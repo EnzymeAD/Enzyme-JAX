@@ -1512,6 +1512,12 @@ Value ReshapeOpCreate(
     OpBuilder &builder, Location loc, Value input, ArrayRef<int64_t> shape,
     std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
 
+// A broadcast_in_dim to the input's own shape along the identity mapping is
+// the input.
+Value BroadcastInDimOpCreate(OpBuilder &builder, Location loc, Value input,
+                             ArrayRef<int64_t> shape,
+                             ArrayRef<int64_t> broadcastDimensions);
+
 Value TransposeOpCreate(
     OpBuilder &builder, Location loc, Value input,
     ArrayRef<int64_t> permutation,

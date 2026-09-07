@@ -47,12 +47,10 @@ func.func @unsigned(%out: memref<4xf64, 1>) {
 // CHECK-NEXT:    %c_5 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_6 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_7 = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:    %7 = stablehlo.broadcast_in_dim %6, dims = [0] : (tensor<4xf64>) -> tensor<4xf64>
-// CHECK-NEXT:    %8 = stablehlo.dynamic_update_slice %arg0, %7, %c_7 : (tensor<4xf64>, tensor<4xf64>, tensor<i64>) -> tensor<4xf64>
-// CHECK-NEXT:    return %8 : tensor<4xf64>
+// CHECK-NEXT:    %7 = stablehlo.dynamic_update_slice %arg0, %6, %c_7 : (tensor<4xf64>, tensor<4xf64>, tensor<i64>) -> tensor<4xf64>
+// CHECK-NEXT:    return %7 : tensor<4xf64>
 // CHECK-NEXT:  }
-
-// CHECK:    func.func private @signed_raised(%arg0: tensor<4xf64>) -> tensor<4xf64> {
+// CHECK-NEXT:  func.func private @signed_raised(%arg0: tensor<4xf64>) -> tensor<4xf64> {
 // CHECK-NEXT:    %c = stablehlo.constant dense<2> : tensor<i64>
 // CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<4xi64>
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<0> : tensor<4xi64>
@@ -70,7 +68,6 @@ func.func @unsigned(%out: memref<4xf64, 1>) {
 // CHECK-NEXT:    %c_5 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_6 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_7 = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:    %8 = stablehlo.broadcast_in_dim %7, dims = [0] : (tensor<4xf64>) -> tensor<4xf64>
-// CHECK-NEXT:    %9 = stablehlo.dynamic_update_slice %arg0, %8, %c_7 : (tensor<4xf64>, tensor<4xf64>, tensor<i64>) -> tensor<4xf64>
-// CHECK-NEXT:    return %9 : tensor<4xf64>
+// CHECK-NEXT:    %8 = stablehlo.dynamic_update_slice %arg0, %7, %c_7 : (tensor<4xf64>, tensor<4xf64>, tensor<i64>) -> tensor<4xf64>
+// CHECK-NEXT:    return %8 : tensor<4xf64>
 // CHECK-NEXT:  }

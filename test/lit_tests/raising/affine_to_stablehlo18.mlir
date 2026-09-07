@@ -44,7 +44,8 @@ module {
   }
 }
 
-// CHECK:    func.func @"bad_compute_w_from_continuity!"(%arg0: tensor<1x200x104xf64>, %arg1: tensor<40x200x104xf64>) -> (tensor<1x200x104xf64>, tensor<40x200x104xf64>) attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
+// CHECK:    llvm.module_flags [#llvm.mlir.module_flag<warning, "Dwarf Version", 2 : i32>, #llvm.mlir.module_flag<warning, "Debug Info Version", 3 : i32>]
+// CHECK-NEXT:  func.func @"bad_compute_w_from_continuity!"(%arg0: tensor<1x200x104xf64>, %arg1: tensor<40x200x104xf64>) -> (tensor<1x200x104xf64>, tensor<40x200x104xf64>) attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
 // CHECK-NEXT:    %0:2 = call @"##call__Z35gpu__bad_compute_w_from_continuity_16CompilerMetadataI16OffsetStaticSizeI15__2_99___2_195_E12DynamicCheckvv7NDRangeILi2E10StaticSizeI7_7__13_ES4_I8_16__16_E5TupleI5Int64S8_ES0_I8__3___3_EEE11OffsetArrayI7Float64Li3E13CuTracedArrayISE_Li3ELi1E14_104__200__40_EE20ImmersedBoundaryGridISE_8Periodic7BoundedSK_15RectilinearGridISE_SJ_SK_SK_28StaticVerticalDiscretizationISD_ISE_Li1E12StepRangeLenISE_14TwicePrecisionISE_ESP_S8_EESR_SE_SE_ESE_SE_SR_SR_vE16GridFittedBottomI5FieldI6CenterSW_vvvvSD_ISE_Li3ESF_ISE_Li3ELi1E13_104__200__1_EESE_vvvE23CenterImmersedConditionEvvvE#246$par0_raised"(%arg1, %arg0) : (tensor<40x200x104xf64>, tensor<1x200x104xf64>) -> (tensor<40x200x104xf64>, tensor<1x200x104xf64>)
 // CHECK-NEXT:    return %arg0, %0#0 : tensor<1x200x104xf64>, tensor<40x200x104xf64>
 // CHECK-NEXT:  }
@@ -123,10 +124,10 @@ module {
 // CHECK-NEXT:    %40 = stablehlo.broadcast_in_dim %12, dims = [0] : (tensor<4xi64>) -> tensor<4x198x102xi64>
 // CHECK-NEXT:    %41 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<f64>) -> tensor<4x198x102xf64>
 // CHECK-NEXT:    %cst_29 = stablehlo.constant dense<0.000000e+00> : tensor<f64>
-// CHECK-NEXT{LITERAL}:    %42 = "stablehlo.reduce_window"(%39, %cst_29) <{base_dilations = array<i64: 1, 1, 1>, padding = dense<[[3, 0], [0, 0], [0, 0]]> : tensor<3x2xi64>, window_dilations = array<i64: 1, 1, 1>, window_dimensions = array<i64: 4, 1, 1>, window_strides = array<i64: 1, 1, 1>}> ({
+// CHECK-NEXT:    %42 = "stablehlo.reduce_window"(%39, %cst_29) <{base_dilations = array<i64: 1, 1, 1>, padding = dense<{{\[\[}}3, 0], [0, 0], [0, 0]]> : tensor<3x2xi64>, window_dilations = array<i64: 1, 1, 1>, window_dimensions = array<i64: 4, 1, 1>, window_strides = array<i64: 1, 1, 1>}> ({
 // CHECK-NEXT:    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
-// CHECK-NEXT:      %48 = stablehlo.add %arg2, %arg3 : tensor<f64>
-// CHECK-NEXT:      stablehlo.return %48 : tensor<f64>
+// CHECK-NEXT:      %47 = stablehlo.add %arg2, %arg3 : tensor<f64>
+// CHECK-NEXT:      stablehlo.return %47 : tensor<f64>
 // CHECK-NEXT:    }) : (tensor<4x198x102xf64>, tensor<f64>) -> tensor<4x198x102xf64>
 // CHECK-NEXT:    %43 = stablehlo.subtract %41, %42 : tensor<4x198x102xf64>
 // CHECK-NEXT:    %c_30 = stablehlo.constant dense<0> : tensor<1xi64>
@@ -147,11 +148,9 @@ module {
 // CHECK-NEXT:    %c_45 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_46 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_47 = stablehlo.constant dense<1> : tensor<i64>
-// CHECK-NEXT:    %44 = stablehlo.broadcast_in_dim %43, dims = [0, 1, 2] : (tensor<4x198x102xf64>) -> tensor<4x198x102xf64>
-// CHECK-NEXT:    %45 = stablehlo.dynamic_update_slice %7, %44, %c_35, %c_41, %c_47 : (tensor<40x200x104xf64>, tensor<4x198x102xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<40x200x104xf64>
+// CHECK-NEXT:    %44 = stablehlo.dynamic_update_slice %7, %43, %c_35, %c_41, %c_47 : (tensor<40x200x104xf64>, tensor<4x198x102xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<40x200x104xf64>
 // CHECK-NEXT:    %c0 = arith.constant 0 : index
-// CHECK-NEXT:    %46 = stablehlo.slice %43 [3:4, 0:198, 0:102] : (tensor<4x198x102xf64>) -> tensor<1x198x102xf64>
-// CHECK-NEXT:    %47 = stablehlo.reshape %46 : (tensor<1x198x102xf64>) -> tensor<198x102xf64>
-// CHECK-NEXT:    return %45, %arg1 : tensor<40x200x104xf64>, tensor<1x200x104xf64>
-// CHECK-NEXT:  }
+// CHECK-NEXT:    %45 = stablehlo.slice %43 [3:4, 0:198, 0:102] : (tensor<4x198x102xf64>) -> tensor<1x198x102xf64>
+// CHECK-NEXT:    %46 = stablehlo.reshape %45 : (tensor<1x198x102xf64>) -> tensor<198x102xf64>
+// CHECK-NEXT:    return %44, %arg1 : tensor<40x200x104xf64>, tensor<1x200x104xf64>
 // CHECK-NEXT:  }

@@ -19,25 +19,23 @@ module {
   }
 }
 
-// CHECK:  func.func private @scoped_raised(%[[v1:.+]]: tensor<16xf64>, %[[v2:.+]]: tensor<16xf64>) -> (tensor<16xf64>, tensor<16xf64>) {
-// CHECK-NEXT:  %[[v3:.+]] = stablehlo.constant dense<2.000000e+00> : tensor<f64>
-// CHECK-NEXT:  %[[v4:.+]] = stablehlo.iota dim = 0 : tensor<16xi64>
-// CHECK-NEXT:  %[[v5:.+]] = stablehlo.constant dense<0> : tensor<16xi64>
-// CHECK-NEXT:  %[[v6:.+]] = stablehlo.add %[[v4]], %[[v5]] : tensor<16xi64>
-// CHECK-NEXT:  %[[v7:.+]] = stablehlo.constant dense<1> : tensor<16xi64>
-// CHECK-NEXT:  %[[v8:.+]] = stablehlo.multiply %[[v6]], %[[v7]] : tensor<16xi64>
-// CHECK-NEXT:  %[[v9:.+]] = stablehlo.reshape %[[v2]] : (tensor<16xf64>) -> tensor<16xf64>
-// CHECK-NEXT:  %[[v10:.+]] = stablehlo.broadcast_in_dim %[[v3]], dims = [] : (tensor<f64>) -> tensor<16xf64>
-// CHECK-NEXT:  %[[v11:.+]] = arith.mulf %[[v9]], %[[v10]] : tensor<16xf64>
-// CHECK-NEXT:  %[[v12:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:  %[[v13:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:  %[[v14:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:  %[[v15:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:  %[[v16:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:  %[[v17:.+]] = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:  %[[v18:.+]] = stablehlo.broadcast_in_dim %[[v11]], dims = [0] : (tensor<16xf64>) -> tensor<16xf64>
-// CHECK-NEXT:  %[[v19:.+]] = stablehlo.dynamic_update_slice %[[v1]], %[[v18]], %[[v17]] : (tensor<16xf64>, tensor<16xf64>, tensor<i64>) -> tensor<16xf64>
-// CHECK-NEXT:  return %[[v19]], %[[v2]] : tensor<16xf64>, tensor<16xf64>
+// CHECK:    func.func private @scoped_raised(%[[a1:.+]]: tensor<16xf64>, %[[a2:.+]]: tensor<16xf64>) -> (tensor<16xf64>, tensor<16xf64>) {
+// CHECK-NEXT:    %[[a3:.+]] = stablehlo.constant dense<2.000000e+00> : tensor<f64>
+// CHECK-NEXT:    %[[a4:.+]] = stablehlo.iota dim = 0 : tensor<16xi64>
+// CHECK-NEXT:    %[[a5:.+]] = stablehlo.constant dense<0> : tensor<16xi64>
+// CHECK-NEXT:    %[[a6:.+]] = stablehlo.add %[[a4]], %[[a5]] : tensor<16xi64>
+// CHECK-NEXT:    %[[a7:.+]] = stablehlo.constant dense<1> : tensor<16xi64>
+// CHECK-NEXT:    %[[a8:.+]] = stablehlo.multiply %[[a6]], %[[a7]] : tensor<16xi64>
+// CHECK-NEXT:    %[[a9:.+]] = stablehlo.broadcast_in_dim %[[a3]], dims = [] : (tensor<f64>) -> tensor<16xf64>
+// CHECK-NEXT:    %[[a10:.+]] = arith.mulf %[[a2]], %[[a9]] : tensor<16xf64>
+// CHECK-NEXT:    %[[a11:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a12:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a13:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a14:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a15:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a16:.+]] = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:    %[[a17:.+]] = stablehlo.dynamic_update_slice %[[a1]], %[[a10]], %[[a16]] : (tensor<16xf64>, tensor<16xf64>, tensor<i64>) -> tensor<16xf64>
+// CHECK-NEXT:    return %[[a17]], %[[a2]] : tensor<16xf64>, tensor<16xf64>
 // CHECK-NEXT:  }
 
 // -----
@@ -68,26 +66,24 @@ module {
   }
 }
 
-// CHECK:  func.func private @trapped_raised(%[[v1:.+]]: tensor<16xf64>, %[[v2:.+]]: tensor<16xf64>) -> (tensor<16xf64>, tensor<16xf64>) {
-// CHECK-NEXT:  %[[v3:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
-// CHECK-NEXT:  %[[v4:.+]] = stablehlo.iota dim = 0 : tensor<16xi64>
-// CHECK-NEXT:  %[[v5:.+]] = stablehlo.constant dense<0> : tensor<16xi64>
-// CHECK-NEXT:  %[[v6:.+]] = stablehlo.add %[[v4]], %[[v5]] : tensor<16xi64>
-// CHECK-NEXT:  %[[v7:.+]] = stablehlo.constant dense<1> : tensor<16xi64>
-// CHECK-NEXT:  %[[v8:.+]] = stablehlo.multiply %[[v6]], %[[v7]] : tensor<16xi64>
-// CHECK-NEXT:  %[[v9:.+]] = stablehlo.reshape %[[v2]] : (tensor<16xf64>) -> tensor<16xf64>
-// CHECK-NEXT:  %[[v10:.+]] = stablehlo.broadcast_in_dim %[[v3]], dims = [] : (tensor<f64>) -> tensor<16xf64>
-// CHECK-NEXT:  %[[v11:.+]] = arith.cmpf uge, %[[v9]], %[[v10]] : tensor<16xf64>
-// CHECK-NEXT:  %[[v12:.+]] = arith.addf %[[v9]], %[[v9]] : tensor<16xf64>
-// CHECK-NEXT:  %[[v13:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:  %[[v14:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:  %[[v15:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:  %[[v16:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:  %[[v17:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:  %[[v18:.+]] = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:  %[[v19:.+]] = stablehlo.broadcast_in_dim %[[v12]], dims = [0] : (tensor<16xf64>) -> tensor<16xf64>
-// CHECK-NEXT:  %[[v20:.+]] = stablehlo.dynamic_update_slice %[[v1]], %[[v19]], %[[v18]] : (tensor<16xf64>, tensor<16xf64>, tensor<i64>) -> tensor<16xf64>
-// CHECK-NEXT:  return %[[v20]], %[[v2]] : tensor<16xf64>, tensor<16xf64>
+// CHECK:    func.func private @trapped_raised(%[[a1:.+]]: tensor<16xf64>, %[[a2:.+]]: tensor<16xf64>) -> (tensor<16xf64>, tensor<16xf64>) {
+// CHECK-NEXT:    %[[a3:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT:    %[[a4:.+]] = stablehlo.iota dim = 0 : tensor<16xi64>
+// CHECK-NEXT:    %[[a5:.+]] = stablehlo.constant dense<0> : tensor<16xi64>
+// CHECK-NEXT:    %[[a6:.+]] = stablehlo.add %[[a4]], %[[a5]] : tensor<16xi64>
+// CHECK-NEXT:    %[[a7:.+]] = stablehlo.constant dense<1> : tensor<16xi64>
+// CHECK-NEXT:    %[[a8:.+]] = stablehlo.multiply %[[a6]], %[[a7]] : tensor<16xi64>
+// CHECK-NEXT:    %[[a9:.+]] = stablehlo.broadcast_in_dim %[[a3]], dims = [] : (tensor<f64>) -> tensor<16xf64>
+// CHECK-NEXT:    %[[a10:.+]] = arith.cmpf uge, %[[a2]], %[[a9]] : tensor<16xf64>
+// CHECK-NEXT:    %[[a11:.+]] = arith.addf %[[a2]], %[[a2]] : tensor<16xf64>
+// CHECK-NEXT:    %[[a12:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a13:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a14:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a15:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a16:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a17:.+]] = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:    %[[a18:.+]] = stablehlo.dynamic_update_slice %[[a1]], %[[a11]], %[[a17]] : (tensor<16xf64>, tensor<16xf64>, tensor<i64>) -> tensor<16xf64>
+// CHECK-NEXT:    return %[[a18]], %[[a2]] : tensor<16xf64>, tensor<16xf64>
 // CHECK-NEXT:  }
 
 // -----
@@ -122,27 +118,25 @@ module {
   }
 }
 
-// CHECK:  func.func private @chained_raised(%[[v1:.+]]: tensor<16xf64>, %[[v2:.+]]: tensor<16xf64>) -> (tensor<16xf64>, tensor<16xf64>) {
-// CHECK-NEXT:  %[[v3:.+]] = stablehlo.constant dense<1.000000e+00> : tensor<f64>
-// CHECK-NEXT:  %[[v4:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
-// CHECK-NEXT:  %[[v5:.+]] = stablehlo.iota dim = 0 : tensor<16xi64>
-// CHECK-NEXT:  %[[v6:.+]] = stablehlo.constant dense<0> : tensor<16xi64>
-// CHECK-NEXT:  %[[v7:.+]] = stablehlo.add %[[v5]], %[[v6]] : tensor<16xi64>
-// CHECK-NEXT:  %[[v8:.+]] = stablehlo.constant dense<1> : tensor<16xi64>
-// CHECK-NEXT:  %[[v9:.+]] = stablehlo.multiply %[[v7]], %[[v8]] : tensor<16xi64>
-// CHECK-NEXT:  %[[v10:.+]] = stablehlo.reshape %[[v2]] : (tensor<16xf64>) -> tensor<16xf64>
-// CHECK-NEXT:  %[[v11:.+]] = stablehlo.broadcast_in_dim %[[v4]], dims = [] : (tensor<f64>) -> tensor<16xf64>
-// CHECK-NEXT:  %[[v12:.+]] = arith.cmpf uge, %[[v10]], %[[v11]] : tensor<16xf64>
-// CHECK-NEXT:  %[[v13:.+]] = stablehlo.broadcast_in_dim %[[v3]], dims = [] : (tensor<f64>) -> tensor<16xf64>
-// CHECK-NEXT:  %[[v14:.+]] = arith.cmpf ule, %[[v10]], %[[v13]] : tensor<16xf64>
-// CHECK-NEXT:  %[[v15:.+]] = arith.mulf %[[v10]], %[[v10]] : tensor<16xf64>
-// CHECK-NEXT:  %[[v16:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:  %[[v17:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:  %[[v18:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:  %[[v19:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:  %[[v20:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:  %[[v21:.+]] = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:  %[[v22:.+]] = stablehlo.broadcast_in_dim %[[v15]], dims = [0] : (tensor<16xf64>) -> tensor<16xf64>
-// CHECK-NEXT:  %[[v23:.+]] = stablehlo.dynamic_update_slice %[[v1]], %[[v22]], %[[v21]] : (tensor<16xf64>, tensor<16xf64>, tensor<i64>) -> tensor<16xf64>
-// CHECK-NEXT:  return %[[v23]], %[[v2]] : tensor<16xf64>, tensor<16xf64>
+// CHECK:    func.func private @chained_raised(%[[a1:.+]]: tensor<16xf64>, %[[a2:.+]]: tensor<16xf64>) -> (tensor<16xf64>, tensor<16xf64>) {
+// CHECK-NEXT:    %[[a3:.+]] = stablehlo.constant dense<1.000000e+00> : tensor<f64>
+// CHECK-NEXT:    %[[a4:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT:    %[[a5:.+]] = stablehlo.iota dim = 0 : tensor<16xi64>
+// CHECK-NEXT:    %[[a6:.+]] = stablehlo.constant dense<0> : tensor<16xi64>
+// CHECK-NEXT:    %[[a7:.+]] = stablehlo.add %[[a5]], %[[a6]] : tensor<16xi64>
+// CHECK-NEXT:    %[[a8:.+]] = stablehlo.constant dense<1> : tensor<16xi64>
+// CHECK-NEXT:    %[[a9:.+]] = stablehlo.multiply %[[a7]], %[[a8]] : tensor<16xi64>
+// CHECK-NEXT:    %[[a10:.+]] = stablehlo.broadcast_in_dim %[[a4]], dims = [] : (tensor<f64>) -> tensor<16xf64>
+// CHECK-NEXT:    %[[a11:.+]] = arith.cmpf uge, %[[a2]], %[[a10]] : tensor<16xf64>
+// CHECK-NEXT:    %[[a12:.+]] = stablehlo.broadcast_in_dim %[[a3]], dims = [] : (tensor<f64>) -> tensor<16xf64>
+// CHECK-NEXT:    %[[a13:.+]] = arith.cmpf ule, %[[a2]], %[[a12]] : tensor<16xf64>
+// CHECK-NEXT:    %[[a14:.+]] = arith.mulf %[[a2]], %[[a2]] : tensor<16xf64>
+// CHECK-NEXT:    %[[a15:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a16:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a17:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a18:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a19:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a20:.+]] = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:    %[[a21:.+]] = stablehlo.dynamic_update_slice %[[a1]], %[[a14]], %[[a20]] : (tensor<16xf64>, tensor<16xf64>, tensor<i64>) -> tensor<16xf64>
+// CHECK-NEXT:    return %[[a21]], %[[a2]] : tensor<16xf64>, tensor<16xf64>
 // CHECK-NEXT:  }
