@@ -84,6 +84,12 @@ using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::stablehlo;
 
+// Steps the tensor provenance walk (DUSDUSSubsuming) takes through a chain of
+// slices, updates and pads before treating the rest as an opaque source. Each
+// step is Presburger work on a relation that grows with the chain; the cutoff
+// only loses precision.
+constexpr size_t kProvenanceWalkBudget = 128;
+
 namespace mlir {
 // Implementation of helper function to lower MultiRotateOp into individual
 // RotateOps
@@ -19119,10 +19125,15 @@ addSelfProvenance(Value value,
 void computeTensorValueProvenanceImpl(
     SmallVectorImpl<Value> &pendingValues,
     DenseMap<Value, TensorValueProvenance> &provenanceInfo2) {
+  size_t steps = 0;
   while (!pendingValues.empty()) {
     Value value = pendingValues.pop_back_val();
     if (provenanceInfo2.contains(value))
       continue;
+    if (steps++ >= kProvenanceWalkBudget) {
+      addSelfProvenance(value, provenanceInfo2);
+      continue;
+    }
 
     if (auto slice = value.getDefiningOp<stablehlo::SliceOp>()) {
       // If we don't know the provenance of the operand, figure it out before
@@ -19143,8 +19154,12 @@ void computeTensorValueProvenanceImpl(
       presburger::IntegerRelation offset =
           getOffsetRelation(domainSpace, slice.getStartIndices());
 
+      // The insertion may rehash the map and invalidate references into it.
+      SmallVector<Value> operandSources = it->second.sources;
+      presburger::PresburgerRelation operandProvenance =
+          it->second.provenanceRelation;
       auto [insertIt, _] = provenanceInfo2.try_emplace(
-          value, it->second.sources, it->second.provenanceRelation);
+          value, std::move(operandSources), std::move(operandProvenance));
       insertIt->second.provenanceRelation =
           insertIt->second.provenanceRelation.intersectDomain(
               presburger::PresburgerSet(restriction));
