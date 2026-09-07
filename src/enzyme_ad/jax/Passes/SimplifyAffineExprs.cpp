@@ -1827,6 +1827,10 @@ struct SimplifyAffineExprsPass
     populateAffineExprSimplificationPatterns(ia, patterns);
     GreedyRewriteConfig config;
     config.enableConstantCSE(false);
+    // The canonicalizer's default: no identical-block merging. Merging adds
+    // successor operands for the values the blocks differed in, and e.g.
+    // llvm.invoke cannot carry an index-typed successor operand.
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     if (failed(applyPatternsGreedily(op, std::move(patterns), config)))
       signalPassFailure();
   }
