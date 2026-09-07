@@ -2901,6 +2901,19 @@ static int64_t unrollCost(Operation *op) {
   return std::min(std::max(trip, (int64_t)1) * body, (int64_t)1 << 40);
 }
 
+// A constant global with a dense initializer (a kernel-local lookup table
+// the optimizer promoted to rodata) is a tensor the module already holds.
+static DenseElementsAttr constantGlobalInitializer(LLVM::AddressOfOp addr) {
+  auto g = SymbolTable::lookupNearestSymbolFrom<LLVM::GlobalOp>(
+      addr, addr.getGlobalNameAttr());
+  if (!g || !g.getConstant())
+    return nullptr;
+  auto dense = dyn_cast_or_null<DenseElementsAttr>(g.getValueOrNull());
+  if (!dense || !isXLACompatiblePrimitive(dense.getElementType()))
+    return nullptr;
+  return dense;
+}
+
 static LogicalResult
 tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         llvm::DenseMap<Value, affine::AffineValueMap> &maps,
@@ -4211,6 +4224,22 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
+  // The address of a constant global reads as the initializer, flattened:
+  // the view a pointer2memref takes of it and the loads through that view
+  // then raise like those of any other buffer.
+  if (auto addr = dyn_cast<LLVM::AddressOfOp>(op)) {
+    auto dense = constantGlobalInitializer(addr);
+    if (!dense)
+      return failure();
+    auto ty =
+        RankedTensorType::get({dense.getNumElements()}, dense.getElementType());
+    Value cst = stablehlo::ConstantOp::create(
+        builder, rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        ty, dense.reshape(ty));
+    mapping.map(addr.getResult(), cst);
+    return success();
+  }
+
   if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(op)) {
     Value operand = op->getOperand(0), result = op->getResult(0);
     auto input = mapping.lookupOrNull(operand);
@@ -4229,6 +4258,23 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         cast<AutoDiffTypeInterface>(ty.getElementType()).getApproxSize();
     size_t inSize =
         cast<AutoDiffTypeInterface>(inTy.getElementType()).getApproxSize();
+
+    // A view of a static tensor holds a known number of elements: size its
+    // one dynamic dimension from that instead of reading it back at runtime.
+    if (inTy.hasStaticShape() && !ty.hasStaticShape() &&
+        llvm::count(ty.getShape(), ShapedType::kDynamic) == 1) {
+      int64_t bytes = inTy.getNumElements() * (int64_t)inSize;
+      int64_t known = 1;
+      for (int64_t d : ty.getShape())
+        if (d != ShapedType::kDynamic)
+          known *= d;
+      if (bytes % ((int64_t)outSize * known) == 0) {
+        SmallVector<int64_t> shape(ty.getShape());
+        *llvm::find(shape, ShapedType::kDynamic) =
+            bytes / ((int64_t)outSize * known);
+        ty = RankedTensorType::get(shape, ty.getElementType());
+      }
+    }
 
     Value res;
     if (outSize == inSize) {
@@ -4851,6 +4897,31 @@ struct AffineToStableHLORaisingPass
   // raising identifies buffers by SSA root: a memory_space_cast view would
   // split one buffer into two roots and lose store propagation. Retarget the
   // accesses to the source and drop the cast.
+  // If `arg` (a memref view or a pointer) is the address of a constant
+  // global, clone the address (and the view) to the region entry and redirect
+  // the region's uses to the clone; being constant, nothing in the region
+  // could have written through it.
+  static bool moveConstantGlobalViewIntoRegion(Value arg, Operation *region,
+                                               Block *body) {
+    auto p2m = arg.getDefiningOp<enzymexla::Pointer2MemrefOp>();
+    Value ptr = p2m ? p2m.getSource() : arg;
+    auto addr = ptr.getDefiningOp<LLVM::AddressOfOp>();
+    if (!addr || !constantGlobalInitializer(addr))
+      return false;
+    OpBuilder b(region->getContext());
+    b.setInsertionPointToStart(body);
+    IRMapping cl;
+    Operation *c = b.clone(*addr, cl);
+    if (p2m) {
+      b.setInsertionPointAfter(c);
+      b.clone(*p2m, cl);
+    }
+    arg.replaceUsesWithIf(cl.lookup(arg), [&](OpOperand &use) {
+      return region->isProperAncestor(use.getOwner());
+    });
+    return true;
+  }
+
   static void stripAccessMemorySpaceCasts(Operation *root) {
     SmallVector<memref::MemorySpaceCastOp> casts;
     root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
@@ -5268,6 +5339,14 @@ struct AffineToStableHLORaisingPass
                            << ", old arg: " << ic << "\n";
             }
           }
+
+          // A view of a constant global (a lookup table promoted to rodata)
+          // is no buffer the kernel could receive: move its address chain
+          // into the region, where it raises as a constant tensor. The view
+          // is taken either outside the region (a memref operand) or inside
+          // it (a pointer operand).
+          if (moveConstantGlobalViewIntoRegion(arg, g, body))
+            continue;
 
           if (isa<LLVM::LLVMPointerType>(arg.getType())) {
             OpBuilder b(g);
