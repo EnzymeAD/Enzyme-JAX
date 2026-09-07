@@ -1196,19 +1196,55 @@ struct HoistSelectConversion : public OpRewritePattern<arith::SelectOp> {
   }
 };
 
+// An access through a view of the null pointer can only execute as undefined
+// behavior (an optional buffer a kernel receives as null sits behind a runtime
+// flag), so it is dynamically dead: an access with a result (a load) reads as
+// a zero of its type, one without (a store) drops. Offsets off the null have
+// already folded into the index.
+template <typename T>
+class NullPointer2MemrefAccess final : public OpRewritePattern<T> {
+public:
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T op,
+                                PatternRewriter &rewriter) const override {
+    auto view =
+        op.getMemref().template getDefiningOp<enzymexla::Pointer2MemrefOp>();
+    if (!view || !view.getSource().template getDefiningOp<LLVM::ZeroOp>())
+      return failure();
+    if (op->getNumResults() == 0) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+    Type t = op->getResult(0).getType();
+    if (t.isIntOrFloat())
+      rewriter.replaceOpWithNewOp<arith::ConstantOp>(op, t,
+                                                     rewriter.getZeroAttr(t));
+    else if (LLVM::isCompatibleType(t))
+      rewriter.replaceOpWithNewOp<LLVM::ZeroOp>(op, t);
+    else
+      return failure();
+    return success();
+  }
+};
+
 void Pointer2MemrefOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                    MLIRContext *context) {
-  results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
-                 LoadStorePointer2MemrefGEP<memref::LoadOp>,
-                 LoadStorePointer2MemrefGEP<affine::AffineLoadOp>,
-                 LoadStorePointer2MemrefGEP<memref::StoreOp>,
-                 LoadStorePointer2MemrefGEP<affine::AffineStoreOp>,
-                 LoadStorePointer2MemrefGEP<enzyme::AtomicRMWOp>,
-                 LoadStorePointer2MemrefGEP<memref::AtomicRMWOp>,
-                 LoadStorePointer2MemrefGEP<enzyme::AffineAtomicRMWOp>,
-                 HoistIfYieldConversion<scf::IfOp>,
-                 HoistIfYieldConversion<affine::AffineIfOp>,
-                 HoistSelectConversion>(context);
+  results
+      .insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
+              LoadStorePointer2MemrefGEP<memref::LoadOp>,
+              LoadStorePointer2MemrefGEP<affine::AffineLoadOp>,
+              LoadStorePointer2MemrefGEP<memref::StoreOp>,
+              LoadStorePointer2MemrefGEP<affine::AffineStoreOp>,
+              LoadStorePointer2MemrefGEP<enzyme::AtomicRMWOp>,
+              LoadStorePointer2MemrefGEP<memref::AtomicRMWOp>,
+              LoadStorePointer2MemrefGEP<enzyme::AffineAtomicRMWOp>,
+              HoistIfYieldConversion<scf::IfOp>,
+              HoistIfYieldConversion<affine::AffineIfOp>, HoistSelectConversion,
+              NullPointer2MemrefAccess<memref::LoadOp>,
+              NullPointer2MemrefAccess<affine::AffineLoadOp>,
+              NullPointer2MemrefAccess<memref::StoreOp>,
+              NullPointer2MemrefAccess<affine::AffineStoreOp>>(context);
   /*
   results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
                  MetaPointer2Memref<memref::LoadOp>,
