@@ -3195,6 +3195,11 @@ static bool isAllocation(Value v) {
 struct BufferBranch {
   Operation *op;
   unsigned resultNo;
+  // Whether an arm is an allocation. Otherwise the branch chooses between
+  // buffers the function was handed, and only its accesses inside a GPU
+  // wrapper are split: those become a kernel, and the kernel's raising has
+  // no tensor that stands for one of two buffers.
+  bool anyAllocation = true;
 
   Value result() const { return op->getResult(resultNo); }
   Value armValue(unsigned arm) const {
@@ -3283,10 +3288,12 @@ static bool splitBufferBranchAccesses(Operation *f) {
   SmallVector<BufferBranch> work;
   f->walk([&](Operation *op) {
     for (Value res : op->getResults())
-      if (auto br = bufferBranch(res))
-        if (isAllocation(bufferRoot(br->armValue(0))) ||
-            isAllocation(bufferRoot(br->armValue(1))))
+      if (auto br = bufferBranch(res)) {
+        br->anyAllocation = isAllocation(bufferRoot(br->armValue(0))) ||
+                            isAllocation(bufferRoot(br->armValue(1)));
+        if (br->anyAllocation || op->getParentOfType<GPUWrapperOp>())
           work.push_back(*br);
+      }
   });
 
   bool changed = false;
@@ -3300,6 +3307,8 @@ static bool splitBufferBranchAccesses(Operation *f) {
       Operation *user = use.getOwner();
       auto operand = bufferOperand(user, br.result());
       if (!operand)
+        continue;
+      if (!br.anyAllocation && !user->getParentOfType<GPUWrapperOp>())
         continue;
 
       OpBuilder b(user);
@@ -3336,8 +3345,10 @@ static bool splitBufferBranchAccesses(Operation *f) {
       // A respelling of the branch's result is a branch between buffers again,
       // whose own accesses want splitting.
       if (newBr->getNumResults())
-        if (auto inner = bufferBranch(newBr->getResult(0)))
+        if (auto inner = bufferBranch(newBr->getResult(0))) {
+          inner->anyAllocation = br.anyAllocation;
           work.push_back(*inner);
+        }
     }
 
     // A branch nothing is left to ask goes, so long as it did nothing but

@@ -83,6 +83,33 @@ module {
     %r = affine.load %buf[0] : memref<4xf64>
     return %r : f64
   }
+
+  // The same choice between two buffers the kernel was handed, not allocated:
+  // `const real_t wx = (c == 0) ? Bct(dx,qx) : Bot(dx,qx)` in MFEM's H(curl)/H(div)
+  // kernels arrives as an affine.if yielding one of two pointer arguments, and
+  // the access sits inside a GPU wrapper. Nothing owns those buffers, but the
+  // kernel's raising has no tensor standing for one of two buffers, so the
+  // access is done in each arm here as well.
+  func.func @args_in_wrapper(%bc: !llvm.ptr, %bo: !llvm.ptr, %out: memref<?xf64>, %n: index) {
+    %c1 = arith.constant 1 : index
+    "enzymexla.gpu_wrapper"(%n, %c1, %c1, %c1, %c1, %c1) ({
+      affine.parallel (%e) = (0) to (symbol(%n)) {
+        %acc = affine.for %c = 0 to 3 iter_args(%a = %e) -> index {
+          %p = affine.if #set(%c) -> !llvm.ptr {
+            affine.yield %bc : !llvm.ptr
+          } else {
+            affine.yield %bo : !llvm.ptr
+          }
+          %m = "enzymexla.pointer2memref"(%p) : (!llvm.ptr) -> memref<?xf64>
+          %v = affine.load %m[%c + %e * 3] : memref<?xf64>
+          affine.store %v, %out[%c + %e * 3] : memref<?xf64>
+          affine.yield %a : index
+        }
+      }
+      "enzymexla.polygeist_yield"() : () -> ()
+    }) : (index, index, index, index, index, index) -> index
+    return
+  }
 }
 
 // CHECK-LABEL: func.func @load_through_if(
@@ -128,3 +155,26 @@ module {
 // CHECK-LABEL: func.func @not_allocations(
 // CHECK:         %[[buf:.+]] = arith.select %arg0, %arg1, %arg2
 // CHECK-NEXT:    affine.load %[[buf]][0]
+
+// CHECK:    func.func @args_in_wrapper(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: memref<?xf64>, %arg3: index) {
+// CHECK-NEXT:    %c1 = arith.constant 1 : index
+// CHECK-NEXT:    %0 = "enzymexla.gpu_wrapper"(%arg3, %c1, %c1, %c1, %c1, %c1) ({
+// CHECK-NEXT:      affine.parallel (%arg4) = (0) to (symbol(%arg3)) {
+// CHECK-NEXT:        %1 = affine.for %arg5 = 0 to 3 iter_args(%arg6 = %arg4) -> (index) {
+// CHECK-NEXT:          %2 = affine.if #set(%arg5) -> f64 {
+// CHECK-NEXT:            %3 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr) -> memref<?xf64>
+// CHECK-NEXT:            %4 = affine.load %3[%arg5 + %arg4 * 3] : memref<?xf64>
+// CHECK-NEXT:            affine.yield %4 : f64
+// CHECK-NEXT:          } else {
+// CHECK-NEXT:            %3 = "enzymexla.pointer2memref"(%arg1) : (!llvm.ptr) -> memref<?xf64>
+// CHECK-NEXT:            %4 = affine.load %3[%arg5 + %arg4 * 3] : memref<?xf64>
+// CHECK-NEXT:            affine.yield %4 : f64
+// CHECK-NEXT:          }
+// CHECK-NEXT:          affine.store %2, %arg2[%arg5 + %arg4 * 3] : memref<?xf64>
+// CHECK-NEXT:          affine.yield %arg6 : index
+// CHECK-NEXT:        }
+// CHECK-NEXT:      }
+// CHECK-NEXT:      "enzymexla.polygeist_yield"() : () -> ()
+// CHECK-NEXT:    }) : (index, index, index, index, index, index) -> index
+// CHECK-NEXT:    return
+// CHECK-NEXT:  }
