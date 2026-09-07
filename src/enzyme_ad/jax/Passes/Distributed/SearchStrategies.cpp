@@ -1,3 +1,4 @@
+#include "src/enzyme_ad/jax/Passes/Distributed/BeamSearchDriver.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/ReplayTree.h"
 
@@ -97,8 +98,12 @@ struct AxisMappingReplayState {
 };
 
 class AxisMappingReplayTree
-    : public mlir::enzyme::distributed::ReplayTree<AxisMappingReplayState> {
+    : public mlir::enzyme::distributed::ReplayTree<AxisMappingReplayTree,
+                                                   AxisMappingReplayState> {
 public:
+  using mlir::enzyme::distributed::ReplayTree<
+      AxisMappingReplayTree, AxisMappingReplayState>::ReplayTree;
+
   llvm::SmallVector<TypedValue<AxisFactorType>>
   getBindings(TypedValue<LogicalMeshAxisType> axis) {
     struct LookupOperator {
@@ -120,13 +125,43 @@ public:
   }
 };
 
-struct StrategySearchNode {
-  std::shared_ptr<LogicalAxisWorklist> worklist;
-  ModuleOp searchedModule;
-  mlir::IRMapping moduleToOriginal;
-  mlir::IRMapping originalToModule;
+struct StrategySearchNode : public BeamSearchNodeBase {
 
-  ~StrategySearchNode() { searchedModule.erase(); }
+  std::shared_ptr<LogicalAxisWorklist> worklist;
+  std::shared_ptr<AxisMappingReplayTree> decisions;
+  int extentTaken; // extent already taken from the current axis
+
+  StrategySearchNode() = delete; // disable default constructor
+  StrategySearchNode(std::shared_ptr<LogicalAxisWorklist> worklist,
+                     std::shared_ptr<AxisMappingReplayTree> decisions,
+                     int extentTaken)
+      : worklist(worklist), decisions(decisions), extentTaken(extentTaken) {
+    assert(extentTaken >= 1);
+  }
+
+  TypedValue<LogicalMeshAxisType> currentAxis() const { return worklist->axis; }
+  bool finalized() const override { return worklist == nullptr; }
+};
+
+class StrategyExplorer : public BeamSearchExplorerBase<StrategySearchNode> {
+public:
+  StrategyExplorer() : BeamSearchExplorerBase<StrategySearchNode>() {}
+
+  virtual std::vector<std::shared_ptr<StrategySearchNode>>
+  generateCandidatesFromNode(
+      std::shared_ptr<StrategySearchNode> node) override {
+    // TODO Implement the exploration logic here.
+    return {};
+  }
+};
+
+class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
+public:
+  virtual double
+  score(const std::shared_ptr<StrategySearchNode> &node) override {
+    // TODO Implement the scoring logic here.
+    return 0.0;
+  }
 };
 
 struct DistributedSearchStrategiesPass
@@ -139,6 +174,20 @@ struct DistributedSearchStrategiesPass
     auto logicalAxes = findAllLogicalAxes(moduleOp);
     // TODO: order by importance
     auto worklist = LogicalAxisWorklist::fromArray(logicalAxes);
+    auto decisions = AxisMappingReplayTree::makeRoot();
+
+    auto initialNode =
+        std::make_shared<StrategySearchNode>(worklist, decisions, 1);
+
+    int TODO_PARAMETER_BEAM_SIZE = 100;
+    BeamSearchBreadthFirstQueue<StrategySearchNode> queue(
+        TODO_PARAMETER_BEAM_SIZE);
+    queue.push(initialNode);
+    StrategyExplorer explorer;
+    StrategyScorer scorer;
+
+    BeamSearchDriver<StrategySearchNode> driver(queue, scorer, explorer);
+    driver.run();
   }
 };
 

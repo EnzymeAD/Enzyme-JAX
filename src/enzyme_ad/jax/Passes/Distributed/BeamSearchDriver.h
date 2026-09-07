@@ -10,12 +10,10 @@
 
 namespace mlir::enzyme::distributed {
 
-template <typename CandidateSpec, typename ExtraState>
 class BeamSearchNodeBase {
+public:
   double score;
-  bool finalized;
-  CandidateSpec candidateSpec;
-  ExtraState extra;
+  virtual bool finalized() const = 0;
 };
 
 /**
@@ -24,19 +22,22 @@ class BeamSearchNodeBase {
  */
 template <typename NodeType> class BeamSearchQueueBase {
   using NodePtr = std::shared_ptr<NodeType>;
+
+public:
   virtual void push(NodePtr node) = 0;
   virtual NodePtr pop() = 0;
   virtual bool done() = 0;
 };
 
 template <typename NodeType> class BeamSearchScorerBase {
-  virtual double score(const NodeType &node) = 0;
+public:
+  virtual double score(const std::shared_ptr<NodeType> &node) = 0;
 };
 
 template <typename NodeType> class BeamSearchExplorerBase {
+public:
   using NodePtr = std::shared_ptr<NodeType>;
-  virtual std::vector<NodePtr>
-  generateCandidatesFromNode(const NodePtr node) = 0;
+  virtual std::vector<NodePtr> generateCandidatesFromNode(NodePtr node) = 0;
 };
 
 /**
@@ -77,13 +78,13 @@ public:
   BeamSearchDriver(QueueType &queue, ScorerType &scorer, ExplorerType &explorer)
       : queue(queue), scorer(scorer), explorer(explorer){};
 
-  NodePtr best() { return bestFinalizedCandidate; }
-  llvm::ArrayRef<NodePtr> finalized() { return finalizedCandidates; }
+  NodePtr getBest() { return bestFinalizedCandidate; }
+  llvm::ArrayRef<NodePtr> getFinalized() { return finalizedCandidates; }
 
   void run() {
     while (!queue.done()) {
       NodePtr node = queue.pop();
-      if (node->finalized) {
+      if (node->finalized()) {
         // Finalized candidates get recorded
         finalizedCandidates.push_back(node);
         if (!bestFinalizedCandidate ||
@@ -95,7 +96,7 @@ public:
         std::vector<NodePtr> newCandidates =
             explorer.generateCandidatesFromNode(node);
         for (NodePtr newNode : newCandidates) {
-          double newScore = scorer.score(*newNode);
+          double newScore = scorer.score(newNode);
           newNode->score = newScore;
           queue.push(newNode);
         }
@@ -117,6 +118,7 @@ class BeamSearchBreadthFirstQueue : public BeamSearchQueueBase<NodeType> {
   };
   std::priority_queue<NodePtr, std::vector<NodePtr>, CompareScore> incoming;
 
+public:
   BeamSearchBreadthFirstQueue(int max_residency)
       : max_residency(max_residency), queue(), incoming() {}
 

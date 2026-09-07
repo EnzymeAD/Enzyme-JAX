@@ -36,17 +36,18 @@ enum ReplayQueryShortCircuit { Continue, Stop };
  * operation allowing one delta to be applied to another. Empty-construting this
  * delta should give us an identity element.
  */
-template <typename DeltaType> class ReplayTree {
+template <typename Derived, typename DeltaType> class ReplayTree {
 protected:
-  using SelfT = ReplayTree<DeltaType>;
+  using SelfT = Derived;
   DeltaType delta;
   std::shared_ptr<const SelfT> parent;
   uint32_t depth;
 
-  ReplayTree(std::shared_ptr<SelfT> predecessor, uint32_t depth)
-      : depth(depth), DeltaType() {
+public:
+  ReplayTree(std::shared_ptr<const SelfT> predecessor, uint32_t depth)
+      : depth(depth), delta() {
     int stepsUp = llvm::countr_zero(depth);
-    std::vector<std::shared_ptr<SelfT>> toCompress;
+    std::vector<std::shared_ptr<const SelfT>> toCompress;
     for (int i = 0; i < stepsUp; ++i) {
       toCompress.push_back(predecessor);
       predecessor = predecessor->parent;
@@ -58,18 +59,19 @@ protected:
     }
   }
 
-public:
   // Define the necessary members and methods for the ReplayTree here.
   static std::shared_ptr<SelfT> makeRoot() {
     return std::make_shared<SelfT>(nullptr, 0);
   }
   static std::shared_ptr<SelfT> makeChild(std::shared_ptr<SelfT> predecessor) {
-    return std::make_shared<SelfT>(predecessor, predecessor->depth + 1);
+    return std::make_shared<SelfT>(predecessor, predecessor->getDepth() + 1);
   }
 
   // Any mutating operations to the replay tree can be done
   // on this getDelta reference.
   DeltaType &getDelta() { return delta; }
+
+  uint32_t getDepth() const { return depth; }
 
   // Currently return-by-reference or state on the query object.
   // Query must return a short-circuit status indicating whether to
