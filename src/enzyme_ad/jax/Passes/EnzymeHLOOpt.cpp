@@ -13586,16 +13586,19 @@ struct DUSSliceSimplify final
               rewriter, loc, itype, cast<ElementsAttr>(makeAttr(itype, start)));
         });
 
-    LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
-                 newDusIndices,
-                 cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
-                 cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
-          APInt start;
-          assert(matchPattern(idx, m_ConstantInt(&start)));
-          int64_t vali = start.getSExtValue();
-          assert(operandSize >= vali + updateSize);
-        });
+    LLVM_DEBUG({
+      auto operandShape =
+          cast<RankedTensorType>(preSliceOperand.getType()).getShape();
+      auto updateShape =
+          cast<RankedTensorType>(preSliceUpdate.getType()).getShape();
+      for (auto [idx, operandSize, updateSize] :
+           llvm::zip_equal(newDusIndices, operandShape, updateShape)) {
+        APInt start;
+        assert(matchPattern(idx, m_ConstantInt(&start)));
+        int64_t vali = start.getSExtValue();
+        assert(operandSize >= vali + updateSize);
+      }
+    });
 
     auto newDus = stablehlo::DynamicUpdateSliceOp::create(
         rewriter, loc, preSliceOperand, preSliceUpdate, newDusIndices);
