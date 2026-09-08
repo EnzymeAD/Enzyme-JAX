@@ -142,13 +142,55 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
   }
   if (p2ms.size() == 0)
     return failure();
-  for (int i = 1; i < p2ms.size(); i++) {
+  // The allocation's own scalar element type is the canonical view type, so
+  // equal-sized punned views retype toward it rather than the other way.
+  {
+    Type allocScalar;
+    if constexpr (!inPlace)
+      allocScalar = alloc.getElemType();
+    else
+      allocScalar = alloc.getType().getElementType();
+    while (auto at = dyn_cast<LLVM::LLVMArrayType>(allocScalar))
+      allocScalar = at.getElementType();
+    for (size_t i = 0; i < p2ms.size(); i++)
+      if (p2ms[i].getType().getElementType() == allocScalar) {
+        std::swap(p2ms[0], p2ms[i]);
+        break;
+      }
+  }
+  // A bit-preserving access reads or writes a same-sized value of another
+  // type (a zeroed double stores as i64 0, a copied one loads as i64): its
+  // view retypes to the canonical element with a bitcast at each access.
+  SmallVector<enzymexla::Pointer2MemrefOp> retypeViews;
+  for (size_t i = 1; i < p2ms.size(); i++) {
     if (p2ms[i].getType().getElementType() !=
         p2ms[0].getType().getElementType()) {
       if (p2ms[0].getType().getElementType().isInteger(8)) {
         std::swap(p2ms[0], p2ms[i]);
       }
       if (p2ms[i].getType().getElementType().isInteger(8)) {
+        continue;
+      }
+      Type a = p2ms[i].getType().getElementType();
+      Type b = p2ms[0].getType().getElementType();
+      if (a.isIntOrFloat() && b.isIntOrFloat() &&
+          dataLayout.getTypeSize(a) == dataLayout.getTypeSize(b) &&
+          llvm::all_of(p2ms[i]->getUsers(), [&](Operation *u) {
+            if (auto ld = dyn_cast<affine::AffineLoadOp>(u))
+              return ld.getMemref() == p2ms[i].getResult();
+            if (auto st = dyn_cast<affine::AffineStoreOp>(u))
+              return st.getMemref() == p2ms[i].getResult() &&
+                     st.getValueToStore() != p2ms[i].getResult();
+            if (auto ld = dyn_cast<memref::LoadOp>(u))
+              return ld.getMemRef() == p2ms[i].getResult();
+            if (auto st = dyn_cast<memref::StoreOp>(u))
+              return st.getMemRef() == p2ms[i].getResult() &&
+                     st.getValueToStore() != p2ms[i].getResult();
+            return false;
+          })) {
+        retypeViews.push_back(p2ms[i]);
+        p2ms.erase(p2ms.begin() + i);
+        i--;
         continue;
       }
       LLVM_DEBUG(llvm::dbgs() << "p2ms[0]:" << p2ms[0] << "\n");
@@ -341,6 +383,54 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
       replacement = memref::CastOp::create(rewriter, p2m.getLoc(),
                                            p2m.getType(), replacement);
     rewriter.replaceOp(p2m, replacement);
+  }
+
+  for (auto p2m : retypeViews) {
+    Value replacement = newAlloc;
+    if (memrefType.getMemorySpace() != p2m.getType().getMemorySpace()) {
+      auto spaceType = MemRefType::get(
+          memrefType.getShape(), memrefType.getElementType(),
+          memrefType.getLayout(), p2m.getType().getMemorySpace());
+      replacement = memref::MemorySpaceCastOp::create(rewriter, p2m.getLoc(),
+                                                      spaceType, replacement);
+    }
+    auto viewType = MemRefType::get(
+        p2m.getType().getShape(), memrefType.getElementType(),
+        p2m.getType().getLayout(), p2m.getType().getMemorySpace());
+    if (replacement.getType() != viewType)
+      replacement =
+          memref::CastOp::create(rewriter, p2m.getLoc(), viewType, replacement);
+    Type punTy = p2m.getType().getElementType();
+    Type canTy = memrefType.getElementType();
+    for (Operation *user : llvm::make_early_inc_range(p2m->getUsers())) {
+      rewriter.setInsertionPoint(user);
+      if (auto ld = dyn_cast<affine::AffineLoadOp>(user)) {
+        auto newLd =
+            affine::AffineLoadOp::create(rewriter, ld.getLoc(), replacement,
+                                         ld.getMap(), ld.getMapOperands());
+        rewriter.replaceOpWithNewOp<arith::BitcastOp>(ld, punTy,
+                                                      newLd.getResult());
+      } else if (auto st = dyn_cast<affine::AffineStoreOp>(user)) {
+        auto cast = arith::BitcastOp::create(rewriter, st.getLoc(), canTy,
+                                             st.getValueToStore());
+        affine::AffineStoreOp::create(rewriter, st.getLoc(), cast, replacement,
+                                      st.getMap(), st.getMapOperands());
+        rewriter.eraseOp(st);
+      } else if (auto ld = dyn_cast<memref::LoadOp>(user)) {
+        auto newLd = memref::LoadOp::create(rewriter, ld.getLoc(), replacement,
+                                            ld.getIndices());
+        rewriter.replaceOpWithNewOp<arith::BitcastOp>(ld, punTy,
+                                                      newLd.getResult());
+      } else {
+        auto st = cast<memref::StoreOp>(user);
+        auto cast = arith::BitcastOp::create(rewriter, st.getLoc(), canTy,
+                                             st.getValueToStore());
+        memref::StoreOp::create(rewriter, st.getLoc(), cast, replacement,
+                                st.getIndices());
+        rewriter.eraseOp(st);
+      }
+    }
+    rewriter.eraseOp(p2m);
   }
 
   for (auto other : others) {
