@@ -190,7 +190,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     // the primal that carries the user's marker -- and any left behind
     // fail translation to LLVM IR.
     "lower-llvm-ext,"
+    "strip-dead-personality,"
     "inline{default-pipeline=canonicalize max-iterations=4},"
+    "discard-unreferenced-linkonce,"
     "polygeist-mem2reg," + canonicalize + ",symbol-dce,"
     // canonicalize-parallel here folds away memref.subview ops before gpu-kernel-outlining
     "" + canonicalize + ",cse";
