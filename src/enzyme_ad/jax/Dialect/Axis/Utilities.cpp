@@ -929,7 +929,8 @@ FailureOr<llvm::SmallVector<TypedValue<AxisFactorType>>>
 subtractSpace(llvm::ArrayRef<TypedValue<AxisFactorType>> minuend,
               llvm::ArrayRef<TypedValue<AxisFactorType>> subtrahend,
               OpBuilder &builder) {
-  Location loc = minuend.empty() ? builder.getUnknownLoc() : minuend[0].getLoc();
+  Location loc =
+      minuend.empty() ? builder.getUnknownLoc() : minuend[0].getLoc();
   return subtractSpaceImpl(minuend, subtrahend, builder, loc);
 }
 
@@ -1048,137 +1049,6 @@ _globalFactorsToRHSIndices(ArrayRef<_global_factor> factors) {
     }
   }
   return rhs_indices;
-}
-
-// rhs_indices are in the same index space,
-// and are in-order according to their LHS indices
-// (rhs_indices[i] = j means i->j, with i the i'th
-// element within the index space regardless of how the
-// index space is actually laid out.)
-FailureOr<TypedValue<AxisMapType>>
-inferMapFromIndices(TypedValue<FactorGroupType> index_space,
-                    llvm::ArrayRef<int> rhs_indices, OpBuilder &builder) {
-  LLVM_DEBUG(llvm::dbgs() << "[axis-infer-map] inferMapFromIndices rhs size="
-                          << rhs_indices.size() << "\n");
-  auto indexSpaceExtent = getFactorGroupExtent(index_space);
-  if (failed(indexSpaceExtent)) {
-    return failure();
-  }
-  assert(*indexSpaceExtent == rhs_indices.size() &&
-         "index-space extent must match rhs index count");
-  if (*indexSpaceExtent != rhs_indices.size()) {
-    return failure();
-  }
-  if (rhs_indices.size() <= 1) {
-    return failure();
-  }
-  if (rhs_indices[0] != 0) {
-    // no axis map moves zero
-    return failure();
-  }
-
-  auto loc = index_space.getLoc();
-
-  // minormost first, against convention, since it is in this
-  // case easiest to construct the global factors in this order.
-  llvm::SmallVector<_global_factor> factors;
-  int group_stride = 1;
-  int factor_working_extent = 1;
-  int factor_working_stride = rhs_indices[1] - rhs_indices[0];
-  while (group_stride < rhs_indices.size()) {
-    int i1 = group_stride * (factor_working_extent - 1);
-    int i2 = group_stride * factor_working_extent;
-    if (i2 >= rhs_indices.size()) {
-      // finished all of our runs
-      break;
-    }
-    int diff = rhs_indices[i2] - rhs_indices[i1];
-    if (diff != factor_working_stride) {
-      // we've found the end of the run!
-      factors.push_back({factor_working_extent, factor_working_stride});
-      group_stride *= factor_working_extent;
-      if (rhs_indices.size() % group_stride != 0) {
-        // indices don't implement a regular axis mapping
-        return failure();
-      }
-      factor_working_extent = 1;
-      factor_working_stride = rhs_indices[group_stride] - rhs_indices[0];
-    } else {
-      // extend the current run
-      factor_working_extent++;
-    }
-  }
-  // push the last run if it exists
-  if (factor_working_extent > 1) {
-    factors.push_back({factor_working_extent, factor_working_stride});
-  }
-
-  // verify that the reconstructed RHS indices match the original
-  // (we didn't check every index, so this is a final verification)
-  if (_globalFactorsToRHSIndices(factors) != rhs_indices) {
-    return failure();
-  }
-
-  LLVM_DEBUG({
-    llvm::dbgs() << "[axis-infer-map] global factors (minor->major):";
-    for (const auto &factor : factors) {
-      llvm::dbgs() << " (ext=" << factor.extent
-                   << ", stride=" << factor.global_stride << ")";
-    }
-    llvm::dbgs() << "\n";
-  });
-
-  // reverse order of global factors now to meet the
-  // major-most convention used elswhere
-  std::reverse(factors.begin(), factors.end());
-
-  LLVM_DEBUG({
-    llvm::dbgs() << "[axis-infer-map] global factors (major->minor):";
-    for (const auto &factor : factors) {
-      llvm::dbgs() << " (ext=" << factor.extent
-                   << ", stride=" << factor.global_stride << ")";
-    }
-    llvm::dbgs() << "\n";
-  });
-
-  llvm::SmallVector<TypedValue<AxisFactorType>> rhsFactors;
-  for (const auto &globalFactor : factors) {
-    LLVM_DEBUG(llvm::dbgs() << "[axis-infer-map] project global factor ext="
-                            << globalFactor.extent << " stride="
-                            << globalFactor.global_stride << "\n");
-    auto projected = projectVirtualFactorToRealFactors(
-        index_space, globalFactor.global_stride, globalFactor.extent, builder,
-        loc);
-    if (failed(projected)) {
-      return failure();
-    }
-    rhsFactors.append(projected->begin(), projected->end());
-  }
-
-  LLVM_DEBUG({
-    llvm::dbgs() << "[axis-infer-map] rhs factors:";
-    for (TypedValue<AxisFactorType> factor : rhsFactors) {
-      llvm::dbgs() << " (ext=" << getFactorExtent(factor)
-                   << ", stride=" << getFactorStride(factor) << ")";
-    }
-    llvm::dbgs() << "\n";
-  });
-
-  llvm::SmallVector<Value> rhsValues;
-  rhsValues.reserve(rhsFactors.size());
-  for (TypedValue<AxisFactorType> factor : rhsFactors) {
-    rhsValues.push_back(factor);
-  }
-
-  auto rhsGroup =
-      builder.create<AxisProductOp>(loc, ValueRange(rhsValues)).getProduct();
-  llvm::SmallVector<Value> lhsGroups;
-  lhsGroups.push_back(index_space);
-  llvm::SmallVector<Value> rhsGroups;
-  rhsGroups.push_back(rhsGroup);
-  auto mapOp = builder.create<AxisMapOp>(loc, ValueRange(lhsGroups),
-                                         ValueRange(rhsGroups));
-  return castTypedValue<AxisMapType>(mapOp.getMap(), "AxisMapType");
 }
 
 LogicalResult propagateResultTypeChanges(ArrayRef<Operation *> initialUsers) {

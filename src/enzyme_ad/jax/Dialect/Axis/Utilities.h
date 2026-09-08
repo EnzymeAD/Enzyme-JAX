@@ -172,13 +172,6 @@ subtractSpace(llvm::ArrayRef<::mlir::TypedValue<AxisFactorType>> minuend,
               llvm::ArrayRef<::mlir::TypedValue<AxisFactorType>> subtrahend,
               ::mlir::OpBuilder &builder);
 
-// Infers an axis.map over one virtual index space from explicit RHS indices.
-// rhs_indices must be ordered by LHS index (rhs_indices[i] = j means i -> j).
-::mlir::FailureOr<::mlir::TypedValue<AxisMapType>>
-inferMapFromIndices(::mlir::TypedValue<FactorGroupType> index_space,
-                    llvm::ArrayRef<int> rhs_indices,
-                    ::mlir::OpBuilder &builder);
-
 // Computes the extent cuts used by split_divisible without materializing SSA
 // factors. The returned extents are maximal one-to-one cuts where possible and
 // minimal indivisible units otherwise.
