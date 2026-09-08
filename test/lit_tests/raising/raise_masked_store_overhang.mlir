@@ -10,8 +10,8 @@
 // reads the padded buffer, and the pad rows slice away afterwards.
 #set = affine_set<(d0) : (-d0 + 1 >= 0)>
 func.func @guarded_lane_store(%out: memref<18xf64, 1>, %in: memref<9xf64, 1>) {
+  %alloca = memref.alloca() : memref<2x3xf64>
   affine.parallel (%i) = (0) to (3) {
-    %alloca = memref.alloca() : memref<2x3xf64>
     affine.if #set(%i) {
       affine.for %b = 0 to 3 {
         %v = affine.load %in[%i * 3 + %b] : memref<9xf64, 1>
@@ -30,12 +30,12 @@ func.func @guarded_lane_store(%out: memref<18xf64, 1>, %in: memref<9xf64, 1>) {
 }
 
 // CHECK:    func.func private @guarded_lane_store_raised(%arg0: tensor<18xf64>, %arg1: tensor<9xf64>) -> (tensor<18xf64>, tensor<9xf64>) {
+// CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<2x3xf64>
 // CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<3xi64>
 // CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<3xi64>
 // CHECK-NEXT:    %1 = stablehlo.add %0, %c : tensor<3xi64>
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<1> : tensor<3xi64>
 // CHECK-NEXT:    %2 = stablehlo.multiply %1, %c_0 : tensor<3xi64>
-// CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<2x3xf64>
 // CHECK-NEXT:    %c_1 = stablehlo.constant dense<-1> : tensor<i64>
 // CHECK-NEXT:    %3 = stablehlo.broadcast_in_dim %c_1, dims = [] : (tensor<i64>) -> tensor<3xi64>
 // CHECK-NEXT:    %4 = stablehlo.multiply %2, %3 : tensor<3xi64>
