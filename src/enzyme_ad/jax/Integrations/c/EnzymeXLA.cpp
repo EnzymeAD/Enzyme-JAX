@@ -1171,9 +1171,11 @@ void enzymexlaFreeTransformPassesList(char *passes) { free(passes); }
 int enzymexlaInitJIT() { return static_cast<int>(enzymexla::init_jit()); }
 
 int enzymexlaLookupSymbol(const char *name, void **symbol) {
-  auto err = enzymexla::lookup_symbol(name, symbol);
+  auto err = enzymexla::lookup_symbol(name);
   if (!err)
     return -1;
+
+  *symbol = err.get();
   return 0;
 }
 
@@ -1182,10 +1184,6 @@ int enzymexlaMapSymbol(const char *name, void *symbol) {
   if (!err)
     return -1;
   return 0;
-}
-
-int EnzymeJaXLookupSymbol(const char *name, void **) {
-  enzymexlaLookupSymbol(name);
 }
 
 void EnzymeJaXMapSymbol(const char *name, void *symbol) {
