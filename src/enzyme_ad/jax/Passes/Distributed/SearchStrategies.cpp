@@ -41,6 +41,70 @@ using namespace mlir::enzyme::axis;
  */
 namespace {
 
+template <typename OpTy>
+using SharedOpRef = std::shared_ptr<mlir::OwningOpRef<OpTy>>;
+
+// Converts a typed value to a SharedOpRef by extracting its defining op
+template <typename ValT, typename OpT>
+inline SharedOpRef<OpT> sharedOpRefFromValue(ValT value) {
+  if (auto defOp = value.template getDefiningOp<OpT>()) {
+    auto owningRef = mlir::OwningOpRef<OpT>(defOp);
+    return std::make_shared<decltype(owningRef)>(std::move(owningRef));
+  }
+  return nullptr;
+}
+
+// Converts a SharedOpRef to its typed result value
+template <typename ValT, typename OpT>
+inline ValT sharedOpRefToValue(const SharedOpRef<OpT> &opRef,
+                               unsigned resultIndex) {
+  assert(opRef && *opRef && "Invalid shared op reference");
+  Value result = (*opRef)->getResult(resultIndex);
+  return cast<ValT>(result);
+}
+
+// Converts a SharedOpRef to its typed result value for ops with a single unique
+// result (e.g., AxisFactorOp which has a typed no-argument getResult())
+template <typename ValT, typename OpT>
+inline ValT sharedOpRefToUniqueValue(const SharedOpRef<OpT> &opRef) {
+  assert(opRef && *opRef && "Invalid shared op reference");
+  Value result = (*opRef)->getResult();
+  return cast<ValT>(result);
+}
+
+// Lifts unique ownership for transformed space values that came from owned inputs.
+// Pass-through values reuse their existing ownership; new values get fresh ownership.
+// This prevents duplicate ownership of the same underlying op.
+template <typename ValT, typename OpT>
+std::vector<SharedOpRef<OpT>>
+liftUniqueOwnership(llvm::ArrayRef<ValT> transformedSpace,
+                    llvm::ArrayRef<SharedOpRef<OpT>> ownedInputs) {
+  // Build a map from input values to their owning refs
+  llvm::DenseMap<Value, SharedOpRef<OpT>> inputValueToRef;
+  for (const auto &opRef : ownedInputs) {
+    if (opRef) {
+      Value val = sharedOpRefToUniqueValue<ValT, OpT>(opRef);
+      inputValueToRef[val] = opRef;
+    }
+  }
+
+  std::vector<SharedOpRef<OpT>> result;
+  for (ValT resultValue : transformedSpace) {
+    auto it = inputValueToRef.find(resultValue);
+    if (it != inputValueToRef.end()) {
+      // This value came from an input - reuse its ownership
+      result.push_back(it->second);
+    } else {
+      // This is a new/transformed value - create fresh ownership
+      auto opRef = sharedOpRefFromValue<ValT, OpT>(cast<ValT>(resultValue));
+      if (opRef) {
+        result.push_back(opRef);
+      }
+    }
+  }
+  return result;
+}
+
 // Collects all logical axes with users in the given module.
 static std::vector<TypedValue<LogicalMeshAxisType>>
 findAllLogicalAxes(ModuleOp moduleOp) {
@@ -64,8 +128,10 @@ findAllLogicalAxes(ModuleOp moduleOp) {
   return logicalAxes;
 }
 
-static llvm::SmallVector<TypedValue<AxisFactorType>>
-findAllPhysicalAxes(ModuleOp moduleOp, mlir::OpBuilder &builder, Location loc) {
+static llvm::SmallVector<SharedOpRef<AxisFactorOp>>
+findAllPhysicalAxes(ModuleOp moduleOp, mlir::OpBuilder &builder,
+                    Location loc) {
+  llvm::SmallVector<SharedOpRef<AxisFactorOp>> physicalFactors;
   GetPhysicalMeshAxesOp getAxesOp = nullptr;
   int count = 0;
   moduleOp.walk([&](GetPhysicalMeshAxesOp op) {
@@ -75,14 +141,23 @@ findAllPhysicalAxes(ModuleOp moduleOp, mlir::OpBuilder &builder, Location loc) {
 
   assert(getAxesOp && count == 1 &&
          "Expected exactly one GetPhysicalMeshAxesOp");
-  return viewAxesAsFactors(getAxesOp.getAxes(), builder, loc);
+
+  auto factorValues = viewAxesAsFactors(getAxesOp.getAxes(), builder, loc);
+  for (TypedValue<AxisFactorType> axisValue : factorValues) {
+    auto opRef = sharedOpRefFromValue<TypedValue<AxisFactorType>, AxisFactorOp>(
+        axisValue);
+    if (opRef) {
+      physicalFactors.push_back(opRef);
+    }
+  }
+  return physicalFactors;
 }
 
 using LogicalAxisOrder = std::vector<TypedValue<LogicalMeshAxisType>>;
 
 struct AxisMappingReplayState {
   llvm::DenseMap<TypedValue<LogicalMeshAxisType>,
-                 std::vector<TypedValue<AxisFactorType>>>
+                 std::vector<SharedOpRef<AxisFactorOp>>>
       axisMapping;
   void apply(const AxisMappingReplayState &other) {
     for (auto &entry : other.axisMapping) {
@@ -101,13 +176,13 @@ public:
 
   // Returns what, if any, factors are currently bound to
   // the given logical axis in the current replay tree.
-  llvm::SmallVector<TypedValue<AxisFactorType>>
+  llvm::SmallVector<SharedOpRef<AxisFactorOp>>
   getBindings(TypedValue<LogicalMeshAxisType> axis) {
     struct LookupOperator {
       ReplayQueryShortCircuit
       operator()(const AxisMappingReplayState &state,
                  TypedValue<LogicalMeshAxisType> axis,
-                 llvm::SmallVector<TypedValue<AxisFactorType>> &result) {
+                 llvm::SmallVector<SharedOpRef<AxisFactorOp>> &result) {
         auto it = state.axisMapping.find(axis);
         if (it != state.axisMapping.end()) {
           result.insert(result.end(), it->second.rbegin(), it->second.rend());
@@ -116,15 +191,15 @@ public:
       }
     };
     LookupOperator lookup;
-    llvm::SmallVector<TypedValue<AxisFactorType>> result;
+    llvm::SmallVector<SharedOpRef<AxisFactorOp>> result;
     queryReplayReverse(lookup, axis, result);
     std::reverse(result.begin(), result.end());
     return result;
   }
 
-  llvm::SmallVector<TypedValue<AxisFactorType>>
+  llvm::SmallVector<SharedOpRef<AxisFactorOp>>
   lookupBindings(llvm::ArrayRef<TypedValue<LogicalMeshAxisType>> axes) {
-    llvm::SmallVector<TypedValue<AxisFactorType>> result;
+    llvm::SmallVector<SharedOpRef<AxisFactorOp>> result;
     for (auto axis : axes) {
       auto bindings = getBindings(axis);
       result.insert(result.end(), bindings.begin(), bindings.end());
@@ -141,7 +216,7 @@ class StrategySearchNode : public BeamSearchNodeBase {
   int extentTaken; // extent already taken from the current axis
 
   // Factors of the physical mesh available for this axis
-  std::vector<TypedValue<AxisFactorType>> availableSpace;
+  std::vector<SharedOpRef<AxisFactorOp>> availableSpace;
 
   StrategySearchNode() = delete; // disable default constructor
 
@@ -172,14 +247,15 @@ public:
   }
 
   void setupNextAxis(LogicalAxisOverlap &overlap,
-                     llvm::ArrayRef<TypedValue<AxisFactorType>> totalMeshSpace,
+                     llvm::ArrayRef<SharedOpRef<AxisFactorOp>> totalMeshSpace,
                      OpBuilder &builder) {
     extentTaken = 1;
     axisIndex++;
     if (finalized()) {
       return;
     }
-    availableSpace = std::move(totalMeshSpace);
+    availableSpace = std::vector<SharedOpRef<AxisFactorOp>>(
+        totalMeshSpace.begin(), totalMeshSpace.end());
 
     auto axis = currentAxis();
 
@@ -191,16 +267,36 @@ public:
     }
     auto overlappingBinds = decisions->lookupBindings(*overlappingAxes);
 
+    // Extract result values from the factor ops to use with existing utilities
+    // The SharedOpRef ensures the ops survive this scope, so we can safely
+    // use non-owning references to their result values
+    llvm::SmallVector<TypedValue<AxisFactorType>> availableSpaceValues;
+    for (const auto &factorOpRef : availableSpace) {
+      availableSpaceValues.push_back(
+          sharedOpRefToUniqueValue<TypedValue<AxisFactorType>, AxisFactorOp>(
+              factorOpRef));
+    }
+
+    llvm::SmallVector<TypedValue<AxisFactorType>> overlappingBindsValues;
+    for (const auto &factorOpRef : overlappingBinds) {
+      overlappingBindsValues.push_back(
+          sharedOpRefToUniqueValue<TypedValue<AxisFactorType>, AxisFactorOp>(
+              factorOpRef));
+    }
+
     // Use axis dialect utilities to get the space subtraction
-    // of binds from availableSpace.
-    // TODO: memory leak?
     auto remainingSpace =
-        subtractSpace(availableSpace, overlappingBinds, builder);
+        subtractSpace(availableSpaceValues, overlappingBindsValues, builder);
     if (failed(remainingSpace)) {
       availableSpace.clear();
       return;
     }
-    availableSpace.assign(remainingSpace->begin(), remainingSpace->end());
+
+    // Lift unique ownership: pass-through values reuse their original refs,
+    // while new/transformed values get fresh ownership
+    availableSpace =
+        liftUniqueOwnership<TypedValue<AxisFactorType>, AxisFactorOp>(
+            *remainingSpace, availableSpace);
   }
 };
 
@@ -231,14 +327,14 @@ struct DistributedSearchStrategiesPass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
-    mlir::OpBuilder temporaryBuilder(moduleOp.getContext());
-    temporaryBuilder.clearInsertionPoint();
+    mlir::OpBuilder builder(moduleOp.getContext());
+    builder.clearInsertionPoint();
 
     auto overlap = LogicalAxisOverlap(moduleOp);
 
     auto logicalAxes = findAllLogicalAxes(moduleOp);
-    llvm::SmallVector<TypedValue<AxisFactorType>> physicalAxes =
-        findAllPhysicalAxes(moduleOp, temporaryBuilder, moduleOp.getLoc());
+    llvm::SmallVector<SharedOpRef<AxisFactorOp>> physicalAxes =
+      findAllPhysicalAxes(moduleOp, builder, moduleOp.getLoc());
 
     // TODO: order by importance
     auto axes =
@@ -246,7 +342,7 @@ struct DistributedSearchStrategiesPass
     auto decisions = AxisMappingReplayTree::makeRoot();
 
     auto initialNode = std::make_shared<StrategySearchNode>(axes, decisions);
-    initialNode->setupNextAxis(overlap, physicalAxes, temporaryBuilder);
+    initialNode->setupNextAxis(overlap, physicalAxes, builder);
 
     int TODO_PARAMETER_BEAM_SIZE = 100;
     BeamSearchBreadthFirstQueue<StrategySearchNode> queue(
