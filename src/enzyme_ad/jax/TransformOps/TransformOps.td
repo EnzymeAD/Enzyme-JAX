@@ -1922,6 +1922,14 @@ def ParallelWhileToBatchedScatterPatterns : EnzymeHLOPatternOp<
   let patterns = ["ParallelWhileToBatchedScatter"];
 }
 
+def ReshapeWhilePatterns : EnzymeHLOPatternOp<"reshape_while"> {
+  let patterns = ["ReshapeWhile"];
+}
+
+def ReshapeBitcastConvertPatterns : EnzymeHLOPatternOp<"reshape_bitcast_convert"> {
+  let patterns = ["ReshapeBitcastConvert"];
+}
+
 def TransposeWhilePatterns : EnzymeHLOPatternOp<
   "transpose_while"
 > {
