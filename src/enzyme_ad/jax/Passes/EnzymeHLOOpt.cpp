@@ -16877,6 +16877,147 @@ private:
   }
 };
 
+// Cancel reshape(bitcast_convert(reshape(x))) when the outer shape is exactly
+// the bitcast shape of x. In particular, a narrowing bitcast must retain its
+// extra innermost dimension, which groups the pieces of each source element.
+struct ReshapeBitcastConvert final
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeBitcastConvert> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // The intermediate bitcast may have a dynamic shape even when the source
+  // and final result statically determine the complete element grouping.
+  bool supportsDynamicShapes() const { return true; }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto bitcast = op.getOperand().getDefiningOp<stablehlo::BitcastConvertOp>();
+    if (!bitcast || !bitcast->hasOneUse())
+      return failure();
+    auto reshape = bitcast.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshape)
+      return failure();
+    auto inputType = cast<RankedTensorType>(reshape.getOperand().getType());
+    auto resultType = cast<RankedTensorType>(op.getType());
+    if (!inputType.hasStaticShape() || !resultType.hasStaticShape() ||
+        !isa<IntegerType, FloatType>(inputType.getElementType()) ||
+        !isa<IntegerType, FloatType>(resultType.getElementType()))
+      return failure();
+
+    unsigned inputBits = inputType.getElementTypeBitWidth();
+    unsigned resultBits = resultType.getElementTypeBitWidth();
+    SmallVector<int64_t> shape(inputType.getShape());
+    if (inputBits > resultBits) {
+      if (inputBits % resultBits)
+        return failure();
+      shape.push_back(inputBits / resultBits);
+    } else if (inputBits < resultBits) {
+      if (resultBits % inputBits || shape.empty() ||
+          shape.back() != resultBits / inputBits)
+        return failure();
+      shape.pop_back();
+    }
+    if (ArrayRef<int64_t>(shape) != resultType.getShape())
+      return failure();
+
+    auto updated = rewriter.replaceOpWithNewOp<stablehlo::BitcastConvertOp>(
+        op, resultType, reshape.getOperand());
+    updated->setAttrs(bitcast->getAttrs());
+    return success();
+  }
+};
+
+// Carry the shape used by the body when every use of the carried argument is
+// a reshape or bitcast_convert. Inverse views adapt those uses and preserve
+// the public result types, including when the body executes zero times.
+struct ReshapeWhile final
+    : CheckedOpRewritePattern<stablehlo::WhileOp, ReshapeWhile> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
+                                    PatternRewriter &rewriter) const {
+    auto &body = op.getBody().front();
+    auto yield = cast<stablehlo::ReturnOp>(body.getTerminator());
+    struct Candidate {
+      unsigned index;
+      RankedTensorType oldType, newType;
+      SmallVector<stablehlo::ReshapeOp> inputViews;
+    };
+    SmallVector<Candidate> candidates;
+    SmallVector<Value> yields(yield.getOperands());
+    for (auto [i, value] : llvm::enumerate(yield.getOperands())) {
+      auto reshape = value.getDefiningOp<stablehlo::ReshapeOp>();
+      if (!reshape)
+        continue;
+      auto oldType = cast<RankedTensorType>(value.getType());
+      auto newType = cast<RankedTensorType>(reshape.getOperand().getType());
+      if (oldType == newType || !oldType.hasStaticShape() ||
+          !newType.hasStaticShape() ||
+          oldType.getElementType() != newType.getElementType())
+        continue;
+      // One matching reshape is not enough: other consumers would still need
+      // the old shape inside the loop. Check both regions, allowing bitcast
+      // users even when there is no direct reshape of the argument.
+      auto onlyViews = [](BlockArgument arg) {
+        return llvm::all_of(arg.getUsers(), [](Operation *user) {
+          return isa<stablehlo::ReshapeOp, stablehlo::BitcastConvertOp>(user);
+        });
+      };
+      if (!onlyViews(body.getArgument(i)) ||
+          !onlyViews(op.getCond().front().getArgument(i)))
+        continue;
+      Candidate candidate{static_cast<unsigned>(i), oldType, newType, {}};
+      for (Operation *user : body.getArgument(i).getUsers())
+        if (auto view = dyn_cast<stablehlo::ReshapeOp>(user))
+          if (view.getType() == newType)
+            candidate.inputViews.push_back(view);
+      candidates.push_back(std::move(candidate));
+      yields[i] = reshape.getOperand();
+    }
+    if (candidates.empty())
+      return failure();
+
+    SmallVector<Value> inputs(op.getOperands());
+    SmallVector<Type> types(op.getResultTypes());
+    for (auto &candidate : candidates) {
+      inputs[candidate.index] = stablehlo::ReshapeOp::create(
+          rewriter, op.getLoc(), candidate.newType, inputs[candidate.index]);
+      types[candidate.index] = candidate.newType;
+    }
+    auto updated = stablehlo::WhileOp::create(rewriter, op.getLoc(), types,
+                                              inputs, op->getAttrs());
+    rewriter.inlineRegionBefore(op.getCond(), updated.getCond(),
+                                updated.getCond().end());
+    rewriter.inlineRegionBefore(op.getBody(), updated.getBody(),
+                                updated.getBody().end());
+    // Change the yield before replacing input views: a yielded value may be
+    // one of those views, including a view of a different loop argument.
+    rewriter.modifyOpInPlace(yield, [&] { yield->setOperands(yields); });
+    for (auto &candidate : candidates) {
+      for (Region *region : {&updated.getCond(), &updated.getBody()}) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        auto arg = region->front().getArgument(candidate.index);
+        rewriter.modifyOpInPlace(updated,
+                                 [&] { arg.setType(candidate.newType); });
+        rewriter.setInsertionPointToStart(&region->front());
+        auto view = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
+                                                 candidate.oldType, arg);
+        rewriter.replaceAllUsesExcept(arg, view, view);
+      }
+      for (auto view : candidate.inputViews)
+        rewriter.replaceOp(
+            view, updated.getBody().front().getArgument(candidate.index));
+    }
+
+    SmallVector<Value> results(updated.getResults());
+    rewriter.setInsertionPointAfter(updated);
+    for (auto &candidate : candidates)
+      results[candidate.index] = stablehlo::ReshapeOp::create(
+          rewriter, op.getLoc(), candidate.oldType, results[candidate.index]);
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+};
+
 struct TransposeWhile
     : public CheckedOpRewritePattern<stablehlo::WhileOp, TransposeWhile> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -37302,6 +37443,8 @@ struct EnzymeHLOOptPass
 
     // clang-format off
     patterns.add<
+        ReshapeWhile,
+        ReshapeBitcastConvert,
         WhileRepeatedInductionReduction,
         WhileOpInductionReplacement,
         WhilePadInductionReduction,
