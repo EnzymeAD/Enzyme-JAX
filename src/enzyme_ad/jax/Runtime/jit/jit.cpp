@@ -121,10 +121,10 @@ llvm::Expected<void *> enzymexla::lookup_symbol(const char *name) {
     return llvm::make_error<llvm::StringError>("JIT not initialized",
                                                llvm::inconvertibleErrorCode());
 
-  auto addr = JIT->lookup(name);
-  if (!addr)
+  auto mangled_name = JIT->mangleAndIntern(name);
+  if (!MappedSymbols.contains(mangled_name))
     return llvm::make_error<llvm::StringError>("Symbol not found",
                                                llvm::inconvertibleErrorCode());
 
-  return addr->toPtr<void *>();
+  return MappedSymbols[mangled_name].toPtr<void *>();
 }
