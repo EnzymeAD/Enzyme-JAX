@@ -3230,6 +3230,42 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
   }
 };
 
+// The reduction kind whose combining op `op` is (the inverse of
+// arith::getReductionOp), where affine.parallel admits that kind on op's
+// type: its signed and unsigned min/max want an integer of that signedness.
+static std::optional<AtomicRMWKind> reductionKind(Operation *op) {
+  auto intType = dyn_cast<IntegerType>(op->getResult(0).getType());
+  bool isSigned = intType && intType.isSigned();
+  bool isUnsigned = intType && intType.isUnsigned();
+  auto ifType = [](bool ok,
+                   AtomicRMWKind kind) -> std::optional<AtomicRMWKind> {
+    if (ok)
+      return kind;
+    return std::nullopt;
+  };
+  return TypeSwitch<Operation *, std::optional<AtomicRMWKind>>(op)
+      .Case<AddFOp>([](auto) { return AtomicRMWKind::addf; })
+      .Case<AddIOp>([](auto) { return AtomicRMWKind::addi; })
+      .Case<MulFOp>([](auto) { return AtomicRMWKind::mulf; })
+      .Case<MulIOp>([](auto) { return AtomicRMWKind::muli; })
+      .Case<MaximumFOp>([](auto) { return AtomicRMWKind::maximumf; })
+      .Case<MinimumFOp>([](auto) { return AtomicRMWKind::minimumf; })
+      .Case<MaxNumFOp>([](auto) { return AtomicRMWKind::maxnumf; })
+      .Case<MinNumFOp>([](auto) { return AtomicRMWKind::minnumf; })
+      .Case<MaxSIOp>(
+          [&](auto) { return ifType(isSigned, AtomicRMWKind::maxs); })
+      .Case<MinSIOp>(
+          [&](auto) { return ifType(isSigned, AtomicRMWKind::mins); })
+      .Case<MaxUIOp>(
+          [&](auto) { return ifType(isUnsigned, AtomicRMWKind::maxu); })
+      .Case<MinUIOp>(
+          [&](auto) { return ifType(isUnsigned, AtomicRMWKind::minu); })
+      .Case<OrIOp>([](auto) { return AtomicRMWKind::ori; })
+      .Case<AndIOp>([](auto) { return AtomicRMWKind::andi; })
+      .Case<XOrIOp>([](auto) { return AtomicRMWKind::xori; })
+      .Default([](auto) { return std::nullopt; });
+}
+
 struct ParallelOpRaising : public OpRewritePattern<scf::ParallelOp> {
   using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
 
@@ -3261,9 +3297,25 @@ struct ParallelOpRaising : public OpRewritePattern<scf::ParallelOp> {
                                 PatternRewriter &rewriter) const final {
     OpBuilder builder(loop);
 
-    if (loop.getResults().size())
-      return rewriter.notifyMatchFailure(
-          loop, "not dependent on a conditional result");
+    // Each reduction combines the two block arguments with one arith op, the
+    // way lower-affine writes an affine.parallel reduction.
+    auto reduceOp = cast<scf::ReduceOp>(loop.getBody()->getTerminator());
+    SmallVector<AtomicRMWKind> reductions;
+    for (Region &region : reduceOp.getReductions()) {
+      Block &body = region.front();
+      if (!llvm::hasSingleElement(body.without_terminator()))
+        return failure();
+      Operation &combine = body.front();
+      if (combine.getNumOperands() != 2 ||
+          combine.getOperand(0) != body.getArgument(0) ||
+          combine.getOperand(1) != body.getArgument(1) ||
+          body.getTerminator()->getOperand(0) != combine.getResult(0))
+        return failure();
+      std::optional<AtomicRMWKind> kind = reductionKind(&combine);
+      if (!kind)
+        return failure();
+      reductions.push_back(*kind);
+    }
 
     auto scope = getLocalAffineScope(loop);
     for (auto idx : loop.getLowerBound()) {
@@ -3282,7 +3334,6 @@ struct ParallelOpRaising : public OpRewritePattern<scf::ParallelOp> {
       else
         return failure();
 
-    ArrayRef<AtomicRMWKind> reductions;
     SmallVector<AffineMap> bounds;
     for (size_t i = 0; i < loop.getLowerBound().size(); i++)
       bounds.push_back(AffineMap::get(
@@ -3319,7 +3370,22 @@ struct ParallelOpRaising : public OpRewritePattern<scf::ParallelOp> {
                                   mergedYieldOp.getOperands());
     rewriter.eraseOp(mergedYieldOp);
 
-    rewriter.replaceOp(loop, affineLoop.getResults());
+    // affine.parallel reduces from the kind's identity; any other initial
+    // value folds in after the loop.
+    rewriter.setInsertionPointAfter(affineLoop);
+    SmallVector<Value> results;
+    for (auto [kind, init, result] :
+         llvm::zip(reductions, loop.getInitVals(), affineLoop.getResults())) {
+      Attribute cst;
+      if (matchPattern(init, m_Constant(&cst)) &&
+          cst == arith::getIdentityValueAttr(kind, result.getType(), rewriter,
+                                             loop.getLoc()))
+        results.push_back(result);
+      else
+        results.push_back(
+            arith::getReductionOp(kind, rewriter, loop.getLoc(), init, result));
+    }
+    rewriter.replaceOp(loop, results);
 
     return success();
   }
