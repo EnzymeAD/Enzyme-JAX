@@ -883,6 +883,49 @@ bool isSafeToSpeculativelyExecuteAtScope(Operation *scope, Operation *op) {
   return inBounds;
 }
 
+// A buffer raised with leading lane dimensions (see the memref.alloca case)
+// is indexed by the lane induction variables before its own indices.
+static void prependLaneDims(Value memref, affine::AffineValueMap &avm,
+                            DenseMap<Value, affine::AffineValueMap> &maps) {
+  auto it = maps.find(memref);
+  if (it == maps.end())
+    return;
+  const affine::AffineValueMap &lane = it->second;
+  unsigned K = lane.getNumResults();
+  AffineMap map = avm.getAffineMap();
+  unsigned nd = map.getNumDims();
+  SmallVector<AffineExpr> exprs;
+  for (unsigned k = 0; k < K; ++k)
+    exprs.push_back(getAffineDimExpr(k, map.getContext()));
+  for (AffineExpr e : map.getResults())
+    exprs.push_back(e.shiftDims(nd, K));
+  SmallVector<Value> operands(lane.getOperands().begin(),
+                              lane.getOperands().end());
+  operands.append(avm.getOperands().begin(), avm.getOperands().begin() + nd);
+  operands.append(avm.getOperands().begin() + nd, avm.getOperands().end());
+  avm = affine::AffineValueMap(
+      AffineMap::get(nd + K, map.getNumSymbols(), exprs, map.getContext()),
+      operands);
+}
+
+// The lane induction variables' raised values, to prepend to a memref.load
+// or memref.store's indices; nullopt when one is not raised.
+static std::optional<SmallVector<Value>>
+laneIndices(Value memref, IRMapping &mapping,
+            DenseMap<Value, affine::AffineValueMap> &maps) {
+  SmallVector<Value> indices;
+  auto it = maps.find(memref);
+  if (it == maps.end())
+    return indices;
+  for (Value iv : it->second.getOperands()) {
+    Value mapped = mapping.lookupOrNull(iv);
+    if (!mapped || !maps.count(mapped))
+      return std::nullopt;
+    indices.push_back(mapped);
+  }
+  return indices;
+}
+
 static LogicalResult
 tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         llvm::DenseMap<Value, affine::AffineValueMap> &maps,
@@ -3088,6 +3131,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     affine::AffineValueMap accessValueMap;
     access.getAccessMap(&accessValueMap);
+    prependLaneDims(access.memref, accessValueMap, maps);
     // See tryRaisingForOpToStableHLOUnroll
     accessValueMap.composeSimplifyAndCanonicalize();
 
@@ -3444,6 +3488,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     affine::AffineValueMap accessValueMap;
     access.getAccessMap(&accessValueMap);
+    prependLaneDims(access.memref, accessValueMap, maps);
     // See tryRaisingForOpToStableHLOUnroll
     accessValueMap.composeSimplifyAndCanonicalize();
 
@@ -3819,8 +3864,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
             Value uiv = getIVForExpr(unionMap, E);
             int64_t storeDim = -1;
             if (uiv)
-              for (auto [k, SE] :
-                   llvm::enumerate(storeOp.getMap().getResults())) {
+              for (auto [k, SE] : llvm::enumerate(
+                       accessValueMap.getAffineMap().getResults())) {
                 if (SE.isSymbolicOrConstant())
                   continue;
                 if (getIVForExpr(accessValueMap,
@@ -4071,7 +4116,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         for (auto [i, E] :
              llvm::enumerate(maskMap.getAffineMap().getResults())) {
           Value iv = getIVForExpr(maskMap, E);
-          if (!iv || llvm::is_contained(storeOp.getIndices(), iv))
+          if (!iv || llvm::is_contained(accessValueMap.getOperands(), iv))
             continue;
           for (auto EE : updateValueMap.getAffineMap().getResults())
             if (getIVForExpr(updateValueMap, EE) == iv)
@@ -4126,7 +4171,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       ShapedType updateType = cast<ShapedType>(update.getType());
       SmallVector<int64_t> updateShapeWithoutConstantDims;
 
-      for (auto [i, E] : llvm::enumerate(storeOp.getMap().getResults())) {
+      for (auto [i, E] :
+           llvm::enumerate(accessValueMap.getAffineMap().getResults())) {
         if (!E.isSymbolicOrConstant()) {
           nonConstantDims.push_back(i);
           updateShapeWithoutConstantDims.push_back(updateType.getShape()[i]);
@@ -4134,7 +4180,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       }
 
       affine::AffineValueMap storeValueMap(
-          storeOp.getMap().getSubMap(nonConstantDims), storeOp.getIndices());
+          accessValueMap.getAffineMap().getSubMap(nonConstantDims),
+          accessValueMap.getOperands());
 
       SmallVector<int64_t> updateShape(updateType.getShape().begin(),
                                        updateType.getShape().end());
@@ -4170,7 +4217,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       for (auto dim : storeValueMap.getOperands()) {
         // This dim is present in the masked update and not in the stored
         // dimensions.
-        if (!llvm::is_contained(storeOp.getIndices(), dim)) {
+        if (!llvm::is_contained(accessValueMap.getOperands(), dim)) {
           auto err = op->emitError(
                          "masked affine.store is dependent on less dimensions "
                          "than masked stored value:\n")
@@ -4204,17 +4251,19 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         assert(!E.isSymbolicOrConstant()); // constant dims have been removed
         auto iv = getIVForExpr(storeValueMap, E);
 
-        for (auto [j, EE] : llvm::enumerate(storeOp.getMap().getResults())) {
+        for (auto [j, EE] :
+             llvm::enumerate(accessValueMap.getAffineMap().getResults())) {
           if (EE.isSymbolicOrConstant())
             continue;
 
           int ivPos = 0;
-          for (int e = storeOp.getMap().getNumDims(); ivPos < e; ++ivPos) {
+          for (int e = accessValueMap.getAffineMap().getNumDims(); ivPos < e;
+               ++ivPos) {
             if (EE.isFunctionOfDim(ivPos))
               break;
           }
 
-          auto storeIV = storeOp.getIndices()[ivPos];
+          auto storeIV = accessValueMap.getOperands()[ivPos];
 
           if (iv == storeIV) {
             assert(maskedUpdateBroadcastDims[i] == -1);
@@ -4298,7 +4347,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   if (auto loadOp = dyn_cast<memref::LoadOp>(op)) {
     auto memref = loadOp.getMemref();
 
-    SmallVector<Value> lIndices;
+    auto lIndicesOr = laneIndices(memref, mapping, maps);
+    if (!lIndicesOr)
+      return failure();
+    SmallVector<Value> lIndices = std::move(*lIndicesOr);
     for (auto idx : loadOp.getIndices()) {
       Value mapped = mapping.lookupOrNull(idx);
       if (!mapped || !maps.count(mapped))
@@ -4328,7 +4380,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       return failure();
     Value value = rmw.getValue();
     Value memref = rmw.getMemref();
-    SmallVector<Value> sIndices;
+    auto sIndicesOr = laneIndices(memref, mapping, maps);
+    if (!sIndicesOr)
+      return failure();
+    SmallVector<Value> sIndices = std::move(*sIndicesOr);
     for (auto idx : rmw.getIndices()) {
       Value mapped = mapping.lookupOrNull(idx);
       if (!mapped || !maps.count(mapped))
@@ -4360,7 +4415,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       return failure();
     Value value = rmw.getValue();
     Value memref = rmw.getMemref();
-    SmallVector<Value> sIndices;
+    auto sIndicesOr = laneIndices(memref, mapping, maps);
+    if (!sIndicesOr)
+      return failure();
+    SmallVector<Value> sIndices = std::move(*sIndicesOr);
     for (auto idx : rmw.getIndices()) {
       Value mapped = mapping.lookupOrNull(idx);
       if (!mapped || !maps.count(mapped))
@@ -4447,7 +4505,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     Value value = storeOp.getValueToStore();
     Value memref = storeOp.getMemref();
 
-    SmallVector<Value> sIndices;
+    auto sIndicesOr = laneIndices(memref, mapping, maps);
+    if (!sIndicesOr)
+      return failure();
+    SmallVector<Value> sIndices = std::move(*sIndicesOr);
     for (auto idx : storeOp.getIndices()) {
       Value mapped = mapping.lookupOrNull(idx);
       if (!mapped || !maps.count(mapped))
@@ -5034,13 +5095,37 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     if (!MT.hasStaticShape() || !isXLACompatiblePrimitive(MT.getElementType()))
       return op->emitError("cannot raise dynamic or non-primitive alloca")
              << *op;
-    auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
+    // Under batched axes every lane owns a copy: the buffer gets one leading
+    // dimension per batched axis whose loop encloses the alloca, and its map
+    // records the axes so that each access indexes its lane's copy first.
+    // Shared memory sits between the grid and the thread parallel, so it
+    // batches over the grid alone.
+    SmallVector<int64_t> shape;
+    SmallVector<Value> laneIVs;
+    for (auto [range, iv] : llvm::zip(pc.ranges, pc.ivs)) {
+      Operation *owner = affine::getAffineParallelInductionVarOwner(iv);
+      if (!owner)
+        owner = affine::getForInductionVarOwner(iv);
+      if (!owner || !owner->isAncestor(alloca))
+        continue;
+      shape.push_back(range.getNumIters());
+      laneIVs.push_back(iv);
+    }
+    shape.append(MT.getShape().begin(), MT.getShape().end());
+    auto TT = RankedTensorType::get(shape, MT.getElementType());
     Value zero = stablehlo::ConstantOp::create(
         builder, rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
         TT,
         SplatElementsAttr::get(TT, builder.getZeroAttr(MT.getElementType())));
     mapping.map(alloca.getResult(), zero);
     maps[zero] = affine::AffineValueMap(AffineMap::get(op->getContext()), {});
+    if (!laneIVs.empty()) {
+      SmallVector<AffineExpr> exprs;
+      for (unsigned k = 0; k < laneIVs.size(); ++k)
+        exprs.push_back(getAffineDimExpr(k, op->getContext()));
+      maps[alloca.getResult()] = affine::AffineValueMap(
+          AffineMap::get(laneIVs.size(), 0, exprs, op->getContext()), laneIVs);
+    }
     return success();
   }
 
