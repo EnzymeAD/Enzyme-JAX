@@ -1909,6 +1909,45 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
       if (legal)
         return true;
     }
+    if (lhs.size() == 1 && rhs.size() == 1 && !lhs_min && !lhs_max &&
+        !rhs_min && !rhs_max && (lhs[0].isValue || rhs[0].isValue)) {
+      auto nonNegDiff = [&](ValueOrInt &av, ValueOrInt &bv) {
+        SmallVector<Value> tmp;
+        SmallVector<AffineExpr> sides;
+        for (ValueOrInt *vori : {&av, &bv}) {
+          if (vori->isValue) {
+            sides.push_back(b.getAffineSymbolExpr(tmp.size()));
+            tmp.push_back(vori->v_val);
+          } else {
+            sides.push_back(getAffineConstantExpr(vori->i_val.getSExtValue(),
+                                                  b.getContext()));
+          }
+        }
+        AffineExpr exprTmp[] = {sides[0] - sides[1]};
+        auto mapTmp = AffineMap::get(/*dimCount=*/0, /*symbolCount=*/tmp.size(),
+                                     exprTmp, b.getContext());
+        bool composed = fully2ComposeAffineMapAndOperands(nullptr, &mapTmp,
+                                                          &tmp, nullptr, scope);
+        mapTmp = recreateExpr(mapTmp);
+        return composed && valueCmp(Cmp::GE, mapTmp.getResult(0),
+                                    mapTmp.getNumDims(), tmp, 0);
+      };
+      bool swapped = false;
+      bool legal = nonNegDiff(lhs[0], rhs[0]);
+      if (!legal) {
+        legal = nonNegDiff(rhs[0], lhs[0]);
+        swapped = legal;
+      }
+      if (legal) {
+        eqflags.push_back(false);
+        unsigned base = applies.size();
+        applies.push_back(swapped ? rhs[0] : lhs[0]);
+        applies.push_back(swapped ? lhs[0] : rhs[0]);
+        exprs.push_back(b.getAffineSymbolExpr(base + 0) -
+                        b.getAffineSymbolExpr(base + 1) - 1);
+        return true;
+      }
+    }
     LLVM_DEBUG(llvm::dbgs() << "illegal icmp ne: " << cmpi << "\n");
     return false;
   }
