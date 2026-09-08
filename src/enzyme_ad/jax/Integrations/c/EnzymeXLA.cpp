@@ -883,6 +883,8 @@ static void addReshapePropagateUpPasses(std::vector<std::string> &list,
                                         bool aggressive) {
   list.push_back("reshape_concat");
   list.push_back("reshape_dus");
+  list.push_back("reshape_while");
+  list.push_back("reshape_bitcast_convert");
   list.push_back("dot_reshape_pad<1>");
   list.push_back("pad_dot_general<1>(0)");
   // FIXME: see https://github.com/EnzymeAD/Enzyme-JAX/issues/1445
