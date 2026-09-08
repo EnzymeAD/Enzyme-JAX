@@ -3,19 +3,6 @@
 
 include "mlir/Pass/PassBase.td"
 
-def PrintShardyFunctionNamesPass
-    : Pass<"print-shardy-function-names", "::mlir::ModuleOp"> {
-  let summary = "Print names of functions that carry Shardy IR";
-  let dependentDialects = [
-    "enzyme::axis::AxisDialect", "sdy::SdyDialect",
-    "enzyme::distributed::DistributedDialect"
-  ];
-  let description = [{Scans func.func operations and prints the symbol names of
-                          functions that either carry sdy -
-                      prefixed attributes on the function /
-                          signature or contain sdy dialect operations /
-                          attributes in their bodies.}];
-}
 
 def ConvertMainToDistributedFunctionPass
     : Pass<"convert-main-to-distributed-function", "::mlir::ModuleOp"> {
@@ -93,29 +80,16 @@ def StabilizeAxisOrderPass
 }
 
 def InsertPhysicalMeshPass : Pass<"insert-physical-mesh", "::mlir::ModuleOp"> {
-  let summary = "Insert a mock distributed.PhysicalMesh derived from Shardy "
-                "mesh metadata.";
+  let summary = "Inserts a module-level distributed.PhysicalMesh and axes based on the passed option.";
   let dependentDialects =
-      ["sdy::SdyDialect", "enzyme::distributed::DistributedDialect"];
-  let description = [{
-      Inserts a module -
-      level distributed
-          .PhysicalMesh when none exists by inferring axis extents from the
-              common Shardy mesh seen in sharded functions
-          .This currently uses a mock device_target and is intended to be
-              replaced with loading an external physical mesh configuration.}];
-}
-
-def NaiveLogicalToPhysicalMeshPass
-    : Pass<"naive-logical-to-physical-mesh", "::mlir::ModuleOp"> {
-  let summary = "Naively replace module-level logical mesh axes with "
-        "module-level physical mesh axes.";
-  let dependentDialects = ["enzyme::distributed::DistributedDialect"];
-  let description = [{
-    Expects exactly one distributed.LogicalMeshAxes op and exactly one
-    distributed.GetPhysicalMeshAxes op in module scope. Verifies that logical
-    and physical axis extents match positionally, then rewrites logical-axis
-    uses to the physical-axis values and erases the logical mesh op.}];
+      ["enzyme::distributed::DistributedDialect"];
+  let options = [
+    Option<"configurationString", "configuration-string", "std::string", "\"\"",
+           "Raw distributed.PhysicalMesh op. Exactly one of configuration string or file must be specified.">,
+    Option<"configurationFile", "configuration-file", "std::string", "\"\"",
+           "Path to file containing a distributed.PhysicalMesh op. Exactly one of configuration string or file must be specified.">,
+  ];
+  let description = [{The configuration string / file is expected to contain a well-formed distributed.PhysicalMesh op.}];
 }
 
 def DistributedToHloPass : Pass<"distributed-to-hlo", "::mlir::ModuleOp"> {

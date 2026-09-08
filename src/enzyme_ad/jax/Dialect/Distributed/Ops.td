@@ -24,11 +24,8 @@ def PhysicalMeshOp
   : DistributedOp<"PhysicalMesh", [DeclarativeDistributedMetadata, Symbol]> {
   let description = [{Declares a mesh of device targets along with their local
                           communication hierarchy.}];
-  let arguments = (ins SymbolNameAttr
-                   : $sym_name, StrAttr
-                   : $device_target,
-                     ArrayAttr
-                   : $axes // array of physical axis types.
+  let arguments = (ins SymbolNameAttr : $sym_name, StrAttr : $device_target,
+                     ArrayAttr : $axes // array of physical axis types.
   );
   let assemblyFormat =
       "$sym_name `device_target` $device_target `axes` $axes attr-dict";

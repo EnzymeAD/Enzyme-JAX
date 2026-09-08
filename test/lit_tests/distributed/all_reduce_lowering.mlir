@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --split-input-file --naive-logical-to-physical-mesh --canonicalize --distributed-to-hlo %s | FileCheck %s
+// RUN: enzymexlamlir-opt --split-input-file  --canonicalize --distributed-to-hlo %s | FileCheck %s
 
 module {
 
@@ -10,10 +10,9 @@ module {
   }
   %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<4, 2>, !distributed.physical_comm_axis<2, 1>
 
-  %l0, %l1 = distributed.LogicalMeshAxes [4, 2] : !distributed.logical_mesh_axis<4>, !distributed.logical_mesh_axis<2>
-  %lf0_upper = axis.factor %l0 : !distributed.logical_mesh_axis<4> <2, 2>
-  %lf0_lower = axis.factor %l0 : !distributed.logical_mesh_axis<4> <2, 1>
-  %lf1 = axis.factor %l1 : !distributed.logical_mesh_axis<2> <2, 1>
+  %lf0_upper = axis.factor %p0 : !distributed.physical_comm_axis<4, 2> <2, 2>
+  %lf0_lower = axis.factor %p0 : !distributed.physical_comm_axis<4, 2> <2, 1>
+  %lf1 = axis.factor %p1 : !distributed.physical_comm_axis<2, 1> <2, 1>
 
   %ta = axis.getaxis tensor<8xf32> 0
   %tf0 = axis.factor %ta : !axis.shape_axis<tensor<8xf32>, 0> <8, 1>
@@ -21,18 +20,18 @@ module {
   %r0 = distributed.ReplicationAxis 2 : !distributed.replication_axis<2>
   %rf0 = axis.factor %r0 : !distributed.replication_axis<2> <2, 1>
 
-  %mesh_in = axis.product (%lf0_upper : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 2>, %lf0_lower : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 1>, %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
-  %mesh_out = axis.product (%lf0_upper : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 2>, %lf0_lower : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 1>, %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
-  %reduction = axis.product (%lf0_upper : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 2>)
+  %mesh_in = axis.product (%lf0_upper : !axis.axis_factor<!distributed.physical_comm_axis<4, 2>, 2, 2>, %lf0_lower : !axis.axis_factor<!distributed.physical_comm_axis<4, 2>, 2, 1>, %lf1 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %mesh_out = axis.product (%lf0_upper : !axis.axis_factor<!distributed.physical_comm_axis<4, 2>, 2, 2>, %lf0_lower : !axis.axis_factor<!distributed.physical_comm_axis<4, 2>, 2, 1>, %lf1 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %reduction = axis.product (%lf0_upper : !axis.axis_factor<!distributed.physical_comm_axis<4, 2>, 2, 2>)
 
   %lhs_group_0 = axis.product (%rf0 : !axis.axis_factor<!distributed.replication_axis<2>, 2, 1>)
-  %rhs_group_0 = axis.product (%lf0_upper : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 2>)
+  %rhs_group_0 = axis.product (%lf0_upper : !axis.axis_factor<!distributed.physical_comm_axis<4,2>, 2, 2>)
 
-  %lhs_group_1 = axis.product (%lf0_lower : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 1>)
-  %rhs_group_1 = axis.product (%lf0_lower : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 1>)
+  %lhs_group_1 = axis.product (%lf0_lower : !axis.axis_factor<!distributed.physical_comm_axis<4,2>, 2, 1>)
+  %rhs_group_1 = axis.product (%lf0_lower : !axis.axis_factor<!distributed.physical_comm_axis<4,2>, 2, 1>)
 
-  %lhs_group_2 = axis.product (%lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
-  %rhs_group_2 = axis.product (%lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+  %lhs_group_2 = axis.product (%lf1 : !axis.axis_factor<!distributed.physical_comm_axis<2,1>, 2, 1>)
+  %rhs_group_2 = axis.product (%lf1 : !axis.axis_factor<!distributed.physical_comm_axis<2,1>, 2, 1>)
 
   %lhs_group_3 = axis.product (%tf0 : !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 8, 1>)
   %rhs_group_3 = axis.product (%tf0 : !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 8, 1>)

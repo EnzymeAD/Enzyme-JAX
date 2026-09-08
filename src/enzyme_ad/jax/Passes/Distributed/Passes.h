@@ -8,6 +8,9 @@
 #include "src/enzyme_ad/jax/Dialect/Axis/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
 
+// Need it within pass declaration
+#include <string>
+
 namespace mlir {
 namespace enzyme {
 namespace distributed {
