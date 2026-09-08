@@ -52,6 +52,117 @@ bool isDisjoint(Value v) {
   return false;
 }
 
+// lower-affine expands `x floordiv c`, `x ceildiv c` and `x mod c` into a
+// truncating division or remainder under a sign test, corrected on the
+// negative side (AffineApplyExpander in Affine/Utils).  Read those shapes back
+// as the expression they compute, binding x and c.
+enum class LoweredDiv { None, FloorDiv, CeilDiv, Mod };
+
+static bool isConstantInt(Value v, int64_t c) {
+  APInt cst;
+  return matchPattern(v, m_ConstantInt(&cst)) && cst.getSExtValue() == c;
+}
+
+static LoweredDiv matchLoweredDiv(Value v, Value &lhs, Value &rhs) {
+  auto sel = v.getDefiningOp<SelectOp>();
+  if (!sel)
+    return LoweredDiv::None;
+  auto cmp = sel.getCondition().getDefiningOp<CmpIOp>();
+  if (!cmp || !isConstantInt(cmp.getRhs(), 0))
+    return LoweredDiv::None;
+  Value x = cmp.getLhs();
+  if (cmp.getPredicate() == CmpIPredicate::slt) {
+    // x mod c: select(r < 0, r + c, r) with r = x remsi c.
+    if (auto rem = sel.getFalseValue().getDefiningOp<RemSIOp>()) {
+      auto corrected = sel.getTrueValue().getDefiningOp<AddIOp>();
+      if (rem.getResult() != x || !corrected || corrected.getLhs() != x ||
+          corrected.getRhs() != rem.getRhs())
+        return LoweredDiv::None;
+      lhs = rem.getLhs();
+      rhs = rem.getRhs();
+      return LoweredDiv::Mod;
+    }
+    // x floordiv c: select(x < 0, -1 - ((-1 - x) divsi c), x divsi c).
+    auto quotient = sel.getFalseValue().getDefiningOp<DivSIOp>();
+    auto corrected = sel.getTrueValue().getDefiningOp<SubIOp>();
+    if (!quotient || !corrected || !isConstantInt(corrected.getLhs(), -1) ||
+        corrected.getRhs() != quotient.getResult())
+      return LoweredDiv::None;
+    auto dividend = quotient.getLhs().getDefiningOp<SelectOp>();
+    if (!dividend || dividend.getCondition() != cmp.getResult() ||
+        dividend.getFalseValue() != x)
+      return LoweredDiv::None;
+    auto negated = dividend.getTrueValue().getDefiningOp<SubIOp>();
+    if (!negated || !isConstantInt(negated.getLhs(), -1) ||
+        negated.getRhs() != x)
+      return LoweredDiv::None;
+    lhs = x;
+    rhs = quotient.getRhs();
+    return LoweredDiv::FloorDiv;
+  }
+  if (cmp.getPredicate() == CmpIPredicate::sle) {
+    // x ceildiv c: select(x <= 0, 0 - ((0 - x) divsi c), (x - 1) divsi c + 1).
+    auto negatedQuotient = sel.getTrueValue().getDefiningOp<SubIOp>();
+    auto incrementedQuotient = sel.getFalseValue().getDefiningOp<AddIOp>();
+    if (!negatedQuotient || !incrementedQuotient ||
+        !isConstantInt(negatedQuotient.getLhs(), 0) ||
+        !isConstantInt(incrementedQuotient.getRhs(), 1))
+      return LoweredDiv::None;
+    auto quotient = negatedQuotient.getRhs().getDefiningOp<DivSIOp>();
+    if (!quotient || incrementedQuotient.getLhs() != quotient.getResult())
+      return LoweredDiv::None;
+    auto dividend = quotient.getLhs().getDefiningOp<SelectOp>();
+    if (!dividend || dividend.getCondition() != cmp.getResult())
+      return LoweredDiv::None;
+    auto negated = dividend.getTrueValue().getDefiningOp<SubIOp>();
+    auto decremented = dividend.getFalseValue().getDefiningOp<SubIOp>();
+    if (!negated || !decremented || !isConstantInt(negated.getLhs(), 0) ||
+        negated.getRhs() != x || decremented.getLhs() != x ||
+        !isConstantInt(decremented.getRhs(), 1))
+      return LoweredDiv::None;
+    lhs = x;
+    rhs = quotient.getRhs();
+    return LoweredDiv::CeilDiv;
+  }
+  return LoweredDiv::None;
+}
+
+// Whether `sel` is the result or the dividend select of a lowered division.
+static bool isLoweredDivSelect(SelectOp sel) {
+  Value lhs, rhs;
+  if (matchLoweredDiv(sel, lhs, rhs) != LoweredDiv::None)
+    return true;
+  for (Operation *quotient : sel->getUsers()) {
+    if (!isa<DivSIOp>(quotient))
+      continue;
+    for (Operation *user : quotient->getUsers()) {
+      if (auto outer = dyn_cast<SelectOp>(user))
+        if (matchLoweredDiv(outer, lhs, rhs) != LoweredDiv::None)
+          return true;
+      for (Operation *corrected : user->getUsers())
+        if (auto outer = dyn_cast<SelectOp>(corrected))
+          if (matchLoweredDiv(outer, lhs, rhs) != LoweredDiv::None)
+            return true;
+    }
+  }
+  return false;
+}
+
+static AffineExpr applyLoweredDiv(LoweredDiv kind, AffineExpr lhs,
+                                  AffineExpr rhs) {
+  switch (kind) {
+  case LoweredDiv::FloorDiv:
+    return lhs.floorDiv(rhs);
+  case LoweredDiv::CeilDiv:
+    return lhs.ceilDiv(rhs);
+  case LoweredDiv::Mod:
+    return lhs % rhs;
+  case LoweredDiv::None:
+    break;
+  }
+  llvm_unreachable("not a lowered division");
+}
+
 void populateAffineParallelizationPattern(MLIRContext &context,
                                           RewritePatternSet &patterns);
 
@@ -672,6 +783,9 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       t = decast;
     }
 
+    Value loweredLhs, loweredRhs;
+    LoweredDiv lowered = matchLoweredDiv(t, loweredLhs, loweredRhs);
+
     // Only promote one at a time, lest we end up with two dimensions
     // multiplying each other.
 
@@ -711,6 +825,8 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
             (isValidIndex(t.getDefiningOp()->getOperand(0), scope) &&
              isValidSymbolInt(t.getDefiningOp()->getOperand(1), /*recur*/ true,
                               scope))) ||
+           (lowered != LoweredDiv::None && isValidIndex(loweredLhs, scope) &&
+            isValidSymbolInt(loweredRhs, /*recur*/ true, scope)) ||
            t.getDefiningOp<ConstantIntOp>() ||
            t.getDefiningOp<ConstantIndexOp>())) ||
          ((decast.getDefiningOp<AddIOp>() || decast.getDefiningOp<SubIOp>() ||
@@ -809,6 +925,24 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
                   .floorDiv(getAffineSymbolExpr(1, op.getContext())));
           affineApplyOperands.push_back(op.getLhs());
           affineApplyOperands.push_back(op.getRhs());
+        }
+      } else if (lowered != LoweredDiv::None) {
+        AffineExpr lhsExpr = getAffineSymbolExpr(0, t.getContext());
+        APInt cst;
+        if (matchPattern(loweredRhs, m_ConstantInt(&cst))) {
+          affineApplyMap = AffineMap::get(
+              0, 1,
+              applyLoweredDiv(
+                  lowered, lhsExpr,
+                  getAffineConstantExpr(cst.getSExtValue(), t.getContext())));
+          affineApplyOperands.push_back(loweredLhs);
+        } else {
+          affineApplyMap = AffineMap::get(
+              0, 2,
+              applyLoweredDiv(lowered, lhsExpr,
+                              getAffineSymbolExpr(1, t.getContext())));
+          affineApplyOperands.push_back(loweredLhs);
+          affineApplyOperands.push_back(loweredRhs);
         }
       } else if (auto op = t.getDefiningOp<RemSIOp>()) {
         if (auto ci = op.getRhs().getDefiningOp<ConstantIntOp>()) {
@@ -1534,6 +1668,13 @@ bool isValidIndex(Value val, Region *scope) {
   if (auto bop = val.getDefiningOp<DivSIOp>())
     return (isValidIndex(bop.getOperand(0), scope) &&
             isValidSymbolInt(bop.getOperand(1), /*recur*/ true, scope));
+
+  {
+    Value lhs, rhs;
+    if (matchLoweredDiv(val, lhs, rhs) != LoweredDiv::None)
+      return isValidIndex(lhs, scope) &&
+             isValidSymbolInt(rhs, /*recur*/ true, scope);
+  }
 
   if (auto bop = val.getDefiningOp<DivUIOp>())
     return (isValidIndex(bop.getOperand(0), scope) &&
@@ -2671,6 +2812,10 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
                                 PatternRewriter &rewriter) const override {
     if (!ifOp->getParentOfType<affine::AffineForOp>() &&
         !ifOp->getParentOfType<affine::AffineParallelOp>())
+      return failure();
+    // The normalizer reads a lowered division whole; split into affine.if
+    // arms it is a division no more.
+    if (isLoweredDivSelect(ifOp))
       return failure();
 
     std::vector<mlir::Type> types = {ifOp.getType()};
