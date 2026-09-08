@@ -1,4 +1,5 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Runtime/jit/jit.h"
 
 #include <cstdint>
 #include <stdexcept>
@@ -13,10 +14,6 @@ namespace mlir::enzyme {
 
 using namespace mlir;
 using namespace mlir::enzyme;
-
-// from LowerJIT.cpp
-extern "C" void EnzymeJaXMapSymbol(const char *name, void *symbol);
-extern "C" int EnzymeJaXLookupSymbol(const char *name, void **symbol);
 
 namespace {
 struct MapSymbolPass : public enzyme::impl::MapSymbolPassBase<MapSymbolPass> {
@@ -47,12 +44,9 @@ struct MapSymbolPass : public enzyme::impl::MapSymbolPassBase<MapSymbolPass> {
         addr = reinterpret_cast<void *>(static_cast<uintptr_t>(value));
       }
 
-      EnzymeJaXMapSymbol(name.c_str(), addr);
-
-      void *lookup_addr;
-      int found_addr = EnzymeJaXLookupSymbol(name.c_str(), &lookup_addr);
-      if (found_addr != 0) {
-        llvm::errs() << "`" << name << "` symbol not mapped\n";
+      auto err = enzymexla::map_symbol(name.c_str(), addr);
+      if (!err) {
+        llvm::errs() << "Failed to register symbol: " << name << "\n";
         return signalPassFailure();
       }
     }

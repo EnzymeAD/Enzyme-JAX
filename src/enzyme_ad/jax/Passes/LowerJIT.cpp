@@ -23,6 +23,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Runtime/jit/jit.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
@@ -37,18 +38,8 @@
 #include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 
-#include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/Core.h"
-#include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
-#include "llvm/ExecutionEngine/Orc/ExecutorProcessControl.h"
-#include "llvm/ExecutionEngine/Orc/IRCompileLayer.h"
-#include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
-#include "llvm/ExecutionEngine/Orc/LLJIT.h"
-#include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
-#include "llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h"
-#include "llvm/ExecutionEngine/Orc/TargetProcess/RegisterEHFrames.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
-#include "llvm/ExecutionEngine/SectionMemoryManager.h"
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -110,7 +101,7 @@ using namespace mlir::enzyme;
 using namespace mlir::gpu;
 using namespace enzyme;
 using namespace mlir::enzymexla;
-using namespace enzymexla;
+using namespace ::enzymexla;
 
 using namespace stablehlo;
 
@@ -242,31 +233,6 @@ struct CallInfo {
 
 llvm::StringMap<CallInfo> jitkernels;
 llvm::sys::SmartRWMutex<true> jit_kernel_mutex;
-std::unique_ptr<llvm::orc::LLJIT> JIT = nullptr;
-llvm::orc::SymbolMap MappedSymbols;
-
-bool initJIT();
-
-extern "C" MLIR_CAPI_EXPORTED int EnzymeJaXLookupSymbol(const char *name,
-                                                        void **symbol) {
-  if (!JIT)
-    return -1;
-
-  auto mangled_name = JIT->mangleAndIntern(name);
-  if (!MappedSymbols.contains(mangled_name))
-    return -1;
-
-  auto addr = MappedSymbols[mangled_name];
-  *symbol = addr.toPtr<void *>();
-  return 0;
-}
-
-extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
-                                                      void *symbol) {
-  initJIT();
-  MappedSymbols[JIT->mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
-      llvm::orc::ExecutorAddr::fromPtr(symbol), llvm::JITSymbolFlags());
-}
 
 #if defined(_WIN32)
 #ifdef __MINGW32__
@@ -283,110 +249,6 @@ extern "C" void __chkstk(void);
 #endif
 #endif
 
-bool initJIT() {
-  if (!JIT) {
-    auto tJTMB = llvm::orc::JITTargetMachineBuilder::detectHost();
-    if (!tJTMB) {
-      llvm::errs() << " jit host detection error: " << tJTMB.takeError()
-                   << "\n";
-      return false;
-    }
-
-    // On Windows, compile as if we were mingw rather than MSVC. With an MSVC
-    // environment LLVM emits every mergeable floating point constant into its
-    // own COMDAT section carrying a global `__real@<hex>` (or `__xmm@<hex>`)
-    // symbol -- see TargetLoweringObjectFileCOFF::getSectionForConstant
-    // together with AsmPrinter::GetCPISymbol, which is gated on
-    // isWindowsMSVCEnvironment(). LLJIT links x86-64 COFF objects with
-    // RuntimeDyld, whose COMDAT support cannot resolve those symbols
-    // (llvm.org/PR40074, which RTDyldObjectLinkingLayer::onObjLoad only
-    // partially works around), so a kernel containing a literal such as `0.5`
-    // intermittently fails to materialize:
-    //
-    //   Failed to materialize symbols:
-    //     { (enzymejitdl_12, { __real@3fe0000000000000 }) }
-    //
-    // The GNU environment selects MCAsmInfoGNUCOFF, which sets
-    // HasCOFFComdatConstants = false, so constants are emitted as ordinary
-    // constant-pool entries with local labels that RuntimeDyld handles fine.
-    // Both environments share the same architecture, object format, data
-    // layout and calling convention, so this only changes how constants are
-    // emitted. The one externally visible difference is the name of the stack
-    // probe helper, which is mapped below. See EnzymeAD/Reactant.jl#1673.
-    if (tJTMB->getTargetTriple().isWindowsMSVCEnvironment())
-      tJTMB->getTargetTriple().setEnvironment(llvm::Triple::GNU);
-
-    auto tJIT =
-        llvm::orc::LLJITBuilder()
-            .setJITTargetMachineBuilder(std::move(*tJTMB))
-            .setLinkProcessSymbolsByDefault(true)
-            .setObjectLinkingLayerCreator(
-                [](llvm::orc::ExecutionSession &ES,
-                   llvm::jitlink::JITLinkMemoryManager &)
-                    -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
-                  auto obj = std::make_unique<
-                      llvm::orc::RTDyldObjectLinkingLayer>(
-                      ES, [](const llvm::MemoryBuffer &) {
-                        return std::make_unique<llvm::SectionMemoryManager>();
-                      });
-                  if (getenv("ENABLE_GDBLISTENER")) {
-                    auto list =
-                        llvm::JITEventListener::createGDBRegistrationListener();
-                    obj->registerJITEventListener(*list);
-                  }
-                  return obj;
-                })
-            .create();
-    if (!tJIT) {
-      llvm::errs() << " jit creating error: " << tJIT.takeError() << "\n";
-      return false;
-    }
-    JIT = std::move(tJIT.get());
-    assert(JIT);
-    auto GlobalPrefix = JIT->getDataLayout().getGlobalPrefix();
-
-    llvm::orc::DynamicLibrarySearchGenerator::SymbolPredicate Pred;
-
-    auto ProcessSymsGenerator =
-        llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
-            GlobalPrefix, Pred);
-
-    if (!ProcessSymsGenerator) {
-      llvm::errs() << " failure creating symbol generator: "
-                   << ProcessSymsGenerator.takeError() << "\n";
-      return false;
-    }
-
-    JIT->getMainJITDylib().addGenerator(std::move(ProcessSymsGenerator.get()));
-
-#if defined(_WIN32)
-#ifdef __MINGW32__
-#if defined(__i386__)
-    void *StackProbe = (void *)&_alloca;
-#elif defined(__x86_64__)
-    void *StackProbe = (void *)&___chkstk_ms;
-#else
-    void *StackProbe = (void *)&__chkstk;
-#endif
-#else
-    void *StackProbe = (void *)&__chkstk;
-#endif
-    EnzymeJaXMapSymbol("__chkstk", StackProbe);
-#if defined(_M_X64) || defined(__x86_64__)
-    // We select the GNU environment above, and x86-64 mingw names the stack
-    // probe ___chkstk_ms rather than __chkstk (see RuntimeLibcalls.td, where
-    // ___chkstk_ms is isCygwinMinGW64 and __chkstk is isWin64NotCygMing). The
-    // two are interchangeable there: both take the allocation size in %rax,
-    // only probe, and leave %rsp and %rax alone (see the comment in
-    // X86FrameLowering::emitStackProbeCall), so whichever one this process was
-    // built with can serve both names.
-    EnzymeJaXMapSymbol("___chkstk_ms", StackProbe);
-#endif
-#endif
-  }
-  return true;
-}
-
 CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
                            bool compileInit, bool dump_final_module) {
   std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext);
@@ -396,7 +258,7 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
     llvm::errs() << "could not convert to LLVM IR\n";
     return {};
   }
-  if (!initJIT())
+  if (!::enzymexla::init_jit())
     return {};
 
   llvmModule->setDataLayout(JIT->getDataLayout());
@@ -441,8 +303,9 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
 }
 
 static void replaceGetStreamOpsWithCudaABIStreamArg(mlir::ModuleOp &submod) {
-  SmallVector<enzymexla::GetStreamOp> streams;
-  submod.walk([&](enzymexla::GetStreamOp op) { streams.push_back(op); });
+  SmallVector<::mlir::enzymexla::GetStreamOp> streams;
+  submod.walk(
+      [&](::mlir::enzymexla::GetStreamOp op) { streams.push_back(op); });
   for (auto op : streams) {
     auto pfunc = op->getParentOfType<LLVM::LLVMFuncOp>();
     assert(pfunc && "expected get_stream to be inside an LLVM function");
@@ -481,14 +344,17 @@ static void insertEmptyGPUInit(mlir::ModuleOp &submod, mlir::Location loc) {
   LLVM::ReturnOp::create(builder, loc, ValueRange(sentinel));
 }
 
-void rewriteKernelCallABI(
-    mlir::ModuleOp &submod, mlir::Location loc, const std::string &legalName,
-    bool debug, enzymexla::JITCallOp jitCallOp, const std::string &modstr,
-    size_t cuResultHandlerPtr, size_t cuStreamSynchronizePtr, int indexBitWidth,
-    const std::string &cubinTriple, const std::string &cubinChip,
-    const std::string &cubinFeatures, const std::string &cubinFormat,
-    int cuOptLevel, const std::string &toolkitPath,
-    const llvm::SmallVectorImpl<std::string> &linkFiles) {
+void rewriteKernelCallABI(mlir::ModuleOp &submod, mlir::Location loc,
+                          const std::string &legalName, bool debug,
+                          ::mlir::enzymexla::JITCallOp jitCallOp,
+                          const std::string &modstr, size_t cuResultHandlerPtr,
+                          size_t cuStreamSynchronizePtr, int indexBitWidth,
+                          const std::string &cubinTriple,
+                          const std::string &cubinChip,
+                          const std::string &cubinFeatures,
+                          const std::string &cubinFormat, int cuOptLevel,
+                          const std::string &toolkitPath,
+                          const llvm::SmallVectorImpl<std::string> &linkFiles) {
   OpBuilder builder(submod);
 
   builder.setInsertionPointToStart(&submod.getBodyRegion().front());
@@ -771,16 +637,18 @@ void rewriteKernelCallABI(
   });
 }
 
-CallInfo
-CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
-            FunctionOpInterface op, bool jit, enzymexla::JITCallOp jcall,
-            bool openmp, size_t cuResultHandlerPtr,
-            size_t cuStreamSynchronizePtr, int indexBitWidth,
-            const std::string &cubinTriple, const std::string &cubinChip,
-            const std::string &cubinFeatures, const std::string &cubinFormat,
-            int cuOptLevel, const std::string &toolkitPath,
-            const llvm::SmallVectorImpl<std::string> &linkFiles, bool debug,
-            bool returnPtr, bool dump_final_module, bool requiresCudaABI) {
+CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
+                     FunctionOpInterface op, bool jit,
+                     ::mlir::enzymexla::JITCallOp jcall, bool openmp,
+                     size_t cuResultHandlerPtr, size_t cuStreamSynchronizePtr,
+                     int indexBitWidth, const std::string &cubinTriple,
+                     const std::string &cubinChip,
+                     const std::string &cubinFeatures,
+                     const std::string &cubinFormat, int cuOptLevel,
+                     const std::string &toolkitPath,
+                     const llvm::SmallVectorImpl<std::string> &linkFiles,
+                     bool debug, bool returnPtr, bool dump_final_module,
+                     bool requiresCudaABI) {
 
   OpBuilder builder(op);
 
@@ -910,8 +778,8 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
     }
 
     if (auto AT = dyn_cast<MemRefType>(oldarg.getType())) {
-      newval = enzymexla::Pointer2MemrefOp::create(builder, newarg.getLoc(),
-                                                   oldarg.getType(), newval);
+      newval = ::mlir::enzymexla::Pointer2MemrefOp::create(
+          builder, newarg.getLoc(), oldarg.getType(), newval);
     }
 
     map.map(oldarg, newval);
@@ -993,7 +861,7 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
         if (str.size() > 200)
           gmod.setName(str.substr(0, 200));
       });
-      submod->walk([](enzymexla::FMulAddOp op) {
+      submod->walk([](::mlir::enzymexla::FMulAddOp op) {
         OpBuilder builder(op);
         auto newOp = LLVM::FMulAddOp::create(builder, op->getLoc(), op.getA(),
                                              op.getB(), op.getC());

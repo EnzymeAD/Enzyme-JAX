@@ -14,6 +14,7 @@
 #include "src/enzyme_ad/jax/Dialect/Comm/Ops.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Runtime/jit/jit.h"
 
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
@@ -1166,3 +1167,27 @@ void enzymexlaGetTransformPassesList(
 }
 
 void enzymexlaFreeTransformPassesList(char *passes) { free(passes); }
+
+int enzymexlaInitJIT() { return static_cast<int>(enzymexla::init_jit()); }
+
+int enzymexlaLookupSymbol(const char *name, void **symbol) {
+  auto err = enzymexla::lookup_symbol(name, symbol);
+  if (!err)
+    return -1;
+  return 0;
+}
+
+int enzymexlaMapSymbol(const char *name, void *symbol) {
+  auto err = enzymexla::map_symbol(name, symbol);
+  if (!err)
+    return -1;
+  return 0;
+}
+
+int EnzymeJaXLookupSymbol(const char *name, void **) {
+  enzymexlaLookupSymbol(name);
+}
+
+void EnzymeJaXMapSymbol(const char *name, void *symbol) {
+  enzymexlaMapSymbol(name, symbol);
+}
