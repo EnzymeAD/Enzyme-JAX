@@ -7629,12 +7629,13 @@ struct ScatterToDynamicUpdateSlice final
   }
 };
 
-struct ElementwiseAllTransposeOperandsSimplify
+template <template <typename> class Trait>
+struct ElementwiseAllTransposeOperandsSimplifyBase
     : public CheckedOpTraitRewritePattern<
-          OpTrait::Elementwise, ElementwiseAllTransposeOperandsSimplify> {
+          Trait, ElementwiseAllTransposeOperandsSimplifyBase<Trait>> {
   using CheckedOpTraitRewritePattern<
-      OpTrait::Elementwise,
-      ElementwiseAllTransposeOperandsSimplify>::CheckedOpTraitRewritePattern;
+      Trait, ElementwiseAllTransposeOperandsSimplifyBase<Trait>>::
+      CheckedOpTraitRewritePattern;
 
   LogicalResult matchAndRewriteImpl(Operation *op,
                                     PatternRewriter &rewriter) const {
@@ -7647,6 +7648,16 @@ struct ElementwiseAllTransposeOperandsSimplify
     DenseI64ArrayAttr permutation;
     bool foundTranspose = false;
     for (auto operand : op->getOperands()) {
+      auto type = dyn_cast<RankedTensorType>(operand.getType());
+      if (!type)
+        return failure();
+      // Select predicates and clamp bounds may be scalars. They have no axes
+      // to permute and do not determine the result's shape.
+      if (type.getRank() == 0) {
+        kinds.push_back(OperandKind::Scalar);
+        operands.push_back(operand);
+        continue;
+      }
       if (matchPattern(operand, m_Constant())) {
         kinds.push_back(OperandKind::Const);
         operands.push_back(operand);
@@ -7683,6 +7694,7 @@ struct ElementwiseAllTransposeOperandsSimplify
     for (size_t i = 0; i < operands.size(); i++) {
       switch (kinds[i]) {
       case OperandKind::Transpose:
+      case OperandKind::Scalar:
         break;
       case OperandKind::Const:
         // This will be eliminated by a transpose(constant) -> constant
@@ -7694,14 +7706,13 @@ struct ElementwiseAllTransposeOperandsSimplify
       }
     }
 
-    auto operandTy = cast<RankedTensorType>(operands[0].getType());
-    SmallVector<int64_t> elemResShape(operandTy.getShape().begin(),
-                                      operandTy.getShape().end());
+    auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
+    SmallVector<int64_t> elemResShape;
+    for (int64_t dim : invPerm.asArrayRef())
+      elemResShape.push_back(resultType.getDimSize(dim));
     auto newOp = Operation::create(
         op->getLoc(), op->getName(),
-        {RankedTensorType::get(
-            elemResShape,
-            cast<TensorType>(op->getResult(0).getType()).getElementType())},
+        {RankedTensorType::get(elemResShape, resultType.getElementType())},
         operands, op->getAttrs(), mlir::PropertyRef(), op->getSuccessors(), 0);
     rewriter.insert(newOp);
     auto newTransposeOp = stablehlo::TransposeOp::create(
@@ -7711,8 +7722,14 @@ struct ElementwiseAllTransposeOperandsSimplify
   }
 
 private:
-  enum class OperandKind { Transpose, Const };
+  enum class OperandKind { Transpose, Const, Scalar };
 };
+
+using ElementwiseAllTransposeOperandsSimplify =
+    ElementwiseAllTransposeOperandsSimplifyBase<OpTrait::Elementwise>;
+using BroadcastingElementwiseAllTransposeOperandsSimplify =
+    ElementwiseAllTransposeOperandsSimplifyBase<
+        mlir::hlo::OpTrait::BroadcastingElementwise>;
 
 struct TransposeElementwiseTransposeSimplify
     : public CheckedOpRewritePattern<stablehlo::TransposeOp,
@@ -37072,6 +37089,7 @@ struct EnzymeHLOOptPass
     patterns.add<GatherConstProp, ClampConstProp>(context);
 
     patterns.add<ElementwiseAllTransposeOperandsSimplify,
+                 BroadcastingElementwiseAllTransposeOperandsSimplify,
                  TransposeElementwiseTransposeSimplify,
                  AssociativeBinaryOpReordering,
                  CommonAssociativeCommutativeOpReorder>(context);

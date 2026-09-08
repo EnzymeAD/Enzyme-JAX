@@ -957,6 +957,7 @@ static void addTransposePropagateUpPasses(std::vector<std::string> &list,
 static void addTransposePropagateDownPasses(std::vector<std::string> &list) {
   list.push_back("reorder_elementwise_and_shape_op<16>");
   list.push_back("elementwise_all_transpose_operands_simplify");
+  list.push_back("broadcasting_elementwise_all_transpose_operands_simplify");
   list.push_back("slice_transpose");
   list.push_back("dynamic_slice_transpose");
   list.push_back("einsum_transpose<1>");
