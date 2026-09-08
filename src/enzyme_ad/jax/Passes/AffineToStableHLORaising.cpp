@@ -4052,6 +4052,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     // lane range runs past the buffer (a guarded write of a scratch narrower
     // than the lane count) slices that value with the range's extent, which
     // only the padded buffer has.
+    // The buffer as raised (lane dimensions included), to slice the padding
+    // away again after the update.
+    SmallVector<int64_t> unpaddedShape(
+        cast<RankedTensorType>(operand.getType()).getShape());
     if (needPad) {
       auto elemType =
           cast<RankedTensorType>(operand.getType()).getElementType();
@@ -4317,18 +4321,15 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         finalResult = stablehlo::DynamicPadOp::create(
             builder,
             rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-            cast<RankedTensorType>(finalResult.getType())
-                .clone(
-                    cast<ShapedType>(storeOp.getMemref().getType()).getShape()),
+            cast<RankedTensorType>(finalResult.getType()).clone(unpaddedShape),
             finalResult, padVal, edgePaddingLow, edgePaddingHigh,
             interiorPadding);
       } else {
         SmallVector<int64_t> startSlice;
         SmallVector<int64_t> limitSlice;
         SmallVector<int64_t> stridesSlice;
-        for (auto [sz, low, high] : llvm::zip(
-                 cast<ShapedType>(storeOp.getMemref().getType()).getShape(),
-                 padLow, padHigh)) {
+        for (auto [sz, low, high] :
+             llvm::zip_equal(unpaddedShape, padLow, padHigh)) {
           startSlice.push_back(low);
           limitSlice.push_back(low + sz);
           stridesSlice.push_back(1);
