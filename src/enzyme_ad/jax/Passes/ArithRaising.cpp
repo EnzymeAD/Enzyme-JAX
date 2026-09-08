@@ -600,6 +600,17 @@ struct RaiseCmpF : public OpRewritePattern<arith::CmpFOp> {
       case arith::CmpFPredicate::ONE:
         direction = stablehlo::ComparisonDirection::NE;
         break;
+      case arith::CmpFPredicate::UNO: {
+        Value isNaNLHS = emitIsNaN(rewriter, cmpOp.getLoc(), cmpOp.getLhs());
+        if (cmpOp.getLhs() == cmpOp.getRhs())
+          rewriter.replaceAllUsesWith(cmpOp.getResult(), isNaNLHS);
+        else {
+          Value isNaNRHS = emitIsNaN(rewriter, cmpOp.getLoc(), cmpOp.getRhs());
+          rewriter.replaceOpWithNewOp<stablehlo::OrOp>(cmpOp, isNaNLHS,
+                                                       isNaNRHS);
+        }
+        return success();
+      }
       default:
         return failure();
       }
