@@ -341,8 +341,6 @@ bool isNonTopLevelPureSymbol(Value value) {
     if (!matchPattern(defOp, m_Constant(&operandCst)) &&
         !affine::isValidSymbol(value, region))
       return false;
-    if (defOp->getNumOperands() != 0)
-      return false;
     if (defOp->getParentRegion() == region)
       return false;
     return true;
