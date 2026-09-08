@@ -753,6 +753,43 @@ def TridiagonalSolveOp: EnzymeXLA_Op<"linalg.tridiagonal_solve", [Pure]> {
   }];
 }
 
+// Sparse Ops
+
+def SparseSpMMOp : EnzymeXLA_Op<"sparse.spmm", [Pure, SameOperandsAndResultElementType]> {
+  let summary = "Sparse matrix times dense vector/matrix product";
+
+  let description = [{
+    output := alpha * A * B + beta * C
+
+    where `A` is a 2-d sparse tensor (e.g. the result of a
+    `sparse_tensor.assemble`) and `B`, `C` and `output` are dense vectors
+    (spmv) or matrices (spmm) of matching shapes. `alpha` and `beta` are 0-d
+    tensors.
+  }];
+
+  let arguments = (ins
+    TensorFloat:$alpha,
+    HLO_Tensor:$A,
+    HLO_Tensor:$B,
+    TensorFloat:$beta,
+    HLO_Tensor:$C
+  );
+
+  let results = (outs
+    HLO_Tensor:$output
+  );
+
+  let assemblyFormat = [{
+    $alpha `,` $A `,` $B `,` $beta `,` $C attr-dict `:` functional-type(operands, results)
+  }];
+
+  let hasVerifier = 1;
+
+  let builders = [
+    OpBuilder<(ins "Value":$A, "Value":$B)>
+  ];
+}
+
 def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
   let summary = "LU factorization operation with RowMaximum pivoting.";
 
