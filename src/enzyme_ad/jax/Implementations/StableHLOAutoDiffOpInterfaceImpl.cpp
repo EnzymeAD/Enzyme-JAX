@@ -450,6 +450,39 @@ public:
   }
 };
 
+class AutoDiffCaseFwd
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffCaseFwd,
+                                                stablehlo::CaseOp> {
+public:
+  LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+    llvm::SmallDenseSet<unsigned> operandPositionsToShadow;
+    llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
+
+    for (auto res : orig->getOpResults()) {
+      if (!gutils->isConstantValue(res))
+        resultPositionsToShadow.insert(res.getResultNumber());
+    }
+    return mlir::enzyme::detail::controlFlowForwardHandler(
+        orig, builder, gutils, operandPositionsToShadow,
+        resultPositionsToShadow);
+  }
+};
+
+class AutoDiffCaseCF
+    : public ControlFlowAutoDiffOpInterface::ExternalModel<AutoDiffCaseCF,
+                                                           stablehlo::CaseOp> {
+public:
+  Operation *createWithShadows(Operation *op, OpBuilder &builder,
+                               MGradientUtils *gutils, Operation *original,
+                               ValueRange remappedOperands,
+                               TypeRange rettys) const {
+    return stablehlo::CaseOp::create(
+        builder, original->getLoc(), rettys, remappedOperands,
+        original->getAttrs(), cast<stablehlo::CaseOp>(op).getBranches().size());
+  }
+};
+
 class AutoDiffWhileFwd
     : public AutoDiffOpInterface::ExternalModel<AutoDiffWhileFwd, WhileOp> {
 public:
@@ -4965,6 +4998,9 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     stablehlo::IfOp::attachInterface<AutoDiffIfRev>(*context);
     stablehlo::IfOp::attachInterface<AutoDiffIfFwd>(*context);
     stablehlo::IfOp::attachInterface<AutoDiffIfCF>(*context);
+
+    stablehlo::CaseOp::attachInterface<AutoDiffCaseFwd>(*context);
+    stablehlo::CaseOp::attachInterface<AutoDiffCaseCF>(*context);
 
     SortOp::attachInterface<AutoDiffSortFwd>(*context);
     SortOp::attachInterface<AutoDiffSortRev>(*context);
