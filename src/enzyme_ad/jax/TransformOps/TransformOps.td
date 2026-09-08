@@ -759,6 +759,11 @@ def ApplyElementwiseAllTransposeOperandsSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["ElementwiseAllTransposeOperandsSimplify"];
 }
 
+def ApplyBroadcastingElementwiseAllTransposeOperandsSimplifyPatterns : EnzymeHLOPatternOp<
+    "broadcasting_elementwise_all_transpose_operands_simplify"> {
+  let patterns = ["BroadcastingElementwiseAllTransposeOperandsSimplify"];
+}
+
 def  AssociativeCommonMulOpReorderingPatterns : EnzymeHLOPatternOp<
     "associative_common_mul_op_reordering"> {
   let patterns = ["AssociativeCommonMulOpReordering<stablehlo::AddOp>",
