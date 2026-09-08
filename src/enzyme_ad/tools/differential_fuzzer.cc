@@ -36,6 +36,7 @@
 #include <optional>
 #include <random>
 #include <string>
+#include <type_traits>
 #include <variant>
 
 namespace {
@@ -193,6 +194,8 @@ struct PoolConstraints {
   bool noSubnormal = false;
   bool nonNegative = false;
   bool nonZero = false;
+  bool purelyReal = false;
+  bool purelyImaginary = false;
   std::optional<APInt> intLo, intHi; // from bounds
   std::optional<APFloat> floatLo, floatHi;
 };
@@ -219,6 +222,27 @@ static bool allowed(const APInt &v, const PoolConstraints &c) {
   if (c.nonZero && v.isZero())
     return false;
   if (c.nonNegative && v.isNegative())
+    return false;
+  return true;
+}
+
+static bool allowed(const mlir::Complex<APFloat> &v, const PoolConstraints &c) {
+  const APFloat &re = v.real(), &im = v.imag();
+  if (c.purelyReal && !im.isZero())
+    return false;
+  if (c.purelyImaginary && !re.isZero())
+    return false;
+  if (c.nonZero && re.isZero() && im.isZero())
+    return false;
+  if (c.noNaN && (re.isNaN() || im.isNaN()))
+    return false;
+  if (c.noInf && (re.isInfinity() || im.isInfinity()))
+    return false;
+  if (c.noSubnormal && (re.isDenormal() || im.isDenormal()))
+    return false;
+  if (c.floatLo && (re < *c.floatLo || im < *c.floatLo))
+    return false;
+  if (c.floatHi && (re > *c.floatHi || im > *c.floatHi))
     return false;
   return true;
 }
@@ -415,6 +439,10 @@ PoolConstraints constraintsFromArg(Value arg, PoolConstraints &base) {
     constraints.noNaN = constraints.noInf = true;
   if (get("enzymexla.non_negative") == G::GUARANTEED)
     constraints.nonNegative = true;
+  if (get("enzymexla.complex_is_purely_real") == G::GUARANTEED)
+    constraints.purelyReal = true;
+  if (get("enzymexla.complex_is_purely_imaginary") == G::GUARANTEED)
+    constraints.purelyImaginary = true;
   return constraints;
 }
 
@@ -471,7 +499,7 @@ generateCursedTensor(mlir::Type argType, std::mt19937 &gen,
       [&](auto &pool) {
         using VectorType = std::decay_t<decltype(pool)>;
         using T = typename VectorType::value_type;
-        if constexpr (std::is_same_v<T, APFloat> || std::is_same_v<T, APInt>)
+        if constexpr (!std::is_same_v<T, bool>)
           llvm::erase_if(pool,
                          [&](const T &v) { return !allowed(v, constraints); });
         if (pool.empty())
