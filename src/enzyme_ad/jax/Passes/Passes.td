@@ -368,6 +368,23 @@ def HoistAllocasPass : Pass<"hoist-allocas"> {
   ];
 }
 
+def StripDeadPersonalityPass : Pass<"strip-dead-personality"> {
+  let summary = "Drop the personality of functions that have no landing pad, "
+                "so the inliner accepts them";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+  ];
+}
+
+def DiscardUnreferencedLinkoncePass
+    : Pass<"discard-unreferenced-linkonce"> {
+  let summary = "Erase linkonce and weak function definitions nothing "
+                "references";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+  ];
+}
+
 def RestorePreserveNVVMPass : Pass<"restore-preserve-nvvm"> {
   let summary = "Undo PreserveNVVM(Begin)'s linkage and inlining fixups once "
                 "the raising has consumed the calls they protected";
