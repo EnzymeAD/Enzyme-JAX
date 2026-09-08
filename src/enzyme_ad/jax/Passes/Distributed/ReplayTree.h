@@ -46,7 +46,8 @@ protected:
 public:
   ReplayTree(std::shared_ptr<const SelfT> predecessor, uint32_t depth)
       : depth(depth), delta() {
-    int stepsUp = llvm::countr_zero(depth);
+    // special case so that depth 0 doesn't have to step up
+    int stepsUp = llvm::countr_zero(std::max(1u, depth));
     std::vector<std::shared_ptr<const SelfT>> toCompress;
     for (int i = 0; i < stepsUp; ++i) {
       toCompress.push_back(predecessor);

@@ -64,10 +64,18 @@ findAllLogicalAxes(ModuleOp moduleOp) {
   return logicalAxes;
 }
 
-static std::vector<TypedValue<AxisFactorType>>
-findAllPhysicalAxes(ModuleOp moduleOp) {
-  assert(false && "findAllPhysicalAxes not implemented");
-  return {};
+static llvm::SmallVector<TypedValue<AxisFactorType>>
+findAllPhysicalAxes(ModuleOp moduleOp, mlir::OpBuilder &builder, Location loc) {
+  GetPhysicalMeshAxesOp getAxesOp = nullptr;
+  int count = 0;
+  moduleOp.walk([&](GetPhysicalMeshAxesOp op) {
+    getAxesOp = op;
+    count++;
+  });
+
+  assert(getAxesOp && count == 1 &&
+         "Expected exactly one GetPhysicalMeshAxesOp");
+  return viewAxesAsFactors(getAxesOp.getAxes(), builder, loc);
 }
 
 using LogicalAxisOrder = std::vector<TypedValue<LogicalMeshAxisType>>;
@@ -164,7 +172,7 @@ public:
   }
 
   void setupNextAxis(LogicalAxisOverlap &overlap,
-                     std::vector<TypedValue<AxisFactorType>> totalMeshSpace,
+                     llvm::ArrayRef<TypedValue<AxisFactorType>> totalMeshSpace,
                      OpBuilder &builder) {
     extentTaken = 1;
     axisIndex++;
@@ -229,8 +237,9 @@ struct DistributedSearchStrategiesPass
     auto overlap = LogicalAxisOverlap(moduleOp);
 
     auto logicalAxes = findAllLogicalAxes(moduleOp);
-    std::vector<TypedValue<AxisFactorType>> physicalAxes =
-        findAllPhysicalAxes(moduleOp);
+    llvm::SmallVector<TypedValue<AxisFactorType>> physicalAxes =
+        findAllPhysicalAxes(moduleOp, temporaryBuilder, moduleOp.getLoc());
+
     // TODO: order by importance
     auto axes =
         std::make_shared<const LogicalAxisOrder>(std::move(logicalAxes));
