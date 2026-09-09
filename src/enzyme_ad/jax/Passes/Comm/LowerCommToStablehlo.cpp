@@ -17,7 +17,7 @@ namespace mlir::comm {
 using namespace mlir;
 using namespace mlir::enzyme;
 
-struct LowerCommMpiConstantOp
+struct LowerCommMpiConstantOpToStablehlo
     : public OpConversionPattern<comm::MpiConstantOp> {
   using OpConversionPattern::OpConversionPattern;
 
