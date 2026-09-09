@@ -192,6 +192,44 @@ struct Pointer2MemrefOfAddrSpaceCast
   }
 };
 
+/// Whether a value is a constant, or a result of an if of flavour IfT with an
+/// else region whose arms yield such values again: a choice between
+/// constants, however many ways.
+template <typename IfT> static bool isBranchedChoiceOfConstants(Value value) {
+  SmallVector<Value> worklist{value};
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    Attribute cst;
+    if (matchPattern(current, m_Constant(&cst)))
+      continue;
+    auto result = dyn_cast<OpResult>(current);
+    if (!result || !isa<IfT>(result.getOwner()) ||
+        result.getOwner()->getRegion(1).empty())
+      return false;
+    for (Region &arm : result.getOwner()->getRegions())
+      worklist.push_back(
+          arm.front().getTerminator()->getOperand(result.getResultNumber()));
+  }
+  return true;
+}
+
+/// Whether a value is a constant, or a select on an i1 between such values.
+static bool isSelectedChoiceOfConstants(Value value) {
+  SmallVector<Value> worklist{value};
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    Attribute cst;
+    if (matchPattern(current, m_Constant(&cst)))
+      continue;
+    auto sel = current.getDefiningOp<arith::SelectOp>();
+    if (!sel || !sel.getCondition().getType().isInteger(1))
+      return false;
+    worklist.push_back(sel.getTrueValue());
+    worklist.push_back(sel.getFalseValue());
+  }
+  return true;
+}
+
 /// Builds an if of the same flavour and condition with new result types.
 static scf::IfOp createLikeIf(PatternRewriter &rewriter, scf::IfOp ifOp,
                               TypeRange types) {
@@ -217,9 +255,12 @@ static void createLikeYield(PatternRewriter &rewriter, Location loc,
 
 /// An op over what a branch chose between constants is the branch choosing
 /// between the op's own results: the op rides into the arms, where it meets a
-/// constant and folds. What a branch chose then reaches its user as the
-/// branch's own result rather than at the far end of some arithmetic, which
-/// is how an index reaches an access for split-branched-accesses.
+/// constant and folds, and the branch grows a result for it. What the branch
+/// chose then reaches the op's users as the branch's own result rather than
+/// at the far end of some arithmetic, which is how an index reaches an access
+/// for split-branched-accesses. An arm may choose again through a further
+/// branch: the op's copy in that arm is such an op over a branch itself, and
+/// sinks in turn. The branch's other users keep its results as they were.
 template <typename OpT, typename IfT>
 struct SinkThroughIfOfConstants : public OpRewritePattern<OpT> {
   using OpRewritePattern<OpT>::OpRewritePattern;
@@ -238,44 +279,64 @@ struct SinkThroughIfOfConstants : public OpRewritePattern<OpT> {
         return failure();
       branched = res;
     }
-    // A second user would keep the branch alive and pay for it twice.
-    if (!branched || !branched.hasOneUse())
+    if (!branched)
       return failure();
-
     auto ifOp = cast<IfT>(branched.getOwner());
     if (ifOp->getRegion(1).empty())
       return failure();
     // The regions of both flavours of if are the arms, in order.
     unsigned resultNo = branched.getResultNumber();
-    Value arms[2];
-    for (unsigned arm = 0; arm < 2; ++arm) {
-      arms[arm] =
-          ifOp->getRegion(arm).front().getTerminator()->getOperand(resultNo);
-      Attribute cst;
-      if (!matchPattern(arms[arm], m_Constant(&cst)))
+    for (unsigned arm = 0; arm < 2; ++arm)
+      if (!isBranchedChoiceOfConstants<IfT>(
+              ifOp->getRegion(arm).front().getTerminator()->getOperand(
+                  resultNo)))
         return failure();
-    }
 
-    // Built where the op stands, so what the branch is taken over -- in hand
-    // before the branch -- is in hand here too.
-    auto newIf = createLikeIf(rewriter, ifOp, op->getResultTypes());
+    // The branch grown by the op's results: the arms move over, and each
+    // yields the op over what it chose. The constants the op reads come
+    // along, since the arm may stand before their definitions. A result the
+    // op was the only user of goes at the same time.
+    bool consumed = branched.hasOneUse();
+    SmallVector<Type> types;
+    for (auto [index, type] : llvm::enumerate(ifOp->getResultTypes()))
+      if (!consumed || index != resultNo)
+        types.push_back(type);
+    llvm::append_range(types, op->getResultTypes());
+    rewriter.setInsertionPoint(ifOp);
+    auto grown = createLikeIf(rewriter, ifOp, types);
     for (unsigned arm = 0; arm < 2; ++arm) {
-      rewriter.setInsertionPointToStart(&newIf->getRegion(arm).front());
-      Operation *chosen = rewriter.clone(*arms[arm].getDefiningOp());
+      Block *block = &grown->getRegion(arm).front();
+      rewriter.mergeBlocks(&ifOp->getRegion(arm).front(), block);
+      Operation *yield = block->getTerminator();
+      rewriter.setInsertionPoint(yield);
       IRMapping map;
-      map.map(branched, chosen->getResult(0));
+      map.map(branched, yield->getOperand(resultNo));
+      for (Value operand : op->getOperands())
+        if (operand != branched)
+          map.map(operand,
+                  rewriter.clone(*operand.getDefiningOp())->getResult(0));
       Operation *cloned = rewriter.clone(*op.getOperation(), map);
-      createLikeYield(rewriter, op.getLoc(), newIf, cloned->getResults());
+      rewriter.modifyOpInPlace(yield, [&] {
+        if (consumed)
+          yield->eraseOperand(resultNo);
+        yield->insertOperands(yield->getNumOperands(), cloned->getResults());
+      });
     }
-    rewriter.replaceOp(op, newIf->getResults());
+    unsigned numKept = ifOp->getNumResults() - consumed;
+    rewriter.replaceOp(op, grown->getResults().drop_front(numKept));
+    unsigned kept = 0;
+    for (auto [index, result] : llvm::enumerate(ifOp->getResults()))
+      if (!consumed || index != resultNo)
+        rewriter.replaceAllUsesWith(result, grown->getResult(kept++));
+    rewriter.eraseOp(ifOp);
     return success();
   }
 };
 
 /// The select counterpart: an op over a select between constants is the
-/// select between the op over each arm, where it meets a constant and folds.
-/// A select costs nothing to keep, so a second user of it is no reason to
-/// leave the op where it is.
+/// select between the op over each arm, where it meets a constant and folds,
+/// or a further select, into which it sinks in turn. A select costs nothing
+/// to keep, so a second user of it is no reason to leave the op where it is.
 template <typename OpT>
 struct SinkThroughSelectOfConstants : public OpRewritePattern<OpT> {
   using OpRewritePattern<OpT>::OpRewritePattern;
@@ -294,13 +355,11 @@ struct SinkThroughSelectOfConstants : public OpRewritePattern<OpT> {
     }
     if (!sel || !sel.getCondition().getType().isInteger(1))
       return failure();
-    Value arms[2] = {sel.getTrueValue(), sel.getFalseValue()};
-    for (Value arm : arms) {
-      Attribute cst;
-      if (!matchPattern(arm, m_Constant(&cst)))
-        return failure();
-    }
+    if (!isSelectedChoiceOfConstants(sel.getTrueValue()) ||
+        !isSelectedChoiceOfConstants(sel.getFalseValue()))
+      return failure();
 
+    Value arms[2] = {sel.getTrueValue(), sel.getFalseValue()};
     Value chosen[2];
     for (unsigned arm = 0; arm < 2; ++arm) {
       IRMapping map;
