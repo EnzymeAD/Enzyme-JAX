@@ -9,6 +9,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Comm/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Comm/TypeConversion.h"
+#include "src/enzyme_ad/jax/Runtime/jit/jit.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 namespace mlir::comm {
@@ -17,8 +18,6 @@ namespace mlir::comm {
 } // namespace mlir::comm
 
 using namespace mlir;
-
-extern "C" int EnzymeJaXLookupSymbol(const char *name, void **symbol);
 
 const char *convertMlirTypeToMpiDatatypeName(Type type,
                                              bool allow_cast = false) {
@@ -122,15 +121,13 @@ struct LowerCommMpiConstantOpToJIT
           op, "MPI constant is not a valid attribute");
     }
 
-    uint64_t value;
-    int found =
-        EnzymeJaXLookupSymbol(name.data(), reinterpret_cast<void **>(&value));
-    if (!found)
+    auto value = ::enzymexla::lookup_symbol(name.data());
+    if (!value)
       return rewriter.notifyMatchFailure(op, name + " symbol not found");
 
     auto constant_attr = SplatElementsAttr::get(
         RankedTensorType::get({}, rewriter.getIntegerType(64)),
-        ArrayRef(APInt(64, value)));
+        ArrayRef(APInt(64, reinterpret_cast<int64_t>(value.get()))));
 
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, restype, cast<ElementsAttr>(constant_attr));
@@ -222,7 +219,7 @@ struct LowerCommMpiCommRankOpToJIT
             /*operandTupleIndices=*/ArrayRef<int64_t>{})});
 
     // TODO revise if it is side effect free
-    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
         op, type_tensor_i32,
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{comm, rank_placeholder},
@@ -320,7 +317,7 @@ struct LowerCommMpiCommSizeOpToJIT
             /*operandTupleIndices=*/ArrayRef<int64_t>{})});
 
     // TODO revise if it is side effect free
-    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
         op, type_tensor_i32,
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{comm, size_placeholder},
@@ -428,7 +425,7 @@ struct LowerCommMpiCommSplitOpToJIT
             /*operandIndex=*/3,
             /*operandTupleIndices=*/ArrayRef<int64_t>{})});
 
-    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
         op, type_tensor_i64,
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{comm, color, key, newcomm_placeholder},
@@ -512,7 +509,7 @@ struct LowerCommMpiBarrierOpToJIT
     auto comm = adaptor.getComm();
 
     // TODO revise if it is side effect free
-    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
         op, TypeRange{}, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{comm},
         /*backend_config=*/rewriter.getStringAttr(""),
@@ -637,19 +634,18 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
     auto datatype_name = convertMlirTypeToMpiDatatypeName(
         op.getBuffer().getType().getElementType(),
         /*allow_cast=*/true);
-    int64_t datatype_val;
-    int found = EnzymeJaXLookupSymbol(datatype_name,
-                                      reinterpret_cast<void **>(&datatype_val));
-    if (!found)
+    auto datatype_val = ::enzymexla::lookup_symbol(datatype_name);
+    if (!datatype_val)
       return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
                                                  " symbol not found");
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
-        DenseIntElementsAttr::get(type_tensor_i64, datatype_val));
+        DenseIntElementsAttr::get(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get())));
 
     // TODO revise if it is side effect free
-    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
         op, type_tensor_i64,
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer, count, datatype, dest, tag, comm},
@@ -782,17 +778,15 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
     auto datatype_name = convertMlirTypeToMpiDatatypeName(
         op.getBuffer().getType().getElementType(),
         /*allow_cast=*/true);
-    int64_t datatype_val;
-    int found = EnzymeJaXLookupSymbol(datatype_name,
-                                      reinterpret_cast<void **>(&datatype_val));
-    if (!found)
+    auto datatype_val = ::enzymexla::lookup_symbol(datatype_name);
+    if (!datatype_val)
       return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
                                                  " symbol not found");
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
-        DenseIntElementsAttr::get(type_tensor_i64,
-                                  reinterpret_cast<int64_t>(datatype_val)));
+        DenseIntElementsAttr::get(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get())));
 
     auto aliases =
         rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
@@ -802,7 +796,7 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
             /*operandTupleIndices=*/ArrayRef<int64_t>{})});
 
     // TODO revise if it is side effect free
-    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
         op, type_tensor_i64,
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer, count, datatype, dest, tag, comm,
@@ -940,17 +934,15 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
     auto datatype_name =
         convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
                                          /*allow_cast=*/true);
-    int64_t datatype_val;
-    int found = EnzymeJaXLookupSymbol(datatype_name,
-                                      reinterpret_cast<void **>(&datatype_val));
-    if (!found)
+    auto datatype_val = ::enzymexla::lookup_symbol(datatype_name);
+    if (!datatype_val)
       return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
                                                  " symbol not found");
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
-        DenseIntElementsAttr::get(type_tensor_i64,
-                                  reinterpret_cast<int64_t>(datatype_val)));
+        DenseIntElementsAttr::get(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get())));
 
     auto aliases =
         rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
@@ -960,7 +952,7 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
             /*operandTupleIndices=*/ArrayRef<int64_t>{})});
 
     // TODO revise if it is side effect free
-    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
         op, type_tensor_i64,
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer_placeholder, count, datatype, src, tag, comm},
@@ -1098,17 +1090,15 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
     auto datatype_name =
         convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
                                          /*allow_cast=*/true);
-    int64_t datatype_val;
-    int found = EnzymeJaXLookupSymbol(datatype_name,
-                                      reinterpret_cast<void **>(&datatype_val));
-    if (!found)
+    auto datatype_val = ::enzymexla::lookup_symbol(datatype_name);
+    if (!datatype_val)
       return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
                                                  " symbol not found");
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
-        DenseIntElementsAttr::get(type_tensor_i64,
-                                  reinterpret_cast<int64_t>(datatype_val)));
+        DenseIntElementsAttr::get(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get())));
 
     auto aliases = rewriter.getArrayAttr({
         /* buffer */
@@ -1126,7 +1116,7 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
     });
 
     // TODO revise if it is side effect free
-    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
         op, type_tensor_i64,
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer_placeholder, count, datatype, src, tag, comm,
@@ -1212,7 +1202,7 @@ struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
 
     auto request = adaptor.getRequest();
 
-    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
         op, TypeRange{}, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{request},
         /*backend_config=*/rewriter.getStringAttr(""),
@@ -1322,7 +1312,7 @@ struct LowerCommMpiWaitallOpToJIT
                                LLVM::Linkage::External);
     }
 
-    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
         op, TypeRange{}, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         adaptor.getRequests(),
         /*backend_config=*/rewriter.getStringAttr(""),
@@ -1447,31 +1437,27 @@ struct LowerCommMpiAllreduceOpToJIT
     auto datatype_name =
         convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
                                          /*allow_cast=*/false);
-    int64_t datatype_val;
-    int found = EnzymeJaXLookupSymbol(datatype_name,
-                                      reinterpret_cast<void **>(&datatype_val));
-    if (!found)
+    auto datatype_val = ::enzymexla::lookup_symbol(datatype_name);
+    if (!datatype_val)
       return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
                                                  " symbol not found");
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
-        DenseIntElementsAttr::get(type_tensor_i64,
-                                  reinterpret_cast<int64_t>(datatype_val)));
+        DenseIntElementsAttr::get(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get())));
 
     auto mpi_op_name =
         comm::stringifyMpiOpEnum(adaptor.getReduceOp().getValue());
-    int64_t mpi_op_val;
-    found = EnzymeJaXLookupSymbol(mpi_op_name.data(),
-                                  reinterpret_cast<void **>(&mpi_op_val));
-    if (!found)
+    auto mpi_op_val = ::enzymexla::lookup_symbol(mpi_op_name.data());
+    if (!mpi_op_val)
       return rewriter.notifyMatchFailure(op, std::string(mpi_op_name) +
                                                  " symbol not found");
 
     Value mpi_op = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
         DenseIntElementsAttr::get(type_tensor_i64,
-                                  reinterpret_cast<int64_t>(mpi_op_val)));
+                                  reinterpret_cast<int64_t>(mpi_op_val.get())));
 
     auto aliases =
         rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
@@ -1481,7 +1467,7 @@ struct LowerCommMpiAllreduceOpToJIT
             /*operandTupleIndices=*/ArrayRef<int64_t>{})});
 
     // TODO revise if it is side effect free
-    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
         op, type_buffer, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{sendbuf, recvbuf_placeholder, count, datatype, mpi_op, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
@@ -1601,17 +1587,15 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
     auto datatype_name =
         convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
                                          /*allow_cast=*/true);
-    int64_t datatype_val;
-    int found = EnzymeJaXLookupSymbol(datatype_name,
-                                      reinterpret_cast<void **>(&datatype_val));
-    if (!found)
+    auto datatype_val = ::enzymexla::lookup_symbol(datatype_name);
+    if (!datatype_val)
       return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
                                                  " symbol not found");
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
-        DenseIntElementsAttr::get(type_tensor_i64,
-                                  reinterpret_cast<int64_t>(datatype_val)));
+        DenseIntElementsAttr::get(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get())));
 
     auto aliases =
         rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
@@ -1621,7 +1605,7 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
             /*operandTupleIndices=*/ArrayRef<int64_t>{})});
 
     // TODO revise if it is side effect free
-    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
         op, type_buffer, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer, count, datatype, root, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
@@ -1645,7 +1629,7 @@ struct LowerCommToJITPass
 
     ConversionTarget target(*context);
     target.addLegalDialect<stablehlo::StablehloDialect>();
-    target.addLegalDialect<enzymexla::EnzymeXLADialect>();
+    target.addLegalDialect<mlir::enzymexla::EnzymeXLADialect>();
     target.addLegalDialect<mlir::LLVM::LLVMDialect>();
     target.addIllegalDialect<comm::CommDialect>();
 
