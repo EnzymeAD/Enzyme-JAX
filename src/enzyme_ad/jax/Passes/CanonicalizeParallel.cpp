@@ -784,6 +784,54 @@ struct FlattenAggregateAlloca : public OpRewritePattern<memref::AllocaOp> {
 
 // A store of undef or poison leaves the memory holding any value, and what
 // it held before is one of those, so the store does nothing.
+// dim3 packing replicates a launch dimension into both halves of an i64 as
+// x * 0x100000001; the low half comes back through a trunc and the high half
+// through a shift. Truncation distributes over multiplication, so the low
+// half of x * c is trunc(x) when c is 1 modulo the truncated width.
+struct TruncOfMulByOneModWidth : public OpRewritePattern<arith::TruncIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::TruncIOp trunc,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<IntegerType>(trunc.getType());
+    auto mul = trunc.getIn().getDefiningOp<arith::MulIOp>();
+    APInt c;
+    if (!type || !mul || !matchPattern(mul.getRhs(), m_ConstantInt(&c)) ||
+        !c.trunc(type.getWidth()).isOne())
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::TruncIOp>(trunc, type, mul.getLhs());
+    return success();
+  }
+};
+
+// The high half: x * (2^k + 1) = (x << k) + x, and the two terms do not
+// overlap when x is zero-extended from at most k bits and the sum fits, so
+// shifting the product right by k gives x back.
+struct ShiftOfMulByShiftPlusOne : public OpRewritePattern<arith::ShRUIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::ShRUIOp shift,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<IntegerType>(shift.getType());
+    auto mul = shift.getLhs().getDefiningOp<arith::MulIOp>();
+    APInt c, k;
+    if (!type || !mul || !matchPattern(mul.getRhs(), m_ConstantInt(&c)) ||
+        !matchPattern(shift.getRhs(), m_ConstantInt(&k)))
+      return failure();
+    auto ext = mul.getLhs().getDefiningOp<arith::ExtUIOp>();
+    auto inType =
+        ext ? dyn_cast<IntegerType>(ext.getIn().getType()) : IntegerType();
+    if (!inType || k.uge(type.getWidth()))
+      return failure();
+    unsigned by = k.getZExtValue();
+    if (inType.getWidth() > by || by + inType.getWidth() > type.getWidth() ||
+        c != APInt(type.getWidth(), 1).shl(by) + 1)
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::ExtUIOp>(shift, type, ext.getIn());
+    return success();
+  }
+};
+
 struct StoreOfUndef
     : public OpInterfaceRewritePattern<enzyme::StoreLikeInterface> {
   using OpInterfaceRewritePattern::OpInterfaceRewritePattern;
@@ -835,7 +883,8 @@ struct CanonicalizeParallelPass
         SinkThroughSelectOfConstants<arith::AddIOp>,
         SinkThroughSelectOfConstants<arith::MulIOp>, SelectOfNullPointer,
         IfOfNullPointer<scf::IfOp>, IfOfNullPointer<affine::AffineIfOp>,
-        FlattenAggregateAlloca, StoreOfUndef>(ctx);
+        FlattenAggregateAlloca, StoreOfUndef, TruncOfMulByOneModWidth,
+        ShiftOfMulByShiftPlusOne>(ctx);
     FrozenRewritePatternSet patterns(std::move(owningPatterns));
 
     GreedyRewriteConfig config;
