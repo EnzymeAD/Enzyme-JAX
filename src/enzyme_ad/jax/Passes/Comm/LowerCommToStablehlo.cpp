@@ -32,9 +32,9 @@ struct LowerCommMpiConstantOpToStablehlo
 
     llvm::StringRef name;
     auto value_attr = op.getValue();
-    if (auto attr = cast<comm::MpiCommAttr>(value_attr)) {
+    if (auto attr = dyn_cast<comm::MpiCommAttr>(value_attr)) {
       name = comm::stringifyMpiCommEnum(attr.getValue());
-    } else if (auto attr = cast<comm::MpiOpAttr>(value_attr)) {
+    } else if (auto attr = dyn_cast<comm::MpiOpAttr>(value_attr)) {
       name = comm::stringifyMpiOpEnum(attr.getValue());
     } else {
       return rewriter.notifyMatchFailure(
