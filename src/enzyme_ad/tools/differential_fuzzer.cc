@@ -667,6 +667,11 @@ int main(int argc, char **argv) {
             << funcName << ": non-ranked-tensor argument, skipping function\n";
         return;
       }
+      if (!tensorType.hasStaticShape()) {
+        llvm::WithColor::warning(diag())
+            << funcName << ": dynamic shape, skipping function\n";
+        return;
+      }
 
       int64_t numElements = tensorType.getNumElements();
       if (numElements > maxElements) {
