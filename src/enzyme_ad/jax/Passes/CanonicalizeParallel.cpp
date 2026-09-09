@@ -927,6 +927,66 @@ struct ShiftOfNarrowZeroExtended : public OpRewritePattern<arith::ShRUIOp> {
   }
 };
 
+// A logical right shift distributes over an or with a constant side, so the
+// halves of a packed value with a constant half come apart: (x | C) >> k is
+// (x >> k) | (C >> k), and the narrow half shifts away entirely.
+struct ShiftOfOrWithConstant : public OpRewritePattern<arith::ShRUIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::ShRUIOp shift,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<IntegerType>(shift.getType());
+    auto orOp = shift.getLhs().getDefiningOp<arith::OrIOp>();
+    APInt c, k;
+    if (!type || !orOp || !matchPattern(shift.getRhs(), m_ConstantInt(&k)) ||
+        k.uge(type.getWidth()))
+      return failure();
+    Value other;
+    if (matchPattern(orOp.getRhs(), m_ConstantInt(&c)))
+      other = orOp.getLhs();
+    else if (matchPattern(orOp.getLhs(), m_ConstantInt(&c)))
+      other = orOp.getRhs();
+    else
+      return failure();
+    Value shifted =
+        arith::ShRUIOp::create(rewriter, shift.getLoc(), other, shift.getRhs());
+    Value constant = arith::ConstantOp::create(
+        rewriter, shift.getLoc(), rewriter.getIntegerAttr(type, c.lshr(k)));
+    rewriter.replaceOpWithNewOp<arith::OrIOp>(shift, shifted, constant);
+    return success();
+  }
+};
+
+// max(min(a, c), min(b, c)) is min(max(a, b), c), and dually for min of
+// maxes: the shared clamp moves outside, where a bound on the value is the
+// clamp's whether or not a and b are bounded.
+template <typename OuterT, typename InnerT>
+struct OuterOfInnersBySharedOperand : public OpRewritePattern<OuterT> {
+  using OpRewritePattern<OuterT>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OuterT outer,
+                                PatternRewriter &rewriter) const override {
+    auto lhs = outer.getLhs().template getDefiningOp<InnerT>();
+    auto rhs = outer.getRhs().template getDefiningOp<InnerT>();
+    if (!lhs || !rhs)
+      return failure();
+    for (Value shared : {lhs.getLhs(), lhs.getRhs()}) {
+      Value a = shared == lhs.getLhs() ? lhs.getRhs() : lhs.getLhs();
+      Value b;
+      if (shared == rhs.getLhs())
+        b = rhs.getRhs();
+      else if (shared == rhs.getRhs())
+        b = rhs.getLhs();
+      else
+        continue;
+      Value inner = OuterT::create(rewriter, outer.getLoc(), a, b);
+      rewriter.replaceOpWithNewOp<InnerT>(outer, inner, shared);
+      return success();
+    }
+    return failure();
+  }
+};
+
 struct StoreOfUndef
     : public OpInterfaceRewritePattern<enzyme::StoreLikeInterface> {
   using OpInterfaceRewritePattern::OpInterfaceRewritePattern;
@@ -980,7 +1040,12 @@ struct CanonicalizeParallelPass
         IfOfNullPointer<scf::IfOp>, IfOfNullPointer<affine::AffineIfOp>,
         FlattenAggregateAlloca, StoreOfUndef, TruncOfMulByOneModWidth,
         ShiftOfMulByShiftPlusOne, TruncOfOrWithShiftedOut,
-        ShiftOfOrWithShiftedIn, ShiftOfNarrowZeroExtended>(ctx);
+        ShiftOfOrWithShiftedIn, ShiftOfNarrowZeroExtended,
+        ShiftOfOrWithConstant,
+        OuterOfInnersBySharedOperand<arith::MaxSIOp, arith::MinSIOp>,
+        OuterOfInnersBySharedOperand<arith::MinSIOp, arith::MaxSIOp>,
+        OuterOfInnersBySharedOperand<arith::MaxUIOp, arith::MinUIOp>,
+        OuterOfInnersBySharedOperand<arith::MinUIOp, arith::MaxUIOp>>(ctx);
     FrozenRewritePatternSet patterns(std::move(owningPatterns));
 
     GreedyRewriteConfig config;
