@@ -14,6 +14,7 @@
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
+#include <limits>
 #include <optional>
 #include <utility>
 #include <variant>
@@ -41,7 +42,8 @@ namespace {
 
 enum class TokenType {
   Ident,
-  Number,
+  Integer,
+  Float,
   LParen,
   RParen,
   Dot,
@@ -60,17 +62,18 @@ bool isAlpha(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }
 
-bool isNum(char c) { return c >= '0' && c <= '9'; }
+bool isDigit(char c) { return c >= '0' && c <= '9'; }
 
-bool isAlphaNum(char c) { return isAlpha(c) || isNum(c); }
+bool isAlphaNum(char c) { return isAlpha(c) || isDigit(c); }
 
-bool isWhitespace(char c) { return c == ' ' || c == '\t' || c == '\n'; }
+bool isWhitespace(char c) { return c == ' ' || c == '\n' || c == '\t'; }
 
 struct Lexer {
   std::string input;
   size_t pos = 0;
 
   char peek() { return pos < input.size() ? input[pos] : '\0'; }
+  char peekNext() { return pos + 1 < input.size() ? input[pos + 1] : '\0'; }
   char advance() { return input[pos++]; }
 
   Token nextToken() {
@@ -89,12 +92,26 @@ struct Lexer {
       return Token{TokenType::Ident, s};
     }
 
-    if (isNum(peek())) {
+    // Two lookahead rules decide whether a leading character starts a number.
+    // A '-' does only when a digit follows, otherwise it is the head of the
+    // "->" arrow handled below. A '.' does only when a digit follows.
+    if (isDigit(peek()) ||
+        ((peek() == '-' || peek() == '.') && isDigit(peekNext()))) {
       std::string num;
-      while (isNum(peek())) {
+      if (peek() == '-') {
         num += advance();
       }
-      return Token{TokenType::Number, num};
+      while (isDigit(peek())) {
+        num += advance();
+      }
+      if (peek() == '.') {
+        num += advance();
+        while (isDigit(peek())) {
+          num += advance();
+        }
+        return Token{TokenType::Float, num};
+      }
+      return Token{TokenType::Integer, num};
     }
 
     if (peek() == '(') {
@@ -117,7 +134,7 @@ struct Lexer {
       return Token{TokenType::Comma, ""};
     }
 
-    if (peek() == '-' && input[pos + 1] == '>') {
+    if (peek() == '-' && peekNext() == '>') {
       advance();
       advance();
       return Token{TokenType::Arrow, ""};
@@ -131,8 +148,12 @@ struct Var {
   std::string name;
 };
 
-struct Num {
-  int value;
+struct IntLit {
+  int64_t value;
+};
+
+struct FloatLit {
+  double value;
 };
 
 struct Expr;
@@ -143,11 +164,12 @@ struct Call {
 };
 
 struct Expr {
-  std::variant<Var, Num, Call> data;
+  std::variant<Var, IntLit, FloatLit, Call> data;
 
   Expr() = default; // default constructor
   Expr(Var v) : data(v) {}
-  Expr(Num n) : data(n) {}
+  Expr(IntLit n) : data(n) {}
+  Expr(FloatLit n) : data(n) {}
   Expr(Call c) : data(std::move(c)) {} // move because Call has a vector
 };
 
@@ -225,10 +247,23 @@ std::optional<Expr> Parser::parseExpr() {
     }
     return Var{s};
   }
-  if (current.type == TokenType::Number) {
-    int n = std::stoi(current.value);
+  if (current.type == TokenType::Integer) {
+    int64_t n;
+    if (StringRef(current.value).getAsInteger(10, n)) {
+      emitError(loc, "integer literal out of range: ") << current.value;
+      return std::nullopt;
+    }
     advance();
-    return Expr(Num{n});
+    return Expr(IntLit{n});
+  }
+  if (current.type == TokenType::Float) {
+    double n;
+    if (StringRef(current.value).getAsDouble(n)) {
+      emitError(loc, "invalid floating point literal: ") << current.value;
+      return std::nullopt;
+    }
+    advance();
+    return Expr(FloatLit{n});
   }
   emitError(loc, "invalid optimization rule expression");
   return std::nullopt;
@@ -250,6 +285,26 @@ std::optional<Rule> Parser::parseRule() {
   return Rule{std::move(*lhs), std::move(*rhs)};
 }
 
+// Pick the narrowest standard integer width that can hold a literal from a
+// rule annotation. Literals are parsed as int64_t, so anything that does not
+// round-trip through int32_t needs an i64 attribute; asking for an i32
+// attribute in that case would silently truncate the value.
+IntegerAttr getIntegerAttrForLiteral(OpBuilder &builder, int64_t value) {
+  if (value >= std::numeric_limits<int32_t>::min() &&
+      value <= std::numeric_limits<int32_t>::max())
+    return builder.getI32IntegerAttr(static_cast<int32_t>(value));
+  return builder.getI64IntegerAttr(value);
+}
+
+// Same idea for float literals: f32 when the value survives the round trip
+// through it, otherwise f64. Values like 0.5 are exact in both, so they
+// narrow to f32; floats like pi and e are not, so they stay f64.
+FloatAttr getFloatAttrForLiteral(OpBuilder &builder, double value) {
+  if (static_cast<double>(static_cast<float>(value)) == value)
+    return builder.getF32FloatAttr(static_cast<float>(value));
+  return builder.getF64FloatAttr(value);
+}
+
 std::pair<mlir::Value, mlir::Value>
 emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
              llvm::StringMap<mlir::Value> &boundVars) {
@@ -263,14 +318,48 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
             }
             return {boundVars[v.name], mlir::Value()};
           },
-          [&](const Num &n) -> std::pair<mlir::Value, mlir::Value> {
-            auto attrVal = pdl::AttributeOp::create(
-                builder, loc, builder.getI64IntegerAttr(n.value));
-            auto constOp = pdl::OperationOp::create(
-                builder, loc, "arith.constant",
-                /*operands=*/ValueRange{},
-                /*attrNames=*/ArrayRef<StringRef>{"value"},
-                /*attrs=*/ValueRange{attrVal}, /*types=*/ValueRange{});
+          [&](const IntLit &n) -> std::pair<mlir::Value, mlir::Value> {
+            auto resultTypeOp = pdl::TypeOp::create(
+                builder, loc, builder.getType<pdl::TypeType>(),
+                /*type=*/TypeAttr());
+            auto constOp =
+                pdl::OperationOp::create(builder, loc, /*name=*/std::nullopt,
+                                         /*operands=*/ValueRange{},
+                                         /*attrNames=*/ArrayRef<StringRef>{},
+                                         /*attrs=*/ValueRange{},
+                                         /*types=*/ValueRange{resultTypeOp});
+
+            auto expectedAttr = pdl::AttributeOp::create(
+                builder, loc, getIntegerAttrForLiteral(builder, n.value));
+
+            pdl::ApplyNativeConstraintOp::create(
+                builder, loc, TypeRange{}, "isConstantEqualTo",
+                ValueRange{constOp, expectedAttr});
+
+            return {pdl::ResultOp::create(
+                        builder, loc, builder.getType<pdl::ValueType>(),
+                        constOp, builder.getI32IntegerAttr(0)),
+                    mlir::Value()};
+          },
+          [&](const FloatLit &n) -> std::pair<mlir::Value, mlir::Value> {
+            auto resultTypeOp = pdl::TypeOp::create(
+                builder, loc, builder.getType<pdl::TypeType>(),
+                /*type=*/TypeAttr());
+
+            auto constOp =
+                pdl::OperationOp::create(builder, loc, /*name=*/std::nullopt,
+                                         /*operands=*/ValueRange{},
+                                         /*attrNames=*/ArrayRef<StringRef>{},
+                                         /*attrs=*/ValueRange{},
+                                         /*types=*/ValueRange{resultTypeOp});
+
+            auto expectedAttr = pdl::AttributeOp::create(
+                builder, loc, builder.getF64FloatAttr(n.value));
+
+            pdl::ApplyNativeConstraintOp::create(
+                builder, loc, TypeRange{}, "isFloatConstantEqualTo",
+                ValueRange{constOp, expectedAttr});
+
             return {pdl::ResultOp::create(
                         builder, loc, builder.getType<pdl::ValueType>(),
                         constOp, builder.getI32IntegerAttr(0)),
@@ -312,11 +401,37 @@ emitRewritePDL(const Expr &expr, OpBuilder &builder, Location loc,
           [&](const Var &v) -> std::pair<mlir::Value, mlir::Value> {
             return {boundVars[v.name], mlir::Value()};
           },
-          [&](const Num &n) -> std::pair<mlir::Value, mlir::Value> {
+          [&](const IntLit &n) -> std::pair<mlir::Value, mlir::Value> {
+            // NOTE: The width is chosen from the literal's magnitude
+            // (i32 when it fits, otherwise i64), which guarantees the value
+            // is representable, but it still takes no account of what the
+            // surrounding IR expects. To fix, we should eventually derive the
+            // type from context (the replaced value, or a type bound while
+            // matching) and fall back to the magnitude-based choice only
+            // when there is no context to read.
             auto attrVal = pdl::AttributeOp::create(
-                builder, loc, builder.getI64IntegerAttr(n.value));
+                builder, loc, getIntegerAttrForLiteral(builder, n.value));
             auto constOp = pdl::OperationOp::create(
-                builder, loc, "arith.constant",
+                builder, loc, "llvm.mlir.constant",
+                /*operands=*/ValueRange{},
+                /*attrNames=*/ArrayRef<StringRef>{"value"},
+                /*attrs=*/ValueRange{attrVal}, /*types=*/ValueRange{});
+            return {pdl::ResultOp::create(
+                        builder, loc, builder.getType<pdl::ValueType>(),
+                        constOp, builder.getI32IntegerAttr(0)),
+                    mlir::Value()};
+          },
+          [&](const FloatLit &n) -> std::pair<mlir::Value, mlir::Value> {
+            // The same caveat as the integer case above applies, where
+            // the width is picked from the literal alone, so a value
+            // that is not exact in f32 (pi, e) always materializes as f64 even
+            // when the surrounding IR is f32, and f16/bf16 are unreachable. A
+            // literal on the right-hand side needs its type derived from
+            // context before this is dependable.
+            auto attrVal = pdl::AttributeOp::create(
+                builder, loc, getFloatAttrForLiteral(builder, n.value));
+            auto constOp = pdl::OperationOp::create(
+                builder, loc, "llvm.mlir.constant",
                 /*operands=*/ValueRange{},
                 /*attrNames=*/ArrayRef<StringRef>{"value"},
                 /*attrs=*/ValueRange{attrVal}, /*types=*/ValueRange{});
