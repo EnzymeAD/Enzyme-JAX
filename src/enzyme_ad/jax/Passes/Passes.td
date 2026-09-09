@@ -378,8 +378,7 @@ def StripDeadPersonalityPass : Pass<"strip-dead-personality"> {
 
 def DiscardUnreferencedLinkoncePass
     : Pass<"discard-unreferenced-linkonce"> {
-  let summary = "Erase linkonce and weak function definitions nothing "
-                "references";
+  let summary = "Erase linkonce function definitions nothing references";
   let dependentDialects = [
     "LLVM::LLVMDialect",
   ];

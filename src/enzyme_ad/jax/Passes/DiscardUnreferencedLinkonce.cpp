@@ -6,10 +6,12 @@
 //
 //===---------------------------------------------------------------------===//
 //
-// symbol-dce keeps every symbol that is not private, so a linkonce or weak
+// symbol-dce keeps every symbol that is not private, so a linkonce
 // definition the inliner has folded into all its callers survives it. Each
 // translation unit that uses such a function defines its own copy, so an
-// unreferenced definition is discardable, as in LLVM's GlobalDCE.
+// unreferenced definition is discardable, as in LLVM's GlobalDCE. A weak
+// definition is not: an explicit template instantiation is weak_odr and the
+// only definition its `extern template` users will find.
 //
 //===---------------------------------------------------------------------===//
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -29,8 +31,6 @@ static bool isDiscardableLinkage(LLVM::Linkage linkage) {
   switch (linkage) {
   case LLVM::Linkage::Linkonce:
   case LLVM::Linkage::LinkonceODR:
-  case LLVM::Linkage::Weak:
-  case LLVM::Linkage::WeakODR:
     return true;
   default:
     return false;
