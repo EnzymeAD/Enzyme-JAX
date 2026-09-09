@@ -1,6 +1,5 @@
 // RUN: enzymexlamlir-opt --lower-comm-to-stablehlo %s | FileCheck %s --check-prefix=SHLO
 // RUN: enzymexlamlir-opt --lower-comm-to-jit %s | FileCheck %s --check-prefix=JIT
-// DISABLED: enzymexlamlir-opt --legalize-mpi-to-nccl %s | FileCheck %s --check-prefix=NCCL
 
 func.func @main(%comm : !comm.mpi.comm) -> tensor<i32> {
     %0 = comm.mpi.comm_rank %comm : tensor<i32>
