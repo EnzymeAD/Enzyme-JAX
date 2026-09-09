@@ -2152,6 +2152,15 @@ WhileIsCopySimplify::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
       }
     }
 
+    if (dusInductionVarDims.size() == 1) {
+      if (succeeded(tryLowerFirstOrderRecurrence(
+              rewriter, whileOp, dusOp, blockArg, idx, dusInductionVarDims[0],
+              affineIndexInfo, info))) {
+        anyOpRewritten = true;
+        continue;
+      }
+    }
+
     if (dusInductionVarDims.empty() ||
         (!indirectScatterIndices &&
          !info.canHoistOperationFromLoop(dusOp, dusInductionVarDims))) {
@@ -2415,6 +2424,255 @@ SmallVector<int64_t> WhileIsCopySimplify::getInductionVariableDimension(
     inductionVarDimensions.push_back(i);
   }
   return inductionVarDimensions;
+}
+
+LogicalResult WhileIsCopySimplify::tryLowerFirstOrderRecurrence(
+    PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
+    stablehlo::DynamicUpdateSliceOp dusOp, BlockArgument blockArg, unsigned idx,
+    int64_t dusDim,
+    llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> &affineIndexInfo,
+    WhileLoopInfo &info) const {
+  Value updateVal = dusOp.getUpdate();
+  if (!updateVal)
+    return failure();
+
+  stablehlo::DynamicSliceOp dsOp = nullptr;
+  Value aOp = nullptr;
+  Value bOp = nullptr;
+
+  auto matchDsInTerm = [&](Value term, Value &outA,
+                           stablehlo::DynamicSliceOp &outDs) -> bool {
+    if (auto ds = term.getDefiningOp<stablehlo::DynamicSliceOp>()) {
+      if (ds.getOperand() == blockArg) {
+        outDs = ds;
+        outA = nullptr;
+        return true;
+      }
+    }
+    if (auto mul = term.getDefiningOp<stablehlo::MulOp>()) {
+      if (auto ds = mul.getLhs().getDefiningOp<stablehlo::DynamicSliceOp>()) {
+        if (ds.getOperand() == blockArg) {
+          outDs = ds;
+          outA = mul.getRhs();
+          return true;
+        }
+      }
+      if (auto ds = mul.getRhs().getDefiningOp<stablehlo::DynamicSliceOp>()) {
+        if (ds.getOperand() == blockArg) {
+          outDs = ds;
+          outA = mul.getLhs();
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  if (auto addOp = updateVal.getDefiningOp<stablehlo::AddOp>()) {
+    Value lhs = addOp.getLhs();
+    Value rhs = addOp.getRhs();
+    if (matchDsInTerm(lhs, aOp, dsOp)) {
+      bOp = rhs;
+    } else if (matchDsInTerm(rhs, aOp, dsOp)) {
+      bOp = lhs;
+    } else {
+      return failure();
+    }
+  } else if (auto mulOp = updateVal.getDefiningOp<stablehlo::MulOp>()) {
+    if (auto ds = mulOp.getLhs().getDefiningOp<stablehlo::DynamicSliceOp>()) {
+      if (ds.getOperand() == blockArg) {
+        dsOp = ds;
+        aOp = mulOp.getRhs();
+      }
+    }
+    if (!dsOp) {
+      if (auto ds = mulOp.getRhs().getDefiningOp<stablehlo::DynamicSliceOp>()) {
+        if (ds.getOperand() == blockArg) {
+          dsOp = ds;
+          aOp = mulOp.getLhs();
+        }
+      }
+    }
+    if (!dsOp)
+      return failure();
+    bOp = nullptr;
+  } else if (auto ds = updateVal.getDefiningOp<stablehlo::DynamicSliceOp>()) {
+    if (ds.getOperand() == blockArg) {
+      dsOp = ds;
+      aOp = nullptr;
+      bOp = nullptr;
+    } else {
+      return failure();
+    }
+  } else {
+    return failure();
+  }
+
+  if (!dsOp || dsOp.getOperand() != blockArg)
+    return failure();
+
+  Value currIndex = dusOp.getStartIndices()[dusDim];
+  Value prevIndex = dsOp.getStartIndices()[dusDim];
+
+  if (!affineIndexInfo.contains(currIndex) ||
+      !affineIndexInfo.contains(prevIndex))
+    return failure();
+
+  auto &currInfo = affineIndexInfo[currIndex];
+  auto &prevInfo = affineIndexInfo[prevIndex];
+
+  if (currInfo.scale != prevInfo.scale)
+    return failure();
+
+  int64_t diff =
+      currInfo.offset.getSExtValue() - prevInfo.offset.getSExtValue();
+  if (diff != 1)
+    return failure();
+
+  auto canHoistVal = [&](Value v) {
+    if (!v)
+      return true;
+    if (definedOutside(v, whileOp))
+      return true;
+    if (auto ds = v.getDefiningOp<stablehlo::DynamicSliceOp>()) {
+      if (!definedOutside(ds.getOperand(), whileOp))
+        return false;
+      auto indDims =
+          getInductionVariableDimension(ds, affineIndexInfo, whileOp, info);
+      return !indDims.empty() && info.canHoistOperationFromLoop(ds, indDims);
+    }
+    return false;
+  };
+
+  if (!canHoistVal(aOp) || !canHoistVal(bOp))
+    return failure();
+
+  Location loc = whileOp.getLoc();
+  int64_t numIters = info.getConstantNumIters();
+  int64_t totalN = numIters + 1;
+  Value initialTensor = whileOp.getOperands()[idx];
+  auto tensorTy = cast<RankedTensorType>(initialTensor.getType());
+  Type elemTy = tensorTy.getElementType();
+  int64_t rank = tensorTy.getRank();
+
+  rewriter.setInsertionPoint(whileOp);
+
+  Attribute oneAttr = rewriter.getOneAttr(elemTy);
+  Attribute zeroAttr = rewriter.getZeroAttr(elemTy);
+
+  auto hoistOrConstructTensor = [&](Value opVal,
+                                    Attribute defaultAttr) -> Value {
+    Value result;
+    if (!opVal) {
+      SmallVector<int64_t> shape(rank, 1);
+      shape[dusDim] = numIters;
+      result = stablehlo::ConstantOp::create(
+          rewriter, loc, RankedTensorType::get(shape, elemTy),
+          SplatElementsAttr::get(RankedTensorType::get(shape, elemTy),
+                                 defaultAttr));
+    } else if (definedOutside(opVal, whileOp)) {
+      Value val = opVal;
+      auto valTy = cast<RankedTensorType>(val.getType());
+      if (valTy.getRank() == 0) {
+        SmallVector<int64_t> targetShape(rank, 1);
+        targetShape[dusDim] = numIters;
+        result = stablehlo::BroadcastInDimOp::create(
+            rewriter, loc, RankedTensorType::get(targetShape, elemTy), val,
+            rewriter.getDenseI64ArrayAttr({}));
+      } else {
+        SmallVector<int64_t> targetShape = llvm::to_vector(valTy.getShape());
+        targetShape[dusDim] = numIters;
+        SmallVector<int64_t> broadcastDims(valTy.getRank());
+        std::iota(broadcastDims.begin(), broadcastDims.end(), 0);
+        result = stablehlo::BroadcastInDimOp::create(
+            rewriter, loc, RankedTensorType::get(targetShape, elemTy), val,
+            rewriter.getDenseI64ArrayAttr(broadcastDims));
+      }
+    } else {
+      auto ds = opVal.getDefiningOp<stablehlo::DynamicSliceOp>();
+      auto indDims =
+          getInductionVariableDimension(ds, affineIndexInfo, whileOp, info);
+      if (!info.hoistOperationFromLoop(rewriter, ds.getOperand(), ds, indDims,
+                                       result))
+        return nullptr;
+      auto hoistedTy = cast<RankedTensorType>(result.getType());
+      if (hoistedTy.getDimSize(dusDim) != numIters) {
+        SmallVector<int64_t> targetShape =
+            llvm::to_vector(hoistedTy.getShape());
+        targetShape[dusDim] = numIters;
+        result = stablehlo::ReshapeOpCreate(rewriter, loc, result, targetShape);
+      }
+    }
+    return result;
+  };
+
+  Value aHoisted = hoistOrConstructTensor(aOp, oneAttr);
+  Value bHoisted = hoistOrConstructTensor(bOp, zeroAttr);
+
+  if (!aHoisted || !bHoisted)
+    return failure();
+
+  // Extract initial element x0 at index 0 from initialTensor
+  SmallVector<int64_t> sliceStarts(rank, 0);
+  SmallVector<int64_t> sliceLimits = llvm::to_vector(tensorTy.getShape());
+  sliceLimits[dusDim] = 1;
+  SmallVector<int64_t> sliceStrides(rank, 1);
+  Value x0 = stablehlo::SliceOpCreate(rewriter, loc, initialTensor, sliceStarts,
+                                      sliceLimits, sliceStrides);
+
+  auto x0Ty = cast<RankedTensorType>(x0.getType());
+  Value a0 = stablehlo::ConstantOp::create(
+      rewriter, loc, x0Ty, SplatElementsAttr::get(x0Ty, oneAttr));
+
+  Value aFull = stablehlo::ConcatenateOp::create(
+      rewriter, loc, ValueRange{a0, aHoisted}, dusDim);
+  Value bFull = stablehlo::ConcatenateOp::create(
+      rewriter, loc, ValueRange{x0, bHoisted}, dusDim);
+
+  auto scalarTy = RankedTensorType::get({}, elemTy);
+  Value initA = stablehlo::ConstantOp::create(
+      rewriter, loc, scalarTy, SplatElementsAttr::get(scalarTy, oneAttr));
+  Value initB = stablehlo::ConstantOp::create(
+      rewriter, loc, scalarTy, SplatElementsAttr::get(scalarTy, zeroAttr));
+
+  SmallVector<int64_t> winDims(rank, 1);
+  winDims[dusDim] = totalN;
+  SmallVector<int64_t> winStrides(rank, 1);
+  SmallVector<int64_t> baseDilations(rank, 1);
+  SmallVector<int64_t> winDilations(rank, 1);
+
+  SmallVector<int64_t> paddingVals(2 * rank, 0);
+  paddingVals[2 * dusDim] = totalN - 1;
+  int64_t paddingShape[2] = {rank, 2};
+  auto paddingAttr = DenseIntElementsAttr::get(
+      RankedTensorType::get(paddingShape, rewriter.getI64Type()), paddingVals);
+
+  auto redwin = stablehlo::ReduceWindowOp::create(
+      rewriter, loc, TypeRange{tensorTy, tensorTy}, ValueRange{aFull, bFull},
+      ValueRange{initA, initB}, rewriter.getDenseI64ArrayAttr(winDims),
+      rewriter.getDenseI64ArrayAttr(winStrides),
+      rewriter.getDenseI64ArrayAttr(baseDilations),
+      rewriter.getDenseI64ArrayAttr(winDilations), paddingAttr);
+
+  Block *bodyBlock = rewriter.createBlock(
+      &redwin.getBody(), {}, {scalarTy, scalarTy, scalarTy, scalarTy},
+      {loc, loc, loc, loc});
+  rewriter.setInsertionPointToStart(bodyBlock);
+  Value aCurr = bodyBlock->getArgument(0);
+  Value bCurr = bodyBlock->getArgument(1);
+  Value aAcc = bodyBlock->getArgument(2);
+  Value bAcc = bodyBlock->getArgument(3);
+
+  Value aRes = stablehlo::MulOp::create(rewriter, loc, aCurr, aAcc);
+  Value tmp = stablehlo::MulOp::create(rewriter, loc, aCurr, bAcc);
+  Value bRes = stablehlo::AddOp::create(rewriter, loc, tmp, bCurr);
+
+  stablehlo::ReturnOp::create(rewriter, loc, ValueRange{aRes, bRes});
+
+  rewriter.setInsertionPointAfter(redwin);
+  whileOp.getResult(idx).replaceAllUsesWith(redwin.getResult(1));
+
+  return success();
 }
 
 namespace mlir {
