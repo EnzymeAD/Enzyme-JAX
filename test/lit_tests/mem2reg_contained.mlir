@@ -78,8 +78,8 @@ llvm.func @straddling_read(%val: !llvm.struct<(i32, i32, i32, i32)>) -> i64 {
 
 // -----
 
-// A write of a part says nothing of the rest, so what was there before it does
-// not reach a read after it.
+// A write of a part folds into the value in the slot, leaving the rest as it
+// was: a read after it reads out of the folded value.
 llvm.func @write_of_a_part(%val: !llvm.struct<(i32, i32)>, %other: i32) -> i32 {
   %c1 = llvm.mlir.constant(1 : i32) : i32
   %mem = llvm.alloca %c1 x !llvm.struct<(i32, i32)> : (i32) -> !llvm.ptr
@@ -92,8 +92,10 @@ llvm.func @write_of_a_part(%val: !llvm.struct<(i32, i32)>, %other: i32) -> i32 {
 }
 
 // CHECK-LABEL: llvm.func @write_of_a_part(
-// CHECK: %[[LD:.+]] = llvm.load
-// CHECK: llvm.return %[[LD]] : i32
+// CHECK-SAME: %[[VAL:[a-z0-9]+]]: !llvm.struct<(i32, i32)>, %[[OTHER:[a-z0-9]+]]: i32
+// CHECK: %[[INS:.+]] = llvm.insertvalue %[[OTHER]], %[[VAL]][1]
+// CHECK: %[[F:.+]] = llvm.extractvalue %[[INS]][0]
+// CHECK: llvm.return %[[F]] : i32
 
 // -----
 
