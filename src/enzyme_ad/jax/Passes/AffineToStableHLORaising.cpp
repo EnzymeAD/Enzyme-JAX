@@ -5570,8 +5570,54 @@ struct AffineToStableHLORaisingPass
     return guardBound(v, anchor);
   }
 
+  // Bound on a parallel axis implied by the static scratch buffers its iv
+  // indexes: a lane past the buffer extent would access out of bounds, so
+  // the axis cannot exceed it. Only accesses every lane is guaranteed to
+  // execute count -- directly in the body, or under constant-trip loops.
+  static std::optional<int64_t> allocaIndexBound(Operation *loop, Block *body,
+                                                 Value iv) {
+    std::optional<int64_t> bound;
+    body->walk([&](Operation *op) {
+      if (!isa<affine::AffineLoadOp, affine::AffineStoreOp, memref::LoadOp,
+               memref::StoreOp>(op))
+        return;
+      for (Operation *a = op->getParentOp(); a != loop; a = a->getParentOp()) {
+        auto f = dyn_cast<affine::AffineForOp>(a);
+        if (!f || !f.hasConstantBounds() ||
+            f.getConstantLowerBound() >= f.getConstantUpperBound())
+          return;
+      }
+      bool isStore = isa<affine::AffineStoreOp, memref::StoreOp>(op);
+      Value memref = op->getOperand(isStore);
+      auto type = cast<MemRefType>(memref.getType());
+      if (!isa_and_nonnull<memref::AllocaOp>(memref.getDefiningOp()) ||
+          !type.hasStaticShape())
+        return;
+      auto indexedByIv = [&](unsigned dim) {
+        bound = std::min(bound.value_or(type.getShape()[dim]),
+                         type.getShape()[dim]);
+      };
+      if (isa<affine::AffineLoadOp, affine::AffineStoreOp>(op)) {
+        affine::AffineValueMap accessMap;
+        affine::MemRefAccess(op).getAccessMap(&accessMap);
+        for (auto [dim, expr] :
+             llvm::enumerate(accessMap.getAffineMap().getResults()))
+          if (auto dimExpr = dyn_cast<AffineDimExpr>(expr);
+              dimExpr && accessMap.getOperand(dimExpr.getPosition()) == iv)
+            indexedByIv(dim);
+      } else {
+        for (auto [dim, index] :
+             llvm::enumerate(op->getOperands().drop_front(1 + isStore)))
+          if (index == iv)
+            indexedByIv(dim);
+      }
+    });
+    return bound;
+  }
+
   // A parallel axis whose extent is dynamic but provably bounded (a block
-  // size clamped by a min against a constant, or capped by a guard) batches
+  // size clamped by a min against a constant, capped by a guard, or indexing
+  // a static scratch buffer) batches
   // at the bound instead of peeling to a serial loop: the axis becomes
   // constant-extent and the body sits behind an `iv < extent` guard, which
   // the masking machinery already understands. Barriers over the axis then
@@ -5608,6 +5654,9 @@ struct AffineToStableHLORaisingPass
           continue;
         if (auto c = derivedExtentBound(ext, 0, par))
           bounded.push_back({i, *c, ext});
+        else if (auto ab = allocaIndexBound(par.getOperation(), par.getBody(),
+                                            par.getBody()->getArgument(i)))
+          bounded.push_back({i, *ab, ext});
       }
       if (bounded.empty())
         continue;
