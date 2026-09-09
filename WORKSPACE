@@ -389,13 +389,13 @@ filegroup(
 http_archive(
     name = "lean",
     build_file_content = LEAN_ALL_CONTENT,
-    strip_prefix = "lean4-4.29.0",
-    url = "https://github.com/leanprover/lean4/archive/refs/tags/v4.29.0.tar.gz",
+    strip_prefix = "lean4-4.33.1",
+    url = "https://github.com/leanprover/lean4/archive/refs/tags/v4.33.1.tar.gz",
 )
 
 http_archive(
     name = "z3",
     build_file = "//third_party/z3:BUILD",
-    strip_prefix = "z3-z3-4.16.0",
-    url = "https://github.com/Z3Prover/z3/archive/refs/tags/z3-4.16.0.tar.gz",
+    strip_prefix = "z3-z3-5.1.0",
+    url = "https://github.com/Z3Prover/z3/archive/refs/tags/z3-5.1.0.tar.gz",
 )
