@@ -5613,9 +5613,55 @@ struct AffineToStableHLORaisingPass
     return bound;
   }
 
+  // Upper bound of an affine expression over upper bounds of its dims and
+  // symbols, which are taken non-negative as launch extents are.
+  static std::optional<int64_t>
+  affineExprExtentBound(AffineExpr e, ArrayRef<int64_t> dimBounds,
+                        ArrayRef<int64_t> symbolBounds) {
+    if (auto c = dyn_cast<AffineConstantExpr>(e))
+      return c.getValue();
+    if (auto d = dyn_cast<AffineDimExpr>(e))
+      return dimBounds[d.getPosition()];
+    if (auto s = dyn_cast<AffineSymbolExpr>(e))
+      return symbolBounds[s.getPosition()];
+    auto bin = cast<AffineBinaryOpExpr>(e);
+    auto l = affineExprExtentBound(bin.getLHS(), dimBounds, symbolBounds);
+    if (!l)
+      return std::nullopt;
+    // Affine keeps the constant on the right.
+    auto rc = dyn_cast<AffineConstantExpr>(bin.getRHS());
+    switch (e.getKind()) {
+    case AffineExprKind::Add: {
+      auto r = affineExprExtentBound(bin.getRHS(), dimBounds, symbolBounds);
+      if (r)
+        return *l + *r;
+      return std::nullopt;
+    }
+    case AffineExprKind::Mul:
+      if (rc && *l >= 0 && rc.getValue() >= 0 &&
+          (rc.getValue() == 0 || *l <= INT64_MAX / rc.getValue()))
+        return *l * rc.getValue();
+      return std::nullopt;
+    case AffineExprKind::FloorDiv:
+      if (rc && rc.getValue() > 0 && *l >= 0)
+        return *l / rc.getValue();
+      return std::nullopt;
+    case AffineExprKind::CeilDiv:
+      if (rc && rc.getValue() > 0 && *l >= 0)
+        return (*l + rc.getValue() - 1) / rc.getValue();
+      return std::nullopt;
+    case AffineExprKind::Mod:
+      if (rc && rc.getValue() > 0)
+        return rc.getValue() - 1;
+      return std::nullopt;
+    default:
+      return std::nullopt;
+    }
+  }
+
   // A parallel axis whose extent is dynamic but provably bounded (a block
-  // size clamped by a min against a constant, capped by a guard, or indexing
-  // a static scratch buffer) batches
+  // size clamped by a min against a constant, capped by a guard, indexing a
+  // static scratch buffer, or an affine expression of such values) batches
   // at the bound instead of peeling to a serial loop: the axis becomes
   // constant-extent and the body sits behind an `iv < extent` guard, which
   // the masking machinery already understands. Barriers over the axis then
@@ -5642,19 +5688,42 @@ struct AffineToStableHLORaisingPass
         auto um = par.getUpperBoundMap(i);
         if (um.getNumResults() != 1)
           continue;
-        Value ext;
-        if (auto sym = dyn_cast<AffineSymbolExpr>(um.getResult(0)))
-          ext =
-              par.getUpperBoundsOperands()[um.getNumDims() + sym.getPosition()];
-        else if (auto dim = dyn_cast<AffineDimExpr>(um.getResult(0)))
-          ext = par.getUpperBoundsOperands()[dim.getPosition()];
-        else
+        AffineExpr expr = um.getResult(0);
+        ValueRange operands = par.getUpperBoundsOperands();
+        // Bound every dim and symbol the expression reads, then the
+        // expression over those bounds. An unbounded operand leaves only the
+        // scratch shapes.
+        SmallVector<int64_t> dimBounds(um.getNumDims()),
+            symbolBounds(um.getNumSymbols());
+        bool operandsBounded = true;
+        expr.walk([&](AffineExpr e) {
+          std::optional<unsigned> position;
+          if (auto d = dyn_cast<AffineDimExpr>(e))
+            position = d.getPosition();
+          else if (auto s = dyn_cast<AffineSymbolExpr>(e))
+            position = um.getNumDims() + s.getPosition();
+          if (!position)
+            return;
+          auto b = derivedExtentBound(operands[*position], 0, par);
+          if (!b)
+            operandsBounded = false;
+          else if (*position < um.getNumDims())
+            dimBounds[*position] = *b;
+          else
+            symbolBounds[*position - um.getNumDims()] = *b;
+        });
+        std::optional<int64_t> bound;
+        if (operandsBounded)
+          bound = affineExprExtentBound(expr, dimBounds, symbolBounds);
+        if (!bound)
+          bound = allocaIndexBound(par.getOperation(), par.getBody(),
+                                   par.getBody()->getArgument(i));
+        if (!bound)
           continue;
-        if (auto c = derivedExtentBound(ext, 0, par))
-          bounded.push_back({i, *c, ext});
-        else if (auto ab = allocaIndexBound(par.getOperation(), par.getBody(),
-                                            par.getBody()->getArgument(i)))
-          bounded.push_back({i, *ab, ext});
+        OpBuilder pre(par);
+        Value ext =
+            pre.createOrFold<affine::AffineApplyOp>(par.getLoc(), um, operands);
+        bounded.push_back({i, *bound, ext});
       }
       if (bounded.empty())
         continue;
