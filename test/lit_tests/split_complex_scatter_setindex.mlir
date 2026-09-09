@@ -29,10 +29,11 @@ module {
 
 // The Setindex scatter on complex constant input gets transformed to a single scatter.
 // The constant input (0.0 + 5.0i) gets decomposed, reshaped, and folded into a pad op.
-// CHECK: %[[REAL:.*]] = stablehlo.real %3
-// CHECK-NEXT: %[[IMAG:.*]] = stablehlo.imag %3
-// CHECK-NEXT: %[[CONCAT_RAW:.*]] = stablehlo.concatenate %[[REAL]], %[[IMAG]], dim = 0
-// CHECK-NEXT: %[[CONCAT:.*]] = stablehlo.reshape %[[CONCAT_RAW]]
+// CHECK: %[[REAL:.*]] = stablehlo.real %arg4
+// CHECK: %[[IMAG:.*]] = stablehlo.imag %arg4
+// CHECK: %[[CONCAT_RAW:.*]] = stablehlo.concatenate %[[REAL]], %[[IMAG]], dim = 0
+// CHECK-NEXT: %[[MUL:.*]] = stablehlo.multiply %{{.*}}, %[[CONCAT_RAW]]
+// CHECK-NEXT: %[[CONCAT:.*]] = stablehlo.reshape %[[MUL]]
 // CHECK-NEXT: %[[SCATTER:.*]] = "stablehlo.scatter"(%{{.*}}, %7, %[[CONCAT]])
 // CHECK-SAME: update_window_dims = [0]
 // CHECK-SAME: inserted_window_dims = [1, 2]
