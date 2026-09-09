@@ -2,6 +2,26 @@
 #include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
 #include "llvm/ExecutionEngine/SectionMemoryManager.h"
 
+#if defined(_WIN32)
+#ifdef __MINGW32__
+#if defined(__i386__)
+#undef _alloca
+extern "C" void _alloca(void);
+#elif defined(__x86_64__)
+extern "C" void ___chkstk_ms(void);
+#else
+extern "C" void __chkstk(void);
+#endif
+#else
+extern "C" void __chkstk(void);
+#endif
+#endif
+
+std::unique_ptr<llvm::orc::LLJIT> JIT = nullptr;
+llvm::orc::SymbolMap MappedSymbols;
+
+using namespace enzymexla;
+
 bool enzymexla::init_jit() {
   if (!JIT) {
     auto tJTMB = llvm::orc::JITTargetMachineBuilder::detectHost();
@@ -104,6 +124,61 @@ bool enzymexla::init_jit() {
 #endif
   }
   return true;
+}
+
+enzymexla::CallInfo enzymexla::CompileHostModule(std::string &key,
+                                                 mlir::ModuleOp modOp,
+                                                 bool compileInit,
+                                                 bool dump_final_module,
+                                                 int lib_counter) {
+  std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext);
+  auto llvmModule = translateModuleToLLVMIR(modOp, *ctx);
+  if (!llvmModule) {
+    llvm::errs() << "modOp: " << *modOp << "\n";
+    llvm::errs() << "could not convert to LLVM IR\n";
+    return {};
+  }
+  if (!::enzymexla::init_jit())
+    return {};
+
+  llvmModule->setDataLayout(JIT->getDataLayout());
+  llvmModule->setTargetTriple(JIT->getTargetTriple());
+
+  if (dump_final_module) {
+    llvm::errs() << " final_llvm_module before jit: " << *llvmModule << "\n";
+  }
+  auto LibA = JIT->createJITDylib("enzymejitdl_" + std::to_string(lib_counter));
+  if (auto Err = JIT->addIRModule(
+          LibA.get(),
+          llvm::orc::ThreadSafeModule(std::move(llvmModule), std::move(ctx)))) {
+    llvm::errs() << " addIRModuleError " << Err << "\n";
+    return {};
+  }
+  if (auto Err = LibA->define(llvm::orc::absoluteSymbols(MappedSymbols))) {
+    llvm::errs() << " Symbol define Error " << Err << "\n";
+    return {};
+  }
+
+  llvm::Expected<llvm::orc::ExecutorAddr> NVSym(llvm::orc::ExecutorAddr{});
+  if (compileInit) {
+    NVSym = JIT->lookup(LibA.get(), "nv_func_init");
+    if (!NVSym) {
+      llvm::errs() << " lookupError " << NVSym.takeError() << "\n";
+      return {};
+    }
+  }
+
+  auto nvptr = (void *)NVSym->getValue();
+
+  auto Entry = JIT->lookup(LibA.get(), "entry");
+  if (!Entry) {
+    llvm::errs() << " lookupError " << Entry.takeError() << "\n";
+    return {};
+  }
+
+  auto ptr = (void *)Entry->getValue();
+
+  return CallInfo{(void (*)(void *, void *, void **))ptr, (void *(*)())nvptr};
 }
 
 llvm::Error enzymexla::map_symbol(const char *name, void *symbol) {
