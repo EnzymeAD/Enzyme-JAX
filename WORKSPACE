@@ -366,3 +366,10 @@ hedron_compile_commands_setup_transitive()
 hedron_compile_commands_setup_transitive_transitive()
 
 hedron_compile_commands_setup_transitive_transitive_transitive()
+
+http_archive(
+    name = "z3",
+    build_file = "//third_party/z3:BUILD",
+    strip_prefix = "z3-z3-5.1.0",
+    url = "https://github.com/Z3Prover/z3/archive/refs/tags/z3-5.1.0.tar.gz",
+)
