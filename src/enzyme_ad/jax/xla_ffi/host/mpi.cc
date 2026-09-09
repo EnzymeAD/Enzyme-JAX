@@ -34,8 +34,8 @@ using MpiRequestBuffer = PtrBuffer;
 // variable size
 using MpiStatusBuffer = Buffer<ffi::U8, 1>;
 
-template <typename T> ffi::ErrorOr<T> LookupSymbol(const char *name) {
-  auto addr = enzymexla::LookupSymbol(name);
+template <typename T> ffi::ErrorOr<T> lookup_symbol(const char *name) {
+  auto addr = enzymexla::lookup_symbol(name);
   if (!addr)
     return ffi::Error::Internal(
         absl::StrFormat("Failed to lookup symbol `%s`", name));
@@ -50,7 +50,7 @@ template <typename T> ffi::ErrorOr<T> LookupSymbol(const char *name) {
 }
 
 ffi::Error checkMpiStatusSize(const MpiStatusBuffer &buf) {
-  auto mpi_status_size = LookupSymbol<int>("MPI_STATUS_SIZE");
+  auto mpi_status_size = lookup_symbol<int>("MPI_STATUS_SIZE");
   if (!mpi_status_size)
     return mpi_status_size.error();
 
@@ -63,18 +63,18 @@ ffi::Error checkMpiStatusSize(const MpiStatusBuffer &buf) {
 }
 
 ffi::Error checkMpiError(const char *fname, const int err) {
-  auto mpi_success = LookupSymbol<int>("MPI_SUCCESS");
+  auto mpi_success = lookup_symbol<int>("MPI_SUCCESS");
   if (!mpi_success)
     return mpi_success.error();
 
   if (err == mpi_success.value())
     return ffi::Error::Success();
 
-  auto mpi_max_error_string = LookupSymbol<int>("MPI_MAX_ERROR_STRING");
+  auto mpi_max_error_string = lookup_symbol<int>("MPI_MAX_ERROR_STRING");
   if (!mpi_max_error_string)
     return mpi_max_error_string.error();
 
-  auto fptr = LookupSymbol<decltype(MPI_Error_string) *>("MPI_Error_string");
+  auto fptr = lookup_symbol<decltype(MPI_Error_string) *>("MPI_Error_string");
 
   if (!fptr)
     return fptr.error();
@@ -140,14 +140,14 @@ convertPrimitiveTypeToMpiDatatype(ffi::DataType type, bool allow_cast = false) {
         absl::StrFormat("MPI: unsupported datatype `%s`", oss.str()));
   }
 
-  auto dt = LookupSymbol<MPI_Datatype>(name);
+  auto dt = lookup_symbol<MPI_Datatype>(name);
   if (!dt)
     return dt.error();
   return dt.value();
 }
 
 ffi::Error MpiCommRankImpl(MpiCommBuffer comm_ptr, Result<IntBuffer> rank_ptr) {
-  auto fptr = LookupSymbol<decltype(MPI_Comm_rank) *>("MPI_Comm_rank");
+  auto fptr = lookup_symbol<decltype(MPI_Comm_rank) *>("MPI_Comm_rank");
   if (!fptr)
     return fptr.error();
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
@@ -162,7 +162,7 @@ XLA_FFI_DEFINE_HANDLER(MpiCommRankFfi, MpiCommRankImpl,
 );
 
 ffi::Error MpiCommSizeImpl(MpiCommBuffer comm_ptr, Result<IntBuffer> size_ptr) {
-  auto fptr = LookupSymbol<decltype(MPI_Comm_size) *>("MPI_Comm_size");
+  auto fptr = lookup_symbol<decltype(MPI_Comm_size) *>("MPI_Comm_size");
   if (!fptr)
     return fptr.error();
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
@@ -179,7 +179,7 @@ XLA_FFI_DEFINE_HANDLER(MpiCommSizeFfi, MpiCommSizeImpl,
 ffi::Error MpiCommSplitImpl(MpiCommBuffer comm_ptr, IntBuffer color_ptr,
                             IntBuffer key_ptr,
                             Result<MpiCommBuffer> newcomm_ptr) {
-  auto fptr = LookupSymbol<decltype(MPI_Comm_split) *>("MPI_Comm_split");
+  auto fptr = lookup_symbol<decltype(MPI_Comm_split) *>("MPI_Comm_split");
   if (!fptr)
     return fptr.error();
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
@@ -199,7 +199,7 @@ XLA_FFI_DEFINE_HANDLER(MpiCommSplitFfi, MpiCommSplitImpl,
 );
 
 ffi::Error MpiBarrierImpl(MpiCommBuffer comm_ptr) {
-  auto fptr = LookupSymbol<decltype(MPI_Barrier) *>("MPI_Barrier");
+  auto fptr = lookup_symbol<decltype(MPI_Barrier) *>("MPI_Barrier");
   if (!fptr)
     return fptr.error();
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
@@ -212,7 +212,7 @@ XLA_FFI_DEFINE_HANDLER(MpiBarrierFfi, MpiBarrierImpl,
 
 ffi::Error MpiSendImpl(ffi::AnyBuffer buf, IntBuffer dest_ptr,
                        IntBuffer tag_ptr, MpiCommBuffer comm_ptr) {
-  auto fptr = LookupSymbol<decltype(MPI_Send) *>("MPI_Send");
+  auto fptr = lookup_symbol<decltype(MPI_Send) *>("MPI_Send");
   if (!fptr)
     return fptr.error();
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
@@ -239,7 +239,7 @@ XLA_FFI_DEFINE_HANDLER(MpiSendFfi, MpiSendImpl,
 ffi::Error MpiIsendImpl(ffi::AnyBuffer buf, IntBuffer dest_ptr,
                         IntBuffer tag_ptr, MpiCommBuffer comm_ptr,
                         Result<MpiRequestBuffer> request_ptr) {
-  auto fptr = LookupSymbol<decltype(MPI_Isend) *>("MPI_Isend");
+  auto fptr = lookup_symbol<decltype(MPI_Isend) *>("MPI_Isend");
   if (!fptr)
     return fptr.error();
   auto datatype = convertPrimitiveTypeToMpiDatatype(buf.element_type());
@@ -269,7 +269,7 @@ XLA_FFI_DEFINE_HANDLER(MpiIsendFfi, MpiIsendImpl,
 ffi::Error MpiRecvImpl(IntBuffer source_ptr, IntBuffer tag_ptr,
                        MpiCommBuffer comm_ptr, Result<ffi::AnyBuffer> buf,
                        Result<MpiStatusBuffer> status_ptr) {
-  auto fptr = LookupSymbol<decltype(MPI_Recv) *>("MPI_Recv");
+  auto fptr = lookup_symbol<decltype(MPI_Recv) *>("MPI_Recv");
   if (!fptr)
     return fptr.error();
   if (auto error = checkMpiStatusSize(*status_ptr); error.failure()) {
@@ -301,7 +301,7 @@ XLA_FFI_DEFINE_HANDLER(MpiRecvFfi, MpiRecvImpl,
 ffi::Error MpiIrecvImpl(IntBuffer source_ptr, IntBuffer tag_ptr,
                         MpiCommBuffer comm_ptr, Result<ffi::AnyBuffer> buf,
                         Result<MpiRequestBuffer> request_ptr) {
-  auto fptr = LookupSymbol<decltype(MPI_Irecv) *>("MPI_Irecv");
+  auto fptr = lookup_symbol<decltype(MPI_Irecv) *>("MPI_Irecv");
   if (!fptr)
     return fptr.error();
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
@@ -330,7 +330,7 @@ XLA_FFI_DEFINE_HANDLER(MpiIrecvFfi, MpiIrecvImpl,
 
 ffi::Error MpiWaitImpl(MpiRequestBuffer request_ptr,
                        Result<MpiStatusBuffer> status_ptr) {
-  auto fptr = LookupSymbol<decltype(MPI_Wait) *>("MPI_Wait");
+  auto fptr = lookup_symbol<decltype(MPI_Wait) *>("MPI_Wait");
   if (!fptr)
     return fptr.error();
 
@@ -352,7 +352,7 @@ XLA_FFI_DEFINE_HANDLER(MpiWaitFfi, MpiWaitImpl,
 
 ffi::Error MpiWaitallImpl(ffi::RemainingArgs requests,
                           ffi::RemainingRets statuses) {
-  auto fptr = LookupSymbol<decltype(MPI_Waitall) *>("MPI_Waitall");
+  auto fptr = lookup_symbol<decltype(MPI_Waitall) *>("MPI_Waitall");
   if (!fptr)
     return fptr.error();
 
@@ -427,11 +427,11 @@ ffi::Error MpiAllreduceImpl(ffi::AnyBuffer sendbuf, std::string_view op_str,
   if (datatype.has_error())
     return datatype.error();
 
-  auto op = LookupSymbol<MPI_Op>(op_str.data());
+  auto op = lookup_symbol<MPI_Op>(op_str.data());
   if (!op)
     return op.error();
 
-  auto fptr = LookupSymbol<decltype(MPI_Allreduce) *>("MPI_Allreduce");
+  auto fptr = lookup_symbol<decltype(MPI_Allreduce) *>("MPI_Allreduce");
   if (!fptr)
     return fptr.error();
 
@@ -451,7 +451,7 @@ XLA_FFI_DEFINE_HANDLER(MpiAllreduceFfi, MpiAllreduceImpl,
 
 ffi::Error MpiBcastImpl(ffi::AnyBuffer buf, IntBuffer root_ptr,
                         MpiCommBuffer comm_ptr) {
-  auto fptr = LookupSymbol<decltype(MPI_Bcast) *>("MPI_Bcast");
+  auto fptr = lookup_symbol<decltype(MPI_Bcast) *>("MPI_Bcast");
   if (!fptr)
     return fptr.error();
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());

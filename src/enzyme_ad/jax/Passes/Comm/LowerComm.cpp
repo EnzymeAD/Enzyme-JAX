@@ -40,7 +40,7 @@ struct LowerCommMpiConstantOp
           op, "MPI constant is not a valid attribute");
     }
 
-    auto value = enzymexla::LookupSymbol(name.data());
+    auto value = enzymexla::lookup_symbol(name.data());
     if (!value)
       return rewriter.notifyMatchFailure(op, "MPI constant `" + name +
                                                  "` not found");

@@ -22,7 +22,7 @@ llvm::orc::SymbolMap MappedSymbols;
 
 using namespace enzymexla;
 
-bool enzymexla::InitJIT() {
+bool enzymexla::init_jit() {
   if (!JIT) {
     auto tJTMB = llvm::orc::JITTargetMachineBuilder::detectHost();
     if (!tJTMB) {
@@ -110,7 +110,7 @@ bool enzymexla::InitJIT() {
 #else
     void *StackProbe = (void *)&__chkstk;
 #endif
-    enzymexla::MapSymbol("__chkstk", StackProbe);
+    enzymexla::map_symbol("__chkstk", StackProbe);
 #if defined(_M_X64) || defined(__x86_64__)
     // We select the GNU environment above, and x86-64 mingw names the stack
     // probe ___chkstk_ms rather than __chkstk (see RuntimeLibcalls.td, where
@@ -119,7 +119,7 @@ bool enzymexla::InitJIT() {
     // only probe, and leave %rsp and %rax alone (see the comment in
     // X86FrameLowering::emitStackProbeCall), so whichever one this process was
     // built with can serve both names.
-    enzymexla::MapSymbol("___chkstk_ms", StackProbe);
+    enzymexla::map_symbol("___chkstk_ms", StackProbe);
 #endif
 #endif
   }
@@ -138,7 +138,7 @@ enzymexla::CallInfo enzymexla::CompileHostModule(std::string &key,
     llvm::errs() << "could not convert to LLVM IR\n";
     return {};
   }
-  if (!::enzymexla::InitJIT())
+  if (!::enzymexla::init_jit())
     return {};
 
   llvmModule->setDataLayout(JIT->getDataLayout());
@@ -181,8 +181,8 @@ enzymexla::CallInfo enzymexla::CompileHostModule(std::string &key,
   return CallInfo{(void (*)(void *, void *, void **))ptr, (void *(*)())nvptr};
 }
 
-llvm::Error enzymexla::MapSymbol(const char *name, void *symbol) {
-  if (!InitJIT())
+llvm::Error enzymexla::map_symbol(const char *name, void *symbol) {
+  if (!init_jit())
     return llvm::make_error<llvm::StringError>("Failed to initialize JIT",
                                                llvm::inconvertibleErrorCode());
 
@@ -192,7 +192,7 @@ llvm::Error enzymexla::MapSymbol(const char *name, void *symbol) {
   return llvm::Error::success();
 }
 
-llvm::Expected<void *> enzymexla::LookupSymbol(const char *name) {
+llvm::Expected<void *> enzymexla::lookup_symbol(const char *name) {
   if (!JIT)
     return llvm::make_error<llvm::StringError>("JIT not initialized",
                                                llvm::inconvertibleErrorCode());

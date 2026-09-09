@@ -13,11 +13,11 @@ struct CallInfo {
   void *(*init)();
 };
 
-bool InitJIT();
+bool init_jit();
 CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
                            bool compileInit, bool dump_final_module,
                            int lib_counter);
-llvm::Error MapSymbol(const char *name, void *symbol);
-llvm::Expected<void *> LookupSymbol(const char *name);
+llvm::Error map_symbol(const char *name, void *symbol);
+llvm::Expected<void *> lookup_symbol(const char *name);
 
 } // namespace enzymexla
