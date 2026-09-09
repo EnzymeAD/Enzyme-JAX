@@ -138,6 +138,15 @@ bool areFactorGroupsDisjoint(TypedValueArrayRef<FactorGroupType> factorGroups);
 llvm::SmallVector<::mlir::TypedValue<AxisTypeInterface>>
 createAxesForRankedShape(::mlir::Type shapeType, ::mlir::OpBuilder &builder,
                          ::mlir::Location loc);
+
+// Creates a new subfactor from a given factor with the same axis,
+// the given extent, and the given stride within the factor
+// (total stride: product of substride and original)
+::mlir::TypedValue<AxisFactorType>
+createSubfactor(::mlir::TypedValue<AxisFactorType> factor, int extent,
+                int strideWithinFactor, ::mlir::OpBuilder &builder,
+                ::mlir::Location loc);
+
 // Creates a single factor for each axis, with full extent and stride 1.
 llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
 viewAxesAsFactors(::mlir::ValueRange axes, ::mlir::OpBuilder &builder,
@@ -145,6 +154,9 @@ viewAxesAsFactors(::mlir::ValueRange axes, ::mlir::OpBuilder &builder,
 llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
 viewAxesAsFactors(TypedValueArrayRef<AxisTypeInterface> axes,
                   ::mlir::OpBuilder &builder, ::mlir::Location loc);
+TypedValue<AxisFactorType> viewAxisAsFactor(::mlir::Value axis,
+                                            ::mlir::OpBuilder &builder,
+                                            ::mlir::Location loc);
 // Creates one factor-group product from an existing list of factors.
 ::mlir::TypedValue<FactorGroupType>
 viewFactorsAsProduct(::mlir::ValueRange factors, ::mlir::OpBuilder &builder,

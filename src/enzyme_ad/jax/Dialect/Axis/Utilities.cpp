@@ -499,12 +499,18 @@ viewAxesAsFactors(TypedValueArrayRef<AxisTypeInterface> axes,
   llvm::SmallVector<::mlir::TypedValue<AxisFactorType>> factors;
   factors.reserve(axes.size());
   for (auto axis : axes) {
-    int extent = getAxisExtent(axis);
-    auto factor = builder.create<AxisFactorOp>(loc, axis, extent, 1);
-    factors.push_back(
-        castTypedValue<AxisFactorType>(factor.getResult(), "AxisFactorType"));
+    factors.push_back(viewAxisAsFactor(axis, builder, loc));
   }
   return factors;
+}
+
+TypedValue<AxisFactorType> viewAxisAsFactor(::mlir::Value axis,
+                                            ::mlir::OpBuilder &builder,
+                                            ::mlir::Location loc) {
+  int extent = getAxisExtent(
+      castTypedValue<AxisTypeInterface>(axis, "AxisTypeInterface"));
+  auto factor = builder.create<AxisFactorOp>(loc, axis, extent, 1);
+  return castTypedValue<AxisFactorType>(factor.getResult(), "AxisFactorType");
 }
 
 ::mlir::TypedValue<FactorGroupType>
@@ -1119,6 +1125,16 @@ predGroupPairIsIdentity(bool respectShapeTypes) {
     return areFactorListsStructurallyEqual(*lhsFactors, *rhsFactors,
                                            respectShapeTypes);
   };
+}
+
+::mlir::TypedValue<AxisFactorType>
+createSubfactor(::mlir::TypedValue<AxisFactorType> factor, int extent,
+                int strideWithinFactor, ::mlir::OpBuilder &builder,
+                ::mlir::Location loc) {
+  auto axis = getFactorProvenanceAxis(factor);
+  int totalStride = getFactorStride(factor) * strideWithinFactor;
+  assert(succeeded(axis) && "Failed to get provenance axis");
+  return builder.create<AxisFactorOp>(loc, *axis, extent, totalStride);
 }
 
 } // namespace mlir::enzyme::axis
