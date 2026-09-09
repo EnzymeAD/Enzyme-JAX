@@ -1,4 +1,3 @@
-#include <cstdint>
 #include <string_view>
 #include <type_traits>
 
@@ -17,7 +16,6 @@ void registerEnzymeJaXXLAHostMPIFFI() {}
 
 namespace enzymexla::ffi_internal {
 namespace ffi = xla::ffi;
-using namespace ::enzymexla;
 
 using ffi::Buffer, ffi::AnyBuffer;
 using ffi::Result, ffi::RemainingArgs, ffi::RemainingRets;
@@ -34,19 +32,12 @@ using MpiRequestBuffer = PtrBuffer;
 // variable size
 using MpiStatusBuffer = Buffer<ffi::U8, 1>;
 
-template <typename T> ffi::ErrorOr<T> lookup_symbol(const char *name) {
+template <T> ffi::ErrorOr<T> lookup_symbol(const char *name) {
   auto addr = enzymexla::lookup_symbol(name);
   if (!addr)
     return ffi::Error::Internal(
         absl::StrFormat("Failed to lookup symbol `%s`", name));
-  if constexpr (std::is_pointer_v<T>) {
-    return reinterpret_cast<T>(addr.get());
-  } else if constexpr (std::is_integral_v<T>) {
-    return static_cast<T>(reinterpret_cast<std::intptr_t>(addr.get()));
-  } else {
-    return ffi::Error::Internal(absl::StrFormat(
-        "Unsupported type for symbol lookup: %s", typeid(T).name()));
-  }
+  return reinterpret_cast<T>(addr->toPtr<void *>());
 }
 
 ffi::Error checkMpiStatusSize(const MpiStatusBuffer &buf) {
@@ -63,7 +54,7 @@ ffi::Error checkMpiStatusSize(const MpiStatusBuffer &buf) {
 }
 
 ffi::Error checkMpiError(const char *fname, const int err) {
-  auto mpi_success = lookup_symbol<int>("MPI_SUCCESS");
+  int mpi_success = lookup_symbol<int>("MPI_SUCCESS");
   if (!mpi_success)
     return mpi_success.error();
 
@@ -437,7 +428,7 @@ ffi::Error MpiAllreduceImpl(ffi::AnyBuffer sendbuf, std::string_view op_str,
 
   int count = sendbuf.element_count();
   int err = fptr.value()(sendbuf.untyped_data(), recvbuf->untyped_data(), count,
-                         datatype.value(), op.value(), comm);
+                         datatype.value(), op, comm);
   return checkMpiError("MPI_Allreduce", err);
 }
 
@@ -460,8 +451,7 @@ ffi::Error MpiBcastImpl(ffi::AnyBuffer buf, IntBuffer root_ptr,
     return datatype.error();
   int root = *root_ptr.typed_data();
   int count = buf.element_count();
-  int err =
-      fptr.value()(buf.untyped_data(), count, datatype.value(), root, comm);
+  int err = fptr(buf.untyped_data(), count, datatype.value(), root, comm);
   return checkMpiError("MPI_Bcast", err);
 }
 
