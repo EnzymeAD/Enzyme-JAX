@@ -10,6 +10,8 @@
 #include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Support.h"
 
+#include "src/enzyme_ad/jax/Dialect/Comm/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Comm/Ops.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 
@@ -288,6 +290,63 @@ MlirAttribute enzymexlaMPIOpAttrGet(MlirContext ctx, EnzymeXlaMPIOp mode) {
   return wrap(mlir::enzymexla::MPIOpAttr::get(unwrap(ctx), op));
 }
 
+MlirType enzymexlaCommMpiCommTypeGet(MlirContext ctx) {
+  return wrap(mlir::comm::MpiCommType::get(unwrap(ctx)));
+}
+
+MlirType enzymexlaCommMpiRequestTypeGet(MlirContext ctx) {
+  return wrap(mlir::comm::MpiRequestType::get(unwrap(ctx)));
+}
+
+MlirAttribute enzymexlaCommMpiCommAttrGet(MlirContext ctx,
+                                          EnzymeXlaCommMpiComm comm) {
+  switch (comm) {
+  case ENZYMEXLA_COMM_MPI_COMM_NULL:
+    return wrap(mlir::comm::MpiCommAttr::get(
+        unwrap(ctx), mlir::comm::MpiCommEnum::MPI_COMM_NULL));
+  case ENZYMEXLA_COMM_MPI_COMM_WORLD:
+    return wrap(mlir::comm::MpiCommAttr::get(
+        unwrap(ctx), mlir::comm::MpiCommEnum::MPI_COMM_WORLD));
+  case ENZYMEXLA_COMM_MPI_COMM_SELF:
+    return wrap(mlir::comm::MpiCommAttr::get(
+        unwrap(ctx), mlir::comm::MpiCommEnum::MPI_COMM_SELF));
+  default:
+    llvm_unreachable("Invalid MPI comm mode");
+  }
+}
+
+MlirAttribute enzymexlaCommMpiOpAttrGet(MlirContext ctx,
+                                        EnzymeXlaCommMpiOp op) {
+  switch (op) {
+  case ENZYMEXLA_COMM_MPI_OP_NULL:
+    return wrap(mlir::comm::MpiOpAttr::get(unwrap(ctx),
+                                           mlir::comm::MpiOpEnum::MPI_OP_NULL));
+  case ENZYMEXLA_COMM_MPI_SUM:
+    return wrap(mlir::comm::MpiOpAttr::get(unwrap(ctx),
+                                           mlir::comm::MpiOpEnum::MPI_SUM));
+  case ENZYMEXLA_COMM_MPI_MIN:
+    return wrap(mlir::comm::MpiOpAttr::get(unwrap(ctx),
+                                           mlir::comm::MpiOpEnum::MPI_MIN));
+  case ENZYMEXLA_COMM_MPI_MAX:
+    return wrap(mlir::comm::MpiOpAttr::get(unwrap(ctx),
+                                           mlir::comm::MpiOpEnum::MPI_MAX));
+  case ENZYMEXLA_COMM_MPI_PROD:
+    return wrap(mlir::comm::MpiOpAttr::get(unwrap(ctx),
+                                           mlir::comm::MpiOpEnum::MPI_PROD));
+  case ENZYMEXLA_COMM_MPI_BAND:
+    return wrap(mlir::comm::MpiOpAttr::get(unwrap(ctx),
+                                           mlir::comm::MpiOpEnum::MPI_BAND));
+  case ENZYMEXLA_COMM_MPI_BOR:
+    return wrap(mlir::comm::MpiOpAttr::get(unwrap(ctx),
+                                           mlir::comm::MpiOpEnum::MPI_BOR));
+  case ENZYMEXLA_COMM_MPI_BXOR:
+    return wrap(mlir::comm::MpiOpAttr::get(unwrap(ctx),
+                                           mlir::comm::MpiOpEnum::MPI_BXOR));
+  default:
+    llvm_unreachable("Invalid MPI op mode");
+  }
+}
+
 namespace {
 
 // Helper: format a pass with a parenthesized int64 argument.
@@ -383,6 +442,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("add_simplify<16>");
   list.push_back("sub_simplify<16>");
   list.push_back("and_simplify<16>");
+  list.push_back("reduce_or_and_pad");
   list.push_back("max_simplify<16>");
   list.push_back("min_simplify<16>");
   list.push_back("or_simplify<16>");
@@ -772,6 +832,7 @@ static void addConstPropPasses(std::vector<std::string> &list,
   list.push_back("log_plus_one_const_prop<1>");
   list.push_back("is_finite_const_prop");
   list.push_back("not_const_prop");
+  list.push_back("reduce_or_and");
   list.push_back("neg_const_prop");
   list.push_back("sqrt_const_prop");
   list.push_back("rsqrt_const_prop");
@@ -896,6 +957,7 @@ static void addTransposePropagateUpPasses(std::vector<std::string> &list,
 static void addTransposePropagateDownPasses(std::vector<std::string> &list) {
   list.push_back("reorder_elementwise_and_shape_op<16>");
   list.push_back("elementwise_all_transpose_operands_simplify");
+  list.push_back("broadcasting_elementwise_all_transpose_operands_simplify");
   list.push_back("slice_transpose");
   list.push_back("dynamic_slice_transpose");
   list.push_back("einsum_transpose<1>");

@@ -84,6 +84,12 @@ using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::stablehlo;
 
+// Steps the tensor provenance walk (DUSDUSSubsuming) takes through a chain of
+// slices, updates and pads before treating the rest as an opaque source. Each
+// step is Presburger work on a relation that grows with the chain; the cutoff
+// only loses precision.
+constexpr size_t kProvenanceWalkBudget = 128;
+
 namespace mlir {
 // Implementation of helper function to lower MultiRotateOp into individual
 // RotateOps
@@ -476,10 +482,15 @@ void sliceSliceHelper(stablehlo::SliceOp prev, SmallVector<int64_t> &starts,
     auto start2 = pstart + pstep * nstart;
     auto step2 = pstep * nstep;
     auto end2 = pstart + pstep * nstart + pstep * (nend - nstart);
-    if (start2 > size)
-      start2 = size;
-    if (end2 > size)
-      end2 = size;
+    // The merged bounds are within the inner slice's static bounds already;
+    // clamping to the operand only matters when its extent is known
+    // (kDynamic is INT64_MIN, and clamping to it makes a negative start).
+    if (size != ShapedType::kDynamic) {
+      if (start2 > size)
+        start2 = size;
+      if (end2 > size)
+        end2 = size;
+    }
     nstart = start2;
     nstep = step2;
     nend = end2;
@@ -7618,12 +7629,13 @@ struct ScatterToDynamicUpdateSlice final
   }
 };
 
-struct ElementwiseAllTransposeOperandsSimplify
+template <template <typename> class Trait>
+struct ElementwiseAllTransposeOperandsSimplifyBase
     : public CheckedOpTraitRewritePattern<
-          OpTrait::Elementwise, ElementwiseAllTransposeOperandsSimplify> {
+          Trait, ElementwiseAllTransposeOperandsSimplifyBase<Trait>> {
   using CheckedOpTraitRewritePattern<
-      OpTrait::Elementwise,
-      ElementwiseAllTransposeOperandsSimplify>::CheckedOpTraitRewritePattern;
+      Trait, ElementwiseAllTransposeOperandsSimplifyBase<Trait>>::
+      CheckedOpTraitRewritePattern;
 
   LogicalResult matchAndRewriteImpl(Operation *op,
                                     PatternRewriter &rewriter) const {
@@ -7636,6 +7648,16 @@ struct ElementwiseAllTransposeOperandsSimplify
     DenseI64ArrayAttr permutation;
     bool foundTranspose = false;
     for (auto operand : op->getOperands()) {
+      auto type = dyn_cast<RankedTensorType>(operand.getType());
+      if (!type)
+        return failure();
+      // Select predicates and clamp bounds may be scalars. They have no axes
+      // to permute and do not determine the result's shape.
+      if (type.getRank() == 0) {
+        kinds.push_back(OperandKind::Scalar);
+        operands.push_back(operand);
+        continue;
+      }
       if (matchPattern(operand, m_Constant())) {
         kinds.push_back(OperandKind::Const);
         operands.push_back(operand);
@@ -7672,6 +7694,7 @@ struct ElementwiseAllTransposeOperandsSimplify
     for (size_t i = 0; i < operands.size(); i++) {
       switch (kinds[i]) {
       case OperandKind::Transpose:
+      case OperandKind::Scalar:
         break;
       case OperandKind::Const:
         // This will be eliminated by a transpose(constant) -> constant
@@ -7683,14 +7706,13 @@ struct ElementwiseAllTransposeOperandsSimplify
       }
     }
 
-    auto operandTy = cast<RankedTensorType>(operands[0].getType());
-    SmallVector<int64_t> elemResShape(operandTy.getShape().begin(),
-                                      operandTy.getShape().end());
+    auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
+    SmallVector<int64_t> elemResShape;
+    for (int64_t dim : invPerm.asArrayRef())
+      elemResShape.push_back(resultType.getDimSize(dim));
     auto newOp = Operation::create(
         op->getLoc(), op->getName(),
-        {RankedTensorType::get(
-            elemResShape,
-            cast<TensorType>(op->getResult(0).getType()).getElementType())},
+        {RankedTensorType::get(elemResShape, resultType.getElementType())},
         operands, op->getAttrs(), mlir::PropertyRef(), op->getSuccessors(), 0);
     rewriter.insert(newOp);
     auto newTransposeOp = stablehlo::TransposeOp::create(
@@ -7700,8 +7722,14 @@ struct ElementwiseAllTransposeOperandsSimplify
   }
 
 private:
-  enum class OperandKind { Transpose, Const };
+  enum class OperandKind { Transpose, Const, Scalar };
 };
+
+using ElementwiseAllTransposeOperandsSimplify =
+    ElementwiseAllTransposeOperandsSimplifyBase<OpTrait::Elementwise>;
+using BroadcastingElementwiseAllTransposeOperandsSimplify =
+    ElementwiseAllTransposeOperandsSimplifyBase<
+        mlir::hlo::OpTrait::BroadcastingElementwise>;
 
 struct TransposeElementwiseTransposeSimplify
     : public CheckedOpRewritePattern<stablehlo::TransposeOp,
@@ -8011,6 +8039,147 @@ struct NoNanSelfSubSimplify
     }
 
     return failure();
+  }
+};
+
+// An or/and reduction of a constant mask is a constant: the raiser's
+// lane masks (a one-hot `tid == 0` guard or-reduced over the lanes) fold
+// to the scalar they always were.
+struct ReduceOrAnd
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceOrAnd> {
+  using CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                ReduceOrAnd>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return failure();
+    auto kind = stablehlo::CheckCommonReduceOp(op).kind;
+    bool isOr = kind == stablehlo::ReduceOpKind::Or;
+    if (!isOr && kind != stablehlo::ReduceOpKind::And)
+      return failure();
+    DenseElementsAttr input, init;
+    if (!matchPattern(op.getInputs()[0], m_Constant(&input)) ||
+        !matchPattern(op.getInitValues()[0], m_Constant(&init)))
+      return failure();
+    auto inTy = cast<RankedTensorType>(input.getType());
+    auto outTy = cast<RankedTensorType>(op.getResult(0).getType());
+    if (!inTy.getElementType().isInteger(1) || !inTy.hasStaticShape() ||
+        !outTy.hasStaticShape())
+      return failure();
+    bool initV = init.getSplatValue<bool>();
+    auto acc = [&](bool a, bool b) { return isOr ? (a || b) : (a && b); };
+
+    DenseElementsAttr result;
+    if (input.isSplat()) {
+      // Every reduced element is the same: the result is a splat too, at
+      // any size.
+      bool v = inTy.getNumElements() > 0
+                   ? acc(initV, input.getSplatValue<bool>())
+                   : initV;
+      result = DenseElementsAttr::get(outTy, v);
+    } else {
+      // Which input dims survive, in order, and the output strides.
+      llvm::SmallDenseSet<int64_t> reduced(op.getDimensions().begin(),
+                                           op.getDimensions().end());
+      SmallVector<int64_t> kept;
+      for (int64_t d = 0; d < inTy.getRank(); ++d)
+        if (!reduced.contains(d))
+          kept.push_back(d);
+      SmallVector<int64_t> outStride(kept.size(), 1);
+      for (int64_t i = (int64_t)kept.size() - 2; i >= 0; --i)
+        outStride[i] = outStride[i + 1] * inTy.getDimSize(kept[i + 1]);
+
+      SmallVector<bool> values(outTy.getNumElements(), initV);
+      SmallVector<int64_t> idx(inTy.getRank(), 0);
+      for (bool v : input.getValues<bool>()) {
+        int64_t o = 0;
+        for (auto [i, d] : llvm::enumerate(kept))
+          o += idx[d] * outStride[i];
+        values[o] = acc(values[o], v);
+        for (int64_t d = inTy.getRank() - 1; d >= 0; --d) {
+          if (++idx[d] < inTy.getDimSize(d))
+            break;
+          idx[d] = 0;
+        }
+      }
+      result = DenseElementsAttr::get(outTy, values);
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, outTy, result);
+    return success();
+  }
+};
+
+// Whether a pad-shaped mask is guaranteed to hold `v` at some index along
+// `dims` for every position outside `dims`: either the padding value is v
+// and every reduced dim is padded, or the operand is a splat of v and the
+// other dims are unpadded or padded with v. Negative and interior padding
+// are left alone.
+static bool padHoldsAlongDims(stablehlo::PadOp pad, ArrayRef<int64_t> dims,
+                              bool v) {
+  auto maskTy = cast<RankedTensorType>(pad.getType());
+  if (!maskTy.hasStaticShape() || dims.empty())
+    return false;
+  for (int64_t d = 0; d < maskTy.getRank(); ++d)
+    if (pad.getInteriorPadding()[d] != 0 || pad.getEdgePaddingLow()[d] < 0 ||
+        pad.getEdgePaddingHigh()[d] < 0)
+      return false;
+  auto is = [&](Value x) {
+    return v ? matchPattern(x, m_One()) : matchPattern(x, m_Zero());
+  };
+  bool padIsV = is(pad.getPaddingValue());
+  if (padIsV && llvm::all_of(dims, [&](int64_t d) {
+        return pad.getEdgePaddingLow()[d] > 0 ||
+               pad.getEdgePaddingHigh()[d] > 0;
+      }))
+    return true;
+  if (!is(pad.getOperand()))
+    return false;
+  auto opTy = cast<RankedTensorType>(pad.getOperand().getType());
+  for (int64_t d = 0; d < maskTy.getRank(); ++d) {
+    if (llvm::is_contained(dims, d)) {
+      if (opTy.getDimSize(d) < 1)
+        return false;
+    } else if (!padIsV && (pad.getEdgePaddingLow()[d] != 0 ||
+                           pad.getEdgePaddingHigh()[d] != 0)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// An or-reduce over a pad that is guaranteed true somewhere along the
+// reduced axes is true (and an and-reduce over one guaranteed false is
+// false) at any size: the raiser's lane guard (`tid == 0`, a pad of an
+// all-true row once its compare folds) or-reduced over the lanes.
+struct ReduceOrAndPad
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceOrAndPad> {
+  using CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                ReduceOrAndPad>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return failure();
+    auto kind = stablehlo::CheckCommonReduceOp(op).kind;
+    bool isOr = kind == stablehlo::ReduceOpKind::Or;
+    if (!isOr && kind != stablehlo::ReduceOpKind::And)
+      return failure();
+    auto pad = op.getInputs()[0].getDefiningOp<stablehlo::PadOp>();
+    if (!pad ||
+        !cast<RankedTensorType>(pad.getType()).getElementType().isInteger(1))
+      return failure();
+    SmallVector<int64_t> dims(op.getDimensions().begin(),
+                              op.getDimensions().end());
+    // or absorbs a true, and absorbs a false, whatever the init.
+    if (!padHoldsAlongDims(pad, dims, isOr))
+      return failure();
+    auto outTy = cast<RankedTensorType>(op.getResult(0).getType());
+    if (!outTy.hasStaticShape())
+      return failure();
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, outTy, DenseElementsAttr::get(outTy, isOr));
+    return success();
   }
 };
 
@@ -18974,10 +19143,15 @@ addSelfProvenance(Value value,
 void computeTensorValueProvenanceImpl(
     SmallVectorImpl<Value> &pendingValues,
     DenseMap<Value, TensorValueProvenance> &provenanceInfo2) {
+  size_t steps = 0;
   while (!pendingValues.empty()) {
     Value value = pendingValues.pop_back_val();
     if (provenanceInfo2.contains(value))
       continue;
+    if (steps++ >= kProvenanceWalkBudget) {
+      addSelfProvenance(value, provenanceInfo2);
+      continue;
+    }
 
     if (auto slice = value.getDefiningOp<stablehlo::SliceOp>()) {
       // If we don't know the provenance of the operand, figure it out before
@@ -18998,8 +19172,12 @@ void computeTensorValueProvenanceImpl(
       presburger::IntegerRelation offset =
           getOffsetRelation(domainSpace, slice.getStartIndices());
 
+      // The insertion may rehash the map and invalidate references into it.
+      SmallVector<Value> operandSources = it->second.sources;
+      presburger::PresburgerRelation operandProvenance =
+          it->second.provenanceRelation;
       auto [insertIt, _] = provenanceInfo2.try_emplace(
-          value, it->second.sources, it->second.provenanceRelation);
+          value, std::move(operandSources), std::move(operandProvenance));
       insertIt->second.provenanceRelation =
           insertIt->second.provenanceRelation.intersectDomain(
               presburger::PresburgerSet(restriction));
@@ -36811,13 +36989,13 @@ struct EnzymeHLOOptPass
     patterns.add<BitcastConvertCancellation>(context);
 
     patterns.add<
-        AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
-        OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
-        PowSimplify, NoopSlice, NoopReverse, SliceReverse, SliceSlice,
-        DynamicSliceDynamicSlice, DynamicSliceSlice, SliceDynamicSlice,
-        LogSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
-        SliceSimplify, ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
-        DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
+        AddSimplify, SubSimplify, AndSimplify, ReduceOrAndPad, ReduceOrAnd,
+        MaxSimplify, MinSimplify, OrSimplify, XorSimplify, MulSimplify,
+        DivSimplify, RemSimplify, PowSimplify, NoopSlice, NoopReverse,
+        SliceReverse, SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
+        SliceDynamicSlice, LogSimplify, ShiftRightLogicalSimplify,
+        NegativePadToSlice, SliceSimplify, ConvertSimplify, TransposeSimplify,
+        DotGeneralSimplify, DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
         BroadcastToReshape, ReshapeEmptyBroadcast, ReshapeBroadcast,
         BroadcastReshape, ConstPropThroughBarrier, ReplaceNegAddWithSubtract,
@@ -36911,6 +37089,7 @@ struct EnzymeHLOOptPass
     patterns.add<GatherConstProp, ClampConstProp>(context);
 
     patterns.add<ElementwiseAllTransposeOperandsSimplify,
+                 BroadcastingElementwiseAllTransposeOperandsSimplify,
                  TransposeElementwiseTransposeSimplify,
                  AssociativeBinaryOpReordering,
                  CommonAssociativeCommutativeOpReorder>(context);
@@ -37293,6 +37472,10 @@ struct EnzymeHLOOptPass
     config.setMaxIterations(max_iterations);
     config.setUseTopDownTraversal(top_down);
     config.enableFolding();
+    // The canonicalizer's default: no identical-block merging. Merging adds
+    // successor operands for the values the blocks differed in, and e.g.
+    // llvm.invoke cannot carry an index-typed successor operand.
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {
       signalPassFailure();

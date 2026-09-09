@@ -22,8 +22,11 @@
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/Passes.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -2226,6 +2229,10 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
 
   SmallPtrSet<Operation *, 4> AliasingStoreOperations;
 
+  SmallVector<std::pair<uint64_t, uint64_t>> writtenRanges;
+
+  bool writeUnknown = false;
+
   LLVM_DEBUG(llvm::dbgs()
              << "Begin forwarding store of " << AI << " to load\n"
              << *AI.getDefiningOp()->getParentOfType<FunctionOpInterface>()
@@ -2279,6 +2286,15 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       }
       // A load naming the slot reads it; one that may only overlap it reads
       // something this knows nothing about, which is no reason to stop.
+      // The bytes of the slot each store lands on, and whether a write may
+      // land where it cannot be told.
+      auto noteWritten = [&](std::optional<uint64_t> at,
+                             std::optional<uint64_t> size) {
+        if (at && size)
+          writtenRanges.emplace_back(*at, *at + *size);
+        else
+          writeUnknown = true;
+      };
       auto matchLoad = [&](Operation *loadOp, OffsetTree accessed) {
         uint64_t at = 0;
         Type read = loadOp->getResult(0).getType();
@@ -2342,7 +2358,12 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << *loadOp << "\n");
       };
       auto matchStore = [&](Operation *storeOp, OffsetTree accessed) {
-        switch (idx.matches(tree.add(accessed, dl), dl)) {
+        OffsetTree stored = tree.add(accessed, dl);
+        Match match = idx.matches(stored, dl);
+        if (match != Match::None)
+          noteWritten(idx.containsAt(stored, dl),
+                      typeSize(stored.getBase(), dl));
+        switch (match) {
         case Match::Exact:
           LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *storeOp << "\n");
           allStoreOps.insert(storeOp);
@@ -2408,6 +2429,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
           if (!isCallNonCapturing(callOp, val, symbolTables)) {
             LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
             AliasingStoreOperations.insert(callOp.getOperation());
+            writeUnknown = true;
             if (!callee || !getNonCapturingFunctions().count(
                                callee.getLeafReference().str()))
               captured = true;
@@ -2417,6 +2439,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
             // is exactly this. The slot's value is unknown after the call.
             LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
             AliasingStoreOperations.insert(callOp.getOperation());
+            writeUnknown = true;
           }
         }
         continue;
@@ -2430,7 +2453,10 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
                   : OffsetTree::unknown();
 
         if (transferDest(user) == val) {
-          switch (idx.matches(touched, dl)) {
+          Match match = idx.matches(touched, dl);
+          if (match != Match::None)
+            noteWritten(idx.containsAt(touched, dl), bytes);
+          switch (match) {
           case Match::Exact:
             // Writing exactly this slot writes a value that is known when what
             // it was written from is: the bytes of a fill, when they are zero,
@@ -2490,11 +2516,13 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       captured = true;
     }
   }
-  if (SharedMemAddr)
+  if (SharedMemAddr) {
+    writeUnknown = true;
     AI.getDefiningOp()->getParentOp()->walk([&](mlir::NVVM::BarrierOp op) {
       LLVM_DEBUG(llvm::dbgs() << "Unknown, potential store: " << *op << "\n");
       AliasingStoreOperations.insert(op);
     });
+  }
 
   if (captured) {
     if (capturedAliasing.count(AI.getDefiningOp()) == 0) {
@@ -2535,6 +2563,56 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         continue;
       LLVM_DEBUG(llvm::dbgs() << "Potential Op ith Effect: " << *op << "\n");
       AliasingStoreOperations.insert(op);
+    }
+  }
+
+  // Bytes of an allocation nothing writes -- no store lands on them and no
+  // write may land where it cannot be told -- hold uninitialized memory, so a
+  // read of them is undef, as LLVM's mem2reg answers a load no store reaches.
+  // A load of the slot is such a read, and so is a field extracted from a
+  // load of it, field by field; the load goes with its last extract.
+  if (!captured && !writeUnknown &&
+      isa<memref::AllocaOp, memref::AllocOp, LLVM::AllocaOp>(
+          AI.getDefiningOp())) {
+    auto written = [&](uint64_t lo, uint64_t hi) {
+      return llvm::any_of(writtenRanges, [&](auto &range) {
+        return range.first < hi && lo < range.second;
+      });
+    };
+    auto undef = [&](Operation *read) {
+      OpBuilder builder(read);
+      Value value = LLVM::UndefOp::create(builder, read->getLoc(),
+                                          read->getResult(0).getType());
+      read->getResult(0).replaceAllUsesWith(value);
+      loadOpsToErase.push_back(read);
+      changed = true;
+    };
+    for (Operation *load :
+         SmallVector<Operation *>(loadOps.begin(), loadOps.end())) {
+      auto contained = containedLoads.find(load);
+      uint64_t at = contained == containedLoads.end() ? 0 : contained->second;
+      auto size = typeSize(load->getResult(0).getType(), dl);
+      if (!size)
+        continue;
+      if (!written(at, at + *size)) {
+        undef(load);
+        loadOps.erase(load);
+        continue;
+      }
+      if (contained != containedLoads.end())
+        continue;
+      for (Operation *user :
+           SmallVector<Operation *>(load->getResult(0).getUsers())) {
+        auto extract = dyn_cast<LLVM::ExtractValueOp>(user);
+        if (!extract || llvm::is_contained(loadOpsToErase, extract))
+          continue;
+        auto field = aggregateFieldOffset(elType, extract.getPosition(), dl);
+        if (!field)
+          continue;
+        auto fieldSize = typeSize(field->second, dl);
+        if (fieldSize && !written(field->first, field->first + *fieldSize))
+          undef(extract);
+      }
     }
   }
 
@@ -3102,6 +3180,8 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
     return std::make_pair(typeSize(tree.getBase(), dl).value_or(0), tree);
   };
   std::map<std::pair<uint64_t, OffsetTree>, unsigned> lastStored;
+  // Whether anything writes the allocation at all.
+  bool anyWrite = false;
 
   std::deque<std::pair<mlir::Value, OffsetTree>> list = {{AI, OffsetTree()}};
 
@@ -3110,6 +3190,7 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
     list.pop_front();
     for (auto *U : val.getUsers()) {
       if (auto SO = dyn_cast<memref::StoreOp>(U)) {
+        anyWrite = true;
         lastStored[slotOf(
             tree.add(accessOffsets(SO.getValue().getType(), SO.getMemRef(),
                                    SO.getIndices(), dl),
@@ -3119,6 +3200,7 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
             accessOffsets(LO.getType(), LO.getMemRef(), LO.getIndices(), dl),
             dl))]++;
       } else if (auto SO = dyn_cast<affine::AffineStoreOp>(U)) {
+        anyWrite = true;
         lastStored[slotOf(
             tree.add(accessOffsets(SO.getValue().getType(), SO.getMemRef(),
                                    SO.getAffineMapAttr().getValue(),
@@ -3131,11 +3213,14 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
                                    LO.getMapOperands(), dl),
                      dl))]++;
       } else if (auto SO = dyn_cast<LLVM::StoreOp>(U)) {
+        anyWrite = true;
         lastStored[slotOf(
             tree.add(accessOffsets(SO.getValue().getType()), dl))]++;
       } else if (auto LO = dyn_cast<LLVM::LoadOp>(U)) {
         lastStored[slotOf(tree.add(accessOffsets(LO.getType()), dl))]++;
       } else if (isa<LLVM::MemcpyOp, LLVM::MemmoveOp, LLVM::MemsetOp>(U)) {
+        if (transferDest(U) == val)
+          anyWrite = true;
         // What a transfer reads or fills is a slot like any other, and the
         // forwarding can only be asked about slots it is told of.
         if (auto bytes = transferLength(U))
@@ -3146,6 +3231,8 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
       } else if (isa<memref::CastOp, Memref2PointerOp, Pointer2MemrefOp,
                      LLVM::BitcastOp, LLVM::AddrSpaceCastOp>(U)) {
         list.emplace_back(U->getResult(0), tree);
+      } else {
+        anyWrite = true;
       }
     }
   }
@@ -3154,7 +3241,8 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
   // of a piece of a slot is an access of that slot too, since the piece can be
   // taken out of what is in it. It counts the other way round as well, since
   // an access reaching over the whole of a slot may be all that is ever said
-  // about what is in it.
+  // about what is in it. When nothing writes the allocation, one access is
+  // enough: whatever it reads is uninitialized.
   std::vector<OffsetTree> todo;
   for (auto &pair : lastStored) {
     unsigned count = pair.second;
@@ -3163,10 +3251,203 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
           (pair.first.second.containsAt(other.first.second, dl) ||
            other.first.second.containsAt(pair.first.second, dl)))
         count += other.second;
-    if (count > 1)
+    if (count > 1 || !anyWrite)
       todo.push_back(pair.first.second);
   }
   return todo;
+}
+
+// The allocation a buffer is, looked at through the casts that only respell
+// it.
+static Value bufferRoot(Value v) {
+  while (Operation *op = v.getDefiningOp()) {
+    if (!isa<memref::CastOp, memref::MemorySpaceCastOp, Memref2PointerOp,
+             Pointer2MemrefOp, LLVM::BitcastOp, LLVM::AddrSpaceCastOp>(op))
+      break;
+    v = op->getOperand(0);
+  }
+  return v;
+}
+
+static bool isAllocation(Value v) {
+  return v.getDefiningOp<memref::AllocaOp>() ||
+         v.getDefiningOp<memref::AllocOp>() ||
+         v.getDefiningOp<LLVM::AllocaOp>() ||
+         v.getDefiningOp<memref::GetGlobalOp>();
+}
+
+// A branch choosing between buffers: an arith.select, or an scf.if or
+// affine.if with an else, yielding a memref or pointer.
+struct BufferBranch {
+  Operation *op;
+  unsigned resultNo;
+  // Whether an arm is an allocation. Otherwise the branch chooses between
+  // buffers the function was handed, and only its accesses inside a GPU
+  // wrapper are split: those become a kernel, and the kernel's raising has
+  // no tensor that stands for one of two buffers.
+  bool anyAllocation = true;
+
+  Value result() const { return op->getResult(resultNo); }
+  Value armValue(unsigned arm) const {
+    if (auto sel = dyn_cast<arith::SelectOp>(op))
+      return arm == 0 ? sel.getTrueValue() : sel.getFalseValue();
+    return op->getRegion(arm).front().getTerminator()->getOperand(resultNo);
+  }
+  // The ops of an arm the chosen buffer is computed from, in program order,
+  // which a copy of the arm has to carry along.
+  bool armSlice(unsigned arm, SmallVectorImpl<Operation *> &slice) const {
+    if (isa<arith::SelectOp>(op))
+      return true;
+    Block &body = op->getRegion(arm).front();
+    SmallPtrSet<Operation *, 4> needed;
+    SmallVector<Value> work = {armValue(arm)};
+    while (!work.empty()) {
+      Operation *def = work.pop_back_val().getDefiningOp();
+      if (!def || def->getBlock() != &body || !needed.insert(def).second)
+        continue;
+      if (!isMemoryEffectFree(def) || def->getNumRegions())
+        return false;
+      work.append(def->operand_begin(), def->operand_end());
+    }
+    for (Operation &o : body.without_terminator())
+      if (needed.count(&o))
+        slice.push_back(&o);
+    return true;
+  }
+};
+
+static std::optional<BufferBranch> bufferBranch(Value v) {
+  auto res = dyn_cast<OpResult>(v);
+  if (!res || !isa<MemRefType, LLVM::LLVMPointerType>(v.getType()))
+    return std::nullopt;
+  Operation *op = res.getOwner();
+  if (auto sel = dyn_cast<arith::SelectOp>(op)) {
+    if (!sel.getCondition().getType().isInteger(1))
+      return std::nullopt;
+  } else if (auto sif = dyn_cast<scf::IfOp>(op)) {
+    if (sif.getElseRegion().empty())
+      return std::nullopt;
+  } else if (auto aif = dyn_cast<affine::AffineIfOp>(op)) {
+    if (!aif.hasElse())
+      return std::nullopt;
+  } else
+    return std::nullopt;
+  return BufferBranch{op, res.getResultNumber()};
+}
+
+// Whether `user` takes the buffer as the thing it accesses or respells, and
+// which operand that is.
+static std::optional<unsigned> bufferOperand(Operation *user, Value buf) {
+  if (auto store = dyn_cast<enzyme::StoreLikeInterface>(user)) {
+    if (store.getStoredPointer() != buf)
+      return std::nullopt;
+    // The pointer written through, which is not the value written even when
+    // the two are spelled the same.
+    bool skippedValue = false;
+    for (OpOperand &operand : user->getOpOperands()) {
+      if (!skippedValue && operand.get() == store.getStoredValue()) {
+        skippedValue = true;
+        continue;
+      }
+      if (operand.get() == buf)
+        return operand.getOperandNumber();
+    }
+    return std::nullopt;
+  }
+  if (!isa<memref::LoadOp, affine::AffineLoadOp, LLVM::LoadOp, memref::CastOp,
+           memref::MemorySpaceCastOp, Memref2PointerOp, Pointer2MemrefOp,
+           LLVM::BitcastOp, LLVM::AddrSpaceCastOp, LLVM::GEPOp>(user) ||
+      user->getOperand(0) != buf)
+    return std::nullopt;
+  return 0;
+}
+
+// A load or store through a branch between allocations names neither of them,
+// and keeps both from being promoted. Doing the access in each arm instead, on
+// the buffer that arm chose, gives every allocation accesses of its own: the
+// branch is asked again where the access stands, with the arm's own
+// computation of the buffer carried along. A cast or offset of the branch's
+// result is pushed into the arms the same way, so an access reached through
+// one still ends at an allocation. Anything else done with the result stays as
+// it was.
+static bool splitBufferBranchAccesses(Operation *f) {
+  SmallVector<BufferBranch> work;
+  f->walk([&](Operation *op) {
+    for (Value res : op->getResults())
+      if (auto br = bufferBranch(res)) {
+        br->anyAllocation = isAllocation(bufferRoot(br->armValue(0))) ||
+                            isAllocation(bufferRoot(br->armValue(1)));
+        if (br->anyAllocation || op->getParentOfType<GPUWrapperOp>())
+          work.push_back(*br);
+      }
+  });
+
+  bool changed = false;
+  while (!work.empty()) {
+    BufferBranch br = work.pop_back_val();
+    SmallVector<Operation *> slices[2];
+    if (!br.armSlice(0, slices[0]) || !br.armSlice(1, slices[1]))
+      continue;
+
+    for (OpOperand &use : llvm::make_early_inc_range(br.result().getUses())) {
+      Operation *user = use.getOwner();
+      auto operand = bufferOperand(user, br.result());
+      if (!operand)
+        continue;
+      if (!br.anyAllocation && !user->getParentOfType<GPUWrapperOp>())
+        continue;
+
+      OpBuilder b(user);
+      Operation *newBr;
+      if (auto aif = dyn_cast<affine::AffineIfOp>(br.op))
+        newBr = affine::AffineIfOp::create(
+            b, user->getLoc(), user->getResultTypes(), aif.getIntegerSet(),
+            aif.getOperands(), /*withElseRegion=*/true);
+      else
+        // A select and an scf.if both lead with their condition.
+        newBr = scf::IfOp::create(b, user->getLoc(), user->getResultTypes(),
+                                  br.op->getOperand(0),
+                                  /*withElseRegion=*/true);
+      for (unsigned arm = 0; arm < 2; ++arm) {
+        Block *dst = &newBr->getRegion(arm).front();
+        // A branch built without results comes with its yields already.
+        if (!dst->empty() && dst->back().hasTrait<OpTrait::IsTerminator>())
+          dst->back().erase();
+        OpBuilder ab = OpBuilder::atBlockEnd(dst);
+        IRMapping m;
+        for (Operation *o : slices[arm])
+          ab.clone(*o, m);
+        Operation *access = ab.clone(*user, m);
+        access->setOperand(*operand, m.lookupOrDefault(br.armValue(arm)));
+        if (isa<affine::AffineIfOp>(newBr))
+          affine::AffineYieldOp::create(ab, user->getLoc(),
+                                        access->getResults());
+        else
+          scf::YieldOp::create(ab, user->getLoc(), access->getResults());
+      }
+      user->replaceAllUsesWith(newBr->getResults());
+      user->erase();
+      changed = true;
+      // A respelling of the branch's result is a branch between buffers again,
+      // whose own accesses want splitting.
+      if (newBr->getNumResults())
+        if (auto inner = bufferBranch(newBr->getResult(0))) {
+          inner->anyAllocation = br.anyAllocation;
+          work.push_back(*inner);
+        }
+    }
+
+    // A branch nothing is left to ask goes, so long as it did nothing but
+    // choose: the yields of a spent arm would still hold the allocation.
+    bool onlyChose = llvm::all_of(br.op->getRegions(), [](Region &arm) {
+      return llvm::all_of(arm.front().without_terminator(),
+                          [](Operation &o) { return isMemoryEffectFree(&o); });
+    });
+    if (onlyChose && llvm::all_of(br.op->getResults(),
+                                  [](Value r) { return r.use_empty(); }))
+      br.op->erase();
+  }
+  return changed;
 }
 
 // A select between two constants, so that each arm names a place of its own.
@@ -3289,6 +3570,23 @@ void PolygeistMem2Reg::runOnOperation() {
 
     // Load op's whose results were replaced by those forwarded from stores.
     SmallVector<Operation *, 8> loadOpsToErase;
+
+    // An allocation reached only through a branch between buffers is not yet
+    // promotable; splitting the accesses first gives it accesses of its own.
+    changed |= splitBufferBranchAccesses(f);
+
+    // A store of undef or poison leaves the slot holding any value, and what
+    // it held before is one; kept, it only stands between a load and the
+    // store that defined the value.
+    SmallVector<Operation *> undefStores;
+    f->walk([&](enzyme::StoreLikeInterface store) {
+      if (isa_and_nonnull<LLVM::UndefOp, LLVM::PoisonOp, ub::PoisonOp>(
+              store.getStoredValue().getDefiningOp()))
+        undefStores.push_back(store);
+    });
+    for (Operation *op : undefStores)
+      op->erase();
+    changed |= !undefStores.empty();
 
     // Walk all load's and perform store to load forwarding.
     SmallVector<mlir::Value, 4> toPromote;

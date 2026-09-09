@@ -140,19 +140,26 @@ def MpiOpAttr : Comm_Attr<"MpiOp", "mpi.op", [TypedAttrInterface]> {
 }
 
 // NCCL
-def NCCL_RedOps : I32EnumAttr<"NCCL_RedOps", "Named predefined NCCL reduction operators", [
-      I32EnumAttrCase<"NCCL_SUM", 0>,
-      I32EnumAttrCase<"NCCL_PROD", 1>,
-      I32EnumAttrCase<"NCCL_MIN", 2>,
-      I32EnumAttrCase<"NCCL_MAX", 3>,
-      I32EnumAttrCase<"NCCL_AVG", 4>,
+def NcclRedOpEnum : I32EnumAttr<"NcclRedOpEnum", "Named predefined NCCL reduction operators", [
+      I32EnumAttrCase<"ncclSum", 0>,
+      I32EnumAttrCase<"ncclProd", 1>,
+      I32EnumAttrCase<"ncclMin", 2>,
+      I32EnumAttrCase<"ncclMax", 3>,
+      I32EnumAttrCase<"ncclAvg", 4>,
     ]> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::comm";
 }
 
-def NCCL_RedOpAttr : EnumAttr<Comm_Dialect, NCCL_RedOps, "nccl.red_op"> {
+def NcclRedOpAttr : Comm_Attr<"NcclRedOp", "nccl.red_op", [TypedAttrInterface]> {
+  let parameters = (ins EnumParameter<NcclRedOpEnum>:$value);
   let assemblyFormat = "`<` $value `>`";
+
+  let extraClassDeclaration = [{
+    ::mlir::Type getType() const {
+      return NcclCommType::get(getContext());
+    }
+  }];
 }
 
 #endif // ENZYMEXLA_COMM_DIALECT_ATTRS_TD

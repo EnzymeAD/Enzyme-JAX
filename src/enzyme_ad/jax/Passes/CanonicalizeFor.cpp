@@ -4001,9 +4001,39 @@ struct ForLoopApplyEnzymeAttributes
     return success();
   }
 };
+
+// An scf.while whose condition is false never enters its after region: it is
+// one execution of its before region, whose condition args are its results.
+struct InlineNeverLoopingWhile : public OpRewritePattern<WhileOp> {
+  using OpRewritePattern<WhileOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(WhileOp op,
+                                PatternRewriter &rewriter) const override {
+    scf::ConditionOp condOp = op.getConditionOp();
+    if (!matchPattern(condOp.getCondition(), m_Zero()))
+      return failure();
+    Block *before = op.getBeforeBody();
+    SmallVector<Value> results;
+    for (Value arg : condOp.getArgs()) {
+      if (auto blockArg = dyn_cast<BlockArgument>(arg);
+          blockArg && blockArg.getOwner() == before)
+        arg = op.getInits()[blockArg.getArgNumber()];
+      results.push_back(arg);
+    }
+    rewriter.eraseOp(condOp);
+    rewriter.inlineBlockBefore(before, op, op.getInits());
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+};
 } // namespace
 } // namespace enzyme
 } // namespace mlir
+
+void mlir::enzyme::populateInlineNeverLoopingWhilePattern(
+    RewritePatternSet &patterns) {
+  patterns.add<InlineNeverLoopingWhile>(patterns.getContext());
+}
 
 void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
@@ -4027,7 +4057,8 @@ void CanonicalizeFor::runOnOperation() {
           // [and should fix] MoveWhileDown3,
           MoveWhileInvariantIfResult, WhileLogicalNegation, SubToAdd,
           WhileCmpOffset, RemoveUnusedCondVar, ReturnSq,
-          MoveSideEffectFreeWhile>(getOperation()->getContext());
+          MoveSideEffectFreeWhile, InlineNeverLoopingWhile>(
+      getOperation()->getContext());
   //    WhileLICM,
   GreedyRewriteConfig config;
   config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);

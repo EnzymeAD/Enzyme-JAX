@@ -17,12 +17,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "Enzyme/MLIR/Dialect/Ops.h"
+#include "Enzyme/MLIR/Interfaces/AutoDiffOpInterface.h"
 #include "mlir/Analysis/DataLayoutAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
@@ -683,6 +685,87 @@ template <typename IfT> struct IfOfNullPointer : public OpRewritePattern<IfT> {
   }
 };
 
+// How many scalars an LLVM aggregate holds when every leaf is the same scalar
+// type, or -1.
+static int64_t homogeneousLeafCount(Type t, Type &leaf) {
+  if (auto at = dyn_cast<LLVM::LLVMArrayType>(t)) {
+    int64_t n = homogeneousLeafCount(at.getElementType(), leaf);
+    return n < 0 ? -1 : n * at.getNumElements();
+  }
+  if (auto st = dyn_cast<LLVM::LLVMStructType>(t)) {
+    if (st.isOpaque())
+      return -1;
+    int64_t tot = 0;
+    for (Type f : st.getBody()) {
+      int64_t n = homogeneousLeafCount(f, leaf);
+      if (n < 0)
+        return -1;
+      tot += n;
+    }
+    return tot;
+  }
+  if (t.isIntOrFloat()) {
+    if (!leaf)
+      leaf = t;
+    return leaf == t ? 1 : -1;
+  }
+  return -1;
+}
+
+// Scratch declared as one aggregate value (a union wrapping a register array)
+// reaches the memref world as a memref of an LLVM struct whose only consumers
+// cast it straight back to a pointer. Padding-free and single-leaf-typed, that
+// is flat scalar scratch, and the pointer round trip then folds to a view.
+struct FlattenAggregateAlloca : public OpRewritePattern<memref::AllocaOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::AllocaOp alloca,
+                                PatternRewriter &rewriter) const override {
+    MemRefType MT = alloca.getType();
+    if (!isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(MT.getElementType()) ||
+        !MT.hasStaticShape() || !MT.getLayout().isIdentity())
+      return failure();
+    Type leaf;
+    int64_t leaves = homogeneousLeafCount(MT.getElementType(), leaf);
+    if (leaves <= 0)
+      return failure();
+    DataLayout dl = DataLayout::closest(alloca);
+    if (dl.getTypeSize(MT.getElementType()) != leaves * dl.getTypeSize(leaf))
+      return failure();
+    if (!llvm::all_of(alloca->getUsers(),
+                      llvm::IsaPred<enzymexla::Memref2PointerOp>))
+      return failure();
+
+    auto NT = MemRefType::get({leaves * MT.getNumElements()}, leaf,
+                              MemRefLayoutAttrInterface{}, MT.getMemorySpace());
+    auto flat = memref::AllocaOp::create(rewriter, alloca.getLoc(), NT,
+                                         alloca.getAlignmentAttr());
+    for (Operation *user : llvm::make_early_inc_range(alloca->getUsers())) {
+      rewriter.setInsertionPoint(user);
+      rewriter.replaceOpWithNewOp<enzymexla::Memref2PointerOp>(
+          user, user->getResult(0).getType(), flat);
+    }
+    rewriter.eraseOp(alloca);
+    return success();
+  }
+};
+
+// A store of undef or poison leaves the memory holding any value, and what
+// it held before is one of those, so the store does nothing.
+struct StoreOfUndef
+    : public OpInterfaceRewritePattern<enzyme::StoreLikeInterface> {
+  using OpInterfaceRewritePattern::OpInterfaceRewritePattern;
+
+  LogicalResult matchAndRewrite(enzyme::StoreLikeInterface store,
+                                PatternRewriter &rewriter) const override {
+    Operation *value = store.getStoredValue().getDefiningOp();
+    if (!isa_and_nonnull<LLVM::UndefOp, LLVM::PoisonOp, ub::PoisonOp>(value))
+      return failure();
+    rewriter.eraseOp(store);
+    return success();
+  }
+};
+
 struct CanonicalizeParallelPass
     : public enzyme::impl::CanonicalizeParallelPassBase<
           CanonicalizeParallelPass> {
@@ -719,7 +802,8 @@ struct CanonicalizeParallelPass
         SinkThroughSelectOfConstants<arith::DivUIOp>,
         SinkThroughSelectOfConstants<arith::AddIOp>,
         SinkThroughSelectOfConstants<arith::MulIOp>, SelectOfNullPointer,
-        IfOfNullPointer<scf::IfOp>, IfOfNullPointer<affine::AffineIfOp>>(ctx);
+        IfOfNullPointer<scf::IfOp>, IfOfNullPointer<affine::AffineIfOp>,
+        FlattenAggregateAlloca, StoreOfUndef>(ctx);
     FrozenRewritePatternSet patterns(std::move(owningPatterns));
 
     GreedyRewriteConfig config;
