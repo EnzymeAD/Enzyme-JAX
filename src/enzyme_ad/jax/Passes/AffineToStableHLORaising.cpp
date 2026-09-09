@@ -5512,18 +5512,6 @@ struct AffineToStableHLORaisingPass
     if (isa_and_nonnull<arith::ExtUIOp, arith::ExtSIOp>(def))
       return operandBound(0);
     APInt k;
-    // dim3 packing with a constant second half arrives as a disjoint or:
-    // either half of (a | c) recovers its own dim. a <= b does not order
-    // a|c against b|c bitwise; a|c <= a+c <= b+c.
-    if (auto orOp = dyn_cast_or_null<arith::OrIOp>(def)) {
-      if (matchPattern(orOp.getRhs(), m_ConstantInt(&k)) &&
-          k.getSExtValue() >= 0) {
-        auto b = operandBound(0);
-        if (b && *b >= 0)
-          return *b + k.getSExtValue();
-      }
-      return std::nullopt;
-    }
     // Launch dims are non-negative by construction, so a product of two
     // bounded dims (a dof count like 2*(D1D-1)*D1D) stays under the product
     // of the bounds.
