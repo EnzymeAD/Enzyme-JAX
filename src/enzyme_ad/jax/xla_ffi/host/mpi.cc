@@ -281,15 +281,14 @@ XLA_FFI_DEFINE_HANDLER(MpiIsendFfi, MpiIsendImpl,
 );
 
 ffi::Error MpiRecvImpl(IntBuffer source_ptr, IntBuffer tag_ptr,
-                       MpiCommBuffer comm_ptr, Result<ffi::AnyBuffer> buf,
-                       Result<MpiStatusBuffer> status_ptr) {
+                       MpiCommBuffer comm_ptr, Result<ffi::AnyBuffer> buf
+                       /*Result<MpiStatusBuffer> status_ptr*/) {
   auto fptr = lookupSymbolOrXlaError<decltype(MPI_Recv) *>("MPI_Recv");
   if (!fptr)
     return fptr.error();
-
-  if (auto error = checkMpiStatusSize(*status_ptr); error.failure()) {
-    return error;
-  }
+  // if (auto error = checkMpiStatusSize(*status_ptr); error.failure()) {
+  //   return error;
+  // }
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   auto datatype = convertPrimitiveTypeToMpiDatatype(buf->element_type());
   if (datatype.has_error())
@@ -298,19 +297,23 @@ ffi::Error MpiRecvImpl(IntBuffer source_ptr, IntBuffer tag_ptr,
   int source = *source_ptr.typed_data();
   int tag = *tag_ptr.typed_data();
   int count = buf->element_count();
-  MPI_Status *status = reinterpret_cast<MPI_Status *>(status_ptr->typed_data());
+  // MPI_Status *status = reinterpret_cast<MPI_Status
+  // *>(status_ptr->typed_data());
+  auto mpi_status_ignore = lookup_symbol<MPI_Status *>("MPI_STATUS_IGNORE");
+  if (!mpi_status_ignore)
+    return mpi_status_ignore.error();
   int err = fptr.value()(buf->untyped_data(), count, datatype.value(), source,
-                         tag, comm, status);
+                         tag, comm, mpi_status_ignore.value());
   return checkMpiError("MPI_Recv", err);
 }
 
 XLA_FFI_DEFINE_HANDLER(MpiRecvFfi, MpiRecvImpl,
                        xla::ffi::Ffi::Bind()
-                           .Arg<IntBuffer>()       // source
-                           .Arg<IntBuffer>()       // tag
-                           .Arg<MpiCommBuffer>()   // comm
-                           .Ret<ffi::AnyBuffer>()  // buf
-                           .Ret<MpiStatusBuffer>() // status
+                           .Arg<IntBuffer>()      // source
+                           .Arg<IntBuffer>()      // tag
+                           .Arg<MpiCommBuffer>()  // comm
+                           .Ret<ffi::AnyBuffer>() // buf
+                       //  .Ret<MpiStatusBuffer>() // status
 );
 
 ffi::Error MpiIrecvImpl(IntBuffer source_ptr, IntBuffer tag_ptr,
@@ -344,40 +347,46 @@ XLA_FFI_DEFINE_HANDLER(MpiIrecvFfi, MpiIrecvImpl,
                            .Ret<MpiRequestBuffer>() // request
 );
 
-ffi::Error MpiWaitImpl(MpiRequestBuffer request_ptr,
-                       Result<MpiStatusBuffer> status_ptr) {
+ffi::Error MpiWaitImpl(MpiRequestBuffer request_ptr
+                       /*Result<MpiStatusBuffer> status_ptr*/) {
   auto fptr = lookupSymbolOrXlaError<decltype(MPI_Wait) *>("MPI_Wait");
   if (!fptr)
     return fptr.error();
 
-  if (auto error = checkMpiStatusSize(*status_ptr); error.failure()) {
-    return error;
-  }
+  // if (auto error = checkMpiStatusSize(*status_ptr); error.failure()) {
+  //   return error;
+  // }
   MPI_Request *request =
       reinterpret_cast<MPI_Request *>(request_ptr.typed_data());
-  MPI_Status *status = reinterpret_cast<MPI_Status *>(status_ptr->typed_data());
-  int err = fptr.value()(request, status);
+  // MPI_Status *status = reinterpret_cast<MPI_Status
+  // *>(status_ptr->typed_data());
+
+  auto mpi_status_ignore = lookup_symbol<MPI_Status *>("MPI_STATUS_IGNORE");
+  if (!mpi_status_ignore)
+    return mpi_status_ignore.error();
+
+  int err = fptr.value()(request, mpi_status_ignore.value());
   return checkMpiError("MPI_Wait", err);
 }
 
 XLA_FFI_DEFINE_HANDLER(MpiWaitFfi, MpiWaitImpl,
-                       xla::ffi::Ffi::Bind()
-                           .Arg<MpiRequestBuffer>() // request
-                           .Ret<MpiStatusBuffer>()  // status
+                       xla::ffi::Ffi::Bind().Arg<MpiRequestBuffer>() // request
+                       //  .Ret<MpiStatusBuffer>()  // status
 );
 
-ffi::Error MpiWaitallImpl(ffi::RemainingArgs requests,
-                          ffi::RemainingRets statuses) {
+ffi::Error MpiWaitallImpl(ffi::RemainingArgs requests
+                          /* ffi::RemainingRets statuses*/) {
   auto fptr = lookupSymbolOrXlaError<decltype(MPI_Waitall) *>("MPI_Waitall");
   if (!fptr)
     return fptr.error();
 
-  if (requests.size() != statuses.size()) {
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Waitall: requests and statuses must have the same "
-                        "size, but got %d and %d",
-                        requests.size(), statuses.size()));
-  }
+  // if (requests.size() != statuses.size()) {
+  //   return ffi::Error::InvalidArgument(
+  //       absl::StrFormat("MPI_Waitall: requests and statuses must have the
+  //       same "
+  //                       "size, but got %d and %d",
+  //                       requests.size(), statuses.size()));
+  // }
   int count = requests.size();
 
   // stack requests in an array
@@ -392,34 +401,38 @@ ffi::Error MpiWaitallImpl(ffi::RemainingArgs requests,
     request_vector[i] = value;
   }
 
-  std::vector<MPI_Status> status_vector(count);
-  int err = fptr.value()(count, request_vector.data(), status_vector.data());
+  // std::vector<MPI_Status> status_vector(count);
+  auto mpi_statuses_ignore = lookup_symbol<MPI_Status *>("MPI_STATUSES_IGNORE");
+  if (!mpi_statuses_ignore)
+    return mpi_statuses_ignore.error();
+
+  int err =
+      fptr.value()(count, request_vector.data(), mpi_statuses_ignore.value());
   auto error = checkMpiError("MPI_Waitall", err);
   if (error.failure())
     return error;
 
   // copy statuses back to the output buffers
-  for (int i = 0; i < count; ++i) {
-    auto buffer_or_error = statuses.get<MpiStatusBuffer>(i);
-    if (buffer_or_error.has_error())
-      return buffer_or_error.error();
+  // for (int i = 0; i < count; ++i) {
+  //   auto buffer_or_error = statuses.get<MpiStatusBuffer>(i);
+  //   if (buffer_or_error.has_error())
+  //     return buffer_or_error.error();
 
-    auto buffer = buffer_or_error.value();
-    if (auto error = checkMpiStatusSize(*buffer); error.failure()) {
-      return error;
-    }
+  //   auto buffer = buffer_or_error.value();
+  //   if (auto error = checkMpiStatusSize(*buffer); error.failure()) {
+  //     return error;
+  //   }
 
-    auto ptr = reinterpret_cast<MPI_Status *>(buffer->typed_data());
-    *ptr = status_vector[i];
-  }
+  //   auto ptr = reinterpret_cast<MPI_Status *>(buffer->typed_data());
+  //   *ptr = status_vector[i];
+  // }
 
   return ffi::Error::Success();
 }
 
 XLA_FFI_DEFINE_HANDLER(MpiWaitallFfi, MpiWaitallImpl,
-                       xla::ffi::Ffi::Bind()
-                           .RemainingArgs() // requests
-                           .RemainingRets() // statuses
+                       xla::ffi::Ffi::Bind().RemainingArgs() // requests
+                       //  .RemainingRets() // statuses
 );
 ffi::Error MpiAllreduceImpl(ffi::AnyBuffer sendbuf, std::string_view op_str,
                             MpiCommBuffer comm_ptr,
