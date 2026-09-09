@@ -2,6 +2,7 @@
 #define ENZYME_AD_JAX_DIALECT_AXIS_UTILITIES_H
 
 #include <cstdint>
+#include <utility>
 
 #include "Dialect.h"
 
@@ -92,10 +93,19 @@ getProductProvenanceFactors(::mlir::TypedValue<FactorGroupType> factorProduct);
 ::mlir::FailureOr<uint64_t>
 getFactorGroupExtent(::mlir::TypedValue<FactorGroupType> factorProduct);
 
-// Checks that two canonical axes are equivalent using the aliases semantics.
-// Canonical axes are either equivalent or wholly disjoint.
+// Uses the type-specific axis equivalence semantics to check
+// structural / logical equivalence of axes
 bool areAxesEquivalent(::mlir::TypedValue<AxisTypeInterface> lhs,
                        ::mlir::TypedValue<AxisTypeInterface> rhs);
+
+// Uses the type-specific disjointness logic to check if
+// two axes may be assigned to the same space (they are disjoint)
+// or if they "interfere" in some way (they are not disjoint).
+// Equivalent axes may still be disjoint. Example: replication axes
+// can be structurally idential / from the same IR node but can be
+// reused.
+bool areAxesDisjoint(::mlir::TypedValue<AxisTypeInterface> lhs,
+                     ::mlir::TypedValue<AxisTypeInterface> rhs);
 
 // Checks that factors are pairwise non-overlapping for one source axis.
 bool arePairwiseFactorsDisjoint(
@@ -220,6 +230,38 @@ propagateResultTypeChanges(::llvm::ArrayRef<::mlir::Operation *> initialUsers);
 // through impacted users only when the replacement crosses a type boundary.
 ::mlir::LogicalResult replaceAndTypePropagate(::mlir::Value from,
                                               ::mlir::Value to);
+
+// Finds every axis.factor op that takes `axis` as its operand, regardless of
+// each factor's own extent or stride -- this does not assume `axis` is
+// currently represented by a single full-extent, unit-stride factor, only
+// that it has at least one. Pure query: does not mutate the IR. Call this
+// before building any new axis.factor referencing `axis`, since a
+// newly-built factor would itself become a use of `axis` and be picked up
+// here too. Fails with a diagnostic if `axis` has no factor at all.
+::mlir::FailureOr<llvm::SmallVector<AxisFactorOp>>
+findAxisFactors(::mlir::TypedValue<AxisTypeInterface> axis);
+
+// Re-projects one axis's factorization from `oldFactors` onto a new basis
+// `newFactors`, rewriting every axis.product that uses an old factor in
+// place. The two lists must cover the same total extent. Where their
+// granularities don't align as whole units, both sides are further split
+// (via computeSplits/computeSplitExtentSlices -- the same machinery
+// split_divisible uses to align two independently-factored sides) to find a
+// common refinement, so a single old factor may end up replaced by one or
+// more new sub-factors. Each axis.product using an old factor has that
+// operand spliced out and the corresponding new sub-factor(s) spliced in --
+// every other operand is left untouched. `oldFactors` should come from
+// findAxisFactors, called before any of `newFactors` were built (see its
+// comment for why). Builds new ops at `builder`'s current insertion point,
+// which the caller must choose to dominate every use. Fails with a
+// diagnostic if an old factor is consumed by anything other than
+// axis.product, has no axis.product use at all, or if the two sides'
+// granularities can't be reconciled (an old factor would need to be merged
+// with part of another to align with the new basis).
+::mlir::LogicalResult
+replaceAxisFactors(TypedValueArrayRef<AxisFactorType> oldFactors,
+                   TypedValueArrayRef<AxisFactorType> newFactors,
+                   ::mlir::OpBuilder &builder);
 
 // some filtering / predicate utilities
 template <typename T> using Predicate = std::function<bool(T)>;

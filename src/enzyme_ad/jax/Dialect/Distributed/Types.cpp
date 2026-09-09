@@ -6,7 +6,7 @@
 
 namespace mlir::enzyme::distributed {
 
-bool PhysicalCommAxisType::aliases(Value ax1, Value ax2) const {
+bool PhysicalCommAxisType::equivalent(Value ax1, Value ax2) const {
   auto result1 = dyn_cast<OpResult>(ax1);
   auto result2 = dyn_cast<OpResult>(ax2);
   if (!result1 || !result2) {
@@ -31,7 +31,11 @@ bool PhysicalCommAxisType::aliases(Value ax1, Value ax2) const {
          result1.getResultNumber() == result2.getResultNumber();
 }
 
-bool LogicalMeshAxisType::aliases(Value ax1, Value ax2) const {
+bool PhysicalCommAxisType::disjoint(Value ax1, Value ax2) const {
+  return !PhysicalCommAxisType::equivalent(ax1, ax2);
+}
+
+bool LogicalMeshAxisType::equivalent(Value ax1, Value ax2) const {
   // alias iff they are the same result of the same op
   auto result1 = dyn_cast<OpResult>(ax1);
   auto result2 = dyn_cast<OpResult>(ax2);
@@ -44,18 +48,36 @@ bool LogicalMeshAxisType::aliases(Value ax1, Value ax2) const {
          result1.getResultNumber() == result2.getResultNumber();
 }
 
-// Replication axes are modeled as always disjoint.
-bool ReplicationAxisType::aliases(Value ax1, Value ax2) const {
+bool LogicalMeshAxisType::disjoint(Value ax1, Value ax2) const {
+  return !LogicalMeshAxisType::equivalent(ax1, ax2);
+}
+
+// Replication axes are equivalent whenever they have the same extent
+bool ReplicationAxisType::equivalent(Value ax1, Value ax2) const {
+  int extent1 = cast<ReplicationAxisType>(ax1.getType()).getExtent();
+  int extent2 = cast<ReplicationAxisType>(ax2.getType()).getExtent();
+  return extent1 == extent2;
+}
+
+// But replication axes are always disjoint / non-interfering
+bool ReplicationAxisType::disjoint(Value ax1, Value ax2) const {
   (void)ax1;
   (void)ax2;
-  return false;
+  return true;
+}
+
+bool DeviceLocalAxisType::equivalent(Value ax1, Value ax2) const {
+  // Also equivalent if they have the same extent
+  int n1 = cast<DeviceLocalAxisType>(ax1.getType()).getExtent();
+  int n2 = cast<DeviceLocalAxisType>(ax2.getType()).getExtent();
+  return n1 == n2;
 }
 
 // Also always disjoint: no collision for serializing everything
-bool DeviceLocalAxisType::aliases(Value ax1, Value ax2) const {
+bool DeviceLocalAxisType::disjoint(Value ax1, Value ax2) const {
   (void)ax1;
   (void)ax2;
-  return false;
+  return true;
 }
 
 } // namespace mlir::enzyme::distributed

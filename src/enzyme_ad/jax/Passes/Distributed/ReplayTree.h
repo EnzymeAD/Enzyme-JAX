@@ -79,7 +79,7 @@ public:
   // continue or stop. Will always search the latest part of the replay
   // first.
   template <typename Query, typename... Args>
-  void queryReplayReverse(Query q, Args... args) const {
+  void queryReplayReverse(Query q, Args &...args) const {
     // Query the current delta first
     ReplayQueryShortCircuit status = q((const DeltaType)delta, args...);
     if (status == Stop) {

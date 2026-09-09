@@ -133,6 +133,9 @@ def LowerKernelsPass : Pass<"distributed-lower-kernels", "::mlir::ModuleOp"> {
 def DistributedSearchStrategiesPass : Pass<"distributed-search-strategies", "::mlir::ModuleOp"> {
   let summary = "Searches for distribution strategies mapping logical axes to physical execution";
   let dependentDialects = ["enzyme::distributed::DistributedDialect"];
+  let options = [
+    Option<"dumpCandidates", "dump-candidates", "bool", "false", "Print the cloned, partially-rewritten IR for each scored search candidate, for debugging. Default: false">,
+  ];
 }
 
 #endif // ENZYME_AD_JAX_DISTRIBUTED_PASSES

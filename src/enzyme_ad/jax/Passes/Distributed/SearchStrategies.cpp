@@ -6,6 +6,10 @@
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 
+#include "mlir/IR/IRMapping.h"
+#include "mlir/Pass/PassManager.h"
+
+#include <limits>
 #include <memory>
 #include <utility>
 
@@ -190,6 +194,13 @@ struct AxisMappingReplayState {
       axisMapping;
   // Store ownership of temporary IR items (axes) supporting the state
   std::vector<SharedOpRef<Operation *>> supportingIR;
+  // Retains ownership of each decided factor's underlying (possibly
+  // detached) op. axisMapping only stores the non-owning Value, so without
+  // this the op -- built via a detached builder during search -- would be
+  // destroyed as soon as the caller's own SharedOpRef goes out of scope,
+  // leaving a dangling Value for anything that reads the decision back later
+  // (e.g. ApplyPartialDecisions).
+  std::vector<SharedOpRef<AxisFactorOp>> ownedFactors;
 
   void apply(const AxisMappingReplayState &other) {
     for (auto &entry : other.axisMapping) {
@@ -198,6 +209,8 @@ struct AxisMappingReplayState {
     }
     supportingIR.insert(supportingIR.end(), other.supportingIR.begin(),
                         other.supportingIR.end());
+    ownedFactors.insert(ownedFactors.end(), other.ownedFactors.begin(),
+                        other.ownedFactors.end());
   }
 };
 
@@ -349,6 +362,8 @@ public:
 
     // add factor to the taken list for working axis
     decisions->getDelta().axisMapping[currentAxis()].push_back(factorValue);
+    // Retain ownership alongside the non-owning Value recorded above.
+    decisions->getDelta().ownedFactors.push_back(factor);
     extentRemaining /= factorExtent;
   }
 
@@ -374,6 +389,142 @@ public:
   void addAvailableSpace(SharedOpRef<AxisFactorOp> factor) {
     availableSpace.push_back(factor);
   }
+
+  // Returns, for every axis touched so far (everything before axisIndex, plus
+  // axisIndex itself if not finalized), the factors committed to it. The
+  // in-progress axis (axisIndex, if not finalized) may come back with an
+  // empty factor list if it was just advanced to via setupNextAxis and no
+  // addFactor call has happened yet.
+  llvm::SmallVector<std::pair<TypedValue<LogicalMeshAxisType>,
+                              llvm::SmallVector<TypedValue<AxisFactorType>>>>
+  getPartialDecisions() const {
+    std::size_t count = finalized() ? axes->size() : axisIndex + 1;
+    llvm::SmallVector<std::pair<TypedValue<LogicalMeshAxisType>,
+                                llvm::SmallVector<TypedValue<AxisFactorType>>>>
+        result;
+    for (std::size_t i = 0; i < count; ++i) {
+      TypedValue<LogicalMeshAxisType> axis = (*axes)[i];
+      result.emplace_back(axis, decisions->getBindings(axis));
+    }
+    return result;
+  }
+};
+
+/**
+ * Sub-pass for the evaluation pipeline. Applies the decisions
+ * from a provided search node by rewriting the axis.
+ *
+ * This pass expects to be given a cloned module from the one the
+ * decisions were made for. As such, an IR mapper is required to go
+ * from the original to logical axes. We also expect each logical
+ * axis to currently not be factored: any factors should have the
+ * whole extent of the axis. This pass effectively replaces any
+ * products of the axis factors with ones using the decisions from the search
+ * node.
+ *
+ * (Note: we will want this replacement logic elsewhere too, so ideally we
+ * implement it as a rewrite in `dialect/axis/Utilities.h` with a general
+ * signature)
+ *
+ * (Note: we should check for users that aren't products, and may have
+ * to redesign if we find any that aren't products.)
+ */
+class ApplyPartialDecisions
+    : public PassWrapper<ApplyPartialDecisions, OperationPass<ModuleOp>> {
+private:
+  std::shared_ptr<StrategySearchNode> node;
+  IRMapping *originalToCloned;
+  ApplyPartialDecisions(std::shared_ptr<StrategySearchNode> node,
+                        IRMapping &originalToCloned)
+      : node(node), originalToCloned(&originalToCloned) {}
+
+public:
+  // ApplyPartialDecisions is a hand-rolled PassWrapper (not generated via
+  // GEN_PASS_DEF) defined in an anonymous namespace, so it needs an explicit
+  // TypeID: PassWrapper's implicit fallback (TypeID::get<PassT>()) refuses
+  // anonymous-namespace types when it can detect them, which some LLVM
+  // builds only actually check under assertions/debug configurations.
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ApplyPartialDecisions)
+
+  static std::unique_ptr<ApplyPartialDecisions>
+  create(std::shared_ptr<StrategySearchNode> node,
+         IRMapping &originalToCloned) {
+    return std::unique_ptr<ApplyPartialDecisions>(
+        new ApplyPartialDecisions(node, originalToCloned));
+  }
+
+  void runOnOperation() override {
+    ModuleOp clonedModule = getOperation();
+    OpBuilder builder(&getContext());
+    builder.setInsertionPointToStart(clonedModule.getBody());
+
+    for (auto &[origAxis, origFactors] : node->getPartialDecisions()) {
+      if (origFactors.empty()) {
+        // Nothing decided for this axis yet; leave its pristine
+        // representation untouched.
+        continue;
+      }
+
+      Value clonedAxisVal = originalToCloned->lookupOrNull(origAxis);
+      if (!clonedAxisVal) {
+        origAxis.getDefiningOp()->emitError(
+            "logical axis has no counterpart in the cloned module");
+        return signalPassFailure();
+      }
+      auto clonedAxis = cast<TypedValue<AxisTypeInterface>>(clonedAxisVal);
+
+      // Discover what to replace *before* building any new axis.factor
+      // referencing clonedAxis -- otherwise a newly-built factor (e.g. the
+      // residual below) would itself show up as a use of clonedAxis and be
+      // mistaken for part of its current state.
+      auto oldFactorOps = findAxisFactors(clonedAxis);
+      if (failed(oldFactorOps))
+        return signalPassFailure();
+      llvm::SmallVector<TypedValue<AxisFactorType>> oldFactors;
+      for (AxisFactorOp oldFactorOp : *oldFactorOps)
+        oldFactors.push_back(castTypedValue<AxisFactorType>(
+            oldFactorOp.getResult(), "AxisFactorType"));
+
+      llvm::SmallVector<TypedValue<AxisFactorType>> clonedFactors;
+      int decidedExtent = 1;
+      for (TypedValue<AxisFactorType> origFactor : origFactors) {
+        auto origProvenance = getFactorProvenanceAxis(origFactor);
+        if (failed(origProvenance)) {
+          origFactor.getDefiningOp()->emitError(
+              "failed to resolve provenance axis for a decided factor");
+          return signalPassFailure();
+        }
+        Value clonedProvenance = originalToCloned->lookupOrNull(*origProvenance);
+        if (!clonedProvenance) {
+          // A search-created axis (e.g. a device-local serialization axis)
+          // with no counterpart in the original module: materialize it here
+          // and register the mapping for reuse.
+          builder.clone(*origProvenance->getDefiningOp(), *originalToCloned);
+          clonedProvenance = originalToCloned->lookup(*origProvenance);
+        }
+        int extent = getFactorExtent(origFactor);
+        decidedExtent *= extent;
+        auto clonedFactor = builder.create<AxisFactorOp>(
+            origFactor.getLoc(), clonedProvenance, extent,
+            getFactorStride(origFactor));
+        clonedFactors.push_back(
+            castTypedValue<AxisFactorType>(clonedFactor.getResult(),
+                                           "AxisFactorType"));
+      }
+
+      int remainder = getAxisExtent(clonedAxis) / decidedExtent;
+      if (remainder > 1) {
+        auto residualFactor = builder.create<AxisFactorOp>(
+            clonedAxisVal.getLoc(), clonedAxisVal, remainder, 1);
+        clonedFactors.push_back(
+            castTypedValue<AxisFactorType>(residualFactor.getResult(),
+                                           "AxisFactorType"));
+      }
+
+      if (failed(replaceAxisFactors(oldFactors, clonedFactors, builder)))
+        return signalPassFailure();
+    }
+  }
 };
 
 class StrategyExplorer : public BeamSearchExplorerBase<StrategySearchNode> {
@@ -390,8 +541,8 @@ public:
         builder(builder), totalMeshSpace(totalMeshSpace),
         defaultLoc(defaultLoc) {}
 
-  // Not algorithmically fast! But we expect resonably small (10000k max, maybe)
-  // and easily divisible numbers.
+  // Not algorithmically fast! But we expect resonably small (10000k max,
+  // maybe) and easily divisible numbers.
   llvm::SmallVector<uint> uniquePrimeFactors(int n) {
     llvm::SmallVector<uint> primes;
     int thresh = 1;
@@ -485,17 +636,57 @@ public:
 };
 
 class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
+  ModuleOp originalModule;
+  bool dumpCandidates;
+
 public:
-  virtual double
-  score(const std::shared_ptr<StrategySearchNode> &node) override {
-    // TODO Implement the scoring logic here.
-    return 0.0;
+  StrategyScorer(ModuleOp originalModule, bool dumpCandidates)
+      : originalModule(originalModule), dumpCandidates(dumpCandidates) {}
+
+  // Plan: run a pass pipeline to apply and lower the current decisions
+  // and score the result. Pipeline:
+  // - ApplyPartialDecisions : decisions from the search
+  // - ApplyHeuristicDecisions : heuristically complete the remaining
+  //   decisions
+  // - Lowering pipeline : general lowering pipeline we will import from
+  //   outside this pass
+  // - ScoreModel : evaluate the lowered IR to produce a score
+  //
+  // Only ApplyPartialDecisions is implemented so far; the rest remain TODO,
+  // so this returns a placeholder score (0.0 on success, -infinity if
+  // ApplyPartialDecisions fails on the candidate's decisions).
+  //
+  // The candidate is scored on a clone of the original module, built fresh
+  // per call via a standalone PassManager (not Pass::runPipeline, which
+  // requires its target to be nested under the operation the calling pass is
+  // currently processing -- our clone is a disconnected top-level module).
+  double score(const std::shared_ptr<StrategySearchNode> &node) override {
+    IRMapping mapper;
+    OwningOpRef<ModuleOp> clonedModule(
+        cast<ModuleOp>(originalModule->clone(mapper)));
+
+    PassManager pm(originalModule.getContext(), ModuleOp::getOperationName());
+    pm.addPass(ApplyPartialDecisions::create(node, mapper));
+    LogicalResult pipelineResult = pm.run(*clonedModule);
+
+    if (dumpCandidates) {
+      llvm::errs() << "// ApplyPartialDecisions candidate ("
+                   << (succeeded(pipelineResult) ? "ok" : "FAILED") << "):\n";
+      clonedModule->print(llvm::errs());
+      llvm::errs() << "\n";
+    }
+
+    if (failed(pipelineResult))
+      return -std::numeric_limits<double>::infinity();
+
+    return 0.0; // TODO: ApplyHeuristicDecisions + lowering + ScoreModel
   }
 };
 
 struct DistributedSearchStrategiesPass
     : public impl::DistributedSearchStrategiesPassBase<
           DistributedSearchStrategiesPass> {
+  using DistributedSearchStrategiesPassBase::DistributedSearchStrategiesPassBase;
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
@@ -508,7 +699,7 @@ struct DistributedSearchStrategiesPass
     llvm::SmallVector<SharedOpRef<AxisFactorOp>> physicalAxes =
         findAllPhysicalAxes(moduleOp, builder, moduleOp.getLoc());
 
-    // TODO: order by importance
+    // TODO: order axis search order by importance
     auto axes =
         std::make_shared<const LogicalAxisOrder>(std::move(logicalAxes));
     auto decisions = AxisMappingReplayTree::makeRoot();
@@ -522,7 +713,7 @@ struct DistributedSearchStrategiesPass
     queue.push(initialNode);
     StrategyExplorer explorer(overlap, builder, physicalAxes,
                               moduleOp.getLoc());
-    StrategyScorer scorer;
+    StrategyScorer scorer(moduleOp, dumpCandidates);
 
     BeamSearchDriver<StrategySearchNode> driver(queue, scorer, explorer);
     driver.run();

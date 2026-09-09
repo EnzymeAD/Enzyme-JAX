@@ -15,7 +15,7 @@ unsigned ShapeAxisType::getExtent() const {
 }
 
 // Shape-axis equivalence is currently based on typed index-space coordinates.
-bool ShapeAxisType::aliases(Value ax1, Value ax2) const {
+bool ShapeAxisType::equivalent(Value ax1, Value ax2) const {
   (void)ax1;
   auto other = dyn_cast<ShapeAxisType>(ax2.getType());
   assert(other && "ShapeAxisType aliasing requires shape axis values");
@@ -23,6 +23,10 @@ bool ShapeAxisType::aliases(Value ax1, Value ax2) const {
   // is represented beyond the current type payload.
   return getAxisIndex() == other.getAxisIndex() &&
          getShapeType() == other.getShapeType();
+}
+
+bool ShapeAxisType::disjoint(Value ax1, Value ax2) const {
+  return !ShapeAxisType::equivalent(ax1, ax2);
 }
 
 } // namespace mlir::enzyme::axis

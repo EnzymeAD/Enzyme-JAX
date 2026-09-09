@@ -26,9 +26,14 @@ def AxisTypeInterface : TypeInterface<"AxisTypeInterface"> {
         return $_type.getExtent();
       }]>,
     InterfaceMethod<
-      [{Returns true when two  SSA values of this axis type are equivalent.
-}],
-      "bool", "aliases",
+      [{Returns true when two SSA values of this axis type are (structurally / logically) equivalent.}],
+      "bool", "equivalent",
+      (ins "::mlir::Value":$ax1, "::mlir::Value":$ax2)
+    >,
+    InterfaceMethod<
+      [{Returns true when two SSA values of this axis type don't "interfere" and may be assigned
+      to different parts of the same index space. Not necessarily the same as equivalence.}],
+      "bool", "disjoint",
       (ins "::mlir::Value":$ax1, "::mlir::Value":$ax2)
     >
   ];

@@ -90,19 +90,28 @@ static FailureOr<bool> refreshResultTypesInPlace(Operation *op) {
   return changed;
 }
 
-// Dispatches alias checks for canonical axes. Canonical axes are
-// either equivalent or wholly disjoint.
+// Uses type-specific semantics
 bool areAxesEquivalent(TypedValue<AxisTypeInterface> lhs,
                        TypedValue<AxisTypeInterface> rhs) {
   if (lhs.getType().getTypeID() != rhs.getType().getTypeID()) {
     return false;
   }
   auto lhsAxisIface = lhs.getType();
-  return lhsAxisIface.aliases(lhs, rhs);
+  return lhsAxisIface.equivalent(lhs, rhs);
+}
+
+bool areAxesDisjoint(TypedValue<AxisTypeInterface> lhs,
+                     TypedValue<AxisTypeInterface> rhs) {
+  if (lhs.getType().getTypeID() != rhs.getType().getTypeID()) {
+    return false;
+  }
+  auto lhsAxisIface = lhs.getType();
+  return lhsAxisIface.disjoint(lhs, rhs);
 }
 
 // Tests if two axis factors are disjoint members of some valid factorization
-// of a shared source axis.
+// of a shared source axis, or are from disjoint axes. Returns false
+// when factors share non-equivalent but non-disjoint axes.
 bool arePairwiseFactorsDisjoint(
     TypedValue<AxisFactorType> lhsFactor, TypedValue<AxisFactorType> rhsFactor,
     TypedValue<AxisTypeInterface> lhsProvenanceAxis,
@@ -134,9 +143,15 @@ bool arePairwiseFactorsDisjoint(
     rhsAxis = *rhsProvenance;
   }
 
-  // Factors from different canonical axes are disjoint by definition.
-  if (!areAxesEquivalent(lhsAxis, rhsAxis)) {
+  // Factors from non-interfering axes are disjoint by definition
+  if (areAxesDisjoint(lhsAxis, rhsAxis)) {
     return true;
+  }
+  // If axes are interfering but not equivalent we don't
+  // know how their interference works, and cannot
+  // prove disjointness.
+  if (!areAxesEquivalent(lhsAxis, rhsAxis)) {
+    return false;
   }
 
   unsigned majorStride = lhsType.getStride();
@@ -1107,6 +1122,127 @@ LogicalResult replaceAndTypePropagate(Value from, Value to) {
     return success();
   }
   return propagateResultTypeChanges(affectedUsers);
+}
+
+FailureOr<SmallVector<AxisFactorOp>>
+findAxisFactors(TypedValue<AxisTypeInterface> axis) {
+  SmallVector<AxisFactorOp> factors;
+  for (Operation *user : axis.getUsers()) {
+    if (auto factorOp = dyn_cast<AxisFactorOp>(user)) {
+      factors.push_back(factorOp);
+    }
+  }
+  if (factors.empty()) {
+    return axis.getDefiningOp()->emitError(
+        "axis has no factor representation to replace");
+  }
+  return factors;
+}
+
+LogicalResult replaceAxisFactors(TypedValueArrayRef<AxisFactorType> oldFactors,
+                                 TypedValueArrayRef<AxisFactorType> newFactors,
+                                 OpBuilder &builder) {
+  assert(!oldFactors.empty() && !newFactors.empty() &&
+         "replaceAxisFactors requires non-empty factor lists");
+
+  SmallVector<uint64_t> oldExtents, newExtents;
+  oldExtents.reserve(oldFactors.size());
+  for (TypedValue<AxisFactorType> factor : oldFactors) {
+    oldExtents.push_back(static_cast<uint64_t>(getFactorExtent(factor)));
+  }
+  newExtents.reserve(newFactors.size());
+  for (TypedValue<AxisFactorType> factor : newFactors) {
+    newExtents.push_back(static_cast<uint64_t>(getFactorExtent(factor)));
+  }
+
+  // computeSplits finds the common refinement between the two sides' extent
+  // lists; each cut is a piece that divides evenly into both an old and a
+  // new factor's remaining extent, exactly mirroring split_divisible's
+  // two-sided approach (just applied to one axis's old/new factorization
+  // instead of two independently-sharded tensors' factor groups).
+  auto cuts = computeSplits(ArrayRef<uint64_t>(oldExtents),
+                            ArrayRef<uint64_t>(newExtents));
+  auto oldCutSlices = computeSplitExtentSlices(oldExtents, cuts);
+  auto newCutSlices = computeSplitExtentSlices(newExtents, cuts);
+
+  Location loc = newFactors.front().getLoc();
+
+  // Materialize each cut's new-side sub-factor(s) once, up front.
+  SmallVector<SmallVector<Value>> newPiecesPerCut(cuts.size());
+  for (auto [cutIdx, sliceGroup] : llvm::enumerate(newCutSlices)) {
+    for (const SplitExtentSlice &slice : sliceGroup) {
+      TypedValue<AxisFactorType> src = newFactors[slice.extentIdx];
+      auto provenance = getFactorProvenanceAxis(src);
+      if (failed(provenance)) {
+        return src.getDefiningOp()->emitError(
+            "failed to resolve provenance axis for a replacement factor");
+      }
+      auto piece = builder.create<AxisFactorOp>(
+          loc, *provenance, static_cast<int32_t>(slice.subExtent),
+          static_cast<int32_t>(getFactorStride(src) *
+                               static_cast<int64_t>(slice.stride)));
+      newPiecesPerCut[cutIdx].push_back(piece.getResult());
+    }
+  }
+
+  // Attribute each cut's pieces to exactly one old factor -- a cut spanning
+  // more than one old factor would mean two old factors need to be merged
+  // to align with the new basis, which splicing-in-place can't express.
+  SmallVector<SmallVector<Value>> replacementPerOldFactor(oldFactors.size());
+  for (auto [cutIdx, sliceGroup] : llvm::enumerate(oldCutSlices)) {
+    size_t oldIdx = sliceGroup.front().extentIdx;
+    for (const SplitExtentSlice &slice : sliceGroup) {
+      if (slice.extentIdx != oldIdx) {
+        return mlir::emitError(
+            loc, "cannot reproject axis factors: an old factor's extent "
+                 "does not align with the requested new basis without "
+                 "merging it with another old factor");
+      }
+    }
+    llvm::append_range(replacementPerOldFactor[oldIdx],
+                       newPiecesPerCut[cutIdx]);
+  }
+
+  for (auto [oldFactor, replacement] :
+       llvm::zip_equal(oldFactors, replacementPerOldFactor)) {
+    bool foundUse = false;
+    for (Operation *user : llvm::make_early_inc_range(oldFactor.getUsers())) {
+      auto productOp = dyn_cast<AxisProductOp>(user);
+      if (!productOp) {
+        return user->emitError(
+            "expected an axis factor being replaced to be consumed only by "
+            "axis.product");
+      }
+      foundUse = true;
+
+      SmallVector<Value> newOperands;
+      bool spliced = false;
+      for (Value operand : productOp->getOperands()) {
+        if (operand == oldFactor) {
+          llvm::append_range(newOperands, replacement);
+          spliced = true;
+        } else {
+          newOperands.push_back(operand);
+        }
+      }
+      if (!spliced) {
+        return productOp.emitError(
+            "old factor must be an operand of its own product");
+      }
+
+      auto newProductOp =
+          builder.create<AxisProductOp>(productOp.getLoc(), newOperands);
+      if (failed(replaceAndTypePropagate(productOp.getProduct(),
+                                         newProductOp.getProduct()))) {
+        return failure();
+      }
+    }
+    if (!foundUse) {
+      return oldFactor.getDefiningOp()->emitError(
+          "old factor has no axis.product use to replace");
+    }
+  }
+  return success();
 }
 
 Predicate<std::pair<::mlir::TypedValue<FactorGroupType>,
