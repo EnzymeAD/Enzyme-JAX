@@ -269,19 +269,6 @@ enzymexlaGetTransformPassesList(const EnzymeXLATransformPassesOptions *options,
 /// Free a string returned by enzymexlaGetTransformPassesList.
 MLIR_CAPI_EXPORTED void enzymexlaFreeTransformPassesList(char *passes);
 
-//===----------------------------------------------------------------------===//
-// JIT runtime support
-//===----------------------------------------------------------------------===//
-MLIR_CAPI_EXPORTED int enzymexlaInitJIT();
-MLIR_CAPI_EXPORTED int enzymexlaLookupSymbol(const char *name, void **symbol);
-MLIR_CAPI_EXPORTED int enzymexlaMapSymbol(const char *name, void *symbol);
-
-// deprecated, use enzymexlaLookupSymbol instead
-MLIR_CAPI_EXPORTED void *EnzymeJaXLookupSymbol(const char *name);
-
-// deprecated, use enzymexlaMapSymbol instead
-MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name, void *symbol);
-
 #ifdef __cplusplus
 } // extern "C"
 #endif
