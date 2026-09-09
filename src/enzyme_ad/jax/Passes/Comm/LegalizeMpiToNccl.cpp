@@ -18,6 +18,21 @@ namespace mlir::comm {
 
 using namespace mlir;
 
+struct LegalizeMpiConstantOpToNccl
+    : public OpConversionPattern<comm::MpiConstantOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiConstantOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    op.emitError(
+        "MPI-to-NCCL lowering for comm.mpi.constant is not yet implemented");
+    return failure();
+  }
+}; // struct LegalizeMpiConstantOpToNccl
+
 struct LegalizeMpiCommRankOpToNccl
     : public OpConversionPattern<comm::MpiCommRankOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -27,11 +42,170 @@ struct LegalizeMpiCommRankOpToNccl
                   ConversionPatternRewriter &rewriter) const override {
     auto context = op->getContext();
 
-    op.emitError("MPI-to-NCCL lowering for comm.mpi.comm_rank is not yet implemented");
+    op.emitError(
+        "MPI-to-NCCL lowering for comm.mpi.comm_rank is not yet implemented");
     return failure();
   }
 }; // struct LegalizeMpiCommRankOpToNccl
 
+struct LegalizeMpiCommSizeOpToNccl
+    : public OpConversionPattern<comm::MpiCommSizeOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiCommSizeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    op.emitError(
+        "MPI-to-NCCL lowering for comm.mpi.comm_size is not yet implemented");
+    return failure();
+  }
+}; // struct LegalizeMpiCommSizeOpToNccl
+
+struct LegalizeMpiCommSplitOpToNccl
+    : public OpConversionPattern<comm::MpiCommSplitOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiCommSplitOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    op.emitError(
+        "MPI-to-NCCL lowering for comm.mpi.comm_split is not yet implemented");
+    return failure();
+  }
+}; // struct LegalizeMpiCommSplitOpToNccl
+
+struct LegalizeMpiBarrierOpToNccl
+    : public OpConversionPattern<comm::MpiBarrierOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiBarrierOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    op.emitError(
+        "MPI-to-NCCL lowering for comm.mpi.barrier is not yet implemented");
+    return failure();
+  }
+}; // struct LegalizeMpiBarrierOpToNccl
+
+struct LegalizeMpiSendOpToNccl : public OpConversionPattern<comm::MpiSendOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiSendOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    op.emitError(
+        "MPI-to-NCCL lowering for comm.mpi.send is not yet implemented");
+    return failure();
+  }
+}; // struct LegalizeMpiSendOpToNccl
+
+struct LegalizeMpiIsendOpToNccl : public OpConversionPattern<comm::MpiIsendOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiIsendOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    op.emitError(
+        "MPI-to-NCCL lowering for comm.mpi.isend is not yet implemented");
+    return failure();
+  }
+}; // struct LegalizeMpiIsendOpToNccl
+
+struct LegalizeMpiRecvOpToNccl : public OpConversionPattern<comm::MpiRecvOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiRecvOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    op.emitError(
+        "MPI-to-NCCL lowering for comm.mpi.recv is not yet implemented");
+    return failure();
+  }
+}; // struct LegalizeMpiRecvOpToNccl
+
+struct LegalizeMpiIrecvOpToNccl : public OpConversionPattern<comm::MpiIrecvOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiIrecvOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    op.emitError(
+        "MPI-to-NCCL lowering for comm.mpi.irecv is not yet implemented");
+    return failure();
+  }
+}; // struct LegalizeMpiIrecvOpToNccl
+
+struct LegalizeMpiWaitOpToNccl : public OpConversionPattern<comm::MpiWaitOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiWaitOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    op.emitError(
+        "MPI-to-NCCL lowering for comm.mpi.wait is not yet implemented");
+    return failure();
+  }
+}; // struct LegalizeMpiWaitOpToNccl
+
+struct LegalizeMpiWaitallOpToNccl
+    : public OpConversionPattern<comm::MpiWaitallOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiWaitallOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    op.emitError(
+        "MPI-to-NCCL lowering for comm.mpi.waitall is not yet implemented");
+    return failure();
+  }
+}; // struct LegalizeMpiWaitallOpToNccl
+
+struct LegalizeMpiAllreduceOpToNccl
+    : public OpConversionPattern<comm::MpiAllreduceOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiAllreduceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    op.emitError(
+        "MPI-to-NCCL lowering for comm.mpi.allreduce is not yet implemented");
+    return failure();
+  }
+}; // struct LegalizeMpiAllreduceOpToNccl
+
+struct LegalizeMpiBcastOpToNccl : public OpConversionPattern<comm::MpiBcastOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiBcastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    op.emitError(
+        "MPI-to-NCCL lowering for comm.mpi.bcast is not yet implemented");
+    return failure();
+  }
+}; // struct LegalizeMpiBcastOpToNccl
 
 struct LegalizeMpiToNcclPass
     : public comm::impl::LegalizeMpiToNcclPassBase<LegalizeMpiToNcclPass> {
@@ -64,7 +238,13 @@ struct LegalizeMpiToNcclPass
     mlir::populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(
         patterns, converter);
 
-    patterns.add<LegalizeMpiCommRankOpToNccl>(converter, context);
+    patterns.add<LegalizeMpiConstantOpToNccl, LegalizeMpiCommRankOpToNccl,
+                 LegalizeMpiCommSizeOpToNccl, LegalizeMpiCommSplitOpToNccl,
+                 LegalizeMpiBarrierOpToNccl, LegalizeMpiSendOpToNccl,
+                 LegalizeMpiIsendOpToNccl, LegalizeMpiRecvOpToNccl,
+                 LegalizeMpiIrecvOpToNccl, LegalizeMpiWaitOpToNccl,
+                 LegalizeMpiWaitallOpToNccl, LegalizeMpiAllreduceOpToNccl,
+                 LegalizeMpiBcastOpToNccl>(converter, context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
