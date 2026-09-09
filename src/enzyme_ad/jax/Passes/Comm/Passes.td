@@ -21,8 +21,8 @@ def LowerCommToJITPass : Pass<"lower-comm-to-jit"> {
   ];
 }
 
-def LegalizeCommMpiToNcclPass : Pass<"legalize-comm-mpi-to-nccl"> {
-  let summary = "Lower Comm Mpi ops to Comm Nccl Ops";
+def LegalizeMpiToNcclPass : Pass<"legalize-mpi-to-nccl"> {
+  let summary = "Lower comm.mpi ops to comm.nccl ops";
   let dependentDialects = [
     "comm::CommDialect",
     "stablehlo::StablehloDialect",
