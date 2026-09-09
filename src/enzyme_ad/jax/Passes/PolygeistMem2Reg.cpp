@@ -22,6 +22,7 @@
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
@@ -3488,6 +3489,19 @@ void PolygeistMem2Reg::runOnOperation() {
     // An allocation reached only through a branch between buffers is not yet
     // promotable; splitting the accesses first gives it accesses of its own.
     changed |= splitBufferBranchAccesses(f);
+
+    // A store of undef or poison leaves the slot holding any value, and what
+    // it held before is one; kept, it only stands between a load and the
+    // store that defined the value.
+    SmallVector<Operation *> undefStores;
+    f->walk([&](enzyme::StoreLikeInterface store) {
+      if (isa_and_nonnull<LLVM::UndefOp, LLVM::PoisonOp, ub::PoisonOp>(
+              store.getStoredValue().getDefiningOp()))
+        undefStores.push_back(store);
+    });
+    for (Operation *op : undefStores)
+      op->erase();
+    changed |= !undefStores.empty();
 
     // Walk all load's and perform store to load forwarding.
     SmallVector<mlir::Value, 4> toPromote;

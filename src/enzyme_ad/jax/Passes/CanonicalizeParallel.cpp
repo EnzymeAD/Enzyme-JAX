@@ -17,12 +17,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "Enzyme/MLIR/Dialect/Ops.h"
+#include "Enzyme/MLIR/Interfaces/AutoDiffOpInterface.h"
 #include "mlir/Analysis/DataLayoutAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
@@ -748,6 +750,22 @@ struct FlattenAggregateAlloca : public OpRewritePattern<memref::AllocaOp> {
   }
 };
 
+// A store of undef or poison leaves the memory holding any value, and what
+// it held before is one of those, so the store does nothing.
+struct StoreOfUndef
+    : public OpInterfaceRewritePattern<enzyme::StoreLikeInterface> {
+  using OpInterfaceRewritePattern::OpInterfaceRewritePattern;
+
+  LogicalResult matchAndRewrite(enzyme::StoreLikeInterface store,
+                                PatternRewriter &rewriter) const override {
+    Operation *value = store.getStoredValue().getDefiningOp();
+    if (!isa_and_nonnull<LLVM::UndefOp, LLVM::PoisonOp, ub::PoisonOp>(value))
+      return failure();
+    rewriter.eraseOp(store);
+    return success();
+  }
+};
+
 struct CanonicalizeParallelPass
     : public enzyme::impl::CanonicalizeParallelPassBase<
           CanonicalizeParallelPass> {
@@ -785,7 +803,7 @@ struct CanonicalizeParallelPass
         SinkThroughSelectOfConstants<arith::AddIOp>,
         SinkThroughSelectOfConstants<arith::MulIOp>, SelectOfNullPointer,
         IfOfNullPointer<scf::IfOp>, IfOfNullPointer<affine::AffineIfOp>,
-        FlattenAggregateAlloca>(ctx);
+        FlattenAggregateAlloca, StoreOfUndef>(ctx);
     FrozenRewritePatternSet patterns(std::move(owningPatterns));
 
     GreedyRewriteConfig config;
