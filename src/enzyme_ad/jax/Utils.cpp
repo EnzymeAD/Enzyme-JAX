@@ -30,6 +30,7 @@
 
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/MathExtras.h"
 
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "stablehlo/dialect/ChloOps.h"
@@ -1853,12 +1854,11 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
 
     // navigate to the next op. If any unsupported intermediate op is found,
     // then return std::nullopt
-    // TODO: we might want to support insert_dims / drop_dims as well
     auto nextOp =
         llvm::TypeSwitch<Operation *, Operation *>(currentOp)
-            .Case<stablehlo::TransposeOp>([&](auto transposeOp) {
+            .Case<stablehlo::TransposeOp, stablehlo::ReshapeOp>([&](auto op) {
               chain.push_back({currentOp, nullptr, nullptr});
-              return transposeOp.getOperand().getDefiningOp();
+              return op.getOperand().getDefiningOp();
             })
             .Case<stablehlo::BroadcastInDimOp>(
                 [&](auto broadcastOp) -> Operation * {
@@ -1980,6 +1980,44 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
                 }
               }
               return true;
+            })
+            .Case<stablehlo::ReshapeOp>([&](auto reshapeOp) {
+              auto inputType = reshapeOp.getOperand().getType();
+              auto outputType = reshapeOp.getType();
+              if (!inputType.hasStaticShape() || !outputType.hasStaticShape() ||
+                  result.dimension < 0 ||
+                  result.dimension >= inputType.getRank())
+                return false;
+
+              auto inputShape = inputType.getShape();
+              auto outputShape = outputType.getShape();
+              if (llvm::is_contained(inputShape, 0) ||
+                  llvm::is_contained(outputShape, 0))
+                return false;
+
+              // At a linear position p, the iota coordinate is
+              // (p / stride) % extent. Reshaping preserves it when both the
+              // extent and the product of trailing dimensions stay the same.
+              // Other dimensions may be regrouped, including inserting or
+              // removing unit dimensions, but the varying axis cannot split
+              // or merge with another axis.
+              int64_t inputStride = 1;
+              for (int64_t size : inputShape.drop_front(result.dimension + 1))
+                if (llvm::MulOverflow(inputStride, size, inputStride))
+                  return false;
+
+              int64_t outputStride = 1;
+              for (int64_t dim = outputType.getRank() - 1; dim >= 0; --dim) {
+                if (outputShape[dim] == inputShape[result.dimension] &&
+                    outputStride == inputStride) {
+                  result.dimension = dim;
+                  return true;
+                }
+                if (llvm::MulOverflow(outputStride, outputShape[dim],
+                                      outputStride))
+                  return false;
+              }
+              return false;
             })
             .Case<stablehlo::BroadcastInDimOp>([&](auto broadcastOp) {
               auto broadcastDims = broadcastOp.getBroadcastDimensions();
