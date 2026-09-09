@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt %s -simple-cycle-analysis | FileCheck %s
 module {
    func.func @foo(%b0 : i64, %a0: i64) -> i64 {
       %cond = arith.cmpi eq, %b0, %a0 : i64

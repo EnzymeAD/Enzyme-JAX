@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt %s -simple-cycle-analysis | FileCheck %s
 module {
    func.func @foo(%b0 : i64, %a0: i64) -> i64 {
       %cond = arith.cmpi eq, %b0, %a0 : i64
@@ -35,23 +35,34 @@ module {
 }
 
 // CHECK: module {
-// CHECK-NEXT:  func.func @foo() {
-// CHECK-NEXT:    return
+// CHECK-NEXT:  func.func @foo(%arg0: i64, %arg1: i64) -> i64 {
+// CHECK-NEXT:    %0 = arith.cmpi eq, %arg0, %arg1 : i64
+// CHECK-NEXT:    %1 = scf.if %0 -> (i64) {
+// CHECK-NEXT:      %2 = arith.muli %arg1, %arg1 : i64
+// CHECK-NEXT:      %3 = arith.muli %2, %2 : i64
+// CHECK-NEXT:      %4 = arith.muli %3, %3 : i64
+// CHECK-NEXT:      scf.yield %4 : i64
+// CHECK-NEXT:    } else {
+// CHECK-NEXT:      scf.yield %arg1 : i64
+// CHECK-NEXT:    }
+// CHECK-NEXT:    return %1 : i64
 // CHECK-NEXT:  }
 // CHECK-NEXT:  perfify.assumptions {
-// CHECK-NEXT:    perfify.cost "arith.mul" 3 : i64
+// CHECK-NEXT:    perfify.cost "arith.muli" 3 : i64
 // CHECK-NEXT:    perfify.cost "func.return" 0 : i64
 // CHECK-NEXT:    perfify.cost "scf.yield" 0 : i64
+// CHECK-NEXT:    perfify.cost "arith.cmpi" 0 : i64
+// CHECK-NEXT:    perfify.cost "scf.if" 0 : i64
 // CHECK-NEXT:    perfify.conditions @foo true pre {
 // CHECK-NEXT:      %0 = perfify.arg 0
-// CHECK-NEXT:      %c0_i64 = arith.constant 0 : i64
-// CHECK-NEXT:      %1 = arith.cmpi eq, %c0_i64, %0 : i64
-// CHECK-NEXT:      perfify.assume %1 {satres = true}
+// CHECK-NEXT:      %1 = perfify.constant_cost 0 : !perfify.cost
+// CHECK-NEXT:      %2 = perfify.cmp eq, %1, %0
+// CHECK-NEXT:      perfify.assume %2 {satres = true}
 // CHECK-NEXT:    } post {
-// CHECK-NEXT:      %0 = perfify.arg 0
-// CHECK-NEXT:      %c0_i64 = arith.constant 0 : i64
-// CHECK-NEXT:      %1 = arith.cmpi eq, %c0_i64, %0 : i64
-// CHECK-NEXT:      perfify.assume %1 {satres = true}
+// CHECK-NEXT:      %0 = perfify.fn_cost : !perfify.cost
+// CHECK-NEXT:      %1 = perfify.constant_cost 9 : !perfify.cost
+// CHECK-NEXT:      %2 = perfify.cmp eq, %0, %1
+// CHECK-NEXT:      perfify.assume %2 {satres = true}
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
 // CHECK-NEXT: }
