@@ -3451,22 +3451,79 @@ static bool splitBufferBranchAccesses(Operation *f) {
 }
 
 // A select between two constants, so that each arm names a place of its own.
-static arith::SelectOp selectOfConstants(Value v) {
-  auto sel = v.getDefiningOp<arith::SelectOp>();
-  Attribute cst;
-  if (!sel || !sel.getCondition().getType().isInteger(1) ||
-      !matchPattern(sel.getTrueValue(), m_Constant(&cst)) ||
-      !matchPattern(sel.getFalseValue(), m_Constant(&cst)))
-    return nullptr;
-  return sel;
+// A choice between constants: a constant, a select on an i1 between such
+// choices, or a result of an if with an else region whose arms yield such
+// choices.
+static bool isChoiceOfConstants(Value value) {
+  SmallVector<Value> worklist{value};
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    Attribute cst;
+    if (matchPattern(current, m_Constant(&cst)))
+      continue;
+    if (auto sel = current.getDefiningOp<arith::SelectOp>()) {
+      if (!sel.getCondition().getType().isInteger(1))
+        return false;
+      worklist.push_back(sel.getTrueValue());
+      worklist.push_back(sel.getFalseValue());
+      continue;
+    }
+    auto result = dyn_cast<OpResult>(current);
+    if (!result || !isa<scf::IfOp, affine::AffineIfOp>(result.getOwner()) ||
+        result.getOwner()->getRegion(1).empty())
+      return false;
+    for (Region &arm : result.getOwner()->getRegions())
+      worklist.push_back(
+          arm.front().getTerminator()->getOperand(result.getResultNumber()));
+  }
+  return true;
 }
 
-// An access indexed by a select between constants lands in one of two slots
-// the forwarding could match, yet names neither. When every user of the
-// allocation is an access at a constant index or at such a select, each
-// select-indexed access becomes a branch on the select's condition around an
-// access at each constant, and the forwarding then sees only constant
-// indices. Nested selects are split one index at a time, on successive
+// The branch making the same choice as `choice`, with `types` as results.
+static Operation *createBranchLike(OpBuilder &b, Location loc, Value choice,
+                                   TypeRange types) {
+  if (auto sel = choice.getDefiningOp<arith::SelectOp>())
+    return scf::IfOp::create(b, loc, types, sel.getCondition(),
+                             /*withElseRegion=*/true);
+  Operation *owner = cast<OpResult>(choice).getOwner();
+  if (auto ifOp = dyn_cast<scf::IfOp>(owner))
+    return scf::IfOp::create(b, loc, types, ifOp.getCondition(),
+                             /*withElseRegion=*/true);
+  auto ifOp = cast<affine::AffineIfOp>(owner);
+  return affine::AffineIfOp::create(b, loc, types, ifOp.getIntegerSet(),
+                                    ifOp.getOperands(),
+                                    /*withElseRegion=*/true);
+}
+
+// What `choice` chooses in arm `arm` of the branch it is.
+static Value armOf(Value choice, unsigned arm) {
+  if (auto sel = choice.getDefiningOp<arith::SelectOp>())
+    return arm == 0 ? sel.getTrueValue() : sel.getFalseValue();
+  auto result = cast<OpResult>(choice);
+  return result.getOwner()->getRegion(arm).front().getTerminator()->getOperand(
+      result.getResultNumber());
+}
+
+// Yields `values` from the arm `block` of `branch`, after what the arm holds.
+static void yieldFrom(OpBuilder &b, Location loc, Operation *branch,
+                      Block *block, ValueRange values) {
+  if (!block->empty() && block->back().hasTrait<OpTrait::IsTerminator>()) {
+    assert(values.empty());
+    return;
+  }
+  b.setInsertionPointToEnd(block);
+  if (isa<affine::AffineIfOp>(branch))
+    affine::AffineYieldOp::create(b, loc, values);
+  else
+    scf::YieldOp::create(b, loc, values);
+}
+
+// An access indexed by a choice between constants lands in one of the slots
+// the forwarding could match, yet names none. When every user of the
+// allocation is an access at a constant index or at such a choice, each
+// choice-indexed access becomes the branches of the choice around an access
+// at each constant, and the forwarding then sees only constant indices.
+// Several choice-indexed operands are split one at a time, on successive
 // rounds.
 static bool splitSelectIndexedAccesses(Value AI) {
   auto constantIndices = [](ValueRange indices) {
@@ -3512,7 +3569,7 @@ static bool splitSelectIndexedAccesses(Value AI) {
         Attribute cst;
         if (matchPattern(idx, m_Constant(&cst)))
           continue;
-        if (!selectOfConstants(idx))
+        if (!isChoiceOfConstants(idx))
           return false;
         split = true;
       }
@@ -3523,27 +3580,46 @@ static bool splitSelectIndexedAccesses(Value AI) {
 
   for (Operation *op : toSplit) {
     OpOperand *chosen = nullptr;
-    for (OpOperand &operand : op->getOpOperands())
-      if (selectOfConstants(operand.get())) {
+    for (OpOperand &operand : op->getOpOperands()) {
+      Attribute cst;
+      if (!matchPattern(operand.get(), m_Constant(&cst)) &&
+          isChoiceOfConstants(operand.get())) {
         chosen = &operand;
         break;
       }
-    auto sel = cast<arith::SelectOp>(chosen->get().getDefiningOp());
-    OpBuilder b(op);
-    auto ifOp = scf::IfOp::create(b, op->getLoc(), op->getResultTypes(),
-                                  sel.getCondition(), /*withElseRegion=*/true);
-    Value arms[2] = {sel.getTrueValue(), sel.getFalseValue()};
-    for (unsigned arm = 0; arm < 2; ++arm) {
-      Block *block = &ifOp->getRegion(arm).front();
-      b.setInsertionPointToStart(block);
-      Operation *cloned = b.clone(*op);
-      cloned->setOperand(chosen->getOperandNumber(), arms[arm]);
-      if (op->getNumResults()) {
-        b.setInsertionPointToEnd(block);
-        scf::YieldOp::create(b, op->getLoc(), cloned->getResults());
-      }
     }
-    op->replaceAllUsesWith(ifOp.getResults());
+    Location loc = op->getLoc();
+    OpBuilder b(op);
+    Operation *root =
+        createBranchLike(b, loc, chosen->get(), op->getResultTypes());
+    // Each arm holds the access at the constant its choice chooses there, or
+    // the branch of a further choice.
+    struct Arm {
+      Operation *branch;
+      unsigned arm;
+      Value choice;
+    };
+    SmallVector<Arm> worklist{{root, 0, chosen->get()},
+                              {root, 1, chosen->get()}};
+    while (!worklist.empty()) {
+      Arm item = worklist.pop_back_val();
+      Block *block = &item.branch->getRegion(item.arm).front();
+      Value picked = armOf(item.choice, item.arm);
+      b.setInsertionPointToStart(block);
+      Attribute cst;
+      if (matchPattern(picked, m_Constant(&cst))) {
+        Operation *cloned = b.clone(*op);
+        cloned->setOperand(chosen->getOperandNumber(), picked);
+        yieldFrom(b, loc, item.branch, block, cloned->getResults());
+        continue;
+      }
+      Operation *nested =
+          createBranchLike(b, loc, picked, op->getResultTypes());
+      yieldFrom(b, loc, item.branch, block, nested->getResults());
+      worklist.push_back({nested, 0, picked});
+      worklist.push_back({nested, 1, picked});
+    }
+    op->replaceAllUsesWith(root->getResults());
     op->erase();
   }
   return !toSplit.empty();
