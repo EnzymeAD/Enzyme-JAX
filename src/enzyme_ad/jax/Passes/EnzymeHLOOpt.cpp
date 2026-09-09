@@ -3125,6 +3125,8 @@ struct SliceBroadcast final
 
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
         op, op.getType(), tobcast, bcast.getBroadcastDimensions());
+    if (innerSlice)
+      rewriter.eraseOp(bcast);
     return success();
   }
 };
@@ -3154,6 +3156,7 @@ struct SliceTransposeBase final
     auto sliceOp = sliceTransposeHelper(transpose, rewriter, op);
     rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
         op, sliceOp, transpose.getPermutation());
+    rewriter.eraseOp(transpose);
     return success();
   }
 };
@@ -3706,6 +3709,7 @@ struct SliceElementwise final
           elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
           TypeRange(op->getResult(0).getType()), elem->getAttrs(), {}, {});
       rewriter.replaceOp(op, nex);
+      rewriter.eraseOp(elem);
       return success();
     }
 
@@ -3791,6 +3795,7 @@ struct SliceElementwise final
       rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(sl, nex->getResult(0),
                                                       sstarts, sstops, sints);
     }
+    rewriter.eraseOp(elem);
     return success();
   }
 };
@@ -12987,6 +12992,8 @@ struct SliceReshapeTranspose final
         rewriter, transpose.getLoc(), newslice, transpose.getPermutation());
     rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
                                                       newtransp);
+    rewriter.eraseOp(reshape);
+    rewriter.eraseOp(transpose);
     return success();
   }
 };
@@ -23365,9 +23372,8 @@ struct SliceSelect
         rewriter, sliceOp.getLoc(), slicedPred, slicedOnTrue, slicedOnFalse);
 
     rewriter.replaceOp(sliceOp, newSelectOp.getResult());
-
+    rewriter.eraseOp(selOp);
     return success();
-    ;
   }
 };
 
