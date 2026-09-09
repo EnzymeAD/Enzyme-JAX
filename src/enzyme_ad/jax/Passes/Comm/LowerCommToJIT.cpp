@@ -124,8 +124,8 @@ struct LowerCommMpiConstantOpToJIT
     }
 
     auto value = ::enzymexla::lookup_symbol(name.data());
-    if (!value)
-      return rewriter.notifyMatchFailure(op, name + " symbol not found");
+    if (auto err = value.takeError())
+      return rewriter.notifyMatchFailure(op, toString(std::move(err)));
 
     auto constant_attr = SplatElementsAttr::get(
         RankedTensorType::get({}, rewriter.getIntegerType(64)),
@@ -637,9 +637,8 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
         op.getBuffer().getType().getElementType(),
         /*allow_cast=*/true);
     auto datatype_val = ::enzymexla::lookup_symbol(datatype_name);
-    if (!datatype_val)
-      return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
-                                                 " symbol not found");
+    if (auto err = datatype_val.takeError())
+      return rewriter.notifyMatchFailure(op, toString(std::move(err)));
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
@@ -781,9 +780,8 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
         op.getBuffer().getType().getElementType(),
         /*allow_cast=*/true);
     auto datatype_val = ::enzymexla::lookup_symbol(datatype_name);
-    if (!datatype_val)
-      return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
-                                                 " symbol not found");
+    if (auto err = datatype_val.takeError())
+      return rewriter.notifyMatchFailure(op, toString(std::move(err)));
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
@@ -937,9 +935,8 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
         convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
                                          /*allow_cast=*/true);
     auto datatype_val = ::enzymexla::lookup_symbol(datatype_name);
-    if (!datatype_val)
-      return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
-                                                 " symbol not found");
+    if (auto err = datatype_val.takeError())
+      return rewriter.notifyMatchFailure(op, toString(std::move(err)));
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
@@ -1093,9 +1090,8 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
         convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
                                          /*allow_cast=*/true);
     auto datatype_val = ::enzymexla::lookup_symbol(datatype_name);
-    if (!datatype_val)
-      return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
-                                                 " symbol not found");
+    if (auto err = datatype_val.takeError())
+      return rewriter.notifyMatchFailure(op, toString(std::move(err)));
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
@@ -1440,9 +1436,8 @@ struct LowerCommMpiAllreduceOpToJIT
         convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
                                          /*allow_cast=*/false);
     auto datatype_val = ::enzymexla::lookup_symbol(datatype_name);
-    if (!datatype_val)
-      return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
-                                                 " symbol not found");
+    if (auto err = datatype_val.takeError())
+      return rewriter.notifyMatchFailure(op, toString(std::move(err)));
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
@@ -1452,9 +1447,8 @@ struct LowerCommMpiAllreduceOpToJIT
     auto mpi_op_name =
         comm::stringifyMpiOpEnum(adaptor.getReduceOp().getValue());
     auto mpi_op_val = ::enzymexla::lookup_symbol(mpi_op_name.data());
-    if (!mpi_op_val)
-      return rewriter.notifyMatchFailure(op, std::string(mpi_op_name) +
-                                                 " symbol not found");
+    if (auto err = mpi_op_val.takeError())
+      return rewriter.notifyMatchFailure(op, toString(std::move(err)));
 
     Value mpi_op = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
@@ -1590,9 +1584,8 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
         convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
                                          /*allow_cast=*/true);
     auto datatype_val = ::enzymexla::lookup_symbol(datatype_name);
-    if (!datatype_val)
-      return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
-                                                 " symbol not found");
+    if (auto err = datatype_val.takeError())
+      return rewriter.notifyMatchFailure(op, toString(std::move(err)));
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
