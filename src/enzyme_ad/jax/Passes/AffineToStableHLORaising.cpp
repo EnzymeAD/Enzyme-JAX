@@ -5388,11 +5388,91 @@ struct AffineToStableHLORaisingPass
   // raising then iterates, leaving the constant-extent dimensions to raise as
   // axes. The tag rides onto the stablehlo.while so downstream passes know
   // the iterations commute.
+  // The bound the relation `v REL C` puts on v when it holds, or when its
+  // negation holds.
+  static std::optional<int64_t> relationBound(arith::CmpIOp cmp, Value v,
+                                              bool holds) {
+    APInt cst;
+    bool onLhs =
+        cmp.getLhs() == v && matchPattern(cmp.getRhs(), m_ConstantInt(&cst));
+    if (!onLhs &&
+        !(cmp.getRhs() == v && matchPattern(cmp.getLhs(), m_ConstantInt(&cst))))
+      return std::nullopt;
+    arith::CmpIPredicate pred =
+        onLhs ? cmp.getPredicate() : swapPredicate(cmp.getPredicate());
+    if (!holds)
+      pred = arith::invertPredicate(pred);
+    int64_t c = cst.getSExtValue();
+    switch (pred) {
+    case arith::CmpIPredicate::eq:
+    case arith::CmpIPredicate::sle:
+    case arith::CmpIPredicate::ule:
+      return c;
+    case arith::CmpIPredicate::slt:
+    case arith::CmpIPredicate::ult:
+      return c - 1;
+    default:
+      return std::nullopt;
+    }
+  }
+
+  // Upper bound on `v` from the guards dominating `anchor`: a verify
+  // `if (v REL C) <noreturn>` leaves the complementary relation holding on
+  // every path that reaches the anchor, and inside the surviving branch of an
+  // enclosing `if (v REL C)` the relation holds.
+  static std::optional<int64_t> guardBound(Value v, Operation *anchor) {
+    if (!anchor)
+      return std::nullopt;
+    std::optional<int64_t> bound;
+    auto aborts = [](Region &region) {
+      return region
+          .walk([](LLVM::UnreachableOp) { return WalkResult::interrupt(); })
+          .wasInterrupted();
+    };
+    for (Operation *user : v.getUsers()) {
+      auto cmp = dyn_cast<arith::CmpIOp>(user);
+      if (!cmp)
+        continue;
+      for (Operation *condUser : cmp->getUsers()) {
+        auto ifOp = dyn_cast<scf::IfOp>(condUser);
+        if (!ifOp || ifOp.getCondition() != cmp.getResult())
+          continue;
+        bool thenAborts = aborts(ifOp.getThenRegion());
+        bool elseAborts =
+            !ifOp.getElseRegion().empty() && aborts(ifOp.getElseRegion());
+        if (thenAborts == elseAborts)
+          continue;
+        Operation *a = anchor;
+        while (a && a->getBlock() != ifOp->getBlock())
+          a = a->getParentOp();
+        if (!a || a == ifOp || !ifOp->isBeforeInBlock(a))
+          continue;
+        if (auto b = relationBound(cmp, v, /*holds=*/elseAborts))
+          bound = std::min(bound.value_or(*b), *b);
+      }
+    }
+    for (Operation *cur = anchor; cur->getParentOp();
+         cur = cur->getParentOp()) {
+      auto ifOp = dyn_cast<scf::IfOp>(cur->getParentOp());
+      if (!ifOp)
+        continue;
+      auto cmp = ifOp.getCondition().getDefiningOp<arith::CmpIOp>();
+      if (!cmp)
+        continue;
+      bool inThen = cur->getParentRegion() == &ifOp.getThenRegion();
+      if (auto b = relationBound(cmp, v, /*holds=*/inThen))
+        bound = std::min(bound.value_or(*b), *b);
+    }
+    return bound;
+  }
+
   // The constant upper bound of an extent value, where one can be derived:
-  // the value itself when constant, or the constant side of a min it is
-  // clamped by (MFEM's block sizes arrive as min(1 << log2(N), 256)).
-  static std::optional<int64_t> derivedExtentBound(Value v,
-                                                   unsigned depth = 0) {
+  // the value itself when constant, the constant side of a min it is
+  // clamped by (MFEM's block sizes arrive as min(1 << log2(N), 256)), the
+  // arithmetic the launch plumbing wraps it in, or a guard dominating
+  // `anchor`.
+  static std::optional<int64_t>
+  derivedExtentBound(Value v, unsigned depth = 0, Operation *anchor = nullptr) {
     if (depth > 8)
       return std::nullopt;
     while (true) {
@@ -5409,28 +5489,93 @@ struct AffineToStableHLORaisingPass
     APInt cst;
     if (matchPattern(v, m_ConstantInt(&cst)))
       return cst.getSExtValue();
-    if (auto mn = v.getDefiningOp<arith::MinSIOp>()) {
-      auto l = derivedExtentBound(mn.getLhs(), depth + 1);
-      auto r = derivedExtentBound(mn.getRhs(), depth + 1);
+    Operation *def = v.getDefiningOp();
+    auto operandBound = [&](unsigned i) {
+      return derivedExtentBound(def->getOperand(i), depth + 1, anchor);
+    };
+    // A min is bounded by either bounded side; a max or a select needs both.
+    if (isa_and_nonnull<arith::MinSIOp, arith::MinUIOp, LLVM::SMinOp,
+                        LLVM::UMinOp>(def)) {
+      auto l = operandBound(0), r = operandBound(1);
       if (l && r)
         return std::min(*l, *r);
       return l ? l : r;
     }
-    if (auto mn = v.getDefiningOp<arith::MinUIOp>()) {
-      auto l = derivedExtentBound(mn.getLhs(), depth + 1);
-      auto r = derivedExtentBound(mn.getRhs(), depth + 1);
+    if (isa_and_nonnull<arith::MaxSIOp, arith::MaxUIOp, LLVM::SMaxOp,
+                        LLVM::UMaxOp, arith::SelectOp>(def)) {
+      unsigned first = isa<arith::SelectOp>(def);
+      auto l = operandBound(first), r = operandBound(first + 1);
       if (l && r)
-        return std::min(*l, *r);
-      return l ? l : r;
+        return std::max(*l, *r);
+      return std::nullopt;
     }
-    return std::nullopt;
+    if (isa_and_nonnull<arith::ExtUIOp, arith::ExtSIOp>(def))
+      return operandBound(0);
+    APInt k;
+    if (auto t = dyn_cast_or_null<arith::TruncIOp>(def)) {
+      // dim3 packing replicates a 32-bit dim into both halves of an i64 as
+      // x * 0x100000001; either half recovers the dim.
+      if (auto mul = t.getIn().getDefiningOp<arith::MulIOp>())
+        if (matchPattern(mul.getRhs(), m_ConstantInt(&k)) &&
+            k.getZExtValue() == 0x100000001ULL)
+          return derivedExtentBound(mul.getLhs(), depth + 1, anchor);
+      auto b = operandBound(0);
+      unsigned w = t.getType().getIntOrFloatBitWidth();
+      if (b && *b >= 0 && (w >= 63 || *b < (int64_t(1) << w)))
+        return b;
+      return std::nullopt;
+    }
+    if (auto sh = dyn_cast_or_null<arith::ShRUIOp>(def)) {
+      if (matchPattern(sh.getRhs(), m_ConstantInt(&k)) &&
+          k.getZExtValue() < 63) {
+        auto b = operandBound(0);
+        if (b && *b >= 0)
+          return *b >> k.getZExtValue();
+      }
+      return std::nullopt;
+    }
+    // dim3 packing with a constant second half arrives as a disjoint or:
+    // either half of (a | c) recovers its own dim. a <= b does not order
+    // a|c against b|c bitwise; a|c <= a+c <= b+c.
+    if (auto orOp = dyn_cast_or_null<arith::OrIOp>(def)) {
+      if (matchPattern(orOp.getRhs(), m_ConstantInt(&k)) &&
+          k.getSExtValue() >= 0) {
+        auto b = operandBound(0);
+        if (b && *b >= 0)
+          return *b + k.getSExtValue();
+      }
+      return std::nullopt;
+    }
+    // Launch dims are non-negative by construction, so a product of two
+    // bounded dims (a dof count like 2*(D1D-1)*D1D) stays under the product
+    // of the bounds.
+    if (auto mul = dyn_cast_or_null<arith::MulIOp>(def)) {
+      auto l = operandBound(0);
+      auto r = matchPattern(mul.getRhs(), m_ConstantInt(&k))
+                   ? std::optional<int64_t>(k.getSExtValue())
+                   : operandBound(1);
+      if (l && r && *l >= 0 && *r >= 0 && (*l == 0 || *r <= INT64_MAX / *l))
+        return *l * *r;
+      return std::nullopt;
+    }
+    if (isa_and_nonnull<arith::AddIOp, arith::SubIOp>(def)) {
+      if (!matchPattern(def->getOperand(1), m_ConstantInt(&k)))
+        return std::nullopt;
+      auto b = operandBound(0);
+      if (!b)
+        return std::nullopt;
+      return isa<arith::AddIOp>(def) ? *b + k.getSExtValue()
+                                     : *b - k.getSExtValue();
+    }
+    return guardBound(v, anchor);
   }
 
   // A parallel axis whose extent is dynamic but provably bounded (a block
-  // size clamped by a min against a constant) batches at the bound instead
-  // of peeling to a serial loop: the axis becomes constant-extent and the
-  // body sits behind an `iv < extent` guard, which the masking machinery
-  // already understands. Barriers over the axis then stay batched no-ops.
+  // size clamped by a min against a constant, or capped by a guard) batches
+  // at the bound instead of peeling to a serial loop: the axis becomes
+  // constant-extent and the body sits behind an `iv < extent` guard, which
+  // the masking machinery already understands. Barriers over the axis then
+  // stay batched no-ops.
   static void boundParallelAxes(Operation *root) {
     SmallVector<affine::AffineParallelOp> worklist;
     root->walk([&](affine::AffineParallelOp par) { worklist.push_back(par); });
@@ -5453,13 +5598,15 @@ struct AffineToStableHLORaisingPass
         auto um = par.getUpperBoundMap(i);
         if (um.getNumResults() != 1)
           continue;
-        auto se = dyn_cast<AffineSymbolExpr>(um.getResult(0));
-        if (!se)
+        Value ext;
+        if (auto sym = dyn_cast<AffineSymbolExpr>(um.getResult(0)))
+          ext =
+              par.getUpperBoundsOperands()[um.getNumDims() + sym.getPosition()];
+        else if (auto dim = dyn_cast<AffineDimExpr>(um.getResult(0)))
+          ext = par.getUpperBoundsOperands()[dim.getPosition()];
+        else
           continue;
-        Value ext =
-            par.getUpperBoundsOperands()[par.getUpperBoundsMap().getNumDims() +
-                                         se.getPosition()];
-        if (auto c = derivedExtentBound(ext))
+        if (auto c = derivedExtentBound(ext, 0, par))
           bounded.push_back({i, *c, ext});
       }
       if (bounded.empty())
