@@ -45,13 +45,9 @@ namespace {
 // Emitted inline instead of creating a math::IsNaNOp for RaiseIsNaN to pick up:
 // the pass is a single walk, so ops created by a pattern are never revisited.
 static Value emitIsNaN(OpBuilder &builder, Location loc, Value val) {
-  Value isFinite = stablehlo::IsFiniteOp::create(builder, loc, val);
-  Value isNotFinite = stablehlo::NotOp::create(builder, loc, isFinite);
-
-  Value isNotInf = stablehlo::NotOp::create(
-      builder, loc, chlo::IsInfOp::create(builder, loc, val));
-
-  return stablehlo::AndOp::create(builder, loc, isNotFinite, isNotInf);
+  return stablehlo::CompareOp::create(builder, loc, val, val,
+                                      stablehlo::ComparisonDirection::NE,
+                                      stablehlo::ComparisonType::FLOAT);
 }
 
 template <typename SrcOp, typename StableHLOOp, typename MHLOOp>
@@ -507,10 +503,7 @@ struct RaiseCmpI : public OpRewritePattern<arith::CmpIOp> {
     // Booleans (i1) and unsigned integers lower to PRED/unsigned HLO types,
     // which require an UNSIGNED comparison type regardless of the predicate.
     auto elemType = operandType.getElementType();
-    bool unsignedPredicate = predicate == arith::CmpIPredicate::ugt ||
-                             predicate == arith::CmpIPredicate::uge ||
-                             predicate == arith::CmpIPredicate::ult ||
-                             predicate == arith::CmpIPredicate::ule;
+    bool unsignedPredicate = isUnsignedPredicate(predicate);
     stablehlo::ComparisonType compType =
         (unsignedPredicate || elemType.isUnsignedInteger() ||
          elemType.isInteger(1))
@@ -603,6 +596,17 @@ struct RaiseCmpF : public OpRewritePattern<arith::CmpFOp> {
       case arith::CmpFPredicate::ONE:
         direction = stablehlo::ComparisonDirection::NE;
         break;
+      case arith::CmpFPredicate::UNO: {
+        Value isNaNLHS = emitIsNaN(rewriter, cmpOp.getLoc(), cmpOp.getLhs());
+        if (cmpOp.getLhs() == cmpOp.getRhs())
+          rewriter.replaceAllUsesWith(cmpOp.getResult(), isNaNLHS);
+        else {
+          Value isNaNRHS = emitIsNaN(rewriter, cmpOp.getLoc(), cmpOp.getRhs());
+          rewriter.replaceOpWithNewOp<stablehlo::OrOp>(cmpOp, isNaNLHS,
+                                                       isNaNRHS);
+        }
+        return success();
+      }
       default:
         return failure();
       }
@@ -694,6 +698,7 @@ struct ArithRaisingPass
         RaiseUnary<math::CountLeadingZerosOp, stablehlo::ClzOp, mhlo::ClzOp>,
         RaiseUnary<math::CtPopOp,       stablehlo::PopulationCountOp, mhlo::PopulationCountOp>,
         RaiseUnary<math::AbsFOp,        stablehlo::AbsOp,      mhlo::AbsOp>,
+        RaiseUnary<math::AbsIOp,        stablehlo::AbsOp,      mhlo::AbsOp>,
         RaiseUnary<math::IsFiniteOp,    stablehlo::IsFiniteOp, mhlo::IsFiniteOp>,
         RaiseUnary<math::CeilOp,        stablehlo::CeilOp,     mhlo::CeilOp>,
         RaiseUnary<math::FloorOp,       stablehlo::FloorOp,    mhlo::FloorOp>,

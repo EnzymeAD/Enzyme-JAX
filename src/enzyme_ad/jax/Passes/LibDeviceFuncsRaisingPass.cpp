@@ -700,6 +700,17 @@ using ConvertFMFMathFromLLVMPattern =
 
 using AbsFOpLowering =
     ConvertFMFMathFromLLVMPattern<math::AbsFOp, LLVM::FAbsOp>;
+
+// llvm.intr.abs carries an is_int_min_poison flag arith has no place for;
+// drop it and raise to math.absi.
+struct AbsIOpRaising : public OpRewritePattern<LLVM::AbsOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(LLVM::AbsOp op,
+                                PatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<math::AbsIOp>(op, op.getIn());
+    return success();
+  }
+};
 using CeilOpLowering =
     ConvertFMFMathFromLLVMPattern<math::CeilOp, LLVM::FCeilOp>;
 using CopySignOpLowering =
@@ -1415,6 +1426,7 @@ void populateLLVMToMathPatterns(MLIRContext *context,
   // From
   // https://github.com/llvm/llvm-project/blob/7d8b4eb0ead277f41ff69525ed807f9f6e227f37/mlir/lib/Conversion/MathToLLVM/MathToLLVM.cpp#L306
   // patterns.add<FTruncOpLowering>(converter);
+  patterns.add<AbsIOpRaising>(patterns.getContext());
   patterns.add<AbsFOpLowering,
                // AbsIOpLowering,
                CeilOpLowering, CopySignOpLowering, CosOpLowering,

@@ -61,6 +61,14 @@ def ApplyAndSimplifyPatterns : EnzymeHLOPatternOp<
     "and_simplify"> {
   let patterns = ["AndSimplify"];
 }
+def ApplyReduceOrAndPadPatterns : EnzymeHLOPatternOp<
+    "reduce_or_and_pad"> {
+  let patterns = ["ReduceOrAndPad"];
+}
+def ApplyReduceOrAndPatterns : EnzymeHLOPatternOp<
+    "reduce_or_and"> {
+  let patterns = ["ReduceOrAnd"];
+}
 def ApplyMaxSimplifyPatterns : EnzymeHLOPatternOp<
     "max_simplify"> {
   let patterns = ["MaxSimplify"];
@@ -749,6 +757,11 @@ def ApplyBinBroadcastSplatMulPatterns : EnzymeHLOPatternOp<
 def ApplyElementwiseAllTransposeOperandsSimplifyPatterns : EnzymeHLOPatternOp<
     "elementwise_all_transpose_operands_simplify"> {
   let patterns = ["ElementwiseAllTransposeOperandsSimplify"];
+}
+
+def ApplyBroadcastingElementwiseAllTransposeOperandsSimplifyPatterns : EnzymeHLOPatternOp<
+    "broadcasting_elementwise_all_transpose_operands_simplify"> {
+  let patterns = ["BroadcastingElementwiseAllTransposeOperandsSimplify"];
 }
 
 def  AssociativeCommonMulOpReorderingPatterns : EnzymeHLOPatternOp<

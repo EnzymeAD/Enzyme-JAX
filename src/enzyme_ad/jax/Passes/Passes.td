@@ -368,6 +368,29 @@ def HoistAllocasPass : Pass<"hoist-allocas"> {
   ];
 }
 
+def InvokeToCallPass : Pass<"invoke-to-call"> {
+  let summary = "Call, rather than invoke, the callees that cannot unwind";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+  ];
+}
+
+def StripDeadPersonalityPass : Pass<"strip-dead-personality"> {
+  let summary = "Drop the personality of functions that have no landing pad, "
+                "so the inliner accepts them";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+  ];
+}
+
+def DiscardUnreferencedLinkoncePass
+    : Pass<"discard-unreferenced-linkonce"> {
+  let summary = "Erase linkonce function definitions nothing references";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+  ];
+}
+
 def RestorePreserveNVVMPass : Pass<"restore-preserve-nvvm"> {
   let summary = "Undo PreserveNVVM(Begin)'s linkage and inlining fixups once "
                 "the raising has consumed the calls they protected";
@@ -450,6 +473,19 @@ def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
         /*type=*/"bool",
         /*default=*/"true",
         /*description=*/"Whether to run instsimplify">,
+  ];
+}
+
+def SplitBranchedAccessesPass : Pass<"split-branched-accesses"> {
+  let summary = "Do an access whose index a branch chose in each arm instead";
+  let description = [{
+    An access at an index chosen between constants by a branch names no slot
+    the store forwarding can see. Doing it in each arm, at the constant that
+    arm chose, gives a constant index there, and the arithmetic in between
+    rides along and folds.
+  }];
+  let dependentDialects = ["affine::AffineDialect", "arith::ArithDialect",
+                           "memref::MemRefDialect", "scf::SCFDialect",
   ];
 }
 
@@ -614,6 +650,7 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
   let summary = "Lower MPI Ops to LLVM";
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect",
+    "gpu::GPUDialect", 
     "LLVM::LLVMDialect",
   ];
   let options = [
@@ -623,6 +660,12 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
         /*type=*/"std::string",
         /*default=*/"\"cpu\"",
         /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"ncclCommPtr",
+        /*CLI argument=*/"ncclCommPtr",
+        /*type=*/"size_t",
+        /*default=*/"0",
+        /*description=*/"Pointer to nccl communicator instance">,
   ];
 }
 
@@ -930,13 +973,11 @@ def EnzymeLiftControlFlowToSCFPass : Pass<"enzyme-lift-cf-to-scf"> {
 
 def LLVMToAffineAccessPass : Pass<"llvm-to-affine-access"> {
   let summary = "";
-  let dependentDialects = [
-    "LLVM::LLVMDialect",
-    "memref::MemRefDialect",
-    "affine::AffineDialect",
-    "vector::VectorDialect",
-    "enzymexla::EnzymeXLADialect",
-    "vector::VectorDialect",
+  let dependentDialects = ["LLVM::LLVMDialect", "enzyme::EnzymeDialect",
+                           "memref::MemRefDialect", "affine::AffineDialect",
+                           "vector::VectorDialect",
+                           "enzymexla::EnzymeXLADialect",
+                           "vector::VectorDialect",
   ];
 }
 
@@ -1269,6 +1310,14 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            /*default=*/"true",
            /*description=*/
            "Whether to prefer raising to while instead of unrolling">,
+       Option<
+           /*C++ variable name=*/"unroll_budget",
+           /*CLI argument=*/"unroll_budget",
+           /*type=*/"int64_t",
+           /*default=*/"65536",
+           /*description=*/
+           "Raise a constant-bound loop as a while instead of unrolling when "
+           "its nested unrolled op count exceeds this. -1 for no budget">,
   ];
 }
 

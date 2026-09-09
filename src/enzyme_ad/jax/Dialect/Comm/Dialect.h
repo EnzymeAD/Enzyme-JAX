@@ -5,12 +5,14 @@
 
 #include "src/enzyme_ad/jax/Dialect/Comm/CommDialect.h.inc"
 
+#define GET_TYPEDEF_CLASSES
+#include "src/enzyme_ad/jax/Dialect/Comm/Types.h.inc"
+#undef GET_TYPEDEF_CLASSES
+
 #include "src/enzyme_ad/jax/Dialect/Comm/AttrEnums.h.inc"
 
 #define GET_ATTRDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Comm/AttrDefs.h.inc"
-
-#define GET_TYPEDEF_CLASSES
-#include "src/enzyme_ad/jax/Dialect/Comm/Types.h.inc"
+#undef GET_ATTRDEF_CLASSES
 
 #endif // ENZYMEXLA_COMM_DIALECT_H

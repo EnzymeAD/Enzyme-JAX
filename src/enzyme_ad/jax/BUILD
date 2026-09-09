@@ -96,17 +96,14 @@ cc_library(
     name = "xla_ffi",
     srcs =
         [
+            "xla_ffi/cuda/blas.cc",
+            "xla_ffi/cuda/register.cc",
+            "xla_ffi/cuda/throw_error.cc",
+            "xla_ffi/host/mpi.cc",
+            "xla_ffi/host/register.cc",
+            "xla_ffi/host/throw_error.cc",
             "xla_ffi/register.cc",
-        ] + glob(
-            [
-                "xla_ffi/host/**/*.cc",
-                "xla_ffi/cuda/**/*.cc",
-            ],
-            exclude = ["xla_ffi/host/mpi.cc"],
-        ) + select({
-            "@xla//xla/tsl:windows": [],
-            "//conditions:default": ["xla_ffi/host/mpi.cc"],
-        }),
+        ],
     hdrs =
         [
             "xla_ffi/export_macro.h",
@@ -948,6 +945,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":EnzymeXLADialect",
+        "//src/enzyme_ad/jax/Dialect/Comm:CommDialect",
         "@com_google_absl//absl/strings",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:CAPIIRObjects",
@@ -1380,8 +1378,8 @@ cc_library(
         "@llvm-project//mlir:InliningUtils",
         "@llvm-project//mlir:LLVMCommonConversion",
         "@llvm-project//mlir:LLVMDialect",
-        "@llvm-project//mlir:LoopLikeInterface",
         "@llvm-project//mlir:LinalgTransforms",
+        "@llvm-project//mlir:LoopLikeInterface",
         "@llvm-project//mlir:MathDialect",
         "@llvm-project//mlir:MathToLLVM",
         "@llvm-project//mlir:MathToLibm",
@@ -1577,6 +1575,7 @@ cc_library(
 
         # Comm dialect
         "//src/enzyme_ad/jax/Dialect/Comm:CommDialect",
+        "//src/enzyme_ad/jax/Passes/Comm:Passes",
     ],
 )
 

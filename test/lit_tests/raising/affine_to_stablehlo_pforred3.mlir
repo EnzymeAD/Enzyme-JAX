@@ -100,14 +100,10 @@ func.func private @reduce_maximumf(%arg0: memref<10x20xf64, 1>, %arg1: memref<5x
 // CHECK:           %[[VAL_2:.*]] = stablehlo.constant dense<0xFFF0000000000000> : tensor<f64>
 // CHECK:           %[[VAL_3:.*]] = stablehlo.reduce(%[[VAL_1]] init: %[[VAL_2]]) across dimensions = [0] : (tensor<5x10x20xf64>, tensor<f64>) -> tensor<10x20xf64>
 // CHECK:            reducer(%[[VAL_4:.*]]: tensor<f64>, %[[VAL_5:.*]]: tensor<f64>)  {
-// CHECK:             %[[VAL_6:.*]] = stablehlo.is_finite %[[VAL_4]] : (tensor<f64>) -> tensor<i1>
-// CHECK:             %[[VAL_7:.*]] = stablehlo.not %[[VAL_6]] : tensor<i1>
-// CHECK:             %[[VAL_8:.*]] = chlo.is_inf %[[VAL_4]] : tensor<f64> -> tensor<i1>
-// CHECK:             %[[VAL_9:.*]] = stablehlo.not %[[VAL_8]] : tensor<i1>
-// CHECK:             %[[VAL_10:.*]] = stablehlo.and %[[VAL_7]], %[[VAL_9]] : tensor<i1>
-// CHECK:             %[[VAL_11:.*]] = stablehlo.maximum %[[VAL_4]], %[[VAL_5]] : tensor<f64>
-// CHECK:             %[[VAL_12:.*]] = stablehlo.select %[[VAL_10]], %[[VAL_5]], %[[VAL_11]] : tensor<i1>, tensor<f64>
-// CHECK:             stablehlo.return %[[VAL_12]] : tensor<f64>
+// CHECK:             %[[VAL_6:.*]] = stablehlo.compare NE, %[[VAL_4]], %[[VAL_4]], FLOAT {enzymexla.no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<f64>, tensor<f64>) -> tensor<i1>
+// CHECK:             %[[VAL_7:.*]] = stablehlo.maximum %[[VAL_4]], %[[VAL_5]] : tensor<f64>
+// CHECK:             %[[VAL_8:.*]] = stablehlo.select %[[VAL_6]], %[[VAL_5]], %[[VAL_7]] : tensor<i1>, tensor<f64>
+// CHECK:             stablehlo.return %[[VAL_8]] : tensor<f64>
 // CHECK:           }
 // CHECK:           return %[[VAL_3]], %[[VAL_1]] : tensor<10x20xf64>, tensor<5x10x20xf64>
 // CHECK:         }
@@ -150,14 +146,10 @@ func.func private @reduce_minimumf(%arg0: memref<10x20xf64, 1>, %arg1: memref<5x
 // CHECK:           %[[VAL_2:.*]] = stablehlo.constant dense<0x7FF0000000000000> : tensor<f64>
 // CHECK:           %[[VAL_3:.*]] = stablehlo.reduce(%[[VAL_1]] init: %[[VAL_2]]) across dimensions = [0] : (tensor<5x10x20xf64>, tensor<f64>) -> tensor<10x20xf64>
 // CHECK:            reducer(%[[VAL_4:.*]]: tensor<f64>, %[[VAL_5:.*]]: tensor<f64>)  {
-// CHECK:             %[[VAL_6:.*]] = stablehlo.is_finite %[[VAL_4]] : (tensor<f64>) -> tensor<i1>
-// CHECK:             %[[VAL_7:.*]] = stablehlo.not %[[VAL_6]] : tensor<i1>
-// CHECK:             %[[VAL_8:.*]] = chlo.is_inf %[[VAL_4]] : tensor<f64> -> tensor<i1>
-// CHECK:             %[[VAL_9:.*]] = stablehlo.not %[[VAL_8]] : tensor<i1>
-// CHECK:             %[[VAL_10:.*]] = stablehlo.and %[[VAL_7]], %[[VAL_9]] : tensor<i1>
-// CHECK:             %[[VAL_11:.*]] = stablehlo.minimum %[[VAL_4]], %[[VAL_5]] : tensor<f64>
-// CHECK:             %[[VAL_12:.*]] = stablehlo.select %[[VAL_10]], %[[VAL_5]], %[[VAL_11]] : tensor<i1>, tensor<f64>
-// CHECK:             stablehlo.return %[[VAL_12]] : tensor<f64>
+// CHECK:             %[[VAL_6:.*]] = stablehlo.compare NE, %[[VAL_4]], %[[VAL_4]], FLOAT {enzymexla.no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<f64>, tensor<f64>) -> tensor<i1>
+// CHECK:             %[[VAL_7:.*]] = stablehlo.minimum %[[VAL_4]], %[[VAL_5]] : tensor<f64>
+// CHECK:             %[[VAL_8:.*]] = stablehlo.select %[[VAL_6]], %[[VAL_5]], %[[VAL_7]] : tensor<i1>, tensor<f64>
+// CHECK:             stablehlo.return %[[VAL_8]] : tensor<f64>
 // CHECK:           }
 // CHECK:           return %[[VAL_3]], %[[VAL_1]] : tensor<10x20xf64>, tensor<5x10x20xf64>
 // CHECK:         }

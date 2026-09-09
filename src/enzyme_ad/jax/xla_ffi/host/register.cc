@@ -1,9 +1,10 @@
 #include "register.h"
-#include "mpi_ffi.h"
-#include "throw_error.h"
 
 namespace enzymexla {
 namespace ffi_internal {
+
+void registerEnzymeJaXXLAHostMPIFFI();
+void registerEnzymeJaXXLAHostThrowErrorFFI();
 
 void registerEnzymeJaXXLAHostFFI() {
   registerEnzymeJaXXLAHostThrowErrorFFI();

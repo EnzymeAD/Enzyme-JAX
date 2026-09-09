@@ -10,20 +10,22 @@ func.func @test_if_0(%arg0: memref<10xf32>, %arg1: memref<i1>) {
   return
 }
 
-// CHECK-LABEL:   func.func private @test_if_0_raised(
-// CHECK-SAME:                                        %[[VAL_0:.*]]: tensor<10xf32>,
-// CHECK-SAME:                                        %[[VAL_1:.*]]: tensor<i1>) -> (tensor<10xf32>, tensor<i1>) {
-// CHECK:           %[[VAL_2:.*]] = stablehlo.reshape %[[VAL_1]] : (tensor<i1>) -> tensor<i1>
-// CHECK:           %[[VAL_3:.*]] = stablehlo.slice %[[VAL_0]] [0:1] : (tensor<10xf32>) -> tensor<1xf32>
-// CHECK:           %[[VAL_4:.*]] = stablehlo.reshape %[[VAL_3]] : (tensor<1xf32>) -> tensor<f32>
-// CHECK:           %[[VAL_5:.*]] = arith.addf %[[VAL_4]], %[[VAL_4]] : tensor<f32>
-// CHECK:           %[[VAL_6:.*]] = stablehlo.constant dense<0> : tensor<i64>
-// CHECK:           %[[VAL_7:.*]] = stablehlo.broadcast_in_dim %[[VAL_5]], dims = [] : (tensor<f32>) -> tensor<1xf32>
-// CHECK:           %[[VAL_8:.*]] = stablehlo.dynamic_slice %[[VAL_0]], %[[VAL_6]], sizes = [1] : (tensor<10xf32>, tensor<i64>) -> tensor<1xf32>
-// CHECK:           %[[VAL_9:.*]] = stablehlo.reshape %[[VAL_7]] : (tensor<1xf32>) -> tensor<f32>
-// CHECK:           %[[VAL_10:.*]] = stablehlo.reshape %[[VAL_8]] : (tensor<1xf32>) -> tensor<f32>
-// CHECK:           %[[VAL_11:.*]] = stablehlo.select %[[VAL_2]], %[[VAL_9]], %[[VAL_10]] : tensor<i1>, tensor<f32>
-// CHECK:           %[[VAL_12:.*]] = stablehlo.broadcast_in_dim %[[VAL_11]], dims = [] : (tensor<f32>) -> tensor<1xf32>
-// CHECK:           %[[VAL_13:.*]] = stablehlo.dynamic_update_slice %[[VAL_0]], %[[VAL_12]], %[[VAL_6]] : (tensor<10xf32>, tensor<1xf32>, tensor<i64>) -> tensor<10xf32>
-// CHECK:           return %[[VAL_13]], %[[VAL_1]] : tensor<10xf32>, tensor<i1>
-// CHECK:         }
+// CHECK:    func.func private @test_if_0_raised(%[[a1:.+]]: tensor<10xf32>, %[[a2:.+]]: tensor<i1>) -> (tensor<10xf32>, tensor<i1>) {
+// CHECK-NEXT:    %[[a3:.+]] = stablehlo.slice %[[a1]] [0:1] : (tensor<10xf32>) -> tensor<1xf32>
+// CHECK-NEXT:    %[[a4:.+]] = stablehlo.reshape %[[a3]] : (tensor<1xf32>) -> tensor<f32>
+// CHECK-NEXT:    %[[a5:.+]] = arith.addf %[[a4]], %[[a4]] : tensor<f32>
+// CHECK-NEXT:    %[[a6:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a7:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a8:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a9:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a10:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a11:.+]] = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:    %[[a12:.+]] = stablehlo.broadcast_in_dim %[[a5]], dims = [] : (tensor<f32>) -> tensor<1xf32>
+// CHECK-NEXT:    %[[a13:.+]] = stablehlo.slice %[[a1]] [0:1] : (tensor<10xf32>) -> tensor<1xf32>
+// CHECK-NEXT:    %[[a14:.+]] = stablehlo.reshape %[[a12]] : (tensor<1xf32>) -> tensor<f32>
+// CHECK-NEXT:    %[[a15:.+]] = stablehlo.reshape %[[a13]] : (tensor<1xf32>) -> tensor<f32>
+// CHECK-NEXT:    %[[a16:.+]] = stablehlo.select %[[a2]], %[[a14]], %[[a15]] : tensor<i1>, tensor<f32>
+// CHECK-NEXT:    %[[a17:.+]] = stablehlo.broadcast_in_dim %[[a16]], dims = [] : (tensor<f32>) -> tensor<1xf32>
+// CHECK-NEXT:    %[[a18:.+]] = stablehlo.dynamic_update_slice %[[a1]], %[[a17]], %[[a11]] : (tensor<10xf32>, tensor<1xf32>, tensor<i64>) -> tensor<10xf32>
+// CHECK-NEXT:    return %[[a18]], %[[a2]] : tensor<10xf32>, tensor<i1>
+// CHECK-NEXT:  }

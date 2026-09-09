@@ -1065,6 +1065,36 @@ static arith::CmpIPredicate swapPredicate(arith::CmpIPredicate pred) {
   llvm_unreachable("unknown cmpi predicate kind");
 }
 
+/// Whether the predicate compares its operands as unsigned integers.
+static bool isUnsignedPredicate(arith::CmpIPredicate pred) {
+  switch (pred) {
+  case arith::CmpIPredicate::ult:
+  case arith::CmpIPredicate::ule:
+  case arith::CmpIPredicate::ugt:
+  case arith::CmpIPredicate::uge:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/// The signed predicate comparing the same way as `pred`; the same as `pred`
+/// on values both known non-negative.
+static arith::CmpIPredicate signedPredicate(arith::CmpIPredicate pred) {
+  switch (pred) {
+  case arith::CmpIPredicate::ult:
+    return arith::CmpIPredicate::slt;
+  case arith::CmpIPredicate::ule:
+    return arith::CmpIPredicate::sle;
+  case arith::CmpIPredicate::ugt:
+    return arith::CmpIPredicate::sgt;
+  case arith::CmpIPredicate::uge:
+    return arith::CmpIPredicate::sge;
+  default:
+    return pred;
+  }
+}
+
 SmallVector<int64_t> findReshapeInsertionDims(RankedTensorType inputType,
                                               RankedTensorType outputType);
 SmallVector<int64_t> findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
@@ -1481,6 +1511,12 @@ Value ConcatenateOpCreate(
 Value ReshapeOpCreate(
     OpBuilder &builder, Location loc, Value input, ArrayRef<int64_t> shape,
     std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+// A broadcast_in_dim to the input's own shape along the identity mapping is
+// the input.
+Value BroadcastInDimOpCreate(OpBuilder &builder, Location loc, Value input,
+                             ArrayRef<int64_t> shape,
+                             ArrayRef<int64_t> broadcastDimensions);
 
 Value TransposeOpCreate(
     OpBuilder &builder, Location loc, Value input,

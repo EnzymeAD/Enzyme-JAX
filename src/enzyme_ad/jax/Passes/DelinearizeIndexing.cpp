@@ -209,6 +209,32 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
   return success();
 }
 
+/// A buffer named by the shape it was declared with, rather than a view of
+/// something else whose own shape would be the one to rebuild on: one handed
+/// in as a block argument, one allocated here, or a branch between such
+/// buffers -- as a ternary picking one of two shared arrays to index leaves.
+static bool isDeclaredBuffer(Value buffer) {
+  SmallVector<Value> worklist{buffer};
+  SmallPtrSet<Value, 4> seen;
+  while (!worklist.empty()) {
+    Value v = worklist.pop_back_val();
+    if (!seen.insert(v).second)
+      continue;
+    if (isa<BlockArgument>(v))
+      continue;
+    Operation *def = v.getDefiningOp();
+    if (isa<memref::AllocaOp>(def))
+      continue;
+    if (auto sel = dyn_cast<arith::SelectOp>(def)) {
+      worklist.push_back(sel.getTrueValue());
+      worklist.push_back(sel.getFalseValue());
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
 LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
   auto source = atAddr.getSource();
   auto m2p = source.getDefiningOp<enzymexla::Memref2PointerOp>();
@@ -251,27 +277,26 @@ LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
   //                         << " memref loads, " << memrefStores
   //                         << " memref stores, " << others << " others\n");
 
-  if (auto ba = dyn_cast<BlockArgument>(m2p.getSource())) {
-    if (isa<FunctionOpInterface>(ba.getOwner()->getParentOp())) {
-      if (&(ba.getOwner()->getParent()->front()) == ba.getOwner()) {
-
-        auto memref = atAddr.getResult();
-        auto oldMt = cast<MemRefType>(memref.getType());
-
-        if (newMt.getElementType() != oldMt.getElementType())
-          return failure();
-
-        return reshapeMemref2(memref, shape, [&](RewriterBase &rewriter) {
-          rewriter.setInsertionPoint(atAddr);
-
-          atAddr = rewriter.replaceOpWithNewOp<enzymexla::Pointer2MemrefOp>(
-              atAddr, newMt, atAddr.getSource());
-        });
-      }
-    }
+  if (!isDeclaredBuffer(m2p.getSource())) {
+    LLVM_DEBUG(llvm::dbgs() << "Failed: buffer is not one declared here\n");
+    return failure();
   }
 
-  return failure();
+  auto memref = atAddr.getResult();
+  auto oldMt = cast<MemRefType>(memref.getType());
+
+  if (newMt.getElementType() != oldMt.getElementType())
+    return failure();
+
+  // The view's flat index splits over the buffer's shape exactly, by floordiv
+  // and mod, so nothing has to be proven in bounds for the split to mean what
+  // the flat index meant.
+  return reshapeMemref2(memref, shape, [&](RewriterBase &rewriter) {
+    rewriter.setInsertionPoint(atAddr);
+
+    atAddr = rewriter.replaceOpWithNewOp<enzymexla::Pointer2MemrefOp>(
+        atAddr, newMt, atAddr.getSource());
+  });
 }
 
 } // namespace

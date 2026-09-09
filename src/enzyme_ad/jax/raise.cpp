@@ -117,7 +117,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
                                     : "canonicalize-parallel{parallel=false}";
   // clang-format off
   std::string pass_pipeline =
-      "inline{default-pipeline=canonicalize "
+      "invoke-to-call,inline{default-pipeline=canonicalize "
       "max-iterations=4},sroa-wrappers{set_private=false attributor=false},"
       "lift-tessera-annotations,parse-optimization-rules,"
       "libdevice-funcs-raise,"
@@ -140,11 +140,15 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "llvm.func(canonicalize-loops),"
       "canonicalize-scf-for,"
       "" + canonicalize + ",affine-cfg," + canonicalize + ","
+      "split-branched-accesses," + canonicalize + ",polygeist-mem2reg,"
+      "" + canonicalize + ","
       "func.func(canonicalize-loops),"
       "llvm.func(canonicalize-loops),"
       "" + canonicalize + ",llvm-to-affine-access,"
       "" + canonicalize + ",delinearize-indexing," + canonicalize + ",simplify-affine-exprs,"
       "affine-cfg," + canonicalize + ",llvm-to-affine-access," + canonicalize + ","
+      "split-branched-accesses," + canonicalize + ",polygeist-mem2reg,"
+      "" + canonicalize + ","
       "func.func(affine-loop-invariant-code-motion),"
       "" + canonicalize + ",sort-memory,llvm-to-tessera,tessera-apply-pdl,tessera-to-llvm,";
   // Differentiation runs before the backends diverge, so on xla the
@@ -186,7 +190,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     // the primal that carries the user's marker -- and any left behind
     // fail translation to LLVM IR.
     "lower-llvm-ext,"
+    "strip-dead-personality,lower-affine,"
     "inline{default-pipeline=canonicalize max-iterations=4},"
+    "discard-unreferenced-linkonce,affine-cfg,"
     "polygeist-mem2reg," + canonicalize + ",symbol-dce,"
     // canonicalize-parallel here folds away memref.subview ops before gpu-kernel-outlining
     "" + canonicalize + ",cse";
@@ -199,6 +205,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
                        ",llvm-to-affine-access," + canonicalize + ",";
       pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true}," + canonicalize + ",arith-raise{stablehlo=true},"
+      "cse,enzyme-hlo-opt," + canonicalize + ","
       "symbol-dce";
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += ",print{filename="+outfile+".mlir}";
