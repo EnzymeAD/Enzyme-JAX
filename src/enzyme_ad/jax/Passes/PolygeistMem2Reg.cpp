@@ -2229,6 +2229,10 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
 
   SmallPtrSet<Operation *, 4> AliasingStoreOperations;
 
+  SmallVector<std::pair<uint64_t, uint64_t>> writtenRanges;
+
+  bool writeUnknown = false;
+
   LLVM_DEBUG(llvm::dbgs()
              << "Begin forwarding store of " << AI << " to load\n"
              << *AI.getDefiningOp()->getParentOfType<FunctionOpInterface>()
@@ -2282,6 +2286,15 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       }
       // A load naming the slot reads it; one that may only overlap it reads
       // something this knows nothing about, which is no reason to stop.
+      // The bytes of the slot each store lands on, and whether a write may
+      // land where it cannot be told.
+      auto noteWritten = [&](std::optional<uint64_t> at,
+                             std::optional<uint64_t> size) {
+        if (at && size)
+          writtenRanges.emplace_back(*at, *at + *size);
+        else
+          writeUnknown = true;
+      };
       auto matchLoad = [&](Operation *loadOp, OffsetTree accessed) {
         uint64_t at = 0;
         Type read = loadOp->getResult(0).getType();
@@ -2345,7 +2358,12 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << *loadOp << "\n");
       };
       auto matchStore = [&](Operation *storeOp, OffsetTree accessed) {
-        switch (idx.matches(tree.add(accessed, dl), dl)) {
+        OffsetTree stored = tree.add(accessed, dl);
+        Match match = idx.matches(stored, dl);
+        if (match != Match::None)
+          noteWritten(idx.containsAt(stored, dl),
+                      typeSize(stored.getBase(), dl));
+        switch (match) {
         case Match::Exact:
           LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *storeOp << "\n");
           allStoreOps.insert(storeOp);
@@ -2411,6 +2429,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
           if (!isCallNonCapturing(callOp, val, symbolTables)) {
             LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
             AliasingStoreOperations.insert(callOp.getOperation());
+            writeUnknown = true;
             if (!callee || !getNonCapturingFunctions().count(
                                callee.getLeafReference().str()))
               captured = true;
@@ -2420,6 +2439,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
             // is exactly this. The slot's value is unknown after the call.
             LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
             AliasingStoreOperations.insert(callOp.getOperation());
+            writeUnknown = true;
           }
         }
         continue;
@@ -2433,7 +2453,10 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
                   : OffsetTree::unknown();
 
         if (transferDest(user) == val) {
-          switch (idx.matches(touched, dl)) {
+          Match match = idx.matches(touched, dl);
+          if (match != Match::None)
+            noteWritten(idx.containsAt(touched, dl), bytes);
+          switch (match) {
           case Match::Exact:
             // Writing exactly this slot writes a value that is known when what
             // it was written from is: the bytes of a fill, when they are zero,
@@ -2493,11 +2516,13 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       captured = true;
     }
   }
-  if (SharedMemAddr)
+  if (SharedMemAddr) {
+    writeUnknown = true;
     AI.getDefiningOp()->getParentOp()->walk([&](mlir::NVVM::BarrierOp op) {
       LLVM_DEBUG(llvm::dbgs() << "Unknown, potential store: " << *op << "\n");
       AliasingStoreOperations.insert(op);
     });
+  }
 
   if (captured) {
     if (capturedAliasing.count(AI.getDefiningOp()) == 0) {
@@ -2538,6 +2563,56 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         continue;
       LLVM_DEBUG(llvm::dbgs() << "Potential Op ith Effect: " << *op << "\n");
       AliasingStoreOperations.insert(op);
+    }
+  }
+
+  // Bytes of an allocation nothing writes -- no store lands on them and no
+  // write may land where it cannot be told -- hold uninitialized memory, so a
+  // read of them is undef, as LLVM's mem2reg answers a load no store reaches.
+  // A load of the slot is such a read, and so is a field extracted from a
+  // load of it, field by field; the load goes with its last extract.
+  if (!captured && !writeUnknown &&
+      isa<memref::AllocaOp, memref::AllocOp, LLVM::AllocaOp>(
+          AI.getDefiningOp())) {
+    auto written = [&](uint64_t lo, uint64_t hi) {
+      return llvm::any_of(writtenRanges, [&](auto &range) {
+        return range.first < hi && lo < range.second;
+      });
+    };
+    auto undef = [&](Operation *read) {
+      OpBuilder builder(read);
+      Value value = LLVM::UndefOp::create(builder, read->getLoc(),
+                                          read->getResult(0).getType());
+      read->getResult(0).replaceAllUsesWith(value);
+      loadOpsToErase.push_back(read);
+      changed = true;
+    };
+    for (Operation *load :
+         SmallVector<Operation *>(loadOps.begin(), loadOps.end())) {
+      auto contained = containedLoads.find(load);
+      uint64_t at = contained == containedLoads.end() ? 0 : contained->second;
+      auto size = typeSize(load->getResult(0).getType(), dl);
+      if (!size)
+        continue;
+      if (!written(at, at + *size)) {
+        undef(load);
+        loadOps.erase(load);
+        continue;
+      }
+      if (contained != containedLoads.end())
+        continue;
+      for (Operation *user :
+           SmallVector<Operation *>(load->getResult(0).getUsers())) {
+        auto extract = dyn_cast<LLVM::ExtractValueOp>(user);
+        if (!extract || llvm::is_contained(loadOpsToErase, extract))
+          continue;
+        auto field = aggregateFieldOffset(elType, extract.getPosition(), dl);
+        if (!field)
+          continue;
+        auto fieldSize = typeSize(field->second, dl);
+        if (fieldSize && !written(field->first, field->first + *fieldSize))
+          undef(extract);
+      }
     }
   }
 
@@ -3105,6 +3180,8 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
     return std::make_pair(typeSize(tree.getBase(), dl).value_or(0), tree);
   };
   std::map<std::pair<uint64_t, OffsetTree>, unsigned> lastStored;
+  // Whether anything writes the allocation at all.
+  bool anyWrite = false;
 
   std::deque<std::pair<mlir::Value, OffsetTree>> list = {{AI, OffsetTree()}};
 
@@ -3113,6 +3190,7 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
     list.pop_front();
     for (auto *U : val.getUsers()) {
       if (auto SO = dyn_cast<memref::StoreOp>(U)) {
+        anyWrite = true;
         lastStored[slotOf(
             tree.add(accessOffsets(SO.getValue().getType(), SO.getMemRef(),
                                    SO.getIndices(), dl),
@@ -3122,6 +3200,7 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
             accessOffsets(LO.getType(), LO.getMemRef(), LO.getIndices(), dl),
             dl))]++;
       } else if (auto SO = dyn_cast<affine::AffineStoreOp>(U)) {
+        anyWrite = true;
         lastStored[slotOf(
             tree.add(accessOffsets(SO.getValue().getType(), SO.getMemRef(),
                                    SO.getAffineMapAttr().getValue(),
@@ -3134,11 +3213,14 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
                                    LO.getMapOperands(), dl),
                      dl))]++;
       } else if (auto SO = dyn_cast<LLVM::StoreOp>(U)) {
+        anyWrite = true;
         lastStored[slotOf(
             tree.add(accessOffsets(SO.getValue().getType()), dl))]++;
       } else if (auto LO = dyn_cast<LLVM::LoadOp>(U)) {
         lastStored[slotOf(tree.add(accessOffsets(LO.getType()), dl))]++;
       } else if (isa<LLVM::MemcpyOp, LLVM::MemmoveOp, LLVM::MemsetOp>(U)) {
+        if (transferDest(U) == val)
+          anyWrite = true;
         // What a transfer reads or fills is a slot like any other, and the
         // forwarding can only be asked about slots it is told of.
         if (auto bytes = transferLength(U))
@@ -3149,6 +3231,8 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
       } else if (isa<memref::CastOp, Memref2PointerOp, Pointer2MemrefOp,
                      LLVM::BitcastOp, LLVM::AddrSpaceCastOp>(U)) {
         list.emplace_back(U->getResult(0), tree);
+      } else {
+        anyWrite = true;
       }
     }
   }
@@ -3157,7 +3241,8 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
   // of a piece of a slot is an access of that slot too, since the piece can be
   // taken out of what is in it. It counts the other way round as well, since
   // an access reaching over the whole of a slot may be all that is ever said
-  // about what is in it.
+  // about what is in it. When nothing writes the allocation, one access is
+  // enough: whatever it reads is uninitialized.
   std::vector<OffsetTree> todo;
   for (auto &pair : lastStored) {
     unsigned count = pair.second;
@@ -3166,7 +3251,7 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
           (pair.first.second.containsAt(other.first.second, dl) ||
            other.first.second.containsAt(pair.first.second, dl)))
         count += other.second;
-    if (count > 1)
+    if (count > 1 || !anyWrite)
       todo.push_back(pair.first.second);
   }
   return todo;
