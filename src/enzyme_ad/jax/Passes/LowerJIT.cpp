@@ -101,11 +101,9 @@ using namespace mlir::enzyme;
 using namespace mlir::gpu;
 using namespace enzyme;
 using namespace mlir::enzymexla;
+using namespace ::enzymexla;
 
 using namespace stablehlo;
-
-using namespace ::enzymexla;
-using ::enzymexla::CallInfo, ::enzymexla::CompileHostModule;
 
 namespace {
 
@@ -228,8 +226,81 @@ gpu::ObjectAttr getSelectedObject(gpu::BinaryOp op) {
 
 } // namespace
 
+struct CallInfo {
+  void (*run)(void *, void *, void **);
+  void *(*init)();
+};
+
 llvm::StringMap<CallInfo> jitkernels;
 llvm::sys::SmartRWMutex<true> jit_kernel_mutex;
+
+#if defined(_WIN32)
+#ifdef __MINGW32__
+#if defined(__i386__)
+#undef _alloca
+extern "C" void _alloca(void);
+#elif defined(__x86_64__)
+extern "C" void ___chkstk_ms(void);
+#else
+extern "C" void __chkstk(void);
+#endif
+#else
+extern "C" void __chkstk(void);
+#endif
+#endif
+
+CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
+                           bool compileInit, bool dump_final_module) {
+  std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext);
+  auto llvmModule = translateModuleToLLVMIR(modOp, *ctx);
+  if (!llvmModule) {
+    llvm::errs() << "modOp: " << *modOp << "\n";
+    llvm::errs() << "could not convert to LLVM IR\n";
+    return {};
+  }
+  if (!::enzymexla::init_jit())
+    return {};
+
+  llvmModule->setDataLayout(JIT->getDataLayout());
+  llvmModule->setTargetTriple(JIT->getTargetTriple());
+
+  if (dump_final_module) {
+    llvm::errs() << " final_llvm_module before jit: " << *llvmModule << "\n";
+  }
+  auto LibA =
+      JIT->createJITDylib("enzymejitdl_" + std::to_string(jitkernels.size()));
+  if (auto Err = JIT->addIRModule(
+          LibA.get(),
+          llvm::orc::ThreadSafeModule(std::move(llvmModule), std::move(ctx)))) {
+    llvm::errs() << " addIRModuleError " << Err << "\n";
+    return {};
+  }
+  if (auto Err = LibA->define(llvm::orc::absoluteSymbols(MappedSymbols))) {
+    llvm::errs() << " Symbol define Error " << Err << "\n";
+    return {};
+  }
+
+  llvm::Expected<llvm::orc::ExecutorAddr> NVSym(llvm::orc::ExecutorAddr{});
+  if (compileInit) {
+    NVSym = JIT->lookup(LibA.get(), "nv_func_init");
+    if (!NVSym) {
+      llvm::errs() << " lookupError " << NVSym.takeError() << "\n";
+      return {};
+    }
+  }
+
+  auto nvptr = (void *)NVSym->getValue();
+
+  auto Entry = JIT->lookup(LibA.get(), "entry");
+  if (!Entry) {
+    llvm::errs() << " lookupError " << Entry.takeError() << "\n";
+    return {};
+  }
+
+  auto ptr = (void *)Entry->getValue();
+
+  return CallInfo{(void (*)(void *, void *, void **))ptr, (void *(*)())nvptr};
+}
 
 static void replaceGetStreamOpsWithCudaABIStreamArg(mlir::ModuleOp &submod) {
   SmallVector<::mlir::enzymexla::GetStreamOp> streams;
@@ -838,7 +909,7 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
 
     auto ptr = CompileHostModule(ss.str(), submod,
                                  numGPUModule != 0 || requiresCudaABI,
-                                 dump_final_module, jitkernels.size());
+                                 dump_final_module);
     jitkernels[ss.str()] = ptr;
     submod.erase();
     return ptr;
