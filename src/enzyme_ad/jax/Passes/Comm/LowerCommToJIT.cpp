@@ -10,6 +10,7 @@
 #include "src/enzyme_ad/jax/Passes/Comm/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Comm/TypeConversion.h"
 #include "src/enzyme_ad/jax/Runtime/jit/jit.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 namespace mlir::comm {
@@ -18,6 +19,7 @@ namespace mlir::comm {
 } // namespace mlir::comm
 
 using namespace mlir;
+using namespace mlir::enzyme;
 
 const char *convertMlirTypeToMpiDatatypeName(Type type,
                                              bool allow_cast = false) {
@@ -623,7 +625,7 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
                            std::multiplies<int64_t>());
     auto count = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i32,
-        DenseIntElementsAttr::get(type_tensor_i32, len));
+        DenseIntElementsAttr::get(type_tensor_i32, static_cast<int32_t>(len)));
 
     auto buffer = adaptor.getBuffer();
     auto dest = adaptor.getDest();
@@ -763,7 +765,7 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
                            std::multiplies<int64_t>());
     auto count = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i32,
-        DenseIntElementsAttr::get(type_tensor_i32, len));
+        DenseIntElementsAttr::get(type_tensor_i32, static_cast<int32_t>(len)));
 
     auto buffer = adaptor.getBuffer();
     auto dest = adaptor.getDest();
@@ -917,7 +919,7 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
 
     auto type_buffer = op.getResult().getType();
     auto buffer_placeholder = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), type_buffer, DenseIntElementsAttr::get(type_buffer, -1));
+        op.getLoc(), type_buffer, cast<ElementsAttr>(makeAttr(type_buffer, 0)));
 
     auto len = std::reduce(type_buffer.getShape().begin(),
                            type_buffer.getShape().end(), 1,
@@ -1069,7 +1071,7 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
 
     auto type_buffer = op.getBuffer().getType();
     auto buffer_placeholder = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), type_buffer, DenseIntElementsAttr::get(type_buffer, -1));
+        op.getLoc(), type_buffer, cast<ElementsAttr>(makeAttr(type_buffer, 0)));
 
     auto len = std::reduce(type_buffer.getShape().begin(),
                            type_buffer.getShape().end(), 1,
@@ -1425,7 +1427,7 @@ struct LowerCommMpiAllreduceOpToJIT
                            type_buffer.getShape().end(), 1,
                            std::multiplies<int64_t>());
     auto recvbuf_placeholder = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), type_buffer, DenseIntElementsAttr::get(type_buffer, -1));
+        op.getLoc(), type_buffer, cast<ElementsAttr>(makeAttr(type_buffer, 0)));
 
     auto count = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i32,
