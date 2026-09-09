@@ -117,7 +117,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
                                     : "canonicalize-parallel{parallel=false}";
   // clang-format off
   std::string pass_pipeline =
-      "inline{default-pipeline=canonicalize "
+      "invoke-to-call,inline{default-pipeline=canonicalize "
       "max-iterations=4},sroa-wrappers{set_private=false attributor=false},"
       "lift-tessera-annotations,parse-optimization-rules,"
       "libdevice-funcs-raise,"
