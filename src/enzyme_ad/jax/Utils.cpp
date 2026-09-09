@@ -7,8 +7,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "Utils.h"
+
 #include "Interfaces/AutoDiffTypeInterface.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include <functional>
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -4263,3 +4265,49 @@ void ExtractBlockIntoFunction(Block *block, ModuleOp modOp, func::FuncOp &func,
 } // namespace stablehlo
 
 } // namespace mlir
+
+// The scalar an LLVM aggregate is made of, and the path to each of its
+// leaves in memory order, when every leaf is that one scalar and the layout
+// holds no padding; nullopt otherwise.
+std::optional<Type>
+mlir::enzyme::homogeneousLeaves(Type type, const DataLayout &dataLayout,
+                                SmallVectorImpl<SmallVector<int64_t>> &paths) {
+  Type leaf;
+  SmallVector<int64_t> path;
+  std::function<bool(Type)> walk = [&](Type t) -> bool {
+    if (auto at = dyn_cast<LLVM::LLVMArrayType>(t)) {
+      for (int64_t i = 0; i < at.getNumElements(); ++i) {
+        path.push_back(i);
+        if (!walk(at.getElementType()))
+          return false;
+        path.pop_back();
+      }
+      return true;
+    }
+    if (auto st = dyn_cast<LLVM::LLVMStructType>(t)) {
+      if (st.isOpaque())
+        return false;
+      for (auto [i, field] : llvm::enumerate(st.getBody())) {
+        path.push_back(i);
+        if (!walk(field))
+          return false;
+        path.pop_back();
+      }
+      return true;
+    }
+    if (!t.isIntOrFloat())
+      return false;
+    if (!leaf)
+      leaf = t;
+    if (leaf != t)
+      return false;
+    paths.push_back(path);
+    return true;
+  };
+  if (!isa<LLVM::LLVMArrayType, LLVM::LLVMStructType>(type) || !walk(type) ||
+      paths.empty() ||
+      dataLayout.getTypeSize(type) !=
+          paths.size() * dataLayout.getTypeSize(leaf))
+    return std::nullopt;
+  return leaf;
+}
