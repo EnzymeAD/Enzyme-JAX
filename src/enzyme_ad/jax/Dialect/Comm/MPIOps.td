@@ -14,6 +14,7 @@ def MpiConstantOp : Comm_Op<"mpi.constant", [ConstantLike, Pure, AllTypesMatch<[
   let arguments = (ins TypedAttrInterface : $value);
   let results = (outs AnyTypeOf<[MpiComm, MpiOp]> : $result);
   let assemblyFormat = "attr-dict $value";
+  let hasFolder = 1;
 }
 
 def MpiCommRankOp : Comm_Op<"mpi.comm_rank", [Pure]> {
