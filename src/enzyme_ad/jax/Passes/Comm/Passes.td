@@ -21,4 +21,13 @@ def LowerCommToJITPass : Pass<"lower-comm-to-jit"> {
   ];
 }
 
+def LegalizeCommMpiToNcclPass : Pass<"legalize-comm-mpi-to-nccl"> {
+  let summary = "Lower Comm Mpi ops to Comm Nccl Ops";
+  let dependentDialects = [
+    "comm::CommDialect",
+    "stablehlo::StablehloDialect",
+    "LLVM::LLVMDialect",
+  ];
+}
+
 #endif // ENZYMEXLA_PASSES_COMM_PASSES_TD
