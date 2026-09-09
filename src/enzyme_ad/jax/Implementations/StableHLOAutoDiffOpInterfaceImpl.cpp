@@ -483,6 +483,69 @@ public:
   }
 };
 
+class AutoDiffCaseRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffCaseRev,
+                                                       stablehlo::CaseOp> {
+public:
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    auto op = cast<stablehlo::CaseOp>(orig);
+    OpBuilder cacheBuilder(gutils->getNewFromOriginal(orig));
+    return {gutils->initAndPushCache(gutils->getNewFromOriginal(op.getIndex()),
+                                     cacheBuilder)};
+  }
+
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
+    return success();
+  }
+
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto caseOp = cast<stablehlo::CaseOp>(orig);
+    auto revOp = stablehlo::CaseOp::create(
+        builder, orig->getLoc(), ArrayRef<mlir::Type>{},
+        gutils->popCache(caches[0], builder), orig->getAttrs(),
+        caseOp.getBranches().size());
+    bool valid = true;
+    for (auto &&[origReg, newReg] :
+         llvm::zip_equal(orig->getRegions(), revOp->getRegions())) {
+      Block *oBB = &origReg.front();
+
+      newReg.push_back(new Block());
+      Block *reverseBB = &newReg.front();
+
+      OpBuilder revBuilder(reverseBB, reverseBB->end());
+      auto term = oBB->getTerminator();
+
+      for (auto &&[ret, op] :
+           llvm::zip_equal(orig->getResults(), term->getOperands())) {
+        if (gutils->isConstantValue(ret))
+          continue;
+        if (gutils->isConstantValue(op))
+          continue;
+
+        gutils->addToDiffe(op, gutils->diffe(ret, revBuilder), revBuilder);
+      }
+
+      auto first = oBB->rbegin(); // terminator
+      first++;
+
+      auto last = oBB->rend();
+
+      for (auto it = first; it != last; ++it) {
+        Operation *op = &*it;
+        valid &= gutils->Logic.visitChild(op, revBuilder, gutils).succeeded();
+      }
+
+      stablehlo::ReturnOp::create(revBuilder, orig->getLoc(),
+                                  ArrayRef<Value>{});
+    }
+    return success(valid);
+  }
+};
+
 class AutoDiffWhileFwd
     : public AutoDiffOpInterface::ExternalModel<AutoDiffWhileFwd, WhileOp> {
 public:
@@ -5001,6 +5064,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
 
     stablehlo::CaseOp::attachInterface<AutoDiffCaseFwd>(*context);
     stablehlo::CaseOp::attachInterface<AutoDiffCaseCF>(*context);
+    stablehlo::CaseOp::attachInterface<AutoDiffCaseRev>(*context);
 
     SortOp::attachInterface<AutoDiffSortFwd>(*context);
     SortOp::attachInterface<AutoDiffSortRev>(*context);
