@@ -95,11 +95,9 @@ struct LegalizeMpiRecvOpToNccl : public OpConversionPattern<comm::MpiRecvOp> {
   LogicalResult
   matchAndRewrite(comm::MpiRecvOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
-
-    op.emitError(
-        "MPI-to-NCCL lowering for comm.mpi.recv is not yet implemented");
-    return failure();
+    rewriter.replaceOpWithNewOp<comm::NcclRecvOp>(
+        op, op.getType(), adaptor.getSource(), adaptor.getComm());
+    return success();
   }
 }; // struct LegalizeMpiRecvOpToNccl
 
