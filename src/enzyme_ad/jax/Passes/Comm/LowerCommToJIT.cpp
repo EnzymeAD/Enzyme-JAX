@@ -886,15 +886,18 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
       Value comm =
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
-      Value status =
-          LLVM::ZeroOp::create(rewriter, op.getLoc(), type_ptr).getResult();
+      Value status_ptr =
+          LLVM::AddressOfOp::create(
+              rewriter, op.getLoc(), type_ptr,
+              FlatSymbolRefAttr::get(context, "MPI_STATUS_IGNORE"))
+              .getResult();
 
       // TODO error checking
       // currently, we ignore the int return code
-      LLVM::CallOp::create(
-          rewriter, op.getLoc(), TypeRange{type_i32},
-          SymbolRefAttr::get(context, function_name),
-          ValueRange{arg_buffer_ptr, count, datatype, src, tag, comm, status});
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{arg_buffer_ptr, count, datatype, src, tag,
+                                      comm, status_ptr});
 
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
@@ -1182,7 +1185,10 @@ struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
 
       Value arg_request_ptr = entryBlock->getArgument(0);
       Value status_ptr =
-          LLVM::ZeroOp::create(rewriter, op.getLoc(), type_ptr).getResult();
+          LLVM::AddressOfOp::create(
+              rewriter, op.getLoc(), type_ptr,
+              FlatSymbolRefAttr::get(context, "MPI_STATUS_IGNORE"))
+              .getResult();
 
       // TODO error checking
       // currently, we ignore the int return code
@@ -1289,9 +1295,11 @@ struct LowerCommMpiWaitallOpToJIT
                               array_of_requests, ValueRange{})
               .getResult();
 
-      // TODO get MPI_STATUS_IGNORE constant
       Value status_ptr =
-          LLVM::ZeroOp::create(rewriter, op.getLoc(), type_ptr).getResult();
+          LLVM::AddressOfOp::create(
+              rewriter, op.getLoc(), type_ptr,
+              FlatSymbolRefAttr::get(context, "MPI_STATUSES_IGNORE"))
+              .getResult();
 
       // TODO error checking
       // currently, we ignore the int return code
