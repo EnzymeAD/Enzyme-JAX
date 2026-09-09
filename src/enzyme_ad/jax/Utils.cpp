@@ -4307,7 +4307,7 @@ mlir::enzyme::homogeneousLeaves(Type type, const DataLayout &dataLayout,
   if (!isa<LLVM::LLVMArrayType, LLVM::LLVMStructType>(type) || !walk(type) ||
       paths.empty() ||
       dataLayout.getTypeSize(type) !=
-          paths.size() * dataLayout.getTypeSize(leaf))
+          (int64_t)paths.size() * dataLayout.getTypeSize(leaf))
     return std::nullopt;
   return leaf;
 }
