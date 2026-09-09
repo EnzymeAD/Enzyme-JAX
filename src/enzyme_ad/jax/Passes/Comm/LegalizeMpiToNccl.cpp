@@ -33,36 +33,6 @@ struct LegalizeMpiConstantOpToNccl
   }
 }; // struct LegalizeMpiConstantOpToNccl
 
-struct LegalizeMpiCommRankOpToNccl
-    : public OpConversionPattern<comm::MpiCommRankOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(comm::MpiCommRankOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
-
-    op.emitError(
-        "MPI-to-NCCL lowering for comm.mpi.comm_rank is not yet implemented");
-    return failure();
-  }
-}; // struct LegalizeMpiCommRankOpToNccl
-
-struct LegalizeMpiCommSizeOpToNccl
-    : public OpConversionPattern<comm::MpiCommSizeOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(comm::MpiCommSizeOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
-
-    op.emitError(
-        "MPI-to-NCCL lowering for comm.mpi.comm_size is not yet implemented");
-    return failure();
-  }
-}; // struct LegalizeMpiCommSizeOpToNccl
-
 struct LegalizeMpiCommSplitOpToNccl
     : public OpConversionPattern<comm::MpiCommSplitOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -219,7 +189,12 @@ struct LegalizeMpiToNcclPass
     target.addLegalDialect<stablehlo::StablehloDialect,
                            enzymexla::EnzymeXLADialect,
                            mlir::LLVM::LLVMDialect>();
+
     target.addIllegalDialect<comm::CommDialect>();
+
+    // These always run on the host, so a NCCL lowering is not needed
+    target.addLegalOp<comm::MpiCommRankOp, comm::MpiCommSizeOp>();
+
     target.addLegalOp<comm::NcclCommSplitOp, comm::NcclCommFinalizeOp,
                       comm::NcclCommDestroyOp, comm::NcclCommAbortOp,
                       comm::NcclCommCountOp, comm::NcclCommCuDeviceOp,
@@ -238,8 +213,7 @@ struct LegalizeMpiToNcclPass
     mlir::populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(
         patterns, converter);
 
-    patterns.add<LegalizeMpiConstantOpToNccl, LegalizeMpiCommRankOpToNccl,
-                 LegalizeMpiCommSizeOpToNccl, LegalizeMpiCommSplitOpToNccl,
+    patterns.add<LegalizeMpiConstantOpToNccl, LegalizeMpiCommSplitOpToNccl,
                  LegalizeMpiBarrierOpToNccl, LegalizeMpiSendOpToNccl,
                  LegalizeMpiIsendOpToNccl, LegalizeMpiRecvOpToNccl,
                  LegalizeMpiIrecvOpToNccl, LegalizeMpiWaitOpToNccl,
