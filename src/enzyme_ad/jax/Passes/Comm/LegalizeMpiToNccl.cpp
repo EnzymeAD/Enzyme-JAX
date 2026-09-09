@@ -26,6 +26,9 @@ struct LegalizeMpiCommRankOpToNccl
   matchAndRewrite(comm::MpiCommRankOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto context = op->getContext();
+
+    op.emitError("MPI-to-NCCL lowering for comm.mpi.comm_rank is not yet implemented");
+    return failure();
   }
 }; // struct LegalizeMpiCommRankOpToNccl
 
