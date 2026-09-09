@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -5462,6 +5463,37 @@ struct AffineToStableHLORaisingPass
       bool inThen = cur->getParentRegion() == &ifOp.getThenRegion();
       if (auto b = relationBound(cmp, v, /*holds=*/inThen))
         bound = std::min(bound.value_or(*b), *b);
+    }
+    // In a function affine-cfg could not structure (MFEM's verify error
+    // paths carry exception edges), the guard is a cf.cond_br. Its condition
+    // holds at the anchor when every path there takes one of its edges: the
+    // edge's target dominates the anchor's block and is entered only through
+    // that edge.
+    Block *block = anchor->getBlock();
+    while (block && !isa<FunctionOpInterface>(block->getParentOp()))
+      block = block->getParentOp()->getBlock();
+    if (!block)
+      return bound;
+    DominanceInfo dominance(block->getParentOp());
+    for (Operation *user : v.getUsers()) {
+      auto cmp = dyn_cast<arith::CmpIOp>(user);
+      if (!cmp)
+        continue;
+      for (Operation *condUser : cmp->getUsers()) {
+        auto branch = dyn_cast<cf::CondBranchOp>(condUser);
+        if (!branch || branch.getCondition() != cmp.getResult())
+          continue;
+        std::optional<bool> holds;
+        for (auto [dest, taken] : {std::pair(branch.getTrueDest(), true),
+                                   std::pair(branch.getFalseDest(), false)})
+          if (dest->getSinglePredecessor() == branch->getBlock() &&
+              dominance.dominates(dest, block))
+            holds = taken;
+        if (!holds)
+          continue;
+        if (auto b = relationBound(cmp, v, *holds))
+          bound = std::min(bound.value_or(*b), *b);
+      }
     }
     return bound;
   }
