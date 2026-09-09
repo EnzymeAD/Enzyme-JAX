@@ -832,6 +832,101 @@ struct ShiftOfMulByShiftPlusOne : public OpRewritePattern<arith::ShRUIOp> {
   }
 };
 
+// dim3 packing with two distinct dims arrives as a disjoint or, x | (y << 32)
+// or (y << 32) | c, and each half is read back with a trunc or a shift. The
+// folds below take the packing apart: a truncation drops a side shifted past
+// its width (TruncOrConst above drops a constant side the same way), a shift
+// by k of an or with a side shifted in by k without loss yields that side,
+// and a value zero-extended from at most k bits shifted right by k is zero.
+static bool zeroExtendedWithin(Value v, unsigned bits) {
+  auto ext = v.getDefiningOp<arith::ExtUIOp>();
+  auto in = ext ? dyn_cast<IntegerType>(ext.getIn().getType()) : IntegerType();
+  return in && in.getWidth() <= bits;
+}
+
+// The value `v` is `z << by` with no set bit shifted out, so that shifting
+// back right by `by` recovers `z`: either the shift says so (nuw) or `z` is
+// zero-extended from bits that fit under the shift.
+static Value shiftedInBy(Value v, unsigned by) {
+  auto shl = v.getDefiningOp<arith::ShLIOp>();
+  APInt k;
+  if (!shl || !matchPattern(shl.getRhs(), m_ConstantInt(&k)) || k != by)
+    return nullptr;
+  unsigned width = cast<IntegerType>(shl.getType()).getWidth();
+  if (bitEnumContainsAll(shl.getOverflowFlags(),
+                         arith::IntegerOverflowFlags::nuw) ||
+      zeroExtendedWithin(shl.getLhs(), width - by))
+    return shl.getLhs();
+  return nullptr;
+}
+
+struct TruncOfOrWithShiftedOut : public OpRewritePattern<arith::TruncIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::TruncIOp trunc,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<IntegerType>(trunc.getType());
+    auto orOp = trunc.getIn().getDefiningOp<arith::OrIOp>();
+    if (!type || !orOp)
+      return failure();
+    for (Value side : {orOp.getLhs(), orOp.getRhs()}) {
+      auto shl = side.getDefiningOp<arith::ShLIOp>();
+      APInt k;
+      if (!shl || !matchPattern(shl.getRhs(), m_ConstantInt(&k)) ||
+          k.ult(type.getWidth()))
+        continue;
+      Value other = side == orOp.getLhs() ? orOp.getRhs() : orOp.getLhs();
+      rewriter.modifyOpInPlace(trunc,
+                               [&] { trunc.getInMutable().assign(other); });
+      return success();
+    }
+    return failure();
+  }
+};
+
+struct ShiftOfOrWithShiftedIn : public OpRewritePattern<arith::ShRUIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::ShRUIOp shift,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<IntegerType>(shift.getType());
+    auto orOp = shift.getLhs().getDefiningOp<arith::OrIOp>();
+    APInt k;
+    if (!type || !orOp || !matchPattern(shift.getRhs(), m_ConstantInt(&k)) ||
+        k.uge(type.getWidth()))
+      return failure();
+    unsigned by = k.getZExtValue();
+    for (Value side : {orOp.getLhs(), orOp.getRhs()}) {
+      Value other = side == orOp.getLhs() ? orOp.getRhs() : orOp.getLhs();
+      Value in = shiftedInBy(side, by);
+      if (!in)
+        continue;
+      Value rest = arith::ShRUIOp::create(rewriter, shift.getLoc(), other,
+                                          shift.getRhs());
+      rewriter.replaceOpWithNewOp<arith::OrIOp>(shift, in, rest);
+      return success();
+    }
+    return failure();
+  }
+};
+
+struct ShiftOfNarrowZeroExtended : public OpRewritePattern<arith::ShRUIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::ShRUIOp shift,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<IntegerType>(shift.getType());
+    APInt k;
+    if (!type || !matchPattern(shift.getRhs(), m_ConstantInt(&k)) ||
+        k.uge(type.getWidth()) ||
+        !zeroExtendedWithin(shift.getLhs(), k.getZExtValue()))
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+        shift, rewriter.getIntegerAttr(type, 0));
+    return success();
+  }
+};
+
 struct StoreOfUndef
     : public OpInterfaceRewritePattern<enzyme::StoreLikeInterface> {
   using OpInterfaceRewritePattern::OpInterfaceRewritePattern;
@@ -884,7 +979,8 @@ struct CanonicalizeParallelPass
         SinkThroughSelectOfConstants<arith::MulIOp>, SelectOfNullPointer,
         IfOfNullPointer<scf::IfOp>, IfOfNullPointer<affine::AffineIfOp>,
         FlattenAggregateAlloca, StoreOfUndef, TruncOfMulByOneModWidth,
-        ShiftOfMulByShiftPlusOne>(ctx);
+        ShiftOfMulByShiftPlusOne, TruncOfOrWithShiftedOut,
+        ShiftOfOrWithShiftedIn, ShiftOfNarrowZeroExtended>(ctx);
     FrozenRewritePatternSet patterns(std::move(owningPatterns));
 
     GreedyRewriteConfig config;
