@@ -5512,28 +5512,6 @@ struct AffineToStableHLORaisingPass
     if (isa_and_nonnull<arith::ExtUIOp, arith::ExtSIOp>(def))
       return operandBound(0);
     APInt k;
-    if (auto t = dyn_cast_or_null<arith::TruncIOp>(def)) {
-      // dim3 packing replicates a 32-bit dim into both halves of an i64 as
-      // x * 0x100000001; either half recovers the dim.
-      if (auto mul = t.getIn().getDefiningOp<arith::MulIOp>())
-        if (matchPattern(mul.getRhs(), m_ConstantInt(&k)) &&
-            k.getZExtValue() == 0x100000001ULL)
-          return derivedExtentBound(mul.getLhs(), depth + 1, anchor);
-      auto b = operandBound(0);
-      unsigned w = t.getType().getIntOrFloatBitWidth();
-      if (b && *b >= 0 && (w >= 63 || *b < (int64_t(1) << w)))
-        return b;
-      return std::nullopt;
-    }
-    if (auto sh = dyn_cast_or_null<arith::ShRUIOp>(def)) {
-      if (matchPattern(sh.getRhs(), m_ConstantInt(&k)) &&
-          k.getZExtValue() < 63) {
-        auto b = operandBound(0);
-        if (b && *b >= 0)
-          return *b >> k.getZExtValue();
-      }
-      return std::nullopt;
-    }
     // dim3 packing with a constant second half arrives as a disjoint or:
     // either half of (a | c) recovers its own dim. a <= b does not order
     // a|c against b|c bitwise; a|c <= a+c <= b+c.
