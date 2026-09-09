@@ -13397,57 +13397,178 @@ bool isCommutativeEquivalent(ValueRange lhs, ValueRange rhs) {
   }
 }
 
+// The live-operation index the CSE patterns of one driver run share.
+// Operations are bucketed on name, inherent attributes, result types and
+// operands (order-insensitive for commutative ops), so an equivalent
+// operation is found in one lookup instead of a walk over an operand's use
+// list, which is quadratic when the operand is a broadcast constant, an
+// iota or an argument with thousands of users. The index is filled before
+// the driver runs and kept complete through the driver's listener (inserted
+// and modified operations are re-hashed, erased ones leave), so every entry
+// is a live operation and a twin is found the moment either side is
+// visited; a candidate is still checked for equivalence.
+struct CSEIndex : public RewriterBase::Listener {
+  DenseMap<size_t, SmallVector<Operation *, 2>> buckets;
+  DenseMap<Operation *, size_t> where;
+
+  static bool indexable(Operation *op) {
+    return op->getNumOperands() > 0 && op->getNumRegions() == 0;
+  }
+
+  static size_t hashOf(Operation *op) {
+    bool commutative = op->hasTrait<::mlir::hlo::OpTrait::IsCommutative>() ||
+                       op->hasTrait<::mlir::OpTrait::IsCommutative>();
+    llvm::hash_code hash = OperationEquivalence::computeHash(
+        op,
+        commutative ? OperationEquivalence::ignoreHashValue
+                    : OperationEquivalence::directHashValue,
+        OperationEquivalence::ignoreHashValue,
+        OperationEquivalence::IgnoreLocations |
+            OperationEquivalence::IgnoreDiscardableAttrs);
+    if (commutative) {
+      size_t operands = 0;
+      for (Value v : op->getOperands())
+        operands += (size_t)hash_value(v);
+      hash = llvm::hash_combine(hash, operands);
+    }
+    return (size_t)hash;
+  }
+
+  void remove(Operation *op) {
+    auto it = where.find(op);
+    if (it == where.end())
+      return;
+    auto bucket = buckets.find(it->second);
+    if (bucket != buckets.end()) {
+      auto &ops = bucket->second;
+      auto pos = llvm::find(ops, op);
+      if (pos != ops.end())
+        ops.erase(pos);
+      if (ops.empty())
+        buckets.erase(bucket);
+    }
+    where.erase(it);
+  }
+
+  void add(Operation *op, size_t hash) {
+    auto it = where.find(op);
+    if (it != where.end()) {
+      if (it->second == hash)
+        return;
+      remove(op);
+    }
+    buckets[hash].push_back(op);
+    where[op] = hash;
+  }
+
+  void add(Operation *op) {
+    if (indexable(op))
+      add(op, hashOf(op));
+  }
+
+  void populate(Operation *root) {
+    root->walk([&](Operation *op) { add(op); });
+  }
+
+  void notifyOperationInserted(Operation *op, OpBuilder::InsertPoint) override {
+    add(op);
+  }
+  void notifyOperationModified(Operation *op) override { add(op); }
+  void notifyOperationErased(Operation *op) override { remove(op); }
+};
+
 template <typename T> struct CSE final : CheckedOpRewritePattern<T, CSE<T>> {
-  using CheckedOpRewritePattern<T, CSE<T>>::CheckedOpRewritePattern;
+  CSEIndex *index;
+
+  CSE(CSEIndex *index, MLIRContext *context, PatternBenefit benefit)
+      : CheckedOpRewritePattern<T, CSE<T>>(context, benefit), index(index) {}
+  // Registered on its own (the transform-dialect pattern names), the
+  // pattern has no driver listener to keep an index live: it walks the use
+  // list of the operand with the fewest users instead.
+  CSE(MLIRContext *context, PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern<T, CSE<T>>(context, benefit), index(nullptr) {}
 
   bool supportsDynamicShapes() { return true; }
 
+  static bool equivalent(T op, Operation *nop) {
+    OperationEquivalence::Flags flags =
+        OperationEquivalence::IgnoreLocations |
+        OperationEquivalence::IgnoreDiscardableAttrs;
+
+    // OperationEquivalence only checks for mlir::OpTrait::IsCommutative
+    if constexpr (!std::is_base_of_v<::mlir::OpTrait::IsCommutative<T>, T>) {
+      flags |= OperationEquivalence::IgnoreCommutativity;
+    }
+
+    if (OperationEquivalence::isEquivalentTo(op, nop, flags))
+      return true;
+    // stablehlo defines a special trait for commutative operations.
+    // check for that here.
+    if constexpr (std::is_base_of_v<::mlir::hlo::OpTrait::IsCommutative<T>,
+                                    T>) {
+      return isCommutativeEquivalent(op->getOperands(), nop->getOperands());
+    }
+    return false;
+  }
+
   LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
-    if (op->getNumOperands() > 0)
-      for (auto nop : op->getOperand(0).getUsers()) {
+    if (op->getNumOperands() == 0)
+      return failure();
+    if (!index) {
+      Value scan;
+      size_t scanLen = std::numeric_limits<size_t>::max();
+      for (Value v : op->getOperands()) {
+        size_t n = 0;
+        for ([[maybe_unused]] auto &use : v.getUses())
+          if (++n >= scanLen)
+            break;
+        if (n < scanLen) {
+          scanLen = n;
+          scan = v;
+        }
+      }
+      for (Operation *nop : scan.getUsers()) {
+        if (nop == op || !isa<T>(nop) || nop->getBlock() != op->getBlock() ||
+            op->getName() != nop->getName() || !equivalent(op, nop))
+          continue;
+        if (nop->isBeforeInBlock(op))
+          rewriter.replaceOp(op, nop);
+        else
+          rewriter.replaceOp(nop, op);
+        return success();
+      }
+      return failure();
+    }
+    size_t hash = CSEIndex::hashOf(op);
+    Operation *twin = nullptr;
+    auto bucket = index->buckets.find(hash);
+    if (bucket != index->buckets.end())
+      for (Operation *nop : bucket->second) {
         if (nop == op)
           continue;
         if (!isa<T>(nop))
           continue;
         if (nop->getBlock() != op->getBlock())
           continue;
-
         if (op->getName() != nop->getName())
           continue;
-
-        OperationEquivalence::Flags flags =
-            OperationEquivalence::IgnoreLocations |
-            OperationEquivalence::IgnoreDiscardableAttrs;
-
-        // OperationEquivalence only checks for mlir::OpTrait::IsCommutative
-        if constexpr (!std::is_base_of_v<::mlir::OpTrait::IsCommutative<T>,
-                                         T>) {
-          flags |= OperationEquivalence::IgnoreCommutativity;
-        }
-
-        if (!OperationEquivalence::isEquivalentTo(op, nop, flags)) {
-          // stablehlo defines a special trait for commutative operations.
-          // check for that here.
-          if constexpr (std::is_base_of_v<
-                            ::mlir::hlo::OpTrait::IsCommutative<T>, T>) {
-            auto opRange = op->getOperands();
-            auto nopRange = nop->getOperands();
-            if (!isCommutativeEquivalent(opRange, nopRange))
-              continue;
-          } else {
-            continue;
-          }
-        }
-
-        if (nop->isBeforeInBlock(op)) {
-          rewriter.replaceOp(op, nop);
-          return success();
-        } else {
-          rewriter.replaceOp(nop, op);
-          return success();
-        }
+        if (!equivalent(op, nop))
+          continue;
+        twin = nop;
+        break;
       }
-    return failure();
+    if (!twin) {
+      index->add(op, hash);
+      return failure();
+    }
+    if (twin->isBeforeInBlock(op)) {
+      rewriter.replaceOp(op, twin);
+    } else {
+      // The survivor stays indexed for the twins still to come.
+      index->add(op, hash);
+      rewriter.replaceOp(twin, op);
+    }
+    return success();
   }
 };
 
@@ -36973,6 +37094,7 @@ struct EnzymeHLOOptPass
   void runOnOperation() override {
     auto context = getOperation()->getContext();
 
+    CSEIndex cseIndex;
     RewritePatternSet patterns(context);
     mlir::enzyme::populateWithGenerated(patterns);
 
@@ -37150,6 +37272,7 @@ struct EnzymeHLOOptPass
       patterns.add<ReshapePad>(context);
 
     if (cse) {
+      patterns.add<CSEIota>(context, PatternBenefit(65000));
       patterns.add<
           CSE<stablehlo::BroadcastInDimOp>, CSE<stablehlo::SliceOp>,
           CSE<stablehlo::TransposeOp>, CSE<stablehlo::ConvertOp>,
@@ -37160,7 +37283,7 @@ struct EnzymeHLOOptPass
           CSE<stablehlo::MinOp>, CSE<stablehlo::ConcatenateOp>,
           CSE<stablehlo::MaxOp>, CSE<stablehlo::NegOp>, CSE<stablehlo::AbsOp>,
           CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
-          CSE<enzymexla::ExtendOp>, CSEIota, CSE<stablehlo::CompareOp>,
+          CSE<enzymexla::ExtendOp>, CSE<stablehlo::CompareOp>,
           CSE<stablehlo::GatherOp>, CSE<stablehlo::ScatterOp>,
           CSE<stablehlo::SelectOp>, CSE<stablehlo::RealOp>, CSE<chlo::ConjOp>,
           CSE<stablehlo::ImagOp>, CSE<stablehlo::BatchNormTrainingOp>,
@@ -37177,7 +37300,7 @@ struct EnzymeHLOOptPass
           CSE<stablehlo::OrOp>, CSE<stablehlo::XorOp>,
           CSE<stablehlo::ConvolutionOp>, CSE<stablehlo::FftOp>,
           CSE<stablehlo::DynamicSliceOp>, CSE<stablehlo::DynamicUpdateSliceOp>,
-          CSE<stablehlo::ReverseOp>>(context, PatternBenefit(65000));
+          CSE<stablehlo::ReverseOp>>(&cseIndex, context, PatternBenefit(65000));
     }
 
     if (passses & 256)
@@ -37476,6 +37599,10 @@ struct EnzymeHLOOptPass
     // successor operands for the values the blocks differed in, and e.g.
     // llvm.invoke cannot carry an index-typed successor operand.
     config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
+    if (cse) {
+      cseIndex.populate(getOperation());
+      config.setListener(&cseIndex);
+    }
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {
       signalPassFailure();
