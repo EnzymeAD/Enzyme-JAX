@@ -20,8 +20,6 @@ struct MapSymbolPass : public enzyme::impl::MapSymbolPassBase<MapSymbolPass> {
   using MapSymbolPassBase::MapSymbolPassBase;
 
   void runOnOperation() override {
-    enzymexla::init_jit();
-
     for (const std::string &symbol : symbols) {
       std::string name = symbol;
       void *addr = nullptr;
@@ -47,9 +45,8 @@ struct MapSymbolPass : public enzyme::impl::MapSymbolPassBase<MapSymbolPass> {
       }
 
       auto err = enzymexla::map_symbol(name.c_str(), addr);
-      if (err) {
-        llvm::errs() << "Failed to register symbol: " << name << " - "
-                     << llvm::toString(std::move(err)) << "\n";
+      if (!err) {
+        llvm::errs() << "Failed to register symbol: " << name << "\n";
         return signalPassFailure();
       }
     }
