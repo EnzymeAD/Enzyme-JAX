@@ -69,11 +69,9 @@ struct LegalizeMpiSendOpToNccl : public OpConversionPattern<comm::MpiSendOp> {
   LogicalResult
   matchAndRewrite(comm::MpiSendOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
-
-    op.emitError(
-        "MPI-to-NCCL lowering for comm.mpi.send is not yet implemented");
-    return failure();
+    rewriter.replaceOpWithNewOp<comm::NcclSendOp>(
+        op, adaptor.getBuffer(), adaptor.getDest(), adaptor.getComm());
+    return success();
   }
 }; // struct LegalizeMpiSendOpToNccl
 
