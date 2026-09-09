@@ -122,7 +122,6 @@ cc_library(
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:c_api",
         "@xla//xla/ffi/api:ffi",
-        "//src/enzyme_ad/jax/Runtime:jit",
     ] + select({
         "@xla//xla/tsl:windows": [],
         "//conditions:default": ["@mpitrampoline"],
