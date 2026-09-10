@@ -99,6 +99,55 @@ func.func @branch_not_false(%buf: memref<8xf64>, %out: memref<i32>, %go: i1) {
   return
 }
 
+// The two-trip edge scan: the flag is yielded true and the exit test is
+// !(flag || x), so the second evaluation exits whatever x is.
+func.func @flag_ored(%buf: memref<8xf64>, %out: memref<i32>, %go: i1, %other: i1, %res0: i32) {
+  %true = arith.constant true
+  %false = arith.constant false
+  %c1_i32 = arith.constant 1 : i32
+  %v = arith.constant 2.0 : f64
+  %r:2 = scf.while (%res = %res0, %flag = %false) : (i32, i1) -> (i32, i1) {
+    affine.store %v, %buf[0] : memref<8xf64>
+    %x:2 = scf.if %go -> (i1, i32) {
+      scf.yield %other, %c1_i32 : i1, i32
+    } else {
+      scf.yield %true, %res : i1, i32
+    }
+    %or = arith.ori %flag, %x#0 : i1
+    %again = arith.xori %or, %true : i1
+    scf.condition(%again) %x#1, %x#0 : i32, i1
+  } do {
+  ^bb0(%res: i32, %x: i1):
+    scf.yield %res, %true : i32, i1
+  }
+  memref.store %r#0, %out[] : memref<i32>
+  return
+}
+
+// The flag is yielded false, so the or is not decided by it.
+func.func @flag_ored_false(%buf: memref<8xf64>, %out: memref<i32>, %go: i1, %other: i1, %res0: i32) {
+  %true = arith.constant true
+  %false = arith.constant false
+  %c1_i32 = arith.constant 1 : i32
+  %v = arith.constant 2.0 : f64
+  %r:2 = scf.while (%res = %res0, %flag = %false) : (i32, i1) -> (i32, i1) {
+    affine.store %v, %buf[0] : memref<8xf64>
+    %x:2 = scf.if %go -> (i1, i32) {
+      scf.yield %other, %c1_i32 : i1, i32
+    } else {
+      scf.yield %true, %res : i1, i32
+    }
+    %or = arith.ori %flag, %x#0 : i1
+    %again = arith.xori %or, %true : i1
+    scf.condition(%again) %x#1, %x#0 : i32, i1
+  } do {
+  ^bb0(%res: i32, %x: i1):
+    scf.yield %res, %false : i32, i1
+  }
+  memref.store %r#0, %out[] : memref<i32>
+  return
+}
+
 // CHECK:    func.func @flag_if(%arg0: memref<8xf64>, %arg1: memref<i32>, %arg2: i1) {
 // CHECK-NEXT:    %c5_i32 = arith.constant 5 : i32
 // CHECK-NEXT:    %cst = arith.constant 2.000000e+00 : f64
@@ -145,6 +194,40 @@ func.func @branch_not_false(%buf: memref<8xf64>, %out: memref<i32>, %go: i1) {
 // CHECK-NEXT:    } do {
 // CHECK-NEXT:    ^bb0(%arg3: i32):
 // CHECK-NEXT:      scf.yield %false, %arg3 : i1, i32
+// CHECK-NEXT:    }
+// CHECK-NEXT:    memref.store %0, %arg1[] : memref<i32>
+// CHECK-NEXT:    return
+// CHECK-NEXT:  }
+// CHECK-NEXT:  func.func @flag_ored(%arg0: memref<8xf64>, %arg1: memref<i32>, %arg2: i1, %arg3: i1, %arg4: i32) {
+// CHECK-NEXT:    %true = arith.constant true
+// CHECK-NEXT:    %c1_i32 = arith.constant 1 : i32
+// CHECK-NEXT:    %cst = arith.constant 2.000000e+00 : f64
+// CHECK-NEXT:    affine.store %cst, %arg0[0] : memref<8xf64>
+// CHECK-NEXT:    %0 = arith.select %arg2, %arg3, %true : i1
+// CHECK-NEXT:    %1 = arith.select %arg2, %c1_i32, %arg4 : i32
+// CHECK-NEXT:    %2 = scf.if %0 -> (i32) {
+// CHECK-NEXT:      scf.yield %1 : i32
+// CHECK-NEXT:    } else {
+// CHECK-NEXT:      affine.store %cst, %arg0[0] : memref<8xf64>
+// CHECK-NEXT:      %3 = arith.select %arg2, %c1_i32, %arg4 : i32
+// CHECK-NEXT:      scf.yield %3 : i32
+// CHECK-NEXT:    }
+// CHECK-NEXT:    memref.store %2, %arg1[] : memref<i32>
+// CHECK-NEXT:    return
+// CHECK-NEXT:  }
+// CHECK-NEXT:  func.func @flag_ored_false(%arg0: memref<8xf64>, %arg1: memref<i32>, %arg2: i1, %arg3: i1, %arg4: i32) {
+// CHECK-NEXT:    %true = arith.constant true
+// CHECK-NEXT:    %c1_i32 = arith.constant 1 : i32
+// CHECK-NEXT:    %cst = arith.constant 2.000000e+00 : f64
+// CHECK-NEXT:    %0 = scf.while (%arg5 = %arg4) : (i32) -> i32 {
+// CHECK-NEXT:      affine.store %cst, %arg0[0] : memref<8xf64>
+// CHECK-NEXT:      %1 = arith.select %arg2, %arg3, %true : i1
+// CHECK-NEXT:      %2 = arith.select %arg2, %c1_i32, %arg5 : i32
+// CHECK-NEXT:      %3 = arith.xori %1, %true : i1
+// CHECK-NEXT:      scf.condition(%3) %2 : i32
+// CHECK-NEXT:    } do {
+// CHECK-NEXT:    ^bb0(%arg5: i32):
+// CHECK-NEXT:      scf.yield %arg5 : i32
 // CHECK-NEXT:    }
 // CHECK-NEXT:    memref.store %0, %arg1[] : memref<i32>
 // CHECK-NEXT:    return

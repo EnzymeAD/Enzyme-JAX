@@ -1156,40 +1156,78 @@ struct UnrollWhileOfOredCounter : public OpRewritePattern<scf::WhileOp> {
   }
 };
 
-// A loop rotated around a flag: the exit test is the result of an scf.if on
-// a carried flag that the after region yields a constant, and the branch that
-// constant selects yields false. The second evaluation takes that branch, so
-// the loop runs at most twice (clang's rotation of a single-trip loop with
-// early exits, the edge scan in batchitrans.cpp).
-struct UnrollWhileOfFlagIf : public OpRewritePattern<scf::WhileOp> {
+// The exit test of a loop rotated around a flag, evaluated on the second
+// evaluation of the before region with the carried flags at the constants the
+// after region yields them: an scf.if or select on a known flag is its
+// selected yield, an or with a true operand is true, an and with a false
+// operand is false, and an xor with a constant negates. Nothing else is
+// known. When that evaluation is false the loop runs at most twice (clang's
+// rotation of a loop with early exits, the edge scans in batchitrans.cpp).
+static std::optional<bool> secondEvaluationFlag(scf::WhileOp whileOp,
+                                                Value value, unsigned depth) {
+  Block &before = whileOp.getBefore().front();
+  Block &after = whileOp.getAfter().front();
+  APInt constant;
+  if (matchPattern(value, m_ConstantInt(&constant)))
+    return !constant.isZero();
+  if (depth > 8 || !whileOp->isAncestor(value.getParentBlock()->getParentOp()))
+    return std::nullopt;
+  auto known = [&](Value v) {
+    return secondEvaluationFlag(whileOp, v, depth + 1);
+  };
+  if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+    if (blockArg.getOwner() != &before)
+      return std::nullopt;
+    Value next = whileOp.getYieldOp().getOperand(blockArg.getArgNumber());
+    if (auto afterArg = dyn_cast<BlockArgument>(next);
+        afterArg && afterArg.getOwner() == &after)
+      next = whileOp.getConditionOp().getArgs()[afterArg.getArgNumber()];
+    if (matchPattern(next, m_ConstantInt(&constant)))
+      return !constant.isZero();
+    return std::nullopt;
+  }
+  Operation *def = value.getDefiningOp();
+  if (auto ifOp = dyn_cast<scf::IfOp>(def)) {
+    auto cond = known(ifOp.getCondition());
+    if (!cond)
+      return std::nullopt;
+    unsigned n = cast<OpResult>(value).getResultNumber();
+    return known((*cond ? ifOp.thenYield() : ifOp.elseYield()).getOperand(n));
+  }
+  if (auto sel = dyn_cast<arith::SelectOp>(def)) {
+    auto cond = known(sel.getCondition());
+    if (!cond)
+      return std::nullopt;
+    return known(*cond ? sel.getTrueValue() : sel.getFalseValue());
+  }
+  if (isa<arith::OrIOp, arith::AndIOp>(def)) {
+    bool isOr = isa<arith::OrIOp>(def);
+    auto l = known(def->getOperand(0)), r = known(def->getOperand(1));
+    if ((l && *l == isOr) || (r && *r == isOr))
+      return isOr;
+    if (l && r)
+      return !isOr;
+    return std::nullopt;
+  }
+  if (auto xorOp = dyn_cast<arith::XOrIOp>(def)) {
+    for (unsigned i = 0; i < 2; ++i)
+      if (matchPattern(xorOp->getOperand(i), m_ConstantInt(&constant)))
+        if (auto other = known(xorOp->getOperand(1 - i)))
+          return *other != !constant.isZero();
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+struct UnrollWhileOfDecidedFlag : public OpRewritePattern<scf::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(scf::WhileOp whileOp,
                                 PatternRewriter &rewriter) const override {
-    Block &before = whileOp.getBefore().front();
-    Block &after = whileOp.getAfter().front();
-    scf::ConditionOp conditionOp = whileOp.getConditionOp();
-    scf::YieldOp yieldOp = whileOp.getYieldOp();
-
-    auto result = dyn_cast<OpResult>(conditionOp.getCondition());
-    auto ifOp = result ? dyn_cast<scf::IfOp>(result.getOwner()) : nullptr;
-    if (!ifOp)
+    auto decided = secondEvaluationFlag(
+        whileOp, whileOp.getConditionOp().getCondition(), 0);
+    if (!decided || *decided)
       return failure();
-    auto flag = dyn_cast<BlockArgument>(ifOp.getCondition());
-    if (!flag || flag.getOwner() != &before)
-      return failure();
-    Value next = yieldOp.getOperand(flag.getArgNumber());
-    if (auto afterArg = dyn_cast<BlockArgument>(next);
-        afterArg && afterArg.getOwner() == &after)
-      next = conditionOp.getArgs()[afterArg.getArgNumber()];
-    APInt constant;
-    if (!matchPattern(next, m_ConstantInt(&constant)))
-      return failure();
-    scf::YieldOp branch =
-        constant.isZero() ? ifOp.elseYield() : ifOp.thenYield();
-    if (!matchPattern(branch.getOperand(result.getResultNumber()), m_Zero()))
-      return failure();
-
     unrollWhileTwice(whileOp, rewriter);
     return success();
   }
@@ -1233,10 +1271,10 @@ struct CanonicalizeParallelPass
         SinkThroughSelectOfConstants<arith::MulIOp>, SelectOfNullPointer,
         IfOfNullPointer<scf::IfOp>, IfOfNullPointer<affine::AffineIfOp>,
         FlattenAggregateAlloca, StoreOfUndef, UnrollWhileWithInvariantExit,
-        UnrollWhileOfOredCounter, UnrollWhileOfFlagIf, TruncOfMulByOneModWidth,
-        ShiftOfMulByShiftPlusOne, TruncOfOrWithShiftedOut,
-        ShiftOfOrWithShiftedIn, ShiftOfNarrowZeroExtended,
-        ShiftOfOrWithConstant,
+        UnrollWhileOfOredCounter, UnrollWhileOfDecidedFlag,
+        TruncOfMulByOneModWidth, ShiftOfMulByShiftPlusOne,
+        TruncOfOrWithShiftedOut, ShiftOfOrWithShiftedIn,
+        ShiftOfNarrowZeroExtended, ShiftOfOrWithConstant,
         OuterOfInnersBySharedOperand<arith::MaxSIOp, arith::MinSIOp>,
         OuterOfInnersBySharedOperand<arith::MinSIOp, arith::MaxSIOp>,
         OuterOfInnersBySharedOperand<arith::MaxUIOp, arith::MinUIOp>,
