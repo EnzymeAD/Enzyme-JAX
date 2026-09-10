@@ -36091,6 +36091,14 @@ private:
 
     // size 1 index can be trivially simplified to a DUS
     if (indices.getType().getNumElements() == 1) {
+      // A scatter DROPS an out-of-bounds update while dynamic-slice and
+      // dynamic-update-slice CLAMP the start, resurrecting the write at a
+      // clamped slot: the conversion is only sound when the index provably
+      // lands in bounds.
+      auto [idxLo, idxHi] = enzyme::getProvableIntegerRange(indices);
+      if (idxLo.isNegative() ||
+          idxHi.sgt(APInt(128, inputTy.getDimSize(0) - 1)))
+        return failure();
       auto scalarIndex =
           stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), indices, {});
 
@@ -36163,7 +36171,8 @@ private:
       stride = -stride;
     }
 
-    if (limit > inputTy.getDimSize(0)) { // gather clamps indices
+    if (start < 0 || limit > inputTy.getDimSize(0)) {
+      // The slice/DUS pair clamps where the scatter would drop.
       return failure();
     }
 

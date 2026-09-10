@@ -1,7 +1,10 @@
 // RUN: enzymexlamlir-opt --enzyme-hlo-opt %s | FileCheck %s
 
 func.func @test_scatter_single_index(%arg0: tensor<4xf32>, %arg1: tensor<1x1xf32>, %idx : tensor<1x1x1xi32>) -> tensor<4xf32> {
-  %0 = "stablehlo.scatter"(%arg0, %idx, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 2>, unique_indices = false}> ({
+  %lo = stablehlo.constant dense<0> : tensor<1x1x1xi32>
+  %hi = stablehlo.constant dense<3> : tensor<1x1x1xi32>
+  %cidx = stablehlo.clamp %lo, %idx, %hi : tensor<1x1x1xi32>
+  %0 = "stablehlo.scatter"(%arg0, %cidx, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 2>, unique_indices = false}> ({
     ^bb0(%arg3: tensor<f32>, %arg4: tensor<f32>):
       %1 = stablehlo.subtract %arg3, %arg4 : tensor<f32>
       stablehlo.return %1 : tensor<f32>
@@ -10,16 +13,22 @@ func.func @test_scatter_single_index(%arg0: tensor<4xf32>, %arg1: tensor<1x1xf32
 }
 
 // CHECK: func.func @test_scatter_single_index(%arg0: tensor<4xf32>, %arg1: tensor<1x1xf32>, %arg2: tensor<1x1x1xi32>) -> tensor<4xf32> {
-// CHECK-NEXT:   %0 = stablehlo.reshape %arg2 : (tensor<1x1x1xi32>) -> tensor<i32>
-// CHECK-NEXT:   %1 = stablehlo.dynamic_slice %arg0, %0, sizes = [1] : (tensor<4xf32>, tensor<i32>) -> tensor<1xf32>
-// CHECK-NEXT:   %2 = stablehlo.reshape %arg1 : (tensor<1x1xf32>) -> tensor<1xf32>
-// CHECK-NEXT:   %3 = stablehlo.subtract %1, %2 : tensor<1xf32>
-// CHECK-NEXT:   %4 = stablehlo.dynamic_update_slice %arg0, %3, %0 : (tensor<4xf32>, tensor<1xf32>, tensor<i32>) -> tensor<4xf32>
-// CHECK-NEXT:   return %4 : tensor<4xf32>
+// CHECK-NEXT: %c = stablehlo.constant dense<0> : tensor<1x1x1xi32>
+// CHECK-NEXT: %c_0 = stablehlo.constant dense<3> : tensor<1x1x1xi32>
+// CHECK-NEXT: %0 = stablehlo.clamp %c, %arg2, %c_0 : tensor<1x1x1xi32>
+// CHECK-NEXT: %1 = stablehlo.reshape %0 : (tensor<1x1x1xi32>) -> tensor<i32>
+// CHECK-NEXT: %2 = stablehlo.dynamic_slice %arg0, %1, sizes = [1] : (tensor<4xf32>, tensor<i32>) -> tensor<1xf32>
+// CHECK-NEXT: %3 = stablehlo.reshape %arg1 : (tensor<1x1xf32>) -> tensor<1xf32>
+// CHECK-NEXT: %4 = stablehlo.subtract %2, %3 : tensor<1xf32>
+// CHECK-NEXT: %5 = stablehlo.dynamic_update_slice %arg0, %4, %1 : (tensor<4xf32>, tensor<1xf32>, tensor<i32>) -> tensor<4xf32>
+// CHECK-NEXT: return %5 : tensor<4xf32>
 // CHECK-NEXT: }
 
 func.func @test_scatter_single_index_outside_value(%arg0: tensor<4xf32>, %arg1: tensor<1x1xf32>, %idx : tensor<1x1x1xi32>, %out_val: tensor<f32>) -> tensor<4xf32> {
-  %0 = "stablehlo.scatter"(%arg0, %idx, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 2>, unique_indices = false}> ({
+  %lo = stablehlo.constant dense<0> : tensor<1x1x1xi32>
+  %hi = stablehlo.constant dense<3> : tensor<1x1x1xi32>
+  %cidx = stablehlo.clamp %lo, %idx, %hi : tensor<1x1x1xi32>
+  %0 = "stablehlo.scatter"(%arg0, %cidx, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 2>, unique_indices = false}> ({
     ^bb0(%arg3: tensor<f32>, %arg4: tensor<f32>):
       %1 = stablehlo.subtract %arg3, %out_val : tensor<f32>
       stablehlo.return %1 : tensor<f32>
@@ -28,18 +37,24 @@ func.func @test_scatter_single_index_outside_value(%arg0: tensor<4xf32>, %arg1: 
 }
 
 // CHECK: func.func @test_scatter_single_index_outside_value(%arg0: tensor<4xf32>, %arg1: tensor<1x1xf32>, %arg2: tensor<1x1x1xi32>, %arg3: tensor<f32>) -> tensor<4xf32> {
-// CHECK-NEXT:   %0 = stablehlo.reshape %arg2 : (tensor<1x1x1xi32>) -> tensor<i32>
-// CHECK-NEXT:   %1 = stablehlo.dynamic_slice %arg0, %0, sizes = [1] : (tensor<4xf32>, tensor<i32>) -> tensor<1xf32>
-// CHECK-NEXT:   %2 = stablehlo.reshape %arg3 : (tensor<f32>) -> tensor<1xf32>
-// CHECK-NEXT:   %3 = stablehlo.subtract %1, %2 : tensor<1xf32>
-// CHECK-NEXT:   %4 = stablehlo.dynamic_update_slice %arg0, %3, %0 : (tensor<4xf32>, tensor<1xf32>, tensor<i32>) -> tensor<4xf32>
-// CHECK-NEXT:   return %4 : tensor<4xf32>
+// CHECK-NEXT: %c = stablehlo.constant dense<0> : tensor<1x1x1xi32>
+// CHECK-NEXT: %c_0 = stablehlo.constant dense<3> : tensor<1x1x1xi32>
+// CHECK-NEXT: %0 = stablehlo.clamp %c, %arg2, %c_0 : tensor<1x1x1xi32>
+// CHECK-NEXT: %1 = stablehlo.reshape %0 : (tensor<1x1x1xi32>) -> tensor<i32>
+// CHECK-NEXT: %2 = stablehlo.dynamic_slice %arg0, %1, sizes = [1] : (tensor<4xf32>, tensor<i32>) -> tensor<1xf32>
+// CHECK-NEXT: %3 = stablehlo.reshape %arg3 : (tensor<f32>) -> tensor<1xf32>
+// CHECK-NEXT: %4 = stablehlo.subtract %2, %3 : tensor<1xf32>
+// CHECK-NEXT: %5 = stablehlo.dynamic_update_slice %arg0, %4, %1 : (tensor<4xf32>, tensor<1xf32>, tensor<i32>) -> tensor<4xf32>
+// CHECK-NEXT: return %5 : tensor<4xf32>
 // CHECK-NEXT: }
 
 func.func @test_scatter_single_index_outside_value2(%arg0: tensor<4xf32>, %arg1: tensor<1x1xf32>, %idx : tensor<1x1x1xi32>, %out_val: tensor<f32>) -> tensor<4xf32> {
+  %lo = stablehlo.constant dense<0> : tensor<1x1x1xi32>
+  %hi = stablehlo.constant dense<3> : tensor<1x1x1xi32>
+  %cidx = stablehlo.clamp %lo, %idx, %hi : tensor<1x1x1xi32>
   %cst = stablehlo.constant dense<5.0> : tensor<f32>
   %out_val2 = stablehlo.add %out_val, %cst : tensor<f32>
-  %0 = "stablehlo.scatter"(%arg0, %idx, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 2>, unique_indices = false}> ({
+  %0 = "stablehlo.scatter"(%arg0, %cidx, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 2>, unique_indices = false}> ({
     ^bb0(%arg3: tensor<f32>, %arg4: tensor<f32>):
       %1 = stablehlo.subtract %arg3, %out_val2 : tensor<f32>
       stablehlo.return %1 : tensor<f32>
@@ -48,19 +63,25 @@ func.func @test_scatter_single_index_outside_value2(%arg0: tensor<4xf32>, %arg1:
 }
 
 // CHECK: func.func @test_scatter_single_index_outside_value2(%arg0: tensor<4xf32>, %arg1: tensor<1x1xf32>, %arg2: tensor<1x1x1xi32>, %arg3: tensor<f32>) -> tensor<4xf32> {
-// CHECK-NEXT:   %cst = stablehlo.constant dense<5.000000e+00> : tensor<f32>
-// CHECK-NEXT:   %0 = stablehlo.add %arg3, %cst : tensor<f32>
-// CHECK-NEXT:   %1 = stablehlo.reshape %arg2 : (tensor<1x1x1xi32>) -> tensor<i32>
-// CHECK-NEXT:   %2 = stablehlo.dynamic_slice %arg0, %1, sizes = [1] : (tensor<4xf32>, tensor<i32>) -> tensor<1xf32>
-// CHECK-NEXT:   %3 = stablehlo.reshape %0 : (tensor<f32>) -> tensor<1xf32>
-// CHECK-NEXT:   %4 = stablehlo.subtract %2, %3 : tensor<1xf32>
-// CHECK-NEXT:   %5 = stablehlo.dynamic_update_slice %arg0, %4, %1 : (tensor<4xf32>, tensor<1xf32>, tensor<i32>) -> tensor<4xf32>
-// CHECK-NEXT:   return %5 : tensor<4xf32>
+// CHECK-NEXT: %cst = stablehlo.constant dense<5.000000e+00> : tensor<f32>
+// CHECK-NEXT: %c = stablehlo.constant dense<0> : tensor<1x1x1xi32>
+// CHECK-NEXT: %c_0 = stablehlo.constant dense<3> : tensor<1x1x1xi32>
+// CHECK-NEXT: %0 = stablehlo.clamp %c, %arg2, %c_0 : tensor<1x1x1xi32>
+// CHECK-NEXT: %1 = stablehlo.add %arg3, %cst : tensor<f32>
+// CHECK-NEXT: %2 = stablehlo.reshape %0 : (tensor<1x1x1xi32>) -> tensor<i32>
+// CHECK-NEXT: %3 = stablehlo.dynamic_slice %arg0, %2, sizes = [1] : (tensor<4xf32>, tensor<i32>) -> tensor<1xf32>
+// CHECK-NEXT: %4 = stablehlo.reshape %1 : (tensor<f32>) -> tensor<1xf32>
+// CHECK-NEXT: %5 = stablehlo.subtract %3, %4 : tensor<1xf32>
+// CHECK-NEXT: %6 = stablehlo.dynamic_update_slice %arg0, %5, %2 : (tensor<4xf32>, tensor<1xf32>, tensor<i32>) -> tensor<4xf32>
+// CHECK-NEXT: return %6 : tensor<4xf32>
 // CHECK-NEXT: }
 
 func.func @test_scatter_single_index_const_outside_value(%arg0: tensor<4xf32>, %arg1: tensor<1x1xf32>, %idx : tensor<1x1x1xi32>) -> tensor<4xf32> {
+  %lo = stablehlo.constant dense<0> : tensor<1x1x1xi32>
+  %hi = stablehlo.constant dense<3> : tensor<1x1x1xi32>
+  %cidx = stablehlo.clamp %lo, %idx, %hi : tensor<1x1x1xi32>
   %cst = stablehlo.constant dense<5.0> : tensor<f32>
-  %0 = "stablehlo.scatter"(%arg0, %idx, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 2>, unique_indices = false}> ({
+  %0 = "stablehlo.scatter"(%arg0, %cidx, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 2>, unique_indices = false}> ({
     ^bb0(%arg3: tensor<f32>, %arg4: tensor<f32>):
       %1 = stablehlo.subtract %arg3, %cst : tensor<f32>
       stablehlo.return %1 : tensor<f32>
@@ -69,12 +90,15 @@ func.func @test_scatter_single_index_const_outside_value(%arg0: tensor<4xf32>, %
 }
 
 // CHECK: func.func @test_scatter_single_index_const_outside_value(%arg0: tensor<4xf32>, %arg1: tensor<1x1xf32>, %arg2: tensor<1x1x1xi32>) -> tensor<4xf32> {
-// CHECK-NEXT:   %cst = stablehlo.constant dense<5.000000e+00> : tensor<1xf32>
-// CHECK-NEXT:   %0 = stablehlo.reshape %arg2 : (tensor<1x1x1xi32>) -> tensor<i32>
-// CHECK-NEXT:   %1 = stablehlo.dynamic_slice %arg0, %0, sizes = [1] : (tensor<4xf32>, tensor<i32>) -> tensor<1xf32>
-// CHECK-NEXT:   %2 = stablehlo.subtract %1, %cst : tensor<1xf32>
-// CHECK-NEXT:   %3 = stablehlo.dynamic_update_slice %arg0, %2, %0 : (tensor<4xf32>, tensor<1xf32>, tensor<i32>) -> tensor<4xf32>
-// CHECK-NEXT:   return %3 : tensor<4xf32>
+// CHECK-NEXT: %cst = stablehlo.constant dense<5.000000e+00> : tensor<1xf32>
+// CHECK-NEXT: %c = stablehlo.constant dense<0> : tensor<1x1x1xi32>
+// CHECK-NEXT: %c_0 = stablehlo.constant dense<3> : tensor<1x1x1xi32>
+// CHECK-NEXT: %0 = stablehlo.clamp %c, %arg2, %c_0 : tensor<1x1x1xi32>
+// CHECK-NEXT: %1 = stablehlo.reshape %0 : (tensor<1x1x1xi32>) -> tensor<i32>
+// CHECK-NEXT: %2 = stablehlo.dynamic_slice %arg0, %1, sizes = [1] : (tensor<4xf32>, tensor<i32>) -> tensor<1xf32>
+// CHECK-NEXT: %3 = stablehlo.subtract %2, %cst : tensor<1xf32>
+// CHECK-NEXT: %4 = stablehlo.dynamic_update_slice %arg0, %3, %1 : (tensor<4xf32>, tensor<1xf32>, tensor<i32>) -> tensor<4xf32>
+// CHECK-NEXT: return %4 : tensor<4xf32>
 // CHECK-NEXT: }
 
 // Test scatter with iota indices starting from 0
