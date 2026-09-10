@@ -535,8 +535,7 @@ getBoundsFromIR(Value val, unsigned bitWidth) {
   return std::make_pair(minVal, maxVal);
 }
 
-inline std::pair<APInt, APInt> getProvableIntegerRange(Value v,
-                                                        int depth = 0) {
+inline std::pair<APInt, APInt> getProvableIntegerRange(Value v, int depth = 0) {
   auto ty = cast<RankedTensorType>(v.getType());
   auto ety = cast<IntegerType>(ty.getElementType());
   unsigned width = ety.getWidth();
