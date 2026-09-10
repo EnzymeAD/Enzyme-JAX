@@ -1,5 +1,5 @@
 // RUN: enzymexlamlir-opt --lower-comm-to-stablehlo %s | FileCheck %s --check-prefix=SHLO
-// RUN enzymexlamlir-opt --lower-comm-to-jit %s | FileCheck %s --check-prefix=JIT
+// RUN: enzymexlamlir-opt --map-symbol="symbols=MPI_Send=0x1,MPI_DOUBLE=0x5" --lower-comm-to-jit %s | FileCheck %s --check-prefix=JIT
 
 func.func @main(%buffer: tensor<4xf64>, %dst: tensor<i32>, %tag: tensor<i32>, %comm: !comm.mpi.comm) {
     comm.mpi.send %buffer, %dst, %tag, %comm : tensor<4xf64>, tensor<i32>, tensor<i32>, !comm.mpi.comm
@@ -24,6 +24,6 @@ func.func @main(%buffer: tensor<4xf64>, %dst: tensor<i32>, %tag: tensor<i32>, %c
 // JIT-LABEL: func.func @main
 // JIT-SAME:                 (%[[BUFFER:.*]]: tensor<4xf64>, %[[DST:.*]]: tensor<i32>, %[[TAG:.*]]: tensor<i32>, %[[COMM:.*]]: tensor<i64>) {
 // JIT-NEXT: %[[COUNT:.*]] = stablehlo.constant dense<4> : tensor<i32>
-// JIT-NEXT: %[[DATATYPE:.*]] = stablehlo.constant dense<0> : tensor<i64>
-// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Send(%[[BUFFER]], %[[COUNT]], %[[DATATYPE]], %[[DST]], %[[TAG]], %[[COMM]]) : (tensor<4xf64>, tensor<i32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>) -> ()
+// JIT-NEXT: %[[DATATYPE:.*]] = stablehlo.constant dense<5> : tensor<i64>
+// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Send (%[[BUFFER]], %[[COUNT]], %[[DATATYPE]], %[[DST]], %[[TAG]], %[[COMM]]) : (tensor<4xf64>, tensor<i32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>) -> ()
 // JIT-NEXT: return
