@@ -9,6 +9,16 @@ include "Utils.td"
 include "Types.td"
 include "Attrs.td"
 
+def NcclGroupStartOp : Comm_Op<"nccl.group_start", []> {
+  let summary = "Equivalent to `ncclGroupStart`";
+  let assemblyFormat = "attr-dict";
+}
+
+def NcclGroupEndOp : Comm_Op<"nccl.group_end", []> {
+  let summary = "Equivalent to `ncclGroupEnd`";
+  let assemblyFormat = "attr-dict";
+}
+
 def NcclCommSplitOp : Comm_Op<"nccl.comm_split", []> {
   let summary = "Equivalent to `ncclCommSplit`";
 
