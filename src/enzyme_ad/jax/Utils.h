@@ -10,6 +10,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Error.h"
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/IR/Value.h>
 
@@ -39,8 +40,28 @@
 
 #include <deque>
 
+#if (defined(_WIN32) || defined(__CYGWIN__)) &&                                \
+    !defined(MLIR_CAPI_ENABLE_WINDOWS_DLL_DECLSPEC)
+// Visibility annotations disabled.
+#define MLIR_CAPI_EXPORTED
+#elif defined(_WIN32) || defined(__CYGWIN__)
+// Windows visibility declarations.
+#if MLIR_CAPI_BUILDING_LIBRARY
+#define MLIR_CAPI_EXPORTED __declspec(dllexport)
+#else
+#define MLIR_CAPI_EXPORTED __declspec(dllimport)
+#endif
+#else
+// Non-windows: use visibility attributes.
+#define MLIR_CAPI_EXPORTED __attribute__((visibility("default")))
+#endif
+
 namespace mlir {
 namespace enzyme {
+
+llvm::Expected<void *> lookupSymbol(const char *name);
+extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
+                                                      void *symbol);
 
 void commonLowerUpdateWithoutCorners(enzymexla::UpdateWithoutCornersOp extend,
                                      PatternRewriter &rewriter);

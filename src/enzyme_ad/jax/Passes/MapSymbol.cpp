@@ -48,13 +48,6 @@ struct MapSymbolPass : public enzyme::impl::MapSymbolPassBase<MapSymbolPass> {
       }
 
       EnzymeJaXMapSymbol(name.c_str(), addr);
-
-      void *lookup_addr;
-      int found_addr = EnzymeJaXLookupSymbol(name.c_str(), &lookup_addr);
-      if (found_addr != 0) {
-        llvm::errs() << "`" << name << "` symbol not mapped\n";
-        return signalPassFailure();
-      }
     }
   }
 };
