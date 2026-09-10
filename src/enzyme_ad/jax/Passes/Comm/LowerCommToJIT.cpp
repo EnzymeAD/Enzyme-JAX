@@ -212,7 +212,8 @@ struct LowerCommMpiCommRankOpToJIT
     auto comm = adaptor.getComm();
     auto rank_placeholder = stablehlo::ConstantOp::create(
         rewriter, op.getLoc(), type_tensor_i32,
-        DenseIntElementsAttr::get(type_tensor_i32, ArrayRef<int32_t>{-1}));
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i32, static_cast<int32_t>(-1))));
 
     auto aliases =
         rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
@@ -310,7 +311,8 @@ struct LowerCommMpiCommSizeOpToJIT
     auto comm = adaptor.getComm();
     auto size_placeholder = stablehlo::ConstantOp::create(
         rewriter, op.getLoc(), type_tensor_i32,
-        DenseIntElementsAttr::get(type_tensor_i32, ArrayRef<int32_t>{-1}));
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i32, static_cast<int32_t>(-1))));
 
     auto aliases =
         rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
@@ -419,7 +421,8 @@ struct LowerCommMpiCommSplitOpToJIT
     auto key = adaptor.getKey();
     auto newcomm_placeholder = stablehlo::ConstantOp::create(
         rewriter, op.getLoc(), type_tensor_i64,
-        DenseIntElementsAttr::get(type_tensor_i64, ArrayRef<int64_t>{-1}));
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i64, static_cast<int64_t>(-1))));
 
     auto aliases =
         rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
@@ -626,7 +629,8 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
                            std::multiplies<int64_t>());
     auto count = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i32,
-        DenseIntElementsAttr::get(type_tensor_i32, static_cast<int32_t>(len)));
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i32, static_cast<int32_t>(len))));
 
     auto buffer = adaptor.getBuffer();
     auto dest = adaptor.getDest();
@@ -643,8 +647,8 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
-        DenseIntElementsAttr::get(
-            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get())));
+        cast<ElementsAttr>(makeAttr(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get()))));
 
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
@@ -765,7 +769,8 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
                            std::multiplies<int64_t>());
     auto count = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i32,
-        DenseIntElementsAttr::get(type_tensor_i32, static_cast<int32_t>(len)));
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i32, static_cast<int32_t>(len))));
 
     auto buffer = adaptor.getBuffer();
     auto dest = adaptor.getDest();
@@ -774,7 +779,7 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
 
     auto request_placeholder = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
-        DenseIntElementsAttr::get(type_tensor_i64, -1));
+        cast<ElementsAttr>(makeAttr(type_tensor_i64, -1)));
 
     // TODO can we pass `datatype` as attribute?
     auto datatype_name = convertMlirTypeToMpiDatatypeName(
@@ -786,8 +791,8 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
-        DenseIntElementsAttr::get(
-            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get())));
+        cast<ElementsAttr>(makeAttr(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get()))));
 
     auto aliases =
         rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
@@ -924,7 +929,8 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
                            std::multiplies<int64_t>());
     auto count = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i32,
-        DenseIntElementsAttr::get(type_tensor_i32, len));
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i32, static_cast<int32_t>(len))));
 
     auto src = adaptor.getSource();
     auto tag = adaptor.getTag();
@@ -940,8 +946,8 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
-        DenseIntElementsAttr::get(
-            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get())));
+        cast<ElementsAttr>(makeAttr(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get()))));
 
     auto aliases =
         rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
@@ -1074,7 +1080,8 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
                            std::multiplies<int64_t>());
     auto count = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i32,
-        DenseIntElementsAttr::get(type_tensor_i32, len));
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i32, static_cast<int32_t>(len))));
 
     auto src = adaptor.getSource();
     auto tag = adaptor.getTag();
@@ -1082,7 +1089,7 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
 
     auto request_placeholder = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
-        DenseIntElementsAttr::get(type_tensor_i64, -1));
+        cast<ElementsAttr>(makeAttr(type_tensor_i64, -1)));
 
     // TODO can we pass `datatype` as attribute?
     auto datatype_name =
@@ -1094,8 +1101,8 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
-        DenseIntElementsAttr::get(
-            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get())));
+        cast<ElementsAttr>(makeAttr(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get()))));
 
     auto aliases = rewriter.getArrayAttr({
         /* buffer */
@@ -1425,7 +1432,8 @@ struct LowerCommMpiAllreduceOpToJIT
 
     auto count = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i32,
-        DenseIntElementsAttr::get(type_tensor_i32, len));
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i32, static_cast<int32_t>(len))));
 
     auto comm = adaptor.getComm();
 
@@ -1439,8 +1447,8 @@ struct LowerCommMpiAllreduceOpToJIT
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
-        DenseIntElementsAttr::get(
-            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get())));
+        cast<ElementsAttr>(makeAttr(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get()))));
 
     auto mpi_op_name =
         comm::stringifyMpiOpEnum(adaptor.getReduceOp().getValue());
@@ -1450,8 +1458,8 @@ struct LowerCommMpiAllreduceOpToJIT
 
     Value mpi_op = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
-        DenseIntElementsAttr::get(type_tensor_i64,
-                                  reinterpret_cast<int64_t>(mpi_op_val.get())));
+        cast<ElementsAttr>(makeAttr(
+            type_tensor_i64, reinterpret_cast<int64_t>(mpi_op_val.get()))));
 
     auto aliases =
         rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
@@ -1571,7 +1579,8 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
                            std::multiplies<int64_t>());
     auto count = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i32,
-        DenseIntElementsAttr::get(type_tensor_i32, len));
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i32, static_cast<int32_t>(len))));
 
     auto root = adaptor.getRoot();
     auto comm = adaptor.getComm();
@@ -1586,8 +1595,8 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
-        DenseIntElementsAttr::get(
-            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get())));
+        cast<ElementsAttr>(makeAttr(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get()))));
 
     auto aliases =
         rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
