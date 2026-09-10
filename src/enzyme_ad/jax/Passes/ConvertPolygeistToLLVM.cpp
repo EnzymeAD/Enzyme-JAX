@@ -132,6 +132,11 @@ static Block *getAllocaBlock(Operation *op) {
   return nullptr;
 }
 
+// Runtime initialization must precede persistent temporary initialization;
+// destructor priorities run in the reverse order.
+static constexpr int32_t xlaRuntimePriority = 65534;
+static constexpr int32_t xlaTempsPriority = 65535;
+
 static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
                                  RewriterBase &rewriter) {
   auto loc = moduleOp.getLoc();
@@ -174,13 +179,13 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
     auto ctorSymbol = FlatSymbolRefAttr::get(ctor);
     LLVM::GlobalCtorsOp::create(
         rewriter, loc, rewriter.getArrayAttr({std::move(ctorSymbol)}),
-        rewriter.getI32ArrayAttr({65535}),
+        rewriter.getI32ArrayAttr({xlaRuntimePriority}),
         rewriter.getArrayAttr({LLVM::ZeroAttr::get(rewriter.getContext())}));
 
     auto dtorSymbol = FlatSymbolRefAttr::get(dtor);
     LLVM::GlobalDtorsOp::create(
         rewriter, loc, rewriter.getArrayAttr({std::move(dtorSymbol)}),
-        rewriter.getI32ArrayAttr({65535}),
+        rewriter.getI32ArrayAttr({xlaRuntimePriority}),
         rewriter.getArrayAttr({LLVM::ZeroAttr::get(rewriter.getContext())}));
 
     if (!data || data.getLinkage() == LLVM::Linkage::External) {
@@ -246,6 +251,116 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
   }
 
   return LLVM::AddressOfOp::create(rewriter, loc, ptrty, data.getSymNameAttr());
+}
+
+// Materialize module-owned allocations before dialect conversion so the
+// ordinary gpu.alloc/dealloc patterns select the XLA runtime ABI. This is
+// independent of the pass or frontend that created the declarations.
+static LogicalResult lowerGlobalTemps(ModuleOp module, StringRef backend,
+                                      bool useCStyleMemRef) {
+  SmallVector<TempAllocOp> allocations(module.getOps<TempAllocOp>());
+  if (allocations.empty())
+    return success();
+  if (!backend.starts_with("xla"))
+    return module.emitError("persistent temporaries require an XLA backend");
+  if (!useCStyleMemRef)
+    return module.emitError(
+        "persistent temporaries require C-style memref lowering");
+  for (TempAllocOp allocation : allocations) {
+    auto elementType = allocation.getType().getElementType();
+    // Diagnose unsupported element types before the ordinary allocation
+    // lowering tries to form an XLA shape for them.
+    if (xla::ConvertMlirTypeToPrimitiveType(elementType) ==
+        xla::PrimitiveType::PRIMITIVE_TYPE_INVALID)
+      return allocation.emitError("unsupported XLA element type ")
+             << elementType;
+  }
+
+  IRRewriter rewriter(module.getContext());
+  SymbolTable symbols(module);
+  auto loc = module.getLoc();
+  auto devicePtrType = LLVM::LLVMPointerType::get(module.getContext(), 1);
+  auto functionType = LLVM::LLVMFunctionType::get(
+      LLVM::LLVMVoidType::get(module.getContext()), {});
+  rewriter.setInsertionPointToEnd(module.getBody());
+  // These functions and slots must not be linkonce: different translation
+  // units own different temporaries even when their local names coincide.
+  auto ctor = LLVM::LLVMFuncOp::create(rewriter, loc, "__reactant_temps_init",
+                                       functionType, LLVM::Linkage::Internal);
+  symbols.insert(ctor);
+  auto dtor = LLVM::LLVMFuncOp::create(rewriter, loc, "__reactant_temps_deinit",
+                                       functionType, LLVM::Linkage::Internal);
+  symbols.insert(dtor);
+  auto *ctorBlock = ctor.addEntryBlock(rewriter);
+  auto *dtorBlock = dtor.addEntryBlock(rewriter);
+
+  DenseMap<Operation *, LLVM::GlobalOp> slots;
+  for (TempAllocOp allocation : allocations) {
+    rewriter.setInsertionPoint(allocation);
+    auto slot = LLVM::GlobalOp::create(
+        rewriter, allocation.getLoc(), devicePtrType, /*constant=*/false,
+        LLVM::Linkage::Internal,
+        ("__reactant_temp_" + allocation.getSymName()).str(), Attribute());
+    symbols.insert(slot);
+    slots[allocation] = slot;
+    auto *initializer = new Block();
+    slot.getInitializerRegion().push_back(initializer);
+    rewriter.setInsertionPointToEnd(initializer);
+    auto null = LLVM::ZeroOp::create(rewriter, loc, devicePtrType);
+    LLVM::ReturnOp::create(rewriter, loc, ValueRange{null});
+
+    rewriter.setInsertionPointToEnd(ctorBlock);
+    auto storage = gpu::AllocOp::create(
+        rewriter, loc, allocation.getType(), /*asyncToken=*/Type(),
+        /*asyncDependencies=*/ValueRange(), /*dynamicSizes=*/ValueRange(),
+        /*symbolOperands=*/ValueRange());
+    auto handle = Memref2PointerOp::create(rewriter, loc, devicePtrType,
+                                           storage.getMemref());
+    auto address = LLVM::AddressOfOp::create(rewriter, loc, slot);
+    LLVM::StoreOp::create(rewriter, loc, handle, address);
+
+    rewriter.setInsertionPointToStart(dtorBlock);
+    address = LLVM::AddressOfOp::create(rewriter, loc, slot);
+    auto loaded = LLVM::LoadOp::create(rewriter, loc, devicePtrType, address);
+    auto memref =
+        Pointer2MemrefOp::create(rewriter, loc, allocation.getType(), loaded);
+    gpu::DeallocOp::create(rewriter, loc, /*asyncToken=*/Type(),
+                           /*asyncDependencies=*/ValueRange(), memref);
+    null = LLVM::ZeroOp::create(rewriter, loc, devicePtrType);
+    LLVM::StoreOp::create(rewriter, loc, null, address);
+  }
+
+  rewriter.setInsertionPointToEnd(ctorBlock);
+  LLVM::ReturnOp::create(rewriter, loc, ValueRange());
+  rewriter.setInsertionPointToEnd(dtorBlock);
+  LLVM::ReturnOp::create(rewriter, loc, ValueRange());
+  rewriter.setInsertionPointToEnd(module.getBody());
+  LLVM::GlobalCtorsOp::create(
+      rewriter, loc, rewriter.getArrayAttr({FlatSymbolRefAttr::get(ctor)}),
+      rewriter.getI32ArrayAttr({xlaTempsPriority}),
+      rewriter.getArrayAttr({LLVM::ZeroAttr::get(module.getContext())}));
+  LLVM::GlobalDtorsOp::create(
+      rewriter, loc, rewriter.getArrayAttr({FlatSymbolRefAttr::get(dtor)}),
+      rewriter.getI32ArrayAttr({xlaTempsPriority}),
+      rewriter.getArrayAttr({LLVM::ZeroAttr::get(module.getContext())}));
+
+  SmallVector<GetGlobalTempOp> accesses;
+  module.walk([&](GetGlobalTempOp access) {
+    if (access->getParentOfType<ModuleOp>() == module)
+      accesses.push_back(access);
+  });
+  for (GetGlobalTempOp access : accesses) {
+    auto allocation = symbols.lookup<TempAllocOp>(access.getName());
+    auto slot = slots.lookup(allocation);
+    rewriter.setInsertionPoint(access);
+    auto address = LLVM::AddressOfOp::create(rewriter, loc, slot);
+    auto handle = LLVM::LoadOp::create(rewriter, loc, devicePtrType, address);
+    rewriter.replaceOpWithNewOp<Pointer2MemrefOp>(
+        access, access.getResult().getType(), handle);
+  }
+  for (TempAllocOp allocation : allocations)
+    rewriter.eraseOp(allocation);
+  return success();
 }
 
 struct Stream2TokenOpLowering : public ConvertOpToLLVMPattern<StreamToTokenOp> {
@@ -4737,6 +4852,10 @@ struct ConvertPolygeistToLLVMPass
     if (useCStyleMemRef && useBarePtrCallConv) {
       emitError(m.getLoc()) << "C-style memref lowering is not compatible with "
                                "bare-pointer calling convention";
+      signalPassFailure();
+      return;
+    }
+    if (failed(lowerGlobalTemps(m, backend, useCStyleMemRef))) {
       signalPassFailure();
       return;
     }

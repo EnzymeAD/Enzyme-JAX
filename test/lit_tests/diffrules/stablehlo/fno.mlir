@@ -48,7 +48,7 @@ module @reactant_enzyme_... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:     %12 = stablehlo.slice %11 [0:16, 0:5, 0:16] {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<16x5x513xcomplex<f32>>) -> tensor<16x5x16xcomplex<f32>>
 // CHECK-NEXT:     %13 = chlo.conj %12 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<16x5x16xcomplex<f32>> -> tensor<16x5x16xcomplex<f32>>
 // CHECK-NEXT:     %14 = stablehlo.broadcast_in_dim %cst, dims = [2] : (tensor<16xcomplex<f32>>) -> tensor<16x5x16xcomplex<f32>>
-// CHECK-NEXT:     %15 = stablehlo.multiply %13, %14 : tensor<16x5x16xcomplex<f32>>
+// CHECK-NEXT:     %15 = stablehlo.multiply %13, %14 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<16x5x16xcomplex<f32>>
 // CHECK-NEXT:     %16 = stablehlo.dot_general %15, %5, batching_dims = [2] x [2], contracting_dims = [1] x [1], precision = [DEFAULT, DEFAULT] {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<16x5x16xcomplex<f32>>, tensor<4x5x16xcomplex<f32>>) -> tensor<16x16x4xcomplex<f32>>
 // CHECK-NEXT:     %17 = chlo.conj %16 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<16x16x4xcomplex<f32>> -> tensor<16x16x4xcomplex<f32>>
 // CHECK-NEXT:     %18 = stablehlo.transpose %17, dims = [0, 2, 1] {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<16x16x4xcomplex<f32>>) -> tensor<16x4x16xcomplex<f32>>

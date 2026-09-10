@@ -44,7 +44,7 @@ jobs:
     secrets: inherit
     with:
       enzymejax_commit: ${{ inputs.enzymejax_commit || github.sha }}
-      julia_version: '1.12'
+      julia_version: '1.12.6'
       os: ${{ matrix.os }}
       localjll: true
       runtime: "ifrt"

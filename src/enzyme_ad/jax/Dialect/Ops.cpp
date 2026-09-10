@@ -2110,6 +2110,33 @@ void GPUErrorOp::build(OpBuilder &builder, OperationState &result) {
   GPUErrorOp::ensureTerminator(*bodyRegion, builder, result.location);
 }
 
+LogicalResult TempAllocOp::verify() {
+  if (!isPrivate())
+    return emitOpError("requires private visibility");
+  auto type = getType();
+  if (!type.hasStaticShape())
+    return emitOpError("requires a static shape");
+  if (!type.getLayout().isIdentity())
+    return emitOpError("requires an identity layout");
+  auto space = dyn_cast_or_null<IntegerAttr>(type.getMemorySpace());
+  if (!space || space.getInt() != 1)
+    return emitOpError("requires device memory space 1");
+  return success();
+}
+
+LogicalResult
+GetGlobalTempOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  auto allocation =
+      symbolTable.lookupNearestSymbolFrom<TempAllocOp>(*this, getNameAttr());
+  if (!allocation)
+    return emitOpError("'")
+           << getName() << "' does not reference a temp_alloc declaration";
+  if (allocation.getType() != getResult().getType())
+    return emitOpError("result type does not match the temp_alloc type ")
+           << allocation.getType();
+  return success();
+}
+
 LogicalResult
 XLAWrapperOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO: Verify that the result type is same as the type of the referenced
