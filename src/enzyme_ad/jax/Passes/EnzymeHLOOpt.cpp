@@ -3118,6 +3118,15 @@ struct SliceBroadcast final
     if (innerSlice && !llvm::hasSingleElement(bcast->getUsers()))
       return failure();
 
+    // The new broadcast must be dimensionally consistent: every mapped
+    // operand dim must equal its result dim or be 1.
+    for (auto [i, outdim] : llvm::enumerate(bcast.getBroadcastDimensions())) {
+      int64_t od = (in_end[i] - in_start[i] + in_stride[i] - 1) / in_stride[i];
+      int64_t rd = op.getType().getShape()[outdim];
+      if (od != rd && od != 1)
+        return failure();
+    }
+
     Value tobcast = bcast.getOperand();
     if (innerSlice)
       tobcast = stablehlo::SliceOp::create(rewriter, op.getLoc(), tobcast,
@@ -3125,6 +3134,8 @@ struct SliceBroadcast final
 
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
         op, op.getType(), tobcast, bcast.getBroadcastDimensions());
+    if (innerSlice)
+      rewriter.eraseOp(bcast);
     return success();
   }
 };
@@ -3154,6 +3165,7 @@ struct SliceTransposeBase final
     auto sliceOp = sliceTransposeHelper(transpose, rewriter, op);
     rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
         op, sliceOp, transpose.getPermutation());
+    rewriter.eraseOp(transpose);
     return success();
   }
 };
@@ -3706,6 +3718,7 @@ struct SliceElementwise final
           elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
           TypeRange(op->getResult(0).getType()), elem->getAttrs(), {}, {});
       rewriter.replaceOp(op, nex);
+      rewriter.eraseOp(elem);
       return success();
     }
 
@@ -3791,6 +3804,7 @@ struct SliceElementwise final
       rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(sl, nex->getResult(0),
                                                       sstarts, sstops, sints);
     }
+    rewriter.eraseOp(elem);
     return success();
   }
 };
@@ -12987,6 +13001,8 @@ struct SliceReshapeTranspose final
         rewriter, transpose.getLoc(), newslice, transpose.getPermutation());
     rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
                                                       newtransp);
+    rewriter.eraseOp(reshape);
+    rewriter.eraseOp(transpose);
     return success();
   }
 };
@@ -23365,9 +23381,8 @@ struct SliceSelect
         rewriter, sliceOp.getLoc(), slicedPred, slicedOnTrue, slicedOnFalse);
 
     rewriter.replaceOp(sliceOp, newSelectOp.getResult());
-
+    rewriter.eraseOp(selOp);
     return success();
-    ;
   }
 };
 
@@ -35533,6 +35548,134 @@ struct RecognizeMultiPad final
   }
 };
 
+// Whether an index tensor maps every grid position to a distinct value: a
+// sum of iota-like terms, each along its own grid dimension, whose strides
+// make the sum injective (the raising's row-major linearization of a store's
+// lane grid, `i * N1 + j`), plus a constant. Dimensions of extent one need
+// no term.
+static bool isInjectiveGridIndex(Value index) {
+  auto ty = cast<RankedTensorType>(index.getType());
+  SmallVector<Value> terms{index};
+  SmallVector<std::pair<int64_t, int64_t>> strides; // (|scale|, dimension)
+  DenseSet<int64_t> covered;
+  while (!terms.empty()) {
+    Value term = terms.pop_back_val();
+    if (auto add = term.getDefiningOp<stablehlo::AddOp>()) {
+      terms.push_back(add.getLhs());
+      terms.push_back(add.getRhs());
+      continue;
+    }
+    if (matchPattern(term, m_Constant()))
+      continue;
+    auto iota = detectIotaLikeTensor(term);
+    if (!iota || !iota->scale || iota->dimension >= ty.getRank() ||
+        !covered.insert(iota->dimension).second)
+      return false;
+    int64_t scale = cast<IntegerAttr>(iota->scale).getValue().getSExtValue();
+    if (scale == 0)
+      return false;
+    strides.push_back({std::abs(scale), iota->dimension});
+  }
+  for (int64_t d = 0; d < ty.getRank(); ++d)
+    if (ty.getDimSize(d) > 1 && !covered.contains(d))
+      return false;
+  // Sorted by stride, each term must step past everything the smaller terms
+  // can add up to.
+  llvm::sort(strides);
+  int64_t reach = 0;
+  for (auto [stride, dim] : strides) {
+    if (stride <= reach)
+      return false;
+    reach += stride * (ty.getDimSize(dim) - 1);
+  }
+  return true;
+}
+
+// The raising masks a store by sending dead lanes' scatter indices out of
+// bounds, which scatter semantics drop. Single-point and iota-indexed
+// scatter rewrites turn the op into a dynamic_update_slice, whose index
+// clamping would bring the dead write back in range; resolve the mask first:
+// scatter at the live index and write the original value back when masked
+// off (a no-op store). That is only a no-op when no live lane writes the
+// same slot, so the live indices must be unique: a single index, an
+// injective grid linearization, or unique_indices.
+struct ScatterMaskedIndexSimplify final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp,
+                              ScatterMaskedIndexSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1)
+      return failure();
+    auto &block = op.getUpdateComputation().front();
+    if (!isSetindexBlock(&block))
+      return failure();
+    auto inputTy = cast<RankedTensorType>(op.getInputs()[0].getType());
+    if (inputTy.getRank() != 1)
+      return failure();
+    auto dims = op.getScatterDimensionNumbers();
+    if (dims.getInsertedWindowDims() != ArrayRef<int64_t>{0} ||
+        dims.getScatterDimsToOperandDims() != ArrayRef<int64_t>{0} ||
+        !dims.getUpdateWindowDims().empty())
+      return failure();
+    auto indices = op.getScatterIndices();
+    auto idxTy = cast<RankedTensorType>(indices.getType());
+    // The select may sit behind reshapes of the index.
+    Value idxSrc = indices;
+    while (auto rs = idxSrc.getDefiningOp<stablehlo::ReshapeOp>())
+      idxSrc = rs.getOperand();
+    auto sel = idxSrc.getDefiningOp<stablehlo::SelectOp>();
+    if (!sel)
+      return failure();
+    SplatElementsAttr offSplat;
+    if (!matchPattern(sel.getOnFalse(), m_Constant(&offSplat)) ||
+        !offSplat.getSplatValue<APInt>().isNegative())
+      return failure();
+    auto predTy = cast<RankedTensorType>(sel.getPred().getType());
+    int64_t count = idxTy.getNumElements();
+    if (predTy.getNumElements() != 1 && predTy.getNumElements() != count)
+      return failure();
+    if (count != 1 && !op.getUniqueIndices() &&
+        !isInjectiveGridIndex(sel.getOnTrue()))
+      return failure();
+
+    auto loc = op.getLoc();
+    Value update = op.getUpdates()[0];
+    auto updTy = cast<RankedTensorType>(update.getType());
+    Value live = stablehlo::ReshapeOpCreate(rewriter, loc, sel.getOnTrue(),
+                                            idxTy.getShape());
+    // The original values at the live indices, gathered as the scatter
+    // addresses them.
+    Value orig = stablehlo::GatherOp::create(
+        rewriter, loc, op.getInputs()[0], live,
+        stablehlo::GatherDimensionNumbersAttr::get(
+            rewriter.getContext(), /*offsetDims*/ {},
+            /*collapsedSliceDims*/ {0}, /*operandBatchingDims*/ {},
+            /*startIndicesBatchingDims*/ {}, /*startIndexMap*/ {0},
+            dims.getIndexVectorDim()),
+        rewriter.getDenseI64ArrayAttr({1}));
+    orig = stablehlo::ReshapeOpCreate(rewriter, loc, orig, updTy.getShape());
+    Value pred = sel.getPred();
+    if (predTy.getNumElements() == 1 && updTy.getNumElements() != 1) {
+      pred = stablehlo::ReshapeOpCreate(rewriter, loc, pred, {});
+      pred = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc,
+          RankedTensorType::get(updTy.getShape(), rewriter.getI1Type()), pred,
+          rewriter.getDenseI64ArrayAttr({}));
+    } else {
+      pred = stablehlo::ReshapeOpCreate(rewriter, loc, pred, updTy.getShape());
+    }
+    Value newUpd =
+        stablehlo::SelectOp::create(rewriter, loc, pred, update, orig);
+    rewriter.modifyOpInPlace(op, [&] {
+      op.getScatterIndicesMutable().assign(live);
+      op.getUpdatesMutable()[0].assign(newUpd);
+    });
+    return success();
+  }
+};
+
 struct ScatterOpCanon final
     : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -37322,6 +37465,7 @@ struct EnzymeHLOOptPass
         DynamicReshapeOpCanon,
         EmptyReduceOpCanon,
         GatherOpCanon,
+        ScatterMaskedIndexSimplify,
         ScatterOpCanon,
         GetDimensionSizeOpCanon,
         GetTupleElementOpCanon,

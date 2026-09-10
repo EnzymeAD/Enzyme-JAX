@@ -1,7 +1,9 @@
 // RUN: enzymexlamlir-opt %s --discard-unreferenced-linkonce | FileCheck %s
 
-// Unreferenced linkonce and weak definitions go; a comdat selector is not a
-// reference, and external definitions and declarations stay.
+// Unreferenced linkonce definitions go; a comdat selector is not a
+// reference. A weak definition stays: an explicit template instantiation is
+// weak_odr and the only definition its `extern template` users have. So do
+// external definitions and declarations.
 
 llvm.comdat @__llvm_global_comdat {
   llvm.comdat_selector @dead_odr any
@@ -12,7 +14,7 @@ llvm.func linkonce_odr @dead_odr() comdat(@__llvm_global_comdat::@dead_odr) {
   llvm.return
 }
 
-llvm.func weak @dead_weak() {
+llvm.func weak_odr @instantiation() {
   llvm.return
 }
 
@@ -35,6 +37,9 @@ llvm.func @main() {
 // CHECK:    llvm.comdat @__llvm_global_comdat {
 // CHECK-NEXT:    llvm.comdat_selector @dead_odr any
 // CHECK-NEXT:    llvm.comdat_selector @live_odr any
+// CHECK-NEXT:  }
+// CHECK-NEXT:  llvm.func weak_odr @instantiation() {
+// CHECK-NEXT:    llvm.return
 // CHECK-NEXT:  }
 // CHECK-NEXT:  llvm.func linkonce_odr @live_odr() comdat(@__llvm_global_comdat::@live_odr) {
 // CHECK-NEXT:    llvm.return

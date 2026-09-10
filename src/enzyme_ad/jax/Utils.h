@@ -6,6 +6,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Types.h"
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
@@ -62,6 +63,13 @@ namespace enzyme {
 llvm::Expected<void *> lookupSymbol(const char *name);
 extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
                                                       void *symbol);
+
+// The scalar an LLVM aggregate is made of, and the path to each of its leaves
+// in memory order, when every leaf is that one scalar and the layout holds no
+// padding; nullopt otherwise.
+std::optional<Type>
+homogeneousLeaves(Type type, const DataLayout &dataLayout,
+                  SmallVectorImpl<SmallVector<int64_t>> &paths);
 
 void commonLowerUpdateWithoutCorners(enzymexla::UpdateWithoutCornersOp extend,
                                      PatternRewriter &rewriter);
