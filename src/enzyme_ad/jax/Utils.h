@@ -535,6 +535,94 @@ getBoundsFromIR(Value val, unsigned bitWidth) {
   return std::make_pair(minVal, maxVal);
 }
 
+inline std::pair<APInt, APInt> getProvableIntegerRange(Value v, int depth = 0) {
+  auto ty = cast<RankedTensorType>(v.getType());
+  auto ety = cast<IntegerType>(ty.getElementType());
+  unsigned width = ety.getWidth();
+  bool isUns = ety.isUnsignedInteger();
+  auto typeRange = [&]() -> std::pair<APInt, APInt> {
+    if (isUns)
+      return {APInt::getZero(128), APInt::getMaxValue(width).zext(128)};
+    return {APInt::getSignedMinValue(width).sext(128),
+            APInt::getSignedMaxValue(width).sext(128)};
+  };
+  if (auto irBounds = getBoundsFromIR(v, 128))
+    return *irBounds;
+  SplatElementsAttr splat;
+  if (matchPattern(v, m_Constant(&splat))) {
+    APInt c = splat.getSplatValue<APInt>();
+    APInt e = isUns ? c.zext(128) : c.sext(128);
+    return {e, e};
+  }
+  Operation *def = v.getDefiningOp();
+  if (!def || depth > 8)
+    return typeRange();
+  if (isa<stablehlo::ReshapeOp, stablehlo::BroadcastInDimOp, stablehlo::SliceOp,
+          stablehlo::DynamicSliceOp, stablehlo::ReverseOp,
+          stablehlo::TransposeOp>(def))
+    // Element subsets and rearrangements keep the operand's range.
+    return getProvableIntegerRange(def->getOperand(0), depth + 1);
+  if (auto cvt = dyn_cast<stablehlo::ConvertOp>(def)) {
+    auto inEty = dyn_cast<IntegerType>(
+        cast<RankedTensorType>(cvt.getOperand().getType()).getElementType());
+    // Only a widening integer conversion preserves the operand's range.
+    if (inEty && inEty.getWidth() <= width)
+      return getProvableIntegerRange(cvt.getOperand(), depth + 1);
+    return typeRange();
+  }
+  if (auto clamp = dyn_cast<stablehlo::ClampOp>(def)) {
+    auto lo = getProvableIntegerRange(clamp.getMin(), depth + 1);
+    auto hi = getProvableIntegerRange(clamp.getMax(), depth + 1);
+    return {lo.first, hi.second};
+  }
+  if (auto mx = dyn_cast<stablehlo::MaxOp>(def)) {
+    auto a = getProvableIntegerRange(mx.getLhs(), depth + 1);
+    auto b = getProvableIntegerRange(mx.getRhs(), depth + 1);
+    return {llvm::APIntOps::smax(a.first, b.first),
+            llvm::APIntOps::smax(a.second, b.second)};
+  }
+  if (auto mn = dyn_cast<stablehlo::MinOp>(def)) {
+    auto a = getProvableIntegerRange(mn.getLhs(), depth + 1);
+    auto b = getProvableIntegerRange(mn.getRhs(), depth + 1);
+    return {llvm::APIntOps::smin(a.first, b.first),
+            llvm::APIntOps::smin(a.second, b.second)};
+  }
+  if (auto sel = dyn_cast<stablehlo::SelectOp>(def)) {
+    auto a = getProvableIntegerRange(sel.getOnTrue(), depth + 1);
+    auto b = getProvableIntegerRange(sel.getOnFalse(), depth + 1);
+    return {llvm::APIntOps::smin(a.first, b.first),
+            llvm::APIntOps::smax(a.second, b.second)};
+  }
+  if (auto add = dyn_cast<stablehlo::AddOp>(def)) {
+    auto a = getProvableIntegerRange(add.getLhs(), depth + 1);
+    auto b = getProvableIntegerRange(add.getRhs(), depth + 1);
+    return {a.first + b.first, a.second + b.second};
+  }
+  if (auto sub = dyn_cast<stablehlo::SubtractOp>(def)) {
+    auto a = getProvableIntegerRange(sub.getLhs(), depth + 1);
+    auto b = getProvableIntegerRange(sub.getRhs(), depth + 1);
+    return {a.first - b.second, a.second - b.first};
+  }
+  if (auto neg = dyn_cast<stablehlo::NegOp>(def)) {
+    auto a = getProvableIntegerRange(neg.getOperand(), depth + 1);
+    return {-a.second, -a.first};
+  }
+  if (auto mul = dyn_cast<stablehlo::MulOp>(def)) {
+    for (int i = 0; i < 2; ++i) {
+      SplatElementsAttr cs;
+      if (matchPattern(def->getOperand(i), m_Constant(&cs))) {
+        APInt c = cs.getSplatValue<APInt>().sext(128);
+        auto a = getProvableIntegerRange(def->getOperand(1 - i), depth + 1);
+        if (c.isNonNegative())
+          return {a.first * c, a.second * c};
+        return {a.second * c, a.first * c};
+      }
+    }
+    return typeRange();
+  }
+  return typeRange();
+}
+
 bool checkNotEqual(llvm::APInt a, llvm::APInt b);
 bool checkNotEqual(llvm::APFloat a, llvm::APFloat b);
 
