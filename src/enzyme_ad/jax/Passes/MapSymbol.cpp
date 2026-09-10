@@ -1,5 +1,5 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
-
+#include "src/enzyme_ad/jax/Utils.h"
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -13,10 +13,6 @@ namespace mlir::enzyme {
 
 using namespace mlir;
 using namespace mlir::enzyme;
-
-// from LowerJIT.cpp
-extern "C" void EnzymeJaXMapSymbol(const char *name, void *symbol);
-extern "C" int EnzymeJaXLookupSymbol(const char *name, void **symbol);
 
 namespace {
 struct MapSymbolPass : public enzyme::impl::MapSymbolPassBase<MapSymbolPass> {

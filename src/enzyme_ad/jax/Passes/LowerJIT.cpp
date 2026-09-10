@@ -23,6 +23,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
@@ -231,7 +232,7 @@ llvm::orc::SymbolMap MappedSymbols;
 
 bool initJIT();
 
-llvm::Expected<void *> lookupSymbol(const char *name) {
+llvm::Expected<void *> mlir::enzyme::lookupSymbol(const char *name) {
   if (!JIT)
     return llvm::make_error<llvm::StringError>("JIT not initialized",
                                                llvm::inconvertibleErrorCode());
@@ -246,7 +247,7 @@ llvm::Expected<void *> lookupSymbol(const char *name) {
   return addr.toPtr<void *>();
 }
 
-void EnzymeJaXMapSymbol(const char *name, void *symbol) {
+extern "C" void EnzymeJaXMapSymbol(const char *name, void *symbol) {
   initJIT();
   MappedSymbols[JIT->mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(symbol), llvm::JITSymbolFlags());
