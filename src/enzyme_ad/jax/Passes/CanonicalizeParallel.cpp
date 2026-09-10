@@ -1001,6 +1001,96 @@ struct StoreOfUndef
   }
 };
 
+// A while loop whose exit test reads only values from outside the loop and
+// carried arguments yielded values from outside the loop decides the same
+// way on every evaluation after the first: the second evaluation sees the
+// values every later one would, so it either exits or the loop never would.
+// A kernel does not run forever (host code may), so inside a GPU wrapper the
+// loop is
+//   before(inits); if (condition) { after; before(yields) }
+struct UnrollWhileWithInvariantExit : public OpRewritePattern<scf::WhileOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::WhileOp whileOp,
+                                PatternRewriter &rewriter) const override {
+    if (!whileOp->getParentOfType<enzymexla::GPUWrapperOp>())
+      return failure();
+    Block &before = whileOp.getBefore().front();
+    Block &after = whileOp.getAfter().front();
+    scf::ConditionOp conditionOp = whileOp.getConditionOp();
+    scf::YieldOp yieldOp = whileOp.getYieldOp();
+
+    auto definedOutside = [&](Value value) {
+      return !whileOp->isAncestor(value.getParentBlock()->getParentOp()) ||
+             matchPattern(value, m_Constant());
+    };
+    SmallVector<Value> worklist{conditionOp.getCondition()};
+    DenseSet<Value> visited;
+    while (!worklist.empty()) {
+      Value value = worklist.pop_back_val();
+      if (!visited.insert(value).second || definedOutside(value))
+        continue;
+      if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+        if (blockArg.getOwner() != &before)
+          return failure();
+        // An after-region argument yielded back is the condition operand
+        // forwarded to it.
+        Value yielded = yieldOp.getOperand(blockArg.getArgNumber());
+        if (auto afterArg = dyn_cast<BlockArgument>(yielded);
+            afterArg && afterArg.getOwner() == &after)
+          yielded = conditionOp.getArgs()[afterArg.getArgNumber()];
+        if (!definedOutside(yielded))
+          return failure();
+        continue;
+      }
+      Operation *definingOp = value.getDefiningOp();
+      if (definingOp->getNumRegions() || !isMemoryEffectFree(definingOp))
+        return failure();
+      worklist.append(definingOp->operand_begin(), definingOp->operand_end());
+    }
+
+    Location loc = whileOp.getLoc();
+    IRMapping firstEvaluation;
+    for (auto [blockArg, init] :
+         llvm::zip(before.getArguments(), whileOp.getInits()))
+      firstEvaluation.map(blockArg, init);
+    for (Operation &op : before.without_terminator())
+      rewriter.clone(op, firstEvaluation);
+    Value firstCondition =
+        firstEvaluation.lookupOrDefault(conditionOp.getCondition());
+    SmallVector<Value> firstForwarded;
+    for (Value value : conditionOp.getArgs())
+      firstForwarded.push_back(firstEvaluation.lookupOrDefault(value));
+
+    auto ifOp = scf::IfOp::create(
+        rewriter, loc, firstCondition,
+        [&](OpBuilder &builder, Location loc) {
+          IRMapping secondEvaluation;
+          for (auto [afterArg, forwarded] :
+               llvm::zip(after.getArguments(), firstForwarded))
+            secondEvaluation.map(afterArg, forwarded);
+          for (Operation &op : after.without_terminator())
+            builder.clone(op, secondEvaluation);
+          for (auto [blockArg, yielded] :
+               llvm::zip(before.getArguments(), yieldOp.getOperands()))
+            secondEvaluation.map(blockArg,
+                                 secondEvaluation.lookupOrDefault(
+                                     firstEvaluation.lookupOrDefault(yielded)));
+          for (Operation &op : before.without_terminator())
+            builder.clone(op, secondEvaluation);
+          SmallVector<Value> secondForwarded;
+          for (Value value : conditionOp.getArgs())
+            secondForwarded.push_back(secondEvaluation.lookupOrDefault(value));
+          scf::YieldOp::create(builder, loc, secondForwarded);
+        },
+        [&](OpBuilder &builder, Location loc) {
+          scf::YieldOp::create(builder, loc, firstForwarded);
+        });
+    rewriter.replaceOp(whileOp, ifOp.getResults());
+    return success();
+  }
+};
+
 struct CanonicalizeParallelPass
     : public enzyme::impl::CanonicalizeParallelPassBase<
           CanonicalizeParallelPass> {
@@ -1038,10 +1128,10 @@ struct CanonicalizeParallelPass
         SinkThroughSelectOfConstants<arith::AddIOp>,
         SinkThroughSelectOfConstants<arith::MulIOp>, SelectOfNullPointer,
         IfOfNullPointer<scf::IfOp>, IfOfNullPointer<affine::AffineIfOp>,
-        FlattenAggregateAlloca, StoreOfUndef, TruncOfMulByOneModWidth,
-        ShiftOfMulByShiftPlusOne, TruncOfOrWithShiftedOut,
-        ShiftOfOrWithShiftedIn, ShiftOfNarrowZeroExtended,
-        ShiftOfOrWithConstant,
+        FlattenAggregateAlloca, StoreOfUndef, UnrollWhileWithInvariantExit,
+        TruncOfMulByOneModWidth, ShiftOfMulByShiftPlusOne,
+        TruncOfOrWithShiftedOut, ShiftOfOrWithShiftedIn,
+        ShiftOfNarrowZeroExtended, ShiftOfOrWithConstant,
         OuterOfInnersBySharedOperand<arith::MaxSIOp, arith::MinSIOp>,
         OuterOfInnersBySharedOperand<arith::MinSIOp, arith::MaxSIOp>,
         OuterOfInnersBySharedOperand<arith::MaxUIOp, arith::MinUIOp>,
