@@ -1001,6 +1001,53 @@ struct StoreOfUndef
   }
 };
 
+// Replace a while loop whose exit test is decided by its second evaluation by
+//   before(inits); if (condition) { after; before(yields) }
+static void unrollWhileTwice(scf::WhileOp whileOp, PatternRewriter &rewriter) {
+  Block &before = whileOp.getBefore().front();
+  Block &after = whileOp.getAfter().front();
+  scf::ConditionOp conditionOp = whileOp.getConditionOp();
+  scf::YieldOp yieldOp = whileOp.getYieldOp();
+  Location loc = whileOp.getLoc();
+  IRMapping firstEvaluation;
+  for (auto [blockArg, init] :
+       llvm::zip(before.getArguments(), whileOp.getInits()))
+    firstEvaluation.map(blockArg, init);
+  for (Operation &op : before.without_terminator())
+    rewriter.clone(op, firstEvaluation);
+  Value firstCondition =
+      firstEvaluation.lookupOrDefault(conditionOp.getCondition());
+  SmallVector<Value> firstForwarded;
+  for (Value value : conditionOp.getArgs())
+    firstForwarded.push_back(firstEvaluation.lookupOrDefault(value));
+
+  auto ifOp = scf::IfOp::create(
+      rewriter, loc, firstCondition,
+      [&](OpBuilder &builder, Location loc) {
+        IRMapping secondEvaluation;
+        for (auto [afterArg, forwarded] :
+             llvm::zip(after.getArguments(), firstForwarded))
+          secondEvaluation.map(afterArg, forwarded);
+        for (Operation &op : after.without_terminator())
+          builder.clone(op, secondEvaluation);
+        for (auto [blockArg, yielded] :
+             llvm::zip(before.getArguments(), yieldOp.getOperands()))
+          secondEvaluation.map(blockArg,
+                               secondEvaluation.lookupOrDefault(
+                                   firstEvaluation.lookupOrDefault(yielded)));
+        for (Operation &op : before.without_terminator())
+          builder.clone(op, secondEvaluation);
+        SmallVector<Value> secondForwarded;
+        for (Value value : conditionOp.getArgs())
+          secondForwarded.push_back(secondEvaluation.lookupOrDefault(value));
+        scf::YieldOp::create(builder, loc, secondForwarded);
+      },
+      [&](OpBuilder &builder, Location loc) {
+        scf::YieldOp::create(builder, loc, firstForwarded);
+      });
+  rewriter.replaceOp(whileOp, ifOp.getResults());
+}
+
 // A while loop whose exit test reads only values from outside the loop and
 // carried arguments yielded values from outside the loop decides the same
 // way on every evaluation after the first: the second evaluation sees the
@@ -1049,44 +1096,101 @@ struct UnrollWhileWithInvariantExit : public OpRewritePattern<scf::WhileOp> {
       worklist.append(definingOp->operand_begin(), definingOp->operand_end());
     }
 
-    Location loc = whileOp.getLoc();
-    IRMapping firstEvaluation;
-    for (auto [blockArg, init] :
-         llvm::zip(before.getArguments(), whileOp.getInits()))
-      firstEvaluation.map(blockArg, init);
-    for (Operation &op : before.without_terminator())
-      rewriter.clone(op, firstEvaluation);
-    Value firstCondition =
-        firstEvaluation.lookupOrDefault(conditionOp.getCondition());
-    SmallVector<Value> firstForwarded;
-    for (Value value : conditionOp.getArgs())
-      firstForwarded.push_back(firstEvaluation.lookupOrDefault(value));
+    unrollWhileTwice(whileOp, rewriter);
+    return success();
+  }
+};
 
-    auto ifOp = scf::IfOp::create(
-        rewriter, loc, firstCondition,
-        [&](OpBuilder &builder, Location loc) {
-          IRMapping secondEvaluation;
-          for (auto [afterArg, forwarded] :
-               llvm::zip(after.getArguments(), firstForwarded))
-            secondEvaluation.map(afterArg, forwarded);
-          for (Operation &op : after.without_terminator())
-            builder.clone(op, secondEvaluation);
-          for (auto [blockArg, yielded] :
-               llvm::zip(before.getArguments(), yieldOp.getOperands()))
-            secondEvaluation.map(blockArg,
-                                 secondEvaluation.lookupOrDefault(
-                                     firstEvaluation.lookupOrDefault(yielded)));
-          for (Operation &op : before.without_terminator())
-            builder.clone(op, secondEvaluation);
-          SmallVector<Value> secondForwarded;
-          for (Value value : conditionOp.getArgs())
-            secondForwarded.push_back(secondEvaluation.lookupOrDefault(value));
-          scf::YieldOp::create(builder, loc, secondForwarded);
-        },
-        [&](OpBuilder &builder, Location loc) {
-          scf::YieldOp::create(builder, loc, firstForwarded);
-        });
-    rewriter.replaceOp(whileOp, ifOp.getResults());
+// A counter that starts at zero and steps by one is one on the second
+// evaluation of the exit test, so `(counter | x) == 0` is false there whatever
+// `x` is: the loop runs at most twice, on the host as well. Clang writes
+// `dx + 1 < 2 - odd` this way for `dx` and `odd` in {0, 1} (MFEM's H(div)
+// mass reductions over a dimension of one or two dofs).
+struct UnrollWhileOfOredCounter : public OpRewritePattern<scf::WhileOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::WhileOp whileOp,
+                                PatternRewriter &rewriter) const override {
+    Block &before = whileOp.getBefore().front();
+    Block &after = whileOp.getAfter().front();
+    scf::ConditionOp conditionOp = whileOp.getConditionOp();
+    scf::YieldOp yieldOp = whileOp.getYieldOp();
+
+    auto cmp = conditionOp.getCondition().getDefiningOp<arith::CmpIOp>();
+    if (!cmp || cmp.getPredicate() != arith::CmpIPredicate::eq)
+      return failure();
+    Value ored;
+    if (matchPattern(cmp.getRhs(), m_Zero()))
+      ored = cmp.getLhs();
+    else if (matchPattern(cmp.getLhs(), m_Zero()))
+      ored = cmp.getRhs();
+    else
+      return failure();
+    auto orOp = ored.getDefiningOp<arith::OrIOp>();
+    if (!orOp)
+      return failure();
+
+    // A before-region argument initialized to zero and yielded itself plus
+    // one, possibly through the condition operand forwarded to the after
+    // region.
+    auto isCounter = [&](Value value) {
+      auto counter = dyn_cast<BlockArgument>(value);
+      if (!counter || counter.getOwner() != &before ||
+          !matchPattern(whileOp.getInits()[counter.getArgNumber()], m_Zero()))
+        return false;
+      Value next = yieldOp.getOperand(counter.getArgNumber());
+      if (auto afterArg = dyn_cast<BlockArgument>(next);
+          afterArg && afterArg.getOwner() == &after)
+        next = conditionOp.getArgs()[afterArg.getArgNumber()];
+      auto add = next.getDefiningOp<arith::AddIOp>();
+      return add &&
+             ((add.getLhs() == counter &&
+               matchPattern(add.getRhs(), m_One())) ||
+              (add.getRhs() == counter && matchPattern(add.getLhs(), m_One())));
+    };
+    if (!isCounter(orOp.getLhs()) && !isCounter(orOp.getRhs()))
+      return failure();
+
+    unrollWhileTwice(whileOp, rewriter);
+    return success();
+  }
+};
+
+// A loop rotated around a flag: the exit test is the result of an scf.if on
+// a carried flag that the after region yields a constant, and the branch that
+// constant selects yields false. The second evaluation takes that branch, so
+// the loop runs at most twice (clang's rotation of a single-trip loop with
+// early exits, the edge scan in batchitrans.cpp).
+struct UnrollWhileOfFlagIf : public OpRewritePattern<scf::WhileOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::WhileOp whileOp,
+                                PatternRewriter &rewriter) const override {
+    Block &before = whileOp.getBefore().front();
+    Block &after = whileOp.getAfter().front();
+    scf::ConditionOp conditionOp = whileOp.getConditionOp();
+    scf::YieldOp yieldOp = whileOp.getYieldOp();
+
+    auto result = dyn_cast<OpResult>(conditionOp.getCondition());
+    auto ifOp = result ? dyn_cast<scf::IfOp>(result.getOwner()) : nullptr;
+    if (!ifOp)
+      return failure();
+    auto flag = dyn_cast<BlockArgument>(ifOp.getCondition());
+    if (!flag || flag.getOwner() != &before)
+      return failure();
+    Value next = yieldOp.getOperand(flag.getArgNumber());
+    if (auto afterArg = dyn_cast<BlockArgument>(next);
+        afterArg && afterArg.getOwner() == &after)
+      next = conditionOp.getArgs()[afterArg.getArgNumber()];
+    APInt constant;
+    if (!matchPattern(next, m_ConstantInt(&constant)))
+      return failure();
+    scf::YieldOp branch =
+        constant.isZero() ? ifOp.elseYield() : ifOp.thenYield();
+    if (!matchPattern(branch.getOperand(result.getResultNumber()), m_Zero()))
+      return failure();
+
+    unrollWhileTwice(whileOp, rewriter);
     return success();
   }
 };
@@ -1129,9 +1233,10 @@ struct CanonicalizeParallelPass
         SinkThroughSelectOfConstants<arith::MulIOp>, SelectOfNullPointer,
         IfOfNullPointer<scf::IfOp>, IfOfNullPointer<affine::AffineIfOp>,
         FlattenAggregateAlloca, StoreOfUndef, UnrollWhileWithInvariantExit,
-        TruncOfMulByOneModWidth, ShiftOfMulByShiftPlusOne,
-        TruncOfOrWithShiftedOut, ShiftOfOrWithShiftedIn,
-        ShiftOfNarrowZeroExtended, ShiftOfOrWithConstant,
+        UnrollWhileOfOredCounter, UnrollWhileOfFlagIf, TruncOfMulByOneModWidth,
+        ShiftOfMulByShiftPlusOne, TruncOfOrWithShiftedOut,
+        ShiftOfOrWithShiftedIn, ShiftOfNarrowZeroExtended,
+        ShiftOfOrWithConstant,
         OuterOfInnersBySharedOperand<arith::MaxSIOp, arith::MinSIOp>,
         OuterOfInnersBySharedOperand<arith::MinSIOp, arith::MaxSIOp>,
         OuterOfInnersBySharedOperand<arith::MaxUIOp, arith::MinUIOp>,
