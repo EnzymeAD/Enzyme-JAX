@@ -36184,7 +36184,7 @@ private:
       // dynamic-update-slice CLAMP the start, resurrecting the write at a
       // clamped slot: the conversion is only sound when the index provably
       // lands in bounds.
-      auto [idxLo, idxHi] = provableIndexRange(indices);
+      auto [idxLo, idxHi] = enzyme::getProvableIntegerRange(indices);
       if (idxLo.isNegative() ||
           idxHi.sgt(APInt(128, inputTy.getDimSize(0) - 1)))
         return failure();
