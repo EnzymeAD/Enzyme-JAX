@@ -23,7 +23,7 @@ func.func @budget(%out: memref<1024xf64, 1>, %in: memref<1024xf64, 1>, %qbuf: me
   return
 }
 
-// CHECK:    func.func @budget(%arg0: memref<1024xf64, 1>, %arg1: memref<1024xf64, 1>, %arg2: memref<i32, 1>, %arg3: index) {
+// CHECK:      func.func @budget(%arg0: memref<1024xf64, 1>, %arg1: memref<1024xf64, 1>, %arg2: memref<i32, 1>, %arg3: index) {
 // CHECK-NEXT:    %alloca = memref.alloca() : memref<i32>
 // CHECK-NEXT:    %c1 = arith.constant 1 : index
 // CHECK-NEXT:    %0 = affine.load %arg2[] : memref<i32, 1>
@@ -121,9 +121,10 @@ func.func @budget(%out: memref<1024xf64, 1>, %in: memref<1024xf64, 1>, %qbuf: me
 // CHECK-NEXT:    %46 = stablehlo.reshape %45 : (tensor<32x32xi64>) -> tensor<32x32x1xi64>
 // CHECK-NEXT:    %47 = stablehlo.reshape %40 : (tensor<1x32x32xf64>) -> tensor<32x32xf64>
 // CHECK-NEXT:    %48 = stablehlo.broadcast_in_dim %47, dims = [1, 0] : (tensor<32x32xf64>) -> tensor<32x32xf64>
-// CHECK-NEXT:    %49 = "stablehlo.gather"(%arg1, %46) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<1024xf64>, tensor<32x32x1xi64>) -> tensor<32x32xf64>
-// CHECK-NEXT:    %50 = stablehlo.select %26, %48, %49 : tensor<32x32xi1>, tensor<32x32xf64>
-// CHECK-NEXT:    %51 = "stablehlo.scatter"(%arg1, %46, %50) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 2>, unique_indices = false}> ({
+// CHECK-NEXT:    %c_32 = stablehlo.constant dense<-1> : tensor<32x32x1xi64>
+// CHECK-NEXT:    %49 = stablehlo.broadcast_in_dim %26, dims = [0, 1] : (tensor<32x32xi1>) -> tensor<32x32x1xi1>
+// CHECK-NEXT:    %50 = stablehlo.select %49, %46, %c_32 : tensor<32x32x1xi1>, tensor<32x32x1xi64>
+// CHECK-NEXT:    %51 = "stablehlo.scatter"(%arg1, %50, %48) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 2>, unique_indices = false}> ({
 // CHECK-NEXT:    ^bb0(%arg3: tensor<f64>, %arg4: tensor<f64>):
 // CHECK-NEXT:      stablehlo.return %arg4 : tensor<f64>
 // CHECK-NEXT:    }) : (tensor<1024xf64>, tensor<32x32x1xi64>, tensor<32x32xf64>) -> tensor<1024xf64>
