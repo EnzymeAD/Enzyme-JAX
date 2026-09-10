@@ -5556,6 +5556,15 @@ struct AffineToStableHLORaisingPass
         return *l * *r;
       return std::nullopt;
     }
+    // A doubling like 2*(D1D-1) reaches here as a left shift.
+    if (auto shl = dyn_cast_or_null<arith::ShLIOp>(def)) {
+      if (!matchPattern(shl.getRhs(), m_ConstantInt(&k)) || k.uge(63))
+        return std::nullopt;
+      auto b = operandBound(0);
+      if (b && *b >= 0 && *b <= (INT64_MAX >> k.getZExtValue()))
+        return *b << k.getZExtValue();
+      return std::nullopt;
+    }
     if (isa_and_nonnull<arith::AddIOp, arith::SubIOp>(def)) {
       if (!matchPattern(def->getOperand(1), m_ConstantInt(&k)))
         return std::nullopt;
