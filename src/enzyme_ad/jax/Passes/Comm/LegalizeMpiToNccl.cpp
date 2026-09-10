@@ -222,11 +222,32 @@ struct LegalizeMpiAllreduceOpToNccl
   LogicalResult
   matchAndRewrite(comm::MpiAllreduceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
+    comm::NcclRedOpAttr reduceOp;
+    switch (op.getReduceOp().getValue()) {
+    case comm::MpiOpEnum::MPI_SUM:
+      reduceOp = comm::NcclRedOpAttr::get(op.getContext(),
+                                          comm::NcclRedOpEnum::ncclSum);
+      break;
+    case comm::MpiOpEnum::MPI_PROD:
+      reduceOp = comm::NcclRedOpAttr::get(op.getContext(),
+                                          comm::NcclRedOpEnum::ncclProd);
+      break;
+    case comm::MpiOpEnum::MPI_MIN:
+      reduceOp = comm::NcclRedOpAttr::get(op.getContext(),
+                                          comm::NcclRedOpEnum::ncclMin);
+      break;
+    case comm::MpiOpEnum::MPI_MAX:
+      reduceOp = comm::NcclRedOpAttr::get(op.getContext(),
+                                          comm::NcclRedOpEnum::ncclMax);
+      break;
+    default:
+      return rewriter.notifyMatchFailure(
+          op, "MPI reduction is not supported by NCCL");
+    }
 
-    op.emitError(
-        "MPI-to-NCCL lowering for comm.mpi.allreduce is not yet implemented");
-    return failure();
+    rewriter.replaceOpWithNewOp<comm::NcclAllReduceOp>(
+        op, op.getType(), adaptor.getSendbuf(), reduceOp, adaptor.getComm());
+    return success();
   }
 }; // struct LegalizeMpiAllreduceOpToNccl
 
