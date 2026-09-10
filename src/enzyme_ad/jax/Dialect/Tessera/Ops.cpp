@@ -199,14 +199,15 @@ static DictionaryAttr getArgModeDict(DefineOp op, unsigned argIdx) {
   return dyn_cast<DictionaryAttr>(modes[argIdx]);
 }
 
-// The direction string of a lifted argument, or empty if it is not lifted.
-static StringRef getArgDir(DefineOp op, unsigned argIdx) {
+// The direction of a lifted argument, or empty if it is not lifted.
+static std::optional<ArgDirection> getArgDir(DefineOp op, unsigned argIdx) {
   auto dict = getArgModeDict(op, argIdx);
   if (!dict)
-    return StringRef();
-  if (auto dirAttr = dyn_cast_or_null<StringAttr>(dict.get(argModeDirField)))
+    return std::nullopt;
+  if (auto dirAttr =
+          dyn_cast_or_null<ArgDirectionAttr>(dict.get(argModeDirField)))
     return dirAttr.getValue();
-  return StringRef();
+  return std::nullopt;
 }
 
 Type DefineOp::getArgLiftedType(unsigned argIdx) {
@@ -224,13 +225,13 @@ bool DefineOp::isLiftedArg(unsigned argIdx) {
 }
 
 bool DefineOp::argIsRead(unsigned argIdx) {
-  StringRef dir = getArgDir(*this, argIdx);
-  return dir == "in" || dir == "inout";
+  std::optional<ArgDirection> dir = getArgDir(*this, argIdx);
+  return dir == ArgDirection::in || dir == ArgDirection::inout;
 }
 
 bool DefineOp::argIsWritten(unsigned argIdx) {
-  StringRef dir = getArgDir(*this, argIdx);
-  return dir == "out" || dir == "inout";
+  std::optional<ArgDirection> dir = getArgDir(*this, argIdx);
+  return dir == ArgDirection::out || dir == ArgDirection::inout;
 }
 
 unsigned DefineOp::getNumWrittenArgs() {
@@ -284,16 +285,11 @@ LogicalResult DefineOp::verify() {
       return emitOpError("argModes entry ")
              << i << " must have a '" << argModeTypeField << "' TypeAttr";
 
-    auto dirAttr = dyn_cast_or_null<StringAttr>(dict.get(argModeDirField));
+    auto dirAttr =
+        dyn_cast_or_null<ArgDirectionAttr>(dict.get(argModeDirField));
     if (!dirAttr)
       return emitOpError("argModes entry ")
-             << i << " must have a '" << argModeDirField << "' StringAttr";
-
-    StringRef dir = dirAttr.getValue();
-    if (dir != "in" && dir != "out" && dir != "inout")
-      return emitOpError("argModes entry ")
-             << i << " has invalid direction '" << dir
-             << "', expected 'in', 'out', or 'inout'";
+             << i << " must have a '" << argModeDirField << "' attribute";
   }
 
   // One entry per sret-excluded argument. Write-only ("out") arguments stay in

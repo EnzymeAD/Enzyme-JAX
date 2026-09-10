@@ -37,7 +37,7 @@ tessera.define @tessera_func_with_call() attributes {argModes = [], pure = false
 // -----
 
 tessera.define @tessera_sret_func(%arg0: !llvm.ptr {llvm.align = 8 : i64, llvm.nonnull, llvm.sret = !llvm.struct<(f32, f32)>}, %arg1: !llvm.ptr {llvm.noundef, llvm.readonly}) 
-attributes {argModes = [{dir = "in", type = !llvm.struct<(f32, f32)>}], linkage = #llvm.linkage<external>, pure = true, tessera.original_name = "sret_func"} {
+attributes {argModes = [{dir = #tessera.dir<in>, type = !llvm.struct<(f32, f32)>}], linkage = #llvm.linkage<external>, pure = true, tessera.original_name = "sret_func"} {
   %0 = llvm.load %arg1 {alignment = 8 : i64} : !llvm.ptr -> f32
   llvm.store %0, %arg0 {alignment = 8 : i64} : f32, !llvm.ptr
   tessera.return
@@ -73,7 +73,7 @@ llvm.func @caller() {
 
 // -----
 
-tessera.define @tessera_func_with_result_arg(%arg0: !llvm.ptr, %arg1: i32) -> i32 attributes {argModes = [{dir = "out", type = i32}, unit], pure = false, tessera.original_name = "func_with_result_arg"} {
+tessera.define @tessera_func_with_result_arg(%arg0: !llvm.ptr, %arg1: i32) -> i32 attributes {argModes = [{dir = #tessera.dir<out>, type = i32}, unit], pure = false, tessera.original_name = "func_with_result_arg"} {
   llvm.store %arg1, %arg0 : i32, !llvm.ptr
   tessera.return %arg1 : i32
 }

@@ -64,10 +64,6 @@ def DefineOp : TesseraOp<"define", [
 
     ::mlir::Attribute getSretAttr();
 
-    // Per-argument lifting mode. Index convention: sret-excluded argument
-    // index, since it is based on the argument list in the annotation string,
-    // which does not include the sret argument.
-    //
     // A "lifted" argument is one the call site dereferences, so that
     // tessera.call carries the pointee as an SSA value instead of the pointer.
     // That is what makes an argument nameable in a PDL rewrite rule: PDL
@@ -77,7 +73,7 @@ def DefineOp : TesseraOp<"define", [
     // Each entry is either UnitAttr (not lifted -- a plain scalar, or a
     // pointer deliberately passed through opaquely) or a DictionaryAttr:
     //   type : TypeAttr -- the pointee type, stored exactly once
-    //   dir  : StrAttr  -- "in", "out", or "inout"
+    //   dir  : ArgDirectionAttr -- enum representing "in", "out", or "inout"
     //
     // The direction records what the callee does to the pointee, which
     // determines the shape of the call:
