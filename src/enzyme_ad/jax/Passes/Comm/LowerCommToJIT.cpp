@@ -13,6 +13,8 @@
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
+#define DEBUG_TYPE "lower-comm-to-jit"
+
 namespace mlir::comm {
 #define GEN_PASS_DEF_LOWERCOMMTOJITPASS
 #include "src/enzyme_ad/jax/Passes/Comm/Passes.h.inc"
@@ -120,13 +122,12 @@ struct LowerCommMpiConstantOpToJIT
     } else if (auto attr = dyn_cast<comm::MpiOpAttr>(value_attr)) {
       name = comm::stringifyMpiOpEnum(attr.getValue());
     } else {
-      return rewriter.notifyMatchFailure(
-          op, "MPI constant is not a valid attribute");
+      return op.emitOpError("unsupported attribute type");
     }
 
     auto value = LookupSymbol(name.data());
     if (auto err = value.takeError())
-      return rewriter.notifyMatchFailure(op, toString(std::move(err)));
+      return op.emitOpError(toString(std::move(err)));
 
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, restype,
@@ -616,8 +617,8 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
     }
 
     if (!op.getBuffer().getType().hasStaticShape()) {
-      return rewriter.notifyMatchFailure(
-          op, "support for dynamic buffer shape is not implemented yet");
+      return op.emitOpError(
+          "support for dynamic buffer shape is not implemented yet");
     }
 
     auto len = std::reduce(op.getBuffer().getType().getShape().begin(),
@@ -638,7 +639,7 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
         /*allow_cast=*/true);
     auto datatype_val = LookupSymbol(datatype_name);
     if (auto err = datatype_val.takeError())
-      return rewriter.notifyMatchFailure(op, toString(std::move(err)));
+      return op.emitOpError(toString(std::move(err)));
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
@@ -755,8 +756,8 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
     }
 
     if (!op.getBuffer().getType().hasStaticShape()) {
-      return rewriter.notifyMatchFailure(
-          op, "support for dynamic buffer shape is not implemented yet");
+      return op.emitOpError(
+          "support for dynamic buffer shape is not implemented yet");
     }
 
     auto len = std::reduce(op.getBuffer().getType().getShape().begin(),
@@ -781,7 +782,7 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
         /*allow_cast=*/true);
     auto datatype_val = LookupSymbol(datatype_name);
     if (auto err = datatype_val.takeError())
-      return rewriter.notifyMatchFailure(op, toString(std::move(err)));
+      return op.emitError(toString(std::move(err)));
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
@@ -911,8 +912,7 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
     }
 
     if (!op.getResult().getType().hasStaticShape()) {
-      return rewriter.notifyMatchFailure(
-          op, "dynamic buffer shape is not supported");
+      return op.emitOpError("dynamic buffer shape is not supported");
     }
 
     auto type_buffer = op.getResult().getType();
@@ -936,7 +936,7 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
                                          /*allow_cast=*/true);
     auto datatype_val = LookupSymbol(datatype_name);
     if (auto err = datatype_val.takeError())
-      return rewriter.notifyMatchFailure(op, toString(std::move(err)));
+      return op.emitOpError(toString(std::move(err)));
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
@@ -1062,8 +1062,7 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
     }
 
     if (!op.getBuffer().getType().hasStaticShape()) {
-      return rewriter.notifyMatchFailure(
-          op, "dynamic buffer shape is not supported");
+      return op.emitOpError("dynamic buffer shape is not supported");
     }
 
     auto type_buffer = op.getBuffer().getType();
@@ -1091,7 +1090,7 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
                                          /*allow_cast=*/true);
     auto datatype_val = LookupSymbol(datatype_name);
     if (auto err = datatype_val.takeError())
-      return rewriter.notifyMatchFailure(op, toString(std::move(err)));
+      return op.emitOpError(toString(std::move(err)));
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
@@ -1413,8 +1412,7 @@ struct LowerCommMpiAllreduceOpToJIT
     }
 
     if (!op.getResult().getType().hasStaticShape()) {
-      return rewriter.notifyMatchFailure(
-          op, "dynamic buffer shape is not supported");
+      return op.emitOpError("dynamic buffer shape is not supported");
     }
 
     auto sendbuf = adaptor.getSendbuf();
@@ -1437,7 +1435,7 @@ struct LowerCommMpiAllreduceOpToJIT
                                          /*allow_cast=*/false);
     auto datatype_val = LookupSymbol(datatype_name);
     if (auto err = datatype_val.takeError())
-      return rewriter.notifyMatchFailure(op, toString(std::move(err)));
+      return op.emitOpError(toString(std::move(err)));
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
@@ -1448,7 +1446,7 @@ struct LowerCommMpiAllreduceOpToJIT
         comm::stringifyMpiOpEnum(adaptor.getReduceOp().getValue());
     auto mpi_op_val = LookupSymbol(mpi_op_name.data());
     if (auto err = mpi_op_val.takeError())
-      return rewriter.notifyMatchFailure(op, toString(std::move(err)));
+      return op.emitOpError(toString(std::move(err)));
 
     Value mpi_op = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
@@ -1562,8 +1560,7 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
     }
 
     if (!op.getResult().getType().hasStaticShape()) {
-      return rewriter.notifyMatchFailure(
-          op, "dynamic buffer shape is not supported");
+      return op.emitOpError("dynamic buffer shape is not supported");
     }
 
     auto buffer = adaptor.getInBuffer();
@@ -1585,7 +1582,7 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
                                          /*allow_cast=*/true);
     auto datatype_val = LookupSymbol(datatype_name);
     if (auto err = datatype_val.takeError())
-      return rewriter.notifyMatchFailure(op, toString(std::move(err)));
+      return op.emitOpError(toString(std::move(err)));
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
