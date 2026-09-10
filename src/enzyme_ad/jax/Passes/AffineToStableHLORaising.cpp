@@ -5421,15 +5421,33 @@ struct AffineToStableHLORaisingPass
   // `if (v REL C) <noreturn>` leaves the complementary relation holding on
   // every path that reaches the anchor, and inside the surviving branch of an
   // enclosing `if (v REL C)` the relation holds.
-  static std::optional<int64_t> guardBound(Value v, Operation *anchor) {
-    if (!anchor)
-      return std::nullopt;
-    std::optional<int64_t> bound;
+  // Whether `ifOp` is a verify dominating `anchor`: exactly one arm aborts,
+  // so on every path reaching the anchor the condition holds (true) or its
+  // negation does (false).
+  static std::optional<bool> dominatingVerify(scf::IfOp ifOp,
+                                              Operation *anchor) {
     auto aborts = [](Region &region) {
       return region
           .walk([](LLVM::UnreachableOp) { return WalkResult::interrupt(); })
           .wasInterrupted();
     };
+    bool thenAborts = aborts(ifOp.getThenRegion());
+    bool elseAborts =
+        !ifOp.getElseRegion().empty() && aborts(ifOp.getElseRegion());
+    if (thenAborts == elseAborts)
+      return std::nullopt;
+    Operation *a = anchor;
+    while (a && a->getBlock() != ifOp->getBlock())
+      a = a->getParentOp();
+    if (!a || a == ifOp || !ifOp->isBeforeInBlock(a))
+      return std::nullopt;
+    return elseAborts;
+  }
+
+  static std::optional<int64_t> guardBound(Value v, Operation *anchor) {
+    if (!anchor)
+      return std::nullopt;
+    std::optional<int64_t> bound;
     for (Operation *user : v.getUsers()) {
       auto cmp = dyn_cast<arith::CmpIOp>(user);
       if (!cmp)
@@ -5438,17 +5456,10 @@ struct AffineToStableHLORaisingPass
         auto ifOp = dyn_cast<scf::IfOp>(condUser);
         if (!ifOp || ifOp.getCondition() != cmp.getResult())
           continue;
-        bool thenAborts = aborts(ifOp.getThenRegion());
-        bool elseAborts =
-            !ifOp.getElseRegion().empty() && aborts(ifOp.getElseRegion());
-        if (thenAborts == elseAborts)
+        auto holds = dominatingVerify(ifOp, anchor);
+        if (!holds)
           continue;
-        Operation *a = anchor;
-        while (a && a->getBlock() != ifOp->getBlock())
-          a = a->getParentOp();
-        if (!a || a == ifOp || !ifOp->isBeforeInBlock(a))
-          continue;
-        if (auto b = relationBound(cmp, v, /*holds=*/elseAborts))
+        if (auto b = relationBound(cmp, v, *holds))
           bound = std::min(bound.value_or(*b), *b);
       }
     }
@@ -5668,9 +5679,96 @@ struct AffineToStableHLORaisingPass
     }
   }
 
+  // A launch dimension stripped of the casts between the host value and the
+  // launch operand.
+  static Value launchDimRoot(Value v) {
+    while (isa_and_nonnull<arith::IndexCastOp, arith::IndexCastUIOp,
+                           arith::ExtUIOp, arith::ExtSIOp, arith::TruncIOp>(
+        v.getDefiningOp()))
+      v = v.getDefiningOp()->getOperand(0);
+    return v;
+  }
+
+  // Two values a dominating noreturn verify pins equal (MFEM_VERIFY(q == d))
+  // share their launch-budget dimension.
+  static bool guardEqual(Value a, Value b, Operation *anchor) {
+    if (a == b)
+      return true;
+    auto fn = anchor->getParentOfType<FunctionOpInterface>();
+    if (!fn)
+      return false;
+    bool eq = false;
+    fn->walk([&](arith::CmpIOp cmp) {
+      if (eq || !((cmp.getLhs() == a && cmp.getRhs() == b) ||
+                  (cmp.getLhs() == b && cmp.getRhs() == a)))
+        return;
+      for (Operation *condUser : cmp->getUsers()) {
+        auto ifOp = dyn_cast<scf::IfOp>(condUser);
+        if (!ifOp || ifOp.getCondition() != cmp.getResult())
+          continue;
+        auto holds = dominatingVerify(ifOp, anchor);
+        if (!holds)
+          continue;
+        auto pred = *holds ? cmp.getPredicate()
+                           : arith::invertPredicate(cmp.getPredicate());
+        if (pred == arith::CmpIPredicate::eq)
+          eq = true;
+      }
+    });
+    return eq;
+  }
+
+  // A CUDA launch whose block exceeds 1024 threads fails, so the reference
+  // execution only ever runs block extents within the hardware budget.
+  // When this extent is one of the launch's block dimensions, split the
+  // budget over the dimensions sharing its value; other constant block
+  // dims consume their share, and unmatched dynamic ones count as >= 1.
+  static std::optional<int64_t> launchDimBound(Value ext,
+                                               enzymexla::GPUWrapperOp g) {
+    Value root = launchDimRoot(ext);
+    if (g->getNumOperands() < 6)
+      return std::nullopt;
+    int64_t budget = 1024;
+    unsigned sharing = 0;
+    for (unsigned i = 3; i < 6; ++i) {
+      Value bd = g->getOperand(i);
+      APInt c;
+      if (matchPattern(bd, m_ConstantInt(&c))) {
+        budget /= std::max<int64_t>(1, c.getSExtValue());
+        continue;
+      }
+      if (guardEqual(launchDimRoot(bd), root, g))
+        ++sharing;
+    }
+    if (!sharing || budget <= 0)
+      return std::nullopt;
+    // The largest b with b^sharing <= budget.
+    int64_t b = budget;
+    if (sharing == 2)
+      b = (int64_t)std::sqrt((double)budget);
+    else if (sharing == 3)
+      b = (int64_t)std::cbrt((double)budget);
+    while (b > 1) {
+      int64_t prod = 1;
+      bool over = false;
+      for (unsigned i = 0; i < sharing; ++i) {
+        if (prod > budget / b) {
+          over = true;
+          break;
+        }
+        prod *= b;
+      }
+      if (!over && prod <= budget)
+        break;
+      --b;
+    }
+    return b;
+  }
+
   // A parallel axis whose extent is dynamic but provably bounded (a block
   // size clamped by a min against a constant, capped by a guard, indexing a
-  // static scratch buffer, or an affine expression of such values) batches
+  // static scratch buffer, an affine expression of such values, or limited
+  // by the launch budget) batches
   // at the bound instead of peeling to a serial loop: the axis becomes
   // constant-extent and the body sits behind an `iv < extent` guard, which
   // the masking machinery already understands. Barriers over the axis then
@@ -5727,11 +5825,14 @@ struct AffineToStableHLORaisingPass
         if (!bound)
           bound = allocaIndexBound(par.getOperation(), par.getBody(),
                                    par.getBody()->getArgument(i));
-        if (!bound)
-          continue;
         OpBuilder pre(par);
         Value ext =
             pre.createOrFold<affine::AffineApplyOp>(par.getLoc(), um, operands);
+        if (auto g = par->getParentOfType<enzymexla::GPUWrapperOp>())
+          if (auto launch = launchDimBound(ext, g))
+            bound = std::min(bound.value_or(*launch), *launch);
+        if (!bound)
+          continue;
         bounded.push_back({i, *bound, ext});
       }
       if (bounded.empty())
