@@ -236,11 +236,10 @@ struct LegalizeMpiBcastOpToNccl : public OpConversionPattern<comm::MpiBcastOp> {
   LogicalResult
   matchAndRewrite(comm::MpiBcastOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
-
-    op.emitError(
-        "MPI-to-NCCL lowering for comm.mpi.bcast is not yet implemented");
-    return failure();
+    rewriter.replaceOpWithNewOp<comm::NcclBroadcastOp>(
+        op, op.getType(), adaptor.getInBuffer(), adaptor.getRoot(),
+        adaptor.getComm());
+    return success();
   }
 }; // struct LegalizeMpiBcastOpToNccl
 
