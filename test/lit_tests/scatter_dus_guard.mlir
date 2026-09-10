@@ -20,15 +20,16 @@ module {
   }
 }
 
-// CHECK:  func.func @masked_single_scatter(%[[v1:.+]]: tensor<12xf64>, %[[v2:.+]]: tensor<i64>, %[[v3:.+]]: tensor<i1>, %[[v4:.+]]: tensor<f64>) -> tensor<12xf64> {
-// CHECK-NEXT:  %[[v5:.+]] = stablehlo.constant dense<-1> : tensor<i64>
-// CHECK-NEXT:  %[[v6:.+]] = stablehlo.select %[[v3]], %[[v2]], %[[v5]] : tensor<i1>, tensor<i64>
-// CHECK-NEXT:  %[[v7:.+]] = stablehlo.reshape %[[v6]] : (tensor<i64>) -> tensor<1xi64>
-// CHECK-NEXT:  %[[v8:.+]] = "stablehlo.scatter"(%[[v1]], %[[v7]], %[[v4]]) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>, unique_indices = true}> ({
-// CHECK-NEXT:  ^bb0(%[[v9:.+]]: tensor<f64>, %[[v10:.+]]: tensor<f64>):
-// CHECK-NEXT:    stablehlo.return %[[v10]] : tensor<f64>
-// CHECK-NEXT:  }) : (tensor<12xf64>, tensor<1xi64>, tensor<f64>) -> tensor<12xf64>
-// CHECK-NEXT:  return %[[v8]] : tensor<12xf64>
+// CHECK:  func.func @masked_single_scatter(%arg0: tensor<12xf64>, %arg1: tensor<i64>, %arg2: tensor<i1>, %arg3: tensor<f64>) -> tensor<12xf64> {
+// CHECK-NEXT:    %0 = stablehlo.reshape %arg1 : (tensor<i64>) -> tensor<1xi64>
+// CHECK-NEXT:    %1 = stablehlo.dynamic_slice %arg0, %arg1, sizes = [1] : (tensor<12xf64>, tensor<i64>) -> tensor<1xf64>
+// CHECK-NEXT:    %2 = stablehlo.reshape %1 : (tensor<1xf64>) -> tensor<f64>
+// CHECK-NEXT:    %3 = stablehlo.select %arg2, %arg3, %2 : tensor<i1>, tensor<f64>
+// CHECK-NEXT:    %4 = "stablehlo.scatter"(%arg0, %0, %3) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>, unique_indices = true}> ({
+// CHECK-NEXT:    ^bb0(%arg4: tensor<f64>, %arg5: tensor<f64>):
+// CHECK-NEXT:      stablehlo.return %arg5 : tensor<f64>
+// CHECK-NEXT:    }) : (tensor<12xf64>, tensor<1xi64>, tensor<f64>) -> tensor<12xf64>
+// CHECK-NEXT:    return %4 : tensor<12xf64>
 // CHECK-NEXT:  }
 
 // -----
@@ -46,12 +47,12 @@ module {
   }
 }
 
-// CHECK:  func.func @unknown_single_scatter(%[[v1:.+]]: tensor<12xf64>, %[[v2:.+]]: tensor<1xi64>, %[[v3:.+]]: tensor<f64>) -> tensor<12xf64> {
-// CHECK-NEXT:  %[[v4:.+]] = "stablehlo.scatter"(%[[v1]], %[[v2]], %[[v3]]) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>, unique_indices = true}> ({
-// CHECK-NEXT:  ^bb0(%[[v5:.+]]: tensor<f64>, %[[v6:.+]]: tensor<f64>):
-// CHECK-NEXT:    stablehlo.return %[[v6]] : tensor<f64>
-// CHECK-NEXT:  }) : (tensor<12xf64>, tensor<1xi64>, tensor<f64>) -> tensor<12xf64>
-// CHECK-NEXT:  return %[[v4]] : tensor<12xf64>
+// CHECK:  func.func @unknown_single_scatter(%arg0: tensor<12xf64>, %arg1: tensor<1xi64>, %arg2: tensor<f64>) -> tensor<12xf64> {
+// CHECK-NEXT:    %0 = "stablehlo.scatter"(%arg0, %arg1, %arg2) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>, unique_indices = true}> ({
+// CHECK-NEXT:    ^bb0(%arg3: tensor<f64>, %arg4: tensor<f64>):
+// CHECK-NEXT:      stablehlo.return %arg4 : tensor<f64>
+// CHECK-NEXT:    }) : (tensor<12xf64>, tensor<1xi64>, tensor<f64>) -> tensor<12xf64>
+// CHECK-NEXT:    return %0 : tensor<12xf64>
 // CHECK-NEXT:  }
 
 // -----
@@ -73,13 +74,13 @@ module {
   }
 }
 
-// CHECK:  func.func @clamped_single_scatter(%[[v1:.+]]: tensor<12xf64>, %[[v2:.+]]: tensor<i64>, %[[v3:.+]]: tensor<f64>) -> tensor<12xf64> {
-// CHECK-NEXT:  %[[v4:.+]] = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:  %[[v5:.+]] = stablehlo.constant dense<11> : tensor<i64>
-// CHECK-NEXT:  %[[v6:.+]] = stablehlo.clamp %[[v4]], %[[v2]], %[[v5]] : tensor<i64>
-// CHECK-NEXT:  %[[v7:.+]] = stablehlo.reshape %[[v3]] : (tensor<f64>) -> tensor<1xf64>
-// CHECK-NEXT:  %[[v8:.+]] = stablehlo.dynamic_update_slice %[[v1]], %[[v7]], %[[v6]] : (tensor<12xf64>, tensor<1xf64>, tensor<i64>) -> tensor<12xf64>
-// CHECK-NEXT:  return %[[v8]] : tensor<12xf64>
+// CHECK:  func.func @clamped_single_scatter(%arg0: tensor<12xf64>, %arg1: tensor<i64>, %arg2: tensor<f64>) -> tensor<12xf64> {
+// CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:    %c_0 = stablehlo.constant dense<11> : tensor<i64>
+// CHECK-NEXT:    %0 = stablehlo.clamp %c, %arg1, %c_0 : tensor<i64>
+// CHECK-NEXT:    %1 = stablehlo.reshape %arg2 : (tensor<f64>) -> tensor<1xf64>
+// CHECK-NEXT:    %2 = stablehlo.dynamic_update_slice %arg0, %1, %0 : (tensor<12xf64>, tensor<1xf64>, tensor<i64>) -> tensor<12xf64>
+// CHECK-NEXT:    return %2 : tensor<12xf64>
 // CHECK-NEXT:  }
 
 // -----
@@ -98,12 +99,12 @@ module {
   }
 }
 
-// CHECK:  func.func @const_single_scatter(%[[v1:.+]]: tensor<12xf64>, %[[v2:.+]]: tensor<f64>) -> tensor<12xf64> {
-// CHECK-NEXT:  %[[v3:.+]] = stablehlo.reshape %[[v2]] : (tensor<f64>) -> tensor<1xf64>
-// CHECK-NEXT:  %[[v4:.+]] = stablehlo.slice %[[v1]] [0:7] : (tensor<12xf64>) -> tensor<7xf64>
-// CHECK-NEXT:  %[[v5:.+]] = stablehlo.slice %[[v1]] [8:12] : (tensor<12xf64>) -> tensor<4xf64>
-// CHECK-NEXT:  %[[v6:.+]] = stablehlo.concatenate %[[v4]], %[[v3]], %[[v5]], dim = 0 : (tensor<7xf64>, tensor<1xf64>, tensor<4xf64>) -> tensor<12xf64>
-// CHECK-NEXT:  return %[[v6]] : tensor<12xf64>
+// CHECK:  func.func @const_single_scatter(%arg0: tensor<12xf64>, %arg1: tensor<f64>) -> tensor<12xf64> {
+// CHECK-NEXT:    %0 = stablehlo.reshape %arg1 : (tensor<f64>) -> tensor<1xf64>
+// CHECK-NEXT:    %1 = stablehlo.slice %arg0 [0:7] : (tensor<12xf64>) -> tensor<7xf64>
+// CHECK-NEXT:    %2 = stablehlo.slice %arg0 [8:12] : (tensor<12xf64>) -> tensor<4xf64>
+// CHECK-NEXT:    %3 = stablehlo.concatenate %1, %0, %2, dim = 0 : (tensor<7xf64>, tensor<1xf64>, tensor<4xf64>) -> tensor<12xf64>
+// CHECK-NEXT:    return %3 : tensor<12xf64>
 // CHECK-NEXT:  }
 
 // -----
@@ -120,13 +121,13 @@ module {
   }
 }
 
-// CHECK:  func.func @const_oob_single_scatter(%[[v1:.+]]: tensor<12xf64>, %[[v2:.+]]: tensor<f64>) -> tensor<12xf64> {
-// CHECK-NEXT:  %[[v3:.+]] = stablehlo.constant dense<12> : tensor<1xi64>
-// CHECK-NEXT:  %[[v4:.+]] = "stablehlo.scatter"(%[[v1]], %[[v3]], %[[v2]]) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>, unique_indices = true}> ({
-// CHECK-NEXT:  ^bb0(%[[v5:.+]]: tensor<f64>, %[[v6:.+]]: tensor<f64>):
-// CHECK-NEXT:    stablehlo.return %[[v6]] : tensor<f64>
-// CHECK-NEXT:  }) : (tensor<12xf64>, tensor<1xi64>, tensor<f64>) -> tensor<12xf64>
-// CHECK-NEXT:  return %[[v4]] : tensor<12xf64>
+// CHECK:  func.func @const_oob_single_scatter(%arg0: tensor<12xf64>, %arg1: tensor<f64>) -> tensor<12xf64> {
+// CHECK-NEXT:    %c = stablehlo.constant dense<12> : tensor<1xi64>
+// CHECK-NEXT:    %0 = "stablehlo.scatter"(%arg0, %c, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>, unique_indices = true}> ({
+// CHECK-NEXT:    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
+// CHECK-NEXT:      stablehlo.return %arg3 : tensor<f64>
+// CHECK-NEXT:    }) : (tensor<12xf64>, tensor<1xi64>, tensor<f64>) -> tensor<12xf64>
+// CHECK-NEXT:    return %0 : tensor<12xf64>
 // CHECK-NEXT:  }
 
 // -----
@@ -146,11 +147,11 @@ module {
   }
 }
 
-// CHECK:  func.func @narrow_unsigned_single_scatter(%[[v1:.+]]: tensor<300xf64>, %[[v2:.+]]: tensor<ui8>, %[[v3:.+]]: tensor<f64>) -> tensor<300xf64> {
-// CHECK-NEXT:  %[[v4:.+]] = stablehlo.convert %[[v2]] : (tensor<ui8>) -> tensor<i64>
-// CHECK-NEXT:  %[[v5:.+]] = stablehlo.reshape %[[v3]] : (tensor<f64>) -> tensor<1xf64>
-// CHECK-NEXT:  %[[v6:.+]] = stablehlo.dynamic_update_slice %[[v1]], %[[v5]], %[[v4]] : (tensor<300xf64>, tensor<1xf64>, tensor<i64>) -> tensor<300xf64>
-// CHECK-NEXT:  return %[[v6]] : tensor<300xf64>
+// CHECK:  func.func @narrow_unsigned_single_scatter(%arg0: tensor<300xf64>, %arg1: tensor<ui8>, %arg2: tensor<f64>) -> tensor<300xf64> {
+// CHECK-NEXT:    %0 = stablehlo.convert %arg1 : (tensor<ui8>) -> tensor<i64>
+// CHECK-NEXT:    %1 = stablehlo.reshape %arg2 : (tensor<f64>) -> tensor<1xf64>
+// CHECK-NEXT:    %2 = stablehlo.dynamic_update_slice %arg0, %1, %0 : (tensor<300xf64>, tensor<1xf64>, tensor<i64>) -> tensor<300xf64>
+// CHECK-NEXT:    return %2 : tensor<300xf64>
 // CHECK-NEXT:  }
 
 // -----
@@ -173,11 +174,11 @@ module {
   }
 }
 
-// CHECK:  func.func @iota_negative_start(%[[v1:.+]]: tensor<12xf64>, %[[v2:.+]]: tensor<4x1xf64>) -> tensor<12xf64> {
-// CHECK-NEXT:  %[[v3:.+]] = stablehlo.constant {{.*}} : tensor<4x1xi64>
-// CHECK-NEXT:  %[[v4:.+]] = "stablehlo.scatter"(%[[v1]], %[[v3]], %[[v2]]) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<update_window_dims = [1], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, unique_indices = true}> ({
-// CHECK-NEXT:  ^bb0(%[[v5:.+]]: tensor<f64>, %[[v6:.+]]: tensor<f64>):
-// CHECK-NEXT:    stablehlo.return %[[v6]] : tensor<f64>
-// CHECK-NEXT:  }) : (tensor<12xf64>, tensor<4x1xi64>, tensor<4x1xf64>) -> tensor<12xf64>
-// CHECK-NEXT:  return %[[v4]] : tensor<12xf64>
+// CHECK:  func.func @iota_negative_start(%arg0: tensor<12xf64>, %arg1: tensor<4x1xf64>) -> tensor<12xf64> {
+// CHECK-NEXT:    %c = stablehlo.constant dense<{{\[\[}}-2], [-1], [0], [1]]> : tensor<4x1xi64>
+// CHECK-NEXT:    %0 = "stablehlo.scatter"(%arg0, %c, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<update_window_dims = [1], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, unique_indices = true}> ({
+// CHECK-NEXT:    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
+// CHECK-NEXT:      stablehlo.return %arg3 : tensor<f64>
+// CHECK-NEXT:    }) : (tensor<12xf64>, tensor<4x1xi64>, tensor<4x1xf64>) -> tensor<12xf64>
+// CHECK-NEXT:    return %0 : tensor<12xf64>
 // CHECK-NEXT:  }
