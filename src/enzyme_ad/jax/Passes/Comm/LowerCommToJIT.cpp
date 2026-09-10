@@ -652,8 +652,7 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
 
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
-        op, type_tensor_i64,
-        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        op, TypeRange{}, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer, count, datatype, dest, tag, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -751,9 +750,11 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-      auto funcType = LLVM::LLVMFunctionType::get(
-          type_i32,
-          {type_ptr, type_i32, type_ptr, type_i32, type_i32, type_ptr}, false);
+      auto funcType =
+          LLVM::LLVMFunctionType::get(type_i32,
+                                      {type_ptr, type_i32, type_ptr, type_i32,
+                                       type_i32, type_ptr, type_ptr},
+                                      false);
 
       LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
@@ -916,6 +917,14 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
                                LLVM::Linkage::External);
     }
 
+    if (!moduleOp.lookupSymbol<LLVM::GlobalOp>("MPI_STATUS_IGNORE")) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+      LLVM::GlobalOp::create(rewriter, op.getLoc(), type_ptr, true,
+                             LLVM::Linkage::External, "MPI_STATUS_IGNORE",
+                             nullptr, 0, 0);
+    }
+
     if (!op.getResult().getType().hasStaticShape()) {
       return op.emitOpError("dynamic buffer shape is not supported");
     }
@@ -958,8 +967,7 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
 
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
-        op, type_tensor_i64,
-        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        op, type_buffer, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer_placeholder, count, datatype, src, tag, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -1121,7 +1129,7 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
 
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
-        op, type_tensor_i64,
+        op, TypeRange{type_buffer, type_tensor_i64},
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer_placeholder, count, datatype, src, tag, comm,
                    request_placeholder},
@@ -1204,6 +1212,14 @@ struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
                                LLVM::Linkage::External);
     }
 
+    if (!moduleOp.lookupSymbol<LLVM::GlobalOp>("MPI_STATUS_IGNORE")) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+      LLVM::GlobalOp::create(rewriter, op.getLoc(), type_ptr, true,
+                             LLVM::Linkage::External, "MPI_STATUS_IGNORE",
+                             nullptr, 0, 0);
+    }
+
     auto request = adaptor.getRequest();
 
     rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
@@ -1236,8 +1252,9 @@ struct LowerCommMpiWaitallOpToJIT
     auto type_i32 = IntegerType::get(context, 32);
 
     auto num_requests = op.getNumOperands();
-    std::string function_name = "MPI_Waitall_" + std::to_string(num_requests);
-    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+    std::string function_name = "MPI_Waitall";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name + "_" +
+                               std::to_string(num_requests);
 
     if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
@@ -1309,11 +1326,19 @@ struct LowerCommMpiWaitallOpToJIT
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-      auto funcType =
-          LLVM::LLVMFunctionType::get(type_i32, {type_ptr, type_ptr}, false);
+      auto funcType = LLVM::LLVMFunctionType::get(
+          type_i32, {type_i32, type_ptr, type_ptr}, false);
 
       LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::GlobalOp>("MPI_STATUSES_IGNORE")) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+      LLVM::GlobalOp::create(rewriter, op.getLoc(), type_ptr, true,
+                             LLVM::Linkage::External, "MPI_STATUSES_IGNORE",
+                             nullptr, 0, 0);
     }
 
     rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
