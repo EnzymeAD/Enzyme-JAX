@@ -149,7 +149,7 @@ func.func @func_store_to_load_not_forwarded() -> i32 {
 
 // -----
 
-tessera.define @tessera_foo_nocapture(%arg0: !llvm.ptr {llvm.nocapture, llvm.readonly}) attributes {argModes = [{dir = "in", type = !llvm.struct<(i32, i32)>}], pure = false} {
+tessera.define @tessera_foo_nocapture(%arg0: !llvm.ptr {llvm.nocapture, llvm.readonly}) attributes {argModes = [{dir = #tessera.dir<in>, type = !llvm.struct<(i32, i32)>}], pure = false} {
   tessera.return
 }
 tessera.define @tessera_store_to_load_forwarded() -> i32 attributes {argModes = [], pure = false} {
@@ -173,7 +173,7 @@ tessera.define @tessera_store_to_load_forwarded() -> i32 attributes {argModes = 
 
 // -----
 
-tessera.define @tessera_foo_capturing(%arg0: !llvm.ptr) attributes {argModes = [{dir = "in", type = !llvm.struct<(i32, i32)>}], pure = false} {
+tessera.define @tessera_foo_capturing(%arg0: !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !llvm.struct<(i32, i32)>}], pure = false} {
   tessera.return
 }
 tessera.define @tessera_store_to_load_not_forwarded() -> i32 attributes {argModes = [], pure = false} {

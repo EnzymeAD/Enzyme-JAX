@@ -73,17 +73,6 @@ public:
     // "tessera_op(arg1:val=in, arg2, ...):globals=index1,..." or
     // "pure_tessera_op(arg1:val=in, arg2, ...):globals=index1,...".
     //
-    // A marker lifts an argument into the value domain: the call site
-    // dereferences the pointer so that tessera.call carries the pointee as an
-    // SSA value. That is what lets a PDL pattern match over calls, since
-    // PDL matches SSA def-use edges and cannot see dependencies through
-    // memory. An unmarked argument is passed through as-is.
-    //
-    // The marker's direction says what the callee does to the pointee:
-    //   :val=in    reads it   -- takes an operand, yields no result
-    //   :val=out   writes it  -- takes no operand, yields a trailing result
-    //   :val=inout both       -- takes an operand and yields a result
-    //
     // index1,... corresponds positionally, in left-to-right order, to the
     // marked args, one global counter index per marked arg, and is used to
     // look up each arg's type in argTypesByGlobalIndices.
@@ -112,7 +101,7 @@ public:
     // Consumes the next global index for a marked arg, looks up its type
     // by that index in argTypesByGlobalIndices, and returns the mode dictionary
     // pairing that type with `dir`.
-    auto consumeMarkedArg = [&](StringRef dir) -> Attribute {
+    auto consumeMarkedArg = [&](ArgDirection dir) -> Attribute {
       if (numIndicesFound >= indexList.size()) {
         funcOp->emitError("tessera: not enough global indices for marked args");
         return nullptr;
@@ -124,21 +113,20 @@ public:
       StringRef indexStr = indexList[numIndicesFound++];
       unsigned idx;
       if (indexStr.trim().getAsInteger(10, idx)) {
-        funcOp->emitError("tessera: invalid type index for :val=")
-            << dir << " arg: " << indexStr;
+        funcOp->emitError("tessera: invalid type index for arg: ") << indexStr;
         return nullptr;
       }
       auto it = argTypesByGlobalIndices.find(idx);
       if (it == argTypesByGlobalIndices.end()) {
-        funcOp->emitError("tessera: no lifting entry found for :val=")
-            << dir << " arg at index: " << idx;
+        funcOp->emitError("tessera: no lifting entry found for arg at index: ")
+            << idx;
         return nullptr;
       }
-      return DictionaryAttr::get(ctx,
-                                 {NamedAttribute(StringAttr::get(ctx, "type"),
-                                                 TypeAttr::get(it->second)),
-                                  NamedAttribute(StringAttr::get(ctx, "dir"),
-                                                 StringAttr::get(ctx, dir))});
+      return DictionaryAttr::get(
+          ctx, {NamedAttribute(StringAttr::get(ctx, "type"),
+                               TypeAttr::get(it->second)),
+                NamedAttribute(StringAttr::get(ctx, "dir"),
+                               ArgDirectionAttr::get(ctx, dir))});
     };
 
     if (!argList.trim().empty()) {
@@ -162,14 +150,16 @@ public:
           wellFormed = dir.consume_front("=");
           dir = dir.trim();
         }
-        if (!wellFormed || (dir != "in" && dir != "out" && dir != "inout")) {
+        std::optional<ArgDirection> argDirection =
+            wellFormed ? symbolizeArgDirection(dir) : std::nullopt;
+        if (!argDirection) {
           funcOp->emitError("tessera: argument '")
               << arg << "' has invalid marker '" << marker
               << "', expected :val=in, :val=out, or :val=inout";
           return failure();
         }
 
-        Attribute mode = consumeMarkedArg(dir);
+        Attribute mode = consumeMarkedArg(*argDirection);
         if (!mode)
           return failure();
         argModes.push_back(mode);
@@ -319,15 +309,9 @@ public:
 
       // Every written arg contributes a trailing tessera.call result, so
       // remember its pointer and pointee type for use after the call is
-      // built. Whether it also keeps an operand slot depends on the
-      // direction:
-      //   - "out": the callee only writes it, so it is dropped from the
-      //     operand list entirely. Supplying one would load the caller's
-      //     not-yet-written storage and pass undef.
-      //   - "inout": the callee reads the caller's existing object and writes
-      //     back through the same pointer, so it falls through to the load
-      //     below and keeps its operand slot carrying the incoming value.
-      // Recorded in argument order either way, as CallOp's verifier expects.
+      // built. Arguments that were marked "out" are dropped from the
+      // operand list while arguments marked "inout" keep their operand
+      // slots carrying their incoming values.
       if (defineOp.argIsWritten(i)) {
         Type resultArgType = defineOp.getArgLiftedType(i);
         resultArgPtrs.push_back(operand);
@@ -426,12 +410,9 @@ struct LLVMToTesseraPass
     auto module = cast<ModuleOp>(getOperation());
 
     // Build a lookup of argument index -> resolved type by scanning the
-    // module once for globals named "__tessera_arg_type_<index>" (names
-    // may be mangled with compiler-added prefixes, e.g.
-    // "_ZL20__tessera_arg_type_0", so we search for the marker rather
-    // than requiring it at the start). Each tessera.define op's own index
-    // list (from its "globals=" attribute) is later resolved against this
-    // map, avoiding a full module rescan per op.
+    // module once for globals named "__tessera_arg_type_<index>".
+    // Each tessera.define op's own index list (from its "globals=" attribute)
+    // is later resolved against this map, avoiding a full module rescan per op.
     llvm::DenseMap<unsigned, mlir::Type> argTypesByGlobalIndices;
     StringRef prefix = "__tessera_arg_type_";
     for (auto global : module.getOps<mlir::LLVM::GlobalOp>()) {

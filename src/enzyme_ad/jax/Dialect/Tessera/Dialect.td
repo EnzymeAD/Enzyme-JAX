@@ -17,7 +17,7 @@ def TesseraDialect : Dialect {
         semantics and thus enable user-defined optimizations on the DSL their code represents.
     }];
     let cppNamespace = "::mlir::enzyme::tessera";
-    // let useDefaultAttributePrinterParser = 1;
+    let useDefaultAttributePrinterParser = 1;
 }
 
 //===----------------------------------------------------------------------===//
