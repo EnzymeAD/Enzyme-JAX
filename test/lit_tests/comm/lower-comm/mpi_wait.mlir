@@ -8,11 +8,13 @@ func.func @main(%req : !comm.mpi.request) {
 // SHLO: func.func @main(%[[REQ:.*]]: tensor<i64>) {
 // SHLO-NEXT: stablehlo.custom_call @MpiWait(%[[REQ]]) {has_side_effect = true} : (tensor<i64>) -> ()
 
+// JIT-LABEL: llvm.mlir.global external constant @MPI_STATUS_IGNORE
+// JIT-SAME:                                                       () {addr_space = 0 : i32} : !llvm.ptr
 // JIT-LABEL: llvm.func @MPI_Wait
 // JIT-SAME:                     (!llvm.ptr, !llvm.ptr) -> i32
 // JIT-LABEL: llvm.func @enzymexla_jitwrap_MPI_Wait
 // JIT-SAME:                                       (%arg0: !llvm.ptr) {
-// JIT-NEXT:   %0 = llvm.mlir.zero : !llvm.ptr
+// JIT-NEXT:   %0 = llvm.mlir.addressof @MPI_STATUS_IGNORE : !llvm.ptr
 // JIT-NEXT:   %1 = llvm.call @MPI_Wait(%arg0, %0) : (!llvm.ptr, !llvm.ptr) -> i32
 // JIT-NEXT:   llvm.return
 // JIT-NEXT: }
