@@ -3985,8 +3985,6 @@ struct CaseOpEnzymeOpsRemover
       terminators.push_back(bb->getTerminator());
     }
 
-    // Each gradient set inside a branch becomes an extra return value of
-    // every branch. Branches that did not set it return its current value.
     for (auto grad : gradients) {
       for (auto &&[mapping, term] : llvm::zip(mappings, terminators)) {
         auto mappingValue = mapping.lookupOrNull(grad);
@@ -3999,9 +3997,6 @@ struct CaseOpEnzymeOpsRemover
       }
     }
 
-    // Each value pushed inside a branch becomes an extra return value of
-    // every branch. Only the pushing branch has the value; the others return
-    // a zero of the same type so the pushed value is well defined.
     for (auto &[pushedValue, info] : pushedCaches) {
       Value dummy =
           makeZero(rewriter, pushedValue.getLoc(), pushedValue.getType());
@@ -4012,8 +4007,6 @@ struct CaseOpEnzymeOpsRemover
       }
     }
 
-    // All terminators now agree on their operand types, so any one of them
-    // gives the result types of the rebuilt op.
     auto newCase = stablehlo::CaseOp::create(rewriter, caseOp->getLoc(),
                                              terminators[0]->getOperandTypes(),
                                              caseOp.getIndex(), blocks.size());
