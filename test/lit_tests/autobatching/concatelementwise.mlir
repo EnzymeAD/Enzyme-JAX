@@ -1,4 +1,5 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="any(enzyme-hlo-generate-td{patterns=concat_insert_dim_elementwise},transform-interpreter,enzyme-hlo-remove-transform)" %s | FileCheck %s
+// RUN: enzymexlamlir-opt --split-input-file --pass-pipeline="any(enzyme-hlo-generate-td{patterns=concat_insert_dim_elementwise},transform-interpreter,enzyme-hlo-remove-transform)" %s | FileCheck %s
+// RUN: enzymexlamlir-opt --split-input-file --pass-pipeline="builtin.module(enzyme-batch,inline,canonicalize,cse,enzyme-hlo-opt,cse,enzyme-hlo-generate-td{patterns=concat_insert_dim_elementwise},transform-interpreter,enzyme-hlo-remove-transform)" %s | FileCheck %s --check-prefix=REACTANT
 
 module {
   func.func @mapped_sub(%arg0: tensor<3x5x10xf32>, %arg1: tensor<3x5x10xf32>) -> (tensor<5x3x10xf32>, tensor<3x5x10xf32>, tensor<3x5x10xf32>) {
@@ -89,5 +90,115 @@ module {
     %83 = stablehlo.transpose %0, dims = [2, 1, 0] : (tensor<10x5x3xf32>) -> tensor<3x5x10xf32>
     %84 = stablehlo.transpose %1, dims = [2, 1, 0] : (tensor<10x5x3xf32>) -> tensor<3x5x10xf32>
     return %82, %83, %84 : tensor<5x3x10xf32>, tensor<3x5x10xf32>, tensor<3x5x10xf32>
+  }
+}
+
+// -----
+
+// Regression test: the batched op repeats the same SSA value in two operand
+// slots (`multiply %1, %1`). Each slot must be batched independently; the
+// wrapper must not collapse both slots onto the same argument, which turned
+// `hcat(z .* z, y .* z)` into `hcat(z .* z, z .* z)`.
+module {
+  // CHECK-LABEL: func.func @hcat_mul_repeated_operand
+  // CHECK-DAG: %[[Z:.+]] = stablehlo.slice %arg0 [2:3, 0:2]
+  // CHECK-DAG: %[[Y:.+]] = stablehlo.slice %arg0 [1:2, 0:2]
+  // CHECK-DAG: %[[ZR:.+]] = stablehlo.reshape %[[Z]] : (tensor<1x2xf64>) -> tensor<2xf64>
+  // CHECK-DAG: %[[YR:.+]] = stablehlo.reshape %[[Y]] : (tensor<1x2xf64>) -> tensor<2xf64>
+  // CHECK-DAG: %[[ZR1:.+]] = stablehlo.reshape %[[ZR]] : (tensor<2xf64>) -> tensor<1x2xf64>
+  // CHECK-DAG: %[[YR1:.+]] = stablehlo.reshape %[[YR]] : (tensor<2xf64>) -> tensor<1x2xf64>
+  // CHECK-DAG: %[[LHS:.+]] = stablehlo.concatenate %[[ZR1]], %[[YR1]], dim = 0
+  // CHECK-DAG: %[[ZR2:.+]] = stablehlo.reshape %[[ZR]] : (tensor<2xf64>) -> tensor<1x2xf64>
+  // CHECK-DAG: %[[ZR3:.+]] = stablehlo.reshape %[[ZR]] : (tensor<2xf64>) -> tensor<1x2xf64>
+  // CHECK-DAG: %[[RHS:.+]] = stablehlo.concatenate %[[ZR2]], %[[ZR3]], dim = 0
+  // CHECK: %[[MUL:.+]] = stablehlo.multiply %[[LHS]], %[[RHS]] : tensor<2x2xf64>
+  // CHECK: stablehlo.transpose %[[MUL]], dims = [0, 1]
+  func.func @hcat_mul_repeated_operand(%arg0: tensor<3x2xf64>) -> tensor<2x2xf64> {
+    %0 = stablehlo.slice %arg0 [2:3, 0:2] : (tensor<3x2xf64>) -> tensor<1x2xf64>
+    %1 = stablehlo.reshape %0 : (tensor<1x2xf64>) -> tensor<2xf64>
+    %2 = stablehlo.multiply %1, %1 : tensor<2xf64>
+    %3 = stablehlo.slice %arg0 [1:2, 0:2] : (tensor<3x2xf64>) -> tensor<1x2xf64>
+    %4 = stablehlo.reshape %3 : (tensor<1x2xf64>) -> tensor<2xf64>
+    %5 = stablehlo.multiply %4, %1 : tensor<2xf64>
+    %6 = stablehlo.reshape %2 : (tensor<2xf64>) -> tensor<1x2xf64>
+    %7 = stablehlo.reshape %5 : (tensor<2xf64>) -> tensor<1x2xf64>
+    %8 = stablehlo.concatenate %6, %7, dim = 0 : (tensor<1x2xf64>, tensor<1x2xf64>) -> tensor<2x2xf64>
+    return %8 : tensor<2x2xf64>
+  }
+}
+
+// -----
+
+// Verbatim `@code_hlo optimize=false` dump from Reactant.jl (0.2.285) for
+//
+//   f(u) = hcat(u[:, 3] .* u[:, 3], u[:, 2] .* u[:, 3])
+//   u = [1.0 2.0 3.0; 4.0 5.0 6.0]
+//
+// After CSE the first multiply becomes `multiply %z, %z`, i.e. the same SSA
+// value in both operand slots. Batching the two multiplies via
+// concat_insert_dim_elementwise used to map both slots of the wrapper function
+// onto the same argument, so the compiled result was hcat(z.*z, z.*z) instead
+// of hcat(z.*z, y.*z). The second column (u[:, 2]) must survive in the output.
+
+// REACTANT-LABEL: func.func @main
+// REACTANT-DAG: %[[Z:.+]] = stablehlo.slice %arg0 [2:3, 0:2] : (tensor<3x2xf64>) -> tensor<1x2xf64>
+// REACTANT-DAG: %[[Y:.+]] = stablehlo.slice %arg0 [1:2, 0:2] : (tensor<3x2xf64>) -> tensor<1x2xf64>
+// REACTANT-DAG: %[[ZT:.+]] = stablehlo.reshape %[[Z]] : (tensor<1x2xf64>) -> tensor<2x1xf64>
+// REACTANT-DAG: %[[YT:.+]] = stablehlo.reshape %[[Y]] : (tensor<1x2xf64>) -> tensor<2x1xf64>
+// REACTANT-DAG: %[[ZY:.+]] = stablehlo.concatenate %[[ZT]], %[[YT]], dim = 1
+// REACTANT-DAG: %[[ZB:.+]] = stablehlo.broadcast_in_dim %[[Z]], dims = [1, 0] : (tensor<1x2xf64>) -> tensor<2x2xf64>
+// REACTANT: stablehlo.multiply %[[ZY]], %[[ZB]]
+
+module @reactant_f attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
+  func.func private @"*_broadcast_scalar"(%arg0: tensor<f64> {enzymexla.memory_effects = []}, %arg1: tensor<f64> {enzymexla.memory_effects = []}) -> (tensor<f64>, tensor<f64>, tensor<f64>) attributes {enzymexla.memory_effects = []} {
+    %0 = stablehlo.multiply %arg0, %arg1 : tensor<f64>
+    return %0, %arg0, %arg1 : tensor<f64>, tensor<f64>, tensor<f64>
+  }
+  func.func private @"*_broadcast_scalar_1"(%arg0: tensor<f64> {enzymexla.memory_effects = []}, %arg1: tensor<f64> {enzymexla.memory_effects = []}) -> (tensor<f64>, tensor<f64>, tensor<f64>) attributes {enzymexla.memory_effects = []} {
+    %0 = stablehlo.multiply %arg0, %arg1 : tensor<f64>
+    return %0, %arg0, %arg1 : tensor<f64>, tensor<f64>, tensor<f64>
+  }
+  func.func @main(%arg0: tensor<3x2xf64> {enzymexla.memory_effects = ["read", "write", "allocate", "free"], tf.aliasing_output = 1 : i32}) -> (tensor<2x2xf64>, tensor<3x2xf64>) attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
+    %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<3x2xf64>) -> tensor<2x3xf64>
+    %1 = stablehlo.slice %0 [0:2, 2:3] : (tensor<2x3xf64>) -> tensor<2x1xf64>
+    %2 = stablehlo.transpose %1, dims = [1, 0] : (tensor<2x1xf64>) -> tensor<1x2xf64>
+    %3 = stablehlo.reshape %2 : (tensor<1x2xf64>) -> tensor<2xf64>
+    %4 = stablehlo.transpose %3, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
+    %5 = stablehlo.slice %0 [0:2, 2:3] : (tensor<2x3xf64>) -> tensor<2x1xf64>
+    %6 = stablehlo.transpose %5, dims = [1, 0] : (tensor<2x1xf64>) -> tensor<1x2xf64>
+    %7 = stablehlo.reshape %6 : (tensor<1x2xf64>) -> tensor<2xf64>
+    %8 = stablehlo.transpose %7, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
+    %cst = stablehlo.constant dense<0.000000e+00> : tensor<2xf64>
+    %9 = stablehlo.broadcast_in_dim %4, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
+    %10 = stablehlo.broadcast_in_dim %9, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
+    %11 = stablehlo.broadcast_in_dim %8, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
+    %12 = stablehlo.broadcast_in_dim %11, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
+    %13:3 = enzyme.batch @"*_broadcast_scalar"(%10, %12) {batch_shape = array<i64: 2>} : (tensor<2xf64>, tensor<2xf64>) -> (tensor<2xf64>, tensor<2xf64>, tensor<2xf64>)
+    %14 = stablehlo.slice %0 [0:2, 1:2] : (tensor<2x3xf64>) -> tensor<2x1xf64>
+    %15 = stablehlo.transpose %14, dims = [1, 0] : (tensor<2x1xf64>) -> tensor<1x2xf64>
+    %16 = stablehlo.reshape %15 : (tensor<1x2xf64>) -> tensor<2xf64>
+    %17 = stablehlo.transpose %16, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
+    %18 = stablehlo.slice %0 [0:2, 2:3] : (tensor<2x3xf64>) -> tensor<2x1xf64>
+    %19 = stablehlo.transpose %18, dims = [1, 0] : (tensor<2x1xf64>) -> tensor<1x2xf64>
+    %20 = stablehlo.reshape %19 : (tensor<1x2xf64>) -> tensor<2xf64>
+    %21 = stablehlo.transpose %20, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
+    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<2xf64>
+    %22 = stablehlo.broadcast_in_dim %17, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
+    %23 = stablehlo.broadcast_in_dim %22, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
+    %24 = stablehlo.broadcast_in_dim %21, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
+    %25 = stablehlo.broadcast_in_dim %24, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
+    %26:3 = enzyme.batch @"*_broadcast_scalar_1"(%23, %25) {batch_shape = array<i64: 2>} : (tensor<2xf64>, tensor<2xf64>) -> (tensor<2xf64>, tensor<2xf64>, tensor<2xf64>)
+    %27 = stablehlo.transpose %13#0, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
+    %28 = stablehlo.reshape %27 : (tensor<2xf64>) -> tensor<1x2xf64>
+    %29 = stablehlo.transpose %28, dims = [1, 0] : (tensor<1x2xf64>) -> tensor<2x1xf64>
+    %30 = stablehlo.convert %29 : tensor<2x1xf64>
+    %31 = stablehlo.transpose %26#0, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
+    %32 = stablehlo.reshape %31 : (tensor<2xf64>) -> tensor<1x2xf64>
+    %33 = stablehlo.transpose %32, dims = [1, 0] : (tensor<1x2xf64>) -> tensor<2x1xf64>
+    %34 = stablehlo.convert %33 : tensor<2x1xf64>
+    %35 = stablehlo.concatenate %30, %34, dim = 1 : (tensor<2x1xf64>, tensor<2x1xf64>) -> tensor<2x2xf64>
+    %36 = stablehlo.transpose %35, dims = [1, 0] : (tensor<2x2xf64>) -> tensor<2x2xf64>
+    %37 = stablehlo.transpose %0, dims = [1, 0] : (tensor<2x3xf64>) -> tensor<3x2xf64>
+    return %36, %37 : tensor<2x2xf64>, tensor<3x2xf64>
   }
 }

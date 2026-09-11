@@ -136,30 +136,36 @@ func::FuncOp CreateWrapperUnbatchedFunction(
   auto &entryBlock = *funcOp.addEntryBlock();
   rewriter.setInsertionPointToStart(&entryBlock);
 
+  // The wrapper arguments correspond positionally to the operand slots of
+  // `firstOp` (skipping CONSTANT-lifted slots). The same SSA value may occupy
+  // several slots (e.g. `multiply %x, %x`), and the caller batches each slot
+  // independently, so the cloned op must read slot `i` from argument `i`. A
+  // value-keyed IRMapping alone would collapse duplicate slots onto whichever
+  // argument was mapped last, silently dropping the other batched operands.
   IRMapping mapper;
+  SmallVector<Value> firstOpOperands;
   size_t argIdx = 0;
   for (auto [i, operand] : llvm::enumerate(firstOp->getOperands())) {
+    Value mapped;
     if (batchLiftingModes.has_value() &&
         batchLiftingModes.value()[i] ==
             BatchLiftingMode::CONSTANT) { // clone into fn body
-      auto clonedConst = rewriter.clone(*operand.getDefiningOp());
-      mapper.map(operand, clonedConst->getResult(0));
-      continue;
+      mapped = rewriter.clone(*operand.getDefiningOp())->getResult(0);
+    } else {
+      mapped = entryBlock.getArguments()[argIdx++];
     }
-    mapper.map(operand, entryBlock.getArguments()[argIdx++]);
-  }
-
-  if (inShape.has_value()) {
-    for (size_t i = 0; i < firstOp->getNumOperands(); i++) {
-      auto blockArg = mapper.lookup(firstOp->getOperand(i));
-      mapper.map(firstOp->getOperand(i),
-                 stablehlo::ReshapeOpCreate(rewriter, firstOp->getLoc(),
-                                            blockArg, inShape.value()));
+    if (inShape.has_value()) {
+      mapped = stablehlo::ReshapeOpCreate(rewriter, firstOp->getLoc(), mapped,
+                                          inShape.value());
     }
+    firstOpOperands.push_back(mapped);
+    mapper.map(operand, mapped);
   }
 
   for (auto op : ops) {
     auto clonedOp = rewriter.clone(*op, mapper);
+    if (op == firstOp)
+      clonedOp->setOperands(firstOpOperands);
     for (size_t i = 0; i < op->getNumResults(); i++) {
       mapper.map(op->getResult(i), clonedOp->getResult(i));
     }
