@@ -18,9 +18,6 @@ module {
     return %0 : tensor<10xf32>
   }
 
-  // Hand-written post-differentiation IR: two branches set the gradient slot,
-  // the third does not. The ops remover must turn the sets into case results,
-  // reading the slot's current value for the branch that leaves it alone.
   func.func @zmain2(%arg0: tensor<10xf32>, %index: tensor<i32>, %arg2: tensor<10xf32>) -> (tensor<10xf32>, tensor<10xf32>) {
     %cst = stablehlo.constant dense<1.000000e+00> : tensor<10xf32>
     %cst_0 = arith.constant dense<0.000000e+00> : tensor<10xf32>
