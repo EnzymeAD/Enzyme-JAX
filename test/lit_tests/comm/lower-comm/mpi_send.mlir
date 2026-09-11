@@ -31,6 +31,6 @@ func.func @main(%buffer: tensor<4xf64>, %dst: tensor<i32>, %tag: tensor<i32>, %c
 
 // NCCL-LABEL: func.func @main
 // NCCL-SAME: (%[[BUFFER:.*]]: tensor<4xf64>, %[[DST:.*]]: tensor<i32>, %[[TAG:.*]]: tensor<i32>, %[[COMM:.*]]: !comm.nccl.comm) {
-// NCCL-NEXT: comm.nccl.send %[[BUFFER]], %[[DST]], %[[COMM]] : tensor<4xf64>
+// NCCL-NEXT: comm.nccl.send %[[BUFFER]], %[[DST]], %[[COMM]] : tensor<4xf64>, tensor<i32>, !comm.nccl.comm
 // NCCL-NEXT: return
 // NCCL-NEXT: }
