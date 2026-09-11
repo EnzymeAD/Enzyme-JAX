@@ -35,25 +35,25 @@ def NcclCommSplitOp : Comm_Op<"nccl.comm_split", []> {
   );
 
   let results = (outs NcclComm : $new_comm);
-  let assemblyFormat = "operands attr-dict `:` functional-type($comm, results)";
+  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
 }
 
 def NcclCommFinalizeOp : Comm_Op<"nccl.comm_finalize", []> {
   let summary = "Equivalent to `ncclCommFinalize`";
   let arguments = (ins NcclComm : $comm);
-  let assemblyFormat = "$comm attr-dict";
+  let assemblyFormat = "$comm attr-dict `:` type(operands)";
 }
 
 def NcclCommDestroyOp : Comm_Op<"nccl.comm_destroy", []> {
   let summary = "Equivalent to `ncclCommDestroy`";
   let arguments = (ins NcclComm : $comm);
-  let assemblyFormat = "$comm attr-dict";
+  let assemblyFormat = "$comm attr-dict `:` type(operands)";
 }
 
 def NcclCommAbortOp : Comm_Op<"nccl.comm_abort", []> {
   let summary = "Equivalent to `ncclCommAbort`";
   let arguments = (ins NcclComm : $comm);
-  let assemblyFormat = "$comm attr-dict";
+  let assemblyFormat = "$comm attr-dict `:` type(operands)";
 }
 
 def NcclCommCountOp : Comm_Op<"nccl.comm_count", [Pure]> {
@@ -88,7 +88,7 @@ def NcclAllReduceOp : Comm_Op<"nccl.all_reduce", []> {
   );
 
   let results = (outs AnyTensor : $recvbuf);
-  let assemblyFormat = "$sendbuf `,` $reduceOp `,` $comm attr-dict `:` functional-type($sendbuf, $recvbuf)";
+  let assemblyFormat = "$sendbuf `,` $reduceOp `,` $comm attr-dict `:` functional-type(operands, results)";
 }
 
 def NcclBroadcastOp : Comm_Op<"nccl.broadcast", []> {
@@ -102,7 +102,7 @@ def NcclBroadcastOp : Comm_Op<"nccl.broadcast", []> {
   );
 
   let results = (outs AnyTensor : $recvbuff);
-  let assemblyFormat = "operands attr-dict `:` functional-type($sendbuff, $recvbuff)";
+  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
 }
 
 def NcclSendOp : Comm_Op<"nccl.send", []> {
@@ -114,7 +114,7 @@ def NcclSendOp : Comm_Op<"nccl.send", []> {
     NcclComm : $comm
   );
 
-  let assemblyFormat = "operands attr-dict `:` type($sendbuff)";
+  let assemblyFormat = "operands attr-dict `:` type(operands)";
 }
 
 def NcclRecvOp : Comm_Op<"nccl.recv", []> {
@@ -126,7 +126,7 @@ def NcclRecvOp : Comm_Op<"nccl.recv", []> {
   );
   let results = (outs AnyTensor : $recvbuff);
 
-  let assemblyFormat = "operands attr-dict `:` type($recvbuff)";
+  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
 }
 
 #endif // ENZYMEXLA_COMM_DIALECT_NCCL_OPS_TD
