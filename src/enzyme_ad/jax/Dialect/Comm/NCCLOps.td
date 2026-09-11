@@ -9,6 +9,12 @@ include "Utils.td"
 include "Types.td"
 include "Attrs.td"
 
+def NcclConstantOp : Comm_Op<"nccl.constant", [Pure]> {
+  let summary = "Produces the default NCCL communicator";
+  let results = (outs NcclComm : $comm);
+  let assemblyFormat = "attr-dict `:` type(results)";
+}
+
 def NcclGroupStartOp : Comm_Op<"nccl.group_start", []> {
   let summary = "Equivalent to `ncclGroupStart`";
   let assemblyFormat = "attr-dict";
