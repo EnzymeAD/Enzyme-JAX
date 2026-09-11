@@ -26,11 +26,14 @@ struct LegalizeMpiConstantOpToNccl
   LogicalResult
   matchAndRewrite(comm::MpiConstantOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
+    auto commAttr = dyn_cast<comm::MpiCommAttr>(op.getValueAttr());
+    if (!commAttr || commAttr.getValue() != comm::MpiCommEnum::MPI_COMM_WORLD)
+      return rewriter.notifyMatchFailure(
+          op, "only MPI_COMM_WORLD can be lowered to an NCCL communicator");
 
-    op.emitError(
-        "MPI-to-NCCL lowering for comm.mpi.constant is not yet implemented");
-    return failure();
+    rewriter.replaceOpWithNewOp<comm::NcclConstantOp>(
+        op, comm::NcclCommType::get(op.getContext()));
+    return success();
   }
 }; // struct LegalizeMpiConstantOpToNccl
 
@@ -317,12 +320,13 @@ struct LegalizeMpiToNcclPass
     // These always run on the host, so a NCCL lowering is not needed
     target.addLegalOp<comm::MpiCommRankOp, comm::MpiCommSizeOp>();
 
-    target.addLegalOp<
-        comm::NcclGroupStartOp, comm::NcclGroupEndOp, comm::NcclCommSplitOp,
-        comm::NcclCommFinalizeOp, comm::NcclCommDestroyOp,
-        comm::NcclCommAbortOp, comm::NcclCommCountOp, comm::NcclCommCuDeviceOp,
-        comm::NcclCommUserRankOp, comm::NcclAllReduceOp, comm::NcclBroadcastOp,
-        comm::NcclSendOp, comm::NcclRecvOp>();
+    target.addLegalOp<comm::NcclConstantOp, comm::NcclGroupStartOp,
+                      comm::NcclGroupEndOp, comm::NcclCommSplitOp,
+                      comm::NcclCommFinalizeOp, comm::NcclCommDestroyOp,
+                      comm::NcclCommAbortOp, comm::NcclCommCountOp,
+                      comm::NcclCommCuDeviceOp, comm::NcclCommUserRankOp,
+                      comm::NcclAllReduceOp, comm::NcclBroadcastOp,
+                      comm::NcclSendOp, comm::NcclRecvOp>();
 
     comm::MpiToNcclTypeConverter converter;
 
