@@ -333,11 +333,19 @@ struct LegalizeMpiToNcclPass
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
       return converter.isSignatureLegal(op.getFunctionType());
     });
+    target.addDynamicallyLegalOp<func::CallOp>([&](func::CallOp op) {
+      return converter.isSignatureLegal(op.getCalleeType());
+    });
+    target.addDynamicallyLegalOp<func::ReturnOp>([&](func::ReturnOp op) {
+      return converter.isLegal(op.getOperandTypes());
+    });
 
     RewritePatternSet patterns(context);
 
     mlir::populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(
         patterns, converter);
+    mlir::populateCallOpTypeConversionPattern(patterns, converter);
+    mlir::populateReturnOpTypeConversionPattern(patterns, converter);
 
     patterns.add<LegalizeMpiConstantOpToNccl, LegalizeMpiCommSplitOpToNccl,
                  LegalizeMpiBarrierOpToNccl, LegalizeMpiSendOpToNccl,
