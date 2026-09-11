@@ -133,7 +133,6 @@
 #include "triton/Target/LLVMIR/Passes.h"
 #endif
 
-
 #ifndef ENZYME_JAX_ENABLE_Z3
 #define ENZYME_JAX_ENABLE_Z3 1
 #endif
