@@ -44,8 +44,6 @@ struct LegalizeMpiCommSplitOpToNccl
   LogicalResult
   matchAndRewrite(comm::MpiCommSplitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
-
     op.emitError(
         "MPI-to-NCCL lowering for comm.mpi.comm_split is not yet implemented");
     return failure();
@@ -59,8 +57,6 @@ struct LegalizeMpiBarrierOpToNccl
   LogicalResult
   matchAndRewrite(comm::MpiBarrierOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
-
     op.emitError(
         "MPI-to-NCCL lowering for comm.mpi.barrier is not yet implemented");
     return failure();
