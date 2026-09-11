@@ -3118,6 +3118,15 @@ struct SliceBroadcast final
     if (innerSlice && !llvm::hasSingleElement(bcast->getUsers()))
       return failure();
 
+    // The new broadcast must be dimensionally consistent: every mapped
+    // operand dim must equal its result dim or be 1.
+    for (auto [i, outdim] : llvm::enumerate(bcast.getBroadcastDimensions())) {
+      int64_t od = (in_end[i] - in_start[i] + in_stride[i] - 1) / in_stride[i];
+      int64_t rd = op.getType().getShape()[outdim];
+      if (od != rd && od != 1)
+        return failure();
+    }
+
     Value tobcast = bcast.getOperand();
     if (innerSlice)
       tobcast = stablehlo::SliceOp::create(rewriter, op.getLoc(), tobcast,
@@ -35539,6 +35548,321 @@ struct RecognizeMultiPad final
   }
 };
 
+// A masked scatter whose mask is decided by comparisons of iotas against
+// constants is live on a box of its lane grid: the lanes outside the box are
+// exactly the ones the negative index drops. Slice the live indices and the
+// updates to the box and scatter those, with no mask left for the index
+// rewrites to see through.
+struct ScatterMaskedIndexSlice final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterMaskedIndexSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // The positions along one grid dimension where `iota * scale + start <pred>
+  // constant` holds, when they form one interval.
+  static std::optional<std::pair<int64_t, int64_t>>
+  compareInterval(stablehlo::ComparisonDirection direction, int64_t start,
+                  int64_t scale, int64_t constant, int64_t extent,
+                  bool iotaOnLeft) {
+    std::optional<int64_t> lo, hi;
+    for (int64_t k = 0; k < extent; ++k) {
+      int64_t value = start + scale * k;
+      int64_t l = iotaOnLeft ? value : constant;
+      int64_t r = iotaOnLeft ? constant : value;
+      bool holds;
+      switch (direction) {
+      case stablehlo::ComparisonDirection::LT:
+        holds = l < r;
+        break;
+      case stablehlo::ComparisonDirection::LE:
+        holds = l <= r;
+        break;
+      case stablehlo::ComparisonDirection::GT:
+        holds = l > r;
+        break;
+      case stablehlo::ComparisonDirection::GE:
+        holds = l >= r;
+        break;
+      case stablehlo::ComparisonDirection::EQ:
+        holds = l == r;
+        break;
+      case stablehlo::ComparisonDirection::NE:
+        holds = l != r;
+        break;
+      }
+      if (!holds)
+        continue;
+      if (hi && *hi != k)
+        return std::nullopt; // a second interval
+      if (!lo)
+        lo = k;
+      hi = k + 1;
+    }
+    if (!lo)
+      return std::make_pair(int64_t(0), int64_t(0));
+    return std::make_pair(*lo, *hi);
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1)
+      return failure();
+    auto &block = op.getUpdateComputation().front();
+    if (!isSetindexBlock(&block))
+      return failure();
+    auto inputTy = cast<RankedTensorType>(op.getInputs()[0].getType());
+    if (inputTy.getRank() != 1)
+      return failure();
+    auto dims = op.getScatterDimensionNumbers();
+    if (dims.getInsertedWindowDims() != ArrayRef<int64_t>{0} ||
+        dims.getScatterDimsToOperandDims() != ArrayRef<int64_t>{0} ||
+        !dims.getUpdateWindowDims().empty())
+      return failure();
+    Value indices = op.getScatterIndices();
+    auto idxTy = cast<RankedTensorType>(indices.getType());
+    int64_t vectorDim = dims.getIndexVectorDim();
+    // The grid is every index dimension but the index vector one.
+    SmallVector<int64_t> grid;
+    for (int64_t d = 0; d < idxTy.getRank(); ++d)
+      if (d != vectorDim)
+        grid.push_back(idxTy.getDimSize(d));
+    Value update = op.getUpdates()[0];
+    auto updTy = cast<RankedTensorType>(update.getType());
+    if (updTy.getShape() != ArrayRef<int64_t>(grid))
+      return failure();
+
+    Value idxSrc = indices;
+    while (auto rs = idxSrc.getDefiningOp<stablehlo::ReshapeOp>())
+      idxSrc = rs.getOperand();
+    auto sel = idxSrc.getDefiningOp<stablehlo::SelectOp>();
+    if (!sel)
+      return failure();
+    SplatElementsAttr offSplat;
+    if (!matchPattern(sel.getOnFalse(), m_Constant(&offSplat)) ||
+        !offSplat.getSplatValue<APInt>().isNegative())
+      return failure();
+    auto predTy = cast<RankedTensorType>(sel.getPred().getType());
+    // The mask's dimensions are the grid's, with the index vector dimension
+    // possibly kept as a unit dimension.
+    SmallVector<int64_t> predGrid;
+    for (int64_t d = 0; d < predTy.getRank(); ++d)
+      if (!(predTy.getRank() == idxTy.getRank() && d == vectorDim))
+        predGrid.push_back(predTy.getDimSize(d));
+    if (predGrid != grid)
+      return failure();
+    auto gridDimOf = [&](int64_t predDim) -> std::optional<int64_t> {
+      if (predTy.getRank() == idxTy.getRank()) {
+        if (predDim == vectorDim)
+          return std::nullopt;
+        return predDim < vectorDim ? predDim : predDim - 1;
+      }
+      return predDim;
+    };
+
+    // Intersect the box over every compare the mask ands together.
+    SmallVector<int64_t> lo(grid.size(), 0), hi(grid.begin(), grid.end());
+    SmallVector<Value> terms{sel.getPred()};
+    while (!terms.empty()) {
+      Value term = terms.pop_back_val();
+      if (auto andOp = term.getDefiningOp<stablehlo::AndOp>()) {
+        terms.push_back(andOp.getLhs());
+        terms.push_back(andOp.getRhs());
+        continue;
+      }
+      auto cmp = term.getDefiningOp<stablehlo::CompareOp>();
+      if (!cmp)
+        return failure();
+      bool iotaOnLeft = true;
+      auto iota = detectIotaLikeTensor(cmp.getLhs());
+      SplatElementsAttr cst;
+      if (!iota || !matchPattern(cmp.getRhs(), m_Constant(&cst))) {
+        iotaOnLeft = false;
+        iota = detectIotaLikeTensor(cmp.getRhs());
+        if (!iota || !matchPattern(cmp.getLhs(), m_Constant(&cst)))
+          return failure();
+      }
+      auto gridDim = gridDimOf(iota->dimension);
+      if (!gridDim)
+        return failure();
+      int64_t start = cast<IntegerAttr>(iota->start).getValue().getSExtValue();
+      int64_t scale =
+          iota->scale ? cast<IntegerAttr>(iota->scale).getValue().getSExtValue()
+                      : 1;
+      auto interval =
+          compareInterval(cmp.getComparisonDirection(), start, scale,
+                          cst.getSplatValue<APInt>().getSExtValue(),
+                          grid[*gridDim], iotaOnLeft);
+      if (!interval)
+        return failure();
+      lo[*gridDim] = std::max(lo[*gridDim], interval->first);
+      hi[*gridDim] = std::min(hi[*gridDim], interval->second);
+    }
+
+    auto loc = op.getLoc();
+    Value live = stablehlo::ReshapeOpCreate(rewriter, loc, sel.getOnTrue(),
+                                            idxTy.getShape());
+    bool full = true, empty = false;
+    for (size_t d = 0; d < grid.size(); ++d) {
+      full &= lo[d] == 0 && hi[d] == grid[d];
+      empty |= hi[d] <= lo[d];
+    }
+    if (empty) {
+      rewriter.replaceOp(op, op.getInputs()[0]);
+      return success();
+    }
+    if (!full) {
+      SmallVector<int64_t> idxLo, idxHi, idxStride(idxTy.getRank(), 1);
+      for (int64_t d = 0, g = 0; d < idxTy.getRank(); ++d) {
+        if (d == vectorDim) {
+          idxLo.push_back(0);
+          idxHi.push_back(idxTy.getDimSize(d));
+        } else {
+          idxLo.push_back(lo[g]);
+          idxHi.push_back(hi[g]);
+          ++g;
+        }
+      }
+      live = stablehlo::SliceOpCreate(rewriter, loc, live, idxLo, idxHi,
+                                      idxStride);
+      SmallVector<int64_t> updStride(grid.size(), 1);
+      update =
+          stablehlo::SliceOpCreate(rewriter, loc, update, lo, hi, updStride);
+    }
+    rewriter.modifyOpInPlace(op, [&] {
+      op.getScatterIndicesMutable().assign(live);
+      op.getUpdatesMutable()[0].assign(update);
+    });
+    return success();
+  }
+};
+
+// Whether an index tensor maps every grid position to a distinct value: a
+// sum of iota-like terms, each along its own grid dimension, whose strides
+// make the sum injective (the raising's row-major linearization of a store's
+// lane grid, `i * N1 + j`), plus a constant. Dimensions of extent one need
+// no term.
+static bool isInjectiveGridIndex(Value index) {
+  auto ty = cast<RankedTensorType>(index.getType());
+  SmallVector<Value> terms{index};
+  SmallVector<std::pair<int64_t, int64_t>> strides; // (|scale|, dimension)
+  DenseSet<int64_t> covered;
+  while (!terms.empty()) {
+    Value term = terms.pop_back_val();
+    if (auto add = term.getDefiningOp<stablehlo::AddOp>()) {
+      terms.push_back(add.getLhs());
+      terms.push_back(add.getRhs());
+      continue;
+    }
+    if (matchPattern(term, m_Constant()))
+      continue;
+    auto iota = detectIotaLikeTensor(term);
+    if (!iota || !iota->scale || iota->dimension >= ty.getRank() ||
+        !covered.insert(iota->dimension).second)
+      return false;
+    int64_t scale = cast<IntegerAttr>(iota->scale).getValue().getSExtValue();
+    if (scale == 0)
+      return false;
+    strides.push_back({std::abs(scale), iota->dimension});
+  }
+  for (int64_t d = 0; d < ty.getRank(); ++d)
+    if (ty.getDimSize(d) > 1 && !covered.contains(d))
+      return false;
+  // Sorted by stride, each term must step past everything the smaller terms
+  // can add up to.
+  llvm::sort(strides);
+  int64_t reach = 0;
+  for (auto [stride, dim] : strides) {
+    if (stride <= reach)
+      return false;
+    reach += stride * (ty.getDimSize(dim) - 1);
+  }
+  return true;
+}
+
+// The raising masks a store by sending dead lanes' scatter indices out of
+// bounds, which scatter semantics drop. Single-point and iota-indexed
+// scatter rewrites turn the op into a dynamic_update_slice, whose index
+// clamping would bring the dead write back in range; resolve the mask first:
+// scatter at the live index and write the original value back when masked
+// off (a no-op store). That is only a no-op when no live lane writes the
+// same slot, so the live indices must be unique: a single index, an
+// injective grid linearization, or unique_indices.
+struct ScatterMaskedIndexSimplify final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp,
+                              ScatterMaskedIndexSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1)
+      return failure();
+    auto &block = op.getUpdateComputation().front();
+    if (!isSetindexBlock(&block))
+      return failure();
+    auto inputTy = cast<RankedTensorType>(op.getInputs()[0].getType());
+    if (inputTy.getRank() != 1)
+      return failure();
+    auto dims = op.getScatterDimensionNumbers();
+    if (dims.getInsertedWindowDims() != ArrayRef<int64_t>{0} ||
+        dims.getScatterDimsToOperandDims() != ArrayRef<int64_t>{0} ||
+        !dims.getUpdateWindowDims().empty())
+      return failure();
+    auto indices = op.getScatterIndices();
+    auto idxTy = cast<RankedTensorType>(indices.getType());
+    // The select may sit behind reshapes of the index.
+    Value idxSrc = indices;
+    while (auto rs = idxSrc.getDefiningOp<stablehlo::ReshapeOp>())
+      idxSrc = rs.getOperand();
+    auto sel = idxSrc.getDefiningOp<stablehlo::SelectOp>();
+    if (!sel)
+      return failure();
+    SplatElementsAttr offSplat;
+    if (!matchPattern(sel.getOnFalse(), m_Constant(&offSplat)) ||
+        !offSplat.getSplatValue<APInt>().isNegative())
+      return failure();
+    auto predTy = cast<RankedTensorType>(sel.getPred().getType());
+    int64_t count = idxTy.getNumElements();
+    if (predTy.getNumElements() != 1 && predTy.getNumElements() != count)
+      return failure();
+    if (count != 1 && !op.getUniqueIndices() &&
+        !isInjectiveGridIndex(sel.getOnTrue()))
+      return failure();
+
+    auto loc = op.getLoc();
+    Value update = op.getUpdates()[0];
+    auto updTy = cast<RankedTensorType>(update.getType());
+    Value live = stablehlo::ReshapeOpCreate(rewriter, loc, sel.getOnTrue(),
+                                            idxTy.getShape());
+    // The original values at the live indices, gathered as the scatter
+    // addresses them.
+    Value orig = stablehlo::GatherOp::create(
+        rewriter, loc, op.getInputs()[0], live,
+        stablehlo::GatherDimensionNumbersAttr::get(
+            rewriter.getContext(), /*offsetDims*/ {},
+            /*collapsedSliceDims*/ {0}, /*operandBatchingDims*/ {},
+            /*startIndicesBatchingDims*/ {}, /*startIndexMap*/ {0},
+            dims.getIndexVectorDim()),
+        rewriter.getDenseI64ArrayAttr({1}));
+    orig = stablehlo::ReshapeOpCreate(rewriter, loc, orig, updTy.getShape());
+    Value pred = sel.getPred();
+    if (predTy.getNumElements() == 1 && updTy.getNumElements() != 1) {
+      pred = stablehlo::ReshapeOpCreate(rewriter, loc, pred, {});
+      pred = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc,
+          RankedTensorType::get(updTy.getShape(), rewriter.getI1Type()), pred,
+          rewriter.getDenseI64ArrayAttr({}));
+    } else {
+      pred = stablehlo::ReshapeOpCreate(rewriter, loc, pred, updTy.getShape());
+    }
+    Value newUpd =
+        stablehlo::SelectOp::create(rewriter, loc, pred, update, orig);
+    rewriter.modifyOpInPlace(op, [&] {
+      op.getScatterIndicesMutable().assign(live);
+      op.getUpdatesMutable()[0].assign(newUpd);
+    });
+    return success();
+  }
+};
+
 struct ScatterOpCanon final
     : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -37328,6 +37652,8 @@ struct EnzymeHLOOptPass
         DynamicReshapeOpCanon,
         EmptyReduceOpCanon,
         GatherOpCanon,
+        ScatterMaskedIndexSlice,
+        ScatterMaskedIndexSimplify,
         ScatterOpCanon,
         GetDimensionSizeOpCanon,
         GetTupleElementOpCanon,

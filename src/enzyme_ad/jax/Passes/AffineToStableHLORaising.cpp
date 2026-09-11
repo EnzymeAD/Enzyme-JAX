@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -1471,21 +1472,6 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
                                              broadcastDims);
 
   if (pc.mask) {
-    SmallVector<int64_t> collapsedDims(scatterDimsToOperandDims.begin(),
-                                       scatterDimsToOperandDims.end());
-    SmallVector<int64_t> sliceSizes(collapsedDims.size(), 1);
-    Value orig = stablehlo::GatherOp::create(
-        builder, loc, input, indices,
-        stablehlo::GatherDimensionNumbersAttr::get(
-            loc.getContext(),
-            /*offsetDims*/ {},
-            /*collapsedSliceDims*/ collapsedDims,
-            /*operandBatchingDims*/ {},
-            /*startIndicesBatchingDims*/ {},
-            /*startIndexMap*/ collapsedDims,
-            /*indexVectorDim*/ (int64_t)gridShape.size()),
-        sliceSizes);
-
     // Broadcast the mask from its IV-space to the update's grid shape. A
     // mask axis over an IV the store does not index or-reduces away first:
     // the update is already known invariant along it (a variant update
@@ -1534,8 +1520,24 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
     Value broadcastedMask = stablehlo::BroadcastInDimOpCreate(
         builder, loc, mask, maskGridTy.getShape(), maskBroadcastDims);
 
-    update = stablehlo::SelectOp::create(builder, loc, broadcastedMask, update,
-                                         orig);
+    // A masked-out lane must not write at all: its index expression is
+    // unconstrained and can collide with a live lane's slot, and scatter
+    // applies duplicate indices in unspecified order. Send dead lanes out
+    // of bounds — the scatter drops those updates.
+    auto idxTy = cast<RankedTensorType>(indices.getType());
+    Value minusOne = stablehlo::ConstantOp::create(
+        builder, loc, idxTy,
+        SplatElementsAttr::get(
+            idxTy, builder.getIntegerAttr(idxTy.getElementType(), -1)));
+    auto idxMaskTy =
+        RankedTensorType::get(idxTy.getShape(), builder.getI1Type());
+    SmallVector<int64_t> idxMaskDims;
+    for (int64_t k = 0, e = (int64_t)gridShape.size(); k < e; ++k)
+      idxMaskDims.push_back(k);
+    Value idxMask = stablehlo::BroadcastInDimOp::create(
+        builder, loc, idxMaskTy, broadcastedMask, idxMaskDims);
+    indices =
+        stablehlo::SelectOp::create(builder, loc, idxMask, indices, minusOne);
   }
 
   auto Ty = cast<RankedTensorType>(input.getType());
@@ -5420,15 +5422,33 @@ struct AffineToStableHLORaisingPass
   // `if (v REL C) <noreturn>` leaves the complementary relation holding on
   // every path that reaches the anchor, and inside the surviving branch of an
   // enclosing `if (v REL C)` the relation holds.
-  static std::optional<int64_t> guardBound(Value v, Operation *anchor) {
-    if (!anchor)
-      return std::nullopt;
-    std::optional<int64_t> bound;
+  // Whether `ifOp` is a verify dominating `anchor`: exactly one arm aborts,
+  // so on every path reaching the anchor the condition holds (true) or its
+  // negation does (false).
+  static std::optional<bool> dominatingVerify(scf::IfOp ifOp,
+                                              Operation *anchor) {
     auto aborts = [](Region &region) {
       return region
           .walk([](LLVM::UnreachableOp) { return WalkResult::interrupt(); })
           .wasInterrupted();
     };
+    bool thenAborts = aborts(ifOp.getThenRegion());
+    bool elseAborts =
+        !ifOp.getElseRegion().empty() && aborts(ifOp.getElseRegion());
+    if (thenAborts == elseAborts)
+      return std::nullopt;
+    Operation *a = anchor;
+    while (a && a->getBlock() != ifOp->getBlock())
+      a = a->getParentOp();
+    if (!a || a == ifOp || !ifOp->isBeforeInBlock(a))
+      return std::nullopt;
+    return elseAborts;
+  }
+
+  static std::optional<int64_t> guardBound(Value v, Operation *anchor) {
+    if (!anchor)
+      return std::nullopt;
+    std::optional<int64_t> bound;
     for (Operation *user : v.getUsers()) {
       auto cmp = dyn_cast<arith::CmpIOp>(user);
       if (!cmp)
@@ -5437,17 +5457,10 @@ struct AffineToStableHLORaisingPass
         auto ifOp = dyn_cast<scf::IfOp>(condUser);
         if (!ifOp || ifOp.getCondition() != cmp.getResult())
           continue;
-        bool thenAborts = aborts(ifOp.getThenRegion());
-        bool elseAborts =
-            !ifOp.getElseRegion().empty() && aborts(ifOp.getElseRegion());
-        if (thenAborts == elseAborts)
+        auto holds = dominatingVerify(ifOp, anchor);
+        if (!holds)
           continue;
-        Operation *a = anchor;
-        while (a && a->getBlock() != ifOp->getBlock())
-          a = a->getParentOp();
-        if (!a || a == ifOp || !ifOp->isBeforeInBlock(a))
-          continue;
-        if (auto b = relationBound(cmp, v, /*holds=*/elseAborts))
+        if (auto b = relationBound(cmp, v, *holds))
           bound = std::min(bound.value_or(*b), *b);
       }
     }
@@ -5462,6 +5475,37 @@ struct AffineToStableHLORaisingPass
       bool inThen = cur->getParentRegion() == &ifOp.getThenRegion();
       if (auto b = relationBound(cmp, v, /*holds=*/inThen))
         bound = std::min(bound.value_or(*b), *b);
+    }
+    // In a function affine-cfg could not structure (MFEM's verify error
+    // paths carry exception edges), the guard is a cf.cond_br. Its condition
+    // holds at the anchor when every path there takes one of its edges: the
+    // edge's target dominates the anchor's block and is entered only through
+    // that edge.
+    Block *block = anchor->getBlock();
+    while (block && !isa<FunctionOpInterface>(block->getParentOp()))
+      block = block->getParentOp()->getBlock();
+    if (!block)
+      return bound;
+    DominanceInfo dominance(block->getParentOp());
+    for (Operation *user : v.getUsers()) {
+      auto cmp = dyn_cast<arith::CmpIOp>(user);
+      if (!cmp)
+        continue;
+      for (Operation *condUser : cmp->getUsers()) {
+        auto branch = dyn_cast<cf::CondBranchOp>(condUser);
+        if (!branch || branch.getCondition() != cmp.getResult())
+          continue;
+        std::optional<bool> holds;
+        for (auto [dest, taken] : {std::pair(branch.getTrueDest(), true),
+                                   std::pair(branch.getFalseDest(), false)})
+          if (dest->getSinglePredecessor() == branch->getBlock() &&
+              dominance.dominates(dest, block))
+            holds = taken;
+        if (!holds)
+          continue;
+        if (auto b = relationBound(cmp, v, *holds))
+          bound = std::min(bound.value_or(*b), *b);
+      }
     }
     return bound;
   }
@@ -5512,18 +5556,6 @@ struct AffineToStableHLORaisingPass
     if (isa_and_nonnull<arith::ExtUIOp, arith::ExtSIOp>(def))
       return operandBound(0);
     APInt k;
-    // dim3 packing with a constant second half arrives as a disjoint or:
-    // either half of (a | c) recovers its own dim. a <= b does not order
-    // a|c against b|c bitwise; a|c <= a+c <= b+c.
-    if (auto orOp = dyn_cast_or_null<arith::OrIOp>(def)) {
-      if (matchPattern(orOp.getRhs(), m_ConstantInt(&k)) &&
-          k.getSExtValue() >= 0) {
-        auto b = operandBound(0);
-        if (b && *b >= 0)
-          return *b + k.getSExtValue();
-      }
-      return std::nullopt;
-    }
     // Launch dims are non-negative by construction, so a product of two
     // bounded dims (a dof count like 2*(D1D-1)*D1D) stays under the product
     // of the bounds.
@@ -5534,6 +5566,15 @@ struct AffineToStableHLORaisingPass
                    : operandBound(1);
       if (l && r && *l >= 0 && *r >= 0 && (*l == 0 || *r <= INT64_MAX / *l))
         return *l * *r;
+      return std::nullopt;
+    }
+    // A doubling like 2*(D1D-1) reaches here as a left shift.
+    if (auto shl = dyn_cast_or_null<arith::ShLIOp>(def)) {
+      if (!matchPattern(shl.getRhs(), m_ConstantInt(&k)) || k.uge(63))
+        return std::nullopt;
+      auto b = operandBound(0);
+      if (b && *b >= 0 && *b <= (INT64_MAX >> k.getZExtValue()))
+        return *b << k.getZExtValue();
       return std::nullopt;
     }
     if (isa_and_nonnull<arith::AddIOp, arith::SubIOp>(def)) {
@@ -5593,9 +5634,142 @@ struct AffineToStableHLORaisingPass
     return bound;
   }
 
+  // Upper bound of an affine expression over upper bounds of its dims and
+  // symbols, which are taken non-negative as launch extents are.
+  static std::optional<int64_t>
+  affineExprExtentBound(AffineExpr e, ArrayRef<int64_t> dimBounds,
+                        ArrayRef<int64_t> symbolBounds) {
+    if (auto c = dyn_cast<AffineConstantExpr>(e))
+      return c.getValue();
+    if (auto d = dyn_cast<AffineDimExpr>(e))
+      return dimBounds[d.getPosition()];
+    if (auto s = dyn_cast<AffineSymbolExpr>(e))
+      return symbolBounds[s.getPosition()];
+    auto bin = cast<AffineBinaryOpExpr>(e);
+    auto l = affineExprExtentBound(bin.getLHS(), dimBounds, symbolBounds);
+    if (!l)
+      return std::nullopt;
+    // Affine keeps the constant on the right.
+    auto rc = dyn_cast<AffineConstantExpr>(bin.getRHS());
+    switch (e.getKind()) {
+    case AffineExprKind::Add: {
+      auto r = affineExprExtentBound(bin.getRHS(), dimBounds, symbolBounds);
+      if (r)
+        return *l + *r;
+      return std::nullopt;
+    }
+    case AffineExprKind::Mul:
+      if (rc && *l >= 0 && rc.getValue() >= 0 &&
+          (rc.getValue() == 0 || *l <= INT64_MAX / rc.getValue()))
+        return *l * rc.getValue();
+      return std::nullopt;
+    case AffineExprKind::FloorDiv:
+      if (rc && rc.getValue() > 0 && *l >= 0)
+        return *l / rc.getValue();
+      return std::nullopt;
+    case AffineExprKind::CeilDiv:
+      if (rc && rc.getValue() > 0 && *l >= 0)
+        return (*l + rc.getValue() - 1) / rc.getValue();
+      return std::nullopt;
+    case AffineExprKind::Mod:
+      if (rc && rc.getValue() > 0)
+        return rc.getValue() - 1;
+      return std::nullopt;
+    default:
+      return std::nullopt;
+    }
+  }
+
+  // A launch dimension stripped of the casts between the host value and the
+  // launch operand.
+  static Value launchDimRoot(Value v) {
+    while (isa_and_nonnull<arith::IndexCastOp, arith::IndexCastUIOp,
+                           arith::ExtUIOp, arith::ExtSIOp, arith::TruncIOp>(
+        v.getDefiningOp()))
+      v = v.getDefiningOp()->getOperand(0);
+    return v;
+  }
+
+  // Two values a dominating noreturn verify pins equal (MFEM_VERIFY(q == d))
+  // share their launch-budget dimension.
+  static bool guardEqual(Value a, Value b, Operation *anchor) {
+    if (a == b)
+      return true;
+    auto fn = anchor->getParentOfType<FunctionOpInterface>();
+    if (!fn)
+      return false;
+    bool eq = false;
+    fn->walk([&](arith::CmpIOp cmp) {
+      if (eq || !((cmp.getLhs() == a && cmp.getRhs() == b) ||
+                  (cmp.getLhs() == b && cmp.getRhs() == a)))
+        return;
+      for (Operation *condUser : cmp->getUsers()) {
+        auto ifOp = dyn_cast<scf::IfOp>(condUser);
+        if (!ifOp || ifOp.getCondition() != cmp.getResult())
+          continue;
+        auto holds = dominatingVerify(ifOp, anchor);
+        if (!holds)
+          continue;
+        auto pred = *holds ? cmp.getPredicate()
+                           : arith::invertPredicate(cmp.getPredicate());
+        if (pred == arith::CmpIPredicate::eq)
+          eq = true;
+      }
+    });
+    return eq;
+  }
+
+  // A CUDA launch whose block exceeds 1024 threads fails, so the reference
+  // execution only ever runs block extents within the hardware budget.
+  // When this extent is one of the launch's block dimensions, split the
+  // budget over the dimensions sharing its value; other constant block
+  // dims consume their share, and unmatched dynamic ones count as >= 1.
+  static std::optional<int64_t> launchDimBound(Value ext,
+                                               enzymexla::GPUWrapperOp g) {
+    Value root = launchDimRoot(ext);
+    if (g->getNumOperands() < 6)
+      return std::nullopt;
+    int64_t budget = 1024;
+    unsigned sharing = 0;
+    for (unsigned i = 3; i < 6; ++i) {
+      Value bd = g->getOperand(i);
+      APInt c;
+      if (matchPattern(bd, m_ConstantInt(&c))) {
+        budget /= std::max<int64_t>(1, c.getSExtValue());
+        continue;
+      }
+      if (guardEqual(launchDimRoot(bd), root, g))
+        ++sharing;
+    }
+    if (!sharing || budget <= 0)
+      return std::nullopt;
+    // The largest b with b^sharing <= budget.
+    int64_t b = budget;
+    if (sharing == 2)
+      b = (int64_t)std::sqrt((double)budget);
+    else if (sharing == 3)
+      b = (int64_t)std::cbrt((double)budget);
+    while (b > 1) {
+      int64_t prod = 1;
+      bool over = false;
+      for (unsigned i = 0; i < sharing; ++i) {
+        if (prod > budget / b) {
+          over = true;
+          break;
+        }
+        prod *= b;
+      }
+      if (!over && prod <= budget)
+        break;
+      --b;
+    }
+    return b;
+  }
+
   // A parallel axis whose extent is dynamic but provably bounded (a block
-  // size clamped by a min against a constant, capped by a guard, or indexing
-  // a static scratch buffer) batches
+  // size clamped by a min against a constant, capped by a guard, indexing a
+  // static scratch buffer, an affine expression of such values, or limited
+  // by the launch budget) batches
   // at the bound instead of peeling to a serial loop: the axis becomes
   // constant-extent and the body sits behind an `iv < extent` guard, which
   // the masking machinery already understands. Barriers over the axis then
@@ -5622,19 +5796,45 @@ struct AffineToStableHLORaisingPass
         auto um = par.getUpperBoundMap(i);
         if (um.getNumResults() != 1)
           continue;
-        Value ext;
-        if (auto sym = dyn_cast<AffineSymbolExpr>(um.getResult(0)))
-          ext =
-              par.getUpperBoundsOperands()[um.getNumDims() + sym.getPosition()];
-        else if (auto dim = dyn_cast<AffineDimExpr>(um.getResult(0)))
-          ext = par.getUpperBoundsOperands()[dim.getPosition()];
-        else
+        AffineExpr expr = um.getResult(0);
+        ValueRange operands = par.getUpperBoundsOperands();
+        // Bound every dim and symbol the expression reads, then the
+        // expression over those bounds. An unbounded operand leaves only the
+        // scratch shapes.
+        SmallVector<int64_t> dimBounds(um.getNumDims()),
+            symbolBounds(um.getNumSymbols());
+        bool operandsBounded = true;
+        expr.walk([&](AffineExpr e) {
+          std::optional<unsigned> position;
+          if (auto d = dyn_cast<AffineDimExpr>(e))
+            position = d.getPosition();
+          else if (auto s = dyn_cast<AffineSymbolExpr>(e))
+            position = um.getNumDims() + s.getPosition();
+          if (!position)
+            return;
+          auto b = derivedExtentBound(operands[*position], 0, par);
+          if (!b)
+            operandsBounded = false;
+          else if (*position < um.getNumDims())
+            dimBounds[*position] = *b;
+          else
+            symbolBounds[*position - um.getNumDims()] = *b;
+        });
+        std::optional<int64_t> bound;
+        if (operandsBounded)
+          bound = affineExprExtentBound(expr, dimBounds, symbolBounds);
+        if (!bound)
+          bound = allocaIndexBound(par.getOperation(), par.getBody(),
+                                   par.getBody()->getArgument(i));
+        OpBuilder pre(par);
+        Value ext =
+            pre.createOrFold<affine::AffineApplyOp>(par.getLoc(), um, operands);
+        if (auto g = par->getParentOfType<enzymexla::GPUWrapperOp>())
+          if (auto launch = launchDimBound(ext, g))
+            bound = std::min(bound.value_or(*launch), *launch);
+        if (!bound)
           continue;
-        if (auto c = derivedExtentBound(ext, 0, par))
-          bounded.push_back({i, *c, ext});
-        else if (auto ab = allocaIndexBound(par.getOperation(), par.getBody(),
-                                            par.getBody()->getArgument(i)))
-          bounded.push_back({i, *ab, ext});
+        bounded.push_back({i, *bound, ext});
       }
       if (bounded.empty())
         continue;
@@ -5807,6 +6007,463 @@ struct AffineToStableHLORaisingPass
     }
   }
 
+  // Residue of an integer/index value modulo m, when the defining arith
+  // chain pins it down. Extension and truncation preserve residues for the
+  // power-of-two moduli struct layouts produce.
+  static std::optional<int64_t> staticResidue(Value v, int64_t m,
+                                              unsigned depth = 0) {
+    if (m == 1)
+      return 0;
+    if (depth > 16)
+      return std::nullopt;
+    APInt cst;
+    if (matchPattern(v, m_ConstantInt(&cst)))
+      return ((cst.getSExtValue() % m) + m) % m;
+    Operation *op = v.getDefiningOp();
+    if (!op)
+      return std::nullopt;
+    if (isa<arith::IndexCastOp, arith::IndexCastUIOp, arith::ExtSIOp,
+            arith::ExtUIOp>(op) ||
+        (isa<arith::TruncIOp>(op) && llvm::isPowerOf2_64(m)))
+      return staticResidue(op->getOperand(0), m, depth + 1);
+    if (auto add = dyn_cast<arith::AddIOp>(op)) {
+      auto a = staticResidue(add.getLhs(), m, depth + 1);
+      auto b = staticResidue(add.getRhs(), m, depth + 1);
+      if (a && b)
+        return (*a + *b) % m;
+      return std::nullopt;
+    }
+    if (auto mul = dyn_cast<arith::MulIOp>(op)) {
+      auto a = staticResidue(mul.getLhs(), m, depth + 1);
+      auto b = staticResidue(mul.getRhs(), m, depth + 1);
+      if (a && b)
+        return (*a * *b) % m;
+      if ((a && *a == 0) || (b && *b == 0))
+        return 0;
+      return std::nullopt;
+    }
+    if (auto shl = dyn_cast<arith::ShLIOp>(op)) {
+      APInt sh;
+      if (matchPattern(shl.getRhs(), m_ConstantInt(&sh)) &&
+          sh.getZExtValue() < 63) {
+        int64_t f = (int64_t(1) << sh.getZExtValue()) % m;
+        if (f == 0)
+          return 0;
+        auto a = staticResidue(shl.getLhs(), m, depth + 1);
+        if (a)
+          return (*a * f) % m;
+      }
+      return std::nullopt;
+    }
+    return std::nullopt;
+  }
+
+  // Struct-element scratch (e.g. reduce-with-location value/index pairs)
+  // cannot become a tensor whole. Every access reaches it through a flat
+  // primitive view whose affine index resolves to a fixed byte offset within
+  // the struct, so the array-of-structs splits into one primitive scratch
+  // per field, with whole-struct integer moves split into their fields.
+  static void splitStructScratch(Operation *root) {
+    SmallVector<memref::AllocaOp> allocas;
+    root->walk([&](memref::AllocaOp a) { allocas.push_back(a); });
+    for (auto alloca : allocas) {
+      auto MT = alloca.getType();
+      if (!MT.hasStaticShape())
+        continue;
+      auto ST = dyn_cast<LLVM::LLVMStructType>(MT.getElementType());
+      if (!ST)
+        continue;
+      DataLayout dl = DataLayout::closest(alloca);
+      struct Field {
+        uint64_t off, size;
+        Type ty;
+      };
+      SmallVector<Field> fields;
+      uint64_t byte = 0;
+      bool ok = true;
+      for (Type member : ST.getBody()) {
+        if (!member.isIntOrFloat()) {
+          ok = false;
+          break;
+        }
+        if (!ST.isPacked())
+          byte = llvm::alignTo(byte, dl.getTypeABIAlignment(member));
+        fields.push_back({byte, dl.getTypeSize(member), member});
+        byte += dl.getTypeSize(member);
+      }
+      if (!ok)
+        continue;
+      int64_t pairSize = dl.getTypeSize(ST);
+
+      struct FieldAccess {
+        Operation *op;
+        unsigned field;
+        AffineMap pairMap;
+        bool bitcast;
+      };
+      struct WideAccess {
+        Operation *op;
+        SmallVector<unsigned> covered;
+        uint64_t base;
+        AffineMap pairMap;
+      };
+      struct DynAccess {
+        Operation *op;
+        unsigned field;
+        int64_t q;
+        bool bitcast;
+      };
+      SmallVector<FieldAccess> fieldAccesses;
+      SmallVector<WideAccess> wideAccesses;
+      SmallVector<DynAccess> dynAccesses;
+      SmallVector<enzymexla::Pointer2MemrefOp> views;
+      SmallVector<enzymexla::Memref2PointerOp> casts;
+
+      auto classify = [&](Operation *op, Type elemTy, AffineMap map) -> bool {
+        if (map.getNumResults() != 1)
+          return false;
+        int64_t s = dl.getTypeSize(elemTy);
+        AffineExpr byteExpr = map.getResult(0) * s;
+        AffineExpr rem = simplifyAffineExpr(
+            byteExpr % pairSize, map.getNumDims(), map.getNumSymbols());
+        auto remCst = dyn_cast<AffineConstantExpr>(rem);
+        if (!remCst)
+          return false;
+        uint64_t off = remCst.getValue();
+        AffineMap pairMap = AffineMap::get(
+            map.getNumDims(), map.getNumSymbols(),
+            simplifyAffineExpr(byteExpr.floorDiv(pairSize), map.getNumDims(),
+                               map.getNumSymbols()));
+        for (auto &&[i, f] : llvm::enumerate(fields))
+          if (f.off == off && f.size == (uint64_t)s) {
+            fieldAccesses.push_back({op, (unsigned)i, pairMap,
+                                     /*bitcast=*/f.ty != elemTy});
+            return true;
+          }
+        // A wider integer move covering whole fields splits into them.
+        if (!isa<IntegerType>(elemTy))
+          return false;
+        SmallVector<unsigned> covered;
+        for (auto &&[i, f] : llvm::enumerate(fields)) {
+          if (f.off + f.size <= off || f.off >= off + s)
+            continue;
+          if (f.off < off || f.off + f.size > off + s ||
+              !isa<IntegerType>(f.ty))
+            return false;
+          covered.push_back(i);
+        }
+        if (covered.empty())
+          return false;
+        wideAccesses.push_back({op, covered, off, pairMap});
+        return true;
+      };
+
+      // The same classification for accesses whose index arrives through
+      // plain arithmetic instead of an affine map: the field is fixed when
+      // the index has a static residue modulo the per-struct element count.
+      auto classifyDyn = [&](Operation *op, Type elemTy, Value idx) -> bool {
+        int64_t s = dl.getTypeSize(elemTy);
+        if (!s || pairSize % s)
+          return false;
+        int64_t q = pairSize / s;
+        auto r = staticResidue(idx, q);
+        if (!r)
+          return false;
+        uint64_t off = (uint64_t)*r * s;
+        for (auto &&[i, f] : llvm::enumerate(fields))
+          if (f.off == off && f.size == (uint64_t)s) {
+            dynAccesses.push_back({op, (unsigned)i, q,
+                                   /*bitcast=*/f.ty != elemTy});
+            return true;
+          }
+        return false;
+      };
+
+      SmallVector<Operation *> spaceCasts;
+      llvm::MapVector<Operation *, Value> pairGeps;
+      llvm::SetVector<Operation *> pairCopies;
+      DenseSet<Value> basePtrs;
+      bool viewedOnly = true;
+      for (Operation *user : alloca->getUsers()) {
+        auto m2p = dyn_cast<enzymexla::Memref2PointerOp>(user);
+        if (!m2p) {
+          viewedOnly = false;
+          break;
+        }
+        casts.push_back(m2p);
+        basePtrs.insert(m2p.getResult());
+        SmallVector<Operation *> viewUsers(m2p->getUsers());
+        for (unsigned vi = 0; vi < viewUsers.size() && viewedOnly; ++vi) {
+          Operation *viewUser = viewUsers[vi];
+          if (isa<LLVM::AddrSpaceCastOp>(viewUser)) {
+            spaceCasts.push_back(viewUser);
+            basePtrs.insert(viewUser->getResult(0));
+            viewUsers.append(viewUser->getUsers().begin(),
+                             viewUser->getUsers().end());
+            continue;
+          }
+          // A copy of pair zero addresses the scratch base directly.
+          if (auto mc = dyn_cast<LLVM::MemcpyOp>(viewUser)) {
+            APInt len;
+            if (mc.getIsVolatile() ||
+                !matchPattern(mc.getLen(), m_ConstantInt(&len)) ||
+                len.getSExtValue() != pairSize) {
+              viewedOnly = false;
+              break;
+            }
+            pairCopies.insert(mc);
+            continue;
+          }
+          // A whole-struct move arrives as a fixed-size memcpy between
+          // struct-strided geps into the scratch: split it per field.
+          if (auto gep = dyn_cast<LLVM::GEPOp>(viewUser)) {
+            auto idxs = gep.getIndices();
+            if (idxs.size() != 1 ||
+                (int64_t)dl.getTypeSize(gep.getElemType()) != pairSize) {
+              viewedOnly = false;
+              break;
+            }
+            // The copy may address the gep through an address-space cast
+            // (canonicalize-parallel sinks the shared-to-generic cast below
+            // the gep); the cast stands for the gep's pair index.
+            bool copiesOnly = true;
+            SmallVector<Operation *> gepUsers(gep->getUsers());
+            SmallVector<Operation *> gepCasts;
+            for (unsigned ui = 0; ui < gepUsers.size(); ++ui) {
+              Operation *gu = gepUsers[ui];
+              if (isa<LLVM::AddrSpaceCastOp>(gu)) {
+                gepCasts.push_back(gu);
+                gepUsers.append(gu->getUsers().begin(), gu->getUsers().end());
+                continue;
+              }
+              auto mc = dyn_cast<LLVM::MemcpyOp>(gu);
+              APInt len;
+              if (!mc || mc.getIsVolatile() ||
+                  !matchPattern(mc.getLen(), m_ConstantInt(&len)) ||
+                  len.getSExtValue() != pairSize) {
+                copiesOnly = false;
+                break;
+              }
+              pairCopies.insert(mc);
+            }
+            if (!copiesOnly) {
+              viewedOnly = false;
+              break;
+            }
+            Value gepIdx;
+            if (!gep.getDynamicIndices().empty()) {
+              gepIdx = gep.getDynamicIndices()[0];
+            } else {
+              OpBuilder gb(gep);
+              gepIdx = arith::ConstantIndexOp::create(
+                  gb, gep.getLoc(), cast<IntegerAttr>(idxs[0]).getInt());
+            }
+            pairGeps.insert({gep, gepIdx});
+            for (Operation *sc : gepCasts)
+              pairGeps.insert({sc, gepIdx});
+            continue;
+          }
+          auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(viewUser);
+          if (!p2m || p2m.getType().getRank() != 1 ||
+              !p2m.getType().getElementType().isIntOrFloat()) {
+            viewedOnly = false;
+            break;
+          }
+          for (Operation *access : p2m->getUsers()) {
+            if (auto ld = dyn_cast<affine::AffineLoadOp>(access)) {
+              if (classify(ld, ld.getType(), ld.getMap()))
+                continue;
+            } else if (auto st = dyn_cast<affine::AffineStoreOp>(access)) {
+              if (st.getValueToStore() != p2m.getResult() &&
+                  classify(st, st.getValueToStore().getType(), st.getMap()))
+                continue;
+            } else if (auto mld = dyn_cast<memref::LoadOp>(access)) {
+              if (mld.getIndices().size() == 1 &&
+                  classifyDyn(mld, mld.getType(), mld.getIndices()[0]))
+                continue;
+            } else if (auto mst = dyn_cast<memref::StoreOp>(access)) {
+              if (mst.getMemRef() == p2m.getResult() &&
+                  mst.getValueToStore() != p2m.getResult() &&
+                  mst.getIndices().size() == 1 &&
+                  classifyDyn(mst, mst.getValueToStore().getType(),
+                              mst.getIndices()[0]))
+                continue;
+            }
+            viewedOnly = false;
+            break;
+          }
+          if (!viewedOnly)
+            break;
+          views.push_back(p2m);
+        }
+        if (!viewedOnly)
+          break;
+      }
+      // Every pair copy must connect two classified geps or scratch bases.
+      auto copyEnd = [&](Value p) {
+        return basePtrs.contains(p) ||
+               (p.getDefiningOp() && pairGeps.count(p.getDefiningOp()));
+      };
+      for (Operation *mc : pairCopies) {
+        auto cp = cast<LLVM::MemcpyOp>(mc);
+        if (!copyEnd(cp.getDst()) || !copyEnd(cp.getSrc()))
+          viewedOnly = false;
+      }
+      if (!viewedOnly || (fieldAccesses.empty() && wideAccesses.empty()))
+        continue;
+
+      OpBuilder b(alloca);
+      SmallVector<Value> fieldBufs;
+      for (auto &f : fields)
+        fieldBufs.push_back(memref::AllocaOp::create(
+            b, alloca.getLoc(), MemRefType::get({MT.getNumElements()}, f.ty)));
+
+      for (auto &fa : fieldAccesses) {
+        if (auto ld = dyn_cast<affine::AffineLoadOp>(fa.op)) {
+          OpBuilder ab(ld);
+          Value newLd =
+              affine::AffineLoadOp::create(ab, ld.getLoc(), fieldBufs[fa.field],
+                                           fa.pairMap, ld.getMapOperands());
+          if (fa.bitcast)
+            newLd =
+                arith::BitcastOp::create(ab, ld.getLoc(), ld.getType(), newLd);
+          ld.getResult().replaceAllUsesWith(newLd);
+          ld.erase();
+        } else {
+          auto st = cast<affine::AffineStoreOp>(fa.op);
+          OpBuilder ab(st);
+          Value val = st.getValueToStore();
+          if (fa.bitcast)
+            val = arith::BitcastOp::create(ab, st.getLoc(), fields[fa.field].ty,
+                                           val);
+          affine::AffineStoreOp::create(ab, st.getLoc(), val,
+                                        fieldBufs[fa.field], fa.pairMap,
+                                        st.getMapOperands());
+          st.erase();
+        }
+      }
+      for (auto &wa : wideAccesses) {
+        if (auto ld = dyn_cast<affine::AffineLoadOp>(wa.op)) {
+          OpBuilder ab(ld);
+          Location loc = ld.getLoc();
+          Type wideTy = ld.getType();
+          Value acc = arith::ConstantOp::create(ab, loc, wideTy,
+                                                ab.getIntegerAttr(wideTy, 0));
+          for (unsigned i : wa.covered) {
+            Value v = affine::AffineLoadOp::create(
+                ab, loc, fieldBufs[i], wa.pairMap, ld.getMapOperands());
+            Value z = arith::ExtUIOp::create(ab, loc, wideTy, v);
+            uint64_t sh = (fields[i].off - wa.base) * 8;
+            if (sh) {
+              Value shv = arith::ConstantOp::create(
+                  ab, loc, wideTy, ab.getIntegerAttr(wideTy, sh));
+              z = arith::ShLIOp::create(ab, loc, z, shv);
+            }
+            acc = arith::OrIOp::create(ab, loc, acc, z);
+          }
+          ld.getResult().replaceAllUsesWith(acc);
+          ld.erase();
+        } else {
+          auto st = cast<affine::AffineStoreOp>(wa.op);
+          OpBuilder ab(st);
+          Location loc = st.getLoc();
+          Value val = st.getValueToStore();
+          Type wideTy = val.getType();
+          for (unsigned i : wa.covered) {
+            Value part = val;
+            uint64_t sh = (fields[i].off - wa.base) * 8;
+            if (sh) {
+              Value shv = arith::ConstantOp::create(
+                  ab, loc, wideTy, ab.getIntegerAttr(wideTy, sh));
+              part = arith::ShRUIOp::create(ab, loc, part, shv);
+            }
+            part = arith::TruncIOp::create(ab, loc, fields[i].ty, part);
+            affine::AffineStoreOp::create(ab, loc, part, fieldBufs[i],
+                                          wa.pairMap, st.getMapOperands());
+          }
+          st.erase();
+        }
+      }
+      for (auto &da : dynAccesses) {
+        OpBuilder ab(da.op);
+        Location loc = da.op->getLoc();
+        Value idx = isa<memref::LoadOp>(da.op)
+                        ? cast<memref::LoadOp>(da.op).getIndices()[0]
+                        : cast<memref::StoreOp>(da.op).getIndices()[0];
+        Value pairIdx = idx;
+        if (da.q != 1) {
+          Value qc = arith::ConstantIndexOp::create(ab, loc, da.q);
+          pairIdx = arith::DivUIOp::create(ab, loc, idx, qc);
+        }
+        if (auto mld = dyn_cast<memref::LoadOp>(da.op)) {
+          Value newLd = memref::LoadOp::create(ab, loc, fieldBufs[da.field],
+                                               ValueRange{pairIdx});
+          if (da.bitcast)
+            newLd = arith::BitcastOp::create(ab, loc, mld.getType(), newLd);
+          mld.getResult().replaceAllUsesWith(newLd);
+          mld.erase();
+        } else {
+          auto mst = cast<memref::StoreOp>(da.op);
+          Value val = mst.getValueToStore();
+          if (da.bitcast)
+            val = arith::BitcastOp::create(ab, loc, fields[da.field].ty, val);
+          memref::StoreOp::create(ab, loc, val, fieldBufs[da.field],
+                                  ValueRange{pairIdx});
+          mst.erase();
+        }
+      }
+      for (Operation *mc : pairCopies) {
+        auto cp = cast<LLVM::MemcpyOp>(mc);
+        OpBuilder ab(cp);
+        Location loc = cp.getLoc();
+        // Constant pair indices stay affine so the accesses raise directly.
+        auto toIdx = [&](Value p) -> std::pair<Value, std::optional<int64_t>> {
+          if (basePtrs.contains(p))
+            return {Value(), 0};
+          Value v = pairGeps.find(p.getDefiningOp())->second;
+          APInt c;
+          if (matchPattern(v, m_ConstantInt(&c)))
+            return {Value(), c.getSExtValue()};
+          if (!isa<IndexType>(v.getType()))
+            v = arith::IndexCastUIOp::create(ab, loc, ab.getIndexType(), v);
+          return {v, std::nullopt};
+        };
+        auto [dstIdx, dstC] = toIdx(cp.getDst());
+        auto [srcIdx, srcC] = toIdx(cp.getSrc());
+        for (auto &&[i, f] : llvm::enumerate(fields)) {
+          Value v;
+          if (srcC)
+            v = affine::AffineLoadOp::create(
+                ab, loc, fieldBufs[i],
+                AffineMap::getConstantMap(*srcC, ab.getContext()),
+                ValueRange());
+          else
+            v = memref::LoadOp::create(ab, loc, fieldBufs[i],
+                                       ValueRange{srcIdx});
+          if (dstC)
+            affine::AffineStoreOp::create(
+                ab, loc, v, fieldBufs[i],
+                AffineMap::getConstantMap(*dstC, ab.getContext()),
+                ValueRange());
+          else
+            memref::StoreOp::create(ab, loc, v, fieldBufs[i],
+                                    ValueRange{dstIdx});
+        }
+        cp.erase();
+      }
+      // Casts of a gep were recorded after it: erase users first.
+      for (auto &g : llvm::reverse(pairGeps))
+        g.first->erase();
+      for (auto p2m : views)
+        p2m.erase();
+      for (Operation *sc : llvm::reverse(spaceCasts))
+        sc->erase();
+      for (auto m2p : casts)
+        m2p.erase();
+      alloca.erase();
+    }
+  }
+
   void runOnOperation() override {
     ParallelContext::Options options{enable_lockstep_for, dump_failed_lockstep,
                                      prefer_while_raising, strip_llvm_debuginfo,
@@ -5849,6 +6506,7 @@ struct AffineToStableHLORaisingPass
     // actually raises.
     for (auto func : funcs) {
       stripAccessMemorySpaceCasts(func);
+      splitStructScratch(func);
       boundParallelAxes(func);
       peelDynamicParallelDims(func);
     }
@@ -5872,6 +6530,7 @@ struct AffineToStableHLORaisingPass
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
     for (auto g : gwrap) {
       stripAccessMemorySpaceCasts(g);
+      splitStructScratch(g);
       hoistWrapperInvariantPointerCompares(g);
       boundParallelAxes(g);
       peelDynamicParallelDims(g);
