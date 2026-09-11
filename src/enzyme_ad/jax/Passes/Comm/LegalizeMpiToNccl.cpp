@@ -44,9 +44,10 @@ struct LegalizeMpiCommSplitOpToNccl
   LogicalResult
   matchAndRewrite(comm::MpiCommSplitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    op.emitError(
-        "MPI-to-NCCL lowering for comm.mpi.comm_split is not yet implemented");
-    return failure();
+    rewriter.replaceOpWithNewOp<comm::NcclCommSplitOp>(
+        op, comm::NcclCommType::get(op.getContext()), adaptor.getComm(),
+        adaptor.getColor(), adaptor.getKey());
+    return success();
   }
 };
 
