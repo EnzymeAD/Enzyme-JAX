@@ -3957,6 +3957,103 @@ struct IfOpEnzymeOpsRemover
   }
 };
 
+struct CaseOpEnzymeOpsRemover
+    : public EnzymeOpsRemoverOpInterface::ExternalModel<CaseOpEnzymeOpsRemover,
+                                                        stablehlo::CaseOp> {
+  LogicalResult removeEnzymeOps(Operation *op,
+                                PatternRewriter &rewriter) const {
+
+    auto caseOp = cast<stablehlo::CaseOp>(op);
+
+    llvm::SetVector<Value> gradients;
+    llvm::MapVector<Value, CacheInfo> pushedCaches;
+
+    SmallVector<Block *> blocks;
+    SmallVector<IRMapping> mappings;
+    for (auto &reg : caseOp->getRegions()) {
+      blocks.push_back(&reg.front());
+      mappings.emplace_back();
+      removalBlockExplore(blocks.back(), mappings.back(), rewriter, gradients,
+                          pushedCaches);
+    }
+
+    if (gradients.empty() && pushedCaches.empty())
+      return success();
+
+    SmallVector<Operation *> terminators;
+    for (Block *bb : blocks) {
+      terminators.push_back(bb->getTerminator());
+    }
+
+    // Each gradient set inside a branch becomes an extra return value of
+    // every branch. Branches that did not set it return its current value.
+    for (auto grad : gradients) {
+      for (auto &&[mapping, term] : llvm::zip(mappings, terminators)) {
+        auto mappingValue = mapping.lookupOrNull(grad);
+        if (!mappingValue) {
+          mappingValue = enzyme::GetOp::create(
+              rewriter, grad.getLoc(),
+              cast<enzyme::GradientType>(grad.getType()).getBasetype(), grad);
+        }
+        term->insertOperands(term->getNumOperands(), ValueRange(mappingValue));
+      }
+    }
+
+    // Each value pushed inside a branch becomes an extra return value of
+    // every branch. Only the pushing branch has the value; the others return
+    // a zero of the same type so the pushed value is well defined.
+    for (auto &[pushedValue, info] : pushedCaches) {
+      Value dummy =
+          makeZero(rewriter, pushedValue.getLoc(), pushedValue.getType());
+      for (auto &&[bb, term] : llvm::zip(blocks, terminators)) {
+        Value branchValue =
+            pushedValue.getParentBlock() == bb ? pushedValue : dummy;
+        term->insertOperands(term->getNumOperands(), ValueRange(branchValue));
+      }
+    }
+
+    // All terminators now agree on their operand types, so any one of them
+    // gives the result types of the rebuilt op.
+    auto newCase = stablehlo::CaseOp::create(rewriter, caseOp->getLoc(),
+                                             terminators[0]->getOperandTypes(),
+                                             caseOp.getIndex(), blocks.size());
+    for (auto &&[oldReg, newReg] :
+         llvm::zip(caseOp->getRegions(), newCase->getRegions()))
+      newReg.takeBody(oldReg);
+
+    size_t idx = caseOp->getNumResults();
+    for (auto grad : gradients) {
+      enzyme::SetOp::create(rewriter, grad.getLoc(), grad,
+                            newCase->getResult(idx));
+      idx++;
+    }
+
+    for (auto &[pushedValue, info] : pushedCaches) {
+      enzyme::PushOp::create(rewriter, info.pushOp->getLoc(),
+                             info.initOp.getResult(), newCase->getResult(idx));
+      rewriter.eraseOp(info.pushOp);
+
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(info.popOp->getParentOp());
+
+      auto newPop = enzyme::PopOp::create(rewriter, info.popOp->getLoc(),
+                                          info.popOp.getResult().getType(),
+                                          info.popOp.getCache());
+      rewriter.replaceAllUsesWith(info.popOp.getResult(), newPop);
+      rewriter.eraseOp(info.popOp);
+
+      idx++;
+    }
+
+    rewriter.replaceAllUsesWith(
+        caseOp->getResults(),
+        newCase->getResults().slice(0, caseOp->getNumResults()));
+    rewriter.eraseOp(caseOp);
+
+    return success();
+  }
+};
+
 struct SHLOReduceOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOReduceOpBatchInterface,
                                              ReduceOp> {
@@ -5045,6 +5142,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
 
     WhileOp::attachInterface<WhileOpEnzymeOpsRemover>(*context);
     stablehlo::IfOp::attachInterface<IfOpEnzymeOpsRemover>(*context);
+    stablehlo::CaseOp::attachInterface<CaseOpEnzymeOpsRemover>(*context);
 
     WhileOp::attachInterface<ADDataFlowWhileOp>(*context);
     SortOp::attachInterface<ADDataFlowSortOp>(*context);

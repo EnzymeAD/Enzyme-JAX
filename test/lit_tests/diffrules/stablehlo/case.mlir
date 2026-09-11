@@ -1,4 +1,5 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= retTys=enzyme_dup argTys=enzyme_dup,enzyme_const mode=ForwardMode" --canonicalize | FileCheck %s --check-prefix=FORWARD
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_const mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE
 
 module {
 	func.func @main(%arg0: tensor<10xf32>, %index: tensor<i32>) -> tensor<10xf32> {
@@ -37,3 +38,23 @@ module {
 // FORWARD-NEXT:      return %0#0, %0#1 : tensor<10xf32>, tensor<10xf32>
 // FORWARD-NEXT:    }
 // FORWARD-NEXT:  }
+
+// REVERSE: func.func @main(%arg0: tensor<10xf32>, %arg1: tensor<i32>, %arg2: tensor<10xf32>) -> tensor<10xf32> {
+// REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<10xf32>
+// REVERSE-NEXT:    %0 = arith.addf %arg2, %cst fastmath<fast> : tensor<10xf32>
+// REVERSE-NEXT:    %1:3 = "stablehlo.case"(%arg1) ({
+// REVERSE-NEXT:      %2 = arith.addf %0, %cst fastmath<fast> : tensor<10xf32>
+// REVERSE-NEXT:      %3 = arith.addf %2, %cst fastmath<fast> : tensor<10xf32>
+// REVERSE-NEXT:      stablehlo.return %cst, %3, %cst : tensor<10xf32>, tensor<10xf32>, tensor<10xf32>
+// REVERSE-NEXT:    }, {
+// REVERSE-NEXT:      %2 = arith.addf %0, %cst fastmath<fast> : tensor<10xf32>
+// REVERSE-NEXT:      %3 = stablehlo.multiply %2, %arg0 : tensor<10xf32>
+// REVERSE-NEXT:      %4 = arith.addf %3, %cst fastmath<fast> : tensor<10xf32>
+// REVERSE-NEXT:      %5 = stablehlo.multiply %2, %arg0 : tensor<10xf32>
+// REVERSE-NEXT:      %6 = arith.addf %4, %5 fastmath<fast> : tensor<10xf32>
+// REVERSE-NEXT:      stablehlo.return %cst, %6, %cst : tensor<10xf32>, tensor<10xf32>, tensor<10xf32>
+// REVERSE-NEXT:    }, {
+// REVERSE-NEXT:      stablehlo.return %cst, %cst, %cst : tensor<10xf32>, tensor<10xf32>, tensor<10xf32>
+// REVERSE-NEXT:    }) : (tensor<i32>) -> (tensor<10xf32>, tensor<10xf32>, tensor<10xf32>)
+// REVERSE-NEXT:    return %1#1 : tensor<10xf32>
+// REVERSE-NEXT:  }
