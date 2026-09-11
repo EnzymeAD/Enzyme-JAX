@@ -298,6 +298,13 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     return "";
   }
 
+  if (options->exportMLIROnly) {
+    std::string res;
+    llvm::raw_string_ostream ss(res);
+    mod->print(ss, flags);
+    return res;
+  }
+
   if (getenv("DEBUG_REACTANT")) {
     llvm::errs() << " final mlir mod: ";
     mod->print(llvm::errs(), flags);
