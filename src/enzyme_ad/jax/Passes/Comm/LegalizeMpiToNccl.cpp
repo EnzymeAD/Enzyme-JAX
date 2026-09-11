@@ -35,7 +35,7 @@ struct LegalizeMpiConstantOpToNccl
         op, comm::NcclCommType::get(op.getContext()));
     return success();
   }
-}; // struct LegalizeMpiConstantOpToNccl
+};
 
 struct LegalizeMpiCommSplitOpToNccl
     : public OpConversionPattern<comm::MpiCommSplitOp> {
@@ -50,7 +50,7 @@ struct LegalizeMpiCommSplitOpToNccl
         "MPI-to-NCCL lowering for comm.mpi.comm_split is not yet implemented");
     return failure();
   }
-}; // struct LegalizeMpiCommSplitOpToNccl
+};
 
 struct LegalizeMpiBarrierOpToNccl
     : public OpConversionPattern<comm::MpiBarrierOp> {
@@ -65,7 +65,7 @@ struct LegalizeMpiBarrierOpToNccl
         "MPI-to-NCCL lowering for comm.mpi.barrier is not yet implemented");
     return failure();
   }
-}; // struct LegalizeMpiBarrierOpToNccl
+};
 
 struct LegalizeMpiSendOpToNccl : public OpConversionPattern<comm::MpiSendOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -77,7 +77,7 @@ struct LegalizeMpiSendOpToNccl : public OpConversionPattern<comm::MpiSendOp> {
         op, adaptor.getBuffer(), adaptor.getDest(), adaptor.getComm());
     return success();
   }
-}; // struct LegalizeMpiSendOpToNccl
+};
 
 struct LegalizeMpiRecvOpToNccl : public OpConversionPattern<comm::MpiRecvOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -89,7 +89,7 @@ struct LegalizeMpiRecvOpToNccl : public OpConversionPattern<comm::MpiRecvOp> {
         op, op.getType(), adaptor.getSource(), adaptor.getComm());
     return success();
   }
-}; // struct LegalizeMpiRecvOpToNccl
+};
 
 struct FoldMpiWaitOp : public OpRewritePattern<comm::MpiWaitOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -124,7 +124,7 @@ struct FoldMpiWaitOp : public OpRewritePattern<comm::MpiWaitOp> {
     return rewriter.notifyMatchFailure(
         op, "expected an MPI request produced by mpi.isend or mpi.irecv");
   }
-}; // struct FoldMpiWaitOp
+};
 
 struct FoldMpiWaitallOp : public OpRewritePattern<comm::MpiWaitallOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -216,7 +216,7 @@ struct FoldMpiWaitallOp : public OpRewritePattern<comm::MpiWaitallOp> {
     rewriter.create<comm::NcclGroupEndOp>(loc);
     return success();
   }
-}; // struct FoldMpiWaitallOp
+};
 
 struct LegalizeMpiAllreduceOpToNccl
     : public OpConversionPattern<comm::MpiAllreduceOp> {
@@ -252,7 +252,7 @@ struct LegalizeMpiAllreduceOpToNccl
         op, op.getType(), adaptor.getSendbuf(), reduceOp, adaptor.getComm());
     return success();
   }
-}; // struct LegalizeMpiAllreduceOpToNccl
+};
 
 struct LegalizeMpiBcastOpToNccl : public OpConversionPattern<comm::MpiBcastOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -265,7 +265,7 @@ struct LegalizeMpiBcastOpToNccl : public OpConversionPattern<comm::MpiBcastOp> {
         adaptor.getComm());
     return success();
   }
-}; // struct LegalizeMpiBcastOpToNccl
+};
 
 struct LegalizeMpiToNcclPass
     : public comm::impl::LegalizeMpiToNcclPassBase<LegalizeMpiToNcclPass> {
