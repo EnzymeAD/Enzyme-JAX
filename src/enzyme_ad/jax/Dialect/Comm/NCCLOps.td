@@ -25,6 +25,12 @@ def NcclGroupEndOp : Comm_Op<"nccl.group_end", []> {
   let assemblyFormat = "attr-dict";
 }
 
+def NcclBarrierOp : Comm_Op<"nccl.barrier", []> {
+  let summary = "NCCL barrier implemented with signals";
+  let arguments = (ins NcclComm : $comm);
+  let assemblyFormat = "$comm attr-dict `:` type(operands)";
+}
+
 def NcclCommSplitOp : Comm_Op<"nccl.comm_split", []> {
   let summary = "Equivalent to `ncclCommSplit`";
 
