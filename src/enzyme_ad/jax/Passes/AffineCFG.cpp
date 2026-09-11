@@ -1815,6 +1815,28 @@ bool handle(PatternRewriter &b, AffineIfOp ifOp, size_t idx,
   return false;
 }
 
+static bool isAtLeastZero(PatternRewriter &b, ValueOrInt &vori, Region *scope) {
+  if (valueCmp(Cmp::GE, vori, 0))
+    return true;
+  if (!vori.isValue)
+    return false;
+
+  AffineExpr exprTmp[] = {b.getAffineSymbolExpr(0)};
+  auto mapTmp = AffineMap::get(/*dimCount=*/0, /*symbolCount=*/1, exprTmp,
+                               b.getContext());
+  SmallVector<Value> tmp = {vori.v_val};
+  bool composed =
+      fully2ComposeAffineMapAndOperands(nullptr, &mapTmp, &tmp, nullptr, scope);
+  mapTmp = recreateExpr(mapTmp);
+  if (!composed)
+    return false;
+  if (valueCmp(Cmp::GE, mapTmp.getResult(0), mapTmp.getNumDims(), tmp, 0))
+    return true;
+  LLVM_DEBUG(llvm::dbgs() << "composed expr is not at least zero: " << mapTmp
+                          << "\n");
+  return false;
+}
+
 bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
             SmallVectorImpl<bool> &eqflags,
             SmallVectorImpl<ValueOrInt> &applies, bool negated, Region *scope) {
@@ -1892,7 +1914,7 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
   case CmpIPredicate::ugt:
   case CmpIPredicate::uge:
     for (auto lhspack : lhs)
-      if (!valueCmp(Cmp::GE, lhspack, 0)) {
+      if (!isAtLeastZero(b, lhspack, scope)) {
         if (!lhspack.isValue) {
           auto ival = lhspack.i_val;
           assert(ival.isNegative());
@@ -1914,7 +1936,7 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
         }
       }
     for (auto &rhspack : rhs)
-      if (!valueCmp(Cmp::GE, rhspack, 0)) {
+      if (!isAtLeastZero(b, rhspack, scope)) {
         if (!rhspack.isValue) {
           auto ival = rhspack.i_val;
           assert(ival.isNegative());
@@ -1963,7 +1985,7 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
   case CmpIPredicate::ult:
   case CmpIPredicate::ule:
     for (auto lhspack : lhs) {
-      if (!valueCmp(Cmp::GE, lhspack, 0)) {
+      if (!isAtLeastZero(b, lhspack, scope)) {
         // Assuming the rhs is strictly positive, even if the lhs is non
         // positive, we can add this as an additional check, that lhs >= 0.
         // Therefore lhs unsigned< rhs -> lhs signed< rhs && lhs >= 0
@@ -1976,7 +1998,7 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
       }
     }
     for (auto rhspack : rhs)
-      if (!valueCmp(Cmp::GE, rhspack, 0)) {
+      if (!isAtLeastZero(b, rhspack, scope)) {
         if (rhspack.isValue)
           LLVM_DEBUG(llvm::dbgs() << "illegal less rhs icmp: " << cmpi << " - "
                                   << rhspack.v_val << "\n");
@@ -2010,33 +2032,16 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
     if (rhs.size() == 1 && !rhs[0].isValue && rhs[0] == 0) {
       bool legal = true;
       for (auto lhspack : lhs) {
-        bool atLeastZero = false;
-        if (valueCmp(Cmp::GE, lhspack, 0))
-          atLeastZero = true;
-        else if (lhspack.isValue) {
-          AffineExpr exprTmp[] = {b.getAffineSymbolExpr(0)};
-          auto mapTmp = AffineMap::get(/*dimCount=*/0, /*symbolCount=*/1,
-                                       exprTmp, b.getContext());
-          SmallVector<Value> tmp = {lhspack.v_val};
-
-          bool composed = fully2ComposeAffineMapAndOperands(
-              nullptr, &mapTmp, &tmp, nullptr, scope);
-          mapTmp = recreateExpr(mapTmp);
-          if (composed && valueCmp(Cmp::GE, mapTmp.getResult(0),
-                                   mapTmp.getNumDims(), tmp, 0)) {
-            atLeastZero = true;
-          } else {
+        bool atLeastZero = isAtLeastZero(b, lhspack, scope);
+        if (!atLeastZero) {
+          if (lhspack.isValue)
             LLVM_DEBUG(llvm::dbgs()
                        << "illegal icmp ne lhs is not at least zero: "
                        << lhspack.v_val << "\n");
-            LLVM_DEBUG(llvm::dbgs() << "simplified map: " << mapTmp << "\n");
-          }
-        } else {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "illegal icmp ne lhs is not at least zero: "
-                     << lhspack.i_val << "\n");
-        }
-        if (!atLeastZero) {
+          else
+            LLVM_DEBUG(llvm::dbgs()
+                       << "illegal icmp ne lhs is not at least zero: "
+                       << lhspack.i_val << "\n");
           legal = false;
           break;
         }
@@ -4794,6 +4799,16 @@ public:
   }
 };
 
+// An index cast of the induction variable is only worth looking through when
+// everything it feeds is a division by the split base; the divisions are
+// rewritten in terms of the two new ivs. Any other consumer sees the value
+// itself, so the cast is left alone and fed the reassembled iv instead.
+static bool castFeedsOnlyDivisions(Operation *cast) {
+  return llvm::all_of(cast->getResult(0).getUsers(), [](Operation *user) {
+    return isa<arith::FloorDivSIOp, arith::DivUIOp, arith::RemUIOp>(user);
+  });
+}
+
 // Reductions or min-max are not supported yet.
 // When all uses of an IV are of the form (%i % cst) or (%i // cst), replace
 // with two ivs: %i1 = (0) to (ub[i] // cst) %i0 = (0) to (cst)
@@ -4910,14 +4925,10 @@ struct SplitParallelInductions
           operands = AA.getMapOperands();
           auto map = AA.getMap();
           exprs.append(map.getResults().begin(), map.getResults().end());
-        } else if (auto cstOp = dyn_cast<arith::IndexCastUIOp>(U)) {
-          for (auto UU : cstOp.getResult().getUsers()) {
-            users.emplace_back(UU, cstOp->getResult(0));
-          }
-          continue;
-        } else if (auto cstOp = dyn_cast<arith::IndexCastOp>(U)) {
-          for (auto UU : cstOp.getResult().getUsers()) {
-            users.emplace_back(UU, cstOp->getResult(0));
+        } else if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(U) &&
+                   castFeedsOnlyDivisions(U)) {
+          for (auto UU : U->getResult(0).getUsers()) {
+            users.emplace_back(UU, U->getResult(0));
           }
           continue;
         } else if (isa<arith::FloorDivSIOp, arith::DivUIOp, arith::RemUIOp>(
@@ -5267,7 +5278,8 @@ struct SplitParallelInductions
               AI.setIntegerSet(newIntegerSet);
               AI->insertOperands(is.getNumDims(), newIv);
             });
-          } else if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(U)) {
+          } else if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(U) &&
+                     castFeedsOnlyDivisions(U)) {
             OpBuilder::InsertionGuard guard(rewriter);
             rewriter.setInsertionPoint(U);
 
