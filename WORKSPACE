@@ -368,6 +368,17 @@ hedron_compile_commands_setup_transitive_transitive()
 hedron_compile_commands_setup_transitive_transitive_transitive()
 
 http_archive(
+    name = "rules_foreign_cc",
+    sha256 = "32759728913c376ba45b0116869b71b68b1c2ebf8f2bcf7b41222bc07b773d73",
+    strip_prefix = "rules_foreign_cc-0.15.1",
+    url = "https://github.com/bazel-contrib/rules_foreign_cc/releases/download/0.15.1/rules_foreign_cc-0.15.1.tar.gz",
+)
+
+load("@rules_foreign_cc//foreign_cc:repositories.bzl", "rules_foreign_cc_dependencies")
+
+rules_foreign_cc_dependencies()
+
+http_archive(
     name = "z3",
     build_file = "//third_party/z3:BUILD",
     strip_prefix = "z3-z3-5.1.0",

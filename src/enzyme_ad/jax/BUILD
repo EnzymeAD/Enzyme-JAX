@@ -70,6 +70,23 @@ if_triton_passes = select({
     ],
 })
 
+config_setting(
+    name = "disable_z3_config",
+    define_values = {"enable_z3": "false"},
+)
+
+z3_copts = select({
+    ":disable_z3_config": ["-DENZYME_JAX_ENABLE_Z3=0"],
+    "//conditions:default": ["-DENZYME_JAX_ENABLE_Z3=1"],
+})
+
+if_z3 = select({
+    ":disable_z3_config": [],
+    "//conditions:default": [ 
+     ":Perfify"
+    ],
+})
+
 cc_library(
     name = "gpu",
     srcs = ["gpu.cc"],
@@ -1258,7 +1275,6 @@ cc_library(
             "Dialect/*.cpp",
             "Dialect/Distributed/*.cpp",
             "Dialect/Tessera/*.cpp",
-            "Dialect/Perfify/*.cpp",
         ],
         exclude = [
             "Dialect/Utils.cpp",
@@ -1276,7 +1292,6 @@ cc_library(
         "Dialect/*.h",
         "Dialect/Distributed/*.h",
         "Dialect/Tessera/*.h",
-        "Dialect/Perfify/*.h",
     ]) + [
         "Utils.h",
     ],
@@ -1302,8 +1317,6 @@ cc_library(
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
         ":LowerEnzymeXLAMathPatternsIncGen",
-        ":PerfifyDialectIncGen",
-        ":PerfifyOpsIncGen",
         ":Polymer",
         ":RaisingTransformOps",
         ":RaisingTransformOpsImplIncGen",
@@ -1441,7 +1454,7 @@ cc_library(
         "@xla//xla/mlir/utils:type_util",
         "@xla//xla/mlir_hlo",
         "@zlib",
-    ],
+    ] + if_z3 ,
 )
 
 cc_library(
@@ -1453,7 +1466,7 @@ cc_library(
     ]) + [
         "RegistryUtils.h",
     ],
-    copts = triton_copts,
+    copts = triton_copts + z3_copts,
     deps = [
         ":TransformOps",
         ":XLADerivatives",
@@ -1537,7 +1550,8 @@ cc_library(
         "@llvm-project//mlir:LLVMCommonConversion",
         "@llvm-project//mlir:Transforms",
         "@llvm-project//mlir:PDLDialect",
-    ] + if_triton + [
+    ] + if_triton 
+      + if_z3 + [
         # Shardy stuff
         "@shardy//shardy/dialect/sdy/ir:dialect",
         "@shardy//shardy/dialect/sdy/transforms/propagation:op_sharding_rule_builder",
@@ -1810,5 +1824,38 @@ pybind_extension(
         "@xla//xla/stream_executor:stream_executor_impl",
         "@xla//xla/stream_executor/cuda:cuda_compute_capability_proto_cc_impl",
         "@xla//xla/tsl/profiler/backends/cpu:annotation_stack_impl",
+    ],
+)
+
+cc_library(
+    name = "Perfify",
+    srcs = glob([
+        "Dialect/Perfify/*.cpp",
+        "Passes/Perfify/*.cpp",
+    ]),
+    hdrs = glob([
+        "Passes/Perfify/*.h",
+        "Dialect/Perfify/*.h",
+    ]),
+    copts = [
+        "-Werror=implicit-fallthrough",
+        "-Werror=switch",
+        "-Werror=unused-variable",
+        "-Werror=unused-result",
+        "-Werror=unused-but-set-variable",
+        "-Werror=return-type",
+        "-Werror=unused-result",
+    ],
+    deps = [
+        ":PerfifyDialectIncGen",
+        ":PerfifyOpsIncGen",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:BytecodeOpInterface",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:FunctionInterfaces",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:Pass",
+        "@z3",
     ],
 )
