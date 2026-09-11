@@ -58,9 +58,8 @@ struct LegalizeMpiBarrierOpToNccl
   LogicalResult
   matchAndRewrite(comm::MpiBarrierOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    op.emitError(
-        "MPI-to-NCCL lowering for comm.mpi.barrier is not yet implemented");
-    return failure();
+    rewriter.replaceOpWithNewOp<comm::NcclBarrierOp>(op, adaptor.getComm());
+    return success();
   }
 };
 
@@ -317,13 +316,13 @@ struct LegalizeMpiToNcclPass
     // These always run on the host, so a NCCL lowering is not needed
     target.addLegalOp<comm::MpiCommRankOp, comm::MpiCommSizeOp>();
 
-    target.addLegalOp<comm::NcclConstantOp, comm::NcclGroupStartOp,
-                      comm::NcclGroupEndOp, comm::NcclCommSplitOp,
-                      comm::NcclCommFinalizeOp, comm::NcclCommDestroyOp,
-                      comm::NcclCommAbortOp, comm::NcclCommCountOp,
-                      comm::NcclCommCuDeviceOp, comm::NcclCommUserRankOp,
-                      comm::NcclAllReduceOp, comm::NcclBroadcastOp,
-                      comm::NcclSendOp, comm::NcclRecvOp>();
+    target.addLegalOp<
+        comm::NcclConstantOp, comm::NcclGroupStartOp, comm::NcclGroupEndOp,
+        comm::NcclBarrierOp, comm::NcclCommSplitOp, comm::NcclCommFinalizeOp,
+        comm::NcclCommDestroyOp, comm::NcclCommAbortOp, comm::NcclCommCountOp,
+        comm::NcclCommCuDeviceOp, comm::NcclCommUserRankOp,
+        comm::NcclAllReduceOp, comm::NcclBroadcastOp, comm::NcclSendOp,
+        comm::NcclRecvOp>();
 
     comm::MpiToNcclTypeConverter converter;
 
