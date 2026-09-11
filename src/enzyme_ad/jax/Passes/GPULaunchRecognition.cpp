@@ -27,6 +27,36 @@ using namespace mlir;
 
 constexpr char gpuModuleName[] = "__mlir_gpu_module";
 
+constexpr char nvshmemCollectiveLaunchName[] = "nvshmemx_collective_launch";
+
+/// True if `op` is an `nvshmemx_collective_launch` call taking `addrOf` as its
+/// kernel operand.
+static bool isCollectiveLaunchOf(Operation *op, LLVM::AddressOfOp addrOf) {
+  auto call = dyn_cast<LLVM::CallOp>(op);
+  if (!call || call.getCallee() != nvshmemCollectiveLaunchName)
+    return false;
+  return !call.getArgOperands().empty() &&
+         call.getArgOperands()[0] == addrOf.getResult();
+}
+
+/// True if `func`'s address is handed to `nvshmemx_collective_launch` as the
+/// kernel to run. Such a function is a host stub whose launch this pass
+/// rewrites itself, rather than an address that escapes out of its reach.
+static bool isCollectiveLaunchStub(LLVM::LLVMFuncOp func, Operation *module) {
+  auto uses = func.getSymbolUses(module);
+  if (!uses)
+    return false;
+  for (const SymbolTable::SymbolUse &use : *uses) {
+    auto addrOf = dyn_cast<LLVM::AddressOfOp>(use.getUser());
+    if (!addrOf)
+      continue;
+    for (Operation *user : addrOf->getUsers())
+      if (isCollectiveLaunchOf(user, addrOf))
+        return true;
+  }
+  return false;
+}
+
 struct GPULaunchRecognitionPass
     : public enzyme::impl::GPULaunchRecognitionBase<GPULaunchRecognitionPass> {
   using GPULaunchRecognitionBase::GPULaunchRecognitionBase;
@@ -435,6 +465,11 @@ enum __device_builtin__ cudaMemcpyKind
 
     DenseMap<LLVM::LLVMFuncOp, SmallVector<CallOpInterface>> kernelLaunches;
 
+    // phase3 calls bypassed in favour of the collective launch that reaches
+    // them. They still launch their kernel, so the capture scan below must not
+    // read them as an address escaping out of this pass's reach.
+    DenseSet<Operation *> stubLaunches;
+
     for (auto launchFunc : launchFuncs) {
       auto launchFuncUses = launchFunc.getSymbolUses(getOperation());
       for (auto use : *launchFuncUses) {
@@ -448,6 +483,18 @@ enum __device_builtin__ cudaMemcpyKind
           auto cur = argop.getFunction(symbolTable);
           if (!cur)
             continue;
+
+          // A phase3 call inside a host stub that nvshmemx_collective_launch
+          // takes by address is reached through the collective-launch walker
+          // below; registering it here as well would launch the kernel twice.
+          // The test is the collective launch specifically, not "address taken
+          // and never called" -- a stub whose address escapes elsewhere is
+          // still the launch site for its own phase3 call.
+          if (auto parentFunc = cop->getParentOfType<LLVM::LLVMFuncOp>())
+            if (isCollectiveLaunchStub(parentFunc, getOperation())) {
+              stubLaunches.insert(cop.getOperation());
+              continue;
+            }
 
           kernelLaunches[cur].push_back(cop);
         }
@@ -485,6 +532,54 @@ enum __device_builtin__ cudaMemcpyKind
       }
     }
 
+    // ── nvshmemx_collective_launch → kernelLaunches ──────────────────────
+    //
+    // The kernel this launches is two indirections away: the call takes the
+    // address of clang's host stub, and the device stub is the first argument
+    // of the phase3 call inside it.
+    getOperation()->walk([&](LLVM::CallOp call) {
+      if (call.getCallee() != nvshmemCollectiveLaunchName)
+        return;
+      // (kernel, gridXY, gridZ, blockXY, blockZ, args, sharedMem, stream);
+      // anything else is a different function wearing the same name.
+      if (call.getArgOperands().size() != 8)
+        return;
+
+      auto addrOf = call.getArgOperands()[0].getDefiningOp<LLVM::AddressOfOp>();
+      if (!addrOf)
+        return;
+      auto hostStub = addrOf.getFunction(symbolTable);
+      if (!hostStub)
+        return;
+
+      LLVM::LLVMFuncOp deviceFunc = nullptr;
+      hostStub->walk([&](LLVM::CallOp inner) {
+        if (inner.getCallee() != "__mlir_cuda_caller_phase3")
+          return WalkResult::advance();
+        if (inner.getArgOperands().empty())
+          return WalkResult::advance();
+        auto innerAddr =
+            inner.getArgOperands()[0].getDefiningOp<LLVM::AddressOfOp>();
+        if (!innerAddr)
+          return WalkResult::advance();
+        deviceFunc = innerAddr.getFunction(symbolTable);
+        if (!deviceFunc)
+          return WalkResult::advance();
+        return WalkResult::interrupt();
+      });
+
+      if (!deviceFunc) {
+        call.emitWarning()
+            << "nvshmemx_collective_launch: could not trace device function "
+               "through host stub '"
+            << hostStub.getName() << "'";
+        return;
+      }
+
+      kernelLaunches[deviceFunc].push_back(
+          cast<CallOpInterface>(call.getOperation()));
+    });
+
     SmallVector<Operation *> toErase;
     for (auto &launch : kernelLaunches) {
       bool captured = false;
@@ -501,7 +596,8 @@ enum __device_builtin__ cudaMemcpyKind
             captured = true;
             break;
           }
-          if (!llvm::is_contained(launch.second, user3)) {
+          if (!llvm::is_contained(launch.second, user3) &&
+              !stubLaunches.contains(user3.getOperation())) {
             captured = true;
             break;
           }
@@ -531,11 +627,21 @@ enum __device_builtin__ cudaMemcpyKind
           if (auto hostStub = symbolTable.getSymbolTable(getOperation())
                                   .lookup<LLVM::LLVMFuncOp>(hostStubName)) {
             if (auto hostStubUses = hostStub.getSymbolUses(getOperation()))
-              for (auto use : *hostStubUses)
-                if (isa<LLVM::AddressOfOp>(use.getUser())) {
-                  captured = true;
-                  break;
-                }
+              for (auto use : *hostStubUses) {
+                auto addrOf = dyn_cast<LLVM::AddressOfOp>(use.getUser());
+                if (!addrOf)
+                  continue;
+                // An address that only ever reaches
+                // nvshmemx_collective_launch is the launch itself, rewritten
+                // below, not an escape -- the same exemption the scan over the
+                // device symbol's own uses already makes for its launches.
+                if (llvm::all_of(addrOf->getUsers(), [&](Operation *user) {
+                      return isCollectiveLaunchOf(user, addrOf);
+                    }))
+                  continue;
+                captured = true;
+                break;
+              }
           }
         }
       }
@@ -674,6 +780,268 @@ enum __device_builtin__ cudaMemcpyKind
         gpu::LaunchFuncOp launchFuncOp = nullptr;
         auto loc = cop->getLoc();
         builder.setInsertionPointAfter(cop);
+
+        // ── nvshmemx_collective_launch branch ──────────────────────────────
+        if (auto llvmCall = dyn_cast<LLVM::CallOp>(cop.getOperation())) {
+          if (llvmCall.getCallee() == nvshmemCollectiveLaunchName) {
+
+            auto unpackDim =
+                [&](Value packed_i64,
+                    Value z_i32) -> std::tuple<Value, Value, Value> {
+              Value c32 = arith::ConstantOp::create(
+                  builder, loc, builder.getI64IntegerAttr(32));
+              Value x_i32 = arith::TruncIOp::create(
+                  builder, loc, builder.getI32Type(), packed_i64);
+              Value y_i64 =
+                  arith::ShRUIOp::create(builder, loc, packed_i64, c32);
+              Value y_i32 = arith::TruncIOp::create(
+                  builder, loc, builder.getI32Type(), y_i64);
+              Value x = arith::IndexCastOp::create(
+                  builder, loc, builder.getIndexType(), x_i32);
+              Value y = arith::IndexCastOp::create(
+                  builder, loc, builder.getIndexType(), y_i32);
+              Value z = arith::IndexCastOp::create(
+                  builder, loc, builder.getIndexType(), z_i32);
+              return {x, y, z};
+            };
+
+            auto [gridX, gridY, gridZ] = unpackDim(
+                llvmCall.getArgOperands()[1], llvmCall.getArgOperands()[2]);
+            auto [blockX, blockY, blockZ] = unpackDim(
+                llvmCall.getArgOperands()[3], llvmCall.getArgOperands()[4]);
+
+            auto curFuncTy =
+                dyn_cast<LLVM::LLVMFunctionType>(cur.getFunctionType());
+            unsigned numParams = curFuncTy ? curFuncTy.getNumParams() : 0;
+
+            Value argsArrayPtr = llvmCall.getArgOperands()[5];
+
+            // nullptr is valid when the kernel has no parameters
+            bool argsIsNull =
+                argsArrayPtr.getDefiningOp<LLVM::ZeroOp>() != nullptr;
+
+            SmallVector<Value> kernelArgs;
+
+            if (argsIsNull) {
+              if (numParams != 0) {
+                llvmCall.emitError()
+                    << "nvshmemx_collective_launch: void** args is null but "
+                       "kernel expects "
+                    << numParams << " parameter(s)";
+                signalPassFailure();
+                return;
+              }
+              // numParams == 0: kernelArgs stays empty.
+            } else {
+              auto argsAlloca = argsArrayPtr.getDefiningOp<LLVM::AllocaOp>();
+              if (!argsAlloca) {
+                llvmCall.emitError()
+                    << "nvshmemx_collective_launch: void** args is not a "
+                       "static alloca";
+                signalPassFailure();
+                return;
+              }
+
+              // Which slot of the args array a pointer into it refers to,
+              // i.e. which kernel parameter a store through it writes. Clang
+              // emits either a store straight to the alloca (slot 0) or a
+              // getelementptr into it, so those are the shapes accepted here;
+              // anything else is reported rather than guessed at.
+              std::function<bool(Value, int64_t &)> getSlotIndex =
+                  [&](Value ptr, int64_t &slot) -> bool {
+                slot = 0;
+                while (ptr != argsAlloca->getResult(0)) {
+                  if (auto bitcast = ptr.getDefiningOp<LLVM::BitcastOp>()) {
+                    ptr = bitcast.getArg();
+                    continue;
+                  }
+                  if (auto addrcast =
+                          ptr.getDefiningOp<LLVM::AddrSpaceCastOp>()) {
+                    ptr = addrcast.getArg();
+                    continue;
+                  }
+                  auto gep = ptr.getDefiningOp<LLVM::GEPOp>();
+                  if (!gep)
+                    return false;
+
+                  SmallVector<int64_t> indices;
+                  for (auto gepIdx : gep.getIndices()) {
+                    if (auto attr = gepIdx.template dyn_cast<IntegerAttr>()) {
+                      indices.push_back(attr.getValue().getSExtValue());
+                      continue;
+                    }
+                    auto val = gepIdx.template dyn_cast<Value>();
+                    APInt intVal;
+                    if (!val || !matchPattern(val, m_ConstantInt(&intVal)))
+                      return false;
+                    indices.push_back(intVal.getSExtValue());
+                  }
+
+                  // `gep ptr, i` walks the slots directly; `gep [N x ptr], p,
+                  // 0, i` walks into the array object. Both land on slot i,
+                  // and nothing else indexes an array of void*.
+                  if (indices.size() == 1 &&
+                      isa<LLVM::LLVMPointerType>(gep.getElemType()))
+                    slot += indices[0];
+                  else if (indices.size() == 2 && indices[0] == 0 &&
+                           isa<LLVM::LLVMArrayType>(gep.getElemType()))
+                    slot += indices[1];
+                  else
+                    return false;
+
+                  ptr = gep.getBase();
+                }
+                return true;
+              };
+
+              SmallVector<Value> slotValues(numParams, nullptr);
+              bool slotFailed = false;
+              bool zeroInit = false;
+
+              auto recordSlot = [&](int64_t slot, Value val) {
+                if (slotFailed)
+                  return;
+                // A slot written twice means the array is built up
+                // conditionally, which this reconstruction cannot follow.
+                if (slot < 0 || (unsigned)slot >= numParams || slotValues[slot])
+                  slotFailed = true;
+                else
+                  slotValues[slot] = val;
+              };
+
+              // Every write into the array has to be accounted for, so an
+              // unrecognised user is a failure rather than something to skip:
+              // it may be the very store the launch arguments come from.
+              std::function<void(Value)> collectWrites = [&](Value ptr) {
+                for (Operation *user : ptr.getUsers()) {
+                  if (auto memset = dyn_cast<LLVM::MemsetOp>(user)) {
+                    APInt fillVal;
+                    if (matchPattern(memset.getVal(),
+                                     m_ConstantInt(&fillVal)) &&
+                        fillVal.isZero())
+                      zeroInit = true;
+                    else
+                      slotFailed = true;
+                  } else if (auto store = dyn_cast<LLVM::StoreOp>(user)) {
+                    int64_t slot = 0;
+                    // The array itself being stored somewhere is an escape,
+                    // not a write into a slot.
+                    if (store.getAddr() != ptr || !getSlotIndex(ptr, slot))
+                      slotFailed = true;
+                    else
+                      recordSlot(slot, store.getValue());
+                  } else if (isa<LLVM::GEPOp, LLVM::BitcastOp,
+                                 LLVM::AddrSpaceCastOp>(user)) {
+                    collectWrites(user->getResult(0));
+                  } else if (auto call = dyn_cast<LLVM::CallOp>(user)) {
+                    // A collective launch consumes the array, it does not
+                    // write to it. Any other callee might.
+                    if (call.getCallee() != nvshmemCollectiveLaunchName)
+                      slotFailed = true;
+                  } else if (!isa<LLVM::LoadOp, LLVM::LifetimeStartOp,
+                                  LLVM::LifetimeEndOp>(user)) {
+                    slotFailed = true;
+                  }
+                }
+              };
+
+              collectWrites(argsAlloca->getResult(0));
+
+              // Applied after the walk, so it does not depend on where the
+              // memset sits relative to the stores that overwrite it.
+              if (zeroInit)
+                for (unsigned i = 0; i < numParams; i++)
+                  if (!slotValues[i])
+                    slotValues[i] = LLVM::ZeroOp::create(
+                        builder, loc, curFuncTy.getParamType(i));
+
+              if (slotFailed) {
+                llvmCall.emitError()
+                    << "nvshmemx_collective_launch: could not statically "
+                       "resolve args array";
+                signalPassFailure();
+                return;
+              }
+
+              // Build the final kernel argument list.
+              for (unsigned i = 0; i < numParams; i++) {
+                if (!slotValues[i]) {
+                  llvmCall.emitError()
+                      << "nvshmemx_collective_launch: missing args[" << i
+                      << "]";
+                  signalPassFailure();
+                  return;
+                }
+                Type paramTy = curFuncTy.getParamType(i);
+                if (slotValues[i].getType() == paramTy) {
+                  kernelArgs.push_back(slotValues[i]);
+                } else {
+                  // Slot holds a void* pointing to the actual arg — load it.
+                  auto slotMemref = enzymexla::Pointer2MemrefOp::create(
+                      builder, loc, MemRefType::get({1}, paramTy),
+                      slotValues[i]);
+                  Value idx0 = arith::ConstantIndexOp::create(builder, loc, 0);
+                  kernelArgs.push_back(memref::LoadOp::create(
+                      builder, loc, slotMemref, ValueRange{idx0}));
+                }
+              }
+            } // end else (!argsIsNull)
+
+            Value shMem =
+                arith::TruncIOp::create(builder, loc, builder.getI32Type(),
+                                        llvmCall.getArgOperands()[6]);
+            Value stream = llvmCall.getArgOperands()[7];
+
+            Value result = llvmCall.getResult();
+            Value zero = nullptr;
+            if (result) {
+              zero = LLVM::ConstantOp::create(
+                  builder, loc, result.getType(),
+                  builder.getIntegerAttr(result.getType(), 0));
+            }
+
+            if (local_use_launch_func) {
+              if (stream.getDefiningOp<LLVM::ZeroOp>()) {
+                launchFuncOp = gpu::LaunchFuncOp::create(
+                    builder, loc, gpufunc, gpu::KernelDim3{gridX, gridY, gridZ},
+                    gpu::KernelDim3{blockX, blockY, blockZ}, shMem,
+                    ValueRange(kernelArgs));
+              } else {
+                assert(isa<LLVM::LLVMPointerType>(stream.getType()));
+                Value token = enzymexla::StreamToTokenOp::create(
+                    builder, loc, gpu::AsyncTokenType::get(ctx), stream);
+                launchFuncOp = gpu::LaunchFuncOp::create(
+                    builder, loc, gpufunc, gpu::KernelDim3{gridX, gridY, gridZ},
+                    gpu::KernelDim3{blockX, blockY, blockZ}, shMem,
+                    ValueRange(kernelArgs), token.getType(), ValueRange(token));
+              }
+            } else {
+              if (stream.getDefiningOp<LLVM::ZeroOp>()) {
+                auto op = mlir::gpu::LaunchOp::create(
+                    builder, loc, gridX, gridY, gridZ, blockX, blockY, blockZ,
+                    shMem, nullptr, ValueRange());
+                builder.setInsertionPointToStart(&op.getRegion().front());
+                LLVM::CallOp::create(builder, loc, cur, kernelArgs);
+                gpu::TerminatorOp::create(builder, loc);
+              } else {
+                assert(isa<LLVM::LLVMPointerType>(stream.getType()));
+                Value token = enzymexla::StreamToTokenOp::create(
+                    builder, loc, gpu::AsyncTokenType::get(ctx), stream);
+                auto op = mlir::gpu::LaunchOp::create(
+                    builder, loc, gridX, gridY, gridZ, blockX, blockY, blockZ,
+                    shMem, token.getType(), ValueRange(token));
+                builder.setInsertionPointToStart(&op.getRegion().front());
+                LLVM::CallOp::create(builder, loc, cur, kernelArgs);
+                gpu::TerminatorOp::create(builder, loc);
+              }
+            }
+
+            if (zero)
+              result.replaceAllUsesWith(zero);
+            cop->erase();
+            continue;
+          }
+        }
 
         auto shMemSize = LLVM::TruncOp::create(
             builder, loc, builder.getI32Type(), cop.getArgOperands()[7]);
