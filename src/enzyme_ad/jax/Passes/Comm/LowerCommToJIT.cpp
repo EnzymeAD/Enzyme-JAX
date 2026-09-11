@@ -9,7 +9,6 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Comm/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Comm/TypeConversion.h"
-#include "src/enzyme_ad/jax/Runtime/jit/jit.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
@@ -22,7 +21,6 @@ namespace mlir::comm {
 
 using namespace mlir;
 using namespace mlir::enzyme;
-using ::enzymexla::LookupSymbol;
 
 const char *convertMlirTypeToMpiDatatypeName(Type type,
                                              bool allow_cast = false) {
@@ -89,19 +87,6 @@ const char *convertMlirTypeToMpiDatatypeName(Type type,
     return nullptr;
 }
 
-// void *convertMlirTypeToMpiDatatype(Type type, bool allow_cast = false) {
-//   const char *name = convertMlirTypeToMpiDatatypeName(type, allow_cast);
-//   return nullptr;
-
-//   auto dt = reinterpret_cast<MPI_Datatype>(EnzymeJaXLookupSymbol(name));
-//   if (dt == nullptr) {
-//     return ffi::Error::Internal(
-//         absl::StrFormat("MPI: symbol `%s` not found", name));
-//   }
-
-//   return dt;
-// }
-
 struct LowerCommMpiConstantOpToJIT
     : public OpConversionPattern<comm::MpiConstantOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -125,7 +110,7 @@ struct LowerCommMpiConstantOpToJIT
       return op.emitOpError("unsupported attribute type");
     }
 
-    auto value = LookupSymbol(name.data());
+    auto value = lookupSymbol(name.data());
     if (auto err = value.takeError())
       return op.emitOpError(toString(std::move(err)));
 
@@ -641,7 +626,7 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
     auto datatype_name = convertMlirTypeToMpiDatatypeName(
         op.getBuffer().getType().getElementType(),
         /*allow_cast=*/true);
-    auto datatype_val = LookupSymbol(datatype_name);
+    auto datatype_val = lookupSymbol(datatype_name);
     if (auto err = datatype_val.takeError())
       return op.emitOpError(toString(std::move(err)));
 
@@ -786,7 +771,7 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
     auto datatype_name = convertMlirTypeToMpiDatatypeName(
         op.getBuffer().getType().getElementType(),
         /*allow_cast=*/true);
-    auto datatype_val = LookupSymbol(datatype_name);
+    auto datatype_val = lookupSymbol(datatype_name);
     if (auto err = datatype_val.takeError())
       return op.emitError(toString(std::move(err)));
 
@@ -949,7 +934,7 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
     auto datatype_name =
         convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
                                          /*allow_cast=*/true);
-    auto datatype_val = LookupSymbol(datatype_name);
+    auto datatype_val = lookupSymbol(datatype_name);
     if (auto err = datatype_val.takeError())
       return op.emitOpError(toString(std::move(err)));
 
@@ -1103,7 +1088,7 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
     auto datatype_name =
         convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
                                          /*allow_cast=*/true);
-    auto datatype_val = LookupSymbol(datatype_name);
+    auto datatype_val = lookupSymbol(datatype_name);
     if (auto err = datatype_val.takeError())
       return op.emitOpError(toString(std::move(err)));
 
@@ -1466,7 +1451,7 @@ struct LowerCommMpiAllreduceOpToJIT
     auto datatype_name =
         convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
                                          /*allow_cast=*/false);
-    auto datatype_val = LookupSymbol(datatype_name);
+    auto datatype_val = lookupSymbol(datatype_name);
     if (auto err = datatype_val.takeError())
       return op.emitOpError(toString(std::move(err)));
 
@@ -1477,7 +1462,7 @@ struct LowerCommMpiAllreduceOpToJIT
 
     auto mpi_op_name =
         comm::stringifyMpiOpEnum(adaptor.getReduceOp().getValue());
-    auto mpi_op_val = LookupSymbol(mpi_op_name.data());
+    auto mpi_op_val = lookupSymbol(mpi_op_name.data());
     if (auto err = mpi_op_val.takeError())
       return op.emitOpError(toString(std::move(err)));
 
@@ -1614,7 +1599,7 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
     auto datatype_name =
         convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
                                          /*allow_cast=*/true);
-    auto datatype_val = LookupSymbol(datatype_name);
+    auto datatype_val = lookupSymbol(datatype_name);
     if (auto err = datatype_val.takeError())
       return op.emitOpError(toString(std::move(err)));
 
