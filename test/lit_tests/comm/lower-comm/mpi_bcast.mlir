@@ -30,6 +30,6 @@ func.func @main(%inBuffer : tensor<4xf64>, %root : tensor<i32>, %comm : !comm.mp
 
 // NCCL-LABEL: func.func @main
 // NCCL-SAME: (%[[IN_BUFFER:.*]]: tensor<4xf64>, %[[ROOT:.*]]: tensor<i32>, %[[COMM:.*]]: !comm.nccl.comm) -> tensor<4xf64> {
-// NCCL-NEXT: %[[OUT_BUFFER:.*]] = comm.nccl.broadcast %[[IN_BUFFER]], %[[ROOT]], %[[COMM]] : tensor<4xf64>
+// NCCL-NEXT: %[[OUT_BUFFER:.*]] = comm.nccl.broadcast %[[IN_BUFFER]], %[[ROOT]], %[[COMM]] : (tensor<4xf64>) -> tensor<4xf64>
 // NCCL-NEXT: return %[[OUT_BUFFER]] : tensor<4xf64>
 // NCCL-NEXT: }
