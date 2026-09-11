@@ -299,7 +299,8 @@ ffi::Error MpiRecvImpl(IntBuffer source_ptr, IntBuffer tag_ptr,
   int count = buf->element_count();
   // MPI_Status *status = reinterpret_cast<MPI_Status
   // *>(status_ptr->typed_data());
-  auto mpi_status_ignore = lookup_symbol<MPI_Status *>("MPI_STATUS_IGNORE");
+  auto mpi_status_ignore =
+      lookupSymbolOrXlaError<MPI_Status *>("MPI_STATUS_IGNORE");
   if (!mpi_status_ignore)
     return mpi_status_ignore.error();
   int err = fptr.value()(buf->untyped_data(), count, datatype.value(), source,
@@ -361,7 +362,8 @@ ffi::Error MpiWaitImpl(MpiRequestBuffer request_ptr
   // MPI_Status *status = reinterpret_cast<MPI_Status
   // *>(status_ptr->typed_data());
 
-  auto mpi_status_ignore = lookup_symbol<MPI_Status *>("MPI_STATUS_IGNORE");
+  auto mpi_status_ignore =
+      lookupSymbolOrXlaError<MPI_Status *>("MPI_STATUS_IGNORE");
   if (!mpi_status_ignore)
     return mpi_status_ignore.error();
 
@@ -402,7 +404,8 @@ ffi::Error MpiWaitallImpl(ffi::RemainingArgs requests
   }
 
   // std::vector<MPI_Status> status_vector(count);
-  auto mpi_statuses_ignore = lookup_symbol<MPI_Status *>("MPI_STATUSES_IGNORE");
+  auto mpi_statuses_ignore =
+      lookupSymbolOrXlaError<MPI_Status *>("MPI_STATUSES_IGNORE");
   if (!mpi_statuses_ignore)
     return mpi_statuses_ignore.error();
 
