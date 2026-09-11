@@ -1,23 +1,16 @@
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Dialect/Transform/IR/TransformDialect.h"
-#include "mlir/Dialect/Transform/Transforms/Passes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Support/FileUtilities.h"
+#include "mlir/Transforms/Passes.h"
 
-#include "stablehlo/dialect/ChloOps.h"
-#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/reference/Api.h"
+#include "stablehlo/reference/InterpreterOps.h"
 #include "stablehlo/reference/Types.h"
+#include "stablehlo/tests/CheckOps.h"
 #include "stablehlo/transforms/Passes.h"
 
 #include "llvm/ADT/StringExtras.h"
@@ -29,8 +22,8 @@
 #include "llvm/Support/WithColor.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/RegistryUtils.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
 #include <optional>
@@ -592,26 +585,18 @@ int main(int argc, char **argv) {
   }
   std::mt19937 gen(seed);
 
-  MLIRContext context;
-  context.loadDialect<mlir::func::FuncDialect>();
-  context.loadDialect<mlir::cf::ControlFlowDialect>();
-  context.loadDialect<mlir::scf::SCFDialect>();
-  context.loadDialect<mlir::linalg::LinalgDialect>();
-  context.loadDialect<mlir::LLVM::LLVMDialect>();
-  context.loadDialect<mlir::tensor::TensorDialect>();
-  context.loadDialect<mlir::sdy::SdyDialect>();
-  context.loadDialect<mlir::affine::AffineDialect>();
-  context.loadDialect<mlir::transform::TransformDialect>();
-  context.loadDialect<mlir::stablehlo::StablehloDialect>();
-  context.loadDialect<mlir::chlo::ChloDialect>();
-  context.loadDialect<mlir::enzyme::EnzymeDialect>();
-  context.loadDialect<mlir::enzymexla::EnzymeXLADialect>();
+  mlir::DialectRegistry registry;
+  mlir::enzyme::prepareRegistry(registry);
+  mlir::enzyme::registerDialects(registry);
+  registry.insert<mlir::stablehlo::check::CheckDialect>();
+  registry.insert<mlir::stablehlo::interpreter::InterpreterDialect>();
+  mlir::enzyme::registerInterfaces(registry);
+  mlir::enzyme::initializePasses();
+  mlir::registerTransformsPasses();
 
+  MLIRContext context(registry);
   if (allowUnreg)
     context.allowUnregisteredDialects();
-
-  mlir::enzyme::registerenzymexlaPasses();
-  mlir::transform::registerTransformPasses();
 
   OwningOpRef<ModuleOp> module = loadMLIRModule(context, inputFilename);
   if (!module)

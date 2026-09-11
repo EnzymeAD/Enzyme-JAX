@@ -16,7 +16,8 @@ cc_binary(
     deps = [
         "//src/enzyme_ad/jax:TransformOps",
         "//src/enzyme_ad/jax:XLADerivatives",
-        
+        "//src/enzyme_ad/jax:RegistryUtils",
+
         # MLIR parsing and execution
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:Support",
@@ -24,26 +25,15 @@ cc_binary(
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:FuncDialect",
-        "@llvm-project//mlir:TransformDialect",
-        "@llvm-project//mlir:TransformDialectTransforms",
+        "@llvm-project//mlir:Transforms",
 
-        "@llvm-project//mlir:AffineDialect",
-        "@llvm-project//mlir:SCFDialect",
-        "@llvm-project//mlir:ControlFlowDialect",
-        "@llvm-project//mlir:LinalgDialect",
-        "@llvm-project//mlir:TensorDialect",
-
-        "@llvm-project//mlir:LLVMDialect",
-
-        "@triton//:TritonToTritonGPU",
-        
         # StableHLO Interpreter
         "@stablehlo//:reference_api",
         "@stablehlo//:reference_ops",
         "@stablehlo//:reference_scope",
         "@stablehlo//:reference_types",
-        "@stablehlo//:stablehlo_ops",
-        "@stablehlo//:chlo_ops",
         "@stablehlo//:stablehlo_passes",
+        "@stablehlo//:interpreter_ops",
+        "@stablehlo//stablehlo/tests:check_ops",
     ],
 )
