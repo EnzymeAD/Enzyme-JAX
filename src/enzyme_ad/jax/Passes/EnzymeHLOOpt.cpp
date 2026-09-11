@@ -84,6 +84,12 @@ using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::stablehlo;
 
+// Steps the tensor provenance walk (DUSDUSSubsuming) takes through a chain of
+// slices, updates and pads before treating the rest as an opaque source. Each
+// step is Presburger work on a relation that grows with the chain; the cutoff
+// only loses precision.
+constexpr size_t kProvenanceWalkBudget = 128;
+
 namespace mlir {
 // Implementation of helper function to lower MultiRotateOp into individual
 // RotateOps
@@ -476,10 +482,15 @@ void sliceSliceHelper(stablehlo::SliceOp prev, SmallVector<int64_t> &starts,
     auto start2 = pstart + pstep * nstart;
     auto step2 = pstep * nstep;
     auto end2 = pstart + pstep * nstart + pstep * (nend - nstart);
-    if (start2 > size)
-      start2 = size;
-    if (end2 > size)
-      end2 = size;
+    // The merged bounds are within the inner slice's static bounds already;
+    // clamping to the operand only matters when its extent is known
+    // (kDynamic is INT64_MIN, and clamping to it makes a negative start).
+    if (size != ShapedType::kDynamic) {
+      if (start2 > size)
+        start2 = size;
+      if (end2 > size)
+        end2 = size;
+    }
     nstart = start2;
     nstep = step2;
     nend = end2;
@@ -3107,6 +3118,15 @@ struct SliceBroadcast final
     if (innerSlice && !llvm::hasSingleElement(bcast->getUsers()))
       return failure();
 
+    // The new broadcast must be dimensionally consistent: every mapped
+    // operand dim must equal its result dim or be 1.
+    for (auto [i, outdim] : llvm::enumerate(bcast.getBroadcastDimensions())) {
+      int64_t od = (in_end[i] - in_start[i] + in_stride[i] - 1) / in_stride[i];
+      int64_t rd = op.getType().getShape()[outdim];
+      if (od != rd && od != 1)
+        return failure();
+    }
+
     Value tobcast = bcast.getOperand();
     if (innerSlice)
       tobcast = stablehlo::SliceOp::create(rewriter, op.getLoc(), tobcast,
@@ -3114,6 +3134,8 @@ struct SliceBroadcast final
 
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
         op, op.getType(), tobcast, bcast.getBroadcastDimensions());
+    if (innerSlice)
+      rewriter.eraseOp(bcast);
     return success();
   }
 };
@@ -3143,6 +3165,7 @@ struct SliceTransposeBase final
     auto sliceOp = sliceTransposeHelper(transpose, rewriter, op);
     rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
         op, sliceOp, transpose.getPermutation());
+    rewriter.eraseOp(transpose);
     return success();
   }
 };
@@ -3695,6 +3718,7 @@ struct SliceElementwise final
           elem->getLoc(), elem->getName().getIdentifier(), ValueRange(ops),
           TypeRange(op->getResult(0).getType()), elem->getAttrs(), {}, {});
       rewriter.replaceOp(op, nex);
+      rewriter.eraseOp(elem);
       return success();
     }
 
@@ -3780,6 +3804,7 @@ struct SliceElementwise final
       rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(sl, nex->getResult(0),
                                                       sstarts, sstops, sints);
     }
+    rewriter.eraseOp(elem);
     return success();
   }
 };
@@ -4319,6 +4344,32 @@ struct ReduceConcat final
 struct FullReduceReshapeOrTranspose final
     : CheckedOpRewritePattern<stablehlo::ReduceOp,
                               FullReduceReshapeOrTranspose> {
+private:
+  // Affine map sending an index of `fromShape` to the corresponding index of
+  // `toShape` under the row-major element ordering used by reshape.
+  static AffineMap reshapeMap(MLIRContext *ctx, ArrayRef<int64_t> fromShape,
+                              ArrayRef<int64_t> toShape) {
+    AffineExpr linear = getAffineConstantExpr(0, ctx);
+    int64_t stride = 1;
+    for (int i = fromShape.size() - 1; i >= 0; --i) {
+      linear = linear + getAffineDimExpr(i, ctx) * stride;
+      stride *= fromShape[i];
+    }
+
+    SmallVector<AffineExpr> exprs(toShape.size());
+    stride = 1;
+    for (int i = toShape.size() - 1; i >= 0; --i) {
+      AffineExpr expr = linear.floorDiv(stride);
+      if (i > 0)
+        expr = expr % toShape[i];
+      exprs[i] = expr;
+      stride *= toShape[i];
+    }
+
+    return AffineMap::get(fromShape.size(), 0, exprs, ctx);
+  }
+
+public:
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
@@ -4330,115 +4381,224 @@ struct FullReduceReshapeOrTranspose final
     if (op.getDimensions().size() != inpTy.getShape().size())
       return failure();
 
-    RankedTensorType changeType = nullptr;
+    MLIRContext *ctx = op.getContext();
+
+    // The reduce spans every dimension, so it is invariant under any bijective
+    // reindexing (reshape/transpose) of its input as long as, for every
+    // elementwise op in the cone, all operands agree on the same reindexing.
+    // For every value in the cone we track that reindexing as an affine map
+    // from the value's index space to the index space of the underlying
+    // pre-reshape/transpose data.
+    llvm::MapVector<Value, AffineMap> transforms;
+    // Maps reshape/transpose results in the cone to their pre-transform value.
+    IRMapping mapping;
+    // Elementwise ops whose operand transforms all agree, in post-order (defs
+    // before users).
+    SetVector<Value> tape;
+    // All rewritable cone ops in post-order, for the final erasure sweep.
+    SmallVector<Operation *> coneOps;
     SmallVector<Operation *> reshapeOrTransposes;
-    llvm::MapVector<Operation *, int> toclone;
+
+    auto getTransform = [&](Value val) -> AffineMap {
+      auto found = transforms.find(val);
+      if (found != transforms.end())
+        return found->second;
+      auto ty = dyn_cast<RankedTensorType>(val.getType());
+      return AffineMap::getMultiDimIdentityMap(ty ? ty.getRank() : 0, ctx);
+    };
+
     {
       SmallVector<Value> todo = {op.getInputs()[0]};
-      while (todo.size()) {
-        auto cur = todo.pop_back_val();
-        auto curOp = cur.getDefiningOp();
-        if (!curOp)
-          return failure();
+      DenseSet<Value> processed;
+      DenseMap<Operation *, unsigned> childIdx;
+      while (!todo.empty()) {
+        Value v = todo.back();
+        if (processed.contains(v)) {
+          todo.pop_back();
+          continue;
+        }
+
+        Operation *curOp = v.getDefiningOp();
+        auto vTy = dyn_cast<RankedTensorType>(v.getType());
+        bool leaf =
+            !curOp || !vTy || !vTy.hasStaticShape() ||
+            curOp->getNumResults() != 1 || curOp->getNumOperands() == 0 ||
+            curOp->getNumRegions() != 0 ||
+            (!isa<stablehlo::ReshapeOp, stablehlo::TransposeOp>(curOp) &&
+             !hasTraitElementwise(curOp)) ||
+            !isMemoryEffectFree(curOp) ||
+            !llvm::all_of(curOp->getOperands(), [](Value operand) {
+              auto ty = dyn_cast<RankedTensorType>(operand.getType());
+              return ty && ty.hasStaticShape();
+            });
+        if (leaf) {
+          processed.insert(v);
+          todo.pop_back();
+          continue;
+        }
+
+        unsigned &idx = childIdx[curOp];
+        if (idx < curOp->getNumOperands()) {
+          todo.push_back(curOp->getOperand(idx++));
+          continue;
+        }
+
+        // All operands of curOp have been processed already.
+        processed.insert(v);
+        todo.pop_back();
+
+        if (auto ts = dyn_cast<stablehlo::TransposeOp>(curOp)) {
+          // Maps a result index to the corresponding operand index.
+          auto map = AffineMap::getPermutationMap(ts.getPermutation(), ctx);
+          transforms[v] = getTransform(ts.getOperand()).compose(map);
+          mapping.map(v, mapping.lookupOrDefault(ts.getOperand()));
+          coneOps.push_back(curOp);
+          reshapeOrTransposes.push_back(curOp);
+          continue;
+        }
+
         if (auto rs = dyn_cast<stablehlo::ReshapeOp>(curOp)) {
-          if (changeType != nullptr) {
-            if (rs.getOperand().getType() != changeType)
-              return failure();
-          } else {
-            changeType = rs.getOperand().getType();
-          }
-          reshapeOrTransposes.push_back(rs);
+          auto inTy = cast<RankedTensorType>(rs.getOperand().getType());
+          auto outTy = cast<RankedTensorType>(rs.getResult().getType());
+          // Maps a result index to the corresponding operand index.
+          auto map = reshapeMap(ctx, outTy.getShape(), inTy.getShape());
+          transforms[v] = getTransform(rs.getOperand()).compose(map);
+          mapping.map(v, mapping.lookupOrDefault(rs.getOperand()));
+          coneOps.push_back(curOp);
+          reshapeOrTransposes.push_back(curOp);
           continue;
         }
-        if (auto rs = dyn_cast<stablehlo::TransposeOp>(curOp)) {
-          if (changeType != nullptr) {
-            if (rs.getOperand().getType() != changeType)
-              return failure();
-          } else {
-            changeType = rs.getOperand().getType();
-          }
-          reshapeOrTransposes.push_back(rs);
-          continue;
-        }
-        if (!hasTraitElementwise(curOp))
-          return failure();
-        if (!isMemoryEffectFree(curOp))
-          return failure();
-        for (auto op : curOp->getOperands())
-          todo.push_back(op);
-        toclone[curOp] = curOp->getNumOperands();
-      }
-    }
 
-    IRMapping map;
-    SmallVector<Operation *> todo;
-    for (auto reshape : reshapeOrTransposes) {
-      map.map(reshape->getResult(0), reshape->getOperand(0));
-      for (auto u : reshape->getResult(0).getUsers()) {
-        if (toclone.contains(u)) {
-          toclone[u]--;
-          if (toclone[u] == 0) {
-            todo.push_back(u);
-            toclone.erase(u);
-          }
+        // Elementwise op: rewritable iff all operands agree on the transform.
+        // Operands outside the cone (or unrewritable ones) count as identity.
+        AffineMap ref = getTransform(curOp->getOperand(0));
+        if (llvm::all_of(curOp->getOperands(), [&](Value operand) {
+              return getTransform(operand) == ref;
+            })) {
+          transforms[v] = ref;
+          tape.insert(v);
+          coneOps.push_back(curOp);
         }
       }
     }
-    for (auto pair : toclone) {
-      for (auto u : pair.first->getResult(0).getUsers()) {
-        if (u == op)
-          continue;
-        if (llvm::is_contained(reshapeOrTransposes, u))
-          continue;
-        if (toclone.contains(u))
-          continue;
-        return failure();
+
+    // A reshape/transpose only becomes dead if all its users are rewritten.
+    // If it has a user outside the cone, rewriting on top of its pre-transform
+    // value would duplicate the computation instead of removing it, so block
+    // rewrites building on that value.
+    DenseSet<Value> blockedValues;
+    auto inCone = [&](Operation *user) {
+      if (user == op)
+        return true;
+      if (user->getNumResults() != 1)
+        return false;
+      Value result = user->getResult(0);
+      return tape.contains(result) || mapping.contains(result);
+    };
+    for (Operation *rt : reshapeOrTransposes)
+      if (!llvm::all_of(rt->getResult(0).getUsers(), inCone))
+        blockedValues.insert(mapping.lookup(rt->getResult(0)));
+
+    // Decide, without mutating the IR yet, what the rewritten form of each
+    // tape value is: unchanged (all operands unchanged), a clone on the
+    // pre-transform operands, or blocked (depends on a blocked value; keeping
+    // the original avoids mixing pre- and post-transform shapes).
+    enum class Status { Unchanged, Clone, Blocked };
+    DenseMap<Value, Status> status;
+    DenseMap<Value, RankedTensorType> newTypes;
+
+    struct OperandInfo {
+      bool blocked;
+      bool changed;
+      RankedTensorType type;
+    };
+    auto operandInfo = [&](Value operand) -> OperandInfo {
+      if (mapping.contains(operand)) {
+        Value pre = mapping.lookup(operand);
+        if (blockedValues.contains(pre))
+          return {true, false, nullptr};
+        return {false, true, cast<RankedTensorType>(pre.getType())};
       }
-    }
+      auto found = status.find(operand);
+      if (found != status.end() && found->second == Status::Blocked)
+        return {true, false, nullptr};
+      if (found != status.end() && found->second == Status::Clone)
+        return {false, true, newTypes.lookup(operand)};
+      return {false, false, dyn_cast<RankedTensorType>(operand.getType())};
+    };
 
-    for (auto cur : todo) {
-      for (auto curOp : cur->getOperands()) {
-        if (!map.contains(curOp))
-          return failure();
-      }
-    }
-
-    while (todo.size()) {
-      auto cur = todo.pop_back_val();
-
-      SmallVector<Value> vals;
-      for (auto op : cur->getOperands())
-        vals.push_back(map.lookup(op));
-
-      auto changeType2 = RankedTensorType::get(
-          changeType.getShape(),
-          cast<RankedTensorType>(cur->getResult(0).getType()).getElementType());
-      auto res =
-          rewriter.create(cur->getLoc(), cur->getName().getIdentifier(), vals,
-                          TypeRange(changeType2), cur->getAttrs(), {}, {});
-
-      map.map(cur->getResult(0), res->getResult(0));
-
-      for (auto u : cur->getResult(0).getUsers()) {
-        if (toclone.contains(u)) {
-          toclone[u]--;
-          if (toclone[u] == 0) {
-            todo.push_back(u);
-            toclone.erase(u);
-          }
+    for (Value v : tape) {
+      Operation *curOp = v.getDefiningOp();
+      bool anyBlocked = false, anyChanged = false;
+      RankedTensorType operandTy = nullptr;
+      for (Value operand : curOp->getOperands()) {
+        OperandInfo info = operandInfo(operand);
+        if (info.blocked) {
+          anyBlocked = true;
+          break;
+        }
+        anyChanged |= info.changed;
+        if (!operandTy)
+          operandTy = info.type;
+        else if (operandTy.getShape() != info.type.getShape()) {
+          // Equal transforms should imply equal pre-transform shapes; be
+          // conservative if they do not.
+          anyBlocked = true;
+          break;
         }
       }
+      if (anyBlocked)
+        status[v] = Status::Blocked;
+      else if (!anyChanged)
+        status[v] = Status::Unchanged;
+      else {
+        status[v] = Status::Clone;
+        newTypes[v] = RankedTensorType::get(
+            operandTy.getShape(),
+            cast<RankedTensorType>(v.getType()).getElementType());
+      }
     }
+
+    // No-op detection: only rewrite if the reduce input actually changes,
+    // i.e. at least one reshape/transpose is bypassed on the way to it.
+    OperandInfo rootInfo = operandInfo(op.getInputs()[0]);
+    if (rootInfo.blocked || !rootInfo.changed)
+      return failure();
+
+    rewriter.setInsertionPoint(op);
+    for (Value v : tape) {
+      if (status.lookup(v) != Status::Clone)
+        continue;
+      Operation *curOp = v.getDefiningOp();
+      SmallVector<Value> newOperands;
+      for (Value operand : curOp->getOperands())
+        newOperands.push_back(mapping.lookupOrDefault(operand));
+      Type newType = newTypes.lookup(v);
+      Operation *newOp = rewriter.create(
+          curOp->getLoc(), curOp->getName().getIdentifier(), newOperands,
+          TypeRange(newType), curOp->getAttrs(), {}, {});
+      mapping.map(v, newOp->getResult(0));
+    }
+
+    Value newInit = mapping.lookupOrDefault(op.getInputs()[0]);
 
     SmallVector<int64_t> newReduceDimensions;
-    for (size_t i = 0, end = changeType.getShape().size(); i < end; i++)
+    for (int64_t i = 0, e = cast<RankedTensorType>(newInit.getType()).getRank();
+         i < e; ++i)
       newReduceDimensions.push_back(i);
 
     auto newReduction = stablehlo::ReduceOp::create(
-        rewriter, op.getLoc(), op->getResultTypes(),
-        map.lookup(op.getInputs()[0]), op.getInitValues(), newReduceDimensions);
+        rewriter, op.getLoc(), op->getResultTypes(), ValueRange{newInit},
+        op.getInitValues(), newReduceDimensions);
     newReduction.getRegion().takeBody(op.getRegion());
     rewriter.replaceOp(op, newReduction);
+
+    // Erase the bypassed ops in reverse post-order (users before defs) so a
+    // single sweep removes the whole dead cone.
+    for (Operation *cur : llvm::reverse(coneOps))
+      if (isOpTriviallyDead(cur))
+        rewriter.eraseOp(cur);
+
     return success();
   }
 };
@@ -7072,6 +7232,55 @@ struct ReshapeBroadcast final
     auto deletionDims =
         findReshapeInsertionDims(op.getType(), op.getOperand().getType());
     if (deletionDims.empty()) {
+      // If the reshape is a transpose we can still replace it with an
+      // equivalent broadcast
+      if (reshapeIsTranspose(op)) {
+        SmallVector<int64_t> perm(bcast.getBroadcastDimensions());
+        SmallVector<int64_t> reshapePerm;
+
+        auto bcastType = bcast.getType();
+        auto outputType = op.getType();
+
+        size_t i = 0, j = 0, N = outputType.getRank();
+
+        for (; i < bcastType.getRank(); ++i) {
+          auto insz = bcastType.getDimSize(i);
+          if (insz == 1) {
+            // find first dim 1 that is not in reshapePerm
+            int64_t whereOneGoes = 0;
+            for (; whereOneGoes < N; ++whereOneGoes) {
+              if (outputType.getDimSize(whereOneGoes) == 1 &&
+                  !llvm::is_contained(reshapePerm, whereOneGoes)) {
+                break;
+              }
+            }
+            assert(whereOneGoes != N);
+            reshapePerm.push_back(whereOneGoes);
+            continue;
+          }
+
+          while (j < N) {
+            auto outsz = outputType.getDimSize(j);
+            if (outsz == insz) {
+              reshapePerm.push_back(j);
+              ++j;
+              break;
+            }
+            assert(outsz == 1);
+            ++j;
+          }
+        }
+
+        for (auto [i, d] : llvm::enumerate(perm)) {
+          perm[i] = reshapePerm[d];
+        }
+
+        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+            op, op.getType(), bcast.getOperand(), perm);
+
+        return success();
+      }
+
       return failure();
     }
 
@@ -7434,12 +7643,13 @@ struct ScatterToDynamicUpdateSlice final
   }
 };
 
-struct ElementwiseAllTransposeOperandsSimplify
+template <template <typename> class Trait>
+struct ElementwiseAllTransposeOperandsSimplifyBase
     : public CheckedOpTraitRewritePattern<
-          OpTrait::Elementwise, ElementwiseAllTransposeOperandsSimplify> {
+          Trait, ElementwiseAllTransposeOperandsSimplifyBase<Trait>> {
   using CheckedOpTraitRewritePattern<
-      OpTrait::Elementwise,
-      ElementwiseAllTransposeOperandsSimplify>::CheckedOpTraitRewritePattern;
+      Trait, ElementwiseAllTransposeOperandsSimplifyBase<Trait>>::
+      CheckedOpTraitRewritePattern;
 
   LogicalResult matchAndRewriteImpl(Operation *op,
                                     PatternRewriter &rewriter) const {
@@ -7452,6 +7662,16 @@ struct ElementwiseAllTransposeOperandsSimplify
     DenseI64ArrayAttr permutation;
     bool foundTranspose = false;
     for (auto operand : op->getOperands()) {
+      auto type = dyn_cast<RankedTensorType>(operand.getType());
+      if (!type)
+        return failure();
+      // Select predicates and clamp bounds may be scalars. They have no axes
+      // to permute and do not determine the result's shape.
+      if (type.getRank() == 0) {
+        kinds.push_back(OperandKind::Scalar);
+        operands.push_back(operand);
+        continue;
+      }
       if (matchPattern(operand, m_Constant())) {
         kinds.push_back(OperandKind::Const);
         operands.push_back(operand);
@@ -7488,6 +7708,7 @@ struct ElementwiseAllTransposeOperandsSimplify
     for (size_t i = 0; i < operands.size(); i++) {
       switch (kinds[i]) {
       case OperandKind::Transpose:
+      case OperandKind::Scalar:
         break;
       case OperandKind::Const:
         // This will be eliminated by a transpose(constant) -> constant
@@ -7499,14 +7720,13 @@ struct ElementwiseAllTransposeOperandsSimplify
       }
     }
 
-    auto operandTy = cast<RankedTensorType>(operands[0].getType());
-    SmallVector<int64_t> elemResShape(operandTy.getShape().begin(),
-                                      operandTy.getShape().end());
+    auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
+    SmallVector<int64_t> elemResShape;
+    for (int64_t dim : invPerm.asArrayRef())
+      elemResShape.push_back(resultType.getDimSize(dim));
     auto newOp = Operation::create(
         op->getLoc(), op->getName(),
-        {RankedTensorType::get(
-            elemResShape,
-            cast<TensorType>(op->getResult(0).getType()).getElementType())},
+        {RankedTensorType::get(elemResShape, resultType.getElementType())},
         operands, op->getAttrs(), mlir::PropertyRef(), op->getSuccessors(), 0);
     rewriter.insert(newOp);
     auto newTransposeOp = stablehlo::TransposeOp::create(
@@ -7516,8 +7736,14 @@ struct ElementwiseAllTransposeOperandsSimplify
   }
 
 private:
-  enum class OperandKind { Transpose, Const };
+  enum class OperandKind { Transpose, Const, Scalar };
 };
+
+using ElementwiseAllTransposeOperandsSimplify =
+    ElementwiseAllTransposeOperandsSimplifyBase<OpTrait::Elementwise>;
+using BroadcastingElementwiseAllTransposeOperandsSimplify =
+    ElementwiseAllTransposeOperandsSimplifyBase<
+        mlir::hlo::OpTrait::BroadcastingElementwise>;
 
 struct TransposeElementwiseTransposeSimplify
     : public CheckedOpRewritePattern<stablehlo::TransposeOp,
@@ -7827,6 +8053,147 @@ struct NoNanSelfSubSimplify
     }
 
     return failure();
+  }
+};
+
+// An or/and reduction of a constant mask is a constant: the raiser's
+// lane masks (a one-hot `tid == 0` guard or-reduced over the lanes) fold
+// to the scalar they always were.
+struct ReduceOrAnd
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceOrAnd> {
+  using CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                ReduceOrAnd>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return failure();
+    auto kind = stablehlo::CheckCommonReduceOp(op).kind;
+    bool isOr = kind == stablehlo::ReduceOpKind::Or;
+    if (!isOr && kind != stablehlo::ReduceOpKind::And)
+      return failure();
+    DenseElementsAttr input, init;
+    if (!matchPattern(op.getInputs()[0], m_Constant(&input)) ||
+        !matchPattern(op.getInitValues()[0], m_Constant(&init)))
+      return failure();
+    auto inTy = cast<RankedTensorType>(input.getType());
+    auto outTy = cast<RankedTensorType>(op.getResult(0).getType());
+    if (!inTy.getElementType().isInteger(1) || !inTy.hasStaticShape() ||
+        !outTy.hasStaticShape())
+      return failure();
+    bool initV = init.getSplatValue<bool>();
+    auto acc = [&](bool a, bool b) { return isOr ? (a || b) : (a && b); };
+
+    DenseElementsAttr result;
+    if (input.isSplat()) {
+      // Every reduced element is the same: the result is a splat too, at
+      // any size.
+      bool v = inTy.getNumElements() > 0
+                   ? acc(initV, input.getSplatValue<bool>())
+                   : initV;
+      result = DenseElementsAttr::get(outTy, v);
+    } else {
+      // Which input dims survive, in order, and the output strides.
+      llvm::SmallDenseSet<int64_t> reduced(op.getDimensions().begin(),
+                                           op.getDimensions().end());
+      SmallVector<int64_t> kept;
+      for (int64_t d = 0; d < inTy.getRank(); ++d)
+        if (!reduced.contains(d))
+          kept.push_back(d);
+      SmallVector<int64_t> outStride(kept.size(), 1);
+      for (int64_t i = (int64_t)kept.size() - 2; i >= 0; --i)
+        outStride[i] = outStride[i + 1] * inTy.getDimSize(kept[i + 1]);
+
+      SmallVector<bool> values(outTy.getNumElements(), initV);
+      SmallVector<int64_t> idx(inTy.getRank(), 0);
+      for (bool v : input.getValues<bool>()) {
+        int64_t o = 0;
+        for (auto [i, d] : llvm::enumerate(kept))
+          o += idx[d] * outStride[i];
+        values[o] = acc(values[o], v);
+        for (int64_t d = inTy.getRank() - 1; d >= 0; --d) {
+          if (++idx[d] < inTy.getDimSize(d))
+            break;
+          idx[d] = 0;
+        }
+      }
+      result = DenseElementsAttr::get(outTy, values);
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, outTy, result);
+    return success();
+  }
+};
+
+// Whether a pad-shaped mask is guaranteed to hold `v` at some index along
+// `dims` for every position outside `dims`: either the padding value is v
+// and every reduced dim is padded, or the operand is a splat of v and the
+// other dims are unpadded or padded with v. Negative and interior padding
+// are left alone.
+static bool padHoldsAlongDims(stablehlo::PadOp pad, ArrayRef<int64_t> dims,
+                              bool v) {
+  auto maskTy = cast<RankedTensorType>(pad.getType());
+  if (!maskTy.hasStaticShape() || dims.empty())
+    return false;
+  for (int64_t d = 0; d < maskTy.getRank(); ++d)
+    if (pad.getInteriorPadding()[d] != 0 || pad.getEdgePaddingLow()[d] < 0 ||
+        pad.getEdgePaddingHigh()[d] < 0)
+      return false;
+  auto is = [&](Value x) {
+    return v ? matchPattern(x, m_One()) : matchPattern(x, m_Zero());
+  };
+  bool padIsV = is(pad.getPaddingValue());
+  if (padIsV && llvm::all_of(dims, [&](int64_t d) {
+        return pad.getEdgePaddingLow()[d] > 0 ||
+               pad.getEdgePaddingHigh()[d] > 0;
+      }))
+    return true;
+  if (!is(pad.getOperand()))
+    return false;
+  auto opTy = cast<RankedTensorType>(pad.getOperand().getType());
+  for (int64_t d = 0; d < maskTy.getRank(); ++d) {
+    if (llvm::is_contained(dims, d)) {
+      if (opTy.getDimSize(d) < 1)
+        return false;
+    } else if (!padIsV && (pad.getEdgePaddingLow()[d] != 0 ||
+                           pad.getEdgePaddingHigh()[d] != 0)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// An or-reduce over a pad that is guaranteed true somewhere along the
+// reduced axes is true (and an and-reduce over one guaranteed false is
+// false) at any size: the raiser's lane guard (`tid == 0`, a pad of an
+// all-true row once its compare folds) or-reduced over the lanes.
+struct ReduceOrAndPad
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceOrAndPad> {
+  using CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                ReduceOrAndPad>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return failure();
+    auto kind = stablehlo::CheckCommonReduceOp(op).kind;
+    bool isOr = kind == stablehlo::ReduceOpKind::Or;
+    if (!isOr && kind != stablehlo::ReduceOpKind::And)
+      return failure();
+    auto pad = op.getInputs()[0].getDefiningOp<stablehlo::PadOp>();
+    if (!pad ||
+        !cast<RankedTensorType>(pad.getType()).getElementType().isInteger(1))
+      return failure();
+    SmallVector<int64_t> dims(op.getDimensions().begin(),
+                              op.getDimensions().end());
+    // or absorbs a true, and absorbs a false, whatever the init.
+    if (!padHoldsAlongDims(pad, dims, isOr))
+      return failure();
+    auto outTy = cast<RankedTensorType>(op.getResult(0).getType());
+    if (!outTy.hasStaticShape())
+      return failure();
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, outTy, DenseElementsAttr::get(outTy, isOr));
+    return success();
   }
 };
 
@@ -10203,7 +10570,9 @@ struct TransposeReduce
     unsigned resultNum = std::distance(
         reduce.getResults().begin(), llvm::find(reduce.getResults(), operand));
 
-    auto reduceDims = reduce.getDimensions();
+    SmallVector<int64_t> reduceDims = llvm::to_vector(reduce.getDimensions());
+    std::sort(reduceDims.begin(), reduceDims.end());
+
     auto reduceInput = reduce.getInputs()[resultNum];
     auto reduceInputType = dyn_cast<RankedTensorType>(reduceInput.getType());
     if (!reduceInputType)
@@ -10664,7 +11033,11 @@ struct BroadcastReduce
     SmallVector<int64_t> broadcastFromNothingDims, broadcastFromOneDims;
     auto broadcastSourceType =
         cast<TensorType>(broadcast.getOperand().getType());
-    for (int64_t reductionDim : op.getDimensions()) {
+
+    SmallVector<int64_t> reduceDims = llvm::to_vector(op.getDimensions());
+    std::sort(reduceDims.begin(), reduceDims.end());
+
+    for (int64_t reductionDim : reduceDims) {
       if (inputType.isDynamicDim(reductionDim))
         continue;
       auto it = llvm::find(broadcastDims, reductionDim);
@@ -10692,7 +11065,7 @@ struct BroadcastReduce
     int64_t numRemoved = 0;
     SmallVector<int64_t> newReduceDimensions;
     llvm::sort(broadcastFromNothingDims);
-    for (int64_t reductionDim : op.getDimensions()) {
+    for (int64_t reductionDim : reduceDims) {
       if (llvm::is_contained(broadcastFromNothingDims, reductionDim)) {
         numRemoved++;
         continue;
@@ -12628,6 +13001,8 @@ struct SliceReshapeTranspose final
         rewriter, transpose.getLoc(), newslice, transpose.getPermutation());
     rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
                                                       newtransp);
+    rewriter.eraseOp(reshape);
+    rewriter.eraseOp(transpose);
     return success();
   }
 };
@@ -15384,6 +15759,260 @@ struct SliceReverse final
   }
 };
 
+// Recursively extracts components of a grid index expression (like additions
+// of iotas and splat constants) to represent them as a list of
+// IotaLikeTensors.
+static bool extractGridIotas(Value val,
+                             SmallVectorImpl<IotaLikeTensor> &result) {
+  if (auto iota = detectIotaLikeTensor(val)) {
+    result.push_back(*iota);
+    return true;
+  }
+
+  if (auto addOp = val.getDefiningOp<stablehlo::AddOp>()) {
+    SmallVector<IotaLikeTensor> lhsIotas;
+    if (!extractGridIotas(addOp.getLhs(), lhsIotas)) {
+      return false;
+    }
+    SmallVector<IotaLikeTensor> rhsIotas;
+    if (!extractGridIotas(addOp.getRhs(), rhsIotas)) {
+      return false;
+    }
+    result.append(lhsIotas.begin(), lhsIotas.end());
+    result.append(rhsIotas.begin(), rhsIotas.end());
+    return true;
+  }
+
+  DenseElementsAttr constAttr;
+  if (matchPattern(val, m_Constant(&constAttr))) {
+    auto tensorType = cast<RankedTensorType>(constAttr.getType());
+    auto elemType = tensorType.getElementType();
+    if (!isa<IntegerType>(elemType)) {
+      return false;
+    }
+    if (constAttr.isSplat()) {
+      TypedAttr zeroScale = IntegerAttr::get(elemType, 0);
+      IotaLikeTensor constIota;
+      constIota.dimension = 0;
+      constIota.scale = zeroScale;
+      constIota.start = constAttr.getSplatValue<TypedAttr>();
+      constIota.tensorType = tensorType;
+      result.push_back(constIota);
+      return true;
+    }
+
+    int64_t rank = tensorType.getRank();
+    auto shape = tensorType.getShape();
+    auto strides = computeStrides(shape);
+    int64_t numElements = tensorType.getNumElements();
+
+    auto values = constAttr.getValues<APInt>();
+
+    // 1. Find offset (value at index 0,0,...,0)
+    APInt offset = values[0];
+
+    // 2. Find scales for each dimension
+    SmallVector<APInt> scales;
+    scales.reserve(rank);
+    for (int64_t d = 0; d < rank; d++) {
+      if (shape[d] > 1) {
+        int64_t linearIdx = strides[d];
+        scales.push_back(values[linearIdx] - offset);
+      } else {
+        scales.push_back(APInt(elemType.getIntOrFloatBitWidth(), 0));
+      }
+    }
+
+    // 3. Verify that the linear relationship holds for all elements
+    SmallVector<int64_t> multiIndex;
+    for (int64_t idx = 0; idx < numElements; idx++) {
+      linearToMultiIndex(idx, strides, multiIndex);
+      APInt expected = offset;
+      for (int64_t d = 0; d < rank; d++) {
+        if (multiIndex[d] != 0 && !scales[d].isZero()) {
+          expected += scales[d] * APInt(scales[d].getBitWidth(), multiIndex[d]);
+        }
+      }
+      if (values[idx] != expected) {
+        return false;
+      }
+    }
+
+    // 4. If verified, create IotaLikeTensors for offset and each non-zero
+    // scale
+    for (int64_t d = 0; d < rank; d++) {
+      if (!scales[d].isZero()) {
+        IotaLikeTensor iota;
+        iota.dimension = d;
+        iota.scale = IntegerAttr::get(elemType, scales[d]);
+        iota.start = IntegerAttr::get(elemType, 0);
+        iota.tensorType = tensorType;
+        result.push_back(iota);
+      }
+    }
+    IotaLikeTensor offsetIota;
+    offsetIota.dimension = 0;
+    offsetIota.scale = IntegerAttr::get(elemType, 0);
+    offsetIota.start = IntegerAttr::get(elemType, offset);
+    offsetIota.tensorType = tensorType;
+    result.push_back(offsetIota);
+    return true;
+  }
+
+  return false;
+}
+
+struct GridIndexingAnalysis {
+  struct DimMapping {
+    int64_t gridDim;
+    int64_t scale;
+    int64_t absScale;
+  };
+  Value grid;
+  int64_t minTotalOffset;
+  SmallVector<int64_t> operandShape;
+  SmallVector<int64_t> sliceStarts;
+  SmallVector<int64_t> sliceSizes;
+  SmallVector<DimMapping> mappings;
+  SmallVector<int64_t> reverseDims;
+};
+
+static LogicalResult analyzeGridIndexing(Value indices, Value operand,
+                                         int64_t indexVectorDim,
+                                         ArrayRef<int64_t> dimsToOperandDims,
+                                         GridIndexingAnalysis &result) {
+  auto operandTy = cast<RankedTensorType>(operand.getType());
+  if (operandTy.getRank() != 1) {
+    return failure();
+  }
+
+  if (cast<ShapedType>(indices.getType()).getNumElements() == 1) {
+    return failure();
+  }
+
+  result.grid = indices;
+  if (auto reshapeOp = indices.getDefiningOp<stablehlo::ReshapeOp>()) {
+    result.grid = reshapeOp.getOperand();
+  }
+
+  SmallVector<IotaLikeTensor> iotas;
+  if (!extractGridIotas(result.grid, iotas)) {
+    return failure();
+  }
+
+  auto gridTy = cast<RankedTensorType>(result.grid.getType());
+  int64_t gridRank = gridTy.getRank();
+  if (gridRank == 0) {
+    return failure();
+  }
+
+  auto indicesTy = cast<RankedTensorType>(indices.getType());
+  if (indexVectorDim < indicesTy.getRank() &&
+      indicesTy.getDimSize(indexVectorDim) != 1) {
+    return failure();
+  }
+  if (dimsToOperandDims.size() != 1 || dimsToOperandDims[0] != 0) {
+    return failure();
+  }
+
+  // Sum the scales and constant offsets for each grid dimension.
+  SmallVector<int64_t> dimScales(gridRank, 0);
+  int64_t totalStart = 0;
+
+  for (auto &iota : iotas) {
+    int64_t start = cast<IntegerAttr>(iota.start).getValue().getSExtValue();
+    int64_t scale = cast<IntegerAttr>(iota.scale).getValue().getSExtValue();
+    totalStart += start;
+    if (scale != 0) {
+      if (iota.dimension >= gridRank)
+        return failure();
+      dimScales[iota.dimension] += scale;
+    }
+  }
+
+  for (int64_t d = 0; d < gridRank; ++d) {
+    if (dimScales[d] != 0) {
+      result.mappings.push_back({d, dimScales[d], std::abs(dimScales[d])});
+    }
+  }
+
+  if (result.mappings.empty())
+    return failure();
+
+  // Sort the mappings by descending absolute scale. We will reshape the 1D
+  // operand tensor into a multi-dimensional tensor where each dimension has
+  // strides matching these scales.
+  llvm::sort(result.mappings, [](const auto &a, const auto &b) {
+    return a.absScale > b.absScale;
+  });
+
+  int64_t N = operandTy.getDimSize(0);
+
+  // Factorize the 1D operand size N into a multi-dimensional shape where each
+  // stride corresponds to one of the grid dimension scales.
+  int64_t currentDivisor = N;
+  for (const auto &map : result.mappings) {
+    if (map.absScale == 0 || currentDivisor % map.absScale != 0)
+      return failure();
+    result.operandShape.push_back(currentDivisor / map.absScale);
+    currentDivisor = map.absScale;
+  }
+  if (currentDivisor > 1) {
+    result.operandShape.push_back(currentDivisor);
+  }
+
+  int64_t opRank = result.operandShape.size();
+
+  // Compute strides for the reshaped operand.
+  SmallVector<int64_t> opStrides(opRank);
+  int64_t st = 1;
+  for (int64_t k = opRank - 1; k >= 0; --k) {
+    opStrides[k] = st;
+    st *= result.operandShape[k];
+  }
+
+  // Calculate the minimum total starting offset, adjusting for any negative
+  // scales that effectively offset the slice starts in the grid.
+  int64_t minTotalOffset = totalStart;
+  for (int64_t d = 0; d < gridRank; ++d) {
+    if (dimScales[d] < 0) {
+      minTotalOffset += (gridTy.getDimSize(d) - 1) * dimScales[d];
+    }
+  }
+
+  if (minTotalOffset < 0)
+    return failure();
+
+  result.minTotalOffset = minTotalOffset;
+
+  result.sliceSizes.resize(opRank, 1);
+  for (size_t m = 0; m < result.mappings.size(); ++m) {
+    int64_t gridDim = result.mappings[m].gridDim;
+    result.sliceSizes[m] = gridTy.getDimSize(gridDim);
+  }
+
+  result.sliceStarts.resize(opRank, 0);
+  int64_t rem = minTotalOffset;
+  for (int64_t k = 0; k < opRank; ++k) {
+    result.sliceStarts[k] = rem / opStrides[k];
+    rem %= opStrides[k];
+  }
+
+  for (int64_t k = 0; k < opRank; ++k) {
+    if (result.sliceStarts[k] + result.sliceSizes[k] > result.operandShape[k]) {
+      return failure();
+    }
+  }
+
+  for (size_t m = 0; m < result.mappings.size(); ++m) {
+    if (result.mappings[m].scale < 0) {
+      result.reverseDims.push_back(m);
+    }
+  }
+
+  return success();
+}
+
 /// Converts gather ops to slice ops in case we have a single set of constant
 /// indices.
 struct GatherOpCanon final
@@ -15404,110 +16033,6 @@ struct GatherOpCanon final
     return failure();
   }
 
-  // Recursively extracts components of a grid index expression (like additions
-  // of iotas and splat constants) to represent them as a list of
-  // IotaLikeTensors.
-  static bool extractGridIotas(Value val,
-                               SmallVectorImpl<IotaLikeTensor> &result) {
-    if (auto iota = detectIotaLikeTensor(val)) {
-      result.push_back(*iota);
-      return true;
-    }
-
-    if (auto addOp = val.getDefiningOp<stablehlo::AddOp>()) {
-      SmallVector<IotaLikeTensor> lhsIotas;
-      if (!extractGridIotas(addOp.getLhs(), lhsIotas)) {
-        return false;
-      }
-      SmallVector<IotaLikeTensor> rhsIotas;
-      if (!extractGridIotas(addOp.getRhs(), rhsIotas)) {
-        return false;
-      }
-      result.append(lhsIotas.begin(), lhsIotas.end());
-      result.append(rhsIotas.begin(), rhsIotas.end());
-      return true;
-    }
-
-    DenseElementsAttr constAttr;
-    if (matchPattern(val, m_Constant(&constAttr))) {
-      auto tensorType = cast<RankedTensorType>(constAttr.getType());
-      auto elemType = tensorType.getElementType();
-      if (!isa<IntegerType>(elemType)) {
-        return false;
-      }
-      if (constAttr.isSplat()) {
-        TypedAttr zeroScale = IntegerAttr::get(elemType, 0);
-        IotaLikeTensor constIota;
-        constIota.dimension = 0;
-        constIota.scale = zeroScale;
-        constIota.start = constAttr.getSplatValue<TypedAttr>();
-        constIota.tensorType = tensorType;
-        result.push_back(constIota);
-        return true;
-      }
-
-      int64_t rank = tensorType.getRank();
-      auto shape = tensorType.getShape();
-      auto strides = computeStrides(shape);
-      int64_t numElements = tensorType.getNumElements();
-
-      auto values = constAttr.getValues<APInt>();
-
-      // 1. Find offset (value at index 0,0,...,0)
-      APInt offset = values[0];
-
-      // 2. Find scales for each dimension
-      SmallVector<APInt> scales;
-      scales.reserve(rank);
-      for (int64_t d = 0; d < rank; d++) {
-        if (shape[d] > 1) {
-          int64_t linearIdx = strides[d];
-          scales.push_back(values[linearIdx] - offset);
-        } else {
-          scales.push_back(APInt(elemType.getIntOrFloatBitWidth(), 0));
-        }
-      }
-
-      // 3. Verify that the linear relationship holds for all elements
-      SmallVector<int64_t> multiIndex;
-      for (int64_t idx = 0; idx < numElements; idx++) {
-        linearToMultiIndex(idx, strides, multiIndex);
-        APInt expected = offset;
-        for (int64_t d = 0; d < rank; d++) {
-          if (multiIndex[d] != 0 && !scales[d].isZero()) {
-            expected +=
-                scales[d] * APInt(scales[d].getBitWidth(), multiIndex[d]);
-          }
-        }
-        if (values[idx] != expected) {
-          return false;
-        }
-      }
-
-      // 4. If verified, create IotaLikeTensors for offset and each non-zero
-      // scale
-      for (int64_t d = 0; d < rank; d++) {
-        if (!scales[d].isZero()) {
-          IotaLikeTensor iota;
-          iota.dimension = d;
-          iota.scale = IntegerAttr::get(elemType, scales[d]);
-          iota.start = IntegerAttr::get(elemType, 0);
-          iota.tensorType = tensorType;
-          result.push_back(iota);
-        }
-      }
-      IotaLikeTensor offsetIota;
-      offsetIota.dimension = 0;
-      offsetIota.scale = IntegerAttr::get(elemType, 0);
-      offsetIota.start = IntegerAttr::get(elemType, offset);
-      offsetIota.tensorType = tensorType;
-      result.push_back(offsetIota);
-      return true;
-    }
-
-    return false;
-  }
-
   // Attempt to rewrite a gather operation with iota-like indexing into a slice.
   // This supports cases where indices are computed from one or more iota
   // operations, representing a multi-dimensional grid layout that indexes into
@@ -15517,8 +16042,6 @@ struct GatherOpCanon final
                                    PatternRewriter &rewriter) const {
     auto operand = op.getOperand();
     auto operandTy = cast<RankedTensorType>(operand.getType());
-    // TODO: check if this optimization is possible for higher dimenional
-    //       tensors?
     if (operandTy.getRank() != 1) {
       return failure();
     }
@@ -15531,9 +16054,7 @@ struct GatherOpCanon final
 
     auto indices = op.getStartIndices();
 
-    // If the index tensor has only 1 element, it represents a single scalar
-    // index. Rewrite it directly to a dynamic slice.
-    if (indices.getType().getNumElements() == 1) {
+    if (cast<ShapedType>(indices.getType()).getNumElements() == 1) {
       auto scalarIndex =
           stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), indices, {});
       auto dsOp = stablehlo::DynamicSliceOpCreate(rewriter, op.getLoc(),
@@ -15545,125 +16066,22 @@ struct GatherOpCanon final
       return success();
     }
 
-    // Unwrap any reshape to find the underlying grid index expression.
-    Value grid = indices;
-    if (auto reshapeOp = indices.getDefiningOp<stablehlo::ReshapeOp>()) {
-      grid = reshapeOp.getOperand();
-    }
-
-    // Extract all component iotas and constant offsets from the grid
-    // expression.
-    SmallVector<IotaLikeTensor> iotas;
-    if (!extractGridIotas(grid, iotas)) {
-      return failure();
-    }
-
-    auto gridTy = cast<RankedTensorType>(grid.getType());
-    int64_t gridRank = gridTy.getRank();
-    if (gridRank == 0) {
-      return failure();
-    }
-
     auto dimNumbers = op.getDimensionNumbers();
-    auto indicesTy = cast<RankedTensorType>(indices.getType());
-    int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
-    if (indexVectorDim < indicesTy.getRank() &&
-        indicesTy.getDimSize(indexVectorDim) != 1) {
-      return failure();
-    }
-    if (dimNumbers.getStartIndexMap().size() != 1 ||
-        dimNumbers.getStartIndexMap()[0] != 0) {
+    GridIndexingAnalysis analysis;
+    if (failed(analyzeGridIndexing(indices, operand,
+                                   dimNumbers.getIndexVectorDim(),
+                                   dimNumbers.getStartIndexMap(), analysis))) {
       return failure();
     }
 
-    // Sum the scales and constant offsets for each grid dimension.
-    SmallVector<int64_t> dimScales(gridRank, 0);
-    int64_t totalStart = 0;
-
-    for (auto &iota : iotas) {
-      int64_t start = cast<IntegerAttr>(iota.start).getValue().getSExtValue();
-      int64_t scale = cast<IntegerAttr>(iota.scale).getValue().getSExtValue();
-      totalStart += start;
-      if (scale != 0) {
-        if (iota.dimension >= gridRank)
-          return failure();
-        dimScales[iota.dimension] += scale;
-      }
-    }
-
-    // Map each grid dimension with a non-zero scale to its stride.
-    struct DimMapping {
-      int64_t gridDim;
-      int64_t scale;
-      int64_t absScale;
-    };
-    SmallVector<DimMapping> mappings;
-    for (int64_t d = 0; d < gridRank; ++d) {
-      if (dimScales[d] != 0) {
-        mappings.push_back({d, dimScales[d], std::abs(dimScales[d])});
-      }
-    }
-
-    if (mappings.empty())
-      return failure();
-
-    // Sort the mappings by descending absolute scale. We will reshape the 1D
-    // operand tensor into a multi-dimensional tensor where each dimension has
-    // strides matching these scales.
-    llvm::sort(mappings, [](const DimMapping &a, const DimMapping &b) {
-      return a.absScale > b.absScale;
-    });
-
-    int64_t N = operandTy.getDimSize(0);
-
-    // Factorize the 1D operand size N into a multi-dimensional shape where each
-    // stride corresponds to one of the grid dimension scales.
-    int64_t currentDivisor = N;
-    SmallVector<int64_t> operandShape;
-    for (const auto &map : mappings) {
-      if (map.absScale == 0 || currentDivisor % map.absScale != 0)
-        return failure();
-      operandShape.push_back(currentDivisor / map.absScale);
-      currentDivisor = map.absScale;
-    }
-    if (currentDivisor > 1) {
-      operandShape.push_back(currentDivisor);
-    }
-
-    int64_t opRank = operandShape.size();
-
-    // Compute strides for the reshaped operand.
-    SmallVector<int64_t> opStrides(opRank);
-    int64_t st = 1;
-    for (int64_t k = opRank - 1; k >= 0; --k) {
-      opStrides[k] = st;
-      st *= operandShape[k];
-    }
-
-    // Calculate the minimum total starting offset, adjusting for any negative
-    // scales that effectively offset the slice starts in the grid.
-    int64_t minTotalOffset = totalStart;
-    for (int64_t d = 0; d < gridRank; ++d) {
-      if (dimScales[d] < 0) {
-        minTotalOffset += (gridTy.getDimSize(d) - 1) * dimScales[d];
-      }
-    }
-
-    if (minTotalOffset < 0)
-      return failure();
-
-    SmallVector<int64_t> sliceSizes(opRank, 1);
-    for (size_t m = 0; m < mappings.size(); ++m) {
-      int64_t gridDim = mappings[m].gridDim;
-      sliceSizes[m] = gridTy.getDimSize(gridDim);
-    }
+    auto gridTy = cast<RankedTensorType>(analysis.grid.getType());
 
     // Special case: If there is only one active grid dimension mapping, we can
     // slice directly out of the 1D operand without reshaping/broadcasting.
-    if (mappings.size() == 1) {
-      int64_t stride = mappings[0].scale;
-      int64_t count = sliceSizes[0];
-      int64_t start = minTotalOffset;
+    if (analysis.mappings.size() == 1) {
+      int64_t stride = analysis.mappings[0].scale;
+      int64_t count = analysis.sliceSizes[0];
+      int64_t start = analysis.minTotalOffset;
 
       int64_t limit;
       bool needsReverse = false;
@@ -15691,6 +16109,18 @@ struct GatherOpCanon final
             rewriter, op.getLoc(), result, rewriter.getDenseI64ArrayAttr({0}));
       }
 
+      // The grid may carry dimensions beyond the single mapped one, along
+      // which the index is constant; the slice only covers the mapped
+      // extent, so the rest comes back by broadcast, not reshape.
+      auto gridResultTy =
+          RankedTensorType::get(gridTy.getShape(), operandTy.getElementType());
+      if (gridResultTy.getNumElements() !=
+          cast<ShapedType>(result.getType()).getNumElements()) {
+        result = stablehlo::BroadcastInDimOp::create(
+            rewriter, op.getLoc(), gridResultTy, result,
+            rewriter.getDenseI64ArrayAttr({analysis.mappings[0].gridDim}));
+      }
+
       if (result.getType() != op.getType()) {
         result = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
                                               op.getType(), result);
@@ -15700,57 +16130,36 @@ struct GatherOpCanon final
     }
 
     // General case: We have multiple grid dimensions mapped.
-    // Decompose the 1D starting offset into coordinates for each dimension of
-    // the multi-dimensional reshaped operand.
-    SmallVector<int64_t> sliceStarts(opRank, 0);
-    int64_t rem = minTotalOffset;
-    for (int64_t k = 0; k < opRank; ++k) {
-      sliceStarts[k] = rem / opStrides[k];
-      rem %= opStrides[k];
-    }
-
-    // Check that the sliced region is within bounds along all dimensions.
-    for (int64_t k = 0; k < opRank; ++k) {
-      if (sliceStarts[k] + sliceSizes[k] > operandShape[k]) {
-        return failure();
-      }
-    }
-
     // Reshape the 1D operand to the factored multi-dimensional shape.
-    Value reshapedOperand = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(),
-                                                       operand, operandShape);
+    Value reshapedOperand = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), operand, analysis.operandShape);
 
+    int64_t opRank = analysis.operandShape.size();
     SmallVector<int64_t> sliceLimits(opRank);
     SmallVector<int64_t> sliceStrides(opRank, 1);
     for (int64_t k = 0; k < opRank; ++k) {
-      sliceLimits[k] = sliceStarts[k] + sliceSizes[k];
+      sliceLimits[k] = analysis.sliceStarts[k] + analysis.sliceSizes[k];
     }
 
     // Slice the multi-dimensional sub-tensor.
-    Value sliced =
-        stablehlo::SliceOpCreate(rewriter, op.getLoc(), reshapedOperand,
-                                 sliceStarts, sliceLimits, sliceStrides);
+    Value sliced = stablehlo::SliceOpCreate(
+        rewriter, op.getLoc(), reshapedOperand, analysis.sliceStarts,
+        sliceLimits, sliceStrides);
 
     // Reverse any slice dimensions that had a negative scale in the grid index.
-    SmallVector<int64_t> reverseDims;
-    for (size_t m = 0; m < mappings.size(); ++m) {
-      if (mappings[m].scale < 0) {
-        reverseDims.push_back(m);
-      }
-    }
-    if (!reverseDims.empty()) {
+    if (!analysis.reverseDims.empty()) {
       sliced = stablehlo::ReverseOp::create(
           rewriter, op.getLoc(), sliced,
-          rewriter.getDenseI64ArrayAttr(reverseDims));
+          rewriter.getDenseI64ArrayAttr(analysis.reverseDims));
     }
 
     // Drop trailing singleton dimensions if the reshaped operand has higher
     // rank.
     SmallVector<int64_t> mappedShape;
-    for (size_t m = 0; m < mappings.size(); ++m) {
-      mappedShape.push_back(sliceSizes[m]);
+    for (size_t m = 0; m < analysis.mappings.size(); ++m) {
+      mappedShape.push_back(analysis.sliceSizes[m]);
     }
-    if (opRank > (int64_t)mappings.size()) {
+    if (opRank > (int64_t)analysis.mappings.size()) {
       sliced = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), sliced,
                                           mappedShape);
     }
@@ -15758,8 +16167,8 @@ struct GatherOpCanon final
     // Broadcast the sliced result back to the dimensions of the full grid
     // shape.
     SmallVector<int64_t> broadcastDims;
-    for (size_t m = 0; m < mappings.size(); ++m) {
-      broadcastDims.push_back(mappings[m].gridDim);
+    for (size_t m = 0; m < analysis.mappings.size(); ++m) {
+      broadcastDims.push_back(analysis.mappings[m].gridDim);
     }
 
     auto gridResultTy =
@@ -18750,10 +19159,15 @@ addSelfProvenance(Value value,
 void computeTensorValueProvenanceImpl(
     SmallVectorImpl<Value> &pendingValues,
     DenseMap<Value, TensorValueProvenance> &provenanceInfo2) {
+  size_t steps = 0;
   while (!pendingValues.empty()) {
     Value value = pendingValues.pop_back_val();
     if (provenanceInfo2.contains(value))
       continue;
+    if (steps++ >= kProvenanceWalkBudget) {
+      addSelfProvenance(value, provenanceInfo2);
+      continue;
+    }
 
     if (auto slice = value.getDefiningOp<stablehlo::SliceOp>()) {
       // If we don't know the provenance of the operand, figure it out before
@@ -18774,8 +19188,12 @@ void computeTensorValueProvenanceImpl(
       presburger::IntegerRelation offset =
           getOffsetRelation(domainSpace, slice.getStartIndices());
 
+      // The insertion may rehash the map and invalidate references into it.
+      SmallVector<Value> operandSources = it->second.sources;
+      presburger::PresburgerRelation operandProvenance =
+          it->second.provenanceRelation;
       auto [insertIt, _] = provenanceInfo2.try_emplace(
-          value, it->second.sources, it->second.provenanceRelation);
+          value, std::move(operandSources), std::move(operandProvenance));
       insertIt->second.provenanceRelation =
           insertIt->second.provenanceRelation.intersectDomain(
               presburger::PresburgerSet(restriction));
@@ -19443,6 +19861,7 @@ struct SinkDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, SinkDUS> {
       for (auto s : DUS.getStartIndices()) {
         if (!definedOutside(s, whileOp)) {
           legal = false;
+          break;
         }
       }
       if (!legal)
@@ -19476,7 +19895,10 @@ struct SinkDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, SinkDUS> {
             Value v = DUS.getOperand();
             while (v != argOperand && v != condOperand) {
               auto DUS2 = v.getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
-              assert(DUS2);
+              if (!DUS2) {
+                legal = false;
+                break;
+              }
               if (mayReadMemoryWrittenTo(use, DUS2)) {
                 mayReadOther = true;
                 break;
@@ -19488,6 +19910,8 @@ struct SinkDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, SinkDUS> {
                 mayReadOther = true;
               }
             }
+            if (!legal)
+              break;
             if (!mayReadOther) {
               if (mustReadMemoryWrittenTo(use, DUS)) {
                 mustReaders.push_back(use);
@@ -21749,6 +22173,10 @@ struct CommonCompareExpressionRewrite
           rewriter.replaceOp(op, negatedCondition);
           return success();
         } else {
+          // The negation reads op's result, so it must sit after op — the
+          // rewriter's insertion point is before op here.
+          PatternRewriter::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPoint(user);
           auto negatedCondition = stablehlo::NotOp::create(
               rewriter, userCompareOp.getLoc(), op.getResult());
           rewriter.replaceOp(user, negatedCondition);
@@ -22953,9 +23381,8 @@ struct SliceSelect
         rewriter, sliceOp.getLoc(), slicedPred, slicedOnTrue, slicedOnFalse);
 
     rewriter.replaceOp(sliceOp, newSelectOp.getResult());
-
+    rewriter.eraseOp(selOp);
     return success();
-    ;
   }
 };
 
@@ -28771,12 +29198,13 @@ struct DotGeneralReshape final
       newShape.push_back(dim);
     }
 
+    // The result element type may differ from the operands' (e.g. a bf16 x bf16
+    // -> f32 accumulating dot), so take it from the op being replaced: the
+    // trailing reshape has to be element-type preserving.
     auto newDotGeneral = stablehlo::DotGeneralOp::create(
         rewriter, op.getLoc(),
-        RankedTensorType::get(
-            newShape,
-            cast<RankedTensorType>(newLhs.getType()).getElementType()),
-        newLhs, newRhs,
+        RankedTensorType::get(newShape, op.getType().getElementType()), newLhs,
+        newRhs,
         stablehlo::DotDimensionNumbersAttr::get(
             rewriter.getContext(), adjustedLhsBatchingDims,
             adjustedRhsBatchingDims, adjustedLhsContractingDims,
@@ -35120,6 +35548,321 @@ struct RecognizeMultiPad final
   }
 };
 
+// A masked scatter whose mask is decided by comparisons of iotas against
+// constants is live on a box of its lane grid: the lanes outside the box are
+// exactly the ones the negative index drops. Slice the live indices and the
+// updates to the box and scatter those, with no mask left for the index
+// rewrites to see through.
+struct ScatterMaskedIndexSlice final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterMaskedIndexSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // The positions along one grid dimension where `iota * scale + start <pred>
+  // constant` holds, when they form one interval.
+  static std::optional<std::pair<int64_t, int64_t>>
+  compareInterval(stablehlo::ComparisonDirection direction, int64_t start,
+                  int64_t scale, int64_t constant, int64_t extent,
+                  bool iotaOnLeft) {
+    std::optional<int64_t> lo, hi;
+    for (int64_t k = 0; k < extent; ++k) {
+      int64_t value = start + scale * k;
+      int64_t l = iotaOnLeft ? value : constant;
+      int64_t r = iotaOnLeft ? constant : value;
+      bool holds;
+      switch (direction) {
+      case stablehlo::ComparisonDirection::LT:
+        holds = l < r;
+        break;
+      case stablehlo::ComparisonDirection::LE:
+        holds = l <= r;
+        break;
+      case stablehlo::ComparisonDirection::GT:
+        holds = l > r;
+        break;
+      case stablehlo::ComparisonDirection::GE:
+        holds = l >= r;
+        break;
+      case stablehlo::ComparisonDirection::EQ:
+        holds = l == r;
+        break;
+      case stablehlo::ComparisonDirection::NE:
+        holds = l != r;
+        break;
+      }
+      if (!holds)
+        continue;
+      if (hi && *hi != k)
+        return std::nullopt; // a second interval
+      if (!lo)
+        lo = k;
+      hi = k + 1;
+    }
+    if (!lo)
+      return std::make_pair(int64_t(0), int64_t(0));
+    return std::make_pair(*lo, *hi);
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1)
+      return failure();
+    auto &block = op.getUpdateComputation().front();
+    if (!isSetindexBlock(&block))
+      return failure();
+    auto inputTy = cast<RankedTensorType>(op.getInputs()[0].getType());
+    if (inputTy.getRank() != 1)
+      return failure();
+    auto dims = op.getScatterDimensionNumbers();
+    if (dims.getInsertedWindowDims() != ArrayRef<int64_t>{0} ||
+        dims.getScatterDimsToOperandDims() != ArrayRef<int64_t>{0} ||
+        !dims.getUpdateWindowDims().empty())
+      return failure();
+    Value indices = op.getScatterIndices();
+    auto idxTy = cast<RankedTensorType>(indices.getType());
+    int64_t vectorDim = dims.getIndexVectorDim();
+    // The grid is every index dimension but the index vector one.
+    SmallVector<int64_t> grid;
+    for (int64_t d = 0; d < idxTy.getRank(); ++d)
+      if (d != vectorDim)
+        grid.push_back(idxTy.getDimSize(d));
+    Value update = op.getUpdates()[0];
+    auto updTy = cast<RankedTensorType>(update.getType());
+    if (updTy.getShape() != ArrayRef<int64_t>(grid))
+      return failure();
+
+    Value idxSrc = indices;
+    while (auto rs = idxSrc.getDefiningOp<stablehlo::ReshapeOp>())
+      idxSrc = rs.getOperand();
+    auto sel = idxSrc.getDefiningOp<stablehlo::SelectOp>();
+    if (!sel)
+      return failure();
+    SplatElementsAttr offSplat;
+    if (!matchPattern(sel.getOnFalse(), m_Constant(&offSplat)) ||
+        !offSplat.getSplatValue<APInt>().isNegative())
+      return failure();
+    auto predTy = cast<RankedTensorType>(sel.getPred().getType());
+    // The mask's dimensions are the grid's, with the index vector dimension
+    // possibly kept as a unit dimension.
+    SmallVector<int64_t> predGrid;
+    for (int64_t d = 0; d < predTy.getRank(); ++d)
+      if (!(predTy.getRank() == idxTy.getRank() && d == vectorDim))
+        predGrid.push_back(predTy.getDimSize(d));
+    if (predGrid != grid)
+      return failure();
+    auto gridDimOf = [&](int64_t predDim) -> std::optional<int64_t> {
+      if (predTy.getRank() == idxTy.getRank()) {
+        if (predDim == vectorDim)
+          return std::nullopt;
+        return predDim < vectorDim ? predDim : predDim - 1;
+      }
+      return predDim;
+    };
+
+    // Intersect the box over every compare the mask ands together.
+    SmallVector<int64_t> lo(grid.size(), 0), hi(grid.begin(), grid.end());
+    SmallVector<Value> terms{sel.getPred()};
+    while (!terms.empty()) {
+      Value term = terms.pop_back_val();
+      if (auto andOp = term.getDefiningOp<stablehlo::AndOp>()) {
+        terms.push_back(andOp.getLhs());
+        terms.push_back(andOp.getRhs());
+        continue;
+      }
+      auto cmp = term.getDefiningOp<stablehlo::CompareOp>();
+      if (!cmp)
+        return failure();
+      bool iotaOnLeft = true;
+      auto iota = detectIotaLikeTensor(cmp.getLhs());
+      SplatElementsAttr cst;
+      if (!iota || !matchPattern(cmp.getRhs(), m_Constant(&cst))) {
+        iotaOnLeft = false;
+        iota = detectIotaLikeTensor(cmp.getRhs());
+        if (!iota || !matchPattern(cmp.getLhs(), m_Constant(&cst)))
+          return failure();
+      }
+      auto gridDim = gridDimOf(iota->dimension);
+      if (!gridDim)
+        return failure();
+      int64_t start = cast<IntegerAttr>(iota->start).getValue().getSExtValue();
+      int64_t scale =
+          iota->scale ? cast<IntegerAttr>(iota->scale).getValue().getSExtValue()
+                      : 1;
+      auto interval =
+          compareInterval(cmp.getComparisonDirection(), start, scale,
+                          cst.getSplatValue<APInt>().getSExtValue(),
+                          grid[*gridDim], iotaOnLeft);
+      if (!interval)
+        return failure();
+      lo[*gridDim] = std::max(lo[*gridDim], interval->first);
+      hi[*gridDim] = std::min(hi[*gridDim], interval->second);
+    }
+
+    auto loc = op.getLoc();
+    Value live = stablehlo::ReshapeOpCreate(rewriter, loc, sel.getOnTrue(),
+                                            idxTy.getShape());
+    bool full = true, empty = false;
+    for (size_t d = 0; d < grid.size(); ++d) {
+      full &= lo[d] == 0 && hi[d] == grid[d];
+      empty |= hi[d] <= lo[d];
+    }
+    if (empty) {
+      rewriter.replaceOp(op, op.getInputs()[0]);
+      return success();
+    }
+    if (!full) {
+      SmallVector<int64_t> idxLo, idxHi, idxStride(idxTy.getRank(), 1);
+      for (int64_t d = 0, g = 0; d < idxTy.getRank(); ++d) {
+        if (d == vectorDim) {
+          idxLo.push_back(0);
+          idxHi.push_back(idxTy.getDimSize(d));
+        } else {
+          idxLo.push_back(lo[g]);
+          idxHi.push_back(hi[g]);
+          ++g;
+        }
+      }
+      live = stablehlo::SliceOpCreate(rewriter, loc, live, idxLo, idxHi,
+                                      idxStride);
+      SmallVector<int64_t> updStride(grid.size(), 1);
+      update =
+          stablehlo::SliceOpCreate(rewriter, loc, update, lo, hi, updStride);
+    }
+    rewriter.modifyOpInPlace(op, [&] {
+      op.getScatterIndicesMutable().assign(live);
+      op.getUpdatesMutable()[0].assign(update);
+    });
+    return success();
+  }
+};
+
+// Whether an index tensor maps every grid position to a distinct value: a
+// sum of iota-like terms, each along its own grid dimension, whose strides
+// make the sum injective (the raising's row-major linearization of a store's
+// lane grid, `i * N1 + j`), plus a constant. Dimensions of extent one need
+// no term.
+static bool isInjectiveGridIndex(Value index) {
+  auto ty = cast<RankedTensorType>(index.getType());
+  SmallVector<Value> terms{index};
+  SmallVector<std::pair<int64_t, int64_t>> strides; // (|scale|, dimension)
+  DenseSet<int64_t> covered;
+  while (!terms.empty()) {
+    Value term = terms.pop_back_val();
+    if (auto add = term.getDefiningOp<stablehlo::AddOp>()) {
+      terms.push_back(add.getLhs());
+      terms.push_back(add.getRhs());
+      continue;
+    }
+    if (matchPattern(term, m_Constant()))
+      continue;
+    auto iota = detectIotaLikeTensor(term);
+    if (!iota || !iota->scale || iota->dimension >= ty.getRank() ||
+        !covered.insert(iota->dimension).second)
+      return false;
+    int64_t scale = cast<IntegerAttr>(iota->scale).getValue().getSExtValue();
+    if (scale == 0)
+      return false;
+    strides.push_back({std::abs(scale), iota->dimension});
+  }
+  for (int64_t d = 0; d < ty.getRank(); ++d)
+    if (ty.getDimSize(d) > 1 && !covered.contains(d))
+      return false;
+  // Sorted by stride, each term must step past everything the smaller terms
+  // can add up to.
+  llvm::sort(strides);
+  int64_t reach = 0;
+  for (auto [stride, dim] : strides) {
+    if (stride <= reach)
+      return false;
+    reach += stride * (ty.getDimSize(dim) - 1);
+  }
+  return true;
+}
+
+// The raising masks a store by sending dead lanes' scatter indices out of
+// bounds, which scatter semantics drop. Single-point and iota-indexed
+// scatter rewrites turn the op into a dynamic_update_slice, whose index
+// clamping would bring the dead write back in range; resolve the mask first:
+// scatter at the live index and write the original value back when masked
+// off (a no-op store). That is only a no-op when no live lane writes the
+// same slot, so the live indices must be unique: a single index, an
+// injective grid linearization, or unique_indices.
+struct ScatterMaskedIndexSimplify final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp,
+                              ScatterMaskedIndexSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1)
+      return failure();
+    auto &block = op.getUpdateComputation().front();
+    if (!isSetindexBlock(&block))
+      return failure();
+    auto inputTy = cast<RankedTensorType>(op.getInputs()[0].getType());
+    if (inputTy.getRank() != 1)
+      return failure();
+    auto dims = op.getScatterDimensionNumbers();
+    if (dims.getInsertedWindowDims() != ArrayRef<int64_t>{0} ||
+        dims.getScatterDimsToOperandDims() != ArrayRef<int64_t>{0} ||
+        !dims.getUpdateWindowDims().empty())
+      return failure();
+    auto indices = op.getScatterIndices();
+    auto idxTy = cast<RankedTensorType>(indices.getType());
+    // The select may sit behind reshapes of the index.
+    Value idxSrc = indices;
+    while (auto rs = idxSrc.getDefiningOp<stablehlo::ReshapeOp>())
+      idxSrc = rs.getOperand();
+    auto sel = idxSrc.getDefiningOp<stablehlo::SelectOp>();
+    if (!sel)
+      return failure();
+    SplatElementsAttr offSplat;
+    if (!matchPattern(sel.getOnFalse(), m_Constant(&offSplat)) ||
+        !offSplat.getSplatValue<APInt>().isNegative())
+      return failure();
+    auto predTy = cast<RankedTensorType>(sel.getPred().getType());
+    int64_t count = idxTy.getNumElements();
+    if (predTy.getNumElements() != 1 && predTy.getNumElements() != count)
+      return failure();
+    if (count != 1 && !op.getUniqueIndices() &&
+        !isInjectiveGridIndex(sel.getOnTrue()))
+      return failure();
+
+    auto loc = op.getLoc();
+    Value update = op.getUpdates()[0];
+    auto updTy = cast<RankedTensorType>(update.getType());
+    Value live = stablehlo::ReshapeOpCreate(rewriter, loc, sel.getOnTrue(),
+                                            idxTy.getShape());
+    // The original values at the live indices, gathered as the scatter
+    // addresses them.
+    Value orig = stablehlo::GatherOp::create(
+        rewriter, loc, op.getInputs()[0], live,
+        stablehlo::GatherDimensionNumbersAttr::get(
+            rewriter.getContext(), /*offsetDims*/ {},
+            /*collapsedSliceDims*/ {0}, /*operandBatchingDims*/ {},
+            /*startIndicesBatchingDims*/ {}, /*startIndexMap*/ {0},
+            dims.getIndexVectorDim()),
+        rewriter.getDenseI64ArrayAttr({1}));
+    orig = stablehlo::ReshapeOpCreate(rewriter, loc, orig, updTy.getShape());
+    Value pred = sel.getPred();
+    if (predTy.getNumElements() == 1 && updTy.getNumElements() != 1) {
+      pred = stablehlo::ReshapeOpCreate(rewriter, loc, pred, {});
+      pred = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc,
+          RankedTensorType::get(updTy.getShape(), rewriter.getI1Type()), pred,
+          rewriter.getDenseI64ArrayAttr({}));
+    } else {
+      pred = stablehlo::ReshapeOpCreate(rewriter, loc, pred, updTy.getShape());
+    }
+    Value newUpd =
+        stablehlo::SelectOp::create(rewriter, loc, pred, update, orig);
+    rewriter.modifyOpInPlace(op, [&] {
+      op.getScatterIndicesMutable().assign(live);
+      op.getUpdatesMutable()[0].assign(newUpd);
+    });
+    return success();
+  }
+};
+
 struct ScatterOpCanon final
     : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -35130,11 +35873,101 @@ struct ScatterOpCanon final
       return success();
     }
 
+    if (tryRewriteScatterWithIotaIndexing(op, rewriter).succeeded()) {
+      return success();
+    }
+
     if (trySimplifyWithIotaIndexing(op, rewriter).succeeded()) {
       return success();
     }
 
     return failure();
+  }
+
+private:
+  LogicalResult
+  tryRewriteScatterWithIotaIndexing(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
+    auto &block = op.getUpdateComputation().front();
+    if (!isSetindexBlock(&block)) {
+      return failure();
+    }
+
+    auto inputs = op.getInputs();
+    if (inputs.size() != 1) {
+      return failure();
+    }
+    auto operand = inputs[0];
+    auto operandTy = cast<RankedTensorType>(operand.getType());
+
+    auto updates = op.getUpdates();
+    if (updates.size() != 1) {
+      return failure();
+    }
+    auto update = updates[0];
+
+    auto indices = op.getScatterIndices();
+    auto dimNumbers = op.getScatterDimensionNumbers();
+
+    GridIndexingAnalysis analysis;
+    if (failed(analyzeGridIndexing(
+            indices, operand, dimNumbers.getIndexVectorDim(),
+            dimNumbers.getScatterDimsToOperandDims(), analysis))) {
+      return failure();
+    }
+
+    auto gridTy = cast<RankedTensorType>(analysis.grid.getType());
+    int64_t gridRank = gridTy.getRank();
+
+    Value reshapedOperand = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), operand, analysis.operandShape);
+
+    auto updatesTy = cast<RankedTensorType>(update.getType());
+    if (updatesTy.getRank() != gridRank) {
+      // Reshape updates to match gridTy shape.
+      update = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), update,
+                                          gridTy.getShape());
+    }
+
+    SmallVector<int64_t> perm;
+    for (const auto &map : analysis.mappings) {
+      perm.push_back(map.gridDim);
+    }
+    for (int64_t d = 0; d < gridRank; d++) {
+      if (llvm::none_of(analysis.mappings,
+                        [d](const auto &m) { return m.gridDim == d; })) {
+        perm.push_back(d);
+      }
+    }
+
+    Value transposedUpdate = stablehlo::TransposeOp::create(
+        rewriter, op.getLoc(), update, rewriter.getDenseI64ArrayAttr(perm));
+
+    Value reshapedUpdate = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), transposedUpdate, analysis.sliceSizes);
+
+    if (!analysis.reverseDims.empty()) {
+      reshapedUpdate = stablehlo::ReverseOp::create(
+          rewriter, op.getLoc(), reshapedUpdate,
+          rewriter.getDenseI64ArrayAttr(analysis.reverseDims));
+    }
+
+    SmallVector<Value> sliceStartsVal(analysis.sliceStarts.size());
+    for (size_t k = 0; k < analysis.sliceStarts.size(); ++k) {
+      sliceStartsVal[k] = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(),
+          cast<ElementsAttr>(
+              makeAttr(RankedTensorType::get({}, rewriter.getI32Type()),
+                       analysis.sliceStarts[k])));
+    }
+
+    Value updatedOperand = stablehlo::DynamicUpdateSliceOp::create(
+        rewriter, op.getLoc(), reshapedOperand, reshapedUpdate, sliceStartsVal);
+
+    Value result = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), updatedOperand, operandTy.getShape());
+    rewriter.replaceOp(op, result);
+    return success();
   }
 
 private:
@@ -36486,13 +37319,13 @@ struct EnzymeHLOOptPass
     patterns.add<BitcastConvertCancellation>(context);
 
     patterns.add<
-        AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
-        OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
-        PowSimplify, NoopSlice, NoopReverse, SliceReverse, SliceSlice,
-        DynamicSliceDynamicSlice, DynamicSliceSlice, SliceDynamicSlice,
-        LogSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
-        SliceSimplify, ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
-        DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
+        AddSimplify, SubSimplify, AndSimplify, ReduceOrAndPad, ReduceOrAnd,
+        MaxSimplify, MinSimplify, OrSimplify, XorSimplify, MulSimplify,
+        DivSimplify, RemSimplify, PowSimplify, NoopSlice, NoopReverse,
+        SliceReverse, SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
+        SliceDynamicSlice, LogSimplify, ShiftRightLogicalSimplify,
+        NegativePadToSlice, SliceSimplify, ConvertSimplify, TransposeSimplify,
+        DotGeneralSimplify, DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
         BroadcastToReshape, ReshapeEmptyBroadcast, ReshapeBroadcast,
         BroadcastReshape, ConstPropThroughBarrier, ReplaceNegAddWithSubtract,
@@ -36586,6 +37419,7 @@ struct EnzymeHLOOptPass
     patterns.add<GatherConstProp, ClampConstProp>(context);
 
     patterns.add<ElementwiseAllTransposeOperandsSimplify,
+                 BroadcastingElementwiseAllTransposeOperandsSimplify,
                  TransposeElementwiseTransposeSimplify,
                  AssociativeBinaryOpReordering,
                  CommonAssociativeCommutativeOpReorder>(context);
@@ -36818,6 +37652,8 @@ struct EnzymeHLOOptPass
         DynamicReshapeOpCanon,
         EmptyReduceOpCanon,
         GatherOpCanon,
+        ScatterMaskedIndexSlice,
+        ScatterMaskedIndexSimplify,
         ScatterOpCanon,
         GetDimensionSizeOpCanon,
         GetTupleElementOpCanon,
@@ -36968,6 +37804,10 @@ struct EnzymeHLOOptPass
     config.setMaxIterations(max_iterations);
     config.setUseTopDownTraversal(top_down);
     config.enableFolding();
+    // The canonicalizer's default: no identical-block merging. Merging adds
+    // successor operands for the values the blocks differed in, and e.g.
+    // llvm.invoke cannot carry an index-typed successor operand.
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {
       signalPassFailure();

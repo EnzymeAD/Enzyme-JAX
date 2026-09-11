@@ -51,7 +51,7 @@ module {
         affine.store %cst, %arg4[%arg5] : memref<?xf32>
         %4 = arith.mulf %3, %arg0 : f32
         %5 = arith.mulf %3, %2 : f32
-        %6 = enzyme.affine_atomic_rmw addf %4, %arg2, (#map) [%arg5] : (f32, memref<?xf32>) -> f32
+        %6 = enzyme.affine_atomic_rmw addf %4, %arg2, (#map) [%arg5] monotonic : (f32, memref<?xf32>) -> f32
         affine.yield %5 : f32
       }
       memref.dealloc %alloc : memref<4xf32>
@@ -82,7 +82,7 @@ module {
         scf.if %pred {
           affine.store %v, %b[%i] : memref<?xf32>
         }
-        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] : (f32, memref<?xf32>) -> f32
+        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -112,7 +112,7 @@ module {
         scf.if %pred {
           affine.store %v, %b[%i] : memref<?xf32>
         }
-        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] : (f32, memref<?xf32>) -> f32
+        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -131,8 +131,8 @@ module {
     %c1 = arith.constant 1 : index
     %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
       affine.parallel (%i) = (0) to (4) {
-        %r0 = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] : (f32, memref<?xf32>) -> f32
-        %r1 = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] : (f32, memref<?xf32>) -> f32
+        %r0 = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] monotonic : (f32, memref<?xf32>) -> f32
+        %r1 = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -154,7 +154,7 @@ module {
     %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
       affine.parallel (%i) = (0) to (4) {
         func.call @unknown_side_effect() : () -> ()
-        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] : (f32, memref<?xf32>) -> f32
+        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -174,7 +174,7 @@ module {
     %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
       affine.parallel (%i) = (0) to (4) {
         %other = memref.atomic_rmw addf %v, %a[%i] : (f32, memref<?xf32>) -> f32
-        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] : (f32, memref<?xf32>) -> f32
+        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -200,7 +200,7 @@ module {
     %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
       affine.parallel (%i) = (0) to (4) {
         %other = memref.atomic_rmw addf %v, %b[%i] : (f32, memref<?xf32>) -> f32
-        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] : (f32, memref<?xf32>) -> f32
+        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -225,7 +225,7 @@ module {
           %next = arith.addf %current, %v : f32
           memref.atomic_yield %next : f32
         }
-        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] : (f32, memref<?xf32>) -> f32
+        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -256,7 +256,7 @@ module {
           %next = arith.addf %current, %v : f32
           memref.atomic_yield %next : f32
         }
-        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] : (f32, memref<?xf32>) -> f32
+        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -317,7 +317,7 @@ module {
         affine.store %cst, %arg4[%arg5] : memref<?xf32>
         %4 = arith.mulf %3, %arg0 : f32
         %5 = arith.mulf %3, %2 : f32
-        %6 = enzyme.affine_atomic_rmw addf %4, %arg2, (#map) [%arg5] : (f32, memref<?xf32>) -> f32
+        %6 = enzyme.affine_atomic_rmw addf %4, %arg2, (#map) [%arg5] monotonic : (f32, memref<?xf32>) -> f32
         affine.yield %5 : f32
       }
       memref.dealloc %alloc : memref<4xf32>
@@ -380,7 +380,7 @@ module {
         affine.store %cst, %arg4[%arg5] : memref<?xf32>
         %4 = arith.mulf %3, %arg0 : f32
         %5 = arith.mulf %3, %2 : f32
-        %6 = enzyme.affine_atomic_rmw addf %4, %arg2, (#map) [%arg5] : (f32, memref<?xf32>) -> f32
+        %6 = enzyme.affine_atomic_rmw addf %4, %arg2, (#map) [%arg5] monotonic : (f32, memref<?xf32>) -> f32
         affine.yield %5 : f32
       }
       memref.dealloc %alloc : memref<4xf32>
@@ -443,7 +443,7 @@ module {
         affine.store %cst, %arg4[%arg5] : memref<?xf32>
         %4 = arith.mulf %3, %arg0 : f32
         %5 = arith.mulf %3, %2 : f32
-        %6 = enzyme.affine_atomic_rmw addf %4, %arg2, (#map) [%arg5] : (f32, memref<?xf32>) -> f32
+        %6 = enzyme.affine_atomic_rmw addf %4, %arg2, (#map) [%arg5] monotonic : (f32, memref<?xf32>) -> f32
         affine.yield %5 : f32
       }
       memref.dealloc %alloc : memref<4xf32>
@@ -465,7 +465,7 @@ module {
     %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
       affine.parallel (%i) = (0) to (4) {
         %other = enzyme.atomic_rmw addf %v, %a[%i] monotonic : (f32, memref<?xf32>) -> f32
-        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] : (f32, memref<?xf32>) -> f32
+        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -491,7 +491,7 @@ module {
     %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
       affine.parallel (%i) = (0) to (4) {
         %other = enzyme.atomic_rmw addf %v, %b[%i] monotonic : (f32, memref<?xf32>) -> f32
-        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] : (f32, memref<?xf32>) -> f32
+        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -529,7 +529,7 @@ module {
     %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
       affine.parallel (%iv) = (1) to (4) {
         affine.store %a, %arr[%iv - 1] : memref<?xf32>
-        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%iv] : (f32, memref<?xf32>) -> f32
+        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%iv] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -567,7 +567,7 @@ module {
     %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
       affine.parallel (%iv) = (1) to (4) {
         affine.store %a, %arr[%iv + 1] : memref<?xf32>
-        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%iv] : (f32, memref<?xf32>) -> f32
+        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%iv] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -608,7 +608,7 @@ module {
         affine.store %a, %arr[%iv + 1] : memref<?xf32>
       }
       affine.parallel (%iv) = (1) to (4) {
-        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%iv] : (f32, memref<?xf32>) -> f32
+        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%iv] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -649,7 +649,7 @@ module {
         affine.store %a, %arr2[%iv + 1] : memref<?xf32>
       }
       affine.parallel (%iv) = (1) to (4) {
-        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%iv] : (f32, memref<?xf32>) -> f32
+        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%iv] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -686,7 +686,7 @@ module {
     %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
       affine.parallel (%iv) = (0) to (4) {
         affine.store %a, %arr2[%iv + 4] : memref<?xf32>
-        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%iv] : (f32, memref<?xf32>) -> f32
+        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%iv] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -724,7 +724,7 @@ module {
     %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
       affine.parallel (%iv) = (0) to (4) {
         affine.store %a, %arr2[%iv + 4] : memref<?xf32>
-        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%iv] : (f32, memref<?xf32>) -> f32
+        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%iv] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -761,7 +761,7 @@ module {
     %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
       affine.parallel (%iv) = (0) to (4) {
         affine.store %a, %arr[%iv + 4] : memref<?xf32>
-        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%iv] : (f32, memref<?xf32>) -> f32
+        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%iv] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -797,7 +797,7 @@ module {
     %c1 = arith.constant 1 : index
     %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
       affine.parallel (%iv) = (0) to (4) {
-        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%iv] : (f32, memref<?xf32>) -> f32
+        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%iv] monotonic : (f32, memref<?xf32>) -> f32
         affine.store %6, %arr[%iv + 4] : memref<?xf32>
       }
       "enzymexla.polygeist_yield"() : () -> ()
@@ -835,7 +835,7 @@ module {
       affine.parallel (%i) = (0) to (4) {
         affine.parallel (%j) = (0) to (4) {
           affine.store %a, %arr[%i + 4, %j] : memref<?x?xf32>
-          %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%i, %j] : (f32, memref<?x?xf32>) -> f32
+          %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%i, %j] monotonic : (f32, memref<?x?xf32>) -> f32
         }
       }
       "enzymexla.polygeist_yield"() : () -> ()
@@ -874,7 +874,7 @@ module {
       affine.parallel (%i) = (0) to (4) {
         affine.parallel (%j) = (0) to (4) {
           affine.store %a, %arr[%i + 4, %j] : memref<?x?xf32>
-          %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%i, %j] : (f32, memref<?x?xf32>) -> f32
+          %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%i, %j] monotonic : (f32, memref<?x?xf32>) -> f32
         }
       }
       "enzymexla.polygeist_yield"() : () -> ()
@@ -912,7 +912,7 @@ module {
       affine.for %i = 0 to 4 {
         affine.parallel (%j) = (0) to (4) {
           affine.store %a, %arr[%i + 4, %j] : memref<?x?xf32>
-          %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%i, %j] : (f32, memref<?x?xf32>) -> f32
+          %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%i, %j] monotonic : (f32, memref<?x?xf32>) -> f32
         }
       }
       "enzymexla.polygeist_yield"() : () -> ()
@@ -951,7 +951,7 @@ module {
       affine.parallel (%i) = (0) to (4) {
         affine.parallel (%j) = (0) to (4) {
           affine.store %a, %arr[%i, %j + 4] : memref<?x?xf32>
-          %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%i, %j] : (f32, memref<?x?xf32>) -> f32
+          %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%i, %j] monotonic : (f32, memref<?x?xf32>) -> f32
         }
       }
       "enzymexla.polygeist_yield"() : () -> ()
@@ -989,7 +989,7 @@ module {
       affine.parallel (%i) = (0) to (4) {
         affine.for %j = 0 to 4 {
           affine.store %a, %arr[%i, %j + 4] : memref<?x?xf32>
-          %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%i, %j] : (f32, memref<?x?xf32>) -> f32
+          %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%i, %j] monotonic : (f32, memref<?x?xf32>) -> f32
         }
       }
       "enzymexla.polygeist_yield"() : () -> ()
@@ -1024,7 +1024,7 @@ module {
     %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
       affine.parallel (%i, %j) = (0, 0) to (4, 4) {
         affine.store %a, %arr[%i + 4, %j] : memref<?x?xf32>
-        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%i, %j] : (f32, memref<?x?xf32>) -> f32
+        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%i, %j] monotonic : (f32, memref<?x?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -1059,7 +1059,7 @@ module {
     %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
       affine.parallel (%i, %j) = (0, 0) to (4, 4) {
         affine.store %a, %arr[%i + 4, %j] : memref<?x?xf32>
-        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%i, %j] : (f32, memref<?x?xf32>) -> f32
+        %6 = enzyme.affine_atomic_rmw addf %a, %arr, (#map) [%i, %j] monotonic : (f32, memref<?x?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index, index, index, index, index) -> index
@@ -1103,7 +1103,7 @@ module {
           %9 = affine.load %0[%arg2 + %arg3 * 5 + 16] : memref<?xf32>
           scf.yield %9 : f32
         }
-        %8 = enzyme.affine_atomic_rmw addf %7, %0, (#map) [%arg2, %arg3] : (f32, memref<?xf32>) -> f32
+        %8 = enzyme.affine_atomic_rmw addf %7, %0, (#map) [%arg2, %arg3] monotonic : (f32, memref<?xf32>) -> f32
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index) -> index
@@ -1137,7 +1137,7 @@ module {
       scf.for %t = %c0 to %c4 step %c1 {
         %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
           affine.parallel (%i) = (0) to (4) {
-            %r = enzyme.affine_atomic_rmw addf %v, %arr, (#map) [%i] : (f32, memref<?xf32>) -> f32
+            %r = enzyme.affine_atomic_rmw addf %v, %arr, (#map) [%i] monotonic : (f32, memref<?xf32>) -> f32
           }
           "enzymexla.polygeist_yield"() : () -> ()
         }) : (index, index, index, index, index, index) -> index

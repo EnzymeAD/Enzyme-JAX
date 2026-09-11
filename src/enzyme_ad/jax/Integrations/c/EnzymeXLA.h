@@ -140,6 +140,45 @@ MLIR_CAPI_EXPORTED MlirAttribute enzymexlaMPIOpAttrGet(MlirContext ctx,
                                                        EnzymeXlaMPIOp op);
 
 //===----------------------------------------------------------------------===//
+// Comm dialect
+//===----------------------------------------------------------------------===//
+
+MLIR_CAPI_EXPORTED MlirType enzymexlaCommMpiCommTypeGet(MlirContext ctx);
+MLIR_CAPI_EXPORTED MlirType enzymexlaCommMpiRequestTypeGet(MlirContext ctx);
+
+// values from MPI 5 ABI
+typedef enum {
+  ENZYMEXLA_COMM_MPI_COMM_NULL = 256,
+  ENZYMEXLA_COMM_MPI_COMM_WORLD = 257,
+  ENZYMEXLA_COMM_MPI_COMM_SELF = 258,
+} EnzymeXlaCommMpiComm;
+
+MLIR_CAPI_EXPORTED MlirAttribute
+enzymexlaCommMpiCommAttrGet(MlirContext ctx, EnzymeXlaCommMpiComm comm);
+
+// values from MPI 5 ABI
+typedef enum {
+  ENZYMEXLA_COMM_MPI_OP_NULL = 32,
+  ENZYMEXLA_COMM_MPI_SUM = 33,
+  ENZYMEXLA_COMM_MPI_MIN = 34,
+  ENZYMEXLA_COMM_MPI_MAX = 35,
+  ENZYMEXLA_COMM_MPI_PROD = 36,
+  ENZYMEXLA_COMM_MPI_BAND = 40,
+  ENZYMEXLA_COMM_MPI_BOR = 41,
+  ENZYMEXLA_COMM_MPI_BXOR = 42,
+  ENZYMEXLA_COMM_MPI_LAND = 48,
+  ENZYMEXLA_COMM_MPI_LOR = 49,
+  ENZYMEXLA_COMM_MPI_LXOR = 50,
+  ENZYMEXLA_COMM_MPI_MINLOC = 56,
+  ENZYMEXLA_COMM_MPI_MAXLOC = 57,
+  ENZYMEXLA_COMM_MPI_REPLACE = 60,
+  ENZYMEXLA_COMM_MPI_NO_OP = 61,
+} EnzymeXlaCommMpiOp;
+
+MLIR_CAPI_EXPORTED MlirAttribute
+enzymexlaCommMpiOpAttrGet(MlirContext ctx, EnzymeXlaCommMpiOp op);
+
+//===----------------------------------------------------------------------===//
 // Other Ops / Attributes
 //===----------------------------------------------------------------------===//
 

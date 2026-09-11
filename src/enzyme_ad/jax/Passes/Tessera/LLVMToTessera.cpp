@@ -360,6 +360,7 @@ struct LLVMToTesseraPass
     patterns.add<CallOpRewrite, ReturnOpRewrite>(ctx);
 
     GreedyRewriteConfig config;
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     config.setUseTopDownTraversal(true);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {

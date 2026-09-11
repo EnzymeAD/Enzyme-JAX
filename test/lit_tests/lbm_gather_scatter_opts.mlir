@@ -1,4 +1,5 @@
 // RUN: enzymexlamlir-opt --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(enzyme-hlo-opt{max_constant_expansion=1})" %s | FileCheck %s
 
 // ------------------------------------------------------------------------
 // Case 1: float gather whose second affine iota is hidden under
@@ -50,8 +51,9 @@ module {
   // indices[i, j] = 16 + 4*i + 32*j
   //
   // This models the LBM flag load after the f32 buffer is bitcast to bytes.
-  // Currently the gather remains because detectIotaLikeTensor does not look
-  // through the reshape.
+  // Keep a run with constant expansion disabled: folding this small index
+  // tensor would hide a failure to recognize the reshaped scaled iota in the
+  // full-size benchmark.
   // ------------------------------------------------------------------------
   func.func @gather_reshaped_scaled_iota(
       %bytes: tensor<256xi8>) -> tensor<2x3xi8> {
@@ -87,4 +89,54 @@ module {
 // CHECK-NEXT:     %[[VAL_3:.*]] = stablehlo.reshape %[[VAL_2]] : (tensor<3x2x1xi8>) -> tensor<3x2xi8>
 // CHECK-NEXT:     %[[VAL_4:.*]] = stablehlo.transpose %[[VAL_3]], dims = [1, 0] : (tensor<3x2xi8>) -> tensor<2x3xi8>
 // CHECK-NEXT:     return %[[VAL_4]] : tensor<2x3xi8>
+
+  // ------------------------------------------------------------------------
+  // Case 3: non-wrapping rectangular set-index scatter with two affine iotas.
+  //
+  // indices[i, j] = 9 + i + 8*j
+  //
+  // In an 8-column view this updates rows [1, 4) and columns [1, 3).
+  // It can be implemented as:
+  //   reshape destination 64 -> 8x8
+  //   transpose updates 2x3 -> 3x2
+  //   dynamic_update_slice at [1, 1]
+  //   reshape 8x8 -> 64
+  //
+  // ------------------------------------------------------------------------
+  func.func @scatter_rectangular_multi_iota(
+      %destination: tensor<64xf32>,
+      %updates: tensor<2x3xf32>) -> tensor<64xf32> {
+    %stride = stablehlo.constant dense<8> : tensor<2x3x1xi64>
+    %offset = stablehlo.constant dense<9> : tensor<2x3x1xi64>
+
+    %i = stablehlo.iota dim = 0 : tensor<2x3x1xi64>
+    %j = stablehlo.iota dim = 1 : tensor<2x3x1xi64>
+    %scaled_j = stablehlo.multiply %j, %stride : tensor<2x3x1xi64>
+    %grid = stablehlo.add %i, %scaled_j : tensor<2x3x1xi64>
+    %indices = stablehlo.add %grid, %offset : tensor<2x3x1xi64>
+
+    %result = "stablehlo.scatter"(%destination, %indices, %updates) <{
+      indices_are_sorted = false,
+      scatter_dimension_numbers = #stablehlo.scatter<
+        inserted_window_dims = [0],
+        scatter_dims_to_operand_dims = [0],
+        index_vector_dim = 2>,
+      unique_indices = true
+    }> ({
+    ^bb0(%old: tensor<f32>, %update: tensor<f32>):
+      stablehlo.return %update : tensor<f32>
+    }) : (tensor<64xf32>, tensor<2x3x1xi64>, tensor<2x3xf32>)
+      -> tensor<64xf32>
+    return %result : tensor<64xf32>
+  }
+
+// CHECK-LABEL: func.func @scatter_rectangular_multi_iota
+// CHECK-SAME:     %[[DEST:.*]]: tensor<64xf32>,
+// CHECK-SAME:     %[[UPD:.*]]: tensor<2x3xf32>
+// CHECK-NEXT:     %[[C1:.*]] = stablehlo.constant dense<1> : tensor<i32>
+// CHECK-NEXT:     %[[RESHAPE_DEST:.*]] = stablehlo.reshape %[[DEST]] : (tensor<64xf32>) -> tensor<8x8xf32>
+// CHECK-NEXT:     %[[TRANSPOSE_UPD:.*]] = stablehlo.transpose %[[UPD]], dims = [1, 0] : (tensor<2x3xf32>) -> tensor<3x2xf32>
+// CHECK-NEXT:     %[[DUS:.*]] = stablehlo.dynamic_update_slice %[[RESHAPE_DEST]], %[[TRANSPOSE_UPD]], %[[C1]], %[[C1]] : (tensor<8x8xf32>, tensor<3x2xf32>, tensor<i32>, tensor<i32>) -> tensor<8x8xf32>
+// CHECK-NEXT:     %[[RESULT:.*]] = stablehlo.reshape %[[DUS]] : (tensor<8x8xf32>) -> tensor<64xf32>
+// CHECK-NEXT:     return %[[RESULT]] : tensor<64xf32>
 }

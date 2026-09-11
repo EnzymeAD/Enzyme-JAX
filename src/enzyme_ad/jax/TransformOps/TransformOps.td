@@ -61,6 +61,14 @@ def ApplyAndSimplifyPatterns : EnzymeHLOPatternOp<
     "and_simplify"> {
   let patterns = ["AndSimplify"];
 }
+def ApplyReduceOrAndPadPatterns : EnzymeHLOPatternOp<
+    "reduce_or_and_pad"> {
+  let patterns = ["ReduceOrAndPad"];
+}
+def ApplyReduceOrAndPatterns : EnzymeHLOPatternOp<
+    "reduce_or_and"> {
+  let patterns = ["ReduceOrAnd"];
+}
 def ApplyMaxSimplifyPatterns : EnzymeHLOPatternOp<
     "max_simplify"> {
   let patterns = ["MaxSimplify"];
@@ -749,6 +757,11 @@ def ApplyBinBroadcastSplatMulPatterns : EnzymeHLOPatternOp<
 def ApplyElementwiseAllTransposeOperandsSimplifyPatterns : EnzymeHLOPatternOp<
     "elementwise_all_transpose_operands_simplify"> {
   let patterns = ["ElementwiseAllTransposeOperandsSimplify"];
+}
+
+def ApplyBroadcastingElementwiseAllTransposeOperandsSimplifyPatterns : EnzymeHLOPatternOp<
+    "broadcasting_elementwise_all_transpose_operands_simplify"> {
+  let patterns = ["BroadcastingElementwiseAllTransposeOperandsSimplify"];
 }
 
 def  AssociativeCommonMulOpReorderingPatterns : EnzymeHLOPatternOp<
@@ -1791,6 +1804,16 @@ def CommonCompareExpressionRewritePatterns : EnzymeHLOPatternOp<
 def ApplyScatterUpdateComputationConstPropPatterns : EnzymeHLOPatternOp<
     "scatter_update_computation_const_prop"> {
   let patterns = ["ScatterUpdateComputationConstProp"];
+}
+
+def ApplyScatterMaskedIndexSlicePatterns : EnzymeHLOPatternOp<
+    "scatter_masked_index_slice"> {
+  let patterns = ["ScatterMaskedIndexSlice"];
+}
+
+def ApplyScatterMaskedIndexSimplifyPatterns : EnzymeHLOPatternOp<
+    "scatter_masked_index_simplify"> {
+  let patterns = ["ScatterMaskedIndexSimplify"];
 }
 
 def ApplyScatterIndicesAreUniquePatterns : EnzymeHLOPatternOp<

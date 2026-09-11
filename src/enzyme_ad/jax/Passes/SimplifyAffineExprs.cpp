@@ -9,8 +9,12 @@
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IntegerSet.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Utils.h"
+#include "llvm/ADT/ScopeExit.h"
 
 #include <isl/aff.h>
 #include <isl/aff_type.h>
@@ -126,6 +130,24 @@ static LogicalResult addAffineIfOpDomain(AffineIfOp ifOp, bool isElse,
   return success();
 }
 
+// Loop bound operands that are symbols only by virtue of dominating the affine
+// scope (e.g. an index_cast defined in an scf.if above a gpu wrapper) are
+// rejected by FlatAffineValueConstraints::addBound, which only accepts
+// symbols defined at the top level of a scope. Register them as symbols of the
+// domain up front so the bound constraints can still be added.
+static void addDominatingBoundSymbols(AffineMap map, ValueRange mapOperands,
+                                      Region *scope,
+                                      FlatAffineValueConstraints *domain) {
+  SmallVector<Value> operands(mapOperands);
+  fullyComposeAffineMapAndOperands(&map, &operands);
+  map = simplifyAffineMap(map);
+  canonicalizeMapAndOperands(&map, &operands);
+  for (Value operand : operands)
+    if (!domain->containsVar(operand) && !isAffineInductionVar(operand) &&
+        !isValidSymbol(operand) && isValidSymbol(operand, scope))
+      domain->appendSymbolVar(operand);
+}
+
 static LogicalResult getIndexSetEx(ArrayRef<Operation *> ops,
                                    ArrayRef<bool> isElse,
                                    FlatAffineValueConstraints *domain,
@@ -157,14 +179,27 @@ static LogicalResult getIndexSetEx(ArrayRef<Operation *> ops,
   for (auto &&[op, complement] : llvm::zip(ops, isElse)) {
     // Add constraints from forOp's bounds.
     if (AffineForOp forOp = dyn_cast<AffineForOp>(op)) {
+      Region *scope = getAffineScope(forOp);
+      addDominatingBoundSymbols(forOp.getLowerBoundMap(),
+                                forOp.getLowerBoundOperands(), scope, domain);
+      addDominatingBoundSymbols(forOp.getUpperBoundMap(),
+                                forOp.getUpperBoundOperands(), scope, domain);
       if (failed(domain->addAffineForOpDomain(forOp)))
         return failure();
     } else if (auto ifOp = dyn_cast<AffineIfOp>(op)) {
       if (failed(addAffineIfOpDomain(ifOp, complement, domain)) && !allowFail)
         return failure();
-    } else if (auto parallelOp = dyn_cast<AffineParallelOp>(op))
+    } else if (auto parallelOp = dyn_cast<AffineParallelOp>(op)) {
+      Region *scope = getAffineScope(parallelOp);
+      addDominatingBoundSymbols(parallelOp.getLowerBoundsMap(),
+                                parallelOp.getLowerBoundsOperands(), scope,
+                                domain);
+      addDominatingBoundSymbols(parallelOp.getUpperBoundsMap(),
+                                parallelOp.getUpperBoundsOperands(), scope,
+                                domain);
       if (failed(domain->addAffineParallelOpDomain(parallelOp)))
         return failure();
+    }
   }
   return success();
 }
@@ -238,29 +273,35 @@ struct AffineExprToIslAffConverter {
       case mlir::AffineExprKind::Add:
         return isl_aff_add(lhs, rhs);
       case mlir::AffineExprKind::CeilDiv:
+        if (isl_aff_is_cst(rhs) != isl_bool_true)
+          break;
         return isl_aff_ceil(isl_aff_div(lhs, rhs));
       case mlir::AffineExprKind::FloorDiv:
+        if (isl_aff_is_cst(rhs) != isl_bool_true)
+          break;
         return isl_aff_floor(isl_aff_div(lhs, rhs));
       case mlir::AffineExprKind::Mod: {
-        if (isl_aff_is_cst(rhs) == isl_bool_true) {
-          isl_aff *r = isl_aff_mod_val(lhs, isl_aff_get_constant_val(rhs));
-          isl_aff_free(rhs);
-          return r;
-        } else {
-          isl_aff_free(lhs);
-          isl_aff_free(rhs);
-          return nullptr;
-        }
+        if (isl_aff_is_cst(rhs) != isl_bool_true)
+          break;
+        isl_aff *r = isl_aff_mod_val(lhs, isl_aff_get_constant_val(rhs));
+        isl_aff_free(rhs);
+        return r;
       }
       case mlir::AffineExprKind::Mul:
+        if (isl_aff_is_cst(lhs) != isl_bool_true &&
+            isl_aff_is_cst(rhs) != isl_bool_true)
+          break;
         return isl_aff_mul(lhs, rhs);
       default:
         LLVM_DEBUG(llvm::dbgs()
                    << "Unhandled kind " << (unsigned)bo.getKind() << "\n");
-        isl_aff_free(lhs);
-        isl_aff_free(rhs);
-        return nullptr;
+        break;
       }
+      // Semi-affine: a division or modulus by a symbol, or a product of two
+      // non-constants, has no isl affine form.
+      isl_aff_free(lhs);
+      isl_aff_free(rhs);
+      return nullptr;
     } else if (auto c = dyn_cast<AffineConstantExpr>(expr)) {
       return isl_aff_val_on_domain(isl_local_space_copy(ls),
                                    isl_val_int_from_si(ctx, c.getValue()));
@@ -551,6 +592,8 @@ struct IslToAffineExprConverter {
   unsigned symOffset;
   PosMapTy dimPosMap;
   PosMapTy symPosMap;
+  // Set when an expression has no isl form or decodes to no map expression.
+  bool incomplete = false;
 
   AffineExpr createOpBin(__isl_take isl_ast_expr *Expr) {
     AffineExpr LHS, RHS, Res;
@@ -723,10 +766,13 @@ struct IslToAffineExprConverter {
 
     unsigned id = (uintptr_t)isl_id_get_user(Id);
     id = id - 1;
+    PosMapTy &posMap = id < symOffset ? dimPosMap : symPosMap;
+    auto pos = posMap.find(id < symOffset ? id : id - symOffset);
+    assert(pos != posMap.end() && "isl identifier outside the domain");
     if (id < symOffset)
-      V = getAffineDimExpr(dimPosMap[id], mlirContext);
+      V = getAffineDimExpr(pos->second, mlirContext);
     else
-      V = getAffineSymbolExpr(symPosMap[id - symOffset], mlirContext);
+      V = getAffineSymbolExpr(pos->second, mlirContext);
 
     isl_id_free(Id);
     isl_ast_expr_free(Expr);
@@ -915,36 +961,33 @@ IslAnalysis::IslAnalysis() {
 
 IslAnalysis::~IslAnalysis() { isl_ctx_free(ctx); }
 
-std::optional<AffineMap> handleAffineValueMap(IslAnalysis &islAnalysis,
-                                              AffineValueMap avm,
-                                              isl_set *domain,
-                                              FlatAffineValueConstraints cst) {
+// Simplifies the results of `avm` against `domain`, the enclosing loop and
+// branch constraints over the variables of `cst`. Map operands the domain does
+// not know become unconstrained variables of it, so a map with its own symbol
+// operands, or one nested in a loop with a symbolic bound, still folds against
+// the bounds it is nested in. A simplified result may read a domain variable
+// the map had no operand for (a domain equality between two loop ivs lets
+// the gist express one through the other); such variables become new
+// operands, so the returned value map may have more operands than `avm`.
+std::optional<AffineValueMap>
+handleAffineValueMap(IslAnalysis &islAnalysis, AffineValueMap avm,
+                     isl_set *domain, FlatAffineValueConstraints cst) {
   isl_ctx *ctx = islAnalysis.getCtx();
   AffineMap map = avm.getAffineMap();
   LLVM_DEBUG(llvm::dbgs() << "Mapping dims:\n");
   PosMapTy dimPosMap;
   PosMapTy dimPosMapReverse;
-  for (unsigned i = 0; i < cst.getNumDimVars(); i++) {
-    Value cstVal = cst.getValue(i);
-    LLVM_DEBUG(llvm::dbgs() << "cstVal " << cstVal << "\n");
-    for (unsigned origDim = 0; origDim < map.getNumDims(); origDim++) {
-      Value dim = avm.getOperand(origDim);
-      LLVM_DEBUG(llvm::dbgs() << "dim " << dim << "\n");
-      if (cstVal == dim) {
-        LLVM_DEBUG(llvm::dbgs() << origDim << " <--> " << i << "\n");
-        dimPosMap[origDim] = i;
-        dimPosMapReverse[i] = origDim;
-        break;
-      }
-    }
-  }
-
-  if (avm.getNumSymbols() != 0 || cst.getNumSymbolVars() != 0) {
-    // TODO While the fact that all dims from the map _must_ appear in the cst,
-    // this is not the case for symbols. We do not handle that case correctly
-    // currently, thus we abort early.
-    domain = isl_set_free(domain);
-    return {};
+  unsigned numDomainDims = cst.getNumDimVars();
+  unsigned numDomainSymbols = cst.getNumSymbolVars();
+  for (unsigned origDim = 0, numDims = map.getNumDims(); origDim < numDims;
+       origDim++) {
+    Value dim = avm.getOperand(origDim);
+    unsigned pos;
+    if (!cst.findVar(dim, &pos) || pos >= cst.getNumDimVars())
+      pos = cst.appendDimVar(dim);
+    LLVM_DEBUG(llvm::dbgs() << origDim << " <--> " << pos << "\n");
+    dimPosMap[origDim] = pos;
+    dimPosMapReverse[pos] = origDim;
   }
 
   bool changed = false;
@@ -952,17 +995,32 @@ std::optional<AffineMap> handleAffineValueMap(IslAnalysis &islAnalysis,
   LLVM_DEBUG(llvm::dbgs() << "Mapping syms:\n");
   PosMapTy symPosMap;
   PosMapTy symPosMapReverse;
-  for (unsigned i = 0; i < cst.getNumSymbolVars(); i++) {
-    for (unsigned origSym = 0; origSym < map.getNumSymbols(); origSym++) {
-      Value dim = avm.getOperand(origSym + map.getNumDims());
-      if (cst.getValue(i + cst.getNumDimVars()) == dim) {
-        LLVM_DEBUG(llvm::dbgs() << origSym << " <--> " << i << "\n");
-        symPosMap[origSym] = i;
-        symPosMapReverse[i] = origSym;
-        break;
-      }
-    }
+  for (unsigned origSym = 0, numSymbols = map.getNumSymbols();
+       origSym < numSymbols; origSym++) {
+    Value sym = avm.getOperand(origSym + map.getNumDims());
+    unsigned pos;
+    if (!cst.findVar(sym, &pos) || pos < cst.getNumDimVars() ||
+        pos >= cst.getNumDimAndSymbolVars())
+      pos = cst.appendSymbolVar(sym);
+    pos -= cst.getNumDimVars();
+    LLVM_DEBUG(llvm::dbgs() << origSym << " <--> " << pos << "\n");
+    symPosMap[origSym] = pos;
+    symPosMapReverse[pos] = origSym;
   }
+  // Every other domain variable decodes to a position past the map's own,
+  // backed by the value the domain associates with it; the ones a result
+  // actually reads are appended as operands below.
+  SmallVector<Value> extraDims, extraSymbols;
+  for (unsigned pos = 0, e = cst.getNumDimVars(); pos < e; ++pos)
+    if (!dimPosMapReverse.count(pos)) {
+      dimPosMapReverse[pos] = map.getNumDims() + extraDims.size();
+      extraDims.push_back(cst.getValue(pos));
+    }
+  for (unsigned pos = 0, e = cst.getNumSymbolVars(); pos < e; ++pos)
+    if (!symPosMapReverse.count(pos)) {
+      symPosMapReverse[pos] = map.getNumSymbols() + extraSymbols.size();
+      extraSymbols.push_back(cst.getValue(cst.getNumDimVars() + pos));
+    }
 
   isl_space *space =
       isl_space_set_alloc(ctx, cst.getNumSymbolVars(), cst.getNumDimVars());
@@ -970,11 +1028,23 @@ std::optional<AffineMap> handleAffineValueMap(IslAnalysis &islAnalysis,
     isl_id *id = isl_id_alloc(ctx, "dim", (void *)(size_t)(i + 1));
     space = isl_space_set_dim_id(space, isl_dim_set, i, id);
   }
+  // isl aligns the parameters of the expression and the domain by identifier
+  // (name and user pointer together), and refuses to add parameters to a set
+  // whose existing ones are unnamed.
   unsigned symOffset = cst.getNumDimVars();
-  for (unsigned i = 0; i < cst.getNumSymbolVars(); i++) {
-    isl_id *id = isl_id_alloc(ctx, "sym", (void *)(size_t)(symOffset + i + 1));
-    space = isl_space_set_dim_id(space, isl_dim_set, i, id);
-  }
+  auto symbolId = [&](unsigned i) {
+    return isl_id_alloc(ctx, "sym", (void *)(size_t)(symOffset + i + 1));
+  };
+  domain = isl_set_add_dims(domain, isl_dim_set,
+                            cst.getNumDimVars() - numDomainDims);
+  for (unsigned i = 0; i < numDomainSymbols; i++)
+    domain = isl_set_set_dim_id(domain, isl_dim_param, i, symbolId(i));
+  domain = isl_set_add_dims(domain, isl_dim_param,
+                            cst.getNumSymbolVars() - numDomainSymbols);
+  for (unsigned i = numDomainSymbols; i < cst.getNumSymbolVars(); i++)
+    domain = isl_set_set_dim_id(domain, isl_dim_param, i, symbolId(i));
+  for (unsigned i = 0; i < cst.getNumSymbolVars(); i++)
+    space = isl_space_set_dim_id(space, isl_dim_param, i, symbolId(i));
 
   isl_ast_build *build =
       isl_ast_build_from_context(isl_set_universe(isl_space_copy(space)));
@@ -989,6 +1059,11 @@ std::optional<AffineMap> handleAffineValueMap(IslAnalysis &islAnalysis,
     LLVM_DEBUG(llvm::dbgs() << "Handling AffineExpr\n" << mlirExpr << "\n");
     LLVM_DEBUG(llvm::dbgs() << "Got aff\n");
     isl_aff *aff = m2i.getIslAff(mlirExpr);
+    if (!aff) {
+      i2m.incomplete = true;
+      newExprs.push_back(mlirExpr);
+      continue;
+    }
     LLVM_DEBUG(isl_aff_dump(aff));
     aff = isl_aff_gist(aff, isl_set_copy(domain));
     LLVM_DEBUG(llvm::dbgs() << "Gisted aff\n");
@@ -999,6 +1074,8 @@ std::optional<AffineMap> handleAffineValueMap(IslAnalysis &islAnalysis,
     LLVM_DEBUG(llvm::dbgs() << "Back to AffineExpr\n");
     AffineExpr newMlirExpr = i2m.create(expr);
     LLVM_DEBUG(llvm::dbgs() << newMlirExpr << "\n");
+    if (!newMlirExpr)
+      i2m.incomplete = true;
     newExprs.push_back(newMlirExpr);
     if (mlirExpr != newMlirExpr)
       changed = true;
@@ -1007,17 +1084,59 @@ std::optional<AffineMap> handleAffineValueMap(IslAnalysis &islAnalysis,
   domain = isl_set_free(domain);
   build = isl_ast_build_free(build);
 
-  if (!changed)
+  if (!changed || i2m.incomplete)
     return std::nullopt;
 
-  AffineMap newMap = AffineMap::get(map.getNumDims(), map.getNumSymbols(),
-                                    newExprs, map.getContext());
+  // Keep only the extra variables some result reads, numbered contiguously
+  // after the map's own.
+  SmallVector<Value> operands(avm.getOperands().take_front(map.getNumDims()));
+  SmallVector<AffineExpr> dimReplacements, symbolReplacements;
+  auto compact = [&](unsigned own, ArrayRef<Value> extra, bool isDim,
+                     SmallVectorImpl<AffineExpr> &replacements) {
+    llvm::SmallBitVector used(extra.size());
+    for (AffineExpr expr : newExprs)
+      expr.walk([&](AffineExpr e) {
+        unsigned pos;
+        if (auto d = dyn_cast<AffineDimExpr>(e); d && isDim)
+          pos = d.getPosition();
+        else if (auto sy = dyn_cast<AffineSymbolExpr>(e); sy && !isDim)
+          pos = sy.getPosition();
+        else
+          return;
+        if (pos >= own)
+          used.set(pos - own);
+      });
+    for (unsigned i = 0; i < own; ++i)
+      replacements.push_back(isDim ? getAffineDimExpr(i, map.getContext())
+                                   : getAffineSymbolExpr(i, map.getContext()));
+    unsigned next = own;
+    for (unsigned i = 0; i < extra.size(); ++i) {
+      if (used[i])
+        operands.push_back(extra[i]);
+      replacements.push_back(
+          isDim ? getAffineDimExpr(used[i] ? next : 0, map.getContext())
+                : getAffineSymbolExpr(used[i] ? next : 0, map.getContext()));
+      next += used[i];
+    }
+    return next;
+  };
+  unsigned numDims =
+      compact(map.getNumDims(), extraDims, true, dimReplacements);
+  operands.append(avm.getOperands().begin() + map.getNumDims(),
+                  avm.getOperands().end());
+  unsigned numSymbols =
+      compact(map.getNumSymbols(), extraSymbols, false, symbolReplacements);
+  for (AffineExpr &expr : newExprs)
+    expr = expr.replaceDimsAndSymbols(dimReplacements, symbolReplacements);
+
+  AffineMap newMap =
+      AffineMap::get(numDims, numSymbols, newExprs, map.getContext());
   newMap = mlir::enzyme::recreateExpr(newMap);
 
   if (map == newMap)
     return {};
 
-  return newMap;
+  return AffineValueMap(newMap, operands);
 }
 
 template <typename T>
@@ -1032,36 +1151,764 @@ LogicalResult handleAffineAccessOp(IslAnalysis &islAnalysis, T access) {
   AffineMap map = access.getMap();
   AffineValueMap avm(map, access.getMapOperands(), {});
 
-  auto newMap = handleAffineValueMap(islAnalysis, avm, domain, cst);
-  if (!newMap)
+  auto simplified = handleAffineValueMap(islAnalysis, avm, domain, cst);
+  if (!simplified)
     return failure();
 
-  access.setMap(*newMap);
+  // The operands ahead of the indices (the memref, and the value of a store)
+  // stay; the indices are the value map's operands.
+  SmallVector<Value> operands(
+      access->getOperands().drop_back(access.getMapOperands().size()));
+  operands.append(simplified->getOperands().begin(),
+                  simplified->getOperands().end());
+  access->setOperands(operands);
+  access.setMap(simplified->getAffineMap());
   return success();
 }
 
+// Simplifies the condition of `ifOp` against its domain and rebuilds its
+// constraints in the pass's canonical form, which applies even where the domain
+// is unavailable.
 LogicalResult handleAffineIfOp(IslAnalysis &islAnalysis, AffineIfOp ifOp) {
   isl_ctx *ctx = islAnalysis.getCtx();
+  IntegerSet set = ifOp.getCondition();
+  IntegerSet newSet = set;
+  SmallVector<Value> operands(ifOp.getOperands());
   LLVM_DEBUG(llvm::dbgs() << "Got domain\n");
   auto [domain, cst] = ::getDomain(ctx, ifOp, true);
-  if (!domain)
+  if (domain) {
+    LLVM_DEBUG(isl_set_dump(domain));
+    LLVM_DEBUG(cst.dump());
+    auto csts = set.getConstraints();
+    AffineMap map = AffineMap::get(set.getNumDims(), set.getNumSymbols(), csts,
+                                   ifOp.getContext());
+    AffineValueMap avm(map, ifOp.getOperands(), {});
+    if (auto simplified = handleAffineValueMap(islAnalysis, avm, domain, cst)) {
+      AffineMap newMap = simplified->getAffineMap();
+      newSet = IntegerSet::get(newMap.getNumDims(), newMap.getNumSymbols(),
+                               newMap.getResults(), set.getEqFlags());
+      operands.assign(simplified->getOperands().begin(),
+                      simplified->getOperands().end());
+    }
+  }
+  newSet = mlir::enzyme::recreateExpr(newSet);
+  if (newSet == set)
     return failure();
-  LLVM_DEBUG(isl_set_dump(domain));
-  LLVM_DEBUG(cst.dump());
-  IntegerSet set = ifOp.getCondition();
-  auto csts = set.getConstraints();
-  AffineMap map = AffineMap::get(set.getNumDims(), set.getNumSymbols(), csts,
-                                 ifOp.getContext());
-  AffineValueMap avm(map, ifOp.getOperands(), {});
-  auto newMap = handleAffineValueMap(islAnalysis, avm, domain, cst);
-  if (!newMap)
-    return failure();
-
-  IntegerSet newSet = IntegerSet::get(set.getNumDims(), set.getNumSymbols(),
-                                      newMap->getResults(), set.getEqFlags());
-  ifOp.setCondition(newSet);
+  ifOp.setConditional(newSet, operands);
   return success();
 }
+
+// Drop bound expressions another expression makes redundant: an upper bound
+// min(a, b) where b >= a for every value of the dims and symbols is min(a),
+// and a lower bound max is its dual. Two bound operands often say the same
+// thing through different arithmetic -- a grid counted in blocks against the
+// size it was computed from -- so the map is first composed through the
+// arithmetic defining its symbol operands, down to shared base values, before
+// asking isl whether the comparison can ever fail. The composition is
+// affine-cfg's, and reads the arithmetic the way affine-cfg read it when it
+// wrote the bounds: casts preserve the value, sums and products do not wrap,
+// and signed division is floordiv.
+
+// Returns `map` with every expression another expression of its group
+// subsumes dropped, with the groups' new sizes; std::nullopt when all stay.
+static std::optional<std::pair<AffineMap, SmallVector<int32_t>>>
+pruneBoundMap(__isl_keep isl_ctx *ctx, AffineMap map, ValueRange operands,
+              DenseIntElementsAttr groups, bool isUpper, Region *scope) {
+  AffineMap expanded = map;
+  SmallVector<Value> expandedOperands(operands);
+  if (!fully2ComposeAffineMapAndOperands(&expanded, &expandedOperands, scope,
+                                         /*throughSymbols=*/true))
+    return std::nullopt;
+
+  unsigned numDims = expanded.getNumDims();
+  unsigned numSyms = expanded.getNumSymbols();
+  isl_space *space = isl_space_set_alloc(ctx, numSyms, numDims);
+  for (unsigned i : llvm::seq(numDims))
+    space =
+        isl_space_set_dim_id(space, isl_dim_set, i,
+                             isl_id_alloc(ctx, "dim", (void *)(size_t)(i + 1)));
+  for (unsigned i : llvm::seq(numSyms))
+    space =
+        isl_space_set_dim_id(space, isl_dim_param, i,
+                             isl_id_alloc(ctx, "sym", (void *)(size_t)(i + 1)));
+  AffineExprToIslAffConverter conv{
+      {}, {}, isl_local_space_from_space(space), ctx};
+  for (unsigned i : llvm::seq(numDims))
+    conv.dimPosMap[i] = i;
+  for (unsigned i : llvm::seq(numSyms))
+    conv.symPosMap[i] = i;
+
+  SmallVector<AffineExpr> keptExprs;
+  SmallVector<int32_t> keptGroups;
+  bool changed = false;
+  unsigned start = 0;
+  for (unsigned size : groups.getValues<uint32_t>()) {
+    ArrayRef<AffineExpr> group = map.getResults().slice(start, size);
+    SmallVector<isl_aff *> affs;
+    for (AffineExpr expr : expanded.getResults().slice(start, size))
+      affs.push_back(conv.getIslAff(expr));
+    start += size;
+    SmallVector<bool> kept(size, true);
+    for (auto [j, affJ] : llvm::enumerate(affs)) {
+      if (!affJ)
+        continue;
+      for (auto [i, affI] : llvm::enumerate(affs)) {
+        if (i == j || !kept[i] || !affI)
+          continue;
+        // Upper: j is redundant where e_j >= e_i everywhere, i.e. the set
+        // e_j < e_i is empty. Lower: the dual.
+        isl_set *fails =
+            isUpper ? isl_aff_lt_set(isl_aff_copy(affJ), isl_aff_copy(affI))
+                    : isl_aff_gt_set(isl_aff_copy(affJ), isl_aff_copy(affI));
+        bool redundant = isl_set_is_empty(fails) == isl_bool_true;
+        isl_set_free(fails);
+        if (redundant) {
+          kept[j] = false;
+          break;
+        }
+      }
+    }
+    for (isl_aff *aff : affs)
+      isl_aff_free(aff);
+    unsigned keptCount = 0;
+    for (auto [j, expr] : llvm::enumerate(group)) {
+      if (!kept[j])
+        continue;
+      keptExprs.push_back(expr);
+      keptCount++;
+    }
+    keptGroups.push_back(keptCount);
+    changed |= keptCount != size;
+  }
+  isl_local_space_free(conv.ls);
+  if (!changed)
+    return std::nullopt;
+  return std::make_pair(AffineMap::get(map.getNumDims(), map.getNumSymbols(),
+                                       keptExprs, map.getContext()),
+                        std::move(keptGroups));
+}
+
+LogicalResult pruneParallelBounds(IslAnalysis &islAnalysis,
+                                  affine::AffineParallelOp op,
+                                  RewriterBase &rewriter) {
+  Region *scope = getLocalAffineScope(op);
+  if (!scope)
+    return failure();
+  isl_ctx *ctx = islAnalysis.getCtx();
+  auto lower =
+      pruneBoundMap(ctx, op.getLowerBoundsMap(), op.getLowerBoundsOperands(),
+                    op.getLowerBoundsGroups(), /*isUpper=*/false, scope);
+  auto upper =
+      pruneBoundMap(ctx, op.getUpperBoundsMap(), op.getUpperBoundsOperands(),
+                    op.getUpperBoundsGroups(), /*isUpper=*/true, scope);
+  if (!lower && !upper)
+    return failure();
+  rewriter.modifyOpInPlace(op, [&] {
+    if (lower) {
+      op.setLowerBoundsMapAttr(AffineMapAttr::get(lower->first));
+      op.setLowerBoundsGroupsAttr(rewriter.getI32TensorAttr(lower->second));
+    }
+    if (upper) {
+      op.setUpperBoundsMapAttr(AffineMapAttr::get(upper->first));
+      op.setUpperBoundsGroupsAttr(rewriter.getI32TensorAttr(upper->second));
+    }
+  });
+  return success();
+}
+
+// The domain of the affine loop and conditional structure around an
+// operation, for the folds below.
+//
+// A domain is the `getDomain` set above (the enclosing affine.for/parallel
+// bounds and affine.if integer sets, conditions that do not convert dropped):
+// one set dimension per induction variable, one parameter per symbol the
+// bounds and conditions depend on. On top of that, every symbol is composed
+// through the arithmetic defining it, as `pruneBoundMap` composes bound
+// operands, and equated with the composition; the values composition stops at
+// are further parameters. A queried value composes the same way, so
+// `blockIdx + gridDim` compared against an extent whose bound shares
+// `gridDim`'s base meets the bound on `blockIdx` in the same parameters.
+//
+// Built per query, as the access simplifications above build theirs: the
+// patterns run under drivers with and without a listener.
+namespace {
+class LoopDomain {
+public:
+  // The domain of the operations in `op`'s block; false when no affine op
+  // encloses the block or its structure does not convert.
+  LoopDomain(isl_ctx *ctx, Operation *op);
+  ~LoopDomain() { isl_set_free(set); }
+  LoopDomain(const LoopDomain &) = delete;
+  LoopDomain &operator=(const LoopDomain &) = delete;
+  explicit operator bool() const { return set != nullptr; }
+
+  // The results of `map` on `operands` as expressions over the dimensions and
+  // parameters of the domain, each operand composed through the arithmetic
+  // defining it; a value composition stops at that is not an induction
+  // variable or a known parameter becomes a new parameter. A value keyed in
+  // `substitution` reads as the value it maps to. Fails when the composition
+  // could not run to completion.
+  FailureOr<SmallVector<AffineExpr>>
+  compose(AffineMap map, ValueRange operands,
+          const DenseMap<Value, Value> *substitution = nullptr);
+
+  // `exprs` over the dimensions and parameters of the domain as isl functions.
+  // Fails when some expression has no affine form (a modulo by a
+  // non-constant). The caller frees the functions.
+  FailureOr<SmallVector<isl_aff *>> getAffs(ArrayRef<AffineExpr> exprs);
+
+  // `values` composed as `compose` describes, as isl functions.
+  FailureOr<SmallVector<isl_aff *>>
+  getAffs(ArrayRef<Value> values,
+          const DenseMap<Value, Value> *substitution = nullptr) {
+    SmallVector<AffineExpr> exprs;
+    for (Value value : values) {
+      FailureOr<AffineExpr> expr = compose(value, substitution);
+      if (failed(expr))
+        return failure();
+      exprs.push_back(*expr);
+    }
+    return getAffs(exprs);
+  }
+
+  // Whether `other` has no point in the domain.
+  bool emptyOnDomain(__isl_take isl_set *other) const {
+    isl_set *inDomain = isl_set_intersect(isl_set_copy(set), other);
+    bool empty = isl_set_is_empty(inDomain) == isl_bool_true;
+    isl_set_free(inDomain);
+    return empty;
+  }
+
+  // Whether `aff` is non-negative on every point of the domain.
+  bool nonNegOnDomain(__isl_keep isl_aff *aff) const {
+    isl_aff *zero = isl_aff_val_on_domain(isl_aff_get_domain_local_space(aff),
+                                          isl_val_zero(ctx));
+    return emptyOnDomain(isl_aff_lt_set(isl_aff_copy(aff), zero));
+  }
+
+  // Set dimensions are the induction variables, parameters the symbols and
+  // the values compositions stopped at.
+  isl_set *set = nullptr;
+
+private:
+  // `value` composed as `compose` describes.
+  FailureOr<AffineExpr> compose(Value value,
+                                const DenseMap<Value, Value> *substitution) {
+    AffineMap map =
+        AffineMap::get(0, 1, getAffineSymbolExpr(0, value.getContext()));
+    FailureOr<SmallVector<AffineExpr>> exprs =
+        compose(map, value, substitution);
+    if (failed(exprs))
+      return failure();
+    return (*exprs)[0];
+  }
+
+  isl_ctx *ctx;
+  // Induction variable to set dimension.
+  DenseMap<Value, unsigned> dimPos;
+  // Symbol or leaf value to parameter.
+  DenseMap<Value, unsigned> paramPos;
+  // The affine scope compositions stay within.
+  Region *scope = nullptr;
+};
+
+LoopDomain::LoopDomain(isl_ctx *ctx, Operation *op) : ctx(ctx) {
+  SmallVector<Operation *> enclosing;
+  affine::getEnclosingAffineOps(*op, &enclosing);
+  scope = getLocalAffineScope(op);
+  if (enclosing.empty() || !scope)
+    return;
+  auto [domain, cst] = ::getDomain(ctx, op, /*overApproximationAllowed=*/true);
+  if (!domain)
+    return;
+  set = domain;
+
+  unsigned numDims = cst.getNumDimVars();
+  for (unsigned pos : llvm::seq(numDims))
+    dimPos[cst.getValue(pos)] = pos;
+  for (auto [pos, symbol] :
+       llvm::enumerate(cst.getMaybeValues(presburger::VarKind::Symbol)))
+    if (symbol)
+      paramPos[*symbol] = pos;
+
+  // Tie each symbol to what it composes to. A symbol composition stops at, or
+  // fails on, is its own parameter and gets no tie. Compose everything before
+  // converting: compositions add parameters, and the conversion works in the
+  // final space.
+  SmallVector<std::pair<Value, unsigned>> symbols(paramPos.begin(),
+                                                  paramPos.end());
+  SmallVector<std::pair<unsigned, AffineExpr>> symbolExprs;
+  for (auto [symbol, pos] : symbols)
+    if (FailureOr<AffineExpr> expr = compose(symbol, /*substitution=*/nullptr);
+        succeeded(expr))
+      symbolExprs.emplace_back(pos, *expr);
+  isl_local_space *localSpace =
+      isl_local_space_from_space(isl_set_get_space(set));
+  llvm::scope_exit freeLocalSpace([&] { isl_local_space_free(localSpace); });
+  AffineExprToIslAffConverter converter{{}, {}, localSpace, ctx};
+  for (unsigned pos : llvm::seq(numDims))
+    converter.dimPosMap[pos] = pos;
+  for (unsigned pos : llvm::seq(isl_set_dim(set, isl_dim_param)))
+    converter.symPosMap[pos] = pos;
+  for (auto [pos, expr] : symbolExprs) {
+    if (expr == getAffineSymbolExpr(pos, expr.getContext()))
+      continue;
+    isl_aff *composedAff = converter.getIslAff(expr);
+    if (!composedAff)
+      continue;
+    isl_aff *symbolAff = isl_aff_var_on_domain(isl_local_space_copy(localSpace),
+                                               isl_dim_param, pos);
+    set = isl_set_intersect(set, isl_aff_eq_set(symbolAff, composedAff));
+  }
+}
+
+FailureOr<SmallVector<AffineExpr>>
+LoopDomain::compose(AffineMap map, ValueRange operands,
+                    const DenseMap<Value, Value> *substitution) {
+  MLIRContext *mlirCtx = map.getContext();
+  SmallVector<Value> composedOperands(operands);
+  // Without a rewriter the composition stops at an operand it would have to
+  // hoist (see composeAffineMapAndOperands).
+  if (!fully2ComposeAffineMapAndOperands(&map, &composedOperands, scope,
+                                         /*throughSymbols=*/true))
+    return failure();
+  SmallVector<AffineExpr> dimReplacements, symbolReplacements;
+  for (auto [index, operand] : llvm::enumerate(composedOperands)) {
+    AffineExpr replacement;
+    auto dim = dimPos.find(operand);
+    if (dim != dimPos.end()) {
+      replacement = getAffineDimExpr(dim->second, mlirCtx);
+    } else if (substitution && substitution->contains(operand)) {
+      FailureOr<AffineExpr> composed =
+          compose(substitution->lookup(operand), substitution);
+      if (failed(composed))
+        return failure();
+      replacement = *composed;
+    } else {
+      auto param = paramPos.find(operand);
+      if (param == paramPos.end()) {
+        unsigned pos = isl_set_dim(set, isl_dim_param);
+        set = isl_set_add_dims(set, isl_dim_param, 1);
+        param = paramPos.try_emplace(operand, pos).first;
+      }
+      replacement = getAffineSymbolExpr(param->second, mlirCtx);
+    }
+    (index < map.getNumDims() ? dimReplacements : symbolReplacements)
+        .push_back(replacement);
+  }
+  SmallVector<AffineExpr> exprs;
+  for (AffineExpr result : map.getResults())
+    exprs.push_back(
+        result.replaceDimsAndSymbols(dimReplacements, symbolReplacements));
+  return exprs;
+}
+
+FailureOr<SmallVector<isl_aff *>>
+LoopDomain::getAffs(ArrayRef<AffineExpr> exprs) {
+  isl_local_space *localSpace =
+      isl_local_space_from_space(isl_set_get_space(set));
+  llvm::scope_exit freeLocalSpace([&] { isl_local_space_free(localSpace); });
+  AffineExprToIslAffConverter converter{{}, {}, localSpace, ctx};
+  for (unsigned pos : llvm::seq(isl_set_dim(set, isl_dim_set)))
+    converter.dimPosMap[pos] = pos;
+  for (unsigned pos : llvm::seq(isl_set_dim(set, isl_dim_param)))
+    converter.symPosMap[pos] = pos;
+  SmallVector<isl_aff *> affs;
+  for (AffineExpr expr : exprs)
+    affs.push_back(converter.getIslAff(expr));
+  if (llvm::is_contained(affs, nullptr)) {
+    for (isl_aff *aff : affs)
+      isl_aff_free(aff);
+    return failure();
+  }
+  return affs;
+}
+
+// The points where `lhs pred rhs` holds; isl compares integers, so an
+// unsigned predicate fails.
+FailureOr<isl_set *> comparisonSet(arith::CmpIPredicate pred,
+                                   __isl_take isl_aff *lhs,
+                                   __isl_take isl_aff *rhs) {
+  using Pred = arith::CmpIPredicate;
+  switch (pred) {
+  case Pred::eq:
+    return isl_aff_eq_set(lhs, rhs);
+  case Pred::ne:
+    return isl_aff_ne_set(lhs, rhs);
+  case Pred::slt:
+    return isl_aff_lt_set(lhs, rhs);
+  case Pred::sle:
+    return isl_aff_le_set(lhs, rhs);
+  case Pred::sgt:
+    return isl_aff_gt_set(lhs, rhs);
+  case Pred::sge:
+    return isl_aff_ge_set(lhs, rhs);
+  case Pred::ult:
+  case Pred::ule:
+  case Pred::ugt:
+  case Pred::uge:
+    break;
+  }
+  isl_aff_free(lhs);
+  isl_aff_free(rhs);
+  return failure();
+}
+
+// Collapse a min/max whose order the enclosing loop bounds already decide
+// (maxsi(tid + 2, 2) under tid >= 0), so a loop bound built from it is
+// affine and the loop raises.
+template <typename MinMaxOp>
+struct FoldMinMaxUsingLoopBounds : public OpRewritePattern<MinMaxOp> {
+  IslAnalysis &islAnalysis;
+  FoldMinMaxUsingLoopBounds(MLIRContext &context, IslAnalysis &islAnalysis)
+      : OpRewritePattern<MinMaxOp>(&context), islAnalysis(islAnalysis) {}
+
+  LogicalResult matchAndRewrite(MinMaxOp op,
+                                PatternRewriter &rewriter) const override {
+    bool isMax = std::is_same_v<MinMaxOp, arith::MaxSIOp> ||
+                 std::is_same_v<MinMaxOp, arith::MaxUIOp>;
+    bool isUnsigned = std::is_same_v<MinMaxOp, arith::MaxUIOp> ||
+                      std::is_same_v<MinMaxOp, arith::MinUIOp>;
+    Value lhs = op.getLhs(), rhs = op.getRhs();
+    LoopDomain domain(islAnalysis.getCtx(), op);
+    if (!domain)
+      return failure();
+    FailureOr<SmallVector<isl_aff *>> affs = domain.getAffs({lhs, rhs});
+    if (failed(affs))
+      return failure();
+    isl_aff *lhsAff = (*affs)[0], *rhsAff = (*affs)[1];
+    llvm::scope_exit freeAffs([&] {
+      isl_aff_free(lhsAff);
+      isl_aff_free(rhsAff);
+    });
+    if (isUnsigned &&
+        !(domain.nonNegOnDomain(lhsAff) && domain.nonNegOnDomain(rhsAff)))
+      return failure();
+    bool lhsGeRhs = domain.emptyOnDomain(
+        isl_aff_lt_set(isl_aff_copy(lhsAff), isl_aff_copy(rhsAff)));
+    bool rhsGeLhs =
+        !lhsGeRhs && domain.emptyOnDomain(isl_aff_lt_set(isl_aff_copy(rhsAff),
+                                                         isl_aff_copy(lhsAff)));
+    if (!lhsGeRhs && !rhsGeLhs)
+      return failure();
+    rewriter.replaceOp(op, (lhsGeRhs == isMax) ? lhs : rhs);
+    return success();
+  }
+};
+
+// The value `lhs pred rhs` has on every point of `domain`, the operands read
+// through `substitution`; fails when the domain does not decide it. Values are
+// mathematical integers (no wraparound); an unsigned predicate is only decided
+// when both sides are provably non-negative on the domain.
+FailureOr<bool>
+decideOnDomain(LoopDomain &domain, arith::CmpIPredicate pred, Value lhs,
+               Value rhs,
+               const DenseMap<Value, Value> *substitution = nullptr) {
+  FailureOr<SmallVector<isl_aff *>> affs =
+      domain.getAffs({lhs, rhs}, substitution);
+  if (failed(affs))
+    return failure();
+  isl_aff *lhsAff = (*affs)[0], *rhsAff = (*affs)[1];
+  llvm::scope_exit freeAffs([&] {
+    isl_aff_free(lhsAff);
+    isl_aff_free(rhsAff);
+  });
+  if (mlir::enzyme::isUnsignedPredicate(pred)) {
+    if (!(domain.nonNegOnDomain(lhsAff) && domain.nonNegOnDomain(rhsAff)))
+      return failure();
+    pred = mlir::enzyme::signedPredicate(pred);
+  }
+
+  FailureOr<isl_set *> fails = comparisonSet(
+      arith::invertPredicate(pred), isl_aff_copy(lhsAff), isl_aff_copy(rhsAff));
+  FailureOr<isl_set *> holds =
+      comparisonSet(pred, isl_aff_copy(lhsAff), isl_aff_copy(rhsAff));
+  if (failed(fails) || failed(holds)) {
+    if (succeeded(fails))
+      isl_set_free(*fails);
+    if (succeeded(holds))
+      isl_set_free(*holds);
+    return failure();
+  }
+  if (domain.emptyOnDomain(*fails)) {
+    isl_set_free(*holds);
+    return true;
+  }
+  if (domain.emptyOnDomain(*holds))
+    return false;
+  return failure();
+}
+
+// The bounds of a for loop as expressions over `domain`: the loop runs while
+// every lower bound is below every upper bound, stepping by `step`.
+LogicalResult loopBounds(LoopDomain &domain, scf::ForOp forOp,
+                         SmallVectorImpl<AffineExpr> &lbs,
+                         SmallVectorImpl<AffineExpr> &ubs, AffineExpr &step) {
+  AffineMap identity =
+      AffineMap::get(0, 1, getAffineSymbolExpr(0, forOp.getContext()));
+  FailureOr<SmallVector<AffineExpr>> lb =
+      domain.compose(identity, forOp.getLowerBound());
+  FailureOr<SmallVector<AffineExpr>> ub =
+      domain.compose(identity, forOp.getUpperBound());
+  FailureOr<SmallVector<AffineExpr>> st =
+      domain.compose(identity, forOp.getStep());
+  if (failed(lb) || failed(ub) || failed(st))
+    return failure();
+  lbs = *lb;
+  ubs = *ub;
+  step = (*st)[0];
+  return success();
+}
+LogicalResult loopBounds(LoopDomain &domain, AffineForOp forOp,
+                         SmallVectorImpl<AffineExpr> &lbs,
+                         SmallVectorImpl<AffineExpr> &ubs, AffineExpr &step) {
+  FailureOr<SmallVector<AffineExpr>> lb =
+      domain.compose(forOp.getLowerBoundMap(), forOp.getLowerBoundOperands());
+  FailureOr<SmallVector<AffineExpr>> ub =
+      domain.compose(forOp.getUpperBoundMap(), forOp.getUpperBoundOperands());
+  if (failed(lb) || failed(ub))
+    return failure();
+  lbs = *lb;
+  ubs = *ub;
+  step = getAffineConstantExpr(forOp.getStepAsInt(), forOp.getContext());
+  return success();
+}
+
+// The value the induction variable takes on the loop's only trip.
+Value firstIterationValue(RewriterBase &rewriter, scf::ForOp forOp) {
+  return forOp.getLowerBound();
+}
+Value firstIterationValue(RewriterBase &rewriter, AffineForOp forOp) {
+  AffineMap lbMap = forOp.getLowerBoundMap();
+  ValueRange operands = forOp.getLowerBoundOperands();
+  if (lbMap.getNumResults() != 1)
+    return AffineMaxOp::create(rewriter, forOp.getLoc(), lbMap, operands);
+  if (auto dim = dyn_cast<AffineDimExpr>(lbMap.getResult(0)))
+    return operands[dim.getPosition()];
+  if (auto symbol = dyn_cast<AffineSymbolExpr>(lbMap.getResult(0)))
+    return operands[lbMap.getNumDims() + symbol.getPosition()];
+  return AffineApplyOp::create(rewriter, forOp.getLoc(), lbMap, operands);
+}
+
+// A for loop whose bounds prove exactly one trip for every point of the
+// enclosing loop nest inlines its body at the lower bound (a strided-copy
+// remainder loop whose extent the propagated block size made constant);
+// a provably zero-trip loop folds to its inits. Applies to scf.for and to
+// the affine.for it raises to.
+template <typename ForOp>
+struct UnrollDecidedFor : public OpRewritePattern<ForOp> {
+  IslAnalysis &islAnalysis;
+  UnrollDecidedFor(MLIRContext &context, IslAnalysis &islAnalysis)
+      : OpRewritePattern<ForOp>(&context), islAnalysis(islAnalysis) {}
+
+  LogicalResult matchAndRewrite(ForOp forOp,
+                                PatternRewriter &rewriter) const override {
+    LoopDomain domain(islAnalysis.getCtx(), forOp);
+    if (!domain)
+      return failure();
+    SmallVector<AffineExpr> lbs, ubs;
+    AffineExpr step;
+    if (failed(loopBounds(domain, forOp, lbs, ubs, step)))
+      return failure();
+    SmallVector<AffineExpr> exprs(lbs);
+    llvm::append_range(exprs, ubs);
+    exprs.push_back(step);
+    FailureOr<SmallVector<isl_aff *>> affs = domain.getAffs(exprs);
+    if (failed(affs))
+      return failure();
+    llvm::scope_exit freeAffs([&] {
+      for (isl_aff *aff : *affs)
+        isl_aff_free(aff);
+    });
+    ArrayRef<isl_aff *> lbAffs(*affs), ubAffs(*affs);
+    lbAffs = lbAffs.take_front(lbs.size());
+    ubAffs = ubAffs.slice(lbs.size(), ubs.size());
+    isl_aff *stepAff = affs->back();
+
+    isl_aff *zero =
+        isl_aff_val_on_domain(isl_aff_get_domain_local_space(stepAff),
+                              isl_val_zero(isl_aff_get_ctx(stepAff)));
+    bool stepPositive =
+        domain.emptyOnDomain(isl_aff_le_set(isl_aff_copy(stepAff), zero));
+    if (!stepPositive)
+      return failure();
+    // The points where the loop runs, and where it takes a second trip.
+    isl_set *runs = isl_set_universe(isl_set_get_space(domain.set));
+    isl_set *runsTwice = isl_set_copy(runs);
+    bool alwaysRuns = true;
+    for (isl_aff *lbAff : lbAffs) {
+      for (isl_aff *ubAff : ubAffs) {
+        runs = isl_set_intersect(
+            runs, isl_aff_lt_set(isl_aff_copy(lbAff), isl_aff_copy(ubAff)));
+        runsTwice = isl_set_intersect(
+            runsTwice, isl_aff_lt_set(isl_aff_add(isl_aff_copy(lbAff),
+                                                  isl_aff_copy(stepAff)),
+                                      isl_aff_copy(ubAff)));
+        alwaysRuns &= domain.emptyOnDomain(
+            isl_aff_ge_set(isl_aff_copy(lbAff), isl_aff_copy(ubAff)));
+      }
+    }
+    bool neverRuns = domain.emptyOnDomain(runs);
+    bool hasSecondTrip = !domain.emptyOnDomain(runsTwice);
+    if (neverRuns) {
+      rewriter.replaceOp(forOp, forOp.getInits());
+      return success();
+    }
+    if (!alwaysRuns || hasSecondTrip)
+      return failure();
+
+    Block *body = forOp.getBody();
+    Operation *yield = body->getTerminator();
+    rewriter.setInsertionPoint(forOp);
+    SmallVector<Value> argReplacements{firstIterationValue(rewriter, forOp)};
+    llvm::append_range(argReplacements, forOp.getInits());
+    SmallVector<Value> results;
+    for (Value result : yield->getOperands()) {
+      auto arg = dyn_cast<BlockArgument>(result);
+      if (arg && arg.getOwner() == body)
+        result = argReplacements[arg.getArgNumber()];
+      results.push_back(result);
+    }
+    rewriter.eraseOp(yield);
+    rewriter.inlineBlockBefore(body, forOp, argReplacements);
+    rewriter.replaceOp(forOp, results);
+    return success();
+  }
+};
+
+// Fold an integer comparison to a constant when the enclosing affine loop
+// bounds already decide it — e.g. a peeled grid-stride residual's guard
+// (blockIdx + gridDim compared against an extent sharing gridDim's base) or
+// a thread-id test under a constant-extent axis.
+struct FoldCmpUsingLoopBounds : public OpRewritePattern<arith::CmpIOp> {
+  IslAnalysis &islAnalysis;
+  FoldCmpUsingLoopBounds(MLIRContext &context, IslAnalysis &islAnalysis)
+      : OpRewritePattern<arith::CmpIOp>(&context), islAnalysis(islAnalysis) {}
+
+  LogicalResult matchAndRewrite(arith::CmpIOp cmp,
+                                PatternRewriter &rewriter) const override {
+    LoopDomain domain(islAnalysis.getCtx(), cmp);
+    if (!domain)
+      return failure();
+    FailureOr<bool> decided =
+        decideOnDomain(domain, cmp.getPredicate(), cmp.getLhs(), cmp.getRhs());
+    if (failed(decided))
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+        cmp, rewriter.getBoolAttr(*decided));
+    return success();
+  }
+};
+
+// An scf.while's condition is evaluated first with the inits as the before
+// arguments, and only evaluated again if it held. So when the enclosing loop
+// bounds show it false on the inits it is false whenever evaluated, and the
+// while is one execution of its before region (InlineNeverLoopingWhile). This
+// is how a rotated do-while remainder loop that the propagated block size
+// made single-shot disappears.
+struct FoldNeverLoopingSCFWhileCondition
+    : public OpRewritePattern<scf::WhileOp> {
+  IslAnalysis &islAnalysis;
+  FoldNeverLoopingSCFWhileCondition(MLIRContext &context,
+                                    IslAnalysis &islAnalysis)
+      : OpRewritePattern<scf::WhileOp>(&context), islAnalysis(islAnalysis) {}
+
+  LogicalResult matchAndRewrite(scf::WhileOp whileOp,
+                                PatternRewriter &rewriter) const override {
+    scf::ConditionOp condOp = whileOp.getConditionOp();
+    auto cmp = condOp.getCondition().getDefiningOp<arith::CmpIOp>();
+    if (!cmp)
+      return failure();
+    LoopDomain domain(islAnalysis.getCtx(), whileOp);
+    if (!domain)
+      return failure();
+    DenseMap<Value, Value> initOfArg;
+    for (auto [arg, init] :
+         llvm::zip(whileOp.getBeforeArguments(), whileOp.getInits()))
+      initOfArg[arg] = init;
+    FailureOr<bool> decided = decideOnDomain(
+        domain, cmp.getPredicate(), cmp.getLhs(), cmp.getRhs(), &initOfArg);
+    // Holding on the first evaluation says nothing about the next.
+    if (failed(decided) || *decided)
+      return failure();
+    rewriter.setInsertionPoint(condOp);
+    Value falseValue = arith::ConstantOp::create(rewriter, condOp.getLoc(),
+                                                 rewriter.getBoolAttr(false));
+    rewriter.modifyOpInPlace(
+        condOp, [&] { condOp.getConditionMutable().assign(falseValue); });
+    return success();
+  }
+};
+
+// (a | b) `ult` 2^k holds exactly when every operand is under 2^k, and
+// (a | b) `uge` 2^k when any operand is: bitwise-or sets a bit at or above
+// position k exactly when some operand does, whatever the bit patterns. The or
+// itself is not affine, but the loop bounds may decide an operand's own
+// comparison: an operand decided under 2^k drops out of an `ult` and one
+// decided at least 2^k drops out of a `uge`, while the opposite decision
+// settles the whole comparison.
+struct FoldOrCmpUsingLoopBounds : public OpRewritePattern<arith::CmpIOp> {
+  IslAnalysis &islAnalysis;
+  FoldOrCmpUsingLoopBounds(MLIRContext &context, IslAnalysis &islAnalysis)
+      : OpRewritePattern<arith::CmpIOp>(&context), islAnalysis(islAnalysis) {}
+
+  LogicalResult matchAndRewrite(arith::CmpIOp cmp,
+                                PatternRewriter &rewriter) const override {
+    using Pred = arith::CmpIPredicate;
+    Pred pred = cmp.getPredicate();
+    if (pred != Pred::ult && pred != Pred::uge)
+      return failure();
+    APInt rhsCst;
+    if (!matchPattern(cmp.getRhs(), m_ConstantInt(&rhsCst)) ||
+        !rhsCst.isPowerOf2() || !cmp.getLhs().getDefiningOp<arith::OrIOp>())
+      return failure();
+    LoopDomain domain(islAnalysis.getCtx(), cmp);
+    if (!domain)
+      return failure();
+    SmallVector<Value> leaves;
+    SmallVector<Value> worklist{cmp.getLhs()};
+    while (!worklist.empty()) {
+      Value value = worklist.pop_back_val();
+      if (auto orOp = value.getDefiningOp<arith::OrIOp>()) {
+        worklist.push_back(orOp.getRhs());
+        worklist.push_back(orOp.getLhs());
+      } else {
+        leaves.push_back(value);
+      }
+    }
+    // Under `ult` an operand decided true contributes nothing; under `uge` an
+    // operand decided false does.
+    bool dropsWhen = pred == Pred::ult;
+    SmallVector<Value> kept;
+    for (Value leaf : leaves) {
+      FailureOr<bool> decided =
+          decideOnDomain(domain, pred, leaf, cmp.getRhs());
+      if (failed(decided)) {
+        kept.push_back(leaf);
+        continue;
+      }
+      if (*decided != dropsWhen) {
+        rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+            cmp, rewriter.getBoolAttr(*decided));
+        return success();
+      }
+    }
+    if (kept.size() == leaves.size())
+      return failure();
+    if (kept.empty()) {
+      rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+          cmp, rewriter.getBoolAttr(dropsWhen));
+      return success();
+    }
+    Value lhs = kept.front();
+    for (Value leaf : llvm::drop_begin(kept))
+      lhs = arith::OrIOp::create(rewriter, cmp.getLoc(), lhs, leaf);
+    rewriter.replaceOpWithNewOp<arith::CmpIOp>(cmp, pred, lhs, cmp.getRhs());
+    return success();
+  }
+};
+
+} // namespace
 
 struct SimplifyAffineExprsPass
     : public enzyme::impl::SimplifyAffineExprsPassBase<
@@ -1071,25 +1918,17 @@ struct SimplifyAffineExprsPass
     IslAnalysis ia;
 
     Operation *op = getOperation();
-    op->walk([&](Operation *op) {
-      if (auto cop = dyn_cast<AffineLoadOp>(op))
-        (void)handleAffineAccessOp(ia, cop);
-      else if (auto cop = dyn_cast<AffineStoreOp>(op))
-        (void)handleAffineAccessOp(ia, cop);
-      else if (auto cop = dyn_cast<AffineVectorLoadOp>(op))
-        (void)handleAffineAccessOp(ia, cop);
-      else if (auto cop = dyn_cast<AffineVectorStoreOp>(op))
-        (void)handleAffineAccessOp(ia, cop);
-      else if (auto cop = dyn_cast<AffineIfOp>(op))
-        (void)handleAffineIfOp(ia, cop);
-    });
-
-    op->walk([=](AffineIfOp affineOp) {
-      auto map = affineOp.getIntegerSet();
-      auto map2 = mlir::enzyme::recreateExpr(map);
-      if (map != map2)
-        affineOp.setIntegerSet(map2);
-    });
+    // Constants stay where they are.
+    RewritePatternSet patterns(op->getContext());
+    populateAffineExprSimplificationPatterns(ia, patterns);
+    GreedyRewriteConfig config;
+    config.enableConstantCSE(false);
+    // The canonicalizer's default: no identical-block merging. Merging adds
+    // successor operands for the values the blocks differed in, and e.g.
+    // llvm.invoke cannot carry an index-typed successor operand.
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
+    if (failed(applyPatternsGreedily(op, std::move(patterns), config)))
+      signalPassFailure();
   }
 };
 
@@ -1116,6 +1955,18 @@ struct SimplifyIfAffineExprs : public OpRewritePattern<AffineIfOp> {
   }
 };
 
+struct PruneParallelBounds : public OpRewritePattern<AffineParallelOp> {
+  using OpRewritePattern<AffineParallelOp>::OpRewritePattern;
+  IslAnalysis &islAnalysis;
+  PruneParallelBounds(MLIRContext &context, IslAnalysis &islAnalysis)
+      : OpRewritePattern<AffineParallelOp>(&context), islAnalysis(islAnalysis) {
+  }
+  LogicalResult matchAndRewrite(AffineParallelOp op,
+                                PatternRewriter &rewriter) const override {
+    return pruneParallelBounds(islAnalysis, op, rewriter);
+  }
+};
+
 void mlir::populateAffineExprSimplificationPatterns(
     IslAnalysis &islAnalysis, RewritePatternSet &patterns) {
   // clang-format off
@@ -1124,7 +1975,18 @@ void mlir::populateAffineExprSimplificationPatterns(
     SimplifyAccessAffineExprs<affine::AffineStoreOp>,
     SimplifyAccessAffineExprs<affine::AffineVectorLoadOp>,
     SimplifyAccessAffineExprs<affine::AffineVectorStoreOp>,
-    SimplifyIfAffineExprs
+    SimplifyIfAffineExprs,
+    PruneParallelBounds,
+    FoldCmpUsingLoopBounds,
+    FoldOrCmpUsingLoopBounds,
+    FoldMinMaxUsingLoopBounds<arith::MaxSIOp>,
+    FoldMinMaxUsingLoopBounds<arith::MinSIOp>,
+    FoldMinMaxUsingLoopBounds<arith::MaxUIOp>,
+    FoldMinMaxUsingLoopBounds<arith::MinUIOp>,
+    FoldNeverLoopingSCFWhileCondition,
+    UnrollDecidedFor<scf::ForOp>,
+    UnrollDecidedFor<AffineForOp>
   >(*patterns.getContext(), islAnalysis);
   // clang-format on
+  mlir::enzyme::populateInlineNeverLoopingWhilePattern(patterns);
 }

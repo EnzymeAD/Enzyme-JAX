@@ -137,6 +137,36 @@ struct GPULaunchRecognitionPass
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(getOperation());
     StringSet<> seenErrors;
+    // With exception handling preserved these runtime calls arrive in
+    // invoke form; none of them throw, so turn each into a call plus a
+    // branch to the normal destination so the rewrites below see them.
+    {
+      SmallVector<LLVM::InvokeOp> invokes;
+      getOperation()->walk([&](LLVM::InvokeOp inv) {
+        auto callee = inv.getCallee();
+        if (!callee)
+          return;
+        for (StringRef name :
+             {"cudaMalloc", "cudaFree",
+              "cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags",
+              "cudaFuncGetAttributes", "cudaFuncSetCacheConfig", "cudaMemcpy",
+              "cudaMemset", "cudaMemsetAsync", "cudaMemcpy2D"})
+          if (*callee == name) {
+            invokes.push_back(inv);
+            return;
+          }
+      });
+      for (auto inv : invokes) {
+        OpBuilder builder(inv);
+        auto call =
+            LLVM::CallOp::create(builder, inv.getLoc(), inv.getResultTypes(),
+                                 inv.getCalleeAttr(), inv.getCalleeOperands());
+        inv->replaceAllUsesWith(call->getResults());
+        LLVM::BrOp::create(builder, inv.getLoc(), inv.getNormalDestOperands(),
+                           inv.getNormalDest());
+        inv->erase();
+      }
+    }
     getOperation()->walk([&](LLVM::CallOp call) {
       auto callee = call.getCallee();
       OpBuilder builder(call);
@@ -477,6 +507,39 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
       }
+      // The scan above only sees uses of the device-side function. An address
+      // user code takes is that of clang's host stub, and when it escapes --
+      // handed to a call rather than straight to a runtime query -- nothing
+      // rewrites it to the device symbol, so the kernel would never reach a
+      // gpu.module and never be registered. An address-taken host stub is a
+      // capture of its kernel.
+      if (!captured) {
+        StringRef hostStubName;
+        if (auto attr = dyn_cast_or_null<ArrayAttr>(
+                launch.first.getPassthroughAttr())) {
+          for (auto a : attr) {
+            auto ar = dyn_cast<ArrayAttr>(a);
+            if (!ar || ar.size() != 2)
+              continue;
+            auto s0 = dyn_cast<StringAttr>(ar[0]);
+            auto s1 = dyn_cast<StringAttr>(ar[1]);
+            if (s0 && s1 && s0.getValue() == "polygeist.host_symbol")
+              hostStubName = s1.getValue();
+          }
+        }
+        if (!hostStubName.empty()) {
+          if (auto hostStub = symbolTable.getSymbolTable(getOperation())
+                                  .lookup<LLVM::LLVMFuncOp>(hostStubName)) {
+            if (auto hostStubUses = hostStub.getSymbolUses(getOperation()))
+              for (auto use : *hostStubUses)
+                if (isa<LLVM::AddressOfOp>(use.getUser())) {
+                  captured = true;
+                  break;
+                }
+          }
+        }
+      }
+
       auto cur = launch.first;
       if (cur.isExternal())
         continue;
@@ -503,6 +566,28 @@ enum __device_builtin__ cudaMemcpyKind
         builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
         gpufunc = gpu::GPUFuncOp::create(builder, cur->getLoc(), cur.getName(),
                                          gpuTy0);
+        {
+          // The plugin records which host symbol each imported kernel was
+          // registered for; carry it so the registration can bind the
+          // address the program actually passes around instead of a
+          // synthetic stub.
+          StringRef host;
+          if (auto attr =
+                  dyn_cast_or_null<ArrayAttr>(cur.getPassthroughAttr())) {
+            for (auto a : attr) {
+              auto ar = dyn_cast<ArrayAttr>(a);
+              if (!ar || ar.size() != 2)
+                continue;
+              auto s0 = dyn_cast<StringAttr>(ar[0]);
+              auto s1 = dyn_cast<StringAttr>(ar[1]);
+              if (s0 && s1 && s0.getValue() == "polygeist.host_symbol")
+                host = s1.getValue();
+            }
+          }
+          if (!host.empty())
+            gpufunc->setAttr("polygeist.host_symbol",
+                             builder.getStringAttr(host));
+        }
         if (auto attrs = cur.getAllArgAttrs()) {
           gpufunc.setAllArgAttrs(attrs);
         }

@@ -257,7 +257,10 @@ struct TesseraToLLVMPass
     patterns.add<DefineOpRewrite>(typeConverter, ctx);
     patterns.add<CallOpRewrite, ReturnOpRewrite>(ctx);
 
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
+    if (failed(applyPatternsGreedily(
+            getOperation(), std::move(patterns),
+            GreedyRewriteConfig().setRegionSimplificationLevel(
+                GreedySimplifyRegionLevel::Normal)))) {
       llvm::errs() << "Failed to convert tessera dialect operations to LLVM "
                       "dialect operations\n";
       return signalPassFailure();

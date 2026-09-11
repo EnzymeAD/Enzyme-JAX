@@ -6,9 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Ops.h"
+#include "Enzyme/MLIR/Dialect/Ops.h"
 #include "Dialect.h"
 #include "Interfaces/AutoDiffTypeInterface.h"
+#include "Ops.h"
 #include "src/enzyme_ad/jax/Dialect/Canonicalizers.h"
 #include "src/enzyme_ad/jax/Dialect/Utils.h"
 #include "src/enzyme_ad/jax/Utils.h"
@@ -246,7 +247,7 @@ void JITCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
   results.insert<ReadOnlyArg<JITCallOp>, ReadNoneArg<JITCallOp>>(context);
 }
 
-/// Simplify pointer2memref(memref2pointer(x)) to cast(x)
+/// Simplify pointer2memref(memref2pointer(x)) to a view of x
 class Memref2Pointer2MemrefCast final
     : public OpRewritePattern<Pointer2MemrefOp> {
 public:
@@ -259,19 +260,30 @@ public:
       return failure();
     auto smt = cast<MemRefType>(src.getSource().getType());
     auto omt = cast<MemRefType>(op.getType());
-    if (smt.getShape().size() != omt.getShape().size())
-      return failure();
-    for (unsigned i = 1; i < smt.getShape().size(); i++) {
-      if (smt.getShape()[i] != omt.getShape()[i])
-        return failure();
-    }
     if (smt.getElementType() != omt.getElementType())
       return failure();
-    if (smt.getMemorySpace() != omt.getMemorySpace())
+    // A strided source is not the flat view the pointer handed out, and a
+    // rank change is what delinearization rebuilds into typed accesses.
+    if (!smt.getLayout().isIdentity() || !omt.getLayout().isIdentity() ||
+        smt.getRank() != omt.getRank())
       return failure();
 
-    rewriter.replaceOpWithNewOp<memref::CastOp>(op, op.getType(),
-                                                src.getSource());
+    // The memory space changes on the source's own shape, so the shape cast
+    // lands last, closest to the accesses, where it folds into them.
+    auto inDstSpace =
+        MemRefType::get(smt.getShape(), smt.getElementType(),
+                        MemRefLayoutAttrInterface{}, omt.getMemorySpace());
+    if (inDstSpace != omt &&
+        !memref::CastOp::areCastCompatible(inDstSpace, omt))
+      return failure();
+    Value v = src.getSource();
+    if (smt.getMemorySpace() != omt.getMemorySpace())
+      v = memref::MemorySpaceCastOp::create(rewriter, op.getLoc(), inDstSpace,
+                                            v)
+              .getResult();
+    if (inDstSpace != omt)
+      v = memref::CastOp::create(rewriter, op.getLoc(), omt, v).getResult();
+    rewriter.replaceOp(op, v);
     return success();
   }
 };
@@ -643,8 +655,12 @@ public:
 
   LogicalResult matchAndRewrite(T op,
                                 PatternRewriter &rewriter) const override {
+    // The accessed memref is the one this op names, whether or not the op
+    // itself spells out a type accessor for it.
+    auto accessedType = cast<MemRefType>(getMemref(op).getType());
+
     // FIXME: Only handle memref.load with single index for now
-    if (op.getMemRefType().getRank() != 1)
+    if (accessedType.getRank() != 1)
       return failure();
 
     // Match pointer2memref -> load pattern
@@ -654,10 +670,12 @@ public:
       return failure();
 
     // Get the element type and size of the final memref
-    Type elementType = op.getMemRefType().getElementType();
-    unsigned elementSize = elementType.isIntOrFloat()
-                               ? elementType.getIntOrFloatBitWidth() / 8
-                               : 0;
+    Type elementType = accessedType.getElementType();
+    if (!elementType.isIntOrFloat() &&
+        !isa<DataLayoutTypeInterface>(elementType))
+      return failure();
+    DataLayout dl = DataLayout::closest(op);
+    unsigned elementSize = dl.getTypeSize(elementType);
     if (elementSize == 0)
       return failure();
 
@@ -861,6 +879,90 @@ void LoadStorePointer2MemrefGEP<affine::AffineStoreOp>::createNewOp(
                                                idxs);
 }
 
+template <>
+Value LoadStorePointer2MemrefGEP<enzyme::AtomicRMWOp>::getMemref(
+    enzyme::AtomicRMWOp op) const {
+  return op.getMemref();
+}
+
+template <>
+SmallVector<Value> LoadStorePointer2MemrefGEP<enzyme::AtomicRMWOp>::newIndex(
+    enzyme::AtomicRMWOp op, Value finalIndex, PatternRewriter &rewriter) const {
+  auto operands = llvm::to_vector(op.getIndices());
+  operands[0] =
+      arith::AddIOp::create(rewriter, op.getLoc(), operands[0], finalIndex);
+  return operands;
+}
+
+template <>
+void LoadStorePointer2MemrefGEP<enzyme::AtomicRMWOp>::createNewOp(
+    enzyme::AtomicRMWOp op, Value baseMemref, SmallVector<Value> idxs,
+    PatternRewriter &rewriter) const {
+  rewriter.replaceOpWithNewOp<enzyme::AtomicRMWOp>(
+      op, op.getResult().getType(), op.getKindAttr(), op.getOrderingAttr(),
+      op.getValue(), baseMemref, idxs, op.getAlignmentAttr(),
+      op.getFastmathAttr());
+}
+
+template <>
+Value LoadStorePointer2MemrefGEP<memref::AtomicRMWOp>::getMemref(
+    memref::AtomicRMWOp op) const {
+  return op.getMemref();
+}
+
+template <>
+SmallVector<Value> LoadStorePointer2MemrefGEP<memref::AtomicRMWOp>::newIndex(
+    memref::AtomicRMWOp op, Value finalIndex, PatternRewriter &rewriter) const {
+  auto operands = llvm::to_vector(op.getIndices());
+  operands[0] =
+      arith::AddIOp::create(rewriter, op.getLoc(), operands[0], finalIndex);
+  return operands;
+}
+
+template <>
+void LoadStorePointer2MemrefGEP<memref::AtomicRMWOp>::createNewOp(
+    memref::AtomicRMWOp op, Value baseMemref, SmallVector<Value> idxs,
+    PatternRewriter &rewriter) const {
+  rewriter.replaceOpWithNewOp<memref::AtomicRMWOp>(
+      op, op.getKind(), op.getValue(), baseMemref, idxs);
+}
+
+template <>
+Value LoadStorePointer2MemrefGEP<enzyme::AffineAtomicRMWOp>::getMemref(
+    enzyme::AffineAtomicRMWOp op) const {
+  return op.getMemref();
+}
+
+template <>
+SmallVector<Value>
+LoadStorePointer2MemrefGEP<enzyme::AffineAtomicRMWOp>::newIndex(
+    enzyme::AffineAtomicRMWOp op, Value finalIndex,
+    PatternRewriter &rewriter) const {
+  auto apply = affine::AffineApplyOp::create(rewriter, op.getLoc(), op.getMap(),
+                                             op.getIndices());
+
+  SmallVector<Value> operands;
+  for (auto res : apply->getResults())
+    operands.push_back(res);
+  operands[0] =
+      arith::AddIOp::create(rewriter, op.getLoc(), operands[0], finalIndex);
+  return operands;
+}
+
+template <>
+void LoadStorePointer2MemrefGEP<enzyme::AffineAtomicRMWOp>::createNewOp(
+    enzyme::AffineAtomicRMWOp op, Value baseMemref, SmallVector<Value> idxs,
+    PatternRewriter &rewriter) const {
+  // As the affine load and store do, this leaves the non-affine form: the
+  // index it is given is a value, not a map. What the op says beyond the
+  // address -- its kind, its ordering, its alignment -- comes with it.
+  rewriter.replaceOpWithNewOp<enzyme::AtomicRMWOp>(
+      op, op.getResult().getType(), op.getKindAttr(),
+      enzyme::OrderingAttr::get(op.getContext(), op.getOrdering()),
+      op.getValue(), baseMemref, idxs, op.getAlignmentAttr(),
+      op.getFastmathAttr());
+}
+
 /// Simplify load (pointer2memref(x)) to llvm.load x
 template <typename Op>
 class MetaPointer2Memref final : public OpRewritePattern<Op> {
@@ -992,13 +1094,157 @@ void MetaPointer2Memref<affine::AffineStoreOp>::rewriteInternal(
   rewriter.replaceOpWithNewOp<LLVM::StoreOp>(op, op.getValue(), ptr);
 }
 
+// An if whose arms all yield the same pointer/memref conversion does the
+// conversion once on the if result instead: the conversion depends only on
+// the yielded value, so hoisting it needs nothing to dominate anything new.
+// Chains of such ifs (nested ternaries picking a slice) collapse to one
+// conversion over a pointer-yielding if.
+template <typename IfT>
+struct HoistIfYieldConversion : public OpRewritePattern<IfT> {
+  using OpRewritePattern<IfT>::OpRewritePattern;
+
+  static Operation *yieldOf(Region &r) { return r.front().getTerminator(); }
+
+  LogicalResult matchAndRewrite(IfT ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (ifOp->getNumResults() == 0 || ifOp.getElseRegion().empty())
+      return failure();
+    Operation *thenY = yieldOf(ifOp.getThenRegion());
+    Operation *elseY = yieldOf(ifOp.getElseRegion());
+
+    SmallVector<Type> newTypes;
+    SmallVector<Operation *> conv(ifOp->getNumResults(), nullptr);
+    bool any = false;
+    for (auto [i, res] : llvm::enumerate(ifOp->getResults())) {
+      Operation *t = thenY->getOperand(i).getDefiningOp();
+      Operation *f = elseY->getOperand(i).getDefiningOp();
+      if (t && f && t->getName() == f->getName() &&
+          isa<Pointer2MemrefOp, Memref2PointerOp>(t) &&
+          t->getOperand(0).getType() == f->getOperand(0).getType()) {
+        conv[i] = t;
+        newTypes.push_back(t->getOperand(0).getType());
+        any = true;
+        continue;
+      }
+      newTypes.push_back(res.getType());
+    }
+    if (!any)
+      return failure();
+
+    auto newIf = create(rewriter, ifOp, newTypes);
+    for (unsigned r = 0; r < 2; ++r) {
+      Region &from = r ? ifOp.getElseRegion() : ifOp.getThenRegion();
+      Region &to = r ? newIf.getElseRegion() : newIf.getThenRegion();
+      rewriter.inlineRegionBefore(from, to, to.begin());
+      rewriter.eraseBlock(&to.back());
+      Operation *y = yieldOf(to);
+      SmallVector<Value> ops(y->getOperands());
+      for (auto [i, c] : llvm::enumerate(conv))
+        if (c)
+          ops[i] = ops[i].getDefiningOp()->getOperand(0);
+      rewriter.modifyOpInPlace(y, [&] { y->setOperands(ops); });
+    }
+
+    rewriter.setInsertionPointAfter(newIf);
+    SmallVector<Value> results;
+    for (auto [i, c] : llvm::enumerate(conv)) {
+      Value v = newIf->getResult(i);
+      if (c) {
+        Operation *cloned = rewriter.clone(*c);
+        cloned->setOperand(0, v);
+        v = cloned->getResult(0);
+      }
+      results.push_back(v);
+    }
+    rewriter.replaceOp(ifOp, results);
+    return success();
+  }
+
+  static scf::IfOp create(PatternRewriter &rewriter, scf::IfOp ifOp,
+                          TypeRange types) {
+    return scf::IfOp::create(rewriter, ifOp.getLoc(), types,
+                             ifOp.getCondition(), /*withElseRegion=*/true);
+  }
+  static affine::AffineIfOp create(PatternRewriter &rewriter,
+                                   affine::AffineIfOp ifOp, TypeRange types) {
+    return affine::AffineIfOp::create(rewriter, ifOp.getLoc(), types,
+                                      ifOp.getIntegerSet(), ifOp.getOperands(),
+                                      /*withElseRegion=*/true);
+  }
+};
+
+// The select twin of the above: an if whose arms only yield existing values
+// becomes a select before this pattern can see it, so hoist there too.
+struct HoistSelectConversion : public OpRewritePattern<arith::SelectOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::SelectOp sel,
+                                PatternRewriter &rewriter) const override {
+    Operation *t = sel.getTrueValue().getDefiningOp();
+    Operation *f = sel.getFalseValue().getDefiningOp();
+    if (!t || !f || t->getName() != f->getName() ||
+        !isa<Pointer2MemrefOp, Memref2PointerOp>(t) ||
+        t->getOperand(0).getType() != f->getOperand(0).getType())
+      return failure();
+    Value inner =
+        arith::SelectOp::create(rewriter, sel.getLoc(), sel.getCondition(),
+                                t->getOperand(0), f->getOperand(0));
+    Operation *conv = rewriter.clone(*t);
+    conv->setOperand(0, inner);
+    rewriter.replaceOp(sel, conv->getResult(0));
+    return success();
+  }
+};
+
+// An access through a view of the null pointer can only execute as undefined
+// behavior (an optional buffer a kernel receives as null sits behind a runtime
+// flag), so it is dynamically dead: an access with a result (a load) reads as
+// a zero of its type, one without (a store) drops. Offsets off the null have
+// already folded into the index.
+template <typename T>
+class NullPointer2MemrefAccess final : public OpRewritePattern<T> {
+public:
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T op,
+                                PatternRewriter &rewriter) const override {
+    auto view =
+        op.getMemref().template getDefiningOp<enzymexla::Pointer2MemrefOp>();
+    if (!view || !view.getSource().template getDefiningOp<LLVM::ZeroOp>())
+      return failure();
+    if (op->getNumResults() == 0) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+    Type t = op->getResult(0).getType();
+    if (t.isIntOrFloat())
+      rewriter.replaceOpWithNewOp<arith::ConstantOp>(op, t,
+                                                     rewriter.getZeroAttr(t));
+    else if (LLVM::isCompatibleType(t))
+      rewriter.replaceOpWithNewOp<LLVM::ZeroOp>(op, t);
+    else
+      return failure();
+    return success();
+  }
+};
+
 void Pointer2MemrefOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                    MLIRContext *context) {
-  results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
-                 LoadStorePointer2MemrefGEP<memref::LoadOp>,
-                 LoadStorePointer2MemrefGEP<affine::AffineLoadOp>,
-                 LoadStorePointer2MemrefGEP<memref::StoreOp>,
-                 LoadStorePointer2MemrefGEP<affine::AffineStoreOp>>(context);
+  results
+      .insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
+              LoadStorePointer2MemrefGEP<memref::LoadOp>,
+              LoadStorePointer2MemrefGEP<affine::AffineLoadOp>,
+              LoadStorePointer2MemrefGEP<memref::StoreOp>,
+              LoadStorePointer2MemrefGEP<affine::AffineStoreOp>,
+              LoadStorePointer2MemrefGEP<enzyme::AtomicRMWOp>,
+              LoadStorePointer2MemrefGEP<memref::AtomicRMWOp>,
+              LoadStorePointer2MemrefGEP<enzyme::AffineAtomicRMWOp>,
+              HoistIfYieldConversion<scf::IfOp>,
+              HoistIfYieldConversion<affine::AffineIfOp>, HoistSelectConversion,
+              NullPointer2MemrefAccess<memref::LoadOp>,
+              NullPointer2MemrefAccess<affine::AffineLoadOp>,
+              NullPointer2MemrefAccess<memref::StoreOp>,
+              NullPointer2MemrefAccess<affine::AffineStoreOp>>(context);
   /*
   results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
                  MetaPointer2Memref<memref::LoadOp>,
@@ -1862,6 +2108,33 @@ void GPUErrorOp::build(OpBuilder &builder, OperationState &result) {
   Region *bodyRegion = result.addRegion();
   builder.createBlock(bodyRegion);
   GPUErrorOp::ensureTerminator(*bodyRegion, builder, result.location);
+}
+
+LogicalResult TempAllocOp::verify() {
+  if (!isPrivate())
+    return emitOpError("requires private visibility");
+  auto type = getType();
+  if (!type.hasStaticShape())
+    return emitOpError("requires a static shape");
+  if (!type.getLayout().isIdentity())
+    return emitOpError("requires an identity layout");
+  auto space = dyn_cast_or_null<IntegerAttr>(type.getMemorySpace());
+  if (!space || space.getInt() != 1)
+    return emitOpError("requires device memory space 1");
+  return success();
+}
+
+LogicalResult
+GetGlobalTempOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  auto allocation =
+      symbolTable.lookupNearestSymbolFrom<TempAllocOp>(*this, getNameAttr());
+  if (!allocation)
+    return emitOpError("'")
+           << getName() << "' does not reference a temp_alloc declaration";
+  if (allocation.getType() != getResult().getType())
+    return emitOpError("result type does not match the temp_alloc type ")
+           << allocation.getType();
+  return success();
 }
 
 LogicalResult

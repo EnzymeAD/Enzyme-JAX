@@ -7,6 +7,8 @@ func.func private @kern$par0(%memref_arg: memref<?x20x30xi64, 1>, %idx : index, 
     affine.store %2, %memref_arg[%arg1, %arg2 floordiv 30, %arg3 mod 30] : memref<?x20x30xi64, 1>
     %l = affine.load %memref_arg[%arg1, %arg2 floordiv 10, %arg3 mod 20] : memref<?x20x30xi64, 1>
     %l2 = affine.load %memref_arg[%arg1 + symbol(%idx2), %arg2 floordiv 10, %arg3 mod 20] : memref<?x20x30xi64, 1>
+    affine.store %l, %memref_arg[%arg1, 0, 0] : memref<?x20x30xi64, 1>
+    affine.store %l2, %memref_arg[%arg1, 0, 1] : memref<?x20x30xi64, 1>
   }
   return
 }
@@ -18,7 +20,7 @@ func.func private @kern$par0(%memref_arg: memref<?x20x30xi64, 1>, %idx : index, 
 // CHECK-SAME:                                 %[[VAL_2:[^:]*]]: index) {
 // CHECK:           affine.parallel (%[[VAL_3:.*]], %[[VAL_4:.*]], %[[VAL_5:.*]]) = (0, 0, 30) to (10, 20, 50) {
 // CHECK:             %[[VAL_6:.*]] = arith.constant 1 : i64
-// CHECK:             affine.store %[[VAL_6]], %[[VAL_0]]{{\[}}%[[VAL_3]] + symbol(%[[VAL_1]]), %[[VAL_4]] floordiv 30, %[[VAL_5]] mod 30] : memref<?x20x30xi64, 1>
+// CHECK:             affine.store %[[VAL_6]], %[[VAL_0]]{{\[}}%[[VAL_3]] + symbol(%[[VAL_1]]), 0, %[[VAL_5]] - 30] : memref<?x20x30xi64, 1>
 // CHECK:             affine.store %[[VAL_6]], %[[VAL_0]]{{\[}}%[[VAL_3]], 0, %[[VAL_5]] - 30] : memref<?x20x30xi64, 1>
 // CHECK:             %[[VAL_7:.*]] = affine.load %[[VAL_0]]{{\[}}%[[VAL_3]], %[[VAL_4]] floordiv 10, %[[VAL_5]] mod 20] : memref<?x20x30xi64, 1>
 // CHECK:             %[[VAL_8:.*]] = affine.load %[[VAL_0]]{{\[}}%[[VAL_3]] + symbol(%[[VAL_2]]), %[[VAL_4]] floordiv 10, %[[VAL_5]] mod 20] : memref<?x20x30xi64, 1>
@@ -104,7 +106,7 @@ module {
 
 // -----
 
-// CHECK: affine_set<(d0, d1) : (d1 - 3 >= 0, -d1 + 8 >= 0)>
+// CHECK: affine_set<(d0) : (d0 - 3 >= 0, -d0 + 8 >= 0)>
 
 module {
   func.func private @foo(%arg0: memref<26x40xf64, 1>) {

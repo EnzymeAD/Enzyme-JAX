@@ -7,8 +7,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "Utils.h"
+
 #include "Interfaces/AutoDiffTypeInterface.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include <functional>
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -30,6 +32,7 @@
 
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/MathExtras.h"
 
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "stablehlo/dialect/ChloOps.h"
@@ -264,12 +267,21 @@ bool getEffectsBefore(Operation *op,
 
   bool conservative = false;
 
-  if (isa<scf::ParallelOp, affine::AffineParallelOp>(op->getParentOp()))
+  Operation *parent = op->getParentOp();
+  if (isa<scf::ParallelOp, affine::AffineParallelOp>(parent))
     return true;
+
+  if (isa<FunctionOpInterface>(parent)) {
+    effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());
+    effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Write>());
+    effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Allocate>());
+    effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Free>());
+    return false;
+  }
 
   // As we didn't hit another barrier, we must check the predecessors of this
   // operation.
-  if (!getEffectsBefore(op->getParentOp(), effects, stopAtBarrier)) {
+  if (!getEffectsBefore(parent, effects, stopAtBarrier)) {
     return false;
   }
   // If the parent operation is not guaranteed to execute its (single-block)
@@ -304,12 +316,21 @@ bool getEffectsAfter(Operation *op,
 
   bool conservative = false;
 
-  if (isa<scf::ParallelOp, affine::AffineParallelOp>(op->getParentOp()))
+  Operation *parent = op->getParentOp();
+  if (isa<scf::ParallelOp, affine::AffineParallelOp>(parent))
     return true;
+
+  if (isa<FunctionOpInterface>(parent)) {
+    effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());
+    effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Write>());
+    effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Allocate>());
+    effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Free>());
+    return false;
+  }
 
   // As we didn't hit another barrier, we must check the predecessors of this
   // operation.
-  if (!getEffectsAfter(op->getParentOp(), effects, stopAtBarrier))
+  if (!getEffectsAfter(parent, effects, stopAtBarrier))
     return false;
 
   // If the parent operation is not guaranteed to execute its (single-block)
@@ -1835,12 +1856,11 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
 
     // navigate to the next op. If any unsupported intermediate op is found,
     // then return std::nullopt
-    // TODO: we might want to support insert_dims / drop_dims as well
     auto nextOp =
         llvm::TypeSwitch<Operation *, Operation *>(currentOp)
-            .Case<stablehlo::TransposeOp>([&](auto transposeOp) {
+            .Case<stablehlo::TransposeOp, stablehlo::ReshapeOp>([&](auto op) {
               chain.push_back({currentOp, nullptr, nullptr});
-              return transposeOp.getOperand().getDefiningOp();
+              return op.getOperand().getDefiningOp();
             })
             .Case<stablehlo::BroadcastInDimOp>(
                 [&](auto broadcastOp) -> Operation * {
@@ -1962,6 +1982,44 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
                 }
               }
               return true;
+            })
+            .Case<stablehlo::ReshapeOp>([&](auto reshapeOp) {
+              auto inputType = reshapeOp.getOperand().getType();
+              auto outputType = reshapeOp.getType();
+              if (!inputType.hasStaticShape() || !outputType.hasStaticShape() ||
+                  result.dimension < 0 ||
+                  result.dimension >= inputType.getRank())
+                return false;
+
+              auto inputShape = inputType.getShape();
+              auto outputShape = outputType.getShape();
+              if (llvm::is_contained(inputShape, 0) ||
+                  llvm::is_contained(outputShape, 0))
+                return false;
+
+              // At a linear position p, the iota coordinate is
+              // (p / stride) % extent. Reshaping preserves it when both the
+              // extent and the product of trailing dimensions stay the same.
+              // Other dimensions may be regrouped, including inserting or
+              // removing unit dimensions, but the varying axis cannot split
+              // or merge with another axis.
+              int64_t inputStride = 1;
+              for (int64_t size : inputShape.drop_front(result.dimension + 1))
+                if (llvm::MulOverflow(inputStride, size, inputStride))
+                  return false;
+
+              int64_t outputStride = 1;
+              for (int64_t dim = outputType.getRank() - 1; dim >= 0; --dim) {
+                if (outputShape[dim] == inputShape[result.dimension] &&
+                    outputStride == inputStride) {
+                  result.dimension = dim;
+                  return true;
+                }
+                if (llvm::MulOverflow(outputStride, outputShape[dim],
+                                      outputStride))
+                  return false;
+              }
+              return false;
             })
             .Case<stablehlo::BroadcastInDimOp>([&](auto broadcastOp) {
               auto broadcastDims = broadcastOp.getBroadcastDimensions();
@@ -3016,7 +3074,8 @@ struct ConcatSlicedElem {
   int64_t start, limit, stride;
 };
 
-std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand) {
+std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand,
+                                                     int64_t concatDim) {
   Value operand = concatOperand;
 
   auto operandTy = cast<ShapedType>(concatOperand.getType());
@@ -3129,13 +3188,17 @@ std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand) {
   if (!foundFirst)
     return std::nullopt;
 
+  if (iperm[sliceDim] != concatDim) {
+    if ((limit - start) / stride != 1 || operandTy.getDimSize(concatDim) != 1)
+      return std::nullopt;
+  }
+
   return {ConcatSlicedElem{operand, iperm, concatOperand, sliceDim, start,
                            limit, stride}};
 }
 
 static Value mergeConcatSlicedElems(PatternRewriter &rewriter,
-                                    int64_t concatDim, ConcatSlicedElem a,
-                                    ConcatSlicedElem b) {
+                                    ConcatSlicedElem a, ConcatSlicedElem b) {
   Value newConcatOperand = nullptr;
 
   if (a.src != b.src) {
@@ -3157,8 +3220,17 @@ static Value mergeConcatSlicedElems(PatternRewriter &rewriter,
   if (sliceSizeA == 1 && sliceSizeB == 1)
     return nullptr;
 
+  // Both elements must slice the same dimension of the source, and agree on
+  // where every other source dimension lands in the operand: the merged value
+  // only keeps one of the two permutations.
+  if (a.dim != b.dim || a.perm.size() != b.perm.size())
+    return nullptr;
+  for (auto [d, p] : llvm::enumerate(a.perm))
+    if ((int64_t)d != a.dim && p != b.perm[d])
+      return nullptr;
+
   auto operandTy = cast<ShapedType>(a.src.getType());
-  int64_t sliceDim = sliceSizeA < sliceSizeB ? b.dim : a.dim;
+  int64_t sliceDim = a.dim;
   SmallVector<int64_t> startIndices(operandTy.getRank(), 0),
       limitIndices(operandTy.getShape()),
       strides(operandTy.getRank(), a.stride);
@@ -3212,7 +3284,8 @@ concatBroadcastSliceSimplify(PatternRewriter &rewriter,
   for (size_t i = 0, e = operands.size(); i < e; ++i) {
     auto operand = operands[i];
 
-    std::optional<ConcatSlicedElem> curElemOpt = findConcatSlicedElem(operand);
+    std::optional<ConcatSlicedElem> curElemOpt =
+        findConcatSlicedElem(operand, dim);
     if (!curElemOpt) {
       newOperands.push_back(operand);
       continue;
@@ -3220,19 +3293,18 @@ concatBroadcastSliceSimplify(PatternRewriter &rewriter,
     ConcatSlicedElem curElem = *curElemOpt;
 
     while (i + 1 < e) {
-      auto otherElemOpt = findConcatSlicedElem(operands[i + 1]);
+      auto otherElemOpt = findConcatSlicedElem(operands[i + 1], dim);
       if (!otherElemOpt) {
         break;
       }
 
-      Value newSlice =
-          mergeConcatSlicedElems(rewriter, dim, curElem, *otherElemOpt);
+      Value newSlice = mergeConcatSlicedElems(rewriter, curElem, *otherElemOpt);
       if (!newSlice) {
         break;
       }
 
       changed = true;
-      curElemOpt = findConcatSlicedElem(newSlice);
+      curElemOpt = findConcatSlicedElem(newSlice, dim);
       if (!curElemOpt) {
         // the slice is full
         curElem.orig = newSlice;
@@ -3519,6 +3591,19 @@ Value ConcatenateOpCreate(
     sdy::setShardings(concatOp, *sharding);
   }
   return concatOp.getResult();
+}
+
+Value BroadcastInDimOpCreate(OpBuilder &builder, Location loc, Value input,
+                             ArrayRef<int64_t> shape,
+                             ArrayRef<int64_t> broadcastDimensions) {
+  auto inputTy = cast<RankedTensorType>(input.getType());
+  if (inputTy.getShape() == shape &&
+      llvm::equal(broadcastDimensions,
+                  llvm::seq<int64_t>(0, inputTy.getRank())))
+    return input;
+  return stablehlo::BroadcastInDimOp::create(
+      builder, loc, RankedTensorType::get(shape, inputTy.getElementType()),
+      input, broadcastDimensions);
 }
 
 Value ReshapeOpCreate(OpBuilder &builder, Location loc, Value input,
@@ -4180,3 +4265,49 @@ void ExtractBlockIntoFunction(Block *block, ModuleOp modOp, func::FuncOp &func,
 } // namespace stablehlo
 
 } // namespace mlir
+
+// The scalar an LLVM aggregate is made of, and the path to each of its
+// leaves in memory order, when every leaf is that one scalar and the layout
+// holds no padding; nullopt otherwise.
+std::optional<Type>
+mlir::enzyme::homogeneousLeaves(Type type, const DataLayout &dataLayout,
+                                SmallVectorImpl<SmallVector<int64_t>> &paths) {
+  Type leaf;
+  SmallVector<int64_t> path;
+  std::function<bool(Type)> walk = [&](Type t) -> bool {
+    if (auto at = dyn_cast<LLVM::LLVMArrayType>(t)) {
+      for (int64_t i = 0; i < at.getNumElements(); ++i) {
+        path.push_back(i);
+        if (!walk(at.getElementType()))
+          return false;
+        path.pop_back();
+      }
+      return true;
+    }
+    if (auto st = dyn_cast<LLVM::LLVMStructType>(t)) {
+      if (st.isOpaque())
+        return false;
+      for (auto [i, field] : llvm::enumerate(st.getBody())) {
+        path.push_back(i);
+        if (!walk(field))
+          return false;
+        path.pop_back();
+      }
+      return true;
+    }
+    if (!t.isIntOrFloat())
+      return false;
+    if (!leaf)
+      leaf = t;
+    if (leaf != t)
+      return false;
+    paths.push_back(path);
+    return true;
+  };
+  if (!isa<LLVM::LLVMArrayType, LLVM::LLVMStructType>(type) || !walk(type) ||
+      paths.empty() ||
+      dataLayout.getTypeSize(type) !=
+          (int64_t)paths.size() * dataLayout.getTypeSize(leaf))
+    return std::nullopt;
+  return leaf;
+}
