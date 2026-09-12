@@ -5,6 +5,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Support/FileUtilities.h"
+#include "mlir/Tools/ParseUtilities.h"
 #include "mlir/Transforms/Passes.h"
 
 #include "stablehlo/reference/Api.h"
@@ -278,8 +279,8 @@ PoolConstraints parseRestrictInput(ArrayRef<std::string> tokens) {
   return p;
 }
 
-OwningOpRef<ModuleOp> loadMLIRModule(MLIRContext &context,
-                                     llvm::StringRef filePath) {
+OwningOpRef<Operation *> loadMLIRModule(MLIRContext &context,
+                                        llvm::StringRef filePath) {
   std::string errorMessage;
   auto file = mlir::openInputFile(filePath, &errorMessage);
   if (!file) {
@@ -288,10 +289,12 @@ OwningOpRef<ModuleOp> loadMLIRModule(MLIRContext &context,
     return nullptr;
   }
 
-  llvm::SourceMgr sourceMgr;
-  sourceMgr.AddNewSourceBuffer(std::move(file), llvm::SMLoc());
+  auto sourceMgr = std::make_shared<llvm::SourceMgr>();
+  sourceMgr->AddNewSourceBuffer(std::move(file), llvm::SMLoc());
 
-  return parseSourceFile<ModuleOp>(sourceMgr, &context);
+  ParserConfig parseConfig(&context);
+  return parseSourceFileForTool(sourceMgr, parseConfig,
+                                /*insertImplicitModule=*/true);
 }
 
 using AnyVector =
@@ -754,7 +757,7 @@ int main(int argc, char **argv) {
   if (allowUnreg)
     context.allowUnregisteredDialects();
 
-  OwningOpRef<ModuleOp> module = loadMLIRModule(context, inputFilename);
+  OwningOpRef<Operation *> module = loadMLIRModule(context, inputFilename);
   if (!module)
     return 2;
 
@@ -773,18 +776,22 @@ int main(int argc, char **argv) {
   funcPM.addPass(mlir::enzyme::createLowerEnzymeXLAMPIPass());
   funcPM.addPass(mlir::enzyme::createLowerEnzymeXLAMLPass());
 
-  mlir::PassManager pm(&context);
-  if (mlir::failed(mlir::parsePassPipeline(passPipeline, pm, diag()))) {
+  FailureOr<OpPassManager> parsed = mlir::parsePassPipeline(passPipeline);
+  if (mlir::failed(parsed)) {
     llvm::WithColor::error(diag())
         << "Failed to parse the pass pipeline: " << passPipeline << "\n";
     return 2;
   }
 
+  mlir::PassManager pm(&context, parsed->getOpAnchorName(),
+                       mlir::PassManager::Nesting::Implicit);
+  static_cast<mlir::OpPassManager &>(pm) = std::move(*parsed);
+
   auto BaseConstraints = parseRestrictInput(restrictInput);
   applyConstraintsFromPipeline(passPipeline, BaseConstraints);
 
-  OwningOpRef<ModuleOp> optimizedModule = module->clone();
-  if (mlir::failed(pm.run(*optimizedModule))) {
+  OwningOpRef<Operation *> optimizedModule(module->clone());
+  if (mlir::failed(pm.run(optimizedModule.get()))) {
     llvm::WithColor::error(diag())
         << "Pass pipeline failed to run on module!\n";
     return 2;
