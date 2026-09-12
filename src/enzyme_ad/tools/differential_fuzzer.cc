@@ -418,7 +418,7 @@ void applyConstraintsFromPipeline(StringRef pipeline, PoolConstraints &c) {
   }
 }
 
-PoolConstraints constraintsFromArg(Value arg, PoolConstraints &base) {
+PoolConstraints constraintsFromArg(Value arg, const PoolConstraints &base) {
   PoolConstraints constraints = base;
   auto get = [&](StringRef name) {
     return mlir::enzyme::getAttributeFromIR<
@@ -555,8 +555,164 @@ bool isClose(const APFloat &unopt, const APFloat &opt, unsigned maxUlps,
   return std::abs(u - o) <= (atol + rtol * std::abs(o));
 }
 
+enum class Verdict {
+  Passed,
+  Mismatched,
+  Skipped,
+};
+
+Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
+                     std::mt19937 &gen, PassManager &legalizationPM,
+                     const PoolConstraints &BaseConstraints) {
+  llvm::StringRef funcName = unoptFunc.getName();
+
+  llvm::SmallVector<mlir::DenseElementsAttr> evalArgs;
+
+  for (BlockArgument arg : unoptFunc.getArguments()) {
+    auto tensorType = llvm::dyn_cast<RankedTensorType>(arg.getType());
+    if (!tensorType) {
+      llvm::WithColor::warning(diag())
+          << funcName << ": non-ranked-tensor argument, skipping function\n";
+      return Verdict::Skipped;
+    }
+    if (!tensorType.hasStaticShape()) {
+      llvm::WithColor::warning(diag())
+          << funcName << ": dynamic shape, skipping function\n";
+      return Verdict::Skipped;
+    }
+
+    int64_t numElements = tensorType.getNumElements();
+    if (numElements > maxElements) {
+      llvm::WithColor::warning(diag())
+          << "Skipping function: argument has " << numElements
+          << " elements (exceeds --max-elements limit of " << maxElements
+          << ").\n";
+      return Verdict::Skipped;
+    }
+
+    PoolConstraints UnoptConstraints = constraintsFromArg(
+        optFunc.getArgument(arg.getArgNumber()), BaseConstraints);
+    std::optional<mlir::DenseElementsAttr> attrOpt =
+        generateCursedTensor(arg.getType(), gen, UnoptConstraints);
+
+    if (!attrOpt) {
+      llvm::WithColor::warning(diag())
+          << "Skipping non-ranked tensor argument.\n";
+      return Verdict::Skipped;
+    }
+    evalArgs.push_back(*attrOpt);
+  }
+  stablehlo::InterpreterConfiguration config;
+  // Get EnzymeXLA and CHLO into stableHLO
+  OwningOpRef<ModuleOp> tempUnoptMod = ModuleOp::create(unoptFunc.getLoc());
+  func::FuncOp clonedUnopt = unoptFunc.clone();
+  clonedUnopt.setName("main");
+  tempUnoptMod->push_back(clonedUnopt);
+
+  if (mlir::failed(legalizationPM.run(*tempUnoptMod))) {
+    llvm::WithColor::warning(diag())
+        << "Legalization failed on unoptimized IR. Skipping.\n";
+    return Verdict::Skipped;
+  }
+
+  auto unoptResults =
+      stablehlo::evalModule(tempUnoptMod.get(), evalArgs, config);
+  if (mlir::failed(unoptResults)) {
+    llvm::WithColor::warning(diag()) << "Unoptimized evaluation failed.\n";
+    return Verdict::Skipped;
+  }
+
+  OwningOpRef<ModuleOp> tempOptMod = ModuleOp::create(optFunc.getLoc());
+  func::FuncOp clonedOpt = optFunc.clone();
+  clonedOpt.setName("main");
+  tempOptMod->push_back(clonedOpt);
+
+  if (mlir::failed(legalizationPM.run(*tempOptMod))) {
+    llvm::WithColor::warning(diag())
+        << "Legalization failed on optimized IR. Skipping.\n";
+    return Verdict::Skipped;
+  }
+
+  auto optResults = stablehlo::evalModule(tempOptMod.get(), evalArgs, config);
+  if (mlir::failed(optResults)) {
+    llvm::WithColor::warning(diag()) << "Optimized evaluation failed.\n";
+    return Verdict::Skipped;
+  }
+
+  // Comparing results from optimized and unoptimized function
+  auto &unoptVals = *unoptResults;
+  auto &optVals = *optResults;
+  if (unoptVals.size() != optVals.size()) {
+    llvm::WithColor::warning(diag())
+        << "mismatch different number of return values!\n";
+    return Verdict::Skipped;
+  }
+  bool mismatch = false;
+  for (size_t i = 0; i < unoptVals.size(); ++i) {
+    if (unoptVals[i] == optVals[i])
+      continue; // Fast path: strict bitwise match
+
+    // If strict match fails, check if it's a floating point deviation
+    auto unoptAttr = llvm::dyn_cast<mlir::DenseElementsAttr>(unoptVals[i]);
+    auto optAttr = llvm::dyn_cast<mlir::DenseElementsAttr>(optVals[i]);
+
+    if (unoptAttr && optAttr &&
+        llvm::isa<mlir::FloatType>(unoptAttr.getElementType())) {
+      for (auto [u, o] : llvm::zip_equal(unoptAttr.getValues<llvm::APFloat>(),
+                                         optAttr.getValues<llvm::APFloat>())) {
+        if (!isClose(u, o, maxUlpsOpt)) {
+          llvm::WithColor::error(diag())
+              << "float mismatch in " << funcName << " expected " << u
+              << " but got " << o << "\n";
+          mismatch = true;
+          break;
+        }
+      }
+    } else if (unoptAttr && optAttr &&
+               llvm::isa<mlir::ComplexType>(unoptAttr.getElementType())) {
+      auto uRange = unoptAttr.getValues<mlir::Complex<APFloat>>();
+      auto oRange = optAttr.getValues<mlir::Complex<APFloat>>();
+      auto uIt = uRange.begin(), uEnd = uRange.end();
+      auto oIt = oRange.begin();
+      for (; uIt != uEnd; ++uIt, ++oIt) {
+        mlir::Complex<APFloat> u = *uIt, o = *oIt;
+        auto uReal = u.real();
+        auto oReal = o.real();
+        auto uImag = u.imag();
+        auto oImag = o.imag();
+
+        auto uPrint = PrintableComplex{u};
+        auto oPrint = PrintableComplex{o};
+
+        if ((!isClose(uReal, oReal, maxUlpsOpt)) ||
+            !isClose(uImag, oImag, maxUlpsOpt)) {
+          llvm::WithColor::error(diag())
+              << "complex mismatch in " << funcName << " expected " << uPrint
+              << " but got " << oPrint << "\n";
+          mismatch = true;
+          break;
+        }
+      }
+    } else {
+      // If it's an integer/bool type and failed strict equality, it's a
+      // definitive bug.
+      llvm::WithColor::error(diag())
+          << "mismatch in " << funcName << " expected " << unoptVals[i]
+          << " but got " << optVals[i] << "!\n";
+      mismatch = true;
+    }
+  }
+  if (!mismatch && (verbosity == Verbosity::Verbose)) {
+    llvm::WithColor::remark(diag())
+        << "passed outputs in " << funcName << " match exactly.\n";
+  }
+  if (mismatch)
+    return Verdict::Mismatched;
+
+  return Verdict::Passed;
+}
+
 int main(int argc, char **argv) {
-  bool anyMismatch = false;
   llvm::cl::ParseCommandLineOptions(argc, argv,
                                     "StableHLO Differential Fuzzer\n");
 
@@ -629,166 +785,37 @@ int main(int argc, char **argv) {
 
   OwningOpRef<ModuleOp> optimizedModule = module->clone();
   if (mlir::failed(pm.run(*optimizedModule))) {
-    llvm::WithColor::warning(diag())
+    llvm::WithColor::error(diag())
         << "Pass pipeline failed to run on module!\n";
-    return 1;
+    return 2;
   }
-  module->walk([&](mlir::func::FuncOp unoptFunc) {
-    llvm::StringRef funcName = unoptFunc.getName();
 
-    auto optFunc = optimizedModule->lookupSymbol<mlir::func::FuncOp>(funcName);
-    if (!optFunc) {
-      llvm::WithColor::warning(diag())
-          << "Skipping: Function deleted by optimization.\n";
-      return;
+  SmallVector<func::FuncOp> unoptFuncs, optFuncs;
+  module->walk([&](func::FuncOp f) { unoptFuncs.push_back(f); });
+  optimizedModule->walk([&](func::FuncOp f) { optFuncs.push_back(f); });
+
+  if (unoptFuncs.size() != optFuncs.size()) {
+    llvm::WithColor::warning(diag())
+        << "function count changed (" << unoptFuncs.size() << " -> "
+        << optFuncs.size() << "), cannot pair functions; skipping file\n";
+    return 0;
+  }
+
+  unsigned passed = 0, mismatched = 0, skipped = 0;
+
+  for (auto [unoptFunc, optFunc] : llvm::zip_equal(unoptFuncs, optFuncs)) {
+    switch (fuzzFunction(unoptFunc, optFunc, gen, legalizationPM,
+                         BaseConstraints)) {
+    case Verdict::Passed:
+      passed++;
+      break;
+    case Verdict::Mismatched:
+      mismatched++;
+      break;
+    case Verdict::Skipped:
+      skipped++;
+      break;
     }
-
-    llvm::SmallVector<mlir::DenseElementsAttr> evalArgs;
-
-    for (BlockArgument arg : unoptFunc.getArguments()) {
-      auto tensorType = llvm::dyn_cast<RankedTensorType>(arg.getType());
-      if (!tensorType) {
-        llvm::WithColor::warning(diag())
-            << funcName << ": non-ranked-tensor argument, skipping function\n";
-        return;
-      }
-      if (!tensorType.hasStaticShape()) {
-        llvm::WithColor::warning(diag())
-            << funcName << ": dynamic shape, skipping function\n";
-        return;
-      }
-
-      int64_t numElements = tensorType.getNumElements();
-      if (numElements > maxElements) {
-        llvm::WithColor::warning(diag())
-            << "Skipping function: argument has " << numElements
-            << " elements (exceeds --max-elements limit of " << maxElements
-            << ").\n";
-        return; // Aborts this function, moves to the next
-      }
-
-      PoolConstraints UnoptConstraints = constraintsFromArg(
-          optFunc.getArgument(arg.getArgNumber()), BaseConstraints);
-      std::optional<mlir::DenseElementsAttr> attrOpt =
-          generateCursedTensor(arg.getType(), gen, UnoptConstraints);
-
-      if (!attrOpt) {
-        llvm::WithColor::warning(diag())
-            << "Skipping non-ranked tensor argument.\n";
-        return;
-      }
-      evalArgs.push_back(*attrOpt);
-    }
-    stablehlo::InterpreterConfiguration config;
-    // Get EnzymeXLA and CHLO into stableHLO
-    OwningOpRef<ModuleOp> tempUnoptMod = ModuleOp::create(unoptFunc.getLoc());
-    func::FuncOp clonedUnopt = unoptFunc.clone();
-    clonedUnopt.setName("main");
-    tempUnoptMod->push_back(clonedUnopt);
-
-    if (mlir::failed(legalizationPM.run(*tempUnoptMod))) {
-      llvm::WithColor::warning(diag())
-          << "Legalization failed on unoptimized IR. Skipping.\n";
-      return;
-    }
-
-    auto unoptResults =
-        stablehlo::evalModule(tempUnoptMod.get(), evalArgs, config);
-    if (mlir::failed(unoptResults)) {
-      llvm::WithColor::warning(diag()) << "Unoptimized evaluation failed.\n";
-      return;
-    }
-
-    OwningOpRef<ModuleOp> tempOptMod = ModuleOp::create(optFunc.getLoc());
-    func::FuncOp clonedOpt = optFunc.clone();
-    clonedOpt.setName("main");
-    tempOptMod->push_back(clonedOpt); // Push BEFORE running pass
-
-    if (mlir::failed(legalizationPM.run(*tempOptMod))) {
-      llvm::WithColor::error(diag())
-          << "Legalization failed on optimized IR. Skipping.\n";
-      anyMismatch = true;
-      return;
-    }
-
-    auto optResults = stablehlo::evalModule(tempOptMod.get(), evalArgs, config);
-    if (mlir::failed(optResults)) {
-      llvm::WithColor::error(diag()) << "Optimized evaluation failed.\n";
-      anyMismatch = true;
-      return;
-    }
-
-    // Comparing results from optimized and unoptimized function
-    auto &unoptVals = *unoptResults;
-    auto &optVals = *optResults;
-    if (unoptVals.size() != optVals.size()) {
-      llvm::WithColor::warning(diag())
-          << "mismatch different number of return values!\n";
-      return;
-    }
-    bool mismatch = false;
-    for (size_t i = 0; i < unoptVals.size(); ++i) {
-      if (unoptVals[i] == optVals[i])
-        continue; // Fast path: strict bitwise match
-
-      // If strict match fails, check if it's a floating point deviation
-      auto unoptAttr = llvm::dyn_cast<mlir::DenseElementsAttr>(unoptVals[i]);
-      auto optAttr = llvm::dyn_cast<mlir::DenseElementsAttr>(optVals[i]);
-
-      if (unoptAttr && optAttr &&
-          llvm::isa<mlir::FloatType>(unoptAttr.getElementType())) {
-        for (auto [u, o] :
-             llvm::zip_equal(unoptAttr.getValues<llvm::APFloat>(),
-                             optAttr.getValues<llvm::APFloat>())) {
-          if (!isClose(u, o, maxUlpsOpt)) {
-            llvm::WithColor::error(diag())
-                << "float mismatch in " << funcName << " expected " << u
-                << " but got " << o << "\n";
-            mismatch = true;
-            anyMismatch = true;
-            break;
-          }
-        }
-      } else if (unoptAttr && optAttr &&
-                 llvm::isa<mlir::ComplexType>(unoptAttr.getElementType())) {
-        auto uRange = unoptAttr.getValues<mlir::Complex<APFloat>>();
-        auto oRange = optAttr.getValues<mlir::Complex<APFloat>>();
-        auto uIt = uRange.begin(), uEnd = uRange.end();
-        auto oIt = oRange.begin();
-        for (; uIt != uEnd; ++uIt, ++oIt) {
-          mlir::Complex<APFloat> u = *uIt, o = *oIt;
-          auto uReal = u.real();
-          auto oReal = o.real();
-          auto uImag = u.imag();
-          auto oImag = o.imag();
-
-          auto uPrint = PrintableComplex{u};
-          auto oPrint = PrintableComplex{o};
-
-          if ((!isClose(uReal, oReal, maxUlpsOpt)) ||
-              !isClose(uImag, oImag, maxUlpsOpt)) {
-            llvm::WithColor::error(diag())
-                << "complex mismatch in " << funcName << " expected " << uPrint
-                << " but got " << oPrint << "\n";
-            mismatch = true;
-            anyMismatch = true;
-            break;
-          }
-        }
-      } else {
-        // If it's an integer/bool type and failed strict equality, it's a
-        // definitive bug.
-        llvm::WithColor::error(diag())
-            << "mismatch in " << funcName << " expected " << unoptVals[i]
-            << " but got " << optVals[i] << "!\n";
-        mismatch = true;
-        anyMismatch = true;
-      }
-    }
-    if (!mismatch && (verbosity == Verbosity::Verbose)) {
-      llvm::WithColor::remark(diag())
-          << "passed outputs in " << funcName << " match exactly.\n";
-    }
-  });
-  return anyMismatch ? 1 : 0;
+  }
+  return mismatched ? 1 : 0;
 }
