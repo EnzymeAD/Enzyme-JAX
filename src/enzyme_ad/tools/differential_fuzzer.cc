@@ -817,5 +817,8 @@ int main(int argc, char **argv) {
       break;
     }
   }
+  if (verbosity != Verbosity::Quiet)
+    llvm::outs() << inputFilename << ": " << passed << " passed, " << mismatched
+                 << " mismatched, " << skipped << " skipped\n";
   return mismatched ? 1 : 0;
 }
