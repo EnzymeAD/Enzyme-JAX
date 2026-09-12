@@ -26,6 +26,7 @@ cc_binary(
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:Transforms",
+        "@llvm-project//mlir:ParseUtilities",
 
         # StableHLO Interpreter
         "@stablehlo//:reference_api",
