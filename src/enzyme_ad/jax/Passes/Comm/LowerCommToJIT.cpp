@@ -1101,13 +1101,13 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
         /* buffer */
         stablehlo::OutputOperandAliasAttr::get(
             context,
-            /*outputTupleIndices=*/ArrayRef<int64_t>{},
+            /*outputTupleIndices=*/ArrayRef<int64_t>{0},
             /*operandIndex=*/0,
             /*operandTupleIndices=*/ArrayRef<int64_t>{}),
         /* request */
         stablehlo::OutputOperandAliasAttr::get(
             context,
-            /*outputTupleIndices=*/ArrayRef<int64_t>{},
+            /*outputTupleIndices=*/ArrayRef<int64_t>{1},
             /*operandIndex=*/6,
             /*operandTupleIndices=*/ArrayRef<int64_t>{}),
     });
