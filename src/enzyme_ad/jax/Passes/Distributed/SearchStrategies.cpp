@@ -729,10 +729,11 @@ public:
   }
 };
 
-// Clones `originalModule` and applies `node`'s decisions to that clone, via
-// a standalone PassManager (not Pass::runPipeline, which requires its target
-// to be nested under the operation the calling pass is currently processing
-// -- our clone is a disconnected top-level module). Reports pipeline success
+// Clones `originalModule`, applies `node`'s decisions to that clone, and
+// runs the search's lowering pipeline on the result, via a standalone
+// PassManager (not Pass::runPipeline, which requires its target to be
+// nested under the operation the calling pass is currently processing --
+// our clone is a disconnected top-level module). Reports pipeline success
 // through `pipelineOk`.
 static OwningOpRef<ModuleOp>
 cloneAndApplyDecisions(ModuleOp originalModule,
@@ -745,6 +746,7 @@ cloneAndApplyDecisions(ModuleOp originalModule,
   PassManager pm(originalModule.getContext(), ModuleOp::getOperationName());
   pm.enableVerifier(!disableVerifier);
   pm.addPass(ApplyPartialDecisions::create(node, mapper));
+  buildDistributedSearchLoweringPipeline(pm, /*lowerLogicalAxes=*/false);
   pipelineOk = succeeded(pm.run(*clonedModule));
   return clonedModule;
 }
@@ -782,13 +784,12 @@ public:
   //   cloned
   // - ApplyPartialDecisions : materialize the (now fully-decided) decisions
   //   onto a clone
-  // - Lowering pipeline : general lowering pipeline we will import from
-  //   outside this pass
+  // - Lowering pipeline (buildDistributedSearchLoweringPipeline) : lowers
+  //   the fully-decided clone, currently just LowerKernels
   // - ScoreModel : evaluate the lowered IR to produce a score
   //
-  // Node completion + ApplyPartialDecisions are implemented; lowering +
-  // ScoreModel remain TODO, so this returns a placeholder score (rand() on
-  // success, -infinity if ApplyPartialDecisions fails on the candidate's
+  // Only ScoreModel remains TODO, so this returns a placeholder score
+  // (rand() on success, -infinity if the pipeline fails on the candidate's
   // decisions).
   double score(const std::shared_ptr<StrategySearchNode> &node) override {
     // Complete decisions on a throwaway clone so scoring can see a fully
@@ -800,7 +801,7 @@ public:
     OwningOpRef<ModuleOp> clonedModule = cloneAndApplyDecisions(
         originalModule, completedNode, disableVerifier, pipelineOk);
 
-    double result = pipelineOk ? rand() // TODO: lowering + ScoreModel
+    double result = pipelineOk ? rand() // TODO: ScoreModel
                                : -std::numeric_limits<double>::infinity();
 
     if (dumpCandidates)

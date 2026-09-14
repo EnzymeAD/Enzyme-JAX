@@ -355,6 +355,7 @@ void initializePasses() {
 
   // Register the standard passes we want.
   mlir::enzyme::distributed::registerShardyToDistributedPipeline();
+  mlir::enzyme::distributed::registerDistributedSearchLoweringPipeline();
 
   mlir::registerCSEPass();
   mlir::registerLowerAffinePass();
