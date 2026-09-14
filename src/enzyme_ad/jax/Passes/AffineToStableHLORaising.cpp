@@ -512,10 +512,10 @@ getExpandedAffineDims(affine::AffineValueMap map, AffineExpr expr,
   if (!expressionRange)
     return failure();
 
-  llvm::sort(dims, [](const ExpandedAffineDim &lhs,
-                      const ExpandedAffineDim &rhs) {
-    return lhs.linearStep > rhs.linearStep;
-  });
+  llvm::sort(dims,
+             [](const ExpandedAffineDim &lhs, const ExpandedAffineDim &rhs) {
+               return lhs.linearStep > rhs.linearStep;
+             });
 
   int64_t product = 1;
   for (auto dim : dims)
@@ -4272,8 +4272,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     if (expandedUpdateShape != updateShape)
       update = stablehlo::ReshapeOpCreate(
           builder,
-          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), update,
-          updateShape);
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+          update, updateShape);
 
     if (!update)
       return failure();
