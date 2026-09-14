@@ -121,3 +121,38 @@ func.func @pointer_keep(%d: i32, %p: !llvm.ptr, %q: !llvm.ptr, %slot: !llvm.ptr)
 // CHECK-LABEL: func.func @pointer_keep
 // CHECK: scf.if %{{.+}} -> (!llvm.ptr) {
 // CHECK-NOT: affine.if
+
+// -----
+
+// A guard on an `arith.cmpf` reaches the conditional only through floats. It
+// raises as a select on its own, so splitting it would only cost the branches
+// their shared induction variables.
+func.func @float_keep(%m: memref<?xf32>, %a: f32, %b: f32) {
+  %true = arith.constant true
+  %false = arith.constant false
+  %cst = arith.constant 0.000000e+00 : f32
+  affine.parallel (%i, %j) = (0, 0) to (16, 95) {
+    %e = affine.if affine_set<(d0, d1) : (-d0 - d1 * 16 + 2 >= 0)>(%i, %j) -> i1 {
+      affine.yield %true : i1
+    } else {
+      affine.yield %false : i1
+    }
+    %s = arith.select %e, %a, %b : f32
+    %c = arith.cmpf olt, %cst, %s : f32
+    %r = scf.if %c -> f32 {
+      %l = affine.load %m[%i + %j * 16] : memref<?xf32>
+      scf.yield %l : f32
+    } else {
+      %l = affine.load %m[%i + %j * 16 + 1] : memref<?xf32>
+      scf.yield %l : f32
+    }
+    affine.store %r, %m[%i + %j * 16] : memref<?xf32>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @float_keep
+// CHECK: affine.parallel (%[[i:.+]]) = (0) to (1520)
+// CHECK: arith.cmpf
+// CHECK: scf.if %{{.+}} -> (f32) {
+// CHECK: affine.load %{{.+}}[%[[i]]]

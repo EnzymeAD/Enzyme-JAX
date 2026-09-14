@@ -3116,6 +3116,12 @@ struct SplitOnAffineIfConstants : public OpRewritePattern<OpTy> {
       }
       if (def->getNumRegions() || !isPure(def))
         continue;
+
+      if (llvm::any_of(def->getOperands(), [](Value operand) {
+            return !operand.getType().isIntOrIndex();
+          }))
+        continue;
+
       todo.append(def->getOperands().begin(), def->getOperands().end());
     }
     return nullptr;
