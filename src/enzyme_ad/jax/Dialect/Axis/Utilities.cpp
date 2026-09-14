@@ -93,7 +93,7 @@ static FailureOr<bool> refreshResultTypesInPlace(Operation *op) {
 // Uses type-specific semantics
 bool areAxesEquivalent(TypedValue<AxisTypeInterface> lhs,
                        TypedValue<AxisTypeInterface> rhs) {
-  if (lhs.getType().getTypeID() != rhs.getType().getTypeID()) {
+  if (lhs.getType() != rhs.getType()) {
     return false;
   }
   auto lhsAxisIface = lhs.getType();
@@ -102,8 +102,8 @@ bool areAxesEquivalent(TypedValue<AxisTypeInterface> lhs,
 
 bool areAxesDisjoint(TypedValue<AxisTypeInterface> lhs,
                      TypedValue<AxisTypeInterface> rhs) {
-  if (lhs.getType().getTypeID() != rhs.getType().getTypeID()) {
-    return false;
+  if (lhs.getType() != rhs.getType()) {
+    return true;
   }
   auto lhsAxisIface = lhs.getType();
   return lhsAxisIface.disjoint(lhs, rhs);
@@ -268,7 +268,7 @@ bool areFactorsDisjoint(
 
   for (size_t i = 0; i < cachedProvenances.size(); ++i) {
     for (size_t j = i + 1; j < cachedProvenances.size(); ++j) {
-      if (!areAxesEquivalent(cachedProvenances[i], cachedProvenances[j])) {
+      if (areAxesDisjoint(cachedProvenances[i], cachedProvenances[j])) {
         continue;
       }
       if (!arePairwiseFactorsDisjoint(factors[i], factors[j],
@@ -843,9 +843,7 @@ subtractFactorFromFactor(TypedValue<AxisFactorType> minuend,
   int aStride = getFactorStride(minuend);
   int bExtent = getFactorExtent(subtrahend);
   int bStride = getFactorStride(subtrahend);
-  if (aExtent <= 1 || aStride <= 1 || bExtent <= 1 || bStride <= 1) {
-    return failure();
-  }
+  assert(aExtent > 1 || aStride >= 1 || bExtent > 1 || bStride >= 1);
 
   int64_t aSpan = static_cast<int64_t>(aExtent) * static_cast<int64_t>(aStride);
   int64_t bSpan = static_cast<int64_t>(bExtent) * static_cast<int64_t>(bStride);
@@ -855,6 +853,7 @@ subtractFactorFromFactor(TypedValue<AxisFactorType> minuend,
   // Upper remainder: larger covered range than the removed factor.
   if (aSpan > bSpan) {
     if ((aSpan % bSpan) != 0) {
+      // Cannot factor out co-prime factors.
       return failure();
     }
     int64_t upperExtent = aSpan / bSpan;
@@ -873,6 +872,7 @@ subtractFactorFromFactor(TypedValue<AxisFactorType> minuend,
   // Lower remainder: retained minor regions below the removed factor stride.
   if (aStride < bStride) {
     if ((bStride % aStride) != 0) {
+      // Cannot factor out co-prime factors.
       return failure();
     }
     int64_t lowerExtent = bStride / aStride;
@@ -920,12 +920,6 @@ subtractSpaceImpl(llvm::ArrayRef<TypedValue<AxisFactorType>> minuend,
         return failure();
       }
       nextRemainder.append(partialRemainder->begin(), partialRemainder->end());
-    }
-
-    // If there is no aliasing factor in the current remainder, subtraction is
-    // undefined for this removed factor.
-    if (!hadAliasOverlap) {
-      return failure();
     }
 
     remainder = std::move(nextRemainder);
