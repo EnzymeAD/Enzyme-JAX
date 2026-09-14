@@ -301,6 +301,37 @@ using AnyVector =
     std::variant<SmallVector<APFloat>, SmallVector<APInt>,
                  SmallVector<mlir::Complex<APFloat>>, SmallVector<bool>>;
 
+std::optional<llvm::SmallVector<std::string>>
+findRunLines(llvm::StringRef filePath) {
+
+  auto bufferOrError = llvm::MemoryBuffer::getFile(filePath);
+  if (!bufferOrError)
+    return std::nullopt;
+
+  llvm::StringRef content = bufferOrError.get()->getBuffer();
+  llvm::SmallVector<std::string> runLines;
+
+  while (!content.empty()) {
+    llvm::StringRef line;
+    std::tie(line, content) = content.split('\n');
+    line = line.trim();
+    if (line.consume_front("// RUN:")) {
+      runLines.push_back(line.trim().str());
+    }
+  }
+
+  if (runLines.empty())
+    return std::nullopt;
+
+  return runLines;
+}
+
+struct RunLineConfig {
+  std::string passPipeline;
+  bool allowUnregisteredDialects = false;
+  bool splitInputFile = false;
+};
+
 // clang-format off
 // Our .mlir test files contain lines like this at the start
 // // RUN: enzymexlamlir-opt --enzyme-hlo-opt="enable_convert_to_convolution=true" %s | FileCheck %s 
@@ -308,27 +339,7 @@ using AnyVector =
 // function and get the optimized function to compare them
 // clang-format on
 // Returns a tuple: { passPipeline, allowUnregisteredDialect, splitInputFile }
-std::tuple<std::string, bool, bool> parseRunLine(llvm::StringRef filePath) {
-  auto bufferOrError = llvm::MemoryBuffer::getFile(filePath);
-  if (!bufferOrError)
-    return {"", false, false};
-
-  llvm::StringRef content = bufferOrError.get()->getBuffer();
-  llvm::StringRef runLine;
-
-  // 1. Find the RUN line
-  while (!content.empty()) {
-    llvm::StringRef line;
-    std::tie(line, content) = content.split('\n');
-    line = line.trim();
-    if (line.consume_front("// RUN:")) {
-      runLine = line;
-      break;
-    }
-  }
-
-  if (runLine.empty())
-    return {"", false, false};
+RunLineConfig parseRunLine(llvm::StringRef runLine) {
 
   llvm::BumpPtrAllocator allocator;
   llvm::StringSaver saver(allocator);
@@ -336,11 +347,10 @@ std::tuple<std::string, bool, bool> parseRunLine(llvm::StringRef filePath) {
   llvm::cl::TokenizeGNUCommandLine(runLine, saver, args);
 
   llvm::SmallVector<std::string, 4> passes;
-  bool allowUnreg = false;
-  bool split = false;
+  RunLineConfig runLineConfig;
   bool afterPipe = false;
 
-  // 3. Process the safe tokens
+  // Process the safe tokens
   for (const char *argChar : args) {
     llvm::StringRef token(argChar);
 
@@ -353,11 +363,11 @@ std::tuple<std::string, bool, bool> parseRunLine(llvm::StringRef filePath) {
 
     // Extract environment flags
     if (token == "-allow-unregistered-dialect") {
-      allowUnreg = true;
+      runLineConfig.allowUnregisteredDialects = true;
       continue;
     }
     if (token == "-split-input-file" || token == "--split-input-file") {
-      split = true;
+      runLineConfig.splitInputFile = true;
       continue;
     }
 
@@ -376,8 +386,13 @@ std::tuple<std::string, bool, bool> parseRunLine(llvm::StringRef filePath) {
     }
   }
 
-  // llvm::join merges the passes with commas automatically
-  return {llvm::join(passes, ","), allowUnreg, split};
+  std::string pipeline = llvm::join(passes, ",");
+  // This is hacky
+  if (!pipeline.empty() && pipeline.find('(') == std::string::npos)
+    pipeline = "builtin.module(" + pipeline + ")";
+
+  runLineConfig.passPipeline = pipeline;
+  return runLineConfig;
 }
 
 void applyConstraintsFromPipeline(StringRef pipeline, PoolConstraints &c) {
@@ -730,18 +745,16 @@ int main(int argc, char **argv) {
         << "Running with manual seed: " << seed << "\n";
   }
 
-  auto [passPipeline, allowUnreg, split] = parseRunLine(inputFilename);
-  if (passPipeline.empty()) {
+  auto runLines = findRunLines(inputFilename);
+  if (!runLines) {
     llvm::WithColor::warning(diag()) << "No RUN line found in file!\n";
     return 2;
   }
 
-  if (split) {
-    llvm::WithColor::warning(diag())
-        << "Skipping test: Fuzzer does not yet support "
-           "--split-input-file.\n";
-    return 0;
-  }
+  llvm::SmallVector<RunLineConfig> runLineConfigs;
+  for (auto runLine : *runLines)
+    runLineConfigs.push_back(parseRunLine(runLine));
+
   std::mt19937 gen(seed);
 
   mlir::DialectRegistry registry;
@@ -754,7 +767,11 @@ int main(int argc, char **argv) {
   mlir::registerTransformsPasses();
 
   MLIRContext context(registry);
-  if (allowUnreg)
+
+  bool anyAllowUnreg = llvm::any_of(runLineConfigs, [](const RunLineConfig &c) {
+    return c.allowUnregisteredDialects;
+  });
+  if (anyAllowUnreg)
     context.allowUnregisteredDialects();
 
   OwningOpRef<Operation *> module = loadMLIRModule(context, inputFilename);
@@ -776,56 +793,91 @@ int main(int argc, char **argv) {
   funcPM.addPass(mlir::enzyme::createLowerEnzymeXLAMPIPass());
   funcPM.addPass(mlir::enzyme::createLowerEnzymeXLAMLPass());
 
-  FailureOr<OpPassManager> parsed = mlir::parsePassPipeline(passPipeline);
-  if (mlir::failed(parsed)) {
-    llvm::WithColor::error(diag())
-        << "Failed to parse the pass pipeline: " << passPipeline << "\n";
-    return 2;
-  }
-
-  mlir::PassManager pm(&context, parsed->getOpAnchorName(),
-                       mlir::PassManager::Nesting::Implicit);
-  static_cast<mlir::OpPassManager &>(pm) = std::move(*parsed);
-
   auto BaseConstraints = parseRestrictInput(restrictInput);
-  applyConstraintsFromPipeline(passPipeline, BaseConstraints);
-
-  OwningOpRef<Operation *> optimizedModule(module->clone());
-  if (mlir::failed(pm.run(optimizedModule.get()))) {
-    llvm::WithColor::error(diag())
-        << "Pass pipeline failed to run on module!\n";
-    return 2;
-  }
-
-  SmallVector<func::FuncOp> unoptFuncs, optFuncs;
-  module->walk([&](func::FuncOp f) { unoptFuncs.push_back(f); });
-  optimizedModule->walk([&](func::FuncOp f) { optFuncs.push_back(f); });
-
-  if (unoptFuncs.size() != optFuncs.size()) {
-    llvm::WithColor::warning(diag())
-        << "function count changed (" << unoptFuncs.size() << " -> "
-        << optFuncs.size() << "), cannot pair functions; skipping file\n";
-    return 0;
-  }
-
+  bool anyMismatch = false;
+  bool anyToolError = false;
   unsigned passed = 0, mismatched = 0, skipped = 0;
 
-  for (auto [unoptFunc, optFunc] : llvm::zip_equal(unoptFuncs, optFuncs)) {
-    switch (fuzzFunction(unoptFunc, optFunc, gen, legalizationPM,
-                         BaseConstraints)) {
-    case Verdict::Passed:
-      passed++;
-      break;
-    case Verdict::Mismatched:
-      mismatched++;
-      break;
-    case Verdict::Skipped:
-      skipped++;
-      break;
+  bool hasRunLine = llvm::any_of(runLineConfigs, [](const RunLineConfig &c) {
+    return !c.passPipeline.empty();
+  });
+
+  if (!hasRunLine) {
+    llvm::WithColor::warning(diag()) << "No RUN line found in file!\n";
+    return 2;
+  }
+
+  for (auto [runIdx, config] : llvm::enumerate(runLineConfigs)) {
+    if (runLineConfigs.size() > 1)
+      llvm::WithColor::remark(diag()) << "run line " << runIdx + 1 << " of "
+                                      << runLineConfigs.size() << "\n";
+
+    if (config.splitInputFile) {
+      llvm::WithColor::warning(diag())
+          << "Skipping test: Fuzzer does not yet support "
+             "--split-input-file.\n";
+      continue;
+    }
+
+    FailureOr<OpPassManager> parsed =
+        mlir::parsePassPipeline(config.passPipeline);
+    if (mlir::failed(parsed)) {
+      llvm::WithColor::error(diag())
+          << "Failed to parse the pass pipeline: " << config.passPipeline
+          << "\n";
+      anyToolError = true;
+      continue;
+    }
+
+    mlir::PassManager pm(&context, parsed->getOpAnchorName(),
+                         mlir::PassManager::Nesting::Implicit);
+    static_cast<mlir::OpPassManager &>(pm) = std::move(*parsed);
+
+    applyConstraintsFromPipeline(config.passPipeline, BaseConstraints);
+
+    OwningOpRef<Operation *> optimizedModule(module->clone());
+    if (mlir::failed(pm.run(optimizedModule.get()))) {
+      llvm::WithColor::error(diag())
+          << "Pass pipeline failed to run on module!\n";
+      anyToolError = true;
+      continue;
+    }
+
+    SmallVector<func::FuncOp> unoptFuncs, optFuncs;
+    module->walk([&](func::FuncOp f) { unoptFuncs.push_back(f); });
+    optimizedModule->walk([&](func::FuncOp f) { optFuncs.push_back(f); });
+
+    if (unoptFuncs.size() != optFuncs.size()) {
+      llvm::WithColor::warning(diag())
+          << "function count changed (" << unoptFuncs.size() << " -> "
+          << optFuncs.size() << "), cannot pair functions; skipping file\n";
+      continue;
+    }
+
+    for (auto [unoptFunc, optFunc] : llvm::zip_equal(unoptFuncs, optFuncs)) {
+      switch (fuzzFunction(unoptFunc, optFunc, gen, legalizationPM,
+                           BaseConstraints)) {
+      case Verdict::Passed:
+        passed++;
+        break;
+      case Verdict::Mismatched:
+        mismatched++;
+        break;
+      case Verdict::Skipped:
+        skipped++;
+        break;
+      }
     }
   }
-  if (verbosity != Verbosity::Quiet)
-    llvm::outs() << inputFilename << ": " << passed << " passed, " << mismatched
+
+  if (verbosity != Verbosity::Quiet) {
+    llvm::outs() << inputFilename;
+    llvm::outs() << ": " << passed << " passed, " << mismatched
                  << " mismatched, " << skipped << " skipped\n";
-  return mismatched ? 1 : 0;
+  }
+  if (anyMismatch)
+    return 1;
+  if (anyToolError)
+    return 2;
+  return 0;
 }
