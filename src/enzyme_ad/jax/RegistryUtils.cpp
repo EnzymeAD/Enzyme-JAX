@@ -263,6 +263,9 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::triton::gpu::TritonGPUDialect>();
   registry.insert<mlir::cuda_tile::CudaTileDialect>();
 #endif
+#if ENZYME_JAX_ENABLE_Z3
+  registry.insert<mlir::enzyme::perfify::PerfifyDialect>();
+#endif
 }
 
 void loadAllRegisteredDialects(mlir::MLIRContext &context) {
