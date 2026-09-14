@@ -11,6 +11,7 @@
 
 #include <limits>
 #include <memory>
+#include <optional>
 #include <utility>
 
 namespace mlir::enzyme::distributed {
@@ -494,7 +495,8 @@ public:
               "failed to resolve provenance axis for a decided factor");
           return signalPassFailure();
         }
-        Value clonedProvenance = originalToCloned->lookupOrNull(*origProvenance);
+        Value clonedProvenance =
+            originalToCloned->lookupOrNull(*origProvenance);
         if (!clonedProvenance) {
           // A search-created axis (e.g. a device-local serialization axis)
           // with no counterpart in the original module: materialize it here
@@ -504,21 +506,19 @@ public:
         }
         int extent = getFactorExtent(origFactor);
         decidedExtent *= extent;
-        auto clonedFactor = builder.create<AxisFactorOp>(
-            origFactor.getLoc(), clonedProvenance, extent,
-            getFactorStride(origFactor));
-        clonedFactors.push_back(
-            castTypedValue<AxisFactorType>(clonedFactor.getResult(),
-                                           "AxisFactorType"));
+        auto clonedFactor =
+            builder.create<AxisFactorOp>(origFactor.getLoc(), clonedProvenance,
+                                         extent, getFactorStride(origFactor));
+        clonedFactors.push_back(castTypedValue<AxisFactorType>(
+            clonedFactor.getResult(), "AxisFactorType"));
       }
 
       int remainder = getAxisExtent(clonedAxis) / decidedExtent;
       if (remainder > 1) {
         auto residualFactor = builder.create<AxisFactorOp>(
             clonedAxisVal.getLoc(), clonedAxisVal, remainder, 1);
-        clonedFactors.push_back(
-            castTypedValue<AxisFactorType>(residualFactor.getResult(),
-                                           "AxisFactorType"));
+        clonedFactors.push_back(castTypedValue<AxisFactorType>(
+            residualFactor.getResult(), "AxisFactorType"));
       }
 
       if (failed(replaceAxisFactors(oldFactors, clonedFactors, builder)))
@@ -635,13 +635,51 @@ public:
   }
 };
 
+// Applies `node`'s decisions to a fresh clone of `originalModule`, built via
+// a standalone PassManager (not Pass::runPipeline, which requires its target
+// to be nested under the operation the calling pass is currently processing
+// -- our clone is a disconnected top-level module). Reports pipeline success
+// through `pipelineOk`.
+static OwningOpRef<ModuleOp>
+applyDecisionsToClone(ModuleOp originalModule,
+                     const std::shared_ptr<StrategySearchNode> &node,
+                     bool disableVerifier, bool &pipelineOk) {
+  IRMapping mapper;
+  OwningOpRef<ModuleOp> clonedModule(
+      cast<ModuleOp>(originalModule->clone(mapper)));
+
+  PassManager pm(originalModule.getContext(), ModuleOp::getOperationName());
+  pm.enableVerifier(!disableVerifier);
+  pm.addPass(ApplyPartialDecisions::create(node, mapper));
+  pipelineOk = succeeded(pm.run(*clonedModule));
+  return clonedModule;
+}
+
+// Prints a debug dump of `module`, the cloned/partially-rewritten IR for one
+// search candidate, distinguishing what kind of dump this is (`header`) and,
+// when available, its search score.
+static void dumpSearchModule(llvm::StringRef header, ModuleOp module,
+                             bool pipelineOk,
+                             std::optional<double> score = std::nullopt) {
+  llvm::errs() << "// " << header << " ("
+               << (pipelineOk ? "ok" : "FAILED");
+  if (score)
+    llvm::errs() << ", score=" << *score;
+  llvm::errs() << "):\n";
+  module.print(llvm::errs());
+  llvm::errs() << "\n";
+}
+
 class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
   ModuleOp originalModule;
   bool dumpCandidates;
+  bool disableVerifier;
 
 public:
-  StrategyScorer(ModuleOp originalModule, bool dumpCandidates)
-      : originalModule(originalModule), dumpCandidates(dumpCandidates) {}
+  StrategyScorer(ModuleOp originalModule, bool dumpCandidates,
+                bool disableVerifier)
+      : originalModule(originalModule), dumpCandidates(dumpCandidates),
+        disableVerifier(disableVerifier) {}
 
   // Plan: run a pass pipeline to apply and lower the current decisions
   // and score the result. Pipeline:
@@ -655,38 +693,28 @@ public:
   // Only ApplyPartialDecisions is implemented so far; the rest remain TODO,
   // so this returns a placeholder score (0.0 on success, -infinity if
   // ApplyPartialDecisions fails on the candidate's decisions).
-  //
-  // The candidate is scored on a clone of the original module, built fresh
-  // per call via a standalone PassManager (not Pass::runPipeline, which
-  // requires its target to be nested under the operation the calling pass is
-  // currently processing -- our clone is a disconnected top-level module).
   double score(const std::shared_ptr<StrategySearchNode> &node) override {
-    IRMapping mapper;
-    OwningOpRef<ModuleOp> clonedModule(
-        cast<ModuleOp>(originalModule->clone(mapper)));
+    bool pipelineOk;
+    OwningOpRef<ModuleOp> clonedModule = applyDecisionsToClone(
+        originalModule, node, disableVerifier, pipelineOk);
 
-    PassManager pm(originalModule.getContext(), ModuleOp::getOperationName());
-    pm.addPass(ApplyPartialDecisions::create(node, mapper));
-    LogicalResult pipelineResult = pm.run(*clonedModule);
+    double result = pipelineOk
+                        ? rand() // TODO: ApplyHeuristicDecisions + lowering +
+                                 // ScoreModel
+                        : -std::numeric_limits<double>::infinity();
 
-    if (dumpCandidates) {
-      llvm::errs() << "// ApplyPartialDecisions candidate ("
-                   << (succeeded(pipelineResult) ? "ok" : "FAILED") << "):\n";
-      clonedModule->print(llvm::errs());
-      llvm::errs() << "\n";
-    }
+    if (dumpCandidates)
+      dumpSearchModule("Search candidate", *clonedModule, pipelineOk, result);
 
-    if (failed(pipelineResult))
-      return -std::numeric_limits<double>::infinity();
-
-    return 0.0; // TODO: ApplyHeuristicDecisions + lowering + ScoreModel
+    return result;
   }
 };
 
 struct DistributedSearchStrategiesPass
     : public impl::DistributedSearchStrategiesPassBase<
           DistributedSearchStrategiesPass> {
-  using DistributedSearchStrategiesPassBase::DistributedSearchStrategiesPassBase;
+  using DistributedSearchStrategiesPassBase::
+      DistributedSearchStrategiesPassBase;
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
@@ -713,10 +741,36 @@ struct DistributedSearchStrategiesPass
     queue.push(initialNode);
     StrategyExplorer explorer(overlap, builder, physicalAxes,
                               moduleOp.getLoc());
-    StrategyScorer scorer(moduleOp, dumpCandidates);
+    StrategyScorer scorer(moduleOp, dumpCandidates, disableVerifier);
 
     BeamSearchDriver<StrategySearchNode> driver(queue, scorer, explorer);
     driver.run();
+
+    // Only dumped once the search is complete, so finalized candidates aren't
+    // interleaved with the in-progress ones dumpCandidates prints during the
+    // search itself.
+    if (dumpFinalized) {
+      for (const auto &node : driver.getFinalized()) {
+        bool pipelineOk;
+        OwningOpRef<ModuleOp> clonedModule = applyDecisionsToClone(
+            moduleOp, node, disableVerifier, pipelineOk);
+        dumpSearchModule("Finalized search candidate", *clonedModule,
+                         pipelineOk, node->score);
+      }
+    }
+
+    if (dumpBest) {
+      if (auto best = driver.getBest()) {
+        bool pipelineOk;
+        OwningOpRef<ModuleOp> clonedModule = applyDecisionsToClone(
+            moduleOp, best, disableVerifier, pipelineOk);
+        dumpSearchModule("Best search candidate", *clonedModule, pipelineOk,
+                         best->score);
+      } else {
+        llvm::errs() << "// Best search candidate: none found (no finalized "
+                        "candidates)\n";
+      }
+    }
   }
 };
 

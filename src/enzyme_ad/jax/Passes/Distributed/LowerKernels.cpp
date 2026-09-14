@@ -28,16 +28,17 @@ using FactorsPerDim = llvm::SmallVector<
 static bool isShardableFactor(mlir::TypedValue<axis::AxisFactorType> factor,
                               bool lowerLogical) {
   auto provenance = axis::getFactorProvenanceAxis(factor);
-  if (failed(provenance)) {
-    return false;
-  }
+  assert(succeeded(provenance) &&
+         "Expected factor to have a valid provenance axis");
 
   // Only logical mesh axes are optionally shardable. Replication and
   // device-local axes never participate in sharding lowering.
   if (isa<LogicalMeshAxisType>((*provenance).getType())) {
     return lowerLogical;
   }
-  return false;
+
+  return !isa<DeviceLocalAxisType, ReplicationAxisType>(
+      (*provenance).getType());
 }
 
 static void splitPartitioningAxesByShardability(
@@ -606,6 +607,10 @@ struct LowerKernelsPass : public impl::LowerKernelsPassBase<LowerKernelsPass> {
     // Transform and copy back the module
     runShardyLowering(shardyModule, verifyShardyLowering);
     stripPlaceholderAllReduces(shardyModule);
+    if (dumpLoweredModules) {
+      llvm::dbgs() << "Dumping lowered module:\n";
+      llvm::dbgs() << shardyModule << "\n";
+    }
     copyShardyModuleToKernelAndErase(shardyModule, kernelOp);
     updateKernelArgumentTypes(kernelOp, shardableParts);
     removeShardedFactorsFromPartitioningAxes(kernelOp, shardableParts,
