@@ -31,10 +31,6 @@ jobs:
   build:
     name: Build - ${{ matrix.os }} - python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
 
     container:
       image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:cd45d851f5ea544f88d042eafefa53d948c229fffcab6189019324e3b02b505a' ) || '' }}
@@ -133,7 +129,9 @@ jobs:
       - name: Update Python requirements files
         run: |
           bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
-
+      - uses: actions/checkout@v4
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
       - name: Build enzymexlamlir-opt
         timeout-minutes: 180
         run: |
