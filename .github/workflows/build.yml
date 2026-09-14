@@ -135,6 +135,11 @@ jobs:
 
       - name: Build enzymexlamlir-opt
         timeout-minutes: 180
+        runs-on: macOS-latest
+        steps:
+          - uses: actions/checkout@v4
+          - name: Setup tmate session
+            uses: mxschmitt/action-tmate@v3
         run: |
           bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
       - name: Upload enzymexlamlir-opt
