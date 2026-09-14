@@ -330,10 +330,7 @@ public:
     // Use axis dialect utilities to get the space subtraction
     auto remainingSpace =
         subtractSpace(availableSpaceValues, overlappingBinds, builder);
-    if (failed(remainingSpace)) {
-      availableSpace.clear();
-      return;
-    }
+    assert(succeeded(remainingSpace) && "Failed to subtract space");
 
     // Lift unique ownership: pass-through values reuse their original refs,
     // while new/transformed values get fresh ownership
@@ -527,6 +524,98 @@ public:
   }
 };
 
+// Not algorithmically fast! But we expect resonably small (10000k max,
+// maybe) and easily divisible numbers.
+static llvm::SmallVector<uint> uniquePrimeFactors(int n) {
+  llvm::SmallVector<uint> primes;
+  int thresh = 1;
+  int i = 2;
+  while (i <= n) {
+    if (n % i == 0) {
+      if (i > thresh) {
+        primes.push_back(i);
+        thresh = i;
+      }
+      n /= i;
+    } else {
+      i++;
+    }
+  }
+  return primes;
+}
+
+// A chunk peeled off a physical factor: `takenFactor` is bound to the axis
+// being decided, `residualFactor` covers what's left of the physical factor
+// and goes back into the available space.
+struct ChunkDecision {
+  SharedOpRef<AxisFactorOp> takenFactor;
+  SharedOpRef<AxisFactorOp> residualFactor;
+};
+
+// Attempts to peel a chunk off of `physicalFactor`, using the first entry of
+// `possibleChunks` (in the order given) whose extent evenly divides
+// `physicalFactor`'s. Returns std::nullopt if no chunk in `possibleChunks`
+// divides it.
+static std::optional<ChunkDecision>
+tryChunkFactor(SharedOpRef<AxisFactorOp> physicalFactor,
+               llvm::ArrayRef<uint> possibleChunks, OpBuilder &builder) {
+  // TODO do we have to swap available extent to owning things too?
+  int factorExtent = getFactorExtent(physicalFactor->get());
+  int chunkTaken = -1;
+  for (auto chunk : possibleChunks) {
+    if (chunk <= factorExtent && factorExtent % chunk == 0) {
+      chunkTaken = chunk;
+      break;
+    }
+  }
+  if (chunkTaken == -1)
+    return std::nullopt;
+
+  int residualExtent = factorExtent / chunkTaken;
+
+  // We have a candidate that takes a chunk out of the physical factor,
+  // from the high stride positions. Need to take the chunk factor,
+  // and create a residual factor from the remaining extent.
+  auto takenFactor =
+      sharedOpRefFromValue<TypedValue<AxisFactorType>, AxisFactorOp>(
+          createSubfactor(physicalFactor->get(), chunkTaken, residualExtent,
+                          builder, physicalFactor->get().getLoc()));
+  auto residualFactor =
+      sharedOpRefFromValue<TypedValue<AxisFactorType>, AxisFactorOp>(
+          createSubfactor(physicalFactor->get(), residualExtent, 1, builder,
+                          physicalFactor->get().getLoc()));
+  return ChunkDecision{takenFactor, residualFactor};
+}
+
+// Commits a chunk decision (see tryChunkFactor) to `node`: binds the taken
+// chunk to the axis currently being decided, and swaps the physical factor
+// it came from for its residual in the available space.
+static void applyChunkDecision(StrategySearchNode &node,
+                               SharedOpRef<AxisFactorOp> physicalFactor,
+                               const ChunkDecision &decision) {
+  node.addFactor(decision.takenFactor);
+  node.removeAvailableSpace(physicalFactor);
+  node.addAvailableSpace(decision.residualFactor);
+}
+
+// Consumes the entirety of `node`'s current axis's remaining extent by
+// serializing it within the device (i.e. no further physical space needed).
+static void applySerializeRemaining(StrategySearchNode &node,
+                                    OpBuilder &builder, Location loc) {
+  int extentRemaining = node.getExtentRemaining();
+  // spin up a fresh new owned reference to a within-device
+  // axis, factor with extent equal to remaining
+  DeviceLocalAxisOp localizationAxis =
+      builder.create<DeviceLocalAxisOp>(loc, extentRemaining);
+  auto factor = viewAxisAsFactor(localizationAxis, builder, loc);
+  SharedOpRef<AxisFactorOp> owningFactor =
+      sharedOpRefFromValue<TypedValue<AxisFactorType>, AxisFactorOp>(factor);
+  SharedOpRef<Operation *> owningAxis =
+      std::make_shared<OwningOpRef<Operation *>>(localizationAxis);
+  node.addFactor(owningFactor);
+  node.addSupportingIR(owningAxis);
+}
+
 class StrategyExplorer : public BeamSearchExplorerBase<StrategySearchNode> {
 public:
   LogicalAxisOverlap &overlap;
@@ -540,27 +629,6 @@ public:
       : BeamSearchExplorerBase<StrategySearchNode>(), overlap(overlap),
         builder(builder), totalMeshSpace(totalMeshSpace),
         defaultLoc(defaultLoc) {}
-
-  // Not algorithmically fast! But we expect resonably small (10000k max,
-  // maybe) and easily divisible numbers.
-  llvm::SmallVector<uint> uniquePrimeFactors(int n) {
-    llvm::SmallVector<uint> primes;
-    int thresh = 1;
-    int i = 2;
-    while (i <= n) {
-      if (n % i == 0) {
-        if (i > thresh) {
-          primes.push_back(i);
-          thresh = i;
-        }
-        n /= i;
-        i = 2;
-      } else {
-        i++;
-      }
-    }
-    return primes;
-  }
 
   virtual std::vector<std::shared_ptr<StrategySearchNode>>
   generateCandidatesFromNode(
@@ -578,36 +646,11 @@ public:
       auto possibleChunks = uniquePrimeFactors(extentRemaining);
       auto availableFactors = node->getAvailableSpace();
       for (auto physicalFactor : availableFactors) {
-        // TODO do we have to swap available extent to owning things too?
-        int factorExtent = getFactorExtent(physicalFactor->get());
-        int chunkTaken = -1;
-        for (auto chunk : possibleChunks) {
-          if (chunk <= factorExtent && factorExtent % chunk == 0) {
-            chunkTaken = chunk;
-            break;
-          }
-        }
-        if (chunkTaken == -1)
+        auto decision = tryChunkFactor(physicalFactor, possibleChunks, builder);
+        if (!decision)
           continue;
-
-        int residualExtent = factorExtent / chunkTaken;
-
-        // We have a candidate that takes a chunk out of the physical factor,
-        // from the high stride positions. Need to take the chunk factor,
-        // and create a residual factor from the remaining extent.
-        auto takenFactor =
-            sharedOpRefFromValue<TypedValue<AxisFactorType>, AxisFactorOp>(
-                createSubfactor(physicalFactor->get(), chunkTaken,
-                                residualExtent, builder,
-                                physicalFactor->get().getLoc()));
-        auto residualFactor =
-            sharedOpRefFromValue<TypedValue<AxisFactorType>, AxisFactorOp>(
-                createSubfactor(physicalFactor->get(), residualExtent, 1,
-                                builder, physicalFactor->get().getLoc()));
         auto child = node->makeChild();
-        child->addFactor(takenFactor);
-        child->removeAvailableSpace(physicalFactor);
-        child->addAvailableSpace(residualFactor);
+        applyChunkDecision(*child, physicalFactor, *decision);
         child->considerNextAxis(overlap, totalMeshSpace, builder);
         candidates.push_back(child);
       }
@@ -616,18 +659,7 @@ public:
     // Decision type 2: serialize remaining
     {
       auto child = node->makeChild();
-      // spin up a fresh new owned reference to a within-device
-      // axis, factor with extent equal to remaining
-      DeviceLocalAxisOp localizationAxis =
-          builder.create<DeviceLocalAxisOp>(defaultLoc, extentRemaining);
-      auto factor = viewAxisAsFactor(localizationAxis, builder, defaultLoc);
-      SharedOpRef<AxisFactorOp> owningFactor =
-          sharedOpRefFromValue<TypedValue<AxisFactorType>, AxisFactorOp>(
-              factor);
-      SharedOpRef<Operation *> owningAxis =
-          std::make_shared<OwningOpRef<Operation *>>(localizationAxis);
-      child->addFactor(owningFactor);
-      child->addSupportingIR(owningAxis);
+      applySerializeRemaining(*child, builder, defaultLoc);
       child->considerNextAxis(overlap, totalMeshSpace, builder);
       candidates.push_back(child);
     }
@@ -635,15 +667,77 @@ public:
   }
 };
 
-// Applies `node`'s decisions to a fresh clone of `originalModule`, built via
+// Heuristically completes every remaining decision on a node so it can be
+// lowered/scored as a full candidate. Implementations mutate `node` in
+// place; callers are expected to pass an already-detached scratch clone
+// (StrategySearchNode::makeChild()), never the live search node, since
+// completion is meant to inform scoring without narrowing what the real
+// search explores.
+class StrategyCompleterBase {
+public:
+  virtual void complete(StrategySearchNode &node) = 0;
+  virtual ~StrategyCompleterBase() = default;
+};
+
+// Completes axes in the same frozen order the search itself uses. For each
+// axis, greedily takes the largest available chunk of free physical mesh
+// space that still divides the remaining extent, repeating until the axis
+// is fully divided; once no available factor can supply any usable chunk
+// (out of free space, or no factor shares a divisor with what's left),
+// serializes whatever extent remains within the device.
+class StrategyInOrderCompleter : public StrategyCompleterBase {
+  LogicalAxisOverlap &overlap;
+  OpBuilder &builder;
+  llvm::ArrayRef<SharedOpRef<AxisFactorOp>> totalMeshSpace;
+  Location defaultLoc;
+
+public:
+  StrategyInOrderCompleter(
+      LogicalAxisOverlap &overlap, OpBuilder &builder,
+      llvm::ArrayRef<SharedOpRef<AxisFactorOp>> totalMeshSpace,
+      Location defaultLoc)
+      : overlap(overlap), builder(builder), totalMeshSpace(totalMeshSpace),
+        defaultLoc(defaultLoc) {}
+
+  void complete(StrategySearchNode &node) override {
+    while (!node.finalized()) {
+      int extentRemaining = node.getExtentRemaining();
+      assert(extentRemaining > 1 &&
+             "considerNextAxis should have advanced past a done axis");
+
+      // Descending order: unlike the explorer (which wants small, diverse
+      // chunks to branch on), a one-shot completer should maximize
+      // parallelism taken from each factor.
+      auto possibleChunks = uniquePrimeFactors(extentRemaining);
+      std::reverse(possibleChunks.begin(), possibleChunks.end());
+
+      auto availableSnapshot = node.getAvailableSpace(); // stable copy
+      bool took = false;
+      for (auto physicalFactor : availableSnapshot) {
+        if (auto decision =
+                tryChunkFactor(physicalFactor, possibleChunks, builder)) {
+          applyChunkDecision(node, physicalFactor, *decision);
+          took = true;
+          break;
+        }
+      }
+      if (!took) {
+        applySerializeRemaining(node, builder, defaultLoc);
+      }
+      node.considerNextAxis(overlap, totalMeshSpace, builder);
+    }
+  }
+};
+
+// Clones `originalModule` and applies `node`'s decisions to that clone, via
 // a standalone PassManager (not Pass::runPipeline, which requires its target
 // to be nested under the operation the calling pass is currently processing
 // -- our clone is a disconnected top-level module). Reports pipeline success
 // through `pipelineOk`.
 static OwningOpRef<ModuleOp>
-applyDecisionsToClone(ModuleOp originalModule,
-                     const std::shared_ptr<StrategySearchNode> &node,
-                     bool disableVerifier, bool &pipelineOk) {
+cloneAndApplyDecisions(ModuleOp originalModule,
+                       const std::shared_ptr<StrategySearchNode> &node,
+                       bool disableVerifier, bool &pipelineOk) {
   IRMapping mapper;
   OwningOpRef<ModuleOp> clonedModule(
       cast<ModuleOp>(originalModule->clone(mapper)));
@@ -661,8 +755,7 @@ applyDecisionsToClone(ModuleOp originalModule,
 static void dumpSearchModule(llvm::StringRef header, ModuleOp module,
                              bool pipelineOk,
                              std::optional<double> score = std::nullopt) {
-  llvm::errs() << "// " << header << " ("
-               << (pipelineOk ? "ok" : "FAILED");
+  llvm::errs() << "// " << header << " (" << (pipelineOk ? "ok" : "FAILED");
   if (score)
     llvm::errs() << ", score=" << *score;
   llvm::errs() << "):\n";
@@ -674,34 +767,41 @@ class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
   ModuleOp originalModule;
   bool dumpCandidates;
   bool disableVerifier;
+  StrategyCompleterBase &completer;
 
 public:
   StrategyScorer(ModuleOp originalModule, bool dumpCandidates,
-                bool disableVerifier)
+                 bool disableVerifier, StrategyCompleterBase &completer)
       : originalModule(originalModule), dumpCandidates(dumpCandidates),
-        disableVerifier(disableVerifier) {}
+        disableVerifier(disableVerifier), completer(completer) {}
 
   // Plan: run a pass pipeline to apply and lower the current decisions
   // and score the result. Pipeline:
-  // - ApplyPartialDecisions : decisions from the search
-  // - ApplyHeuristicDecisions : heuristically complete the remaining
-  //   decisions
+  // - StrategyCompleterBase (StrategyInOrderCompleter) : heuristically
+  //   complete the remaining decisions on the node itself, before any IR is
+  //   cloned
+  // - ApplyPartialDecisions : materialize the (now fully-decided) decisions
+  //   onto a clone
   // - Lowering pipeline : general lowering pipeline we will import from
   //   outside this pass
   // - ScoreModel : evaluate the lowered IR to produce a score
   //
-  // Only ApplyPartialDecisions is implemented so far; the rest remain TODO,
-  // so this returns a placeholder score (0.0 on success, -infinity if
-  // ApplyPartialDecisions fails on the candidate's decisions).
+  // Node completion + ApplyPartialDecisions are implemented; lowering +
+  // ScoreModel remain TODO, so this returns a placeholder score (rand() on
+  // success, -infinity if ApplyPartialDecisions fails on the candidate's
+  // decisions).
   double score(const std::shared_ptr<StrategySearchNode> &node) override {
-    bool pipelineOk;
-    OwningOpRef<ModuleOp> clonedModule = applyDecisionsToClone(
-        originalModule, node, disableVerifier, pipelineOk);
+    // Complete decisions on a throwaway clone so scoring can see a fully
+    // decided candidate without narrowing what the real search explores.
+    std::shared_ptr<StrategySearchNode> completedNode = node->makeChild();
+    completer.complete(*completedNode);
 
-    double result = pipelineOk
-                        ? rand() // TODO: ApplyHeuristicDecisions + lowering +
-                                 // ScoreModel
-                        : -std::numeric_limits<double>::infinity();
+    bool pipelineOk;
+    OwningOpRef<ModuleOp> clonedModule = cloneAndApplyDecisions(
+        originalModule, completedNode, disableVerifier, pipelineOk);
+
+    double result = pipelineOk ? rand() // TODO: lowering + ScoreModel
+                               : -std::numeric_limits<double>::infinity();
 
     if (dumpCandidates)
       dumpSearchModule("Search candidate", *clonedModule, pipelineOk, result);
@@ -741,7 +841,9 @@ struct DistributedSearchStrategiesPass
     queue.push(initialNode);
     StrategyExplorer explorer(overlap, builder, physicalAxes,
                               moduleOp.getLoc());
-    StrategyScorer scorer(moduleOp, dumpCandidates, disableVerifier);
+    StrategyInOrderCompleter completer(overlap, builder, physicalAxes,
+                                       moduleOp.getLoc());
+    StrategyScorer scorer(moduleOp, dumpCandidates, disableVerifier, completer);
 
     BeamSearchDriver<StrategySearchNode> driver(queue, scorer, explorer);
     driver.run();
@@ -752,8 +854,8 @@ struct DistributedSearchStrategiesPass
     if (dumpFinalized) {
       for (const auto &node : driver.getFinalized()) {
         bool pipelineOk;
-        OwningOpRef<ModuleOp> clonedModule = applyDecisionsToClone(
-            moduleOp, node, disableVerifier, pipelineOk);
+        OwningOpRef<ModuleOp> clonedModule =
+            cloneAndApplyDecisions(moduleOp, node, disableVerifier, pipelineOk);
         dumpSearchModule("Finalized search candidate", *clonedModule,
                          pipelineOk, node->score);
       }
@@ -762,8 +864,8 @@ struct DistributedSearchStrategiesPass
     if (dumpBest) {
       if (auto best = driver.getBest()) {
         bool pipelineOk;
-        OwningOpRef<ModuleOp> clonedModule = applyDecisionsToClone(
-            moduleOp, best, disableVerifier, pipelineOk);
+        OwningOpRef<ModuleOp> clonedModule =
+            cloneAndApplyDecisions(moduleOp, best, disableVerifier, pipelineOk);
         dumpSearchModule("Best search candidate", *clonedModule, pipelineOk,
                          best->score);
       } else {
