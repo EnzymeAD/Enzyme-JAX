@@ -836,9 +836,7 @@ struct DistributedSearchStrategiesPass
     auto initialNode = std::make_shared<StrategySearchNode>(axes, decisions);
     initialNode->setupNextAxis(overlap, physicalAxes, builder);
 
-    int TODO_PARAMETER_BEAM_SIZE = 100;
-    BeamSearchBreadthFirstQueue<StrategySearchNode> queue(
-        TODO_PARAMETER_BEAM_SIZE);
+    BeamSearchBreadthFirstQueue<StrategySearchNode> queue(beamSize);
     queue.push(initialNode);
     StrategyExplorer explorer(overlap, builder, physicalAxes,
                               moduleOp.getLoc());
