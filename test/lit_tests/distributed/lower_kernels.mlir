@@ -14,10 +14,12 @@
 // RUN: enzymexlamlir-opt --distributed-lower-kernels="lower-logical-axes=true" --cse --canonicalize --stabilize-axis-order -split-input-file %t.lower.once -o %t.lower.twice
 // RUN: diff -u %t.lower.once %t.lower.twice
 
-// A kernel partitioned over a physical axis. Physical axes are never
-// shardable through this pass (regardless of lower-logical-axes), so nothing
-// about the kernel should change: not the external operand/result types, not
-// the internal block-arg/yield types, and not the per-dim axis product.
+// A kernel partitioned over a physical axis. Physical axes always shard,
+// regardless of lower-logical-axes. Once fully sharded over, the
+// single-factor product is replaced by an empty product ("()"), not removed
+// entirely (that would desync the sharding attrs' axis indices). The
+// external operand/result types never change; only the internal block-arg
+// and yield types (and the factor_group extent) step closer to local.
 module @physical_kernel {
   func.func @main() {
     return
@@ -36,20 +38,20 @@ module @physical_kernel {
 }
 
 // NOLOWER-LABEL: module @physical_kernel {
-// NOLOWER: %[[PG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 4, 1>)
+// NOLOWER: %[[PG:.*]] = axis.product ()
 // NOLOWER: distributed.DistributedKernel (%{{.*}} : tensor<4xf32>) {{.*}}
 // NOLOWER-NEXT: -> (tensor<4xf32>) {{.*}}
-// NOLOWER-NEXT: axes (%[[PG]] : !axis.factor_group<4>) {
-// NOLOWER-NEXT: ^bb0(%arg0: tensor<4xf32>):
-// NOLOWER-NEXT: distributed.DistributedYield (%arg0 : tensor<4xf32>)
+// NOLOWER-NEXT: axes (%[[PG]] : !axis.factor_group<1>) {
+// NOLOWER-NEXT: ^bb0(%arg0: tensor<1xf32>):
+// NOLOWER-NEXT: distributed.DistributedYield (%arg0 : tensor<1xf32>)
 
 // LOWER-LABEL: module @physical_kernel {
-// LOWER: %[[PG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 4, 1>)
+// LOWER: %[[PG:.*]] = axis.product ()
 // LOWER: distributed.DistributedKernel (%{{.*}} : tensor<4xf32>) {{.*}}
 // LOWER-NEXT: -> (tensor<4xf32>) {{.*}}
-// LOWER-NEXT: axes (%[[PG]] : !axis.factor_group<4>) {
-// LOWER-NEXT: ^bb0(%arg0: tensor<4xf32>):
-// LOWER-NEXT: distributed.DistributedYield (%arg0 : tensor<4xf32>)
+// LOWER-NEXT: axes (%[[PG]] : !axis.factor_group<1>) {
+// LOWER-NEXT: ^bb0(%arg0: tensor<1xf32>):
+// LOWER-NEXT: distributed.DistributedYield (%arg0 : tensor<1xf32>)
 
 // -----
 
