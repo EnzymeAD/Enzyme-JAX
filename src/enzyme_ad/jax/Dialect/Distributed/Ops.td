@@ -53,6 +53,7 @@ def LogicalMeshAxesOp : DistributedOp<"LogicalMeshAxes", [
   let results = (outs Variadic<LogicalMeshAxisType> : $axes);
   let assemblyFormat = "$axis_extents attr-dict `:` type($axes)";
   let hasVerifier = 1;
+  let hasCanonicalizer = 1;
 }
 
 def ReplicationAxisOp : DistributedOp<"ReplicationAxis", [

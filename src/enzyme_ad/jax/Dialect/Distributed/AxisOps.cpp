@@ -1,6 +1,8 @@
 #include "Dialect.h"
 #include "Utilities.h"
 
+#include "mlir/IR/PatternMatch.h"
+
 namespace mlir::enzyme::distributed {
 
 LogicalResult PhysicalMeshOp::verify() {
@@ -118,6 +120,57 @@ LogicalResult LogicalMeshAxesOp::inferReturnTypes(
   }
 
   return success();
+}
+
+namespace {
+// LogicalMeshAxesOp deliberately opts out of Pure (see
+// DeclarativeMetadataTrait): two structurally-identical declarations denote two
+// distinct logical axes, so they must never be CSE'd together. That trait
+// choice also opts the op out of MLIR's generic DCE, since DCE and CSE both key
+// off the same memory-effect-free check. This pattern restores DCE (whole-op
+// and, for the variadic result list, per-result) without reintroducing CSE.
+struct PruneUnusedLogicalMeshAxes : public OpRewritePattern<LogicalMeshAxesOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LogicalMeshAxesOp op,
+                                 PatternRewriter &rewriter) const override {
+    ResultRange results = op.getAxes();
+    SmallVector<unsigned> liveIndices;
+    for (auto [idx, result] : llvm::enumerate(results)) {
+      if (!result.use_empty()) {
+        liveIndices.push_back(idx);
+      }
+    }
+
+    if (liveIndices.size() == results.size()) {
+      return failure();
+    }
+
+    if (liveIndices.empty()) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    ArrayRef<int32_t> axisExtents = op.getAxisExtents();
+    SmallVector<int32_t> liveExtents;
+    liveExtents.reserve(liveIndices.size());
+    for (unsigned idx : liveIndices) {
+      liveExtents.push_back(axisExtents[idx]);
+    }
+
+    auto newOp = rewriter.create<LogicalMeshAxesOp>(op.getLoc(), liveExtents);
+    for (auto [newIdx, oldIdx] : llvm::enumerate(liveIndices)) {
+      rewriter.replaceAllUsesWith(results[oldIdx], newOp.getAxes()[newIdx]);
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+} // namespace
+
+void LogicalMeshAxesOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                                     MLIRContext *context) {
+  results.add<PruneUnusedLogicalMeshAxes>(context);
 }
 
 LogicalResult ReplicationAxisOp::inferReturnTypes(
