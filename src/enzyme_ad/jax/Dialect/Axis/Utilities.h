@@ -6,6 +6,9 @@
 
 #include "Dialect.h"
 
+#include "mlir/IR/Block.h"
+#include "mlir/IR/Builders.h"
+
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -180,6 +183,52 @@ viewFactorsAsProduct(TypedValueArrayRef<AxisFactorType> factors,
 llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
 factorAxisByExtents(::mlir::Value axis, llvm::ArrayRef<int32_t> extents,
                     ::mlir::OpBuilder &builder, ::mlir::Location loc);
+
+// Redirects `builder` to insert into a private scratch block for this
+// guard's lifetime, and erases everything still in that block (via the
+// block's own destructor) once the guard goes out of scope -- regardless of
+// which exit path was taken. Call keep() on any value that should survive
+// (become a detached, standalone value again, exactly as if this guard had
+// never existed) before the guard is destroyed.
+//
+// This is for callers whose builder has no meaningful insertion point of its
+// own (detached, ephemeral bookkeeping -- e.g. search-time scratch axis
+// arithmetic, or a pure verifier computation): everything created here is
+// meant to end up either kept as a free-floating value or discarded, never
+// inserted into real IR. If a function's builder already points at a real,
+// persistent destination block, don't route it through this guard -- ops
+// created there are already properly owned from the moment they're built;
+// track and selectively erase unconfirmed ones directly instead (see
+// replaceAxisFactors for that pattern).
+//
+// A kept value must not depend (through its own operands) on anything else
+// created in this scope that was not also kept: block teardown drops all
+// internal references in one shot and doesn't know to preserve
+// cross-references among discarded ops. This is a non-issue for axis-factor
+// arithmetic specifically, since every AxisFactorOp's "axis" operand always
+// resolves directly to its root axis (see createSubfactor), never to another
+// (possibly-discarded) factor.
+class TemporaryOpGuard {
+  ::mlir::OpBuilder::InsertionGuard insertionGuard;
+  ::mlir::Block scratch;
+
+public:
+  explicit TemporaryOpGuard(::mlir::OpBuilder &builder)
+      : insertionGuard(builder) {
+    builder.setInsertionPointToEnd(&scratch);
+  }
+
+  // Detaches `value`'s defining op from the scratch block (without erasing
+  // it) so it survives this guard's destruction. No-op if `value` wasn't
+  // actually created in this scope (e.g. a pass-through value already owned
+  // elsewhere before the guard existed).
+  template <typename ValT> ValT keep(ValT value) {
+    if (::mlir::Operation *op = value.getDefiningOp();
+        op && op->getBlock() == &scratch)
+      op->remove();
+    return value;
+  }
+};
 
 // Subtracts subtrahend factors from a factor-group and returns the remaining
 // factors in major-first order. Subtrahend factors must be representable as

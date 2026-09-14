@@ -70,8 +70,11 @@ LogicalResult DistributedCollectiveOp::verify() {
   auto rhs_filtered = filterOutReplicationFactors(mapping_rhs_factors);
 
   // Create the set of axis we expect to see from the input, output types.
+  // These are pure scratch values used only for the comparisons below, so a
+  // TemporaryOpGuard cleans them all up regardless of which return path is
+  // taken -- none of them need to (or do) survive past this function.
   OpBuilder builder(getContext());
-  builder.clearInsertionPoint();
+  TemporaryOpGuard guard(builder);
   Location loc = getLoc();
   auto expected_input_tensor_axes =
       axis::createAxesForRankedShape(getInputObject().getType(), builder, loc);

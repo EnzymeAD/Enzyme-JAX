@@ -897,6 +897,10 @@ FailureOr<llvm::SmallVector<TypedValue<AxisFactorType>>>
 subtractSpaceImpl(llvm::ArrayRef<TypedValue<AxisFactorType>> minuend,
                   llvm::ArrayRef<TypedValue<AxisFactorType>> subtrahend,
                   OpBuilder &builder, Location loc) {
+  // Every intermediate split created below lives in this guard's scratch
+  // block until explicitly kept; on any return (success or one of the
+  // failure paths above/below) whatever wasn't kept is erased automatically.
+  TemporaryOpGuard guard(builder);
   llvm::SmallVector<TypedValue<AxisFactorType>> remainder(minuend.begin(),
                                                           minuend.end());
 
@@ -925,6 +929,8 @@ subtractSpaceImpl(llvm::ArrayRef<TypedValue<AxisFactorType>> minuend,
     remainder = std::move(nextRemainder);
   }
 
+  for (TypedValue<AxisFactorType> &value : remainder)
+    value = guard.keep(value);
   return remainder;
 }
 
@@ -971,6 +977,11 @@ projectVirtualFactorToRealFactors(TypedValue<FactorGroupType> virtualAxis,
   if (failed(virtualFactors) || virtualFactors->empty()) {
     return failure();
   }
+
+  // Every projected factor created below lives in this guard's scratch
+  // block until explicitly kept; any of the failure returns below leaves it
+  // to be erased automatically instead of leaking a detached op.
+  TemporaryOpGuard guard(builder);
 
   // Remove complete minor-most virtual factors from the virtual stride,
   // then split the first partially-covered factor as needed.
@@ -1047,6 +1058,8 @@ projectVirtualFactorToRealFactors(TypedValue<FactorGroupType> virtualAxis,
   }
 
   std::reverse(projectedMinorToMajor.begin(), projectedMinorToMajor.end());
+  for (TypedValue<AxisFactorType> &value : projectedMinorToMajor)
+    value = guard.keep(value);
   return projectedMinorToMajor;
 }
 
