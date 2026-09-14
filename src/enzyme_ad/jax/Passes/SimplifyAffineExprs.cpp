@@ -273,29 +273,35 @@ struct AffineExprToIslAffConverter {
       case mlir::AffineExprKind::Add:
         return isl_aff_add(lhs, rhs);
       case mlir::AffineExprKind::CeilDiv:
+        if (isl_aff_is_cst(rhs) != isl_bool_true)
+          break;
         return isl_aff_ceil(isl_aff_div(lhs, rhs));
       case mlir::AffineExprKind::FloorDiv:
+        if (isl_aff_is_cst(rhs) != isl_bool_true)
+          break;
         return isl_aff_floor(isl_aff_div(lhs, rhs));
       case mlir::AffineExprKind::Mod: {
-        if (isl_aff_is_cst(rhs) == isl_bool_true) {
-          isl_aff *r = isl_aff_mod_val(lhs, isl_aff_get_constant_val(rhs));
-          isl_aff_free(rhs);
-          return r;
-        } else {
-          isl_aff_free(lhs);
-          isl_aff_free(rhs);
-          return nullptr;
-        }
+        if (isl_aff_is_cst(rhs) != isl_bool_true)
+          break;
+        isl_aff *r = isl_aff_mod_val(lhs, isl_aff_get_constant_val(rhs));
+        isl_aff_free(rhs);
+        return r;
       }
       case mlir::AffineExprKind::Mul:
+        if (isl_aff_is_cst(lhs) != isl_bool_true &&
+            isl_aff_is_cst(rhs) != isl_bool_true)
+          break;
         return isl_aff_mul(lhs, rhs);
       default:
         LLVM_DEBUG(llvm::dbgs()
                    << "Unhandled kind " << (unsigned)bo.getKind() << "\n");
-        isl_aff_free(lhs);
-        isl_aff_free(rhs);
-        return nullptr;
+        break;
       }
+      // Semi-affine: a division or modulus by a symbol, or a product of two
+      // non-constants, has no isl affine form.
+      isl_aff_free(lhs);
+      isl_aff_free(rhs);
+      return nullptr;
     } else if (auto c = dyn_cast<AffineConstantExpr>(expr)) {
       return isl_aff_val_on_domain(isl_local_space_copy(ls),
                                    isl_val_int_from_si(ctx, c.getValue()));
@@ -586,6 +592,8 @@ struct IslToAffineExprConverter {
   unsigned symOffset;
   PosMapTy dimPosMap;
   PosMapTy symPosMap;
+  // Set when an expression has no isl form or decodes to no map expression.
+  bool incomplete = false;
 
   AffineExpr createOpBin(__isl_take isl_ast_expr *Expr) {
     AffineExpr LHS, RHS, Res;
@@ -758,10 +766,13 @@ struct IslToAffineExprConverter {
 
     unsigned id = (uintptr_t)isl_id_get_user(Id);
     id = id - 1;
+    PosMapTy &posMap = id < symOffset ? dimPosMap : symPosMap;
+    auto pos = posMap.find(id < symOffset ? id : id - symOffset);
+    assert(pos != posMap.end() && "isl identifier outside the domain");
     if (id < symOffset)
-      V = getAffineDimExpr(dimPosMap[id], mlirContext);
+      V = getAffineDimExpr(pos->second, mlirContext);
     else
-      V = getAffineSymbolExpr(symPosMap[id - symOffset], mlirContext);
+      V = getAffineSymbolExpr(pos->second, mlirContext);
 
     isl_id_free(Id);
     isl_ast_expr_free(Expr);
@@ -950,36 +961,33 @@ IslAnalysis::IslAnalysis() {
 
 IslAnalysis::~IslAnalysis() { isl_ctx_free(ctx); }
 
-std::optional<AffineMap> handleAffineValueMap(IslAnalysis &islAnalysis,
-                                              AffineValueMap avm,
-                                              isl_set *domain,
-                                              FlatAffineValueConstraints cst) {
+// Simplifies the results of `avm` against `domain`, the enclosing loop and
+// branch constraints over the variables of `cst`. Map operands the domain does
+// not know become unconstrained variables of it, so a map with its own symbol
+// operands, or one nested in a loop with a symbolic bound, still folds against
+// the bounds it is nested in. A simplified result may read a domain variable
+// the map had no operand for (a domain equality between two loop ivs lets
+// the gist express one through the other); such variables become new
+// operands, so the returned value map may have more operands than `avm`.
+std::optional<AffineValueMap>
+handleAffineValueMap(IslAnalysis &islAnalysis, AffineValueMap avm,
+                     isl_set *domain, FlatAffineValueConstraints cst) {
   isl_ctx *ctx = islAnalysis.getCtx();
   AffineMap map = avm.getAffineMap();
   LLVM_DEBUG(llvm::dbgs() << "Mapping dims:\n");
   PosMapTy dimPosMap;
   PosMapTy dimPosMapReverse;
-  for (unsigned i = 0; i < cst.getNumDimVars(); i++) {
-    Value cstVal = cst.getValue(i);
-    LLVM_DEBUG(llvm::dbgs() << "cstVal " << cstVal << "\n");
-    for (unsigned origDim = 0; origDim < map.getNumDims(); origDim++) {
-      Value dim = avm.getOperand(origDim);
-      LLVM_DEBUG(llvm::dbgs() << "dim " << dim << "\n");
-      if (cstVal == dim) {
-        LLVM_DEBUG(llvm::dbgs() << origDim << " <--> " << i << "\n");
-        dimPosMap[origDim] = i;
-        dimPosMapReverse[i] = origDim;
-        break;
-      }
-    }
-  }
-
-  if (avm.getNumSymbols() != 0 || cst.getNumSymbolVars() != 0) {
-    // TODO While the fact that all dims from the map _must_ appear in the cst,
-    // this is not the case for symbols. We do not handle that case correctly
-    // currently, thus we abort early.
-    domain = isl_set_free(domain);
-    return {};
+  unsigned numDomainDims = cst.getNumDimVars();
+  unsigned numDomainSymbols = cst.getNumSymbolVars();
+  for (unsigned origDim = 0, numDims = map.getNumDims(); origDim < numDims;
+       origDim++) {
+    Value dim = avm.getOperand(origDim);
+    unsigned pos;
+    if (!cst.findVar(dim, &pos) || pos >= cst.getNumDimVars())
+      pos = cst.appendDimVar(dim);
+    LLVM_DEBUG(llvm::dbgs() << origDim << " <--> " << pos << "\n");
+    dimPosMap[origDim] = pos;
+    dimPosMapReverse[pos] = origDim;
   }
 
   bool changed = false;
@@ -987,17 +995,32 @@ std::optional<AffineMap> handleAffineValueMap(IslAnalysis &islAnalysis,
   LLVM_DEBUG(llvm::dbgs() << "Mapping syms:\n");
   PosMapTy symPosMap;
   PosMapTy symPosMapReverse;
-  for (unsigned i = 0; i < cst.getNumSymbolVars(); i++) {
-    for (unsigned origSym = 0; origSym < map.getNumSymbols(); origSym++) {
-      Value dim = avm.getOperand(origSym + map.getNumDims());
-      if (cst.getValue(i + cst.getNumDimVars()) == dim) {
-        LLVM_DEBUG(llvm::dbgs() << origSym << " <--> " << i << "\n");
-        symPosMap[origSym] = i;
-        symPosMapReverse[i] = origSym;
-        break;
-      }
-    }
+  for (unsigned origSym = 0, numSymbols = map.getNumSymbols();
+       origSym < numSymbols; origSym++) {
+    Value sym = avm.getOperand(origSym + map.getNumDims());
+    unsigned pos;
+    if (!cst.findVar(sym, &pos) || pos < cst.getNumDimVars() ||
+        pos >= cst.getNumDimAndSymbolVars())
+      pos = cst.appendSymbolVar(sym);
+    pos -= cst.getNumDimVars();
+    LLVM_DEBUG(llvm::dbgs() << origSym << " <--> " << pos << "\n");
+    symPosMap[origSym] = pos;
+    symPosMapReverse[pos] = origSym;
   }
+  // Every other domain variable decodes to a position past the map's own,
+  // backed by the value the domain associates with it; the ones a result
+  // actually reads are appended as operands below.
+  SmallVector<Value> extraDims, extraSymbols;
+  for (unsigned pos = 0, e = cst.getNumDimVars(); pos < e; ++pos)
+    if (!dimPosMapReverse.count(pos)) {
+      dimPosMapReverse[pos] = map.getNumDims() + extraDims.size();
+      extraDims.push_back(cst.getValue(pos));
+    }
+  for (unsigned pos = 0, e = cst.getNumSymbolVars(); pos < e; ++pos)
+    if (!symPosMapReverse.count(pos)) {
+      symPosMapReverse[pos] = map.getNumSymbols() + extraSymbols.size();
+      extraSymbols.push_back(cst.getValue(cst.getNumDimVars() + pos));
+    }
 
   isl_space *space =
       isl_space_set_alloc(ctx, cst.getNumSymbolVars(), cst.getNumDimVars());
@@ -1005,11 +1028,23 @@ std::optional<AffineMap> handleAffineValueMap(IslAnalysis &islAnalysis,
     isl_id *id = isl_id_alloc(ctx, "dim", (void *)(size_t)(i + 1));
     space = isl_space_set_dim_id(space, isl_dim_set, i, id);
   }
+  // isl aligns the parameters of the expression and the domain by identifier
+  // (name and user pointer together), and refuses to add parameters to a set
+  // whose existing ones are unnamed.
   unsigned symOffset = cst.getNumDimVars();
-  for (unsigned i = 0; i < cst.getNumSymbolVars(); i++) {
-    isl_id *id = isl_id_alloc(ctx, "sym", (void *)(size_t)(symOffset + i + 1));
-    space = isl_space_set_dim_id(space, isl_dim_set, i, id);
-  }
+  auto symbolId = [&](unsigned i) {
+    return isl_id_alloc(ctx, "sym", (void *)(size_t)(symOffset + i + 1));
+  };
+  domain = isl_set_add_dims(domain, isl_dim_set,
+                            cst.getNumDimVars() - numDomainDims);
+  for (unsigned i = 0; i < numDomainSymbols; i++)
+    domain = isl_set_set_dim_id(domain, isl_dim_param, i, symbolId(i));
+  domain = isl_set_add_dims(domain, isl_dim_param,
+                            cst.getNumSymbolVars() - numDomainSymbols);
+  for (unsigned i = numDomainSymbols; i < cst.getNumSymbolVars(); i++)
+    domain = isl_set_set_dim_id(domain, isl_dim_param, i, symbolId(i));
+  for (unsigned i = 0; i < cst.getNumSymbolVars(); i++)
+    space = isl_space_set_dim_id(space, isl_dim_param, i, symbolId(i));
 
   isl_ast_build *build =
       isl_ast_build_from_context(isl_set_universe(isl_space_copy(space)));
@@ -1024,6 +1059,11 @@ std::optional<AffineMap> handleAffineValueMap(IslAnalysis &islAnalysis,
     LLVM_DEBUG(llvm::dbgs() << "Handling AffineExpr\n" << mlirExpr << "\n");
     LLVM_DEBUG(llvm::dbgs() << "Got aff\n");
     isl_aff *aff = m2i.getIslAff(mlirExpr);
+    if (!aff) {
+      i2m.incomplete = true;
+      newExprs.push_back(mlirExpr);
+      continue;
+    }
     LLVM_DEBUG(isl_aff_dump(aff));
     aff = isl_aff_gist(aff, isl_set_copy(domain));
     LLVM_DEBUG(llvm::dbgs() << "Gisted aff\n");
@@ -1034,6 +1074,8 @@ std::optional<AffineMap> handleAffineValueMap(IslAnalysis &islAnalysis,
     LLVM_DEBUG(llvm::dbgs() << "Back to AffineExpr\n");
     AffineExpr newMlirExpr = i2m.create(expr);
     LLVM_DEBUG(llvm::dbgs() << newMlirExpr << "\n");
+    if (!newMlirExpr)
+      i2m.incomplete = true;
     newExprs.push_back(newMlirExpr);
     if (mlirExpr != newMlirExpr)
       changed = true;
@@ -1042,17 +1084,59 @@ std::optional<AffineMap> handleAffineValueMap(IslAnalysis &islAnalysis,
   domain = isl_set_free(domain);
   build = isl_ast_build_free(build);
 
-  if (!changed)
+  if (!changed || i2m.incomplete)
     return std::nullopt;
 
-  AffineMap newMap = AffineMap::get(map.getNumDims(), map.getNumSymbols(),
-                                    newExprs, map.getContext());
+  // Keep only the extra variables some result reads, numbered contiguously
+  // after the map's own.
+  SmallVector<Value> operands(avm.getOperands().take_front(map.getNumDims()));
+  SmallVector<AffineExpr> dimReplacements, symbolReplacements;
+  auto compact = [&](unsigned own, ArrayRef<Value> extra, bool isDim,
+                     SmallVectorImpl<AffineExpr> &replacements) {
+    llvm::SmallBitVector used(extra.size());
+    for (AffineExpr expr : newExprs)
+      expr.walk([&](AffineExpr e) {
+        unsigned pos;
+        if (auto d = dyn_cast<AffineDimExpr>(e); d && isDim)
+          pos = d.getPosition();
+        else if (auto sy = dyn_cast<AffineSymbolExpr>(e); sy && !isDim)
+          pos = sy.getPosition();
+        else
+          return;
+        if (pos >= own)
+          used.set(pos - own);
+      });
+    for (unsigned i = 0; i < own; ++i)
+      replacements.push_back(isDim ? getAffineDimExpr(i, map.getContext())
+                                   : getAffineSymbolExpr(i, map.getContext()));
+    unsigned next = own;
+    for (unsigned i = 0; i < extra.size(); ++i) {
+      if (used[i])
+        operands.push_back(extra[i]);
+      replacements.push_back(
+          isDim ? getAffineDimExpr(used[i] ? next : 0, map.getContext())
+                : getAffineSymbolExpr(used[i] ? next : 0, map.getContext()));
+      next += used[i];
+    }
+    return next;
+  };
+  unsigned numDims =
+      compact(map.getNumDims(), extraDims, true, dimReplacements);
+  operands.append(avm.getOperands().begin() + map.getNumDims(),
+                  avm.getOperands().end());
+  unsigned numSymbols =
+      compact(map.getNumSymbols(), extraSymbols, false, symbolReplacements);
+  for (AffineExpr &expr : newExprs)
+    expr = expr.replaceDimsAndSymbols(dimReplacements, symbolReplacements);
+
+  AffineMap newMap =
+      AffineMap::get(numDims, numSymbols, newExprs, map.getContext());
   newMap = mlir::enzyme::recreateExpr(newMap);
 
   if (map == newMap)
     return {};
 
-  return newMap;
+  return AffineValueMap(newMap, operands);
 }
 
 template <typename T>
@@ -1067,11 +1151,18 @@ LogicalResult handleAffineAccessOp(IslAnalysis &islAnalysis, T access) {
   AffineMap map = access.getMap();
   AffineValueMap avm(map, access.getMapOperands(), {});
 
-  auto newMap = handleAffineValueMap(islAnalysis, avm, domain, cst);
-  if (!newMap)
+  auto simplified = handleAffineValueMap(islAnalysis, avm, domain, cst);
+  if (!simplified)
     return failure();
 
-  access.setMap(*newMap);
+  // The operands ahead of the indices (the memref, and the value of a store)
+  // stay; the indices are the value map's operands.
+  SmallVector<Value> operands(
+      access->getOperands().drop_back(access.getMapOperands().size()));
+  operands.append(simplified->getOperands().begin(),
+                  simplified->getOperands().end());
+  access->setOperands(operands);
+  access.setMap(simplified->getAffineMap());
   return success();
 }
 
@@ -1082,6 +1173,7 @@ LogicalResult handleAffineIfOp(IslAnalysis &islAnalysis, AffineIfOp ifOp) {
   isl_ctx *ctx = islAnalysis.getCtx();
   IntegerSet set = ifOp.getCondition();
   IntegerSet newSet = set;
+  SmallVector<Value> operands(ifOp.getOperands());
   LLVM_DEBUG(llvm::dbgs() << "Got domain\n");
   auto [domain, cst] = ::getDomain(ctx, ifOp, true);
   if (domain) {
@@ -1091,14 +1183,18 @@ LogicalResult handleAffineIfOp(IslAnalysis &islAnalysis, AffineIfOp ifOp) {
     AffineMap map = AffineMap::get(set.getNumDims(), set.getNumSymbols(), csts,
                                    ifOp.getContext());
     AffineValueMap avm(map, ifOp.getOperands(), {});
-    if (auto newMap = handleAffineValueMap(islAnalysis, avm, domain, cst))
-      newSet = IntegerSet::get(set.getNumDims(), set.getNumSymbols(),
-                               newMap->getResults(), set.getEqFlags());
+    if (auto simplified = handleAffineValueMap(islAnalysis, avm, domain, cst)) {
+      AffineMap newMap = simplified->getAffineMap();
+      newSet = IntegerSet::get(newMap.getNumDims(), newMap.getNumSymbols(),
+                               newMap.getResults(), set.getEqFlags());
+      operands.assign(simplified->getOperands().begin(),
+                      simplified->getOperands().end());
+    }
   }
   newSet = mlir::enzyme::recreateExpr(newSet);
   if (newSet == set)
     return failure();
-  ifOp.setCondition(newSet);
+  ifOp.setConditional(newSet, operands);
   return success();
 }
 

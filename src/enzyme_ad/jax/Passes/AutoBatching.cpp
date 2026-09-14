@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <llvm/ADT/STLExtras.h>
+#include <numeric>
 #include <tuple>
 
 #define DEBUG_TYPE "auto-batching"
@@ -1884,11 +1885,26 @@ RemoveLoopCarriedDependenciesFromWhileLoadOperations::matchAndRewriteImpl(
                                          DusInfoCollect::NOT_SEARCHED);
 
   whileBody.walk([&](stablehlo::DynamicSliceOp dsOp) {
-    auto operand = dsOp.getOperand();
+    SmallVector<stablehlo::TransposeOp> transposeChain;
+    Value operand = dsOp.getOperand();
+    while (auto transposeOp = operand.getDefiningOp<stablehlo::TransposeOp>()) {
+      transposeChain.push_back(transposeOp);
+      operand = transposeOp.getOperand();
+    }
 
     auto blockArg = dyn_cast<BlockArgument>(operand);
     if (!blockArg || blockArg.getOwner() != &whileBody) {
       return WalkResult::advance();
+    }
+
+    SmallVector<int64_t> permutation(
+        cast<RankedTensorType>(operand.getType()).getRank());
+    std::iota(permutation.begin(), permutation.end(), 0);
+    for (auto transposeOp : transposeChain) {
+      auto perm = transposeOp.getPermutation();
+      for (auto &dim : permutation) {
+        dim = perm[dim];
+      }
     }
 
     size_t argNum = blockArg.getArgNumber();
@@ -1932,10 +1948,16 @@ RemoveLoopCarriedDependenciesFromWhileLoadOperations::matchAndRewriteImpl(
     //      of 1. this can be extended to ensure that each step > step size
     //      (currently not implemented).
 
+    SmallVector<Value> dsStartIndices(loadStartIndices.size());
+    SmallVector<int64_t> dsSliceSizes(loadSliceSizes.size());
+    for (auto [dsDim, argDim] : llvm::enumerate(permutation)) {
+      dsStartIndices[argDim] = dsOp.getStartIndices()[dsDim];
+      dsSliceSizes[argDim] = dsOp.getSliceSizes()[dsDim];
+    }
+
     bool foundDepIndex = false;
-    for (auto [dsStart, dusStart, dsSliceSize, dusSliceSize] :
-         llvm::zip_equal(dsOp.getStartIndices(), loadStartIndices,
-                         dsOp.getSliceSizes(), loadSliceSizes)) {
+    for (auto [dsStart, dusStart, dsSliceSize, dusSliceSize] : llvm::zip_equal(
+             dsStartIndices, loadStartIndices, dsSliceSizes, loadSliceSizes)) {
       if (dsStart != dusStart || dsSliceSize != dusSliceSize) {
         return WalkResult::advance();
       }
@@ -1950,8 +1972,15 @@ RemoveLoopCarriedDependenciesFromWhileLoadOperations::matchAndRewriteImpl(
     }
 
     if (foundDepIndex) {
-      rewriter.modifyOpInPlace(
-          dsOp, [&]() { dsOp.setOperand(0, whileOp->getOperand(argNum)); });
+      Value newOperand = whileOp->getOperand(argNum);
+      if (!transposeChain.empty()) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(whileOp);
+        newOperand = stablehlo::TransposeOp::create(rewriter, dsOp.getLoc(),
+                                                    newOperand, permutation);
+      }
+      rewriter.modifyOpInPlace(dsOp, [&]() { dsOp.setOperand(0, newOperand); });
+      anyOpRewritten = true;
     }
 
     return WalkResult::advance();

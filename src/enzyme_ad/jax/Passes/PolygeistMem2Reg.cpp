@@ -22,6 +22,7 @@
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
@@ -2228,6 +2229,10 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
 
   SmallPtrSet<Operation *, 4> AliasingStoreOperations;
 
+  SmallVector<std::pair<uint64_t, uint64_t>> writtenRanges;
+
+  bool writeUnknown = false;
+
   LLVM_DEBUG(llvm::dbgs()
              << "Begin forwarding store of " << AI << " to load\n"
              << *AI.getDefiningOp()->getParentOfType<FunctionOpInterface>()
@@ -2281,6 +2286,15 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       }
       // A load naming the slot reads it; one that may only overlap it reads
       // something this knows nothing about, which is no reason to stop.
+      // The bytes of the slot each store lands on, and whether a write may
+      // land where it cannot be told.
+      auto noteWritten = [&](std::optional<uint64_t> at,
+                             std::optional<uint64_t> size) {
+        if (at && size)
+          writtenRanges.emplace_back(*at, *at + *size);
+        else
+          writeUnknown = true;
+      };
       auto matchLoad = [&](Operation *loadOp, OffsetTree accessed) {
         uint64_t at = 0;
         Type read = loadOp->getResult(0).getType();
@@ -2344,7 +2358,12 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << *loadOp << "\n");
       };
       auto matchStore = [&](Operation *storeOp, OffsetTree accessed) {
-        switch (idx.matches(tree.add(accessed, dl), dl)) {
+        OffsetTree stored = tree.add(accessed, dl);
+        Match match = idx.matches(stored, dl);
+        if (match != Match::None)
+          noteWritten(idx.containsAt(stored, dl),
+                      typeSize(stored.getBase(), dl));
+        switch (match) {
         case Match::Exact:
           LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *storeOp << "\n");
           allStoreOps.insert(storeOp);
@@ -2410,6 +2429,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
           if (!isCallNonCapturing(callOp, val, symbolTables)) {
             LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
             AliasingStoreOperations.insert(callOp.getOperation());
+            writeUnknown = true;
             if (!callee || !getNonCapturingFunctions().count(
                                callee.getLeafReference().str()))
               captured = true;
@@ -2419,6 +2439,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
             // is exactly this. The slot's value is unknown after the call.
             LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
             AliasingStoreOperations.insert(callOp.getOperation());
+            writeUnknown = true;
           }
         }
         continue;
@@ -2432,7 +2453,10 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
                   : OffsetTree::unknown();
 
         if (transferDest(user) == val) {
-          switch (idx.matches(touched, dl)) {
+          Match match = idx.matches(touched, dl);
+          if (match != Match::None)
+            noteWritten(idx.containsAt(touched, dl), bytes);
+          switch (match) {
           case Match::Exact:
             // Writing exactly this slot writes a value that is known when what
             // it was written from is: the bytes of a fill, when they are zero,
@@ -2492,11 +2516,13 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       captured = true;
     }
   }
-  if (SharedMemAddr)
+  if (SharedMemAddr) {
+    writeUnknown = true;
     AI.getDefiningOp()->getParentOp()->walk([&](mlir::NVVM::BarrierOp op) {
       LLVM_DEBUG(llvm::dbgs() << "Unknown, potential store: " << *op << "\n");
       AliasingStoreOperations.insert(op);
     });
+  }
 
   if (captured) {
     if (capturedAliasing.count(AI.getDefiningOp()) == 0) {
@@ -2537,6 +2563,56 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         continue;
       LLVM_DEBUG(llvm::dbgs() << "Potential Op ith Effect: " << *op << "\n");
       AliasingStoreOperations.insert(op);
+    }
+  }
+
+  // Bytes of an allocation nothing writes -- no store lands on them and no
+  // write may land where it cannot be told -- hold uninitialized memory, so a
+  // read of them is undef, as LLVM's mem2reg answers a load no store reaches.
+  // A load of the slot is such a read, and so is a field extracted from a
+  // load of it, field by field; the load goes with its last extract.
+  if (!captured && !writeUnknown &&
+      isa<memref::AllocaOp, memref::AllocOp, LLVM::AllocaOp>(
+          AI.getDefiningOp())) {
+    auto written = [&](uint64_t lo, uint64_t hi) {
+      return llvm::any_of(writtenRanges, [&](auto &range) {
+        return range.first < hi && lo < range.second;
+      });
+    };
+    auto undef = [&](Operation *read) {
+      OpBuilder builder(read);
+      Value value = LLVM::UndefOp::create(builder, read->getLoc(),
+                                          read->getResult(0).getType());
+      read->getResult(0).replaceAllUsesWith(value);
+      loadOpsToErase.push_back(read);
+      changed = true;
+    };
+    for (Operation *load :
+         SmallVector<Operation *>(loadOps.begin(), loadOps.end())) {
+      auto contained = containedLoads.find(load);
+      uint64_t at = contained == containedLoads.end() ? 0 : contained->second;
+      auto size = typeSize(load->getResult(0).getType(), dl);
+      if (!size)
+        continue;
+      if (!written(at, at + *size)) {
+        undef(load);
+        loadOps.erase(load);
+        continue;
+      }
+      if (contained != containedLoads.end())
+        continue;
+      for (Operation *user :
+           SmallVector<Operation *>(load->getResult(0).getUsers())) {
+        auto extract = dyn_cast<LLVM::ExtractValueOp>(user);
+        if (!extract || llvm::is_contained(loadOpsToErase, extract))
+          continue;
+        auto field = aggregateFieldOffset(elType, extract.getPosition(), dl);
+        if (!field)
+          continue;
+        auto fieldSize = typeSize(field->second, dl);
+        if (fieldSize && !written(field->first, field->first + *fieldSize))
+          undef(extract);
+      }
     }
   }
 
@@ -3104,6 +3180,8 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
     return std::make_pair(typeSize(tree.getBase(), dl).value_or(0), tree);
   };
   std::map<std::pair<uint64_t, OffsetTree>, unsigned> lastStored;
+  // Whether anything writes the allocation at all.
+  bool anyWrite = false;
 
   std::deque<std::pair<mlir::Value, OffsetTree>> list = {{AI, OffsetTree()}};
 
@@ -3112,6 +3190,7 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
     list.pop_front();
     for (auto *U : val.getUsers()) {
       if (auto SO = dyn_cast<memref::StoreOp>(U)) {
+        anyWrite = true;
         lastStored[slotOf(
             tree.add(accessOffsets(SO.getValue().getType(), SO.getMemRef(),
                                    SO.getIndices(), dl),
@@ -3121,6 +3200,7 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
             accessOffsets(LO.getType(), LO.getMemRef(), LO.getIndices(), dl),
             dl))]++;
       } else if (auto SO = dyn_cast<affine::AffineStoreOp>(U)) {
+        anyWrite = true;
         lastStored[slotOf(
             tree.add(accessOffsets(SO.getValue().getType(), SO.getMemRef(),
                                    SO.getAffineMapAttr().getValue(),
@@ -3133,11 +3213,14 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
                                    LO.getMapOperands(), dl),
                      dl))]++;
       } else if (auto SO = dyn_cast<LLVM::StoreOp>(U)) {
+        anyWrite = true;
         lastStored[slotOf(
             tree.add(accessOffsets(SO.getValue().getType()), dl))]++;
       } else if (auto LO = dyn_cast<LLVM::LoadOp>(U)) {
         lastStored[slotOf(tree.add(accessOffsets(LO.getType()), dl))]++;
       } else if (isa<LLVM::MemcpyOp, LLVM::MemmoveOp, LLVM::MemsetOp>(U)) {
+        if (transferDest(U) == val)
+          anyWrite = true;
         // What a transfer reads or fills is a slot like any other, and the
         // forwarding can only be asked about slots it is told of.
         if (auto bytes = transferLength(U))
@@ -3148,6 +3231,8 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
       } else if (isa<memref::CastOp, Memref2PointerOp, Pointer2MemrefOp,
                      LLVM::BitcastOp, LLVM::AddrSpaceCastOp>(U)) {
         list.emplace_back(U->getResult(0), tree);
+      } else {
+        anyWrite = true;
       }
     }
   }
@@ -3156,7 +3241,8 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
   // of a piece of a slot is an access of that slot too, since the piece can be
   // taken out of what is in it. It counts the other way round as well, since
   // an access reaching over the whole of a slot may be all that is ever said
-  // about what is in it.
+  // about what is in it. When nothing writes the allocation, one access is
+  // enough: whatever it reads is uninitialized.
   std::vector<OffsetTree> todo;
   for (auto &pair : lastStored) {
     unsigned count = pair.second;
@@ -3165,7 +3251,7 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
           (pair.first.second.containsAt(other.first.second, dl) ||
            other.first.second.containsAt(pair.first.second, dl)))
         count += other.second;
-    if (count > 1)
+    if (count > 1 || !anyWrite)
       todo.push_back(pair.first.second);
   }
   return todo;
@@ -3365,22 +3451,79 @@ static bool splitBufferBranchAccesses(Operation *f) {
 }
 
 // A select between two constants, so that each arm names a place of its own.
-static arith::SelectOp selectOfConstants(Value v) {
-  auto sel = v.getDefiningOp<arith::SelectOp>();
-  Attribute cst;
-  if (!sel || !sel.getCondition().getType().isInteger(1) ||
-      !matchPattern(sel.getTrueValue(), m_Constant(&cst)) ||
-      !matchPattern(sel.getFalseValue(), m_Constant(&cst)))
-    return nullptr;
-  return sel;
+// A choice between constants: a constant, a select on an i1 between such
+// choices, or a result of an if with an else region whose arms yield such
+// choices.
+static bool isChoiceOfConstants(Value value) {
+  SmallVector<Value> worklist{value};
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    Attribute cst;
+    if (matchPattern(current, m_Constant(&cst)))
+      continue;
+    if (auto sel = current.getDefiningOp<arith::SelectOp>()) {
+      if (!sel.getCondition().getType().isInteger(1))
+        return false;
+      worklist.push_back(sel.getTrueValue());
+      worklist.push_back(sel.getFalseValue());
+      continue;
+    }
+    auto result = dyn_cast<OpResult>(current);
+    if (!result || !isa<scf::IfOp, affine::AffineIfOp>(result.getOwner()) ||
+        result.getOwner()->getRegion(1).empty())
+      return false;
+    for (Region &arm : result.getOwner()->getRegions())
+      worklist.push_back(
+          arm.front().getTerminator()->getOperand(result.getResultNumber()));
+  }
+  return true;
 }
 
-// An access indexed by a select between constants lands in one of two slots
-// the forwarding could match, yet names neither. When every user of the
-// allocation is an access at a constant index or at such a select, each
-// select-indexed access becomes a branch on the select's condition around an
-// access at each constant, and the forwarding then sees only constant
-// indices. Nested selects are split one index at a time, on successive
+// The branch making the same choice as `choice`, with `types` as results.
+static Operation *createBranchLike(OpBuilder &b, Location loc, Value choice,
+                                   TypeRange types) {
+  if (auto sel = choice.getDefiningOp<arith::SelectOp>())
+    return scf::IfOp::create(b, loc, types, sel.getCondition(),
+                             /*withElseRegion=*/true);
+  Operation *owner = cast<OpResult>(choice).getOwner();
+  if (auto ifOp = dyn_cast<scf::IfOp>(owner))
+    return scf::IfOp::create(b, loc, types, ifOp.getCondition(),
+                             /*withElseRegion=*/true);
+  auto ifOp = cast<affine::AffineIfOp>(owner);
+  return affine::AffineIfOp::create(b, loc, types, ifOp.getIntegerSet(),
+                                    ifOp.getOperands(),
+                                    /*withElseRegion=*/true);
+}
+
+// What `choice` chooses in arm `arm` of the branch it is.
+static Value armOf(Value choice, unsigned arm) {
+  if (auto sel = choice.getDefiningOp<arith::SelectOp>())
+    return arm == 0 ? sel.getTrueValue() : sel.getFalseValue();
+  auto result = cast<OpResult>(choice);
+  return result.getOwner()->getRegion(arm).front().getTerminator()->getOperand(
+      result.getResultNumber());
+}
+
+// Yields `values` from the arm `block` of `branch`, after what the arm holds.
+static void yieldFrom(OpBuilder &b, Location loc, Operation *branch,
+                      Block *block, ValueRange values) {
+  if (!block->empty() && block->back().hasTrait<OpTrait::IsTerminator>()) {
+    assert(values.empty());
+    return;
+  }
+  b.setInsertionPointToEnd(block);
+  if (isa<affine::AffineIfOp>(branch))
+    affine::AffineYieldOp::create(b, loc, values);
+  else
+    scf::YieldOp::create(b, loc, values);
+}
+
+// An access indexed by a choice between constants lands in one of the slots
+// the forwarding could match, yet names none. When every user of the
+// allocation is an access at a constant index or at such a choice, each
+// choice-indexed access becomes the branches of the choice around an access
+// at each constant, and the forwarding then sees only constant indices.
+// Several choice-indexed operands are split one at a time, on successive
 // rounds.
 static bool splitSelectIndexedAccesses(Value AI) {
   auto constantIndices = [](ValueRange indices) {
@@ -3426,7 +3569,7 @@ static bool splitSelectIndexedAccesses(Value AI) {
         Attribute cst;
         if (matchPattern(idx, m_Constant(&cst)))
           continue;
-        if (!selectOfConstants(idx))
+        if (!isChoiceOfConstants(idx))
           return false;
         split = true;
       }
@@ -3437,27 +3580,46 @@ static bool splitSelectIndexedAccesses(Value AI) {
 
   for (Operation *op : toSplit) {
     OpOperand *chosen = nullptr;
-    for (OpOperand &operand : op->getOpOperands())
-      if (selectOfConstants(operand.get())) {
+    for (OpOperand &operand : op->getOpOperands()) {
+      Attribute cst;
+      if (!matchPattern(operand.get(), m_Constant(&cst)) &&
+          isChoiceOfConstants(operand.get())) {
         chosen = &operand;
         break;
       }
-    auto sel = cast<arith::SelectOp>(chosen->get().getDefiningOp());
-    OpBuilder b(op);
-    auto ifOp = scf::IfOp::create(b, op->getLoc(), op->getResultTypes(),
-                                  sel.getCondition(), /*withElseRegion=*/true);
-    Value arms[2] = {sel.getTrueValue(), sel.getFalseValue()};
-    for (unsigned arm = 0; arm < 2; ++arm) {
-      Block *block = &ifOp->getRegion(arm).front();
-      b.setInsertionPointToStart(block);
-      Operation *cloned = b.clone(*op);
-      cloned->setOperand(chosen->getOperandNumber(), arms[arm]);
-      if (op->getNumResults()) {
-        b.setInsertionPointToEnd(block);
-        scf::YieldOp::create(b, op->getLoc(), cloned->getResults());
-      }
     }
-    op->replaceAllUsesWith(ifOp.getResults());
+    Location loc = op->getLoc();
+    OpBuilder b(op);
+    Operation *root =
+        createBranchLike(b, loc, chosen->get(), op->getResultTypes());
+    // Each arm holds the access at the constant its choice chooses there, or
+    // the branch of a further choice.
+    struct Arm {
+      Operation *branch;
+      unsigned arm;
+      Value choice;
+    };
+    SmallVector<Arm> worklist{{root, 0, chosen->get()},
+                              {root, 1, chosen->get()}};
+    while (!worklist.empty()) {
+      Arm item = worklist.pop_back_val();
+      Block *block = &item.branch->getRegion(item.arm).front();
+      Value picked = armOf(item.choice, item.arm);
+      b.setInsertionPointToStart(block);
+      Attribute cst;
+      if (matchPattern(picked, m_Constant(&cst))) {
+        Operation *cloned = b.clone(*op);
+        cloned->setOperand(chosen->getOperandNumber(), picked);
+        yieldFrom(b, loc, item.branch, block, cloned->getResults());
+        continue;
+      }
+      Operation *nested =
+          createBranchLike(b, loc, picked, op->getResultTypes());
+      yieldFrom(b, loc, item.branch, block, nested->getResults());
+      worklist.push_back({nested, 0, picked});
+      worklist.push_back({nested, 1, picked});
+    }
+    op->replaceAllUsesWith(root->getResults());
     op->erase();
   }
   return !toSplit.empty();
@@ -3488,6 +3650,19 @@ void PolygeistMem2Reg::runOnOperation() {
     // An allocation reached only through a branch between buffers is not yet
     // promotable; splitting the accesses first gives it accesses of its own.
     changed |= splitBufferBranchAccesses(f);
+
+    // A store of undef or poison leaves the slot holding any value, and what
+    // it held before is one; kept, it only stands between a load and the
+    // store that defined the value.
+    SmallVector<Operation *> undefStores;
+    f->walk([&](enzyme::StoreLikeInterface store) {
+      if (isa_and_nonnull<LLVM::UndefOp, LLVM::PoisonOp, ub::PoisonOp>(
+              store.getStoredValue().getDefiningOp()))
+        undefStores.push_back(store);
+    });
+    for (Operation *op : undefStores)
+      op->erase();
+    changed |= !undefStores.empty();
 
     // Walk all load's and perform store to load forwarding.
     SmallVector<mlir::Value, 4> toPromote;

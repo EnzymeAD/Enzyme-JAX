@@ -33,7 +33,8 @@ llvm.func @partial_overlap_clobber(%src: !llvm.ptr) {
 // -----
 
 // A copy that does not reach the slot leaves the cached value alone: filling
-// a[0..16) does not touch a[24..32), so the two loads still fold to one.
+// a[0..16) does not touch a[24..32), so the two loads still fold to one -- a
+// load of what the copy that filled a[24..32) read.
 
 llvm.func @use(f64)
 
@@ -44,6 +45,8 @@ llvm.func @disjoint_copy_still_forwards(%src: !llvm.ptr) {
   %a = llvm.alloca %c1 x !llvm.array<8 x f64> {alignment = 16 : i64} : (i32) -> !llvm.ptr
   %at24 = llvm.getelementptr %a[24] : (!llvm.ptr) -> !llvm.ptr, i8
   %at0 = llvm.getelementptr %a[0] : (!llvm.ptr) -> !llvm.ptr, i8
+  %c8 = llvm.mlir.constant(8 : i64) : i64
+  "llvm.intr.memcpy"(%at24, %src, %c8) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
   // CHECK: %[[V:.+]] = llvm.load
   %v1 = llvm.load %at24 : !llvm.ptr -> f64
   llvm.call @use(%v1) : (f64) -> ()

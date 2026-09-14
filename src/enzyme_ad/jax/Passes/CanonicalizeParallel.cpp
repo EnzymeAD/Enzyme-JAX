@@ -17,12 +17,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "Enzyme/MLIR/Dialect/Ops.h"
+#include "Enzyme/MLIR/Interfaces/AutoDiffOpInterface.h"
 #include "mlir/Analysis/DataLayoutAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
@@ -30,6 +32,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 namespace mlir {
 namespace enzyme {
@@ -190,6 +193,44 @@ struct Pointer2MemrefOfAddrSpaceCast
   }
 };
 
+/// Whether a value is a constant, or a result of an if of flavour IfT with an
+/// else region whose arms yield such values again: a choice between
+/// constants, however many ways.
+template <typename IfT> static bool isBranchedChoiceOfConstants(Value value) {
+  SmallVector<Value> worklist{value};
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    Attribute cst;
+    if (matchPattern(current, m_Constant(&cst)))
+      continue;
+    auto result = dyn_cast<OpResult>(current);
+    if (!result || !isa<IfT>(result.getOwner()) ||
+        result.getOwner()->getRegion(1).empty())
+      return false;
+    for (Region &arm : result.getOwner()->getRegions())
+      worklist.push_back(
+          arm.front().getTerminator()->getOperand(result.getResultNumber()));
+  }
+  return true;
+}
+
+/// Whether a value is a constant, or a select on an i1 between such values.
+static bool isSelectedChoiceOfConstants(Value value) {
+  SmallVector<Value> worklist{value};
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    Attribute cst;
+    if (matchPattern(current, m_Constant(&cst)))
+      continue;
+    auto sel = current.getDefiningOp<arith::SelectOp>();
+    if (!sel || !sel.getCondition().getType().isInteger(1))
+      return false;
+    worklist.push_back(sel.getTrueValue());
+    worklist.push_back(sel.getFalseValue());
+  }
+  return true;
+}
+
 /// Builds an if of the same flavour and condition with new result types.
 static scf::IfOp createLikeIf(PatternRewriter &rewriter, scf::IfOp ifOp,
                               TypeRange types) {
@@ -215,9 +256,12 @@ static void createLikeYield(PatternRewriter &rewriter, Location loc,
 
 /// An op over what a branch chose between constants is the branch choosing
 /// between the op's own results: the op rides into the arms, where it meets a
-/// constant and folds. What a branch chose then reaches its user as the
-/// branch's own result rather than at the far end of some arithmetic, which
-/// is how an index reaches an access for split-branched-accesses.
+/// constant and folds, and the branch grows a result for it. What the branch
+/// chose then reaches the op's users as the branch's own result rather than
+/// at the far end of some arithmetic, which is how an index reaches an access
+/// for split-branched-accesses. An arm may choose again through a further
+/// branch: the op's copy in that arm is such an op over a branch itself, and
+/// sinks in turn. The branch's other users keep its results as they were.
 template <typename OpT, typename IfT>
 struct SinkThroughIfOfConstants : public OpRewritePattern<OpT> {
   using OpRewritePattern<OpT>::OpRewritePattern;
@@ -236,44 +280,64 @@ struct SinkThroughIfOfConstants : public OpRewritePattern<OpT> {
         return failure();
       branched = res;
     }
-    // A second user would keep the branch alive and pay for it twice.
-    if (!branched || !branched.hasOneUse())
+    if (!branched)
       return failure();
-
     auto ifOp = cast<IfT>(branched.getOwner());
     if (ifOp->getRegion(1).empty())
       return failure();
     // The regions of both flavours of if are the arms, in order.
     unsigned resultNo = branched.getResultNumber();
-    Value arms[2];
-    for (unsigned arm = 0; arm < 2; ++arm) {
-      arms[arm] =
-          ifOp->getRegion(arm).front().getTerminator()->getOperand(resultNo);
-      Attribute cst;
-      if (!matchPattern(arms[arm], m_Constant(&cst)))
+    for (unsigned arm = 0; arm < 2; ++arm)
+      if (!isBranchedChoiceOfConstants<IfT>(
+              ifOp->getRegion(arm).front().getTerminator()->getOperand(
+                  resultNo)))
         return failure();
-    }
 
-    // Built where the op stands, so what the branch is taken over -- in hand
-    // before the branch -- is in hand here too.
-    auto newIf = createLikeIf(rewriter, ifOp, op->getResultTypes());
+    // The branch grown by the op's results: the arms move over, and each
+    // yields the op over what it chose. The constants the op reads come
+    // along, since the arm may stand before their definitions. A result the
+    // op was the only user of goes at the same time.
+    bool consumed = branched.hasOneUse();
+    SmallVector<Type> types;
+    for (auto [index, type] : llvm::enumerate(ifOp->getResultTypes()))
+      if (!consumed || index != resultNo)
+        types.push_back(type);
+    llvm::append_range(types, op->getResultTypes());
+    rewriter.setInsertionPoint(ifOp);
+    auto grown = createLikeIf(rewriter, ifOp, types);
     for (unsigned arm = 0; arm < 2; ++arm) {
-      rewriter.setInsertionPointToStart(&newIf->getRegion(arm).front());
-      Operation *chosen = rewriter.clone(*arms[arm].getDefiningOp());
+      Block *block = &grown->getRegion(arm).front();
+      rewriter.mergeBlocks(&ifOp->getRegion(arm).front(), block);
+      Operation *yield = block->getTerminator();
+      rewriter.setInsertionPoint(yield);
       IRMapping map;
-      map.map(branched, chosen->getResult(0));
+      map.map(branched, yield->getOperand(resultNo));
+      for (Value operand : op->getOperands())
+        if (operand != branched)
+          map.map(operand,
+                  rewriter.clone(*operand.getDefiningOp())->getResult(0));
       Operation *cloned = rewriter.clone(*op.getOperation(), map);
-      createLikeYield(rewriter, op.getLoc(), newIf, cloned->getResults());
+      rewriter.modifyOpInPlace(yield, [&] {
+        if (consumed)
+          yield->eraseOperand(resultNo);
+        yield->insertOperands(yield->getNumOperands(), cloned->getResults());
+      });
     }
-    rewriter.replaceOp(op, newIf->getResults());
+    unsigned numKept = ifOp->getNumResults() - consumed;
+    rewriter.replaceOp(op, grown->getResults().drop_front(numKept));
+    unsigned kept = 0;
+    for (auto [index, result] : llvm::enumerate(ifOp->getResults()))
+      if (!consumed || index != resultNo)
+        rewriter.replaceAllUsesWith(result, grown->getResult(kept++));
+    rewriter.eraseOp(ifOp);
     return success();
   }
 };
 
 /// The select counterpart: an op over a select between constants is the
-/// select between the op over each arm, where it meets a constant and folds.
-/// A select costs nothing to keep, so a second user of it is no reason to
-/// leave the op where it is.
+/// select between the op over each arm, where it meets a constant and folds,
+/// or a further select, into which it sinks in turn. A select costs nothing
+/// to keep, so a second user of it is no reason to leave the op where it is.
 template <typename OpT>
 struct SinkThroughSelectOfConstants : public OpRewritePattern<OpT> {
   using OpRewritePattern<OpT>::OpRewritePattern;
@@ -292,13 +356,11 @@ struct SinkThroughSelectOfConstants : public OpRewritePattern<OpT> {
     }
     if (!sel || !sel.getCondition().getType().isInteger(1))
       return failure();
-    Value arms[2] = {sel.getTrueValue(), sel.getFalseValue()};
-    for (Value arm : arms) {
-      Attribute cst;
-      if (!matchPattern(arm, m_Constant(&cst)))
-        return failure();
-    }
+    if (!isSelectedChoiceOfConstants(sel.getTrueValue()) ||
+        !isSelectedChoiceOfConstants(sel.getFalseValue()))
+      return failure();
 
+    Value arms[2] = {sel.getTrueValue(), sel.getFalseValue()};
     Value chosen[2];
     for (unsigned arm = 0; arm < 2; ++arm) {
       IRMapping map;
@@ -683,33 +745,6 @@ template <typename IfT> struct IfOfNullPointer : public OpRewritePattern<IfT> {
   }
 };
 
-// How many scalars an LLVM aggregate holds when every leaf is the same scalar
-// type, or -1.
-static int64_t homogeneousLeafCount(Type t, Type &leaf) {
-  if (auto at = dyn_cast<LLVM::LLVMArrayType>(t)) {
-    int64_t n = homogeneousLeafCount(at.getElementType(), leaf);
-    return n < 0 ? -1 : n * at.getNumElements();
-  }
-  if (auto st = dyn_cast<LLVM::LLVMStructType>(t)) {
-    if (st.isOpaque())
-      return -1;
-    int64_t tot = 0;
-    for (Type f : st.getBody()) {
-      int64_t n = homogeneousLeafCount(f, leaf);
-      if (n < 0)
-        return -1;
-      tot += n;
-    }
-    return tot;
-  }
-  if (t.isIntOrFloat()) {
-    if (!leaf)
-      leaf = t;
-    return leaf == t ? 1 : -1;
-  }
-  return -1;
-}
-
 // Scratch declared as one aggregate value (a union wrapping a register array)
 // reaches the memref world as a memref of an LLVM struct whose only consumers
 // cast it straight back to a pointer. Padding-free and single-leaf-typed, that
@@ -723,19 +758,18 @@ struct FlattenAggregateAlloca : public OpRewritePattern<memref::AllocaOp> {
     if (!isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(MT.getElementType()) ||
         !MT.hasStaticShape() || !MT.getLayout().isIdentity())
       return failure();
-    Type leaf;
-    int64_t leaves = homogeneousLeafCount(MT.getElementType(), leaf);
-    if (leaves <= 0)
-      return failure();
-    DataLayout dl = DataLayout::closest(alloca);
-    if (dl.getTypeSize(MT.getElementType()) != leaves * dl.getTypeSize(leaf))
+    SmallVector<SmallVector<int64_t>> paths;
+    std::optional<Type> leaf = enzyme::homogeneousLeaves(
+        MT.getElementType(), DataLayout::closest(alloca), paths);
+    if (!leaf)
       return failure();
     if (!llvm::all_of(alloca->getUsers(),
                       llvm::IsaPred<enzymexla::Memref2PointerOp>))
       return failure();
 
-    auto NT = MemRefType::get({leaves * MT.getNumElements()}, leaf,
-                              MemRefLayoutAttrInterface{}, MT.getMemorySpace());
+    auto NT =
+        MemRefType::get({(int64_t)paths.size() * MT.getNumElements()}, *leaf,
+                        MemRefLayoutAttrInterface{}, MT.getMemorySpace());
     auto flat = memref::AllocaOp::create(rewriter, alloca.getLoc(), NT,
                                          alloca.getAlignmentAttr());
     for (Operation *user : llvm::make_early_inc_range(alloca->getUsers())) {
@@ -744,6 +778,457 @@ struct FlattenAggregateAlloca : public OpRewritePattern<memref::AllocaOp> {
           user, user->getResult(0).getType(), flat);
     }
     rewriter.eraseOp(alloca);
+    return success();
+  }
+};
+
+// A store of undef or poison leaves the memory holding any value, and what
+// it held before is one of those, so the store does nothing.
+// dim3 packing replicates a launch dimension into both halves of an i64 as
+// x * 0x100000001; the low half comes back through a trunc and the high half
+// through a shift. Truncation distributes over multiplication, so the low
+// half of x * c is trunc(x) when c is 1 modulo the truncated width.
+struct TruncOfMulByOneModWidth : public OpRewritePattern<arith::TruncIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::TruncIOp trunc,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<IntegerType>(trunc.getType());
+    auto mul = trunc.getIn().getDefiningOp<arith::MulIOp>();
+    APInt c;
+    if (!type || !mul || !matchPattern(mul.getRhs(), m_ConstantInt(&c)) ||
+        !c.trunc(type.getWidth()).isOne())
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::TruncIOp>(trunc, type, mul.getLhs());
+    return success();
+  }
+};
+
+// The high half: x * (2^k + 1) = (x << k) + x, and the two terms do not
+// overlap when x is zero-extended from at most k bits and the sum fits, so
+// shifting the product right by k gives x back.
+struct ShiftOfMulByShiftPlusOne : public OpRewritePattern<arith::ShRUIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::ShRUIOp shift,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<IntegerType>(shift.getType());
+    auto mul = shift.getLhs().getDefiningOp<arith::MulIOp>();
+    APInt c, k;
+    if (!type || !mul || !matchPattern(mul.getRhs(), m_ConstantInt(&c)) ||
+        !matchPattern(shift.getRhs(), m_ConstantInt(&k)))
+      return failure();
+    auto ext = mul.getLhs().getDefiningOp<arith::ExtUIOp>();
+    auto inType =
+        ext ? dyn_cast<IntegerType>(ext.getIn().getType()) : IntegerType();
+    if (!inType || k.uge(type.getWidth()))
+      return failure();
+    unsigned by = k.getZExtValue();
+    if (inType.getWidth() > by || by + inType.getWidth() > type.getWidth() ||
+        c != APInt(type.getWidth(), 1).shl(by) + 1)
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::ExtUIOp>(shift, type, ext.getIn());
+    return success();
+  }
+};
+
+// dim3 packing with two distinct dims arrives as a disjoint or, x | (y << 32)
+// or (y << 32) | c, and each half is read back with a trunc or a shift. The
+// folds below take the packing apart: a truncation drops a side shifted past
+// its width (TruncOrConst above drops a constant side the same way), a shift
+// by k of an or with a side shifted in by k without loss yields that side,
+// and a value zero-extended from at most k bits shifted right by k is zero.
+static bool zeroExtendedWithin(Value v, unsigned bits) {
+  auto ext = v.getDefiningOp<arith::ExtUIOp>();
+  auto in = ext ? dyn_cast<IntegerType>(ext.getIn().getType()) : IntegerType();
+  return in && in.getWidth() <= bits;
+}
+
+// The value `v` is `z << by` with no set bit shifted out, so that shifting
+// back right by `by` recovers `z`: either the shift says so (nuw) or `z` is
+// zero-extended from bits that fit under the shift.
+static Value shiftedInBy(Value v, unsigned by) {
+  auto shl = v.getDefiningOp<arith::ShLIOp>();
+  APInt k;
+  if (!shl || !matchPattern(shl.getRhs(), m_ConstantInt(&k)) || k != by)
+    return nullptr;
+  unsigned width = cast<IntegerType>(shl.getType()).getWidth();
+  if (bitEnumContainsAll(shl.getOverflowFlags(),
+                         arith::IntegerOverflowFlags::nuw) ||
+      zeroExtendedWithin(shl.getLhs(), width - by))
+    return shl.getLhs();
+  return nullptr;
+}
+
+struct TruncOfOrWithShiftedOut : public OpRewritePattern<arith::TruncIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::TruncIOp trunc,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<IntegerType>(trunc.getType());
+    auto orOp = trunc.getIn().getDefiningOp<arith::OrIOp>();
+    if (!type || !orOp)
+      return failure();
+    for (Value side : {orOp.getLhs(), orOp.getRhs()}) {
+      auto shl = side.getDefiningOp<arith::ShLIOp>();
+      APInt k;
+      if (!shl || !matchPattern(shl.getRhs(), m_ConstantInt(&k)) ||
+          k.ult(type.getWidth()))
+        continue;
+      Value other = side == orOp.getLhs() ? orOp.getRhs() : orOp.getLhs();
+      rewriter.modifyOpInPlace(trunc,
+                               [&] { trunc.getInMutable().assign(other); });
+      return success();
+    }
+    return failure();
+  }
+};
+
+struct ShiftOfOrWithShiftedIn : public OpRewritePattern<arith::ShRUIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::ShRUIOp shift,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<IntegerType>(shift.getType());
+    auto orOp = shift.getLhs().getDefiningOp<arith::OrIOp>();
+    APInt k;
+    if (!type || !orOp || !matchPattern(shift.getRhs(), m_ConstantInt(&k)) ||
+        k.uge(type.getWidth()))
+      return failure();
+    unsigned by = k.getZExtValue();
+    for (Value side : {orOp.getLhs(), orOp.getRhs()}) {
+      Value other = side == orOp.getLhs() ? orOp.getRhs() : orOp.getLhs();
+      Value in = shiftedInBy(side, by);
+      if (!in)
+        continue;
+      Value rest = arith::ShRUIOp::create(rewriter, shift.getLoc(), other,
+                                          shift.getRhs());
+      rewriter.replaceOpWithNewOp<arith::OrIOp>(shift, in, rest);
+      return success();
+    }
+    return failure();
+  }
+};
+
+struct ShiftOfNarrowZeroExtended : public OpRewritePattern<arith::ShRUIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::ShRUIOp shift,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<IntegerType>(shift.getType());
+    APInt k;
+    if (!type || !matchPattern(shift.getRhs(), m_ConstantInt(&k)) ||
+        k.uge(type.getWidth()) ||
+        !zeroExtendedWithin(shift.getLhs(), k.getZExtValue()))
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+        shift, rewriter.getIntegerAttr(type, 0));
+    return success();
+  }
+};
+
+// A logical right shift distributes over an or with a constant side, so the
+// halves of a packed value with a constant half come apart: (x | C) >> k is
+// (x >> k) | (C >> k), and the narrow half shifts away entirely.
+struct ShiftOfOrWithConstant : public OpRewritePattern<arith::ShRUIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::ShRUIOp shift,
+                                PatternRewriter &rewriter) const override {
+    auto type = dyn_cast<IntegerType>(shift.getType());
+    auto orOp = shift.getLhs().getDefiningOp<arith::OrIOp>();
+    APInt c, k;
+    if (!type || !orOp || !matchPattern(shift.getRhs(), m_ConstantInt(&k)) ||
+        k.uge(type.getWidth()))
+      return failure();
+    Value other;
+    if (matchPattern(orOp.getRhs(), m_ConstantInt(&c)))
+      other = orOp.getLhs();
+    else if (matchPattern(orOp.getLhs(), m_ConstantInt(&c)))
+      other = orOp.getRhs();
+    else
+      return failure();
+    Value shifted =
+        arith::ShRUIOp::create(rewriter, shift.getLoc(), other, shift.getRhs());
+    Value constant = arith::ConstantOp::create(
+        rewriter, shift.getLoc(), rewriter.getIntegerAttr(type, c.lshr(k)));
+    rewriter.replaceOpWithNewOp<arith::OrIOp>(shift, shifted, constant);
+    return success();
+  }
+};
+
+// max(min(a, c), min(b, c)) is min(max(a, b), c), and dually for min of
+// maxes: the shared clamp moves outside, where a bound on the value is the
+// clamp's whether or not a and b are bounded.
+template <typename OuterT, typename InnerT>
+struct OuterOfInnersBySharedOperand : public OpRewritePattern<OuterT> {
+  using OpRewritePattern<OuterT>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OuterT outer,
+                                PatternRewriter &rewriter) const override {
+    auto lhs = outer.getLhs().template getDefiningOp<InnerT>();
+    auto rhs = outer.getRhs().template getDefiningOp<InnerT>();
+    if (!lhs || !rhs)
+      return failure();
+    for (Value shared : {lhs.getLhs(), lhs.getRhs()}) {
+      Value a = shared == lhs.getLhs() ? lhs.getRhs() : lhs.getLhs();
+      Value b;
+      if (shared == rhs.getLhs())
+        b = rhs.getRhs();
+      else if (shared == rhs.getRhs())
+        b = rhs.getLhs();
+      else
+        continue;
+      Value inner = OuterT::create(rewriter, outer.getLoc(), a, b);
+      rewriter.replaceOpWithNewOp<InnerT>(outer, inner, shared);
+      return success();
+    }
+    return failure();
+  }
+};
+
+struct StoreOfUndef
+    : public OpInterfaceRewritePattern<enzyme::StoreLikeInterface> {
+  using OpInterfaceRewritePattern::OpInterfaceRewritePattern;
+
+  LogicalResult matchAndRewrite(enzyme::StoreLikeInterface store,
+                                PatternRewriter &rewriter) const override {
+    Operation *value = store.getStoredValue().getDefiningOp();
+    if (!isa_and_nonnull<LLVM::UndefOp, LLVM::PoisonOp, ub::PoisonOp>(value))
+      return failure();
+    rewriter.eraseOp(store);
+    return success();
+  }
+};
+
+// Replace a while loop whose exit test is decided by its second evaluation by
+//   before(inits); if (condition) { after; before(yields) }
+static void unrollWhileTwice(scf::WhileOp whileOp, PatternRewriter &rewriter) {
+  Block &before = whileOp.getBefore().front();
+  Block &after = whileOp.getAfter().front();
+  scf::ConditionOp conditionOp = whileOp.getConditionOp();
+  scf::YieldOp yieldOp = whileOp.getYieldOp();
+  Location loc = whileOp.getLoc();
+  IRMapping firstEvaluation;
+  for (auto [blockArg, init] :
+       llvm::zip(before.getArguments(), whileOp.getInits()))
+    firstEvaluation.map(blockArg, init);
+  for (Operation &op : before.without_terminator())
+    rewriter.clone(op, firstEvaluation);
+  Value firstCondition =
+      firstEvaluation.lookupOrDefault(conditionOp.getCondition());
+  SmallVector<Value> firstForwarded;
+  for (Value value : conditionOp.getArgs())
+    firstForwarded.push_back(firstEvaluation.lookupOrDefault(value));
+
+  auto ifOp = scf::IfOp::create(
+      rewriter, loc, firstCondition,
+      [&](OpBuilder &builder, Location loc) {
+        IRMapping secondEvaluation;
+        for (auto [afterArg, forwarded] :
+             llvm::zip(after.getArguments(), firstForwarded))
+          secondEvaluation.map(afterArg, forwarded);
+        for (Operation &op : after.without_terminator())
+          builder.clone(op, secondEvaluation);
+        for (auto [blockArg, yielded] :
+             llvm::zip(before.getArguments(), yieldOp.getOperands()))
+          secondEvaluation.map(blockArg,
+                               secondEvaluation.lookupOrDefault(
+                                   firstEvaluation.lookupOrDefault(yielded)));
+        for (Operation &op : before.without_terminator())
+          builder.clone(op, secondEvaluation);
+        SmallVector<Value> secondForwarded;
+        for (Value value : conditionOp.getArgs())
+          secondForwarded.push_back(secondEvaluation.lookupOrDefault(value));
+        scf::YieldOp::create(builder, loc, secondForwarded);
+      },
+      [&](OpBuilder &builder, Location loc) {
+        scf::YieldOp::create(builder, loc, firstForwarded);
+      });
+  rewriter.replaceOp(whileOp, ifOp.getResults());
+}
+
+// A while loop whose exit test reads only values from outside the loop and
+// carried arguments yielded values from outside the loop decides the same
+// way on every evaluation after the first: the second evaluation sees the
+// values every later one would, so it either exits or the loop never would.
+// A kernel does not run forever (host code may), so inside a GPU wrapper the
+// loop is
+//   before(inits); if (condition) { after; before(yields) }
+struct UnrollWhileWithInvariantExit : public OpRewritePattern<scf::WhileOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::WhileOp whileOp,
+                                PatternRewriter &rewriter) const override {
+    if (!whileOp->getParentOfType<enzymexla::GPUWrapperOp>())
+      return failure();
+    Block &before = whileOp.getBefore().front();
+    Block &after = whileOp.getAfter().front();
+    scf::ConditionOp conditionOp = whileOp.getConditionOp();
+    scf::YieldOp yieldOp = whileOp.getYieldOp();
+
+    auto definedOutside = [&](Value value) {
+      return !whileOp->isAncestor(value.getParentBlock()->getParentOp()) ||
+             matchPattern(value, m_Constant());
+    };
+    SmallVector<Value> worklist{conditionOp.getCondition()};
+    DenseSet<Value> visited;
+    while (!worklist.empty()) {
+      Value value = worklist.pop_back_val();
+      if (!visited.insert(value).second || definedOutside(value))
+        continue;
+      if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+        if (blockArg.getOwner() != &before)
+          return failure();
+        // An after-region argument yielded back is the condition operand
+        // forwarded to it.
+        Value yielded = yieldOp.getOperand(blockArg.getArgNumber());
+        if (auto afterArg = dyn_cast<BlockArgument>(yielded);
+            afterArg && afterArg.getOwner() == &after)
+          yielded = conditionOp.getArgs()[afterArg.getArgNumber()];
+        if (!definedOutside(yielded))
+          return failure();
+        continue;
+      }
+      Operation *definingOp = value.getDefiningOp();
+      if (definingOp->getNumRegions() || !isMemoryEffectFree(definingOp))
+        return failure();
+      worklist.append(definingOp->operand_begin(), definingOp->operand_end());
+    }
+
+    unrollWhileTwice(whileOp, rewriter);
+    return success();
+  }
+};
+
+// A counter that starts at zero and steps by one is one on the second
+// evaluation of the exit test, so `(counter | x) == 0` is false there whatever
+// `x` is: the loop runs at most twice, on the host as well. Clang writes
+// `dx + 1 < 2 - odd` this way for `dx` and `odd` in {0, 1} (MFEM's H(div)
+// mass reductions over a dimension of one or two dofs).
+struct UnrollWhileOfOredCounter : public OpRewritePattern<scf::WhileOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::WhileOp whileOp,
+                                PatternRewriter &rewriter) const override {
+    Block &before = whileOp.getBefore().front();
+    Block &after = whileOp.getAfter().front();
+    scf::ConditionOp conditionOp = whileOp.getConditionOp();
+    scf::YieldOp yieldOp = whileOp.getYieldOp();
+
+    auto cmp = conditionOp.getCondition().getDefiningOp<arith::CmpIOp>();
+    if (!cmp || cmp.getPredicate() != arith::CmpIPredicate::eq)
+      return failure();
+    Value ored;
+    if (matchPattern(cmp.getRhs(), m_Zero()))
+      ored = cmp.getLhs();
+    else if (matchPattern(cmp.getLhs(), m_Zero()))
+      ored = cmp.getRhs();
+    else
+      return failure();
+    auto orOp = ored.getDefiningOp<arith::OrIOp>();
+    if (!orOp)
+      return failure();
+
+    // A before-region argument initialized to zero and yielded itself plus
+    // one, possibly through the condition operand forwarded to the after
+    // region.
+    auto isCounter = [&](Value value) {
+      auto counter = dyn_cast<BlockArgument>(value);
+      if (!counter || counter.getOwner() != &before ||
+          !matchPattern(whileOp.getInits()[counter.getArgNumber()], m_Zero()))
+        return false;
+      Value next = yieldOp.getOperand(counter.getArgNumber());
+      if (auto afterArg = dyn_cast<BlockArgument>(next);
+          afterArg && afterArg.getOwner() == &after)
+        next = conditionOp.getArgs()[afterArg.getArgNumber()];
+      auto add = next.getDefiningOp<arith::AddIOp>();
+      return add &&
+             ((add.getLhs() == counter &&
+               matchPattern(add.getRhs(), m_One())) ||
+              (add.getRhs() == counter && matchPattern(add.getLhs(), m_One())));
+    };
+    if (!isCounter(orOp.getLhs()) && !isCounter(orOp.getRhs()))
+      return failure();
+
+    unrollWhileTwice(whileOp, rewriter);
+    return success();
+  }
+};
+
+// The exit test of a loop rotated around a flag, evaluated on the second
+// evaluation of the before region with the carried flags at the constants the
+// after region yields them: an scf.if or select on a known flag is its
+// selected yield, an or with a true operand is true, an and with a false
+// operand is false, and an xor with a constant negates. Nothing else is
+// known. When that evaluation is false the loop runs at most twice (clang's
+// rotation of a loop with early exits, the edge scans in batchitrans.cpp).
+static std::optional<bool> secondEvaluationFlag(scf::WhileOp whileOp,
+                                                Value value, unsigned depth) {
+  Block &before = whileOp.getBefore().front();
+  Block &after = whileOp.getAfter().front();
+  APInt constant;
+  if (matchPattern(value, m_ConstantInt(&constant)))
+    return !constant.isZero();
+  if (depth > 8 || !whileOp->isAncestor(value.getParentBlock()->getParentOp()))
+    return std::nullopt;
+  auto known = [&](Value v) {
+    return secondEvaluationFlag(whileOp, v, depth + 1);
+  };
+  if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+    if (blockArg.getOwner() != &before)
+      return std::nullopt;
+    Value next = whileOp.getYieldOp().getOperand(blockArg.getArgNumber());
+    if (auto afterArg = dyn_cast<BlockArgument>(next);
+        afterArg && afterArg.getOwner() == &after)
+      next = whileOp.getConditionOp().getArgs()[afterArg.getArgNumber()];
+    if (matchPattern(next, m_ConstantInt(&constant)))
+      return !constant.isZero();
+    return std::nullopt;
+  }
+  Operation *def = value.getDefiningOp();
+  if (auto ifOp = dyn_cast<scf::IfOp>(def)) {
+    auto cond = known(ifOp.getCondition());
+    if (!cond)
+      return std::nullopt;
+    unsigned n = cast<OpResult>(value).getResultNumber();
+    return known((*cond ? ifOp.thenYield() : ifOp.elseYield()).getOperand(n));
+  }
+  if (auto sel = dyn_cast<arith::SelectOp>(def)) {
+    auto cond = known(sel.getCondition());
+    if (!cond)
+      return std::nullopt;
+    return known(*cond ? sel.getTrueValue() : sel.getFalseValue());
+  }
+  if (isa<arith::OrIOp, arith::AndIOp>(def)) {
+    bool isOr = isa<arith::OrIOp>(def);
+    auto l = known(def->getOperand(0)), r = known(def->getOperand(1));
+    if ((l && *l == isOr) || (r && *r == isOr))
+      return isOr;
+    if (l && r)
+      return !isOr;
+    return std::nullopt;
+  }
+  if (auto xorOp = dyn_cast<arith::XOrIOp>(def)) {
+    for (unsigned i = 0; i < 2; ++i)
+      if (matchPattern(xorOp->getOperand(i), m_ConstantInt(&constant)))
+        if (auto other = known(xorOp->getOperand(1 - i)))
+          return *other != !constant.isZero();
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+struct UnrollWhileOfDecidedFlag : public OpRewritePattern<scf::WhileOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::WhileOp whileOp,
+                                PatternRewriter &rewriter) const override {
+    auto decided = secondEvaluationFlag(
+        whileOp, whileOp.getConditionOp().getCondition(), 0);
+    if (!decided || *decided)
+      return failure();
+    unrollWhileTwice(whileOp, rewriter);
     return success();
   }
 };
@@ -785,7 +1270,15 @@ struct CanonicalizeParallelPass
         SinkThroughSelectOfConstants<arith::AddIOp>,
         SinkThroughSelectOfConstants<arith::MulIOp>, SelectOfNullPointer,
         IfOfNullPointer<scf::IfOp>, IfOfNullPointer<affine::AffineIfOp>,
-        FlattenAggregateAlloca>(ctx);
+        FlattenAggregateAlloca, StoreOfUndef, UnrollWhileWithInvariantExit,
+        UnrollWhileOfOredCounter, UnrollWhileOfDecidedFlag,
+        TruncOfMulByOneModWidth, ShiftOfMulByShiftPlusOne,
+        TruncOfOrWithShiftedOut, ShiftOfOrWithShiftedIn,
+        ShiftOfNarrowZeroExtended, ShiftOfOrWithConstant,
+        OuterOfInnersBySharedOperand<arith::MaxSIOp, arith::MinSIOp>,
+        OuterOfInnersBySharedOperand<arith::MinSIOp, arith::MaxSIOp>,
+        OuterOfInnersBySharedOperand<arith::MaxUIOp, arith::MinUIOp>,
+        OuterOfInnersBySharedOperand<arith::MinUIOp, arith::MaxUIOp>>(ctx);
     FrozenRewritePatternSet patterns(std::move(owningPatterns));
 
     GreedyRewriteConfig config;

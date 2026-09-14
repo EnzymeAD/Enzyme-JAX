@@ -250,6 +250,49 @@ let skipDefaultBuilders = 1;
 let builders = [OpBuilder<(ins "ValueRange" : $blockSizes)>, OpBuilder<(ins)>];
 }
 
+def TempAllocOp : EnzymeXLA_Op<"temp_alloc", [Symbol, HasParent<"ModuleOp">]> {
+  let summary = "declare a module-owned persistent XLA allocation";
+  let description = [{
+    Declares uninitialized, statically shaped device storage allocated when
+    the module is initialized and freed when it is finalized. The declaration
+    must be private. Uses retrieve the allocation with `get_global_temp`;
+    accessing it does not allocate new storage.
+
+    The allocation belongs to the module's XLA runtime. Its contents are
+    mutable and shared by all uses, so callers must synchronize overlapping
+    accesses. The first write and subsequent updates remain explicit copies.
+    This operation does not move copies or computations across calls or loops.
+    Lowering currently requires an XLA backend and C-style memrefs.
+
+    Example:
+    ```mlir
+    enzymexla.temp_alloc "private" @bound : memref<i32, 1>
+    ```
+  }];
+  let arguments = (ins SymbolNameAttr:$sym_name,
+                       OptionalAttr<StrAttr>:$sym_visibility,
+                       TypeAttrOf<AnyMemRef>:$type);
+  let assemblyFormat = "($sym_visibility^)? $sym_name `:` $type attr-dict";
+  let hasVerifier = 1;
+}
+
+def GetGlobalTempOp : EnzymeXLA_Op<"get_global_temp", [
+    Pure, DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+  let summary = "retrieve a persistent XLA allocation";
+  let description = [{
+    Returns the storage owned by a `temp_alloc` declaration. Repeated accesses
+    to the same symbol alias the same allocation; this operation is not an
+    allocation. The returned reference is borrowed and must not be freed or
+    used beyond the lifetime of the owning module's XLA runtime.
+
+    The allocation handle is stable even when the XLA runtime replaces the
+    underlying PJRT buffer after execution. Its contents are not constant.
+  }];
+  let arguments = (ins FlatSymbolRefAttr:$name);
+  let results = (outs AnyStaticShapeMemRef:$result);
+  let assemblyFormat = "$name `:` type($result) attr-dict";
+}
+
 def XLAWrapperOp : EnzymeXLA_Op<"xla_wrapper", [
   DeclareOpInterfaceMethods<SymbolUserOpInterface>,
   DeclareOpInterfaceMethods<CallOpInterface>,
