@@ -1806,6 +1806,11 @@ def ApplyScatterUpdateComputationConstPropPatterns : EnzymeHLOPatternOp<
   let patterns = ["ScatterUpdateComputationConstProp"];
 }
 
+def ApplyScatterMaskedIndexSlicePatterns : EnzymeHLOPatternOp<
+    "scatter_masked_index_slice"> {
+  let patterns = ["ScatterMaskedIndexSlice"];
+}
+
 def ApplyScatterMaskedIndexSimplifyPatterns : EnzymeHLOPatternOp<
     "scatter_masked_index_simplify"> {
   let patterns = ["ScatterMaskedIndexSimplify"];

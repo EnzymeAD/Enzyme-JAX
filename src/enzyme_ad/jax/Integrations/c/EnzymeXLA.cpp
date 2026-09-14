@@ -684,6 +684,7 @@ static void addScatterGatherPasses(std::vector<std::string> &list,
   list.push_back("scatter_div_simplify");
   list.push_back("unary_elementwise_scatter_simplify");
   list.push_back("scatter_indices_are_unique");
+  list.push_back("scatter_masked_index_slice");
   list.push_back("scatter_masked_index_simplify");
   list.push_back("split_complex_scatter");
   list.push_back("split_complex_gather");
