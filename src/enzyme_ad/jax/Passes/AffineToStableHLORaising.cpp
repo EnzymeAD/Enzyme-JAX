@@ -153,34 +153,6 @@ static Value getIVForExpr(affine::AffineValueMap map, AffineExpr expr) {
   return map.getOperand(pos);
 }
 
-// has single (or zero) iv per dim.
-// iv are present only at one dim.
-static bool needsGeneralScatterGather(affine::AffineValueMap accessValueMap) {
-  bool repeatingIV = false;
-  auto map = accessValueMap.getAffineMap();
-  auto sz = map.getNumDims();
-  SmallVector<bool> ivseen(sz, false);
-  for (auto E : map.getResults()) {
-    if (E.isSymbolicOrConstant())
-      continue;
-    bool moreThanOneIV = false;
-    for (int iv = 0; iv < sz; ++iv) {
-      if (!E.isFunctionOfDim(iv))
-        continue;
-      if (ivseen[iv]) {
-        repeatingIV = true;
-        break;
-      }
-      if (moreThanOneIV) {
-        return true;
-      }
-      moreThanOneIV = true;
-      ivseen[iv] = true;
-    }
-  }
-  return repeatingIV;
-}
-
 static std::optional<int64_t> getConstant(AffineMap map) {
   if (map.isSingleConstant())
     return map.getSingleConstantResult();
@@ -208,6 +180,7 @@ static std::optional<InductionVariableRange> getIVRange(Value iv) {
       return std::nullopt;
     return InductionVariableRange{*lb, *ub, step.getSExtValue()};
   }
+
   llvm_unreachable("Not affine iv");
 }
 
@@ -229,29 +202,48 @@ computeExprRange(affine::AffineValueMap map, AffineExpr expr) {
 
     auto rhsConst = dyn_cast<AffineConstantExpr>(rhs);
     auto constantSide = rhsConst ? rhsConst : dyn_cast<AffineConstantExpr>(lhs);
-    auto dynSide = rhsConst ? lhs : rhs;
-
-    auto rangeDyn = computeExprRange(map, dynSide);
-
-    if (!rangeDyn.has_value() || !constantSide)
-      return std::nullopt;
-
-    auto const_ = constantSide.getValue();
-
     auto kind = expr.getKind();
-    switch (kind) {
-    case AffineExprKind::Add:
-      range.lb = rangeDyn->lb + const_;
-      range.ub = rangeDyn->ub + const_;
-      range.step = rangeDyn->step;
-      break;
-    case AffineExprKind::Mul:
-      range.lb = rangeDyn->lb * const_;
-      range.ub = rangeDyn->ub * const_;
-      range.step = rangeDyn->step * const_;
-      break;
-    default:
-      // unsupported
+    if (constantSide) {
+      auto dynSide = rhsConst ? lhs : rhs;
+      auto rangeDyn = computeExprRange(map, dynSide);
+      if (!rangeDyn)
+        return std::nullopt;
+
+      auto const_ = constantSide.getValue();
+      switch (kind) {
+      case AffineExprKind::Add:
+        range.lb = rangeDyn->lb + const_;
+        range.ub = rangeDyn->ub + const_;
+        range.step = rangeDyn->step;
+        break;
+      case AffineExprKind::Mul:
+        range.lb = rangeDyn->lb * const_;
+        range.ub = rangeDyn->ub * const_;
+        range.step = rangeDyn->step * const_;
+        break;
+      default:
+        return std::nullopt;
+      }
+    } else if (kind == AffineExprKind::Add) {
+      auto lhsRange = computeExprRange(map, lhs);
+      auto rhsRange = computeExprRange(map, rhs);
+      if (!lhsRange || !rhsRange)
+        return std::nullopt;
+
+      int64_t lhsIters = lhsRange->getNumIters();
+      int64_t rhsIters = rhsRange->getNumIters();
+
+      // One range must exactly fill the gap between values of the other.
+      if (lhsRange->step * lhsIters == rhsRange->step)
+        range.step = lhsRange->step;
+      else if (rhsRange->step * rhsIters == lhsRange->step)
+        range.step = rhsRange->step;
+      else
+        return std::nullopt;
+
+      range.lb = lhsRange->lb + rhsRange->lb;
+      range.ub = range.lb + range.step * lhsIters * rhsIters;
+    } else {
       return std::nullopt;
     }
   } else {
@@ -259,6 +251,40 @@ computeExprRange(affine::AffineValueMap map, AffineExpr expr) {
   }
 
   return std::optional<InductionVariableRange>{range};
+}
+
+static bool isContinuousAlongIVs(affine::AffineValueMap map, AffineExpr E) {
+  return computeExprRange(map, E).has_value();
+}
+
+// has single (or zero) iv per dim.
+// iv are present only at one dim.
+static bool needsGeneralScatterGather(affine::AffineValueMap accessValueMap) {
+  bool repeatingIV = false;
+  auto map = accessValueMap.getAffineMap();
+  auto sz = map.getNumDims();
+  SmallVector<bool> ivseen(sz, false);
+  for (auto E : map.getResults()) {
+    if (E.isSymbolicOrConstant())
+      continue;
+    int numIVs = 0;
+    for (int iv = 0; iv < sz; ++iv) {
+      if (!E.isFunctionOfDim(iv))
+        continue;
+      if (ivseen[iv]) {
+        repeatingIV = true;
+        break;
+      }
+      if (numIVs == 1) {
+        if (!isContinuousAlongIVs(accessValueMap, E))
+          return true;
+      } else if (numIVs >= 2)
+        return true;
+      numIVs++;
+      ivseen[iv] = true;
+    }
+  }
+  return repeatingIV;
 }
 
 static void
@@ -411,6 +437,151 @@ struct ParallelContext {
   }
 };
 
+struct ExpandedAffineDim {
+  unsigned operandPosition;
+  int64_t size;
+  int64_t linearStep;
+};
+
+// Return the coefficient of d`position` in a linear affine expression.
+// computeExprRange supports the same add/constant-multiply subset, so keep
+// this deliberately small as well.
+static std::optional<int64_t> getDimCoefficient(AffineExpr expr,
+                                                unsigned position) {
+  if (auto dim = dyn_cast<AffineDimExpr>(expr))
+    return dim.getPosition() == position ? 1 : 0;
+  if (isa<AffineConstantExpr>(expr))
+    return 0;
+
+  auto binary = dyn_cast<AffineBinaryOpExpr>(expr);
+  if (!binary)
+    return std::nullopt;
+
+  if (expr.getKind() == AffineExprKind::Add) {
+    auto lhs = getDimCoefficient(binary.getLHS(), position);
+    auto rhs = getDimCoefficient(binary.getRHS(), position);
+    if (!lhs || !rhs)
+      return std::nullopt;
+    return *lhs + *rhs;
+  }
+
+  if (expr.getKind() != AffineExprKind::Mul)
+    return std::nullopt;
+
+  if (auto lhs = dyn_cast<AffineConstantExpr>(binary.getLHS())) {
+    auto rhs = getDimCoefficient(binary.getRHS(), position);
+    if (!rhs)
+      return std::nullopt;
+    return lhs.getValue() * *rhs;
+  }
+  if (auto rhs = dyn_cast<AffineConstantExpr>(binary.getRHS())) {
+    auto lhs = getDimCoefficient(binary.getLHS(), position);
+    if (!lhs)
+      return std::nullopt;
+    return rhs.getValue() * *lhs;
+  }
+  return std::nullopt;
+}
+
+// A contiguous expression such as d0 * 16 + d1 is represented by one tensor
+// dimension after slicing. For IV-based alignment, temporarily recover the
+// row-major dimensions [d0, d1].
+static FailureOr<SmallVector<ExpandedAffineDim>>
+getExpandedAffineDims(affine::AffineValueMap map, AffineExpr expr,
+                      ParallelContext pc) {
+  SmallVector<ExpandedAffineDim> dims;
+  for (unsigned i = 0, e = map.getNumDims(); i < e; ++i) {
+    if (!expr.isFunctionOfDim(i))
+      continue;
+
+    Value iv = map.getOperand(i);
+    if (!affine::isAffineInductionVar(iv) || !pc.isParallelIV(iv))
+      return failure();
+    auto range = getIVRange(iv);
+    auto coefficient = getDimCoefficient(expr, i);
+    if (!range || !coefficient)
+      return failure();
+    dims.push_back(
+        {i, range->getNumIters(), std::abs(*coefficient * range->step)});
+  }
+
+  if (dims.size() <= 1)
+    return dims;
+
+  auto expressionRange = computeExprRange(map, expr);
+  if (!expressionRange)
+    return failure();
+
+  llvm::sort(dims, [](const ExpandedAffineDim &lhs,
+                      const ExpandedAffineDim &rhs) {
+    return lhs.linearStep > rhs.linearStep;
+  });
+
+  int64_t product = 1;
+  for (auto dim : dims)
+    product *= dim.size;
+  if (product != expressionRange->getNumIters())
+    return failure();
+
+  // In row-major order, each outer IV advances by exactly the number of
+  // elements spanned by all dimensions inside it.
+  int64_t expectedStep = dims.back().linearStep;
+  for (auto dim : llvm::reverse(dims)) {
+    if (dim.linearStep != expectedStep)
+      return failure();
+    expectedStep *= dim.size;
+  }
+  return dims;
+}
+
+// Reshape flattened contiguous affine dimensions into one dimension per IV
+// and return the corresponding map. This is only an alignment view; callers
+// that target a memory access collapse the view again before emitting a DUS.
+static FailureOr<affine::AffineValueMap>
+expandAffineValueMap(Value &value, affine::AffineValueMap map,
+                     OpBuilder &builder, ParallelContext pc) {
+  auto type = dyn_cast<RankedTensorType>(value.getType());
+  if (!type || type.getRank() != map.getNumResults())
+    return failure();
+
+  SmallVector<int64_t> expandedShape;
+  SmallVector<AffineExpr> expandedExprs;
+  bool changed = false;
+  for (auto [i, expr] : llvm::enumerate(map.getAffineMap().getResults())) {
+    auto dims = getExpandedAffineDims(map, expr, pc);
+    if (failed(dims) || dims->size() <= 1) {
+      expandedShape.push_back(type.getDimSize(i));
+      expandedExprs.push_back(expr);
+      continue;
+    }
+
+    int64_t product = 1;
+    for (auto dim : *dims)
+      product *= dim.size;
+    if (type.isDynamicDim(i) || type.getDimSize(i) != product)
+      return failure();
+
+    changed = true;
+    for (auto dim : *dims) {
+      expandedShape.push_back(dim.size);
+      expandedExprs.push_back(
+          getAffineDimExpr(dim.operandPosition, value.getContext()));
+    }
+  }
+
+  if (changed)
+    value = stablehlo::ReshapeOpCreate(
+        builder,
+        rewriteLocation(value.getLoc(), pc.options.strip_llvm_debuginfo), value,
+        expandedShape);
+
+  return affine::AffineValueMap(
+      AffineMap::get(map.getAffineMap().getNumDims(),
+                     map.getAffineMap().getNumSymbols(), expandedExprs,
+                     value.getContext()),
+      map.getOperands());
+}
+
 // Given an affine map for a load/store operation, compute the startIndices,
 // limitIndices and strides corresponding in the memref based on the loop
 // induction variables.
@@ -493,8 +664,10 @@ affineMapShape(affine::AffineValueMap accessValueMap, ParallelContext pc) {
     if (!affine::isAffineInductionVar(iv))
       return failure();
 
-    auto range = getIVRange(iv);
-    if (!range.has_value())
+    auto range = computeExprRange(accessValueMap, E);
+    if (!range)
+      range = getIVRange(iv);
+    if (!range)
       return failure();
 
     shape.push_back(range->getNumIters());
@@ -515,6 +688,21 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
   for (unsigned qi = 0; qi < dsts.size(); ++qi)
     if (!bs[qi])
       return failure();
+
+  auto expandedSrc = expandAffineValueMap(a, src, builder, pc);
+  if (failed(expandedSrc))
+    return failure();
+  src = *expandedSrc;
+
+  SmallVector<affine::AffineValueMap> expandedDsts;
+  expandedDsts.reserve(dsts.size());
+  for (auto [i, dst] : llvm::enumerate(dsts)) {
+    auto expandedDst = expandAffineValueMap(bs[i], dst, builder, pc);
+    if (failed(expandedDst))
+      return failure();
+    expandedDsts.push_back(*expandedDst);
+  }
+  dsts = expandedDsts;
   // -> tensor<10x1xf32> loaded from (i) -> (i, 0)
   // -> to tensor<1x10xf32> written as (i) -> (0, i)
 
@@ -1299,6 +1487,13 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
   if (!maps.count(update))
     return nullptr;
   affine::AffineValueMap updateValueMap = maps.lookup(update);
+
+  auto expandedUpdateMap =
+      expandAffineValueMap(update, updateValueMap, builder, pc);
+  if (failed(expandedUpdateMap))
+    return nullptr;
+  updateValueMap = *expandedUpdateMap;
+  maps[update] = updateValueMap;
 
   auto UTy = cast<RankedTensorType>(update.getType());
 
@@ -3549,11 +3744,24 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       return failure();
     affine::AffineValueMap updateValueMap = maps.lookup(update);
 
+    // Values loaded through a contiguous multi-IV expression carry a single
+    // flattened tensor dimension. Recover the IV dimensions while deciding
+    // how the value aligns with the store, then collapse them to the memory
+    // dimension immediately before the DUS.
+    auto expandedUpdateMap =
+        expandAffineValueMap(update, updateValueMap, builder, pc);
+    if (failed(expandedUpdateMap))
+      return failure();
+    updateValueMap = *expandedUpdateMap;
+    maps[update] = updateValueMap;
+
     // for each dim in update, where it will
     // be located in broadcastedupdate
     SmallVector<int64_t> broadcastDims(
         cast<RankedTensorType>(update.getType()).getShape().size(), -1);
     SmallVector<int64_t> updateShape;
+    SmallVector<int64_t> expandedUpdateShape;
+    SmallVector<Value> expandedUpdateIVs;
 
     bool needPad = false;
     SmallVector<int64_t> padLow;
@@ -3746,6 +3954,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         Ty, cast<AffineConstantExpr>(E).getValue()))))
                 .getResult();
         updateShape.push_back(1);
+        expandedUpdateShape.push_back(1);
+        expandedUpdateIVs.push_back(nullptr);
       } else {
 
         unsigned dim = 0;
@@ -3763,8 +3973,25 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           auto lb = r->step < 0 ? r->ub - r->step : r->lb;
           exprToEmit = mlir::getAffineConstantExpr(lb, iv.getContext());
           updateShape.push_back(r->getNumIters());
+
+          auto expandedDims = getExpandedAffineDims(accessValueMap, E, pc);
+          if (succeeded(expandedDims) && expandedDims->size() > 1) {
+            for (auto dim : *expandedDims) {
+              expandedUpdateShape.push_back(dim.size);
+              expandedUpdateIVs.push_back(
+                  accessValueMap.getOperand(dim.operandPosition));
+            }
+          } else {
+            expandedUpdateShape.push_back(r->getNumIters());
+            expandedUpdateIVs.push_back(iv);
+          }
         } else {
           updateShape.push_back(1);
+          expandedUpdateShape.push_back(1);
+          // A while-raised affine.for is scalar in this iteration (extent
+          // one), but masked alignment still uses its IV to identify this
+          // target dimension.
+          expandedUpdateIVs.push_back(iv);
         }
 
         auto expanded = expandAffineExpr(
@@ -3794,18 +4021,19 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       }
 
       startIndicesValues.push_back(startIndex);
+    }
 
+    // Match the expanded update axes to the expanded view of each store
+    // dimension. Multiple update IVs may consequently map to dimensions that
+    // will be collapsed into one memory axis below.
+    for (auto [updateIdx, E] :
+         llvm::enumerate(updateValueMap.getAffineMap().getResults())) {
       if (E.isSymbolicOrConstant())
         continue;
-
-      // find dim in update which varies along the same iv
-      Value storeIv = getIVForExpr(accessValueMap, E);
-
-      for (auto [updateIdx, EE] :
-           llvm::enumerate(updateValueMap.getAffineMap().getResults())) {
-        Value updateIv = getIVForExpr(updateValueMap, EE);
-        if (storeIv == updateIv) {
-          broadcastDims[updateIdx] = (updateShape.size() - 1);
+      Value updateIV = getIVForExpr(updateValueMap, E);
+      for (auto [targetIdx, targetIV] : llvm::enumerate(expandedUpdateIVs)) {
+        if (targetIV == updateIV) {
+          broadcastDims[updateIdx] = targetIdx;
           break;
         }
       }
@@ -4039,7 +4267,13 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     update = stablehlo::BroadcastInDimOpCreate(
         builder, rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-        update, updateShape, broadcastDims);
+        update, expandedUpdateShape, broadcastDims);
+
+    if (expandedUpdateShape != updateShape)
+      update = stablehlo::ReshapeOpCreate(
+          builder,
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), update,
+          updateShape);
 
     if (!update)
       return failure();
@@ -4257,22 +4491,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         assert(!E.isSymbolicOrConstant()); // constant dims have been removed
         auto iv = getIVForExpr(storeValueMap, E);
 
-        for (auto [j, EE] :
-             llvm::enumerate(accessValueMap.getAffineMap().getResults())) {
-          if (EE.isSymbolicOrConstant())
-            continue;
-
-          int ivPos = 0;
-          for (int e = accessValueMap.getAffineMap().getNumDims(); ivPos < e;
-               ++ivPos) {
-            if (EE.isFunctionOfDim(ivPos))
-              break;
-          }
-
-          auto storeIV = accessValueMap.getOperands()[ivPos];
-
+        for (auto [j, storeIV] : llvm::enumerate(expandedUpdateIVs)) {
           if (iv == storeIV) {
-            assert(maskedUpdateBroadcastDims[i] == -1);
             maskedUpdateBroadcastDims[i] = j;
             break;
           }
@@ -4288,7 +4508,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       update = stablehlo::BroadcastInDimOpCreate(
           builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-          maskedUpdate, updateType.getShape(), maskedUpdateBroadcastDims);
+          maskedUpdate, expandedUpdateShape, maskedUpdateBroadcastDims);
+      if (expandedUpdateShape != updateType.getShape())
+        update = stablehlo::ReshapeOpCreate(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            update, updateType.getShape());
     }
 
     auto newOperand = stablehlo::DynamicUpdateSliceOp::create(
