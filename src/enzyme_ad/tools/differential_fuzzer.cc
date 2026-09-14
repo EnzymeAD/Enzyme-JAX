@@ -34,23 +34,17 @@
 #include <variant>
 
 namespace {
+llvm::cl::OptionCategory fuzzerCategory("Differential Fuzzer Options");
 // Positional argument for the MLIR file (required)
 llvm::cl::opt<std::string> inputFilename(llvm::cl::Positional,
                                          llvm::cl::desc("<input mlir file>"),
-                                         llvm::cl::Required);
-
+                                         llvm::cl::Required,
+                                         llvm::cl::cat(fuzzerCategory));
 // --seed=<int> (defaults to 0, which we will treat as "generate a random seed")
 llvm::cl::opt<uint32_t>
     seedOpt("seed",
             llvm::cl::desc("Seed for the random number generator (0 = random)"),
-            llvm::cl::init(0));
-
-// --use-custom-pool (boolean flag for your debugging needs)
-llvm::cl::opt<bool> useCustomPool(
-    "use-custom-pool",
-    llvm::cl::desc(
-        "Inject a specific custom debug pool instead of the cursed vectors"),
-    llvm::cl::init(false));
+            llvm::cl::init(0), llvm::cl::cat(fuzzerCategory));
 
 // --max-ulps (how much floating-point drift from reassociation we tolerate)
 llvm::cl::opt<unsigned> maxUlpsOpt(
@@ -59,7 +53,7 @@ llvm::cl::opt<unsigned> maxUlpsOpt(
                    "results, in units in the last place (default 8). log2(n) "
                    "bits are allowed to deviate so in the n=8 case the three "
                    "least signficant mantissa bits are allowed to deviate"),
-    llvm::cl::init(8));
+    llvm::cl::init(8), llvm::cl::cat(fuzzerCategory));
 
 // --verbosity (how much your screen gets spammend full of stuff)
 enum class Verbosity { Quiet, Normal, Verbose };
@@ -71,20 +65,21 @@ llvm::cl::opt<Verbosity> verbosity(
                                 "Seed, mismatches and summary"),
                      clEnumValN(Verbosity::Verbose, "verbose",
                                 "Also report passing functions")),
-    llvm::cl::init(Verbosity::Normal));
+    llvm::cl::init(Verbosity::Normal), llvm::cl::cat(fuzzerCategory));
 
 // --maxElements (do not blow up CI or your machine with a large number)
 llvm::cl::opt<int64_t> maxElements(
     "max-elements",
     llvm::cl::desc("Maximum number of tensor elements in an argument to fuzz "
                    "before skipping (default 10M)"),
-    llvm::cl::init(10000000));
+    llvm::cl::init(10000000), llvm::cl::cat(fuzzerCategory));
 
 llvm::cl::list<std::string> restrictInput(
     "restrict-input", llvm::cl::CommaSeparated,
     llvm::cl::desc(
         "Categories of values to omit from being part of the number pool used "
-        "to generate tensors: nonzero, non_negative, noNaN, allFinite"));
+        "to generate tensors: nonzero, non_negative, noNaN, allFinite"),
+    llvm::cl::cat(fuzzerCategory));
 
 } // namespace
 
@@ -770,6 +765,7 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
 }
 
 int main(int argc, char **argv) {
+  llvm::cl::HideUnrelatedOptions(fuzzerCategory);
   llvm::cl::ParseCommandLineOptions(argc, argv,
                                     "StableHLO Differential Fuzzer\n");
 
