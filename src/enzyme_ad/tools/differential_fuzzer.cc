@@ -388,7 +388,12 @@ RunLineConfig parseRunLine(llvm::StringRef runLine) {
 
   std::string pipeline = llvm::join(passes, ",");
   // This is hacky
-  if (!pipeline.empty() && pipeline.find('(') == std::string::npos)
+  size_t paren = pipeline.find('(');
+  size_t brace = pipeline.find('{');
+  size_t comma = pipeline.find(',');
+  bool hasAnchor = paren != std::string::npos && paren < brace && paren < comma;
+
+  if (!pipeline.empty() && !hasAnchor)
     pipeline = "builtin.module(" + pipeline + ")";
 
   runLineConfig.passPipeline = pipeline;
@@ -573,6 +578,34 @@ bool isClose(const APFloat &unopt, const APFloat &opt, unsigned maxUlps,
   return std::abs(u - o) <= (atol + rtol * std::abs(o));
 }
 
+static bool hasUninterpretableOp(Operation *root) {
+  bool found = false;
+  root->walk([&](Operation *op) {
+    Dialect *dialect = op->getDialect();
+    // Unregistered ops have no dialect and cannot be interpreted.
+    if (!dialect) {
+      found = true;
+      return WalkResult::interrupt();
+    }
+    StringRef ns = dialect->getNamespace();
+    // only dialects the intperter can run
+    if (ns != "stablehlo" && ns != "func" && ns != "builtin") {
+      found = true;
+      return WalkResult::interrupt();
+    }
+    // unimplemented or broken ops in the refrence interpreter
+    StringRef name = op->getName().getStringRef();
+    if (name == "stablehlo.einsum" || name == "stablehlo.broadcast" ||
+        name == "stablehlo.batch_norm_training" ||
+        name == "stablehlo.batch_norm_inference") {
+      found = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return found;
+}
+
 enum class Verdict {
   Passed,
   Mismatched,
@@ -632,6 +665,17 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
         << "Legalization failed on unoptimized IR. Skipping.\n";
     return Verdict::Skipped;
   }
+  OwningOpRef<ModuleOp> tempOptMod = ModuleOp::create(optFunc.getLoc());
+  func::FuncOp clonedOpt = optFunc.clone();
+  clonedOpt.setName("main");
+  tempOptMod->push_back(clonedOpt);
+
+  if (hasUninterpretableOp(*tempUnoptMod) ||
+      hasUninterpretableOp(*tempOptMod)) {
+    llvm::WithColor::warning(diag())
+        << funcName << ": contains ops the interpreter cannot run, skipping\n";
+    return Verdict::Skipped;
+  }
 
   auto unoptResults =
       stablehlo::evalModule(tempUnoptMod.get(), evalArgs, config);
@@ -639,11 +683,6 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
     llvm::WithColor::warning(diag()) << "Unoptimized evaluation failed.\n";
     return Verdict::Skipped;
   }
-
-  OwningOpRef<ModuleOp> tempOptMod = ModuleOp::create(optFunc.getLoc());
-  func::FuncOp clonedOpt = optFunc.clone();
-  clonedOpt.setName("main");
-  tempOptMod->push_back(clonedOpt);
 
   if (mlir::failed(legalizationPM.run(*tempOptMod))) {
     llvm::WithColor::warning(diag())
