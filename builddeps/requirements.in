@@ -6,3 +6,5 @@
 jax[cuda12] >= 0.8.0
 jaxlib
 absl_py >= 2.3.0
+
+standard-pipes
