@@ -106,7 +106,7 @@ cc_library(
         ],
     hdrs =
         [
-            "xla_ffi/export_macro.h",
+            "Utils.h",
         ] + glob([
             "xla_ffi/host/**/*.h",
             "xla_ffi/cuda/**/*.h",
@@ -117,8 +117,18 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        ":EnzymeXLADialect",
         "@com_google_absl//absl/base",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings:str_format",
+        "@enzyme//:EnzymeMLIR",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:DataLayoutInterfaces",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:SCFDialect",
+        "@shardy//shardy/dialect/sdy/ir:dialect",
+        "@stablehlo//:stablehlo_ops",
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:c_api",
         "@xla//xla/ffi/api:ffi",
@@ -881,6 +891,35 @@ gentbl_cc_library(
     ],
 )
 
+td_library(
+    name = "CommPassesTdFiles",
+    srcs = [
+        "Passes/Comm/Passes.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:PassBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "CommPassesIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-pass-decls",
+                "-name=comm",
+            ],
+            "Passes/Comm/Passes.h.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/Comm/Passes.td",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":CommPassesTdFiles",
+    ],
+)
+
 cc_library(
     name = "CheckedRewrite",
     hdrs = ["CheckedRewrite.h"],
@@ -1255,6 +1294,7 @@ cc_library(
             "Implementations/*.cpp",
             "Passes/*.cpp",
             "Passes/Tessera/*.cpp",
+            "Passes/Comm/*.cpp",
             "Dialect/*.cpp",
             "Dialect/Distributed/*.cpp",
             "Dialect/Tessera/*.cpp",
@@ -1273,6 +1313,7 @@ cc_library(
         "Implementations/*.h",
         "Passes/*.h",
         "Passes/Tessera/*.h",
+        "Passes/Comm/*.h",
         "Dialect/*.h",
         "Dialect/Distributed/*.h",
         "Dialect/Tessera/*.h",
@@ -1292,6 +1333,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":CheckedRewrite",
+        ":CommPassesIncGen",
         ":DistributedDialectIncGen",
         ":DistributedOpsIncGen",
         ":DistributedTypesIncGen",
@@ -1319,6 +1361,7 @@ cc_library(
         ":mhlo-derivatives",
         ":stablehlo-derivatives",
         ":triton-derivatives",
+        "//src/enzyme_ad/jax/Dialect/Comm:CommDialect",
         "//src/external/isl:Isl",
         "//src/external/polly:Polly",
         "@com_google_absl//absl/status",
@@ -1356,10 +1399,10 @@ cc_library(
         "@llvm-project//mlir:ComplexDialect",
         "@llvm-project//mlir:ControlFlowDialect",
         "@llvm-project//mlir:ControlFlowInterfaces",
-        "@llvm-project//mlir:DataLayoutInterfaces",
         "@llvm-project//mlir:ControlFlowToLLVM",
         "@llvm-project//mlir:ControlFlowToSCF",
         "@llvm-project//mlir:DLTIDialect",
+        "@llvm-project//mlir:DataLayoutInterfaces",
         "@llvm-project//mlir:DialectUtils",
         "@llvm-project//mlir:FromLLVMIRTranslation",
         "@llvm-project//mlir:FromLLVMIRTranslationRegistration",
@@ -1577,7 +1620,6 @@ cc_library(
 
         # Comm dialect
         "//src/enzyme_ad/jax/Dialect/Comm:CommDialect",
-        "//src/enzyme_ad/jax/Passes/Comm:Passes",
     ],
 )
 
