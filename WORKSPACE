@@ -418,7 +418,6 @@ http_archive(
     url = "https://github.com/Z3Prover/z3/archive/refs/tags/z3-5.1.0.tar.gz",
 )
 
-
 LEAN_ALL_CONTENT = """\
 filegroup(
     name = "lean_src",
