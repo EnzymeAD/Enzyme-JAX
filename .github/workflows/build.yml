@@ -129,8 +129,8 @@ jobs:
       - name: Update Python requirements files
         run: |
           bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
-      - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
+      - name: Setup upterm session
+        uses: owenthereal/action-upterm@v1
       - name: Build enzymexlamlir-opt
         timeout-minutes: 180
         run: |
