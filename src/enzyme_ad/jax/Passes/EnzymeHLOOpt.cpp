@@ -21338,16 +21338,21 @@ struct WhileScatterAccumulatorNoAdd final
   }
 };
 
-// A function argument, possibly seen through the layout ops a raised kernel
-// puts on it (reshape, bitcast_convert).
-static bool isLayoutOfFunctionArgument(Value value) {
+// A function argument or the iteration argument of an enclosing while (a
+// nested loop of a raised kernel starts its variables from the outer loop's),
+// possibly seen through the layout ops a raised kernel puts on an argument
+// (reshape, bitcast_convert).
+static bool isLayoutOfLoopOrFunctionArgument(Value value) {
   while (Operation *op = value.getDefiningOp()) {
     if (!isa<stablehlo::ReshapeOp, stablehlo::BitcastConvertOp>(op))
       return false;
     value = op->getOperand(0);
   }
   auto BA = dyn_cast<BlockArgument>(value);
-  return BA && isa<FunctionOpInterface>(BA.getOwner()->getParentOp());
+  if (!BA)
+    return false;
+  Operation *parent = BA.getOwner()->getParentOp();
+  return isa<FunctionOpInterface>(parent) || isa<stablehlo::WhileOp>(parent);
 }
 
 // Replace while op iteration variables which are not updated with their
@@ -21383,7 +21388,7 @@ struct WhileSimplify
       if (hoist_all) {
         canHoist = true;
       } else {
-        canHoist |= isLayoutOfFunctionArgument(inputValue);
+        canHoist |= isLayoutOfLoopOrFunctionArgument(inputValue);
       }
 
       Value bodyRes = bodyTerm->getOperand(i);
