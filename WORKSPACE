@@ -120,6 +120,17 @@ http_archive(
     url = "https://github.com/bazel-contrib/rules_uv/releases/download/v0.89.2/rules_uv-0.89.2.tar.gz",
 )
 
+http_archive(
+    name = "rules_foreign_cc",
+    sha256 = "327b3fcacde97b9665424db2b6c37e6f8da59ecc783dc5b8683c69396f820a12",
+    strip_prefix = "rules_foreign_cc-0.16.0",
+    url = "https://github.com/bazel-contrib/rules_foreign_cc/releases/download/0.16.0/rules_foreign_cc-0.16.0.tar.gz",
+)
+
+load("@rules_foreign_cc//foreign_cc:repositories.bzl", "rules_foreign_cc_dependencies")
+
+rules_foreign_cc_dependencies()
+
 load("//third_party/jax:workspace.bzl", jax_workspace = "repo")
 load("//third_party/ml_toolchain:workspace.bzl", ml_toolchain_workspace = "repo")
 
@@ -142,17 +153,6 @@ ml_toolchain_workspace()
 load("@rules_ml_toolchain//cc/deps:cc_toolchain_deps.bzl", "cc_toolchain_deps")
 
 cc_toolchain_deps()
-
-http_archive(
-    name = "rules_foreign_cc",
-    sha256 = "327b3fcacde97b9665424db2b6c37e6f8da59ecc783dc5b8683c69396f820a12",
-    strip_prefix = "rules_foreign_cc-0.16.0",
-    url = "https://github.com/bazel-contrib/rules_foreign_cc/releases/download/0.16.0/rules_foreign_cc-0.16.0.tar.gz",
-)
-
-load("@rules_foreign_cc//foreign_cc:repositories.bzl", "rules_foreign_cc_dependencies")
-
-rules_foreign_cc_dependencies(ninja_version = "1.13.2")
 
 load("@xla//third_party/py:python_init_rules.bzl", "python_init_rules")
 
