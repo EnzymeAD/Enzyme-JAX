@@ -723,10 +723,9 @@ struct ArithRaisingPass
                // TODO: either SI or UI is wrong
                RaiseToConvert<arith::ExtUIOp>, RaiseToConvert<arith::ExtSIOp>,
                RaiseToConvert<arith::TruncIOp>, RaiseMulAdd<math::FmaOp>,
-               RaiseMulAdd<enzymexla::FMulAddOp>, RaiseCopySign, RaiseTruncOp,
-               RaiseAtan, RaiseMaxNumF, RaiseMinNumF, RaiseIsNaN, RaiseConstant,
-               RaiseFPToSI, RaiseSIToFP, RaiseUIToFP, RaiseSelect, RaiseCmpI>(
-              context);
+               RaiseCopySign, RaiseTruncOp, RaiseAtan, RaiseMaxNumF,
+               RaiseMinNumF, RaiseIsNaN, RaiseConstant, RaiseFPToSI,
+               RaiseSIToFP, RaiseUIToFP, RaiseSelect, RaiseCmpI>(context);
 
     walkAndApplyPatterns(getOperation(), std::move(patterns));
   }
