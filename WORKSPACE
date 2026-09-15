@@ -201,7 +201,7 @@ load("@xla//:workspace1.bzl", "xla_workspace1")
 
 xla_workspace1()
 
-# xla_workspace0() includes benchmark (specifically benchmark_deps.bzl).  
+# xla_workspace0() includes benchmark (specifically benchmark_deps.bzl).
 # at the version pinned in xla, benchmark in turn includes a version of rules_foreign_cc that sets up a very old ninja version
 # this ninja version includes a config script which depends on the python "pipes" module, which was deprecated after 3.11
 # this causes builds to fail (especially on macOS)
@@ -220,7 +220,10 @@ http_archive(
 
 http_archive(
     name = "rules_foreign_cc",
-    repo_mapping = {"@bazel_lib": "@bazel_lib_3_2_0", "@bazel_features" : "@bazel_features_1_47"},
+    repo_mapping = {
+        "@bazel_lib": "@bazel_lib_3_2_0",
+        "@bazel_features": "@bazel_features_1_47",
+    },
     sha256 = "327b3fcacde97b9665424db2b6c37e6f8da59ecc783dc5b8683c69396f820a12",
     strip_prefix = "rules_foreign_cc-0.16.0",
     url = "https://github.com/bazel-contrib/rules_foreign_cc/releases/download/0.16.0/rules_foreign_cc-0.16.0.tar.gz",
