@@ -417,3 +417,19 @@ http_archive(
     strip_prefix = "z3-z3-5.1.0",
     url = "https://github.com/Z3Prover/z3/archive/refs/tags/z3-5.1.0.tar.gz",
 )
+
+
+LEAN_ALL_CONTENT = """\
+filegroup(
+    name = "lean_src",
+    srcs = ["CMakeLists.txt"] + glob(["cmake/*", "src/**", "stage0/**"]),
+    visibility = ["//visibility:public"],
+)
+"""
+
+http_archive(
+    name = "lean",
+    build_file_content = LEAN_ALL_CONTENT,
+    strip_prefix = "lean4-4.33.1",
+    url = "https://github.com/leanprover/lean4/archive/refs/tags/v4.33.1.tar.gz",
+)
