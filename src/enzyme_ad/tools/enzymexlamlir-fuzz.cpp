@@ -589,10 +589,11 @@ static bool hasUninterpretableOp(Operation *root) {
       return WalkResult::interrupt();
     }
     // unimplemented or broken ops in the refrence interpreter
+    // fft is bugged in the interpreter currently
     StringRef name = op->getName().getStringRef();
     if (name == "stablehlo.einsum" || name == "stablehlo.broadcast" ||
         name == "stablehlo.batch_norm_training" ||
-        name == "stablehlo.batch_norm_inference") {
+        name == "stablehlo.batch_norm_inference" || name == "stablehlo.fft") {
       found = true;
       return WalkResult::interrupt();
     }
