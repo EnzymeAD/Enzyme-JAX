@@ -57,5 +57,5 @@ module {
 // CHECK:         stablehlo.while
 // CHECK:           "stablehlo.batch_norm_training"
 // CHECK:         stablehlo.while
-// CHECK-NOT:       "stablehlo.batch_norm_training"
+// CHECK:           stablehlo.dynamic_slice {{.*}}sizes
 // CHECK:           "stablehlo.batch_norm_grad"
