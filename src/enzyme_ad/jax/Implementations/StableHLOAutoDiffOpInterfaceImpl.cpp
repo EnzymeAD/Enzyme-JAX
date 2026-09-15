@@ -3230,8 +3230,8 @@ public:
 
       auto opOperand0 = gutils->popCache(caches[0], builder);
       auto opOperand1 = gutils->popCache(caches[1], builder);
-      auto opResult1 = gutils->getNewFromOriginal(op->getResult(1));
-      auto opResult2 = gutils->getNewFromOriginal(op->getResult(2));
+      auto opResult1 = gutils->popCache(caches[2], builder);
+      auto opResult2 = gutils->popCache(caches[3], builder);
 
       auto gradOp = BatchNormGradOp::create(
           builder, op->getLoc(), opOperand0, opOperand1, opResult1, opResult2,
@@ -3270,6 +3270,12 @@ public:
       auto initCacheOperand1 = gutils->initAndPushCache(
           gutils->getNewFromOriginal(op->getOperand(1)), cacheBuilder);
       caches.push_back(initCacheOperand1);
+
+      cacheBuilder.setInsertionPointAfter(newOp);
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(op->getResult(1)), cacheBuilder));
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(op->getResult(2)), cacheBuilder));
 
       return caches;
     }
