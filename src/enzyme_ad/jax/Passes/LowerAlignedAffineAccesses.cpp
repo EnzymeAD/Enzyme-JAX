@@ -54,20 +54,17 @@ struct LowerAlignedAffineLoad : public OpRewritePattern<affine::AffineLoadOp> {
 
   LogicalResult matchAndRewrite(affine::AffineLoadOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!op->hasAttr("alignment"))
+    if (!op.getAlignment())
       return failure();
     auto indices = expandMap(rewriter, op.getLoc(), op.getAffineMap(),
                              op.getMapOperands());
     auto newLoad =
         memref::LoadOp::create(rewriter, op.getLoc(), op.getMemRef(), indices);
-    // On the affine op the alignment was a discardable attribute; memref.load
-    // owns one, and only the owned one is what its lowering reads.
-    for (NamedAttribute attr : op->getDiscardableAttrs()) {
-      if (attr.getName() == "alignment")
-        newLoad.setAlignmentAttr(cast<IntegerAttr>(attr.getValue()));
-      else
-        newLoad->setAttr(attr.getName(), attr.getValue());
-    }
+    // Both ops own their alignment; carry it across, then the remaining
+    // discardable attributes.
+    newLoad.setAlignmentAttr(op.getAlignmentAttr());
+    for (NamedAttribute attr : op->getDiscardableAttrs())
+      newLoad->setAttr(attr.getName(), attr.getValue());
     rewriter.replaceOp(op, newLoad);
     return success();
   }
@@ -79,19 +76,16 @@ struct LowerAlignedAffineStore
 
   LogicalResult matchAndRewrite(affine::AffineStoreOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!op->hasAttr("alignment"))
+    if (!op.getAlignment())
       return failure();
     auto indices = expandMap(rewriter, op.getLoc(), op.getAffineMap(),
                              op.getMapOperands());
     auto newStore = memref::StoreOp::create(
         rewriter, op.getLoc(), op.getValueToStore(), op.getMemRef(), indices);
     // See LowerAlignedAffineLoad.
-    for (NamedAttribute attr : op->getDiscardableAttrs()) {
-      if (attr.getName() == "alignment")
-        newStore.setAlignmentAttr(cast<IntegerAttr>(attr.getValue()));
-      else
-        newStore->setAttr(attr.getName(), attr.getValue());
-    }
+    newStore.setAlignmentAttr(op.getAlignmentAttr());
+    for (NamedAttribute attr : op->getDiscardableAttrs())
+      newStore->setAttr(attr.getName(), attr.getValue());
     rewriter.replaceOp(op, newStore);
     return success();
   }
