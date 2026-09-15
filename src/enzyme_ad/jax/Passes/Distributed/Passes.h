@@ -19,9 +19,10 @@ namespace distributed {
 void registerShardyToDistributedPipeline();
 
 // Lowering pipeline run on a fully-decided distributed-search candidate
-// before scoring. Currently just runs LowerKernels; more lowering stages
-// will be added here as they come online (see StrategyScorer in
-// SearchStrategies.cpp). `lowerLogicalAxes` should normally stay true here:
+// before scoring. Currently runs InlineDeviceLocalAxes followed by
+// LowerKernels; more lowering stages will be added here as they come online
+// (see StrategyScorer in SearchStrategies.cpp). `lowerLogicalAxes` should
+// normally stay true here:
 // candidates reaching this pipeline are expected to already have every
 // logical axis decided (e.g. by the search's heuristic completer), so there
 // should be no un-sharded logical axis left to preserve.

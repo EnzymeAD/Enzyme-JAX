@@ -9,6 +9,7 @@ void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
                                             bool lowerLogicalAxes) {
   LowerKernelsPassOptions options;
   options.lowerLogicalAxes = lowerLogicalAxes;
+  pm.addPass(createInlineDeviceLocalAxesPass());
   pm.addPass(createLowerKernelsPass(options));
 }
 
@@ -31,9 +32,8 @@ struct DistributedSearchLoweringPipelineOptions
 void registerDistributedSearchLoweringPipeline() {
   PassPipelineRegistration<DistributedSearchLoweringPipelineOptions>(
       "distributed-search-lowering-pipeline",
-      "Lowering pipeline run on a fully-decided distributed-search "
-      "candidate before scoring. Currently just runs LowerKernels; more "
-      "lowering stages will be added here as they come online.",
+      "Lowers a fully-decided module written in terms of physical execution "
+      "axes to its sharded form.",
       [](OpPassManager &pm,
          const DistributedSearchLoweringPipelineOptions &options) {
         buildDistributedSearchLoweringPipeline(pm, options.lowerLogicalAxes);

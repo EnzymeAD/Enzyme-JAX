@@ -131,6 +131,20 @@ def LowerKernelsPass : Pass<"distributed-lower-kernels", "::mlir::ModuleOp"> {
   }];
 }
 
+def InlineDeviceLocalAxesPass
+    : Pass<"inline-device-local-axes", "::mlir::ModuleOp"> {
+  let summary = "Inline distributed.DeviceLocalAxis markers into concrete local structure.";
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "enzyme::distributed::DistributedDialect"
+  ];
+  let description = [{
+    Skeleton pass for eliminating distributed.DeviceLocalAxis markers left
+    behind by LowerKernelsPass (axes that were never sharded across the mesh
+    because they're serialized entirely within a device). This pass
+    currently performs no rewrites.
+  }];
+}
+
 def DistributedSearchStrategiesPass : Pass<"distributed-search-strategies", "::mlir::ModuleOp"> {
   let summary = "Searches for distribution strategies mapping logical axes to physical execution";
   let dependentDialects = ["enzyme::distributed::DistributedDialect"];
