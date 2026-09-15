@@ -112,6 +112,62 @@ def CanonicalizeAxisMapsPass
         replacing mapping groups with maximal one - to - one split groups.}];
 }
 
+def CanonicalizeShardedFactorOrderPass
+    : Pass<"canonicalize-sharded-factor-order", "::mlir::ModuleOp"> {
+  let summary = "Rewrites tensors so sharded factors are always major and "
+                "local factors always minor on every dimension.";
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "enzyme::distributed::DistributedDialect",
+    "sdy::SdyDialect", "stablehlo::StablehloDialect"
+  ];
+  let description = [{
+    A tensor dimension composed of several independent factors (e.g. from a
+    reshape merging previously-separate axes) can end up with a Sharded
+    factor sandwiched between Local ones -- a pattern Shardy's
+    DimensionShardingAttr cannot represent (it requires all sharded (sub-)axes
+    to form a major-most prefix, with everything else an implicit minor-most
+    remainder). This pass establishes that invariant everywhere: every op
+    consumes and produces tensors with all sharded factors bubbled to the
+    major position of their axis, on every dimension.
+
+    Elementwise and associative-reduction ops need no rewrite: untouched
+    dimensions inherit their input's canonical order for free, determined
+    generically via Shardy's own per-op sharding rule rather than by
+    hardcoding op identity. A distributed kernel's own block arguments and
+    yielded results, and the cast ops bookending collectives
+    (distributed.CastGlobalToLocal/CastLocalToGlobal), are true fixed points
+    with no producer or consumer to defer the fix to, so they are rewritten
+    directly: a clean split at the dimension's current boundary, a transpose
+    into canonical order, and a merge back to the original shape. This is a
+    cheap, local, per-device operation (the transpose only reorders which
+    dimension index a factor occupies; it never changes which device holds
+    which data), not a cross-device communication cost.
+    distributed.Collective itself is never rewritten directly: its mesh
+    operands are flat, mesh-space groupings rather than one-per-tensor-
+    dimension, so it has no positional structure this pass can act on --
+    whatever correctness is needed around a collective lives entirely in its
+    bookending casts.
+
+    LowerKernelsPass and InlineDeviceLocalAxesPass depend on this invariant
+    already holding: they assume every DeviceLocalAxis is contiguous and
+    minor-most on its dimension, and this pass is what is expected to
+    establish that before they run.
+
+    Current status: a reshape (or other op with a dimension mapped to more
+    than one factor) whose operand or result is one of the fixed points above
+    is handled as part of that fixed point's own rewrite. One fed by an
+    arbitrary intermediate value elsewhere in a kernel body is not yet
+    handled -- doing so correctly requires tracking that value's actual
+    current factor order forward from the nearest already-fixed point,
+    rather than trusting any op's own once-computed sharding attributes,
+    which go stale as soon as an upstream fixed point is rewritten. Such ops
+    are reported with a remark identifying them, and the pass fails, so the
+    gap is visible rather than silently producing wrong results. Rewrite
+    support is added incrementally as specific op patterns are actually hit,
+    rather than guessed upfront.
+  }];
+}
+
 def LowerKernelsPass : Pass<"distributed-lower-kernels", "::mlir::ModuleOp"> {
   let summary = "Applies sharding to distributed kernels to translate from global to sharded form.";
   let dependentDialects = [

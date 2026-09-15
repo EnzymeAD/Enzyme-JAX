@@ -297,8 +297,11 @@ static void stripPlaceholderAllReduces(ModuleOp shardyModule) {
  * Note: implemented along the logic that a sharding dimension is either
  * embarassingly parallel or an associative reduction, so even if the paralleism
  * isn't contiguous the rewrite is the same (with different operand tensors /
- * blocks passed in from the collectives). This may not hold up to all sharding
- * dimensions, or may simply not be correct.
+ * blocks passed in from the collectives). This depends on
+ * CanonicalizeShardedFactorOrderPass having already put every dimension's
+ * sharded factors in major-most position (see the doc comment above
+ * runShardyLowering) -- without that precondition this would not hold up to
+ * all sharding dimensions.
  */
 static void constructShardyAttributes(DistributedKernelOp originalKernel,
                                       ModuleOp shardyModule,
@@ -521,24 +524,25 @@ static void copyShardyModuleToKernelAndErase(ModuleOp shardyModule,
 
 /**
  * When sharding over an axis, we expect to see groups in the form
- * <sharding_axes> * serialize_axis, where serialize axis is the contiguousmost.
- * But this still leaves some problems: we can have multiple axes on the same
- * tensor dimension (induced from i.e. a reshape), leading to a composite
- * sharding something along the lines of <sharding_axes> * serialize_ax *
- * <sharding_axes> * serialize_ax. This doesn't play very nice with Shardy
- * rewrite capabilities, which just takes a number of dims to shard over.
+ * <sharding_axes> * serialize_axis, where serialize axis is the contiguousmost
+ * (i.e. minor-most). We can have multiple axes on the same tensor dimension
+ * (induced from i.e. a reshape), leading to a composite sharding along the
+ * lines of <sharding_axes> * serialize_ax * <sharding_axes> * serialize_ax --
+ * this doesn't play very nice with Shardy rewrite capabilities, which just
+ * takes a number of dims to shard over.
  *
- * Treatement of these cases depends on the semantics of the op / axis.
- * If the axis is embarassingly parallel (pass through), we don't care: we can
- * pretend the serialize axes can be shifted to the end.
- * If the axis is an associative reduction, we can still shift the serialize
- * axes to the end, but this results in a reassociation of the reduction.
- * If the axis does not parallelize, we shouldn't be sharding over it in the
- * first place.
- *
- * So as far as the computation rewriting goes, we can just take the total
- * parallelism over the axis as a shard count. However, we will have to be
- * very careful about communication and slicing ops.
+ * CanonicalizeShardedFactorOrderPass is expected to have already run and
+ * established that every dimension's sharded (sub-)axes form a major-most
+ * prefix with the serialize/local factors an implicit minor-most remainder --
+ * i.e. the "<sharding_axes> * serialize_ax * <sharding_axes> * serialize_ax"
+ * composite case above never actually reaches this pass with the serialize
+ * axes anywhere but the end. That's what justifies treating the axis as
+ * either embarrassingly parallel (pass through) or an associative reduction
+ * (reassociated, with the serialize axes shifted to the end) and just taking
+ * the total parallelism over the axis as a flat shard count below: it's a
+ * consequence of the upstream invariant, not an unverified hope about ops
+ * that don't parallelize. However, we will still have to be very careful
+ * about communication and slicing ops.
  */
 
 /**

@@ -9,6 +9,11 @@ void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
                                             bool lowerLogicalAxes) {
   LowerKernelsPassOptions options;
   options.lowerLogicalAxes = lowerLogicalAxes;
+  // CanonicalizeShardedFactorOrder must run first: both InlineDeviceLocalAxes
+  // and LowerKernels assume every DeviceLocalAxis is already contiguous and
+  // minor-most on its dimension, which is exactly the invariant this
+  // establishes.
+  pm.addPass(createCanonicalizeShardedFactorOrderPass());
   pm.addPass(createInlineDeviceLocalAxesPass());
   pm.addPass(createLowerKernelsPass(options));
 }
