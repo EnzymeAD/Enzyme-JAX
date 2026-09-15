@@ -46,7 +46,10 @@ jobs:
       fail-fast: false
       matrix:
         os:
+          - linux-x86-n2-32
           - linux-arm64-c4a-32
+          - linux-x86-ct6e-180-4tpu
+          - linux-x86-a2-48-a100-4gpu
           # FIXME: Build has been broken for a while
           - macOS-latest
         python:
@@ -129,8 +132,7 @@ jobs:
       - name: Update Python requirements files
         run: |
           bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
-      - name: Setup upterm session
-        uses: owenthereal/action-upterm@v1
+
       - name: Build enzymexlamlir-opt
         timeout-minutes: 180
         run: |

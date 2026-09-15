@@ -201,15 +201,16 @@ load("@xla//:workspace1.bzl", "xla_workspace1")
 
 xla_workspace1()
 
-# rules_foreign_cc must be declared before xla_workspace0(): that calls
-# com_google_benchmark's benchmark_deps(), which declares rules_foreign_cc
-# 0.7.1 if "rules_foreign_cc" is not yet in native.existing_rules(), and the
-# first WORKSPACE declaration of a repository name wins over any later ones.
-# z3 (//third_party/z3) is the only consumer of @rules_foreign_cc in this
-# workspace. The repo_mapping is required because @bazel_lib here is
-# bazel-skylib (needed by rules_multitool), while rules_foreign_cc 0.16.0
-# loads bazel-lib 3.x symbols (e.g. lib:resource_sets.bzl's resource_set_for,
-# absent from the aspect_bazel_lib 2.8.1 used elsewhere in this WORKSPACE).
+# xla_workspace0() includes benchmark (specifically benchmark_deps.bzl).  
+# at the version pinned in xla, benchmark in turn includes a version of rules_foreign_cc that sets up a very old ninja version
+# this ninja version includes a config script which depends on the python "pipes" module, which was deprecated after 3.11
+# this causes builds to fail (especially on macOS)
+
+# these rules ensure that rules_foreign_cc builds before xla_workspace0(), and does so with dependencies sufficiently recent to compile z3 via ninja
+# see: https://github.com/google/benchmark/blob/754ef08ab91767be54f56e8de3f00527aef3f779/bazel/benchmark_deps.bzl#L21
+# https://github.com/openxla/xla/blob/3a6a82438d93c3d1bc3709a9603275d51af9026e/workspace0.bzl#L23
+# and https://github.com/ninja-build/ninja/blob/b84b3501c63042e72b05c90c76d75e0381daa4cf/configure.py#L24
+
 http_archive(
     name = "bazel_lib_3_2_0",
     sha256 = "e733937de2f542436c5d3d618e22c638489b40dfd251284050357babe71103d7",
