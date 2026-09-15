@@ -1414,7 +1414,6 @@ cc_library(
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
         ":LowerEnzymeXLAMathPatternsIncGen",
-        ":Perfify",
         ":Polymer",
         ":RaisingTransformOps",
         ":RaisingTransformOpsImplIncGen",
