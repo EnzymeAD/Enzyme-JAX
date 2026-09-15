@@ -1385,6 +1385,8 @@ void fully2ComposeIntegerSetAndOperands(
 
 namespace {
 struct AffineCFGPass : public enzyme::impl::AffineCFGBase<AffineCFGPass> {
+  using AffineCFGBase::AffineCFGBase;
+
   void runOnOperation() override;
 };
 } // namespace
