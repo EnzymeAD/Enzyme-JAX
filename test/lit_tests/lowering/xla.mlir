@@ -134,6 +134,6 @@ module {
 // CHECK-NEXT:    llvm.call @reactantXLADeInit(%0) : (!llvm.ptr) -> ()
 // CHECK-NEXT:    llvm.return
 // CHECK-NEXT:  }
-// CHECK:  llvm.mlir.global_ctors ctors = [@__reactant_xla_init], priorities = [65535 : i32], data = [#llvm.zero]
-// CHECK:  llvm.mlir.global_dtors dtors = [@__reactant_xla_deinit], priorities = [65535 : i32], data = [#llvm.zero]
+// CHECK:  llvm.mlir.global_ctors ctors = [@__reactant_xla_init], priorities = [65534 : i32], data = [#llvm.zero]
+// CHECK:  llvm.mlir.global_dtors dtors = [@__reactant_xla_deinit], priorities = [65534 : i32], data = [#llvm.zero]
 // CHECK:  llvm.mlir.global linkonce @__reactant_xla_data() {addr_space = 0 : i32, alignment = 8 : i64} : !llvm.ptr

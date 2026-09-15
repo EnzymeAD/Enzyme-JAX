@@ -1138,6 +1138,11 @@ def CompareOpCanonPatterns : EnzymeHLOPatternOp<
   let patterns = ["CompareOpCanon"];
 }
 
+def CompareBoolConstPatterns : EnzymeHLOPatternOp<
+    "compare_bool_const"> {
+  let patterns = ["CompareBoolConst"];
+}
+
 def CompareExtPatterns : EnzymeHLOPatternOp<
     "compare_ext"> {
   let patterns = ["CompareExt"];
@@ -1804,6 +1809,16 @@ def CommonCompareExpressionRewritePatterns : EnzymeHLOPatternOp<
 def ApplyScatterUpdateComputationConstPropPatterns : EnzymeHLOPatternOp<
     "scatter_update_computation_const_prop"> {
   let patterns = ["ScatterUpdateComputationConstProp"];
+}
+
+def ApplyScatterMaskedIndexSlicePatterns : EnzymeHLOPatternOp<
+    "scatter_masked_index_slice"> {
+  let patterns = ["ScatterMaskedIndexSlice"];
+}
+
+def ApplyScatterMaskedIndexSimplifyPatterns : EnzymeHLOPatternOp<
+    "scatter_masked_index_simplify"> {
+  let patterns = ["ScatterMaskedIndexSimplify"];
 }
 
 def ApplyScatterIndicesAreUniquePatterns : EnzymeHLOPatternOp<

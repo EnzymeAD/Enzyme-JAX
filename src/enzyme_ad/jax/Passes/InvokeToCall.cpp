@@ -90,8 +90,10 @@ struct InvokeToCallPass
         if (auto attrs = invoke.getResAttrsAttr())
           call.setResAttrsAttr(attrs);
         rewriter.replaceAllUsesWith(invoke.getResults(), call.getResults());
-        rewriter.replaceOpWithNewOp<LLVM::BrOp>(
-            invoke, invoke.getNormalDestOperands(), invoke.getNormalDest());
+        LLVM::BrOp::create(rewriter, invoke->getLoc(),
+                           invoke.getNormalDestOperands(),
+                           invoke.getNormalDest());
+        rewriter.eraseOp(invoke);
       }
       (void)eraseUnreachableBlocks(rewriter, fn->getRegions());
     }

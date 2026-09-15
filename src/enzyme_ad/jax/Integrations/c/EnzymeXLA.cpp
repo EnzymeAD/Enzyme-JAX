@@ -364,6 +364,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
                                    int64_t maxConstThreshold,
                                    int64_t whileUnrollThreshold) {
   list.push_back("compare_op_canon<16>");
+  list.push_back("compare_bool_const<16>");
+  list.push_back("compare_ext<16>");
   list.push_back("transpose_transpose<16>");
   list.push_back("broadcast_in_dim_op_canon<16>");
   list.push_back("convert_op_canon<16>");
@@ -684,6 +686,8 @@ static void addScatterGatherPasses(std::vector<std::string> &list,
   list.push_back("scatter_div_simplify");
   list.push_back("unary_elementwise_scatter_simplify");
   list.push_back("scatter_indices_are_unique");
+  list.push_back("scatter_masked_index_slice");
+  list.push_back("scatter_masked_index_simplify");
   list.push_back("split_complex_scatter");
   list.push_back("split_complex_gather");
   // const prop patterns
