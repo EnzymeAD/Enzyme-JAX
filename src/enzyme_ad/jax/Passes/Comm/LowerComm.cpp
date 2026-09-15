@@ -6,6 +6,7 @@
 #include "src/enzyme_ad/jax/Dialect/Comm/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Comm/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Comm/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 namespace mlir::comm {
@@ -14,9 +15,7 @@ namespace mlir::comm {
 } // namespace mlir::comm
 
 using namespace mlir;
-
-// from LowerJIT
-extern "C" int EnzymeJaXLookupSymbol(const char *name, void **symbol);
+using namespace mlir::enzyme;
 
 struct LowerCommMpiConstantOp
     : public OpConversionPattern<comm::MpiConstantOp> {
@@ -42,20 +41,14 @@ struct LowerCommMpiConstantOp
           op, "MPI constant is not a valid attribute");
     }
 
-    uint64_t value;
-    int found =
-        EnzymeJaXLookupSymbol(name.data(), reinterpret_cast<void **>(&value));
-    if (!found) {
-      return rewriter.notifyMatchFailure(op, "MPI constant `" + name +
-                                                 "` not found");
-    }
-
-    auto constant_attr = SplatElementsAttr::get(
-        RankedTensorType::get({}, rewriter.getIntegerType(64)),
-        ArrayRef(APInt(64, value)));
+    auto value = lookupSymbol(name.data());
+    if (auto err = value.takeError())
+      return rewriter.notifyMatchFailure(op, toString(std::move(err)));
 
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-        op, restype, cast<ElementsAttr>(constant_attr));
+        op, restype,
+        cast<ElementsAttr>(
+            makeAttr(restype, reinterpret_cast<int64_t>(value.get()))));
 
     return success();
   }
