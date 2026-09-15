@@ -95,3 +95,12 @@ func.func @test8(%arg0: tensor<4xf64>) -> tensor<4xf64> {
 // CHECK-NEXT:     %0 = stablehlo.logistic %arg0 {enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>]} : tensor<4xf64>
 // CHECK-NEXT:     return %0 : tensor<4xf64>
 // CHECK-NEXT: }
+
+// A bitwise op on a signed integer is NOT non-negative: not(0) == -1, so the
+// abs must stay.
+func.func @test_signed_bitwise(%arg0: tensor<4xi32>) -> tensor<4xi32> {
+    %0 = stablehlo.not %arg0 : tensor<4xi32>
+    // CHECK: stablehlo.abs
+    %1 = stablehlo.abs %0 : tensor<4xi32>
+    return %1 : tensor<4xi32>
+}
