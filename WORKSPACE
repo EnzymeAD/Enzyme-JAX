@@ -93,6 +93,15 @@ http_archive(
     url = "https://github.com/bazel-contrib/bazel_features/releases/download/v1.38.0/bazel_features-v1.38.0.tar.gz",
 )
 
+http_archive(
+    name = "bazel_features_1_47",
+    # 1.47.1 is the floor required by rules_cc_autoconf (used by rules_foreign_cc
+    # 0.16.0's pkgconf toolchain); matches rules_foreign_cc's own pin.
+    sha256 = "6a727a78c0134b1b912c97c0937e1c956f35775934ae3e1f4af4156f8d5d1ff4",
+    strip_prefix = "bazel_features-1.47.1",
+    url = "https://github.com/bazel-contrib/bazel_features/releases/download/v1.47.1/bazel_features-v1.47.1.tar.gz",
+)
+
 load("@bazel_features//:deps.bzl", "bazel_features_deps")
 
 bazel_features_deps()
@@ -191,6 +200,30 @@ llvm_configure(
 load("@xla//:workspace1.bzl", "xla_workspace1")
 
 xla_workspace1()
+
+# rules_foreign_cc must be declared before xla_workspace0(): that calls
+# com_google_benchmark's benchmark_deps(), which declares rules_foreign_cc
+# 0.7.1 if "rules_foreign_cc" is not yet in native.existing_rules(), and the
+# first WORKSPACE declaration of a repository name wins over any later ones.
+# z3 (//third_party/z3) is the only consumer of @rules_foreign_cc in this
+# workspace. The repo_mapping is required because @bazel_lib here is
+# bazel-skylib (needed by rules_multitool), while rules_foreign_cc 0.16.0
+# loads bazel-lib 3.x symbols (e.g. lib:resource_sets.bzl's resource_set_for,
+# absent from the aspect_bazel_lib 2.8.1 used elsewhere in this WORKSPACE).
+http_archive(
+    name = "bazel_lib_3_2_0",
+    sha256 = "e733937de2f542436c5d3d618e22c638489b40dfd251284050357babe71103d7",
+    strip_prefix = "bazel-lib-3.2.0",
+    url = "https://github.com/bazel-contrib/bazel-lib/releases/download/v3.2.0/bazel-lib-v3.2.0.tar.gz",
+)
+
+http_archive(
+    name = "rules_foreign_cc",
+    repo_mapping = {"@bazel_lib": "@bazel_lib_3_2_0", "@bazel_features" : "@bazel_features_1_47"},
+    sha256 = "327b3fcacde97b9665424db2b6c37e6f8da59ecc783dc5b8683c69396f820a12",
+    strip_prefix = "rules_foreign_cc-0.16.0",
+    url = "https://github.com/bazel-contrib/rules_foreign_cc/releases/download/0.16.0/rules_foreign_cc-0.16.0.tar.gz",
+)
 
 load("@xla//:workspace0.bzl", "xla_workspace0")
 
@@ -367,16 +400,12 @@ hedron_compile_commands_setup_transitive_transitive()
 
 hedron_compile_commands_setup_transitive_transitive_transitive()
 
-http_archive(
-    name = "rules_foreign_cc",
-    sha256 = "327b3fcacde97b9665424db2b6c37e6f8da59ecc783dc5b8683c69396f820a12",
-    strip_prefix = "rules_foreign_cc-0.16.0",
-    url = "https://github.com/bazel-contrib/rules_foreign_cc/releases/download/0.16.0/rules_foreign_cc-0.16.0.tar.gz",
-)
-
 load("@rules_foreign_cc//foreign_cc:repositories.bzl", "rules_foreign_cc_dependencies")
 
-rules_foreign_cc_dependencies()
+# Use the prebuilt cmake/ninja toolchains only: the source-built toolchains
+# (pkgconf/m4/make via rules_cc_autoconf) require
+# --incompatible_enable_cc_toolchain_resolution, which this build disables.
+rules_foreign_cc_dependencies(register_built_tools = False)
 
 http_archive(
     name = "z3",
