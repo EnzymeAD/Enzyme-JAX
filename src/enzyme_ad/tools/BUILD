@@ -11,8 +11,8 @@ package(
 )
 
 cc_binary(
-    name = "differential_fuzzer",
-    srcs = ["differential_fuzzer.cc"],
+    name = "enzymexlamlir-fuzz",
+    srcs = ["enzymexlamlir-fuzz.cpp"],
     deps = [
         "//src/enzyme_ad/jax:TransformOps",
         "//src/enzyme_ad/jax:XLADerivatives",
