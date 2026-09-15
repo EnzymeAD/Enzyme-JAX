@@ -32,6 +32,10 @@ void ApplyNoNanCompareSimplify::populatePatterns(RewritePatternSet &patterns) {
   addNoNanCompareSimplify(patterns, getParameter(), *getContext(),
                           PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyCompareAbs::populatePatterns(RewritePatternSet &patterns) {
+  addCompareAbs(patterns, getParameter(), *getContext(),
+                PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyNoNanSelfSubSimplify::populatePatterns(RewritePatternSet &patterns) {
   addNoNanSelfSubSimplify(patterns, getParameter(), *getContext(),
                           PatternBenefit(getBenefit().value_or(1)));
