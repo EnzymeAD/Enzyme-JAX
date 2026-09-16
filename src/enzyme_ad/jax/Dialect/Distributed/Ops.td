@@ -67,14 +67,20 @@ def ReplicationAxisOp : DistributedOp<"ReplicationAxis", [
 }
 
 def DeviceLocalAxisOp : DistributedOp<"DeviceLocalAxis", [
-  PureDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>
+  DeclarativeDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>
 ]> {
   let description = [{Declares a new device-local axis, marking that part of
                       the parallelism should be placed entirely within a
-                          local device instead of being sharded across the mesh.}];
+                          local device instead of being sharded across the mesh.
+                      Deliberately opts out of Pure (see DeclarativeMetadataTrait,
+                      and LogicalMeshAxesOp's identical choice): we want to be
+                      able to carry tensor / operator axis provenance through them,
+                      so they must never be CSE'd together --
+                      identity is the SSA value itself, not its extent.}];
   let arguments = (ins I32Attr : $extent);
   let results = (outs DeviceLocalAxisType : $axis);
   let assemblyFormat = "$extent attr-dict `:` type($axis)";
+  let hasCanonicalizer = 1;
 }
 
 def DistributedFunctionOp : DistributedOp<"DistributedFunction", [

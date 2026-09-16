@@ -66,11 +66,22 @@ bool ReplicationAxisType::disjoint(Value ax1, Value ax2) const {
   return true;
 }
 
+// Identity, not extent: two DeviceLocalAxis declarations with the same extent
+// are NOT the same axis (mirrors LogicalMeshAxisType::equivalent -- see that
+// type's comment, and DeviceLocalAxisOp's own doc comment for why this
+// matters: an extent-only check can't tell "the same serialized chunk reused"
+// apart from "two unrelated chunks that happen to have the same size").
 bool DeviceLocalAxisType::equivalent(Value ax1, Value ax2) const {
-  // Also equivalent if they have the same extent
-  int n1 = cast<DeviceLocalAxisType>(ax1.getType()).getExtent();
-  int n2 = cast<DeviceLocalAxisType>(ax2.getType()).getExtent();
-  return n1 == n2;
+  auto result1 = dyn_cast<OpResult>(ax1);
+  auto result2 = dyn_cast<OpResult>(ax2);
+  if (!result1 || !result2) {
+    assert(result1 && result2 &&
+           "DeviceLocalAxisType::equivalent requires both axes to be "
+           "OpResults");
+    return false;
+  }
+  return result1.getOwner() == result2.getOwner() &&
+         result1.getResultNumber() == result2.getResultNumber();
 }
 
 // Also always disjoint: no collision for serializing everything
