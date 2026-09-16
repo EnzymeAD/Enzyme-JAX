@@ -826,7 +826,6 @@ int main(int argc, char **argv) {
   funcPM.addPass(mlir::enzyme::createEnzymeBatchToStableHLOPass());
   funcPM.addPass(mlir::enzyme::createLowerEnzymeXLALinalgPass());
   funcPM.addPass(mlir::enzyme::createLowerEnzymeJacobianStableHLO());
-  funcPM.addPass(mlir::enzyme::createLowerEnzymeXLAMPIPass());
   funcPM.addPass(mlir::enzyme::createLowerEnzymeXLAMLPass());
 
   auto BaseConstraints = parseRestrictInput(restrictInput);
