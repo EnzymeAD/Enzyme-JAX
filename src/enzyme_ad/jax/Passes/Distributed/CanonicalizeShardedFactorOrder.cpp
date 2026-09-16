@@ -59,32 +59,36 @@
  *    dimension's dim_partitioning_axes slot-index list so
  *    Sharded-classified slots precede Local-classified ones -- with no
  *    tensor type change and no new stablehlo op.
- * 2. DistributedCastGlobalToLocalOp/CastLocalToGlobalOp get the same kind
- *    of pure-metadata reorder on their local-side partitioning_axes: they
- *    start declaring canonical (G-relative) order in place of the original
- *    (g-relative) order. Free for the same "same materialization" reason
- *    above, with one extra bit of leverage: a cast is this project's own
- *    dialect op, and nothing in this codebase lowers it to real HLO yet --
- *    so whatever eventually does is free to implement the (possibly
- *    strided) access pattern G's declared order calls for, at zero marginal
- *    cost beyond the extraction the cast always had to perform anyway.
- *    No reconciling collective is needed to bridge this relabeling back to
- *    the original (g/g') view: DistributedCollectiveOp's own verifier and
- *    HLO lowering compare input/output axis sets, never a per-dimension
- *    declared order (see CollectiveOps.cpp's verify() and
- *    DistributedToHlo.cpp), so a collective on either side of a reordered
- *    cast is already invariant to the reorder. The one real constraint this
- *    leaves is that every collective still needs a cast bookending each of
+ * 2. DistributedCastGlobalToLocalOp/CastLocalToGlobalOp, and
+ *    AnchorPartitioningOp, all get the same kind of pure-metadata reorder on
+ *    their partitioning_axes: they start declaring canonical (G-relative)
+ *    order in place of the original (g-relative) order. Free for the same
+ *    "same materialization" reason above, with one extra bit of leverage: a
+ *    cast is this project's own dialect op, and nothing in this codebase
+ *    lowers it to real HLO yet -- so whatever eventually does is free to
+ *    implement the (possibly strided) access pattern G's declared order
+ *    calls for, at zero marginal cost beyond the extraction the cast always
+ *    had to perform anyway. No reconciling collective is needed to bridge
+ *    this relabeling back to the original (g/g') view:
+ *    DistributedCollectiveOp's own verifier and HLO lowering compare
+ *    input/output axis sets, never a per-dimension declared order (see
+ *    CollectiveOps.cpp's verify() and DistributedToHlo.cpp), so a collective
+ *    on either side of a reordered cast is already invariant to the reorder.
+ *    The one real constraint this leaves is that every collective still
+ *    needs a cast bookending each of
  *    its sides -- that's InlineDeviceLocalAxesPass's only anchor for a
  *    tensor dimension's DeviceLocal growth (see its own top-of-file
  *    comment). MaterializeDistributedCollectives.cpp guarantees that by
  *    construction: whenever one collective would otherwise feed another
  *    directly (its await result chained straight into the next collective's
  *    input_object), it inserts an intermediary local/global/local cast pair
- *    using identical partitioning axes on both casts, which
- *    DistributedCastGlobalToLocalOp/CastLocalToGlobalOp's own
- *    canonicalization pattern folds back away once nothing downstream still
- *    needs the anchor.
+ *    using identical partitioning axes on both casts. That pair collapses to
+ *    a single AnchorPartitioningOp via DistributedCastGlobalToLocalOp/
+ *    CastLocalToGlobalOp's own canonicalization pattern once nothing
+ *    downstream still needs the round trip -- which is exactly why
+ *    AnchorPartitioningOp needs this same reordering: it's what the anchor
+ *    this paragraph describes actually looks like by the time this pass
+ *    walks the module.
  * 3. A reshape (or any op whose Shardy sharding rule maps one dimension to
  *    more than one factor) strictly INSIDE a kernel
  *    body is the one real exception: relabeling isn't enough, because a
@@ -662,7 +666,7 @@ canonicalizeShardingMetadata(DistributedKernelOp kernelOp,
   return IndexedTensorShardingPerValueAttr::get(ctx, newShardings);
 }
 
-// case (2) above: canonicalizes a cast op's own `partitioning_axes` --
+// case (2) above: canonicalizes a cast-shaped op's own `partitioning_axes` --
 // unlike a DistributedKernelOp's, this is one FactorGroupType operand
 // *directly* per tensor dimension (no shared slot pool, no integer-index
 // indirection), so a non-canonical dimension is fixed by building one new
@@ -673,7 +677,11 @@ canonicalizeShardingMetadata(DistributedKernelOp kernelOp,
 // "same materialization" reason in this file's top-level comment; bridging
 // this declaration back to whatever the cast's other end still expects (g or
 // g') is a separate, real op (a bookending DistributedCollectiveOp), not
-// built here.
+// built here. Templated rather than typed to DistributedCastGlobalToLocalOp/
+// CastLocalToGlobalOp because AnchorPartitioningOp has the identical
+// `partitioning_axes` shape and needs exactly this same fix (see this file's
+// top-level comment, case (2)) -- all three implement
+// PartitioningAnchorOpInterface for the same reason.
 template <typename CastOpTy>
 static bool canonicalizeCastPartitioningAxes(CastOpTy castOp) {
   bool sawUnsupported = false;
@@ -1111,6 +1119,17 @@ struct CanonicalizeShardedFactorOrderPass
           }
           if (auto l2g = dyn_cast<DistributedCastLocalToGlobalOp>(op)) {
             if (canonicalizeCastPartitioningAxes(l2g)) {
+              sawUnsupported = true;
+            }
+            return;
+          }
+          if (auto anchor = dyn_cast<AnchorPartitioningOp>(op)) {
+            // Same case (2) treatment: AnchorPartitioningOp's partitioning_axes
+            // has the exact same one-FactorGroup-operand-per-dimension shape as
+            // the two real casts (it implements PartitioningAnchorOpInterface
+            // alongside them), so the identical pure-metadata reorder applies
+            // -- it never changes AllTypesMatch's input/output type either way.
+            if (canonicalizeCastPartitioningAxes(anchor)) {
               sawUnsupported = true;
             }
             return;

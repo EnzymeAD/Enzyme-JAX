@@ -38,15 +38,19 @@ module {
 
 // -----
 
-// Roundtrip distributed.DistributedKernel custom assembly.
+// Roundtrip distributed.DistributedKernel custom assembly. The kernel's own
+// (external, LOCAL) operand/result are already divided by the declared
+// extent (global 8 / extent 2 = local 4) -- DistributedKernelOp::verify()
+// requires this; only the region's own block argument is at the GLOBAL (8)
+// shape.
 module {
   %axis = axis.getaxis tensor<8xf32> 0
   %factor = axis.factor %axis : !axis.shape_axis<tensor<8xf32>, 0> <2, 4>
   %ctx = axis.product (%factor : !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 2, 4>)
-  %input = tensor.empty() : tensor<8xf32>
+  %input = tensor.empty() : tensor<4xf32>
 
-  %result = distributed.DistributedKernel (%input : tensor<8xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
-    -> (tensor<8xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+  %result = distributed.DistributedKernel (%input : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+    -> (tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
     axes (%ctx : !axis.factor_group<2>) {
   ^bb0(%arg0: tensor<8xf32>):
     distributed.DistributedYield (%arg0 : tensor<8xf32>)
@@ -54,8 +58,8 @@ module {
 }
 
 // CHECK-LABEL: module {
-// CHECK: %{{.*}} = distributed.DistributedKernel (%{{.*}} : tensor<8xf32>) <[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: -> (tensor<8xf32>) <[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>
+// CHECK: %{{.*}} = distributed.DistributedKernel (%{{.*}} : tensor<4xf32>) <[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: -> (tensor<4xf32>) <[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>
 // CHECK-NEXT: axes (%{{.*}} : !axis.factor_group<2>) {
 // CHECK: distributed.DistributedYield (%{{.*}} : tensor<8xf32>)
 
@@ -233,10 +237,10 @@ module {
   %l = distributed.LogicalMeshAxes 4 : !distributed.logical_mesh_axis<4>
   %lf = axis.factor %l : !distributed.logical_mesh_axis<4><4, 1>
   %g = axis.product (%lf : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 4, 1>)
-  %input = tensor.empty() : tensor<4xf32>
+  %input = tensor.empty() : tensor<1xf32>
 
-  %r = distributed.DistributedKernel (%input : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
-    -> (tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+  %r = distributed.DistributedKernel (%input : tensor<1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+    -> (tensor<1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
     axes (%g : !axis.factor_group<4>) {
   ^bb0(%arg0: tensor<4xf32>):
     %m = distributed.ManualComputation (%arg0 : tensor<4xf32>) <[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
@@ -249,8 +253,8 @@ module {
   }
 }
 
-// CHECK: %{{.*}} = distributed.DistributedKernel (%{{.*}} : tensor<4xf32>) <[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: -> (tensor<4xf32>) <[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>
+// CHECK: %{{.*}} = distributed.DistributedKernel (%{{.*}} : tensor<1xf32>) <[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: -> (tensor<1xf32>) <[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>
 // CHECK-NEXT: axes (%{{.*}} : !axis.factor_group<4>) {
 // CHECK-NEXT: ^bb0(%[[KARG:.*]]: tensor<4xf32>):
 // CHECK-NEXT: %{{.*}} = distributed.ManualComputation (%[[KARG]] : tensor<4xf32>) <[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>
@@ -259,4 +263,21 @@ module {
 // CHECK-NEXT: ^bb0(%[[MARG:.*]]: tensor<1xf32>):
 // CHECK-NEXT: distributed.DistributedYield (%[[MARG]] : tensor<1xf32>)
 // CHECK: distributed.DistributedYield (%{{.*}} : tensor<4xf32>)
+
+// -----
+
+// Roundtrip distributed.AnchorPartitioning: input and output are always the
+// identical type (AllTypesMatch) -- unlike the two real Cast ops, there is no
+// `-> type($output)` to print since it's inferred from $input.
+module {
+  %l = distributed.LogicalMeshAxes 4 : !distributed.logical_mesh_axis<4>
+  %lf = axis.factor %l : !distributed.logical_mesh_axis<4><4, 1>
+  %g = axis.product (%lf : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 4, 1>)
+  %input = tensor.empty() : tensor<4xf32>
+  %out = distributed.AnchorPartitioning %input axes (%g : !axis.factor_group<4>) : tensor<4xf32>
+}
+
+// CHECK: %[[G:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 4, 1>)
+// CHECK: %[[IN:.*]] = tensor.empty() : tensor<4xf32>
+// CHECK: distributed.AnchorPartitioning %[[IN]] axes (%[[G]] : !axis.factor_group<4>) : tensor<4xf32>
 

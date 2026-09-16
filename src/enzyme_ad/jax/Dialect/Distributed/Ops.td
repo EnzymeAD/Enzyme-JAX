@@ -109,7 +109,10 @@ def DistributedFunctionOp : DistributedOp<"DistributedFunction", [
   let hasVerifier = 1;
 }
 
-def DistributedKernelOp : DistributedOp<"DistributedKernel", [SingleBlock, AttrSizedOperandSegments]> {
+def DistributedKernelOp : DistributedOp<"DistributedKernel", [
+  SingleBlock, AttrSizedOperandSegments,
+  DeclareOpInterfaceMethods<PartitioningAnchorOpInterface>
+]> {
   let description = [{Contains a computation subgraph that will never internally
     create collectives no matter how the partitioning axes are chosen. The results
     may require a reduction after, as indicated by the unreduced axes on the
@@ -118,7 +121,18 @@ def DistributedKernelOp : DistributedOp<"DistributedKernel", [SingleBlock, AttrS
     unique axis list. The cluster-distributed-kernels pass establishes this
     invariant by assigning one index to each logical AxisSymbol. Operations in the
     body carry distributed.argument_shardings and distributed.output_shardings
-    attributes with the same index space.}];
+    attributes with the same index space.
+
+    Scope: $arguments/$returns (this op's own operand/result lists) are at
+    LOCAL (per-device shard) scope, while the region's own block arguments
+    and yielded values are at GLOBAL (full-tensor) scope -- this op is
+    itself the local/global boundary, matching PartitioningAnchorOpInterface's
+    role elsewhere in this dialect. The two are not required to be identical
+    in type; verify() checks the real relationship between them (a
+    corresponding operand/block-arg or result/yield pair's shapes must
+    differ by exactly the product of that dimension's currently-declared
+    partitioning-axis factor extents, per argument_shardings/output_shardings)
+    instead.}];
   let arguments = (ins Variadic<AnyType> : $arguments,
                    Variadic<FactorGroupType> : $partitioning_axes,
                    IndexedTensorShardingPerValueAttr : $argument_shardings,
@@ -155,12 +169,33 @@ def DistributedAwait
   let hasVerifier = 1;
 }
 
+// Rule of thumb established across this dialect for how two ops/edges at
+// possibly-different local/global scope should communicate that fact:
+//  1. If an op already implements PartitioningAnchorOpInterface (owns a
+//     partitioning_axes-indexable operand/result list -- DistributedKernelOp,
+//     a Cast op, AnchorPartitioningOp), read/attach the binding there
+//     directly. Never introduce a second, separately-attached copy.
+//  2. If a real shape change is genuinely needed between two scopes, use
+//     CastGlobalToLocal/CastLocalToGlobal.
+//  3. If two ops/edges meet at the same scope/shape with no owning op to
+//     hang a binding on, use AnchorPartitioning.
 def DistributedCastGlobalToLocalOp : DistributedOp<
-    "CastGlobalToLocal", [DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
-  let description = [{Reinterprets one global tensor as its local shard. The
+    "CastGlobalToLocal", [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface>,
+                          DeclareOpInterfaceMethods<PartitioningAnchorOpInterface>]> {
+  let description = [{Reinterprets one global tensor as its local shard:
+    $input is at GLOBAL scope, $output is at LOCAL scope. The
     partitioning_axes operands are positional: operand i is the factor group
     partitioning tensor dimension i. The result type is inferred by dividing
-    each static input dimension by the corresponding factor-group extent.}];
+    each static input dimension by the corresponding factor-group extent.
+
+    Pure: safe because CSE only ever merges instances with literally
+    identical operands (same input value, same partitioning_axes values in
+    the same order), and axis propagation guarantees any two such instances
+    always require the identical growth decision -- so in-place mutation of
+    a result type by InlineDeviceLocalAxesPass (inlining a DeviceLocalAxis
+    factor: grow this dimension, drop that factor from partitioning_axes --
+    see that pass's own comment) never creates two structurally-identical
+    instances with diverging meaning.}];
   let arguments = (ins
     AnyTensor:$input,
     Variadic<FactorGroupType>:$partitioning_axes
@@ -173,12 +208,16 @@ def DistributedCastGlobalToLocalOp : DistributedOp<
 }
 
 def DistributedCastLocalToGlobalOp : DistributedOp<
-    "CastLocalToGlobal", [DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
-  let description = [{Reinterprets one local tensor shard as its global tensor.
-    The partitioning_axes operands are positional: operand i is the factor
+    "CastLocalToGlobal", [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface>,
+                          DeclareOpInterfaceMethods<PartitioningAnchorOpInterface>]> {
+  let description = [{Reinterprets one local tensor shard as its global
+    tensor: $input is at LOCAL scope, $output is at GLOBAL scope. The
+    partitioning_axes operands are positional: operand i is the factor
     group partitioning tensor dimension i. The result type is inferred by
     multiplying each static input dimension by the corresponding factor-group
-    extent.}];
+    extent.
+
+    Pure: see DistributedCastGlobalToLocalOp's identical note.}];
   let arguments = (ins
     AnyTensor:$input,
     Variadic<FactorGroupType>:$partitioning_axes
@@ -186,6 +225,50 @@ def DistributedCastLocalToGlobalOp : DistributedOp<
   let results = (outs AnyTensor:$output);
   let assemblyFormat =
       "$input `axes` custom<VariadicWithTypes>($partitioning_axes, type($partitioning_axes)) attr-dict `:` type($input) `->` type($output)";
+  let hasVerifier = 1;
+  let hasCanonicalizer = 1;
+}
+
+def AnchorPartitioningOp : DistributedOp<
+    "AnchorPartitioning", [Pure, AllTypesMatch<["input", "output"]>,
+                           DeclareOpInterfaceMethods<PartitioningAnchorOpInterface>]> {
+  let description = [{Re-anchors a value's partitioning binding onto a new
+    SSA edge with no shape change: $input and $output are always the SAME
+    type (structurally enforced -- AllTypesMatch). This op does not itself
+    distinguish local from global scope -- both sides are the identical
+    scope; which scope that is comes from context (this value's own
+    producer/consumers), not from this op. partitioning_axes here is pure
+    metadata (which mesh/DeviceLocal factors this value's own dimensions
+    would divide by if its never-materialized other-scope counterpart were
+    ever needed) -- it never drives this op's own type the way it drives a
+    Cast op's.
+
+    Because $input/$output must always match, this op cannot grow itself
+    unilaterally the way a Cast op grows its own result in place: growing
+    one side without the other would violate AllTypesMatch, and growing
+    $input directly isn't this op's call to make (it doesn't own that
+    value). Growth here is always propagated: whatever pass grows $input's
+    own defining op forward-propagates that change onto any
+    AnchorPartitioningOp directly consuming it (setting its result type to
+    match and dropping the same factor from its own partitioning_axes) --
+    the same style of propagation InlineDeviceLocalAxes.cpp's
+    applyCollectiveOutputType already does for DistributedAwait uses of a
+    grown collective, extended to also cover this op.
+
+    Exists for edges where two ops meet at the same local/global scope but
+    neither one already implements PartitioningAnchorOpInterface to hang the
+    binding on directly (a chained distributed.Collective's reused await
+    result, feeding another collective's input_object with no real scope
+    change in between, is the motivating case). Never introduce one where
+    the producer or consumer already self-describes via
+    PartitioningAnchorOpInterface -- read the binding from there instead.}];
+  let arguments = (ins
+    AnyTensor:$input,
+    Variadic<FactorGroupType>:$partitioning_axes
+  );
+  let results = (outs AnyTensor:$output);
+  let assemblyFormat =
+      "$input `axes` custom<VariadicWithTypes>($partitioning_axes, type($partitioning_axes)) attr-dict `:` type($input)";
   let hasVerifier = 1;
   let hasCanonicalizer = 1;
 }

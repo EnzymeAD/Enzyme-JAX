@@ -22,7 +22,8 @@ static FailureOr<int64_t> getValueDimensionCount(Type valueType) {
 }
 
 template <typename RangeT>
-static FailureOr<SmallVector<int64_t>> computeDimensionCounts(RangeT valueTypes) {
+static FailureOr<SmallVector<int64_t>>
+computeDimensionCounts(RangeT valueTypes) {
   SmallVector<int64_t> dimCounts;
   dimCounts.reserve(llvm::size(valueTypes));
   for (Type valueType : valueTypes) {
@@ -41,21 +42,22 @@ static LogicalResult verifyIndexedShardingPerValueAgainstDimensionRanges(
     DimCountRangeT dimCounts, StringRef ownerName,
     int64_t partitioningAxisCount) {
   if (shardings.getShardings().size() != llvm::size(dimCounts)) {
-    return op->emitOpError() << "requires " << ownerName
-                             << " size to match value count ("
-                             << shardings.getShardings().size() << " != "
-                             << llvm::size(dimCounts) << ")";
+    return op->emitOpError()
+           << "requires " << ownerName << " size to match value count ("
+           << shardings.getShardings().size() << " != " << llvm::size(dimCounts)
+           << ")";
   }
 
-  for (auto [valueIndex, sharding] : llvm::enumerate(shardings.getShardings())) {
+  for (auto [valueIndex, sharding] :
+       llvm::enumerate(shardings.getShardings())) {
     int64_t expectedDimCount = dimCounts[valueIndex];
     if (sharding.getDimPartitioningAxes().size() !=
         static_cast<size_t>(expectedDimCount)) {
       return op->emitOpError()
              << "requires " << ownerName << "[" << valueIndex
              << "] dim_partitioning_axes size to match value dimension count ("
-             << sharding.getDimPartitioningAxes().size() << " != "
-             << expectedDimCount << ")";
+             << sharding.getDimPartitioningAxes().size()
+             << " != " << expectedDimCount << ")";
     }
 
     for (auto [dimIndex, dimPartitionAxes] :
@@ -72,8 +74,8 @@ static LogicalResult verifyIndexedShardingPerValueAgainstDimensionRanges(
           return op->emitOpError()
                  << "requires " << ownerName << "[" << valueIndex
                  << "] dim_partitioning_axes[" << dimIndex << "] index "
-                 << axisIndex << " to be in range [0, "
-                 << partitioningAxisCount << ")";
+                 << axisIndex << " to be in range [0, " << partitioningAxisCount
+                 << ")";
         }
       }
     }
@@ -96,7 +98,8 @@ static LogicalResult verifyIndexedShardingPerValueAgainstDimensionRanges(
 static LogicalResult verifyIndexedShardingPerValueHasNoUnreducedAxes(
     Operation *op, IndexedTensorShardingPerValueAttr shardings,
     StringRef ownerName) {
-  for (auto [valueIndex, sharding] : llvm::enumerate(shardings.getShardings())) {
+  for (auto [valueIndex, sharding] :
+       llvm::enumerate(shardings.getShardings())) {
     if (!sharding.getUnreducedAxes().empty()) {
       return op->emitOpError() << "requires " << ownerName << "[" << valueIndex
                                << "] to have no unreduced axes";
@@ -105,10 +108,11 @@ static LogicalResult verifyIndexedShardingPerValueHasNoUnreducedAxes(
   return success();
 }
 
-static LogicalResult inferTensorViewCastResultType(
-    MLIRContext *context, std::optional<Location> location, Value input,
-    ValueRange partitioningAxes, bool globalToLocal,
-    SmallVectorImpl<Type> &inferredReturnTypes) {
+static LogicalResult
+inferTensorViewCastResultType(MLIRContext *context,
+                              std::optional<Location> location, Value input,
+                              ValueRange partitioningAxes, bool globalToLocal,
+                              SmallVectorImpl<Type> &inferredReturnTypes) {
   auto inputType = dyn_cast<RankedTensorType>(input.getType());
   if (!inputType || !inputType.hasStaticShape()) {
     if (location) {
@@ -195,17 +199,19 @@ static LogicalResult verifyTensorViewCast(CastOp castOp, bool globalToLocal) {
 // CanonicalizeShardedFactorOrderPass's top-of-file "same materialization"
 // invariant), so reinterpreting a value one way and immediately back the
 // other -- declaring the identical factor decomposition each time --
-// reproduces the original value exactly; nothing about the round trip needs
-// to survive. Requires literal operand equality (not just axis-set
-// equivalence) so this never has to reason about factor-order equivalence
-// itself; a mismatched pair (e.g. one leg canonically reordered by
-// CanonicalizeShardedFactorOrderPass) is deliberately left alone.
+// reproduces the same materialization exactly. Folds to an
+// AnchorPartitioningOp rather than bypassing straight to the original
+// value: the binding still needs to be discoverable at this exact edge.
+// Requires literal operand equality (not just axis-set equivalence) so this
+// never has to reason about factor-order equivalence itself; a mismatched pair
+// (e.g. one leg canonically reordered by CanonicalizeShardedFactorOrderPass) is
+// deliberately left alone.
 template <typename ThisOp, typename OppositeOp>
 struct FoldCastRoundTrip : public OpRewritePattern<ThisOp> {
   using OpRewritePattern<ThisOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(ThisOp castOp,
-                                 PatternRewriter &rewriter) const override {
+                                PatternRewriter &rewriter) const override {
     auto producer = castOp.getInput().template getDefiningOp<OppositeOp>();
     if (!producer) {
       return failure();
@@ -214,10 +220,165 @@ struct FoldCastRoundTrip : public OpRewritePattern<ThisOp> {
                      castOp.getPartitioningAxes())) {
       return failure();
     }
-    rewriter.replaceOp(castOp, producer.getInput());
+    rewriter.replaceOpWithNewOp<AnchorPartitioningOp>(
+        castOp, producer.getInput(), producer.getPartitioningAxes());
     return success();
   }
 };
+
+// Folds an AnchorPartitioningOp whose own input is already produced by any
+// PartitioningAnchorOpInterface op declaring the exact same
+// partitioning_axes for its result -- the anchor is then purely redundant
+// (the identical binding is already discoverable directly at its own
+// input), so replace it with that input value itself. Only handles the case
+// where every dimension of the producer's own binding resolves to exactly
+// one value (true for every current implementer except a composite
+// DistributedKernelOp slot, which this deliberately leaves alone rather
+// than reasoning about multi-value-per-dimension equivalence).
+struct FoldRedundantAnchor : public OpRewritePattern<AnchorPartitioningOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(AnchorPartitioningOp anchorOp,
+                                PatternRewriter &rewriter) const override {
+    auto producer = dyn_cast_or_null<PartitioningAnchorOpInterface>(
+        anchorOp.getInput().getDefiningOp());
+    if (!producer) {
+      return failure();
+    }
+    auto producerResult = cast<OpResult>(anchorOp.getInput());
+    auto producerBinding = producer.getBindingInfoForResult(producerResult);
+    if (failed(producerBinding)) {
+      return failure();
+    }
+    SmallVector<Value> flatProducerAxes;
+    flatProducerAxes.reserve(producerBinding->size());
+    for (ArrayRef<Value> dimValues : *producerBinding) {
+      if (dimValues.size() != 1) {
+        return failure();
+      }
+      flatProducerAxes.push_back(dimValues.front());
+    }
+    if (!llvm::equal(flatProducerAxes, anchorOp.getPartitioningAxes())) {
+      return failure();
+    }
+    rewriter.replaceOp(anchorOp, anchorOp.getInput());
+    return success();
+  }
+};
+
+// Shared PartitioningAnchorOpInterface implementation for every op whose
+// own partitioning_axes operand is already one factor-group value per
+// tensor dimension (both Cast ops, and AnchorPartitioningOp) -- as opposed
+// to DistributedKernelOp, which addresses a possibly-composite
+// decomposition by index into a shared list instead.
+template <typename OpTy>
+static FailureOr<SmallVector<SmallVector<Value>>>
+singleValueBindingInfo(OpTy op, unsigned operandOrResultIndex) {
+  if (operandOrResultIndex != 0) {
+    return failure();
+  }
+  SmallVector<SmallVector<Value>> result;
+  result.reserve(op.getPartitioningAxes().size());
+  for (Value axis : op.getPartitioningAxes()) {
+    result.push_back({axis});
+  }
+  return result;
+}
+
+// Shared PartitioningAnchorOpInterface implementation for DistributedKernelOp:
+// resolves `shardings`[valueIndex]'s dim_partitioning_axes (lists of indices
+// into the kernel's own shared partitioning_axes) into the actual
+// FactorGroupType values at those indices, one inner list per tensor
+// dimension.
+static FailureOr<SmallVector<SmallVector<Value>>>
+kernelBindingInfo(DistributedKernelOp kernelOp,
+                  IndexedTensorShardingPerValueAttr shardings,
+                  unsigned valueIndex) {
+  ArrayRef<IndexedTensorShardingAttr> perValue = shardings.getShardings();
+  if (valueIndex >= perValue.size()) {
+    return failure();
+  }
+  ValueRange partitioningAxes = kernelOp.getPartitioningAxes();
+  SmallVector<SmallVector<Value>> result;
+  result.reserve(perValue[valueIndex].getDimPartitioningAxes().size());
+  for (DenseI64ArrayAttr dimAxes :
+       perValue[valueIndex].getDimPartitioningAxes()) {
+    SmallVector<Value> dimValues;
+    dimValues.reserve(dimAxes.size());
+    for (int64_t idx : dimAxes.asArrayRef()) {
+      if (idx < 0 || idx >= static_cast<int64_t>(partitioningAxes.size())) {
+        return failure();
+      }
+      dimValues.push_back(partitioningAxes[idx]);
+    }
+    result.push_back(std::move(dimValues));
+  }
+  return result;
+}
+
+// Checks the real relationship DistributedKernelOp::verify() requires
+// between one operand/result (`localValue`, at this op's own LOCAL scope)
+// and its corresponding block-argument/yielded-value type
+// (`globalScopeType`, at GLOBAL scope): the two must be identical wherever
+// `binding` names no factors for a dimension, and otherwise
+// globalScopeType[d] == localValue's shape[d] * (product of binding[d]'s
+// raw factor extents, EXCLUDING ReplicationAxisType provenance -- a
+// replicated axis is the same full extent on every device, so it never
+// divides the local size down from the global one, unlike a
+// DeviceLocalAxis, which does count here even though it's never physically
+// mesh-sharded). Unresolvable factor extents are skipped rather than
+// flagged (same "don't fail what we can't resolve" stance as
+// resolveCurrentSharding elsewhere in this dialect) -- this check is only
+// as strong as the axis-algebra info currently available.
+static LogicalResult
+checkLocalGlobalBinding(DistributedKernelOp kernelOp, Value localValue,
+                        Type globalScopeType,
+                        ArrayRef<SmallVector<Value>> binding, StringRef what) {
+  auto localType = dyn_cast<RankedTensorType>(localValue.getType());
+  auto globalType = dyn_cast<RankedTensorType>(globalScopeType);
+  if (!localType || !globalType) {
+    return success();
+  }
+  if (localType.getRank() != globalType.getRank() ||
+      static_cast<int64_t>(binding.size()) != localType.getRank()) {
+    return success(); // rank mismatch is caught by the existing
+                      // sharding-vs-rank checks above.
+  }
+  for (auto [dim, dimValues] : llvm::enumerate(binding)) {
+    int64_t extent = 1;
+    for (Value v : dimValues) {
+      auto factorGroup = dyn_cast<TypedValue<axis::FactorGroupType>>(v);
+      if (!factorGroup) {
+        continue;
+      }
+      auto rawFactors = axis::getProductProvenanceFactors(factorGroup);
+      if (failed(rawFactors)) {
+        continue;
+      }
+      for (auto factor : *rawFactors) {
+        auto provenance = axis::getFactorProvenanceAxis(factor);
+        if (failed(provenance) ||
+            isa<ReplicationAxisType>(provenance->getType())) {
+          continue;
+        }
+        extent *= static_cast<int64_t>(axis::getFactorExtent(factor));
+      }
+    }
+    int64_t localDim = localType.getDimSize(dim);
+    int64_t globalDim = globalType.getDimSize(dim);
+    if (extent == 1) {
+      continue; // nothing declared (or unresolvable) for this dimension -- not
+                // this check's job to require anything.
+    }
+    if (globalDim != localDim * extent) {
+      return kernelOp.emitOpError()
+             << what << " dimension " << dim << ": global-scope size ("
+             << globalDim << ") does not equal local-scope size (" << localDim
+             << ") times its declared partitioning extent (" << extent << ")";
+    }
+  }
+  return success();
+}
 
 } // namespace
 
@@ -245,8 +406,8 @@ LogicalResult DistributedFunctionOp::verify() {
     return failure();
   }
   if (failed(verifyIndexedShardingPerValueAgainstDimensionRanges(
-          getOperation(), outputShardings, *outputDimCounts,
-          "output_shardings", partitioningAxisCount))) {
+          getOperation(), outputShardings, *outputDimCounts, "output_shardings",
+          partitioningAxisCount))) {
     return failure();
   }
   if (failed(verifyIndexedShardingPerValueHasNoUnreducedAxes(
@@ -288,15 +449,65 @@ LogicalResult DistributedKernelOp::verify() {
     return failure();
   }
   if (failed(verifyIndexedShardingPerValueAgainstDimensionRanges(
-          getOperation(), outputShardings, outputDimCounts,
-          "output_shardings", partitioningAxisCount))) {
+          getOperation(), outputShardings, outputDimCounts, "output_shardings",
+          partitioningAxisCount))) {
     return failure();
   }
   if (failed(verifyIndexedShardingPerValueHasNoUnreducedAxes(
           getOperation(), argumentShardings, "argument_shardings"))) {
     return failure();
   }
+
+  // The real local(operand)<->global(block-arg) relationship -- see this
+  // op's own doc comment. Checked here, unconditionally, because it's meant
+  // to hold continuously, not just after some specific pass has run: every
+  // pass that changes a factor's classification or extent is responsible
+  // for keeping the operand/block-arg (and result/yield) pair in sync at
+  // the same time, and this is what catches it immediately if one ever
+  // doesn't.
+  auto &bodyBlock = getBody().front();
+  if (getArguments().size() == bodyBlock.getNumArguments()) {
+    for (auto [idx, arg] : llvm::enumerate(getArguments())) {
+      auto binding =
+          getBindingInfoForOperand(getOperation()->getOpOperand(idx));
+      if (failed(binding)) {
+        continue;
+      }
+      if (failed(checkLocalGlobalBinding(*this, arg,
+                                         bodyBlock.getArgument(idx).getType(),
+                                         *binding, "operand"))) {
+        return failure();
+      }
+    }
+  }
+  if (auto yieldOp = dyn_cast<DistributedYieldOp>(bodyBlock.getTerminator());
+      yieldOp && yieldOp.getReturns().size() == getResults().size()) {
+    for (auto [idx, result] : llvm::enumerate(getResults())) {
+      auto binding = getBindingInfoForResult(cast<OpResult>(result));
+      if (failed(binding)) {
+        continue;
+      }
+      if (failed(checkLocalGlobalBinding(*this, result,
+                                         yieldOp.getReturns()[idx].getType(),
+                                         *binding, "result"))) {
+        return failure();
+      }
+    }
+  }
+
   return success();
+}
+
+FailureOr<SmallVector<SmallVector<Value>>>
+DistributedKernelOp::getBindingInfoForOperand(OpOperand &operand) {
+  return kernelBindingInfo(*this, getArgumentShardings(),
+                           operand.getOperandNumber());
+}
+
+FailureOr<SmallVector<SmallVector<Value>>>
+DistributedKernelOp::getBindingInfoForResult(OpResult result) {
+  return kernelBindingInfo(*this, getOutputShardings(),
+                           result.getResultNumber());
 }
 
 LogicalResult DistributedCastGlobalToLocalOp::verify() {
@@ -308,7 +519,7 @@ LogicalResult DistributedCastGlobalToLocalOp::inferReturnTypes(
     DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
   DistributedCastGlobalToLocalOpAdaptor adaptor(operands, attributes,
-                                                 properties, regions);
+                                                properties, regions);
   return inferTensorViewCastResultType(
       context, location, adaptor.getInput(), adaptor.getPartitioningAxes(),
       /*globalToLocal=*/true, inferredReturnTypes);
@@ -320,6 +531,16 @@ void DistributedCastGlobalToLocalOp::getCanonicalizationPatterns(
                                 DistributedCastLocalToGlobalOp>>(context);
 }
 
+FailureOr<SmallVector<SmallVector<Value>>>
+DistributedCastGlobalToLocalOp::getBindingInfoForOperand(OpOperand &operand) {
+  return singleValueBindingInfo(*this, operand.getOperandNumber());
+}
+
+FailureOr<SmallVector<SmallVector<Value>>>
+DistributedCastGlobalToLocalOp::getBindingInfoForResult(OpResult result) {
+  return singleValueBindingInfo(*this, result.getResultNumber());
+}
+
 LogicalResult DistributedCastLocalToGlobalOp::verify() {
   return verifyTensorViewCast(*this, /*globalToLocal=*/false);
 }
@@ -329,7 +550,7 @@ LogicalResult DistributedCastLocalToGlobalOp::inferReturnTypes(
     DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
   DistributedCastLocalToGlobalOpAdaptor adaptor(operands, attributes,
-                                                 properties, regions);
+                                                properties, regions);
   return inferTensorViewCastResultType(
       context, location, adaptor.getInput(), adaptor.getPartitioningAxes(),
       /*globalToLocal=*/false, inferredReturnTypes);
@@ -341,14 +562,65 @@ void DistributedCastLocalToGlobalOp::getCanonicalizationPatterns(
                                 DistributedCastGlobalToLocalOp>>(context);
 }
 
+FailureOr<SmallVector<SmallVector<Value>>>
+DistributedCastLocalToGlobalOp::getBindingInfoForOperand(OpOperand &operand) {
+  return singleValueBindingInfo(*this, operand.getOperandNumber());
+}
+
+FailureOr<SmallVector<SmallVector<Value>>>
+DistributedCastLocalToGlobalOp::getBindingInfoForResult(OpResult result) {
+  return singleValueBindingInfo(*this, result.getResultNumber());
+}
+
+// AnchorPartitioningOp is a pure re-anchor: rank must match
+// partitioning_axes.size() (same structural check as the Cast ops), and
+// factor groups must be pairwise disjoint. Type equality between input and
+// output is already enforced structurally by the AllTypesMatch trait, so
+// this verifier doesn't need to (and can't meaningfully, given growth can
+// legitimately make the two diverge via forward propagation -- see this
+// op's own doc comment) check shapes itself.
+LogicalResult AnchorPartitioningOp::verify() {
+  auto inputType = dyn_cast<RankedTensorType>(getInput().getType());
+  if (!inputType) {
+    return emitOpError() << "requires a ranked tensor input";
+  }
+  if (getPartitioningAxes().size() !=
+      static_cast<size_t>(inputType.getRank())) {
+    return emitOpError() << "requires one partitioning axis per tensor "
+                         << "dimension";
+  }
+  auto partitioningAxes = axis::castTypedValueList<axis::FactorGroupType>(
+      getPartitioningAxes(), "FactorGroupType");
+  if (!axis::areFactorGroupsDisjoint(partitioningAxes)) {
+    return emitOpError()
+           << "requires partitioning-axis factor groups to be disjoint";
+  }
+  return success();
+}
+
+void AnchorPartitioningOp::getCanonicalizationPatterns(
+    RewritePatternSet &results, MLIRContext *context) {
+  results.add<FoldRedundantAnchor>(context);
+}
+
+FailureOr<SmallVector<SmallVector<Value>>>
+AnchorPartitioningOp::getBindingInfoForOperand(OpOperand &operand) {
+  return singleValueBindingInfo(*this, operand.getOperandNumber());
+}
+
+FailureOr<SmallVector<SmallVector<Value>>>
+AnchorPartitioningOp::getBindingInfoForResult(OpResult result) {
+  return singleValueBindingInfo(*this, result.getResultNumber());
+}
+
 LogicalResult DistributedManualComputationOp::verify() {
   auto kernelOp = getOperation()->getParentOfType<DistributedKernelOp>();
   if (!kernelOp) {
-    return emitOpError() << "requires an enclosing distributed.DistributedKernel";
+    return emitOpError()
+           << "requires an enclosing distributed.DistributedKernel";
   }
   ValueRange partitioningAxes = kernelOp.getPartitioningAxes();
-  int64_t partitioningAxisCount =
-      static_cast<int64_t>(partitioningAxes.size());
+  int64_t partitioningAxisCount = static_cast<int64_t>(partitioningAxes.size());
 
   // manual_axes is the caller's own choice of which slots Shardy should
   // divide down for this op's region. A DeviceLocalAxisType/ReplicationAxisType
@@ -380,7 +652,8 @@ LogicalResult DistributedManualComputationOp::verify() {
         return emitOpError() << "requires manual_axes[" << axisIndex
                              << "]'s factors to have a resolvable provenance";
       }
-      if (isa<DeviceLocalAxisType, ReplicationAxisType>(provenance->getType())) {
+      if (isa<DeviceLocalAxisType, ReplicationAxisType>(
+              provenance->getType())) {
         return emitOpError()
                << "requires manual_axes[" << axisIndex
                << "] to not be a DeviceLocalAxisType/ReplicationAxisType "
@@ -402,8 +675,8 @@ LogicalResult DistributedManualComputationOp::verify() {
           getOperation(), argumentShardings, *inputDimCounts,
           "argument_shardings", partitioningAxisCount)) ||
       failed(verifyIndexedShardingPerValueAgainstDimensionRanges(
-          getOperation(), outputShardings, *outputDimCounts,
-          "output_shardings", partitioningAxisCount))) {
+          getOperation(), outputShardings, *outputDimCounts, "output_shardings",
+          partitioningAxisCount))) {
     return failure();
   }
 
@@ -447,11 +720,11 @@ LogicalResult DistributedManualComputationOp::verify() {
   auto yieldOp = dyn_cast<DistributedYieldOp>(bodyBlock.getTerminator());
   if (!yieldOp) {
     return emitOpError() << "requires its body to be terminated by "
-                         "distributed.DistributedYield";
+                            "distributed.DistributedYield";
   }
   auto checkLocalShape = [&](Value outer, Type localType,
-                            IndexedTensorShardingAttr sharding,
-                            StringRef what) -> LogicalResult {
+                             IndexedTensorShardingAttr sharding,
+                             StringRef what) -> LogicalResult {
     auto outerType = dyn_cast<RankedTensorType>(outer.getType());
     auto localRankedType = dyn_cast<RankedTensorType>(localType);
     if (!outerType || !localRankedType) {
@@ -489,8 +762,9 @@ LogicalResult DistributedManualComputationOp::verify() {
     }
     if (localRankedType.getShape() != ArrayRef<int64_t>(expectedLocalShape)) {
       return emitOpError()
-             << what << "'s local (region) type does not match its global "
-                        "type divided by its manual axes' extents";
+             << what
+             << "'s local (region) type does not match its global "
+                "type divided by its manual axes' extents";
     }
     return success();
   };
@@ -498,13 +772,13 @@ LogicalResult DistributedManualComputationOp::verify() {
   if (getInputs().size() != bodyBlock.getNumArguments() ||
       argumentShardings.getShardings().size() != getInputs().size()) {
     return emitOpError() << "requires one region block argument and one "
-                         "argument_shardings entry per input";
+                            "argument_shardings entry per input";
   }
   for (auto [input, blockArg, sharding] :
        llvm::zip_equal(getInputs(), bodyBlock.getArguments(),
                        argumentShardings.getShardings())) {
     if (failed(checkLocalShape(input, blockArg.getType(), sharding,
-                              "an input's"))) {
+                               "an input's"))) {
       return failure();
     }
   }
@@ -512,13 +786,13 @@ LogicalResult DistributedManualComputationOp::verify() {
   if (getOutputs().size() != yieldOp.getReturns().size() ||
       outputShardings.getShardings().size() != getOutputs().size()) {
     return emitOpError() << "requires one yielded value and one "
-                         "output_shardings entry per output";
+                            "output_shardings entry per output";
   }
   for (auto [output, yielded, sharding] :
        llvm::zip_equal(getOutputs(), yieldOp.getReturns(),
                        outputShardings.getShardings())) {
     if (failed(checkLocalShape(output, yielded.getType(), sharding,
-                              "an output's"))) {
+                               "an output's"))) {
       return failure();
     }
   }

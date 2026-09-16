@@ -110,89 +110,54 @@ getPartitioningForValue(Value value, ShardyLogicalAxisAnalysis &axisAnalysis) {
   return std::nullopt;
 }
 
+// Historically this walked through a neighboring
+// builtin.unrealized_conversion_cast when direct analysis failed. That fallback
+// is gone: ShardyLogicalAxisAnalysis now dispatches directly through
+// DistributedCastGlobalToLocalOp, CastLocalToGlobalOp, and AnchorPartitioningOp
+// (their partitioning_axes are ground truth), so a value produced by any of
+// those already resolves via getPartitioningForValue itself -- no cast-shaped
+// op is opaque to the analysis anymore.
 static std::optional<TensorPartitioningAxes>
 getPartitioningForValueOrCastNeighborhood(
     Value value, ShardyLogicalAxisAnalysis &axisAnalysis) {
-  if (auto partitioning = getPartitioningForValue(value, axisAnalysis)) {
-    return partitioning;
-  }
-
-  if (auto castOp = value.getDefiningOp<UnrealizedConversionCastOp>();
-      castOp && castOp.getNumOperands() == 1 && castOp.getNumResults() == 1) {
-    if (auto partitioning =
-            getPartitioningForValue(castOp.getOperand(0), axisAnalysis)) {
-      return partitioning;
-    }
-  }
-
-  for (OpOperand &use : value.getUses()) {
-    auto castUser = dyn_cast<UnrealizedConversionCastOp>(use.getOwner());
-    if (!castUser || castUser.getNumOperands() != 1 ||
-        castUser.getNumResults() != 1) {
-      continue;
-    }
-    if (auto partitioning =
-            getPartitioningForValue(castUser.getResult(0), axisAnalysis)) {
-      return partitioning;
-    }
-  }
-
-  return std::nullopt;
+  return getPartitioningForValue(value, axisAnalysis);
 }
 
-static Value
-chooseKernelInputOperandValue(Value input,
-                              ShardyLogicalAxisAnalysis &axisAnalysis) {
-  Value current = input;
+// Determines whether `value` is already at the distributed dialect's LOCAL
+// (per-device shard) scope as opposed to GLOBAL (full-tensor) scope, by
+// walking back through scope-preserving ops. This can no longer be read off
+// a value's own tensor shape: AnchorPartitioningOp is scope-agnostic (its
+// AllTypesMatch input/output are the identical type, whichever scope that
+// happens to be), so the scope has to be established by whatever real
+// boundary sits further upstream -- a Cast op, a collective's own Await
+// (always local -- see this file's DistributedCollectiveOp/DistributedAwait
+// usage), or a DistributedKernelOp's own operand/result (always local).
+// Anything else (a plain compute op's result, a function block argument) is
+// GLOBAL by default, matching this dialect's baseline assumption that
+// ordinary tensor values are full-tensor until something explicitly shards
+// them.
+static bool isLocallyScopedValue(Value value) {
   for (int step = 0; step < 8; ++step) {
-    auto castOp = current.getDefiningOp<UnrealizedConversionCastOp>();
-    if (!castOp || castOp.getNumOperands() != 1 ||
-        castOp.getNumResults() != 1) {
-      break;
+    Operation *producer = value.getDefiningOp();
+    if (!producer) {
+      return false;
     }
-
-    Value source = castOp.getOperand(0);
-    auto currentPartitioning = getPartitioningForValue(current, axisAnalysis);
-    auto sourcePartitioning = getPartitioningForValue(source, axisAnalysis);
-
-    if (sourcePartitioning && !currentPartitioning) {
-      current = source;
+    if (isa<DistributedCastGlobalToLocalOp>(producer)) {
+      return true;
+    }
+    if (isa<DistributedCastLocalToGlobalOp>(producer)) {
+      return false;
+    }
+    if (isa<DistributedAwait, DistributedKernelOp>(producer)) {
+      return true;
+    }
+    if (auto anchor = dyn_cast<AnchorPartitioningOp>(producer)) {
+      value = anchor.getInput();
       continue;
     }
-
-    auto currentType = dyn_cast<RankedTensorType>(current.getType());
-    auto sourceType = dyn_cast<RankedTensorType>(source.getType());
-    if (!currentType || !sourceType ||
-        currentType.getRank() != sourceType.getRank()) {
-      break;
-    }
-
-    bool sourceLooksMoreLocal = false;
-    bool comparableShape = true;
-    for (int64_t dim = 0; dim < currentType.getRank(); ++dim) {
-      if (currentType.isDynamicDim(dim) || sourceType.isDynamicDim(dim)) {
-        comparableShape = false;
-        break;
-      }
-      int64_t currentSize = currentType.getDimSize(dim);
-      int64_t sourceSize = sourceType.getDimSize(dim);
-      if (sourceSize > currentSize) {
-        comparableShape = false;
-        break;
-      }
-      if (sourceSize < currentSize) {
-        sourceLooksMoreLocal = true;
-      }
-    }
-
-    if (!comparableShape || !sourceLooksMoreLocal) {
-      break;
-    }
-
-    current = source;
+    return false;
   }
-
-  return current;
+  return false;
 }
 
 static IndexedTensorShardingAttr buildDefaultShardingForType(MLIRContext *ctx,
@@ -263,6 +228,22 @@ struct ClusterDistributedKernelsPass
     auto factor = getOrCreateLogicalAxisForSymbol(symbol);
     return axis::viewFactorsAsProduct(ValueRange{factor}, *axis_builder,
                                       *axis_loc);
+  }
+
+  // Builds one positional factor group per tensor dimension for a real
+  // global/local Cast op. Each group preserves the logical-axis provenance
+  // of that dimension (mirrors MaterializeDistributedCollectives.cpp's
+  // helper of the same name).
+  SmallVector<Value> getTensorPartitioningAxisGroups(
+      llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes) {
+    SmallVector<Value> partitioningAxisGroups;
+    partitioningAxisGroups.reserve(partitioningAxes.size());
+    for (const auto &dimensionAxes : partitioningAxes) {
+      auto factors = getLogicalAxesForSymbols(dimensionAxes);
+      partitioningAxisGroups.push_back(
+          axis::viewFactorsAsProduct(factors, *axis_builder, *axis_loc));
+    }
+    return partitioningAxisGroups;
   }
 
   IndexedTensorShardingAttr buildIndexedShardingAttr(
@@ -338,8 +319,8 @@ struct ClusterDistributedKernelsPass
       // Keep communication and control/meta ops outside kernels.
       if (isa<DistributedCollectiveOp, DistributedAwait, DistributedYieldOp,
               DistributedKernelOp, UnrealizedConversionCastOp,
-              DistributedCastGlobalToLocalOp,
-              DistributedCastLocalToGlobalOp>(op)) {
+              DistributedCastGlobalToLocalOp, DistributedCastLocalToGlobalOp,
+              AnchorPartitioningOp>(op)) {
         return false;
       }
 
@@ -616,19 +597,28 @@ struct ClusterDistributedKernelsPass
           return failure();
         }
 
+        // `input` itself may already be local-scoped (e.g. it flows straight
+        // from a collective's Await, possibly through a scope-agnostic
+        // AnchorPartitioning) -- see isLocallyScopedValue's comment. In that
+        // case its own type already IS the local type; dividing it by the
+        // partitioning extent again would be wrong (and, since a fully-local
+        // value's size is already <= the divided target, silently produces
+        // degenerate near-zero dimensions). Only genuinely global values get
+        // divided down.
         Type localInputType = input.getType();
-        if (maybePartitioning) {
+        if (maybePartitioning && !isLocallyScopedValue(input)) {
           localInputType = getLocalTypeForValue(input, *maybePartitioning);
         }
 
-        Value localInputValue =
-            chooseKernelInputOperandValue(input, axisAnalysis);
+        Value localInputValue = input;
         if (localInputValue.getType() != localInputType) {
-          localInputValue =
-              builder
-                  .create<UnrealizedConversionCastOp>(
-                      insertBefore->getLoc(), localInputType, localInputValue)
-                  .getResult(0);
+          SmallVector<Value> axesOperands =
+              getTensorPartitioningAxisGroups(*maybePartitioning);
+          localInputValue = builder
+                                .create<DistributedCastGlobalToLocalOp>(
+                                    insertBefore->getLoc(), localInputType,
+                                    localInputValue, axesOperands)
+                                .getOutput();
         }
         kernelInputOperands.push_back(localInputValue);
 
@@ -781,11 +771,27 @@ struct ClusterDistributedKernelsPass
             Value valueForUse = newValue;
             if (valueForUse.getType() != expectedUseType) {
               builder.setInsertionPoint(use.getOwner());
-              valueForUse =
-                  builder
-                      .create<UnrealizedConversionCastOp>(
-                          insertBefore->getLoc(), expectedUseType, valueForUse)
-                      .getResult(0);
+              // The kernel's own result is local; the outside use still
+              // expects the pre-clustering global type. oldValue's defining
+              // op hasn't been erased yet (that happens below), so its
+              // partitioning is still resolvable here.
+              auto maybePartitioning =
+                  getPartitioningForValueOrCastNeighborhood(oldValue,
+                                                            axisAnalysis);
+              if (!maybePartitioning) {
+                insertBefore->emitError()
+                    << "missing sharding to cast kernel result back to its "
+                       "pre-clustering type "
+                    << oldValue;
+                return failure();
+              }
+              SmallVector<Value> axesOperands =
+                  getTensorPartitioningAxisGroups(*maybePartitioning);
+              valueForUse = builder
+                                .create<DistributedCastLocalToGlobalOp>(
+                                    insertBefore->getLoc(), expectedUseType,
+                                    valueForUse, axesOperands)
+                                .getOutput();
             }
             use.set(valueForUse);
           }

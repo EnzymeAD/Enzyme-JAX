@@ -651,6 +651,17 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbols() {
         continue;
       }
       symbolFactorMerge.markOverlapping(flattenNested(*mapping));
+    } else if (auto anchor = dyn_cast<AnchorPartitioningOp>(op)) {
+      // Same-scope identity marker: its partitioning_axes are ground truth
+      // for its (single, identically-typed) input/output, exactly like the
+      // two real Cast ops above.
+      auto mapping =
+          getTensorPartitionDimsForViewCast(anchor.getPartitioningAxes());
+      if (!mapping) {
+        anchor.emitError() << "failed to recover partitioning axes from anchor";
+        continue;
+      }
+      symbolFactorMerge.markOverlapping(flattenNested(*mapping));
     } else if (sdy::OpShardingRuleAttr sharding_rule =
                    getOrSynthesizeOpShardingRule(op).rule) {
       int64_t numDims = sharding_rule.getNumFactors();
@@ -736,6 +747,11 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(Operation *op, bool isLHS,
     (void)valueIdx;
     return getTensorPartitionDimsForViewCast(
         localToGlobal.getPartitioningAxes());
+  }
+  if (auto anchor = dyn_cast<AnchorPartitioningOp>(op)) {
+    (void)isLHS;
+    (void)valueIdx;
+    return getTensorPartitionDimsForViewCast(anchor.getPartitioningAxes());
   }
   if (auto reshard_op = toCollective(op)) {
     return getTensorPartitionDims(reshard_op, isLHS, valueIdx);

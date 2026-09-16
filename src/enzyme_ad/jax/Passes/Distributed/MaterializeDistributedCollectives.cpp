@@ -307,18 +307,27 @@ struct MaterializeDistributedCollectivesPass
     return conflicts;
   }
 
-  // Rewrites one operand use, inserting casts when type adaptation is required.
+  // Rewrites one operand use, always routing it through something that
+  // implements PartitioningAnchorOpInterface: a real cast when the scope
+  // genuinely changes (local collective result -> global consumer type), or
+  // an AnchorPartitioningOp when it doesn't (the types already coincide, but
+  // the edge still needs a legible anchor -- see Ops.td's rule of thumb
+  // above DistributedCastGlobalToLocalOp). Never leave a collective's bare
+  // Await result feeding a consumer directly: passes downstream (e.g.
+  // InlineDeviceLocalAxesPass's mapping-growth logic) trust every collective
+  // boundary to be anchored this way, and an un-anchored same-type edge is
+  // indistinguishable from a genuinely un-bookended chain to them.
   void rewriteUseWithValue(
       OpBuilder &builder, Location loc, OpOperand *use, Value replacement,
       llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes) {
     Type expectedUseType = use->get().getType();
     Value valueForUse = replacement;
-    if (valueForUse.getType() != expectedUseType) {
-      builder.setInsertionPoint(use->getOwner());
-      if (isa<RankedTensorType>(valueForUse.getType()) &&
-          isa<RankedTensorType>(expectedUseType)) {
-        auto partitioningAxisGroups =
-            getTensorPartitioningAxisGroups(partitioningAxes);
+    builder.setInsertionPoint(use->getOwner());
+    if (isa<RankedTensorType>(valueForUse.getType()) &&
+        isa<RankedTensorType>(expectedUseType)) {
+      auto partitioningAxisGroups =
+          getTensorPartitioningAxisGroups(partitioningAxes);
+      if (valueForUse.getType() != expectedUseType) {
         valueForUse =
             builder
                 .create<DistributedCastLocalToGlobalOp>(
@@ -326,10 +335,15 @@ struct MaterializeDistributedCollectivesPass
                 .getOutput();
       } else {
         valueForUse = builder
-                          .create<UnrealizedConversionCastOp>(
-                              loc, expectedUseType, valueForUse)
-                          .getResult(0);
+                          .create<AnchorPartitioningOp>(loc, valueForUse,
+                                                        partitioningAxisGroups)
+                          .getOutput();
       }
+    } else if (valueForUse.getType() != expectedUseType) {
+      valueForUse = builder
+                        .create<UnrealizedConversionCastOp>(
+                            loc, expectedUseType, valueForUse)
+                        .getResult(0);
     }
     use->set(valueForUse);
   }

@@ -509,6 +509,33 @@ static void updateKernelArgumentTypes(DistributedKernelOp kernelOp,
       arg.setType(
           RankedTensorType::get(updatedShape, rankedType.getElementType()));
     }
+
+    // Cross-check against the kernel's own operand: that's the external ABI
+    // shape (already local, per ClusterDistributedKernels.cpp/
+    // InlineDeviceLocalAxesPass) this Shardy-shrunk block-argument type is
+    // supposed to land on exactly. Nothing before this point actually
+    // verifies the two agree -- ClusterDistributedKernels.cpp divides the
+    // operand down once at construction, InlineDeviceLocalAxesPass grows it
+    // for DeviceLocal factors, and this function independently shrinks the
+    // block argument by the sharded factors -- so a divergence here means
+    // that bookkeeping chain is out of sync somewhere upstream. Remark-only,
+    // same rationale as checkKernelOperandGrowthConsistency: SearchStrategies
+    // .cpp runs this pass internally to score every candidate, so a hard
+    // failure here would make the search unable to use any candidate that
+    // happens to hit this.
+    if (argIndex < kernelOp.getArguments().size()) {
+      auto operandType =
+          dyn_cast<RankedTensorType>(kernelOp.getArguments()[argIndex].getType());
+      if (operandType && operandType.getShape() != ArrayRef<int64_t>(updatedShape)) {
+        kernelOp.emitRemark()
+            << "distributed-lower-kernels: operand " << argIndex
+            << "'s actual type " << operandType
+            << " doesn't match the local shape this pass derives from "
+               "argument_shardings after sharding ("
+            << RankedTensorType::get(updatedShape, rankedType.getElementType())
+            << ")";
+      }
+    }
   }
 }
 
