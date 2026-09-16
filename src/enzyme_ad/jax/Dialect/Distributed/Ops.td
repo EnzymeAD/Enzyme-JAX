@@ -133,7 +133,7 @@ def DistributedKernelOp : DistributedOp<"DistributedKernel", [SingleBlock, AttrS
 
 def DistributedYieldOp : DistributedOp<"DistributedYield", [Terminator]> {
   let description = [{
-        Terminator for distributed functions. Yields local values back to the caller.
+        Terminator for distributed functions and DistributedKernelOp bodies.
   }];
   let arguments = (ins Variadic<AnyType> : $returns);
   let assemblyFormat =

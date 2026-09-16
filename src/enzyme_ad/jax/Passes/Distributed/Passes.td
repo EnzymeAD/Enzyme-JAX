@@ -194,10 +194,14 @@ def InlineDeviceLocalAxesPass
     "enzyme::axis::AxisDialect", "enzyme::distributed::DistributedDialect"
   ];
   let description = [{
-    Skeleton pass for eliminating distributed.DeviceLocalAxis markers left
-    behind by LowerKernelsPass (axes that were never sharded across the mesh
-    because they're serialized entirely within a device). This pass
-    currently performs no rewrites.
+    Materializes distributed.DeviceLocalAxis markers (axis-algebra factors the
+    search process, SearchStrategies.cpp, decided to serialize entirely
+    within a device rather than shard across the mesh) into concrete local
+    structure: growing the local side of casts and a kernel's own external
+    result types by the corresponding real tensor extent, and dropping the
+    now-redundant factors from a collective's own mesh/reduction/mapping
+    bookkeeping. See InlineDeviceLocalAxes.cpp's own doc comment for the full
+    per-op breakdown.
   }];
 }
 
