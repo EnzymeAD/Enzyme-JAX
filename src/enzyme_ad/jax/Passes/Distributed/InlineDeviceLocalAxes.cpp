@@ -22,8 +22,12 @@
  *    are contiguous and minor-most per dimension, so growing a dimension by
  *    their combined extent is always an unambiguous multiply.
  *  - This pass only grows a value an op *owns* (its own result); operands
- *    are never grown directly. This means we expect local tensor shapes to
- *    be a result of one of our expected operations.
+ *    are never grown directly. Every consumer of a value needing growth
+ *    trusts that value's own producer to have already grown it, and
+ *    identifies a producer able to do so by whether it implements
+ *    PartitioningAnchorOpInterface (see Dialect/Distributed/Interfaces.td) --
+ *    the op kind itself never matters, only whether it owns an authoritative
+ *    partitioning binding for its own result.
  *
  * Cases handled, one per op kind:
  *  - DistributedCastGlobalToLocalOp: grows its own result (the local side)
@@ -31,12 +35,11 @@
  *  - DistributedCastLocalToGlobalOp: symmetric, but its local side is an
  *    operand (someone else's result), so only partitioning_axes is
  *    rewritten.
- *  - DistributedKernelOp: grows its own external result types. Operand
- *    types are otherwise left alone (see the propagation assumption above),
- *    with one exception: a plain UnrealizedConversionCastOp feeding an
- *    operand (the placeholder ClusterDistributedKernels.cpp leaves at a
- *    kernel's own argument boundary) is grown directly, since it carries no
- *    shape information of its own to propagate from anywhere else.
+ *  - AnchorPartitioningOp: AllTypesMatch (no local side to grow), so only
+ *    partitioning_axes' own content is stripped, keeping it in sync with
+ *    whatever it feeds.
+ *  - DistributedKernelOp: grows its own external result types; its own
+ *    operands are left untouched, per the propagation assumption above.
  *  - DistributedCollectiveOp:
  *    - input_mesh/output_mesh factors are dropped: that part of the index
  *      space now lives on the tensor's own (already-grown) dimension
@@ -58,9 +61,9 @@
  *      dimension a given factor belongs to -- input_mesh/output_mesh never
  *      need that association; see computeMappingRhsDeviceLocalGrowth's
  *      comment for how the mapping recovers it. Every collective is
- *      "bookended" (input_object directly produced by a
- *      DistributedCastGlobalToLocalOp)  so this pass never has to
- *      handle an unanchored input_object.
+ *      "bookended" by a PartitioningAnchorOpInterface producer (a real cast,
+ *      an anchor, or a kernel boundary), so this pass never has to handle an
+ *      unanchored input_object.
  *
  * See the comment on each function below for the mechanics and why each
  * case is safe.
@@ -509,49 +512,119 @@ static bool inlineDeviceLocalAxesInCast(CastOpTy castOp,
   return sawUnsupported;
 }
 
-// Appends a brand-new single-purpose partitioning-axis slot (an axis.product
-// over exactly `factors`) to `kernelOp`'s own operand list and returns its
-// index. Mirrors CanonicalizeShardedFactorOrder.cpp's own
-// appendNewPartitioningAxisSlot (duplicated locally rather than shared --
-// hoist to Dialect/Distributed/Utilities if a third caller ever needs this).
-// Built with its own builder positioned right before `kernelOp`, since the
-// new axis.product must dominate the kernel op itself.
-static int64_t appendNewPartitioningAxisSlot(
-    DistributedKernelOp kernelOp,
-    ArrayRef<TypedValue<axis::AxisFactorType>> factors) {
-  int64_t newIndex =
-      static_cast<int64_t>(kernelOp.getPartitioningAxes().size());
+// AnchorPartitioningOp is AllTypesMatch (its input and output are always the
+// identical type), so unlike a real Cast op there is no local side to grow
+// here. But its partitioning_axes are, like a Cast's, the declared
+// decomposition of its single (shared) input/output value -- and every other
+// consumer of that same value independently strips a DeviceLocal factor from
+// its own declared view once inlined (a kernel operand's slot, a collective's
+// mapping). If the anchor sitting between them keeps declaring the old,
+// un-stripped content forever, it disagrees with whatever it feeds: the
+// anchor says "DeviceLocalAxis<8> still present here", its consumer says
+// "nothing left to declare for this dimension" -- for the identical value.
+// Pure content strip, mirroring the kernel-slot treatment: no tensor value
+// or type ever changes here.
+static bool inlineDeviceLocalAxesInAnchor(AnchorPartitioningOp anchorOp) {
+  bool sawUnsupported = false;
+  ValueRange partitioningAxes = anchorOp.getPartitioningAxes();
+  SmallVector<Value> newPartitioningAxes(partitioningAxes.begin(),
+                                         partitioningAxes.end());
+  OpBuilder builder(anchorOp);
+  bool changed = false;
+
+  for (auto [dim, factorGroupValue] : llvm::enumerate(partitioningAxes)) {
+    auto factorGroup =
+        cast<TypedValue<axis::FactorGroupType>>(factorGroupValue);
+    auto split = splitOutDeviceLocalFactors(factorGroup);
+    if (failed(split)) {
+      anchorOp->emitRemark() << "inline-device-local-axes: partitioning_axes["
+                             << dim << "] couldn't be resolved to raw factors";
+      sawUnsupported = true;
+      continue;
+    }
+    auto &[kept, deviceLocalExtent] = *split;
+    if (deviceLocalExtent == 1) {
+      continue;
+    }
+    newPartitioningAxes[dim] =
+        axis::viewFactorsAsProduct(kept, builder, anchorOp.getLoc());
+    changed = true;
+  }
+
+  if (changed) {
+    anchorOp.getPartitioningAxesMutable().assign(newPartitioningAxes);
+  }
+  return sawUnsupported;
+}
+
+// Strips DeviceLocal factors from partitioning-axis slot `idx`'s OWN content,
+// in place: the slot keeps its index (and every dim_partitioning_axes list
+// across every operand/result -- and every op's own un-refreshed per-op
+// distributed.argument_shardings/output_shardings copy inside the kernel
+// body -- keeps referencing that same index unchanged), only the axis.product
+// value stored there shrinks to the remaining (non-DeviceLocal) factors, or
+// becomes an empty (extent-1) product if none remain.
+//
+// This mirrors the established rule elsewhere in this file (see
+// mapping_lhs/mapping_rhs in the top comment): a slot several dimensions
+// share -- e.g. a dot_general's contracting dimension is the very same
+// physical/logical axis on both its lhs and rhs kernel operands, so both
+// carry the identical dim_partitioning_axes entry for it -- must never be
+// dropped and replaced with a fresh, separately-numbered slot. Doing so
+// would desync every OTHER reference to the original index (both the
+// kernel's own metadata for the sibling dimension, and every individual op's
+// own frozen sharding copy inside the body, which this pass never touches),
+// turning what was one shared axis into two independently-tracked ones --
+// exactly the kind of mismatch that makes LowerKernelsPass ask Shardy for a
+// real reshard where none should ever be needed.
+//
+// Naturally idempotent: a slot already stripped resolves to deviceLocalExtent
+// == 1 on a second visit (from a sibling dimension referencing the same
+// index) and this returns success with extent 1 without touching it again.
+static FailureOr<int64_t>
+stripDeviceLocalFactorsFromSlot(DistributedKernelOp kernelOp, int64_t idx) {
+  ValueRange partitioningAxes = kernelOp.getPartitioningAxes();
+  if (idx < 0 || idx >= static_cast<int64_t>(partitioningAxes.size())) {
+    return failure();
+  }
+  auto factorGroup =
+      dyn_cast<TypedValue<axis::FactorGroupType>>(partitioningAxes[idx]);
+  if (!factorGroup) {
+    return failure();
+  }
+  auto split = splitOutDeviceLocalFactors(factorGroup);
+  if (failed(split)) {
+    return failure();
+  }
+  auto &[kept, deviceLocalExtent] = *split;
+  if (deviceLocalExtent == 1) {
+    return 1;
+  }
   OpBuilder builder(kernelOp.getContext());
   builder.setInsertionPoint(kernelOp);
-  Value newSlot =
-      axis::viewFactorsAsProduct(factors, builder, kernelOp.getLoc());
-  kernelOp.getPartitioningAxesMutable().append(newSlot);
-  return newIndex;
+  Value newSlot = axis::viewFactorsAsProduct(kept, builder, kernelOp.getLoc());
+  kernelOp.getPartitioningAxesMutable()
+      .slice(static_cast<unsigned>(idx), 1)
+      .assign(newSlot);
+  return deviceLocalExtent;
 }
 
 // Grows every dimension of `kernelOp`'s own external result types using
-// output_shardings' DeviceLocalAxis factors, dropping the now-inlined
-// DeviceLocal slot reference from output_shardings itself in the same step
-// (via a fresh replacement slot holding only the remaining factors, exactly
-// like reconcileKernelOperandBindings does for operands below). Both halves
-// must happen together: growing the type but leaving output_shardings still
-// declaring the pre-inlining extent makes DistributedKernelOp::verify()'s own
-// invariant double-count that extent (global == (already-grown) local *
-// (still-undropped) declared extent), which is wrong by exactly the inlined
-// factor -- this was a real, verifier-catchable bug before this fix (a
-// dimension whose ENTIRE declared extent was DeviceLocal grew its type from 1
-// all the way to the global size, matching the extent, but never dropped
-// that extent from output_shardings, leaving local*extent == global*extent
-// instead of global).
+// output_shardings' DeviceLocalAxis factors, stripping the now-inlined
+// DeviceLocal sub-factors from each referenced slot's own content in place
+// (see stripDeviceLocalFactorsFromSlot). output_shardings' dim_partitioning_
+// axes index lists never change: DistributedKernelOp::verify()'s own
+// invariant (checkLocalGlobalBinding in Ops.cpp) recomputes each dimension's
+// declared extent by reading the CURRENT content of whatever slots it
+// references, so once a slot's DeviceLocal portion is stripped, every
+// dimension referencing it -- this one and any sibling that shares the same
+// slot -- sees the smaller extent for free. Only the result's own type needs
+// an explicit update here, since growth is this op's own responsibility (see
+// the file's top comment).
 static bool inlineDeviceLocalAxesInKernelResults(DistributedKernelOp kernelOp) {
   bool sawUnsupported = false;
   ArrayRef<IndexedTensorShardingAttr> outputShardings =
       kernelOp.getOutputShardings().getShardings();
-  MLIRContext *ctx = kernelOp.getContext();
-
-  SmallVector<IndexedTensorShardingAttr> newOutputShardings(
-      outputShardings.begin(), outputShardings.end());
-  bool shardingsChanged = false;
 
   for (auto [resultIdx, result] : llvm::enumerate(kernelOp.getReturns())) {
     if (resultIdx >= outputShardings.size()) {
@@ -568,49 +641,18 @@ static bool inlineDeviceLocalAxesInKernelResults(DistributedKernelOp kernelOp) {
     }
 
     SmallVector<int64_t> newShape(rankedType.getShape());
-    SmallVector<DenseI64ArrayAttr> newDimAxesList(dimAxesList.begin(),
-                                                  dimAxesList.end());
     bool shapeChanged = false;
-    bool valueShardingChanged = false;
 
     for (auto [dim, dimAxes] : llvm::enumerate(dimAxesList)) {
-      SmallVector<TypedValue<axis::AxisFactorType>> remainingFactors;
       int64_t deviceLocalExtent = 1;
       bool resolvedAll = true;
-      ValueRange currentPartitioningAxes = kernelOp.getPartitioningAxes();
       for (int64_t idx : dimAxes.asArrayRef()) {
-        if (idx < 0 ||
-            idx >= static_cast<int64_t>(currentPartitioningAxes.size())) {
+        auto stripped = stripDeviceLocalFactorsFromSlot(kernelOp, idx);
+        if (failed(stripped)) {
           resolvedAll = false;
           break;
         }
-        auto factorGroup = dyn_cast<TypedValue<axis::FactorGroupType>>(
-            currentPartitioningAxes[idx]);
-        if (!factorGroup) {
-          resolvedAll = false;
-          break;
-        }
-        auto factors = axis::getProductProvenanceFactors(factorGroup);
-        if (failed(factors)) {
-          resolvedAll = false;
-          break;
-        }
-        for (auto factor : *factors) {
-          auto provenance = axis::getFactorProvenanceAxis(factor);
-          if (failed(provenance)) {
-            resolvedAll = false;
-            break;
-          }
-          if (isa<DeviceLocalAxisType>(provenance->getType())) {
-            deviceLocalExtent *=
-                static_cast<int64_t>(axis::getFactorExtent(factor));
-            continue;
-          }
-          remainingFactors.push_back(factor);
-        }
-        if (!resolvedAll) {
-          break;
-        }
+        deviceLocalExtent *= *stripped;
       }
       if (!resolvedAll) {
         kernelOp.emitRemark()
@@ -626,10 +668,6 @@ static bool inlineDeviceLocalAxesInKernelResults(DistributedKernelOp kernelOp) {
       }
       newShape[dim] *= deviceLocalExtent;
       shapeChanged = true;
-      int64_t newSlotIndex =
-          appendNewPartitioningAxisSlot(kernelOp, remainingFactors);
-      newDimAxesList[dim] = DenseI64ArrayAttr::get(ctx, {newSlotIndex});
-      valueShardingChanged = true;
     }
 
     if (shapeChanged) {
@@ -637,17 +675,8 @@ static bool inlineDeviceLocalAxesInKernelResults(DistributedKernelOp kernelOp) {
           RankedTensorType::get(newShape, rankedType.getElementType()));
       propagateGrowthThroughAnchors(result);
     }
-    if (valueShardingChanged) {
-      newOutputShardings[resultIdx] = IndexedTensorShardingAttr::get(
-          ctx, newDimAxesList, outputShardings[resultIdx].getUnreducedAxes());
-      shardingsChanged = true;
-    }
   }
 
-  if (shardingsChanged) {
-    kernelOp.setOutputShardingsAttr(
-        IndexedTensorShardingPerValueAttr::get(ctx, newOutputShardings));
-  }
   return sawUnsupported;
 }
 
@@ -656,22 +685,27 @@ static bool inlineDeviceLocalAxesInKernelResults(DistributedKernelOp kernelOp) {
 // argument size: for each dimension whose currently-declared slot(s) still
 // include a DeviceLocalAxis-provenance factor, computes the operand's
 // correct LOCAL size directly from the block-argument's GLOBAL size divided
-// by the dimension's REMAINING (non-DeviceLocal) declared extent, sets the
-// operand to that size, and rewrites the dimension's own declared slot list
-// to drop the DeviceLocalAxis factor (Replication factors are kept
-// declared, matching their own never-divides exception -- see
-// DistributedKernelOp::verify()'s own comment) -- building a fresh,
-// independent replacement slot.
+// by the dimension's REMAINING (non-DeviceLocal) declared extent, as a sanity
+// check before stripping that dimension's referenced slot(s) of their
+// DeviceLocal sub-factors in place (see stripDeviceLocalFactorsFromSlot).
+// argument_shardings' dim_partitioning_axes index lists never change --
+// same reasoning as inlineDeviceLocalAxesInKernelResults above.
 //
-// Deliberately does NOT rely on the operand's producer (a cast, an anchor,
-// another kernel) having already grown/dropped anything on its own account:
-// this pass's own principle is that every affected consumer of an
-// axis-algebra value independently rebuilds its own reference rather than
-// trusting a shared value's mutation to propagate -- see this file's own
-// top comment. Computing the target size directly from the block-arg
-// (rather than multiplying the operand's own current size by some growth
-// factor) is what makes this idempotent regardless of whether the operand
-// already reflects growth applied elsewhere or not.
+// Deliberately does NOT mutate `operand`'s (or its real producer's) type
+// here: every producer kind (Cast, Kernel, Await via its own collective, or
+// an AnchorPartitioningOp forwarding one of those) owns its own authoritative
+// growth logic elsewhere in this file. Growing it a second time here --
+// especially a DistributedAwait, whose collective is processed in a
+// separate, LATER walk than kernels -- would race the producer's own
+// decision and can corrupt it outright (observed: an Await grown here to a
+// size its own collective, once it later runs, has no idea was already
+// "decided"). This function's only job is to keep the kernel's OWN
+// partitioning-axis slots in sync (drop the now-inlined DeviceLocal
+// sub-factors from whatever they reference); the operand's actual type is
+// trusted to converge to the identical target size independently, via its
+// own producer's growth logic, by the same "operand-identical decisions are
+// always consistent" reasoning that makes every cast/anchor in this dialect
+// CSE-safe.
 //
 // Only handles a dimension whose entire currently-declared slot list is
 // resolvable to raw factors, and whose global size evenly divides by the
@@ -682,13 +716,9 @@ static bool reconcileKernelOperandBindings(DistributedKernelOp kernelOp) {
   ArrayRef<IndexedTensorShardingAttr> argumentShardings =
       kernelOp.getArgumentShardings().getShardings();
   auto &bodyBlock = kernelOp.getBody().front();
-  MLIRContext *ctx = kernelOp.getContext();
 
   SmallVector<Value> operands(kernelOp.getArguments().begin(),
                               kernelOp.getArguments().end());
-  SmallVector<IndexedTensorShardingAttr> newArgumentShardings(
-      argumentShardings.begin(), argumentShardings.end());
-  bool shardingsChanged = false;
 
   for (auto [argIdx, operand] : llvm::enumerate(operands)) {
     if (argIdx >= argumentShardings.size() ||
@@ -708,12 +738,11 @@ static bool reconcileKernelOperandBindings(DistributedKernelOp kernelOp) {
       continue;
     }
 
-    SmallVector<DenseI64ArrayAttr> newDimAxesList(dimAxesList.begin(),
-                                                  dimAxesList.end());
-    bool valueShardingChanged = false;
-
     for (auto [dim, dimAxes] : llvm::enumerate(dimAxesList)) {
-      SmallVector<TypedValue<axis::AxisFactorType>> remainingFactors;
+      // First pass (read-only): resolve the dimension's combined
+      // DeviceLocal/remaining extent across all its slots, without
+      // mutating anything, so the divisibility check below sees the
+      // pre-strip state consistently regardless of slot-processing order.
       int64_t deviceLocalExtent = 1;
       int64_t remainingExtent = 1;
       bool resolvedAll = true;
@@ -730,23 +759,19 @@ static bool reconcileKernelOperandBindings(DistributedKernelOp kernelOp) {
           resolvedAll = false;
           break;
         }
-        auto factors = axis::getProductProvenanceFactors(factorGroup);
-        if (failed(factors)) {
+        auto split = splitOutDeviceLocalFactors(factorGroup);
+        if (failed(split)) {
           resolvedAll = false;
           break;
         }
-        for (auto factor : *factors) {
+        auto &[kept, thisSlotDeviceLocalExtent] = *split;
+        deviceLocalExtent *= thisSlotDeviceLocalExtent;
+        for (auto factor : kept) {
           auto provenance = axis::getFactorProvenanceAxis(factor);
           if (failed(provenance)) {
             resolvedAll = false;
             break;
           }
-          if (isa<DeviceLocalAxisType>(provenance->getType())) {
-            deviceLocalExtent *=
-                static_cast<int64_t>(axis::getFactorExtent(factor));
-            continue;
-          }
-          remainingFactors.push_back(factor);
           if (!isa<ReplicationAxisType>(provenance->getType())) {
             remainingExtent *=
                 static_cast<int64_t>(axis::getFactorExtent(factor));
@@ -778,47 +803,28 @@ static bool reconcileKernelOperandBindings(DistributedKernelOp kernelOp) {
         sawUnsupported = true;
         continue;
       }
-      // Deliberately not mutating `operand`'s (or its real producer's) type
-      // here: every remaining producer kind (Cast, Kernel, Await via its own
-      // collective, or an AnchorPartitioningOp forwarding one of those) owns
-      // its own authoritative growth logic elsewhere in this file. Growing
-      // it a second time here -- especially a DistributedAwait, whose
-      // collective is processed in a separate, LATER walk than kernels --
-      // would race the producer's own decision and can corrupt it outright
-      // (observed: an Await grown here to a size its own collective, once
-      // it later runs, has no idea was already "decided"). This function's
-      // only job is to keep the kernel's OWN dim_partitioning_axes metadata
-      // in sync (drop the now-inlined DeviceLocal reference); the operand's
-      // actual type is trusted to converge to the identical target size
-      // independently, via its own producer's growth logic, by the same
-      // "operand-identical decisions are always consistent" reasoning that
-      // makes every cast/anchor in this dialect CSE-safe. (globalDim's
-      // divisibility by remainingExtent was already validated above.)
-      int64_t newSlotIndex =
-          appendNewPartitioningAxisSlot(kernelOp, remainingFactors);
-      newDimAxesList[dim] = DenseI64ArrayAttr::get(ctx, {newSlotIndex});
-      valueShardingChanged = true;
-    }
-
-    if (valueShardingChanged) {
-      newArgumentShardings[argIdx] = IndexedTensorShardingAttr::get(
-          ctx, newDimAxesList, argumentShardings[argIdx].getUnreducedAxes());
-      shardingsChanged = true;
+      for (int64_t idx : dimAxes.asArrayRef()) {
+        // Failure here would contradict the read-only resolution above,
+        // which already validated every slot in this same list.
+        (void)stripDeviceLocalFactorsFromSlot(kernelOp, idx);
+      }
     }
   }
 
-  if (shardingsChanged) {
-    kernelOp.setArgumentShardingsAttr(
-        IndexedTensorShardingPerValueAttr::get(ctx, newArgumentShardings));
-  }
   return sawUnsupported;
 }
 
 // Debug/validation check: flags a kernel operand that needs DeviceLocalAxis
 // growth per its own argument_shardings but isn't produced by something this
-// pass already grows (a cast, a kernel, an UnrealizedConversionCastOp, or a
-// DistributedAwait). Collectives are processed before this check runs, so an
-// Await producer is always safe to accept here.
+// pass already grows. What matters is not the producer's op kind but whether
+// it OWNS an authoritative partitioning binding for its own result --
+// PartitioningAnchorOpInterface, implemented by both Cast ops,
+// AnchorPartitioningOp, and DistributedKernelOp -- since that's exactly the
+// set of ops this file's other functions grow in place. An
+// UnrealizedConversionCastOp (a bare kernel-boundary placeholder with no
+// binding of its own) or a DistributedAwait (whose collective is processed
+// in a separate, later walk) are the two remaining producer kinds this pass
+// can still make consistent, so they're accepted too.
 //
 // Remark only, never a hard failure. SearchStrategies.cpp runs this pass
 // internally to score every candidate during search, and collective-fed
@@ -856,7 +862,7 @@ static void checkKernelOperandGrowthConsistency(DistributedKernelOp kernelOp) {
     }
 
     Operation *producer = operand.getDefiningOp();
-    if (isa_and_nonnull<DistributedCastGlobalToLocalOp, DistributedKernelOp,
+    if (isa_and_nonnull<PartitioningAnchorOpInterface,
                         UnrealizedConversionCastOp, DistributedAwait>(
             producer)) {
       continue;
@@ -864,9 +870,9 @@ static void checkKernelOperandGrowthConsistency(DistributedKernelOp kernelOp) {
     kernelOp.emitRemark()
         << "inline-device-local-axes: operand " << argIdx
         << " needs DeviceLocalAxis growth per its own argument_shardings, "
-           "but isn't produced by a distributed.CastGlobalToLocal, "
-           "distributed.DistributedKernel, builtin.unrealized_conversion_cast, "
-           "or distributed.Await this pass could have already grown";
+           "but its producer owns no PartitioningAnchorOpInterface binding "
+           "of its own (nor is it an UnrealizedConversionCastOp or "
+           "distributed.Await) for this pass to have already grown";
   }
 }
 
@@ -1011,57 +1017,42 @@ inlineDeviceLocalAxesInCollective(DistributedCollectiveOp collectiveOp) {
 
   // Remark-only, same style as checkKernelOperandGrowthConsistency:
   // input_object is never grown here, so if mapping_lhs implies real growth,
-  // its producer had better already be something that grows its own result.
-  //
-  // AnchorPartitioningOp never changes type (AllTypesMatch), so it's
-  // transparent for this check: unwrap through zero or more of them to find
-  // whichever real PartitioningAnchorOpInterface boundary actually
-  // established the (possibly-already-grown) type -- the type is identical
-  // on both sides of every hop, so peeling them off changes nothing about
-  // what's being validated.
-  //
-  // MaterializeDistributedCollectives.cpp's rewriteUseWithValue guarantees
-  // every collective's input_object is bookended this way (a real cast, an
-  // AnchorPartitioning, or a kernel boundary) -- a bare, unanchored
-  // DistributedAwait surviving to here would mean that invariant was
-  // violated somewhere upstream, not a tolerable "chained" case, so it's no
-  // longer special-cased as trusted.
+  // its producer had better already own a PartitioningAnchorOpInterface binding
+  // reflecting that growth -- the op kind doesn't matter (a real cast, an
+  // AnchorPartitioning, or a kernel boundary all qualify identically). A bare
+  // DistributedAwait doesn't own such a binding itself (it just forwards its
+  // collective's own result), so it's not accepted here.
   if (inputGrowthExpected) {
-    Value current = collectiveOp.getInputObject();
-    for (int step = 0; step < 8; ++step) {
-      auto anchor = current.getDefiningOp<AnchorPartitioningOp>();
-      if (!anchor) {
-        break;
-      }
-      current = anchor.getInput();
-    }
-    Operation *producer = current.getDefiningOp();
-    if (!isa_and_nonnull<DistributedCastGlobalToLocalOp, DistributedKernelOp>(
-            producer)) {
+    Operation *producer = collectiveOp.getInputObject().getDefiningOp();
+    if (!isa_and_nonnull<PartitioningAnchorOpInterface>(producer)) {
       collectiveOp.emitRemark()
           << "inline-device-local-axes: input_object needs DeviceLocalAxis "
-             "growth per its mapping, but isn't produced (through zero or "
-             "more AnchorPartitioning hops) by a distributed.CastGlobalToLocal "
-             "or distributed.DistributedKernel this pass could have already "
-             "grown -- MaterializeDistributedCollectives.cpp is expected to "
-             "bookend every collective boundary with one of these";
+             "growth per its mapping, but its producer owns no "
+             "PartitioningAnchorOpInterface binding of its own this pass "
+             "could have already grown -- "
+             "MaterializeDistributedCollectives.cpp is expected to bookend "
+             "every collective boundary with one of these";
     }
   }
 
-  // Remark-only: a dropped reduction group assumed some producer's own
-  // local contraction already reduced over it (see the loop above). That
-  // assumption only makes sense if a kernel is actually in the producer
-  // chain, so flag the case where it plainly isn't.
+  // Remark-only: a dropped reduction group assumed some producer's own local
+  // contraction already reduced over it (see the loop above). That
+  // assumption only makes sense if input_object's producer is one this pass
+  // could have grown (any PartitioningAnchorOpInterface op), or a
+  // DistributedAwait -- unlike the growth check above, an Await is accepted
+  // here too, since the assumption traces back through its own collective's
+  // own reduction bookkeeping (checked independently when that collective is
+  // itself processed), not through any binding the Await would need to own.
   if (reductionAssumedAlreadyLocal) {
     Operation *producer = collectiveOp.getInputObject().getDefiningOp();
-    if (!isa_and_nonnull<DistributedCastGlobalToLocalOp, DistributedKernelOp,
-                         DistributedAwait>(producer)) {
+    if (!isa_and_nonnull<PartitioningAnchorOpInterface, DistributedAwait>(
+            producer)) {
       collectiveOp.emitRemark()
           << "inline-device-local-axes: dropped a reduction group assuming "
-             "it was already reduced locally, but input_object isn't "
-             "produced by a distributed.CastGlobalToLocal, "
-             "distributed.DistributedKernel, or distributed.Await, so that "
-             "assumption may not hold here";
+             "it was already reduced locally, but input_object's producer "
+             "owns no PartitioningAnchorOpInterface binding of its own (nor "
+             "is it a distributed.Await), so that assumption may not hold "
+             "here";
     }
   }
 
@@ -1141,6 +1132,10 @@ struct InlineDeviceLocalAxesPass
         }
       } else if (auto l2g = dyn_cast<DistributedCastLocalToGlobalOp>(op)) {
         if (inlineDeviceLocalAxesInCast(l2g, /*localSideIsOwnResult=*/false)) {
+          sawUnsupported = true;
+        }
+      } else if (auto anchor = dyn_cast<AnchorPartitioningOp>(op)) {
+        if (inlineDeviceLocalAxesInAnchor(anchor)) {
           sawUnsupported = true;
         }
       } else if (auto kernelOp = dyn_cast<DistributedKernelOp>(op)) {
