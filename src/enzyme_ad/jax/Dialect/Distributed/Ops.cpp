@@ -319,17 +319,22 @@ kernelBindingInfo(DistributedKernelOp kernelOp,
 // Checks the real relationship DistributedKernelOp::verify() requires
 // between one operand/result (`localValue`, at this op's own LOCAL scope)
 // and its corresponding block-argument/yielded-value type
-// (`globalScopeType`, at GLOBAL scope): the two must be identical wherever
-// `binding` names no factors for a dimension, and otherwise
-// globalScopeType[d] == localValue's shape[d] * (product of binding[d]'s
-// raw factor extents, EXCLUDING ReplicationAxisType provenance -- a
-// replicated axis is the same full extent on every device, so it never
+// (`globalScopeType`, at GLOBAL scope): the two must have the same rank, be
+// identical wherever `binding` names no factors for a dimension, and
+// otherwise globalScopeType[d] == localValue's shape[d] * (product of
+// binding[d]'s raw factor extents, EXCLUDING ReplicationAxisType provenance
+// -- a replicated axis is the same full extent on every device, so it never
 // divides the local size down from the global one, unlike a
 // DeviceLocalAxis, which does count here even though it's never physically
 // mesh-sharded). Unresolvable factor extents are skipped rather than
 // flagged (same "don't fail what we can't resolve" stance as
 // resolveCurrentSharding elsewhere in this dialect) -- this check is only
-// as strong as the axis-algebra info currently available.
+// as strong as the axis-algebra info currently available. Rank itself is
+// NOT similarly best-effort: partitioning can never add or remove a
+// dimension, so a rank mismatch between the local and global views of the
+// same operand/result is always a real bug (e.g. a pass that rebuilt one
+// side's type but not the other), never a case this check should stay
+// silent about.
 static LogicalResult
 checkLocalGlobalBinding(DistributedKernelOp kernelOp, Value localValue,
                         Type globalScopeType,
@@ -339,10 +344,20 @@ checkLocalGlobalBinding(DistributedKernelOp kernelOp, Value localValue,
   if (!localType || !globalType) {
     return success();
   }
-  if (localType.getRank() != globalType.getRank() ||
-      static_cast<int64_t>(binding.size()) != localType.getRank()) {
-    return success(); // rank mismatch is caught by the existing
-                      // sharding-vs-rank checks above.
+  if (localType.getRank() != globalType.getRank()) {
+    return kernelOp.emitOpError()
+           << what << "'s local-scope type " << localType
+           << " and global-scope type " << globalType
+           << " have different ranks -- partitioning can only divide an "
+              "existing dimension's size, never add or remove one, so this "
+              "always means some pass rebuilt one side's type without "
+              "keeping the other in sync";
+  }
+  if (static_cast<int64_t>(binding.size()) != localType.getRank()) {
+    return kernelOp.emitOpError()
+           << what << "'s resolved binding has " << binding.size()
+           << " dimension(s) but its local-scope type " << localType
+           << " has rank " << localType.getRank();
   }
   for (auto [dim, dimValues] : llvm::enumerate(binding)) {
     int64_t extent = 1;
@@ -465,33 +480,52 @@ LogicalResult DistributedKernelOp::verify() {
   // for keeping the operand/block-arg (and result/yield) pair in sync at
   // the same time, and this is what catches it immediately if one ever
   // doesn't.
+  //
+  // Both count checks below are hard errors, not best-effort skips: the
+  // block's own argument count and the yield's own operand count are
+  // structural properties of this op (by construction, one block argument
+  // per operand, one yielded value per result), so a mismatch here always
+  // means some pass edited one list -- operands, block arguments, results,
+  // or the yield -- without keeping the other three in sync, exactly the
+  // class of bug this whole check exists to catch immediately rather than
+  // let surface as a confusing shape error somewhere downstream.
   auto &bodyBlock = getBody().front();
-  if (getArguments().size() == bodyBlock.getNumArguments()) {
-    for (auto [idx, arg] : llvm::enumerate(getArguments())) {
-      auto binding =
-          getBindingInfoForOperand(getOperation()->getOpOperand(idx));
-      if (failed(binding)) {
-        continue;
-      }
-      if (failed(checkLocalGlobalBinding(*this, arg,
-                                         bodyBlock.getArgument(idx).getType(),
-                                         *binding, "operand"))) {
-        return failure();
-      }
+  if (getArguments().size() != bodyBlock.getNumArguments()) {
+    return emitOpError() << "has " << getArguments().size()
+                         << " operand(s) but its body block has "
+                         << bodyBlock.getNumArguments() << " argument(s)";
+  }
+  for (auto [idx, arg] : llvm::enumerate(getArguments())) {
+    auto binding = getBindingInfoForOperand(getOperation()->getOpOperand(idx));
+    if (failed(binding)) {
+      continue;
+    }
+    if (failed(checkLocalGlobalBinding(*this, arg,
+                                       bodyBlock.getArgument(idx).getType(),
+                                       *binding, "operand"))) {
+      return failure();
     }
   }
-  if (auto yieldOp = dyn_cast<DistributedYieldOp>(bodyBlock.getTerminator());
-      yieldOp && yieldOp.getReturns().size() == getResults().size()) {
-    for (auto [idx, result] : llvm::enumerate(getResults())) {
-      auto binding = getBindingInfoForResult(cast<OpResult>(result));
-      if (failed(binding)) {
-        continue;
-      }
-      if (failed(checkLocalGlobalBinding(*this, result,
-                                         yieldOp.getReturns()[idx].getType(),
-                                         *binding, "result"))) {
-        return failure();
-      }
+
+  auto yieldOp = dyn_cast<DistributedYieldOp>(bodyBlock.getTerminator());
+  if (!yieldOp) {
+    return emitOpError() << "body block must be terminated by a "
+                            "distributed.DistributedYield";
+  }
+  if (yieldOp.getReturns().size() != getResults().size()) {
+    return emitOpError() << "has " << getResults().size()
+                         << " result(s) but its body yields "
+                         << yieldOp.getReturns().size() << " value(s)";
+  }
+  for (auto [idx, result] : llvm::enumerate(getResults())) {
+    auto binding = getBindingInfoForResult(cast<OpResult>(result));
+    if (failed(binding)) {
+      continue;
+    }
+    if (failed(checkLocalGlobalBinding(*this, result,
+                                       yieldOp.getReturns()[idx].getType(),
+                                       *binding, "result"))) {
+      return failure();
     }
   }
 
