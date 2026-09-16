@@ -275,6 +275,57 @@ static void insertPlaceholderAllReduces(
   }
 }
 
+// Translates every distributed.ManualComputation in `shardyModule` (built by
+// CanonicalizeShardedFactorOrderPass's buildManualComputationChain) into a
+// real sdy.manual_computation. This op's argument_shardings/output_shardings/
+// manual_axes are ODS-declared arguments (stored under their own plain
+// attribute names, e.g. "argument_shardings" -- NOT the "distributed."-
+// prefixed discardable attributes constructShardyAttributes's generic
+// opsToProcess walk below scans for), so this must run as its own pass over
+// the module rather than folding into that walk; the two don't interact
+// either way regardless of ordering, since the string keys never collide.
+static void convertManualComputationsToShardy(ModuleOp shardyModule,
+                                              StringRef meshName) {
+  MLIRContext *ctx = shardyModule.getContext();
+
+  // Collect first, then convert: converting erases each op and moves its
+  // region, so mutating while walking would visit already-invalidated state.
+  llvm::SmallVector<DistributedManualComputationOp> manualOps;
+  shardyModule.getRegion().walk(
+      [&](DistributedManualComputationOp op) { manualOps.push_back(op); });
+
+  for (DistributedManualComputationOp manualOp : manualOps) {
+    auto inShardings = translateIndexedShardingPerValue(
+        ctx, meshName, manualOp.getArgumentShardings());
+    auto outShardings = translateIndexedShardingPerValue(
+        ctx, meshName, manualOp.getOutputShardings());
+
+    llvm::SmallVector<StringAttr> manualAxes;
+    manualAxes.reserve(manualOp.getManualAxes().size());
+    for (int64_t index : manualOp.getManualAxes()) {
+      manualAxes.push_back(StringAttr::get(ctx, shardyAxisName(index)));
+    }
+
+    OpBuilder builder(manualOp);
+    auto sdyOp = builder.create<mlir::sdy::ManualComputationOp>(
+        manualOp.getLoc(), manualOp.getResultTypes(), manualOp.getInputs(),
+        inShardings.getShardings(), outShardings.getShardings(), manualAxes);
+
+    sdyOp.getBody().takeBody(manualOp.getBody());
+
+    // sdy.manual_computation requires an sdy.return terminator, not
+    // distributed.DistributedYield.
+    auto yieldOp =
+        cast<DistributedYieldOp>(sdyOp.getBody().front().getTerminator());
+    OpBuilder(yieldOp).create<mlir::sdy::ReturnOp>(yieldOp.getLoc(),
+                                                   yieldOp.getReturns());
+    yieldOp.erase();
+
+    manualOp.replaceAllUsesWith(sdyOp.getResults());
+    manualOp.erase();
+  }
+}
+
 // Placeholder all_reduce ops (see insertPlaceholderAllReduces) get lowered by
 // ConvertGlobalToLocal into real stablehlo.all_reduce collectives; strip
 // those back out since a distributed kernel body must never itself contain a
@@ -323,6 +374,14 @@ static void constructShardyAttributes(DistributedKernelOp originalKernel,
   meshBuilder.create<mlir::sdy::MeshOp>(
       shardyModule.getLoc(), kMeshName,
       mlir::sdy::MeshAttr::get(ctx, meshAxes));
+
+  // Must run before the generic per-op walk below builds sdy.sharding_
+  // constraint ops against any distributed.ManualComputation operand: a real
+  // sdy.manual_computation's own in_shardings already establish its operand's
+  // sharding directly, so there's nothing left for that walk to see once this
+  // runs (it never looked at this op's attrs to begin with -- see this
+  // function's own comment).
+  convertManualComputationsToShardy(shardyModule, kMeshName);
 
   auto shardyFunc = shardyModule.lookupSymbol<func::FuncOp>("kernel");
   if (!shardyFunc) {

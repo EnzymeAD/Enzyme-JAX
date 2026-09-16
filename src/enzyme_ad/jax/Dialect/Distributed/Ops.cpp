@@ -296,4 +296,189 @@ LogicalResult DistributedCastLocalToGlobalOp::inferReturnTypes(
       /*globalToLocal=*/false, inferredReturnTypes);
 }
 
+LogicalResult DistributedManualComputationOp::verify() {
+  auto kernelOp = getOperation()->getParentOfType<DistributedKernelOp>();
+  if (!kernelOp) {
+    return emitOpError() << "requires an enclosing distributed.DistributedKernel";
+  }
+  ValueRange partitioningAxes = kernelOp.getPartitioningAxes();
+  int64_t partitioningAxisCount =
+      static_cast<int64_t>(partitioningAxes.size());
+
+  // manual_axes is the caller's own choice of which slots Shardy should
+  // divide down for this op's region. A DeviceLocalAxisType/ReplicationAxisType
+  // factor is always excluded from LowerKernels.cpp's real mesh-axis sizing
+  // (parallelismPerDim), so marking one manual would just divide by 1 -- a
+  // meaningless no-op that almost certainly indicates a caller bug (the axis
+  // that needs manual, real division is the sharded one, not the local one).
+  llvm::SmallDenseSet<int64_t> manualAxisSet;
+  for (int64_t axisIndex : getManualAxes()) {
+    if (axisIndex < 0 || axisIndex >= partitioningAxisCount) {
+      return emitOpError() << "requires manual_axes index " << axisIndex
+                           << " to be in range [0, " << partitioningAxisCount
+                           << ")";
+    }
+    if (!manualAxisSet.insert(axisIndex).second) {
+      return emitOpError() << "requires manual_axes to be pairwise distinct ("
+                           << axisIndex << " repeated)";
+    }
+    auto factorGroup =
+        cast<TypedValue<axis::FactorGroupType>>(partitioningAxes[axisIndex]);
+    auto factors = axis::getProductProvenanceFactors(factorGroup);
+    if (failed(factors)) {
+      return emitOpError() << "requires manual_axes[" << axisIndex
+                           << "] to be produced by axis.product";
+    }
+    for (auto factor : *factors) {
+      auto provenance = axis::getFactorProvenanceAxis(factor);
+      if (failed(provenance)) {
+        return emitOpError() << "requires manual_axes[" << axisIndex
+                             << "]'s factors to have a resolvable provenance";
+      }
+      if (isa<DeviceLocalAxisType, ReplicationAxisType>(provenance->getType())) {
+        return emitOpError()
+               << "requires manual_axes[" << axisIndex
+               << "] to not be a DeviceLocalAxisType/ReplicationAxisType "
+                  "factor (never really divided by LowerKernels.cpp)";
+      }
+    }
+  }
+
+  auto argumentShardings = getArgumentShardings();
+  auto outputShardings = getOutputShardings();
+  FailureOr<SmallVector<int64_t>> inputDimCounts =
+      computeDimensionCounts(getInputs().getTypes());
+  FailureOr<SmallVector<int64_t>> outputDimCounts =
+      computeDimensionCounts(getOutputs().getTypes());
+  if (failed(inputDimCounts) || failed(outputDimCounts)) {
+    return emitOpError() << "failed to compute input/output dimension counts";
+  }
+  if (failed(verifyIndexedShardingPerValueAgainstDimensionRanges(
+          getOperation(), argumentShardings, *inputDimCounts,
+          "argument_shardings", partitioningAxisCount)) ||
+      failed(verifyIndexedShardingPerValueAgainstDimensionRanges(
+          getOperation(), outputShardings, *outputDimCounts,
+          "output_shardings", partitioningAxisCount))) {
+    return failure();
+  }
+
+  // Same grammar Shardy's own sdy.manual_computation requires: a manual axis
+  // must precede any non-manual one within its own dimension's index list.
+  // Nothing else is required of a non-manual axis -- it's fine for one to
+  // also be device-distributed (Shardy is free to treat it as an ordinary
+  // sharded/free axis; this op just doesn't divide it down further itself).
+  auto checkManualMajormost = [&](IndexedTensorShardingPerValueAttr shardings,
+                                  StringRef ownerName) -> LogicalResult {
+    for (auto [valueIndex, sharding] :
+         llvm::enumerate(shardings.getShardings())) {
+      for (auto [dimIndex, dimAxes] :
+           llvm::enumerate(sharding.getDimPartitioningAxes())) {
+        bool sawNonManual = false;
+        for (int64_t axisIndex : dimAxes.asArrayRef()) {
+          if (!manualAxisSet.contains(axisIndex)) {
+            sawNonManual = true;
+          } else if (sawNonManual) {
+            return emitOpError()
+                   << "requires manual axes to precede non-manual axes in "
+                   << ownerName << "[" << valueIndex
+                   << "]'s dim_partitioning_axes[" << dimIndex << "]";
+          }
+        }
+      }
+    }
+    return success();
+  };
+  if (failed(checkManualMajormost(argumentShardings, "argument_shardings")) ||
+      failed(checkManualMajormost(outputShardings, "output_shardings"))) {
+    return failure();
+  }
+
+  // Each manual-axis dimension of an input/output must be evenly divisible by
+  // the product of its manual axes' extents, with the region's corresponding
+  // block-argument/yield-operand dimension equal to that quotient; every
+  // other dimension is unchanged between the outer (global) and inner
+  // (local) view.
+  auto &bodyBlock = getBody().front();
+  auto yieldOp = dyn_cast<DistributedYieldOp>(bodyBlock.getTerminator());
+  if (!yieldOp) {
+    return emitOpError() << "requires its body to be terminated by "
+                         "distributed.DistributedYield";
+  }
+  auto checkLocalShape = [&](Value outer, Type localType,
+                            IndexedTensorShardingAttr sharding,
+                            StringRef what) -> LogicalResult {
+    auto outerType = dyn_cast<RankedTensorType>(outer.getType());
+    auto localRankedType = dyn_cast<RankedTensorType>(localType);
+    if (!outerType || !localRankedType) {
+      return success();
+    }
+    SmallVector<int64_t> expectedLocalShape(outerType.getShape());
+    for (auto [dim, dimAxes] :
+         llvm::enumerate(sharding.getDimPartitioningAxes())) {
+      if (dim >= expectedLocalShape.size()) {
+        break;
+      }
+      int64_t divisor = 1;
+      for (int64_t axisIndex : dimAxes.asArrayRef()) {
+        if (!manualAxisSet.contains(axisIndex)) {
+          continue;
+        }
+        auto factorGroup = cast<TypedValue<axis::FactorGroupType>>(
+            partitioningAxes[axisIndex]);
+        FailureOr<uint64_t> extent = axis::getFactorGroupExtent(factorGroup);
+        if (failed(extent)) {
+          return emitOpError() << "requires manual_axes[" << axisIndex
+                               << "] to have a resolvable extent";
+        }
+        divisor *= static_cast<int64_t>(*extent);
+      }
+      if (divisor == 1) {
+        continue;
+      }
+      if (expectedLocalShape[dim] % divisor != 0) {
+        return emitOpError()
+               << what << " dimension " << dim
+               << " is not evenly divisible by its manual axes' extents";
+      }
+      expectedLocalShape[dim] /= divisor;
+    }
+    if (localRankedType.getShape() != ArrayRef<int64_t>(expectedLocalShape)) {
+      return emitOpError()
+             << what << "'s local (region) type does not match its global "
+                        "type divided by its manual axes' extents";
+    }
+    return success();
+  };
+
+  if (getInputs().size() != bodyBlock.getNumArguments() ||
+      argumentShardings.getShardings().size() != getInputs().size()) {
+    return emitOpError() << "requires one region block argument and one "
+                         "argument_shardings entry per input";
+  }
+  for (auto [input, blockArg, sharding] :
+       llvm::zip_equal(getInputs(), bodyBlock.getArguments(),
+                       argumentShardings.getShardings())) {
+    if (failed(checkLocalShape(input, blockArg.getType(), sharding,
+                              "an input's"))) {
+      return failure();
+    }
+  }
+
+  if (getOutputs().size() != yieldOp.getReturns().size() ||
+      outputShardings.getShardings().size() != getOutputs().size()) {
+    return emitOpError() << "requires one yielded value and one "
+                         "output_shardings entry per output";
+  }
+  for (auto [output, yielded, sharding] :
+       llvm::zip_equal(getOutputs(), yieldOp.getReturns(),
+                       outputShardings.getShardings())) {
+    if (failed(checkLocalShape(output, yielded.getType(), sharding,
+                              "an output's"))) {
+      return failure();
+    }
+  }
+
+  return success();
+}
+
 } // namespace mlir::enzyme::distributed

@@ -252,11 +252,16 @@ module @kernel_internal_merge_sandwiched {
 
 // CHECK-LABEL: module @kernel_internal_merge_sandwiched {
 // CHECK: distributed.DistributedKernel (%{{.*}} : tensor<6x4xf32>) <[<dim_partitioning_axes = {{\[\[0\], \[1\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: -> (tensor<24xf32>) <[<dim_partitioning_axes = {{\[\[6, 7, 8, 9\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: -> (tensor<24xf32>) <[<dim_partitioning_axes = {{\[\[2, 4, 3, 5\]\]}} : unreduced_axes = []>]>
 // CHECK-NEXT: axes
 // CHECK-NEXT: ^bb0(%arg0: tensor<6x4xf32>):
 // CHECK-NEXT: %[[MERGED:.*]] = stablehlo.reshape %arg0 {distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[0\], \[1\]\]}} : unreduced_axes = []>]>, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[0, 1\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: %[[SPLIT:.*]] = stablehlo.reshape %[[MERGED]] {canonicalize_sharded_factor_order.internal
-// CHECK-NEXT: %[[T:.*]] = stablehlo.transpose %[[SPLIT]], dims = [0, 2, 1, 3]
-// CHECK-NEXT: %[[MERGE2:.*]] = stablehlo.reshape %[[T]] {canonicalize_sharded_factor_order.internal, distributed.argument_shardings = {{.*}}, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[6, 7, 8, 9\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: distributed.DistributedYield (%[[MERGE2]] : tensor<24xf32>)
+// CHECK-NEXT: %[[SPLIT:.*]] = stablehlo.reshape %[[MERGED]] {canonicalize_sharded_factor_order.internal, distributed.argument_shardings = {{.*}}, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[2\], \[3\], \[4\], \[5\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: %[[MANUAL:.*]] = distributed.ManualComputation (%[[SPLIT]] : tensor<2x3x2x2xf32>) <[<dim_partitioning_axes = {{\[\[2\], \[3\], \[4\], \[5\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: manual_axes [2, 4]
+// CHECK-NEXT: -> (tensor<24xf32>) <[<dim_partitioning_axes = {{\[\[2, 4, 3, 5\]\]}} : unreduced_axes = []>]> {
+// CHECK-NEXT: ^bb0(%[[LARG:.*]]: tensor<1x3x1x2xf32>):
+// CHECK-NEXT: %[[LMERGE:.*]] = stablehlo.reshape %[[LARG]] {canonicalize_sharded_factor_order.internal} : (tensor<1x3x1x2xf32>) -> tensor<6xf32>
+// CHECK-NEXT: distributed.DistributedYield (%[[LMERGE]] : tensor<6xf32>)
+// CHECK-NEXT: }
+// CHECK-NEXT: distributed.DistributedYield (%[[MANUAL]] : tensor<24xf32>)

@@ -217,3 +217,43 @@ module {
 // CHECK: stablehlo.add %[[ARG]], %[[ARG]]
 // CHECK: distributed.DistributedYield (%{{.*}} : tensor<8xf32>)
 
+// -----
+
+// Roundtrip distributed.ManualComputation, this project's own stand-in for
+// Shardy's sdy.manual_computation (see its doc comment in Ops.td) -- built by
+// CanonicalizeShardedFactorOrderPass in place of a real transpose to fix a
+// multi-factor op's non-canonical dimension. Its own operand/result are at
+// the enclosing kernel's declared (global) shape, while its region's block
+// argument/yielded value are at the fully-divided-down local shape for
+// exactly the manual (fully-sharded, extent-4) axis.
+module {
+  %l = distributed.LogicalMeshAxes [4] : !distributed.logical_mesh_axis<4>
+  %lf = axis.factor %l : !distributed.logical_mesh_axis<4><4, 1>
+  %g = axis.product (%lf : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 4, 1>)
+  %input = tensor.empty() : tensor<4xf32>
+
+  %r = distributed.DistributedKernel (%input : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+    -> (tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+    axes (%g : !axis.factor_group<4>) {
+  ^bb0(%arg0: tensor<4xf32>):
+    %m = distributed.ManualComputation (%arg0 : tensor<4xf32>) <[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+      manual_axes [0]
+      -> (tensor<4xf32>) <[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]> {
+    ^bb0(%larg: tensor<1xf32>):
+      distributed.DistributedYield (%larg : tensor<1xf32>)
+    }
+    distributed.DistributedYield (%m : tensor<4xf32>)
+  }
+}
+
+// CHECK: %{{.*}} = distributed.DistributedKernel (%{{.*}} : tensor<4xf32>) <[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: -> (tensor<4xf32>) <[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: axes (%{{.*}} : !axis.factor_group<4>) {
+// CHECK-NEXT: ^bb0(%[[KARG:.*]]: tensor<4xf32>):
+// CHECK-NEXT: %{{.*}} = distributed.ManualComputation (%[[KARG]] : tensor<4xf32>) <[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: manual_axes [0]
+// CHECK-NEXT: -> (tensor<4xf32>) <[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]> {
+// CHECK-NEXT: ^bb0(%[[MARG:.*]]: tensor<1xf32>):
+// CHECK-NEXT: distributed.DistributedYield (%[[MARG]] : tensor<1xf32>)
+// CHECK: distributed.DistributedYield (%{{.*}} : tensor<4xf32>)
+

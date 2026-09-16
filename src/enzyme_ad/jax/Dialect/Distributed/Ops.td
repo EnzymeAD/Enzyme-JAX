@@ -245,4 +245,33 @@ def DistributedCollectiveOp
       "type($mapping) $reduction_bodies attr-dict";
   let hasVerifier = 1;
 }
+
+def DistributedManualComputationOp
+    : DistributedOp<"ManualComputation", [SingleBlock]> {
+  let description = [{This project's own stand-in for Shardy's
+    sdy.manual_computation, which LowerKernels.cpp later translates it into:
+    operands/results are at the enclosing kernel's declared shape, while the
+    region's block arguments/yielded values are at the fully-divided-down
+    local shape for whichever dimensions reference a manual axis.
+    CanonicalizeShardedFactorOrderPass builds this op in place of a real
+    transpose to fix a reshape whose dimension order doesn't fit neatly with
+    shardy axis grammar.
+    
+    manual_axes indexes into the enclosing DistributedKernelOp's shared
+    partitioning_axes list (this op has no partitioning_axes of its own),
+    naming which slots the region computes with at already-divided-down local
+    extent; none of their factors may be DeviceLocalAxisType/
+    ReplicationAxisType, since those are never really divided by
+    LowerKernels.cpp anyway.}];
+  let arguments = (ins
+    Variadic<AnyTensor>:$inputs,
+    DenseI64ArrayAttr:$manual_axes,
+    IndexedTensorShardingPerValueAttr:$argument_shardings,
+    IndexedTensorShardingPerValueAttr:$output_shardings
+  );
+  let results = (outs Variadic<AnyTensor>:$outputs);
+  let regions = (region AnyRegion:$body);
+  let hasVerifier = 1;
+  let assemblyFormat = [{custom<VariadicWithTypes>($inputs, type($inputs)) $argument_shardings `\n` ` ` ` ` `manual_axes` $manual_axes `\n` ` ` ` ` `->` custom<ParenTypes>(type($outputs)) $output_shardings $body attr-dict}];
+}
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD

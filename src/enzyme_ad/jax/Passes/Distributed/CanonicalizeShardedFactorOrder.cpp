@@ -74,7 +74,7 @@
  *    transpose") needs to bookend each cast to bridge the two. That
  *    bookending collective is not yet implemented.
  * 3. A reshape (or any op whose Shardy sharding rule maps one dimension to
- *    more than one factor -- "CompoundFactor") strictly INSIDE a kernel
+ *    more than one factor) strictly INSIDE a kernel
  *    body is the one real exception: relabeling isn't enough, because a
  *    reshape's own numerical meaning IS its dimension order (it's defined
  *    by flattening the tensor row-major and re-splitting it) -- changing
@@ -84,13 +84,16 @@
  *    machinery inside LowerKernels.cpp's Shardy sub-lowering, which this
  *    project doesn't own and can't instruct to trust a declared order that
  *    doesn't match reality. So this is the one place we still insert real
- *    ops: a "clean" split matching the dimension's current boundary -> a
- *    transpose into canonical order -> a merge back to the original shape,
- *    applied strictly at that one op's own operand/result (see
- *    canonicalizeOpNeedingLayout). This needs no dataflow tracking, because
- *    nothing upstream of the fixed-up op is ever touched by this pass, and
- *    its operand already arrives canonically declared thanks to (1)/(2)
- *    above.
+ *    ops: a "clean" split matching the dimension's current boundary, then a
+ *    distributed.ManualComputation (this project's own stand-in for Shardy's
+ *    sdy.manual_computation, see its own doc comment in Ops.td) whose region
+ *    computes the final local-shape result directly -- no transpose, since
+ *    Shardy's per-op reshape-rule machinery never even sees the merge once
+ *    it's wrapped this way. Applied strictly at that one op's own
+ *    operand/result (see canonicalizeOpNeedingLayout). This needs no
+ *    dataflow tracking, because nothing upstream of the fixed-up op is ever
+ *    touched by this pass, and its operand already arrives canonically
+ *    declared thanks to (1)/(2) above.
  *
  * Not yet supported: an op whose sharding rule marks a factor as
  * needing permutation or replication (e.g. stablehlo.convolution's spatial
@@ -115,11 +118,11 @@ namespace mlir::enzyme::distributed {
 namespace {
 
 // Marks an op as one of this pass's own boundary-canonicalization rewrite
-// ops (the split/transpose/merge triplet canonicalizeDimOrder builds). These
+// ops (the split/manual-computation pair canonicalizeDimOrder builds). These
 // are deliberately still in "has a dimension mapped to more than one
 // factor" form -- that's exactly the split/merge they exist to perform --
 // so the classifier walk below must skip them rather than flag them as an
-// unhandled CompoundFactor reshape.
+// unhandled multi-factor reshape.
 static constexpr llvm::StringLiteral kInternalRewriteMarker =
     "canonicalize_sharded_factor_order.internal";
 
@@ -196,27 +199,32 @@ static IndexedTensorShardingAttr buildRankShiftedSharding(
 
 // Clean-splits `tensorValue` at dimension `dim` into one sub-dimension per
 // entry of `extents` (current order, so the split always matches existing
-// structure) -> transposes into `canonicalPositions` order -> merges back to
-// the original shape. The transpose is the only op that reorders data, and
-// it's confined to this one dimension's own sub-factors, never touching
-// which device holds which data. Also attaches correct distributed.
-// argument_shardings/output_shardings to each of the three new ops (see
-// buildRankShiftedSharding), so LowerKernels.cpp's Shardy translation
-// doesn't leave them unannotated.
+// structure), then wraps that split value in a distributed.ManualComputation
+// declaring the currently-Sharded sub-dimensions as manual axes, whose region
+// computes the final (merged-back, canonical-order) local result directly --
+// no transpose, ever. Also attaches correct distributed.argument_shardings/
+// output_shardings to the split op and the manual-computation op (see
+// buildRankShiftedSharding), so LowerKernels.cpp's Shardy translation doesn't
+// leave them unannotated.
 //
-// Why this is a real rewrite, given the top-of-file comment's claim that a
-// device's own local tile never changes: at the point this pass runs, a
-// Sharded factor's extent is still its global-relative (mesh) size, not the
+// Why a real rewrite is needed at all, given the top-of-file comment's claim
+// that a device's own local tile never changes: at the point this pass runs,
+// a Sharded factor's extent is still its global-relative (mesh) size, not the
 // 1 a single device ends up with, and Shardy's own reshape-sharding-rule
 // machinery derives one specific factor decomposition mechanically from the
 // concrete shapes at that size -- it can't be told to trust a declared order
-// that doesn't match. So the fix has to be self-consistent at that
-// granularity, even though the sequence becomes a pure relabeling (no data
-// actually moves) once Shardy later divides the Sharded factor down to 1.
-static Value buildSplitTransposeMergeChain(
-    OpBuilder &builder, Location loc, Value tensorValue, int64_t dim,
-    ArrayRef<int64_t> extents, ArrayRef<int64_t> canonicalPositions,
-    ArrayRef<int64_t> singleFactorSlot,
+// that doesn't match. distributed.ManualComputation sidesteps this rather
+// than working around it: wrapping the split value's Sharded sub-dimensions
+// as manual axes means Shardy's own per-op reshape-rule machinery never sees
+// (and so never has to be fooled by) the merge at all -- only the
+// ManualComputation op itself gets converted (by literal inlining, see
+// Shardy's own ManualComputationOpPattern), and its region already computes
+// with concrete local sizes throughout, using exactly the same axis-extent
+// information (axis::getFactorExtent) this pass already has at this stage.
+static Value buildManualComputationChain(
+    OpBuilder &builder, Location loc, DistributedKernelOp kernelOp,
+    Value tensorValue, int64_t dim, ArrayRef<int64_t> extents,
+    ArrayRef<bool> isSharded, ArrayRef<int64_t> singleFactorSlot,
     ArrayRef<DenseI64ArrayAttr> fullDimAxesList,
     DenseI64ArrayAttr unreducedAxes, ArrayRef<int64_t> finalDimAxisIndices) {
   MLIRContext *ctx = builder.getContext();
@@ -243,13 +251,20 @@ static Value buildSplitTransposeMergeChain(
   // fullDimAxesList/unreducedAxes: the tensor's own current per-dimension
   // sharding (untouched dims pass through as-is via buildRankShiftedSharding).
   // singleFactorSlot: one dedicated single-factor partitioning-axis slot per
-  // raw factor, in current order, built by the caller.
+  // raw factor, in current order, built by the caller. Each new sub-dimension
+  // gets exactly one slot in its own dim_partitioning_axes entry, so this is
+  // trivially "manual axes majormost" no matter which sub-dimensions end up
+  // manual -- no permutation is needed on the operand side at all.
   IndexedTensorShardingAttr operandSharding =
       IndexedTensorShardingAttr::get(ctx, fullDimAxesList, unreducedAxes);
   SmallVector<DenseI64ArrayAttr> splitDimEntries;
   splitDimEntries.reserve(n);
+  SmallVector<int64_t> manualAxes;
   for (int64_t k = 0; k < n; ++k) {
     splitDimEntries.push_back(DenseI64ArrayAttr::get(ctx, singleFactorSlot[k]));
+    if (isSharded[k]) {
+      manualAxes.push_back(singleFactorSlot[k]);
+    }
   }
   IndexedTensorShardingAttr splitOutputSharding = buildRankShiftedSharding(
       ctx, fullDimAxesList, dim, splitDimEntries, unreducedAxes);
@@ -260,62 +275,63 @@ static Value buildSplitTransposeMergeChain(
       "distributed.output_shardings",
       IndexedTensorShardingPerValueAttr::get(ctx, {splitOutputSharding}));
 
-  SmallVector<int64_t> permutation(splitShape.size());
-  for (int64_t i = 0; i < dim; ++i) {
-    permutation[i] = i;
-  }
-  for (int64_t i = dim + 1; i < rank; ++i) {
-    permutation[i + n - 1] = i + n - 1;
-  }
-  for (int64_t k = 0; k < n; ++k) {
-    permutation[dim + k] = dim + canonicalPositions[k];
-  }
-
-  SmallVector<int64_t> transposedShape(splitShape.size());
-  for (size_t i = 0; i < permutation.size(); ++i) {
-    transposedShape[i] = splitShape[permutation[i]];
-  }
-  auto transposedType =
-      RankedTensorType::get(transposedShape, tensorType.getElementType());
-  auto transposeOp = builder.create<stablehlo::TransposeOp>(
-      loc, transposedType, splitVal, builder.getDenseI64ArrayAttr(permutation));
-  Value transposedVal = transposeOp;
-
-  SmallVector<DenseI64ArrayAttr> transposedDimEntries(n);
-  for (int64_t k = 0; k < n; ++k) {
-    transposedDimEntries[k] = splitDimEntries[canonicalPositions[k]];
-  }
-  IndexedTensorShardingAttr transposeOutputSharding = buildRankShiftedSharding(
-      ctx, fullDimAxesList, dim, transposedDimEntries, unreducedAxes);
-  // argument_shardings is literally splitOutputSharding (the same attribute
-  // value, not merely equal content), so constructShardyAttributes's
-  // producer/consumer sharding-equality check is hit and no
-  // sdy.sharding_constraint gets inserted for this operand.
-  transposeOp->setAttr(
-      "distributed.argument_shardings",
-      IndexedTensorShardingPerValueAttr::get(ctx, {splitOutputSharding}));
-  transposeOp->setAttr(
-      "distributed.output_shardings",
-      IndexedTensorShardingPerValueAttr::get(ctx, {transposeOutputSharding}));
-
-  auto mergeOp =
-      builder.create<stablehlo::ReshapeOp>(loc, tensorType, transposedVal);
-  mergeOp->setDiscardableAttr(kInternalRewriteMarker, builder.getUnitAttr());
-
-  // finalDimAxisIndices is the caller's already-computed final slot list for
-  // `dim` (identical to what it assigns back into axisIndices) -- reused
-  // as-is so this can't drift from what the caller ends up declaring.
-  IndexedTensorShardingAttr mergeOutputSharding = buildRankShiftedSharding(
+  // finalDimAxisIndices is the caller's already-computed final (canonical,
+  // Sharded-major) slot list for `dim` (identical to what it assigns back
+  // into axisIndices) -- reused as-is so this can't drift from what the
+  // caller ends up declaring. This is the manual computation's *result*
+  // sharding: the one place a real permutation of slots (not just a
+  // pass-through) shows up, since it's this op's own declared boundary that
+  // establishes the canonical order everything downstream sees.
+  IndexedTensorShardingAttr manualOutputSharding = buildRankShiftedSharding(
       ctx, fullDimAxesList, dim,
       {DenseI64ArrayAttr::get(ctx, finalDimAxisIndices)}, unreducedAxes);
-  mergeOp->setAttr(
-      "distributed.argument_shardings",
-      IndexedTensorShardingPerValueAttr::get(ctx, {transposeOutputSharding}));
-  mergeOp->setAttr(
-      "distributed.output_shardings",
-      IndexedTensorShardingPerValueAttr::get(ctx, {mergeOutputSharding}));
 
-  return mergeOp;
+  // Region block-argument shape: splitShape with each manual (Sharded)
+  // sub-dimension divided down to its own local size -- always 1, since
+  // LowerKernels.cpp sizes that slot's Shardy mesh axis to exactly match the
+  // factor's own extent (see constructShardyAttributes). Non-manual
+  // (Local) sub-dimensions are left at full extent unchanged.
+  SmallVector<int64_t> localSplitShape(splitShape.begin(), splitShape.end());
+  for (int64_t k = 0; k < n; ++k) {
+    if (isSharded[k]) {
+      localSplitShape[dim + k] = 1;
+    }
+  }
+
+  // Region result shape: the original tensor's own dimension `dim` divided
+  // by the product of its Sharded sub-dimensions' extents (i.e. its local
+  // size once Shardy divides those factors down) -- every other dimension
+  // unchanged.
+  int64_t shardedExtentProduct = 1;
+  for (int64_t k = 0; k < n; ++k) {
+    if (isSharded[k]) {
+      shardedExtentProduct *= extents[k];
+    }
+  }
+  SmallVector<int64_t> localMergedShape(tensorType.getShape());
+  localMergedShape[dim] /= shardedExtentProduct;
+
+  auto manualOp = builder.create<DistributedManualComputationOp>(
+      loc, TypeRange{tensorType}, ValueRange{splitVal},
+      builder.getDenseI64ArrayAttr(manualAxes),
+      IndexedTensorShardingPerValueAttr::get(ctx, {splitOutputSharding}),
+      IndexedTensorShardingPerValueAttr::get(ctx, {manualOutputSharding}));
+
+  Block *body =
+      builder.createBlock(&manualOp.getBody(), {},
+                          TypeRange{RankedTensorType::get(
+                              localSplitShape, tensorType.getElementType())},
+                          {loc});
+  OpBuilder bodyBuilder = OpBuilder::atBlockBegin(body);
+  auto localMergeOp = bodyBuilder.create<stablehlo::ReshapeOp>(
+      loc, RankedTensorType::get(localMergedShape, tensorType.getElementType()),
+      body->getArgument(0));
+  localMergeOp->setDiscardableAttr(kInternalRewriteMarker,
+                                   builder.getUnitAttr());
+  bodyBuilder.create<DistributedYieldOp>(loc, TypeRange{},
+                                         ValueRange{localMergeOp});
+
+  return manualOp.getResult(0);
 }
 
 // Given a flattened raw-factor list's Sharded/Local classification, returns
@@ -354,7 +370,7 @@ computeCanonicalPositions(ArrayRef<bool> isSharded,
 // lower_kernels.mlir), so the canonical shard/local boundary may need to cut
 // *through* one slot, not just between slots. Shared by both the pure
 // metadata reorder (computeCanonicalSlotReorder) and the real-rewrite path
-// (canonicalizeDimOrder, for a CompoundFactor op's own operand/result).
+// (canonicalizeDimOrder, for a multi-factor op's own operand/result).
 struct FlattenedRawFactors {
   SmallVector<TypedValue<axis::AxisFactorType>> rawFactors;
   SmallVector<int64_t>
@@ -455,7 +471,7 @@ computeCanonicalSlotReorder(DistributedKernelOp kernelOp,
 }
 
 // The real-rewrite half (case (3) above (this file's own top-of-file comment):
-// a CompoundFactor op's own operand/result). Returns the value to use going
+// a multi-factor op's own operand/result). Returns the value to use going
 // forward for this one dimension (unchanged input if already canonical), and
 // rewrites `axisIndices` in place to the new canonical list of slot indices.
 // Fails (leaving both untouched) only if a slot's provenance can't be resolved
@@ -491,11 +507,19 @@ canonicalizeDimOrder(OpBuilder &builder, Location loc,
         ArrayRef<TypedValue<axis::AxisFactorType>>(flat->rawFactors[k]));
   }
 
-  SmallVector<int64_t> newAxisIndices =
-      regroupIntoSlots(kernelOp, *flat, axisIndices, canonicalPositions);
+  // Unlike the pure-metadata reorder's regroupIntoSlots (which reuses/merges
+  // slots to minimize how many new axis.product values get created), the
+  // manual-computation output must keep every raw factor on its OWN
+  // single-factor slot: distributed.ManualComputation's manual_axes need to
+  // resolve to exactly one raw factor each (see its verifier), which a
+  // regrouped composite slot spanning a Sharded/Local boundary would violate.
+  SmallVector<int64_t> newAxisIndices(n);
+  for (int64_t k = 0; k < n; ++k) {
+    newAxisIndices[k] = singleFactorSlot[canonicalPositions[k]];
+  }
 
-  Value mergedVal = buildSplitTransposeMergeChain(
-      builder, loc, tensorValue, dim, flat->extents, canonicalPositions,
+  Value mergedVal = buildManualComputationChain(
+      builder, loc, kernelOp, tensorValue, dim, flat->extents, flat->isSharded,
       singleFactorSlot, fullDimAxesList, unreducedAxes, newAxisIndices);
 
   axisIndices.assign(newAxisIndices.begin(), newAxisIndices.end());
@@ -546,12 +570,12 @@ static Value canonicalizeBoundaryValue(OpBuilder &builder, Location loc,
         canonicalizeDimOrder(builder, loc, kernelOp, current, dim, axisIndices,
                              newDimAxes, sharding.getUnreducedAxes());
     if (failed(rewritten)) {
-      mlir::emitRemark(loc) << "canonicalize-sharded-factor-order: dimension "
-                             << dim << " of a boundary value in kernel "
-                             << kernelOp.getOperationName()
-                             << " references a partitioning-axis slot whose "
-                                "provenance couldn't be resolved (index out "
-                                "of range, or not produced by axis.product)";
+      mlir::emitRemark(loc)
+          << "canonicalize-sharded-factor-order: dimension " << dim
+          << " of a boundary value in kernel " << kernelOp.getOperationName()
+          << " references a partitioning-axis slot whose "
+             "provenance couldn't be resolved (index out "
+             "of range, or not produced by axis.product)";
       sawUnsupported = true;
       continue;
     }
@@ -734,6 +758,20 @@ resolveCurrentSharding(Value value) {
   if (!def) {
     return failure();
   }
+  // DistributedManualComputationOp declares output_shardings as a real ODS
+  // argument (stored under the plain attribute name "output_shardings", not
+  // the "distributed."-prefixed discardable attribute every other op in a
+  // kernel body carries), so it needs its own accessor here rather than the
+  // generic string lookup below.
+  if (auto manualOp = dyn_cast<DistributedManualComputationOp>(def)) {
+    ArrayRef<IndexedTensorShardingAttr> shardings =
+        manualOp.getOutputShardings().getShardings();
+    auto result = dyn_cast<OpResult>(value);
+    if (!result || result.getResultNumber() >= shardings.size()) {
+      return failure();
+    }
+    return shardings[result.getResultNumber()];
+  }
   auto outputShardings = def->getAttrOfType<IndexedTensorShardingPerValueAttr>(
       "distributed.output_shardings");
   if (!outputShardings) {
@@ -752,7 +790,7 @@ resolveCurrentSharding(Value value) {
 }
 
 // Canonicalizes one op that genuinely needs a specific factor order on some
-// dimension (a CompoundFactor op -- a reshape splitting or joining axes),
+// dimension (a multi-factor op -- a reshape splitting or joining axes),
 // using its own already-accurate distributed.argument_shardings/
 // output_shardings attribute (set once, consistently, by
 // ClusterDistributedKernels.cpp) as the source of truth for its operands'
@@ -850,12 +888,13 @@ static bool canonicalizeOpNeedingLayout(Operation *op,
       // order), or Shardy's own reshape-rule-derived local type computation
       // for `op` contradicts the (wrongly reassigned) declared order,
       // producing an inconsistent mesh/type error. Only the newly-inserted
-      // chain's own final (merge) op -- which really does produce the
-      // canonical order -- carries that declaration; downstream consumers
-      // are redirected to read from it instead. Confirmed empirically: a
-      // merge-type CompoundFactor op whose own declared output_shardings
-      // was previously (incorrectly) overwritten to the post-chain value
-      // failed Shardy's own lowering with a mesh/type mismatch.
+      // chain's own final (distributed.ManualComputation) op -- which really
+      // does produce the canonical order -- carries that declaration;
+      // downstream consumers are redirected to read from it instead.
+      // Confirmed empirically: a merge-type multi-factor op whose own
+      // declared output_shardings was previously (incorrectly) overwritten to
+      // the post-chain value failed Shardy's own lowering with a mesh/type
+      // mismatch.
     }
   }
 
@@ -873,7 +912,7 @@ static bool canonicalizeOpNeedingLayout(Operation *op,
 //    contracting dims uniformly, without hardcoding op identity.
 //  - A dimension mapped to more than one factor
 //  (rule.hasDimensionsWithMultipleFactors())
-//    is exactly the reshape "compound factor" signature -- a real split/join
+//    is exactly the reshape "multi-factor" signature -- a real split/join
 //    rewrite is needed, whatever the op is.
 //  - A permutation or need-replication factor looks like a clean 1:1
 //    mapping by arity alone but isn't safe to treat as plain pass-through:
@@ -883,10 +922,10 @@ static bool canonicalizeOpNeedingLayout(Operation *op,
 //    a free relabeling. Convolution is exactly the kind of op the
 //    elementwise/pass-through argument above does *not* apply to.
 enum class OpClassification {
-  Conforming,     // no rewrite needed
-  CompoundFactor, // split/join signature -- needs the reshape-style rewrite
-  SpecialFactor,  // permutation/need-replication/blocked-propagation factor
-  NoRule,         // no sharding rule could be synthesized at all
+  Conforming,    // no rewrite needed
+  MultiFactor,   // split/join signature -- needs the reshape-style rewrite
+  SpecialFactor, // permutation/need-replication/blocked-propagation factor
+  NoRule,        // no sharding rule could be synthesized at all
 };
 
 static OpClassification classifyOp(Operation *op) {
@@ -895,7 +934,7 @@ static OpClassification classifyOp(Operation *op) {
     return OpClassification::NoRule;
   }
   if (rule.hasDimensionsWithMultipleFactors()) {
-    return OpClassification::CompoundFactor;
+    return OpClassification::MultiFactor;
   }
   for (int64_t factor = 0, n = rule.getNumFactors(); factor < n; ++factor) {
     if (!rule.isPassThroughFactor(factor) && !rule.isReductionFactor(factor)) {
@@ -917,7 +956,7 @@ struct CanonicalizeShardedFactorOrderPass
 
     // Pre-order: a DistributedKernelOp's own boundary (and any cast op) must
     // be canonicalized BEFORE the ops inside a kernel body are visited, so
-    // resolveCurrentSharding (used by the CompoundFactor/reshape path) sees
+    // resolveCurrentSharding (used by the multi-factor/reshape path) sees
     // an already-canonical producer instead of a stale one. MLIR's default
     // walk order is post-order (children before parents), which is the
     // wrong direction for this dependency.
@@ -950,7 +989,7 @@ struct CanonicalizeShardedFactorOrderPass
             // must happen AFTER the body's ops are visited (guaranteed by
             // program order within this block, since a yield is always a
             // terminator, visited last among its siblings under pre-order) --
-            // otherwise, if the yielded value traces through a CompoundFactor
+            // otherwise, if the yielded value traces through a multi-factor
             // fix (a merge, which builds brand-new slots independent of
             // anything computed here), a separately/eagerly pure-metadata-
             // reordered output_shardings would reference DIFFERENT (though
@@ -979,7 +1018,7 @@ struct CanonicalizeShardedFactorOrderPass
                 // the existing (already-empty) declaration silently instead
                 // of flagging it as unsupported.
                 bool benign = idx < existing.size() &&
-                             existing[idx].getDimPartitioningAxes().empty();
+                              existing[idx].getDimPartitioningAxes().empty();
                 if (!benign) {
                   op->emitRemark()
                       << "canonicalize-sharded-factor-order: yielded operand "
@@ -1027,7 +1066,8 @@ struct CanonicalizeShardedFactorOrderPass
             return;
           }
           if (isa<DistributedFunctionOp, DistributedAwait,
-                  UnrealizedConversionCastOp, DistributedCollectiveOp>(op)) {
+                  UnrealizedConversionCastOp, DistributedCollectiveOp,
+                  DistributedManualComputationOp>(op)) {
             // DistributedFunctionOp: a real external boundary, deliberately
             // untouched (see above). DistributedAwait just unwraps an
             // already-computed async handle -- a no-op on the payload, per its
@@ -1038,7 +1078,13 @@ struct CanonicalizeShardedFactorOrderPass
             // groupings rather than one-per-tensor-dimension, so it has no
             // positional structure this pass can act on -- whatever correctness
             // is needed around a collective lives entirely in its bookending
-            // casts.
+            // casts. DistributedManualComputationOp is this pass's own
+            // construction (buildManualComputationChain): its argument_
+            // shardings/output_shardings are already canonical by
+            // construction, and it has no Shardy sharding rule of its own for
+            // classifyOp to consult (it isn't a stablehlo/sdy op), so it must
+            // be skipped explicitly rather than falling into the "no rule
+            // could be synthesized" exotic-op failure below.
             return;
           }
           if (auto g2l = dyn_cast<DistributedCastGlobalToLocalOp>(op)) {
@@ -1107,10 +1153,10 @@ struct CanonicalizeShardedFactorOrderPass
             }
             return;
           }
-          case OpClassification::CompoundFactor: {
+          case OpClassification::MultiFactor: {
             // The split/join signature -- routed by the rule's own structure,
             // not by checking isa<stablehlo::ReshapeOp>, since any op producing
-            // a compound-factor rule needs the same treatment. This is the one
+            // a multi-factor rule needs the same treatment. This is the one
             // case that genuinely needs a fix, applied directly at `op` itself.
             auto kernelOp = op->getParentOfType<DistributedKernelOp>();
             if (!kernelOp) {
