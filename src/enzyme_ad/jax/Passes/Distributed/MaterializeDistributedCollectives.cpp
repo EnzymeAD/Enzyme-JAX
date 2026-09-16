@@ -100,10 +100,9 @@ struct MaterializeDistributedCollectivesPass
 
     auto op = axisBuilder->create<mlir::enzyme::distributed::LogicalMeshAxesOp>(
         *axisLoc, symbol.getExtent());
-    auto asFactor =
-        axis::viewAxesAsFactors(op.getAxes(), *axisBuilder, *axisLoc);
-    symbolToLogicalAxis[symbol] = asFactor.front();
-    return asFactor.front();
+    auto asFactor = axis::viewAxisAsFactor(op.getAxis(), *axisBuilder, *axisLoc);
+    symbolToLogicalAxis[symbol] = asFactor;
+    return asFactor;
   }
 
   // Collects logical-axis factors for one tensor partitioning dimension list.

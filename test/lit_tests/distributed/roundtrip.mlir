@@ -9,7 +9,8 @@ module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 3>, !distributed.physical_comm_axis<3, 1>]
 
   %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 3>, !distributed.physical_comm_axis<3, 1>
-  %l0, %l1 = distributed.LogicalMeshAxes [2, 3] : !distributed.logical_mesh_axis<2>, !distributed.logical_mesh_axis<3>
+  %l0 = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
+  %l1 = distributed.LogicalMeshAxes 3 : !distributed.logical_mesh_axis<3>
   %r0 = distributed.ReplicationAxis 4 : !distributed.replication_axis<4>
   %d0 = distributed.DeviceLocalAxis 5 : !distributed.device_local_axis<5>
 
@@ -27,7 +28,8 @@ module {
 // CHECK-LABEL: module {
 // CHECK: distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 3>, !distributed.physical_comm_axis<3, 1>]
 // CHECK: %{{.*}}:2 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 3>, !distributed.physical_comm_axis<3, 1>
-// CHECK: %{{.*}}:2 = distributed.LogicalMeshAxes [2, 3] : !distributed.logical_mesh_axis<2>, !distributed.logical_mesh_axis<3>
+// CHECK: %{{.*}} = distributed.LogicalMeshAxes 2 : <2>
+// CHECK: %{{.*}} = distributed.LogicalMeshAxes 3 : <3>
 // CHECK: %{{.*}} = distributed.ReplicationAxis 4 : <4>
 // CHECK: %{{.*}} = distributed.DeviceLocalAxis 5 : <5>
 // CHECK: "distributed.DistributedFunction"(%{{.*}}) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>, function_type = (tensor<12xf32>) -> tensor<12xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = [0]>]>, sym_name = "identity"}> ({
@@ -65,7 +67,8 @@ module {
 
   %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
 
-  %l0, %l1 = distributed.LogicalMeshAxes [2, 2] : !distributed.logical_mesh_axis<2>, !distributed.logical_mesh_axis<2>
+  %l0 = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
+  %l1 = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
   %lf0 = axis.factor %l0 : !distributed.logical_mesh_axis<2> <2, 1>
   %lf1 = axis.factor %l1 : !distributed.logical_mesh_axis<2> <2, 1>
   %ta = axis.getaxis tensor<8xf32> 0
@@ -192,7 +195,7 @@ module {
 // from its internal (global) block argument and yield types, with a body op
 // carrying the per-op sharding metadata the pipeline attaches.
 module {
-  %l = distributed.LogicalMeshAxes [4] : !distributed.logical_mesh_axis<4>
+  %l = distributed.LogicalMeshAxes 4 : !distributed.logical_mesh_axis<4>
   %lf = axis.factor %l : !distributed.logical_mesh_axis<4><4, 1>
   %g = axis.product (%lf : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 4, 1>)
   %input = tensor.empty() : tensor<2xf32>
@@ -227,7 +230,7 @@ module {
 // argument/yielded value are at the fully-divided-down local shape for
 // exactly the manual (fully-sharded, extent-4) axis.
 module {
-  %l = distributed.LogicalMeshAxes [4] : !distributed.logical_mesh_axis<4>
+  %l = distributed.LogicalMeshAxes 4 : !distributed.logical_mesh_axis<4>
   %lf = axis.factor %l : !distributed.logical_mesh_axis<4><4, 1>
   %g = axis.product (%lf : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 4, 1>)
   %input = tensor.empty() : tensor<4xf32>

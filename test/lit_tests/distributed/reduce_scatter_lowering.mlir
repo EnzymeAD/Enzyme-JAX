@@ -7,7 +7,8 @@ module {
 
   %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<4, 2>, !distributed.physical_comm_axis<2, 1>
 
-  %l0, %l1 = distributed.LogicalMeshAxes [4, 2] : !distributed.logical_mesh_axis<4>, !distributed.logical_mesh_axis<2>
+  %l0 = distributed.LogicalMeshAxes 4 : !distributed.logical_mesh_axis<4>
+  %l1 = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
   %lf0_upper = axis.factor %l0 : !distributed.logical_mesh_axis<4> <2, 2>
   %lf0_lower = axis.factor %l0 : !distributed.logical_mesh_axis<4> <2, 1>
   %lf1 = axis.factor %l1 : !distributed.logical_mesh_axis<2> <2, 1>

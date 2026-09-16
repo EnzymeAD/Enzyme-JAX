@@ -8,10 +8,10 @@ module @axis_ssa_anchor {
   %2 = axis.factor %1 : !axis.shape_axis<tensor<1xf32>, 0><1, 1>
   %3 = axis.product (%9 : !axis.axis_factor<!distributed.logical_mesh_axis<8>, 8, 1>, %2 : !axis.axis_factor<!axis.shape_axis<tensor<1xf32>, 0>, 1, 1>)
   %4 = axis.product (%9 : !axis.axis_factor<!distributed.logical_mesh_axis<8>, 8, 1>, %6 : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 4, 1>)
-  %5 = distributed.LogicalMeshAxes [4] : !distributed.logical_mesh_axis<4>
+  %5 = distributed.LogicalMeshAxes 4 : !distributed.logical_mesh_axis<4>
   %6 = axis.factor %5 : !distributed.logical_mesh_axis<4><4, 1>
   %7 = axis.product (%6 : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 4, 1>)
-  %8 = distributed.LogicalMeshAxes [8] : !distributed.logical_mesh_axis<8>
+  %8 = distributed.LogicalMeshAxes 8 : !distributed.logical_mesh_axis<8>
   %9 = axis.factor %8 : !distributed.logical_mesh_axis<8><8, 1>
   "distributed.DistributedFunction"(%0, %7) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>]>, function_type = (tensor<8x4xf32>) -> tensor<8xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>, sym_name = "main"}> ({
   ^bb0(%arg0: tensor<8x4xf32>):
@@ -32,8 +32,8 @@ module @axis_ssa_anchor {
 }
 
 // CHECK-LABEL: module @axis_ssa_anchor {
-// CHECK: %[[LOGICAL_AXIS:.*]] = distributed.LogicalMeshAxes [8] : !distributed.logical_mesh_axis<8>
-// CHECK-NOT: distributed.LogicalMeshAxes [8] : !distributed.logical_mesh_axis<8>
+// CHECK: %[[LOGICAL_AXIS:.*]] = distributed.LogicalMeshAxes 8 : <8>
+// CHECK-NOT: distributed.LogicalMeshAxes 8 : <8>
 // CHECK: "distributed.DistributedFunction"
 // CHECK: distributed.DistributedKernel
 // CHECK: distributed.CastGlobalToLocal {{.*}} axes (%{{.*}} : !axis.factor_group<8>)

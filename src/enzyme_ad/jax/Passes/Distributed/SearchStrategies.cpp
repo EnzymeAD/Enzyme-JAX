@@ -146,19 +146,18 @@ findAllLogicalAxes(ModuleOp moduleOp) {
   std::vector<TypedValue<LogicalMeshAxisType>> logicalAxes;
   moduleOp.walk([&](LogicalMeshAxesOp axesOp) {
     // Check dead axes have been cleaned up so we don't have to search over them
-    for (Value axis : axesOp.getAxes()) {
-      bool hasUsers = !axis.use_empty();
+    Value axis = axesOp.getAxis();
+    bool hasUsers = !axis.use_empty();
 #ifndef NDEBUG
-      static bool remarked = false;
-      if (!remarked && !hasUsers) {
-        axesOp.emitWarning("Skipping dead logical axis: will unnecessarily "
-                           "increase search space. Skipping future remarks.");
-        remarked = true;
-      }
-#endif
-      if (hasUsers)
-        logicalAxes.push_back(cast<TypedValue<LogicalMeshAxisType>>(axis));
+    static bool remarked = false;
+    if (!remarked && !hasUsers) {
+      axesOp.emitWarning("Skipping dead logical axis: will unnecessarily "
+                         "increase search space. Skipping future remarks.");
+      remarked = true;
     }
+#endif
+    if (hasUsers)
+      logicalAxes.push_back(cast<TypedValue<LogicalMeshAxisType>>(axis));
   });
   return logicalAxes;
 }

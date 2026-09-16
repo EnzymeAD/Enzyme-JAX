@@ -242,9 +242,9 @@ struct ClusterDistributedKernelsPass
         axis_builder->create<mlir::enzyme::distributed::LogicalMeshAxesOp>(
             *axis_loc, symbol.getExtent());
     auto as_factor =
-        axis::viewAxesAsFactors(op.getAxes(), *axis_builder, *axis_loc);
-    symbolToLogicalAxis[symbol] = as_factor.front();
-    return as_factor.front();
+        axis::viewAxisAsFactor(op.getAxis(), *axis_builder, *axis_loc);
+    symbolToLogicalAxis[symbol] = as_factor;
+    return as_factor;
   }
 
   llvm::SmallVector<TV_AxisFactor>

@@ -8,7 +8,7 @@ module @already_canonical {
   func.func @main() {
     return
   }
-  %logical = distributed.LogicalMeshAxes [2] : !distributed.logical_mesh_axis<2>
+  %logical = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
   %devloc = distributed.DeviceLocalAxis 2 : !distributed.device_local_axis<2>
   %lf = axis.factor %logical : !distributed.logical_mesh_axis<2><2, 1>
   %df = axis.factor %devloc : !distributed.device_local_axis<2><2, 1>
@@ -48,7 +48,7 @@ module @sandwiched_within_slot {
   func.func @main() {
     return
   }
-  %logical = distributed.LogicalMeshAxes [2] : !distributed.logical_mesh_axis<2>
+  %logical = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
   %devloc = distributed.DeviceLocalAxis 2 : !distributed.device_local_axis<2>
   %lf = axis.factor %logical : !distributed.logical_mesh_axis<2><2, 1>
   %df = axis.factor %devloc : !distributed.device_local_axis<2><2, 1>
@@ -87,7 +87,7 @@ module @sandwiched_across_slots {
     return
   }
   %a1 = distributed.DeviceLocalAxis 4 : !distributed.device_local_axis<4>
-  %a2 = distributed.LogicalMeshAxes [2] : !distributed.logical_mesh_axis<2>
+  %a2 = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
   %a3 = distributed.DeviceLocalAxis 4 : !distributed.device_local_axis<4>
   %f1 = axis.factor %a1 : !distributed.device_local_axis<4><4, 1>
   %f2 = axis.factor %a2 : !distributed.logical_mesh_axis<2><2, 1>
@@ -124,7 +124,7 @@ module @cast_global_to_local_sandwiched {
   func.func @main() {
     return
   }
-  %logical = distributed.LogicalMeshAxes [2] : !distributed.logical_mesh_axis<2>
+  %logical = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
   %devloc = distributed.DeviceLocalAxis 2 : !distributed.device_local_axis<2>
   %lf = axis.factor %logical : !distributed.logical_mesh_axis<2><2, 1>
   %df = axis.factor %devloc : !distributed.device_local_axis<2><2, 1>
@@ -146,7 +146,7 @@ module @cast_local_to_global_sandwiched {
   func.func @main() {
     return
   }
-  %logical = distributed.LogicalMeshAxes [2] : !distributed.logical_mesh_axis<2>
+  %logical = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
   %devloc = distributed.DeviceLocalAxis 2 : !distributed.device_local_axis<2>
   %lf = axis.factor %logical : !distributed.logical_mesh_axis<2><2, 1>
   %df = axis.factor %devloc : !distributed.device_local_axis<2><2, 1>
@@ -180,7 +180,7 @@ module @kernel_internal_reshape_sandwiched {
     return
   }
   %a1 = distributed.DeviceLocalAxis 4 : !distributed.device_local_axis<4>
-  %a2 = distributed.LogicalMeshAxes [2] : !distributed.logical_mesh_axis<2>
+  %a2 = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
   %a3 = distributed.DeviceLocalAxis 4 : !distributed.device_local_axis<4>
   %f1 = axis.factor %a1 : !distributed.device_local_axis<4><4, 1>
   %f2 = axis.factor %a2 : !distributed.logical_mesh_axis<2><2, 1>
@@ -230,9 +230,9 @@ module @kernel_internal_merge_sandwiched {
   func.func @main() {
     return
   }
-  %xs = distributed.LogicalMeshAxes [2] : !distributed.logical_mesh_axis<2>
+  %xs = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
   %xl = distributed.DeviceLocalAxis 3 : !distributed.device_local_axis<3>
-  %ys = distributed.LogicalMeshAxes [2] : !distributed.logical_mesh_axis<2>
+  %ys = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
   %yl = distributed.DeviceLocalAxis 2 : !distributed.device_local_axis<2>
   %fxs = axis.factor %xs : !distributed.logical_mesh_axis<2><2, 1>
   %fxl = axis.factor %xl : !distributed.device_local_axis<3><3, 1>

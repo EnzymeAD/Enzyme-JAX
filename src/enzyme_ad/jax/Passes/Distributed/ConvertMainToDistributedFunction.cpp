@@ -59,9 +59,9 @@ static TV_AxisFactor getOrCreateLogicalAxisForSymbol(
 
   auto op = axisBuilder.create<mlir::enzyme::distributed::LogicalMeshAxesOp>(
       axisLoc, symbol.getExtent());
-  auto as_factor = axis::viewAxesAsFactors(op.getAxes(), axisBuilder, axisLoc);
-  symbolToLogicalAxis[symbol] = as_factor.front();
-  return as_factor.front();
+  auto as_factor = axis::viewAxisAsFactor(op.getAxis(), axisBuilder, axisLoc);
+  symbolToLogicalAxis[symbol] = as_factor;
+  return as_factor;
 }
 
 // Wraps one logical axis factor as a factor-group operand for function

@@ -65,7 +65,7 @@ module @logical_kernel {
   func.func @main() {
     return
   }
-  %logical = distributed.LogicalMeshAxes [4] : !distributed.logical_mesh_axis<4>
+  %logical = distributed.LogicalMeshAxes 4 : !distributed.logical_mesh_axis<4>
   %lf = axis.factor %logical : !distributed.logical_mesh_axis<4><4, 1>
   %lg = axis.product (%lf : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 4, 1>)
   %input = tensor.empty() : tensor<4xf32>
@@ -169,7 +169,7 @@ module @composite_kernel {
   func.func @main() {
     return
   }
-  %logical = distributed.LogicalMeshAxes [2] : !distributed.logical_mesh_axis<2>
+  %logical = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
   %devloc = distributed.DeviceLocalAxis 2 : !distributed.device_local_axis<2>
   %lf = axis.factor %logical : !distributed.logical_mesh_axis<2><2, 1>
   %df = axis.factor %devloc : !distributed.device_local_axis<2><2, 1>
@@ -209,8 +209,8 @@ module @addmul_kernel {
   func.func @main() {
     return
   }
-  %x_axis = distributed.LogicalMeshAxes [8] : !distributed.logical_mesh_axis<8>
-  %y_axis = distributed.LogicalMeshAxes [8] : !distributed.logical_mesh_axis<8>
+  %x_axis = distributed.LogicalMeshAxes 8 : !distributed.logical_mesh_axis<8>
+  %y_axis = distributed.LogicalMeshAxes 8 : !distributed.logical_mesh_axis<8>
   %xf = axis.factor %x_axis : !distributed.logical_mesh_axis<8><8, 1>
   %yf = axis.factor %y_axis : !distributed.logical_mesh_axis<8><8, 1>
   %xg = axis.product (%xf : !axis.axis_factor<!distributed.logical_mesh_axis<8>, 8, 1>)
@@ -262,9 +262,9 @@ module @dot_general_kernel {
   func.func @main() {
     return
   }
-  %i_axis = distributed.LogicalMeshAxes [2] : !distributed.logical_mesh_axis<2>
-  %k_axis = distributed.LogicalMeshAxes [2] : !distributed.logical_mesh_axis<2>
-  %j_axis = distributed.LogicalMeshAxes [2] : !distributed.logical_mesh_axis<2>
+  %i_axis = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
+  %k_axis = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
+  %j_axis = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
   %if = axis.factor %i_axis : !distributed.logical_mesh_axis<2><2, 1>
   %kf = axis.factor %k_axis : !distributed.logical_mesh_axis<2><2, 1>
   %jf = axis.factor %j_axis : !distributed.logical_mesh_axis<2><2, 1>
