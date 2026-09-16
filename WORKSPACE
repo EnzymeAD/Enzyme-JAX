@@ -411,9 +411,6 @@ load("@rules_foreign_cc//foreign_cc:repositories.bzl", "rules_foreign_cc_depende
 # --incompatible_enable_cc_toolchain_resolution, which this build disables.
 rules_foreign_cc_dependencies(register_built_tools = False)
 
-http_archive(
-    name = "z3",
-    build_file = "//third_party/z3:BUILD",
-    strip_prefix = "z3-z3-5.1.0",
-    url = "https://github.com/Z3Prover/z3/archive/refs/tags/z3-5.1.0.tar.gz",
-)
+load("//third_party/z3:workspace.bzl", z3_workspace = "repo")
+
+z3_workspace()
