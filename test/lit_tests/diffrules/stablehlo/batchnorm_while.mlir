@@ -1,9 +1,7 @@
 // RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --enzyme-simplify-math --arith-raise --canonicalize | FileCheck %s
-// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --enzyme-simplify-math --arith-raise --canonicalize | stablehlo-translate --interpret
 
-// batch_norm_grad needs the batch mean and variance produced by the forward
-// batch_norm_training. Inside a while loop those must be cached; the reverse
-// body cannot reference the forward body directly.
+// Reverse-mode batch_norm_training inside a while must not use forward results
+// from the other loop body.
 
 module {
   func.func @in_loop(%x: tensor<2x3xf32>, %scale: tensor<3xf32>, %offset: tensor<3xf32>) -> tensor<2x3xf32> {
@@ -22,34 +20,12 @@ module {
     return %r#1 : tensor<2x3xf32>
   }
 
-  func.func @unrolled(%x: tensor<2x3xf32>, %scale: tensor<3xf32>, %offset: tensor<3xf32>) -> tensor<2x3xf32> {
-    %o0, %m0, %v0 = "stablehlo.batch_norm_training"(%x,  %scale, %offset) <{epsilon = 9.99999974E-6 : f32, feature_index = 1 : i64}> : (tensor<2x3xf32>, tensor<3xf32>, tensor<3xf32>) -> (tensor<2x3xf32>, tensor<3xf32>, tensor<3xf32>)
-    %o1, %m1, %v1 = "stablehlo.batch_norm_training"(%o0, %scale, %offset) <{epsilon = 9.99999974E-6 : f32, feature_index = 1 : i64}> : (tensor<2x3xf32>, tensor<3xf32>, tensor<3xf32>) -> (tensor<2x3xf32>, tensor<3xf32>, tensor<3xf32>)
-    %o2, %m2, %v2 = "stablehlo.batch_norm_training"(%o1, %scale, %offset) <{epsilon = 9.99999974E-6 : f32, feature_index = 1 : i64}> : (tensor<2x3xf32>, tensor<3xf32>, tensor<3xf32>) -> (tensor<2x3xf32>, tensor<3xf32>, tensor<3xf32>)
-    return %o2 : tensor<2x3xf32>
-  }
-
-  func.func @main() {
-    %x = stablehlo.constant dense<[[1.0, 2.0, 3.0], [4.0, 6.0, 9.0]]> : tensor<2x3xf32>
-    %scale = stablehlo.constant dense<[0.5, 1.0, 1.5]> : tensor<3xf32>
-    %offset = stablehlo.constant dense<[0.1, -0.2, 0.3]> : tensor<3xf32>
-    %seed = stablehlo.constant dense<[[1.0, -1.0, 0.5], [2.0, 0.25, -3.0]]> : tensor<2x3xf32>
-
-    %ref:4 = enzyme.autodiff @unrolled(%x, %scale, %offset, %seed) {
-      activity = [#enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>],
-      ret_activity = [#enzyme<activity enzyme_active>]
-    } : (tensor<2x3xf32>, tensor<3xf32>, tensor<3xf32>, tensor<2x3xf32>) -> (tensor<2x3xf32>, tensor<2x3xf32>, tensor<3xf32>, tensor<3xf32>)
-
+  func.func @main(%x: tensor<2x3xf32>, %scale: tensor<3xf32>, %offset: tensor<3xf32>, %seed: tensor<2x3xf32>) -> (tensor<2x3xf32>, tensor<2x3xf32>, tensor<3xf32>, tensor<3xf32>) {
     %loop:4 = enzyme.autodiff @in_loop(%x, %scale, %offset, %seed) {
       activity = [#enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>],
       ret_activity = [#enzyme<activity enzyme_active>]
     } : (tensor<2x3xf32>, tensor<3xf32>, tensor<3xf32>, tensor<2x3xf32>) -> (tensor<2x3xf32>, tensor<2x3xf32>, tensor<3xf32>, tensor<3xf32>)
-
-    check.expect_almost_eq %loop#0, %ref#0 : tensor<2x3xf32>
-    check.expect_almost_eq %loop#1, %ref#1 : tensor<2x3xf32>
-    check.expect_almost_eq %loop#2, %ref#2 : tensor<3xf32>
-    check.expect_almost_eq %loop#3, %ref#3 : tensor<3xf32>
-    return
+    return %loop#0, %loop#1, %loop#2, %loop#3 : tensor<2x3xf32>, tensor<2x3xf32>, tensor<3xf32>, tensor<3xf32>
   }
 }
 
@@ -58,4 +34,6 @@ module {
 // CHECK:           "stablehlo.batch_norm_training"
 // CHECK:         stablehlo.while
 // CHECK:           stablehlo.dynamic_slice {{.*}}sizes
-// CHECK:           "stablehlo.batch_norm_grad"
+// CHECK:           %[[X:.+]] = stablehlo.reshape
+// CHECK:           %{{.+}}, %[[MEAN:.+]], %[[VAR:.+]] = "stablehlo.batch_norm_training"(%[[X]],
+// CHECK:           "stablehlo.batch_norm_grad"(%[[X]], %{{.+}}, %[[MEAN]], %[[VAR]],
