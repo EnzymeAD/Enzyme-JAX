@@ -10,4 +10,4 @@ func.func @main(%buffer: tensor<4xf64>, %dst: tensor<i32>,
   return
 }
 
-// CHECK: error: expected single-use requests produced by comm.mpi.isend or comm.mpi.irecv in the same communication-safe block range
+// CHECK: error: mpi.waitall is not in a form supported by MPI-to-NCCL legalization
