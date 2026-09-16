@@ -97,7 +97,27 @@ struct FoldMpiWaitOp : public OpRewritePattern<comm::MpiWaitOp> {
       return rewriter.notifyMatchFailure(
           op, "expected an MPI request used only by this mpi.wait");
 
-    if (auto isend = request.getDefiningOp<comm::MpiIsendOp>()) {
+    Operation *producer = request.getDefiningOp();
+    if (!isa_and_nonnull<comm::MpiIsendOp, comm::MpiIrecvOp>(producer))
+      return rewriter.notifyMatchFailure(
+          op, "expected an MPI request produced by mpi.isend or mpi.irecv");
+    if (producer->getBlock() != op->getBlock() ||
+        !producer->isBeforeInBlock(op))
+      return rewriter.notifyMatchFailure(
+          op, "expected the MPI request producer to precede this mpi.wait "
+              "in the same block");
+
+    // Don't allow unrelated communication between the request producer and
+    // mpi.wait.
+    for (Operation *candidate = producer->getNextNode(); candidate != op;
+         candidate = candidate->getNextNode()) {
+      if (candidate->getName().getDialectNamespace() == "comm")
+        return rewriter.notifyMatchFailure(
+            op, "cannot fold a request producer interleaved with other "
+                "communication operations");
+    }
+
+    if (auto isend = dyn_cast<comm::MpiIsendOp>(producer)) {
       rewriter.eraseOp(op);
       rewriter.replaceOpWithNewOp<comm::MpiSendOp>(
           isend, isend.getBuffer(), isend.getDest(), isend.getTag(),
@@ -105,20 +125,16 @@ struct FoldMpiWaitOp : public OpRewritePattern<comm::MpiWaitOp> {
       return success();
     }
 
-    if (auto irecv = request.getDefiningOp<comm::MpiIrecvOp>()) {
-      rewriter.setInsertionPoint(irecv);
-      auto recv = rewriter.create<comm::MpiRecvOp>(
-          irecv.getLoc(), irecv.getBuffer().getType(), irecv.getSource(),
-          irecv.getTag(), irecv.getComm());
+    auto irecv = cast<comm::MpiIrecvOp>(producer);
+    rewriter.setInsertionPoint(irecv);
+    auto recv = rewriter.create<comm::MpiRecvOp>(
+        irecv.getLoc(), irecv.getBuffer().getType(), irecv.getSource(),
+        irecv.getTag(), irecv.getComm());
 
-      rewriter.eraseOp(op);
-      rewriter.replaceAllUsesWith(irecv.getBuffer(), recv.getBuffer());
-      rewriter.eraseOp(irecv);
-      return success();
-    }
-
-    return rewriter.notifyMatchFailure(
-        op, "expected an MPI request produced by mpi.isend or mpi.irecv");
+    rewriter.eraseOp(op);
+    rewriter.replaceAllUsesWith(irecv.getBuffer(), recv.getBuffer());
+    rewriter.eraseOp(irecv);
+    return success();
   }
 };
 
@@ -270,7 +286,7 @@ struct LegalizeMpiToNcclPass
     auto *context = getOperation()->getContext();
 
     // Normalize nonblocking MPI ops:
-    // A matching mpi.wait folds it's associated mpi.isend/mpi.irecv into an
+    // A matching mpi.wait folds its associated mpi.isend/mpi.irecv into an
     // mpi.send/recv; a matching mpi.waitall does the same and creates NCCL
     // group boundaries. This leaves independent mpi.send/recv's for the
     // conversion to nccl.send/recv below.
@@ -285,9 +301,8 @@ struct LegalizeMpiToNcclPass
     if (getOperation()
             ->walk([&](Operation *op) -> WalkResult {
               if (auto wait = dyn_cast<comm::MpiWaitOp>(op)) {
-                wait.emitError("expected a single-use request produced by "
-                               "comm.mpi.isend or "
-                               "comm.mpi.irecv");
+                wait.emitError("mpi.wait is not in a form supported by "
+                               "MPI-to-NCCL legalization");
                 return WalkResult::interrupt();
               }
               if (auto waitall = dyn_cast<comm::MpiWaitallOp>(op)) {
