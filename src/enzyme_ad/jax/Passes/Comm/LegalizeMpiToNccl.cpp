@@ -291,10 +291,8 @@ struct LegalizeMpiToNcclPass
                 return WalkResult::interrupt();
               }
               if (auto waitall = dyn_cast<comm::MpiWaitallOp>(op)) {
-                waitall.emitError("expected single-use requests produced by "
-                                  "comm.mpi.isend or "
-                                  "comm.mpi.irecv in the same "
-                                  "communication-safe block range");
+                waitall.emitError("mpi.waitall is not in a form supported by "
+                                  "MPI-to-NCCL legalization");
                 return WalkResult::interrupt();
               }
               return WalkResult::advance();
