@@ -635,7 +635,7 @@ static void copyShardyModuleToKernelAndErase(ModuleOp shardyModule,
  * Invokes Shardy's ConvertGlobalToLocal pass and then drop the mesh/sharding
  * metadata from the synthetic wrapper.
  */
-static void runShardyLowering(ModuleOp shardyModule, bool verify) {
+static LogicalResult runShardyLowering(ModuleOp shardyModule, bool verify) {
   PassManager pm(shardyModule.getContext());
   // With maximal logical parallelism (one device id per tensor element),
   // MLIR's verifier can spend a very long time walking the resulting
@@ -643,11 +643,18 @@ static void runShardyLowering(ModuleOp shardyModule, bool verify) {
   // default (verify defaults to false at the pass level) and only pay that
   // cost when explicitly asked for.
   pm.enableVerifier(verify);
-  // Our sharding_constraint ops always pin fully-closed shardings that match
-  // the kernel's own local ABI, so this should always fold them away rather
-  // than emit a reshard/collective (ConvertGlobalToLocal cannot handle a
-  // surviving sharding_constraint op on its own).
+  // Most sharding_constraint ops we insert pin the same sharding an operand
+  // already has, so ApplyShardingConstraintsPass folds those away as a
+  // no-op. But constructShardyAttributes only inserts a constraint when it
+  // actually differs from what the operand already carries (see its own
+  // comment), so a constraint surviving past that pass is not a bug: it's a
+  // real resharding boundary. ConvertGlobalToLocal has no pattern for
+  // sdy.sharding_constraint itself -- it expects such survivors to already
+  // be converted to sdy.reshard, which ShardingConstraintToReshardPass does
+  // unconditionally for whatever the previous pass left behind.
   pm.addPass(mlir::sdy::createApplyShardingConstraintsPass());
+  pm.addNestedPass<func::FuncOp>(
+      mlir::sdy::createShardingConstraintToReshardPass());
   mlir::sdy::ConvertGlobalToLocalPassOptions convertOptions;
   // Emit collectives with mesh-axes-based (symbolic) replica groups instead
   // of enumerating every device id literally -- the literal form is what
@@ -658,7 +665,9 @@ static void runShardyLowering(ModuleOp shardyModule, bool verify) {
   pm.addPass(mlir::sdy::createDropShardingAndMeshPass());
   if (failed(pm.run(shardyModule))) {
     shardyModule.emitError() << "Shardy lowering failed";
+    return failure();
   }
+  return success();
 }
 
 struct LowerKernelsPass : public impl::LowerKernelsPassBase<LowerKernelsPass> {
@@ -669,7 +678,7 @@ struct LowerKernelsPass : public impl::LowerKernelsPassBase<LowerKernelsPass> {
   // local kernel view. The sharding decision is based on axis kind: logical
   // mesh axes are optionally shardable, while replication and device-local axes
   // are never lowered through Shardy.
-  void lowerKernel(DistributedKernelOp kernelOp, Operation *mainScopeOp,
+  bool lowerKernel(DistributedKernelOp kernelOp, Operation *mainScopeOp,
                    bool lowerLogical) {
     FactorsPerDim shardableParts;
     FactorsPerDim nonShardableParts;
@@ -695,18 +704,27 @@ struct LowerKernelsPass : public impl::LowerKernelsPassBase<LowerKernelsPass> {
       llvm::dbgs() << shardyModule << "\n";
     }
     // Transform and copy back the module
-    runShardyLowering(shardyModule, verifyShardyLowering);
+    bool lowered = succeeded(runShardyLowering(shardyModule, verifyShardyLowering));
     stripPlaceholderAllReduces(shardyModule);
     if (dumpLoweredModules) {
       llvm::dbgs() << "Dumping lowered module:\n";
       llvm::dbgs() << shardyModule << "\n";
     }
+    // Still splice back and continue bookkeeping even on failure, matching
+    // the rest of the pass's remark-and-continue style: this keeps the walk
+    // below able to report every failing kernel in one run instead of just
+    // the first, and dumpLoweredModules still shows the (partially) lowered
+    // body. The pass-wide failure signaled below is what actually stops this
+    // from being mistaken for a successful lowering, e.g. by the search's
+    // own scoring, which treats a failed pipeline run as a candidate to
+    // reject rather than a valid, silently-broken one to keep.
     copyShardyModuleToKernelAndErase(shardyModule, kernelOp);
     updateKernelArgumentTypes(kernelOp, shardableParts);
     removeShardedFactorsFromPartitioningAxes(kernelOp, shardableParts,
                                              nonShardableParts);
 
     (void)mainScopeOp;
+    return lowered;
   }
 
   void runOnOperation() override {
@@ -733,9 +751,15 @@ struct LowerKernelsPass : public impl::LowerKernelsPassBase<LowerKernelsPass> {
       return;
     }
 
+    bool allLowered = true;
     module_op.walk([&](DistributedKernelOp kernel_op) {
-      lowerKernel(kernel_op, mainScopeOp, lowerLogicalAxes);
+      if (!lowerKernel(kernel_op, mainScopeOp, lowerLogicalAxes)) {
+        allLowered = false;
+      }
     });
+    if (!allLowered) {
+      signalPassFailure();
+    }
   }
 };
 
