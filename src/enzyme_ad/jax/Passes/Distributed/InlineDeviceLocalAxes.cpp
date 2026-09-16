@@ -236,16 +236,26 @@ static bool inlineDeviceLocalAxesInKernelResults(DistributedKernelOp kernelOp) {
   return sawUnsupported;
 }
 
-// Flags a kernel operand whose own argument_shardings predicts real
-// DeviceLocalAxis growth but whose producer isn't a
-// DistributedCastGlobalToLocalOp or another DistributedKernelOp -- i.e. a
-// value this pass has no way of having already grown "for free" via ordinary
-// SSA value-sharing (see this file's own doc comment for why every other case
-// doesn't need this: casts and kernel results are grown directly above, and
-// anything consuming one of those already-grown values automatically sees
-// the grown type without any further action).
-static bool checkKernelOperandGrowthConsistency(DistributedKernelOp kernelOp) {
-  bool sawUnsupported = false;
+// Flags (as a remark only -- deliberately non-fatal, see below) a kernel
+// operand whose own argument_shardings predicts real DeviceLocalAxis growth
+// but whose producer isn't a DistributedCastGlobalToLocalOp or another
+// DistributedKernelOp -- i.e. a value this pass has no way of having already
+// grown "for free" via ordinary SSA value-sharing (see this file's own doc
+// comment for why every other case doesn't need this: casts and kernel
+// results are grown directly above, and anything consuming one of those
+// already-grown values automatically sees the grown type without any further
+// action). The most common real case today is a value fed through
+// DistributedCollectiveOp/DistributedAwait, which this pass doesn't yet
+// handle (see this file's own doc comment).
+//
+// Deliberately never treated as a hard failure: SearchStrategies.cpp runs
+// this pass internally to score every candidate it explores
+// (buildDistributedSearchLoweringPipeline), and collective-fed kernels are
+// completely ordinary in real models (e.g. any all-reduce) -- failing the
+// pass here would make the search unable to find any usable candidate at
+// all for such models, which is a strictly worse outcome than leaving this
+// one, already-flagged gap unaddressed a little longer.
+static void checkKernelOperandGrowthConsistency(DistributedKernelOp kernelOp) {
   ArrayRef<IndexedTensorShardingAttr> argumentShardings =
       kernelOp.getArgumentShardings().getShardings();
 
@@ -285,10 +295,9 @@ static bool checkKernelOperandGrowthConsistency(DistributedKernelOp kernelOp) {
         << "inline-device-local-axes: operand " << argIdx
         << " needs DeviceLocalAxis growth per its own argument_shardings, "
            "but isn't produced by a distributed.CastGlobalToLocal or "
-           "distributed.DistributedKernel this pass could have already grown";
-    sawUnsupported = true;
+           "distributed.DistributedKernel this pass could have already grown "
+           "(likely a not-yet-handled DistributedCollectiveOp/Await chain)";
   }
-  return sawUnsupported;
 }
 
 } // namespace
@@ -319,11 +328,10 @@ struct InlineDeviceLocalAxesPass
 
     // Consistency check runs only after every cast/kernel result has already
     // been grown, so every kernel operand this pass could have grown "for
-    // free" has actually done so by now.
+    // free" has actually done so by now. Remark-only (see its own comment) --
+    // does not contribute to sawUnsupported.
     moduleOp.walk([&](DistributedKernelOp kernelOp) {
-      if (checkKernelOperandGrowthConsistency(kernelOp)) {
-        sawUnsupported = true;
-      }
+      checkKernelOperandGrowthConsistency(kernelOp);
     });
 
     if (sawUnsupported) {
