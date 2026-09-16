@@ -626,6 +626,50 @@ static bool inlineDeviceLocalAxesInKernelResults(DistributedKernelOp kernelOp) {
   ArrayRef<IndexedTensorShardingAttr> outputShardings =
       kernelOp.getOutputShardings().getShardings();
 
+  // First pass (read-only): resolve every slot referenced by ANY result's
+  // dim_partitioning_axes to its own DeviceLocal extent, from its current,
+  // pre-strip content. A slot is often shared across multiple results of
+  // the same kernel (e.g. two outputs of a fused kernel sharing the same
+  // batch/head sharding on their leading dimensions) -- computing this
+  // lazily while growing each result's shape in turn, as a previous version
+  // of this function did, would strip a shared slot while processing the
+  // first result that references it, making every later result referencing
+  // that same slot see it already emptied (extent 1) and silently skip
+  // growth it still needs, since each result's own type is independently
+  // sized even when several share one metadata slot.
+  llvm::DenseMap<int64_t, int64_t> deviceLocalExtentPerSlot;
+  llvm::DenseSet<int64_t> unresolvedSlots;
+  ValueRange partitioningAxes = kernelOp.getPartitioningAxes();
+  for (auto [resultIdx, result] : llvm::enumerate(kernelOp.getReturns())) {
+    if (resultIdx >= outputShardings.size()) {
+      break;
+    }
+    for (DenseI64ArrayAttr dimAxes :
+         outputShardings[resultIdx].getDimPartitioningAxes()) {
+      for (int64_t idx : dimAxes.asArrayRef()) {
+        if (deviceLocalExtentPerSlot.count(idx) || unresolvedSlots.count(idx)) {
+          continue;
+        }
+        if (idx < 0 || idx >= static_cast<int64_t>(partitioningAxes.size())) {
+          unresolvedSlots.insert(idx);
+          continue;
+        }
+        auto factorGroup =
+            dyn_cast<TypedValue<axis::FactorGroupType>>(partitioningAxes[idx]);
+        if (!factorGroup) {
+          unresolvedSlots.insert(idx);
+          continue;
+        }
+        auto split = splitOutDeviceLocalFactors(factorGroup);
+        if (failed(split)) {
+          unresolvedSlots.insert(idx);
+          continue;
+        }
+        deviceLocalExtentPerSlot[idx] = split->second;
+      }
+    }
+  }
+
   for (auto [resultIdx, result] : llvm::enumerate(kernelOp.getReturns())) {
     if (resultIdx >= outputShardings.size()) {
       break;
@@ -647,12 +691,11 @@ static bool inlineDeviceLocalAxesInKernelResults(DistributedKernelOp kernelOp) {
       int64_t deviceLocalExtent = 1;
       bool resolvedAll = true;
       for (int64_t idx : dimAxes.asArrayRef()) {
-        auto stripped = stripDeviceLocalFactorsFromSlot(kernelOp, idx);
-        if (failed(stripped)) {
+        if (unresolvedSlots.contains(idx)) {
           resolvedAll = false;
           break;
         }
-        deviceLocalExtent *= *stripped;
+        deviceLocalExtent *= deviceLocalExtentPerSlot.lookup(idx);
       }
       if (!resolvedAll) {
         kernelOp.emitRemark()
@@ -675,6 +718,14 @@ static bool inlineDeviceLocalAxesInKernelResults(DistributedKernelOp kernelOp) {
           RankedTensorType::get(newShape, rankedType.getElementType()));
       propagateGrowthThroughAnchors(result);
     }
+  }
+
+  // Second pass: strip every resolved, referenced slot's own content exactly
+  // once. Order doesn't matter here -- every result's growth above already
+  // used each slot's ORIGINAL extent, cached before any stripping happened.
+  for (auto &[idx, extent] : deviceLocalExtentPerSlot) {
+    (void)extent;
+    (void)stripDeviceLocalFactorsFromSlot(kernelOp, idx);
   }
 
   return sawUnsupported;
