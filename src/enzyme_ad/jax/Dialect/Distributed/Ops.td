@@ -169,6 +169,7 @@ def DistributedCastGlobalToLocalOp : DistributedOp<
   let assemblyFormat =
       "$input `axes` custom<VariadicWithTypes>($partitioning_axes, type($partitioning_axes)) attr-dict `:` type($input) `->` type($output)";
   let hasVerifier = 1;
+  let hasCanonicalizer = 1;
 }
 
 def DistributedCastLocalToGlobalOp : DistributedOp<
@@ -186,6 +187,7 @@ def DistributedCastLocalToGlobalOp : DistributedOp<
   let assemblyFormat =
       "$input `axes` custom<VariadicWithTypes>($partitioning_axes, type($partitioning_axes)) attr-dict `:` type($input) `->` type($output)";
   let hasVerifier = 1;
+  let hasCanonicalizer = 1;
 }
 
 def DistributedCollectiveOp
@@ -193,11 +195,11 @@ def DistributedCollectiveOp
                     [DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
   let description = [{
   An operation representing reductions and resharding along multiple axes. Does not
-        cover collective permutes and point-to-point communication. 
-        
-        A collective operation happens over the mesh and tile axis, and maps input mesh/tile 
-        axis factors to output mesh/tile axis factors. Essentially, this is a 
-        reduce-transpose-reshape operation. 
+        cover collective permutes and point-to-point communication.
+
+        A collective operation happens over the mesh and tile axis, and maps input mesh/tile
+        axis factors to output mesh/tile axis factors. Essentially, this is a
+        reduce-transpose-reshape operation.
 
         Reductions are specified as different groups of axis factors to reduce over.
         Reductions take custom binary bodies as inline regions, which must be associative.
@@ -261,7 +263,7 @@ def DistributedManualComputationOp
     CanonicalizeShardedFactorOrderPass builds this op in place of a real
     transpose to fix a reshape whose dimension order doesn't fit neatly with
     shardy axis grammar.
-    
+
     manual_axes indexes into the enclosing DistributedKernelOp's shared
     partitioning_axes list (this op has no partitioning_axes of its own),
     naming which slots the region computes with at already-divided-down local

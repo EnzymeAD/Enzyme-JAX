@@ -1,5 +1,7 @@
 #include "CollectiveOps.h"
 
+#include "mlir/IR/PatternMatch.h"
+
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
 
 // Central emission point for generated distributed op class definitions.
@@ -186,6 +188,37 @@ static LogicalResult verifyTensorViewCast(CastOp castOp, bool globalToLocal) {
   return success();
 }
 
+// Folds a cast that round-trips straight back through its own opposite
+// (DistributedCastGlobalToLocalOp<-DistributedCastLocalToGlobalOp or vice
+// versa) using the exact same partitioning-axis operands both times. Both
+// casts are pure relabeling with no data movement (see
+// CanonicalizeShardedFactorOrderPass's top-of-file "same materialization"
+// invariant), so reinterpreting a value one way and immediately back the
+// other -- declaring the identical factor decomposition each time --
+// reproduces the original value exactly; nothing about the round trip needs
+// to survive. Requires literal operand equality (not just axis-set
+// equivalence) so this never has to reason about factor-order equivalence
+// itself; a mismatched pair (e.g. one leg canonically reordered by
+// CanonicalizeShardedFactorOrderPass) is deliberately left alone.
+template <typename ThisOp, typename OppositeOp>
+struct FoldCastRoundTrip : public OpRewritePattern<ThisOp> {
+  using OpRewritePattern<ThisOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(ThisOp castOp,
+                                 PatternRewriter &rewriter) const override {
+    auto producer = castOp.getInput().template getDefiningOp<OppositeOp>();
+    if (!producer) {
+      return failure();
+    }
+    if (!llvm::equal(producer.getPartitioningAxes(),
+                     castOp.getPartitioningAxes())) {
+      return failure();
+    }
+    rewriter.replaceOp(castOp, producer.getInput());
+    return success();
+  }
+};
+
 } // namespace
 
 LogicalResult DistributedFunctionOp::verify() {
@@ -281,6 +314,12 @@ LogicalResult DistributedCastGlobalToLocalOp::inferReturnTypes(
       /*globalToLocal=*/true, inferredReturnTypes);
 }
 
+void DistributedCastGlobalToLocalOp::getCanonicalizationPatterns(
+    RewritePatternSet &results, MLIRContext *context) {
+  results.add<FoldCastRoundTrip<DistributedCastGlobalToLocalOp,
+                                DistributedCastLocalToGlobalOp>>(context);
+}
+
 LogicalResult DistributedCastLocalToGlobalOp::verify() {
   return verifyTensorViewCast(*this, /*globalToLocal=*/false);
 }
@@ -294,6 +333,12 @@ LogicalResult DistributedCastLocalToGlobalOp::inferReturnTypes(
   return inferTensorViewCastResultType(
       context, location, adaptor.getInput(), adaptor.getPartitioningAxes(),
       /*globalToLocal=*/false, inferredReturnTypes);
+}
+
+void DistributedCastLocalToGlobalOp::getCanonicalizationPatterns(
+    RewritePatternSet &results, MLIRContext *context) {
+  results.add<FoldCastRoundTrip<DistributedCastLocalToGlobalOp,
+                                DistributedCastGlobalToLocalOp>>(context);
 }
 
 LogicalResult DistributedManualComputationOp::verify() {

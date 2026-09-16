@@ -57,20 +57,10 @@
  *      result. Doing that per dimension requires knowing which output
  *      dimension a given factor belongs to -- input_mesh/output_mesh never
  *      need that association; see computeMappingRhsDeviceLocalGrowth's
- *      comment for how the mapping recovers it. A collective is assumed to
- *      be "bookended" (input_object directly produced by a
- *      DistributedCastGlobalToLocalOp) rather than chained (fed by
- *      DistributedAwait on another collective); see the comment above the
- *      mapping loop in inlineDeviceLocalAxesInCollective for what this pass
- *      does and doesn't verify about that.
- *
- * Known open gap this pass doesn't address:
- * CanonicalizeShardedFactorOrderPass's own doc comment describes an
- * as-yet-unimplemented "reconciling DistributedCollectiveOp" needed to bridge a
- * cast whose partitioning_axes it canonically reordered with a real collective
- * that still expects the original (pre-reorder) view. If that reconciling
- * mechanism is ever built, revisit whether this pass's mapping rebuild still
- * composes correctly with it.
+ *      comment for how the mapping recovers it. Every collective is
+ *      "bookended" (input_object directly produced by a
+ *      DistributedCastGlobalToLocalOp)  so this pass never has to
+ *      handle an unanchored input_object.
  *
  * See the comment on each function below for the mechanics and why each
  * case is safe.
@@ -761,16 +751,14 @@ inlineDeviceLocalAxesInCollective(DistributedCollectiveOp collectiveOp) {
   // type has already grown relative to what they were built against.
   // input_object itself is never grown here.
   //
-  // Assumption: a collective is "bookended" -- input_object is directly
-  // produced by a DistributedCastGlobalToLocalOp, matching how
-  // MaterializeDistributedCollectives.cpp normally builds one. This pass
-  // doesn't independently verify that for a *chained* collective
-  // (input_object fed by DistributedAwait on another collective instead);
-  // the only thing that actually catches a violation is the numeric
-  // dimension-size check in rebuildMappingFactorsForTarget, which fails
-  // (remark, non-fatal) rather than silently mis-rewriting. See the file doc
-  // comment's note on CanonicalizeShardedFactorOrderPass's unimplemented
-  // reconciling collective for a related, still-open gap.
+  // Every collective is "bookended" by a DistributedCastGlobalToLocalOp by
+  // construction: MaterializeDistributedCollectives.cpp always inserts an
+  // intermediary cast pair for a collective that would otherwise chain directly
+  // off another collective's own await result, so a *chained* (uncast)
+  // input_object should never reach this pass. The numeric dimension-size
+  // check in rebuildMappingFactorsForTarget is kept as defense in depth
+  // regardless -- it fails (remark, non-fatal) rather than silently
+  // miscompiling if that invariant is ever violated.
   auto inputObjectType =
       dyn_cast<RankedTensorType>(collectiveOp.getInputObject().getType());
 

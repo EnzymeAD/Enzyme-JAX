@@ -436,6 +436,32 @@ struct MaterializeDistributedCollectivesPass
                             conflict.currentValue,
                             conflict.producerPartitioningAxes);
       }
+
+      if (conflict.conflictingUses.empty()) {
+        continue;
+      }
+
+      // A conflicting use makes materializeCollectivesForConflicts chain a
+      // second (layout) collective directly off this reduction collective's
+      // own await result, with no cast in between.
+      // CanonicalizeShardedFactorOrderPass and InlineDeviceLocalAxesPass both
+      // assume every collective is "bookended" by a cast -- that's their only
+      // anchor for a tensor dimension's declared factor order / DeviceLocal
+      // growth. Round-trip through a cast pair using the exact same
+      // partitioning-axis operands as the local cast above, so the next
+      // collective sees a properly-anchored producer. The round trip is a
+      // pure relabeling (no data movement -- see this project's "same
+      // materialization" invariant), and gets folded back away by
+      // DistributedCastGlobalToLocalOp/CastLocalToGlobalOp's own
+      // canonicalization pattern once nothing downstream still needs the
+      // anchor.
+      auto globalCast = builder.create<DistributedCastLocalToGlobalOp>(
+          conflict.value.getLoc(), conflict.globalType, reducedValue,
+          partitioningAxisGroups);
+      auto relocalCast = builder.create<DistributedCastGlobalToLocalOp>(
+          conflict.value.getLoc(), localType, globalCast.getOutput(),
+          partitioningAxisGroups);
+      conflict.currentValue = relocalCast.getOutput();
     }
 
     return success();

@@ -68,11 +68,23 @@
  *    so whatever eventually does is free to implement the (possibly
  *    strided) access pattern G's declared order calls for, at zero marginal
  *    cost beyond the extraction the cast always had to perform anyway.
- *    Because the rest of the program -- the caller, a real collective, the
- *    DistributedFunctionOp boundary -- still expects the original (g/g')
- *    view, an explicit reconciling DistributedCollectiveOp ("noop
- *    transpose") needs to bookend each cast to bridge the two. That
- *    bookending collective is not yet implemented.
+ *    No reconciling collective is needed to bridge this relabeling back to
+ *    the original (g/g') view: DistributedCollectiveOp's own verifier and
+ *    HLO lowering compare input/output axis sets, never a per-dimension
+ *    declared order (see CollectiveOps.cpp's verify() and
+ *    DistributedToHlo.cpp), so a collective on either side of a reordered
+ *    cast is already invariant to the reorder. The one real constraint this
+ *    leaves is that every collective still needs a cast bookending each of
+ *    its sides -- that's InlineDeviceLocalAxesPass's only anchor for a
+ *    tensor dimension's DeviceLocal growth (see its own top-of-file
+ *    comment). MaterializeDistributedCollectives.cpp guarantees that by
+ *    construction: whenever one collective would otherwise feed another
+ *    directly (its await result chained straight into the next collective's
+ *    input_object), it inserts an intermediary local/global/local cast pair
+ *    using identical partitioning axes on both casts, which
+ *    DistributedCastGlobalToLocalOp/CastLocalToGlobalOp's own
+ *    canonicalization pattern folds back away once nothing downstream still
+ *    needs the anchor.
  * 3. A reshape (or any op whose Shardy sharding rule maps one dimension to
  *    more than one factor) strictly INSIDE a kernel
  *    body is the one real exception: relabeling isn't enough, because a
