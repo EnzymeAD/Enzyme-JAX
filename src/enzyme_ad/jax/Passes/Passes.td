@@ -1011,6 +1011,14 @@ def AffineCFG : Pass<"affine-cfg"> {
     "affine::AffineDialect",
     "enzyme::EnzymeDialect",
   ];
+  let options = [
+    Option<
+      /*C++ variable name=*/"enable_split_on_affine_if_constants",
+      /*CLI argument=*/"enable_split_on_affine_if_constants",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Enable the SplitOnAffineIfConstants pattern">,
+    ];
 }
 
 def CuDNNHLOOpt : Pass<"enzymexla-cudnn-hlo-opt"> {

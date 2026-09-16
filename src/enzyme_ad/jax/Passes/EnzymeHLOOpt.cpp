@@ -14140,6 +14140,94 @@ struct CompareOpCanon final
   }
 };
 
+// For i1 element types, values are constrained to {0,1}, so comparisons
+// against boolean constants can always be simplified:
+//   x != false -> x,   x == false -> not(x)
+//   x == true  -> x,   x != true  -> not(x)
+// and the ordering variants (GT/LE with false, GE/LT with true) follow suit.
+struct CompareBoolConst final
+    : CheckedOpRewritePattern<stablehlo::CompareOp, CompareBoolConst> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
+                                    PatternRewriter &rewriter) const {
+    auto elemType =
+        cast<RankedTensorType>(op.getLhs().getType()).getElementType();
+    if (!elemType.isInteger(1))
+      return failure();
+
+    using ComparisonDirection = stablehlo::ComparisonDirection;
+
+    for (int i = 0; i < 2; i++) {
+      Value constVal = op->getOperand(i);
+      Value boolVal = op->getOperand(1 - i);
+
+      // Normalise so boolVal is always the notional left operand.
+      ComparisonDirection dir =
+          (i == 0) ? invertDirection(op.getComparisonDirection())
+                   : op.getComparisonDirection();
+
+      bool isZero = matchPattern(constVal, m_Zero());
+      bool isOne = matchPattern(constVal, m_AllOnes());
+      if (!isZero && !isOne)
+        continue;
+
+      if (isZero) {
+        switch (dir) {
+        case ComparisonDirection::LT:
+          // x < false -> false
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              op, rewriter.getZeroAttr(op.getType()));
+          return success();
+        case ComparisonDirection::LE:
+        case ComparisonDirection::EQ:
+          // x <= false -> not(x);  x == false -> not(x)
+          rewriter.replaceOpWithNewOp<stablehlo::NotOp>(op, boolVal);
+          return success();
+        case ComparisonDirection::NE:
+        case ComparisonDirection::GT:
+          // x != false -> x;  x > false -> x
+          rewriter.replaceOp(op, boolVal);
+          return success();
+        case ComparisonDirection::GE:
+          // x >= false -> true
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              op,
+              SplatElementsAttr::get(op.getType(), rewriter.getBoolAttr(true)));
+          return success();
+        }
+      }
+
+      if (isOne) {
+        switch (dir) {
+        case ComparisonDirection::GT:
+          // x > true -> false
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              op, rewriter.getZeroAttr(op.getType()));
+          return success();
+        case ComparisonDirection::GE:
+        case ComparisonDirection::EQ:
+          // x >= true -> x;  x == true -> x
+          rewriter.replaceOp(op, boolVal);
+          return success();
+        case ComparisonDirection::NE:
+        case ComparisonDirection::LT:
+          // x != true -> not(x);  x < true -> not(x)
+          rewriter.replaceOpWithNewOp<stablehlo::NotOp>(op, boolVal);
+          return success();
+        case ComparisonDirection::LE:
+          // x <= true -> true
+          rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+              op,
+              SplatElementsAttr::get(op.getType(), rewriter.getBoolAttr(true)));
+          return success();
+        }
+      }
+    }
+    return failure();
+  }
+};
+
 struct CompareExt final
     : CheckedOpRewritePattern<stablehlo::CompareOp, CompareExt> {
   using CheckedOpRewritePattern<stablehlo::CompareOp,
@@ -21250,6 +21338,23 @@ struct WhileScatterAccumulatorNoAdd final
   }
 };
 
+// A function argument or the iteration argument of an enclosing while (a
+// nested loop of a raised kernel starts its variables from the outer loop's),
+// possibly seen through the layout ops a raised kernel puts on an argument
+// (reshape, bitcast_convert).
+static bool isLayoutOfLoopOrFunctionArgument(Value value) {
+  while (Operation *op = value.getDefiningOp()) {
+    if (!isa<stablehlo::ReshapeOp, stablehlo::BitcastConvertOp>(op))
+      return false;
+    value = op->getOperand(0);
+  }
+  auto BA = dyn_cast<BlockArgument>(value);
+  if (!BA)
+    return false;
+  Operation *parent = BA.getOwner()->getParentOp();
+  return isa<FunctionOpInterface>(parent) || isa<stablehlo::WhileOp>(parent);
+}
+
 // Replace while op iteration variables which are not updated with their
 // upcoming value
 struct WhileSimplify
@@ -21282,8 +21387,8 @@ struct WhileSimplify
       bool canHoist = inputValue.getDefiningOp<stablehlo::ConstantOp>();
       if (hoist_all) {
         canHoist = true;
-      } else if (auto BA = dyn_cast<BlockArgument>(inputValue)) {
-        canHoist |= isa<FunctionOpInterface>(BA.getOwner()->getParentOp());
+      } else {
+        canHoist |= isLayoutOfLoopOrFunctionArgument(inputValue);
       }
 
       Value bodyRes = bodyTerm->getOperand(i);
@@ -37641,6 +37746,7 @@ struct EnzymeHLOOptPass
         BroadcastInDimOpCanon,
         ChainedDynamicBroadcastInDimCanonicalization,
         CompareOpCanon,
+        CompareBoolConst,
         CompareExt,
         ConjComplexNegate,
         NegateImagConj,
