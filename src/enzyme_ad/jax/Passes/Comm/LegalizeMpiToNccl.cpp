@@ -162,12 +162,13 @@ struct FoldMpiWaitallOp : public OpRewritePattern<comm::MpiWaitallOp> {
       }
     }
 
-    // Don't allow other unrelated mpi ops within the scope of a request.
+    // Don't allow unrelated communication between the first request producer
+    // and mpi.waitall.
     // Could relax this to only disallow partially overlapping request
     // scopes since these semantics are impossible to represent in nccl
     // (nested request scopes should be ok however)
-    for (Operation *candidate = orderedProducers.front();;
-         candidate = candidate->getNextNode()) {
+    for (Operation *candidate = orderedProducers.front()->getNextNode();
+         candidate != op; candidate = candidate->getNextNode()) {
       bool isProducer = false;
       for (Operation *producer : orderedProducers) {
         if (candidate == producer) {
@@ -179,8 +180,6 @@ struct FoldMpiWaitallOp : public OpRewritePattern<comm::MpiWaitallOp> {
         return rewriter.notifyMatchFailure(
             op, "cannot group request producers interleaved with other "
                 "communication operations");
-      if (candidate == orderedProducers.back())
-        break;
     }
 
     Location loc = op.getLoc();
