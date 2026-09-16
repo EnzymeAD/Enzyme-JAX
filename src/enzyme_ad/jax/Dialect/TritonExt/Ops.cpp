@@ -21,9 +21,8 @@ triton_ext::TritonCallOp ReadOnlyArg<triton_ext::TritonCallOp>::create(
       launchOp.getGridx(), launchOp.getGridy(), launchOp.getGridz(),
       launchOp.getClusterx(), launchOp.getClustery(), launchOp.getClusterz(),
       launchOp.getInputs(), launchOp.getBackendConfigAttr(),
-      launchOp.getOperandLayoutsAttr(),
-      outputLayouts, launchOp.getArgAttrsAttr(),
-      launchOp.getResAttrsAttr(), outputAliases,
+      launchOp.getOperandLayoutsAttr(), outputLayouts,
+      launchOp.getArgAttrsAttr(), launchOp.getResAttrsAttr(), outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
 }
 
