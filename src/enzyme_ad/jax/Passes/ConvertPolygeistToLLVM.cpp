@@ -13,6 +13,7 @@
 
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/ConvertPolygeistToLLVM.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/MD5.h"
@@ -4197,10 +4198,9 @@ struct CMemorySpaceCastOpLowering
   }
 };
 
-static void
-populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
-                                     LLVMTypeConverter &typeConverter,
-                                     StringRef backend) {
+void populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
+                                          LLVMTypeConverter &typeConverter,
+                                          StringRef backend) {
   patterns.add<CAllocaOpLowering, CAllocOpLowering, CDeallocOpLowering,
                GetGlobalOpLowering, GlobalOpLowering, CLoadOpLowering,
                CStoreOpLowering, AllocaScopeOpLowering, CAtomicRMWOpLowering,
@@ -4475,10 +4475,9 @@ public:
 /// Appends the patterns lowering operations from the Func dialect to the LLVM
 /// dialect using the C-style type conversion, i.e. converting memrefs to
 /// pointer to arrays of arrays.
-static void
-populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
-                                      LLVMTypeConverter &typeConverter,
-                                      std::string gpuTarget, bool func) {
+void populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
+                                           LLVMTypeConverter &typeConverter,
+                                           std::string gpuTarget, bool func) {
   if (func) {
     patterns.add<GPUReturnOpLowering>(typeConverter);
     patterns.add<GPUFuncOpLowering>(

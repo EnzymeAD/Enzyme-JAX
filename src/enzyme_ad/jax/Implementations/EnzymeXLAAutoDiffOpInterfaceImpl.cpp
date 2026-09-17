@@ -13,9 +13,11 @@
 
 #include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
 #include "Enzyme/MLIR/Interfaces/AutoDiffOpInterface.h"
+#include "Enzyme/MLIR/Interfaces/AutoDiffTypeInterface.h"
 #include "Enzyme/MLIR/Interfaces/GradientUtils.h"
 #include "Enzyme/MLIR/Interfaces/GradientUtilsReverse.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/RegionUtils.h"
@@ -229,6 +231,124 @@ struct GPUWrapperOpEnzymeOpsRemover
   }
 };
 
+struct Memref2TensorOpInterfaceReverse
+    : public ReverseAutoDiffOpInterface::ExternalModel<
+          Memref2TensorOpInterfaceReverse, Memref2TensorOp> {
+  LogicalResult createReverseModeAdjoint(Operation *op, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto castOp = cast<Memref2TensorOp>(op);
+    Value memref = castOp.getMemref();
+    Value result = castOp.getTensor();
+    if (!gutils->isConstantValue(result) && !gutils->isConstantValue(memref)) {
+      auto iface = cast<AutoDiffTypeInterface>(result.getType());
+      Value gradient = gutils->diffe(result, builder);
+      Value memrefGradient = gutils->popCache(caches.front(), builder);
+
+      // Accumulate the tensor gradient into the shadow memref in place:
+      // read its current contents, add the incoming gradient, and copy the
+      // sum back into the same buffer.
+      Value current = Memref2TensorOp::create(
+          builder, castOp.getLoc(), result.getType(), memrefGradient);
+      Value added =
+          iface.createAddOp(builder, castOp.getLoc(), current, gradient);
+      Value materialized = Tensor2MemrefOp::create(
+          builder, castOp.getLoc(), memrefGradient.getType(), added);
+      memref::CopyOp::create(builder, castOp.getLoc(), materialized,
+                             memrefGradient);
+    }
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *op,
+                                 MGradientUtilsReverse *gutils) const {
+    auto castOp = cast<Memref2TensorOp>(op);
+    Value memref = castOp.getMemref();
+    Value result = castOp.getTensor();
+    if (!gutils->isConstantValue(result) && !gutils->isConstantValue(memref)) {
+      OpBuilder cacheBuilder(gutils->getNewFromOriginal(op));
+      return {gutils->initAndPushCache(
+          gutils->invertPointerM(memref, cacheBuilder), cacheBuilder)};
+    }
+    return {};
+  }
+
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
+    // The tensor result is an immutable value: its adjoint is accumulated
+    // directly into the source memref's shadow above (see
+    // createReverseModeAdjoint), so there is no shadow view to materialize
+    // for it here -- mirrors memref::LoadOp's handling of a non-mutable
+    // element type.
+    return success();
+  }
+};
+
+struct Tensor2MemrefOpInterfaceReverse
+    : public ReverseAutoDiffOpInterface::ExternalModel<
+          Tensor2MemrefOpInterfaceReverse, Tensor2MemrefOp> {
+  LogicalResult createReverseModeAdjoint(Operation *op, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto castOp = cast<Tensor2MemrefOp>(op);
+    Value val = castOp.getTensor();
+    if (!gutils->isConstantValue(val)) {
+      // By now every use of the shadow memref inside the (already reversed)
+      // consumers has accumulated its contribution into it, so harvest the
+      // final gradient and add it to the tensor's adjoint.
+      Value memrefGradient = gutils->popCache(caches.front(), builder);
+      Value gradient = Memref2TensorOp::create(builder, castOp.getLoc(),
+                                                val.getType(), memrefGradient);
+      gutils->addToDiffe(val, gradient, builder);
+    }
+    return success();
+  }
+
+  // Note: cacheValues() and createShadowValues() are each handed a fresh
+  // OpBuilder anchored at the same insertion point (just before this op's
+  // augmented-primal copy). Building the shadow across two independent
+  // builders would let cacheValues' push land *before* createShadowValues'
+  // shadow alloc at that shared anchor -- exactly backwards, since
+  // cacheValues always runs first. So the whole shadow (alloc, zero-init,
+  // registration, and the cache push) is built here in one continuous
+  // builder to keep it in the right order, and createShadowValues is a
+  // no-op.
+  SmallVector<Value> cacheValues(Operation *op,
+                                 MGradientUtilsReverse *gutils) const {
+    auto castOp = cast<Tensor2MemrefOp>(op);
+    Value val = castOp.getTensor();
+    if (gutils->isConstantValue(val))
+      return {};
+
+    OpBuilder cacheBuilder(gutils->getNewFromOriginal(op));
+
+    // The result memref does not alias any existing shadow: allocate a
+    // fresh, zero-initialized gradient accumulator for it (mirroring the
+    // treatment of an allocation-like op), which its consumers inside the
+    // wrapper will accumulate into during the reverse sweep.
+    auto memrefTy = cast<MemRefType>(castOp.getMemref().getType());
+    SmallVector<Value> dynSizes;
+    Value newMemref = gutils->getNewFromOriginal(castOp.getMemref());
+    for (int64_t i = 0; i < memrefTy.getRank(); ++i)
+      if (memrefTy.isDynamicDim(i))
+        dynSizes.push_back(
+            memref::DimOp::create(cacheBuilder, castOp.getLoc(), newMemref, i));
+
+    Value shadow = memref::AllocOp::create(cacheBuilder, castOp.getLoc(),
+                                           memrefTy, dynSizes);
+    auto iface = cast<AutoDiffTypeInterface>(shadow.getType());
+    (void)iface.zeroInPlace(cacheBuilder, castOp.getLoc(), shadow);
+    gutils->setInvertedPointer(castOp.getMemref(), shadow);
+
+    return {gutils->initAndPushCache(shadow, cacheBuilder)};
+  }
+
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
+    return success();
+  }
+};
+
 // Reverse-mode adjoint for pure view-cast ops (Pointer2Memref /
 // Memref2Pointer). We only need to materialize the corresponding shadow view
 // in the augmented primal and register it via setInvertedPointer so downstream
@@ -344,6 +464,11 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
         ViewCastOpInterfaceReverse<Pointer2MemrefOp>>(*context);
     Memref2PointerOp::attachInterface<
         ViewCastOpInterfaceReverse<Memref2PointerOp>>(*context);
+
+    Memref2TensorOp::attachInterface<Memref2TensorOpInterfaceReverse>(
+        *context);
+    Tensor2MemrefOp::attachInterface<Tensor2MemrefOpInterfaceReverse>(
+        *context);
 
     // Register batching interfaces
     JITCallOp::attachInterface<SHLOGenericBatchOpInterface<JITCallOp>>(

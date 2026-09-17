@@ -591,8 +591,14 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       auto newWrapper = rewriter.clone(*wrapper.getOperation());
       auto blockSize = createSplitOp(cast<enzymexla::GPUWrapperOp>(newWrapper),
                                      defaultThreads, rewriter);
-      if (emittedBlockSizes.contains(blockSize) ||
-          /* failed */ blockSize == -1) {
+      if (blockSize == -1) {
+        // createSplitOp already replaced newWrapper with an error code on
+        // this failure path, nothing left to clean up.
+      } else if (emittedBlockSizes.contains(blockSize)) {
+        // A prior candidate already produced this same effective block
+        // size: drop this duplicate clone instead of leaving it behind as
+        // dead (but still side-effecting) sibling code in the region.
+        rewriter.eraseOp(newWrapper);
       } else {
         emittedBlockSizes.insert(blockSize);
         descs.push_back(rewriter.getStringAttr(

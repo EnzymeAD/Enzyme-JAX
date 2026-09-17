@@ -1029,13 +1029,17 @@ public:
                                  MGradientUtilsReverse *gutils, Block *origBody,
                                  Block *revOuterBody,
                                  ArrayRef<bool> operandsActive) {
+    auto isMutable = [](Value val) {
+      return cast<AutoDiffTypeInterface>(val.getType()).isMutable();
+    };
+
     for (auto arg : origBody->getArguments())
-      if (!gutils->isConstantValue(arg))
+      if (!gutils->isConstantValue(arg) && !isMutable(arg))
         gutils->zeroDiffe(arg, builder);
 
     for (auto &it : origBody->getOperations())
       for (auto res : it.getResults())
-        if (!gutils->isConstantValue(res))
+        if (!gutils->isConstantValue(res) && !isMutable(res))
           gutils->zeroDiffe(res, builder);
   }
 

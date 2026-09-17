@@ -2702,7 +2702,9 @@ struct SliceOfDynamicUpdate final
         }
       }
 
-      if (no_overlap) {
+      Operation *definingOp = dyn.getOperand().getDefiningOp();
+      if (no_overlap &&
+          !llvm::isa<stablehlo::DynamicUpdateSliceOp>(definingOp)) {
         rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
             op, dyn.getOperand(), op.getStartIndices(), op.getLimitIndices(),
             op.getStrides());
@@ -13620,8 +13622,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -19793,12 +19794,11 @@ struct DUSDUSSubsuming
           originalProvenance.isEqual(it2->second.provenanceRelation)) {
         movedSlices.insert({slice.getOperation(), clonedSlice});
       } else {
-        rewriter.eraseOp(clonedSlice);
-
         // Don't forget to erase the provenance info for the op result we just
         // erased since that value address may be reused for something entirely
         // different!
         provenanceInfo.erase(clonedSlice->getResult(0));
+        rewriter.eraseOp(clonedSlice);
       }
     }
 

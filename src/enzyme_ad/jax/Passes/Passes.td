@@ -17,7 +17,7 @@ def TestPolymerPass : Pass<"test-polymer"> {
   ];
 }
 
-def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops", 
+def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops",
                                           "mlir::FunctionOpInterface"> {
   let summary = "Canonicalize loops";
   let dependentDialects = ["affine::AffineDialect"];
@@ -61,12 +61,12 @@ def PropagateConstantBoundsPass
   let summary = "Propagate constant bounds";
   let description = [{
     Propagate constant bounds information:
-    1. thread index 
-    2. Block dimension 
+    1. thread index
+    2. Block dimension
     3. Block index.
     Additionally, set all the following attributes for all kernel pointers:
     1. align 128
-    2. no alias 
+    2. no alias
     3. dereferenceable = tensor.size() * sizeof(element_type)
   }];
   let dependentDialects = [
@@ -603,7 +603,7 @@ def LowerKernelPass : Pass<"lower-kernel"> {
   let summary = "Lower kernel to custom call";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
-    "gpu::GPUDialect", 
+    "gpu::GPUDialect",
     "func::FuncDialect",
     "affine::AffineDialect",
     "scf::SCFDialect",
@@ -618,6 +618,34 @@ def LowerKernelPass : Pass<"lower-kernel"> {
         /*type=*/"std::string",
         /*default=*/"\"cuda\"",
         /*description=*/"HW backend">,
+  ];
+}
+
+def KernelCallToGPUWrapperPass
+    : Pass<"kernel-call-to-gpu-wrapper", "mlir::ModuleOp"> {
+  let summary = "Expose kernel calls as differentiable GPU wrapper loops";
+  let description = [{
+    kernel call to gpu wrapper op.
+  }];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "LLVM::LLVMDialect",
+  ];
+}
+
+def GPUWrapperToKernelCallPass : Pass<"gpu-wrapper-to-kernel-call", "mlir::ModuleOp"> {
+  let summary = "Expose kernel calls as differentiable GPU wrapper loops";
+  let description = [{
+    Outlines each gpu_wrapper op and replaces it with a kernel call op.
+  }];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "LLVM::LLVMDialect",
+    "tensor::TensorDialect",
   ];
 }
 
@@ -650,7 +678,7 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
   let summary = "Lower MPI Ops to LLVM";
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect",
-    "gpu::GPUDialect", 
+    "gpu::GPUDialect",
     "LLVM::LLVMDialect",
   ];
   let options = [
@@ -803,17 +831,17 @@ def RaiseTritonCustomCallPass : Pass<"raise-triton-custom-call"> {
 def LowerJITPass : Pass<"lower-jit"> {
   let summary = "Lower jit call to custom call";
   let dependentDialects = [
-    "stablehlo::StablehloDialect", 
-    "gpu::GPUDialect", 
+    "stablehlo::StablehloDialect",
+    "gpu::GPUDialect",
     "func::FuncDialect",
-    "math::MathDialect", 
-    "memref::MemRefDialect", 
+    "math::MathDialect",
+    "memref::MemRefDialect",
     "scf::SCFDialect",
-    "vector::VectorDialect", 
-    "nvgpu::NVGPUDialect", 
+    "vector::VectorDialect",
+    "nvgpu::NVGPUDialect",
     "NVVM::NVVMDialect",
-    "LLVM::LLVMDialect", 
-    "arith::ArithDialect", 
+    "LLVM::LLVMDialect",
+    "arith::ArithDialect",
     "tensor::TensorDialect"
   ];
 
@@ -1033,7 +1061,7 @@ def GPULaunchRecognition : Pass<"gpu-launch-recognition"> {
   let summary = "Recognize and convert GPU kernel launches to GPU dialect operations";
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect",
-    "arith::ArithDialect", 
+    "arith::ArithDialect",
     "gpu::GPUDialect",
     "mlir::NVVM::NVVMDialect",
     "mlir::ROCDL::ROCDLDialect",

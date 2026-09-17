@@ -241,7 +241,7 @@ def GPUWrapperOp : EnzymeXLA_Op<"gpu_wrapper", [
   let summary = "Indicates the region contained must be executed on the GPU";
   let description = [{
     The optional arguments to this operation are suggestions about what block
-    dimensions this gpu kernel should have - usually taken f rom kernel
+    dimensions this gpu kernel should have - usually taken from kernel
       launch params
 }];
 let results = (outs Index : $result);
@@ -311,6 +311,17 @@ def XLAWrapperOp : EnzymeXLA_Op<"xla_wrapper", [
     $fn ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
   }];
 
+}
+
+def Tensor2MemrefOp : EnzymeXLA_Op<"tensor2memref", []> {
+  let summary = "convert tensor to memref";
+  let arguments = (ins HLO_Tensor : $tensor);
+  let results = (outs AnyType : $memref);
+}
+def Memref2TensorOp : EnzymeXLA_Op<"memref2tensor", []> {
+  let summary = "convert memref to tensor";
+  let arguments = (ins AnyType : $memref);
+  let results = (outs HLO_Tensor : $tensor);
 }
 
 def GPUErrorOp : EnzymeXLA_Op<"gpu_error", [
