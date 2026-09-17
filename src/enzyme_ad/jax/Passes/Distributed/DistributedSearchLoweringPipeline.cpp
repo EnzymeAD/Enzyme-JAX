@@ -19,6 +19,10 @@ void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
   // Can only drop anchors after inlining tensor types
   pm.addPass(createDropIdentityCollectivesPass());
   pm.addPass(createDropIdentityPartitioningAnchorsPass());
+  // Must run after the anchor/cast folds above: a trivial kernel's boundary
+  // casts need to already be gone for its operand/result types to line up
+  // with its body's block-args/yield, which is what marks it mergeable.
+  pm.addPass(createMergeAdjacentTrivialKernelsPass());
 }
 
 namespace {

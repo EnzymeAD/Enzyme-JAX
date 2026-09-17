@@ -210,6 +210,33 @@ def DropIdentityPartitioningAnchorsPass
   }];
 }
 
+def MergeAdjacentTrivialKernelsPass
+    : Pass<"merge-adjacent-trivial-kernels", "::mlir::ModuleOp"> {
+  let summary = "Merges physically-adjacent distributed.kernel ops that no "
+                "longer carry any real sharding.";
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "enzyme::distributed::DistributedDialect"
+  ];
+  let description = [{
+    A distributed.kernel is "trivial" once every operand/result's local-scope
+    type equals its body block-argument/yielded-value's global-scope type --
+    i.e. distributed-lower-kernels has already divided every partitioning
+    axis down to an extent of 1, so no real sharding is left for that kernel
+    to describe. Two trivial kernels that are immediate block neighbors
+    (this pass never looks across an intervening op -- valid because by this
+    point a distributed function body holds only kernels and collectives)
+    are pure serial computation split across an unnecessary op boundary, and
+    are merged into a single kernel that returns everything either
+    constituent kernel returned. Any direct SSA dependency between the pair
+    (the second kernel consuming one of the first's results) is rewired to
+    the shared internal value instead of round-tripping through the
+    now-removed kernel boundary. Chains of more than two adjacent trivial
+    kernels collapse to one op in a single run, since each merge produces a
+    new kernel that is itself revisited. Leaves any now-unused kernel
+    results in place -- dropping those is a separate pass.
+  }];
+}
+
 def DropIdentityCollectivesPass
     : Pass<"drop-identity-collectives", "::mlir::ModuleOp"> {
   let summary = "Drops distributed.Collective ops that perform no real "
