@@ -2007,14 +2007,31 @@ struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
       //                            memoryEffectsAttr);
       //   }
 
-      Value arg_buffer_ptr = entryBlock->getArgument(0);
-      Value arg_count_ptr = entryBlock->getArgument(1);
-      Value arg_datatype_ptr = entryBlock->getArgument(2);
-      Value arg_peer_ptr = entryBlock->getArgument(3);
-      Value arg_comm_ptr = entryBlock->getArgument(4);
+      Value arg_buffer_slot_ptr = entryBlock->getArgument(0);
+      Value arg_count_slot_ptr = entryBlock->getArgument(1);
+      Value arg_datatype_slot_ptr = entryBlock->getArgument(2);
+      Value arg_peer_slot_ptr = entryBlock->getArgument(3);
+      Value arg_comm_slot_ptr = entryBlock->getArgument(4);
       Value stream =
           enzymexla::GetStreamOp::create(rewriter, op.getLoc(), type_ptr)
               .getResult();
+
+      Value arg_buffer_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(),
+                                                  type_ptr, arg_buffer_slot_ptr)
+                                 .getResult();
+      Value arg_count_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(),
+                                                 type_ptr, arg_count_slot_ptr)
+                                .getResult();
+      Value arg_datatype_ptr =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                               arg_datatype_slot_ptr)
+              .getResult();
+      Value arg_peer_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                                                arg_peer_slot_ptr)
+                               .getResult();
+      Value arg_comm_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                                                arg_comm_slot_ptr)
+                               .getResult();
 
       // copy scalars from device to host memory
       Value host_count_ptr =
@@ -2201,14 +2218,31 @@ struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
       //                            memoryEffectsAttr);
       //   }
 
-      Value arg_buffer_ptr = entryBlock->getArgument(0);
-      Value arg_count_ptr = entryBlock->getArgument(1);
-      Value arg_datatype_ptr = entryBlock->getArgument(2);
-      Value arg_peer_ptr = entryBlock->getArgument(3);
-      Value arg_comm_ptr = entryBlock->getArgument(4);
+      Value arg_buffer_slot_ptr = entryBlock->getArgument(0);
+      Value arg_count_slot_ptr = entryBlock->getArgument(1);
+      Value arg_datatype_slot_ptr = entryBlock->getArgument(2);
+      Value arg_peer_slot_ptr = entryBlock->getArgument(3);
+      Value arg_comm_slot_ptr = entryBlock->getArgument(4);
       Value stream =
           enzymexla::GetStreamOp::create(rewriter, op.getLoc(), type_ptr)
               .getResult();
+
+      Value arg_buffer_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(),
+                                                  type_ptr, arg_buffer_slot_ptr)
+                                 .getResult();
+      Value arg_count_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(),
+                                                 type_ptr, arg_count_slot_ptr)
+                                .getResult();
+      Value arg_datatype_ptr =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                               arg_datatype_slot_ptr)
+              .getResult();
+      Value arg_peer_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                                                arg_peer_slot_ptr)
+                               .getResult();
+      Value arg_comm_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                                                arg_comm_slot_ptr)
+                               .getResult();
 
       // copy scalars from device to host memory
       Value host_count_ptr =
@@ -2408,18 +2442,31 @@ struct LowerCommNcclAllReduceOpToJIT
       //                            memoryEffectsAttr);
       //   }
 
-      Value arg_slot_ptr = entryBlock->getArgument(0);
-      Value arg_count_ptr = entryBlock->getArgument(1);
-      Value arg_datatype_ptr = entryBlock->getArgument(2);
-      Value arg_redop_ptr = entryBlock->getArgument(3);
-      Value arg_comm_ptr = entryBlock->getArgument(4);
+      Value arg_buffer_slot_ptr = entryBlock->getArgument(0);
+      Value arg_count_slot_ptr = entryBlock->getArgument(1);
+      Value arg_datatype_slot_ptr = entryBlock->getArgument(2);
+      Value arg_redop_slot_ptr = entryBlock->getArgument(3);
+      Value arg_comm_slot_ptr = entryBlock->getArgument(4);
       Value stream =
           enzymexla::GetStreamOp::create(rewriter, op.getLoc(), type_ptr)
               .getResult();
 
-      Value arg_buffer_ptr =
-          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_slot_ptr)
+      Value arg_buffer_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(),
+                                                  type_ptr, arg_buffer_slot_ptr)
+                                 .getResult();
+      Value arg_count_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(),
+                                                 type_ptr, arg_count_slot_ptr)
+                                .getResult();
+      Value arg_datatype_ptr =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                               arg_datatype_slot_ptr)
               .getResult();
+      Value arg_redop_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(),
+                                                 type_ptr, arg_redop_slot_ptr)
+                                .getResult();
+      Value arg_comm_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                                                arg_comm_slot_ptr)
+                               .getResult();
 
       // copy scalars from device to host memory
       Value host_count_ptr =
@@ -2631,14 +2678,31 @@ struct LowerCommNcclBroadcastOpToJIT
       //                            memoryEffectsAttr);
       //   }
 
-      Value arg_buffer_ptr = entryBlock->getArgument(0);
-      Value arg_count_ptr = entryBlock->getArgument(1);
-      Value arg_datatype_ptr = entryBlock->getArgument(2);
-      Value arg_root_ptr = entryBlock->getArgument(3);
-      Value arg_comm_ptr = entryBlock->getArgument(4);
+      Value arg_buffer_slot_ptr = entryBlock->getArgument(0);
+      Value arg_count_slot_ptr = entryBlock->getArgument(1);
+      Value arg_datatype_slot_ptr = entryBlock->getArgument(2);
+      Value arg_root_slot_ptr = entryBlock->getArgument(3);
+      Value arg_comm_slot_ptr = entryBlock->getArgument(4);
       Value stream =
           enzymexla::GetStreamOp::create(rewriter, op.getLoc(), type_ptr)
               .getResult();
+
+      Value arg_buffer_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(),
+                                                  type_ptr, arg_buffer_slot_ptr)
+                                 .getResult();
+      Value arg_count_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(),
+                                                 type_ptr, arg_count_slot_ptr)
+                                .getResult();
+      Value arg_datatype_ptr =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                               arg_datatype_slot_ptr)
+              .getResult();
+      Value arg_root_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                                                arg_root_slot_ptr)
+                               .getResult();
+      Value arg_comm_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                                                arg_comm_slot_ptr)
+                               .getResult();
 
       // copy scalars from device to host memory
       Value host_count_ptr =
