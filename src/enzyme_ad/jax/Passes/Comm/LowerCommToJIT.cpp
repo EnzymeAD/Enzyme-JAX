@@ -2408,13 +2408,17 @@ struct LowerCommNcclAllReduceOpToJIT
       //                            memoryEffectsAttr);
       //   }
 
-      Value arg_buffer_ptr = entryBlock->getArgument(0);
+      Value arg_slot_ptr = entryBlock->getArgument(0);
       Value arg_count_ptr = entryBlock->getArgument(1);
       Value arg_datatype_ptr = entryBlock->getArgument(2);
       Value arg_redop_ptr = entryBlock->getArgument(3);
       Value arg_comm_ptr = entryBlock->getArgument(4);
       Value stream =
           enzymexla::GetStreamOp::create(rewriter, op.getLoc(), type_ptr)
+              .getResult();
+
+      Value arg_buffer_ptr =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_slot_ptr)
               .getResult();
 
       // copy scalars from device to host memory
