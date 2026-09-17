@@ -395,10 +395,12 @@ RunLineConfig parseRunLine(llvm::StringRef runLine) {
   return runLineConfig;
 }
 
-void applyConstraintsFromPipeline(StringRef pipeline, PoolConstraints &c) {
-
+PoolConstraints constraintsFromPipeline(StringRef pipeline,
+                                        const PoolConstraints &base) {
+  PoolConstraints c = base;
   // Option form: no_nan / no_nan=true, all_finite=true. The =false spellings
   // exist, so the value has to be read rather than just the name matched.
+
   auto optionSet = [&](StringRef name) {
     size_t pos = 0;
     while ((pos = pipeline.find(name, pos)) != StringRef::npos) {
@@ -409,7 +411,8 @@ void applyConstraintsFromPipeline(StringRef pipeline, PoolConstraints &c) {
           return true;
         continue; // =false
       }
-      // Bare form: must end at a delimiter, not be a prefix of something else.
+      // Bare form: must end at a delimiter, not be a prefix of something
+      // else.
       if (rest.empty() || rest.starts_with("}") || rest.starts_with(",") ||
           rest.starts_with(" "))
         return true;
@@ -434,6 +437,7 @@ void applyConstraintsFromPipeline(StringRef pipeline, PoolConstraints &c) {
       c.noNaN = true;
     pos += 6;
   }
+  return c;
 }
 
 PoolConstraints constraintsFromArg(Value arg, const PoolConstraints &base) {
@@ -829,7 +833,6 @@ int main(int argc, char **argv) {
   funcPM.addPass(mlir::enzyme::createLowerEnzymeXLAMLPass());
 
   auto BaseConstraints = parseRestrictInput(restrictInput);
-  bool anyMismatch = false;
   bool anyToolError = false;
   unsigned passed = 0, mismatched = 0, skipped = 0;
 
@@ -868,7 +871,8 @@ int main(int argc, char **argv) {
                          mlir::PassManager::Nesting::Implicit);
     static_cast<mlir::OpPassManager &>(pm) = std::move(*parsed);
 
-    applyConstraintsFromPipeline(config.passPipeline, BaseConstraints);
+    PoolConstraints currentConstraints =
+        constraintsFromPipeline(config.passPipeline, BaseConstraints);
 
     OwningOpRef<Operation *> optimizedModule(module->clone());
     if (mlir::failed(pm.run(optimizedModule.get()))) {
@@ -891,7 +895,7 @@ int main(int argc, char **argv) {
 
     for (auto [unoptFunc, optFunc] : llvm::zip_equal(unoptFuncs, optFuncs)) {
       switch (fuzzFunction(unoptFunc, optFunc, gen, legalizationPM,
-                           BaseConstraints)) {
+                           currentConstraints)) {
       case Verdict::Passed:
         passed++;
         break;
@@ -910,7 +914,7 @@ int main(int argc, char **argv) {
     llvm::outs() << ": " << passed << " passed, " << mismatched
                  << " mismatched, " << skipped << " skipped\n";
   }
-  if (anyMismatch)
+  if (mismatched)
     return 1;
   if (anyToolError)
     return 2;
