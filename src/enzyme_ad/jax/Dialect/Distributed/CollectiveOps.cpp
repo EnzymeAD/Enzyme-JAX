@@ -63,11 +63,22 @@ LogicalResult DistributedCollectiveOp::verify() {
       mappingOp.getMappingRhs(), "FactorGroupType");
   auto reduction_group_factors =
       axis::flattenGroupsToFactors(typedReductionGroups);
-  SmallVector<TypedValue<AxisFactorType>> mapping_lhs_factors =
-      axis::flattenGroupsToFactors(typedMappingLHS);
+  if (failed(reduction_group_factors)) {
+    return emitOpError()
+           << "requires reduction_groups to be produced by axis.product";
+  }
+  auto mapping_lhs_factors = axis::flattenGroupsToFactors(typedMappingLHS);
+  if (failed(mapping_lhs_factors)) {
+    return emitOpError()
+           << "requires mapping_lhs to be produced by axis.product";
+  }
   auto mapping_rhs_factors = axis::flattenGroupsToFactors(typedMappingRHS);
-  auto lhs_filtered = filterOutReplicationFactors(mapping_lhs_factors);
-  auto rhs_filtered = filterOutReplicationFactors(mapping_rhs_factors);
+  if (failed(mapping_rhs_factors)) {
+    return emitOpError()
+           << "requires mapping_rhs to be produced by axis.product";
+  }
+  auto lhs_filtered = filterOutReplicationFactors(*mapping_lhs_factors);
+  auto rhs_filtered = filterOutReplicationFactors(*mapping_rhs_factors);
 
   // Create the set of axis we expect to see from the input, output types.
   // These are pure scratch values used only for the comparisons below, so a
@@ -89,8 +100,8 @@ LogicalResult DistributedCollectiveOp::verify() {
   // Validate index-space coverage independently on both sides:
   // - LHS must cover reduction groups + mapping_lhs == input_mesh + input type.
   // - RHS must cover mapping_rhs == output_mesh + output_type.
-  auto lhs_space =
-      concatTypedRanges<AxisFactorType>(reduction_group_factors, lhs_filtered);
+  auto lhs_space = concatTypedRanges<AxisFactorType>(*reduction_group_factors,
+                                                     lhs_filtered);
   auto expected_input_space = concatTypedRanges<AxisFactorType>(
       *inputMeshFactors, expected_input_factors);
   auto expected_output_space = concatTypedRanges<AxisFactorType>(
@@ -112,7 +123,8 @@ LogicalResult DistributedCollectiveOp::verify() {
            << "requires mapping_rhs to match output_mesh + output_tensor axes";
   }
 
-  if (!axis::areFactorGroupsDisjoint(typedReductionGroups)) {
+  // Provenance already confirmed above via reduction_group_factors.
+  if (!*axis::areFactorGroupsDisjoint(typedReductionGroups)) {
     return emitOpError() << "requires reduction_groups to be pairwise disjoint";
   }
 

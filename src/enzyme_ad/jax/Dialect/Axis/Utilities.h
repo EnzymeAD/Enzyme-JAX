@@ -140,11 +140,15 @@ bool areFactorsComplete(::mlir::TypedValue<AxisTypeInterface> axis,
                         TypedValueArrayRef<AxisFactorType> factors);
 
 // Small utlity for extracting all factors from one or more factor groups.
-llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
+// Fails if any group is not traceable to an axis.product (e.g. a block
+// argument), rather than assuming its caller already verified that.
+::mlir::FailureOr<llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>>
 flattenGroupsToFactors(TypedValueArrayRef<FactorGroupType> factorGroups);
 
-// Shortcut for calling distjoint on a flattened factor list
-bool areFactorGroupsDisjoint(TypedValueArrayRef<FactorGroupType> factorGroups);
+// Shortcut for calling distjoint on a flattened factor list. Fails under the
+// same condition as flattenGroupsToFactors.
+::mlir::FailureOr<bool>
+areFactorGroupsDisjoint(TypedValueArrayRef<FactorGroupType> factorGroups);
 
 // Given a shapeType with a known rank, returns a list of canonical axes for
 // each dimension of that shape. Use a builder without an insertion point and

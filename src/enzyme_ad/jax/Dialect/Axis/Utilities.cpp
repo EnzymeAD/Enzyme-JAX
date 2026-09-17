@@ -483,23 +483,26 @@ bool areFactorsComplete(TypedValue<AxisTypeInterface> axis,
   return product == static_cast<uint64_t>(getAxisExtent(axis));
 }
 
-llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
+FailureOr<llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>>
 flattenGroupsToFactors(TypedValueArrayRef<FactorGroupType> factorGroups) {
   llvm::SmallVector<::mlir::TypedValue<AxisFactorType>> flattenedFactors;
   for (auto group : factorGroups) {
     auto factors = getProductProvenanceFactors(group);
     if (failed(factors)) {
-      llvm_unreachable(
-          "flattenGroupsToFactors failed to get factors from FactorGroupType");
+      return failure();
     }
     flattenedFactors.append(factors->begin(), factors->end());
   }
   return flattenedFactors;
 }
 
-bool areFactorGroupsDisjoint(TypedValueArrayRef<FactorGroupType> factorGroups) {
+FailureOr<bool>
+areFactorGroupsDisjoint(TypedValueArrayRef<FactorGroupType> factorGroups) {
   auto flattenedFactors = flattenGroupsToFactors(factorGroups);
-  return areFactorsDisjoint(flattenedFactors);
+  if (failed(flattenedFactors)) {
+    return failure();
+  }
+  return areFactorsDisjoint(*flattenedFactors);
 }
 
 llvm::SmallVector<::mlir::TypedValue<AxisTypeInterface>>

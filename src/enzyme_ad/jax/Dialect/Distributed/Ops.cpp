@@ -185,7 +185,13 @@ static LogicalResult verifyTensorViewCast(CastOp castOp, bool globalToLocal) {
 
   auto partitioningAxes = axis::castTypedValueList<axis::FactorGroupType>(
       castOp.getPartitioningAxes(), "FactorGroupType");
-  if (!axis::areFactorGroupsDisjoint(partitioningAxes)) {
+  auto disjoint = axis::areFactorGroupsDisjoint(partitioningAxes);
+  if (failed(disjoint)) {
+    return castOp.emitOpError()
+           << "requires partitioning-axis factor groups to be produced by "
+              "axis.product";
+  }
+  if (!*disjoint) {
     return castOp.emitOpError()
            << "requires partitioning-axis factor groups to be disjoint";
   }
@@ -625,7 +631,12 @@ LogicalResult AnchorPartitioningOp::verify() {
   }
   auto partitioningAxes = axis::castTypedValueList<axis::FactorGroupType>(
       getPartitioningAxes(), "FactorGroupType");
-  if (!axis::areFactorGroupsDisjoint(partitioningAxes)) {
+  auto disjoint = axis::areFactorGroupsDisjoint(partitioningAxes);
+  if (failed(disjoint)) {
+    return emitOpError() << "requires partitioning-axis factor groups to be "
+                            "produced by axis.product";
+  }
+  if (!*disjoint) {
     return emitOpError()
            << "requires partitioning-axis factor groups to be disjoint";
   }
