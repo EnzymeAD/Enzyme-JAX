@@ -2010,8 +2010,8 @@ struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
       //        rewriter.getStringAttr("allocate"),
       //        rewriter.getStringAttr("free")});
       //   wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
-      //   wrapperFunc->setAttr("enzymexla.device_abi",
-      //                        rewriter.getStringAttr("cuda"));
+      wrapperFunc->setAttr("enzymexla.device_abi",
+                           rewriter.getStringAttr("cuda"));
       // Add argument-level memory effects attribute to all arguments
       //   for (unsigned i = 0; i < 2; ++i) {
       //     wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
@@ -2204,8 +2204,8 @@ struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
       //        rewriter.getStringAttr("allocate"),
       //        rewriter.getStringAttr("free")});
       //   wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
-      //   wrapperFunc->setAttr("enzymexla.device_abi",
-      //                        rewriter.getStringAttr("cuda"));
+      wrapperFunc->setAttr("enzymexla.device_abi",
+                           rewriter.getStringAttr("cuda"));
       // Add argument-level memory effects attribute to all arguments
       //   for (unsigned i = 0; i < 2; ++i) {
       //     wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
@@ -2411,8 +2411,8 @@ struct LowerCommNcclAllReduceOpToJIT
       //        rewriter.getStringAttr("allocate"),
       //        rewriter.getStringAttr("free")});
       //   wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
-      //   wrapperFunc->setAttr("enzymexla.device_abi",
-      //                        rewriter.getStringAttr("cuda"));
+      wrapperFunc->setAttr("enzymexla.device_abi",
+                           rewriter.getStringAttr("cuda"));
       // Add argument-level memory effects attribute to all arguments
       //   for (unsigned i = 0; i < 2; ++i) {
       //     wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
@@ -2630,8 +2630,8 @@ struct LowerCommNcclBroadcastOpToJIT
       //        rewriter.getStringAttr("allocate"),
       //        rewriter.getStringAttr("free")});
       //   wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
-      //   wrapperFunc->setAttr("enzymexla.device_abi",
-      //                        rewriter.getStringAttr("cuda"));
+      wrapperFunc->setAttr("enzymexla.device_abi",
+                           rewriter.getStringAttr("cuda"));
       // Add argument-level memory effects attribute to all arguments
       //   for (unsigned i = 0; i < 2; ++i) {
       //     wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
