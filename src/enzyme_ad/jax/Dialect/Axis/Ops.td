@@ -58,6 +58,7 @@ def AxisProductOp : AxisOp<"product", [PureMetadataTrait, DeclareOpInterfaceMeth
   let results = (outs FactorGroupType:$product);
   let assemblyFormat = "custom<VariadicWithTypes>($factors, type($factors)) attr-dict";
   let hasVerifier = 1;
+  let hasCanonicalizer = 1;
 }
 
 def AxisMapOp : AxisOp<"map", [

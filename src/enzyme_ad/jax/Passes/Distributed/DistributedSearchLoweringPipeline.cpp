@@ -16,6 +16,9 @@ void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
   pm.addPass(createCanonicalizeShardedFactorOrderPass());
   pm.addPass(createInlineDeviceLocalAxesPass());
   pm.addPass(createLowerKernelsPass(options));
+  // Can only drop anchors after inlining tensor types
+  pm.addPass(createDropIdentityCollectivesPass());
+  pm.addPass(createDropIdentityPartitioningAnchorsPass());
 }
 
 namespace {

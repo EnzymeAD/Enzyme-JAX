@@ -1,6 +1,8 @@
 #include "Dialect.h"
 #include "Utilities.h"
 
+#include "mlir/IR/PatternMatch.h"
+
 namespace mlir::enzyme::axis {
 
 namespace {
@@ -277,6 +279,32 @@ LogicalResult AxisProductOp::inferReturnTypes(
   inferredReturnTypes.push_back(
       FactorGroupType::get(context, static_cast<unsigned>(extentProduct)));
   return success();
+}
+
+namespace {
+// Extent-1 factors are multiplicatively neutral -- they never divide
+// anything and don't change which real index space the product covers (see
+// areFactorIndexSpacesEqual, which ignores them for the same reason) -- so
+// dropping them from any axis.product is always semantics-preserving.
+struct DropUnitFactorsFromProduct : public OpRewritePattern<AxisProductOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(AxisProductOp op,
+                                PatternRewriter &rewriter) const override {
+    rewriter.setInsertionPoint(op);
+    auto dropped = dropUnitFactors(op.getProduct(), rewriter);
+    if (dropped == op.getProduct()) {
+      return failure();
+    }
+    rewriter.replaceOp(op, dropped);
+    return success();
+  }
+};
+} // namespace
+
+void AxisProductOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                                MLIRContext *context) {
+  results.add<DropUnitFactorsFromProduct>(context);
 }
 
 llvm::SmallVector<TypedValue<FactorGroupType>> AxisMapOp::getTypedMappingLhs() {

@@ -187,6 +187,47 @@ def LowerKernelsPass : Pass<"distributed-lower-kernels", "::mlir::ModuleOp"> {
   }];
 }
 
+def DropIdentityPartitioningAnchorsPass
+    : Pass<"drop-identity-partitioning-anchors", "::mlir::ModuleOp"> {
+  let summary = "Unconditionally drops partitioning-anchor metadata that is "
+                "no longer needed once lowering has completed.";
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "enzyme::distributed::DistributedDialect"
+  ];
+  let description = [{
+    distributed.AnchorPartitioning's input/output types are always
+    structurally identical, so every instance is a semantic no-op: it exists
+    only to keep an axis-to-tensor-axis binding discoverable for earlier
+    passes that consume PartitioningAnchorOpInterface (chiefly
+    InlineDeviceLocalAxesPass). Once distributed-lower-kernels has run, that
+    metadata has already been fully consumed and no further growth will
+    occur, so every AnchorPartitioning op can simply be dropped in favor of
+    its own input, and any Cast op whose input/output types happen to
+    already be equal can be folded the same way. This pass is expected to
+    run late in the pipeline (after distributed-lower-kernels), never
+    earlier -- running it before InlineDeviceLocalAxesPass would incorrectly
+    discard bindings that pass still needs.
+  }];
+}
+
+def DropIdentityCollectivesPass
+    : Pass<"drop-identity-collectives", "::mlir::ModuleOp"> {
+  let summary = "Drops distributed.Collective ops that perform no real "
+                "communication.";
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "enzyme::distributed::DistributedDialect"
+  ];
+  let description = [{
+    Runs canonicalize-axis-maps as an internal sub-pass to put every
+    distributed.Collective's mapping into maximal one-to-one factor form,
+    then drops any collective that does no reduction, maps its input mesh
+    to a structurally identical output mesh with a fully identity mapping,
+    and produces an output type identical to its own input -- i.e. one that
+    performs no real communication. Each such collective's
+    distributed.Await uses are replaced directly by its own input_object.
+  }];
+}
+
 def InlineDeviceLocalAxesPass
     : Pass<"inline-device-local-axes", "::mlir::ModuleOp"> {
   let summary = "Inline distributed.DeviceLocalAxis markers into concrete local structure.";

@@ -339,6 +339,25 @@ llvm::SmallVector<std::pair<int, int>> build_max_factors(ValueRange factors) {
 // equivalence) and is intentionally permutation-invariant.
 bool areFactorIndexSpacesEqual(TypedValueArrayRef<AxisFactorType> lhsFactors,
                                TypedValueArrayRef<AxisFactorType> rhsFactors) {
+  // Extent-1 factors are multiplicatively neutral: they never affect which
+  // real index space a list of factors covers, so whether one is present on
+  // either side (or on neither) is irrelevant here. This is what lets
+  // dropUnitFactors physically omit them from one side without the other
+  // side (e.g. DistributedCollectiveOp::verify()'s own always-present,
+  // one-factor-per-tensor-dimension expectation) being considered a
+  // mismatch.
+  SmallVector<TypedValue<AxisFactorType>> lhsNoUnit, rhsNoUnit;
+  llvm::copy_if(lhsFactors, std::back_inserter(lhsNoUnit),
+                [](TypedValue<AxisFactorType> factor) {
+                  return getFactorExtent(factor) != 1;
+                });
+  llvm::copy_if(rhsFactors, std::back_inserter(rhsNoUnit),
+                [](TypedValue<AxisFactorType> factor) {
+                  return getFactorExtent(factor) != 1;
+                });
+  lhsFactors = lhsNoUnit;
+  rhsFactors = rhsNoUnit;
+
   struct AxisFactors {
     TypedValue<AxisTypeInterface> provenance;
     SmallVector<Value> lhsFactors;
@@ -546,6 +565,30 @@ viewFactorsAsProduct(TypedValueArrayRef<AxisFactorType> factors,
     factorValues.push_back(factor);
   }
   auto product = builder.create<AxisProductOp>(loc, ValueRange(factorValues));
+  return product.getProduct();
+}
+
+::mlir::TypedValue<FactorGroupType>
+dropUnitFactors(::mlir::TypedValue<FactorGroupType> group,
+                ::mlir::OpBuilder &builder) {
+  auto factors = getProductProvenanceFactors(group);
+  assert(succeeded(factors) && "group must be produced by axis.product");
+
+  SmallVector<Value> kept;
+  bool anyDropped = false;
+  for (TypedValue<AxisFactorType> factor : *factors) {
+    if (getFactorExtent(factor) == 1) {
+      anyDropped = true;
+      continue;
+    }
+    kept.push_back(factor);
+  }
+  if (!anyDropped) {
+    return group;
+  }
+
+  auto product =
+      builder.create<AxisProductOp>(group.getLoc(), ValueRange(kept));
   return product.getProduct();
 }
 

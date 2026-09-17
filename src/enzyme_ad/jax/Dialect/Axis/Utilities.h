@@ -178,6 +178,13 @@ viewFactorsAsProduct(::mlir::ValueRange factors, ::mlir::OpBuilder &builder,
 viewFactorsAsProduct(TypedValueArrayRef<AxisFactorType> factors,
                      ::mlir::OpBuilder &builder, ::mlir::Location loc);
 
+// Rebuilds `group` with every extent-1 factor removed.
+// The ressult is unchanged if there are no extent 1 factors.
+// May produce an empty product.
+::mlir::TypedValue<FactorGroupType>
+dropUnitFactors(::mlir::TypedValue<FactorGroupType> group,
+                ::mlir::OpBuilder &builder);
+
 // Creates a full major-first factorization for one axis from major-first
 // extents. Strides are inferred
 llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
