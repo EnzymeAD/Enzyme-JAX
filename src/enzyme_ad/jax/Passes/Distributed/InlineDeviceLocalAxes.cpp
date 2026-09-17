@@ -134,6 +134,103 @@ computeDeviceLocalGrowthFactor(ValueRange partitioningAxes,
   return growth;
 }
 
+// Where a DeviceLocalAxis sits within one specific binding: which tensor
+// dimension, and what stride among its (contiguous, minor-most -- this
+// pass's own precondition) sibling DeviceLocalAxis factors on that same
+// dimension. Stride is computed here rather than read off the factor's own
+// axis::getFactorStride, which is relative to its declaring axis, not to
+// this position.
+struct AxisBinding {
+  unsigned dim;
+  int64_t stride;
+};
+
+// Maps each DeviceLocalAxis (keyed by its declaring op's result -- see
+// splitOutDeviceLocalFactors) to where it sits in one specific binding.
+// Never merge two of these: the same axis can legitimately sit on a
+// different dimension of some other, unrelated tensor (e.g. a value and its
+// own transpose), so a binding is only meaningful for the one value it was
+// resolved from.
+using AxisToDimensionMap = llvm::DenseMap<Value, AxisBinding>;
+
+// Converts one getBindingInfoForOperand/Result result (per dimension, the
+// factor-group values contributing to it) into an AxisToDimensionMap.
+static AxisToDimensionMap
+axisToDimensionMapFromBinding(ArrayRef<SmallVector<Value>> binding) {
+  AxisToDimensionMap axisToDim;
+  for (auto [dim, factorGroups] : llvm::enumerate(binding)) {
+    // Only DeviceLocalAxis factors advance the running stride: a mesh
+    // factor sharing the slot doesn't occupy any of this dimension's
+    // device-local sub-range.
+    int64_t stride = 1;
+    for (Value factorGroupValue : factorGroups) {
+      auto factorGroup =
+          dyn_cast<TypedValue<axis::FactorGroupType>>(factorGroupValue);
+      if (!factorGroup) {
+        continue;
+      }
+      auto factors = axis::getProductProvenanceFactors(factorGroup);
+      if (failed(factors)) {
+        continue;
+      }
+      for (auto factor : *factors) {
+        auto provenance = axis::getFactorProvenanceAxis(factor);
+        if (failed(provenance) ||
+            !isa<DeviceLocalAxisType>(provenance->getType())) {
+          continue;
+        }
+        axisToDim.try_emplace(*provenance,
+                              AxisBinding{static_cast<unsigned>(dim), stride});
+        stride *= axis::getFactorExtent(factor);
+      }
+    }
+  }
+  return axisToDim;
+}
+
+// Resolves an operand's binding via its producer's own
+// PartitioningAnchorOpInterface implementation -- one lookup, no walking:
+// the interface is the sole authority on what a value's current binding is.
+// Must run before anything in this pass mutates/strips a slot's own
+// content, since that binding is what's being read here.
+static AxisToDimensionMap resolveOperandAxisBindings(Value value) {
+  if (!isa<RankedTensorType>(value.getType())) {
+    return AxisToDimensionMap();
+  }
+  auto anchorOp =
+      dyn_cast_or_null<PartitioningAnchorOpInterface>(value.getDefiningOp());
+  if (!anchorOp) {
+    return AxisToDimensionMap();
+  }
+  auto binding = anchorOp.getBindingInfoForResult(cast<OpResult>(value));
+  if (failed(binding)) {
+    return AxisToDimensionMap();
+  }
+  return axisToDimensionMapFromBinding(*binding);
+}
+
+// Resolves a result's binding via any one consumer implementing
+// PartitioningAnchorOpInterface -- every such consumer must agree (this
+// dialect's own consistency invariant, maintained elsewhere), so the first
+// one found is as good as any other.
+static AxisToDimensionMap resolveResultAxisBindings(Value value) {
+  if (!isa<RankedTensorType>(value.getType())) {
+    return AxisToDimensionMap();
+  }
+  for (OpOperand &use : value.getUses()) {
+    auto anchorOp = dyn_cast<PartitioningAnchorOpInterface>(use.getOwner());
+    if (!anchorOp) {
+      continue;
+    }
+    auto binding = anchorOp.getBindingInfoForOperand(use);
+    if (failed(binding)) {
+      continue;
+    }
+    return axisToDimensionMapFromBinding(*binding);
+  }
+  return AxisToDimensionMap();
+}
+
 // Scans one mapping_rhs entry (a flat factor-group product covering every
 // output tensor dimension) and returns, per dimension index, the product of
 // DeviceLocalAxis factor extents found for that dimension: how much
@@ -141,29 +238,24 @@ computeDeviceLocalGrowthFactor(ValueRange partitioningAxes,
 //
 // Mesh operands (input_mesh/output_mesh) never need to know which dimension
 // a factor belongs to; they're flat totals, stripped or compared as a
-// whole. The mapping does need that association, and recovers it
-// positionally:
-//  - MaterializeDistributedCollectives.cpp's toLocallyTypedAxisProduct
-//    builds each mapping_lhs/mapping_rhs entry dimension by dimension, in
-//    rank order: each dimension's own mesh factors, followed by exactly one
-//    ShapeAxisType factor anchoring it (from axis.getaxis on that
-//    dimension).
-//  - So scanning front to back, everything since the last anchor belongs to
-//    the dimension the next anchor names.
-//  - That positional bookkeeping survives the search's factor rebasing.
-//    axis::replaceAxisFactors (how SearchStrategies.cpp turns a
-//    LogicalMeshAxis factor into physical/device-local ones) splices its
-//    replacement in at the same operand position; it never appends or
-//    reorders. The anchors themselves are never rebased (they're ShapeAxis,
-//    not LogicalMeshAxis), so they stay exactly where construction put
-//    them.
+// whole. The mapping does need that association, resolved two ways:
+//  - Positionally: MaterializeDistributedCollectives.cpp builds each entry
+//    dimension by dimension, each dimension's mesh factors followed by one
+//    ShapeAxisType anchor naming it -- scanning front to back, everything
+//    since the last anchor belongs to the dimension the next one names.
+//  - Via `axisToDim` otherwise, for a mapping entry with no embedded anchor
+//    at all (e.g. a genuine identity pass-through over these axes).
 static FailureOr<llvm::DenseMap<unsigned, int64_t>>
-computeMappingRhsDeviceLocalGrowth(TypedValue<axis::FactorGroupType> group) {
+computeMappingRhsDeviceLocalGrowth(TypedValue<axis::FactorGroupType> group,
+                                   const AxisToDimensionMap &axisToDim) {
   auto factors = axis::getProductProvenanceFactors(group);
   if (failed(factors)) {
     return failure();
   }
   llvm::DenseMap<unsigned, int64_t> growthPerDim;
+  auto accumulate = [&](unsigned dim, int64_t extent) {
+    growthPerDim.try_emplace(dim, 1).first->second *= extent;
+  };
   int64_t runDeviceLocalExtent = 1;
   for (auto factor : *factors) {
     auto provenance = axis::getFactorProvenanceAxis(factor);
@@ -173,15 +265,21 @@ computeMappingRhsDeviceLocalGrowth(TypedValue<axis::FactorGroupType> group) {
     if (isa<axis::ShapeAxisType>(provenance->getType())) {
       unsigned dim = axis::getAxisDimIndex(
           cast<TypedValue<axis::ShapeAxisType>>(*provenance));
-      growthPerDim[dim] = runDeviceLocalExtent;
+      accumulate(dim, runDeviceLocalExtent);
       runDeviceLocalExtent = 1;
     } else if (isa<DeviceLocalAxisType>(provenance->getType())) {
-      runDeviceLocalExtent *= axis::getFactorExtent(factor);
+      auto dimIt = axisToDim.find(*provenance);
+      if (dimIt != axisToDim.end()) {
+        accumulate(dimIt->second.dim, axis::getFactorExtent(factor));
+      } else {
+        runDeviceLocalExtent *= axis::getFactorExtent(factor);
+      }
     }
   }
   if (runDeviceLocalExtent != 1) {
-    // DeviceLocalAxis factor(s) after the last anchor: can't tell which
-    // dimension they belong to.
+    // DeviceLocalAxis factor(s) after the last anchor, with no durable
+    // binding in axisToDim either: genuinely can't tell which dimension
+    // they belong to.
     return failure();
   }
   return growthPerDim;
@@ -192,12 +290,13 @@ computeMappingRhsDeviceLocalGrowth(TypedValue<axis::FactorGroupType> group) {
 // `currentType` unchanged if no growth is needed. Pure computation -- does
 // not mutate anything.
 static FailureOr<RankedTensorType>
-computeGrownOutputType(RankedTensorType currentType, ValueRange mappingRhs) {
+computeGrownOutputType(RankedTensorType currentType, ValueRange mappingRhs,
+                       const AxisToDimensionMap &axisToDim) {
   SmallVector<int64_t> newShape(currentType.getShape());
   bool changed = false;
   for (Value rhs : mappingRhs) {
     auto typedRhs = cast<TypedValue<axis::FactorGroupType>>(rhs);
-    auto growthPerDim = computeMappingRhsDeviceLocalGrowth(typedRhs);
+    auto growthPerDim = computeMappingRhsDeviceLocalGrowth(typedRhs, axisToDim);
     if (failed(growthPerDim)) {
       return failure();
     }
@@ -290,16 +389,16 @@ struct MappingReplacementPlan {
 };
 
 // Figures out where each DeviceLocalAxis factor in one mapping side's flat
-// factor list belongs: which tensor dimension (named by that dimension's
-// own trailing ShapeAxisType anchor -- see computeMappingRhsDeviceLocalGrowth's
-// comment for why this positional scan is valid) and what stride its
-// same-extent replacement should have there. DeviceLocalAxis factors within
-// one dimension are placed minor-most, in their existing relative order
-// (this pass's own contiguous/minor-most precondition) -- deliberately not
-// merged into one combined factor; that consolidation, if ever wanted, is a
-// separate canonicalization pass's job, not this one's.
+// factor list belongs: which tensor dimension and what stride its
+// same-extent replacement should have there. Prefers `axisToDim` per
+// factor; falls back to the positional scan (named by that dimension's own
+// trailing ShapeAxisType anchor in this same list, with DeviceLocalAxis
+// factors placed minor-most in their existing relative order -- this
+// pass's own contiguous/minor-most precondition) for whichever factors
+// axisToDim doesn't know about.
 static FailureOr<MappingReplacementPlan> planDeviceLocalReplacements(
-    llvm::ArrayRef<TypedValue<axis::AxisFactorType>> factors) {
+    llvm::ArrayRef<TypedValue<axis::AxisFactorType>> factors,
+    const AxisToDimensionMap &axisToDim) {
   MappingReplacementPlan plan;
   SmallVector<size_t> pendingIndices;
   int64_t pendingStride = 1;
@@ -309,6 +408,18 @@ static FailureOr<MappingReplacementPlan> planDeviceLocalReplacements(
       return failure();
     }
     if (isa<DeviceLocalAxisType>(provenance->getType())) {
+      auto dimIt = axisToDim.find(*provenance);
+      if (dimIt != axisToDim.end()) {
+        unsigned dim = dimIt->second.dim;
+        plan.perFactor[idx] = {dim, dimIt->second.stride};
+        // A real ShapeAxis anchor still present later in this list needs
+        // this dimension's combined extent to shift its own stride -- the
+        // same tally the positional pendingStride below feeds.
+        auto [extentIt, inserted] =
+            plan.combinedExtentPerDim.try_emplace(dim, 1);
+        extentIt->second *= axis::getFactorExtent(factor);
+        continue;
+      }
       pendingIndices.push_back(idx);
       continue;
     }
@@ -328,7 +439,8 @@ static FailureOr<MappingReplacementPlan> planDeviceLocalReplacements(
     pendingStride = 1;
   }
   if (!pendingIndices.empty()) {
-    // DeviceLocalAxis factor(s) with no anchor to name their dimension.
+    // DeviceLocalAxis factor(s) with no anchor to name their dimension,
+    // positionally or via axisToDim.
     return failure();
   }
   return plan;
@@ -354,15 +466,14 @@ static FailureOr<MappingReplacementPlan> planDeviceLocalReplacements(
 // Returns the (possibly unchanged) rebuilt value, whether anything actually
 // changed, and whether any DeviceLocalAxis factor was found on this side at
 // all (the caller uses this to decide whether growth was expected here).
-static FailureOr<std::tuple<Value, bool, bool>>
-rebuildMappingFactorsForTarget(TypedValue<axis::FactorGroupType> group,
-                               RankedTensorType targetType, OpBuilder &builder,
-                               Location loc) {
+static FailureOr<std::tuple<Value, bool, bool>> rebuildMappingFactorsForTarget(
+    TypedValue<axis::FactorGroupType> group, RankedTensorType targetType,
+    OpBuilder &builder, Location loc, const AxisToDimensionMap &axisToDim) {
   auto factors = axis::getProductProvenanceFactors(group);
   if (failed(factors)) {
     return failure();
   }
-  auto plan = planDeviceLocalReplacements(*factors);
+  auto plan = planDeviceLocalReplacements(*factors, axisToDim);
   if (failed(plan)) {
     return failure();
   }
@@ -934,7 +1045,9 @@ static void checkKernelOperandGrowthConsistency(DistributedKernelOp kernelOp) {
 // reduction_groups). input_object is never touched; it's expected to
 // already be grown by whatever produced it.
 static bool
-inlineDeviceLocalAxesInCollective(DistributedCollectiveOp collectiveOp) {
+inlineDeviceLocalAxesInCollective(DistributedCollectiveOp collectiveOp,
+                                  const AxisToDimensionMap &inputAxisToDim,
+                                  const AxisToDimensionMap &outputAxisToDim) {
   OpBuilder builder(collectiveOp);
   Location loc = collectiveOp.getLoc();
 
@@ -1014,7 +1127,8 @@ inlineDeviceLocalAxesInCollective(DistributedCollectiveOp collectiveOp) {
       dyn_cast<RankedTensorType>(collectiveOp.getOutputType());
   RankedTensorType newOutputType = currentOutputType;
   if (currentOutputType) {
-    auto grown = computeGrownOutputType(currentOutputType, oldMappingRhs);
+    auto grown = computeGrownOutputType(currentOutputType, oldMappingRhs,
+                                        outputAxisToDim);
     if (failed(grown)) {
       collectiveOp.emitRemark() << "inline-device-local-axes: mapping_rhs "
                                    "couldn't be resolved for output_type "
@@ -1045,10 +1159,10 @@ inlineDeviceLocalAxesInCollective(DistributedCollectiveOp collectiveOp) {
   for (size_t i = 0; i < oldMappingLhs.size(); ++i) {
     auto typedLhs = cast<TypedValue<axis::FactorGroupType>>(oldMappingLhs[i]);
     auto typedRhs = cast<TypedValue<axis::FactorGroupType>>(oldMappingRhs[i]);
-    auto lhsResult =
-        rebuildMappingFactorsForTarget(typedLhs, inputObjectType, builder, loc);
-    auto rhsResult =
-        rebuildMappingFactorsForTarget(typedRhs, newOutputType, builder, loc);
+    auto lhsResult = rebuildMappingFactorsForTarget(
+        typedLhs, inputObjectType, builder, loc, inputAxisToDim);
+    auto rhsResult = rebuildMappingFactorsForTarget(
+        typedRhs, newOutputType, builder, loc, outputAxisToDim);
     if (failed(lhsResult) || failed(rhsResult)) {
       collectiveOp.emitRemark() << "inline-device-local-axes: mapping pair "
                                 << i << " couldn't be resolved to raw factors";
@@ -1176,6 +1290,32 @@ struct InlineDeviceLocalAxesPass
     ModuleOp moduleOp = getOperation();
     bool sawUnsupported = false;
 
+    // Resolved before any mutation below: once a kernel/cast/anchor strips
+    // its own copy of a DeviceLocalAxis's binding, a collective resolving
+    // the same value later in this pass run would otherwise find nothing.
+    // input_object and output are resolved independently (see
+    // AxisToDimensionMap's comment on why they must never be merged).
+    struct CollectiveAxisBindings {
+      AxisToDimensionMap input;
+      AxisToDimensionMap output;
+    };
+    llvm::DenseMap<Operation *, CollectiveAxisBindings> collectiveAxisBindings;
+    moduleOp.walk([&](DistributedCollectiveOp collectiveOp) {
+      // async_handle isn't itself a tensor; a collective's result is only
+      // ever unwrapped by its own DistributedAwait, so that's not an
+      // arbitrary hop to special-case, just how this value is reached.
+      AxisToDimensionMap outputBindings;
+      for (OpOperand &use : collectiveOp.getAsyncHandle().getUses()) {
+        if (auto awaitOp = dyn_cast<DistributedAwait>(use.getOwner())) {
+          outputBindings = resolveResultAxisBindings(awaitOp.getValue());
+          break;
+        }
+      }
+      collectiveAxisBindings[collectiveOp.getOperation()] = {
+          resolveOperandAxisBindings(collectiveOp.getInputObject()),
+          std::move(outputBindings)};
+    });
+
     moduleOp.walk([&](Operation *op) {
       if (auto g2l = dyn_cast<DistributedCastGlobalToLocalOp>(op)) {
         if (inlineDeviceLocalAxesInCast(g2l, /*localSideIsOwnResult=*/true)) {
@@ -1209,7 +1349,10 @@ struct InlineDeviceLocalAxesPass
       collectiveOps.push_back(collectiveOp);
     });
     for (DistributedCollectiveOp collectiveOp : collectiveOps) {
-      if (inlineDeviceLocalAxesInCollective(collectiveOp)) {
+      const CollectiveAxisBindings &bindings =
+          collectiveAxisBindings[collectiveOp.getOperation()];
+      if (inlineDeviceLocalAxesInCollective(collectiveOp, bindings.input,
+                                            bindings.output)) {
         sawUnsupported = true;
       }
     }
