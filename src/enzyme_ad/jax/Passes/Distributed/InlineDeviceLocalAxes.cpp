@@ -580,6 +580,7 @@ static bool inlineDeviceLocalAxesInCast(CastOpTy castOp,
   SmallVector<Value> newPartitioningAxes(partitioningAxes.begin(),
                                          partitioningAxes.end());
   OpBuilder builder(castOp);
+  axis::ModuleScopeGuard moduleScope(builder);
 
   Value localSide = localSideIsOwnResult ? Value(castOp.getOutput())
                                          : Value(castOp.getInput());
@@ -641,6 +642,7 @@ static bool inlineDeviceLocalAxesInAnchor(AnchorPartitioningOp anchorOp) {
   SmallVector<Value> newPartitioningAxes(partitioningAxes.begin(),
                                          partitioningAxes.end());
   OpBuilder builder(anchorOp);
+  axis::ModuleScopeGuard moduleScope(builder);
   bool changed = false;
 
   for (auto [dim, factorGroupValue] : llvm::enumerate(partitioningAxes)) {
@@ -713,6 +715,7 @@ stripDeviceLocalFactorsFromSlot(DistributedKernelOp kernelOp, int64_t idx) {
   }
   OpBuilder builder(kernelOp.getContext());
   builder.setInsertionPoint(kernelOp);
+  axis::ModuleScopeGuard moduleScope(builder);
   Value newSlot = axis::viewFactorsAsProduct(kept, builder, kernelOp.getLoc());
   kernelOp.getPartitioningAxesMutable()
       .slice(static_cast<unsigned>(idx), 1)
@@ -1051,6 +1054,19 @@ inlineDeviceLocalAxesInCollective(DistributedCollectiveOp collectiveOp,
   OpBuilder builder(collectiveOp);
   Location loc = collectiveOp.getLoc();
 
+  // Everything up to (but not including) the region-count-changed rebuild
+  // below is pure axis-algebra and belongs at module scope; only the final
+  // collective rebuild is a real op that must stay at collectiveOp's own
+  // position, so the guard's scope ends before reaching it.
+  FailureOr<std::pair<Value, bool>> newInputMesh, newOutputMesh;
+  SmallVector<Value> newReductionGroups;
+  SmallVector<Region *> keptBodies;
+  bool reductionGroupRemoved = false;
+  RankedTensorType newOutputType;
+  RankedTensorType currentOutputType;
+  Value finalMapping;
+  {
+  axis::ModuleScopeGuard moduleScope(builder);
   auto stripGroup = [&](TypedValue<axis::FactorGroupType> group)
       -> FailureOr<std::pair<Value, bool>> {
     auto split = splitOutDeviceLocalFactors(group);
@@ -1065,8 +1081,8 @@ inlineDeviceLocalAxesInCollective(DistributedCollectiveOp collectiveOp,
                           true);
   };
 
-  auto newInputMesh = stripGroup(collectiveOp.getInputMesh());
-  auto newOutputMesh = stripGroup(collectiveOp.getOutputMesh());
+  newInputMesh = stripGroup(collectiveOp.getInputMesh());
+  newOutputMesh = stripGroup(collectiveOp.getOutputMesh());
   if (failed(newInputMesh) || failed(newOutputMesh)) {
     collectiveOp.emitRemark() << "inline-device-local-axes: input_mesh/"
                                  "output_mesh couldn't be resolved to raw "
@@ -1076,9 +1092,6 @@ inlineDeviceLocalAxesInCollective(DistributedCollectiveOp collectiveOp,
 
   ValueRange oldReductionGroups = collectiveOp.getReductionGroups();
   MutableArrayRef<Region> oldBodies = collectiveOp.getReductionBodies();
-  SmallVector<Value> newReductionGroups;
-  SmallVector<Region *> keptBodies;
-  bool reductionGroupRemoved = false;
   bool reductionContentChanged = false;
   bool reductionAssumedAlreadyLocal = false;
   for (size_t i = 0; i < oldReductionGroups.size(); ++i) {
@@ -1123,9 +1136,8 @@ inlineDeviceLocalAxesInCollective(DistributedCollectiveOp collectiveOp,
   // Computed up front (from the *old*, pre-strip mapping_rhs) because
   // rebuilding mapping_rhs's own factors below needs to know the target type
   // its ShapeAxis anchors should be rebuilt against.
-  auto currentOutputType =
-      dyn_cast<RankedTensorType>(collectiveOp.getOutputType());
-  RankedTensorType newOutputType = currentOutputType;
+  currentOutputType = dyn_cast<RankedTensorType>(collectiveOp.getOutputType());
+  newOutputType = currentOutputType;
   if (currentOutputType) {
     auto grown = computeGrownOutputType(currentOutputType, oldMappingRhs,
                                         outputAxisToDim);
@@ -1227,7 +1239,7 @@ inlineDeviceLocalAxesInCollective(DistributedCollectiveOp collectiveOp,
     return false;
   }
 
-  Value finalMapping = collectiveOp.getMapping();
+  finalMapping = collectiveOp.getMapping();
   if (mappingChanged) {
     auto newMapOp = builder.create<axis::AxisMapOp>(
         loc, axis::AxisMapType::get(builder.getContext()), newMappingLhs,
@@ -1247,6 +1259,8 @@ inlineDeviceLocalAxesInCollective(DistributedCollectiveOp collectiveOp,
     }
     return false;
   }
+  } // end of module-scoped axis-algebra construction; builder is restored to
+    // collectiveOp's own position below for the real op rebuild.
 
   // A whole reduction group vanished: reduction_bodies' region count must
   // shrink to match, which requires rebuilding the op (regions can't be

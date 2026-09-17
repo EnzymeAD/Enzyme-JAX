@@ -50,16 +50,16 @@ module {
 }
 
 // CHECK-LABEL: module {
-// CHECK: %[[RF:.*]] = axis.factor %{{.*}} : !distributed.physical_comm_axis<2, 1><2, 1>
+// CHECK-DAG: %[[RF:.*]] = axis.factor %{{.*}} : !distributed.physical_comm_axis<2, 1><2, 1>
+// CHECK-DAG: %[[MESH_IN:.*]] = axis.product (%[[RF]] : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
 // CHECK: %[[LOCAL:.*]] = distributed.CastGlobalToLocal %{{.*}} axes (%{{.*}} : !axis.factor_group<1>) : tensor<4xf32> -> tensor<4xf32>
 // The kernel's own operand is already grown by the cast above -- no remark
 // about it, and no remark about the dropped reduction group either, since
 // its producer really is a distributed.DistributedKernel.
 // CHECK-NOT: remark: inline-device-local-axes
 // CHECK: %[[SUM:.*]] = distributed.DistributedKernel (%[[LOCAL]] : tensor<4xf32>)
-// CHECK: %[[MESH_OUT:.*]] = axis.product (%[[RF]] : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
-// CHECK: %[[MAP:.*]] = axis.map %{{.*}} to %{{.*}} : [!axis.factor_group<2>] [!axis.factor_group<2>]
-// CHECK: %[[MESH_IN:.*]] = axis.product (%[[RF]] : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+// CHECK-DAG: %[[MESH_OUT:.*]] = axis.product (%[[RF]] : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+// CHECK-DAG: %[[MAP:.*]] = axis.map %{{.*}} to %{{.*}} : [!axis.factor_group<2>] [!axis.factor_group<2>]
 // CHECK: distributed.Collective %[[SUM]] : tensor<f32> on %[[MESH_IN]] : <2> to tensor<f32> on %[[MESH_OUT]] : <2> reduces () maps %[[MAP]] : !axis.map
 
 // -----
@@ -111,21 +111,21 @@ module {
 }
 
 // CHECK-LABEL: module {
-// CHECK: %[[RF:.*]] = axis.factor %{{.*}} : !distributed.physical_comm_axis<2, 1><2, 1>
-// CHECK: %[[LOCAL:.*]] = distributed.CastGlobalToLocal %{{.*}} axes (%{{.*}} : !axis.factor_group<2>) : tensor<8xf32> -> tensor<4xf32>
-// CHECK: %[[MESH_IN:.*]] = axis.product (%[[RF]] : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
-// CHECK: %[[MESH_OUT:.*]] = axis.product (%[[RF]] : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+// CHECK-DAG: %[[RF:.*]] = axis.factor %{{.*}} : !distributed.physical_comm_axis<2, 1><2, 1>
+// CHECK-DAG: %[[MESH_IN:.*]] = axis.product (%[[RF]] : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+// CHECK-DAG: %[[MESH_OUT:.*]] = axis.product (%[[RF]] : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
 // The DeviceLocalAxis factor is replaced by a same-extent (4, stride 1)
 // sub-factor, and the original anchor (extent 1, unchanged) shifts to
 // stride 4 above it -- not merged into one grown anchor.
-// CHECK: %[[LHS_AXIS:.*]] = axis.getaxis tensor<4xf32> 0
-// CHECK: %[[LHS_LOCAL:.*]] = axis.factor %[[LHS_AXIS]] : !axis.shape_axis<tensor<4xf32>, 0><4, 1>
-// CHECK: %[[LHS_ANCHOR:.*]] = axis.factor %[[LHS_AXIS]] : !axis.shape_axis<tensor<4xf32>, 0><1, 4>
-// CHECK: %[[LHS:.*]] = axis.product (%[[RF]] : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>, %[[LHS_LOCAL]] : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>, %[[LHS_ANCHOR]] : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 1, 4>)
-// CHECK: %[[RHS_AXIS:.*]] = axis.getaxis tensor<4xf32> 0
-// CHECK: %[[RHS_LOCAL:.*]] = axis.factor %[[RHS_AXIS]] : !axis.shape_axis<tensor<4xf32>, 0><4, 1>
-// CHECK: %[[RHS_ANCHOR:.*]] = axis.factor %[[RHS_AXIS]] : !axis.shape_axis<tensor<4xf32>, 0><1, 4>
-// CHECK: %[[RHS:.*]] = axis.product (%[[RF]] : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>, %[[RHS_LOCAL]] : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>, %[[RHS_ANCHOR]] : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 1, 4>)
-// CHECK: %[[MAP:.*]] = axis.map %[[LHS]] to %[[RHS]] : [!axis.factor_group<8>] [!axis.factor_group<8>]
+// CHECK-DAG: %[[LHS_AXIS:.*]] = axis.getaxis tensor<4xf32> 0
+// CHECK-DAG: %[[LHS_LOCAL:.*]] = axis.factor %[[LHS_AXIS]] : !axis.shape_axis<tensor<4xf32>, 0><4, 1>
+// CHECK-DAG: %[[LHS_ANCHOR:.*]] = axis.factor %[[LHS_AXIS]] : !axis.shape_axis<tensor<4xf32>, 0><1, 4>
+// CHECK-DAG: %[[LHS:.*]] = axis.product (%[[RF]] : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>, %[[LHS_LOCAL]] : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>, %[[LHS_ANCHOR]] : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 1, 4>)
+// CHECK-DAG: %[[RHS_AXIS:.*]] = axis.getaxis tensor<4xf32> 0
+// CHECK-DAG: %[[RHS_LOCAL:.*]] = axis.factor %[[RHS_AXIS]] : !axis.shape_axis<tensor<4xf32>, 0><4, 1>
+// CHECK-DAG: %[[RHS_ANCHOR:.*]] = axis.factor %[[RHS_AXIS]] : !axis.shape_axis<tensor<4xf32>, 0><1, 4>
+// CHECK-DAG: %[[RHS:.*]] = axis.product (%[[RF]] : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>, %[[RHS_LOCAL]] : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>, %[[RHS_ANCHOR]] : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 1, 4>)
+// CHECK-DAG: %[[MAP:.*]] = axis.map %[[LHS]] to %[[RHS]] : [!axis.factor_group<8>] [!axis.factor_group<8>]
+// CHECK: %[[LOCAL:.*]] = distributed.CastGlobalToLocal %{{.*}} axes (%{{.*}} : !axis.factor_group<2>) : tensor<8xf32> -> tensor<4xf32>
 // CHECK: %[[H:.*]] = distributed.Collective %[[LOCAL]] : tensor<4xf32> on %[[MESH_IN]] : <2> to tensor<4xf32> on %[[MESH_OUT]] : <2> reduces () maps %[[MAP]] : !axis.map
 // CHECK: distributed.Await %[[H]] : <tensor<4xf32>> -> tensor<4xf32>

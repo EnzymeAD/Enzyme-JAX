@@ -355,17 +355,23 @@ struct MaterializeDistributedCollectivesPass
       Type collectiveOutputType, Value collectiveInput,
       llvm::ArrayRef<TV_AxisFactor> collectiveReductionDims) {
     llvm::SmallVector<Value> reductionGroupValues;
-    if (!collectiveReductionDims.empty()) {
-      auto reductionGroup =
-          builder
-              .create<mlir::enzyme::axis::AxisProductOp>(
-                  conflict.value.getLoc(), asValues(collectiveReductionDims))
-              .getProduct();
-      reductionGroupValues.push_back(reductionGroup);
-    }
+    mlir::enzyme::axis::AxisMapOp mapping;
+    {
+      // axis.product/axis.map are pure metadata and belong at module scope,
+      // unlike the real collective/await ops built below.
+      axis::ModuleScopeGuard moduleScope(builder);
+      if (!collectiveReductionDims.empty()) {
+        auto reductionGroup =
+            builder
+                .create<mlir::enzyme::axis::AxisProductOp>(
+                    conflict.value.getLoc(), asValues(collectiveReductionDims))
+                .getProduct();
+        reductionGroupValues.push_back(reductionGroup);
+      }
 
-    auto mapping = builder.create<mlir::enzyme::axis::AxisMapOp>(
-        conflict.value.getLoc(), ValueRange{lhsDims}, ValueRange{rhsDims});
+      mapping = builder.create<mlir::enzyme::axis::AxisMapOp>(
+          conflict.value.getLoc(), ValueRange{lhsDims}, ValueRange{rhsDims});
+    }
     auto collectiveAndAwait =
         mlir::enzyme::distributed::createCollectiveAndAwait(
             builder, conflict.value.getLoc(), collectiveInput, lhsMesh, rhsMesh,

@@ -9,12 +9,15 @@
 // DistributedCollectiveOp::verify() accepts this without it -- see
 // test/lit_tests/axis/canonicalize.mlir for axis.product's own unit-factor
 // dropping, which is what makes such factors unnecessary to write out here.
-// CHECK-LABEL: func.func @drops_identity_collective
+// CHECK-LABEL: module @drops_identity_collective
 // CHECK: %[[LOCAL:.*]] = distributed.CastGlobalToLocal
 // CHECK-NOT: distributed.Collective
 // CHECK-NOT: distributed.Await
-// CHECK: return %[[LOCAL]] : tensor<1xf32>
-func.func @drops_identity_collective() -> tensor<1xf32> {
+// CHECK: distributed.DistributedKernel (%[[LOCAL]] : tensor<1xf32>)
+module @drops_identity_collective {
+  func.func @main() {
+    return
+  }
   %l = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
   %rf = axis.factor %l : !distributed.logical_mesh_axis<2><2, 1>
 
@@ -31,15 +34,23 @@ func.func @drops_identity_collective() -> tensor<1xf32> {
 
   %h = distributed.Collective %local : tensor<1xf32> on %mesh_in : !axis.factor_group<2> to tensor<1xf32> on %mesh_out : !axis.factor_group<2> reduces () maps %map : !axis.map
   %v = distributed.Await %h : !distributed.asynch_handle<tensor<1xf32>> -> tensor<1xf32>
-  return %v : tensor<1xf32>
+  %keep = distributed.DistributedKernel (%v : tensor<1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+    -> (tensor<1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+    axes () {
+  ^bb0(%arg0: tensor<1xf32>):
+    distributed.DistributedYield (%arg0 : tensor<1xf32>)
+  }
 }
 
 // A collective with a real reduction performs genuine communication and
 // must be left untouched.
-// CHECK-LABEL: func.func @keeps_collective_with_reduction
+// CHECK-LABEL: module @keeps_collective_with_reduction
 // CHECK: distributed.Collective
 // CHECK: distributed.Await
-func.func @keeps_collective_with_reduction() -> tensor<4xf32> {
+module @keeps_collective_with_reduction {
+  func.func @main() {
+    return
+  }
   %l0 = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
   %l1 = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
   %lf0 = axis.factor %l0 : !distributed.logical_mesh_axis<2> <2, 1>
@@ -64,5 +75,4 @@ func.func @keeps_collective_with_reduction() -> tensor<4xf32> {
     distributed.DistributedYield (%sum : f32)
   }
   %v = distributed.Await %h : !distributed.asynch_handle<tensor<4xf32>> -> tensor<4xf32>
-  return %v : tensor<4xf32>
 }

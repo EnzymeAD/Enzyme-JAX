@@ -13,12 +13,12 @@ module @axis_ssa_anchor {
   %7 = axis.product (%6 : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 4, 1>)
   %8 = distributed.LogicalMeshAxes 8 : !distributed.logical_mesh_axis<8>
   %9 = axis.factor %8 : !distributed.logical_mesh_axis<8><8, 1>
+  %13 = axis.map %3 to %3 : [!axis.factor_group<8>] [!axis.factor_group<8>]
   "distributed.DistributedFunction"(%0, %7) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>]>, function_type = (tensor<8x4xf32>) -> tensor<8xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>, sym_name = "main"}> ({
   ^bb0(%arg0: tensor<8x4xf32>):
     %10 = sdy.constant dense<0.000000e+00> : tensor<f32>
     %11 = stablehlo.reduce(%arg0 init: %10) applies stablehlo.add across dimensions = [1] {sdy.sharding_rule = #sdy.op_sharding_rule<([i, j], [])->([i]) {i=8, j=4} reduction={j}>} : (tensor<8x4xf32>, tensor<f32>) -> tensor<8xf32>
     %12 = distributed.CastGlobalToLocal %11 axes (%0 : !axis.factor_group<8>) : tensor<8xf32> -> tensor<1xf32>
-    %13 = axis.map %3 to %3 : [!axis.factor_group<8>] [!axis.factor_group<8>]
     %14 = distributed.Collective %12 : tensor<1xf32> on %4 : <32> to tensor<1xf32> on %0 : <8> reduces (%7 : !axis.factor_group<4>) maps %13 : !axis.map {
     ^bb0(%arg1: tensor<f32>, %arg2: tensor<f32>):
       %18 = stablehlo.add %arg1, %arg2 : tensor<f32>

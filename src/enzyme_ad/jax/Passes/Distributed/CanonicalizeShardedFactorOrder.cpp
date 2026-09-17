@@ -170,12 +170,8 @@ static bool touchesAnyTensor(Operation *op) {
 // halves can no longer share one slot, since `dim_partitioning_axes` can
 // only select whole slots, not partial ones.
 //
-// Built with its own builder positioned right before `kernelOp` in its
-// enclosing block, deliberately ignoring whatever builder the caller is
-// otherwise using: `kernelOp`'s partitioning_axes are its own operands, so
-// the new axis.product must dominate `kernelOp` itself, not merely
-// somewhere inside its body region (where the caller's builder for the
-// block-argument rewrite actually points).
+// Uses its own builder, since axis.product is metadata and belongs at
+// module scope regardless of where the caller's own builder is positioned.
 static int64_t appendNewPartitioningAxisSlot(
     DistributedKernelOp kernelOp,
     ArrayRef<TypedValue<axis::AxisFactorType>> factors) {
@@ -183,6 +179,7 @@ static int64_t appendNewPartitioningAxisSlot(
       static_cast<int64_t>(kernelOp.getPartitioningAxes().size());
   OpBuilder outerBuilder(kernelOp.getContext());
   outerBuilder.setInsertionPoint(kernelOp);
+  axis::ModuleScopeGuard moduleScope(outerBuilder);
   Value newSlot =
       axis::viewFactorsAsProduct(factors, outerBuilder, kernelOp.getLoc());
   kernelOp.getPartitioningAxesMutable().append(newSlot);
@@ -689,7 +686,10 @@ static bool canonicalizeCastPartitioningAxes(CastOpTy castOp) {
   SmallVector<Value> newPartitioningAxes(partitioningAxes.begin(),
                                          partitioningAxes.end());
   bool changed = false;
+  // Only ever used to rebuild an axis.product below, so module-scoped for
+  // its whole lifetime here.
   OpBuilder builder(castOp);
+  axis::ModuleScopeGuard moduleScope(builder);
 
   for (auto [dim, factorGroupValue] : llvm::enumerate(partitioningAxes)) {
     auto factorGroup =

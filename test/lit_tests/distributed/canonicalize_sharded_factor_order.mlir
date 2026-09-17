@@ -63,9 +63,9 @@ module @sandwiched_within_slot {
 }
 
 // CHECK-LABEL: module @sandwiched_within_slot {
-// CHECK: %[[ORIGCG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>, %{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
-// CHECK: %[[NEWCG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, %{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
-// CHECK-NEXT: distributed.DistributedKernel (%{{.*}} : tensor<1xf32>) <[<dim_partitioning_axes = {{\[\[1\]\]}} : unreduced_axes = []>]>
+// CHECK-DAG: %[[ORIGCG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>, %{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+// CHECK-DAG: %[[NEWCG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, %{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
+// CHECK: distributed.DistributedKernel (%{{.*}} : tensor<1xf32>) <[<dim_partitioning_axes = {{\[\[1\]\]}} : unreduced_axes = []>]>
 // CHECK-NEXT: -> (tensor<1xf32>) <[<dim_partitioning_axes = {{\[\[1\]\]}} : unreduced_axes = []>]>
 // CHECK-NEXT: axes (%[[ORIGCG]] : !axis.factor_group<4>, %[[NEWCG]] : !axis.factor_group<4>) {
 // CHECK-NEXT: ^bb0(%arg0: tensor<4xf32>):
@@ -120,48 +120,59 @@ module @sandwiched_across_slots {
 // no stablehlo op inserted anywhere, no change to the cast's result or any
 // of its uses. (The bookending reconciling collective this design also
 // calls for is not yet implemented -- see the pass's own top-level comment.)
-// The cast's result is threaded through func.return (rather than left
-// dangling) because the cast is now Pure -- an unused instance would
-// otherwise be deleted as dead code before FileCheck ever sees it.
 module @cast_global_to_local_sandwiched {
-  func.func @main(%input : tensor<16xf32>) -> tensor<4xf32> {
-    %logical = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
-    %devloc = distributed.DeviceLocalAxis 2 : !distributed.device_local_axis<2>
-    %lf = axis.factor %logical : !distributed.logical_mesh_axis<2><2, 1>
-    %df = axis.factor %devloc : !distributed.device_local_axis<2><2, 1>
-    %cg = axis.product (%df : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>, %lf : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
-    %out = distributed.CastGlobalToLocal %input axes (%cg : !axis.factor_group<4>) : tensor<16xf32> -> tensor<4xf32>
-    func.return %out : tensor<4xf32>
+  func.func @main() {
+    return
+  }
+  %logical = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
+  %devloc = distributed.DeviceLocalAxis 2 : !distributed.device_local_axis<2>
+  %lf = axis.factor %logical : !distributed.logical_mesh_axis<2><2, 1>
+  %df = axis.factor %devloc : !distributed.device_local_axis<2><2, 1>
+  %cg = axis.product (%df : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>, %lf : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+  %input = stablehlo.constant dense<1.0> : tensor<16xf32>
+  %out = distributed.CastGlobalToLocal %input axes (%cg : !axis.factor_group<4>) : tensor<16xf32> -> tensor<4xf32>
+  %keep = distributed.DistributedKernel (%out : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+    -> (tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+    axes () {
+  ^bb0(%arg0: tensor<4xf32>):
+    distributed.DistributedYield (%arg0 : tensor<4xf32>)
   }
 }
 
 // CHECK-LABEL: module @cast_global_to_local_sandwiched {
-// CHECK: func.func @main(%[[ARG:.*]]: tensor<16xf32>)
 // CHECK: %[[NEWCG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, %{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
-// CHECK-NEXT: distributed.CastGlobalToLocal %[[ARG]] axes (%[[NEWCG]] : !axis.factor_group<4>) : tensor<16xf32> -> tensor<4xf32>
+// CHECK: %[[CST:.*]] = stablehlo.constant
+// CHECK-NEXT: %[[OUT:.*]] = distributed.CastGlobalToLocal %[[CST]] axes (%[[NEWCG]] : !axis.factor_group<4>) : tensor<16xf32> -> tensor<4xf32>
+// CHECK-NEXT: distributed.DistributedKernel (%[[OUT]] : tensor<4xf32>)
 
 // -----
 
 // DistributedCastLocalToGlobalOp, same sandwiched shape -- same pure
-// metadata fix, symmetric direction. See the comment above the
-// cast_global_to_local_sandwiched module for why the result is returned
-// rather than left dangling.
+// metadata fix, symmetric direction.
 module @cast_local_to_global_sandwiched {
-  func.func @main(%input : tensor<4xf32>) -> tensor<16xf32> {
-    %logical = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
-    %devloc = distributed.DeviceLocalAxis 2 : !distributed.device_local_axis<2>
-    %lf = axis.factor %logical : !distributed.logical_mesh_axis<2><2, 1>
-    %df = axis.factor %devloc : !distributed.device_local_axis<2><2, 1>
-    %cg = axis.product (%df : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>, %lf : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
-    %out = distributed.CastLocalToGlobal %input axes (%cg : !axis.factor_group<4>) : tensor<4xf32> -> tensor<16xf32>
-    func.return %out : tensor<16xf32>
+  func.func @main() {
+    return
+  }
+  %logical = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
+  %devloc = distributed.DeviceLocalAxis 2 : !distributed.device_local_axis<2>
+  %lf = axis.factor %logical : !distributed.logical_mesh_axis<2><2, 1>
+  %df = axis.factor %devloc : !distributed.device_local_axis<2><2, 1>
+  %cg = axis.product (%df : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>, %lf : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+  %input = stablehlo.constant dense<1.0> : tensor<4xf32>
+  %out = distributed.CastLocalToGlobal %input axes (%cg : !axis.factor_group<4>) : tensor<4xf32> -> tensor<16xf32>
+  %keep = distributed.DistributedKernel (%out : tensor<16xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+    -> (tensor<16xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+    axes () {
+  ^bb0(%arg0: tensor<16xf32>):
+    distributed.DistributedYield (%arg0 : tensor<16xf32>)
   }
 }
 
 // CHECK-LABEL: module @cast_local_to_global_sandwiched {
-// CHECK: func.func @main(%[[ARG:.*]]: tensor<4xf32>)
 // CHECK: %[[NEWCG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, %{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
-// CHECK-NEXT: distributed.CastLocalToGlobal %[[ARG]] axes (%[[NEWCG]] : !axis.factor_group<4>) : tensor<4xf32> -> tensor<16xf32>
+// CHECK: %[[CST:.*]] = stablehlo.constant
+// CHECK-NEXT: %[[OUT:.*]] = distributed.CastLocalToGlobal %[[CST]] axes (%[[NEWCG]] : !axis.factor_group<4>) : tensor<4xf32> -> tensor<16xf32>
+// CHECK-NEXT: distributed.DistributedKernel (%[[OUT]] : tensor<16xf32>)
 
 // -----
 
@@ -170,21 +181,29 @@ module @cast_local_to_global_sandwiched {
 // see this file's top-level comment). AllTypesMatch means there's no
 // direction to get wrong and no type to change either way.
 module @anchor_partitioning_sandwiched {
-  func.func @main(%input : tensor<4xf32>) -> tensor<4xf32> {
-    %logical = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
-    %devloc = distributed.DeviceLocalAxis 2 : !distributed.device_local_axis<2>
-    %lf = axis.factor %logical : !distributed.logical_mesh_axis<2><2, 1>
-    %df = axis.factor %devloc : !distributed.device_local_axis<2><2, 1>
-    %cg = axis.product (%df : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>, %lf : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
-    %out = distributed.AnchorPartitioning %input axes (%cg : !axis.factor_group<4>) : tensor<4xf32>
-    func.return %out : tensor<4xf32>
+  func.func @main() {
+    return
+  }
+  %logical = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
+  %devloc = distributed.DeviceLocalAxis 2 : !distributed.device_local_axis<2>
+  %lf = axis.factor %logical : !distributed.logical_mesh_axis<2><2, 1>
+  %df = axis.factor %devloc : !distributed.device_local_axis<2><2, 1>
+  %cg = axis.product (%df : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>, %lf : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+  %input = stablehlo.constant dense<1.0> : tensor<4xf32>
+  %out = distributed.AnchorPartitioning %input axes (%cg : !axis.factor_group<4>) : tensor<4xf32>
+  %keep = distributed.DistributedKernel (%out : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+    -> (tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+    axes () {
+  ^bb0(%arg0: tensor<4xf32>):
+    distributed.DistributedYield (%arg0 : tensor<4xf32>)
   }
 }
 
 // CHECK-LABEL: module @anchor_partitioning_sandwiched {
-// CHECK: func.func @main(%[[ARG:.*]]: tensor<4xf32>)
 // CHECK: %[[NEWCG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, %{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
-// CHECK-NEXT: distributed.AnchorPartitioning %[[ARG]] axes (%[[NEWCG]] : !axis.factor_group<4>) : tensor<4xf32>
+// CHECK: %[[CST:.*]] = stablehlo.constant
+// CHECK-NEXT: %[[OUT:.*]] = distributed.AnchorPartitioning %[[CST]] axes (%[[NEWCG]] : !axis.factor_group<4>) : tensor<4xf32>
+// CHECK-NEXT: distributed.DistributedKernel (%[[OUT]] : tensor<4xf32>)
 
 // -----
 

@@ -8,6 +8,7 @@
 
 #include "mlir/IR/Block.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinOps.h"
 
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -234,6 +235,27 @@ public:
         op && op->getBlock() == &scratch)
       op->remove();
     return value;
+  }
+};
+
+// RAII: temporarily repositions `builder` to the start of the enclosing
+// module's body for this guard's lifetime, restoring the builder's prior
+// insertion point on destruction. Use around axis::Axis*Op/DeviceLocalAxis/
+// LogicalMeshAxes creation calls made through a builder that's otherwise
+// positioned locally (e.g. right before the real, tensor-valued op it's
+// building axis metadata for) -- every axis-algebra op belongs at module
+// scope (see MetadataTrait).
+class ModuleScopeGuard {
+  ::mlir::OpBuilder::InsertionGuard insertionGuard;
+
+public:
+  explicit ModuleScopeGuard(::mlir::OpBuilder &builder)
+      : insertionGuard(builder) {
+    ::mlir::Operation *anchor = builder.getInsertionBlock()->getParentOp();
+    auto moduleOp = ::mlir::isa<::mlir::ModuleOp>(anchor)
+                        ? ::mlir::cast<::mlir::ModuleOp>(anchor)
+                        : anchor->getParentOfType<::mlir::ModuleOp>();
+    builder.setInsertionPointToStart(&moduleOp.getBodyRegion().front());
   }
 };
 
