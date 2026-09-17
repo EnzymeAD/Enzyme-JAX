@@ -187,6 +187,62 @@ def LowerKernelsPass : Pass<"distributed-lower-kernels", "::mlir::ModuleOp"> {
   }];
 }
 
+def DropKernelBodyShardingAttrsPass
+    : Pass<"drop-kernel-body-sharding-attrs", "::mlir::ModuleOp"> {
+  let summary = "Drops the per-op distributed.argument_shardings/"
+                "output_shardings attributes inside every kernel body once "
+                "distributed-lower-kernels has consumed them.";
+  let dependentDialects = ["enzyme::distributed::DistributedDialect"];
+  let description = [{
+    A DistributedKernelOp's body ops carry distributed.argument_shardings/
+    output_shardings attributes indexing into that kernel's own
+    partitioning_axes list (see DistributedKernelOp's doc comment).
+    distributed-lower-kernels is their last real consumer; once it has run,
+    they're stale bookkeeping that nothing downstream reads, and they become
+    outright dangling (indices into a slot list a later pass, e.g.
+    merge-adjacent-trivial-kernels, may shrink or empty) if left in place.
+    This pass unconditionally removes them from every op nested in a kernel
+    body, expected to run any time after distributed-lower-kernels.
+  }];
+}
+
+def DropShardingRuleAttrsPass
+    : Pass<"drop-sharding-rule-attrs", "::mlir::ModuleOp"> {
+  let summary = "Drops stale sdy.sharding_rule attributes module-wide.";
+  let dependentDialects = ["mlir::sdy::SdyDialect"];
+  let description = [{
+    Wraps mlir::sdy::removeShardingRules (the same logic behind Shardy's own
+    sdy-drop-sharding-rules pass) but runs it directly on the whole module
+    instead of nesting it under func::FuncOp: at this point in the pipeline
+    the outer function is still a distributed.DistributedFunction, not a
+    func.func, so the upstream, FuncOp-anchored pass would never find
+    anything to run on. distributed-lower-kernels is the last real consumer
+    of these attributes; once it's done they're stale.
+  }];
+}
+
+def DropTrivialKernelShardingPass
+    : Pass<"drop-trivial-kernel-sharding", "::mlir::ModuleOp"> {
+  let summary = "Blanks a trivial kernel's own argument_shardings/"
+                "output_shardings and empties its partitioning_axes.";
+  let dependentDialects = ["enzyme::distributed::DistributedDialect"];
+  let description = [{
+    A kernel is trivial (see MergeAdjacentTrivialKernelsPass) once every
+    operand/result's local-scope type already equals its body's
+    block-argument/yielded-value type -- no partitioning axis divides its
+    declared extent by anything but 1. Such a kernel's argument_shardings/
+    output_shardings and partitioning_axes are then pure, unused bookkeeping
+    (every dim_partitioning_axes entry could only ever resolve to an
+    extent-1 slice), so this pass blanks them: empty dim_partitioning_axes
+    per operand/result, and an empty partitioning_axes list. This is what
+    lets the axis-algebra chain feeding those slots become dead code for a
+    later cse/canonicalize to remove, for every trivial kernel -- not just
+    ones merge-adjacent-trivial-kernels happens to fuse. Expected to run any
+    time after distributed-lower-kernels, which is what establishes
+    triviality in the first place.
+  }];
+}
+
 def DropIdentityPartitioningAnchorsPass
     : Pass<"drop-identity-partitioning-anchors", "::mlir::ModuleOp"> {
   let summary = "Unconditionally drops partitioning-anchor metadata that is "

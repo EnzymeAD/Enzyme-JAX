@@ -217,4 +217,32 @@ createCollectiveAndAwait(::mlir::OpBuilder &builder, ::mlir::Location loc,
   return {collective, await};
 }
 
+bool isTriviallyLocalKernel(DistributedKernelOp kernelOp) {
+  Block &body = kernelOp.getBody().front();
+  for (auto [operand, blockArg] :
+       llvm::zip(kernelOp.getArguments(), body.getArguments())) {
+    if (operand.getType() != blockArg.getType()) {
+      return false;
+    }
+  }
+  auto yieldOp = cast<DistributedYieldOp>(body.getTerminator());
+  for (auto [result, yieldOperand] :
+       llvm::zip(kernelOp.getResults(), yieldOp.getReturns())) {
+    if (result.getType() != yieldOperand.getType()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+IndexedTensorShardingAttr buildEmptyShardingForType(::mlir::MLIRContext *ctx,
+                                                    ::mlir::Type type) {
+  auto emptyAxes = DenseI64ArrayAttr::get(ctx, ArrayRef<int64_t>{});
+  SmallVector<DenseI64ArrayAttr> dimPartitioningAxes;
+  if (auto rankedType = dyn_cast<RankedTensorType>(type)) {
+    dimPartitioningAxes.append(rankedType.getRank(), emptyAxes);
+  }
+  return IndexedTensorShardingAttr::get(ctx, dimPartitioningAxes, emptyAxes);
+}
+
 } // namespace mlir::enzyme::distributed

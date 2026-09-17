@@ -2,6 +2,7 @@
 
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 #include "llvm/ADT/DenseMap.h"
 
 namespace mlir::enzyme::distributed {
@@ -10,45 +11,6 @@ namespace mlir::enzyme::distributed {
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h.inc"
 
 namespace {
-
-// A kernel is "trivial" -- carries no real sharding any more -- exactly when
-// every operand/result's local-scope type equals its body's
-// block-argument/yielded-value global-scope type (see DistributedKernelOp's
-// doc comment and checkLocalGlobalBinding in Dialect/Distributed/Ops.cpp):
-// under that condition every declared partitioning axis divides by an
-// extent of 1, so the local/global distinction is purely nominal.
-static bool isTriviallyLocalKernel(DistributedKernelOp kernelOp) {
-  Block &body = kernelOp.getBody().front();
-  for (auto [operand, blockArg] :
-       llvm::zip(kernelOp.getArguments(), body.getArguments())) {
-    if (operand.getType() != blockArg.getType()) {
-      return false;
-    }
-  }
-  auto yieldOp = cast<DistributedYieldOp>(body.getTerminator());
-  for (auto [result, yieldOperand] :
-       llvm::zip(kernelOp.getResults(), yieldOp.getReturns())) {
-    if (result.getType() != yieldOperand.getType()) {
-      return false;
-    }
-  }
-  return true;
-}
-
-// Every argument/result of a merged kernel is by construction unsharded, so
-// its sharding attribute is simply "no axis assigned to any dimension".
-// Mirrors the identically-named helper duplicated between
-// ClusterDistributedKernels.cpp and ConvertMainToDistributedFunction.cpp;
-// not worth sharing for one more call site of this size.
-static IndexedTensorShardingAttr buildEmptyShardingForType(MLIRContext *ctx,
-                                                           Type type) {
-  auto emptyAxes = DenseI64ArrayAttr::get(ctx, ArrayRef<int64_t>{});
-  SmallVector<DenseI64ArrayAttr> dimPartitioningAxes;
-  if (auto rankedType = dyn_cast<RankedTensorType>(type)) {
-    dimPartitioningAxes.append(rankedType.getRank(), emptyAxes);
-  }
-  return IndexedTensorShardingAttr::get(ctx, dimPartitioningAxes, emptyAxes);
-}
 
 // Merges two physically-adjacent trivial kernels into one. `next` is always
 // `first`'s immediate successor in the block, so nothing needs to be

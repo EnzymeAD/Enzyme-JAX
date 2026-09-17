@@ -59,10 +59,10 @@ filterOutReplicationFactors(
 // synthetic rule for ops that do not have an explicit sharding rule.
 struct OpShardingRuleAndReductionKind {
   OpShardingRuleAndReductionKind() = default;
-  OpShardingRuleAndReductionKind(::mlir::sdy::OpShardingRuleAttr rule,
-                                 ::mlir::stablehlo::ReduceOpKind reductionKind,
-                                 std::shared_ptr<::mlir::Region> reductionBody =
-                                     nullptr)
+  OpShardingRuleAndReductionKind(
+      ::mlir::sdy::OpShardingRuleAttr rule,
+      ::mlir::stablehlo::ReduceOpKind reductionKind,
+      std::shared_ptr<::mlir::Region> reductionBody = nullptr)
       : rule(rule), reductionKind(reductionKind),
         reductionBody(std::move(reductionBody)) {}
 
@@ -90,6 +90,14 @@ createCollectiveAndAwait(::mlir::OpBuilder &builder, ::mlir::Location loc,
                          ::mlir::Value outputMesh,
                          ::mlir::ValueRange reductionGroups,
                          ::mlir::Value mapping, ::mlir::Type outputType);
+
+// A kernel is "trivially local" if it has no sharding attributes- aka,
+// it has been lowered into its single-device form.
+bool isTriviallyLocalKernel(DistributedKernelOp kernelOp);
+
+// A sharding attribute declaring no axis assigned to any dimension
+IndexedTensorShardingAttr buildEmptyShardingForType(::mlir::MLIRContext *ctx,
+                                                    ::mlir::Type type);
 
 } // namespace mlir::enzyme::distributed
 
