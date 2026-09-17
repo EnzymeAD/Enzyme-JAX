@@ -12,6 +12,70 @@ namespace mlir::enzyme::distributed {
 
 namespace {
 
+// A CastGlobalToLocal fed directly by a block argument has no dependency on
+// anything else in the block, so it's always safe (the op is Pure) to slide
+// it earlier past whatever currently precedes it. Doing so clears casts that
+// otherwise sit between two kernels for no real reason other than emission
+// order, exposing them to MergeAdjacentTrivialKernels. Moves one hop at a
+// time so the greedy driver naturally settles once every such cast has
+// bubbled past every non-cast predecessor -- stopping short of swapping two
+// bubbled casts against each other avoids oscillating forever.
+struct HoistBlockArgCastUp
+    : public OpRewritePattern<DistributedCastGlobalToLocalOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(DistributedCastGlobalToLocalOp castOp,
+                                PatternRewriter &rewriter) const override {
+    if (!isa<BlockArgument>(castOp.getInput())) {
+      return failure();
+    }
+    Operation *prev = castOp->getPrevNode();
+    if (!prev) {
+      return failure();
+    }
+    if (auto prevCast = dyn_cast<DistributedCastGlobalToLocalOp>(prev)) {
+      if (isa<BlockArgument>(prevCast.getInput())) {
+        return failure();
+      }
+    }
+    rewriter.moveOpBefore(castOp, prev);
+    return success();
+  }
+};
+
+// Symmetric to HoistBlockArgCastUp: a CastLocalToGlobal whose only use is the
+// block's terminator has nothing downstream depending on where it sits, so
+// it's safe to slide later past whatever currently follows it, clearing it
+// out from between kernels the same way.
+struct SinkYieldOnlyCastDown
+    : public OpRewritePattern<DistributedCastLocalToGlobalOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(DistributedCastLocalToGlobalOp castOp,
+                                PatternRewriter &rewriter) const override {
+    if (!castOp.getOutput().hasOneUse()) {
+      return failure();
+    }
+    Operation *user = *castOp.getOutput().getUsers().begin();
+    auto yieldOp = dyn_cast<DistributedYieldOp>(user);
+    if (!yieldOp || yieldOp->getBlock() != castOp->getBlock()) {
+      return failure();
+    }
+    Operation *next = castOp->getNextNode();
+    if (next == yieldOp) {
+      return failure();
+    }
+    if (auto nextCast = dyn_cast<DistributedCastLocalToGlobalOp>(next)) {
+      if (nextCast.getOutput().hasOneUse() &&
+          *nextCast.getOutput().getUsers().begin() == yieldOp) {
+        return failure();
+      }
+    }
+    rewriter.moveOpAfter(castOp, next);
+    return success();
+  }
+};
+
 // Merges two physically-adjacent trivial kernels into one. `next` is always
 // `first`'s immediate successor in the block, so nothing needs to be
 // reordered -- the merged kernel simply occupies their combined position.
@@ -147,7 +211,8 @@ struct MergeAdjacentTrivialKernelsPass
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
-    patterns.add<MergeAdjacentTrivialKernels>(context);
+    patterns.add<HoistBlockArgCastUp, SinkYieldOnlyCastDown,
+                 MergeAdjacentTrivialKernels>(context);
 
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
       signalPassFailure();

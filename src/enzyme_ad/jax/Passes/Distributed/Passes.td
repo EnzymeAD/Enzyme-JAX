@@ -278,18 +278,26 @@ def MergeAdjacentTrivialKernelsPass
     type equals its body block-argument/yielded-value's global-scope type --
     i.e. distributed-lower-kernels has already divided every partitioning
     axis down to an extent of 1, so no real sharding is left for that kernel
-    to describe. Two trivial kernels that are immediate block neighbors
-    (this pass never looks across an intervening op -- valid because by this
-    point a distributed function body holds only kernels and collectives)
-    are pure serial computation split across an unnecessary op boundary, and
-    are merged into a single kernel that returns everything either
-    constituent kernel returned. Any direct SSA dependency between the pair
-    (the second kernel consuming one of the first's results) is rewired to
-    the shared internal value instead of round-tripping through the
-    now-removed kernel boundary. Chains of more than two adjacent trivial
-    kernels collapse to one op in a single run, since each merge produces a
-    new kernel that is itself revisited. Leaves any now-unused kernel
-    results in place -- dropping those is a separate pass.
+    to describe. Two trivial kernels that are immediate block neighbors are
+    pure serial computation split across an unnecessary op boundary, and are
+    merged into a single kernel that returns everything either constituent
+    kernel returned. Any direct SSA dependency between the pair (the second
+    kernel consuming one of the first's results) is rewired to the shared
+    internal value instead of round-tripping through the now-removed kernel
+    boundary. Chains of more than two adjacent trivial kernels collapse to
+    one op in a single run, since each merge produces a new kernel that is
+    itself revisited. Leaves any now-unused kernel results in place --
+    dropping those is a separate pass.
+
+    A CastGlobalToLocal/CastLocalToGlobal is often left directly between two
+    otherwise-mergeable kernels purely as an artifact of emission order, not
+    a real dependency: a CastGlobalToLocal reading straight from a block
+    argument doesn't depend on anything computed earlier in the block, and a
+    CastLocalToGlobal whose only use is the block's terminator has nothing
+    downstream depending on where it sits. This pass also sweeps such casts
+    up to just past the last thing they actually depend on, or down to just
+    before the terminator, respectively, so the merge above only has to
+    reason about strict physical adjacency.
   }];
 }
 

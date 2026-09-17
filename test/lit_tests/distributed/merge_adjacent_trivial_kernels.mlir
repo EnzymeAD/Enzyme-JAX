@@ -175,3 +175,100 @@ func.func @not_physically_adjacent() -> (tensor<4xf32>, tensor<4xf32>) {
   }
   return %r0, %r1 : tensor<4xf32>, tensor<4xf32>
 }
+
+// -----
+
+// A CastGlobalToLocal reading directly from the enclosing function's block
+// argument has no dependency on anything computed earlier in the block, so
+// it's safe to bubble all the way to the top -- clearing it from between an
+// unrelated kernel and the one that actually consumes the cast, so the two
+// kernels become adjacent and merge.
+// CHECK-LABEL: sym_name = "hoist_up"
+// CHECK: %[[CAST:.*]] = distributed.CastGlobalToLocal %arg0
+// CHECK: %[[IN0:.*]] = tensor.empty
+// CHECK: %{{.*}}:2 = distributed.DistributedKernel (%[[IN0]] : tensor<4xf32>, %[[CAST]] : tensor<4xf32>)
+%g_hoist = axis.product ()
+"distributed.DistributedFunction"() <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, function_type = (tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>), output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>, <dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "hoist_up"}> ({
+^bb0(%arg0: tensor<4xf32>):
+  %in0 = tensor.empty() : tensor<4xf32>
+  %r0 = distributed.DistributedKernel (%in0 : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      -> (tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      axes () {
+  ^bb1(%k0: tensor<4xf32>):
+    %c = stablehlo.add %k0, %k0 : tensor<4xf32>
+    distributed.DistributedYield (%c : tensor<4xf32>)
+  }
+  %cast = distributed.CastGlobalToLocal %arg0 axes (%g_hoist : !axis.factor_group<1>) : tensor<4xf32> -> tensor<4xf32>
+  %r1 = distributed.DistributedKernel (%cast : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      -> (tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      axes () {
+  ^bb2(%k1: tensor<4xf32>):
+    %d = stablehlo.multiply %k1, %k1 : tensor<4xf32>
+    distributed.DistributedYield (%d : tensor<4xf32>)
+  }
+  distributed.DistributedYield (%r0 : tensor<4xf32>, %r1 : tensor<4xf32>)
+}) : () -> ()
+
+// -----
+
+// Symmetric to the hoist above: a CastLocalToGlobal whose sole use is the
+// block terminator has nothing downstream depending on where it sits, so
+// it's safe to sink past the kernel that currently follows it, clearing the
+// way for the two kernels around it to merge.
+// CHECK-LABEL: sym_name = "sink_down"
+// CHECK: %[[R:.*]]:2 = distributed.DistributedKernel (%arg0 : tensor<4xf32>, %arg0 : tensor<4xf32>)
+// CHECK: %[[CAST:.*]] = distributed.CastLocalToGlobal %[[R]]#0
+// CHECK: distributed.DistributedYield (%[[CAST]] : tensor<4xf32>, %[[R]]#1 : tensor<4xf32>)
+%g_sink = axis.product ()
+"distributed.DistributedFunction"() <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, function_type = (tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>), output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>, <dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "sink_down"}> ({
+^bb0(%arg0: tensor<4xf32>):
+  %r0 = distributed.DistributedKernel (%arg0 : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      -> (tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      axes () {
+  ^bb1(%k0: tensor<4xf32>):
+    %c = stablehlo.add %k0, %k0 : tensor<4xf32>
+    distributed.DistributedYield (%c : tensor<4xf32>)
+  }
+  %cast = distributed.CastLocalToGlobal %r0 axes (%g_sink : !axis.factor_group<1>) : tensor<4xf32> -> tensor<4xf32>
+  %r1 = distributed.DistributedKernel (%arg0 : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      -> (tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      axes () {
+  ^bb2(%k1: tensor<4xf32>):
+    %d = stablehlo.multiply %k1, %k1 : tensor<4xf32>
+    distributed.DistributedYield (%d : tensor<4xf32>)
+  }
+  distributed.DistributedYield (%cast : tensor<4xf32>, %r1 : tensor<4xf32>)
+}) : () -> ()
+
+// -----
+
+// Two adjacent hoistable casts must not swap past each other indefinitely:
+// once they're next to each other, the sweep stops moving them (their
+// relative order is preserved) instead of oscillating forever.
+// CHECK-LABEL: sym_name = "two_hoistable_casts"
+// CHECK: %[[C0:.*]] = distributed.CastGlobalToLocal %arg0
+// CHECK: %[[C1:.*]] = distributed.CastGlobalToLocal %arg1
+// CHECK: %[[IN0:.*]] = tensor.empty
+// CHECK: %{{.*}}:2 = distributed.DistributedKernel (%[[IN0]] : tensor<4xf32>, %[[C0]] : tensor<4xf32>, %[[C1]] : tensor<4xf32>)
+%g_two = axis.product ()
+"distributed.DistributedFunction"() <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, function_type = (tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>), output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>, <dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "two_hoistable_casts"}> ({
+^bb0(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>):
+  %in0 = tensor.empty() : tensor<4xf32>
+  %r0 = distributed.DistributedKernel (%in0 : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      -> (tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      axes () {
+  ^bb1(%k0: tensor<4xf32>):
+    %c = stablehlo.add %k0, %k0 : tensor<4xf32>
+    distributed.DistributedYield (%c : tensor<4xf32>)
+  }
+  %cast0 = distributed.CastGlobalToLocal %arg0 axes (%g_two : !axis.factor_group<1>) : tensor<4xf32> -> tensor<4xf32>
+  %cast1 = distributed.CastGlobalToLocal %arg1 axes (%g_two : !axis.factor_group<1>) : tensor<4xf32> -> tensor<4xf32>
+  %r1 = distributed.DistributedKernel (%cast0 : tensor<4xf32>, %cast1 : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>, <dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      -> (tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      axes () {
+  ^bb2(%k1: tensor<4xf32>, %k2: tensor<4xf32>):
+    %d = stablehlo.multiply %k1, %k2 : tensor<4xf32>
+    distributed.DistributedYield (%d : tensor<4xf32>)
+  }
+  distributed.DistributedYield (%r0 : tensor<4xf32>, %r1 : tensor<4xf32>)
+}) : () -> ()
