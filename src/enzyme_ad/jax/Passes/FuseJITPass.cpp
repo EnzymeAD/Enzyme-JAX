@@ -1,5 +1,6 @@
 #include "Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -14,6 +15,7 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include <iterator>
 
 #define DEBUG_TYPE "fuse-jit"
 
@@ -25,123 +27,24 @@ namespace enzyme {
 
 namespace {
 
-// Describes one direct SSA-connected JIT-call component and its IR boundary.
+// Describes a validated lexical group and its IR boundary.
 struct JITFusionInfo {
   SmallVector<enzymexla::JITCallOp> fusionCalls;
+  SmallVector<LLVM::LLVMFuncOp> fusionFuncs;
   SmallVector<Value> fusedArgs;
   SmallVector<Value> fusedReturns;
+  DenseMap<Value, Value> resultSourceMap;
+  SmallVector<Operation *> constantsToMove;
 };
 
-static constexpr llvm::StringLiteral FusedNamePrefix = "fused__";
+constexpr llvm::StringLiteral FusedNamePrefix = "fused__";
 
-static bool isGeneratedFusedCall(enzymexla::JITCallOp call) {
-  // Prevent the greedy driver from folding a generated call again.
-  return call.getFn().getRootReference().getValue().starts_with(
-      FusedNamePrefix);
-}
-
-static bool containsOperation(ArrayRef<enzymexla::JITCallOp> calls,
-                              Operation *op) {
-  return llvm::any_of(calls, [&](enzymexla::JITCallOp call) {
-    return call.getOperation() == op;
-  });
-}
-
-static JITFusionInfo collectJITFusionInfo(enzymexla::JITCallOp jitCallOp) {
-  JITFusionInfo info;
-  SmallVector<enzymexla::JITCallOp> worklist;
-  SmallPtrSet<Operation *, 8> seenCalls;
-
-  // Deduplication also makes the bidirectional walk terminate on diamonds.
-  auto pushCall = [&](enzymexla::JITCallOp call) {
-    if (!call || isGeneratedFusedCall(call))
-      return;
-    if (seenCalls.insert(call.getOperation()).second)
-      worklist.push_back(call);
-  };
-
-  pushCall(jitCallOp);
-  while (!worklist.empty()) {
-    enzymexla::JITCallOp call = worklist.pop_back_val();
-    info.fusionCalls.push_back(call);
-
-    // Walk direct JIT producer and consumer edges in both directions.
-    // TODO: Extend discovery through selected pure forwarding ops if needed.
-    for (Value operand : call.getOperands()) {
-      if (auto producer = operand.getDefiningOp<enzymexla::JITCallOp>())
-        pushCall(producer);
-    }
-
-    for (Value result : call.getResults()) {
-      for (Operation *user : result.getUsers()) {
-        if (auto consumer = dyn_cast<enzymexla::JITCallOp>(user))
-          pushCall(consumer);
-      }
-    }
-  }
-
-  // Lexical order defines cloning order and the fused function ABI.
-  if (!info.fusionCalls.empty()) {
-    Block *block = info.fusionCalls.front()->getBlock();
-    if (llvm::all_of(info.fusionCalls, [&](enzymexla::JITCallOp call) {
-          return call->getBlock() == block;
-        })) {
-      llvm::sort(info.fusionCalls,
-                 [](enzymexla::JITCallOp lhs, enzymexla::JITCallOp rhs) {
-                   return lhs->isBeforeInBlock(rhs);
-                 });
-    }
-  }
-
-  // Sets only deduplicate; vector insertion order remains deterministic.
-  SmallPtrSet<Value, 8> seenArgs;
-  SmallPtrSet<Value, 8> seenReturns;
-
-  // Values crossing into the component become fused arguments.
-  for (enzymexla::JITCallOp call : info.fusionCalls) {
-    for (Value operand : call.getOperands()) {
-      Operation *defOp = operand.getDefiningOp();
-      if (defOp && containsOperation(info.fusionCalls, defOp))
-        continue;
-      if (seenArgs.insert(operand).second)
-        info.fusedArgs.push_back(operand);
-    }
-  }
-
-  // Keep only results observed outside the component.
-  for (enzymexla::JITCallOp call : info.fusionCalls) {
-    for (Value result : call.getResults()) {
-      bool hasExternalUser =
-          llvm::any_of(result.getUsers(), [&](Operation *user) {
-            return !containsOperation(info.fusionCalls, user);
-          });
-      if (hasExternalUser && seenReturns.insert(result).second)
-        info.fusedReturns.push_back(result);
-    }
-  }
-
-  return info;
-}
-
-static LogicalResult validateSameBlock(ArrayRef<enzymexla::JITCallOp> calls) {
-  // Cross-block fusion needs control-flow-aware placement and dominance fixes.
-  if (calls.empty())
-    return failure();
-
-  Block *block = calls.front()->getBlock();
-  for (enzymexla::JITCallOp call : calls) {
-    if (call->getBlock() != block)
-      return failure();
-  }
-  return success();
-}
-
-static LogicalResult validateSingleBlockWrapper(LLVM::LLVMFuncOp func) {
+LogicalResult validateSingleBlockWrapper(LLVM::LLVMFuncOp func) {
   // Body cloning below copies one block and supplies its own terminator.
   return success(llvm::hasSingleElement(func.getBody()));
 }
 
-static std::string buildFusedName(ArrayRef<enzymexla::JITCallOp> fusionCalls) {
+std::string buildFusedName(ArrayRef<enzymexla::JITCallOp> fusionCalls) {
   // Ordered callee names distinguish different wrapper sequences.
   std::string fusedName = FusedNamePrefix.str();
   llvm::raw_string_ostream os(fusedName);
@@ -156,36 +59,34 @@ static std::string buildFusedName(ArrayRef<enzymexla::JITCallOp> fusionCalls) {
   return fusedName;
 }
 
-static FailureOr<SmallVector<LLVM::LLVMFuncOp>>
-lookupFusionFunctions(ModuleOp module,
-                      ArrayRef<enzymexla::JITCallOp> fusionCalls) {
+FailureOr<LLVM::LLVMFuncOp>
+lookupFusionFunction(ModuleOp module, enzymexla::JITCallOp call) {
+  // TODO: Merge compatible call metadata instead of rejecting it.
+  if (!call.getBackendConfig().empty() || call.getOperandLayoutsAttr() ||
+      call.getResultLayoutsAttr() || call.getArgAttrsAttr() ||
+      call.getResAttrsAttr())
+    return failure();
+
   // Fusion currently supports single-block, pointer-only, void wrappers.
-  SmallVector<LLVM::LLVMFuncOp> fusionFuncs;
-  fusionFuncs.reserve(fusionCalls.size());
-
-  for (enzymexla::JITCallOp call : fusionCalls) {
-    StringRef fnName = call.getFn().getRootReference().getValue();
-    auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(fnName);
-    if (!func || func.empty())
-      return failure();
-    if (failed(validateSingleBlockWrapper(func)))
-      return failure();
-    if (func.getNumArguments() < call.getNumOperands())
-      return failure();
-    auto funcType = func.getFunctionType();
-    if (funcType.isVarArg() ||
-        !isa<LLVM::LLVMVoidType>(funcType.getReturnType()) ||
-        llvm::any_of(funcType.getParams(), [](Type type) {
-          return !isa<LLVM::LLVMPointerType>(type);
-        }))
-      return failure();
-    fusionFuncs.push_back(func);
-  }
-
-  return fusionFuncs;
+  StringRef fnName = call.getFn().getRootReference().getValue();
+  auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(fnName);
+  if (!func || func.empty())
+    return failure();
+  if (failed(validateSingleBlockWrapper(func)))
+    return failure();
+  if (func.getNumArguments() < call.getNumOperands())
+    return failure();
+  auto funcType = func.getFunctionType();
+  if (funcType.isVarArg() ||
+      !isa<LLVM::LLVMVoidType>(funcType.getReturnType()) ||
+      llvm::any_of(funcType.getParams(), [](Type type) {
+        return !isa<LLVM::LLVMPointerType>(type);
+      }))
+    return failure();
+  return func;
 }
 
-static std::string getAvailableFusedName(ModuleOp module, StringRef baseName) {
+std::string getAvailableFusedName(ModuleOp module, StringRef baseName) {
   // TODO: Reuse equivalent fused wrappers once a stable key is available.
   std::string fusedName = baseName.str();
   unsigned suffix = 0;
@@ -195,7 +96,7 @@ static std::string getAvailableFusedName(ModuleOp module, StringRef baseName) {
   return fusedName;
 }
 
-static FailureOr<unsigned> findValueIndex(Value value, ArrayRef<Value> values) {
+FailureOr<unsigned> findValueIndex(Value value, ArrayRef<Value> values) {
   for (auto [idx, candidate] : llvm::enumerate(values)) {
     if (candidate == value)
       return static_cast<unsigned>(idx);
@@ -203,8 +104,8 @@ static FailureOr<unsigned> findValueIndex(Value value, ArrayRef<Value> values) {
   return failure();
 }
 
-static bool aliasMatchesResult(stablehlo::OutputOperandAliasAttr alias,
-                               unsigned resultIdx, unsigned numResults) {
+bool aliasMatchesResult(stablehlo::OutputOperandAliasAttr alias,
+                        unsigned resultIdx, unsigned numResults) {
   // StableHLO uses [] for one result and [i] for multiple results.
   auto outputTupleIndices = alias.getOutputTupleIndices();
   if (numResults == 1)
@@ -214,8 +115,8 @@ static bool aliasMatchesResult(stablehlo::OutputOperandAliasAttr alias,
          outputTupleIndices.front() == static_cast<int64_t>(resultIdx);
 }
 
-static FailureOr<int64_t> findAliasedOperandIndex(enzymexla::JITCallOp call,
-                                                  unsigned resultIdx) {
+FailureOr<int64_t> findAliasedOperandIndex(enzymexla::JITCallOp call,
+                                         unsigned resultIdx) {
   for (Attribute attr : call.getOutputOperandAliases()) {
     auto alias = dyn_cast<stablehlo::OutputOperandAliasAttr>(attr);
     if (!alias)
@@ -236,107 +137,170 @@ static FailureOr<int64_t> findAliasedOperandIndex(enzymexla::JITCallOp call,
   return -1;
 }
 
-// Resolve a JIT SSA value to the external operand that owns its storage.
-static FailureOr<Value>
-lookupSourceForValue(Value value, ArrayRef<Value> fusedArgs,
-                     const DenseMap<Value, Value> &resultSourceMap) {
-  auto resultIt = resultSourceMap.find(value);
-  if (resultIt != resultSourceMap.end())
-    return resultIt->second;
-  if (llvm::is_contained(fusedArgs, value))
-    return value;
-  return failure();
-}
+// Only this call's additions are staged; a rejected extension changes no state.
+struct JITFusionExtension {
+  SmallVector<Value> newArgs;
+  SmallVector<Value> resultSources;
+  SmallVector<Operation *> constantsToMove;
+};
 
-// Preflight every mapping before mutation and record each result's source.
-static LogicalResult
-validateFusionMappings(ArrayRef<enzymexla::JITCallOp> fusionCalls,
-                       ArrayRef<LLVM::LLVMFuncOp> fusionFuncs,
-                       ArrayRef<Value> fusedArgs,
-                       DenseMap<Value, Value> &resultSourceMap) {
-  for (size_t i = 0; i < fusionCalls.size(); ++i) {
-    enzymexla::JITCallOp call = fusionCalls[i];
-    LLVM::LLVMFuncOp wrapperFunc = fusionFuncs[i];
-    // Used wrapper arguments must all receive a value before cloning.
-    SmallPtrSet<Value, 8> mappedWrapperArgs;
-
-    for (auto [argIdx, operand] : llvm::enumerate(call.getOperands())) {
-      if (failed(lookupSourceForValue(operand, fusedArgs, resultSourceMap)))
-        return failure();
-      mappedWrapperArgs.insert(wrapperFunc.getArgument(argIdx));
+LogicalResult validateFusionExtension(
+    enzymexla::JITCallOp call, LLVM::LLVMFuncOp wrapperFunc, Operation *firstOp,
+    DominanceInfo &dominance, const JITFusionInfo &info,
+    const llvm::SmallPtrSetImpl<Value> &seenArgs, JITFusionExtension &extension) {
+  SmallVector<Value> operandSources;
+  SmallPtrSet<Value, 8> newArgs;
+  for (Value operand : call.getOperands()) {
+    // The source map also identifies values produced inside the accepted group.
+    auto source = info.resultSourceMap.find(operand);
+    if (source != info.resultSourceMap.end()) {
+      operandSources.push_back(source->second);
+      continue;
     }
+    operandSources.push_back(operand);
+    if (seenArgs.contains(operand) || !newArgs.insert(operand).second)
+      continue;
 
-    for (auto [resultIdx, result] : llvm::enumerate(call.getResults())) {
-      FailureOr<int64_t> aliasedOperand =
-          findAliasedOperandIndex(call, resultIdx);
-      // TODO: Support unaliased results with separate output storage.
-      if (failed(aliasedOperand) || aliasedOperand.value() < 0)
+    if (!dominance.properlyDominates(operand, firstOp)) {
+      Operation *defOp = operand.getDefiningOp();
+      // MPI request initializers may be placed next to later calls. Only
+      // operand-free constants can move; a late computed input ends the group.
+      if (!defOp || defOp->getBlock() != firstOp->getBlock() ||
+          !isa<stablehlo::ConstantOp>(defOp) || defOp->getNumOperands() != 0)
         return failure();
-
-      FailureOr<Value> mappedResult = lookupSourceForValue(
-          call.getOperand(static_cast<unsigned>(aliasedOperand.value())),
-          fusedArgs, resultSourceMap);
-      if (failed(mappedResult))
-        return failure();
-
-      // Some wrappers append one pointer argument for each JIT result.
-      unsigned wrapperArgIdx = call.getNumOperands() + resultIdx;
-      if (wrapperArgIdx < wrapperFunc.getNumArguments())
-        mappedWrapperArgs.insert(wrapperFunc.getArgument(wrapperArgIdx));
-      resultSourceMap[result] = mappedResult.value();
+      extension.constantsToMove.push_back(defOp);
     }
+    extension.newArgs.push_back(operand);
+  }
 
-    for (BlockArgument arg : wrapperFunc.getArguments()) {
-      if (!mappedWrapperArgs.contains(arg) && !arg.use_empty())
-        return failure();
-    }
+  for (unsigned resultIdx = 0; resultIdx < call.getNumResults(); ++resultIdx) {
+    FailureOr<int64_t> aliasedOperand = findAliasedOperandIndex(call, resultIdx);
+    // TODO: Support unaliased results with separate output storage.
+    if (failed(aliasedOperand) || aliasedOperand.value() < 0)
+      return failure();
+    extension.resultSources.push_back(operandSources[aliasedOperand.value()]);
+  }
+
+  // Inputs and any appended result pointers cover a prefix of wrapper args.
+  unsigned mappedArgs = call.getNumOperands() + call.getNumResults();
+  for (BlockArgument arg : wrapperFunc.getArguments()) {
+    if (arg.getArgNumber() >= mappedArgs && !arg.use_empty())
+      return failure();
   }
   return success();
 }
 
-// The fused call replaces the first call and must not cross other effects.
-static LogicalResult
-validateRewriteCanMoveToFirstCall(ArrayRef<enzymexla::JITCallOp> fusionCalls,
-                                  ArrayRef<Value> fusedArgs) {
-  enzymexla::JITCallOp firstCall = fusionCalls.front();
-  enzymexla::JITCallOp lastCall = fusionCalls.back();
-  Operation *firstOp = firstCall.getOperation();
-  Operation *lastOp = lastCall.getOperation();
-  Block *block = firstOp->getBlock();
+JITFusionInfo collectJITFusionInfo(enzymexla::JITCallOp firstCall) {
+  JITFusionInfo info;
+  DominanceInfo dominance;
+  if (!dominance.hasSSADominance(firstCall->getBlock()))
+    return info;
+  auto module = firstCall->getParentOfType<ModuleOp>();
+  SmallPtrSet<Value, 8> seenArgs;
+  DenseMap<Value, size_t> outsideUses;
+  size_t escapingResults = 0;
+  bool hasEffects = false;
+  size_t legalCalls = 0, legalArgs = 0, legalConstants = 0;
 
-  // Every external operand must dominate the new position at the first call.
-  for (Value arg : fusedArgs) {
-    Operation *defOp = arg.getDefiningOp();
-    if (!defOp || defOp->getBlock() != block)
+  // Boundary bookkeeping does bounded work per operand/result/use per attempt.
+  // Alias searches, greedy revisits and repeated wrapper cloning can cost more.
+  for (Operation *op = firstCall; op; op = op->getNextNode()) {
+    if (op->hasTrait<OpTrait::IsTerminator>())
+      break;
+    auto call = dyn_cast<enzymexla::JITCallOp>(op);
+    if (!call) {
+      // Effects may only be crossed when their JIT bodies join the group.
+      if (!isMemoryEffectFree(op))
+        break;
       continue;
-    if (firstOp->isBeforeInBlock(defOp))
-      return failure();
+    }
+
+    FailureOr<LLVM::LLVMFuncOp> func = lookupFusionFunction(module, call);
+    if (failed(func))
+      break;
+    JITFusionExtension extension;
+    if (failed(validateFusionExtension(call, func.value(), firstCall, dominance,
+                                      info, seenArgs, extension)))
+      break;
+
+    // Commit the extension only after its complete preflight succeeds.
+    info.fusionCalls.push_back(call);
+    info.fusionFuncs.push_back(func.value());
+    for (Value arg : extension.newArgs) {
+      seenArgs.insert(arg);
+      info.fusedArgs.push_back(arg);
+    }
+    llvm::append_range(info.constantsToMove, extension.constantsToMove);
+    for (Value operand : call.getOperands()) {
+      auto useIt = outsideUses.find(operand);
+      if (useIt != outsideUses.end()) {
+        assert(useIt->second != 0 && "missing external operand use");
+        // Repeated operands consume separate uses of the same result.
+        if (--useIt->second == 0)
+          --escapingResults;
+      }
+    }
+    for (auto [idx, result] : llvm::enumerate(call.getResults())) {
+      size_t uses = std::distance(result.use_begin(), result.use_end());
+      outsideUses[result] = uses;
+      escapingResults += uses != 0;
+      info.resultSourceMap[result] = extension.resultSources[idx];
+    }
+    hasEffects |= !isMemoryEffectFree(call);
+    if (info.fusionCalls.size() >= 2 && (hasEffects || escapingResults != 0)) {
+      legalCalls = info.fusionCalls.size();
+      legalArgs = info.fusedArgs.size();
+      legalConstants = info.constantsToMove.size();
+    }
   }
 
-  // Later calls may move across pure operations, but never across effects.
-  for (Operation *op = firstOp->getNextNode(); op && op != lastOp;
-       op = op->getNextNode()) {
-    if (containsOperation(fusionCalls, op))
-      continue;
-    if (!isMemoryEffectFree(op))
-      return failure();
+  if (legalCalls == 0)
+    return JITFusionInfo{};
+
+  // A pure suffix may hide all escaping results. Rewind it once to the last
+  // observable group, without revalidating prefixes or copying growing maps.
+  for (size_t i = info.fusionCalls.size(); i > legalCalls; --i) {
+    auto call = info.fusionCalls[i - 1];
+    for (Value operand : call.getOperands()) {
+      auto useIt = outsideUses.find(operand);
+      if (useIt != outsideUses.end())
+        ++useIt->second;
+    }
+    for (Value result : call.getResults()) {
+      outsideUses.erase(result);
+      info.resultSourceMap.erase(result);
+    }
   }
+  info.fusionCalls.resize(legalCalls);
+  info.fusionFuncs.resize(legalCalls);
+  info.fusedArgs.resize(legalArgs);
+  info.constantsToMove.resize(legalConstants);
 
-  return success();
+  // Keep external results first, in lexical result order.
+  SmallPtrSet<Value, 8> returnedSources;
+  for (auto call : info.fusionCalls) {
+    for (Value result : call.getResults()) {
+      if (outsideUses.lookup(result) != 0) {
+        info.fusedReturns.push_back(result);
+        returnedSources.insert(info.resultSourceMap.lookup(result));
+      }
+    }
+  }
+  // Preserve an alias for every written input, even if its result is internal
+  // or unused. Otherwise constant request buffers can be treated as read-only.
+  for (auto call : info.fusionCalls) {
+    for (Value result : call.getResults()) {
+      if (returnedSources.insert(info.resultSourceMap.lookup(result)).second)
+        info.fusedReturns.push_back(result);
+    }
+  }
+  return info;
 }
 
-static bool hasSideEffectingCall(ArrayRef<enzymexla::JITCallOp> fusionCalls) {
-  // A resultless component is observable only if at least one call has effects.
-  return llvm::any_of(fusionCalls, [](enzymexla::JITCallOp call) {
-    return !isMemoryEffectFree(call);
-  });
-}
-
-// LLVM-level counterpart of lookupSourceForValue used while cloning wrappers.
-static Value
-lookupPointerForValue(Value value, LLVM::LLVMFuncOp fusedFunc,
-                      ArrayRef<Value> fusedArgs,
-                      const DenseMap<Value, Value> &resultValueMap) {
+// Resolve JIT values to their LLVM pointers while cloning wrappers.
+Value lookupPointerForValue(Value value, LLVM::LLVMFuncOp fusedFunc,
+                            ArrayRef<Value> fusedArgs,
+                            const DenseMap<Value, Value> &resultValueMap) {
   auto resultIt = resultValueMap.find(value);
   if (resultIt != resultValueMap.end())
     return resultIt->second;
@@ -346,11 +310,11 @@ lookupPointerForValue(Value value, LLVM::LLVMFuncOp fusedFunc,
   return fusedFunc.getArgument(fusedArgIdx.value());
 }
 
-static void mapCallInputs(enzymexla::JITCallOp call,
-                          LLVM::LLVMFuncOp wrapperFunc,
-                          LLVM::LLVMFuncOp fusedFunc, ArrayRef<Value> fusedArgs,
-                          const DenseMap<Value, Value> &resultValueMap,
-                          IRMapping &mapping) {
+void mapCallInputs(enzymexla::JITCallOp call,
+                   LLVM::LLVMFuncOp wrapperFunc,
+                   LLVM::LLVMFuncOp fusedFunc, ArrayRef<Value> fusedArgs,
+                   const DenseMap<Value, Value> &resultValueMap,
+                   IRMapping &mapping) {
   // Bind source wrapper arguments to their physical fused pointers.
   for (auto [argIdx, operand] : llvm::enumerate(call.getOperands())) {
     Value mappedOperand =
@@ -359,10 +323,9 @@ static void mapCallInputs(enzymexla::JITCallOp call,
   }
 }
 
-static void
-mapCallResults(enzymexla::JITCallOp call, LLVM::LLVMFuncOp wrapperFunc,
-               LLVM::LLVMFuncOp fusedFunc, ArrayRef<Value> fusedArgs,
-               DenseMap<Value, Value> &resultValueMap, IRMapping &mapping) {
+void mapCallResults(enzymexla::JITCallOp call, LLVM::LLVMFuncOp wrapperFunc,
+                    LLVM::LLVMFuncOp fusedFunc, ArrayRef<Value> fusedArgs,
+                    DenseMap<Value, Value> &resultValueMap, IRMapping &mapping) {
   // JIT results name their aliased operand pointers, not LLVM return values.
   for (auto [resultIdx, result] : llvm::enumerate(call.getResults())) {
     FailureOr<int64_t> aliasedOperand =
@@ -383,7 +346,7 @@ mapCallResults(enzymexla::JITCallOp call, LLVM::LLVMFuncOp wrapperFunc,
 }
 
 // Purity is preserved only when every original call declares it.
-static UnitAttr
+UnitAttr
 getFusedSideEffectFreeAttr(ArrayRef<enzymexla::JITCallOp> fusionCalls) {
   if (llvm::all_of(fusionCalls, [](enzymexla::JITCallOp call) {
         return static_cast<bool>(call.getXlaSideEffectFreeAttr());
@@ -397,48 +360,26 @@ getFusedSideEffectFreeAttr(ArrayRef<enzymexla::JITCallOp> fusionCalls) {
 struct FuseJITPattern : public OpRewritePattern<enzymexla::JITCallOp> {
   using OpRewritePattern<enzymexla::JITCallOp>::OpRewritePattern;
 
+  void initialize() { setHasBoundedRewriteRecursion(); }
+
   LogicalResult matchAndRewrite(enzymexla::JITCallOp jitCallOp,
                                 PatternRewriter &rewriter) const override {
-    if (isGeneratedFusedCall(jitCallOp))
-      return failure();
-
     JITFusionInfo fusionInfo = collectJITFusionInfo(jitCallOp);
     SmallVector<enzymexla::JITCallOp> &fusionCalls = fusionInfo.fusionCalls;
+    // Each rewrite replaces at least two calls with one. This strict decrease
+    // permits recursive folding, including generated calls, without name guards.
     if (fusionCalls.size() < 2)
-      return failure();
-    // Only the earliest call owns the rewrite for this component.
-    if (fusionCalls.front() != jitCallOp)
-      return failure();
-    if (failed(validateSameBlock(fusionCalls)))
-      return failure();
-    // Avoid replacing a pure component whose results are all dead or internal.
-    if (fusionInfo.fusedReturns.empty() && !hasSideEffectingCall(fusionCalls))
-      return failure();
-    // TODO: Merge compatible call metadata instead of rejecting it.
-    if (llvm::any_of(fusionCalls, [](enzymexla::JITCallOp call) {
-          return !call.getBackendConfig().empty() ||
-                 call.getOperandLayoutsAttr() || call.getResultLayoutsAttr() ||
-                 call.getArgAttrsAttr() || call.getResAttrsAttr();
-        }))
-      return failure();
-    if (failed(validateRewriteCanMoveToFirstCall(fusionCalls,
-                                                 fusionInfo.fusedArgs)))
       return failure();
 
     auto module = jitCallOp->getParentOfType<ModuleOp>();
-    FailureOr<SmallVector<LLVM::LLVMFuncOp>> fusionFuncsOr =
-        lookupFusionFunctions(module, fusionCalls);
-    if (failed(fusionFuncsOr))
-      return failure();
-
-    SmallVector<LLVM::LLVMFuncOp> &fusionFuncs = fusionFuncsOr.value();
+    SmallVector<LLVM::LLVMFuncOp> &fusionFuncs = fusionInfo.fusionFuncs;
     SmallVector<Value> &fusedArgs = fusionInfo.fusedArgs;
     SmallVector<Value> &fusedReturns = fusionInfo.fusedReturns;
-    DenseMap<Value, Value> resultSourceMap;
-    // Keep pattern failure atomic by completing validation before IR creation.
-    if (failed(validateFusionMappings(fusionCalls, fusionFuncs, fusedArgs,
-                                      resultSourceMap)))
-      return failure();
+    const DenseMap<Value, Value> &resultSourceMap = fusionInfo.resultSourceMap;
+
+    // Collection has completed all checks; no IR moves on a failed match.
+    for (Operation *constant : fusionInfo.constantsToMove)
+      rewriter.moveOpBefore(constant, jitCallOp);
 
     // The JIT wrapper ABI passes every tensor or scalar buffer as !llvm.ptr.
     SmallVector<Type> llvmArgTypes(
@@ -483,13 +424,13 @@ struct FuseJITPattern : public OpRewritePattern<enzymexla::JITCallOp> {
       rewriter.create<LLVM::ReturnOp>(jitCallOp.getLoc(), ValueRange{});
     }
 
-    // Internal results disappear; external results retain their original types.
+    // Retained results include unused outputs needed to preserve input aliases.
     SmallVector<Type> fusedResultTypes;
     fusedResultTypes.reserve(fusedReturns.size());
     for (Value result : fusedReturns)
       fusedResultTypes.push_back(result.getType());
 
-    // Express external results as aliases of the fused argument list.
+    // Express retained results as aliases of the fused argument list.
     SmallVector<Attribute> fusedOutputAliases;
     fusedOutputAliases.reserve(fusedReturns.size());
     for (auto [resultIdx, result] : llvm::enumerate(fusedReturns)) {
@@ -508,7 +449,7 @@ struct FuseJITPattern : public OpRewritePattern<enzymexla::JITCallOp> {
           static_cast<int64_t>(fusedArgIdx.value()), {}));
     }
 
-    // Replace the component with one JIT call exposing its external results.
+    // Replace the group with one JIT call preserving its results and aliases.
     auto newCall = rewriter.create<enzymexla::JITCallOp>(
         jitCallOp.getLoc(), fusedResultTypes,
         mlir::FlatSymbolRefAttr::get(rewriter.getContext(), fusedName),
@@ -542,7 +483,9 @@ struct FuseJITPass : public impl::FuseJITPassBase<FuseJITPass> {
 
     patterns.add<FuseJITPattern>(context);
 
-    if (failed(applyPatternsGreedily(module, std::move(patterns)))) {
+    GreedyRewriteConfig config;
+    config.setUseTopDownTraversal(true);
+    if (failed(applyPatternsGreedily(module, std::move(patterns), config))) {
       signalPassFailure();
     }
   }
