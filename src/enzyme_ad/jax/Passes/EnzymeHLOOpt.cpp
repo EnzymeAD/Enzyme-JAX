@@ -36198,12 +36198,15 @@ private:
     if (indices.getType().getNumElements() == 1) {
       // A scatter DROPS an out-of-bounds update while dynamic-slice and
       // dynamic-update-slice CLAMP the start, resurrecting the write at a
-      // clamped slot: the conversion is only sound when the index provably
-      // lands in bounds.
-      auto [idxLo, idxHi] = enzyme::getProvableIntegerRange(indices);
-      if (idxLo.isNegative() ||
-          idxHi.sgt(APInt(128, inputTy.getDimSize(0) - 1)))
-        return failure();
+      // clamped slot: the conversion is only sound when the index lands in
+      // bounds, either provably or as asserted by whoever built the scatter
+      // (`enzymexla.inbounds`).
+      if (!op->hasAttr("enzymexla.inbounds")) {
+        auto [idxLo, idxHi] = enzyme::getProvableIntegerRange(indices);
+        if (idxLo.isNegative() ||
+            idxHi.sgt(APInt(128, inputTy.getDimSize(0) - 1)))
+          return failure();
+      }
       auto scalarIndex =
           stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), indices, {});
 

@@ -156,6 +156,28 @@ module {
 
 // -----
 
+// The same index asserted in bounds by whoever built the scatter
+// (`enzymexla.inbounds`, LAPACK's pivots): no range analysis, DUS.
+
+module {
+  func.func @asserted_single_scatter(%buf: tensor<12xf64>, %idx: tensor<1xi64>, %val: tensor<f64>) -> tensor<12xf64> {
+    %r = "stablehlo.scatter"(%buf, %idx, %val) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>, unique_indices = false}> ({
+    ^bb0(%arg0: tensor<f64>, %arg1: tensor<f64>):
+      stablehlo.return %arg1 : tensor<f64>
+    }) {enzymexla.inbounds} : (tensor<12xf64>, tensor<1xi64>, tensor<f64>) -> tensor<12xf64>
+    return %r : tensor<12xf64>
+  }
+}
+
+// CHECK:  func.func @asserted_single_scatter(%arg0: tensor<12xf64>, %arg1: tensor<1xi64>, %arg2: tensor<f64>) -> tensor<12xf64> {
+// CHECK-NEXT:    %0 = stablehlo.reshape %arg1 : (tensor<1xi64>) -> tensor<i64>
+// CHECK-NEXT:    %1 = stablehlo.reshape %arg2 : (tensor<f64>) -> tensor<1xf64>
+// CHECK-NEXT:    %2 = stablehlo.dynamic_update_slice %arg0, %1, %0 : (tensor<12xf64>, tensor<1xf64>, tensor<i64>) -> tensor<12xf64>
+// CHECK-NEXT:    return %2 : tensor<12xf64>
+// CHECK-NEXT:  }
+
+// -----
+
 
 // The iota path bound-checks its constant start the same way: a negative
 // start would clamp where the scatter drops.
