@@ -1187,8 +1187,9 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
         Operation *def = cur.getDefiningOp();
         if (!def || def->getParentRegion() != outerBlock->getParent())
           continue;
-        assert(def->getNumRegions() == 0 &&
-               "bounds computed by an op with regions");
+        if (def->getNumRegions() != 0)
+          return rewriter.notifyMatchFailure(
+              def, "bounds computed by an op with regions");
         if (!pinned.insert(def).second)
           continue;
         llvm::append_range(todo, def->getOperands());

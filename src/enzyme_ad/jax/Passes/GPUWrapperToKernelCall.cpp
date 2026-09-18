@@ -25,9 +25,9 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include <algorithm>
 
 #include "llvm/Support/Debug.h"
-#include <algorithm>
 
 #include "stablehlo/dialect/StablehloOps.h"
 
@@ -63,8 +63,7 @@ struct Tensor2MemrefEliminate
     }
 
     // tensor2memref(memref2tensor(x)) -> x
-    if (auto def =
-            op.getTensor().getDefiningOp<enzymexla::Memref2TensorOp>()) {
+    if (auto def = op.getTensor().getDefiningOp<enzymexla::Memref2TensorOp>()) {
       if (def.getMemref().getType() == op.getMemref().getType()) {
         rewriter.replaceOp(op, def.getMemref());
         return success();
@@ -104,8 +103,7 @@ struct Memref2TensorEliminate
     }
 
     // memref2tensor(tensor2memref(x)) -> x
-    if (auto def =
-            op.getMemref().getDefiningOp<enzymexla::Tensor2MemrefOp>()) {
+    if (auto def = op.getMemref().getDefiningOp<enzymexla::Tensor2MemrefOp>()) {
       if (def.getTensor().getType() == op.getTensor().getType()) {
         rewriter.replaceOp(op, def.getTensor());
         return success();

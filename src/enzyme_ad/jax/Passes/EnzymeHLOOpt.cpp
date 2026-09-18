@@ -2704,7 +2704,8 @@ struct SliceOfDynamicUpdate final
 
       Operation *definingOp = dyn.getOperand().getDefiningOp();
       if (no_overlap &&
-          !llvm::isa<stablehlo::DynamicUpdateSliceOp>(definingOp)) {
+          (!definingOp ||
+           !llvm::isa<stablehlo::DynamicUpdateSliceOp>(definingOp))) {
         rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
             op, dyn.getOperand(), op.getStartIndices(), op.getLimitIndices(),
             op.getStrides());
