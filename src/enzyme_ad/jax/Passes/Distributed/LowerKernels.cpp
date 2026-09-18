@@ -8,6 +8,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
+#include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/MainFunctionAnalysis.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 
@@ -68,54 +69,6 @@ static void splitPartitioningAxesByShardability(
       }
     }
   }
-}
-
-// Shardy expects a function-shaped wrapper, but the kernel's block arguments
-// are the canonical source of truth for the current local view. The kernel body
-// is discarded once the rewritten function is spliced back in
-// copyShardyModuleToKernelAndErase, so its ops are moved rather than cloned.
-static ModuleOp kernelToModule(DistributedKernelOp kernelOp) {
-  OpBuilder builder(kernelOp.getContext());
-  auto shardyModule = ModuleOp::create(builder.getUnknownLoc());
-
-  // Use the kernel body's own (possibly already partially-shrunk) block-arg
-  // and yield-operand types, not the kernel op's external operand/result
-  // types: those two only coincide on the first pass invocation, and diverge
-  // once any factor has been lowered, which would desync operand/result
-  // shapes on a second run (idempotency).
-  auto &kernelBody = kernelOp.getBody().front();
-  auto yield = cast<DistributedYieldOp>(kernelBody.getTerminator());
-  SmallVector<Type> shardyInputTypes(kernelBody.getArgumentTypes().begin(),
-                                     kernelBody.getArgumentTypes().end());
-  SmallVector<Type> shardyResultTypes(yield.getOperandTypes().begin(),
-                                      yield.getOperandTypes().end());
-
-  auto fnType = FunctionType::get(kernelOp.getContext(), shardyInputTypes,
-                                  shardyResultTypes);
-  auto shardyFunc =
-      func::FuncOp::create(builder, kernelOp.getLoc(), "kernel", fnType);
-
-  auto &funcBody = *shardyFunc.addEntryBlock();
-  for (auto [origArg, newArg] :
-       llvm::zip_equal(kernelBody.getArguments(), funcBody.getArguments())) {
-    // Somewhat worried about replacing uses not in the copied module,
-    // but scoping rules here means every use will be overwritten anyways,
-    // so going with all uses rather than region-specific uses for now.
-    // mlir::replaceAllUsesInRegionWith(origArg, newArg, &funcBody);
-    origArg.replaceAllUsesWith(newArg);
-  }
-
-  SmallVector<Value> results(yield.getOperands().begin(),
-                             yield.getOperands().end());
-  yield.erase();
-  funcBody.getOperations().splice(funcBody.end(), kernelBody.getOperations());
-
-  builder.setInsertionPointToEnd(&funcBody);
-  builder.create<func::ReturnOp>(kernelOp.getLoc(), results);
-
-  shardyModule.push_back(shardyFunc);
-
-  return shardyModule;
 }
 
 // Shardy axis name for a kernel partitioning-axis index; index-based so no
@@ -524,9 +477,10 @@ static void updateKernelArgumentTypes(DistributedKernelOp kernelOp,
     // failure here would make the search unable to use any candidate that
     // happens to hit this.
     if (argIndex < kernelOp.getArguments().size()) {
-      auto operandType =
-          dyn_cast<RankedTensorType>(kernelOp.getArguments()[argIndex].getType());
-      if (operandType && operandType.getShape() != ArrayRef<int64_t>(updatedShape)) {
+      auto operandType = dyn_cast<RankedTensorType>(
+          kernelOp.getArguments()[argIndex].getType());
+      if (operandType &&
+          operandType.getShape() != ArrayRef<int64_t>(updatedShape)) {
         kernelOp.emitRemark()
             << "distributed-lower-kernels: operand " << argIndex
             << "'s actual type " << operandType
@@ -695,8 +649,16 @@ struct LowerKernelsPass : public impl::LowerKernelsPassBase<LowerKernelsPass> {
 
     // The temporary func.func is intentionally a thin wrapper: Shardy works on
     // function-shaped IR, while the kernel op itself carries the local ABI
-    // types.
-    auto shardyModule = kernelToModule(kernelOp);
+    // types. Built from the kernel body's own (possibly already
+    // partially-shrunk) block-arg/yield types rather than the kernel op's
+    // external operand/result types, which only coincide on the first pass
+    // invocation and diverge once any factor has been lowered -- using the
+    // body's types keeps a second run idempotent.
+    auto shardyModuleOrFailure = buildKernelBodyModule(kernelOp);
+    if (failed(shardyModuleOrFailure)) {
+      return false;
+    }
+    ModuleOp shardyModule = *shardyModuleOrFailure;
     constructShardyAttributes(kernelOp, shardyModule, parallelismPerDim);
     // debug logging option
     if (dumpShardyModules) {
@@ -704,7 +666,8 @@ struct LowerKernelsPass : public impl::LowerKernelsPassBase<LowerKernelsPass> {
       llvm::dbgs() << shardyModule << "\n";
     }
     // Transform and copy back the module
-    bool lowered = succeeded(runShardyLowering(shardyModule, verifyShardyLowering));
+    bool lowered =
+        succeeded(runShardyLowering(shardyModule, verifyShardyLowering));
     stripPlaceholderAllReduces(shardyModule);
     if (dumpLoweredModules) {
       llvm::dbgs() << "Dumping lowered module:\n";

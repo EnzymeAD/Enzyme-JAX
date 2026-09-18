@@ -3,11 +3,14 @@
 #include "src/enzyme_ad/jax/Utils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/IRMapping.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "shardy/dialect/sdy/transforms/propagation/op_sharding_rule_builder.h"
 #include "shardy/dialect/sdy/transforms/propagation/op_sharding_rule_registry.h"
 #include "stablehlo/dialect/StablehloOps.h"
+
+#include <functional>
 
 namespace mlir::enzyme::distributed {
 
@@ -243,6 +246,89 @@ IndexedTensorShardingAttr buildEmptyShardingForType(::mlir::MLIRContext *ctx,
     dimPartitioningAxes.append(rankedType.getRank(), emptyAxes);
   }
   return IndexedTensorShardingAttr::get(ctx, dimPartitioningAxes, emptyAxes);
+}
+
+FailureOr<ModuleOp> buildKernelBodyModule(DistributedKernelOp kernelOp) {
+  OpBuilder builder(kernelOp.getContext());
+  auto module = ModuleOp::create(kernelOp.getLoc());
+
+  Block &kernelBody = kernelOp.getBody().front();
+  auto yield = cast<DistributedYieldOp>(kernelBody.getTerminator());
+
+  auto fnType = builder.getFunctionType(kernelBody.getArgumentTypes(),
+                                        yield.getOperandTypes());
+  auto func =
+      func::FuncOp::create(builder, kernelOp.getLoc(), "kernel", fnType);
+  module.push_back(func);
+
+  Block *entry = func.addEntryBlock();
+  IRMapping mapping;
+  mapping.map(kernelBody.getArguments(), entry->getArguments());
+  builder.setInsertionPointToStart(entry);
+
+  // A kernel body need not be isolated from above: e.g. CSE commons up a
+  // constant used by several sibling kernels and hoists the single copy
+  // just outside all of them. The standalone module built here must be
+  // self-contained regardless, so any operand not already mapped (i.e. not
+  // one of the body's own block args or an already-cloned op's result) is
+  // materialized by cloning its defining op first, recursively -- always
+  // safe for the kind of side-effect-free op CSE would have hoisted this
+  // way. Plain recursion over defining ops (rather than a region-ancestor
+  // utility like makeRegionIsolatedFromAbove) is what makes this work at
+  // all here: by the time a capture is discovered, the func body has
+  // already been detached into a brand new, disconnected module, so any
+  // check relying on the two actually sharing a region tree would vacuously
+  // find nothing to capture.
+  bool ok = true;
+  std::function<void(Value)> materialize =
+      [&](Value value) {
+        if (!ok || mapping.contains(value)) {
+          return;
+        }
+        Operation *definingOp = value.getDefiningOp();
+        if (!definingOp) {
+          kernelOp.emitError()
+              << "kernel body captures a value with no defining op (an outer "
+                 "block argument), which cannot be inlined into a standalone "
+                 "module";
+          ok = false;
+          return;
+        }
+        for (Value operand : definingOp->getOperands()) {
+          materialize(operand);
+        }
+        if (ok) {
+          builder.clone(*definingOp, mapping);
+        }
+      };
+
+  for (Operation &op : kernelBody.without_terminator()) {
+    for (Value operand : op.getOperands()) {
+      materialize(operand);
+    }
+    if (!ok) {
+      break;
+    }
+    builder.clone(op, mapping);
+  }
+
+  SmallVector<Value> results;
+  if (ok) {
+    results.reserve(yield.getReturns().size());
+    for (Value v : yield.getReturns()) {
+      materialize(v);
+      if (ok) {
+        results.push_back(mapping.lookup(v));
+      }
+    }
+  }
+  if (!ok) {
+    module.erase();
+    return failure();
+  }
+
+  builder.create<func::ReturnOp>(kernelOp.getLoc(), results);
+  return module;
 }
 
 } // namespace mlir::enzyme::distributed

@@ -301,6 +301,39 @@ def MergeAdjacentTrivialKernelsPass
   }];
 }
 
+def LowerKernelsToExecutablePass
+    : Pass<"distributed-lower-kernels-to-executable", "::mlir::ModuleOp"> {
+  let summary = "Placeholder: will dispatch each local-size distributed.kernel "
+                "body to an external compiler for executable lowering.";
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect", "mlir::func::FuncDialect"
+  ];
+  let options = [
+    Option<"dumpKernelModulesTo", "dump-kernel-modules-to", "std::string", "\"\"",
+           "If non-empty, write each kernel's body as a standalone module "
+           "(one func.func mirroring the kernel's local-scope ABI) under "
+           "this directory, one kernel-<random>.mlir file per kernel -- the "
+           "wire format the external compiler will eventually be dispatched "
+           "on, for inspecting before real dispatch is wired up. Randomly "
+           "suffixed rather than indexed since this pass runs once per "
+           "search candidate, sharing one directory across many runs; "
+           "nothing here needs to map a dump back to the candidate or "
+           "kernel that produced it.">
+  ];
+  let description = [{
+    By the time this pass runs, distributed-lower-kernels has already
+    divided every kernel's operands/results down to local (per-device)
+    sizes -- that pass is about sharding, not code generation. What's left
+    inside each kernel body is a plain, unsharded HLO subgraph. This pass is
+    a placeholder for the next lowering stage: handing each such subgraph to
+    an external compiler for actual executable lowering. Compilation there
+    is per-kernel, so this pass's job is the walk-and-dispatch boilerplate;
+    for now it only performs that walk, with dump-kernel-modules-to emitting
+    the standalone module each kernel would be dispatched as, since real
+    dispatch isn't wired up yet.
+  }];
+}
+
 def DropIdentityCollectivesPass
     : Pass<"drop-identity-collectives", "::mlir::ModuleOp"> {
   let summary = "Drops distributed.Collective ops that perform no real "

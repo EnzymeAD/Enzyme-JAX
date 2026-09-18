@@ -46,6 +46,10 @@ void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
   // with nothing after them to clean up until now.
   pm.addPass(createCSEPass());
   pm.addPass(createCanonicalizerPass());
+  // Runs last so that whatever it dispatches (or, for now, dumps) per kernel
+  // reflects the fully merged and cleaned-up IR above, not an intermediate
+  // state with dead axis-algebra ops still attached.
+  pm.addPass(createLowerKernelsToExecutablePass());
 }
 
 namespace {

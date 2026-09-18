@@ -99,6 +99,32 @@ bool isTriviallyLocalKernel(DistributedKernelOp kernelOp);
 IndexedTensorShardingAttr buildEmptyShardingForType(::mlir::MLIRContext *ctx,
                                                     ::mlir::Type type);
 
+// Builds a standalone module containing one func.func ("kernel") whose
+// signature and body mirror kernelOp's body block: argument types from the
+// block's own arguments, result types from its DistributedYield operands,
+// and each body op cloned in verbatim (attributes included) so per-op
+// metadata like distributed.argument_shardings/output_shardings survives
+// unchanged. kernelOp itself is left untouched. Two lowering stages need
+// exactly this kernel-body-as-a-function view for different reasons --
+// LowerKernelsPass hands it to Shardy after layering on sdy sharding
+// attributes, while a later executable-lowering stage hands it to an
+// external compiler as-is and must NOT expect or add any sharding
+// attributes of its own -- so the shape of the module is shared here and
+// each caller only adds what's specific to its own destination.
+//
+// A kernel body need not be isolated from above (e.g. CSE can common up a
+// constant used by several sibling kernels and hoist the single copy just
+// outside all of them), so any such captured value is pulled in by cloning
+// its defining op, recursively, making the returned module self-contained.
+// Fails (with a diagnostic already emitted on kernelOp) if a capture has no
+// defining op to clone -- an outer block argument -- which should not occur
+// for a well-formed kernel body.
+//
+// On success the caller owns the returned module and is responsible for
+// erasing it.
+::mlir::FailureOr<::mlir::ModuleOp>
+buildKernelBodyModule(DistributedKernelOp kernelOp);
+
 } // namespace mlir::enzyme::distributed
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_UTILITIES_H
