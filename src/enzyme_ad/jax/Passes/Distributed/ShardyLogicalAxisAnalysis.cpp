@@ -603,8 +603,13 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbols() {
       // for each dimension in the tensor being resharded,
       // if the input and output shardings are the same,
       // LHS and RHS get the same symbol, otherwise different.
-      TensorShardingAttr in_sharding = getSharding(reshard_op.getInput());
-      TensorShardingAttr out_sharding = getSharding(reshard_op.getResult());
+      Attribute meshOrRef = reshard_op.getSharding().getMeshOrRef();
+      TensorShardingAttr in_sharding =
+          getOrCreateSharding(reshard_op.getInput(), meshOrRef,
+                              /*closedIfMissing=*/true);
+      TensorShardingAttr out_sharding =
+          getOrCreateSharding(reshard_op.getResult(), meshOrRef,
+                              /*closedIfMissing=*/true);
       for (auto [dimIdx, dimShardings] :
            llvm::enumerate(llvm::zip_equal(in_sharding.getDimShardings(),
                                            out_sharding.getDimShardings()))) {

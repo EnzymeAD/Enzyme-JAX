@@ -119,6 +119,19 @@ py_test(
 )
 
 py_test(
+    name = "distributed_llama",
+    srcs = [
+        "distributed_llama.py",
+        "test_utils.py",
+        "xprof_utils.py",
+    ],
+    data = ["//:enzymexlamlir-opt"],
+    imports = ["."],
+    tags = ["exclusive"],
+    deps = TEST_DEPS,
+)
+
+py_test(
     name = "llama",
     timeout = "eternal",
     srcs = [
@@ -214,6 +227,7 @@ test_suite(
     name = "python_tests",
     tests = [
         ":bench_vs_xla",
+        ":distributed_llama",
         ":jaxmd",
         ":jaxpi_benchmark",
         ":llama",
