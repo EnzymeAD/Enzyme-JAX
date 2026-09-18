@@ -1719,6 +1719,8 @@ private:
                                     permutationX.getType().getElementType()),
               permutationX)),
           scatterDims);
+      // LAPACK guarantees every pivot lands in [1, n].
+      permutationUpdate2->setAttr("enzymexla.inbounds", rewriter.getUnitAttr());
 
       {
         OpBuilder::InsertionGuard guard(rewriter);
