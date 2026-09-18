@@ -12,8 +12,10 @@
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
+#ifdef ENZYMEJAX_CUDA
 #include "cuda/cuda_runtime_api.h"
 #include "nccl.h"
+#endif
 
 #define DEBUG_TYPE "lower-comm-to-jit"
 
@@ -117,6 +119,7 @@ static Value createMpiPtrConstant(OpBuilder &builder, Location loc,
 //   return dt;
 // }
 
+#ifdef ENZYMEJAX_CUDA
 llvm::Expected<ncclDatatype_t>
 convertMlirTypeToNcclDatatype(Type type, bool allow_cast = false) {
   if (type.isInteger(8))  /*ffi::DataType::S8:*/
@@ -172,6 +175,7 @@ convertCommNcclRedOpEnumToNcclRedOp(comm::NcclRedOpEnum op) {
         comm::stringifyMpiOpEnum(op).c_str());
   }
 }
+#endif
 
 struct LowerCommMpiConstantOpToJIT
     : public OpConversionPattern<comm::MpiConstantOp> {
@@ -1685,6 +1689,7 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
   }
 };
 
+#ifdef ENZYMEJAX_CUDA
 struct LowerCommNcclCommUserRankOpToJIT
     : public OpConversionPattern<comm::NcclCommUserRankOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -2844,6 +2849,7 @@ struct LowerCommNcclBroadcastOpToJIT
     return success();
   }
 };
+#endif
 
 struct LowerCommToJITPass
     : public mlir::comm::impl::LowerCommToJITPassBase<LowerCommToJITPass> {
@@ -2892,7 +2898,13 @@ struct LowerCommToJITPass
                  LowerCommMpiWaitallOpToJIT, LowerCommMpiAllreduceOpToJIT,
                  LowerCommMpiBcastOpToJIT>(converter, context);
 
-    patterns.add<>(converter, context);
+#ifdef ENZYMEJAX_CUDA
+    patterns
+        .add<LowerCommNcclCommUserRankOpToJIT, LowerCommNcclCommCountOpToJIT,
+             LowerCommNcclSendOpToJIT, LowerCommNcclRecvOpToJIT,
+             LowerCommNcclAllReduceOpToJIT, LowerCommNcclBroadcastOpToJIT>(
+            converter, context);
+#endif
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
