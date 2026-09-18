@@ -5,6 +5,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Support/FileUtilities.h"
+#include "mlir/Support/ToolUtilities.h"
 #include "mlir/Tools/ParseUtilities.h"
 #include "mlir/Transforms/Passes.h"
 
@@ -274,19 +275,10 @@ PoolConstraints parseRestrictInput(ArrayRef<std::string> tokens) {
   return p;
 }
 
-OwningOpRef<Operation *> loadMLIRModule(MLIRContext &context,
-                                        llvm::StringRef filePath) {
-  std::string errorMessage;
-  auto file = mlir::openInputFile(filePath, &errorMessage);
-  if (!file) {
-    llvm::WithColor::warning(diag())
-        << "Failed to open file: " << errorMessage << "\n";
-    return nullptr;
-  }
-
+static OwningOpRef<Operation *>
+parseChunk(std::unique_ptr<llvm::MemoryBuffer> chunk, MLIRContext &context) {
   auto sourceMgr = std::make_shared<llvm::SourceMgr>();
-  sourceMgr->AddNewSourceBuffer(std::move(file), llvm::SMLoc());
-
+  sourceMgr->AddNewSourceBuffer(std::move(chunk), llvm::SMLoc());
   ParserConfig parseConfig(&context);
   return parseSourceFileForTool(sourceMgr, parseConfig,
                                 /*insertImplicitModule=*/true);
@@ -876,9 +868,12 @@ int main(int argc, char **argv) {
   if (anyAllowUnreg)
     context.allowUnregisteredDialects();
 
-  OwningOpRef<Operation *> module = loadMLIRModule(context, inputFilename);
-  if (!module)
+  std::string errorMessage;
+  auto buffer = mlir::openInputFile(inputFilename, &errorMessage);
+  if (!buffer) {
+    llvm::WithColor::error(diag()) << errorMessage << "\n";
     return 2;
+  }
 
   mlir::PassManager legalizationPM(&context);
   // Make it possible to run the chlo tests
@@ -907,25 +902,32 @@ int main(int argc, char **argv) {
     return 2;
   }
 
-  for (auto [runIdx, config] : llvm::enumerate(runLineConfigs)) {
-    if (config.splitInputFile) {
-      llvm::WithColor::warning(diag())
-          << "Skipping test: Fuzzer does not yet support "
-             "--split-input-file.\n";
-      continue;
+  auto handler = [&](std::unique_ptr<llvm::MemoryBuffer> chunk,
+                     llvm::raw_ostream &) -> LogicalResult {
+    OwningOpRef<Operation *> module = parseChunk(std::move(chunk), context);
+    if (!module) {
+      anyToolError = true;
+      return mlir::success();
     }
 
-    if (runLineConfigs.size() > 1)
-      llvm::WithColor::remark(diag()) << "run line " << runIdx + 1 << " of "
-                                      << runLineConfigs.size() << "\n";
-    Counts counts = fuzzWithPipeline(module.get(), config, context, gen,
-                                     legalizationPM, BaseConstraints);
+    for (auto [runIdx, config] : llvm::enumerate(runLineConfigs)) {
+      if (runLineConfigs.size() > 1)
+        llvm::WithColor::remark(diag()) << "run line " << runIdx + 1 << " of "
+                                        << runLineConfigs.size() << "\n";
 
-    passed += counts.passed;
-    mismatched += counts.mismatched;
-    skipped += counts.skipped;
-    anyToolError |= counts.toolError;
-  }
+      Counts counts = fuzzWithPipeline(module.get(), config, context, gen,
+                                       legalizationPM, BaseConstraints);
+      passed += counts.passed;
+      mismatched += counts.mismatched;
+      skipped += counts.skipped;
+      anyToolError |= counts.toolError;
+    }
+    return mlir::success();
+  };
+
+  if (mlir::failed(mlir::splitAndProcessBuffer(std::move(buffer), handler,
+                                               llvm::nulls())))
+    anyToolError = true;
 
   if (verbosity != Verbosity::Quiet) {
     llvm::outs() << inputFilename;
