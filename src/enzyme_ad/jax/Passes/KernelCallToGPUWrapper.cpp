@@ -42,13 +42,12 @@ struct KernelCallToGPUWrapperPass
                                  int64_t defaultValue, StringRef description) {
     if (!value)
       return defaultValue;
-    DenseIntElementsAttr attr;
-    if (!matchPattern(value, m_Constant(&attr)) || attr.size() != 1) {
-      call.emitError() << description
-                       << " must be a constant scalar integer tensor";
-      return failure();
+    APInt constantValue;
+    if (!matchPattern(value, m_ConstantInt(&constantValue))) {
+      return call.emitError()
+             << description << " must be a constant scalar integer tensor";
     }
-    return (*attr.value_begin<APInt>()).getSExtValue();
+    return constantValue.getSExtValue();
   }
 
   template <typename OpTy> static void replaceNVVMId(OpTy op, Value iv) {
