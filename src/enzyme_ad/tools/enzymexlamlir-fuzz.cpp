@@ -769,6 +769,68 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
   return Verdict::Passed;
 }
 
+struct Counts {
+  unsigned passed = 0, mismatched = 0, skipped = 0;
+  bool toolError = false;
+};
+
+Counts fuzzWithPipeline(Operation *module, const RunLineConfig &config,
+                        MLIRContext &context, std::mt19937 &gen,
+                        PassManager &legalizationPM,
+                        const PoolConstraints &BaseConstraints) {
+  Counts counts;
+  FailureOr<OpPassManager> parsed =
+      mlir::parsePassPipeline(config.passPipeline);
+  if (mlir::failed(parsed)) {
+    llvm::WithColor::error(diag())
+        << "Failed to parse the pass pipeline: " << config.passPipeline << "\n";
+    counts.toolError = true;
+    return counts;
+  }
+
+  mlir::PassManager pm(&context, parsed->getOpAnchorName(),
+                       mlir::PassManager::Nesting::Implicit);
+  static_cast<mlir::OpPassManager &>(pm) = std::move(*parsed);
+
+  PoolConstraints currentConstraints =
+      constraintsFromPipeline(config.passPipeline, BaseConstraints);
+
+  OwningOpRef<Operation *> optimizedModule(module->clone());
+  if (mlir::failed(pm.run(optimizedModule.get()))) {
+    llvm::WithColor::error(diag())
+        << "Pass pipeline failed to run on module!\n";
+    counts.toolError = true;
+    return counts;
+  }
+
+  SmallVector<func::FuncOp> unoptFuncs, optFuncs;
+  module->walk([&](func::FuncOp f) { unoptFuncs.push_back(f); });
+  optimizedModule->walk([&](func::FuncOp f) { optFuncs.push_back(f); });
+
+  if (unoptFuncs.size() != optFuncs.size()) {
+    llvm::WithColor::warning(diag())
+        << "function count changed (" << unoptFuncs.size() << " -> "
+        << optFuncs.size() << "), cannot pair functions; skipping file\n";
+    return counts;
+  }
+
+  for (auto [unoptFunc, optFunc] : llvm::zip_equal(unoptFuncs, optFuncs)) {
+    switch (fuzzFunction(unoptFunc, optFunc, gen, legalizationPM,
+                         currentConstraints)) {
+    case Verdict::Passed:
+      counts.passed++;
+      break;
+    case Verdict::Mismatched:
+      counts.mismatched++;
+      break;
+    case Verdict::Skipped:
+      counts.skipped++;
+      break;
+    }
+  }
+  return counts;
+}
+
 int main(int argc, char **argv) {
   llvm::cl::HideUnrelatedOptions(fuzzerCategory);
   llvm::cl::ParseCommandLineOptions(argc, argv,
@@ -846,10 +908,6 @@ int main(int argc, char **argv) {
   }
 
   for (auto [runIdx, config] : llvm::enumerate(runLineConfigs)) {
-    if (runLineConfigs.size() > 1)
-      llvm::WithColor::remark(diag()) << "run line " << runIdx + 1 << " of "
-                                      << runLineConfigs.size() << "\n";
-
     if (config.splitInputFile) {
       llvm::WithColor::warning(diag())
           << "Skipping test: Fuzzer does not yet support "
@@ -857,56 +915,16 @@ int main(int argc, char **argv) {
       continue;
     }
 
-    FailureOr<OpPassManager> parsed =
-        mlir::parsePassPipeline(config.passPipeline);
-    if (mlir::failed(parsed)) {
-      llvm::WithColor::error(diag())
-          << "Failed to parse the pass pipeline: " << config.passPipeline
-          << "\n";
-      anyToolError = true;
-      continue;
-    }
+    if (runLineConfigs.size() > 1)
+      llvm::WithColor::remark(diag()) << "run line " << runIdx + 1 << " of "
+                                      << runLineConfigs.size() << "\n";
+    Counts counts = fuzzWithPipeline(module.get(), config, context, gen,
+                                     legalizationPM, BaseConstraints);
 
-    mlir::PassManager pm(&context, parsed->getOpAnchorName(),
-                         mlir::PassManager::Nesting::Implicit);
-    static_cast<mlir::OpPassManager &>(pm) = std::move(*parsed);
-
-    PoolConstraints currentConstraints =
-        constraintsFromPipeline(config.passPipeline, BaseConstraints);
-
-    OwningOpRef<Operation *> optimizedModule(module->clone());
-    if (mlir::failed(pm.run(optimizedModule.get()))) {
-      llvm::WithColor::error(diag())
-          << "Pass pipeline failed to run on module!\n";
-      anyToolError = true;
-      continue;
-    }
-
-    SmallVector<func::FuncOp> unoptFuncs, optFuncs;
-    module->walk([&](func::FuncOp f) { unoptFuncs.push_back(f); });
-    optimizedModule->walk([&](func::FuncOp f) { optFuncs.push_back(f); });
-
-    if (unoptFuncs.size() != optFuncs.size()) {
-      llvm::WithColor::warning(diag())
-          << "function count changed (" << unoptFuncs.size() << " -> "
-          << optFuncs.size() << "), cannot pair functions; skipping file\n";
-      continue;
-    }
-
-    for (auto [unoptFunc, optFunc] : llvm::zip_equal(unoptFuncs, optFuncs)) {
-      switch (fuzzFunction(unoptFunc, optFunc, gen, legalizationPM,
-                           currentConstraints)) {
-      case Verdict::Passed:
-        passed++;
-        break;
-      case Verdict::Mismatched:
-        mismatched++;
-        break;
-      case Verdict::Skipped:
-        skipped++;
-        break;
-      }
-    }
+    passed += counts.passed;
+    mismatched += counts.mismatched;
+    skipped += counts.skipped;
+    anyToolError |= counts.toolError;
   }
 
   if (verbosity != Verbosity::Quiet) {
