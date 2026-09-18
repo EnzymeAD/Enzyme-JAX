@@ -14,11 +14,26 @@ module {
    }
 
     perfify.assumptions { // operation in the dialect
-     perfify.cost "arith.muli" 3 // op
-     perfify.cost "func.return" 0
-     perfify.cost "scf.yield" 0
-     perfify.cost "arith.cmpi" 0
-     perfify.cost "scf.if" 0
+     perfify.cost "arith.muli" {
+      arith.constant 3 // op
+      perfify.yield
+     }
+     perfify.cost "func.return" {
+      arith.constant 0
+      perfify.yield
+     }
+     perfify.cost "scf.yield" {
+      arith.constant 0
+      perfify.yield
+     }
+     perfify.cost "arith.cmpi" {
+      arith.constant 0
+      perfify.yield
+     }
+     perfify.cost "scf.if" {
+      arith.constant 0
+      perfify.yield
+     }
    
      perfify.conditions @foo true pre { // true here meaning verification is enabled
         %b0 = perfify.arg 0

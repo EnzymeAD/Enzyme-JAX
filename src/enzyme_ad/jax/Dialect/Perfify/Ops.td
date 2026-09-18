@@ -5,13 +5,26 @@ include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/OpBase.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
+include "mlir/IR/SymbolInterfaces.td"
 include "Dialect.td"
 include "Types.td"
 
+def DefSymbolOp : PerfifyOp<"define_symbol", [Symbol]> {
+  let arguments = (ins SymbolNameAttr:$symbol, TypeAttr:$type);
+  let assemblyFormat = "$symbol `:` $type attr-dict";
+}
+
+def SymCostOp : PerfifyOp<"sym_cost", [
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+  let arguments = (ins FlatSymbolRefAttr:$sym);
+  let results  = (outs AnyType:$result);
+  let assemblyFormat = "$sym attr-dict `:` type($result)";
+}
+
 def CostOp : PerfifyOp<"cost", []> {
-  let arguments = (ins StrAttr:$target_op, 
-                  APIntAttr:$cycle_cost);
-  let assemblyFormat = "$target_op $cycle_cost attr-dict";
+  let arguments = (ins StrAttr:$target_op);
+  let regions = (region AnyRegion:$body);
+  let assemblyFormat = "$target_op $body attr-dict";
 }
 
 def FnCostOp : PerfifyOp<"fn_cost", []> { // this should be where we calculate the cost in the pass
@@ -62,6 +75,10 @@ def ConditionsOp : PerfifyOp<"conditions", [HasParent<"AssumptionsOp">, Terminat
 def AssumptionsOp : PerfifyOp<"assumptions", [Terminator]> {
   let regions = (region AnyRegion:$body);
   let assemblyFormat = [{$body attr-dict}];
+}
+
+def YieldOp : PerfifyOp<"yield", [Terminator]> {
+  let assemblyFormat = "attr-dict";
 }
 
 #endif // ENZYME_AD_JAX_DIALECT_PERFIFY_OPS_TD
