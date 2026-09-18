@@ -3,9 +3,9 @@
 
 #include "Dialect.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
-#include "mlir/IR/SymbolTable.h"
 
 namespace mlir::enzyme::perfify {} // namespace mlir::enzyme::perfify
 
@@ -15,13 +15,13 @@ namespace mlir::enzyme::perfify {} // namespace mlir::enzyme::perfify
 using namespace mlir;
 using namespace mlir::enzyme::perfify;
 LogicalResult SymCostOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
-  auto def = symbolTable.lookupNearestSymbolFrom<DefSymbolOp>(*this, getSymAttr());
+  auto def =
+      symbolTable.lookupNearestSymbolFrom<DefSymbolOp>(*this, getSymAttr());
   if (!def)
-    return emitOpError("'") << getSym() << "' does not reference a valid symbol";
+    return emitOpError("'")
+           << getSym() << "' does not reference a valid symbol";
   if (def.getType() != getResult().getType())
-    return emitOpError("type mismatch: symbol is ") << def.getType()
-           << " but result is " << getResult().getType();
+    return emitOpError("type mismatch: symbol is ")
+           << def.getType() << " but result is " << getResult().getType();
   return success();
 }
-
-
