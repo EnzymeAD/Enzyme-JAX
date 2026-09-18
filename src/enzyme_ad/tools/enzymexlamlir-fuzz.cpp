@@ -53,7 +53,7 @@ llvm::cl::opt<unsigned> maxUlpsOpt(
     llvm::cl::desc("Allowed deviation between optimized and unoptimized float "
                    "results, in units in the last place (default 8). log2(n) "
                    "bits are allowed to deviate so in the n=8 case the three "
-                   "least signficant mantissa bits are allowed to deviate"),
+                   "least significant mantissa bits are allowed to deviate"),
     llvm::cl::init(8), llvm::cl::cat(fuzzerCategory));
 
 // --verbosity (how much your screen gets spammend full of stuff)
