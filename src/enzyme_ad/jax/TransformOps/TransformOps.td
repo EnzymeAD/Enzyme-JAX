@@ -1113,8 +1113,8 @@ def ApplyCSEConjPatterns : EnzymeHLOPatternOp<
   let patterns = ["CSE<chlo::ConjOp>"];
 }
 
-def ApplyCompareAbs : EnzymeHLOParameterizedPatternOp<
-    "compare_abs"> {
+def ApplyNoNanCompareAbs : EnzymeHLOParameterizedPatternOp<
+    "no_nan_compare_abs"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.

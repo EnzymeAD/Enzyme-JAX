@@ -9405,10 +9405,11 @@ struct CompareIotaConstSimplify
   }
 };
 
-struct CompareAbs
-    : public NoNanCheckedOpRewritePattern<stablehlo::CompareOp, CompareAbs> {
-  using NoNanCheckedOpRewritePattern<stablehlo::CompareOp,
-                                     CompareAbs>::NoNanCheckedOpRewritePattern;
+struct NoNanCompareAbs
+    : public NoNanCheckedOpRewritePattern<stablehlo::CompareOp,
+                                          NoNanCompareAbs> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::CompareOp, NoNanCompareAbs>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
                                     PatternRewriter &rewriter) const {
@@ -37298,11 +37299,11 @@ void mlir::transform::addNoNanCompareSimplify(RewritePatternSet &patterns,
                                         benefit);
 }
 
-void mlir::transform::addCompareAbs(RewritePatternSet &patterns,
-                                    bool allowOnFloatingPointMath,
-                                    MLIRContext &context,
-                                    PatternBenefit benefit) {
-  patterns.insert<CompareAbs>(allowOnFloatingPointMath, &context, benefit);
+void mlir::transform::addNoNanCompareAbs(RewritePatternSet &patterns,
+                                         bool allowOnFloatingPointMath,
+                                         MLIRContext &context,
+                                         PatternBenefit benefit) {
+  patterns.insert<NoNanCompareAbs>(allowOnFloatingPointMath, &context, benefit);
 }
 
 void mlir::transform::addNoNanSelfSubSimplify(RewritePatternSet &patterns,
@@ -37749,7 +37750,7 @@ struct EnzymeHLOOptPass
 
     patterns
         .add<NoNanCompareSimplify, NoNanSelfSubSimplify, NoNanAddSubSimplify,
-             NoNanMulSimplify, NoNanDivSimplify, CompareAbs>(
+             NoNanMulSimplify, NoNanDivSimplify, NoNanCompareAbs>(
             (no_nan || all_finite), context);
 
     patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify>(
