@@ -153,6 +153,8 @@ def CallOp : TesseraOp<"call",
             results, operands);
     }]>];
 
+  let hasCanonicalizer = 1;
+
   let extraClassDeclaration = [{
     FunctionType getCalleeType();
 
