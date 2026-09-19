@@ -117,21 +117,45 @@ Value placeIntoCanonical(OpBuilder &builder, Location loc, Value v,
       loc, finalType, sortedValue, broadcastDims);
 }
 
-// Resolves one Cast op's positional partitioning_axes into, per original
-// tensor dimension, the ordered list of physical-axis splits it
-// contributes. A ReplicationAxisType factor is a deliberate, legitimate
-// "this dimension isn't divided along this axis" marker and is simply
-// skipped (contributes no split); anything else (LogicalMeshAxisType,
-// DeviceLocalAxisType, or a physical factor covering an axis this pass
-// doesn't recognize) means the module reached this pass without every
-// kernel/cast fully lowered down to physical/replication axes, which is a
-// pipeline-ordering bug this pass treats as a hard failure rather than a
-// partial case (see the pass's own top-of-file precondition).
-FailureOr<SmallVector<SmallVector<AxisSplit>>>
+// Per original tensor dimension: the ordered list of physical-axis splits
+// a Cast's partitioning_axes contributes (`splits`), plus the combined
+// extent of any ReplicationAxisType factors on that dimension
+// (`replicateDivisor`, tracked for diagnostic purposes -- see below). Per
+// DistributedCastGlobalToLocalOp/CastLocalToGlobalOp's own type inference
+// (inferTensorViewCastResultType in Ops.cpp), which divides/multiplies by
+// every factor's extent regardless of provenance, a Replicate factor with
+// extent > 1 on a dimension genuinely shrinks/grows that dimension's
+// local/global shape, exactly like a physical split does -- unlike a
+// physical split, though, correctly expanding/collapsing it requires an
+// actual data operation (duplicating one real copy out to `extent` copies,
+// or dropping back down to one representative copy), not just a reshape
+// dimension-count adjustment. That data operation is not implemented by
+// this pass: expandFromFlat/collapseToFlat instead fail loudly the moment
+// replicateDivisor != 1 for any dimension, rather than silently emitting a
+// reshape with a mismatched element count. A Replicate factor is still
+// fully supported elsewhere in this pass -- at a collective's own
+// mesh/mapping level (see lowerCollective's resolveSingleAxisProvenance
+// and its Replicate<->real handling) -- this limitation is specifically
+// about one appearing inside a Cast's own per-tensor-dimension
+// partitioning_axes.
+struct CastPerDimInfo {
+  SmallVector<SmallVector<AxisSplit>> splits;
+  SmallVector<int64_t> replicateDivisor;
+};
+
+// Resolves one Cast op's positional partitioning_axes into per-dimension
+// split/replicate info (see CastPerDimInfo). Anything other than a
+// physical or replication factor (LogicalMeshAxisType, DeviceLocalAxisType,
+// or a physical factor covering an axis this pass doesn't recognize) means
+// the module reached this pass without every kernel/cast fully lowered
+// down to physical/replication axes, which is a pipeline-ordering bug this
+// pass treats as a hard failure rather than a partial case (see the pass's
+// own top-of-file precondition).
+FailureOr<CastPerDimInfo>
 resolveCastPerDimSplits(ValueRange partitioningAxes,
                         ArrayRef<PhysicalCommAxisType> meshAxisTypes,
                         Operation *diagnosticAnchor) {
-  SmallVector<SmallVector<AxisSplit>> perDimSplits;
+  CastPerDimInfo info;
   for (Value dimAxes : partitioningAxes) {
     auto group = cast<TV_FactorGroup>(dimAxes);
     auto factors = axis::getProductProvenanceFactors(group);
@@ -141,6 +165,7 @@ resolveCastPerDimSplits(ValueRange partitioningAxes,
                 "axis.product";
     }
     SmallVector<AxisSplit> splits;
+    int64_t replicateDivisor = 1;
     for (TV_AxisFactor factor : *factors) {
       auto provenanceAxis = axis::getFactorProvenanceAxis(factor);
       if (failed(provenanceAxis)) {
@@ -149,6 +174,7 @@ resolveCastPerDimSplits(ValueRange partitioningAxes,
                   "axis";
       }
       if (isa<ReplicationAxisType>(provenanceAxis->getType())) {
+        replicateDivisor *= axis::getFactorExtent(factor);
         continue;
       }
       auto physicalType =
@@ -171,9 +197,10 @@ resolveCastPerDimSplits(ValueRange partitioningAxes,
           static_cast<size_t>(meshIdx - meshAxisTypes.begin()),
           axis::getFactorExtent(factor)});
     }
-    perDimSplits.push_back(std::move(splits));
+    info.splits.push_back(std::move(splits));
+    info.replicateDivisor.push_back(replicateDivisor);
   }
-  return perDimSplits;
+  return info;
 }
 
 // Walks through pass-through AnchorPartitioningOp edges (which never change
@@ -185,6 +212,31 @@ Operation *skipPassThroughAnchors(Value v) {
     def = anchor.getInput().getDefiningOp();
   }
   return def;
+}
+
+// Finds the CastLocalToGlobalOp bounding `result`, if any, walking forward
+// through `result`'s sole-consumer chain past any pass-through
+// AnchorPartitioningOp. Shared by kernel- and collective-result resolution:
+// both a DistributedKernelOp's own result and a DistributedCollectiveOp's
+// Await result are local-scope values that may or may not be immediately
+// globalized by a real cast (see this dialect's own local/global scope rule
+// of thumb, Ops.td's comment above DistributedCastGlobalToLocalOp) --
+// returns null if `result` is never wrapped by one (a legitimate
+// pass-through/un-globalized value).
+DistributedCastLocalToGlobalOp findBoundingCastLocalToGlobal(Value result) {
+  Value cur = result;
+  while (true) {
+    if (!cur.hasOneUse())
+      break;
+    Operation *user = *cur.getUsers().begin();
+    if (auto anchor = dyn_cast<AnchorPartitioningOp>(user)) {
+      cur = anchor.getOutput();
+      continue;
+    }
+    break;
+  }
+  Operation *soleUser = cur.hasOneUse() ? *cur.getUsers().begin() : nullptr;
+  return dyn_cast_or_null<DistributedCastLocalToGlobalOp>(soleUser);
 }
 
 // The whole-module lowering state: an ordered walk over the
@@ -265,12 +317,12 @@ private:
     bool partitioned;
     Value expanded; // valid iff partitioned
     Value flat;    // valid iff !partitioned
-    SmallVector<SmallVector<AxisSplit>> perDimSplits; // iff partitioned
+    CastPerDimInfo perDimSplits; // iff partitioned
   };
   struct ResultInfo {
     bool partitioned;
     DistributedCastLocalToGlobalOp castOp; // valid iff partitioned
-    SmallVector<SmallVector<AxisSplit>> perDimSplits; // iff partitioned
+    CastPerDimInfo perDimSplits; // iff partitioned
   };
 
   size_t numMeshAxes() const { return meshAxisTypes.size(); }
@@ -310,18 +362,16 @@ private:
       return expanded;
     }
     if (auto castOp = dyn_cast_or_null<DistributedCastLocalToGlobalOp>(def)) {
-      // A CastLocalToGlobal's own OUTPUT is only ever consumed as a plain
-      // flat global value (by later plain ops, or by nothing at all) --
-      // never re-expanded. Reaching this branch while resolving a kernel
-      // operand or collective input means that Cast's output is itself
-      // feeding a *second* kernel/collective directly, i.e. re-entering
-      // local scope without an intervening CastGlobalToLocal, which never
-      // occurs in a validly-lowered program (see Ops.td's own scope rule of
-      // thumb above DistributedCastGlobalToLocalOp).
-      return fail(castOp,
-                  "unexpected re-entry into local scope through a "
-                  "CastLocalToGlobal's own output"),
-             nullptr;
+      // Reached via a CastGlobalToLocal's own input recursing into
+      // getExpandedValue (never as a top-level call on a kernel operand or
+      // collective input directly, since those are local-scope and would
+      // only ever have a CastGlobalToLocal or Await as their own defining
+      // op) -- this is the cast-pair "round trip" chaining pattern
+      // MaterializeDistributedCollectives.cpp's own comment describes (a
+      // pure relabeling, no data movement), so the correct expansion is
+      // simply whatever the round trip's own pre-cast local input already
+      // resolves to.
+      return getExpandedValue(castOp.getInput());
     }
     // Not behind a Cast: either genuinely un-partitioned (pass-through), or
     // it's a kernel result / collective Await result that must already be
@@ -331,10 +381,22 @@ private:
   }
 
   Value expandFromFlat(Value flat, RankedTensorType flatType,
-                       ArrayRef<SmallVector<AxisSplit>> perDimSplits) {
+                       const CastPerDimInfo &perDimInfo) {
     SmallVector<int64_t> intermediateShape;
     SmallVector<DimLabel> labels;
-    for (auto [d, splits] : llvm::enumerate(perDimSplits)) {
+    for (auto [d, splits] : llvm::enumerate(perDimInfo.splits)) {
+      // See CastPerDimInfo's doc comment: correctly expanding a
+      // Replicate-affected dimension needs an actual drop-to-one-copy data
+      // operation this pass doesn't implement, so fail loudly rather than
+      // emit a reshape with a mismatched element count.
+      if (perDimInfo.replicateDivisor[d] != 1) {
+        mlir::emitError(flat.getLoc())
+            << "distributed-lower-for-sanity-check does not yet support a "
+              "ReplicationAxisType factor inside a Cast's own per-tensor-"
+              "dimension partitioning_axes (dim " << d << ")";
+        hasFailed = true;
+        return nullptr;
+      }
       int64_t extentProduct = 1;
       for (const AxisSplit &split : splits) {
         intermediateShape.push_back(split.extent);
@@ -359,11 +421,25 @@ private:
   // Inverse of expandFromFlat: collapses a canonical expanded tensor back
   // down to one Cast's own flat local/global tensor type.
   Value collapseToFlat(Value expanded, RankedTensorType flatType,
-                       ArrayRef<SmallVector<AxisSplit>> perDimSplits,
+                       const CastPerDimInfo &perDimInfo,
                        Location loc) {
+    // See CastPerDimInfo's doc comment / expandFromFlat's identical guard:
+    // collapsing back through a Replicate-affected dimension needs an
+    // actual duplicate-to-`extent`-copies data operation this pass doesn't
+    // implement.
+    for (int64_t divisor : perDimInfo.replicateDivisor) {
+      if (divisor != 1) {
+        mlir::emitError(loc)
+            << "distributed-lower-for-sanity-check does not yet support a "
+              "ReplicationAxisType factor inside a Cast's own per-tensor-"
+              "dimension partitioning_axes";
+        hasFailed = true;
+        return nullptr;
+      }
+    }
     size_t n = numMeshAxes();
     llvm::SmallBitVector used(n);
-    for (const auto &splits : perDimSplits)
+    for (const auto &splits : perDimInfo.splits)
       for (const AxisSplit &split : splits)
         used.set(split.axisIndex);
 
@@ -388,7 +464,7 @@ private:
       if (!used.test(a))
         permutation.push_back(a);
     }
-    for (auto [d, splits] : llvm::enumerate(perDimSplits)) {
+    for (auto [d, splits] : llvm::enumerate(perDimInfo.splits)) {
       for (const AxisSplit &split : splits)
         permutation.push_back(split.axisIndex);
       permutation.push_back(n + d);
@@ -460,19 +536,7 @@ private:
     // through pass-through anchors forward).
     SmallVector<ResultInfo> resultInfos;
     for (Value result : kernel.getResults()) {
-      Value cur = result;
-      while (true) {
-        if (!cur.hasOneUse())
-          break;
-        Operation *user = *cur.getUsers().begin();
-        if (auto anchor = dyn_cast<AnchorPartitioningOp>(user)) {
-          cur = anchor.getOutput();
-          continue;
-        }
-        break;
-      }
-      Operation *soleUser = cur.hasOneUse() ? *cur.getUsers().begin() : nullptr;
-      if (auto castOp = dyn_cast_or_null<DistributedCastLocalToGlobalOp>(soleUser)) {
+      if (auto castOp = findBoundingCastLocalToGlobal(result)) {
         auto perDimSplits = resolveCastPerDimSplits(
             castOp.getPartitioningAxes(), meshAxisTypes, castOp);
         if (failed(perDimSplits)) {
@@ -517,6 +581,13 @@ private:
 
     for (auto [idx, info] : llvm::enumerate(resultInfos)) {
       if (info.partitioned) {
+        // Memoize the canonical expanded form under the kernel's own raw
+        // result value too (not just the bounding cast's global output):
+        // a collective consuming this result directly (local scope, no
+        // cast in between) resolves it via getExpandedValue's memo lookup
+        // rather than walking through a cast that doesn't exist on that
+        // edge.
+        expandedOf[kernel.getResults()[idx]] = finalCarried[idx];
         auto globalType =
             cast<RankedTensorType>(info.castOp.getOutput().getType());
         Value flatGlobal = collapseToFlat(finalCarried[idx], globalType,
@@ -775,10 +846,30 @@ private:
     // The collective's own DistributedAwait is its sole real consumer (see
     // this dialect's own convention -- Ops.td's rule of thumb above
     // DistributedCastGlobalToLocalOp, and DropIdentityCollectives.cpp's
-    // identical assumption).
-    for (Operation *user : collective->getUsers()) {
-      auto await = cast<DistributedAwait>(user);
-      expandedOf[await.getValue()] = finalExpanded;
+    // identical assumption). Memoize the expanded form under the Await's
+    // result so a downstream kernel/collective consuming it directly (no
+    // cast) resolves it via getExpandedValue's memo lookup; additionally,
+    // if the Await's result is itself immediately globalized by a real
+    // cast (e.g. feeding the function's own return directly), collapse
+    // and map that cast's output too -- mirroring lowerKernel's identical
+    // handling of its own results, since nothing else in this pass ever
+    // clones/maps a Cast op's output otherwise.
+    assert(llvm::hasSingleElement(collective->getUsers()) &&
+          "a DistributedCollective's async handle must have exactly one "
+          "DistributedAwait consumer (see createCollectiveAndAwait)");
+    auto await = cast<DistributedAwait>(*collective->getUsers().begin());
+    expandedOf[await.getValue()] = finalExpanded;
+    if (auto castOp = findBoundingCastLocalToGlobal(await.getValue())) {
+      auto perDimSplits = resolveCastPerDimSplits(
+          castOp.getPartitioningAxes(), meshAxisTypes, castOp);
+      if (failed(perDimSplits)) {
+        hasFailed = true;
+        return;
+      }
+      auto globalType = cast<RankedTensorType>(castOp.getOutput().getType());
+      Value flatGlobal =
+          collapseToFlat(finalExpanded, globalType, *perDimSplits, loc);
+      mapper.map(castOp.getOutput(), flatGlobal);
     }
   }
 
@@ -826,6 +917,17 @@ private:
       Value result;
       for (Operation &op : body.without_terminator()) {
         Operation *cloned = builder.clone(op, bodyMapping);
+        // The region's ops are declared over scalar (0-d tensor) block
+        // args, matching stablehlo.reduce's own region convention, but
+        // here they're being applied to whole-array slices instead (see
+        // this function's own doc comment) -- clone keeps each op's
+        // original *scalar* result type, so it needs refreshing to match
+        // its (now whole-array-shaped) operands. Every op legal in a
+        // reduction body is a same-shape elementwise op (add/max/min/...,
+        // exactly what CreateReductionOpGeneral ever builds), so the
+        // first operand's type is always the correct new result type.
+        for (OpResult resultVal : cloned->getResults())
+          resultVal.setType(cloned->getOperand(0).getType());
         result = cloned->getResult(0);
       }
       auto returnOp = cast<stablehlo::ReturnOp>(body.getTerminator());
@@ -844,7 +946,9 @@ private:
     SmallVector<int64_t> strides(type.getRank(), 1);
     starts[dim] = idx;
     limits[dim] = idx + 1;
-    SmallVector<int64_t> resultShape(limits);
+    SmallVector<int64_t> resultShape(type.getRank());
+    for (int64_t i = 0; i < type.getRank(); ++i)
+      resultShape[i] = limits[i] - starts[i];
     auto resultType = RankedTensorType::get(resultShape, type.getElementType());
     return builder.create<stablehlo::SliceOp>(loc, resultType, tensor, starts,
                                               limits, strides);
