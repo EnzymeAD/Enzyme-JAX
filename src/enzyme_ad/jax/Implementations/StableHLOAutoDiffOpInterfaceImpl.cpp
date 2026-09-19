@@ -2006,10 +2006,11 @@ public:
     if (isa<MaxOp>(innerOp) || isa<MinOp>(innerOp)) {
       // TODO: technically we should invert the order here to pick the last
       // value (or divide by count) if multiple are the same as the result
-      auto ores = gutils->getNewFromOriginal(op->getResult(0));
+      Value oprev = gutils->popCache(caches[0], builder);
+      Value oinit = gutils->popCache(caches[1], builder);
+      Value ores = gutils->popCache(caches[2], builder);
 
       if (!gutils->isConstantValue(op.getInputs()[0])) {
-        auto oprev = gutils->getNewFromOriginal(op.getInputs()[0]);
         auto attr = builder.getDenseI64ArrayAttr(toBroadcast);
         auto bc = BroadcastInDimOp::create(builder, op.getLoc(),
                                            oprev.getType(), ores, attr);
@@ -2025,12 +2026,10 @@ public:
         gutils->addToDiffe(op.getInputs()[0], res, builder);
       }
       if (!gutils->isConstantValue(op.getInitValues()[0])) {
-        auto oprev = gutils->getNewFromOriginal(op.getInitValues()[0]);
-
         auto zeroI = cast<AutoDiffTypeInterface>(inDiffe.getType())
                          .createNullValue(builder, op.getLoc());
 
-        auto cmp = CompareOp::create(builder, op.getLoc(), ores, oprev,
+        auto cmp = CompareOp::create(builder, op.getLoc(), ores, oinit,
                                      ComparisonDirection::EQ);
 
         auto res = stablehlo::SelectOp::create(builder, op.getLoc(), cmp,
@@ -2107,7 +2106,7 @@ public:
     }
 
     Operation &innerOp = op.getBody().front().front();
-    if (isa<MulOp>(innerOp)) {
+    if (isa<MulOp, MaxOp, MinOp>(innerOp)) {
       SmallVector<Value> caches;
 
       auto result = op.getResult(0);
