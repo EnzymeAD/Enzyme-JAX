@@ -992,7 +992,11 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
         if (bounds->first.sgt(APInt::getSignedMinValue(bw)))
           return State::GUARANTEED;
 
-      return State::NOTGUARANTEED;
+      // Failing explicit bounds, an operand that is already non-negative is
+      // its own absolute value, so it cannot be the smallest integer either.
+      SmallVector<Value> operandsToCheck = {absOp.getOperand()};
+      return recursivelyCheckOperands(localtodo, operandsToCheck,
+                                      /*skipIntegerEltypes=*/false);
     }
   }
 
