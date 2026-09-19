@@ -27710,13 +27710,8 @@ struct ScatterMultiplySimplify final
                             bool isAllZeros, bool isAllOnes, bool lhsIsScatter,
                             SplatElementsAttr constSetIndexValue,
                             SmallVectorImpl<int64_t> &sliceSizes) const {
-    if (isAllZeros) { // non scattered values before zeros
-      gatherElementwiseSetIndex<stablehlo::MulOpCreate>(
-          op, rewriter, scatterOp, otherValue, scatterOp.getInputs()[0],
-          lhsIsScatter, constSetIndexValue, sliceSizes, false);
-      return success();
-    }
-
+    // The isAllZeros case is only valid without NaNs/Infs, see
+    // NoNanZerosScatterMultiplySimplify.
     if (isAllOnes) { // non-scattered values stay as is
       auto newScatterOp = stablehlo::ScatterOp::create(
           rewriter, op.getLoc(), scatterOp.getResultTypes(),
@@ -27753,6 +27748,46 @@ struct ScatterMultiplySimplify final
 
     return failure();
   }
+};
+
+// multiply(scatter(zeros, indices, updates), other)
+//   -> scatter(zeros, indices, multiply(updates, gather(other, indices)))
+//
+// The non-scattered positions of the result are `0 * other` which is only zero
+// if `other` is neither NaN nor Inf there, hence the NoNan gate.
+struct NoNanZerosScatterMultiplySimplify final
+    : public ScatterBinaryOpSimplifyBase<stablehlo::MulOp,
+                                         NoNanZerosScatterMultiplySimplify> {
+  NoNanZerosScatterMultiplySimplify(bool allowOnFloatingPointMath,
+                                    MLIRContext *context,
+                                    PatternBenefit benefit = 1)
+      : ScatterBinaryOpSimplifyBase<stablehlo::MulOp,
+                                    NoNanZerosScatterMultiplySimplify>(context,
+                                                                       benefit),
+        allowOnFloatingPointMath(allowOnFloatingPointMath) {}
+
+  LogicalResult
+  rewriteScatterElementwise(stablehlo::MulOp op, PatternRewriter &rewriter,
+                            stablehlo::ScatterOp scatterOp, Value otherValue,
+                            bool isAllZeros, bool isAllOnes, bool lhsIsScatter,
+                            SplatElementsAttr constSetIndexValue,
+                            SmallVectorImpl<int64_t> &sliceSizes) const {
+    if (!isAllZeros)
+      return failure();
+
+    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(),
+                              otherValue.getType(), op, rewriter))
+      return rewriter.notifyMatchFailure(op, "multiply may produce a NaN");
+
+    // non scattered values become zeros
+    gatherElementwiseSetIndex<stablehlo::MulOpCreate>(
+        op, rewriter, scatterOp, otherValue, scatterOp.getInputs()[0],
+        lhsIsScatter, constSetIndexValue, sliceSizes, false);
+    return success();
+  }
+
+protected:
+  bool allowOnFloatingPointMath;
 };
 
 struct ScatterDivSimplify final
@@ -37304,6 +37339,13 @@ void mlir::transform::addNoNanDivSimplify(RewritePatternSet &patterns,
                                     benefit);
 }
 
+void mlir::transform::addNoNanZerosScatterMultiplySimplify(
+    RewritePatternSet &patterns, bool allowOnFloatingPointMath,
+    MLIRContext &context, PatternBenefit benefit) {
+  patterns.insert<NoNanZerosScatterMultiplySimplify>(allowOnFloatingPointMath,
+                                                     &context, benefit);
+}
+
 void mlir::transform::addNoNanZeroBasePowSimplify(RewritePatternSet &patterns,
                                                   bool allowOnFloatingPointMath,
                                                   MLIRContext &context,
@@ -37724,8 +37766,9 @@ struct EnzymeHLOOptPass
                    AllFiniteIsNegInf>(context);
 
     patterns.add<NoNanCompareSimplify, NoNanSelfSubSimplify,
-                 NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
-        (no_nan || all_finite), context);
+                 NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify,
+                 NoNanZerosScatterMultiplySimplify>((no_nan || all_finite),
+                                                    context);
 
     patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify>(
         context);

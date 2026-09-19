@@ -1,4 +1,5 @@
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-opt | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(enzyme-hlo-opt{no_nan=true})" | FileCheck %s --check-prefix=NONAN
 
 func.func @unaryscatter(%arg0: tensor<4xi64>, %arg1: tensor<6xi64>, %arg2: tensor<1024x1024xf32>) -> tensor<1024x1024xf32> {
     %cst = stablehlo.constant dense<2.000000e+00> : tensor<24xf32>
@@ -99,23 +100,51 @@ func.func @convertscatter(%arg0: tensor<5x4xf32>, %arg1: tensor<5xui32>) -> tens
 }
 
 // CHECK: func.func @convertscatter(%arg0: tensor<5x4xf32>, %arg1: tensor<5xui32>) -> tensor<5x4xf32> {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<4x5xf32>
-// CHECK-NEXT{LITERAL}:     %c = stablehlo.constant dense<[[4, 5], [4, 5], [4, 5], [4, 5], [4, 5]]> : tensor<5x2xi64>
-// CHECK-NEXT:     %c_0 = stablehlo.constant dense<[-1, 3, 7, 11, 15]> : tensor<5xi64>
-// CHECK-NEXT:     %c_1 = stablehlo.constant dense<4> : tensor<5xi64>
-// CHECK-NEXT:     %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<5x4xf32>) -> tensor<4x5xf32>
-// CHECK-NEXT:     %1 = stablehlo.convert %arg1 : (tensor<5xui32>) -> tensor<5xi64>
-// CHECK-NEXT:     %2 = stablehlo.add %1, %c_0 : tensor<5xi64>
-// CHECK-NEXT:     %3 = stablehlo.divide %2, %c_1 : tensor<5xi64>
-// CHECK-NEXT:     %4 = stablehlo.reshape %2 : (tensor<5xi64>) -> tensor<5x1xi64>
-// CHECK-NEXT:     %5 = stablehlo.reshape %3 : (tensor<5xi64>) -> tensor<5x1xi64>
-// CHECK-NEXT:     %6 = stablehlo.concatenate %4, %5, dim = 1 : (tensor<5x1xi64>, tensor<5x1xi64>) -> tensor<5x2xi64>
-// CHECK-NEXT:     %7 = stablehlo.remainder %6, %c : tensor<5x2xi64>
-// CHECK-NEXT:     %8 = "stablehlo.gather"(%0, %7) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<4x5xf32>, tensor<5x2xi64>) -> tensor<5xf32>
-// CHECK-NEXT:     %9 = "stablehlo.scatter"(%cst, %7, %8) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
-// CHECK-NEXT:     ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
-// CHECK-NEXT:       stablehlo.return %arg3 : tensor<f32>
-// CHECK-NEXT:     }) : (tensor<4x5xf32>, tensor<5x2xi64>, tensor<5xf32>) -> tensor<4x5xf32>
-// CHECK-NEXT:     %10 = stablehlo.transpose %9, dims = [1, 0] : (tensor<4x5xf32>) -> tensor<5x4xf32>
-// CHECK-NEXT:     return %10 : tensor<5x4xf32>
+// CHECK-NEXT:   %cst = stablehlo.constant dense<1.000000e+00> : tensor<f32>
+// CHECK-NEXT:   %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<5xf32>
+// CHECK-NEXT:   %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<4x5xf32>
+// CHECK-NEXT{LITERAL}:   %c = stablehlo.constant dense<[[4, 5], [4, 5], [4, 5], [4, 5], [4, 5]]> : tensor<5x2xi64>
+// CHECK-NEXT:   %c_2 = stablehlo.constant dense<[-1, 3, 7, 11, 15]> : tensor<5xi64>
+// CHECK-NEXT:   %c_3 = stablehlo.constant dense<4> : tensor<5xi64>
+// CHECK-NEXT:   %0 = stablehlo.transpose %arg0, dims = [1, 0] {enzymexla.finite = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<5x4xf32>) -> tensor<4x5xf32>
+// CHECK-NEXT:   %1 = stablehlo.convert %arg1 : (tensor<5xui32>) -> tensor<5xi64>
+// CHECK-NEXT:   %2 = stablehlo.add %1, %c_2 : tensor<5xi64>
+// CHECK-NEXT:   %3 = stablehlo.divide %2, %c_3 : tensor<5xi64>
+// CHECK-NEXT:   %4 = stablehlo.reshape %2 : (tensor<5xi64>) -> tensor<5x1xi64>
+// CHECK-NEXT:   %5 = stablehlo.reshape %3 : (tensor<5xi64>) -> tensor<5x1xi64>
+// CHECK-NEXT:   %6 = stablehlo.concatenate %4, %5, dim = 1 : (tensor<5x1xi64>, tensor<5x1xi64>) -> tensor<5x2xi64>
+// CHECK-NEXT:   %7 = stablehlo.remainder %6, %c : tensor<5x2xi64>
+// CHECK-NEXT:   %8 = "stablehlo.scatter"(%cst_1, %7, %cst_0) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
+// CHECK-NEXT:   ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
+// CHECK-NEXT:     stablehlo.return %cst : tensor<f32>
+// CHECK-NEXT:   }) : (tensor<4x5xf32>, tensor<5x2xi64>, tensor<5xf32>) -> tensor<4x5xf32>
+// CHECK-NEXT:   %9 = stablehlo.multiply %0, %8 {enzymexla.no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<4x5xf32>
+// CHECK-NEXT:   %10 = stablehlo.transpose %9, dims = [1, 0] : (tensor<4x5xf32>) -> tensor<5x4xf32>
+// CHECK-NEXT:   return %10 : tensor<5x4xf32>
 // CHECK-NEXT: }
+
+// @unaryscatter and @expscatter are unaffected by no_nan; only @convertscatter
+// differs, because the multiply over its zero-initialized scatter is gated
+// behind no_nan. With the flag on, the multiply fuses into the scatter via a
+// gather of %arg0.
+// NONAN: func.func @convertscatter(%arg0: tensor<5x4xf32>, %arg1: tensor<5xui32>) -> tensor<5x4xf32> {
+// NONAN-NEXT:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<4x5xf32>
+// NONAN-NEXT{LITERAL}:   %c = stablehlo.constant dense<[[4, 5], [4, 5], [4, 5], [4, 5], [4, 5]]> : tensor<5x2xi64>
+// NONAN-NEXT:   %c_0 = stablehlo.constant dense<[-1, 3, 7, 11, 15]> : tensor<5xi64>
+// NONAN-NEXT:   %c_1 = stablehlo.constant dense<4> : tensor<5xi64>
+// NONAN-NEXT:   %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<5x4xf32>) -> tensor<4x5xf32>
+// NONAN-NEXT:   %1 = stablehlo.convert %arg1 : (tensor<5xui32>) -> tensor<5xi64>
+// NONAN-NEXT:   %2 = stablehlo.add %1, %c_0 : tensor<5xi64>
+// NONAN-NEXT:   %3 = stablehlo.divide %2, %c_1 : tensor<5xi64>
+// NONAN-NEXT:   %4 = stablehlo.reshape %2 : (tensor<5xi64>) -> tensor<5x1xi64>
+// NONAN-NEXT:   %5 = stablehlo.reshape %3 : (tensor<5xi64>) -> tensor<5x1xi64>
+// NONAN-NEXT:   %6 = stablehlo.concatenate %4, %5, dim = 1 : (tensor<5x1xi64>, tensor<5x1xi64>) -> tensor<5x2xi64>
+// NONAN-NEXT:   %7 = stablehlo.remainder %6, %c : tensor<5x2xi64>
+// NONAN-NEXT:   %8 = "stablehlo.gather"(%0, %7) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<4x5xf32>, tensor<5x2xi64>) -> tensor<5xf32>
+// NONAN-NEXT:   %9 = "stablehlo.scatter"(%cst, %7, %8) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
+// NONAN-NEXT:   ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
+// NONAN-NEXT:     stablehlo.return %arg3 : tensor<f32>
+// NONAN-NEXT:   }) : (tensor<4x5xf32>, tensor<5x2xi64>, tensor<5xf32>) -> tensor<4x5xf32>
+// NONAN-NEXT:   %10 = stablehlo.transpose %9, dims = [1, 0] : (tensor<4x5xf32>) -> tensor<5x4xf32>
+// NONAN-NEXT:   return %10 : tensor<5x4xf32>
+// NONAN-NEXT: }
