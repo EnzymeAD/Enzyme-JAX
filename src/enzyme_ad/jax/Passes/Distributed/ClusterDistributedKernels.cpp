@@ -673,44 +673,23 @@ struct ClusterDistributedKernelsPass
         }
       }
 
-      SmallVector<Value> kernelPartitioningAxes(
-          symbolToPartitioningAxisIdx.size());
-      for (const auto &[symbol, idx] : symbolToPartitioningAxisIdx) {
-        kernelPartitioningAxes[idx] = getOrCreatePartitioningAxisGroup(symbol);
-      }
-
-      auto inputShardingsAttr =
-          IndexedTensorShardingPerValueAttr::get(ctx, inputShardings);
-      auto outputShardingsAttr =
-          IndexedTensorShardingPerValueAttr::get(ctx, outputShardings);
-
-      auto kernel = builder.create<DistributedKernelOp>(
-          insertBefore->getLoc(), TypeRange(kernelResultTypes),
-          ValueRange(kernelInputOperands), ValueRange(kernelPartitioningAxes),
-          inputShardingsAttr, outputShardingsAttr);
-
-      Region &kernelBody = kernel->getRegion(0);
-      if (kernelBody.empty()) {
-        kernelBody.push_back(new Block());
-      }
-      Block &kernelBlock = kernelBody.front();
-      for (Type argType : kernelBlockArgTypes) {
-        kernelBlock.addArgument(argType, insertBefore->getLoc());
-      }
-
-      IRMapping mapping;
-      for (auto [idx, input] : llvm::enumerate(kernelInputs)) {
-        mapping.map(input, kernelBlock.getArgument(idx));
-      }
-
-      OpBuilder bodyBuilder = OpBuilder::atBlockBegin(&kernelBlock);
+      // Every AxisSymbol referenced anywhere in this kernel -- by its own
+      // boundary values above or by any member's operand/result below --
+      // must be registered in symbolToPartitioningAxisIdx before
+      // kernelPartitioningAxes is sized from that map. buildIndexedShardingAttr
+      // assigns a symbol its index the first time it's seen, so a symbol that
+      // only appears inside the body (e.g. an extent-1 factor a broadcast's
+      // operand carries but the kernel's boundary values don't) needs to be
+      // registered here; otherwise its dim_partitioning_axes index would point
+      // past the kernel's own `axes` operand list, with nothing downstream
+      // able to resolve it. The attrs computed here are cached and reused
+      // verbatim once members are cloned below, so this pass isn't redundant
+      // work.
+      llvm::DenseMap<Operation *,
+                     std::pair<SmallVector<IndexedTensorShardingAttr>,
+                               SmallVector<IndexedTensorShardingAttr>>>
+          memberShardings;
       for (Operation *member : orderedMembers) {
-        Operation *cloned = bodyBuilder.clone(*member, mapping);
-
-        // Query analysis on the original operation, then annotate its clone
-        // using the kernel-wide partitioning-axis index space. This is so
-        // we can look up the partitioning of internal values in the kernel body
-        // later (i.e. for doing the actual sharding rewrite).
         SmallVector<IndexedTensorShardingAttr> argumentShardings;
         argumentShardings.reserve(member->getNumOperands());
         for (OpOperand &operand : member->getOpOperands()) {
@@ -761,6 +740,51 @@ struct ClusterDistributedKernelsPass
           }
         }
 
+        memberShardings[member] = {std::move(argumentShardings),
+                                   std::move(outputShardings)};
+      }
+
+      SmallVector<Value> kernelPartitioningAxes(
+          symbolToPartitioningAxisIdx.size());
+      for (const auto &[symbol, idx] : symbolToPartitioningAxisIdx) {
+        kernelPartitioningAxes[idx] = getOrCreatePartitioningAxisGroup(symbol);
+      }
+
+      auto inputShardingsAttr =
+          IndexedTensorShardingPerValueAttr::get(ctx, inputShardings);
+      auto outputShardingsAttr =
+          IndexedTensorShardingPerValueAttr::get(ctx, outputShardings);
+
+      auto kernel = builder.create<DistributedKernelOp>(
+          insertBefore->getLoc(), TypeRange(kernelResultTypes),
+          ValueRange(kernelInputOperands), ValueRange(kernelPartitioningAxes),
+          inputShardingsAttr, outputShardingsAttr);
+
+      Region &kernelBody = kernel->getRegion(0);
+      if (kernelBody.empty()) {
+        kernelBody.push_back(new Block());
+      }
+      Block &kernelBlock = kernelBody.front();
+      for (Type argType : kernelBlockArgTypes) {
+        kernelBlock.addArgument(argType, insertBefore->getLoc());
+      }
+
+      IRMapping mapping;
+      for (auto [idx, input] : llvm::enumerate(kernelInputs)) {
+        mapping.map(input, kernelBlock.getArgument(idx));
+      }
+
+      OpBuilder bodyBuilder = OpBuilder::atBlockBegin(&kernelBlock);
+      for (Operation *member : orderedMembers) {
+        Operation *cloned = bodyBuilder.clone(*member, mapping);
+
+        // Shardings were already computed (and symbolToPartitioningAxisIdx
+        // already fully populated) by the pre-scan above; annotate the
+        // clone with them using the kernel-wide partitioning-axis index
+        // space, for looking up the partitioning of internal values in the
+        // kernel body later (i.e. for doing the actual sharding rewrite).
+        const auto &[argumentShardings, outputShardings] =
+            memberShardings.at(member);
         cloned->setAttr(
             "distributed.argument_shardings",
             IndexedTensorShardingPerValueAttr::get(ctx, argumentShardings));
