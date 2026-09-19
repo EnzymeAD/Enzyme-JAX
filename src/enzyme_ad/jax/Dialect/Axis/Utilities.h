@@ -182,6 +182,12 @@ viewFactorsAsProduct(::mlir::ValueRange factors, ::mlir::OpBuilder &builder,
 ::mlir::TypedValue<FactorGroupType>
 viewFactorsAsProduct(TypedValueArrayRef<AxisFactorType> factors,
                      ::mlir::OpBuilder &builder, ::mlir::Location loc);
+// Single-factor convenience overload: wraps one factor as its own
+// one-factor product (the shape callers building a partitioning-axes
+// operand from a single already-resolved factor repeatedly need).
+::mlir::TypedValue<FactorGroupType>
+viewFactorsAsProduct(::mlir::TypedValue<AxisFactorType> factor,
+                     ::mlir::OpBuilder &builder, ::mlir::Location loc);
 
 // Rebuilds `group` with every extent-1 factor removed.
 // The ressult is unchanged if there are no extent 1 factors.

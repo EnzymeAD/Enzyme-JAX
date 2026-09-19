@@ -572,6 +572,12 @@ viewFactorsAsProduct(TypedValueArrayRef<AxisFactorType> factors,
 }
 
 ::mlir::TypedValue<FactorGroupType>
+viewFactorsAsProduct(::mlir::TypedValue<AxisFactorType> factor,
+                     ::mlir::OpBuilder &builder, ::mlir::Location loc) {
+  return viewFactorsAsProduct(ValueRange{Value(factor)}, builder, loc);
+}
+
+::mlir::TypedValue<FactorGroupType>
 dropUnitFactors(::mlir::TypedValue<FactorGroupType> group,
                 ::mlir::OpBuilder &builder) {
   auto factors = getProductProvenanceFactors(group);

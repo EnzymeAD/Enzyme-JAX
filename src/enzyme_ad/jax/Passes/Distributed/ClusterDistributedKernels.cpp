@@ -229,8 +229,7 @@ struct ClusterDistributedKernelsPass
   // distributed.function partitioning_axes metadata.
   TV_FactorGroup getOrCreatePartitioningAxisGroup(AxisSymbol symbol) {
     auto factor = getOrCreateLogicalAxisForSymbol(symbol);
-    return axis::viewFactorsAsProduct(ValueRange{factor}, *axis_builder,
-                                      *axis_loc);
+    return axis::viewFactorsAsProduct(factor, *axis_builder, *axis_loc);
   }
 
   // Builds one positional factor group per tensor dimension for a real

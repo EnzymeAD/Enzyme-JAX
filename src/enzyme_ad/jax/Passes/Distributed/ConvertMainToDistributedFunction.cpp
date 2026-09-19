@@ -49,7 +49,7 @@ static TV_FactorGroup getOrCreatePartitioningAxisGroup(
     llvm::DenseMap<AxisSymbol, TV_AxisFactor> &symbolToLogicalAxis) {
   auto factor = getOrCreateLogicalAxisForSymbol(symbol, axisBuilder, axisLoc,
                                                 symbolToLogicalAxis);
-  return axis::viewFactorsAsProduct(ValueRange{factor}, axisBuilder, axisLoc);
+  return axis::viewFactorsAsProduct(factor, axisBuilder, axisLoc);
 }
 
 // Builds per-dimension sharding indices against a stable partitioning-axis
