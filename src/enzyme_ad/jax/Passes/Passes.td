@@ -1015,6 +1015,8 @@ def SimplifyAffineExprsPass : Pass<"simplify-affine-exprs"> {
 def LLVMToMemrefAccessPass : Pass<"llvm-to-memref-access"> {
   let summary = "";
   let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
     "memref::MemRefDialect",
     "vector::VectorDialect",
   ];
