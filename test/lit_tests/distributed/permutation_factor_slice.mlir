@@ -13,8 +13,16 @@
 // below.)
 // RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards --convert-main-to-distributed-function --materialize-distributed-collectives %s | FileCheck %s
 
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --shardy-to-distributed-pipeline %s | FileCheck %s --check-prefix=FULL
+
+// The unshardable dimension is materialized as a device-local axis, sized to
+// each tensor separately: 3 on the slice's operand and 1 on its result, which
+// only exists once kernels are clustered.
 // CHECK-NOT: distributed.LogicalMeshAxes 3
+// CHECK: distributed.DeviceLocalAxis 3
 // CHECK: distributed.DistributedYield
+// FULL: distributed.DeviceLocalAxis 3
+// FULL: distributed.DeviceLocalAxis 1
 
 module @permutation_factor_slice {
   sdy.mesh @mesh = <["tp"=4]>

@@ -91,20 +91,31 @@ struct MaterializeDistributedCollectivesPass
   std::optional<OpBuilder> axisBuilder;
   std::optional<Location> axisLoc;
 
-  // Lazily materializes one LogicalMeshAxesOp value for each logical symbol.
+  // Lazily materializes one axis value for each logical symbol: a
+  // LogicalMeshAxesOp, or a DeviceLocalAxisOp for a symbol that must never be
+  // sharded across the mesh. Keeping the latter in each tensor's axes, rather
+  // than omitting them, preserves the position of every factor within its
+  // dimension.
   TV_AxisFactor getOrCreateLogicalAxisForSymbol(AxisSymbol symbol) {
-    assert(!axisAnalysis.isUnshardable(symbol) &&
-           "must not materialize a real logical axis for an unshardable "
-           "symbol -- caller should have filtered via excludeUnshardable");
     auto it = symbolToLogicalAxis.find(symbol);
     if (it != symbolToLogicalAxis.end()) {
       return it->second;
     }
 
-    auto op = axisBuilder->create<mlir::enzyme::distributed::LogicalMeshAxesOp>(
-        *axisLoc, symbol.getExtent());
-    auto asFactor =
-        axis::viewAxisAsFactor(op.getAxis(), *axisBuilder, *axisLoc);
+    Value axisValue;
+    if (axisAnalysis.isUnshardable(symbol)) {
+      axisValue = axisBuilder
+                      ->create<mlir::enzyme::distributed::DeviceLocalAxisOp>(
+                          *axisLoc, symbol.getExtent())
+                      .getAxis();
+    } else {
+      axisValue =
+          axisBuilder
+              ->create<mlir::enzyme::distributed::LogicalMeshAxesOp>(
+                  *axisLoc, symbol.getExtent())
+              .getAxis();
+    }
+    auto asFactor = axis::viewAxisAsFactor(axisValue, *axisBuilder, *axisLoc);
     symbolToLogicalAxis[symbol] = asFactor;
     return asFactor;
   }
@@ -149,13 +160,6 @@ struct MaterializeDistributedCollectivesPass
         maybePartitioning = axisAnalysis.getTensorPartitionDims(result);
       } else if (auto argument = dyn_cast<BlockArgument>(value)) {
         maybePartitioning = axisAnalysis.getTensorPartitionDims(argument);
-      }
-      // The frozen sharding metadata was already built excluding unshardable
-      // symbols (see ConvertMainToDistributedFunction.cpp), so the freshly
-      // rebuilt analysis's own mapping must be filtered the same way before
-      // comparing sizes below.
-      if (maybePartitioning) {
-        maybePartitioning = axisAnalysis.excludeUnshardable(*maybePartitioning);
       }
       if (!maybePartitioning || maybePartitioning->size() !=
                                     sharding.getDimPartitioningAxes().size()) {
@@ -292,12 +296,13 @@ struct MaterializeDistributedCollectivesPass
           continue;
         }
 
-        // Filter out unshardable dimensions (e.g. the sliced-away layer axis
-        // of a static per-layer stablehlo.slice) before storing or comparing
-        // partitioning axes -- these must never be treated as a real
-        // sharding conflict needing a collective.
-        auto producerPartitioningAxes =
-            axisAnalysis.excludeUnshardable(*maybeProducerSharded);
+        // Unshardable axes (e.g. the sliced-away layer axis of a static
+        // per-layer stablehlo.slice) stay in the partitioning axes, but must
+        // never be treated as a real sharding conflict needing a collective,
+        // so conflicts are decided on the shardable axes alone.
+        auto producerPartitioningAxes = *maybeProducerSharded;
+        auto producerShardableAxes =
+            axisAnalysis.excludeUnshardable(producerPartitioningAxes);
 
         ShardConflict conflict;
         conflict.value = result;
@@ -318,7 +323,7 @@ struct MaterializeDistributedCollectivesPass
                 << result.getResultNumber() << " of op " << op;
             continue;
           }
-          bool conflicting = !isReturn && producerPartitioningAxes !=
+          bool conflicting = !isReturn && producerShardableAxes !=
                                               axisAnalysis.excludeUnshardable(
                                                   *maybeConsumerSharded);
           if (conflicting) {
@@ -551,8 +556,6 @@ struct MaterializeDistributedCollectivesPass
               << "missing partitioning axes for conflicting use";
           return failure();
         }
-        rhsPartitioningAxes =
-            axisAnalysis.excludeUnshardable(*rhsPartitioningAxes);
 
         auto rhsLocalType =
             toLocalType(conflict.globalType, *rhsPartitioningAxes);

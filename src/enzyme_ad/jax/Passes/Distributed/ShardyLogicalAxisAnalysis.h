@@ -97,12 +97,13 @@ public:
   /**
    * Marks a set of symbols as "unshardable": they still participate
    * normally in union-find merging (this never blocks a merge the way
-   * markOverlapping does), but must never be handed out as a real
-   * materialized logical/physical sharding axis. Used for factors Shardy
+   * markOverlapping does), but must never be sharded across the mesh, so
+   * they are materialized as device-local axes. Used for factors Shardy
    * tags as needing a collective-permute if sharded (e.g. the sliced-away
    * dimension of a static per-layer stablehlo.slice) -- we don't implement
    * collective-permute, so we instead guarantee these axes are never
-   * actually sharded at all.
+   * actually sharded at all. Symbols anchored to a device-local axis in the
+   * IR are tagged the same way.
    */
   void markUnshardable(llvm::ArrayRef<AxisSymbol> symbols);
   // Whether a symbol's resolved root has been tagged unshardable, directly
@@ -233,10 +234,10 @@ public:
   }
   /**
    * Returns a copy of a tensor's per-dimension partitioning-axis lists with
-   * every unshardable symbol dropped. Callers that are about to hand out a
-   * real materialized/physical logical axis for a symbol (as opposed to
-   * internal union-find bookkeeping) must filter through this first, so an
-   * unshardable dimension is treated as fully local/unsharded instead.
+   * every unshardable symbol dropped. Unshardable symbols stay in the axes a
+   * tensor is materialized with, as device-local axes, so this is only for
+   * deciding whether communication is needed: unshardable axes never need a
+   * collective, so they must not count as a sharding conflict or a reduction.
    */
   TensorAxesToPartitionAxes
   excludeUnshardable(const TensorAxesToPartitionAxes &axes);
@@ -251,6 +252,17 @@ private:
 
   using DimToSymbol = llvm::SmallVector<AxisSymbol, 4>;
   llvm::DenseMap<Operation *, DimToSymbol> opToPartitioningAxes;
+  // For an op with permutation or need-replication factors, the symbol each
+  // operand / result gets for every dimension one of them spans (null for other
+  // dimensions), keyed by (op, operand or result number). Such a factor is
+  // sized by the op's own extent for it, which differs between tensors (the
+  // sliced-away axis of a slice is 2 on its operand and 1 on its result), and
+  // nothing is sharded along it, so each tensor gets an unshardable symbol of
+  // its own dimension's size instead of sharing the factor's.
+  using TensorLocalSymbols =
+      llvm::DenseMap<std::pair<Operation *, int64_t>, DimToSymbol>;
+  TensorLocalSymbols operandLocalSymbols;
+  TensorLocalSymbols resultLocalSymbols;
   BlockArgumentToPartitionAxes argToPartitioningAxes;
   llvm::DenseMap<Operation *, DimToSymbol> reshardLHSSymbols;
   llvm::DenseMap<Operation *, DimToSymbol> reshardRHSSymbols;
@@ -274,6 +286,8 @@ private:
   // its transitive callees.
   llvm::SmallVector<Operation *> analyzedFuncs;
   void collectAnalyzedFunctions();
+  void buildTensorLocalSymbols(Operation *op,
+                               mlir::sdy::OpShardingRuleAttr shardingRule);
   void buildInitialSymbolsFor(Operation *func);
   void buildUnionFor(Operation *func);
   void validateLogicalAxisAssignments();
@@ -286,8 +300,10 @@ private:
                          int valueIdx);
   TensorAxesToPartitionAxes getTensorPartitionDims(mlir::sdy::ReshardOp op,
                                                    bool isLHS, int valueIdx);
+  // Mapping for a view cast or anchor `op`, read from its explicit
+  // partitioning_axes operands.
   std::optional<TensorAxesToPartitionAxes>
-  getTensorPartitionDimsForViewCast(ValueRange partitioningAxes);
+  getTensorPartitionDimsFromPartitioningAxes(Operation *op);
   std::optional<TensorAxesToPartitionAxes>
   getTensorPartitionDims(Operation *op, bool isLHS, int valueIdx);
   // Callee-side view of a func.call: the argument (consumer) or return operand

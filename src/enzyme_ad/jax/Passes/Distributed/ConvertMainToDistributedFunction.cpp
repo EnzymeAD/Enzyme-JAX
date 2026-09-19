@@ -26,18 +26,32 @@ using TV_FactorGroup = mlir::TypedValue<mlir::enzyme::axis::FactorGroupType>;
 using TensorPartitioningAxes =
     ShardyLogicalAxisAnalysis::SymbolsPerPartitioningAxis;
 
-// Lazily materializes one LogicalMeshAxesOp value per logical symbol.
+// Lazily materializes one axis value per logical symbol: a LogicalMeshAxesOp,
+// or a DeviceLocalAxisOp for a symbol that must never be sharded across the
+// mesh. Keeping the latter in each tensor's axes, rather than omitting them,
+// preserves the position of every factor within its dimension.
 static TV_AxisFactor getOrCreateLogicalAxisForSymbol(
-    AxisSymbol symbol, OpBuilder &axisBuilder, Location axisLoc,
+    AxisSymbol symbol, ShardyLogicalAxisAnalysis &axisAnalysis,
+    OpBuilder &axisBuilder, Location axisLoc,
     llvm::DenseMap<AxisSymbol, TV_AxisFactor> &symbolToLogicalAxis) {
   auto it = symbolToLogicalAxis.find(symbol);
   if (it != symbolToLogicalAxis.end()) {
     return it->second;
   }
 
-  auto op = axisBuilder.create<mlir::enzyme::distributed::LogicalMeshAxesOp>(
-      axisLoc, symbol.getExtent());
-  auto as_factor = axis::viewAxisAsFactor(op.getAxis(), axisBuilder, axisLoc);
+  Value axisValue;
+  if (axisAnalysis.isUnshardable(symbol)) {
+    axisValue = axisBuilder
+                    .create<mlir::enzyme::distributed::DeviceLocalAxisOp>(
+                        axisLoc, symbol.getExtent())
+                    .getAxis();
+  } else {
+    axisValue = axisBuilder
+                    .create<mlir::enzyme::distributed::LogicalMeshAxesOp>(
+                        axisLoc, symbol.getExtent())
+                    .getAxis();
+  }
+  auto as_factor = axis::viewAxisAsFactor(axisValue, axisBuilder, axisLoc);
   symbolToLogicalAxis[symbol] = as_factor;
   return as_factor;
 }
@@ -45,10 +59,11 @@ static TV_AxisFactor getOrCreateLogicalAxisForSymbol(
 // Wraps one logical axis factor as a factor-group operand for function
 // metadata.
 static TV_FactorGroup getOrCreatePartitioningAxisGroup(
-    AxisSymbol symbol, OpBuilder &axisBuilder, Location axisLoc,
+    AxisSymbol symbol, ShardyLogicalAxisAnalysis &axisAnalysis,
+    OpBuilder &axisBuilder, Location axisLoc,
     llvm::DenseMap<AxisSymbol, TV_AxisFactor> &symbolToLogicalAxis) {
-  auto factor = getOrCreateLogicalAxisForSymbol(symbol, axisBuilder, axisLoc,
-                                                symbolToLogicalAxis);
+  auto factor = getOrCreateLogicalAxisForSymbol(
+      symbol, axisAnalysis, axisBuilder, axisLoc, symbolToLogicalAxis);
   return axis::viewFactorsAsProduct(factor, axisBuilder, axisLoc);
 }
 
@@ -118,8 +133,7 @@ static LogicalResult convertMainToDistributedFunction(
     }
 
     argumentShardings.push_back(buildIndexedShardingAttr(
-        tensorType, axisAnalysis.excludeUnshardable(*maybePartitioning),
-        symbolToPartitioningAxisIdx));
+        tensorType, *maybePartitioning, symbolToPartitioningAxisIdx));
   }
 
   // Derive output sharding metadata from the yielded producer values.
@@ -147,8 +161,7 @@ static LogicalResult convertMainToDistributedFunction(
     }
 
     outputShardings.push_back(buildIndexedShardingAttr(
-        tensorType, axisAnalysis.excludeUnshardable(*maybePartitioning),
-        symbolToPartitioningAxisIdx));
+        tensorType, *maybePartitioning, symbolToPartitioningAxisIdx));
   }
 
   // Rebuild partitioning axis SSA operands in the same index order used above.
@@ -156,7 +169,7 @@ static LogicalResult convertMainToDistributedFunction(
       symbolToPartitioningAxisIdx.size());
   for (const auto &[symbol, idx] : symbolToPartitioningAxisIdx) {
     orderedPartitioningAxes[idx] = getOrCreatePartitioningAxisGroup(
-        symbol, axisBuilder, axisLoc, symbolToLogicalAxis);
+        symbol, axisAnalysis, axisBuilder, axisLoc, symbolToLogicalAxis);
   }
 
   auto argShardingsAttr =

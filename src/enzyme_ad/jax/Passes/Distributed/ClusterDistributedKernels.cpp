@@ -173,6 +173,100 @@ static IndexedTensorShardingAttr buildDefaultShardingForType(MLIRContext *ctx,
   return IndexedTensorShardingAttr::get(ctx, dimPartitioningAxes, emptyAxes);
 }
 
+// A group of ops that will run as one kernel, tracked while clustering.
+struct ColorState {
+  int64_t id;
+  llvm::SmallVector<Operation *> members;
+  llvm::DenseSet<Operation *> externalProducers;
+  llvm::DenseSet<Operation *> externalConsumers;
+};
+
+// Whether walking from `start` along operands (`upstream`) or along uses
+// reaches an op of color `colorId`, through ops of `block`. Every finished
+// color in `colors` is walked as one node, since its members run in one kernel:
+// reaching any member reaches all of them.
+//
+// Worst case this visits every op in the block, so it is O(N) in the number of
+// ops.
+static bool reachesColor(Operation *start, int64_t colorId, bool upstream,
+                         Block *block,
+                         const llvm::DenseMap<Operation *, int64_t> &opToColor,
+                         llvm::ArrayRef<ColorState> colors) {
+  llvm::SmallPtrSet<Operation *, 16> visited;
+  llvm::SmallVector<Operation *> worklist{start};
+  while (!worklist.empty()) {
+    Operation *op = worklist.pop_back_val();
+    if (!visited.insert(op).second) {
+      continue;
+    }
+    if (auto it = opToColor.find(op); it != opToColor.end()) {
+      if (it->second == colorId) {
+        return true;
+      }
+      if (it->second < static_cast<int64_t>(colors.size())) {
+        worklist.append(colors[it->second].members.begin(),
+                        colors[it->second].members.end());
+      }
+    }
+    if (upstream) {
+      for (Value operand : op->getOperands()) {
+        Operation *producer = operand.getDefiningOp();
+        if (producer && producer->getBlock() == block) {
+          worklist.push_back(producer);
+        }
+      }
+    } else {
+      for (Operation *user : op->getUsers()) {
+        if (user->getBlock() == block) {
+          worklist.push_back(user);
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// Whether adding `candidate` to `color` would make two kernels depend on each
+// other, counting every color finished so far as a single node.
+//
+// The op-level partial order alone cannot rule this out. Two ops with no
+// dependence between them can each be linked to a third color: A -> X in one
+// kernel and Y -> B in another are both fine op by op, but if A and B share a
+// kernel, and X and Y share another, the kernels feed each other. So a
+// candidate is rejected when one of its producers outside the color already
+// depends on a member, or one of its consumers outside the color feeds one.
+//
+// Complexity: O(N^2) in the number of ops N in `block`. Each check walks up to
+// the whole block once per operand and user of the candidate, and one check
+// runs per candidate per sweep. This pass runs once per compilation, so this
+// is not optimized; an incremental reachability structure over the contracted
+// graph would make it near-linear.
+static bool wouldCloseKernelCycle(
+    Operation *candidate, const ColorState &color, Block *block,
+    const llvm::DenseMap<Operation *, int64_t> &opToColor,
+    llvm::ArrayRef<ColorState> colors) {
+  auto isExternal = [&](Operation *op) {
+    auto it = opToColor.find(op);
+    return it == opToColor.end() || it->second != color.id;
+  };
+  for (Value operand : candidate->getOperands()) {
+    Operation *producer = operand.getDefiningOp();
+    if (producer && producer->getBlock() == block && isExternal(producer) &&
+        reachesColor(producer, color.id, /*upstream=*/true, block, opToColor,
+                     colors)) {
+      return true;
+    }
+  }
+  for (Operation *user : candidate->getUsers()) {
+    if (user->getBlock() == block && isExternal(user) &&
+        reachesColor(user, color.id, /*upstream=*/false, block, opToColor,
+                     colors)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 struct ClusterDistributedKernelsPass
     : public impl::ClusterDistributedKernelsPassBase<
           ClusterDistributedKernelsPass> {
@@ -190,10 +284,10 @@ struct ClusterDistributedKernelsPass
 
   ClusterDistributedKernelsPass() = default;
 
+  // Materializes an axis value for a symbol not already anchored in the IR: a
+  // LogicalMeshAxesOp, or a DeviceLocalAxisOp for a symbol that must never be
+  // sharded across the mesh.
   TV_AxisFactor getOrCreateLogicalAxisForSymbol(AxisSymbol symbol) {
-    assert(!axisAnalysis.isUnshardable(symbol) &&
-           "must not materialize a real logical axis for an unshardable "
-           "symbol -- caller should have filtered via excludeUnshardable");
     // if present, return
     auto it = symbolToLogicalAxis.find(symbol);
     if (it != symbolToLogicalAxis.end()) {
@@ -204,13 +298,24 @@ struct ClusterDistributedKernelsPass
       symbolToLogicalAxis[symbol] = factor;
       return factor;
     }
-    // otherwise, we need to instantiate a new logical axis,
+    // otherwise, we need to instantiate a new axis,
     // then turn it into a factor.
-    auto op =
-        axis_builder->create<mlir::enzyme::distributed::LogicalMeshAxesOp>(
-            *axis_loc, symbol.getExtent());
+    Value axisValue;
+    if (axisAnalysis.isUnshardable(symbol)) {
+      axisValue =
+          axis_builder
+              ->create<mlir::enzyme::distributed::DeviceLocalAxisOp>(
+                  *axis_loc, symbol.getExtent())
+              .getAxis();
+    } else {
+      axisValue =
+          axis_builder
+              ->create<mlir::enzyme::distributed::LogicalMeshAxesOp>(
+                  *axis_loc, symbol.getExtent())
+              .getAxis();
+    }
     auto as_factor =
-        axis::viewAxisAsFactor(op.getAxis(), *axis_builder, *axis_loc);
+        axis::viewAxisAsFactor(axisValue, *axis_builder, *axis_loc);
     symbolToLogicalAxis[symbol] = as_factor;
     return as_factor;
   }
@@ -296,7 +401,8 @@ struct ClusterDistributedKernelsPass
     //   uncolored op, then repeatedly sweeps remaining bucket members.
     // - A candidate is accepted if it does not violate topology boundaries of
     //   the color: it must not be before any external producer boundary and
-    //   must not be after any external consumer boundary.
+    //   must not be after any external consumer boundary. It must also not
+    //   make two kernels depend on each other (see wouldCloseKernelCycle).
     // - After each accepted op, producer/consumer boundaries are recomputed
     //   from direct SSA use/def edges. Sweeps continue until a fixed point
     //   is reached.
@@ -305,13 +411,6 @@ struct ClusterDistributedKernelsPass
     // color and the block is topologically reordered.
     using PartitioningAxes =
         ShardyLogicalAxisAnalysis::SymbolsPerPartitioningAxis;
-
-    struct ColorState {
-      int64_t id;
-      llvm::SmallVector<Operation *> members;
-      llvm::DenseSet<Operation *> externalProducers;
-      llvm::DenseSet<Operation *> externalConsumers;
-    };
 
     struct BucketState {
       llvm::SmallVector<Operation *> pending;
@@ -339,7 +438,11 @@ struct ClusterDistributedKernelsPass
       llvm::SmallVector<std::pair<uint64_t, uint64_t>> symbols;
       for (const auto &axis : axes) {
         for (const AxisSymbol &symbol : axis) {
-          symbols.emplace_back(symbol.getId(), symbol.getExtent());
+          // Unshardable axes are device-local, so never need communication:
+          // ops can share a kernel whatever their unshardable axes are.
+          if (!axisAnalysis.isUnshardable(symbol)) {
+            symbols.emplace_back(symbol.getId(), symbol.getExtent());
+          }
         }
       }
       std::sort(symbols.begin(), symbols.end());
@@ -356,9 +459,18 @@ struct ClusterDistributedKernelsPass
 
     auto tryAcceptCandidate =
         [&](Operation *candidate, ColorState &color,
-            llvm::DenseMap<Operation *, int64_t> &opToColor) {
+            llvm::DenseMap<Operation *, int64_t> &opToColor,
+            llvm::ArrayRef<ColorState> colors) {
           if (!candidate || !isClusterableOp(candidate) ||
               opToColor.contains(candidate)) {
+            return false;
+          }
+
+          // The boundary checks below only compare against boundary ops
+          // recorded for the members so far, not the candidate's own, and
+          // cannot see cycles through other kernels.
+          if (wouldCloseKernelCycle(candidate, color, mainBlock, opToColor,
+                                    colors)) {
             return false;
           }
 
@@ -455,7 +567,7 @@ struct ClusterDistributedKernelsPass
 
           for (size_t i = 0; i < bucket.pending.size();) {
             Operation *candidate = bucket.pending[i];
-            if (!tryAcceptCandidate(candidate, color, opToColor)) {
+            if (!tryAcceptCandidate(candidate, color, opToColor, colors)) {
               ++i;
               continue;
             }
@@ -603,9 +715,6 @@ struct ClusterDistributedKernelsPass
               << "missing sharding for ranked kernel input value " << input;
           return failure();
         }
-        if (maybePartitioning) {
-          maybePartitioning = axisAnalysis.excludeUnshardable(*maybePartitioning);
-        }
 
         // `input` itself may already be local-scoped (e.g. it flows straight
         // from a collective's Await, possibly through a scope-agnostic
@@ -654,9 +763,6 @@ struct ClusterDistributedKernelsPass
               << "missing sharding for ranked kernel output value " << output;
           return failure();
         }
-        if (maybePartitioning) {
-          maybePartitioning = axisAnalysis.excludeUnshardable(*maybePartitioning);
-        }
         // Kernel returns are in local type, global type recoverable
         // from yield or from multiplying the local type by the sharding.
         Type globalOutputType = output.getType();
@@ -701,9 +807,6 @@ struct ClusterDistributedKernelsPass
                 << operand.getOperandNumber();
             return failure();
           }
-          if (maybePartitioning) {
-            maybePartitioning = axisAnalysis.excludeUnshardable(*maybePartitioning);
-          }
 
           if (auto rankedType = dyn_cast<RankedTensorType>(operandType);
               rankedType && maybePartitioning) {
@@ -725,9 +828,6 @@ struct ClusterDistributedKernelsPass
                 << "missing sharding for ranked kernel operation result "
                 << result.getResultNumber();
             return failure();
-          }
-          if (maybePartitioning) {
-            maybePartitioning = axisAnalysis.excludeUnshardable(*maybePartitioning);
           }
 
           if (auto rankedType = dyn_cast<RankedTensorType>(resultType);
@@ -828,8 +928,8 @@ struct ClusterDistributedKernelsPass
                     << oldValue;
                 return failure();
               }
-              SmallVector<Value> axesOperands = getTensorPartitioningAxisGroups(
-                  axisAnalysis.excludeUnshardable(*maybePartitioning));
+              SmallVector<Value> axesOperands =
+                  getTensorPartitioningAxisGroups(*maybePartitioning);
               valueForUse = builder
                                 .create<DistributedCastLocalToGlobalOp>(
                                     insertBefore->getLoc(), expectedUseType,

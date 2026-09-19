@@ -521,6 +521,17 @@ void ShardyLogicalAxisAnalysis::markRewrite(Operation *from, Operation *to) {
     reshardRHSSymbols[to] = std::move(rhsIt->second);
     reshardRHSSymbols.erase(rhsIt);
   }
+
+  auto moveLocalSymbols = [&](TensorLocalSymbols &symbols, unsigned count) {
+    for (unsigned idx = 0; idx < count; ++idx) {
+      if (auto it = symbols.find({from, idx}); it != symbols.end()) {
+        symbols[{to, idx}] = std::move(it->second);
+        symbols.erase(it);
+      }
+    }
+  };
+  moveLocalSymbols(operandLocalSymbols, from->getNumOperands());
+  moveLocalSymbols(resultLocalSymbols, from->getNumResults());
 }
 
 llvm::SmallVector<AxisSymbol>
@@ -679,8 +690,18 @@ Value ShardyLogicalAxisAnalysis::getLogicalAxis(AxisSymbol symbol) const {
 }
 
 std::optional<ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes>
-ShardyLogicalAxisAnalysis::getTensorPartitionDimsForViewCast(
-    ValueRange partitioningAxes) {
+ShardyLogicalAxisAnalysis::getTensorPartitionDimsFromPartitioningAxes(
+    Operation *op) {
+  ValueRange partitioningAxes;
+  if (auto globalToLocal = dyn_cast<DistributedCastGlobalToLocalOp>(op)) {
+    partitioningAxes = globalToLocal.getPartitioningAxes();
+  } else if (auto localToGlobal =
+                 dyn_cast<DistributedCastLocalToGlobalOp>(op)) {
+    partitioningAxes = localToGlobal.getPartitioningAxes();
+  } else {
+    partitioningAxes = cast<AnchorPartitioningOp>(op).getPartitioningAxes();
+  }
+
   TensorAxesToPartitionAxes mapping;
   mapping.reserve(partitioningAxes.size());
   for (Value partitioningAxis : partitioningAxes) {
@@ -706,6 +727,11 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDimsForViewCast(
         if (failed(assignLogicalAxis(symbol, factor))) {
           return std::nullopt;
         }
+        // A device-local axis is one that is never sharded across the mesh,
+        // which is what an unshardable symbol is materialized as.
+        if (isa<DeviceLocalAxisType>(factor.getType().getAxisType())) {
+          symbolFactorMerge.markUnshardable({symbol});
+        }
         factorIt = factorToLogicalAxis.find(factor);
       }
       dimensionSymbols.push_back(factorIt->second);
@@ -713,6 +739,55 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDimsForViewCast(
     mapping.push_back(symbolFactorMerge.resolve(dimensionSymbols));
   }
   return mapping;
+}
+
+void ShardyLogicalAxisAnalysis::buildTensorLocalSymbols(
+    Operation *op, OpShardingRuleAttr shardingRule) {
+  llvm::SmallDenseSet<int64_t> localFactors;
+  localFactors.insert_range(shardingRule.getPermutationFactors());
+  localFactors.insert_range(shardingRule.getNeedReplicationFactors());
+
+  auto build = [&](llvm::ArrayRef<TensorMappingAttr> mappings, TypeRange types,
+                   TensorLocalSymbols &out) {
+    for (auto [valueIdx, mapping] : llvm::enumerate(mappings)) {
+      auto tensorType = dyn_cast<RankedTensorType>(types[valueIdx]);
+      if (!tensorType) {
+        continue;
+      }
+      DimToSymbol dimSymbols(tensorType.getRank());
+      llvm::SmallVector<AxisSymbol> newSymbols;
+      for (auto [dim, dimMapping] : llvm::enumerate(mapping.getDimMappings())) {
+        llvm::ArrayRef<int64_t> factors = dimMapping.getFactorIndices();
+        if (factors.size() == 1 && localFactors.contains(factors[0]) &&
+            !tensorType.isDynamicDim(dim)) {
+          dimSymbols[dim] = AxisSymbol::create(
+              static_cast<uint64_t>(tensorType.getDimSize(dim)));
+          newSymbols.push_back(dimSymbols[dim]);
+        }
+      }
+      if (newSymbols.empty()) {
+        continue;
+      }
+      symbolFactorMerge.markUnshardable(newSymbols);
+      // Distinct dimensions of one tensor are distinct axes.
+      llvm::SmallVector<AxisSymbol> tensorSymbols;
+      for (auto [dim, dimMapping] : llvm::enumerate(mapping.getDimMappings())) {
+        if (!dimSymbols[dim].isNull()) {
+          tensorSymbols.push_back(dimSymbols[dim]);
+          continue;
+        }
+        for (int64_t factor : dimMapping.getFactorIndices()) {
+          tensorSymbols.push_back(opToPartitioningAxes[op][factor]);
+        }
+      }
+      symbolFactorMerge.markOverlapping(tensorSymbols);
+      out[{op, valueIdx}] = std::move(dimSymbols);
+    }
+  };
+  build(shardingRule.getOperandMappings(), op->getOperandTypes(),
+        operandLocalSymbols);
+  build(shardingRule.getResultMappings(), op->getResultTypes(),
+        resultLocalSymbols);
 }
 
 void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
@@ -804,34 +879,14 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
       }
       symbolFactorMerge.markOverlapping(lhs_list);
       symbolFactorMerge.markOverlapping(rhs_list);
-    } else if (auto globalToLocal =
-                   dyn_cast<DistributedCastGlobalToLocalOp>(op)) {
-      auto mapping = getTensorPartitionDimsForViewCast(
-          globalToLocal.getPartitioningAxes());
+    } else if (isa<DistributedCastGlobalToLocalOp,
+                   DistributedCastLocalToGlobalOp, AnchorPartitioningOp>(op)) {
+      // Their partitioning_axes are ground truth for the tensors they bind. An
+      // anchor is a same-scope identity marker, exactly like the two casts.
+      auto mapping = getTensorPartitionDimsFromPartitioningAxes(op);
       if (!mapping) {
-        globalToLocal.emitError()
-            << "failed to recover partitioning axes from tensor view cast";
-        continue;
-      }
-      symbolFactorMerge.markOverlapping(flattenNested(*mapping));
-    } else if (auto localToGlobal =
-                   dyn_cast<DistributedCastLocalToGlobalOp>(op)) {
-      auto mapping = getTensorPartitionDimsForViewCast(
-          localToGlobal.getPartitioningAxes());
-      if (!mapping) {
-        localToGlobal.emitError()
-            << "failed to recover partitioning axes from tensor view cast";
-        continue;
-      }
-      symbolFactorMerge.markOverlapping(flattenNested(*mapping));
-    } else if (auto anchor = dyn_cast<AnchorPartitioningOp>(op)) {
-      // Same-scope identity marker: its partitioning_axes are ground truth
-      // for its (single, identically-typed) input/output, exactly like the
-      // two real Cast ops above.
-      auto mapping =
-          getTensorPartitionDimsForViewCast(anchor.getPartitioningAxes());
-      if (!mapping) {
-        anchor.emitError() << "failed to recover partitioning axes from anchor";
+        op->emitError() << "failed to recover partitioning axes from tensor "
+                           "view cast or anchor";
         continue;
       }
       symbolFactorMerge.markOverlapping(flattenNested(*mapping));
@@ -864,6 +919,7 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
       }
       if (!mustStayLocalSymbols.empty()) {
         symbolFactorMerge.markUnshardable(mustStayLocalSymbols);
+        buildTensorLocalSymbols(op, sharding_rule);
       }
     } else if (auto collective_op = dyn_cast<sdy::CollectiveOpInterface>(op)) {
       // TBD whether this is a real problem
@@ -898,10 +954,18 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(
          "Mismatch between number of tensor mappings and operands/results: "
          "double-check rule attr semantics");
   TensorMappingAttr tensor_mapping = tensor_mappings[valueIdx];
+  const TensorLocalSymbols &localSymbols =
+      isLHS ? resultLocalSymbols : operandLocalSymbols;
   for (auto [dim, dim_mapping] :
        llvm::enumerate(tensor_mapping.getDimMappings())) {
     mapping.emplace_back();
     auto &dim_vec = mapping.back();
+    if (auto localIt = localSymbols.find({op, valueIdx});
+        localIt != localSymbols.end() && !localIt->second[dim].isNull()) {
+      dim_vec.push_back(localIt->second[dim]);
+      dim_vec = symbolFactorMerge.resolve(dim_vec);
+      continue;
+    }
     ArrayRef<int64_t> factorIndices = dim_mapping.getFactorIndices();
     for (int64_t factorIdx : factorIndices) {
       dim_vec.push_back(opToPartitioningAxes[op][factorIdx]);
@@ -928,22 +992,9 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(ReshardOp op, bool isLHS,
 std::optional<ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes>
 ShardyLogicalAxisAnalysis::getTensorPartitionDims(Operation *op, bool isLHS,
                                                   int valueIdx) {
-  if (auto globalToLocal = dyn_cast<DistributedCastGlobalToLocalOp>(op)) {
-    (void)isLHS;
-    (void)valueIdx;
-    return getTensorPartitionDimsForViewCast(
-        globalToLocal.getPartitioningAxes());
-  }
-  if (auto localToGlobal = dyn_cast<DistributedCastLocalToGlobalOp>(op)) {
-    (void)isLHS;
-    (void)valueIdx;
-    return getTensorPartitionDimsForViewCast(
-        localToGlobal.getPartitioningAxes());
-  }
-  if (auto anchor = dyn_cast<AnchorPartitioningOp>(op)) {
-    (void)isLHS;
-    (void)valueIdx;
-    return getTensorPartitionDimsForViewCast(anchor.getPartitioningAxes());
+  if (isa<DistributedCastGlobalToLocalOp, DistributedCastLocalToGlobalOp,
+          AnchorPartitioningOp>(op)) {
+    return getTensorPartitionDimsFromPartitioningAxes(op);
   }
   if (auto reshard_op = toCollective(op)) {
     return getTensorPartitionDims(reshard_op, isLHS, valueIdx);
