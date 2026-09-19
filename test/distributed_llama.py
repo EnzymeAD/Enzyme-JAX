@@ -28,6 +28,7 @@ the Python bridge.
 
 import os
 import re
+import shlex
 import subprocess
 import tempfile
 
@@ -571,8 +572,44 @@ class DistributedLlamaNumericTest(absltest.TestCase):
         np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-4)
 
 
+def dry_run_dump(output_path):
+    """Exports the Shardy-annotated module to `output_path`, writes a matching
+    physical-mesh config next to it, and prints the exact enzymexlamlir-opt
+    command line that would run the sanity-check pipeline on it -- without
+    actually invoking the subprocess. For iterating by hand on a failing
+    pipeline step (see run_distributed_llama.sh's --dry-run flag) without
+    re-paying JAX tracing/export on every attempt."""
+    text = export_shardy_module()
+    output_path = os.path.abspath(output_path)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w") as f:
+        f.write(text)
+
+    mesh_config_path = os.path.join(os.path.dirname(output_path), "physical_mesh.mlir")
+    with open(mesh_config_path, "w") as f:
+        f.write(PHYSICAL_MESH_CONFIG)
+
+    opt_binary = find_enzymexlamlir_opt()
+    out_path = output_path + ".sanity_check_out.mlir"
+    argv = (
+        [opt_binary]
+        + build_sanity_check_pipeline_argv(mesh_config_path)
+        + [output_path, "-o", out_path]
+    )
+
+    print(f"Wrote pre-lowering module to {output_path}")
+    print(f"Wrote physical mesh config to {mesh_config_path}")
+    print("Sanity-check pipeline command:")
+    print(" ".join(shlex.quote(a) for a in argv))
+
+
 if __name__ == "__main__":
     from test_utils import fix_paths
 
     fix_paths()
-    absltest.main()
+
+    dry_run_path = os.environ.get("DISTRIBUTED_LLAMA_DRY_RUN")
+    if dry_run_path:
+        dry_run_dump(dry_run_path)
+    else:
+        absltest.main()
