@@ -82,6 +82,11 @@ llvm::cl::list<std::string> restrictInput(
         "to generate tensors: nonzero, non_negative, noNaN, allFinite"),
     llvm::cl::cat(fuzzerCategory));
 
+llvm::cl::opt<bool> printMismatchInputs(
+    "print-mismatch-inputs",
+    llvm::cl::desc("Print the generated argument tensors for the "
+                   "fuzzed functions when a mismatch is found"),
+    llvm::cl::cat(fuzzerCategory));
 } // namespace
 
 static llvm::raw_ostream &diag() {
@@ -751,6 +756,9 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
       mismatch = true;
     }
   }
+  if (mismatch && printMismatchInputs)
+    for (auto [i, arg] : llvm::enumerate(evalArgs))
+      diag() << funcName << " arg " << i << ": " << arg << "\n";
   if (!mismatch && (verbosity == Verbosity::Verbose)) {
     llvm::WithColor::remark(diag())
         << "passed outputs in " << funcName << " match exactly.\n";
