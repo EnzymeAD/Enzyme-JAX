@@ -4,11 +4,13 @@
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 
 #include "mlir/IR/Attributes.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/AnalysisManager.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "shardy/dialect/sdy/transforms/propagation/op_sharding_rule_registry.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
 
 namespace mlir::enzyme::distributed {
@@ -384,11 +386,15 @@ void SymbolFactorMerge::attemptMergeSymbols(llvm::ArrayRef<AxisSymbol> a,
   }
 }
 
-/**
- * TODO: we will need to add unification process for shardable
- * dataflow ops like loops, since we want to simplify llama into
- * loops over layers to reduce the degrees of freedom.
- */
+static func::FuncOp resolveCallee(func::CallOp call) {
+  auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+      call, call.getCalleeAttr());
+  assert(callee && !callee.isExternal() &&
+         "axis analysis requires every call to target a function with a body");
+  assert(callee.getBody().hasOneBlock() &&
+         "axis analysis currently only supports single-block callees");
+  return callee;
+}
 
 // TBD: reshard op, or CollectiveOpInterface?
 mlir::sdy::ReshardOp toCollective(Operation *op) {
@@ -428,9 +434,32 @@ ShardyLogicalAxisAnalysis::ShardyLogicalAxisAnalysis(Operation *sdy_func)
   assert(sdy_func && sdy_func->getNumRegions() == 1 &&
          sdy_func->getRegion(0).hasOneBlock() &&
          "axis analysis currently only supports single-block main ops");
-  buildInitialSymbols();
-  buildUnion();
+  collectAnalyzedFunctions();
+  // Every function's symbols must exist before any union runs, since a call
+  // boundary reads the callee's argument and return symbols.
+  for (Operation *func : analyzedFuncs) {
+    buildInitialSymbolsFor(func);
+  }
+  for (Operation *func : analyzedFuncs) {
+    buildUnionFor(func);
+  }
   validateLogicalAxisAssignments();
+}
+
+void ShardyLogicalAxisAnalysis::collectAnalyzedFunctions() {
+  llvm::SmallPtrSet<Operation *, 8> seen;
+  llvm::SmallVector<Operation *> worklist{sdy_func};
+  while (!worklist.empty()) {
+    Operation *func = worklist.pop_back_val();
+    if (!seen.insert(func).second) {
+      continue;
+    }
+    analyzedFuncs.push_back(func);
+    Block &body = func->getRegion(0).front();
+    for (func::CallOp call : body.getOps<func::CallOp>()) {
+      worklist.push_back(resolveCallee(call));
+    }
+  }
 }
 
 MainFunctionShardyLogicalAxisAnalysis::MainFunctionShardyLogicalAxisAnalysis(
@@ -686,10 +715,10 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDimsForViewCast(
   return mapping;
 }
 
-void ShardyLogicalAxisAnalysis::buildInitialSymbols() {
+void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
   // For each tensor argument, add a partitioning dimension per
   // tensor axis.
-  Block &bodyBlock = sdy_func->getRegion(0).front();
+  Block &bodyBlock = func->getRegion(0).front();
   for (BlockArgument arg : bodyBlock.getArguments()) {
     auto tensorType = dyn_cast_or_null<RankedTensorType>(arg.getType());
     if (!tensorType) {
@@ -806,6 +835,9 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbols() {
         continue;
       }
       symbolFactorMerge.markOverlapping(flattenNested(*mapping));
+    } else if (isa<func::CallOp>(op)) {
+      // A call has no symbols of its own: it shares its callee's argument and
+      // return symbols (see getTensorPartitionDimsForCall).
     } else if (sdy::OpShardingRuleAttr sharding_rule =
                    getOrSynthesizeOpShardingRule(op).rule) {
       int64_t numDims = sharding_rule.getNumFactors();
@@ -888,7 +920,7 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(ReshardOp op, bool isLHS,
   auto symbolList = isLHS ? reshardRHSSymbols[op] : reshardLHSSymbols[op];
   mapping.resize(symbolList.size());
   for (auto [dim, sym] : llvm::enumerate(symbolList)) {
-    mapping[dim].push_back(sym);
+    mapping[dim] = symbolFactorMerge.resolve(sym);
   }
   return mapping;
 }
@@ -916,6 +948,9 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(Operation *op, bool isLHS,
   if (auto reshard_op = toCollective(op)) {
     return getTensorPartitionDims(reshard_op, isLHS, valueIdx);
   }
+  if (auto call = dyn_cast<func::CallOp>(op)) {
+    return getTensorPartitionDimsForCall(call, isLHS, valueIdx);
+  }
 
   if (OpShardingRuleAttr sharding_rule =
           getOrSynthesizeOpShardingRule(op).rule) {
@@ -923,6 +958,22 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(Operation *op, bool isLHS,
   }
 
   return std::nullopt;
+}
+
+std::optional<ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes>
+ShardyLogicalAxisAnalysis::getTensorPartitionDimsForCall(func::CallOp call,
+                                                         bool isLHS,
+                                                         int valueIdx) {
+  Block &calleeBody = resolveCallee(call).getBody().front();
+  if (!isLHS) {
+    return getTensorPartitionDims(calleeBody.getArgument(valueIdx));
+  }
+  Value returned =
+      cast<func::ReturnOp>(calleeBody.getTerminator()).getOperand(valueIdx);
+  if (auto arg = dyn_cast<BlockArgument>(returned)) {
+    return getTensorPartitionDims(arg);
+  }
+  return getTensorPartitionDims(cast<OpResult>(returned));
 }
 
 static void mergeProducedAndConsumedAxes(
@@ -993,7 +1044,7 @@ void ShardyLogicalAxisAnalysis::validateLogicalAxisAssignments() {
  * union-factor-find: we can never merge any symbols that are overlapping. This
  * rejection is located in the datastructure itself.
  */
-void ShardyLogicalAxisAnalysis::buildUnion() {
+void ShardyLogicalAxisAnalysis::buildUnionFor(Operation *func) {
   auto mergeUses = [&](const TensorAxesToPartitionAxes &producerMapping,
                        auto &&getUses) {
     for (OpOperand &use : getUses()) {
@@ -1008,7 +1059,7 @@ void ShardyLogicalAxisAnalysis::buildUnion() {
     }
   };
 
-  Block &bodyBlock = sdy_func->getRegion(0).front();
+  Block &bodyBlock = func->getRegion(0).front();
   for (BlockArgument arg : bodyBlock.getArguments()) {
     auto it = argToPartitioningAxes.find(arg);
     if (it == argToPartitioningAxes.end()) {
@@ -1030,7 +1081,7 @@ void ShardyLogicalAxisAnalysis::buildUnion() {
       mergeUses(producerMapping, [&]() { return result.getUses(); });
     }
   }
-} // end of buildUnion
+} // end of buildUnionFor
 
 // Prints one symbol as its resolved SSA factor name, falling back to a
 // synthetic "aN" name when no factor has been assigned yet (e.g. mid-rewrite).

@@ -154,6 +154,15 @@ private:
  * that shards both inputs along an axis). Respects any existing reshardings
  * rules that "break" a propagation dependency.
  *
+ * The analysis covers the function it is constructed on plus every function
+ * reachable from it through func.call. All of them share one symbol space, and
+ * a call is transparent: its operand k is consumed with the callee's argument-k
+ * symbols, and its result k is produced with the callee's return-operand-k
+ * symbols. Every call site of one callee therefore unifies on the callee's
+ * argument and result axes, so repeated structure factored into a function
+ * contributes one set of degrees of freedom rather than one per call site.
+ * The call graph must be acyclic (recursive calls are not supported).
+ *
  * Results in a mapping from the following IR items to logical axes:
  *  - ops to logical axes: for each op, provides a logical axis for each axis of
  * its shardy partitioning rule.
@@ -261,7 +270,12 @@ private:
   bool emittedNeedReplicationFactorRemark = false;
 #endif
 
-  void buildInitialSymbols();
+  // Functions whose bodies participate in the analysis: sdy_func first, then
+  // its transitive callees.
+  llvm::SmallVector<Operation *> analyzedFuncs;
+  void collectAnalyzedFunctions();
+  void buildInitialSymbolsFor(Operation *func);
+  void buildUnionFor(Operation *func);
   void validateLogicalAxisAssignments();
   // Internal implementation for either a producer (lhs) or consumer (rhs) of a
   // tensor. Three versions: one for a generic op, which may or may not
@@ -276,7 +290,10 @@ private:
   getTensorPartitionDimsForViewCast(ValueRange partitioningAxes);
   std::optional<TensorAxesToPartitionAxes>
   getTensorPartitionDims(Operation *op, bool isLHS, int valueIdx);
-  void buildUnion();
+  // Callee-side view of a func.call: the argument (consumer) or return operand
+  // (producer) whose symbols the call boundary shares.
+  std::optional<TensorAxesToPartitionAxes>
+  getTensorPartitionDimsForCall(func::CallOp call, bool isLHS, int valueIdx);
 };
 
 // Module-scoped wrapper that materializes ShardyLogicalAxisAnalysis for
