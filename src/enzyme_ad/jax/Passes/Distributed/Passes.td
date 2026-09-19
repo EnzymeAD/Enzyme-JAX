@@ -425,4 +425,35 @@ def MakeReplicationsExplicitPass
   }];
 }
 
+def LowerForSanityCheckPass
+    : Pass<"distributed-lower-for-sanity-check", "::mlir::ModuleOp"> {
+  let summary = "Lowers the whole distributed program to a single-device "
+                "serial StableHLO reference implementation.";
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect", "mlir::stablehlo::StablehloDialect",
+    "mlir::func::FuncDialect"
+  ];
+  let description = [{
+    Produces a "raw serial StableHLO" oracle for the whole distributed
+    program: every distributed.DistributedKernel becomes an explicit
+    stablehlo.while looping once per relevant mesh coordinate, slicing its
+    local operand shard out of (and update-slicing its local result shard
+    into) an explicitly materialized <mesh axes> x <local dims> tensor built
+    outside the loop; every distributed.Collective becomes a reduction plus
+    a transpose/reshape over that same materialized representation. Not
+    meant to run efficiently -- only to be compared against real distributed
+    execution as a correctness reference. distributed.function is converted
+    to func.func as the final step.
+
+    Expects to run at/after the very end of the current lowering pipeline,
+    once every DistributedKernel is trivial (see isTriviallyLocalKernel) and
+    every axis-algebra factor bounding a kernel or collective is either a
+    real physical communication axis or an explicit replication marker, with
+    no unlowered LogicalMeshAxis/DeviceLocalAxis residue. A kernel or
+    bounding cast/collective that doesn't meet this precondition is a
+    pipeline-ordering bug, not something this pass handles partially: it
+    emits a diagnostic and fails outright.
+  }];
+}
+
 #endif // ENZYME_AD_JAX_DISTRIBUTED_PASSES
