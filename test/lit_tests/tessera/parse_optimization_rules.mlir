@@ -39,13 +39,13 @@ module {
 // CHECK: pdl.pattern : benefit(1) {
 // CHECK-NEXT:   %[[X0:.*]] = operand
 // CHECK-NEXT:   %[[NEGF:.*]] = attribute = @arith.negf
-// CHECK-NEXT:   %[[T0:.*]] = type
+// CHECK-NEXT:   %[[T0:.*]] = types
 // CHECK-NEXT:   %[[NEGF_CALL:.*]] = operation "tessera.call"(%[[X0]] : !pdl.value) {"callee" = %[[NEGF]]} -> (%[[T0]] : !pdl.type)
 // CHECK-NEXT:   %[[NEGF_RES:.*]] = result 0 of %[[NEGF_CALL]]
 // CHECK-NEXT:   %[[Y:.*]] = operand
 // CHECK-NEXT:   %[[Z:.*]] = operand
 // CHECK-NEXT:   %[[MAG:.*]] = attribute = @eigen.mag
-// CHECK-NEXT:   %[[T1:.*]] = type
+// CHECK-NEXT:   %[[T1:.*]] = types
 // CHECK-NEXT:   %[[MAG_CALL:.*]] = operation "tessera.call"(%[[NEGF_RES]], %[[Y]], %[[Z]] : !pdl.value, !pdl.value, !pdl.value) {"callee" = %[[MAG]]} -> (%[[T1]] : !pdl.type)
 // CHECK-NEXT:   %{{.*}} = result 0 of %[[MAG_CALL]]
 // CHECK-NEXT:   rewrite %[[MAG_CALL]] {
@@ -60,11 +60,11 @@ module {
 // CHECK: pdl.pattern : benefit(1) {
 // CHECK-NEXT:   %[[X0:.*]] = operand
 // CHECK-NEXT:   %[[INV1:.*]] = attribute = @eigen.inv
-// CHECK-NEXT:   %[[T0:.*]] = type
+// CHECK-NEXT:   %[[T0:.*]] = types
 // CHECK-NEXT:   %[[INV1_CALL:.*]] = operation "tessera.call"(%[[X0]] : !pdl.value) {"callee" = %[[INV1]]} -> (%[[T0]] : !pdl.type)
 // CHECK-NEXT:   %[[INV1_RES:.*]] = result 0 of %[[INV1_CALL]]
 // CHECK-NEXT:   %[[INV2:.*]] = attribute = @eigen.inv
-// CHECK-NEXT:   %[[T1:.*]] = type
+// CHECK-NEXT:   %[[T1:.*]] = types
 // CHECK-NEXT:   %[[INV2_CALL:.*]] = operation "tessera.call"(%[[INV1_RES]] : !pdl.value) {"callee" = %[[INV2]]} -> (%[[T1]] : !pdl.type)
 // CHECK-NEXT:   %{{.*}} = result 0 of %[[INV2_CALL]]
 // CHECK-NEXT:   rewrite %[[INV2_CALL]] {
