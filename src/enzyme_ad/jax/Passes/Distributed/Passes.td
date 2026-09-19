@@ -402,4 +402,27 @@ def DistributedSearchStrategiesPass : Pass<"distributed-search-strategies", "::m
   ];
 }
 
+def MakeReplicationsExplicitPass
+    : Pass<"distributed-make-replications-explicit", "::mlir::ModuleOp"> {
+  let summary = "Makes every distributed.Collective's mesh bookkeeping "
+                "explicitly cover every physical mesh axis.";
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "enzyme::distributed::DistributedDialect"
+  ];
+  let description = [{
+    A distributed.Collective's input_mesh/output_mesh/mapping are only
+    required to account for whichever physical axes they actually mention --
+    a physical axis absent from input_mesh entirely is well-defined (the
+    value is uniformly replicated across it) but that meaning is only
+    recoverable by reasoning about the whole module's PhysicalMesh from
+    outside the collective op itself. This pass makes that meaning explicit
+    once: for every physical axis of the module's PhysicalMesh missing from
+    a collective's input_mesh or output_mesh, it inserts an explicit
+    ReplicationAxis factor (and a matching identity Replicate->Replicate
+    mapping pair) so every axis of the whole mesh is always directly
+    represented on both sides, and downstream passes never need to infer
+    replication from omission.
+  }];
+}
+
 #endif // ENZYME_AD_JAX_DISTRIBUTED_PASSES
