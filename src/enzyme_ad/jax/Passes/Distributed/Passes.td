@@ -398,7 +398,8 @@ def DistributedSearchStrategiesPass : Pass<"distributed-search-strategies", "::m
     Option<"dumpBest", "dump-best", "bool", "false", "Print the cloned, partially-rewritten IR for the best search candidate, for debugging. Default: false">,
     Option<"disableVerifier", "disable-verifier", "bool", "true", "Disable the MLIR verifier when running the internal lowering pipeline on each candidate clone during search, for runtime reasons. Default: true">,
     Option<"beamSize", "beam-size", "int", "100", "Maximum number of candidates retained per generation of the beam search. Default: 100">,
-    Option<"logProgress", "log-progress", "bool", "false", "Log the deepest and shallowest axis-decision depth reached across the beam at each generation turnover, out of the total axis count. Useful for tracking how far a long-running search has gotten. Default: false">
+    Option<"logProgress", "log-progress", "bool", "false", "Log the deepest and shallowest axis-decision depth reached across the beam at each generation turnover, out of the total axis count. Useful for tracking how far a long-running search has gotten. Default: false">,
+    Option<"failOnBadCandidate", "fail-on-bad-candidate", "bool", "false", "Fail this pass outright the first time any scored candidate's lowering pipeline fails, instead of silently scoring it -infinity and letting the search route around it. Normal operation should leave this off, since a real search is expected to explore and discard plenty of infeasible candidates; turn it on for tests/debugging that want a lowering bug to surface immediately (with the offending candidate's IR printed) rather than being masked by the search finding a different, working candidate elsewhere. Default: false">
   ];
 }
 

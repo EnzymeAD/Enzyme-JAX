@@ -29,6 +29,12 @@ public:
   virtual void push(NodePtr node) = 0;
   virtual NodePtr pop() = 0;
   virtual bool done() = 0;
+  // Discards every pending candidate, so the next done() call returns true
+  // and BeamSearchDriver::run() returns on its next loop check. For a scorer
+  // that wants to halt the whole search immediately (e.g. a strict "fail on
+  // the first bad candidate" mode) rather than waiting for every remaining
+  // candidate to be explored and scored first.
+  virtual void abort() = 0;
   virtual ~BeamSearchQueueBase() = default;
 };
 
@@ -122,6 +128,12 @@ class BeamSearchBreadthFirstQueue : public BeamSearchQueueBase<NodeType> {
     }
   };
   std::priority_queue<NodePtr, std::vector<NodePtr>, CompareScore> incoming;
+  // Set by abort(). Latches done() to true and makes push() a no-op. Needed
+  // because BeamSearchDriver::run() calls queue.push() on every node right
+  // after scoring it, including the node whose scoring just triggered the
+  // abort and any siblings scored afterward in the same expansion batch;
+  // without this latch those pushes would repopulate the queue and undo it.
+  bool aborted = false;
   // Called with every node in a freshly-refilled generation, right as it
   // becomes the new queue (see pop() below) -- the one point where the whole
   // beam for this round is known at once. Left null (the default), this is a
@@ -138,6 +150,9 @@ public:
         onGenerationStart(std::move(onGenerationStart)) {}
 
   void push(NodePtr node) override {
+    if (aborted) {
+      return;
+    }
     incoming.push(node);
     if (incoming.size() > max_residency) {
       // pop worst node off the incoming queue
@@ -165,7 +180,15 @@ public:
     queue.pop();
     return node;
   }
-  bool done() override { return queue.empty() && incoming.empty(); }
+  bool done() override {
+    return aborted || (queue.empty() && incoming.empty());
+  }
+
+  void abort() override {
+    aborted = true;
+    queue = {};
+    incoming = {};
+  }
 };
 
 } // namespace mlir::enzyme::distributed

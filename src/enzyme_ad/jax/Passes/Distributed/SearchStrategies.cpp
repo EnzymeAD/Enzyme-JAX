@@ -798,13 +798,22 @@ class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
   ModuleOp originalModule;
   bool dumpCandidates;
   bool disableVerifier;
+  bool failOnBadCandidate;
+  bool &sawBadCandidate;
+  BeamSearchQueueBase<StrategySearchNode> &queue;
   StrategyCompleterBase &completer;
 
 public:
   StrategyScorer(ModuleOp originalModule, bool dumpCandidates,
-                 bool disableVerifier, StrategyCompleterBase &completer)
+                 bool disableVerifier, bool failOnBadCandidate,
+                 bool &sawBadCandidate,
+                 BeamSearchQueueBase<StrategySearchNode> &queue,
+                 StrategyCompleterBase &completer)
       : originalModule(originalModule), dumpCandidates(dumpCandidates),
-        disableVerifier(disableVerifier), completer(completer) {}
+        disableVerifier(disableVerifier),
+        failOnBadCandidate(failOnBadCandidate),
+        sawBadCandidate(sawBadCandidate), queue(queue), completer(completer) {
+  }
 
   // Plan: run a pass pipeline to apply and lower the current decisions
   // and score the result. Pipeline:
@@ -835,6 +844,24 @@ public:
 
     if (dumpCandidates)
       dumpSearchModule("Search candidate", *clonedModule, pipelineOk, result);
+
+    if (!pipelineOk && failOnBadCandidate && !sawBadCandidate) {
+      sawBadCandidate = true;
+      // Always show this one candidate's IR, even without dump-candidates,
+      // since it's the whole reason failOnBadCandidate exists: surfacing the
+      // bug immediately instead of it being masked by the search discarding
+      // the candidate and moving on.
+      if (!dumpCandidates)
+        dumpSearchModule("Search candidate", *clonedModule, pipelineOk,
+                         result);
+      originalModule.emitError()
+          << "distributed-search-strategies: failing outright because "
+             "fail-on-bad-candidate is set and a search candidate's "
+             "lowering pipeline failed (see the printed candidate IR above)";
+      // Discard the rest of the beam so the search stops now rather than
+      // exploring and scoring every remaining candidate first.
+      queue.abort();
+    }
 
     return result;
   }
@@ -890,10 +917,18 @@ struct DistributedSearchStrategiesPass
                               moduleOp.getLoc(), logProgress);
     StrategyInOrderCompleter completer(overlap, builder, physicalAxes,
                                        moduleOp.getLoc());
-    StrategyScorer scorer(moduleOp, dumpCandidates, disableVerifier, completer);
+    bool sawBadCandidate = false;
+    StrategyScorer scorer(moduleOp, dumpCandidates, disableVerifier,
+                          failOnBadCandidate, sawBadCandidate, queue,
+                          completer);
 
     BeamSearchDriver<StrategySearchNode> driver(queue, scorer, explorer);
     driver.run();
+
+    if (sawBadCandidate) {
+      signalPassFailure();
+      return;
+    }
 
     // Only dumped once the search is complete, so finalized candidates aren't
     // interleaved with the in-progress ones dumpCandidates prints during the
