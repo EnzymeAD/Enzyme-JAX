@@ -26,6 +26,11 @@ config_setting(
     define_values = {"enable_triton": "false"},
 )
 
+cuda_copts = select({
+    "@local_config_cuda//:is_cuda_enabled": ["-DENZYMEJAX_CUDA=1"],
+    "//conditions:default": [],
+})
+
 triton_copts = select({
     ":disable_triton_config": ["-DENZYME_JAX_ENABLE_TRITON=0"],
     "//conditions:default": ["-DENZYME_JAX_ENABLE_TRITON=1"],
@@ -111,10 +116,7 @@ cc_library(
             "xla_ffi/host/**/*.h",
             "xla_ffi/cuda/**/*.h",
         ]),
-    copts = select({
-        "@local_config_cuda//:is_cuda_enabled": ["-DENZYMEJAX_CUDA=1"],
-        "//conditions:default": [],
-    }),
+    copts = cuda_copts,
     visibility = ["//visibility:public"],
     deps = [
         ":EnzymeXLADialect",
@@ -1329,7 +1331,7 @@ cc_library(
         "-Werror=unused-but-set-variable",
         "-Werror=return-type",
         "-Werror=unused-result",
-    ] + triton_copts,
+    ] + triton_copts + cuda_copts,
     visibility = ["//visibility:public"],
     deps = [
         ":CheckedRewrite",
@@ -1484,7 +1486,13 @@ cc_library(
         "@xla//xla/mlir/utils:type_util",
         "@xla//xla/mlir_hlo",
         "@zlib",
-    ],
+    ] + select({
+        "@local_config_cuda//:is_cuda_enabled": [
+            "@local_config_cuda//cuda:cuda_headers",
+            "@xla//xla/tsl/cuda:cudart",
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 cc_library(
