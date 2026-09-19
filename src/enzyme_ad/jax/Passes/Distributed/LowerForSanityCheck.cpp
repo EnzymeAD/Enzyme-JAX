@@ -40,6 +40,10 @@ struct DimLabel {
     return isMeshAxis ? static_cast<int64_t>(index)
                       : static_cast<int64_t>(numMeshAxes + index);
   }
+
+  bool operator==(const DimLabel &other) const {
+    return isMeshAxis == other.isMeshAxis && index == other.index;
+  }
 };
 
 Value buildZeroConstant(OpBuilder &builder, Location loc,
@@ -811,11 +815,31 @@ private:
       }
     }
 
-    // labels[i] tracks, for each remaining leading dim of `running`, either
-    // its current physical-axis identity or the target output axis it's
-    // been relabeled to by a mapping pair. -1 = not yet labeled by mapping
-    // (shouldn't survive to the final placement step).
-    SmallVector<int64_t> dimLabels(activeMeshDims);
+    // dimLabels[i] tracks, for each current dim of `running` (remaining mesh
+    // axes first, then `running`'s own local dims -- its actual dim order),
+    // what that dim currently represents. A mapping pair relabels an
+    // existing dim (physical axis <-> physical axis, tensor dim <-> tensor
+    // dim, or physical axis <-> tensor dim) or drops one down to a single
+    // representative slice (X -> Replicate); it never needs to fabricate a
+    // dim from nothing, since every physical axis and every one of
+    // `running`'s own local dims is already present in dimLabels from the
+    // start. A relabel that lands on an already-claimed label (e.g.
+    // gathering a physical axis into a tensor dim that still carries its
+    // own local remainder) is resolved by dropping whichever side is a
+    // trivial extent-1 placeholder -- see the loop below. Otherwise, the
+    // data movement a relabel implies (e.g. a physical axis becoming a
+    // local dim, or vice versa) is carried out generically by
+    // placeIntoCanonical's own transpose/broadcast below, exactly as it
+    // already does for a Cast's own dimension placement.
+    SmallVector<DimLabel> dimLabels;
+    for (int64_t axisIdx : activeMeshDims)
+      dimLabels.push_back(DimLabel{true, static_cast<size_t>(axisIdx)});
+    size_t numOriginalLocalDims =
+        cast<RankedTensorType>(running.getType()).getRank() -
+        activeMeshDims.size();
+    for (size_t i = 0; i < numOriginalLocalDims; ++i)
+      dimLabels.push_back(DimLabel{false, i});
+
     auto mapOp = collective.getMapping().getDefiningOp<axis::AxisMapOp>();
     if (!mapOp) {
       fail(collective, "collective mapping must be produced by axis.map");
@@ -827,17 +851,49 @@ private:
       if (!lhsAxis && !rhsAxis)
         continue; // Replicate -> Replicate: nothing present either side.
       if (lhsAxis && rhsAxis) {
-        auto dimPos = llvm::find(dimLabels, static_cast<int64_t>(lhsAxis->axisIndex));
+        auto dimPos = llvm::find(dimLabels, *lhsAxis);
         if (dimPos == dimLabels.end()) {
           fail(collective, "mapping lhs references an already-consumed axis");
           return;
         }
-        *dimPos = static_cast<int64_t>(rhsAxis->axisIndex);
+        size_t dim = dimPos - dimLabels.begin();
+        auto collision = llvm::find(dimLabels, *rhsAxis);
+        if (collision == dimLabels.end()) {
+          dimLabels[dim] = *rhsAxis;
+        } else {
+          // The target label is already claimed by a different dim -- e.g.
+          // a physical axis being gathered into a tensor dimension that
+          // still has its own (pre-collective) local remainder dim. Only
+          // handle the common case where one side is a trivial (extent-1)
+          // placeholder: drop it and let the other side (the one actually
+          // carrying real per-coordinate data) take the label. A genuine
+          // merge of two non-trivial dims onto one label (a partial
+          // gather/scatter) isn't implemented yet.
+          size_t collisionDim = collision - dimLabels.begin();
+          auto runningType = cast<RankedTensorType>(running.getType());
+          if (runningType.getDimSize(collisionDim) == 1) {
+            running = dropDim(running, collisionDim, loc);
+            dimLabels.erase(collision);
+            if (dim > collisionDim)
+              --dim;
+            dimLabels[dim] = *rhsAxis;
+          } else if (runningType.getDimSize(dim) == 1) {
+            running = dropDim(running, dim, loc);
+            dimLabels.erase(dimPos);
+          } else {
+            fail(collective,
+                "distributed-lower-for-sanity-check does not yet support "
+                "merging two non-unit-extent dims onto the same mapping "
+                "target (a partial gather/scatter with a real remaining "
+                "local extent)");
+            return;
+          }
+        }
       } else if (lhsAxis && !rhsAxis) {
-        // Physical -> Replicate: this axis's data is already uniform
-        // across it (consumed by reduction upstream, or asserted redundant
-        // by construction) -- drop it by taking its representative slice.
-        auto dimPos = llvm::find(dimLabels, static_cast<int64_t>(lhsAxis->axisIndex));
+        // X -> Replicate: this dim's data is already uniform across it
+        // (consumed by reduction upstream, or asserted redundant by
+        // construction) -- drop it by taking its representative slice.
+        auto dimPos = llvm::find(dimLabels, *lhsAxis);
         if (dimPos == dimLabels.end()) {
           fail(collective, "mapping lhs references an already-consumed axis");
           return;
@@ -848,18 +904,12 @@ private:
       }
       // Replicate -> Physical(b) and Replicate -> Replicate need no action
       // now: the final placeIntoCanonical fill-broadcast below materializes
-      // any physical axis not already present among dimLabels.
+      // any physical axis not already present among dimLabels. Replicate ->
+      // TensorDim(j) never arises for well-formed IR (see this loop's own
+      // header comment).
     }
 
-    SmallVector<DimLabel> finalLabels;
-    for (int64_t label : dimLabels)
-      finalLabels.push_back(DimLabel{true, static_cast<size_t>(label)});
-    auto runningType = cast<RankedTensorType>(running.getType());
-    size_t numLocalDims = runningType.getRank() - dimLabels.size();
-    for (size_t i = 0; i < numLocalDims; ++i)
-      finalLabels.push_back(DimLabel{false, i});
-
-    Value finalExpanded = placeIntoCanonical(builder, loc, running, finalLabels, meshExtents);
+    Value finalExpanded = placeIntoCanonical(builder, loc, running, dimLabels, meshExtents);
 
     // The collective's own DistributedAwait is its sole real consumer (see
     // this dialect's own convention -- Ops.td's rule of thumb above
@@ -891,15 +941,11 @@ private:
     }
   }
 
-  // Present only for a factor group resolving to a single real
-  // PhysicalCommAxisType factor; a Replicate-provenance or empty group
-  // resolves to std::nullopt instead (see below), so a non-null result is
-  // always physical -- there is no in-band non-physical case to track.
-  struct AxisProvenance {
-    size_t axisIndex;
-  };
-
-  std::optional<AxisProvenance> resolveSingleAxisProvenance(TV_FactorGroup group) {
+  // Resolves a mapping pair's factor group to the dim label it names: a
+  // physical mesh axis, or one of the tensor's own original dimensions (via
+  // its ShapeAxisType provenance). A Replicate-provenance or empty group
+  // resolves to std::nullopt instead.
+  std::optional<DimLabel> resolveSingleAxisProvenance(TV_FactorGroup group) {
     auto factors = axis::getProductProvenanceFactors(group);
     if (failed(factors) || factors->empty())
       return std::nullopt;
@@ -908,13 +954,18 @@ private:
       return std::nullopt;
     if (isa<ReplicationAxisType>(provenance->getType()))
       return std::nullopt;
+    if (isa<axis::ShapeAxisType>(provenance->getType())) {
+      auto shapeAxis = cast<TypedValue<axis::ShapeAxisType>>(*provenance);
+      return DimLabel{false,
+                      static_cast<size_t>(axis::getAxisDimIndex(shapeAxis))};
+    }
     auto physicalType = dyn_cast<PhysicalCommAxisType>(provenance->getType());
     if (!physicalType)
       return std::nullopt;
     auto meshIdx = llvm::find(meshAxisTypes, physicalType);
     if (meshIdx == meshAxisTypes.end())
       return std::nullopt;
-    return AxisProvenance{static_cast<size_t>(meshIdx - meshAxisTypes.begin())};
+    return DimLabel{true, static_cast<size_t>(meshIdx - meshAxisTypes.begin())};
   }
 
   // Reduces dimension `dim` of `tensor` via stablehlo.reduce, using
