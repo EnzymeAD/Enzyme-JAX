@@ -2399,6 +2399,28 @@ Value getIdentityValue(OpBuilder &builder, Location loc, Type elemType,
       .Default([&](Operation *op) -> Value { return nullptr; });
 }
 
+Value getIdentityValueForReduceKind(OpBuilder &builder, Location loc,
+                                    Type elemType, ReduceOpKind kind) {
+  switch (kind) {
+  case ReduceOpKind::Add:
+    return getIdentityValueForOp<stablehlo::AddOp>(builder, loc, elemType);
+  case ReduceOpKind::Mul:
+    return getIdentityValueForOp<stablehlo::MulOp>(builder, loc, elemType);
+  case ReduceOpKind::Min:
+    return getIdentityValueForOp<stablehlo::MinOp>(builder, loc, elemType);
+  case ReduceOpKind::Max:
+    return getIdentityValueForOp<stablehlo::MaxOp>(builder, loc, elemType);
+  case ReduceOpKind::And:
+    return getIdentityValueForOp<stablehlo::AndOp>(builder, loc, elemType);
+  case ReduceOpKind::Or:
+    return getIdentityValueForOp<stablehlo::OrOp>(builder, loc, elemType);
+  case ReduceOpKind::Xor:
+    return getIdentityValueForOp<stablehlo::XorOp>(builder, loc, elemType);
+  default:
+    return nullptr;
+  }
+}
+
 bool canFuseIntoReduce(Operation *op) {
   return isa<stablehlo::AddOp, stablehlo::MulOp, stablehlo::MinOp,
              stablehlo::MaxOp, stablehlo::OrOp, stablehlo::XorOp,

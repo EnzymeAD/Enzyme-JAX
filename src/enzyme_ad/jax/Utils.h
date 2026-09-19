@@ -1580,6 +1580,44 @@ inline Value CreateReductionOpGeneral(
   }
 }
 
+// Looks up the identity element for a classified reduction kind, mirroring
+// CreateReductionOpGeneral's own kind switch but dispatching to
+// getIdentityValueForOp instead. Returns null for Unknown, and for any
+// kind with no identity defined over `elemType` (e.g. And has no identity
+// over a float element type). Defined in Utils.cpp, after
+// getIdentityValueForOp's explicit specializations -- defining it here
+// inline would force those specializations' primary template to be
+// implicitly instantiated ahead of them within Utils.cpp's own
+// translation unit (which itself includes this header), conflicting with
+// their later explicit-specialization definitions.
+Value getIdentityValueForReduceKind(OpBuilder &builder, Location loc,
+                                    Type elemType, ReduceOpKind kind);
+
+// Classifies a reduction-like region's single block by its lone
+// associative op, or Unknown if the block isn't exactly one of
+// add/min/max/mul/and/or/xor over its two block arguments. Factored out of
+// CheckCommonReduceLikeOp so a caller holding a reduction body as a raw
+// Block -- not yet wrapped in a real ReduceOp/ReduceWindowOp, e.g. a region
+// cloned in from elsewhere -- can classify it the same way without needing
+// to construct a throwaway op first.
+inline ReduceOpKind classifyReduceBlockKind(Block &block) {
+  if (isOnlyOpBlock<stablehlo::AddOp, true, false>(&block))
+    return ReduceOpKind::Add;
+  if (isOnlyOpBlock<stablehlo::MinOp, true, false>(&block))
+    return ReduceOpKind::Min;
+  if (isOnlyOpBlock<stablehlo::MaxOp, true, false>(&block))
+    return ReduceOpKind::Max;
+  if (isOnlyOpBlock<stablehlo::MulOp, true, false>(&block))
+    return ReduceOpKind::Mul;
+  if (isOnlyOpBlock<stablehlo::AndOp, true, false>(&block))
+    return ReduceOpKind::And;
+  if (isOnlyOpBlock<stablehlo::OrOp, true, false>(&block))
+    return ReduceOpKind::Or;
+  if (isOnlyOpBlock<stablehlo::XorOp, true, false>(&block))
+    return ReduceOpKind::Xor;
+  return ReduceOpKind::Unknown;
+}
+
 template <typename OpTy> struct CheckCommonReduceLikeOp {
 public:
   ReduceOpKind kind;
@@ -1590,25 +1628,7 @@ public:
       kind = ReduceOpKind::Unknown;
       return;
     }
-
-    auto &block = region.getBlocks().front();
-    if (isOnlyOpBlock<stablehlo::AddOp, true, false>(&block)) {
-      kind = ReduceOpKind::Add;
-    } else if (isOnlyOpBlock<stablehlo::MinOp, true, false>(&block)) {
-      kind = ReduceOpKind::Min;
-    } else if (isOnlyOpBlock<stablehlo::MaxOp, true, false>(&block)) {
-      kind = ReduceOpKind::Max;
-    } else if (isOnlyOpBlock<stablehlo::MulOp, true, false>(&block)) {
-      kind = ReduceOpKind::Mul;
-    } else if (isOnlyOpBlock<stablehlo::AndOp, true, false>(&block)) {
-      kind = ReduceOpKind::And;
-    } else if (isOnlyOpBlock<stablehlo::OrOp, true, false>(&block)) {
-      kind = ReduceOpKind::Or;
-    } else if (isOnlyOpBlock<stablehlo::XorOp, true, false>(&block)) {
-      kind = ReduceOpKind::Xor;
-    } else {
-      kind = ReduceOpKind::Unknown;
-    }
+    kind = classifyReduceBlockKind(region.getBlocks().front());
   }
 
   bool isCommutativeOp() const { return kind != ReduceOpKind::Unknown; }

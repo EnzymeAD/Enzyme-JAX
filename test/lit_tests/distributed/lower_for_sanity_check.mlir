@@ -82,15 +82,15 @@ module {
 // -----
 
 // An all-reduce-shaped collective between two kernels: reduces() is
-// non-empty, so expect the cloned add-body applied via the static
-// unrolled fold (a stablehlo.add over sliced 1x1 pieces of the expanded
-// tensor, not a stablehlo.reduce), and no hardware-collective machinery
-// at all (this pass never reuses DistributedToHlo.cpp's patterns).
+// non-empty, so expect a stablehlo.reduce (classified from the cloned
+// add-body via its identity element -- see
+// stablehlo::classifyReduceBlockKind/getReductionIdentity) over the
+// reduced mesh axis, and no hardware-collective machinery at all (this
+// pass never reuses DistributedToHlo.cpp's patterns).
 // CHECK-LABEL: func.func @main
 // CHECK: stablehlo.while
-// CHECK: stablehlo.slice
-// CHECK: stablehlo.slice
-// CHECK: stablehlo.add
+// CHECK: stablehlo.reduce
+// CHECK-SAME: applies stablehlo.add
 // CHECK: stablehlo.broadcast_in_dim
 // CHECK: stablehlo.while
 // CHECK-NOT: stablehlo.all_reduce

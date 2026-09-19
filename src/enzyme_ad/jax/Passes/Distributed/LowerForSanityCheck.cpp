@@ -8,6 +8,7 @@
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/MainFunctionAnalysis.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 namespace mlir::enzyme::distributed {
 
@@ -53,6 +54,7 @@ Value buildIndexConstant(OpBuilder &builder, Location loc, int64_t value) {
   return builder.create<stablehlo::ConstantOp>(
       loc, DenseElementsAttr::get(type, builder.getI64IntegerAttr(value)));
 }
+
 
 // Places `v`'s own dims (each described by `labels`, one per dim of `v`) at
 // their canonical [meshExtents..., <v's own local dims, in original order>]
@@ -771,6 +773,22 @@ private:
         fail(collective, "reduction group must be produced by axis.product");
         return;
       }
+
+      // One region may fold more than one axis (when a reduction group
+      // spans several mesh axis factors), so its kind/identity are
+      // resolved once here rather than per axis.
+      auto elemType = cast<RankedTensorType>(running.getType()).getElementType();
+      auto kind = stablehlo::classifyReduceBlockKind(region.front());
+      Value identity = stablehlo::getIdentityValueForReduceKind(builder, loc, elemType, kind);
+      if (!identity) {
+        fail(collective,
+            "distributed-lower-for-sanity-check requires a collective's "
+            "reduction body to be a single recognized associative op "
+            "(add/mul/min/max/and/or/xor) with a known identity element over "
+            "its element type");
+        return;
+      }
+
       for (TV_AxisFactor factor : *groupFactors) {
         auto provenance = axis::getFactorProvenanceAxis(factor);
         auto physicalType =
@@ -788,7 +806,7 @@ private:
           return;
         }
         size_t dim = dimPos - activeMeshDims.begin();
-        running = foldReduction(running, dim, region.front(), loc);
+        running = foldReduction(running, dim, region.front(), identity, loc);
         activeMeshDims.erase(dimPos);
       }
     }
@@ -899,42 +917,26 @@ private:
     return AxisProvenance{static_cast<size_t>(meshIdx - meshAxisTypes.begin())};
   }
 
-  // Statically unrolled left-fold over dimension `dim` of `tensor`, cloning
-  // `body`'s ops (mapping its two scalar block args to whole-array slices,
-  // not scalars -- the region's ops are elementwise and don't otherwise
-  // depend on the declared 0-d block-arg type) once per element beyond the
-  // first. This sidesteps needing a generic reduction identity element for
-  // an arbitrary associative op.
-  Value foldReduction(Value tensor, size_t dim, Block &body, Location loc) {
+  // Reduces dimension `dim` of `tensor` via stablehlo.reduce, using
+  // `identity` (the reduction body's own identity element, resolved once
+  // per reduction body by the caller -- see
+  // stablehlo::classifyReduceBlockKind/getIdentityValueForReduceKind) as
+  // its init value.
+  Value foldReduction(Value tensor, size_t dim, Block &body, Value identity,
+                      Location loc) {
     auto type = cast<RankedTensorType>(tensor.getType());
-    int64_t extent = type.getDimSize(dim);
-    Value running = sliceAtIndex(tensor, dim, 0, loc);
-    for (int64_t i = 1; i < extent; ++i) {
-      Value next = sliceAtIndex(tensor, dim, i, loc);
-      IRMapping bodyMapping;
-      bodyMapping.map(body.getArgument(0), running);
-      bodyMapping.map(body.getArgument(1), next);
-      Value result;
-      for (Operation &op : body.without_terminator()) {
-        Operation *cloned = builder.clone(op, bodyMapping);
-        // The region's ops are declared over scalar (0-d tensor) block
-        // args, matching stablehlo.reduce's own region convention, but
-        // here they're being applied to whole-array slices instead (see
-        // this function's own doc comment) -- clone keeps each op's
-        // original *scalar* result type, so it needs refreshing to match
-        // its (now whole-array-shaped) operands. Every op legal in a
-        // reduction body is a same-shape elementwise op (add/max/min/...,
-        // exactly what CreateReductionOpGeneral ever builds), so the
-        // first operand's type is always the correct new result type.
-        for (OpResult resultVal : cloned->getResults())
-          resultVal.setType(cloned->getOperand(0).getType());
-        result = cloned->getResult(0);
-      }
-      auto returnOp = cast<stablehlo::ReturnOp>(body.getTerminator());
-      running = bodyMapping.lookupOrDefault(returnOp.getOperand(0));
-      (void)result;
-    }
-    return dropDim(running, dim, loc, /*alreadySliced=*/true);
+    SmallVector<int64_t> resultShape;
+    for (auto [i, extent] : llvm::enumerate(type.getShape()))
+      if (i != dim)
+        resultShape.push_back(extent);
+    auto resultType = RankedTensorType::get(resultShape, type.getElementType());
+    auto reduceOp = builder.create<stablehlo::ReduceOp>(
+        loc, TypeRange{resultType}, ValueRange{tensor}, ValueRange{identity},
+        builder.getDenseI64ArrayAttr({static_cast<int64_t>(dim)}));
+
+    IRMapping bodyMapping;
+    body.getParent()->cloneInto(&reduceOp.getBody(), bodyMapping);
+    return reduceOp.getResult(0);
   }
 
   // Static slice picking index `idx` along `dim`, keeping `dim` at size 1
@@ -954,12 +956,12 @@ private:
                                               limits, strides);
   }
 
-  // Drops a size-1 dimension via reshape. If `alreadySliced` is false, the
-  // dim is first sliced down to its index-0 representative (used for a
-  // Physical -> Replicate mapping pair, where every coordinate along `dim`
-  // is already known-equal by this pipeline's own correctness invariant).
-  Value dropDim(Value tensor, size_t dim, Location loc, bool alreadySliced = false) {
-    Value sliced = alreadySliced ? tensor : sliceAtIndex(tensor, dim, 0, loc);
+  // Drops a size-1 dimension via reshape, first slicing the dim down to its
+  // index-0 representative (used for a Physical -> Replicate mapping pair,
+  // where every coordinate along `dim` is already known-equal by this
+  // pipeline's own correctness invariant).
+  Value dropDim(Value tensor, size_t dim, Location loc) {
+    Value sliced = sliceAtIndex(tensor, dim, 0, loc);
     auto type = cast<RankedTensorType>(sliced.getType());
     SmallVector<int64_t> newShape;
     for (auto [i, extent] : llvm::enumerate(type.getShape())) {
