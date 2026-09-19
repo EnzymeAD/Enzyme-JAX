@@ -17,7 +17,8 @@
 // #include "llvm/Support/LogicalResult.h"
 // #include "llvm/Support/MathExtras.h"
 // #include <algorithm>
-// #include <cstdint>
+#include <cstdint>
+#include <limits>
 
 namespace mlir {
 namespace enzyme {
@@ -807,9 +808,12 @@ struct MPIRecvOpLowering : public OpRewritePattern<enzymexla::MPIRecvOp> {
 struct MPIIsendOpLowering : public OpRewritePattern<enzymexla::MPIIsendOp> {
 
   std::string backend;
+  int32_t &nextRequestStorageInitializer;
   MPIIsendOpLowering(std::string backend, MLIRContext *context,
+                     int32_t &nextRequestStorageInitializer,
                      PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), backend(backend) {}
+      : OpRewritePattern(context, benefit), backend(backend),
+        nextRequestStorageInitializer(nextRequestStorageInitializer) {}
 
   LogicalResult matchAndRewrite(enzymexla::MPIIsendOp op,
                                 PatternRewriter &rewriter) const override {
@@ -949,10 +953,16 @@ struct MPIIsendOpLowering : public OpRewritePattern<enzymexla::MPIIsendOp> {
       // Get all orinigal op operands
       auto opOperands = op.getOperands();
 
-      // Create a constant tensor to hold request
+      // Each isend/irecv ops needs it's own storage for requests.
+      // Initialize constants with unique values so that folding doesn't
+      // cause other ops to resuse the same buffer
+      if (nextRequestStorageInitializer ==
+          std::numeric_limits<int32_t>::min())
+        return rewriter.notifyMatchFailure(
+            op, "exhausted distinct MPI request storage initializers");
       auto tensorType = RankedTensorType::get({}, i32Type);
-      auto constantAttr =
-          DenseIntElementsAttr::get(tensorType, ArrayRef<int32_t>{-1});
+      auto constantAttr = DenseIntElementsAttr::get(
+          tensorType, ArrayRef<int32_t>{nextRequestStorageInitializer--});
       Value constantTensor = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), tensorType, constantAttr);
 
@@ -993,9 +1003,12 @@ struct MPIIsendOpLowering : public OpRewritePattern<enzymexla::MPIIsendOp> {
 struct MPIIrecvOpLowering : public OpRewritePattern<enzymexla::MPIIrecvOp> {
 
   std::string backend;
+  int32_t &nextRequestStorageInitializer;
   MPIIrecvOpLowering(std::string backend, MLIRContext *context,
+                     int32_t &nextRequestStorageInitializer,
                      PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), backend(backend) {}
+      : OpRewritePattern(context, benefit), backend(backend),
+        nextRequestStorageInitializer(nextRequestStorageInitializer) {}
 
   LogicalResult matchAndRewrite(enzymexla::MPIIrecvOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1136,10 +1149,16 @@ struct MPIIrecvOpLowering : public OpRewritePattern<enzymexla::MPIIrecvOp> {
       // Get all orinigal op operands
       auto opOperands = op.getOperands();
 
-      // Create a constant tensor to hold request
+      // Each isend/irecv ops needs it's own storage for requests.
+      // Initialize constants with unique values so that folding doesn't
+      // cause other ops to resuse the same buffer
+      if (nextRequestStorageInitializer ==
+          std::numeric_limits<int32_t>::min())
+        return rewriter.notifyMatchFailure(
+            op, "exhausted distinct MPI request storage initializers");
       auto tensorType = RankedTensorType::get({}, i32Type);
-      auto constantAttr =
-          DenseIntElementsAttr::get(tensorType, ArrayRef<int32_t>{-1});
+      auto constantAttr = DenseIntElementsAttr::get(
+          tensorType, ArrayRef<int32_t>{nextRequestStorageInitializer--});
       Value constantTensor = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), tensorType, constantAttr);
 
@@ -1315,17 +1334,21 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
       auto i32Type = IntegerType::get(context, 32);
 
       std::string mpiFunctionName = "MPI_Waitall";
+      auto requests = op.getRequests();
+      unsigned numRequests = requests.size();
 
       // Generate the enzymexla_wrapper LLVM function body
-      std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName;
+      std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName +
+                                        "_" + std::to_string(numRequests);
 
       if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
         // Create the wrapper function decl
+        SmallVector<Type> wrapperArgumentTypes(numRequests, llvmPtrType);
         auto funcType = LLVM::LLVMFunctionType::get(
-            llvmVoidType, {llvmPtrType, llvmPtrType}, false);
+            llvmVoidType, wrapperArgumentTypes, false);
 
         auto wrapperFunc = LLVM::LLVMFuncOp::create(
             rewriter, op.getLoc(), wrapperFunctionName, funcType);
@@ -1341,18 +1364,31 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
         rewriter.setInsertionPointToStart(entryBlock);
 
         // Add argument-level memory effects attribute to all arguments
-        for (unsigned i = 0; i < 2; ++i) {
+        for (unsigned i = 0; i < numRequests; ++i) {
           wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
                                  memoryEffectsAttr);
         }
 
-        // Get the function argument
-        Value countPtr = entryBlock->getArgument(0);
-        Value requestPtr = entryBlock->getArgument(1);
+        Value count = arith::ConstantOp::create(
+            rewriter, op.getLoc(), i32Type,
+            rewriter.getI32IntegerAttr(static_cast<int32_t>(numRequests)));
 
-        // Load the count value
-        Value count =
-            LLVM::LoadOp::create(rewriter, op.getLoc(), i32Type, countPtr);
+        // Pack the scalar requests into the native contiguous request array.
+        Value requestsPtr = LLVM::AllocaOp::create(rewriter, op.getLoc(),
+                                                   llvmPtrType, i32Type, count);
+        SmallVector<Value> requestElementPtrs;
+        requestElementPtrs.reserve(numRequests);
+        for (unsigned index = 0; index < numRequests; ++index) {
+          Value requestPtr = entryBlock->getArgument(index);
+          Value request =
+              LLVM::LoadOp::create(rewriter, op.getLoc(), i32Type, requestPtr);
+          Value requestElementPtr = LLVM::GEPOp::create(
+              rewriter, op.getLoc(), llvmPtrType, i32Type, requestsPtr,
+              ArrayRef<LLVM::GEPArg>{static_cast<int32_t>(index)});
+          LLVM::StoreOp::create(rewriter, op.getLoc(), request,
+                                requestElementPtr);
+          requestElementPtrs.push_back(requestElementPtr);
+        }
 
         // Allocate a count x !llvm.array<6 x i32> for the array of statuses
         // Size of status is implem dependendent, 6 should cover the max
@@ -1367,7 +1403,16 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
         // TODO returns i32 error code which we're ignoring here
         LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{i32Type},
                              SymbolRefAttr::get(context, mpiFunctionName),
-                             ValueRange{count, requestPtr, statusPtr});
+                             ValueRange{count, requestsPtr, statusPtr});
+
+        // MPI_Waitall sets completed requests to MPI_REQUEST_NULL.
+        for (unsigned index = 0; index < numRequests; ++index) {
+          Value requestPtr = entryBlock->getArgument(index);
+          Value requestElementPtr = requestElementPtrs[index];
+          Value request = LLVM::LoadOp::create(rewriter, op.getLoc(), i32Type,
+                                               requestElementPtr);
+          LLVM::StoreOp::create(rewriter, op.getLoc(), request, requestPtr);
+        }
 
         LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
       }
@@ -1384,14 +1429,11 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
                                  funcType, LLVM::Linkage::External);
       }
 
-      // Get all orinigal op operands
-      auto opOperands = op.getOperands();
-
       // Call the LLVM function with enzymexla.jit_call
       enzymexla::JITCallOp::create(
           rewriter, op.getLoc(), TypeRange{},
-          mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
-          ValueRange{opOperands}, rewriter.getStringAttr(""),
+          mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName), requests,
+          rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
           /*arg_attrs=*/nullptr,
@@ -1999,14 +2041,17 @@ struct LowerEnzymeXLAMPIPass
     }
 
     RewritePatternSet patterns(context);
+    int32_t nextRequestStorageInitializer = -1;
 
     patterns.add<MPICommRankOpLowering>(backend, context);
     patterns.add<MPICommSizeOpLowering>(backend, context);
     patterns.add<MPIBarrierOpLowering>(backend, context);
     patterns.add<MPISendOpLowering>(backend, context);
     patterns.add<MPIRecvOpLowering>(backend, context);
-    patterns.add<MPIIsendOpLowering>(backend, context);
-    patterns.add<MPIIrecvOpLowering>(backend, context);
+    patterns.add<MPIIsendOpLowering>(backend, context,
+                                     nextRequestStorageInitializer);
+    patterns.add<MPIIrecvOpLowering>(backend, context,
+                                     nextRequestStorageInitializer);
     patterns.add<MPIWaitOpLowering>(backend, context);
     patterns.add<MPIWaitallOpLowering>(backend, context);
     patterns.add<MPIAllreduceOpLowering>(backend, ncclCommPtr, context);
