@@ -319,6 +319,14 @@ private:
           &affineIndexInfo,
       mlir::stablehlo::WhileOp whileOp,
       mlir::enzyme::WhileLoopInfo &info) const;
+
+  mlir::LogicalResult tryLowerFirstOrderRecurrence(
+      mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
+      mlir::stablehlo::DynamicUpdateSliceOp dusOp, mlir::BlockArgument blockArg,
+      unsigned idx, int64_t dusDim,
+      llvm::MapVector<mlir::Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
+          &affineIndexInfo,
+      mlir::enzyme::WhileLoopInfo &info) const;
 };
 
 namespace mlir {
