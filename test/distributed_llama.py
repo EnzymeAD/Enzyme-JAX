@@ -247,6 +247,13 @@ def maybe_constrain(tensor, dim_to_axis):
     return jax.lax.with_sharding_constraint(tensor, NamedSharding(MESH, PartitionSpec(*spec)))
 
 
+def maybe_constrain_all(tensor):
+    """Constrain `tensor` to fully replicated over the active mesh."""
+    return jax.lax.with_sharding_constraint(
+        tensor, NamedSharding(MESH, PartitionSpec(*([None] * tensor.ndim)))
+    )
+
+
 def shard_weight(w, tp_out_dim):
     """Megatron-style TP shards the matmul's output dim (tp_out_dim) so propagation
     naturally produces the right collective: no communication needed going into a
@@ -275,6 +282,84 @@ def sigmoid(x):
 
 def silu(x):
     return x * sigmoid(x)
+
+
+@jax.jit
+def transformer_layer(
+    x,
+    wq,
+    wk,
+    wv,
+    wo,
+    w1,
+    w2,
+    w3,
+    rms_att_weight,
+    rms_ffn_weight,
+    key_cache_l,
+    value_cache_l,
+    toconv,
+    toconv2,
+):
+    """One transformer layer, given that layer's slice of every weight/cache.
+
+    Jitting it makes each layer a func.call to a shared private func.func in the
+    exported StableHLO, instead of N inlined copies. JAX only shares the callee
+    across calls whose argument avals are equal, so every caller must pass
+    activations with the same (mesh-carrying) sharding aval; see the entry
+    constraint in forward_batched()."""
+    pos = key_cache_l.shape[0]
+
+    xb = rmsnorm(x, rms_att_weight)
+
+    q = wq @ xb
+    k = wk @ xb
+    v = wv @ xb
+
+    q_tmp = jnp.reshape(q, (DIM // 2, 2))
+    k_tmp = jnp.reshape(k, (DIM // 2, 2))
+
+    k = jnp.reshape(jnp.einsum("ijk,ik -> ij", toconv2, k_tmp), (DIM,))
+    q = jnp.reshape(jnp.einsum("ijk,ik -> ij", toconv, q_tmp), (DIM,))
+
+    # jnp.append lowers to a separate outlined func.call wrapping a plain
+    # stablehlo.concatenate, which the distributed pipeline has no sharding
+    # rule for; jnp.concatenate produces the same op inlined.
+    key_cache_l = jnp.concatenate([key_cache_l, jnp.reshape(k, (1, DIM))], axis=0)
+    value_cache_l = jnp.concatenate([value_cache_l, jnp.reshape(v, (1, DIM))], axis=0)
+
+    # Multi-head attention over a real "head" dimension via einsum,
+    # instead of Python-unrolled static per-head slices: a static slice
+    # gets a Shardy "permutation" sharding-rule factor, which entangles
+    # the TP-sharded head-split axis with whatever else that factor
+    # touches. A reshape splitting DIM into (N_HEADS, HEAD_SIZE) is an
+    # ordinary pass-through factor instead, so the TP axis stays cleanly
+    # shardable across heads.
+    q_heads = jnp.reshape(q, (N_HEADS, HEAD_SIZE))
+    key_cache_heads = jnp.reshape(key_cache_l, (pos + 1, N_KV_HEADS, HEAD_SIZE))
+    value_cache_heads = jnp.reshape(value_cache_l, (pos + 1, N_KV_HEADS, HEAD_SIZE))
+    if KV_MUL > 1:
+        key_cache_heads = jnp.repeat(key_cache_heads, KV_MUL, axis=1)
+        value_cache_heads = jnp.repeat(value_cache_heads, KV_MUL, axis=1)
+
+    att = jnp.einsum("phd,hd->hp", key_cache_heads, q_heads)
+    att = att / jnp.sqrt(HEAD_SIZE)
+    att = softmax(att, axis=-1)
+
+    xb = jnp.einsum("phd,hp->hd", value_cache_heads, att)
+    xb = jnp.reshape(xb, (DIM,))
+
+    x = x + wo @ xb
+
+    xb = rmsnorm(x, rms_ffn_weight)
+
+    hb = w1 @ xb
+    hb2 = w3 @ xb
+    hb = silu(hb)
+    hb = hb * hb2
+    xb = w2 @ hb
+
+    return x + xb
 
 
 def forward(x, weights, key_cache, value_cache):
@@ -311,63 +396,22 @@ def forward(x, weights, key_cache, value_cache):
     toconv2 = jnp.array(toconv2)
 
     for i in range(N_LAYERS):
-        xb = rmsnorm(x, rms_att_weight[i, :])
-
-        q = wq[i, :, :] @ xb
-        k = wk[i, :, :] @ xb
-        v = wv[i, :, :] @ xb
-
-        q_tmp = jnp.reshape(q, (DIM // 2, 2))
-        k_tmp = jnp.reshape(k, (DIM // 2, 2))
-
-        k = jnp.reshape(jnp.einsum("ijk,ik -> ij", toconv2, k_tmp), (DIM,))
-        q = jnp.reshape(jnp.einsum("ijk,ik -> ij", toconv, q_tmp), (DIM,))
-
-        # jnp.append lowers to a separate outlined func.call wrapping a plain
-        # stablehlo.concatenate, which the distributed pipeline has no sharding
-        # rule for; jnp.concatenate produces the same op inlined.
-        key_cache_l = key_cache[i, :, :]
-        key_cache_l = jnp.concatenate([key_cache_l, jnp.reshape(k, (1, DIM))], axis=0)
-        value_cache_l = value_cache[i, :, :]
-        value_cache_l = jnp.concatenate(
-            [value_cache_l, jnp.reshape(v, (1, DIM))], axis=0
+        x = transformer_layer(
+            x,
+            wq[i, :, :],
+            wk[i, :, :],
+            wv[i, :, :],
+            wo[i, :, :],
+            w1[i, :, :],
+            w2[i, :, :],
+            w3[i, :, :],
+            rms_att_weight[i, :],
+            rms_ffn_weight[i, :],
+            key_cache[i, :, :],
+            value_cache[i, :, :],
+            toconv,
+            toconv2,
         )
-
-        # Multi-head attention over a real "head" dimension via einsum,
-        # instead of Python-unrolled static per-head slices: a static slice
-        # gets a Shardy "permutation" sharding-rule factor, which entangles
-        # the TP-sharded head-split axis with whatever else that factor
-        # touches. A reshape splitting DIM into (N_HEADS, HEAD_SIZE) is an
-        # ordinary pass-through factor instead, so the TP axis stays cleanly
-        # shardable across heads.
-        q_heads = jnp.reshape(q, (N_HEADS, HEAD_SIZE))
-        key_cache_heads = jnp.reshape(key_cache_l, (pos + 1, N_KV_HEADS, HEAD_SIZE))
-        value_cache_heads = jnp.reshape(
-            value_cache_l, (pos + 1, N_KV_HEADS, HEAD_SIZE)
-        )
-        if KV_MUL > 1:
-            key_cache_heads = jnp.repeat(key_cache_heads, KV_MUL, axis=1)
-            value_cache_heads = jnp.repeat(value_cache_heads, KV_MUL, axis=1)
-
-        att = jnp.einsum("phd,hd->hp", key_cache_heads, q_heads)
-        att = att / jnp.sqrt(HEAD_SIZE)
-        att = softmax(att, axis=-1)
-
-        xb = jnp.einsum("phd,hp->hd", value_cache_heads, att)
-        xb = jnp.reshape(xb, (DIM,))
-
-        xb2 = wo[i, :, :] @ xb
-        x = x + xb2
-
-        xb = rmsnorm(x, rms_ffn_weight[i, :])
-
-        hb = w1[i, :, :] @ xb
-        hb2 = w3[i, :, :] @ xb
-        hb = silu(hb)
-        hb = hb * hb2
-        xb = w2[i, :, :] @ hb
-
-        x = x + xb
 
     x = rmsnorm(x, rms_final_weight)
     return x
@@ -378,6 +422,13 @@ def forward_batched(x, weights, key_cache, value_cache):
     from forward()'s (per-example) point of view, so it has to be constrained on the
     batched arguments before vmapping over them."""
     x = maybe_constrain(x, {0: "data"})
+    if "data" not in MESH.axis_names:
+        # Without any constraint, x keeps an empty-mesh aval as a raw jit argument
+        # while later layers' activations carry the plan's mesh, so JAX would not
+        # share transformer_layer's callee between layer 0 and the rest. A closed
+        # replicated constraint gives x the mesh aval (an open one is rejected by
+        # the distributed pipeline).
+        x = maybe_constrain_all(x)
     key_cache = maybe_constrain(key_cache, {0: "data"})
     value_cache = maybe_constrain(value_cache, {0: "data"})
     return jax.vmap(forward, in_axes=(0, None, 0, 0))(x, weights, key_cache, value_cache)
