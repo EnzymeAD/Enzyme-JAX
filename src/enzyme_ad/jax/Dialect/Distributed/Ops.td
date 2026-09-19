@@ -31,6 +31,11 @@ def PhysicalMeshOp
   let assemblyFormat =
       "$sym_name `device_target` $device_target `axes` $axes attr-dict";
   let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    // Product of every physical axis's extent -- the total number of
+    // devices this mesh spans.
+    uint64_t getDeviceCount();
+  }];
 }
 
 def GetPhysicalMeshAxesOp

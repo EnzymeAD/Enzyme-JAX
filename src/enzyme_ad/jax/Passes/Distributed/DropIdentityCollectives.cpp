@@ -13,12 +13,10 @@ namespace mlir::enzyme::distributed {
 namespace {
 
 // A collective performs no real communication when it does no reduction,
-// its input and output meshes are the exact same factors in the exact same
-// order, its mapping is a fully identity factor-to-factor correspondence,
-// and its declared output type is literally its own input type. Callers
-// must have already put `op`'s mapping into maximal one-to-one form (see
-// CanonicalizeAxisMapsPass) before calling this, since predGroupPairIsIdentity
-// checks per-pair identity, not per-factor.
+// has identical input and output meshes (based on index space),
+// and its mapping is a fully identity factor-to-factor correspondence.
+// This should also imply identical input and output types.
+// Expects canonicalized axis maps: see CanonicalizeAxisMapsPass.
 bool isIdentityCollective(DistributedCollectiveOp op) {
   if (!op.getReductionGroups().empty()) {
     return false;
@@ -30,8 +28,7 @@ bool isIdentityCollective(DistributedCollectiveOp op) {
   if (failed(inputMeshFactors) || failed(outputMeshFactors)) {
     return false;
   }
-  if (!axis::areFactorListsStructurallyEqual(*inputMeshFactors,
-                                             *outputMeshFactors)) {
+  if (!axis::areFactorIndexSpacesEqual(*inputMeshFactors, *outputMeshFactors)) {
     return false;
   }
 
@@ -44,17 +41,14 @@ bool isIdentityCollective(DistributedCollectiveOp op) {
     return false;
   }
 
-  return op.getOutputType() == op.getInputObject().getType();
+  assert(op.getOutputType() == op.getInputObject().getType() &&
+         "identity collective should have identical input and output types");
+  return true;
 }
 
 // Removes a distributed.Collective that performs no real communication,
 // replacing every distributed.Await use of its result directly with its own
-// input_object. No AnchorPartitioning is needed at that edge: type equality
-// is already guaranteed by the identity condition, and DistributedAwait
-// never itself implemented PartitioningAnchorOpInterface, so any binding a
-// downstream consumer needs already lives on a real AnchorPartitioning sitting
-// after the await -- which simply gets repointed to input_object, one hop
-// shorter.
+// input_object.
 struct DropIdentityCollective
     : public OpRewritePattern<DistributedCollectiveOp> {
   using OpRewritePattern::OpRewritePattern;

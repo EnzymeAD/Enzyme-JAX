@@ -5,6 +5,15 @@
 
 namespace mlir::enzyme::distributed {
 
+uint64_t PhysicalMeshOp::getDeviceCount() {
+  uint64_t count = 1;
+  for (Attribute axisAttr : getAxesAttr()) {
+    count *= cast<PhysicalCommAxisType>(cast<TypeAttr>(axisAttr).getValue())
+                 .getExtent();
+  }
+  return count;
+}
+
 LogicalResult PhysicalMeshOp::verify() {
   for (auto [idx, axisAttr] : llvm::enumerate(getAxesAttr())) {
     auto typeAttr = dyn_cast<TypeAttr>(axisAttr);

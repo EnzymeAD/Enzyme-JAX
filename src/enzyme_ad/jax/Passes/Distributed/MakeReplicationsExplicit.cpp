@@ -18,14 +18,8 @@ namespace {
 using TV_AxisFactor = TypedValue<axis::AxisFactorType>;
 using TV_FactorGroup = TypedValue<axis::FactorGroupType>;
 
-// Builds a fresh factor-group covering the whole module mesh: one
-// full-extent, unit-stride factor per physical axis. This is the minuend
-// axis::subtractSpace needs to compute what a mesh operand is missing --
-// PhysicalCommAxisType's equivalence is defined structurally (same physical
-// mesh symbol + same axis index, see PhysicalCommAxisType::equivalent), not
-// by SSA identity, so a brand new distributed.GetPhysicalMeshAxes here is
-// automatically recognized as the same axis space any other collective's
-// mesh operands were built from -- no CSE required.
+// Builds a fresh factor-group covering the whole module mesh, so we can
+// use it as the device universe to subtract from later.
 TV_FactorGroup buildFullMeshFactorGroup(PhysicalMeshOp physicalMesh,
                                         OpBuilder &builder, Location loc) {
   SmallVector<Type> axisTypes;
@@ -38,80 +32,114 @@ TV_FactorGroup buildFullMeshFactorGroup(PhysicalMeshOp physicalMesh,
   return axis::viewFactorsAsProduct(factors, builder, loc);
 }
 
-// A DistributedCollective's input_mesh/output_mesh/mapping are only required
-// (by the op's own verifier) to fully account for whichever physical axes
-// they actually mention -- a physical axis absent from input_mesh entirely
-// is well-defined (the value is uniformly replicated across it) but that
-// meaning is only recoverable by comparing against the whole module's
-// PhysicalMesh from outside the collective itself. This rewrites each such
-// collective so every physical axis of the module's mesh is always directly
-// represented as either a real spatial factor or an explicit ReplicationAxis
-// factor, on both the input/output mesh operands and in `mapping`, so no
-// downstream consumer of a collective needs to infer replication from
-// omission.
-//
-// reduction_groups/mapping never need their own separate "missing axis"
-// scan: MaterializeDistributedCollectives.cpp (the sole producer of these
-// operands) always builds a collective's input_mesh to already include its
-// own reduction_groups' axes, and builds mapping's lhs/rhs FactorGroups from
-// that same producer/consumer partitioning-axis basis -- so any physical
-// axis reachable through reduction_groups or mapping is already reachable
-// through input_mesh/output_mesh directly, and checking those two mesh
-// operands alone is exhaustive.
+// Gets the extent just of the physical axes, ignoring any other axes (tensor,
+// replication, etc)
+static uint64_t getPhysicalAxesExtent(TV_FactorGroup group) {
+  auto factors = axis::getProductProvenanceFactors(group);
+  uint64_t extent = 1;
+  for (TV_AxisFactor factor : *factors) {
+    auto provenance = axis::getFactorProvenanceAxis(factor);
+    if (isa<PhysicalCommAxisType>(provenance->getType())) {
+      extent *= axis::getFactorExtent(factor);
+    }
+  }
+  return extent;
+}
+// A kernel, collective, or cast using only a subset of the module's
+// physical mesh axes is implicitly replicated accross the missing axes.
+// This pass adds explicit replication factors to the collectives. Note: a
+// missing axis means the DATA is replicated, not necessarily the whole
+// collective is replicated: an all-gather may have MeshAx --> Replicate(),
+// indicating the output data on MeshAx is replicated but there is still
+// only one gather collective.
+// In the case that a collective is indeed replicated completely
+// over a missing axis (i.e., input and output meshes are missing the same
+// factor), emit Ax1 --> Replicate() and Replicate() --> Ax1 instead of Ax1 -->
+// Ax1: provides slightly more information.
 struct MakeCollectiveReplicationsExplicit
     : public OpRewritePattern<DistributedCollectiveOp> {
   MakeCollectiveReplicationsExplicit(MLIRContext *context,
                                      PhysicalMeshOp physicalMesh)
-      : OpRewritePattern(context), physicalMesh(physicalMesh) {}
+      : OpRewritePattern(context), physicalMesh(physicalMesh),
+        fullExtentOfMesh(physicalMesh.getDeviceCount()) {}
 
   LogicalResult matchAndRewrite(DistributedCollectiveOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // Cheap early exit computed with ZERO IR mutation (no op creation at
-    // all -- fullExtentOfMesh reads physicalMesh's own type attrs
-    // directly, and axis::getFactorGroupExtent is a pure query) so a
-    // "nothing to do" match attempt never itself changes the IR before
-    // even reaching buildFullMeshFactorGroup below. This matters for more
-    // than a style nicety: OpRewritePattern's contract requires a
-    // failure() return to have made no IR changes, and
-    // buildFullMeshFactorGroup creates real ops (a fresh
-    // GetPhysicalMeshAxesOp + factors + product) -- calling it
-    // unconditionally on every match attempt, including already-fixed
-    // collectives, would leave dangling ops behind on every "no-op" visit
-    // and confuse the greedy driver's convergence tracking. This check is
-    // a plain necessary condition (an operand at full extent might still
-    // be composed differently than expected), not a substitute for the
-    // real axis::subtractSpace-based check below -- it only exists to
-    // avoid mutating the IR before that real check has had a chance to
-    // run cheaply.
-    uint64_t fullExtentOfMesh = 1;
-    // matchAndRewrite is const, so the `physicalMesh` member is accessed as
-    // const here; getAxesAttr() isn't const-qualified (ODS-generated op
-    // accessors aren't), so a plain non-const copy is needed to call it.
-    PhysicalMeshOp mesh = physicalMesh;
-    for (Attribute axisAttr : mesh.getAxesAttr()) {
-      fullExtentOfMesh *=
-          cast<PhysicalCommAxisType>(cast<TypeAttr>(axisAttr).getValue())
-              .getExtent();
+    // Cheap early exit computed with ZERO IR mutation: check if both the
+    // input, output mesh operands already cover the full extent of the
+    // physical mesh.
+    uint64_t inputExtent = getPhysicalAxesExtent(op.getInputMesh());
+    uint64_t outputExtent = getPhysicalAxesExtent(op.getOutputMesh());
+    if (inputExtent == fullExtentOfMesh && outputExtent == fullExtentOfMesh) {
+      return failure(); // No match, nothing to do.
     }
-    FailureOr<uint64_t> inputExtent =
-        axis::getFactorGroupExtent(op.getInputMesh());
-    FailureOr<uint64_t> outputExtent =
-        axis::getFactorGroupExtent(op.getOutputMesh());
-    assert(succeeded(inputExtent) && succeeded(outputExtent) &&
-          "collective mesh operand must have a computable factor-group "
-          "extent");
-    if (*inputExtent == fullExtentOfMesh && *outputExtent == fullExtentOfMesh) {
-      return failure();
-    }
+
+    // Parallel arrays: addInputMapFactors[i]/addOutputMapFactors[i] is one
+    // new mapping pair's (lhs, rhs) contribution -- exactly one side of each
+    // pair is a real missing physical factor, the other a same-extent
+    // Replicate standing in for "no real axis here" (see the per-side
+    // comment below for which side is which and why).
+    llvm::SmallVector<TV_AxisFactor> addInputMapFactors;
+    llvm::SmallVector<TV_AxisFactor> addOutputMapFactors;
+
+    // Not parallel arrays: just the missing mesh space to add to each mesh
+    // operand.
+    llvm::SmallVector<TV_AxisFactor> missingInputMeshFactors;
+    llvm::SmallVector<TV_AxisFactor> missingOutputMeshFactors;
 
     // Every axis-algebra op below is pure metadata and belongs at module
     // scope, mirroring the ModuleScopeGuard convention used throughout the
-    // rest of this dialect's lowering passes.
+    // rest of this dialect's lowering passes -- built directly at module
+    // scope from the start, so (unlike a TemporaryOpGuard) nothing here
+    // needs to be individually kept alive past this function.
     axis::ModuleScopeGuard moduleScope(rewriter);
-    TV_FactorGroup fullMesh = buildFullMeshFactorGroup(physicalMesh, rewriter, loc);
 
+    TV_FactorGroup fullMesh =
+        buildFullMeshFactorGroup(physicalMesh, rewriter, loc);
+
+    // Adds the missing physical factors to the list for the mesh operand,
+    // and adds the physical axis / replicat factor pairs to the map parallel
+    // lists.
+    auto findExtraFactors =
+        [&fullMesh, &rewriter,
+         loc](TV_FactorGroup collectiveMesh,
+              llvm::SmallVector<TV_AxisFactor> &missingMeshList,
+              llvm::SmallVector<TV_AxisFactor> &missingMapOurs,
+              llvm::SmallVector<TV_AxisFactor> &missingMapOther) {
+          auto collectiveMeshFactors =
+              axis::getProductProvenanceFactors(collectiveMesh);
+          assert(succeeded(collectiveMeshFactors) &&
+                 "collective mesh operand must be produced by axis.product");
+          auto missingPhysicalFactors =
+              axis::subtractSpace(fullMesh, *collectiveMeshFactors, rewriter);
+          assert(succeeded(missingPhysicalFactors) &&
+                 "module physical mesh axes must be representable as "
+                 "factors of a collective's own mesh operand");
+          llvm::SmallVector<TV_AxisFactor> correspondingReplicationFactors;
+          for (TV_AxisFactor factor : *missingPhysicalFactors) {
+            // Just need something with the same extent.
+            auto replAxis = rewriter.create<ReplicationAxisOp>(
+                loc, axis::getFactorExtent(factor));
+            correspondingReplicationFactors.push_back(
+                axis::viewAxisAsFactor(replAxis.getAxis(), rewriter, loc));
+          }
+
+          missingMeshList.append(missingPhysicalFactors->begin(),
+                                 missingPhysicalFactors->end());
+          missingMapOurs.append(missingPhysicalFactors->begin(),
+                                missingPhysicalFactors->end());
+          missingMapOther.append(correspondingReplicationFactors.begin(),
+                                 correspondingReplicationFactors.end());
+        };
+    findExtraFactors(op.getInputMesh(), missingInputMeshFactors,
+                     addInputMapFactors, addOutputMapFactors);
+    findExtraFactors(op.getOutputMesh(), missingOutputMeshFactors,
+                     addOutputMapFactors, addInputMapFactors);
+
+    // Extend the collective's own mesh operands with whatever they were
+    // missing.
     auto inputFactors = axis::getProductProvenanceFactors(op.getInputMesh());
     auto outputFactors = axis::getProductProvenanceFactors(op.getOutputMesh());
     // Guaranteed by the collective having reached this pass at all: its own
@@ -119,97 +147,53 @@ struct MakeCollectiveReplicationsExplicit
     // MaterializeDistributedCollectives.cpp, the sole producer of these
     // operands).
     assert(succeeded(inputFactors) && succeeded(outputFactors) &&
-          "collective mesh operand must be produced by axis.product");
-
-    FailureOr<SmallVector<TV_AxisFactor>> missingInput =
-        axis::subtractSpace(fullMesh, *inputFactors, rewriter);
-    FailureOr<SmallVector<TV_AxisFactor>> missingOutput =
-        axis::subtractSpace(fullMesh, *outputFactors, rewriter);
-    assert(succeeded(missingInput) && succeeded(missingOutput) &&
-          "module physical mesh axes must be representable as factors of "
-          "a collective's own mesh operands");
-
-    if (missingInput->empty() && missingOutput->empty()) {
-      return failure();
-    }
-
+           "collective mesh operand must be produced by axis.product");
     SmallVector<TV_AxisFactor> newInputFactors(*inputFactors);
+    newInputFactors.append(missingInputMeshFactors.begin(),
+                           missingInputMeshFactors.end());
     SmallVector<TV_AxisFactor> newOutputFactors(*outputFactors);
-    auto mapOp = cast<axis::AxisMapOp>(op.getMapping().getDefiningOp());
-    SmallVector<TV_FactorGroup> newMappingLhs = mapOp.getTypedMappingLhs();
-    SmallVector<TV_FactorGroup> newMappingRhs = mapOp.getTypedMappingRhs();
-
-    // missingInput and missingOutput are independent sets -- a physical
-    // axis can be missing from one mesh operand without being missing from
-    // the other (or from neither, or from both), and each direction gets
-    // its own fix rather than trying to detect/pair an axis that happens
-    // to be missing on both sides: that degenerate case is correctly (and
-    // deliberately -- see below) covered by simply letting both loops run
-    // independently over it, each contributing its own pair.
-    //
-    // Per DistributedCollectiveOp::verify() (CollectiveOps.cpp): the
-    // "counted" side of a mapping pair (matched against its own mesh
-    // operand's factor list) must carry the REAL missing factor, since a
-    // mesh operand's own factors are compared unfiltered; only a mapping
-    // pair's *other*, uncounted side (filtered out via
-    // filterOutReplicationFactors before that comparison) may safely be a
-    // synthetic Replicate that is never folded into any mesh operand. Get
-    // this backwards (e.g. fold a fresh Replicate into a mesh operand
-    // instead of the real factor) and the verifier's index-space-equality
-    // check fails, since the mesh operand side would count a factor the
-    // mapping side doesn't.
-    //
-    // Missing from output_mesh (RHS) means the result is replicated over
-    // that axis: fold the real factor into output_mesh (counted side) and
-    // pair it against a fresh, never-mesh-folded Replicate standing in for
-    // "no real axis here" on mapping's lhs (uncounted side).
-    for (TV_AxisFactor missing : *missingOutput) {
-      unsigned extent = axis::getFactorExtent(missing);
-      auto replAxis = rewriter.create<ReplicationAxisOp>(loc, extent);
-      TV_AxisFactor replicateFactor =
-          axis::viewAxisAsFactor(replAxis.getAxis(), rewriter, loc);
-      newOutputFactors.push_back(missing);
-      newMappingLhs.push_back(
-          axis::viewFactorsAsProduct(replicateFactor, rewriter, loc));
-      newMappingRhs.push_back(
-          axis::viewFactorsAsProduct(missing, rewriter, loc));
-    }
-    // Symmetric: missing from input_mesh (LHS) means the input is
-    // replicated over that axis -- real factor folded into input_mesh
-    // (counted side, lhs of the new pair), fresh Replicate confined to
-    // mapping's rhs (uncounted side), never folded into output_mesh.
-    for (TV_AxisFactor missing : *missingInput) {
-      unsigned extent = axis::getFactorExtent(missing);
-      auto replAxis = rewriter.create<ReplicationAxisOp>(loc, extent);
-      TV_AxisFactor replicateFactor =
-          axis::viewAxisAsFactor(replAxis.getAxis(), rewriter, loc);
-      newInputFactors.push_back(missing);
-      newMappingLhs.push_back(
-          axis::viewFactorsAsProduct(missing, rewriter, loc));
-      newMappingRhs.push_back(
-          axis::viewFactorsAsProduct(replicateFactor, rewriter, loc));
-    }
-
+    newOutputFactors.append(missingOutputMeshFactors.begin(),
+                            missingOutputMeshFactors.end());
     TV_FactorGroup newInputMesh =
         axis::viewFactorsAsProduct(newInputFactors, rewriter, loc);
     TV_FactorGroup newOutputMesh =
         axis::viewFactorsAsProduct(newOutputFactors, rewriter, loc);
 
+    // Bundle everything missing into one new mapping pair rather than one
+    // pair per factor -- axis::getProductProvenanceFactors and friends can
+    // always decompose a multi-factor group back into its individual
+    // factors later, so nothing downstream needs these split apart here.
+    TV_FactorGroup newLhsGroup =
+        axis::viewFactorsAsProduct(addInputMapFactors, rewriter, loc);
+    TV_FactorGroup newRhsGroup =
+        axis::viewFactorsAsProduct(addOutputMapFactors, rewriter, loc);
+
+    // Build a brand new axis.map rather than mutating the existing one in
+    // place: the same axis.map value may be shared by other collectives,
+    // which must keep seeing their own original mapping unchanged.
+    auto mapOp = cast<axis::AxisMapOp>(op.getMapping().getDefiningOp());
+    SmallVector<TV_FactorGroup> oldMappingLhs = mapOp.getTypedMappingLhs();
+    SmallVector<TV_FactorGroup> oldMappingRhs = mapOp.getTypedMappingRhs();
+    SmallVector<Value> newMappingLhs(oldMappingLhs.begin(),
+                                     oldMappingLhs.end());
+    SmallVector<Value> newMappingRhs(oldMappingRhs.begin(),
+                                     oldMappingRhs.end());
+    newMappingLhs.push_back(newLhsGroup);
+    newMappingRhs.push_back(newRhsGroup);
+    auto newMapOp = rewriter.create<axis::AxisMapOp>(
+        loc, ValueRange(newMappingLhs), ValueRange(newMappingRhs));
+
     rewriter.modifyOpInPlace(op, [&] {
       op.getInputMeshMutable().assign(newInputMesh);
       op.getOutputMeshMutable().assign(newOutputMesh);
-    });
-    rewriter.modifyOpInPlace(mapOp, [&] {
-      mapOp.getMappingLhsMutable().assign(
-          SmallVector<Value>(newMappingLhs.begin(), newMappingLhs.end()));
-      mapOp.getMappingRhsMutable().assign(
-          SmallVector<Value>(newMappingRhs.begin(), newMappingRhs.end()));
+      op.getMappingMutable().assign(newMapOp.getMap());
     });
     return success();
   }
 
 private:
   PhysicalMeshOp physicalMesh;
+  uint64_t fullExtentOfMesh;
 };
 
 struct MakeReplicationsExplicitPass
@@ -235,10 +219,7 @@ struct MakeReplicationsExplicitPass
       return;
     }
 
-    // Keep `mapping`'s factor lists in maximal one-to-one form after adding
-    // the new whole-axis Replicate<->Replicate pairs above, matching the
-    // canonical form DropIdentityCollectivesPass also restores after its own
-    // rewrite.
+    // Restore mappings to their decomposed form
     PassManager pm(context);
     pm.addPass(createCanonicalizeAxisMapsPass());
     if (failed(pm.run(module))) {
