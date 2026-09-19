@@ -251,7 +251,7 @@ func.func @not_physically_adjacent() -> (tensor<4xf32>, tensor<4xf32>) {
 // CHECK: %[[IN0:.*]] = tensor.empty
 // CHECK: %{{.*}}:2 = distributed.DistributedKernel (%[[IN0]] : tensor<4xf32>, %[[C0]] : tensor<4xf32>, %[[C1]] : tensor<4xf32>)
 %g_two = axis.product ()
-"distributed.DistributedFunction"() <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, function_type = (tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>), output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>, <dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "two_hoistable_casts"}> ({
+"distributed.DistributedFunction"() <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>, <dim_partitioning_axes = [[]] : unreduced_axes = []>]>, function_type = (tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>), output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>, <dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "two_hoistable_casts"}> ({
 ^bb0(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>):
   %in0 = tensor.empty() : tensor<4xf32>
   %r0 = distributed.DistributedKernel (%in0 : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>

@@ -180,10 +180,10 @@ def rmsnorm(x, weight):
     return weight * x * ss
 
 
-def softmax(x):
-    max_val = jnp.max(x)
+def softmax(x, axis=-1):
+    max_val = jnp.max(x, axis=axis, keepdims=True)
     x = jnp.exp(x - max_val)
-    return x / jnp.sum(x)
+    return x / jnp.sum(x, axis=axis, keepdims=True)
 
 
 def sigmoid(x):
@@ -250,27 +250,28 @@ def forward(x, weights, key_cache, value_cache):
             [value_cache_l, jnp.reshape(v, (1, DIM))], axis=0
         )
 
-        xbs2 = []
-        for h in range(N_HEADS):
-            q2 = q[HEAD_SIZE * h : HEAD_SIZE * (h + 1)]
-            key_index = h // KV_MUL
+        # Multi-head attention over a real "head" dimension via einsum,
+        # instead of Python-unrolled static per-head slices: a static slice
+        # gets a Shardy "permutation" sharding-rule factor, which entangles
+        # the TP-sharded head-split axis with whatever else that factor
+        # touches. A reshape splitting DIM into (N_HEADS, HEAD_SIZE) is an
+        # ordinary pass-through factor instead, so the TP axis stays cleanly
+        # shardable across heads.
+        q_heads = jnp.reshape(q, (N_HEADS, HEAD_SIZE))
+        key_cache_heads = jnp.reshape(key_cache_l, (pos + 1, N_KV_HEADS, HEAD_SIZE))
+        value_cache_heads = jnp.reshape(
+            value_cache_l, (pos + 1, N_KV_HEADS, HEAD_SIZE)
+        )
+        if KV_MUL > 1:
+            key_cache_heads = jnp.repeat(key_cache_heads, KV_MUL, axis=1)
+            value_cache_heads = jnp.repeat(value_cache_heads, KV_MUL, axis=1)
 
-            att = jnp.einsum(
-                "ij,j->i",
-                key_cache_l[:, key_index * HEAD_SIZE : (key_index + 1) * HEAD_SIZE],
-                q2,
-            )
-            att = att / jnp.sqrt(HEAD_SIZE)
-            att = softmax(att)
+        att = jnp.einsum("phd,hd->hp", key_cache_heads, q_heads)
+        att = att / jnp.sqrt(HEAD_SIZE)
+        att = softmax(att, axis=-1)
 
-            x_tmp = jnp.einsum(
-                "ij,i->j",
-                value_cache_l[:, key_index * HEAD_SIZE : (key_index + 1) * HEAD_SIZE],
-                att,
-            )
-            xbs2.append(x_tmp)
-
-        xb = jnp.concatenate(xbs2, axis=None)
+        xb = jnp.einsum("phd,hp->hd", value_cache_heads, att)
+        xb = jnp.reshape(xb, (DIM,))
 
         xb2 = wo[i, :, :] @ xb
         x = x + xb2

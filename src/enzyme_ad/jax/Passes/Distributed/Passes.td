@@ -7,6 +7,14 @@ include "mlir/Pass/PassBase.td"
 def ConvertMainToDistributedFunctionPass
     : Pass<"convert-main-to-distributed-function", "::mlir::ModuleOp"> {
   let summary = "Convert the main func.func into distributed.function.";
+  let options = [
+    Option<"dumpValueAxes", "dump-value-axes", "bool", "false",
+           "Print ShardyLogicalAxisAnalysis axis symbols for each SSA value "
+           "in main, before conversion">,
+    Option<"dumpOperationAxes", "dump-operation-axes", "bool", "false",
+           "Print ShardyLogicalAxisAnalysis axis symbols for each operation "
+           "in main, before conversion">,
+  ];
   let dependentDialects = [
     "enzyme::axis::AxisDialect", "sdy::SdyDialect",
     "enzyme::distributed::DistributedDialect"

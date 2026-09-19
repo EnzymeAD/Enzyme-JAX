@@ -95,6 +95,20 @@ public:
    */
   void markOverlapping(llvm::ArrayRef<AxisSymbol> overlapping);
   /**
+   * Marks a set of symbols as "unshardable": they still participate
+   * normally in union-find merging (this never blocks a merge the way
+   * markOverlapping does), but must never be handed out as a real
+   * materialized logical/physical sharding axis. Used for factors Shardy
+   * tags as needing a collective-permute if sharded (e.g. the sliced-away
+   * dimension of a static per-layer stablehlo.slice) -- we don't implement
+   * collective-permute, so we instead guarantee these axes are never
+   * actually sharded at all.
+   */
+  void markUnshardable(llvm::ArrayRef<AxisSymbol> symbols);
+  // Whether a symbol's resolved root has been tagged unshardable, directly
+  // or via a merge with an unshardable symbol.
+  bool isUnshardable(AxisSymbol sym);
+  /**
    * Resolves the root factorization of a symbol or symbol
    * list after traversing unions and merges.
    */
@@ -108,6 +122,8 @@ private:
   llvm::EquivalenceClasses<AxisSymbol> symbolUnion;
   llvm::DenseMap<AxisSymbol, llvm::SmallVector<AxisSymbol>> factorizations;
   llvm::DenseMap<AxisSymbol, OverlapSet> overlappingSymbols;
+  llvm::DenseSet<AxisSymbol>
+      unshardableSymbols; // keyed by root, like overlappingSymbols
   /**
    * Between two lists of (possibly factored) symbols,
    * performs as much of a merge between factors as possible.
@@ -201,6 +217,24 @@ public:
    * global result.
    */
   llvm::SmallVector<AxisSymbol> getReductionAxes(OpResult result);
+  // Whether a symbol's resolved root has been tagged unshardable (see
+  // SymbolFactorMerge::markUnshardable).
+  bool isUnshardable(AxisSymbol symbol) {
+    return symbolFactorMerge.isUnshardable(symbol);
+  }
+  /**
+   * Returns a copy of a tensor's per-dimension partitioning-axis lists with
+   * every unshardable symbol dropped. Callers that are about to hand out a
+   * real materialized/physical logical axis for a symbol (as opposed to
+   * internal union-find bookkeeping) must filter through this first, so an
+   * unshardable dimension is treated as fully local/unsharded instead.
+   */
+  TensorAxesToPartitionAxes
+  excludeUnshardable(const TensorAxesToPartitionAxes &axes);
+  // Flat-list overload for callers like getReductionAxes's result that
+  // aren't shaped per-dimension.
+  llvm::SmallVector<AxisSymbol>
+  excludeUnshardable(llvm::ArrayRef<AxisSymbol> symbols);
 
 private:
   // two loops: one vector over dimensions, one vector over

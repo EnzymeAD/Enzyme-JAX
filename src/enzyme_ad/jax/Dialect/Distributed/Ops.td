@@ -4,6 +4,7 @@
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/RegionKindInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
+include "mlir/Interfaces/FunctionInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "stablehlo/dialect/Base.td"
 include "shardy/dialect/sdy/ir/attrs.td"
@@ -86,13 +87,23 @@ def DeviceLocalAxisOp : DistributedOp<"DeviceLocalAxis", [
 def DistributedFunctionOp : DistributedOp<"DistributedFunction", [
   Symbol,
   OpAsmOpInterface,
-  SingleBlock
+  SingleBlock,
+  FunctionOpInterface
 ]> {
   let description = [{
     Function-like distributed region that can capture enclosing module SSA
     metadata (for example axis declarations). Unlike func.func, this op is not
     isolated from above. The function carries explicit partitioning axis
     operands and indexed sharding metadata for its inputs and outputs.
+
+    Implements FunctionOpInterface so that Shardy utilities dispatching on
+    that interface, such as looking up a block argument's sharding, treat
+    this op's block arguments like a func.func's instead of falling back to
+    the "unshardable argument" default meant for ops with no place to attach
+    a per-argument sharding, like reduce bodies.
+
+    Its arg_attrs/res_attrs/function_type fields already use the names
+    FunctionOpInterface expects, so no renaming was needed to satisfy it.
   }];
 
   let arguments = (ins
@@ -107,6 +118,22 @@ def DistributedFunctionOp : DistributedOp<"DistributedFunction", [
   );
   let regions = (region AnyRegion:$body);
   let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    //===------------------------------------------------------------------===//
+    // FunctionOpInterface Methods
+    //===------------------------------------------------------------------===//
+
+    ::mlir::Region *getCallableRegion() { return &getBody(); }
+
+    ::mlir::ArrayRef<::mlir::Type> getArgumentTypes() {
+      return getFunctionType().getInputs();
+    }
+
+    ::mlir::ArrayRef<::mlir::Type> getResultTypes() {
+      return getFunctionType().getResults();
+    }
+  }];
 }
 
 def DistributedKernelOp : DistributedOp<"DistributedKernel", [

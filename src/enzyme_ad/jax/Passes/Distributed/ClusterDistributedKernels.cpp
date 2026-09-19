@@ -191,6 +191,9 @@ struct ClusterDistributedKernelsPass
   ClusterDistributedKernelsPass() = default;
 
   TV_AxisFactor getOrCreateLogicalAxisForSymbol(AxisSymbol symbol) {
+    assert(!axisAnalysis.isUnshardable(symbol) &&
+           "must not materialize a real logical axis for an unshardable "
+           "symbol -- caller should have filtered via excludeUnshardable");
     // if present, return
     auto it = symbolToLogicalAxis.find(symbol);
     if (it != symbolToLogicalAxis.end()) {
@@ -596,6 +599,9 @@ struct ClusterDistributedKernelsPass
               << "missing sharding for ranked kernel input value " << input;
           return failure();
         }
+        if (maybePartitioning) {
+          maybePartitioning = axisAnalysis.excludeUnshardable(*maybePartitioning);
+        }
 
         // `input` itself may already be local-scoped (e.g. it flows straight
         // from a collective's Await, possibly through a scope-agnostic
@@ -643,6 +649,9 @@ struct ClusterDistributedKernelsPass
           insertBefore->emitError()
               << "missing sharding for ranked kernel output value " << output;
           return failure();
+        }
+        if (maybePartitioning) {
+          maybePartitioning = axisAnalysis.excludeUnshardable(*maybePartitioning);
         }
         // Kernel returns are in local type, global type recoverable
         // from yield or from multiplying the local type by the sharding.
@@ -709,6 +718,9 @@ struct ClusterDistributedKernelsPass
                 << operand.getOperandNumber();
             return failure();
           }
+          if (maybePartitioning) {
+            maybePartitioning = axisAnalysis.excludeUnshardable(*maybePartitioning);
+          }
 
           if (auto rankedType = dyn_cast<RankedTensorType>(operandType);
               rankedType && maybePartitioning) {
@@ -730,6 +742,9 @@ struct ClusterDistributedKernelsPass
                 << "missing sharding for ranked kernel operation result "
                 << result.getResultNumber();
             return failure();
+          }
+          if (maybePartitioning) {
+            maybePartitioning = axisAnalysis.excludeUnshardable(*maybePartitioning);
           }
 
           if (auto rankedType = dyn_cast<RankedTensorType>(resultType);
@@ -785,8 +800,8 @@ struct ClusterDistributedKernelsPass
                     << oldValue;
                 return failure();
               }
-              SmallVector<Value> axesOperands =
-                  getTensorPartitioningAxisGroups(*maybePartitioning);
+              SmallVector<Value> axesOperands = getTensorPartitioningAxisGroups(
+                  axisAnalysis.excludeUnshardable(*maybePartitioning));
               valueForUse = builder
                                 .create<DistributedCastLocalToGlobalOp>(
                                     insertBefore->getLoc(), expectedUseType,

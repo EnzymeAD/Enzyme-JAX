@@ -26,28 +26,6 @@ using TV_FactorGroup = mlir::TypedValue<mlir::enzyme::axis::FactorGroupType>;
 using TensorPartitioningAxes =
     ShardyLogicalAxisAnalysis::SymbolsPerPartitioningAxis;
 
-// Can't use dedicated Shardy pass since we need to keep the mesh attributes
-// around for the Reshard ops (for now)
-static ArrayAttr dropShardyAttrs(ArrayAttr attrs, MLIRContext *ctx) {
-  if (!attrs) {
-    return {};
-  }
-
-  SmallVector<Attribute> filteredAttrs;
-  bool hasRemainingAttrs = false;
-  for (Attribute attr : attrs) {
-    SmallVector<NamedAttribute> filteredDict;
-    for (NamedAttribute namedAttr : cast<DictionaryAttr>(attr)) {
-      if (!namedAttr.getName().strref().starts_with("sdy.")) {
-        filteredDict.push_back(namedAttr);
-      }
-    }
-    hasRemainingAttrs |= !filteredDict.empty();
-    filteredAttrs.push_back(DictionaryAttr::get(ctx, filteredDict));
-  }
-  return hasRemainingAttrs ? ArrayAttr::get(ctx, filteredAttrs) : ArrayAttr{};
-}
-
 // Lazily materializes one LogicalMeshAxesOp value per logical symbol.
 static TV_AxisFactor getOrCreateLogicalAxisForSymbol(
     AxisSymbol symbol, OpBuilder &axisBuilder, Location axisLoc,
@@ -140,7 +118,8 @@ static LogicalResult convertMainToDistributedFunction(
     }
 
     argumentShardings.push_back(buildIndexedShardingAttr(
-        tensorType, *maybePartitioning, symbolToPartitioningAxisIdx));
+        tensorType, axisAnalysis.excludeUnshardable(*maybePartitioning),
+        symbolToPartitioningAxisIdx));
   }
 
   // Derive output sharding metadata from the yielded producer values.
@@ -168,7 +147,8 @@ static LogicalResult convertMainToDistributedFunction(
     }
 
     outputShardings.push_back(buildIndexedShardingAttr(
-        tensorType, *maybePartitioning, symbolToPartitioningAxisIdx));
+        tensorType, axisAnalysis.excludeUnshardable(*maybePartitioning),
+        symbolToPartitioningAxisIdx));
   }
 
   // Rebuild partitioning axis SSA operands in the same index order used above.
@@ -187,13 +167,21 @@ static LogicalResult convertMainToDistributedFunction(
   OpBuilder builder(ctx);
   builder.setInsertionPoint(mainFunc);
 
+  // ShardyLogicalAxisAnalysis's reshard-identity check (buildInitialSymbols
+  // in ShardyLogicalAxisAnalysis.cpp) needs a reshard operand's real
+  // sdy.sharding to know which dimensions the reshard touches, and this is
+  // the last point with the mesh's axis names in hand to preserve it -- once
+  // conversion finishes, only our own logical-axis symbols remain. Nothing
+  // else consults these attrs on this op (LowerKernels writes its own fresh
+  // sdy.sharding on kernel bodies later, from our own derived metadata), so
+  // passing them through unchanged doesn't create a second, driftable source
+  // of truth.
   auto distributedFunction = builder.create<DistributedFunctionOp>(
       mainFunc.getLoc(), mainFunc.getSymNameAttr(),
       TypeAttr::get(mainFunc.getFunctionType()),
       ValueRange(orderedPartitioningAxes), argShardingsAttr,
       outputShardingsAttr, mainFunc.getSymVisibilityAttr(),
-      dropShardyAttrs(mainFunc.getArgAttrsAttr(), ctx),
-      dropShardyAttrs(mainFunc.getResAttrsAttr(), ctx));
+      mainFunc.getArgAttrsAttr(), mainFunc.getResAttrsAttr());
   distributedFunction.getBody().takeBody(mainFunc.getBody());
   mainBlock = &distributedFunction.getBody().front();
 
@@ -269,6 +257,15 @@ struct ConvertMainToDistributedFunctionPass
     }
 
     auto axisAnalysis = mainAxisAnalysis.getAnalysis();
+
+    // Dump before any rewriting below, so the output reflects analysis of
+    // Shardy IR and remains available even if a later step fails.
+    if (dumpValueAxes) {
+      distributed::dumpValueAxes(llvm::errs(), mainBlock, axisAnalysis);
+    }
+    if (dumpOperationAxes) {
+      distributed::dumpOperationAxes(llvm::errs(), mainBlock, axisAnalysis);
+    }
 
     if (failed(convertMainToDistributedFunction(
             moduleOp, mainFunc, mainBlock, mainScopeOp, axisAnalysis,

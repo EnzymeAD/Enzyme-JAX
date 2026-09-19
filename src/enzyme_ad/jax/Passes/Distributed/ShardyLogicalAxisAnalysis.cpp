@@ -74,6 +74,21 @@ void SymbolFactorMerge::markOverlapping(
   }
 }
 
+void SymbolFactorMerge::markUnshardable(llvm::ArrayRef<AxisSymbol> symbols) {
+  for (AxisSymbol root : resolve(symbols)) {
+    unshardableSymbols.insert(root);
+  }
+}
+
+bool SymbolFactorMerge::isUnshardable(AxisSymbol sym) {
+  for (AxisSymbol root : resolve(sym)) {
+    if (unshardableSymbols.contains(root)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 SymbolFactorMerge::OverlapSet
 SymbolFactorMerge::_getOverlappingForRoot(AxisSymbol sym) {
   assert(sym == resolve(sym).front() && "symbol must be a root symbol");
@@ -178,7 +193,8 @@ static bool hasOverlappingSymbolsConflict(
 // possible and recording any newly introduced subfactors in `factorizations`.
 static llvm::SmallVector<llvm::SmallVector<AxisSymbol>> materializeSplitGroups(
     llvm::ArrayRef<AxisSymbol> factors, llvm::ArrayRef<uint64_t> splits,
-    llvm::DenseMap<AxisSymbol, llvm::SmallVector<AxisSymbol>> &factorizations) {
+    llvm::DenseMap<AxisSymbol, llvm::SmallVector<AxisSymbol>> &factorizations,
+    llvm::DenseSet<AxisSymbol> &unshardableSymbols) {
   llvm::SmallVector<llvm::SmallVector<AxisSymbol>> groups;
   auto splitSlices =
       axis::computeSplitExtentSlices(symbolsToExtents(factors), splits);
@@ -208,6 +224,14 @@ static llvm::SmallVector<llvm::SmallVector<AxisSymbol>> materializeSplitGroups(
     if (!(currentFactorPieces.size() == 1 &&
           currentFactorPieces.front() == factor)) {
       factorizations[factor] = currentFactorPieces;
+      // Can't assume splitting an unshardable axis into
+      // pieces makes them shardable
+      if (unshardableSymbols.contains(factor)) {
+        unshardableSymbols.erase(factor);
+        for (AxisSymbol piece : currentFactorPieces) {
+          unshardableSymbols.insert(piece);
+        }
+      }
     }
   }
   return groups;
@@ -221,6 +245,15 @@ void SymbolFactorMerge::_factorSymbol(AxisSymbol sym,
   assert(llvm::ArrayRef<AxisSymbol>(resolvedFactors) == factors &&
          "factors must be root symbols");
 #endif
+
+  // Factoring an unshardable symbol into finer pieces doesn't make those
+  // pieces any more real: every piece must stay unshardable too.
+  if (unshardableSymbols.contains(sym)) {
+    unshardableSymbols.erase(sym);
+    for (AxisSymbol factor : factors) {
+      unshardableSymbols.insert(factor);
+    }
+  }
 
   const auto &overlapping_sym = getOverlapping(sym);
 
@@ -239,15 +272,25 @@ void SymbolFactorMerge::_mergeSymbols(AxisSymbol a, AxisSymbol b) {
 
   auto overlap_a = getOverlapping(a);
   auto overlap_b = getOverlapping(b);
+  bool unshardable =
+      unshardableSymbols.contains(a) || unshardableSymbols.contains(b);
 
   auto new_leader = *symbolUnion.unionSets(a, b);
   if (!(new_leader == a)) {
     _appendOverlaps(overlap_a, new_leader);
     _clearOverlapping(a);
+    unshardableSymbols.erase(a);
   }
   if (!(new_leader == b)) {
     _appendOverlaps(overlap_b, new_leader);
     _clearOverlapping(b);
+    unshardableSymbols.erase(b);
+  }
+  // An unshardable factor stays unshardable through any merge it
+  // participates in -- e.g. a permutation-tagged slice factor unifying with
+  // its unsliced producer's own symbol must not "launder" the tag away.
+  if (unshardable) {
+    unshardableSymbols.insert(new_leader);
   }
 }
 
@@ -255,8 +298,15 @@ void SymbolFactorMerge::attemptMergeSymbols(llvm::ArrayRef<AxisSymbol> a,
                                             llvm::ArrayRef<AxisSymbol> b) {
   auto lhs_factors = resolve(a);
   auto rhs_factors = resolve(b);
-  assert(extentOfList(lhs_factors) == extentOfList(rhs_factors) &&
-         "Cannot merge symbols with different extents");
+  if (extentOfList(lhs_factors) != extentOfList(rhs_factors)) {
+    // reject merge: a permutation-style op (e.g. slice) can tag a dimension
+    // with a factor sized by its pre-permutation extent, while the same SSA
+    // value's literal tensor-type size feeds a freshly synthesized, smaller
+    // factor on the consuming op's side. These are genuinely different
+    // factors, not a caller bug, so this is a normal rejection rather than
+    // an invariant violation.
+    return;
+  }
   if (hasSharedFactorOrderConflict(lhs_factors, rhs_factors)) {
     // reject merge: the same symbol appears in A and B at
     // different positions
@@ -302,8 +352,10 @@ void SymbolFactorMerge::attemptMergeSymbols(llvm::ArrayRef<AxisSymbol> a,
   llvm::SmallVector<uint64_t> splits = axis::computeSplits(
       symbolsToExtents(lhs_factors), symbolsToExtents(rhs_factors));
 
-  auto lhsGroups = materializeSplitGroups(lhs_factors, splits, factorizations);
-  auto rhsGroups = materializeSplitGroups(rhs_factors, splits, factorizations);
+  auto lhsGroups = materializeSplitGroups(lhs_factors, splits, factorizations,
+                                          unshardableSymbols);
+  auto rhsGroups = materializeSplitGroups(rhs_factors, splits, factorizations,
+                                          unshardableSymbols);
   assert(lhsGroups.size() == rhsGroups.size() &&
          "split plans must produce aligned symbolic groups");
 
@@ -448,10 +500,24 @@ ShardyLogicalAxisAnalysis::getReductionAxes(OpResult result) {
 
   assert(!shardingRule.getIsCustomRule() &&
          "TODO: custom sharding rules need dedicated handling");
-  assert(shardingRule.getNeedReplicationFactors().empty() &&
-         "TODO: need-replication factors need dedicated handling");
-  assert(shardingRule.getPermutationFactors().empty() &&
-         "TODO: permutation factors need dedicated handling");
+  // Permutation and need-replication factors are never reduction factors
+  // (Shardy documents all three factor kinds as disjoint, non-overlapping
+  // index sets), so the loop below already skips them correctly -- this is
+  // purely informational. Both kinds are tagged unshardable in
+  // buildInitialSymbols, so neither is ever handed out as a real logical
+  // axis for materialization either.
+#ifndef NDEBUG
+  if (!shardingRule.getPermutationFactors().empty()) {
+    op->emitRemark() << "op has permutation factors in its sharding rule; "
+                        "the corresponding logical axes are treated as "
+                        "unshardable rather than reduced";
+  }
+  if (!shardingRule.getNeedReplicationFactors().empty()) {
+    op->emitRemark() << "op has need-replication factors in its sharding "
+                        "rule; the corresponding logical axes are treated as "
+                        "unshardable rather than replicated";
+  }
+#endif
 
   llvm::SmallVector<AxisSymbol> reductionSymbols;
   for (int64_t factorIdx : shardingRule.getReductionFactors()) {
@@ -464,6 +530,33 @@ ShardyLogicalAxisAnalysis::getReductionAxes(OpResult result) {
   }
 
   return reductionSymbols;
+}
+
+ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes
+ShardyLogicalAxisAnalysis::excludeUnshardable(
+    const TensorAxesToPartitionAxes &axes) {
+  TensorAxesToPartitionAxes filtered;
+  filtered.reserve(axes.size());
+  for (const auto &dimSymbols : axes) {
+    auto &kept = filtered.emplace_back();
+    for (AxisSymbol symbol : dimSymbols) {
+      if (!symbolFactorMerge.isUnshardable(symbol)) {
+        kept.push_back(symbol);
+      }
+    }
+  }
+  return filtered;
+}
+
+llvm::SmallVector<AxisSymbol> ShardyLogicalAxisAnalysis::excludeUnshardable(
+    llvm::ArrayRef<AxisSymbol> symbols) {
+  llvm::SmallVector<AxisSymbol> kept;
+  for (AxisSymbol symbol : symbols) {
+    if (!symbolFactorMerge.isUnshardable(symbol)) {
+      kept.push_back(symbol);
+    }
+  }
+  return kept;
 }
 
 std::optional<ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes>
@@ -501,6 +594,30 @@ LogicalResult ShardyLogicalAxisAnalysis::assignLogicalAxis(AxisSymbol symbol,
   }
 
   AxisSymbol resolvedSymbol = resolved.front();
+
+  // Two symbols our union-find never connected (e.g. a function argument's
+  // own symbol and the symbol reached by walking through the yielded
+  // result's producer chain -- the yield carries no sharding rule, so
+  // buildUnion() never propagates a merge through it) can both be anchored
+  // here to the same frozen SSA factor. That shared anchor is ground truth
+  // from an earlier pass that they are the same logical axis, so try
+  // unioning them now instead of immediately treating it as a conflict.
+  if (auto existingIt = factorToLogicalAxis.find(factor);
+      existingIt != factorToLogicalAxis.end() &&
+      !(existingIt->second == resolvedSymbol)) {
+    AxisSymbol existingSymbol = existingIt->second;
+    symbolFactorMerge.mergeSymbols(existingSymbol, resolvedSymbol);
+    llvm::SmallVector<AxisSymbol> mergedExisting =
+        symbolFactorMerge.resolve(existingSymbol);
+    llvm::SmallVector<AxisSymbol> mergedNew =
+        symbolFactorMerge.resolve(resolvedSymbol);
+    if (mergedExisting.size() == 1 && mergedNew.size() == 1 &&
+        mergedExisting.front() == mergedNew.front()) {
+      resolvedSymbol = mergedNew.front();
+      existingIt->second = resolvedSymbol;
+    }
+  }
+
   auto [symbolIt, insertedSymbol] =
       logicalAxisToFactor.try_emplace(resolvedSymbol, factor);
   auto [factorIt, insertedFactor] =
@@ -603,13 +720,22 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbols() {
       // for each dimension in the tensor being resharded,
       // if the input and output shardings are the same,
       // LHS and RHS get the same symbol, otherwise different.
-      Attribute meshOrRef = reshard_op.getSharding().getMeshOrRef();
-      TensorShardingAttr in_sharding =
-          getOrCreateSharding(reshard_op.getInput(), meshOrRef,
-                              /*closedIfMissing=*/true);
-      TensorShardingAttr out_sharding =
-          getOrCreateSharding(reshard_op.getResult(), meshOrRef,
-                              /*closedIfMissing=*/true);
+      //
+      // These shardings are read purely to recover the reshard's own
+      // structural constraints: which dimensions it touches. They are not
+      // this analysis's source of truth for a value's real physical axis,
+      // which it re-derives independently. If either is missing, the
+      // reshard's semantics cannot be determined at all, which is fatal.
+      TensorShardingAttr in_sharding = getSharding(reshard_op.getInput());
+      TensorShardingAttr out_sharding = getSharding(reshard_op.getResult());
+      if (!in_sharding || !out_sharding) {
+        reshard_op.emitError()
+            << "could not recover a sharding for this reshard's "
+            << (!in_sharding ? "input" : "result")
+            << "; axis analysis cannot determine the reshard's semantics "
+               "without it";
+        return;
+      }
       for (auto [dimIdx, dimShardings] :
            llvm::enumerate(llvm::zip_equal(in_sharding.getDimShardings(),
                                            out_sharding.getDimShardings()))) {
@@ -677,6 +803,23 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbols() {
             static_cast<uint64_t>(sharding_rule.getFactorSize(i))));
       }
       symbolFactorMerge.markOverlapping(symbols);
+      // Permutation factors (e.g. the sliced-away dimension of a static
+      // per-layer stablehlo.slice) would need a collective-permute, and
+      // need-replication factors (e.g. the concatenated dimension of a
+      // stablehlo.concatenate) would need an all-gather, if ever actually
+      // sharded; we don't implement either collective, so guarantee neither
+      // factor kind ever is by excluding both from real logical axis
+      // materialization later.
+      llvm::SmallVector<AxisSymbol> mustStayLocalSymbols;
+      for (int64_t idx : sharding_rule.getPermutationFactors()) {
+        mustStayLocalSymbols.push_back(symbols[idx]);
+      }
+      for (int64_t idx : sharding_rule.getNeedReplicationFactors()) {
+        mustStayLocalSymbols.push_back(symbols[idx]);
+      }
+      if (!mustStayLocalSymbols.empty()) {
+        symbolFactorMerge.markUnshardable(mustStayLocalSymbols);
+      }
     } else if (auto collective_op = dyn_cast<sdy::CollectiveOpInterface>(op)) {
       // TBD whether this is a real problem
       collective_op.emitWarning(
@@ -687,11 +830,10 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbols() {
     } else if (isa<func::ReturnOp, DistributedYieldOp>(op)) {
       // do nothing.
     } else {
-      // Remark the op type encountered that isn't shardable
-      // for debug. We will have to handle this case
-      // eventually: TBD
+#ifndef NDEBUG
       op->emitRemark("Operation has no sharding rule: possible "
                      "to-be-implemented");
+#endif
     }
   }
 }
@@ -886,6 +1028,9 @@ static void printAxisSymbol(llvm::raw_ostream &os,
     factor.printAsOperand(os, OpPrintingFlags());
   } else {
     os << "a" << symbol.getId();
+  }
+  if (axisAnalysis.isUnshardable(symbol)) {
+    os << "(unshardable)";
   }
 }
 
