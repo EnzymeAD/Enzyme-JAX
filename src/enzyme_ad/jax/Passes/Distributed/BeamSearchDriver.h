@@ -2,6 +2,7 @@
 #ifndef ENZYME_PASSES_DISTRIBUTED_BEAMSEARCHDRIVER_H
 #define ENZYME_PASSES_DISTRIBUTED_BEAMSEARCHDRIVER_H
 
+#include <functional>
 #include <memory>
 #include <queue>
 #include <vector>
@@ -121,10 +122,20 @@ class BeamSearchBreadthFirstQueue : public BeamSearchQueueBase<NodeType> {
     }
   };
   std::priority_queue<NodePtr, std::vector<NodePtr>, CompareScore> incoming;
+  // Called with every node in a freshly-refilled generation, right as it
+  // becomes the new queue (see pop() below) -- the one point where the whole
+  // beam for this round is known at once. Left null (the default), this is a
+  // no-op; a caller that wants per-generation progress markers (e.g. the
+  // deepest/shallowest search depth reached so far) supplies one at
+  // construction.
+  std::function<void(llvm::ArrayRef<NodePtr>)> onGenerationStart;
 
 public:
-  BeamSearchBreadthFirstQueue(int max_residency)
-      : max_residency(max_residency), queue(), incoming() {}
+  BeamSearchBreadthFirstQueue(
+      int max_residency,
+      std::function<void(llvm::ArrayRef<NodePtr>)> onGenerationStart = nullptr)
+      : max_residency(max_residency), queue(), incoming(),
+        onGenerationStart(std::move(onGenerationStart)) {}
 
   void push(NodePtr node) override {
     incoming.push(node);
@@ -137,10 +148,17 @@ public:
   NodePtr pop() override {
     if (queue.empty()) {
       // refill the queue from the incoming queue
+      std::vector<NodePtr> generation;
       while (!incoming.empty()) {
         NodePtr node = incoming.top();
         incoming.pop();
         queue.push(node);
+        if (onGenerationStart) {
+          generation.push_back(node);
+        }
+      }
+      if (onGenerationStart && !generation.empty()) {
+        onGenerationStart(generation);
       }
     }
     NodePtr node = queue.front();

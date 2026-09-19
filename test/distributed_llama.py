@@ -58,6 +58,11 @@ KV_MUL = N_HEADS // N_KV_HEADS
 POS = 64  # KV cache length so far (excludes the new token being appended)
 BATCH = 8
 
+# This is a smoke test for "does it crash", not a check on the quality of the
+# chosen sharding/scheduling decisions, so the beam only needs to be wide
+# enough to exercise the search machinery.
+SEARCH_BEAM_SIZE = 10
+
 # ---------------------------------------------------------------------------
 # Mesh / sharding plan selection. "tp" and "fsdp" are two different strategies
 # for sharding the *same* weight tensors and are never combined in one plan
@@ -96,11 +101,6 @@ PHYSICAL_MESH_CONFIG = (
     "!distributed.physical_comm_axis<8, 1>]"
 )
 
-# Small beam: this is a smoke test for "does it crash", not a check on the
-# quality of the chosen sharding/scheduling decisions.
-SEARCH_BEAM_SIZE = 2
-
-
 def find_enzymexlamlir_opt():
     """Locates the enzymexlamlir-opt binary, whether run as a bazel test (where
     it's a data dependency staged into runfiles) or invoked directly from the
@@ -129,6 +129,12 @@ def find_enzymexlamlir_opt():
 
 def build_pipeline_argv(physical_mesh_config_path, kernel_modules_dir=""):
     args = [
+        # The search step (distributed-search-strategies below) runs its lowering
+        # pipeline once per scored candidate and relies on op verification/remarks
+        # to reject bad candidates; MLIR's default of attaching a full op dump to
+        # every diagnostic makes that cost scale with IR size per candidate, which
+        # dominates runtime once the beam explores more than a handful of them.
+        "--mlir-print-op-on-diagnostic=false",
         "--sdy-propagation-pipeline",
         "--shardy-to-distributed-pipeline",
         "--cse",

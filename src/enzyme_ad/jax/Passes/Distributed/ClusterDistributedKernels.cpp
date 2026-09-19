@@ -587,11 +587,16 @@ struct ClusterDistributedKernelsPass
       for (Value input : kernelInputs) {
         kernelBlockArgTypes.push_back(input.getType());
 
+        // Prefer `input`'s own producer-tracked identity over the consuming
+        // op's synthesized per-factor symbol: the latter always resolves
+        // structurally for any op with a sharding rule, even when nothing
+        // ever unioned it back to the value's true identity, which would
+        // silently materialize a phantom partitioning axis if tried first.
         auto maybePartitioning =
-            axisAnalysis.getTensorPartitionDims(*representativeInputUse[input]);
+            getPartitioningForValueOrCastNeighborhood(input, axisAnalysis);
         if (!maybePartitioning) {
           maybePartitioning =
-              getPartitioningForValueOrCastNeighborhood(input, axisAnalysis);
+              axisAnalysis.getTensorPartitionDims(*representativeInputUse[input]);
         }
 
         if (!maybePartitioning && isa<RankedTensorType>(input.getType())) {

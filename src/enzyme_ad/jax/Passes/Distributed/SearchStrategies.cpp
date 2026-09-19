@@ -9,6 +9,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/PassManager.h"
 
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -284,6 +285,10 @@ public:
     return (*axes)[axisIndex];
   }
   bool finalized() const override { return axisIndex >= axes->size(); }
+  // How many axes this node has advanced past -- equals axes->size() once
+  // finalized(). Search-progress reporting's notion of "depth".
+  std::size_t getAxisIndex() const { return axisIndex; }
+  std::size_t getTotalAxisCount() const { return axes->size(); }
   int getExtentRemaining() const { return extentRemaining; }
   const auto &getAvailableSpace() const { return availableSpace; }
 
@@ -621,13 +626,14 @@ public:
   OpBuilder &builder;
   ArrayRef<SharedOpRef<AxisFactorOp>> totalMeshSpace;
   Location defaultLoc;
+  bool logProgress;
 
   StrategyExplorer(LogicalAxisOverlap &overlap, OpBuilder &builder,
                    ArrayRef<SharedOpRef<AxisFactorOp>> totalMeshSpace,
-                   Location defaultLoc)
+                   Location defaultLoc, bool logProgress = false)
       : BeamSearchExplorerBase<StrategySearchNode>(), overlap(overlap),
         builder(builder), totalMeshSpace(totalMeshSpace),
-        defaultLoc(defaultLoc) {}
+        defaultLoc(defaultLoc), logProgress(logProgress) {}
 
   virtual std::vector<std::shared_ptr<StrategySearchNode>>
   generateCandidatesFromNode(
@@ -636,6 +642,15 @@ public:
     // apply a sharding axis, pipeline (TODO), or place within
     // a device.
     const int extentRemaining = node->getExtentRemaining();
+
+    if (logProgress) {
+      llvm::errs() << "distributed-search-strategies: parent at axis depth "
+                   << node->getAxisIndex() << " of "
+                   << node->getTotalAxisCount() << ", extent remaining "
+                   << extentRemaining << ", "
+                   << node->getAvailableSpace().size()
+                   << " available physical factor(s)\n";
+    }
 
     std::vector<std::shared_ptr<StrategySearchNode>> candidates;
 
@@ -651,6 +666,15 @@ public:
         auto child = node->makeChild();
         applyChunkDecision(*child, physicalFactor, *decision);
         child->considerNextAxis(overlap, totalMeshSpace, builder);
+        if (logProgress) {
+          llvm::errs() << "distributed-search-strategies:   child "
+                       << candidates.size() << ": took chunk (extent "
+                       << getFactorExtent(decision->takenFactor->get())
+                       << ") from a physical factor of extent "
+                       << getFactorExtent(physicalFactor->get())
+                       << ", now at axis depth " << child->getAxisIndex()
+                       << "\n";
+        }
         candidates.push_back(child);
       }
     }
@@ -660,6 +684,12 @@ public:
       auto child = node->makeChild();
       applySerializeRemaining(*child, builder, defaultLoc);
       child->considerNextAxis(overlap, totalMeshSpace, builder);
+      if (logProgress) {
+        llvm::errs() << "distributed-search-strategies:   child "
+                     << candidates.size() << ": serialized remaining extent "
+                     << extentRemaining << ", now at axis depth "
+                     << child->getAxisIndex() << "\n";
+      }
       candidates.push_back(child);
     }
     return candidates;
@@ -835,10 +865,29 @@ struct DistributedSearchStrategiesPass
     auto initialNode = std::make_shared<StrategySearchNode>(axes, decisions);
     initialNode->setupNextAxis(overlap, physicalAxes, builder);
 
-    BeamSearchBreadthFirstQueue<StrategySearchNode> queue(beamSize);
+    std::function<void(llvm::ArrayRef<std::shared_ptr<StrategySearchNode>>)>
+        progressLogger;
+    if (logProgress) {
+      std::size_t totalAxes = axes->size();
+      progressLogger = [totalAxes](llvm::ArrayRef<std::shared_ptr<StrategySearchNode>>
+                                        generation) {
+        std::size_t shallowest = generation.front()->getAxisIndex();
+        std::size_t deepest = shallowest;
+        for (const auto &node : generation) {
+          shallowest = std::min(shallowest, node->getAxisIndex());
+          deepest = std::max(deepest, node->getAxisIndex());
+        }
+        llvm::errs() << "distributed-search-strategies: beam turnover ("
+                     << generation.size() << " candidate(s)), axis depth "
+                     << shallowest << "-" << deepest << " of " << totalAxes
+                     << "\n";
+      };
+    }
+    BeamSearchBreadthFirstQueue<StrategySearchNode> queue(beamSize,
+                                                          progressLogger);
     queue.push(initialNode);
     StrategyExplorer explorer(overlap, builder, physicalAxes,
-                              moduleOp.getLoc());
+                              moduleOp.getLoc(), logProgress);
     StrategyInOrderCompleter completer(overlap, builder, physicalAxes,
                                        moduleOp.getLoc());
     StrategyScorer scorer(moduleOp, dumpCandidates, disableVerifier, completer);

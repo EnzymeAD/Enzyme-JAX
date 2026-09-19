@@ -380,13 +380,25 @@ def InlineDeviceLocalAxesPass
 
 def DistributedSearchStrategiesPass : Pass<"distributed-search-strategies", "::mlir::ModuleOp"> {
   let summary = "Searches for distribution strategies mapping logical axes to physical execution";
-  let dependentDialects = ["enzyme::distributed::DistributedDialect"];
+  // Every dialect any pass in buildDistributedSearchLoweringPipeline
+  // (SearchStrategies.cpp's cloneAndApplyDecisions runs it in a nested
+  // PassManager once per scored candidate) could ever need must be loaded
+  // here, not left to that nested run's own dependent-dialect preloading:
+  // this pass's runOnOperation() is already inside the outer PassManager's
+  // multi-threaded execution context by the time it starts, and MLIR
+  // disallows loading a not-yet-loaded dialect at that point (it either
+  // hard-errors or deadlocks contending on the same thread pool).
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect", "enzyme::axis::AxisDialect",
+    "sdy::SdyDialect", "stablehlo::StablehloDialect", "mlir::func::FuncDialect"
+  ];
   let options = [
     Option<"dumpCandidates", "dump-candidates", "bool", "false", "Print the cloned, partially-rewritten IR for each scored search candidate, for debugging. Default: false">,
     Option<"dumpFinalized", "dump-finalized", "bool", "false", "Print the cloned, partially-rewritten IR for each finalized search candidate, for debugging. Default: false">,
     Option<"dumpBest", "dump-best", "bool", "false", "Print the cloned, partially-rewritten IR for the best search candidate, for debugging. Default: false">,
     Option<"disableVerifier", "disable-verifier", "bool", "true", "Disable the MLIR verifier when running the internal lowering pipeline on each candidate clone during search, for runtime reasons. Default: true">,
-    Option<"beamSize", "beam-size", "int", "100", "Maximum number of candidates retained per generation of the beam search. Default: 100">
+    Option<"beamSize", "beam-size", "int", "100", "Maximum number of candidates retained per generation of the beam search. Default: 100">,
+    Option<"logProgress", "log-progress", "bool", "false", "Log the deepest and shallowest axis-decision depth reached across the beam at each generation turnover, out of the total axis count. Useful for tracking how far a long-running search has gotten. Default: false">
   ];
 }
 

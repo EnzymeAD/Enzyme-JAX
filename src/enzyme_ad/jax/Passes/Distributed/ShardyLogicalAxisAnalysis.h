@@ -252,6 +252,14 @@ private:
   SymbolFactorMerge symbolFactorMerge;
   Operation *sdy_func = nullptr;
   bool valid = true;
+#ifndef NDEBUG
+  // getReductionAxes's debug-only informational remarks, emitted only once
+  // each: an unrolled model repeats the same permutation/need-replication
+  // classification across many ops, and a single remark says everything the
+  // per-occurrence spam would.
+  bool emittedPermutationFactorRemark = false;
+  bool emittedNeedReplicationFactorRemark = false;
+#endif
 
   void buildInitialSymbols();
   void validateLogicalAxisAssignments();

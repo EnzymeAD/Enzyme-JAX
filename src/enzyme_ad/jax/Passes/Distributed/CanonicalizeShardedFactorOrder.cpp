@@ -974,6 +974,18 @@ struct CanonicalizeShardedFactorOrderPass
     ModuleOp moduleOp = getOperation();
     bool sawUnsupported = false;
 
+    // A real, unrolled model tends to repeat the same "not yet supported"
+    // classification across many structurally-identical ops (e.g. dozens of
+    // otherwise-identical RoPE concatenates); every occurrence beyond the
+    // first adds no new information. One remark per distinct op kind per
+    // pass run is enough to flag the gap without the noise -- and without
+    // MLIR's default per-diagnostic operation-printing cost scaling with
+    // however many times the same message would otherwise fire.
+    llvm::DenseSet<OperationName> seenMultiFactorNoKernel;
+    llvm::DenseSet<OperationName> seenSpecialFactor;
+    llvm::DenseSet<OperationName> seenUnimplementedReshard;
+    llvm::DenseSet<OperationName> seenNoRule;
+
     // Pre-order: a DistributedKernelOp's own boundary (and any cast op) must
     // be canonicalized BEFORE the ops inside a kernel body are visited, so
     // resolveCurrentSharding (used by the multi-factor/reshape path) sees
@@ -1191,11 +1203,14 @@ struct CanonicalizeShardedFactorOrderPass
             // case that genuinely needs a fix, applied directly at `op` itself.
             auto kernelOp = op->getParentOfType<DistributedKernelOp>();
             if (!kernelOp) {
-              op->emitRemark()
-                  << op->getName()
-                  << ": has a dimension mapped to more than one factor "
-                     "(split/join), but isn't inside a distributed kernel, so "
-                     "its current per-dimension factor order can't be resolved";
+              if (seenMultiFactorNoKernel.insert(op->getName()).second) {
+                op->emitRemark()
+                    << op->getName()
+                    << ": has a dimension mapped to more than one factor "
+                       "(split/join), but isn't inside a distributed kernel, "
+                       "so its current per-dimension factor order can't be "
+                       "resolved";
+              }
               sawUnsupported = true;
               return;
             }
@@ -1207,11 +1222,13 @@ struct CanonicalizeShardedFactorOrderPass
           case OpClassification::SpecialFactor:
             // Needs real communication (a halo-swap/collective-permute), not a
             // free relabeling -- out of scope for this pass.
-            op->emitRemark()
-                << op->getName()
-                << ": has a factor requiring permutation or full replication "
-                   "(e.g. a windowed/neighborhood-dependent op such as "
-                   "convolution) -- not yet supported";
+            if (seenSpecialFactor.insert(op->getName()).second) {
+              op->emitRemark()
+                  << op->getName()
+                  << ": has a factor requiring permutation or full "
+                     "replication (e.g. a windowed/neighborhood-dependent op "
+                     "such as convolution) -- not yet supported";
+            }
             sawUnsupported = true;
             return;
           case OpClassification::NoRule:
@@ -1219,17 +1236,22 @@ struct CanonicalizeShardedFactorOrderPass
           }
 
           if (isa<sdy::ReshardOp>(op)) {
-            op->emitRemark() << op->getName()
-                             << ": collective canonicalizing rewrite not yet "
-                                "implemented";
+            if (seenUnimplementedReshard.insert(op->getName()).second) {
+              op->emitRemark()
+                  << op->getName()
+                  << ": collective canonicalizing rewrite not yet "
+                     "implemented";
+            }
             sawUnsupported = true;
             return;
           }
 
-          op->emitRemark() << op->getName() << ": unsupported by "
-                           << getArgument()
-                           << ", needs an explicit rewrite rule (no Shardy "
-                              "sharding rule could be synthesized)";
+          if (seenNoRule.insert(op->getName()).second) {
+            op->emitRemark() << op->getName() << ": unsupported by "
+                             << getArgument()
+                             << ", needs an explicit rewrite rule (no Shardy "
+                                "sharding rule could be synthesized)";
+          }
           sawUnsupported = true;
         });
 

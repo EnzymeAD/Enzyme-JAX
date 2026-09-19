@@ -299,12 +299,20 @@ void SymbolFactorMerge::attemptMergeSymbols(llvm::ArrayRef<AxisSymbol> a,
   auto lhs_factors = resolve(a);
   auto rhs_factors = resolve(b);
   if (extentOfList(lhs_factors) != extentOfList(rhs_factors)) {
-    // reject merge: a permutation-style op (e.g. slice) can tag a dimension
-    // with a factor sized by its pre-permutation extent, while the same SSA
-    // value's literal tensor-type size feeds a freshly synthesized, smaller
-    // factor on the consuming op's side. These are genuinely different
-    // factors, not a caller bug, so this is a normal rejection rather than
-    // an invariant violation.
+    // A permutation-style op (e.g. slice) can tag a dimension with a factor
+    // sized by its pre-permutation extent, while the same SSA value's
+    // literal tensor-type size feeds a freshly synthesized, smaller factor
+    // on the consuming op's side -- genuinely different factors, not a
+    // caller bug, so rejecting the merge is correct. Any other extent
+    // mismatch reaching here is an invariant violation elsewhere in the
+    // analysis, not a case this rejection is meant to paper over.
+    assert((llvm::any_of(lhs_factors,
+                          [this](AxisSymbol s) { return isUnshardable(s); }) ||
+            llvm::any_of(
+                rhs_factors,
+                [this](AxisSymbol s) { return isUnshardable(s); })) &&
+           "extent mismatch on a mergeable factor pair should only occur "
+           "via a permutation-tagged (unshardable) factor");
     return;
   }
   if (hasSharedFactorOrderConflict(lhs_factors, rhs_factors)) {
@@ -507,12 +515,16 @@ ShardyLogicalAxisAnalysis::getReductionAxes(OpResult result) {
   // buildInitialSymbols, so neither is ever handed out as a real logical
   // axis for materialization either.
 #ifndef NDEBUG
-  if (!shardingRule.getPermutationFactors().empty()) {
+  if (!shardingRule.getPermutationFactors().empty() &&
+      !emittedPermutationFactorRemark) {
+    emittedPermutationFactorRemark = true;
     op->emitRemark() << "op has permutation factors in its sharding rule; "
                         "the corresponding logical axes are treated as "
                         "unshardable rather than reduced";
   }
-  if (!shardingRule.getNeedReplicationFactors().empty()) {
+  if (!shardingRule.getNeedReplicationFactors().empty() &&
+      !emittedNeedReplicationFactorRemark) {
+    emittedNeedReplicationFactorRemark = true;
     op->emitRemark() << "op has need-replication factors in its sharding "
                         "rule; the corresponding logical axes are treated as "
                         "unshardable rather than replicated";
@@ -734,6 +746,7 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbols() {
             << (!in_sharding ? "input" : "result")
             << "; axis analysis cannot determine the reshard's semantics "
                "without it";
+        valid = false;
         return;
       }
       for (auto [dimIdx, dimShardings] :
