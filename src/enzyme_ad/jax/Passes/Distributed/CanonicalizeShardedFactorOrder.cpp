@@ -354,6 +354,22 @@ static Value buildManualComputationChain(
       body->getArgument(0));
   localMergeOp->setDiscardableAttr(kInternalRewriteMarker,
                                    builder.getUnitAttr());
+  // Inside the region the manual axes are already divided down. Every other
+  // dimension of the tensor keeps its own (non-manual) sharding, and Shardy
+  // only localizes region ops that say so: without these attributes the
+  // merged result would keep the global size on those dimensions.
+  SmallVector<DenseI64ArrayAttr> noSlots(n, DenseI64ArrayAttr::get(ctx, {}));
+  IndexedTensorShardingAttr regionOperandSharding = buildRankShiftedSharding(
+      ctx, fullDimAxesList, dim, noSlots, unreducedAxes);
+  IndexedTensorShardingAttr regionResultSharding = buildRankShiftedSharding(
+      ctx, fullDimAxesList, dim, {DenseI64ArrayAttr::get(ctx, {})},
+      unreducedAxes);
+  localMergeOp->setAttr(
+      "distributed.argument_shardings",
+      IndexedTensorShardingPerValueAttr::get(ctx, {regionOperandSharding}));
+  localMergeOp->setAttr(
+      "distributed.output_shardings",
+      IndexedTensorShardingPerValueAttr::get(ctx, {regionResultSharding}));
   bodyBuilder.create<DistributedYieldOp>(loc, TypeRange{},
                                          ValueRange{localMergeOp});
 

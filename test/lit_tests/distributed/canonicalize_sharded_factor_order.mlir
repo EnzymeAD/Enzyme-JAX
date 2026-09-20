@@ -266,7 +266,8 @@ module @kernel_internal_reshape_sandwiched {
 // PLUS its declared operand sharding, so a mismatched self-declaration on
 // the reshape itself, not just at a boundary, causes a real lowering
 // failure, independent of whatever the kernel or a downstream consumer
-// separately declares.
+// separately declares. The region's own merge reshape carries the sharding of
+// the tensor's non-manual dimensions (none here) so Shardy localizes it.
 module @kernel_internal_merge_sandwiched {
   func.func @main() {
     return
@@ -302,7 +303,7 @@ module @kernel_internal_merge_sandwiched {
 // CHECK-NEXT: manual_axes [0, 2]
 // CHECK-NEXT: -> (tensor<24xf32>) <[<dim_partitioning_axes = {{\[\[0, 2, 1, 3\]\]}} : unreduced_axes = []>]> {
 // CHECK-NEXT: ^bb0(%[[LARG:.*]]: tensor<1x3x1x2xf32>):
-// CHECK-NEXT: %[[LMERGE:.*]] = stablehlo.reshape %[[LARG]] {canonicalize_sharded_factor_order.internal} : (tensor<1x3x1x2xf32>) -> tensor<6xf32>
+// CHECK-NEXT: %[[LMERGE:.*]] = stablehlo.reshape %[[LARG]] {canonicalize_sharded_factor_order.internal, distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[\], \[\], \[\], \[\]\]}} : unreduced_axes = []>]>, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[\]\]}} : unreduced_axes = []>]>} : (tensor<1x3x1x2xf32>) -> tensor<6xf32>
 // CHECK-NEXT: distributed.DistributedYield (%[[LMERGE]] : tensor<6xf32>)
 // CHECK-NEXT: }
 // CHECK-NEXT: distributed.DistributedYield (%[[MANUAL]] : tensor<24xf32>)
@@ -353,3 +354,39 @@ module @special_factor_but_local {
 // CHECK-NEXT: ^bb0(%arg0: tensor<4x1xf32>):
 // CHECK-NEXT: %[[CAT:.*]] = stablehlo.concatenate %arg0, %arg0, dim = 1 {distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[1, 0\], \[2\]\]}} : unreduced_axes = []>, <dim_partitioning_axes = {{\[\[1, 0\], \[2\]\]}} : unreduced_axes = []>]>, {{.*}}
 // CHECK-NEXT: distributed.DistributedYield (%[[CAT]] : tensor<4x2xf32>)
+
+// -----
+
+// The merge fix on a tensor with another sharded dimension the rewrite does not
+// touch: the region's merge reshape must carry that dimension's sharding, or
+// Shardy leaves its size global while the region argument is localized.
+module @merge_with_sharded_batch_dim {
+  func.func @main() {
+    return
+  }
+  %zs = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
+  %xs = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
+  %xl = distributed.DeviceLocalAxis 3 : !distributed.device_local_axis<3>
+  %ys = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
+  %yl = distributed.DeviceLocalAxis 2 : !distributed.device_local_axis<2>
+  %fzs = axis.factor %zs : !distributed.logical_mesh_axis<2><2, 1>
+  %fxs = axis.factor %xs : !distributed.logical_mesh_axis<2><2, 1>
+  %fxl = axis.factor %xl : !distributed.device_local_axis<3><3, 1>
+  %fys = axis.factor %ys : !distributed.logical_mesh_axis<2><2, 1>
+  %fyl = axis.factor %yl : !distributed.device_local_axis<2><2, 1>
+  %slotZ = axis.product (%fzs : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+  %slotX = axis.product (%fxs : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, %fxl : !axis.axis_factor<!distributed.device_local_axis<3>, 3, 1>)
+  %slotY = axis.product (%fys : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, %fyl : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
+  %cst = stablehlo.constant dense<0.0> : tensor<1x1x1xf32>
+  %r = distributed.DistributedKernel (%cst : tensor<1x1x1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1], [2]] : unreduced_axes = []>]>
+    -> (tensor<1x1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1, 2]] : unreduced_axes = []>]>
+    axes (%slotZ : !axis.factor_group<2>, %slotX : !axis.factor_group<6>, %slotY : !axis.factor_group<4>) {
+  ^bb0(%arg0: tensor<2x6x4xf32>):
+    %merged = stablehlo.reshape %arg0 {distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1], [2]] : unreduced_axes = []>]>, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1, 2]] : unreduced_axes = []>]>, sdy.sharding_rule = #sdy.op_sharding_rule<([i, j, k])->([i, jk]) {i=2, j=6, k=4}>} : (tensor<2x6x4xf32>) -> tensor<2x24xf32>
+    distributed.DistributedYield (%merged : tensor<2x24xf32>)
+  }
+}
+
+// CHECK-LABEL: module @merge_with_sharded_batch_dim {
+// CHECK: distributed.ManualComputation
+// CHECK: stablehlo.reshape %{{.*}} {canonicalize_sharded_factor_order.internal, distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[0\], \[\], \[\], \[\], \[\]\]}} : unreduced_axes = []>]>, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[0\], \[\]\]}} : unreduced_axes = []>]>}
