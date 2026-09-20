@@ -110,6 +110,11 @@ public:
         .extent;
   }
 
+  uint64_t strideOf(const AtomLabel &label) const {
+    return atoms->atomsOf(index.at({label.space, label.axis}))[label.atom]
+        .stride;
+  }
+
   SmallVector<int64_t> extentsOf(ArrayRef<AtomLabel> labels) const {
     SmallVector<int64_t> result;
     for (const AtomLabel &label : labels)
@@ -149,6 +154,14 @@ struct CollectiveResolution {
   // meanings are unaffected by this field's contents.
   SmallVector<ResolvedFactor> inputMeshFactors;
   SmallVector<ResolvedFactor> outputMeshFactors;
+  // The provenance value recorded for each axis key, from whichever resolved
+  // factor over it was encountered first. Every mesh axis and every tile
+  // axis with extent greater than 1 is guaranteed an entry (see
+  // resolveCollectiveAtoms's own resolution order below): mesh axes through
+  // inputMeshFactors/outputMeshFactors, tile axes through reductionGroups or
+  // pairs. Consumed by the atomizing rewrite in AtomizeCollectives.cpp to
+  // build a fresh axis.factor over an atom without re-deriving provenance.
+  std::map<AxisKey, TypedValue<axis::AxisTypeInterface>> axisProvenance;
   CollectiveAtoms atoms;
 };
 

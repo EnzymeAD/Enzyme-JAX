@@ -74,6 +74,12 @@ FailureOr<CollectiveResolution> resolveCollectiveAtoms(
           *provenance};
       atoms.addFactor(resolvedFactor);
       resolved.push_back(resolvedFactor);
+      // try_emplace keeps the first provenance seen for a key, matching this
+      // function's resolution order (reduction groups, then each mapping
+      // pair's lhs and rhs, then the mesh operands) -- every factor over the
+      // same key shares one provenance axis, so which occurrence wins
+      // doesn't otherwise matter.
+      resolution.axisProvenance.try_emplace(key, *provenance);
     }
     return resolved;
   };
