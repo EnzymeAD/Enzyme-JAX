@@ -450,6 +450,34 @@ def MakeReplicationsExplicitPass
   }];
 }
 
+def AtomizeCollectivesPass
+    : Pass<"distributed-atomize-collectives", "::mlir::ModuleOp"> {
+  let summary = "Rewrites every distributed.Collective into atomic form: one "
+                "factor per mesh atom, atom-to-atom mapping pairs.";
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "enzyme::distributed::DistributedDialect"
+  ];
+  let description = [{
+    Rewrites every distributed.Collective into atomic form and marks it with
+    the `atomic` unit attribute, which the op verifier checks. A collective is
+    atomic when:
+
+      * every mesh atom appears once in input_mesh and once in output_mesh,
+      * every mapping pair relates one factor to one factor, and
+      * on each axis, any two factors the collective mentions (mesh,
+        reduction or mapping) are either equal or disjoint.
+
+    An atom is a piece of an axis that no factor of the collective cuts
+    further.
+
+    Expects distributed-make-replications-explicit to have run. A collective
+    with no common atom basis (a mapping pair that cannot be split into equal
+    atoms, such as 3*2 against 2*3, or cuts on an axis that do not nest) is
+    left unmarked with a remark; the pass still succeeds, since such a
+    collective is an infeasible sharding candidate rather than a bug.
+  }];
+}
+
 def LowerForSanityCheckPass
     : Pass<"distributed-lower-for-sanity-check", "::mlir::ModuleOp"> {
   let summary = "Lowers the whole distributed program to a single-device "
