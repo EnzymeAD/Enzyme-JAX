@@ -982,19 +982,20 @@ static SmallVector<bool> dimsLocalForValue(DistributedKernelOp kernelOp,
   return local;
 }
 
-// Conservatively std::nullopt (don't claim locality for anything) if `op`
-// isn't inside a kernel or carries no sharding metadata to check.
-static std::optional<DimensionLocality>
-computeDimensionLocality(Operation *op) {
+// Empty (no per-value entries at all) if `op` isn't inside a kernel or
+// carries no sharding metadata to check -- isFactorFullyLocal's own bounds
+// check then treats every dimension as conservatively not-local, the same
+// way it does for an out-of-range value index.
+static DimensionLocality computeDimensionLocality(Operation *op) {
+  DimensionLocality result;
   auto kernelOp = op->getParentOfType<DistributedKernelOp>();
   auto argShardings = op->getAttrOfType<IndexedTensorShardingPerValueAttr>(
       "distributed.argument_shardings");
   auto outputShardings = op->getAttrOfType<IndexedTensorShardingPerValueAttr>(
       "distributed.output_shardings");
   if (!kernelOp || !argShardings || !outputShardings) {
-    return std::nullopt;
+    return result;
   }
-  DimensionLocality result;
   for (IndexedTensorShardingAttr sharding : argShardings.getShardings()) {
     result.operandDimsLocal.push_back(dimsLocalForValue(kernelOp, sharding));
   }
@@ -1052,10 +1053,8 @@ static OpClassification classifyOp(Operation *op) {
   }
   DimensionLocality locality = computeDimensionLocality(op);
   for (int64_t factor = 0, n = rule.getNumFactors(); factor < n; ++factor) {
-    if (rule.isPassThroughFactor(factor) || rule.isReductionFactor(factor)) {
-      continue;
-    }
-    if (isFactorFullyLocal(rule, factor, locality)) {
+    if (rule.isPassThroughFactor(factor) || rule.isReductionFactor(factor) ||
+        isFactorFullyLocal(rule, factor, locality)) {
       continue;
     }
     return OpClassification::SpecialFactor;
