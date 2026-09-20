@@ -1047,6 +1047,110 @@ func::FuncOp convertDistributedFunctionToFunc(DistributedFunctionOp distFn,
   return funcOp;
 }
 
+// Splices `call`'s callee body in at the call site, entirely avoiding the
+// callee's own GLOBAL-scope argument/return values: a partitioned tensor
+// argument/return of a DistributedFunctionOp is bound through exactly one
+// CastGlobalToLocal/CastLocalToGlobal (see convertFunctionToDistributedFunction),
+// whose local-scope side is already at exactly the same axes this call's own
+// (also local-scope) operands/results share with the callee (DistributedCallOp
+// reuses the callee's own partitioning_axes/argument_shardings/output_shardings
+// directly, see localizeCall in ConvertMainToDistributedFunction.cpp); an
+// unpartitioned one has no cast at all, local and global being identical. So
+// rather than reconstituting a global value only to immediately re-derive its
+// local form again, this skips cloning a boundary cast where one exists and
+// wires the call's own local operand/result straight onto the value it would
+// have produced/consumed -- exactly the flat program a hand-inlined version
+// of the same call would produce. Leaves the callee function itself in
+// place, since this pass only ever extracts `main`; it's a dead symbol at
+// that point, cleaned up by the same subsequent DCE this pass already relies
+// on for its axis.* metadata leftovers.
+LogicalResult inlineDistributedCall(DistributedCallOp call) {
+  auto callee = SymbolTable::lookupNearestSymbolFrom<DistributedFunctionOp>(
+      call, call.getCalleeAttr());
+  Block &calleeBlock = callee.getBody().front();
+  OpBuilder builder(call);
+  IRMapping mapping;
+  // Both boundary casts get skipped below rather than cloned, so a
+  // partitioned result's producing kernel/collective keeps exactly the one
+  // real consumer this pass's own bounding-cast lookup
+  // (findBoundingCastLocalToGlobal) requires -- cloning the callee's own
+  // result cast alongside redirecting the call's result to its input would
+  // otherwise leave that value with two consumers.
+  llvm::SmallDenseSet<Operation *> skip;
+
+  for (auto [idx, arg] : llvm::enumerate(calleeBlock.getArguments())) {
+    Value operand = call.getArguments()[idx];
+    // An unpartitioned argument is identical at both scopes (no data to
+    // reconcile), so the callee never needs a cast for it at all -- map it
+    // straight through regardless of whether the callee body happens to
+    // wrap it in a (then-trivial) cast anyway.
+    if (arg.getType() == operand.getType()) {
+      mapping.map(arg, operand);
+      continue;
+    }
+    auto castOp = arg.hasOneUse()
+                      ? dyn_cast<DistributedCastGlobalToLocalOp>(
+                            *arg.getUsers().begin())
+                      : nullptr;
+    if (!castOp)
+      return call.emitError()
+             << "argument " << idx
+             << ": expected exactly one direct CastGlobalToLocal off this "
+                "callee argument to inline this call";
+    mapping.map(castOp.getOutput(), operand);
+    skip.insert(castOp);
+  }
+
+  auto yieldOp = cast<DistributedYieldOp>(calleeBlock.getTerminator());
+  SmallVector<Value> resultSources;
+  for (auto [idx, result] : llvm::enumerate(call.getResults())) {
+    Value returned = yieldOp.getReturns()[idx];
+    if (result.getType() == returned.getType()) {
+      resultSources.push_back(returned);
+      continue;
+    }
+    auto castOp = returned.getDefiningOp<DistributedCastLocalToGlobalOp>();
+    if (!castOp)
+      return call.emitError()
+             << "result " << idx
+             << ": expected a direct CastLocalToGlobal producing this "
+                "callee return to inline this call";
+    skip.insert(castOp);
+    resultSources.push_back(castOp.getInput());
+  }
+
+  for (Operation &op : calleeBlock.without_terminator())
+    if (!skip.contains(&op))
+      builder.clone(op, mapping);
+
+  for (auto [result, source] : llvm::zip_equal(call.getResults(), resultSources))
+    result.replaceAllUsesWith(mapping.lookupOrDefault(source));
+  call.erase();
+  return success();
+}
+
+// Inlines every distributed.DistributedCall reachable from `mainFn`, so the
+// rest of this pass can keep treating "main's body" as the whole program,
+// exactly as it would if the source had never been factored into functions.
+// The call DAG is non-recursive, so repeatedly inlining whatever call is
+// found first terminates: a callee's own calls are cloned in as fresh ops
+// and picked up by the next scan.
+LogicalResult inlineDistributedCalls(DistributedFunctionOp mainFn) {
+  Block &block = mainFn.getBody().front();
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (Operation &op : llvm::make_early_inc_range(block)) {
+      if (auto call = dyn_cast<DistributedCallOp>(&op)) {
+        if (failed(inlineDistributedCall(call)))
+          return failure();
+        changed = true;
+      }
+    }
+  }
+  return success();
+}
+
 struct LowerForSanityCheckPass
     : public impl::LowerForSanityCheckPassBase<LowerForSanityCheckPass> {
   using LowerForSanityCheckPassBase::LowerForSanityCheckPassBase;
@@ -1065,6 +1169,10 @@ struct LowerForSanityCheckPass
       emitError(module.getLoc())
           << "distributed-lower-for-sanity-check requires main to still be "
             "a distributed.function -- nothing to lower";
+      signalPassFailure();
+      return;
+    }
+    if (failed(inlineDistributedCalls(distFn))) {
       signalPassFailure();
       return;
     }
