@@ -396,6 +396,9 @@ struct AtomizeCollectivesPass
                                          *resolution, *postResolution) &&
              "atomize-collectives: rewriting to atomic form changed the "
              "collective's own atoms or how they relate to each other");
+      assert(isCollectiveAtomic(*postResolution) &&
+             "atomize-collectives: rewriting to atomic form did not actually "
+             "produce an atomic collective");
       collective->emitRemark() << describeResolution(
           meshAxisTypes, inputTile, outputTile, *postResolution);
     });

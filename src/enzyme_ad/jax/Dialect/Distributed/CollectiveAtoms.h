@@ -215,6 +215,19 @@ FailureOr<CollectiveResolution> resolveCollectiveAtoms(
     ArrayRef<PhysicalCommAxisType> meshAxisTypes, ArrayRef<int64_t> inputTile,
     ArrayRef<int64_t> outputTile, CollectiveResolutionError &error);
 
+// Whether every factor `resolution` resolved already IS one atom -- the
+// property distributed-atomize-collectives's rewrite establishes, and
+// nothing here re-derives: a factor resolves to more than one atom exactly
+// when some other factor mentioned anywhere in the collective cuts partway
+// through it, which is what property (iii) ("equal or disjoint") rules out.
+// Given that, a mesh operand whose factors are each already one atom is
+// automatically disjoint (distinct atoms never overlap) and, since a mesh
+// axis is always registered at its full physical extent (regardless of what
+// the mesh operand's own factors happen to cover -- see
+// resolveCollectiveAtoms's own initial atoms.addAxis calls), covering every
+// one of its atoms is exactly covering the whole axis: this is property (i).
+bool isCollectiveAtomic(const CollectiveResolution &resolution);
+
 } // namespace mlir::enzyme::distributed
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_COLLECTIVE_ATOMS_H

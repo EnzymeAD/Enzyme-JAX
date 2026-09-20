@@ -1,5 +1,9 @@
 #include "CollectiveAtoms.h"
 
+#include "llvm/ADT/STLExtras.h"
+
+#include <set>
+
 namespace mlir::enzyme::distributed {
 
 namespace {
@@ -132,6 +136,68 @@ FailureOr<CollectiveResolution> resolveCollectiveAtoms(
     return failure();
   }
   return resolution;
+}
+
+bool isCollectiveAtomic(const CollectiveResolution &resolution) {
+  const CollectiveAtoms &atoms = resolution.atoms;
+  auto oneAtom = [&](const ResolvedFactor &factor) {
+    return atoms.labelsOf(factor).size() == 1;
+  };
+  auto allOneAtom = [&](const ResolvedGroup &group) {
+    return llvm::all_of(group, oneAtom);
+  };
+
+  for (const ResolvedGroup &group : resolution.reductionGroups)
+    if (!allOneAtom(group))
+      return false;
+  // A mapping pair also needs exactly one factor per side: a two-factor
+  // side where each factor happens to already be one atom still isn't one
+  // factor to one factor.
+  for (const auto &[lhs, rhs] : resolution.pairs)
+    if (lhs.size() != 1 || rhs.size() != 1 || !oneAtom(lhs.front()) ||
+        !oneAtom(rhs.front()))
+      return false;
+  if (!allOneAtom(resolution.inputMeshFactors) ||
+      !allOneAtom(resolution.outputMeshFactors))
+    return false;
+
+  // Every mesh axis this collective's own mesh operands ever registered a
+  // factor for must have every one of its atoms covered, exactly once, by
+  // inputMeshFactors, and likewise by outputMeshFactors. Since every factor
+  // checked above is already known to be one atom, "exactly once" reduces to
+  // set equality between the atoms a side's factors reference and the axis's
+  // full atom set.
+  std::set<size_t> meshAxes;
+  for (const ResolvedFactor &factor : resolution.inputMeshFactors)
+    meshAxes.insert(factor.key.second);
+  for (const ResolvedFactor &factor : resolution.outputMeshFactors)
+    meshAxes.insert(factor.key.second);
+
+  auto coversAxisExactly = [&](const ResolvedGroup &meshFactors, size_t axis) {
+    std::set<size_t> covered;
+    size_t factorCount = 0;
+    for (const ResolvedFactor &factor : meshFactors) {
+      if (factor.key.second != axis)
+        continue;
+      ++factorCount;
+      covered.insert(atoms.labelsOf(factor).front().atom);
+    }
+    // A duplicate reference to one atom would collapse into `covered`
+    // without changing its size, so comparing sizes catches "not once" the
+    // same way set equality below catches "not every atom".
+    if (covered.size() != factorCount)
+      return false;
+    std::set<size_t> expected;
+    for (const AtomLabel &label : atoms.labelsOfAxis({AtomSpace::Mesh, axis}))
+      expected.insert(label.atom);
+    return covered == expected;
+  };
+  for (size_t axis : meshAxes)
+    if (!coversAxisExactly(resolution.inputMeshFactors, axis) ||
+        !coversAxisExactly(resolution.outputMeshFactors, axis))
+      return false;
+
+  return true;
 }
 
 } // namespace mlir::enzyme::distributed
