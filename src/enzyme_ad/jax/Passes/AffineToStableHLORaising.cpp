@@ -257,9 +257,10 @@ static bool isContinuousAlongIVs(affine::AffineValueMap map, AffineExpr E) {
   return computeExprRange(map, E).has_value();
 }
 
-// has single (or zero) iv per dim.
+// has single (or zero) iv per dim, or a contiguous pair of batched ivs.
 // iv are present only at one dim.
-static bool needsGeneralScatterGather(affine::AffineValueMap accessValueMap) {
+static bool needsGeneralScatterGather(affine::AffineValueMap accessValueMap,
+                                      function_ref<bool(Value)> isBatchedIV) {
   bool repeatingIV = false;
   auto map = accessValueMap.getAffineMap();
   auto sz = map.getNumDims();
@@ -278,6 +279,14 @@ static bool needsGeneralScatterGather(affine::AffineValueMap accessValueMap) {
       if (numIVs == 1) {
         if (!isContinuousAlongIVs(accessValueMap, E))
           return true;
+        // A contiguous pair is one slice only when both inductions are
+        // batched. With one of them scalar in this iteration (`%t + %k * 8`,
+        // a lane reading its row of a scratch inside a sequential loop) the
+        // access is a per-lane index, which only the gather expresses.
+        for (int d = 0; d < sz; ++d)
+          if (E.isFunctionOfDim(d) &&
+              !isBatchedIV(accessValueMap.getOperand(d)))
+            return true;
       } else if (numIVs >= 2)
         return true;
       numIVs++;
@@ -524,9 +533,13 @@ getExpandedAffineDims(affine::AffineValueMap map, AffineExpr expr,
     return failure();
 
   // In row-major order, each outer IV advances by exactly the number of
-  // elements spanned by all dimensions inside it.
+  // elements spanned by all dimensions inside it. A dimension of one
+  // element (an induction the context sizes to a single iteration) spans
+  // nothing and constrains no step.
   int64_t expectedStep = dims.back().linearStep;
   for (auto dim : llvm::reverse(dims)) {
+    if (dim.size == 1)
+      continue;
     if (dim.linearStep != expectedStep)
       return failure();
     expectedStep *= dim.size;
@@ -3352,7 +3365,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed() ||
         (dynIndices &&
          llvm::any_of(strides, [](int64_t stride) { return stride != 1; })) ||
-        needsGeneralScatterGather(accessValueMap) ||
+        needsGeneralScatterGather(
+            accessValueMap, [&](Value iv) { return pc.isParallelIV(iv); }) ||
         usesLaneTensorIV(accessValueMap, mapping, pc);
 
     if (emitAsGather) {
@@ -3695,7 +3709,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     bool emitAsScatter =
         affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed() ||
         llvm::any_of(strides, [](int64_t stride) { return stride != 1; }) ||
-        needsGeneralScatterGather(accessValueMap) ||
+        needsGeneralScatterGather(
+            accessValueMap, [&](Value iv) { return pc.isParallelIV(iv); }) ||
         usesLaneTensorIV(accessValueMap, mapping, pc);
 
     if (emitAsScatter) {
