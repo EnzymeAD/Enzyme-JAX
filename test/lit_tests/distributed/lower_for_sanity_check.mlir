@@ -265,3 +265,61 @@ module {
     distributed.DistributedYield (%global_out : tensor<2xf32>)
   }) : (!axis.factor_group<2>) -> ()
 }
+
+// -----
+
+// A collective fed directly by a kernel result, with no cast in between
+// (nothing on that edge changes scope or shape). The kernel result must still
+// be expanded per mesh coordinate so the collective sees distinct values;
+// expect the same reduce-then-map recipe as the cast-bounded case above.
+// CHECK-LABEL: func.func @main
+// CHECK: stablehlo.while
+// CHECK: stablehlo.reduce
+// CHECK-SAME: applies stablehlo.add
+// CHECK: stablehlo.broadcast_in_dim
+// CHECK: stablehlo.while
+module {
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
+
+  %p0 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 1>
+  %f0 = axis.factor %p0 : !distributed.physical_comm_axis<2, 1> <2, 1>
+  %axes_grp = axis.product (%f0 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+
+  %r0 = distributed.ReplicationAxis 2 : !distributed.replication_axis<2>
+  %rf0 = axis.factor %r0 : !distributed.replication_axis<2> <2, 1>
+  %lhs = axis.product (%rf0 : !axis.axis_factor<!distributed.replication_axis<2>, 2, 1>)
+  %rhs = axis.product (%f0 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %map = axis.map %lhs to %rhs : [!axis.factor_group<2>] [!axis.factor_group<2>]
+
+  "distributed.DistributedFunction"(%axes_grp) <{
+    argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>,
+    function_type = (tensor<2xf32>) -> tensor<2xf32>,
+    output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>,
+    sym_name = "main"
+  }> ({
+  ^bb0(%arg0: tensor<2xf32>):
+    %local_in = distributed.CastGlobalToLocal %arg0 axes (%axes_grp : !axis.factor_group<2>) : tensor<2xf32> -> tensor<1xf32>
+    %k1 = distributed.DistributedKernel (%local_in : tensor<1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+        -> (tensor<1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+        axes () {
+    ^bb1(%a: tensor<1xf32>):
+      %c = stablehlo.multiply %a, %a : tensor<1xf32>
+      distributed.DistributedYield (%c : tensor<1xf32>)
+    }
+    %h = distributed.Collective %k1 : tensor<1xf32> on %axes_grp : !axis.factor_group<2> to tensor<1xf32> on %axes_grp : !axis.factor_group<2> reduces (%axes_grp : !axis.factor_group<2>) maps %map : !axis.map {
+    ^bb2(%lhs_v: tensor<f32>, %rhs_v: tensor<f32>):
+      %sum = stablehlo.add %lhs_v, %rhs_v : tensor<f32>
+      stablehlo.return %sum : tensor<f32>
+    }
+    %v = distributed.Await %h : !distributed.asynch_handle<tensor<1xf32>> -> tensor<1xf32>
+    %k2 = distributed.DistributedKernel (%v : tensor<1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+        -> (tensor<1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+        axes () {
+    ^bb3(%b: tensor<1xf32>):
+      %d = stablehlo.add %b, %b : tensor<1xf32>
+      distributed.DistributedYield (%d : tensor<1xf32>)
+    }
+    %global_out = distributed.CastLocalToGlobal %k2 axes (%axes_grp : !axis.factor_group<2>) : tensor<1xf32> -> tensor<2xf32>
+    distributed.DistributedYield (%global_out : tensor<2xf32>)
+  }) : (!axis.factor_group<2>) -> ()
+}

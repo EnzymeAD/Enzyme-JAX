@@ -245,6 +245,28 @@ DistributedCastLocalToGlobalOp findBoundingCastLocalToGlobal(Value result) {
   return dyn_cast_or_null<DistributedCastLocalToGlobalOp>(soleUser);
 }
 
+// Same forward sole-consumer walk as findBoundingCastLocalToGlobal, but
+// checking whether `result` is instead consumed directly as a
+// DistributedCollectiveOp's own input_object. A collective needs genuinely
+// distinct per-mesh-coordinate values, so a result consumed this way needs
+// the expanded form just as a cast-bound one does. The usual kernel ->
+// collective edge has no cast at all, since it changes neither scope nor
+// shape.
+bool feedsCollectiveInputDirectly(Value result) {
+  Value cur = result;
+  while (true) {
+    if (!cur.hasOneUse())
+      return false;
+    Operation *user = *cur.getUsers().begin();
+    if (auto anchor = dyn_cast<AnchorPartitioningOp>(user)) {
+      cur = anchor.getOutput();
+      continue;
+    }
+    auto collective = dyn_cast<DistributedCollectiveOp>(user);
+    return collective && collective.getInputObject() == cur;
+  }
+}
+
 // The whole-module lowering state: an ordered walk over the
 // DistributedFunctionOp's body, dispatched by op kind, building both a
 // plain IRMapping (for values that stay at their original flat shape) and
@@ -539,7 +561,10 @@ private:
     }
 
     // Resolve each result's bounding cast (its sole real consumer, walking
-    // through pass-through anchors forward).
+    // through pass-through anchors forward) -- or, absent a cast, whether a
+    // collective consumes it directly instead (see
+    // feedsCollectiveInputDirectly), which needs the same expanded
+    // treatment despite there being no cast to derive perDimSplits from.
     SmallVector<ResultInfo> resultInfos;
     for (Value result : kernel.getResults()) {
       if (auto castOp = findBoundingCastLocalToGlobal(result)) {
@@ -551,6 +576,8 @@ private:
         }
         resultInfos.push_back(
             ResultInfo{true, castOp, std::move(*perDimSplits)});
+      } else if (feedsCollectiveInputDirectly(result)) {
+        resultInfos.push_back(ResultInfo{true, nullptr, {}});
       } else {
         resultInfos.push_back(ResultInfo{false, nullptr, {}});
       }
@@ -592,13 +619,17 @@ private:
         // a collective consuming this result directly (local scope, no
         // cast in between) resolves it via getExpandedValue's memo lookup
         // rather than walking through a cast that doesn't exist on that
-        // edge.
+        // edge -- and for a result with no bounding cast at all (only a
+        // direct collective consumer), that memoization is the only thing
+        // needed here.
         expandedOf[kernel.getResults()[idx]] = finalCarried[idx];
-        auto globalType =
-            cast<RankedTensorType>(info.castOp.getOutput().getType());
-        Value flatGlobal = collapseToFlat(finalCarried[idx], globalType,
-                                          info.perDimSplits, loc);
-        mapper.map(info.castOp.getOutput(), flatGlobal);
+        if (info.castOp) {
+          auto globalType =
+              cast<RankedTensorType>(info.castOp.getOutput().getType());
+          Value flatGlobal = collapseToFlat(finalCarried[idx], globalType,
+                                            info.perDimSplits, loc);
+          mapper.map(info.castOp.getOutput(), flatGlobal);
+        }
       } else {
         mapper.map(kernel.getResults()[idx], finalCarried[idx]);
       }
