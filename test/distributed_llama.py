@@ -178,9 +178,24 @@ def build_sanity_check_pipeline_argv(physical_mesh_config_path):
     single-device serial StableHLO oracle (distributed-make-replications-
     explicit + distributed-lower-for-sanity-check) instead of the real
     hardware-collective lowering -- see DistributedLlamaNumericTest, which
-    executes this oracle directly and checks it against a plain reference."""
+    executes this oracle directly and checks it against a plain reference.
+
+    distributed-search-strategies only lowers a disposable clone of each
+    candidate to score it (see cloneAndApplyDecisions in
+    SearchStrategies.cpp); the module it actually returns just has the
+    winning decisions applied, not lowered. distributed-lower-for-sanity-
+    check requires every kernel already trivially local, so this pipeline
+    needs the same canonicalize/inline/lower-kernels sequence
+    DistributedSearchLoweringPipeline runs internally, minus its trailing
+    executable-dispatch step (this oracle wants real stablehlo kernel
+    bodies, not a dispatch placeholder)."""
     args = _shared_pipeline_prefix(physical_mesh_config_path)
     args += [
+        "--canonicalize-sharded-factor-order",
+        "--inline-device-local-axes",
+        "--cse",
+        "--canonicalize",
+        "--distributed-lower-kernels",
         "--distributed-make-replications-explicit",
         "--distributed-lower-for-sanity-check",
     ]
