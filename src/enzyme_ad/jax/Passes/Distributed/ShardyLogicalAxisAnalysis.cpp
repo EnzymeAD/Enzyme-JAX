@@ -1075,11 +1075,9 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(Operation *op, bool isLHS,
   if (auto reshard_op = toCollective(op)) {
     return getTensorPartitionDims(reshard_op, isLHS, valueIdx);
   }
-  // A localized call is a local/global boundary like a kernel: its axes are
-  // carried by the casts around it, so the call itself has no mapping.
-  if (isa<DistributedCallOp>(op)) {
-    return std::nullopt;
-  }
+  // A localized DistributedCall is a call like any other: its operands and
+  // results carry the callee's argument and result axes, and are bound to
+  // the surrounding global values by the casts around it.
   if (auto call = dyn_cast<CallOpInterface>(op)) {
     return getTensorPartitionDimsForCall(call, isLHS, valueIdx);
   }

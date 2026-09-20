@@ -265,10 +265,6 @@ struct MaterializeDistributedCollectivesPass
   std::vector<ShardConflict> collectShardConflicts(Block *mainBlock) {
     std::vector<ShardConflict> conflicts;
     for (Operation &op : mainBlock->getOperations()) {
-      // A localized call's results are bound by the cast that follows it.
-      if (isa<DistributedCallOp>(op)) {
-        continue;
-      }
       for (OpResult result : op.getResults()) {
         auto maybeProducerSharded = axisAnalysis.getTensorPartitionDims(result);
         if (!maybeProducerSharded) {

@@ -116,10 +116,11 @@ filterOutReplicationFactors(
 
 OpShardingRuleAndReductionKind
 getOrSynthesizeOpShardingRule(::mlir::Operation *op) {
-  // Calls and local/global boundary ops (casts, anchors, kernels) have no
-  // rule of their own: their axes are carried explicitly, or come from the
-  // callee.
-  if (!op || isa<::mlir::CallOpInterface, PartitioningAnchorOpInterface>(op)) {
+  // Calls, collectives and local/global boundary ops (casts, anchors,
+  // kernels) have no rule of their own: their axes are carried explicitly, or
+  // come from the callee. They are never sharded or clustered as computation.
+  if (!op || isa<::mlir::CallOpInterface, PartitioningAnchorOpInterface,
+                 DistributedCollectiveOp, DistributedAwait>(op)) {
     return {};
   }
 
