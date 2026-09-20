@@ -180,15 +180,15 @@ def build_sanity_check_pipeline_argv(physical_mesh_config_path):
     hardware-collective lowering -- see DistributedLlamaNumericTest, which
     executes this oracle directly and checks it against a plain reference.
 
-    distributed-search-strategies only lowers a disposable clone of each
-    candidate to score it (see cloneAndApplyDecisions in
-    SearchStrategies.cpp); the module it actually returns just has the
-    winning decisions applied, not lowered. distributed-lower-for-sanity-
-    check requires every kernel already trivially local, so this pipeline
-    needs the same canonicalize/inline/lower-kernels sequence
-    DistributedSearchLoweringPipeline runs internally, minus its trailing
-    executable-dispatch step (this oracle wants real stablehlo kernel
-    bodies, not a dispatch placeholder)."""
+    distributed-search-strategies only lowers disposable clones of each
+    candidate to score them (see cloneAndApplyDecisions in
+    SearchStrategies.cpp); the module it actually returns has the winning
+    decisions bound onto every logical axis it owns, but not yet lowered.
+    distributed-lower-for-sanity-check requires every kernel already
+    trivially local, so this pipeline needs the same canonicalize/inline/
+    lower-kernels sequence DistributedSearchLoweringPipeline runs
+    internally, minus its trailing executable-dispatch step (this oracle
+    wants real stablehlo kernel bodies, not a dispatch placeholder)."""
     args = _shared_pipeline_prefix(physical_mesh_config_path)
     args += [
         "--canonicalize-sharded-factor-order",

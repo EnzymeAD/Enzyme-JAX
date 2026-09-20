@@ -416,13 +416,16 @@ public:
  * Sub-pass for the evaluation pipeline. Applies the decisions
  * from a provided search node by rewriting the axis.
  *
- * This pass expects to be given a cloned module from the one the
- * decisions were made for. As such, an IR mapper is required to go
- * from the original to logical axes. We also expect each logical
- * axis to currently not be factored: any factors should have the
- * whole extent of the axis. This pass effectively replaces any
- * products of the axis factors with ones using the decisions from the search
- * node.
+ * The decisions reference axis Values from the module the search actually
+ * ran over. This pass can either apply them to that same module directly
+ * (`createInPlace`, `originalToCloned == nullptr`, decided axis Values are
+ * used as-is) or replay them onto a clone of it (`create`, used for the
+ * disposable scoring/dump clones in `cloneAndApplyDecisions`), in which case
+ * an IR mapper is required to go from the original to the clone's axes. We
+ * also expect each logical axis to currently not be factored: any factors
+ * should have the whole extent of the axis. This pass effectively replaces
+ * any products of the axis factors with ones using the decisions from the
+ * search node.
  *
  * (Note: we will want this replacement logic elsewhere too, so ideally we
  * implement it as a rewrite in `dialect/axis/Utilities.h` with a general
@@ -436,9 +439,51 @@ class ApplyPartialDecisions
 private:
   std::shared_ptr<StrategySearchNode> node;
   IRMapping *originalToCloned;
+  // Records, for in-place application only, splices of detached
+  // search-created ops (see resolve() below) keyed by their original Value,
+  // so a second decision referencing the same op reuses the splice instead
+  // of duplicating it. Serves the same role originalToCloned serves for the
+  // disposable-clone case.
+  IRMapping inPlaceSplices;
+
   ApplyPartialDecisions(std::shared_ptr<StrategySearchNode> node,
-                        IRMapping &originalToCloned)
-      : node(node), originalToCloned(&originalToCloned) {}
+                        IRMapping *originalToCloned)
+      : node(node), originalToCloned(originalToCloned) {}
+
+  // Resolves a Value from the module the decisions were made against to its
+  // counterpart in the module this pass is actually rewriting.
+  //
+  // Most decided Values (logical mesh axes, physical mesh factors) are
+  // already real ops belonging to that source module. Applying in place,
+  // those resolve to themselves; replaying onto a disposable clone, they
+  // resolve through the IR mapper (populated by the clone that created the
+  // whole module).
+  //
+  // A factor's provenance axis (getFactorProvenanceAxis) can instead be a
+  // detached, search-created op with no counterpart in either target, such as
+  // a device-local serialization axis from applySerializeRemaining that only
+  // the search tree's shared_ptrs keep alive. It is cloned into the target
+  // module the first time it is needed. The clone recurses over the op's
+  // operands, although a provenance op is always a single hop: every
+  // AxisFactorOp's axis operand resolves directly to its root axis (see the
+  // TemporaryOpGuard comment in Dialect/Axis/Utilities.h).
+  Value resolve(Value original, OpBuilder &builder) {
+    Operation *defOp = original.getDefiningOp();
+    if (!defOp || defOp->getBlock())
+      return originalToCloned ? originalToCloned->lookupOrNull(original)
+                              : original;
+
+    IRMapping &spliceMap =
+        originalToCloned ? *originalToCloned : inPlaceSplices;
+    if (Value mapped = spliceMap.lookupOrNull(original))
+      return mapped;
+
+    for (Value operand : defOp->getOperands())
+      resolve(operand, builder);
+
+    builder.clone(*defOp, spliceMap);
+    return spliceMap.lookup(original);
+  }
 
 public:
   // ApplyPartialDecisions is a hand-rolled PassWrapper (not generated via
@@ -452,13 +497,19 @@ public:
   create(std::shared_ptr<StrategySearchNode> node,
          IRMapping &originalToCloned) {
     return std::unique_ptr<ApplyPartialDecisions>(
-        new ApplyPartialDecisions(node, originalToCloned));
+        new ApplyPartialDecisions(node, &originalToCloned));
+  }
+
+  static std::unique_ptr<ApplyPartialDecisions>
+  createInPlace(std::shared_ptr<StrategySearchNode> node) {
+    return std::unique_ptr<ApplyPartialDecisions>(
+        new ApplyPartialDecisions(node, nullptr));
   }
 
   void runOnOperation() override {
-    ModuleOp clonedModule = getOperation();
+    ModuleOp targetModule = getOperation();
     OpBuilder builder(&getContext());
-    builder.setInsertionPointToStart(clonedModule.getBody());
+    builder.setInsertionPointToStart(targetModule.getBody());
 
     for (auto &[origAxis, origFactors] : node->getPartialDecisions()) {
       if (origFactors.empty()) {
@@ -467,19 +518,19 @@ public:
         continue;
       }
 
-      Value clonedAxisVal = originalToCloned->lookupOrNull(origAxis);
-      if (!clonedAxisVal) {
+      Value targetAxisVal = resolve(origAxis, builder);
+      if (!targetAxisVal) {
         origAxis.getDefiningOp()->emitError(
-            "logical axis has no counterpart in the cloned module");
+            "logical axis has no counterpart in the target module");
         return signalPassFailure();
       }
-      auto clonedAxis = cast<TypedValue<AxisTypeInterface>>(clonedAxisVal);
+      auto targetAxis = cast<TypedValue<AxisTypeInterface>>(targetAxisVal);
 
       // Discover what to replace *before* building any new axis.factor
-      // referencing clonedAxis -- otherwise a newly-built factor (e.g. the
-      // residual below) would itself show up as a use of clonedAxis and be
+      // referencing targetAxis -- otherwise a newly-built factor (e.g. the
+      // residual below) would itself show up as a use of targetAxis and be
       // mistaken for part of its current state.
-      auto oldFactorOps = findAxisFactors(clonedAxis);
+      auto oldFactorOps = findAxisFactors(targetAxis);
       if (failed(oldFactorOps))
         return signalPassFailure();
       llvm::SmallVector<TypedValue<AxisFactorType>> oldFactors;
@@ -487,7 +538,7 @@ public:
         oldFactors.push_back(castTypedValue<AxisFactorType>(
             oldFactorOp.getResult(), "AxisFactorType"));
 
-      llvm::SmallVector<TypedValue<AxisFactorType>> clonedFactors;
+      llvm::SmallVector<TypedValue<AxisFactorType>> targetFactors;
       int decidedExtent = 1;
       for (TypedValue<AxisFactorType> origFactor : origFactors) {
         auto origProvenance = getFactorProvenanceAxis(origFactor);
@@ -496,33 +547,31 @@ public:
               "failed to resolve provenance axis for a decided factor");
           return signalPassFailure();
         }
-        Value clonedProvenance =
-            originalToCloned->lookupOrNull(*origProvenance);
-        if (!clonedProvenance) {
-          // A search-created axis (e.g. a device-local serialization axis)
-          // with no counterpart in the original module: materialize it here
-          // and register the mapping for reuse.
-          builder.clone(*origProvenance->getDefiningOp(), *originalToCloned);
-          clonedProvenance = originalToCloned->lookup(*origProvenance);
+        Value targetProvenance = resolve(*origProvenance, builder);
+        if (!targetProvenance) {
+          origFactor.getDefiningOp()->emitError(
+              "decided factor's provenance axis has no counterpart in the "
+              "target module");
+          return signalPassFailure();
         }
         int extent = getFactorExtent(origFactor);
         decidedExtent *= extent;
-        auto clonedFactor =
-            builder.create<AxisFactorOp>(origFactor.getLoc(), clonedProvenance,
+        auto targetFactor =
+            builder.create<AxisFactorOp>(origFactor.getLoc(), targetProvenance,
                                          extent, getFactorStride(origFactor));
-        clonedFactors.push_back(castTypedValue<AxisFactorType>(
-            clonedFactor.getResult(), "AxisFactorType"));
+        targetFactors.push_back(castTypedValue<AxisFactorType>(
+            targetFactor.getResult(), "AxisFactorType"));
       }
 
-      int remainder = getAxisExtent(clonedAxis) / decidedExtent;
+      int remainder = getAxisExtent(targetAxis) / decidedExtent;
       if (remainder > 1) {
         auto residualFactor = builder.create<AxisFactorOp>(
-            clonedAxisVal.getLoc(), clonedAxisVal, remainder, 1);
-        clonedFactors.push_back(castTypedValue<AxisFactorType>(
+            targetAxisVal.getLoc(), targetAxisVal, remainder, 1);
+        targetFactors.push_back(castTypedValue<AxisFactorType>(
             residualFactor.getResult(), "AxisFactorType"));
       }
 
-      if (failed(replaceAxisFactors(oldFactors, clonedFactors, builder)))
+      if (failed(replaceAxisFactors(oldFactors, targetFactors, builder)))
         return signalPassFailure();
     }
   }
@@ -943,8 +992,10 @@ struct DistributedSearchStrategiesPass
       }
     }
 
+    auto best = driver.getBest();
+
     if (dumpBest) {
-      if (auto best = driver.getBest()) {
+      if (best) {
         bool pipelineOk;
         OwningOpRef<ModuleOp> clonedModule =
             cloneAndApplyDecisions(moduleOp, best, disableVerifier, pipelineOk);
@@ -955,6 +1006,25 @@ struct DistributedSearchStrategiesPass
                         "candidates)\n";
       }
     }
+
+    // A finalized candidate whose own lowering pipeline failed still scores
+    // -infinity (see StrategyScorer::score) rather than being dropped, so it
+    // can still win when nothing else finalizes; treat that the same as no
+    // candidate at all rather than committing known-bad decisions.
+    if (!best || best->score == -std::numeric_limits<double>::infinity()) {
+      moduleOp.emitError()
+          << "distributed-search-strategies: no viable candidate found "
+             "(every explored candidate's lowering pipeline failed)";
+      return signalPassFailure();
+    }
+
+    // Everything above only explored decisions against disposable clones;
+    // bind the winning decisions onto the real module now, in place, so no
+    // LogicalMeshAxisType this pass owns survives into later pipeline stages.
+    OpPassManager applyPm(ModuleOp::getOperationName());
+    applyPm.addPass(ApplyPartialDecisions::createInPlace(best));
+    if (failed(runPipeline(applyPm, moduleOp)))
+      return signalPassFailure();
   }
 };
 
