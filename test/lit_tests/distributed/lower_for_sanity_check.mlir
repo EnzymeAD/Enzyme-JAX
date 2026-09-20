@@ -1,14 +1,13 @@
 // RUN: enzymexlamlir-opt --split-input-file --distributed-lower-for-sanity-check %s | FileCheck %s
 
 // Single physical axis, one trivial kernel, no collectives: expect one
-// stablehlo.while, a reshape+broadcast_in_dim materializing the expanded
-// input outside it, dynamic_slice/dynamic_update_slice inside, and a plain
+// stablehlo.while, a reshape materializing the expanded input outside it,
+// dynamic_slice/dynamic_update_slice inside, and a plain
 // func.func (no distributed.*/axis.* residue) at the top level.
 // CHECK-LABEL: func.func @main
 // CHECK-NOT: distributed.
 // CHECK-NOT: axis.
 // CHECK: stablehlo.reshape
-// CHECK: stablehlo.broadcast_in_dim
 // CHECK: stablehlo.while
 // CHECK: stablehlo.dynamic_slice
 // CHECK: stablehlo.add
@@ -208,14 +207,11 @@ module {
 // of the output tensor's own dim 0 (Physical(axis0) -> TensorDim(0)) rather
 // than another physical axis, so the physical axis's genuinely-varying
 // data ends up relabeled onto that tensor dimension instead of staying a
-// mesh axis. The dimension's own trivial (extent-1) local remainder from
-// the input side's full split is dropped in the process (see
-// lowerCollective's mapping loop). Since the result is no longer split by
-// any physical axis, the canonical placement broadcasts it uniformly
-// across the mesh before the second kernel's loop.
+// mesh axis. The input tile's extent-1 dim is dropped in the process. Since
+// the result is no longer split by any physical axis, it is broadcast
+// uniformly across the mesh before the second kernel's loop.
 // CHECK-LABEL: func.func @main
 // CHECK: stablehlo.while
-// CHECK: stablehlo.slice
 // CHECK: stablehlo.broadcast_in_dim
 // CHECK: stablehlo.while
 // CHECK-NOT: stablehlo.all_gather
@@ -322,4 +318,128 @@ module {
     %global_out = distributed.CastLocalToGlobal %k2 axes (%axes_grp : !axis.factor_group<2>) : tensor<1xf32> -> tensor<2xf32>
     distributed.DistributedYield (%global_out : tensor<2xf32>)
   }) : (!axis.factor_group<2>) -> ()
+}
+
+// -----
+
+// A reduction over one half (stride 2) of a 4-way physical axis, leaving the
+// other half (stride 1) mapped to itself. Splitting the axis into two atoms
+// makes the reduction a plain reduce over one dim: expect a reshape exposing
+// both halves, one reduce, and a broadcast restoring the reduced half.
+// CHECK-LABEL: func.func @main
+// CHECK: stablehlo.reshape {{.*}} -> tensor<2x2x1xf32>
+// CHECK: stablehlo.reduce
+// CHECK-SAME: dimensions = [0]
+// CHECK: stablehlo.broadcast_in_dim
+module {
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 1>]
+
+  %p0 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<4, 1>
+  %hi = axis.factor %p0 : !distributed.physical_comm_axis<4, 1> <2, 2>
+  %lo = axis.factor %p0 : !distributed.physical_comm_axis<4, 1> <2, 1>
+  %full = axis.product (%hi : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 2>, %lo : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 1>)
+  %hi_grp = axis.product (%hi : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 2>)
+  %lo_grp = axis.product (%lo : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 1>)
+  %r0 = distributed.ReplicationAxis 2 : !distributed.replication_axis<2>
+  %rf0 = axis.factor %r0 : !distributed.replication_axis<2> <2, 1>
+  %repl_grp = axis.product (%rf0 : !axis.axis_factor<!distributed.replication_axis<2>, 2, 1>)
+  %map = axis.map %lo_grp, %repl_grp to %lo_grp, %hi_grp : [!axis.factor_group<2>, !axis.factor_group<2>] [!axis.factor_group<2>, !axis.factor_group<2>]
+
+  "distributed.DistributedFunction"(%full) <{
+    argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>,
+    function_type = (tensor<4xf32>) -> tensor<4xf32>,
+    output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>,
+    sym_name = "main"
+  }> ({
+  ^bb0(%arg0: tensor<4xf32>):
+    %l0 = distributed.CastGlobalToLocal %arg0 axes (%full : !axis.factor_group<4>) : tensor<4xf32> -> tensor<1xf32>
+    %h = distributed.Collective %l0 : tensor<1xf32> on %full : !axis.factor_group<4> to tensor<1xf32> on %full : !axis.factor_group<4> reduces (%hi_grp : !axis.factor_group<2>) maps %map : !axis.map {
+    ^bb2(%lhs_v: tensor<f32>, %rhs_v: tensor<f32>):
+      %sum = stablehlo.add %lhs_v, %rhs_v : tensor<f32>
+      stablehlo.return %sum : tensor<f32>
+    }
+    %v = distributed.Await %h : !distributed.asynch_handle<tensor<1xf32>> -> tensor<1xf32>
+    %out = distributed.CastLocalToGlobal %v axes (%full : !axis.factor_group<4>) : tensor<1xf32> -> tensor<4xf32>
+    distributed.DistributedYield (%out : tensor<4xf32>)
+  }) : (!axis.factor_group<4>) -> ()
+}
+
+// -----
+
+// A partial all-gather: only the stride-1 half of a 4-way physical axis is
+// gathered into the tensor dimension, which keeps its own extent-2 tile as
+// the minor part. The gathered half becomes the major part of the output dim.
+// CHECK-LABEL: func.func @main
+// CHECK: stablehlo.reshape {{.*}} -> tensor<2x2x2xf32>
+// CHECK: stablehlo.broadcast_in_dim {{.*}} dims = [0, 2, 3]
+// CHECK: stablehlo.reshape {{.*}} -> tensor<4x4xf32>
+module {
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 1>]
+
+  %p0 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<4, 1>
+  %hi = axis.factor %p0 : !distributed.physical_comm_axis<4, 1> <2, 2>
+  %lo = axis.factor %p0 : !distributed.physical_comm_axis<4, 1> <2, 1>
+  %full = axis.product (%hi : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 2>, %lo : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 1>)
+  %hi_only = axis.product (%hi : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 2>)
+  %none = axis.product ()
+  %lo_grp = axis.product (%lo : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 1>)
+
+  %ta_in = axis.getaxis tensor<2xf32> 0
+  %tin = axis.factor %ta_in : !axis.shape_axis<tensor<2xf32>, 0> <2, 1>
+  %tin_grp = axis.product (%tin : !axis.axis_factor<!axis.shape_axis<tensor<2xf32>, 0>, 2, 1>)
+  %ta = axis.getaxis tensor<4xf32> 0
+  %tmajor = axis.factor %ta : !axis.shape_axis<tensor<4xf32>, 0> <2, 2>
+  %tminor = axis.factor %ta : !axis.shape_axis<tensor<4xf32>, 0> <2, 1>
+  %tmajor_grp = axis.product (%tmajor : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 2, 2>)
+  %tminor_grp = axis.product (%tminor : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 2, 1>)
+  %map = axis.map %lo_grp, %tin_grp to %tmajor_grp, %tminor_grp : [!axis.factor_group<2>, !axis.factor_group<2>] [!axis.factor_group<2>, !axis.factor_group<2>]
+
+  "distributed.DistributedFunction"(%full) <{
+    argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>,
+    function_type = (tensor<8xf32>) -> tensor<8xf32>,
+    output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>,
+    sym_name = "main"
+  }> ({
+  ^bb0(%arg0: tensor<8xf32>):
+    %l0 = distributed.CastGlobalToLocal %arg0 axes (%full : !axis.factor_group<4>) : tensor<8xf32> -> tensor<2xf32>
+    %h = distributed.Collective %l0 : tensor<2xf32> on %lo_grp : !axis.factor_group<2> to tensor<4xf32> on %none : !axis.factor_group<1> reduces () maps %map : !axis.map
+    %v = distributed.Await %h : !distributed.asynch_handle<tensor<4xf32>> -> tensor<4xf32>
+    %out = distributed.CastLocalToGlobal %v axes (%hi_only : !axis.factor_group<2>) : tensor<4xf32> -> tensor<8xf32>
+    distributed.DistributedYield (%out : tensor<8xf32>)
+  }) : (!axis.factor_group<4>) -> ()
+}
+
+// -----
+
+// Aligning a mapping pair can cut an axis nothing else touches: the whole
+// extent-4 factor of axis A maps onto the two halves of axis B, so A has to be
+// split into two extent-2 atoms to pair up with them, even though no factor
+// over A is split. Expect every mesh axis exposed as two atoms.
+// CHECK-LABEL: func.func @main
+// CHECK: stablehlo.reshape {{.*}} -> tensor<2x2x2x2x1xf32>
+module {
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 2>, !distributed.physical_comm_axis<4, 1>]
+
+  %pa, %pb = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<4, 2>, !distributed.physical_comm_axis<4, 1>
+  %fa = axis.factor %pa : !distributed.physical_comm_axis<4, 2> <4, 1>
+  %bhi = axis.factor %pb : !distributed.physical_comm_axis<4, 1> <2, 2>
+  %blo = axis.factor %pb : !distributed.physical_comm_axis<4, 1> <2, 1>
+  %in_mesh = axis.product (%fa : !axis.axis_factor<!distributed.physical_comm_axis<4, 2>, 4, 1>)
+  %out_mesh = axis.product (%bhi : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 2>, %blo : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 1>)
+  %full = axis.product (%fa : !axis.axis_factor<!distributed.physical_comm_axis<4, 2>, 4, 1>)
+  %map = axis.map %in_mesh to %out_mesh : [!axis.factor_group<4>] [!axis.factor_group<4>]
+
+  "distributed.DistributedFunction"(%full) <{
+    argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>,
+    function_type = (tensor<4xf32>) -> tensor<4xf32>,
+    output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>,
+    sym_name = "main"
+  }> ({
+  ^bb0(%arg0: tensor<4xf32>):
+    %l0 = distributed.CastGlobalToLocal %arg0 axes (%full : !axis.factor_group<4>) : tensor<4xf32> -> tensor<1xf32>
+    %h = distributed.Collective %l0 : tensor<1xf32> on %in_mesh : !axis.factor_group<4> to tensor<1xf32> on %out_mesh : !axis.factor_group<4> reduces () maps %map : !axis.map
+    %v = distributed.Await %h : !distributed.asynch_handle<tensor<1xf32>> -> tensor<1xf32>
+    %out = distributed.CastLocalToGlobal %v axes (%out_mesh : !axis.factor_group<4>) : tensor<1xf32> -> tensor<4xf32>
+    distributed.DistributedYield (%out : tensor<4xf32>)
+  }) : (!axis.factor_group<4>) -> ()
 }

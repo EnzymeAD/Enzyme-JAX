@@ -1,8 +1,13 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 
+#include <functional>
+#include <map>
+#include <numeric>
+
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
@@ -26,24 +31,7 @@ using TV_FactorGroup = TypedValue<axis::FactorGroupType>;
 struct AxisSplit {
   size_t axisIndex;
   int64_t extent;
-};
-
-// Where one dimension of an "expanded" (canonical [meshExtents...,
-// localDims...] shaped) tensor came from: either a real physical mesh axis
-// (by index into the module's PhysicalMesh) or one of the value's own
-// original tensor dimensions, kept in its original relative order.
-struct DimLabel {
-  bool isMeshAxis;
-  size_t index; // mesh axis index, or original-tensor-dimension index.
-
-  int64_t canonicalPosition(size_t numMeshAxes) const {
-    return isMeshAxis ? static_cast<int64_t>(index)
-                      : static_cast<int64_t>(numMeshAxes + index);
-  }
-
-  bool operator==(const DimLabel &other) const {
-    return isMeshAxis == other.isMeshAxis && index == other.index;
-  }
+  int64_t stride;
 };
 
 Value buildZeroConstant(OpBuilder &builder, Location loc,
@@ -59,91 +47,18 @@ Value buildIndexConstant(OpBuilder &builder, Location loc, int64_t value) {
       loc, DenseElementsAttr::get(type, builder.getI64IntegerAttr(value)));
 }
 
-
-// Places `v`'s own dims (each described by `labels`, one per dim of `v`) at
-// their canonical [meshExtents..., <v's own local dims, in original order>]
-// positions, broadcasting in full extent for any mesh axis `v` doesn't
-// already vary along -- the same "physical axis absent means uniformly
-// replicated" reading used throughout this pass (see the pass's own
-// top-of-file rationale). broadcast_in_dim requires a strictly increasing
-// dimension correspondence, so dims not already in canonical order are
-// transposed into place first.
-Value placeIntoCanonical(OpBuilder &builder, Location loc, Value v,
-                         ArrayRef<DimLabel> labels,
-                         ArrayRef<int64_t> meshExtents) {
-  size_t numMeshAxes = meshExtents.size();
-  SmallVector<int64_t> order(labels.size());
-  for (size_t i = 0; i < labels.size(); ++i)
-    order[i] = i;
-  llvm::stable_sort(order, [&](int64_t a, int64_t b) {
-    return labels[a].canonicalPosition(numMeshAxes) <
-           labels[b].canonicalPosition(numMeshAxes);
-  });
-
-  bool alreadySorted = llvm::is_sorted(order);
-  Value sortedValue = v;
-  SmallVector<DimLabel> sortedLabels(labels.begin(), labels.end());
-  if (!alreadySorted) {
-    SmallVector<int64_t> permutation(order.begin(), order.end());
-    auto vType = cast<RankedTensorType>(v.getType());
-    SmallVector<int64_t> transposedShape;
-    for (int64_t srcDim : permutation)
-      transposedShape.push_back(vType.getDimSize(srcDim));
-    auto transposedType =
-        RankedTensorType::get(transposedShape, vType.getElementType());
-    sortedValue = builder.create<stablehlo::TransposeOp>(
-        loc, transposedType, v, permutation);
-    sortedLabels.clear();
-    for (int64_t srcDim : permutation)
-      sortedLabels.push_back(labels[srcDim]);
-  }
-
-  SmallVector<int64_t> broadcastDims;
-  size_t numLocalDims = 0;
-  for (const DimLabel &label : sortedLabels) {
-    broadcastDims.push_back(label.canonicalPosition(numMeshAxes));
-    if (!label.isMeshAxis)
-      ++numLocalDims;
-  }
-
-  auto sortedType = cast<RankedTensorType>(sortedValue.getType());
-  SmallVector<int64_t> finalShape(meshExtents.begin(), meshExtents.end());
-  finalShape.resize(numMeshAxes + numLocalDims);
-  for (auto [dimIdx, label] : llvm::enumerate(sortedLabels)) {
-    if (!label.isMeshAxis)
-      finalShape[numMeshAxes + label.index] = sortedType.getDimSize(dimIdx);
-  }
-  // Local dims keep their own relative order (they were never reordered
-  // above -- only mesh-axis dims may have moved), so `label.index` for the
-  // trailing dims is already exactly its position among local dims.
-
-  auto finalType =
-      RankedTensorType::get(finalShape, sortedType.getElementType());
-  return builder.create<stablehlo::BroadcastInDimOp>(
-      loc, finalType, sortedValue, broadcastDims);
-}
-
-// Per original tensor dimension: the ordered list of physical-axis splits
-// a Cast's partitioning_axes contributes (`splits`), plus the combined
-// extent of any ReplicationAxisType factors on that dimension
-// (`replicateDivisor`, tracked for diagnostic purposes -- see below). Per
-// DistributedCastGlobalToLocalOp/CastLocalToGlobalOp's own type inference
-// (inferTensorViewCastResultType in Ops.cpp), which divides/multiplies by
-// every factor's extent regardless of provenance, a Replicate factor with
-// extent > 1 on a dimension genuinely shrinks/grows that dimension's
-// local/global shape, exactly like a physical split does -- unlike a
-// physical split, though, correctly expanding/collapsing it requires an
-// actual data operation (duplicating one real copy out to `extent` copies,
-// or dropping back down to one representative copy), not just a reshape
-// dimension-count adjustment. That data operation is not implemented by
-// this pass: expandFromFlat/collapseToFlat instead fail loudly the moment
-// replicateDivisor != 1 for any dimension, rather than silently emitting a
-// reshape with a mismatched element count. A Replicate factor is still
-// fully supported elsewhere in this pass -- at a collective's own
-// mesh/mapping level (see lowerCollective's resolveSingleAxisProvenance
-// and its Replicate<->real handling) -- this limitation is specifically
-// about one appearing inside a Cast's own per-tensor-dimension
-// partitioning_axes.
+// What a Cast's partitioning_axes does to each original tensor dimension:
+// the ordered physical-axis splits (`splits`) and the combined extent of any
+// replication factors (`replicateDivisor`).
+//
+// A replication factor with extent > 1 shrinks or grows the dimension like a
+// physical split does (inferTensorViewCastResultType in Ops.cpp divides by
+// every factor's extent), but expanding or collapsing it needs a data
+// operation this pass does not implement: duplicating one copy out to
+// `extent` copies, or dropping back to one. expandFromFlat/collapseToFlat
+// fail on replicateDivisor != 1 rather than emit a reshape with the wrong
+// element count. Replication factors in a collective's own mapping are
+// supported; this only concerns ones inside a Cast.
 struct CastPerDimInfo {
   SmallVector<SmallVector<AxisSplit>> splits;
   SmallVector<int64_t> replicateDivisor;
@@ -201,7 +116,7 @@ resolveCastPerDimSplits(ValueRange partitioningAxes,
       }
       splits.push_back(AxisSplit{
           static_cast<size_t>(meshIdx - meshAxisTypes.begin()),
-          axis::getFactorExtent(factor)});
+          axis::getFactorExtent(factor), axis::getFactorStride(factor)});
     }
     info.splits.push_back(std::move(splits));
     info.replicateDivisor.push_back(replicateDivisor);
@@ -266,6 +181,125 @@ bool feedsCollectiveInputDirectly(Value result) {
     return collective && collective.getInputObject() == cur;
   }
 }
+
+// Index spaces a collective's factors can slice. Mesh axes are shared by the
+// input and output; tensor dimensions differ between the input tile and the
+// output tile, so each side gets its own space. Every replicate factor is an
+// independent one-off axis of its own.
+enum class AtomSpace { Mesh, InTile, OutTile, Replicate };
+using AxisKey = std::pair<AtomSpace, size_t>;
+
+// One atom (indivisible digit) of an axis, identified by its position among
+// that axis's atoms, major-first.
+struct AtomLabel {
+  AtomSpace space;
+  size_t axis;
+  size_t atom;
+
+  bool operator==(const AtomLabel &other) const {
+    return space == other.space && axis == other.axis && atom == other.atom;
+  }
+};
+
+// A factor of a collective's reduction group or mapping, resolved to the
+// axis it slices.
+struct ResolvedFactor {
+  AxisKey key;
+  uint64_t extent;
+  uint64_t stride;
+};
+using ResolvedGroup = SmallVector<ResolvedFactor>;
+
+// The common atoms of every factor a collective mentions (see
+// axis::computeCommonAtomsAndMappingSplits), addressed by this pass's own
+// axis keys.
+//
+// Reshaping an expanded tensor to one dim per atom exposes every factor as
+// whole dims, and a mapping pair then becomes a per-atom relabeling: the k-th
+// atom of its lhs pairs with the k-th of its rhs.
+//
+// Assumes each group's index space is row-major over its factors,
+// major-first.
+class CollectiveAtoms {
+public:
+  void addAxis(AxisKey key, uint64_t extent) {
+    auto [it, inserted] = index.try_emplace(key, keys.size());
+    if (inserted) {
+      keys.push_back(key);
+      extents.push_back(extent);
+    } else {
+      extents[it->second] = extent;
+    }
+  }
+
+  void addFactor(const ResolvedFactor &factor) {
+    others.push_back(toAtomFactor(factor));
+  }
+
+  LogicalResult
+  refine(ArrayRef<std::pair<ResolvedGroup, ResolvedGroup>> pairs) {
+    SmallVector<axis::AtomFactorPair> atomPairs;
+    for (const auto &[lhs, rhs] : pairs)
+      atomPairs.push_back({toAtomGroup(lhs), toAtomGroup(rhs)});
+    auto result =
+        axis::computeCommonAtomsAndMappingSplits(extents, atomPairs, others);
+    if (failed(result))
+      return failure();
+    atoms.emplace(std::move(*result));
+    return success();
+  }
+
+  SmallVector<AtomLabel> labelsOf(const ResolvedFactor &factor) const {
+    auto [first, count] = atoms->rangeOf(toAtomFactor(factor));
+    SmallVector<AtomLabel> labels;
+    for (size_t i = first; i < first + count; ++i)
+      labels.push_back({factor.key.first, factor.key.second, i});
+    return labels;
+  }
+
+  SmallVector<AtomLabel> labelsOf(const ResolvedGroup &group) const {
+    SmallVector<AtomLabel> labels;
+    for (const ResolvedFactor &factor : group)
+      labels.append(labelsOf(factor));
+    return labels;
+  }
+
+  SmallVector<AtomLabel> labelsOfAxis(AxisKey key) const {
+    SmallVector<AtomLabel> labels;
+    for (size_t i = 0; i < atoms->atomsOf(index.at(key)).size(); ++i)
+      labels.push_back({key.first, key.second, i});
+    return labels;
+  }
+
+  uint64_t extentOf(const AtomLabel &label) const {
+    return atoms->atomsOf(index.at({label.space, label.axis}))[label.atom]
+        .extent;
+  }
+
+  SmallVector<int64_t> extentsOf(ArrayRef<AtomLabel> labels) const {
+    SmallVector<int64_t> result;
+    for (const AtomLabel &label : labels)
+      result.push_back(extentOf(label));
+    return result;
+  }
+
+private:
+  std::map<AxisKey, size_t> index;
+  SmallVector<AxisKey> keys;
+  SmallVector<uint64_t> extents;
+  SmallVector<axis::AtomFactor> others;
+  std::optional<axis::CommonAtoms> atoms;
+
+  axis::AtomFactor toAtomFactor(const ResolvedFactor &factor) const {
+    return {index.at(factor.key), factor.extent, factor.stride};
+  }
+  axis::AtomFactorGroup toAtomGroup(const ResolvedGroup &group) const {
+    axis::AtomFactorGroup result;
+    for (const ResolvedFactor &factor : group)
+      result.push_back(toAtomFactor(factor));
+    return result;
+  }
+};
 
 // The whole-module lowering state: an ordered walk over the
 // DistributedFunctionOp's body, dispatched by op kind, building both a
@@ -408,16 +442,62 @@ private:
     return nullptr;
   }
 
+  // Where a cast's factors live among the atoms of the mesh axes they slice.
+  // Each mesh axis is cut only at its own factors' boundaries (factors of one
+  // cast are disjoint, so each is exactly one atom); any atom no factor
+  // covers is a gap the cast leaves replicated.
+  struct CastAtoms {
+    SmallVector<SmallVector<axis::AxisAtom>> perAxis;
+    SmallVector<size_t> offset; // first atom-dim of each mesh axis.
+    size_t total = 0;
+
+    size_t atomDim(const AxisSplit &split) const {
+      auto [first, count] = axis::getFactorAtomRange(
+          perAxis[split.axisIndex], split.extent, split.stride);
+      assert(count == 1 && "cast factors are disjoint");
+      return offset[split.axisIndex] + first;
+    }
+    SmallVector<int64_t> shape() const {
+      SmallVector<int64_t> result;
+      for (const auto &atoms : perAxis)
+        for (const axis::AxisAtom &atom : atoms)
+          result.push_back(atom.extent);
+      return result;
+    }
+  };
+
+  FailureOr<CastAtoms> computeCastAtoms(const CastPerDimInfo &info) {
+    SmallVector<axis::AtomFactor> factors;
+    for (const auto &splits : info.splits)
+      for (const AxisSplit &split : splits)
+        factors.push_back({split.axisIndex, static_cast<uint64_t>(split.extent),
+                           static_cast<uint64_t>(split.stride)});
+    SmallVector<uint64_t> axisExtents(meshExtents.begin(), meshExtents.end());
+    auto common = axis::computeCommonAtoms(axisExtents, factors);
+    if (failed(common))
+      return failure();
+    CastAtoms result;
+    for (size_t a = 0; a < numMeshAxes(); ++a) {
+      result.offset.push_back(result.total);
+      result.total += common->atomsOf(a).size();
+      auto atoms = common->atomsOf(a);
+      result.perAxis.emplace_back(atoms.begin(), atoms.end());
+    }
+    return result;
+  }
+
+  // Expands a flat (global-shaped) tensor to the canonical [meshExtents...,
+  // localDims...] form: reshape to one dim per factor (with each dimension's
+  // unpartitioned remainder last), then place each factor at its mesh atom
+  // and broadcast in the atoms no factor covers.
   Value expandFromFlat(Value flat, RankedTensorType flatType,
                        const CastPerDimInfo &perDimInfo) {
-    SmallVector<int64_t> intermediateShape;
-    SmallVector<DimLabel> labels;
-    for (auto [d, splits] : llvm::enumerate(perDimInfo.splits)) {
-      // See CastPerDimInfo's doc comment: correctly expanding a
-      // Replicate-affected dimension needs an actual drop-to-one-copy data
-      // operation this pass doesn't implement, so fail loudly rather than
-      // emit a reshape with a mismatched element count.
-      if (perDimInfo.replicateDivisor[d] != 1) {
+    // See CastPerDimInfo's doc comment: correctly expanding a
+    // Replicate-affected dimension needs an actual drop-to-one-copy data
+    // operation this pass doesn't implement, so fail loudly rather than
+    // emit a reshape with a mismatched element count.
+    for (auto [d, divisor] : llvm::enumerate(perDimInfo.replicateDivisor)) {
+      if (divisor != 1) {
         mlir::emitError(flat.getLoc())
             << "distributed-lower-for-sanity-check does not yet support a "
               "ReplicationAxisType factor inside a Cast's own per-tensor-"
@@ -425,32 +505,41 @@ private:
         hasFailed = true;
         return nullptr;
       }
+    }
+    auto castAtoms = computeCastAtoms(perDimInfo);
+    if (failed(castAtoms)) {
+      mlir::emitError(flat.getLoc())
+          << "a cast's factors over one mesh axis are not nested";
+      hasFailed = true;
+      return nullptr;
+    }
+    SmallVector<int64_t> intermediateShape, targetPos;
+    SmallVector<int64_t> targetShape = castAtoms->shape();
+    for (auto [d, splits] : llvm::enumerate(perDimInfo.splits)) {
       int64_t extentProduct = 1;
       for (const AxisSplit &split : splits) {
         intermediateShape.push_back(split.extent);
-        labels.push_back(DimLabel{true, split.axisIndex});
+        targetPos.push_back(castAtoms->atomDim(split));
         extentProduct *= split.extent;
       }
       int64_t remainder = flatType.getDimSize(d) / extentProduct;
       intermediateShape.push_back(remainder);
-      labels.push_back(DimLabel{false, static_cast<size_t>(d)});
+      targetPos.push_back(castAtoms->total + d);
+      targetShape.push_back(remainder);
     }
-    Value reshaped = flat;
-    if (intermediateShape != flatType.getShape()) {
-      auto intermediateType =
-          RankedTensorType::get(intermediateShape, flatType.getElementType());
-      reshaped = builder.create<stablehlo::ReshapeOp>(flat.getLoc(),
-                                                       intermediateType, flat);
-    }
-    return placeIntoCanonical(builder, flat.getLoc(), reshaped, labels,
-                              meshExtents);
+    Location loc = flat.getLoc();
+    Value reshaped = reshapeTo(flat, intermediateShape, loc);
+    Value placed = placeAtoms(reshaped, targetPos, targetShape, loc);
+    SmallVector<int64_t> canonical(meshExtents);
+    canonical.append(targetShape.begin() + castAtoms->total, targetShape.end());
+    return reshapeTo(placed, canonical, loc);
   }
 
   // Inverse of expandFromFlat: collapses a canonical expanded tensor back
-  // down to one Cast's own flat local/global tensor type.
+  // down to one Cast's own flat local/global tensor type, keeping only index
+  // 0 of every atom no factor covers.
   Value collapseToFlat(Value expanded, RankedTensorType flatType,
-                       const CastPerDimInfo &perDimInfo,
-                       Location loc) {
+                       const CastPerDimInfo &perDimInfo, Location loc) {
     // See CastPerDimInfo's doc comment / expandFromFlat's identical guard:
     // collapsing back through a Replicate-affected dimension needs an
     // actual duplicate-to-`extent`-copies data operation this pass doesn't
@@ -465,48 +554,57 @@ private:
         return nullptr;
       }
     }
-    size_t n = numMeshAxes();
-    llvm::SmallBitVector used(n);
+    auto castAtoms = computeCastAtoms(perDimInfo);
+    if (failed(castAtoms)) {
+      mlir::emitError(loc)
+          << "a cast's factors over one mesh axis are not nested";
+      hasFailed = true;
+      return nullptr;
+    }
+    auto expandedType = cast<RankedTensorType>(expanded.getType());
+    SmallVector<int64_t> atomShape = castAtoms->shape();
+    atomShape.append(expandedType.getShape().begin() + numMeshAxes(),
+                     expandedType.getShape().end());
+    Value atomized = reshapeTo(expanded, atomShape, loc);
+
+    llvm::SmallBitVector used(castAtoms->total);
     for (const auto &splits : perDimInfo.splits)
       for (const AxisSplit &split : splits)
-        used.set(split.axisIndex);
+        used.set(castAtoms->atomDim(split));
 
-    auto expandedType = cast<RankedTensorType>(expanded.getType());
-    SmallVector<int64_t> sliceStarts(expandedType.getRank(), 0);
-    SmallVector<int64_t> sliceLimits(expandedType.getShape());
-    SmallVector<int64_t> sliceStrides(expandedType.getRank(), 1);
-    for (size_t a = 0; a < n; ++a) {
-      if (!used.test(a))
-        sliceLimits[a] = 1;
-    }
-    Value sliced = expanded;
-    if (sliceLimits != llvm::to_vector(expandedType.getShape())) {
-      auto slicedType = RankedTensorType::get(
-          SmallVector<int64_t>(sliceLimits), expandedType.getElementType());
+    SmallVector<int64_t> sliceStarts(atomShape.size(), 0);
+    SmallVector<int64_t> sliceLimits(atomShape);
+    SmallVector<int64_t> sliceStrides(atomShape.size(), 1);
+    for (size_t i = 0; i < castAtoms->total; ++i)
+      if (!used.test(i))
+        sliceLimits[i] = 1;
+    Value sliced = atomized;
+    if (sliceLimits != atomShape) {
       sliced = builder.create<stablehlo::SliceOp>(
-          loc, slicedType, expanded, sliceStarts, sliceLimits, sliceStrides);
+          loc,
+          RankedTensorType::get(sliceLimits, expandedType.getElementType()),
+          atomized, sliceStarts, sliceLimits, sliceStrides);
     }
 
     SmallVector<int64_t> permutation;
-    for (size_t a = 0; a < n; ++a) {
-      if (!used.test(a))
-        permutation.push_back(a);
-    }
+    for (size_t i = 0; i < castAtoms->total; ++i)
+      if (!used.test(i))
+        permutation.push_back(i);
     for (auto [d, splits] : llvm::enumerate(perDimInfo.splits)) {
       for (const AxisSplit &split : splits)
-        permutation.push_back(split.axisIndex);
-      permutation.push_back(n + d);
+        permutation.push_back(castAtoms->atomDim(split));
+      permutation.push_back(castAtoms->total + d);
     }
     auto slicedType = cast<RankedTensorType>(sliced.getType());
-    SmallVector<int64_t> transposedShape;
-    for (int64_t srcDim : permutation)
-      transposedShape.push_back(slicedType.getDimSize(srcDim));
     Value transposed = sliced;
     if (!llvm::is_sorted(permutation)) {
-      auto transposedType =
-          RankedTensorType::get(transposedShape, slicedType.getElementType());
+      SmallVector<int64_t> transposedShape;
+      for (int64_t srcDim : permutation)
+        transposedShape.push_back(slicedType.getDimSize(srcDim));
       transposed = builder.create<stablehlo::TransposeOp>(
-          loc, transposedType, sliced, permutation);
+          loc,
+          RankedTensorType::get(transposedShape, slicedType.getElementType()),
+          sliced, permutation);
     }
     return builder.create<stablehlo::ReshapeOp>(loc, flatType, transposed);
   }
@@ -766,10 +864,20 @@ private:
   }
 
   // Lowers a DistributedCollective + its (unique) DistributedAwait
-  // consumer into a reduce-then-map recipe entirely over the canonical
-  // expanded representation -- see the pass description in Passes.td for
-  // why this never reuses DistributedToHlo.cpp's hardware-collective
-  // patterns.
+  // consumer entirely over the canonical expanded representation (see the
+  // pass description in Passes.td for why this never reuses
+  // DistributedToHlo.cpp's hardware-collective patterns).
+  //
+  // The recipe, over the common refinement of the collective's factors
+  // (CollectiveAtoms), so a factor may be any sub-range of an axis:
+  //  1. Reshape [mesh..., tile...] to one dim per atom.
+  //  2. Reduce each reduction group's atom dims.
+  //  3. Relabel per mapping pair: lhs atom -> rhs atom, lhs -> replicate drops
+  //     the dim to its index-0 representative, replicate -> rhs atom is left
+  //     for the broadcast.
+  //  4. Transpose into the output's atom order, broadcast in any missing atom
+  //     (including whole mesh axes the collective never mentions), and
+  //     reshape to [mesh..., output tile...].
   void lowerCollective(DistributedCollectiveOp collective) {
     Location loc = collective.getLoc();
     Value inputExpanded = getExpandedValue(collective.getInputObject());
@@ -783,38 +891,134 @@ private:
       return;
     }
 
-    size_t n = numMeshAxes();
-    // activeMeshDims[i] = which physical axis the i-th leading dim of the
-    // running tensor currently represents (labels shrink as axes are
-    // reduced/dropped below; local dims never move and are addressed by
-    // their own trailing position, tracked separately as `numLocalDims`).
-    SmallVector<int64_t> activeMeshDims;
-    for (size_t a = 0; a < n; ++a)
-      activeMeshDims.push_back(a);
-    Value running = inputExpanded;
+    // The collective's own DistributedAwait is its sole real consumer (see
+    // this dialect's own convention -- Ops.td's rule of thumb above
+    // DistributedCastGlobalToLocalOp, and DropIdentityCollectives.cpp's
+    // identical assumption).
+    assert(llvm::hasSingleElement(collective->getUsers()) &&
+           "a DistributedCollective's async handle must have exactly one "
+           "DistributedAwait consumer (see createCollectiveAndAwait)");
+    auto await = cast<DistributedAwait>(*collective->getUsers().begin());
 
-    auto inputFactors = axis::getProductProvenanceFactors(collective.getInputMesh());
-    if (failed(inputFactors)) {
-      fail(collective, "collective input_mesh must be produced by axis.product");
+    size_t n = numMeshAxes();
+    auto inputType = cast<RankedTensorType>(inputExpanded.getType());
+    auto outputTileType = cast<RankedTensorType>(await.getValue().getType());
+    ArrayRef<int64_t> inputTile = inputType.getShape().drop_front(n);
+    ArrayRef<int64_t> outputTile = outputTileType.getShape();
+    if (inputTile.size() != outputTile.size()) {
+      fail(collective, "collective input and output tiles must have the same "
+                       "rank");
       return;
     }
 
-    for (auto [reductionGroup, region] :
-        llvm::zip_equal(collective.getReductionGroups(),
-                        collective.getReductionBodies())) {
-      auto groupFactors =
-          axis::getProductProvenanceFactors(cast<TV_FactorGroup>(reductionGroup));
-      if (failed(groupFactors)) {
-        fail(collective, "reduction group must be produced by axis.product");
-        return;
-      }
+    CollectiveAtoms atoms;
+    for (size_t a = 0; a < n; ++a)
+      atoms.addAxis({AtomSpace::Mesh, a}, meshExtents[a]);
+    for (size_t j = 0; j < inputTile.size(); ++j) {
+      atoms.addAxis({AtomSpace::InTile, j}, inputTile[j]);
+      atoms.addAxis({AtomSpace::OutTile, j}, outputTile[j]);
+    }
 
-      // One region may fold more than one axis (when a reduction group
-      // spans several mesh axis factors), so its kind/identity are
-      // resolved once here rather than per axis.
+    // Resolves a group's factors onto axes; extent-1 factors carry no data
+    // and are dropped. `tileSpace` is the tile a shape-axis factor refers to.
+    size_t nextReplicateId = 0;
+    auto resolveGroup = [&](TV_FactorGroup group,
+                            AtomSpace tileSpace) -> FailureOr<ResolvedGroup> {
+      auto factors = axis::getProductProvenanceFactors(group);
+      if (failed(factors)) {
+        fail(collective, "factor group must be produced by axis.product");
+        return failure();
+      }
+      ResolvedGroup resolved;
+      for (TV_AxisFactor factor : *factors) {
+        uint64_t extent = axis::getFactorExtent(factor);
+        if (extent == 1)
+          continue;
+        auto provenance = axis::getFactorProvenanceAxis(factor);
+        if (failed(provenance)) {
+          fail(collective, "factor has no provenance axis");
+          return failure();
+        }
+        AxisKey key;
+        Type type = provenance->getType();
+        if (auto physical = dyn_cast<PhysicalCommAxisType>(type)) {
+          auto meshIdx = llvm::find(meshAxisTypes, physical);
+          if (meshIdx == meshAxisTypes.end()) {
+            fail(collective, "factor over an axis outside the module's mesh");
+            return failure();
+          }
+          key = {AtomSpace::Mesh,
+                 static_cast<size_t>(meshIdx - meshAxisTypes.begin())};
+        } else if (isa<axis::ShapeAxisType>(type)) {
+          key = {tileSpace,
+                 static_cast<size_t>(axis::getAxisDimIndex(
+                     cast<TypedValue<axis::ShapeAxisType>>(*provenance)))};
+        } else if (isa<ReplicationAxisType>(type)) {
+          key = {AtomSpace::Replicate, nextReplicateId++};
+          atoms.addAxis(key, axis::getAxisExtent(*provenance));
+        } else {
+          fail(collective, "expected a fully-lowered physical, tensor, or "
+                           "replication axis");
+          return failure();
+        }
+        ResolvedFactor resolvedFactor{
+            key, extent, static_cast<uint64_t>(axis::getFactorStride(factor))};
+        atoms.addFactor(resolvedFactor);
+        resolved.push_back(resolvedFactor);
+      }
+      return resolved;
+    };
+
+    SmallVector<ResolvedGroup> reductionGroups;
+    for (Value group : collective.getReductionGroups()) {
+      auto resolved =
+          resolveGroup(cast<TV_FactorGroup>(group), AtomSpace::InTile);
+      if (failed(resolved))
+        return;
+      reductionGroups.push_back(std::move(*resolved));
+    }
+
+    auto mapOp = collective.getMapping().getDefiningOp<axis::AxisMapOp>();
+    if (!mapOp) {
+      fail(collective, "collective mapping must be produced by axis.map");
+      return;
+    }
+    SmallVector<std::pair<ResolvedGroup, ResolvedGroup>> pairs;
+    for (auto [lhsGroup, rhsGroup] : mapOp.getTypedMappingPairs()) {
+      auto lhs = resolveGroup(lhsGroup, AtomSpace::InTile);
+      auto rhs = resolveGroup(rhsGroup, AtomSpace::OutTile);
+      if (failed(lhs) || failed(rhs))
+        return;
+      pairs.push_back({std::move(*lhs), std::move(*rhs)});
+    }
+
+    if (failed(atoms.refine(pairs))) {
+      fail(collective,
+           "distributed-lower-for-sanity-check could not split this "
+           "collective's factors into a common set of atoms (a mapping pair "
+           "is indivisible, or an axis's factor boundaries are not "
+           "nested)");
+      return;
+    }
+
+    // 1. Expose every atom as its own dim.
+    SmallVector<AtomLabel> labels;
+    auto appendAxis = [&](AtomSpace space, size_t axisIdx) {
+      labels.append(atoms.labelsOfAxis({space, axisIdx}));
+    };
+    for (size_t a = 0; a < n; ++a)
+      appendAxis(AtomSpace::Mesh, a);
+    for (size_t j = 0; j < inputTile.size(); ++j)
+      appendAxis(AtomSpace::InTile, j);
+    Value running = reshapeTo(inputExpanded, atoms.extentsOf(labels), loc);
+
+    // 2. Reduce.
+    for (auto [group, region] :
+         llvm::zip_equal(reductionGroups, collective.getReductionBodies())) {
       auto elemType = cast<RankedTensorType>(running.getType()).getElementType();
       auto kind = stablehlo::classifyReduceBlockKind(region.front());
-      Value identity = stablehlo::getIdentityValueForReduceKind(builder, loc, elemType, kind);
+      Value identity = stablehlo::getIdentityValueForReduceKind(builder, loc,
+                                                                elemType, kind);
       if (!identity) {
         fail(collective,
             "distributed-lower-for-sanity-check requires a collective's "
@@ -823,140 +1027,106 @@ private:
             "its element type");
         return;
       }
-
-      for (TV_AxisFactor factor : *groupFactors) {
-        auto provenance = axis::getFactorProvenanceAxis(factor);
-        auto physicalType =
-            failed(provenance) ? nullptr
-                              : dyn_cast<PhysicalCommAxisType>(provenance->getType());
-        if (!physicalType) {
-          fail(collective, "expected a fully-lowered physical reduction axis");
+      for (AtomLabel label : atoms.labelsOf(group)) {
+        auto dimPos = llvm::find(labels, label);
+        if (label.space != AtomSpace::Mesh || dimPos == labels.end()) {
+          fail(collective, "reduction over an axis that is not a live mesh "
+                           "axis (or is reduced twice)");
           return;
         }
-        auto meshIdx = llvm::find(meshAxisTypes, physicalType);
-        size_t axisIdx = meshIdx - meshAxisTypes.begin();
-        auto dimPos = llvm::find(activeMeshDims, static_cast<int64_t>(axisIdx));
-        if (dimPos == activeMeshDims.end()) {
-          fail(collective, "reduction axis already consumed");
-          return;
-        }
-        size_t dim = dimPos - activeMeshDims.begin();
+        size_t dim = dimPos - labels.begin();
         running = foldReduction(running, dim, region.front(), identity, loc);
-        activeMeshDims.erase(dimPos);
+        labels.erase(dimPos);
       }
     }
 
-    // dimLabels[i] tracks, for each current dim of `running` (remaining mesh
-    // axes first, then `running`'s own local dims -- its actual dim order),
-    // what that dim currently represents. A mapping pair relabels an
-    // existing dim (physical axis <-> physical axis, tensor dim <-> tensor
-    // dim, or physical axis <-> tensor dim) or drops one down to a single
-    // representative slice (X -> Replicate); it never needs to fabricate a
-    // dim from nothing, since every physical axis and every one of
-    // `running`'s own local dims is already present in dimLabels from the
-    // start. A relabel that lands on an already-claimed label (e.g.
-    // gathering a physical axis into a tensor dim that still carries its
-    // own local remainder) is resolved by dropping whichever side is a
-    // trivial extent-1 placeholder -- see the loop below. Otherwise, the
-    // data movement a relabel implies (e.g. a physical axis becoming a
-    // local dim, or vice versa) is carried out generically by
-    // placeIntoCanonical's own transpose/broadcast below, exactly as it
-    // already does for a Cast's own dimension placement.
-    SmallVector<DimLabel> dimLabels;
-    for (int64_t axisIdx : activeMeshDims)
-      dimLabels.push_back(DimLabel{true, static_cast<size_t>(axisIdx)});
-    size_t numOriginalLocalDims =
-        cast<RankedTensorType>(running.getType()).getRank() -
-        activeMeshDims.size();
-    for (size_t i = 0; i < numOriginalLocalDims; ++i)
-      dimLabels.push_back(DimLabel{false, i});
-
-    auto mapOp = collective.getMapping().getDefiningOp<axis::AxisMapOp>();
-    if (!mapOp) {
-      fail(collective, "collective mapping must be produced by axis.map");
-      return;
-    }
-    for (auto [lhsGroup, rhsGroup] : mapOp.getTypedMappingPairs()) {
-      auto lhsAxis = resolveSingleAxisProvenance(lhsGroup);
-      auto rhsAxis = resolveSingleAxisProvenance(rhsGroup);
-      if (!lhsAxis && !rhsAxis)
-        continue; // Replicate -> Replicate: nothing present either side.
-      if (lhsAxis && rhsAxis) {
-        auto dimPos = llvm::find(dimLabels, *lhsAxis);
-        if (dimPos == dimLabels.end()) {
+    // 3. Relabel from input atoms to output atoms. All lookups use the
+    // pre-relabel labels so a permutation of atoms doesn't chase itself.
+    SmallVector<AtomLabel> relabeled = labels;
+    SmallVector<bool> dropped(labels.size(), false);
+    SmallVector<AtomLabel> namedIn, namedOut;
+    auto dimOf = [&](AtomLabel label) -> std::optional<size_t> {
+      auto pos = llvm::find(labels, label);
+      if (pos == labels.end())
+        return std::nullopt;
+      return pos - labels.begin();
+    };
+    for (const auto &[lhs, rhs] : pairs) {
+      SmallVector<AtomLabel> lhsLabels = atoms.labelsOf(lhs);
+      SmallVector<AtomLabel> rhsLabels = atoms.labelsOf(rhs);
+      for (auto [l, r] : llvm::zip_equal(lhsLabels, rhsLabels)) {
+        if (l.space != AtomSpace::Replicate)
+          namedIn.push_back(l);
+        if (r.space != AtomSpace::Replicate)
+          namedOut.push_back(r);
+        if (l.space == AtomSpace::Replicate)
+          continue;
+        std::optional<size_t> dim = dimOf(l);
+        if (!dim) {
           fail(collective, "mapping lhs references an already-consumed axis");
           return;
         }
-        size_t dim = dimPos - dimLabels.begin();
-        auto collision = llvm::find(dimLabels, *rhsAxis);
-        if (collision == dimLabels.end()) {
-          dimLabels[dim] = *rhsAxis;
-        } else {
-          // The target label is already claimed by a different dim -- e.g.
-          // a physical axis being gathered into a tensor dimension that
-          // still has its own (pre-collective) local remainder dim. Only
-          // handle the common case where one side is a trivial (extent-1)
-          // placeholder: drop it and let the other side (the one actually
-          // carrying real per-coordinate data) take the label. A genuine
-          // merge of two non-trivial dims onto one label (a partial
-          // gather/scatter) isn't implemented yet.
-          size_t collisionDim = collision - dimLabels.begin();
-          auto runningType = cast<RankedTensorType>(running.getType());
-          if (runningType.getDimSize(collisionDim) == 1) {
-            running = dropDim(running, collisionDim, loc);
-            dimLabels.erase(collision);
-            if (dim > collisionDim)
-              --dim;
-            dimLabels[dim] = *rhsAxis;
-          } else if (runningType.getDimSize(dim) == 1) {
-            running = dropDim(running, dim, loc);
-            dimLabels.erase(dimPos);
-          } else {
-            fail(collective,
-                "distributed-lower-for-sanity-check does not yet support "
-                "merging two non-unit-extent dims onto the same mapping "
-                "target (a partial gather/scatter with a real remaining "
-                "local extent)");
-            return;
-          }
-        }
-      } else if (lhsAxis && !rhsAxis) {
-        // X -> Replicate: this dim's data is already uniform across it
-        // (consumed by reduction upstream, or asserted redundant by
-        // construction) -- drop it by taking its representative slice.
-        auto dimPos = llvm::find(dimLabels, *lhsAxis);
-        if (dimPos == dimLabels.end()) {
-          fail(collective, "mapping lhs references an already-consumed axis");
-          return;
-        }
-        size_t dim = dimPos - dimLabels.begin();
-        running = dropDim(running, dim, loc);
-        dimLabels.erase(dimPos);
+        if (r.space == AtomSpace::Replicate)
+          dropped[*dim] = true;
+        else
+          relabeled[*dim] = r;
       }
-      // Replicate -> Physical(b) and Replicate -> Replicate need no action
-      // now: the final placeIntoCanonical fill-broadcast below materializes
-      // any physical axis not already present among dimLabels. Replicate ->
-      // TensorDim(j) never arises for well-formed IR (see this loop's own
-      // header comment).
+    }
+    // An input mesh atom no pair consumes normally passes through unchanged.
+    // If some pair writes that same atom instead, the input was uniform along
+    // it, so only its index-0 representative is kept and the write (or the
+    // final broadcast) re-expands it.
+    for (AtomLabel label : namedOut)
+      if (label.space == AtomSpace::Mesh && !llvm::is_contained(namedIn, label))
+        if (std::optional<size_t> dim = dimOf(label))
+          dropped[*dim] = true;
+    // The verifier requires the mapping to cover every tile dimension in full,
+    // so an unnamed tile atom has extent 1: an input one is dropped, an
+    // output one is filled by the final broadcast.
+    for (size_t j = 0; j < inputTile.size(); ++j) {
+      for (AtomLabel label : atoms.labelsOfAxis({AtomSpace::InTile, j})) {
+        if (llvm::is_contained(namedIn, label))
+          continue;
+        assert(atoms.extentOf(label) == 1 &&
+               "collective mapping must cover the whole input tile");
+        dropped[*dimOf(label)] = true;
+      }
+    }
+    for (size_t dim = labels.size(); dim-- > 0;) {
+      if (!dropped[dim])
+        continue;
+      running = dropDim(running, dim, loc);
+      relabeled.erase(relabeled.begin() + dim);
     }
 
-    Value finalExpanded = placeIntoCanonical(builder, loc, running, dimLabels, meshExtents);
+    // 4. Place into [mesh atoms..., output tile atoms...] and reshape.
+    SmallVector<AtomLabel> target;
+    for (size_t a = 0; a < n; ++a)
+      target.append(atoms.labelsOfAxis({AtomSpace::Mesh, a}));
+    for (size_t j = 0; j < outputTile.size(); ++j)
+      target.append(atoms.labelsOfAxis({AtomSpace::OutTile, j}));
+    SmallVector<int64_t> targetPos;
+    for (AtomLabel label : relabeled) {
+      auto pos = llvm::find(target, label);
+      if (pos == target.end() ||
+          llvm::is_contained(targetPos, pos - target.begin())) {
+        fail(collective, "collective mapping leaves an atom unplaced or "
+                         "claims one output atom twice");
+        return;
+      }
+      targetPos.push_back(pos - target.begin());
+    }
+    Value placed = placeAtoms(running, targetPos, atoms.extentsOf(target), loc);
+    SmallVector<int64_t> finalShape(meshExtents);
+    finalShape.append(outputTile.begin(), outputTile.end());
+    Value finalExpanded = reshapeTo(placed, finalShape, loc);
 
-    // The collective's own DistributedAwait is its sole real consumer (see
-    // this dialect's own convention -- Ops.td's rule of thumb above
-    // DistributedCastGlobalToLocalOp, and DropIdentityCollectives.cpp's
-    // identical assumption). Memoize the expanded form under the Await's
-    // result so a downstream kernel/collective consuming it directly (no
-    // cast) resolves it via getExpandedValue's memo lookup; additionally,
-    // if the Await's result is itself immediately globalized by a real
-    // cast (e.g. feeding the function's own return directly), collapse
-    // and map that cast's output too -- mirroring lowerKernel's identical
-    // handling of its own results, since nothing else in this pass ever
-    // clones/maps a Cast op's output otherwise.
-    assert(llvm::hasSingleElement(collective->getUsers()) &&
-          "a DistributedCollective's async handle must have exactly one "
-          "DistributedAwait consumer (see createCollectiveAndAwait)");
-    auto await = cast<DistributedAwait>(*collective->getUsers().begin());
+    // Memoize the expanded form under the Await's result so a downstream
+    // kernel/collective consuming it directly (no cast) resolves it via
+    // getExpandedValue's memo lookup; additionally, if the Await's result is
+    // itself immediately globalized by a real cast (e.g. feeding the
+    // function's own return directly), collapse and map that cast's output
+    // too, mirroring lowerKernel's handling of its own results.
     expandedOf[await.getValue()] = finalExpanded;
     if (auto castOp = findBoundingCastLocalToGlobal(await.getValue())) {
       auto perDimSplits = resolveCastPerDimSplits(
@@ -972,31 +1142,41 @@ private:
     }
   }
 
-  // Resolves a mapping pair's factor group to the dim label it names: a
-  // physical mesh axis, or one of the tensor's own original dimensions (via
-  // its ShapeAxisType provenance). A Replicate-provenance or empty group
-  // resolves to std::nullopt instead.
-  std::optional<DimLabel> resolveSingleAxisProvenance(TV_FactorGroup group) {
-    auto factors = axis::getProductProvenanceFactors(group);
-    if (failed(factors) || factors->empty())
-      return std::nullopt;
-    auto provenance = axis::getFactorProvenanceAxis(factors->front());
-    if (failed(provenance))
-      return std::nullopt;
-    if (isa<ReplicationAxisType>(provenance->getType()))
-      return std::nullopt;
-    if (isa<axis::ShapeAxisType>(provenance->getType())) {
-      auto shapeAxis = cast<TypedValue<axis::ShapeAxisType>>(*provenance);
-      return DimLabel{false,
-                      static_cast<size_t>(axis::getAxisDimIndex(shapeAxis))};
+  Value reshapeTo(Value tensor, ArrayRef<int64_t> shape, Location loc) {
+    auto type = cast<RankedTensorType>(tensor.getType());
+    if (type.getShape() == shape)
+      return tensor;
+    return builder.create<stablehlo::ReshapeOp>(
+        loc, RankedTensorType::get(shape, type.getElementType()), tensor);
+  }
+
+  // Transposes `tensor`'s dims into increasing `targetPos` order, then
+  // broadcasts it into `targetShape` (one dim per output atom), so an atom
+  // with no source dim is uniform along it.
+  Value placeAtoms(Value tensor, ArrayRef<int64_t> targetPos,
+                   ArrayRef<int64_t> targetShape, Location loc) {
+    auto type = cast<RankedTensorType>(tensor.getType());
+    SmallVector<int64_t> order(targetPos.size());
+    std::iota(order.begin(), order.end(), 0);
+    llvm::sort(order, [&](int64_t a, int64_t b) {
+      return targetPos[a] < targetPos[b];
+    });
+    if (!llvm::is_sorted(order)) {
+      SmallVector<int64_t> shape;
+      for (int64_t src : order)
+        shape.push_back(type.getDimSize(src));
+      tensor = builder.create<stablehlo::TransposeOp>(
+          loc, RankedTensorType::get(shape, type.getElementType()), tensor,
+          order);
     }
-    auto physicalType = dyn_cast<PhysicalCommAxisType>(provenance->getType());
-    if (!physicalType)
-      return std::nullopt;
-    auto meshIdx = llvm::find(meshAxisTypes, physicalType);
-    if (meshIdx == meshAxisTypes.end())
-      return std::nullopt;
-    return DimLabel{true, static_cast<size_t>(meshIdx - meshAxisTypes.begin())};
+    SmallVector<int64_t> broadcastDims;
+    for (int64_t src : order)
+      broadcastDims.push_back(targetPos[src]);
+    if (broadcastDims.size() == targetShape.size())
+      return tensor;
+    return builder.create<stablehlo::BroadcastInDimOp>(
+        loc, RankedTensorType::get(targetShape, type.getElementType()), tensor,
+        broadcastDims);
   }
 
   // Reduces dimension `dim` of `tensor` via stablehlo.reduce, using
@@ -1043,7 +1223,9 @@ private:
   // where every coordinate along `dim` is already known-equal by this
   // pipeline's own correctness invariant).
   Value dropDim(Value tensor, size_t dim, Location loc) {
-    Value sliced = sliceAtIndex(tensor, dim, 0, loc);
+    Value sliced = cast<RankedTensorType>(tensor.getType()).getDimSize(dim) == 1
+                       ? tensor
+                       : sliceAtIndex(tensor, dim, 0, loc);
     auto type = cast<RankedTensorType>(sliced.getType());
     SmallVector<int64_t> newShape;
     for (auto [i, extent] : llvm::enumerate(type.getShape())) {
@@ -1060,15 +1242,59 @@ private:
 // func.func and swaps its terminator. Kept local to this file (rather than
 // promoted to Dialect/Distributed/Utilities.h) until a second real caller
 // exists.
+// Removes `sdy.sharding` from per-argument/result attribute dictionaries.
+// Shardy's mesh declaration is already gone by this point, and a func.func
+// would fail verification on a sharding naming it.
+ArrayAttr stripSdyShardings(ArrayAttr attrs, Builder &builder) {
+  if (!attrs)
+    return attrs;
+  SmallVector<Attribute> stripped;
+  for (Attribute entry : attrs) {
+    NamedAttrList dict(cast<DictionaryAttr>(entry));
+    dict.erase("sdy.sharding");
+    stripped.push_back(dict.getDictionary(builder.getContext()));
+  }
+  return builder.getArrayAttr(stripped);
+}
+
+// A distributed.function may use values defined at module scope (constants
+// the export leaves there), but func.func is isolated from above. Clones each
+// such value's defining op (and, transitively, what it depends on) to the
+// start of the function.
+void cloneCapturedValuesIntoFunc(func::FuncOp funcOp, OpBuilder &builder) {
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(&funcOp.getBody().front());
+  IRMapping cloned;
+  std::function<Value(Value)> capture = [&](Value value) -> Value {
+    if (Value existing = cloned.lookupOrNull(value))
+      return existing;
+    Operation *def = value.getDefiningOp();
+    assert(def && "only op results can be defined outside a function");
+    for (Value operand : def->getOperands())
+      capture(operand);
+    builder.clone(*def, cloned);
+    return cloned.lookup(value);
+  };
+  funcOp.walk([&](Operation *op) {
+    for (OpOperand &use : op->getOpOperands()) {
+      Operation *def = use.get().getDefiningOp();
+      if (def && !funcOp->isAncestor(def))
+        use.set(capture(use.get()));
+    }
+  });
+}
+
 func::FuncOp convertDistributedFunctionToFunc(DistributedFunctionOp distFn,
                                               OpBuilder &builder) {
   builder.setInsertionPoint(distFn);
   auto funcOp = builder.create<func::FuncOp>(
       distFn.getLoc(), distFn.getSymName(), distFn.getFunctionType(),
-      distFn.getSymVisibilityAttr(), distFn.getArgAttrsAttr(),
-      distFn.getResAttrsAttr());
+      distFn.getSymVisibilityAttr(),
+      stripSdyShardings(distFn.getArgAttrsAttr(), builder),
+      stripSdyShardings(distFn.getResAttrsAttr(), builder));
   funcOp.getBody().takeBody(distFn.getBody());
   auto &block = funcOp.getBody().front();
+  cloneCapturedValuesIntoFunc(funcOp, builder);
   auto yieldOp = cast<DistributedYieldOp>(block.getTerminator());
   OpBuilder::InsertionGuard g(builder);
   builder.setInsertionPoint(yieldOp);
@@ -1255,10 +1481,29 @@ struct LowerForSanityCheckPass
 
     convertDistributedFunctionToFunc(distFn, builder);
 
-    // axis.* metadata ops (LogicalMeshAxes/ReplicationAxis/GetPhysicalMeshAxes/
-    // axis.product/axis.map/...) may now be unused module-scope leftovers;
-    // a plain DCE pass over the module cleans those up rather than this
-    // pass tracking every one it might have consumed.
+    // The output is plain func/stablehlo: drop the physical mesh, axis
+    // algebra, and any callee distributed.function that inlining left dead.
+    // Functions go first since they are the only remaining users of the
+    // module-scope axis values.
+    SmallVector<Operation *> metadata;
+    for (Operation &op :
+         llvm::make_early_inc_range(module.getBody()->getOperations())) {
+      if (isa<DistributedFunctionOp>(op))
+        op.erase();
+      else if (llvm::is_contained({"axis", "distributed"},
+                                  op.getName().getDialectNamespace()))
+        metadata.push_back(&op);
+    }
+    for (Operation *op : llvm::reverse(metadata)) {
+      op->dropAllUses();
+      op->erase();
+    }
+    // Module-scope constants are now redundant with the copies cloned into
+    // the function.
+    for (Operation &op :
+         llvm::make_early_inc_range(llvm::reverse(*module.getBody())))
+      if (!isa<SymbolOpInterface>(op) && isOpTriviallyDead(&op))
+        op.erase();
   }
 };
 

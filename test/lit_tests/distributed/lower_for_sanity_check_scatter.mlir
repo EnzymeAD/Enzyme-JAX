@@ -1,17 +1,15 @@
-// A scatter-shaped collective: the mapping maps TensorDim(0) -> Physical
-// (axis0) -- the reverse direction from the gather case in
-// lower_for_sanity_check.mlir. Unlike that case, the dim already occupying
-// the target physical-axis label here is a broadcast filler (the input
-// side, %trivial_grp, never actually splits along the physical axis, so
-// placeIntoCanonical filled it to full mesh extent rather than it holding
-// a genuinely trivial remainder). Materializing real per-device variation
-// out of that filler needs an actual reshape-split this pass doesn't
-// implement yet, so it must fail loudly rather than silently produce
-// incorrect data placement. Kept in its own file for the same reason as
-// lower_for_sanity_check_not_trivial.mlir: a failing chunk shouldn't share
-// a RUN line (and exit status) with passing cases.
-// RUN: not enzymexlamlir-opt --distributed-lower-for-sanity-check %s 2>&1 | FileCheck %s
-// CHECK: distributed-lower-for-sanity-check does not yet support merging
+// RUN: enzymexlamlir-opt --distributed-lower-for-sanity-check %s | FileCheck %s
+
+// A scatter-shaped collective: the mapping sends TensorDim(0) -> Physical
+// (axis0), the reverse of the gather case in lower_for_sanity_check.mlir. The
+// input never varied along the physical axis (its input_mesh is trivial), so
+// the axis's index-0 representative is kept and the tensor dim's atoms become
+// the mesh dim.
+// CHECK-LABEL: func.func @main
+// CHECK: stablehlo.while
+// CHECK: stablehlo.slice
+// CHECK: stablehlo.broadcast_in_dim {{.*}} dims = [0] : (tensor<2xf32>) -> tensor<2x1xf32>
+// CHECK: stablehlo.while
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
 
