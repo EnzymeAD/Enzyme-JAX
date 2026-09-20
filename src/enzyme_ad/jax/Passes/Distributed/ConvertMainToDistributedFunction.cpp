@@ -67,6 +67,15 @@ static TV_FactorGroup getOrCreatePartitioningAxisGroup(
   return axis::viewFactorsAsProduct(factor, axisBuilder, axisLoc);
 }
 
+// The analysis' partitioning axes for a global value, if it has any.
+static std::optional<TensorPartitioningAxes>
+getValueDims(ShardyLogicalAxisAnalysis &axisAnalysis, Value value) {
+  if (auto result = dyn_cast<OpResult>(value)) {
+    return axisAnalysis.getTensorPartitionDims(result);
+  }
+  return axisAnalysis.getTensorPartitionDims(cast<BlockArgument>(value));
+}
+
 // Builds per-dimension sharding indices against a stable partitioning-axis
 // table.
 static IndexedTensorShardingAttr buildIndexedShardingAttr(
@@ -97,17 +106,18 @@ static IndexedTensorShardingAttr buildIndexedShardingAttr(
       DenseI64ArrayAttr::get(ctx, llvm::ArrayRef<int64_t>{}));
 }
 
-// Replaces func.func @main with distributed.function and preserves sharding
+// Replaces a func.func with a distributed.function and preserves sharding
 // intent.
-static LogicalResult convertMainToDistributedFunction(
-    ModuleOp moduleOp, func::FuncOp mainFunc, Block *&mainBlock,
-    Operation *&mainScopeOp, ShardyLogicalAxisAnalysis &axisAnalysis,
-    OpBuilder &axisBuilder, Location axisLoc,
+static LogicalResult convertFunctionToDistributedFunction(
+    ModuleOp moduleOp, func::FuncOp mainFunc,
+    ShardyLogicalAxisAnalysis &axisAnalysis, OpBuilder &axisBuilder,
+    Location axisLoc,
     llvm::DenseMap<AxisSymbol, TV_AxisFactor> &symbolToLogicalAxis) {
   auto *ctx = moduleOp.getContext();
+  Block *mainBlock = &mainFunc.getBody().front();
   auto returnOp = dyn_cast<func::ReturnOp>(mainBlock->getTerminator());
   if (!returnOp) {
-    mainFunc.emitError() << "expected main terminator to be func.return";
+    mainFunc.emitError() << "expected function terminator to be func.return";
     return failure();
   }
 
@@ -148,12 +158,8 @@ static LogicalResult convertMainToDistributedFunction(
       continue;
     }
 
-    std::optional<TensorPartitioningAxes> maybePartitioning = std::nullopt;
-    if (OpResult result = dyn_cast<OpResult>(operand.get())) {
-      maybePartitioning = axisAnalysis.getTensorPartitionDims(result);
-    } else if (BlockArgument arg = dyn_cast<BlockArgument>(operand.get())) {
-      maybePartitioning = axisAnalysis.getTensorPartitionDims(arg);
-    }
+    std::optional<TensorPartitioningAxes> maybePartitioning =
+        getValueDims(axisAnalysis, operand.get());
     if (!maybePartitioning) {
       mainFunc.emitError() << "missing partitioning mapping for return operand "
                            << operand.getOperandNumber();
@@ -201,7 +207,7 @@ static LogicalResult convertMainToDistributedFunction(
   auto movedReturnOp = dyn_cast<func::ReturnOp>(mainBlock->getTerminator());
   if (!movedReturnOp) {
     distributedFunction.emitError()
-        << "expected moved main block to end with func.return";
+        << "expected moved function block to end with func.return";
     return failure();
   }
 
@@ -211,7 +217,6 @@ static LogicalResult convertMainToDistributedFunction(
   axisAnalysis.markRewrite(movedReturnOp, yieldOp);
   movedReturnOp.erase();
 
-  mainScopeOp = distributedFunction;
   mainFunc.erase();
   return success();
 }
@@ -226,8 +231,151 @@ struct ConvertMainToDistributedFunctionPass
   std::optional<OpBuilder> axisBuilder;
   std::optional<Location> axisLoc;
 
-  // Converts func.main once and leaves already-converted distributed.main
-  // unchanged.
+  // What every call site of one callee shares: the callee's global argument
+  // and result axes, as per-dimension factor-group values ready for casts.
+  struct CalleeBinding {
+    SmallVector<std::optional<TensorPartitioningAxes>> argDims, resultDims;
+    SmallVector<SmallVector<Value>> argGroups, resultGroups;
+  };
+  llvm::DenseMap<Operation *, CalleeBinding> calleeBindings;
+
+  // One factor-group value per tensor dimension, as a cast's axes.
+  SmallVector<Value> getAxisGroups(const TensorPartitioningAxes &dims,
+                                   ShardyLogicalAxisAnalysis &axisAnalysis) {
+    SmallVector<Value> groups;
+    for (const auto &dimSymbols : dims) {
+      SmallVector<Value> factors;
+      for (AxisSymbol symbol : dimSymbols) {
+        factors.push_back(getOrCreateLogicalAxisForSymbol(
+            symbol, axisAnalysis, *axisBuilder, *axisLoc,
+            symbolToLogicalAxis));
+      }
+      groups.push_back(
+          axis::viewFactorsAsProduct(factors, *axisBuilder, *axisLoc));
+    }
+    return groups;
+  }
+
+  // Computes a callee's binding once, from the analysis, for all its calls.
+  FailureOr<CalleeBinding *>
+  getCalleeBinding(DistributedFunctionOp callee,
+                   ShardyLogicalAxisAnalysis &axisAnalysis) {
+    auto [it, inserted] = calleeBindings.try_emplace(callee);
+    CalleeBinding &binding = it->second;
+    if (!inserted) {
+      return &binding;
+    }
+    auto bind = [&](Value value, auto &dimsList, auto &groupsList) {
+      std::optional<TensorPartitioningAxes> dims;
+      SmallVector<Value> groups;
+      if (isa<RankedTensorType>(value.getType())) {
+        dims = getValueDims(axisAnalysis, value);
+        if (!dims) {
+          return false;
+        }
+        groups = getAxisGroups(*dims, axisAnalysis);
+      }
+      dimsList.push_back(std::move(dims));
+      groupsList.push_back(std::move(groups));
+      return true;
+    };
+    Block &body = callee.getBody().front();
+    for (BlockArgument arg : body.getArguments()) {
+      if (!bind(arg, binding.argDims, binding.argGroups)) {
+        callee.emitError() << "missing partitioning mapping for argument "
+                           << arg.getArgNumber();
+        return failure();
+      }
+    }
+    for (Value returned : body.getTerminator()->getOperands()) {
+      if (!bind(returned, binding.resultDims, binding.resultGroups)) {
+        callee.emitError() << "missing partitioning mapping for a result";
+        return failure();
+      }
+    }
+    return &binding;
+  }
+
+  // Replaces a call with a localized distributed call: local operands and
+  // results bound to the callee's own axes, with casts to and from the
+  // surrounding global values. The call shares the callee's sharding
+  // metadata, since both index the same partitioning axes.
+  LogicalResult localizeCall(func::CallOp call,
+                             ShardyLogicalAxisAnalysis &axisAnalysis) {
+    auto callee = SymbolTable::lookupNearestSymbolFrom<DistributedFunctionOp>(
+        call, call.getCalleeAttr());
+    if (!callee) {
+      return call.emitError() << "call to a non-distributed function";
+    }
+    auto binding = getCalleeBinding(callee, axisAnalysis);
+    if (failed(binding)) {
+      return failure();
+    }
+    OpBuilder builder(call);
+
+    SmallVector<Value> localOperands;
+    for (auto [idx, operand] : llvm::enumerate(call.getOperands())) {
+      if (!(*binding)->argDims[idx]) {
+        localOperands.push_back(operand);
+        continue;
+      }
+      localOperands.push_back(
+          builder
+              .create<DistributedCastGlobalToLocalOp>(
+                  call.getLoc(),
+                  getLocalTensorType(cast<RankedTensorType>(operand.getType()),
+                                     *(*binding)->argDims[idx]),
+                  operand, (*binding)->argGroups[idx])
+              .getOutput());
+    }
+
+    SmallVector<Type> localResultTypes;
+    for (auto [idx, result] : llvm::enumerate(call.getResults())) {
+      localResultTypes.push_back(
+          (*binding)->resultDims[idx]
+              ? getLocalTensorType(cast<RankedTensorType>(result.getType()),
+                                   *(*binding)->resultDims[idx])
+              : result.getType());
+    }
+
+    auto localCall = builder.create<DistributedCallOp>(
+        call.getLoc(), localResultTypes, call.getCalleeAttr(), localOperands,
+        callee.getPartitioningAxes(), callee.getArgumentShardingsAttr(),
+        callee.getOutputShardingsAttr(), call.getArgAttrsAttr(),
+        call.getResAttrsAttr());
+    axisAnalysis.markRewrite(call, localCall);
+
+    for (auto [idx, result] : llvm::enumerate(call.getResults())) {
+      Value replacement = localCall.getResult(idx);
+      if ((*binding)->resultDims[idx]) {
+        replacement = builder
+                          .create<DistributedCastLocalToGlobalOp>(
+                              call.getLoc(), result.getType(), replacement,
+                              (*binding)->resultGroups[idx])
+                          .getOutput();
+      }
+      result.replaceAllUsesWith(replacement);
+    }
+    call.erase();
+    return success();
+  }
+
+  // Localizes every call, after all functions are converted, since a call
+  // verifies against a distributed function.
+  LogicalResult localizeCalls(ModuleOp moduleOp,
+                              ShardyLogicalAxisAnalysis &axisAnalysis) {
+    SmallVector<func::CallOp> calls;
+    moduleOp.walk([&](func::CallOp call) { calls.push_back(call); });
+    for (func::CallOp call : calls) {
+      if (failed(localizeCall(call, axisAnalysis))) {
+        return failure();
+      }
+    }
+    return success();
+  }
+
+  // Converts main and every function it transitively calls, leaving
+  // already-converted distributed functions unchanged.
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
 
@@ -271,18 +419,36 @@ struct ConvertMainToDistributedFunctionPass
 
     auto axisAnalysis = mainAxisAnalysis.getAnalysis();
 
-    // Dump before any rewriting below, so the output reflects analysis of
-    // Shardy IR and remains available even if a later step fails.
-    if (dumpValueAxes) {
-      distributed::dumpValueAxes(llvm::errs(), mainBlock, axisAnalysis);
-    }
-    if (dumpOperationAxes) {
-      distributed::dumpOperationAxes(llvm::errs(), mainBlock, axisAnalysis);
+    // Snapshot the functions first: conversion erases the analyzed ops.
+    SmallVector<func::FuncOp> funcs;
+    for (Operation *func : axisAnalysis.getAnalyzedFunctions()) {
+      funcs.push_back(cast<func::FuncOp>(func));
     }
 
-    if (failed(convertMainToDistributedFunction(
-            moduleOp, mainFunc, mainBlock, mainScopeOp, axisAnalysis,
-            *axisBuilder, *axisLoc, symbolToLogicalAxis))) {
+    // Dump before any rewriting below, so the output reflects analysis of
+    // Shardy IR and remains available even if a later step fails.
+    if (dumpValueAxes || dumpOperationAxes) {
+      for (func::FuncOp func : funcs) {
+        if (dumpValueAxes) {
+          distributed::dumpValueAxes(llvm::errs(), &func.getBody().front(),
+                                     axisAnalysis);
+        }
+        if (dumpOperationAxes) {
+          distributed::dumpOperationAxes(llvm::errs(), &func.getBody().front(),
+                                         axisAnalysis);
+        }
+      }
+    }
+
+    for (func::FuncOp func : funcs) {
+      if (failed(convertFunctionToDistributedFunction(
+              moduleOp, func, axisAnalysis, *axisBuilder, *axisLoc,
+              symbolToLogicalAxis))) {
+        signalPassFailure();
+        return;
+      }
+    }
+    if (failed(localizeCalls(moduleOp, axisAnalysis))) {
       signalPassFailure();
       return;
     }

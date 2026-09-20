@@ -21,8 +21,8 @@
 // CHECK-NOT: distributed.LogicalMeshAxes 3
 // CHECK: distributed.DeviceLocalAxis 3
 // CHECK: distributed.DistributedYield
-// FULL: distributed.DeviceLocalAxis 3
-// FULL: distributed.DeviceLocalAxis 1
+// FULL-DAG: distributed.DeviceLocalAxis 3
+// FULL-DAG: distributed.DeviceLocalAxis 1
 
 module @permutation_factor_slice {
   sdy.mesh @mesh = <["tp"=4]>

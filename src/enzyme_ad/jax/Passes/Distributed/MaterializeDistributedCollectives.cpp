@@ -46,28 +46,6 @@ static void removeExistingReshards(Operation *scopeOp) {
   }
 }
 
-// Computes producer-local tensor type by dividing each dim by partition extent.
-static RankedTensorType
-toLocalType(RankedTensorType globalType,
-            llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes) {
-  auto globalShape = globalType.getShape();
-  assert(globalShape.size() == partitioningAxes.size() &&
-         "global shape and partitioning axes must have the same rank");
-  llvm::SmallVector<int64_t> localShape;
-  localShape.reserve(globalShape.size());
-  for (size_t i = 0; i < globalShape.size(); ++i) {
-    int64_t globalDim = globalShape[i];
-    uint64_t extent = 1;
-    for (const auto &symbol : partitioningAxes[i]) {
-      extent *= symbol.getExtent();
-    }
-    assert(globalDim % extent == 0 &&
-           "global dimension must be divisible by partitioning extent");
-    localShape.push_back(globalDim / extent);
-  }
-  return RankedTensorType::get(localShape, globalType.getElementType());
-}
-
 struct MaterializeDistributedCollectivesPass
     : public impl::MaterializeDistributedCollectivesPassBase<
           MaterializeDistributedCollectivesPass> {
@@ -109,11 +87,10 @@ struct MaterializeDistributedCollectivesPass
                           *axisLoc, symbol.getExtent())
                       .getAxis();
     } else {
-      axisValue =
-          axisBuilder
-              ->create<mlir::enzyme::distributed::LogicalMeshAxesOp>(
-                  *axisLoc, symbol.getExtent())
-              .getAxis();
+      axisValue = axisBuilder
+                      ->create<mlir::enzyme::distributed::LogicalMeshAxesOp>(
+                          *axisLoc, symbol.getExtent())
+                      .getAxis();
     }
     auto asFactor = axis::viewAxisAsFactor(axisValue, *axisBuilder, *axisLoc);
     symbolToLogicalAxis[symbol] = asFactor;
@@ -288,6 +265,10 @@ struct MaterializeDistributedCollectivesPass
   std::vector<ShardConflict> collectShardConflicts(Block *mainBlock) {
     std::vector<ShardConflict> conflicts;
     for (Operation &op : mainBlock->getOperations()) {
+      // A localized call's results are bound by the cast that follows it.
+      if (isa<DistributedCallOp>(op)) {
+        continue;
+      }
       for (OpResult result : op.getResults()) {
         auto maybeProducerSharded = axisAnalysis.getTensorPartitionDims(result);
         if (!maybeProducerSharded) {
@@ -310,8 +291,8 @@ struct MaterializeDistributedCollectivesPass
             getOrSynthesizeOpShardingRule(result.getOwner());
         conflict.producerPartitioningAxes = producerPartitioningAxes;
         conflict.globalType = dyn_cast<RankedTensorType>(result.getType());
-        conflict.reductionAxes =
-            axisAnalysis.excludeUnshardable(axisAnalysis.getReductionAxes(result));
+        conflict.reductionAxes = axisAnalysis.excludeUnshardable(
+            axisAnalysis.getReductionAxes(result));
 
         for (OpOperand &use : result.getUses()) {
           auto maybeConsumerSharded = axisAnalysis.getTensorPartitionDims(use);
@@ -450,8 +431,8 @@ struct MaterializeDistributedCollectivesPass
         return failure();
       }
 
-      auto localType =
-          toLocalType(conflict.globalType, conflict.producerPartitioningAxes);
+      auto localType = getLocalTensorType(conflict.globalType,
+                                          conflict.producerPartitioningAxes);
       builder.setInsertionPointAfterValue(conflict.value);
       auto partitioningAxisGroups =
           getTensorPartitioningAxisGroups(conflict.producerPartitioningAxes);
@@ -558,7 +539,7 @@ struct MaterializeDistributedCollectivesPass
         }
 
         auto rhsLocalType =
-            toLocalType(conflict.globalType, *rhsPartitioningAxes);
+            getLocalTensorType(conflict.globalType, *rhsPartitioningAxes);
         auto rhsDims =
             toLocallyTypedAxisProduct(rhsLocalType, *rhsPartitioningAxes);
         auto rhsMesh = getMeshForTensorPartitioning(*rhsPartitioningAxes);
@@ -621,32 +602,53 @@ struct MaterializeDistributedCollectivesPass
     }
     axisAnalysis = mainAxisAnalysis.getAnalysis();
 
+    // Every analyzed function (main and its transitive callees) is
+    // materialized against the one shared analysis, so a callee's collectives
+    // are placed once no matter how many call sites reach it.
+    SmallVector<DistributedFunctionOp> functions;
+    for (Operation *func : axisAnalysis.getAnalyzedFunctions()) {
+      auto distributedFunction = dyn_cast<DistributedFunctionOp>(func);
+      if (!distributedFunction) {
+        func->emitError() << "expected a distributed function";
+        signalPassFailure();
+        return;
+      }
+      functions.push_back(distributedFunction);
+    }
+
     // Dump before any rewriting below, so the output reflects analysis of
     // Shardy IR and remains available even if a later step fails.
-    if (dumpValueAxes) {
-      distributed::dumpValueAxes(llvm::errs(), mainBlock, axisAnalysis);
-    }
-    if (dumpOperationAxes) {
-      distributed::dumpOperationAxes(llvm::errs(), mainBlock, axisAnalysis);
-    }
-
-    auto distributedFunction = dyn_cast<DistributedFunctionOp>(mainScopeOp);
-    if (!distributedFunction ||
-        failed(seedLogicalAxesFromFunction(distributedFunction))) {
-      signalPassFailure();
-      return;
+    for (DistributedFunctionOp function : functions) {
+      if (dumpValueAxes) {
+        distributed::dumpValueAxes(llvm::errs(), &function.getBody().front(),
+                                   axisAnalysis);
+      }
+      if (dumpOperationAxes) {
+        distributed::dumpOperationAxes(
+            llvm::errs(), &function.getBody().front(), axisAnalysis);
+      }
     }
 
-    removeExistingReshards(mainScopeOp);
-    std::vector<ShardConflict> conflicts = collectShardConflicts(mainBlock);
-
-    if (failed(materializeCollectivesForReductions(moduleOp, conflicts))) {
-      signalPassFailure();
-      return;
+    for (DistributedFunctionOp function : functions) {
+      if (failed(seedLogicalAxesFromFunction(function))) {
+        signalPassFailure();
+        return;
+      }
     }
-    if (failed(materializeCollectivesForConflicts(moduleOp, conflicts))) {
-      signalPassFailure();
-      return;
+
+    for (DistributedFunctionOp function : functions) {
+      removeExistingReshards(function);
+      std::vector<ShardConflict> conflicts =
+          collectShardConflicts(&function.getBody().front());
+
+      if (failed(materializeCollectivesForReductions(moduleOp, conflicts))) {
+        signalPassFailure();
+        return;
+      }
+      if (failed(materializeCollectivesForConflicts(moduleOp, conflicts))) {
+        signalPassFailure();
+        return;
+      }
     }
 
     // Explicit tensor view casts retain the logical-axis basis across this

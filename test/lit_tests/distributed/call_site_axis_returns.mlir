@@ -14,6 +14,9 @@
 // CHECK-NEXT: %1 : {{\[}}[[P0]]{{\]}} {{\[}}[[P1]]{{\]}}
 // CHECK-NEXT: %2 : {{\[}}[[P0]]{{\]}} {{\[}}[[P1]]{{\]}}
 // CHECK-NEXT: %3 : {{\[}}[[P0]]{{\]}} {{\[}}[[P1]]{{\]}}
+// CHECK: ===== Logical Axes per Value =====
+// CHECK-NEXT: %arg0 : {{\[}}[[P0]]{{\]}} {{\[}}[[P1]]{{\]}}
+// CHECK-NEXT: ===== End Logical Axes per Value =====
 module @passthrough {
   sdy.mesh @mesh = <["x"=2]>
 
@@ -46,6 +49,19 @@ module @passthrough {
 // CHECK-NEXT: %arg3 : {{\[}}[[A]]{{\]}} {{\[}}[[H]]{{\]}}
 // CHECK-NEXT: %arg4 : {{\[}}[[H]]{{\]}} {{\[}}[[A]]{{\]}}
 // CHECK-NEXT: %0 : {{\[}}[[H]]{{\]}}
+// CHECK-NEXT: %1 : {{\[}}[[H]]{{\]}}
+// The callees share the caller's axes: @outer forwards @mlp's result, so both
+// carry the same result axis.
+// CHECK: ===== Logical Axes per Value =====
+// CHECK-NEXT: %arg0 : {{\[}}[[H]]{{\]}}
+// CHECK-NEXT: %arg1 : {{\[}}[[A]]{{\]}} {{\[}}[[H]]{{\]}}
+// CHECK-NEXT: %arg2 : {{\[}}[[H]]{{\]}} {{\[}}[[A]]{{\]}}
+// CHECK-NEXT: %0 : {{\[}}[[H]]{{\]}}
+// CHECK: ===== Logical Axes per Value =====
+// CHECK-NEXT: %arg0 : {{\[}}[[H]]{{\]}}
+// CHECK-NEXT: %arg1 : {{\[}}[[A]]{{\]}} {{\[}}[[H]]{{\]}}
+// CHECK-NEXT: %arg2 : {{\[}}[[H]]{{\]}} {{\[}}[[A]]{{\]}}
+// CHECK-NEXT: %0 : {{\[}}[[A]]{{\]}}
 // CHECK-NEXT: %1 : {{\[}}[[H]]{{\]}}
 module @nested {
   sdy.mesh @mesh = <["x"=2]>

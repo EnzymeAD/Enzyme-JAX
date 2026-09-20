@@ -65,27 +65,6 @@ dumpLogicalAxesForMainBlock(Block *mainBlock,
   }
 }
 
-mlir::RankedTensorType
-toLocalType(mlir::RankedTensorType globalType,
-            llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes) {
-  auto globalShape = globalType.getShape();
-  assert(globalShape.size() == partitioningAxes.size() &&
-         "global shape and partitioning axes must have the same rank");
-  llvm::SmallVector<int64_t> localShape;
-  localShape.reserve(globalShape.size());
-  for (size_t i = 0; i < globalShape.size(); ++i) {
-    int64_t globalDim = globalShape[i];
-    uint64_t extent = 1;
-    for (const auto &symbol : partitioningAxes[i]) {
-      extent *= symbol.getExtent();
-    }
-    assert(globalDim % extent == 0 &&
-           "global dimension must be divisible by partitioning extent");
-    localShape.push_back(globalDim / extent);
-  }
-  return mlir::RankedTensorType::get(localShape, globalType.getElementType());
-}
-
 using TensorPartitioningAxes =
     ShardyLogicalAxisAnalysis::SymbolsPerPartitioningAxis;
 
@@ -96,7 +75,7 @@ static Type getLocalTypeForValue(
   if (!rankedType) {
     return value.getType();
   }
-  return toLocalType(rankedType, partitioningAxes);
+  return getLocalTensorType(rankedType, partitioningAxes);
 }
 
 static std::optional<TensorPartitioningAxes>
@@ -241,10 +220,11 @@ static bool reachesColor(Operation *start, int64_t colorId, bool upstream,
 // runs per candidate per sweep. This pass runs once per compilation, so this
 // is not optimized; an incremental reachability structure over the contracted
 // graph would make it near-linear.
-static bool wouldCloseKernelCycle(
-    Operation *candidate, const ColorState &color, Block *block,
-    const llvm::DenseMap<Operation *, int64_t> &opToColor,
-    llvm::ArrayRef<ColorState> colors) {
+static bool
+wouldCloseKernelCycle(Operation *candidate, const ColorState &color,
+                      Block *block,
+                      const llvm::DenseMap<Operation *, int64_t> &opToColor,
+                      llvm::ArrayRef<ColorState> colors) {
   auto isExternal = [&](Operation *op) {
     auto it = opToColor.find(op);
     return it == opToColor.end() || it->second != color.id;
@@ -302,17 +282,15 @@ struct ClusterDistributedKernelsPass
     // then turn it into a factor.
     Value axisValue;
     if (axisAnalysis.isUnshardable(symbol)) {
-      axisValue =
-          axis_builder
-              ->create<mlir::enzyme::distributed::DeviceLocalAxisOp>(
-                  *axis_loc, symbol.getExtent())
-              .getAxis();
+      axisValue = axis_builder
+                      ->create<mlir::enzyme::distributed::DeviceLocalAxisOp>(
+                          *axis_loc, symbol.getExtent())
+                      .getAxis();
     } else {
-      axisValue =
-          axis_builder
-              ->create<mlir::enzyme::distributed::LogicalMeshAxesOp>(
-                  *axis_loc, symbol.getExtent())
-              .getAxis();
+      axisValue = axis_builder
+                      ->create<mlir::enzyme::distributed::LogicalMeshAxesOp>(
+                          *axis_loc, symbol.getExtent())
+                      .getAxis();
     }
     auto as_factor =
         axis::viewAxisAsFactor(axisValue, *axis_builder, *axis_loc);
@@ -419,9 +397,9 @@ struct ClusterDistributedKernelsPass
     auto isClusterableOp = [](Operation *op) {
       // Keep communication and control/meta ops outside kernels.
       if (isa<DistributedCollectiveOp, DistributedAwait, DistributedYieldOp,
-              DistributedKernelOp, UnrealizedConversionCastOp,
-              DistributedCastGlobalToLocalOp, DistributedCastLocalToGlobalOp,
-              AnchorPartitioningOp>(op)) {
+              DistributedCallOp, DistributedKernelOp,
+              UnrealizedConversionCastOp, DistributedCastGlobalToLocalOp,
+              DistributedCastLocalToGlobalOp, AnchorPartitioningOp>(op)) {
         return false;
       }
 
@@ -706,8 +684,8 @@ struct ClusterDistributedKernelsPass
         auto maybePartitioning =
             getPartitioningForValueOrCastNeighborhood(input, axisAnalysis);
         if (!maybePartitioning) {
-          maybePartitioning =
-              axisAnalysis.getTensorPartitionDims(*representativeInputUse[input]);
+          maybePartitioning = axisAnalysis.getTensorPartitionDims(
+              *representativeInputUse[input]);
         }
 
         if (!maybePartitioning && isa<RankedTensorType>(input.getType())) {
@@ -1004,24 +982,28 @@ struct ClusterDistributedKernelsPass
     }
     axisAnalysis = mainAxisAnalysis.getAnalysis();
 
-    if (dumpLogicalAxes) {
-      dumpLogicalAxesForMainBlock(mainBlock, axisAnalysis);
-    }
+    // Each function body is clustered independently against the one shared
+    // analysis. A call stays outside every kernel, so a callee's kernels are
+    // formed once however many call sites reach it.
+    for (Operation *function : axisAnalysis.getAnalyzedFunctions()) {
+      Block *block = &function->getRegion(0).front();
+      if (dumpLogicalAxes) {
+        dumpLogicalAxesForMainBlock(block, axisAnalysis);
+      }
 
-    // need partial order to help clustering: need to ensure that nothing
-    // outside a kernel sits topologically between any part of a kernel.
-    auto &order_analysis =
-        getAnalysis<MainFunctionSSABlockPartialOrderAnalysis>();
-    if (!order_analysis.isValid()) {
-      emitError(module_op.getLoc())
-          << "failed to build module-scoped main SSA partial order analysis";
-      signalPassFailure();
-      return;
-    }
-    auto &order = order_analysis.getPartialOrder();
-    if (failed(clusterOpsIntoKernels(mainBlock, order, axisAnalysis))) {
-      signalPassFailure();
-      return;
+      // need partial order to help clustering: need to ensure that nothing
+      // outside a kernel sits topologically between any part of a kernel.
+      SSABlockPartialOrderAnalysis orderAnalysis(function);
+      if (!orderAnalysis.isValid()) {
+        function->emitError() << "failed to build SSA partial order analysis";
+        signalPassFailure();
+        return;
+      }
+      if (failed(clusterOpsIntoKernels(block, orderAnalysis.getPartialOrder(),
+                                       axisAnalysis))) {
+        signalPassFailure();
+        return;
+      }
     }
   }
 };

@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Pass/AnalysisManager.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/MainFunctionAnalysis.h"
@@ -221,6 +222,12 @@ public:
   Value getLogicalAxis(AxisSymbol symbol) const;
   // Redirects analysis bookkeeping from one op to another after a rewrite.
   void markRewrite(Operation *from, Operation *to);
+
+  // The analyzed function-like ops: sdy_func first, then its transitive
+  // callees.
+  llvm::ArrayRef<Operation *> getAnalyzedFunctions() const {
+    return analyzedFuncs;
+  }
   /**
    * Returns the set of symbols that an op result
    * needs to be reduced over to produce the correct
@@ -289,7 +296,17 @@ private:
   void buildTensorLocalSymbols(Operation *op,
                                mlir::sdy::OpShardingRuleAttr shardingRule);
   void buildInitialSymbolsFor(Operation *func);
-  void buildUnionFor(Operation *func);
+  // The symbol anchored to a frozen SSA axis factor, created on first use.
+  std::optional<AxisSymbol>
+  getOrCreateSymbolForFactor(mlir::TypedValue<axis::AxisFactorType> factor);
+  // A converted function argument's axes, recovered from the function's own
+  // sharding metadata. Empty for a function that is not yet converted.
+  std::optional<TensorAxesToPartitionAxes>
+  getFrozenArgumentAxes(Operation *func, mlir::BlockArgument arg);
+  // Merges the producer-to-consumer edges within `func`'s body. Call
+  // boundary edges (operand to call, call result to its uses) are handled
+  // only when `boundaryEdges` is true, and all other edges only when false.
+  void buildUnionFor(Operation *func, bool boundaryEdges);
   void validateLogicalAxisAssignments();
   // Internal implementation for either a producer (lhs) or consumer (rhs) of a
   // tensor. Three versions: one for a generic op, which may or may not
@@ -309,7 +326,7 @@ private:
   // Callee-side view of a func.call: the argument (consumer) or return operand
   // (producer) whose symbols the call boundary shares.
   std::optional<TensorAxesToPartitionAxes>
-  getTensorPartitionDimsForCall(func::CallOp call, bool isLHS, int valueIdx);
+  getTensorPartitionDimsForCall(CallOpInterface call, bool isLHS, int valueIdx);
 };
 
 // Module-scoped wrapper that materializes ShardyLogicalAxisAnalysis for
@@ -353,6 +370,12 @@ void dumpValueAxes(llvm::raw_ostream &os, Block *block,
 // %ax3]`.
 void dumpOperationAxes(llvm::raw_ostream &os, Block *block,
                        ShardyLogicalAxisAnalysis &axisAnalysis);
+
+// The per-device type of a global tensor: each dimension divided by the
+// product of its partitioning axes' extents.
+mlir::RankedTensorType getLocalTensorType(
+    mlir::RankedTensorType globalType,
+    llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes);
 
 } // namespace mlir::enzyme::distributed
 

@@ -116,7 +116,10 @@ filterOutReplicationFactors(
 
 OpShardingRuleAndReductionKind
 getOrSynthesizeOpShardingRule(::mlir::Operation *op) {
-  if (!op) {
+  // Calls and local/global boundary ops (casts, anchors, kernels) have no
+  // rule of their own: their axes are carried explicitly, or come from the
+  // callee.
+  if (!op || isa<::mlir::CallOpInterface, PartitioningAnchorOpInterface>(op)) {
     return {};
   }
 

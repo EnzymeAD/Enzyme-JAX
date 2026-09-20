@@ -5,6 +5,7 @@
 
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/AnalysisManager.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
@@ -309,10 +310,9 @@ void SymbolFactorMerge::attemptMergeSymbols(llvm::ArrayRef<AxisSymbol> a,
     // mismatch reaching here is an invariant violation elsewhere in the
     // analysis, not a case this rejection is meant to paper over.
     assert((llvm::any_of(lhs_factors,
-                          [this](AxisSymbol s) { return isUnshardable(s); }) ||
-            llvm::any_of(
-                rhs_factors,
-                [this](AxisSymbol s) { return isUnshardable(s); })) &&
+                         [this](AxisSymbol s) { return isUnshardable(s); }) ||
+            llvm::any_of(rhs_factors,
+                         [this](AxisSymbol s) { return isUnshardable(s); })) &&
            "extent mismatch on a mergeable factor pair should only occur "
            "via a permutation-tagged (unshardable) factor");
     return;
@@ -386,12 +386,13 @@ void SymbolFactorMerge::attemptMergeSymbols(llvm::ArrayRef<AxisSymbol> a,
   }
 }
 
-static func::FuncOp resolveCallee(func::CallOp call) {
-  auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
-      call, call.getCalleeAttr());
-  assert(callee && !callee.isExternal() &&
-         "axis analysis requires every call to target a function with a body");
-  assert(callee.getBody().hasOneBlock() &&
+// Resolves a call to its callee function-like op (a func.func before
+// conversion, a distributed.DistributedFunction after).
+static Operation *resolveCallee(CallOpInterface call) {
+  Operation *callee = call.resolveCallable();
+  assert(callee && isa<FunctionOpInterface>(callee) &&
+         "axis analysis requires every call to target a function");
+  assert(callee->getRegion(0).hasOneBlock() &&
          "axis analysis currently only supports single-block callees");
   return callee;
 }
@@ -429,6 +430,27 @@ bool structurallyEqual(sdy::DimensionShardingAttr a,
   return true;
 }
 
+RankedTensorType getLocalTensorType(
+    RankedTensorType globalType,
+    llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes) {
+  auto globalShape = globalType.getShape();
+  assert(globalShape.size() == partitioningAxes.size() &&
+         "global shape and partitioning axes must have the same rank");
+  llvm::SmallVector<int64_t> localShape;
+  localShape.reserve(globalShape.size());
+  for (size_t i = 0; i < globalShape.size(); ++i) {
+    int64_t globalDim = globalShape[i];
+    uint64_t extent = 1;
+    for (const auto &symbol : partitioningAxes[i]) {
+      extent *= symbol.getExtent();
+    }
+    assert(globalDim % extent == 0 &&
+           "global dimension must be divisible by partitioning extent");
+    localShape.push_back(globalDim / extent);
+  }
+  return RankedTensorType::get(localShape, globalType.getElementType());
+}
+
 ShardyLogicalAxisAnalysis::ShardyLogicalAxisAnalysis(Operation *sdy_func)
     : sdy_func(sdy_func) {
   assert(sdy_func && sdy_func->getNumRegions() == 1 &&
@@ -440,8 +462,13 @@ ShardyLogicalAxisAnalysis::ShardyLogicalAxisAnalysis(Operation *sdy_func)
   for (Operation *func : analyzedFuncs) {
     buildInitialSymbolsFor(func);
   }
-  for (Operation *func : analyzedFuncs) {
-    buildUnionFor(func);
+  // Call boundary edges merge first, across every function, so a shared
+  // callee's argument and return classes are settled before any interior
+  // edge can claim symbols that would make a call site's merge overlap.
+  for (bool boundaryEdges : {true, false}) {
+    for (Operation *func : analyzedFuncs) {
+      buildUnionFor(func, boundaryEdges);
+    }
   }
   validateLogicalAxisAssignments();
 }
@@ -456,7 +483,7 @@ void ShardyLogicalAxisAnalysis::collectAnalyzedFunctions() {
     }
     analyzedFuncs.push_back(func);
     Block &body = func->getRegion(0).front();
-    for (func::CallOp call : body.getOps<func::CallOp>()) {
+    for (CallOpInterface call : body.getOps<CallOpInterface>()) {
       worklist.push_back(resolveCallee(call));
     }
   }
@@ -689,6 +716,24 @@ Value ShardyLogicalAxisAnalysis::getLogicalAxis(AxisSymbol symbol) const {
   return it == logicalAxisToFactor.end() ? Value() : it->second;
 }
 
+std::optional<AxisSymbol> ShardyLogicalAxisAnalysis::getOrCreateSymbolForFactor(
+    TypedValue<axis::AxisFactorType> factor) {
+  auto factorIt = factorToLogicalAxis.find(factor);
+  if (factorIt != factorToLogicalAxis.end()) {
+    return factorIt->second;
+  }
+  AxisSymbol symbol = AxisSymbol::create(factor.getType().getExtent());
+  if (failed(assignLogicalAxis(symbol, factor))) {
+    return std::nullopt;
+  }
+  // A device-local axis is one that is never sharded across the mesh, which
+  // is what an unshardable symbol is materialized as.
+  if (isa<DeviceLocalAxisType>(factor.getType().getAxisType())) {
+    symbolFactorMerge.markUnshardable({symbol});
+  }
+  return factorToLogicalAxis.find(factor)->second;
+}
+
 std::optional<ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes>
 ShardyLogicalAxisAnalysis::getTensorPartitionDimsFromPartitioningAxes(
     Operation *op) {
@@ -721,20 +766,11 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDimsFromPartitioningAxes(
     SmallVector<AxisSymbol> dimensionSymbols;
     dimensionSymbols.reserve(factors->size());
     for (TypedValue<axis::AxisFactorType> factor : *factors) {
-      auto factorIt = factorToLogicalAxis.find(factor);
-      if (factorIt == factorToLogicalAxis.end()) {
-        AxisSymbol symbol = AxisSymbol::create(factor.getType().getExtent());
-        if (failed(assignLogicalAxis(symbol, factor))) {
-          return std::nullopt;
-        }
-        // A device-local axis is one that is never sharded across the mesh,
-        // which is what an unshardable symbol is materialized as.
-        if (isa<DeviceLocalAxisType>(factor.getType().getAxisType())) {
-          symbolFactorMerge.markUnshardable({symbol});
-        }
-        factorIt = factorToLogicalAxis.find(factor);
+      std::optional<AxisSymbol> symbol = getOrCreateSymbolForFactor(factor);
+      if (!symbol) {
+        return std::nullopt;
       }
-      dimensionSymbols.push_back(factorIt->second);
+      dimensionSymbols.push_back(*symbol);
     }
     mapping.push_back(symbolFactorMerge.resolve(dimensionSymbols));
   }
@@ -790,6 +826,38 @@ void ShardyLogicalAxisAnalysis::buildTensorLocalSymbols(
         resultLocalSymbols);
 }
 
+std::optional<ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes>
+ShardyLogicalAxisAnalysis::getFrozenArgumentAxes(Operation *func,
+                                                 BlockArgument arg) {
+  auto function = dyn_cast<DistributedFunctionOp>(func);
+  if (!function) {
+    return std::nullopt;
+  }
+  IndexedTensorShardingAttr sharding =
+      function.getArgumentShardings().getShardings()[arg.getArgNumber()];
+  TensorAxesToPartitionAxes dims;
+  for (DenseI64ArrayAttr dimAxes : sharding.getDimPartitioningAxes()) {
+    SmallVector<AxisSymbol> dimSymbols;
+    for (int64_t idx : dimAxes.asArrayRef()) {
+      auto factorGroup = cast<TypedValue<axis::FactorGroupType>>(
+          function.getPartitioningAxes()[idx]);
+      auto factors = axis::getProductProvenanceFactors(factorGroup);
+      if (failed(factors)) {
+        return std::nullopt;
+      }
+      for (TypedValue<axis::AxisFactorType> factor : *factors) {
+        std::optional<AxisSymbol> symbol = getOrCreateSymbolForFactor(factor);
+        if (!symbol) {
+          return std::nullopt;
+        }
+        dimSymbols.push_back(*symbol);
+      }
+    }
+    dims.push_back(symbolFactorMerge.resolve(dimSymbols));
+  }
+  return dims;
+}
+
 void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
   // For each tensor argument, add a partitioning dimension per
   // tensor axis.
@@ -797,6 +865,14 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
   for (BlockArgument arg : bodyBlock.getArguments()) {
     auto tensorType = dyn_cast_or_null<RankedTensorType>(arg.getType());
     if (!tensorType) {
+      continue;
+    }
+
+    // A converted function's axes are already frozen in its metadata, so its
+    // arguments start from exactly those factors, as a cast's would.
+    if (auto anchored = getFrozenArgumentAxes(func, arg)) {
+      symbolFactorMerge.markOverlapping(flattenNested(*anchored));
+      argToPartitioningAxes[arg] = std::move(*anchored);
       continue;
     }
 
@@ -890,7 +966,7 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
         continue;
       }
       symbolFactorMerge.markOverlapping(flattenNested(*mapping));
-    } else if (isa<func::CallOp>(op)) {
+    } else if (isa<CallOpInterface>(op)) {
       // A call has no symbols of its own: it shares its callee's argument and
       // return symbols (see getTensorPartitionDimsForCall).
     } else if (sdy::OpShardingRuleAttr sharding_rule =
@@ -999,7 +1075,12 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(Operation *op, bool isLHS,
   if (auto reshard_op = toCollective(op)) {
     return getTensorPartitionDims(reshard_op, isLHS, valueIdx);
   }
-  if (auto call = dyn_cast<func::CallOp>(op)) {
+  // A localized call is a local/global boundary like a kernel: its axes are
+  // carried by the casts around it, so the call itself has no mapping.
+  if (isa<DistributedCallOp>(op)) {
+    return std::nullopt;
+  }
+  if (auto call = dyn_cast<CallOpInterface>(op)) {
     return getTensorPartitionDimsForCall(call, isLHS, valueIdx);
   }
 
@@ -1012,15 +1093,14 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(Operation *op, bool isLHS,
 }
 
 std::optional<ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes>
-ShardyLogicalAxisAnalysis::getTensorPartitionDimsForCall(func::CallOp call,
+ShardyLogicalAxisAnalysis::getTensorPartitionDimsForCall(CallOpInterface call,
                                                          bool isLHS,
                                                          int valueIdx) {
-  Block &calleeBody = resolveCallee(call).getBody().front();
+  Block &calleeBody = resolveCallee(call)->getRegion(0).front();
   if (!isLHS) {
     return getTensorPartitionDims(calleeBody.getArgument(valueIdx));
   }
-  Value returned =
-      cast<func::ReturnOp>(calleeBody.getTerminator()).getOperand(valueIdx);
+  Value returned = calleeBody.getTerminator()->getOperand(valueIdx);
   if (auto arg = dyn_cast<BlockArgument>(returned)) {
     return getTensorPartitionDims(arg);
   }
@@ -1095,10 +1175,16 @@ void ShardyLogicalAxisAnalysis::validateLogicalAxisAssignments() {
  * union-factor-find: we can never merge any symbols that are overlapping. This
  * rejection is located in the datastructure itself.
  */
-void ShardyLogicalAxisAnalysis::buildUnionFor(Operation *func) {
+void ShardyLogicalAxisAnalysis::buildUnionFor(Operation *func,
+                                              bool boundaryEdges) {
   auto mergeUses = [&](const TensorAxesToPartitionAxes &producerMapping,
-                       auto &&getUses) {
+                       Operation *producer, auto &&getUses) {
     for (OpOperand &use : getUses()) {
+      bool isBoundary = isa<CallOpInterface>(use.getOwner()) ||
+                        (producer && isa<CallOpInterface>(producer));
+      if (isBoundary != boundaryEdges) {
+        continue;
+      }
       auto maybeConsumerMapping = getTensorPartitionDims(use);
       if (!maybeConsumerMapping.has_value()) {
         continue;
@@ -1118,7 +1204,7 @@ void ShardyLogicalAxisAnalysis::buildUnionFor(Operation *func) {
     }
 
     const TensorAxesToPartitionAxes &producerMapping = it->second;
-    mergeUses(producerMapping, [&]() { return arg.getUses(); });
+    mergeUses(producerMapping, nullptr, [&]() { return arg.getUses(); });
   }
 
   for (Operation &opRef : bodyBlock.getOperations()) {
@@ -1129,7 +1215,7 @@ void ShardyLogicalAxisAnalysis::buildUnionFor(Operation *func) {
         continue;
       }
       TensorAxesToPartitionAxes producerMapping = maybeProducerMapping.value();
-      mergeUses(producerMapping, [&]() { return result.getUses(); });
+      mergeUses(producerMapping, op, [&]() { return result.getUses(); });
     }
   }
 } // end of buildUnionFor

@@ -291,14 +291,15 @@ singleValueBindingInfo(OpTy op, unsigned operandOrResultIndex) {
   return result;
 }
 
-// Shared PartitioningAnchorOpInterface implementation for DistributedKernelOp:
+// Shared PartitioningAnchorOpInterface implementation for DistributedKernelOp
+// and DistributedCallOp:
 // resolves `shardings`[valueIndex]'s dim_partitioning_axes (lists of indices
 // into the kernel's own shared partitioning_axes) into the actual
 // FactorGroupType values at those indices, one inner list per tensor
 // dimension.
+template <typename OpTy>
 static FailureOr<SmallVector<SmallVector<Value>>>
-kernelBindingInfo(DistributedKernelOp kernelOp,
-                  IndexedTensorShardingPerValueAttr shardings,
+kernelBindingInfo(OpTy kernelOp, IndexedTensorShardingPerValueAttr shardings,
                   unsigned valueIndex) {
   ArrayRef<IndexedTensorShardingAttr> perValue = shardings.getShardings();
   if (valueIndex >= perValue.size()) {
@@ -342,7 +343,7 @@ kernelBindingInfo(DistributedKernelOp kernelOp,
 // side's type but not the other), never a case this check should stay
 // silent about.
 static LogicalResult
-checkLocalGlobalBinding(DistributedKernelOp kernelOp, Value localValue,
+checkLocalGlobalBinding(Operation *kernelOp, Value localValue,
                         Type globalScopeType,
                         ArrayRef<SmallVector<Value>> binding, StringRef what) {
   auto localType = dyn_cast<RankedTensorType>(localValue.getType());
@@ -351,7 +352,7 @@ checkLocalGlobalBinding(DistributedKernelOp kernelOp, Value localValue,
     return success();
   }
   if (localType.getRank() != globalType.getRank()) {
-    return kernelOp.emitOpError()
+    return kernelOp->emitOpError()
            << what << "'s local-scope type " << localType
            << " and global-scope type " << globalType
            << " have different ranks -- partitioning can only divide an "
@@ -360,7 +361,7 @@ checkLocalGlobalBinding(DistributedKernelOp kernelOp, Value localValue,
               "keeping the other in sync";
   }
   if (static_cast<int64_t>(binding.size()) != localType.getRank()) {
-    return kernelOp.emitOpError()
+    return kernelOp->emitOpError()
            << what << "'s resolved binding has " << binding.size()
            << " dimension(s) but its local-scope type " << localType
            << " has rank " << localType.getRank();
@@ -392,7 +393,7 @@ checkLocalGlobalBinding(DistributedKernelOp kernelOp, Value localValue,
                 // this check's job to require anything.
     }
     if (globalDim != localDim * extent) {
-      return kernelOp.emitOpError()
+      return kernelOp->emitOpError()
              << what << " dimension " << dim << ": global-scope size ("
              << globalDim << ") does not equal local-scope size (" << localDim
              << ") times its declared partitioning extent (" << extent << ")";
@@ -436,6 +437,93 @@ LogicalResult DistributedFunctionOp::verify() {
     return failure();
   }
   return success();
+}
+
+LogicalResult DistributedCallOp::verify() {
+  int64_t partitioningAxisCount =
+      static_cast<int64_t>(getPartitioningAxes().size());
+
+  SmallVector<int64_t> argumentDimCounts;
+  for (Value argument : getArguments()) {
+    FailureOr<int64_t> dimCount = getValueDimensionCount(argument.getType());
+    if (failed(dimCount)) {
+      return emitOpError() << "failed to compute argument dimension counts";
+    }
+    argumentDimCounts.push_back(*dimCount);
+  }
+  SmallVector<int64_t> outputDimCounts;
+  for (Type resultType : getResultTypes()) {
+    FailureOr<int64_t> dimCount = getValueDimensionCount(resultType);
+    if (failed(dimCount)) {
+      return emitOpError() << "failed to compute result dimension counts";
+    }
+    outputDimCounts.push_back(*dimCount);
+  }
+
+  if (failed(verifyIndexedShardingPerValueAgainstDimensionRanges(
+          getOperation(), getArgumentShardings(), argumentDimCounts,
+          "argument_shardings", partitioningAxisCount)) ||
+      failed(verifyIndexedShardingPerValueAgainstDimensionRanges(
+          getOperation(), getOutputShardings(), outputDimCounts,
+          "output_shardings", partitioningAxisCount)) ||
+      failed(verifyIndexedShardingPerValueHasNoUnreducedAxes(
+          getOperation(), getArgumentShardings(), "argument_shardings"))) {
+    return failure();
+  }
+  return success();
+}
+
+LogicalResult
+DistributedCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  auto callee = symbolTable.lookupNearestSymbolFrom<DistributedFunctionOp>(
+      *this, getCalleeAttr());
+  if (!callee) {
+    return emitOpError() << "'" << getCallee()
+                         << "' does not reference a distributed function";
+  }
+  FunctionType type = callee.getFunctionType();
+  if (type.getNumInputs() != getArguments().size() ||
+      type.getNumResults() != getNumResults()) {
+    return emitOpError() << "operand and result counts must match the "
+                            "signature of '"
+                         << getCallee() << "'";
+  }
+
+  // The callee's signature is at global scope: each local operand/result must
+  // relate to it through this call's declared partitioning axes.
+  for (auto [idx, arg] : llvm::enumerate(getArguments())) {
+    auto binding = getBindingInfoForOperand(getOperation()->getOpOperand(idx));
+    if (failed(binding)) {
+      continue;
+    }
+    if (failed(checkLocalGlobalBinding(getOperation(), arg, type.getInput(idx),
+                                       *binding, "operand"))) {
+      return failure();
+    }
+  }
+  for (auto [idx, result] : llvm::enumerate(getResults())) {
+    auto binding = getBindingInfoForResult(cast<OpResult>(result));
+    if (failed(binding)) {
+      continue;
+    }
+    if (failed(checkLocalGlobalBinding(
+            getOperation(), result, type.getResult(idx), *binding, "result"))) {
+      return failure();
+    }
+  }
+  return success();
+}
+
+FailureOr<SmallVector<SmallVector<Value>>>
+DistributedCallOp::getBindingInfoForOperand(OpOperand &operand) {
+  return kernelBindingInfo(*this, getArgumentShardings(),
+                           operand.getOperandNumber());
+}
+
+FailureOr<SmallVector<SmallVector<Value>>>
+DistributedCallOp::getBindingInfoForResult(OpResult result) {
+  return kernelBindingInfo(*this, getOutputShardings(),
+                           result.getResultNumber());
 }
 
 LogicalResult DistributedKernelOp::verify() {

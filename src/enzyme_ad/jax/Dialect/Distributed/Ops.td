@@ -4,6 +4,7 @@
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/RegionKindInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
+include "mlir/Interfaces/CallInterfaces.td"
 include "mlir/Interfaces/FunctionInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "stablehlo/dialect/Base.td"
@@ -137,6 +138,51 @@ def DistributedFunctionOp : DistributedOp<"DistributedFunction", [
 
     ::mlir::ArrayRef<::mlir::Type> getResultTypes() {
       return getFunctionType().getResults();
+    }
+  }];
+}
+
+def DistributedCallOp : DistributedOp<"DistributedCall", [
+  CallOpInterface,
+  DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+  DeclareOpInterfaceMethods<PartitioningAnchorOpInterface>,
+  AttrSizedOperandSegments
+]> {
+  let description = [{
+    Calls a distributed.DistributedFunction. Like DistributedKernelOp, this op
+    is the local/global boundary: $arguments/$returns are at LOCAL (per-device
+    shard) scope, while the callee's block arguments and yielded values are at
+    GLOBAL (full-tensor) scope. Each corresponding pair must differ by exactly
+    the product of that dimension's declared partitioning-axis factor extents.
+
+    Each partitioning_axes operand is one logical axis; the indexed shardings
+    refer to this ordered list, exactly as in DistributedKernelOp. Every call
+    site of one callee names the same axes, since the callee's own argument
+    and result shardings are shared by all of them.
+
+    A call is never part of a kernel, so any communication needed to reach the
+    callee's argument shardings stays visible in the caller.
+  }];
+  let arguments = (ins FlatSymbolRefAttr:$callee,
+                       Variadic<AnyType>:$arguments,
+                       Variadic<FactorGroupType>:$partitioning_axes,
+                       IndexedTensorShardingPerValueAttr:$argument_shardings,
+                       IndexedTensorShardingPerValueAttr:$output_shardings,
+                       OptionalAttr<DictArrayAttr>:$arg_attrs,
+                       OptionalAttr<DictArrayAttr>:$res_attrs);
+  let results = (outs Variadic<AnyType>:$returns);
+  let hasVerifier = 1;
+  let assemblyFormat = [{$callee custom<VariadicWithTypes>($arguments, type($arguments)) $argument_shardings `\n` ` ` ` ` `->` custom<ParenTypes>(type($returns)) $output_shardings `\n` ` ` ` ` `axes` custom<VariadicWithTypes>($partitioning_axes, type($partitioning_axes)) attr-dict}];
+  let extraClassDeclaration = [{
+    ::mlir::CallInterfaceCallable getCallableForCallee() {
+      return (*this)->getAttrOfType<::mlir::SymbolRefAttr>("callee");
+    }
+    void setCalleeFromCallable(::mlir::CallInterfaceCallable callee) {
+      (*this)->setAttr("callee", ::llvm::cast<::mlir::SymbolRefAttr>(callee));
+    }
+    ::mlir::Operation::operand_range getArgOperands() { return getArguments(); }
+    ::mlir::MutableOperandRange getArgOperandsMutable() {
+      return getArgumentsMutable();
     }
   }];
 }
