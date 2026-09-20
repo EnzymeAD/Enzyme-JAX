@@ -443,3 +443,72 @@ module {
     distributed.DistributedYield (%out : tensor<4xf32>)
   }) : (!axis.factor_group<4>) -> ()
 }
+
+// -----
+
+// A replicated (extent-1 cast) result returned straight from a collective:
+// the return has no CastLocalToGlobal, so the per-device result has to be
+// flattened to device 0's copy for the function's result.
+// CHECK-LABEL: func.func @main
+// CHECK: stablehlo.reduce
+// CHECK: stablehlo.slice
+// CHECK: return
+module {
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<3, 1>]
+  %0 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<3, 1>
+  %1 = axis.factor %0 : !distributed.physical_comm_axis<3, 1><3, 1>
+  %2 = axis.product (%1 : !axis.axis_factor<!distributed.physical_comm_axis<3, 1>, 3, 1>)
+  %3 = axis.product ()
+  %4 = axis.getaxis tensor<2xf32> 0
+  %5 = axis.factor %4 : !axis.shape_axis<tensor<2xf32>, 0><2, 1>
+  %6 = axis.product (%5 : !axis.axis_factor<!axis.shape_axis<tensor<2xf32>, 0>, 2, 1>)
+  %7 = axis.factor %4 : !axis.shape_axis<tensor<2xf32>, 0><2, 1>
+  %8 = axis.product (%7 : !axis.axis_factor<!axis.shape_axis<tensor<2xf32>, 0>, 2, 1>)
+  %9 = axis.map %6 to %8 : [!axis.factor_group<2>] [!axis.factor_group<2>]
+  %10 = axis.product (%1 : !axis.axis_factor<!distributed.physical_comm_axis<3, 1>, 3, 1>)
+  "distributed.DistributedFunction"(%2) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>, function_type = (tensor<6xf32>) -> tensor<2xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "main"}> ({
+  ^bb0(%arg0: tensor<6xf32>):
+    %11 = distributed.CastGlobalToLocal %arg0 axes (%2 : !axis.factor_group<3>) : tensor<6xf32> -> tensor<2xf32>
+    %12 = distributed.Collective %11 : tensor<2xf32> on %2 : <3> to tensor<2xf32> on %3 : <1> reduces (%10 : !axis.factor_group<3>) maps %9 : !axis.map {
+    ^bb0(%arg1: tensor<f32>, %arg2: tensor<f32>):
+      %14 = stablehlo.add %arg1, %arg2 : tensor<f32>
+      stablehlo.return %14 : tensor<f32>
+    }
+    %13 = distributed.Await %12 : <tensor<2xf32>> -> tensor<2xf32>
+    distributed.DistributedYield (%13 : tensor<2xf32>)
+  }) : (!axis.factor_group<3>) -> ()
+}
+
+
+// -----
+
+// A replicated function argument feeding a collective directly, with no
+// cast around it: it is broadcast to every mesh coordinate first.
+// CHECK-LABEL: func.func @main
+// CHECK: stablehlo.broadcast_in_dim
+// CHECK: return
+module {
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
+  %0 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 1>
+  %1 = axis.factor %0 : !distributed.physical_comm_axis<2, 1><2, 1>
+  %2 = axis.product (%1 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %3 = axis.product ()
+  %4 = axis.getaxis tensor<4xf32> 0
+  %5 = axis.factor %4 : !axis.shape_axis<tensor<4xf32>, 0><2, 2>
+  %6 = axis.product (%5 : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 2, 2>)
+  %7 = axis.product (%1 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %8 = axis.factor %4 : !axis.shape_axis<tensor<4xf32>, 0><2, 1>
+  %9 = axis.product (%8 : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 2, 1>)
+  %10 = axis.getaxis tensor<2xf32> 0
+  %11 = axis.factor %10 : !axis.shape_axis<tensor<2xf32>, 0><2, 1>
+  %12 = axis.product (%11 : !axis.axis_factor<!axis.shape_axis<tensor<2xf32>, 0>, 2, 1>)
+  %13 = axis.map %6, %9 to %7, %12 : [!axis.factor_group<2>, !axis.factor_group<2>] [!axis.factor_group<2>, !axis.factor_group<2>]
+  "distributed.DistributedFunction"(%2) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, function_type = (tensor<4xf32>) -> tensor<4xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>, sym_name = "main"}> ({
+  ^bb0(%arg0: tensor<4xf32>):
+    %14 = distributed.Collective %arg0 : tensor<4xf32> on %3 : <1> to tensor<2xf32> on %2 : <2> reduces () maps %13 : !axis.map 
+    %15 = distributed.Await %14 : <tensor<2xf32>> -> tensor<2xf32>
+    %16 = distributed.CastLocalToGlobal %15 axes (%2 : !axis.factor_group<2>) : tensor<2xf32> -> tensor<4xf32>
+    distributed.DistributedYield (%16 : tensor<4xf32>)
+  }) : (!axis.factor_group<2>) -> ()
+}
+

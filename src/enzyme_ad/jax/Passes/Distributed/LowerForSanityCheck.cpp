@@ -160,28 +160,6 @@ DistributedCastLocalToGlobalOp findBoundingCastLocalToGlobal(Value result) {
   return dyn_cast_or_null<DistributedCastLocalToGlobalOp>(soleUser);
 }
 
-// Same forward sole-consumer walk as findBoundingCastLocalToGlobal, but
-// checking whether `result` is instead consumed directly as a
-// DistributedCollectiveOp's own input_object. A collective needs genuinely
-// distinct per-mesh-coordinate values, so a result consumed this way needs
-// the expanded form just as a cast-bound one does. The usual kernel ->
-// collective edge has no cast at all, since it changes neither scope nor
-// shape.
-bool feedsCollectiveInputDirectly(Value result) {
-  Value cur = result;
-  while (true) {
-    if (!cur.hasOneUse())
-      return false;
-    Operation *user = *cur.getUsers().begin();
-    if (auto anchor = dyn_cast<AnchorPartitioningOp>(user)) {
-      cur = anchor.getOutput();
-      continue;
-    }
-    auto collective = dyn_cast<DistributedCollectiveOp>(user);
-    return collective && collective.getInputObject() == cur;
-  }
-}
-
 // Index spaces a collective's factors can slice. Mesh axes are shared by the
 // input and output; tensor dimensions differ between the input tile and the
 // output tile, so each side gets its own space. Every replicate factor is an
@@ -339,25 +317,96 @@ public:
       } else if (auto castOp = dyn_cast<DistributedCastGlobalToLocalOp>(&op)) {
         // Consumed lazily by whichever kernel/collective needs it -- see
         // getExpandedValue.
-        (void)castOp;
+        Value input = castOp.getInput();
+        while (auto anchor = input.getDefiningOp<AnchorPartitioningOp>())
+          input = anchor.getInput();
+        if (!isa<BlockArgument>(input))
+          warnInteriorCast(castOp);
       } else if (auto castOp = dyn_cast<DistributedCastLocalToGlobalOp>(&op)) {
-        (void)castOp;
+        Value cur = castOp.getOutput();
+        auto onlyReturned = [&](Value v) {
+          return llvm::all_of(v.getUsers(), [](Operation *user) {
+            return isa<DistributedYieldOp>(user);
+          });
+        };
+        while (cur.hasOneUse() && isa<AnchorPartitioningOp>(*cur.user_begin()))
+          cur = cast<AnchorPartitioningOp>(*cur.user_begin()).getOutput();
+        if (!onlyReturned(cur))
+          warnInteriorCast(castOp);
       } else if (auto anchor = dyn_cast<AnchorPartitioningOp>(&op)) {
         // Input/output are always identical (Ops.td's own doc comment);
         // just forward.
         mapper.map(anchor.getOutput(), mapper.lookupOrDefault(anchor.getInput()));
+        if (Value expanded = expandedOf.lookup(anchor.getInput()))
+          expandedOf[anchor.getOutput()] = expanded;
       } else if (auto collective = dyn_cast<DistributedCollectiveOp>(&op)) {
         lowerCollective(collective);
       } else if (isa<DistributedAwait>(&op)) {
         // Handled together with its producing Collective in lowerCollective.
         continue;
       } else {
+        for (Value operand : op.getOperands())
+          (void)getFlatValue(operand);
         builder.clone(op, mapper);
       }
     }
   }
 
-  IRMapping &getMapper() { return mapper; }
+  // Once every kernel is lowered, casts should only mark the function's own
+  // argument and result boundaries. One anywhere else means an earlier pass
+  // (call inlining, for one) left a scope marker behind. It is still lowered
+  // correctly, but is worth surfacing.
+  void warnInteriorCast(Operation *cast) {
+    cast->emitWarning()
+        << "scope cast inside the function body; after lowering, casts "
+           "should only appear at function argument and result boundaries";
+  }
+
+  // The flat (single-copy) value standing for `original`. A value produced
+  // per device with no bounding cast is flattened on first use by taking
+  // device 0's copy. That is the whole value only when it is replicated: a
+  // collective's mapping says whether its result is (deviceVaryingResults),
+  // and a kernel result without a cast is replicated by the earlier passes'
+  // construction, since a partitioning cast would otherwise remain.
+  Value getFlatValue(Value original) {
+    if (mapper.contains(original))
+      return mapper.lookup(original);
+    if (Value expanded = expandedOf.lookup(original)) {
+      if (deviceVaryingResults.contains(original)) {
+        fail(original.getDefiningOp(),
+             "a collective result that varies across the mesh is used at "
+             "global scope without a CastLocalToGlobal, so it has no single "
+             "flat value");
+        return nullptr;
+      }
+      auto flatType = cast<RankedTensorType>(original.getType());
+      auto expandedType = cast<RankedTensorType>(expanded.getType());
+      SmallVector<int64_t> limits(expandedType.getShape());
+      for (size_t a = 0; a < numMeshAxes(); ++a)
+        limits[a] = 1;
+      SmallVector<int64_t> starts(limits.size(), 0), strides(limits.size(), 1);
+      Value sliced = builder.create<stablehlo::SliceOp>(
+          original.getLoc(),
+          RankedTensorType::get(limits, expandedType.getElementType()),
+          expanded, starts, limits, strides);
+      Value flat = reshapeTo(sliced, flatType.getShape(), original.getLoc());
+      mapper.map(original, flat);
+      return flat;
+    }
+    return mapper.lookupOrDefault(original);
+  }
+
+  // Copies a flat value to every mesh coordinate: [meshExtents..., dims...].
+  Value broadcastToMesh(Value flat, Location loc) {
+    auto type = cast<RankedTensorType>(flat.getType());
+    SmallVector<int64_t> shape(meshExtents);
+    shape.append(type.getShape().begin(), type.getShape().end());
+    SmallVector<int64_t> dims;
+    for (int64_t i = 0; i < type.getRank(); ++i)
+      dims.push_back(numMeshAxes() + i);
+    return builder.create<stablehlo::BroadcastInDimOp>(
+        loc, RankedTensorType::get(shape, type.getElementType()), flat, dims);
+  }
 
 private:
   OpBuilder &builder;
@@ -369,6 +418,10 @@ private:
   // IR value. Memoized so the same partitioned value is only ever expanded
   // once no matter how many kernels/collectives consume it.
   DenseMap<Value, Value> expandedOf;
+  // Collective results that carry different data on different mesh
+  // coordinates, as decided by the collective's own mapping. Such a result
+  // has no single flat value (see getFlatValue).
+  DenseSet<Value> deviceVaryingResults;
   bool hasFailed = false;
 
   // Resolved per-operand/per-result state for one kernel's lowering; kept
@@ -382,9 +435,8 @@ private:
     CastPerDimInfo perDimSplits; // iff partitioned
   };
   struct ResultInfo {
-    bool partitioned;
-    DistributedCastLocalToGlobalOp castOp; // valid iff partitioned
-    CastPerDimInfo perDimSplits; // iff partitioned
+    DistributedCastLocalToGlobalOp castOp; // null if no cast bounds the result
+    CastPerDimInfo perDimSplits;           // iff castOp
   };
 
   size_t numMeshAxes() const { return meshAxisTypes.size(); }
@@ -653,55 +705,43 @@ private:
           operandInfos.push_back(OperandInfo{true, expanded, nullptr, {}});
         } else {
           operandInfos.push_back(
-              OperandInfo{false, nullptr, mapper.lookupOrDefault(operand), {}});
+              OperandInfo{false, nullptr, getFlatValue(operand), {}});
         }
       }
     }
 
-    // Resolve each result's bounding cast (its sole real consumer, walking
-    // through pass-through anchors forward) -- or, absent a cast, whether a
-    // collective consumes it directly instead (see
-    // feedsCollectiveInputDirectly), which needs the same expanded
-    // treatment despite there being no cast to derive perDimSplits from.
+    // Every result is kept per device (canonical expanded form). A bounding
+    // cast, if any, tells how to fold the result back to a global value;
+    // without one the result is consumed at local scope, and a flat value is
+    // only built if something outside the distributed ops needs it (see
+    // getFlatValue).
     SmallVector<ResultInfo> resultInfos;
     for (Value result : kernel.getResults()) {
-      if (auto castOp = findBoundingCastLocalToGlobal(result)) {
-        auto perDimSplits = resolveCastPerDimSplits(
-            castOp.getPartitioningAxes(), meshAxisTypes, castOp);
-        if (failed(perDimSplits)) {
-          hasFailed = true;
-          return;
-        }
-        resultInfos.push_back(
-            ResultInfo{true, castOp, std::move(*perDimSplits)});
-      } else if (feedsCollectiveInputDirectly(result)) {
-        resultInfos.push_back(ResultInfo{true, nullptr, {}});
-      } else {
-        resultInfos.push_back(ResultInfo{false, nullptr, {}});
+      auto castOp = findBoundingCastLocalToGlobal(result);
+      if (!castOp) {
+        resultInfos.push_back(ResultInfo{nullptr, {}});
+        continue;
       }
+      auto perDimSplits = resolveCastPerDimSplits(castOp.getPartitioningAxes(),
+                                                  meshAxisTypes, castOp);
+      if (failed(perDimSplits)) {
+        hasFailed = true;
+        return;
+      }
+      resultInfos.push_back(ResultInfo{castOp, std::move(*perDimSplits)});
     }
 
     size_t n = numMeshAxes();
-    // Loop-carried accumulator per result: canonical expanded shape for a
-    // partitioned result, its own flat local type otherwise (overwritten
-    // wholesale each iteration -- correct because a result not partitioned
-    // along a given axis is, by this pipeline's own correctness invariant,
-    // identical across every coordinate of that axis).
+    // Loop-carried accumulator per result, in canonical expanded shape.
     SmallVector<Value> initCarried;
-    for (auto [idx, info] : llvm::enumerate(resultInfos)) {
-      if (info.partitioned) {
-        SmallVector<int64_t> canonicalShape(meshExtents);
-        auto localType = cast<RankedTensorType>(kernel.getResults()[idx].getType());
-        canonicalShape.append(localType.getShape().begin(),
-                              localType.getShape().end());
-        initCarried.push_back(buildZeroConstant(
-            builder, loc,
-            RankedTensorType::get(canonicalShape, localType.getElementType())));
-      } else {
-        initCarried.push_back(buildZeroConstant(
-            builder, loc,
-            cast<RankedTensorType>(kernel.getResults()[idx].getType())));
-      }
+    for (Value result : kernel.getResults()) {
+      SmallVector<int64_t> canonicalShape(meshExtents);
+      auto localType = cast<RankedTensorType>(result.getType());
+      canonicalShape.append(localType.getShape().begin(),
+                            localType.getShape().end());
+      initCarried.push_back(buildZeroConstant(
+          builder, loc,
+          RankedTensorType::get(canonicalShape, localType.getElementType())));
     }
 
     SmallVector<Value> allIVs;
@@ -711,25 +751,16 @@ private:
       return;
 
     for (auto [idx, info] : llvm::enumerate(resultInfos)) {
-      if (info.partitioned) {
-        // Memoize the canonical expanded form under the kernel's own raw
-        // result value too (not just the bounding cast's global output):
-        // a collective consuming this result directly (local scope, no
-        // cast in between) resolves it via getExpandedValue's memo lookup
-        // rather than walking through a cast that doesn't exist on that
-        // edge -- and for a result with no bounding cast at all (only a
-        // direct collective consumer), that memoization is the only thing
-        // needed here.
-        expandedOf[kernel.getResults()[idx]] = finalCarried[idx];
-        if (info.castOp) {
-          auto globalType =
-              cast<RankedTensorType>(info.castOp.getOutput().getType());
-          Value flatGlobal = collapseToFlat(finalCarried[idx], globalType,
-                                            info.perDimSplits, loc);
-          mapper.map(info.castOp.getOutput(), flatGlobal);
-        }
-      } else {
-        mapper.map(kernel.getResults()[idx], finalCarried[idx]);
+      // Later kernels and collectives read the kernel's own (local-scope)
+      // result through this memo; the bounding cast's global output is only
+      // built when a cast exists.
+      expandedOf[kernel.getResults()[idx]] = finalCarried[idx];
+      if (info.castOp) {
+        auto globalType =
+            cast<RankedTensorType>(info.castOp.getOutput().getType());
+        Value flatGlobal = collapseToFlat(finalCarried[idx], globalType,
+                                          info.perDimSplits, loc);
+        mapper.map(info.castOp.getOutput(), flatGlobal);
       }
     }
   }
@@ -843,22 +874,18 @@ private:
     SmallVector<Value> newCarried;
     for (auto [idx, info] : llvm::enumerate(resultInfos)) {
       Value localResult = bodyMapping.lookupOrDefault(yieldOp.getReturns()[idx]);
-      if (info.partitioned) {
-        auto localType = cast<RankedTensorType>(localResult.getType());
-        SmallVector<int64_t> updateShape(numMeshAxes(), 1);
-        updateShape.append(localType.getShape().begin(), localType.getShape().end());
-        auto updateType =
-            RankedTensorType::get(updateShape, localType.getElementType());
-        Value update =
-            builder.create<stablehlo::ReshapeOp>(loc, updateType, localResult);
-        SmallVector<Value> starts(allIVs.begin(), allIVs.end());
-        for (size_t i = 0; i < localType.getRank(); ++i)
-          starts.push_back(zeroIdx);
-        newCarried.push_back(builder.create<stablehlo::DynamicUpdateSliceOp>(
-            loc, carried[idx].getType(), carried[idx], update, starts));
-      } else {
-        newCarried.push_back(localResult);
-      }
+      auto localType = cast<RankedTensorType>(localResult.getType());
+      SmallVector<int64_t> updateShape(numMeshAxes(), 1);
+      updateShape.append(localType.getShape().begin(), localType.getShape().end());
+      auto updateType =
+          RankedTensorType::get(updateShape, localType.getElementType());
+      Value update =
+          builder.create<stablehlo::ReshapeOp>(loc, updateType, localResult);
+      SmallVector<Value> starts(allIVs.begin(), allIVs.end());
+      for (size_t i = 0; i < localType.getRank(); ++i)
+        starts.push_back(zeroIdx);
+      newCarried.push_back(builder.create<stablehlo::DynamicUpdateSliceOp>(
+          loc, carried[idx].getType(), carried[idx], update, starts));
     }
     return newCarried;
   }
@@ -884,11 +911,10 @@ private:
     if (hasFailed)
       return;
     if (!inputExpanded) {
-      fail(collective,
-          "distributed-lower-for-sanity-check requires a collective's "
-          "input_object to already be a partitioned (Cast- or Await-"
-          "bound) value");
-      return;
+      // Not produced per device: a replicated value with no cast around it.
+      inputExpanded = broadcastToMesh(getFlatValue(collective.getInputObject()),
+                                      loc);
+      expandedOf[collective.getInputObject()] = inputExpanded;
     }
 
     // The collective's own DistributedAwait is its sole real consumer (see
@@ -1099,6 +1125,12 @@ private:
       relabeled.erase(relabeled.begin() + dim);
     }
 
+    // The result varies across the mesh iff a mesh atom survives from the
+    // input; every other mesh atom is a clone made by the final broadcast.
+    bool varies = llvm::any_of(relabeled, [&](const AtomLabel &label) {
+      return label.space == AtomSpace::Mesh && atoms.extentOf(label) > 1;
+    });
+
     // 4. Place into [mesh atoms..., output tile atoms...] and reshape.
     SmallVector<AtomLabel> target;
     for (size_t a = 0; a < n; ++a)
@@ -1128,6 +1160,8 @@ private:
     // function's own return directly), collapse and map that cast's output
     // too, mirroring lowerKernel's handling of its own results.
     expandedOf[await.getValue()] = finalExpanded;
+    if (varies)
+      deviceVaryingResults.insert(await.getValue());
     if (auto castOp = findBoundingCastLocalToGlobal(await.getValue())) {
       auto perDimSplits = resolveCastPerDimSplits(
           castOp.getPartitioningAxes(), meshAxisTypes, castOp);
@@ -1458,7 +1492,7 @@ struct LowerForSanityCheckPass
     auto yieldOp = cast<DistributedYieldOp>(mainBlock.getTerminator());
     SmallVector<Value> newReturns;
     for (Value v : yieldOp.getReturns())
-      newReturns.push_back(lowering.getMapper().lookupOrDefault(v));
+      newReturns.push_back(lowering.getFlatValue(v));
     builder.setInsertionPoint(yieldOp);
     auto newYield = builder.create<DistributedYieldOp>(yieldOp.getLoc(), newReturns);
     yieldOp.erase();
