@@ -1097,11 +1097,18 @@ struct CanonicalizeShardedFactorOrderPass
             }
             return;
           }
-          if (isa<DistributedFunctionOp, DistributedAwait,
+          if (isa<DistributedFunctionOp, DistributedCallOp, DistributedAwait,
                   UnrealizedConversionCastOp, DistributedCollectiveOp,
                   DistributedManualComputationOp>(op)) {
             // DistributedFunctionOp: a real external boundary, deliberately
-            // untouched (see above). DistributedAwait just unwraps an
+            // untouched (see above). DistributedCallOp gets the same
+            // treatment: its argument_shardings/output_shardings are the
+            // callee's own attribute, shared by every call site (see
+            // localizeCalls in ConvertMainToDistributedFunction.cpp) rather
+            // than a private copy, so touching one would mean touching the
+            // function boundary itself. This also makes a call transparent
+            // to this pass, exactly as if the callee's body had been
+            // inlined in place. DistributedAwait just unwraps an
             // already-computed async handle -- a no-op on the payload, per its
             // own doc comment. UnrealizedConversionCastOp is a temporary
             // type-reconciliation marker inserted by earlier passes (e.g.

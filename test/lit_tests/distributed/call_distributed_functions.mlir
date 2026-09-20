@@ -1,10 +1,18 @@
 // RUN: enzymexlamlir-opt --sdy-propagation-pipeline --shardy-to-distributed-pipeline %s | FileCheck %s
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --shardy-to-distributed-pipeline %s | enzymexlamlir-opt --canonicalize-sharded-factor-order | FileCheck %s --check-prefix=CANON
 
 // A call is localized: its operands and results are per-device shards, bound
 // to the callee's axes by casts to and from the global neighbors.
 // A shared callee becomes a distributed function of its own: its body is
 // clustered into kernels once, and each call site is a distributed call that
 // stays outside every kernel.
+// distributed.DistributedCall is a real external boundary, exactly like
+// distributed.DistributedFunction: canonicalize-sharded-factor-order leaves
+// it untouched rather than raising the "no sharding rule" remark it would
+// for an arbitrary unrecognized op.
+// CANON-NOT: not yet supported
+// CANON: distributed.DistributedCall @mlp
+
 // CHECK-NOT: func.func
 // CHECK-NOT: func.call
 // CHECK: "distributed.DistributedFunction"
