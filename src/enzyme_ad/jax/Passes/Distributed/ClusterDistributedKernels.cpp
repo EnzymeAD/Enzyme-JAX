@@ -110,11 +110,11 @@ getPartitioningForValueOrCastNeighborhood(
 // happens to be), so the scope has to be established by whatever real
 // boundary sits further upstream -- a Cast op, a collective's own Await
 // (always local -- see this file's DistributedCollectiveOp/DistributedAwait
-// usage), or a DistributedKernelOp's own operand/result (always local).
-// Anything else (a plain compute op's result, a function block argument) is
-// GLOBAL by default, matching this dialect's baseline assumption that
-// ordinary tensor values are full-tensor until something explicitly shards
-// them.
+// usage), or a DistributedKernelOp's/DistributedCallOp's own operand/result
+// (always local). Anything else (a plain compute op's result, a function
+// block argument) is GLOBAL by default, matching this dialect's baseline
+// assumption that ordinary tensor values are full-tensor until something
+// explicitly shards them.
 static bool isLocallyScopedValue(Value value) {
   for (int step = 0; step < 8; ++step) {
     Operation *producer = value.getDefiningOp();
@@ -127,7 +127,8 @@ static bool isLocallyScopedValue(Value value) {
     if (isa<DistributedCastLocalToGlobalOp>(producer)) {
       return false;
     }
-    if (isa<DistributedAwait, DistributedKernelOp>(producer)) {
+    if (isa<DistributedAwait, DistributedKernelOp, DistributedCallOp>(
+            producer)) {
       return true;
     }
     if (auto anchor = dyn_cast<AnchorPartitioningOp>(producer)) {

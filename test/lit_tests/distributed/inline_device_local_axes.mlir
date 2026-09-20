@@ -129,3 +129,45 @@ module {
 // CHECK: %[[LOCAL:.*]] = distributed.CastGlobalToLocal %{{.*}} axes (%{{.*}} : !axis.factor_group<2>) : tensor<8xf32> -> tensor<4xf32>
 // CHECK: %[[H:.*]] = distributed.Collective %[[LOCAL]] : tensor<4xf32> on %[[MESH_IN]] : <2> to tensor<4xf32> on %[[MESH_OUT]] : <2> reduces () maps %[[MAP]] : !axis.map
 // CHECK: distributed.Await %[[H]] : <tensor<4xf32>> -> tensor<4xf32>
+
+// -----
+
+// A DeviceLocalAxis factor feeding a distributed.DistributedCall through its
+// argument cast must be reconciled on the call's own argument_shardings/
+// partitioning_axes, not just on the cast: the call is its own local/global
+// boundary (like a DistributedKernelOp), checked against its callee's fixed
+// GLOBAL-scope function-type input/result types, so its own declared
+// binding has to shrink in step with the cast that grew its operand or the
+// two disagree about how big the growth already was.
+module {
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
+  %p0 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 1>
+  %rf = axis.factor %p0 : !distributed.physical_comm_axis<2, 1> <2, 1>
+
+  %d = distributed.DeviceLocalAxis 4 : !distributed.device_local_axis<4>
+  %df = axis.factor %d : !distributed.device_local_axis<4> <4, 1>
+  %axes_grp = axis.product (%df : !axis.axis_factor<!distributed.device_local_axis<4>, 4, 1>)
+
+  "distributed.DistributedFunction"(%axes_grp) <{
+    argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>,
+    function_type = (tensor<4xf32>) -> tensor<4xf32>,
+    output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>,
+    sym_name = "identity",
+    sym_visibility = "private"
+  }> ({
+  ^bb0(%arg0: tensor<4xf32>):
+    distributed.DistributedYield (%arg0 : tensor<4xf32>)
+  }) : (!axis.factor_group<4>) -> ()
+
+  %global = stablehlo.constant dense<0.0> : tensor<4xf32>
+  %local = distributed.CastGlobalToLocal %global axes (%axes_grp : !axis.factor_group<4>) : tensor<4xf32> -> tensor<1xf32>
+  %call = distributed.DistributedCall @identity (%local : tensor<1xf32>) <[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+      -> (tensor<1xf32>) <[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+      axes (%axes_grp : !axis.factor_group<4>)
+}
+
+// CHECK-NOT: remark: inline-device-local-axes
+// CHECK: %[[LOCAL:.*]] = distributed.CastGlobalToLocal %{{.*}} axes (%{{.*}} : !axis.factor_group<1>) : tensor<4xf32> -> tensor<4xf32>
+// CHECK: distributed.DistributedCall @identity (%[[LOCAL]] : tensor<4xf32>) <[<dim_partitioning_axes = {{\[\[0\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: -> (tensor<4xf32>)
+// CHECK-NEXT: axes (%{{.*}} : !axis.factor_group<1>)
