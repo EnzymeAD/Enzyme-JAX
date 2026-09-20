@@ -940,13 +940,107 @@ static bool canonicalizeOpNeedingLayout(Operation *op,
 //    FactorType::kPermutation in op_sharding_rule_registry.cc precisely
 //    because a sharded spatial dim needs a halo-swap/collective-permute, not
 //    a free relabeling. Convolution is exactly the kind of op the
-//    elementwise/pass-through argument above does *not* apply to.
+//    elementwise/pass-through argument above does *not* apply to. But that
+//    risk is specifically about a REAL cross-device split: reordering only
+//    changes which physical bytes each device would need to hold if the
+//    factor's own dimension actually crosses a device boundary. A factor
+//    whose dimension is, at this occurrence, composed purely of Local
+//    (DeviceLocal/replication/trivial) factors -- no LogicalMeshAxisType
+//    anywhere -- has nothing split across devices in the first place, so
+//    relabeling it is exactly as free as an ordinary pass-through factor,
+//    regardless of what Shardy's registry says about the factor in general.
+//    This is decided per factor (see isFactorFullyLocal), not for the op as
+//    a whole: an op can freely have one special-but-local factor and one
+//    genuinely-sharded pass-through factor on different dimensions: those
+//    are independent slot-index lists with nothing tying their fixups
+//    together.
 enum class OpClassification {
   Conforming,    // no rewrite needed
   MultiFactor,   // split/join signature -- needs the reshape-style rewrite
   SpecialFactor, // permutation/need-replication/blocked-propagation factor
   NoRule,        // no sharding rule could be synthesized at all
 };
+
+// Per-operand/per-result, per-dimension: true if that dimension's own
+// declared slot list (distributed.argument_shardings/output_shardings)
+// contains no real (Sharded, i.e. LogicalMeshAxisType) factor. Computed once
+// per op and consulted per factor by isFactorFullyLocal.
+struct DimensionLocality {
+  SmallVector<SmallVector<bool>> operandDimsLocal;
+  SmallVector<SmallVector<bool>> resultDimsLocal;
+};
+
+static SmallVector<bool> dimsLocalForValue(DistributedKernelOp kernelOp,
+                                           IndexedTensorShardingAttr sharding) {
+  SmallVector<bool> local;
+  for (DenseI64ArrayAttr dimAxes : sharding.getDimPartitioningAxes()) {
+    auto flat =
+        flattenRawFactors(kernelOp.getPartitioningAxes(), dimAxes.asArrayRef());
+    local.push_back(succeeded(flat) &&
+                    !llvm::is_contained(flat->isSharded, true));
+  }
+  return local;
+}
+
+// Conservatively std::nullopt (don't claim locality for anything) if `op`
+// isn't inside a kernel or carries no sharding metadata to check.
+static std::optional<DimensionLocality>
+computeDimensionLocality(Operation *op) {
+  auto kernelOp = op->getParentOfType<DistributedKernelOp>();
+  auto argShardings = op->getAttrOfType<IndexedTensorShardingPerValueAttr>(
+      "distributed.argument_shardings");
+  auto outputShardings = op->getAttrOfType<IndexedTensorShardingPerValueAttr>(
+      "distributed.output_shardings");
+  if (!kernelOp || !argShardings || !outputShardings) {
+    return std::nullopt;
+  }
+  DimensionLocality result;
+  for (IndexedTensorShardingAttr sharding : argShardings.getShardings()) {
+    result.operandDimsLocal.push_back(dimsLocalForValue(kernelOp, sharding));
+  }
+  for (IndexedTensorShardingAttr sharding : outputShardings.getShardings()) {
+    result.resultDimsLocal.push_back(dimsLocalForValue(kernelOp, sharding));
+  }
+  return result;
+}
+
+// True if every dimension `rule` maps `factor` to (across every operand and
+// result) is fully local per `locality` -- see classifyOp's own comment on
+// why that makes the factor harmless regardless of its Shardy-registry type.
+static bool isFactorFullyLocal(mlir::sdy::OpShardingRuleAttr rule,
+                               int64_t factor,
+                               const DimensionLocality &locality) {
+  auto mappedDimsAreLocal = [&](mlir::sdy::TensorMappingAttr mapping,
+                                ArrayRef<SmallVector<bool>> perValueDimsLocal,
+                                int64_t valueIdx) {
+    if (static_cast<size_t>(valueIdx) >= perValueDimsLocal.size()) {
+      return false;
+    }
+    ArrayRef<bool> dimsLocal = perValueDimsLocal[valueIdx];
+    for (auto [dim, dimMapping] : llvm::enumerate(mapping.getDimMappings())) {
+      if (!llvm::is_contained(dimMapping.getFactorIndices(), factor)) {
+        continue;
+      }
+      if (static_cast<size_t>(dim) >= dimsLocal.size() || !dimsLocal[dim]) {
+        return false;
+      }
+    }
+    return true;
+  };
+  for (int64_t i = 0, n = rule.getNumOperands(); i < n; ++i) {
+    if (!mappedDimsAreLocal(rule.getOperandMapping(i),
+                            locality.operandDimsLocal, i)) {
+      return false;
+    }
+  }
+  for (int64_t i = 0, n = rule.getNumResults(); i < n; ++i) {
+    if (!mappedDimsAreLocal(rule.getResultMapping(i), locality.resultDimsLocal,
+                            i)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 static OpClassification classifyOp(Operation *op) {
   mlir::sdy::OpShardingRuleAttr rule = getOrSynthesizeOpShardingRule(op).rule;
@@ -956,10 +1050,15 @@ static OpClassification classifyOp(Operation *op) {
   if (rule.hasDimensionsWithMultipleFactors()) {
     return OpClassification::MultiFactor;
   }
+  DimensionLocality locality = computeDimensionLocality(op);
   for (int64_t factor = 0, n = rule.getNumFactors(); factor < n; ++factor) {
-    if (!rule.isPassThroughFactor(factor) && !rule.isReductionFactor(factor)) {
-      return OpClassification::SpecialFactor;
+    if (rule.isPassThroughFactor(factor) || rule.isReductionFactor(factor)) {
+      continue;
     }
+    if (isFactorFullyLocal(rule, factor, locality)) {
+      continue;
+    }
+    return OpClassification::SpecialFactor;
   }
   return OpClassification::Conforming;
 }
@@ -1244,20 +1343,19 @@ struct CanonicalizeShardedFactorOrderPass
 
           if (isa<sdy::ReshardOp>(op)) {
             if (seenUnimplementedReshard.insert(op->getName()).second) {
-              op->emitRemark()
-                  << op->getName()
-                  << ": collective canonicalizing rewrite not yet "
-                     "implemented";
+              op->emitRemark() << op->getName()
+                               << ": collective canonicalizing rewrite not yet "
+                                  "implemented";
             }
             sawUnsupported = true;
             return;
           }
 
           if (seenNoRule.insert(op->getName()).second) {
-            op->emitRemark() << op->getName() << ": unsupported by "
-                             << getArgument()
-                             << ", needs an explicit rewrite rule (no Shardy "
-                                "sharding rule could be synthesized)";
+            op->emitRemark()
+                << op->getName() << ": unsupported by " << getArgument()
+                << ", needs an explicit rewrite rule (no Shardy "
+                   "sharding rule could be synthesized)";
           }
           sawUnsupported = true;
         });

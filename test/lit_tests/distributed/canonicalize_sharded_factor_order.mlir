@@ -310,3 +310,48 @@ module @kernel_internal_merge_sandwiched {
 // CHECK-NEXT: distributed.DistributedYield (%[[LMERGE]] : tensor<6xf32>)
 // CHECK-NEXT: }
 // CHECK-NEXT: distributed.DistributedYield (%[[MANUAL]] : tensor<24xf32>)
+
+// -----
+
+// A concatenate whose own concatenated dimension (a Shardy need_replication
+// factor) is a single trivial DeviceLocalAxis slot -- never a real
+// cross-device split -- while its OTHER (pass-through) dimension is
+// sandwiched (local-major, shard-minor) and genuinely needs reordering. The
+// two dimensions are independent slot-index lists, so the special factor's
+// dimension is left untouched (classified per factor, not for the op as a
+// whole -- see isFactorFullyLocal) while the pass-through dimension gets the
+// ordinary pure-metadata fix, exactly as it would for any Conforming op: no
+// "not yet supported" remark at all.
+module @special_factor_but_local {
+  func.func @main() {
+    return
+  }
+  %devloc0 = distributed.DeviceLocalAxis 2 : !distributed.device_local_axis<2>
+  %logical0 = distributed.LogicalMeshAxes 2 : !distributed.logical_mesh_axis<2>
+  %df0 = axis.factor %devloc0 : !distributed.device_local_axis<2><2, 1>
+  %lf0 = axis.factor %logical0 : !distributed.logical_mesh_axis<2><2, 1>
+  %sandwiched = axis.product (%df0 : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>, %lf0 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+  %devloc1 = distributed.DeviceLocalAxis 1 : !distributed.device_local_axis<1>
+  %df1 = axis.factor %devloc1 : !distributed.device_local_axis<1><1, 1>
+  %local_dim = axis.product (%df1 : !axis.axis_factor<!distributed.device_local_axis<1>, 1, 1>)
+  %cst = stablehlo.constant dense<0.0> : tensor<1x1xf32>
+  %r = distributed.DistributedKernel (%cst : tensor<1x1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[], []] : unreduced_axes = []>]>
+      -> (tensor<1x2xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>]>
+      axes (%sandwiched : !axis.factor_group<4>, %local_dim : !axis.factor_group<1>) {
+  ^bb0(%arg0: tensor<4x1xf32>):
+    %cat = stablehlo.concatenate %arg0, %arg0, dim = 1 {distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>, <dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>]>, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>]>} : (tensor<4x1xf32>, tensor<4x1xf32>) -> tensor<4x2xf32>
+    distributed.DistributedYield (%cat : tensor<4x2xf32>)
+  }
+}
+
+// CHECK-NOT: not yet supported
+// CHECK-LABEL: module @special_factor_but_local {
+// CHECK-DAG: %[[SANDWICHED:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>, %{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+// CHECK-DAG: %[[CANON:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, %{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
+// CHECK-DAG: %[[LOCAL:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.device_local_axis<1>, 1, 1>)
+// CHECK: distributed.DistributedKernel (%{{.*}} : tensor<1x1xf32>) <[<dim_partitioning_axes = {{\[\[\], \[\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: -> (tensor<1x2xf32>) <[<dim_partitioning_axes = {{\[\[[0-9]+\], \[[0-9]+\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: axes (%[[SANDWICHED]] : !axis.factor_group<4>, %[[LOCAL]] : !axis.factor_group<1>, %[[CANON]] : !axis.factor_group<4>, %[[CANON]] : !axis.factor_group<4>, %[[CANON]] : !axis.factor_group<4>) {
+// CHECK-NEXT: ^bb0(%arg0: tensor<4x1xf32>):
+// CHECK-NEXT: %[[CAT:.*]] = stablehlo.concatenate %arg0, %arg0, dim = 1 {distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[[0-9]+\], \[1\]\]}} : unreduced_axes = []>, <dim_partitioning_axes = {{\[\[[0-9]+\], \[1\]\]}} : unreduced_axes = []>]>, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[[0-9]+\], \[1\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: distributed.DistributedYield (%[[CAT]] : tensor<4x2xf32>)
