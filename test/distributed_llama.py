@@ -196,6 +196,17 @@ def build_sanity_check_pipeline_argv(physical_mesh_config_path):
         "--cse",
         "--canonicalize",
         "--distributed-lower-kernels",
+        # Same cleanup DistributedSearchLoweringPipeline runs after
+        # lower-kernels: identity collectives must be dropped before
+        # make-replications-explicit turns them into non-identity ones.
+        "--drop-kernel-body-sharding-attrs",
+        "--drop-sharding-rule-attrs",
+        "--drop-trivial-kernel-sharding",
+        "--drop-identity-collectives",
+        "--drop-identity-partitioning-anchors",
+        "--merge-adjacent-trivial-kernels",
+        "--cse",
+        "--canonicalize",
         "--distributed-make-replications-explicit",
         "--distributed-lower-for-sanity-check",
     ]
