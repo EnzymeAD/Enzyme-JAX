@@ -120,6 +120,30 @@ def CanonicalizeAxisMapsPass
         replacing mapping groups with maximal one - to - one split groups.}];
 }
 
+def RefinePartitioningSlotsPass
+    : Pass<"refine-partitioning-slots", "::mlir::ModuleOp"> {
+  let summary = "Splits kernel partitioning-axis slots so each is purely "
+                "sharded or purely local.";
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "enzyme::distributed::DistributedDialect"
+  ];
+  let description = [{
+    A partitioning-axis slot of a distributed.DistributedKernel is a space
+    (an axis.product) that tensor dimensions select by index. A slot whose
+    factors mix sharded and local kinds cannot be reordered relative to
+    other slots without cutting through it, so this pass replaces each such
+    slot by one slot per maximal run of same-kind factors and rewrites every
+    reference (the kernel's own shardings and the sharding attributes on body
+    ops) to the run of new slots. The replacement products are new values;
+    the original axis.product is never modified, since other users may share
+    it. Fully local and empty slots are kept.
+
+    Later passes (canonicalize-sharded-factor-order) only reorder slot
+    indices and never create slots, which requires this pass to have run
+    after every factor's kind is decided.
+  }];
+}
+
 def CanonicalizeShardedFactorOrderPass
     : Pass<"canonicalize-sharded-factor-order", "::mlir::ModuleOp"> {
   let summary = "Rewrites tensors so sharded factors are always major and "

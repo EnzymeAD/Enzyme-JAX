@@ -158,49 +158,47 @@ static bool touchesAnyTensor(Operation *op) {
          llvm::any_of(op->getResultTypes(), isTensor);
 }
 
-// A kernel's own `distributed.argument_shardings`/`output_shardings` are the
-// actual place the sandwiching problem can materialize in real IR: each
-// entry in `kernelOp.getPartitioningAxes()` is a FactorGroupType (an
-// axis.product of one or more axis.factor values, built by
-// ClusterDistributedKernels.cpp), so a tensor dimension's
-// `dim_partitioning_axes` index list *is* its physical major-to-minor factor
-// order. Once ClusterDistributedKernels.cpp fixes that order, nothing
-// upstream of this pass ever revisits it -- so it stays whatever order
-// Shardy's own per-op sharding rule originally assigned, without regard to
-// which factors later get colored DeviceLocalAxis vs. Sharded.
-//
-// Appends a brand-new single-purpose partitioning-axis slot (an axis.product
-// over exactly `factors`) to `kernelOp`'s own operand list and returns its
-// index. Used when canonicalization splits a slot whose own factor list
-// mixes Sharded and Local factors (the `composite_kernel` shape in
-// lower_kernels.mlir) across the canonical shard/local boundary: the two
-// halves can no longer share one slot, since `dim_partitioning_axes` can
-// only select whole slots, not partial ones.
-//
-// Uses its own builder, since axis.product is metadata and belongs at
-// module scope regardless of where the caller's own builder is positioned.
-static int64_t appendNewPartitioningAxisSlot(
-    DistributedKernelOp kernelOp,
-    ArrayRef<TypedValue<axis::AxisFactorType>> factors) {
-  // A slot is identified by its factors: LowerKernels names a kernel's mesh
-  // axes by slot index, so the same factors given two indices (say, for an
-  // operand and for the result of a pass-through dimension) would look like
-  // two different shardings and make Shardy insert a reshard.
-  for (auto [index, slot] : llvm::enumerate(kernelOp.getPartitioningAxes())) {
-    auto existing = axis::getProductProvenanceFactors(
-        cast<TypedValue<axis::FactorGroupType>>(slot));
-    if (succeeded(existing) && llvm::equal(*existing, factors))
-      return static_cast<int64_t>(index);
+// Partitioning-axis slots are spaces that tensor dimensions select by index.
+// RefinePartitioningSlotsPass has made every slot purely sharded or purely
+// local, so canonicalizing a dimension only permutes its slot indices; this
+// pass never creates or modifies a slot.
+struct SlotKinds {
+  SmallVector<bool> isSharded;
+  SmallVector<int64_t> extents;
+};
+
+// Kind and total extent of each slot in `axisIndices`. An empty slot counts as
+// local with extent 1.
+static FailureOr<SlotKinds> classifySlots(ValueRange partitioningAxes,
+                                          ArrayRef<int64_t> axisIndices) {
+  SlotKinds result;
+  for (int64_t idx : axisIndices) {
+    if (idx < 0 || idx >= static_cast<int64_t>(partitioningAxes.size())) {
+      return failure();
+    }
+    auto factors = axis::getProductProvenanceFactors(
+        cast<TypedValue<axis::FactorGroupType>>(partitioningAxes[idx]));
+    if (failed(factors)) {
+      return failure();
+    }
+    bool sharded = false;
+    int64_t extent = 1;
+    for (auto factor : *factors) {
+      auto provenance = axis::getFactorProvenanceAxis(factor);
+      if (failed(provenance)) {
+        return failure();
+      }
+      bool factorSharded = isShardedAxisType(provenance->getType());
+      assert((factor == factors->front() || factorSharded == sharded) &&
+             "slot mixes sharded and local factors; run "
+             "refine-partitioning-slots first");
+      sharded = factorSharded;
+      extent *= axis::getFactorExtent(factor);
+    }
+    result.isSharded.push_back(sharded);
+    result.extents.push_back(extent);
   }
-  int64_t newIndex =
-      static_cast<int64_t>(kernelOp.getPartitioningAxes().size());
-  OpBuilder outerBuilder(kernelOp.getContext());
-  outerBuilder.setInsertionPoint(kernelOp);
-  axis::ModuleScopeGuard moduleScope(outerBuilder);
-  Value newSlot =
-      axis::viewFactorsAsProduct(factors, outerBuilder, kernelOp.getLoc());
-  kernelOp.getPartitioningAxesMutable().append(newSlot);
-  return newIndex;
+  return result;
 }
 
 // Builds an IndexedTensorShardingAttr where dimension `dim` of the tensor
@@ -228,14 +226,14 @@ static IndexedTensorShardingAttr buildRankShiftedSharding(
 }
 
 // Clean-splits `tensorValue` at dimension `dim` into one sub-dimension per
-// entry of `extents` (current order, so the split always matches existing
-// structure), then wraps that split value in a distributed.ManualComputation
-// declaring the currently-Sharded sub-dimensions as manual axes, whose region
-// computes the final (merged-back, canonical-order) local result directly --
-// no transpose, ever. Also attaches correct distributed.argument_shardings/
-// output_shardings to the split op and the manual-computation op (see
-// buildRankShiftedSharding), so LowerKernels.cpp's Shardy translation doesn't
-// leave them unannotated.
+// slot, `extents[k]` being the total extent of slot `slots[k]` (current order,
+// so the split always matches existing structure), then wraps that split value
+// in a distributed.ManualComputation declaring the currently-Sharded
+// sub-dimensions as manual axes, whose region computes the final (merged-back,
+// canonical-order) local result directly -- no transpose, ever. Also attaches
+// correct distributed.argument_shardings/ output_shardings to the split op and
+// the manual-computation op (see buildRankShiftedSharding), so
+// LowerKernels.cpp's Shardy translation doesn't leave them unannotated.
 //
 // Why a real rewrite is needed at all, given the top-of-file comment's claim
 // that a device's own local tile never changes: at the point this pass runs,
@@ -254,7 +252,7 @@ static IndexedTensorShardingAttr buildRankShiftedSharding(
 static Value buildManualComputationChain(
     OpBuilder &builder, Location loc, DistributedKernelOp kernelOp,
     Value tensorValue, int64_t dim, ArrayRef<int64_t> extents,
-    ArrayRef<bool> isSharded, ArrayRef<int64_t> singleFactorSlot,
+    ArrayRef<bool> isSharded, ArrayRef<int64_t> slots,
     ArrayRef<DenseI64ArrayAttr> fullDimAxesList,
     DenseI64ArrayAttr unreducedAxes, ArrayRef<int64_t> finalDimAxisIndices) {
   MLIRContext *ctx = builder.getContext();
@@ -280,20 +278,18 @@ static Value buildManualComputationChain(
 
   // fullDimAxesList/unreducedAxes: the tensor's own current per-dimension
   // sharding (untouched dims pass through as-is via buildRankShiftedSharding).
-  // singleFactorSlot: one dedicated single-factor partitioning-axis slot per
-  // raw factor, in current order, built by the caller. Each new sub-dimension
-  // gets exactly one slot in its own dim_partitioning_axes entry, so this is
-  // trivially "manual axes majormost" no matter which sub-dimensions end up
-  // manual -- no permutation is needed on the operand side at all.
+  // slots: the dimension's current slots, one sub-dimension per slot. Each
+  // sub-dimension lists exactly its own slot, so manual axes are trivially
+  // majormost no matter which sub-dimensions end up manual.
   IndexedTensorShardingAttr operandSharding =
       IndexedTensorShardingAttr::get(ctx, fullDimAxesList, unreducedAxes);
   SmallVector<DenseI64ArrayAttr> splitDimEntries;
   splitDimEntries.reserve(n);
   SmallVector<int64_t> manualAxes;
   for (int64_t k = 0; k < n; ++k) {
-    splitDimEntries.push_back(DenseI64ArrayAttr::get(ctx, singleFactorSlot[k]));
+    splitDimEntries.push_back(DenseI64ArrayAttr::get(ctx, slots[k]));
     if (isSharded[k]) {
-      manualAxes.push_back(singleFactorSlot[k]);
+      manualAxes.push_back(slots[k]);
     }
   }
   IndexedTensorShardingAttr splitOutputSharding = buildRankShiftedSharding(
@@ -441,62 +437,30 @@ flattenRawFactors(ValueRange partitioningAxes, ArrayRef<int64_t> axisIndices) {
   return result;
 }
 
-// Regroups raw factors (now in canonicalPositions order) back into slots: a
-// maximal run of consecutive (in the new order) raw factors that all came
-// from the same original slot, in that slot's own original relative order,
-// can keep using that slot's existing index unchanged. Any other run (a
-// composite slot split across the shard/local boundary) needs a brand-new
-// slot, built as a pure axis-algebra value (Pure/CSE-eligible, never a
-// tensor-typed op) via appendNewPartitioningAxisSlot.
-static SmallVector<int64_t>
-regroupIntoSlots(DistributedKernelOp kernelOp, const FlattenedRawFactors &flat,
-                 ArrayRef<int64_t> axisIndices,
-                 ArrayRef<int64_t> canonicalPositions) {
-  int64_t n = static_cast<int64_t>(flat.rawFactors.size());
-  SmallVector<int64_t> newAxisIndices;
-  for (int64_t k = 0; k < n;) {
-    int64_t slot = flat.sourceSlot[canonicalPositions[k]];
-    SmallVector<TypedValue<axis::AxisFactorType>> run;
-    while (k < n && flat.sourceSlot[canonicalPositions[k]] == slot) {
-      run.push_back(flat.rawFactors[canonicalPositions[k]]);
-      ++k;
-    }
-    bool isWholeOriginalSlotInOrder =
-        run.size() == flat.slotFactors[slot].size() &&
-        std::equal(run.begin(), run.end(), flat.slotFactors[slot].begin());
-    if (isWholeOriginalSlotInOrder) {
-      newAxisIndices.push_back(axisIndices[slot]);
-    } else {
-      newAxisIndices.push_back(appendNewPartitioningAxisSlot(kernelOp, run));
-    }
-  }
-  return newAxisIndices;
-}
-
 // The pure-metadata half of canonicalization (case (1) above (this file's own
 // top-of-file comment)/kernel's own boundary): given one dimension's current
 // slot-index list, computes the new canonical list -- Sharded-classified slots
 // before Local-classified ones -- with NO tensor value, builder, or physical
-// rewrite involved at all: just axis-algebra bookkeeping (new axis.product
-// values only where a composite slot must be split, never a stablehlo op).
+// rewrite involved at all: only the slot indices of the dimension are
+// permuted.
 // Returns std::nullopt if already canonical (nothing to do); fails only if a
 // slot's provenance can't be resolved.
 static FailureOr<std::optional<SmallVector<int64_t>>>
 computeCanonicalSlotReorder(DistributedKernelOp kernelOp,
                             ArrayRef<int64_t> axisIndices) {
-  if (axisIndices.empty()) {
-    return std::optional<SmallVector<int64_t>>(std::nullopt);
-  }
-  auto flat = flattenRawFactors(kernelOp.getPartitioningAxes(), axisIndices);
-  if (failed(flat)) {
+  auto kinds = classifySlots(kernelOp.getPartitioningAxes(), axisIndices);
+  if (failed(kinds)) {
     return failure();
   }
   SmallVector<int64_t> canonicalPositions;
-  if (computeCanonicalPositions(flat->isSharded, canonicalPositions)) {
+  if (computeCanonicalPositions(kinds->isSharded, canonicalPositions)) {
     return std::optional<SmallVector<int64_t>>(std::nullopt);
   }
-  return std::optional<SmallVector<int64_t>>(
-      regroupIntoSlots(kernelOp, *flat, axisIndices, canonicalPositions));
+  SmallVector<int64_t> reordered;
+  for (int64_t position : canonicalPositions) {
+    reordered.push_back(axisIndices[position]);
+  }
+  return std::optional<SmallVector<int64_t>>(std::move(reordered));
 }
 
 // The real-rewrite half (case (3) above (this file's own top-of-file comment):
@@ -518,38 +482,27 @@ canonicalizeDimOrder(OpBuilder &builder, Location loc,
     return tensorValue;
   }
 
-  auto flat = flattenRawFactors(kernelOp.getPartitioningAxes(), axisIndices);
-  if (failed(flat)) {
+  auto kinds = classifySlots(kernelOp.getPartitioningAxes(), axisIndices);
+  if (failed(kinds)) {
     return failure();
   }
 
   SmallVector<int64_t> canonicalPositions;
-  if (computeCanonicalPositions(flat->isSharded, canonicalPositions)) {
+  if (computeCanonicalPositions(kinds->isSharded, canonicalPositions)) {
     return tensorValue;
   }
 
-  int64_t n = static_cast<int64_t>(flat->rawFactors.size());
-  SmallVector<int64_t> singleFactorSlot(n);
-  for (int64_t k = 0; k < n; ++k) {
-    singleFactorSlot[k] = appendNewPartitioningAxisSlot(
-        kernelOp,
-        ArrayRef<TypedValue<axis::AxisFactorType>>(flat->rawFactors[k]));
-  }
-
-  // Unlike the pure-metadata reorder's regroupIntoSlots (which reuses/merges
-  // slots to minimize how many new axis.product values get created), the
-  // manual-computation output must keep every raw factor on its OWN
-  // single-factor slot: distributed.ManualComputation's manual_axes need to
-  // resolve to exactly one raw factor each (see its verifier), which a
-  // regrouped composite slot spanning a Sharded/Local boundary would violate.
+  int64_t n = static_cast<int64_t>(axisIndices.size());
+  SmallVector<int64_t> currentSlots(axisIndices.begin(), axisIndices.end());
   SmallVector<int64_t> newAxisIndices(n);
   for (int64_t k = 0; k < n; ++k) {
-    newAxisIndices[k] = singleFactorSlot[canonicalPositions[k]];
+    newAxisIndices[k] = currentSlots[canonicalPositions[k]];
   }
 
   Value mergedVal = buildManualComputationChain(
-      builder, loc, kernelOp, tensorValue, dim, flat->extents, flat->isSharded,
-      singleFactorSlot, fullDimAxesList, unreducedAxes, newAxisIndices);
+      builder, loc, kernelOp, tensorValue, dim, kinds->extents,
+      kinds->isSharded, currentSlots, fullDimAxesList, unreducedAxes,
+      newAxisIndices);
 
   axisIndices.assign(newAxisIndices.begin(), newAxisIndices.end());
 
@@ -625,9 +578,7 @@ static Value canonicalizeBoundaryValue(OpBuilder &builder, Location loc,
 
 // case (1) above: the pure-metadata reorder, applied to every dimension of
 // every value in `attr` -- no tensor type changes, no new stablehlo ops, only
-// dim_partitioning_axes slot-index lists change (and, for a composite slot
-// that must be split across the shard/local boundary, a new axis.product
-// value -- pure axis-algebra, never a tensor-typed op). Used both for a
+// dim_partitioning_axes slot-index lists change. Used both for a
 // DistributedKernelOp's own argument_shardings/output_shardings and for an
 // ordinary (Conforming) op's distributed.argument_shardings/output_shardings.
 // Returns the original `attr` unchanged if nothing needed reordering.
@@ -954,10 +905,10 @@ resolveCurrentSharding(Value value) {
 // own attrs already describe reality, precisely because this pass never
 // rewrites anything except exactly where an op like this one needs it.
 //
-// Slot-index resolution (appendNewPartitioningAxisSlot/canonicalizeDimOrder
-// above) needs the enclosing kernel's own partitioning_axes list; an op with
-// no such enclosing kernel can't be resolved this way and is reported
-// unsupported by the caller instead.
+// Slot-index resolution (classifySlots/canonicalizeDimOrder above) needs the
+// enclosing kernel's own partitioning_axes list; an op with no such enclosing
+// kernel can't be resolved this way and is reported unsupported by the caller
+// instead.
 static bool canonicalizeOpNeedingLayout(Operation *op,
                                         DistributedKernelOp kernelOp) {
   bool sawUnsupported = false;
@@ -1267,11 +1218,11 @@ struct CanonicalizeShardedFactorOrderPass
             // program order within this block, since a yield is always a
             // terminator, visited last among its siblings under pre-order) --
             // otherwise, if the yielded value traces through a multi-factor
-            // fix (a merge, which builds brand-new slots independent of
-            // anything computed here), a separately/eagerly pure-metadata-
-            // reordered output_shardings would reference DIFFERENT (though
-            // structurally equivalent) slot indices than what the fixed-up
-            // value actually ends up declaring -- a real mismatch
+            // fix (a merge, which declares its own canonical slot order
+            // independent of anything computed here), a separately/eagerly
+            // pure-metadata-reordered output_shardings could list the slots
+            // in a different order than the fixed-up value actually ends up
+            // declaring -- a real mismatch
             // constructShardyAttributes would see as two different shardings
             // for the same value. Confirmed empirically before this fix.
             auto kernelOp =

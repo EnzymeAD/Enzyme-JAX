@@ -309,13 +309,6 @@ struct ClusterDistributedKernelsPass
     return logical_axes;
   }
 
-  // Normalizes one logical symbol into a single-factor group for
-  // distributed.function partitioning_axes metadata.
-  TV_FactorGroup getOrCreatePartitioningAxisGroup(AxisSymbol symbol) {
-    auto factor = getOrCreateLogicalAxisForSymbol(symbol);
-    return axis::viewFactorsAsProduct(factor, *axis_builder, *axis_loc);
-  }
-
   // Builds one positional factor group per tensor dimension for a real
   // global/local Cast op. Each group preserves the logical-axis provenance
   // of that dimension (mirrors MaterializeDistributedCollectives.cpp's
@@ -336,7 +329,7 @@ struct ClusterDistributedKernelsPass
       RankedTensorType tensorType,
       const ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes
           &partitioningDims,
-      llvm::DenseMap<AxisSymbol, int64_t> &symbolToPartitioningAxisIdx) {
+      llvm::DenseMap<Value, int64_t> &factorToPartitioningAxisIdx) {
     auto *ctx = &getContext();
     SmallVector<DenseI64ArrayAttr> dimPartitioningAxes;
     dimPartitioningAxes.reserve(tensorType.getRank());
@@ -345,8 +338,12 @@ struct ClusterDistributedKernelsPass
       SmallVector<int64_t> partitioningAxisIndices;
       if (dimIdx < static_cast<int64_t>(partitioningDims.size())) {
         for (AxisSymbol symbol : partitioningDims[dimIdx]) {
-          auto [it, inserted] = symbolToPartitioningAxisIdx.try_emplace(
-              symbol, symbolToPartitioningAxisIdx.size());
+          // Slots are keyed by the logical axis factor, not the symbol: two
+          // symbols can resolve to one factor, and a factor must be
+          // reachable from a single slot.
+          auto [it, inserted] = factorToPartitioningAxisIdx.try_emplace(
+              getOrCreateLogicalAxisForSymbol(symbol),
+              factorToPartitioningAxisIdx.size());
           (void)inserted;
           partitioningAxisIndices.push_back(it->second);
         }
@@ -667,7 +664,7 @@ struct ClusterDistributedKernelsPass
       SmallVector<Type> kernelBlockArgTypes;
       kernelBlockArgTypes.reserve(kernelInputs.size());
 
-      llvm::DenseMap<AxisSymbol, int64_t> symbolToPartitioningAxisIdx;
+      llvm::DenseMap<Value, int64_t> factorToPartitioningAxisIdx;
       SmallVector<IndexedTensorShardingAttr> inputShardings;
       inputShardings.reserve(kernelInputs.size());
 
@@ -723,7 +720,7 @@ struct ClusterDistributedKernelsPass
         if (auto rankedType = dyn_cast<RankedTensorType>(localInputType);
             rankedType && maybePartitioning) {
           inputShardings.push_back(buildIndexedShardingAttr(
-              rankedType, *maybePartitioning, symbolToPartitioningAxisIdx));
+              rankedType, *maybePartitioning, factorToPartitioningAxisIdx));
         } else {
           inputShardings.push_back(
               buildDefaultShardingForType(ctx, localInputType));
@@ -751,7 +748,7 @@ struct ClusterDistributedKernelsPass
         if (auto rankedType = dyn_cast<RankedTensorType>(globalOutputType);
             rankedType && maybePartitioning) {
           outputShardings.push_back(buildIndexedShardingAttr(
-              rankedType, *maybePartitioning, symbolToPartitioningAxisIdx));
+              rankedType, *maybePartitioning, factorToPartitioningAxisIdx));
         } else {
           outputShardings.push_back(
               buildDefaultShardingForType(ctx, globalOutputType));
@@ -760,7 +757,7 @@ struct ClusterDistributedKernelsPass
 
       // Every AxisSymbol referenced anywhere in this kernel -- by its own
       // boundary values above or by any member's operand/result below --
-      // must be registered in symbolToPartitioningAxisIdx before
+      // must be registered in factorToPartitioningAxisIdx before
       // kernelPartitioningAxes is sized from that map. buildIndexedShardingAttr
       // assigns a symbol its index the first time it's seen, so a symbol that
       // only appears inside the body (e.g. an extent-1 factor a broadcast's
@@ -790,7 +787,7 @@ struct ClusterDistributedKernelsPass
           if (auto rankedType = dyn_cast<RankedTensorType>(operandType);
               rankedType && maybePartitioning) {
             argumentShardings.push_back(buildIndexedShardingAttr(
-                rankedType, *maybePartitioning, symbolToPartitioningAxisIdx));
+                rankedType, *maybePartitioning, factorToPartitioningAxisIdx));
           } else {
             argumentShardings.push_back(
                 buildDefaultShardingForType(ctx, operandType));
@@ -812,7 +809,7 @@ struct ClusterDistributedKernelsPass
           if (auto rankedType = dyn_cast<RankedTensorType>(resultType);
               rankedType && maybePartitioning) {
             outputShardings.push_back(buildIndexedShardingAttr(
-                rankedType, *maybePartitioning, symbolToPartitioningAxisIdx));
+                rankedType, *maybePartitioning, factorToPartitioningAxisIdx));
           } else {
             outputShardings.push_back(
                 buildDefaultShardingForType(ctx, resultType));
@@ -824,9 +821,10 @@ struct ClusterDistributedKernelsPass
       }
 
       SmallVector<Value> kernelPartitioningAxes(
-          symbolToPartitioningAxisIdx.size());
-      for (const auto &[symbol, idx] : symbolToPartitioningAxisIdx) {
-        kernelPartitioningAxes[idx] = getOrCreatePartitioningAxisGroup(symbol);
+          factorToPartitioningAxisIdx.size());
+      for (const auto &[factor, idx] : factorToPartitioningAxisIdx) {
+        kernelPartitioningAxes[idx] = axis::viewFactorsAsProduct(
+            cast<TV_AxisFactor>(factor), *axis_builder, *axis_loc);
       }
 
       auto inputShardingsAttr =
@@ -857,7 +855,7 @@ struct ClusterDistributedKernelsPass
       for (Operation *member : orderedMembers) {
         Operation *cloned = bodyBuilder.clone(*member, mapping);
 
-        // Shardings were already computed (and symbolToPartitioningAxisIdx
+        // Shardings were already computed (and factorToPartitioningAxisIdx
         // already fully populated) by the pre-scan above; annotate the
         // clone with them using the kernel-wide partitioning-axis index
         // space, for looking up the partitioning of internal values in the

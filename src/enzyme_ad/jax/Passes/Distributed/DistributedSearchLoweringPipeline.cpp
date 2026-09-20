@@ -14,6 +14,7 @@ void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
   // and LowerKernels assume every DeviceLocalAxis is already contiguous and
   // minor-most on its dimension, which is exactly the invariant this
   // establishes.
+  pm.addPass(createRefinePartitioningSlotsPass());
   pm.addPass(createCanonicalizeShardedFactorOrderPass());
   pm.addPass(createInlineDeviceLocalAxesPass());
   // InlineDeviceLocalAxes builds its axis-algebra ops (axis.getaxis,

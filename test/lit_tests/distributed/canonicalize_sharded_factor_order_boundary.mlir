@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --canonicalize-sharded-factor-order %s | FileCheck %s
+// RUN: enzymexlamlir-opt --refine-partitioning-slots --canonicalize-sharded-factor-order %s | FileCheck %s
 
 // The returned value's flat dimension is declared [device-local 8, physical x3,
 // device-local 2]: the sharded factors sit between two device-local ones (the

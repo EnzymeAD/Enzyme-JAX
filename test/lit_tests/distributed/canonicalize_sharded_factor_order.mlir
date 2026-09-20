@@ -1,9 +1,10 @@
-// RUN: enzymexlamlir-opt --canonicalize-sharded-factor-order --cse -split-input-file %s | FileCheck %s
+// RUN: enzymexlamlir-opt --refine-partitioning-slots --canonicalize-sharded-factor-order --cse -split-input-file %s | FileCheck %s
 
 // A kernel whose sole dimension is already sharded-major/local-minor within
 // one composite axis.product slot (the same shape as lower_kernels.mlir's
-// composite_kernel) -- must be a complete no-op: this is the pure-metadata
-// path (Part L case (1)), and it already sees a canonical order.
+// composite_kernel). refine-partitioning-slots splits the slot into a sharded
+// slot and a local slot, listed in that order; canonicalization then has
+// nothing to reorder.
 module @already_canonical {
   func.func @main() {
     return
@@ -23,11 +24,11 @@ module @already_canonical {
 }
 
 // CHECK-LABEL: module @already_canonical {
-// CHECK: %[[CG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, %{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
-// CHECK: %[[CST:.*]] = stablehlo.constant
-// CHECK: distributed.DistributedKernel (%[[CST]] : tensor<1xf32>) <[<dim_partitioning_axes = {{\[\[0\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: -> (tensor<1xf32>) <[<dim_partitioning_axes = {{\[\[0\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: axes (%[[CG]] : !axis.factor_group<4>) {
+// CHECK-DAG: %[[SHARD:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+// CHECK-DAG: %[[LOCAL:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
+// CHECK: distributed.DistributedKernel (%{{.*}} : tensor<1xf32>) <[<dim_partitioning_axes = {{\[\[0, 1\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: -> (tensor<1xf32>) <[<dim_partitioning_axes = {{\[\[0, 1\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: axes (%[[SHARD]] : !axis.factor_group<2>, %[[LOCAL]] : !axis.factor_group<2>) {
 // CHECK-NEXT: ^bb0(%arg0: tensor<4xf32>):
 // CHECK-NEXT: distributed.DistributedYield (%arg0 : tensor<4xf32>)
 
@@ -35,15 +36,10 @@ module @already_canonical {
 
 // Same shape, but the one slot's own factor order is sandwiched the other
 // way (local major, shard minor). Part L case (1): this is a
-// DistributedKernelOp's own boundary, so it's a PURE METADATA fix -- a new
-// canonical axis.product slot is appended and argument_shardings is
-// repointed at it. output_shardings is derived separately, from the
-// DistributedYieldOp's own operand (here, %arg0 itself, an identity kernel)
-// via resolveCurrentSharding -- since that resolves to the SAME
-// already-canonicalized argument_shardings slot, output_shardings ends up
-// referencing that same slot too, rather than a redundant second one. The
-// kernel body (block argument, yield) is completely untouched: no
-// stablehlo.reshape/transpose anywhere.
+// DistributedKernelOp's own boundary, so it's a PURE METADATA fix. The slot is
+// refined into a local slot and a sharded slot, and the dimension's slot list
+// is permuted to [sharded, local]; no slot is created by canonicalization.
+// The kernel body (block argument, yield) is untouched.
 module @sandwiched_within_slot {
   func.func @main() {
     return
@@ -63,11 +59,11 @@ module @sandwiched_within_slot {
 }
 
 // CHECK-LABEL: module @sandwiched_within_slot {
-// CHECK-DAG: %[[ORIGCG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>, %{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
-// CHECK-DAG: %[[NEWCG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, %{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
-// CHECK: distributed.DistributedKernel (%{{.*}} : tensor<1xf32>) <[<dim_partitioning_axes = {{\[\[1\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: -> (tensor<1xf32>) <[<dim_partitioning_axes = {{\[\[1\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: axes (%[[ORIGCG]] : !axis.factor_group<4>, %[[NEWCG]] : !axis.factor_group<4>) {
+// CHECK-DAG: %[[LOCAL:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
+// CHECK-DAG: %[[SHARD:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+// CHECK: distributed.DistributedKernel (%{{.*}} : tensor<1xf32>) <[<dim_partitioning_axes = {{\[\[1, 0\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: -> (tensor<1xf32>) <[<dim_partitioning_axes = {{\[\[1, 0\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: axes (%[[LOCAL]] : !axis.factor_group<2>, %[[SHARD]] : !axis.factor_group<2>) {
 // CHECK-NEXT: ^bb0(%arg0: tensor<4xf32>):
 // CHECK-NEXT: distributed.DistributedYield (%arg0 : tensor<4xf32>)
 
@@ -296,15 +292,15 @@ module @kernel_internal_merge_sandwiched {
 }
 
 // CHECK-LABEL: module @kernel_internal_merge_sandwiched {
-// CHECK: distributed.DistributedKernel (%{{.*}} : tensor<1x1xf32>) <[<dim_partitioning_axes = {{\[\[0\], \[1\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: -> (tensor<1xf32>) <[<dim_partitioning_axes = {{\[\[2, 4, 3, 5\]\]}} : unreduced_axes = []>]>
+// CHECK: distributed.DistributedKernel (%{{.*}} : tensor<1x1xf32>) <[<dim_partitioning_axes = {{\[\[0, 1\], \[2, 3\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: -> (tensor<1xf32>) <[<dim_partitioning_axes = {{\[\[0, 2, 1, 3\]\]}} : unreduced_axes = []>]>
 // CHECK-NEXT: axes
 // CHECK-NEXT: ^bb0(%arg0: tensor<6x4xf32>):
-// CHECK-NEXT: %[[MERGED:.*]] = stablehlo.reshape %arg0 {distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[0\], \[1\]\]}} : unreduced_axes = []>]>, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[0, 1\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: %[[SPLIT:.*]] = stablehlo.reshape %[[MERGED]] {canonicalize_sharded_factor_order.internal, distributed.argument_shardings = {{.*}}, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[2\], \[3\], \[4\], \[5\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: %[[MANUAL:.*]] = distributed.ManualComputation (%[[SPLIT]] : tensor<2x3x2x2xf32>) <[<dim_partitioning_axes = {{\[\[2\], \[3\], \[4\], \[5\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: manual_axes [2, 4]
-// CHECK-NEXT: -> (tensor<24xf32>) <[<dim_partitioning_axes = {{\[\[2, 4, 3, 5\]\]}} : unreduced_axes = []>]> {
+// CHECK-NEXT: %[[MERGED:.*]] = stablehlo.reshape %arg0 {distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[0, 1\], \[2, 3\]\]}} : unreduced_axes = []>]>, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[0, 1, 2, 3\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: %[[SPLIT:.*]] = stablehlo.reshape %[[MERGED]] {canonicalize_sharded_factor_order.internal, distributed.argument_shardings = {{.*}}, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[0\], \[1\], \[2\], \[3\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: %[[MANUAL:.*]] = distributed.ManualComputation (%[[SPLIT]] : tensor<2x3x2x2xf32>) <[<dim_partitioning_axes = {{\[\[0\], \[1\], \[2\], \[3\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: manual_axes [0, 2]
+// CHECK-NEXT: -> (tensor<24xf32>) <[<dim_partitioning_axes = {{\[\[0, 2, 1, 3\]\]}} : unreduced_axes = []>]> {
 // CHECK-NEXT: ^bb0(%[[LARG:.*]]: tensor<1x3x1x2xf32>):
 // CHECK-NEXT: %[[LMERGE:.*]] = stablehlo.reshape %[[LARG]] {canonicalize_sharded_factor_order.internal} : (tensor<1x3x1x2xf32>) -> tensor<6xf32>
 // CHECK-NEXT: distributed.DistributedYield (%[[LMERGE]] : tensor<6xf32>)
@@ -322,10 +318,8 @@ module @kernel_internal_merge_sandwiched {
 // whole -- see isFactorFullyLocal) while the pass-through dimension gets the
 // ordinary pure-metadata fix, exactly as it would for any Conforming op: no
 // "not yet supported" remark at all.
-// The sandwiched slot is split once and every use of it (both operands and
-// the result of the concatenate) shares that one new slot: LowerKernels names
-// mesh axes by slot index, so separate slots for the same factors would look
-// like different shardings.
+// The sandwiched slot is refined once into a local and a sharded slot, so
+// both operands and the result of the concatenate share those slots.
 module @special_factor_but_local {
   func.func @main() {
     return
@@ -350,12 +344,12 @@ module @special_factor_but_local {
 
 // CHECK-NOT: not yet supported
 // CHECK-LABEL: module @special_factor_but_local {
-// CHECK-DAG: %[[SANDWICHED:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>, %{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
-// CHECK-DAG: %[[CANON:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, %{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
-// CHECK-DAG: %[[LOCAL:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.device_local_axis<1>, 1, 1>)
+// CHECK-DAG: %[[LOCAL2:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
+// CHECK-DAG: %[[SHARD:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+// CHECK-DAG: %[[LOCAL1:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.device_local_axis<1>, 1, 1>)
 // CHECK: distributed.DistributedKernel (%{{.*}} : tensor<1x1xf32>) <[<dim_partitioning_axes = {{\[\[\], \[\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: -> (tensor<1x2xf32>) <[<dim_partitioning_axes = {{\[\[[0-9]+\], \[[0-9]+\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: axes (%[[SANDWICHED]] : !axis.factor_group<4>, %[[LOCAL]] : !axis.factor_group<1>, %[[CANON]] : !axis.factor_group<4>) {
+// CHECK-NEXT: -> (tensor<1x2xf32>) <[<dim_partitioning_axes = {{\[\[1, 0\], \[2\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: axes (%[[LOCAL2]] : !axis.factor_group<2>, %[[SHARD]] : !axis.factor_group<2>, %[[LOCAL1]] : !axis.factor_group<1>) {
 // CHECK-NEXT: ^bb0(%arg0: tensor<4x1xf32>):
-// CHECK-NEXT: %[[CAT:.*]] = stablehlo.concatenate %arg0, %arg0, dim = 1 {distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[[0-9]+\], \[1\]\]}} : unreduced_axes = []>, <dim_partitioning_axes = {{\[\[[0-9]+\], \[1\]\]}} : unreduced_axes = []>]>, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[[0-9]+\], \[1\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: %[[CAT:.*]] = stablehlo.concatenate %arg0, %arg0, dim = 1 {distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[1, 0\], \[2\]\]}} : unreduced_axes = []>, <dim_partitioning_axes = {{\[\[1, 0\], \[2\]\]}} : unreduced_axes = []>]>, {{.*}}
 // CHECK-NEXT: distributed.DistributedYield (%[[CAT]] : tensor<4x2xf32>)

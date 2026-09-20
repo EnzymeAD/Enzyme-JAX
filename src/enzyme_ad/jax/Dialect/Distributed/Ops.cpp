@@ -526,7 +526,57 @@ DistributedCallOp::getBindingInfoForResult(OpResult result) {
                            result.getResultNumber());
 }
 
+// Distinct partitioning-axis slots of one kernel must not overlap: no factor
+// may be reachable from two slots, or one physical axis piece would shard (or
+// be local in) two places at once. Two factors over the same base axis
+// overlap when their digit ranges [stride, stride * extent) intersect; extent-1
+// factors cover nothing and are ignored, since the same trivial value may
+// legitimately fill several slots. Unresolvable slots are skipped, matching
+// the other best-effort checks here.
+static LogicalResult verifySlotsDisjoint(Operation *kernelOp,
+                                         ValueRange partitioningAxes) {
+  struct SlotFactor {
+    size_t slot;
+    Value baseAxis;
+    int64_t low, high;
+  };
+  SmallVector<SlotFactor> seen;
+  for (auto [slotIndex, slot] : llvm::enumerate(partitioningAxes)) {
+    auto factors = axis::getProductProvenanceFactors(
+        cast<TypedValue<axis::FactorGroupType>>(slot));
+    if (failed(factors)) {
+      continue;
+    }
+    for (auto factor : *factors) {
+      int64_t extent = axis::getFactorExtent(factor);
+      auto base = axis::getFactorProvenanceAxis(factor);
+      if (extent == 1 || failed(base)) {
+        continue;
+      }
+      int64_t low = axis::getFactorStride(factor);
+      int64_t high = low * extent;
+      for (const SlotFactor &other : seen) {
+        if (other.slot != slotIndex && other.baseAxis == *base &&
+            low < other.high && other.low < high) {
+          return kernelOp->emitOpError()
+                 << "requires partitioning_axes slots to be disjoint, but slot "
+                 << other.slot << " and slot " << slotIndex
+                 << " both cover digits [" << std::max(low, other.low) << ", "
+                 << std::min(high, other.high) << ") of the same "
+                 << base->getType();
+        }
+      }
+      seen.push_back({slotIndex, *base, low, high});
+    }
+  }
+  return success();
+}
+
 LogicalResult DistributedKernelOp::verify() {
+  if (failed(verifySlotsDisjoint(getOperation(), getPartitioningAxes()))) {
+    return failure();
+  }
+
   auto argumentShardings = getArgumentShardings();
   auto outputShardings = getOutputShardings();
   int64_t partitioningAxisCount =

@@ -191,6 +191,7 @@ def build_sanity_check_pipeline_argv(physical_mesh_config_path):
     wants real stablehlo kernel bodies, not a dispatch placeholder)."""
     args = _shared_pipeline_prefix(physical_mesh_config_path)
     args += [
+        "--refine-partitioning-slots",
         "--canonicalize-sharded-factor-order",
         "--inline-device-local-axes",
         "--cse",
