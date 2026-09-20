@@ -88,7 +88,7 @@ struct DropIdentityCollectivesPass
     // DropUnitFactorsFromProduct in Dialect/Axis/Ops.cpp): applying it here,
     // ahead of the canonicalize-axis-maps sub-pass below, ensures no
     // collective's mesh/mapping operand still mixes a unit factor in with
-    // real ones by the time axis::split_divisible runs -- that mix is what
+    // real ones by the time axis::splitDivisibleMappings runs -- that mix is what
     // makes its internal splitting choke.
     RewritePatternSet dropUnitFactorPatterns(context);
     axis::AxisProductOp::getCanonicalizationPatterns(dropUnitFactorPatterns,

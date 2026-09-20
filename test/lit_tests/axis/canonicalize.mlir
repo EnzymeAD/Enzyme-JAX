@@ -15,7 +15,7 @@
 // incidental extent-1 tensor-shape factor (as
 // MaterializeDistributedCollectives.cpp's toLocallyTypedAxisProduct always
 // emits, one local-axis factor per tensor dimension regardless of extent)
-// reach axis::split_divisible with only real content left.
+// reach axis::splitDivisibleMappings with only real content left.
 // CHECK-LABEL: module @product_drops_unit_factor
 // CHECK: %[[REAL:.*]] = axis.factor %{{.*}} : !axis.shape_axis<tensor<2xf32>, 0><2, 1>
 // CHECK: %[[PRODUCT:.*]] = axis.product (%[[REAL]] : !axis.axis_factor<!axis.shape_axis<tensor<2xf32>, 0>, 2, 1>)

@@ -116,7 +116,7 @@ def CanonicalizeAxisMapsPass
   let summary = "Rewrite axis.map mappings into maximal indivisible form.";
   let dependentDialects = ["enzyme::axis::AxisDialect"];
   let description =
-      [{Rewrites each axis.map pair using split_divisible,
+      [{Rewrites each axis.map pair using splitDivisibleMappings,
         replacing mapping groups with maximal one - to - one split groups.}];
 }
 

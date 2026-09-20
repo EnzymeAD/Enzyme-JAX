@@ -626,8 +626,9 @@ factorAxisByExtents(::mlir::Value axis, llvm::ArrayRef<int32_t> extents,
   return factors;
 }
 
-llvm::SmallVector<uint64_t> computeSplits(ArrayRef<uint64_t> lhsExtents,
-                                          ArrayRef<uint64_t> rhsExtents) {
+llvm::SmallVector<uint64_t>
+computeMappingSplits(ArrayRef<uint64_t> lhsExtents,
+                     ArrayRef<uint64_t> rhsExtents) {
   llvm::SmallVector<uint64_t> splits;
   if (lhsExtents.empty() || rhsExtents.empty()) {
     assert(lhsExtents.empty() == rhsExtents.empty() &&
@@ -772,8 +773,8 @@ computeSplitExtentSlices(ArrayRef<uint64_t> extents, ArrayRef<uint64_t> cuts) {
 }
 
 static llvm::SmallVector<uint64_t>
-computeSplits(ArrayRef<TypedValue<AxisFactorType>> lhs,
-              ArrayRef<TypedValue<AxisFactorType>> rhs) {
+computeMappingSplits(ArrayRef<TypedValue<AxisFactorType>> lhs,
+                     ArrayRef<TypedValue<AxisFactorType>> rhs) {
   llvm::SmallVector<uint64_t> lhsExtents;
   lhsExtents.reserve(lhs.size());
   for (TypedValue<AxisFactorType> factor : lhs) {
@@ -786,8 +787,8 @@ computeSplits(ArrayRef<TypedValue<AxisFactorType>> lhs,
     rhsExtents.push_back(static_cast<uint64_t>(getFactorExtent(factor)));
   }
 
-  return computeSplits(ArrayRef<uint64_t>(lhsExtents),
-                       ArrayRef<uint64_t>(rhsExtents));
+  return computeMappingSplits(ArrayRef<uint64_t>(lhsExtents),
+                              ArrayRef<uint64_t>(rhsExtents));
 }
 
 // Attempts to split a mapping of factor products into one-to-one
@@ -801,11 +802,12 @@ computeSplits(ArrayRef<TypedValue<AxisFactorType>> lhs,
 // kept separate in the input.
 // As always, use the recursive insert strategy if any returned factor
 // products are added to the IR.
-bool split_divisible(ArrayRef<TypedValue<FactorGroupType>> lhs,
-                     ArrayRef<TypedValue<FactorGroupType>> rhs,
-                     llvm::SmallVector<TypedValue<FactorGroupType>> &lhs_out,
-                     llvm::SmallVector<TypedValue<FactorGroupType>> &rhs_out,
-                     mlir::OpBuilder &builder) {
+bool splitDivisibleMappings(
+    ArrayRef<TypedValue<FactorGroupType>> lhs,
+    ArrayRef<TypedValue<FactorGroupType>> rhs,
+    llvm::SmallVector<TypedValue<FactorGroupType>> &lhs_out,
+    llvm::SmallVector<TypedValue<FactorGroupType>> &rhs_out,
+    mlir::OpBuilder &builder) {
   lhs_out.clear();
   rhs_out.clear();
 
@@ -823,7 +825,7 @@ bool split_divisible(ArrayRef<TypedValue<FactorGroupType>> lhs,
     }
 
     // Nonatomic product group
-    auto splits = computeSplits(*g1_factors, *g2_factors);
+    auto splits = computeMappingSplits(*g1_factors, *g2_factors);
     auto construct_splits =
         [&](ArrayRef<TypedValue<AxisFactorType>> factors,
             llvm::ArrayRef<uint64_t> factorExtents,
@@ -1214,13 +1216,13 @@ LogicalResult replaceAxisFactors(TypedValueArrayRef<AxisFactorType> oldFactors,
     newExtents.push_back(static_cast<uint64_t>(getFactorExtent(factor)));
   }
 
-  // computeSplits finds the common refinement between the two sides' extent
-  // lists; each cut is a piece that divides evenly into both an old and a
-  // new factor's remaining extent, exactly mirroring split_divisible's
+  // computeMappingSplits finds the common refinement between the two sides'
+  // extent lists; each cut is a piece that divides evenly into both an old and
+  // a new factor's remaining extent, exactly mirroring splitDivisibleMappings's
   // two-sided approach (just applied to one axis's old/new factorization
   // instead of two independently-sharded tensors' factor groups).
-  auto cuts = computeSplits(ArrayRef<uint64_t>(oldExtents),
-                            ArrayRef<uint64_t>(newExtents));
+  auto cuts = computeMappingSplits(ArrayRef<uint64_t>(oldExtents),
+                                   ArrayRef<uint64_t>(newExtents));
   auto oldCutSlices = computeSplitExtentSlices(oldExtents, cuts);
   auto newCutSlices = computeSplitExtentSlices(newExtents, cuts);
 
@@ -1330,6 +1332,170 @@ createSubfactor(::mlir::TypedValue<AxisFactorType> factor, int extent,
   int totalStride = getFactorStride(factor) * strideWithinFactor;
   assert(succeeded(axis) && "Failed to get provenance axis");
   return builder.create<AxisFactorOp>(loc, *axis, extent, totalStride);
+}
+
+::mlir::FailureOr<llvm::SmallVector<AxisAtom>>
+applyCutsSorted(uint64_t axisExtent, llvm::ArrayRef<uint64_t> cuts) {
+  llvm::SmallVector<uint64_t> sorted;
+  sorted.push_back(1);
+  for (uint64_t cut : cuts)
+    if (cut > 1 && cut < axisExtent)
+      sorted.push_back(cut);
+  sorted.push_back(axisExtent);
+  llvm::sort(sorted);
+  sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+
+  llvm::SmallVector<AxisAtom> atoms;
+  for (size_t i = 0; i + 1 < sorted.size(); ++i) {
+    if (sorted[i + 1] % sorted[i] != 0)
+      return failure();
+    atoms.push_back({sorted[i + 1] / sorted[i], sorted[i]});
+  }
+  if (atoms.empty()) // axisExtent == 1
+    atoms.push_back({1, 1});
+  std::reverse(atoms.begin(), atoms.end());
+  return atoms;
+}
+
+std::pair<size_t, size_t> getFactorAtomRange(llvm::ArrayRef<AxisAtom> atoms,
+                                             uint64_t extent, uint64_t stride) {
+  if (extent == 1)
+    return {0, 0};
+  uint64_t majorBoundary = stride * extent;
+  size_t first = 0;
+  while (first < atoms.size() &&
+         atoms[first].stride * atoms[first].extent != majorBoundary)
+    ++first;
+  assert(first < atoms.size() && "factor's cuts were not given to atoms");
+  size_t last = first;
+  while (last < atoms.size() && atoms[last].stride != stride)
+    ++last;
+  assert(last < atoms.size() && "factor's cuts were not given to atoms");
+  return {first, last - first + 1};
+}
+
+llvm::SmallVector<uint64_t>
+CommonAtoms::extentsOf(const AtomFactorGroup &group) const {
+  llvm::SmallVector<uint64_t> extents;
+  for (const AtomFactor &factor : group) {
+    auto [first, count] = rangeOf(factor);
+    for (size_t i = first; i < first + count; ++i)
+      extents.push_back(perAxis[factor.axis][i].extent);
+  }
+  return extents;
+}
+
+namespace {
+using AxisCuts = llvm::SmallVector<llvm::SmallVector<uint64_t>>;
+
+void addFactorCuts(AxisCuts &cuts, const AtomFactor &factor) {
+  if (factor.extent == 1)
+    return;
+  auto [lo, hi] = getFactorCuts(factor.extent, factor.stride);
+  cuts[factor.axis].push_back(lo);
+  cuts[factor.axis].push_back(hi);
+}
+
+FailureOr<CommonAtoms> applyCuts(ArrayRef<uint64_t> axisExtents,
+                                 const AxisCuts &cuts) {
+  llvm::SmallVector<llvm::SmallVector<AxisAtom>> perAxis;
+  for (auto [extent, axisCuts] : llvm::zip_equal(axisExtents, cuts)) {
+    auto atoms = applyCutsSorted(extent, axisCuts);
+    if (failed(atoms))
+      return failure();
+    perAxis.push_back(std::move(*atoms));
+  }
+  return CommonAtoms(std::move(perAxis));
+}
+
+// Cuts the axes under `group` wherever one of `bounds` (digit boundaries of
+// the group's index space, minor-first cumulative products) falls strictly
+// inside one of its atoms. Returns whether a cut was added, or fails if a
+// boundary cannot be expressed as a digit of that atom.
+FailureOr<bool> cutGroupAt(const CommonAtoms &atoms,
+                           const AtomFactorGroup &group,
+                           ArrayRef<uint64_t> bounds, AxisCuts &cuts) {
+  llvm::SmallVector<std::pair<size_t, AxisAtom>> minorFirst;
+  for (const AtomFactor &factor : llvm::reverse(group)) {
+    auto [first, count] = atoms.rangeOf(factor);
+    for (size_t i = first + count; i-- > first;)
+      minorFirst.push_back({factor.axis, atoms.atomsOf(factor.axis)[i]});
+  }
+  bool added = false;
+  for (uint64_t bound : bounds) {
+    uint64_t below = 1;
+    for (const auto &[axis, atom] : minorFirst) {
+      uint64_t above = below * atom.extent;
+      if (below < bound && bound < above) {
+        uint64_t sub = bound / below;
+        if (bound % below != 0 || atom.extent % sub != 0)
+          return failure();
+        cuts[axis].push_back(atom.stride * sub);
+        added = true;
+        break;
+      }
+      below = above;
+    }
+  }
+  return added;
+}
+} // namespace
+
+FailureOr<CommonAtoms> computeCommonAtoms(ArrayRef<uint64_t> axisExtents,
+                                          ArrayRef<AtomFactor> factors) {
+  AxisCuts cuts(axisExtents.size());
+  for (const AtomFactor &factor : factors)
+    addFactorCuts(cuts, factor);
+  return applyCuts(axisExtents, cuts);
+}
+
+FailureOr<CommonAtoms>
+computeCommonAtomsAndMappingSplits(ArrayRef<uint64_t> axisExtents,
+                                   ArrayRef<AtomFactorPair> pairs,
+                                   ArrayRef<AtomFactor> otherFactors) {
+  AxisCuts cuts(axisExtents.size());
+  for (const AtomFactor &factor : otherFactors)
+    addFactorCuts(cuts, factor);
+  for (const auto &[lhs, rhs] : pairs)
+    for (const AtomFactorGroup *group : {&lhs, &rhs})
+      for (const AtomFactor &factor : *group)
+        addFactorCuts(cuts, factor);
+
+  while (true) {
+    FailureOr<CommonAtoms> atoms = applyCuts(axisExtents, cuts);
+    if (failed(atoms))
+      return failure();
+    bool changed = false;
+    for (const auto &[lhs, rhs] : pairs) {
+      auto lhsExtents = atoms->extentsOf(lhs);
+      auto rhsExtents = atoms->extentsOf(rhs);
+      if (lhsExtents == rhsExtents)
+        continue;
+      if (llvm::product_of(lhsExtents) != llvm::product_of(rhsExtents))
+        return failure();
+      // The pieces of the pair's index space that both sides must break at.
+      // Their boundaries, from the minor end, are where each side needs a cut.
+      auto splits = computeMappingSplits(lhsExtents, rhsExtents);
+      llvm::SmallVector<uint64_t> bounds;
+      uint64_t below = 1;
+      for (uint64_t piece : llvm::reverse(splits)) {
+        below *= piece;
+        bounds.push_back(below);
+      }
+      bool added = false;
+      for (const AtomFactorGroup *group : {&lhs, &rhs}) {
+        FailureOr<bool> groupAdded = cutGroupAt(*atoms, *group, bounds, cuts);
+        if (failed(groupAdded))
+          return failure();
+        added |= *groupAdded;
+      }
+      if (!added)
+        return failure(); // indivisible pair
+      changed = true;
+    }
+    if (!changed)
+      return atoms;
+  }
 }
 
 } // namespace mlir::enzyme::axis

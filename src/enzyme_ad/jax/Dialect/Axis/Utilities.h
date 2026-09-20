@@ -282,11 +282,15 @@ subtractSpace(llvm::ArrayRef<::mlir::TypedValue<AxisFactorType>> minuend,
               llvm::ArrayRef<::mlir::TypedValue<AxisFactorType>> subtrahend,
               ::mlir::OpBuilder &builder);
 
-// Computes the extent cuts used by split_divisible without materializing SSA
-// factors. The returned extents are maximal one-to-one cuts where possible and
-// minimal indivisible units otherwise.
-llvm::SmallVector<uint64_t> computeSplits(llvm::ArrayRef<uint64_t> lhsExtents,
-                                          llvm::ArrayRef<uint64_t> rhsExtents);
+// Finds where a mapping's two sides decompose together: given the ordered
+// extents (all > 1, major-first) of the lhs and rhs factors of one mapping
+// pair, returns the extents of the maximal one-to-one pieces, or minimal
+// indivisible units where the sides cannot be separated (3*2 against 2*3 is
+// one piece of 6). Used by splitDivisibleMappings without materializing SSA
+// factors.
+llvm::SmallVector<uint64_t>
+computeMappingSplits(llvm::ArrayRef<uint64_t> lhsExtents,
+                     llvm::ArrayRef<uint64_t> rhsExtents);
 
 // Materializes one side of a split plan as, for each cut, the list of source
 // extent slices contributing to that cut.
@@ -299,7 +303,7 @@ computeSplitExtentSlices(llvm::ArrayRef<uint64_t> extents,
 // The outputs are always populated with the computed split mapping. The return
 // value is true only if every produced mapping pair is fully atomic on both
 // sides.
-bool split_divisible(
+bool splitDivisibleMappings(
     llvm::ArrayRef<::mlir::TypedValue<FactorGroupType>> lhs,
     llvm::ArrayRef<::mlir::TypedValue<FactorGroupType>> rhs,
     llvm::SmallVector<::mlir::TypedValue<FactorGroupType>> &lhs_out,
@@ -333,10 +337,10 @@ findAxisFactors(::mlir::TypedValue<AxisTypeInterface> axis);
 // `newFactors`, rewriting every axis.product that uses an old factor in
 // place. The two lists must cover the same total extent. Where their
 // granularities don't align as whole units, both sides are further split
-// (via computeSplits/computeSplitExtentSlices -- the same machinery
-// split_divisible uses to align two independently-factored sides) to find a
-// common refinement, so a single old factor may end up replaced by one or
-// more new sub-factors. Each axis.product using an old factor has that
+// (via computeMappingSplits/computeSplitExtentSlices -- the same machinery
+// splitDivisibleMappings uses to align two independently-factored sides) to
+// find a common refinement, so a single old factor may end up replaced by one
+// or more new sub-factors. Each axis.product using an old factor has that
 // operand spliced out and the corresponding new sub-factor(s) spliced in --
 // every other operand is left untouched. `oldFactors` should come from
 // findAxisFactors, called before any of `newFactors` were built (see its
@@ -350,6 +354,94 @@ findAxisFactors(::mlir::TypedValue<AxisTypeInterface> axis);
 replaceAxisFactors(TypedValueArrayRef<AxisFactorType> oldFactors,
                    TypedValueArrayRef<AxisFactorType> newFactors,
                    ::mlir::OpBuilder &builder);
+
+// One digit of an axis's index space that no cut divides further.
+struct AxisAtom {
+  uint64_t extent;
+  uint64_t stride;
+};
+
+// Cuts an axis of `axisExtent` at each stride in `cuts` and returns the pieces
+// between consecutive cuts as atoms, major-first (the row-major order of a
+// reshape of the axis). `cuts` may be unsorted and contain duplicates; the
+// boundaries 1 and `axisExtent` are implicit.
+//
+// A factor whose two boundaries (see getFactorCuts) are both cuts is then a
+// contiguous run of atoms, found with getFactorAtomRange. Cutting at the
+// boundaries of every factor over an axis therefore expresses all of them on
+// one shared basis.
+//
+// Fails if the cuts are not a divisibility chain (2 and 3 on an axis of 6),
+// since the pieces are then not digits of a mixed-radix index.
+::mlir::FailureOr<llvm::SmallVector<AxisAtom>>
+applyCutsSorted(uint64_t axisExtent, llvm::ArrayRef<uint64_t> cuts);
+
+// The two cut strides a factor of the given extent and stride contributes.
+inline std::pair<uint64_t, uint64_t> getFactorCuts(uint64_t extent,
+                                                   uint64_t stride) {
+  return {stride, stride * extent};
+}
+
+// Returns {first, count}: the run of `atoms` (major-first) that a factor of
+// the given extent and stride covers. Both of the factor's cuts must have been
+// passed to applyCutsSorted. An extent-1 factor covers no atoms.
+std::pair<size_t, size_t> getFactorAtomRange(llvm::ArrayRef<AxisAtom> atoms,
+                                             uint64_t extent, uint64_t stride);
+
+// A factor over one of a caller-numbered set of axes. The axes are only
+// numbers here: callers decide what counts as the same axis (for example,
+// whether an input and an output tensor dimension share one).
+struct AtomFactor {
+  size_t axis;
+  uint64_t extent;
+  uint64_t stride;
+};
+using AtomFactorGroup = llvm::SmallVector<AtomFactor>;
+using AtomFactorPair = std::pair<AtomFactorGroup, AtomFactorGroup>;
+
+// The atoms of several axes, on which every factor given to
+// computeCommonAtoms is a contiguous run.
+class CommonAtoms {
+public:
+  explicit CommonAtoms(llvm::SmallVector<llvm::SmallVector<AxisAtom>> perAxis)
+      : perAxis(std::move(perAxis)) {}
+
+  llvm::ArrayRef<AxisAtom> atomsOf(size_t axis) const { return perAxis[axis]; }
+
+  // The {first, count} run of atomsOf(factor.axis) the factor covers.
+  std::pair<size_t, size_t> rangeOf(const AtomFactor &factor) const {
+    return getFactorAtomRange(perAxis[factor.axis], factor.extent,
+                              factor.stride);
+  }
+
+  // The extents of the atoms `group` covers, in the group's order (which is
+  // major-first).
+  llvm::SmallVector<uint64_t> extentsOf(const AtomFactorGroup &group) const;
+
+private:
+  llvm::SmallVector<llvm::SmallVector<AxisAtom>> perAxis;
+};
+
+// Expresses all `factors` on one shared basis: each axis (with extent
+// `axisExtents[axis]`) is cut at every factor boundary over it. Fails when
+// some axis's boundaries do not nest (see applyCutsSorted).
+::mlir::FailureOr<CommonAtoms>
+computeCommonAtoms(llvm::ArrayRef<uint64_t> axisExtents,
+                   llvm::ArrayRef<AtomFactor> factors);
+
+// computeCommonAtoms over the factors of `pairs` and `otherFactors`, where
+// each pair's lhs and rhs group must also decompose identically: the k-th
+// atom on one side then has the same extent as the k-th on the other.
+//
+// The two requirements interact, since cutting an atom to line up one pair
+// can break another pair or force more cuts elsewhere. Cuts are only ever
+// added, so this iterates to the coarsest basis satisfying both. Fails when
+// that basis does not exist, that is when a pair is indivisible
+// (computeMappingSplits leaves 3*2 against 2*3 as one piece) or the cuts on
+// some axis do not nest.
+::mlir::FailureOr<CommonAtoms> computeCommonAtomsAndMappingSplits(
+    llvm::ArrayRef<uint64_t> axisExtents, llvm::ArrayRef<AtomFactorPair> pairs,
+    llvm::ArrayRef<AtomFactor> otherFactors = {});
 
 // some filtering / predicate utilities
 template <typename T> using Predicate = std::function<bool(T)>;

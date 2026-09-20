@@ -359,7 +359,7 @@ void SymbolFactorMerge::attemptMergeSymbols(llvm::ArrayRef<AxisSymbol> a,
   // the mismatching part, and merge any other clean cuts we can find. When
   // introducing new factors, we may need to create new symbols.
 
-  llvm::SmallVector<uint64_t> splits = axis::computeSplits(
+  llvm::SmallVector<uint64_t> splits = axis::computeMappingSplits(
       symbolsToExtents(lhs_factors), symbolsToExtents(rhs_factors));
 
   auto lhsGroups = materializeSplitGroups(lhs_factors, splits, factorizations,
@@ -375,7 +375,7 @@ void SymbolFactorMerge::attemptMergeSymbols(llvm::ArrayRef<AxisSymbol> a,
       continue;
     }
 
-    llvm::SmallVector<uint64_t> groupSplits = axis::computeSplits(
+    llvm::SmallVector<uint64_t> groupSplits = axis::computeMappingSplits(
         symbolsToExtents(lhsGroup), symbolsToExtents(rhsGroup));
 
     if (groupSplits.size() == 1 &&

@@ -31,7 +31,8 @@ struct CanonicalizeAxisMapsPass
       SmallVector<TypedValue<axis::FactorGroupType>> rhsOut;
 
       builder.setInsertionPoint(mapOp);
-      axis::split_divisible(lhsFactors, rhsFactors, lhsOut, rhsOut, builder);
+      axis::splitDivisibleMappings(lhsFactors, rhsFactors, lhsOut, rhsOut,
+                                   builder);
 
       Block &targetBlock = *mapOp->getBlock();
       auto materializeGroup = [&](TypedValue<axis::FactorGroupType> group) {
