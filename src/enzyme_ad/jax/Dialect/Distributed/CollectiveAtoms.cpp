@@ -11,18 +11,20 @@ FailureOr<CollectiveResolution> resolveCollectiveAtoms(
     DistributedCollectiveOp collective,
     ArrayRef<PhysicalCommAxisType> meshAxisTypes, ArrayRef<int64_t> inputTile,
     ArrayRef<int64_t> outputTile, CollectiveResolutionError &error) {
-  assert(inputTile.size() == outputTile.size() &&
-         "collective input and output tiles must have the same rank");
   error = CollectiveResolutionError();
 
   CollectiveResolution resolution;
   CollectiveAtoms &atoms = resolution.atoms;
   for (size_t a = 0; a < meshAxisTypes.size(); ++a)
     atoms.addAxis({AtomSpace::Mesh, a}, meshAxisTypes[a].getExtent());
-  for (size_t j = 0; j < inputTile.size(); ++j) {
+  // InTile and OutTile are independent axis spaces (one indexed by the input
+  // tensor's own rank, the other by the output's), so they are registered in
+  // separate loops rather than one shared by index -- a collective may
+  // reshape and have the two tiles differ in rank.
+  for (size_t j = 0; j < inputTile.size(); ++j)
     atoms.addAxis({AtomSpace::InTile, j}, inputTile[j]);
+  for (size_t j = 0; j < outputTile.size(); ++j)
     atoms.addAxis({AtomSpace::OutTile, j}, outputTile[j]);
-  }
 
   // Resolves a group's factors onto axes; extent-1 factors carry no data and
   // are dropped. `tileSpace` is the tile a shape-axis factor refers to.
@@ -68,7 +70,8 @@ FailureOr<CollectiveResolution> resolveCollectiveAtoms(
         return failure();
       }
       ResolvedFactor resolvedFactor{
-          key, extent, static_cast<uint64_t>(axis::getFactorStride(factor))};
+          key, extent, static_cast<uint64_t>(axis::getFactorStride(factor)),
+          *provenance};
       atoms.addFactor(resolvedFactor);
       resolved.push_back(resolvedFactor);
     }
@@ -97,6 +100,24 @@ FailureOr<CollectiveResolution> resolveCollectiveAtoms(
       return failure();
     resolution.pairs.push_back({std::move(*lhs), std::move(*rhs)});
   }
+
+  // The mesh operands are resolved last (see this function's header comment
+  // for why the replicate-id order doesn't matter in practice): their
+  // factors are registered as cut sources exactly like any other, but kept
+  // out of reductionGroups/pairs since they mean neither a reduction nor a
+  // relabeling. `tileSpace` is passed but never actually used for these,
+  // since a mesh operand's factors are always physical-axis provenance (see
+  // MakeReplicationsExplicit.cpp, the sole builder of these operands).
+  auto inputMeshFactors =
+      resolveGroup(collective.getInputMesh(), AtomSpace::Mesh);
+  if (failed(inputMeshFactors))
+    return failure();
+  resolution.inputMeshFactors = std::move(*inputMeshFactors);
+  auto outputMeshFactors =
+      resolveGroup(collective.getOutputMesh(), AtomSpace::Mesh);
+  if (failed(outputMeshFactors))
+    return failure();
+  resolution.outputMeshFactors = std::move(*outputMeshFactors);
 
   if (failed(atoms.refine(resolution.pairs))) {
     error.kind = CollectiveResolutionError::Kind::NoCommonAtoms;

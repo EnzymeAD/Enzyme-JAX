@@ -30,12 +30,18 @@ struct AtomLabel {
   }
 };
 
-// A factor of a collective's reduction group or mapping, resolved to the
-// axis it slices.
+// A factor of a collective's reduction group, mapping, or mesh operand,
+// resolved to the axis it slices.
 struct ResolvedFactor {
   AxisKey key;
   uint64_t extent;
   uint64_t stride;
+  // The canonical axis this factor is a piece of (axis::
+  // getFactorProvenanceAxis's result for it). Not used by any resolution
+  // logic here; carried along so a caller rebuilding axis algebra from a
+  // resolved factor (the atomizing rewrite) can create a fresh axis.factor
+  // over the same source axis without re-deriving provenance.
+  TypedValue<axis::AxisTypeInterface> provenanceAxis;
 };
 using ResolvedGroup = SmallVector<ResolvedFactor>;
 
@@ -135,6 +141,14 @@ struct CollectiveResolution {
   SmallVector<ResolvedGroup> reductionGroups;
   // One (lhs, rhs) group pair per mapping pair, in mapping order.
   SmallVector<std::pair<ResolvedGroup, ResolvedGroup>> pairs;
+  // The collective's own input_mesh/output_mesh factors, resolved the same
+  // way as any other factor and folded into `atoms` as cut sources (so the
+  // common atom basis also respects a mesh operand's own cuts), but kept
+  // separate from reductionGroups/pairs since they are neither a reduction
+  // nor a relabeling: existing callers that only care about those two
+  // meanings are unaffected by this field's contents.
+  SmallVector<ResolvedFactor> inputMeshFactors;
+  SmallVector<ResolvedFactor> outputMeshFactors;
   CollectiveAtoms atoms;
 };
 
@@ -162,13 +176,21 @@ struct CollectiveResolutionError {
 //
 // The axes are the module's mesh axes (shared by input and output), each
 // tile dimension of the input and of the output, and one axis per replicate
-// factor. Each factor of a reduction group or mapping is resolved to one of
-// these and registered as a cut source, and extent-1 factors carry no data and
-// are dropped. Replicate axes are numbered in resolution order: reduction
-// groups first, then each mapping pair's lhs followed by its rhs.
+// factor. Each factor of a reduction group, a mapping pair, or the
+// collective's own input_mesh/output_mesh operand is resolved to one of these
+// and registered as a cut source, so the common atom basis respects a mesh
+// operand's own cuts too; extent-1 factors carry no data and are dropped.
+// Replicate axes are numbered in resolution order: reduction groups first,
+// then each mapping pair's lhs followed by its rhs, then input_mesh and
+// output_mesh last. (In practice a mesh operand holds only physical factors
+// once distributed-make-replications-explicit has run, so this last step
+// rarely allocates a replicate id at all; the order only matters for
+// determinism.)
 //
 // `meshAxisTypes` is the module's physical mesh; `inputTile` and `outputTile`
-// are the local tile shapes on either side and must have equal rank.
+// are the local tile shapes on either side. They index independent axis
+// spaces (InTile/OutTile) and need not have equal rank -- a collective may
+// reshape, as when a gather's output has more dims than its per-device input.
 //
 // Assumes each group's index space is row-major over its factors,
 // major-first.
