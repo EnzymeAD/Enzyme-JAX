@@ -105,3 +105,37 @@ module @already_explicit {
   %h = distributed.Collective %local : tensor<1xf32> on %mesh_in : !axis.factor_group<4> to tensor<1xf32> on %mesh_out : !axis.factor_group<4> reduces () maps %map : !axis.map
   %v = distributed.Await %h : !distributed.asynch_handle<tensor<1xf32>> -> tensor<1xf32>
 }
+
+// -----
+
+// A physical axis only partially covered by the collective's own mesh
+// operand (here: a stride-2 half of a 4-way physical axis) requires
+// subtractSpace to synthesize a genuinely new complementary sub-factor,
+// rather than passing an existing whole-axis factor through unchanged --
+// this is the path that needs the missing factor spliced into the module
+// before being used (see MakeReplicationsExplicit.cpp's materialize step).
+// CHECK-LABEL: module @missing_partial_factor
+// CHECK: distributed.ReplicationAxis 2
+// CHECK: distributed.ReplicationAxis 2
+// CHECK: distributed.Collective {{.*}} on %{{.*}} : <4> to {{.*}} on %{{.*}} : <4>
+module @missing_partial_factor {
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 1>]
+
+  func.func @main() {
+    return
+  }
+
+  %p0 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<4, 1>
+  %f0 = axis.factor %p0 : !distributed.physical_comm_axis<4, 1> <2, 2>
+
+  %mesh_in = axis.product (%f0 : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 2>)
+  %mesh_out = axis.product (%f0 : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 2>)
+  %lhs = axis.product (%f0 : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 2>)
+  %rhs = axis.product (%f0 : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 2>)
+  %map = axis.map %lhs to %rhs : [!axis.factor_group<2>] [!axis.factor_group<2>]
+
+  %global = tensor.empty() : tensor<2xf32>
+  %local = distributed.CastGlobalToLocal %global axes (%mesh_in : !axis.factor_group<2>) : tensor<2xf32> -> tensor<1xf32>
+  %h = distributed.Collective %local : tensor<1xf32> on %mesh_in : !axis.factor_group<2> to tensor<1xf32> on %mesh_out : !axis.factor_group<2> reduces () maps %map : !axis.map
+  %v = distributed.Await %h : !distributed.asynch_handle<tensor<1xf32>> -> tensor<1xf32>
+}

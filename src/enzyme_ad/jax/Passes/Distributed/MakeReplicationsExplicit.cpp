@@ -117,6 +117,20 @@ struct MakeCollectiveReplicationsExplicit
           assert(succeeded(missingPhysicalFactors) &&
                  "module physical mesh axes must be representable as "
                  "factors of a collective's own mesh operand");
+
+          // subtractSpace returns a genuinely new factor detached (it builds
+          // it through a TemporaryOpGuard); a pass-through of one of
+          // collectiveMesh's own factors is already in the module. Each
+          // detached factor is materialized before anything real uses it,
+          // because MaybeTemporaryInterface::materialize does not recurse
+          // through the operands of an already-manifested op, and the
+          // axis.product built below is manifested as soon as it is created.
+          Block &moduleBody = *rewriter.getInsertionBlock();
+          for (TV_AxisFactor factor : *missingPhysicalFactors) {
+            if (Operation *op = factor.getDefiningOp())
+              cast<axis::MaybeTemporaryInterface>(op).materialize(moduleBody);
+          }
+
           llvm::SmallVector<TV_AxisFactor> correspondingReplicationFactors;
           for (TV_AxisFactor factor : *missingPhysicalFactors) {
             // Just need something with the same extent.
