@@ -3404,6 +3404,13 @@ struct TransposeLikeBroadcastSliceBase final
       return failure();
     }
 
+    // Above the slice the broadcast applies to the slice's operand; of a
+    // splat constant it is no longer transpose-like (see
+    // isTransposeReshapeLikeBroadcast) and SliceBroadcast would move it back.
+    if (SplatElementsAttr cstAttr;
+        matchPattern(sliceOp.getOperand(), m_Constant(&cstAttr)))
+      return failure();
+
     // If we can fuse the transpose into all of its users then we shouldn't push
     // it up (or atleast give higher priority to other passes before trying to
     // move it up)
