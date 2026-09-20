@@ -317,21 +317,34 @@ public:
       } else if (auto castOp = dyn_cast<DistributedCastGlobalToLocalOp>(&op)) {
         // Consumed lazily by whichever kernel/collective needs it -- see
         // getExpandedValue.
+        // The argument side may pass through the boundary relayout
+        // (reshape/transpose) before reaching the function argument.
         Value input = castOp.getInput();
-        while (auto anchor = input.getDefiningOp<AnchorPartitioningOp>())
-          input = anchor.getInput();
+        while (Operation *def = input.getDefiningOp()) {
+          if (!isa<AnchorPartitioningOp, stablehlo::ReshapeOp,
+                   stablehlo::TransposeOp>(def))
+            break;
+          input = def->getOperand(0);
+        }
         if (!isa<BlockArgument>(input))
           warnInteriorCast(castOp);
       } else if (auto castOp = dyn_cast<DistributedCastLocalToGlobalOp>(&op)) {
+        // The result side may pass through the boundary relayout
+        // (reshape/transpose) before the return.
         Value cur = castOp.getOutput();
-        auto onlyReturned = [&](Value v) {
-          return llvm::all_of(v.getUsers(), [](Operation *user) {
-            return isa<DistributedYieldOp>(user);
-          });
-        };
-        while (cur.hasOneUse() && isa<AnchorPartitioningOp>(*cur.user_begin()))
-          cur = cast<AnchorPartitioningOp>(*cur.user_begin()).getOutput();
-        if (!onlyReturned(cur))
+        bool returned = false;
+        while (cur.hasOneUse()) {
+          Operation *user = *cur.user_begin();
+          if (isa<DistributedYieldOp>(user)) {
+            returned = true;
+            break;
+          }
+          if (!isa<AnchorPartitioningOp, stablehlo::ReshapeOp,
+                   stablehlo::TransposeOp>(user))
+            break;
+          cur = user->getResult(0);
+        }
+        if (!returned)
           warnInteriorCast(castOp);
       } else if (auto anchor = dyn_cast<AnchorPartitioningOp>(&op)) {
         // Input/output are always identical (Ops.td's own doc comment);
@@ -1482,6 +1495,10 @@ struct LowerForSanityCheckPass
     Block &mainBlock = distFn.getBody().front();
     builder.setInsertionPointToStart(&mainBlock);
 
+    SmallVector<Operation *> originals;
+    for (Operation &op : mainBlock.without_terminator())
+      originals.push_back(&op);
+
     SanityCheckLowering lowering(builder, meshAxisTypes);
     lowering.lowerBlock(mainBlock);
     if (lowering.sawFailure()) {
@@ -1494,24 +1511,15 @@ struct LowerForSanityCheckPass
     for (Value v : yieldOp.getReturns())
       newReturns.push_back(lowering.getFlatValue(v));
     builder.setInsertionPoint(yieldOp);
-    auto newYield = builder.create<DistributedYieldOp>(yieldOp.getLoc(), newReturns);
+    builder.create<DistributedYieldOp>(yieldOp.getLoc(), newReturns);
     yieldOp.erase();
 
-    // Erase every original distributed.*/axis.* op now that everything has
-    // been re-expressed in terms of newly-cloned plain stablehlo ops --
-    // walking in reverse so a value's uses are erased before its def.
-    SmallVector<Operation *> toErase;
-    for (Operation &op : llvm::make_early_inc_range(mainBlock)) {
-      if (&op == newYield)
-        continue;
-      if (isa<DistributedKernelOp, DistributedCastGlobalToLocalOp,
-             DistributedCastLocalToGlobalOp, AnchorPartitioningOp,
-             DistributedCollectiveOp, DistributedAwait>(op)) {
-        toErase.push_back(&op);
-      }
+    // Everything was re-expressed as newly cloned plain stablehlo, so erase
+    // every original op, in reverse so a value's uses go before its def.
+    for (Operation *op : llvm::reverse(originals)) {
+      op->dropAllUses();
+      op->erase();
     }
-    for (Operation *op : llvm::reverse(toErase))
-      op->dropAllUses(), op->erase();
 
     convertDistributedFunctionToFunc(distFn, builder);
 
