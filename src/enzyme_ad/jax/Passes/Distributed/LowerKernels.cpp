@@ -77,11 +77,23 @@ static std::string shardyAxisName(int64_t partitioningAxisIndex) {
   return ("a" + llvm::Twine(partitioningAxisIndex)).str();
 }
 
+// Only an index whose slot is genuinely shardable (see isShardableFactor)
+// ever becomes a real, Shardy-visible axis-ref: a slot that's purely
+// DeviceLocal/Replication never needs cross-device identity, so silently
+// dropping it here (rather than naming it "aN" like any other slot) is what
+// keeps two independently-numbered local slots for what's really the same
+// permutation/need-replication factor (see ShardyLogicalAxisAnalysis's own
+// comment on why it never unifies them) from ever looking like a genuine,
+// unreconciled sharding conflict to Shardy's own legality checks.
 static llvm::SmallVector<mlir::sdy::AxisRefAttr>
-shardyAxisRefsForIndices(MLIRContext *ctx, llvm::ArrayRef<int64_t> indices) {
+shardyAxisRefsForIndices(MLIRContext *ctx, llvm::ArrayRef<int64_t> indices,
+                         llvm::ArrayRef<bool> shardableSlots) {
   llvm::SmallVector<mlir::sdy::AxisRefAttr> axisRefs;
   axisRefs.reserve(indices.size());
   for (int64_t index : indices) {
+    if (!shardableSlots[index]) {
+      continue;
+    }
     axisRefs.push_back(mlir::sdy::AxisRefAttr::get(ctx, shardyAxisName(index)));
   }
   return axisRefs;
@@ -92,17 +104,20 @@ shardyAxisRefsForIndices(MLIRContext *ctx, llvm::ArrayRef<int64_t> indices) {
 // partitioning-axis index space, so dim/unreduced indices translate directly.
 static mlir::sdy::TensorShardingAttr
 translateIndexedSharding(MLIRContext *ctx, StringRef meshName,
-                         IndexedTensorShardingAttr indexed) {
+                         IndexedTensorShardingAttr indexed,
+                         llvm::ArrayRef<bool> shardableSlots) {
   llvm::SmallVector<mlir::sdy::DimensionShardingAttr> dimShardings;
   dimShardings.reserve(indexed.getDimPartitioningAxes().size());
   for (DenseI64ArrayAttr dimAxes : indexed.getDimPartitioningAxes()) {
     dimShardings.push_back(mlir::sdy::DimensionShardingAttr::get(
-        ctx, shardyAxisRefsForIndices(ctx, dimAxes.asArrayRef()),
+        ctx,
+        shardyAxisRefsForIndices(ctx, dimAxes.asArrayRef(), shardableSlots),
         /*is_closed=*/true));
   }
 
   llvm::SmallVector<mlir::sdy::AxisRefAttr> unreducedAxisRefs =
-      shardyAxisRefsForIndices(ctx, indexed.getUnreducedAxes().asArrayRef());
+      shardyAxisRefsForIndices(ctx, indexed.getUnreducedAxes().asArrayRef(),
+                               shardableSlots);
 
   // TODO: assumes SUM reduction (Shardy's default); revisit if
   // IndexedTensorShardingAttr ever gains a reduction-kind field.
@@ -113,27 +128,32 @@ translateIndexedSharding(MLIRContext *ctx, StringRef meshName,
 
 static mlir::sdy::TensorShardingPerValueAttr
 translateIndexedShardingPerValue(MLIRContext *ctx, StringRef meshName,
-                                 IndexedTensorShardingPerValueAttr perValue) {
+                                 IndexedTensorShardingPerValueAttr perValue,
+                                 llvm::ArrayRef<bool> shardableSlots) {
   llvm::SmallVector<mlir::sdy::TensorShardingAttr> shardings;
   shardings.reserve(perValue.getShardings().size());
   for (IndexedTensorShardingAttr indexed : perValue.getShardings()) {
-    shardings.push_back(translateIndexedSharding(ctx, meshName, indexed));
+    shardings.push_back(
+        translateIndexedSharding(ctx, meshName, indexed, shardableSlots));
   }
   return mlir::sdy::TensorShardingPerValueAttr::get(ctx, shardings);
 }
 
-// Every partitioning-axis index appearing in any value's dim_partitioning_axes
-// or unreduced_axes; used to tell which axes are "visible" on the argument or
-// result side of an op.
+// Every genuinely shardable partitioning-axis index appearing in any value's
+// dim_partitioning_axes or unreduced_axes; used to tell which axes are
+// "visible" on the argument or result side of an op. Non-shardable indices
+// are excluded for the same reason shardyAxisRefsForIndices drops them: they
+// carry no cross-device identity worth comparing.
 static llvm::SmallVector<int64_t>
-collectAxisIndices(IndexedTensorShardingPerValueAttr perValue) {
+collectAxisIndices(IndexedTensorShardingPerValueAttr perValue,
+                   llvm::ArrayRef<bool> shardableSlots) {
   if (!perValue) {
     return {};
   }
   llvm::SmallDenseSet<int64_t> seen;
   llvm::SmallVector<int64_t> indices;
   auto add = [&](int64_t index) {
-    if (seen.insert(index).second) {
+    if (shardableSlots[index] && seen.insert(index).second) {
       indices.push_back(index);
     }
   };
@@ -156,12 +176,20 @@ collectAxisIndices(IndexedTensorShardingPerValueAttr perValue) {
 // but Shardy's ConvertGlobalToLocal only accepts a sharded contracting dim if
 // the op has an explicit sdy.all_reduce consumer over exactly those axes. See
 // insertPlaceholderAllReduces, which satisfies that and is undone afterward.
+//
+// Only shardable axes are considered: a non-shardable slot "vanishing"
+// between the argument and output sides (e.g. a permutation factor's
+// independently-numbered operand/result local symbols, see
+// ShardyLogicalAxisAnalysis) never actually reduced anything and needs no
+// placeholder all-reduce.
 static llvm::SmallVector<int64_t>
 computeReductionAxes(IndexedTensorShardingPerValueAttr argumentShardings,
-                     IndexedTensorShardingPerValueAttr outputShardings) {
-  llvm::SmallVector<int64_t> argAxes = collectAxisIndices(argumentShardings);
+                     IndexedTensorShardingPerValueAttr outputShardings,
+                     llvm::ArrayRef<bool> shardableSlots) {
+  llvm::SmallVector<int64_t> argAxes =
+      collectAxisIndices(argumentShardings, shardableSlots);
   llvm::SmallDenseSet<int64_t> visible;
-  for (int64_t index : collectAxisIndices(outputShardings)) {
+  for (int64_t index : collectAxisIndices(outputShardings, shardableSlots)) {
     visible.insert(index);
   }
   llvm::SmallVector<int64_t> reductionAxes;
@@ -177,14 +205,15 @@ computeReductionAxes(IndexedTensorShardingPerValueAttr argumentShardings,
 static mlir::sdy::TensorShardingAttr
 withAdditionalUnreducedAxes(MLIRContext *ctx,
                             mlir::sdy::TensorShardingAttr sharding,
-                            llvm::ArrayRef<int64_t> extraAxisIndices) {
+                            llvm::ArrayRef<int64_t> extraAxisIndices,
+                            llvm::ArrayRef<bool> shardableSlots) {
   if (extraAxisIndices.empty()) {
     return sharding;
   }
   llvm::SmallVector<mlir::sdy::AxisRefAttr> unreduced(
       sharding.getUnreducedAxes().begin(), sharding.getUnreducedAxes().end());
-  llvm::append_range(unreduced,
-                     shardyAxisRefsForIndices(ctx, extraAxisIndices));
+  llvm::append_range(unreduced, shardyAxisRefsForIndices(ctx, extraAxisIndices,
+                                                         shardableSlots));
   return sharding.replaceUnreducedAxes(unreduced);
 }
 
@@ -199,7 +228,8 @@ withAdditionalUnreducedAxes(MLIRContext *ctx,
 static void insertPlaceholderAllReduces(
     MLIRContext *ctx, StringRef meshName, Operation *op,
     mlir::sdy::TensorShardingPerValueAttr baseResultShardings,
-    llvm::ArrayRef<int64_t> reductionAxes) {
+    llvm::ArrayRef<int64_t> reductionAxes,
+    llvm::ArrayRef<bool> shardableSlots) {
   if (reductionAxes.empty()) {
     op->setAttr("sdy.sharding", baseResultShardings);
     return;
@@ -208,13 +238,14 @@ static void insertPlaceholderAllReduces(
   llvm::SmallVector<mlir::sdy::TensorShardingAttr> opShardings;
   opShardings.reserve(baseResultShardings.getShardings().size());
   for (auto sharding : baseResultShardings.getShardings()) {
-    opShardings.push_back(
-        withAdditionalUnreducedAxes(ctx, sharding, reductionAxes));
+    opShardings.push_back(withAdditionalUnreducedAxes(
+        ctx, sharding, reductionAxes, shardableSlots));
   }
   op->setAttr("sdy.sharding",
               mlir::sdy::TensorShardingPerValueAttr::get(ctx, opShardings));
 
-  auto reductionAxisRefs = shardyAxisRefsForIndices(ctx, reductionAxes);
+  auto reductionAxisRefs =
+      shardyAxisRefsForIndices(ctx, reductionAxes, shardableSlots);
   OpBuilder builder(op);
   builder.setInsertionPointAfter(op);
   for (auto [result, outSharding] :
@@ -237,8 +268,9 @@ static void insertPlaceholderAllReduces(
 // opsToProcess walk below scans for), so this must run as its own pass over
 // the module rather than folding into that walk; the two don't interact
 // either way regardless of ordering, since the string keys never collide.
-static void convertManualComputationsToShardy(ModuleOp shardyModule,
-                                              StringRef meshName) {
+static void convertManualComputationsToShardy(
+    ModuleOp shardyModule, StringRef meshName,
+    llvm::ArrayRef<bool> shardableSlots) {
   MLIRContext *ctx = shardyModule.getContext();
 
   // Collect first, then convert: converting erases each op and moves its
@@ -249,9 +281,9 @@ static void convertManualComputationsToShardy(ModuleOp shardyModule,
 
   for (DistributedManualComputationOp manualOp : manualOps) {
     auto inShardings = translateIndexedShardingPerValue(
-        ctx, meshName, manualOp.getArgumentShardings());
+        ctx, meshName, manualOp.getArgumentShardings(), shardableSlots);
     auto outShardings = translateIndexedShardingPerValue(
-        ctx, meshName, manualOp.getOutputShardings());
+        ctx, meshName, manualOp.getOutputShardings(), shardableSlots);
 
     llvm::SmallVector<StringAttr> manualAxes;
     manualAxes.reserve(manualOp.getManualAxes().size());
@@ -309,7 +341,8 @@ static void stripPlaceholderAllReduces(ModuleOp shardyModule) {
  */
 static void constructShardyAttributes(DistributedKernelOp originalKernel,
                                       ModuleOp shardyModule,
-                                      llvm::SmallVector<int> &shardingFactors) {
+                                      llvm::SmallVector<int> &shardingFactors,
+                                      llvm::ArrayRef<bool> shardableSlots) {
   MLIRContext *ctx = shardyModule.getContext();
   constexpr llvm::StringLiteral kMeshName = "mesh";
 
@@ -334,7 +367,7 @@ static void constructShardyAttributes(DistributedKernelOp originalKernel,
   // sharding directly, so there's nothing left for that walk to see once this
   // runs (it never looked at this op's attrs to begin with -- see this
   // function's own comment).
-  convertManualComputationsToShardy(shardyModule, kMeshName);
+  convertManualComputationsToShardy(shardyModule, kMeshName, shardableSlots);
 
   auto shardyFunc = shardyModule.lookupSymbol<func::FuncOp>("kernel");
   if (!shardyFunc) {
@@ -346,14 +379,16 @@ static void constructShardyAttributes(DistributedKernelOp originalKernel,
   // original kernel
   mlir::sdy::TensorShardingPerValueAttr argShardings =
       translateIndexedShardingPerValue(ctx, kMeshName,
-                                       originalKernel.getArgumentShardings());
+                                       originalKernel.getArgumentShardings(),
+                                       shardableSlots);
   for (auto [argIndex, blockArg] : llvm::enumerate(shardyFunc.getArguments())) {
     mlir::sdy::setSharding(blockArg, argShardings.getSharding(argIndex));
   }
 
   mlir::sdy::TensorShardingPerValueAttr outputShardings =
       translateIndexedShardingPerValue(ctx, kMeshName,
-                                       originalKernel.getOutputShardings());
+                                       originalKernel.getOutputShardings(),
+                                       shardableSlots);
   mlir::sdy::setFuncResultShardings(shardyFunc, outputShardings);
 
   // Every op in the body is annotated explicitly (no reliance on producer/
@@ -384,12 +419,12 @@ static void constructShardyAttributes(DistributedKernelOp originalKernel,
     if (auto outputShardings =
             op->getAttrOfType<IndexedTensorShardingPerValueAttr>(
                 "distributed.output_shardings")) {
-      auto baseResultShardings =
-          translateIndexedShardingPerValue(ctx, kMeshName, outputShardings);
-      auto reductionAxes =
-          computeReductionAxes(argumentShardings, outputShardings);
+      auto baseResultShardings = translateIndexedShardingPerValue(
+          ctx, kMeshName, outputShardings, shardableSlots);
+      auto reductionAxes = computeReductionAxes(
+          argumentShardings, outputShardings, shardableSlots);
       insertPlaceholderAllReduces(ctx, kMeshName, op, baseResultShardings,
-                                  reductionAxes);
+                                  reductionAxes, shardableSlots);
     }
 
     if (!argumentShardings) {
@@ -399,7 +434,8 @@ static void constructShardyAttributes(DistributedKernelOp originalKernel,
     for (auto [operandIndex, indexed] :
          llvm::enumerate(argumentShardings.getShardings())) {
       Value operand = op->getOperand(operandIndex);
-      auto sharding = translateIndexedSharding(ctx, kMeshName, indexed);
+      auto sharding =
+          translateIndexedSharding(ctx, kMeshName, indexed, shardableSlots);
       // ConvertGlobalToLocal rejects any surviving sharding_constraint op, and
       // ApplyShardingConstraintsPass only folds one away when its input has
       // no sharding of its own yet -- which is never true here, since the
@@ -639,12 +675,14 @@ struct LowerKernelsPass : public impl::LowerKernelsPassBase<LowerKernelsPass> {
     splitPartitioningAxesByShardability(kernelOp, lowerLogical, shardableParts,
                                         nonShardableParts);
     llvm::SmallVector<int> parallelismPerDim;
+    llvm::SmallVector<bool> slotIsShardable;
     for (const auto &factors : shardableParts) {
       int dimParallelism = 1;
       for (auto factor : factors) {
         dimParallelism *= axis::getFactorExtent(factor);
       }
       parallelismPerDim.push_back(dimParallelism);
+      slotIsShardable.push_back(!factors.empty());
     }
 
     // The temporary func.func is intentionally a thin wrapper: Shardy works on
@@ -659,7 +697,8 @@ struct LowerKernelsPass : public impl::LowerKernelsPassBase<LowerKernelsPass> {
       return false;
     }
     ModuleOp shardyModule = *shardyModuleOrFailure;
-    constructShardyAttributes(kernelOp, shardyModule, parallelismPerDim);
+    constructShardyAttributes(kernelOp, shardyModule, parallelismPerDim,
+                              slotIsShardable);
     // debug logging option
     if (dumpShardyModules) {
       llvm::dbgs() << "Dumping Shardy module:\n";
