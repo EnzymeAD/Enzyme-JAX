@@ -2659,6 +2659,11 @@ def ReduceReduce : EnzymeHLOPatternOp<
   let patterns = ["ReduceReduce"];
 }
 
+def ReduceHalvingReduceWindow : EnzymeHLOPatternOp<
+  "reduce_halving_reduce_window"> {
+  let patterns = ["ReduceHalvingReduceWindow"];
+}
+
 def ConjReal : EnzymeHLOPatternOp<
   "conj_real"> {
   let patterns = ["ConjReal"];
