@@ -1,7 +1,6 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 
 #include <functional>
-#include <map>
 #include <numeric>
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -11,6 +10,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
+#include "src/enzyme_ad/jax/Dialect/Distributed/CollectiveAtoms.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/MainFunctionAnalysis.h"
 #include "src/enzyme_ad/jax/Utils.h"
@@ -159,125 +159,6 @@ DistributedCastLocalToGlobalOp findBoundingCastLocalToGlobal(Value result) {
   Operation *soleUser = cur.hasOneUse() ? *cur.getUsers().begin() : nullptr;
   return dyn_cast_or_null<DistributedCastLocalToGlobalOp>(soleUser);
 }
-
-// Index spaces a collective's factors can slice. Mesh axes are shared by the
-// input and output; tensor dimensions differ between the input tile and the
-// output tile, so each side gets its own space. Every replicate factor is an
-// independent one-off axis of its own.
-enum class AtomSpace { Mesh, InTile, OutTile, Replicate };
-using AxisKey = std::pair<AtomSpace, size_t>;
-
-// One atom (indivisible digit) of an axis, identified by its position among
-// that axis's atoms, major-first.
-struct AtomLabel {
-  AtomSpace space;
-  size_t axis;
-  size_t atom;
-
-  bool operator==(const AtomLabel &other) const {
-    return space == other.space && axis == other.axis && atom == other.atom;
-  }
-};
-
-// A factor of a collective's reduction group or mapping, resolved to the
-// axis it slices.
-struct ResolvedFactor {
-  AxisKey key;
-  uint64_t extent;
-  uint64_t stride;
-};
-using ResolvedGroup = SmallVector<ResolvedFactor>;
-
-// The common atoms of every factor a collective mentions (see
-// axis::computeCommonAtomsAndMappingSplits), addressed by this pass's own
-// axis keys.
-//
-// Reshaping an expanded tensor to one dim per atom exposes every factor as
-// whole dims, and a mapping pair then becomes a per-atom relabeling: the k-th
-// atom of its lhs pairs with the k-th of its rhs.
-//
-// Assumes each group's index space is row-major over its factors,
-// major-first.
-class CollectiveAtoms {
-public:
-  void addAxis(AxisKey key, uint64_t extent) {
-    auto [it, inserted] = index.try_emplace(key, keys.size());
-    if (inserted) {
-      keys.push_back(key);
-      extents.push_back(extent);
-    } else {
-      extents[it->second] = extent;
-    }
-  }
-
-  void addFactor(const ResolvedFactor &factor) {
-    others.push_back(toAtomFactor(factor));
-  }
-
-  LogicalResult
-  refine(ArrayRef<std::pair<ResolvedGroup, ResolvedGroup>> pairs) {
-    SmallVector<axis::AtomFactorPair> atomPairs;
-    for (const auto &[lhs, rhs] : pairs)
-      atomPairs.push_back({toAtomGroup(lhs), toAtomGroup(rhs)});
-    auto result =
-        axis::computeCommonAtomsAndMappingSplits(extents, atomPairs, others);
-    if (failed(result))
-      return failure();
-    atoms.emplace(std::move(*result));
-    return success();
-  }
-
-  SmallVector<AtomLabel> labelsOf(const ResolvedFactor &factor) const {
-    auto [first, count] = atoms->rangeOf(toAtomFactor(factor));
-    SmallVector<AtomLabel> labels;
-    for (size_t i = first; i < first + count; ++i)
-      labels.push_back({factor.key.first, factor.key.second, i});
-    return labels;
-  }
-
-  SmallVector<AtomLabel> labelsOf(const ResolvedGroup &group) const {
-    SmallVector<AtomLabel> labels;
-    for (const ResolvedFactor &factor : group)
-      labels.append(labelsOf(factor));
-    return labels;
-  }
-
-  SmallVector<AtomLabel> labelsOfAxis(AxisKey key) const {
-    SmallVector<AtomLabel> labels;
-    for (size_t i = 0; i < atoms->atomsOf(index.at(key)).size(); ++i)
-      labels.push_back({key.first, key.second, i});
-    return labels;
-  }
-
-  uint64_t extentOf(const AtomLabel &label) const {
-    return atoms->atomsOf(index.at({label.space, label.axis}))[label.atom]
-        .extent;
-  }
-
-  SmallVector<int64_t> extentsOf(ArrayRef<AtomLabel> labels) const {
-    SmallVector<int64_t> result;
-    for (const AtomLabel &label : labels)
-      result.push_back(extentOf(label));
-    return result;
-  }
-
-private:
-  std::map<AxisKey, size_t> index;
-  SmallVector<AxisKey> keys;
-  SmallVector<uint64_t> extents;
-  SmallVector<axis::AtomFactor> others;
-  std::optional<axis::CommonAtoms> atoms;
-
-  axis::AtomFactor toAtomFactor(const ResolvedFactor &factor) const {
-    return {index.at(factor.key), factor.extent, factor.stride};
-  }
-  axis::AtomFactorGroup toAtomGroup(const ResolvedGroup &group) const {
-    axis::AtomFactorGroup result;
-    for (const ResolvedFactor &factor : group)
-      result.push_back(toAtomFactor(factor));
-    return result;
-  }
-};
 
 // The whole-module lowering state: an ordered walk over the
 // DistributedFunctionOp's body, dispatched by op kind, building both a
@@ -950,95 +831,25 @@ private:
       return;
     }
 
-    CollectiveAtoms atoms;
-    for (size_t a = 0; a < n; ++a)
-      atoms.addAxis({AtomSpace::Mesh, a}, meshExtents[a]);
-    for (size_t j = 0; j < inputTile.size(); ++j) {
-      atoms.addAxis({AtomSpace::InTile, j}, inputTile[j]);
-      atoms.addAxis({AtomSpace::OutTile, j}, outputTile[j]);
-    }
-
-    // Resolves a group's factors onto axes; extent-1 factors carry no data
-    // and are dropped. `tileSpace` is the tile a shape-axis factor refers to.
-    size_t nextReplicateId = 0;
-    auto resolveGroup = [&](TV_FactorGroup group,
-                            AtomSpace tileSpace) -> FailureOr<ResolvedGroup> {
-      auto factors = axis::getProductProvenanceFactors(group);
-      if (failed(factors)) {
-        fail(collective, "factor group must be produced by axis.product");
-        return failure();
+    CollectiveResolutionError resolutionError;
+    FailureOr<CollectiveResolution> resolution = resolveCollectiveAtoms(
+        collective, meshAxisTypes, inputTile, outputTile, resolutionError);
+    if (failed(resolution)) {
+      if (resolutionError.kind ==
+          CollectiveResolutionError::Kind::NoCommonAtoms) {
+        fail(collective,
+             "distributed-lower-for-sanity-check could not split this "
+             "collective's factors into a common set of atoms (" +
+                 resolutionError.reasons.front() + ")");
+      } else {
+        for (const std::string &reason : resolutionError.reasons)
+          fail(collective, reason);
       }
-      ResolvedGroup resolved;
-      for (TV_AxisFactor factor : *factors) {
-        uint64_t extent = axis::getFactorExtent(factor);
-        if (extent == 1)
-          continue;
-        auto provenance = axis::getFactorProvenanceAxis(factor);
-        if (failed(provenance)) {
-          fail(collective, "factor has no provenance axis");
-          return failure();
-        }
-        AxisKey key;
-        Type type = provenance->getType();
-        if (auto physical = dyn_cast<PhysicalCommAxisType>(type)) {
-          auto meshIdx = llvm::find(meshAxisTypes, physical);
-          if (meshIdx == meshAxisTypes.end()) {
-            fail(collective, "factor over an axis outside the module's mesh");
-            return failure();
-          }
-          key = {AtomSpace::Mesh,
-                 static_cast<size_t>(meshIdx - meshAxisTypes.begin())};
-        } else if (isa<axis::ShapeAxisType>(type)) {
-          key = {tileSpace,
-                 static_cast<size_t>(axis::getAxisDimIndex(
-                     cast<TypedValue<axis::ShapeAxisType>>(*provenance)))};
-        } else if (isa<ReplicationAxisType>(type)) {
-          key = {AtomSpace::Replicate, nextReplicateId++};
-          atoms.addAxis(key, axis::getAxisExtent(*provenance));
-        } else {
-          fail(collective, "expected a fully-lowered physical, tensor, or "
-                           "replication axis");
-          return failure();
-        }
-        ResolvedFactor resolvedFactor{
-            key, extent, static_cast<uint64_t>(axis::getFactorStride(factor))};
-        atoms.addFactor(resolvedFactor);
-        resolved.push_back(resolvedFactor);
-      }
-      return resolved;
-    };
-
-    SmallVector<ResolvedGroup> reductionGroups;
-    for (Value group : collective.getReductionGroups()) {
-      auto resolved =
-          resolveGroup(cast<TV_FactorGroup>(group), AtomSpace::InTile);
-      if (failed(resolved))
-        return;
-      reductionGroups.push_back(std::move(*resolved));
-    }
-
-    auto mapOp = collective.getMapping().getDefiningOp<axis::AxisMapOp>();
-    if (!mapOp) {
-      fail(collective, "collective mapping must be produced by axis.map");
       return;
     }
-    SmallVector<std::pair<ResolvedGroup, ResolvedGroup>> pairs;
-    for (auto [lhsGroup, rhsGroup] : mapOp.getTypedMappingPairs()) {
-      auto lhs = resolveGroup(lhsGroup, AtomSpace::InTile);
-      auto rhs = resolveGroup(rhsGroup, AtomSpace::OutTile);
-      if (failed(lhs) || failed(rhs))
-        return;
-      pairs.push_back({std::move(*lhs), std::move(*rhs)});
-    }
-
-    if (failed(atoms.refine(pairs))) {
-      fail(collective,
-           "distributed-lower-for-sanity-check could not split this "
-           "collective's factors into a common set of atoms (a mapping pair "
-           "is indivisible, or an axis's factor boundaries are not "
-           "nested)");
-      return;
-    }
+    ArrayRef<ResolvedGroup> reductionGroups = resolution->reductionGroups;
+    ArrayRef<std::pair<ResolvedGroup, ResolvedGroup>> pairs = resolution->pairs;
+    const CollectiveAtoms &atoms = resolution->atoms;
 
     // 1. Expose every atom as its own dim.
     SmallVector<AtomLabel> labels;
