@@ -214,7 +214,13 @@ struct MergeAdjacentTrivialKernelsPass
     patterns.add<HoistBlockArgCastUp, SinkYieldOnlyCastDown,
                  MergeAdjacentTrivialKernels>(context);
 
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
+    // Hoisting and sinking move a cast one op per rewrite, so the number of
+    // iterations needed grows with the distance to travel; a fixed cap would
+    // make the pass fail on long function bodies.
+    GreedyRewriteConfig config;
+    config.setMaxIterations(GreedyRewriteConfig::kNoLimit);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       signalPassFailure();
     }
   }
