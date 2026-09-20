@@ -142,6 +142,13 @@ namespace {
 static constexpr llvm::StringLiteral kInternalRewriteMarker =
     "canonicalize_sharded_factor_order.internal";
 
+// A factor is Sharded if its provenance axis splits data across devices: a
+// logical mesh axis not yet bound by the search, or a physical mesh axis once
+// it is. Device-local and replication axes are Local.
+static bool isShardedAxisType(Type axisType) {
+  return isa<LogicalMeshAxisType, PhysicalCommAxisType>(axisType);
+}
+
 // Ops with no tensor-typed operand or result carry no sharded/local factor
 // structure to reason about (mesh/axis declarations, terminators without
 // operands, etc.) -- always fine to skip regardless of op identity.
@@ -175,6 +182,16 @@ static bool touchesAnyTensor(Operation *op) {
 static int64_t appendNewPartitioningAxisSlot(
     DistributedKernelOp kernelOp,
     ArrayRef<TypedValue<axis::AxisFactorType>> factors) {
+  // A slot is identified by its factors: LowerKernels names a kernel's mesh
+  // axes by slot index, so the same factors given two indices (say, for an
+  // operand and for the result of a pass-through dimension) would look like
+  // two different shardings and make Shardy insert a reshard.
+  for (auto [index, slot] : llvm::enumerate(kernelOp.getPartitioningAxes())) {
+    auto existing = axis::getProductProvenanceFactors(
+        cast<TypedValue<axis::FactorGroupType>>(slot));
+    if (succeeded(existing) && llvm::equal(*existing, factors))
+      return static_cast<int64_t>(index);
+  }
   int64_t newIndex =
       static_cast<int64_t>(kernelOp.getPartitioningAxes().size());
   OpBuilder outerBuilder(kernelOp.getContext());
@@ -416,8 +433,7 @@ flattenRawFactors(ValueRange partitioningAxes, ArrayRef<int64_t> axisIndices) {
       }
       result.rawFactors.push_back(factor);
       result.sourceSlot.push_back(static_cast<int64_t>(slotPos));
-      result.isSharded.push_back(
-          isa<LogicalMeshAxisType>(provenance->getType()));
+      result.isSharded.push_back(isShardedAxisType(provenance->getType()));
       result.extents.push_back(
           static_cast<int64_t>(axis::getFactorExtent(factor)));
     }
@@ -663,6 +679,79 @@ canonicalizeShardingMetadata(DistributedKernelOp kernelOp,
   return IndexedTensorShardingPerValueAttr::get(ctx, newShardings);
 }
 
+// How one tensor dimension's declared factor order changes: its own factors
+// (major-first, then the unpartitioned local remainder as the minor part) go
+// from the order `extents` lists to `extents` permuted by `newPositions`.
+struct DimReorder {
+  int64_t dim;
+  SmallVector<int64_t> extents;      // factor extents, original order
+  int64_t remainder;                 // local remainder extent, stays minor
+  SmallVector<int64_t> newPositions; // new order: original index per slot
+};
+
+// Re-lays out a global tensor between its original view `g` and the
+// canonical view `G` a boundary cast now declares: reshape every reordered
+// dimension into its factors, transpose them into the new order (or back),
+// and reshape to the original global type. `toCanonical` picks the direction.
+// Pure data rearrangement of the global tensor: no device owns different
+// elements in `g` and `G`.
+static Value buildRelayout(OpBuilder &builder, Location loc, Value tensor,
+                           ArrayRef<DimReorder> reorders, bool toCanonical) {
+  auto type = cast<RankedTensorType>(tensor.getType());
+  DenseMap<int64_t, const DimReorder *> byDim;
+  for (const DimReorder &r : reorders)
+    byDim[r.dim] = &r;
+
+  // Shape of the tensor with each reordered dim split into
+  // [factors..., remainder], in the view `tensor` is currently in.
+  SmallVector<int64_t> splitShape;
+  SmallVector<int64_t> permutation;
+  SmallVector<int64_t> viewOrder; // per split dim: index in the source view
+  int64_t offset = 0;
+  for (int64_t d = 0; d < type.getRank(); ++d) {
+    auto it = byDim.find(d);
+    if (it == byDim.end()) {
+      splitShape.push_back(type.getDimSize(d));
+      permutation.push_back(offset++);
+      continue;
+    }
+    const DimReorder &r = *it->second;
+    size_t n = r.extents.size();
+    // Source view order of this dim's split pieces.
+    SmallVector<int64_t> srcExtents;
+    if (toCanonical) {
+      srcExtents.assign(r.extents.begin(), r.extents.end());
+    } else {
+      for (int64_t pos : r.newPositions)
+        srcExtents.push_back(r.extents[pos]);
+    }
+    for (int64_t e : srcExtents)
+      splitShape.push_back(e);
+    splitShape.push_back(r.remainder);
+    // Destination piece k comes from source piece srcOf(k).
+    for (size_t k = 0; k < n; ++k) {
+      if (toCanonical) {
+        permutation.push_back(offset + r.newPositions[k]);
+      } else {
+        auto pos = llvm::find(r.newPositions, static_cast<int64_t>(k));
+        permutation.push_back(offset + (pos - r.newPositions.begin()));
+      }
+    }
+    permutation.push_back(offset + n);
+    offset += n + 1;
+  }
+
+  auto elem = type.getElementType();
+  Value split = builder.create<stablehlo::ReshapeOp>(
+      loc, RankedTensorType::get(splitShape, elem), tensor);
+  SmallVector<int64_t> transposedShape;
+  for (int64_t src : permutation)
+    transposedShape.push_back(splitShape[src]);
+  Value transposed = builder.create<stablehlo::TransposeOp>(
+      loc, RankedTensorType::get(transposedShape, elem), split, permutation);
+  return builder.create<stablehlo::ReshapeOp>(loc, type, transposed);
+}
+
 // case (2) above: canonicalizes a cast-shaped op's own `partitioning_axes` --
 // unlike a DistributedKernelOp's, this is one FactorGroupType operand
 // *directly* per tensor dimension (no shared slot pool, no integer-index
@@ -679,9 +768,16 @@ canonicalizeShardingMetadata(DistributedKernelOp kernelOp,
 // `partitioning_axes` shape and needs exactly this same fix (see this file's
 // top-level comment, case (2)) -- all three implement
 // PartitioningAnchorOpInterface for the same reason.
+//
+// `externalBoundary` marks a cast whose global side is a function argument or
+// result that something outside the distributed program observes. There the
+// declared order must still describe the caller's tensor, so the reorder is
+// paired with a real relayout of the global tensor (buildRelayout).
 template <typename CastOpTy>
-static bool canonicalizeCastPartitioningAxes(CastOpTy castOp) {
+static bool canonicalizeCastPartitioningAxes(CastOpTy castOp,
+                                             bool externalBoundary = false) {
   bool sawUnsupported = false;
+  SmallVector<DimReorder> reorders;
   ValueRange partitioningAxes = castOp.getPartitioningAxes();
   SmallVector<Value> newPartitioningAxes(partitioningAxes.begin(),
                                          partitioningAxes.end());
@@ -713,7 +809,7 @@ static bool canonicalizeCastPartitioningAxes(CastOpTy castOp) {
         resolvedAll = false;
         break;
       }
-      isSharded.push_back(isa<LogicalMeshAxisType>(provenance->getType()));
+      isSharded.push_back(isShardedAxisType(provenance->getType()));
     }
     if (!resolvedAll) {
       castOp->emitRemark()
@@ -733,6 +829,24 @@ static bool canonicalizeCastPartitioningAxes(CastOpTy castOp) {
     for (int64_t pos : canonicalPositions) {
       reordered.push_back((*factors)[pos]);
     }
+    if (externalBoundary) {
+      DimReorder r;
+      r.dim = dim;
+      int64_t product = 1;
+      for (auto factor : *factors) {
+        r.extents.push_back(axis::getFactorExtent(factor));
+        product *= axis::getFactorExtent(factor);
+      }
+      Type globalType;
+      if constexpr (std::is_same_v<CastOpTy, DistributedCastGlobalToLocalOp>)
+        globalType = castOp.getInput().getType();
+      else
+        globalType = castOp.getOutput().getType();
+      r.remainder = cast<RankedTensorType>(globalType).getDimSize(dim) / product;
+      r.newPositions.assign(canonicalPositions.begin(),
+                            canonicalPositions.end());
+      reorders.push_back(std::move(r));
+    }
     newPartitioningAxes[dim] =
         axis::viewFactorsAsProduct(reordered, builder, castOp.getLoc());
     changed = true;
@@ -740,6 +854,25 @@ static bool canonicalizeCastPartitioningAxes(CastOpTy castOp) {
 
   if (changed) {
     castOp.getPartitioningAxesMutable().assign(newPartitioningAxes);
+    if (!reorders.empty()) {
+      OpBuilder relayoutBuilder(castOp);
+      if constexpr (std::is_same_v<CastOpTy, DistributedCastGlobalToLocalOp>) {
+        // caller's tensor (g) -> canonical view (G), then the cast.
+        Value canonical = buildRelayout(relayoutBuilder, castOp.getLoc(),
+                                        castOp.getInput(), reorders,
+                                        /*toCanonical=*/true);
+        castOp.getInputMutable().assign(canonical);
+      } else {
+        // the cast yields G; hand the caller g.
+        relayoutBuilder.setInsertionPointAfter(castOp);
+        Value global = castOp.getOutput();
+        Value original = buildRelayout(relayoutBuilder, castOp.getLoc(), global,
+                                       reorders, /*toCanonical=*/false);
+        global.replaceUsesWithIf(original, [](OpOperand &use) {
+          return isa<DistributedYieldOp>(use.getOwner());
+        });
+      }
+    }
   }
   return sawUnsupported;
 }
@@ -945,8 +1078,8 @@ static bool canonicalizeOpNeedingLayout(Operation *op,
 //    changes which physical bytes each device would need to hold if the
 //    factor's own dimension actually crosses a device boundary. A factor
 //    whose dimension is, at this occurrence, composed purely of Local
-//    (DeviceLocal/replication/trivial) factors -- no LogicalMeshAxisType
-//    anywhere -- has nothing split across devices in the first place, so
+//    (DeviceLocal/replication/trivial) factors -- no logical or physical
+//    mesh axis anywhere -- has nothing split across devices in the first place, so
 //    relabeling it is exactly as free as an ordinary pass-through factor,
 //    regardless of what Shardy's registry says about the factor in general.
 //    This is decided per factor (see isFactorFullyLocal), not for the op as
@@ -963,7 +1096,7 @@ enum class OpClassification {
 
 // Per-operand/per-result, per-dimension: true if that dimension's own
 // declared slot list (distributed.argument_shardings/output_shardings)
-// contains no real (Sharded, i.e. LogicalMeshAxisType) factor. Computed once
+// contains no real (Sharded, i.e. logical or physical mesh axis) factor. Computed once
 // per op and consulted per factor by isFactorFullyLocal.
 struct DimensionLocality {
   SmallVector<SmallVector<bool>> operandDimsLocal;
@@ -1090,6 +1223,20 @@ struct CanonicalizeShardedFactorOrderPass
     // an already-canonical producer instead of a stale one. MLIR's default
     // walk order is post-order (children before parents), which is the
     // wrong direction for this dependency.
+    // A function no DistributedCallOp calls is entered from outside the
+    // distributed program (main). Its global arguments/results are observed
+    // by the caller, so relabeling a boundary cast there needs a real
+    // relayout. A callee's globals are never observed: call sites pass local
+    // values.
+    llvm::DenseSet<StringAttr> calledFunctions;
+    moduleOp.walk([&](DistributedCallOp call) {
+      calledFunctions.insert(call.getCalleeAttr().getAttr());
+    });
+    auto isExternalFunction = [&](Operation *op) {
+      auto fn = dyn_cast_or_null<DistributedFunctionOp>(op);
+      return fn && !calledFunctions.contains(fn.getSymNameAttr());
+    };
+
     moduleOp.walk<WalkOrder::PreOrder>(
         [&](Operation *op) {
           // Structural / container ops and axis-algebra bookkeeping
@@ -1229,13 +1376,20 @@ struct CanonicalizeShardedFactorOrderPass
             // partitioning_axes -- pure axis-algebra, no tensor type change.
             // The bookending reconciling collective (bridging g<->G) is
             // inserted separately, not here.
-            if (canonicalizeCastPartitioningAxes(g2l)) {
+            bool boundary = isa<BlockArgument>(g2l.getInput()) &&
+                            isExternalFunction(g2l->getParentOp());
+            if (canonicalizeCastPartitioningAxes(g2l, boundary)) {
               sawUnsupported = true;
             }
             return;
           }
           if (auto l2g = dyn_cast<DistributedCastLocalToGlobalOp>(op)) {
-            if (canonicalizeCastPartitioningAxes(l2g)) {
+            bool boundary =
+                isExternalFunction(l2g->getParentOp()) &&
+                llvm::all_of(l2g.getOutput().getUsers(), [](Operation *user) {
+                  return isa<DistributedYieldOp>(user);
+                });
+            if (canonicalizeCastPartitioningAxes(l2g, boundary)) {
               sawUnsupported = true;
             }
             return;

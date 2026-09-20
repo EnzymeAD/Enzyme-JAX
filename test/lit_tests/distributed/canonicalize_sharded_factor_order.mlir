@@ -322,6 +322,10 @@ module @kernel_internal_merge_sandwiched {
 // whole -- see isFactorFullyLocal) while the pass-through dimension gets the
 // ordinary pure-metadata fix, exactly as it would for any Conforming op: no
 // "not yet supported" remark at all.
+// The sandwiched slot is split once and every use of it (both operands and
+// the result of the concatenate) shares that one new slot: LowerKernels names
+// mesh axes by slot index, so separate slots for the same factors would look
+// like different shardings.
 module @special_factor_but_local {
   func.func @main() {
     return
@@ -351,7 +355,7 @@ module @special_factor_but_local {
 // CHECK-DAG: %[[LOCAL:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.device_local_axis<1>, 1, 1>)
 // CHECK: distributed.DistributedKernel (%{{.*}} : tensor<1x1xf32>) <[<dim_partitioning_axes = {{\[\[\], \[\]\]}} : unreduced_axes = []>]>
 // CHECK-NEXT: -> (tensor<1x2xf32>) <[<dim_partitioning_axes = {{\[\[[0-9]+\], \[[0-9]+\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: axes (%[[SANDWICHED]] : !axis.factor_group<4>, %[[LOCAL]] : !axis.factor_group<1>, %[[CANON]] : !axis.factor_group<4>, %[[CANON]] : !axis.factor_group<4>, %[[CANON]] : !axis.factor_group<4>) {
+// CHECK-NEXT: axes (%[[SANDWICHED]] : !axis.factor_group<4>, %[[LOCAL]] : !axis.factor_group<1>, %[[CANON]] : !axis.factor_group<4>) {
 // CHECK-NEXT: ^bb0(%arg0: tensor<4x1xf32>):
 // CHECK-NEXT: %[[CAT:.*]] = stablehlo.concatenate %arg0, %arg0, dim = 1 {distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[[0-9]+\], \[1\]\]}} : unreduced_axes = []>, <dim_partitioning_axes = {{\[\[[0-9]+\], \[1\]\]}} : unreduced_axes = []>]>, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[[0-9]+\], \[1\]\]}} : unreduced_axes = []>]>
 // CHECK-NEXT: distributed.DistributedYield (%[[CAT]] : tensor<4x2xf32>)
