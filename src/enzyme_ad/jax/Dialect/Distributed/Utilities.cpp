@@ -123,9 +123,21 @@ getOrSynthesizeOpShardingRule(::mlir::Operation *op) {
     return {};
   }
 
-  // First check the Shardy rule registry
+  // First check the Shardy rule registry. Shardy's rule only says which
+  // factors are reductions; how partial results are combined comes from the
+  // op itself. A reduce combines with its own body (max, min, ...), every
+  // other op with a reduction factor (dot_general's contraction) sums.
   if (auto shardingRule = ::mlir::sdy::getOrCreateShardingRule(op)) {
-    return {shardingRule, ::mlir::stablehlo::ReduceOpKind::Add};
+    ::mlir::stablehlo::ReduceOpKind reductionKind =
+        ::mlir::stablehlo::ReduceOpKind::Add;
+    std::shared_ptr<::mlir::Region> reductionBody;
+    if (auto reduceOp = dyn_cast<::mlir::stablehlo::ReduceOp>(op)) {
+      reductionKind = ::mlir::stablehlo::CheckCommonReduceOp(reduceOp).kind;
+      reductionBody = std::make_shared<::mlir::Region>();
+      ::mlir::IRMapping regionMapper;
+      reduceOp.getRegion().cloneInto(reductionBody.get(), regionMapper);
+    }
+    return {shardingRule, reductionKind, std::move(reductionBody)};
   }
 
   // Rule registry missing some cases for us, so we construct our own
