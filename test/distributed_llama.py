@@ -284,6 +284,44 @@ def silu(x):
     return x * sigmoid(x)
 
 
+def build_rope_tables(pos):
+    """Builds RoPE's per-position rotation-matrix tables, (DIM//2, 2, 2) for
+    toconv and (DIM//2, 2, 2) for toconv2 (the latter's tail padded with
+    identity rotations past KV_DIM).
+
+    Vectorized over the DIM//2 index instead of a Python loop building one
+    (2, 2) block per index and concatenating them all together: that traced
+    to a 144-deep tree of stablehlo.concatenate/broadcast_in_dim, and once
+    that tree's axis ties into a TP-sharded dimension (DIM also being the
+    TP-sharded model dimension elsewhere), canonicalize-sharded-factor-order
+    has no rewrite for concatenate's resulting factor order (its
+    SpecialFactor case), leaving affected kernels not fully lowered by the
+    time distributed-lower-for-sanity-check runs. Vectorizing keeps this a
+    real (traced, not constant-folded) computation like the rest of the
+    model -- baking the whole table into one literal instead avoids the
+    concatenate tree but hits a separate gap, a kernel-local constant not
+    getting sliced down to its own local shard -- while cutting the two
+    remaining concatenates down to fixed-size ones assembling a single (2, 2)
+    block, never the DIM//2-sized axis itself."""
+    idx = jnp.arange(0, DIM, 2)
+    freq = 1 / jnp.power(10000, (idx % HEAD_SIZE) / HEAD_SIZE)
+    val = pos * freq
+    fcr = jnp.cos(val)
+    fci = jnp.sin(val)
+    rot = jnp.stack(
+        [jnp.stack([fcr, -fci], axis=-1), jnp.stack([fci, fcr], axis=-1)], axis=-2
+    )  # (DIM // 2, 2, 2)
+
+    n_pad = DIM // 2 - KV_DIM // 2
+    if n_pad > 0:
+        pad = jnp.broadcast_to(jnp.eye(2, dtype=rot.dtype), (n_pad, 2, 2))
+        rot2 = jnp.concatenate([rot[: KV_DIM // 2], pad], axis=0)
+    else:
+        rot2 = rot[: KV_DIM // 2]
+
+    return rot, rot2
+
+
 @jax.jit
 def transformer_layer(
     x,
@@ -383,17 +421,7 @@ def forward(x, weights, key_cache, value_cache):
     key_cache = maybe_constrain(key_cache, {1: "cp"})
     value_cache = maybe_constrain(value_cache, {1: "cp"})
 
-    toconv = []
-    for i in range(0, DIM, 2):
-        freq = 1 / jnp.power(10000, (i % HEAD_SIZE) / HEAD_SIZE)
-        val = pos * freq
-        fcr = jnp.cos(val)
-        fci = jnp.sin(val)
-        rotM = jnp.array([[fcr, -fci], [fci, fcr]])
-        toconv.append(rotM)
-    toconv2 = toconv[: KV_DIM // 2] + [jnp.eye(2)] * (DIM // 2 - KV_DIM // 2)
-    toconv = jnp.array(toconv)
-    toconv2 = jnp.array(toconv2)
+    toconv, toconv2 = build_rope_tables(pos)
 
     for i in range(N_LAYERS):
         x = transformer_layer(
