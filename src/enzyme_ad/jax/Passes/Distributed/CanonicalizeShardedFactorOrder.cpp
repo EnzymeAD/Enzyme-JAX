@@ -1,5 +1,7 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 
+#include "llvm/ADT/SetVector.h"
+
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -100,16 +102,12 @@
  *    machinery inside LowerKernels.cpp's Shardy sub-lowering, which this
  *    project doesn't own and can't instruct to trust a declared order that
  *    doesn't match reality. So this is the one place we still insert real
- *    ops: a "clean" split matching the dimension's current boundary, then a
- *    distributed.ManualComputation (this project's own stand-in for Shardy's
- *    sdy.manual_computation, see its own doc comment in Ops.td) whose region
- *    computes the final local-shape result directly -- no transpose, since
- *    Shardy's per-op reshape-rule machinery never even sees the merge once
- *    it's wrapped this way. Applied strictly at that one op's own
- *    operand/result (see canonicalizeOpNeedingLayout). This needs no
- *    dataflow tracking, because nothing upstream of the fixed-up op is ever
- *    touched by this pass, and its operand already arrives canonically
- *    declared thanks to (1)/(2) above.
+ *    ops: the reshape is replaced by one distributed.ManualComputation over
+ *    all of its sharded slots, whose region reshapes the local tile (see
+ *    wrapReshapeInLocalManualComputation for a worked example). Applied
+ *    strictly at that one op. This needs no dataflow tracking, because
+ *    nothing upstream of the op is ever touched by this pass, and its operand
+ *    already arrives canonically declared thanks to (1)/(2) above.
  *
  * Not yet supported: an op whose sharding rule marks a factor as
  * needing permutation or replication (e.g. stablehlo.convolution's spatial
@@ -133,12 +131,10 @@ namespace mlir::enzyme::distributed {
 
 namespace {
 
-// Marks an op as one of this pass's own boundary-canonicalization rewrite
-// ops (the split/manual-computation pair canonicalizeDimOrder builds). These
-// are deliberately still in "has a dimension mapped to more than one
-// factor" form -- that's exactly the split/merge they exist to perform --
-// so the classifier walk below must skip them rather than flag them as an
-// unhandled multi-factor reshape.
+// Marks the local reshape inside a manual computation built by
+// wrapReshapeInLocalManualComputation. It still has a dimension mapped to more
+// than one factor, so the classifier walk below must skip it rather than flag
+// it as an unhandled multi-factor reshape.
 static constexpr llvm::StringLiteral kInternalRewriteMarker =
     "canonicalize_sharded_factor_order.internal";
 
@@ -201,181 +197,6 @@ static FailureOr<SlotKinds> classifySlots(ValueRange partitioningAxes,
   return result;
 }
 
-// Builds an IndexedTensorShardingAttr where dimension `dim` of the tensor
-// described by `fullDimAxesList` is replaced by `dimEntries` (one or more
-// entries, e.g. N single-factor slots after a split, or one merged slot list
-// after a merge), and every other dimension keeps whatever `fullDimAxesList`
-// already says. dim_partitioning_axes is positional (one entry per tensor
-// dimension), so no index-shift arithmetic is needed -- just concatenation
-// around the replaced entries. Used to build self-consistent
-// argument_shardings/output_shardings for each of the three ops
-// buildSplitTransposeMergeChain inserts, so LowerKernels.cpp's
-// constructShardyAttributes (which only annotates ops carrying these attrs)
-// treats them like any other op instead of leaving them unannotated to
-// Shardy -- the direct cause of the sdy.sharding_constraint legalization
-// failure this fixes.
-static IndexedTensorShardingAttr buildRankShiftedSharding(
-    MLIRContext *ctx, ArrayRef<DenseI64ArrayAttr> fullDimAxesList, int64_t dim,
-    ArrayRef<DenseI64ArrayAttr> dimEntries, DenseI64ArrayAttr unreducedAxes) {
-  SmallVector<DenseI64ArrayAttr> newList;
-  newList.reserve(fullDimAxesList.size() - 1 + dimEntries.size());
-  newList.append(fullDimAxesList.begin(), fullDimAxesList.begin() + dim);
-  newList.append(dimEntries.begin(), dimEntries.end());
-  newList.append(fullDimAxesList.begin() + dim + 1, fullDimAxesList.end());
-  return IndexedTensorShardingAttr::get(ctx, newList, unreducedAxes);
-}
-
-// Clean-splits `tensorValue` at dimension `dim` into one sub-dimension per
-// slot, `extents[k]` being the total extent of slot `slots[k]` (current order,
-// so the split always matches existing structure), then wraps that split value
-// in a distributed.ManualComputation declaring the currently-Sharded
-// sub-dimensions as manual axes, whose region computes the final (merged-back,
-// canonical-order) local result directly -- no transpose, ever. Also attaches
-// correct distributed.argument_shardings/ output_shardings to the split op and
-// the manual-computation op (see buildRankShiftedSharding), so
-// LowerKernels.cpp's Shardy translation doesn't leave them unannotated.
-//
-// Why a real rewrite is needed at all, given the top-of-file comment's claim
-// that a device's own local tile never changes: at the point this pass runs,
-// a Sharded factor's extent is still its global-relative (mesh) size, not the
-// 1 a single device ends up with, and Shardy's own reshape-sharding-rule
-// machinery derives one specific factor decomposition mechanically from the
-// concrete shapes at that size -- it can't be told to trust a declared order
-// that doesn't match. distributed.ManualComputation sidesteps this rather
-// than working around it: wrapping the split value's Sharded sub-dimensions
-// as manual axes means Shardy's own per-op reshape-rule machinery never sees
-// (and so never has to be fooled by) the merge at all -- only the
-// ManualComputation op itself gets converted (by literal inlining, see
-// Shardy's own ManualComputationOpPattern), and its region already computes
-// with concrete local sizes throughout, using exactly the same axis-extent
-// information (axis::getFactorExtent) this pass already has at this stage.
-static Value buildManualComputationChain(
-    OpBuilder &builder, Location loc, DistributedKernelOp kernelOp,
-    Value tensorValue, int64_t dim, ArrayRef<int64_t> extents,
-    ArrayRef<bool> isSharded, ArrayRef<int64_t> slots,
-    ArrayRef<DenseI64ArrayAttr> fullDimAxesList,
-    DenseI64ArrayAttr unreducedAxes, ArrayRef<int64_t> finalDimAxisIndices) {
-  MLIRContext *ctx = builder.getContext();
-  int64_t n = static_cast<int64_t>(extents.size());
-  auto tensorType = cast<RankedTensorType>(tensorValue.getType());
-  int64_t rank = tensorType.getRank();
-
-  SmallVector<int64_t> splitShape;
-  splitShape.reserve(rank - 1 + n);
-  for (int64_t i = 0; i < rank; ++i) {
-    if (i == dim) {
-      splitShape.append(extents.begin(), extents.end());
-    } else {
-      splitShape.push_back(tensorType.getDimSize(i));
-    }
-  }
-  auto splitType =
-      RankedTensorType::get(splitShape, tensorType.getElementType());
-  auto splitOp =
-      builder.create<stablehlo::ReshapeOp>(loc, splitType, tensorValue);
-  splitOp->setDiscardableAttr(kInternalRewriteMarker, builder.getUnitAttr());
-  Value splitVal = splitOp;
-
-  // fullDimAxesList/unreducedAxes: the tensor's own current per-dimension
-  // sharding (untouched dims pass through as-is via buildRankShiftedSharding).
-  // slots: the dimension's current slots, one sub-dimension per slot. Each
-  // sub-dimension lists exactly its own slot, so manual axes are trivially
-  // majormost no matter which sub-dimensions end up manual.
-  IndexedTensorShardingAttr operandSharding =
-      IndexedTensorShardingAttr::get(ctx, fullDimAxesList, unreducedAxes);
-  SmallVector<DenseI64ArrayAttr> splitDimEntries;
-  splitDimEntries.reserve(n);
-  SmallVector<int64_t> manualAxes;
-  for (int64_t k = 0; k < n; ++k) {
-    splitDimEntries.push_back(DenseI64ArrayAttr::get(ctx, slots[k]));
-    if (isSharded[k]) {
-      manualAxes.push_back(slots[k]);
-    }
-  }
-  IndexedTensorShardingAttr splitOutputSharding = buildRankShiftedSharding(
-      ctx, fullDimAxesList, dim, splitDimEntries, unreducedAxes);
-  splitOp->setAttr(
-      "distributed.argument_shardings",
-      IndexedTensorShardingPerValueAttr::get(ctx, {operandSharding}));
-  splitOp->setAttr(
-      "distributed.output_shardings",
-      IndexedTensorShardingPerValueAttr::get(ctx, {splitOutputSharding}));
-
-  // finalDimAxisIndices is the caller's already-computed final (canonical,
-  // Sharded-major) slot list for `dim` (identical to what it assigns back
-  // into axisIndices) -- reused as-is so this can't drift from what the
-  // caller ends up declaring. This is the manual computation's *result*
-  // sharding: the one place a real permutation of slots (not just a
-  // pass-through) shows up, since it's this op's own declared boundary that
-  // establishes the canonical order everything downstream sees.
-  IndexedTensorShardingAttr manualOutputSharding = buildRankShiftedSharding(
-      ctx, fullDimAxesList, dim,
-      {DenseI64ArrayAttr::get(ctx, finalDimAxisIndices)}, unreducedAxes);
-
-  // Region block-argument shape: splitShape with each manual (Sharded)
-  // sub-dimension divided down to its own local size -- always 1, since
-  // LowerKernels.cpp sizes that slot's Shardy mesh axis to exactly match the
-  // factor's own extent (see constructShardyAttributes). Non-manual
-  // (Local) sub-dimensions are left at full extent unchanged.
-  SmallVector<int64_t> localSplitShape(splitShape.begin(), splitShape.end());
-  for (int64_t k = 0; k < n; ++k) {
-    if (isSharded[k]) {
-      localSplitShape[dim + k] = 1;
-    }
-  }
-
-  // Region result shape: the original tensor's own dimension `dim` divided
-  // by the product of its Sharded sub-dimensions' extents (i.e. its local
-  // size once Shardy divides those factors down) -- every other dimension
-  // unchanged.
-  int64_t shardedExtentProduct = 1;
-  for (int64_t k = 0; k < n; ++k) {
-    if (isSharded[k]) {
-      shardedExtentProduct *= extents[k];
-    }
-  }
-  SmallVector<int64_t> localMergedShape(tensorType.getShape());
-  localMergedShape[dim] /= shardedExtentProduct;
-
-  auto manualOp = builder.create<DistributedManualComputationOp>(
-      loc, TypeRange{tensorType}, ValueRange{splitVal},
-      builder.getDenseI64ArrayAttr(manualAxes),
-      IndexedTensorShardingPerValueAttr::get(ctx, {splitOutputSharding}),
-      IndexedTensorShardingPerValueAttr::get(ctx, {manualOutputSharding}));
-
-  Block *body =
-      builder.createBlock(&manualOp.getBody(), {},
-                          TypeRange{RankedTensorType::get(
-                              localSplitShape, tensorType.getElementType())},
-                          {loc});
-  OpBuilder bodyBuilder = OpBuilder::atBlockBegin(body);
-  auto localMergeOp = bodyBuilder.create<stablehlo::ReshapeOp>(
-      loc, RankedTensorType::get(localMergedShape, tensorType.getElementType()),
-      body->getArgument(0));
-  localMergeOp->setDiscardableAttr(kInternalRewriteMarker,
-                                   builder.getUnitAttr());
-  // Inside the region the manual axes are already divided down. Every other
-  // dimension of the tensor keeps its own (non-manual) sharding, and Shardy
-  // only localizes region ops that say so: without these attributes the
-  // merged result would keep the global size on those dimensions.
-  SmallVector<DenseI64ArrayAttr> noSlots(n, DenseI64ArrayAttr::get(ctx, {}));
-  IndexedTensorShardingAttr regionOperandSharding = buildRankShiftedSharding(
-      ctx, fullDimAxesList, dim, noSlots, unreducedAxes);
-  IndexedTensorShardingAttr regionResultSharding = buildRankShiftedSharding(
-      ctx, fullDimAxesList, dim, {DenseI64ArrayAttr::get(ctx, {})},
-      unreducedAxes);
-  localMergeOp->setAttr(
-      "distributed.argument_shardings",
-      IndexedTensorShardingPerValueAttr::get(ctx, {regionOperandSharding}));
-  localMergeOp->setAttr(
-      "distributed.output_shardings",
-      IndexedTensorShardingPerValueAttr::get(ctx, {regionResultSharding}));
-  bodyBuilder.create<DistributedYieldOp>(loc, TypeRange{},
-                                         ValueRange{localMergeOp});
-
-  return manualOp.getResult(0);
-}
-
 // Given a flattened raw-factor list's Sharded/Local classification, returns
 // canonicalPositions such that canonicalPositions[k] is which *current*
 // position ends up at output position k under a stable partition: every
@@ -412,7 +233,8 @@ computeCanonicalPositions(ArrayRef<bool> isSharded,
 // lower_kernels.mlir), so the canonical shard/local boundary may need to cut
 // *through* one slot, not just between slots. Shared by both the pure
 // metadata reorder (computeCanonicalSlotReorder) and the real-rewrite path
-// (canonicalizeDimOrder, for a multi-factor op's own operand/result).
+// (wrapReshapeInLocalManualComputation, for a multi-factor op's own
+// operand/result).
 struct FlattenedRawFactors {
   SmallVector<TypedValue<axis::AxisFactorType>> rawFactors;
   SmallVector<int64_t>
@@ -477,119 +299,6 @@ computeCanonicalSlotReorder(DistributedKernelOp kernelOp,
     reordered.push_back(axisIndices[position]);
   }
   return std::optional<SmallVector<int64_t>>(std::move(reordered));
-}
-
-// The real-rewrite half (case (3) above (this file's own top-of-file comment):
-// a multi-factor op's own operand/result). Returns the value to use going
-// forward for this one dimension (unchanged input if already canonical), and
-// rewrites `axisIndices` in place to the new canonical list of slot indices.
-// Fails (leaving both untouched) only if a slot's provenance can't be resolved
-// at all. `fullDimAxesList`/`unreducedAxes` describe the tensor's own *current*
-// per-dimension sharding (all dimensions, not just `dim`) -- needed to build
-// self-consistent argument_shardings/output_shardings for the inserted
-// split/transpose/merge ops via buildRankShiftedSharding.
-static FailureOr<Value>
-canonicalizeDimOrder(OpBuilder &builder, Location loc,
-                     DistributedKernelOp kernelOp, Value tensorValue,
-                     int64_t dim, SmallVectorImpl<int64_t> &axisIndices,
-                     ArrayRef<DenseI64ArrayAttr> fullDimAxesList,
-                     DenseI64ArrayAttr unreducedAxes) {
-  if (axisIndices.empty()) {
-    return tensorValue;
-  }
-
-  auto kinds = classifySlots(kernelOp.getPartitioningAxes(), axisIndices);
-  if (failed(kinds)) {
-    return failure();
-  }
-
-  SmallVector<int64_t> canonicalPositions;
-  if (computeCanonicalPositions(kinds->isSharded, canonicalPositions)) {
-    return tensorValue;
-  }
-
-  int64_t n = static_cast<int64_t>(axisIndices.size());
-  SmallVector<int64_t> currentSlots(axisIndices.begin(), axisIndices.end());
-  SmallVector<int64_t> newAxisIndices(n);
-  for (int64_t k = 0; k < n; ++k) {
-    newAxisIndices[k] = currentSlots[canonicalPositions[k]];
-  }
-
-  Value mergedVal = buildManualComputationChain(
-      builder, loc, kernelOp, tensorValue, dim, kinds->extents,
-      kinds->isSharded, currentSlots, fullDimAxesList, unreducedAxes,
-      newAxisIndices);
-
-  axisIndices.assign(newAxisIndices.begin(), newAxisIndices.end());
-
-  return mergedVal;
-}
-
-// Canonicalizes every dimension of one boundary tensor value (a kernel block
-// argument, or a value about to be yielded) against its own
-// IndexedTensorShardingAttr. Returns the value to use going forward (may be
-// `value` itself if already canonical on every dimension) and rewrites
-// `sharding` in place to describe the new order. `sawUnsupported` is set
-// (never cleared) if any dimension couldn't be verified/canonicalized.
-static Value canonicalizeBoundaryValue(OpBuilder &builder, Location loc,
-                                       DistributedKernelOp kernelOp,
-                                       Value value,
-                                       IndexedTensorShardingAttr &sharding,
-                                       bool &sawUnsupported) {
-  auto rankedType = dyn_cast<RankedTensorType>(value.getType());
-  if (!rankedType) {
-    return value;
-  }
-  ArrayRef<DenseI64ArrayAttr> dimAxesList = sharding.getDimPartitioningAxes();
-  if (static_cast<int64_t>(dimAxesList.size()) != rankedType.getRank()) {
-    return value;
-  }
-
-  Value current = value;
-  SmallVector<DenseI64ArrayAttr> newDimAxes(dimAxesList.begin(),
-                                            dimAxesList.end());
-  bool changed = false;
-
-  for (int64_t dim = 0; dim < rankedType.getRank(); ++dim) {
-    SmallVector<int64_t> axisIndices(dimAxesList[dim].asArrayRef());
-    if (axisIndices.empty()) {
-      continue;
-    }
-    // Note: even a single slot can itself be a composite product (mixing
-    // Sharded and Local factors, e.g. `composite_kernel` in
-    // lower_kernels.mlir), so this can't skip on axisIndices.size() <= 1 --
-    // canonicalizeDimOrder does its own (accurate) flattened-factor-count
-    // check. Pass the CURRENT (possibly already-updated-by-an-earlier-
-    // dimension) newDimAxes as context, not the pristine original
-    // dimAxesList -- a value with more than one dimension needing
-    // canonicalization must see any earlier dimension's already-rewritten
-    // slot list when building the inserted ops' own sharding attrs.
-    auto rewritten =
-        canonicalizeDimOrder(builder, loc, kernelOp, current, dim, axisIndices,
-                             newDimAxes, sharding.getUnreducedAxes());
-    if (failed(rewritten)) {
-      mlir::emitRemark(loc)
-          << "canonicalize-sharded-factor-order: dimension " << dim
-          << " of a boundary value in kernel " << kernelOp.getOperationName()
-          << " references a partitioning-axis slot whose "
-             "provenance couldn't be resolved (index out "
-             "of range, or not produced by axis.product)";
-      sawUnsupported = true;
-      continue;
-    }
-    if (*rewritten != current) {
-      current = *rewritten;
-      newDimAxes[dim] =
-          DenseI64ArrayAttr::get(kernelOp.getContext(), axisIndices);
-      changed = true;
-    }
-  }
-
-  if (changed) {
-    sharding = IndexedTensorShardingAttr::get(kernelOp.getContext(), newDimAxes,
-                                              sharding.getUnreducedAxes());
-  }
-  return current;
 }
 
 // case (1) above: the pure-metadata reorder, applied to every dimension of
@@ -909,116 +618,161 @@ resolveCurrentSharding(Value value) {
   return shardings[result.getResultNumber()];
 }
 
-// Canonicalizes one op that genuinely needs a specific factor order on some
-// dimension (a multi-factor op -- a reshape splitting or joining axes),
-// using its own already-accurate distributed.argument_shardings/
-// output_shardings attribute (set once, consistently, by
-// ClusterDistributedKernels.cpp) as the source of truth for its operands'
-// and results' current per-dimension factor order. Fixes are applied
-// directly at this one op -- immediately before it for an operand, or
-// immediately after for a result -- without touching anything else in the
-// program, so nothing upstream ever needs to be tracked or revisited: `op`'s
-// own attrs already describe reality, precisely because this pass never
-// rewrites anything except exactly where an op like this one needs it.
+// Wraps a reshape whose result cannot be declared in canonical order in a
+// single distributed.ManualComputation that reshapes the local tile.
 //
-// Slot-index resolution (classifySlots/canonicalizeDimOrder above) needs the
-// enclosing kernel's own partitioning_axes list; an op with no such enclosing
-// kernel can't be resolved this way and is reported unsupported by the caller
-// instead.
-static bool canonicalizeOpNeedingLayout(Operation *op,
-                                        DistributedKernelOp kernelOp) {
-  bool sawUnsupported = false;
-  MLIRContext *ctx = op->getContext();
+// Example. Take g : 2x6x4 reshaped to G : 2x24, with slots
+//   g : [[0], [1, 2], [3, 4]]      i | j = (S1 L2) | k = (S3 L4)
+//   G : [[0], [1, 2, 3, 4]]        jk = S1 L2 S3 L4
+// where S are sharded slots (extents 2, 2, 2 for slots 0, 1, 3) and L are
+// local slots (extents 3 and 2 for slots 2 and 4). G puts a local factor
+// between two sharded ones, which Shardy cannot declare. Removing the sharded
+// factors from both sides leaves the local picture
+//   l : [[-], [-, 2], [-, 4]] = 1x3x2      L : [[-], [-, 2, -, 4]] = 1x6
+// and the only computation each device performs is the reshape 1x3x2 -> 1x6.
+// That is valid because both sides flatten to the same factor sequence
+// (i S1 L2 S3 L4), so deleting the same sharded factors from both leaves the
+// same local sequence. The 6 elements a device holds are not contiguous in G;
+// the passes around this one treat that non-contiguous slice as one local
+// tile, and the relabeled order S1 S3 L2 L4 is what G is declared as:
+//
+//   %G = distributed.ManualComputation (%g : 2x6x4) [[0], [1, 2], [3, 4]]
+//          manual_axes [0, 1, 3]
+//          -> (2x24) [[0], [1, 3, 2, 4]] {
+//     ^bb0(%l : 1x3x2):
+//       %L = stablehlo.reshape %l : 1x3x2 -> 1x6
+//       yield %L
+//   }
+//
+// Every sharded slot of the operand and result is manual, so nothing inside
+// the region is left for Shardy to localize.
+//
+// Reshapes whose declared result dimensions are already sharded-first are left
+// alone: Shardy handles them as ordinary ops. Operands are expected to be
+// canonical already, which the kernel-boundary reorder and the earlier ops of
+// the walk establish; anything else is reported unsupported.
+//
+// Returns true if the op could not be handled.
+static bool wrapReshapeInLocalManualComputation(stablehlo::ReshapeOp op,
+                                                DistributedKernelOp kernelOp) {
+  MLIRContext *ctx = op.getContext();
+  auto argShardings = op->getAttrOfType<IndexedTensorShardingPerValueAttr>(
+      "distributed.argument_shardings");
+  auto outShardings = op->getAttrOfType<IndexedTensorShardingPerValueAttr>(
+      "distributed.output_shardings");
+  auto operandType = dyn_cast<RankedTensorType>(op.getOperand().getType());
+  auto resultType = op.getType();
+  if (!argShardings || !outShardings || !operandType) {
+    op.emitRemark() << "canonicalize-sharded-factor-order: reshape without "
+                       "sharding attributes cannot be wrapped";
+    return true;
+  }
 
-  if (auto argShardingsAttr =
-          op->getAttrOfType<IndexedTensorShardingPerValueAttr>(
-              "distributed.argument_shardings")) {
-    ArrayRef<IndexedTensorShardingAttr> argShardings =
-        argShardingsAttr.getShardings();
-    SmallVector<IndexedTensorShardingAttr> newArgShardings(argShardings.begin(),
-                                                           argShardings.end());
-    bool changedArgs = false;
-    OpBuilder builder(op);
+  IndexedTensorShardingAttr operandSharding = argShardings.getShardings()[0];
+  if (auto resolved = resolveCurrentSharding(op.getOperand());
+      succeeded(resolved)) {
+    operandSharding = *resolved;
+  }
+  IndexedTensorShardingAttr resultSharding = outShardings.getShardings()[0];
 
-    for (auto [operandIdx, sharding] : llvm::enumerate(argShardings)) {
-      if (operandIdx >= op->getNumOperands()) {
-        break;
-      }
-      Value operand = op->getOperand(operandIdx);
-      IndexedTensorShardingAttr thisSharding = sharding;
-      if (auto resolved = resolveCurrentSharding(operand);
-          succeeded(resolved)) {
-        thisSharding = *resolved;
-      }
-      Value canonicalized =
-          canonicalizeBoundaryValue(builder, op->getLoc(), kernelOp, operand,
-                                    thisSharding, sawUnsupported);
-      if (canonicalized == operand && thisSharding == sharding) {
-        continue;
-      }
-      op->setOperand(operandIdx, canonicalized);
-      newArgShardings[operandIdx] = thisSharding;
-      changedArgs = true;
+  // The operand must already be canonical. The result is reordered here.
+  SmallVector<DenseI64ArrayAttr> canonicalResultDims;
+  bool resultNeedsReorder = false;
+  for (DenseI64ArrayAttr dimAxes : resultSharding.getDimPartitioningAxes()) {
+    auto reordered =
+        computeCanonicalSlotReorder(kernelOp, dimAxes.asArrayRef());
+    if (failed(reordered)) {
+      op.emitRemark() << "canonicalize-sharded-factor-order: a slot of this "
+                         "reshape's result could not be resolved";
+      return true;
     }
-
-    if (changedArgs) {
-      op->setAttr("distributed.argument_shardings",
-                  IndexedTensorShardingPerValueAttr::get(ctx, newArgShardings));
+    resultNeedsReorder |= reordered->has_value();
+    canonicalResultDims.push_back(reordered->has_value()
+                                      ? DenseI64ArrayAttr::get(ctx, **reordered)
+                                      : dimAxes);
+  }
+  for (DenseI64ArrayAttr dimAxes : operandSharding.getDimPartitioningAxes()) {
+    auto reordered =
+        computeCanonicalSlotReorder(kernelOp, dimAxes.asArrayRef());
+    if (failed(reordered) || reordered->has_value()) {
+      op.emitRemark() << "canonicalize-sharded-factor-order: this reshape's "
+                         "operand is not in canonical order";
+      return true;
     }
   }
 
-  if (auto outputShardingsAttr =
-          op->getAttrOfType<IndexedTensorShardingPerValueAttr>(
-              "distributed.output_shardings")) {
-    ArrayRef<IndexedTensorShardingAttr> outputShardings =
-        outputShardingsAttr.getShardings();
-    OpBuilder builder(ctx);
-    builder.setInsertionPointAfter(op);
-
-    for (auto [resultIdx, sharding] : llvm::enumerate(outputShardings)) {
-      if (resultIdx >= op->getNumResults()) {
-        break;
-      }
-      Value result = op->getResult(resultIdx);
-      // Snapshot uses before inserting anything, same reasoning as the
-      // operand side would need if it redirected all uses -- here it
-      // matters because a result (unlike an operand slot) can have many
-      // uses, all of which need to move to the fixed-up value.
-      SmallVector<OpOperand *> existingUses;
-      for (OpOperand &use : result.getUses()) {
-        existingUses.push_back(&use);
-      }
-      IndexedTensorShardingAttr thisSharding = sharding;
-      Value canonicalized =
-          canonicalizeBoundaryValue(builder, op->getLoc(), kernelOp, result,
-                                    thisSharding, sawUnsupported);
-      if (canonicalized == result) {
-        continue;
-      }
-      for (OpOperand *use : existingUses) {
-        use->set(canonicalized);
-      }
-      // Deliberately NOT updating op's own distributed.output_shardings
-      // here (unlike the operand-side case above, which DOES update
-      // distributed.argument_shardings when its operand is replaced).
-      // `op` itself is a real op whose result type Shardy derives
-      // mechanically from its own structural sharding rule plus its
-      // operands' declared sharding -- op's own attr must keep describing
-      // what op ACTUALLY, structurally produces (the natural, pre-fix
-      // order), or Shardy's own reshape-rule-derived local type computation
-      // for `op` contradicts the (wrongly reassigned) declared order,
-      // producing an inconsistent mesh/type error. Only the newly-inserted
-      // chain's own final (distributed.ManualComputation) op -- which really
-      // does produce the canonical order -- carries that declaration;
-      // downstream consumers are redirected to read from it instead.
-      // Confirmed empirically: a merge-type multi-factor op whose own
-      // declared output_shardings was previously (incorrectly) overwritten to
-      // the post-chain value failed Shardy's own lowering with a mesh/type
-      // mismatch.
-    }
+  // The op keeps describing what its operand actually is.
+  if (operandSharding != argShardings.getShardings()[0]) {
+    op->setAttr("distributed.argument_shardings",
+                IndexedTensorShardingPerValueAttr::get(ctx, {operandSharding}));
+  }
+  if (!resultNeedsReorder) {
+    return false;
   }
 
-  return sawUnsupported;
+  // Local tile shape of `type` under `sharding`: each dimension divided by the
+  // extent of its sharded slots. Also collects those slots.
+  llvm::SmallSetVector<int64_t, 8> manualSlots;
+  auto localShape = [&](RankedTensorType type,
+                        IndexedTensorShardingAttr sharding,
+                        SmallVectorImpl<int64_t> &shape) -> bool {
+    for (auto [dim, dimAxes] :
+         llvm::enumerate(sharding.getDimPartitioningAxes())) {
+      auto kinds =
+          classifySlots(kernelOp.getPartitioningAxes(), dimAxes.asArrayRef());
+      if (failed(kinds)) {
+        return false;
+      }
+      int64_t size = type.getDimSize(dim);
+      for (auto [slot, isSharded, extent] :
+           llvm::zip(dimAxes.asArrayRef(), kinds->isSharded, kinds->extents)) {
+        if (isSharded) {
+          manualSlots.insert(slot);
+          size /= extent;
+        }
+      }
+      shape.push_back(size);
+    }
+    return true;
+  };
+  SmallVector<int64_t> localOperandShape, localResultShape;
+  if (!localShape(operandType, operandSharding, localOperandShape) ||
+      !localShape(resultType, resultSharding, localResultShape)) {
+    op.emitRemark() << "canonicalize-sharded-factor-order: a slot of this "
+                       "reshape could not be resolved";
+    return true;
+  }
+
+  SmallVector<int64_t> manualAxes(manualSlots.begin(), manualSlots.end());
+  llvm::sort(manualAxes);
+  IndexedTensorShardingAttr canonicalResultSharding =
+      IndexedTensorShardingAttr::get(ctx, canonicalResultDims,
+                                     resultSharding.getUnreducedAxes());
+
+  OpBuilder builder(op);
+  auto manualOp = builder.create<DistributedManualComputationOp>(
+      op.getLoc(), TypeRange{resultType}, ValueRange{op.getOperand()},
+      builder.getDenseI64ArrayAttr(manualAxes),
+      IndexedTensorShardingPerValueAttr::get(ctx, {operandSharding}),
+      IndexedTensorShardingPerValueAttr::get(ctx, {canonicalResultSharding}));
+  Block *body =
+      builder.createBlock(&manualOp.getBody(), {},
+                          TypeRange{RankedTensorType::get(
+                              localOperandShape, operandType.getElementType())},
+                          {op.getLoc()});
+  OpBuilder bodyBuilder = OpBuilder::atBlockBegin(body);
+  auto localReshape = bodyBuilder.create<stablehlo::ReshapeOp>(
+      op.getLoc(),
+      RankedTensorType::get(localResultShape, resultType.getElementType()),
+      body->getArgument(0));
+  localReshape->setDiscardableAttr(kInternalRewriteMarker,
+                                   builder.getUnitAttr());
+  bodyBuilder.create<DistributedYieldOp>(op.getLoc(), TypeRange{},
+                                         ValueRange{localReshape});
+
+  op.getResult().replaceAllUsesWith(manualOp.getResult(0));
+  op.erase();
+  return false;
 }
 
 // Classification of `op` with respect to the canonical sharded-major/
@@ -1330,7 +1084,7 @@ struct CanonicalizeShardedFactorOrderPass
             // positional structure this pass can act on -- whatever correctness
             // is needed around a collective lives entirely in its bookending
             // casts. DistributedManualComputationOp is this pass's own
-            // construction (buildManualComputationChain): its argument_
+            // construction (wrapReshapeInLocalManualComputation): its argument_
             // shardings/output_shardings are already canonical by
             // construction, and it has no Shardy sharding rule of its own for
             // classifyOp to consult (it isn't a stablehlo/sdy op), so it must
@@ -1440,7 +1194,16 @@ struct CanonicalizeShardedFactorOrderPass
               sawUnsupported = true;
               return;
             }
-            if (canonicalizeOpNeedingLayout(op, kernelOp)) {
+            auto reshape = dyn_cast<stablehlo::ReshapeOp>(op);
+            if (!reshape) {
+              op->emitRemark()
+                  << op->getName()
+                  << ": has a dimension mapped to more than one factor, and "
+                     "only stablehlo.reshape is supported";
+              sawUnsupported = true;
+              return;
+            }
+            if (wrapReshapeInLocalManualComputation(reshape, kernelOp)) {
               sawUnsupported = true;
             }
             return;

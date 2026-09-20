@@ -260,14 +260,15 @@ static void insertPlaceholderAllReduces(
 }
 
 // Translates every distributed.ManualComputation in `shardyModule` (built by
-// CanonicalizeShardedFactorOrderPass's buildManualComputationChain) into a
-// real sdy.manual_computation. This op's argument_shardings/output_shardings/
-// manual_axes are ODS-declared arguments (stored under their own plain
-// attribute names, e.g. "argument_shardings" -- NOT the "distributed."-
-// prefixed discardable attributes constructShardyAttributes's generic
-// opsToProcess walk below scans for), so this must run as its own pass over
-// the module rather than folding into that walk; the two don't interact
-// either way regardless of ordering, since the string keys never collide.
+// CanonicalizeShardedFactorOrderPass's wrapReshapeInLocalManualComputation)
+// into a real sdy.manual_computation. This op's
+// argument_shardings/output_shardings/ manual_axes are ODS-declared arguments
+// (stored under their own plain attribute names, e.g. "argument_shardings" --
+// NOT the "distributed."- prefixed discardable attributes
+// constructShardyAttributes's generic opsToProcess walk below scans for), so
+// this must run as its own pass over the module rather than folding into that
+// walk; the two don't interact either way regardless of ordering, since the
+// string keys never collide.
 static void convertManualComputationsToShardy(
     ModuleOp shardyModule, StringRef meshName,
     llvm::ArrayRef<bool> shardableSlots) {

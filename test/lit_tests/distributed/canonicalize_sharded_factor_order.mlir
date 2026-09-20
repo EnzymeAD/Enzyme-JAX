@@ -249,25 +249,13 @@ module @kernel_internal_reshape_sandwiched {
 
 // -----
 
-// A merge (join) reshape strictly inside a kernel body: two ALREADY
+// A merge (join) reshape strictly inside a kernel body: two already
 // individually-canonical dims (X = Xshard(2) major/Xlocal(3) minor,
-// Y = Yshard(2) major/Ylocal(2) minor) get merged into one compound
-// dimension. Unlike the split case above, this genuinely needs the real
-// split+transpose+merge recipe (per sanity_check/09/10: a merge's natural
-// order [Xshard,Xlocal,Yshard,Yshard] cannot be relabeled into canonical
-// [Xshard,Yshard,Xlocal,Ylocal] order without physically rearranging bytes).
-// Critically, the ORIGINAL reshape's own distributed.output_shardings must
-// stay describing its TRUE (natural, non-canonical) structural output --
-// only the chain's own final merge op declares the canonical order, matching
-// the kernel's own (separately-derived, via the yield) output_shardings.
-// Getting this backwards (overwriting the original reshape's own declared
-// output to the post-chain value) was a real bug caught by this test: Shardy
-// mechanically derives a reshape's own local type from its structural rule
-// PLUS its declared operand sharding, so a mismatched self-declaration on
-// the reshape itself, not just at a boundary, causes a real lowering
-// failure, independent of whatever the kernel or a downstream consumer
-// separately declares. The region's own merge reshape carries the sharding of
-// the tensor's non-manual dimensions (none here) so Shardy localizes it.
+// Y = Yshard(2) major/Ylocal(2) minor) get merged into one dimension whose
+// natural order [Xshard,Xlocal,Yshard,Ylocal] has a local factor between two
+// sharded ones. The reshape is replaced by one ManualComputation over both
+// sharded slots whose region merges the local 3x2 tile into 6, and whose result
+// declares the canonical order [Xshard,Yshard,Xlocal,Ylocal].
 module @kernel_internal_merge_sandwiched {
   func.func @main() {
     return
@@ -297,13 +285,11 @@ module @kernel_internal_merge_sandwiched {
 // CHECK-NEXT: -> (tensor<1xf32>) <[<dim_partitioning_axes = {{\[\[0, 2, 1, 3\]\]}} : unreduced_axes = []>]>
 // CHECK-NEXT: axes
 // CHECK-NEXT: ^bb0(%arg0: tensor<6x4xf32>):
-// CHECK-NEXT: %[[MERGED:.*]] = stablehlo.reshape %arg0 {distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[0, 1\], \[2, 3\]\]}} : unreduced_axes = []>]>, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[0, 1, 2, 3\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: %[[SPLIT:.*]] = stablehlo.reshape %[[MERGED]] {canonicalize_sharded_factor_order.internal, distributed.argument_shardings = {{.*}}, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[0\], \[1\], \[2\], \[3\]\]}} : unreduced_axes = []>]>
-// CHECK-NEXT: %[[MANUAL:.*]] = distributed.ManualComputation (%[[SPLIT]] : tensor<2x3x2x2xf32>) <[<dim_partitioning_axes = {{\[\[0\], \[1\], \[2\], \[3\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: %[[MANUAL:.*]] = distributed.ManualComputation (%arg0 : tensor<6x4xf32>) <[<dim_partitioning_axes = {{\[\[0, 1\], \[2, 3\]\]}} : unreduced_axes = []>]>
 // CHECK-NEXT: manual_axes [0, 2]
 // CHECK-NEXT: -> (tensor<24xf32>) <[<dim_partitioning_axes = {{\[\[0, 2, 1, 3\]\]}} : unreduced_axes = []>]> {
-// CHECK-NEXT: ^bb0(%[[LARG:.*]]: tensor<1x3x1x2xf32>):
-// CHECK-NEXT: %[[LMERGE:.*]] = stablehlo.reshape %[[LARG]] {canonicalize_sharded_factor_order.internal, distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[\], \[\], \[\], \[\]\]}} : unreduced_axes = []>]>, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[\]\]}} : unreduced_axes = []>]>} : (tensor<1x3x1x2xf32>) -> tensor<6xf32>
+// CHECK-NEXT: ^bb0(%[[LARG:.*]]: tensor<3x2xf32>):
+// CHECK-NEXT: %[[LMERGE:.*]] = stablehlo.reshape %[[LARG]] {canonicalize_sharded_factor_order.internal} : (tensor<3x2xf32>) -> tensor<6xf32>
 // CHECK-NEXT: distributed.DistributedYield (%[[LMERGE]] : tensor<6xf32>)
 // CHECK-NEXT: }
 // CHECK-NEXT: distributed.DistributedYield (%[[MANUAL]] : tensor<24xf32>)
@@ -357,9 +343,9 @@ module @special_factor_but_local {
 
 // -----
 
-// The merge fix on a tensor with another sharded dimension the rewrite does not
-// touch: the region's merge reshape must carry that dimension's sharding, or
-// Shardy leaves its size global while the region argument is localized.
+// A merge on a tensor with another sharded dimension (the batch slot 0). Every
+// sharded slot is manual, so the region reshapes the fully local 1x3x2 tile to
+// 1x6.
 module @merge_with_sharded_batch_dim {
   func.func @main() {
     return
@@ -388,5 +374,8 @@ module @merge_with_sharded_batch_dim {
 }
 
 // CHECK-LABEL: module @merge_with_sharded_batch_dim {
-// CHECK: distributed.ManualComputation
-// CHECK: stablehlo.reshape %{{.*}} {canonicalize_sharded_factor_order.internal, distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[0\], \[\], \[\], \[\], \[\]\]}} : unreduced_axes = []>]>, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[0\], \[\]\]}} : unreduced_axes = []>]>}
+// CHECK: distributed.ManualComputation (%arg0 : tensor<2x6x4xf32>)
+// CHECK-NEXT: manual_axes [0, 1, 3]
+// CHECK-NEXT: -> (tensor<2x24xf32>) <[<dim_partitioning_axes = {{\[\[0\], \[1, 3, 2, 4\]\]}} : unreduced_axes = []>]> {
+// CHECK-NEXT: ^bb0(%[[L:.*]]: tensor<1x3x2xf32>):
+// CHECK-NEXT: stablehlo.reshape %[[L]] {canonicalize_sharded_factor_order.internal} : (tensor<1x3x2xf32>) -> tensor<1x6xf32>
