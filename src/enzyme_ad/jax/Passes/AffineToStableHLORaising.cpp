@@ -6771,6 +6771,11 @@ struct AffineToStableHLORaisingPass
       mapping.map(body, newBlock);
 
       SetVector<Value> operands;
+      // The host scalar each buffered device scalar was copied from, and the
+      // buffer's dealloc: a specialized scalar is passed as the host value
+      // and needs no buffer.
+      DenseMap<Value, Value> hostScalarOf;
+      DenseMap<Value, Operation *> deallocOf;
       {
         SetVector<Value> operands0;
         getUsedValuesDefinedAbove(g->getRegion(0), operands0);
@@ -7064,9 +7069,10 @@ struct AffineToStableHLORaisingPass
             }
 
             b.setInsertionPointAfter(g);
-            gpu::DeallocOp::create(
+            deallocOf[res] = gpu::DeallocOp::create(
                 b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
                 (mlir::Type) nullptr, ValueRange(), res);
+            hostScalarOf[res] = storeVal;
             buffered[arg] = ld;
             operands.insert(res);
             continue;
@@ -7147,10 +7153,87 @@ struct AffineToStableHLORaisingPass
         continue;
       }
 
+      // A scalar integer argument a while loop's exit test reads (`e < NE`)
+      // is a trip count. The runtime specializes an executable over such
+      // scalars (one per distinct value, `num_specialized` trailing inputs),
+      // which makes the loop's trip count a constant to every pass after it.
+      // Only an argument the kernel does not write qualifies: a specialized
+      // scalar is not returned.
+      SmallVector<unsigned> specialized;
+      if (specialize_loop_bounds) {
+        // An exit test `compare(%iv, %bound)` of a loop's own argument
+        // against a value from outside the loop, where the bound is a
+        // function argument, widened by converts.
+        DenseSet<Value> bounds;
+        newFunc.walk([&](stablehlo::WhileOp whileOp) {
+          auto ret = cast<stablehlo::ReturnOp>(
+              whileOp.getCond().front().getTerminator());
+          auto cmp = ret.getOperand(0).getDefiningOp<stablehlo::CompareOp>();
+          if (!cmp)
+            return;
+          Value bound;
+          for (auto [side, other] : {std::pair(cmp.getLhs(), cmp.getRhs()),
+                                     std::pair(cmp.getRhs(), cmp.getLhs())}) {
+            auto BA = dyn_cast<BlockArgument>(side);
+            if (BA && BA.getOwner() == &whileOp.getCond().front() &&
+                !whileOp->isProperAncestor(
+                    other.getParentBlock()->getParentOp()))
+              bound = other;
+          }
+          if (!bound)
+            return;
+          while (auto cvt = bound.getDefiningOp<stablehlo::ConvertOp>())
+            bound = cvt.getOperand();
+          if (auto BA = dyn_cast<BlockArgument>(bound);
+              BA && BA.getOwner() == newBlock)
+            bounds.insert(bound);
+        });
+        for (auto [i, arg] : llvm::enumerate(operands)) {
+          Value newArg = newBlock->getArgument(i);
+          auto TT = cast<RankedTensorType>(newArg.getType());
+          if (!bounds.contains(newArg) || TT.getRank() != 0 ||
+              !TT.getElementType().isInteger() || !hostScalarOf.count(arg))
+            continue;
+          bool readOnly = true;
+          for (Operation *user : arg.getUsers())
+            if (g->isAncestor(user) &&
+                !isa<affine::AffineLoadOp, memref::LoadOp>(user))
+              readOnly = false;
+          if (readOnly)
+            specialized.push_back(i);
+        }
+      }
+
+      SmallVector<Value> wrapperOperands;
       SmallVector<Value> results;
-      for (auto arg : operands) {
-        auto val = mapping.lookup(arg);
-        results.push_back(val);
+      for (auto [i, arg] : llvm::enumerate(operands)) {
+        if (llvm::is_contained(specialized, i))
+          continue;
+        wrapperOperands.push_back(arg);
+        results.push_back(mapping.lookup(arg));
+      }
+      if (!specialized.empty()) {
+        // The specialized scalars move to the end of the argument list.
+        SmallVector<Type> newTypes;
+        for (auto [i, arg] : llvm::enumerate(operands))
+          if (!llvm::is_contained(specialized, i))
+            newTypes.push_back(newBlock->getArgument(i).getType());
+        for (unsigned i : specialized) {
+          Value old = newBlock->getArgument(i);
+          Value moved = newBlock->addArgument(old.getType(), old.getLoc());
+          old.replaceAllUsesWith(moved);
+          newTypes.push_back(old.getType());
+          wrapperOperands.push_back(hostScalarOf.lookup(operands[i]));
+        }
+        llvm::BitVector erase(newBlock->getNumArguments());
+        for (unsigned i : specialized)
+          erase.set(i);
+        newBlock->eraseArguments(erase);
+        SmallVector<Type> resultTypes;
+        for (Value r : results)
+          resultTypes.push_back(r.getType());
+        newFunc.setType(
+            FunctionType::get(g->getContext(), newTypes, resultTypes));
       }
 
       func::ReturnOp::create(
@@ -7162,14 +7245,28 @@ struct AffineToStableHLORaisingPass
 
       {
         OpBuilder builder(g);
-        enzymexla::XLAWrapperOp::create(
-            builder, g->getLoc(), SymbolRefAttr::get(newFunc),
-            llvm::to_vector(operands), nullptr, nullptr);
+        auto wrapper = enzymexla::XLAWrapperOp::create(
+            builder, g->getLoc(), SymbolRefAttr::get(newFunc), wrapperOperands,
+            nullptr, nullptr);
+        if (!specialized.empty())
+          wrapper.setNumSpecialized(specialized.size());
+        // The device buffers the specialized scalars were copied into have
+        // no reader left once the wrapper region goes.
+        for (unsigned i : specialized) {
+          Value res = operands[i];
+          deallocOf.lookup(res)->erase();
+          for (Operation *user : llvm::make_early_inc_range(res.getUsers()))
+            if (!g->isAncestor(user))
+              user->erase();
+        }
         if (g->getNumResults() > 0) {
           Value zero = arith::ConstantIndexOp::create(builder, g->getLoc(), 0);
           g->getResult(0).replaceAllUsesWith(zero);
         }
         g->erase();
+        for (unsigned i : specialized)
+          if (operands[i].use_empty())
+            operands[i].getDefiningOp()->erase();
         anyRaised = true;
       }
     }
