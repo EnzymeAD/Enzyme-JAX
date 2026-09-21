@@ -153,17 +153,19 @@ module {
 //   u = [1.0 2.0 3.0; 4.0 5.0 6.0]
 //
 // After CSE the first multiply becomes `multiply %z, %z` while the second stays
-// `multiply %y, %z`. Batching them together used to collapse both operand slots
-// of the wrapper onto one argument, so the compiled result was
-// hcat(z.*z, z.*z) instead of hcat(z.*z, y.*z). The two multiplies must now be
-// left alone, and the second column (u[:, 2]) must survive in the output.
+// `multiply %y, %z`. concat_insert_dim_elementwise used to batch them together
+// and collapse both wrapper slots onto one argument, giving hcat(z.*z, z.*z).
+// The pipeline still fuses the pair, but per slot: slot 0 becomes concat(z, y)
+// and slot 1 a broadcast of z, so the second column (u[:, 2]) survives.
 
 // REACTANT-LABEL: func.func @main
 // REACTANT-DAG: %[[Z:.+]] = stablehlo.slice %arg0 [2:3, 0:2] : (tensor<3x2xf64>) -> tensor<1x2xf64>
 // REACTANT-DAG: %[[Y:.+]] = stablehlo.slice %arg0 [1:2, 0:2] : (tensor<3x2xf64>) -> tensor<1x2xf64>
-// REACTANT-DAG: stablehlo.multiply %[[Z]], %[[Z]] : tensor<1x2xf64>
-// REACTANT-DAG: stablehlo.multiply {{.*}}%[[Y]]{{.*}} : tensor<1x2xf64>
-// REACTANT-NOT: stablehlo.multiply {{.*}} : tensor<2x2xf64>
+// REACTANT-DAG: %[[ZT:.+]] = stablehlo.reshape %[[Z]] : (tensor<1x2xf64>) -> tensor<2x1xf64>
+// REACTANT-DAG: %[[YT:.+]] = stablehlo.reshape %[[Y]] : (tensor<1x2xf64>) -> tensor<2x1xf64>
+// REACTANT-DAG: %[[ZY:.+]] = stablehlo.concatenate %[[ZT]], %[[YT]], dim = 1
+// REACTANT-DAG: %[[ZB:.+]] = stablehlo.broadcast_in_dim %[[Z]], dims = [1, 0] : (tensor<1x2xf64>) -> tensor<2x2xf64>
+// REACTANT: stablehlo.multiply %[[ZY]], %[[ZB]]
 
 module @reactant_f attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
   func.func private @"*_broadcast_scalar"(%arg0: tensor<f64> {enzymexla.memory_effects = []}, %arg1: tensor<f64> {enzymexla.memory_effects = []}) -> (tensor<f64>, tensor<f64>, tensor<f64>) attributes {enzymexla.memory_effects = []} {
