@@ -30934,6 +30934,86 @@ struct NoopReduceWindowOpCanon final
   }
 };
 
+// A reduce over the windowed dimension of a halving reduce_window (window 2,
+// dilation n/2 on a dimension of padded size n, unit strides) with the same
+// body and the identity as init: every input element lands in exactly one
+// window and the padding contributes the identity, so reducing the windows is
+// reducing the input. This is what an unrolled tree reduction becomes once
+// each step is recognized as a reduce_window (SumToReduceWindow).
+struct ReduceHalvingReduceWindow final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceHalvingReduceWindow> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1)
+      return failure();
+    auto rw = op.getInputs()[0].getDefiningOp<stablehlo::ReduceWindowOp>();
+    if (!rw || rw.getInputs().size() != 1 || !rw->hasOneUse())
+      return failure();
+    auto inputType = dyn_cast<RankedTensorType>(rw.getInputs()[0].getType());
+    if (!inputType || !inputType.hasStaticShape())
+      return failure();
+
+    auto strides = rw.getWindowStrides();
+    if (strides && !llvm::all_of(*strides, [](int64_t s) { return s == 1; }))
+      return failure();
+    auto baseDilations = rw.getBaseDilations();
+    if (baseDilations &&
+        !llvm::all_of(*baseDilations, [](int64_t d) { return d == 1; }))
+      return failure();
+
+    // Padding (filled with the identity init below) may only extend the
+    // halved dimension.
+    SmallVector<int64_t> padded(inputType.getShape());
+    if (auto padding = rw.getPadding()) {
+      SmallVector<int64_t> vals(padding->getValues<int64_t>());
+      for (int64_t i = 0; i < inputType.getRank(); ++i) {
+        int64_t lo = vals[2 * i], hi = vals[2 * i + 1];
+        if (lo < 0 || hi < 0)
+          return failure();
+        padded[i] += lo + hi;
+      }
+    }
+
+    auto windowDims = rw.getWindowDimensions();
+    auto windowDilations = rw.getWindowDilations();
+    int64_t halved = -1;
+    for (auto [i, w] : llvm::enumerate(windowDims)) {
+      if (w == 1) {
+        if (padded[i] != inputType.getDimSize(i))
+          return failure();
+        continue;
+      }
+      int64_t dilation = windowDilations ? (*windowDilations)[i] : 1;
+      if (w != 2 || halved != -1 || padded[i] != 2 * dilation)
+        return failure();
+      halved = i;
+    }
+    if (halved == -1 || !llvm::is_contained(op.getDimensions(), halved))
+      return failure();
+
+    auto commonRW = CheckCommonReduceWindowOp(rw);
+    if (commonRW.kind == ReduceOpKind::Unknown ||
+        !isIdentityValueForReduceOp(rw.getInitValues()[0], commonRW.kind))
+      return failure();
+    if (!OperationEquivalence::isRegionEquivalentTo(
+            &rw.getBody(), &op.getBody(),
+            OperationEquivalence::IgnoreLocations))
+      return failure();
+
+    auto newReduce = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(), TypeRange(op.getType(0)),
+        ValueRange(rw.getInputs()), ValueRange(op.getInitValues()),
+        op.getDimensions());
+    rewriter.inlineRegionBefore(op.getBody(), newReduce.getBody(),
+                                newReduce.getBody().end());
+    rewriter.replaceOp(op, newReduce.getResult(0));
+    rewriter.eraseOp(rw);
+    return success();
+  }
+};
+
 template <typename BinaryOpType, typename Child>
 struct ReduceSliceFusionBase
     : public CheckedOpRewritePattern<
@@ -37876,6 +37956,7 @@ struct EnzymeHLOOptPass
         ConcatReshapeElementwise,
         TransposeAllUsersSlice,
         ReduceReduce,
+        ReduceHalvingReduceWindow,
         IfOpLiftCommonOps,
         InvolutionSimplify<stablehlo::NegOp>,
         InvolutionSimplify<stablehlo::NotOp>,
