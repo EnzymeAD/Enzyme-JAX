@@ -906,6 +906,12 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   if (!info.isValid() || !info.isConstant())
     return failure();
 
+  // A loop that never runs (an inner loop whose bound became constant when
+  // the outer loop was unrolled) has nothing to batch; leave it for
+  // canonicalization instead of building zero-sized tensors.
+  if (info.getConstantNumIters() <= 0)
+    return rewriter.notifyMatchFailure(whileOp, "loop runs no iterations");
+
   auto &whileBody = whileOp.getBody().front();
 
   auto affineIndexInfoMap = info.getAffineIndexInfo();
