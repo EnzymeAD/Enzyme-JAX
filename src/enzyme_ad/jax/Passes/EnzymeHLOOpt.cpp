@@ -15992,6 +15992,9 @@ struct GridIndexingAnalysis {
   SmallVector<int64_t> sliceSizes;
   SmallVector<DimMapping> mappings;
   SmallVector<int64_t> reverseDims;
+  // Whether every index of the grid lies within the operand. A gather clamps
+  // the ones past the end; a scatter drops them.
+  bool inBounds;
 };
 
 static LogicalResult analyzeGridIndexing(Value indices, Value operand,
@@ -16115,10 +16118,10 @@ static LogicalResult analyzeGridIndexing(Value indices, Value operand,
     rem %= opStrides[k];
   }
 
+  result.inBounds = true;
   for (int64_t k = 0; k < opRank; ++k) {
-    if (result.sliceStarts[k] + result.sliceSizes[k] > result.operandShape[k]) {
-      return failure();
-    }
+    if (result.sliceStarts[k] + result.sliceSizes[k] > result.operandShape[k])
+      result.inBounds = false;
   }
 
   for (size_t m = 0; m < result.mappings.size(); ++m) {
@@ -16215,15 +16218,37 @@ struct GatherOpCanon final
         stride = -stride;
       }
 
-      if (limit > operandTy.getDimSize(0)) { // gather clamps indices
+      int64_t dim = operandTy.getDimSize(0);
+      Value result;
+      if (limit <= dim) {
+        result = stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand,
+                                          {start}, {limit}, {stride});
+        if (needsReverse) {
+          result =
+              stablehlo::ReverseOp::create(rewriter, op.getLoc(), result,
+                                           rewriter.getDenseI64ArrayAttr({0}));
+        }
+      } else if (needsReverse || start < 0) {
         return failure();
-      }
-
-      Value result = stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand,
-                                              {start}, {limit}, {stride});
-      if (needsReverse) {
-        result = stablehlo::ReverseOp::create(
-            rewriter, op.getLoc(), result, rewriter.getDenseI64ArrayAttr({0}));
+      } else {
+        // The gather clamps each index to dim - 1, so the part of the run
+        // past the end reads the last element that many times.
+        int64_t inBounds =
+            start < dim ? (dim - start + stride - 1) / stride : 0;
+        Value last = stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand,
+                                              {dim - 1}, {dim}, {1});
+        result = stablehlo::BroadcastInDimOp::create(
+            rewriter, op.getLoc(),
+            RankedTensorType::get({count - inBounds},
+                                  operandTy.getElementType()),
+            last, rewriter.getDenseI64ArrayAttr({0}));
+        if (inBounds > 0) {
+          Value head =
+              stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand, {start},
+                                       {start + inBounds * stride}, {stride});
+          result = stablehlo::ConcatenateOp::create(
+              rewriter, op.getLoc(), ValueRange{head, result}, 0);
+        }
       }
 
       // The grid may carry dimensions beyond the single mapped one, along
@@ -16247,6 +16272,8 @@ struct GatherOpCanon final
     }
 
     // General case: We have multiple grid dimensions mapped.
+    if (!analysis.inBounds)
+      return failure();
     // Reshape the 1D operand to the factored multi-dimensional shape.
     Value reshapedOperand = stablehlo::ReshapeOpCreate(
         rewriter, op.getLoc(), operand, analysis.operandShape);
@@ -36045,7 +36072,8 @@ private:
     GridIndexingAnalysis analysis;
     if (failed(analyzeGridIndexing(
             indices, operand, dimNumbers.getIndexVectorDim(),
-            dimNumbers.getScatterDimsToOperandDims(), analysis))) {
+            dimNumbers.getScatterDimsToOperandDims(), analysis)) ||
+        !analysis.inBounds) {
       return failure();
     }
 
