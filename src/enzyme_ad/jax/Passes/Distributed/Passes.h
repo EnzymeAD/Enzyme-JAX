@@ -27,8 +27,10 @@ void registerShardyToDistributedPipeline();
 // candidates reaching this pipeline are expected to already have every
 // logical axis decided (e.g. by the search's heuristic completer), so there
 // should be no un-sharded logical axis left to preserve.
-void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
-                                            bool lowerLogicalAxes = true);
+// `dumpKernelModulesTo` is forwarded to LowerKernelsToExecutable.
+void buildDistributedSearchLoweringPipeline(
+    OpPassManager &pm, bool lowerLogicalAxes = true,
+    llvm::StringRef dumpKernelModulesTo = "");
 void registerDistributedSearchLoweringPipeline();
 
 #define GEN_PASS_DECL

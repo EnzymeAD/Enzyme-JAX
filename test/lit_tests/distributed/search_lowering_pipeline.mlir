@@ -1,5 +1,9 @@
 // RUN: enzymexlamlir-opt %s --distributed-search-lowering-pipeline | FileCheck %s
 // RUN: enzymexlamlir-opt %s --distributed-search-lowering-pipeline 2>&1 >/dev/null | FileCheck %s --check-prefix=REMARK
+// RUN: rm -rf %t.dir && mkdir -p %t.dir
+// RUN: enzymexlamlir-opt %s --distributed-search-lowering-pipeline="dump-kernel-modules-to=%t.dir" -o /dev/null 2>/dev/null
+// RUN: ls %t.dir | wc -l | FileCheck %s --check-prefix=DUMPCOUNT
+// DUMPCOUNT: 1
 
 // End-to-end smoke test for buildDistributedSearchLoweringPipeline
 // (--distributed-search-lowering-pipeline), which otherwise has no lit

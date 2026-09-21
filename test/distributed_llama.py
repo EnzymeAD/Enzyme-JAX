@@ -164,12 +164,14 @@ def _shared_pipeline_prefix(physical_mesh_config_path):
 
 def build_pipeline_argv(physical_mesh_config_path, kernel_modules_dir=""):
     args = _shared_pipeline_prefix(physical_mesh_config_path)
+    # The registered pipeline is exactly what the search scores each candidate
+    # with, so the real lowering cannot drift from it.
     if kernel_modules_dir:
         args.append(
-            f"--distributed-lower-kernels-to-executable=dump-kernel-modules-to={kernel_modules_dir}"
+            f"--distributed-search-lowering-pipeline=dump-kernel-modules-to={kernel_modules_dir}"
         )
     else:
-        args.append("--distributed-lower-kernels-to-executable")
+        args.append("--distributed-search-lowering-pipeline")
     return args
 
 
@@ -209,6 +211,8 @@ def build_sanity_check_pipeline_argv(physical_mesh_config_path):
         "--cse",
         "--canonicalize",
         "--distributed-make-replications-explicit",
+        "--distributed-fuse-collectives",
+        "--distributed-atomize-collectives",
         "--distributed-lower-for-sanity-check",
     ]
     return args

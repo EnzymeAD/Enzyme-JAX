@@ -6,8 +6,9 @@
 
 namespace mlir::enzyme::distributed {
 
-void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
-                                            bool lowerLogicalAxes) {
+void buildDistributedSearchLoweringPipeline(
+    OpPassManager &pm, bool lowerLogicalAxes,
+    llvm::StringRef dumpKernelModulesTo) {
   LowerKernelsPassOptions options;
   options.lowerLogicalAxes = lowerLogicalAxes;
   // CanonicalizeShardedFactorOrder must run first: both InlineDeviceLocalAxes
@@ -62,7 +63,9 @@ void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
   // Runs last so that whatever it dispatches (or, for now, dumps) per kernel
   // reflects the fully merged and cleaned-up IR above, not an intermediate
   // state with dead axis-algebra ops still attached.
-  pm.addPass(createLowerKernelsToExecutablePass());
+  LowerKernelsToExecutablePassOptions executableOptions;
+  executableOptions.dumpKernelModulesTo = dumpKernelModulesTo.str();
+  pm.addPass(createLowerKernelsToExecutablePass(executableOptions));
 }
 
 namespace {
@@ -78,6 +81,10 @@ struct DistributedSearchLoweringPipelineOptions
           "stay true: candidates reaching this pipeline are expected to "
           "already have every logical axis decided. Default: true"),
       llvm::cl::init(true)};
+  Option<std::string> dumpKernelModulesTo{
+      *this, "dump-kernel-modules-to",
+      llvm::cl::desc("Forwarded to distributed-lower-kernels-to-executable."),
+      llvm::cl::init("")};
 };
 } // namespace
 
@@ -88,7 +95,8 @@ void registerDistributedSearchLoweringPipeline() {
       "axes to its sharded form.",
       [](OpPassManager &pm,
          const DistributedSearchLoweringPipelineOptions &options) {
-        buildDistributedSearchLoweringPipeline(pm, options.lowerLogicalAxes);
+        buildDistributedSearchLoweringPipeline(pm, options.lowerLogicalAxes,
+                                               options.dumpKernelModulesTo);
       });
 }
 
