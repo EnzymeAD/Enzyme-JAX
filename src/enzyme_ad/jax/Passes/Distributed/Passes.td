@@ -641,6 +641,28 @@ def PrintPrimitiveFootprintsPass
   }];
 }
 
+def PrintScheduleGraphPass
+    : Pass<"distributed-print-schedule-graph", "::mlir::ModuleOp"> {
+  let summary = "Debug pass: reports the event DAG of a lowered candidate "
+                "module (ScheduleGraph.h) as remarks.";
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "enzyme::distributed::DistributedDialect"
+  ];
+  let description = [{
+    Builds the event DAG (ScheduleGraph.h): one node per op inside every
+    distributed.DistributedKernel body, costed by ComputeCost.h's roofline,
+    and one node per primitive step of every atomic distributed.Collective's
+    decomposed chain (CollectiveDecomposer.h), connected by SSA def-use edges
+    (kernel and collective-chain boundaries bridged by value aliasing, not
+    rewriting). Each node gets a remark with its kind, cost/demand summary and
+    predecessor node indices; the module gets a summary remark. Mesh/device
+    cost parameters come from the unique physical mesh's optional metadata,
+    else abstract defaults (MeshCostMetadata.h). An unplannable collective
+    makes the whole graph infeasible, reported as a single remark instead of
+    per-node ones.
+  }];
+}
+
 def LowerForSanityCheckPass
     : Pass<"distributed-lower-for-sanity-check", "::mlir::ModuleOp"> {
   let summary = "Lowers the whole distributed program to a single-device "
