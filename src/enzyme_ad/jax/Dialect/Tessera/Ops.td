@@ -198,6 +198,81 @@ def ReturnOp : TesseraOp<"return", [Pure, HasParent<"DefineOp">, ReturnLike, Ter
 }
 
 //===----------------------------------------------------------------------===//
+// GuardOp
+//===----------------------------------------------------------------------===//
+
+def GuardOp : TesseraOp<"guard", [SingleBlock]> {
+  let summary = "A rewrite predicated on a property that is not known statically";
+  let description = [{
+    The 'tessera.guard' operation holds the two outcomes of a conditional
+    optimization rule whose condition could not be proven at compile time: the
+    specialized rewrite in its first region, and the original computation in its
+    second. It is produced by `tessera-apply-pdl` and consumed by
+    `tessera-lower-guards`, which synthesizes code testing `cond` and replaces
+    the whole operation with a branch between the two regions.
+
+    `cond` is the condition text from the optimization rule. The variables it
+    names are resolved positionally through `argNames`, which runs parallel to
+    `args`: the value that `cond` calls `argNames[i]` is `args[i]`. Keeping the
+    condition as text rather than as encoded operands is what lets a guard be
+    read back at a glance in a test.
+
+    The op deliberately declares no memory effects, so it is never speculated or
+    eliminated on the assumption that its regions are pure -- they generally
+    contain calls that are not.
+
+    Example:
+```mlir
+    %r = tessera.guard "symmetric(x)" args(%m) {argNames = ["x"]} : (i512) -> f32 {
+      %s = tessera.call @lib.symmetric_foo(%m) : (i512) -> f32
+      tessera.yield %s : f32
+    } else {
+      %o = tessera.call @lib.foo(%m) : (i512) -> f32
+      tessera.yield %o : f32
+    }
+```
+  }];
+
+  let arguments = (ins StrAttr:$cond,
+                       ArrayAttr:$argNames,
+                       Variadic<AnyType>:$args);
+  let results = (outs Variadic<AnyType>);
+  let regions = (region SizedRegion<1>:$thenRegion,
+                        SizedRegion<1>:$elseRegion);
+
+  let assemblyFormat = [{
+    $cond `args` `(` $args `)` attr-dict `:` functional-type($args, results)
+    $thenRegion `else` $elseRegion
+  }];
+
+  let extraClassDeclaration = [{
+    /// Return the value that `cond` refers to by `name`, or a null Value when
+    /// the condition names something this guard does not carry.
+    ::mlir::Value getArgForName(::llvm::StringRef name);
+  }];
+
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// YieldOp
+//===----------------------------------------------------------------------===//
+
+def YieldOp : TesseraOp<"yield", [Pure, HasParent<"GuardOp">, ReturnLike,
+                                  Terminator]> {
+  let summary = "yield operation";
+  let description = [{
+    The 'tessera.yield' operation terminates a region of a 'tessera.guard' and
+    supplies that branch's values as the results of the guard.
+  }];
+
+  let arguments = (ins Variadic<AnyType>:$operands);
+
+  let assemblyFormat = "attr-dict ($operands^ `:` type($operands))?";
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
 // OptimizationOp
 //===----------------------------------------------------------------------===//
 

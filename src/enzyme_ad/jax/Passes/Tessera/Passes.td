@@ -49,6 +49,28 @@ def TesseraToLLVMPass : Pass<"tessera-to-llvm", "ModuleOp"> {
   ];
 }
 
+def LowerTesseraGuardsPass : Pass<"tessera-lower-guards", "ModuleOp"> {
+  let summary = "Turn each tessera.guard into a runtime check and a branch";
+  let description = [{
+    This pass synthesizes the code that tests the condition recorded on a
+    tessera.guard, then replaces the guard with a conditional branch between its
+    two regions: the specialized rewrite when the condition holds, the original
+    computation when it does not. It runs before tessera-to-llvm, so both
+    branches still contain tessera.call ops.
+  }];
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+    "enzyme::tessera::TesseraDialect"
+  ];
+  let options = [
+    Option<"maxUnrolledElems", "max-unrolled-elems", "int64_t",
+           /*default=*/"64",
+           "Largest matrix, in elements, whose property check is emitted as "
+           "straight-line comparisons. A predicate declines above this rather "
+           "than emitting an unreasonable amount of code.">
+  ];
+}
+
 def TesseraApplyPDLPass : Pass<"tessera-apply-pdl", "ModuleOp"> {
   let summary = "Apply PDL patterns to Tessera operations";
   let description = [{

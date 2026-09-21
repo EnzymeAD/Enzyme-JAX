@@ -14,6 +14,7 @@
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/RuleAST.h"
 #include <limits>
 #include <optional>
 #include <utility>
@@ -40,274 +41,10 @@ using namespace mlir::enzyme::tessera;
 
 namespace {
 
-enum class TokenType {
-  Ident,
-  Integer,
-  Float,
-  LParen,
-  RParen,
-  Dot,
-  Comma,
-  Arrow,
-  End,
-  Error
-};
-
-struct Token {
-  TokenType type;
-  std::string value;
-};
-
-bool isAlpha(char c) {
-  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
-}
-
-bool isDigit(char c) { return c >= '0' && c <= '9'; }
-
-bool isAlphaNum(char c) { return isAlpha(c) || isDigit(c); }
-
-bool isWhitespace(char c) { return c == ' ' || c == '\n' || c == '\t'; }
-
-struct Lexer {
-  std::string input;
-  size_t pos = 0;
-
-  char peek() { return pos < input.size() ? input[pos] : '\0'; }
-  char peekNext() { return pos + 1 < input.size() ? input[pos + 1] : '\0'; }
-  char advance() { return input[pos++]; }
-
-  Token nextToken() {
-    if (peek() == '\0') {
-      return Token{TokenType::End, ""};
-    }
-
-    while (isWhitespace(peek()))
-      advance();
-
-    if (isAlpha(peek()) || peek() == '_') {
-      std::string s;
-      while (isAlphaNum(peek()) || peek() == '_') {
-        s += advance();
-      }
-      return Token{TokenType::Ident, s};
-    }
-
-    // Two lookahead rules decide whether a leading character starts a number.
-    // A '-' does only when a digit follows, otherwise it is the head of the
-    // "->" arrow handled below. A '.' does only when a digit follows.
-    if (isDigit(peek()) ||
-        ((peek() == '-' || peek() == '.') && isDigit(peekNext()))) {
-      std::string num;
-      if (peek() == '-') {
-        num += advance();
-      }
-      while (isDigit(peek())) {
-        num += advance();
-      }
-      if (peek() == '.') {
-        num += advance();
-        while (isDigit(peek())) {
-          num += advance();
-        }
-        return Token{TokenType::Float, num};
-      }
-      return Token{TokenType::Integer, num};
-    }
-
-    if (peek() == '(') {
-      advance();
-      return Token{TokenType::LParen, ""};
-    }
-
-    if (peek() == ')') {
-      advance();
-      return Token{TokenType::RParen, ""};
-    }
-
-    if (peek() == '.') {
-      advance();
-      return Token{TokenType::Dot, ""};
-    }
-
-    if (peek() == ',') {
-      advance();
-      return Token{TokenType::Comma, ""};
-    }
-
-    if (peek() == '-' && peekNext() == '>') {
-      advance();
-      advance();
-      return Token{TokenType::Arrow, ""};
-    }
-
-    return Token{TokenType::Error, std::string(1, peek())};
-  }
-};
-
-struct Var {
-  std::string name;
-};
-
-struct IntLit {
-  int64_t value;
-};
-
-struct FloatLit {
-  double value;
-};
-
-struct Expr;
-
-struct Call {
-  std::string dialect, opname;
-  std::vector<Expr> args;
-};
-
-struct Expr {
-  std::variant<Var, IntLit, FloatLit, Call> data;
-
-  Expr() = default; // default constructor
-  Expr(Var v) : data(v) {}
-  Expr(IntLit n) : data(n) {}
-  Expr(FloatLit n) : data(n) {}
-  Expr(Call c) : data(std::move(c)) {} // move because Call has a vector
-};
-
-struct Rule {
-  Expr lhs;
-  Expr rhs;
-};
-
-struct Parser {
-  Lexer lexer;
-  Token current;
-  Location loc;
-  bool failed = false;
-
-  Parser(std::string input, Location location) : lexer{input}, loc{location} {
-    advance();
-  }
-
-  void advance() {
-    current = lexer.nextToken();
-    if (current.type == TokenType::Error) {
-      emitError(loc, "unrecognized character '")
-          << current.value << "' in optimization rule";
-      failed = true;
-    }
-  }
-
-  std::optional<Call> parseCall(std::string dialect_name);
-  std::optional<Expr> parseExpr();
-  std::optional<Rule> parseRule();
-};
-
-std::optional<Call> Parser::parseCall(std::string dialect_name) {
-  if (current.type != TokenType::Dot) {
-    emitError(loc, "expected '.' in optimization rule, got '")
-        << current.value << "'";
-    return std::nullopt;
-  }
-  advance();
-  if (current.type != TokenType::Ident) {
-    emitError(loc, "expected identifier in optimization rule, got '")
-        << current.value << "'";
-    return std::nullopt;
-  }
-  std::string op_name = current.value;
-  advance();
-  if (current.type != TokenType::LParen) {
-    emitError(loc, "expected '(' in optimization rule, got '")
-        << current.value << "'";
-    return std::nullopt;
-  }
-  std::vector<Expr> args;
-  advance();
-  while (current.type != TokenType::RParen) {
-    auto expr = parseExpr();
-    if (!expr)
-      return std::nullopt;
-    args.push_back(std::move(*expr));
-    if (current.type == TokenType::Comma)
-      advance();
-  }
-  advance(); // consume ')'
-  return Call{dialect_name, op_name, std::move(args)};
-}
-
-std::optional<Expr> Parser::parseExpr() {
-  if (current.type == TokenType::Ident) {
-    std::string s = current.value;
-    advance();
-    if (current.type == TokenType::Dot) {
-      auto call = parseCall(s);
-      if (!call)
-        return std::nullopt;
-      return Expr(std::move(*call));
-    }
-    return Var{s};
-  }
-  if (current.type == TokenType::Integer) {
-    int64_t n;
-    if (StringRef(current.value).getAsInteger(10, n)) {
-      emitError(loc, "integer literal out of range: ") << current.value;
-      return std::nullopt;
-    }
-    advance();
-    return Expr(IntLit{n});
-  }
-  if (current.type == TokenType::Float) {
-    double n;
-    if (StringRef(current.value).getAsDouble(n)) {
-      emitError(loc, "invalid floating point literal: ") << current.value;
-      return std::nullopt;
-    }
-    advance();
-    return Expr(FloatLit{n});
-  }
-  emitError(loc, "invalid optimization rule expression");
-  return std::nullopt;
-}
-
-std::optional<Rule> Parser::parseRule() {
-  auto lhs = parseExpr();
-  if (!lhs)
-    return std::nullopt;
-  if (current.type != TokenType::Arrow) {
-    emitError(loc, "expected '->' in optimization rule, got '")
-        << current.value << "'";
-    return std::nullopt;
-  }
-  advance();
-  auto rhs = parseExpr();
-  if (!rhs)
-    return std::nullopt;
-  return Rule{std::move(*lhs), std::move(*rhs)};
-}
-
-// Pick the narrowest standard integer width that can hold a literal from a
-// rule annotation. Literals are parsed as int64_t, so anything that does not
-// round-trip through int32_t needs an i64 attribute; asking for an i32
-// attribute in that case would silently truncate the value.
-IntegerAttr getIntegerAttrForLiteral(OpBuilder &builder, int64_t value) {
-  if (value >= std::numeric_limits<int32_t>::min() &&
-      value <= std::numeric_limits<int32_t>::max())
-    return builder.getI32IntegerAttr(static_cast<int32_t>(value));
-  return builder.getI64IntegerAttr(value);
-}
-
-// Same idea for float literals: f32 when the value survives the round trip
-// through it, otherwise f64. Values like 0.5 are exact in both, so they
-// narrow to f32; floats like pi and e are not, so they stay f64.
-FloatAttr getFloatAttrForLiteral(OpBuilder &builder, double value) {
-  if (static_cast<double>(static_cast<float>(value)) == value)
-    return builder.getF32FloatAttr(static_cast<float>(value));
-  return builder.getF64FloatAttr(value);
-}
-
 std::pair<mlir::Value, mlir::Value>
 emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
-             llvm::StringMap<mlir::Value> &boundVars) {
+             llvm::StringMap<mlir::Value> &boundVars,
+             SmallVectorImpl<std::string> &orderedVars) {
   return std::visit(
       overloaded{
           [&](const Var &v) -> std::pair<mlir::Value, mlir::Value> {
@@ -315,6 +52,10 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
               boundVars[v.name] = pdl::OperandOp::create(
                   builder, loc, builder.getType<pdl::ValueType>(),
                   /*type=*/mlir::Value());
+              // Track first-appearance order too: a conditional rule hands
+              // these values to its rewrite function positionally, paired with
+              // a list of the names the condition knows them by.
+              orderedVars.push_back(v.name);
             }
             return {boundVars[v.name], mlir::Value()};
           },
@@ -368,7 +109,8 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
           [&](const Call &c) -> std::pair<mlir::Value, mlir::Value> {
             SmallVector<mlir::Value> argValues;
             for (int i = 0; i < c.args.size(); i++) {
-              auto argPDL = emitMatchPDL(c.args[i], builder, loc, boundVars);
+              auto argPDL =
+                  emitMatchPDL(c.args[i], builder, loc, boundVars, orderedVars);
               argValues.push_back(argPDL.first);
             }
             auto calleeAttr = pdl::AttributeOp::create(
@@ -504,16 +246,52 @@ struct ParseOptimizationRulesPass
         Block *patternBlock = builder.createBlock(&pattern.getBodyRegion());
         builder.setInsertionPointToStart(patternBlock);
         llvm::StringMap<mlir::Value> boundVars;
+        SmallVector<std::string> orderedVars;
 
         // Emit PDL for the left hand side of the rewrite rule (the pattern to
         // match)
-        auto root = emitMatchPDL(rule->lhs, builder, loc, boundVars);
+        auto root =
+            emitMatchPDL(rule->lhs, builder, loc, boundVars, orderedVars);
         if (!root.second) {
           signalPassFailure();
           llvm::errs()
               << "Left hand side of optimization rule must be a call\n";
           return;
         }
+
+        // A conditional rule cannot be expressed declaratively: whether it
+        // rewrites directly or becomes a guard depends on what can be proven
+        // about the matched values, which is only knowable once they exist.
+        // Hand the whole rule to a native rewrite instead, along with the
+        // matched values and the names the condition calls them by.
+        if (rule->cond) {
+          auto ruleAttr = pdl::AttributeOp::create(
+              builder, loc, builder.getStringAttr(optimization_op.getRule()));
+          SmallVector<Attribute> nameAttrs;
+          for (const std::string &name : orderedVars)
+            nameAttrs.push_back(builder.getStringAttr(name));
+          auto namesAttr = pdl::AttributeOp::create(
+              builder, loc, builder.getArrayAttr(nameAttrs));
+
+          // The guard keeps a clone of the matched call in its else region, so
+          // without this the pattern would match that clone and nest guards
+          // without end.
+          pdl::ApplyNativeConstraintOp::create(
+              builder, loc, TypeRange{}, "tesseraRuleNotApplied",
+              ValueRange{root.second, ruleAttr});
+
+          // PDL passes the matched root to the rewrite function itself, ahead
+          // of these, so it must not be listed here as well.
+          SmallVector<mlir::Value> externalArgs{ruleAttr, namesAttr};
+          for (const std::string &name : orderedVars)
+            externalArgs.push_back(boundVars[name]);
+
+          pdl::RewriteOp::create(
+              builder, loc, root.second,
+              builder.getStringAttr("tesseraConditionalRewrite"), externalArgs);
+          continue;
+        }
+
         auto rewrite = pdl::RewriteOp::create(builder, loc, root.second,
                                               /*name=*/StringAttr(),
                                               /*externalArgs=*/ValueRange{});

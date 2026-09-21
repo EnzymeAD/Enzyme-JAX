@@ -305,3 +305,65 @@ LogicalResult ReturnOp::verify() {
                          << results[i] << ")";
   return success();
 }
+
+//===----------------------------------------------------------------------===//
+// GuardOp
+//===----------------------------------------------------------------------===//
+
+Value GuardOp::getArgForName(llvm::StringRef name) {
+  ArrayRef<Attribute> names = getArgNames().getValue();
+  for (auto [index, attr] : llvm::enumerate(names))
+    if (auto str = dyn_cast<StringAttr>(attr))
+      if (str.getValue() == name)
+        return getArgs()[index];
+  return Value();
+}
+
+LogicalResult GuardOp::verify() {
+  ArrayRef<Attribute> names = getArgNames().getValue();
+  if (names.size() != getArgs().size())
+    return emitOpError("argNames size (")
+           << names.size() << ") must match number of args ("
+           << getArgs().size() << ")";
+
+  for (auto [index, attr] : llvm::enumerate(names)) {
+    auto str = dyn_cast<StringAttr>(attr);
+    if (!str)
+      return emitOpError("argNames entry ")
+             << index << " must be a StringAttr, but got " << attr;
+    // A duplicate would make the condition ambiguous, since a variable in it
+    // is resolved by looking its name up in this list.
+    for (unsigned prior = 0; prior < index; ++prior)
+      if (cast<StringAttr>(names[prior]).getValue() == str.getValue())
+        return emitOpError("argNames entry ")
+               << index << " duplicates the name '" << str.getValue() << "'";
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// YieldOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult YieldOp::verify() {
+  auto guard = cast<GuardOp>((*this)->getParentOp());
+
+  // Both regions feed the same results, so each yield has to agree with the
+  // guard's result list.
+  TypeRange results = guard.getResultTypes();
+  if (getNumOperands() != results.size())
+    return emitOpError("has ")
+           << getNumOperands()
+           << " operands, but the enclosing tessera.guard returns "
+           << results.size();
+
+  for (unsigned i = 0, e = results.size(); i != e; ++i)
+    if (getOperand(i).getType() != results[i])
+      return emitError() << "type of yield operand " << i << " ("
+                         << getOperand(i).getType()
+                         << ") doesn't match the enclosing tessera.guard "
+                            "result type ("
+                         << results[i] << ")";
+  return success();
+}

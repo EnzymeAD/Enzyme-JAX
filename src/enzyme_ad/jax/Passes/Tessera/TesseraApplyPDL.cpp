@@ -14,6 +14,9 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/Predicates.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/RuleAST.h"
+#include <variant>
 
 namespace mlir {
 namespace enzyme {
@@ -29,6 +32,12 @@ using namespace mlir::enzyme;
 using namespace mlir::enzyme::tessera;
 
 namespace {
+
+template <class... Ts> struct overloaded : Ts... {
+  using Ts::operator()...;
+};
+
+template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 
 static LogicalResult isConstantEqualTo(PatternRewriter &rewriter,
                                        PDLResultList &results,
@@ -99,6 +108,217 @@ static LogicalResult isFloatConstantEqualTo(PatternRewriter &rewriter,
   return success();
 }
 
+// Names the rules that have already been applied to an operation. The original
+// call a guard keeps in its else region is a clone of the matched op, so
+// without this the very same pattern would match it again and wrap it in
+// another guard, forever. Recording the rule rather than marking the op
+// off-limits outright keeps a *different* conditional rule free to specialize
+// that same call, and keeps rules applying inside a guard's regions.
+static constexpr llvm::StringLiteral kAppliedRulesAttr =
+    "tessera.applied_rules";
+
+static bool hasRuleBeenApplied(Operation *op, StringAttr rule) {
+  auto applied = op->getAttrOfType<ArrayAttr>(kAppliedRulesAttr);
+  return applied && llvm::is_contained(applied.getValue(), Attribute(rule));
+}
+
+static void markRuleApplied(Operation *op, StringAttr rule) {
+  SmallVector<Attribute> applied;
+  if (auto existing = op->getAttrOfType<ArrayAttr>(kAppliedRulesAttr))
+    applied.assign(existing.getValue().begin(), existing.getValue().end());
+  applied.push_back(rule);
+  op->setAttr(kAppliedRulesAttr, ArrayAttr::get(op->getContext(), applied));
+}
+
+static LogicalResult tesseraRuleNotApplied(PatternRewriter &rewriter,
+                                           PDLResultList &results,
+                                           ArrayRef<PDLValue> args) {
+  Operation *op = args[0].cast<Operation *>();
+  auto rule = dyn_cast<StringAttr>(args[1].cast<Attribute>());
+  if (!rule)
+    return failure();
+  return success(!hasRuleBeenApplied(op, rule));
+}
+
+// Build the IR for the right-hand side of a rule. This mirrors emitRewritePDL
+// in ParseOptimizationRules.cpp, except that it constructs real operations
+// rather than the PDL that would construct them: by the time a conditional
+// rule is applied, the matched values exist, so the replacement can simply be
+// built.
+//
+// Returns the produced operation for a call, or a null operation and the bound
+// value for a bare variable on the right-hand side (the `f(f(x)) -> x` shape).
+struct BuiltExpr {
+  Value value;
+  Operation *op = nullptr;
+};
+
+static BuiltExpr buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
+                             const llvm::StringMap<Value> &boundVars,
+                             Operation *symbolAnchor, TypeRange fallbackTypes) {
+  return std::visit(
+      overloaded{
+          [&](const Var &v) -> BuiltExpr {
+            auto it = boundVars.find(v.name);
+            if (it == boundVars.end()) {
+              emitError(loc) << "optimization rule uses '" << v.name
+                             << "' on the right-hand side, but it is not bound "
+                                "on the left";
+              return {};
+            }
+            return {it->second, nullptr};
+          },
+          [&](const IntLit &n) -> BuiltExpr {
+            auto attr = getIntegerAttrForLiteral(builder, n.value);
+            auto op =
+                LLVM::ConstantOp::create(builder, loc, attr.getType(), attr);
+            return {op.getResult(), op};
+          },
+          [&](const FloatLit &n) -> BuiltExpr {
+            auto attr = getFloatAttrForLiteral(builder, n.value);
+            auto op =
+                LLVM::ConstantOp::create(builder, loc, attr.getType(), attr);
+            return {op.getResult(), op};
+          },
+          [&](const Call &c) -> BuiltExpr {
+            SmallVector<Value> argValues;
+            for (const Expr &arg : c.args) {
+              BuiltExpr built = buildExprIR(arg, builder, loc, boundVars,
+                                            symbolAnchor, fallbackTypes);
+              if (!built.value)
+                return {};
+              argValues.push_back(built.value);
+            }
+
+            // Result types come from the callee's own declaration rather than
+            // being guessed, which is also what makes a nested call on the
+            // right-hand side work. When the callee is not declared, fall back
+            // to what the matched op produced and let the verifier report the
+            // unknown symbol -- it does so more precisely than this could.
+            std::string callee = c.dialect + "." + c.opname;
+            auto define = SymbolTable::lookupNearestSymbolFrom<DefineOp>(
+                symbolAnchor, StringAttr::get(builder.getContext(), callee));
+            TypeRange resultTypes =
+                define ? define.getFunctionType().getResults() : fallbackTypes;
+
+            auto call =
+                CallOp::create(builder, loc, callee, resultTypes, argValues);
+            return {call.getNumResults() ? call.getResult(0) : Value(), call};
+          },
+      },
+      expr.data);
+}
+
+// Rewrite function for a conditional rule. PDL passes the matched root first,
+// then the external arguments the pattern listed: the rule text, the names the
+// condition uses, and the matched values those names refer to.
+//
+// The condition is not evaluated here. It is recorded on a tessera.guard,
+// holding the specialized rewrite and the original computation in its two
+// regions, and -tessera-lower-guards later synthesizes the check and turns the
+// guard into a branch.
+//
+// This never reports failure, though the signature PDL requires allows it: the
+// greedy driver has no way to recover from a failed native rewrite and aborts
+// the process instead. Everything this needs was fixed when the pattern was
+// generated, and the one thing that is not -- whether the right-hand side
+// names a real tessera.define -- is left to the verifier, which rejects a call
+// to an unknown callee with a better message than anything available here.
+static LogicalResult tesseraConditionalRewrite(PatternRewriter &rewriter,
+                                               PDLResultList &results,
+                                               ArrayRef<PDLValue> args) {
+  Operation *root = args[0].cast<Operation *>();
+  auto ruleAttr = cast<StringAttr>(args[1].cast<Attribute>());
+  auto namesAttr = cast<ArrayAttr>(args[2].cast<Attribute>());
+
+  SmallVector<Value> values;
+  for (size_t i = 3; i < args.size(); ++i)
+    values.push_back(args[i].cast<Value>());
+
+  Location loc = root->getLoc();
+  Parser parser(ruleAttr.getValue().str(), loc);
+  auto rule = parser.parseRule();
+  assert(rule && rule->cond &&
+         "a conditional pattern carries a rule that already parsed once");
+
+  llvm::StringMap<Value> boundVars;
+  for (auto [nameAttr, value] : llvm::zip(namesAttr.getValue(), values))
+    boundVars[cast<StringAttr>(nameAttr).getValue()] = value;
+
+  rewriter.setInsertionPoint(root);
+
+  // When the condition is already known to hold, there is nothing to test at
+  // run time: apply the rewrite outright. This is a pure saving over the
+  // guarded form, never a precondition for it -- a condition that cannot be
+  // proven still works, it just costs a check.
+  //
+  // A condition provably *false* deliberately still builds a guard, rather
+  // than declining to rewrite. Keeping the outcomes down to "proven or not" is
+  // what keeps this simple, and it costs nothing today because of an invariant
+  // worth stating:
+  //
+  //   Proof::False can only originate from constant-folding a comparison.
+  //   provePropertyOfValue answers True or Unknown and never False, since
+  //   there is no way to declare that a value lacks a property. So a false
+  //   condition always lowers to a constant icmp/fcmp, which folds away along
+  //   with its dead branch.
+  //
+  // That invariant is what makes this safe, not an argument that it always
+  // would be. Adding a negative proof source -- a `tessera.guarantees_not`, or
+  // anything else letting a predicate be disproven -- breaks it: the guard for
+  // a provably false matrix predicate would reach -tessera-lower-guards, which
+  // would try to synthesize a real check for a branch that can never run, and
+  // could fail the build over an unresolvable layout or the unroll limit. A
+  // rule that provably does not apply must not be able to fail compilation, so
+  // whoever adds that source should skip the rewrite here instead, marking the
+  // root with markRuleApplied (through rewriter.modifyOpInPlace, so the greedy
+  // driver sees the change) to keep the pattern from matching it again.
+  if (proveCondition(*rule->cond, boundVars) == Proof::True) {
+    BuiltExpr built = buildExprIR(rule->rhs, rewriter, loc, boundVars, root,
+                                  root->getResultTypes());
+    if (built.op && built.op->getNumResults()) {
+      rewriter.replaceOp(root, built.op->getResults());
+      return success();
+    }
+    if (built.value) {
+      rewriter.replaceOp(root, built.value);
+      return success();
+    }
+    // Nothing usable came back; fall through and guard it instead.
+  }
+
+  auto guard = GuardOp::create(rewriter, loc, root->getResultTypes(),
+                               rewriter.getStringAttr(renderCond(*rule->cond)),
+                               namesAttr, values);
+
+  // Specialized path: the rule's right-hand side.
+  {
+    Block *block = rewriter.createBlock(&guard.getThenRegion());
+    rewriter.setInsertionPointToStart(block);
+    BuiltExpr built = buildExprIR(rule->rhs, rewriter, loc, boundVars, root,
+                                  root->getResultTypes());
+    SmallVector<Value> yielded;
+    if (built.op && built.op->getNumResults())
+      yielded.assign(built.op->getResults().begin(),
+                     built.op->getResults().end());
+    else if (built.value)
+      yielded.push_back(built.value);
+    YieldOp::create(rewriter, loc, yielded);
+  }
+
+  // Original path: the matched call, unchanged.
+  {
+    Block *block = rewriter.createBlock(&guard.getElseRegion());
+    rewriter.setInsertionPointToStart(block);
+    Operation *clone = rewriter.clone(*root);
+    markRuleApplied(clone, ruleAttr);
+    YieldOp::create(rewriter, loc, clone->getResults());
+  }
+
+  rewriter.replaceOp(root, guard.getResults());
+  return success();
+}
+
 struct TesseraApplyPDLPass
     : public enzyme::tessera::impl::TesseraApplyPDLPassBase<
           TesseraApplyPDLPass> {
@@ -129,6 +349,12 @@ struct TesseraApplyPDLPass
                                           isConstantEqualTo);
     pdlPattern.registerConstraintFunction("isFloatConstantEqualTo",
                                           isFloatConstantEqualTo);
+
+    // Conditional rules are applied by this, rather than declaratively.
+    pdlPattern.registerConstraintFunction("tesseraRuleNotApplied",
+                                          tesseraRuleNotApplied);
+    pdlPattern.registerRewriteFunction("tesseraConditionalRewrite",
+                                       tesseraConditionalRewrite);
 
     patternList.add(std::move(pdlPattern));
 
