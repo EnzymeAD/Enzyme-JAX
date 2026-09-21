@@ -95,25 +95,18 @@ module {
 
 // -----
 
-// Regression test: the batched op repeats the same SSA value in two operand
-// slots (`multiply %1, %1`). Each slot must be batched independently; the
-// wrapper must not collapse both slots onto the same argument, which turned
+// Regression test for the matcher: `multiply %1, %1` and `multiply %4, %1`
+// share an operation shape but not an operand-repetition structure, so they
+// must not be batched together. Doing so per slot used to turn
 // `hcat(z .* z, y .* z)` into `hcat(z .* z, z .* z)`.
 module {
-  // CHECK-LABEL: func.func @hcat_mul_repeated_operand
-  // CHECK-DAG: %[[Z:.+]] = stablehlo.slice %arg0 [2:3, 0:2]
-  // CHECK-DAG: %[[Y:.+]] = stablehlo.slice %arg0 [1:2, 0:2]
-  // CHECK-DAG: %[[ZR:.+]] = stablehlo.reshape %[[Z]] : (tensor<1x2xf64>) -> tensor<2xf64>
-  // CHECK-DAG: %[[YR:.+]] = stablehlo.reshape %[[Y]] : (tensor<1x2xf64>) -> tensor<2xf64>
-  // CHECK-DAG: %[[ZR1:.+]] = stablehlo.reshape %[[ZR]] : (tensor<2xf64>) -> tensor<1x2xf64>
-  // CHECK-DAG: %[[YR1:.+]] = stablehlo.reshape %[[YR]] : (tensor<2xf64>) -> tensor<1x2xf64>
-  // CHECK-DAG: %[[LHS:.+]] = stablehlo.concatenate %[[ZR1]], %[[YR1]], dim = 0
-  // CHECK-DAG: %[[ZR2:.+]] = stablehlo.reshape %[[ZR]] : (tensor<2xf64>) -> tensor<1x2xf64>
-  // CHECK-DAG: %[[ZR3:.+]] = stablehlo.reshape %[[ZR]] : (tensor<2xf64>) -> tensor<1x2xf64>
-  // CHECK-DAG: %[[RHS:.+]] = stablehlo.concatenate %[[ZR2]], %[[ZR3]], dim = 0
-  // CHECK: %[[MUL:.+]] = stablehlo.multiply %[[LHS]], %[[RHS]] : tensor<2x2xf64>
-  // CHECK: stablehlo.transpose %[[MUL]], dims = [0, 1]
-  func.func @hcat_mul_repeated_operand(%arg0: tensor<3x2xf64>) -> tensor<2x2xf64> {
+  // CHECK-LABEL: func.func @hcat_mul_mixed_repetition_not_batched
+  // CHECK: %[[Z:.+]] = stablehlo.reshape {{.*}} : (tensor<1x2xf64>) -> tensor<2xf64>
+  // CHECK: stablehlo.multiply %[[Z]], %[[Z]] : tensor<2xf64>
+  // CHECK: %[[Y:.+]] = stablehlo.reshape {{.*}} : (tensor<1x2xf64>) -> tensor<2xf64>
+  // CHECK: stablehlo.multiply %[[Y]], %[[Z]] : tensor<2xf64>
+  // CHECK-NOT: stablehlo.multiply {{.*}} : tensor<2x2xf64>
+  func.func @hcat_mul_mixed_repetition_not_batched(%arg0: tensor<3x2xf64>) -> tensor<2x2xf64> {
     %0 = stablehlo.slice %arg0 [2:3, 0:2] : (tensor<3x2xf64>) -> tensor<1x2xf64>
     %1 = stablehlo.reshape %0 : (tensor<1x2xf64>) -> tensor<2xf64>
     %2 = stablehlo.multiply %1, %1 : tensor<2xf64>
@@ -129,25 +122,54 @@ module {
 
 // -----
 
+// Ops with the same repetition structure (`z .* z` and `y .* y`) do batch, and
+// the repeated slot shares a single batched operand: one concatenate feeds
+// both operands of the batched multiply.
+module {
+  // CHECK-LABEL: func.func @hcat_square_repeated_operand
+  // CHECK-DAG: %[[Z:.+]] = stablehlo.slice %arg0 [2:3, 0:2]
+  // CHECK-DAG: %[[Y:.+]] = stablehlo.slice %arg0 [1:2, 0:2]
+  // CHECK-DAG: %[[ZR:.+]] = stablehlo.reshape %[[Z]] : (tensor<1x2xf64>) -> tensor<2xf64>
+  // CHECK-DAG: %[[YR:.+]] = stablehlo.reshape %[[Y]] : (tensor<1x2xf64>) -> tensor<2xf64>
+  // CHECK-DAG: %[[ZR1:.+]] = stablehlo.reshape %[[ZR]] : (tensor<2xf64>) -> tensor<1x2xf64>
+  // CHECK-DAG: %[[YR1:.+]] = stablehlo.reshape %[[YR]] : (tensor<2xf64>) -> tensor<1x2xf64>
+  // CHECK: %[[B:.+]] = stablehlo.concatenate %[[ZR1]], %[[YR1]], dim = 0
+  // CHECK-NOT: stablehlo.concatenate
+  // CHECK: %[[MUL:.+]] = stablehlo.multiply %[[B]], %[[B]] : tensor<2x2xf64>
+  // CHECK: stablehlo.transpose %[[MUL]], dims = [0, 1]
+  func.func @hcat_square_repeated_operand(%arg0: tensor<3x2xf64>) -> tensor<2x2xf64> {
+    %0 = stablehlo.slice %arg0 [2:3, 0:2] : (tensor<3x2xf64>) -> tensor<1x2xf64>
+    %1 = stablehlo.reshape %0 : (tensor<1x2xf64>) -> tensor<2xf64>
+    %2 = stablehlo.multiply %1, %1 : tensor<2xf64>
+    %3 = stablehlo.slice %arg0 [1:2, 0:2] : (tensor<3x2xf64>) -> tensor<1x2xf64>
+    %4 = stablehlo.reshape %3 : (tensor<1x2xf64>) -> tensor<2xf64>
+    %5 = stablehlo.multiply %4, %4 : tensor<2xf64>
+    %6 = stablehlo.reshape %2 : (tensor<2xf64>) -> tensor<1x2xf64>
+    %7 = stablehlo.reshape %5 : (tensor<2xf64>) -> tensor<1x2xf64>
+    %8 = stablehlo.concatenate %6, %7, dim = 0 : (tensor<1x2xf64>, tensor<1x2xf64>) -> tensor<2x2xf64>
+    return %8 : tensor<2x2xf64>
+  }
+}
+
+// -----
+
 // Verbatim `@code_hlo optimize=false` dump from Reactant.jl (0.2.285) for
 //
 //   f(u) = hcat(u[:, 3] .* u[:, 3], u[:, 2] .* u[:, 3])
 //   u = [1.0 2.0 3.0; 4.0 5.0 6.0]
 //
-// After CSE the first multiply becomes `multiply %z, %z`, i.e. the same SSA
-// value in both operand slots. Batching the two multiplies via
-// concat_insert_dim_elementwise used to map both slots of the wrapper function
-// onto the same argument, so the compiled result was hcat(z.*z, z.*z) instead
-// of hcat(z.*z, y.*z). The second column (u[:, 2]) must survive in the output.
+// After CSE the first multiply becomes `multiply %z, %z` while the second stays
+// `multiply %y, %z`. Batching them together used to collapse both operand slots
+// of the wrapper onto one argument, so the compiled result was
+// hcat(z.*z, z.*z) instead of hcat(z.*z, y.*z). The two multiplies must now be
+// left alone, and the second column (u[:, 2]) must survive in the output.
 
 // REACTANT-LABEL: func.func @main
 // REACTANT-DAG: %[[Z:.+]] = stablehlo.slice %arg0 [2:3, 0:2] : (tensor<3x2xf64>) -> tensor<1x2xf64>
 // REACTANT-DAG: %[[Y:.+]] = stablehlo.slice %arg0 [1:2, 0:2] : (tensor<3x2xf64>) -> tensor<1x2xf64>
-// REACTANT-DAG: %[[ZT:.+]] = stablehlo.reshape %[[Z]] : (tensor<1x2xf64>) -> tensor<2x1xf64>
-// REACTANT-DAG: %[[YT:.+]] = stablehlo.reshape %[[Y]] : (tensor<1x2xf64>) -> tensor<2x1xf64>
-// REACTANT-DAG: %[[ZY:.+]] = stablehlo.concatenate %[[ZT]], %[[YT]], dim = 1
-// REACTANT-DAG: %[[ZB:.+]] = stablehlo.broadcast_in_dim %[[Z]], dims = [1, 0] : (tensor<1x2xf64>) -> tensor<2x2xf64>
-// REACTANT: stablehlo.multiply %[[ZY]], %[[ZB]]
+// REACTANT-DAG: stablehlo.multiply %[[Z]], %[[Z]] : tensor<1x2xf64>
+// REACTANT-DAG: stablehlo.multiply {{.*}}%[[Y]]{{.*}} : tensor<1x2xf64>
+// REACTANT-NOT: stablehlo.multiply {{.*}} : tensor<2x2xf64>
 
 module @reactant_f attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
   func.func private @"*_broadcast_scalar"(%arg0: tensor<f64> {enzymexla.memory_effects = []}, %arg1: tensor<f64> {enzymexla.memory_effects = []}) -> (tensor<f64>, tensor<f64>, tensor<f64>) attributes {enzymexla.memory_effects = []} {

@@ -136,17 +136,19 @@ func::FuncOp CreateWrapperUnbatchedFunction(
   auto &entryBlock = *funcOp.addEntryBlock();
   rewriter.setInsertionPointToStart(&entryBlock);
 
-  // The wrapper arguments correspond positionally to the operand slots of
-  // `firstOp`, skipping CONSTANT-lifted slots: ConstructAndExtractBatchOperands
-  // batches every non-CONSTANT slot independently, so slot `i` must read
-  // argument `i`. When the same SSA value occupies several slots (e.g.
-  // `multiply %x, %x`) an IRMapping cannot express that, being keyed by value,
-  // so record the per-slot operands and apply them directly in that case.
+  // Wrapper arguments correspond positionally to the operand slots of
+  // `firstOp` that are neither CONSTANT (cloned into the body) nor REPEATED (a
+  // value already seen in an earlier slot reuses that slot's mapping; the
+  // matcher guarantees every op in the batch repeats the same slots).
   IRMapping mapper;
-  SmallVector<Value> firstOpOperands;
-  bool repeatsOperand = false;
   size_t argIdx = 0;
   for (auto [i, operand] : llvm::enumerate(firstOp->getOperands())) {
+    if (mapper.contains(operand)) {
+      assert((!batchLiftingModes.has_value() ||
+              batchLiftingModes.value()[i] == BatchLiftingMode::REPEATED) &&
+             "repeated operand slot must not consume a wrapper argument");
+      continue;
+    }
     Value mapped;
     if (batchLiftingModes.has_value() &&
         batchLiftingModes.value()[i] ==
@@ -159,15 +161,11 @@ func::FuncOp CreateWrapperUnbatchedFunction(
       mapped = stablehlo::ReshapeOpCreate(rewriter, firstOp->getLoc(), mapped,
                                           inShape.value());
     }
-    repeatsOperand |= mapper.contains(operand);
-    firstOpOperands.push_back(mapped);
     mapper.map(operand, mapped);
   }
 
   for (auto op : ops) {
     auto clonedOp = rewriter.clone(*op, mapper);
-    if (op == firstOp && repeatsOperand)
-      clonedOp->setOperands(firstOpOperands);
     for (size_t i = 0; i < op->getNumResults(); i++) {
       mapper.map(op->getResult(i), clonedOp->getResult(i));
     }
@@ -195,7 +193,8 @@ func::FuncOp CreateWrapperUnbatchedFunction(
     std::optional<SmallVector<int64_t>> outShape) {
   SmallVector<Type> argTypes;
   for (auto [i, v] : llvm::enumerate(op->getOperands())) {
-    if (batchLiftingModes[i] == BatchLiftingMode::CONSTANT) {
+    if (batchLiftingModes[i] == BatchLiftingMode::CONSTANT ||
+        batchLiftingModes[i] == BatchLiftingMode::REPEATED) {
       continue;
     }
     argTypes.push_back(v.getType());
@@ -229,6 +228,15 @@ void ConstructAndExtractBatchOperands(
     SmallVectorImpl<Value> &operands,
     SmallVectorImpl<BatchLiftingMode> &liftingModes) {
   for (int i = 0; i < batchOps[0]->getNumOperands(); i++) {
+    // A slot repeating an earlier slot's value shares that slot's batched
+    // operand. The matcher only groups ops with identical repetition
+    // structure, so checking the first op suffices.
+    auto firstOperands = batchOps[0]->getOperands();
+    if (llvm::is_contained(firstOperands.take_front(i), firstOperands[i])) {
+      liftingModes.push_back(BatchLiftingMode::REPEATED);
+      continue;
+    }
+
     SmallVector<Value> currentOperands(batchOps.size());
     for (auto [idx, op] : llvm::enumerate(batchOps)) {
       currentOperands[idx] = op->getOperand(i);
@@ -324,10 +332,23 @@ void ConstructAndExtractBatchOperands(
   }
 }
 
-bool IsEquivalentToIgnoringValueEquivalence(Operation *op1, Operation *op2) {
-  return OperationEquivalence::isEquivalentTo(
-      op1, op2, OperationEquivalence::ignoreValueEquivalence, nullptr,
-      OperationEquivalence::IgnoreLocations, nullptr);
+// Two ops are equivalent if they differ only by a consistent renaming of their
+// operands: whenever one op uses the same value in two slots, so must the
+// other. `multiply %z, %z` and `multiply %y, %z` are therefore *not*
+// equivalent. The batching wrapper maps each distinct operand value to one
+// argument, so it could not tell those two slots apart.
+bool IsEquivalentUpToOperandRenaming(Operation *op1, Operation *op2) {
+  if (!OperationEquivalence::isEquivalentTo(
+          op1, op2, OperationEquivalence::ignoreValueEquivalence, nullptr,
+          OperationEquivalence::IgnoreLocations, nullptr))
+    return false;
+  DenseMap<Value, Value> forward, backward;
+  for (auto [a, b] : llvm::zip_equal(op1->getOperands(), op2->getOperands())) {
+    if (forward.try_emplace(a, b).first->second != b ||
+        backward.try_emplace(b, a).first->second != a)
+      return false;
+  }
+  return true;
 }
 
 bool allOpsAreUnique(const SmallVector<Operation *> &ops) {
@@ -526,8 +547,8 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
     }
 
     if (concatOpOperands.size() != 0) {
-      if (!::utils::IsEquivalentToIgnoringValueEquivalence(concatOpOperands[0],
-                                                           vdefOp)) {
+      if (!::utils::IsEquivalentUpToOperandRenaming(concatOpOperands[0],
+                                                    vdefOp)) {
         return rewriter.notifyMatchFailure(concatOp,
                                            "op is not equivalent to first");
       }
@@ -653,8 +674,8 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     // check that all of the ops are equivalent and that the slice operand is
     // at the same location
     if (targetOp) {
-      if (!::utils::IsEquivalentToIgnoringValueEquivalence(targetOp,
-                                                           candidateTargetOp)) {
+      if (!::utils::IsEquivalentUpToOperandRenaming(targetOp,
+                                                    candidateTargetOp)) {
         continue;
       }
       if (candidateTargetOp->getOperand(sliceOperandIndex) !=
@@ -1104,6 +1125,12 @@ bool traverseOperandsForHoisting(
   mappedSliceInfos.resize(operands.size());
 
   for (auto [i, operand] : llvm::enumerate(operands)) {
+    // Same value as an earlier slot: shares that slot's wrapper argument.
+    if (llvm::is_contained(operands.take_front(i), operand)) {
+      batchLiftingModes[i] = BatchLiftingMode::REPEATED;
+      continue;
+    }
+
     Value outerValue;
     SmallVector<Operation *> canBeHoisted;
     if (info.isConstantAcrossIterations(operand, outerValue, canBeHoisted)) {
@@ -1199,6 +1226,9 @@ LogicalResult constructNewOperandsForHoistedOp(
   for (auto [consType, baseOp, sliceDim, sliceInfo, hoistDim] :
        llvm::zip_equal(batchLiftingModes, batchOperands, sliceDims,
                        mappedSliceInfos, hoistedDims)) {
+    if (consType == BatchLiftingMode::REPEATED)
+      continue; // shares an earlier slot's operand; `baseOp` is unset
+
     auto operandType = cast<RankedTensorType>(baseOp.getType());
     int operandRank = cast<RankedTensorType>(baseOp.getType()).getRank();
 
