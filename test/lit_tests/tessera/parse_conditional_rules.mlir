@@ -13,7 +13,7 @@
 module {
   tessera.optimizations {
     // expected-error @+1 {{conditional optimization rules are not supported yet}}
-    tessera.optimization "if symmetric(x), eigen.inv(x) -> eigen.inv_sym(x)"
+    tessera.optimization "if symmetric(x), lib.foo(x) -> lib.symmetric_foo(x)"
   }
 }
 
@@ -23,7 +23,7 @@ module {
 module {
   tessera.optimizations {
     // expected-error @+1 {{conditional optimization rules are not supported yet}}
-    tessera.optimization "if triangular_upper(a), eigen.solve(a, b) -> eigen.trsv(a, b)"
+    tessera.optimization "if triangular_upper(a), lib.bar(a, b) -> lib.triangular_bar(a, b)"
   }
 }
 
@@ -33,7 +33,7 @@ module {
 module {
   tessera.optimizations {
     // expected-error @+1 {{conditional optimization rules are not supported yet}}
-    tessera.optimization "if symmetric(a) && !diagonal(a), eigen.matmul(a, b) -> eigen.symm(a, b)"
+    tessera.optimization "if symmetric(a) && !diagonal(a), lib.baz(a, b) -> lib.symmetric_baz(a, b)"
   }
 }
 
@@ -43,7 +43,7 @@ module {
 module {
   tessera.optimizations {
     // expected-error @+1 {{conditional optimization rules are not supported yet}}
-    tessera.optimization "if n > 64, eigen.blocked(x, n) -> eigen.blocked_tiled(x, n)"
+    tessera.optimization "if n > 64, lib.qux(x, n) -> lib.tiled_qux(x, n)"
   }
 }
 
@@ -54,7 +54,7 @@ module {
 module {
   tessera.optimizations {
     // expected-error @+1 {{conditional optimization rules are not supported yet}}
-    tessera.optimization "if (symmetric(x) || diagonal(x)) && n >= 2, eigen.inv(x) -> eigen.inv_sym(x)"
+    tessera.optimization "if (symmetric(x) || diagonal(x)) && n >= 2, lib.foo(x) -> lib.symmetric_foo(x)"
   }
 }
 
@@ -65,7 +65,7 @@ module {
 module {
   tessera.optimizations {
     // expected-error @+1 {{conditional optimization rules are not supported yet}}
-    tessera.optimization "if !(a == b) || n <= -3, eigen.f(a, b) -> eigen.g(a, b)"
+    tessera.optimization "if !(a == b) || n <= -3, lib.f(a, b) -> lib.g(a, b)"
   }
 }
 
@@ -75,7 +75,7 @@ module {
 module {
   tessera.optimizations {
     // expected-error @+1 {{conditional optimization rules are not supported yet}}
-    tessera.optimization "if symmetric(eigen.t(x)), eigen.inv(x) -> eigen.inv_sym(x)"
+    tessera.optimization "if symmetric(lib.transpose(x)), lib.foo(x) -> lib.symmetric_foo(x)"
   }
 }
 
@@ -85,7 +85,7 @@ module {
 // to a pattern, so it produces no diagnostic at all.
 module {
   tessera.optimizations {
-    tessera.optimization "eigen.inv(eigen.inv(x)) -> x"
+    tessera.optimization "lib.foo(lib.foo(x)) -> x"
     tessera.optimization "tessera.pow(x, 2) -> tessera.mul(x, x)"
   }
 }
@@ -96,7 +96,7 @@ module {
 // whitespace is skipped, not before.
 module {
   tessera.optimizations {
-    tessera.optimization "eigen.inv(eigen.inv(x)) -> x   "
+    tessera.optimization "lib.foo(lib.foo(x)) -> x   "
   }
 }
 
@@ -106,7 +106,7 @@ module {
 // an ordinary variable name.
 module {
   tessera.optimizations {
-    tessera.optimization "eigen.f(x, if) -> eigen.g(if, x)"
+    tessera.optimization "lib.f(x, if) -> lib.g(if, x)"
   }
 }
 
@@ -115,8 +115,8 @@ module {
 // The comma after the condition is required.
 module {
   tessera.optimizations {
-    // expected-error @+1 {{expected ',' after the condition of an optimization rule, got 'eigen'}}
-    tessera.optimization "if symmetric(x) eigen.inv(x) -> eigen.inv_sym(x)"
+    // expected-error @+1 {{expected ',' after the condition of an optimization rule, got 'lib'}}
+    tessera.optimization "if symmetric(x) lib.foo(x) -> lib.symmetric_foo(x)"
   }
 }
 
@@ -126,7 +126,7 @@ module {
 module {
   tessera.optimizations {
     // expected-error @+1 {{expected ',' or ')' in predicate 'symmetric', got ''}}
-    tessera.optimization "if symmetric(x, eigen.inv(x) -> eigen.inv_sym(x)"
+    tessera.optimization "if symmetric(x, lib.foo(x) -> lib.symmetric_foo(x)"
   }
 }
 
@@ -136,7 +136,7 @@ module {
 module {
   tessera.optimizations {
     // expected-error @+1 {{unrecognized character '&' in optimization rule}}
-    tessera.optimization "if n & 3, eigen.f(n) -> eigen.g(n)"
+    tessera.optimization "if n & 3, lib.f(n) -> lib.g(n)"
   }
 }
 
@@ -146,7 +146,7 @@ module {
 module {
   tessera.optimizations {
     // expected-error @+1 {{expected a comparison operator in optimization rule condition}}
-    tessera.optimization "if n 64, eigen.f(n) -> eigen.g(n)"
+    tessera.optimization "if n 64, lib.f(n) -> lib.g(n)"
   }
 }
 
@@ -156,6 +156,6 @@ module {
 module {
   tessera.optimizations {
     // expected-error @+1 {{expected ')' in optimization rule condition, got ''}}
-    tessera.optimization "if (symmetric(x), eigen.inv(x) -> eigen.inv_sym(x)"
+    tessera.optimization "if (symmetric(x), lib.foo(x) -> lib.symmetric_foo(x)"
   }
 }
