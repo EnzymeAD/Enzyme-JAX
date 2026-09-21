@@ -547,6 +547,18 @@ def PrintCollectivePlanPass
     Option<"disablePeelVariants", "disable-peel-variants", "bool", "false",
            "With chain: do not offer a peel for a (Reduced, Replicate) atom, "
            "so it is always a flat all-reduce">,
+    Option<"kOrder", "k-order", "int64_t", "-1",
+           "With chain: run the heuristic step orderer, expanding only the "
+           "top N candidates of the lowest size tier at each state (N = 1 is "
+           "greedy); negative leaves the orderer off (exact search)">,
+    Option<"kVariant", "k-variant", "int64_t", "-1",
+           "With chain: keep only the top N non-baseline variants of each "
+           "component; negative leaves it unlimited. Enables the orderer's "
+           "budget like k-order">,
+    Option<"maxStates", "max-states", "int64_t", "-1",
+           "With chain: give up after expanding more than N decomposer "
+           "states; negative leaves it unlimited. Enables the orderer's "
+           "budget like k-order">,
   ];
   let description = [{
     Emits one remark per distributed.Collective describing its
@@ -569,6 +581,10 @@ def PrintCollectivePlanPass
     half-split so the baseline can be compared with the cheaper variants.
     disable-peel-variants restricts a (Reduced, Replicate) atom to the flat
     all-reduce so that baseline can be compared with the peel.
+    k-order, k-variant and max-states supply a PlanBudget to the decomposer;
+    giving any of them (a nonnegative value) switches the heuristic step
+    orderer on, with the unset ones unlimited. Without any, the search is
+    the exact one.
   }];
 }
 

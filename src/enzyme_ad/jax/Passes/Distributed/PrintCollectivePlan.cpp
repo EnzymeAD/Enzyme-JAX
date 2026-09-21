@@ -159,6 +159,16 @@ struct PrintCollectivePlanPass
       PlanOptions options;
       options.relayVariants = !disableRelayVariants;
       options.peelVariants = !disablePeelVariants;
+      if (kOrder >= 0 || kVariant >= 0 || maxStates >= 0) {
+        PlanBudget budget;
+        if (kOrder >= 0)
+          budget.kOrder = static_cast<size_t>(kOrder);
+        if (kVariant >= 0)
+          budget.kVariant = static_cast<size_t>(kVariant);
+        if (maxStates >= 0)
+          budget.maxStates = static_cast<size_t>(maxStates);
+        options.budget = budget;
+      }
       if (!disabled.empty())
         options.filter = [disabled](const DecomposerState &,
                                     std::vector<CandidateStep> &candidates) {

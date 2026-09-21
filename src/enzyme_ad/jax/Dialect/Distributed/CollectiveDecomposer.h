@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -210,6 +211,44 @@ struct CandidateStep {
 using CandidateFilter =
     std::function<void(const DecomposerState &, std::vector<CandidateStep> &)>;
 
+// Bounds the search with a heuristic step orderer and state limit. Every field
+// defaults to kUnlimited, so a caller can bound just one axis. An unset
+// PlanOptions::budget runs the exact search with none of these mechanisms,
+// which differs from a budget with every field unlimited: that one still
+// applies the size-tier restriction and symmetry dedupe (see kOrder).
+struct PlanBudget {
+  static constexpr size_t kUnlimited = std::numeric_limits<size_t>::max();
+
+  // At each decomposer state with more than one candidate step, restrict the
+  // candidates to the lowest nonempty size-class tier (shrink, neutral,
+  // expand), rank the survivors by the Smith's-rule soft score, and keep only
+  // the top kOrder of them. kOrder = 1 is pure greedy (values below 1 act as
+  // 1); kOrder = kUnlimited still applies the tier restriction (tiers are never
+  // optional once a budget is supplied) but otherwise keeps every candidate,
+  // which reproduces the exact DP's cost on every case the tier order is valid
+  // for.
+  //
+  // Also gates symmetry dedupe: candidates whose units are independent of
+  // every other live unit (D12) and share an identical (kind, atoms)
+  // footprint are interchangeable, so only one representative is kept. This
+  // never changes the optimal cost but can change which of several cost-tied
+  // chains plan() returns, so it only runs under a budget.
+  size_t kOrder = kUnlimited;
+
+  // For each component with more than kVariant non-baseline variants (D13;
+  // the baseline, index 0, is always kept), rank the rest by an O(1) gain
+  // estimate and keep only the top kVariant. kVariant = kUnlimited leaves
+  // the kMaxVariantCombinations prefix cap in buildComponents as the only
+  // limit.
+  size_t kVariant = kUnlimited;
+
+  // Fail plan() (nullopt + a reason) once ChainSearch::solve() has expanded
+  // more than this many distinct DP states, instead of continuing to search
+  // exactly. kMaxLiveUnits (a static precheck on unit count) still applies
+  // unconditionally as the coarser fallback.
+  size_t maxStates = kUnlimited;
+};
+
 struct PlanOptions {
   CandidateFilter filter;
   // Offer the variants that beat the half-split for mesh-coupled components
@@ -220,6 +259,9 @@ struct PlanOptions {
   // Replicate) atom. Off, such an atom is only ever a flat all-reduce, which
   // lets tests pin that baseline.
   bool peelVariants = true;
+  // Unset (default): plan() runs the exact search. Set: the search is bounded
+  // by the heuristic step orderer and limits in PlanBudget.
+  std::optional<PlanBudget> budget;
 };
 
 // Most combinations of component variants (see D13) plan() searches.
