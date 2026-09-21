@@ -1092,7 +1092,13 @@ def ConvertParallelToGPU1 : Pass<"convert-parallel-to-gpu1"> {
   let summary = "Convert parallel loops to gpu";
   let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect", "scf::SCFDialect"];
   let options = [
-  Option<"arch", "arch", "std::string", /*default=*/"\"sm_60\"", "Target GPU architecture">
+  Option<"arch", "arch", "std::string", /*default=*/"\"sm_60\"", "Target GPU architecture">,
+  Option<
+     /*C++ variable name=*/"emitSingleAlternative",
+     /*CLI argument=*/"emit_single_alternative",
+     /*type=*/"bool",
+     /*default=*/"false",
+     /*description=*/"Emit a single alternative matching the original gpu_wrapper/parallel op bounds instead of duplicating the kernel through many block-size alternatives">
   ];
 }
 

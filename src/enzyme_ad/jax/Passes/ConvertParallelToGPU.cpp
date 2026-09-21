@@ -555,8 +555,16 @@ struct CreateParallelOps : public OpRewritePattern<enzymexla::GPUWrapperOp> {
 ///
 #if 1
 struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
-  using OpRewritePattern<enzymexla::GPUWrapperOp>::OpRewritePattern;
+  SplitParallelOp(MLIRContext *context, bool emitSingleAlternative = false)
+      : OpRewritePattern(context),
+        emitSingleAlternative(emitSingleAlternative) {}
   const char *PATTERN = "split-parallel-op";
+
+  // When true, skip the many block-size alternatives below and emit a
+  // single alternative reproducing the original gpu_wrapper/parallel op
+  // bounds exactly (falling back to the usual single-alternative path when
+  // no exact match can be derived).
+  bool emitSingleAlternative;
 
   // TODO this should differ from arch to arch
   const unsigned MAX_GPU_THREADS = 1024;
@@ -666,7 +674,18 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     bool hasExactMatch = matchWrapperShape(pop, wrapper, exactDims);
 
     enzymexla::AlternativesOp alternativesOp = nullptr;
-    if (char *blockSizeStr = getenv("POLYGEIST_GPU_KERNEL_BLOCK_SIZE")) {
+    if (emitSingleAlternative) {
+      alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
+      alternativesOp->setAttr("alternatives.type",
+                              rewriter.getStringAttr("gpu_kernel"));
+      if (hasExactMatch) {
+        exactMatch(alternativesOp, exactDims);
+      } else {
+        emitAlternative(-1, alternativesOp);
+      }
+      alternativesOp->setAttr("alternatives.descs",
+                              rewriter.getArrayAttr(descs));
+    } else if (char *blockSizeStr = getenv("POLYGEIST_GPU_KERNEL_BLOCK_SIZE")) {
       alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
       alternativesOp->setAttr("alternatives.type",
                               rewriter.getStringAttr("gpu_kernel"));
@@ -2355,7 +2374,7 @@ struct ConvertParallelToGPU1Pass
         CreateParallelOps,
         ParallelizeBlockOps
         >(&getContext());
-      patterns.insert<SplitParallelOp>(&getContext());
+      patterns.insert<SplitParallelOp>(&getContext(), emitSingleAlternative);
       // clang-format on
     };
     auto runNormalization = [&]() {
@@ -2511,7 +2530,7 @@ struct ConvertParallelToGPU1Pass
           }
         }
         runLICM();
-      } else if (GPUKernelEmitCoarsenedAlternatives) {
+      } else if (!emitSingleAlternative && GPUKernelEmitCoarsenedAlternatives) {
         // If the user did not specify coarsening factors, generate
         // pre-determined set of alternative coarsened kernels
 

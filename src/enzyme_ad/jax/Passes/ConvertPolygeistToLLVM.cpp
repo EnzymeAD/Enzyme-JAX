@@ -37,6 +37,7 @@
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
 #include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
+#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -94,6 +95,31 @@ using namespace mlir::enzymexla;
 
 mlir::LLVM::LLVMFuncOp GetOrCreateFreeFunction(ModuleOp module);
 
+// True when `type`'s layout describes exactly the row-major-contiguous
+// strides for its (static part of the) shape, regardless of offset. Bare
+// pointer lowering never encodes the offset in the type -- it gets folded
+// directly into the GEP that produces the pointer -- so a memref.subview
+// result (e.g. `strided<[1], offset: ?>`) is exactly as convertible as an
+// identity-layout memref of the same shape.
+static bool isContiguousLayoutIgnoringOffset(MemRefType type) {
+  SmallVector<int64_t> strides;
+  int64_t offset;
+  if (failed(type.getStridesAndOffset(strides, offset)))
+    return false;
+
+  int64_t running = 1;
+  for (int64_t i = type.getRank() - 1; i >= 0; --i) {
+    if (strides[i] != running)
+      return false;
+    int64_t size = type.getShape()[i];
+    // Only the leading dimension may be dynamic (checked by the caller).
+    if (ShapedType::isDynamic(size))
+      continue;
+    running *= size;
+  }
+  return true;
+}
+
 Type convertMemrefElementTypeForLLVMPointer(
     MemRefType type, const LLVMTypeConverter &converter) {
   Type converted = converter.convertType(type.getElementType());
@@ -108,10 +134,8 @@ Type convertMemrefElementTypeForLLVMPointer(
   if (llvm::any_of(type.getShape().drop_front(), ShapedType::isDynamic))
     return Type();
 
-  // Only identity layout is supported.
-  // TODO: detect the strided layout that is equivalent to identity
-  // given the static part of the shape.
-  if (!type.getLayout().isIdentity())
+  if (!type.getLayout().isIdentity() &&
+      !isContiguousLayoutIgnoringOffset(type))
     return Type();
 
   if (type.getRank() > 0) {
@@ -946,6 +970,45 @@ protected:
   }
 };
 
+/// Pattern for lowering a memref.subview to a GEP that offsets the base
+/// bare pointer by the subview's offsets. Sizes and strides need no codegen
+/// here: they only constrain what later ops may legally do with the result,
+/// which -- being itself just a bare pointer -- carries no shape of its own.
+struct CSubViewOpLowering : public ConvertOpToLLVMPattern<memref::SubViewOp> {
+  using ConvertOpToLLVMPattern<memref::SubViewOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(memref::SubViewOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    MemRefType sourceType = op.getSourceType();
+
+    auto resultPtrType = dyn_cast_or_null<LLVM::LLVMPointerType>(
+        getTypeConverter()->convertType(op.getType()));
+    if (!resultPtrType)
+      return rewriter.notifyMatchFailure(op, "unsupported result memref type");
+
+    auto elTy = convertMemrefElementTypeForLLVMPointer(
+        sourceType, *this->getTypeConverter());
+    if (!elTy)
+      return rewriter.notifyMatchFailure(op, "unsupported source memref type");
+
+    SmallVector<LLVM::GEPArg> args;
+    unsigned dynamicIdx = 0;
+    for (OpFoldResult ofr : op.getMixedOffsets()) {
+      if (auto attr = llvm::dyn_cast_if_present<Attribute>(ofr))
+        args.push_back(LLVM::GEPArg(cast<IntegerAttr>(attr).getInt()));
+      else
+        args.push_back(LLVM::GEPArg(adaptor.getOffsets()[dynamicIdx++]));
+    }
+
+    Value newPtr = LLVM::GEPOp::create(rewriter, loc, resultPtrType, elTy,
+                                       adaptor.getSource(), args);
+    rewriter.replaceOp(op, newPtr);
+    return success();
+  }
+};
+
 /// Pattern for lowering a memory load.
 struct CLoadOpLowering : public CLoadStoreOpLowering<memref::LoadOp> {
 public:
@@ -1055,6 +1118,54 @@ struct CEnzymeAtomicRMWOpLowering
     auto dataPtr = getAddress(atomicOp, adaptor, rewriter);
     if (!dataPtr)
       return failure();
+    rewriter.replaceOpWithNewOp<LLVM::AtomicRMWOp>(
+        atomicOp, *maybeKind, dataPtr, adaptor.getValue(),
+        convertAtomicOrdering(atomicOp.getOrdering()),
+        /*syncscope=*/StringRef(), atomicOp.getAlignment().value_or(0));
+    return success();
+  }
+};
+
+/// Pattern for lowering an affine atomic rmw. Unlike enzyme.atomic_rmw, its
+/// $indices are the affine map's dim/symbol operands, not one index per
+/// memref dimension, so the per-dimension address offsets have to be
+/// recovered by expanding the map first.
+struct CEnzymeAffineAtomicRMWOpLowering
+    : public ConvertOpToLLVMPattern<enzyme::AffineAtomicRMWOp> {
+  using ConvertOpToLLVMPattern<
+      enzyme::AffineAtomicRMWOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(enzyme::AffineAtomicRMWOp atomicOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto maybeKind = matchSimpleAtomicOp(atomicOp.getKind());
+    if (!maybeKind)
+      return failure();
+
+    Location loc = atomicOp.getLoc();
+    auto originalType = cast<MemRefType>(atomicOp.getMemref().getType());
+    auto convertedType = dyn_cast_or_null<LLVM::LLVMPointerType>(
+        getTypeConverter()->convertType(originalType));
+    if (!convertedType)
+      return rewriter.notifyMatchFailure(atomicOp, "unsupported memref type");
+
+    auto elTy = convertMemrefElementTypeForLLVMPointer(
+        originalType, *this->getTypeConverter());
+    if (!elTy)
+      return rewriter.notifyMatchFailure(atomicOp, "unsupported memref type");
+
+    auto indices = affine::expandAffineMap(rewriter, loc, atomicOp.getMap(),
+                                           adaptor.getIndices());
+    if (!indices)
+      return rewriter.notifyMatchFailure(atomicOp,
+                                         "could not expand affine map");
+
+    SmallVector<LLVM::GEPArg> args = llvm::to_vector(
+        llvm::map_range(*indices, [](Value v) { return LLVM::GEPArg(v); }));
+
+    Value dataPtr = LLVM::GEPOp::create(rewriter, loc, convertedType, elTy,
+                                        adaptor.getMemref(), args);
+
     rewriter.replaceOpWithNewOp<LLVM::AtomicRMWOp>(
         atomicOp, *maybeKind, dataPtr, adaptor.getValue(),
         convertAtomicOrdering(atomicOp.getOrdering()),
@@ -4203,8 +4314,9 @@ void populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
                                           StringRef backend) {
   patterns.add<CAllocaOpLowering, CAllocOpLowering, CDeallocOpLowering,
                GetGlobalOpLowering, GlobalOpLowering, CLoadOpLowering,
-               CStoreOpLowering, AllocaScopeOpLowering, CAtomicRMWOpLowering,
-               CEnzymeAtomicRMWOpLowering, CMemorySpaceCastOpLowering>(
+               CStoreOpLowering, CSubViewOpLowering, AllocaScopeOpLowering,
+               CAtomicRMWOpLowering, CEnzymeAtomicRMWOpLowering,
+               CEnzymeAffineAtomicRMWOpLowering, CMemorySpaceCastOpLowering>(
       typeConverter);
   patterns.add<FillZeroOpLowering>(typeConverter);
   patterns.add<CMemcpyOpLowering>(typeConverter, backend);
