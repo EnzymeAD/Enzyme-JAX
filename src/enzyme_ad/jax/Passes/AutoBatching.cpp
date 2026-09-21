@@ -137,13 +137,14 @@ func::FuncOp CreateWrapperUnbatchedFunction(
   rewriter.setInsertionPointToStart(&entryBlock);
 
   // The wrapper arguments correspond positionally to the operand slots of
-  // `firstOp` (skipping CONSTANT-lifted slots). The same SSA value may occupy
-  // several slots (e.g. `multiply %x, %x`), and the caller batches each slot
-  // independently, so the cloned op must read slot `i` from argument `i`. A
-  // value-keyed IRMapping alone would collapse duplicate slots onto whichever
-  // argument was mapped last, silently dropping the other batched operands.
+  // `firstOp`, skipping CONSTANT-lifted slots: ConstructAndExtractBatchOperands
+  // batches every non-CONSTANT slot independently, so slot `i` must read
+  // argument `i`. When the same SSA value occupies several slots (e.g.
+  // `multiply %x, %x`) an IRMapping cannot express that, being keyed by value,
+  // so record the per-slot operands and apply them directly in that case.
   IRMapping mapper;
   SmallVector<Value> firstOpOperands;
+  bool repeatsOperand = false;
   size_t argIdx = 0;
   for (auto [i, operand] : llvm::enumerate(firstOp->getOperands())) {
     Value mapped;
@@ -158,13 +159,14 @@ func::FuncOp CreateWrapperUnbatchedFunction(
       mapped = stablehlo::ReshapeOpCreate(rewriter, firstOp->getLoc(), mapped,
                                           inShape.value());
     }
+    repeatsOperand |= mapper.contains(operand);
     firstOpOperands.push_back(mapped);
     mapper.map(operand, mapped);
   }
 
   for (auto op : ops) {
     auto clonedOp = rewriter.clone(*op, mapper);
-    if (op == firstOp)
+    if (op == firstOp && repeatsOperand)
       clonedOp->setOperands(firstOpOperands);
     for (size_t i = 0; i < op->getNumResults(); i++) {
       mapper.map(op->getResult(i), clonedOp->getResult(i));
