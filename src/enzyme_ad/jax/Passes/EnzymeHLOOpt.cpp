@@ -14309,8 +14309,61 @@ static bool extractSplatInt(Value v, int64_t &out) {
   return false;
 }
 
+// A constant predicate that, along one dimension, is a run of one value
+// followed by a run of the other and does not vary along the remaining
+// dimensions is `iota_dim < K` (prefix true) or `iota_dim >= K` (prefix
+// false), the mask of an unrolled tree reduction step (`lane < k`).
+static bool matchConstantPrefixMask(Value pred, int64_t &dim, int64_t &K,
+                                    stablehlo::ComparisonDirection &direction) {
+  auto type = dyn_cast<RankedTensorType>(pred.getType());
+  if (!type || !type.hasStaticShape() || type.getRank() == 0)
+    return false;
+  ElementsAttr cond;
+  if (!matchPattern(pred, m_Constant(&cond)) || cond.isSplat())
+    return false;
+  SmallVector<bool> values(cond.getValues<bool>().begin(),
+                           cond.getValues<bool>().end());
+  ArrayRef<int64_t> shape = type.getShape();
+  int64_t rank = type.getRank();
+  SmallVector<int64_t> strides(rank, 1);
+  for (int64_t d = rank - 2; d >= 0; --d)
+    strides[d] = strides[d + 1] * shape[d + 1];
+  for (int64_t d = 0; d < rank; ++d) {
+    // The value at each coordinate along d, when it is uniform there.
+    SmallVector<int8_t> along(shape[d], -1);
+    bool uniform = true;
+    for (int64_t i = 0, e = values.size(); i < e && uniform; ++i) {
+      int64_t c = (i / strides[d]) % shape[d];
+      if (along[c] < 0)
+        along[c] = values[i];
+      else if (along[c] != (int8_t)values[i])
+        uniform = false;
+    }
+    if (!uniform)
+      continue;
+    int64_t split = -1;
+    for (int64_t c = 1; c < shape[d]; ++c)
+      if (along[c] != along[c - 1]) {
+        if (split >= 0) {
+          split = -2;
+          break;
+        }
+        split = c;
+      }
+    if (split < 0)
+      continue;
+    dim = d;
+    K = split;
+    direction = along[0] ? stablehlo::ComparisonDirection::LT
+                         : stablehlo::ComparisonDirection::GE;
+    return true;
+  }
+  return false;
+}
+
 // Matches: select(broadcast_in_dim(compare(iota_expr, K), [dim]), A, B)
 //      or: select(compare(iota_expr, K), A, B)   (no broadcast)
+//      or: select(constant_prefix_mask, A, B)  (see matchConstantPrefixMask)
 // where iota_expr is either iota or add(iota, const_offset).
 // Replaces with concat(slice(A|B, ...), ...) along the iota/broadcast
 // dimension.
@@ -14321,9 +14374,6 @@ struct SelectCompIotaConstSimplify final
 
   LogicalResult matchAndRewriteImpl(stablehlo::SelectOp selectOp,
                                     PatternRewriter &rewriter) const {
-    Value trueTensor = selectOp.getOnTrue();
-    Value falseTensor = selectOp.getOnFalse();
-
     // pred may come from a broadcast_in_dim wrapping a compare, or directly
     // from a compare (no broadcast).
     auto broadcast =
@@ -14334,8 +14384,13 @@ struct SelectCompIotaConstSimplify final
     } else {
       compare = selectOp.getPred().getDefiningOp<stablehlo::CompareOp>();
     }
-    if (!compare)
-      return failure();
+    if (!compare) {
+      int64_t outputDim = 0, K = 0;
+      stablehlo::ComparisonDirection direction;
+      if (!matchConstantPrefixMask(selectOp.getPred(), outputDim, K, direction))
+        return failure();
+      return rewriteAsSlices(selectOp, outputDim, K, direction, rewriter);
+    }
 
     Value cmpLHS = compare.getLhs();
     Value cmpRHS = compare.getRhs();
@@ -14418,6 +14473,17 @@ struct SelectCompIotaConstSimplify final
         return failure();
     }
 
+    return rewriteAsSlices(selectOp, outputDim, K, direction, rewriter);
+  }
+
+  // select(iota_outputDim <direction> K, onTrue, onFalse) as the
+  // concatenation, along outputDim, of the operands' slices.
+  static LogicalResult rewriteAsSlices(stablehlo::SelectOp selectOp,
+                                       int64_t outputDim, int64_t K,
+                                       stablehlo::ComparisonDirection direction,
+                                       PatternRewriter &rewriter) {
+    Value trueTensor = selectOp.getOnTrue();
+    Value falseTensor = selectOp.getOnFalse();
     auto outputShape = selectOp.getType().getShape();
     const int64_t endValue = outputShape[outputDim];
 
