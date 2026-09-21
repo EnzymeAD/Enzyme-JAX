@@ -2,10 +2,10 @@
 
 // How a matrix operand's layout is found, and what happens when it cannot be.
 //
-// After llvm-to-tessera a matrix is usually a flat integer, which records its
-// size but neither its element type nor its shape. The callee's declaration is
-// what knows, so the lookup goes through the call the guard kept in its else
-// region and reads the layout off the matching tessera.define argument.
+// A by-reference matrix operand is an !llvm.ptr, so the value itself says
+// nothing at all. The callee's declaration is what knows, so the lookup goes
+// through the call the guard kept in its else region and reads the layout off
+// the matching tessera.define argument.
 
 // An explicit tessera.layout is taken at face value.
 module {
@@ -32,8 +32,13 @@ module {
 // -----
 
 // With no explicit layout, the by-reference type is walked down to the array
-// holding the elements and *assumed* square and row-major. That is a guess, and
-// a wrong guess miscompiles quietly rather than failing, so it says so.
+// holding the elements. The element type and count come out exactly; the
+// rows/cols split and the storage order are not in the type at all and are
+// *assumed* square and row-major. That is a guess, and a wrong guess
+// miscompiles quietly rather than failing, so it says so.
+//
+// The order half of the guess is harmless here: reading column-major storage
+// as row-major is a transpose, and symmetry is transpose-invariant.
 module {
   tessera.define @lib.foo(%a: !llvm.ptr) -> f32 attributes {byRefTypes = [!llvm.struct<"Outer", (struct<"Inner", (array<4 x f32>)>)>], pure = true} {
     %c = llvm.mlir.constant(0.0 : f32) : f32
@@ -47,6 +52,60 @@ module {
     // expected-remark @+1 {{assuming argument 0 of 'lib.foo' is a 2x2 row-major matrix of 'f32'; declare tessera.layout on the tessera.define to be certain}}
     %0 = tessera.guard "symmetric(x)" args(%x) {argNames = ["x"]} : (!llvm.ptr) -> f32 {
       %1 = tessera.call @lib.sym_foo(%x) : (!llvm.ptr) -> f32
+      tessera.yield %1 : f32
+    } else {
+      %2 = tessera.call @lib.foo(%x) : (!llvm.ptr) -> f32
+      tessera.yield %2 : f32
+    }
+    llvm.return %0 : f32
+  }
+}
+
+// -----
+
+// The triangular pair is the exception: it is NOT transpose-invariant, so
+// reading column-major storage as row-major turns an upper triangle into a
+// lower one and the check would answer true for a matrix that is not upper
+// triangular. An assumed order is therefore refused outright rather than
+// remarked on -- this is the one place the inference could be unsound.
+module {
+  tessera.define @lib.foo(%a: !llvm.ptr) -> f32 attributes {byRefTypes = [!llvm.struct<"Outer", (array<4 x f32>)>], pure = true} {
+    %c = llvm.mlir.constant(0.0 : f32) : f32
+    tessera.return %c : f32
+  }
+  tessera.define @lib.tri_foo(%a: !llvm.ptr) -> f32 attributes {byRefTypes = [unit], pure = true} {
+    %c = llvm.mlir.constant(0.0 : f32) : f32
+    tessera.return %c : f32
+  }
+  llvm.func @triangular_inferred_order(%x: !llvm.ptr) -> f32 {
+    // expected-remark @+2 {{assuming argument 0 of 'lib.foo' is a 2x2 row-major matrix of 'f32'}}
+    // expected-error @+1 {{'triangular_upper' depends on the storage order, which was assumed rather than declared; declare tessera.layout with row_major on the corresponding tessera.define argument}}
+    %0 = tessera.guard "triangular_upper(x)" args(%x) {argNames = ["x"]} : (!llvm.ptr) -> f32 {
+      %1 = tessera.call @lib.tri_foo(%x) : (!llvm.ptr) -> f32
+      tessera.yield %1 : f32
+    } else {
+      %2 = tessera.call @lib.foo(%x) : (!llvm.ptr) -> f32
+      tessera.yield %2 : f32
+    }
+    llvm.return %0 : f32
+  }
+}
+
+// -----
+
+// Declared order, so the same predicate goes through.
+module {
+  tessera.define @lib.foo(%a: !llvm.ptr {tessera.layout = {elem = f32, rows = 2 : i64, cols = 2 : i64, row_major = true}}) -> f32 attributes {byRefTypes = [unit], pure = true} {
+    %c = llvm.mlir.constant(0.0 : f32) : f32
+    tessera.return %c : f32
+  }
+  tessera.define @lib.tri_foo(%a: !llvm.ptr) -> f32 attributes {byRefTypes = [unit], pure = true} {
+    %c = llvm.mlir.constant(0.0 : f32) : f32
+    tessera.return %c : f32
+  }
+  llvm.func @triangular_declared_order(%x: !llvm.ptr) -> f32 {
+    %0 = tessera.guard "triangular_upper(x)" args(%x) {argNames = ["x"]} : (!llvm.ptr) -> f32 {
+      %1 = tessera.call @lib.tri_foo(%x) : (!llvm.ptr) -> f32
       tessera.yield %1 : f32
     } else {
       %2 = tessera.call @lib.foo(%x) : (!llvm.ptr) -> f32

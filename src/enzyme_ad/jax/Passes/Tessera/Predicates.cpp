@@ -112,8 +112,9 @@ MatrixLayout resolveMatrixLayout(Value value, GuardOp guard) {
     return {};
   }
 
-  // Otherwise infer from the by-reference type. Only the element count is
-  // really known, so squareness and row-major order are assumed.
+  // Otherwise infer from the by-reference type. The element type and count are
+  // exact; the rows/cols split and the storage order are not in the type at
+  // all, so both are assumed.
   LLVM::LLVMArrayType array = findElementArray(define.getByRefType(index));
   if (!array)
     return {};
@@ -126,6 +127,7 @@ MatrixLayout resolveMatrixLayout(Value value, GuardOp guard) {
   layout.elemType = array.getElementType();
   layout.rows = layout.cols = side;
   layout.rowMajor = true;
+  layout.orderInferred = true;
 
   // This is a guess, and a wrong guess miscompiles quietly rather than
   // failing, so say so.
@@ -396,14 +398,32 @@ Value emitConjunction(ArrayRef<Value> terms, CheckContext &ctx) {
 }
 
 /// Shared entry checks for the matrix predicates.
+///
+/// `orderMatters` says the property is not preserved by transposition, so an
+/// assumed storage order could make the check answer true for a matrix that
+/// does not have the property. Only the triangular pair is in that position:
+/// reading column-major storage as row-major turns an upper triangle into a
+/// lower one. Everything else here is transpose-invariant -- symmetry,
+/// diagonality and identity obviously so, and diagonal dominance because
+/// column dominance implies nonsingularity just as row dominance does -- so an
+/// inferred order cannot make those unsound.
 bool prepareMatrix(llvm::StringRef name, Value matrix, CheckContext &ctx,
-                   bool requireSquare, MatrixLayout &layout) {
+                   bool requireSquare, bool orderMatters,
+                   MatrixLayout &layout) {
   layout = resolveMatrixLayout(matrix, ctx.guard);
   if (!layout.isValid()) {
     ctx.guard.emitError()
         << "cannot determine the layout of the operand of '" << name
         << "'; declare tessera.layout on the corresponding tessera.define "
            "argument";
+    return false;
+  }
+  if (orderMatters && layout.orderInferred) {
+    ctx.guard.emitError()
+        << "'" << name
+        << "' depends on the storage order, which was assumed "
+           "rather than declared; declare tessera.layout with row_major on the "
+           "corresponding tessera.define argument";
     return false;
   }
   if (requireSquare && !layout.isSquare()) {
@@ -516,7 +536,8 @@ Value positiveDiagonalOf(Value matrix, const MatrixLayout &layout,
 /// A[i][j] == A[j][i] for every i < j. Exact.
 Value emitSymmetric(ArrayRef<Value> args, CheckContext &ctx) {
   MatrixLayout layout;
-  if (!prepareMatrix("symmetric", args[0], ctx, /*requireSquare=*/true, layout))
+  if (!prepareMatrix("symmetric", args[0], ctx, /*requireSquare=*/true,
+                     /*orderMatters=*/false, layout))
     return Value();
   return symmetryOf(args[0], layout, ctx);
 }
@@ -533,7 +554,7 @@ Value emitSymmetric(ArrayRef<Value> args, CheckContext &ctx) {
 Value emitInvertible(ArrayRef<Value> args, CheckContext &ctx) {
   MatrixLayout layout;
   if (!prepareMatrix("invertible", args[0], ctx, /*requireSquare=*/true,
-                     layout))
+                     /*orderMatters=*/false, layout))
     return Value();
   return diagonalDominanceOf(args[0], layout, ctx);
 }
@@ -546,7 +567,7 @@ Value emitInvertible(ArrayRef<Value> args, CheckContext &ctx) {
 Value emitPositiveDefinite(ArrayRef<Value> args, CheckContext &ctx) {
   MatrixLayout layout;
   if (!prepareMatrix("positive_definite", args[0], ctx, /*requireSquare=*/true,
-                     layout))
+                     /*orderMatters=*/false, layout))
     return Value();
 
   Value symmetric = symmetryOf(args[0], layout, ctx);
@@ -561,7 +582,8 @@ Value emitPositiveDefinite(ArrayRef<Value> args, CheckContext &ctx) {
 /// matrix too.
 Value emitDiagonal(ArrayRef<Value> args, CheckContext &ctx) {
   MatrixLayout layout;
-  if (!prepareMatrix("diagonal", args[0], ctx, /*requireSquare=*/false, layout))
+  if (!prepareMatrix("diagonal", args[0], ctx, /*requireSquare=*/false,
+                     /*orderMatters=*/false, layout))
     return Value();
 
   Value zero = emitScalarConstant(layout.elemType, 0, ctx);
@@ -582,7 +604,7 @@ Value emitDiagonal(ArrayRef<Value> args, CheckContext &ctx) {
 Value emitTriangularUpper(ArrayRef<Value> args, CheckContext &ctx) {
   MatrixLayout layout;
   if (!prepareMatrix("triangular_upper", args[0], ctx, /*requireSquare=*/true,
-                     layout))
+                     /*orderMatters=*/true, layout))
     return Value();
 
   Value zero = emitScalarConstant(layout.elemType, 0, ctx);
@@ -601,7 +623,7 @@ Value emitTriangularUpper(ArrayRef<Value> args, CheckContext &ctx) {
 Value emitTriangularLower(ArrayRef<Value> args, CheckContext &ctx) {
   MatrixLayout layout;
   if (!prepareMatrix("triangular_lower", args[0], ctx, /*requireSquare=*/true,
-                     layout))
+                     /*orderMatters=*/true, layout))
     return Value();
 
   Value zero = emitScalarConstant(layout.elemType, 0, ctx);
@@ -619,7 +641,8 @@ Value emitTriangularLower(ArrayRef<Value> args, CheckContext &ctx) {
 /// Ones on the diagonal, zeros everywhere else. Exact.
 Value emitIdentity(ArrayRef<Value> args, CheckContext &ctx) {
   MatrixLayout layout;
-  if (!prepareMatrix("identity", args[0], ctx, /*requireSquare=*/true, layout))
+  if (!prepareMatrix("identity", args[0], ctx, /*requireSquare=*/true,
+                     /*orderMatters=*/false, layout))
     return Value();
 
   Value zero = emitScalarConstant(layout.elemType, 0, ctx);

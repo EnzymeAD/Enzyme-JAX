@@ -36,6 +36,12 @@ struct MatrixLayout {
   int64_t cols = 0;
   bool rowMajor = true;
 
+  /// True when `rowMajor` was assumed rather than declared. Reading
+  /// column-major storage as row-major is exactly a transpose, so this only
+  /// matters to a predicate that is not transpose-invariant; those refuse to
+  /// emit a check unless the order was declared.
+  bool orderInferred = false;
+
   bool isValid() const { return elemType && rows > 0 && cols > 0; }
   bool isSquare() const { return rows == cols; }
   int64_t numElements() const { return rows * cols; }
@@ -48,14 +54,15 @@ struct MatrixLayout {
 
 /// Work out the layout of a value the guard carries.
 ///
-/// The value itself rarely says enough -- after llvm-to-tessera a matrix is
-/// typically a flat integer such as i512, which records the size but not the
-/// element type or the shape. The declaration of the callee does say, so the
-/// lookup goes through the call the guard kept in its else region:
+/// The value itself says nothing: a by-reference matrix operand is an
+/// `!llvm.ptr`. The declaration of the callee does say, so the lookup goes
+/// through the call the guard kept in its else region:
 ///
 ///   1. a `tessera.layout` dictionary on the callee's argument, or
-///   2. the argument's by-reference type, walked down to its element array and
-///      assumed square and row-major -- a guess, so it emits a remark.
+///   2. the argument's `byRefTypes` entry, walked down to its element array.
+///      That gives the element type and count exactly, but neither the
+///      rows/cols split nor the storage order, so both are assumed (square,
+///      row-major) and `orderInferred` is set. It emits a remark either way.
 ///
 /// Returns an invalid layout when neither applies.
 MatrixLayout resolveMatrixLayout(Value value, GuardOp guard);
