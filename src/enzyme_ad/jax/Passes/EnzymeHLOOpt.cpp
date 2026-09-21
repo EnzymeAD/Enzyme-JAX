@@ -2702,7 +2702,10 @@ struct SliceOfDynamicUpdate final
         }
       }
 
-      if (no_overlap) {
+      Operation *definingOp = dyn.getOperand().getDefiningOp();
+      if (no_overlap &&
+          (!definingOp ||
+           !llvm::isa<stablehlo::DynamicUpdateSliceOp>(definingOp))) {
         rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
             op, dyn.getOperand(), op.getStartIndices(), op.getLimitIndices(),
             op.getStrides());
@@ -13438,50 +13441,69 @@ template <typename T> struct CSE final : CheckedOpRewritePattern<T, CSE<T>> {
   bool supportsDynamicShapes() { return true; }
 
   LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
-    if (op->getNumOperands() > 0)
-      for (auto nop : op->getOperand(0).getUsers()) {
-        if (nop == op)
-          continue;
-        if (!isa<T>(nop))
-          continue;
-        if (nop->getBlock() != op->getBlock())
-          continue;
-
-        if (op->getName() != nop->getName())
-          continue;
-
-        OperationEquivalence::Flags flags =
-            OperationEquivalence::IgnoreLocations |
-            OperationEquivalence::IgnoreDiscardableAttrs;
-
-        // OperationEquivalence only checks for mlir::OpTrait::IsCommutative
-        if constexpr (!std::is_base_of_v<::mlir::OpTrait::IsCommutative<T>,
-                                         T>) {
-          flags |= OperationEquivalence::IgnoreCommutativity;
+    if (op->getNumOperands() == 0)
+      return failure();
+    // An equivalent op uses every operand of this one, so it is among the
+    // users of whichever operand has the fewest. Walk the user lists in
+    // lockstep and take the first to end: a buffer read by thousands of
+    // gathers is never scanned when each gather has its own index.
+    Value key;
+    SmallVector<Value::user_iterator> its, ends;
+    for (Value operand : op->getOperands()) {
+      its.push_back(operand.user_begin());
+      ends.push_back(operand.user_end());
+    }
+    while (!key) {
+      for (auto [i, operand] : llvm::enumerate(op->getOperands())) {
+        if (its[i] == ends[i]) {
+          key = operand;
+          break;
         }
+        ++its[i];
+      }
+    }
+    for (auto nop : key.getUsers()) {
+      if (nop == op)
+        continue;
+      if (!isa<T>(nop))
+        continue;
+      if (nop->getBlock() != op->getBlock())
+        continue;
 
-        if (!OperationEquivalence::isEquivalentTo(op, nop, flags)) {
-          // stablehlo defines a special trait for commutative operations.
-          // check for that here.
-          if constexpr (std::is_base_of_v<
-                            ::mlir::hlo::OpTrait::IsCommutative<T>, T>) {
-            auto opRange = op->getOperands();
-            auto nopRange = nop->getOperands();
-            if (!isCommutativeEquivalent(opRange, nopRange))
-              continue;
-          } else {
+      if (op->getName() != nop->getName())
+        continue;
+
+      OperationEquivalence::Flags flags =
+          OperationEquivalence::IgnoreLocations |
+          OperationEquivalence::IgnoreDiscardableAttrs;
+
+      // OperationEquivalence only checks for mlir::OpTrait::IsCommutative
+      if constexpr (!std::is_base_of_v<::mlir::OpTrait::IsCommutative<T>, T>) {
+        flags |= OperationEquivalence::IgnoreCommutativity;
+      }
+
+      if (!OperationEquivalence::isEquivalentTo(op, nop, flags)) {
+        // stablehlo defines a special trait for commutative operations.
+        // check for that here.
+        if constexpr (std::is_base_of_v<::mlir::hlo::OpTrait::IsCommutative<T>,
+                                        T>) {
+          auto opRange = op->getOperands();
+          auto nopRange = nop->getOperands();
+          if (!isCommutativeEquivalent(opRange, nopRange))
             continue;
-          }
-        }
-
-        if (nop->isBeforeInBlock(op)) {
-          rewriter.replaceOp(op, nop);
-          return success();
         } else {
-          rewriter.replaceOp(nop, op);
-          return success();
+          continue;
         }
       }
+
+      if (nop->isBeforeInBlock(op)) {
+        rewriter.replaceOp(op, nop);
+        return success();
+      } else {
+        rewriter.replaceOp(nop, op);
+        return success();
+      }
+    }
     return failure();
   }
 };
@@ -19812,12 +19834,11 @@ struct DUSDUSSubsuming
           originalProvenance.isEqual(it2->second.provenanceRelation)) {
         movedSlices.insert({slice.getOperation(), clonedSlice});
       } else {
-        rewriter.eraseOp(clonedSlice);
-
         // Don't forget to erase the provenance info for the op result we just
         // erased since that value address may be reused for something entirely
         // different!
         provenanceInfo.erase(clonedSlice->getResult(0));
+        rewriter.eraseOp(clonedSlice);
       }
     }
 
