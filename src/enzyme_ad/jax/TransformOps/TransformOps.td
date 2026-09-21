@@ -1128,6 +1128,11 @@ def CompareConvert : EnzymeHLOPatternOp<
   let patterns = ["CompareConvert"];
 }
 
+def NonZeroCompareFold : EnzymeHLOPatternOp<
+    "non_zero_compare_fold"> {
+  let patterns = ["NonZeroCompareFold"];
+}
+
 def AddSelects : EnzymeHLOPatternOp<
     "add_selects"> {
   let patterns = ["AddSelects"];

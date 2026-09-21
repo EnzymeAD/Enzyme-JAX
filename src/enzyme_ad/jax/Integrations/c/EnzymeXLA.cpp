@@ -617,6 +617,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("concatenate_broadcast_in_dim");
   list.push_back("compare_abs");
   list.push_back("compare_convert");
+  list.push_back("non_zero_compare_fold");
   list.push_back("add_selects");
   list.push_back("subtract_multiply_const_to_add_mul_const");
   list.push_back("trivial_reduce_window_to_reduce_op");
