@@ -1109,4 +1109,51 @@ module {
       llvm.return %0 : f64
     }
   }
+  gpu.module @test_module_erfc {
+    llvm.func @__nv_erfcf(f32) -> f32
+    llvm.func @__nv_erfc(f64) -> f64
+    llvm.func @gpu_erfc(%arg0: f32, %arg1: f64) -> !llvm.struct<(f32, f64)> attributes {llvm.emit_c_interface} {
+      // CHECK-COUNT-2: math.erfc
+      %0 = llvm.call @__nv_erfcf(%arg0) : (f32) -> f32
+      %1 = llvm.call @__nv_erfc(%arg1) : (f64) -> f64
+      %2 = llvm.mlir.undef : !llvm.struct<(f32, f64)>
+      %3 = llvm.insertvalue %0, %2[0] : !llvm.struct<(f32, f64)>
+      %4 = llvm.insertvalue %1, %3[1] : !llvm.struct<(f32, f64)>
+      llvm.return %4 : !llvm.struct<(f32, f64)>
+    }
+    llvm.func @_mlir_ciface_gpu_erfc(%arg0: !llvm.ptr, %arg1: f32, %arg2: f64) attributes {llvm.emit_c_interface} {
+      %0 = llvm.call @gpu_erfc(%arg1, %arg2) : (f32, f64) -> !llvm.struct<(f32, f64)>
+      llvm.store %0, %arg0 : !llvm.struct<(f32, f64)>, !llvm.ptr
+      llvm.return
+    }
+  }
+  gpu.module @test_module_exp10 {
+    llvm.func @__nv_exp10f(f32) -> f32
+    llvm.func @__nv_exp10(f64) -> f64
+    llvm.func @exp10(f64) -> f64
+    // CHECK-LABEL: @gpu_exp10_f32
+    llvm.func @gpu_exp10_f32(%arg0: f32) -> f32 {
+      // CHECK: %[[LOG2OF10:.*]] = arith.constant {{.*}} : f32
+      // CHECK: %[[SCALED:.*]] = arith.mulf %arg0, %[[LOG2OF10]] : f32
+      // CHECK: math.exp2 %[[SCALED]] : f32
+      %0 = llvm.call @__nv_exp10f(%arg0) : (f32) -> f32
+      llvm.return %0 : f32
+    }
+    // CHECK-LABEL: @gpu_exp10_f64
+    llvm.func @gpu_exp10_f64(%arg0: f64) -> f64 {
+      // CHECK: %[[LOG2OF10:.*]] = arith.constant {{.*}} : f64
+      // CHECK: %[[SCALED:.*]] = arith.mulf %arg0, %[[LOG2OF10]] : f64
+      // CHECK: math.exp2 %[[SCALED]] : f64
+      %0 = llvm.call @__nv_exp10(%arg0) : (f64) -> f64
+      llvm.return %0 : f64
+    }
+    // CHECK-LABEL: @libm_exp10_f64
+    llvm.func @libm_exp10_f64(%arg0: f64) -> f64 {
+      // CHECK: %[[LOG2OF10:.*]] = arith.constant {{.*}} : f64
+      // CHECK: %[[SCALED:.*]] = arith.mulf %arg0, %[[LOG2OF10]] : f64
+      // CHECK: math.exp2 %[[SCALED]] : f64
+      %0 = llvm.call @exp10(%arg0) : (f64) -> f64
+      llvm.return %0 : f64
+    }
+  }
 }
