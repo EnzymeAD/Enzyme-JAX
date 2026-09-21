@@ -1,5 +1,6 @@
 #include "CollectiveScore.h"
 
+#include "MeshCostMetadata.h"
 #include "Utilities.h"
 
 #include "llvm/Support/raw_ostream.h"
@@ -60,14 +61,10 @@ CollectiveCostSummary CollectiveCostModel::summarize(ModuleOp module) {
     return summary;
   }
   SmallVector<PhysicalCommAxisType> meshAxisTypes;
-  std::vector<uint64_t> extents;
-  for (Attribute axisAttr : physicalMesh->getAxesAttr()) {
-    auto axis = cast<PhysicalCommAxisType>(cast<TypeAttr>(axisAttr).getValue());
-    meshAxisTypes.push_back(axis);
-    extents.push_back(axis.getExtent());
-  }
-  // Uniform bandwidth and latencies on every axis.
-  MeshCostParams params(extents);
+  for (Attribute axisAttr : physicalMesh->getAxesAttr())
+    meshAxisTypes.push_back(
+        cast<PhysicalCommAxisType>(cast<TypeAttr>(axisAttr).getValue()));
+  MeshCostParams params = meshCostParamsFromPhysicalMesh(*physicalMesh);
 
   module.walk([&](DistributedCollectiveOp collective) {
     ++summary.numCollectives;

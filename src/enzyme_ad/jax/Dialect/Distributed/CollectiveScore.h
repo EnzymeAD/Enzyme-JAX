@@ -16,10 +16,10 @@ namespace mlir::enzyme::distributed {
 //
 // The model is deliberately simple:
 //   - Each atomic distributed.Collective is decomposed by the collective
-//     planner and costed alone, at the uniform MeshCostParams of the module's
-//     physical mesh.
+//     planner and costed alone, at the MeshCostParams of the module's
+//     physical mesh (its metadata, else defaults).
 //   - Durations are added. Collectives that could run concurrently are not
-//     overlapped, and computation is not costed.
+//     overlapped. Computation is costed separately (ComputeCost.h).
 struct CollectiveCostSummary {
   // Sum of `durations`. Meaningful only when `feasible`.
   double total = 0;

@@ -35,7 +35,8 @@ namespace mlir::enzyme::distributed {
 //       several axes' digits crosses each of those axes, using that axis's
 //       port and paying that axis's round latency. Only a permute spans axes.
 //   N6  One launch latency per collective and one round latency per axis.
-//       They default to uniform constants until mesh metadata provides them.
+//       They come from the physical mesh's optional metadata, with uniform
+//       constants as defaults.
 //   N7  Payload bytes are the only size input: no message-size-dependent
 //       bandwidth, protocol switch or minimum message size.
 //   N8  Combining values in a reduction is free; compute is not modelled.
@@ -58,9 +59,9 @@ namespace mlir::enzyme::distributed {
 // Bandwidth and latency of a physical mesh, indexed by physical axis.
 //
 // The vectors are public so a caller can build parameters from any source.
-// A later constructor will read them from the physical mesh's bandwidth and
-// latency metadata; until that metadata exists, the extents-only constructor
-// gives uniform parameters that make hand computation easy.
+// meshCostParamsFromPhysicalMesh (MeshCostMetadata.h) reads them from a
+// physical mesh; the extents-only constructor gives uniform parameters that
+// make hand computation easy.
 //
 // Latency model (N6): a collective takes some number of rounds (see the
 // footprint functions), each costing the per-round latency of its axis, on top

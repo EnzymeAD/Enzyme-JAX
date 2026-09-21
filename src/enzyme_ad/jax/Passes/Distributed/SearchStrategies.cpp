@@ -5,6 +5,7 @@
 
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/CollectiveScore.h"
+#include "src/enzyme_ad/jax/Dialect/Distributed/ComputeCost.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 
 #include "mlir/IR/IRMapping.h"
@@ -844,8 +845,13 @@ static void dumpSearchModule(llvm::StringRef header, ModuleOp module,
   if (score)
     llvm::errs() << ", score=" << *score;
   llvm::errs() << "):\n";
-  if (!note.empty())
-    llvm::errs() << "// " << note << "\n";
+  if (!note.empty()) {
+    std::string commented = note.str();
+    for (size_t at = commented.find('\n'); at != std::string::npos;
+         at = commented.find('\n', at + 4))
+      commented.replace(at, 1, "\n// ");
+    llvm::errs() << "// " << commented << "\n";
+  }
   module.print(llvm::errs());
   llvm::errs() << "\n";
 }
@@ -862,6 +868,18 @@ static std::string describeCost(const CollectiveCostSummary &cost) {
      << cost.numCollectives << " collectives:";
   for (const auto &[duration, count] : byDuration)
     os << " " << duration << "x" << count;
+  return text;
+}
+
+// One line summarizing the compute cost: the total, and how much of the module
+// the model could not cost exactly.
+static std::string describeCompute(const ComputeCostSummary &compute) {
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  os << "compute cost: total=" << compute.total << " over "
+     << compute.numKernels << " kernels (unknown ops: " << compute.numUnknownOps
+     << ", collectives: " << compute.numCollectiveOps
+     << ", skipped: " << compute.numSkippedOps << ")";
   return text;
 }
 
@@ -896,6 +914,24 @@ public:
   const std::string &getFirstPlanFailure() const { return firstPlanFailure; }
   const CollectiveCostModel &getCostModel() const { return costModel; }
 
+  // Scores a module that lowered successfully, describing the score in
+  // `note`. Infeasible modules score -infinity.
+  double scoreLowered(ModuleOp lowered, std::string &note) {
+    CollectiveCostSummary cost = costModel.summarize(lowered);
+    if (!cost.feasible()) {
+      if (numPlanFailures++ == 0)
+        firstPlanFailure = cost.failureReason;
+      note = "collective planning failed: " + cost.failureReason;
+      return -std::numeric_limits<double>::infinity();
+    }
+    // The collective model has already found the unique physical mesh.
+    DeviceCostParams device =
+        deviceCostParamsFromPhysicalMesh(*findUniquePhysicalMesh(lowered));
+    ComputeCostSummary compute = summarizeKernelCompute(lowered, device);
+    note = describeCost(cost) + "\n" + describeCompute(compute);
+    return 0.0 - (cost.total + compute.total);
+  }
+
   // Applies and lowers the candidate's decisions on a clone, then scores it.
   // Pipeline:
   // - StrategyCompleterBase (StrategyInOrderCompleter) : heuristically
@@ -908,9 +944,11 @@ public:
   // - CollectiveCostModel : costs the lowered clone
   //
   // The score is the negated sum of the lowered clone's collective durations
-  // (higher is better, as the beam maximizes). It models communication only:
-  // collectives are costed in isolation at uniform mesh parameters, are never
-  // overlapped with each other, and computation is free.
+  // and per-op kernel compute times (higher is better, as the beam
+  // maximizes). Collectives are costed in isolation and never overlapped with
+  // each other, and compute does not overlap communication (see
+  // CollectiveScore.h and ComputeCost.h). The mesh parameters come from the
+  // physical mesh's metadata, else abstract defaults.
   //
   // A candidate is infeasible, and scores -infinity, if its lowering pipeline
   // fails or any of its collectives cannot be planned.
@@ -925,19 +963,9 @@ public:
         originalModule, completedNode, disableVerifier, pipelineOk);
 
     ++numScored;
-    double result = -std::numeric_limits<double>::infinity();
     std::string note;
-    if (pipelineOk) {
-      CollectiveCostSummary cost = costModel.summarize(*clonedModule);
-      if (cost.feasible()) {
-        result = 0.0 - cost.total;
-        note = describeCost(cost);
-      } else {
-        if (numPlanFailures++ == 0)
-          firstPlanFailure = cost.failureReason;
-        note = "collective planning failed: " + cost.failureReason;
-      }
-    }
+    double result = pipelineOk ? scoreLowered(*clonedModule, note)
+                               : -std::numeric_limits<double>::infinity();
 
     if (dumpCandidates)
       dumpSearchModule("Search candidate", *clonedModule, pipelineOk, result,
@@ -1052,8 +1080,11 @@ struct DistributedSearchStrategiesPass
         bool pipelineOk;
         OwningOpRef<ModuleOp> clonedModule =
             cloneAndApplyDecisions(moduleOp, node, disableVerifier, pipelineOk);
+        std::string note;
+        if (pipelineOk)
+          scorer.scoreLowered(*clonedModule, note);
         dumpSearchModule("Finalized search candidate", *clonedModule,
-                         pipelineOk, node->score);
+                         pipelineOk, node->score, note);
       }
     }
 
@@ -1064,8 +1095,11 @@ struct DistributedSearchStrategiesPass
         bool pipelineOk;
         OwningOpRef<ModuleOp> clonedModule =
             cloneAndApplyDecisions(moduleOp, best, disableVerifier, pipelineOk);
+        std::string note;
+        if (pipelineOk)
+          scorer.scoreLowered(*clonedModule, note);
         dumpSearchModule("Best search candidate", *clonedModule, pipelineOk,
-                         best->score);
+                         best->score, note);
       } else {
         llvm::errs() << "// Best search candidate: none found (no finalized "
                         "candidates)\n";

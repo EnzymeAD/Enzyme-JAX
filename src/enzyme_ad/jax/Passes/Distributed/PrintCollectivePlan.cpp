@@ -5,6 +5,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include "src/enzyme_ad/jax/Dialect/Distributed/CollectiveDecomposer.h"
+#include "src/enzyme_ad/jax/Dialect/Distributed/MeshCostMetadata.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/NormalizedCollective.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 
@@ -123,10 +124,7 @@ struct PrintCollectivePlanPass
 
     std::optional<MeshCostParams> params;
     if (chain) {
-      std::vector<uint64_t> extents;
-      for (PhysicalCommAxisType axis : meshAxisTypes)
-        extents.push_back(axis.getExtent());
-      params = MeshCostParams(extents);
+      params = meshCostParamsFromPhysicalMesh(*physicalMesh);
       if (!bandwidths.empty()) {
         if (bandwidths.size() != meshAxisTypes.size()) {
           module.emitError("bandwidths needs one entry per physical axis");

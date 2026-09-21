@@ -3,6 +3,8 @@
 
 #include "mlir/IR/PatternMatch.h"
 
+#include <cmath>
+
 namespace mlir::enzyme::distributed {
 
 uint64_t PhysicalMeshOp::getDeviceCount() {
@@ -24,6 +26,52 @@ LogicalResult PhysicalMeshOp::verify() {
       return emitOpError() << "requires axes[" << idx
                            << "] to be a PhysicalCommAxisType attribute";
     }
+  }
+
+  auto verifyPerAxis = [&](ArrayAttr values, StringRef name,
+                           bool strictlyPositive) -> LogicalResult {
+    if (!values) {
+      return success();
+    }
+    if (values.size() != getAxesAttr().size()) {
+      return emitOpError() << "requires " << name << " to have one entry per "
+                           << "axis (" << getAxesAttr().size() << "), got "
+                           << values.size();
+    }
+    for (auto [idx, value] :
+         llvm::enumerate(values.getAsValueRange<FloatAttr>())) {
+      double v = value.convertToDouble();
+      if (!std::isfinite(v) || v < 0.0 || (strictlyPositive && v == 0.0)) {
+        return emitOpError() << "requires " << name << "[" << idx << "] to be "
+                             << (strictlyPositive ? "positive" : "non-negative")
+                             << " and finite";
+      }
+    }
+    return success();
+  };
+  if (failed(verifyPerAxis(getAxisBandwidthsAttr(), "axis_bandwidths", true)) ||
+      failed(verifyPerAxis(getAxisLatenciesAttr(), "axis_latencies", false))) {
+    return failure();
+  }
+
+  auto verifyScalar = [&](FloatAttr value, StringRef name,
+                          bool strictlyPositive) -> LogicalResult {
+    if (!value) {
+      return success();
+    }
+    double v = value.getValueAsDouble();
+    if (!std::isfinite(v) || v < 0.0 || (strictlyPositive && v == 0.0)) {
+      return emitOpError() << "requires " << name << " to be "
+                           << (strictlyPositive ? "positive" : "non-negative")
+                           << " and finite";
+    }
+    return success();
+  };
+  if (failed(verifyScalar(getLaunchLatencyAttr(), "launch_latency", false)) ||
+      failed(verifyScalar(getDeviceFlopsAttr(), "device_flops", true)) ||
+      failed(verifyScalar(getDeviceMemBandwidthAttr(), "device_mem_bandwidth",
+                          true))) {
+    return failure();
   }
 
   return success();

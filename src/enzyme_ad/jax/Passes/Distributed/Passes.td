@@ -520,6 +520,29 @@ def FuseCollectivesPass
   }];
 }
 
+def PrintComputeCostPass
+    : Pass<"distributed-print-compute-cost", "::mlir::ModuleOp"> {
+  let summary = "Debug pass: reports the roofline compute cost of each op in "
+                "every distributed kernel body as remarks.";
+  let description = [{
+    Each costed op gets a remark with its flops, bytes and roofline time, and
+    the module gets a summary remark. The device's peak rates come from the
+    unique physical mesh's device_flops and device_mem_bandwidth, else abstract
+    defaults; the options override both. See ComputeCost.h for the model.
+  }];
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "enzyme::distributed::DistributedDialect"
+  ];
+  let options = [
+    Option<"flops", "flops", "double", "-1.0",
+           "Peak FLOP per time unit of one device; negative uses the mesh's "
+           "device_flops">,
+    Option<"memBandwidth", "mem-bandwidth", "double", "-1.0",
+           "Peak memory bytes per time unit of one device; negative uses the "
+           "mesh's device_mem_bandwidth">
+  ];
+}
+
 def PrintCollectivePlanPass
     : Pass<"distributed-print-collective-plan", "::mlir::ModuleOp"> {
   let summary = "Debug pass: reports each atomic collective's normal form "
@@ -532,8 +555,8 @@ def PrintCollectivePlanPass
            "Also report the decomposition of each collective into primitive "
            "steps with their footprints">,
     ListOption<"bandwidths", "bandwidths", "double",
-               "With chain: bandwidth per physical mesh axis; uniform 1 when "
-               "omitted">,
+               "With chain: bandwidth per physical mesh axis; the mesh's "
+               "axis_bandwidths (else 1) when omitted">,
     Option<"disableAllToAll", "disable-all-to-all", "bool", "false",
            "With chain: do not offer all-to-all, so tile-to-tile atoms use "
            "gather + local slice">,
