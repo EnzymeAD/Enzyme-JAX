@@ -14,6 +14,7 @@
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/RuleAST.h"
 #include <limits>
 #include <optional>
 #include <utility>
@@ -39,251 +40,6 @@ using namespace mlir::enzyme;
 using namespace mlir::enzyme::tessera;
 
 namespace {
-
-enum class TokenType {
-  Ident,
-  Integer,
-  Float,
-  LParen,
-  RParen,
-  Dot,
-  Comma,
-  Arrow,
-  End,
-  Error
-};
-
-struct Token {
-  TokenType type;
-  std::string value;
-};
-
-bool isAlpha(char c) {
-  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
-}
-
-bool isDigit(char c) { return c >= '0' && c <= '9'; }
-
-bool isAlphaNum(char c) { return isAlpha(c) || isDigit(c); }
-
-bool isWhitespace(char c) { return c == ' ' || c == '\n' || c == '\t'; }
-
-struct Lexer {
-  std::string input;
-  size_t pos = 0;
-
-  char peek() { return pos < input.size() ? input[pos] : '\0'; }
-  char peekNext() { return pos + 1 < input.size() ? input[pos + 1] : '\0'; }
-  char advance() { return input[pos++]; }
-
-  Token nextToken() {
-    if (peek() == '\0') {
-      return Token{TokenType::End, ""};
-    }
-
-    while (isWhitespace(peek()))
-      advance();
-
-    if (isAlpha(peek()) || peek() == '_') {
-      std::string s;
-      while (isAlphaNum(peek()) || peek() == '_') {
-        s += advance();
-      }
-      return Token{TokenType::Ident, s};
-    }
-
-    // Two lookahead rules decide whether a leading character starts a number.
-    // A '-' does only when a digit follows, otherwise it is the head of the
-    // "->" arrow handled below. A '.' does only when a digit follows.
-    if (isDigit(peek()) ||
-        ((peek() == '-' || peek() == '.') && isDigit(peekNext()))) {
-      std::string num;
-      if (peek() == '-') {
-        num += advance();
-      }
-      while (isDigit(peek())) {
-        num += advance();
-      }
-      if (peek() == '.') {
-        num += advance();
-        while (isDigit(peek())) {
-          num += advance();
-        }
-        return Token{TokenType::Float, num};
-      }
-      return Token{TokenType::Integer, num};
-    }
-
-    if (peek() == '(') {
-      advance();
-      return Token{TokenType::LParen, ""};
-    }
-
-    if (peek() == ')') {
-      advance();
-      return Token{TokenType::RParen, ""};
-    }
-
-    if (peek() == '.') {
-      advance();
-      return Token{TokenType::Dot, ""};
-    }
-
-    if (peek() == ',') {
-      advance();
-      return Token{TokenType::Comma, ""};
-    }
-
-    if (peek() == '-' && peekNext() == '>') {
-      advance();
-      advance();
-      return Token{TokenType::Arrow, ""};
-    }
-
-    return Token{TokenType::Error, std::string(1, peek())};
-  }
-};
-
-struct Var {
-  std::string name;
-};
-
-struct IntLit {
-  int64_t value;
-};
-
-struct FloatLit {
-  double value;
-};
-
-struct Expr;
-
-struct Call {
-  std::string dialect, opname;
-  std::vector<Expr> args;
-};
-
-struct Expr {
-  std::variant<Var, IntLit, FloatLit, Call> data;
-
-  Expr() = default; // default constructor
-  Expr(Var v) : data(v) {}
-  Expr(IntLit n) : data(n) {}
-  Expr(FloatLit n) : data(n) {}
-  Expr(Call c) : data(std::move(c)) {} // move because Call has a vector
-};
-
-struct Rule {
-  Expr lhs;
-  Expr rhs;
-};
-
-struct Parser {
-  Lexer lexer;
-  Token current;
-  Location loc;
-  bool failed = false;
-
-  Parser(std::string input, Location location) : lexer{input}, loc{location} {
-    advance();
-  }
-
-  void advance() {
-    current = lexer.nextToken();
-    if (current.type == TokenType::Error) {
-      emitError(loc, "unrecognized character '")
-          << current.value << "' in optimization rule";
-      failed = true;
-    }
-  }
-
-  std::optional<Call> parseCall(std::string dialect_name);
-  std::optional<Expr> parseExpr();
-  std::optional<Rule> parseRule();
-};
-
-std::optional<Call> Parser::parseCall(std::string dialect_name) {
-  if (current.type != TokenType::Dot) {
-    emitError(loc, "expected '.' in optimization rule, got '")
-        << current.value << "'";
-    return std::nullopt;
-  }
-  advance();
-  if (current.type != TokenType::Ident) {
-    emitError(loc, "expected identifier in optimization rule, got '")
-        << current.value << "'";
-    return std::nullopt;
-  }
-  std::string op_name = current.value;
-  advance();
-  if (current.type != TokenType::LParen) {
-    emitError(loc, "expected '(' in optimization rule, got '")
-        << current.value << "'";
-    return std::nullopt;
-  }
-  std::vector<Expr> args;
-  advance();
-  while (current.type != TokenType::RParen) {
-    auto expr = parseExpr();
-    if (!expr)
-      return std::nullopt;
-    args.push_back(std::move(*expr));
-    if (current.type == TokenType::Comma)
-      advance();
-  }
-  advance(); // consume ')'
-  return Call{dialect_name, op_name, std::move(args)};
-}
-
-std::optional<Expr> Parser::parseExpr() {
-  if (current.type == TokenType::Ident) {
-    std::string s = current.value;
-    advance();
-    if (current.type == TokenType::Dot) {
-      auto call = parseCall(s);
-      if (!call)
-        return std::nullopt;
-      return Expr(std::move(*call));
-    }
-    return Var{s};
-  }
-  if (current.type == TokenType::Integer) {
-    int64_t n;
-    if (StringRef(current.value).getAsInteger(10, n)) {
-      emitError(loc, "integer literal out of range: ") << current.value;
-      return std::nullopt;
-    }
-    advance();
-    return Expr(IntLit{n});
-  }
-  if (current.type == TokenType::Float) {
-    double n;
-    if (StringRef(current.value).getAsDouble(n)) {
-      emitError(loc, "invalid floating point literal: ") << current.value;
-      return std::nullopt;
-    }
-    advance();
-    return Expr(FloatLit{n});
-  }
-  emitError(loc, "invalid optimization rule expression");
-  return std::nullopt;
-}
-
-std::optional<Rule> Parser::parseRule() {
-  auto lhs = parseExpr();
-  if (!lhs)
-    return std::nullopt;
-  if (current.type != TokenType::Arrow) {
-    emitError(loc, "expected '->' in optimization rule, got '")
-        << current.value << "'";
-    return std::nullopt;
-  }
-  advance();
-  auto rhs = parseExpr();
-  if (!rhs)
-    return std::nullopt;
-  return Rule{std::move(*lhs), std::move(*rhs)};
-}
 
 // Pick the narrowest standard integer width that can hold a literal from a
 // rule annotation. Literals are parsed as int64_t, so anything that does not
@@ -494,6 +250,17 @@ struct ParseOptimizationRulesPass
         if (!rule) {
           signalPassFailure();
           llvm::errs() << "Pass failure\n";
+          return;
+        }
+
+        // The condition is parsed but not yet turned into a guarded rewrite.
+        // Reject it rather than dropping it: emitting the pattern without the
+        // condition would apply a conditional rewrite unconditionally, which
+        // miscompiles silently.
+        if (rule->cond) {
+          optimization_op.emitError(
+              "conditional optimization rules are not supported yet");
+          signalPassFailure();
           return;
         }
 
