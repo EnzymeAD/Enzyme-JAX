@@ -29,6 +29,9 @@ void printLabel(llvm::raw_ostream &os, const AtomLabel &label) {
   case AtomSpace::Replicate:
     os << "replicate";
     break;
+  case AtomSpace::MidTile:
+    os << "mid";
+    break;
   }
   os << label.axis << "." << label.atom;
 }

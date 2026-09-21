@@ -14,8 +14,11 @@ namespace mlir::enzyme::distributed {
 // Index spaces a collective's factors can slice. Mesh axes are shared by the
 // input and output; tensor dimensions differ between the input tile and the
 // output tile, so each side gets its own space. Every replicate factor is an
-// independent one-off axis of its own.
-enum class AtomSpace { Mesh, InTile, OutTile, Replicate };
+// independent one-off axis of its own. MidTile is the tile between two chained
+// collectives (the first's output, the second's input); it only exists when a
+// chained pair is resolved jointly (see resolveCollectiveFactors), so that the
+// fused collective's own InTile/OutTile spaces stay meaningful.
+enum class AtomSpace { Mesh, InTile, OutTile, Replicate, MidTile };
 using AxisKey = std::pair<AtomSpace, size_t>;
 
 // One atom (indivisible digit) of an axis, identified by its position among
@@ -165,6 +168,21 @@ struct CollectiveResolution {
   CollectiveAtoms atoms;
 };
 
+// One collective's factors resolved onto keyed axes, before any refinement.
+struct CollectiveFactors {
+  SmallVector<ResolvedGroup> reductionGroups;
+  SmallVector<std::pair<ResolvedGroup, ResolvedGroup>> pairs;
+  ResolvedGroup inputMeshFactors;
+  ResolvedGroup outputMeshFactors;
+};
+
+// Which axis space a collective's tile factors belong to: `input` for
+// reduction groups and mapping lhs groups, `output` for mapping rhs groups.
+struct TileSpaces {
+  AtomSpace input;
+  AtomSpace output;
+};
+
 // Why resolveCollectiveAtoms failed. The kind tells the caller how to treat it.
 struct CollectiveResolutionError {
   enum class Kind {
@@ -214,6 +232,51 @@ FailureOr<CollectiveResolution> resolveCollectiveAtoms(
     DistributedCollectiveOp collective,
     ArrayRef<PhysicalCommAxisType> meshAxisTypes, ArrayRef<int64_t> inputTile,
     ArrayRef<int64_t> outputTile, CollectiveResolutionError &error);
+
+// The building block of resolveCollectiveAtoms, exposed so that several
+// collectives can be resolved into one shared atom space (the fusion of a
+// chained pair does this, giving the first's output tile and the second's
+// input tile the same axes).
+//
+// Resolves every factor of `collective` (reduction groups first, then each
+// mapping pair's lhs and rhs, then input_mesh and output_mesh, the order that
+// numbers replicate axes) and registers each as a cut source of `atoms`, which
+// must already have its mesh and tile axes added. `axisProvenance` and
+// `nextReplicateId` are shared across calls so replicate axes of different
+// collectives stay distinct. Does not refine `atoms`; the caller passes every
+// pair of every collective sharing the space to CollectiveAtoms::refine.
+// `error` is appended to, not reset.
+FailureOr<CollectiveFactors> resolveCollectiveFactors(
+    DistributedCollectiveOp collective,
+    ArrayRef<PhysicalCommAxisType> meshAxisTypes, TileSpaces spaces,
+    CollectiveAtoms &atoms,
+    std::map<AxisKey, TypedValue<axis::AxisTypeInterface>> &axisProvenance,
+    size_t &nextReplicateId, CollectiveResolutionError &error);
+
+// The axis-algebra operands of an atomic collective.
+struct AtomicOperands {
+  Value inputMesh;
+  Value outputMesh;
+  Value mapping;
+  // One product per entry of resolution.reductionGroups.
+  SmallVector<Value> reductionGroups;
+};
+
+// Builds fresh axis.factor/axis.product/axis.map values expressing
+// `resolution` at atom granularity: one factor per atom (extent-1 atoms
+// dropped), input_mesh/output_mesh covering every atom of every mesh axis,
+// one product per reduction group, and one single-factor pair per atom
+// position of every mapping pair, all in one axis.map. The values are built
+// at module scope and are never shared with existing IR, so a caller can
+// assign them to a collective without disturbing others that use the old
+// operands. Replicate atoms get a fresh, exactly-sized ReplicationAxis.
+//
+// `resolution` needs `atoms`, `axisProvenance`, `reductionGroups` and `pairs`
+// (each group/pair's atoms must have equal extents position by position);
+// `builder`'s location only matters for op locations.
+AtomicOperands buildAtomicOperands(const CollectiveResolution &resolution,
+                                   ArrayRef<PhysicalCommAxisType> meshAxisTypes,
+                                   OpBuilder &builder, Location loc);
 
 // Whether every factor `resolution` resolved already IS one atom -- the
 // property distributed-atomize-collectives's rewrite establishes, and

@@ -205,6 +205,7 @@ buildNormalizedCollective(const CollectiveResolution &resolution,
         role = {AtomRole::Replicate};
         break;
       case AtomSpace::InTile:
+      case AtomSpace::MidTile:
         llvm_unreachable("a pair's rhs is never an input-tile atom");
       }
       bool inserted = inRoles.try_emplace(keyOf(lhs), role).second;
@@ -229,6 +230,7 @@ buildNormalizedCollective(const CollectiveResolution &resolution,
         role = {AtomRole::Replicate};
         break;
       case AtomSpace::OutTile:
+      case AtomSpace::MidTile:
         llvm_unreachable("a pair's lhs is never an output-tile atom");
       }
       bool inserted = outRoles.try_emplace(keyOf(rhs), role).second;

@@ -53,6 +53,11 @@ void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
   // thing left changing collective operands. LowerKernelsToExecutable wants
   // the fully merged, cleaned-up state that follows.
   pm.addPass(createMakeReplicationsExplicitPass());
+  // Fusion needs explicit replication (every mesh atom on both sides of both
+  // collectives) but resolves its own atom space, so it does not need atomic
+  // input; atomize then runs last over the fused and unfused collectives
+  // alike, and is a no-op on the atomic collectives fusion builds.
+  pm.addPass(createFuseCollectivesPass());
   pm.addPass(createAtomizeCollectivesPass());
   // Runs last so that whatever it dispatches (or, for now, dumps) per kernel
   // reflects the fully merged and cleaned-up IR above, not an intermediate

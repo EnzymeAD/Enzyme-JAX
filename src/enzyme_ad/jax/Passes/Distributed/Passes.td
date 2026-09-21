@@ -479,6 +479,47 @@ def AtomizeCollectivesPass
   }];
 }
 
+def FuseCollectivesPass
+    : Pass<"distributed-fuse-collectives", "::mlir::ModuleOp"> {
+  let summary = "Fuses a distributed.Collective with the collective that "
+                "consumes its result, e.g. reduce + slice into a "
+                "reduce-scatter.";
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "enzyme::distributed::DistributedDialect"
+  ];
+  let description = [{
+    Fuses a pair of collectives (C1, C2) where C2's input_object is C1's
+    result (through C1's single Await) and nothing else uses that result,
+    repeating until no pair fuses so chains collapse. The fused collective
+    reads C1's input, produces C2's output type, and is atomic (the pass
+    asserts this, see isCollectiveAtomic in CollectiveAtoms.h). This makes
+    role combinations reachable that two separate collectives never show,
+    such as reduce-scatter (an all-reduce followed by a slice).
+
+    The pair is resolved into one shared atom space in which C1's output tile
+    and C2's input tile are the same axes, so the two are cut consistently
+    even when they were written with different factorizations. Composition is
+    then per atom:
+
+      * a pair (L1 -> R1) of C1 and (L2 -> R2) of C2 with R1 the same digit as
+        L2 compose to (L1 -> R2); a replicate digit composes like any other,
+      * C1's reduced atoms stay reduced, and a C2 reduced atom is followed
+        back through the C1 pair that produced it, whose source becomes
+        reduced (C2 must not reduce an atom C1 produced from a replicate,
+        which the pass asserts),
+      * C1 and C2 reductions are merged into one group with one body.
+
+    A pair is left alone, with a remark on C2 saying why, when C1's result has
+    another user, the reduction bodies are not the same recognized kind, a C2
+    reduction traces back to a device-local tile atom of C1's input (the model
+    only reduces over mesh atoms), the two collectives touch different mesh
+    axes, or the joint atom space cannot be built.
+
+    Expects distributed-make-replications-explicit to have run, so that every
+    mesh atom appears on both sides of both collectives. Idempotent.
+  }];
+}
+
 def PrintCollectivePlanPass
     : Pass<"distributed-print-collective-plan", "::mlir::ModuleOp"> {
   let summary = "Debug pass: reports each atomic collective's normal form "

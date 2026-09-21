@@ -13,8 +13,6 @@ namespace mlir::enzyme::distributed {
 
 namespace {
 
-using TV_AxisFactor = TypedValue<axis::AxisFactorType>;
-
 // Prints one atom as `<space><axis>.<atom>` (e.g. `mesh0.1`, `in2.0`): a
 // handle for a lit test (or a future NormalizedCollective builder) to key
 // off of that only depends on the resolution's own structure, never on an
@@ -32,6 +30,9 @@ void printAtomLabel(llvm::raw_ostream &os, const AtomLabel &label) {
     break;
   case AtomSpace::Replicate:
     os << "replicate";
+    break;
+  case AtomSpace::MidTile:
+    os << "mid";
     break;
   }
   os << label.axis << "." << label.atom;
@@ -176,49 +177,6 @@ bool haveEquivalentAtomStructure(ArrayRef<PhysicalCommAxisType> meshAxisTypes,
   return flattenedPairAtoms(before) == flattenedPairAtoms(after);
 }
 
-// Builds a fresh axis.factor over one atom, at module scope: the digit the
-// atom names is, by construction, exactly the extent/stride absolute cut
-// `atoms` computed for it, over the axis its originating factor came from.
-// Skipped by every caller for an extent-1 atom, which carries no data and
-// would otherwise need a provenance value even for tile axes no factor in
-// the collective ever actually references.
-//
-// A replicate atom is handled differently from a mesh/tile one: a replicate
-// axis has no identity worth preserving across factors in the first place
-// (resolveCollectiveAtoms already treats every replicate factor as its own
-// one-off axis slot, sized to that factor's own extent -- see its "Replicate
-// axes are numbered in resolution order" comment), so a strided sub-factor
-// of the original, possibly coarser replicate axis would misrepresent this
-// atom's size the moment anything re-resolves it. A fresh, exactly-sized
-// ReplicationAxis stands in for it instead, the same "just need something
-// with the same extent" idiom distributed-make-replications-explicit uses.
-TV_AxisFactor buildAtomFactor(const CollectiveResolution &resolution,
-                              const AtomLabel &label, OpBuilder &builder,
-                              Location loc) {
-  auto extent = static_cast<int32_t>(resolution.atoms.extentOf(label));
-  if (label.space == AtomSpace::Replicate) {
-    auto replicationAxis = builder.create<ReplicationAxisOp>(loc, extent);
-    return axis::viewAxisAsFactor(replicationAxis.getAxis(), builder, loc);
-  }
-  TypedValue<axis::AxisTypeInterface> provenance =
-      resolution.axisProvenance.at({label.space, label.axis});
-  return builder.create<axis::AxisFactorOp>(
-      loc, provenance, extent,
-      static_cast<int32_t>(resolution.atoms.strideOf(label)));
-}
-
-// Builds one fresh factor per atom in `labels` whose extent is greater than
-// one, in order.
-SmallVector<TV_AxisFactor>
-buildAtomFactors(const CollectiveResolution &resolution,
-                 ArrayRef<AtomLabel> labels, OpBuilder &builder, Location loc) {
-  SmallVector<TV_AxisFactor> factors;
-  for (const AtomLabel &label : labels)
-    if (resolution.atoms.extentOf(label) != 1)
-      factors.push_back(buildAtomFactor(resolution, label, builder, loc));
-  return factors;
-}
-
 // Rewrites `collective`'s own input_mesh/output_mesh/reduction_groups/
 // mapping operands into atomic form: one factor per atom, with every mesh
 // atom appearing once on each mesh operand and every mapping pair relating
@@ -241,79 +199,12 @@ void atomizeCollective(DistributedCollectiveOp collective,
                        const CollectiveResolution &resolution,
                        ArrayRef<PhysicalCommAxisType> meshAxisTypes) {
   OpBuilder builder(collective);
-  Location loc = collective.getLoc();
-  const CollectiveAtoms &atoms = resolution.atoms;
-
-  Value newInputMesh, newOutputMesh, newMap;
-  SmallVector<Value> newReductionGroups;
-  {
-    // Every op built in this block is pure axis-algebra metadata and
-    // belongs at module scope; only the final operand reassignment below
-    // needs to happen at the collective's own position.
-    axis::ModuleScopeGuard moduleScope(builder);
-
-    // input_mesh/output_mesh: every mesh atom, axis 0's atoms then axis 1's,
-    // and so on, assembled into one product. Built twice (once per side)
-    // rather than once and reused, since the two operands are logically
-    // independent even when they end up structurally identical.
-    auto buildMeshOperand = [&] {
-      SmallVector<TV_AxisFactor> factors;
-      for (size_t a = 0; a < meshAxisTypes.size(); ++a)
-        factors.append(buildAtomFactors(
-            resolution, atoms.labelsOfAxis({AtomSpace::Mesh, a}), builder,
-            loc));
-      return Value(axis::viewFactorsAsProduct(factors, builder, loc));
-    };
-    newInputMesh = buildMeshOperand();
-    newOutputMesh = buildMeshOperand();
-
-    // Each reduction group's original factors, atomized in place and
-    // reassembled into one product per group; the reduction body region
-    // (kept as-is) and the operand's position in reduction_groups are
-    // untouched.
-    for (const ResolvedGroup &group : resolution.reductionGroups) {
-      SmallVector<TV_AxisFactor> factors;
-      for (const ResolvedFactor &factor : group)
-        factors.append(
-            buildAtomFactors(resolution, atoms.labelsOf(factor), builder, loc));
-      newReductionGroups.push_back(
-          axis::viewFactorsAsProduct(factors, builder, loc));
-    }
-
-    // Mapping: one atomic (single-factor) pair per atom position of every
-    // original pair, all collected into ONE fresh axis.map -- never one
-    // axis.map per original pair. A pair's lhs/rhs atom runs are positionally
-    // aligned one-to-one by computeCommonAtomsAndMappingSplits (the same
-    // property describeResolution's own pairK: lhs -> rhs line relies on), so
-    // the two extents at a given position always agree and either both or
-    // neither side is skipped there.
-    SmallVector<Value> newMappingLhs, newMappingRhs;
-    for (const auto &[lhsGroup, rhsGroup] : resolution.pairs) {
-      SmallVector<AtomLabel> lhsLabels = atoms.labelsOf(lhsGroup);
-      SmallVector<AtomLabel> rhsLabels = atoms.labelsOf(rhsGroup);
-      for (auto [lhsLabel, rhsLabel] : llvm::zip_equal(lhsLabels, rhsLabels)) {
-        if (atoms.extentOf(lhsLabel) == 1)
-          continue;
-        TV_AxisFactor lhsFactor =
-            buildAtomFactor(resolution, lhsLabel, builder, loc);
-        TV_AxisFactor rhsFactor =
-            buildAtomFactor(resolution, rhsLabel, builder, loc);
-        newMappingLhs.push_back(
-            axis::viewFactorsAsProduct(lhsFactor, builder, loc));
-        newMappingRhs.push_back(
-            axis::viewFactorsAsProduct(rhsFactor, builder, loc));
-      }
-    }
-    newMap = builder
-                 .create<axis::AxisMapOp>(loc, ValueRange(newMappingLhs),
-                                          ValueRange(newMappingRhs))
-                 .getMap();
-  }
-
-  collective.getInputMeshMutable().assign(newInputMesh);
-  collective.getOutputMeshMutable().assign(newOutputMesh);
-  collective.getReductionGroupsMutable().assign(newReductionGroups);
-  collective.getMappingMutable().assign(newMap);
+  AtomicOperands operands = buildAtomicOperands(resolution, meshAxisTypes,
+                                                builder, collective.getLoc());
+  collective.getInputMeshMutable().assign(operands.inputMesh);
+  collective.getOutputMeshMutable().assign(operands.outputMesh);
+  collective.getReductionGroupsMutable().assign(operands.reductionGroups);
+  collective.getMappingMutable().assign(operands.mapping);
 }
 
 struct AtomizeCollectivesPass
