@@ -19821,12 +19821,11 @@ struct DUSDUSSubsuming
           originalProvenance.isEqual(it2->second.provenanceRelation)) {
         movedSlices.insert({slice.getOperation(), clonedSlice});
       } else {
-        rewriter.eraseOp(clonedSlice);
-
         // Don't forget to erase the provenance info for the op result we just
         // erased since that value address may be reused for something entirely
         // different!
         provenanceInfo.erase(clonedSlice->getResult(0));
+        rewriter.eraseOp(clonedSlice);
       }
     }
 
