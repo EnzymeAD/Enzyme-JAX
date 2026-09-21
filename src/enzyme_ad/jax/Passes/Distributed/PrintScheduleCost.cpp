@@ -69,6 +69,12 @@ struct PrintScheduleCostPass
                         << shortest(result.makespan) << " over "
                         << graph.nodes.size() << " nodes, critical path=["
                         << criticalPath << "]";
+    module.emitRemark() << "schedule cost summary: communicating="
+                        << shortest(result.totalCommunicationTime)
+                        << " computing=" << shortest(result.totalComputeTime)
+                        << " utilization="
+                        << shortest(result.averageComputeUtilization)
+                        << " idle=" << shortest(result.totalComputeIdleTime);
   }
 };
 

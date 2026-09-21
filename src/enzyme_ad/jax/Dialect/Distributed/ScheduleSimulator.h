@@ -116,6 +116,11 @@ struct SimEvent {
   // event with isolatedDuration == 0 (it takes the noop fast path before
   // admission is ever considered).
   bool exclusiveCompute = false;
+  // True for Communication-kind events, which select the intervals that
+  // feed TimelineResult::totalCommunicationTime's interval-union computation
+  // (see simulate()): unlike Compute events, these can genuinely overlap
+  // (independent axes, or fair-shared time on one axis).
+  bool isCommunication = false;
   std::vector<SimPredecessor> predecessors;
   // This event's position in the order the graph was built (ScheduleGraph's
   // node index, or a nested graph's own node index): used only as a
@@ -148,6 +153,28 @@ struct TimelineResult {
   // trace of the live simulation, so it can differ from the path that
   // actually determined `makespan` when contention adds delay.
   std::vector<size_t> criticalPath;
+
+  // Summary metrics derived from the start/finish arrays above. Each is
+  // scoped to this TimelineResult alone: a FunctionCall event contributes
+  // only its own latency floor here (see buildSimGraph), not the
+  // compute/communication time spent inside its callee's nested simulation.
+  // A caller wanting a whole-program total must add in each FunctionCall
+  // event's callee TimelineResult explicitly.
+
+  // Wall-clock time during which at least one Communication event was
+  // active, i.e. the union of every Communication event's [start, finish)
+  // interval (not the sum of their durations, which would double-count
+  // overlap between independent axes or fair-shared time on one axis).
+  double totalCommunicationTime = 0;
+  // Wall-clock time the compute engine was occupied: the sum of every
+  // Compute event's own duration. exclusiveCompute guarantees at most one
+  // Compute event is ever active, so no interval union is needed here.
+  double totalComputeTime = 0;
+  // Fraction of makespan spent computing: totalComputeTime / makespan, or 0
+  // when makespan is 0.
+  double averageComputeUtilization = 0;
+  // makespan minus totalComputeTime.
+  double totalComputeIdleTime = 0;
 };
 
 // Runs the simulation. `graph.events[i].predecessors` must only reference

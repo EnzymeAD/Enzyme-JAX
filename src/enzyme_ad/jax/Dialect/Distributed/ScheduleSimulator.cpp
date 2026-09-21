@@ -56,12 +56,14 @@ CriticalPathInfo computeCriticalPath(
   info.priority.assign(n, 0.0);
   info.bestSuccessor.assign(n, std::numeric_limits<size_t>::max());
   for (size_t i = n; i-- > 0;) {
-    double best = -1.0;
+    double best = 0.0;
     size_t bestSucc = std::numeric_limits<size_t>::max();
+    bool haveSucc = false;
     for (const SimPredecessor &edge : successors[i]) {
-      if (info.priority[edge.node] > best) {
+      if (!haveSucc || info.priority[edge.node] > best) {
         best = info.priority[edge.node];
         bestSucc = edge.node;
+        haveSucc = true;
       }
     }
     info.priority[i] = graph.events[i].isolatedDuration + best;
@@ -217,7 +219,10 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
     result.finish[i] = finishTime;
     state[i] = State::Done;
     ++doneCount;
-    if (graph.events[i].exclusiveCompute)
+    // Only a Compute event that actually went through admission ever set
+    // computeEngineBusy; a zero-duration one finishes via the noop fast path
+    // without acquiring the gate, so it must not release it here.
+    if (graph.events[i].exclusiveCompute && !isNoop(i))
       computeEngineBusy = false;
     for (const SimPredecessor &edge : successors[i]) {
       blocked[edge.node] -= edge.multiplicity;
@@ -354,6 +359,43 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
 
   result.makespan = time;
   result.criticalPath = reconstructCriticalPath(criticalPath);
+
+  // Communication time is the union of every Communication event's
+  // [start, finish) interval, computed with a merge-sorted-intervals pass:
+  // independent axes or fair-shared time on one axis can make those
+  // intervals genuinely overlap.
+  //
+  // Compute time is a plain sum of Compute events' durations: exclusiveCompute
+  // already guarantees at most one is ever active, so no interval union is
+  // needed.
+  std::vector<std::pair<double, double>> commIntervals;
+  for (size_t i = 0; i < n; ++i) {
+    const SimEvent &event = graph.events[i];
+    if (event.isCommunication)
+      commIntervals.emplace_back(result.start[i], result.finish[i]);
+    if (event.exclusiveCompute)
+      result.totalComputeTime += result.finish[i] - result.start[i];
+  }
+  llvm::sort(commIntervals);
+  double mergedStart = 0, mergedEnd = -1;
+  for (auto &[start, finish] : commIntervals) {
+    if (start > mergedEnd) {
+      if (mergedEnd >= mergedStart)
+        result.totalCommunicationTime += mergedEnd - mergedStart;
+      mergedStart = start;
+      mergedEnd = finish;
+    } else {
+      mergedEnd = std::max(mergedEnd, finish);
+    }
+  }
+  if (mergedEnd >= mergedStart)
+    result.totalCommunicationTime += mergedEnd - mergedStart;
+
+  result.averageComputeUtilization =
+      result.makespan > kEpsilon ? result.totalComputeTime / result.makespan
+                                 : 0.0;
+  result.totalComputeIdleTime = result.makespan - result.totalComputeTime;
+
   return result;
 }
 
@@ -398,6 +440,7 @@ SimGraph buildSimGraph(const ScheduleGraph &graph, const MeshCostParams &mesh,
                                     node.step.volume[axis]);
       event.latency = node.step.latency;
       event.isolatedDuration = node.isolatedDuration;
+      event.isCommunication = true;
       break;
     case ScheduleEventKind::FunctionCall: {
       // Recursively simulate the callee's own scope to get a real makespan,

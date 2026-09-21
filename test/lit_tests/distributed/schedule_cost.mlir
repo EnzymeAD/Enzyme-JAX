@@ -26,6 +26,7 @@
 // CHECK: node 1: compute start=2.4 finish=4.8
 // CHECK: node 2: compute start=4.8 finish=7.2
 // CHECK: schedule cost: makespan=7.2 over 3 nodes, critical path=[0, 1, 2]
+// CHECK: schedule cost summary: communicating=0 computing=7.2 utilization=1 idle=0
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
 
@@ -52,6 +53,7 @@ module {
 // CHECK: node 0: communication start=0 finish=16
 // CHECK: node 1: communication start=0 finish=16
 // CHECK: schedule cost: makespan=16 over 2 nodes, critical path=[0]
+// CHECK: schedule cost summary: communicating=16 computing=0 utilization=0 idle=16
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e0, 1.0e0], axis_latencies = [0.0e0, 0.0e0], launch_latency = 0.0e0}
 
@@ -129,6 +131,7 @@ module {
 // CHECK: node 0: communication start=0 finish=32
 // CHECK: node 1: communication start=0 finish=32
 // CHECK: schedule cost: makespan=32 over 2 nodes, critical path=[0]
+// CHECK: schedule cost summary: communicating=32 computing=0 utilization=0 idle=32
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e0], axis_latencies = [0.0e0], launch_latency = 0.0e0}
 
@@ -203,6 +206,7 @@ module {
 // CHECK: node 0: compute start=0 finish=2.4
 // CHECK: node 1: communication start=0 finish=16
 // CHECK: schedule cost: makespan=16 over 2 nodes, critical path=[1]
+// CHECK: schedule cost summary: communicating=16 computing=2.4 utilization=0.15 idle=13.6
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e0], axis_latencies = [0.0e0], launch_latency = 0.0e0}
 
@@ -259,6 +263,7 @@ module {
 // CHECK: node 0: compute start=0 finish=2.4
 // CHECK: node 1: compute start=2.4 finish=4.8
 // CHECK: schedule cost: makespan=4.8 over 2 nodes, critical path=[0]
+// CHECK: schedule cost summary: communicating=0 computing=4.8 utilization=1 idle=0
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
 
@@ -292,6 +297,7 @@ module {
 // CHECK: node 0: compute start=0 finish=16
 // CHECK: node 1: compute start=16 finish=25.6
 // CHECK: schedule cost: makespan=25.6 over 2 nodes, critical path=[0]
+// CHECK: schedule cost summary: communicating=0 computing=25.6 utilization=1 idle=0
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e0], axis_latencies = [0.0e0], launch_latency = 0.0e0, device_flops = 1.0e0, device_mem_bandwidth = 5.0e0}
 
@@ -327,6 +333,7 @@ module {
 // CHECK: node 1: communication start=0 finish=320
 // CHECK: node 2: communication start=0 finish=0.16
 // CHECK: schedule cost: makespan=320 over 3 nodes, critical path=[0]
+// CHECK: schedule cost summary: communicating=320 computing=0 utilization=0 idle=320
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e-1, 1.0e2], axis_latencies = [0.0e0, 0.0e0], launch_latency = 0.0e0}
 
@@ -433,6 +440,7 @@ module {
 // never appears in any resource's contender list.
 // CHECK: node 0: communication start=0 finish=0.8
 // CHECK: schedule cost: makespan=0.8 over 1 nodes, critical path=[0]
+// CHECK: schedule cost summary: communicating=0.8 computing=0 utilization=0 idle=0.8
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e18], axis_latencies = [5.0e-1], launch_latency = 3.0e-1}
 
@@ -483,6 +491,7 @@ module {
 // CHECK: node 0: communication start=0 finish=16
 // CHECK: node 1: compute start=16 finish=18.4
 // CHECK: schedule cost: makespan=18.4 over 2 nodes, critical path=[0, 1]
+// CHECK: schedule cost summary: communicating=16 computing=2.4 utilization=0.130435 idle=16
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e0], axis_latencies = [0.0e0], launch_latency = 0.0e0}
 
@@ -538,6 +547,7 @@ module {
 // CHECK: node 0: communication start=0 finish=16
 // CHECK: node 1: compute start=0 finish=2.4
 // CHECK: schedule cost: makespan=16 over 2 nodes, critical path=[0]
+// CHECK: schedule cost summary: communicating=16 computing=2.4 utilization=0.15 idle=13.6
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e0], axis_latencies = [0.0e0], launch_latency = 0.0e0}
 
