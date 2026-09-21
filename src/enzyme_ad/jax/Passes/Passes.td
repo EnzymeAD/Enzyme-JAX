@@ -1385,6 +1385,15 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            /*description=*/
            "Raise a constant-bound loop as a while instead of unrolling when "
            "its nested unrolled op count exceeds this. -1 for no budget">,
+       Option<
+           /*C++ variable name=*/"specialize_loop_bounds",
+           /*CLI argument=*/"specialize_loop_bounds",
+           /*type=*/"bool",
+           /*default=*/"true",
+           /*description=*/
+           "Mark the scalar arguments a raised while loop's exit test reads "
+           "as scalars the runtime specializes the executable over (trailing "
+           "xla_wrapper inputs, num_specialized)">,
   ];
 }
 
