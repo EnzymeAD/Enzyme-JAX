@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --affine-cfg --split-input-file %s | FileCheck %s
+// RUN: enzymexlamlir-opt --affine-cfg="enable_split_on_affine_if_constants=true" --split-input-file %s | FileCheck %s
 
 // An affine.if over a dimension yielding constants is a select no affine
 // expression writes: a loop bounded by its result splits on the conditional,

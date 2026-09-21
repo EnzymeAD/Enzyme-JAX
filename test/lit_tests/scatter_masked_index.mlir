@@ -36,12 +36,15 @@ func.func @dense_masked(%input: tensor<100xf32>, %update: tensor<10x10xf32>, %pr
   return %0 : tensor<100xf32>
 }
 
-// CHECK:    func.func @main(%arg0: tensor<50xf64>, %arg1: tensor<i64>, %arg2: tensor<i1>, %arg3: tensor<f64>) -> tensor<50xf64> {
-// CHECK-NEXT:    %0 = stablehlo.dynamic_slice %arg0, %arg1, sizes = [1] : (tensor<50xf64>, tensor<i64>) -> tensor<1xf64>
-// CHECK-NEXT:    %1 = stablehlo.reshape %0 : (tensor<1xf64>) -> tensor<f64>
-// CHECK-NEXT:    %2 = stablehlo.select %arg2, %arg3, %1 : tensor<i1>, tensor<f64>
-// CHECK-NEXT:    %3 = stablehlo.reshape %2 : (tensor<f64>) -> tensor<1xf64>
-// CHECK-NEXT:    %4 = stablehlo.dynamic_update_slice %arg0, %3, %arg1 : (tensor<50xf64>, tensor<1xf64>, tensor<i64>) -> tensor<50xf64>
+// CHECK:      func.func @main(%arg0: tensor<50xf64>, %arg1: tensor<i64>, %arg2: tensor<i1>, %arg3: tensor<f64>) -> tensor<50xf64> {
+// CHECK-NEXT:    %0 = stablehlo.reshape %arg1 : (tensor<i64>) -> tensor<1xi64>
+// CHECK-NEXT:    %1 = stablehlo.dynamic_slice %arg0, %arg1, sizes = [1] : (tensor<50xf64>, tensor<i64>) -> tensor<1xf64>
+// CHECK-NEXT:    %2 = stablehlo.reshape %1 : (tensor<1xf64>) -> tensor<f64>
+// CHECK-NEXT:    %3 = stablehlo.select %arg2, %arg3, %2 : tensor<i1>, tensor<f64>
+// CHECK-NEXT:    %4 = "stablehlo.scatter"(%arg0, %0, %3) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>, unique_indices = true}> ({
+// CHECK-NEXT:    ^bb0(%arg4: tensor<f64>, %arg5: tensor<f64>):
+// CHECK-NEXT:      stablehlo.return %arg5 : tensor<f64>
+// CHECK-NEXT:    }) : (tensor<50xf64>, tensor<1xi64>, tensor<f64>) -> tensor<50xf64>
 // CHECK-NEXT:    return %4 : tensor<50xf64>
 // CHECK-NEXT:  }
 // CHECK-NEXT:  func.func @dense_masked(%arg0: tensor<100xf32>, %arg1: tensor<10x10xf32>, %arg2: tensor<10x10x1xi1>) -> tensor<100xf32> {

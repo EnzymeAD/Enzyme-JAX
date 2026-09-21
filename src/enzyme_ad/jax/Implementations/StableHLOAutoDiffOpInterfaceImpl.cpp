@@ -450,6 +450,102 @@ public:
   }
 };
 
+class AutoDiffCaseFwd
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffCaseFwd,
+                                                stablehlo::CaseOp> {
+public:
+  LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+    llvm::SmallDenseSet<unsigned> operandPositionsToShadow;
+    llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
+
+    for (auto res : orig->getOpResults()) {
+      if (!gutils->isConstantValue(res))
+        resultPositionsToShadow.insert(res.getResultNumber());
+    }
+    return mlir::enzyme::detail::controlFlowForwardHandler(
+        orig, builder, gutils, operandPositionsToShadow,
+        resultPositionsToShadow);
+  }
+};
+
+class AutoDiffCaseCF
+    : public ControlFlowAutoDiffOpInterface::ExternalModel<AutoDiffCaseCF,
+                                                           stablehlo::CaseOp> {
+public:
+  Operation *createWithShadows(Operation *op, OpBuilder &builder,
+                               MGradientUtils *gutils, Operation *original,
+                               ValueRange remappedOperands,
+                               TypeRange rettys) const {
+    return stablehlo::CaseOp::create(
+        builder, original->getLoc(), rettys, remappedOperands,
+        original->getAttrs(), cast<stablehlo::CaseOp>(op).getBranches().size());
+  }
+};
+
+class AutoDiffCaseRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffCaseRev,
+                                                       stablehlo::CaseOp> {
+public:
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    auto op = cast<stablehlo::CaseOp>(orig);
+    OpBuilder cacheBuilder(gutils->getNewFromOriginal(orig));
+    return {gutils->initAndPushCache(gutils->getNewFromOriginal(op.getIndex()),
+                                     cacheBuilder)};
+  }
+
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
+    return success();
+  }
+
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto caseOp = cast<stablehlo::CaseOp>(orig);
+    auto revOp = stablehlo::CaseOp::create(
+        builder, orig->getLoc(), ArrayRef<mlir::Type>{},
+        gutils->popCache(caches[0], builder), orig->getAttrs(),
+        caseOp.getBranches().size());
+    bool valid = true;
+    for (auto &&[origReg, newReg] :
+         llvm::zip_equal(orig->getRegions(), revOp->getRegions())) {
+      Block *oBB = &origReg.front();
+
+      newReg.push_back(new Block());
+      Block *reverseBB = &newReg.front();
+
+      OpBuilder revBuilder(reverseBB, reverseBB->end());
+      auto term = oBB->getTerminator();
+
+      for (auto &&[ret, op] :
+           llvm::zip_equal(orig->getResults(), term->getOperands())) {
+        if (gutils->isConstantValue(ret))
+          continue;
+        if (gutils->isConstantValue(op))
+          continue;
+
+        gutils->addToDiffe(op, gutils->diffe(ret, revBuilder), revBuilder);
+      }
+
+      auto first = oBB->rbegin(); // terminator
+      first++;
+
+      auto last = oBB->rend();
+
+      for (auto it = first; it != last; ++it) {
+        Operation *op = &*it;
+        valid &= gutils->Logic.visitChild(op, revBuilder, gutils).succeeded();
+      }
+
+      stablehlo::ReturnOp::create(revBuilder, orig->getLoc(),
+                                  ArrayRef<Value>{});
+    }
+    return success(valid);
+  }
+};
+
 class AutoDiffWhileFwd
     : public AutoDiffOpInterface::ExternalModel<AutoDiffWhileFwd, WhileOp> {
 public:
@@ -1910,10 +2006,11 @@ public:
     if (isa<MaxOp>(innerOp) || isa<MinOp>(innerOp)) {
       // TODO: technically we should invert the order here to pick the last
       // value (or divide by count) if multiple are the same as the result
-      auto ores = gutils->getNewFromOriginal(op->getResult(0));
+      Value oprev = gutils->popCache(caches[0], builder);
+      Value oinit = gutils->popCache(caches[1], builder);
+      Value ores = gutils->popCache(caches[2], builder);
 
       if (!gutils->isConstantValue(op.getInputs()[0])) {
-        auto oprev = gutils->getNewFromOriginal(op.getInputs()[0]);
         auto attr = builder.getDenseI64ArrayAttr(toBroadcast);
         auto bc = BroadcastInDimOp::create(builder, op.getLoc(),
                                            oprev.getType(), ores, attr);
@@ -1929,12 +2026,10 @@ public:
         gutils->addToDiffe(op.getInputs()[0], res, builder);
       }
       if (!gutils->isConstantValue(op.getInitValues()[0])) {
-        auto oprev = gutils->getNewFromOriginal(op.getInitValues()[0]);
-
         auto zeroI = cast<AutoDiffTypeInterface>(inDiffe.getType())
                          .createNullValue(builder, op.getLoc());
 
-        auto cmp = CompareOp::create(builder, op.getLoc(), ores, oprev,
+        auto cmp = CompareOp::create(builder, op.getLoc(), ores, oinit,
                                      ComparisonDirection::EQ);
 
         auto res = stablehlo::SelectOp::create(builder, op.getLoc(), cmp,
@@ -2011,7 +2106,7 @@ public:
     }
 
     Operation &innerOp = op.getBody().front().front();
-    if (isa<MulOp>(innerOp)) {
+    if (isa<MulOp, MaxOp, MinOp>(innerOp)) {
       SmallVector<Value> caches;
 
       auto result = op.getResult(0);
@@ -3134,8 +3229,8 @@ public:
 
       auto opOperand0 = gutils->popCache(caches[0], builder);
       auto opOperand1 = gutils->popCache(caches[1], builder);
-      auto opResult1 = gutils->getNewFromOriginal(op->getResult(1));
-      auto opResult2 = gutils->getNewFromOriginal(op->getResult(2));
+      auto opResult1 = gutils->popCache(caches[2], builder);
+      auto opResult2 = gutils->popCache(caches[3], builder);
 
       auto gradOp = BatchNormGradOp::create(
           builder, op->getLoc(), opOperand0, opOperand1, opResult1, opResult2,
@@ -3174,6 +3269,12 @@ public:
       auto initCacheOperand1 = gutils->initAndPushCache(
           gutils->getNewFromOriginal(op->getOperand(1)), cacheBuilder);
       caches.push_back(initCacheOperand1);
+
+      cacheBuilder.setInsertionPointAfter(newOp);
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(op->getResult(1)), cacheBuilder));
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(op->getResult(2)), cacheBuilder));
 
       return caches;
     }
@@ -3856,6 +3957,96 @@ struct IfOpEnzymeOpsRemover
         ifOp->getResults(),
         newIf->getResults().slice(0, ifOp->getNumResults()));
     rewriter.eraseOp(ifOp);
+
+    return success();
+  }
+};
+
+struct CaseOpEnzymeOpsRemover
+    : public EnzymeOpsRemoverOpInterface::ExternalModel<CaseOpEnzymeOpsRemover,
+                                                        stablehlo::CaseOp> {
+  LogicalResult removeEnzymeOps(Operation *op,
+                                PatternRewriter &rewriter) const {
+
+    auto caseOp = cast<stablehlo::CaseOp>(op);
+
+    llvm::SetVector<Value> gradients;
+    llvm::MapVector<Value, CacheInfo> pushedCaches;
+
+    SmallVector<Block *> blocks;
+    SmallVector<IRMapping> mappings;
+    for (auto &reg : caseOp->getRegions()) {
+      blocks.push_back(&reg.front());
+      mappings.emplace_back();
+      removalBlockExplore(blocks.back(), mappings.back(), rewriter, gradients,
+                          pushedCaches);
+    }
+
+    if (gradients.empty() && pushedCaches.empty())
+      return success();
+
+    SmallVector<Operation *> terminators;
+    for (Block *bb : blocks) {
+      terminators.push_back(bb->getTerminator());
+    }
+
+    for (auto grad : gradients) {
+      for (auto &&[mapping, term] : llvm::zip(mappings, terminators)) {
+        auto mappingValue = mapping.lookupOrNull(grad);
+        if (!mappingValue) {
+          mappingValue = enzyme::GetOp::create(
+              rewriter, grad.getLoc(),
+              cast<enzyme::GradientType>(grad.getType()).getBasetype(), grad);
+        }
+        term->insertOperands(term->getNumOperands(), ValueRange(mappingValue));
+      }
+    }
+
+    for (auto &[pushedValue, info] : pushedCaches) {
+      Value dummy =
+          makeZero(rewriter, pushedValue.getLoc(), pushedValue.getType());
+      for (auto &&[bb, term] : llvm::zip(blocks, terminators)) {
+        Value branchValue =
+            pushedValue.getParentBlock() == bb ? pushedValue : dummy;
+        term->insertOperands(term->getNumOperands(), ValueRange(branchValue));
+      }
+    }
+
+    auto newCase = stablehlo::CaseOp::create(rewriter, caseOp->getLoc(),
+                                             terminators[0]->getOperandTypes(),
+                                             caseOp.getIndex(), blocks.size());
+    for (auto &&[oldReg, newReg] :
+         llvm::zip(caseOp->getRegions(), newCase->getRegions()))
+      newReg.takeBody(oldReg);
+
+    size_t idx = caseOp->getNumResults();
+    for (auto grad : gradients) {
+      enzyme::SetOp::create(rewriter, grad.getLoc(), grad,
+                            newCase->getResult(idx));
+      idx++;
+    }
+
+    for (auto &[pushedValue, info] : pushedCaches) {
+      enzyme::PushOp::create(rewriter, info.pushOp->getLoc(),
+                             info.initOp.getResult(), newCase->getResult(idx));
+      rewriter.eraseOp(info.pushOp);
+
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(info.popOp->getParentOp());
+
+      auto newPop = enzyme::PopOp::create(rewriter, info.popOp->getLoc(),
+                                          info.popOp.getResult().getType(),
+                                          info.popOp.getCache());
+      rewriter.replaceAllUsesWith(info.popOp.getResult(), newPop);
+      rewriter.eraseOp(info.popOp);
+
+      idx++;
+    }
+
+    rewriter.replaceAllUsesWith(
+        caseOp->getResults(),
+        newCase->getResults().slice(0, caseOp->getNumResults()));
+    rewriter.eraseOp(caseOp);
 
     return success();
   }
@@ -4949,6 +5140,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
 
     WhileOp::attachInterface<WhileOpEnzymeOpsRemover>(*context);
     stablehlo::IfOp::attachInterface<IfOpEnzymeOpsRemover>(*context);
+    stablehlo::CaseOp::attachInterface<CaseOpEnzymeOpsRemover>(*context);
 
     WhileOp::attachInterface<ADDataFlowWhileOp>(*context);
     SortOp::attachInterface<ADDataFlowSortOp>(*context);
@@ -4965,6 +5157,10 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     stablehlo::IfOp::attachInterface<AutoDiffIfRev>(*context);
     stablehlo::IfOp::attachInterface<AutoDiffIfFwd>(*context);
     stablehlo::IfOp::attachInterface<AutoDiffIfCF>(*context);
+
+    stablehlo::CaseOp::attachInterface<AutoDiffCaseFwd>(*context);
+    stablehlo::CaseOp::attachInterface<AutoDiffCaseCF>(*context);
+    stablehlo::CaseOp::attachInterface<AutoDiffCaseRev>(*context);
 
     SortOp::attachInterface<AutoDiffSortFwd>(*context);
     SortOp::attachInterface<AutoDiffSortRev>(*context);

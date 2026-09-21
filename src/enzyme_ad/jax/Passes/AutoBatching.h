@@ -274,13 +274,6 @@ struct RemoveLoopCarriedDependenciesFromWhileLoadOperations
   mlir::LogicalResult
   matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
                       mlir::PatternRewriter &rewriter) const;
-
-private:
-  bool extractDynamicUpdateSliceUpdate(
-      mlir::Operation *op, mlir::BlockArgument blockArg,
-      llvm::SmallVectorImpl<mlir::Value> &startIndices,
-      llvm::SmallVectorImpl<int64_t> &sliceSizes,
-      mlir::enzyme::WhileLoopInfo &info) const;
 };
 
 struct WhileIsCopySimplify

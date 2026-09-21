@@ -923,6 +923,31 @@ def LowerJITPass : Pass<"lower-jit"> {
   ];
 }
 
+def MapSymbolPass : Pass<"map-symbol"> {
+  let summary = "Register a symbol to address mapping";
+  let description = [{
+    Register a symbol to address mapping, mainly used for JIT.
+
+    This pass is not thought to be used on a regular pipeline. It exists because
+    some transformation passes fail to run when run through `enzymexlamlir-opt`. 
+    As they rely on taking symbols from the symbol table, it fails because such
+    symbols are registered on runtime initialization by a frontend (e.g.
+    Reactant).
+
+    This pass is a workaround to register the symbols with mock values as if you
+    were calling `EnzymeJaxMapSymbol`. This pass should only be used for
+    testing.
+  }];
+  let dependentDialects = [];
+  let options = [
+    ListOption<
+      /*C++ variable name=*/"symbols",
+      /*CLI argument=*/"symbols",
+      /*type=*/"std::string",
+      /*description=*/"List of symbols to register with mock values">
+  ];
+}
+
 //===----------------------------------------------------------------------===//
 // LLVMToControlFlow
 //===----------------------------------------------------------------------===//
@@ -1011,6 +1036,14 @@ def AffineCFG : Pass<"affine-cfg"> {
     "affine::AffineDialect",
     "enzyme::EnzymeDialect",
   ];
+  let options = [
+    Option<
+      /*C++ variable name=*/"enable_split_on_affine_if_constants",
+      /*CLI argument=*/"enable_split_on_affine_if_constants",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Enable the SplitOnAffineIfConstants pattern">,
+    ];
 }
 
 def CuDNNHLOOpt : Pass<"enzymexla-cudnn-hlo-opt"> {
@@ -1318,6 +1351,15 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            /*description=*/
            "Raise a constant-bound loop as a while instead of unrolling when "
            "its nested unrolled op count exceeds this. -1 for no budget">,
+       Option<
+           /*C++ variable name=*/"specialize_loop_bounds",
+           /*CLI argument=*/"specialize_loop_bounds",
+           /*type=*/"bool",
+           /*default=*/"true",
+           /*description=*/
+           "Mark the scalar arguments a raised while loop's exit test reads "
+           "as scalars the runtime specializes the executable over (trailing "
+           "xla_wrapper inputs, num_specialized)">,
   ];
 }
 

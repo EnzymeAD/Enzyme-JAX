@@ -1138,6 +1138,11 @@ def CompareOpCanonPatterns : EnzymeHLOPatternOp<
   let patterns = ["CompareOpCanon"];
 }
 
+def CompareBoolConstPatterns : EnzymeHLOPatternOp<
+    "compare_bool_const"> {
+  let patterns = ["CompareBoolConst"];
+}
+
 def CompareExtPatterns : EnzymeHLOPatternOp<
     "compare_ext"> {
   let patterns = ["CompareExt"];
@@ -2652,6 +2657,11 @@ def ConcatTranspose : EnzymeHLOPatternOp<
 def ReduceReduce : EnzymeHLOPatternOp<
   "reduce_reduce"> {
   let patterns = ["ReduceReduce"];
+}
+
+def ReduceHalvingReduceWindow : EnzymeHLOPatternOp<
+  "reduce_halving_reduce_window"> {
+  let patterns = ["ReduceHalvingReduceWindow"];
 }
 
 def ConjReal : EnzymeHLOPatternOp<
