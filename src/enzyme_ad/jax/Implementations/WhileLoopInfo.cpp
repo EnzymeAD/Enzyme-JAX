@@ -597,12 +597,63 @@ bool WhileLoopInfo::canHoistOperationFromLoop(
   return true;
 }
 
+// i in [lb, ub)
+// idx_min = scale * lb + offset
+// idx_max = scale * (ub - 1) + offset
+// size = idx_max - idx_min + 1 = (N - 1) * scale + 1 where N = ub - lb
+static std::pair<int64_t, int64_t>
+slicedRegion(const WhileLoopInfo::AffineIndexInfo &indexInfo, int64_t lb,
+             int64_t ub) {
+  auto scale = indexInfo.scale.getSExtValue();
+  auto offset = indexInfo.offset.getSExtValue();
+  auto rawMin = scale * lb + offset;
+  auto rawMax = scale * (ub - 1) + offset;
+  // flip if negative scale
+  auto actualMin = std::min(rawMin, rawMax);
+  auto actualMax = std::max(rawMin, rawMax);
+  return {actualMin, actualMax - actualMin + 1};
+}
+
+bool WhileLoopInfo::slicedRegionFitsOperand(
+    Value operand, mlir::stablehlo::DynamicSliceOp sliceOp,
+    int64_t sliceIndex) {
+  auto [start, size] =
+      slicedRegion(affineIndexInfo[sliceOp.getStartIndices()[sliceIndex]],
+                   getConstantStart().value(), getConstantLimit().value());
+  auto operandTy = cast<RankedTensorType>(operand.getType());
+  for (auto [i, sliceSize] : llvm::enumerate(sliceOp.getSliceSizes())) {
+    if (((int64_t)i == sliceIndex ? size : sliceSize) > operandTy.getDimSize(i))
+      return false;
+  }
+  return true;
+}
+
+bool WhileLoopInfo::canHoistOperationFromLoop(
+    Value operand, mlir::stablehlo::DynamicSliceOp sliceOp,
+    SmallVectorImpl<int64_t> &dimensions) {
+  if (!canHoistOperationFromLoop(sliceOp, dimensions))
+    return false;
+  // A single hoisted dimension becomes one slice of the operand, which must
+  // exist; several become a gather, which clamps.
+  return dimensions.size() != 1 ||
+         slicedRegionFitsOperand(operand, sliceOp, dimensions[0]);
+}
+
 bool WhileLoopInfo::hoistOperationFromLoop(
     OpBuilder &builder, Value operand, mlir::stablehlo::DynamicSliceOp sliceOp,
     int64_t sliceIndex, Value &result) {
   SmallVector<int64_t> dimensions = {sliceIndex};
   if (!canHoistOperationFromLoop(sliceOp, dimensions))
     return false;
+
+  // Decide before creating any op: a pattern that modifies the IR and then
+  // fails leaves the greedy driver revisiting the loop forever.
+  if (!slicedRegionFitsOperand(operand, sliceOp, sliceIndex)) {
+    sliceOp->emitError("Out of bounds access detected in the array. Bailing "
+                       "out of automatic hoisting of the code from the loop. "
+                       "This typically indicates a bug in the user code.");
+    return false;
+  }
 
   auto depIndex = sliceOp.getStartIndices()[sliceIndex];
   auto indexTy = depIndex.getType();
@@ -611,50 +662,22 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   // might be converted into a Slice Op if the starts are static.
   // Next we do a strided slice of this DS op. If starts are static,
   // these will get fused into a single slice op.
-  auto indexInfo = affineIndexInfo[depIndex];
-  auto scale = indexInfo.scale.getSExtValue();
-  auto offset = indexInfo.offset.getSExtValue();
-
+  auto [actualMin, actualSize] =
+      slicedRegion(affineIndexInfo[depIndex], getConstantStart().value(),
+                   getConstantLimit().value());
+  auto scale = affineIndexInfo[depIndex].scale.getSExtValue();
   auto step = getConstantStep().value();
-  auto lb = getConstantStart().value();
-  auto ub = getConstantLimit().value();
-
-  auto rawMin = scale * lb + offset;
-  auto rawMax = scale * (ub - 1) + offset;
-
-  // flip if negative scale
-  auto actualMin = std::min(rawMin, rawMax);
-  auto actualMax = std::max(rawMin, rawMax);
-  auto actualSize = actualMax - actualMin + 1;
 
   SmallVector<Value> dSliceStarts;
   mlir::enzyme::hoistStartIndicesOutsideLoop(sliceOp, builder, dSliceStarts,
                                              dimensions, *this);
   SmallVector<int64_t> dSliceSizes(sliceOp.getSliceSizes().begin(),
                                    sliceOp.getSliceSizes().end());
-
-  // i in [lb, ub)
-  // idx_min = scale * lb + offset
-  // idx_max = scale * (ub - 1) + offset
-  // size = idx_max - idx_min + 1 = (N - 1) * scale + 1 where N = ub - lb
   auto idxMinConst = stablehlo::ConstantOp::create(
       builder, sliceOp.getLoc(), indexTy,
       cast<ElementsAttr>(makeAttr(indexTy, actualMin)));
   dSliceStarts[sliceIndex] = idxMinConst;
   dSliceSizes[sliceIndex] = actualSize;
-
-  // avoid crashing by doing a size check here. This typically means the user
-  // code was incorrect and they were doing a out of bounds access.
-  auto operandTy = dyn_cast<RankedTensorType>(operand.getType());
-  assert(operandTy);
-  for (size_t i = 0; i < operandTy.getRank(); i++) {
-    if (dSliceSizes[i] > operandTy.getShape()[i]) {
-      sliceOp->emitError("Out of bounds access detected in the array. Bailing "
-                         "out of automatic hoisting of the code from the loop. "
-                         "This typically indicates a bug in the user code.");
-      return false;
-    }
-  }
 
   auto dSlice = stablehlo::DynamicSliceOpCreate(
       builder, sliceOp.getLoc(), operand, dSliceStarts, dSliceSizes);

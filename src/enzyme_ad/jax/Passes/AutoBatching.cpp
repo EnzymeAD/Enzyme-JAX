@@ -1529,6 +1529,14 @@ bool raiseDynamicSliceToGather(
     return false;
   }
 
+  // Decide every hoist before creating anything (see liftOperationByBatching).
+  for (auto [operand, sliceInfo] :
+       llvm::zip_equal(innerSliceOperands, innerSliceInfos)) {
+    if (!info.canHoistOperationFromLoop(operand, sliceInfo.sliceOp,
+                                        sliceInfo.dimensions))
+      return false;
+  }
+
   rewriter.setInsertionPoint(whileOp);
 
   if (!outerOperand) {
@@ -1735,6 +1743,15 @@ bool liftOperationByBatching(
                                    batchLiftingModes, batchOperands, sliceDims,
                                    hoistedDims, mappedSliceInfos, hoistMap)) {
     return false;
+  }
+
+  // Decide every hoist before creating anything: a failed attempt must not
+  // leave ops behind, or the greedy driver revisits the loop forever.
+  for (auto [mode, baseOp, sliceDim, sliceInfo] : llvm::zip_equal(
+           batchLiftingModes, batchOperands, sliceDims, mappedSliceInfos)) {
+    if (mode == BatchLiftingMode::DYNAMIC_SLICE &&
+        !info.canHoistOperationFromLoop(baseOp, sliceInfo.sliceOp, sliceDim))
+      return false;
   }
 
   func::FuncOp func = ::utils::CreateWrapperUnbatchedFunction(
