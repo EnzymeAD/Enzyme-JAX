@@ -41,29 +41,10 @@ using namespace mlir::enzyme::tessera;
 
 namespace {
 
-// Pick the narrowest standard integer width that can hold a literal from a
-// rule annotation. Literals are parsed as int64_t, so anything that does not
-// round-trip through int32_t needs an i64 attribute; asking for an i32
-// attribute in that case would silently truncate the value.
-IntegerAttr getIntegerAttrForLiteral(OpBuilder &builder, int64_t value) {
-  if (value >= std::numeric_limits<int32_t>::min() &&
-      value <= std::numeric_limits<int32_t>::max())
-    return builder.getI32IntegerAttr(static_cast<int32_t>(value));
-  return builder.getI64IntegerAttr(value);
-}
-
-// Same idea for float literals: f32 when the value survives the round trip
-// through it, otherwise f64. Values like 0.5 are exact in both, so they
-// narrow to f32; floats like pi and e are not, so they stay f64.
-FloatAttr getFloatAttrForLiteral(OpBuilder &builder, double value) {
-  if (static_cast<double>(static_cast<float>(value)) == value)
-    return builder.getF32FloatAttr(static_cast<float>(value));
-  return builder.getF64FloatAttr(value);
-}
-
 std::pair<mlir::Value, mlir::Value>
 emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
-             llvm::StringMap<mlir::Value> &boundVars) {
+             llvm::StringMap<mlir::Value> &boundVars,
+             SmallVectorImpl<std::string> &orderedVars) {
   return std::visit(
       overloaded{
           [&](const Var &v) -> std::pair<mlir::Value, mlir::Value> {
@@ -71,6 +52,10 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
               boundVars[v.name] = pdl::OperandOp::create(
                   builder, loc, builder.getType<pdl::ValueType>(),
                   /*type=*/mlir::Value());
+              // Track first-appearance order too: a conditional rule hands
+              // these values to its rewrite function positionally, paired with
+              // a list of the names the condition knows them by.
+              orderedVars.push_back(v.name);
             }
             return {boundVars[v.name], mlir::Value()};
           },
@@ -124,7 +109,8 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
           [&](const Call &c) -> std::pair<mlir::Value, mlir::Value> {
             SmallVector<mlir::Value> argValues;
             for (int i = 0; i < c.args.size(); i++) {
-              auto argPDL = emitMatchPDL(c.args[i], builder, loc, boundVars);
+              auto argPDL =
+                  emitMatchPDL(c.args[i], builder, loc, boundVars, orderedVars);
               argValues.push_back(argPDL.first);
             }
             auto calleeAttr = pdl::AttributeOp::create(
@@ -253,17 +239,6 @@ struct ParseOptimizationRulesPass
           return;
         }
 
-        // The condition is parsed but not yet turned into a guarded rewrite.
-        // Reject it rather than dropping it: emitting the pattern without the
-        // condition would apply a conditional rewrite unconditionally, which
-        // miscompiles silently.
-        if (rule->cond) {
-          optimization_op.emitError(
-              "conditional optimization rules are not supported yet");
-          signalPassFailure();
-          return;
-        }
-
         // Create pdl.pattern op that will store PDL for parsed rewrite rule
         builder.setInsertionPointToStart(patternsModule.getBody());
         auto pattern = pdl::PatternOp::create(builder, loc, /*benefit=*/1,
@@ -271,16 +246,52 @@ struct ParseOptimizationRulesPass
         Block *patternBlock = builder.createBlock(&pattern.getBodyRegion());
         builder.setInsertionPointToStart(patternBlock);
         llvm::StringMap<mlir::Value> boundVars;
+        SmallVector<std::string> orderedVars;
 
         // Emit PDL for the left hand side of the rewrite rule (the pattern to
         // match)
-        auto root = emitMatchPDL(rule->lhs, builder, loc, boundVars);
+        auto root =
+            emitMatchPDL(rule->lhs, builder, loc, boundVars, orderedVars);
         if (!root.second) {
           signalPassFailure();
           llvm::errs()
               << "Left hand side of optimization rule must be a call\n";
           return;
         }
+
+        // A conditional rule cannot be expressed declaratively: whether it
+        // rewrites directly or becomes a guard depends on what can be proven
+        // about the matched values, which is only knowable once they exist.
+        // Hand the whole rule to a native rewrite instead, along with the
+        // matched values and the names the condition calls them by.
+        if (rule->cond) {
+          auto ruleAttr = pdl::AttributeOp::create(
+              builder, loc, builder.getStringAttr(optimization_op.getRule()));
+          SmallVector<Attribute> nameAttrs;
+          for (const std::string &name : orderedVars)
+            nameAttrs.push_back(builder.getStringAttr(name));
+          auto namesAttr = pdl::AttributeOp::create(
+              builder, loc, builder.getArrayAttr(nameAttrs));
+
+          // The guard keeps a clone of the matched call in its else region, so
+          // without this the pattern would match that clone and nest guards
+          // without end.
+          pdl::ApplyNativeConstraintOp::create(
+              builder, loc, TypeRange{}, "tesseraRuleNotApplied",
+              ValueRange{root.second, ruleAttr});
+
+          // PDL passes the matched root to the rewrite function itself, ahead
+          // of these, so it must not be listed here as well.
+          SmallVector<mlir::Value> externalArgs{ruleAttr, namesAttr};
+          for (const std::string &name : orderedVars)
+            externalArgs.push_back(boundVars[name]);
+
+          pdl::RewriteOp::create(
+              builder, loc, root.second,
+              builder.getStringAttr("tesseraConditionalRewrite"), externalArgs);
+          continue;
+        }
+
         auto rewrite = pdl::RewriteOp::create(builder, loc, root.second,
                                               /*name=*/StringAttr(),
                                               /*externalArgs=*/ValueRange{});

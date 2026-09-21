@@ -19,14 +19,24 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "src/enzyme_ad/jax/Passes/Tessera/RuleAST.h"
 #include "mlir/IR/Diagnostics.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/RuleAST.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/Support/Format.h"
+#include "llvm/Support/raw_ostream.h"
+#include <limits>
 
 using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::enzyme::tessera;
 
 namespace {
+
+template <class... Ts> struct overloaded : Ts... {
+  using Ts::operator()...;
+};
+
+template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 
 bool isAlpha(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
@@ -239,21 +249,21 @@ Token Parser::peekAhead() {
 
 std::optional<Call> Parser::parseCall(std::string dialect_name) {
   if (current.type != TokenType::Dot) {
-    error() << "expected '.' in optimization rule, got '"
-        << current.value << "'";
+    error() << "expected '.' in optimization rule, got '" << current.value
+            << "'";
     return std::nullopt;
   }
   advance();
   if (current.type != TokenType::Ident) {
     error() << "expected identifier in optimization rule, got '"
-        << current.value << "'";
+            << current.value << "'";
     return std::nullopt;
   }
   std::string op_name = current.value;
   advance();
   if (current.type != TokenType::LParen) {
-    error() << "expected '(' in optimization rule, got '"
-        << current.value << "'";
+    error() << "expected '(' in optimization rule, got '" << current.value
+            << "'";
     return std::nullopt;
   }
   std::vector<Expr> args;
@@ -348,7 +358,7 @@ std::optional<Cond> Parser::parseUnary() {
       return std::nullopt;
     if (current.type != TokenType::RParen) {
       error() << "expected ')' in optimization rule condition, got '"
-          << current.value << "'";
+              << current.value << "'";
       return std::nullopt;
     }
     advance();
@@ -374,8 +384,8 @@ std::optional<Cond> Parser::parseUnary() {
       if (current.type == TokenType::Comma) {
         advance();
       } else if (current.type != TokenType::RParen) {
-        error() << "expected ',' or ')' in predicate '"
-            << name << "', got '" << current.value << "'";
+        error() << "expected ',' or ')' in predicate '" << name << "', got '"
+                << current.value << "'";
         return std::nullopt;
       }
     }
@@ -421,8 +431,8 @@ std::optional<Rule> Parser::parseRule() {
   if (!lhs)
     return std::nullopt;
   if (current.type != TokenType::Arrow) {
-    error() << "expected '->' in optimization rule, got '"
-        << current.value << "'";
+    error() << "expected '->' in optimization rule, got '" << current.value
+            << "'";
     return std::nullopt;
   }
   advance();
@@ -430,6 +440,121 @@ std::optional<Rule> Parser::parseRule() {
   if (!rhs)
     return std::nullopt;
   return Rule{std::move(cond), std::move(*lhs), std::move(*rhs)};
+}
+
+//===----------------------------------------------------------------------===//
+// Rendering
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+/// Binding strength, used to decide where the renderer has to add parentheses.
+/// Higher binds tighter.
+enum : unsigned { PrecOr = 1, PrecAnd = 2, PrecNot = 3, PrecAtom = 4 };
+
+unsigned precedenceOf(const Cond &cond) {
+  if (std::holds_alternative<OrCond>(cond.data))
+    return PrecOr;
+  if (std::holds_alternative<AndCond>(cond.data))
+    return PrecAnd;
+  if (std::holds_alternative<NotCond>(cond.data))
+    return PrecNot;
+  return PrecAtom;
+}
+
+/// Render `cond`, wrapping it in parentheses when it binds more loosely than
+/// the context it is being placed into.
+std::string renderCondAt(const Cond &cond, unsigned parentPrec);
+
+std::string renderNested(const Cond &cond, unsigned parentPrec) {
+  std::string inner = renderCondAt(cond, parentPrec);
+  return precedenceOf(cond) < parentPrec ? "(" + inner + ")" : inner;
+}
+
+std::string renderCondAt(const Cond &cond, unsigned parentPrec) {
+  return std::visit(overloaded{
+                        [](const Pred &p) {
+                          std::string out = p.name + "(";
+                          for (size_t i = 0; i < p.args.size(); ++i) {
+                            if (i)
+                              out += ", ";
+                            out += renderExpr(p.args[i]);
+                          }
+                          return out + ")";
+                        },
+                        [](const Compare &c) {
+                          return renderExpr(c.lhs) + " " +
+                                 std::string(getCmpOpSpelling(c.op)) + " " +
+                                 renderExpr(c.rhs);
+                        },
+                        [](const NotCond &c) {
+                          return "!" + renderNested(*c.operand, PrecNot);
+                        },
+                        [](const AndCond &c) {
+                          return renderNested(*c.lhs, PrecAnd) + " && " +
+                                 renderNested(*c.rhs, PrecAnd);
+                        },
+                        [](const OrCond &c) {
+                          return renderNested(*c.lhs, PrecOr) + " || " +
+                                 renderNested(*c.rhs, PrecOr);
+                        },
+                    },
+                    cond.data);
+}
+
+} // namespace
+
+std::string renderExpr(const Expr &expr) {
+  return std::visit(overloaded{
+                        [](const Var &v) { return v.name; },
+                        [](const IntLit &n) { return std::to_string(n.value); },
+                        [](const FloatLit &n) {
+                          // %.17g is the shortest format guaranteed to
+                          // round-trip a double, which matters because this
+                          // text is parsed back.
+                          llvm::SmallString<32> buffer;
+                          llvm::raw_svector_ostream os(buffer);
+                          os << llvm::format("%.17g", n.value);
+                          return std::string(buffer);
+                        },
+                        [](const Call &c) {
+                          std::string out = c.dialect + "." + c.opname + "(";
+                          for (size_t i = 0; i < c.args.size(); ++i) {
+                            if (i)
+                              out += ", ";
+                            out += renderExpr(c.args[i]);
+                          }
+                          return out + ")";
+                        },
+                    },
+                    expr.data);
+}
+
+std::string renderCond(const Cond &cond) { return renderCondAt(cond, PrecOr); }
+
+std::optional<Cond> parseConditionText(llvm::StringRef text, Location loc) {
+  Parser parser(text.str(), loc);
+  auto cond = parser.parseCond();
+  if (!cond)
+    return std::nullopt;
+  if (parser.current.type != TokenType::End) {
+    parser.error() << "unexpected trailing text in condition '" << text << "'";
+    return std::nullopt;
+  }
+  return cond;
+}
+
+IntegerAttr getIntegerAttrForLiteral(OpBuilder &builder, int64_t value) {
+  if (value >= std::numeric_limits<int32_t>::min() &&
+      value <= std::numeric_limits<int32_t>::max())
+    return builder.getI32IntegerAttr(static_cast<int32_t>(value));
+  return builder.getI64IntegerAttr(value);
+}
+
+FloatAttr getFloatAttrForLiteral(OpBuilder &builder, double value) {
+  if (static_cast<double>(static_cast<float>(value)) == value)
+    return builder.getF32FloatAttr(static_cast<float>(value));
+  return builder.getF64FloatAttr(value);
 }
 
 } // namespace tessera

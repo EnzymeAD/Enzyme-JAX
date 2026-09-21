@@ -5,14 +5,12 @@
 //   rule ::= [ 'if' cond ',' ] expr '->' expr
 //
 // These cases pin the shapes the grammar accepts and the diagnostics it gives
-// for the ones it does not. Conditions are parsed but not yet lowered into a
-// guarded rewrite, so every well-formed condition below currently stops at
-// "not supported yet" -- that check is what proves the rule parsed rather than
-// failing somewhere in the condition.
+// for the ones it does not. A well-formed condition produces no diagnostic at
+// all here; what the resulting pattern looks like is checked separately, in
+// conditional_pattern_gen.mlir.
 
 module {
   tessera.optimizations {
-    // expected-error @+1 {{conditional optimization rules are not supported yet}}
     tessera.optimization "if symmetric(x), lib.foo(x) -> lib.symmetric_foo(x)"
   }
 }
@@ -22,7 +20,6 @@ module {
 // Multiple arguments, both in the predicate and in the matched call.
 module {
   tessera.optimizations {
-    // expected-error @+1 {{conditional optimization rules are not supported yet}}
     tessera.optimization "if triangular_upper(a), lib.bar(a, b) -> lib.triangular_bar(a, b)"
   }
 }
@@ -32,7 +29,6 @@ module {
 // Conjunction and negation.
 module {
   tessera.optimizations {
-    // expected-error @+1 {{conditional optimization rules are not supported yet}}
     tessera.optimization "if symmetric(a) && !diagonal(a), lib.baz(a, b) -> lib.symmetric_baz(a, b)"
   }
 }
@@ -42,7 +38,6 @@ module {
 // A relational test on a scalar operand.
 module {
   tessera.optimizations {
-    // expected-error @+1 {{conditional optimization rules are not supported yet}}
     tessera.optimization "if n > 64, lib.qux(x, n) -> lib.tiled_qux(x, n)"
   }
 }
@@ -53,7 +48,6 @@ module {
 // a two-character relational operator.
 module {
   tessera.optimizations {
-    // expected-error @+1 {{conditional optimization rules are not supported yet}}
     tessera.optimization "if (symmetric(x) || diagonal(x)) && n >= 2, lib.foo(x) -> lib.symmetric_foo(x)"
   }
 }
@@ -64,7 +58,6 @@ module {
 // the '-' here must lex as part of the number, not as the head of an arrow.
 module {
   tessera.optimizations {
-    // expected-error @+1 {{conditional optimization rules are not supported yet}}
     tessera.optimization "if !(a == b) || n <= -3, lib.f(a, b) -> lib.g(a, b)"
   }
 }
@@ -74,7 +67,6 @@ module {
 // A predicate may take a call, not just a bare variable.
 module {
   tessera.optimizations {
-    // expected-error @+1 {{conditional optimization rules are not supported yet}}
     tessera.optimization "if symmetric(lib.transpose(x)), lib.foo(x) -> lib.symmetric_foo(x)"
   }
 }

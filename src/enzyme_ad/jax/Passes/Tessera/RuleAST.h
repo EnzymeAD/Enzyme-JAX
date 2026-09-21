@@ -15,6 +15,8 @@
 #ifndef ENZYME_AD_JAX_PASSES_TESSERA_RULEAST_H
 #define ENZYME_AD_JAX_PASSES_TESSERA_RULEAST_H
 
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Location.h"
 #include "llvm/ADT/StringRef.h"
 #include <memory>
@@ -199,6 +201,33 @@ struct Parser {
   std::optional<Cond> parseUnary();
   std::optional<Rule> parseRule();
 };
+
+/// Parse a bare condition, as carried on a tessera.guard, rather than a whole
+/// rule. Returns nullopt and emits a diagnostic against `loc` if the text does
+/// not parse or has trailing junk.
+std::optional<Cond> parseConditionText(llvm::StringRef text, Location loc);
+
+/// Render an expression or a condition back to its textual form. A rendered
+/// condition is what a tessera.guard carries, so it has to parse back to an
+/// equivalent tree: parentheses are inserted wherever precedence would
+/// otherwise regroup the operands.
+std::string renderExpr(const Expr &expr);
+std::string renderCond(const Cond &cond);
+
+//===----------------------------------------------------------------------===//
+// Literal materialization
+//===----------------------------------------------------------------------===//
+
+/// Pick the narrowest standard integer width that can hold a literal from a
+/// rule annotation. Literals are parsed as int64_t, so anything that does not
+/// round-trip through int32_t needs an i64 attribute; asking for an i32
+/// attribute in that case would silently truncate the value.
+IntegerAttr getIntegerAttrForLiteral(OpBuilder &builder, int64_t value);
+
+/// Same idea for float literals: f32 when the value survives the round trip
+/// through it, otherwise f64. Values like 0.5 are exact in both, so they
+/// narrow to f32; floats like pi and e are not, so they stay f64.
+FloatAttr getFloatAttrForLiteral(OpBuilder &builder, double value);
 
 } // namespace tessera
 } // namespace enzyme
