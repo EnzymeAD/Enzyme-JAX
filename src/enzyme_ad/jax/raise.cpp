@@ -150,7 +150,8 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "split-branched-accesses," + canonicalize + ",polygeist-mem2reg,"
       "" + canonicalize + ","
       "func.func(affine-loop-invariant-code-motion),"
-      "" + canonicalize + ",sort-memory,llvm-to-tessera,tessera-apply-pdl,tessera-to-llvm,";
+      "" + canonicalize + ",sort-memory,llvm-to-tessera,tessera-apply-pdl,"
+      "tessera-lower-guards,tessera-to-llvm,";
   // Differentiation runs before the backends diverge, so on xla the
   // generated derivative launches raise to stablehlo like any other kernel.
   if (outfile.size() && getenv("EXPORT_REACTANT")) {
