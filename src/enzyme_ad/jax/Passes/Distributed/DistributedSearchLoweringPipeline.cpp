@@ -22,7 +22,9 @@ void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
   // shared location, so the same computation is often rebuilt at several
   // nearby sites; those ops are Pure, so CSE collapses the duplicates.
   pm.addPass(createCSEPass());
-  pm.addPass(createCanonicalizerPass());
+  GreedyRewriteConfig canonConfig;
+  canonConfig.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Disabled);
+  pm.addPass(createCanonicalizerPass(canonConfig));
   pm.addPass(createLowerKernelsPass(options));
   // distributed-lower-kernels is the last real consumer of kernel body ops'
   // own distributed.argument_shardings/output_shardings and of Shardy's
@@ -42,11 +44,6 @@ void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
   // casts need to already be gone for its operand/result types to line up
   // with its body's block-args/yield, which is what marks it mergeable.
   pm.addPass(createMergeAdjacentTrivialKernelsPass());
-  // The passes above can each orphan more axis-algebra ops (blanked
-  // partitioning_axes, folded collectives/anchors, merged kernel operands),
-  // with nothing after them to clean up until now.
-  pm.addPass(createCSEPass());
-  pm.addPass(createCanonicalizerPass());
   // These two run here, after the kernel-side cleanup above and before
   // LowerKernelsToExecutable: MakeReplicationsExplicit needs a module whose
   // collectives' mesh bookkeeping is otherwise settled (no more identity

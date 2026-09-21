@@ -68,7 +68,10 @@ struct DropIdentityPartitioningAnchorsPass
                  FoldTrivialCast<DistributedCastGlobalToLocalOp>,
                  FoldTrivialCast<DistributedCastLocalToGlobalOp>>(context);
 
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
+    GreedyRewriteConfig config;
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Disabled);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       signalPassFailure();
     }
   }

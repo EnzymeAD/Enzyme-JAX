@@ -93,13 +93,18 @@ struct DropIdentityCollectivesPass
     RewritePatternSet dropUnitFactorPatterns(context);
     axis::AxisProductOp::getCanonicalizationPatterns(dropUnitFactorPatterns,
                                                      context);
-    if (failed(
-            applyPatternsGreedily(module, std::move(dropUnitFactorPatterns)))) {
+    GreedyRewriteConfig config;
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Disabled);
+    if (failed(applyPatternsGreedily(module, std::move(dropUnitFactorPatterns),
+                                     config))) {
       signalPassFailure();
       return;
     }
 
     PassManager pm(&getContext());
+    // The enclosing pass manager verifies the module after this pass finishes,
+    // so a nested verification would repeat the same whole-module walk.
+    pm.enableVerifier(false);
     pm.addPass(createCanonicalizeAxisMapsPass());
     if (failed(pm.run(module))) {
       module.emitError() << "canonicalize-axis-maps sub-pass failed";
@@ -108,7 +113,7 @@ struct DropIdentityCollectivesPass
 
     RewritePatternSet patterns(context);
     patterns.add<DropIdentityCollective>(context);
-    if (failed(applyPatternsGreedily(module, std::move(patterns)))) {
+    if (failed(applyPatternsGreedily(module, std::move(patterns), config))) {
       signalPassFailure();
     }
   }

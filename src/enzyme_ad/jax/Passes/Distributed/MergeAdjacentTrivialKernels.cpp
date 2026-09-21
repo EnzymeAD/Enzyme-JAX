@@ -219,6 +219,7 @@ struct MergeAdjacentTrivialKernelsPass
     // make the pass fail on long function bodies.
     GreedyRewriteConfig config;
     config.setMaxIterations(GreedyRewriteConfig::kNoLimit);
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Disabled);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {
       signalPassFailure();
