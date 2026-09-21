@@ -496,6 +496,36 @@ def PrintCollectivePlanPass
   }];
 }
 
+def PrintPrimitiveFootprintsPass
+    : Pass<"distributed-print-primitive-footprints", "::mlir::ModuleOp"> {
+  let summary = "Test pass: prints the closed-form footprint of one primitive "
+                "collective as a remark.";
+  let options = [
+    Option<"kind", "kind", "std::string", "\"\"",
+           "One of all-reduce, reduce-scatter, all-gather, all-to-all, "
+           "collective-permute, local-slice">,
+    Option<"payloadBytes", "payload-bytes", "int64_t", "0",
+           "Per-device payload before the step, in bytes">,
+    ListOption<"extents", "extents", "int64_t",
+               "Extent of each mesh atom the step runs over">,
+    ListOption<"axes", "axes", "int64_t",
+               "Physical mesh axis of each atom, parallel to extents">,
+    ListOption<"bandwidths", "bandwidths", "double",
+               "Bandwidth per mesh axis; uniform 1 when omitted">,
+    Option<"latency", "latency", "double", "1.0",
+           "Latency of one round on every axis">,
+    ListOption<"changedFractions", "changed-fractions", "double",
+               "Collective-permute only: fraction of devices whose digit "
+               "changes, one per atom">,
+  ];
+  let description = [{
+    Builds one PrimitiveStep with the closed-form footprint builders of
+    CollectiveCost.h and reports its payloads, latency, per-axis volume and
+    demand, and isolated duration as a remark on the module. It exists to
+    check the cost formulas against hand-computed numbers.
+  }];
+}
+
 def LowerForSanityCheckPass
     : Pass<"distributed-lower-for-sanity-check", "::mlir::ModuleOp"> {
   let summary = "Lowers the whole distributed program to a single-device "
