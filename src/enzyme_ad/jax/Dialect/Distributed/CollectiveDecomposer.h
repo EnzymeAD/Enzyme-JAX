@@ -23,7 +23,9 @@ namespace mlir::enzyme::distributed {
 // Supported collectives
 // ---------------------
 // Rows of the normal form (see RolePair) per mesh atom:
-//   (Reduced, Replicate)              all-reduce
+//   (Reduced, Replicate)              all-reduce, or a peel (D17) around
+//                                     other units' cheaper-at-smaller-payload
+//                                     work
 //   (Reduced, Tile)                   reduce-scatter, or all-reduce + local
 //                                     slice
 //   (Replicate, Tile)                 local slice
@@ -164,6 +166,23 @@ namespace mlir::enzyme::distributed {
 //       atom (all-to-all, reduce-scatter, slices) are not conjugated: after
 //       the swap they would place the digit of the atom whose content moved,
 //       which the chain checker cannot tell from the step alone.
+//   D17 Peel. A (Reduced, Replicate) atom offers a second variant besides the
+//       flat all-reduce (D8): reduce-scatter the atom against its own mesh
+//       coordinate (a SelfScatter unit, the same footprint as an ordinary
+//       reduce-scatter of extent n, D3) and, once every other unit that
+//       benefits from the shrunk payload has run, an all-gather (a Gather
+//       unit depending on the scatter, D12) that restores full replication.
+//       No tile atom is involved, unlike a real reduce-scatter row: every
+//       tile digit is already spent on some other role by atomization, so
+//       none has capacity to spare the way a conjugation's borrowed atom does
+//       (D16); the atom's own coordinate plays that role instead, and the
+//       chain checker tracks it as a payload divisor rather than a digit,
+//       since no digit the collective's map names is involved. Between the
+//       two steps the shared payload (D3, D6) is smaller, so the DP may
+//       schedule other units' cheaper-at-smaller-payload work in the gap;
+//       a hierarchical multi-axis all-reduce is exactly this ordering.
+//       Offered only when the atom's extent divides the payload (the same
+//       eligibility a reduce-scatter needs).
 
 // Per-unit progress of the decomposition. Two states with equal stages are
 // equal for the purposes of every later decision (D3), so it is the memo key.
@@ -197,6 +216,10 @@ struct PlanOptions {
   // (D14 to D16). Off, mesh-coupled components are only half-split with plain
   // gathers and slices, which lets tests pin the baseline.
   bool relayVariants = true;
+  // Offer the peel (D17) alongside the flat all-reduce for a (Reduced,
+  // Replicate) atom. Off, such an atom is only ever a flat all-reduce, which
+  // lets tests pin that baseline.
+  bool peelVariants = true;
 };
 
 // Most combinations of component variants (see D13) plan() searches.
@@ -241,6 +264,18 @@ plan(const NormalizedCollective &collective, const MeshCostParams &params,
 // requires). A reduction step on an atom that is not reduced, or that was
 // already reduced, fails, as does a chain that leaves a reduced atom
 // unreduced or a collective whose reduction body is not a recognized kind.
+//
+// A reduce-scatter whose atom needs no output tile digit (a (Reduced,
+// Replicate) atom's peel, D17) instead marks the atom self-scattered: it
+// holds a shard keyed by its own coordinate, belonging to no digit the
+// collective's map names, so it is tracked as a payload divisor rather than
+// with the digit machinery above. A later all-gather of that atom closes the
+// peel and clears the marker instead of moving a digit into the tile; an
+// ordinary gather that finds no occupant and no open peel fails, as does a
+// component permute over a self-scattered atom (it is never part of a
+// mesh-linked component in practice, and has no digit to shift). A swap
+// carries the marker like a pending reduction. A self-scattered atom left
+// open at the end of the chain fails.
 //
 // The chain passes if every step's preconditions hold, each step's payloads
 // equal the independently recomputed tile size, and the final placement equals

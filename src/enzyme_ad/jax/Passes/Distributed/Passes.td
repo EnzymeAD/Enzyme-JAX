@@ -544,6 +544,9 @@ def PrintCollectivePlanPass
            "With chain: decompose mesh-coupled components only by the "
            "half-split, without fused exchanges, path closures or "
            "conjugations">,
+    Option<"disablePeelVariants", "disable-peel-variants", "bool", "false",
+           "With chain: do not offer a peel for a (Reduced, Replicate) atom, "
+           "so it is always a flat all-reduce">,
   ];
   let description = [{
     Emits one remark per distributed.Collective describing its
@@ -564,6 +567,8 @@ def PrintCollectivePlanPass
     alternatives, which a cost-minimizing search never selects.
     disable-relay-variants restricts mesh-coupled components to the
     half-split so the baseline can be compared with the cheaper variants.
+    disable-peel-variants restricts a (Reduced, Replicate) atom to the flat
+    all-reduce so that baseline can be compared with the peel.
   }];
 }
 

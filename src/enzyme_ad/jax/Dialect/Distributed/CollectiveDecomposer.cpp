@@ -20,7 +20,13 @@ enum class UnitKind {
   TileToTile,
   AllReduce,
   ReduceScatter,
-  Permute
+  Permute,
+  // The scatter half of a peel (D17): a reduce-scatter against the atom's own
+  // coordinate, with no output digit to place. Unlike ReduceScatter it has a
+  // single stage (pending, done) because nothing follows it within the same
+  // unit; the Gather unit that closes the peel is a separate unit depending
+  // on it (D12).
+  SelfScatter,
 };
 
 struct Unit {
@@ -287,12 +293,14 @@ void addConjugations(const NormalizedCollective &collective,
 // Splits the mesh atoms into components of units, or reports why the
 // collective is outside the supported rows.
 //
-// Atoms with no mesh partner have a dedicated row of their own. Atoms tied by
-// mesh partners form connected components (D11): one made only of (Mesh, Mesh)
-// atoms is a set of permutation cycles, and all cycles share one permute unit
-// (D5); any other component is half-split (D11) and, unless
-// `options.relayVariants` is off, also offered as a path closure (D15).
-// Components are ordered by their first atom, with the permute component last.
+// Atoms with no mesh partner have a dedicated row of their own; a (Reduced,
+// Replicate) atom's row is also offered a peel (D17) unless
+// `options.peelVariants` is off. Atoms tied by mesh partners form connected
+// components (D11): one made only of (Mesh, Mesh) atoms is a set of
+// permutation cycles, and all cycles share one permute unit (D5); any other
+// component is half-split (D11) and, unless `options.relayVariants` is off,
+// also offered as a path closure (D15). Components are ordered by their first
+// atom, with the permute component last.
 // The variant lists are trimmed so that their product stays within
 // kMaxVariantCombinations, keeping the earliest variants of the earliest
 // components.
@@ -304,6 +312,28 @@ bool buildComponents(const NormalizedCollective &collective,
     Component component;
     component.variants.push_back(
         {UnitSet{{kind, {stepAtomOf(atom)}, atom.extent, {}}}, {}});
+    if (options.relayVariants)
+      addConjugations(collective, params, component);
+    components.push_back(std::move(component));
+  };
+
+  // A (Reduced, Replicate) atom's component: the flat all-reduce (D8), plus a
+  // peel (D17) when it is offered and the atom's extent divides the payload.
+  // The peel is a second variant beside the flat one, exactly like the relay
+  // variants mesh-coupled components get, so plan() searches both and keeps
+  // whichever is cheaper.
+  auto singleAllReduce = [&](const MeshAtom &atom) {
+    Component component;
+    component.variants.push_back(
+        {UnitSet{{UnitKind::AllReduce, {stepAtomOf(atom)}, atom.extent, {}}},
+         {}});
+    if (options.peelVariants && collective.payloadBytes % atom.extent == 0) {
+      UnitSet peel;
+      peel.push_back(
+          {UnitKind::SelfScatter, {stepAtomOf(atom)}, atom.extent, {}});
+      peel.push_back({UnitKind::Gather, {stepAtomOf(atom)}, atom.extent, {0}});
+      component.variants.push_back({std::move(peel), {}});
+    }
     if (options.relayVariants)
       addConjugations(collective, params, component);
     components.push_back(std::move(component));
@@ -351,7 +381,7 @@ bool buildComponents(const NormalizedCollective &collective,
     case RolePair::AllReduce:
       if (!checkReductionKind(collective, atom, failureReason))
         return false;
-      single(UnitKind::AllReduce, atom);
+      singleAllReduce(atom);
       break;
     case RolePair::ReduceScatter:
       if (!checkReductionKind(collective, atom, failureReason))
@@ -481,6 +511,10 @@ public:
         if (stage == 2)
           divisor *= e;
         break;
+      case UnitKind::SelfScatter:
+        if (stage == 1)
+          divisor *= e;
+        break;
       case UnitKind::AllReduce:
       case UnitKind::Permute:
         break;
@@ -488,7 +522,9 @@ public:
     }
     // Every slice and reduce-scatter divides out a digit that is local by
     // then: an input tile atom the initial payload contains, or a digit a
-    // gather brought in (D12 orders the gather first).
+    // gather brought in (D12 orders the gather first). A SelfScatter's extent
+    // (D17) is not backed by any such digit, so candidates() only offers it
+    // where it is known to divide the payload evenly.
     assert(payloadBytes * factor % divisor == 0 &&
            "slices exceed the tile payload");
     return payloadBytes * factor / divisor;
@@ -554,6 +590,14 @@ public:
       case UnitKind::AllReduce:
         result.push_back({allReduceFootprint(unit.atoms, payload, params),
                           advance(state, i, 1)});
+        break;
+      case UnitKind::SelfScatter:
+        // A SelfScatter's extent (D17) is not backed by a digit, so nothing
+        // guarantees it divides the current payload. Skip it here instead of
+        // letting reduceScatterFootprint's own assert fire.
+        if (payload % static_cast<int64_t>(unit.extent) == 0)
+          result.push_back({reduceScatterFootprint(unit.atoms, payload, params),
+                            advance(state, i, 1)});
         break;
       case UnitKind::ReduceScatter:
         if (ready)
@@ -706,7 +750,8 @@ namespace {
 // The symbolic model behind verifyChainRealizesCollective. Digits are indexed
 // mesh atoms first, then input tile atoms. A reduced input atom carries no
 // digit (its digit is summed away); it is tracked by a pending flag that a
-// reduction step clears.
+// reduction step clears. A peel's self-scattered atom (D17, see the header)
+// is tracked the same way, as a payload divisor rather than a digit.
 class ChainChecker {
 public:
   explicit ChainChecker(const NormalizedCollective &collective)
@@ -773,6 +818,12 @@ private:
     int64_t bytes = elementBytes;
     for (int digit : local)
       bytes *= extent[digit];
+    // A self-scattered atom (D17) holds a shard of the payload keyed by its
+    // own coordinate, not a tracked digit, so it is a divisor alongside the
+    // digit set rather than a member of it.
+    for (size_t x = 0; x < selfScattered.size(); ++x)
+      if (selfScattered[x])
+        bytes /= extent[x];
     return bytes;
   }
 
@@ -783,6 +834,7 @@ private:
     occupant.assign(numMesh, kNone);
     requiredOccupant.assign(numMesh, kNone);
     reductionPending.assign(numMesh, false);
+    selfScattered.assign(numMesh, false);
 
     int64_t inputElements = 1;
     for (size_t i = 0; i < numMesh; ++i)
@@ -882,13 +934,19 @@ private:
     int required = requiredOccupant[x];
     switch (step.kind) {
     case PrimitiveKind::AllGather:
-      if (occupant[x] == kNone) {
-        why = "gathers an atom that holds no digit";
-        return false;
+      if (occupant[x] != kNone) {
+        local.insert(occupant[x]);
+        occupant[x] = kNone;
+        return true;
       }
-      local.insert(occupant[x]);
-      occupant[x] = kNone;
-      return true;
+      if (selfScattered[x]) {
+        // Closes a peel (D17): the scattered shard belongs to no digit, so
+        // restoring the atom to fully replicated only clears the marker.
+        selfScattered[x] = false;
+        return true;
+      }
+      why = "gathers an atom that holds no digit";
+      return false;
     case PrimitiveKind::LocalSlice:
       if (occupant[x] != kNone) {
         why = "slices onto an atom that still holds a digit";
@@ -916,6 +974,16 @@ private:
       // digit on it must be followed by a slice.
       return consumeReduction(x, why);
     case PrimitiveKind::ReduceScatter:
+      if (required == kNone) {
+        // A (Reduced, Replicate) atom needs no output tile digit, so this is
+        // the scatter half of a peel (D17): the atom holds a shard of the
+        // payload keyed by its own coordinate until a matching all-gather
+        // closes it.
+        if (!consumeReduction(x, why))
+          return false;
+        selfScattered[x] = true;
+        return true;
+      }
       return consumeReduction(x, why) && place(x, required, why);
     case PrimitiveKind::Permute:
       llvm_unreachable("permutes are handled above");
@@ -997,6 +1065,13 @@ private:
         why = "permutes an atom whose reduction has not run";
         return false;
       }
+      if (selfScattered[x]) {
+        // A self-scattered atom (D17) is never part of a mesh-linked
+        // component in a plan() output; its content is a payload shard, not
+        // a digit a component permute can shift.
+        why = "permutes a self-scattered atom";
+        return false;
+      }
       size_t source;
       if (atom.out.kind == AtomRole::Mesh) {
         source = meshIndex(atom.out.partner);
@@ -1022,6 +1097,9 @@ private:
     bool pending = reductionPending[x];
     reductionPending[x] = reductionPending[y];
     reductionPending[y] = pending;
+    bool scattered = selfScattered[x];
+    selfScattered[x] = selfScattered[y];
+    selfScattered[y] = scattered;
     return true;
   }
 
@@ -1031,6 +1109,13 @@ private:
         why = "mesh" + std::to_string(collective.meshAtoms[x].axis) + "." +
               std::to_string(collective.meshAtoms[x].atom) +
               " is never reduced";
+        return false;
+      }
+    for (size_t x = 0; x < selfScattered.size(); ++x)
+      if (selfScattered[x]) {
+        why = "mesh" + std::to_string(collective.meshAtoms[x].axis) + "." +
+              std::to_string(collective.meshAtoms[x].atom) +
+              " is scattered onto itself but never gathered back";
         return false;
       }
     for (size_t x = 0; x < occupant.size(); ++x)
@@ -1058,6 +1143,9 @@ private:
   std::vector<int> occupant, requiredOccupant;
   // Reduced input atoms whose digit has not been summed away yet.
   std::vector<bool> reductionPending;
+  // Mesh atoms currently holding a peel's scattered shard (D17), keyed by
+  // their own coordinate rather than a digit in `occupant` or `local`.
+  std::vector<bool> selfScattered;
   std::set<int> local, requiredLocal;
   int64_t elementBytes = 1;
   int64_t expectedFinalPayload = 0;
