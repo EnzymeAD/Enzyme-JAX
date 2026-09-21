@@ -153,3 +153,80 @@ module @all_to_all_two_axes {
   %h = distributed.Collective %in : tensor<16x1xi8> on %mesh_in : !axis.factor_group<8> to tensor<2x8xi8> on %mesh_out : !axis.factor_group<8> reduces () maps %map : !axis.map
   %v = distributed.Await %h : !distributed.asynch_handle<tensor<2x8xi8>> -> tensor<2x8xi8>
 }
+// -----
+
+// Order of two reduce-scatters (S = 16). axis0 and axis1 both have n = 2 and each scatters onto its own tile atom of extent 2, so the tile shrinks 16 -> 8 -> 4. A reduce-scatter on axis a at payload P costs P / 2 / BW[a] plus latency 0.11. The bytes moved on the second step are halved, so the fast axis should go first, while the payload is large.
+// Uniform bandwidth: axis0 first is 8 + 4 = 12 (+ 0.22), an exact tie with the other order, so the order is not asserted here.
+// bandwidths=4,1 (axis0 fast): axis0 first = 0.11 + 8/4 + 0.11 + 4/1 = 6.22; axis1 first = 0.11 + 8/1 + 0.11 + 4/4 = 9.22.
+// bandwidths=1,4: axis1 first = 6.22, axis0 first = 9.22. The order follows the bandwidth, against the unit order in the second case.
+// FAST0: chain: 2 steps, total duration 6.22
+// FAST0-NEXT: step 0: reduce-scatter
+// FAST0-NEXT: atoms: axis0.0(x2)
+// FAST0-NEXT: payload: 16 -> 8
+// FAST0-NEXT: latency: 0.11
+// FAST0-NEXT: V: [8, 0]
+// FAST0-NEXT: rho: [1, 0]
+// FAST0-NEXT: duration: 2.11
+// FAST0-NEXT: step 1: reduce-scatter
+// FAST0-NEXT: atoms: axis1.0(x2)
+// FAST0-NEXT: payload: 8 -> 4
+// FAST0-NEXT: latency: 0.11
+// FAST0-NEXT: V: [0, 4]
+// FAST0-NEXT: rho: [0, 1]
+// FAST0-NEXT: duration: 4.11
+// FAST0-NEXT: semantics: verified
+// FAST0-NEXT: input port: tensor<16xi8> (the collective's input_object operand) -> step 0
+// FAST0-NEXT: result port: tensor<4xi8> (the await result, 0 uses) <- step 1
+// FAST1: chain: 2 steps, total duration 6.22
+// FAST1-NEXT: step 0: reduce-scatter
+// FAST1-NEXT: atoms: axis1.0(x2)
+// FAST1-NEXT: payload: 16 -> 8
+// FAST1-NEXT: latency: 0.11
+// FAST1-NEXT: V: [0, 8]
+// FAST1-NEXT: rho: [0, 1]
+// FAST1-NEXT: duration: 2.11
+// FAST1-NEXT: step 1: reduce-scatter
+// FAST1-NEXT: atoms: axis0.0(x2)
+// FAST1-NEXT: payload: 8 -> 4
+// FAST1-NEXT: latency: 0.11
+// FAST1-NEXT: V: [4, 0]
+// FAST1-NEXT: rho: [1, 0]
+// FAST1-NEXT: duration: 4.11
+// FAST1-NEXT: semantics: verified
+// FAST1-NEXT: input port: tensor<16xi8> (the collective's input_object operand) -> step 0
+// FAST1-NEXT: result port: tensor<4xi8> (the await result, 0 uses) <- step 1
+module @reduce_scatter_two_axes {
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
+
+  func.func @main() {
+    return
+  }
+
+  %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
+  %ti0 = axis.getaxis tensor<16xi8> 0
+  %to0 = axis.getaxis tensor<4xi8> 0
+  %f1 = axis.factor %p0 : !distributed.physical_comm_axis<2, 2> <2, 1>
+  %f2 = axis.factor %p1 : !distributed.physical_comm_axis<2, 1> <2, 1>
+  %mesh_in = axis.product (%f1 : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>, %f2 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %f3 = axis.factor %p0 : !distributed.physical_comm_axis<2, 2> <2, 1>
+  %f4 = axis.factor %p1 : !distributed.physical_comm_axis<2, 1> <2, 1>
+  %mesh_out = axis.product (%f3 : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>, %f4 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %f5 = axis.factor %p0 : !distributed.physical_comm_axis<2, 2> <2, 1>
+  %f6 = axis.factor %p1 : !distributed.physical_comm_axis<2, 1> <2, 1>
+  %red0 = axis.product (%f5 : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>, %f6 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %f7 = axis.factor %ti0 : !axis.shape_axis<tensor<16xi8>, 0> <16, 1>
+  %lhs0 = axis.product (%f7 : !axis.axis_factor<!axis.shape_axis<tensor<16xi8>, 0>, 16, 1>)
+  %f8 = axis.factor %p0 : !distributed.physical_comm_axis<2, 2> <2, 1>
+  %f9 = axis.factor %p1 : !distributed.physical_comm_axis<2, 1> <2, 1>
+  %f10 = axis.factor %to0 : !axis.shape_axis<tensor<4xi8>, 0> <4, 1>
+  %rhs0 = axis.product (%f8 : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>, %f9 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>, %f10 : !axis.axis_factor<!axis.shape_axis<tensor<4xi8>, 0>, 4, 1>)
+  %map = axis.map %lhs0 to %rhs0 : [!axis.factor_group<16>] [!axis.factor_group<16>]
+
+  %in = tensor.empty() : tensor<16xi8>
+  %h = distributed.Collective %in : tensor<16xi8> on %mesh_in : !axis.factor_group<4> to tensor<4xi8> on %mesh_out : !axis.factor_group<4> reduces (%red0 : !axis.factor_group<4>) maps %map : !axis.map {
+  ^bb0(%lhs_v: tensor<i8>, %rhs_v: tensor<i8>):
+    %r = stablehlo.add %lhs_v, %rhs_v : tensor<i8>
+    stablehlo.return %r : tensor<i8>
+  }
+  %v = distributed.Await %h : !distributed.asynch_handle<tensor<4xi8>> -> tensor<4xi8>
+}

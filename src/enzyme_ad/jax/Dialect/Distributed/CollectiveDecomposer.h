@@ -23,15 +23,26 @@ namespace mlir::enzyme::distributed {
 // Supported collectives
 // ---------------------
 // Rows of the normal form (see RolePair) per mesh atom:
+//   (Reduced, Replicate)              all-reduce
+//   (Reduced, Tile)                   reduce-scatter, or all-reduce + local
+//                                     slice
 //   (Replicate, Tile)                 local slice
 //   (Tile, Replicate)                 all-gather
 //   (Tile, Tile)                      all-to-all, or all-gather + local slice
 //   (Mesh, Mesh), different atoms     collective permute
 //   (Replicate, Replicate), or a mesh atom feeding itself: nothing
 // Tile atoms paired only with tile atoms of the other side are device-local
-// relabelings and cost nothing. Reductions and the mixed rows (Tile, Mesh),
-// (Replicate, Mesh), (Mesh, Tile), (Mesh, Replicate) are not decomposed yet;
-// plan() reports them as a failure with a reason rather than approximating.
+// relabelings and cost nothing. Not decomposed, and reported by plan() as a
+// failure with a reason:
+//   - (Reduced, Mesh): reduction then permute. A reduced atom has no outgoing
+//     pair, so the atoms its output is moved through form an open path,
+//     which is not a permutation cycle. The head of that path has a Tile or
+//     Replicate output and is one of the mixed rows below, which need a move
+//     that is not a rename of atoms.
+//   - the mixed rows (Tile, Mesh), (Replicate, Mesh), (Mesh, Tile),
+//     (Mesh, Replicate).
+//   - reductions whose body is not a single recognized associative operation
+//     (D9).
 //
 // Decomposition assumptions
 // -------------------------
@@ -69,7 +80,26 @@ namespace mlir::enzyme::distributed {
 //       intermediate stage, gathered with the slice pending, and the pending
 //       slice is a free step available immediately (D2). A collective with
 //       more than kMaxLiveUnits units is reported as unsupported rather than
-//       searched.
+//       searched. Reduce-scatter atoms have the same three stages as
+//       tile-to-tile atoms (see D10).
+//   D8  Every reduced atom is its own unit and its own single-axis step,
+//       (Reduced, Replicate) an all-reduce and (Reduced, Tile) a reduce-
+//       scatter onto that atom's tile atom (N1, N5). Reduction steps are not
+//       merged across atoms or split into rounds, so several reduced atoms are
+//       ordered by the DP like any other units (D6). A reduce-scatter divides
+//       the payload by its extent like a slice (D3) but costs time; an
+//       all-reduce keeps the payload. Combining values is free (N8).
+//   D9  Only reductions whose body is a single recognized associative and
+//       commutative kind (add, min, max, mul, and, or, xor) are decomposed,
+//       because the log-round algorithms combine partial results in an
+//       arbitrary order (N2). Other bodies make plan() fail.
+//   D10 A (Reduced, Tile) atom also offers an all-reduce followed by the free
+//       local slice (D2) as a DP branch, in the way gather + slice is one for
+//       tile-to-tile atoms (D4). It is offered so the checker and the
+//       print pass can exercise it, but it is never cheaper: an
+//       all-reduce moves about twice the volume of a reduce-scatter (N9's
+//       formulas) in no fewer rounds, so a cost-minimizing search never
+//       selects it.
 
 // Per-unit progress of the decomposition. Two states with equal stages are
 // equal for the purposes of every later decision (D3), so it is the memo key.
@@ -124,11 +154,19 @@ plan(const NormalizedCollective &collective, const MeshCostParams &params,
 // atom into the tile, slices move a required tile digit onto a free mesh atom,
 // an all-to-all does both on one atom, and a permute renames mesh atoms. The
 // digit a slice or all-to-all places on atom `a` is the one the collective's
-// output role for `a` requires. The chain passes if every step's preconditions
-// hold, each step's payloads equal the independently recomputed tile size,
-// and the final placement equals the collective's required placement (which
-// also drops digits replicated away and requires the right output tile).
-// Returns false and sets `why` otherwise.
+// output role for `a` requires.
+//
+// A reduced input atom carries no digit; its digit is summed away by exactly
+// one all-reduce (the atom then holds replicated data, and a slice may follow)
+// or reduce-scatter (the atom then holds the tile digit its output role
+// requires). A reduction step on an atom that is not reduced, or that was
+// already reduced, fails, as does a chain that leaves a reduced atom
+// unreduced or a collective whose reduction body is not a recognized kind.
+//
+// The chain passes if every step's preconditions hold, each step's payloads
+// equal the independently recomputed tile size, and the final placement equals
+// the collective's required placement (which also drops digits replicated away
+// and requires the right output tile). Returns false and sets `why` otherwise.
 bool verifyChainRealizesCollective(const NormalizedCollective &collective,
                                    const std::vector<PrimitiveStep> &chain,
                                    std::string &why);

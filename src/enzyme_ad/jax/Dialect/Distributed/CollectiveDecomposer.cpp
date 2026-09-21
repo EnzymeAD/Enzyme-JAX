@@ -14,7 +14,14 @@ namespace {
 
 // The units of work the DP orders (D7). Each unit owns one atom, except the
 // permute group, which owns every atom of a nontrivial cycle.
-enum class UnitKind { Slice, Gather, TileToTile, Permute };
+enum class UnitKind {
+  Slice,
+  Gather,
+  TileToTile,
+  AllReduce,
+  ReduceScatter,
+  Permute
+};
 
 struct Unit {
   UnitKind kind;
@@ -22,10 +29,15 @@ struct Unit {
   // Extent of the (single) atom; unused by Permute.
   uint64_t extent;
 
-  // The stage at which the unit has nothing left to do. Slice, Gather and
-  // Permute have stages {pending, done}; TileToTile adds the intermediate
-  // {gathered, slice pending}.
-  uint8_t finalStage() const { return kind == UnitKind::TileToTile ? 2 : 1; }
+  // The stage at which the unit has nothing left to do. Slice, Gather,
+  // AllReduce and Permute have stages {pending, done}. TileToTile and
+  // ReduceScatter add the intermediate {communicated, slice pending}: the
+  // gather (resp. all-reduce) of the alternative that ends in a free slice,
+  // which is then the only way forward from that stage.
+  uint8_t finalStage() const {
+    return kind == UnitKind::TileToTile || kind == UnitKind::ReduceScatter ? 2
+                                                                           : 1;
+  }
 };
 
 StepAtom stepAtomOf(const MeshAtom &atom) {
@@ -38,6 +50,17 @@ bool buildUnits(const NormalizedCollective &collective,
                 std::vector<Unit> &units, std::string &failureReason) {
   auto describeAtom = [](const MeshAtom &atom) {
     return "mesh" + std::to_string(atom.axis) + "." + std::to_string(atom.atom);
+  };
+  // D9: the log-round reduction algorithms need an associative and
+  // commutative body of a recognized kind.
+  auto checkReductionKind = [&](const MeshAtom &atom) {
+    assert(collective.reductionKind != ReductionKind::None &&
+           "a reduced atom implies a reduction body");
+    if (collective.reductionKind != ReductionKind::Unknown)
+      return true;
+    failureReason = "unsupported reduction body on " + describeAtom(atom) +
+                    " (not a single recognized associative operation)";
+    return false;
   };
   std::vector<StepAtom> permuted;
   for (const MeshAtom &atom : collective.meshAtoms) {
@@ -63,10 +86,24 @@ bool buildUnits(const NormalizedCollective &collective,
       permuted.push_back(stepAtomOf(atom));
       break;
     case RolePair::AllReduce:
+      if (!checkReductionKind(atom))
+        return false;
+      units.push_back({UnitKind::AllReduce, {stepAtomOf(atom)}, atom.extent});
+      break;
     case RolePair::ReduceScatter:
+      if (!checkReductionKind(atom))
+        return false;
+      units.push_back(
+          {UnitKind::ReduceScatter, {stepAtomOf(atom)}, atom.extent});
+      break;
     case RolePair::ReduceThenPermute:
-      failureReason = "unsupported reduction on " + describeAtom(atom) + " (" +
-                      toString(classify(atom)) + ")";
+      // A reduced atom has no outgoing pair, so the atoms its output digit
+      // is moved through form an open path rather than a cycle. The head of
+      // that path has a Tile or Replicate output and is a mixed row.
+      failureReason = "unsupported reduce-then-permute on " +
+                      describeAtom(atom) +
+                      " (the residual move after the reduction is "
+                      "mesh-coupled, not a permutation cycle)";
       return false;
     }
   }
@@ -129,12 +166,17 @@ public:
         if (stage == 2)
           divisor *= e;
         break;
+      case UnitKind::ReduceScatter:
+        if (stage == 2)
+          divisor *= e;
+        break;
+      case UnitKind::AllReduce:
       case UnitKind::Permute:
         break;
       }
     }
-    // Every slice divides out a distinct input tile atom, all of which the
-    // initial payload contains.
+    // Every slice and reduce-scatter divides out a distinct input tile atom,
+    // all of which the initial payload contains.
     assert(payloadBytes % divisor == 0 && "slices exceed the tile payload");
     return payloadBytes / divisor * factor;
   }
@@ -147,9 +189,10 @@ public:
     std::vector<CandidateStep> result;
     for (size_t i = 0; i < units.size(); ++i) {
       const Unit &unit = units[i];
-      bool sliceReady =
-          (unit.kind == UnitKind::Slice && state.stage[i] == 0) ||
-          (unit.kind == UnitKind::TileToTile && state.stage[i] == 1);
+      bool sliceReady = (unit.kind == UnitKind::Slice && state.stage[i] == 0) ||
+                        ((unit.kind == UnitKind::TileToTile ||
+                          unit.kind == UnitKind::ReduceScatter) &&
+                         state.stage[i] == 1);
       if (!sliceReady)
         continue;
       DecomposerState next = advance(state, i, unit.finalStage());
@@ -172,6 +215,16 @@ public:
         result.push_back({allToAllFootprint(unit.atoms, payload, params),
                           advance(state, i, 2)});
         result.push_back({allGatherFootprint(unit.atoms, payload, params),
+                          advance(state, i, 1)});
+        break;
+      case UnitKind::AllReduce:
+        result.push_back({allReduceFootprint(unit.atoms, payload, params),
+                          advance(state, i, 1)});
+        break;
+      case UnitKind::ReduceScatter:
+        result.push_back({reduceScatterFootprint(unit.atoms, payload, params),
+                          advance(state, i, 2)});
+        result.push_back({allReduceFootprint(unit.atoms, payload, params),
                           advance(state, i, 1)});
         break;
       case UnitKind::Permute: {
@@ -273,7 +326,9 @@ plan(const NormalizedCollective &collective, const MeshCostParams &params,
 namespace {
 
 // The symbolic model behind verifyChainRealizesCollective. Digits are indexed
-// mesh atoms first, then input tile atoms.
+// mesh atoms first, then input tile atoms. A reduced input atom carries no
+// digit (its digit is summed away); it is tracked by a pending flag that a
+// reduction step clears.
 class ChainChecker {
 public:
   explicit ChainChecker(const NormalizedCollective &collective)
@@ -343,6 +398,7 @@ private:
     extent.assign(numDigits, 1);
     occupant.assign(numMesh, kNone);
     requiredOccupant.assign(numMesh, kNone);
+    reductionPending.assign(numMesh, false);
 
     int64_t inputElements = 1;
     for (size_t i = 0; i < numMesh; ++i)
@@ -361,8 +417,12 @@ private:
     for (size_t i = 0; i < numMesh; ++i) {
       const MeshAtom &atom = collective.meshAtoms[i];
       if (atom.in.kind == AtomRole::Reduced) {
-        why = "reductions are not modelled";
-        return false;
+        if (collective.reductionKind == ReductionKind::None ||
+            collective.reductionKind == ReductionKind::Unknown) {
+          why = "reduction body is not a recognized associative kind";
+          return false;
+        }
+        reductionPending[i] = true;
       }
       // An input digit that goes nowhere (replicated away) carries no data.
       if (atom.in.kind == AtomRole::Tile || atom.in.kind == AtomRole::Mesh)
@@ -450,6 +510,10 @@ private:
         why = "slices onto an atom that still holds a digit";
         return false;
       }
+      if (reductionPending[x]) {
+        why = "slices onto an atom whose reduction has not run";
+        return false;
+      }
       return place(x, required, why);
     case PrimitiveKind::AllToAll: {
       if (occupant[x] == kNone) {
@@ -464,12 +528,26 @@ private:
       return true;
     }
     case PrimitiveKind::AllReduce:
+      // The atom then holds replicated data; an output that needs a tile
+      // digit on it must be followed by a slice.
+      return consumeReduction(x, why);
     case PrimitiveKind::ReduceScatter:
+      return consumeReduction(x, why) && place(x, required, why);
     case PrimitiveKind::Permute:
-      why = "kind is not part of a reduction-free chain";
-      return false;
+      llvm_unreachable("permutes are handled above");
     }
     llvm_unreachable("covered switch");
+  }
+
+  // Sums the reduced atom `x`'s digit away. Each reduced atom is consumed by
+  // exactly one step.
+  bool consumeReduction(size_t x, std::string &why) {
+    if (!reductionPending[x]) {
+      why = "reduces an atom that is not reduced, or reduces it twice";
+      return false;
+    }
+    reductionPending[x] = false;
+    return true;
   }
 
   // Moves the tile digit `digit` onto mesh atom `x`.
@@ -498,6 +576,10 @@ private:
     std::vector<int> renamed = occupant;
     for (size_t x : inStep) {
       const MeshAtom &atom = collective.meshAtoms[x];
+      if (reductionPending[x]) {
+        why = "permutes an atom whose reduction has not run";
+        return false;
+      }
       if (atom.out.kind != AtomRole::Mesh) {
         why = "permutes an atom whose output is not another atom's digit";
         return false;
@@ -514,6 +596,13 @@ private:
   }
 
   bool checkFinal(std::string &why) {
+    for (size_t x = 0; x < reductionPending.size(); ++x)
+      if (reductionPending[x]) {
+        why = "mesh" + std::to_string(collective.meshAtoms[x].axis) + "." +
+              std::to_string(collective.meshAtoms[x].atom) +
+              " is never reduced";
+        return false;
+      }
     for (size_t x = 0; x < occupant.size(); ++x)
       if (occupant[x] != requiredOccupant[x]) {
         why = "mesh" + std::to_string(collective.meshAtoms[x].axis) + "." +
@@ -537,6 +626,8 @@ private:
   const NormalizedCollective &collective;
   std::vector<uint64_t> extent;
   std::vector<int> occupant, requiredOccupant;
+  // Reduced input atoms whose digit has not been summed away yet.
+  std::vector<bool> reductionPending;
   std::set<int> local, requiredLocal;
   int64_t elementBytes = 1;
   int64_t expectedFinalPayload = 0;

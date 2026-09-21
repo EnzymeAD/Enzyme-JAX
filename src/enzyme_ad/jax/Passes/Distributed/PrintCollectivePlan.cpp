@@ -149,12 +149,19 @@ struct PrintCollectivePlanPass
       collective->emitRemark() << describe(*normalized);
       if (!chain)
         return;
-      PlanOptions options;
+      // Removes the candidates whose kind is disabled, so the alternatives a
+      // cost-minimizing search never selects can still be exercised.
+      std::vector<PrimitiveKind> disabled;
       if (disableAllToAll)
-        options.filter = [](const DecomposerState &,
-                            std::vector<CandidateStep> &candidates) {
-          llvm::erase_if(candidates, [](const CandidateStep &candidate) {
-            return candidate.step.kind == PrimitiveKind::AllToAll;
+        disabled.push_back(PrimitiveKind::AllToAll);
+      if (disableReduceScatter)
+        disabled.push_back(PrimitiveKind::ReduceScatter);
+      PlanOptions options;
+      if (!disabled.empty())
+        options.filter = [disabled](const DecomposerState &,
+                                    std::vector<CandidateStep> &candidates) {
+          llvm::erase_if(candidates, [&](const CandidateStep &candidate) {
+            return llvm::is_contained(disabled, candidate.step.kind);
           });
         };
       std::optional<CollectivePlan> plan = planCollective(

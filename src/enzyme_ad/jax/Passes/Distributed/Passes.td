@@ -537,6 +537,9 @@ def PrintCollectivePlanPass
     Option<"disableAllToAll", "disable-all-to-all", "bool", "false",
            "With chain: do not offer all-to-all, so tile-to-tile atoms use "
            "gather + local slice">,
+    Option<"disableReduceScatter", "disable-reduce-scatter", "bool", "false",
+           "With chain: do not offer reduce-scatter, so reduced atoms "
+           "scattering onto a tile atom use all-reduce + local slice">,
   ];
   let description = [{
     Emits one remark per distributed.Collective describing its
@@ -552,8 +555,9 @@ def PrintCollectivePlanPass
     semantic check of that chain, and the SSA ports that attach the chain to
     the surrounding program. Costs use the uniform defaults of
     MeshCostParams over the mesh axes' extents, with the bandwidths option
-    overriding per-axis bandwidth. disable-all-to-all exercises the gather +
-    slice alternative, which a cost-minimizing search never selects.
+    overriding per-axis bandwidth. disable-all-to-all and
+    disable-reduce-scatter exercise the gather + slice and all-reduce + slice
+    alternatives, which a cost-minimizing search never selects.
   }];
 }
 

@@ -541,9 +541,22 @@ module @ports_with_consumer {
 
 // -----
 
-// Unsupported: a reduction (all-reduce) is not decomposed yet, so the collective gets no chain and a reason.
-// CHECK: print-collective-plan: no chain (unsupported reduction on mesh0.0 (all-reduce))
-module @unsupported_all_reduce {
+// All-reduce over f32 (n = 2, S = 16 bytes, k = 1). Recursive doubling is the cheaper algorithm here:
+//   halving + doubling: 2 rounds, V = 2 * 16 * 1 / 2 = 16, latency 0.12, duration 16.12
+//   recursive doubling: 1 round, V = 16 * 1 = 16, latency 0.11, duration 16.11 (chosen)
+// More reduction cases are in decompose_collective_reduce.mlir.
+// CHECK: chain: 1 steps, total duration 16.11
+// CHECK-NEXT: step 0: all-reduce
+// CHECK-NEXT: atoms: axis0.0(x2)
+// CHECK-NEXT: payload: 16 -> 16
+// CHECK-NEXT: latency: 0.11
+// CHECK-NEXT: V: [16]
+// CHECK-NEXT: rho: [1]
+// CHECK-NEXT: duration: 16.11
+// CHECK-NEXT: semantics: verified
+// CHECK-NEXT: input port: tensor<4xf32> (the collective's input_object operand) -> step 0
+// CHECK-NEXT: result port: tensor<4xf32> (the await result, 0 uses) <- step 0
+module @all_reduce_f32 {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
 
   func.func @main() {
