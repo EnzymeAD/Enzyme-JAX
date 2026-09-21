@@ -1,11 +1,11 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=mul_zero_pad<1>(1);negative_pad_to_slice<16>;" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s --check-prefixes=CHECK,NONAN
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=mul_zero_pad<1>(0);negative_pad_to_slice<16>;" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s --check-prefixes=CHECK,NAN
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=no_nan_mul_zero_pad<1>(1);negative_pad_to_slice<16>;" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s --check-prefixes=CHECK,NONAN
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=no_nan_mul_zero_pad<1>(0);negative_pad_to_slice<16>;" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s --check-prefixes=CHECK,NAN
 
-// mul_zero_pad rewrites pad(x, 0) * y into pad(x * slice(y), 0), which forces the
+// no_nan_mul_zero_pad rewrites pad(x, 0) * y into pad(x * slice(y), 0), which forces the
 // newly-padded region to 0 rather than to 0 * y. That is only sound when y cannot be
 // NaN or +-Inf there, so the pattern is gated on its NoNan parameter.
 //
-// This runs mul_zero_pad on its own rather than the whole --enzyme-hlo-opt pipeline:
+// This runs no_nan_mul_zero_pad on its own rather than the whole --enzyme-hlo-opt pipeline:
 // that pipeline also contains binop_pad_to_concat_mul, which performs the same
 // rewrite ungated and would hide the gating being tested here.
 
@@ -23,7 +23,7 @@ func.func @pad_multiply(%4: tensor<1x3x1024xf32>, %2: tensor<1x3x2048xf32>) -> t
   return %7 : tensor<1x3x2048xf32>
 }
 
-// The pad here has a negative low padding, so mul_zero_pad never applies and
+// The pad here has a negative low padding, so no_nan_mul_zero_pad never applies and
 // negative_pad_to_slice turns it into a slice regardless of the NoNan parameter.
 func.func @pad_multiply_inv(%4: tensor<1x3x2048xf32>, %2: tensor<1x3x1024xf32>) -> tensor<1x3x1024xf32> {
   %constant_0 = stablehlo.constant dense<0.0> : tensor<f32>

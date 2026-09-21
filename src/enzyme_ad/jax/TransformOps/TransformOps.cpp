@@ -53,13 +53,15 @@ void ApplyNoNanZeroBasePowSimplify::populatePatterns(
   addNoNanZeroBasePowSimplify(patterns, getParameter(), *getContext(),
                               PatternBenefit(getBenefit().value_or(1)));
 }
-void ApplyMulZeroPadPatterns::populatePatterns(RewritePatternSet &patterns) {
-  addMulZeroPad(patterns, getParameter(), *getContext(),
-                PatternBenefit(getBenefit().value_or(1)));
+void ApplyNoNanMulZeroPadPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addNoNanMulZeroPad(patterns, getParameter(), *getContext(),
+                     PatternBenefit(getBenefit().value_or(1)));
 }
-void ApplyDivZeroPadPatterns::populatePatterns(RewritePatternSet &patterns) {
-  addDivZeroPad(patterns, getParameter(), *getContext(),
-                PatternBenefit(getBenefit().value_or(1)));
+void ApplyNoNanDivZeroPadPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addNoNanDivZeroPad(patterns, getParameter(), *getContext(),
+                     PatternBenefit(getBenefit().value_or(1)));
 }
 void ApplySelfSubtractToConvolutionLikePatterns::populatePatterns(
     RewritePatternSet &patterns) {

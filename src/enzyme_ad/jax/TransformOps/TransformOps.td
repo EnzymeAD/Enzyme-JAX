@@ -511,7 +511,8 @@ def ApplyBroadcastPadPatterns : EnzymeHLOPatternOp<
     "broadcast_pad"> {
   let patterns = ["BroadcastPad"];
 }
-def ApplyMulZeroPadPatterns : EnzymeHLOParameterizedPatternOp<"mul_zero_pad"> {
+def ApplyNoNanMulZeroPadPatterns : EnzymeHLOParameterizedPatternOp<
+    "no_nan_mul_zero_pad"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.
@@ -524,7 +525,8 @@ def ApplyMulZeroPadPatterns : EnzymeHLOParameterizedPatternOp<"mul_zero_pad"> {
     }
   }];
 }
-def ApplyDivZeroPadPatterns : EnzymeHLOParameterizedPatternOp<"div_zero_pad"> {
+def ApplyNoNanDivZeroPadPatterns : EnzymeHLOParameterizedPatternOp<
+    "no_nan_div_zero_pad"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.

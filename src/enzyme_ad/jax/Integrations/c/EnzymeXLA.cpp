@@ -791,8 +791,8 @@ static void addPadPasses(std::vector<std::string> &list,
   list.push_back("reduce_pad<1>");
   list.push_back("broadcast_pad<1>");
   list.push_back("zero_product_reshape_pad<1>");
-  list.push_back(passWithBenefitAndArg("mul_zero_pad", 1, noNan));
-  list.push_back(passWithBenefitAndArg("div_zero_pad", 1, noNan));
+  list.push_back(passWithBenefitAndArg("no_nan_mul_zero_pad", 1, noNan));
+  list.push_back(passWithBenefitAndArg("no_nan_div_zero_pad", 1, noNan));
   list.push_back("binop_const_reshape_pad<1>");
   list.push_back("binop_pad_to_concat_add<1>");
   list.push_back("binop_pad_to_concat_mul<1>");
@@ -1081,9 +1081,9 @@ void enzymexlaGetTransformPassesList(
 
   // Pad passes
   if (options->enable_pad_optimization_passes) {
-    // mul_zero_pad/div_zero_pad rewrite the padded region to the pad value,
-    // which is only sound under the same assumption EnzymeHLOOptPass uses for
-    // these two patterns.
+    // no_nan_mul_zero_pad/no_nan_div_zero_pad rewrite the padded region to
+    // the pad value, which is only sound under the same assumption
+    // EnzymeHLOOptPass uses for these two patterns.
     addPadPasses(list, maxConst, options->enable_licm_optimization_passes,
                  options->no_nan || options->all_finite);
   }

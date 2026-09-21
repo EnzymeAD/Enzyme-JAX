@@ -11595,10 +11595,10 @@ struct BinopBinopPadConst
   }
 };
 
-struct MulZeroPad
-    : public NoNanCheckedOpRewritePattern<stablehlo::MulOp, MulZeroPad> {
-  using NoNanCheckedOpRewritePattern<stablehlo::MulOp,
-                                     MulZeroPad>::NoNanCheckedOpRewritePattern;
+struct NoNanMulZeroPad
+    : public NoNanCheckedOpRewritePattern<stablehlo::MulOp, NoNanMulZeroPad> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::MulOp, NoNanMulZeroPad>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
                                     PatternRewriter &rewriter) const {
@@ -11646,10 +11646,10 @@ struct MulZeroPad
   }
 };
 
-struct DivZeroPad
-    : public NoNanCheckedOpRewritePattern<stablehlo::DivOp, DivZeroPad> {
-  using NoNanCheckedOpRewritePattern<stablehlo::DivOp,
-                                     DivZeroPad>::NoNanCheckedOpRewritePattern;
+struct NoNanDivZeroPad
+    : public NoNanCheckedOpRewritePattern<stablehlo::DivOp, NoNanDivZeroPad> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::DivOp, NoNanDivZeroPad>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
                                     PatternRewriter &rewriter) const {
@@ -37529,18 +37529,18 @@ void mlir::transform::addNoNanZeroBasePowSimplify(RewritePatternSet &patterns,
                                             benefit);
 }
 
-void mlir::transform::addMulZeroPad(RewritePatternSet &patterns,
-                                    bool allowOnFloatingPointMath,
-                                    MLIRContext &context,
-                                    PatternBenefit benefit) {
-  patterns.insert<MulZeroPad>(allowOnFloatingPointMath, &context, benefit);
+void mlir::transform::addNoNanMulZeroPad(RewritePatternSet &patterns,
+                                         bool allowOnFloatingPointMath,
+                                         MLIRContext &context,
+                                         PatternBenefit benefit) {
+  patterns.insert<NoNanMulZeroPad>(allowOnFloatingPointMath, &context, benefit);
 }
 
-void mlir::transform::addDivZeroPad(RewritePatternSet &patterns,
-                                    bool allowOnFloatingPointMath,
-                                    MLIRContext &context,
-                                    PatternBenefit benefit) {
-  patterns.insert<DivZeroPad>(allowOnFloatingPointMath, &context, benefit);
+void mlir::transform::addNoNanDivZeroPad(RewritePatternSet &patterns,
+                                         bool allowOnFloatingPointMath,
+                                         MLIRContext &context,
+                                         PatternBenefit benefit) {
+  patterns.insert<NoNanDivZeroPad>(allowOnFloatingPointMath, &context, benefit);
 }
 
 void mlir::transform::addSelfSubtractToConvolutionLike(
@@ -37800,7 +37800,8 @@ struct EnzymeHLOOptPass
     if (passses & 2)
       patterns.add<ReducePad, BroadcastPad>(context);
     if (passses & 4) {
-      patterns.add<MulZeroPad, DivZeroPad>((no_nan || all_finite), context);
+      patterns.add<NoNanMulZeroPad, NoNanDivZeroPad>((no_nan || all_finite),
+                                                     context);
       patterns.add<ZeroProductReshapePad>(context);
     }
     if (passses & 8)
