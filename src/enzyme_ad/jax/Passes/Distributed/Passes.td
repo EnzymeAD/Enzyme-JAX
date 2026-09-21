@@ -527,6 +527,17 @@ def PrintCollectivePlanPass
   let dependentDialects = [
     "enzyme::axis::AxisDialect", "enzyme::distributed::DistributedDialect"
   ];
+  let options = [
+    Option<"chain", "chain", "bool", "false",
+           "Also report the decomposition of each collective into primitive "
+           "steps with their footprints">,
+    ListOption<"bandwidths", "bandwidths", "double",
+               "With chain: bandwidth per physical mesh axis; uniform 1 when "
+               "omitted">,
+    Option<"disableAllToAll", "disable-all-to-all", "bool", "false",
+           "With chain: do not offer all-to-all, so tile-to-tile atoms use "
+           "gather + local slice">,
+  ];
   let description = [{
     Emits one remark per distributed.Collective describing its
     NormalizedCollective: each mesh atom with its (in, out) roles and the
@@ -534,6 +545,15 @@ def PrintCollectivePlanPass
     payload size in bytes, and each reduction group's kind. Does not change
     the IR. A collective that is not atomic or cannot be resolved gets a remark
     saying so; run distributed-atomize-collectives first.
+
+    With chain=true, a second remark per collective gives the chain the
+    decomposer chose (each step's kind, atoms, payloads, latency, per-axis
+    volume and demand, and duration), the outcome of the independent
+    semantic check of that chain, and the SSA ports that attach the chain to
+    the surrounding program. Costs use the uniform defaults of
+    MeshCostParams over the mesh axes' extents, with the bandwidths option
+    overriding per-axis bandwidth. disable-all-to-all exercises the gather +
+    slice alternative, which a cost-minimizing search never selects.
   }];
 }
 

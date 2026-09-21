@@ -1,8 +1,5 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 
-#include "llvm/Support/Format.h"
-#include "llvm/Support/raw_ostream.h"
-
 #include "src/enzyme_ad/jax/Dialect/Distributed/CollectiveCost.h"
 
 #include <algorithm>
@@ -13,31 +10,6 @@ namespace mlir::enzyme::distributed {
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h.inc"
 
 namespace {
-
-void printNumbers(llvm::raw_ostream &os, const std::vector<double> &values) {
-  os << "[";
-  for (size_t i = 0; i < values.size(); ++i)
-    os << (i ? ", " : "") << llvm::format("%g", values[i]);
-  os << "]";
-}
-
-std::string describe(const PrimitiveStep &step) {
-  std::string message;
-  llvm::raw_string_ostream os(message);
-  os << toString(step.kind) << "\n";
-  os << "atoms:";
-  for (const StepAtom &atom : step.atoms)
-    os << " axis" << atom.axis << "." << atom.atom << "(x" << atom.extent
-       << ")";
-  os << "\npayload: " << step.payloadIn << " -> " << step.payloadOut << "\n";
-  os << "latency: " << llvm::format("%g", step.latency) << "\n";
-  os << "V: ";
-  printNumbers(os, step.volume);
-  os << "\nrho: ";
-  printNumbers(os, step.rho);
-  os << "\nduration: " << llvm::format("%g", step.isolatedDuration()) << "\n";
-  return message;
-}
 
 struct PrintPrimitiveFootprintsPass
     : public impl::PrintPrimitiveFootprintsPassBase<
@@ -115,7 +87,7 @@ struct PrintPrimitiveFootprintsPass
       module.emitError("unknown primitive kind '") << kind << "'";
       return signalPassFailure();
     }
-    module.emitRemark() << describe(step);
+    module.emitRemark() << describeStep(step);
     markAllAnalysesPreserved();
   }
 };

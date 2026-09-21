@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace mlir::enzyme::distributed {
@@ -205,6 +206,11 @@ double permuteSwapChangeFraction(uint64_t e);
 PrimitiveStep localSliceFootprint(const std::vector<StepAtom> &atoms,
                                   int64_t payloadIn, int64_t payloadOut,
                                   const MeshCostParams &params);
+
+// Multi-line text report of a step: kind, atoms, payloads, latency, per-axis
+// volume and demand, and isolated duration. The format used by the debug
+// passes that print footprints.
+std::string describeStep(const PrimitiveStep &step);
 
 } // namespace mlir::enzyme::distributed
 

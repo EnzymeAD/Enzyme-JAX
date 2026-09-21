@@ -1,8 +1,10 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "src/enzyme_ad/jax/Dialect/Distributed/CollectiveDecomposer.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/NormalizedCollective.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 
@@ -72,6 +74,35 @@ std::string describe(const NormalizedCollective &normalized) {
   return message;
 }
 
+// Reports the decomposer's chain for `plan`, the outcome of the independent
+// semantic check, and the ports that attach the chain to the program.
+std::string describeChain(const CollectivePlan &plan,
+                          const NormalizedCollective &normalized) {
+  std::string message;
+  llvm::raw_string_ostream os(message);
+  os << "chain: " << plan.chain.size() << " steps, total duration "
+     << llvm::format("%g", plan.totalDuration()) << "\n";
+  for (size_t i = 0; i < plan.chain.size(); ++i)
+    os << "step " << i << ": " << describeStep(plan.chain[i]);
+  std::string why;
+  if (verifyChainRealizesCollective(normalized, plan.chain, why))
+    os << "semantics: verified\n";
+  else
+    os << "semantics: FAILED (" << why << ")\n";
+  // The chain is sequential, so these two values are its only external
+  // dependencies: the input feeds step 0 and the result is produced by the
+  // last step.
+  os << "input port: " << plan.inputPort.getType()
+     << " (the collective's input_object operand) -> "
+     << (plan.chain.empty() ? "result port" : "step 0") << "\n";
+  os << "result port: " << plan.resultPort.getType() << " (the await result, "
+     << llvm::range_size(plan.resultPort.getUses()) << " uses) <- "
+     << (plan.chain.empty() ? "input port"
+                            : "step " + std::to_string(plan.chain.size() - 1))
+     << "\n";
+  return message;
+}
+
 struct PrintCollectivePlanPass
     : public impl::PrintCollectivePlanPassBase<PrintCollectivePlanPass> {
   using PrintCollectivePlanPassBase::PrintCollectivePlanPassBase;
@@ -90,6 +121,22 @@ struct PrintCollectivePlanPass
       meshAxisTypes.push_back(
           cast<PhysicalCommAxisType>(cast<TypeAttr>(axisAttr).getValue()));
 
+    std::optional<MeshCostParams> params;
+    if (chain) {
+      std::vector<uint64_t> extents;
+      for (PhysicalCommAxisType axis : meshAxisTypes)
+        extents.push_back(axis.getExtent());
+      params = MeshCostParams(extents);
+      if (!bandwidths.empty()) {
+        if (bandwidths.size() != meshAxisTypes.size()) {
+          module.emitError("bandwidths needs one entry per physical axis");
+          signalPassFailure();
+          return;
+        }
+        params->bandwidth.assign(bandwidths.begin(), bandwidths.end());
+      }
+    }
+
     module.walk([&](DistributedCollectiveOp collective) {
       std::string failureReason;
       std::optional<NormalizedCollective> normalized =
@@ -100,6 +147,24 @@ struct PrintCollectivePlanPass
         return;
       }
       collective->emitRemark() << describe(*normalized);
+      if (!chain)
+        return;
+      PlanOptions options;
+      if (disableAllToAll)
+        options.filter = [](const DecomposerState &,
+                            std::vector<CandidateStep> &candidates) {
+          llvm::erase_if(candidates, [](const CandidateStep &candidate) {
+            return candidate.step.kind == PrimitiveKind::AllToAll;
+          });
+        };
+      std::optional<CollectivePlan> plan = planCollective(
+          collective, meshAxisTypes, *params, failureReason, options);
+      if (!plan) {
+        collective->emitRemark()
+            << "print-collective-plan: no chain (" << failureReason << ")";
+        return;
+      }
+      collective->emitRemark() << describeChain(*plan, *normalized);
     });
 
     markAllAnalysesPreserved();
