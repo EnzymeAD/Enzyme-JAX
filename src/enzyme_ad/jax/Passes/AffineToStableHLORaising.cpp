@@ -257,36 +257,6 @@ static bool isContinuousAlongIVs(affine::AffineValueMap map, AffineExpr E) {
   return computeExprRange(map, E).has_value();
 }
 
-// has single (or zero) iv per dim.
-// iv are present only at one dim.
-static bool needsGeneralScatterGather(affine::AffineValueMap accessValueMap) {
-  bool repeatingIV = false;
-  auto map = accessValueMap.getAffineMap();
-  auto sz = map.getNumDims();
-  SmallVector<bool> ivseen(sz, false);
-  for (auto E : map.getResults()) {
-    if (E.isSymbolicOrConstant())
-      continue;
-    int numIVs = 0;
-    for (int iv = 0; iv < sz; ++iv) {
-      if (!E.isFunctionOfDim(iv))
-        continue;
-      if (ivseen[iv]) {
-        repeatingIV = true;
-        break;
-      }
-      if (numIVs == 1) {
-        if (!isContinuousAlongIVs(accessValueMap, E))
-          return true;
-      } else if (numIVs >= 2)
-        return true;
-      numIVs++;
-      ivseen[iv] = true;
-    }
-  }
-  return repeatingIV;
-}
-
 static void
 emitIVToStableHLO(OpBuilder &builder, Value iv, InductionVariableRange range,
                   IRMapping &mapping,
@@ -437,6 +407,45 @@ struct ParallelContext {
   }
 };
 
+// has single (or zero) iv per dim, or a contiguous pair of batched ivs.
+// iv are present only at one dim.
+static bool needsGeneralScatterGather(affine::AffineValueMap accessValueMap,
+                                      ParallelContext &pc) {
+  bool repeatingIV = false;
+  auto map = accessValueMap.getAffineMap();
+  auto sz = map.getNumDims();
+  SmallVector<bool> ivseen(sz, false);
+  for (auto E : map.getResults()) {
+    if (E.isSymbolicOrConstant())
+      continue;
+    int numIVs = 0;
+    for (int iv = 0; iv < sz; ++iv) {
+      if (!E.isFunctionOfDim(iv))
+        continue;
+      if (ivseen[iv]) {
+        repeatingIV = true;
+        break;
+      }
+      if (numIVs == 1) {
+        if (!isContinuousAlongIVs(accessValueMap, E))
+          return true;
+        // A contiguous pair is one slice only when both inductions are
+        // batched. With one of them scalar in this iteration (`%t + %k * 8`,
+        // a lane reading its row of a scratch inside a sequential loop) the
+        // access is a per-lane index, which only the gather expresses.
+        for (int d = 0; d < sz; ++d)
+          if (E.isFunctionOfDim(d) &&
+              !pc.isParallelIV(accessValueMap.getOperand(d)))
+            return true;
+      } else if (numIVs >= 2)
+        return true;
+      numIVs++;
+      ivseen[iv] = true;
+    }
+  }
+  return repeatingIV;
+}
+
 struct ExpandedAffineDim {
   unsigned operandPosition;
   int64_t size;
@@ -524,9 +533,13 @@ getExpandedAffineDims(affine::AffineValueMap map, AffineExpr expr,
     return failure();
 
   // In row-major order, each outer IV advances by exactly the number of
-  // elements spanned by all dimensions inside it.
+  // elements spanned by all dimensions inside it. A dimension of one
+  // element (an induction the context sizes to a single iteration) spans
+  // nothing and constrains no step.
   int64_t expectedStep = dims.back().linearStep;
   for (auto dim : llvm::reverse(dims)) {
+    if (dim.size == 1)
+      continue;
     if (dim.linearStep != expectedStep)
       return failure();
     expectedStep *= dim.size;
@@ -1348,17 +1361,25 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
 static Value buildGatherScatterIndices(
     Location loc, ValueRange indexColumns, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps,
-    SmallVectorImpl<Value> &ivs, SmallVectorImpl<int64_t> &gridShape) {
+    SmallVectorImpl<Value> &ivs, SmallVectorImpl<int64_t> &gridShape,
+    ParallelContext pc) {
   Value indices = nullptr;
 
-  for (auto raisedIdx : indexColumns) {
-    auto Ty = cast<RankedTensorType>(raisedIdx.getType());
-
+  for (Value raisedIdx : indexColumns) {
     SmallVector<int64_t> dimsToBroadcast;
 
     if (!maps.count(raisedIdx))
       return nullptr;
     auto map = maps.lookup(raisedIdx);
+    // An index loaded through a contiguous pair of inductions (`t + u * 2`)
+    // carries the pair as one flattened dimension; the grid has one axis per
+    // induction, so recover them first.
+    auto expanded = expandAffineValueMap(raisedIdx, map, builder, pc);
+    if (failed(expanded))
+      return nullptr;
+    map = *expanded;
+    maps[raisedIdx] = map;
+    auto Ty = cast<RankedTensorType>(raisedIdx.getType());
 
     for (auto [i, E] : llvm::enumerate(map.getAffineMap().getResults())) {
       auto iv = getIVForExpr(map, E);
@@ -1439,10 +1460,9 @@ static Value buildGatherScatterIndices(
   return indices;
 }
 
-static Value
-emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
-                 OpBuilder &builder,
-                 llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
+static Value emitLoadAsGather(
+    Location loc, Value mappedMemref, ValueRange lIndices, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
   SmallVector<int64_t> sliceSizes(lIndices.size(), 1);
   SmallVector<int64_t> startIndexMap;
   for (int64_t i = 0, e = lIndices.size(); i < e; ++i)
@@ -1451,8 +1471,8 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
   SmallVector<int64_t> outputShape;
   SmallVector<Value> ivs;
 
-  Value indices =
-      buildGatherScatterIndices(loc, lIndices, builder, maps, ivs, outputShape);
+  Value indices = buildGatherScatterIndices(loc, lIndices, builder, maps, ivs,
+                                            outputShape, pc);
   if (!indices)
     return nullptr;
 
@@ -1502,8 +1522,8 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
   // dimensions reuses a single axis instead of forming a cartesian product.
   SmallVector<Value> ivs;
   SmallVector<int64_t> gridShape;
-  Value indices =
-      buildGatherScatterIndices(loc, sIndices, builder, maps, ivs, gridShape);
+  Value indices = buildGatherScatterIndices(loc, sIndices, builder, maps, ivs,
+                                            gridShape, pc);
   if (!indices)
     return nullptr;
 
@@ -3352,7 +3372,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed() ||
         (dynIndices &&
          llvm::any_of(strides, [](int64_t stride) { return stride != 1; })) ||
-        needsGeneralScatterGather(accessValueMap) ||
+        needsGeneralScatterGather(accessValueMap, pc) ||
         usesLaneTensorIV(accessValueMap, mapping, pc);
 
     if (emitAsGather) {
@@ -3372,7 +3392,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
       Value res = emitLoadAsGather(
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-          inputTen, lIndices, builder, maps);
+          inputTen, lIndices, builder, maps, pc);
       if (!res) {
         return op->emitError("failed to raise load (indices of rank > 1)")
                << *op;
@@ -3695,7 +3715,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     bool emitAsScatter =
         affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed() ||
         llvm::any_of(strides, [](int64_t stride) { return stride != 1; }) ||
-        needsGeneralScatterGather(accessValueMap) ||
+        needsGeneralScatterGather(accessValueMap, pc) ||
         usesLaneTensorIV(accessValueMap, mapping, pc);
 
     if (emitAsScatter) {
@@ -4590,7 +4610,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     Value res = emitLoadAsGather(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-        mapping.lookup(memref), lIndices, builder, maps);
+        mapping.lookup(memref), lIndices, builder, maps, pc);
     if (!res) {
       return failure();
     }
