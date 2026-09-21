@@ -458,8 +458,7 @@ def AtomizeCollectivesPass
     "enzyme::axis::AxisDialect", "enzyme::distributed::DistributedDialect"
   ];
   let description = [{
-    Rewrites every distributed.Collective into atomic form and marks it with
-    the `atomic` unit attribute, which the op verifier checks. A collective is
+    Rewrites every distributed.Collective into atomic form. A collective is
     atomic when:
 
       * every mesh atom appears once in input_mesh and once in output_mesh,
@@ -468,12 +467,14 @@ def AtomizeCollectivesPass
         reduction or mapping) are either equal or disjoint.
 
     An atom is a piece of an axis that no factor of the collective cuts
-    further.
+    further. The rewrite asserts its own result is atomic
+    (isCollectiveAtomic in CollectiveAtoms.h); nothing in the IR marks a
+    collective as atomic for other passes to check.
 
     Expects distributed-make-replications-explicit to have run. A collective
     with no common atom basis (a mapping pair that cannot be split into equal
     atoms, such as 3*2 against 2*3, or cuts on an axis that do not nest) is
-    left unmarked with a remark; the pass still succeeds, since such a
+    left unrewritten with a remark; the pass still succeeds, since such a
     collective is an infeasible sharding candidate rather than a bug.
   }];
 }
