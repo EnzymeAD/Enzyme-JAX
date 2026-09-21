@@ -323,8 +323,36 @@ module @all_reduce_unknown_kind {
 
 // -----
 
-// Reduce-then-permute is not decomposed. mesh0 is reduced and its output comes from mesh1, whose own output is replicated: the atoms the reduced digit is moved through form an open path (mesh1 -> mesh0), not a permutation cycle, so the residual after the reduction is a move that is not a rename of atoms. Here the reduced atom comes first in atom order.
-// CHECK: print-collective-plan: no chain (unsupported reduce-then-permute on mesh0.0 (the residual move after the reduction is mesh-coupled, not a permutation cycle))
+// Reduce then permute, reduced atom first. mesh0 is reduced and its output comes from mesh1, whose own output is replicated: the atoms the reduced digit is moved through form an open path (mesh1 -> mesh0), not a permutation cycle, so both are half-split: all-reduce mesh0, all-gather mesh1, then a free slice onto mesh0 of the digit mesh1 held. n = 2, S = 4.
+//   all-reduce mesh0: recursive doubling V = 4, latency 0.11, duration 4.11
+//   all-gather mesh1: V = 4, latency 0.11, duration 4.11, payload 4 -> 8
+//   slice onto mesh0: 8 -> 4, free
+// Total 8.22. More cases (n = 4, other rows, mixed with a permute) are in decompose_collective_meshcoupled.mlir.
+// CHECK: chain: 3 steps, total duration 8.22
+// CHECK-NEXT: step 0: all-reduce
+// CHECK-NEXT: atoms: axis0.0(x2)
+// CHECK-NEXT: payload: 4 -> 4
+// CHECK-NEXT: latency: 0.11
+// CHECK-NEXT: V: [4, 0]
+// CHECK-NEXT: rho: [1, 0]
+// CHECK-NEXT: duration: 4.11
+// CHECK-NEXT: step 1: all-gather
+// CHECK-NEXT: atoms: axis1.0(x2)
+// CHECK-NEXT: payload: 4 -> 8
+// CHECK-NEXT: latency: 0.11
+// CHECK-NEXT: V: [0, 4]
+// CHECK-NEXT: rho: [0, 1]
+// CHECK-NEXT: duration: 4.11
+// CHECK-NEXT: step 2: local-slice
+// CHECK-NEXT: atoms: axis0.0(x2)
+// CHECK-NEXT: payload: 8 -> 4
+// CHECK-NEXT: latency: 0
+// CHECK-NEXT: V: [0, 0]
+// CHECK-NEXT: rho: [0, 0]
+// CHECK-NEXT: duration: 0
+// CHECK-NEXT: semantics: verified
+// CHECK-NEXT: input port: tensor<4xi8> (the collective's input_object operand) -> step 0
+// CHECK-NEXT: result port: tensor<4xi8> (the await result, 0 uses) <- step 2
 module @reduce_then_permute_reduced_first {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
 
@@ -369,8 +397,32 @@ module @reduce_then_permute_reduced_first {
 
 // -----
 
-// The same collective with the axes swapped (mesh1 reduced, mesh0 feeding it): the path head mesh0 has (in mesh, out replicate) and is reported first as a mixed row.
-// CHECK: print-collective-plan: no chain (unsupported mixed row on mesh0.0 (in mesh, out replicate))
+// The same collective with the axes swapped (mesh1 reduced, mesh0 feeding it): the chain is the same with the axes exchanged, 8.22.
+// CHECK: chain: 3 steps, total duration 8.22
+// CHECK-NEXT: step 0: all-reduce
+// CHECK-NEXT: atoms: axis1.0(x2)
+// CHECK-NEXT: payload: 4 -> 4
+// CHECK-NEXT: latency: 0.11
+// CHECK-NEXT: V: [0, 4]
+// CHECK-NEXT: rho: [0, 1]
+// CHECK-NEXT: duration: 4.11
+// CHECK-NEXT: step 1: all-gather
+// CHECK-NEXT: atoms: axis0.0(x2)
+// CHECK-NEXT: payload: 4 -> 8
+// CHECK-NEXT: latency: 0.11
+// CHECK-NEXT: V: [4, 0]
+// CHECK-NEXT: rho: [1, 0]
+// CHECK-NEXT: duration: 4.11
+// CHECK-NEXT: step 2: local-slice
+// CHECK-NEXT: atoms: axis1.0(x2)
+// CHECK-NEXT: payload: 8 -> 4
+// CHECK-NEXT: latency: 0
+// CHECK-NEXT: V: [0, 0]
+// CHECK-NEXT: rho: [0, 0]
+// CHECK-NEXT: duration: 0
+// CHECK-NEXT: semantics: verified
+// CHECK-NEXT: input port: tensor<4xi8> (the collective's input_object operand) -> step 0
+// CHECK-NEXT: result port: tensor<4xi8> (the await result, 0 uses) <- step 2
 module @reduce_then_permute_head_first {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
 

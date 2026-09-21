@@ -594,9 +594,42 @@ module @all_reduce_f32 {
 
 // -----
 
-// Unsupported: mixed mesh row. mesh0.0 has (in mesh, out tile) and mesh1.0 has (in tile, out mesh), so the roles are coupled through a rotation and are not a plain permute; no chain is reported.
-// CHECK: print-collective-plan: no chain (unsupported mixed row on mesh0.0 (in mesh, out tile))
-module @unsupported_mixed_mesh_row {
+// Mixed mesh row, (Mesh, Tile) next to (Tile, Mesh): the input tile digit is sliced onto mesh0, mesh0's digit goes to mesh1, and mesh1's digit goes to the output tile. The coupled atoms are half-split: an all-gather of each atom, then a free slice onto each. S = 2, n = 2, each gather V = 2, latency 0.11, duration 2.11 and payload 2 -> 4.
+//   gather mesh0 (payload 2 -> 4), slice onto mesh0 (the input tile digit, 4 -> 2), gather mesh1 (2 -> 4), slice onto mesh1 (mesh0's digit, 4 -> 2)
+// mesh0 goes first because its slice needs only its own gather and returns the payload to 2 before mesh1 gathers; the other order would gather mesh0 at payload 4 (V = 4). Total 2.11 + 2.11 = 4.22.
+// CHECK: chain: 4 steps, total duration 4.22
+// CHECK-NEXT: step 0: all-gather
+// CHECK-NEXT: atoms: axis0.0(x2)
+// CHECK-NEXT: payload: 2 -> 4
+// CHECK-NEXT: latency: 0.11
+// CHECK-NEXT: V: [2, 0]
+// CHECK-NEXT: rho: [1, 0]
+// CHECK-NEXT: duration: 2.11
+// CHECK-NEXT: step 1: local-slice
+// CHECK-NEXT: atoms: axis0.0(x2)
+// CHECK-NEXT: payload: 4 -> 2
+// CHECK-NEXT: latency: 0
+// CHECK-NEXT: V: [0, 0]
+// CHECK-NEXT: rho: [0, 0]
+// CHECK-NEXT: duration: 0
+// CHECK-NEXT: step 2: all-gather
+// CHECK-NEXT: atoms: axis1.0(x2)
+// CHECK-NEXT: payload: 2 -> 4
+// CHECK-NEXT: latency: 0.11
+// CHECK-NEXT: V: [0, 2]
+// CHECK-NEXT: rho: [0, 1]
+// CHECK-NEXT: duration: 2.11
+// CHECK-NEXT: step 3: local-slice
+// CHECK-NEXT: atoms: axis1.0(x2)
+// CHECK-NEXT: payload: 4 -> 2
+// CHECK-NEXT: latency: 0
+// CHECK-NEXT: V: [0, 0]
+// CHECK-NEXT: rho: [0, 0]
+// CHECK-NEXT: duration: 0
+// CHECK-NEXT: semantics: verified
+// CHECK-NEXT: input port: tensor<2xi8> (the collective's input_object operand) -> step 0
+// CHECK-NEXT: result port: tensor<2xi8> (the await result, 0 uses) <- step 3
+module @mixed_mesh_row {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
 
   func.func @main() {

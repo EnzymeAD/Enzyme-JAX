@@ -29,20 +29,20 @@ namespace mlir::enzyme::distributed {
 //   (Replicate, Tile)                 local slice
 //   (Tile, Replicate)                 all-gather
 //   (Tile, Tile)                      all-to-all, or all-gather + local slice
-//   (Mesh, Mesh), different atoms     collective permute
+//   (Mesh, Mesh) in pure cycles       collective permute
 //   (Replicate, Replicate), or a mesh atom feeding itself: nothing
-// Tile atoms paired only with tile atoms of the other side are device-local
-// relabelings and cost nothing. Not decomposed, and reported by plan() as a
-// failure with a reason:
-//   - (Reduced, Mesh): reduction then permute. A reduced atom has no outgoing
-//     pair, so the atoms its output is moved through form an open path,
-//     which is not a permutation cycle. The head of that path has a Tile or
-//     Replicate output and is one of the mixed rows below, which need a move
-//     that is not a rename of atoms.
-//   - the mixed rows (Tile, Mesh), (Replicate, Mesh), (Mesh, Tile),
-//     (Mesh, Replicate).
+// Every other row with a Mesh role, (Reduced, Mesh), (Replicate, Mesh),
+// (Tile, Mesh), (Mesh, Tile), (Mesh, Replicate) and a (Mesh, Mesh) atom whose
+// component is not a pure cycle, is mesh-coupled: its cost depends on the
+// partner atoms' roles. Mesh-coupled components are decomposed by the
+// half-split (D11). Tile atoms paired only with tile atoms of the other side
+// are device-local relabelings and cost nothing. Not decomposed, and reported
+// by plan() as a failure with a reason:
 //   - reductions whose body is not a single recognized associative operation
 //     (D9).
+//   - collectives with more than kMaxLiveUnits units (D7).
+//   - tile atoms whose partner is neither a mesh atom nor the other side's
+//     tile.
 //
 // Decomposition assumptions
 // -------------------------
@@ -59,9 +59,10 @@ namespace mlir::enzyme::distributed {
 //       atoms paired with tile atoms of the other side are relabelings of
 //       local layout, which is not costed.
 //   D3  Payload tracking: a slice on extent e divides the per-device payload
-//       by e, a gather multiplies it by e, an all-to-all and a permute keep
-//       it. The payload before a step therefore depends only on which steps
-//       were done, not on their order (N7: size is the only cost input).
+//       by e, a gather multiplies it by e, an all-to-all, an all-reduce and a
+//       permute keep it. The payload before a step therefore depends only on
+//       which steps were done, not on their order (N7: size is the only cost
+//       input).
 //   D4  Tile-to-tile atoms choose between one all-to-all and a gather
 //       followed by the (free) slice. Both are DP branches, not a choice
 //       made inside a footprint, because their payload effects on the other
@@ -100,6 +101,24 @@ namespace mlir::enzyme::distributed {
 //       all-reduce moves about twice the volume of a reduce-scatter (N9's
 //       formulas) in no fewer rounds, so a cost-minimizing search never
 //       selects it.
+//   D11 Mesh atoms tied together by mesh partners form a connected component.
+//       A component of only (Mesh, Mesh) atoms is a set of permutation cycles
+//       (D5). Any other component is half-split: an atom with roles (in = P,
+//       out = Q) becomes a first half by P (all-reduce for Reduced, all-gather
+//       for Tile or Mesh, nothing for Replicate) that leaves the atom holding
+//       replicated data, then a free local slice (D2) placing Q (nothing for
+//       Replicate). This can move more data than a dedicated move of the
+//       digit would, but it uses only the primitives above.
+//   D12 A unit may depend on other units. A half-split slice waits for its own
+//       atom's first half and, when its output digit comes from a partner atom,
+//       for the partner's first half, so that the digit is local by then.
+//       Dependencies restrict the DP's orders (D6) but do not change costs.
+//       A gather can therefore raise the payload above its initial value
+//       before the slice that consumes it lowers it again (D3).
+//   D13 Components share only the payload. Each lists alternative variants
+//       (sets of units), and plan() searches every combination of one variant
+//       per component, up to kMaxVariantCombinations, and keeps the cheapest
+//       chain.
 
 // Per-unit progress of the decomposition. Two states with equal stages are
 // equal for the purposes of every later decision (D3), so it is the memo key.
@@ -131,9 +150,14 @@ struct PlanOptions {
   CandidateFilter filter;
 };
 
+// Most combinations of component variants (see D13) plan() searches.
+constexpr size_t kMaxVariantCombinations = 64;
+
 // The most units of work (see D7) plan() accepts. The memoized state space
-// grows up to 3^units, so this keeps the exact DP tractable.
-constexpr size_t kMaxLiveUnits = 12;
+// grows up to 3^units, so a collective near this limit can take very long to
+// search exactly. TODO: replace with a state budget once the heuristic step
+// orderer bounds the branching.
+constexpr size_t kMaxLiveUnits = 20;
 
 // The chain realizing `collective` with the least summed isolated duration
 // (D6), in execution order. An empty chain means the collective moves nothing
@@ -154,7 +178,10 @@ plan(const NormalizedCollective &collective, const MeshCostParams &params,
 // atom into the tile, slices move a required tile digit onto a free mesh atom,
 // an all-to-all does both on one atom, and a permute renames mesh atoms. The
 // digit a slice or all-to-all places on atom `a` is the one the collective's
-// output role for `a` requires.
+// output role for `a` requires: an input tile digit, or, for a Mesh(m) role,
+// the digit that started on input atom m, which must already be local (a
+// gather of m moved it there). A gather of an atom whose input role is Mesh
+// releases that atom's own digit the same way as for a Tile role.
 //
 // A reduced input atom carries no digit; its digit is summed away by exactly
 // one all-reduce (the atom then holds replicated data, and a slice may follow)

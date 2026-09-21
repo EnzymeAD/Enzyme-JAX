@@ -110,8 +110,10 @@ enum class RolePair {
 // Permute: (Tile, Mesh), (Replicate, Mesh), (Mesh, Tile), (Mesh, Replicate)
 // and (Mesh, Mesh) between two different atoms. Some of these also imply a
 // slice, gather or broadcast, and their cost depends on the partner atom's
-// role. `atom`'s own identity is needed to tell a mesh atom feeding itself
-// (NoOp) from a genuine permutation.
+// role, so the decomposer resolves them per connected component (a pure
+// permutation cycle stays a permute, anything else is half-split). `atom`'s own
+// identity is needed to tell a mesh atom feeding itself (NoOp) from a genuine
+// permutation.
 RolePair classify(const MeshAtom &atom);
 
 const char *toString(AtomRole role);

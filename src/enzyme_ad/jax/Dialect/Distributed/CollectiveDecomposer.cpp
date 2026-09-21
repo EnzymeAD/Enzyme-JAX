@@ -13,7 +13,7 @@ namespace mlir::enzyme::distributed {
 namespace {
 
 // The units of work the DP orders (D7). Each unit owns one atom, except the
-// permute group, which owns every atom of a nontrivial cycle.
+// permute group, which owns every atom of the pure permutation cycles.
 enum class UnitKind {
   Slice,
   Gather,
@@ -28,6 +28,10 @@ struct Unit {
   std::vector<StepAtom> atoms;
   // Extent of the (single) atom; unused by Permute.
   uint64_t extent;
+  // Units that must be done before this one may start (D12). Indices are into
+  // the unit's UnitSet when built and into the assembled unit vector once a
+  // combination of variants has been assembled.
+  std::vector<size_t> after;
 
   // The stage at which the unit has nothing left to do. Slice, Gather,
   // AllReduce and Permute have stages {pending, done}. TileToTile and
@@ -40,75 +44,194 @@ struct Unit {
   }
 };
 
+// One way of realizing a component, with its internal dependencies.
+using UnitSet = std::vector<Unit>;
+
+// A group of mesh atoms decomposed together (D11, D13). Components share
+// nothing but the payload, so their units are independent DP dimensions.
+// `variants` lists alternative realizations; exactly one is used per plan.
+struct Component {
+  std::vector<UnitSet> variants;
+};
+
 StepAtom stepAtomOf(const MeshAtom &atom) {
   return {atom.axis, atom.atom, atom.extent};
 }
 
-// Splits the mesh atoms into units, or reports why the collective is outside
-// the supported rows.
-bool buildUnits(const NormalizedCollective &collective,
-                std::vector<Unit> &units, std::string &failureReason) {
-  auto describeAtom = [](const MeshAtom &atom) {
-    return "mesh" + std::to_string(atom.axis) + "." + std::to_string(atom.atom);
+// Index of the mesh atom `label` names.
+size_t meshIndexOf(const NormalizedCollective &collective,
+                   const AtomLabel &label) {
+  assert(label.space == AtomSpace::Mesh && "a mesh partner names a mesh atom");
+  for (size_t i = 0; i < collective.meshAtoms.size(); ++i)
+    if (collective.meshAtoms[i].axis == label.axis &&
+        collective.meshAtoms[i].atom == label.atom)
+      return i;
+  llvm_unreachable("mesh partner is not an atom of the collective");
+}
+
+// True for the rows whose cost depends on a mesh partner's role, which the
+// role pair alone does not determine. classify() labels them Permute (or
+// ReduceThenPermute for a reduced atom).
+bool isMeshCoupled(const MeshAtom &atom) {
+  RolePair pair = classify(atom);
+  return pair == RolePair::Permute || pair == RolePair::ReduceThenPermute;
+}
+
+// D9: the log-round reduction algorithms need an associative and commutative
+// body of a recognized kind.
+bool checkReductionKind(const NormalizedCollective &collective,
+                        const MeshAtom &atom, std::string &failureReason) {
+  assert(collective.reductionKind != ReductionKind::None &&
+         "a reduced atom implies a reduction body");
+  if (collective.reductionKind != ReductionKind::Unknown)
+    return true;
+  failureReason = "unsupported reduction body on mesh" +
+                  std::to_string(atom.axis) + "." + std::to_string(atom.atom) +
+                  " (not a single recognized associative operation)";
+  return false;
+}
+
+// The half-split of a mesh-coupled component (D11): every atom (in = P,
+// out = Q) becomes a first half by P followed by a second half by Q, with the
+// atom holding replicated data in between. The first halves are ordinary
+// units; each second half is a free slice that waits for the digit it places
+// (D12).
+bool halfSplit(const NormalizedCollective &collective,
+               const std::vector<size_t> &members, UnitSet &set,
+               std::string &failureReason) {
+  std::map<size_t, size_t> firstHalf;
+  for (size_t i : members) {
+    const MeshAtom &atom = collective.meshAtoms[i];
+    switch (atom.in.kind) {
+    case AtomRole::Reduced:
+      if (!checkReductionKind(collective, atom, failureReason))
+        return false;
+      firstHalf[i] = set.size();
+      set.push_back({UnitKind::AllReduce, {stepAtomOf(atom)}, atom.extent, {}});
+      break;
+    case AtomRole::Tile:
+    case AtomRole::Mesh:
+      firstHalf[i] = set.size();
+      set.push_back({UnitKind::Gather, {stepAtomOf(atom)}, atom.extent, {}});
+      break;
+    case AtomRole::Replicate:
+      break;
+    }
+  }
+  for (size_t i : members) {
+    const MeshAtom &atom = collective.meshAtoms[i];
+    if (atom.out.kind == AtomRole::Replicate)
+      continue;
+    Unit slice{UnitKind::Slice, {stepAtomOf(atom)}, atom.extent, {}};
+    // The atom must have released its own digit (or finished reducing) ...
+    if (auto it = firstHalf.find(i); it != firstHalf.end())
+      slice.after.push_back(it->second);
+    // ... and a digit that came from another atom must be local by then. An
+    // input tile digit is local from the start.
+    if (atom.out.kind == AtomRole::Mesh) {
+      auto it = firstHalf.find(meshIndexOf(collective, atom.out.partner));
+      assert(it != firstHalf.end() &&
+             "a digit that moves between atoms is gathered by its source");
+      slice.after.push_back(it->second);
+    }
+    set.push_back(std::move(slice));
+  }
+  return true;
+}
+
+// Splits the mesh atoms into components of units, or reports why the
+// collective is outside the supported rows.
+//
+// Atoms with no mesh partner have a dedicated row of their own. Atoms tied by
+// mesh partners form connected components (D11): one made only of (Mesh, Mesh)
+// atoms is a set of permutation cycles, and all cycles share one permute unit
+// (D5); any other component is half-split. Components are ordered by their
+// first atom, with the permute component last.
+bool buildComponents(const NormalizedCollective &collective,
+                     std::vector<Component> &components,
+                     std::string &failureReason) {
+  auto single = [&](UnitKind kind, const MeshAtom &atom) {
+    UnitSet set;
+    set.push_back({kind, {stepAtomOf(atom)}, atom.extent, {}});
+    components.push_back({{std::move(set)}});
   };
-  // D9: the log-round reduction algorithms need an associative and
-  // commutative body of a recognized kind.
-  auto checkReductionKind = [&](const MeshAtom &atom) {
-    assert(collective.reductionKind != ReductionKind::None &&
-           "a reduced atom implies a reduction body");
-    if (collective.reductionKind != ReductionKind::Unknown)
-      return true;
-    failureReason = "unsupported reduction body on " + describeAtom(atom) +
-                    " (not a single recognized associative operation)";
-    return false;
+
+  // Union-find over the mesh-coupled atoms, joined by mesh partners.
+  size_t numAtoms = collective.meshAtoms.size();
+  std::vector<size_t> parent(numAtoms);
+  for (size_t i = 0; i < numAtoms; ++i)
+    parent[i] = i;
+  auto find = [&](size_t x) {
+    while (parent[x] != x)
+      x = parent[x] = parent[parent[x]];
+    return x;
   };
+  for (size_t i = 0; i < numAtoms; ++i) {
+    const MeshAtom &atom = collective.meshAtoms[i];
+    if (!isMeshCoupled(atom))
+      continue;
+    for (const MeshAtomRole *role : {&atom.in, &atom.out})
+      if (role->kind == AtomRole::Mesh)
+        parent[find(i)] = find(meshIndexOf(collective, role->partner));
+  }
+  std::map<size_t, std::vector<size_t>> members;
+  for (size_t i = 0; i < numAtoms; ++i)
+    if (isMeshCoupled(collective.meshAtoms[i]))
+      members[find(i)].push_back(i);
+
   std::vector<StepAtom> permuted;
-  for (const MeshAtom &atom : collective.meshAtoms) {
+  std::set<size_t> emitted;
+  for (size_t i = 0; i < numAtoms; ++i) {
+    const MeshAtom &atom = collective.meshAtoms[i];
     switch (classify(atom)) {
     case RolePair::NoOp:
       break;
     case RolePair::LocalSlice:
-      units.push_back({UnitKind::Slice, {stepAtomOf(atom)}, atom.extent});
+      single(UnitKind::Slice, atom);
       break;
     case RolePair::AllGather:
-      units.push_back({UnitKind::Gather, {stepAtomOf(atom)}, atom.extent});
+      single(UnitKind::Gather, atom);
       break;
     case RolePair::TileToTile:
-      units.push_back({UnitKind::TileToTile, {stepAtomOf(atom)}, atom.extent});
-      break;
-    case RolePair::Permute:
-      if (atom.in.kind != AtomRole::Mesh || atom.out.kind != AtomRole::Mesh) {
-        failureReason = "unsupported mixed row on " + describeAtom(atom) +
-                        " (in " + toString(atom.in.kind) + ", out " +
-                        toString(atom.out.kind) + ")";
-        return false;
-      }
-      permuted.push_back(stepAtomOf(atom));
+      single(UnitKind::TileToTile, atom);
       break;
     case RolePair::AllReduce:
-      if (!checkReductionKind(atom))
+      if (!checkReductionKind(collective, atom, failureReason))
         return false;
-      units.push_back({UnitKind::AllReduce, {stepAtomOf(atom)}, atom.extent});
+      single(UnitKind::AllReduce, atom);
       break;
     case RolePair::ReduceScatter:
-      if (!checkReductionKind(atom))
+      if (!checkReductionKind(collective, atom, failureReason))
         return false;
-      units.push_back(
-          {UnitKind::ReduceScatter, {stepAtomOf(atom)}, atom.extent});
+      single(UnitKind::ReduceScatter, atom);
       break;
     case RolePair::ReduceThenPermute:
-      // A reduced atom has no outgoing pair, so the atoms its output digit
-      // is moved through form an open path rather than a cycle. The head of
-      // that path has a Tile or Replicate output and is a mixed row.
-      failureReason = "unsupported reduce-then-permute on " +
-                      describeAtom(atom) +
-                      " (the residual move after the reduction is "
-                      "mesh-coupled, not a permutation cycle)";
-      return false;
+    case RolePair::Permute: {
+      const std::vector<size_t> &group = members.at(find(i));
+      bool pure = llvm::all_of(group, [&](size_t j) {
+        const MeshAtom &member = collective.meshAtoms[j];
+        return member.in.kind == AtomRole::Mesh &&
+               member.out.kind == AtomRole::Mesh;
+      });
+      if (pure) {
+        permuted.push_back(stepAtomOf(atom));
+        break;
+      }
+      if (!emitted.insert(find(i)).second)
+        break;
+      UnitSet set;
+      if (!halfSplit(collective, group, set, failureReason))
+        return false;
+      components.push_back({{std::move(set)}});
+      break;
+    }
     }
   }
-  if (!permuted.empty())
-    units.push_back({UnitKind::Permute, std::move(permuted), 0});
+  if (!permuted.empty()) {
+    UnitSet set;
+    set.push_back({UnitKind::Permute, std::move(permuted), 0, {}});
+    components.push_back({{std::move(set)}});
+  }
 
   // Tile atoms must be moved by a mesh atom or relabeled to the other side's
   // tile; anything else (e.g. output data drawn from nowhere) has no
@@ -130,6 +253,22 @@ bool buildUnits(const NormalizedCollective &collective,
     }
   }
   return true;
+}
+
+// Concatenates the chosen variant of every component into one unit vector,
+// shifting each unit's dependencies to the assembled indices.
+std::vector<Unit> assemble(const std::vector<Component> &components,
+                           const std::vector<size_t> &choice) {
+  std::vector<Unit> units;
+  for (size_t c = 0; c < components.size(); ++c) {
+    size_t offset = units.size();
+    for (Unit unit : components[c].variants[choice[c]]) {
+      for (size_t &dep : unit.after)
+        dep += offset;
+      units.push_back(std::move(unit));
+    }
+  }
+  return units;
 }
 
 // Exact DP over DecomposerState (D6, D7). Candidate generation is separate
@@ -175,10 +314,26 @@ public:
         break;
       }
     }
-    // Every slice and reduce-scatter divides out a distinct input tile atom,
-    // all of which the initial payload contains.
-    assert(payloadBytes % divisor == 0 && "slices exceed the tile payload");
-    return payloadBytes / divisor * factor;
+    // Every slice and reduce-scatter divides out a digit that is local by
+    // then: an input tile atom the initial payload contains, or a digit a
+    // gather brought in (D12 orders the gather first).
+    assert(payloadBytes * factor % divisor == 0 &&
+           "slices exceed the tile payload");
+    return payloadBytes * factor / divisor;
+  }
+
+  bool finished(const DecomposerState &state) const {
+    for (size_t i = 0; i < units.size(); ++i)
+      if (state.stage[i] != units[i].finalStage())
+        return false;
+    return true;
+  }
+
+  // True when every unit `unit` waits for is done (D12).
+  bool dependenciesDone(const DecomposerState &state, const Unit &unit) const {
+    return llvm::all_of(unit.after, [&](size_t dep) {
+      return state.stage[dep] == units[dep].finalStage();
+    });
   }
 
   // The steps available in `state`. A pending free step (D2) is returned
@@ -189,7 +344,8 @@ public:
     std::vector<CandidateStep> result;
     for (size_t i = 0; i < units.size(); ++i) {
       const Unit &unit = units[i];
-      bool sliceReady = (unit.kind == UnitKind::Slice && state.stage[i] == 0) ||
+      bool sliceReady = (unit.kind == UnitKind::Slice && state.stage[i] == 0 &&
+                         dependenciesDone(state, unit)) ||
                         ((unit.kind == UnitKind::TileToTile ||
                           unit.kind == UnitKind::ReduceScatter) &&
                          state.stage[i] == 1);
@@ -202,11 +358,11 @@ public:
     }
     for (size_t i = 0; i < units.size(); ++i) {
       const Unit &unit = units[i];
-      if (state.stage[i] != 0)
+      if (state.stage[i] != 0 || !dependenciesDone(state, unit))
         continue;
       switch (unit.kind) {
       case UnitKind::Slice:
-        llvm_unreachable("slices are consumed as free steps above");
+        llvm_unreachable("ready slices are consumed as free steps above");
       case UnitKind::Gather:
         result.push_back({allGatherFootprint(unit.atoms, payload, params),
                           advance(state, i, 1)});
@@ -250,6 +406,8 @@ public:
       return it->second.cost;
     std::vector<CandidateStep> options = candidates(state);
     Entry best{0.0, 0};
+    assert((!options.empty() || finished(state)) &&
+           "unfinished units wait on dependencies that can never complete");
     if (!options.empty()) {
       best.cost = std::numeric_limits<double>::infinity();
       for (size_t i = 0; i < options.size(); ++i) {
@@ -304,23 +462,52 @@ private:
 std::optional<std::vector<PrimitiveStep>>
 plan(const NormalizedCollective &collective, const MeshCostParams &params,
      std::string &failureReason, const PlanOptions &options) {
-  std::vector<Unit> units;
-  if (!buildUnits(collective, units, failureReason))
+  std::vector<Component> components;
+  if (!buildComponents(collective, components, failureReason))
     return std::nullopt;
-  if (units.size() > kMaxLiveUnits) {
-    failureReason = "too many units of work (" + std::to_string(units.size()) +
-                    ") for the exact search";
+
+  // Components are independent but share the payload, so their variants are
+  // chosen jointly: one exact search per combination, cheapest chain wins
+  // (ties keep the earlier combination).
+  size_t combinations = 1;
+  for (const Component &component : components)
+    combinations *= component.variants.size();
+  assert(combinations <= kMaxVariantCombinations &&
+         "component variant lists exceed the combination cap");
+
+  std::optional<std::vector<PrimitiveStep>> best;
+  std::string oversizeReason;
+  double bestCost = std::numeric_limits<double>::infinity();
+  for (size_t combination = 0; combination < combinations; ++combination) {
+    std::vector<size_t> choice;
+    size_t rest = combination;
+    for (const Component &component : components) {
+      choice.push_back(rest % component.variants.size());
+      rest /= component.variants.size();
+    }
+    std::vector<Unit> units = assemble(components, choice);
+    if (units.size() > kMaxLiveUnits) {
+      oversizeReason = "too many units of work (" +
+                       std::to_string(units.size()) + ") for the exact search";
+      continue;
+    }
+    ChainSearch search(units, collective.payloadBytes, params, options.filter);
+    double cost = search.solve(search.initialState());
+    if (cost < bestCost) {
+      bestCost = cost;
+      best = search.extractChain();
+    }
+  }
+  if (!best) {
+    failureReason = oversizeReason;
     return std::nullopt;
   }
-
-  ChainSearch search(units, collective.payloadBytes, params, options.filter);
-  std::vector<PrimitiveStep> chain = search.extractChain();
 #ifndef NDEBUG
   std::string why;
-  assert(verifyChainRealizesCollective(collective, chain, why) &&
+  assert(verifyChainRealizesCollective(collective, *best, why) &&
          "decomposition does not realize the collective");
 #endif
-  return chain;
+  return best;
 }
 
 namespace {
