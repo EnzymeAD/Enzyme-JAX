@@ -44,10 +44,12 @@ void addNoNanZeroBasePowSimplify(RewritePatternSet &patterns,
 void addNoNanCompareAbs(RewritePatternSet &patterns,
                         bool allowOnFloatingPointMath, MLIRContext &context,
                         PatternBenefit benefit);
-void addMulZeroPad(RewritePatternSet &patterns, bool allowOnFloatingPointMath,
-                   MLIRContext &context, PatternBenefit benefit);
-void addDivZeroPad(RewritePatternSet &patterns, bool allowOnFloatingPointMath,
-                   MLIRContext &context, PatternBenefit benefit);
+void addNoNanMulZeroPad(RewritePatternSet &patterns,
+                        bool allowOnFloatingPointMath, MLIRContext &context,
+                        PatternBenefit benefit);
+void addNoNanDivZeroPad(RewritePatternSet &patterns,
+                        bool allowOnFloatingPointMath, MLIRContext &context,
+                        PatternBenefit benefit);
 void addIotaSimplify(RewritePatternSet &patterns, int64_t maxConstantExpansion,
                      MLIRContext &context, PatternBenefit benefit);
 void addRecognizeFromConstant(RewritePatternSet &patterns, int64_t minFoldSize,
