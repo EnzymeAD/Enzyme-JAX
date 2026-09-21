@@ -136,26 +136,27 @@ func::FuncOp CreateWrapperUnbatchedFunction(
   auto &entryBlock = *funcOp.addEntryBlock();
   rewriter.setInsertionPointToStart(&entryBlock);
 
+  // Wrapper arguments correspond positionally to the non-CONSTANT operand
+  // slots of `firstOp`. If a value occupies several slots (`multiply %x, %x`)
+  // the last slot's argument wins; that is sound because the matcher only
+  // batches ops with the same repetition structure, so those slots receive
+  // identical batched operands.
   IRMapping mapper;
   size_t argIdx = 0;
   for (auto [i, operand] : llvm::enumerate(firstOp->getOperands())) {
+    Value mapped;
     if (batchLiftingModes.has_value() &&
         batchLiftingModes.value()[i] ==
             BatchLiftingMode::CONSTANT) { // clone into fn body
-      auto clonedConst = rewriter.clone(*operand.getDefiningOp());
-      mapper.map(operand, clonedConst->getResult(0));
-      continue;
+      mapped = rewriter.clone(*operand.getDefiningOp())->getResult(0);
+    } else {
+      mapped = entryBlock.getArguments()[argIdx++];
     }
-    mapper.map(operand, entryBlock.getArguments()[argIdx++]);
-  }
-
-  if (inShape.has_value()) {
-    for (size_t i = 0; i < firstOp->getNumOperands(); i++) {
-      auto blockArg = mapper.lookup(firstOp->getOperand(i));
-      mapper.map(firstOp->getOperand(i),
-                 stablehlo::ReshapeOpCreate(rewriter, firstOp->getLoc(),
-                                            blockArg, inShape.value()));
+    if (inShape.has_value()) {
+      mapped = stablehlo::ReshapeOpCreate(rewriter, firstOp->getLoc(), mapped,
+                                          inShape.value());
     }
+    mapper.map(operand, mapped);
   }
 
   for (auto op : ops) {
@@ -316,10 +317,25 @@ void ConstructAndExtractBatchOperands(
   }
 }
 
-bool IsEquivalentToIgnoringValueEquivalence(Operation *op1, Operation *op2) {
-  return OperationEquivalence::isEquivalentTo(
-      op1, op2, OperationEquivalence::ignoreValueEquivalence, nullptr,
-      OperationEquivalence::IgnoreLocations, nullptr);
+// Two ops are equivalent if they differ only by a consistent renaming of their
+// operands: whenever one op uses the same value in two slots, so must the
+// other. `multiply %z, %z` and `multiply %y, %z` are therefore *not*
+// equivalent. The batching wrapper clones the first op through a value-keyed
+// IRMapping, so a value repeated across slots can only be read from one
+// wrapper argument; that is only correct if every op in the batch repeats the
+// same slots, i.e. those slots receive identical batched operands.
+bool IsEquivalentUpToOperandRenaming(Operation *op1, Operation *op2) {
+  if (!OperationEquivalence::isEquivalentTo(
+          op1, op2, OperationEquivalence::ignoreValueEquivalence, nullptr,
+          OperationEquivalence::IgnoreLocations, nullptr))
+    return false;
+  DenseMap<Value, Value> forward, backward;
+  for (auto [a, b] : llvm::zip_equal(op1->getOperands(), op2->getOperands())) {
+    if (forward.try_emplace(a, b).first->second != b ||
+        backward.try_emplace(b, a).first->second != a)
+      return false;
+  }
+  return true;
 }
 
 bool allOpsAreUnique(const SmallVector<Operation *> &ops) {
@@ -518,8 +534,8 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
     }
 
     if (concatOpOperands.size() != 0) {
-      if (!::utils::IsEquivalentToIgnoringValueEquivalence(concatOpOperands[0],
-                                                           vdefOp)) {
+      if (!::utils::IsEquivalentUpToOperandRenaming(concatOpOperands[0],
+                                                    vdefOp)) {
         return rewriter.notifyMatchFailure(concatOp,
                                            "op is not equivalent to first");
       }
@@ -645,8 +661,8 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     // check that all of the ops are equivalent and that the slice operand is
     // at the same location
     if (targetOp) {
-      if (!::utils::IsEquivalentToIgnoringValueEquivalence(targetOp,
-                                                           candidateTargetOp)) {
+      if (!::utils::IsEquivalentUpToOperandRenaming(targetOp,
+                                                    candidateTargetOp)) {
         continue;
       }
       if (candidateTargetOp->getOperand(sliceOperandIndex) !=
