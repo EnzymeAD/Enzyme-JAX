@@ -151,9 +151,11 @@ std::optional<Composition> composeCollectives(ArrayRef<AtomPair> firstPairs,
     assert(produced.count(keyOf(lhs)) &&
            "the second collective consumes a digit the first never produces");
   }
-  for (const AtomLabel &label : secondReduced)
+  for (const AtomLabel &label : secondReduced) {
     assert(produced.count(keyOf(label)) &&
            "the second collective reduces a digit the first never produces");
+    (void)label;
+  }
   return result;
 }
 

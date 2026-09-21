@@ -83,8 +83,10 @@ PrimitiveStep singleAxisStep(PrimitiveKind kind,
   assert(!atoms.empty() && "step without atoms");
   size_t axis = atoms.front().axis;
   assert(axis < params.numAxes() && "atom outside the mesh");
-  for (const StepAtom &atom : atoms)
+  for (const StepAtom &atom : atoms) {
     assert(atom.axis == axis && "step atoms must share one physical axis");
+    (void)atom;
+  }
   PrimitiveStep step;
   step.kind = kind;
   step.atoms = atoms;
