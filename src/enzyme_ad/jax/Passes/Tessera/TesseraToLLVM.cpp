@@ -133,6 +133,10 @@ public:
       for (auto attr : baseAttrs) {
         if (attr.getName() != callOp.getArgAttrsAttrName() &&
             attr.getName() != "tessera.loaded_operands" &&
+            // Bookkeeping for the conditional-rule rewriter, which keeps the
+            // same pattern from matching the copy of a call that a guard left
+            // behind. It means nothing once the call is an llvm.call.
+            attr.getName() != "tessera.applied_rules" &&
             attr.getName() != "operandSegmentSizes" &&
             attr.getName() != "op_bundle_sizes")
           newAttrs.push_back(attr);

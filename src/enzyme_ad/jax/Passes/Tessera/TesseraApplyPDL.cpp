@@ -14,6 +14,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/Predicates.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/RuleAST.h"
 #include <variant>
 
@@ -244,10 +245,48 @@ static LogicalResult tesseraConditionalRewrite(PatternRewriter &rewriter,
   for (auto [nameAttr, value] : llvm::zip(namesAttr.getValue(), values))
     boundVars[cast<StringAttr>(nameAttr).getValue()] = value;
 
-  // TODO: when the condition can be proven from the IR, build the right-hand
-  // side directly here instead of a guard, so the check costs nothing.
-
   rewriter.setInsertionPoint(root);
+
+  // When the condition is already known to hold, there is nothing to test at
+  // run time: apply the rewrite outright. This is a pure saving over the
+  // guarded form, never a precondition for it -- a condition that cannot be
+  // proven still works, it just costs a check.
+  //
+  // A condition provably *false* deliberately still builds a guard, rather
+  // than declining to rewrite. Keeping the outcomes down to "proven or not" is
+  // what keeps this simple, and it costs nothing today because of an invariant
+  // worth stating:
+  //
+  //   Proof::False can only originate from constant-folding a comparison.
+  //   provePropertyOfValue answers True or Unknown and never False, since
+  //   there is no way to declare that a value lacks a property. So a false
+  //   condition always lowers to a constant icmp/fcmp, which folds away along
+  //   with its dead branch.
+  //
+  // That invariant is what makes this safe, not an argument that it always
+  // would be. Adding a negative proof source -- a `tessera.guarantees_not`, or
+  // anything else letting a predicate be disproven -- breaks it: the guard for
+  // a provably false matrix predicate would reach -tessera-lower-guards, which
+  // would try to synthesize a real check for a branch that can never run, and
+  // could fail the build over an unresolvable layout or the unroll limit. A
+  // rule that provably does not apply must not be able to fail compilation, so
+  // whoever adds that source should skip the rewrite here instead, marking the
+  // root with markRuleApplied (through rewriter.modifyOpInPlace, so the greedy
+  // driver sees the change) to keep the pattern from matching it again.
+  if (proveCondition(*rule->cond, boundVars) == Proof::True) {
+    BuiltExpr built = buildExprIR(rule->rhs, rewriter, loc, boundVars, root,
+                                  root->getResultTypes());
+    if (built.op && built.op->getNumResults()) {
+      rewriter.replaceOp(root, built.op->getResults());
+      return success();
+    }
+    if (built.value) {
+      rewriter.replaceOp(root, built.value);
+      return success();
+    }
+    // Nothing usable came back; fall through and guard it instead.
+  }
+
   auto guard = GuardOp::create(rewriter, loc, root->getResultTypes(),
                                rewriter.getStringAttr(renderCond(*rule->cond)),
                                namesAttr, values);

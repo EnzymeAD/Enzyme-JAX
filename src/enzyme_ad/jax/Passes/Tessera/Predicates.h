@@ -15,6 +15,8 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Value.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/RuleAST.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 
 namespace mlir {
@@ -72,9 +74,36 @@ struct CheckContext {
   int64_t maxUnrolledElems;
 };
 
+/// What the IR alone says about a condition.
+///
+/// This is an internal three-way answer, not a third outcome: only `True`
+/// changes what happens, by letting the check be skipped. `False` and
+/// `Unknown` both still produce a guard -- a provably false condition simply
+/// folds to a constant test that the LLVM optimizer drops. The extra state
+/// exists so that negation can be reasoned through.
+enum class Proof { True, False, Unknown };
+
+/// Flip a proof, for `!cond`. Unknown stays unknown.
+inline Proof invertProof(Proof proof) {
+  switch (proof) {
+  case Proof::True:
+    return Proof::False;
+  case Proof::False:
+    return Proof::True;
+  case Proof::Unknown:
+    return Proof::Unknown;
+  }
+  return Proof::Unknown;
+}
+
 struct TesseraPredicate {
   llvm::StringRef name;
   unsigned arity;
+
+  /// Decide the property from the IR alone, without emitting anything.
+  /// Returning Unknown is the ordinary case and just means the check is
+  /// emitted; returning True must be certain, since it removes the check.
+  Proof (*prove)(llvm::StringRef name, ArrayRef<Value> args);
 
   /// Emit an i1 that is true when the property holds, or a null Value if it
   /// cannot be emitted (with a diagnostic already reported).
@@ -85,6 +114,10 @@ struct TesseraPredicate {
   /// operation being optimized.
   Value (*emitCheck)(ArrayRef<Value> args, CheckContext &ctx);
 };
+
+/// Decide a whole condition from the IR, given the values its variables are
+/// bound to. Used before a guard is built, to skip building one at all.
+Proof proveCondition(const Cond &cond, const llvm::StringMap<Value> &boundVars);
 
 /// Look a predicate up by the name a rule used, or null if there is none.
 const TesseraPredicate *lookupPredicate(llvm::StringRef name);
