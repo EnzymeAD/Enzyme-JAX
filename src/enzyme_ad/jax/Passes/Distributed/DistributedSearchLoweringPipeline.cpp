@@ -47,6 +47,16 @@ void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
   // with nothing after them to clean up until now.
   pm.addPass(createCSEPass());
   pm.addPass(createCanonicalizerPass());
+  // These two run here, after the kernel-side cleanup above and before
+  // LowerKernelsToExecutable: MakeReplicationsExplicit needs a module whose
+  // collectives' mesh bookkeeping is otherwise settled (no more identity
+  // collectives to fold away, no dangling sharding metadata) before it
+  // commits to explicit replication factors, and AtomizeCollectives'
+  // idempotent per-atom rewrite is cheapest to run once that's the only
+  // thing left changing collective operands. LowerKernelsToExecutable wants
+  // the fully merged, cleaned-up state that follows.
+  pm.addPass(createMakeReplicationsExplicitPass());
+  pm.addPass(createAtomizeCollectivesPass());
   // Runs last so that whatever it dispatches (or, for now, dumps) per kernel
   // reflects the fully merged and cleaned-up IR above, not an intermediate
   // state with dead axis-algebra ops still attached.
