@@ -23,10 +23,6 @@ enum class BatchLiftingMode {
   CONSTANT,
   NEEDS_HOISTING_OUTSIDE_WHILE,
   AFFINE_INDEX,
-  // The slot holds the same value as an earlier slot of the same op (e.g. both
-  // operands of `multiply %x, %x`). It contributes no wrapper argument and no
-  // batched operand; the wrapper reuses the earlier slot's mapping.
-  REPEATED,
 };
 
 template <typename OpTy> struct SliceInfo {

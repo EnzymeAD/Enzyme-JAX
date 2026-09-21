@@ -122,20 +122,14 @@ module {
 
 // -----
 
-// Ops with the same repetition structure (`z .* z` and `y .* y`) do batch, and
-// the repeated slot shares a single batched operand: one concatenate feeds
-// both operands of the batched multiply.
+// Ops with the same repetition structure (`z .* z` and `y .* y`) do batch.
+// Both slots receive the same batched operand (concat of z and y), so the
+// wrapper reading one argument for both slots squares the right values.
 module {
   // CHECK-LABEL: func.func @hcat_square_repeated_operand
-  // CHECK-DAG: %[[Z:.+]] = stablehlo.slice %arg0 [2:3, 0:2]
-  // CHECK-DAG: %[[Y:.+]] = stablehlo.slice %arg0 [1:2, 0:2]
-  // CHECK-DAG: %[[ZR:.+]] = stablehlo.reshape %[[Z]] : (tensor<1x2xf64>) -> tensor<2xf64>
-  // CHECK-DAG: %[[YR:.+]] = stablehlo.reshape %[[Y]] : (tensor<1x2xf64>) -> tensor<2xf64>
-  // CHECK-DAG: %[[ZR1:.+]] = stablehlo.reshape %[[ZR]] : (tensor<2xf64>) -> tensor<1x2xf64>
-  // CHECK-DAG: %[[YR1:.+]] = stablehlo.reshape %[[YR]] : (tensor<2xf64>) -> tensor<1x2xf64>
-  // CHECK: %[[B:.+]] = stablehlo.concatenate %[[ZR1]], %[[YR1]], dim = 0
-  // CHECK-NOT: stablehlo.concatenate
-  // CHECK: %[[MUL:.+]] = stablehlo.multiply %[[B]], %[[B]] : tensor<2x2xf64>
+  // CHECK-DAG: stablehlo.slice %arg0 [2:3, 0:2]
+  // CHECK-DAG: stablehlo.slice %arg0 [1:2, 0:2]
+  // CHECK: %[[MUL:.+]] = stablehlo.multiply %[[B:.+]], %[[B]] : tensor<2x2xf64>
   // CHECK: stablehlo.transpose %[[MUL]], dims = [0, 1]
   func.func @hcat_square_repeated_operand(%arg0: tensor<3x2xf64>) -> tensor<2x2xf64> {
     %0 = stablehlo.slice %arg0 [2:3, 0:2] : (tensor<3x2xf64>) -> tensor<1x2xf64>
