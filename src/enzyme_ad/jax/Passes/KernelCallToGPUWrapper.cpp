@@ -109,6 +109,8 @@ struct KernelCallToGPUWrapperPass
              ValueRange{call.getClusterx(), call.getClustery(),
                         call.getClusterz()},
              ArrayRef<StringRef>{"cluster x", "cluster y", "cluster z"})) {
+      if (!value)
+        continue;
       FailureOr<int64_t> dimension = getConstant(call, value, 1, name);
       if (failed(dimension))
         return failure();

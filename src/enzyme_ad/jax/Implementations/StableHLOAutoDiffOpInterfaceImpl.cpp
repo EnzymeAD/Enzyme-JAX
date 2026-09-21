@@ -3321,8 +3321,13 @@ public:
     for (auto &it : *body) {
       Operation *op = &it;
 
-      if (auto setOp = dyn_cast<enzyme::SetOp>(op))
+      if (auto setOp = dyn_cast<enzyme::SetOp>(op)) {
+        if (auto initOp = setOp.getGradient().getDefiningOp<enzyme::InitOp>()) {
+          if (op->isProperAncestor(initOp))
+            continue;
+        }
         updatedGradients.insert(setOp.getGradient());
+      }
 
       if (auto pushOp = dyn_cast<enzyme::PushOp>(op)) {
         CacheInfo info(pushOp.getCache());
