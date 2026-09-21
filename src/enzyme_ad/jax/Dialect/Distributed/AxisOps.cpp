@@ -81,7 +81,7 @@ LogicalResult LogicalMeshAxesOp::inferReturnTypes(
     SmallVectorImpl<Type> &inferredReturnTypes) {
   LogicalMeshAxesOpAdaptor adaptor(operands, attributes, properties, regions);
 
-  int32_t extent = adaptor.getExtent();
+  int64_t extent = adaptor.getExtent();
   if (extent <= 0) {
     if (location) {
       mlir::emitError(*location)
@@ -90,8 +90,8 @@ LogicalResult LogicalMeshAxesOp::inferReturnTypes(
     return failure();
   }
 
-  inferredReturnTypes.push_back(
-      LogicalMeshAxisType::get(context, static_cast<unsigned>(extent)));
+  inferredReturnTypes.push_back(LogicalMeshAxisType::get(
+      context, static_cast<axis::AxisExtentT>(extent)));
   return success();
 }
 
@@ -108,7 +108,7 @@ struct PruneUnusedMetadataAxis : public OpRewritePattern<ConcreteOp> {
   using OpRewritePattern<ConcreteOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(ConcreteOp op,
-                                 PatternRewriter &rewriter) const override {
+                                PatternRewriter &rewriter) const override {
     if (!op->getResult(0).use_empty()) {
       return failure();
     }
@@ -119,7 +119,7 @@ struct PruneUnusedMetadataAxis : public OpRewritePattern<ConcreteOp> {
 } // namespace
 
 void LogicalMeshAxesOp::getCanonicalizationPatterns(RewritePatternSet &results,
-                                                     MLIRContext *context) {
+                                                    MLIRContext *context) {
   results.add<PruneUnusedMetadataAxis<LogicalMeshAxesOp>>(context);
 }
 
@@ -129,7 +129,7 @@ LogicalResult ReplicationAxisOp::inferReturnTypes(
     SmallVectorImpl<Type> &inferredReturnTypes) {
   ReplicationAxisOpAdaptor adaptor(operands, attributes, properties, regions);
 
-  int32_t extent = adaptor.getExtent();
+  int64_t extent = adaptor.getExtent();
   if (extent <= 0) {
     if (location) {
       mlir::emitError(*location)
@@ -138,8 +138,8 @@ LogicalResult ReplicationAxisOp::inferReturnTypes(
     return failure();
   }
 
-  inferredReturnTypes.push_back(
-      ReplicationAxisType::get(context, static_cast<unsigned>(extent)));
+  inferredReturnTypes.push_back(ReplicationAxisType::get(
+      context, static_cast<axis::AxisExtentT>(extent)));
   return success();
 }
 
@@ -149,7 +149,7 @@ LogicalResult DeviceLocalAxisOp::inferReturnTypes(
     SmallVectorImpl<Type> &inferredReturnTypes) {
   DeviceLocalAxisOpAdaptor adaptor(operands, attributes, properties, regions);
 
-  int32_t extent = adaptor.getExtent();
+  int64_t extent = adaptor.getExtent();
   if (extent <= 0) {
     if (location) {
       mlir::emitError(*location)
@@ -158,13 +158,13 @@ LogicalResult DeviceLocalAxisOp::inferReturnTypes(
     return failure();
   }
 
-  inferredReturnTypes.push_back(
-      DeviceLocalAxisType::get(context, static_cast<unsigned>(extent)));
+  inferredReturnTypes.push_back(DeviceLocalAxisType::get(
+      context, static_cast<axis::AxisExtentT>(extent)));
   return success();
 }
 
 void DeviceLocalAxisOp::getCanonicalizationPatterns(RewritePatternSet &results,
-                                                     MLIRContext *context) {
+                                                    MLIRContext *context) {
   results.add<PruneUnusedMetadataAxis<DeviceLocalAxisOp>>(context);
 }
 

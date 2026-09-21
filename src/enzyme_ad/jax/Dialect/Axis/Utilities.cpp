@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <limits>
 #include <numeric>
 
 #include "mlir/Interfaces/InferTypeOpInterface.h"
@@ -154,17 +153,17 @@ bool arePairwiseFactorsDisjoint(
     return false;
   }
 
-  unsigned majorStride = lhsType.getStride();
-  unsigned majorExtent = lhsType.getExtent();
-  unsigned minorStride = rhsType.getStride();
-  unsigned minorExtent = rhsType.getExtent();
+  AxisStrideT majorStride = lhsType.getStride();
+  AxisExtentT majorExtent = lhsType.getExtent();
+  AxisStrideT minorStride = rhsType.getStride();
+  AxisExtentT minorExtent = rhsType.getExtent();
   if (majorStride < minorStride) {
     std::swap(majorStride, minorStride);
     std::swap(majorExtent, minorExtent);
   }
 
   (void)majorExtent;
-  unsigned minorSpan = minorStride * minorExtent;
+  AxisExtentT minorSpan = minorStride * minorExtent;
   if (majorStride < minorSpan) {
     return false;
   }
@@ -175,8 +174,8 @@ bool arePairwiseFactorsDisjoint(
 }
 
 // Asserts an axis (not factor) type and gets the extent.
-int getAxisExtent(TypedValue<AxisTypeInterface> axis) {
-  return static_cast<int>(axis.getType().extent());
+int64_t getAxisExtent(TypedValue<AxisTypeInterface> axis) {
+  return static_cast<int64_t>(axis.getType().extent());
 }
 
 int getAxisDimIndex(TypedValue<ShapeAxisType> axis) {
@@ -184,13 +183,13 @@ int getAxisDimIndex(TypedValue<ShapeAxisType> axis) {
 }
 
 // Asserts a factor type and gets the extent.
-int getFactorExtent(TypedValue<AxisFactorType> factor) {
-  return static_cast<int>(factor.getType().getExtent());
+int64_t getFactorExtent(TypedValue<AxisFactorType> factor) {
+  return static_cast<int64_t>(factor.getType().getExtent());
 }
 
 // Asserts a factor type and gets the stride.
-int getFactorStride(TypedValue<AxisFactorType> factor) {
-  return static_cast<int>(factor.getType().getStride());
+int64_t getFactorStride(TypedValue<AxisFactorType> factor) {
+  return static_cast<int64_t>(factor.getType().getStride());
 }
 
 // Asserts a segment type and gets the extent.
@@ -238,7 +237,7 @@ getFactorGroupExtent(TypedValue<FactorGroupType> factorProduct) {
     if (!factorType) {
       return failure();
     }
-    extent *= static_cast<uint64_t>(factorType.getExtent());
+    extent *= factorType.getExtent();
   }
 
   return extent;
@@ -285,17 +284,17 @@ bool areFactorsDisjoint(
 // From a list of factors known to be from the same axis,
 // creates a list of pairs indicating the maximum factor ranges.
 // Ranges are gauranteed to be return in major-first order.
-llvm::SmallVector<std::pair<int, int>>
+llvm::SmallVector<std::pair<int64_t, int64_t>>
 build_max_factors(TypedValueArrayRef<AxisFactorType> factors) {
   if (factors.empty()) {
     return {};
   }
   // convert into intervals
-  llvm::SmallVector<std::pair<int, int>> factor_pairs;
+  llvm::SmallVector<std::pair<int64_t, int64_t>> factor_pairs;
   for (TypedValue<AxisFactorType> factor : factors) {
     auto factorType = factor.getType();
-    int extent = static_cast<int>(factorType.getExtent());
-    int stride = static_cast<int>(factorType.getStride());
+    int64_t extent = static_cast<int64_t>(factorType.getExtent());
+    int64_t stride = static_cast<int64_t>(factorType.getStride());
     factor_pairs.push_back({extent, stride});
   }
   // sort intervals by stride
@@ -303,8 +302,8 @@ build_max_factors(TypedValueArrayRef<AxisFactorType> factors) {
       factor_pairs.begin(), factor_pairs.end(),
       [](const auto &lhs, const auto &rhs) { return lhs.second > rhs.second; });
 
-  llvm::SmallVector<std::pair<int, int>> max_factors;
-  std::pair<int, int> current_factor = factor_pairs[0];
+  llvm::SmallVector<std::pair<int64_t, int64_t>> max_factors;
+  std::pair<int64_t, int64_t> current_factor = factor_pairs[0];
   for (size_t i = 1; i < factor_pairs.size(); ++i) {
     // if the stride of the current factor = stride * extent of the next factor,
     // they can be combined.
@@ -321,7 +320,8 @@ build_max_factors(TypedValueArrayRef<AxisFactorType> factors) {
   return max_factors;
 }
 
-llvm::SmallVector<std::pair<int, int>> build_max_factors(ValueRange factors) {
+llvm::SmallVector<std::pair<int64_t, int64_t>>
+build_max_factors(ValueRange factors) {
   if (factors.empty()) {
     return {};
   }
@@ -544,7 +544,7 @@ viewAxesAsFactors(TypedValueArrayRef<AxisTypeInterface> axes,
 TypedValue<AxisFactorType> viewAxisAsFactor(::mlir::Value axis,
                                             ::mlir::OpBuilder &builder,
                                             ::mlir::Location loc) {
-  int extent = getAxisExtent(
+  int64_t extent = getAxisExtent(
       castTypedValue<AxisTypeInterface>(axis, "AxisTypeInterface"));
   auto factor = builder.create<AxisFactorOp>(loc, axis, extent, 1);
   return castTypedValue<AxisFactorType>(factor.getResult(), "AxisFactorType");
@@ -602,24 +602,23 @@ dropUnitFactors(::mlir::TypedValue<FactorGroupType> group,
 }
 
 llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
-factorAxisByExtents(::mlir::Value axis, llvm::ArrayRef<int32_t> extents,
+factorAxisByExtents(::mlir::Value axis, llvm::ArrayRef<int64_t> extents,
                     ::mlir::OpBuilder &builder, ::mlir::Location loc) {
   auto typedAxis = castTypedValue<AxisTypeInterface>(axis, "AxisTypeInterface");
   (void)typedAxis;
 
-  llvm::SmallVector<unsigned> strides(extents.size());
-  unsigned runningStride = 1;
+  llvm::SmallVector<int64_t> strides(extents.size());
+  int64_t runningStride = 1;
   for (int idx = static_cast<int>(extents.size()) - 1; idx >= 0; --idx) {
     assert(extents[idx] > 0 && "factor extent must be positive");
     strides[idx] = runningStride;
-    runningStride *= static_cast<unsigned>(extents[idx]);
+    runningStride *= extents[idx];
   }
 
   llvm::SmallVector<::mlir::TypedValue<AxisFactorType>> factors;
   factors.reserve(extents.size());
   for (auto [extent, stride] : llvm::zip_equal(extents, strides)) {
-    auto factor = builder.create<AxisFactorOp>(loc, axis, extent,
-                                               static_cast<int32_t>(stride));
+    auto factor = builder.create<AxisFactorOp>(loc, axis, extent, stride);
     factors.push_back(
         castTypedValue<AxisFactorType>(factor.getResult(), "AxisFactorType"));
   }
@@ -840,10 +839,9 @@ bool splitDivisibleMappings(
               auto factor_axis = getFactorProvenanceAxis(sourceFactor);
               assert(succeeded(factor_axis) &&
                      "factor must have a provenance axis");
-              int32_t new_factor_extent = static_cast<int32_t>(slice.subExtent);
-              int32_t new_factor_stride = static_cast<int32_t>(
-                  static_cast<uint64_t>(getFactorStride(sourceFactor)) *
-                  slice.stride);
+              int64_t new_factor_extent = static_cast<int64_t>(slice.subExtent);
+              int64_t new_factor_stride = getFactorStride(sourceFactor) *
+                                          static_cast<int64_t>(slice.stride);
               auto splitFactor = builder.create<AxisFactorOp>(
                   groupLoc, *factor_axis, new_factor_extent, new_factor_stride);
               currentGroup.push_back(splitFactor.getResult());
@@ -893,14 +891,14 @@ subtractFactorFromFactor(TypedValue<AxisFactorType> minuend,
     return failure();
   }
 
-  int aExtent = getFactorExtent(minuend);
-  int aStride = getFactorStride(minuend);
-  int bExtent = getFactorExtent(subtrahend);
-  int bStride = getFactorStride(subtrahend);
+  int64_t aExtent = getFactorExtent(minuend);
+  int64_t aStride = getFactorStride(minuend);
+  int64_t bExtent = getFactorExtent(subtrahend);
+  int64_t bStride = getFactorStride(subtrahend);
   assert(aExtent > 1 || aStride >= 1 || bExtent > 1 || bStride >= 1);
 
-  int64_t aSpan = static_cast<int64_t>(aExtent) * static_cast<int64_t>(aStride);
-  int64_t bSpan = static_cast<int64_t>(bExtent) * static_cast<int64_t>(bStride);
+  int64_t aSpan = aExtent * aStride;
+  int64_t bSpan = bExtent * bStride;
 
   llvm::SmallVector<TypedValue<AxisFactorType>> remainder;
 
@@ -912,12 +910,8 @@ subtractFactorFromFactor(TypedValue<AxisFactorType> minuend,
     }
     int64_t upperExtent = aSpan / bSpan;
     if (upperExtent > 1) {
-      if (upperExtent > std::numeric_limits<int32_t>::max()) {
-        return failure();
-      }
-      auto upperFactor = builder.create<AxisFactorOp>(
-          loc, *minuendAxis, static_cast<int32_t>(upperExtent),
-          static_cast<int32_t>(bSpan));
+      auto upperFactor =
+          builder.create<AxisFactorOp>(loc, *minuendAxis, upperExtent, bSpan);
       remainder.push_back(castTypedValue<AxisFactorType>(
           upperFactor.getResult(), "AxisFactorType"));
     }
@@ -931,12 +925,8 @@ subtractFactorFromFactor(TypedValue<AxisFactorType> minuend,
     }
     int64_t lowerExtent = bStride / aStride;
     if (lowerExtent > 1) {
-      if (lowerExtent > std::numeric_limits<int32_t>::max()) {
-        return failure();
-      }
-      auto lowerFactor = builder.create<AxisFactorOp>(
-          loc, *minuendAxis, static_cast<int32_t>(lowerExtent),
-          static_cast<int32_t>(aStride));
+      auto lowerFactor =
+          builder.create<AxisFactorOp>(loc, *minuendAxis, lowerExtent, aStride);
       remainder.push_back(castTypedValue<AxisFactorType>(
           lowerFactor.getResult(), "AxisFactorType"));
     }
@@ -1007,130 +997,6 @@ subtractSpace(llvm::ArrayRef<TypedValue<AxisFactorType>> minuend,
   Location loc =
       minuend.empty() ? builder.getUnknownLoc() : minuend[0].getLoc();
   return subtractSpaceImpl(minuend, subtrahend, builder, loc);
-}
-
-struct _global_factor {
-  int extent;
-  int global_stride;
-};
-
-// Projects one factor defined in a virtual factor-group index space onto
-// factors of the real underlying axes.
-static FailureOr<llvm::SmallVector<TypedValue<AxisFactorType>>>
-projectVirtualFactorToRealFactors(TypedValue<FactorGroupType> virtualAxis,
-                                  int virtualStride, int virtualExtent,
-                                  OpBuilder &builder, Location loc) {
-  LLVM_DEBUG(llvm::dbgs() << "[axis-infer-map] project start stride="
-                          << virtualStride << " extent=" << virtualExtent
-                          << "\n");
-  if (virtualStride <= 0 || virtualExtent <= 0) {
-    return failure();
-  }
-
-  auto virtualFactors = getProductProvenanceFactors(virtualAxis);
-  if (failed(virtualFactors) || virtualFactors->empty()) {
-    return failure();
-  }
-
-  // Every projected factor created below lives in this guard's scratch
-  // block until explicitly kept; any of the failure returns below leaves it
-  // to be erased automatically instead of leaking a detached op.
-  TemporaryOpGuard guard(builder);
-
-  // Remove complete minor-most virtual factors from the virtual stride,
-  // then split the first partially-covered factor as needed.
-  int pivot = static_cast<int>(virtualFactors->size()) - 1;
-  int localStrideInPivot = virtualStride;
-  while (pivot >= 0 &&
-         localStrideInPivot >= getFactorExtent((*virtualFactors)[pivot])) {
-    if (localStrideInPivot % getFactorExtent((*virtualFactors)[pivot]) != 0) {
-      return failure();
-    }
-    localStrideInPivot /= getFactorExtent((*virtualFactors)[pivot]);
-    --pivot;
-  }
-  LLVM_DEBUG(llvm::dbgs() << "[axis-infer-map] project pivot=" << pivot
-                          << " localStrideInPivot=" << localStrideInPivot
-                          << "\n");
-  assert(pivot >= 0 && "Virtual factor must fit within product group extent");
-
-  int remainingExtent = virtualExtent;
-  llvm::SmallVector<TypedValue<AxisFactorType>> projectedMinorToMajor;
-
-  for (int i = pivot; i >= 0 && remainingExtent > 1; --i) {
-    auto sourceFactor = (*virtualFactors)[i];
-    int sourceExtent = getFactorExtent(sourceFactor);
-    int sourceStride = getFactorStride(sourceFactor);
-    int sourcePieceExtent = sourceExtent;
-    int sourcePieceStride = sourceStride;
-
-    if (i == pivot) {
-      sourcePieceExtent = sourceExtent / localStrideInPivot;
-      sourcePieceStride = sourceStride * localStrideInPivot;
-    }
-
-    int takeExtent = 0;
-    if (remainingExtent >= sourcePieceExtent) {
-      if (remainingExtent % sourcePieceExtent != 0) {
-        return failure();
-      }
-      takeExtent = sourcePieceExtent;
-    } else {
-      if (sourcePieceExtent % remainingExtent != 0) {
-        return failure();
-      }
-      takeExtent = remainingExtent;
-    }
-
-    // For partial picks, take the minor-most subpiece of the available source
-    // piece so disjoint virtual factors project to disjoint real factors.
-    int projectedStride = sourcePieceStride;
-    if (takeExtent <= 1) {
-      return failure();
-    }
-
-    auto provenanceAxis = getFactorProvenanceAxis(sourceFactor);
-    if (failed(provenanceAxis)) {
-      return failure();
-    }
-
-    auto projected = builder.create<AxisFactorOp>(loc, *provenanceAxis,
-                                                  takeExtent, projectedStride);
-    LLVM_DEBUG(llvm::dbgs()
-               << "[axis-infer-map]   project factor i=" << i
-               << " src(ext=" << sourceExtent << ", stride=" << sourceStride
-               << ") piece(ext=" << sourcePieceExtent
-               << ", stride=" << sourcePieceStride << ") take=" << takeExtent
-               << " -> projected stride=" << projectedStride << "\n");
-    projectedMinorToMajor.push_back(castTypedValue<AxisFactorType>(
-        projected.getResult(), "AxisFactorType"));
-    remainingExtent /= takeExtent;
-  }
-
-  if (remainingExtent != 1) {
-    return failure();
-  }
-
-  std::reverse(projectedMinorToMajor.begin(), projectedMinorToMajor.end());
-  for (TypedValue<AxisFactorType> &value : projectedMinorToMajor)
-    value = guard.keep(value);
-  return projectedMinorToMajor;
-}
-
-// against convention takes MINORMOST FIRST
-llvm::SmallVector<int>
-_globalFactorsToRHSIndices(ArrayRef<_global_factor> factors) {
-  llvm::SmallVector<int> rhs_indices;
-  rhs_indices.push_back(0);
-  for (const auto &factor : factors) {
-    int existing = rhs_indices.size();
-    for (int i = 1; i < factor.extent; ++i) {
-      for (int j = 0; j < existing; ++j) {
-        rhs_indices.push_back(rhs_indices[j] + i * factor.global_stride);
-      }
-    }
-  }
-  return rhs_indices;
 }
 
 LogicalResult propagateResultTypeChanges(ArrayRef<Operation *> initialUsers) {
@@ -1239,9 +1105,8 @@ LogicalResult replaceAxisFactors(TypedValueArrayRef<AxisFactorType> oldFactors,
             "failed to resolve provenance axis for a replacement factor");
       }
       auto piece = builder.create<AxisFactorOp>(
-          loc, *provenance, static_cast<int32_t>(slice.subExtent),
-          static_cast<int32_t>(getFactorStride(src) *
-                               static_cast<int64_t>(slice.stride)));
+          loc, *provenance, static_cast<int64_t>(slice.subExtent),
+          getFactorStride(src) * static_cast<int64_t>(slice.stride));
       newPiecesPerCut[cutIdx].push_back(piece.getResult());
     }
   }
@@ -1325,11 +1190,11 @@ predGroupPairIsIdentity(bool respectShapeTypes) {
 }
 
 ::mlir::TypedValue<AxisFactorType>
-createSubfactor(::mlir::TypedValue<AxisFactorType> factor, int extent,
-                int strideWithinFactor, ::mlir::OpBuilder &builder,
+createSubfactor(::mlir::TypedValue<AxisFactorType> factor, int64_t extent,
+                int64_t strideWithinFactor, ::mlir::OpBuilder &builder,
                 ::mlir::Location loc) {
   auto axis = getFactorProvenanceAxis(factor);
-  int totalStride = getFactorStride(factor) * strideWithinFactor;
+  int64_t totalStride = getFactorStride(factor) * strideWithinFactor;
   assert(succeeded(axis) && "Failed to get provenance axis");
   return builder.create<AxisFactorOp>(loc, *axis, extent, totalStride);
 }

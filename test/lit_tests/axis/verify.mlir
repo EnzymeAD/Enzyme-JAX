@@ -94,10 +94,10 @@ func.func @product_requires_factor_op_results(%arg0: !axis.axis_factor<!axis.sha
 
 %axis11 = axis.getaxis tensor<6xf32> 0
 // expected-error @+1 {{requires result #1 offset to match cumulative segment layout (low result index maps to low axis values)}}
-%s0c, %s1c = "axis.segment"(%axis11) {segment_extents = array<i32: 2, 4>} : (!axis.shape_axis<tensor<6xf32>, 0>) -> (!axis.axis_segment<!axis.shape_axis<tensor<6xf32>, 0>, 2, 0>, !axis.axis_segment<!axis.shape_axis<tensor<6xf32>, 0>, 4, 1>)
+%s0c, %s1c = "axis.segment"(%axis11) {segment_extents = array<i64: 2, 4>} : (!axis.shape_axis<tensor<6xf32>, 0>) -> (!axis.axis_segment<!axis.shape_axis<tensor<6xf32>, 0>, 2, 0>, !axis.axis_segment<!axis.shape_axis<tensor<6xf32>, 0>, 4, 1>)
 
 // -----
 
 %axis12 = axis.getaxis tensor<6xf32> 0
 // expected-error @+1 {{requires result #0 offset to match cumulative segment layout (low result index maps to low axis values)}}
-%s0d, %s1d = "axis.segment"(%axis12) {segment_extents = array<i32: 2, 4>} : (!axis.shape_axis<tensor<6xf32>, 0>) -> (!axis.axis_segment<!axis.shape_axis<tensor<6xf32>, 0>, 2, 1>, !axis.axis_segment<!axis.shape_axis<tensor<6xf32>, 0>, 4, 3>)
+%s0d, %s1d = "axis.segment"(%axis12) {segment_extents = array<i64: 2, 4>} : (!axis.shape_axis<tensor<6xf32>, 0>) -> (!axis.axis_segment<!axis.shape_axis<tensor<6xf32>, 0>, 2, 1>, !axis.axis_segment<!axis.shape_axis<tensor<6xf32>, 0>, 4, 3>)

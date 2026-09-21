@@ -56,7 +56,7 @@ def LogicalMeshAxesOp : DistributedOp<"LogicalMeshAxes", [
 ]> {
   let description = [{Declares a new logical mesh axis,
                       which may or may not correspond to a physical mesh.}];
-  let arguments = (ins I32Attr : $extent);
+  let arguments = (ins I64Attr : $extent);
   let results = (outs LogicalMeshAxisType : $axis);
   let assemblyFormat = "$extent attr-dict `:` type($axis)";
   let hasCanonicalizer = 1;
@@ -68,7 +68,7 @@ def ReplicationAxisOp : DistributedOp<"ReplicationAxis", [
   let description = [{Declares a new replication axis,
                       which is a logical mesh axis that is replicated across all
                           devices in the physical mesh.}];
-  let arguments = (ins I32Attr : $extent);
+  let arguments = (ins I64Attr : $extent);
   let results = (outs ReplicationAxisType : $axis);
   let assemblyFormat = "$extent attr-dict `:` type($axis)";
 }
@@ -84,7 +84,7 @@ def DeviceLocalAxisOp : DistributedOp<"DeviceLocalAxis", [
                       able to carry tensor / operator axis provenance through them,
                       so they must never be CSE'd together --
                       identity is the SSA value itself, not its extent.}];
-  let arguments = (ins I32Attr : $extent);
+  let arguments = (ins I64Attr : $extent);
   let results = (outs DeviceLocalAxisType : $axis);
   let assemblyFormat = "$extent attr-dict `:` type($axis)";
   let hasCanonicalizer = 1;

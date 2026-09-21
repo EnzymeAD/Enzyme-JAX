@@ -261,7 +261,7 @@ class StrategySearchNode : public BeamSearchNodeBase {
   std::shared_ptr<const LogicalAxisOrder> axes;
   std::size_t axisIndex;
   std::shared_ptr<AxisMappingReplayTree> decisions;
-  int extentRemaining;
+  int64_t extentRemaining;
 
   // Factors of the physical mesh available for this axis
   std::vector<SharedOpRef<AxisFactorOp>> availableSpace;
@@ -289,7 +289,7 @@ public:
   // finalized(). Search-progress reporting's notion of "depth".
   std::size_t getAxisIndex() const { return axisIndex; }
   std::size_t getTotalAxisCount() const { return axes->size(); }
-  int getExtentRemaining() const { return extentRemaining; }
+  int64_t getExtentRemaining() const { return extentRemaining; }
   const auto &getAvailableSpace() const { return availableSpace; }
 
   std::shared_ptr<StrategySearchNode> makeChild() const {
@@ -357,7 +357,7 @@ public:
     TypedValue<AxisFactorType> factorValue =
         sharedOpRefToUniqueValue<TypedValue<AxisFactorType>, AxisFactorOp>(
             factor);
-    int factorExtent = getFactorExtent(factorValue);
+    int64_t factorExtent = getFactorExtent(factorValue);
     assert(factorExtent > 1 && "Expect search to make progress");
     assert(extentRemaining >= factorExtent &&
            "Factor exceeds remaining extent");
@@ -539,7 +539,7 @@ public:
             oldFactorOp.getResult(), "AxisFactorType"));
 
       llvm::SmallVector<TypedValue<AxisFactorType>> targetFactors;
-      int decidedExtent = 1;
+      int64_t decidedExtent = 1;
       for (TypedValue<AxisFactorType> origFactor : origFactors) {
         auto origProvenance = getFactorProvenanceAxis(origFactor);
         if (failed(origProvenance)) {
@@ -554,7 +554,7 @@ public:
               "target module");
           return signalPassFailure();
         }
-        int extent = getFactorExtent(origFactor);
+        int64_t extent = getFactorExtent(origFactor);
         decidedExtent *= extent;
         auto targetFactor =
             builder.create<AxisFactorOp>(origFactor.getLoc(), targetProvenance,
@@ -563,7 +563,7 @@ public:
             targetFactor.getResult(), "AxisFactorType"));
       }
 
-      int remainder = getAxisExtent(targetAxis) / decidedExtent;
+      int64_t remainder = getAxisExtent(targetAxis) / decidedExtent;
       if (remainder > 1) {
         auto residualFactor = builder.create<AxisFactorOp>(
             targetAxisVal.getLoc(), targetAxisVal, remainder, 1);
@@ -579,10 +579,10 @@ public:
 
 // Not algorithmically fast! But we expect resonably small (10000k max,
 // maybe) and easily divisible numbers.
-static llvm::SmallVector<uint> uniquePrimeFactors(int n) {
-  llvm::SmallVector<uint> primes;
-  int thresh = 1;
-  int i = 2;
+static llvm::SmallVector<int64_t> uniquePrimeFactors(int64_t n) {
+  llvm::SmallVector<int64_t> primes;
+  int64_t thresh = 1;
+  int64_t i = 2;
   while (i <= n) {
     if (n % i == 0) {
       if (i > thresh) {
@@ -611,10 +611,10 @@ struct ChunkDecision {
 // divides it.
 static std::optional<ChunkDecision>
 tryChunkFactor(SharedOpRef<AxisFactorOp> physicalFactor,
-               llvm::ArrayRef<uint> possibleChunks, OpBuilder &builder) {
+               llvm::ArrayRef<int64_t> possibleChunks, OpBuilder &builder) {
   // TODO do we have to swap available extent to owning things too?
-  int factorExtent = getFactorExtent(physicalFactor->get());
-  int chunkTaken = -1;
+  int64_t factorExtent = getFactorExtent(physicalFactor->get());
+  int64_t chunkTaken = -1;
   for (auto chunk : possibleChunks) {
     if (chunk <= factorExtent && factorExtent % chunk == 0) {
       chunkTaken = chunk;
@@ -624,7 +624,7 @@ tryChunkFactor(SharedOpRef<AxisFactorOp> physicalFactor,
   if (chunkTaken == -1)
     return std::nullopt;
 
-  int residualExtent = factorExtent / chunkTaken;
+  int64_t residualExtent = factorExtent / chunkTaken;
 
   // We have a candidate that takes a chunk out of the physical factor,
   // from the high stride positions. Need to take the chunk factor,
@@ -655,7 +655,7 @@ static void applyChunkDecision(StrategySearchNode &node,
 // serializing it within the device (i.e. no further physical space needed).
 static void applySerializeRemaining(StrategySearchNode &node,
                                     OpBuilder &builder, Location loc) {
-  int extentRemaining = node.getExtentRemaining();
+  int64_t extentRemaining = node.getExtentRemaining();
   // spin up a fresh new owned reference to a within-device
   // axis, factor with extent equal to remaining
   DeviceLocalAxisOp localizationAxis =
@@ -690,7 +690,7 @@ public:
     // For the axis being worked on, decide if we want to
     // apply a sharding axis, pipeline (TODO), or place within
     // a device.
-    const int extentRemaining = node->getExtentRemaining();
+    const int64_t extentRemaining = node->getExtentRemaining();
 
     if (logProgress) {
       llvm::errs() << "distributed-search-strategies: parent at axis depth "
@@ -779,7 +779,7 @@ public:
 
   void complete(StrategySearchNode &node) override {
     while (!node.finalized()) {
-      int extentRemaining = node.getExtentRemaining();
+      int64_t extentRemaining = node.getExtentRemaining();
       assert(extentRemaining > 1 &&
              "considerNextAxis should have advanced past a done axis");
 

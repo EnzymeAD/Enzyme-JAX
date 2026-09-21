@@ -20,6 +20,18 @@ class Operation;
 
 namespace mlir::enzyme::axis {
 void materializeMaybeTemporaryOp(::mlir::Operation *op, ::mlir::Block &block);
+
+// Storage width for every axis/factor/mesh extent (and cumulative offset) in
+// this dialect and in Dialect/Distributed. 64 bits because an extent is often
+// a product of factors that each fit in 32 bits but whose product does not.
+// Declared ahead of the generated type/interface headers so ODS parameters
+// can name it.
+using AxisExtentT = uint64_t;
+
+// Storage width for every axis-factor stride. A stride is a spacing in the
+// same index space an extent measures, so it needs the same width. It is a
+// separate alias so the two roles stay distinguishable in signatures.
+using AxisStrideT = uint64_t;
 } // namespace mlir::enzyme::axis
 
 // Include the dialect

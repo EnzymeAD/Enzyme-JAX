@@ -2,9 +2,9 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "mlir/IR/IRMapping.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
@@ -378,11 +378,11 @@ struct DistributedCollectiveAllReduceToStablehloPattern
 
     auto &reductionBody = op.getReductionBodies()[0];
 
-    RankedTensorType scalarReductionTensorType = RankedTensorType::get(
-      {}, inputs.inputTensorType.getElementType());
+    RankedTensorType scalarReductionTensorType =
+        RankedTensorType::get({}, inputs.inputTensorType.getElementType());
 
-    auto buildComputation = bindBuildReductionComputation(reductionBody,
-                                                          scalarReductionTensorType);
+    auto buildComputation =
+        bindBuildReductionComputation(reductionBody, scalarReductionTensorType);
 
     auto buildCollectiveOp = [&](Value asyncTensorOperand,
                                  RegionBuilder &rb) -> void {
@@ -441,9 +441,9 @@ struct DistributedCollectiveReduceScatterToStablehloPattern
 
     // If match, we expect to see one upper range of the tensor mapped to
     // the same space as the reduction axes.
-    llvm::SmallVector<std::pair<int, TypedValue<axis::AxisFactorType>>>
+    llvm::SmallVector<std::pair<int64_t, TypedValue<axis::AxisFactorType>>>
         rhs_space_factors;
-    int min_tensor_stride = INT_MAX;
+    int64_t min_tensor_stride = INT64_MAX;
     std::optional<TypedValue<axis::ShapeAxisType>> tensor_axis;
     llvm::SmallVector<TypedValue<axis::AxisFactorType>> tensor_factors;
     for (auto [lhs_group, rhs_group] : paired_groups) {
@@ -489,7 +489,7 @@ struct DistributedCollectiveReduceScatterToStablehloPattern
           return failWithRemark("splitting over multiple tensor axes");
         }
       }
-      int this_tensor_stride = axis::getFactorStride((*lhs_factors)[0]);
+      int64_t this_tensor_stride = axis::getFactorStride((*lhs_factors)[0]);
       min_tensor_stride = std::min(min_tensor_stride, this_tensor_stride);
       tensor_factors.push_back((*lhs_factors)[0]);
       rhs_space_factors.push_back({this_tensor_stride, (*rhs_factors)[0]});
@@ -498,19 +498,20 @@ struct DistributedCollectiveReduceScatterToStablehloPattern
     // Check that we have a contiguous upper range of the tensor axis we are
     // splitting. this is equivalent to covering the whole space upwards of
     // min_tensor_stride
-    llvm::SmallVector<std::pair<int, int>> max_factor_pairs =
+    llvm::SmallVector<std::pair<int64_t, int64_t>> max_factor_pairs =
         axis::build_max_factors(tensor_factors);
     if (max_factor_pairs.size() != 1) {
       return failWithRemark(
           "tensor factors do not cover a contiguous upper range of the "
           "tensor axis");
     }
-    int total_extent = max_factor_pairs[0].first * max_factor_pairs[0].second;
+    int64_t total_extent =
+        max_factor_pairs[0].first * max_factor_pairs[0].second;
     if (!tensor_axis.has_value()) {
       return failWithRemark("no tensor axis was identified for reduce-scatter");
     }
     auto tensor_axis_typed = *tensor_axis;
-    int total_expected_extent = axis::getAxisExtent(tensor_axis_typed);
+    int64_t total_expected_extent = axis::getAxisExtent(tensor_axis_typed);
     if (total_extent != total_expected_extent) {
       return failWithRemark("tensor factors does not cover full upper range");
     }
@@ -535,11 +536,11 @@ struct DistributedCollectiveReduceScatterToStablehloPattern
 
     auto &reductionBody = op.getReductionBodies()[0];
 
-    RankedTensorType scalarReductionTensorType = RankedTensorType::get(
-        {}, inputs.inputTensorType.getElementType());
+    RankedTensorType scalarReductionTensorType =
+        RankedTensorType::get({}, inputs.inputTensorType.getElementType());
 
-    auto buildComputation = bindBuildReductionComputation(reductionBody,
-                                scalarReductionTensorType);
+    auto buildComputation =
+        bindBuildReductionComputation(reductionBody, scalarReductionTensorType);
 
     auto buildCollectiveOp = [&](Value asyncTensorOperand,
                                  RegionBuilder &rb) -> void {

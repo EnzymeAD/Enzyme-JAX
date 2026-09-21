@@ -176,7 +176,7 @@ namespace {
 TV_AxisFactor buildAtomFactor(const CollectiveResolution &resolution,
                               const AtomLabel &label, OpBuilder &builder,
                               Location loc) {
-  auto extent = static_cast<int32_t>(resolution.atoms.extentOf(label));
+  int64_t extent = static_cast<int64_t>(resolution.atoms.extentOf(label));
   if (label.space == AtomSpace::Replicate) {
     auto replicationAxis = builder.create<ReplicationAxisOp>(loc, extent);
     return axis::viewAxisAsFactor(replicationAxis.getAxis(), builder, loc);
@@ -185,7 +185,7 @@ TV_AxisFactor buildAtomFactor(const CollectiveResolution &resolution,
       resolution.axisProvenance.at({label.space, label.axis});
   return builder.create<axis::AxisFactorOp>(
       loc, provenance, extent,
-      static_cast<int32_t>(resolution.atoms.strideOf(label)));
+      static_cast<int64_t>(resolution.atoms.strideOf(label)));
 }
 
 // One fresh factor per atom in `labels` whose extent is greater than one, in

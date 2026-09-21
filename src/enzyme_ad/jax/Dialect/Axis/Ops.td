@@ -26,7 +26,7 @@ def AxisFactorOp : AxisOp<"factor", [PureMetadataTrait, DeclareOpInterfaceMethod
   let description = [{
     Defines one factor of a canonical axis with static extent and stride, encoded by the type.
   }];
-  let arguments = (ins AnyType:$axis, I32Attr:$extent, I32Attr:$stride);
+  let arguments = (ins AnyType:$axis, I64Attr:$extent, I64Attr:$stride);
   let results = (outs AxisFactorType:$axis_factor);
   let assemblyFormat = "$axis attr-dict `:` type($axis)`<`$extent`,`$stride`>`";
   let hasVerifier = 1;
@@ -41,7 +41,7 @@ def AxisSegmentOp : AxisOp<"segment", [PureMetadataTrait, DeclareOpInterfaceMeth
   }];
   let arguments = (ins
     AnyType:$axis,
-    DenseI32ArrayAttr:$segment_extents
+    DenseI64ArrayAttr:$segment_extents
   );
   let results = (outs Variadic<AxisSegmentType>:$axis_segments);
   let assemblyFormat = "$axis $segment_extents attr-dict `:` type($axis)";

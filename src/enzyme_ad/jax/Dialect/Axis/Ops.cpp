@@ -7,25 +7,35 @@ namespace mlir::enzyme::axis {
 
 namespace {
 
-static LogicalResult verifyFactorShape(unsigned extent, unsigned stride,
-                                       unsigned sourceExtent, Operation *op) {
+// True when a factor of positive `extent` and `stride` evenly divides an axis
+// of `sourceExtent`. Bounds are checked before multiplying so the product
+// cannot wrap.
+static bool factorDividesAxis(AxisExtentT extent, AxisStrideT stride,
+                              AxisExtentT sourceExtent) {
+  return stride <= sourceExtent && extent <= sourceExtent / stride &&
+         sourceExtent % (stride * extent) == 0;
+}
+
+static LogicalResult verifyFactorShape(AxisExtentT extent, AxisStrideT stride,
+                                       AxisExtentT sourceExtent,
+                                       Operation *op) {
   if (extent <= 0) {
     return op->emitOpError() << "requires factor extent to be > 0";
   }
   if (stride <= 0) {
     return op->emitOpError() << "requires factor stride to be > 0";
   }
-  if (sourceExtent % (stride * extent) != 0) {
+  if (!factorDividesAxis(extent, stride, sourceExtent)) {
     return op->emitOpError() << "requires factor to divide source axis";
   }
   return success();
 }
 
-static LogicalResult verifySegmentExtents(ArrayRef<int32_t> extents,
-                                          unsigned sourceExtent,
+static LogicalResult verifySegmentExtents(ArrayRef<int64_t> extents,
+                                          AxisExtentT sourceExtent,
                                           Operation *op) {
   uint64_t sum = 0;
-  for (int32_t extent : extents) {
+  for (int64_t extent : extents) {
     if (extent <= 0) {
       return op->emitOpError() << "requires all segment extents to be > 0";
     }
@@ -105,9 +115,18 @@ LogicalResult AxisFactorOp::verify() {
     return emitOpError() << "requires result to have AxisFactorType";
   }
 
-  auto expectedType = AxisFactorType::get(getContext(), getAxis().getType(),
-                                          static_cast<unsigned>(getExtent()),
-                                          static_cast<unsigned>(getStride()));
+  // The attributes are signed; reject negatives before they wrap in the
+  // unsigned type parameters below.
+  if (getExtent() <= 0) {
+    return emitOpError() << "requires factor extent to be > 0";
+  }
+  if (getStride() <= 0) {
+    return emitOpError() << "requires factor stride to be > 0";
+  }
+
+  auto expectedType = AxisFactorType::get(
+      getContext(), getAxis().getType(), static_cast<AxisExtentT>(getExtent()),
+      static_cast<AxisStrideT>(getStride()));
   if (axisFactorType != expectedType) {
     return emitOpError()
            << "requires result type to match axis, extent, and stride attrs";
@@ -137,8 +156,10 @@ LogicalResult AxisFactorOp::inferReturnTypes(
     return failure();
   }
 
-  int32_t extent = adaptor.getExtent();
-  int32_t stride = adaptor.getStride();
+  // Kept signed so the <= 0 checks below catch negative attribute values;
+  // the unsigned AxisExtentT/AxisStrideT would wrap them.
+  int64_t extent = adaptor.getExtent();
+  int64_t stride = adaptor.getStride();
   if (extent <= 0) {
     if (location) {
       mlir::emitError(*location)
@@ -153,7 +174,8 @@ LogicalResult AxisFactorOp::inferReturnTypes(
     }
     return failure();
   }
-  if (axisType.extent() % (extent * stride) != 0) {
+  if (!factorDividesAxis(static_cast<AxisExtentT>(extent),
+                         static_cast<AxisStrideT>(stride), axisType.extent())) {
     if (location) {
       mlir::emitError(*location) << "requires factor to divide source axis";
     }
@@ -161,8 +183,8 @@ LogicalResult AxisFactorOp::inferReturnTypes(
   }
 
   inferredReturnTypes.push_back(AxisFactorType::get(
-      context, adaptor.getAxis().getType(), static_cast<unsigned>(extent),
-      static_cast<unsigned>(stride)));
+      context, adaptor.getAxis().getType(), static_cast<AxisExtentT>(extent),
+      static_cast<AxisStrideT>(stride)));
   return success();
 }
 
@@ -178,7 +200,7 @@ LogicalResult AxisSegmentOp::verify() {
                             "AxisTypeInterface";
   }
 
-  ArrayRef<int32_t> segmentExtents = getSegmentExtents();
+  ArrayRef<int64_t> segmentExtents = getSegmentExtents();
   if (failed(verifySegmentExtents(segmentExtents, axisIface.extent(),
                                   getOperation()))) {
     return failure();
@@ -189,7 +211,7 @@ LogicalResult AxisSegmentOp::verify() {
                             "segment extents";
   }
 
-  unsigned runningOffset = 0;
+  AxisExtentT runningOffset = 0;
   for (auto [idx, axisSegmentVal] : llvm::enumerate(getAxisSegments())) {
     auto axisSegmentType = dyn_cast<AxisSegmentType>(axisSegmentVal.getType());
     if (!axisSegmentType) {
@@ -200,7 +222,7 @@ LogicalResult AxisSegmentOp::verify() {
                            << " to have base axis type equal to operand type";
     }
     if (axisSegmentType.getExtent() !=
-        static_cast<unsigned>(segmentExtents[idx])) {
+        static_cast<AxisExtentT>(segmentExtents[idx])) {
       return emitOpError() << "requires result #" << idx
                            << " extent to match segment extent";
     }
@@ -209,7 +231,7 @@ LogicalResult AxisSegmentOp::verify() {
                            << " offset to match cumulative segment layout "
                               "(low result index maps to low axis values)";
     }
-    runningOffset += static_cast<unsigned>(segmentExtents[idx]);
+    runningOffset += static_cast<AxisExtentT>(segmentExtents[idx]);
   }
 
   return success();
@@ -220,16 +242,16 @@ LogicalResult AxisSegmentOp::inferReturnTypes(
     DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
   AxisSegmentOpAdaptor adaptor(operands, attributes, properties, regions);
-  ArrayRef<int32_t> segmentExtents = adaptor.getSegmentExtents();
+  ArrayRef<int64_t> segmentExtents = adaptor.getSegmentExtents();
 
   inferredReturnTypes.reserve(segmentExtents.size());
   Type axisType = adaptor.getAxis().getType();
-  unsigned runningOffset = 0;
-  for (int32_t segmentExtent : segmentExtents) {
+  AxisExtentT runningOffset = 0;
+  for (int64_t segmentExtent : segmentExtents) {
     inferredReturnTypes.push_back(AxisSegmentType::get(
-        context, axisType, static_cast<unsigned>(segmentExtent),
+        context, axisType, static_cast<AxisExtentT>(segmentExtent),
         runningOffset));
-    runningOffset += static_cast<unsigned>(segmentExtent);
+    runningOffset += static_cast<AxisExtentT>(segmentExtent);
   }
   return success();
 }
@@ -249,7 +271,7 @@ LogicalResult AxisProductOp::verify() {
     if (!factorType) {
       return emitOpError() << "requires all operands to be AxisFactorType";
     }
-    extentProduct *= static_cast<uint64_t>(factorType.getExtent());
+    extentProduct *= factorType.getExtent();
   }
 
   if (getProduct().getType().getExtent() != extentProduct) {
@@ -273,11 +295,10 @@ LogicalResult AxisProductOp::inferReturnTypes(
             << "requires all operands to be AxisFactorType";
       return failure();
     }
-    extentProduct *= static_cast<uint64_t>(factorType.getExtent());
+    extentProduct *= factorType.getExtent();
   }
 
-  inferredReturnTypes.push_back(
-      FactorGroupType::get(context, static_cast<unsigned>(extentProduct)));
+  inferredReturnTypes.push_back(FactorGroupType::get(context, extentProduct));
   return success();
 }
 

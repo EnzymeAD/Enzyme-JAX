@@ -12,30 +12,33 @@ class AxisType<string name, string type_mnemonic, list<Trait> traits = []>
 def ShapeAxisType : AxisType<"ShapeAxis", "shape_axis"> {
   let parameters = (ins "::mlir::Type" : $shapeType, "unsigned" : $axisIndex);
   let assemblyFormat = "`<` $shapeType `,` $axisIndex `>`";
-  let extraClassDeclaration = [{ unsigned getExtent() const; }];
+  let extraClassDeclaration = [{ AxisExtentT getExtent() const; }];
 }
 
 // Factor of a canonical axis with static extent and stride metadata.
 def AxisFactorType : AxisDialectType<"AxisFactor", "axis_factor"> {
   let parameters = (ins "::mlir::Type"
-                    : $axisType, "unsigned"
-                    : $extent, "unsigned"
+                    : $axisType, "::mlir::enzyme::axis::AxisExtentT"
+                    : $extent, "::mlir::enzyme::axis::AxisStrideT"
                     : $stride);
   let assemblyFormat = "`<` $axisType `,` $extent `,` $stride `>`";
 }
 
-// Contiguous linear segment of a canonical axis with static extent and offset.
+// Contiguous linear segment of a canonical axis with static extent and
+// offset. The offset is a position within the source axis, so it uses the
+// extent width.
 def AxisSegmentType : AxisDialectType<"AxisSegment", "axis_segment"> {
   let parameters = (ins "::mlir::Type"
-                    : $axisType, "unsigned"
-                    : $extent, "unsigned"
+                    : $axisType, "::mlir::enzyme::axis::AxisExtentT"
+                    : $extent, "::mlir::enzyme::axis::AxisExtentT"
                     : $offset);
   let assemblyFormat = "`<` $axisType `,` $extent `,` $offset `>`";
 }
 
-// Virtual axis reconstructed from a list of factors.
+// Virtual axis reconstructed from a list of factors. Its extent is the
+// product of those factors' extents (see AxisProductOp).
 def FactorGroupType : AxisDialectType<"FactorGroup", "factor_group"> {
-  let parameters = (ins "unsigned" : $extent);
+  let parameters = (ins "::mlir::enzyme::axis::AxisExtentT" : $extent);
   let assemblyFormat = "`<` $extent `>`";
 }
 

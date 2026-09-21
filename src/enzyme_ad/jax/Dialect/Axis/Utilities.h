@@ -72,15 +72,15 @@ castTypedValueList(ValueRange values, llvm::StringRef expectedType) {
 }
 
 // Returns the static extent for any canonical axis SSA value.
-int getAxisExtent(::mlir::TypedValue<AxisTypeInterface> axis);
+int64_t getAxisExtent(::mlir::TypedValue<AxisTypeInterface> axis);
 
 int getAxisDimIndex(::mlir::TypedValue<ShapeAxisType> axis);
 
 // Returns the static extent for any factor SSA value.
-int getFactorExtent(::mlir::TypedValue<AxisFactorType> factor);
+int64_t getFactorExtent(::mlir::TypedValue<AxisFactorType> factor);
 
 // Returns the static stride for any factor SSA value.
-int getFactorStride(::mlir::TypedValue<AxisFactorType> factor);
+int64_t getFactorStride(::mlir::TypedValue<AxisFactorType> factor);
 
 // Returns the defining op for a canonical axis SSA value.
 ::mlir::FailureOr<::mlir::Operation *> getAxisProvenanceOp(::mlir::Value axis);
@@ -161,8 +161,8 @@ createAxesForRankedShape(::mlir::Type shapeType, ::mlir::OpBuilder &builder,
 // the given extent, and the given stride within the factor
 // (total stride: product of substride and original)
 ::mlir::TypedValue<AxisFactorType>
-createSubfactor(::mlir::TypedValue<AxisFactorType> factor, int extent,
-                int strideWithinFactor, ::mlir::OpBuilder &builder,
+createSubfactor(::mlir::TypedValue<AxisFactorType> factor, int64_t extent,
+                int64_t strideWithinFactor, ::mlir::OpBuilder &builder,
                 ::mlir::Location loc);
 
 // Creates a single factor for each axis, with full extent and stride 1.
@@ -197,9 +197,9 @@ dropUnitFactors(::mlir::TypedValue<FactorGroupType> group,
                 ::mlir::OpBuilder &builder);
 
 // Creates a full major-first factorization for one axis from major-first
-// extents. Strides are inferred
+// extents. Strides are inferred.
 llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
-factorAxisByExtents(::mlir::Value axis, llvm::ArrayRef<int32_t> extents,
+factorAxisByExtents(::mlir::Value axis, llvm::ArrayRef<int64_t> extents,
                     ::mlir::OpBuilder &builder, ::mlir::Location loc);
 
 // Redirects `builder` to insert into a private scratch block for this
@@ -460,11 +460,12 @@ Predicate<std::pair<::mlir::TypedValue<FactorGroupType>,
 predGroupPairIsIdentity(bool respectShapeTypes = true);
 
 // From a list of factors known to be from the same axis,
-// creates a list of pairs indicating the maximum factor ranges.
-// Ranges are gauranteed to be return in major-first order.
-llvm::SmallVector<std::pair<int, int>>
+// creates a list of (extent, stride) pairs indicating the maximum factor
+// ranges. Ranges are guaranteed to be returned in major-first order.
+llvm::SmallVector<std::pair<int64_t, int64_t>>
 build_max_factors(TypedValueArrayRef<AxisFactorType> factors);
-llvm::SmallVector<std::pair<int, int>> build_max_factors(ValueRange factors);
+llvm::SmallVector<std::pair<int64_t, int64_t>>
+build_max_factors(ValueRange factors);
 
 } // namespace mlir::enzyme::axis
 

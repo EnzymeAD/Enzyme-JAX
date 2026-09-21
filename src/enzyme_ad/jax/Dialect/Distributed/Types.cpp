@@ -54,8 +54,10 @@ bool LogicalMeshAxisType::disjoint(Value ax1, Value ax2) const {
 
 // Replication axes are equivalent whenever they have the same extent
 bool ReplicationAxisType::equivalent(Value ax1, Value ax2) const {
-  int extent1 = cast<ReplicationAxisType>(ax1.getType()).getExtent();
-  int extent2 = cast<ReplicationAxisType>(ax2.getType()).getExtent();
+  axis::AxisExtentT extent1 =
+      cast<ReplicationAxisType>(ax1.getType()).getExtent();
+  axis::AxisExtentT extent2 =
+      cast<ReplicationAxisType>(ax2.getType()).getExtent();
   return extent1 == extent2;
 }
 

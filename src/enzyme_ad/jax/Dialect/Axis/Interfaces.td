@@ -21,7 +21,7 @@ def AxisTypeInterface : TypeInterface<"AxisTypeInterface"> {
   let methods = [
     InterfaceMethod<
       [{Returns the compile-time extent of this canonical axis.}],
-      "unsigned", "extent", (ins), "",
+      "::mlir::enzyme::axis::AxisExtentT", "extent", (ins), "",
       [{
         return $_type.getExtent();
       }]>,

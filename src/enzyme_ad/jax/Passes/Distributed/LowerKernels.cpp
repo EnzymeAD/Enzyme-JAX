@@ -340,10 +340,11 @@ static void stripPlaceholderAllReduces(ModuleOp shardyModule) {
  * runShardyLowering) -- without that precondition this would not hold up to
  * all sharding dimensions.
  */
-static void constructShardyAttributes(DistributedKernelOp originalKernel,
-                                      ModuleOp shardyModule,
-                                      llvm::SmallVector<int> &shardingFactors,
-                                      llvm::ArrayRef<bool> shardableSlots) {
+static void
+constructShardyAttributes(DistributedKernelOp originalKernel,
+                          ModuleOp shardyModule,
+                          llvm::SmallVector<int64_t> &shardingFactors,
+                          llvm::ArrayRef<bool> shardableSlots) {
   MLIRContext *ctx = shardyModule.getContext();
   constexpr llvm::StringLiteral kMeshName = "mesh";
 
@@ -675,10 +676,10 @@ struct LowerKernelsPass : public impl::LowerKernelsPassBase<LowerKernelsPass> {
     FactorsPerDim nonShardableParts;
     splitPartitioningAxesByShardability(kernelOp, lowerLogical, shardableParts,
                                         nonShardableParts);
-    llvm::SmallVector<int> parallelismPerDim;
+    llvm::SmallVector<int64_t> parallelismPerDim;
     llvm::SmallVector<bool> slotIsShardable;
     for (const auto &factors : shardableParts) {
-      int dimParallelism = 1;
+      int64_t dimParallelism = 1;
       for (auto factor : factors) {
         dimParallelism *= axis::getFactorExtent(factor);
       }

@@ -14,16 +14,17 @@ class DistributedAxisType<string name, string type_mnemonic,
 class DistributedBasicAxisType<string name, string type_mnemonic,
                                list<Trait> traits = []>
     : DistributedAxisType<name, type_mnemonic, traits> {
-  let parameters = (ins "unsigned" : $extent);
+  let parameters = (ins "::mlir::enzyme::axis::AxisExtentT" : $extent);
   let assemblyFormat = "`<` $extent `>`";
 }
 
 // A natural axis defined by the hardware topology.
-// ID stride is for conversion between device IDs to
-// axis coordinates.
+// ID stride is for conversion between device IDs to axis coordinates. It is
+// bounded by the product of the other physical axes' extents in the mesh
+// (a device count), so it stays 32-bit.
 def PhysicalCommAxisType
     : DistributedAxisType<"PhysicalCommAxis", "physical_comm_axis"> {
-  let parameters = (ins "unsigned" : $extent, "unsigned" : $idStride);
+  let parameters = (ins "::mlir::enzyme::axis::AxisExtentT" : $extent, "unsigned" : $idStride);
   let assemblyFormat = "`<` $extent `,` $idStride `>`";
 }
 

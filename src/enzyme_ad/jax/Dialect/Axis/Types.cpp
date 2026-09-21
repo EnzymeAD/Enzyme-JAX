@@ -4,14 +4,14 @@
 
 namespace mlir::enzyme::axis {
 
-unsigned ShapeAxisType::getExtent() const {
+AxisExtentT ShapeAxisType::getExtent() const {
   auto shaped = ::mlir::dyn_cast<::mlir::ShapedType>(getShapeType());
   assert(shaped && "ShapeAxisType expects a shaped type");
   assert(shaped.hasRank() && "ShapeAxisType expects a ranked shaped type");
   assert(getAxisIndex() < shaped.getRank() && "axis index out of range");
   assert(!shaped.isDynamicDim(getAxisIndex()) &&
          "dynamic shape dimensions are not yet supported");
-  return static_cast<unsigned>(shaped.getDimSize(getAxisIndex()));
+  return static_cast<AxisExtentT>(shaped.getDimSize(getAxisIndex()));
 }
 
 // Shape-axis equivalence is currently based on typed index-space coordinates.
