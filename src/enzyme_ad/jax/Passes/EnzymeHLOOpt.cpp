@@ -12580,20 +12580,23 @@ struct TransposeReduceWindow final
                             reduce.getWindowDilations()->end());
     SmallVector<int64_t> padding_dialations(2 * padding_shape[0]);
 
+    // Dimension i of the transposed operand is dimension perm[i] of the
+    // reduce_window's operand, so it takes that dimension's window.
     auto perm = op.getPermutation();
     for (int64_t i = 0; i < perm.size(); ++i) {
-      win_dim[perm[i]] = reduce.getWindowDimensions()[i];
+      win_dim[i] = reduce.getWindowDimensions()[perm[i]];
       if (reduce.getWindowStrides())
-        win_strides[perm[i]] = (*reduce.getWindowStrides())[i];
+        win_strides[i] = (*reduce.getWindowStrides())[perm[i]];
       if (reduce.getBaseDilations())
-        base_dialations[perm[i]] = (*reduce.getBaseDilations())[i];
+        base_dialations[i] = (*reduce.getBaseDilations())[perm[i]];
       if (reduce.getWindowDilations())
-        win_dialations[perm[i]] = (*reduce.getWindowDilations())[i];
+        win_dialations[i] = (*reduce.getWindowDilations())[perm[i]];
       if (reduce.getPadding()) {
-        padding_dialations[2 * perm[i]] =
-            (*(reduce.getPadding()->begin() + (2 * i))).getSExtValue();
-        padding_dialations[2 * perm[i] + 1] =
-            (*(reduce.getPadding()->begin() + (2 * i + 1))).getSExtValue();
+        padding_dialations[2 * i] =
+            (*(reduce.getPadding()->begin() + (2 * perm[i]))).getSExtValue();
+        padding_dialations[2 * i + 1] =
+            (*(reduce.getPadding()->begin() + (2 * perm[i] + 1)))
+                .getSExtValue();
       }
     }
 
