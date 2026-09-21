@@ -28,9 +28,12 @@ struct Unit {
   std::vector<StepAtom> atoms;
   // Extent of the (single) atom; unused by Permute.
   uint64_t extent;
-  // Units that must be done before this one may start (D12). Indices are into
-  // the unit's UnitSet when built and into the assembled unit vector once a
-  // combination of variants has been assembled.
+  // Units that must have communicated (stage >= 1) before this unit's
+  // dependent step may start (D12). For TileToTile and ReduceScatter units the
+  // dependent steps are the direct exchange and the pending slice; their first
+  // half (gather, all-reduce) never waits. Indices are into the unit's UnitSet
+  // when built and into the assembled unit vector once a combination of
+  // variants has been assembled.
   std::vector<size_t> after;
 
   // The stage at which the unit has nothing left to do. Slice, Gather,
@@ -47,11 +50,19 @@ struct Unit {
 // One way of realizing a component, with its internal dependencies.
 using UnitSet = std::vector<Unit>;
 
+// A realization of a component: its units, and the mesh atoms it borrows for
+// a conjugation (D16). Two chosen variants must not borrow the same atom.
+struct Variant {
+  UnitSet units;
+  std::vector<size_t> borrowed;
+};
+
 // A group of mesh atoms decomposed together (D11, D13). Components share
-// nothing but the payload, so their units are independent DP dimensions.
-// `variants` lists alternative realizations; exactly one is used per plan.
+// nothing but the payload and the borrowed atoms, so their units are
+// independent DP dimensions. `variants` lists alternative realizations; exactly
+// one is used per plan, and the first is always the half-split.
 struct Component {
-  std::vector<UnitSet> variants;
+  std::vector<Variant> variants;
 };
 
 StepAtom stepAtomOf(const MeshAtom &atom) {
@@ -96,47 +107,181 @@ bool checkReductionKind(const NormalizedCollective &collective,
 // atom holding replicated data in between. The first halves are ordinary
 // units; each second half is a free slice that waits for the digit it places
 // (D12).
+//
+// With `fuse`, an atom whose first half releases a digit (P is Tile or Mesh)
+// and whose second half places one (Q is Tile or Mesh) is one TileToTile unit,
+// and a reduced atom placing a digit (Q is Mesh) is one ReduceScatter unit
+// (D14). The digit they place must be local, so they wait for its source's
+// unit exactly as the slice would.
 bool halfSplit(const NormalizedCollective &collective,
-               const std::vector<size_t> &members, UnitSet &set,
+               const std::vector<size_t> &members, bool fuse, UnitSet &set,
                std::string &failureReason) {
-  std::map<size_t, size_t> firstHalf;
+  // Atom index -> the unit of its first half (or fused exchange).
+  std::map<size_t, size_t> mainUnit;
   for (size_t i : members) {
     const MeshAtom &atom = collective.meshAtoms[i];
+    bool places = atom.out.kind != AtomRole::Replicate;
+    UnitKind kind;
     switch (atom.in.kind) {
     case AtomRole::Reduced:
       if (!checkReductionKind(collective, atom, failureReason))
         return false;
-      firstHalf[i] = set.size();
-      set.push_back({UnitKind::AllReduce, {stepAtomOf(atom)}, atom.extent, {}});
+      kind = fuse && places ? UnitKind::ReduceScatter : UnitKind::AllReduce;
       break;
     case AtomRole::Tile:
     case AtomRole::Mesh:
-      firstHalf[i] = set.size();
-      set.push_back({UnitKind::Gather, {stepAtomOf(atom)}, atom.extent, {}});
+      kind = fuse && places ? UnitKind::TileToTile : UnitKind::Gather;
       break;
     case AtomRole::Replicate:
-      break;
+      continue;
     }
+    mainUnit[i] = set.size();
+    set.push_back({kind, {stepAtomOf(atom)}, atom.extent, {}});
   }
   for (size_t i : members) {
     const MeshAtom &atom = collective.meshAtoms[i];
     if (atom.out.kind == AtomRole::Replicate)
       continue;
-    Unit slice{UnitKind::Slice, {stepAtomOf(atom)}, atom.extent, {}};
-    // The atom must have released its own digit (or finished reducing) ...
-    if (auto it = firstHalf.find(i); it != firstHalf.end())
-      slice.after.push_back(it->second);
-    // ... and a digit that came from another atom must be local by then. An
-    // input tile digit is local from the start.
+    // A digit that came from another atom must be local by the time it is
+    // placed. An input tile digit is local from the start.
+    std::vector<size_t> sourceLocal;
     if (atom.out.kind == AtomRole::Mesh) {
-      auto it = firstHalf.find(meshIndexOf(collective, atom.out.partner));
-      assert(it != firstHalf.end() &&
+      auto it = mainUnit.find(meshIndexOf(collective, atom.out.partner));
+      assert(it != mainUnit.end() &&
              "a digit that moves between atoms is gathered by its source");
-      slice.after.push_back(it->second);
+      sourceLocal.push_back(it->second);
     }
-    set.push_back(std::move(slice));
+    auto own = mainUnit.find(i);
+    if (own != mainUnit.end()) {
+      Unit &main = set[own->second];
+      if (main.kind == UnitKind::TileToTile ||
+          main.kind == UnitKind::ReduceScatter) {
+        main.after = std::move(sourceLocal);
+        continue;
+      }
+      // The atom must have released its own digit (or finished reducing).
+      sourceLocal.push_back(own->second);
+    }
+    set.push_back({UnitKind::Slice,
+                   {stepAtomOf(atom)},
+                   atom.extent,
+                   std::move(sourceLocal)});
   }
   return true;
+}
+
+// The path closure of a non-pure mesh-coupled component (D15). Data flows
+// along the component's mesh links from a start atom s (whose output is a
+// tile digit or a replicate) through atoms that hand their digit on, to an end
+// atom e (whose input is reduced, a tile digit or a replicate). Once e holds
+// no digit, the whole path is one cyclic shift of atom contents: every atom
+// takes its source's digit and s takes e's empty content. That is one permute,
+// followed by the free slice of s's tile digit when s's output is a tile atom.
+//
+// e is emptied first: an all-reduce when it is reduced, a gather when its own
+// digit goes to the output tile, nothing when its input is replicated.
+void pathClosure(const NormalizedCollective &collective,
+                 const std::vector<size_t> &members, UnitSet &set) {
+  size_t start = members.front(), end = members.front();
+  for (size_t i : members) {
+    const MeshAtom &atom = collective.meshAtoms[i];
+    if (atom.out.kind != AtomRole::Mesh)
+      start = i;
+    if (atom.in.kind != AtomRole::Mesh)
+      end = i;
+  }
+  const MeshAtom &s = collective.meshAtoms[start];
+  const MeshAtom &e = collective.meshAtoms[end];
+  assert(s.out.kind != AtomRole::Mesh && e.in.kind != AtomRole::Mesh &&
+         "a non-pure component is a path with a start and an end");
+
+  std::vector<size_t> dependency;
+  switch (e.in.kind) {
+  case AtomRole::Reduced:
+    set.push_back({UnitKind::AllReduce, {stepAtomOf(e)}, e.extent, {}});
+    dependency.push_back(set.size() - 1);
+    break;
+  case AtomRole::Tile:
+    set.push_back({UnitKind::Gather, {stepAtomOf(e)}, e.extent, {}});
+    dependency.push_back(set.size() - 1);
+    break;
+  case AtomRole::Replicate:
+    break;
+  case AtomRole::Mesh:
+    llvm_unreachable("the end of a path hands no digit on");
+  }
+  std::vector<StepAtom> atoms;
+  for (size_t i : members)
+    atoms.push_back(stepAtomOf(collective.meshAtoms[i]));
+  set.push_back({UnitKind::Permute, std::move(atoms), 0, dependency});
+  if (s.out.kind == AtomRole::Tile)
+    set.push_back(
+        {UnitKind::Slice, {stepAtomOf(s)}, s.extent, {set.size() - 1}});
+}
+
+// The mesh atom a step on `atom` can be conjugated onto (D16): an atom of the
+// same extent that holds no digit and has no role of its own, on an axis with
+// strictly more bandwidth. Returns the fastest such atom (ties to the lowest
+// index), or meshAtoms.size() when there is none.
+size_t conjugationTarget(const NormalizedCollective &collective,
+                         const MeshCostParams &params, const StepAtom &atom) {
+  size_t best = collective.meshAtoms.size();
+  for (size_t i = 0; i < collective.meshAtoms.size(); ++i) {
+    const MeshAtom &candidate = collective.meshAtoms[i];
+    if (candidate.in.kind != AtomRole::Replicate ||
+        candidate.out.kind != AtomRole::Replicate ||
+        candidate.extent != atom.extent ||
+        params.bandwidth[candidate.axis] <= params.bandwidth[atom.axis])
+      continue;
+    if (best == collective.meshAtoms.size() ||
+        params.bandwidth[candidate.axis] >
+            params.bandwidth[collective.meshAtoms[best].axis])
+      best = i;
+  }
+  return best;
+}
+
+// `base` with unit `u` (a gather or all-reduce on atom A) run on atom
+// `target` instead: a swap permute of A and `target` first, then the step on
+// `target`. The target holds no digit, so after the step both atoms are empty
+// again, exactly as after the unconjugated step, and no swap back is needed.
+Variant conjugate(const Variant &base, size_t u, const MeshAtom &target,
+                  size_t targetIndex) {
+  // Unit u becomes two units (swap, then the step), shifting later indices.
+  auto newIndex = [&](size_t old) { return old < u ? old : old + 1; };
+  Variant result;
+  result.borrowed = {targetIndex};
+  for (size_t i = 0; i < base.units.size(); ++i) {
+    Unit unit = base.units[i];
+    for (size_t &dep : unit.after)
+      dep = newIndex(dep);
+    if (i == u) {
+      result.units.push_back(
+          {UnitKind::Permute, {unit.atoms.front(), stepAtomOf(target)}, 0, {}});
+      unit.atoms = {stepAtomOf(target)};
+      unit.after.push_back(u);
+    }
+    result.units.push_back(std::move(unit));
+  }
+  return result;
+}
+
+// Appends to `component` one variant per gather or all-reduce unit of its
+// first variant that has a conjugation target (D16). At most one unit is
+// conjugated per variant.
+void addConjugations(const NormalizedCollective &collective,
+                     const MeshCostParams &params, Component &component) {
+  const Variant base = component.variants.front();
+  for (size_t u = 0; u < base.units.size(); ++u) {
+    const Unit &unit = base.units[u];
+    if (unit.kind != UnitKind::Gather && unit.kind != UnitKind::AllReduce)
+      continue;
+    size_t target = conjugationTarget(collective, params, unit.atoms.front());
+    if (target == collective.meshAtoms.size())
+      continue;
+    component.variants.push_back(
+        conjugate(base, u, collective.meshAtoms[target], target));
+  }
 }
 
 // Splits the mesh atoms into components of units, or reports why the
@@ -145,15 +290,23 @@ bool halfSplit(const NormalizedCollective &collective,
 // Atoms with no mesh partner have a dedicated row of their own. Atoms tied by
 // mesh partners form connected components (D11): one made only of (Mesh, Mesh)
 // atoms is a set of permutation cycles, and all cycles share one permute unit
-// (D5); any other component is half-split. Components are ordered by their
-// first atom, with the permute component last.
+// (D5); any other component is half-split (D11) and, unless
+// `options.relayVariants` is off, also offered as a path closure (D15).
+// Components are ordered by their first atom, with the permute component last.
+// The variant lists are trimmed so that their product stays within
+// kMaxVariantCombinations, keeping the earliest variants of the earliest
+// components.
 bool buildComponents(const NormalizedCollective &collective,
+                     const MeshCostParams &params, const PlanOptions &options,
                      std::vector<Component> &components,
                      std::string &failureReason) {
   auto single = [&](UnitKind kind, const MeshAtom &atom) {
-    UnitSet set;
-    set.push_back({kind, {stepAtomOf(atom)}, atom.extent, {}});
-    components.push_back({{std::move(set)}});
+    Component component;
+    component.variants.push_back(
+        {UnitSet{{kind, {stepAtomOf(atom)}, atom.extent, {}}}, {}});
+    if (options.relayVariants)
+      addConjugations(collective, params, component);
+    components.push_back(std::move(component));
   };
 
   // Union-find over the mesh-coupled atoms, joined by mesh partners.
@@ -219,10 +372,18 @@ bool buildComponents(const NormalizedCollective &collective,
       }
       if (!emitted.insert(find(i)).second)
         break;
-      UnitSet set;
-      if (!halfSplit(collective, group, set, failureReason))
+      Component component;
+      component.variants.push_back({});
+      if (!halfSplit(collective, group, options.relayVariants,
+                     component.variants.front().units, failureReason))
         return false;
-      components.push_back({{std::move(set)}});
+      if (options.relayVariants) {
+        Variant closure;
+        pathClosure(collective, group, closure.units);
+        component.variants.push_back(std::move(closure));
+        addConjugations(collective, params, component);
+      }
+      components.push_back(std::move(component));
       break;
     }
     }
@@ -230,7 +391,18 @@ bool buildComponents(const NormalizedCollective &collective,
   if (!permuted.empty()) {
     UnitSet set;
     set.push_back({UnitKind::Permute, std::move(permuted), 0, {}});
-    components.push_back({{std::move(set)}});
+    components.push_back({{{std::move(set), {}}}});
+  }
+
+  // Keep the product of the variant counts within the cap. The first variant
+  // of every component (the half-split) always stays, so no collective becomes
+  // unsupported.
+  size_t product = 1;
+  for (Component &component : components) {
+    size_t allowed = std::max<size_t>(1, kMaxVariantCombinations / product);
+    if (component.variants.size() > allowed)
+      component.variants.resize(allowed);
+    product *= component.variants.size();
   }
 
   // Tile atoms must be moved by a mesh atom or relabeled to the other side's
@@ -262,7 +434,7 @@ std::vector<Unit> assemble(const std::vector<Component> &components,
   std::vector<Unit> units;
   for (size_t c = 0; c < components.size(); ++c) {
     size_t offset = units.size();
-    for (Unit unit : components[c].variants[choice[c]]) {
+    for (Unit unit : components[c].variants[choice[c]].units) {
       for (size_t &dep : unit.after)
         dep += offset;
       units.push_back(std::move(unit));
@@ -329,11 +501,10 @@ public:
     return true;
   }
 
-  // True when every unit `unit` waits for is done (D12).
+  // True when every unit `unit` waits for has communicated (D12).
   bool dependenciesDone(const DecomposerState &state, const Unit &unit) const {
-    return llvm::all_of(unit.after, [&](size_t dep) {
-      return state.stage[dep] == units[dep].finalStage();
-    });
+    return llvm::all_of(unit.after,
+                        [&](size_t dep) { return state.stage[dep] >= 1; });
   }
 
   // The steps available in `state`. A pending free step (D2) is returned
@@ -348,7 +519,7 @@ public:
                          dependenciesDone(state, unit)) ||
                         ((unit.kind == UnitKind::TileToTile ||
                           unit.kind == UnitKind::ReduceScatter) &&
-                         state.stage[i] == 1);
+                         state.stage[i] == 1 && dependenciesDone(state, unit));
       if (!sliceReady)
         continue;
       DecomposerState next = advance(state, i, unit.finalStage());
@@ -358,7 +529,13 @@ public:
     }
     for (size_t i = 0; i < units.size(); ++i) {
       const Unit &unit = units[i];
-      if (state.stage[i] != 0 || !dependenciesDone(state, unit))
+      if (state.stage[i] != 0)
+        continue;
+      // The exchange of a TileToTile or ReduceScatter unit waits for its
+      // dependencies; its gather or all-reduce does not.
+      bool ready = dependenciesDone(state, unit);
+      if (!ready && unit.kind != UnitKind::TileToTile &&
+          unit.kind != UnitKind::ReduceScatter)
         continue;
       switch (unit.kind) {
       case UnitKind::Slice:
@@ -368,8 +545,9 @@ public:
                           advance(state, i, 1)});
         break;
       case UnitKind::TileToTile:
-        result.push_back({allToAllFootprint(unit.atoms, payload, params),
-                          advance(state, i, 2)});
+        if (ready)
+          result.push_back({allToAllFootprint(unit.atoms, payload, params),
+                            advance(state, i, 2)});
         result.push_back({allGatherFootprint(unit.atoms, payload, params),
                           advance(state, i, 1)});
         break;
@@ -378,8 +556,9 @@ public:
                           advance(state, i, 1)});
         break;
       case UnitKind::ReduceScatter:
-        result.push_back({reduceScatterFootprint(unit.atoms, payload, params),
-                          advance(state, i, 2)});
+        if (ready)
+          result.push_back({reduceScatterFootprint(unit.atoms, payload, params),
+                            advance(state, i, 2)});
         result.push_back({allReduceFootprint(unit.atoms, payload, params),
                           advance(state, i, 1)});
         break;
@@ -463,12 +642,13 @@ std::optional<std::vector<PrimitiveStep>>
 plan(const NormalizedCollective &collective, const MeshCostParams &params,
      std::string &failureReason, const PlanOptions &options) {
   std::vector<Component> components;
-  if (!buildComponents(collective, components, failureReason))
+  if (!buildComponents(collective, params, options, components, failureReason))
     return std::nullopt;
 
   // Components are independent but share the payload, so their variants are
   // chosen jointly: one exact search per combination, cheapest chain wins
-  // (ties keep the earlier combination).
+  // (ties keep the earlier combination). buildComponents keeps the number of
+  // combinations within kMaxVariantCombinations.
   size_t combinations = 1;
   for (const Component &component : components)
     combinations *= component.variants.size();
@@ -485,6 +665,14 @@ plan(const NormalizedCollective &collective, const MeshCostParams &params,
       choice.push_back(rest % component.variants.size());
       rest /= component.variants.size();
     }
+    // Two components cannot conjugate onto the same atom (D16).
+    std::set<size_t> borrowed;
+    bool conflict = false;
+    for (size_t c = 0; c < components.size(); ++c)
+      for (size_t atom : components[c].variants[choice[c]].borrowed)
+        conflict |= !borrowed.insert(atom).second;
+    if (conflict)
+      continue;
     std::vector<Unit> units = assemble(components, choice);
     if (units.size() > kMaxLiveUnits) {
       oversizeReason = "too many units of work (" +
@@ -499,9 +687,12 @@ plan(const NormalizedCollective &collective, const MeshCostParams &params,
     }
   }
   if (!best) {
+    // Every combination was skipped: the first variants never conflict, so the
+    // only cause is the unit limit.
     failureReason = oversizeReason;
     return std::nullopt;
   }
+  failureReason.clear();
 #ifndef NDEBUG
   std::string why;
   assert(verifyChainRealizesCollective(collective, *best, why) &&
@@ -545,6 +736,12 @@ private:
           collective.meshAtoms[i].atom == label.atom)
         return static_cast<int>(i);
     return kNone;
+  }
+
+  size_t meshIndex(const AtomLabel &label) const {
+    int digit = meshDigit(label);
+    assert(digit != kNone && "a mesh partner names a mesh atom");
+    return static_cast<size_t>(digit);
   }
 
   int inTileDigit(const AtomLabel &label) const {
@@ -752,6 +949,19 @@ private:
     return true;
   }
 
+  // A permute moves the contents of atoms (their digit, or nothing, and their
+  // pending reduction) among the atoms it names, so every atom of the step
+  // must have equal extent to its source. Two readings:
+  //   - The atoms are a union of complete mesh-linked components: every mesh
+  //     partner of an atom is in the step. The step is the collective's own
+  //     movement. A cycle shifts each atom's content to the atom that takes its
+  //     digit. A path (see the path closure) shifts along the path and its
+  //     start atom takes the content of its end atom, which is what closes the
+  //     path into a cycle.
+  //   - The atoms are exactly two atoms, at least one without a mesh link. The
+  //     step swaps their contents; it is how a step is run on a different atom
+  //     (conjugation), so the digit or pending reduction that a later step
+  //     finds on an atom is whatever the swap put there.
   bool applyPermute(const PrimitiveStep &step, std::string &why) {
     std::set<size_t> inStep;
     for (const StepAtom &atom : step.atoms) {
@@ -760,6 +970,26 @@ private:
         return false;
       inStep.insert(x);
     }
+    bool closed = true, linked = true;
+    for (size_t x : inStep) {
+      const MeshAtom &atom = collective.meshAtoms[x];
+      bool hasLink = false;
+      for (const MeshAtomRole *role : {&atom.in, &atom.out})
+        if (role->kind == AtomRole::Mesh) {
+          hasLink = true;
+          closed &= inStep.count(meshIndex(role->partner)) > 0;
+        }
+      linked &= hasLink;
+    }
+    if (closed && linked)
+      return applyComponentPermute(inStep, why);
+    if (inStep.size() == 2)
+      return applySwap(inStep, why);
+    why = "permute atoms are neither complete components nor a swap";
+    return false;
+  }
+
+  bool applyComponentPermute(const std::set<size_t> &inStep, std::string &why) {
     std::vector<int> renamed = occupant;
     for (size_t x : inStep) {
       const MeshAtom &atom = collective.meshAtoms[x];
@@ -767,18 +997,31 @@ private:
         why = "permutes an atom whose reduction has not run";
         return false;
       }
-      if (atom.out.kind != AtomRole::Mesh) {
-        why = "permutes an atom whose output is not another atom's digit";
-        return false;
-      }
-      int source = meshDigit(atom.out.partner);
-      if (source == kNone || !inStep.count(source)) {
-        why = "a digit's source atom is not part of the permute";
-        return false;
+      size_t source;
+      if (atom.out.kind == AtomRole::Mesh) {
+        source = meshIndex(atom.out.partner);
+      } else {
+        // The start of a path takes the content of the path's end.
+        source = x;
+        while (collective.meshAtoms[source].in.kind == AtomRole::Mesh)
+          source = meshIndex(collective.meshAtoms[source].in.partner);
       }
       renamed[x] = occupant[source];
     }
     occupant = renamed;
+    return true;
+  }
+
+  bool applySwap(const std::set<size_t> &inStep, std::string &why) {
+    size_t x = *inStep.begin(), y = *std::next(inStep.begin());
+    if (collective.meshAtoms[x].extent != collective.meshAtoms[y].extent) {
+      why = "swaps atoms of different extents";
+      return false;
+    }
+    std::swap(occupant[x], occupant[y]);
+    bool pending = reductionPending[x];
+    reductionPending[x] = reductionPending[y];
+    reductionPending[y] = pending;
     return true;
   }
 

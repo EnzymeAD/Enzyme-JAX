@@ -157,6 +157,7 @@ struct PrintCollectivePlanPass
       if (disableReduceScatter)
         disabled.push_back(PrimitiveKind::ReduceScatter);
       PlanOptions options;
+      options.relayVariants = !disableRelayVariants;
       if (!disabled.empty())
         options.filter = [disabled](const DecomposerState &,
                                     std::vector<CandidateStep> &candidates) {

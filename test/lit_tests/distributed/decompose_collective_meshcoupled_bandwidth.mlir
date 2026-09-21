@@ -1,7 +1,7 @@
-// RUN: enzymexlamlir-opt --split-input-file --distributed-atomize-collectives --distributed-print-collective-plan="chain=true bandwidths=4,1" %s 2>&1 >/dev/null | FileCheck %s --check-prefix=FAST0
-// RUN: enzymexlamlir-opt --split-input-file --distributed-atomize-collectives --distributed-print-collective-plan="chain=true bandwidths=1,4" %s 2>&1 >/dev/null | FileCheck %s --check-prefix=FAST1
+// RUN: enzymexlamlir-opt --split-input-file --distributed-atomize-collectives --distributed-print-collective-plan="chain=true bandwidths=4,1 disable-relay-variants=true" %s 2>&1 >/dev/null | FileCheck %s --check-prefix=FAST0
+// RUN: enzymexlamlir-opt --split-input-file --distributed-atomize-collectives --distributed-print-collective-plan="chain=true bandwidths=1,4 disable-relay-variants=true" %s 2>&1 >/dev/null | FileCheck %s --check-prefix=FAST1
 
-// Bandwidth changes the order of the first halves of a half-split component (see decompose_collective_meshcoupled.mlir). Round latency 0.01 and launch latency 0.1 as in decompose_collective.mlir.
+// Bandwidth changes the order of the first halves of a half-split component (see decompose_collective_meshcoupled.mlir); the relay variants are disabled so the half-split is what is tested. Round latency 0.01 and launch latency 0.1 as in decompose_collective.mlir.
 
 // Two gathers before the slice. mesh0 is (tile, mesh1): its digit joins the output tile and it takes mesh1's digit; mesh1 is (mesh0, replicate). The one slice (onto mesh0) waits for both gathers, so both grow the payload for good. S = 2, n = 2. A gather at payload P on axis a costs P / BW[a] plus latency 0.11.
 //   mesh0 first: 2 / BW0 + 4 / BW1

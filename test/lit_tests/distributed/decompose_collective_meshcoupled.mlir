@@ -1,12 +1,15 @@
-// RUN: enzymexlamlir-opt --split-input-file --distributed-atomize-collectives --distributed-print-collective-plan=chain=true %s 2>&1 >/dev/null | FileCheck %s
+// RUN: enzymexlamlir-opt --split-input-file --distributed-atomize-collectives --distributed-print-collective-plan="chain=true disable-relay-variants=true" %s 2>&1 >/dev/null | FileCheck %s
 
-// Mesh-coupled rows: atoms whose in or out role is another mesh atom. The
-// decomposer half-splits every atom (in = P, out = Q) of such a component into
-// a first half by P (all-reduce for a reduced atom, all-gather for a tile or
-// mesh digit, nothing for a replicate) and a free local slice by Q (the input
-// tile digit, or the digit that came from the partner atom). A slice waits for
-// its own atom's first half and for the partner's first half. A component of
-// pure (Mesh, Mesh) atoms stays one permute step (see decompose_collective.mlir).
+// Mesh-coupled rows with the relay variants disabled (fused exchanges, path
+// closures and conjugations; see decompose_collective_relay.mlir), which pins
+// the half-split baseline that every collective supports. Atoms whose in or out
+// role is another mesh atom form components. The half-split turns every atom
+// (in = P, out = Q) of such a component into a first half by P (all-reduce for
+// a reduced atom, all-gather for a tile or mesh digit, nothing for a replicate)
+// and a free local slice by Q (the input tile digit, or the digit that came
+// from the partner atom). A slice waits for its own atom's first half and for
+// the partner's first half. A component of pure (Mesh, Mesh) atoms stays one
+// permute step (see decompose_collective.mlir).
 //
 // Hand computation uses the default parameters (bandwidth 1, round latency
 // 0.01, launch latency 0.1) and the formulas at the top of

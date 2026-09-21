@@ -35,9 +35,12 @@ namespace mlir::enzyme::distributed {
 // (Tile, Mesh), (Mesh, Tile), (Mesh, Replicate) and a (Mesh, Mesh) atom whose
 // component is not a pure cycle, is mesh-coupled: its cost depends on the
 // partner atoms' roles. Mesh-coupled components are decomposed by the
-// half-split (D11). Tile atoms paired only with tile atoms of the other side
-// are device-local relabelings and cost nothing. Not decomposed, and reported
-// by plan() as a failure with a reason:
+// half-split (D11), which is the baseline every collective supports, and are
+// also offered cheaper variants: fused exchanges (D14), a path closure (D15)
+// and a conjugation onto a faster axis (D16). Tile atoms paired only with
+// tile atoms of the other side are device-local relabelings and cost
+// nothing. Not decomposed, and reported by plan() as a failure with a
+// reason:
 //   - reductions whose body is not a single recognized associative operation
 //     (D9).
 //   - collectives with more than kMaxLiveUnits units (D7).
@@ -115,10 +118,52 @@ namespace mlir::enzyme::distributed {
 //       Dependencies restrict the DP's orders (D6) but do not change costs.
 //       A gather can therefore raise the payload above its initial value
 //       before the slice that consumes it lowers it again (D3).
-//   D13 Components share only the payload. Each lists alternative variants
-//       (sets of units), and plan() searches every combination of one variant
-//       per component, up to kMaxVariantCombinations, and keeps the cheapest
-//       chain.
+//   D13 Components share only the payload (and, see D16, the atoms they
+//       borrow). Each lists alternative variants (sets of units), and plan()
+//       searches every combination of one variant per component and keeps the
+//       cheapest chain. The first variant is the half-split, which is what
+//       keeps every collective supported; when the product of the variant
+//       counts would exceed kMaxVariantCombinations, later variants of later
+//       components are dropped, so the bound holds in release builds too.
+//   D14 Fused exchange. In a half-split, an atom that gathers its own digit
+//       (in is Tile or Mesh) and then slices a digit onto itself (out is Tile
+//       or Mesh) is a TileToTile unit: besides gather + slice it may run one
+//       all-to-all on its axis, which keeps the payload where the gather
+//       would multiply it by the extent (D4 applies unchanged). A reduced atom
+//       placing a digit (out is Mesh) is likewise a ReduceScatter unit. The
+//       digit an exchange or slice places on the atom must already be local,
+//       so it waits for the unit of the atom that owns that digit; this
+//       needs only that unit to have communicated (D12), by gather or by
+//       exchange. An exchange placing a digit that came from another atom
+//       therefore follows that atom's gather. The atom's own gather does not
+//       wait.
+//   D15 Path closure. A component that is not a pure cycle is one path along
+//       its mesh links: data flows from a start atom s (out is Tile or
+//       Replicate) through atoms that hand their digit on to an end atom e
+//       (in is Reduced, Tile or Replicate). When e holds nothing, every atom
+//       takes its source's digit and s takes e's empty content, which is one
+//       cyclic shift of the atoms' contents: a single permute over the whole
+//       path with change fraction permuteSwapChangeFraction(extent) on each
+//       atom (D5, N5), not the S (n - 1) of a gather. Before it, e is emptied
+//       (all-reduce for Reduced, gather for Tile, nothing for Replicate); after
+//       it, a free slice places s's tile digit. The permute is a variant of
+//       the component beside the half-split, so it is used only when cheaper.
+//       A network where a message may not cross several axes at once
+//       (replacing N5) would change the permute's cost, not its validity.
+//   D16 Conjugation. A gather or all-reduce on atom A of a slow axis may run
+//       on an atom M instead when M has the same extent, holds no digit and
+//       has no role (in and out are Replicate), and its axis has strictly
+//       more bandwidth (a different bandwidth class, N1). A swap permute of A
+//       and M moves A's digit or pending reduction onto M, the step runs on M,
+//       and since M then holds nothing and A holds M's empty content, both
+//       atoms are in the state the unconjugated step would have left and no
+//       swap back is needed. The step costs what it costs on M's axis; the
+//       swap crosses both axes (N5) and moves the payload at that moment.
+//       Each variant conjugates one unit, the fastest such M is chosen, and
+//       two components never borrow the same M. Steps that leave a digit on the
+//       atom (all-to-all, reduce-scatter, slices) are not conjugated: after
+//       the swap they would place the digit of the atom whose content moved,
+//       which the chain checker cannot tell from the step alone.
 
 // Per-unit progress of the decomposition. Two states with equal stages are
 // equal for the purposes of every later decision (D3), so it is the memo key.
@@ -148,6 +193,10 @@ using CandidateFilter =
 
 struct PlanOptions {
   CandidateFilter filter;
+  // Offer the variants that beat the half-split for mesh-coupled components
+  // (D14 to D16). Off, mesh-coupled components are only half-split with plain
+  // gathers and slices, which lets tests pin the baseline.
+  bool relayVariants = true;
 };
 
 // Most combinations of component variants (see D13) plan() searches.
@@ -176,12 +225,15 @@ plan(const NormalizedCollective &collective, const MeshCostParams &params,
 // atoms. A digit is either held on a mesh atom (its coordinate selects which
 // piece a device has) or local to the tile. Gathers move a digit from a mesh
 // atom into the tile, slices move a required tile digit onto a free mesh atom,
-// an all-to-all does both on one atom, and a permute renames mesh atoms. The
-// digit a slice or all-to-all places on atom `a` is the one the collective's
-// output role for `a` requires: an input tile digit, or, for a Mesh(m) role,
-// the digit that started on input atom m, which must already be local (a
-// gather of m moved it there). A gather of an atom whose input role is Mesh
-// releases that atom's own digit the same way as for a Tile role.
+// an all-to-all does both on one atom, and a permute moves the contents of
+// atoms: either the collective's own permutation cycles and paths (a path
+// closes into a cycle through its empty end atom), or a swap of two atoms that
+// runs a step on another atom instead (D16). The digit a slice or all-to-all
+// places on atom `a` is the one the collective's output role for `a`
+// requires: an input tile digit, or, for a Mesh(m) role, the digit that
+// started on input atom m, which must already be local (a gather of m moved
+// it there). A gather of an atom whose input role is Mesh releases that
+// atom's own digit the same way as for a Tile role.
 //
 // A reduced input atom carries no digit; its digit is summed away by exactly
 // one all-reduce (the atom then holds replicated data, and a slice may follow)

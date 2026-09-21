@@ -540,6 +540,10 @@ def PrintCollectivePlanPass
     Option<"disableReduceScatter", "disable-reduce-scatter", "bool", "false",
            "With chain: do not offer reduce-scatter, so reduced atoms "
            "scattering onto a tile atom use all-reduce + local slice">,
+    Option<"disableRelayVariants", "disable-relay-variants", "bool", "false",
+           "With chain: decompose mesh-coupled components only by the "
+           "half-split, without fused exchanges, path closures or "
+           "conjugations">,
   ];
   let description = [{
     Emits one remark per distributed.Collective describing its
@@ -558,6 +562,8 @@ def PrintCollectivePlanPass
     overriding per-axis bandwidth. disable-all-to-all and
     disable-reduce-scatter exercise the gather + slice and all-reduce + slice
     alternatives, which a cost-minimizing search never selects.
+    disable-relay-variants restricts mesh-coupled components to the
+    half-split so the baseline can be compared with the cheaper variants.
   }];
 }
 

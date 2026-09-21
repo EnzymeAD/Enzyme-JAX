@@ -594,41 +594,28 @@ module @all_reduce_f32 {
 
 // -----
 
-// Mixed mesh row, (Mesh, Tile) next to (Tile, Mesh): the input tile digit is sliced onto mesh0, mesh0's digit goes to mesh1, and mesh1's digit goes to the output tile. The coupled atoms are half-split: an all-gather of each atom, then a free slice onto each. S = 2, n = 2, each gather V = 2, latency 0.11, duration 2.11 and payload 2 -> 4.
-//   gather mesh0 (payload 2 -> 4), slice onto mesh0 (the input tile digit, 4 -> 2), gather mesh1 (2 -> 4), slice onto mesh1 (mesh0's digit, 4 -> 2)
-// mesh0 goes first because its slice needs only its own gather and returns the payload to 2 before mesh1 gathers; the other order would gather mesh0 at payload 4 (V = 4). Total 2.11 + 2.11 = 4.22.
-// CHECK: chain: 4 steps, total duration 4.22
-// CHECK-NEXT: step 0: all-gather
+// Mixed mesh row, (Mesh, Tile) next to (Tile, Mesh): the input tile digit is sliced onto mesh0, mesh0's digit goes to mesh1, and mesh1's digit goes to the output tile. Each atom both releases its own digit and places another, so each is one all-to-all (a fused exchange) instead of a gather followed by a free slice. S = 2, n = 2.
+//   all-to-all mesh0 (places the input tile digit): pairwise V = 2 * 1 / 2 = 1, latency 0.1 + 0.01 = 0.11, duration 1.11, payload 2 -> 2
+//   all-to-all mesh1 (places mesh0's digit, which mesh0's exchange made local): the same, 1.11
+// Total 2.22. The half-split (gather + slice per atom, 2.11 each) is 4.22; decompose_collective_meshcoupled.mlir keeps it as the baseline.
+// CHECK: chain: 2 steps, total duration 2.22
+// CHECK-NEXT: step 0: all-to-all
 // CHECK-NEXT: atoms: axis0.0(x2)
-// CHECK-NEXT: payload: 2 -> 4
+// CHECK-NEXT: payload: 2 -> 2
 // CHECK-NEXT: latency: 0.11
-// CHECK-NEXT: V: [2, 0]
+// CHECK-NEXT: V: [1, 0]
 // CHECK-NEXT: rho: [1, 0]
-// CHECK-NEXT: duration: 2.11
-// CHECK-NEXT: step 1: local-slice
-// CHECK-NEXT: atoms: axis0.0(x2)
-// CHECK-NEXT: payload: 4 -> 2
-// CHECK-NEXT: latency: 0
-// CHECK-NEXT: V: [0, 0]
-// CHECK-NEXT: rho: [0, 0]
-// CHECK-NEXT: duration: 0
-// CHECK-NEXT: step 2: all-gather
+// CHECK-NEXT: duration: 1.11
+// CHECK-NEXT: step 1: all-to-all
 // CHECK-NEXT: atoms: axis1.0(x2)
-// CHECK-NEXT: payload: 2 -> 4
+// CHECK-NEXT: payload: 2 -> 2
 // CHECK-NEXT: latency: 0.11
-// CHECK-NEXT: V: [0, 2]
+// CHECK-NEXT: V: [0, 1]
 // CHECK-NEXT: rho: [0, 1]
-// CHECK-NEXT: duration: 2.11
-// CHECK-NEXT: step 3: local-slice
-// CHECK-NEXT: atoms: axis1.0(x2)
-// CHECK-NEXT: payload: 4 -> 2
-// CHECK-NEXT: latency: 0
-// CHECK-NEXT: V: [0, 0]
-// CHECK-NEXT: rho: [0, 0]
-// CHECK-NEXT: duration: 0
+// CHECK-NEXT: duration: 1.11
 // CHECK-NEXT: semantics: verified
 // CHECK-NEXT: input port: tensor<2xi8> (the collective's input_object operand) -> step 0
-// CHECK-NEXT: result port: tensor<2xi8> (the await result, 0 uses) <- step 3
+// CHECK-NEXT: result port: tensor<2xi8> (the await result, 0 uses) <- step 1
 module @mixed_mesh_row {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
 
