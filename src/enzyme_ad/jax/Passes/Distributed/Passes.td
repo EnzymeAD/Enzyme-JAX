@@ -479,6 +479,23 @@ def AtomizeCollectivesPass
   }];
 }
 
+def PrintCollectivePlanPass
+    : Pass<"distributed-print-collective-plan", "::mlir::ModuleOp"> {
+  let summary = "Debug pass: reports each atomic collective's normal form "
+                "(mesh atom roles and primitive) as remarks.";
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "enzyme::distributed::DistributedDialect"
+  ];
+  let description = [{
+    Emits one remark per distributed.Collective describing its
+    NormalizedCollective: each mesh atom with its (in, out) roles and the
+    communication primitive those roles call for, the tile atoms, the input
+    payload size in bytes, and each reduction group's kind. Does not change
+    the IR. A collective that is not atomic or cannot be resolved gets a remark
+    saying so; run distributed-atomize-collectives first.
+  }];
+}
+
 def LowerForSanityCheckPass
     : Pass<"distributed-lower-for-sanity-check", "::mlir::ModuleOp"> {
   let summary = "Lowers the whole distributed program to a single-device "
