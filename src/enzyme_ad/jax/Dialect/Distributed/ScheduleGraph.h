@@ -81,7 +81,20 @@ struct ScheduleEvent {
   // nothing after it may start before it finishes. Every event on either
   // side of a call is wired to it directly rather than relying on data
   // dependencies alone to enforce that ordering.
+  //
+  // Deduplicated: one entry per distinct predecessor node, which is what a
+  // human-facing report (describeEvent, the print-schedule-graph debug pass)
+  // wants. `predecessorMultiplicity` (parallel, same length) carries the
+  // operand-slot count collapsed into each entry, for a consumer (the
+  // timeline simulator) whose readiness bookkeeping has to match how many
+  // times a predecessor's value is actually used rather than how many
+  // distinct predecessors there are: an op referencing the same producer
+  // through two operand slots (e.g. `add %x, %x`) has multiplicity 2 at that
+  // predecessor's entry, since two OpOperand occurrences must each be
+  // accounted for once. Always 1 for a chain-internal or call-barrier edge,
+  // since those are never multi-use.
   std::vector<size_t> predecessors;
+  std::vector<size_t> predecessorMultiplicity;
 };
 
 // One function's event DAG (the entry function, dissolved together with the

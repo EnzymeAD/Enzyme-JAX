@@ -663,6 +663,29 @@ def PrintScheduleGraphPass
   }];
 }
 
+def PrintScheduleCostPass
+    : Pass<"distributed-print-schedule-cost", "::mlir::ModuleOp"> {
+  let summary = "Debug pass: reports the simulated makespan and critical "
+                "path of a lowered candidate module (ScheduleSimulator.h) "
+                "as remarks.";
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "enzyme::distributed::DistributedDialect"
+  ];
+  let description = [{
+    Builds the event DAG (ScheduleGraph.h) and runs the discrete-event,
+    max-min fair-share timeline simulator (ScheduleSimulator.h) over it: one
+    remark per top-level node reports its index, kind and simulated
+    start/finish time, and one summary remark on the module reports the
+    predicted makespan and the DAG's own critical path (source to sink node
+    indices, ignoring resource contention; see ScheduleSimulator.h). Mesh/
+    device cost parameters come from the unique physical mesh's optional
+    metadata, else abstract defaults (MeshCostMetadata.h), matching
+    ScheduleGraph.h's own node costs. An unplannable collective (or any
+    other cause of ScheduleGraph infeasibility) is reported as a single
+    remark instead of a makespan.
+  }];
+}
+
 def LowerForSanityCheckPass
     : Pass<"distributed-lower-for-sanity-check", "::mlir::ModuleOp"> {
   let summary = "Lowers the whole distributed program to a single-device "

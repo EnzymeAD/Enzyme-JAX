@@ -78,11 +78,20 @@ void buildKernelNodes(DistributedKernelOp kernel,
     event.computeCost = costOp(&op).value_or(OpCost{});
     event.isolatedDuration = event.computeCost.time(device);
     // An op using the same value for more than one operand (e.g. `add %x,
-    // %x`) must not turn into a duplicated dependency edge.
+    // %x`) must not turn into a duplicated dependency edge, but the number of
+    // operand slots it occupied still has to be recoverable (see
+    // predecessorMultiplicity in ScheduleGraph.h), so track it alongside the
+    // deduplicated list instead of discarding it.
     for (Value operand : op.getOperands())
-      if (std::optional<size_t> producer = lookup(valueNode, operand))
-        if (!llvm::is_contained(event.predecessors, *producer))
+      if (std::optional<size_t> producer = lookup(valueNode, operand)) {
+        auto it = llvm::find(event.predecessors, *producer);
+        if (it == event.predecessors.end()) {
           event.predecessors.push_back(*producer);
+          event.predecessorMultiplicity.push_back(1);
+        } else {
+          ++event.predecessorMultiplicity[it - event.predecessors.begin()];
+        }
+      }
     size_t index = nodes.size();
     nodes.push_back(std::move(event));
     for (Value result : op.getResults())
@@ -121,10 +130,13 @@ bool buildCollectiveNodes(DistributedCollectiveOp collective,
     event.step = plan->chain[i];
     event.isolatedDuration = event.step.isolatedDuration();
     if (i == 0) {
-      if (inputProducer)
+      if (inputProducer) {
         event.predecessors.push_back(*inputProducer);
+        event.predecessorMultiplicity.push_back(1);
+      }
     } else {
       event.predecessors.push_back(lastIndex);
+      event.predecessorMultiplicity.push_back(1);
     }
     lastIndex = nodes.size();
     nodes.push_back(std::move(event));
@@ -230,8 +242,10 @@ bool buildCallNode(Operation *op, GraphBuildContext &ctx, ScheduleGraph &graph,
     for (size_t predecessor : node.predecessors)
       hasSuccessor[predecessor] = true;
   for (size_t i = 0; i < graph.nodes.size(); ++i)
-    if (!hasSuccessor[i])
+    if (!hasSuccessor[i]) {
       event.predecessors.push_back(i);
+      event.predecessorMultiplicity.push_back(1);
+    }
 
   // TODO: this is only a rough serial-execution proxy for the callee's
   // duration (sum of its own nodes' isolated durations), not a real
@@ -304,8 +318,10 @@ bool buildBlockNodes(Block &block, GraphBuildContext &ctx, ScheduleGraph &graph,
 
     if (pendingBarrier)
       for (size_t i = startIndex; i < graph.nodes.size(); ++i)
-        if (!llvm::is_contained(graph.nodes[i].predecessors, *pendingBarrier))
+        if (!llvm::is_contained(graph.nodes[i].predecessors, *pendingBarrier)) {
           graph.nodes[i].predecessors.push_back(*pendingBarrier);
+          graph.nodes[i].predecessorMultiplicity.push_back(1);
+        }
   }
   return true;
 }
