@@ -4,6 +4,7 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/ReplayTree.h"
 
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
+#include "src/enzyme_ad/jax/Dialect/Distributed/CollectiveScore.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 
 #include "mlir/IR/IRMapping.h"
@@ -11,8 +12,10 @@
 
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 
 namespace mlir::enzyme::distributed {
@@ -831,16 +834,35 @@ cloneAndApplyDecisions(ModuleOp originalModule,
 
 // Prints a debug dump of `module`, the cloned/partially-rewritten IR for one
 // search candidate, distinguishing what kind of dump this is (`header`) and,
-// when available, its search score.
+// when available, its search score and a one-line `note` on how the score
+// was computed.
 static void dumpSearchModule(llvm::StringRef header, ModuleOp module,
                              bool pipelineOk,
-                             std::optional<double> score = std::nullopt) {
+                             std::optional<double> score = std::nullopt,
+                             llvm::StringRef note = "") {
   llvm::errs() << "// " << header << " (" << (pipelineOk ? "ok" : "FAILED");
   if (score)
     llvm::errs() << ", score=" << *score;
   llvm::errs() << "):\n";
+  if (!note.empty())
+    llvm::errs() << "// " << note << "\n";
   module.print(llvm::errs());
   llvm::errs() << "\n";
+}
+
+// One line summarizing a feasible cost: the total and the collective durations
+// grouped by value, as `duration x count`.
+static std::string describeCost(const CollectiveCostSummary &cost) {
+  std::map<double, size_t> byDuration;
+  for (double duration : cost.durations)
+    ++byDuration[duration];
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  os << "collective cost: total=" << cost.total << " over "
+     << cost.numCollectives << " collectives:";
+  for (const auto &[duration, count] : byDuration)
+    os << " " << duration << "x" << count;
+  return text;
 }
 
 class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
@@ -851,6 +873,10 @@ class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
   bool &sawBadCandidate;
   BeamSearchQueueBase<StrategySearchNode> &queue;
   StrategyCompleterBase &completer;
+  CollectiveCostModel costModel;
+  size_t numScored = 0;
+  size_t numPlanFailures = 0;
+  std::string firstPlanFailure;
 
 public:
   StrategyScorer(ModuleOp originalModule, bool dumpCandidates,
@@ -861,23 +887,33 @@ public:
       : originalModule(originalModule), dumpCandidates(dumpCandidates),
         disableVerifier(disableVerifier),
         failOnBadCandidate(failOnBadCandidate),
-        sawBadCandidate(sawBadCandidate), queue(queue), completer(completer) {
-  }
+        sawBadCandidate(sawBadCandidate), queue(queue), completer(completer) {}
 
-  // Plan: run a pass pipeline to apply and lower the current decisions
-  // and score the result. Pipeline:
+  // Search statistics: candidates scored, how many of those lowered but had a
+  // collective that could not be planned, and the first such reason.
+  size_t getNumScored() const { return numScored; }
+  size_t getNumPlanFailures() const { return numPlanFailures; }
+  const std::string &getFirstPlanFailure() const { return firstPlanFailure; }
+  const CollectiveCostModel &getCostModel() const { return costModel; }
+
+  // Applies and lowers the candidate's decisions on a clone, then scores it.
+  // Pipeline:
   // - StrategyCompleterBase (StrategyInOrderCompleter) : heuristically
   //   complete the remaining decisions on the node itself, before any IR is
   //   cloned
   // - ApplyPartialDecisions : materialize the (now fully-decided) decisions
   //   onto a clone
   // - Lowering pipeline (buildDistributedSearchLoweringPipeline) : lowers
-  //   the fully-decided clone, currently just LowerKernels
-  // - ScoreModel : evaluate the lowered IR to produce a score
+  //   the fully-decided clone to atomic distributed.Collective ops
+  // - CollectiveCostModel : costs the lowered clone
   //
-  // Only ScoreModel remains TODO, so this returns a placeholder score
-  // (rand() on success, -infinity if the pipeline fails on the candidate's
-  // decisions).
+  // The score is the negated sum of the lowered clone's collective durations
+  // (higher is better, as the beam maximizes). It models communication only:
+  // collectives are costed in isolation at uniform mesh parameters, are never
+  // overlapped with each other, and computation is free.
+  //
+  // A candidate is infeasible, and scores -infinity, if its lowering pipeline
+  // fails or any of its collectives cannot be planned.
   double score(const std::shared_ptr<StrategySearchNode> &node) override {
     // Complete decisions on a throwaway clone so scoring can see a fully
     // decided candidate without narrowing what the real search explores.
@@ -888,11 +924,24 @@ public:
     OwningOpRef<ModuleOp> clonedModule = cloneAndApplyDecisions(
         originalModule, completedNode, disableVerifier, pipelineOk);
 
-    double result = pipelineOk ? rand() // TODO: ScoreModel
-                               : -std::numeric_limits<double>::infinity();
+    ++numScored;
+    double result = -std::numeric_limits<double>::infinity();
+    std::string note;
+    if (pipelineOk) {
+      CollectiveCostSummary cost = costModel.summarize(*clonedModule);
+      if (cost.feasible()) {
+        result = 0.0 - cost.total;
+        note = describeCost(cost);
+      } else {
+        if (numPlanFailures++ == 0)
+          firstPlanFailure = cost.failureReason;
+        note = "collective planning failed: " + cost.failureReason;
+      }
+    }
 
     if (dumpCandidates)
-      dumpSearchModule("Search candidate", *clonedModule, pipelineOk, result);
+      dumpSearchModule("Search candidate", *clonedModule, pipelineOk, result,
+                       note);
 
     if (!pipelineOk && failOnBadCandidate && !sawBadCandidate) {
       sawBadCandidate = true;
@@ -901,8 +950,8 @@ public:
       // bug immediately instead of it being masked by the search discarding
       // the candidate and moving on.
       if (!dumpCandidates)
-        dumpSearchModule("Search candidate", *clonedModule, pipelineOk,
-                         result);
+        dumpSearchModule("Search candidate", *clonedModule, pipelineOk, result,
+                         note);
       originalModule.emitError()
           << "distributed-search-strategies: failing outright because "
              "fail-on-bad-candidate is set and a search candidate's "
@@ -979,6 +1028,22 @@ struct DistributedSearchStrategiesPass
       return;
     }
 
+    if (logProgress)
+      llvm::errs() << "distributed-search-strategies: scored "
+                   << scorer.getNumScored() << " candidates; collective plans "
+                   << scorer.getCostModel().cacheMisses() << " computed, "
+                   << scorer.getCostModel().cacheHits() << " reused\n";
+
+    // An infeasible collective scores its candidate -infinity, so a search
+    // that hits one everywhere would silently degrade; report the count once.
+    if (scorer.getNumPlanFailures() > 0)
+      moduleOp.emitRemark()
+          << "distributed-search-strategies: " << scorer.getNumPlanFailures()
+          << " of " << scorer.getNumScored()
+          << " scored candidates had a collective that could not be planned "
+             "(first reason: "
+          << scorer.getFirstPlanFailure() << ")";
+
     // Only dumped once the search is complete, so finalized candidates aren't
     // interleaved with the in-progress ones dumpCandidates prints during the
     // search itself.
@@ -1007,14 +1072,15 @@ struct DistributedSearchStrategiesPass
       }
     }
 
-    // A finalized candidate whose own lowering pipeline failed still scores
-    // -infinity (see StrategyScorer::score) rather than being dropped, so it
-    // can still win when nothing else finalizes; treat that the same as no
-    // candidate at all rather than committing known-bad decisions.
+    // An infeasible finalized candidate still scores -infinity (see
+    // StrategyScorer::score) rather than being dropped, so it can still win
+    // when nothing else finalizes; treat that the same as no candidate at all
+    // rather than committing known-bad decisions.
     if (!best || best->score == -std::numeric_limits<double>::infinity()) {
       moduleOp.emitError()
           << "distributed-search-strategies: no viable candidate found "
-             "(every explored candidate's lowering pipeline failed)";
+             "(every explored candidate failed lowering or collective "
+             "planning)";
       return signalPassFailure();
     }
 
