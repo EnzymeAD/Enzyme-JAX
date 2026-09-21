@@ -71,30 +71,162 @@ static void splitPartitioningAxesByShardability(
   }
 }
 
-// Shardy axis name for a kernel partitioning-axis index; index-based so no
-// separate remap table is needed between the two attribute schemes.
-static std::string shardyAxisName(int64_t partitioningAxisIndex) {
-  return ("a" + llvm::Twine(partitioningAxisIndex)).str();
+// The Shardy mesh a kernel is lowered against, plus how each of the kernel's
+// partitioning-axis slots maps onto that mesh's axes.
+//
+// When every shardable factor comes from one physical mesh, the Shardy mesh is
+// that physical mesh: each physical axis is split into "atoms" (Shardy axes)
+// so that every factor is a whole number of atoms, and the device id Shardy
+// sees (stablehlo.partition_id) is the real, row-major device id. Axes no
+// factor uses stay in the mesh as replication, which Shardy leaves implicit.
+// A slot then maps to the atoms of its shardable factors, major-first, which
+// is also the order Shardy computes a dimension's tile index in.
+//
+// Otherwise (logical axes, which have no device numbering yet) each slot is a
+// single synthetic axis sized by its shardable parallelism.
+struct KernelMesh {
+  llvm::SmallVector<mlir::sdy::MeshAxisAttr> axes;
+  llvm::SmallVector<llvm::SmallVector<mlir::sdy::AxisRefAttr>> slotAxes;
+
+  bool isShardable(int64_t slot) const { return !slotAxes[slot].empty(); }
+};
+
+static KernelMesh buildSyntheticKernelMesh(MLIRContext *ctx,
+                                           const FactorsPerDim &shardableParts) {
+  KernelMesh mesh;
+  for (auto [slot, factors] : llvm::enumerate(shardableParts)) {
+    int64_t parallelism = 1;
+    for (auto factor : factors) {
+      parallelism *= axis::getFactorExtent(factor);
+    }
+    std::string name = ("a" + llvm::Twine(slot)).str();
+    mesh.axes.push_back(mlir::sdy::MeshAxisAttr::get(ctx, name, parallelism));
+    mesh.slotAxes.emplace_back();
+    if (!factors.empty()) {
+      mesh.slotAxes.back().push_back(mlir::sdy::AxisRefAttr::get(ctx, name));
+    }
+  }
+  return mesh;
 }
 
-// Only an index whose slot is genuinely shardable (see isShardableFactor)
-// ever becomes a real, Shardy-visible axis-ref: a slot that's purely
-// DeviceLocal/Replication never needs cross-device identity, so silently
-// dropping it here (rather than naming it "aN" like any other slot) is what
-// keeps two independently-numbered local slots for what's really the same
+// Returns std::nullopt if the shardable factors aren't all physical factors of
+// one mesh whose device ids are row-major over its axes (the numbering Shardy
+// assumes), or if two factors overlap on one physical axis.
+static std::optional<KernelMesh>
+buildPhysicalKernelMesh(DistributedKernelOp kernelOp,
+                        const FactorsPerDim &shardableParts) {
+  MLIRContext *ctx = kernelOp.getContext();
+  PhysicalMeshOp meshOp;
+  // Physical axis index -> the shardable factors on it.
+  llvm::DenseMap<int64_t, llvm::SmallVector<mlir::TypedValue<axis::AxisFactorType>>>
+      factorsByAxis;
+  for (const auto &factors : shardableParts) {
+    for (auto factor : factors) {
+      if (axis::getFactorExtent(factor) == 1) {
+        continue;
+      }
+      auto provenance = axis::getFactorProvenanceAxis(factor);
+      auto axisResult = dyn_cast<OpResult>(Value(*provenance));
+      auto getAxes =
+          axisResult ? dyn_cast<GetPhysicalMeshAxesOp>(axisResult.getOwner())
+                     : GetPhysicalMeshAxesOp();
+      if (!getAxes) {
+        return std::nullopt;
+      }
+      auto factorMesh = SymbolTable::lookupNearestSymbolFrom<PhysicalMeshOp>(
+          getAxes, getAxes.getPhysicalMeshAttr());
+      if (!factorMesh || (meshOp && factorMesh != meshOp)) {
+        return std::nullopt;
+      }
+      meshOp = factorMesh;
+      factorsByAxis[axisResult.getResultNumber()].push_back(factor);
+    }
+  }
+  if (!meshOp) {
+    return std::nullopt;
+  }
+
+  llvm::SmallVector<PhysicalCommAxisType> physicalAxes;
+  for (Attribute axisAttr : meshOp.getAxesAttr()) {
+    physicalAxes.push_back(
+        cast<PhysicalCommAxisType>(cast<TypeAttr>(axisAttr).getValue()));
+  }
+  int64_t suffixExtent = 1;
+  for (auto axisType : llvm::reverse(physicalAxes)) {
+    if (axisType.getIdStride() != suffixExtent) {
+      return std::nullopt;
+    }
+    suffixExtent *= axisType.getExtent();
+  }
+
+  KernelMesh mesh;
+  mesh.slotAxes.resize(shardableParts.size());
+  llvm::DenseMap<Value, mlir::sdy::AxisRefAttr> atomOfFactor;
+  for (auto [axisIndex, axisType] : llvm::enumerate(physicalAxes)) {
+    auto factors = factorsByAxis.lookup(axisIndex);
+    llvm::sort(factors, [](auto lhs, auto rhs) {
+      return axis::getFactorStride(lhs) > axis::getFactorStride(rhs);
+    });
+    // Walk the axis major to minor, emitting an atom for each factor and for
+    // each gap between factors (digits no factor uses).
+    int64_t remaining = axisType.getExtent();
+    int64_t atomCount = 0;
+    auto addAtom = [&](int64_t extent) {
+      std::string name =
+          ("p" + llvm::Twine(axisIndex) + "_" + llvm::Twine(atomCount++)).str();
+      mesh.axes.push_back(mlir::sdy::MeshAxisAttr::get(ctx, name, extent));
+      return mlir::sdy::AxisRefAttr::get(ctx, name);
+    };
+    for (auto factor : factors) {
+      int64_t extent = axis::getFactorExtent(factor);
+      int64_t stride = axis::getFactorStride(factor);
+      if (remaining % (extent * stride) != 0) {
+        return std::nullopt;
+      }
+      if (remaining != extent * stride) {
+        addAtom(remaining / (extent * stride));
+      }
+      atomOfFactor[factor] = addAtom(extent);
+      remaining = stride;
+    }
+    if (remaining != 1) {
+      addAtom(remaining);
+    }
+  }
+
+  for (auto [slot, factors] : llvm::enumerate(shardableParts)) {
+    for (auto factor : factors) {
+      auto atom = atomOfFactor.find(factor);
+      if (atom != atomOfFactor.end()) {
+        mesh.slotAxes[slot].push_back(atom->second);
+      }
+    }
+  }
+  return mesh;
+}
+
+static KernelMesh buildKernelMesh(DistributedKernelOp kernelOp,
+                                  const FactorsPerDim &shardableParts) {
+  if (auto physical = buildPhysicalKernelMesh(kernelOp, shardableParts)) {
+    return *physical;
+  }
+  return buildSyntheticKernelMesh(kernelOp.getContext(), shardableParts);
+}
+
+// Only a slot whose factors are genuinely shardable (see isShardableFactor)
+// ever becomes Shardy-visible axis-refs: a slot that's purely
+// DeviceLocal/Replication never needs cross-device identity, so it maps to no
+// axes at all (rather than being named like any other slot). This keeps two
+// independently-numbered local slots for what's really the same
 // permutation/need-replication factor (see ShardyLogicalAxisAnalysis's own
 // comment on why it never unifies them) from ever looking like a genuine,
 // unreconciled sharding conflict to Shardy's own legality checks.
 static llvm::SmallVector<mlir::sdy::AxisRefAttr>
-shardyAxisRefsForIndices(MLIRContext *ctx, llvm::ArrayRef<int64_t> indices,
-                         llvm::ArrayRef<bool> shardableSlots) {
+shardyAxisRefsForIndices(llvm::ArrayRef<int64_t> indices,
+                         const KernelMesh &mesh) {
   llvm::SmallVector<mlir::sdy::AxisRefAttr> axisRefs;
-  axisRefs.reserve(indices.size());
   for (int64_t index : indices) {
-    if (!shardableSlots[index]) {
-      continue;
-    }
-    axisRefs.push_back(mlir::sdy::AxisRefAttr::get(ctx, shardyAxisName(index)));
+    llvm::append_range(axisRefs, mesh.slotAxes[index]);
   }
   return axisRefs;
 }
@@ -105,19 +237,18 @@ shardyAxisRefsForIndices(MLIRContext *ctx, llvm::ArrayRef<int64_t> indices,
 static mlir::sdy::TensorShardingAttr
 translateIndexedSharding(MLIRContext *ctx, StringRef meshName,
                          IndexedTensorShardingAttr indexed,
-                         llvm::ArrayRef<bool> shardableSlots) {
+                         const KernelMesh &mesh) {
   llvm::SmallVector<mlir::sdy::DimensionShardingAttr> dimShardings;
   dimShardings.reserve(indexed.getDimPartitioningAxes().size());
   for (DenseI64ArrayAttr dimAxes : indexed.getDimPartitioningAxes()) {
     dimShardings.push_back(mlir::sdy::DimensionShardingAttr::get(
         ctx,
-        shardyAxisRefsForIndices(ctx, dimAxes.asArrayRef(), shardableSlots),
+        shardyAxisRefsForIndices(dimAxes.asArrayRef(), mesh),
         /*is_closed=*/true));
   }
 
   llvm::SmallVector<mlir::sdy::AxisRefAttr> unreducedAxisRefs =
-      shardyAxisRefsForIndices(ctx, indexed.getUnreducedAxes().asArrayRef(),
-                               shardableSlots);
+      shardyAxisRefsForIndices(indexed.getUnreducedAxes().asArrayRef(), mesh);
 
   // TODO: assumes SUM reduction (Shardy's default); revisit if
   // IndexedTensorShardingAttr ever gains a reduction-kind field.
@@ -129,12 +260,12 @@ translateIndexedSharding(MLIRContext *ctx, StringRef meshName,
 static mlir::sdy::TensorShardingPerValueAttr
 translateIndexedShardingPerValue(MLIRContext *ctx, StringRef meshName,
                                  IndexedTensorShardingPerValueAttr perValue,
-                                 llvm::ArrayRef<bool> shardableSlots) {
+                                 const KernelMesh &mesh) {
   llvm::SmallVector<mlir::sdy::TensorShardingAttr> shardings;
   shardings.reserve(perValue.getShardings().size());
   for (IndexedTensorShardingAttr indexed : perValue.getShardings()) {
     shardings.push_back(
-        translateIndexedSharding(ctx, meshName, indexed, shardableSlots));
+        translateIndexedSharding(ctx, meshName, indexed, mesh));
   }
   return mlir::sdy::TensorShardingPerValueAttr::get(ctx, shardings);
 }
@@ -146,14 +277,14 @@ translateIndexedShardingPerValue(MLIRContext *ctx, StringRef meshName,
 // carry no cross-device identity worth comparing.
 static llvm::SmallVector<int64_t>
 collectAxisIndices(IndexedTensorShardingPerValueAttr perValue,
-                   llvm::ArrayRef<bool> shardableSlots) {
+                   const KernelMesh &mesh) {
   if (!perValue) {
     return {};
   }
   llvm::SmallDenseSet<int64_t> seen;
   llvm::SmallVector<int64_t> indices;
   auto add = [&](int64_t index) {
-    if (shardableSlots[index] && seen.insert(index).second) {
+    if (mesh.isShardable(index) && seen.insert(index).second) {
       indices.push_back(index);
     }
   };
@@ -185,11 +316,11 @@ collectAxisIndices(IndexedTensorShardingPerValueAttr perValue,
 static llvm::SmallVector<int64_t>
 computeReductionAxes(IndexedTensorShardingPerValueAttr argumentShardings,
                      IndexedTensorShardingPerValueAttr outputShardings,
-                     llvm::ArrayRef<bool> shardableSlots) {
+                     const KernelMesh &mesh) {
   llvm::SmallVector<int64_t> argAxes =
-      collectAxisIndices(argumentShardings, shardableSlots);
+      collectAxisIndices(argumentShardings, mesh);
   llvm::SmallDenseSet<int64_t> visible;
-  for (int64_t index : collectAxisIndices(outputShardings, shardableSlots)) {
+  for (int64_t index : collectAxisIndices(outputShardings, mesh)) {
     visible.insert(index);
   }
   llvm::SmallVector<int64_t> reductionAxes;
@@ -206,14 +337,14 @@ static mlir::sdy::TensorShardingAttr
 withAdditionalUnreducedAxes(MLIRContext *ctx,
                             mlir::sdy::TensorShardingAttr sharding,
                             llvm::ArrayRef<int64_t> extraAxisIndices,
-                            llvm::ArrayRef<bool> shardableSlots) {
+                            const KernelMesh &mesh) {
   if (extraAxisIndices.empty()) {
     return sharding;
   }
   llvm::SmallVector<mlir::sdy::AxisRefAttr> unreduced(
       sharding.getUnreducedAxes().begin(), sharding.getUnreducedAxes().end());
-  llvm::append_range(unreduced, shardyAxisRefsForIndices(ctx, extraAxisIndices,
-                                                         shardableSlots));
+  llvm::append_range(unreduced,
+                     shardyAxisRefsForIndices(extraAxisIndices, mesh));
   return sharding.replaceUnreducedAxes(unreduced);
 }
 
@@ -229,7 +360,7 @@ static void insertPlaceholderAllReduces(
     MLIRContext *ctx, StringRef meshName, Operation *op,
     mlir::sdy::TensorShardingPerValueAttr baseResultShardings,
     llvm::ArrayRef<int64_t> reductionAxes,
-    llvm::ArrayRef<bool> shardableSlots) {
+    const KernelMesh &mesh) {
   if (reductionAxes.empty()) {
     op->setAttr("sdy.sharding", baseResultShardings);
     return;
@@ -239,13 +370,13 @@ static void insertPlaceholderAllReduces(
   opShardings.reserve(baseResultShardings.getShardings().size());
   for (auto sharding : baseResultShardings.getShardings()) {
     opShardings.push_back(withAdditionalUnreducedAxes(
-        ctx, sharding, reductionAxes, shardableSlots));
+        ctx, sharding, reductionAxes, mesh));
   }
   op->setAttr("sdy.sharding",
               mlir::sdy::TensorShardingPerValueAttr::get(ctx, opShardings));
 
   auto reductionAxisRefs =
-      shardyAxisRefsForIndices(ctx, reductionAxes, shardableSlots);
+      shardyAxisRefsForIndices(reductionAxes, mesh);
   OpBuilder builder(op);
   builder.setInsertionPointAfter(op);
   for (auto [result, outSharding] :
@@ -271,7 +402,7 @@ static void insertPlaceholderAllReduces(
 // string keys never collide.
 static void convertManualComputationsToShardy(
     ModuleOp shardyModule, StringRef meshName,
-    llvm::ArrayRef<bool> shardableSlots) {
+    const KernelMesh &mesh) {
   MLIRContext *ctx = shardyModule.getContext();
 
   // Collect first, then convert: converting erases each op and moves its
@@ -282,14 +413,16 @@ static void convertManualComputationsToShardy(
 
   for (DistributedManualComputationOp manualOp : manualOps) {
     auto inShardings = translateIndexedShardingPerValue(
-        ctx, meshName, manualOp.getArgumentShardings(), shardableSlots);
+        ctx, meshName, manualOp.getArgumentShardings(), mesh);
     auto outShardings = translateIndexedShardingPerValue(
-        ctx, meshName, manualOp.getOutputShardings(), shardableSlots);
+        ctx, meshName, manualOp.getOutputShardings(), mesh);
 
     llvm::SmallVector<StringAttr> manualAxes;
     manualAxes.reserve(manualOp.getManualAxes().size());
     for (int64_t index : manualOp.getManualAxes()) {
-      manualAxes.push_back(StringAttr::get(ctx, shardyAxisName(index)));
+      for (mlir::sdy::AxisRefAttr ref : mesh.slotAxes[index]) {
+        manualAxes.push_back(StringAttr::get(ctx, ref.getName()));
+      }
     }
 
     OpBuilder builder(manualOp);
@@ -342,26 +475,17 @@ static void stripPlaceholderAllReduces(ModuleOp shardyModule) {
  */
 static void
 constructShardyAttributes(DistributedKernelOp originalKernel,
-                          ModuleOp shardyModule,
-                          llvm::SmallVector<int64_t> &shardingFactors,
-                          llvm::ArrayRef<bool> shardableSlots) {
+                          ModuleOp shardyModule, const KernelMesh &mesh) {
   MLIRContext *ctx = shardyModule.getContext();
   constexpr llvm::StringLiteral kMeshName = "mesh";
 
-  // Add a sdy.mesh op to the module with axes "a0", "a1", ... corresponding to
-  // the sharding factors (and sized accordingly). Future attributes will
-  // reference this mesh to translate indices directly into mesh axis names.
-  llvm::SmallVector<mlir::sdy::MeshAxisAttr> meshAxes;
-  meshAxes.reserve(shardingFactors.size());
-  for (auto [index, factor] : llvm::enumerate(shardingFactors)) {
-    meshAxes.push_back(
-        mlir::sdy::MeshAxisAttr::get(ctx, shardyAxisName(index), factor));
-  }
+  // Later attributes reference this mesh by the axis names `mesh` assigns to
+  // each partitioning-axis slot.
   OpBuilder meshBuilder(ctx);
   meshBuilder.setInsertionPointToStart(shardyModule.getBody());
   meshBuilder.create<mlir::sdy::MeshOp>(
       shardyModule.getLoc(), kMeshName,
-      mlir::sdy::MeshAttr::get(ctx, meshAxes));
+      mlir::sdy::MeshAttr::get(ctx, mesh.axes));
 
   // Must run before the generic per-op walk below builds sdy.sharding_
   // constraint ops against any distributed.ManualComputation operand: a real
@@ -369,7 +493,7 @@ constructShardyAttributes(DistributedKernelOp originalKernel,
   // sharding directly, so there's nothing left for that walk to see once this
   // runs (it never looked at this op's attrs to begin with -- see this
   // function's own comment).
-  convertManualComputationsToShardy(shardyModule, kMeshName, shardableSlots);
+  convertManualComputationsToShardy(shardyModule, kMeshName, mesh);
 
   auto shardyFunc = shardyModule.lookupSymbol<func::FuncOp>("kernel");
   if (!shardyFunc) {
@@ -382,7 +506,7 @@ constructShardyAttributes(DistributedKernelOp originalKernel,
   mlir::sdy::TensorShardingPerValueAttr argShardings =
       translateIndexedShardingPerValue(ctx, kMeshName,
                                        originalKernel.getArgumentShardings(),
-                                       shardableSlots);
+                                       mesh);
   for (auto [argIndex, blockArg] : llvm::enumerate(shardyFunc.getArguments())) {
     mlir::sdy::setSharding(blockArg, argShardings.getSharding(argIndex));
   }
@@ -390,7 +514,7 @@ constructShardyAttributes(DistributedKernelOp originalKernel,
   mlir::sdy::TensorShardingPerValueAttr outputShardings =
       translateIndexedShardingPerValue(ctx, kMeshName,
                                        originalKernel.getOutputShardings(),
-                                       shardableSlots);
+                                       mesh);
   mlir::sdy::setFuncResultShardings(shardyFunc, outputShardings);
 
   // Every op in the body is annotated explicitly (no reliance on producer/
@@ -422,11 +546,11 @@ constructShardyAttributes(DistributedKernelOp originalKernel,
             op->getAttrOfType<IndexedTensorShardingPerValueAttr>(
                 "distributed.output_shardings")) {
       auto baseResultShardings = translateIndexedShardingPerValue(
-          ctx, kMeshName, outputShardings, shardableSlots);
+          ctx, kMeshName, outputShardings, mesh);
       auto reductionAxes = computeReductionAxes(
-          argumentShardings, outputShardings, shardableSlots);
+          argumentShardings, outputShardings, mesh);
       insertPlaceholderAllReduces(ctx, kMeshName, op, baseResultShardings,
-                                  reductionAxes, shardableSlots);
+                                  reductionAxes, mesh);
     }
 
     if (!argumentShardings) {
@@ -437,7 +561,7 @@ constructShardyAttributes(DistributedKernelOp originalKernel,
          llvm::enumerate(argumentShardings.getShardings())) {
       Value operand = op->getOperand(operandIndex);
       auto sharding =
-          translateIndexedSharding(ctx, kMeshName, indexed, shardableSlots);
+          translateIndexedSharding(ctx, kMeshName, indexed, mesh);
       // ConvertGlobalToLocal rejects any surviving sharding_constraint op, and
       // ApplyShardingConstraintsPass only folds one away when its input has
       // no sharding of its own yet -- which is never true here, since the
@@ -676,16 +800,7 @@ struct LowerKernelsPass : public impl::LowerKernelsPassBase<LowerKernelsPass> {
     FactorsPerDim nonShardableParts;
     splitPartitioningAxesByShardability(kernelOp, lowerLogical, shardableParts,
                                         nonShardableParts);
-    llvm::SmallVector<int64_t> parallelismPerDim;
-    llvm::SmallVector<bool> slotIsShardable;
-    for (const auto &factors : shardableParts) {
-      int64_t dimParallelism = 1;
-      for (auto factor : factors) {
-        dimParallelism *= axis::getFactorExtent(factor);
-      }
-      parallelismPerDim.push_back(dimParallelism);
-      slotIsShardable.push_back(!factors.empty());
-    }
+    KernelMesh mesh = buildKernelMesh(kernelOp, shardableParts);
 
     // The temporary func.func is intentionally a thin wrapper: Shardy works on
     // function-shaped IR, while the kernel op itself carries the local ABI
@@ -699,8 +814,7 @@ struct LowerKernelsPass : public impl::LowerKernelsPassBase<LowerKernelsPass> {
       return false;
     }
     ModuleOp shardyModule = *shardyModuleOrFailure;
-    constructShardyAttributes(kernelOp, shardyModule, parallelismPerDim,
-                              slotIsShardable);
+    constructShardyAttributes(kernelOp, shardyModule, mesh);
     // debug logging option
     if (dumpShardyModules) {
       llvm::dbgs() << "Dumping Shardy module:\n";

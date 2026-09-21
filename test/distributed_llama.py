@@ -59,7 +59,7 @@ HIDDEN_DIM = 768
 # neither of which needs many layers to exercise the pipeline meaningfully.
 # The fsdp3/fsdp6 plans below need N_LAYERS divisible by 3/6 respectively --
 # neither is SELECTED_PLAN, so this doesn't affect what's actually run.
-N_LAYERS = 2
+N_LAYERS = 1
 N_HEADS = 6
 N_KV_HEADS = 6
 HEAD_SIZE = DIM // N_HEADS
@@ -517,7 +517,7 @@ def build_concrete_inputs(seed=0):
     rng = np.random.default_rng(seed)
 
     def draw(shape):
-        return jnp.asarray(rng.normal(scale=0.1, size=shape), dtype=jnp.float32)
+        return jnp.asarray(rng.normal(scale=1.0, size=shape), dtype=jnp.float32)
 
     x = draw(X_SHAPE)
     weights = {name: draw(shape) for name, shape in WEIGHT_SHAPES.items()}

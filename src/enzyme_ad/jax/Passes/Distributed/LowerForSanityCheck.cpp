@@ -731,6 +731,22 @@ private:
     return finalCarried;
   }
 
+  // The device this iteration stands for, numbered the way a real
+  // stablehlo.partition_id is: the sum over mesh axes of the axis coordinate
+  // times the axis's device-id stride. Kernel bodies use partition_id (e.g.
+  // for slices Shardy emits) expecting a different value on every device, but
+  // all devices run in this one process, so it is rebuilt from the loop
+  // induction variables.
+  Value buildDeviceId(Location loc, ArrayRef<Value> allIVs, Type resultType) {
+    Value id = buildIndexConstant(builder, loc, 0);
+    for (auto [iv, axisType] : llvm::zip_equal(allIVs, meshAxisTypes)) {
+      Value stride = buildIndexConstant(builder, loc, axisType.getIdStride());
+      Value scaled = builder.create<stablehlo::MulOp>(loc, iv, stride);
+      id = builder.create<stablehlo::AddOp>(loc, id, scaled);
+    }
+    return builder.create<stablehlo::ConvertOp>(loc, resultType, id);
+  }
+
   SmallVector<Value> computeKernelBodyAndUpdate(
       DistributedKernelOp kernel, ArrayRef<Value> carried,
       ArrayRef<Value> allIVs, ArrayRef<OperandInfo> operandInfos,
@@ -761,8 +777,14 @@ private:
       bodyMapping.map(blockArg, local);
     }
 
-    for (Operation &op : body.without_terminator())
+    for (Operation &op : body.without_terminator()) {
+      if (auto partitionId = dyn_cast<stablehlo::PartitionIdOp>(op)) {
+        bodyMapping.map(partitionId.getResult(),
+                        buildDeviceId(loc, allIVs, partitionId.getType()));
+        continue;
+      }
       builder.clone(op, bodyMapping);
+    }
     auto yieldOp = cast<DistributedYieldOp>(body.getTerminator());
 
     SmallVector<Value> newCarried;

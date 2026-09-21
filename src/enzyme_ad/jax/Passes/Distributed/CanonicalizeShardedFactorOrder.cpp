@@ -365,24 +365,21 @@ struct DimReorder {
   SmallVector<int64_t> newPositions; // new order: original index per slot
 };
 
-// Re-lays out a global tensor between its original view `g` and the
-// canonical view `G` a boundary cast now declares: reshape every reordered
-// dimension into its factors, transpose them into the new order (or back),
-// and reshape to the original global type. `toCanonical` picks the direction.
-// Pure data rearrangement of the global tensor: no device owns different
-// elements in `g` and `G`.
-static Value buildRelayout(OpBuilder &builder, Location loc, Value tensor,
-                           ArrayRef<DimReorder> reorders, bool toCanonical) {
-  auto type = cast<RankedTensorType>(tensor.getType());
+// Splits each reordered dimension of a tensor of type `type` into
+// [factors..., remainder] and returns the shape of that split view plus the
+// permutation taking it to the other view: `toCanonical` goes from the
+// original view `g` to the canonical view `G`, and false goes back. Shared by
+// the boundary relayout (buildRelayout) and by constants, whose data is
+// permuted directly (permuteConstantToCanonicalView).
+static void computeRelayoutPermutation(RankedTensorType type,
+                                       ArrayRef<DimReorder> reorders,
+                                       bool toCanonical,
+                                       SmallVectorImpl<int64_t> &splitShape,
+                                       SmallVectorImpl<int64_t> &permutation) {
   DenseMap<int64_t, const DimReorder *> byDim;
   for (const DimReorder &r : reorders)
     byDim[r.dim] = &r;
 
-  // Shape of the tensor with each reordered dim split into
-  // [factors..., remainder], in the view `tensor` is currently in.
-  SmallVector<int64_t> splitShape;
-  SmallVector<int64_t> permutation;
-  SmallVector<int64_t> viewOrder; // per split dim: index in the source view
   int64_t offset = 0;
   for (int64_t d = 0; d < type.getRank(); ++d) {
     auto it = byDim.find(d);
@@ -416,6 +413,20 @@ static Value buildRelayout(OpBuilder &builder, Location loc, Value tensor,
     permutation.push_back(offset + n);
     offset += n + 1;
   }
+}
+
+// Re-lays out a global tensor between its original view `g` and the
+// canonical view `G` a boundary cast now declares: reshape every reordered
+// dimension into its factors, transpose them into the new order (or back),
+// and reshape to the original global type. `toCanonical` picks the direction.
+// Pure data rearrangement of the global tensor: no device owns different
+// elements in `g` and `G`.
+static Value buildRelayout(OpBuilder &builder, Location loc, Value tensor,
+                           ArrayRef<DimReorder> reorders, bool toCanonical) {
+  auto type = cast<RankedTensorType>(tensor.getType());
+  SmallVector<int64_t> splitShape, permutation;
+  computeRelayoutPermutation(type, reorders, toCanonical, splitShape,
+                             permutation);
 
   auto elem = type.getElementType();
   Value split = builder.create<stablehlo::ReshapeOp>(
@@ -426,6 +437,86 @@ static Value buildRelayout(OpBuilder &builder, Location loc, Value tensor,
   Value transposed = builder.create<stablehlo::TransposeOp>(
       loc, RankedTensorType::get(transposedShape, elem), split, permutation);
   return builder.create<stablehlo::ReshapeOp>(loc, type, transposed);
+}
+
+// A constant generated inside a kernel is written in the original view `g`,
+// but once its dimensions' slots are reordered the sharding describes the
+// canonical view `G`. Applies the same permutation buildRelayout would, but
+// directly to the data, so the constant stays a single folded constant.
+static DenseElementsAttr
+permuteConstantToCanonicalView(DenseElementsAttr value,
+                               ArrayRef<DimReorder> reorders) {
+  auto type = cast<RankedTensorType>(value.getType());
+  SmallVector<int64_t> splitShape, permutation;
+  computeRelayoutPermutation(type, reorders, /*toCanonical=*/true, splitShape,
+                             permutation);
+
+  int64_t rank = splitShape.size();
+  SmallVector<int64_t> srcStrides(rank, 1);
+  for (int64_t i = rank - 2; i >= 0; --i) {
+    srcStrides[i] = srcStrides[i + 1] * splitShape[i + 1];
+  }
+  SmallVector<int64_t> outShape;
+  for (int64_t src : permutation) {
+    outShape.push_back(splitShape[src]);
+  }
+
+  SmallVector<Attribute> source(value.getValues<Attribute>());
+  SmallVector<Attribute> permuted;
+  permuted.reserve(source.size());
+  SmallVector<int64_t> index(rank, 0);
+  for (size_t linear = 0; linear < source.size(); ++linear) {
+    int64_t srcLinear = 0;
+    for (int64_t k = 0; k < rank; ++k) {
+      srcLinear += index[k] * srcStrides[permutation[k]];
+    }
+    permuted.push_back(source[srcLinear]);
+    for (int64_t k = rank - 1; k >= 0; --k) {
+      if (++index[k] < outShape[k]) {
+        break;
+      }
+      index[k] = 0;
+    }
+  }
+  return DenseElementsAttr::get(type, permuted);
+}
+
+// The per-dimension reorders that turn `before` into `after`, the same
+// value's sharding either side of canonicalizeShardingMetadata. Each dimension
+// keeps its slots, so `newPositions` names the original position of each slot
+// in the new order.
+static FailureOr<SmallVector<DimReorder>>
+computeReordersBetween(DistributedKernelOp kernelOp,
+                       IndexedTensorShardingAttr before,
+                       IndexedTensorShardingAttr after, RankedTensorType type) {
+  SmallVector<DimReorder> reorders;
+  for (auto [dim, pair] : llvm::enumerate(
+           llvm::zip(before.getDimPartitioningAxes(),
+                     after.getDimPartitioningAxes()))) {
+    auto [oldAxes, newAxes] = pair;
+    if (oldAxes == newAxes) {
+      continue;
+    }
+    auto kinds = classifySlots(kernelOp.getPartitioningAxes(),
+                               oldAxes.asArrayRef());
+    if (failed(kinds)) {
+      return failure();
+    }
+    DimReorder r;
+    r.dim = dim;
+    r.extents = kinds->extents;
+    int64_t product = 1;
+    for (int64_t e : r.extents) {
+      product *= e;
+    }
+    r.remainder = type.getDimSize(dim) / product;
+    for (int64_t slot : newAxes.asArrayRef()) {
+      r.newPositions.push_back(llvm::find(oldAxes.asArrayRef(), slot) -
+                               oldAxes.asArrayRef().begin());
+    }
+    reorders.push_back(std::move(r));
+  }
+  return reorders;
 }
 
 // case (2) above: canonicalizes a cast-shaped op's own `partitioning_axes` --
@@ -897,6 +988,29 @@ static bool isFactorFullyLocal(mlir::sdy::OpShardingRuleAttr rule,
   return true;
 }
 
+// Rewrites a kernel-internal constant's data to match its just-reordered
+// output sharding (see permuteConstantToCanonicalView). Returns true if the
+// reorder couldn't be resolved.
+static bool permuteConstantForReorder(Operation *constantOp,
+                                      DistributedKernelOp kernelOp,
+                                      IndexedTensorShardingPerValueAttr before,
+                                      IndexedTensorShardingPerValueAttr after) {
+  auto value = constantOp->getAttrOfType<DenseElementsAttr>("value");
+  auto type = cast<RankedTensorType>(constantOp->getResult(0).getType());
+  auto reorders = computeReordersBetween(
+      kernelOp, before.getShardings().front(), after.getShardings().front(),
+      type);
+  if (failed(reorders)) {
+    constantOp->emitRemark()
+        << "canonicalize-sharded-factor-order: couldn't resolve the slots of "
+           "this constant's sharding, so its data was not permuted";
+    return true;
+  }
+  constantOp->setAttr("value",
+                      permuteConstantToCanonicalView(value, *reorders));
+  return false;
+}
+
 static OpClassification classifyOp(Operation *op) {
   mlir::sdy::OpShardingRuleAttr rule = getOrSynthesizeOpShardingRule(op).rule;
   if (!rule) {
@@ -1169,6 +1283,11 @@ struct CanonicalizeShardedFactorOrderPass
                   kernelOp, outputShardings, sawUnsupportedHere);
               if (newAttr != outputShardings) {
                 op->setAttr("distributed.output_shardings", newAttr);
+                if (isa<stablehlo::ConstantOp, sdy::ConstantOp>(op) &&
+                    permuteConstantForReorder(op, kernelOp, outputShardings,
+                                              newAttr)) {
+                  sawUnsupportedHere = true;
+                }
               }
               if (sawUnsupportedHere) {
                 sawUnsupported = true;

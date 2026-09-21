@@ -379,3 +379,33 @@ module @merge_with_sharded_batch_dim {
 // CHECK-NEXT: -> (tensor<2x24xf32>) <[<dim_partitioning_axes = {{\[\[0\], \[1, 3, 2, 4\]\]}} : unreduced_axes = []>]> {
 // CHECK-NEXT: ^bb0(%[[L:.*]]: tensor<1x3x2xf32>):
 // CHECK-NEXT: stablehlo.reshape %[[L]] {canonicalize_sharded_factor_order.internal} : (tensor<1x3x2xf32>) -> tensor<1x6xf32>
+
+// -----
+
+// An iota-valued constant inside a kernel, declared [physical p1, device-local
+// 2, physical p0, unpartitioned 2] over a 16-element dimension, so the
+// device-local factor sits between the sharded ones. Reordering the slots to
+// [p1, p0, device-local] changes which elements each device's tile names, so
+// the constant's data must be permuted to match: reshape to (p1, dl, p0, r),
+// transpose to (p1, p0, dl, r), flatten. Device (i on p0, j on p1) then still
+// receives {8j + 4l + 2i + r : l, r in 0..1} once the constant is sliced in
+// the new order.
+// CHECK-LABEL: module @reorder_const_axes {
+// CHECK: stablehlo.constant {{.*}}dim_partitioning_axes = {{\[\[0, 2, 1\]\]}}{{.*}} dense<[0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15]> : tensor<16xi32>
+module @reorder_const_axes {
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
+  %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
+  %d = distributed.DeviceLocalAxis 2 : !distributed.device_local_axis<2>
+  %f0 = axis.factor %p0 : !distributed.physical_comm_axis<2, 2> <2, 1>
+  %f1 = axis.factor %p1 : !distributed.physical_comm_axis<2, 1> <2, 1>
+  %fd = axis.factor %d : !distributed.device_local_axis<2> <2, 1>
+  %g1 = axis.product (%f1 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %gd = axis.product (%fd : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
+  %g0 = axis.product (%f0 : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
+  %r = distributed.DistributedKernel () #distributed.indexed_tensor_sharding_per_value<[]>
+    -> (tensor<2xi32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0, 1, 2]] : unreduced_axes = []>]>
+    axes (%g1 : !axis.factor_group<2>, %gd : !axis.factor_group<2>, %g0 : !axis.factor_group<2>) {
+    %c = stablehlo.constant {distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[]>, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0, 1, 2]] : unreduced_axes = []>]>} dense<[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]> : tensor<16xi32>
+    distributed.DistributedYield (%c : tensor<16xi32>)
+  }
+}
