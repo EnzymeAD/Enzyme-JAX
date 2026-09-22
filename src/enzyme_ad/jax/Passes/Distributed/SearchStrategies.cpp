@@ -4,8 +4,9 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/ReplayTree.h"
 
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
-#include "src/enzyme_ad/jax/Dialect/Distributed/CollectiveScore.h"
-#include "src/enzyme_ad/jax/Dialect/Distributed/ComputeCost.h"
+#include "src/enzyme_ad/jax/Dialect/Distributed/MeshCostMetadata.h"
+#include "src/enzyme_ad/jax/Dialect/Distributed/ScheduleGraph.h"
+#include "src/enzyme_ad/jax/Dialect/Distributed/ScheduleSimulator.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 
 #include "mlir/IR/IRMapping.h"
@@ -13,7 +14,6 @@
 
 #include <functional>
 #include <limits>
-#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -856,30 +856,19 @@ static void dumpSearchModule(llvm::StringRef header, ModuleOp module,
   llvm::errs() << "\n";
 }
 
-// One line summarizing a feasible cost: the total and the collective durations
-// grouped by value, as `duration x count`.
-static std::string describeCost(const CollectiveCostSummary &cost) {
-  std::map<double, size_t> byDuration;
-  for (double duration : cost.durations)
-    ++byDuration[duration];
+// One line summarizing a feasible timeline: the makespan and how much of it
+// is spent communicating vs. computing (ScheduleSimulator.h's
+// TimelineResult), the same breakdown distributed-print-schedule-cost
+// reports for a single module.
+static std::string describeTimeline(const TimelineResult &result,
+                                    size_t numNodes) {
   std::string text;
   llvm::raw_string_ostream os(text);
-  os << "collective cost: total=" << cost.total << " over "
-     << cost.numCollectives << " collectives:";
-  for (const auto &[duration, count] : byDuration)
-    os << " " << duration << "x" << count;
-  return text;
-}
-
-// One line summarizing the compute cost: the total, and how much of the module
-// the model could not cost exactly.
-static std::string describeCompute(const ComputeCostSummary &compute) {
-  std::string text;
-  llvm::raw_string_ostream os(text);
-  os << "compute cost: total=" << compute.total << " over "
-     << compute.numKernels << " kernels (unknown ops: " << compute.numUnknownOps
-     << ", collectives: " << compute.numCollectiveOps
-     << ", skipped: " << compute.numSkippedOps << ")";
+  os << "schedule cost: makespan=" << result.makespan << " over " << numNodes
+     << " nodes (communicating=" << result.totalCommunicationTime
+     << " computing=" << result.totalComputeTime
+     << " utilization=" << result.averageComputeUtilization
+     << " idle=" << result.totalComputeIdleTime << ")";
   return text;
 }
 
@@ -891,7 +880,6 @@ class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
   bool &sawBadCandidate;
   BeamSearchQueueBase<StrategySearchNode> &queue;
   StrategyCompleterBase &completer;
-  CollectiveCostModel costModel;
   size_t numScored = 0;
   size_t numPlanFailures = 0;
   std::string firstPlanFailure;
@@ -912,24 +900,24 @@ public:
   size_t getNumScored() const { return numScored; }
   size_t getNumPlanFailures() const { return numPlanFailures; }
   const std::string &getFirstPlanFailure() const { return firstPlanFailure; }
-  const CollectiveCostModel &getCostModel() const { return costModel; }
 
   // Scores a module that lowered successfully, describing the score in
   // `note`. Infeasible modules score -infinity.
   double scoreLowered(ModuleOp lowered, std::string &note) {
-    CollectiveCostSummary cost = costModel.summarize(lowered);
-    if (!cost.feasible()) {
+    ScheduleGraph graph = buildScheduleGraph(lowered);
+    if (!graph.feasible) {
       if (numPlanFailures++ == 0)
-        firstPlanFailure = cost.failureReason;
-      note = "collective planning failed: " + cost.failureReason;
+        firstPlanFailure = graph.failureReason;
+      note = "collective planning failed: " + graph.failureReason;
       return -std::numeric_limits<double>::infinity();
     }
-    // The collective model has already found the unique physical mesh.
-    DeviceCostParams device =
-        deviceCostParamsFromPhysicalMesh(*findUniquePhysicalMesh(lowered));
-    ComputeCostSummary compute = summarizeKernelCompute(lowered, device);
-    note = describeCost(cost) + "\n" + describeCompute(compute);
-    return 0.0 - (cost.total + compute.total);
+    // The graph build has already found the unique physical mesh.
+    PhysicalMeshOp physicalMesh = *findUniquePhysicalMesh(lowered);
+    MeshCostParams mesh = meshCostParamsFromPhysicalMesh(physicalMesh);
+    DeviceCostParams device = deviceCostParamsFromPhysicalMesh(physicalMesh);
+    TimelineResult result = simulateScheduleGraph(graph, mesh, device);
+    note = describeTimeline(result, graph.nodes.size());
+    return 0.0 - result.makespan;
   }
 
   // Applies and lowers the candidate's decisions on a clone, then scores it.
@@ -941,14 +929,17 @@ public:
   //   onto a clone
   // - Lowering pipeline (buildDistributedSearchLoweringPipeline) : lowers
   //   the fully-decided clone to atomic distributed.Collective ops
-  // - CollectiveCostModel : costs the lowered clone
+  // - ScheduleGraph + ScheduleSimulator : builds the lowered clone's event DAG
+  //   and simulates it to a predicted makespan
   //
-  // The score is the negated sum of the lowered clone's collective durations
-  // and per-op kernel compute times (higher is better, as the beam
-  // maximizes). Collectives are costed in isolation and never overlapped with
-  // each other, and compute does not overlap communication (see
-  // CollectiveScore.h and ComputeCost.h). The mesh parameters come from the
-  // physical mesh's metadata, else abstract defaults.
+  // The score is the negated predicted makespan (higher is better, as the
+  // beam maximizes): a discrete-event, max-min fair-share timeline simulation
+  // over the candidate's compute ops and decomposed collective steps (see
+  // ScheduleGraph.h and ScheduleSimulator.h), so independent collectives on
+  // different mesh axes and compute overlapping communication are credited
+  // with running concurrently rather than summed as if serialized. The mesh
+  // parameters come from the physical mesh's metadata, else abstract
+  // defaults.
   //
   // A candidate is infeasible, and scores -infinity, if its lowering pipeline
   // fails or any of its collectives cannot be planned.
@@ -1037,7 +1028,7 @@ struct DistributedSearchStrategiesPass
       };
     }
     BeamSearchBreadthFirstQueue<StrategySearchNode> queue(beamSize,
-                                                          progressLogger);
+                                                           progressLogger);
     queue.push(initialNode);
     StrategyExplorer explorer(overlap, builder, physicalAxes,
                               moduleOp.getLoc(), logProgress);
@@ -1058,9 +1049,7 @@ struct DistributedSearchStrategiesPass
 
     if (logProgress)
       llvm::errs() << "distributed-search-strategies: scored "
-                   << scorer.getNumScored() << " candidates; collective plans "
-                   << scorer.getCostModel().cacheMisses() << " computed, "
-                   << scorer.getCostModel().cacheHits() << " reused\n";
+                   << scorer.getNumScored() << " candidates\n";
 
     // An infeasible collective scores its candidate -infinity, so a search
     // that hits one everywhere would silently degrade; report the count once.
