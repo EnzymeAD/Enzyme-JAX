@@ -8,6 +8,7 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -52,6 +53,45 @@ std::optional<size_t> lookup(const llvm::DenseMap<Value, size_t> &valueNode,
   return it->second;
 }
 
+// Records `producer` as one of `event`'s predecessors, deduplicated against
+// any predecessor already recorded (predecessorMultiplicity tracks how many
+// operand slots collapsed into each entry; see ScheduleGraph.h).
+void addPredecessor(ScheduleEvent &event, size_t producer) {
+  auto it = llvm::find(event.predecessors, producer);
+  if (it == event.predecessors.end()) {
+    event.predecessors.push_back(producer);
+    event.predecessorMultiplicity.push_back(1);
+  } else {
+    ++event.predecessorMultiplicity[it - event.predecessors.begin()];
+  }
+}
+
+// Appends one Compute node for `op`: costs it, wires its operand producers
+// as predecessors, and aliases its results to the new node. Shared by a
+// kernel body's ops (buildKernelNodes) and a bare compute op sitting
+// directly in a block post-inlining (buildBlockNodes).
+void appendComputeNode(Operation &op, const DeviceCostParams &device,
+                       std::vector<ScheduleEvent> &nodes,
+                       llvm::DenseMap<Value, size_t> &valueNode) {
+  ScheduleEvent event;
+  event.kind = ScheduleEventKind::Compute;
+  event.op = &op;
+  // costOp returns nullopt only for a dynamic shape or unsized type (R6, R7
+  // in ComputeCost.h), which should not occur in code this graph models
+  // (kernel bodies, and their bare-op form once dissolved, are always
+  // lowered to local shapes); treat it as a zero-cost node rather than
+  // dropping it, so it still carries through any dependency it sits on.
+  event.computeCost = costOp(&op).value_or(OpCost{});
+  event.isolatedDuration = event.computeCost.time(device);
+  for (Value operand : op.getOperands())
+    if (std::optional<size_t> producer = lookup(valueNode, operand))
+      addPredecessor(event, *producer);
+  size_t index = nodes.size();
+  nodes.push_back(std::move(event));
+  for (Value result : op.getResults())
+    alias(valueNode, result, index);
+}
+
 // Appends the Compute nodes for one kernel's body, aliasing the block args to
 // whatever produced the kernel's operands and the kernel's results to
 // whatever the terminator yields.
@@ -68,34 +108,7 @@ void buildKernelNodes(DistributedKernelOp kernel,
   for (Operation &op : body) {
     if (isa<DistributedYieldOp>(op))
       continue;
-    ScheduleEvent event;
-    event.kind = ScheduleEventKind::Compute;
-    event.op = &op;
-    // costOp returns nullopt only for a dynamic shape or unsized type (R6,
-    // R7 in ComputeCost.h), which should not occur in a kernel body lowered
-    // to local shapes; treat it as a zero-cost node rather than dropping it,
-    // so it still carries through any dependency it sits on.
-    event.computeCost = costOp(&op).value_or(OpCost{});
-    event.isolatedDuration = event.computeCost.time(device);
-    // An op using the same value for more than one operand (e.g. `add %x,
-    // %x`) must not turn into a duplicated dependency edge, but the number of
-    // operand slots it occupied still has to be recoverable (see
-    // predecessorMultiplicity in ScheduleGraph.h), so track it alongside the
-    // deduplicated list instead of discarding it.
-    for (Value operand : op.getOperands())
-      if (std::optional<size_t> producer = lookup(valueNode, operand)) {
-        auto it = llvm::find(event.predecessors, *producer);
-        if (it == event.predecessors.end()) {
-          event.predecessors.push_back(*producer);
-          event.predecessorMultiplicity.push_back(1);
-        } else {
-          ++event.predecessorMultiplicity[it - event.predecessors.begin()];
-        }
-      }
-    size_t index = nodes.size();
-    nodes.push_back(std::move(event));
-    for (Value result : op.getResults())
-      alias(valueNode, result, index);
+    appendComputeNode(op, device, nodes, valueNode);
   }
 
   auto yield = cast<DistributedYieldOp>(body.getTerminator());
@@ -150,6 +163,85 @@ bool buildCollectiveNodes(DistributedCollectiveOp collective,
   else if (inputProducer)
     alias(valueNode, plan->resultPort, *inputProducer);
   return true;
+}
+
+// The PrimitiveKind named by `name`, the inverse of toString(PrimitiveKind).
+PrimitiveKind primitiveKindFromString(StringRef name) {
+  for (PrimitiveKind kind :
+       {PrimitiveKind::AllReduce, PrimitiveKind::ReduceScatter,
+        PrimitiveKind::AllGather, PrimitiveKind::AllToAll,
+        PrimitiveKind::Permute, PrimitiveKind::LocalSlice})
+    if (toString(kind) == name)
+      return kind;
+  llvm_unreachable(
+      "distributed.primitive_cost's \"kind\" field must be one produced by "
+      "toString(PrimitiveKind), since buildPrimitiveCostAttr is the only "
+      "writer of this attribute");
+}
+
+// Rebuilds a PrimitiveStep from the distributed.primitive_cost attribute
+// (buildPrimitiveCostAttr, CollectivePrimitiveBuilders.cpp) stamped on a
+// lowered step's stablehlo.async_start. This attribute is the only source of
+// the step's cost at this point in the pipeline: distributed-lower-collectives
+// replaces the DistributedCollectiveOp/CollectivePlan the step was planned
+// from with the async op this attribute is attached to.
+//
+// `atoms` and `rho` are left empty: the simulator (ScheduleSimulator.cpp)
+// never reads them, atoms only drive IR emission (already done by this
+// point), and rho is informational/DP-only elsewhere.
+PrimitiveStep primitiveStepFromCostAttr(DictionaryAttr costAttr) {
+  PrimitiveStep step;
+  step.kind = primitiveKindFromString(
+      cast<StringAttr>(costAttr.get("kind")).getValue());
+  step.payloadIn = cast<IntegerAttr>(costAttr.get("payload_in")).getInt();
+  step.payloadOut = cast<IntegerAttr>(costAttr.get("payload_out")).getInt();
+  step.latency = cast<FloatAttr>(costAttr.get("latency")).getValueAsDouble();
+  step.transferTime =
+      cast<FloatAttr>(costAttr.get("transfer_time")).getValueAsDouble();
+  for (Attribute volumeAttr : cast<ArrayAttr>(costAttr.get("volume")))
+    step.volume.push_back(cast<FloatAttr>(volumeAttr).getValueAsDouble());
+  return step;
+}
+
+// Appends one Communication node for a distributed.primitive_cost-tagged
+// stablehlo.async_start (one PrimitiveStep of a collective lowered by
+// distributed-lower-collectives), wiring its operand producers as
+// predecessors.
+//
+// `asyncStart`'s own result is a !stablehlo.future, not a payload value, so
+// nothing aliases to it directly. Its paired async_done (the future
+// result's sole use, per StableHLO's async contract) has its result aliased
+// to this node instead, since that is the value the rest of the graph
+// depends on.
+void appendAsyncCommunicationNode(stablehlo::AsyncStartOp asyncStart,
+                                  DictionaryAttr costAttr,
+                                  std::vector<ScheduleEvent> &nodes,
+                                  llvm::DenseMap<Value, size_t> &valueNode) {
+  ScheduleEvent event;
+  event.kind = ScheduleEventKind::Communication;
+  event.op = asyncStart;
+  event.step = primitiveStepFromCostAttr(costAttr);
+  event.isolatedDuration = event.step.isolatedDuration();
+  // A multi-step chain threads each step's async_done result into the next
+  // step's async_start operand (distributed-lower-collectives), so the
+  // chain position is recoverable from whichever operand traces back to a
+  // prior Communication node, without any explicit chain-grouping in the IR.
+  for (Value operand : asyncStart.getOperands())
+    if (std::optional<size_t> producer = lookup(valueNode, operand)) {
+      addPredecessor(event, *producer);
+      if (nodes[*producer].kind == ScheduleEventKind::Communication)
+        event.chainIndex = nodes[*producer].chainIndex + 1;
+    }
+  size_t index = nodes.size();
+  nodes.push_back(std::move(event));
+
+  Value future = asyncStart.getResult();
+  assert(llvm::hasSingleElement(future.getUses()) &&
+         "stablehlo.async_start's future result must have exactly one use, "
+         "its paired async_done, per StableHLO's async contract");
+  auto asyncDone =
+      cast<stablehlo::AsyncDoneOp>(future.getUses().begin()->getOwner());
+  alias(valueNode, asyncDone.getResult(), index);
 }
 
 // Read-only parameters shared by every scope built in one buildScheduleGraph
@@ -296,6 +388,22 @@ bool buildBlockNodes(Block &block, GraphBuildContext &ctx, ScheduleGraph &graph,
                                 ctx.options, graph.nodes, valueNode,
                                 graph.failureReason))
         return false;
+    } else if (auto asyncStart = dyn_cast<stablehlo::AsyncStartOp>(op)) {
+      // Only a distributed.primitive_cost-tagged async_start is a lowered
+      // collective step (distributed-lower-collectives); an untagged one is
+      // some other async op this graph does not model, the same as any
+      // other unrecognized op.
+      if (auto costAttr =
+              op->getAttrOfType<DictionaryAttr>("distributed.primitive_cost"))
+        appendAsyncCommunicationNode(asyncStart, costAttr, graph.nodes,
+                                     valueNode);
+      else
+        continue;
+    } else if (isa<stablehlo::AsyncDoneOp>(op)) {
+      // Its result was already aliased to the paired async_start's node (if
+      // that async_start was cost-tagged) by appendAsyncCommunicationNode;
+      // it must never become a node of its own.
+      continue;
     } else if (isa<CallOpInterface>(op)) {
       // The barrier event is itself wired to the previous barrier (if any)
       // by the frontier scan in buildCallNode, not by the post-loop
@@ -312,7 +420,28 @@ bool buildBlockNodes(Block &block, GraphBuildContext &ctx, ScheduleGraph &graph,
             return false;
       }
       continue;
+    } else if (op->getName().getDialectNamespace() == "stablehlo") {
+      // A bare stablehlo op sitting directly in a block: the shape
+      // distributed-inline-kernels (D4) produces when it splices a kernel
+      // body into the surrounding block, dissolving the
+      // DistributedKernelOp wrapper. Kernel bodies, per ComputeCost.h's
+      // model, only ever contain stablehlo ops.
+      //
+      // Restricting this branch to the stablehlo dialect, rather than
+      // costing every unrecognized op the way buildKernelNodes costs a
+      // whole kernel body, keeps a module-scope non-computational value
+      // producer (e.g. a placeholder tensor.empty feeding a collective in a
+      // hand-written test) from becoming a spurious node: nothing outside a
+      // kernel body or its dissolved form is expected to be stablehlo
+      // dialect otherwise.
+      appendComputeNode(*op, ctx.device, graph.nodes, valueNode);
     } else {
+      // Axis-algebra / declarative distributed metadata (PhysicalMesh,
+      // GetPhysicalMeshAxes, axis.getaxis/factor/product/map, ...), a
+      // terminator (func.return, or a distributed.Yield that somehow
+      // reached block scope), and any other non-stablehlo value producer
+      // sitting directly in a block (e.g. tensor.empty) carry no runtime
+      // cost this graph models: none of them is a node here.
       continue;
     }
 
