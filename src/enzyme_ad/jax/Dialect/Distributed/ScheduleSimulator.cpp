@@ -352,12 +352,17 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
   // already guarantees at most one is ever active, so no interval union is
   // needed.
   std::vector<std::pair<double, double>> commIntervals;
+  double totalFlopsExecuted = 0;
   for (size_t i = 0; i < n; ++i) {
     const SimEvent &event = graph.events[i];
     if (event.isCommunication)
       commIntervals.emplace_back(result.start[i], result.finish[i]);
-    if (event.exclusiveCompute)
+    if (event.exclusiveCompute) {
       result.totalComputeTime += result.finish[i] - result.start[i];
+      for (auto [resource, amount] : event.demand)
+        if (resource == kComputeResource)
+          totalFlopsExecuted += amount;
+    }
   }
   llvm::sort(commIntervals);
   double mergedStart = 0, mergedEnd = -1;
@@ -374,10 +379,15 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
   if (mergedEnd >= mergedStart)
     result.totalCommunicationTime += mergedEnd - mergedStart;
 
+  double peakFlopsWindow = resources.capacity[kComputeResource] * result.makespan;
   result.averageComputeUtilization =
-      result.makespan > kEpsilon ? result.totalComputeTime / result.makespan
-                                 : 0.0;
+      peakFlopsWindow > kEpsilon ? totalFlopsExecuted / peakFlopsWindow : 0.0;
   result.totalComputeIdleTime = result.makespan - result.totalComputeTime;
+  double peakFlopsWhileActive =
+      resources.capacity[kComputeResource] * result.totalComputeTime;
+  result.averageActiveComputeUtilization =
+      peakFlopsWhileActive > kEpsilon ? totalFlopsExecuted / peakFlopsWhileActive
+                                      : 0.0;
 
   return result;
 }

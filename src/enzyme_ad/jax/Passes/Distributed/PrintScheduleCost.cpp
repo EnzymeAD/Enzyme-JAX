@@ -74,7 +74,9 @@ struct PrintScheduleCostPass
                         << " computing=" << shortest(result.totalComputeTime)
                         << " utilization="
                         << shortest(result.averageComputeUtilization)
-                        << " idle=" << shortest(result.totalComputeIdleTime);
+                        << " idle=" << shortest(result.totalComputeIdleTime)
+                        << " activeUtilization="
+                        << shortest(result.averageActiveComputeUtilization);
   }
 };
 

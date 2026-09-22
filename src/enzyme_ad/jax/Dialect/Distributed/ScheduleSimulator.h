@@ -175,11 +175,25 @@ struct TimelineResult {
   // Compute event's own duration. exclusiveCompute guarantees at most one
   // Compute event is ever active, so no interval union is needed here.
   double totalComputeTime = 0;
-  // Fraction of makespan spent computing: totalComputeTime / makespan, or 0
-  // when makespan is 0.
+  // Time-weighted average fraction of peak compute throughput actually
+  // achieved: (total flops executed) / (deviceFlops * makespan).
+  //
+  // A memory-bound Compute event occupies the engine (via exclusiveCompute)
+  // longer than its flops alone would take at peak rate, so this weights by
+  // each event's actual flops rather than by engine occupancy: a kernel that
+  // spans the whole makespan while its arithmetic units mostly wait on
+  // memory reads as low utilization here, not 100%.
+  // 0 when makespan or the compute resource's capacity is 0.
   double averageComputeUtilization = 0;
   // makespan minus totalComputeTime.
   double totalComputeIdleTime = 0;
+  // Same throughput-fraction measure as averageComputeUtilization, scaled
+  // against totalComputeTime instead of makespan: the average fraction of
+  // peak flops achieved during only the time the compute engine was actually
+  // occupied. This isolates how memory-bound the compute that ran actually
+  // was from how much of the timeline was idle (see totalComputeIdleTime).
+  // 0 when totalComputeTime or the compute resource's capacity is 0.
+  double averageActiveComputeUtilization = 0;
 };
 
 // Runs the simulation. `graph.events[i].predecessors` must only reference

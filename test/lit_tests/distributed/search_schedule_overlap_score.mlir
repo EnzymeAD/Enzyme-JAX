@@ -54,7 +54,7 @@ module {
 // 8.22, essentially double the INDEPENDENT candidate's makespan above for
 // the same total work.
 // CHECK-DAG: // Search candidate (ok, score=-8.220004e+00):
-// CHECK-DAG: // schedule cost: makespan=8.220004e+00 over 5 nodes (communicating=8.220000e+00 computing=4.008000e-06 utilization=4.875910e-07 idle=8.220000e+00)
+// CHECK-DAG: // schedule cost: makespan=8.220004e+00 over 5 nodes (communicating=8.220000e+00 computing=4.008000e-06 utilization=4.866178e-07 idle=8.220000e+00)
 
 module {
   sdy.mesh @mesh = <["x"=2, "y"=2]>
