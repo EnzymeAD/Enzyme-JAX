@@ -2,6 +2,7 @@
 #include "Enzyme/MLIR/Passes/EnzymeBatchPass.h"
 #include "mhlo/IR/hlo_ops.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Dialect/LLVMIR/FunctionCallUtils.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
@@ -2930,6 +2931,15 @@ struct SyevdOpLowering : public OpRewritePattern<enzymexla::SyevdOp> {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
+      // Heap workspace: for JOBZ = 'V', LWORK = 1 + 6N + 2N^2 overflows the
+      // 8 MB stack of the XLA worker thread as an alloca once N reaches ~900.
+      auto type_i64 = rewriter.getI64Type();
+      auto mallocFn =
+          LLVM::lookupOrCreateMallocFn(rewriter, moduleOp, type_i64);
+      auto freeFn = LLVM::lookupOrCreateFreeFn(rewriter, moduleOp);
+      if (failed(mallocFn) || failed(freeFn))
+        return rewriter.notifyMatchFailure(op, "cannot declare malloc/free");
+
       // Wrapper arguments: (A_ptr, W_ptr, info_ptr)
       auto func_type = LLVM::LLVMFunctionType::get(
           type_llvm_void, {type_llvm_ptr, type_llvm_ptr, type_llvm_ptr}, false);
@@ -3006,11 +3016,24 @@ struct SyevdOpLowering : public OpRewritePattern<enzymexla::SyevdOp> {
       auto opt_liwork = LLVM::LoadOp::create(rewriter, loc,
                                              type_llvm_lapack_int, iwork_query);
 
-      // Allocate optimal workspace
-      auto work_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
-                                             inputElementType, opt_lwork);
-      auto iwork_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
-                                              type_lapack_int, opt_liwork);
+      auto toBytes = [&](Value count, int64_t elemBytes) -> Value {
+        Value count64 = count;
+        if (blasIntWidth != 64)
+          count64 = LLVM::SExtOp::create(rewriter, loc, type_i64, count);
+        auto size = LLVM::ConstantOp::create(
+            rewriter, loc, type_i64, rewriter.getI64IntegerAttr(elemBytes));
+        return LLVM::MulOp::create(rewriter, loc, count64, size);
+      };
+      auto work_ptr =
+          LLVM::CallOp::create(
+              rewriter, loc, *mallocFn,
+              ValueRange{toBytes(opt_lwork,
+                                 inputElementType.getIntOrFloatBitWidth() / 8)})
+              .getResult();
+      auto iwork_ptr = LLVM::CallOp::create(
+                           rewriter, loc, *mallocFn,
+                           ValueRange{toBytes(opt_liwork, blasIntWidth / 8)})
+                           .getResult();
 
       LLVM::StoreOp::create(rewriter, loc, opt_lwork, lwork_ptr);
       LLVM::StoreOp::create(rewriter, loc, opt_liwork, liwork_ptr);
@@ -3019,6 +3042,9 @@ struct SyevdOpLowering : public OpRewritePattern<enzymexla::SyevdOp> {
           rewriter, loc, TypeRange{}, SymbolRefAttr::get(ctx, bind_fn),
           ValueRange{jobz_ptr, uplo_ptr, n_ptr, a_ptr, lda_ptr, w_ptr, work_ptr,
                      lwork_ptr, iwork_ptr, liwork_ptr, info_ptr});
+
+      LLVM::CallOp::create(rewriter, loc, *freeFn, ValueRange{work_ptr});
+      LLVM::CallOp::create(rewriter, loc, *freeFn, ValueRange{iwork_ptr});
 
       LLVM::ReturnOp::create(rewriter, loc, ValueRange{});
     }
