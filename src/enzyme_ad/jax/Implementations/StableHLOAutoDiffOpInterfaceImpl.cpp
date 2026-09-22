@@ -22,6 +22,7 @@
 #include "mlir/Analysis/TopologicalSortUtils.h"
 
 #include "llvm/ADT/PointerUnion.h"
+#include "llvm/ADT/STLExtras.h"
 
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Support/LogicalResult.h"
@@ -3288,6 +3289,46 @@ public:
   }
 };
 
+// The removal driver (Enzyme's RemoveUnusedEnzymeOpsPass) hands nested
+// EnzymeOpsRemoverOpInterface ops to their own removers before the op enclosing
+// them, so by the time a loop is handled every enzyme.get / enzyme.set inside a
+// nested stablehlo.if / stablehlo.case / stablehlo.while has been hoisted into
+// the loop body by that op's remover. Whatever is still nested therefore sits
+// in an op without a remover, and the loop's mem2reg could neither see it nor
+// thread it through the iteration arguments.
+static Operation *findNestedGradientOp(Operation *loop) {
+  Operation *nested = nullptr;
+  loop->walk([&](Operation *sub) {
+    if (isa<enzyme::GetOp, enzyme::SetOp>(sub) && sub->getParentOp() != loop) {
+      nested = sub;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return nested;
+}
+
+// `removalBlockExplore` reroutes every enzyme.get in `block` to an SSA value (a
+// value set earlier in the block, or a fresh get placed before the region op)
+// and records every enzyme.set in the mapping the caller threads through the
+// block's terminator. The ops it walked are then dead, and they have to go: an
+// enclosing stablehlo.while requires every gradient read/write in its body to
+// be a direct child (findNestedGradientOp), and these leftovers -- one region
+// deeper -- are exactly what made it reject a loop whose body updates a
+// gradient under a stablehlo.if ("had set op which was not a direct
+// descendant"). A get that still has uses was not rerouted and is kept, so the
+// enclosing loop reports it instead of the IR silently losing a read.
+static void eraseExploredGradientOps(Block *block, PatternRewriter &rewriter) {
+  for (Operation &op : llvm::make_early_inc_range(*block)) {
+    if (auto getOp = dyn_cast<enzyme::GetOp>(&op)) {
+      if (getOp.getResult().use_empty())
+        rewriter.eraseOp(getOp);
+    } else if (isa<enzyme::SetOp>(&op)) {
+      rewriter.eraseOp(&op);
+    }
+  }
+}
+
 struct WhileOpEnzymeOpsRemover
     : public EnzymeOpsRemoverOpInterface::ExternalModel<WhileOpEnzymeOpsRemover,
                                                         stablehlo::WhileOp> {
@@ -3305,29 +3346,12 @@ public:
 
     llvm::MapVector<Value, CacheInfo> cachesMap;
 
-    if (op->walk([&](enzyme::SetOp sub) {
-            if (sub->getParentOp() != op) {
-              llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
-              llvm::errs() << "op: " << *op << "\n";
-              llvm::errs() << "sub: " << sub << "\n";
-              return WalkResult::interrupt();
-            }
-            return WalkResult::advance();
-          }).wasInterrupted()) {
-      return rewriter.notifyMatchFailure(
-          op, "had set op which was not a direct descendant");
-    }
-    if (op->walk([&](enzyme::GetOp sub) {
-            if (sub->getParentOp() != op) {
-              llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
-              llvm::errs() << "op: " << *op << "\n";
-              llvm::errs() << "sub: " << sub << "\n";
-              return WalkResult::interrupt();
-            }
-            return WalkResult::advance();
-          }).wasInterrupted()) {
-      return rewriter.notifyMatchFailure(
-          op, "had get op which was not a direct descendant");
+    if (Operation *nested = findNestedGradientOp(op)) {
+      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+        diag << "had " << nested->getName() << " nested in "
+             << nested->getParentOp()->getName()
+             << " which was not a direct descendant of the loop body";
+      });
     }
 
     for (auto &it : *body) {
@@ -3883,6 +3907,11 @@ struct IfOpEnzymeOpsRemover
     removalBlockExplore(falseBlock, falseMapping, rewriter, gradients,
                         pushedCaches);
 
+    // Before the early return: a branch that only reads a gradient leaves
+    // `gradients` empty but has still had its get rerouted above.
+    eraseExploredGradientOps(trueBlock, rewriter);
+    eraseExploredGradientOps(falseBlock, rewriter);
+
     if (gradients.empty() && pushedCaches.empty())
       return success();
 
@@ -3980,6 +4009,7 @@ struct CaseOpEnzymeOpsRemover
       mappings.emplace_back();
       removalBlockExplore(blocks.back(), mappings.back(), rewriter, gradients,
                           pushedCaches);
+      eraseExploredGradientOps(blocks.back(), rewriter);
     }
 
     if (gradients.empty() && pushedCaches.empty())
