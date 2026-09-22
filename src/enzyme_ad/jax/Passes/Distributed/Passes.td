@@ -333,6 +333,35 @@ def MergeAdjacentTrivialKernelsPass
   }];
 }
 
+def InlineKernelsPass : Pass<"distributed-inline-kernels", "::mlir::ModuleOp"> {
+  let summary = "Dissolves every distributed.DistributedKernel wrapper by "
+                "inlining its body into the surrounding block.";
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect"
+  ];
+  let description = [{
+    distributed-lower-kernels replaces a kernel's interior with locally-
+    lowered ops but leaves the distributed.DistributedKernel wrapper op
+    itself in place. This pass closes that gap: it splices each kernel
+    body's operations into its parent block in the kernel's place, remaps
+    block arguments to the kernel's own operands, replaces uses of the
+    kernel's results with the values yielded by its terminator, and erases
+    the now-empty kernel op.
+
+    This is a winner-only finalization step, meant to run once on the
+    single search candidate ultimately chosen, after distributed-lower-
+    kernels has fully localized every kernel body. Search-time cost
+    estimation avoids mutating IR for every scored candidate by instead
+    treating kernel bodies as an opaque unit via value aliasing (see
+    ScheduleGraph.h).
+
+    distributed.DistributedCall / distributed.DistributedFunction are a
+    function-call boundary and are left untouched here. A kernel inside a
+    called function's body is still reached and inlined, since this pass
+    walks the whole module rather than just the entry function.
+  }];
+}
+
 def LowerKernelsToExecutablePass
     : Pass<"distributed-lower-kernels-to-executable", "::mlir::ModuleOp"> {
   let summary = "Placeholder: will dispatch each local-size distributed.kernel "
