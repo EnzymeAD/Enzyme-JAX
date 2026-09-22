@@ -128,8 +128,9 @@ module {
   }
 }
 
-// Every derivative keeps its forward and reverse loops and the lazy branch in
-// each, and no enzyme.get/set/push/pop survives anywhere in the module.
+// Every derivative keeps its reverse loop with the lazy branch inside it, the
+// variants that tape keep the forward loop too, and no enzyme.get/set/push/pop
+// survives anywhere in the module.
 // CHECK-NOT:       enzyme.{{get|set|push|pop|init}}
 // CHECK-LABEL:   func.func private @diffecond_sum(
 // CHECK:           stablehlo.while
@@ -138,9 +139,11 @@ module {
 // CHECK:           stablehlo.if
 // CHECK:           return
 // CHECK-NOT:       enzyme.{{get|set|push|pop|init}}
+// With the min cut on nothing is taped for this add-only loop: the branch
+// predicate and the slice index are recomputed from the reverse counter, and
+// the primal is not returned, so the augmented forward loop is dead and only
+// the reverse loop with its lazy branch remains.
 // CHECK-LABEL:   func.func private @diffecond_sum_mincut(
-// CHECK:           stablehlo.while
-// CHECK:           stablehlo.if
 // CHECK:           stablehlo.while
 // CHECK:           stablehlo.if
 // CHECK:           return
