@@ -38116,9 +38116,13 @@ struct EnzymeHLOOptPass
 
     if (enable_auto_batching_passes) {
       mlir::enzyme::AutoBatchingPassPipelineOptions options{
-          true, true, "greedy", true, true, true};
+          true, true, "greedy", true, true, true, true};
       mlir::enzyme::populateAutoBatchingPassPatterns(patterns, context,
                                                      options);
+    } else {
+      // A parallel loop of a raised kernel is a batched scatter whatever
+      // the auto batching setting: the loop is the host-driven cost.
+      patterns.add<ParallelWhileToBatchedScatter>(context);
     }
 
     GreedyRewriteConfig config;
