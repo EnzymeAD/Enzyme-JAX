@@ -394,6 +394,34 @@ def LowerCollectivesPass
   }];
 }
 
+def ReorderSchedulePass
+    : Pass<"distributed-reorder-schedule", "::mlir::ModuleOp"> {
+  let summary = "Physically reorders each block's operations to match the "
+                "admission order the event-DAG simulator predicts.";
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect", "stablehlo::StablehloDialect"
+  ];
+  let description = [{
+    Requires the module to already be fully materialized by
+    distributed-inline-kernels and distributed-lower-collectives: it re-runs
+    ScheduleGraph.h's event-DAG builder and ScheduleSimulator.h's timeline
+    simulator over the real ops those passes produced, then reorders each
+    block so its event-bearing ops appear in simulated admission order (the
+    order events leave `ready` and start, not the order they finish).
+
+    Sorting by admission order is topologically valid by construction: the
+    simulator only admits an event once every predecessor has finished, so a
+    predecessor is always admitted no later than its successors. Ops with no
+    ScheduleEvent of their own (axis-algebra/mesh metadata, terminators,
+    stablehlo.async_done) travel with the preceding event-bearing op instead
+    of being reordered independently. A distributed.DistributedCall's callee
+    body is reordered too, recursively, via its own fresh simulation.
+
+    Meant to run once, winner-only, on the single search candidate the
+    search ultimately picks.
+  }];
+}
+
 def LowerKernelsToExecutablePass
     : Pass<"distributed-lower-kernels-to-executable", "::mlir::ModuleOp"> {
   let summary = "Placeholder: will dispatch each local-size distributed.kernel "
