@@ -7,7 +7,8 @@
 
 namespace mlir::enzyme::distributed {
 
-// Discrete-event, max-min fair-share timeline simulator over an event DAG.
+// Discrete-event, strict-priority-dispatch timeline simulator over an event
+// DAG.
 // ScheduleGraph.h builds the DAG from a lowered candidate module; this file
 // turns it into a predicted wall-clock makespan, accounting for events on
 // independent resources overlapping each other and for events sharing one
@@ -35,7 +36,7 @@ namespace mlir::enzyme::distributed {
 //
 // kMemBandwidthResource is a genuinely divisible physical resource, like a
 // network link, and stays an ordinary capacity-limited resource in the
-// max-min fair-share pool ("Algorithm" below): Compute events register
+// priority-dispatch pool ("Algorithm" below): Compute events register
 // demand against it exactly as they do for any other resource.
 // kComputeResource is different: this device model has no multithreaded or
 // event-based kernel dispatch, so the compute engine runs one kernel at a
@@ -57,16 +58,20 @@ namespace mlir::enzyme::distributed {
 // Algorithm
 // ---------
 // At every event boundary (an event's latency floor releasing it into
-// resource contention, or an event finishing), the simulator recomputes a
-// max-min fair split of each resource's capacity among everything currently
-// contending for it (maxMinFairShare), so an event always runs at the rate
-// its tightest resource can currently spare and a finishing event's freed
-// capacity is picked up by the next boundary. Concurrency is bounded by
-// kMaxInFlight: at most that many events are ever admitted out of latency
-// wait at once, a deliberate model of limited issue width (not just a
-// complexity knob) that also bounds each fair-share resolve to a constant
-// size (progressive filling, the noop fast path and snapshot admission are
-// each implemented in ScheduleSimulator.cpp).
+// resource contention, or an event finishing), the simulator redispatches
+// everything currently contending for a resource in strict priority order
+// (priorityDispatch): the highest-priority contender takes as much of each
+// resource it needs as remains, up to its own full unthrottled rate, before
+// the next contender is even considered, so a lower-priority contender can
+// be left running at rate 0 until something ahead of it frees the resource.
+// A contender always eventually becomes highest-priority among what's left
+// once everything ahead of it finishes, so this still guarantees forward
+// progress; it just never blends two contenders' rates the way max-min fair
+// sharing would. Concurrency is bounded by kMaxInFlight: at most that many
+// events are ever admitted out of latency wait at once, a deliberate model
+// of limited issue width (not just a complexity knob) that also bounds each
+// dispatch resolve to a constant size (the noop fast path and snapshot
+// admission are each implemented in ScheduleSimulator.cpp).
 enum : size_t {
   kComputeResource = 0,
   kMemBandwidthResource = 1,

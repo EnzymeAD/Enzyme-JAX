@@ -86,58 +86,37 @@ std::vector<size_t> reconstructCriticalPath(const CriticalPathInfo &info) {
   return path;
 }
 
-// Progressive filling: repeatedly freezes whichever contending event's
-// bottleneck resource, split evenly among everyone still contending for it,
-// gives the smallest scale factor, then removes it and repeats on the rest.
-// `contenders` holds resource-consuming events only (an empty-demand event
-// is resolved by the caller before this runs, see the "instant finish"
-// handling in simulate); every contender is therefore guaranteed at least
-// one rate entry.
-std::vector<double> maxMinFairShare(const std::vector<size_t> &contenders,
-                                    const std::vector<RateNeeded> &rateNeeded,
-                                    const std::vector<double> &capacity) {
+// Strict-priority dispatch: `contenders` must already be sorted
+// highest-priority first (the same order admission draws from `ready`, see
+// priorityLess in simulate). Each contender in turn takes as much of every
+// resource it needs as still remains, capped at scale 1.0 (its full,
+// unthrottled rate) rather than split with anyone behind it, and what it
+// takes is subtracted from the running capacity before the next contender is
+// considered. A resource a higher-priority contender bottlenecks on is
+// exactly zeroed out for everyone queued behind it on that resource; a
+// resource it doesn't touch is untouched, so a lower-priority contender can
+// still run at full rate on an axis nothing ahead of it needs. Unlike max-min
+// fair sharing, a contender can be left with scale 0 (fully starved this
+// boundary) if everything ahead of it has already exhausted its bottleneck
+// resource; `contenders` holds resource-consuming events only (an
+// empty-demand event is resolved by the caller before this runs, see the
+// "instant finish" handling in simulate).
+std::vector<double> priorityDispatch(const std::vector<size_t> &contenders,
+                                     const std::vector<RateNeeded> &rateNeeded,
+                                     const std::vector<double> &capacity) {
   std::vector<double> remainingCap = capacity;
   std::vector<double> scale(contenders.size(), 0.0);
-  std::vector<bool> resolved(contenders.size(), false);
-  size_t numUnresolved = contenders.size();
-
-  while (numUnresolved > 0) {
-    // Per-resource count of still-unresolved contenders needing it, so each
-    // gets an equal share of what capacity remains on that resource.
-    llvm::DenseMap<size_t, size_t> resourceContenders;
-    for (size_t i = 0; i < contenders.size(); ++i) {
-      if (resolved[i])
+  for (size_t k = 0; k < contenders.size(); ++k) {
+    double s = 1.0;
+    for (auto [resource, rate] : rateNeeded[contenders[k]].rates) {
+      if (rate <= 0)
         continue;
-      for (auto [resource, rate] : rateNeeded[contenders[i]].rates)
-        ++resourceContenders[resource];
+      s = std::min(s, remainingCap[resource] / rate);
     }
-
-    double bestScale = std::numeric_limits<double>::infinity();
-    size_t bestIndex = std::numeric_limits<size_t>::max();
-    for (size_t i = 0; i < contenders.size(); ++i) {
-      if (resolved[i])
-        continue;
-      double candidate = std::numeric_limits<double>::infinity();
-      for (auto [resource, rate] : rateNeeded[contenders[i]].rates) {
-        if (rate <= 0)
-          continue;
-        double share = remainingCap[resource] / resourceContenders[resource];
-        candidate = std::min(candidate, share / rate);
-      }
-      if (candidate < bestScale) {
-        bestScale = candidate;
-        bestIndex = i;
-      }
-    }
-    assert(bestIndex != std::numeric_limits<size_t>::max() &&
-           "every contender here has at least one nonzero rate, by "
-           "precondition, so some candidate scale must be finite");
-
-    scale[bestIndex] = bestScale;
-    resolved[bestIndex] = true;
-    --numUnresolved;
-    for (auto [resource, rate] : rateNeeded[contenders[bestIndex]].rates)
-      remainingCap[resource] -= bestScale * rate;
+    s = std::max(s, 0.0);
+    scale[k] = s;
+    for (auto [resource, rate] : rateNeeded[contenders[k]].rates)
+      remainingCap[resource] -= s * rate;
   }
   return scale;
 }
@@ -292,7 +271,7 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
     // latency clears: its remaining work is already zero. Progressive
     // filling has no fixed point for such an event (it never appears in any
     // resource's contender list), so it is finished here directly rather
-    // than passed into maxMinFairShare, which assumes every contender needs
+    // than passed into priorityDispatch, which assumes every contender needs
     // at least one resource. `active` is snapshotted before this loop since
     // finishEvent mutates it.
     std::vector<size_t> transferring;
@@ -332,14 +311,18 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
 
     std::vector<double> scale;
     if (!contenders.empty()) {
-      scale = maxMinFairShare(contenders, rateNeeded, resources.capacity);
-      for (size_t k = 0; k < contenders.size(); ++k) {
-        assert(scale[k] > 0 &&
-               "a contender with nonzero demand must get a nonzero share of "
-               "some resource with positive capacity");
-        nextTime =
-            std::min(nextTime, time + remainingWork[contenders[k]] / scale[k]);
-      }
+      // Highest-priority-first, matching the order admission drew these
+      // events from `ready`: priorityDispatch gives resources to a
+      // contender only after everyone ranked ahead of it has taken what it
+      // needs, so a starved contender (scale 0) simply sits out this
+      // boundary rather than forcing a wait.
+      llvm::sort(contenders,
+                 [&](size_t a, size_t b) { return priorityLess(b, a); });
+      scale = priorityDispatch(contenders, rateNeeded, resources.capacity);
+      for (size_t k = 0; k < contenders.size(); ++k)
+        if (scale[k] > 0)
+          nextTime = std::min(nextTime,
+                              time + remainingWork[contenders[k]] / scale[k]);
     }
 
     assert(std::isfinite(nextTime) &&

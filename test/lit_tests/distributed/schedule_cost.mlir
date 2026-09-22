@@ -1,7 +1,7 @@
 // RUN: enzymexlamlir-opt --split-input-file --distributed-print-schedule-cost %s 2>&1 >/dev/null | FileCheck %s
 
 // distributed-print-schedule-cost runs the event DAG builder (ScheduleGraph.h)
-// followed by the discrete-event, max-min fair-share timeline simulator
+// followed by the discrete-event, strict-priority-dispatch timeline simulator
 // (ScheduleSimulator.h): one remark per node with its simulated start/finish
 // time, and a module summary remark with the predicted makespan and the
 // DAG's own (contention-free) critical path.
@@ -122,13 +122,14 @@ module {
 
 // -----
 
-// Two independent all-reduces on the SAME axis must share its bandwidth
-// (max-min fair share): each alone would take 16, but splitting the single
-// axis's bandwidth between them makes each take 32, so both finish at 32:
-// conservation of work on one shared resource, the same reason two
+// Two independent all-reduces on the SAME axis must contend for its
+// bandwidth: node 0, ranked first, dispatches at full rate and finishes at
+// 16; node 1 gets scale 0 while node 0 holds the axis, then dispatches at
+// full rate once node 0 finishes, so it finishes at 16 + 16 = 32.
+// Conservation of work on one shared resource, the same reason two
 // independent compute ops on the one shared compute resource (case 4 below)
 // would also sum rather than overlap.
-// CHECK: node 0: communication start=0 finish=32
+// CHECK: node 0: communication start=0 finish=16
 // CHECK: node 1: communication start=0 finish=32
 // CHECK: schedule cost: makespan=32 over 2 nodes, critical path=[0]
 // CHECK: schedule cost summary: communicating=32 computing=0 utilization=0 idle=32
@@ -323,13 +324,14 @@ module {
 // -----
 
 // A bottlenecked axis (bandwidth 0.1) carries two contending all-reduces
-// (isolated 160 each, sharing to 320) while an independent all-reduce on a
-// much faster axis (bandwidth 100, isolated 0.16) runs concurrently. The
-// fast axis leaves headroom the bottleneck pair never touches: its own node
-// finishes at 0.16, far ahead of the makespan, and the makespan itself (320)
-// is exactly what the bottleneck pair alone would produce. The extra
-// concurrent load on the fast axis does not inflate it.
-// CHECK: node 0: communication start=0 finish=320
+// (isolated 160 each): node 0, ranked first, takes the whole axis and
+// finishes at 160; node 1 sits at scale 0 until then, then finishes at
+// 160 + 160 = 320. An independent all-reduce on a much faster axis
+// (bandwidth 100, isolated 0.16) runs concurrently and never contends with
+// either: its own node finishes at 0.16, far ahead of the makespan, and the
+// makespan itself (320) is exactly what the bottleneck pair alone would
+// produce. The extra concurrent load on the fast axis does not inflate it.
+// CHECK: node 0: communication start=0 finish=160
 // CHECK: node 1: communication start=0 finish=320
 // CHECK: node 2: communication start=0 finish=0.16
 // CHECK: schedule cost: makespan=320 over 3 nodes, critical path=[0]
@@ -486,7 +488,7 @@ module {
 // the same graph with that one dependency removed; FileCheck cannot compare
 // the two makespans arithmetically, but 16 (next case) < 18.4 (this case)
 // demonstrates the required property directly: removing a dependency (or,
-// by the same fair-share reasoning as case 5, increasing a resource's
+// by the same reasoning as case 5, increasing a resource's
 // capacity) must never increase the predicted makespan.
 // CHECK: node 0: communication start=0 finish=16
 // CHECK: node 1: compute start=16 finish=18.4
