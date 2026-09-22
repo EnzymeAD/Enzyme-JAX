@@ -6,9 +6,10 @@
 
 namespace mlir::enzyme::distributed {
 
-void buildDistributedSearchLoweringPipeline(
-    OpPassManager &pm, bool lowerLogicalAxes,
-    llvm::StringRef dumpKernelModulesTo) {
+void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
+                                            bool lowerLogicalAxes,
+                                            llvm::StringRef dumpKernelModulesTo,
+                                            bool finalizeSchedule) {
   LowerKernelsPassOptions options;
   options.lowerLogicalAxes = lowerLogicalAxes;
   // CanonicalizeShardedFactorOrder must run first: both InlineDeviceLocalAxes
@@ -66,6 +67,19 @@ void buildDistributedSearchLoweringPipeline(
   LowerKernelsToExecutablePassOptions executableOptions;
   executableOptions.dumpKernelModulesTo = dumpKernelModulesTo.str();
   pm.addPass(createLowerKernelsToExecutablePass(executableOptions));
+
+  // The three passes below are winner-only finalization: they materialize
+  // real physical IR (inlined kernel bodies, StableHLO async op chains for
+  // collectives, physically reordered ops matching the simulated schedule)
+  // and are meant to run exactly once, on the single search candidate
+  // ultimately chosen. Per-candidate scoring only needs the read-only
+  // simulation above LowerKernelsToExecutable and must stay fast, so it runs
+  // this pipeline with finalizeSchedule=false.
+  if (finalizeSchedule) {
+    pm.addPass(createInlineKernelsPass());
+    pm.addPass(createLowerCollectivesPass());
+    pm.addPass(createReorderSchedulePass());
+  }
 }
 
 namespace {
@@ -85,6 +99,15 @@ struct DistributedSearchLoweringPipelineOptions
       *this, "dump-kernel-modules-to",
       llvm::cl::desc("Forwarded to distributed-lower-kernels-to-executable."),
       llvm::cl::init("")};
+  Option<bool> finalizeSchedule{
+      *this, "finalize-schedule",
+      llvm::cl::desc(
+          "Whether to run the winner-only finalization stages "
+          "(distributed-inline-kernels, distributed-lower-collectives, "
+          "distributed-reorder-schedule) after lowering. Should normally "
+          "stay true; set to false to inspect the pipeline's output before "
+          "finalization. Default: true"),
+      llvm::cl::init(true)};
 };
 } // namespace
 
@@ -96,7 +119,8 @@ void registerDistributedSearchLoweringPipeline() {
       [](OpPassManager &pm,
          const DistributedSearchLoweringPipelineOptions &options) {
         buildDistributedSearchLoweringPipeline(pm, options.lowerLogicalAxes,
-                                               options.dumpKernelModulesTo);
+                                               options.dumpKernelModulesTo,
+                                               options.finalizeSchedule);
       });
 }
 

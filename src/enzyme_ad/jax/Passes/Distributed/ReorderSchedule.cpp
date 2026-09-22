@@ -6,6 +6,8 @@
 #include "src/enzyme_ad/jax/Dialect/Distributed/ScheduleSimulator.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 
+#include "mlir/IR/RegionKindInterface.h"
+
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
@@ -26,7 +28,16 @@ namespace {
 // block into an invalid one. Cheap enough (one pass over the block) to run
 // unconditionally in a debug build as a direct check of the claim that
 // admission-order sorting is topologically valid by construction.
+//
+// Only meaningful for an SSACFG block (a function body): ScheduleGraph.h
+// walks module-scope ops (axis-algebra metadata, and, once
+// MaterializeDistributedCollectives has run, atomic collectives/kernels
+// themselves) as part of the same top-level scope, but ModuleOp's body is a
+// graph region, where forward SSA references are legal and op order carries
+// no dominance guarantee to begin with.
 void assertBlockOrderValid(Block &block) {
+  if (mayBeGraphRegion(*block.getParent()))
+    return;
   llvm::DenseMap<Operation *, size_t> position;
   size_t index = 0;
   for (Operation &op : block)
@@ -67,7 +78,21 @@ void reorderBlockByAdmission(Block &block, ArrayRef<ScheduleEvent> nodes,
   if (anchorNode.empty())
     return;
 
-  Operation *terminator = block.getTerminator();
+  // A block only has a terminator if its region requires one (e.g. a
+  // func.func body); ScheduleGraph.h's "module scope and a function body are
+  // one flattened scope" treatment (see reorderScopeRecursively below) means
+  // `block` here can be a bare ModuleOp body, which has none.
+  Operation *terminator =
+      block.mightHaveTerminator() ? block.getTerminator() : nullptr;
+  // Moves `op` to just before `terminator`, or to the end of `block` if it
+  // has none.
+  auto moveToEnd = [&](Operation *op) {
+    if (terminator)
+      op->moveBefore(terminator);
+    else
+      op->moveBefore(&block, block.end());
+  };
+
   SmallVector<Operation *> prefix;
   SmallVector<Chunk> chunks;
   for (Operation &opRef : block) {
@@ -94,11 +119,11 @@ void reorderBlockByAdmission(Block &block, ArrayRef<ScheduleEvent> nodes,
   });
 
   for (Operation *op : prefix)
-    op->moveBefore(terminator);
+    moveToEnd(op);
   for (Chunk &chunk : chunks) {
-    chunk.anchor->moveBefore(terminator);
+    moveToEnd(chunk.anchor);
     for (Operation *op : chunk.trailer)
-      op->moveBefore(terminator);
+      moveToEnd(op);
   }
 
 #ifndef NDEBUG

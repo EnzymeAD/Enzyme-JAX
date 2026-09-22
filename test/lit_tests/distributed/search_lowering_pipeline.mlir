@@ -1,18 +1,19 @@
-// RUN: enzymexlamlir-opt %s --distributed-search-lowering-pipeline | FileCheck %s
-// RUN: enzymexlamlir-opt %s --distributed-search-lowering-pipeline 2>&1 >/dev/null | FileCheck %s --check-prefix=REMARK
+// RUN: enzymexlamlir-opt %s --distributed-search-lowering-pipeline="finalize-schedule=false" | FileCheck %s --check-prefix=NOFINAL
+// RUN: enzymexlamlir-opt %s --distributed-search-lowering-pipeline="finalize-schedule=false" 2>&1 >/dev/null | FileCheck %s --check-prefix=REMARK
 // RUN: rm -rf %t.dir && mkdir -p %t.dir
-// RUN: enzymexlamlir-opt %s --distributed-search-lowering-pipeline="dump-kernel-modules-to=%t.dir" -o /dev/null 2>/dev/null
+// RUN: enzymexlamlir-opt %s --distributed-search-lowering-pipeline="dump-kernel-modules-to=%t.dir finalize-schedule=false" -o /dev/null 2>/dev/null
 // RUN: ls %t.dir | wc -l | FileCheck %s --check-prefix=DUMPCOUNT
 // DUMPCOUNT: 1
+// RUN: enzymexlamlir-opt %s --distributed-search-lowering-pipeline | FileCheck %s --check-prefix=FINAL
 
 // End-to-end smoke test for buildDistributedSearchLoweringPipeline
 // (--distributed-search-lowering-pipeline), which otherwise has no lit
 // coverage: a genuine physical all-reduce (mesh0's upper sub-factor of
 // physical_comm_axis<4,2> is reduced then replicated back across it, the
 // "reduced -> replicate" row of the atomic-form design) sitting downstream
-// of a real DistributedKernel, run through all sixteen passes in the
-// pipeline. The kernel is intentionally unsharded (an embarrassingly
-// parallel elementwise op, dim_partitioning_axes = [[]]) so
+// of a real DistributedKernel, run through all sixteen non-finalization
+// passes in the pipeline. The kernel is intentionally unsharded (an
+// embarrassingly parallel elementwise op, dim_partitioning_axes = [[]]) so
 // RefinePartitioningSlots/CanonicalizeShardedFactorOrder/
 // InlineDeviceLocalAxes -- whose own preconditions are about how
 // DeviceLocalAxis slots are laid out -- have nothing to do here; there is no
@@ -23,17 +24,28 @@
 // and distributed-atomize-collectives right before the final
 // distributed-lower-kernels-to-executable.
 //
-// The full 16-pass IR is not pinned line by line (SSA numbering and
+// The full pipeline's IR is not pinned line by line (SSA numbering and
 // structural churn at every stage make that brittle to the point of
 // meaninglessness, per this repo's convention for pipeline-level tests);
-// instead this checks structural anchors: the kernel and collective both
-// survive to the end (this collective is never an identity, so
-// DropIdentityCollectives must not remove it), the kernel body's
-// sharding attributes are gone (distributed-lower-kernels is their last
-// consumer), and the REMARK lines are atomize's own atom-structure report,
-// re-run against the rewritten (not original) collective -- a cheap,
-// stable-ish signal that atomize actually ran and succeeded on this
-// collective, following the same REMARK convention as atomize_collectives.mlir.
+// instead this checks structural anchors.
+//
+// NOFINAL (finalize-schedule=false, the scoring-clone shape): the kernel and
+// collective both survive to the end (this collective is never an identity,
+// so DropIdentityCollectives must not remove it) as their own
+// distributed.DistributedKernel/distributed.Collective ops, the kernel
+// body's sharding attributes are gone (distributed-lower-kernels is their
+// last consumer), and the REMARK lines are atomize's own atom-structure
+// report, re-run against the rewritten (not original) collective. That
+// report is a cheap, stable-ish signal that atomize actually ran and
+// succeeded on this collective, following the same REMARK convention as
+// atomize_collectives.mlir.
+//
+// FINAL (finalize-schedule left at its default, true, the real winner
+// shape): the same module additionally run through
+// distributed-inline-kernels/distributed-lower-collectives/
+// distributed-reorder-schedule, so no distributed.DistributedKernel or
+// distributed.Collective survives: the kernel body's ops are spliced inline
+// and the collective becomes a real stablehlo.async_start/done pair.
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 2>, !distributed.physical_comm_axis<2, 1>]
 
@@ -86,21 +98,34 @@ module {
   %v = distributed.Await %h : !distributed.asynch_handle<tensor<8xf32>> -> tensor<8xf32>
 }
 
-// CHECK: distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 2>, !distributed.physical_comm_axis<2, 1>]
+// NOFINAL: distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 2>, !distributed.physical_comm_axis<2, 1>]
 // The kernel survives to the end unmerged (nothing else to merge it with)
 // and its body's sharding attributes are gone: distributed-lower-kernels is
 // their last consumer, and drop-kernel-body-sharding-attrs/
 // drop-sharding-rule-attrs run right after it in this pipeline.
-// CHECK: %[[KERNEL:[0-9]+]] = distributed.DistributedKernel
-// CHECK: stablehlo.multiply %{{.*}}, %{{.*}} : tensor<8xf32>
-// CHECK-NOT: distributed.argument_shardings
-// CHECK-NOT: distributed.output_shardings
+// NOFINAL: %[[KERNEL:[0-9]+]] = distributed.DistributedKernel
+// NOFINAL: stablehlo.multiply %{{.*}}, %{{.*}} : tensor<8xf32>
+// NOFINAL-NOT: distributed.argument_shardings
+// NOFINAL-NOT: distributed.output_shardings
 // The collective is never an identity (mesh_in's reduced atom becomes a
 // fresh replicate on the output side, not the same factor back), so
 // distributed-drop-identity-collectives must leave it in place; atomize
 // then rebuilds its mesh/reduction/map operands into atomic form.
-// CHECK: distributed.Collective %[[KERNEL]] : tensor<8xf32> on %{{[0-9]+}} : <8> to tensor<8xf32> on %{{[0-9]+}} : <8> reduces (%{{[0-9]+}} : !axis.factor_group<2>) maps %{{[0-9]+}} : !axis.map
-// CHECK: distributed.Await %{{[0-9]+}} : <tensor<8xf32>> -> tensor<8xf32>
+// NOFINAL: distributed.Collective %[[KERNEL]] : tensor<8xf32> on %{{[0-9]+}} : <8> to tensor<8xf32> on %{{[0-9]+}} : <8> reduces (%{{[0-9]+}} : !axis.factor_group<2>) maps %{{[0-9]+}} : !axis.map
+// NOFINAL: distributed.Await %{{[0-9]+}} : <tensor<8xf32>> -> tensor<8xf32>
+
+// With finalization on (the default), distributed-inline-kernels has
+// spliced the kernel body's multiply directly into the module, and
+// distributed-lower-collectives has replaced the atomic collective with a
+// real async-wrapped stablehlo.all_reduce; neither distributed.
+// DistributedKernel nor distributed.Collective survives.
+// FINAL: distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 2>, !distributed.physical_comm_axis<2, 1>]
+// FINAL-NOT: distributed.DistributedKernel
+// FINAL-NOT: distributed.Collective
+// FINAL: stablehlo.multiply %{{.*}}, %{{.*}} : tensor<8xf32>
+// FINAL: stablehlo.async_start
+// FINAL: stablehlo.all_reduce
+// FINAL: stablehlo.async_done
 
 // REMARK: remark: mesh0: 2, 2
 // REMARK-NEXT: mesh1: 2

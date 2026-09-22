@@ -828,7 +828,13 @@ cloneAndApplyDecisions(ModuleOp originalModule,
   PassManager pm(originalModule.getContext(), ModuleOp::getOperationName());
   pm.enableVerifier(!disableVerifier);
   pm.addPass(ApplyPartialDecisions::create(node, mapper));
-  buildDistributedSearchLoweringPipeline(pm, /*lowerLogicalAxes=*/false);
+  // Scoring clones must stay a fast, read-only simulation: skip the
+  // winner-only finalization stages (kernel inlining, collective lowering,
+  // schedule reordering) that are only meant to run once, on the search's
+  // eventual winner.
+  buildDistributedSearchLoweringPipeline(pm, /*lowerLogicalAxes=*/false,
+                                         /*dumpKernelModulesTo=*/"",
+                                         /*finalizeSchedule=*/false);
   pipelineOk = succeeded(pm.run(*clonedModule));
   return clonedModule;
 }
@@ -1013,25 +1019,26 @@ struct DistributedSearchStrategiesPass
         progressLogger;
     if (logProgress) {
       std::size_t totalAxes = axes->size();
-      progressLogger = [totalAxes](llvm::ArrayRef<std::shared_ptr<StrategySearchNode>>
-                                        generation) {
-        std::size_t shallowest = generation.front()->getAxisIndex();
-        std::size_t deepest = shallowest;
-        for (const auto &node : generation) {
-          shallowest = std::min(shallowest, node->getAxisIndex());
-          deepest = std::max(deepest, node->getAxisIndex());
-        }
-        llvm::errs() << "distributed-search-strategies: beam turnover ("
-                     << generation.size() << " candidate(s)), axis depth "
-                     << shallowest << "-" << deepest << " of " << totalAxes
-                     << "\n";
-      };
+      progressLogger =
+          [totalAxes](
+              llvm::ArrayRef<std::shared_ptr<StrategySearchNode>> generation) {
+            std::size_t shallowest = generation.front()->getAxisIndex();
+            std::size_t deepest = shallowest;
+            for (const auto &node : generation) {
+              shallowest = std::min(shallowest, node->getAxisIndex());
+              deepest = std::max(deepest, node->getAxisIndex());
+            }
+            llvm::errs() << "distributed-search-strategies: beam turnover ("
+                         << generation.size() << " candidate(s)), axis depth "
+                         << shallowest << "-" << deepest << " of " << totalAxes
+                         << "\n";
+          };
     }
     BeamSearchBreadthFirstQueue<StrategySearchNode> queue(beamSize,
-                                                           progressLogger);
+                                                          progressLogger);
     queue.push(initialNode);
-    StrategyExplorer explorer(overlap, builder, physicalAxes,
-                              moduleOp.getLoc(), logProgress);
+    StrategyExplorer explorer(overlap, builder, physicalAxes, moduleOp.getLoc(),
+                              logProgress);
     StrategyInOrderCompleter completer(overlap, builder, physicalAxes,
                                        moduleOp.getLoc());
     bool sawBadCandidate = false;

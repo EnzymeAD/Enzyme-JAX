@@ -18,19 +18,33 @@ namespace distributed {
 
 void registerShardyToDistributedPipeline();
 
-// Lowering pipeline run on a fully-decided distributed-search candidate
-// before scoring. Currently runs CanonicalizeShardedFactorOrder, then
-// InlineDeviceLocalAxes, then LowerKernels; more lowering stages will be
-// added here as they come online (see StrategyScorer in
-// SearchStrategies.cpp). `lowerLogicalAxes` should
-// normally stay true here:
-// candidates reaching this pipeline are expected to already have every
-// logical axis decided (e.g. by the search's heuristic completer), so there
-// should be no un-sharded logical axis left to preserve.
-// `dumpKernelModulesTo` is forwarded to LowerKernelsToExecutable.
+// Lowering pipeline run on a fully-decided distributed-search candidate,
+// either for scoring (a disposable clone, see cloneAndApplyDecisions in
+// SearchStrategies.cpp) or as the real final lowering of the search's
+// winner. It takes the candidate from physical-axis sharding down through
+// per-kernel local lowering (RefinePartitioningSlots,
+// CanonicalizeShardedFactorOrder, InlineDeviceLocalAxes, LowerKernels),
+// kernel-body cleanup and collective fusion/atomization, and
+// LowerKernelsToExecutable.
+//
+// `lowerLogicalAxes` should normally stay true: candidates reaching this
+// pipeline are expected to already have every logical axis decided (e.g. by
+// the search's heuristic completer), so there should be no un-sharded
+// logical axis left to preserve. `dumpKernelModulesTo` is forwarded to
+// LowerKernelsToExecutable.
+//
+// `finalizeSchedule` gates a further, winner-only finalization stage
+// (distributed-inline-kernels, distributed-lower-collectives,
+// distributed-reorder-schedule) that materializes real physical IR:
+//   - inlined kernel bodies
+//   - StableHLO async op chains for collectives
+//   - ops physically reordered to match the simulated schedule
+// It defaults to true for the real pipeline, but per-candidate scoring must
+// stay a fast, read-only simulation and passes false explicitly (see
+// cloneAndApplyDecisions).
 void buildDistributedSearchLoweringPipeline(
     OpPassManager &pm, bool lowerLogicalAxes = true,
-    llvm::StringRef dumpKernelModulesTo = "");
+    llvm::StringRef dumpKernelModulesTo = "", bool finalizeSchedule = true);
 void registerDistributedSearchLoweringPipeline();
 
 #define GEN_PASS_DECL
