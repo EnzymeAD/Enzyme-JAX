@@ -109,10 +109,21 @@ const char *toString(PrimitiveKind kind);
 
 // A mesh atom a step communicates over. `atom` indexes the axis's atoms as in
 // AtomLabel, so consumers can relate a step to a NormalizedCollective.
+//
+// `stride` is the atom's own stride within its physical axis's mixed-radix
+// coordinate (matching MeshAtom::stride, NormalizedCollective.h): axis
+// coordinate c = sum_i digit_i * atoms[i].stride over the axis's atoms, atoms
+// stored major-first (index 0 has the largest stride). A device's flat id
+// contribution from this atom is `stride * axisIdStride` (PhysicalCommAxisType
+// idStride), so a consumer building a replica group or a device-id-dependent
+// offset from a StepAtom that is a genuine sub-portion of its physical axis
+// (several atoms sharing one axis) needs this field, not just `extent`, to
+// know which devices the atom actually names.
 struct StepAtom {
   size_t axis;
   size_t atom;
   uint64_t extent;
+  uint64_t stride;
 };
 
 // One primitive collective with its footprint.

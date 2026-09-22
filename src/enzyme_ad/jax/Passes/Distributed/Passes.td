@@ -362,6 +362,38 @@ def InlineKernelsPass : Pass<"distributed-inline-kernels", "::mlir::ModuleOp"> {
   }];
 }
 
+def LowerCollectivesPass
+    : Pass<"distributed-lower-collectives", "::mlir::ModuleOp"> {
+  let summary = "Replaces every atomic distributed.Collective/Await pair "
+                "with the real StableHLO async op chain its decomposition "
+                "plan calls for.";
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect", "stablehlo::StablehloDialect"
+  ];
+  let description = [{
+    A distributed.Collective's PrimitiveStep chain (CollectiveDecomposer.h's
+    planCollective) is a pure-data decomposition plan with no MLIR ops of its
+    own. This pass turns a chosen chain into a real, async-wrapped StableHLO
+    op chain, each async_start tagged with a "distributed.primitive_cost"
+    attribute carrying that step's cost fields so a downstream scheduler can
+    read a step's predicted cost straight off the IR instead of recomputing
+    it via a second planCollective call. See CollectivePrimitiveBuilders.h
+    for the exact op chain and attribute shape.
+
+    This is a winner-only finalization step, meant to run once on the single
+    search candidate ultimately chosen, mirroring distributed-inline-kernels:
+    search-time scoring costs a collective's decomposition without
+    materializing it (ScheduleGraph.h), and this pass is what actually turns
+    that decomposition into IR afterward. Mesh/device cost parameters come
+    from the unique physical mesh's optional metadata, else abstract
+    defaults (MeshCostMetadata.h), matching every other consumer of
+    planCollective. An unplannable collective fails the pass with a
+    diagnostic rather than being skipped, since planning is expected to have
+    already succeeded once during scoring for the candidate this pass runs
+    on.
+  }];
+}
+
 def LowerKernelsToExecutablePass
     : Pass<"distributed-lower-kernels-to-executable", "::mlir::ModuleOp"> {
   let summary = "Placeholder: will dispatch each local-size distributed.kernel "

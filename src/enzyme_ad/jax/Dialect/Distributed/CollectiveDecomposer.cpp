@@ -75,7 +75,7 @@ struct Component {
 };
 
 StepAtom stepAtomOf(const MeshAtom &atom) {
-  return {atom.axis, atom.atom, atom.extent};
+  return {atom.axis, atom.atom, atom.extent, atom.stride};
 }
 
 // Index of the mesh atom `label` names.

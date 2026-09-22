@@ -36,8 +36,11 @@ struct PrintPrimitiveFootprintsPass
     std::vector<StepAtom> atoms;
     size_t numAxes = bandwidths.size();
     for (size_t i = 0; i < axes.size(); ++i) {
-      atoms.push_back(
-          {static_cast<size_t>(axes[i]), i, static_cast<uint64_t>(extents[i])});
+      // Each synthetic atom stands for its whole test axis (this pass only
+      // exercises the closed-form footprint math, which never reads
+      // stride), so stride 1 (a lone, whole-axis atom) is the right value.
+      atoms.push_back({static_cast<size_t>(axes[i]), i,
+                       static_cast<uint64_t>(extents[i]), /*stride=*/1});
       if (bandwidths.empty())
         numAxes = std::max(numAxes, static_cast<size_t>(axes[i]) + 1);
     }
