@@ -16308,9 +16308,8 @@ struct GatherOpCanon final
                                   operandTy.getElementType()),
             last, rewriter.getDenseI64ArrayAttr({0}));
         if (inBounds > 0) {
-          Value head =
-              stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand, {start},
-                                       {start + inBounds * stride}, {stride});
+          Value head = stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand,
+                                                {start}, {dim}, {stride});
           result = stablehlo::ConcatenateOp::create(
               rewriter, op.getLoc(), ValueRange{head, result}, 0);
         }
