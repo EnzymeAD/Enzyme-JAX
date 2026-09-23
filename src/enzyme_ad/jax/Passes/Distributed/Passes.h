@@ -33,18 +33,30 @@ void registerShardyToDistributedPipeline();
 // logical axis left to preserve. `dumpKernelModulesTo` is forwarded to
 // LowerKernelsToExecutable.
 //
-// `finalizeSchedule` gates a further, winner-only finalization stage
-// (distributed-inline-kernels, distributed-lower-collectives,
-// distributed-reorder-schedule) that materializes real physical IR:
-//   - inlined kernel bodies
-//   - StableHLO async op chains for collectives
-//   - ops physically reordered to match the simulated schedule
-// It defaults to true for the real pipeline, but per-candidate scoring must
-// stay a fast, read-only simulation and passes false explicitly (see
-// cloneAndApplyDecisions).
+// distributed-inline-kernels and distributed-lower-collectives always run
+// after LowerKernelsToExecutable, materializing the kernel-dissolved,
+// collective-lowered IR shape that ScheduleGraphAnalysis needs to build a
+// correct event graph from, for every candidate reaching schedule-graph-
+// building, not only the winner (see cloneAndApplyDecisions in
+// SearchStrategies.cpp for the scoring clone's own use of this pipeline).
+// `finalizeSchedule` gates only the last of the three, distributed-reorder-
+// schedule, which physically reorders ops to match the simulated schedule
+// and is meaningful just once, on the single candidate the search ultimately
+// picks; it defaults to true for the real pipeline, but per-candidate
+// scoring passes false explicitly.
+//
+// `actTarget`/`actWorkerDirRoot`/`actWorkerScriptDir` are forwarded to
+// LowerKernelsToExecutable to activate real ACT dispatch (see that pass's
+// options for their meaning); they default to off. distributed-search-
+// strategies forwards its own same-named options through here from
+// cloneAndApplyDecisions, so real ACT dispatch (backed by the same
+// content-hash cache and persistent worker as everywhere else) is also what
+// scores each per-candidate clone during search, not just the winner.
 void buildDistributedSearchLoweringPipeline(
     OpPassManager &pm, bool lowerLogicalAxes = true,
-    llvm::StringRef dumpKernelModulesTo = "", bool finalizeSchedule = true);
+    llvm::StringRef dumpKernelModulesTo = "", bool finalizeSchedule = true,
+    llvm::StringRef actTarget = "", llvm::StringRef actWorkerDirRoot = "",
+    llvm::StringRef actWorkerScriptDir = "");
 void registerDistributedSearchLoweringPipeline();
 
 #define GEN_PASS_DECL

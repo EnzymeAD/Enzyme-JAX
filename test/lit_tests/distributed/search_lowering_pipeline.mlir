@@ -29,23 +29,30 @@
 // meaninglessness, per this repo's convention for pipeline-level tests);
 // instead this checks structural anchors.
 //
-// NOFINAL (finalize-schedule=false, the scoring-clone shape): the kernel and
-// collective both survive to the end (this collective is never an identity,
-// so DropIdentityCollectives must not remove it) as their own
-// distributed.DistributedKernel/distributed.Collective ops, the kernel
-// body's sharding attributes are gone (distributed-lower-kernels is their
-// last consumer), and the REMARK lines are atomize's own atom-structure
-// report, re-run against the rewritten (not original) collective. That
-// report is a cheap, stable-ish signal that atomize actually ran and
-// succeeded on this collective, following the same REMARK convention as
-// atomize_collectives.mlir.
+// distributed-inline-kernels and distributed-lower-collectives always run
+// regardless of finalize-schedule: every candidate reaching schedule-graph-
+// building needs the same dissolved-kernel, lowered-collective IR shape that
+// a ScheduleGraphAnalysis costs from, scoring clone or eventual winner
+// alike. So the kernel body's multiply is spliced directly into the module,
+// and the collective (never an identity, since mesh_in's reduced atom
+// becomes a fresh replicate on the output side rather than the same factor
+// back, so distributed-drop-identity-collectives must leave it in place)
+// becomes a real async-wrapped stablehlo.all_reduce; neither NOFINAL nor
+// FINAL sees a surviving distributed.DistributedKernel or
+// distributed.Collective.
 //
-// FINAL (finalize-schedule left at its default, true, the real winner
-// shape): the same module additionally run through
-// distributed-inline-kernels/distributed-lower-collectives/
-// distributed-reorder-schedule, so no distributed.DistributedKernel or
-// distributed.Collective survives: the kernel body's ops are spliced inline
-// and the collective becomes a real stablehlo.async_start/done pair.
+// Only distributed-reorder-schedule stays behind finalize-schedule. This
+// module's ops already sit in simulated admission order (one straight-line
+// dependency chain, nothing to overlap or reorder), so NOFINAL and FINAL
+// check identical structural anchors here; the two RUN lines still each
+// guard that lowering succeeds whether or not that last physical-reordering
+// step runs.
+//
+// The REMARK lines are atomize's own atom-structure report, re-run against
+// the rewritten (not original) collective, checked once against the
+// finalize-schedule=false invocation. That report is a cheap, stable-ish
+// signal that atomize actually ran and succeeded on this collective,
+// following the same REMARK convention as atomize_collectives.mlir.
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 2>, !distributed.physical_comm_axis<2, 1>]
 
@@ -99,26 +106,15 @@ module {
 }
 
 // NOFINAL: distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 2>, !distributed.physical_comm_axis<2, 1>]
-// The kernel survives to the end unmerged (nothing else to merge it with)
-// and its body's sharding attributes are gone: distributed-lower-kernels is
-// their last consumer, and drop-kernel-body-sharding-attrs/
-// drop-sharding-rule-attrs run right after it in this pipeline.
-// NOFINAL: %[[KERNEL:[0-9]+]] = distributed.DistributedKernel
+// NOFINAL-NOT: distributed.DistributedKernel
+// NOFINAL-NOT: distributed.Collective
 // NOFINAL: stablehlo.multiply %{{.*}}, %{{.*}} : tensor<8xf32>
 // NOFINAL-NOT: distributed.argument_shardings
 // NOFINAL-NOT: distributed.output_shardings
-// The collective is never an identity (mesh_in's reduced atom becomes a
-// fresh replicate on the output side, not the same factor back), so
-// distributed-drop-identity-collectives must leave it in place; atomize
-// then rebuilds its mesh/reduction/map operands into atomic form.
-// NOFINAL: distributed.Collective %[[KERNEL]] : tensor<8xf32> on %{{[0-9]+}} : <8> to tensor<8xf32> on %{{[0-9]+}} : <8> reduces (%{{[0-9]+}} : !axis.factor_group<2>) maps %{{[0-9]+}} : !axis.map
-// NOFINAL: distributed.Await %{{[0-9]+}} : <tensor<8xf32>> -> tensor<8xf32>
+// NOFINAL: stablehlo.async_start
+// NOFINAL: stablehlo.all_reduce
+// NOFINAL: stablehlo.async_done
 
-// With finalization on (the default), distributed-inline-kernels has
-// spliced the kernel body's multiply directly into the module, and
-// distributed-lower-collectives has replaced the atomic collective with a
-// real async-wrapped stablehlo.all_reduce; neither distributed.
-// DistributedKernel nor distributed.Collective survives.
 // FINAL: distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 2>, !distributed.physical_comm_axis<2, 1>]
 // FINAL-NOT: distributed.DistributedKernel
 // FINAL-NOT: distributed.Collective

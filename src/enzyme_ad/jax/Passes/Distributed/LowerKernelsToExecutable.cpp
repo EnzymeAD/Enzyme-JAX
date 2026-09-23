@@ -4,6 +4,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 
+#include "src/enzyme_ad/jax/Dialect/Distributed/ActWorkerClient.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 
@@ -57,23 +58,53 @@ static LogicalResult dumpKernelModule(DistributedKernelOp kernelOp,
   return success();
 }
 
-// Placeholder for the next lowering stage. By now distributed-lower-kernels
-// has already shrunk every kernel to its local (per-device) sizes, so a
-// kernel body is just a plain, unsharded HLO subgraph, ready to be handed to
-// an external compiler for actual executable lowering (compilation is
-// per-kernel). That dispatch isn't wired up yet, so this pass only performs
-// the walk that will drive it:
-//   - dump-kernel-modules-to writes the wire format each kernel would be
-//     sent as.
+// By now distributed-lower-kernels has already shrunk every kernel to its
+// local (per-device) sizes, so a kernel body is just a plain, unsharded HLO
+// subgraph, ready to be handed to ACT for actual executable lowering
+// (compilation is per-kernel). This pass's job is the walk-and-dispatch
+// boilerplate around that:
+//   - dump-kernel-modules-to writes the wire format each kernel is
+//     dispatched as, independent of whether real dispatch is also active.
+//   - act-target/act-worker-dir-root/act-worker-script-dir drive real
+//     dispatch through ensureActPatchedKernel (ActWorkerClient.h).
 //   - act-patched-module-file splices a literal patched-module file back in
-//     through spliceKernelBodyModule, standing in for a real
-//     external-compiler round trip.
+//     through spliceKernelBodyModule instead, for tests that want the
+//     splice behavior without a real ACT/Docker round trip.
 struct LowerKernelsToExecutablePass
     : public impl::LowerKernelsToExecutablePassBase<
           LowerKernelsToExecutablePass> {
   using LowerKernelsToExecutablePassBase::LowerKernelsToExecutablePassBase;
 
   void runOnOperation() override {
+    bool anyRealDispatchOption = !actTarget.empty() ||
+                                 !actWorkerDirRoot.empty() ||
+                                 !actWorkerScriptDir.empty();
+    bool realDispatch = !actTarget.empty() && !actWorkerDirRoot.empty() &&
+                        !actWorkerScriptDir.empty();
+
+    // Both of these are CLI-option misuse, a genuine input boundary (nothing
+    // upstream validates pass options), so they get a real diagnostic rather
+    // than an implicit "one wins" precedence.
+    if (!actPatchedModuleFile.empty() && anyRealDispatchOption) {
+      getOperation()->emitError()
+          << "act-patched-module-file (a test-only seam that bypasses real "
+             "ACT dispatch) is mutually exclusive with act-target/"
+             "act-worker-dir-root/act-worker-script-dir (real dispatch); set "
+             "one or the other, not both";
+      signalPassFailure();
+      return;
+    }
+    if (anyRealDispatchOption && !realDispatch) {
+      getOperation()->emitError()
+          << "act-target, act-worker-dir-root, and act-worker-script-dir "
+             "must all be set together to activate real ACT dispatch (got "
+             "act-target='"
+          << actTarget << "', act-worker-dir-root='" << actWorkerDirRoot
+          << "', act-worker-script-dir='" << actWorkerScriptDir << "')";
+      signalPassFailure();
+      return;
+    }
+
     OwningOpRef<ModuleOp> testPatchedModule;
     if (!actPatchedModuleFile.empty()) {
       ParserConfig parserConfig(&getContext());
@@ -87,6 +118,15 @@ struct LowerKernelsToExecutablePass
       }
     }
 
+    // Shared across every kernel this pass walks: the worker/cache these
+    // fields point at is keyed by (target, calling user), not by kernel.
+    ActWorkerConfig config;
+    if (realDispatch) {
+      config.target = actTarget;
+      config.workdirRoot = actWorkerDirRoot;
+      config.workerScriptDir = actWorkerScriptDir;
+    }
+
     auto result = getOperation()->walk([&](DistributedKernelOp kernelOp) {
       if (!dumpKernelModulesTo.empty() &&
           failed(dumpKernelModule(kernelOp, dumpKernelModulesTo))) {
@@ -96,9 +136,9 @@ struct LowerKernelsToExecutablePass
           failed(spliceKernelBodyModule(kernelOp, *testPatchedModule))) {
         return WalkResult::interrupt();
       }
-      // TODO: dispatch kernelOp's body to the external compiler (once that
-      // exists, hand its result to spliceKernelBodyModule above instead of
-      // the test-only parsed file).
+      if (realDispatch && failed(ensureActPatchedKernel(kernelOp, config))) {
+        return WalkResult::interrupt();
+      }
       return WalkResult::advance();
     });
     if (result.wasInterrupted()) {

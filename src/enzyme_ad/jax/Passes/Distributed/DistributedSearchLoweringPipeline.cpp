@@ -6,10 +6,11 @@
 
 namespace mlir::enzyme::distributed {
 
-void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
-                                            bool lowerLogicalAxes,
-                                            llvm::StringRef dumpKernelModulesTo,
-                                            bool finalizeSchedule) {
+void buildDistributedSearchLoweringPipeline(
+    OpPassManager &pm, bool lowerLogicalAxes,
+    llvm::StringRef dumpKernelModulesTo, bool finalizeSchedule,
+    llvm::StringRef actTarget, llvm::StringRef actWorkerDirRoot,
+    llvm::StringRef actWorkerScriptDir) {
   LowerKernelsPassOptions options;
   options.lowerLogicalAxes = lowerLogicalAxes;
   // CanonicalizeShardedFactorOrder must run first: both InlineDeviceLocalAxes
@@ -61,25 +62,38 @@ void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
   // alike, and is a no-op on the atomic collectives fusion builds.
   pm.addPass(createFuseCollectivesPass());
   pm.addPass(createAtomizeCollectivesPass());
+  // Runs after every kernel-merging/cleanup pass above, so each kernel is
+  // hoisted exactly once, over its final body, rather than possibly once per
+  // merged constituent. Must precede LowerKernelsToExecutable
+  // unconditionally, like that pass, regardless of finalizeSchedule: ACT's
+  // cost model has no notion of stablehlo.partition_id, so every kernel
+  // reaching ACT dispatch, whether the eventual winner or a per-candidate
+  // scoring clone, needs it hoisted out first.
+  pm.addPass(createHoistKernelPartitionIdPass());
   // Runs last so that whatever it dispatches (or, for now, dumps) per kernel
   // reflects the fully merged and cleaned-up IR above, not an intermediate
   // state with dead axis-algebra ops still attached.
   LowerKernelsToExecutablePassOptions executableOptions;
   executableOptions.dumpKernelModulesTo = dumpKernelModulesTo.str();
+  executableOptions.actTarget = actTarget.str();
+  executableOptions.actWorkerDirRoot = actWorkerDirRoot.str();
+  executableOptions.actWorkerScriptDir = actWorkerScriptDir.str();
   pm.addPass(createLowerKernelsToExecutablePass(executableOptions));
 
-  // The three passes below are winner-only finalization: they materialize
-  // real physical IR (inlined kernel bodies, StableHLO async op chains for
-  // collectives, physically reordered ops matching the simulated schedule)
-  // and are meant to run exactly once, on the single search candidate
-  // ultimately chosen. Per-candidate scoring only needs the read-only
-  // simulation above LowerKernelsToExecutable and must stay fast, so it runs
-  // this pipeline with finalizeSchedule=false.
-  if (finalizeSchedule) {
-    pm.addPass(createInlineKernelsPass());
-    pm.addPass(createLowerCollectivesPass());
+  // Kernel inlining and collective lowering materialize real physical IR
+  // (spliced-in kernel bodies, StableHLO async op chains for collectives),
+  // but neither depends on which candidate wins the search: every
+  // candidate's ScheduleGraphAnalysis needs to see the same fully
+  // materialized shape, kernel wrappers dissolved and collectives already
+  // lowered, that scoring and finalization both cost from, so both always
+  // run here rather than being gated to the winner. Schedule reordering is
+  // different: it physically reorders ops to match a simulated admission
+  // order, which is only meaningful, and only wanted, once on the single
+  // candidate ultimately chosen, so it alone stays behind finalizeSchedule.
+  pm.addPass(createInlineKernelsPass());
+  pm.addPass(createLowerCollectivesPass());
+  if (finalizeSchedule)
     pm.addPass(createReorderSchedulePass());
-  }
 }
 
 namespace {
@@ -102,12 +116,27 @@ struct DistributedSearchLoweringPipelineOptions
   Option<bool> finalizeSchedule{
       *this, "finalize-schedule",
       llvm::cl::desc(
-          "Whether to run the winner-only finalization stages "
-          "(distributed-inline-kernels, distributed-lower-collectives, "
-          "distributed-reorder-schedule) after lowering. Should normally "
-          "stay true; set to false to inspect the pipeline's output before "
-          "finalization. Default: true"),
+          "Whether to run distributed-reorder-schedule, physically "
+          "reordering ops to match the simulated schedule, after lowering. "
+          "distributed-inline-kernels and distributed-lower-collectives "
+          "always run regardless of this option. Should normally stay "
+          "true; set to false to inspect the pipeline's output before "
+          "reordering. Default: true"),
       llvm::cl::init(true)};
+  Option<std::string> actTarget{
+      *this, "act-target",
+      llvm::cl::desc(
+          "Forwarded to distributed-lower-kernels-to-executable's option of "
+          "the same name; see there for what activates real ACT dispatch."),
+      llvm::cl::init("")};
+  Option<std::string> actWorkerDirRoot{
+      *this, "act-worker-dir-root",
+      llvm::cl::desc("Forwarded to distributed-lower-kernels-to-executable."),
+      llvm::cl::init("")};
+  Option<std::string> actWorkerScriptDir{
+      *this, "act-worker-script-dir",
+      llvm::cl::desc("Forwarded to distributed-lower-kernels-to-executable."),
+      llvm::cl::init("")};
 };
 } // namespace
 
@@ -118,9 +147,10 @@ void registerDistributedSearchLoweringPipeline() {
       "axes to its sharded form.",
       [](OpPassManager &pm,
          const DistributedSearchLoweringPipelineOptions &options) {
-        buildDistributedSearchLoweringPipeline(pm, options.lowerLogicalAxes,
-                                               options.dumpKernelModulesTo,
-                                               options.finalizeSchedule);
+        buildDistributedSearchLoweringPipeline(
+            pm, options.lowerLogicalAxes, options.dumpKernelModulesTo,
+            options.finalizeSchedule, options.actTarget,
+            options.actWorkerDirRoot, options.actWorkerScriptDir);
       });
 }
 

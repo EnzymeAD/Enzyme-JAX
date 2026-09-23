@@ -8,6 +8,7 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -66,59 +67,126 @@ void addPredecessor(ScheduleEvent &event, size_t producer) {
   }
 }
 
+// Walks ViewLikeOpInterface's getViewSource() (memref.subview/cast/
+// reinterpret_cast) back to the root value `value` is ultimately a view of:
+// a memref.alloc result, a block argument, or any other non-view producer.
+// This is the coarsest granularity that can tell two ops touching the same
+// underlying buffer apart from two touching unrelated ones without full
+// alias analysis: distinct views of one root are treated as conflicting
+// even when their offsets provably don't overlap (see
+// addMemrefSideEffectEdges).
+Value memrefRoot(Value value) {
+  while (Operation *def = value.getDefiningOp()) {
+    auto view = dyn_cast<ViewLikeOpInterface>(def);
+    if (!view)
+      break;
+    value = view.getViewSource();
+  }
+  return value;
+}
+
+// Chains `op` after whichever previously built node last touched the same
+// memref root, for every memref-typed operand `op` has, and records `op`'s
+// own node as that root's new last-toucher.
+//
+// A memref op reads or writes through its operands as a side effect; there
+// is no SSA result threading that effect the way there is for a tensor
+// value, so two ops that only share a memref operand (e.g. one op's write
+// into a subview and another op's later read of that same subview) have no
+// SSA producer/consumer edge between them at all: both only depend on
+// whatever produced the view, never on each other. Threading one linear
+// chain per root through this graph's existing block-walk order recovers
+// exactly the serialization real memory effects impose, which is what lets,
+// for instance, ACT's void-returning stage/launch/fetch calls
+// (CollectivePrimitiveBuilders.h's ACT convention) get ordered relative to
+// each other despite passing no SSA value between them.
+void addMemrefSideEffectEdges(Operation &op, size_t index, ScheduleEvent &event,
+                              llvm::DenseMap<Value, size_t> &lastToucher) {
+  // Reads every operand's previous toucher before writing any of them, so an
+  // op with several operands aliasing the same root (e.g. an ACT launch
+  // reading two staged views and writing a third, all views of one
+  // allocation) never wires a spurious edge to itself.
+  for (Value operand : op.getOperands())
+    if (isa<MemRefType>(operand.getType()))
+      if (std::optional<size_t> producer =
+              lookup(lastToucher, memrefRoot(operand)))
+        addPredecessor(event, *producer);
+  for (Value operand : op.getOperands())
+    if (isa<MemRefType>(operand.getType()))
+      lastToucher[memrefRoot(operand)] = index;
+}
+
 // Appends one Compute node for `op`: costs it, wires its operand producers
-// as predecessors, and aliases its results to the new node. Shared by a
-// kernel body's ops (buildKernelNodes) and a bare compute op sitting
-// directly in a block post-inlining (buildBlockNodes).
+// and memref side effects as predecessors, and aliases its results to the
+// new node. Shared by a kernel body's ops (buildKernelNodes) and a bare
+// compute op sitting directly in a block post-inlining (buildBlockNodes).
 void appendComputeNode(Operation &op, const DeviceCostParams &device,
                        std::vector<ScheduleEvent> &nodes,
-                       llvm::DenseMap<Value, size_t> &valueNode) {
+                       llvm::DenseMap<Value, size_t> &valueNode,
+                       llvm::DenseMap<Value, size_t> &lastMemrefToucher) {
   ScheduleEvent event;
   event.kind = ScheduleEventKind::Compute;
   event.op = &op;
-  // costOp returns nullopt only for a dynamic shape or unsized type (R6, R7
-  // in ComputeCost.h), which should not occur in code this graph models
-  // (kernel bodies, and their bare-op form once dissolved, are always
-  // lowered to local shapes); treat it as a zero-cost node rather than
-  // dropping it, so it still carries through any dependency it sits on.
+  // costOp returns nullopt in two cases, both treated as a zero-cost node
+  // here rather than dropped, so it still carries through any dependency it
+  // sits on:
+  //   - a dynamic shape or unsized type (R6, R7 in ComputeCost.h), expected
+  //     for a kernel body's own stablehlo ops since they're always lowered
+  //     to local shapes by this point;
+  //   - unconditionally, any op with a non-tensor operand or result, which
+  //     covers every memref op ACT's real patched kernel bodies splice in
+  //     around their bodyless stage/launch/fetch calls. A memref op's real
+  //     cost, if any, is already attributed to the stage/launch/fetch call
+  //     it stages memory for (see actCalleeCostCycles).
   event.computeCost = costOp(&op).value_or(OpCost{});
   event.isolatedDuration = event.computeCost.time(device);
   for (Value operand : op.getOperands())
     if (std::optional<size_t> producer = lookup(valueNode, operand))
       addPredecessor(event, *producer);
   size_t index = nodes.size();
+  addMemrefSideEffectEdges(op, index, event, lastMemrefToucher);
   nodes.push_back(std::move(event));
   for (Value result : op.getResults())
     alias(valueNode, result, index);
 }
 
-// The act.cost cycle count on `op`'s resolved callee, if it has one: ACT's
-// convention for a bodyless accelerator-launch declaration (@act_launch,
-// per the ACT plan doc's real sample) is to carry its cost as this attribute
-// rather than a walkable body. Nullopt for any other call, including one
-// whose callee cannot be resolved at all; each caller decides what to do
-// with that case itself (buildKernelNodes falls back to costing the call as
-// an ordinary op via appendComputeNode, buildBlockNodes falls back to the
-// hard-barrier handling in buildCallNode).
-std::optional<double> actLaunchCostCycles(Operation *op) {
+// The cost, in cycles, of calling `op`'s resolved callee, if it is one of
+// ACT's own bodyless declarations:
+//   - an accelerator-launch declaration (@act_launch, per the ACT plan
+//     doc's real sample) carries a real cycle count in its act.cost
+//     attribute.
+//   - a staging/fetch declaration (@act_stage_N/@act_fetch_N) carries
+//     act.role ("stage"/"fetch") instead, with no act.cost: ACT costs the
+//     memref copy it performs as part of its neighboring launch, not
+//     separately, so zero is its real cost here, not a placeholder.
+// Nullopt for any other call, including one whose callee cannot be resolved
+// at all; each caller decides what to do with that case itself
+// (buildKernelNodes falls back to costing the call as an ordinary op via
+// appendComputeNode, buildBlockNodes falls back to the hard-barrier
+// handling in buildCallNode).
+std::optional<double> actCalleeCostCycles(Operation *op) {
   Operation *calleeOp = cast<CallOpInterface>(op).resolveCallable();
   if (!calleeOp)
     return std::nullopt;
   if (FloatAttr cost = calleeOp->getAttrOfType<FloatAttr>("act.cost"))
     return cost.getValueAsDouble();
+  if (calleeOp->hasAttrOfType<StringAttr>("act.role"))
+    return 0.0;
   return std::nullopt;
 }
 
-// Appends one atomic Compute node for a call to an ACT launch. Unlike an
-// ordinary call, the callee is a bodyless declaration with no region to
-// build a nested ScheduleGraph from, and act.cost already gives its full
-// cost directly, so there is no reason to treat the call as a scope-wide
-// hard barrier (buildCallNode) or recurse into it (appendComputeNode via
-// costOp would just see an opaque, likely memref-typed, unknown op).
-void appendActLaunchNode(Operation *op, double costCycles,
+// Appends one atomic Compute node for a call to a bodyless ACT declaration
+// (a costed launch or a zero-cost stage/fetch, per actCalleeCostCycles).
+// Unlike an ordinary call, the callee has no region to build a nested
+// ScheduleGraph from, and its cost (real or zero) is already known directly,
+// so there is no reason to treat the call as a scope-wide hard barrier
+// (buildCallNode) or recurse into it (appendComputeNode via costOp would
+// just see an opaque, likely memref-typed, unknown op).
+void appendActCalleeNode(Operation *op, double costCycles,
                          const DeviceCostParams &device,
                          std::vector<ScheduleEvent> &nodes,
-                         llvm::DenseMap<Value, size_t> &valueNode) {
+                         llvm::DenseMap<Value, size_t> &valueNode,
+                         llvm::DenseMap<Value, size_t> &lastMemrefToucher) {
   ScheduleEvent event;
   event.kind = ScheduleEventKind::Compute;
   event.op = op;
@@ -135,6 +203,13 @@ void appendActLaunchNode(Operation *op, double costCycles,
     if (std::optional<size_t> producer = lookup(valueNode, operand))
       addPredecessor(event, *producer);
   size_t index = nodes.size();
+  // A stage/launch/fetch call's own operands are exactly the memref views it
+  // reads or writes as a side effect (see ActWorkerClient.cpp's spliced
+  // kernel-body convention), so this is the case addMemrefSideEffectEdges
+  // exists for: none of these calls return an SSA value the others consume,
+  // so without this they would only ever be ordered relative to whichever
+  // memref.subview produced their operand, never relative to each other.
+  addMemrefSideEffectEdges(*op, index, event, lastMemrefToucher);
   nodes.push_back(std::move(event));
   for (Value result : op->getResults())
     alias(valueNode, result, index);
@@ -144,14 +219,16 @@ void appendActLaunchNode(Operation *op, double costCycles,
 // whatever produced the kernel's operands and the kernel's results to
 // whatever the terminator yields. Calls inside a kernel body are never
 // barriers relative to each other (a kernel body has no notion of a "call
-// barrier" the way a scope walked by buildBlockNodes does): a call whose
-// resolved callee carries act.cost (see actLaunchCostCycles) is costed as
-// one atomic node instead of through the ordinary per-op roofline, and any
-// other call is costed the same as any other op in the body.
+// barrier" the way a scope walked by buildBlockNodes does): a call to a
+// bodyless ACT declaration (see actCalleeCostCycles) is costed as one atomic
+// node (real cost for a launch, zero for a stage/fetch) instead of through
+// the ordinary per-op roofline, and any other call is costed the same as
+// any other op in the body.
 void buildKernelNodes(DistributedKernelOp kernel,
                       const DeviceCostParams &device,
                       std::vector<ScheduleEvent> &nodes,
-                      llvm::DenseMap<Value, size_t> &valueNode) {
+                      llvm::DenseMap<Value, size_t> &valueNode,
+                      llvm::DenseMap<Value, size_t> &lastMemrefToucher) {
   Block &body = kernel.getBody().front();
   for (auto [blockArg, operand] :
        llvm::zip(body.getArguments(), kernel.getArguments()))
@@ -162,11 +239,12 @@ void buildKernelNodes(DistributedKernelOp kernel,
     if (isa<DistributedYieldOp>(op))
       continue;
     if (isa<CallOpInterface>(op))
-      if (std::optional<double> costCycles = actLaunchCostCycles(&op)) {
-        appendActLaunchNode(&op, *costCycles, device, nodes, valueNode);
+      if (std::optional<double> costCycles = actCalleeCostCycles(&op)) {
+        appendActCalleeNode(&op, *costCycles, device, nodes, valueNode,
+                            lastMemrefToucher);
         continue;
       }
-    appendComputeNode(op, device, nodes, valueNode);
+    appendComputeNode(op, device, nodes, valueNode, lastMemrefToucher);
   }
 
   auto yield = cast<DistributedYieldOp>(body.getTerminator());
@@ -319,18 +397,24 @@ struct GraphBuildContext {
 
 bool buildBlockNodes(Block &block, GraphBuildContext &ctx, ScheduleGraph &graph,
                      llvm::DenseMap<Value, size_t> &valueNode,
+                     llvm::DenseMap<Value, size_t> &lastMemrefToucher,
                      std::optional<size_t> &pendingBarrier);
 
 // Builds one function-like op's own scope (module scope, or a callee's
 // body), with fresh scheduling state: `distributed.kernel` boundaries
 // dissolve within this scope, but nothing here is visible to, or depends on,
 // any enclosing scope. That is exactly what makes a call a hard barrier
-// rather than an ordinary dependency edge (see ScheduleGraph.h).
+// rather than an ordinary dependency edge (see ScheduleGraph.h). The memref
+// last-toucher map (see addMemrefSideEffectEdges) gets the same fresh,
+// scope-local lifetime as valueNode: a callee's own allocations are never
+// visible to its caller's memory ordering either.
 ScheduleGraph buildScopeGraph(Block &block, GraphBuildContext &ctx) {
   ScheduleGraph graph;
   llvm::DenseMap<Value, size_t> valueNode;
+  llvm::DenseMap<Value, size_t> lastMemrefToucher;
   std::optional<size_t> pendingBarrier;
-  if (!buildBlockNodes(block, ctx, graph, valueNode, pendingBarrier)) {
+  if (!buildBlockNodes(block, ctx, graph, valueNode, lastMemrefToucher,
+                       pendingBarrier)) {
     graph.feasible = false;
     graph.nodes.clear();
   }
@@ -424,10 +508,15 @@ bool buildCallNode(Operation *op, GraphBuildContext &ctx, ScheduleGraph &graph,
 // hard barrier (buildCallNode): once one is built, every subsequently built
 // node in this same scope, regardless of what builds it, gets that call
 // event wired in as an extra predecessor, which is what actually enforces
-// "nothing after the call may start before it finishes". A call to an
-// act.cost-carrying callee is not a barrier at all: it costs as an ordinary
-// atomic Compute node (appendActLaunchNode) wired only to its own operands,
-// the same as any other op built here.
+// "nothing after the call may start before it finishes". A call to a
+// bodyless ACT declaration is not a barrier at all, since it has no body to
+// wait on, and costs as an ordinary atomic Compute node (appendActCalleeNode)
+// wired to its own SSA operand producers plus, via addMemrefSideEffectEdges,
+// whichever earlier node last touched the same memref, the same as any
+// other op built here; this matters for a real ACT-patched kernel's
+// stage/fetch calls in particular, which sit as plain top-level ops in the
+// dissolved block, sharing memref views with act_launch as a side effect
+// rather than through an SSA result any of them return.
 //
 // The module's own top-level block reaches here as the outermost scope, with
 // its "main" function's body flattened inline (isMainFunctionOp); any other
@@ -437,13 +526,15 @@ bool buildCallNode(Operation *op, GraphBuildContext &ctx, ScheduleGraph &graph,
 // (mis)trigger this branch.
 bool buildBlockNodes(Block &block, GraphBuildContext &ctx, ScheduleGraph &graph,
                      llvm::DenseMap<Value, size_t> &valueNode,
+                     llvm::DenseMap<Value, size_t> &lastMemrefToucher,
                      std::optional<size_t> &pendingBarrier) {
   for (Operation &opRef : block) {
     Operation *op = &opRef;
     size_t startIndex = graph.nodes.size();
 
     if (auto kernel = dyn_cast<DistributedKernelOp>(op)) {
-      buildKernelNodes(kernel, ctx.device, graph.nodes, valueNode);
+      buildKernelNodes(kernel, ctx.device, graph.nodes, valueNode,
+                       lastMemrefToucher);
     } else if (auto collective = dyn_cast<DistributedCollectiveOp>(op)) {
       if (!buildCollectiveNodes(collective, ctx.meshAxisTypes, ctx.params,
                                 ctx.options, graph.nodes, valueNode,
@@ -466,12 +557,12 @@ bool buildBlockNodes(Block &block, GraphBuildContext &ctx, ScheduleGraph &graph,
       // it must never become a node of its own.
       continue;
     } else if (isa<CallOpInterface>(op)) {
-      if (std::optional<double> costCycles = actLaunchCostCycles(op)) {
-        appendActLaunchNode(op, *costCycles, ctx.device, graph.nodes,
-                            valueNode);
+      if (std::optional<double> costCycles = actCalleeCostCycles(op)) {
+        appendActCalleeNode(op, *costCycles, ctx.device, graph.nodes, valueNode,
+                            lastMemrefToucher);
         // Falls through to the ordinary pendingBarrier wiring below, the
-        // same as any other Compute node built in this loop: an ACT launch
-        // is not a hard barrier.
+        // same as any other Compute node built in this loop: a bodyless ACT
+        // declaration is never a hard barrier.
       } else {
         // The barrier event is itself wired to the previous barrier (if
         // any) by the frontier scan in buildCallNode, not by the post-loop
@@ -486,32 +577,35 @@ bool buildBlockNodes(Block &block, GraphBuildContext &ctx, ScheduleGraph &graph,
         Region *body = func.getCallableRegion();
         if (body && body->hasOneBlock())
           if (!buildBlockNodes(body->front(), ctx, graph, valueNode,
-                               pendingBarrier))
+                               lastMemrefToucher, pendingBarrier))
             return false;
       }
       continue;
-    } else if (op->getName().getDialectNamespace() == "stablehlo") {
+    } else if (StringRef ns = op->getName().getDialectNamespace();
+               ns == "stablehlo" || ns == "memref") {
       // A bare stablehlo op sitting directly in a block: the shape
       // distributed-inline-kernels (D4) produces when it splices a kernel
-      // body into the surrounding block, dissolving the
-      // DistributedKernelOp wrapper. Kernel bodies, per ComputeCost.h's
-      // model, only ever contain stablehlo ops.
+      // body into the surrounding block, dissolving the DistributedKernelOp
+      // wrapper. A bare memref op alongside it: the memref.alloc/subview/
+      // dealloc scaffolding ACT's own patched kernel bodies (spliced in by
+      // ensureActPatchedKernel) build around their bodyless stage/launch/
+      // fetch calls, dissolved into the block the same way.
       //
-      // Restricting this branch to the stablehlo dialect, rather than
-      // costing every unrecognized op the way buildKernelNodes costs a
-      // whole kernel body, keeps a module-scope non-computational value
-      // producer (e.g. a placeholder tensor.empty feeding a collective in a
-      // hand-written test) from becoming a spurious node: nothing outside a
-      // kernel body or its dissolved form is expected to be stablehlo
-      // dialect otherwise.
-      appendComputeNode(*op, ctx.device, graph.nodes, valueNode);
+      // Restricting this branch to these two dialects, rather than costing
+      // every unrecognized op the way buildKernelNodes costs a whole kernel
+      // body, keeps a module-scope non-computational value producer (e.g. a
+      // placeholder tensor.empty feeding a collective in a hand-written
+      // test) from becoming a spurious node: nothing outside a kernel body
+      // or its dissolved form is expected to be either dialect otherwise.
+      appendComputeNode(*op, ctx.device, graph.nodes, valueNode,
+                        lastMemrefToucher);
     } else {
       // Axis-algebra / declarative distributed metadata (PhysicalMesh,
       // GetPhysicalMeshAxes, axis.getaxis/factor/product/map, ...), a
       // terminator (func.return, or a distributed.Yield that somehow
-      // reached block scope), and any other non-stablehlo value producer
-      // sitting directly in a block (e.g. tensor.empty) carry no runtime
-      // cost this graph models: none of them is a node here.
+      // reached block scope), and any other value producer sitting directly
+      // in a block outside these two dialects (e.g. tensor.empty) carry no
+      // runtime cost this graph models: none of them is a node here.
       continue;
     }
 
@@ -569,5 +663,8 @@ std::string describeEvent(const ScheduleEvent &event) {
   }
   return message;
 }
+
+ScheduleGraphAnalysis::ScheduleGraphAnalysis(ModuleOp module)
+    : graph(buildScheduleGraph(module)) {}
 
 } // namespace mlir::enzyme::distributed

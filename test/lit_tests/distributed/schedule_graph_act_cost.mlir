@@ -20,7 +20,7 @@
 // device_clock_frequency = 100 converts act.cost's 480 cycles into an
 // isolated duration of 4.8; computeCost.flops is back-solved to
 // device.flops (2000, the default) * 4.8 = 9600 so the call still shows up
-// as full compute-resource demand (see appendActLaunchNode's comment).
+// as full compute-resource demand (see appendActCalleeNode's comment).
 // CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2.4 preds=[]
 // CHECK: node 1: compute func.call: flops=9600 bytes=0 time=4.8 preds=[0]
 // CHECK: schedule graph: 2 nodes (2 compute, 0 communication, 0 call)
@@ -85,14 +85,19 @@ module {
 
 // -----
 
-// A call to a bodyless callee that carries no act.cost (ACT's convention for
-// an @act_stage_N/@act_fetch_N declaration, tagged act.role instead) falls
-// through to the hard-barrier path (buildCallNode), which requires a
-// walkable single-block callee region; a bodyless declaration has none, so
-// the whole graph is infeasible. A real spliced kernel never calls a
-// stage/fetch declaration this way: act_launch's own operands are the staged
-// copies (see the ACT plan doc's "Redone breakdown" item 1).
-// CHECK: schedule graph: infeasible (call to an unresolved or non-single-block callee)
+// A call to a bodyless callee that carries act.role instead of act.cost
+// (ACT's convention for an @act_stage_N/@act_fetch_N declaration: the memref
+// copy it performs is costed as part of its neighboring launch, not
+// separately) costs as a zero-duration atomic Compute node, the same
+// non-barrier treatment as an act.cost-carrying launch above, rather than
+// falling through to the hard-barrier path: a bodyless declaration has no
+// walkable region for that path to recurse into, which would otherwise make
+// the whole graph infeasible. A real spliced kernel's stage/fetch calls sit
+// as plain top-level ops next to their launch, not only as the launch's own
+// operand producers, so this path is genuinely reachable, not just
+// defensive.
+// CHECK: node 0: compute func.call: flops=0 bytes=0 time=0 preds=[]
+// CHECK: schedule graph: 1 nodes (1 compute, 0 communication, 0 call)
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
 

@@ -35,6 +35,14 @@
 // Compute is small next to the network cost here, so a candidate with
 // collectives is dominated by them, and among the collective-free candidates
 // the cheapest compute wins.
+//
+// A candidate with a collective always reports two more nodes than its step
+// count would suggest: distributed-lower-collectives (unconditional for
+// every scored candidate, not only the eventual winner) flattens the
+// collective's operand to 1-D before its chain and reshapes the chain's
+// result back afterward, and both reshapes are zero-cost Movement ops
+// (ComputeCost.h) that never change a makespan already dominated by network
+// time.
 
 // Candidates with no collective.
 // CHECK-DAG: // Search candidate (ok, score=-1.048576e+00):
@@ -46,13 +54,13 @@
 // One 2-way all-reduce of the 32x64 tile: 8192.11 + 0.262144, on the same
 // dependency chain as the kernel it follows, so nothing overlaps it.
 // CHECK-DAG: // Search candidate (ok, score=-8.192372e+03):
-// CHECK-DAG: // schedule cost: makespan=8.192372e+03 over 2 nodes (communicating=8.192110e+03 computing=2.621440e-01 utilization=3.199855e-05 idle=8.192110e+03)
+// CHECK-DAG: // schedule cost: makespan=8.192372e+03 over 4 nodes (communicating=8.192110e+03 computing=2.621440e-01 utilization=3.199855e-05 idle=8.192110e+03)
 // One 2-way all-reduce of the 64x64 tile: 16384.11 + 0.524288.
 // CHECK-DAG: // Search candidate (ok, score=-1.638463e+04):
-// CHECK-DAG: // schedule cost: makespan=1.638463e+04 over 2 nodes (communicating=1.638411e+04 computing=5.242880e-01 utilization=3.199876e-05 idle=1.638411e+04)
+// CHECK-DAG: // schedule cost: makespan=1.638463e+04 over 4 nodes (communicating=1.638411e+04 computing=5.242880e-01 utilization=3.199876e-05 idle=1.638411e+04)
 // The 4-way all-reduce: 24576.33 + 0.262144.
 // CHECK-DAG: // Search candidate (ok, score=-2.457659e+04):
-// CHECK-DAG: // schedule cost: makespan=2.457659e+04 over 4 nodes (communicating=2.457633e+04 computing=2.621440e-01 utilization=1.066641e-05 idle=2.457633e+04)
+// CHECK-DAG: // schedule cost: makespan=2.457659e+04 over 6 nodes (communicating=2.457633e+04 computing=2.621440e-01 utilization=1.066641e-05 idle=2.457633e+04)
 // The best candidate needs no collective and shards the compute four ways.
 // CHECK-DAG: // Best search candidate (ok, score=-2.621440e-01):
 

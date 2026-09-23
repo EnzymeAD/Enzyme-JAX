@@ -116,11 +116,13 @@ struct LowerCollectivesPass
       std::optional<CollectivePlan> plan = planCollective(
           collective, meshAxisTypes, params, failureReason, PlanOptions{});
       if (!plan) {
-        // This pass is meant to run winner-only, on a single search
-        // candidate that has already been validated (planned successfully)
-        // during scoring, so an unplannable collective here means an
-        // unexpected precondition violation, not a normal outcome to skip
-        // over quietly.
+        // A hard pass failure, not a diagnostic recorded for the caller to
+        // inspect: a search candidate this happens on simply fails to lower
+        // (StrategyScorer::score already treats a failed lowering pipeline
+        // as an infeasible, -infinity-scored candidate), and the eventual
+        // winner is never expected to reach this pass with an unplannable
+        // collective at all, since it was already lowered successfully once
+        // during scoring.
         collective.emitError()
             << "distributed-lower-collectives: could not plan collective ("
             << failureReason << ")";

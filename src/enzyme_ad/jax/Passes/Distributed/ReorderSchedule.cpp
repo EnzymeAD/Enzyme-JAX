@@ -166,7 +166,8 @@ struct ReorderSchedulePass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    ScheduleGraph graph = buildScheduleGraph(module);
+    const ScheduleGraph &graph =
+        getAnalysis<ScheduleGraphAnalysis>().getGraph();
     if (!graph.feasible) {
       // This pass is meant to run winner-only, on a single search candidate
       // that has already been validated (planned successfully) during

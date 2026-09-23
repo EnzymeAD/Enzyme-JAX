@@ -348,12 +348,13 @@ def InlineKernelsPass : Pass<"distributed-inline-kernels", "::mlir::ModuleOp"> {
     kernel's results with the values yielded by its terminator, and erases
     the now-empty kernel op.
 
-    This is a winner-only finalization step, meant to run once on the
-    single search candidate ultimately chosen, after distributed-lower-
-    kernels has fully localized every kernel body. Search-time cost
-    estimation avoids mutating IR for every scored candidate by instead
-    treating kernel bodies as an opaque unit via value aliasing (see
-    ScheduleGraph.h).
+    Runs after distributed-lower-kernels has fully localized every kernel
+    body, for every candidate reaching schedule-graph-building (not only the
+    search's eventual winner): ScheduleGraphAnalysis needs the dissolved,
+    bare-op shape this pass produces to see real ops with real SSA/memref
+    dependencies in place of an opaque distributed.DistributedKernel wrapper
+    (see ScheduleGraph.h), whether it's building the winner's finalized
+    schedule or scoring a still-disposable clone.
 
     distributed.DistributedCall / distributed.DistributedFunction are a
     function-call boundary and are left untouched here. A kernel inside a
@@ -380,17 +381,19 @@ def LowerCollectivesPass
     it via a second planCollective call. See CollectivePrimitiveBuilders.h
     for the exact op chain and attribute shape.
 
-    This is a winner-only finalization step, meant to run once on the single
-    search candidate ultimately chosen, mirroring distributed-inline-kernels:
-    search-time scoring costs a collective's decomposition without
-    materializing it (ScheduleGraph.h), and this pass is what actually turns
-    that decomposition into IR afterward. Mesh/device cost parameters come
-    from the unique physical mesh's optional metadata, else abstract
-    defaults (MeshCostMetadata.h), matching every other consumer of
-    planCollective. An unplannable collective fails the pass with a
-    diagnostic rather than being skipped, since planning is expected to have
-    already succeeded once during scoring for the candidate this pass runs
-    on.
+    Runs for every candidate reaching schedule-graph-building (not only the
+    search's eventual winner), mirroring distributed-inline-kernels:
+    ScheduleGraphAnalysis costs a materialized StableHLO async op chain, not
+    an abstract distributed.Collective/Await pair, so every candidate needs
+    this pass's output before it can be scored the same way the eventual
+    winner is. Mesh/device cost parameters come from the unique physical
+    mesh's optional metadata, else abstract defaults (MeshCostMetadata.h),
+    matching every other consumer of planCollective. Replanning a collective
+    independently per invocation, with no state shared across candidates,
+    is what makes running this pass on every disposable scoring clone safe.
+    An unplannable collective fails the pass with a diagnostic rather than
+    being skipped, since a candidate that lowered this far is expected to
+    have every collective plannable.
   }];
 }
 
@@ -422,10 +425,38 @@ def ReorderSchedulePass
   }];
 }
 
+def HoistKernelPartitionIdPass
+    : Pass<"hoist-kernel-partition-id", "::mlir::ModuleOp"> {
+  let summary = "Hoists stablehlo.partition_id out of DistributedKernelOp "
+                "bodies into a new scalar operand/block argument.";
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect", "stablehlo::StablehloDialect"
+  ];
+  let description = [{
+    stablehlo.partition_id can end up inside a kernel body as a side effect
+    of Shardy's own local lowering (distributed-lower-kernels), not as
+    something this dialect introduces; see that pass for where it comes
+    from. Left in place, it reaches distributed-lower-kernels-to-executable's
+    ACT dispatch, whose cost model has no notion of the op at all.
+
+    For every kernel with one or more occurrences directly in its body (there
+    may be several, always deterministic and identical), this pass builds one
+    stablehlo.partition_id in the kernel's parent scope, appends it as a new
+    trailing operand with a matching block argument and (dimensionless, since
+    the op is a rank-0 scalar) argument_shardings entry, rewrites every
+    in-body occurrence to that block argument, and erases the now-dead
+    op(s). A kernel with no such op is left untouched.
+
+    Expected to run after distributed-lower-kernels (where the op is
+    introduced) and before distributed-lower-kernels-to-executable (where it
+    would otherwise reach ACT).
+  }];
+}
+
 def LowerKernelsToExecutablePass
     : Pass<"distributed-lower-kernels-to-executable", "::mlir::ModuleOp"> {
-  let summary = "Placeholder: will dispatch each local-size distributed.kernel "
-                "body to an external compiler for executable lowering.";
+  let summary = "Dispatches each local-size distributed.kernel body to the "
+                "ACT external compiler for executable lowering.";
   let dependentDialects = [
     "enzyme::distributed::DistributedDialect", "mlir::func::FuncDialect",
     // act-patched-module-file parses an arbitrary external module, which may
@@ -449,26 +480,54 @@ def LowerKernelsToExecutablePass
     Option<"actPatchedModuleFile", "act-patched-module-file", "std::string",
            "\"\"",
            "Test-only seam for the splice half of executable lowering, "
-           "skipping real dispatch (not wired up yet): if non-empty, parse "
-           "this single literal patched-module .mlir file (the external "
-           "compiler's own output shape -- see spliceKernelBodyModule) and "
-           "splice it into every kernel this pass walks, in place of "
-           "dispatching. Only useful for a module with a single kernel, "
-           "since there is only one file to feed for every kernel in the "
-           "walk.">
+           "skipping real dispatch: if non-empty, parse this single literal "
+           "patched-module .mlir file (the external compiler's own output "
+           "shape; see spliceKernelBodyModule) and splice it into every "
+           "kernel this pass walks, in place of dispatching. Only useful "
+           "for a module with a single kernel, since there is only one "
+           "file to feed for every kernel in the walk. Mutually exclusive "
+           "with act-target/act-worker-dir-root/act-worker-script-dir "
+           "below: setting both this and real dispatch is a configuration "
+           "error, not an ambiguity to silently resolve.">,
+    Option<"actTarget", "act-target", "std::string", "\"\"",
+           "Accelerator target name (e.g. \"eva2\", \"eva2-fine\", "
+           "\"eva2-coarse\") to dispatch each kernel body to via a "
+           "persistent ACT worker process, forwarded verbatim as "
+           "ActWorkerConfig::target. Real dispatch only activates once "
+           "this, act-worker-dir-root, and act-worker-script-dir are all "
+           "non-empty together (mirrors act-patched-module-file's "
+           "empty-string-means-off convention); setting only some of the "
+           "three is a configuration error.">,
+    Option<"actWorkerDirRoot", "act-worker-dir-root", "std::string", "\"\"",
+           "Root directory under which a per-(target, calling user) work "
+           "directory (requests/, responses/, cache/, and the container "
+           "lifecycle lockfile) is created, forwarded verbatim as "
+           "ActWorkerConfig::workdirRoot. See act-target for when real "
+           "dispatch actually activates.">,
+    Option<"actWorkerScriptDir", "act-worker-script-dir", "std::string",
+           "\"\"",
+           "Directory containing act_worker.py, bind-mounted read-only "
+           "into the worker container, forwarded verbatim as "
+           "ActWorkerConfig::workerScriptDir. See act-target for when real "
+           "dispatch actually activates.">
   ];
   let description = [{
     By the time this pass runs, distributed-lower-kernels has already
     divided every kernel's operands/results down to local (per-device)
-    sizes -- that pass is about sharding, not code generation. What's left
-    inside each kernel body is a plain, unsharded HLO subgraph. This pass is
-    a placeholder for the next lowering stage: handing each such subgraph to
-    an external compiler for actual executable lowering. Compilation there
-    is per-kernel, so this pass's job is the walk-and-dispatch boilerplate;
-    for now it only performs that walk, with dump-kernel-modules-to emitting
-    the standalone module each kernel would be dispatched as, and
-    act-patched-module-file exercising the splice-back-in half against a
-    literal file instead of a real dispatch, since that isn't wired up yet.
+    sizes, since that pass is about sharding, not code generation. What's
+    left inside each kernel body is a plain, unsharded HLO subgraph, ready
+    to hand to ACT for actual executable lowering and costing, per-kernel.
+
+    With act-target/act-worker-dir-root/act-worker-script-dir all set, each
+    kernel this pass walks is dispatched for real, via
+    ensureActPatchedKernel's content-hash cache and persistent worker
+    (Dialect/Distributed/ActWorkerClient.h): a hit or a successful dispatch
+    splices ACT's patched body (with its act.cost attributes) into the
+    kernel in place. dump-kernel-modules-to additionally emits the
+    standalone module each kernel is dispatched as, and
+    act-patched-module-file exercises the splice-back-in half against a
+    literal file instead of a real dispatch, for tests that shouldn't
+    depend on Docker.
   }];
 }
 
@@ -528,6 +587,9 @@ def DistributedSearchStrategiesPass : Pass<"distributed-search-strategies", "::m
   let options = [
     Option<"dumpCandidates", "dump-candidates", "bool", "false", "Print the cloned, partially-rewritten IR for each scored search candidate, for debugging. Default: false">,
     Option<"dumpKernelModulesTo", "dump-kernel-modules-to", "std::string", "\"\"", "If non-empty, write each scored candidate's kernel bodies as standalone modules under this directory (see LowerKernelsToExecutablePass's own option of the same name, which this threads down into every candidate's scoring pipeline, not just the final winner's). Useful for measuring how many distinct kernel shapes a real search actually visits, independent of any external-compiler dispatch. Default: \"\"">,
+    Option<"actTarget", "act-target", "std::string", "\"\"", "Accelerator target name (e.g. \"eva2\", \"eva2-fine\", \"eva2-coarse\") forwarded to every scored candidate's own distributed-lower-kernels-to-executable invocation (see LowerKernelsToExecutablePass's option of the same name), so real ACT dispatch (backed by the same content-hash cache and persistent worker as every other use of these options) is what search scoring itself uses to pick a winner, not a roofline stand-in. Real dispatch only activates once this, act-worker-dir-root, and act-worker-script-dir are all non-empty together; setting only some of the three is a configuration error, checked once up front before the search loop starts (not per candidate), so a misconfiguration surfaces as one clear diagnostic instead of every candidate silently scoring -infinity. Default: \"\"">,
+    Option<"actWorkerDirRoot", "act-worker-dir-root", "std::string", "\"\"", "Root directory under which the per-(target, calling user) ACT worker's work directory (requests/, responses/, cache/, lockfile) is created, forwarded verbatim to every candidate's distributed-lower-kernels-to-executable invocation. See act-target for when real dispatch actually activates. Default: \"\"">,
+    Option<"actWorkerScriptDir", "act-worker-script-dir", "std::string", "\"\"", "Directory containing act_worker.py, bind-mounted read-only into the worker container, forwarded verbatim to every candidate's distributed-lower-kernels-to-executable invocation. See act-target for when real dispatch actually activates. Default: \"\"">,
     Option<"dumpFinalized", "dump-finalized", "bool", "false", "Print the cloned, partially-rewritten IR for each finalized search candidate, for debugging. Default: false">,
     Option<"dumpBest", "dump-best", "bool", "false", "Print the cloned, partially-rewritten IR for the best search candidate, for debugging. Default: false">,
     Option<"disableVerifier", "disable-verifier", "bool", "true", "Disable the MLIR verifier when running the internal lowering pipeline on each candidate clone during search, for runtime reasons. Default: true">,

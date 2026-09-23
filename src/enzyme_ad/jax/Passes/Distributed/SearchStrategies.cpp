@@ -818,11 +818,11 @@ public:
 // nested under the operation the calling pass is currently processing --
 // our clone is a disconnected top-level module). Reports pipeline success
 // through `pipelineOk`.
-static OwningOpRef<ModuleOp>
-cloneAndApplyDecisions(ModuleOp originalModule,
-                       const std::shared_ptr<StrategySearchNode> &node,
-                       bool disableVerifier,
-                       llvm::StringRef dumpKernelModulesTo, bool &pipelineOk) {
+static OwningOpRef<ModuleOp> cloneAndApplyDecisions(
+    ModuleOp originalModule, const std::shared_ptr<StrategySearchNode> &node,
+    bool disableVerifier, llvm::StringRef dumpKernelModulesTo,
+    llvm::StringRef actTarget, llvm::StringRef actWorkerDirRoot,
+    llvm::StringRef actWorkerScriptDir, bool &pipelineOk) {
   IRMapping mapper;
   OwningOpRef<ModuleOp> clonedModule(
       cast<ModuleOp>(originalModule->clone(mapper)));
@@ -830,13 +830,18 @@ cloneAndApplyDecisions(ModuleOp originalModule,
   PassManager pm(originalModule.getContext(), ModuleOp::getOperationName());
   pm.enableVerifier(!disableVerifier);
   pm.addPass(ApplyPartialDecisions::create(node, mapper));
-  // Scoring clones must stay a fast, read-only simulation: skip the
-  // winner-only finalization stages (kernel inlining, collective lowering,
-  // schedule reordering) that are only meant to run once, on the search's
-  // eventual winner.
+  // Kernel inlining and collective lowering run for every candidate (see
+  // buildDistributedSearchLoweringPipeline): scoring needs the same fully
+  // materialized IR shape (no kernel wrappers, no abstract collectives) that
+  // ScheduleGraphAnalysis builds its cost graph from on the eventual winner,
+  // so a candidate's simulated score can never disagree with how it would
+  // actually be costed once chosen. Only schedule reordering (a physical IR
+  // rewrite with nothing left for scoring to read afterward) stays gated to
+  // the winner alone.
   buildDistributedSearchLoweringPipeline(pm, /*lowerLogicalAxes=*/false,
                                          dumpKernelModulesTo,
-                                         /*finalizeSchedule=*/false);
+                                         /*finalizeSchedule=*/false, actTarget,
+                                         actWorkerDirRoot, actWorkerScriptDir);
   pipelineOk = succeeded(pm.run(*clonedModule));
   return clonedModule;
 }
@@ -885,6 +890,9 @@ class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
   bool dumpCandidates;
   bool disableVerifier;
   std::string dumpKernelModulesTo;
+  std::string actTarget;
+  std::string actWorkerDirRoot;
+  std::string actWorkerScriptDir;
   bool failOnBadCandidate;
   bool &sawBadCandidate;
   BeamSearchQueueBase<StrategySearchNode> &queue;
@@ -896,12 +904,16 @@ class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
 public:
   StrategyScorer(ModuleOp originalModule, bool dumpCandidates,
                  bool disableVerifier, llvm::StringRef dumpKernelModulesTo,
-                 bool failOnBadCandidate, bool &sawBadCandidate,
+                 llvm::StringRef actTarget, llvm::StringRef actWorkerDirRoot,
+                 llvm::StringRef actWorkerScriptDir, bool failOnBadCandidate,
+                 bool &sawBadCandidate,
                  BeamSearchQueueBase<StrategySearchNode> &queue,
                  StrategyCompleterBase &completer)
       : originalModule(originalModule), dumpCandidates(dumpCandidates),
         disableVerifier(disableVerifier),
-        dumpKernelModulesTo(dumpKernelModulesTo),
+        dumpKernelModulesTo(dumpKernelModulesTo), actTarget(actTarget),
+        actWorkerDirRoot(actWorkerDirRoot),
+        actWorkerScriptDir(actWorkerScriptDir),
         failOnBadCandidate(failOnBadCandidate),
         sawBadCandidate(sawBadCandidate), queue(queue), completer(completer) {}
 
@@ -914,7 +926,11 @@ public:
   // Scores a module that lowered successfully, describing the score in
   // `note`. Infeasible modules score -infinity.
   double scoreLowered(ModuleOp lowered, std::string &note) {
-    ScheduleGraph graph = buildScheduleGraph(lowered);
+    // `lowered` is a disposable, one-shot clone with no surrounding
+    // AnalysisManager to cache through (see cloneAndApplyDecisions), so the
+    // analysis is built directly rather than via getAnalysis<>().
+    ScheduleGraphAnalysis analysis(lowered);
+    const ScheduleGraph &graph = analysis.getGraph();
     if (!graph.feasible) {
       if (numPlanFailures++ == 0)
         firstPlanFailure = graph.failureReason;
@@ -960,9 +976,9 @@ public:
     completer.complete(*completedNode);
 
     bool pipelineOk;
-    OwningOpRef<ModuleOp> clonedModule =
-        cloneAndApplyDecisions(originalModule, completedNode, disableVerifier,
-                               dumpKernelModulesTo, pipelineOk);
+    OwningOpRef<ModuleOp> clonedModule = cloneAndApplyDecisions(
+        originalModule, completedNode, disableVerifier, dumpKernelModulesTo,
+        actTarget, actWorkerDirRoot, actWorkerScriptDir, pipelineOk);
 
     ++numScored;
     std::string note;
@@ -1002,6 +1018,31 @@ struct DistributedSearchStrategiesPass
       DistributedSearchStrategiesPassBase;
 
   void runOnOperation() override {
+    // Mirrors LowerKernelsToExecutablePass's own validation of these same
+    // three options (see there), but enforced independently here, before the
+    // search loop starts: a config mistake reaching cloneAndApplyDecisions
+    // during real per-candidate scoring would otherwise surface as
+    // pipelineOk=false for every candidate (StrategyScorer::score treats that
+    // as "infeasible, score -infinity", not a hard failure), burying one
+    // clear config error under a search that silently finds no viable
+    // candidate instead of failing loudly up front.
+    bool anyActDispatchOption = !actTarget.empty() ||
+                                !actWorkerDirRoot.empty() ||
+                                !actWorkerScriptDir.empty();
+    bool allActDispatchOptions = !actTarget.empty() &&
+                                 !actWorkerDirRoot.empty() &&
+                                 !actWorkerScriptDir.empty();
+    if (anyActDispatchOption && !allActDispatchOptions) {
+      getOperation()->emitError()
+          << "act-target, act-worker-dir-root, and act-worker-script-dir "
+             "must all be set together to activate real ACT dispatch during "
+             "search scoring (got act-target='"
+          << actTarget << "', act-worker-dir-root='" << actWorkerDirRoot
+          << "', act-worker-script-dir='" << actWorkerScriptDir << "')";
+      signalPassFailure();
+      return;
+    }
+
     ModuleOp moduleOp = getOperation();
     mlir::OpBuilder builder(moduleOp.getContext());
     builder.clearInsertionPoint();
@@ -1048,7 +1089,8 @@ struct DistributedSearchStrategiesPass
                                        moduleOp.getLoc());
     bool sawBadCandidate = false;
     StrategyScorer scorer(moduleOp, dumpCandidates, disableVerifier,
-                          dumpKernelModulesTo, failOnBadCandidate,
+                          dumpKernelModulesTo, actTarget, actWorkerDirRoot,
+                          actWorkerScriptDir, failOnBadCandidate,
                           sawBadCandidate, queue, completer);
 
     BeamSearchDriver<StrategySearchNode> driver(queue, scorer, explorer);
@@ -1079,9 +1121,9 @@ struct DistributedSearchStrategiesPass
     if (dumpFinalized) {
       for (const auto &node : driver.getFinalized()) {
         bool pipelineOk;
-        OwningOpRef<ModuleOp> clonedModule =
-            cloneAndApplyDecisions(moduleOp, node, disableVerifier,
-                                   /*dumpKernelModulesTo=*/"", pipelineOk);
+        OwningOpRef<ModuleOp> clonedModule = cloneAndApplyDecisions(
+            moduleOp, node, disableVerifier, /*dumpKernelModulesTo=*/"",
+            actTarget, actWorkerDirRoot, actWorkerScriptDir, pipelineOk);
         std::string note;
         if (pipelineOk)
           scorer.scoreLowered(*clonedModule, note);
@@ -1095,9 +1137,9 @@ struct DistributedSearchStrategiesPass
     if (dumpBest) {
       if (best) {
         bool pipelineOk;
-        OwningOpRef<ModuleOp> clonedModule =
-            cloneAndApplyDecisions(moduleOp, best, disableVerifier,
-                                   /*dumpKernelModulesTo=*/"", pipelineOk);
+        OwningOpRef<ModuleOp> clonedModule = cloneAndApplyDecisions(
+            moduleOp, best, disableVerifier, /*dumpKernelModulesTo=*/"",
+            actTarget, actWorkerDirRoot, actWorkerScriptDir, pipelineOk);
         std::string note;
         if (pipelineOk)
           scorer.scoreLowered(*clonedModule, note);

@@ -9,6 +9,10 @@
 // collective (if any) on one straight-line dependency chain, so the timeline
 // simulator (ScheduleGraph.h/ScheduleSimulator.h) finds nothing to overlap
 // and the makespan is the plain sum of the collective and compute durations.
+// A candidate with a collective reports two more nodes than its step count
+// would suggest, for the zero-cost flatten/reshape-back pair
+// distributed-lower-collectives wraps every chain in; see
+// search_collective_cost_score.mlir for why.
 //
 // Compute-dominant mesh (COMPUTE prefix): slow devices (device_flops = 10) and
 // the default network. Compute per candidate is flops / 10:
@@ -31,11 +35,11 @@
 // COMPUTE-DAG: // Search candidate (ok, score=-5.242880e+04):
 // COMPUTE-DAG: // schedule cost: makespan=5.242880e+04 over 1 nodes (communicating=0.000000e+00 computing=5.242880e+04 utilization=1.000000e+00 idle=0.000000e+00)
 // COMPUTE-DAG: // Search candidate (ok, score=-6.881291e+04):
-// COMPUTE-DAG: // schedule cost: makespan=6.881291e+04 over 2 nodes (communicating=1.638411e+04 computing=5.242880e+04 utilization=7.619035e-01 idle=1.638411e+04)
+// COMPUTE-DAG: // schedule cost: makespan=6.881291e+04 over 4 nodes (communicating=1.638411e+04 computing=5.242880e+04 utilization=7.619035e-01 idle=1.638411e+04)
 // COMPUTE-DAG: // Search candidate (ok, score=-5.079073e+04):
-// COMPUTE-DAG: // schedule cost: makespan=5.079073e+04 over 4 nodes (communicating=2.457633e+04 computing=2.621440e+04 utilization=5.161257e-01 idle=2.457633e+04)
+// COMPUTE-DAG: // schedule cost: makespan=5.079073e+04 over 6 nodes (communicating=2.457633e+04 computing=2.621440e+04 utilization=5.161257e-01 idle=2.457633e+04)
 // COMPUTE-DAG: // Search candidate (ok, score=-3.440651e+04):
-// COMPUTE-DAG: // schedule cost: makespan=3.440651e+04 over 2 nodes (communicating=8.192110e+03 computing=2.621440e+04 utilization=7.619023e-01 idle=8.192110e+03)
+// COMPUTE-DAG: // schedule cost: makespan=3.440651e+04 over 4 nodes (communicating=8.192110e+03 computing=2.621440e+04 utilization=7.619023e-01 idle=8.192110e+03)
 // COMPUTE-DAG: // Search candidate (ok, score=-2.621440e+04):
 // COMPUTE-DAG: // schedule cost: makespan=2.621440e+04 over 1 nodes (communicating=0.000000e+00 computing=2.621440e+04 utilization=1.000000e+00 idle=0.000000e+00)
 // COMPUTE-DAG: // Best search candidate (ok, score=-2.621440e+04):
@@ -47,11 +51,11 @@
 // collective is dominated by it, and the winner needs none.
 //
 // NETWORK-DAG: // Search candidate (ok, score=-8.192000e+06):
-// NETWORK-DAG: // schedule cost: makespan=8.192000e+06 over 2 nodes (communicating=8.192000e+06 computing=2.621440e-07 utilization=3.200000e-14 idle=8.192000e+06)
+// NETWORK-DAG: // schedule cost: makespan=8.192000e+06 over 4 nodes (communicating=8.192000e+06 computing=2.621440e-07 utilization=3.200000e-14 idle=8.192000e+06)
 // NETWORK-DAG: // Search candidate (ok, score=-1.638400e+07):
-// NETWORK-DAG: // schedule cost: makespan=1.638400e+07 over 2 nodes (communicating=1.638400e+07 computing=5.242880e-07 utilization=3.200000e-14 idle=1.638400e+07)
+// NETWORK-DAG: // schedule cost: makespan=1.638400e+07 over 4 nodes (communicating=1.638400e+07 computing=5.242880e-07 utilization=3.200000e-14 idle=1.638400e+07)
 // NETWORK-DAG: // Search candidate (ok, score=-2.457600e+07):
-// NETWORK-DAG: // schedule cost: makespan=2.457600e+07 over 4 nodes (communicating=2.457600e+07 computing=2.621440e-07 utilization=1.066667e-14 idle=2.457600e+07)
+// NETWORK-DAG: // schedule cost: makespan=2.457600e+07 over 6 nodes (communicating=2.457600e+07 computing=2.621440e-07 utilization=1.066667e-14 idle=2.457600e+07)
 // NETWORK-DAG: // Best search candidate (ok, score=-2.621440e-07):
 // NETWORK-DAG: // schedule cost: makespan=2.621440e-07 over 1 nodes (communicating=0.000000e+00 computing=2.621440e-07 utilization=1.000000e+00 idle=0.000000e+00)
 

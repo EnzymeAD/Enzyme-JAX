@@ -60,7 +60,8 @@ struct PrintScheduleGraphPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    ScheduleGraph graph = buildScheduleGraph(module);
+    const ScheduleGraph &graph =
+        getAnalysis<ScheduleGraphAnalysis>().getGraph();
     if (!graph.feasible) {
       module.emitRemark() << "schedule graph: infeasible ("
                           << graph.failureReason << ")";

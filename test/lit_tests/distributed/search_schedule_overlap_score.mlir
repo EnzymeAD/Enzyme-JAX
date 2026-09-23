@@ -13,7 +13,11 @@
 // enough to check by hand. When both contractions are sharded, each needs a
 // 2-way all-reduce of a single f32 (4 bytes): isolated duration 4 + 0.11 =
 // 4.11 (recursive doubling, one round at the default bandwidth 1, round
-// latency 0.01, launch 0.1).
+// latency 0.01, launch 0.1). Each all-reduce contributes two more nodes than
+// its own chain length: distributed-lower-collectives (unconditional for
+// every scored candidate) wraps every chain in a zero-cost flatten/
+// reshape-back pair, which never affects the makespans computed below (see
+// search_collective_cost_score.mlir).
 //
 // INDEPENDENT (first module): the two dot products have no data dependency,
 // so once each one's own all-reduce is ready it can run concurrently with
@@ -21,7 +25,7 @@
 // above one all-reduce's own isolated duration, not their sum: only the
 // later-finishing of the two ever extends the critical path.
 // CHECK-DAG: // Search candidate (ok, score=-4.110004e+00):
-// CHECK-DAG: // schedule cost: makespan=4.110004e+00 over 4 nodes (communicating=4.110002e+00 computing=4.000000e-06 utilization=9.732351e-07 idle=4.110000e+00)
+// CHECK-DAG: // schedule cost: makespan=4.110004e+00 over 8 nodes (communicating=4.110002e+00 computing=4.000000e-06 utilization=9.732351e-07 idle=4.110000e+00)
 
 module {
   sdy.mesh @mesh = <["x"=2, "y"=2]>
@@ -54,7 +58,7 @@ module {
 // 8.22, essentially double the INDEPENDENT candidate's makespan above for
 // the same total work.
 // CHECK-DAG: // Search candidate (ok, score=-8.220004e+00):
-// CHECK-DAG: // schedule cost: makespan=8.220004e+00 over 5 nodes (communicating=8.220000e+00 computing=4.008000e-06 utilization=4.866178e-07 idle=8.220000e+00)
+// CHECK-DAG: // schedule cost: makespan=8.220004e+00 over 9 nodes (communicating=8.220000e+00 computing=4.008000e-06 utilization=4.866178e-07 idle=8.220000e+00)
 
 module {
   sdy.mesh @mesh = <["x"=2, "y"=2]>

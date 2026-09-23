@@ -54,11 +54,11 @@ struct ScheduleEvent {
   // collective already fails the whole graph rather than producing a
   // partial one.
   //
-  // A call whose resolved callee carries an act.cost attribute (ACT's
-  // convention for a bodyless accelerator-launch declaration) never becomes
-  // a FunctionCall event at all: ScheduleGraph.cpp costs it as an ordinary
-  // atomic Compute event instead, since there is no callee body to build a
-  // nested graph from.
+  // A call to a bodyless ACT declaration (an act.cost-carrying launch, or an
+  // act.role-carrying stage/fetch with no cost of its own) never becomes a
+  // FunctionCall event at all: ScheduleGraph.cpp costs it as an ordinary
+  // atomic Compute event instead (real cost, or zero), since there is no
+  // callee body to build a nested graph from.
   std::unique_ptr<ScheduleGraph> calleeGraph;
 
   // max(flops/F, bytes/M) for a Compute event, step.isolatedDuration() for a
@@ -152,6 +152,21 @@ const char *toString(ScheduleEventKind kind);
 // Multi-line text report of one event: kind, cost/demand summary, and the
 // originating op (Compute) or collective and step index (Communication).
 std::string describeEvent(const ScheduleEvent &event);
+
+// Module-scoped wrapper letting a pass request `module`'s ScheduleGraph
+// through getAnalysis<>() (see FindMainFunctionAnalysis in
+// MainFunctionAnalysis.h for the same idiom) instead of calling
+// buildScheduleGraph directly, so MLIR's analysis-manager caching applies
+// the same way it does for any other per-module analysis.
+class ScheduleGraphAnalysis {
+public:
+  explicit ScheduleGraphAnalysis(ModuleOp module);
+
+  const ScheduleGraph &getGraph() const { return graph; }
+
+private:
+  ScheduleGraph graph;
+};
 
 } // namespace mlir::enzyme::distributed
 
