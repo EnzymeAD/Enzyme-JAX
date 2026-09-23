@@ -3305,31 +3305,6 @@ public:
 
     llvm::MapVector<Value, CacheInfo> cachesMap;
 
-    if (op->walk([&](enzyme::SetOp sub) {
-            if (sub->getParentOp() != op) {
-              llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
-              llvm::errs() << "op: " << *op << "\n";
-              llvm::errs() << "sub: " << sub << "\n";
-              return WalkResult::interrupt();
-            }
-            return WalkResult::advance();
-          }).wasInterrupted()) {
-      return rewriter.notifyMatchFailure(
-          op, "had set op which was not a direct descendant");
-    }
-    if (op->walk([&](enzyme::GetOp sub) {
-            if (sub->getParentOp() != op) {
-              llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
-              llvm::errs() << "op: " << *op << "\n";
-              llvm::errs() << "sub: " << sub << "\n";
-              return WalkResult::interrupt();
-            }
-            return WalkResult::advance();
-          }).wasInterrupted()) {
-      return rewriter.notifyMatchFailure(
-          op, "had get op which was not a direct descendant");
-    }
-
     for (auto &it : *body) {
       Operation *op = &it;
 
