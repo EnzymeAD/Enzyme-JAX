@@ -326,12 +326,12 @@ module @local_slice {
 // CHECK: %[[START0:.+]] = "stablehlo.async_start"(%[[IN]]) (
 // CHECK: ^bb0(%{{.+}}: tensor<64xi8>):
 // CHECK:   "stablehlo.reduce_scatter"
-// CHECK: }) {distributed.primitive_cost = {isolated_duration = 4.812000e+01 : f64, kind = "reduce-scatter", latency = {{.*}} : f64, payload_in = 64 : i64, payload_out = 16 : i64
+// CHECK: }) {distributed.primitive_cost = {isolated_duration = 7.001000e+03 : f64, kind = "reduce-scatter", latency = {{.*}} : f64, payload_in = 64 : i64, payload_out = 16 : i64
 // CHECK: %[[DONE0:.+]] = "stablehlo.async_done"(%[[START0]]) : (!stablehlo.future<tensor<16xi8>>) -> tensor<16xi8>
 // CHECK: %[[START1:.+]] = "stablehlo.async_start"(%[[DONE0]]) (
 // CHECK: ^bb0(%{{.+}}: tensor<16xi8>):
 // CHECK:   "stablehlo.all_reduce"
-// CHECK: }) {distributed.primitive_cost = {isolated_duration = 2.414000e+01 : f64, kind = "all-reduce", latency = {{.*}} : f64, payload_in = 16 : i64, payload_out = 16 : i64
+// CHECK: }) {distributed.primitive_cost = {isolated_duration = 7.001000e+03 : f64, kind = "all-reduce", latency = {{.*}} : f64, payload_in = 16 : i64, payload_out = 16 : i64
 // CHECK: %{{.+}} = "stablehlo.async_done"(%[[START1]]) : (!stablehlo.future<tensor<16xi8>>) -> tensor<16xi8>
 // CHECK-NOT: distributed.Collective
 // CHECK-NOT: distributed.Await

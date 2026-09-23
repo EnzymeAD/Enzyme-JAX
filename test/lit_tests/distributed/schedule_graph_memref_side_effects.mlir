@@ -29,12 +29,12 @@
 // CHECK: node 3: compute memref.subview: flops=0 bytes=0 time=0 preds=[0, 2]
 // CHECK: node 4: compute func.call: flops=0 bytes=0 time=0 preds=[1, 3]
 // CHECK: node 5: compute func.call: flops=0 bytes=0 time=0 preds=[2, 4]
-// CHECK: node 6: compute func.call: flops=8320 bytes=0 time=4.16 preds=[1, 2, 3, 5]
+// CHECK: node 6: compute func.call: flops=400000 bytes=0 time=4 preds=[1, 2, 3, 5]
 // CHECK: node 7: compute func.call: flops=0 bytes=0 time=0 preds=[3, 6]
 // CHECK: node 8: compute memref.dealloc: flops=0 bytes=0 time=0 preds=[0, 7]
 // CHECK: schedule graph: 9 nodes (9 compute, 0 communication, 0 call)
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_clock_frequency = 1.0e2}
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_clock_frequency = 1.0e11}
 
   func.func @main(%a: tensor<4x8xf32>, %b: tensor<8x4xf32>) -> tensor<4x4xf32> {
     %alloc = memref.alloc() : memref<320xi8>

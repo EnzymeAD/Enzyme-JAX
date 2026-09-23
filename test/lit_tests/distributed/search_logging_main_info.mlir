@@ -1,5 +1,5 @@
 // RUN: rm -rf %t.dir && mkdir -p %t.dir
-// RUN: enzymexlamlir-opt --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --set-distributed-logging="root=%t.dir module-name=testmod commit=deadbeef" --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh4 device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>] {device_flops = 1.0e6, device_mem_bandwidth = 1.0e9}"' --distributed-search-strategies="beam-size=200 dump-candidates" %s -o /dev/null 2> %t.stderr
+// RUN: enzymexlamlir-opt --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --set-distributed-logging="root=%t.dir module-name=testmod commit=deadbeef" --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh4 device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>] {device_flops = 1.0e15, device_mem_bandwidth = 1.0e18}"' --distributed-search-strategies="beam-size=200 dump-candidates" %s -o /dev/null 2> %t.stderr
 // RUN: cat %t.dir/testmod-*/Main/info.json | FileCheck %s --check-prefix=INFOJSON
 // RUN: FileCheck %s --check-prefix=CANDIDATEUID < %t.stderr
 // RUN: grep -c "distributed.logging_candidate_uid" %t.stderr | FileCheck %s --check-prefix=UIDCOUNT
@@ -15,7 +15,7 @@
 
 // llvm::json sorts Main/info.json's keys alphabetically, so this pins the
 // exact, complete byte content for this fixture, not a partial match.
-// INFOJSON: {"best_candidate_uid":13,"commit_or_version":"deadbeef","input_module_name":"testmod","num_candidates_infeasible":0,"num_candidates_pipeline_errored":0,"num_candidates_scored":12,"num_logical_axes":2}
+// INFOJSON: {"best_candidate_uid":13,"commit_or_version":"deadbeef","finalized_candidate_uids":[5,7,11,10,12,6,8,9,13],"input_module_name":"testmod","num_candidates_infeasible":0,"num_candidates_pipeline_errored":0,"num_candidates_scored":12,"num_logical_axes":2}
 
 // Each scored candidate's dumped clone carries its own uid, which varies per
 // candidate, so this pins only the attribute's shape. The checkpoint-dump

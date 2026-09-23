@@ -6,7 +6,7 @@
 // under lit's pipefail before FileCheck checks the "0" text; `|| true` leaves
 // the exit status to FileCheck alone.
 // RUN: (grep -c 'distributed.Collective ' %t.dir/testmod-*/Candidates/4/ir/02-before-collectives.mlir || true) | FileCheck %s --check-prefix=BEFOREIRCOUNT
-// RUN: (grep -c 'distributed.Collective ' %t.dir/testmod-*/Candidates/4/ir/03-final.mlir || true) | FileCheck %s --check-prefix=AFTERIRCOUNT
+// RUN: (grep -c 'stablehlo.all_reduce' %t.dir/testmod-*/Candidates/4/ir/03-final.mlir || true) | FileCheck %s --check-prefix=AFTERIRCOUNT
 // RUN: cat %t.dir/testmod-*/Candidates/4/ir/01-before-act.mlir | FileCheck %s --check-prefix=BEFOREORDER
 // RUN: cat %t.dir/testmod-*/Candidates/4/ir/03-final.mlir | FileCheck %s --check-prefix=AFTERORDER
 
@@ -29,14 +29,15 @@
 // IRFILES-NEXT: 03-final.mlir
 
 // uid 4 has one distributed.Collective (an all-reduce over one of the two
-// logical axes) in its abstract form at the 02-before-collectives checkpoint,
-// and none at 03-final, once distributed-lower-collectives has rewritten it to
-// a stablehlo.async_start/all_reduce/async_done chain. The counts in info.json
-// are cross-checked against the two checkpoint IR dumps.
-// JSONCOUNTS: "num_collectives_after":0
+// logical axes) in its abstract form at the 02-before-collectives checkpoint.
+// distributed-lower-collectives rewrites it to a stablehlo.async_start/
+// all_reduce/async_done chain, so 03-final has one lowered collective and no
+// abstract ones. The counts in info.json cover both forms and are
+// cross-checked against the two checkpoint IR dumps.
+// JSONCOUNTS: "num_collectives_after":1
 // JSONCOUNTS: "num_collectives_before":1
 // BEFOREIRCOUNT: 1
-// AFTERIRCOUNT: 0
+// AFTERIRCOUNT: 1
 
 // distributed-reorder-schedule runs for every logged candidate
 // (reorderForLogging), not only the search winner, so uid 4's final checkpoint

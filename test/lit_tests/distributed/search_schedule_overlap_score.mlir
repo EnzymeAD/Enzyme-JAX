@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --split-input-file --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh4 device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>] {device_flops = 1.0e6, device_mem_bandwidth = 1.0e9}"' --distributed-search-strategies="beam-size=200 dump-candidates" %s -o /dev/null 2>&1 | FileCheck %s
+// RUN: enzymexlamlir-opt --split-input-file --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh4 device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>] {device_flops = 1.0e15, device_mem_bandwidth = 1.0e18}"' --distributed-search-strategies="beam-size=200 dump-candidates" %s -o /dev/null 2>&1 | FileCheck %s
 
 // The search scorer costs a candidate by simulating its event DAG
 // (ScheduleGraph.h/ScheduleSimulator.h) to a predicted makespan, so a
@@ -10,22 +10,25 @@
 // size-2 dimension over a different physical mesh axis ("x" and "y" of a 2x2
 // mesh); the non-contracting dimensions are all size 1, so there is no room
 // for the search to shard anything else, which keeps the candidate set small
-// enough to check by hand. When both contractions are sharded, each needs a
-// 2-way all-reduce of a single f32 (4 bytes): isolated duration 4 + 0.11 =
-// 4.11 (recursive doubling, one round at the default bandwidth 1, round
-// latency 0.01, launch 0.1). Each all-reduce contributes two more nodes than
-// its own chain length: distributed-lower-collectives (unconditional for
-// every scored candidate) wraps every chain in a zero-cost flatten/
-// reshape-back pair, which never affects the makespans computed below (see
-// search_collective_cost_score.mlir).
+// enough to check by hand. The mesh sets only device_flops/device_mem_
+// bandwidth (irrelevant here: a 1x1-output dot product's flops/bytes round
+// to 0ns regardless), leaving axis_bandwidths/axis_latencies/launch_latency
+// at MeshCostParams's defaults (bandwidth 50 bytes/ns, round latency 1000ns,
+// launch latency 5000ns). When a contraction is sharded, its 2-way
+// all-reduce of a single f32 (4 bytes) costs launchLatency + roundLatency +
+// round(4/50) = 5000 + 1000 + 0 = 6000ns (recursive doubling, one round; see
+// search_collective_cost_score.mlir for the general formula). Each
+// all-reduce contributes extra zero-cost CastGlobalToLocal/reshape nodes
+// around it (ComputeCost.h's Movement/Free op classes), which never affect
+// the makespans computed below.
 //
 // INDEPENDENT (first module): the two dot products have no data dependency,
 // so once each one's own all-reduce is ready it can run concurrently with
-// the other (they land on different mesh axes here). The makespan is barely
-// above one all-reduce's own isolated duration, not their sum: only the
-// later-finishing of the two ever extends the critical path.
-// CHECK-DAG: // Search candidate (ok, score=-4.110004e+00):
-// CHECK-DAG: // schedule cost: makespan=4.110004e+00 over 8 nodes (communicating=4.110002e+00 computing=4.000000e-06 utilization=9.732351e-07 idle=4.110000e+00)
+// the other (they land on different mesh axes here). The makespan equals one
+// all-reduce's isolated duration, not their sum: only the later-finishing of
+// the two ever extends the critical path.
+// CHECK-DAG: // Search candidate (ok, score=-6.000000e+03):
+// CHECK-DAG: // schedule cost: makespan=6000 over 12 nodes (communicating=6000 computing=0 utilization=6.666667e-10 idle=6000)
 
 module {
   sdy.mesh @mesh = <["x"=2, "y"=2]>
@@ -54,11 +57,11 @@ module {
 // dependency edge is the only difference from the module above: same op
 // count, same per-collective payload, same axes available. Because the
 // second all-reduce cannot start until the first one finishes, the makespan
-// is the plain sum of both all-reduces' isolated durations, 4.11 + 4.11 =
-// 8.22, essentially double the INDEPENDENT candidate's makespan above for
-// the same total work.
-// CHECK-DAG: // Search candidate (ok, score=-8.220004e+00):
-// CHECK-DAG: // schedule cost: makespan=8.220004e+00 over 9 nodes (communicating=8.220000e+00 computing=4.008000e-06 utilization=4.866178e-07 idle=8.220000e+00)
+// is the plain sum of both all-reduces' isolated durations, 6000 + 6000 =
+// 12000, exactly double the INDEPENDENT candidate's makespan above for the
+// same total work.
+// CHECK-DAG: // Search candidate (ok, score=-1.200000e+04):
+// CHECK-DAG: // schedule cost: makespan=12000 over 12 nodes (communicating=12000 computing=0 utilization=3.333333e-10 idle=12000)
 
 module {
   sdy.mesh @mesh = <["x"=2, "y"=2]>

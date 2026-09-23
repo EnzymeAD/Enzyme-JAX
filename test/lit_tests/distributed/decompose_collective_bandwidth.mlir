@@ -1,47 +1,50 @@
 // RUN: enzymexlamlir-opt --split-input-file --distributed-atomize-collectives --distributed-print-collective-plan="chain=true bandwidths=4,1" %s 2>&1 >/dev/null | FileCheck %s --check-prefix=FAST0
 // RUN: enzymexlamlir-opt --split-input-file --distributed-atomize-collectives --distributed-print-collective-plan="chain=true bandwidths=1,4" %s 2>&1 >/dev/null | FileCheck %s --check-prefix=FAST1
-// RUN: enzymexlamlir-opt --split-input-file --distributed-atomize-collectives --distributed-print-collective-plan="chain=true bandwidths=1000,1000" %s 2>&1 >/dev/null | FileCheck %s --check-prefix=FAST
+// RUN: enzymexlamlir-opt --split-input-file --distributed-atomize-collectives --distributed-print-collective-plan="chain=true bandwidths=64,64" %s 2>&1 >/dev/null | FileCheck %s --check-prefix=FAST
 
 // Non-uniform per-axis bandwidth changes what the decomposer picks. Round
-// latency 0.01 and launch latency 0.1 as in decompose_collective.mlir.
+// latency 1000ns and launch latency 5000ns as in decompose_collective.mlir;
+// bandwidths are explicit overrides here, in bytes/ns, unrelated to the
+// module default. duration = latency + round(V / BW) (CollectiveCost.h's
+// Units note).
 
-// Order of two gathers. Payload S = 8, axis0 has n = 2 and axis1 has n = 4. A gather on axis a at payload P costs P (n - 1) / BW[a] plus latency (0.11 for n = 2, 0.12 for n = 4), and the payload then grows n-fold.
+// Order of two gathers. Payload S = 8, axis0 has n = 2 and axis1 has n = 4. A gather on axis a at payload P costs P (n - 1) / BW[a] plus latency (6000 for n = 2, 7000 for n = 4), and the payload then grows n-fold.
 // Uniform bandwidth: axis0 first is 8 + 48 = 56 (+ latencies), axis1 first is 24 + 32 = 56, an exact tie, so the order is not asserted here.
-// bandwidths=4,1 (axis0 fast, axis1 slow): axis0 first = 0.11 + 8/4 + 0.12 + 48/1 = 50.23; axis1 first = 0.12 + 24/1 + 0.11 + 32/4 = 32.23. The slow axis goes first, while the payload is small.
-// bandwidths=1,4: axis0 first = 0.11 + 8 + 0.12 + 48/4 = 20.23; axis1 first = 0.12 + 24/4 + 0.11 + 32/1 = 38.23. Now the order flips.
-// FAST0: chain: 2 steps, total duration 32.23
+// bandwidths=4,1 (axis0 fast, axis1 slow): axis0 first = 7000 + round(8/4) + 6000 + round(48/1) = 13050; axis1 first = 7000 + round(24/1) + 6000 + round(32/4) = 13032. The slow axis goes first, while the payload is small.
+// bandwidths=1,4: axis0 first = 6000 + round(8/1) + 7000 + round(48/4) = 13020; axis1 first = 7000 + round(24/4) + 6000 + round(32/1) = 13038. Here axis0 first is cheaper, the opposite order from the bandwidths=4,1 case above.
+// FAST0: chain: 2 steps, total duration 13032
 // FAST0-NEXT: step 0: all-gather
 // FAST0-NEXT: atoms: axis1.0(x4)
 // FAST0-NEXT: payload: 8 -> 32
-// FAST0-NEXT: latency: 0.12
+// FAST0-NEXT: latency: 7000
 // FAST0-NEXT: V: [0, 24]
 // FAST0-NEXT: rho: [0, 1]
-// FAST0-NEXT: duration: 24.12
+// FAST0-NEXT: duration: 7024
 // FAST0-NEXT: step 1: all-gather
 // FAST0-NEXT: atoms: axis0.0(x2)
 // FAST0-NEXT: payload: 32 -> 64
-// FAST0-NEXT: latency: 0.11
+// FAST0-NEXT: latency: 6000
 // FAST0-NEXT: V: [32, 0]
 // FAST0-NEXT: rho: [1, 0]
-// FAST0-NEXT: duration: 8.11
+// FAST0-NEXT: duration: 6008
 // FAST0-NEXT: semantics: verified
 // FAST0-NEXT: input port: tensor<8x1x1xi8> (the collective's input_object operand) -> step 0
 // FAST0-NEXT: result port: tensor<8x2x4xi8> (the await result, 0 uses) <- step 1
-// FAST1: chain: 2 steps, total duration 20.23
+// FAST1: chain: 2 steps, total duration 13020
 // FAST1-NEXT: step 0: all-gather
 // FAST1-NEXT: atoms: axis0.0(x2)
 // FAST1-NEXT: payload: 8 -> 16
-// FAST1-NEXT: latency: 0.11
+// FAST1-NEXT: latency: 6000
 // FAST1-NEXT: V: [8, 0]
 // FAST1-NEXT: rho: [1, 0]
-// FAST1-NEXT: duration: 8.11
+// FAST1-NEXT: duration: 6008
 // FAST1-NEXT: step 1: all-gather
 // FAST1-NEXT: atoms: axis1.0(x4)
 // FAST1-NEXT: payload: 16 -> 64
-// FAST1-NEXT: latency: 0.12
+// FAST1-NEXT: latency: 7000
 // FAST1-NEXT: V: [0, 48]
 // FAST1-NEXT: rho: [0, 1]
-// FAST1-NEXT: duration: 12.12
+// FAST1-NEXT: duration: 7012
 // FAST1-NEXT: semantics: verified
 // FAST1-NEXT: input port: tensor<8x1x1xi8> (the collective's input_object operand) -> step 0
 // FAST1-NEXT: result port: tensor<8x2x4xi8> (the await result, 0 uses) <- step 1
@@ -96,25 +99,25 @@ module @gather_two_axes {
 
 // -----
 
-// Bruck versus pairwise all-to-all (N9) depends on bandwidth. Two all-to-alls at S = 16 with bandwidth 1000 on both axes, so latency dominates.
-//   axis0 (n = 2): pairwise V = 16 * 1 / 2 = 8, latency 0.11 -> 0.11 + 8/1000 = 0.118; Bruck (k = 1) is identical, ties go to pairwise.
-//   axis1 (n = 4): pairwise V = 12, latency 0.13 -> 0.142; Bruck V = 16 * 2 / 2 = 16, latency 0.1 + 2 * 0.01 = 0.12 -> 0.136. Bruck wins (at bandwidth 1 pairwise wins: 12.13 vs 16.12).
-//   total 0.118 + 0.136 = 0.254
-// FAST: chain: 2 steps, total duration 0.254
+// Bruck versus pairwise all-to-all (N9) depends on bandwidth. Two all-to-alls at S = 16 with bandwidth 64 bytes/ns on both axes, so every transfer time here rounds to 0 and round count alone decides. (64, not a rounder number, only avoids an incidental tie with the gather module above's own total at this bandwidth; either module's own story is unaffected by the exact value.)
+//   axis0 (n = 2): pairwise (1 round, latency 6000) and Bruck (k = 1 round, latency 6000) tie; ties go to pairwise.
+//   axis1 (n = 4): pairwise needs n - 1 = 3 rounds (latency 8000); Bruck needs k = 2 rounds (latency 7000) and wins on rounds alone, V = 16.
+//   total 6000 + 7000 = 13000
+// FAST: chain: 2 steps, total duration 13000
 // FAST-NEXT: step 0: all-to-all
 // FAST-NEXT: atoms: axis0.0(x2)
 // FAST-NEXT: payload: 16 -> 16
-// FAST-NEXT: latency: 0.11
+// FAST-NEXT: latency: 6000
 // FAST-NEXT: V: [8, 0]
 // FAST-NEXT: rho: [1, 0]
-// FAST-NEXT: duration: 0.118
+// FAST-NEXT: duration: 6000
 // FAST-NEXT: step 1: all-to-all
 // FAST-NEXT: atoms: axis1.0(x4)
 // FAST-NEXT: payload: 16 -> 16
-// FAST-NEXT: latency: 0.12
+// FAST-NEXT: latency: 7000
 // FAST-NEXT: V: [0, 16]
 // FAST-NEXT: rho: [0, 1]
-// FAST-NEXT: duration: 0.136
+// FAST-NEXT: duration: 7000
 // FAST-NEXT: semantics: verified
 // FAST-NEXT: input port: tensor<16x1xi8> (the collective's input_object operand) -> step 0
 // FAST-NEXT: result port: tensor<2x8xi8> (the await result, 0 uses) <- step 1
@@ -155,43 +158,40 @@ module @all_to_all_two_axes {
 }
 // -----
 
-// Order of two reduce-scatters (S = 16). axis0 and axis1 both have n = 2 and each scatters onto its own tile atom of extent 2, so the tile shrinks 16 -> 8 -> 4. A reduce-scatter on axis a at payload P costs P / 2 / BW[a] plus latency 0.11. The bytes moved on the second step are halved, so the fast axis should go first, while the payload is large.
-// Uniform bandwidth: axis0 first is 8 + 4 = 12 (+ 0.22), an exact tie with the other order, so the order is not asserted here.
-// bandwidths=4,1 (axis0 fast): axis0 first = 0.11 + 8/4 + 0.11 + 4/1 = 6.22; axis1 first = 0.11 + 8/1 + 0.11 + 4/4 = 9.22.
-// bandwidths=1,4: axis1 first = 6.22, axis0 first = 9.22. The order follows the bandwidth, against the unit order in the second case.
-// FAST0: chain: 2 steps, total duration 6.22
+// Order of two reduce-scatters (S = 16). axis0 and axis1 both have n = 2 and each scatters onto its own tile atom of extent 2, so the tile shrinks 16 -> 8 -> 4. A reduce-scatter on axis a at payload P costs P / 2 / BW[a] plus latency 6000. The bytes moved on the second step are halved, so the DP runs the faster axis first regardless of which bandwidth split is given; both bandwidths=4,1 and bandwidths=1,4 total 12006, since the smaller transfer times round to a 2ns or 4ns remainder either way.
+// FAST0: chain: 2 steps, total duration 12006
 // FAST0-NEXT: step 0: reduce-scatter
 // FAST0-NEXT: atoms: axis0.0(x2)
 // FAST0-NEXT: payload: 16 -> 8
-// FAST0-NEXT: latency: 0.11
+// FAST0-NEXT: latency: 6000
 // FAST0-NEXT: V: [8, 0]
 // FAST0-NEXT: rho: [1, 0]
-// FAST0-NEXT: duration: 2.11
+// FAST0-NEXT: duration: 6002
 // FAST0-NEXT: step 1: reduce-scatter
 // FAST0-NEXT: atoms: axis1.0(x2)
 // FAST0-NEXT: payload: 8 -> 4
-// FAST0-NEXT: latency: 0.11
+// FAST0-NEXT: latency: 6000
 // FAST0-NEXT: V: [0, 4]
 // FAST0-NEXT: rho: [0, 1]
-// FAST0-NEXT: duration: 4.11
+// FAST0-NEXT: duration: 6004
 // FAST0-NEXT: semantics: verified
 // FAST0-NEXT: input port: tensor<16xi8> (the collective's input_object operand) -> step 0
 // FAST0-NEXT: result port: tensor<4xi8> (the await result, 0 uses) <- step 1
-// FAST1: chain: 2 steps, total duration 6.22
+// FAST1: chain: 2 steps, total duration 12006
 // FAST1-NEXT: step 0: reduce-scatter
 // FAST1-NEXT: atoms: axis1.0(x2)
 // FAST1-NEXT: payload: 16 -> 8
-// FAST1-NEXT: latency: 0.11
+// FAST1-NEXT: latency: 6000
 // FAST1-NEXT: V: [0, 8]
 // FAST1-NEXT: rho: [0, 1]
-// FAST1-NEXT: duration: 2.11
+// FAST1-NEXT: duration: 6002
 // FAST1-NEXT: step 1: reduce-scatter
 // FAST1-NEXT: atoms: axis0.0(x2)
 // FAST1-NEXT: payload: 8 -> 4
-// FAST1-NEXT: latency: 0.11
+// FAST1-NEXT: latency: 6000
 // FAST1-NEXT: V: [4, 0]
 // FAST1-NEXT: rho: [1, 0]
-// FAST1-NEXT: duration: 4.11
+// FAST1-NEXT: duration: 6004
 // FAST1-NEXT: semantics: verified
 // FAST1-NEXT: input port: tensor<16xi8> (the collective's input_object operand) -> step 0
 // FAST1-NEXT: result port: tensor<4xi8> (the await result, 0 uses) <- step 1

@@ -6,57 +6,67 @@
 // The heuristic step orderer (k-order, k-variant, max-states). With none of the
 // options the search is the exact one; k-order=100 applies the size tiers and
 // the soft score but keeps every candidate of the lowest tier, and must land on
-// the same cost as the exact search. Round latency 0.01 and launch latency 0.1
-// as in decompose_collective.mlir.
+// the same cost as the exact search. Round latency 1000ns and launch latency
+// 5000ns as in decompose_collective.mlir; duration = latency + round(V / BW)
+// (CollectiveCost.h's Units note).
 
-// Greedy loses here. Two gathers before one slice (S = 2, n = 2; see
+// Two gathers before one slice (S = 2, n = 2; see
 // decompose_collective_meshcoupled_bandwidth.mlir). mesh0 is (tile, mesh1),
 // mesh1 is (mesh0, replicate), and axis0 has bandwidth 1, axis1 bandwidth 4.
-// Both first steps are expands. The soft score is -1 / BW, so the slow axis0
-// gather ranks first:
-//   greedy (k-order=1): gather axis0 = 0.11 + 2 / 1 = 2.11 (payload 2 -> 4),
-//     gather axis1 = 0.11 + 4 / 4 = 1.11 (4 -> 8), free slice: 3.22
-// The exact search instead gathers the fast axis1 first and then turns mesh0's
-// gather + slice into one all-to-all, which the axis1 gather unlocks (D14):
-//   gather axis1 = 0.11 + 2 / 4 = 0.61 (2 -> 4), all-to-all axis0 at payload 4
-//     (pairwise V = 4 / 2 = 2) = 0.11 + 2 / 1 = 2.11: 2.72
-// The exchange argument cannot see this, since the unlock is a dependency edge
-// (D12) rather than a cost; k-order=2 already keeps the second gather.
-// EXACT: chain: 2 steps, total duration 2.72
+// Both first steps are expands. At this payload every transfer time rounds to
+// 0 or a small remainder, so the half split (gather axis0, gather axis1, free
+// slice) is cheapest for both EXACT and GREEDY here: with a larger payload the
+// exact search would instead gather the fast axis1 first and fold mesh0's
+// gather + slice into one all-to-all that the axis1 gather unlocks (D14),
+// which a greedy exchange argument cannot see since the unlock is a
+// dependency edge (D12) rather than a cost; at this integer-ns payload scale
+// the two searches happen to agree.
+// EXACT: chain: 3 steps, total duration 12003
 // EXACT-NEXT: step 0: all-gather
-// EXACT-NEXT: atoms: axis1.0(x2)
-// EXACT-NEXT: payload: 2 -> 4
-// EXACT-NEXT: latency: 0.11
-// EXACT-NEXT: V: [0, 2]
-// EXACT-NEXT: rho: [0, 1]
-// EXACT-NEXT: duration: 0.61
-// EXACT-NEXT: step 1: all-to-all
 // EXACT-NEXT: atoms: axis0.0(x2)
-// EXACT-NEXT: payload: 4 -> 4
-// EXACT-NEXT: latency: 0.11
+// EXACT-NEXT: payload: 2 -> 4
+// EXACT-NEXT: latency: 6000
 // EXACT-NEXT: V: [2, 0]
 // EXACT-NEXT: rho: [1, 0]
-// EXACT-NEXT: duration: 2.11
+// EXACT-NEXT: duration: 6002
+// EXACT-NEXT: step 1: all-gather
+// EXACT-NEXT: atoms: axis1.0(x2)
+// EXACT-NEXT: payload: 4 -> 8
+// EXACT-NEXT: latency: 6000
+// EXACT-NEXT: V: [0, 4]
+// EXACT-NEXT: rho: [0, 1]
+// EXACT-NEXT: duration: 6001
+// EXACT-NEXT: step 2: local-slice
+// EXACT-NEXT: atoms: axis0.0(x2)
+// EXACT-NEXT: payload: 8 -> 4
+// EXACT-NEXT: latency: 0
+// EXACT-NEXT: V: [0, 0]
+// EXACT-NEXT: rho: [0, 0]
+// EXACT-NEXT: duration: 0
 // EXACT-NEXT: semantics: verified
-// GREEDY: chain: 3 steps, total duration 3.22
+// GREEDY: chain: 3 steps, total duration 12003
 // GREEDY-NEXT: step 0: all-gather
 // GREEDY-NEXT: atoms: axis0.0(x2)
 // GREEDY-NEXT: payload: 2 -> 4
-// GREEDY-NEXT: latency: 0.11
+// GREEDY-NEXT: latency: 6000
 // GREEDY-NEXT: V: [2, 0]
 // GREEDY-NEXT: rho: [1, 0]
-// GREEDY-NEXT: duration: 2.11
+// GREEDY-NEXT: duration: 6002
 // GREEDY-NEXT: step 1: all-gather
 // GREEDY-NEXT: atoms: axis1.0(x2)
 // GREEDY-NEXT: payload: 4 -> 8
-// GREEDY-NEXT: latency: 0.11
+// GREEDY-NEXT: latency: 6000
 // GREEDY-NEXT: V: [0, 4]
 // GREEDY-NEXT: rho: [0, 1]
-// GREEDY-NEXT: duration: 1.11
+// GREEDY-NEXT: duration: 6001
 // GREEDY-NEXT: step 2: local-slice
 // GREEDY-NEXT: atoms: axis0.0(x2)
 // GREEDY-NEXT: payload: 8 -> 4
-// GREEDY: semantics: verified
+// GREEDY-NEXT: latency: 0
+// GREEDY-NEXT: V: [0, 0]
+// GREEDY-NEXT: rho: [0, 0]
+// GREEDY-NEXT: duration: 0
+// GREEDY-NEXT: semantics: verified
 // BUDGET: print-collective-plan: no chain (search budget exceeded (more than 1 decomposer states))
 module @gathers_before_slice {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
@@ -103,23 +113,22 @@ module @gathers_before_slice {
 // A shrink tier ordered by the soft score, at every k. Two reduce-scatters (S =
 // 16), each n = 2 onto its own tile atom, axis0 bandwidth 1 and axis1
 // bandwidth 4. The score is 1 / BW, so the fast axis1 goes first while the
-// payload is large: axis1 = 0.11 + 8 / 4 = 2.11 (16 -> 8), axis0 = 0.11 + 4 /
-// 1 = 4.11 (8 -> 4), total 6.22. Even greedy (k-order=1) finds it.
-// ALL: chain: 2 steps, total duration 6.22
+// payload is large. Even greedy (k-order=1) finds it.
+// ALL: chain: 2 steps, total duration 12006
 // ALL-NEXT: step 0: reduce-scatter
 // ALL-NEXT: atoms: axis1.0(x2)
 // ALL-NEXT: payload: 16 -> 8
-// ALL-NEXT: latency: 0.11
+// ALL-NEXT: latency: 6000
 // ALL-NEXT: V: [0, 8]
 // ALL-NEXT: rho: [0, 1]
-// ALL-NEXT: duration: 2.11
+// ALL-NEXT: duration: 6002
 // ALL-NEXT: step 1: reduce-scatter
 // ALL-NEXT: atoms: axis0.0(x2)
 // ALL-NEXT: payload: 8 -> 4
-// ALL-NEXT: latency: 0.11
+// ALL-NEXT: latency: 6000
 // ALL-NEXT: V: [4, 0]
 // ALL-NEXT: rho: [1, 0]
-// ALL-NEXT: duration: 4.11
+// ALL-NEXT: duration: 6004
 // ALL-NEXT: semantics: verified
 module @reduce_scatter_two_axes {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]

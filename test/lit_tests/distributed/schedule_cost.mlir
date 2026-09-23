@@ -6,13 +6,21 @@
 // time, and a module summary remark with the predicted makespan and the
 // DAG's own (contention-free) critical path.
 //
-// Every mesh below sets axis_bandwidths/axis_latencies/launch_latency
-// explicitly so the numbers below are exact rather than depending on
-// MeshCostParams's abstract defaults. Compute nodes use the default device
-// rates (DeviceCostParams::kDefaultFlops = 2000, kDefaultMemBandwidth = 20):
-// a stablehlo.add of 4 f32 elements is flops=4, bytes=48 (two operand reads
-// plus one result write, 16 bytes each), time = max(4/2000, 48/20) = 2.4,
-// matching schedule_graph.mlir's own worked example.
+// Every mesh below sets axis_bandwidths/axis_latencies/launch_latency, and
+// (wherever a compute node's duration is asserted) device_flops/
+// device_mem_bandwidth, explicitly, at whatever SI value reproduces F = 2000
+// FLOP/ns, M = 20 bytes/ns internally (MeshCostMetadata.cpp divides every
+// attribute by 1e9), so the numbers below are exact rather than depending on
+// MeshCostParams's abstract defaults. A stablehlo.add of 4 f32 elements is
+// flops=4, bytes=48 (two operand reads plus one result write, 16 bytes
+// each), time = max(4/2000, 48/20) = 2.4, matching schedule_graph.mlir's own
+// worked example. The simulator itself reports 3, not round(2.4) = 2: the
+// event's own rate is normalized against its already-rounded isolated
+// duration (2), so its memory-bound rate 48/2 = 24 exceeds the true
+// bandwidth capacity 20, forcing a fair-share scale below 1 even though
+// nothing else contends for the resource, and ceilTimeToFinish (the
+// simulator's integer progress step, ScheduleSimulator.cpp) rounds that
+// throttled time up to 3.
 
 // A linear dependency chain inside one kernel body must simulate as the
 // serial sum of each op's isolated duration. It also pins down
@@ -22,13 +30,13 @@
 // once, to become ready. Building the counters from the deduplicated
 // predecessor list instead of per-operand multiplicity would leave node 1
 // and node 2 permanently blocked and deadlock the simulation.
-// CHECK: node 0: compute start=0 finish=2.4
-// CHECK: node 1: compute start=2.4 finish=4.8
-// CHECK: node 2: compute start=4.8 finish=7.2
-// CHECK: schedule cost: makespan=7.2 over 3 nodes, critical path=[0, 1, 2]
-// CHECK: schedule cost summary: communicating=0 computing=7.2 utilization=0.000833333 idle=0 activeUtilization=0.000833333
+// CHECK: node 0: compute start=0 finish=3
+// CHECK: node 1: compute start=3 finish=6
+// CHECK: node 2: compute start=6 finish=9
+// CHECK: schedule cost: makespan=9 over 3 nodes, critical path=[0, 1, 2]
+// CHECK: schedule cost summary: communicating=0 computing=9 utilization=0.000666667 idle=0 activeUtilization=0.000666667
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e12, device_mem_bandwidth = 2.0e10}
 
   func.func @main(%a: tensor<4xf32>) -> tensor<4xf32> {
     %k = distributed.DistributedKernel (%a : tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
@@ -55,7 +63,7 @@ module {
 // CHECK: schedule cost: makespan=16 over 2 nodes, critical path=[0]
 // CHECK: schedule cost summary: communicating=16 computing=0 utilization=0 idle=16 activeUtilization=0
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e0, 1.0e0], axis_latencies = [0.0e0, 0.0e0], launch_latency = 0.0e0}
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e9, 1.0e9], axis_latencies = [0.0e0, 0.0e0], launch_latency = 0.0e0}
 
   func.func @main() {
     return
@@ -134,7 +142,7 @@ module {
 // CHECK: schedule cost: makespan=32 over 2 nodes, critical path=[0]
 // CHECK: schedule cost summary: communicating=32 computing=0 utilization=0 idle=32 activeUtilization=0
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e0], axis_latencies = [0.0e0], launch_latency = 0.0e0}
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e9], axis_latencies = [0.0e0], launch_latency = 0.0e0}
 
   func.func @main() {
     return
@@ -204,12 +212,12 @@ module {
 // An independent compute kernel and collective use disjoint resources
 // (compute/memBW vs. the one mesh axis) and fully overlap: makespan is
 // max(2.4, 16) = 16, not their sum.
-// CHECK: node 0: compute start=0 finish=2.4
+// CHECK: node 0: compute start=0 finish=3
 // CHECK: node 1: communication start=0 finish=16
 // CHECK: schedule cost: makespan=16 over 2 nodes, critical path=[1]
-// CHECK: schedule cost summary: communicating=16 computing=2.4 utilization=0.000125 idle=13.6 activeUtilization=0.000833333
+// CHECK: schedule cost summary: communicating=16 computing=3 utilization=0.000125 idle=13 activeUtilization=0.000666667
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e0], axis_latencies = [0.0e0], launch_latency = 0.0e0}
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e9], axis_latencies = [0.0e0], launch_latency = 0.0e0, device_flops = 2.0e12, device_mem_bandwidth = 2.0e10}
 
   func.func @main(%a: tensor<4xf32>) -> tensor<4xf32> {
     %k = distributed.DistributedKernel (%a : tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
@@ -258,15 +266,16 @@ module {
 // argument, neither depending on the other) must serialize rather than
 // fair-share the compute/memBW resources: the compute engine can only
 // dispatch one kernel at a time, so the makespan is the SUM of their
-// isolated durations (2.4 + 2.4 = 4.8), not max(2.4, 2.4). This exercises
+// isolated durations (3 + 3 = 6, each rounded up from 2.4 the same way as
+// schedule_cost.mlir's first case above), not max(3, 3). This exercises
 // mutual exclusion on kComputeResource with two concurrently-ready Compute
 // events.
-// CHECK: node 0: compute start=0 finish=2.4
-// CHECK: node 1: compute start=2.4 finish=4.8
-// CHECK: schedule cost: makespan=4.8 over 2 nodes, critical path=[0]
-// CHECK: schedule cost summary: communicating=0 computing=4.8 utilization=0.000833333 idle=0 activeUtilization=0.000833333
+// CHECK: node 0: compute start=0 finish=3
+// CHECK: node 1: compute start=3 finish=6
+// CHECK: schedule cost: makespan=6 over 2 nodes, critical path=[0]
+// CHECK: schedule cost summary: communicating=0 computing=6 utilization=0.000666667 idle=0 activeUtilization=0.000666667
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e12, device_mem_bandwidth = 2.0e10}
 
   func.func @main(%a: tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>) {
     %k:2 = distributed.DistributedKernel (%a : tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
@@ -288,19 +297,19 @@ module {
 // memory-bound add (flops=4, bytes=48), under a mesh whose device rates
 // (device_flops=1, device_mem_bandwidth=5) are chosen so the two ops are
 // bottlenecked on different resources. dot_general's isolated duration is
-// max(16/1, 48/5) = 16 (compute-bound), the add's is max(4/1, 48/5) = 9.6
-// (memory-bound). Serialization must still hold regardless of which
-// resource each op is individually bottlenecked on: makespan is their SUM,
-// 16 + 9.6 = 25.6, not max(16, 9.6). A memory-bound kernel occupying the
-// device still fully blocks a compute-bound kernel from running
-// concurrently, even though neither op saturates the resource the other is
-// bottlenecked on.
+// max(16/1, 48/5) = 16 (compute-bound, an exact integer already), the add's
+// is max(4/1, 48/5) = 9.6, rounded to 10 (memory-bound). Serialization must
+// still hold regardless of which resource each op is individually
+// bottlenecked on: makespan is their SUM, 16 + 10 = 26, not max(16, 10). A
+// memory-bound kernel occupying the device still fully blocks a
+// compute-bound kernel from running concurrently, even though neither op
+// saturates the resource the other is bottlenecked on.
 // CHECK: node 0: compute start=0 finish=16
-// CHECK: node 1: compute start=16 finish=25.6
-// CHECK: schedule cost: makespan=25.6 over 2 nodes, critical path=[0]
-// CHECK: schedule cost summary: communicating=0 computing=25.6 utilization=0.78125 idle=0 activeUtilization=0.78125
+// CHECK: node 1: compute start=16 finish=26
+// CHECK: schedule cost: makespan=26 over 2 nodes, critical path=[0]
+// CHECK: schedule cost summary: communicating=0 computing=26 utilization=0.769231 idle=0 activeUtilization=0.769231
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e0], axis_latencies = [0.0e0], launch_latency = 0.0e0, device_flops = 1.0e0, device_mem_bandwidth = 5.0e0}
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e9], axis_latencies = [0.0e0], launch_latency = 0.0e0, device_flops = 1.0e9, device_mem_bandwidth = 5.0e9}
 
   func.func @main(%a: tensor<2x2xf32>, %b: tensor<4xf32>) -> (tensor<2x2xf32>, tensor<4xf32>) {
     %k:2 = distributed.DistributedKernel (%a : tensor<2x2xf32>, %b : tensor<4xf32>) <[<dim_partitioning_axes = [[], []] : unreduced_axes = []>, <dim_partitioning_axes = [[]] : unreduced_axes = []>]>
@@ -327,17 +336,18 @@ module {
 // (isolated 160 each): node 0, ranked first, takes the whole axis and
 // finishes at 160; node 1 sits at scale 0 until then, then finishes at
 // 160 + 160 = 320. An independent all-reduce on a much faster axis
-// (bandwidth 100, isolated 0.16) runs concurrently and never contends with
-// either: its own node finishes at 0.16, far ahead of the makespan, and the
-// makespan itself (320) is exactly what the bottleneck pair alone would
-// produce. The extra concurrent load on the fast axis does not inflate it.
+// (bandwidth 100, isolated 0.16, rounded to 0) runs concurrently and never
+// contends with either: its own node finishes at 0, far ahead of the
+// makespan, and the makespan itself (320) is exactly what the bottleneck
+// pair alone would produce. The extra concurrent load on the fast axis does
+// not inflate it.
 // CHECK: node 0: communication start=0 finish=160
 // CHECK: node 1: communication start=0 finish=320
-// CHECK: node 2: communication start=0 finish=0.16
+// CHECK: node 2: communication start=0 finish=0
 // CHECK: schedule cost: makespan=320 over 3 nodes, critical path=[0]
 // CHECK: schedule cost summary: communicating=320 computing=0 utilization=0 idle=320 activeUtilization=0
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e-1, 1.0e2], axis_latencies = [0.0e0, 0.0e0], launch_latency = 0.0e0}
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e8, 1.0e11], axis_latencies = [0.0e0, 0.0e0], launch_latency = 0.0e0}
 
   func.func @main() {
     return
@@ -432,19 +442,19 @@ module {
 
 // -----
 
-// A single all-reduce whose axis bandwidth is enormous (1e18) relative to
-// its 16-byte payload: transfer time is negligible next to the 0.8 latency
-// floor (launch 0.3 plus one round at 0.5), so the makespan is exactly the
-// latency, none of it spent waiting on bandwidth. This also exercises the
-// simulator's "instant finish" path (ScheduleSimulator.cpp) for a
-// contending event with no meaningful resource demand once its latency
-// clears: progressive filling has no fixed point for such an event, since it
-// never appears in any resource's contender list.
-// CHECK: node 0: communication start=0 finish=0.8
-// CHECK: schedule cost: makespan=0.8 over 1 nodes, critical path=[0]
-// CHECK: schedule cost summary: communicating=0.8 computing=0 utilization=0 idle=0.8 activeUtilization=0
+// A single all-reduce whose axis bandwidth is enormous (1e9 bytes/ns
+// internal) relative to its 16-byte payload: transfer time is negligible
+// next to the 800ns latency floor (launch 300ns plus one round at 500ns), so
+// the makespan is exactly the latency, none of it spent waiting on
+// bandwidth. This also exercises the simulator's "instant finish" path
+// (ScheduleSimulator.cpp) for a contending event with no meaningful resource
+// demand once its latency clears: progressive filling has no fixed point for
+// such an event, since it never appears in any resource's contender list.
+// CHECK: node 0: communication start=0 finish=800
+// CHECK: schedule cost: makespan=800 over 1 nodes, critical path=[0]
+// CHECK: schedule cost summary: communicating=800 computing=0 utilization=0 idle=800 activeUtilization=0
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e18], axis_latencies = [5.0e-1], launch_latency = 3.0e-1}
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e18], axis_latencies = [5.0e-7], launch_latency = 3.0e-7}
 
   func.func @main() {
     return
@@ -484,18 +494,19 @@ module {
 
 // Monotonicity, baseline: the kernel consumes the collective's Await result,
 // a real dependency, so it can only start once the collective finishes.
-// Makespan is the serial sum, 16 + 2.4 = 18.4. The next split-file case is
-// the same graph with that one dependency removed; FileCheck cannot compare
-// the two makespans arithmetically, but 16 (next case) < 18.4 (this case)
-// demonstrates the required property directly: removing a dependency (or,
-// by the same reasoning as case 5, increasing a resource's
-// capacity) must never increase the predicted makespan.
+// Makespan is the serial sum, 16 + 3 = 19 (the compute node rounds up to 3
+// the same way as schedule_cost.mlir's first case above). The next
+// split-file case is the same graph with that one dependency removed;
+// FileCheck cannot compare the two makespans arithmetically, but 16 (next
+// case) < 19 (this case) demonstrates the required property directly:
+// removing a dependency (or, by the same reasoning as case 5, increasing a
+// resource's capacity) must never increase the predicted makespan.
 // CHECK: node 0: communication start=0 finish=16
-// CHECK: node 1: compute start=16 finish=18.4
-// CHECK: schedule cost: makespan=18.4 over 2 nodes, critical path=[0, 1]
-// CHECK: schedule cost summary: communicating=16 computing=2.4 utilization=0.000108696 idle=16 activeUtilization=0.000833333
+// CHECK: node 1: compute start=16 finish=19
+// CHECK: schedule cost: makespan=19 over 2 nodes, critical path=[0, 1]
+// CHECK: schedule cost summary: communicating=16 computing=3 utilization=0.000105263 idle=16 activeUtilization=0.000666667
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e0], axis_latencies = [0.0e0], launch_latency = 0.0e0}
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e9], axis_latencies = [0.0e0], launch_latency = 0.0e0, device_flops = 2.0e12, device_mem_bandwidth = 2.0e10}
 
   func.func @main() {
     return
@@ -544,14 +555,14 @@ module {
 // Monotonicity, variant: identical to the previous case except the kernel
 // now takes its input from an unrelated value instead of the collective's
 // Await result, so the one dependency edge is gone. Makespan drops to
-// max(16, 2.4) = 16 < 18.4 (the baseline above), as required: removing a
+// max(16, 3) = 16 < 19 (the baseline above), as required: removing a
 // dependency never increases the predicted makespan.
 // CHECK: node 0: communication start=0 finish=16
-// CHECK: node 1: compute start=0 finish=2.4
+// CHECK: node 1: compute start=0 finish=3
 // CHECK: schedule cost: makespan=16 over 2 nodes, critical path=[0]
-// CHECK: schedule cost summary: communicating=16 computing=2.4 utilization=0.000125 idle=13.6 activeUtilization=0.000833333
+// CHECK: schedule cost summary: communicating=16 computing=3 utilization=0.000125 idle=13 activeUtilization=0.000666667
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e0], axis_latencies = [0.0e0], launch_latency = 0.0e0}
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e9], axis_latencies = [0.0e0], launch_latency = 0.0e0, device_flops = 2.0e12, device_mem_bandwidth = 2.0e10}
 
   func.func @main() {
     return

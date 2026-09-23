@@ -1,5 +1,5 @@
 // RUN: rm -rf %t.dir && mkdir -p %t.dir
-// RUN: enzymexlamlir-opt --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --set-distributed-logging="root=%t.dir module-name=testmod" --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh4 device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>] {device_flops = 1.0e6, device_mem_bandwidth = 1.0e9}"' --distributed-search-strategies="beam-size=200" %s -o /dev/null
+// RUN: enzymexlamlir-opt --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --set-distributed-logging="root=%t.dir module-name=testmod" --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh4 device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>] {device_flops = 1.0e15, device_mem_bandwidth = 1.0e18}"' --distributed-search-strategies="beam-size=200" %s -o /dev/null
 // RUN: find %t.dir/testmod-*/Candidates -mindepth 1 -maxdepth 1 | wc -l | FileCheck %s --check-prefix=CANDIDATECOUNT
 // RUN: find %t.dir/testmod-*/Candidates -name info.json | wc -l | FileCheck %s --check-prefix=INFOCOUNT
 // RUN: find %t.dir/testmod-*/Candidates -name schedule.json | wc -l | FileCheck %s --check-prefix=SCHEDULECOUNT
@@ -29,15 +29,17 @@
 // also cross-checks the two literals against each other. This candidate fully
 // serializes both logical axes within one device (see the PARENTINFO comment
 // below), so no communication remains by the 03-final checkpoint and both
-// collectives counts are 0.
-// WINNERINFO: {"heuristic_score":-7.9999999999999996e-06,"num_collectives_after":0,"num_collectives_before":0,"parent_uid":4,"pipeline_ok":true,"summary":{"accelerator_compute_time":0,"communication_time":0,"cpu_compute_time":7.9999999999999996e-06,"idle_time":0,"num_act_kernel_matches":0,"total_time":7.9999999999999996e-06},"uid":13}
+// collectives counts are 0. Its two dot_generals are 1x2 . 2x1, flops=4
+// bytes=20 each (ComputeCost.cpp); at the mesh's device_flops=1e15/
+// device_mem_bandwidth=1e18 (SI, so F=1e6 FLOP/ns, M=1e9 bytes/ns
+// internally), both roofline times round down to 0ns.
+// WINNERINFO: {"heuristic_score":0,"num_collectives_after":0,"num_collectives_before":0,"parent_uid":4,"pipeline_ok":true,"summary":{"accelerator_compute_time":0,"communication_time":0,"cpu_compute_time":0,"idle_time":0,"num_act_kernel_matches":0,"total_time":0},"uid":13}
 
 // uid 13's schedule.json: two independent stablehlo.dot_general compute
 // nodes (this candidate fully serializes both logical axes within one
-// device, so nothing overlaps and nothing communicates), each 4e-06 long,
-// running back to back to the same 7.9999999999999996e-06 makespan
-// info.json's summary.total_time reports.
-// WINNERSCHEDULE: {"makespan":7.9999999999999996e-06,"nodes":[{"description":"compute stablehlo.dot_general: flops=4 bytes=20 time=4e-06","finish":3.9999999999999998e-06,"index":0,"kind":"compute","predecessors":[],"start":0},{"description":"compute stablehlo.dot_general: flops=4 bytes=20 time=4e-06","finish":7.9999999999999996e-06,"index":1,"kind":"compute","predecessors":[],"start":3.9999999999999998e-06}]}
+// device, so nothing overlaps and nothing communicates), each rounding to
+// 0ns, for the same 0ns makespan info.json's summary.total_time reports.
+// WINNERSCHEDULE: {"makespan":0,"nodes":[{"description":"compute stablehlo.dot_general: flops=4 bytes=20 time=0","finish":0,"index":0,"kind":"compute","predecessors":[],"start":0},{"description":"compute stablehlo.dot_general: flops=4 bytes=20 time=0","finish":0,"index":1,"kind":"compute","predecessors":[],"start":0}]}
 
 // uid 13's parent (uid 4) has real communication (one logical axis is
 // serialized within a device, the other is sharded across the physical mesh)
@@ -46,8 +48,12 @@
 // distributed.Collective at the 02-before-collectives checkpoint
 // (num_collectives_before=1) and fully lowered to StableHLO primitives by
 // 03-final (num_collectives_after=0), as for every other candidate's
-// collective in this fixture.
-// PARENTINFO: {"heuristic_score":-4.1100019999999997,"num_collectives_after":0,"num_collectives_before":1,"parent_uid":1,"pipeline_ok":true,"summary":{"accelerator_compute_time":0,"communication_time":4.1099999999999994,"cpu_compute_time":6.0000000000000002e-06,"idle_time":4.1099959999999998,"num_act_kernel_matches":0,"total_time":4.1100019999999997},"uid":4}
+// collective in this fixture. The sharded contraction's 2-way all-reduce of
+// a single f32 (4 bytes) costs the default launchLatency + roundLatency +
+// round(4/bandwidth) = 5000 + 1000 + 0 = 6000ns (search_collective_cost_
+// score.mlir has the general formula), which dominates the makespan since
+// both dot_generals' compute again rounds to 0ns.
+// PARENTINFO: {"heuristic_score":-6000,"num_collectives_after":1,"num_collectives_before":1,"parent_uid":1,"pipeline_ok":true,"summary":{"accelerator_compute_time":0,"communication_time":6000,"cpu_compute_time":0,"idle_time":6000,"num_act_kernel_matches":0,"total_time":6000},"uid":4}
 
 module {
   sdy.mesh @mesh = <["x"=2, "y"=2]>

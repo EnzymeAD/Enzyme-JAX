@@ -20,18 +20,20 @@
 // stay uncosted, the same as the axis-algebra metadata ops around it.
 //
 // The two adds are each 4 f32 elements: flops=4, bytes=48 (two operand reads
-// plus one result write, 16 bytes each), time=max(4/2000, 48/20)=2.4 with
-// the default device rates, matching schedule_graph.mlir's own worked
-// example. The all-reduce moves a 16-byte payload over the default mesh
-// bandwidth/latency; its own isolated duration is read directly off the
-// distributed.primitive_cost attribute distributed-lower-collectives
-// stamped on the async_start, rather than recomputed here.
-// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2.4 preds=[]
-// CHECK: node 1: compute stablehlo.add: flops=4 bytes=48 time=2.4 preds=[0]
+// plus one result write, 16 bytes each); the mesh sets device_flops = 2
+// FLOP/ns and device_mem_bandwidth = 24 bytes/ns so time = max(4/2, 48/24) = 2
+// lands on a clean integer nanosecond count (CollectiveCost.h's Units note),
+// matching schedule_graph.mlir's own worked example. The all-reduce moves a
+// 16-byte payload over the default mesh bandwidth/latency; its own isolated
+// duration is read directly off the distributed.primitive_cost attribute
+// distributed-lower-collectives stamped on the async_start, rather than
+// recomputed here.
+// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
+// CHECK: node 1: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[0]
 // CHECK: node 2: communication all-reduce (step 0): time={{.*}} preds=[1]
 // CHECK: schedule graph: 3 nodes (2 compute, 1 communication, 0 call)
 module @lowered_collective_schedule {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e9, device_mem_bandwidth = 2.4e10}
 
   func.func @main() {
     return

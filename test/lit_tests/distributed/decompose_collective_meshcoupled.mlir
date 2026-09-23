@@ -11,37 +11,41 @@
 // the partner's first half. A component of pure (Mesh, Mesh) atoms stays one
 // permute step (see decompose_collective.mlir).
 //
-// Hand computation uses the default parameters (bandwidth 1, round latency
-// 0.01, launch latency 0.1) and the formulas at the top of
+// Hand computation uses the default parameters (bandwidth 50 bytes/ns, round
+// latency 1000ns, launch latency 5000ns) and the formulas at the top of
 // decompose_collective.mlir. With group size n, k = ceil(log2 n) and payload S:
-//   all-gather:  V = S (n - 1), latency 0.1 + 0.01 k, payload S -> n S
+//   all-gather:  V = S (n - 1), latency 5000 + 1000 k, payload S -> n S
 //   all-reduce:  the cheaper of halving + doubling (V = 2 S (n - 1) / n, latency
-//                0.1 + 0.02 k) and recursive doubling (V = S k, latency 0.1 + 0.01 k)
-//   permute:     V[a] = S (1 - 1/e) on each axis, latency 0.1 + 0.01 x (axes)
+//                5000 + 2000 k) and recursive doubling (V = S k, latency 5000 + 1000 k)
+//   permute:     V[a] = S on every axis with a nonzero change fraction (a
+//                moving device sends its whole payload), latency
+//                5000 + 1000 x (axes crossed)
 //   slice:       free, payload divides by the extent
-// Element type i8, so a payload in bytes equals its element count.
+// duration = latency + round(V / BW) (CollectiveCost.h's Units note): at these
+// tiny payloads that rounded term is usually 0 or 1, so most decisions below
+// turn on round count rather than volume. Element type i8, so a payload in
+// bytes equals its element count.
 
-// Reduce then permute, larger n. mesh0 is reduced and its output comes from mesh1 (in mesh, out replicate), so the atoms form the open path mesh1 -> mesh0 rather than a permutation cycle and both are half-split: all-reduce mesh0, all-gather mesh1, then a free slice onto mesh0 of the digit mesh1 held. n = 4 (k = 2), S = 8.
-//   all-reduce mesh0: halving + doubling V = 2 * 8 * 3 / 4 = 12, latency 0.1 + 0.04 = 0.14, duration 12.14 (recursive doubling would be V = 16, 16.12)
-//   all-gather mesh1: V = 8 * 3 = 24, latency 0.12, duration 24.12, payload 8 -> 32
+// Reduce then permute, larger n. mesh0 is reduced and its output comes from mesh1 (in mesh, out replicate), so the atoms form the open path mesh1 -> mesh0 rather than a permutation cycle and both are half-split: all-reduce mesh0, all-gather mesh1, then a free slice onto mesh0 of the digit mesh1 held. n = 4 (k = 2), S = 8; every candidate's transfer time rounds to 0, so the all-reduce turns on round count alone.
+//   all-reduce mesh0: recursive doubling needs k = 2 rounds (latency 5000 + 2000 = 7000); halving + doubling needs 2k = 4 rounds (latency 9000) despite its smaller volume coefficient, so recursive doubling wins, V = 8 * 2 = 16, duration 7000
+//   all-gather mesh1: V = 8 * 3 = 24, latency 7000, duration 7000, payload 8 -> 32
 //   slice onto mesh0: 32 -> 8, free
-// All-reduce runs before the gather because it keeps the payload while the gather grows it: the other order would all-reduce 32 bytes (V = 48).
-// Total 12.14 + 24.12 = 36.26. The gather moves 24 bytes per port where the digit only needs to move to mesh0 (at most 8 bytes per port), so a dedicated move after the all-reduce would be cheaper.
-// CHECK: chain: 3 steps, total duration 36.26
+// Total 7000 + 7000 = 14000.
+// CHECK: chain: 3 steps, total duration 14000
 // CHECK-NEXT: step 0: all-reduce
 // CHECK-NEXT: atoms: axis0.0(x4)
 // CHECK-NEXT: payload: 8 -> 8
-// CHECK-NEXT: latency: 0.14
-// CHECK-NEXT: V: [12, 0]
+// CHECK-NEXT: latency: 7000
+// CHECK-NEXT: V: [16, 0]
 // CHECK-NEXT: rho: [1, 0]
-// CHECK-NEXT: duration: 12.14
+// CHECK-NEXT: duration: 7000
 // CHECK-NEXT: step 1: all-gather
 // CHECK-NEXT: atoms: axis1.0(x4)
 // CHECK-NEXT: payload: 8 -> 32
-// CHECK-NEXT: latency: 0.12
+// CHECK-NEXT: latency: 7000
 // CHECK-NEXT: V: [0, 24]
 // CHECK-NEXT: rho: [0, 1]
-// CHECK-NEXT: duration: 24.12
+// CHECK-NEXT: duration: 7000
 // CHECK-NEXT: step 2: local-slice
 // CHECK-NEXT: atoms: axis0.0(x4)
 // CHECK-NEXT: payload: 32 -> 8
@@ -96,20 +100,20 @@ module @reduce_then_permute_n4 {
 
 // -----
 
-// (Replicate, Mesh) next to (Mesh, Tile). mesh0 has (in replicate, out mesh1) and mesh1 has (in mesh0, out tile): the input tile of 8 holds a digit of extent 2 that is sliced onto mesh1, and mesh0's output is mesh1's input digit. The first halves are only the all-gather of mesh1; mesh0 has none. S = 8, n = 2.
-//   all-gather mesh1: V = 8, latency 0.11, duration 8.11, payload 8 -> 16
+// (Replicate, Mesh) next to (Mesh, Tile). mesh0 has (in replicate, out mesh1) and mesh1 has (in mesh0, out tile): the input tile of 8 holds a digit of extent 2 that is sliced onto mesh1, and mesh0's output is mesh1's input digit. The first halves are only the all-gather of mesh1; mesh0 has none. S = 8, n = 2; transfer time rounds to 0.
+//   all-gather mesh1: V = 8, latency 5000 + 1000 = 6000, duration 6000, payload 8 -> 16
 //   slice onto mesh0 (mesh1's digit): 16 -> 8, free
 //   slice onto mesh1 (the input tile digit): 8 -> 4, free; it waits for mesh1's own gather
-// Total 8.11. A permute that moves only what each device lacks would send 4 bytes (V = 4) instead of gathering 8.
+// Total 6000.
 // The result has two uses, so the result port reports both.
-// CHECK: chain: 3 steps, total duration 8.11
+// CHECK: chain: 3 steps, total duration 6000
 // CHECK-NEXT: step 0: all-gather
 // CHECK-NEXT: atoms: axis1.0(x2)
 // CHECK-NEXT: payload: 8 -> 16
-// CHECK-NEXT: latency: 0.11
+// CHECK-NEXT: latency: 6000
 // CHECK-NEXT: V: [0, 8]
 // CHECK-NEXT: rho: [0, 1]
-// CHECK-NEXT: duration: 8.11
+// CHECK-NEXT: duration: 6000
 // CHECK-NEXT: step 1: local-slice
 // CHECK-NEXT: atoms: axis0.0(x2)
 // CHECK-NEXT: payload: 16 -> 8
@@ -171,25 +175,25 @@ module @replicate_mesh_row {
 // -----
 
 // (Tile, Mesh) with n = 4. mesh0 sends its digit to the output tile and takes mesh1's digit; mesh1 is (Mesh, Replicate). Both gathers precede the only slice, which needs mesh0's own gather and mesh1's digit. S = 4, k = 2.
-//   all-gather mesh0: V = 4 * 3 = 12, latency 0.12, duration 12.12, payload 4 -> 16
-//   all-gather mesh1: V = 16 * 3 = 48, latency 0.12, duration 48.12, payload 16 -> 64
+//   all-gather mesh0: V = 4 * 3 = 12, transfer time rounds to 0, latency 5000 + 2000 = 7000, duration 7000, payload 4 -> 16
+//   all-gather mesh1: V = 16 * 3 = 48, transfer time 48/50 = 0.96ns rounds to 1, latency 7000, duration 7001, payload 16 -> 64
 //   slice onto mesh0: 64 -> 16, free
-// The two orders tie at 60.24 (12 + 48 either way at uniform bandwidth), and the earlier candidate, mesh0, is kept. decompose_collective_meshcoupled_bandwidth.mlir shows the order changing with the bandwidths.
-// CHECK: chain: 3 steps, total duration 60.24
+// Running mesh0 first is one nanosecond cheaper than the reverse (mesh1 first would round its own transfer time up while mesh0's still rounds to 0 either way). decompose_collective_meshcoupled_bandwidth.mlir shows the order changing with the bandwidths.
+// CHECK: chain: 3 steps, total duration 14001
 // CHECK-NEXT: step 0: all-gather
 // CHECK-NEXT: atoms: axis0.0(x4)
 // CHECK-NEXT: payload: 4 -> 16
-// CHECK-NEXT: latency: 0.12
+// CHECK-NEXT: latency: 7000
 // CHECK-NEXT: V: [12, 0]
 // CHECK-NEXT: rho: [1, 0]
-// CHECK-NEXT: duration: 12.12
+// CHECK-NEXT: duration: 7000
 // CHECK-NEXT: step 1: all-gather
 // CHECK-NEXT: atoms: axis1.0(x4)
 // CHECK-NEXT: payload: 16 -> 64
-// CHECK-NEXT: latency: 0.12
+// CHECK-NEXT: latency: 7000
 // CHECK-NEXT: V: [0, 48]
 // CHECK-NEXT: rho: [0, 1]
-// CHECK-NEXT: duration: 48.12
+// CHECK-NEXT: duration: 7001
 // CHECK-NEXT: step 2: local-slice
 // CHECK-NEXT: atoms: axis0.0(x4)
 // CHECK-NEXT: payload: 64 -> 16
@@ -242,27 +246,27 @@ module @tile_mesh_row_n4 {
 
 // -----
 
-// A pure permutation cycle and a half-split component in one collective. mesh0 and mesh1 swap digits (one permute step); mesh2 is reduced and takes mesh3's digit, mesh3 is (mesh, replicate). The components are independent DP dimensions that share the payload S = 4, all extents 2.
-//   permute mesh0,mesh1: V = 4 * (1 - 1/2) = 2 on each axis, latency 0.1 + 0.02 = 0.12, duration 2.12 (4.12 at payload 8)
-//   all-reduce mesh2: recursive doubling V = 4, latency 0.11, duration 4.11
-//   all-gather mesh3: V = 4, latency 0.11, duration 4.11, payload 4 -> 8
+// A pure permutation cycle and a half-split component in one collective. mesh0 and mesh1 swap digits (one permute step); mesh2 is reduced and takes mesh3's digit, mesh3 is (mesh, replicate). The components are independent DP dimensions that share the payload S = 4, all extents 2; every step's transfer time rounds to 0 or 1.
+//   permute mesh0,mesh1: V = 4 on each axis, latency 5000 + 1000 + 1000 = 7000, duration 7000 (duration 7000 at payload 8 too, since 8/50 still rounds to 0)
+//   all-reduce mesh2: recursive doubling, latency 6000, duration 6000
+//   all-gather mesh3: V = 4, latency 6000, duration 6000, payload 4 -> 8
 //   slice onto mesh2: 8 -> 4, free
-// The permute must run at payload 4 (after the slice), never while the gather's 8 bytes are live. Its position at payload 4 is a tie, resolved to the last. Total 4.11 + 4.11 + 2.12 = 10.34.
-// CHECK: chain: 4 steps, total duration 10.34
+// The permute never has to run while the gather's 8 bytes are live at this payload scale (transfer time rounds to 0 regardless), so its position is a tie, resolved to the last. Total 6000 + 6000 + 7000 = 19000.
+// CHECK: chain: 4 steps, total duration 19000
 // CHECK-NEXT: step 0: all-reduce
 // CHECK-NEXT: atoms: axis2.0(x2)
 // CHECK-NEXT: payload: 4 -> 4
-// CHECK-NEXT: latency: 0.11
+// CHECK-NEXT: latency: 6000
 // CHECK-NEXT: V: [0, 0, 4, 0]
 // CHECK-NEXT: rho: [0, 0, 1, 0]
-// CHECK-NEXT: duration: 4.11
+// CHECK-NEXT: duration: 6000
 // CHECK-NEXT: step 1: all-gather
 // CHECK-NEXT: atoms: axis3.0(x2)
 // CHECK-NEXT: payload: 4 -> 8
-// CHECK-NEXT: latency: 0.11
+// CHECK-NEXT: latency: 6000
 // CHECK-NEXT: V: [0, 0, 0, 4]
 // CHECK-NEXT: rho: [0, 0, 0, 1]
-// CHECK-NEXT: duration: 4.11
+// CHECK-NEXT: duration: 6000
 // CHECK-NEXT: step 2: local-slice
 // CHECK-NEXT: atoms: axis2.0(x2)
 // CHECK-NEXT: payload: 8 -> 4
@@ -273,10 +277,10 @@ module @tile_mesh_row_n4 {
 // CHECK-NEXT: step 3: permute
 // CHECK-NEXT: atoms: axis0.0(x2) axis1.0(x2)
 // CHECK-NEXT: payload: 4 -> 4
-// CHECK-NEXT: latency: 0.12
-// CHECK-NEXT: V: [2, 2, 0, 0]
+// CHECK-NEXT: latency: 7000
+// CHECK-NEXT: V: [4, 4, 0, 0]
 // CHECK-NEXT: rho: [1, 1, 0, 0]
-// CHECK-NEXT: duration: 2.12
+// CHECK-NEXT: duration: 7000
 // CHECK-NEXT: semantics: verified
 // CHECK-NEXT: input port: tensor<4xi8> (the collective's input_object operand) -> step 0
 // CHECK-NEXT: result port: tensor<4xi8> (the await result, 0 uses) <- step 3

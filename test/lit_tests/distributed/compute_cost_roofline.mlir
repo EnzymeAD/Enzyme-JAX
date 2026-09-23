@@ -3,8 +3,13 @@
 
 // distributed-print-compute-cost reports the per-op roofline of the ops in
 // each distributed kernel body: time = max(flops / F, bytes / M), with bytes
-// the operand and result bytes (ComputeCost.h). The mesh below gives F = 100
-// FLOP per time unit and M = 100 bytes per time unit.
+// the operand and result bytes (ComputeCost.h). This pass's own numbers are
+// left as plain floats (only the schedule graph's per-node durations round to
+// integer nanoseconds; see CollectiveCost.h's Units note), so the arithmetic
+// below is exact. The mesh declares device_flops = 1.0e11 FLOP/s and
+// device_mem_bandwidth = 1.0e11 bytes/s (SI, Ops.td); converted to this
+// model's internal FLOP/ns and bytes/ns (MeshCostMetadata.cpp divides by
+// 1e9), that is F = 100 and M = 100.
 //
 //   dot_general 8x16 . 16x4 -> 8x4, f32:
 //     flops = 2 * 32 * 16 = 1024, bytes = (128 + 64 + 32) * 4 = 896
@@ -28,7 +33,7 @@
 
 // expected-remark @below {{compute cost: total=19.84 over 1 kernels, 6 ops (unknown: 1, collective: 0, skipped: 0)}}
 module {
-  distributed.PhysicalMesh @mesh device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 1.0e2, device_mem_bandwidth = 1.0e2}
+  distributed.PhysicalMesh @mesh device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 1.0e11, device_mem_bandwidth = 1.0e11}
 
   func.func @main(%a: tensor<8x16xf32>, %b: tensor<16x4xf32>, %i: tensor<4xi32>) -> (tensor<32xf32>, tensor<4xi32>) {
     %r:2 = distributed.DistributedKernel (%a : tensor<8x16xf32>, %b : tensor<16x4xf32>, %i : tensor<4xi32>) <[<dim_partitioning_axes = [[], []] : unreduced_axes = []>, <dim_partitioning_axes = [[], []] : unreduced_axes = []>, <dim_partitioning_axes = [[]] : unreduced_axes = []>]>

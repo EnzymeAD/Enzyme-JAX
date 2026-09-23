@@ -17,15 +17,18 @@
 // is elided from this minimal fixture since ScheduleGraph only cares about
 // the call's own SSA operands, not the staging ops around it.
 //
-// device_clock_frequency = 100 converts act.cost's 480 cycles into an
-// isolated duration of 4.8; computeCost.flops is back-solved to
-// device.flops (2000, the default) * 4.8 = 9600 so the call still shows up
-// as full compute-resource demand (see appendActCalleeNode's comment).
-// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2.4 preds=[]
-// CHECK: node 1: compute func.call: flops=9600 bytes=0 time=4.8 preds=[0]
+// device_clock_frequency = 1.0e11 Hz (100 cycles/ns internal,
+// MeshCostMetadata.cpp) converts act.cost's 480 cycles into an isolated
+// duration of 480/100 = 4.8ns, rounded to 5 (CollectiveCost.h's Units note);
+// computeCost.flops is back-solved to device.flops (2, set below alongside
+// device_mem_bandwidth so the preceding add's own time also lands on a clean
+// integer) * 5 = 10 so the call still shows up as full compute-resource
+// demand (see appendActCalleeNode's comment).
+// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
+// CHECK: node 1: compute func.call: flops=10 bytes=0 time=5 preds=[0]
 // CHECK: schedule graph: 2 nodes (2 compute, 0 communication, 0 call)
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_clock_frequency = 1.0e2}
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e9, device_mem_bandwidth = 2.4e10, device_clock_frequency = 1.0e11}
 
   func.func @main(%a: tensor<4xf32>) -> tensor<4xf32> {
     %k = distributed.DistributedKernel (%a : tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
@@ -50,11 +53,11 @@ module {
 // code path from buildKernelNodes above, since buildBlockNodes's dispatch
 // loop is never reached while a kernel wrapper is still in place) and
 // confirms it costs identically to the still-wrapped case.
-// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2.4 preds=[]
-// CHECK: node 1: compute func.call: flops=9600 bytes=0 time=4.8 preds=[0]
+// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
+// CHECK: node 1: compute func.call: flops=10 bytes=0 time=5 preds=[0]
 // CHECK: schedule graph: 2 nodes (2 compute, 0 communication, 0 call)
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_clock_frequency = 1.0e2}
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e9, device_mem_bandwidth = 2.4e10, device_clock_frequency = 1.0e11}
 
   func.func @main(%a: tensor<4xf32>) -> tensor<4xf32> {
     %s = stablehlo.add %a, %a : tensor<4xf32>
@@ -68,9 +71,10 @@ module {
 // -----
 
 // No device_clock_frequency given: DeviceCostParams::kDefaultClockFrequency
-// (1) treats act.cost's cycle count as already being in this model's time
-// unit, so isolatedDuration is exactly the 100-cycle act.cost, unconverted.
-// CHECK: node 0: compute func.call: flops=200000 bytes=0 time=100 preds=[]
+// (1.5 cycles/ns, an H100-class clock) converts act.cost's 100 cycles into
+// 100/1.5 = 66.67ns, rounded to 67; computeCost.flops is back-solved to the
+// default device.flops (1.0e5 FLOP/ns) * 67 = 6.7e6.
+// CHECK: node 0: compute func.call: flops=6.7e+06 bytes=0 time=67 preds=[]
 // CHECK: schedule graph: 1 nodes (1 compute, 0 communication, 0 call)
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]

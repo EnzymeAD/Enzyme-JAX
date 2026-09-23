@@ -1,42 +1,44 @@
 // RUN: enzymexlamlir-opt --split-input-file --distributed-atomize-collectives --distributed-print-collective-plan=chain=true %s 2>&1 >/dev/null | FileCheck %s
 // RUN: enzymexlamlir-opt --split-input-file --distributed-atomize-collectives --distributed-print-collective-plan="chain=true disable-peel-variants=true" %s 2>&1 >/dev/null | FileCheck %s
 
-// Peel (D17) under the default, uniform (bandwidth 1 on every axis) cost
-// parameters: peeling a (Reduced, Replicate) atom never beats the flat
+// Peel (D17) under the default, uniform (bandwidth 50 bytes/ns on every axis)
+// cost parameters: peeling a (Reduced, Replicate) atom never beats the flat
 // all-reduce here, so plan() stays flat with or without disable-peel-variants
 // and both RUN lines below produce byte-identical CHECK matches. See
 // decompose_collective_peel_bandwidth.mlir for the cases where a peel wins.
+// duration = latency + round(V / BW) (CollectiveCost.h's Units note); at this
+// payload scale most decisions turn on round count.
 //
 // Two independent reduced atoms (S = 64): axis0 (extent 4) is (Reduced,
 // Replicate), axis1 (extent 4) is (Reduced, Tile) scattering onto a tile
 // atom. The cost-minimizing order is axis1's reduce-scatter (shrinking the
 // shared payload) before axis0's flat all-reduce, exactly as in
 // decompose_collective_reduce.mlir's two-axis case:
-//   reduce-scatter axis1 at S = 64: V = 64 * 3 / 4 = 48, k = 2, latency 0.12, duration 48.12; payload 64 -> 16
-//   all-reduce axis0 at the shrunk payload 16: halving+doubling V = 2*16*3/4 = 24, latency 0.1+0.04 = 0.14, duration 24.14 (cheaper than recursive doubling V = 16*2 = 32, latency 0.12, duration 32.12)
-// Total 72.26. Peeling axis0 instead (self-scatter, then axis1's
+//   reduce-scatter axis1 at S = 64: k = 2 rounds, latency 5000 + 2000 = 7000, duration 7001; payload 64 -> 16
+//   all-reduce axis0 at the shrunk payload 16: recursive doubling needs k = 2 rounds (latency 7000) against halving+doubling's 2k = 4 (latency 9000), so it wins on rounds alone, V = 16 * 2 = 32, duration 7001
+// Total 14002. Peeling axis0 instead (self-scatter, then axis1's
 // reduce-scatter, then the closing all-gather) would cost exactly one extra
 // launch latency more for the same volume (D17's two steps reproduce the
-// flat all-reduce's halving-doubling volume and rounds when nothing runs
-// between them), so the DP never selects it: peeling only pays off when
-// something else benefits from running in the gap at a discount that exceeds
-// that extra launch, which uniform bandwidth cannot provide (every axis costs
-// the same either way).
-// CHECK: chain: 2 steps, total duration 72.26
+// flat all-reduce's volume and rounds when nothing runs between them), so the
+// DP never selects it: peeling only pays off when something else benefits
+// from running in the gap at a discount that exceeds that extra launch,
+// which uniform bandwidth cannot provide (every axis costs the same either
+// way).
+// CHECK: chain: 2 steps, total duration 14002
 // CHECK-NEXT: step 0: reduce-scatter
 // CHECK-NEXT: atoms: axis1.0(x4)
 // CHECK-NEXT: payload: 64 -> 16
-// CHECK-NEXT: latency: 0.12
+// CHECK-NEXT: latency: 7000
 // CHECK-NEXT: V: [0, 48]
 // CHECK-NEXT: rho: [0, 1]
-// CHECK-NEXT: duration: 48.12
+// CHECK-NEXT: duration: 7001
 // CHECK-NEXT: step 1: all-reduce
 // CHECK-NEXT: atoms: axis0.0(x4)
 // CHECK-NEXT: payload: 16 -> 16
-// CHECK-NEXT: latency: 0.14
-// CHECK-NEXT: V: [24, 0]
+// CHECK-NEXT: latency: 7000
+// CHECK-NEXT: V: [32, 0]
 // CHECK-NEXT: rho: [1, 0]
-// CHECK-NEXT: duration: 24.14
+// CHECK-NEXT: duration: 7001
 // CHECK-NEXT: semantics: verified
 // CHECK-NEXT: input port: tensor<64xi8> (the collective's input_object operand) -> step 0
 // CHECK-NEXT: result port: tensor<16xi8> (the await result, 0 uses) <- step 1
@@ -85,17 +87,17 @@ module @peel_not_cheaper_uniform_bandwidth {
 // A single reduced atom on its own (n = 8, S = 8, as in
 // decompose_collective_reduce.mlir's all_reduce_n8): peeling has nothing to
 // interleave with, so it can only add the peel's extra launch latency over
-// the flat all-reduce. The DP keeps the flat all-reduce (duration 14.16):
-// the degenerate case where D17's premise, that some other unit benefits
-// from the shrunk payload, does not hold.
-// CHECK: chain: 1 steps, total duration 14.16
+// the flat all-reduce. The DP keeps the flat all-reduce (recursive doubling,
+// duration 8000): the degenerate case where D17's premise, that some other
+// unit benefits from the shrunk payload, does not hold.
+// CHECK: chain: 1 steps, total duration 8000
 // CHECK-NEXT: step 0: all-reduce
 // CHECK-NEXT: atoms: axis0.0(x8)
 // CHECK-NEXT: payload: 8 -> 8
-// CHECK-NEXT: latency: 0.16
-// CHECK-NEXT: V: [14]
+// CHECK-NEXT: latency: 8000
+// CHECK-NEXT: V: [24]
 // CHECK-NEXT: rho: [1]
-// CHECK-NEXT: duration: 14.16
+// CHECK-NEXT: duration: 8000
 // CHECK-NEXT: semantics: verified
 // CHECK-NEXT: input port: tensor<8xi8> (the collective's input_object operand) -> step 0
 // CHECK-NEXT: result port: tensor<8xi8> (the await result, 0 uses) <- step 0

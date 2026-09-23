@@ -6,18 +6,21 @@
 //
 // Each stablehlo.add/multiply here is 4 f32 elements: flops = 4 (arithmetic
 // kind, ComputeCost.h), bytes = 3 * 16 = 48 (two operand reads plus one
-// result write, 16 bytes each), time = max(4/2000, 48/20) = 2.4 with the
-// default device rates (no mesh performance metadata given).
+// result write, 16 bytes each). Every mesh below sets device_flops = 2 FLOP/ns
+// and device_mem_bandwidth = 24 bytes/ns so time = max(4/2, 48/24) = 2 lands
+// on a clean integer nanosecond count (a schedule node's own duration rounds
+// to the nearest ns, CollectiveCost.h's Units note); the default rates would
+// round this tiny op to 0.
 
 // A linear SSA dependency chain inside one kernel body produces a chain of
 // compute nodes, each depending on the one before it; the first depends on
 // nothing since its operand is the kernel's own block argument, not a node
 // in the graph.
-// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2.4 preds=[]
-// CHECK: node 1: compute stablehlo.add: flops=4 bytes=48 time=2.4 preds=[0]
+// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
+// CHECK: node 1: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[0]
 // CHECK: schedule graph: 2 nodes (2 compute, 0 communication, 0 call)
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e9, device_mem_bandwidth = 2.4e10}
 
   func.func @main(%a: tensor<4xf32>) -> tensor<4xf32> {
     %k = distributed.DistributedKernel (%a : tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
@@ -38,11 +41,11 @@ module {
 // results are independent: neither node's predecessor list names the other,
 // since edges are plain SSA def-use (ScheduleGraph.h) and there is none
 // between them.
-// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2.4 preds=[]
-// CHECK: node 1: compute stablehlo.multiply: flops=4 bytes=48 time=2.4 preds=[]
+// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
+// CHECK: node 1: compute stablehlo.multiply: flops=4 bytes=48 time=2 preds=[]
 // CHECK: schedule graph: 2 nodes (2 compute, 0 communication, 0 call)
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e9, device_mem_bandwidth = 2.4e10}
 
   func.func @main(%a: tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>) {
     %k:2 = distributed.DistributedKernel (%a : tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
@@ -65,11 +68,11 @@ module {
 // still depends on the first kernel's compute node, even though the edge
 // between them is `kernel1 result -> kernel2 operand`, not a direct op-to-op
 // SSA use.
-// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2.4 preds=[]
-// CHECK: node 1: compute stablehlo.add: flops=4 bytes=48 time=2.4 preds=[0]
+// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
+// CHECK: node 1: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[0]
 // CHECK: schedule graph: 2 nodes (2 compute, 0 communication, 0 call)
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e9, device_mem_bandwidth = 2.4e10}
 
   func.func @main(%a: tensor<4xf32>) -> tensor<4xf32> {
     %k1 = distributed.DistributedKernel (%a : tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
@@ -104,12 +107,12 @@ module {
 // inside a function, matching the atomic-collective examples elsewhere in
 // this directory (e.g. print_collective_plan.mlir); the kernels, collective
 // and await are placed alongside them rather than inside func.func @main.
-// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2.4 preds=[]
+// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
 // CHECK: node 1: communication all-reduce (step 0): {{.*}} preds=[0]
-// CHECK: node 2: compute stablehlo.add: flops=4 bytes=48 time=2.4 preds=[1]
+// CHECK: node 2: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[1]
 // CHECK: schedule graph: 3 nodes (2 compute, 1 communication, 0 call)
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e9, device_mem_bandwidth = 2.4e10}
 
   func.func @main() {
     return
@@ -171,16 +174,16 @@ module {
 // with no predecessors of their own. The callee's internal parallelism is
 // preserved rather than serialized through the barrier, since only the
 // caller-side ordering is a hard barrier, not the callee's internal one. The
-// call's own isolatedDuration (4.8 = 2.4 + 2.4) is only a proxy: a serial sum
+// call's own isolatedDuration (4 = 2 + 2) is only a proxy: a serial sum
 // of the callee's own node durations, not a real simulated makespan.
-// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2.4 preds=[]
-// CHECK: node 1: call distributed.DistributedCall: callee_nodes=2 time=4.8 (proxy: serial sum of callee node durations, pending D2 timeline simulator) preds=[0]
-// CHECK: callee node 0: compute stablehlo.add: flops=4 bytes=48 time=2.4 preds=[]
-// CHECK: callee node 1: compute stablehlo.multiply: flops=4 bytes=48 time=2.4 preds=[]
-// CHECK: node 2: compute stablehlo.add: flops=4 bytes=48 time=2.4 preds=[1]
+// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
+// CHECK: node 1: call distributed.DistributedCall: callee_nodes=2 time=4 (proxy: serial sum of callee node durations, pending D2 timeline simulator) preds=[0]
+// CHECK: callee node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
+// CHECK: callee node 1: compute stablehlo.multiply: flops=4 bytes=48 time=2 preds=[]
+// CHECK: node 2: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[1]
 // CHECK: schedule graph: 5 nodes (4 compute, 0 communication, 1 call)
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e9, device_mem_bandwidth = 2.4e10}
 
   func.func @main() {
     return

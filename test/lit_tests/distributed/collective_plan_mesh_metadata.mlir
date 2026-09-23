@@ -2,17 +2,22 @@
 // RUN: enzymexlamlir-opt --distributed-atomize-collectives --distributed-print-collective-plan="chain=true bandwidths=4" %s 2>&1 >/dev/null | FileCheck %s --check-prefix=OVERRIDE
 
 // The decomposer costs collectives with the physical mesh's metadata, and the
-// pass's explicit bandwidths option overrides the mesh's axis_bandwidths.
+// pass's explicit bandwidths option overrides the mesh's axis_bandwidths. The
+// mesh's own attributes are SI seconds/bytes-per-second (Ops.td); the pass's
+// own bandwidths= option is already in the internal bytes/ns representation
+// (CollectiveCost.h's Units note), so it bypasses that conversion entirely.
 //
 // An all-gather of a 2-byte payload over 2 devices sends V = 2 bytes. The mesh
-// declares bandwidth 2, round latency 0.5 and launch latency 1, so the latency
-// is 1 + 0.5 * 1 = 1.5 and the duration is 1.5 + 2 / 2 = 2.5. With the
-// bandwidth overridden to 4 it is 1.5 + 2 / 4 = 2.
-// CHECK: chain: 1 steps, total duration 2.5
-// CHECK: latency: 1.5
-// OVERRIDE: chain: 1 steps, total duration 2
+// declares bandwidth 2.0e10 bytes/s (20 bytes/ns), round latency 5.0e-7s
+// (500ns) and launch latency 1.0e-6s (1000ns), so the latency is
+// 1000 + 500 = 1500ns and the transfer time (2/20 = 0.1ns) rounds to 0,
+// giving a duration of 1500. With the bandwidth overridden to 4 bytes/ns the
+// transfer time is 2/4 = 0.5ns, which rounds up to 1, giving 1501.
+// CHECK: chain: 1 steps, total duration 1500
+// CHECK: latency: 1500
+// OVERRIDE: chain: 1 steps, total duration 1501
 module @all_gather {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [2.0e0], axis_latencies = [5.0e-1], launch_latency = 1.0e0}
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [2.0e10], axis_latencies = [5.0e-7], launch_latency = 1.0e-6}
 
   func.func @main() {
     return

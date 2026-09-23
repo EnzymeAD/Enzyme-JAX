@@ -6,44 +6,53 @@
 // The relay variants (D14 to D16) mesh-coupled components are offered besides
 // the half-split (see decompose_collective_meshcoupled.mlir, which pins the
 // half-split with disable-relay-variants=true). CHECK/NOREL use the default
-// parameters (bandwidth 1, round latency 0.01, launch latency 0.1); FAST/
-// FASTNOREL give axis1 four times axis0's bandwidth, which is what D16
-// (conjugation) needs to have any effect.
+// parameters (bandwidth 50 bytes/ns, round latency 1000ns, launch latency
+// 5000ns); FAST/FASTNOREL give axis1 four times axis0's bandwidth (still
+// bytes/ns; both are far slower than the default, an explicit scenario
+// unrelated to it). D16 (conjugation) is exercised below, but a permute's
+// cost is floored by the slowest axis it crosses (a moving device sends its
+// whole payload there too), so moving a digit off axis0 through a swap
+// permute is never cheaper than gathering it on axis0 directly; see
+// d16_allgather_conjugate below. duration = latency + round(V / BW)
+// (CollectiveCost.h's Units note); at these tiny payloads that rounded term
+// is usually 0 or a small remainder.
 
 // D14: fused exchange. mesh0 and mesh1 each both release their own digit (in
 // is Tile or Mesh) and place another (out is Tile or Mesh), the shape a
 // TileToTile or ReduceScatter unit fuses into one all-to-all instead of a
-// gather followed by a free slice. S = 2, n = 2.
-//   half-split (NOREL): all-gather mesh0 (V = 2, 2.11) + slice + all-gather
-//     mesh1 (V = 2, 2.11) + slice = 4.22
-//   fused exchange (CHECK): all-to-all mesh0 (pairwise V = 2 * 1 / 2 = 1,
-//     latency 0.11, duration 1.11) + all-to-all mesh1 (the same, 1.11) = 2.22
-// CHECK: chain: 2 steps, total duration 2.22
+// gather followed by a free slice. S = 2, n = 2; every transfer time here
+// rounds to 0, so both shapes cost the same and CHECK/NOREL only differ in
+// which chain shape the DP happens to try first.
+//   half-split (NOREL): all-gather mesh0 (6000) + slice + all-gather
+//     mesh1 (6000) + slice = 12000
+//   fused exchange (CHECK): all-to-all mesh0 (6000) + all-to-all mesh1
+//     (6000) = 12000
+// CHECK: chain: 2 steps, total duration 12000
 // CHECK-NEXT: step 0: all-to-all
 // CHECK-NEXT: atoms: axis0.0(x2)
 // CHECK-NEXT: payload: 2 -> 2
-// CHECK-NEXT: latency: 0.11
+// CHECK-NEXT: latency: 6000
 // CHECK-NEXT: V: [1, 0]
 // CHECK-NEXT: rho: [1, 0]
-// CHECK-NEXT: duration: 1.11
+// CHECK-NEXT: duration: 6000
 // CHECK-NEXT: step 1: all-to-all
 // CHECK-NEXT: atoms: axis1.0(x2)
 // CHECK-NEXT: payload: 2 -> 2
-// CHECK-NEXT: latency: 0.11
+// CHECK-NEXT: latency: 6000
 // CHECK-NEXT: V: [0, 1]
 // CHECK-NEXT: rho: [0, 1]
-// CHECK-NEXT: duration: 1.11
+// CHECK-NEXT: duration: 6000
 // CHECK-NEXT: semantics: verified
 // CHECK-NEXT: input port: tensor<2xi8> (the collective's input_object operand) -> step 0
 // CHECK-NEXT: result port: tensor<2xi8> (the await result, 0 uses) <- step 1
-// NOREL: chain: 4 steps, total duration 4.22
+// NOREL: chain: 4 steps, total duration 12000
 // NOREL-NEXT: step 0: all-gather
 // NOREL-NEXT: atoms: axis0.0(x2)
 // NOREL-NEXT: payload: 2 -> 4
-// NOREL-NEXT: latency: 0.11
+// NOREL-NEXT: latency: 6000
 // NOREL-NEXT: V: [2, 0]
 // NOREL-NEXT: rho: [1, 0]
-// NOREL-NEXT: duration: 2.11
+// NOREL-NEXT: duration: 6000
 // NOREL-NEXT: step 1: local-slice
 // NOREL-NEXT: atoms: axis0.0(x2)
 // NOREL-NEXT: payload: 4 -> 2
@@ -54,10 +63,10 @@
 // NOREL-NEXT: step 2: all-gather
 // NOREL-NEXT: atoms: axis1.0(x2)
 // NOREL-NEXT: payload: 2 -> 4
-// NOREL-NEXT: latency: 0.11
+// NOREL-NEXT: latency: 6000
 // NOREL-NEXT: V: [0, 2]
 // NOREL-NEXT: rho: [0, 1]
-// NOREL-NEXT: duration: 2.11
+// NOREL-NEXT: duration: 6000
 // NOREL-NEXT: step 3: local-slice
 // NOREL-NEXT: atoms: axis1.0(x2)
 // NOREL-NEXT: payload: 4 -> 2
@@ -107,52 +116,62 @@ module @d14_fused_exchange {
 
 // D15: path closure. mesh0 is reduced and its output comes from mesh1, whose
 // own output is replicated: an open path (mesh1 -> mesh0), not a permutation
-// cycle. n = 2, S = 4.
-//   half-split (NOREL): all-reduce mesh0 (V = 4, 4.11) + all-gather mesh1
-//     (V = 4, 4.11) + free slice = 8.22
-//   path closure (CHECK, default bandwidth): all-reduce mesh0 empties it
-//     (4.11), then one permute of both atoms, V = S * (1 - 1/2) = 2 on each
-//     axis, latency 0.1 + 0.01 + 0.01 = 0.12, duration 2.12. Total 6.23.
-//   at FAST (axis1 four times axis0's bandwidth): the half-split's expensive
-//     step (the gather) lands on the fast axis1 (1.11 instead of 4.11: total
-//     5.22), while the permute is still bottlenecked by slow axis0 (V = 2 on
-//     each axis, transferTime = max(2 / 1, 2 / 4) = 2, so still 2.12) and the
-//     all-reduce is unaffected by axis1's bandwidth (still 4.11), so closure
-//     stays 6.23. Closure is tried (it is still a variant) but no longer
-//     cheaper, so FAST and FASTNOREL agree: the half-split wins here, at 5.22.
-// CHECK: chain: 2 steps, total duration 6.23
+// cycle. n = 2, S = 4; every transfer time here rounds to 0 or a small
+// remainder.
+//   half-split (NOREL, default bandwidth): all-reduce mesh0 (6000) +
+//     all-gather mesh1 (6000) + free slice = 12000
+//   path closure (a moving device sends its whole payload, so the permute is
+//     no cheaper than gathering the same bytes): all-reduce mesh0 empties it
+//     (6000), then one permute of both atoms crossing two round latencies
+//     (7000). Total 13000, more than the half split, so CHECK (default
+//     bandwidth) takes the half split.
+//   at FAST (axis0 kept at bandwidth 1, axis1 four times that): the
+//     all-reduce still runs on slow axis0, so its own transfer time (V = 4)
+//     no longer rounds to 0 (duration 6004); the gather moves to the fast
+//     axis1 (duration 6001), for a half-split total of 12005. The permute
+//     also crosses slow axis0, so its own transfer time stops rounding to 0
+//     too (duration 7004): closure costs 13008, so the half split still
+//     wins.
+// CHECK: chain: 3 steps, total duration 12000
 // CHECK-NEXT: step 0: all-reduce
 // CHECK-NEXT: atoms: axis0.0(x2)
 // CHECK-NEXT: payload: 4 -> 4
-// CHECK-NEXT: latency: 0.11
+// CHECK-NEXT: latency: 6000
 // CHECK-NEXT: V: [4, 0]
 // CHECK-NEXT: rho: [1, 0]
-// CHECK-NEXT: duration: 4.11
-// CHECK-NEXT: step 1: permute
-// CHECK-NEXT: atoms: axis0.0(x2) axis1.0(x2)
-// CHECK-NEXT: payload: 4 -> 4
-// CHECK-NEXT: latency: 0.12
-// CHECK-NEXT: V: [2, 2]
-// CHECK-NEXT: rho: [1, 1]
-// CHECK-NEXT: duration: 2.12
+// CHECK-NEXT: duration: 6000
+// CHECK-NEXT: step 1: all-gather
+// CHECK-NEXT: atoms: axis1.0(x2)
+// CHECK-NEXT: payload: 4 -> 8
+// CHECK-NEXT: latency: 6000
+// CHECK-NEXT: V: [0, 4]
+// CHECK-NEXT: rho: [0, 1]
+// CHECK-NEXT: duration: 6000
+// CHECK-NEXT: step 2: local-slice
+// CHECK-NEXT: atoms: axis0.0(x2)
+// CHECK-NEXT: payload: 8 -> 4
+// CHECK-NEXT: latency: 0
+// CHECK-NEXT: V: [0, 0]
+// CHECK-NEXT: rho: [0, 0]
+// CHECK-NEXT: duration: 0
 // CHECK-NEXT: semantics: verified
 // CHECK-NEXT: input port: tensor<4xi8> (the collective's input_object operand) -> step 0
-// CHECK-NEXT: result port: tensor<4xi8> (the await result, 0 uses) <- step 1
-// NOREL: chain: 3 steps, total duration 8.22
+// CHECK-NEXT: result port: tensor<4xi8> (the await result, 0 uses) <- step 2
+// NOREL: chain: 3 steps, total duration 12000
 // NOREL-NEXT: step 0: all-reduce
 // NOREL-NEXT: atoms: axis0.0(x2)
 // NOREL-NEXT: payload: 4 -> 4
-// NOREL-NEXT: latency: 0.11
+// NOREL-NEXT: latency: 6000
 // NOREL-NEXT: V: [4, 0]
 // NOREL-NEXT: rho: [1, 0]
-// NOREL-NEXT: duration: 4.11
+// NOREL-NEXT: duration: 6000
 // NOREL-NEXT: step 1: all-gather
 // NOREL-NEXT: atoms: axis1.0(x2)
 // NOREL-NEXT: payload: 4 -> 8
-// NOREL-NEXT: latency: 0.11
+// NOREL-NEXT: latency: 6000
 // NOREL-NEXT: V: [0, 4]
 // NOREL-NEXT: rho: [0, 1]
-// NOREL-NEXT: duration: 4.11
+// NOREL-NEXT: duration: 6000
 // NOREL-NEXT: step 2: local-slice
 // NOREL-NEXT: atoms: axis0.0(x2)
 // NOREL-NEXT: payload: 8 -> 4
@@ -163,21 +182,21 @@ module @d14_fused_exchange {
 // NOREL-NEXT: semantics: verified
 // NOREL-NEXT: input port: tensor<4xi8> (the collective's input_object operand) -> step 0
 // NOREL-NEXT: result port: tensor<4xi8> (the await result, 0 uses) <- step 2
-// FAST: chain: 3 steps, total duration 5.22
+// FAST: chain: 3 steps, total duration 12005
 // FAST-NEXT: step 0: all-reduce
 // FAST-NEXT: atoms: axis0.0(x2)
 // FAST-NEXT: payload: 4 -> 4
-// FAST-NEXT: latency: 0.11
+// FAST-NEXT: latency: 6000
 // FAST-NEXT: V: [4, 0]
 // FAST-NEXT: rho: [1, 0]
-// FAST-NEXT: duration: 4.11
+// FAST-NEXT: duration: 6004
 // FAST-NEXT: step 1: all-gather
 // FAST-NEXT: atoms: axis1.0(x2)
 // FAST-NEXT: payload: 4 -> 8
-// FAST-NEXT: latency: 0.11
+// FAST-NEXT: latency: 6000
 // FAST-NEXT: V: [0, 4]
 // FAST-NEXT: rho: [0, 1]
-// FAST-NEXT: duration: 1.11
+// FAST-NEXT: duration: 6001
 // FAST-NEXT: step 2: local-slice
 // FAST-NEXT: atoms: axis0.0(x2)
 // FAST-NEXT: payload: 8 -> 4
@@ -188,21 +207,21 @@ module @d14_fused_exchange {
 // FAST-NEXT: semantics: verified
 // FAST-NEXT: input port: tensor<4xi8> (the collective's input_object operand) -> step 0
 // FAST-NEXT: result port: tensor<4xi8> (the await result, 0 uses) <- step 2
-// FASTNOREL: chain: 3 steps, total duration 5.22
+// FASTNOREL: chain: 3 steps, total duration 12005
 // FASTNOREL-NEXT: step 0: all-reduce
 // FASTNOREL-NEXT: atoms: axis0.0(x2)
 // FASTNOREL-NEXT: payload: 4 -> 4
-// FASTNOREL-NEXT: latency: 0.11
+// FASTNOREL-NEXT: latency: 6000
 // FASTNOREL-NEXT: V: [4, 0]
 // FASTNOREL-NEXT: rho: [1, 0]
-// FASTNOREL-NEXT: duration: 4.11
+// FASTNOREL-NEXT: duration: 6004
 // FASTNOREL-NEXT: step 1: all-gather
 // FASTNOREL-NEXT: atoms: axis1.0(x2)
 // FASTNOREL-NEXT: payload: 4 -> 8
-// FASTNOREL-NEXT: latency: 0.11
+// FASTNOREL-NEXT: latency: 6000
 // FASTNOREL-NEXT: V: [0, 4]
 // FASTNOREL-NEXT: rho: [0, 1]
-// FASTNOREL-NEXT: duration: 1.11
+// FASTNOREL-NEXT: duration: 6001
 // FASTNOREL-NEXT: step 2: local-slice
 // FASTNOREL-NEXT: atoms: axis0.0(x2)
 // FASTNOREL-NEXT: payload: 8 -> 4
@@ -257,46 +276,55 @@ module @d15_reduce_then_permute_n2 {
 
 // -----
 
-// D15 at n = 4: the same reduce-then-permute shape, scaled up. S = 4.
-//   half-split (NOREL): all-reduce mesh0 (halving+doubling, 2k = 4 rounds,
-//     V = 2 * 4 * 3 / 4 = 6, latency 0.1 + 0.04 = 0.14, duration 6.14) +
-//     all-gather mesh1 (k = 2, V = 4 * 3 = 12, latency 0.12, duration 12.12) +
-//     free slice = 18.26
-//   path closure (CHECK): all-reduce mesh0 (6.14, as above) + one permute,
-//     V = S * (1 - 1/4) = 3 on each axis, latency 0.12, duration 3.12 = 9.26
-// CHECK: chain: 2 steps, total duration 9.26
+// D15 at n = 4: the same reduce-then-permute shape, scaled up. S = 4; every
+// transfer time here rounds to 0.
+//   half-split: all-reduce mesh0 (recursive doubling needs k = 2 rounds
+//     against halving+doubling's 2k = 4, so it wins on rounds alone: latency
+//     5000 + 2000 = 7000) + all-gather mesh1 (k = 2, latency 7000) + free
+//     slice = 14000
+//   path closure: all-reduce mesh0 (7000, as above) + one permute crossing
+//     two round latencies (latency 7000) = 14000, tying the half split; the
+//     DP's tie-break here keeps the half split, so CHECK and NOREL agree.
+// CHECK: chain: 3 steps, total duration 14000
 // CHECK-NEXT: step 0: all-reduce
 // CHECK-NEXT: atoms: axis0.0(x4)
 // CHECK-NEXT: payload: 4 -> 4
-// CHECK-NEXT: latency: 0.14
-// CHECK-NEXT: V: [6, 0]
+// CHECK-NEXT: latency: 7000
+// CHECK-NEXT: V: [8, 0]
 // CHECK-NEXT: rho: [1, 0]
-// CHECK-NEXT: duration: 6.14
-// CHECK-NEXT: step 1: permute
-// CHECK-NEXT: atoms: axis0.0(x4) axis1.0(x4)
-// CHECK-NEXT: payload: 4 -> 4
-// CHECK-NEXT: latency: 0.12
-// CHECK-NEXT: V: [3, 3]
-// CHECK-NEXT: rho: [1, 1]
-// CHECK-NEXT: duration: 3.12
+// CHECK-NEXT: duration: 7000
+// CHECK-NEXT: step 1: all-gather
+// CHECK-NEXT: atoms: axis1.0(x4)
+// CHECK-NEXT: payload: 4 -> 16
+// CHECK-NEXT: latency: 7000
+// CHECK-NEXT: V: [0, 12]
+// CHECK-NEXT: rho: [0, 1]
+// CHECK-NEXT: duration: 7000
+// CHECK-NEXT: step 2: local-slice
+// CHECK-NEXT: atoms: axis0.0(x4)
+// CHECK-NEXT: payload: 16 -> 4
+// CHECK-NEXT: latency: 0
+// CHECK-NEXT: V: [0, 0]
+// CHECK-NEXT: rho: [0, 0]
+// CHECK-NEXT: duration: 0
 // CHECK-NEXT: semantics: verified
 // CHECK-NEXT: input port: tensor<4xi8> (the collective's input_object operand) -> step 0
-// CHECK-NEXT: result port: tensor<4xi8> (the await result, 0 uses) <- step 1
-// NOREL: chain: 3 steps, total duration 18.26
+// CHECK-NEXT: result port: tensor<4xi8> (the await result, 0 uses) <- step 2
+// NOREL: chain: 3 steps, total duration 14000
 // NOREL-NEXT: step 0: all-reduce
 // NOREL-NEXT: atoms: axis0.0(x4)
 // NOREL-NEXT: payload: 4 -> 4
-// NOREL-NEXT: latency: 0.14
-// NOREL-NEXT: V: [6, 0]
+// NOREL-NEXT: latency: 7000
+// NOREL-NEXT: V: [8, 0]
 // NOREL-NEXT: rho: [1, 0]
-// NOREL-NEXT: duration: 6.14
+// NOREL-NEXT: duration: 7000
 // NOREL-NEXT: step 1: all-gather
 // NOREL-NEXT: atoms: axis1.0(x4)
 // NOREL-NEXT: payload: 4 -> 16
-// NOREL-NEXT: latency: 0.12
+// NOREL-NEXT: latency: 7000
 // NOREL-NEXT: V: [0, 12]
 // NOREL-NEXT: rho: [0, 1]
-// NOREL-NEXT: duration: 12.12
+// NOREL-NEXT: duration: 7000
 // NOREL-NEXT: step 2: local-slice
 // NOREL-NEXT: atoms: axis0.0(x4)
 // NOREL-NEXT: payload: 16 -> 4
@@ -358,29 +386,37 @@ module @d15_reduce_then_permute_n4 {
 // just one permute; no tile atoms are touched by the mesh at all, so the
 // payload is carried on a plain identity pair. n = 2, S = 2.
 //   half-split (NOREL): mesh0 has no first half (in = replicate); its free
-//     slice waits for mesh1's all-gather (V = 2, 2.11). mesh1 has no second
-//     half (out = replicate). Total 2.11.
-//   path closure (CHECK): one permute, V = S * (1 - 1/2) = 1 on each axis,
-//     latency 0.12, duration 1.12.
-// CHECK: chain: 1 steps, total duration 1.12
-// CHECK-NEXT: step 0: permute
-// CHECK-NEXT: atoms: axis0.0(x2) axis1.0(x2)
-// CHECK-NEXT: payload: 2 -> 2
-// CHECK-NEXT: latency: 0.12
-// CHECK-NEXT: V: [1, 1]
-// CHECK-NEXT: rho: [1, 1]
-// CHECK-NEXT: duration: 1.12
+//     slice waits for mesh1's all-gather (6000). mesh1 has no second half
+//     (out = replicate). Total 6000.
+//   path closure: one permute crossing two round latencies, duration 7000,
+//     more than the half split, so CHECK (default bandwidth) also takes the
+//     half split.
+// CHECK: chain: 2 steps, total duration 6000
+// CHECK-NEXT: step 0: all-gather
+// CHECK-NEXT: atoms: axis1.0(x2)
+// CHECK-NEXT: payload: 2 -> 4
+// CHECK-NEXT: latency: 6000
+// CHECK-NEXT: V: [0, 2]
+// CHECK-NEXT: rho: [0, 1]
+// CHECK-NEXT: duration: 6000
+// CHECK-NEXT: step 1: local-slice
+// CHECK-NEXT: atoms: axis0.0(x2)
+// CHECK-NEXT: payload: 4 -> 2
+// CHECK-NEXT: latency: 0
+// CHECK-NEXT: V: [0, 0]
+// CHECK-NEXT: rho: [0, 0]
+// CHECK-NEXT: duration: 0
 // CHECK-NEXT: semantics: verified
 // CHECK-NEXT: input port: tensor<2xi8> (the collective's input_object operand) -> step 0
-// CHECK-NEXT: result port: tensor<2xi8> (the await result, 0 uses) <- step 0
-// NOREL: chain: 2 steps, total duration 2.11
+// CHECK-NEXT: result port: tensor<2xi8> (the await result, 0 uses) <- step 1
+// NOREL: chain: 2 steps, total duration 6000
 // NOREL-NEXT: step 0: all-gather
 // NOREL-NEXT: atoms: axis1.0(x2)
 // NOREL-NEXT: payload: 2 -> 4
-// NOREL-NEXT: latency: 0.11
+// NOREL-NEXT: latency: 6000
 // NOREL-NEXT: V: [0, 2]
 // NOREL-NEXT: rho: [0, 1]
-// NOREL-NEXT: duration: 2.11
+// NOREL-NEXT: duration: 6000
 // NOREL-NEXT: step 1: local-slice
 // NOREL-NEXT: atoms: axis0.0(x2)
 // NOREL-NEXT: payload: 4 -> 2
@@ -447,52 +483,47 @@ module @d15_replicate_mesh_path {
 // D16: conjugation. mesh0 is a plain all-gather (Tile, Replicate) on axis0;
 // mesh1 has no role at all (Replicate, Replicate), so it is an idle atom of
 // equal extent D16 can borrow. n = 2, S = 2.
-//   CHECK is bandwidth 1 on both axes (the default): no axis has strictly
-//     more bandwidth than another, so conjugationTarget finds nothing and the
-//     gather runs on mesh0 unchanged, the same 2.11 as disabling the relay
-//     variants entirely. This is the "uniform bandwidth never conjugates" case.
-//   FAST gives axis1 four times axis0's bandwidth: a swap permute moves
-//     mesh0's digit onto mesh1 (V = S * (1 - 1/2) = 1 on each axis, latency
-//     0.12, transferTime = max(1 / 1, 1 / 4) = 1, duration 1.12), then the
-//     gather runs on the fast axis1 (V = 2, latency 0.11, transferTime =
-//     2 / 4 = 0.5, duration 0.61). Total 1.73, cheaper than FASTNOREL's 2.11.
-// CHECK: chain: 1 steps, total duration 2.11
+//   CHECK uses the default bandwidth, uniform 50 bytes/ns on both axes: no
+//     axis has strictly more bandwidth than another, so conjugationTarget
+//     finds nothing and the gather runs on mesh0 unchanged, the same 6000 as
+//     disabling the relay variants entirely. This is the "uniform bandwidth
+//     never conjugates" case.
+//   FAST gives axis1 four times axis0's bandwidth: a swap permute could move
+//     mesh0's digit onto mesh1, but a moving device sends its whole payload
+//     (V = 2 on each axis, transferTime = max(2 / 1, 2 / 4) = 2, rounds to 0,
+//     duration 7000) before the gather could even run on the fast axis1
+//     (6001), so conjugation (13001) no longer beats running the gather
+//     where it is (6002): FAST agrees with FASTNOREL here.
+// CHECK: chain: 1 steps, total duration 6000
 // CHECK-NEXT: step 0: all-gather
 // CHECK-NEXT: atoms: axis0.0(x2)
 // CHECK-NEXT: payload: 2 -> 4
-// CHECK-NEXT: latency: 0.11
+// CHECK-NEXT: latency: 6000
 // CHECK-NEXT: V: [2, 0]
 // CHECK-NEXT: rho: [1, 0]
-// CHECK-NEXT: duration: 2.11
+// CHECK-NEXT: duration: 6000
 // CHECK-NEXT: semantics: verified
 // CHECK-NEXT: input port: tensor<2xi8> (the collective's input_object operand) -> step 0
 // CHECK-NEXT: result port: tensor<4xi8> (the await result, 0 uses) <- step 0
-// FAST: chain: 2 steps, total duration 1.73
-// FAST-NEXT: step 0: permute
-// FAST-NEXT: atoms: axis0.0(x2) axis1.0(x2)
-// FAST-NEXT: payload: 2 -> 2
-// FAST-NEXT: latency: 0.12
-// FAST-NEXT: V: [1, 1]
-// FAST-NEXT: rho: [1, 0.25]
-// FAST-NEXT: duration: 1.12
-// FAST-NEXT: step 1: all-gather
-// FAST-NEXT: atoms: axis1.0(x2)
+// FAST: chain: 1 steps, total duration 6002
+// FAST-NEXT: step 0: all-gather
+// FAST-NEXT: atoms: axis0.0(x2)
 // FAST-NEXT: payload: 2 -> 4
-// FAST-NEXT: latency: 0.11
-// FAST-NEXT: V: [0, 2]
-// FAST-NEXT: rho: [0, 1]
-// FAST-NEXT: duration: 0.61
+// FAST-NEXT: latency: 6000
+// FAST-NEXT: V: [2, 0]
+// FAST-NEXT: rho: [1, 0]
+// FAST-NEXT: duration: 6002
 // FAST-NEXT: semantics: verified
 // FAST-NEXT: input port: tensor<2xi8> (the collective's input_object operand) -> step 0
-// FAST-NEXT: result port: tensor<4xi8> (the await result, 0 uses) <- step 1
-// FASTNOREL: chain: 1 steps, total duration 2.11
+// FAST-NEXT: result port: tensor<4xi8> (the await result, 0 uses) <- step 0
+// FASTNOREL: chain: 1 steps, total duration 6002
 // FASTNOREL-NEXT: step 0: all-gather
 // FASTNOREL-NEXT: atoms: axis0.0(x2)
 // FASTNOREL-NEXT: payload: 2 -> 4
-// FASTNOREL-NEXT: latency: 0.11
+// FASTNOREL-NEXT: latency: 6000
 // FASTNOREL-NEXT: V: [2, 0]
 // FASTNOREL-NEXT: rho: [1, 0]
-// FASTNOREL-NEXT: duration: 2.11
+// FASTNOREL-NEXT: duration: 6002
 // FASTNOREL-NEXT: semantics: verified
 // FASTNOREL-NEXT: input port: tensor<2xi8> (the collective's input_object operand) -> step 0
 // FASTNOREL-NEXT: result port: tensor<4xi8> (the await result, 0 uses) <- step 0
@@ -553,39 +584,39 @@ module @d16_allgather_conjugate {
 // already has a role (it is itself an all-gather, not idle), so it fails
 // conjugationTarget's "holds no digit and has no role" test and cannot be
 // axis0's target: FAST and FASTNOREL agree.
-// FAST: chain: 2 steps, total duration 6.22
+// FAST: chain: 2 steps, total duration 12006
 // FAST-NEXT: step 0: all-gather
 // FAST-NEXT: atoms: axis0.0(x2)
 // FAST-NEXT: payload: 4 -> 8
-// FAST-NEXT: latency: 0.11
+// FAST-NEXT: latency: 6000
 // FAST-NEXT: V: [4, 0]
 // FAST-NEXT: rho: [1, 0]
-// FAST-NEXT: duration: 4.11
+// FAST-NEXT: duration: 6004
 // FAST-NEXT: step 1: all-gather
 // FAST-NEXT: atoms: axis1.0(x2)
 // FAST-NEXT: payload: 8 -> 16
-// FAST-NEXT: latency: 0.11
+// FAST-NEXT: latency: 6000
 // FAST-NEXT: V: [0, 8]
 // FAST-NEXT: rho: [0, 1]
-// FAST-NEXT: duration: 2.11
+// FAST-NEXT: duration: 6002
 // FAST-NEXT: semantics: verified
 // FAST-NEXT: input port: tensor<2x2xi8> (the collective's input_object operand) -> step 0
 // FAST-NEXT: result port: tensor<4x4xi8> (the await result, 0 uses) <- step 1
-// FASTNOREL: chain: 2 steps, total duration 6.22
+// FASTNOREL: chain: 2 steps, total duration 12006
 // FASTNOREL-NEXT: step 0: all-gather
 // FASTNOREL-NEXT: atoms: axis0.0(x2)
 // FASTNOREL-NEXT: payload: 4 -> 8
-// FASTNOREL-NEXT: latency: 0.11
+// FASTNOREL-NEXT: latency: 6000
 // FASTNOREL-NEXT: V: [4, 0]
 // FASTNOREL-NEXT: rho: [1, 0]
-// FASTNOREL-NEXT: duration: 4.11
+// FASTNOREL-NEXT: duration: 6004
 // FASTNOREL-NEXT: step 1: all-gather
 // FASTNOREL-NEXT: atoms: axis1.0(x2)
 // FASTNOREL-NEXT: payload: 8 -> 16
-// FASTNOREL-NEXT: latency: 0.11
+// FASTNOREL-NEXT: latency: 6000
 // FASTNOREL-NEXT: V: [0, 8]
 // FASTNOREL-NEXT: rho: [0, 1]
-// FASTNOREL-NEXT: duration: 2.11
+// FASTNOREL-NEXT: duration: 6002
 // FASTNOREL-NEXT: semantics: verified
 // FASTNOREL-NEXT: input port: tensor<2x2xi8> (the collective's input_object operand) -> step 0
 // FASTNOREL-NEXT: result port: tensor<4x4xi8> (the await result, 0 uses) <- step 1
