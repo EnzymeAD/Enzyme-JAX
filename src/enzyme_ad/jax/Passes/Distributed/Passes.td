@@ -100,6 +100,76 @@ def InsertPhysicalMeshPass : Pass<"insert-physical-mesh", "::mlir::ModuleOp"> {
   let description = [{The configuration string / file is expected to contain a well-formed distributed.PhysicalMesh op.}];
 }
 
+def SetDistributedLoggingPass
+    : Pass<"set-distributed-logging", "::mlir::ModuleOp"> {
+  let summary = "Mints a per-run logging directory and stamps its location "
+                "as discardable attributes on the module.";
+  let options = [
+    Option<"root", "root", "std::string", "\"\"",
+           "Master logging directory. Empty (the default) turns logging off "
+           "entirely: this pass becomes a no-op, creating no directory and "
+           "stamping no attributes. Non-empty mints "
+           "<root>/<module-name-or-\"run\">-<date>-<random suffix>/ (with "
+           "empty Main/ and Candidates/ subdirectories) and stamps its "
+           "absolute path as distributed.logging_root on the module.">,
+    Option<"moduleName", "module-name", "std::string", "\"\"",
+           "Optional name folded into the run directory and stamped as "
+           "distributed.logging_module_name; omitted from both when "
+           "empty (the run directory then falls back to a plain \"run\" "
+           "prefix).">,
+    Option<"commit", "commit", "std::string", "\"\"",
+           "Optional commit/version string, stamped as "
+           "distributed.logging_commit when non-empty.">,
+  ];
+  let description = [{
+    A standalone config pass, meant to run once, early, ahead of
+    distributed-search-strategies (or a bare distributed-search-lowering-
+    pipeline invocation re-finalizing an already-searched winner). Later
+    passes read distributed.logging_root (and the optional module-name/
+    commit attributes) off their own module, so no logging option has to be
+    threaded through intervening passes. Cloning a module, e.g. one search
+    candidate's disposable clone, carries these attributes along.
+  }];
+}
+
+def DumpDistributedLoggingCheckpointPass
+    : Pass<"dump-distributed-logging-checkpoint", "::mlir::ModuleOp"> {
+  let summary = "Dumps the module to Candidates/<uid>/ir/<checkpoint-name>"
+                ".mlir when per-candidate logging is active.";
+  let dependentDialects = ["enzyme::distributed::DistributedDialect"];
+  let options = [
+    Option<"checkpointName", "checkpoint-name", "std::string", "\"\"",
+           "This instance's checkpoint filename (e.g. "
+           "\"00-after-decisions\"), written as <checkpoint-name>.mlir.">,
+    Option<"countCollectivesAs", "count-collectives-as", "std::string", "\"\"",
+           "Attribute name to stamp the module's current "
+           "distributed.Collective op count under (e.g. "
+           "distributed.logging_num_collectives_before), for a later reader "
+           "(StrategyScorer) to pick back up. Empty (the default) skips "
+           "counting; only the 02-before-collectives and 03-final instances "
+           "pass a name.">,
+  ];
+  let description = [{
+    Reads distributed.logging_root (set by --set-distributed-logging) and
+    distributed.logging_candidate_uid (set by cloneAndApplyDecisions) off its
+    own module and, when both are present, writes the module to
+    <logging_root>/Candidates/<uid>/ir/<checkpoint-name>.mlir. Does nothing
+    (no directory, no file, no error) when either is absent. That is the
+    normal case for a non-logging run, and for the winner-finalization run
+    that applies a search's winning decisions directly onto the original
+    module rather than through cloneAndApplyDecisions. The winner's
+    checkpoints were already logged while it was a scoring clone, so
+    re-finalizing it must not produce a second log entry.
+
+    One instance exists per checkpoint. cloneAndApplyDecisions inserts
+    00-after-decisions ahead of the lowering pipeline, and
+    buildDistributedSearchLoweringPipeline inserts 01-before-act,
+    02-before-collectives and 03-final. Each instance self-gates as above, so
+    the only per-instance options are the checkpoint name and optional
+    collective counting.
+  }];
+}
+
 def DistributedToHloPass : Pass<"distributed-to-hlo", "::mlir::ModuleOp"> {
   let summary = "Lower distributed dialect constructs to StableHLO.";
   let dependentDialects = [

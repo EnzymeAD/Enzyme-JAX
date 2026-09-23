@@ -12,7 +12,15 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Support/DebugStringHelper.h"
 
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/Path.h"
+
+#include <atomic>
+#include <cmath>
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -271,19 +279,40 @@ class StrategySearchNode : public BeamSearchNodeBase {
   // Factors of the physical mesh available for this axis
   std::vector<SharedOpRef<AxisFactorOp>> availableSpace;
 
+  // Identity of this node in the search tree, so a later reader can
+  // reconstruct the tree purely from these ids: `uid` names this node,
+  // `parentUid` names the node it branched from (absent for the root).
+  // Mirrors AxisSymbol's atomic-counter pattern (ShardyLogicalAxisAnalysis.h).
+  uint64_t uid;
+  std::optional<uint64_t> parentUid;
+  inline static std::atomic<uint64_t> nextUid{1};
+
   StrategySearchNode() = delete; // disable default constructor
 
+  // Picks between makeChild()'s real search-tree branch (fresh uid, this
+  // node recorded as parent) and clone()'s identity-preserving working copy
+  // (uid/parentUid copied verbatim, nothing newly minted).
+  enum class IdentityMode { Branch, Preserve };
+
   StrategySearchNode(const StrategySearchNode &other,
-                     std::shared_ptr<AxisMappingReplayTree> childDecisions)
+                     std::shared_ptr<AxisMappingReplayTree> childDecisions,
+                     IdentityMode mode)
       : axes(other.axes), axisIndex(other.axisIndex), decisions(childDecisions),
         extentRemaining(other.extentRemaining),
-        availableSpace(other.availableSpace) {}
+        availableSpace(other.availableSpace),
+        uid(mode == IdentityMode::Branch
+                ? nextUid.fetch_add(1, std::memory_order_relaxed)
+                : other.uid),
+        parentUid(mode == IdentityMode::Branch
+                      ? std::optional<uint64_t>(other.uid)
+                      : other.parentUid) {}
 
 public:
   StrategySearchNode(std::shared_ptr<const LogicalAxisOrder> axes,
                      std::shared_ptr<AxisMappingReplayTree> decisions)
       : axes(axes), axisIndex(-1 /* incremented to 0 upon setupNextAxis */),
-        decisions(decisions), availableSpace(), extentRemaining(-1) {}
+        decisions(decisions), availableSpace(), extentRemaining(-1),
+        uid(nextUid.fetch_add(1, std::memory_order_relaxed)) {}
 
   TypedValue<LogicalMeshAxisType> currentAxis() const {
     assert(!finalized());
@@ -296,12 +325,26 @@ public:
   std::size_t getTotalAxisCount() const { return axes->size(); }
   int64_t getExtentRemaining() const { return extentRemaining; }
   const auto &getAvailableSpace() const { return availableSpace; }
+  uint64_t getUid() const { return uid; }
+  std::optional<uint64_t> getParentUid() const { return parentUid; }
 
+  // Branches the search tree: used by StrategyExplorer to turn one node into
+  // several real candidates. The child gets a fresh uid with this node as
+  // its parent.
   std::shared_ptr<StrategySearchNode> makeChild() const {
     auto childDecisions = AxisMappingReplayTree::makeChild(decisions);
-    auto childNode = std::shared_ptr<StrategySearchNode>(
-        new StrategySearchNode(*this, childDecisions));
-    return childNode;
+    return std::shared_ptr<StrategySearchNode>(
+        new StrategySearchNode(*this, childDecisions, IdentityMode::Branch));
+  }
+
+  // Forks a working copy that keeps this node's uid/parentUid. For a caller
+  // that needs a derived node only to mutate and discard (e.g. heuristic
+  // completion ahead of scoring), so it does not count as a new branch in the
+  // search tree.
+  std::shared_ptr<StrategySearchNode> clone() const {
+    auto childDecisions = AxisMappingReplayTree::makeChild(decisions);
+    return std::shared_ptr<StrategySearchNode>(
+        new StrategySearchNode(*this, childDecisions, IdentityMode::Preserve));
   }
 
   void setupNextAxis(LogicalAxisOverlap &overlap,
@@ -818,30 +861,60 @@ public:
 // nested under the operation the calling pass is currently processing --
 // our clone is a disconnected top-level module). Reports pipeline success
 // through `pipelineOk`.
+//
+// When `originalModule` carries distributed.logging_root, the clone also gets
+// per-candidate logging (checkpoint IR dumps and collective counts).
+// `suppressLogging` turns that off, for a caller replaying a node that was
+// already logged when it was scored.
 static OwningOpRef<ModuleOp> cloneAndApplyDecisions(
     ModuleOp originalModule, const std::shared_ptr<StrategySearchNode> &node,
     bool disableVerifier, llvm::StringRef dumpKernelModulesTo,
     llvm::StringRef actTarget, llvm::StringRef actWorkerDirRoot,
-    llvm::StringRef actWorkerScriptDir, bool &pipelineOk) {
+    llvm::StringRef actWorkerScriptDir, bool &pipelineOk,
+    bool suppressLogging = false) {
   IRMapping mapper;
   OwningOpRef<ModuleOp> clonedModule(
       cast<ModuleOp>(originalModule->clone(mapper)));
 
+  // The pipeline's passes learn which candidate they are working on from
+  // distributed.logging_candidate_uid on their own module, the same way they
+  // learn the log destination from distributed.logging_root. It is stamped
+  // only when logging is active, so non-logging clones carry no logging
+  // attributes.
+  bool loggingActive =
+      !suppressLogging && originalModule->hasAttr("distributed.logging_root");
+  if (loggingActive) {
+    Builder builder(originalModule.getContext());
+    (*clonedModule)
+        ->setAttr("distributed.logging_candidate_uid",
+                  builder.getI64IntegerAttr(node->getUid()));
+  }
+
   PassManager pm(originalModule.getContext(), ModuleOp::getOperationName());
   pm.enableVerifier(!disableVerifier);
   pm.addPass(ApplyPartialDecisions::create(node, mapper));
+  {
+    // Dumps the decided-but-not-yet-lowered clone, before any of
+    // buildDistributedSearchLoweringPipeline's passes run. A no-op unless
+    // logging is active, like every other checkpoint instance.
+    DumpDistributedLoggingCheckpointPassOptions checkpointOptions;
+    checkpointOptions.checkpointName = "00-after-decisions";
+    pm.addPass(createDumpDistributedLoggingCheckpointPass(checkpointOptions));
+  }
   // Kernel inlining and collective lowering run for every candidate (see
   // buildDistributedSearchLoweringPipeline): scoring needs the same fully
   // materialized IR shape (no kernel wrappers, no abstract collectives) that
   // ScheduleGraphAnalysis builds its cost graph from on the eventual winner,
   // so a candidate's simulated score can never disagree with how it would
   // actually be costed once chosen. Only schedule reordering (a physical IR
-  // rewrite with nothing left for scoring to read afterward) stays gated to
-  // the winner alone.
-  buildDistributedSearchLoweringPipeline(pm, /*lowerLogicalAxes=*/false,
-                                         dumpKernelModulesTo,
-                                         /*finalizeSchedule=*/false, actTarget,
-                                         actWorkerDirRoot, actWorkerScriptDir);
+  // rewrite with nothing left for scoring to read afterward) is gated to the
+  // winner alone, except that it also runs for every candidate when logging
+  // is active (reorderForLogging), so each 03-final checkpoint is
+  // post-reorder.
+  buildDistributedSearchLoweringPipeline(
+      pm, /*lowerLogicalAxes=*/false, dumpKernelModulesTo,
+      /*finalizeSchedule=*/false, actTarget, actWorkerDirRoot,
+      actWorkerScriptDir, /*reorderForLogging=*/loggingActive);
   pipelineOk = succeeded(pm.run(*clonedModule));
   return clonedModule;
 }
@@ -849,15 +922,22 @@ static OwningOpRef<ModuleOp> cloneAndApplyDecisions(
 // Prints a debug dump of `module`, the cloned/partially-rewritten IR for one
 // search candidate, distinguishing what kind of dump this is (`header`) and,
 // when available, its search score and a one-line `note` on how the score
-// was computed.
+// was computed. `uid`/`parentUid` identify the StrategySearchNode this
+// candidate came from, so a chain of dumps can be reassembled into the
+// search tree that produced them.
 static void dumpSearchModule(llvm::StringRef header, ModuleOp module,
-                             bool pipelineOk,
+                             bool pipelineOk, uint64_t uid,
+                             std::optional<uint64_t> parentUid,
                              std::optional<double> score = std::nullopt,
                              llvm::StringRef note = "") {
   llvm::errs() << "// " << header << " (" << (pipelineOk ? "ok" : "FAILED");
   if (score)
     llvm::errs() << ", score=" << *score;
   llvm::errs() << "):\n";
+  llvm::errs() << "// uid=" << uid;
+  if (parentUid)
+    llvm::errs() << " parent_uid=" << *parentUid;
+  llvm::errs() << "\n";
   if (!note.empty()) {
     std::string commented = note.str();
     for (size_t at = commented.find('\n'); at != std::string::npos;
@@ -885,6 +965,169 @@ static std::string describeTimeline(const TimelineResult &result,
   return text;
 }
 
+// The ScheduleGraph and TimelineResult a feasible scoreLowered() call builds
+// to compute its makespan, kept so per-candidate logging can serialize them.
+struct ScoredSchedule {
+  ScheduleGraph graph;
+  TimelineResult timeline;
+};
+
+// Serializes `value` to `path` so a concurrent reader never observes a
+// partially-written file. Errors are reported on `diagnosticModule`.
+static LogicalResult writeJsonAtomically(ModuleOp diagnosticModule,
+                                         llvm::StringRef path,
+                                         const llvm::json::Value &value) {
+  std::string text;
+  llvm::raw_string_ostream(text) << value;
+
+  // Write to a sibling .tmp file, then rename over `path`.
+  llvm::SmallString<128> tmpPath(path);
+  tmpPath += ".tmp";
+  std::error_code ec;
+  {
+    llvm::raw_fd_ostream os(tmpPath, ec, llvm::sys::fs::OF_None);
+    if (ec)
+      return diagnosticModule.emitError()
+             << "distributed-search-strategies: failed to open '" << tmpPath
+             << "' for writing: " << ec.message();
+    os << text;
+  }
+  if (auto renameEc = llvm::sys::fs::rename(tmpPath, path))
+    return diagnosticModule.emitError()
+           << "distributed-search-strategies: failed to publish '" << path
+           << "': " << renameEc.message();
+  return success();
+}
+
+// A feasible candidate's compute time split between real ACT accelerator
+// dispatches and everything else (ordinary ops, plus ACT's zero-cost
+// stage/fetch calls, which add no time to either bucket).
+struct ComputeTimeSplit {
+  double acceleratorTime = 0;
+  double cpuTime = 0;
+  int64_t numAcceleratorLaunches = 0;
+};
+
+static ComputeTimeSplit splitComputeTime(const ScheduleGraph &graph,
+                                         const TimelineResult &timeline) {
+  ComputeTimeSplit split;
+  for (size_t i = 0, e = graph.nodes.size(); i < e; ++i) {
+    const ScheduleEvent &node = graph.nodes[i];
+    if (node.kind != ScheduleEventKind::Compute)
+      continue;
+    double duration = timeline.finish[i] - timeline.start[i];
+    if (node.isAcceleratorLaunch) {
+      split.acceleratorTime += duration;
+      ++split.numAcceleratorLaunches;
+    } else {
+      split.cpuTime += duration;
+    }
+  }
+  return split;
+}
+
+// JSON `null` for a non-finite double (this model only ever produces
+// -infinity, for an unscored/infeasible candidate's heuristic_score): JSON
+// has no infinity literal, and llvm::json's own serializer (OStream::value)
+// prints a non-finite double via a plain "%g", yielding literal "-inf" text
+// that is not valid JSON.
+static llvm::json::Value jsonDoubleOrNull(double value) {
+  return std::isfinite(value) ? llvm::json::Value(value)
+                              : llvm::json::Value(nullptr);
+}
+
+// JSON `null` for an absent collectives count. The counts are stamped on a
+// candidate's clone only once its pipeline reaches the counting checkpoints
+// (see DumpDistributedLoggingCheckpointPass's count-collectives-as option), so
+// a pipeline failure leaves them unset.
+static llvm::json::Value jsonInt64OrNull(std::optional<int64_t> value) {
+  return value ? llvm::json::Value(*value) : llvm::json::Value(nullptr);
+}
+
+// Writes Candidates/<uid>/info.json for one scored candidate, plus
+// schedule.json when `schedule` is present (a feasible, fully simulated
+// candidate).
+//
+// Called for every scored candidate, including a pipeline failure or an
+// infeasible collective graph. Both have no `schedule`, so their info.json
+// has no `summary` block and no schedule.json is written.
+// `numCollectivesBefore`/`numCollectivesAfter` are absent when the pipeline
+// did not reach both counting checkpoints (see
+// DumpDistributedLoggingCheckpointPass), as always happens on a pipeline
+// failure.
+static LogicalResult
+writeCandidateLog(ModuleOp originalModule, llvm::StringRef loggingRoot,
+                  const StrategySearchNode &node, bool pipelineOk,
+                  double heuristicScore,
+                  const std::optional<ScoredSchedule> &schedule,
+                  std::optional<int64_t> numCollectivesBefore,
+                  std::optional<int64_t> numCollectivesAfter) {
+  llvm::SmallString<128> candidateDir(loggingRoot);
+  llvm::sys::path::append(candidateDir, "Candidates",
+                          llvm::Twine(node.getUid()));
+  if (auto ec = llvm::sys::fs::create_directories(candidateDir))
+    return originalModule.emitError()
+           << "distributed-search-strategies: failed to create '"
+           << candidateDir << "': " << ec.message();
+
+  llvm::json::Object info;
+  info["uid"] = static_cast<int64_t>(node.getUid());
+  info["parent_uid"] =
+      node.getParentUid()
+          ? llvm::json::Value(static_cast<int64_t>(*node.getParentUid()))
+          : llvm::json::Value(nullptr);
+  info["pipeline_ok"] = pipelineOk;
+  info["heuristic_score"] = jsonDoubleOrNull(heuristicScore);
+  info["num_collectives_before"] = jsonInt64OrNull(numCollectivesBefore);
+  info["num_collectives_after"] = jsonInt64OrNull(numCollectivesAfter);
+
+  if (schedule) {
+    ComputeTimeSplit split =
+        splitComputeTime(schedule->graph, schedule->timeline);
+    llvm::json::Object summary;
+    summary["num_act_kernel_matches"] = split.numAcceleratorLaunches;
+    summary["accelerator_compute_time"] = split.acceleratorTime;
+    summary["cpu_compute_time"] = split.cpuTime;
+    summary["idle_time"] = schedule->timeline.totalComputeIdleTime;
+    summary["communication_time"] = schedule->timeline.totalCommunicationTime;
+    summary["total_time"] = schedule->timeline.makespan;
+    info["summary"] = std::move(summary);
+  }
+
+  llvm::SmallString<128> infoPath(candidateDir);
+  llvm::sys::path::append(infoPath, "info.json");
+  if (failed(writeJsonAtomically(originalModule, infoPath,
+                                 llvm::json::Value(std::move(info)))))
+    return failure();
+
+  if (!schedule)
+    return success();
+
+  llvm::json::Array nodes;
+  for (size_t i = 0, e = schedule->graph.nodes.size(); i < e; ++i) {
+    const ScheduleEvent &event = schedule->graph.nodes[i];
+    llvm::json::Array predecessors;
+    for (size_t pred : event.predecessors)
+      predecessors.push_back(static_cast<int64_t>(pred));
+    llvm::json::Object nodeObj;
+    nodeObj["index"] = static_cast<int64_t>(i);
+    nodeObj["kind"] = toString(event.kind);
+    nodeObj["description"] = describeEvent(event);
+    nodeObj["start"] = schedule->timeline.start[i];
+    nodeObj["finish"] = schedule->timeline.finish[i];
+    nodeObj["predecessors"] = std::move(predecessors);
+    nodes.push_back(std::move(nodeObj));
+  }
+  llvm::json::Object scheduleJson;
+  scheduleJson["makespan"] = schedule->timeline.makespan;
+  scheduleJson["nodes"] = std::move(nodes);
+
+  llvm::SmallString<128> schedulePath(candidateDir);
+  llvm::sys::path::append(schedulePath, "schedule.json");
+  return writeJsonAtomically(originalModule, schedulePath,
+                             llvm::json::Value(std::move(scheduleJson)));
+}
+
 class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
   ModuleOp originalModule;
   bool dumpCandidates;
@@ -900,6 +1143,10 @@ class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
   size_t numScored = 0;
   size_t numPlanFailures = 0;
   std::string firstPlanFailure;
+  // Candidates whose nested PassManager in cloneAndApplyDecisions failed
+  // (pipelineOk=false). numPlanFailures separately counts candidates that
+  // lowered but scored -infinity because a collective could not be planned.
+  size_t numPipelineErrors = 0;
 
 public:
   StrategyScorer(ModuleOp originalModule, bool dumpCandidates,
@@ -922,15 +1169,19 @@ public:
   size_t getNumScored() const { return numScored; }
   size_t getNumPlanFailures() const { return numPlanFailures; }
   const std::string &getFirstPlanFailure() const { return firstPlanFailure; }
+  size_t getNumPipelineErrors() const { return numPipelineErrors; }
 
   // Scores a module that lowered successfully, describing the score in
-  // `note`. Infeasible modules score -infinity.
-  double scoreLowered(ModuleOp lowered, std::string &note) {
+  // `note`. A feasible candidate's graph and timeline are returned in
+  // `schedule` for logging; an infeasible module scores -infinity and leaves
+  // `schedule` unset.
+  double scoreLowered(ModuleOp lowered, std::string &note,
+                      std::optional<ScoredSchedule> &schedule) {
     // `lowered` is a disposable, one-shot clone with no surrounding
-    // AnalysisManager to cache through (see cloneAndApplyDecisions), so the
-    // analysis is built directly rather than via getAnalysis<>().
-    ScheduleGraphAnalysis analysis(lowered);
-    const ScheduleGraph &graph = analysis.getGraph();
+    // AnalysisManager to cache through (see cloneAndApplyDecisions). The graph
+    // is built directly with buildScheduleGraph, which returns it by value so
+    // it can be moved into `schedule` below.
+    ScheduleGraph graph = buildScheduleGraph(lowered);
     if (!graph.feasible) {
       if (numPlanFailures++ == 0)
         firstPlanFailure = graph.failureReason;
@@ -943,7 +1194,9 @@ public:
     DeviceCostParams device = deviceCostParamsFromPhysicalMesh(physicalMesh);
     TimelineResult result = simulateScheduleGraph(graph, mesh, device);
     note = describeTimeline(result, graph.nodes.size());
-    return 0.0 - result.makespan;
+    double score = 0.0 - result.makespan;
+    schedule = ScoredSchedule{std::move(graph), std::move(result)};
+    return score;
   }
 
   // Applies and lowers the candidate's decisions on a clone, then scores it.
@@ -972,7 +1225,9 @@ public:
   double score(const std::shared_ptr<StrategySearchNode> &node) override {
     // Complete decisions on a throwaway clone so scoring can see a fully
     // decided candidate without narrowing what the real search explores.
-    std::shared_ptr<StrategySearchNode> completedNode = node->makeChild();
+    // clone() keeps `node`'s uid: the copy is discarded after scoring and is
+    // never itself a node in the search tree.
+    std::shared_ptr<StrategySearchNode> completedNode = node->clone();
     completer.complete(*completedNode);
 
     bool pipelineOk;
@@ -981,13 +1236,46 @@ public:
         actTarget, actWorkerDirRoot, actWorkerScriptDir, pipelineOk);
 
     ++numScored;
+    if (!pipelineOk)
+      ++numPipelineErrors;
     std::string note;
-    double result = pipelineOk ? scoreLowered(*clonedModule, note)
+    std::optional<ScoredSchedule> schedule;
+    double result = pipelineOk ? scoreLowered(*clonedModule, note, schedule)
                                : -std::numeric_limits<double>::infinity();
 
+    // Stamped by the 02-before-collectives and 03-final checkpoints (see
+    // DumpDistributedLoggingCheckpointPass), so absent on a pipeline failure
+    // or when logging is off.
+    std::optional<int64_t> numCollectivesBefore, numCollectivesAfter;
+    if (pipelineOk) {
+      if (auto attr = (*clonedModule)
+                          ->getAttrOfType<IntegerAttr>(
+                              "distributed.logging_num_collectives_before"))
+        numCollectivesBefore = attr.getInt();
+      if (auto attr = (*clonedModule)
+                          ->getAttrOfType<IntegerAttr>(
+                              "distributed.logging_num_collectives_after"))
+        numCollectivesAfter = attr.getInt();
+    }
+
+    // Every scored candidate is logged, not only finalized ones, so the search
+    // tree can be reconstructed afterward (see writeCandidateLog).
+    if (auto loggingRoot = originalModule->getAttrOfType<StringAttr>(
+            "distributed.logging_root"))
+      if (failed(writeCandidateLog(
+              originalModule, loggingRoot.getValue(), *node, pipelineOk, result,
+              schedule, numCollectivesBefore, numCollectivesAfter))) {
+        // A write failure (already reported by writeCandidateLog) indicates a
+        // broken logging destination, e.g. a full or unwritable disk. Abort
+        // the whole search, as fail-on-bad-candidate does for a pipeline
+        // failure, since continuing would silently drop logged data.
+        sawBadCandidate = true;
+        queue.abort();
+      }
+
     if (dumpCandidates)
-      dumpSearchModule("Search candidate", *clonedModule, pipelineOk, result,
-                       note);
+      dumpSearchModule("Search candidate", *clonedModule, pipelineOk,
+                       node->getUid(), node->getParentUid(), result, note);
 
     if (!pipelineOk && failOnBadCandidate && !sawBadCandidate) {
       sawBadCandidate = true;
@@ -996,8 +1284,8 @@ public:
       // bug immediately instead of it being masked by the search discarding
       // the candidate and moving on.
       if (!dumpCandidates)
-        dumpSearchModule("Search candidate", *clonedModule, pipelineOk, result,
-                         note);
+        dumpSearchModule("Search candidate", *clonedModule, pipelineOk,
+                         node->getUid(), node->getParentUid(), result, note);
       originalModule.emitError()
           << "distributed-search-strategies: failing outright because "
              "fail-on-bad-candidate is set and a search candidate's "
@@ -1010,6 +1298,208 @@ public:
     return result;
   }
 };
+
+// Writes <loggingRoot>/Main/info.json once the search has finished:
+// per-compilation counts, and which candidate (if any) won.
+static LogicalResult
+writeMainInfoJson(ModuleOp moduleOp, llvm::StringRef loggingRoot,
+                  size_t numLogicalAxes, const StrategyScorer &scorer,
+                  const std::shared_ptr<StrategySearchNode> &best) {
+  llvm::json::Object info;
+  info["num_logical_axes"] = static_cast<int64_t>(numLogicalAxes);
+  if (auto moduleName = moduleOp->getAttrOfType<StringAttr>(
+          "distributed.logging_module_name"))
+    info["input_module_name"] = moduleName.getValue();
+  else
+    info["input_module_name"] = nullptr;
+  if (auto commit =
+          moduleOp->getAttrOfType<StringAttr>("distributed.logging_commit"))
+    info["commit_or_version"] = commit.getValue();
+  else
+    info["commit_or_version"] = nullptr;
+  info["best_candidate_uid"] =
+      best ? llvm::json::Value(static_cast<int64_t>(best->getUid()))
+           : llvm::json::Value(nullptr);
+  info["num_candidates_scored"] = static_cast<int64_t>(scorer.getNumScored());
+  info["num_candidates_pipeline_errored"] =
+      static_cast<int64_t>(scorer.getNumPipelineErrors());
+  info["num_candidates_infeasible"] =
+      static_cast<int64_t>(scorer.getNumPlanFailures());
+
+  llvm::SmallString<128> finalPath(loggingRoot);
+  llvm::sys::path::append(finalPath, "Main", "info.json");
+  return writeJsonAtomically(moduleOp, finalPath,
+                             llvm::json::Value(std::move(info)));
+}
+
+// Writes <loggingRoot>/Main/logical_axes.json: every logical/device-local
+// axis in the module, keyed by a distributed.logging_id that this walk mints
+// and stamps on each axis op.
+//
+// Axis ops are created by several passes that do not know whether logging is
+// active, so ids are minted here, gated like every other logging output.
+// logging_id therefore exists on a module only when logging is on.
+// resolvePartitioningAxesToLoggingIds relies on this having already stamped
+// every axis op.
+//
+// Broader than findAllLogicalAxes, which collects only LogicalMeshAxesOps with
+// live users (the axes the search decides over). A DeviceLocalAxisOp is never
+// searched over but still occupies a slot in a tensor's sharding index space,
+// so it is listed here too.
+static LogicalResult writeLogicalAxesJson(ModuleOp moduleOp,
+                                          llvm::StringRef loggingRoot) {
+  llvm::json::Array axesJson;
+  int64_t nextLoggingId = 1;
+  Builder builder(moduleOp.getContext());
+  moduleOp.walk([&](Operation *op) {
+    llvm::StringRef kind;
+    uint64_t extent;
+    if (auto axesOp = dyn_cast<LogicalMeshAxesOp>(op)) {
+      kind = "logical_mesh";
+      extent = axesOp.getExtent();
+    } else if (auto localOp = dyn_cast<DeviceLocalAxisOp>(op)) {
+      kind = "device_local";
+      extent = localOp.getExtent();
+    } else {
+      return;
+    }
+    int64_t loggingId = nextLoggingId++;
+    op->setAttr("distributed.logging_id", builder.getI64IntegerAttr(loggingId));
+    llvm::json::Object entry;
+    entry["logging_id"] = loggingId;
+    entry["extent"] = static_cast<int64_t>(extent);
+    entry["kind"] = kind;
+    axesJson.push_back(std::move(entry));
+  });
+
+  llvm::json::Object root;
+  root["axes"] = std::move(axesJson);
+  llvm::SmallString<128> path(loggingRoot);
+  llvm::sys::path::append(path, "Main", "logical_axes.json");
+  return writeJsonAtomically(moduleOp, path,
+                             llvm::json::Value(std::move(root)));
+}
+
+// Resolves each of `kernelOp`'s partitioning_axes operands (its ordered
+// logical-axis index space, see DistributedKernelOp's description) to the
+// distributed.logging_id of the LogicalMeshAxesOp/DeviceLocalAxisOp behind it.
+//
+// Assumes the def-chain ClusterDistributedKernels.cpp builds for every
+// operand (kernelPartitioningAxes there): an axis.product wrapping exactly
+// one axis.factor, whose axis operand is the axis op itself. That is the only
+// site that builds partitioning_axes at the point this pass walks the module
+// (MergeAdjacentTrivialKernels, the other creator of DistributedKernelOp, runs
+// later in the per-candidate lowering pipeline), so the chain is asserted.
+// Also requires writeLogicalAxesJson to have already stamped logging_id.
+static llvm::SmallVector<int64_t>
+resolvePartitioningAxesToLoggingIds(DistributedKernelOp kernelOp) {
+  llvm::SmallVector<int64_t> loggingIds;
+  loggingIds.reserve(kernelOp.getPartitioningAxes().size());
+  for (Value axisOperand : kernelOp.getPartitioningAxes()) {
+    auto factorGroup = cast<TypedValue<FactorGroupType>>(axisOperand);
+    auto factors = getProductProvenanceFactors(factorGroup);
+    assert(succeeded(factors) &&
+           "a DistributedKernelOp's partitioning_axes operand is always "
+           "built via axis.product (viewFactorsAsProduct)");
+    assert(factors->size() == 1 &&
+           "a kernel's own partitioning_axes group always wraps exactly one "
+           "factor (ClusterDistributedKernels.cpp's kernelPartitioningAxes)");
+    auto axisValue = getFactorProvenanceAxis((*factors)[0]);
+    assert(succeeded(axisValue) &&
+           "a partitioning-axis factor is always built via axis.factor "
+           "(viewAxisAsFactor)");
+    Operation *axisDefOp = axisValue->getDefiningOp();
+    auto loggingId =
+        axisDefOp->getAttrOfType<IntegerAttr>("distributed.logging_id");
+    assert(loggingId && "writeLogicalAxesJson stamps every LogicalMeshAxesOp/"
+                        "DeviceLocalAxisOp in the module before this walk "
+                        "runs, and the two are only ever called together, "
+                        "in that order, from runOnOperation");
+    loggingIds.push_back(loggingId.getInt());
+  }
+  return loggingIds;
+}
+
+// Resolves one IndexedTensorShardingAttr's index-space fields
+// (dim_partitioning_axes and unreduced_axes, both indices into the owning
+// DistributedKernelOp's partitioning_axes list) to logging ids.
+static llvm::json::Object
+shardingToJson(IndexedTensorShardingAttr sharding,
+               llvm::ArrayRef<int64_t> axisIndexToLoggingId) {
+  llvm::json::Array dims;
+  for (DenseI64ArrayAttr dimAxes : sharding.getDimPartitioningAxes()) {
+    llvm::json::Array dimIds;
+    for (int64_t idx : dimAxes.asArrayRef())
+      dimIds.push_back(axisIndexToLoggingId[idx]);
+    dims.push_back(std::move(dimIds));
+  }
+  llvm::json::Array unreducedIds;
+  for (int64_t idx : sharding.getUnreducedAxes().asArrayRef())
+    unreducedIds.push_back(axisIndexToLoggingId[idx]);
+  llvm::json::Object obj;
+  obj["dims"] = std::move(dims);
+  obj["unreduced_axes"] = std::move(unreducedIds);
+  return obj;
+}
+
+static llvm::json::Array
+shardingsToJson(IndexedTensorShardingPerValueAttr perValue,
+                llvm::ArrayRef<int64_t> axisIndexToLoggingId) {
+  llvm::json::Array result;
+  for (IndexedTensorShardingAttr sharding : perValue.getShardings())
+    result.push_back(shardingToJson(sharding, axisIndexToLoggingId));
+  return result;
+}
+
+// Writes <loggingRoot>/Main/op_axis_tags.json: the op-to-logical-axis
+// correspondence that ClusterDistributedKernels fixes before search starts. A
+// candidate only decides which physical factor binds to a logical axis, so one
+// walk over the original module covers every candidate.
+static LogicalResult writeOpAxisTagsJson(ModuleOp moduleOp,
+                                         llvm::StringRef loggingRoot) {
+  llvm::json::Array opsJson;
+  llvm::DenseMap<Operation *, llvm::SmallVector<int64_t>> kernelAxisCache;
+  moduleOp.walk([&](Operation *op) {
+    auto argShardings = op->getAttrOfType<IndexedTensorShardingPerValueAttr>(
+        "distributed.argument_shardings");
+    auto outShardings = op->getAttrOfType<IndexedTensorShardingPerValueAttr>(
+        "distributed.output_shardings");
+    if (!argShardings && !outShardings)
+      return;
+
+    // ClusterDistributedKernels.cpp is the only site that sets these
+    // attributes, and only on ops inside a DistributedKernelOp body.
+    auto kernelOp = op->getParentOfType<DistributedKernelOp>();
+    assert(kernelOp && "distributed.argument_shardings/output_shardings only "
+                       "ever appears on a DistributedKernelOp body member");
+    Operation *kernelOpPtr = kernelOp.getOperation();
+
+    auto cacheIt = kernelAxisCache.find(kernelOpPtr);
+    if (cacheIt == kernelAxisCache.end())
+      cacheIt = kernelAxisCache
+                    .try_emplace(kernelOpPtr,
+                                 resolvePartitioningAxesToLoggingIds(kernelOp))
+                    .first;
+    llvm::ArrayRef<int64_t> axisIndexToLoggingId = cacheIt->second;
+
+    llvm::json::Object entry;
+    entry["location"] = mlir::debugString(op->getLoc());
+    if (argShardings)
+      entry["argument_shardings"] =
+          shardingsToJson(argShardings, axisIndexToLoggingId);
+    if (outShardings)
+      entry["output_shardings"] =
+          shardingsToJson(outShardings, axisIndexToLoggingId);
+    opsJson.push_back(std::move(entry));
+  });
+
+  llvm::json::Object root;
+  root["ops"] = std::move(opsJson);
+  llvm::SmallString<128> path(loggingRoot);
+  llvm::sys::path::append(path, "Main", "op_axis_tags.json");
+  return writeJsonAtomically(moduleOp, path,
+                             llvm::json::Value(std::move(root)));
+}
 
 struct DistributedSearchStrategiesPass
     : public impl::DistributedSearchStrategiesPassBase<
@@ -1046,6 +1536,23 @@ struct DistributedSearchStrategiesPass
     ModuleOp moduleOp = getOperation();
     mlir::OpBuilder builder(moduleOp.getContext());
     builder.clearInsertionPoint();
+
+    // Walks the original module before any candidate is cloned from it. The
+    // op-to-logical-axis correspondence these files record is the same for
+    // every candidate, so it is written once here.
+    //
+    // Assumes kernel-body ops still carry the distributed.argument_shardings/
+    // output_shardings that the shardy-to-distributed pipeline stamped; those
+    // are stripped only per candidate, inside the lowering pipeline.
+    // writeOpAxisTagsJson reads the logging_id that writeLogicalAxesJson
+    // stamps, so the two must run in this order.
+    if (auto loggingRoot =
+            moduleOp->getAttrOfType<StringAttr>("distributed.logging_root")) {
+      if (failed(writeLogicalAxesJson(moduleOp, loggingRoot.getValue())))
+        return signalPassFailure();
+      if (failed(writeOpAxisTagsJson(moduleOp, loggingRoot.getValue())))
+        return signalPassFailure();
+    }
 
     auto overlap = LogicalAxisOverlap(moduleOp);
 
@@ -1115,36 +1622,63 @@ struct DistributedSearchStrategiesPass
              "(first reason: "
           << scorer.getFirstPlanFailure() << ")";
 
+    // A hard pipeline failure (a bug or config error) is a different failure
+    // mode than an infeasible collective above, so it is counted separately.
+    if (scorer.getNumPipelineErrors() > 0)
+      moduleOp.emitRemark()
+          << "distributed-search-strategies: " << scorer.getNumPipelineErrors()
+          << " of " << scorer.getNumScored()
+          << " scored candidates had a hard lowering-pipeline failure";
+
+    // getBest() returns a field BeamSearchDriver already tracks during run(),
+    // so it can be read here, ahead of the dump logic below, for
+    // Main/info.json.
+    auto best = driver.getBest();
+
+    if (auto loggingRoot =
+            moduleOp->getAttrOfType<StringAttr>("distributed.logging_root"))
+      if (failed(writeMainInfoJson(moduleOp, loggingRoot.getValue(),
+                                   axes->size(), scorer, best)))
+        return signalPassFailure();
+
     // Only dumped once the search is complete, so finalized candidates aren't
     // interleaved with the in-progress ones dumpCandidates prints during the
-    // search itself.
+    // search itself. Each node here was already logged when scored during the
+    // search, so this replay passes suppressLogging=true: it exists only for
+    // dumpSearchModule's stderr output and must not overwrite the real
+    // Candidates/<uid>/ log.
     if (dumpFinalized) {
       for (const auto &node : driver.getFinalized()) {
         bool pipelineOk;
         OwningOpRef<ModuleOp> clonedModule = cloneAndApplyDecisions(
             moduleOp, node, disableVerifier, /*dumpKernelModulesTo=*/"",
-            actTarget, actWorkerDirRoot, actWorkerScriptDir, pipelineOk);
+            actTarget, actWorkerDirRoot, actWorkerScriptDir, pipelineOk,
+            /*suppressLogging=*/true);
         std::string note;
+        std::optional<ScoredSchedule> schedule;
         if (pipelineOk)
-          scorer.scoreLowered(*clonedModule, note);
+          scorer.scoreLowered(*clonedModule, note, schedule);
         dumpSearchModule("Finalized search candidate", *clonedModule,
-                         pipelineOk, node->score, note);
+                         pipelineOk, node->getUid(), node->getParentUid(),
+                         node->score, note);
       }
     }
 
-    auto best = driver.getBest();
-
+    // As with dumpFinalized above, `best` was already logged during scoring.
     if (dumpBest) {
       if (best) {
         bool pipelineOk;
         OwningOpRef<ModuleOp> clonedModule = cloneAndApplyDecisions(
             moduleOp, best, disableVerifier, /*dumpKernelModulesTo=*/"",
-            actTarget, actWorkerDirRoot, actWorkerScriptDir, pipelineOk);
+            actTarget, actWorkerDirRoot, actWorkerScriptDir, pipelineOk,
+            /*suppressLogging=*/true);
         std::string note;
+        std::optional<ScoredSchedule> schedule;
         if (pipelineOk)
-          scorer.scoreLowered(*clonedModule, note);
+          scorer.scoreLowered(*clonedModule, note, schedule);
         dumpSearchModule("Best search candidate", *clonedModule, pipelineOk,
-                         best->score, note);
+                         best->getUid(), best->getParentUid(), best->score,
+                         note);
       } else {
         llvm::errs() << "// Best search candidate: none found (no finalized "
                         "candidates)\n";

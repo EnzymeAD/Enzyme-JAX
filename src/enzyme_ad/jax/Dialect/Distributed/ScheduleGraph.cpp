@@ -150,8 +150,18 @@ void appendComputeNode(Operation &op, const DeviceCostParams &device,
     alias(valueNode, result, index);
 }
 
-// The cost, in cycles, of calling `op`'s resolved callee, if it is one of
-// ACT's own bodyless declarations:
+// The cost ACT declared for a call to one of its own bodyless declarations
+// (see actCalleeCostCycles).
+struct ActCalleeCost {
+  double cycles;
+  // True for a real accelerator dispatch (an act.cost-bearing callee); false
+  // for a zero-cost stage/fetch call (act.role-bearing, no cost of its own).
+  bool isRealLaunch;
+};
+
+// The cost, in cycles, of calling `op`'s resolved callee (and whether that
+// callee is a real accelerator launch), if it is one of ACT's own bodyless
+// declarations:
 //   - an accelerator-launch declaration (@act_launch, per the ACT plan
 //     doc's real sample) carries a real cycle count in its act.cost
 //     attribute.
@@ -164,14 +174,14 @@ void appendComputeNode(Operation &op, const DeviceCostParams &device,
 // (buildKernelNodes falls back to costing the call as an ordinary op via
 // appendComputeNode, buildBlockNodes falls back to the hard-barrier
 // handling in buildCallNode).
-std::optional<double> actCalleeCostCycles(Operation *op) {
+std::optional<ActCalleeCost> actCalleeCostCycles(Operation *op) {
   Operation *calleeOp = cast<CallOpInterface>(op).resolveCallable();
   if (!calleeOp)
     return std::nullopt;
   if (FloatAttr cost = calleeOp->getAttrOfType<FloatAttr>("act.cost"))
-    return cost.getValueAsDouble();
+    return ActCalleeCost{cost.getValueAsDouble(), /*isRealLaunch=*/true};
   if (calleeOp->hasAttrOfType<StringAttr>("act.role"))
-    return 0.0;
+    return ActCalleeCost{0.0, /*isRealLaunch=*/false};
   return std::nullopt;
 }
 
@@ -182,7 +192,7 @@ std::optional<double> actCalleeCostCycles(Operation *op) {
 // so there is no reason to treat the call as a scope-wide hard barrier
 // (buildCallNode) or recurse into it (appendComputeNode via costOp would
 // just see an opaque, likely memref-typed, unknown op).
-void appendActCalleeNode(Operation *op, double costCycles,
+void appendActCalleeNode(Operation *op, ActCalleeCost cost,
                          const DeviceCostParams &device,
                          std::vector<ScheduleEvent> &nodes,
                          llvm::DenseMap<Value, size_t> &valueNode,
@@ -190,7 +200,8 @@ void appendActCalleeNode(Operation *op, double costCycles,
   ScheduleEvent event;
   event.kind = ScheduleEventKind::Compute;
   event.op = op;
-  event.isolatedDuration = costCycles / device.clockFrequency;
+  event.isAcceleratorLaunch = cost.isRealLaunch;
+  event.isolatedDuration = cost.cycles / device.clockFrequency;
   // The simulator (ScheduleSimulator.cpp) drives kComputeResource occupancy
   // off computeCost.flops/.bytes, not isolatedDuration directly. Leaving
   // flops at 0 would make this node look like it claims no compute resource
@@ -239,8 +250,8 @@ void buildKernelNodes(DistributedKernelOp kernel,
     if (isa<DistributedYieldOp>(op))
       continue;
     if (isa<CallOpInterface>(op))
-      if (std::optional<double> costCycles = actCalleeCostCycles(&op)) {
-        appendActCalleeNode(&op, *costCycles, device, nodes, valueNode,
+      if (std::optional<ActCalleeCost> cost = actCalleeCostCycles(&op)) {
+        appendActCalleeNode(&op, *cost, device, nodes, valueNode,
                             lastMemrefToucher);
         continue;
       }
@@ -557,8 +568,8 @@ bool buildBlockNodes(Block &block, GraphBuildContext &ctx, ScheduleGraph &graph,
       // it must never become a node of its own.
       continue;
     } else if (isa<CallOpInterface>(op)) {
-      if (std::optional<double> costCycles = actCalleeCostCycles(op)) {
-        appendActCalleeNode(op, *costCycles, ctx.device, graph.nodes, valueNode,
+      if (std::optional<ActCalleeCost> cost = actCalleeCostCycles(op)) {
+        appendActCalleeNode(op, *cost, ctx.device, graph.nodes, valueNode,
                             lastMemrefToucher);
         // Falls through to the ordinary pendingBarrier wiring below, the
         // same as any other Compute node built in this loop: a bodyless ACT

@@ -12,6 +12,7 @@
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Pass/AnalysisManager.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/MainFunctionAnalysis.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -376,6 +377,19 @@ void dumpOperationAxes(llvm::raw_ostream &os, Block *block,
 mlir::RankedTensorType getLocalTensorType(
     mlir::RankedTensorType globalType,
     llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes);
+
+// Creates a new axis for `symbol` and returns it viewed as a factor: a
+// DeviceLocalAxisOp if `axisAnalysis` says the symbol must never be sharded
+// across the mesh, otherwise a LogicalMeshAxesOp. Device-local axes stay in a
+// tensor's axes so every factor keeps its position within its dimension.
+//
+// Always creates a new op. Callers own their symbol-to-factor cache (and any
+// reuse of axes the wider analysis already knows about) and call this only on
+// a cache miss.
+mlir::TypedValue<mlir::enzyme::axis::AxisFactorType>
+createLogicalAxisFactor(AxisSymbol symbol,
+                        ShardyLogicalAxisAnalysis &axisAnalysis,
+                        mlir::OpBuilder &builder, mlir::Location loc);
 
 } // namespace mlir::enzyme::distributed
 

@@ -281,20 +281,8 @@ struct ClusterDistributedKernelsPass
     }
     // otherwise, we need to instantiate a new axis,
     // then turn it into a factor.
-    Value axisValue;
-    if (axisAnalysis.isUnshardable(symbol)) {
-      axisValue = axis_builder
-                      ->create<mlir::enzyme::distributed::DeviceLocalAxisOp>(
-                          *axis_loc, symbol.getExtent())
-                      .getAxis();
-    } else {
-      axisValue = axis_builder
-                      ->create<mlir::enzyme::distributed::LogicalMeshAxesOp>(
-                          *axis_loc, symbol.getExtent())
-                      .getAxis();
-    }
     auto as_factor =
-        axis::viewAxisAsFactor(axisValue, *axis_builder, *axis_loc);
+        createLogicalAxisFactor(symbol, axisAnalysis, *axis_builder, *axis_loc);
     symbolToLogicalAxis[symbol] = as_factor;
     return as_factor;
   }

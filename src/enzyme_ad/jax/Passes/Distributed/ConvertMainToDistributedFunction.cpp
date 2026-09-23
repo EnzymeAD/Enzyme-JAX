@@ -38,20 +38,8 @@ static TV_AxisFactor getOrCreateLogicalAxisForSymbol(
   if (it != symbolToLogicalAxis.end()) {
     return it->second;
   }
-
-  Value axisValue;
-  if (axisAnalysis.isUnshardable(symbol)) {
-    axisValue = axisBuilder
-                    .create<mlir::enzyme::distributed::DeviceLocalAxisOp>(
-                        axisLoc, symbol.getExtent())
-                    .getAxis();
-  } else {
-    axisValue = axisBuilder
-                    .create<mlir::enzyme::distributed::LogicalMeshAxesOp>(
-                        axisLoc, symbol.getExtent())
-                    .getAxis();
-  }
-  auto as_factor = axis::viewAxisAsFactor(axisValue, axisBuilder, axisLoc);
+  auto as_factor =
+      createLogicalAxisFactor(symbol, axisAnalysis, axisBuilder, axisLoc);
   symbolToLogicalAxis[symbol] = as_factor;
   return as_factor;
 }

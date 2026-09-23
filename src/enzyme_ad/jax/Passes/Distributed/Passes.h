@@ -45,6 +45,11 @@ void registerShardyToDistributedPipeline();
 // picks; it defaults to true for the real pipeline, but per-candidate
 // scoring passes false explicitly.
 //
+// `reorderForLogging` also runs distributed-reorder-schedule when
+// `finalizeSchedule` is false, so the 03-final logging checkpoint shows
+// post-reorder IR for a non-winning candidate too. cloneAndApplyDecisions
+// passes true exactly when logging is active, for every candidate.
+//
 // `actTarget`/`actWorkerDirRoot`/`actWorkerScriptDir` are forwarded to
 // LowerKernelsToExecutable to activate real ACT dispatch (see that pass's
 // options for their meaning); they default to off. distributed-search-
@@ -56,7 +61,7 @@ void buildDistributedSearchLoweringPipeline(
     OpPassManager &pm, bool lowerLogicalAxes = true,
     llvm::StringRef dumpKernelModulesTo = "", bool finalizeSchedule = true,
     llvm::StringRef actTarget = "", llvm::StringRef actWorkerDirRoot = "",
-    llvm::StringRef actWorkerScriptDir = "");
+    llvm::StringRef actWorkerScriptDir = "", bool reorderForLogging = false);
 void registerDistributedSearchLoweringPipeline();
 
 #define GEN_PASS_DECL

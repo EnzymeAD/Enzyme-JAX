@@ -46,6 +46,14 @@ struct ScheduleEvent {
   // Compute only: the op's roofline footprint.
   OpCost computeCost;
 
+  // Compute only: true for a call to one of ACT's act.cost-bearing
+  // accelerator-launch declarations. False for everything else costed as a
+  // Compute event: an ordinary op, an ACT stage/fetch call (zero cost), or
+  // any other plain function call. Lets per-candidate logging
+  // (SearchStrategies.cpp) split compute time between accelerator dispatches
+  // and the CPU remainder.
+  bool isAcceleratorLaunch = false;
+
   // FunctionCall only: the callee's own event graph, built independently as
   // its own fresh scheduling scope (see the "hard barrier" note below).
   // Always non-null and feasible for a FunctionCall event: an unresolved

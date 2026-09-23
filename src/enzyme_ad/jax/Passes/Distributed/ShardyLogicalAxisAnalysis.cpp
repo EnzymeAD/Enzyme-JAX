@@ -1287,4 +1287,19 @@ void dumpOperationAxes(llvm::raw_ostream &os, Block *block,
   }
   os << "===== End Logical Axes per Operation =====\n";
 }
+
+TypedValue<axis::AxisFactorType>
+createLogicalAxisFactor(AxisSymbol symbol,
+                        ShardyLogicalAxisAnalysis &axisAnalysis,
+                        OpBuilder &builder, Location loc) {
+  Value axisValue;
+  if (axisAnalysis.isUnshardable(symbol)) {
+    axisValue =
+        builder.create<DeviceLocalAxisOp>(loc, symbol.getExtent()).getAxis();
+  } else {
+    axisValue =
+        builder.create<LogicalMeshAxesOp>(loc, symbol.getExtent()).getAxis();
+  }
+  return axis::viewAxisAsFactor(axisValue, builder, loc);
+}
 } // namespace mlir::enzyme::distributed

@@ -10,7 +10,7 @@ void buildDistributedSearchLoweringPipeline(
     OpPassManager &pm, bool lowerLogicalAxes,
     llvm::StringRef dumpKernelModulesTo, bool finalizeSchedule,
     llvm::StringRef actTarget, llvm::StringRef actWorkerDirRoot,
-    llvm::StringRef actWorkerScriptDir) {
+    llvm::StringRef actWorkerScriptDir, bool reorderForLogging) {
   LowerKernelsPassOptions options;
   options.lowerLogicalAxes = lowerLogicalAxes;
   // CanonicalizeShardedFactorOrder must run first: both InlineDeviceLocalAxes
@@ -70,9 +70,13 @@ void buildDistributedSearchLoweringPipeline(
   // reaching ACT dispatch, whether the eventual winner or a per-candidate
   // scoring clone, needs it hoisted out first.
   pm.addPass(createHoistKernelPartitionIdPass());
-  // Runs last so that whatever it dispatches (or, for now, dumps) per kernel
-  // reflects the fully merged and cleaned-up IR above, not an intermediate
-  // state with dead axis-algebra ops still attached.
+  {
+    DumpDistributedLoggingCheckpointPassOptions checkpointOptions;
+    checkpointOptions.checkpointName = "01-before-act";
+    pm.addPass(createDumpDistributedLoggingCheckpointPass(checkpointOptions));
+  }
+  // Runs after all the kernel merging and cleanup above, so whatever it
+  // dispatches or dumps per kernel reflects the final merged IR.
   LowerKernelsToExecutablePassOptions executableOptions;
   executableOptions.dumpKernelModulesTo = dumpKernelModulesTo.str();
   executableOptions.actTarget = actTarget.str();
@@ -89,11 +93,30 @@ void buildDistributedSearchLoweringPipeline(
   // run here rather than being gated to the winner. Schedule reordering is
   // different: it physically reorders ops to match a simulated admission
   // order, which is only meaningful, and only wanted, once on the single
-  // candidate ultimately chosen, so it alone stays behind finalizeSchedule.
+  // candidate ultimately chosen, so it alone stays behind finalizeSchedule
+  // (or reorderForLogging, see that parameter's doc comment).
   pm.addPass(createInlineKernelsPass());
+  {
+    DumpDistributedLoggingCheckpointPassOptions checkpointOptions;
+    checkpointOptions.checkpointName = "02-before-collectives";
+    checkpointOptions.countCollectivesAs =
+        "distributed.logging_num_collectives_before";
+    pm.addPass(createDumpDistributedLoggingCheckpointPass(checkpointOptions));
+  }
   pm.addPass(createLowerCollectivesPass());
-  if (finalizeSchedule)
+  if (finalizeSchedule || reorderForLogging)
     pm.addPass(createReorderSchedulePass());
+  // This dump no-ops unless logging is active (see
+  // DumpDistributedLoggingCheckpointPass), and cloneAndApplyDecisions sets
+  // reorderForLogging exactly when logging is active. So whenever it writes
+  // anything, distributed-reorder-schedule has already run above.
+  {
+    DumpDistributedLoggingCheckpointPassOptions checkpointOptions;
+    checkpointOptions.checkpointName = "03-final";
+    checkpointOptions.countCollectivesAs =
+        "distributed.logging_num_collectives_after";
+    pm.addPass(createDumpDistributedLoggingCheckpointPass(checkpointOptions));
+  }
 }
 
 namespace {
@@ -137,6 +160,15 @@ struct DistributedSearchLoweringPipelineOptions
       *this, "act-worker-script-dir",
       llvm::cl::desc("Forwarded to distributed-lower-kernels-to-executable."),
       llvm::cl::init("")};
+  Option<bool> reorderForLogging{
+      *this, "reorder-for-logging",
+      llvm::cl::desc(
+          "Also run distributed-reorder-schedule when finalize-schedule is "
+          "false, so the 03-final logging checkpoint (see "
+          "DumpDistributedLoggingCheckpointPass) shows post-reorder IR even "
+          "for a candidate that is not the real winner. Has no effect when "
+          "finalize-schedule is true (its default). Default: false"),
+      llvm::cl::init(false)};
 };
 } // namespace
 
@@ -150,7 +182,8 @@ void registerDistributedSearchLoweringPipeline() {
         buildDistributedSearchLoweringPipeline(
             pm, options.lowerLogicalAxes, options.dumpKernelModulesTo,
             options.finalizeSchedule, options.actTarget,
-            options.actWorkerDirRoot, options.actWorkerScriptDir);
+            options.actWorkerDirRoot, options.actWorkerScriptDir,
+            options.reorderForLogging);
       });
 }
 
