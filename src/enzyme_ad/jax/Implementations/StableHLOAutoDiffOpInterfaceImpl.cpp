@@ -379,13 +379,6 @@ public:
   }
 };
 
-// The adjoints of a stablehlo.if / stablehlo.case's results, read once in
-// front of the reverse op, which then zeroes them (as the scf.if reverse
-// does); an inactive result gets a null entry. The branches only consume the
-// values. Leaving the adjoints set is not harmless: the op's results can be
-// defined one region below a loop body (the op sits in a branch of another
-// if), where the loop does not re-zero adjoints between iterations, so the
-// next iteration's reverse would consume this iteration's adjoint again.
 static SmallVector<Value> takeResultAdjoints(Operation *orig,
                                              OpBuilder &builder,
                                              MGradientUtilsReverse *gutils) {
