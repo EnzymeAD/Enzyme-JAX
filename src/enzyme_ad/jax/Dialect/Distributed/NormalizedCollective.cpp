@@ -311,7 +311,14 @@ normalizeCollective(DistributedCollectiveOp collective,
   }
 
   Type elementType = inputType.getElementType();
-  int64_t elementBytes = (elementType.getIntOrFloatBitWidth() + 7) / 8;
+  // A complex element is two components (ComputeCost.h's R7 counts it
+  // the same way); getIntOrFloatBitWidth asserts on a complex type.
+  unsigned bits = isa<ComplexType>(elementType)
+                      ? 2 * cast<ComplexType>(elementType)
+                                .getElementType()
+                                .getIntOrFloatBitWidth()
+                      : elementType.getIntOrFloatBitWidth();
+  int64_t elementBytes = (bits + 7) / 8;
 
   ReductionKind kind = ReductionKind::None;
   for (Region &body : collective.getReductionBodies()) {

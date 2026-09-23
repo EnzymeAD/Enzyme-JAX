@@ -17,7 +17,28 @@ namespace mlir::enzyme::distributed {
 
 namespace {
 
+// Guards a divide against a genuinely zero (not merely small) flops-domain
+// denominator: a utilization ratio's denominator, or a rate-needed event's
+// isolatedDuration - latency, both still floating point. Integer
+// nanosecond time-domain quantities compare against 0 exactly and need no
+// epsilon.
 constexpr double kEpsilon = 1e-9;
+
+// The smallest integer number of nanoseconds `dt` such that
+// `dt * scale >= remaining` (`scale` in (0, 1]), i.e. how long the event with
+// `remaining` nanoseconds of work left takes to finish at its current
+// fair-share rate. Always at least 1 when `remaining > 0`, which is what
+// guarantees the simulator always makes forward progress: unlike a floating
+// point `remaining / scale`, this never rounds down to a `dt` too small to
+// finish anything. Clamped well short of overflow for a pathologically small
+// `scale` (many contenders splitting one resource), since a caller adds this
+// to the current time.
+int64_t ceilTimeToFinish(int64_t remaining, double scale) {
+  double raw = std::ceil(static_cast<double>(remaining) / scale);
+  constexpr double kMaxSafeDt = 4.0e18;
+  return raw > kMaxSafeDt ? static_cast<int64_t>(kMaxSafeDt)
+                          : static_cast<int64_t>(raw);
+}
 
 // One event's demand normalized into a per-resource rate: how fast it would
 // consume each resource it needs, running alone, to finish exactly at
@@ -30,7 +51,8 @@ struct RateNeeded {
 std::vector<RateNeeded> computeRateNeeded(const SimGraph &graph) {
   std::vector<RateNeeded> rateNeeded(graph.events.size());
   for (auto [event, rate] : llvm::zip(graph.events, rateNeeded)) {
-    double denom = std::max(event.isolatedDuration - event.latency, kEpsilon);
+    double denom = std::max(
+        static_cast<double>(event.isolatedDuration - event.latency), kEpsilon);
     for (auto [resource, amount] : event.demand)
       rate.rates.emplace_back(resource, amount / denom);
   }
@@ -129,8 +151,8 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
                         size_t kMaxInFlight) {
   size_t n = graph.events.size();
   TimelineResult result;
-  result.start.assign(n, 0.0);
-  result.finish.assign(n, 0.0);
+  result.start.assign(n, 0);
+  result.finish.assign(n, 0);
   if (n == 0)
     return result;
 
@@ -165,13 +187,11 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
   std::vector<size_t> noopReady;
 
   std::vector<State> state(n, State::Blocked);
-  std::vector<double> waitUntil(n, 0.0);
-  std::vector<double> remainingWork(n, 0.0);
+  std::vector<int64_t> waitUntil(n, 0);
+  std::vector<int64_t> remainingWork(n, 0);
   size_t doneCount = 0;
 
-  auto isNoop = [&](size_t i) {
-    return graph.events[i].isolatedDuration <= kEpsilon;
-  };
+  auto isNoop = [&](size_t i) { return graph.events[i].isolatedDuration <= 0; };
   auto becomeReady = [&](size_t i) {
     state[i] = State::Ready;
     if (isNoop(i))
@@ -194,7 +214,7 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
   // time, so admission must refuse a second exclusiveCompute event even if
   // kMaxInFlight has headroom (see the admission loop below).
   bool computeEngineBusy = false;
-  auto finishEvent = [&](size_t i, double finishTime) {
+  auto finishEvent = [&](size_t i, int64_t finishTime) {
     result.finish[i] = finishTime;
     state[i] = State::Done;
     ++doneCount;
@@ -214,7 +234,7 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
     if (blocked[i] == 0)
       becomeReady(i);
 
-  double time = 0.0;
+  int64_t time = 0;
   while (doneCount < n) {
     // Noop fast path: drain every zero-cost ready event before admission,
     // looping since finishing one can make another noop ready. These never
@@ -259,7 +279,7 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
       ready.push(i);
 
     for (size_t i : active)
-      if (state[i] == State::LatencyWait && waitUntil[i] <= time + kEpsilon) {
+      if (state[i] == State::LatencyWait && waitUntil[i] <= time) {
         state[i] = State::Transferring;
         remainingWork[i] =
             graph.events[i].isolatedDuration - graph.events[i].latency;
@@ -280,7 +300,7 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
         transferring.push_back(i);
     std::vector<size_t> contenders;
     for (size_t i : transferring) {
-      if (remainingWork[i] <= kEpsilon) {
+      if (remainingWork[i] <= 0) {
         finishEvent(i, time);
         removeFromActive(i);
       } else {
@@ -304,7 +324,8 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
       continue;
     }
 
-    double nextTime = std::numeric_limits<double>::infinity();
+    constexpr int64_t kNoBoundary = std::numeric_limits<int64_t>::max();
+    int64_t nextTime = kNoBoundary;
     for (size_t i : active)
       if (state[i] == State::LatencyWait)
         nextTime = std::min(nextTime, waitUntil[i]);
@@ -321,19 +342,25 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
       scale = priorityDispatch(contenders, rateNeeded, resources.capacity);
       for (size_t k = 0; k < contenders.size(); ++k)
         if (scale[k] > 0)
-          nextTime = std::min(nextTime,
-                              time + remainingWork[contenders[k]] / scale[k]);
+          nextTime = std::min(
+              nextTime,
+              time + ceilTimeToFinish(remainingWork[contenders[k]], scale[k]));
     }
 
-    assert(std::isfinite(nextTime) &&
+    assert(nextTime != kNoBoundary &&
            "no event can make progress: the schedule graph has a cycle or an "
            "unmodeled dependency, which ScheduleGraph.h should never produce "
            "from valid IR");
-    double dt = nextTime - time;
+    int64_t dt = nextTime - time;
     time = nextTime;
     for (size_t k = 0; k < contenders.size(); ++k) {
-      remainingWork[contenders[k]] -= scale[k] * dt;
-      if (remainingWork[contenders[k]] <= kEpsilon) {
+      // The work a contender not sharing the boundary's own bottleneck
+      // resource made over dt, rounded to the nearest nanosecond (see
+      // CollectiveCost.h's Units note); the contender whose own
+      // ceilTimeToFinish set nextTime is guaranteed to reach <= 0 here, since
+      // ceiling rounds its dt up to at least what finishing it needs.
+      remainingWork[contenders[k]] -= std::llround(scale[k] * dt);
+      if (remainingWork[contenders[k]] <= 0) {
         finishEvent(contenders[k], time);
         removeFromActive(contenders[k]);
       }
@@ -351,7 +378,7 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
   // Compute time is a plain sum of Compute events' durations: exclusiveCompute
   // already guarantees at most one is ever active, so no interval union is
   // needed.
-  std::vector<std::pair<double, double>> commIntervals;
+  std::vector<std::pair<int64_t, int64_t>> commIntervals;
   double totalFlopsExecuted = 0;
   for (size_t i = 0; i < n; ++i) {
     const SimEvent &event = graph.events[i];
@@ -365,7 +392,7 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
     }
   }
   llvm::sort(commIntervals);
-  double mergedStart = 0, mergedEnd = -1;
+  int64_t mergedStart = 0, mergedEnd = -1;
   for (auto &[start, finish] : commIntervals) {
     if (start > mergedEnd) {
       if (mergedEnd >= mergedStart)
@@ -379,15 +406,17 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
   if (mergedEnd >= mergedStart)
     result.totalCommunicationTime += mergedEnd - mergedStart;
 
-  double peakFlopsWindow = resources.capacity[kComputeResource] * result.makespan;
+  double peakFlopsWindow =
+      resources.capacity[kComputeResource] * result.makespan;
   result.averageComputeUtilization =
       peakFlopsWindow > kEpsilon ? totalFlopsExecuted / peakFlopsWindow : 0.0;
   result.totalComputeIdleTime = result.makespan - result.totalComputeTime;
   double peakFlopsWhileActive =
       resources.capacity[kComputeResource] * result.totalComputeTime;
   result.averageActiveComputeUtilization =
-      peakFlopsWhileActive > kEpsilon ? totalFlopsExecuted / peakFlopsWhileActive
-                                      : 0.0;
+      peakFlopsWhileActive > kEpsilon
+          ? totalFlopsExecuted / peakFlopsWhileActive
+          : 0.0;
 
   return result;
 }

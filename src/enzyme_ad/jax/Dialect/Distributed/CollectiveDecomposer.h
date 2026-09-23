@@ -346,7 +346,8 @@ struct CollectivePlan {
   Value resultPort;
   std::vector<PrimitiveStep> chain;
 
-  double totalDuration() const;
+  // Exact: a sum of already-integer nanosecond step durations.
+  int64_t totalDuration() const;
 };
 
 // Normalizes `collective` and decomposes it. Returns nullopt and sets

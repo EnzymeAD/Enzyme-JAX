@@ -9,6 +9,7 @@
 #include "mlir/IR/BuiltinOps.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -69,12 +70,13 @@ struct ScheduleEvent {
   // callee body to build a nested graph from.
   std::unique_ptr<ScheduleGraph> calleeGraph;
 
-  // max(flops/F, bytes/M) for a Compute event, step.isolatedDuration() for a
-  // Communication event: the time the event would take running alone, at the
-  // device/mesh parameters buildScheduleGraph resolved. Kept on the event
-  // itself, rather than recomputed later, since a future timeline simulation
-  // needs it as-is per event and it is cheap to compute once, here, from the
-  // same OpCost/PrimitiveStep this node already carries.
+  // Nanoseconds: round(max(flops/F, bytes/M)) for a Compute event,
+  // step.isolatedDuration() for a Communication event: the time the event
+  // would take running alone, at the device/mesh parameters
+  // buildScheduleGraph resolved. Kept on the event itself, rather than
+  // recomputed later, since a future timeline simulation needs it as-is per
+  // event and it is cheap to compute once, here, from the same
+  // OpCost/PrimitiveStep this node already carries.
   //
   // For a FunctionCall event this is only a placeholder: the sum of the
   // callee graph's own node durations, i.e. what the callee would take
@@ -82,7 +84,7 @@ struct ScheduleEvent {
   // internal events could exploit, so it is an overestimate whenever the
   // callee has such overlap. A real duration needs a timeline simulator that
   // actually schedules the callee body and reports its makespan.
-  double isolatedDuration = 0;
+  int64_t isolatedDuration = 0;
 
   // Direct predecessors, within this event's own scheduling scope (see
   // ScheduleGraph): SSA operand producers; for a step after the first in its

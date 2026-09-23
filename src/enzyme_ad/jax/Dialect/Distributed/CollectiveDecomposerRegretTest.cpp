@@ -188,7 +188,9 @@ public:
       e = std::max<uint64_t>(e, 1);
     return {std::move(collective),
             MeshCostParams(axisExtents, bandwidth,
-                           std::vector<double>(numAxes, 0.01), 0.1),
+                           std::vector<int64_t>(
+                               numAxes, MeshCostParams::kDefaultRoundLatency),
+                           MeshCostParams::kDefaultLaunchLatency),
             description};
   }
 
@@ -305,8 +307,8 @@ MeshAtomRole mesh(size_t axis) {
 // axes: keeping only the top-ranked variant must still find the exact
 // optimum, the variant the exact search picks.
 TEST(CollectiveDecomposerRegret, VariantRankingKeepsTheOptimum) {
-  MeshCostParams params({2, 2, 2, 2}, {1, 1, 4, 16}, {0.01, 0.01, 0.01, 0.01},
-                        0.1);
+  MeshCostParams params({2, 2, 2, 2}, {1, 1, 4, 16}, {1000, 1000, 1000, 1000},
+                        5000);
   std::vector<NormalizedCollective> collectives(2);
   // A reduce whose result moves to another atom (D15 against the half-split).
   collectives[0].meshAtoms = {

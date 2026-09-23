@@ -7,12 +7,14 @@
 namespace mlir::enzyme::distributed {
 
 // Cost parameters read from the optional performance attributes of a
-// PhysicalMeshOp. Every attribute that is absent falls back to an abstract
+// PhysicalMeshOp. Every attribute that is absent falls back to an SI-derived
 // default.
 //
-// Units are abstract. All numbers of one mesh live in one consistent but
-// arbitrary system (bytes per time unit, FLOP per time unit, time units), and
-// only the relative strength of compute versus communication affects a search.
+// The IR-level attributes (Ops.td) stay plain SI doubles (bytes, seconds,
+// FLOP/s, bytes/s, Hz) for readability in a mesh string; meshCostParams/
+// deviceCostParamsFromPhysicalMesh convert them once, here, into the integer
+// nanosecond/bytes-per-nanosecond representation CollectiveCost.h's footprint
+// math and the schedule simulator use throughout.
 
 // Per-axis bandwidth and round latency and the launch latency of `mesh`, with
 // axis extents taken from its axes. Defaults are the MeshCostParams constants.
@@ -20,37 +22,45 @@ MeshCostParams meshCostParamsFromPhysicalMesh(PhysicalMeshOp mesh);
 
 // Peak throughput of one device.
 //
-// Defaults are chosen relative to the default network bandwidth of 1 byte per
-// time unit: a device with a memory bandwidth 20 times, and a peak FLOP rate
-// 2000 times, that of one network port. That is the ratio of a device with
-// roughly 100 TFLOP/s and 1 TB/s of memory bandwidth to a 50 GB/s link, and
-// the balance point (flops / memBandwidth) of 100 FLOP per byte is typical of
-// accelerators.
+// Defaults describe an H100 class accelerator at FP32/TF32 precision: about
+// 100 TFLOP/s and 3 TB/s of HBM bandwidth (a balance point of about 33 FLOP
+// per byte) at a 1.5 GHz clock. Against the default 50 GB/s network port this
+// is 2000 FLOP per network byte.
 struct DeviceCostParams {
-  // Peak FLOP per time unit.
+  // Peak FLOP per nanosecond.
   double flops;
-  // Peak local memory bytes per time unit.
+  // Peak local memory bytes per nanosecond.
   double memBandwidth;
-  // Cycles per time unit, i.e. the device's clock rate expressed in this
-  // model's own time unit. Nothing in the roofline model itself is
-  // denominated in cycles; this parameter exists solely to convert an
-  // ACT-reported act.cost (a cycle count) into that time unit (see
-  // ScheduleGraph.cpp's act.cost handling).
+  // Cycles per nanosecond, i.e. the device's clock rate. Nothing in the
+  // roofline model itself is denominated in cycles; this parameter exists
+  // solely to convert an ACT-reported act.cost (a cycle count) into
+  // nanoseconds (see actCyclesToNs and ScheduleGraph.cpp's act.cost
+  // handling).
   double clockFrequency;
+  // Dimensionless factor applied to every act.cost before the clock
+  // conversion. Calibrates ACT's simulator against this model, e.g. when ACT
+  // simulates a part with a different clock, PE count or memory system than
+  // the modeled device, or is systematically optimistic next to the
+  // roofline estimate of the same kernel.
+  double actCostScale;
 
-  static constexpr double kDefaultFlops = 2000.0;
-  static constexpr double kDefaultMemBandwidth = 20.0;
-  // No real device is calibrated against yet, so the default treats a cycle
-  // as exactly one time unit: absent an explicit device_clock_frequency, an
-  // act.cost is trusted to already be in this model's time unit rather than
-  // guessing a conversion factor.
-  static constexpr double kDefaultClockFrequency = 1.0;
+  static constexpr double kDefaultFlops = 1.0e5;
+  static constexpr double kDefaultMemBandwidth = 3.0e3;
+  static constexpr double kDefaultClockFrequency = 1.5;
+  static constexpr double kDefaultActCostScale = 1.0;
 
   DeviceCostParams(double flops = kDefaultFlops,
                    double memBandwidth = kDefaultMemBandwidth,
-                   double clockFrequency = kDefaultClockFrequency)
+                   double clockFrequency = kDefaultClockFrequency,
+                   double actCostScale = kDefaultActCostScale)
       : flops(flops), memBandwidth(memBandwidth),
-        clockFrequency(clockFrequency) {}
+        clockFrequency(clockFrequency), actCostScale(actCostScale) {}
+
+  // Nanoseconds of an ACT launch that ACT costed at `cycles`, rounded to the
+  // nearest nanosecond.
+  int64_t actCyclesToNs(double cycles) const {
+    return std::llround(cycles * actCostScale / clockFrequency);
+  }
 };
 
 DeviceCostParams deviceCostParamsFromPhysicalMesh(PhysicalMeshOp mesh);

@@ -1301,10 +1301,11 @@ public:
 
 // Writes <loggingRoot>/Main/info.json once the search has finished:
 // per-compilation counts, and which candidate (if any) won.
-static LogicalResult
-writeMainInfoJson(ModuleOp moduleOp, llvm::StringRef loggingRoot,
-                  size_t numLogicalAxes, const StrategyScorer &scorer,
-                  const std::shared_ptr<StrategySearchNode> &best) {
+static LogicalResult writeMainInfoJson(
+    ModuleOp moduleOp, llvm::StringRef loggingRoot, size_t numLogicalAxes,
+    const StrategyScorer &scorer,
+    const std::shared_ptr<StrategySearchNode> &best,
+    llvm::ArrayRef<std::shared_ptr<StrategySearchNode>> finalized) {
   llvm::json::Object info;
   info["num_logical_axes"] = static_cast<int64_t>(numLogicalAxes);
   if (auto moduleName = moduleOp->getAttrOfType<StringAttr>(
@@ -1320,6 +1321,12 @@ writeMainInfoJson(ModuleOp moduleOp, llvm::StringRef loggingRoot,
   info["best_candidate_uid"] =
       best ? llvm::json::Value(static_cast<int64_t>(best->getUid()))
            : llvm::json::Value(nullptr);
+  // The candidates the search finished with (every axis decided and kept in
+  // the final beam), in the driver's order.
+  llvm::json::Array finalizedUids;
+  for (const auto &node : finalized)
+    finalizedUids.push_back(static_cast<int64_t>(node->getUid()));
+  info["finalized_candidate_uids"] = std::move(finalizedUids);
   info["num_candidates_scored"] = static_cast<int64_t>(scorer.getNumScored());
   info["num_candidates_pipeline_errored"] =
       static_cast<int64_t>(scorer.getNumPipelineErrors());
@@ -1638,7 +1645,8 @@ struct DistributedSearchStrategiesPass
     if (auto loggingRoot =
             moduleOp->getAttrOfType<StringAttr>("distributed.logging_root"))
       if (failed(writeMainInfoJson(moduleOp, loggingRoot.getValue(),
-                                   axes->size(), scorer, best)))
+                                   axes->size(), scorer, best,
+                                   driver.getFinalized())))
         return signalPassFailure();
 
     // Only dumped once the search is complete, so finalized candidates aren't

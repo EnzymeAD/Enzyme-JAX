@@ -1,5 +1,6 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 
+#include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 
@@ -70,8 +71,18 @@ struct DumpDistributedLoggingCheckpointPass
     if (countCollectivesAs.empty())
       return;
 
+    // Counts a collective at either level of the pipeline: an abstract
+    // distributed.Collective before lowering, or one of the stablehlo
+    // primitives distributed-lower-collectives emits for it afterward. A
+    // collective decomposes into one or more primitives, so the count can grow
+    // across lowering; it is zero only when nothing communicates.
     int64_t numCollectives = 0;
-    moduleOp.walk([&](DistributedCollectiveOp) { ++numCollectives; });
+    moduleOp.walk([&](Operation *op) {
+      if (isa<DistributedCollectiveOp, stablehlo::AllReduceOp,
+              stablehlo::ReduceScatterOp, stablehlo::AllGatherOp,
+              stablehlo::AllToAllOp, stablehlo::CollectivePermuteOp>(op))
+        ++numCollectives;
+    });
     Builder builder(moduleOp.getContext());
     moduleOp->setAttr(countCollectivesAs.getValue(),
                       builder.getI64IntegerAttr(numCollectives));

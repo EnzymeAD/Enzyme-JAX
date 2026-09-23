@@ -142,8 +142,9 @@ def DumpDistributedLoggingCheckpointPass
            "This instance's checkpoint filename (e.g. "
            "\"00-after-decisions\"), written as <checkpoint-name>.mlir.">,
     Option<"countCollectivesAs", "count-collectives-as", "std::string", "\"\"",
-           "Attribute name to stamp the module's current "
-           "distributed.Collective op count under (e.g. "
+           "Attribute name to stamp the module's current collective count "
+           "under: abstract distributed.Collective ops plus the stablehlo "
+           "collective primitives they lower to (e.g. "
            "distributed.logging_num_collectives_before), for a later reader "
            "(StrategyScorer) to pick back up. Empty (the default) skips "
            "counting; only the 02-before-collectives and 03-final instances "
@@ -868,9 +869,10 @@ def PrintPrimitiveFootprintsPass
     ListOption<"axes", "axes", "int64_t",
                "Physical mesh axis of each atom, parallel to extents">,
     ListOption<"bandwidths", "bandwidths", "double",
-               "Bandwidth per mesh axis; uniform 1 when omitted">,
-    Option<"latency", "latency", "double", "1.0",
-           "Latency of one round on every axis">,
+               "Bandwidth per mesh axis, in bytes/ns; uniform "
+               "MeshCostParams::kDefaultBandwidth when omitted">,
+    Option<"latency", "latency", "double", "1000.0",
+           "Latency of one round on every axis, in nanoseconds">,
     ListOption<"changedFractions", "changed-fractions", "double",
                "Collective-permute only: fraction of devices whose digit "
                "changes, one per atom">,

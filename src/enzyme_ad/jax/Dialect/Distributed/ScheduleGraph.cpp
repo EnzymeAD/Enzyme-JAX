@@ -4,6 +4,7 @@
 #include "Utilities.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/RegionKindInterface.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Interfaces/CallInterfaces.h"
@@ -139,12 +140,34 @@ void appendComputeNode(Operation &op, const DeviceCostParams &device,
   //     cost, if any, is already attributed to the stage/launch/fetch call
   //     it stages memory for (see actCalleeCostCycles).
   event.computeCost = costOp(&op).value_or(OpCost{});
-  event.isolatedDuration = event.computeCost.time(device);
+  event.isolatedDuration = std::llround(event.computeCost.time(device));
   for (Value operand : op.getOperands())
     if (std::optional<size_t> producer = lookup(valueNode, operand))
       addPredecessor(event, *producer);
   size_t index = nodes.size();
   addMemrefSideEffectEdges(op, index, event, lastMemrefToucher);
+  nodes.push_back(std::move(event));
+  for (Value result : op.getResults())
+    alias(valueNode, result, index);
+}
+
+// Appends one zero-cost Compute node for an op this graph does not cost but
+// that sits in an SSACFG block (a function body), e.g. a
+// distributed.CastGlobalToLocal left in main's body after kernel inlining.
+// The node only carries dependencies: without it, a consumer of `op`'s
+// results would look independent of `op`'s own operand producers, the
+// simulator could admit that consumer before them, and
+// distributed-reorder-schedule (which keeps every non-node op attached to the
+// node op preceding it) would then move the consumer above `op`.
+void appendPassThroughNode(Operation &op, std::vector<ScheduleEvent> &nodes,
+                           llvm::DenseMap<Value, size_t> &valueNode) {
+  ScheduleEvent event;
+  event.kind = ScheduleEventKind::Compute;
+  event.op = &op;
+  for (Value operand : op.getOperands())
+    if (std::optional<size_t> producer = lookup(valueNode, operand))
+      addPredecessor(event, *producer);
+  size_t index = nodes.size();
   nodes.push_back(std::move(event));
   for (Value result : op.getResults())
     alias(valueNode, result, index);
@@ -201,7 +224,7 @@ void appendActCalleeNode(Operation *op, ActCalleeCost cost,
   event.kind = ScheduleEventKind::Compute;
   event.op = op;
   event.isAcceleratorLaunch = cost.isRealLaunch;
-  event.isolatedDuration = cost.cycles / device.clockFrequency;
+  event.isolatedDuration = device.actCyclesToNs(cost.cycles);
   // The simulator (ScheduleSimulator.cpp) drives kComputeResource occupancy
   // off computeCost.flops/.bytes, not isolatedDuration directly. Leaving
   // flops at 0 would make this node look like it claims no compute resource
@@ -497,7 +520,7 @@ bool buildCallNode(Operation *op, GraphBuildContext &ctx, ScheduleGraph &graph,
   // simulated one. An accurate duration needs a timeline simulator that
   // actually schedules the callee body with its own internal overlap and
   // reports a makespan, which does not exist yet.
-  double proxyDuration = 0;
+  int64_t proxyDuration = 0;
   for (const ScheduleEvent &calleeNode : calleeGraph.nodes)
     proxyDuration += calleeNode.isolatedDuration;
   event.isolatedDuration = proxyDuration;
@@ -610,13 +633,22 @@ bool buildBlockNodes(Block &block, GraphBuildContext &ctx, ScheduleGraph &graph,
       // or its dissolved form is expected to be either dialect otherwise.
       appendComputeNode(*op, ctx.device, graph.nodes, valueNode,
                         lastMemrefToucher);
+    } else if (op->getNumResults() != 0 &&
+               !mayBeGraphRegion(*block.getParent())) {
+      // Any other value producer in a function body costs nothing here but
+      // still has to forward its operands' dependencies to its users (see
+      // appendPassThroughNode).
+      appendPassThroughNode(*op, graph.nodes, valueNode);
     } else {
-      // Axis-algebra / declarative distributed metadata (PhysicalMesh,
-      // GetPhysicalMeshAxes, axis.getaxis/factor/product/map, ...), a
-      // terminator (func.return, or a distributed.Yield that somehow
-      // reached block scope), and any other value producer sitting directly
-      // in a block outside these two dialects (e.g. tensor.empty) carry no
-      // runtime cost this graph models: none of them is a node here.
+      // None of these carry runtime cost this graph models, so none becomes a
+      // node here:
+      //   - axis-algebra / declarative distributed metadata (PhysicalMesh,
+      //     GetPhysicalMeshAxes, axis.getaxis/factor/product/map, ...);
+      //   - a terminator (func.return, or a distributed.Yield that somehow
+      //     reached block scope);
+      //   - a resultless op;
+      //   - any other value producer at module scope (e.g. tensor.empty),
+      //     where op order carries no dominance.
       continue;
     }
 
@@ -660,15 +692,15 @@ std::string describeEvent(const ScheduleEvent &event) {
     os << "compute " << event.op->getName()
        << ": flops=" << llvm::format("%g", event.computeCost.flops)
        << " bytes=" << llvm::format("%g", event.computeCost.bytes)
-       << " time=" << llvm::format("%g", event.isolatedDuration);
+       << " time=" << event.isolatedDuration;
   } else if (event.kind == ScheduleEventKind::Communication) {
     os << "communication " << toString(event.step.kind) << " (step "
        << event.chainIndex << "): "
-       << "time=" << llvm::format("%g", event.isolatedDuration);
+       << "time=" << event.isolatedDuration;
   } else {
     os << "call " << event.op->getName()
        << ": callee_nodes=" << event.calleeGraph->nodes.size()
-       << " time=" << llvm::format("%g", event.isolatedDuration)
+       << " time=" << event.isolatedDuration
        << " (proxy: serial sum of callee node durations, pending D2 timeline "
           "simulator)";
   }

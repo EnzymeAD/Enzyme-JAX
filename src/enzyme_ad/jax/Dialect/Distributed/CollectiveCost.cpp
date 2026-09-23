@@ -17,7 +17,7 @@ MeshCostParams::MeshCostParams(std::vector<uint64_t> extents)
 
 MeshCostParams::MeshCostParams(std::vector<uint64_t> extents,
                                std::vector<double> bw,
-                               std::vector<double> latency, double launch)
+                               std::vector<int64_t> latency, int64_t launch)
     : axisExtents(std::move(extents)), bandwidth(std::move(bw)),
       roundLatency(std::move(latency)), launchLatency(launch) {
   assert(bandwidth.size() == axisExtents.size() &&
@@ -94,9 +94,10 @@ PrimitiveStep singleAxisStep(PrimitiveKind kind,
   step.payloadOut = payloadOut;
   step.volume.assign(params.numAxes(), 0.0);
   step.volume[axis] = volume;
-  step.latency =
-      rounds == 0 ? 0.0
-                  : params.launchLatency + params.roundLatency[axis] * rounds;
+  step.latency = rounds == 0
+                     ? 0
+                     : params.launchLatency + params.roundLatency[axis] *
+                                                  static_cast<int64_t>(rounds);
   finishStep(step, params);
   return step;
 }
@@ -169,18 +170,22 @@ PrimitiveStep permuteFootprint(const std::vector<StepAtom> &atoms,
   std::vector<bool> crossed(params.numAxes(), false);
   for (size_t i = 0; i < atoms.size(); ++i) {
     assert(atoms[i].axis < params.numAxes() && "atom outside the mesh");
-    double v = payload * changeFraction[i];
+    // A device whose digit changes sends its whole payload; the step ends
+    // when the slowest such device finishes, so V is the full payload
+    // whenever any device on the axis moves. changeFraction only says how
+    // many devices move, which is average load, not per-port bytes (N3).
+    double v = changeFraction[i] > 0 ? static_cast<double>(payload) : 0.0;
     step.volume[atoms[i].axis] = std::max(step.volume[atoms[i].axis], v);
     crossed[atoms[i].axis] = crossed[atoms[i].axis] || v > 0;
   }
-  double roundLatencySum = 0;
+  int64_t roundLatencySum = 0;
   bool moves = false;
   for (size_t a = 0; a < params.numAxes(); ++a)
     if (crossed[a]) {
       moves = true;
       roundLatencySum += params.roundLatency[a];
     }
-  step.latency = moves ? params.launchLatency + roundLatencySum : 0.0;
+  step.latency = moves ? params.launchLatency + roundLatencySum : 0;
   finishStep(step, params);
   return step;
 }
@@ -220,12 +225,12 @@ std::string describeStep(const PrimitiveStep &step) {
     os << " axis" << atom.axis << "." << atom.atom << "(x" << atom.extent
        << ")";
   os << "\npayload: " << step.payloadIn << " -> " << step.payloadOut << "\n";
-  os << "latency: " << llvm::format("%g", step.latency) << "\n";
+  os << "latency: " << step.latency << "\n";
   os << "V: ";
   printNumbers(os, step.volume);
   os << "\nrho: ";
   printNumbers(os, step.rho);
-  os << "\nduration: " << llvm::format("%g", step.isolatedDuration()) << "\n";
+  os << "\nduration: " << step.isolatedDuration() << "\n";
   return message;
 }
 

@@ -60,7 +60,7 @@ void assertBlockOrderValid(Block &block) {
 struct Chunk {
   Operation *anchor;
   SmallVector<Operation *> trailer;
-  double start;
+  int64_t start;
   size_t originalIndex;
 };
 

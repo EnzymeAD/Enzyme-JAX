@@ -22,6 +22,11 @@ std::string shortest(double value) {
   return text;
 }
 
+// Nanosecond quantities (TimelineResult's start/finish/makespan/totalXTime)
+// are exact integers, printed directly instead of through shortest(double);
+// matches describeTimeline's plain-integer style (SearchStrategies.cpp).
+std::string shortestNs(int64_t value) { return std::to_string(value); }
+
 struct PrintScheduleCostPass
     : public impl::PrintScheduleCostPassBase<PrintScheduleCostPass> {
   using PrintScheduleCostPassBase::PrintScheduleCostPassBase;
@@ -60,22 +65,22 @@ struct PrintScheduleCostPass
     // distributed-print-schedule-graph, is run directly on it).
     for (auto [index, event] : llvm::enumerate(graph.nodes))
       event.op->emitRemark() << "node " << index << ": " << toString(event.kind)
-                             << " start=" << shortest(result.start[index])
-                             << " finish=" << shortest(result.finish[index]);
+                             << " start=" << shortestNs(result.start[index])
+                             << " finish=" << shortestNs(result.finish[index]);
 
     std::string criticalPath;
     llvm::raw_string_ostream criticalPathStream(criticalPath);
     llvm::interleaveComma(result.criticalPath, criticalPathStream);
     module.emitRemark() << "schedule cost: makespan="
-                        << shortest(result.makespan) << " over "
+                        << shortestNs(result.makespan) << " over "
                         << graph.nodes.size() << " nodes, critical path=["
                         << criticalPath << "]";
     module.emitRemark() << "schedule cost summary: communicating="
-                        << shortest(result.totalCommunicationTime)
-                        << " computing=" << shortest(result.totalComputeTime)
+                        << shortestNs(result.totalCommunicationTime)
+                        << " computing=" << shortestNs(result.totalComputeTime)
                         << " utilization="
                         << shortest(result.averageComputeUtilization)
-                        << " idle=" << shortest(result.totalComputeIdleTime)
+                        << " idle=" << shortestNs(result.totalComputeIdleTime)
                         << " activeUtilization="
                         << shortest(result.averageActiveComputeUtilization);
   }

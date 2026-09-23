@@ -2,6 +2,7 @@
 #define ENZYME_AD_JAX_DIALECT_DISTRIBUTED_SCHEDULE_SIMULATOR_H
 
 #include <cstddef>
+#include <cstdint>
 #include <utility>
 #include <vector>
 
@@ -104,15 +105,15 @@ struct SimEvent {
   // for by this event. Demand is in the same units as SimResources::capacity
   // (bytes for memBW/axis resources, FLOPs for compute).
   std::vector<std::pair<size_t, double>> demand;
-  // Fixed time this event waits before it starts consuming any resource
+  // Nanoseconds this event waits before it starts consuming any resource
   // (a collective's launch-plus-round latency; zero for compute).
-  double latency = 0;
-  // Time this event would take running alone at full resource allocation:
-  // latency plus however long its bottleneck resource needs. Zero here
-  // (implying both zero latency and zero demand) is the noop fast-path
-  // condition: such an event is drained immediately when ready, without
-  // occupying a kMaxInFlight slot or entering a fair-share resolve.
-  double isolatedDuration = 0;
+  int64_t latency = 0;
+  // Nanoseconds this event would take running alone at full resource
+  // allocation: latency plus however long its bottleneck resource needs.
+  // Zero here (implying both zero latency and zero demand) is the noop
+  // fast-path condition: such an event is drained immediately when ready,
+  // without occupying a kMaxInFlight slot or entering a fair-share resolve.
+  int64_t isolatedDuration = 0;
   // True for Compute-kind events with nonzero isolatedDuration: at most one
   // such event may be admitted into `active` at a time (see simulate()'s
   // admission loop), modeling that a device dispatches kernels one at a
@@ -144,13 +145,13 @@ struct SimResources {
 };
 
 struct TimelineResult {
-  // The simulated wall-clock time every event has finished by. The score:
-  // lower is better.
-  double makespan = 0;
+  // The simulated wall-clock time, in nanoseconds, every event has finished
+  // by. The score: lower is better.
+  int64_t makespan = 0;
   // Per-event start (admission out of latency wait onto the timeline) and
-  // finish time, parallel to the SimGraph's events.
-  std::vector<double> start;
-  std::vector<double> finish;
+  // finish time, in nanoseconds, parallel to the SimGraph's events.
+  std::vector<int64_t> start;
+  std::vector<int64_t> finish;
   // The DAG's own longest weighted path (by isolatedDuration, ignoring
   // resource contention), source to sink, ending at whichever event this
   // result's makespan search identified as critical. This is a static,
@@ -166,15 +167,15 @@ struct TimelineResult {
   // A caller wanting a whole-program total must add in each FunctionCall
   // event's callee TimelineResult explicitly.
 
-  // Wall-clock time during which at least one Communication event was
-  // active, i.e. the union of every Communication event's [start, finish)
-  // interval (not the sum of their durations, which would double-count
-  // overlap between independent axes or fair-shared time on one axis).
-  double totalCommunicationTime = 0;
-  // Wall-clock time the compute engine was occupied: the sum of every
-  // Compute event's own duration. exclusiveCompute guarantees at most one
-  // Compute event is ever active, so no interval union is needed here.
-  double totalComputeTime = 0;
+  // Nanoseconds during which at least one Communication event was active,
+  // i.e. the union of every Communication event's [start, finish) interval
+  // (not the sum of their durations, which would double-count overlap
+  // between independent axes or fair-shared time on one axis).
+  int64_t totalCommunicationTime = 0;
+  // Nanoseconds the compute engine was occupied: the sum of every Compute
+  // event's own duration. exclusiveCompute guarantees at most one Compute
+  // event is ever active, so no interval union is needed here.
+  int64_t totalComputeTime = 0;
   // Time-weighted average fraction of peak compute throughput actually
   // achieved: (total flops executed) / (deviceFlops * makespan).
   //
@@ -185,8 +186,8 @@ struct TimelineResult {
   // memory reads as low utilization here, not 100%.
   // 0 when makespan or the compute resource's capacity is 0.
   double averageComputeUtilization = 0;
-  // makespan minus totalComputeTime.
-  double totalComputeIdleTime = 0;
+  // makespan minus totalComputeTime, in nanoseconds.
+  int64_t totalComputeIdleTime = 0;
   // Same throughput-fraction measure as averageComputeUtilization, scaled
   // against totalComputeTime instead of makespan: the average fraction of
   // peak flops achieved during only the time the compute engine was actually

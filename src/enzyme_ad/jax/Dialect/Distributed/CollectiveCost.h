@@ -1,6 +1,7 @@
 #ifndef ENZYME_AD_JAX_DIALECT_DISTRIBUTED_COLLECTIVE_COST_H
 #define ENZYME_AD_JAX_DIALECT_DISTRIBUTED_COLLECTIVE_COST_H
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -14,6 +15,19 @@ namespace mlir::enzyme::distributed {
 // Everything here is a plain value type with no MLIR values, operations or
 // types. PrimitiveStep in particular is consumed by cost models outside this
 // file, so its field names are stable.
+//
+// Units
+// -----
+// Latency is an integer count of nanoseconds. Bandwidth is bytes per
+// nanosecond, kept as a float since real ports rarely land on an exact
+// integer byte rate.
+//   - latency is exact: it is built entirely from integer round/launch
+//     latencies.
+//   - transfer time is bandwidth-derived and stays a float until
+//     isolatedDuration() rounds the sum to the nearest nanosecond, once.
+//   - the sub-nanosecond precision this loses is immaterial next to the
+//     model's other approximations, as long as the values involved are at
+//     least in the hundreds of nanoseconds.
 //
 // Network model
 // -------------
@@ -71,25 +85,28 @@ struct MeshCostParams {
   // Extent of each physical mesh axis (not used by the closed forms; kept so
   // consumers can size arrays and validate atoms against the mesh).
   std::vector<uint64_t> axisExtents;
-  // Bytes per unit time of one device's port on each axis (N1).
+  // Bytes per nanosecond of one device's port on each axis (N1).
   std::vector<double> bandwidth;
-  // Latency of one communication round on each axis.
-  std::vector<double> roundLatency;
-  // Fixed cost of launching any collective that moves data.
-  double launchLatency;
+  // Nanoseconds of one communication round on each axis.
+  std::vector<int64_t> roundLatency;
+  // Nanoseconds of fixed cost to launch any collective that moves data.
+  int64_t launchLatency;
 
-  static constexpr double kDefaultBandwidth = 1.0;
-  static constexpr double kDefaultRoundLatency = 0.01;
-  static constexpr double kDefaultLaunchLatency = 0.1;
+  // SI-derived defaults: an InfiniBand NDR class port (400 Gb/s, i.e. 50 GB/s
+  // per direction), a 1 us hop and a 5 us collective launch, so an
+  // unannotated mesh models a uniform scale-out cluster.
+  static constexpr double kDefaultBandwidth = 50.0;
+  static constexpr int64_t kDefaultRoundLatency = 1000;
+  static constexpr int64_t kDefaultLaunchLatency = 5000;
 
-  // Uniform parameters: every axis has bandwidth 1 and round latency 0.01,
-  // and a launch costs 0.1.
+  // Uniform parameters: every axis has the default bandwidth and round
+  // latency, and a launch costs the default launch latency.
   explicit MeshCostParams(std::vector<uint64_t> axisExtents);
 
   // Explicit per-axis parameters; the three vectors have one entry per axis.
   MeshCostParams(std::vector<uint64_t> axisExtents,
                  std::vector<double> bandwidth,
-                 std::vector<double> roundLatency, double launchLatency);
+                 std::vector<int64_t> roundLatency, int64_t launchLatency);
 
   size_t numAxes() const { return axisExtents.size(); }
 };
@@ -135,18 +152,23 @@ struct PrimitiveStep {
   // Per-device bytes before and after the step.
   int64_t payloadIn = 0;
   int64_t payloadOut = 0;
-  // Launch plus per-round latency.
-  double latency = 0;
+  // Launch plus per-round latency, in nanoseconds. Built entirely from the
+  // mesh's integer round/launch latencies, so this is always exact.
+  int64_t latency = 0;
   // Per-port bytes on each physical axis (N3), indexed by axis; zero for axes
   // the step does not touch.
   std::vector<double> volume;
   // Relative demand per axis, in [0, 1]; all zero when the step moves no data.
   std::vector<double> rho;
-  // max_a V[a] / BW[a]: the time the slowest axis is busy.
+  // max_a V[a] / BW[a], in nanoseconds: the time the slowest axis is busy.
+  // Kept as a float since it is bandwidth-derived; isolatedDuration() is the
+  // one place it gets rounded.
   double transferTime = 0;
 
-  // L + max_a V[a] / BW[a].
-  double isolatedDuration() const { return latency + transferTime; }
+  // L + max_a V[a] / BW[a], rounded to the nearest nanosecond.
+  int64_t isolatedDuration() const {
+    return latency + std::llround(transferTime);
+  }
 };
 
 // Footprints. `atoms` lists the mesh atoms of the communicating group, and the
@@ -200,11 +222,12 @@ PrimitiveStep allToAllFootprint(const std::vector<StepAtom> &atoms,
 // round costs the launch latency plus the SUM of the round latencies of the
 // axes with a nonzero change fraction (N5); with a non-dimension-ordered
 // route it would be a max instead.
-// V[a] = S * changeFraction[a] where changeFraction[a] is the fraction of
-// devices whose digit on the step's atom over axis a changes. The caller
-// supplies it per atom (parallel to `atoms`); for two atoms of equal extent e
-// swapping digits it is permuteSwapChangeFraction(e) on both. If two atoms
-// share an axis, the larger fraction is used.
+// V[a] = S on every axis with a nonzero changeFraction[a], the fraction of
+// devices whose digit on the step's atom over axis a changes: a moving device
+// sends its whole payload, and the step lasts as long as its slowest device.
+// The caller supplies the fraction per atom (parallel to `atoms`); for two
+// atoms of equal extent e swapping digits it is permuteSwapChangeFraction(e)
+// on both.
 PrimitiveStep permuteFootprint(const std::vector<StepAtom> &atoms,
                                const std::vector<double> &changeFraction,
                                int64_t payload, const MeshCostParams &params);

@@ -958,25 +958,31 @@ public:
     return result;
   }
 
-  // Least summed isolated duration from `state` to completion.
-  double solve(const DecomposerState &state) {
+  // Least summed isolated duration from `state` to completion. Every term is
+  // an already-integer nanosecond count, so this sum, and the comparisons
+  // choosing the cheapest option, are exact.
+  int64_t solve(const DecomposerState &state) {
     if (auto it = memo.find(state); it != memo.end())
       return it->second.cost;
     if (exceeded || memo.size() >= maxStates) {
       exceeded = true;
-      return std::numeric_limits<double>::infinity();
+      return std::numeric_limits<int64_t>::max();
     }
     std::vector<CandidateStep> options = candidates(state);
-    Entry best{0.0, 0};
+    Entry best{0, 0};
     assert((!options.empty() || finished(state)) &&
            "unfinished units wait on dependencies that can never complete");
     if (!options.empty()) {
-      best.cost = std::numeric_limits<double>::infinity();
+      best.cost = std::numeric_limits<int64_t>::max();
       for (size_t i = 0; i < options.size(); ++i) {
-        double cost =
-            options[i].step.isolatedDuration() + solve(options[i].next);
-        // Strict comparison keeps the earlier candidate on ties, so results
-        // do not depend on floating point noise between equal-cost orders.
+        int64_t restCost = solve(options[i].next);
+        // restCost may already be the "exceeded/infeasible" sentinel; adding
+        // to it would overflow, so it propagates as-is instead.
+        int64_t cost = restCost == std::numeric_limits<int64_t>::max()
+                           ? restCost
+                           : options[i].step.isolatedDuration() + restCost;
+        // Strict comparison keeps the earlier candidate on ties, breaking
+        // them deterministically by candidate order.
         if (cost < best.cost)
           best = {cost, i};
       }
@@ -1002,7 +1008,7 @@ public:
 
 private:
   struct Entry {
-    double cost;
+    int64_t cost;
     size_t choice;
   };
 
@@ -1045,7 +1051,7 @@ plan(const NormalizedCollective &collective, const MeshCostParams &params,
 
   std::optional<std::vector<PrimitiveStep>> best;
   std::string oversizeReason;
-  double bestCost = std::numeric_limits<double>::infinity();
+  int64_t bestCost = std::numeric_limits<int64_t>::max();
   for (size_t combination = 0; combination < combinations; ++combination) {
     std::vector<size_t> choice;
     size_t rest = combination;
@@ -1076,7 +1082,7 @@ plan(const NormalizedCollective &collective, const MeshCostParams &params,
                        params, options.budget ? budgeted : options.filter,
                        options.budget ? options.budget->maxStates
                                       : PlanBudget::kUnlimited);
-    double cost = search.solve(search.initialState());
+    int64_t cost = search.solve(search.initialState());
     if (search.budgetExceeded()) {
       failureReason = "search budget exceeded (more than " +
                       std::to_string(options.budget->maxStates) +
@@ -1517,8 +1523,8 @@ bool verifyChainRealizesCollective(const NormalizedCollective &collective,
   return ChainChecker(collective).run(chain, why);
 }
 
-double CollectivePlan::totalDuration() const {
-  double total = 0;
+int64_t CollectivePlan::totalDuration() const {
+  int64_t total = 0;
   for (const PrimitiveStep &step : chain)
     total += step.isolatedDuration();
   return total;

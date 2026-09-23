@@ -3,6 +3,7 @@
 #include "src/enzyme_ad/jax/Dialect/Distributed/CollectiveCost.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace mlir::enzyme::distributed {
 
@@ -60,9 +61,9 @@ struct PrintPrimitiveFootprintsPass
     MeshCostParams params(
         std::vector<uint64_t>(numAxes, 1),
         bandwidths.empty()
-            ? std::vector<double>(numAxes, 1.0)
+            ? std::vector<double>(numAxes, MeshCostParams::kDefaultBandwidth)
             : std::vector<double>(bandwidths.begin(), bandwidths.end()),
-        std::vector<double>(numAxes, latency),
+        std::vector<int64_t>(numAxes, std::llround(latency)),
         MeshCostParams::kDefaultLaunchLatency);
 
     PrimitiveStep step;

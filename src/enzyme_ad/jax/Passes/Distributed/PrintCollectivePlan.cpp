@@ -82,7 +82,7 @@ std::string describeChain(const CollectivePlan &plan,
   std::string message;
   llvm::raw_string_ostream os(message);
   os << "chain: " << plan.chain.size() << " steps, total duration "
-     << llvm::format("%g", plan.totalDuration()) << "\n";
+     << plan.totalDuration() << "\n";
   for (size_t i = 0; i < plan.chain.size(); ++i)
     os << "step " << i << ": " << describeStep(plan.chain[i]);
   std::string why;

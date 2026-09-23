@@ -27,22 +27,20 @@ def PhysicalMeshOp
   let description = [{Declares a mesh of device targets along with their local
                           communication hierarchy.
 
-    Optional performance metadata for cost models. All values are F64 and every
-    attribute may be omitted; a consumer substitutes abstract defaults.
-    Units are arbitrary but must be consistent across all attributes of one
-    mesh: bytes per time unit, FLOP per time unit, and time units. Only the
-    relative strength of compute versus communication matters to the models.
-      - axis_bandwidths: bytes per time unit of one device's port on each axis,
-        one per entry of axes.
-      - axis_latencies: time units per communication round on each axis, one
+    Optional performance metadata for cost models. All values are F64 in SI
+    units and every attribute may be omitted; a consumer substitutes the
+    defaults of MeshCostMetadata.h (an H100 class device on a 50 GB/s port).
+      - axis_bandwidths: bytes/s of one device's port on each axis, one
+        direction, one per entry of axes.
+      - axis_latencies: seconds per communication round on each axis, one
         per entry of axes.
-      - launch_latency: time units of fixed cost to launch any collective.
-      - device_flops: peak FLOP per time unit of one device.
-      - device_mem_bandwidth: peak local memory bytes per time unit of one
-        device.
-      - device_clock_frequency: cycles per time unit of one device's clock,
-        used only to convert an ACT-reported act.cost (a cycle count) into
-        this model's time unit.
+      - launch_latency: seconds of fixed cost to launch any collective.
+      - device_flops: peak FLOP/s of one device.
+      - device_mem_bandwidth: peak local memory bytes/s of one device.
+      - device_clock_frequency: Hz, used only to convert an ACT-reported
+        act.cost (a cycle count) into nanoseconds.
+      - act_cost_scale: dimensionless calibration multiplied into every
+        act.cost before that conversion.
   }];
   let arguments = (ins SymbolNameAttr : $sym_name, StrAttr : $device_target,
                      ArrayAttr : $axes, // array of physical axis types.
@@ -51,7 +49,8 @@ def PhysicalMeshOp
                      OptionalAttr<F64Attr> : $launch_latency,
                      OptionalAttr<F64Attr> : $device_flops,
                      OptionalAttr<F64Attr> : $device_mem_bandwidth,
-                     OptionalAttr<F64Attr> : $device_clock_frequency
+                     OptionalAttr<F64Attr> : $device_clock_frequency,
+                     OptionalAttr<F64Attr> : $act_cost_scale
   );
   let assemblyFormat =
       "$sym_name `device_target` $device_target `axes` $axes attr-dict";
