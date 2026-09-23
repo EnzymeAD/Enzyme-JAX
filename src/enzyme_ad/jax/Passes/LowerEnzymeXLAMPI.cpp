@@ -17,8 +17,7 @@
 // #include "llvm/Support/LogicalResult.h"
 // #include "llvm/Support/MathExtras.h"
 // #include <algorithm>
-#include <cstdint>
-#include <limits>
+// #include <cstdint>
 
 namespace mlir {
 namespace enzyme {
@@ -803,12 +802,9 @@ struct MPIRecvOpLowering : public OpRewritePattern<enzymexla::MPIRecvOp> {
 struct MPIIsendOpLowering : public OpRewritePattern<enzymexla::MPIIsendOp> {
 
   std::string backend;
-  int32_t &nextRequestStorageInitializer;
   MPIIsendOpLowering(std::string backend, MLIRContext *context,
-                     int32_t &nextRequestStorageInitializer,
                      PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), backend(backend),
-        nextRequestStorageInitializer(nextRequestStorageInitializer) {}
+      : OpRewritePattern(context, benefit), backend(backend) {}
 
   LogicalResult matchAndRewrite(enzymexla::MPIIsendOp op,
                                 PatternRewriter &rewriter) const override {
@@ -948,16 +944,10 @@ struct MPIIsendOpLowering : public OpRewritePattern<enzymexla::MPIIsendOp> {
       // Get all orinigal op operands
       auto opOperands = op.getOperands();
 
-      // Each isend/irecv ops needs it's own storage for requests.
-      // Initialize constants with unique values so that folding doesn't
-      // cause other ops to resuse the same buffer
-      if (nextRequestStorageInitializer ==
-          std::numeric_limits<int32_t>::min())
-        return rewriter.notifyMatchFailure(
-            op, "exhausted distinct MPI request storage initializers");
+      // Create a constant tensor to hold request
       auto tensorType = RankedTensorType::get({}, i32Type);
-      auto constantAttr = DenseIntElementsAttr::get(
-          tensorType, ArrayRef<int32_t>{nextRequestStorageInitializer--});
+      auto constantAttr =
+          DenseIntElementsAttr::get(tensorType, ArrayRef<int32_t>{-1});
       Value constantTensor = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), tensorType, constantAttr);
 
@@ -997,12 +987,9 @@ struct MPIIsendOpLowering : public OpRewritePattern<enzymexla::MPIIsendOp> {
 struct MPIIrecvOpLowering : public OpRewritePattern<enzymexla::MPIIrecvOp> {
 
   std::string backend;
-  int32_t &nextRequestStorageInitializer;
   MPIIrecvOpLowering(std::string backend, MLIRContext *context,
-                     int32_t &nextRequestStorageInitializer,
                      PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), backend(backend),
-        nextRequestStorageInitializer(nextRequestStorageInitializer) {}
+      : OpRewritePattern(context, benefit), backend(backend) {}
 
   LogicalResult matchAndRewrite(enzymexla::MPIIrecvOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1143,16 +1130,10 @@ struct MPIIrecvOpLowering : public OpRewritePattern<enzymexla::MPIIrecvOp> {
       // Get all orinigal op operands
       auto opOperands = op.getOperands();
 
-      // Each isend/irecv ops needs it's own storage for requests.
-      // Initialize constants with unique values so that folding doesn't
-      // cause other ops to resuse the same buffer
-      if (nextRequestStorageInitializer ==
-          std::numeric_limits<int32_t>::min())
-        return rewriter.notifyMatchFailure(
-            op, "exhausted distinct MPI request storage initializers");
+      // Create a constant tensor to hold request
       auto tensorType = RankedTensorType::get({}, i32Type);
-      auto constantAttr = DenseIntElementsAttr::get(
-          tensorType, ArrayRef<int32_t>{nextRequestStorageInitializer--});
+      auto constantAttr =
+          DenseIntElementsAttr::get(tensorType, ArrayRef<int32_t>{-1});
       Value constantTensor = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), tensorType, constantAttr);
 
@@ -2029,17 +2010,14 @@ struct LowerEnzymeXLAMPIPass
     }
 
     RewritePatternSet patterns(context);
-    int32_t nextRequestStorageInitializer = -1;
 
     patterns.add<MPICommRankOpLowering>(backend, context);
     patterns.add<MPICommSizeOpLowering>(backend, context);
     patterns.add<MPIBarrierOpLowering>(backend, context);
     patterns.add<MPISendOpLowering>(backend, context);
     patterns.add<MPIRecvOpLowering>(backend, context);
-    patterns.add<MPIIsendOpLowering>(backend, context,
-                                     nextRequestStorageInitializer);
-    patterns.add<MPIIrecvOpLowering>(backend, context,
-                                     nextRequestStorageInitializer);
+    patterns.add<MPIIsendOpLowering>(backend, context);
+    patterns.add<MPIIrecvOpLowering>(backend, context);
     patterns.add<MPIWaitOpLowering>(backend, context);
     patterns.add<MPIWaitallOpLowering>(backend, context);
     patterns.add<MPIAllreduceOpLowering>(backend, ncclCommPtr, context);
