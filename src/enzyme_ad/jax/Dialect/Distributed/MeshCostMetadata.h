@@ -31,13 +31,26 @@ struct DeviceCostParams {
   double flops;
   // Peak local memory bytes per time unit.
   double memBandwidth;
+  // Cycles per time unit, i.e. the device's clock rate expressed in this
+  // model's own time unit. Nothing in the roofline model itself is
+  // denominated in cycles; this parameter exists solely to convert an
+  // ACT-reported act.cost (a cycle count) into that time unit (see
+  // ScheduleGraph.cpp's act.cost handling).
+  double clockFrequency;
 
   static constexpr double kDefaultFlops = 2000.0;
   static constexpr double kDefaultMemBandwidth = 20.0;
+  // No real device is calibrated against yet, so the default treats a cycle
+  // as exactly one time unit: absent an explicit device_clock_frequency, an
+  // act.cost is trusted to already be in this model's time unit rather than
+  // guessing a conversion factor.
+  static constexpr double kDefaultClockFrequency = 1.0;
 
   DeviceCostParams(double flops = kDefaultFlops,
-                   double memBandwidth = kDefaultMemBandwidth)
-      : flops(flops), memBandwidth(memBandwidth) {}
+                   double memBandwidth = kDefaultMemBandwidth,
+                   double clockFrequency = kDefaultClockFrequency)
+      : flops(flops), memBandwidth(memBandwidth),
+        clockFrequency(clockFrequency) {}
 };
 
 DeviceCostParams deviceCostParamsFromPhysicalMesh(PhysicalMeshOp mesh);

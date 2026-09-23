@@ -427,7 +427,13 @@ def LowerKernelsToExecutablePass
   let summary = "Placeholder: will dispatch each local-size distributed.kernel "
                 "body to an external compiler for executable lowering.";
   let dependentDialects = [
-    "enzyme::distributed::DistributedDialect", "mlir::func::FuncDialect"
+    "enzyme::distributed::DistributedDialect", "mlir::func::FuncDialect",
+    // act-patched-module-file parses an arbitrary external module, which may
+    // reference any dialect the real ACT output does (e.g. memref, for the
+    // alloc/subview/dealloc around each launch) -- loading a dialect lazily
+    // mid-pass isn't allowed under the PassManager's multithreading, so it
+    // must already be registered here.
+    "mlir::memref::MemRefDialect"
   ];
   let options = [
     Option<"dumpKernelModulesTo", "dump-kernel-modules-to", "std::string", "\"\"",
@@ -439,7 +445,17 @@ def LowerKernelsToExecutablePass
            "suffixed rather than indexed since this pass runs once per "
            "search candidate, sharing one directory across many runs; "
            "nothing here needs to map a dump back to the candidate or "
-           "kernel that produced it.">
+           "kernel that produced it.">,
+    Option<"actPatchedModuleFile", "act-patched-module-file", "std::string",
+           "\"\"",
+           "Test-only seam for the splice half of executable lowering, "
+           "skipping real dispatch (not wired up yet): if non-empty, parse "
+           "this single literal patched-module .mlir file (the external "
+           "compiler's own output shape -- see spliceKernelBodyModule) and "
+           "splice it into every kernel this pass walks, in place of "
+           "dispatching. Only useful for a module with a single kernel, "
+           "since there is only one file to feed for every kernel in the "
+           "walk.">
   ];
   let description = [{
     By the time this pass runs, distributed-lower-kernels has already
@@ -450,8 +466,9 @@ def LowerKernelsToExecutablePass
     an external compiler for actual executable lowering. Compilation there
     is per-kernel, so this pass's job is the walk-and-dispatch boilerplate;
     for now it only performs that walk, with dump-kernel-modules-to emitting
-    the standalone module each kernel would be dispatched as, since real
-    dispatch isn't wired up yet.
+    the standalone module each kernel would be dispatched as, and
+    act-patched-module-file exercising the splice-back-in half against a
+    literal file instead of a real dispatch, since that isn't wired up yet.
   }];
 }
 
@@ -503,10 +520,14 @@ def DistributedSearchStrategiesPass : Pass<"distributed-search-strategies", "::m
   // hard-errors or deadlocks contending on the same thread pool).
   let dependentDialects = [
     "enzyme::distributed::DistributedDialect", "enzyme::axis::AxisDialect",
-    "sdy::SdyDialect", "stablehlo::StablehloDialect", "mlir::func::FuncDialect"
+    "sdy::SdyDialect", "stablehlo::StablehloDialect", "mlir::func::FuncDialect",
+    // Needed transitively by LowerKernelsToExecutablePass, which every
+    // candidate's nested pipeline runs (see the comment above).
+    "mlir::memref::MemRefDialect"
   ];
   let options = [
     Option<"dumpCandidates", "dump-candidates", "bool", "false", "Print the cloned, partially-rewritten IR for each scored search candidate, for debugging. Default: false">,
+    Option<"dumpKernelModulesTo", "dump-kernel-modules-to", "std::string", "\"\"", "If non-empty, write each scored candidate's kernel bodies as standalone modules under this directory (see LowerKernelsToExecutablePass's own option of the same name, which this threads down into every candidate's scoring pipeline, not just the final winner's). Useful for measuring how many distinct kernel shapes a real search actually visits, independent of any external-compiler dispatch. Default: \"\"">,
     Option<"dumpFinalized", "dump-finalized", "bool", "false", "Print the cloned, partially-rewritten IR for each finalized search candidate, for debugging. Default: false">,
     Option<"dumpBest", "dump-best", "bool", "false", "Print the cloned, partially-rewritten IR for the best search candidate, for debugging. Default: false">,
     Option<"disableVerifier", "disable-verifier", "bool", "true", "Disable the MLIR verifier when running the internal lowering pipeline on each candidate clone during search, for runtime reasons. Default: true">,

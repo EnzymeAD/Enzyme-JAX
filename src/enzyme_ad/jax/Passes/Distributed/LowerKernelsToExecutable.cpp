@@ -1,4 +1,6 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Parser/Parser.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 
@@ -57,24 +59,46 @@ static LogicalResult dumpKernelModule(DistributedKernelOp kernelOp,
 
 // Placeholder for the next lowering stage. By now distributed-lower-kernels
 // has already shrunk every kernel to its local (per-device) sizes, so a
-// kernel body is just a plain, unsharded HLO subgraph -- ready to be handed
-// to an external compiler for actual executable lowering. That dispatch
-// isn't wired up yet; this pass is only the walk that will drive it,
-// compilation being per-kernel, plus a debug dump of the wire format each
-// kernel would be sent as.
+// kernel body is just a plain, unsharded HLO subgraph, ready to be handed to
+// an external compiler for actual executable lowering (compilation is
+// per-kernel). That dispatch isn't wired up yet, so this pass only performs
+// the walk that will drive it:
+//   - dump-kernel-modules-to writes the wire format each kernel would be
+//     sent as.
+//   - act-patched-module-file splices a literal patched-module file back in
+//     through spliceKernelBodyModule, standing in for a real
+//     external-compiler round trip.
 struct LowerKernelsToExecutablePass
     : public impl::LowerKernelsToExecutablePassBase<
           LowerKernelsToExecutablePass> {
   using LowerKernelsToExecutablePassBase::LowerKernelsToExecutablePassBase;
 
   void runOnOperation() override {
+    OwningOpRef<ModuleOp> testPatchedModule;
+    if (!actPatchedModuleFile.empty()) {
+      ParserConfig parserConfig(&getContext());
+      testPatchedModule =
+          parseSourceFile<ModuleOp>(actPatchedModuleFile, parserConfig);
+      if (!testPatchedModule) {
+        // parseSourceFile already emitted a diagnostic through the context's
+        // error handler.
+        signalPassFailure();
+        return;
+      }
+    }
+
     auto result = getOperation()->walk([&](DistributedKernelOp kernelOp) {
       if (!dumpKernelModulesTo.empty() &&
           failed(dumpKernelModule(kernelOp, dumpKernelModulesTo))) {
         return WalkResult::interrupt();
       }
-      // TODO: dispatch kernelOp's body to the external compiler and splice
-      // the resulting executable back in.
+      if (testPatchedModule &&
+          failed(spliceKernelBodyModule(kernelOp, *testPatchedModule))) {
+        return WalkResult::interrupt();
+      }
+      // TODO: dispatch kernelOp's body to the external compiler (once that
+      // exists, hand its result to spliceKernelBodyModule above instead of
+      // the test-only parsed file).
       return WalkResult::advance();
     });
     if (result.wasInterrupted()) {

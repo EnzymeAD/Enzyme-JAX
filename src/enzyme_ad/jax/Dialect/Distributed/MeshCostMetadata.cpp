@@ -32,6 +32,8 @@ DeviceCostParams deviceCostParamsFromPhysicalMesh(PhysicalMeshOp mesh) {
     params.flops = flops.getValueAsDouble();
   if (FloatAttr memBandwidth = mesh.getDeviceMemBandwidthAttr())
     params.memBandwidth = memBandwidth.getValueAsDouble();
+  if (FloatAttr clockFrequency = mesh.getDeviceClockFrequencyAttr())
+    params.clockFrequency = clockFrequency.getValueAsDouble();
   return params;
 }
 

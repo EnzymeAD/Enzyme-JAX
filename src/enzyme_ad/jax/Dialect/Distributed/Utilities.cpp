@@ -347,4 +347,82 @@ FailureOr<ModuleOp> buildKernelBodyModule(DistributedKernelOp kernelOp) {
   return module;
 }
 
+LogicalResult spliceKernelBodyModule(DistributedKernelOp kernelOp,
+                                     ModuleOp patchedModule) {
+  SymbolTable patchedSymbols(patchedModule);
+  auto patchedKernelFn = patchedSymbols.lookup<func::FuncOp>("kernel");
+  if (!patchedKernelFn || patchedKernelFn.isDeclaration()) {
+    return kernelOp.emitError() << "ACT-patched module has no defined "
+                                   "'kernel' function to splice in";
+  }
+
+  Block &kernelBody = kernelOp.getBody().front();
+  auto oldYield = cast<DistributedYieldOp>(kernelBody.getTerminator());
+  Block &patchedBody = patchedKernelFn.getBody().front();
+  auto patchedReturn = cast<func::ReturnOp>(patchedBody.getTerminator());
+
+  auto kernelArgTypes = llvm::to_vector(kernelBody.getArgumentTypes());
+  auto patchedArgTypes = llvm::to_vector(patchedBody.getArgumentTypes());
+  if (kernelArgTypes != patchedArgTypes) {
+    return kernelOp.emitError()
+           << "ACT-patched 'kernel' function's argument types do not match "
+              "this kernel's body: expected ("
+           << kernelArgTypes << "), got (" << patchedArgTypes << ")";
+  }
+  auto yieldTypes = llvm::to_vector(oldYield.getOperandTypes());
+  auto patchedReturnTypes = llvm::to_vector(patchedReturn.getOperandTypes());
+  if (yieldTypes != patchedReturnTypes) {
+    return kernelOp.emitError()
+           << "ACT-patched 'kernel' function's result types do not match "
+              "this kernel's body: expected ("
+           << yieldTypes << "), got (" << patchedReturnTypes << ")";
+  }
+
+  // Block arguments are the kernel body's own -- they stay put -- while the
+  // patched function's block arguments are only a mapping key to reach them.
+  IRMapping mapping;
+  mapping.map(patchedBody.getArguments(), kernelBody.getArguments());
+
+  // A value can only be used by ops later in the same straight-line block,
+  // so erasing back-to-front never leaves a dangling use behind.
+  while (!kernelBody.empty()) {
+    kernelBody.back().erase();
+  }
+
+  OpBuilder builder(kernelOp.getContext());
+  builder.setInsertionPointToStart(&kernelBody);
+  for (Operation &op : patchedBody.without_terminator()) {
+    builder.clone(op, mapping);
+  }
+  SmallVector<Value> yieldOperands = llvm::map_to_vector(
+      patchedReturn.getOperands(), [&](Value v) { return mapping.lookup(v); });
+  builder.create<DistributedYieldOp>(kernelOp.getLoc(), yieldOperands);
+
+  // DistributedKernelOp is only ever created inside a module in this
+  // pipeline (buildDistributedSearchLoweringPipeline runs on a ModuleOp),
+  // so this is an invariant to assert, not a case to fail on.
+  auto containingModule = kernelOp->getParentOfType<ModuleOp>();
+  assert(containingModule &&
+         "DistributedKernelOp expected to live inside a module");
+  SymbolTable containingSymbols(containingModule);
+
+  for (auto patchedFn : patchedModule.getOps<func::FuncOp>()) {
+    if (patchedFn == patchedKernelFn) {
+      continue;
+    }
+    StringAttr oldName = patchedFn.getSymNameAttr();
+    Operation *clone = patchedFn->clone();
+    StringAttr newName = containingSymbols.insert(clone);
+    if (newName != oldName &&
+        failed(SymbolTable::replaceAllSymbolUses(oldName, newName, kernelOp))) {
+      return kernelOp.emitError()
+             << "failed to rewrite references to '" << oldName
+             << "' (renamed to '" << newName
+             << "' to avoid a symbol collision) in the spliced kernel body";
+    }
+  }
+
+  return success();
+}
+
 } // namespace mlir::enzyme::distributed

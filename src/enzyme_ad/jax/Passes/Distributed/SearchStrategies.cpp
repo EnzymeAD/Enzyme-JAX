@@ -9,6 +9,7 @@
 #include "src/enzyme_ad/jax/Dialect/Distributed/ScheduleSimulator.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/PassManager.h"
 
@@ -820,7 +821,8 @@ public:
 static OwningOpRef<ModuleOp>
 cloneAndApplyDecisions(ModuleOp originalModule,
                        const std::shared_ptr<StrategySearchNode> &node,
-                       bool disableVerifier, bool &pipelineOk) {
+                       bool disableVerifier,
+                       llvm::StringRef dumpKernelModulesTo, bool &pipelineOk) {
   IRMapping mapper;
   OwningOpRef<ModuleOp> clonedModule(
       cast<ModuleOp>(originalModule->clone(mapper)));
@@ -833,7 +835,7 @@ cloneAndApplyDecisions(ModuleOp originalModule,
   // schedule reordering) that are only meant to run once, on the search's
   // eventual winner.
   buildDistributedSearchLoweringPipeline(pm, /*lowerLogicalAxes=*/false,
-                                         /*dumpKernelModulesTo=*/"",
+                                         dumpKernelModulesTo,
                                          /*finalizeSchedule=*/false);
   pipelineOk = succeeded(pm.run(*clonedModule));
   return clonedModule;
@@ -882,6 +884,7 @@ class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
   ModuleOp originalModule;
   bool dumpCandidates;
   bool disableVerifier;
+  std::string dumpKernelModulesTo;
   bool failOnBadCandidate;
   bool &sawBadCandidate;
   BeamSearchQueueBase<StrategySearchNode> &queue;
@@ -892,12 +895,13 @@ class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
 
 public:
   StrategyScorer(ModuleOp originalModule, bool dumpCandidates,
-                 bool disableVerifier, bool failOnBadCandidate,
-                 bool &sawBadCandidate,
+                 bool disableVerifier, llvm::StringRef dumpKernelModulesTo,
+                 bool failOnBadCandidate, bool &sawBadCandidate,
                  BeamSearchQueueBase<StrategySearchNode> &queue,
                  StrategyCompleterBase &completer)
       : originalModule(originalModule), dumpCandidates(dumpCandidates),
         disableVerifier(disableVerifier),
+        dumpKernelModulesTo(dumpKernelModulesTo),
         failOnBadCandidate(failOnBadCandidate),
         sawBadCandidate(sawBadCandidate), queue(queue), completer(completer) {}
 
@@ -956,8 +960,9 @@ public:
     completer.complete(*completedNode);
 
     bool pipelineOk;
-    OwningOpRef<ModuleOp> clonedModule = cloneAndApplyDecisions(
-        originalModule, completedNode, disableVerifier, pipelineOk);
+    OwningOpRef<ModuleOp> clonedModule =
+        cloneAndApplyDecisions(originalModule, completedNode, disableVerifier,
+                               dumpKernelModulesTo, pipelineOk);
 
     ++numScored;
     std::string note;
@@ -1043,8 +1048,8 @@ struct DistributedSearchStrategiesPass
                                        moduleOp.getLoc());
     bool sawBadCandidate = false;
     StrategyScorer scorer(moduleOp, dumpCandidates, disableVerifier,
-                          failOnBadCandidate, sawBadCandidate, queue,
-                          completer);
+                          dumpKernelModulesTo, failOnBadCandidate,
+                          sawBadCandidate, queue, completer);
 
     BeamSearchDriver<StrategySearchNode> driver(queue, scorer, explorer);
     driver.run();
@@ -1075,7 +1080,8 @@ struct DistributedSearchStrategiesPass
       for (const auto &node : driver.getFinalized()) {
         bool pipelineOk;
         OwningOpRef<ModuleOp> clonedModule =
-            cloneAndApplyDecisions(moduleOp, node, disableVerifier, pipelineOk);
+            cloneAndApplyDecisions(moduleOp, node, disableVerifier,
+                                   /*dumpKernelModulesTo=*/"", pipelineOk);
         std::string note;
         if (pipelineOk)
           scorer.scoreLowered(*clonedModule, note);
@@ -1090,7 +1096,8 @@ struct DistributedSearchStrategiesPass
       if (best) {
         bool pipelineOk;
         OwningOpRef<ModuleOp> clonedModule =
-            cloneAndApplyDecisions(moduleOp, best, disableVerifier, pipelineOk);
+            cloneAndApplyDecisions(moduleOp, best, disableVerifier,
+                                   /*dumpKernelModulesTo=*/"", pipelineOk);
         std::string note;
         if (pipelineOk)
           scorer.scoreLowered(*clonedModule, note);

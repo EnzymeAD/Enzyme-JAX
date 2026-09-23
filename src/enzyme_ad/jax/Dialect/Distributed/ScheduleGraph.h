@@ -53,6 +53,12 @@ struct ScheduleEvent {
   // whole enclosing buildScheduleGraph call, matching how an unplannable
   // collective already fails the whole graph rather than producing a
   // partial one.
+  //
+  // A call whose resolved callee carries an act.cost attribute (ACT's
+  // convention for a bodyless accelerator-launch declaration) never becomes
+  // a FunctionCall event at all: ScheduleGraph.cpp costs it as an ordinary
+  // atomic Compute event instead, since there is no callee body to build a
+  // nested graph from.
   std::unique_ptr<ScheduleGraph> calleeGraph;
 
   // max(flops/F, bytes/M) for a Compute event, step.isolatedDuration() for a

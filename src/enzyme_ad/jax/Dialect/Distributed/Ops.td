@@ -40,6 +40,9 @@ def PhysicalMeshOp
       - device_flops: peak FLOP per time unit of one device.
       - device_mem_bandwidth: peak local memory bytes per time unit of one
         device.
+      - device_clock_frequency: cycles per time unit of one device's clock,
+        used only to convert an ACT-reported act.cost (a cycle count) into
+        this model's time unit.
   }];
   let arguments = (ins SymbolNameAttr : $sym_name, StrAttr : $device_target,
                      ArrayAttr : $axes, // array of physical axis types.
@@ -47,7 +50,8 @@ def PhysicalMeshOp
                      OptionalAttr<F64ArrayAttr> : $axis_latencies,
                      OptionalAttr<F64Attr> : $launch_latency,
                      OptionalAttr<F64Attr> : $device_flops,
-                     OptionalAttr<F64Attr> : $device_mem_bandwidth
+                     OptionalAttr<F64Attr> : $device_mem_bandwidth,
+                     OptionalAttr<F64Attr> : $device_clock_frequency
   );
   let assemblyFormat =
       "$sym_name `device_target` $device_target `axes` $axes attr-dict";

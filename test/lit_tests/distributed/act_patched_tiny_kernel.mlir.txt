@@ -1,0 +1,28 @@
+// Real ACT output (act-eva-egan, `python -m act_e2e.compile ... -t eva2`) for
+// a standalone "kernel" module containing a single
+// stablehlo.dot_general(tensor<4x8xf32>, tensor<8x4xf32>) -> tensor<4x4xf32>
+// -- i.e. exactly buildKernelBodyModule's own wrapper shape, generated from
+// the smallest kernel body that reproduces ACT's launch/stage/fetch
+// convention. Only the `act.asm` attribute (a large embedded Python source
+// string, irrelevant to the splice logic under test) has been trimmed;
+// everything else, including all other attributes and the body shape, is
+// verbatim. Not a `.mlir` file so the lit_test BUILD glob doesn't also treat
+// it as its own standalone test.
+module {
+  func.func private @act_launch(memref<128xi8, strided<[1]>>, memref<128xi8, strided<[1], offset: 128>>, memref<64xi8, strided<[1], offset: 256>>) attributes {act.cost = 4.160000e+02 : f64, act.kernel = "dot_general_4x8_8x4", act.target = "eva2"}
+  func.func private @act_stage_0(tensor<4x8xf32>, memref<128xi8, strided<[1]>>) attributes {act.role = "stage"}
+  func.func private @act_stage_1(tensor<8x4xf32>, memref<128xi8, strided<[1], offset: 128>>) attributes {act.role = "stage"}
+  func.func private @act_fetch(memref<64xi8, strided<[1], offset: 256>>) -> tensor<4x4xf32> attributes {act.role = "fetch"}
+  func.func @kernel(%arg0: tensor<4x8xf32>, %arg1: tensor<8x4xf32>) -> tensor<4x4xf32> {
+    %alloc = memref.alloc() : memref<320xi8>
+    %subview = memref.subview %alloc[0] [128] [1] : memref<320xi8> to memref<128xi8, strided<[1]>>
+    %subview_0 = memref.subview %alloc[128] [128] [1] : memref<320xi8> to memref<128xi8, strided<[1], offset: 128>>
+    %subview_1 = memref.subview %alloc[256] [64] [1] : memref<320xi8> to memref<64xi8, strided<[1], offset: 256>>
+    call @act_stage_0(%arg0, %subview) : (tensor<4x8xf32>, memref<128xi8, strided<[1]>>) -> ()
+    call @act_stage_1(%arg1, %subview_0) : (tensor<8x4xf32>, memref<128xi8, strided<[1], offset: 128>>) -> ()
+    call @act_launch(%subview, %subview_0, %subview_1) : (memref<128xi8, strided<[1]>>, memref<128xi8, strided<[1], offset: 128>>, memref<64xi8, strided<[1], offset: 256>>) -> ()
+    %0 = call @act_fetch(%subview_1) : (memref<64xi8, strided<[1], offset: 256>>) -> tensor<4x4xf32>
+    memref.dealloc %alloc : memref<320xi8>
+    return %0 : tensor<4x4xf32>
+  }
+}

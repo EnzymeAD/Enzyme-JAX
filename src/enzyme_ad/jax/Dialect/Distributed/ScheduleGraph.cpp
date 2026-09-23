@@ -92,9 +92,62 @@ void appendComputeNode(Operation &op, const DeviceCostParams &device,
     alias(valueNode, result, index);
 }
 
+// The act.cost cycle count on `op`'s resolved callee, if it has one: ACT's
+// convention for a bodyless accelerator-launch declaration (@act_launch,
+// per the ACT plan doc's real sample) is to carry its cost as this attribute
+// rather than a walkable body. Nullopt for any other call, including one
+// whose callee cannot be resolved at all; each caller decides what to do
+// with that case itself (buildKernelNodes falls back to costing the call as
+// an ordinary op via appendComputeNode, buildBlockNodes falls back to the
+// hard-barrier handling in buildCallNode).
+std::optional<double> actLaunchCostCycles(Operation *op) {
+  Operation *calleeOp = cast<CallOpInterface>(op).resolveCallable();
+  if (!calleeOp)
+    return std::nullopt;
+  if (FloatAttr cost = calleeOp->getAttrOfType<FloatAttr>("act.cost"))
+    return cost.getValueAsDouble();
+  return std::nullopt;
+}
+
+// Appends one atomic Compute node for a call to an ACT launch. Unlike an
+// ordinary call, the callee is a bodyless declaration with no region to
+// build a nested ScheduleGraph from, and act.cost already gives its full
+// cost directly, so there is no reason to treat the call as a scope-wide
+// hard barrier (buildCallNode) or recurse into it (appendComputeNode via
+// costOp would just see an opaque, likely memref-typed, unknown op).
+void appendActLaunchNode(Operation *op, double costCycles,
+                         const DeviceCostParams &device,
+                         std::vector<ScheduleEvent> &nodes,
+                         llvm::DenseMap<Value, size_t> &valueNode) {
+  ScheduleEvent event;
+  event.kind = ScheduleEventKind::Compute;
+  event.op = op;
+  event.isolatedDuration = costCycles / device.clockFrequency;
+  // The simulator (ScheduleSimulator.cpp) drives kComputeResource occupancy
+  // off computeCost.flops/.bytes, not isolatedDuration directly. Leaving
+  // flops at 0 would make this node look like it claims no compute resource
+  // at all despite occupying the device for isolatedDuration; back-solving a
+  // synthetic flops that reproduces this duration through the same
+  // OpCost::time() formula as an ordinary op keeps its resource accounting
+  // consistent with every other Compute node's.
+  event.computeCost.flops = device.flops * event.isolatedDuration;
+  for (Value operand : op->getOperands())
+    if (std::optional<size_t> producer = lookup(valueNode, operand))
+      addPredecessor(event, *producer);
+  size_t index = nodes.size();
+  nodes.push_back(std::move(event));
+  for (Value result : op->getResults())
+    alias(valueNode, result, index);
+}
+
 // Appends the Compute nodes for one kernel's body, aliasing the block args to
 // whatever produced the kernel's operands and the kernel's results to
-// whatever the terminator yields.
+// whatever the terminator yields. Calls inside a kernel body are never
+// barriers relative to each other (a kernel body has no notion of a "call
+// barrier" the way a scope walked by buildBlockNodes does): a call whose
+// resolved callee carries act.cost (see actLaunchCostCycles) is costed as
+// one atomic node instead of through the ordinary per-op roofline, and any
+// other call is costed the same as any other op in the body.
 void buildKernelNodes(DistributedKernelOp kernel,
                       const DeviceCostParams &device,
                       std::vector<ScheduleEvent> &nodes,
@@ -108,6 +161,11 @@ void buildKernelNodes(DistributedKernelOp kernel,
   for (Operation &op : body) {
     if (isa<DistributedYieldOp>(op))
       continue;
+    if (isa<CallOpInterface>(op))
+      if (std::optional<double> costCycles = actLaunchCostCycles(&op)) {
+        appendActLaunchNode(&op, *costCycles, device, nodes, valueNode);
+        continue;
+      }
     appendComputeNode(op, device, nodes, valueNode);
   }
 
@@ -362,11 +420,14 @@ bool buildCallNode(Operation *op, GraphBuildContext &ctx, ScheduleGraph &graph,
 
 // Walks `block` in order, appending its events to `graph.nodes`. Kernel and
 // collective-chain boundaries dissolve into this same flat scope via
-// `valueNode` (see the file-level comment). A call is instead a hard barrier
-// (buildCallNode): once one is built, every subsequently built node in this
-// same scope, regardless of what builds it, gets that call event wired in as
-// an extra predecessor, which is what actually enforces "nothing after the
-// call may start before it finishes".
+// `valueNode` (see the file-level comment). A call to a walkable callee is a
+// hard barrier (buildCallNode): once one is built, every subsequently built
+// node in this same scope, regardless of what builds it, gets that call
+// event wired in as an extra predecessor, which is what actually enforces
+// "nothing after the call may start before it finishes". A call to an
+// act.cost-carrying callee is not a barrier at all: it costs as an ordinary
+// atomic Compute node (appendActLaunchNode) wired only to its own operands,
+// the same as any other op built here.
 //
 // The module's own top-level block reaches here as the outermost scope, with
 // its "main" function's body flattened inline (isMainFunctionOp); any other
@@ -405,12 +466,21 @@ bool buildBlockNodes(Block &block, GraphBuildContext &ctx, ScheduleGraph &graph,
       // it must never become a node of its own.
       continue;
     } else if (isa<CallOpInterface>(op)) {
-      // The barrier event is itself wired to the previous barrier (if any)
-      // by the frontier scan in buildCallNode, not by the post-loop
-      // pendingBarrier patch-up below, so no further action is needed here.
-      if (!buildCallNode(op, ctx, graph, valueNode, pendingBarrier))
-        return false;
-      continue;
+      if (std::optional<double> costCycles = actLaunchCostCycles(op)) {
+        appendActLaunchNode(op, *costCycles, ctx.device, graph.nodes,
+                            valueNode);
+        // Falls through to the ordinary pendingBarrier wiring below, the
+        // same as any other Compute node built in this loop: an ACT launch
+        // is not a hard barrier.
+      } else {
+        // The barrier event is itself wired to the previous barrier (if
+        // any) by the frontier scan in buildCallNode, not by the post-loop
+        // pendingBarrier patch-up below, so no further action is needed
+        // here.
+        if (!buildCallNode(op, ctx, graph, valueNode, pendingBarrier))
+          return false;
+        continue;
+      }
     } else if (auto func = dyn_cast<FunctionOpInterface>(op)) {
       if (isMainFunctionOp(op)) {
         Region *body = func.getCallableRegion();

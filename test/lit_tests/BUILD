@@ -13,7 +13,14 @@ load("@llvm-project//llvm:lit_test.bzl", "lit_test")
             "@llvm-project//llvm:count",
             "@llvm-project//llvm:not",
             "@stablehlo//:stablehlo-translate",
-        ] + glob(["**/*.h"]),
+            # `.mlir.txt` is the convention for a real (or realistic) auxiliary
+            # MLIR fixture that a RUN line reads via %S but that isn't itself a
+            # standalone test -- the extension keeps it out of the `srcs` glob
+            # below, which would otherwise treat it as its own FileCheck test.
+        ] + glob([
+            "**/*.h",
+            "**/*.mlir.txt",
+        ]),
     )
     for src in glob(
         [
