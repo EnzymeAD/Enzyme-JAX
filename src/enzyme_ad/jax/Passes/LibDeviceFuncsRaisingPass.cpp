@@ -697,6 +697,7 @@ public:
       Value scaled =
           arith::MulFOp::create(rewriter, loc, op->getOperands()[0], log2of10);
       rewriter.replaceOpWithNewOp<math::Exp2Op>(op, scaled);
+      return success();
     }
 
     return failure();
