@@ -53,6 +53,7 @@
 
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Interfaces/MemorySlotInterfaces.h"
 #include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -177,6 +178,78 @@ struct UpdateWithoutCornersOpShardingInterface
 class MemRefInsider
     : public mlir::MemRefElementTypeInterface::FallbackModel<MemRefInsider> {};
 
+// memref.copy simultaneously reads its source slot and writes its target
+// slot. When acting as a write to a promoted target, the value stored is
+// obtained by inserting a plain memref2tensor read of the (still-real)
+// source right before the copy -- if that source is itself a promoted slot,
+// this new read becomes an ordinary load a later promotion round folds
+// away. When acting as a read of a promoted source (for some OTHER,
+// not-yet-promoted target slot), the copy cannot simply disappear -- its
+// target still needs a real memref to be copied from -- so its source
+// operand is redirected to a fresh materialization of the tracked value
+// instead of being deleted outright.
+struct MemrefCopyMemorySlotOpInterface
+    : public mlir::PromotableMemOpInterface::ExternalModel<
+          MemrefCopyMemorySlotOpInterface, mlir::memref::CopyOp> {
+  bool loadsFrom(mlir::Operation *op, const mlir::MemorySlot &slot) const {
+    return mlir::cast<mlir::memref::CopyOp>(op).getSource() == slot.ptr;
+  }
+
+  bool storesTo(mlir::Operation *op, const mlir::MemorySlot &slot) const {
+    return mlir::cast<mlir::memref::CopyOp>(op).getTarget() == slot.ptr;
+  }
+
+  mlir::Value getStored(mlir::Operation *op, const mlir::MemorySlot &slot,
+                        mlir::OpBuilder &builder, mlir::Value reachingDef,
+                        const mlir::DataLayout &dataLayout) const {
+    auto copy = mlir::cast<mlir::memref::CopyOp>(op);
+    return enzymexla::Memref2TensorOp::create(builder, copy.getLoc(),
+                                              slot.elemType,
+                                              copy.getSource());
+  }
+
+  bool canUsesBeRemoved(
+      mlir::Operation *op, const mlir::MemorySlot &slot,
+      const llvm::SmallPtrSetImpl<mlir::OpOperand *> &blockingUses,
+      llvm::SmallVectorImpl<mlir::OpOperand *> &newBlockingUses,
+      const mlir::DataLayout &dataLayout) const {
+    if (blockingUses.size() != 1)
+      return false;
+    auto copy = mlir::cast<mlir::memref::CopyOp>(op);
+    mlir::Value blockingUse = (*blockingUses.begin())->get();
+    return blockingUse == slot.ptr &&
+           (copy.getSource() == slot.ptr || copy.getTarget() == slot.ptr);
+  }
+
+  mlir::DeletionKind removeBlockingUses(
+      mlir::Operation *op, const mlir::MemorySlot &slot,
+      const llvm::SmallPtrSetImpl<mlir::OpOperand *> &blockingUses,
+      mlir::OpBuilder &builder, mlir::Value reachingDefinition,
+      const mlir::DataLayout &dataLayout) const {
+    auto copy = mlir::cast<mlir::memref::CopyOp>(op);
+    if (copy.getTarget() == slot.ptr) {
+      // This copy's role writing into `slot` is now pure SSA dataflow
+      // (captured by getStored above); nothing is left for it to do.
+      return mlir::DeletionKind::Delete;
+    }
+
+    // copy.getSource() == slot.ptr: the copy still needs a real memref to
+    // read from for its (unrelated) target, so keep it alive backed by a
+    // fresh materialization of the tracked value instead of this slot. The
+    // builder handed to us is positioned *after* the copy (per the
+    // interface's contract); the replacement source must dominate the copy
+    // itself, so it has to be inserted before it instead.
+    mlir::OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPoint(copy);
+    auto newSource = enzymexla::Tensor2MemrefOp::create(
+        builder, copy.getLoc(),
+        mlir::cast<mlir::MemRefType>(copy.getSource().getType()),
+        reachingDefinition);
+    copy.getSourceMutable().assign(newSource);
+    return mlir::DeletionKind::Keep;
+  }
+};
+
 template <typename T>
 struct PtrElementModel
     : public mlir::LLVM::PointerElementTypeInterface::ExternalModel<
@@ -210,6 +283,12 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
             PermuteOperandOpInterface<enzymexla::ExtendOp>>(*ctx);
         enzymexla::RotateOp::attachInterface<
             PermuteOperandOpInterface<enzymexla::RotateOp>>(*ctx);
+      });
+
+  registry.addExtension(
+      +[](mlir::MLIRContext *ctx, mlir::memref::MemRefDialect *) {
+        mlir::memref::CopyOp::attachInterface<MemrefCopyMemorySlotOpInterface>(
+            *ctx);
       });
 }
 

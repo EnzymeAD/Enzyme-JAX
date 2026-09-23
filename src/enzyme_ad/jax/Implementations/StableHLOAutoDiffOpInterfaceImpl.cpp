@@ -24,6 +24,8 @@
 #include "llvm/ADT/PointerUnion.h"
 
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/Interfaces/MemorySlotInterfaces.h"
+#include "mlir/Interfaces/Utils/MemorySlotUtils.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/RegionUtils.h"
 
@@ -3287,6 +3289,69 @@ public:
   }
 };
 
+// Lets mem2reg promote a memory slot whose pointer is captured into a
+// stablehlo.while's cond/body regions, threading it through as a genuine
+// loop-carried operand/block-argument/result exactly like scf.while does
+// for its `before`/`after` regions (mlir/lib/Dialect/SCF/IR/MemorySlot.cpp) --
+// the two ops share the same shape (a cond region and a body region, with
+// loop-carried values mirrored 1:1 across operands/block arguments/yielded
+// results), so this is close to a direct transliteration.
+struct WhileOpMemorySlotPromotion
+    : public PromotableRegionOpInterface::ExternalModel<
+          WhileOpMemorySlotPromotion, stablehlo::WhileOp> {
+  bool isRegionPromotable(Operation *op, const MemorySlot &slot,
+                          Region *region, bool hasValueStores) const {
+    return true;
+  }
+
+  void setupPromotion(
+      Operation *op, const MemorySlot &slot, Value reachingDef,
+      bool hasValueStores,
+      llvm::SmallMapVector<Region *, Value, 2> &regionsToProcess) const {
+    auto whileOp = cast<stablehlo::WhileOp>(op);
+    Region &condRegion = whileOp.getCond();
+    Region &bodyRegion = whileOp.getBody();
+
+    if (!hasValueStores) {
+      regionsToProcess.insert({&condRegion, reachingDef});
+      regionsToProcess.insert({&bodyRegion, reachingDef});
+      return;
+    }
+
+    whileOp.getOperandMutable().append(reachingDef);
+
+    condRegion.addArgument(slot.elemType, slot.ptr.getLoc());
+    regionsToProcess.insert({&condRegion, condRegion.getArguments().back()});
+
+    bodyRegion.addArgument(slot.elemType, slot.ptr.getLoc());
+    regionsToProcess.insert({&bodyRegion, bodyRegion.getArguments().back()});
+  }
+
+  Value finalizePromotion(Operation *op, const MemorySlot &slot,
+                          Value entryReachingDef, bool hasValueStores,
+                          const DenseMap<Block *, Value> &reachingAtBlockEnd,
+                          OpBuilder &builder) const {
+    auto whileOp = cast<stablehlo::WhileOp>(op);
+    if (!hasValueStores)
+      return entryReachingDef;
+
+    memoryslot::updateTerminator(&whileOp.getCond().back(),
+                                 whileOp.getCond().getArguments().back(),
+                                 reachingAtBlockEnd);
+    memoryslot::updateTerminator(&whileOp.getBody().back(),
+                                 whileOp.getBody().getArguments().back(),
+                                 reachingAtBlockEnd);
+
+    SmallVector<Type> resultTypes(whileOp->getResultTypes());
+    resultTypes.push_back(slot.elemType);
+
+    IRRewriter rewriter(builder);
+    Operation *newOp = memoryslot::replaceWithNewResults(
+        rewriter, whileOp.getOperation(), resultTypes);
+    return newOp->getResults().back();
+  }
+};
+
 struct WhileOpEnzymeOpsRemover
     : public EnzymeOpsRemoverOpInterface::ExternalModel<WhileOpEnzymeOpsRemover,
                                                         stablehlo::WhileOp> {
@@ -5154,6 +5219,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     registerInterfaces(context);
 
     WhileOp::attachInterface<WhileOpEnzymeOpsRemover>(*context);
+    WhileOp::attachInterface<WhileOpMemorySlotPromotion>(*context);
     stablehlo::IfOp::attachInterface<IfOpEnzymeOpsRemover>(*context);
     stablehlo::CaseOp::attachInterface<CaseOpEnzymeOpsRemover>(*context);
 

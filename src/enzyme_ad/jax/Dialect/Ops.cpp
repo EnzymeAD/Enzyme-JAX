@@ -1288,6 +1288,126 @@ OpFoldResult Pointer2MemrefOp::fold(FoldAdaptor adaptor) {
   return nullptr;
 }
 
+//===----------------------------------------------------------------------===//
+// Tensor2MemrefOp -- PromotableAllocationOpInterface
+//
+// A tensor2memref is treated as an "alloc" of a slot whose value is the
+// tensor operand itself, rather than an undefined/poison default: reading
+// the memref back (memref2tensor) before any write to it should observe
+// exactly the tensor this op was given.
+//===----------------------------------------------------------------------===//
+
+SmallVector<MemorySlot> Tensor2MemrefOp::getPromotableSlots() {
+  return {MemorySlot{getMemref(), getTensor().getType()}};
+}
+
+Value Tensor2MemrefOp::getDefaultValue(const MemorySlot &slot,
+                                       OpBuilder &builder) {
+  return getTensor();
+}
+
+void Tensor2MemrefOp::handleBlockArgument(const MemorySlot &slot,
+                                          BlockArgument argument,
+                                          OpBuilder &builder) {}
+
+std::optional<PromotableAllocationOpInterface>
+Tensor2MemrefOp::handlePromotionComplete(const MemorySlot &slot,
+                                         Value defaultValue,
+                                         OpBuilder &builder) {
+  // Unlike enzyme.init, the default value here is the pre-existing tensor
+  // operand, not a value this op created -- it is not ours to erase even if
+  // it ends up unused.
+  this->erase();
+  return std::nullopt;
+}
+
+//===----------------------------------------------------------------------===//
+// Memref2TensorOp -- PromotableMemOpInterface
+//
+// A pure load from the slot a tensor2memref created.
+//===----------------------------------------------------------------------===//
+
+bool Memref2TensorOp::loadsFrom(const MemorySlot &slot) {
+  return getMemref() == slot.ptr;
+}
+
+bool Memref2TensorOp::storesTo(const MemorySlot &slot) { return false; }
+
+Value Memref2TensorOp::getStored(const MemorySlot &slot, OpBuilder &builder,
+                                 Value reachingDef,
+                                 const DataLayout &dataLayout) {
+  llvm_unreachable("getStored should not be called on Memref2TensorOp");
+}
+
+bool Memref2TensorOp::canUsesBeRemoved(
+    const MemorySlot &slot, const SmallPtrSetImpl<OpOperand *> &blockingUses,
+    SmallVectorImpl<OpOperand *> &newBlockingUses,
+    const DataLayout &dataLayout) {
+  if (blockingUses.size() != 1)
+    return false;
+  Value blockingUse = (*blockingUses.begin())->get();
+  return blockingUse == slot.ptr && getMemref() == slot.ptr &&
+         getTensor().getType() == slot.elemType;
+}
+
+DeletionKind Memref2TensorOp::removeBlockingUses(
+    const MemorySlot &slot, const SmallPtrSetImpl<OpOperand *> &blockingUses,
+    OpBuilder &builder, Value reachingDefinition,
+    const DataLayout &dataLayout) {
+  getTensor().replaceAllUsesWith(reachingDefinition);
+  return DeletionKind::Delete;
+}
+
+//===----------------------------------------------------------------------===//
+// Memref2PointerOp -- PromotableMemOpInterface
+//
+// Kernels in this codebase take generic `memref<?xelemty>`/raw-pointer
+// arguments, so a promoted slot is frequently read by casting it to a
+// pointer rather than by a direct memref2tensor. Unlike a plain load,
+// this op cannot just vanish in favor of the reaching tensor value -- its
+// whole purpose is to hand out a real address -- so instead of deleting it,
+// its source operand is redirected to a fresh materialization of the
+// tracked value, keeping the op (and whatever raw-pointer chain depends on
+// it) alive.
+//===----------------------------------------------------------------------===//
+
+bool Memref2PointerOp::loadsFrom(const MemorySlot &slot) {
+  return getSource() == slot.ptr;
+}
+
+bool Memref2PointerOp::storesTo(const MemorySlot &slot) { return false; }
+
+Value Memref2PointerOp::getStored(const MemorySlot &slot, OpBuilder &builder,
+                                  Value reachingDef,
+                                  const DataLayout &dataLayout) {
+  llvm_unreachable("getStored should not be called on Memref2PointerOp");
+}
+
+bool Memref2PointerOp::canUsesBeRemoved(
+    const MemorySlot &slot, const SmallPtrSetImpl<OpOperand *> &blockingUses,
+    SmallVectorImpl<OpOperand *> &newBlockingUses,
+    const DataLayout &dataLayout) {
+  if (blockingUses.size() != 1)
+    return false;
+  Value blockingUse = (*blockingUses.begin())->get();
+  return blockingUse == slot.ptr && getSource() == slot.ptr;
+}
+
+DeletionKind Memref2PointerOp::removeBlockingUses(
+    const MemorySlot &slot, const SmallPtrSetImpl<OpOperand *> &blockingUses,
+    OpBuilder &builder, Value reachingDefinition,
+    const DataLayout &dataLayout) {
+  // The builder is positioned after this op; the replacement source must
+  // dominate it, so it has to be inserted before instead.
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPoint(getOperation());
+  auto newSource = Tensor2MemrefOp::create(
+      builder, getLoc(), cast<MemRefType>(getSource().getType()),
+      reachingDefinition);
+  getSourceMutable().assign(newSource);
+  return DeletionKind::Keep;
+}
+
 LogicalResult
 WrapOp::inferReturnTypes(MLIRContext * /*context*/,
                          std::optional<Location> location, ValueRange operands,

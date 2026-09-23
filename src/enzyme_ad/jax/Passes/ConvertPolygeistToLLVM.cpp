@@ -1160,8 +1160,18 @@ struct CEnzymeAffineAtomicRMWOpLowering
       return rewriter.notifyMatchFailure(atomicOp,
                                          "could not expand affine map");
 
-    SmallVector<LLVM::GEPArg> args = llvm::to_vector(
-        llvm::map_range(*indices, [](Value v) { return LLVM::GEPArg(v); }));
+    // expandAffineMap builds fresh index-typed arithmetic that isn't itself
+    // part of this op's operands, so the dialect conversion driver never
+    // gets a chance to legalize it to the LLVM-compatible integer type GEP
+    // requires -- cast explicitly instead of relying on that.
+    Type llvmIndexType = getIndexType();
+    SmallVector<LLVM::GEPArg> args;
+    args.reserve(indices->size());
+    for (Value idx : *indices) {
+      if (idx.getType() != llvmIndexType)
+        idx = arith::IndexCastOp::create(rewriter, loc, llvmIndexType, idx);
+      args.push_back(LLVM::GEPArg(idx));
+    }
 
     Value dataPtr = LLVM::GEPOp::create(rewriter, loc, convertedType, elTy,
                                         adaptor.getMemref(), args);

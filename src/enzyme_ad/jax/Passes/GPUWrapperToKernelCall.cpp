@@ -19,14 +19,19 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/MemorySlotInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/Mem2Reg.h"
+
 #include <algorithm>
 
+#include "llvm/ADT/SetVector.h"
 #include "llvm/Support/Debug.h"
 
 #include "stablehlo/dialect/StablehloOps.h"
@@ -125,6 +130,44 @@ struct Memref2TensorEliminate
       rewriter.eraseOp(user);
     }
     rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
+// pointer2memref(memref2pointer(x)) -> x, for every pointer2memref user
+// that recovers x's exact memref type.
+struct Memref2PointerForward
+    : public OpRewritePattern<enzymexla::Memref2PointerOp> {
+  using OpRewritePattern<enzymexla::Memref2PointerOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::Memref2PointerOp op,
+                                PatternRewriter &rewriter) const override {
+    Value source = op.getSource();
+    SmallVector<enzymexla::Pointer2MemrefOp> users;
+    bool allChanged = true;
+
+    for (Operation *user : op.getResult().getUsers()) {
+      if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(user)) {
+        auto RT = cast<MemRefType>(p2m.getResult().getType());
+        auto ST = cast<MemRefType>(source.getType());
+        if (RT == ST || (!RT.hasStaticShape() && ST.hasStaticShape() &&
+                         RT.getRank() == 1)) {
+          users.push_back(p2m);
+          continue;
+        }
+      }
+      allChanged = false;
+    }
+
+    if (users.empty())
+      return failure();
+
+    for (auto p2m : users)
+      rewriter.replaceOp(p2m, source);
+
+    if (allChanged)
+      rewriter.eraseOp(op);
 
     return success();
   }
@@ -316,259 +359,79 @@ struct GPUWrapperToKernelCallPass
   using mlir::enzyme::impl::GPUWrapperToKernelCallPassBase<
       GPUWrapperToKernelCallPass>::GPUWrapperToKernelCallPassBase;
 
-  // True when `v` is defined outside of `scope` (i.e. it is captured by
-  // reference into one of `scope`'s regions rather than produced there).
-  static bool isDefinedOutside(Value v, Operation *scope) {
-    Region *vRegion = v.getParentRegion();
-    for (Region &r : scope->getRegions())
-      if (r.isAncestor(vRegion))
-        return false;
-    return true;
-  }
-
-  // Collects, in `escaping`, every memref this pass' bridging ops
-  // (memref2tensor / memref.copy / enzyme.fill_zero) touch inside `region`
-  // that is defined outside `scope` -- i.e. a memref whose "current value"
-  // has to survive crossing into (and, if written, back out of) the region.
-  void collectEscapingMemrefs(Region &region, Operation *scope,
-                              SmallVectorImpl<Value> &escaping,
-                              DenseSet<Value> &seen) {
-    auto visit = [&](Value v) {
-      if (isDefinedOutside(v, scope) && seen.insert(v).second)
-        escaping.push_back(v);
-    };
-    region.walk([&](Operation *op) {
-      if (auto m2t = dyn_cast<enzymexla::Memref2TensorOp>(op))
-        visit(m2t.getMemref());
-      else if (auto memcpy = dyn_cast<memref::CopyOp>(op)) {
-        visit(memcpy.getSource());
-        visit(memcpy.getTarget());
-      } else if (auto fz = dyn_cast<enzyme::FillZeroOp>(op))
-        visit(fz.getMemref());
-    });
-  }
-
-  // Handles a nested stablehlo.while found while scanning a block: any
-  // memref this pass is tracking the current value of that is used inside
-  // the loop body cannot simply be forwarded through a flat DenseMap the
-  // way straight-line code can, since a write in one iteration has to be
-  // visible to a read in the next (and after the loop) -- an genuinely
-  // loop-carried dependency. enzyme.init/get/set express exactly that (a
-  // mutable cell readable/writable from anywhere, including across a
-  // region boundary), and EnzymeOpsRemoverOpInterface::removeEnzymeOps
-  // already knows how to thread such a cell through a while loop as a
-  // proper operand/result pair, so we lean on it instead of reimplementing
-  // loop-carried promotion here.
-  LogicalResult processWhileOp(stablehlo::WhileOp whileOp,
-                               DenseMap<Value, Value> &mappings) {
-    DenseSet<Value> seen;
-    SmallVector<Value> escapingCond;
-    collectEscapingMemrefs(whileOp.getCond(), whileOp, escapingCond, seen);
-    if (!escapingCond.empty())
-      return whileOp->emitError() << "cannot yet handle a memref crossing "
-                                     "into a while loop's condition";
-
-    SmallVector<Value> escaping;
-    collectEscapingMemrefs(whileOp.getBody(), whileOp, escaping, seen);
-
-    Location loc = whileOp->getLoc();
-    DenseMap<Value, Value> cells;
-    DenseMap<Value, Type> tensorTypes;
-
-    OpBuilder builder(whileOp);
-    for (Value m : escaping) {
-      auto MT = cast<MemRefType>(m.getType());
-      auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
-      tensorTypes[m] = TT;
-
-      Value seed;
-      auto it = mappings.find(m);
-      if (it != mappings.end()) {
-        seed = it->second;
-      } else {
-        auto ATI = cast<AutoDiffTypeInterface>(TT);
-        seed = ATI.createNullValue(builder, loc);
-      }
-
-      auto gradTy = enzyme::GradientType::get(builder.getContext(), TT);
-      auto initOp = enzyme::InitOp::create(builder, loc, gradTy);
-      enzyme::SetOp::create(builder, loc, initOp.getResult(), seed);
-      cells[m] = initOp.getResult();
-    }
-
-    Block *body = &whileOp.getBody().front();
-    DenseMap<Value, Value> innerMappings;
-    {
-      OpBuilder bodyBuilder(body, body->begin());
-      for (Value m : escaping)
-        innerMappings[m] = enzyme::GetOp::create(bodyBuilder, loc,
-                                                 tensorTypes[m], cells[m])
-                               .getResult();
-    }
-
-    if (failed(processBlock(*body, innerMappings)))
-      return failure();
-
-    {
-      OpBuilder endBuilder(body->getTerminator());
-      for (Value m : escaping)
-        enzyme::SetOp::create(endBuilder, loc, cells[m], innerMappings[m]);
-    }
-
-    Block *parentBlock = whileOp->getBlock();
-    Operation *anchor = whileOp->getNextNode();
-
-    PatternRewriter rewriter(&getContext());
-    rewriter.setInsertionPoint(whileOp);
-    if (failed(cast<enzyme::EnzymeOpsRemoverOpInterface>(whileOp.getOperation())
-                   .removeEnzymeOps(rewriter)))
-      return whileOp->emitError() << "failed to remove enzyme ops from while loop";
-
-    OpBuilder afterBuilder =
-        anchor ? OpBuilder(anchor)
-               : OpBuilder(parentBlock, parentBlock->end());
-    for (Value m : escaping)
-      mappings[m] = enzyme::GetOp::create(afterBuilder, loc, tensorTypes[m],
-                                          cells[m])
-                        .getResult();
-
-    return success();
-  }
-
-  // Resolves the tensor value currently backing memref `m` from `mappings`,
-  // walking through a `pointer2memref(memref2pointer(parent))` alias when
-  // `m` itself has no entry. Gpu kernels in this codebase are declared with
-  // generic `memref<?xelemty>` arguments, so a kernel operand is frequently
-  // not the tracked (properly shaped) memref itself but a same-buffer,
-  // flattened-and-reshaped-to-dynamic view of it produced that way; such a
-  // view is a distinct SSA value the plain map was never told about. Returns
-  // a null Value when `m` cannot be resolved to a known value at all.
-  Value resolveMappedTensor(Value m, DenseMap<Value, Value> &mappings,
-                            OpBuilder &builder, Location loc) {
-    auto it = mappings.find(m);
-    if (it != mappings.end())
-      return it->second;
-
-    auto p2m = m.getDefiningOp<enzymexla::Pointer2MemrefOp>();
-    if (!p2m)
-      return nullptr;
-    auto m2p = p2m.getSource().getDefiningOp<enzymexla::Memref2PointerOp>();
-    if (!m2p)
-      return nullptr;
-
-    Value parent = m2p.getSource();
-    Value parentTensor = resolveMappedTensor(parent, mappings, builder, loc);
-    if (!parentTensor)
-      return nullptr;
-
-    auto parentMT = cast<MemRefType>(parent.getType());
-    auto targetMT = cast<MemRefType>(m.getType());
-    if (targetMT.getRank() != 1 || targetMT.hasStaticShape() ||
-        !parentMT.hasStaticShape())
-      return nullptr;
-
-    auto flatType = RankedTensorType::get({parentMT.getNumElements()},
-                                          parentMT.getElementType());
-    Value flat =
-        stablehlo::ReshapeOp::create(builder, loc, flatType, parentTensor);
-    return tensor::CastOp::create(
-        builder, loc,
-        RankedTensorType::get({ShapedType::kDynamic},
-                              parentMT.getElementType()),
-        flat);
-  }
-
-  LogicalResult processBlock(Block &block, DenseMap<Value, Value> &mappings) {
-    SmallVector<Operation *> toDelete;
-
-    for (auto &it : llvm::make_early_inc_range(block)) {
-      Operation *op = &it;
-
-      if (auto whileOp = dyn_cast<stablehlo::WhileOp>(op)) {
-        if (failed(processWhileOp(whileOp, mappings)))
-          return failure();
-        continue;
-      }
-
-      // This is a nested op we don't yet know how to handle.
-      if (isa<enzyme::EnzymeOpsRemoverOpInterface>(op)) {
-        return op->emitError() << "cannot yet handle nested op";
-      }
-
-      if (isa<enzyme::PlaceholderOp, gpu::AllocOp, gpu::DeallocOp>(op)) {
-        toDelete.push_back(op);
-        continue;
-      }
-
-      if (auto m2t = dyn_cast<enzymexla::Memref2TensorOp>(op)) {
-        toDelete.push_back(op);
-
-        OpBuilder builder(op);
-        Value tensor =
-            resolveMappedTensor(m2t.getMemref(), mappings, builder,
-                               m2t->getLoc());
-        if (!tensor) {
-          auto TT = cast<AutoDiffTypeInterface>(m2t.getTensor().getType());
-          tensor = TT.createNullValue(builder, m2t->getLoc());
-        } else {
-          mappings[m2t.getMemref()] = tensor;
-        }
-
-        m2t.getTensor().replaceAllUsesWith(tensor);
-        continue;
-      }
-
-      if (auto t2m = dyn_cast<enzymexla::Tensor2MemrefOp>(op)) {
-        mappings[t2m.getMemref()] = t2m.getTensor();
-        toDelete.push_back(t2m);
-        continue;
-      }
-
-      if (auto memcpy = dyn_cast<memref::CopyOp>(op)) {
-        auto it = mappings.find(memcpy.getSource());
-        if (it == mappings.end()) {
-          continue;
-        }
-
-        mappings[memcpy.getTarget()] = it->second;
-        toDelete.push_back(op);
-        continue;
-      }
-
-      if (auto fz = dyn_cast<enzyme::FillZeroOp>(op)) {
-        auto memref = fz.getMemref();
-        auto TT = cast<AutoDiffTypeInterface>(RankedTensorType::get(
-            memref.getType().getShape(), memref.getType().getElementType()));
-
-        OpBuilder builder(op);
-        mappings[memref] = TT.createNullValue(builder, memref.getLoc());
-        toDelete.push_back(fz);
-        continue;
-      }
-    }
-
-    // A tracked op is only safe to erase once every use we know how to fold
-    // away has actually been folded. A memref this pass tracks can still
-    // pick up a use we don't understand -- e.g. a raw-pointer alias
-    // (memref2pointer/pointer2memref round trip) feeding some other,
-    // unrelated kernel operand -- in which case leaving the (otherwise
-    // dead-looking) op in place is correct; only its own redundant uses were
-    // ever guaranteed to be gone.
-    while (!toDelete.empty()) {
-      Operation *deadOp = toDelete.pop_back_val();
-      if (deadOp->use_empty())
-        deadOp->erase();
-    }
-
-    return success();
+  // Folds every enzymexla.tensor2memref this function's gpu_error scaffolding
+  // created into the tensor value it was given, forwarding it to matching
+  // enzymexla.memref2tensor reads (and memref.copy stores) via MLIR's
+  // Mem2Reg machinery instead of a bespoke DenseMap-based scan: promotion
+  // threads a slot through nested regions (e.g. a stablehlo.while, see
+  // WhileOpMemorySlotPromotion) with proper dominance handling and
+  // fixed-point retries for free, and simply leaves any slot it cannot fully
+  // promote (a real, non-scratch memref, or one touched by a construct that
+  // doesn't implement the relevant Promotable*Interface) untouched rather
+  // than erroring -- only Tensor2MemrefOp results are ever registered as
+  // allocators here, so no other memref in the function is a candidate.
+  // True for scratch scaffolding this pass is willing to delete outright
+  // once nothing uses it any more: placeholders/allocations that never carry
+  // meaning on their own, and this pass' own tensor/memref/pointer bridging
+  // ops (some of which -- see Memref2PointerOp and memref.copy's
+  // PromotableMemOpInterface impls -- get freshly recreated as a promoted
+  // slot's blocking use is redirected, and can end up unused if their own
+  // sole consumer is independently eliminated later).
+  static bool isDeletableScratchOp(Operation *op) {
+    return isa<enzyme::PlaceholderOp, gpu::AllocOp, gpu::DeallocOp,
+               enzymexla::Tensor2MemrefOp, enzymexla::Memref2TensorOp,
+               enzymexla::Memref2PointerOp>(op);
   }
 
   LogicalResult cleanupMemrefs(func::FuncOp func) {
-    if (!func.getBody().hasOneBlock())
-      return failure();
+    SmallVector<PromotableAllocationOpInterface> allocators;
+    func.walk([&](enzymexla::Tensor2MemrefOp op) {
+      allocators.push_back(
+          cast<PromotableAllocationOpInterface>(op.getOperation()));
+    });
 
-    DenseMap<Value, Value> mappings; // tensor <-> memref
-    return processBlock(func.getBody().front(), mappings);
+    if (!allocators.empty()) {
+      DominanceInfo dominance(func);
+      DataLayout dataLayout(func->getParentOfType<ModuleOp>());
+      OpBuilder builder(&func.getBody().front(),
+                        func.getBody().front().begin());
+      (void)tryToPromoteMemorySlots(allocators, builder, dataLayout, dominance);
+    }
+
+    // Sweep away anything left with no remaining uses. This is a plain
+    // worklist DCE fixed point (deleting a dead op can make the op that fed
+    // one of its own operands dead in turn), not another mem2reg pass, so
+    // unlike re-running promotion itself it is cheap and always terminates:
+    // a redirected blocking use that has no real destination to redirect to
+    // (e.g. a memref.copy into a real, non-promotable memref) recreates an
+    // equivalent tensor2memref every time it is reconsidered, which would
+    // make looping promotion to a fixed point spin forever instead of
+    // converging.
+    SmallVector<Operation *> worklist;
+    func.walk([&](Operation *op) {
+      if (isDeletableScratchOp(op))
+        worklist.push_back(op);
+    });
+    // The same op can land on the worklist twice (once from the walk above,
+    // again as a cascade target of two different now-dead consumers) before
+    // either entry is popped; erasing it twice is a use-after-free, so track
+    // what has already been resolved (erased or found still live) instead of
+    // processing every entry blindly.
+    DenseSet<Operation *> resolved;
+    while (!worklist.empty()) {
+      Operation *op = worklist.pop_back_val();
+      if (!resolved.insert(op).second)
+        continue;
+      if (!op->use_empty())
+        continue;
+      for (Value operand : op->getOperands())
+        if (Operation *def = operand.getDefiningOp())
+          if (isDeletableScratchOp(def) && !resolved.contains(def))
+            worklist.push_back(def);
+      op->erase();
+    }
+
+    return success();
   }
 
   LLVM::LLVMFuncOp convertGPUFuncToLLVMFunc(gpu::GPUFuncOp funcOp,
@@ -593,8 +456,8 @@ struct GPUWrapperToKernelCallPass
         (moduleOp.getName() + "::" + funcOp.getName() + "_to_llvm").str();
 
     OpBuilder builder(funcOp->getParentOp());
-    auto fn = LLVM::LLVMFuncOp::create(builder, funcOp->getLoc(), fnName,
-                                       fnType);
+    auto fn =
+        LLVM::LLVMFuncOp::create(builder, funcOp->getLoc(), fnName, fnType);
     fn.setPrivate();
 
     Block *entry = fn.addEntryBlock(builder);
@@ -717,14 +580,18 @@ struct GPUWrapperToKernelCallPass
 
     SmallVector<Value> kernelCallOperands;
     SmallVector<Type> resultTypes;
+
     // The memref actually backing each kernel operand: either the operand
     // itself, or -- for an operand that reached the launch_func as a raw
     // pointer (see the memref2pointer walk below) -- the memref that pointer
     // was cast from.
     SmallVector<Value> operandMemrefs;
     for (auto [i, koperand] : llvm::enumerate(launchOp.getKernelOperands())) {
+      Value kernelOperand = nullptr;
       Value memrefOperand = koperand;
+
       auto MT = dyn_cast<MemRefType>(koperand.getType());
+
       if (!MT) {
         // Enzyme-AD kernels can capture a memref2pointer cast of a memref
         // rather than the memref itself (its body wants a bare pointer).
@@ -739,9 +606,36 @@ struct GPUWrapperToKernelCallPass
         MT = cast<MemRefType>(memrefOperand.getType());
       }
 
-      auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
-      kernelCallOperands.push_back(enzymexla::Memref2TensorOp::create(
-          builder, koperand.getLoc(), TT, memrefOperand));
+      while (true) {
+        if (auto p2m =
+                memrefOperand.getDefiningOp<enzymexla::Pointer2MemrefOp>()) {
+          if (auto m2p = p2m.getSource()
+                             .getDefiningOp<enzymexla::Memref2PointerOp>()) {
+            memrefOperand = m2p.getSource();
+            continue;
+          }
+        }
+
+        if (auto t2m =
+                memrefOperand.getDefiningOp<enzymexla::Tensor2MemrefOp>();
+            t2m && memrefOperand.hasOneUse()) {
+          kernelOperand = t2m.getTensor();
+          memrefOperand = nullptr;
+          break;
+        }
+
+        break;
+      }
+
+      if (!kernelOperand) {
+        auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
+        kernelOperand = enzymexla::Memref2TensorOp::create(
+            builder, koperand.getLoc(), TT, memrefOperand);
+      }
+
+      auto TT = cast<RankedTensorType>(kernelOperand.getType());
+
+      kernelCallOperands.push_back(kernelOperand);
       resultTypes.push_back(TT);
       operandMemrefs.push_back(memrefOperand);
     }
@@ -802,6 +696,8 @@ struct GPUWrapperToKernelCallPass
 
     for (auto [memrefOperand, result] :
          llvm::zip_equal(operandMemrefs, kernelCall.getResults())) {
+      if (!memrefOperand)
+        continue;
       Value memref = enzymexla::Tensor2MemrefOp::create(
           builder, memrefOperand.getLoc(), memrefOperand.getType(), result);
       memref::CopyOp::create(builder, memrefOperand.getLoc(), memref,
@@ -820,13 +716,16 @@ struct GPUWrapperToKernelCallPass
 
     bool anyFailed = false;
 
-    SmallVector<func::FuncOp> funcs;
+    // A func can contain many GPUErrorOps (one per kernel); cleanupMemrefs
+    // walks and mem2reg's the whole function, so it must run once per
+    // function, not once per error op it happened to contain.
+    llvm::SetVector<func::FuncOp> funcs;
 
     getOperation().walk(
         [&](enzymexla::GPUErrorOp alt) { errs.push_back(alt); });
     for (enzymexla::GPUErrorOp err : errs) {
       auto func = err->getParentOfType<func::FuncOp>();
-      funcs.push_back(func);
+      funcs.insert(func);
 
       if (failed(emitErrorOp(err, symbolTables))) {
         anyFailed = true;
