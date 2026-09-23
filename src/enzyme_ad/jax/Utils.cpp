@@ -1072,6 +1072,174 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
   }
 }
 
+bool NonZeroResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
+  for (auto elem : attr.getValues<APInt>())
+    if (elem.isZero())
+      return false;
+  return true;
+}
+
+bool NonZeroResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
+  for (auto elem : attr.getValues<APFloat>())
+    if (elem.isZero() || elem.isDenormal())
+      return false;
+  return true;
+}
+
+static bool integerRangeExcludesZero(Value val) {
+  auto tensorTy = dyn_cast<RankedTensorType>(val.getType());
+  if (!tensorTy)
+    return false;
+  auto ety = dyn_cast<IntegerType>(tensorTy.getElementType());
+  if (!ety)
+    return false;
+
+  unsigned w = ety.getWidth();
+  auto [lo, hi] = getProvableIntegerRange(val);
+
+  APInt tyLo = ety.isUnsignedInteger() ? APInt::getZero(128)
+                                       : APInt::getSignedMinValue(w).sext(128);
+  APInt tyHi = ety.isUnsignedInteger() ? APInt::getMaxValue(w).zext(128)
+                                       : APInt::getSignedMaxValue(w).sext(128);
+  if (lo.slt(tyLo) || hi.sgt(tyHi))
+    return false;
+
+  return lo.sgt(0) || hi.slt(0);
+}
+
+NonZeroResultAnalysis::State NonZeroResultAnalysis::localGuaranteed(
+    Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
+  auto elemTy = getElementTypeOrSelf(val.getType());
+  // NonNegative's exp/abs rules don't check for complex types, so bail here.
+  if (isa<ComplexType>(elemTy))
+    return State::NOTGUARANTEED;
+
+  if (isa<IntegerType>(elemTy) && integerRangeExcludesZero(val))
+    return State::GUARANTEED;
+
+  auto op = val.getDefiningOp();
+  if (!op)
+    return State::NOTGUARANTEED;
+
+  bool recursiveCheck = false;
+  SmallVector<Value> operandsToCheck;
+
+  if (isa<stablehlo::ExpOp, stablehlo::LogisticOp>(op)) {
+    // exp(x >= 0) >= 1, logistic(x >= 0) >= 0.5
+    // for small enough numbers the result becomes zero depending on the float
+    // precision so nonNegativeResultAnalysis for now
+    return nonNegativeResultAnalysis.guaranteed(op->getOperand(0), rewriter)
+               ? State::GUARANTEED
+               : State::NOTGUARANTEED;
+  } else if (isa<chlo::CoshOp>(op)) {
+    return State::GUARANTEED;
+  } else if (isa<stablehlo::RsqrtOp>(op)) {
+    // rsqrt(0) = inf; rsqrt(finite > 0) >= 1/sqrt(max)
+    return finiteResultAnalysis.guaranteed(op->getOperand(0), rewriter)
+               ? State::GUARANTEED
+               : State::NOTGUARANTEED;
+  } else if (auto addOp = dyn_cast<stablehlo::AddOp>(op)) {
+    // integers are covered by the range check above (wraparound-safe)
+    if (!isa<FloatType>(elemTy))
+      return State::NOTGUARANTEED;
+    Value lhs = addOp.getLhs(), rhs = addOp.getRhs();
+    if (!nonNegativeResultAnalysis.guaranteed(lhs, rewriter) ||
+        !nonNegativeResultAnalysis.guaranteed(rhs, rewriter))
+      return State::NOTGUARANTEED;
+    // a >= 0, b > 0  =>  a + b >= b > 0
+    return (this->guaranteed(lhs, rewriter) || this->guaranteed(rhs, rewriter))
+               ? State::GUARANTEED
+               : State::NOTGUARANTEED;
+  }
+
+  if (isa<stablehlo::AbsOp, stablehlo::NegOp, stablehlo::SignOp,
+          stablehlo::PopulationCountOp, stablehlo::SqrtOp, stablehlo::CbrtOp,
+          stablehlo::ReshapeOp, stablehlo::TransposeOp, stablehlo::SliceOp,
+          stablehlo::ReverseOp, stablehlo::DynamicSliceOp,
+          stablehlo::BroadcastInDimOp, chlo::ErfOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+  }
+
+  else if (isa<stablehlo::PadOp, stablehlo::DynamicPadOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0)); // operand
+    operandsToCheck.push_back(op->getOperand(1)); // padding_value
+  } else if (isa<stablehlo::ConcatenateOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.append(op->operand_begin(), op->operand_end());
+  } else if (auto maxOp = dyn_cast<stablehlo::MaxOp>(op)) {
+    for (Value v : {maxOp.getLhs(), maxOp.getRhs()}) {
+      if (nonNegativeResultAnalysis.guaranteed(v, rewriter) &&
+          this->guaranteed(v, rewriter))
+        return State::GUARANTEED;
+    }
+    recursiveCheck = true;
+    operandsToCheck.push_back(maxOp.getLhs());
+    operandsToCheck.push_back(maxOp.getRhs());
+  } else if (isa<stablehlo::MinOp>(op)) {
+    // we do not have a NonPositiveAnalysis pass unfortunetly
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+    operandsToCheck.push_back(op->getOperand(1));
+  } else if (isa<stablehlo::SelectOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(1));
+    operandsToCheck.push_back(op->getOperand(2));
+  } else if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
+    // result[i] = min(max(x[i], lo[i]), hi[i])
+    Value lo = clampOp.getMin();
+    Value x = clampOp.getOperand();
+    Value hi = clampOp.getMax();
+
+    // Case 1: lo > 0 and hi != 0.
+    //   lo[i] <= hi[i]  =>  result[i] >= lo[i] > 0
+    //   lo[i] >  hi[i]  =>  result[i] == hi[i] != 0
+    if (nonNegativeResultAnalysis.guaranteed(lo, rewriter) &&
+        this->guaranteed(lo, rewriter) && this->guaranteed(hi, rewriter))
+      return State::GUARANTEED;
+
+    // Case 2: all three nonzero.
+    //   the result is always one of x, lo, hi (or NaN)
+    recursiveCheck = true;
+    operandsToCheck.push_back(lo);
+    operandsToCheck.push_back(x);
+    operandsToCheck.push_back(hi);
+  } else if (auto convertOp = dyn_cast<stablehlo::ConvertOp>(op)) {
+    auto inTy = getElementTypeOrSelf(convertOp.getOperand().getType());
+    bool preservesNonZero = false;
+    if (auto outI = dyn_cast<IntegerType>(elemTy)) {
+      if (outI.getWidth() == 1) {
+        // convert to i1 is (x != 0)
+        preservesNonZero = true;
+      } else if (auto inI = dyn_cast<IntegerType>(inTy)) {
+        preservesNonZero = outI.getWidth() >= inI.getWidth();
+      }
+    } else if (auto outF = dyn_cast<FloatType>(elemTy)) {
+      if (isa<IntegerType>(inTy)) {
+        // a nonzero integer maps to |x| >= 1, or inf/NaN
+        preservesNonZero = true;
+      } else if (auto inF = dyn_cast<FloatType>(inTy)) {
+        // a smaller exponent range can underflow to zero (1e-300 f64 -> f32)
+        preservesNonZero =
+            APFloat::semanticsMinExponent(outF.getFloatSemantics()) <=
+            APFloat::semanticsMinExponent(inF.getFloatSemantics());
+      }
+    }
+
+    if (!preservesNonZero)
+      return State::NOTGUARANTEED;
+
+    recursiveCheck = true;
+    operandsToCheck.push_back(convertOp.getOperand());
+  }
+
+  if (recursiveCheck)
+    return recursivelyCheckOperands(localtodo, operandsToCheck,
+                                    /*skipIntegerEltypes=*/false);
+  return State::NOTGUARANTEED;
+}
+
 bool PurelyRealResultAnalysis::constantComplexCheck(DenseElementsAttr attr) {
   for (auto value : attr.getValues<mlir::Complex<llvm::APFloat>>()) {
     if (!value.imag().isZero()) {

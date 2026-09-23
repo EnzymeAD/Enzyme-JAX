@@ -1131,6 +1131,32 @@ inline bool guaranteedNonNegativeResult(Operation *op,
                                                            rewriter);
 }
 
+class NonZeroResultAnalysis
+    : public GuaranteedResultAnalysisBase<NonZeroResultAnalysis> {
+private:
+  NonNegativeResultAnalysis nonNegativeResultAnalysis;
+  FiniteResultAnalysis finiteResultAnalysis = initFiniteResultAnalysis();
+
+public:
+  bool constantComplexCheck(DenseElementsAttr attr) { return false; }
+  bool constantFloatCheck(DenseElementsAttr attr);
+  bool constantIntCheck(DenseElementsAttr attr);
+
+  StringRef getAttrName() const { return "enzymexla.non_zero"; }
+
+  State localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo,
+                        PatternRewriter &rewriter);
+};
+
+inline bool guaranteedNonZeroResult(mlir::Value value,
+                                    PatternRewriter &rewriter) {
+  return NonZeroResultAnalysis().guaranteed(value, rewriter);
+}
+inline bool guaranteedNonZeroResult(Operation *op, PatternRewriter &rewriter) {
+  auto analysis = NonZeroResultAnalysis();
+  return runAnalysisOnOperation<NonZeroResultAnalysis>(analysis, op, rewriter);
+}
+
 inline bool guaranteedPurelyRealResult(mlir::Value value,
                                        PatternRewriter &rewriter) {
   return initPurelyRealResultAnalysis().guaranteed(value, rewriter);
