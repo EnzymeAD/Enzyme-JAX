@@ -293,11 +293,25 @@ void addConjugations(const NormalizedCollective &collective,
   }
 }
 
+// Whether a payload of `payloadBytes` (elements of `elementBytes` bytes each)
+// splits evenly into `extent` shards. A scatter or gather's split dimension
+// size is counted in elements, so this divides the byte count back down to
+// elements before checking: an element width that shares a factor with
+// `extent` can make the byte count divide evenly when the element count does
+// not.
+bool dividesIntoElements(int64_t payloadBytes, int64_t elementBytes,
+                         uint64_t extent) {
+  assert(payloadBytes % elementBytes == 0 &&
+         "payload must be a whole number of elements");
+  return (payloadBytes / elementBytes) % static_cast<int64_t>(extent) == 0;
+}
+
 // An O(1) estimate of a unit's own isolated duration at `payload`, using the
 // footprint the unit would run with when ready (the fused reading for
 // TileToTile and ReduceScatter units, D14). It only ranks component variants
 // against each other (see variantGain); the DP never uses it to cost a step.
 double estimatedIsolatedCost(const Unit &unit, int64_t payload,
+                             int64_t elementBytes,
                              const MeshCostParams &params) {
   switch (unit.kind) {
   case UnitKind::Slice:
@@ -310,9 +324,9 @@ double estimatedIsolatedCost(const Unit &unit, int64_t payload,
     return allReduceFootprint(unit.atoms, payload, params).isolatedDuration();
   case UnitKind::ReduceScatter:
   case UnitKind::SelfScatter:
-    // A shrunk payload may no longer divide the extent; fall back to the
-    // all-reduce a ReduceScatter unit also offers.
-    return payload % static_cast<int64_t>(unit.extent) == 0
+    // A shrunk payload may no longer divide the extent in elements; fall
+    // back to the all-reduce a ReduceScatter unit also offers.
+    return dividesIntoElements(payload, elementBytes, unit.extent)
                ? reduceScatterFootprint(unit.atoms, payload, params)
                      .isolatedDuration()
                : allReduceFootprint(unit.atoms, payload, params)
@@ -334,7 +348,7 @@ double estimatedIsolatedCost(const Unit &unit, int64_t payload,
 // the payload its source's gather leaves. This is the variant's cost in
 // isolation and ignores how it interleaves with other components.
 double variantOwnCost(const UnitSet &units, int64_t payload,
-                      const MeshCostParams &params) {
+                      int64_t elementBytes, const MeshCostParams &params) {
   double total = 0;
   std::vector<bool> done(units.size(), false);
   for (size_t step = 0; step < units.size(); ++step) {
@@ -344,7 +358,7 @@ double variantOwnCost(const UnitSet &units, int64_t payload,
       ++next;
     done[next] = true;
     const Unit &unit = units[next];
-    total += estimatedIsolatedCost(unit, payload, params);
+    total += estimatedIsolatedCost(unit, payload, elementBytes, params);
     int64_t extent = static_cast<int64_t>(unit.extent);
     switch (unit.kind) {
     case UnitKind::Gather:
@@ -380,7 +394,7 @@ uint64_t shrinkFactorOf(const UnitSet &units) {
 // at `payload`.
 double otherNeutralSavings(const std::vector<Component> &components,
                            size_t excluded, int64_t payload, uint64_t shrinkBy,
-                           const MeshCostParams &params) {
+                           int64_t elementBytes, const MeshCostParams &params) {
   double savings = 0;
   for (size_t c = 0; c < components.size(); ++c) {
     if (c == excluded)
@@ -389,9 +403,10 @@ double otherNeutralSavings(const std::vector<Component> &components,
       if (unit.kind != UnitKind::AllReduce &&
           unit.kind != UnitKind::TileToTile && unit.kind != UnitKind::Permute)
         continue;
-      savings += estimatedIsolatedCost(unit, payload, params) -
-                 estimatedIsolatedCost(
-                     unit, payload / static_cast<int64_t>(shrinkBy), params);
+      savings +=
+          estimatedIsolatedCost(unit, payload, elementBytes, params) -
+          estimatedIsolatedCost(unit, payload / static_cast<int64_t>(shrinkBy),
+                                elementBytes, params);
     }
   }
   return savings;
@@ -414,29 +429,31 @@ double otherNeutralSavings(const std::vector<Component> &components,
 // locally cheaper choice, which is what the exact search would also prefer.
 double variantGain(const std::vector<Component> &components, size_t component,
                    const Variant &baseline, const Variant &variant,
-                   int64_t payload, const MeshCostParams &params) {
+                   int64_t payload, int64_t elementBytes,
+                   const MeshCostParams &params) {
   uint64_t shrinkBy = shrinkFactorOf(variant.units);
   double benefit = 0;
   if (shrinkBy > 1)
-    benefit =
-        (1.0 - 1.0 / std::exp(1.0)) *
-        otherNeutralSavings(components, component, payload, shrinkBy, params);
-  return benefit - (variantOwnCost(variant.units, payload, params) -
-                    variantOwnCost(baseline.units, payload, params));
+    benefit = (1.0 - 1.0 / std::exp(1.0)) *
+              otherNeutralSavings(components, component, payload, shrinkBy,
+                                  elementBytes, params);
+  return benefit -
+         (variantOwnCost(variant.units, payload, elementBytes, params) -
+          variantOwnCost(baseline.units, payload, elementBytes, params));
 }
 
 // Keeps the baseline (index 0) and the `kVariant` non-baseline variants of
 // component `index` with the highest gain, in their original order.
 void keepBestVariants(std::vector<Component> &components, size_t index,
-                      int64_t payload, const MeshCostParams &params,
-                      size_t kVariant) {
+                      int64_t payload, int64_t elementBytes,
+                      const MeshCostParams &params, size_t kVariant) {
   Component &component = components[index];
   if (component.variants.size() <= kVariant + 1)
     return;
   std::vector<double> gain(component.variants.size(), 0.0);
   for (size_t i = 1; i < component.variants.size(); ++i)
     gain[i] = variantGain(components, index, component.variants.front(),
-                          component.variants[i], payload, params);
+                          component.variants[i], payload, elementBytes, params);
   std::vector<size_t> ranked;
   for (size_t i = 1; i < component.variants.size(); ++i)
     ranked.push_back(i);
@@ -488,7 +505,9 @@ bool buildComponents(const NormalizedCollective &collective,
     component.variants.push_back(
         {UnitSet{{UnitKind::AllReduce, {stepAtomOf(atom)}, atom.extent, {}}},
          {}});
-    if (options.peelVariants && collective.payloadBytes % atom.extent == 0) {
+    if (options.peelVariants &&
+        dividesIntoElements(collective.payloadBytes, collective.elementBytes,
+                            atom.extent)) {
       UnitSet peel;
       peel.push_back(
           {UnitKind::SelfScatter, {stepAtomOf(atom)}, atom.extent, {}});
@@ -590,7 +609,8 @@ bool buildComponents(const NormalizedCollective &collective,
   // the product. Otherwise this step does nothing.
   if (options.budget && options.budget->kVariant != PlanBudget::kUnlimited)
     for (size_t c = 0; c < components.size(); ++c)
-      keepBestVariants(components, c, collective.payloadBytes, params,
+      keepBestVariants(components, c, collective.payloadBytes,
+                       collective.elementBytes, params,
                        options.budget->kVariant);
 
   // Keep the product of the variant counts within the cap. The first variant
@@ -787,10 +807,11 @@ CandidateFilter budgetedFilter(const CandidateFilter &callerFilter,
 class ChainSearch {
 public:
   ChainSearch(const std::vector<Unit> &units, int64_t payloadBytes,
-              const MeshCostParams &params, const CandidateFilter &filter,
+              int64_t elementBytes, const MeshCostParams &params,
+              const CandidateFilter &filter,
               size_t maxStates = PlanBudget::kUnlimited)
-      : units(units), payloadBytes(payloadBytes), params(params),
-        filter(filter), maxStates(maxStates) {}
+      : units(units), payloadBytes(payloadBytes), elementBytes(elementBytes),
+        params(params), filter(filter), maxStates(maxStates) {}
 
   // True once solve() expanded more than `maxStates` distinct states and gave
   // up; the returned cost and any extracted chain are then meaningless.
@@ -907,9 +928,9 @@ public:
         break;
       case UnitKind::SelfScatter:
         // A SelfScatter's extent (D17) is not backed by a digit, so nothing
-        // guarantees it divides the current payload. Skip it here instead of
-        // letting reduceScatterFootprint's own assert fire.
-        if (payload % static_cast<int64_t>(unit.extent) == 0)
+        // guarantees it divides the current element count. Skip it here
+        // instead of letting reduceScatterFootprint's own assert fire.
+        if (dividesIntoElements(payload, elementBytes, unit.extent))
           result.push_back({reduceScatterFootprint(unit.atoms, payload, params),
                             advance(state, i, 1)});
         break;
@@ -993,6 +1014,7 @@ private:
 
   const std::vector<Unit> &units;
   int64_t payloadBytes;
+  int64_t elementBytes;
   const MeshCostParams &params;
   const CandidateFilter &filter;
   size_t maxStates;
@@ -1050,8 +1072,8 @@ plan(const NormalizedCollective &collective, const MeshCostParams &params,
     CandidateFilter budgeted;
     if (options.budget)
       budgeted = budgetedFilter(options.filter, *options.budget, units);
-    ChainSearch search(units, collective.payloadBytes, params,
-                       options.budget ? budgeted : options.filter,
+    ChainSearch search(units, collective.payloadBytes, collective.elementBytes,
+                       params, options.budget ? budgeted : options.filter,
                        options.budget ? options.budget->maxStates
                                       : PlanBudget::kUnlimited);
     double cost = search.solve(search.initialState());

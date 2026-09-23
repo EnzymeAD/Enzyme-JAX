@@ -155,6 +155,7 @@ buildNormalizedCollective(const CollectiveResolution &resolution,
 
   NormalizedCollective result;
   result.reductionKind = reductionKind;
+  result.elementBytes = elementBytes;
   result.payloadBytes = elementBytes;
   for (int64_t dim : inputTile)
     result.payloadBytes *= dim;

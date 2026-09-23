@@ -87,6 +87,13 @@ struct NormalizedCollective {
   // Bytes of the per-device input tile, the payload every primitive of the
   // decomposition starts from.
   int64_t payloadBytes = 0;
+  // Bytes of one tensor element. A scatter or gather's split dimension size
+  // is counted in elements, so a decomposition step's legality (whether an
+  // atom's extent evenly divides what it moves) is answered by dividing
+  // payloadBytes back down to elements with this, not by payloadBytes alone:
+  // an element width that shares a factor with the extent can make the byte
+  // count divide evenly when the element count does not.
+  int64_t elementBytes = 1;
   // The one kind shared by all reduction groups, or None without a reduction.
   // Collectives whose groups use different bodies are unsupported.
   ReductionKind reductionKind = ReductionKind::None;
