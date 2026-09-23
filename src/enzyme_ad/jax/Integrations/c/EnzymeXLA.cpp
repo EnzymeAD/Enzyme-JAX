@@ -978,6 +978,7 @@ static void addNoNanPasses(std::vector<std::string> &list, bool noNan) {
   list.push_back(passWithArg("no_nan_add_sub_simplify", noNan));
   list.push_back(passWithArg("no_nan_mul_simplify", noNan));
   list.push_back(passWithArg("no_nan_div_simplify", noNan));
+  list.push_back(passWithArg("no_nan_zeros_scatter_multiply_simplify", noNan));
 }
 
 static void addAllFinitePasses(std::vector<std::string> &list) {

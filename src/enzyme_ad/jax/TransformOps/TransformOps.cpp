@@ -53,6 +53,12 @@ void ApplyNoNanZeroBasePowSimplify::populatePatterns(
   addNoNanZeroBasePowSimplify(patterns, getParameter(), *getContext(),
                               PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyNoNanZerosScatterMultiplySimplify::populatePatterns(
+    RewritePatternSet &patterns) {
+  addNoNanZerosScatterMultiplySimplify(
+      patterns, getParameter(), *getContext(),
+      PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplySelfSubtractToConvolutionLikePatterns::populatePatterns(
     RewritePatternSet &patterns) {
   addSelfSubtractToConvolutionLike(patterns, getParameter(), *getContext(),
