@@ -3173,15 +3173,13 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
         // The DUS clamps its window into the buffer, the scatter would drop
         // an out-of-bounds window instead.
         auto i64Ty = RankedTensorType::get({}, rewriter.getI64Type());
-        bcol = stablehlo::ClampOp::create(
+        Value lo = stablehlo::ConstantOp::create(
+            rewriter, loc, cast<ElementsAttr>(makeAttr(i64Ty, 0)));
+        Value hi = stablehlo::ConstantOp::create(
             rewriter, loc,
-            stablehlo::ConstantOp::create(
-                rewriter, loc, cast<ElementsAttr>(makeAttr(i64Ty, 0))),
-            bcol,
-            stablehlo::ConstantOp::create(
-                rewriter, loc,
-                cast<ElementsAttr>(makeAttr(i64Ty, bufTy.getDimSize(d) -
-                                                       updTy.getDimSize(d)))));
+            cast<ElementsAttr>(
+                makeAttr(i64Ty, bufTy.getDimSize(d) - updTy.getDimSize(d))));
+        bcol = stablehlo::ClampOp::create(rewriter, loc, lo, bcol, hi);
         cols.push_back(bcol);
       }
       Value indices =
