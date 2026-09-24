@@ -272,3 +272,93 @@ func.func @not_physically_adjacent() -> (tensor<4xf32>, tensor<4xf32>) {
   }
   distributed.DistributedYield (%r0 : tensor<4xf32>, %r1 : tensor<4xf32>)
 }) : () -> ()
+
+// -----
+
+// The kv-heads repeat pattern: two trivial kernels are not directly
+// adjacent but are instead joined by a CastLocalToGlobal/CastGlobalToLocal
+// round trip naming two different logical axes (e.g. the kv-heads axis on
+// one side, the query-heads/repeat axis on the other) that happen to agree
+// on local shape. FoldCastRoundTrip declines this pair since the two casts'
+// partitioning_axes differ, but from this pass's vantage point -- deciding
+// whether to splice two kernel bodies together -- the shared local shape is
+// enough: the round trip is spliced out and the two bodies merge into one
+// kernel, same as if they'd been directly adjacent.
+// CHECK-LABEL: module @cast_boundary_shape_identity
+// CHECK-NOT: distributed.CastLocalToGlobal
+// CHECK-NOT: distributed.CastGlobalToLocal
+// CHECK: %[[R:.*]]:2 = distributed.DistributedKernel (%{{.*}} : tensor<1xf32>)
+// CHECK-NEXT: -> (tensor<1xf32>, tensor<1xf32>) {{.*}}
+// CHECK-NEXT: axes () {
+// CHECK-NEXT: ^bb0(%[[A0:.*]]: tensor<1xf32>):
+// CHECK-NEXT: %[[C:.*]] = stablehlo.add %[[A0]], %[[A0]]
+// CHECK-NEXT: %[[D:.*]] = stablehlo.multiply %[[C]], %[[C]]
+// CHECK-NEXT: distributed.DistributedYield (%[[C]] : tensor<1xf32>, %[[D]] : tensor<1xf32>)
+module @cast_boundary_shape_identity {
+  func.func @main() {
+    return
+  }
+  %d0 = distributed.DeviceLocalAxis 4 : <4>
+  %d1 = distributed.DeviceLocalAxis 4 : <4>
+  %f0 = axis.factor %d0 : !distributed.device_local_axis<4><4, 1>
+  %g0 = axis.product (%f0 : !axis.axis_factor<!distributed.device_local_axis<4>, 4, 1>)
+  %f1 = axis.factor %d1 : !distributed.device_local_axis<4><4, 1>
+  %g1 = axis.product (%f1 : !axis.axis_factor<!distributed.device_local_axis<4>, 4, 1>)
+  %in0 = tensor.empty() : tensor<1xf32>
+  %r0 = distributed.DistributedKernel (%in0 : tensor<1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      -> (tensor<1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      axes () {
+  ^bb0(%arg0: tensor<1xf32>):
+    %c = stablehlo.add %arg0, %arg0 : tensor<1xf32>
+    distributed.DistributedYield (%c : tensor<1xf32>)
+  }
+  %cast0 = distributed.CastLocalToGlobal %r0 axes (%g0 : !axis.factor_group<4>) : tensor<1xf32> -> tensor<4xf32>
+  %cast1 = distributed.CastGlobalToLocal %cast0 axes (%g1 : !axis.factor_group<4>) : tensor<4xf32> -> tensor<1xf32>
+  %r1 = distributed.DistributedKernel (%cast1 : tensor<1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      -> (tensor<1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      axes () {
+  ^bb0(%arg1: tensor<1xf32>):
+    %d = stablehlo.multiply %arg1, %arg1 : tensor<1xf32>
+    distributed.DistributedYield (%d : tensor<1xf32>)
+  }
+}
+
+// -----
+
+// Same-extent axes on the two boundary casts are not by themselves enough:
+// here the round trip's own net shape changes (tensor<1xf32> in, but
+// tensor<4xf32> comes back out, since the second cast only divides by a
+// trivial factor group instead of undoing the first cast's growth) --
+// real per-element movement, not just an axis relabeling -- so this must
+// not merge; both kernels and the full cast pair survive untouched.
+// CHECK-LABEL: module @cast_boundary_not_shape_identity
+// CHECK: distributed.DistributedKernel
+// CHECK: distributed.CastLocalToGlobal
+// CHECK: distributed.CastGlobalToLocal
+// CHECK: distributed.DistributedKernel
+module @cast_boundary_not_shape_identity {
+  func.func @main() {
+    return
+  }
+  %d0 = distributed.DeviceLocalAxis 4 : <4>
+  %f0 = axis.factor %d0 : !distributed.device_local_axis<4><4, 1>
+  %g0 = axis.product (%f0 : !axis.axis_factor<!distributed.device_local_axis<4>, 4, 1>)
+  %g_triv = axis.product ()
+  %in0 = tensor.empty() : tensor<1xf32>
+  %r0 = distributed.DistributedKernel (%in0 : tensor<1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      -> (tensor<1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      axes () {
+  ^bb0(%arg0: tensor<1xf32>):
+    %c = stablehlo.add %arg0, %arg0 : tensor<1xf32>
+    distributed.DistributedYield (%c : tensor<1xf32>)
+  }
+  %cast0 = distributed.CastLocalToGlobal %r0 axes (%g0 : !axis.factor_group<4>) : tensor<1xf32> -> tensor<4xf32>
+  %cast1 = distributed.CastGlobalToLocal %cast0 axes (%g_triv : !axis.factor_group<1>) : tensor<4xf32> -> tensor<4xf32>
+  %r1 = distributed.DistributedKernel (%cast1 : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      -> (tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      axes () {
+  ^bb0(%arg1: tensor<4xf32>):
+    %d = stablehlo.multiply %arg1, %arg1 : tensor<4xf32>
+    distributed.DistributedYield (%d : tensor<4xf32>)
+  }
+}

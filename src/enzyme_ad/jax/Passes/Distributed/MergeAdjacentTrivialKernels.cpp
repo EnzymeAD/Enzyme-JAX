@@ -76,9 +76,65 @@ struct SinkYieldOnlyCastDown
   }
 };
 
+// Matches a CastLocalToGlobal/CastGlobalToLocal (or reverse) pair sitting
+// immediately after `afterFirst`, immediately followed by the kernel that
+// consumes the second cast's result, when the round trip's net effect on
+// the tensor is a plain identity: same rank, same static shape, same
+// element type going in and coming back out, even though the two casts
+// name different logical axes. Requiring each hop to be the block's actual
+// next op, and each cast's own result to have exactly the one use that
+// continues the chain, rules out anything else in the block observing an
+// intermediate value this pattern is about to erase.
+//
+// A same-shape round trip like this can only be relabeling which logical
+// axis explains a given local shard, not moving data across devices -- a
+// kernel body only ever sees its own local shard, so if that shard's shape
+// is unchanged end to end, the value flowing into the second kernel really
+// is the same value the first kernel produced. Whether two different axes
+// happen to agree on shape like this is exactly the kind of thing this
+// pass's usual merge condition (both kernels already directly adjacent,
+// established by isTriviallyLocalKernel plus FoldCastRoundTrip already
+// having applied) can't tell from either cast's own local vantage point --
+// this pattern is a narrower, special-cased fold on top of that, scoped to
+// this one boundary shape rather than a general instruction-scheduling
+// merge.
+template <typename FirstCastOp, typename SecondCastOp>
+static bool matchShapeIdentityCastBoundary(Operation *afterFirst,
+                                           DistributedKernelOp &second,
+                                           Operation *&cast1, Operation *&cast2,
+                                           Value &bypassValue) {
+  auto firstCast = dyn_cast<FirstCastOp>(afterFirst);
+  if (!firstCast || !firstCast.getOutput().hasOneUse()) {
+    return false;
+  }
+  auto secondCast =
+      dyn_cast<SecondCastOp>(*firstCast.getOutput().getUsers().begin());
+  if (!secondCast || secondCast->getPrevNode() != firstCast ||
+      !secondCast.getOutput().hasOneUse()) {
+    return false;
+  }
+  if (firstCast.getInput().getType() != secondCast.getOutput().getType()) {
+    return false;
+  }
+  auto kernel =
+      dyn_cast<DistributedKernelOp>(*secondCast.getOutput().getUsers().begin());
+  if (!kernel || kernel->getPrevNode() != secondCast) {
+    return false;
+  }
+  second = kernel;
+  cast1 = firstCast;
+  cast2 = secondCast;
+  bypassValue = firstCast.getInput();
+  return true;
+}
+
 // Merges two physically-adjacent trivial kernels into one. `next` is always
 // `first`'s immediate successor in the block, so nothing needs to be
 // reordered -- the merged kernel simply occupies their combined position.
+// "Adjacent" also covers the two kernels being joined directly by a
+// shape-identity cast round trip (see matchShapeIdentityCastBoundary):
+// once that's confirmed identity, the round trip is spliced out along with
+// the two kernel bodies coming together.
 struct MergeAdjacentTrivialKernels
     : public OpRewritePattern<DistributedKernelOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -88,7 +144,23 @@ struct MergeAdjacentTrivialKernels
     if (!isTriviallyLocalKernel(first)) {
       return failure();
     }
-    auto second = dyn_cast_or_null<DistributedKernelOp>(first->getNextNode());
+    Operation *next = first->getNextNode();
+    if (!next) {
+      return failure();
+    }
+    DistributedKernelOp second;
+    Operation *castOp1 = nullptr, *castOp2 = nullptr;
+    Value bypassValue;
+    if (auto direct = dyn_cast<DistributedKernelOp>(next)) {
+      second = direct;
+    } else if (!matchShapeIdentityCastBoundary<DistributedCastLocalToGlobalOp,
+                                               DistributedCastGlobalToLocalOp>(
+                   next, second, castOp1, castOp2, bypassValue) &&
+               !matchShapeIdentityCastBoundary<DistributedCastGlobalToLocalOp,
+                                               DistributedCastLocalToGlobalOp>(
+                   next, second, castOp1, castOp2, bypassValue)) {
+      return failure();
+    }
     if (!second || !isTriviallyLocalKernel(second)) {
       return failure();
     }
@@ -109,19 +181,29 @@ struct MergeAdjacentTrivialKernels
       int64_t index; // index into first's results, or into mergedOperands.
     };
 
+    // When a shape-identity cast boundary sits between the two kernels,
+    // `second`'s operand naming that boundary's own tail value is really
+    // naming whatever fed the boundary's head -- substitute that through
+    // before doing the same first-result-or-external classification as the
+    // no-boundary case.
+    Value castChainOutput = castOp2 ? castOp2->getResult(0) : Value();
+
     SmallVector<Value> mergedOperands(first.getArguments().begin(),
                                       first.getArguments().end());
     SmallVector<SecondArgSource> secondArgSources;
     secondArgSources.reserve(second.getArguments().size());
     for (Value operand : second.getArguments()) {
-      auto it = firstResultIndex.find(operand);
+      Value effective = (castChainOutput && operand == castChainOutput)
+                            ? bypassValue
+                            : operand;
+      auto it = firstResultIndex.find(effective);
       if (it != firstResultIndex.end()) {
         secondArgSources.push_back({true, it->second});
         continue;
       }
       secondArgSources.push_back(
           {false, static_cast<int64_t>(mergedOperands.size())});
-      mergedOperands.push_back(operand);
+      mergedOperands.push_back(effective);
     }
 
     SmallVector<Type> mergedResultTypes(first.getResultTypes().begin(),
@@ -196,7 +278,14 @@ struct MergeAdjacentTrivialKernels
       rewriter.replaceAllUsesWith(oldResult, newResult);
     }
 
+    // `second` is erased first so the cast pair's uses actually go to zero
+    // before each cast is erased in turn; `first`'s uses were already
+    // retargeted to `merged` above, including any use from castOp1 itself.
     rewriter.eraseOp(second);
+    if (castOp2) {
+      rewriter.eraseOp(castOp2);
+      rewriter.eraseOp(castOp1);
+    }
     rewriter.eraseOp(first);
     return success();
   }
