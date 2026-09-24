@@ -537,7 +537,6 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("while_dus");
   list.push_back("while_updatewithoutcorners");
   list.push_back("while_op_induction_replacement");
-  list.push_back("parallel_while_to_batched_scatter");
   list.push_back("while_scatter_accumulator_no_add");
   list.push_back("dus_concat");
   list.push_back("dusdus_to_duspad");
@@ -745,6 +744,7 @@ static void addLoopRaisingPasses(std::vector<std::string> &list) {
   list.push_back("greedy_while_loop_batch_fission");
   list.push_back("while_elementwise_reduction_to_reduce");
   list.push_back("remove_loop_carried_dependencies_from_while_load_operations");
+  list.push_back("parallel_while_to_batched_scatter");
 }
 
 static void addLICMPasses(std::vector<std::string> &list,
