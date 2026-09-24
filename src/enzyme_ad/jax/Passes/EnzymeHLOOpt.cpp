@@ -13631,6 +13631,13 @@ struct DUSSliceSimplify final
         llvm::zip(dusStartIndices, updateShape),
         [](auto p) { return std::get<0>(p) + std::get<1>(p); });
 
+    for (auto [iStart, iEnd, dStart, dEnd] : llvm::zip(
+             ignoredStart, ignoredEnd, dusStartIndices, duslimitIndices)) {
+      if (iEnd <= dStart || iStart >= dEnd)
+        return rewriter.notifyMatchFailure(
+            dusOp, "Slices do not overlap the updated region");
+    }
+
     SmallVector<int64_t> strideOne(resRank, 1);
 
     auto loc = dusOp->getLoc();
