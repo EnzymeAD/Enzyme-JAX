@@ -13557,7 +13557,6 @@ struct DUSSliceSimplify final
     SmallVector<int64_t> ignoredStart(resShape);
     SmallVector<int64_t> ignoredEnd(resRank, 0);
     SmallVector<stablehlo::SliceOp> slices;
-    slices.reserve(resRank);
     for (auto &use : res.getUses()) {
       if (auto slice = dyn_cast<stablehlo::SliceOp>(use.getOwner())) {
         ignoredStart = llvm::map_to_vector(
@@ -13611,6 +13610,15 @@ struct DUSSliceSimplify final
     SmallVector<int64_t> duslimitIndices = llvm::map_to_vector(
         llvm::zip(dusStartIndices, updateShape),
         [](auto p) { return std::get<0>(p) + std::get<1>(p); });
+
+    if (llvm::any_of(llvm::zip(ignoredStart, ignoredEnd, dusStartIndices,
+                               duslimitIndices),
+                     [](auto p) {
+                       auto &[iStart, iEnd, dStart, dEnd] = p;
+                       return iEnd <= dStart || iStart >= dEnd;
+                     }))
+      return rewriter.notifyMatchFailure(
+          dusOp, "Slices do not overlap the updated region");
 
     SmallVector<int64_t> strideOne(resRank, 1);
 
