@@ -676,6 +676,67 @@ LogicalResult DistributedKernelOp::verify() {
   return success();
 }
 
+namespace {
+// Drops kernel results that have no uses, from the op's result list, its
+// body's yield, and output_shardings. Compute that only fed a dropped value
+// becomes trivially dead inside the body. Downstream consumers that match
+// closed subgraphs of a kernel body (ACT's macro matchers) need every
+// intermediate to be consumed inside the body, so an unused yielded value
+// would block a match that the body otherwise satisfies.
+//
+// A kernel whose results are all dead is left alone: the op declares no
+// memory effects, so it is not known to be removable, and a kernel with no
+// results is not a shape later passes expect.
+struct PruneDeadKernelResults : public OpRewritePattern<DistributedKernelOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(DistributedKernelOp kernel,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<unsigned> live;
+    for (auto [idx, result] : llvm::enumerate(kernel.getResults()))
+      if (!result.use_empty())
+        live.push_back(idx);
+    if (live.empty() || live.size() == kernel.getNumResults())
+      return failure();
+
+    auto yield =
+        cast<DistributedYieldOp>(kernel.getBody().front().getTerminator());
+    SmallVector<Value> liveYielded;
+    SmallVector<Type> liveTypes;
+    SmallVector<IndexedTensorShardingAttr> liveShardings;
+    ArrayRef<IndexedTensorShardingAttr> shardings =
+        kernel.getOutputShardings().getShardings();
+    for (unsigned idx : live) {
+      liveYielded.push_back(yield.getReturns()[idx]);
+      liveTypes.push_back(kernel.getResult(idx).getType());
+      liveShardings.push_back(shardings[idx]);
+    }
+
+    // Results are variadic, so the op is rebuilt around the same body.
+    auto newKernel = DistributedKernelOp::create(
+        rewriter, kernel.getLoc(), liveTypes, kernel.getArguments(),
+        kernel.getPartitioningAxes(), kernel.getArgumentShardings(),
+        IndexedTensorShardingPerValueAttr::get(kernel.getContext(),
+                                               liveShardings));
+    newKernel->setDiscardableAttrs(kernel->getDiscardableAttrDictionary());
+    rewriter.modifyOpInPlace(yield, [&] { yield->setOperands(liveYielded); });
+    rewriter.inlineRegionBefore(kernel.getBody(), newKernel.getBody(),
+                                newKernel.getBody().end());
+
+    SmallVector<Value> replacements(kernel.getNumResults());
+    for (auto [newIdx, oldIdx] : llvm::enumerate(live))
+      replacements[oldIdx] = newKernel.getResult(newIdx);
+    rewriter.replaceOp(kernel, replacements);
+    return success();
+  }
+};
+} // namespace
+
+void DistributedKernelOp::getCanonicalizationPatterns(
+    RewritePatternSet &results, MLIRContext *context) {
+  results.add<PruneDeadKernelResults>(context);
+}
+
 FailureOr<SmallVector<SmallVector<Value>>>
 DistributedKernelOp::getBindingInfoForOperand(OpOperand &operand) {
   return kernelBindingInfo(*this, getArgumentShardings(),

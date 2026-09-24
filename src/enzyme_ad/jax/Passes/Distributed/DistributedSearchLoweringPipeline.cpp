@@ -62,6 +62,12 @@ void buildDistributedSearchLoweringPipeline(
   // alike, and is a no-op on the atomic collectives fusion builds.
   pm.addPass(createFuseCollectivesPass());
   pm.addPass(createAtomizeCollectivesPass());
+  // ACT matches a kernel body against a closed subgraph, so every yielded
+  // value must be consumed outside the kernel. Clustering yields every value
+  // that crosses its boundary, and merging turns some of those into
+  // internal-only values, so unused results are pruned here, after the last
+  // merge and before dispatch, for scoring clones and the winner alike.
+  pm.addPass(createCanonicalizerPass(canonConfig));
   // Runs after every kernel-merging/cleanup pass above, so each kernel is
   // hoisted exactly once, over its final body, rather than possibly once per
   // merged constituent. Must precede LowerKernelsToExecutable

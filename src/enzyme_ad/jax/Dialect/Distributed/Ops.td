@@ -234,6 +234,7 @@ def DistributedKernelOp : DistributedOp<"DistributedKernel", [
     differ by exactly the product of that dimension's currently-declared
     partitioning-axis factor extents, per argument_shardings/output_shardings)
     instead.}];
+  let hasCanonicalizer = 1;
   let arguments = (ins Variadic<AnyType> : $arguments,
                    Variadic<FactorGroupType> : $partitioning_axes,
                    IndexedTensorShardingPerValueAttr : $argument_shardings,
