@@ -20,31 +20,37 @@ struct DumpDistributedLoggingCheckpointPass
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
 
-    // Logging needs both attributes:
+    // Logging needs the log root plus an identity (candidate or baseline):
     // - distributed.logging_root: set by --set-distributed-logging, and
     //   inherited by every scoring clone through ordinary attribute cloning.
     // - distributed.logging_candidate_uid: set by cloneAndApplyDecisions on
-    //   each scoring clone only.
+    //   each candidate scoring clone only. Dumps go to Candidates/<uid>/ir.
+    // - distributed.logging_baseline: set on the Shardy baseline's scoring
+    //   clone only. Dumps go to Baseline/ir, never under Candidates/.
     //
     // The winner-finalization run at the end of distributed-search-strategies
     // applies the winning decisions in place on the original module, which
-    // carries logging_root but no candidate uid. That is the expected shape
+    // carries logging_root but neither identity. That is the expected shape
     // once logging is enabled: the winner's checkpoints were already captured
     // while it was a scoring clone, and finalizing it again must not produce
-    // a second log entry. So a missing uid (with root present) is a no-op,
-    // the same as logging being off.
+    // a second log entry. So a missing identity (with root present) is a
+    // no-op, the same as logging being off.
     auto loggingRoot =
         moduleOp->getAttrOfType<StringAttr>("distributed.logging_root");
     if (!loggingRoot)
       return;
     auto candidateUid = moduleOp->getAttrOfType<IntegerAttr>(
         "distributed.logging_candidate_uid");
-    if (!candidateUid)
+    bool isBaseline = moduleOp->hasAttr("distributed.logging_baseline");
+    if (!candidateUid && !isBaseline)
       return;
 
     llvm::SmallString<128> irDir(loggingRoot.getValue());
-    llvm::sys::path::append(irDir, "Candidates",
-                            llvm::Twine(candidateUid.getInt()), "ir");
+    if (isBaseline)
+      llvm::sys::path::append(irDir, "Baseline", "ir");
+    else
+      llvm::sys::path::append(irDir, "Candidates",
+                              llvm::Twine(candidateUid.getInt()), "ir");
     if (auto ec = llvm::sys::fs::create_directories(irDir)) {
       moduleOp.emitError()
           << "dump-distributed-logging-checkpoint: failed to create '" << irDir
@@ -55,8 +61,8 @@ struct DumpDistributedLoggingCheckpointPass
     llvm::SmallString<128> irPath(irDir);
     llvm::sys::path::append(irPath, checkpointName.getValue() + ".mlir");
     // Only one writer ever produces a given
-    // Candidates/<uid>/ir/<checkpoint-name>.mlir, so a plain overwrite is
-    // enough; no tmp-then-rename as in writeJsonAtomically.
+    // <Candidates/<uid>|Baseline>/ir/<checkpoint-name>.mlir, so a plain
+    // overwrite is enough; no tmp-then-rename as in writeJsonAtomically.
     std::error_code ec;
     llvm::raw_fd_ostream os(irPath, ec, llvm::sys::fs::OF_None);
     if (ec) {

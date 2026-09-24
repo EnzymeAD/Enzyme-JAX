@@ -2,6 +2,7 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/LogicalAxisOverlap.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/ReplayTree.h"
+#include "src/enzyme_ad/jax/Passes/Distributed/ShardyLogicalAxisAnalysis.h"
 
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/MeshCostMetadata.h"
@@ -11,6 +12,7 @@
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/DebugStringHelper.h"
 
@@ -858,7 +860,7 @@ public:
 // Clones `originalModule`, applies `node`'s decisions to that clone, and
 // runs the search's lowering pipeline on the result, via a standalone
 // PassManager (not Pass::runPipeline, which requires its target to be
-// nested under the operation the calling pass is currently processing --
+// nested under the operation the calling pass is currently processing, and
 // our clone is a disconnected top-level module). Reports pipeline success
 // through `pipelineOk`.
 //
@@ -866,6 +868,10 @@ public:
 // per-candidate logging (checkpoint IR dumps and collective counts).
 // `suppressLogging` turns that off, for a caller replaying a node that was
 // already logged when it was scored.
+//
+// A null `node` lowers the Shardy baseline: `originalModule` then already
+// carries its shardings as physical factors, so no decisions are applied, and
+// the clone logs under Baseline/ instead of a candidate directory.
 static OwningOpRef<ModuleOp> cloneAndApplyDecisions(
     ModuleOp originalModule, const std::shared_ptr<StrategySearchNode> &node,
     bool disableVerifier, llvm::StringRef dumpKernelModulesTo,
@@ -877,22 +883,27 @@ static OwningOpRef<ModuleOp> cloneAndApplyDecisions(
       cast<ModuleOp>(originalModule->clone(mapper)));
 
   // The pipeline's passes learn which candidate they are working on from
-  // distributed.logging_candidate_uid on their own module, the same way they
-  // learn the log destination from distributed.logging_root. It is stamped
-  // only when logging is active, so non-logging clones carry no logging
-  // attributes.
+  // distributed.logging_candidate_uid (or distributed.logging_baseline) on
+  // their own module, the same way they learn the log destination from
+  // distributed.logging_root. It is stamped only when logging is active, so
+  // non-logging clones carry no logging attributes.
   bool loggingActive =
       !suppressLogging && originalModule->hasAttr("distributed.logging_root");
   if (loggingActive) {
     Builder builder(originalModule.getContext());
-    (*clonedModule)
-        ->setAttr("distributed.logging_candidate_uid",
-                  builder.getI64IntegerAttr(node->getUid()));
+    if (node)
+      (*clonedModule)
+          ->setAttr("distributed.logging_candidate_uid",
+                    builder.getI64IntegerAttr(node->getUid()));
+    else
+      (*clonedModule)
+          ->setAttr("distributed.logging_baseline", builder.getUnitAttr());
   }
 
   PassManager pm(originalModule.getContext(), ModuleOp::getOperationName());
   pm.enableVerifier(!disableVerifier);
-  pm.addPass(ApplyPartialDecisions::create(node, mapper));
+  if (node)
+    pm.addPass(ApplyPartialDecisions::create(node, mapper));
   {
     // Dumps the decided-but-not-yet-lowered clone, before any of
     // buildDistributedSearchLoweringPipeline's passes run. A no-op unless
@@ -1044,11 +1055,12 @@ static llvm::json::Value jsonInt64OrNull(std::optional<int64_t> value) {
   return value ? llvm::json::Value(*value) : llvm::json::Value(nullptr);
 }
 
-// Writes Candidates/<uid>/info.json for one scored candidate, plus
-// schedule.json when `schedule` is present (a feasible, fully simulated
-// candidate).
+// Writes info.json into `dir` for one scored module, plus schedule.json when
+// `schedule` is present (a feasible, fully simulated module). `identity`
+// holds the fields naming what was scored (a candidate's uid and parent_uid;
+// none for the baseline), which lead the shared score fields.
 //
-// Called for every scored candidate, including a pipeline failure or an
+// Called for every scored module, including a pipeline failure or an
 // infeasible collective graph. Both have no `schedule`, so their info.json
 // has no `summary` block and no schedule.json is written.
 // `numCollectivesBefore`/`numCollectivesAfter` are absent when the pipeline
@@ -1056,26 +1068,19 @@ static llvm::json::Value jsonInt64OrNull(std::optional<int64_t> value) {
 // DumpDistributedLoggingCheckpointPass), as always happens on a pipeline
 // failure.
 static LogicalResult
-writeCandidateLog(ModuleOp originalModule, llvm::StringRef loggingRoot,
-                  const StrategySearchNode &node, bool pipelineOk,
-                  double heuristicScore,
-                  const std::optional<ScoredSchedule> &schedule,
-                  std::optional<int64_t> numCollectivesBefore,
-                  std::optional<int64_t> numCollectivesAfter) {
-  llvm::SmallString<128> candidateDir(loggingRoot);
-  llvm::sys::path::append(candidateDir, "Candidates",
-                          llvm::Twine(node.getUid()));
+writeScoredLog(ModuleOp originalModule, llvm::StringRef dirPath,
+               llvm::json::Object identity, bool pipelineOk,
+               double heuristicScore,
+               const std::optional<ScoredSchedule> &schedule,
+               std::optional<int64_t> numCollectivesBefore,
+               std::optional<int64_t> numCollectivesAfter) {
+  llvm::SmallString<128> candidateDir(dirPath);
   if (auto ec = llvm::sys::fs::create_directories(candidateDir))
     return originalModule.emitError()
            << "distributed-search-strategies: failed to create '"
            << candidateDir << "': " << ec.message();
 
-  llvm::json::Object info;
-  info["uid"] = static_cast<int64_t>(node.getUid());
-  info["parent_uid"] =
-      node.getParentUid()
-          ? llvm::json::Value(static_cast<int64_t>(*node.getParentUid()))
-          : llvm::json::Value(nullptr);
+  llvm::json::Object info = std::move(identity);
   info["pipeline_ok"] = pipelineOk;
   info["heuristic_score"] = jsonDoubleOrNull(heuristicScore);
   info["num_collectives_before"] = jsonInt64OrNull(numCollectivesBefore);
@@ -1128,6 +1133,70 @@ writeCandidateLog(ModuleOp originalModule, llvm::StringRef loggingRoot,
                              llvm::json::Value(std::move(scheduleJson)));
 }
 
+// Writes Candidates/<uid>/ for one scored search candidate.
+static LogicalResult
+writeCandidateLog(ModuleOp originalModule, llvm::StringRef loggingRoot,
+                  const StrategySearchNode &node, bool pipelineOk,
+                  double heuristicScore,
+                  const std::optional<ScoredSchedule> &schedule,
+                  std::optional<int64_t> numCollectivesBefore,
+                  std::optional<int64_t> numCollectivesAfter) {
+  llvm::SmallString<128> candidateDir(loggingRoot);
+  llvm::sys::path::append(candidateDir, "Candidates",
+                          llvm::Twine(node.getUid()));
+  llvm::json::Object identity;
+  identity["uid"] = static_cast<int64_t>(node.getUid());
+  identity["parent_uid"] =
+      node.getParentUid()
+          ? llvm::json::Value(static_cast<int64_t>(*node.getParentUid()))
+          : llvm::json::Value(nullptr);
+  return writeScoredLog(originalModule, candidateDir, std::move(identity),
+                        pipelineOk, heuristicScore, schedule,
+                        numCollectivesBefore, numCollectivesAfter);
+}
+
+// Directory of the Shardy baseline's log, relative to the logging root. It is
+// deliberately not under Candidates/, so analyses over candidates never see
+// the baseline.
+static constexpr llvm::StringLiteral kBaselineLogDir = "Baseline";
+
+// Scores a module that lowered successfully, describing the score in `note`.
+// A feasible module's graph and timeline are returned in `schedule` for
+// logging; an infeasible module scores -infinity, leaves `schedule` unset, and
+// reports why in `planFailure`.
+static double scoreLoweredModule(ModuleOp lowered, std::string &note,
+                                 std::optional<ScoredSchedule> &schedule,
+                                 std::string &planFailure) {
+  // `lowered` is a disposable, one-shot clone with no surrounding
+  // AnalysisManager to cache through (see cloneAndApplyDecisions). The graph
+  // is built directly with buildScheduleGraph, which returns it by value so
+  // it can be moved into `schedule` below.
+  ScheduleGraph graph = buildScheduleGraph(lowered);
+  if (!graph.feasible) {
+    planFailure = graph.failureReason;
+    note = "collective planning failed: " + graph.failureReason;
+    return -std::numeric_limits<double>::infinity();
+  }
+  // The graph build has already found the unique physical mesh.
+  PhysicalMeshOp physicalMesh = *findUniquePhysicalMesh(lowered);
+  MeshCostParams mesh = meshCostParamsFromPhysicalMesh(physicalMesh);
+  DeviceCostParams device = deviceCostParamsFromPhysicalMesh(physicalMesh);
+  TimelineResult result = simulateScheduleGraph(graph, mesh, device);
+  note = describeTimeline(result, graph.nodes.size());
+  double score = 0.0 - result.makespan;
+  schedule = ScoredSchedule{std::move(graph), std::move(result)};
+  return score;
+}
+
+// The collectives count a checkpoint pass stamped on `module` under `name`,
+// if the pipeline reached that checkpoint.
+static std::optional<int64_t> getLoggedCollectiveCount(ModuleOp module,
+                                                       llvm::StringRef name) {
+  if (auto attr = module->getAttrOfType<IntegerAttr>(name))
+    return attr.getInt();
+  return std::nullopt;
+}
+
 class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
   ModuleOp originalModule;
   bool dumpCandidates;
@@ -1171,31 +1240,14 @@ public:
   const std::string &getFirstPlanFailure() const { return firstPlanFailure; }
   size_t getNumPipelineErrors() const { return numPipelineErrors; }
 
-  // Scores a module that lowered successfully, describing the score in
-  // `note`. A feasible candidate's graph and timeline are returned in
-  // `schedule` for logging; an infeasible module scores -infinity and leaves
-  // `schedule` unset.
+  // Scores a lowered search candidate (see scoreLoweredModule), counting an
+  // infeasible one in the search statistics.
   double scoreLowered(ModuleOp lowered, std::string &note,
                       std::optional<ScoredSchedule> &schedule) {
-    // `lowered` is a disposable, one-shot clone with no surrounding
-    // AnalysisManager to cache through (see cloneAndApplyDecisions). The graph
-    // is built directly with buildScheduleGraph, which returns it by value so
-    // it can be moved into `schedule` below.
-    ScheduleGraph graph = buildScheduleGraph(lowered);
-    if (!graph.feasible) {
-      if (numPlanFailures++ == 0)
-        firstPlanFailure = graph.failureReason;
-      note = "collective planning failed: " + graph.failureReason;
-      return -std::numeric_limits<double>::infinity();
-    }
-    // The graph build has already found the unique physical mesh.
-    PhysicalMeshOp physicalMesh = *findUniquePhysicalMesh(lowered);
-    MeshCostParams mesh = meshCostParamsFromPhysicalMesh(physicalMesh);
-    DeviceCostParams device = deviceCostParamsFromPhysicalMesh(physicalMesh);
-    TimelineResult result = simulateScheduleGraph(graph, mesh, device);
-    note = describeTimeline(result, graph.nodes.size());
-    double score = 0.0 - result.makespan;
-    schedule = ScoredSchedule{std::move(graph), std::move(result)};
+    std::string planFailure;
+    double score = scoreLoweredModule(lowered, note, schedule, planFailure);
+    if (!schedule && numPlanFailures++ == 0)
+      firstPlanFailure = planFailure;
     return score;
   }
 
@@ -1248,14 +1300,10 @@ public:
     // or when logging is off.
     std::optional<int64_t> numCollectivesBefore, numCollectivesAfter;
     if (pipelineOk) {
-      if (auto attr = (*clonedModule)
-                          ->getAttrOfType<IntegerAttr>(
-                              "distributed.logging_num_collectives_before"))
-        numCollectivesBefore = attr.getInt();
-      if (auto attr = (*clonedModule)
-                          ->getAttrOfType<IntegerAttr>(
-                              "distributed.logging_num_collectives_after"))
-        numCollectivesAfter = attr.getInt();
+      numCollectivesBefore = getLoggedCollectiveCount(
+          *clonedModule, "distributed.logging_num_collectives_before");
+      numCollectivesAfter = getLoggedCollectiveCount(
+          *clonedModule, "distributed.logging_num_collectives_after");
     }
 
     // Every scored candidate is logged, not only finalized ones, so the search
@@ -1299,13 +1347,114 @@ public:
   }
 };
 
+// Lowers and scores the Shardy baseline module stored at `path` through the
+// same pipeline and cost model as a search candidate, logging it under
+// Baseline/ when logging is active. The baseline sits outside the beam search
+// and the candidate statistics, so it cannot influence which candidate wins.
+//
+// Whether `a` and `b` are the same physical mesh for costing purposes: same
+// axes and cost-model attributes, ignoring the mesh op's own symbol name.
+static bool physicalMeshesMatch(PhysicalMeshOp a, PhysicalMeshOp b) {
+  return a.getDeviceTarget() == b.getDeviceTarget() &&
+         a.getAxesAttr() == b.getAxesAttr() &&
+         a.getAxisBandwidthsAttr() == b.getAxisBandwidthsAttr() &&
+         a.getAxisLatenciesAttr() == b.getAxisLatenciesAttr() &&
+         a.getLaunchLatencyAttr() == b.getLaunchLatencyAttr() &&
+         a.getDeviceFlopsAttr() == b.getDeviceFlopsAttr() &&
+         a.getDeviceMemBandwidthAttr() == b.getDeviceMemBandwidthAttr() &&
+         a.getDeviceClockFrequencyAttr() == b.getDeviceClockFrequencyAttr() &&
+         a.getActCostScaleAttr() == b.getActCostScaleAttr();
+}
+
+// Fails, with a diagnostic on `mainModule`, when the baseline cannot be
+// parsed, does not lower, has an unplannable collective, or was built against
+// a different physical mesh: a baseline scored under a different mesh's cost
+// model would make every comparison against it meaningless, so none of these
+// are skipped silently.
+static FailureOr<double>
+scoreShardyBaseline(ModuleOp mainModule, llvm::StringRef path,
+                    bool disableVerifier, llvm::StringRef dumpKernelModulesTo,
+                    llvm::StringRef actTarget, llvm::StringRef actWorkerDirRoot,
+                    llvm::StringRef actWorkerScriptDir) {
+  OwningOpRef<ModuleOp> baseline =
+      parseSourceFile<ModuleOp>(path, ParserConfig(mainModule.getContext()));
+  if (!baseline)
+    return mainModule.emitError()
+           << "distributed-search-strategies: failed to parse baseline-module '"
+           << path << "'";
+  if (!(*baseline)->hasAttr(kShardyBaselineAttr))
+    return mainModule.emitError()
+           << "distributed-search-strategies: baseline-module '" << path
+           << "' was not produced by shardy-to-distributed-pipeline with "
+              "preserve-shardy-sharding=true";
+
+  FailureOr<PhysicalMeshOp> mainMesh = findUniquePhysicalMesh(mainModule);
+  FailureOr<PhysicalMeshOp> baselineMesh = findUniquePhysicalMesh(*baseline);
+  if (failed(mainMesh) || failed(baselineMesh))
+    return failure(); // findUniquePhysicalMesh already emitted a diagnostic.
+  if (!physicalMeshesMatch(*mainMesh, *baselineMesh))
+    return mainModule.emitError()
+           << "distributed-search-strategies: baseline-module '" << path
+           << "' has a different physical mesh than the module being "
+              "searched, so its score would not be comparable";
+
+  // The baseline takes its log destination and run metadata from the module
+  // being searched.
+  for (llvm::StringRef name :
+       {"distributed.logging_root", "distributed.logging_module_name",
+        "distributed.logging_commit"})
+    if (Attribute attr = mainModule->getAttr(name))
+      (*baseline)->setAttr(name, attr);
+
+  bool pipelineOk;
+  OwningOpRef<ModuleOp> lowered = cloneAndApplyDecisions(
+      *baseline, /*node=*/nullptr, disableVerifier, dumpKernelModulesTo,
+      actTarget, actWorkerDirRoot, actWorkerScriptDir, pipelineOk);
+
+  std::string note;
+  std::string planFailure;
+  std::optional<ScoredSchedule> schedule;
+  double score = -std::numeric_limits<double>::infinity();
+  if (pipelineOk)
+    score = scoreLoweredModule(*lowered, note, schedule, planFailure);
+
+  if (auto loggingRoot =
+          mainModule->getAttrOfType<StringAttr>("distributed.logging_root")) {
+    llvm::SmallString<128> dir(loggingRoot.getValue());
+    llvm::sys::path::append(dir, kBaselineLogDir);
+    std::optional<int64_t> before, after;
+    if (pipelineOk) {
+      before = getLoggedCollectiveCount(
+          *lowered, "distributed.logging_num_collectives_before");
+      after = getLoggedCollectiveCount(
+          *lowered, "distributed.logging_num_collectives_after");
+    }
+    if (failed(writeScoredLog(mainModule, dir, llvm::json::Object(), pipelineOk,
+                              score, schedule, before, after)))
+      return failure();
+  }
+
+  if (!pipelineOk)
+    return mainModule.emitError()
+           << "distributed-search-strategies: the Shardy baseline's lowering "
+              "pipeline failed";
+  if (!schedule)
+    return mainModule.emitError()
+           << "distributed-search-strategies: the Shardy baseline has a "
+              "collective that could not be planned: "
+           << planFailure;
+  return score;
+}
+
 // Writes <loggingRoot>/Main/info.json once the search has finished:
-// per-compilation counts, and which candidate (if any) won.
-static LogicalResult writeMainInfoJson(
-    ModuleOp moduleOp, llvm::StringRef loggingRoot, size_t numLogicalAxes,
-    const StrategyScorer &scorer,
-    const std::shared_ptr<StrategySearchNode> &best,
-    llvm::ArrayRef<std::shared_ptr<StrategySearchNode>> finalized) {
+// per-compilation counts, and which candidate (if any) won, plus where the
+// Shardy baseline was logged and its score when one was scored.
+static LogicalResult
+writeMainInfoJson(ModuleOp moduleOp, llvm::StringRef loggingRoot,
+                  size_t numLogicalAxes, const StrategyScorer &scorer,
+                  const std::shared_ptr<StrategySearchNode> &best,
+                  llvm::ArrayRef<std::shared_ptr<StrategySearchNode>> finalized,
+                  std::optional<double> baselineScore) {
   llvm::json::Object info;
   info["num_logical_axes"] = static_cast<int64_t>(numLogicalAxes);
   if (auto moduleName = moduleOp->getAttrOfType<StringAttr>(
@@ -1332,6 +1481,12 @@ static LogicalResult writeMainInfoJson(
       static_cast<int64_t>(scorer.getNumPipelineErrors());
   info["num_candidates_infeasible"] =
       static_cast<int64_t>(scorer.getNumPlanFailures());
+  // Present only when a Shardy baseline was scored. It is kept out of every
+  // candidate count above.
+  if (baselineScore) {
+    info["baseline_dir"] = kBaselineLogDir;
+    info["baseline_score"] = jsonDoubleOrNull(*baselineScore);
+  }
 
   llvm::SmallString<128> finalPath(loggingRoot);
   llvm::sys::path::append(finalPath, "Main", "info.json");
@@ -1394,16 +1549,20 @@ static constexpr int64_t kNoLoggingId = -1;
 // logical-axis index space, see DistributedKernelOp's description) to the
 // distributed.logging_id of the LogicalMeshAxesOp/DeviceLocalAxisOp behind it.
 //
-// An operand with no logical axis (an empty product for an extent-1 axis)
-// resolves to kNoLoggingId; shardingToJson omits those entries.
+// An operand with no logical axis resolves to kNoLoggingId, and shardingToJson
+// omits those entries. That covers an empty product (an extent-1 axis) and,
+// in a Shardy baseline module, a product of physical factors, which are
+// already decided and never come from a logical axis.
 //
-// Assumes the def-chain ClusterDistributedKernels.cpp builds for every
-// operand (kernelPartitioningAxes there): an axis.product wrapping at most
-// one axis.factor, whose axis operand is the axis op itself. That is the only
-// site that builds partitioning_axes at the point this pass walks the module
-// (MergeAdjacentTrivialKernels, the other creator of DistributedKernelOp, runs
-// later in the per-candidate lowering pipeline), so the chain is asserted.
-// Also requires writeLogicalAxesJson to have already stamped logging_id.
+// Otherwise assumes the def-chain ClusterDistributedKernels.cpp builds for
+// every non-baseline operand (kernelPartitioningAxes there): an axis.product
+// wrapping exactly one axis.factor whose axis operand is the axis op itself.
+// That is the only site that builds partitioning_axes at the point this pass
+// walks the module (MergeAdjacentTrivialKernels, the other creator of
+// DistributedKernelOp, runs later in the per-candidate lowering pipeline), so
+// a product that is neither empty, all-physical, nor exactly one logical
+// factor is a genuine invariant violation, not a case to log around. Also
+// requires writeLogicalAxesJson to have already stamped logging_id.
 static llvm::SmallVector<int64_t>
 resolvePartitioningAxesToLoggingIds(DistributedKernelOp kernelOp) {
   llvm::SmallVector<int64_t> loggingIds;
@@ -1414,19 +1573,29 @@ resolvePartitioningAxesToLoggingIds(DistributedKernelOp kernelOp) {
     assert(succeeded(factors) &&
            "a DistributedKernelOp's partitioning_axes operand is always "
            "built via axis.product (viewFactorsAsProduct)");
-    assert(factors->size() <= 1 &&
-           "a kernel's own partitioning_axes group wraps at most one factor "
-           "(ClusterDistributedKernels.cpp's kernelPartitioningAxes)");
     if (factors->empty()) {
-      // An extent-1 axis is an empty product and has no logical axis to name.
       loggingIds.push_back(kNoLoggingId);
       continue;
     }
-    auto axisValue = getFactorProvenanceAxis((*factors)[0]);
-    assert(succeeded(axisValue) &&
-           "a partitioning-axis factor is always built via axis.factor "
-           "(viewAxisAsFactor)");
-    Operation *axisDefOp = axisValue->getDefiningOp();
+    auto factorAxis = [](TypedValue<AxisFactorType> factor) {
+      auto axisValue = getFactorProvenanceAxis(factor);
+      assert(succeeded(axisValue) &&
+             "a partitioning-axis factor is always built via axis.factor "
+             "(viewAxisAsFactor)");
+      return axisValue->getDefiningOp();
+    };
+    if (llvm::all_of(*factors, [&](TypedValue<AxisFactorType> factor) {
+          return isa<GetPhysicalMeshAxesOp>(factorAxis(factor));
+        })) {
+      loggingIds.push_back(kNoLoggingId);
+      continue;
+    }
+    assert(factors->size() == 1 &&
+           "a kernel's own partitioning_axes group wraps at most one logical "
+           "factor (ClusterDistributedKernels.cpp's kernelPartitioningAxes); "
+           "only a Shardy baseline module's product of already-physical "
+           "factors combines more than one");
+    Operation *axisDefOp = factorAxis((*factors)[0]);
     auto loggingId =
         axisDefOp->getAttrOfType<IntegerAttr>("distributed.logging_id");
     assert(loggingId && "writeLogicalAxesJson stamps every LogicalMeshAxesOp/"
@@ -1557,6 +1726,18 @@ struct DistributedSearchStrategiesPass
     mlir::OpBuilder builder(moduleOp.getContext());
     builder.clearInsertionPoint();
 
+    // The baseline is scored first so that a broken baseline fails fast,
+    // before any search time is spent.
+    std::optional<double> baselineScore;
+    if (!baselineModule.empty()) {
+      FailureOr<double> score = scoreShardyBaseline(
+          moduleOp, baselineModule, disableVerifier, dumpKernelModulesTo,
+          actTarget, actWorkerDirRoot, actWorkerScriptDir);
+      if (failed(score))
+        return signalPassFailure();
+      baselineScore = *score;
+    }
+
     // Walks the original module before any candidate is cloned from it. The
     // op-to-logical-axis correspondence these files record is the same for
     // every candidate, so it is written once here.
@@ -1659,7 +1840,7 @@ struct DistributedSearchStrategiesPass
             moduleOp->getAttrOfType<StringAttr>("distributed.logging_root"))
       if (failed(writeMainInfoJson(moduleOp, loggingRoot.getValue(),
                                    axes->size(), scorer, best,
-                                   driver.getFinalized())))
+                                   driver.getFinalized(), baselineScore)))
         return signalPassFailure();
 
     // Only dumped once the search is complete, so finalized candidates aren't
