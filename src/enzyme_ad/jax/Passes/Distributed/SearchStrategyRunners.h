@@ -331,7 +331,9 @@ template <typename Node> struct UctStats {
 
 // Monte Carlo Tree Search (UCT). Rollouts are random because the completion
 // heuristic is deterministic, and ties break at random because sibling UCB
-// values tie often. One iteration is one evaluation.
+// values tie often. An iteration that lands on a node already scored in an
+// earlier iteration reuses that score rather than evaluating again, so the
+// number of real evaluations can be less than `iterations`.
 template <typename Node>
 std::shared_ptr<Node>
 runMcts(std::shared_ptr<Node> root, BeamSearchExplorerBase<Node> &explorer,
@@ -451,10 +453,27 @@ runMcts(std::shared_ptr<Node> root, BeamSearchExplorerBase<Node> &explorer,
     }
     if (!leaf->finalized())
       continue;
-    double value = scoreLeaf(leaf, scorer, best);
-    if (std::isfinite(value)) {
-      obsMin = std::min(obsMin, value);
-      obsMax = std::max(obsMax, value);
+
+    // The select loop's UCB comparison can revisit the same finalized node
+    // on a later iteration. Since scorer.score() clones the module and runs
+    // the full nested lowering pipeline, a revisit reuses the value
+    // recorded on the node's first visit instead of paying for that again.
+    //
+    // `visits > 0` on a finalized node is a reliable revisit check because:
+    //   - backprop (below) is what increments visits, so it's only nonzero
+    //     once a select path has ended here and been scored.
+    //   - a finalized node only ever appears as the last element of a
+    //     select path, never as an interior one.
+    UctStats<Node> &leafStats = stats[leaf.get()];
+    double value;
+    if (leafStats.visits > 0) {
+      value = leaf->score;
+    } else {
+      value = scoreLeaf(leaf, scorer, best);
+      if (std::isfinite(value)) {
+        obsMin = std::min(obsMin, value);
+        obsMax = std::max(obsMax, value);
+      }
     }
 
     // Backprop.

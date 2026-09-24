@@ -3,7 +3,7 @@
 // RUN: cat %t.rnd/testmod-*/Main/info.json | FileCheck %s --check-prefix=BUDGET20
 // RUN: rm -rf %t.mcts && mkdir -p %t.mcts
 // RUN: enzymexlamlir-opt --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --set-distributed-logging="root=%t.mcts module-name=testmod" --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh2 device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 1>]"' --distributed-search-strategies="search-strategy=mcts search-samples=20 search-seed=1" %s -o /dev/null 2>/dev/null
-// RUN: cat %t.mcts/testmod-*/Main/info.json | FileCheck %s --check-prefix=BUDGET20
+// RUN: cat %t.mcts/testmod-*/Main/info.json | FileCheck %s --check-prefix=MCTS_BUDGET
 // RUN: rm -rf %t.ts && mkdir -p %t.ts
 // RUN: enzymexlamlir-opt --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --set-distributed-logging="root=%t.ts module-name=testmod" --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh2 device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 1>]"' --distributed-search-strategies="search-strategy=twostage search-samples=20 surrogate-train=5 search-seed=1" %s -o /dev/null 2>/dev/null
 // RUN: cat %t.ts/testmod-*/Main/info.json | FileCheck %s --check-prefix=BUDGET20
@@ -24,6 +24,17 @@
 // StrategyScorer::score() increments on every call regardless of which
 // strategy is driving it).
 // BUDGET20: "num_candidates_scored":20
+
+// MCTS is the exception: its UCB-driven select loop can revisit a finalized
+// node it already scored in an earlier iteration (this tiny tree has few
+// distinct decision sets relative to the 20-iteration budget, so it happens
+// here). A revisit reuses the score already recorded on that node instead of
+// running the lowering pipeline again, so num_candidates_scored (real
+// pipeline invocations) comes in under the iteration budget. See
+// search_mcts_revisit_reuses_score.mlir for the invariant this protects: a
+// revisited decision set never gets a second lowering pass or overwrites its
+// candidate log entry.
+// MCTS_BUDGET: "num_candidates_scored":9
 
 // With no training samples the surrogate cannot be fitted, and two-stage
 // falls back to random rollouts for the whole budget.
