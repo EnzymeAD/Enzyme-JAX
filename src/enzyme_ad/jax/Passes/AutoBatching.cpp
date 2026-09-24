@@ -3026,7 +3026,13 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
       // A write into a carried buffer: its indices and update are batched
       // (or the same every iteration); the buffer itself is not.
       if (auto sc = dyn_cast<stablehlo::ScatterOp>(&op);
-          sc && sc.getScatterIndices().getType().getRank() == 0)
+          sc &&
+          (sc.getScatterIndices().getType().getRank() == 0 ||
+           !sc.getScatterDimensionNumbers().getInputBatchingDims().empty()))
+        return failure();
+      if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&op);
+          dus && (!dus.getOperand().getType().hasStaticShape() ||
+                  !dus.getUpdate().getType().hasStaticShape()))
         return failure();
       if (capturesBatched(&op))
         return failure();
@@ -3041,10 +3047,14 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
           return failure(); // a read of a buffer another iteration writes
     bool any = llvm::any_of(op.getOperands(), isBatched);
     if (!any) {
-      // Loop-invariant computation: hoisted as is. Region ops are only
-      // fine when they read nothing carried.
+      // Loop-invariant computation: hoisted as is, so it runs once instead of
+      // once per iteration. Region ops are only fine when they read nothing
+      // carried.
+      if (!isMemoryEffectFree(&op))
+        return failure();
       if (op.getNumRegions() &&
-          !isa<stablehlo::ReduceOp, stablehlo::ScatterOp>(&op))
+          (!isa<stablehlo::ReduceOp, stablehlo::ScatterOp>(&op) ||
+           capturesBatched(&op)))
         return failure();
       continue;
     }
@@ -3147,9 +3157,10 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
       // Every iteration's window, written by one scatter: the start indices
       // of all iterations are its indices, the updates its windows.
       auto updTy = cast<RankedTensorType>(dus.getUpdate().getType());
+      auto bufTy = cast<RankedTensorType>(dus.getOperand().getType());
       int64_t rank = updTy.getRank();
       SmallVector<Value> cols;
-      for (Value st : dus.getStartIndices()) {
+      for (auto [d, st] : llvm::enumerate(dus.getStartIndices())) {
         Value bcol = operand(st);
         Type et = cast<RankedTensorType>(bcol.getType()).getElementType();
         bcol = stablehlo::ReshapeOp::create(
@@ -3159,6 +3170,18 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
               rewriter, loc,
               RankedTensorType::get({numIters, 1}, rewriter.getI64Type()),
               bcol);
+        // The DUS clamps its window into the buffer, the scatter would drop
+        // an out-of-bounds window instead.
+        auto i64Ty = RankedTensorType::get({}, rewriter.getI64Type());
+        bcol = stablehlo::ClampOp::create(
+            rewriter, loc,
+            stablehlo::ConstantOp::create(
+                rewriter, loc, cast<ElementsAttr>(makeAttr(i64Ty, 0))),
+            bcol,
+            stablehlo::ConstantOp::create(
+                rewriter, loc,
+                cast<ElementsAttr>(makeAttr(i64Ty, bufTy.getDimSize(d) -
+                                                       updTy.getDimSize(d)))));
         cols.push_back(bcol);
       }
       Value indices =
@@ -3215,7 +3238,9 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
               rewriter, loc,
               RankedTensorType::get(cast<RankedTensorType>(resTy).getShape(),
                                     rewriter.getI1Type()),
-              map.lookupOrDefault(v), rewriter.getDenseI64ArrayAttr({})));
+              map.lookupOrDefault(v),
+              isBatched(v) ? rewriter.getDenseI64ArrayAttr({0})
+                           : rewriter.getDenseI64ArrayAttr({})));
           continue;
         }
         ops.push_back(operand(v));
@@ -3404,7 +3429,7 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
                 dn.getCollapsedSliceDims(), dn.getOperandBatchingDims(),
                 dn.getStartIndicesBatchingDims(), dn.getStartIndexMap(),
                 dn.getIndexVectorDim() + 1),
-            g.getSliceSizesAttr(), g.getIndicesAreSorted());
+            g.getSliceSizesAttr(), /*indices_are_sorted=*/false);
       } else {
         // Every iteration gathers from its own operand: pair the batch
         // dimensions.
