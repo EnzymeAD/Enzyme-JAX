@@ -2,6 +2,7 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/LogicalAxisOverlap.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/ReplayTree.h"
+#include "src/enzyme_ad/jax/Passes/Distributed/SearchStrategyRunners.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/ShardyLogicalAxisAnalysis.h"
 
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
@@ -1801,8 +1802,79 @@ struct DistributedSearchStrategiesPass
                           actWorkerScriptDir, failOnBadCandidate,
                           sawBadCandidate, queue, completer);
 
+    if (uctBackup != "mean" && uctBackup != "max") {
+      moduleOp.emitError() << "distributed-search-strategies: unknown "
+                              "uct-backup '"
+                           << uctBackup << "' (known: mean, max)";
+      return signalPassFailure();
+    }
+    if (surrogateTarget != "log" && surrogateTarget != "linear") {
+      moduleOp.emitError() << "distributed-search-strategies: unknown "
+                              "surrogate-target '"
+                           << surrogateTarget << "' (known: log, linear)";
+      return signalPassFailure();
+    }
+
+    // `queue` is built here regardless of which strategy runs:
+    //  - StrategyScorer::score() sets `sawBadCandidate` and calls
+    //    queue.abort() together on a pipeline failure under
+    //    fail-on-bad-candidate (see StrategyScorer::score).
+    //  - Only the beam strategy actually pushes/pops `queue`, but every
+    //    strategy still needs a queue to construct the shared `scorer` below,
+    //    and passing it through unused keeps StrategyScorer's abort handling
+    //    one code path instead of one per strategy.
     BeamSearchDriver<StrategySearchNode> driver(queue, scorer, explorer);
-    driver.run();
+
+    // One row per strategy. A new strategy is a runner and a row here.
+    using Runner = std::function<std::shared_ptr<StrategySearchNode>()>;
+    const bool &stop = sawBadCandidate;
+    const std::pair<llvm::StringRef, Runner> strategies[] = {
+        {"beam",
+         [&] {
+           driver.run();
+           return driver.getBest();
+         }},
+        {"random",
+         [&] {
+           return runRandom(initialNode, explorer, scorer, searchSamples,
+                            searchSeed, stop);
+         }},
+        {"mcts",
+         [&] {
+           return runMcts(initialNode, explorer, scorer, searchSamples,
+                          searchSeed, uctC, uctBackup == "max", surrogatePrior,
+                          surrogateTrain, surrogateTarget != "linear", stop);
+         }},
+        {"twostage",
+         [&] {
+           unsigned train = std::min<unsigned>(surrogateTrain, searchSamples);
+           unsigned k = searchSamples - train;
+           unsigned pool = surrogatePool ? surrogatePool : k * 10;
+           // Ranking fewer candidates than are evaluated would leave part of
+           // the budget unspent, which makes a matched-budget comparison a
+           // lie.
+           if (pool < k) {
+             moduleOp.emitWarning()
+                 << "distributed-search-strategies: surrogate-pool " << pool
+                 << " is below the " << k
+                 << " candidates to evaluate; raising it to " << k;
+             pool = k;
+           }
+           return runTwoStage(initialNode, explorer, scorer, searchSamples,
+                              searchSeed, train, pool,
+                              surrogateTarget != "linear", surrogateDump, stop);
+         }},
+    };
+    const auto *strategy = llvm::find_if(
+        strategies, [&](const auto &s) { return s.first == searchStrategy; });
+    if (strategy == std::end(strategies)) {
+      moduleOp.emitError() << "distributed-search-strategies: unknown "
+                              "search-strategy '"
+                           << searchStrategy
+                           << "' (known: beam, random, mcts, twostage)";
+      return signalPassFailure();
+    }
+    std::shared_ptr<StrategySearchNode> best = strategy->second();
 
     if (sawBadCandidate) {
       signalPassFailure();
@@ -1831,11 +1903,10 @@ struct DistributedSearchStrategiesPass
           << " of " << scorer.getNumScored()
           << " scored candidates had a hard lowering-pipeline failure";
 
-    // getBest() returns a field BeamSearchDriver already tracks during run(),
-    // so it can be read here, ahead of the dump logic below, for
-    // Main/info.json.
-    auto best = driver.getBest();
-
+    // `driver.getFinalized()` is populated only by the beam strategy, via
+    // BeamSearchDriver::run(); other strategies leave it empty and track
+    // their winner through `best` instead. The finalized-candidate reporting
+    // below (Main/info.json, dump-finalized) is therefore beam-specific.
     if (auto loggingRoot =
             moduleOp->getAttrOfType<StringAttr>("distributed.logging_root"))
       if (failed(writeMainInfoJson(moduleOp, loggingRoot.getValue(),
