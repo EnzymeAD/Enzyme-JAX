@@ -20,14 +20,11 @@ func.func @erfinv(%x : tensor<2xf32>) -> tensor<2xf32> {
 
 // REVERSE:  func.func @erfinv(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> tensor<2xf32> {
 // REVERSE-NEXT:    %[[CST0:.*]] = chlo.constant dense<0.886226952> : tensor<2xf32>
-// REVERSE-NEXT:    %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<2xf32>
-// REVERSE-NEXT:    %[[DRET:.*]] = arith.addf %arg1, %[[ZERO]] fastmath<fast> : tensor<2xf32>
 // REVERSE-NEXT:    %[[EI1:.*]] = chlo.erf_inv %arg0 : tensor<2xf32>
 // REVERSE-NEXT:    %[[EI2:.*]] = chlo.erf_inv %arg0 : tensor<2xf32>
 // REVERSE-NEXT:    %[[SQ:.*]] = stablehlo.multiply %[[EI1]], %[[EI2]] : tensor<2xf32>
 // REVERSE-NEXT:    %[[EXP:.*]] = stablehlo.exponential %[[SQ]] : tensor<2xf32>
 // REVERSE-NEXT:    %[[CEXP:.*]] = stablehlo.multiply %[[CST0]], %[[EXP]] : tensor<2xf32>
-// REVERSE-NEXT:    %[[GRAD:.*]] = stablehlo.multiply %[[DRET]], %[[CEXP]] : tensor<2xf32>
-// REVERSE-NEXT:    %[[RES:.*]] = arith.addf %[[GRAD]], %[[ZERO]] fastmath<fast> : tensor<2xf32>
-// REVERSE-NEXT:    return %[[RES]] : tensor<2xf32>
+// REVERSE-NEXT:    %[[GRAD:.*]] = stablehlo.multiply %arg1, %[[CEXP]] : tensor<2xf32>
+// REVERSE-NEXT:    return %[[GRAD]] : tensor<2xf32>
 // REVERSE-NEXT:  }

@@ -49,21 +49,16 @@ module {
 
 // REVERSE: func.func @clamp(%arg0: tensor<10xf32>, %arg1: tensor<10xf32>, %arg2: tensor<10xf32>, %arg3: tensor<10xf32>) -> (tensor<10xf32>, tensor<10xf32>, tensor<10xf32>) {
 // REVERSE-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<10xf32>
-// REVERSE-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<10xf32>
-// REVERSE-NEXT:    %0 = stablehlo.add %arg3, %cst_0 : tensor<10xf32>
-// REVERSE-NEXT:    %1 = stablehlo.compare  LT, %arg0, %arg2 : (tensor<10xf32>, tensor<10xf32>) -> tensor<10xi1>
-// REVERSE-NEXT:    %2 = stablehlo.compare  GT, %arg0, %arg1 : (tensor<10xf32>, tensor<10xf32>) -> tensor<10xi1>
-// REVERSE-NEXT:    %3 = stablehlo.and %1, %2 : tensor<10xi1>
-// REVERSE-NEXT:    %4 = stablehlo.select %3, %0, %cst : tensor<10xi1>, tensor<10xf32>
-// REVERSE-NEXT:    %5 = stablehlo.add %4, %cst_0 : tensor<10xf32>
-// REVERSE-NEXT:    %6 = stablehlo.compare  LT, %arg1, %arg0 : (tensor<10xf32>, tensor<10xf32>) -> tensor<10xi1>
-// REVERSE-NEXT:    %7 = stablehlo.compare  GT, %arg1, %arg2 : (tensor<10xf32>, tensor<10xf32>) -> tensor<10xi1>
-// REVERSE-NEXT:    %8 = stablehlo.or %6, %7 : tensor<10xi1>
-// REVERSE-NEXT:    %9 = stablehlo.select %8, %cst, %0 : tensor<10xi1>, tensor<10xf32>
-// REVERSE-NEXT:    %10 = stablehlo.add %9, %cst_0 : tensor<10xf32>
-// REVERSE-NEXT:    %11 = stablehlo.maximum %arg1, %arg0 : tensor<10xf32>
-// REVERSE-NEXT:    %12 = stablehlo.compare  GT, %11, %arg2 : (tensor<10xf32>, tensor<10xf32>) -> tensor<10xi1>
-// REVERSE-NEXT:    %13 = stablehlo.select %12, %0, %cst : tensor<10xi1>, tensor<10xf32>
-// REVERSE-NEXT:    %14 = stablehlo.add %13, %cst_0 : tensor<10xf32>
-// REVERSE-NEXT:    return %5, %10, %14 : tensor<10xf32>, tensor<10xf32>, tensor<10xf32>
+// REVERSE-NEXT:    %0 = stablehlo.compare LT, %arg0, %arg2 : (tensor<10xf32>, tensor<10xf32>) -> tensor<10xi1>
+// REVERSE-NEXT:    %1 = stablehlo.compare GT, %arg0, %arg1 : (tensor<10xf32>, tensor<10xf32>) -> tensor<10xi1>
+// REVERSE-NEXT:    %2 = stablehlo.and %0, %1 : tensor<10xi1>
+// REVERSE-NEXT:    %3 = stablehlo.select %2, %arg3, %cst : tensor<10xi1>, tensor<10xf32>
+// REVERSE-NEXT:    %4 = stablehlo.compare LT, %arg1, %arg0 : (tensor<10xf32>, tensor<10xf32>) -> tensor<10xi1>
+// REVERSE-NEXT:    %5 = stablehlo.compare GT, %arg1, %arg2 : (tensor<10xf32>, tensor<10xf32>) -> tensor<10xi1>
+// REVERSE-NEXT:    %6 = stablehlo.or %4, %5 : tensor<10xi1>
+// REVERSE-NEXT:    %7 = stablehlo.select %6, %cst, %arg3 : tensor<10xi1>, tensor<10xf32>
+// REVERSE-NEXT:    %8 = stablehlo.maximum %arg1, %arg0 : tensor<10xf32>
+// REVERSE-NEXT:    %9 = stablehlo.compare GT, %8, %arg2 : (tensor<10xf32>, tensor<10xf32>) -> tensor<10xi1>
+// REVERSE-NEXT:    %10 = stablehlo.select %9, %arg3, %cst : tensor<10xi1>, tensor<10xf32>
+// REVERSE-NEXT:    return %3, %7, %10 : tensor<10xf32>, tensor<10xf32>, tensor<10xf32>
 // REVERSE-NEXT:  }

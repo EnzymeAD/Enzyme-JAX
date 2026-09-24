@@ -62,35 +62,30 @@ module {
 // REVERSE-NEXT:    %c_0 = stablehlo.constant dense<3> : tensor<i64>
 // REVERSE-NEXT:    %c_1 = stablehlo.constant dense<1> : tensor<i64>
 // REVERSE-NEXT:    %c_2 = stablehlo.constant dense<0> : tensor<i64>
-// REVERSE-NEXT:    %cst_3 = arith.constant dense<0.000000e+00> : tensor<f64>
-// REVERSE-NEXT:    %[[a2:.+]]:3 = stablehlo.while(%iterArg = %c_2, %iterArg_4 = %arg0, %iterArg_5 = %cst) : tensor<i64>, tensor<f64>, tensor<3xf64>
+// REVERSE-NEXT:    %[[a2:.+]]:3 = stablehlo.while(%iterArg = %c_2, %iterArg_3 = %arg0, %iterArg_4 = %cst) : tensor<i64>, tensor<f64>, tensor<3xf64>
 // REVERSE-NEXT:     cond {
 // REVERSE-NEXT:      %[[a6:.+]] = stablehlo.compare  LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // REVERSE-NEXT:      stablehlo.return %[[a6]] : tensor<i1>
 // REVERSE-NEXT:    } do {
-// REVERSE-NEXT:      %[[a6:.+]] = stablehlo.reshape %iterArg_4 : (tensor<f64>) -> tensor<1xf64>
-// REVERSE-NEXT:      %[[a7:.+]] = stablehlo.dynamic_update_slice %iterArg_5, %[[a6]], %iterArg : (tensor<3xf64>, tensor<1xf64>, tensor<i64>) -> tensor<3xf64>
-// REVERSE-NEXT:      %[[a8:.+]] = stablehlo.multiply %iterArg_4, %iterArg_4 : tensor<f64>
+// REVERSE-NEXT:      %[[a6:.+]] = stablehlo.reshape %iterArg_3 : (tensor<f64>) -> tensor<1xf64>
+// REVERSE-NEXT:      %[[a7:.+]] = stablehlo.dynamic_update_slice %iterArg_4, %[[a6]], %iterArg : (tensor<3xf64>, tensor<1xf64>, tensor<i64>) -> tensor<3xf64>
+// REVERSE-NEXT:      %[[a8:.+]] = stablehlo.multiply %iterArg_3, %iterArg_3 : tensor<f64>
 // REVERSE-NEXT:      %[[a9:.+]] = stablehlo.add %iterArg, %c_1 : tensor<i64>
 // REVERSE-NEXT:      stablehlo.return %[[a9]], %[[a8]], %[[a7]] : tensor<i64>, tensor<f64>, tensor<3xf64>
 // REVERSE-NEXT:    }
-// REVERSE-NEXT:    %[[a3:.+]] = arith.addf %arg1, %cst_3 fastmath<fast> : tensor<f64>
-// REVERSE-NEXT:    %[[a4:.+]]:3 = stablehlo.while(%iterArg = %c_2, %iterArg_4 = %[[a3]], %iterArg_5 = %c) : tensor<i64>, tensor<f64>, tensor<i64>
+// REVERSE-NEXT:    %[[a4:.+]]:3 = stablehlo.while(%iterArg = %c_2, %iterArg_3 = %arg1, %iterArg_4 = %c) : tensor<i64>, tensor<f64>, tensor<i64>
 // REVERSE-NEXT:     cond {
 // REVERSE-NEXT:      %[[a6:.+]] = stablehlo.compare  LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // REVERSE-NEXT:      stablehlo.return %[[a6]] : tensor<i1>
 // REVERSE-NEXT:    } do {
-// REVERSE-NEXT:      %[[a7:.+]] = stablehlo.dynamic_slice %[[a2]]#2, %iterArg_5, sizes = [1] : (tensor<3xf64>, tensor<i64>) -> tensor<1xf64>
+// REVERSE-NEXT:      %[[a7:.+]] = stablehlo.dynamic_slice %[[a2]]#2, %iterArg_4, sizes = [1] : (tensor<3xf64>, tensor<i64>) -> tensor<1xf64>
 // REVERSE-NEXT:      %[[a8:.+]] = stablehlo.reshape %[[a7]] : (tensor<1xf64>) -> tensor<f64>
 // REVERSE-NEXT:      %[[a6:.+]] = stablehlo.add %iterArg, %c_1 : tensor<i64>
-// REVERSE-NEXT:      %[[i4:.+]] = arith.addf %iterArg_4, %cst_3 fastmath<fast> : tensor<f64>
-// REVERSE-NEXT:      %[[a9:.+]] = stablehlo.multiply %[[i4]], %[[a8]] : tensor<f64>
-// REVERSE-NEXT:      %[[a10:.+]] = arith.addf %[[a9]], %cst_3 fastmath<fast> : tensor<f64>
-// REVERSE-NEXT:      %[[a11:.+]] = stablehlo.multiply %[[i4]], %[[a8]] : tensor<f64>
-// REVERSE-NEXT:      %[[a12:.+]] = arith.addf %[[a10]], %[[a11]] fastmath<fast> : tensor<f64>
-// REVERSE-NEXT:      %[[a13:.+]] = stablehlo.subtract %iterArg_5, %c_1 : tensor<i64>
+// REVERSE-NEXT:      %[[a9:.+]] = stablehlo.multiply %iterArg_3, %[[a8]] : tensor<f64>
+// REVERSE-NEXT:      %[[a11:.+]] = stablehlo.multiply %iterArg_3, %[[a8]] : tensor<f64>
+// REVERSE-NEXT:      %[[a12:.+]] = arith.addf %[[a9]], %[[a11]] fastmath<fast> : tensor<f64>
+// REVERSE-NEXT:      %[[a13:.+]] = stablehlo.subtract %iterArg_4, %c_1 : tensor<i64>
 // REVERSE-NEXT:      stablehlo.return %[[a6]], %[[a12]], %[[a13]] : tensor<i64>, tensor<f64>, tensor<i64>
 // REVERSE-NEXT:    }
-// REVERSE-NEXT:    %[[a5:.+]] = arith.addf %[[a4]]#1, %cst_3 fastmath<fast> : tensor<f64>
-// REVERSE-NEXT:    return %[[a2]]#1, %[[a5]] : tensor<f64>, tensor<f64>
+// REVERSE-NEXT:    return %[[a2]]#1, %[[a4]]#1 : tensor<f64>, tensor<f64>
 // REVERSE-NEXT:  }
