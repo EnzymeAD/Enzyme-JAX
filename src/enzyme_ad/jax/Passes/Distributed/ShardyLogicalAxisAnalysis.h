@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstdint>
 #include <optional>
+#include <string>
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -22,6 +23,10 @@
 #include "llvm/Support/raw_ostream.h"
 
 namespace mlir::enzyme::distributed {
+
+// Module attribute that switches the axis analysis into Shardy baseline mode.
+inline constexpr llvm::StringLiteral kShardyBaselineAttr =
+    "distributed.shardy_baseline";
 
 // Unique counter object.
 class AxisSymbol {
@@ -224,6 +229,24 @@ public:
   // Redirects analysis bookkeeping from one op to another after a rewrite.
   void markRewrite(Operation *from, Operation *to);
 
+  /**
+   * Shardy baseline mode, enabled by the module attribute
+   * kShardyBaselineAttr. The expert Shardy plan is then read from the sdy
+   * shardings and every symbol Shardy shards is bound to the digit range of
+   * the physical mesh it is sharded over, so it is materialized as an
+   * axis.factor over a physical axis instead of a fresh logical axis. All
+   * other symbols are materialized as device-local axes, since nothing is
+   * left for a search to decide.
+   */
+  bool isShardyBaseline() const { return shardyBaseline; }
+  // The physical digit range a (root) symbol is bound to, if Shardy shards it.
+  std::optional<PhysicalFactorRef> getPhysicalBinding(AxisSymbol symbol);
+  // Builds the axis.factor for a physical digit range over the physical mesh's
+  // axes.
+  mlir::TypedValue<mlir::enzyme::axis::AxisFactorType>
+  createPhysicalFactor(PhysicalFactorRef factor, mlir::OpBuilder &builder,
+                       mlir::Location loc);
+
   // The analyzed function-like ops: sdy_func first, then its transitive
   // callees.
   llvm::ArrayRef<Operation *> getAnalyzedFunctions() const {
@@ -281,6 +304,73 @@ private:
   SymbolFactorMerge symbolFactorMerge;
   Operation *sdy_func = nullptr;
   bool valid = true;
+
+  // Shardy baseline state (see isShardyBaseline).
+  //
+  // An atom is a symbol created for one physical digit range, either by
+  // seeding a dimension from its Shardy sharding or by anchoring a frozen
+  // physical factor. Merges may later factor an atom into several roots, so
+  // per-root bindings are derived from the atoms after all unions.
+  struct BoundAtom {
+    AxisSymbol symbol;
+    PhysicalFactorRef factor;
+    Operation *diagOp;
+    std::string description;
+  };
+  // One tensor dimension seeded from Shardy: `symbols` is the sharded atoms
+  // major-first followed by the unsharded remainder, and `original` is the
+  // symbol list the dimension had before seeding.
+  struct DimSeed {
+    Operation *diagOp;
+    std::string description;
+    llvm::SmallVector<AxisSymbol> original;
+    llvm::SmallVector<AxisSymbol> symbols;
+    llvm::SmallVector<PhysicalFactorRef> expected;
+  };
+  bool shardyBaseline = false;
+  ModuleOp baselineModule;
+  PhysicalMeshOp baselinePhysicalMesh;
+  llvm::SmallVector<PhysicalAxisSpec> physicalAxes;
+  llvm::SmallVector<Value> physicalAxisValues;
+  llvm::SmallVector<BoundAtom> boundAtoms;
+  llvm::SmallVector<DimSeed> dimSeeds;
+  llvm::DenseMap<AxisSymbol, PhysicalFactorRef> rootBindings;
+  bool rootBindingsDirty = true;
+  void initShardyBaseline();
+  // Merges each dimension's symbols with the factorization implied by its
+  // Shardy sharding, before propagation unions run, so propagation cannot
+  // move a shard boundary.
+  void seedShardyShardings();
+  void seedTensorDims(Operation *diagOp, llvm::StringRef what, Value value,
+                      mlir::sdy::TensorShardingAttr sharding,
+                      llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> dims);
+  // The physical digit ranges, major-first, each dimension of a Shardy
+  // sharding is sharded over.
+  FailureOr<llvm::SmallVector<llvm::SmallVector<PhysicalFactorRef>>>
+  projectShardingDims(Operation *diagOp, llvm::StringRef what,
+                      mlir::sdy::TensorShardingAttr sharding);
+  // Merges one producer-to-consumer edge dimension by dimension, except where
+  // Shardy leaves the two sides deliberately different. Shardy does not insert
+  // a reshard when an op shards a dimension further than its operand is
+  // (each device slices its operand locally), nor across a call boundary; such
+  // an edge keeps separate axes so materialization sees a collective.
+  void
+  mergeEdgeRespectingShardy(const TensorAxesToPartitionAxes &producerMapping,
+                            Value producerValue,
+                            const TensorAxesToPartitionAxes &consumerMapping,
+                            OpOperand &use, bool isBoundary);
+  // Projection of a sharding onto the physical mesh, memoized.
+  const llvm::SmallVector<llvm::SmallVector<PhysicalFactorRef>> *
+  getProjection(Operation *diagOp, llvm::StringRef what,
+                mlir::sdy::TensorShardingAttr sharding);
+  llvm::DenseMap<mlir::Attribute,
+                 llvm::SmallVector<llvm::SmallVector<PhysicalFactorRef>>>
+      projectionCache;
+  // Recomputes the physical digit range of every root symbol. Conflicts are
+  // reported only when `diagnose` is set, which is for the final check.
+  void rebuildRootBindings(bool diagnose);
+  // Checks that the unions kept every Shardy sharding intact.
+  void validateShardyBaseline();
 #ifndef NDEBUG
   // getReductionAxes's debug-only informational remarks, emitted only once
   // each: an unrolled model repeats the same permutation/need-replication
@@ -380,8 +470,11 @@ mlir::RankedTensorType getLocalTensorType(
 
 // Creates a new axis for `symbol` and returns it viewed as a factor: a
 // DeviceLocalAxisOp if `axisAnalysis` says the symbol must never be sharded
-// across the mesh, otherwise a LogicalMeshAxesOp. Device-local axes stay in a
-// tensor's axes so every factor keeps its position within its dimension.
+// across the mesh, otherwise a LogicalMeshAxesOp. In Shardy baseline mode a
+// symbol bound to a physical digit range becomes a factor over the physical
+// axis instead, and every other symbol a DeviceLocalAxisOp. Device-local axes
+// stay in a tensor's axes so every factor keeps its position within its
+// dimension.
 //
 // Always creates a new op. Callers own their symbol-to-factor cache (and any
 // reuse of axes the wider analysis already knows about) and call this only on

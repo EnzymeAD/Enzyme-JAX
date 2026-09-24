@@ -1,6 +1,7 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
+#include "src/enzyme_ad/jax/Passes/Distributed/ShardyLogicalAxisAnalysis.h"
 
 #include "mlir/IR/BuiltinOps.h"
 
@@ -14,7 +15,10 @@ namespace {
 // Checks that every sdy.mesh axis is a contiguous device-id window of the
 // physical mesh's factorization, so Shardy's per-axis shardings can be read as
 // physical axis factors. Runs at pipeline entry because the user-supplied mesh
-// declarations are the only input to check.
+// declarations are the only input to check. On success it stamps the module
+// with kShardyBaselineAttr, which switches every later
+// ShardyLogicalAxisAnalysis into Shardy baseline mode and stays on the module
+// to mark it as a baseline.
 struct ValidateShardyBaselineMeshPass
     : public impl::ValidateShardyBaselineMeshPassBase<
           ValidateShardyBaselineMeshPass> {
@@ -68,6 +72,7 @@ struct ValidateShardyBaselineMeshPass
         return signalPassFailure();
       }
     }
+    moduleOp->setAttr(kShardyBaselineAttr, UnitAttr::get(&getContext()));
   }
 };
 

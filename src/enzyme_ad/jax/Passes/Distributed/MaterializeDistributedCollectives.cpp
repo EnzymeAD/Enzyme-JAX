@@ -53,7 +53,12 @@ struct MaterializeDistributedCollectivesPass
       MaterializeDistributedCollectivesPassBase;
 
   struct ShardConflict {
-    OpResult value;
+    // An op result, or a function argument in Shardy baseline mode.
+    Value value;
+    Operation *owner() {
+      return value.getDefiningOp() ? value.getDefiningOp()
+                                   : value.getParentBlock()->getParentOp();
+    }
     OpShardingRuleAndReductionKind shardingRule;
     llvm::SmallVector<llvm::SmallVector<AxisSymbol>> producerPartitioningAxes;
     RankedTensorType globalType;
@@ -252,6 +257,67 @@ struct MaterializeDistributedCollectivesPass
   // Scans SSA uses to find sharding conflicts and reduction requirements.
   std::vector<ShardConflict> collectShardConflicts(Block *mainBlock) {
     std::vector<ShardConflict> conflicts;
+
+    // Records `value`'s uses whose consumer view of the sharding differs from
+    // the producer's. Unshardable axes (e.g. the sliced-away layer axis of a
+    // static per-layer stablehlo.slice) stay in the partitioning axes, but must
+    // never be treated as a real sharding conflict needing a collective, so
+    // conflicts are decided on the shardable axes alone.
+    auto collectFor =
+        [&](Value value,
+            const ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes
+                &producerAxes,
+            llvm::SmallVector<AxisSymbol> reductionAxes,
+            OpShardingRuleAndReductionKind shardingRule) {
+          auto producerShardableAxes =
+              axisAnalysis.excludeUnshardable(producerAxes);
+
+          ShardConflict conflict;
+          conflict.value = value;
+          conflict.shardingRule = shardingRule;
+          conflict.producerPartitioningAxes = producerAxes;
+          conflict.globalType = dyn_cast<RankedTensorType>(value.getType());
+          conflict.reductionAxes = std::move(reductionAxes);
+
+          for (OpOperand &use : value.getUses()) {
+            auto maybeConsumerSharded =
+                axisAnalysis.getTensorPartitionDims(use);
+            auto isReturn =
+                isa<func::ReturnOp, distributed::DistributedYieldOp>(
+                    use.getOwner());
+            if (!maybeConsumerSharded && !isReturn) {
+              use.getOwner()->emitRemark("Found non-sharded use of value ")
+                  << value;
+              continue;
+            }
+            bool conflicting = !isReturn && producerShardableAxes !=
+                                                axisAnalysis.excludeUnshardable(
+                                                    *maybeConsumerSharded);
+            if (conflicting) {
+              conflict.conflictingUses.push_back(&use);
+            } else {
+              conflict.nonConflictingUses.push_back(&use);
+            }
+          }
+
+          if (!conflict.conflictingUses.empty() ||
+              !conflict.reductionAxes.empty()) {
+            conflicts.push_back(std::move(conflict));
+          }
+        };
+
+    // A function argument's own axes normally unify with every consumer's, so
+    // only a baseline plan, which keeps Shardy's differing shardings apart,
+    // can leave an argument needing a collective.
+    if (axisAnalysis.isShardyBaseline()) {
+      for (BlockArgument arg : mainBlock->getArguments()) {
+        auto axes = axisAnalysis.getTensorPartitionDims(arg);
+        if (axes) {
+          collectFor(arg, *axes, {}, OpShardingRuleAndReductionKind());
+        }
+      }
+    }
+
     for (Operation &op : mainBlock->getOperations()) {
       for (OpResult result : op.getResults()) {
         auto maybeProducerSharded = axisAnalysis.getTensorPartitionDims(result);
@@ -260,48 +326,10 @@ struct MaterializeDistributedCollectivesPass
               << result.getResultNumber() << " of op " << op;
           continue;
         }
-
-        // Unshardable axes (e.g. the sliced-away layer axis of a static
-        // per-layer stablehlo.slice) stay in the partitioning axes, but must
-        // never be treated as a real sharding conflict needing a collective,
-        // so conflicts are decided on the shardable axes alone.
-        auto producerPartitioningAxes = *maybeProducerSharded;
-        auto producerShardableAxes =
-            axisAnalysis.excludeUnshardable(producerPartitioningAxes);
-
-        ShardConflict conflict;
-        conflict.value = result;
-        conflict.shardingRule =
-            getOrSynthesizeOpShardingRule(result.getOwner());
-        conflict.producerPartitioningAxes = producerPartitioningAxes;
-        conflict.globalType = dyn_cast<RankedTensorType>(result.getType());
-        conflict.reductionAxes = axisAnalysis.excludeUnshardable(
-            axisAnalysis.getReductionAxes(result));
-
-        for (OpOperand &use : result.getUses()) {
-          auto maybeConsumerSharded = axisAnalysis.getTensorPartitionDims(use);
-          auto isReturn = isa<func::ReturnOp, distributed::DistributedYieldOp>(
-              use.getOwner());
-          if (!maybeConsumerSharded && !isReturn) {
-            use.getOwner()->emitRemark(
-                "Found non-sharded use of result number ")
-                << result.getResultNumber() << " of op " << op;
-            continue;
-          }
-          bool conflicting = !isReturn && producerShardableAxes !=
-                                              axisAnalysis.excludeUnshardable(
-                                                  *maybeConsumerSharded);
-          if (conflicting) {
-            conflict.conflictingUses.push_back(&use);
-          } else {
-            conflict.nonConflictingUses.push_back(&use);
-          }
-        }
-
-        if (!conflict.conflictingUses.empty() ||
-            !conflict.reductionAxes.empty()) {
-          conflicts.push_back(std::move(conflict));
-        }
+        collectFor(result, *maybeProducerSharded,
+                   axisAnalysis.excludeUnshardable(
+                       axisAnalysis.getReductionAxes(result)),
+                   getOrSynthesizeOpShardingRule(result.getOwner()));
       }
     }
     return conflicts;
@@ -380,7 +408,7 @@ struct MaterializeDistributedCollectivesPass
 
     if (!collectiveReductionDims.empty()) {
       if (!conflict.globalType) {
-        conflict.value.getOwner()->emitError()
+        conflict.owner()->emitError()
             << "expected ranked tensor type when materializing reduction "
                "collective";
         return Value();
@@ -388,7 +416,7 @@ struct MaterializeDistributedCollectivesPass
       auto *reductionBody = conflict.shardingRule.getReductionBody(
           conflict.globalType.getElementType());
       if (!reductionBody) {
-        conflict.value.getOwner()->emitError()
+        conflict.owner()->emitError()
             << "expected reduction body metadata when materializing reduction "
                "collective";
         return Value();
@@ -409,7 +437,7 @@ struct MaterializeDistributedCollectivesPass
 
     for (ShardConflict &conflict : conflicts) {
       if (!conflict.globalType) {
-        conflict.value.getOwner()->emitError()
+        conflict.owner()->emitError()
             << "Found non-ranked tensor type for sharded value "
             << conflict.value;
         return failure();
@@ -496,7 +524,7 @@ struct MaterializeDistributedCollectivesPass
     for (ShardConflict &conflict : conflicts) {
       if (!conflict.currentValue || !conflict.globalType ||
           !conflict.currentValueType) {
-        conflict.value.getOwner()->emitError()
+        conflict.owner()->emitError()
             << "missing conflict state before layout collective "
                "materialization";
         return failure();

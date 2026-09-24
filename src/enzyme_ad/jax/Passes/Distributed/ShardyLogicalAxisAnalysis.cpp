@@ -457,10 +457,18 @@ ShardyLogicalAxisAnalysis::ShardyLogicalAxisAnalysis(Operation *sdy_func)
          sdy_func->getRegion(0).hasOneBlock() &&
          "axis analysis currently only supports single-block main ops");
   collectAnalyzedFunctions();
+  initShardyBaseline();
+  if (!valid) {
+    return;
+  }
   // Every function's symbols must exist before any union runs, since a call
   // boundary reads the callee's argument and return symbols.
   for (Operation *func : analyzedFuncs) {
     buildInitialSymbolsFor(func);
+  }
+  seedShardyShardings();
+  if (!valid) {
+    return;
   }
   // Call boundary edges merge first, across every function, so a shared
   // callee's argument and return classes are settled before any interior
@@ -471,6 +479,7 @@ ShardyLogicalAxisAnalysis::ShardyLogicalAxisAnalysis(Operation *sdy_func)
     }
   }
   validateLogicalAxisAssignments();
+  validateShardyBaseline();
 }
 
 void ShardyLogicalAxisAnalysis::collectAnalyzedFunctions() {
@@ -690,6 +699,7 @@ LogicalResult ShardyLogicalAxisAnalysis::assignLogicalAxis(AxisSymbol symbol,
         symbolFactorMerge.resolve(existingSymbol);
     llvm::SmallVector<AxisSymbol> mergedNew =
         symbolFactorMerge.resolve(resolvedSymbol);
+    rootBindingsDirty = true;
     if (mergedExisting.size() == 1 && mergedNew.size() == 1 &&
         mergedExisting.front() == mergedNew.front()) {
       resolvedSymbol = mergedNew.front();
@@ -730,6 +740,24 @@ std::optional<AxisSymbol> ShardyLogicalAxisAnalysis::getOrCreateSymbolForFactor(
   // is what an unshardable symbol is materialized as.
   if (isa<DeviceLocalAxisType>(factor.getType().getAxisType())) {
     symbolFactorMerge.markUnshardable({symbol});
+  }
+  if (shardyBaseline) {
+    // A factor over a physical axis is already a decided binding.
+    FailureOr<TypedValue<axis::AxisTypeInterface>> provenance =
+        axis::getFactorProvenanceAxis(factor);
+    auto getAxes = succeeded(provenance)
+                       ? dyn_cast_or_null<GetPhysicalMeshAxesOp>(
+                             provenance->getDefiningOp())
+                       : GetPhysicalMeshAxesOp();
+    if (getAxes) {
+      boundAtoms.push_back(
+          {symbol,
+           {static_cast<int64_t>(cast<OpResult>(*provenance).getResultNumber()),
+            axis::getFactorExtent(factor), axis::getFactorStride(factor)},
+           getAxes,
+           "frozen physical factor"});
+      rootBindingsDirty = true;
+    }
   }
   return factorToLogicalAxis.find(factor)->second;
 }
@@ -1176,7 +1204,8 @@ void ShardyLogicalAxisAnalysis::validateLogicalAxisAssignments() {
 void ShardyLogicalAxisAnalysis::buildUnionFor(Operation *func,
                                               bool boundaryEdges) {
   auto mergeUses = [&](const TensorAxesToPartitionAxes &producerMapping,
-                       Operation *producer, auto &&getUses) {
+                       Operation *producer, Value producerValue,
+                       auto &&getUses) {
     for (OpOperand &use : getUses()) {
       bool isBoundary = isa<CallOpInterface>(use.getOwner()) ||
                         (producer && isa<CallOpInterface>(producer));
@@ -1189,6 +1218,11 @@ void ShardyLogicalAxisAnalysis::buildUnionFor(Operation *func,
       }
       const TensorAxesToPartitionAxes &consumerMapping =
           maybeConsumerMapping.value();
+      if (shardyBaseline) {
+        mergeEdgeRespectingShardy(producerMapping, producerValue,
+                                  consumerMapping, use, isBoundary);
+        continue;
+      }
       mergeProducedAndConsumedAxes(producerMapping, consumerMapping,
                                    symbolFactorMerge);
     }
@@ -1202,7 +1236,7 @@ void ShardyLogicalAxisAnalysis::buildUnionFor(Operation *func,
     }
 
     const TensorAxesToPartitionAxes &producerMapping = it->second;
-    mergeUses(producerMapping, nullptr, [&]() { return arg.getUses(); });
+    mergeUses(producerMapping, nullptr, arg, [&]() { return arg.getUses(); });
   }
 
   for (Operation &opRef : bodyBlock.getOperations()) {
@@ -1213,7 +1247,8 @@ void ShardyLogicalAxisAnalysis::buildUnionFor(Operation *func,
         continue;
       }
       TensorAxesToPartitionAxes producerMapping = maybeProducerMapping.value();
-      mergeUses(producerMapping, op, [&]() { return result.getUses(); });
+      mergeUses(producerMapping, op, result,
+                [&]() { return result.getUses(); });
     }
   }
 } // end of buildUnionFor
@@ -1292,6 +1327,15 @@ TypedValue<axis::AxisFactorType>
 createLogicalAxisFactor(AxisSymbol symbol,
                         ShardyLogicalAxisAnalysis &axisAnalysis,
                         OpBuilder &builder, Location loc) {
+  if (axisAnalysis.isShardyBaseline()) {
+    if (std::optional<PhysicalFactorRef> binding =
+            axisAnalysis.getPhysicalBinding(symbol)) {
+      return axisAnalysis.createPhysicalFactor(*binding, builder, loc);
+    }
+    Value localAxis =
+        builder.create<DeviceLocalAxisOp>(loc, symbol.getExtent()).getAxis();
+    return axis::viewAxisAsFactor(localAxis, builder, loc);
+  }
   Value axisValue;
   if (axisAnalysis.isUnshardable(symbol)) {
     axisValue =

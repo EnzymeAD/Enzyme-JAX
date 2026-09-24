@@ -107,7 +107,9 @@ def ValidateShardyBaselineMeshPass
     Requires exactly one distributed.PhysicalMesh. Every sdy.mesh must use the
     default (iota) device order, have the physical mesh's device count, and each
     of its axes must be a contiguous device-id window over the physical axes'
-    factorization.
+    factorization. On success the module is stamped with
+    `distributed.shardy_baseline`, which makes the Shardy logical axis analysis
+    bind Shardy-sharded axes to physical factors.
   }];
   let dependentDialects =
       ["enzyme::distributed::DistributedDialect", "sdy::SdyDialect"];
