@@ -1387,12 +1387,18 @@ static LogicalResult writeLogicalAxesJson(ModuleOp moduleOp,
                              llvm::json::Value(std::move(root)));
 }
 
+// Logging id of a partitioning axis that has no logical axis behind it.
+static constexpr int64_t kNoLoggingId = -1;
+
 // Resolves each of `kernelOp`'s partitioning_axes operands (its ordered
 // logical-axis index space, see DistributedKernelOp's description) to the
 // distributed.logging_id of the LogicalMeshAxesOp/DeviceLocalAxisOp behind it.
 //
+// An operand with no logical axis (an empty product for an extent-1 axis)
+// resolves to kNoLoggingId; shardingToJson omits those entries.
+//
 // Assumes the def-chain ClusterDistributedKernels.cpp builds for every
-// operand (kernelPartitioningAxes there): an axis.product wrapping exactly
+// operand (kernelPartitioningAxes there): an axis.product wrapping at most
 // one axis.factor, whose axis operand is the axis op itself. That is the only
 // site that builds partitioning_axes at the point this pass walks the module
 // (MergeAdjacentTrivialKernels, the other creator of DistributedKernelOp, runs
@@ -1408,9 +1414,14 @@ resolvePartitioningAxesToLoggingIds(DistributedKernelOp kernelOp) {
     assert(succeeded(factors) &&
            "a DistributedKernelOp's partitioning_axes operand is always "
            "built via axis.product (viewFactorsAsProduct)");
-    assert(factors->size() == 1 &&
-           "a kernel's own partitioning_axes group always wraps exactly one "
-           "factor (ClusterDistributedKernels.cpp's kernelPartitioningAxes)");
+    assert(factors->size() <= 1 &&
+           "a kernel's own partitioning_axes group wraps at most one factor "
+           "(ClusterDistributedKernels.cpp's kernelPartitioningAxes)");
+    if (factors->empty()) {
+      // An extent-1 axis is an empty product and has no logical axis to name.
+      loggingIds.push_back(kNoLoggingId);
+      continue;
+    }
     auto axisValue = getFactorProvenanceAxis((*factors)[0]);
     assert(succeeded(axisValue) &&
            "a partitioning-axis factor is always built via axis.factor "
@@ -1437,12 +1448,14 @@ shardingToJson(IndexedTensorShardingAttr sharding,
   for (DenseI64ArrayAttr dimAxes : sharding.getDimPartitioningAxes()) {
     llvm::json::Array dimIds;
     for (int64_t idx : dimAxes.asArrayRef())
-      dimIds.push_back(axisIndexToLoggingId[idx]);
+      if (axisIndexToLoggingId[idx] != kNoLoggingId)
+        dimIds.push_back(axisIndexToLoggingId[idx]);
     dims.push_back(std::move(dimIds));
   }
   llvm::json::Array unreducedIds;
   for (int64_t idx : sharding.getUnreducedAxes().asArrayRef())
-    unreducedIds.push_back(axisIndexToLoggingId[idx]);
+    if (axisIndexToLoggingId[idx] != kNoLoggingId)
+      unreducedIds.push_back(axisIndexToLoggingId[idx]);
   llvm::json::Object obj;
   obj["dims"] = std::move(dims);
   obj["unreduced_axes"] = std::move(unreducedIds);
