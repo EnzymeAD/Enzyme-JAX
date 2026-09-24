@@ -118,6 +118,19 @@ struct MakeCollectiveReplicationsExplicit
                  "module physical mesh axes must be representable as "
                  "factors of a collective's own mesh operand");
 
+          // subtractSpace can return an extent-1 factor whenever the
+          // collective's own mesh operand already covers all but a single
+          // unit of a physical axis. Those carry no data to replicate, and
+          // CanonicalizeAxisMapsPass's computeMappingSplits asserts that
+          // every factor in an axis.map has extent > 1, so they are dropped
+          // before materializing, building replication factors, or
+          // appending to the mesh/map lists below.
+          llvm::SmallVector<TV_AxisFactor> nontrivialMissingFactors;
+          for (TV_AxisFactor factor : *missingPhysicalFactors) {
+            if (axis::getFactorExtent(factor) != 1)
+              nontrivialMissingFactors.push_back(factor);
+          }
+
           // subtractSpace returns a genuinely new factor detached (it builds
           // it through a TemporaryOpGuard); a pass-through of one of
           // collectiveMesh's own factors is already in the module. Each
@@ -126,13 +139,13 @@ struct MakeCollectiveReplicationsExplicit
           // through the operands of an already-manifested op, and the
           // axis.product built below is manifested as soon as it is created.
           Block &moduleBody = *rewriter.getInsertionBlock();
-          for (TV_AxisFactor factor : *missingPhysicalFactors) {
+          for (TV_AxisFactor factor : nontrivialMissingFactors) {
             if (Operation *op = factor.getDefiningOp())
               cast<axis::MaybeTemporaryInterface>(op).materialize(moduleBody);
           }
 
           llvm::SmallVector<TV_AxisFactor> correspondingReplicationFactors;
-          for (TV_AxisFactor factor : *missingPhysicalFactors) {
+          for (TV_AxisFactor factor : nontrivialMissingFactors) {
             // Just need something with the same extent.
             auto replAxis = rewriter.create<ReplicationAxisOp>(
                 loc, axis::getFactorExtent(factor));
@@ -140,10 +153,10 @@ struct MakeCollectiveReplicationsExplicit
                 axis::viewAxisAsFactor(replAxis.getAxis(), rewriter, loc));
           }
 
-          missingMeshList.append(missingPhysicalFactors->begin(),
-                                 missingPhysicalFactors->end());
-          missingMapOurs.append(missingPhysicalFactors->begin(),
-                                missingPhysicalFactors->end());
+          missingMeshList.append(nontrivialMissingFactors.begin(),
+                                 nontrivialMissingFactors.end());
+          missingMapOurs.append(nontrivialMissingFactors.begin(),
+                                nontrivialMissingFactors.end());
           missingMapOther.append(correspondingReplicationFactors.begin(),
                                  correspondingReplicationFactors.end());
         };
