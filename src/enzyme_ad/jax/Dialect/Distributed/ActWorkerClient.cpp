@@ -391,6 +391,41 @@ struct DispatchAttempt {
   return success();
 }
 
+// Per-process memoization of ACT's patched module, layered on top of the
+// on-disk cache. The beam search calls ensureActPatchedKernel far more often
+// than there are distinct kernel bodies, so most calls are content-hash
+// repeats of a body already parsed earlier in this process; caching the
+// parsed module (not just its cached text) skips that re-parse. Keyed the
+// same way as the disk cache, one entry per (target, uid) worker, so an
+// in-process hit never crosses that boundary either.
+//
+// spliceKernelBodyModule only clones ops out of a patched module rather than
+// mutating or consuming it, so the same parsed module can be spliced into
+// any number of kernels. That reuse is only sound because the whole
+// distributed search runs single-threaded inside one pass invocation over
+// one MLIRContext: every candidate scored is a clone of the original module
+// via ModuleOp::clone, never a fresh context, so a module parsed once here
+// stays valid for the rest of the run. Being single-threaded is also why the
+// map needs no lock.
+//
+// byHash holds a bare ModuleOp rather than an owning reference because a
+// cached module must survive to program exit: any later kernel in this
+// process might still splice from it, so nothing ever erases it. The
+// MLIRContext these modules live in is owned by a local further up the call
+// stack (inside MlirOptMain) and is torn down as that stack unwinds, before
+// this function-local static's own destructor would run; an owning
+// reference here would erase into an already-destroyed context at that
+// point and crash.
+struct PerWorkerActCache {
+  MLIRContext *context = nullptr;
+  llvm::StringMap<ModuleOp> byHash;
+};
+
+llvm::StringMap<PerWorkerActCache> &inProcessActCache() {
+  static llvm::StringMap<PerWorkerActCache> cache;
+  return cache;
+}
+
 } // namespace
 
 ::mlir::LogicalResult ensureActPatchedKernel(DistributedKernelOp kernelOp,
@@ -418,6 +453,28 @@ struct DispatchAttempt {
 
   std::string workerKey =
       (llvm::Twine(config.target) + "-uid" + llvm::Twine(getuid())).str();
+
+  PerWorkerActCache &processCache = inProcessActCache()[workerKey];
+  // Not an assert: nothing upstream of this function guarantees every caller
+  // across the process's lifetime shares one MLIRContext, only today's sole
+  // caller (the search loop) happens to. A second context reusing the same
+  // worker key would otherwise silently splice a cached ModuleOp that lives
+  // in the first context's already-destroyed (or still-live but foreign)
+  // arena -- exactly the kind of boundary CLAUDE.md's error-handling policy
+  // says to validate for real, since a release build has assertions
+  // compiled out and would corrupt memory instead of failing loudly.
+  if (processCache.context && processCache.context != kernelOp.getContext()) {
+    return kernelOp.emitError()
+           << "ACT in-process cache for worker '" << workerKey
+           << "' was populated from a different MLIRContext; this cache "
+              "assumes every caller sharing a worker key runs in one context";
+  }
+  processCache.context = kernelOp.getContext();
+  if (auto it = processCache.byHash.find(hash);
+      it != processCache.byHash.end()) {
+    return spliceKernelBodyModule(kernelOp, it->second);
+  }
+
   llvm::SmallString<128> workdir(config.workdirRoot);
   llvm::sys::path::append(workdir, workerKey);
   llvm::SmallString<128> cacheDir(workdir);
@@ -467,7 +524,12 @@ struct DispatchAttempt {
            << (cacheHit ? "the cost cache" : "a live ACT dispatch") << ")";
   }
 
-  return spliceKernelBodyModule(kernelOp, *patchedModule);
+  // Handed to the in-process cache for the rest of the program's life (see
+  // PerWorkerActCache's comment on why that means releasing it here rather
+  // than letting an owning reference erase it later).
+  ModuleOp patchedModuleHandle = patchedModule.release();
+  processCache.byHash[hash] = patchedModuleHandle;
+  return spliceKernelBodyModule(kernelOp, patchedModuleHandle);
 }
 
 } // namespace mlir::enzyme::distributed
