@@ -139,3 +139,37 @@ module @missing_partial_factor {
   %h = distributed.Collective %local : tensor<1xf32> on %mesh_in : !axis.factor_group<2> to tensor<1xf32> on %mesh_out : !axis.factor_group<2> reduces () maps %map : !axis.map
   %v = distributed.Await %h : !distributed.asynch_handle<tensor<1xf32>> -> tensor<1xf32>
 }
+
+// -----
+
+// Same partially-covered-physical-axis shape as @missing_partial_factor
+// above, but the collective's data operand traces to a module-scope
+// stablehlo.constant rather than a kernel result (SinkKernelBoundaryValues
+// can produce such hoisted constants directly above a collective's use).
+// The pattern only inspects the collective's mesh and mapping operands, so
+// a constant data operand is handled identically to a kernel result.
+// CHECK-LABEL: module @missing_partial_factor_constant_operand
+// CHECK: distributed.ReplicationAxis 2
+// CHECK: distributed.ReplicationAxis 2
+// CHECK: distributed.Collective {{.*}} on %{{.*}} : <4> to {{.*}} on %{{.*}} : <4>
+module @missing_partial_factor_constant_operand {
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 1>]
+
+  func.func @main() {
+    return
+  }
+
+  %p0 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<4, 1>
+  %f0 = axis.factor %p0 : !distributed.physical_comm_axis<4, 1> <2, 2>
+
+  %mesh_in = axis.product (%f0 : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 2>)
+  %mesh_out = axis.product (%f0 : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 2>)
+  %lhs = axis.product (%f0 : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 2>)
+  %rhs = axis.product (%f0 : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 2>)
+  %map = axis.map %lhs to %rhs : [!axis.factor_group<2>] [!axis.factor_group<2>]
+
+  %global = stablehlo.constant dense<0.0> : tensor<2xf32>
+  %local = distributed.CastGlobalToLocal %global axes (%mesh_in : !axis.factor_group<2>) : tensor<2xf32> -> tensor<1xf32>
+  %h = distributed.Collective %local : tensor<1xf32> on %mesh_in : !axis.factor_group<2> to tensor<1xf32> on %mesh_out : !axis.factor_group<2> reduces () maps %map : !axis.map
+  %v = distributed.Await %h : !distributed.asynch_handle<tensor<1xf32>> -> tensor<1xf32>
+}
