@@ -621,6 +621,26 @@ def LowerKernelPass : Pass<"lower-kernel"> {
   ];
 }
 
+def PrepareAffineGPUWrapperPass
+    : Pass<"prepare-affine-gpu-wrapper", "mlir::ModuleOp"> {
+  let summary = "Realign a gpu_wrapper's affine.parallel with its launch bounds";
+  let description = [{
+    Affine optimizations drop unit dimensions and split induction variables
+    of the affine.parallel inside an enzymexla.gpu_wrapper, so its dimensions
+    no longer correspond to the wrapper's grid and block bounds. This pass
+    groups the loop dimensions by the launch bound their extents multiply to
+    and rebuilds a 6-d affine.parallel whose upper bounds are the wrapper's
+    bound values, delinearizing each new induction variable into its group.
+
+    Run it immediately before lower-affine and convert-parallel-to-gpu1:
+    canonicalization folds the symbolic bounds back into constants.
+  }];
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "arith::ArithDialect",
+  ];
+}
+
 def KernelCallToGPUWrapperPass
     : Pass<"kernel-call-to-gpu-wrapper", "mlir::ModuleOp"> {
   let summary = "Expose kernel calls as differentiable GPU wrapper loops";

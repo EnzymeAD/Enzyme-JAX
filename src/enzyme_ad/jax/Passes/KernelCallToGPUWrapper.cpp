@@ -128,6 +128,9 @@ struct KernelCallToGPUWrapperPass
 
     IRMapping mapping;
 
+    auto wrapper =
+        enzymexla::GPUWrapperOp::create(builder, call.getLoc(), bounds);
+
     SmallVector<Value> kargMemrefs;
     for (auto [karg, operand] :
          llvm::zip_equal(kernel.getArguments(), call.getArgOperands())) {
@@ -135,17 +138,19 @@ struct KernelCallToGPUWrapperPass
       auto MT = MemRefType::get(T.getShape(), T.getElementType(),
                                 /* layout= */ MemRefLayoutAttrInterface{},
                                 builder.getI64IntegerAttr(1));
+
+      builder.setInsertionPoint(wrapper);
       Value memref = enzymexla::Tensor2MemrefOp::create(
           builder, operand.getLoc(), MT, operand);
       kargMemrefs.push_back(memref);
+
+      builder.setInsertionPoint(wrapper.getBody()->getTerminator());
       Value ptr = enzymexla::Memref2PointerOp::create(builder, operand.getLoc(),
                                                       karg.getType(), memref);
       mapping.map(karg, ptr);
     }
 
-    auto wrapper =
-        enzymexla::GPUWrapperOp::create(builder, call.getLoc(), bounds);
-    builder.setInsertionPointToStart(wrapper.getBody());
+    builder.setInsertionPoint(wrapper.getBody()->getTerminator());
 
     MLIRContext *context = call.getContext();
     SmallVector<AffineMap> lowerMaps(6, AffineMap::getConstantMap(0, context));
