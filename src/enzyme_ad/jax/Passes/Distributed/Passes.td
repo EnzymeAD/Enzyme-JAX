@@ -100,6 +100,19 @@ def InsertPhysicalMeshPass : Pass<"insert-physical-mesh", "::mlir::ModuleOp"> {
   let description = [{The configuration string / file is expected to contain a well-formed distributed.PhysicalMesh op.}];
 }
 
+def ValidateShardyBaselineMeshPass
+    : Pass<"validate-shardy-baseline-mesh", "::mlir::ModuleOp"> {
+  let summary = "Check that every sdy.mesh projects onto the distributed.PhysicalMesh.";
+  let description = [{
+    Requires exactly one distributed.PhysicalMesh. Every sdy.mesh must use the
+    default (iota) device order, have the physical mesh's device count, and each
+    of its axes must be a contiguous device-id window over the physical axes'
+    factorization.
+  }];
+  let dependentDialects =
+      ["enzyme::distributed::DistributedDialect", "sdy::SdyDialect"];
+}
+
 def SetDistributedLoggingPass
     : Pass<"set-distributed-logging", "::mlir::ModuleOp"> {
   let summary = "Mints a per-run logging directory and stamps its location "

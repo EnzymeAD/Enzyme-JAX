@@ -22,6 +22,14 @@ struct ShardyToDistributedPipelineOptions
       llvm::cl::desc("Print ShardyLogicalAxisAnalysis axis symbols for each "
                      "operation in main, before collective materialization"),
       llvm::cl::init(false)};
+  Option<bool> preserveShardySharding{
+      *this, "preserve-shardy-sharding",
+      llvm::cl::desc("Keep sdy.sharding attributes and the sdy.mesh alive "
+                     "through kernel clustering so the Shardy plan can be "
+                     "lowered as the expert baseline. Requires a "
+                     "distributed.PhysicalMesh onto which every sdy.mesh "
+                     "projects (run --insert-physical-mesh first)"),
+      llvm::cl::init(false)};
 };
 } // namespace
 
@@ -32,6 +40,8 @@ void registerShardyToDistributedPipeline() {
       "reshards through kernel clustering. End result: all computation "
       "distributed on maximal logical axes",
       [](OpPassManager &pm, const ShardyToDistributedPipelineOptions &options) {
+        if (options.preserveShardySharding)
+          pm.addPass(createValidateShardyBaselineMeshPass());
         pm.addPass(mlir::sdy::createInsertExplicitReshardsPass());
         pm.addPass(createConvertMainToDistributedFunctionPass());
         MaterializeDistributedCollectivesPassOptions materializeOptions;
@@ -39,10 +49,13 @@ void registerShardyToDistributedPipeline() {
         materializeOptions.dumpOperationAxes = options.dumpOperationAxes;
         pm.addPass(
             createMaterializeDistributedCollectivesPass(materializeOptions));
-        pm.addPass(mlir::sdy::createDropShardingAndMeshPass());
+        if (!options.preserveShardySharding)
+          pm.addPass(mlir::sdy::createDropShardingAndMeshPass());
         pm.addPass(createCanonicalizerPass());
         pm.addPass(createCSEPass());
         pm.addPass(createClusterDistributedKernelsPass());
+        if (options.preserveShardySharding)
+          pm.addPass(mlir::sdy::createDropShardingAndMeshPass());
       });
 }
 

@@ -50,6 +50,46 @@ template <typename OpTy>
   return ::mlir::failure();
 }
 
+// A physical mesh axis as (extent, idStride): the device id of a coordinate is
+// the sum over axes of coordinate * idStride.
+struct PhysicalAxisSpec {
+  int64_t extent;
+  int64_t idStride;
+};
+
+// A digit range of one physical axis, in the (extent, stride) form of an
+// axis.factor over that axis: it selects coordinate / strideWithinAxis %
+// extent, so its device-id stride is idStride * strideWithinAxis.
+struct PhysicalFactorRef {
+  int64_t axisIndex;
+  int64_t extent;
+  int64_t strideWithinAxis;
+};
+
+// Expresses the device-id window {0, s, ..., (extent - 1) * s} (s =
+// deviceStride) as physical factors, major-first. The physical axes must
+// tile the device ids as a mixed-radix number. Fails if the window straddles
+// a physical axis boundary without divisibility. Extent 1 yields no factors.
+llvm::Expected<llvm::SmallVector<PhysicalFactorRef>>
+projectDeviceWindow(int64_t extent, int64_t deviceStride,
+                    llvm::ArrayRef<PhysicalAxisSpec> physicalAxes);
+
+// Projects a Shardy sub-axis "(preSize)size" of a full axis onto physical
+// factors, major-first. Within the full axis, the sub-axis has extent `size`
+// and device-id stride
+// fullAxisDeviceStride * (fullAxisSize / (preSize * size)).
+llvm::Expected<llvm::SmallVector<PhysicalFactorRef>>
+projectShardySubAxis(int64_t fullAxisSize, int64_t fullAxisDeviceStride,
+                     int64_t preSize, int64_t size,
+                     llvm::ArrayRef<PhysicalAxisSpec> physicalAxes);
+
+// Projects every axis of an iota-ordered sdy mesh (row-major device ids) onto
+// the physical axes. Result i is the factor list of mesh axis i. Fails if the
+// device counts differ or any axis is not a contiguous window.
+llvm::Expected<llvm::SmallVector<llvm::SmallVector<PhysicalFactorRef>>>
+projectShardyMesh(llvm::ArrayRef<::mlir::sdy::MeshAxisAttr> meshAxes,
+                  llvm::ArrayRef<PhysicalAxisSpec> physicalAxes);
+
 // Creates a new range with all replication axes removed from the input range.
 ::llvm::SmallVector<TypedValue<::mlir::enzyme::axis::AxisFactorType>>
 filterOutReplicationFactors(

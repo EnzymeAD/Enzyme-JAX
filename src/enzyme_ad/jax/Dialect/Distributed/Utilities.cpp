@@ -425,4 +425,91 @@ LogicalResult spliceKernelBodyModule(DistributedKernelOp kernelOp,
   return success();
 }
 
+llvm::Expected<llvm::SmallVector<PhysicalFactorRef>>
+projectDeviceWindow(int64_t extent, int64_t deviceStride,
+                    llvm::ArrayRef<PhysicalAxisSpec> physicalAxes) {
+  llvm::SmallVector<PhysicalFactorRef> minorFirst;
+  int64_t remaining = extent;
+  int64_t position = deviceStride;
+  while (remaining > 1) {
+    // The physical axis whose digit range contains `position`.
+    int64_t found = -1;
+    for (auto [i, axis] : llvm::enumerate(physicalAxes)) {
+      if (axis.extent > 1 && position % axis.idStride == 0 &&
+          position / axis.idStride < axis.extent) {
+        found = i;
+        break;
+      }
+    }
+    if (found < 0)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "device-id stride %lld does not fall on a physical axis digit",
+          (long long)position);
+    const PhysicalAxisSpec &axis = physicalAxes[found];
+    int64_t digit = position / axis.idStride;
+    int64_t available = axis.extent / digit;
+    if (axis.extent % digit != 0)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "device-id stride %lld splits physical axis #%lld "
+          "(extent %lld) non-divisibly",
+          (long long)position, (long long)found, (long long)axis.extent);
+    int64_t take = remaining <= available ? remaining : available;
+    if (available % take != 0 || remaining % take != 0)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "extent %lld straddles the boundary of physical axis #%lld "
+          "(extent %lld, %lld digits available) without divisibility",
+          (long long)remaining, (long long)found, (long long)axis.extent,
+          (long long)available);
+    minorFirst.push_back({found, take, digit});
+    remaining /= take;
+    position = axis.idStride * axis.extent;
+  }
+  return llvm::SmallVector<PhysicalFactorRef>(llvm::reverse(minorFirst));
+}
+
+llvm::Expected<llvm::SmallVector<PhysicalFactorRef>>
+projectShardySubAxis(int64_t fullAxisSize, int64_t fullAxisDeviceStride,
+                     int64_t preSize, int64_t size,
+                     llvm::ArrayRef<PhysicalAxisSpec> physicalAxes) {
+  // Shardy guarantees preSize * size divides the full axis size.
+  assert(fullAxisSize % (preSize * size) == 0);
+  return projectDeviceWindow(
+      size, fullAxisDeviceStride * (fullAxisSize / (preSize * size)),
+      physicalAxes);
+}
+
+llvm::Expected<llvm::SmallVector<llvm::SmallVector<PhysicalFactorRef>>>
+projectShardyMesh(llvm::ArrayRef<::mlir::sdy::MeshAxisAttr> meshAxes,
+                  llvm::ArrayRef<PhysicalAxisSpec> physicalAxes) {
+  int64_t meshDevices = 1, physicalDevices = 1;
+  for (auto axis : meshAxes)
+    meshDevices *= axis.getSize();
+  for (auto axis : physicalAxes)
+    physicalDevices *= axis.extent;
+  if (meshDevices != physicalDevices)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "mesh has %lld devices but the physical mesh has %lld",
+        (long long)meshDevices, (long long)physicalDevices);
+
+  llvm::SmallVector<llvm::SmallVector<PhysicalFactorRef>> result(
+      meshAxes.size());
+  int64_t stride = 1;
+  for (size_t i = meshAxes.size(); i-- > 0;) {
+    auto factors =
+        projectDeviceWindow(meshAxes[i].getSize(), stride, physicalAxes);
+    if (!factors)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(), "axis \"%s\": %s",
+          meshAxes[i].getName().str().c_str(),
+          llvm::toString(factors.takeError()).c_str());
+    result[i] = std::move(*factors);
+    stride *= meshAxes[i].getSize();
+  }
+  return result;
+}
+
 } // namespace mlir::enzyme::distributed
