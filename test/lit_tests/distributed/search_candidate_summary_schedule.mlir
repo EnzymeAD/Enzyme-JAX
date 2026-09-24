@@ -24,7 +24,8 @@
 
 // uid 13's info.json. llvm::json sorts keys alphabetically, so this pins the
 // exact, complete byte content for this fixture's winning candidate, not a
-// partial match. heuristic_score is the negation of summary.total_time
+// partial match (scored_at_ms varies run to run, so it alone is matched
+// loosely). heuristic_score is the negation of summary.total_time
 // (scoreLowered computes score = 0.0 - result.makespan), so the exact-text pin
 // also cross-checks the two literals against each other. This candidate fully
 // serializes both logical axes within one device (see the PARENTINFO comment
@@ -32,8 +33,10 @@
 // collectives counts are 0. Its two dot_generals are 1x2 . 2x1, flops=4
 // bytes=20 each (ComputeCost.cpp); at the mesh's device_flops=1e15/
 // device_mem_bandwidth=1e18 (SI, so F=1e6 FLOP/ns, M=1e9 bytes/ns
-// internally), both roofline times round down to 0ns.
-// WINNERINFO: {"heuristic_score":0,"num_collectives_after":0,"num_collectives_before":0,"parent_uid":4,"pipeline_ok":true,"summary":{"accelerator_compute_time":0,"communication_time":0,"cpu_compute_time":0,"idle_time":0,"num_act_kernel_matches":0,"total_time":0},"uid":13}
+// internally), both roofline times round down to 0ns. It is the last (12th)
+// of this deterministic search's candidates to be scored, and the best score
+// seen is its own (0, the best possible here).
+// WINNERINFO: {"heuristic_score":0,"num_collectives_after":0,"num_collectives_before":0,"parent_uid":4,"pipeline_ok":true,"running_best_score":0,"scored_at_ms":{{[0-9]+}},"scored_sequence":12,"summary":{"accelerator_compute_time":0,"communication_time":0,"cpu_compute_time":0,"idle_time":0,"num_act_kernel_matches":0,"total_time":0},"uid":13}
 
 // uid 13's schedule.json: two independent stablehlo.dot_general compute
 // nodes (this candidate fully serializes both logical axes within one
@@ -52,8 +55,9 @@
 // a single f32 (4 bytes) costs the default launchLatency + roundLatency +
 // round(4/bandwidth) = 5000 + 1000 + 0 = 6000ns (search_collective_cost_
 // score.mlir has the general formula), which dominates the makespan since
-// both dot_generals' compute again rounds to 0ns.
-// PARENTINFO: {"heuristic_score":-6000,"num_collectives_after":1,"num_collectives_before":1,"parent_uid":1,"pipeline_ok":true,"summary":{"accelerator_compute_time":0,"communication_time":6000,"cpu_compute_time":0,"idle_time":6000,"num_act_kernel_matches":0,"total_time":6000},"uid":4}
+// both dot_generals' compute again rounds to 0ns. It is the 3rd candidate
+// scored, and -6000 is still the best score seen at that point.
+// PARENTINFO: {"heuristic_score":-6000,"num_collectives_after":1,"num_collectives_before":1,"parent_uid":1,"pipeline_ok":true,"running_best_score":-6000,"scored_at_ms":{{[0-9]+}},"scored_sequence":3,"summary":{"accelerator_compute_time":0,"communication_time":6000,"cpu_compute_time":0,"idle_time":6000,"num_act_kernel_matches":0,"total_time":6000},"uid":4}
 
 module {
   sdy.mesh @mesh = <["x"=2, "y"=2]>

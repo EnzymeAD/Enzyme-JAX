@@ -24,6 +24,7 @@
 #include "llvm/Support/Path.h"
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -1071,13 +1072,22 @@ static llvm::json::Value jsonInt64OrNull(std::optional<int64_t> value) {
 // did not reach both counting checkpoints (see
 // DumpDistributedLoggingCheckpointPass), as always happens on a pipeline
 // failure.
+//
+// `scoredSequence`/`scoredAtMs`/`runningBestScore` record this candidate's
+// position in the order every search strategy actually scored candidates in,
+// distinct from `identity`'s uid/parent_uid (search-tree shape). They are
+// unset for the Shardy baseline, which is scored outside the search and has
+// no such position.
 static LogicalResult
 writeScoredLog(ModuleOp originalModule, llvm::StringRef dirPath,
                llvm::json::Object identity, bool pipelineOk,
                double heuristicScore,
                const std::optional<ScoredSchedule> &schedule,
                std::optional<int64_t> numCollectivesBefore,
-               std::optional<int64_t> numCollectivesAfter) {
+               std::optional<int64_t> numCollectivesAfter,
+               std::optional<int64_t> scoredSequence = std::nullopt,
+               std::optional<int64_t> scoredAtMs = std::nullopt,
+               std::optional<double> runningBestScore = std::nullopt) {
   llvm::SmallString<128> candidateDir(dirPath);
   if (auto ec = llvm::sys::fs::create_directories(candidateDir))
     return originalModule.emitError()
@@ -1089,6 +1099,13 @@ writeScoredLog(ModuleOp originalModule, llvm::StringRef dirPath,
   info["heuristic_score"] = jsonDoubleOrNull(heuristicScore);
   info["num_collectives_before"] = jsonInt64OrNull(numCollectivesBefore);
   info["num_collectives_after"] = jsonInt64OrNull(numCollectivesAfter);
+  info["scored_sequence"] = jsonInt64OrNull(scoredSequence);
+  info["scored_at_ms"] = jsonInt64OrNull(scoredAtMs);
+  // jsonDoubleOrNull already maps a -infinity double (its own "absent" value)
+  // to null, so an absent runningBestScore can reuse it directly rather than
+  // needing a second not-present check like the two integer fields above.
+  info["running_best_score"] = jsonDoubleOrNull(
+      runningBestScore.value_or(-std::numeric_limits<double>::infinity()));
 
   if (schedule) {
     ComputeTimeSplit split =
@@ -1137,14 +1154,16 @@ writeScoredLog(ModuleOp originalModule, llvm::StringRef dirPath,
                              llvm::json::Value(std::move(scheduleJson)));
 }
 
-// Writes Candidates/<uid>/ for one scored search candidate.
-static LogicalResult
-writeCandidateLog(ModuleOp originalModule, llvm::StringRef loggingRoot,
-                  const StrategySearchNode &node, bool pipelineOk,
-                  double heuristicScore,
-                  const std::optional<ScoredSchedule> &schedule,
-                  std::optional<int64_t> numCollectivesBefore,
-                  std::optional<int64_t> numCollectivesAfter) {
+// Writes Candidates/<uid>/ for one scored search candidate. `scoredSequence`,
+// `scoredAtMs`, and `runningBestScore` are as described on writeScoredLog
+// above.
+static LogicalResult writeCandidateLog(
+    ModuleOp originalModule, llvm::StringRef loggingRoot,
+    const StrategySearchNode &node, bool pipelineOk, double heuristicScore,
+    const std::optional<ScoredSchedule> &schedule,
+    std::optional<int64_t> numCollectivesBefore,
+    std::optional<int64_t> numCollectivesAfter, int64_t scoredSequence,
+    int64_t scoredAtMs, double runningBestScore) {
   llvm::SmallString<128> candidateDir(loggingRoot);
   llvm::sys::path::append(candidateDir, "Candidates",
                           llvm::Twine(node.getUid()));
@@ -1156,7 +1175,8 @@ writeCandidateLog(ModuleOp originalModule, llvm::StringRef loggingRoot,
           : llvm::json::Value(nullptr);
   return writeScoredLog(originalModule, candidateDir, std::move(identity),
                         pipelineOk, heuristicScore, schedule,
-                        numCollectivesBefore, numCollectivesAfter);
+                        numCollectivesBefore, numCollectivesAfter,
+                        scoredSequence, scoredAtMs, runningBestScore);
 }
 
 // Directory of the Shardy baseline's log, relative to the logging root. It is
@@ -1220,6 +1240,17 @@ class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
   // (pipelineOk=false). numPlanFailures separately counts candidates that
   // lowered but scored -infinity because a collective could not be planned.
   size_t numPipelineErrors = 0;
+  // Start time for scored_at_ms: candidates log elapsed time since this
+  // search run started (steady_clock, immune to wall-clock adjustments)
+  // rather than epoch time, so a convergence-vs-time plot doesn't need to
+  // reconcile clocks across machines.
+  std::chrono::steady_clock::time_point startTime =
+      std::chrono::steady_clock::now();
+  // Best heuristic_score seen among every candidate scored so far (including
+  // -infinity ones, which never move it), recorded on each candidate's log
+  // entry so a convergence curve can be built from any single candidate's
+  // info.json without first scanning and sorting the whole Candidates/ tree.
+  double bestScoreSoFar = -std::numeric_limits<double>::infinity();
 
 public:
   StrategyScorer(ModuleOp originalModule, bool dumpCandidates,
@@ -1298,6 +1329,7 @@ public:
     std::optional<ScoredSchedule> schedule;
     double result = pipelineOk ? scoreLowered(*clonedModule, note, schedule)
                                : -std::numeric_limits<double>::infinity();
+    bestScoreSoFar = std::max(bestScoreSoFar, result);
 
     // Stamped by the 02-before-collectives and 03-final checkpoints (see
     // DumpDistributedLoggingCheckpointPass), so absent on a pipeline failure
@@ -1311,12 +1343,18 @@ public:
     }
 
     // Every scored candidate is logged, not only finalized ones, so the search
-    // tree can be reconstructed afterward (see writeCandidateLog).
+    // tree can be reconstructed afterward (see writeCandidateLog). numScored
+    // was already incremented above, so it doubles directly as this
+    // candidate's 1-indexed scoredSequence.
     if (auto loggingRoot = originalModule->getAttrOfType<StringAttr>(
-            "distributed.logging_root"))
+            "distributed.logging_root")) {
+      int64_t elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - startTime)
+                              .count();
       if (failed(writeCandidateLog(
               originalModule, loggingRoot.getValue(), *node, pipelineOk, result,
-              schedule, numCollectivesBefore, numCollectivesAfter))) {
+              schedule, numCollectivesBefore, numCollectivesAfter,
+              static_cast<int64_t>(numScored), elapsedMs, bestScoreSoFar))) {
         // A write failure (already reported by writeCandidateLog) indicates a
         // broken logging destination, e.g. a full or unwritable disk. Abort
         // the whole search, as fail-on-bad-candidate does for a pipeline
@@ -1324,6 +1362,7 @@ public:
         sawBadCandidate = true;
         queue.abort();
       }
+    }
 
     if (dumpCandidates)
       dumpSearchModule("Search candidate", *clonedModule, pipelineOk,
@@ -1895,6 +1934,11 @@ struct DistributedSearchStrategiesPass
     auto initialNode = std::make_shared<StrategySearchNode>(axes, decisions);
     initialNode->setupNextAxis(overlap, physicalAxes, builder);
 
+    // A beam-specific stderr debug aid: it describes progress in terms of
+    // synchronized generations, which only beam search has. For a durable,
+    // cross-strategy progress signal (also covering random/mcts/twostage),
+    // see each candidate's scored_sequence/scored_at_ms in its info.json
+    // (see StrategyScorer::score / writeCandidateLog).
     std::function<void(llvm::ArrayRef<std::shared_ptr<StrategySearchNode>>)>
         progressLogger;
     if (logProgress) {
