@@ -92,6 +92,11 @@ struct OpCost {
 // static size (R6, R7).
 std::optional<OpCost> costOp(Operation *op);
 
+// Byte size of a value of `type` under the same convention as costOp's bytes
+// term (R6, R7): nullopt if `type` is not a static-shape tensor of a sized
+// element type.
+std::optional<double> staticTensorBytes(Type type);
+
 struct ComputeCostSummary {
   // Sum of the per-op roofline times.
   double total = 0;

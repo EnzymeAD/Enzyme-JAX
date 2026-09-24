@@ -72,9 +72,13 @@ const llvm::StringMap<Kind> &kindTable() {
   return table;
 }
 
-// Size in bytes of a value of `type`, or nullopt if it is not a static tensor
-// of a sized element type (R6, R7).
-std::optional<double> staticBytes(Type type) {
+double numelOf(Type type) {
+  return static_cast<double>(cast<RankedTensorType>(type).getNumElements());
+}
+
+} // namespace
+
+std::optional<double> staticTensorBytes(Type type) {
   auto tensor = dyn_cast<RankedTensorType>(type);
   if (!tensor || !tensor.hasStaticShape())
     return std::nullopt;
@@ -91,12 +95,6 @@ std::optional<double> staticBytes(Type type) {
   return static_cast<double>(tensor.getNumElements()) * ((bits + 7) / 8);
 }
 
-double numelOf(Type type) {
-  return static_cast<double>(cast<RankedTensorType>(type).getNumElements());
-}
-
-} // namespace
-
 double OpCost::time(const DeviceCostParams &device) const {
   return std::max(flops / device.flops, bytes / device.memBandwidth);
 }
@@ -105,7 +103,7 @@ std::optional<OpCost> costOp(Operation *op) {
   OpCost cost;
   for (Type type :
        llvm::concat<const Type>(op->getOperandTypes(), op->getResultTypes())) {
-    std::optional<double> bytes = staticBytes(type);
+    std::optional<double> bytes = staticTensorBytes(type);
     if (!bytes)
       return std::nullopt;
     cost.bytes += *bytes;

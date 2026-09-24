@@ -6,6 +6,7 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/ShardyLogicalAxisAnalysis.h"
 
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
+#include "src/enzyme_ad/jax/Dialect/Distributed/ComputeCost.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/MeshCostMetadata.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/ScheduleGraph.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/ScheduleSimulator.h"
@@ -17,6 +18,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/DebugStringHelper.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/Path.h"
@@ -27,6 +29,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <utility>
@@ -1547,13 +1550,11 @@ static LogicalResult writeLogicalAxesJson(ModuleOp moduleOp,
 static constexpr int64_t kNoLoggingId = -1;
 
 // Resolves each of `kernelOp`'s partitioning_axes operands (its ordered
-// logical-axis index space, see DistributedKernelOp's description) to the
-// distributed.logging_id of the LogicalMeshAxesOp/DeviceLocalAxisOp behind it.
-//
-// An operand with no logical axis resolves to kNoLoggingId, and shardingToJson
-// omits those entries. That covers an empty product (an extent-1 axis) and,
-// in a Shardy baseline module, a product of physical factors, which are
-// already decided and never come from a logical axis.
+// logical-axis index space, see DistributedKernelOp's description) to the SSA
+// value of the LogicalMeshAxesOp/DeviceLocalAxisOp behind it, or a null Value
+// when the operand has no logical axis. That covers an empty product (an
+// extent-1 axis) and, in a Shardy baseline module, a product of physical
+// factors, which are already decided and never come from a logical axis.
 //
 // Otherwise assumes the def-chain ClusterDistributedKernels.cpp builds for
 // every non-baseline operand (kernelPartitioningAxes there): an axis.product
@@ -1562,12 +1563,11 @@ static constexpr int64_t kNoLoggingId = -1;
 // walks the module (MergeAdjacentTrivialKernels, the other creator of
 // DistributedKernelOp, runs later in the per-candidate lowering pipeline), so
 // a product that is neither empty, all-physical, nor exactly one logical
-// factor is a genuine invariant violation, not a case to log around. Also
-// requires writeLogicalAxesJson to have already stamped logging_id.
-static llvm::SmallVector<int64_t>
-resolvePartitioningAxesToLoggingIds(DistributedKernelOp kernelOp) {
-  llvm::SmallVector<int64_t> loggingIds;
-  loggingIds.reserve(kernelOp.getPartitioningAxes().size());
+// factor is a genuine invariant violation, not a case to log around.
+static llvm::SmallVector<Value>
+resolvePartitioningAxesToAxisValues(DistributedKernelOp kernelOp) {
+  llvm::SmallVector<Value> axisValues;
+  axisValues.reserve(kernelOp.getPartitioningAxes().size());
   for (Value axisOperand : kernelOp.getPartitioningAxes()) {
     auto factorGroup = cast<TypedValue<FactorGroupType>>(axisOperand);
     auto factors = getProductProvenanceFactors(factorGroup);
@@ -1575,20 +1575,20 @@ resolvePartitioningAxesToLoggingIds(DistributedKernelOp kernelOp) {
            "a DistributedKernelOp's partitioning_axes operand is always "
            "built via axis.product (viewFactorsAsProduct)");
     if (factors->empty()) {
-      loggingIds.push_back(kNoLoggingId);
+      axisValues.push_back(nullptr);
       continue;
     }
-    auto factorAxis = [](TypedValue<AxisFactorType> factor) {
+    auto factorAxis = [](TypedValue<AxisFactorType> factor) -> Value {
       auto axisValue = getFactorProvenanceAxis(factor);
       assert(succeeded(axisValue) &&
              "a partitioning-axis factor is always built via axis.factor "
              "(viewAxisAsFactor)");
-      return axisValue->getDefiningOp();
+      return *axisValue;
     };
     if (llvm::all_of(*factors, [&](TypedValue<AxisFactorType> factor) {
-          return isa<GetPhysicalMeshAxesOp>(factorAxis(factor));
+          return isa<GetPhysicalMeshAxesOp>(factorAxis(factor).getDefiningOp());
         })) {
-      loggingIds.push_back(kNoLoggingId);
+      axisValues.push_back(nullptr);
       continue;
     }
     assert(factors->size() == 1 &&
@@ -1596,9 +1596,26 @@ resolvePartitioningAxesToLoggingIds(DistributedKernelOp kernelOp) {
            "factor (ClusterDistributedKernels.cpp's kernelPartitioningAxes); "
            "only a Shardy baseline module's product of already-physical "
            "factors combines more than one");
-    Operation *axisDefOp = factorAxis((*factors)[0]);
-    auto loggingId =
-        axisDefOp->getAttrOfType<IntegerAttr>("distributed.logging_id");
+    axisValues.push_back(factorAxis((*factors)[0]));
+  }
+  return axisValues;
+}
+
+// Resolves each of `kernelOp`'s partitioning_axes operands to the
+// distributed.logging_id of the axis resolvePartitioningAxesToAxisValues
+// finds behind it (kNoLoggingId when there is none). Requires
+// writeLogicalAxesJson to have already stamped logging_id on every
+// LogicalMeshAxesOp/DeviceLocalAxisOp in the module.
+static llvm::SmallVector<int64_t>
+resolvePartitioningAxesToLoggingIds(DistributedKernelOp kernelOp) {
+  llvm::SmallVector<int64_t> loggingIds;
+  for (Value axisValue : resolvePartitioningAxesToAxisValues(kernelOp)) {
+    if (!axisValue) {
+      loggingIds.push_back(kNoLoggingId);
+      continue;
+    }
+    auto loggingId = axisValue.getDefiningOp()->getAttrOfType<IntegerAttr>(
+        "distributed.logging_id");
     assert(loggingId && "writeLogicalAxesJson stamps every LogicalMeshAxesOp/"
                         "DeviceLocalAxisOp in the module before this walk "
                         "runs, and the two are only ever called together, "
@@ -1691,6 +1708,99 @@ static LogicalResult writeOpAxisTagsJson(ModuleOp moduleOp,
                              llvm::json::Value(std::move(root)));
 }
 
+// Coarse, per-axis proxy for how much a logical axis's binding decision
+// matters, used only to order `LogicalAxisOrder` (the fixed sequence beam
+// search decides axes in) so that beam search's aggressive per-generation
+// pruning is spent on the axes most worth deciding well first.
+//
+// Simplifications, since this is a relative ordering signal rather than a
+// real cost model:
+//  - An op's whole roofline compute time is charged to every axis it is
+//    tagged with, with no attempt to divide it across several axes.
+//  - A sharded tensor's whole global byte size is charged, as a
+//    communication-time estimate, to every axis it touches.
+//  - Both terms use the integer-nanosecond convention MeshCostMetadata.h
+//    documents, so they are directly comparable and summable.
+//  - This runs before any axis is bound to a physical factor, so kernel-body
+//    ops are still at their original (global, unsharded) tensor shapes:
+//    costOp's flops/bytes are an upper-bound, mesh-wide estimate rather than
+//    the true per-device cost the same helper computes post-lowering.
+//
+// Walks the same distributed.argument_shardings/output_shardings metadata
+// writeOpAxisTagsJson does (ClusterDistributedKernels stamps these before
+// search starts, so one walk over the un-lowered module covers every
+// candidate), but resolves indices to the logical axis's own SSA value
+// instead of a logging id.
+static llvm::DenseMap<Value, double>
+estimateAxisImportance(ModuleOp moduleOp, const DeviceCostParams &device,
+                       double avgBandwidth) {
+  llvm::DenseMap<Value, double> importance;
+  llvm::DenseMap<Operation *, llvm::SmallVector<Value>> kernelAxisCache;
+
+  moduleOp.walk([&](Operation *op) {
+    auto argShardings = op->getAttrOfType<IndexedTensorShardingPerValueAttr>(
+        "distributed.argument_shardings");
+    auto outShardings = op->getAttrOfType<IndexedTensorShardingPerValueAttr>(
+        "distributed.output_shardings");
+    if (!argShardings && !outShardings)
+      return;
+
+    auto kernelOp = op->getParentOfType<DistributedKernelOp>();
+    assert(kernelOp && "distributed.argument_shardings/output_shardings only "
+                       "ever appears on a DistributedKernelOp body member");
+    Operation *kernelOpPtr = kernelOp.getOperation();
+    auto cacheIt = kernelAxisCache.find(kernelOpPtr);
+    if (cacheIt == kernelAxisCache.end())
+      cacheIt = kernelAxisCache
+                    .try_emplace(kernelOpPtr,
+                                 resolvePartitioningAxesToAxisValues(kernelOp))
+                    .first;
+    llvm::ArrayRef<Value> axisIndexToValue = cacheIt->second;
+
+    // Adds each axis a value's sharding touches (its dim or unreduced
+    // indices) to `touchedByOp`, and separately charges that value's whole
+    // global byte size, converted to a communication-time estimate, to each
+    // such axis.
+    llvm::SmallPtrSet<Value, 4> touchedByOp;
+    auto chargeValue = [&](IndexedTensorShardingAttr sharding, Value value) {
+      llvm::SmallPtrSet<Value, 4> touchedByValue;
+      auto noteAxis = [&](int64_t idx) {
+        Value axis = axisIndexToValue[idx];
+        if (axis) {
+          touchedByOp.insert(axis);
+          touchedByValue.insert(axis);
+        }
+      };
+      for (DenseI64ArrayAttr dimAxes : sharding.getDimPartitioningAxes())
+        for (int64_t idx : dimAxes.asArrayRef())
+          noteAxis(idx);
+      for (int64_t idx : sharding.getUnreducedAxes().asArrayRef())
+        noteAxis(idx);
+      if (touchedByValue.empty())
+        return;
+      std::optional<double> bytes = staticTensorBytes(value.getType());
+      if (!bytes)
+        return;
+      double commTime = *bytes / avgBandwidth;
+      for (Value axis : touchedByValue)
+        importance[axis] += commTime;
+    };
+    if (argShardings)
+      for (auto [i, sharding] : llvm::enumerate(argShardings.getShardings()))
+        chargeValue(sharding, op->getOperand(i));
+    if (outShardings)
+      for (auto [i, sharding] : llvm::enumerate(outShardings.getShardings()))
+        chargeValue(sharding, op->getResult(i));
+
+    if (std::optional<OpCost> cost = costOp(op)) {
+      double computeTime = cost->time(device);
+      for (Value axis : touchedByOp)
+        importance[axis] += computeTime;
+    }
+  });
+  return importance;
+}
+
 struct DistributedSearchStrategiesPass
     : public impl::DistributedSearchStrategiesPassBase<
           DistributedSearchStrategiesPass> {
@@ -1762,7 +1872,22 @@ struct DistributedSearchStrategiesPass
     llvm::SmallVector<SharedOpRef<AxisFactorOp>> physicalAxes =
         findAllPhysicalAxes(moduleOp, builder, moduleOp.getLoc());
 
-    // TODO: order axis search order by importance
+    // Orders axes by estimateAxisImportance so the fixed per-generation
+    // decision sequence spends beam search's pruning budget on the axes most
+    // worth deciding well first.
+    PhysicalMeshOp physicalMesh = *findUniquePhysicalMesh(moduleOp);
+    DeviceCostParams device = deviceCostParamsFromPhysicalMesh(physicalMesh);
+    MeshCostParams mesh = meshCostParamsFromPhysicalMesh(physicalMesh);
+    assert(!mesh.bandwidth.empty() &&
+           "a physical mesh always declares at least one axis");
+    double avgBandwidth =
+        std::accumulate(mesh.bandwidth.begin(), mesh.bandwidth.end(), 0.0) /
+        mesh.bandwidth.size();
+    llvm::DenseMap<Value, double> axisImportance =
+        estimateAxisImportance(moduleOp, device, avgBandwidth);
+    llvm::stable_sort(logicalAxes, [&](Value a, Value b) {
+      return axisImportance.lookup(a) > axisImportance.lookup(b);
+    });
     auto axes =
         std::make_shared<const LogicalAxisOrder>(std::move(logicalAxes));
     auto decisions = AxisMappingReplayTree::makeRoot();
