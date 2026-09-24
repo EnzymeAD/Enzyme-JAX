@@ -180,6 +180,10 @@ struct ActCalleeCost {
   // True for a real accelerator dispatch (an act.cost-bearing callee); false
   // for a zero-cost stage/fetch call (act.role-bearing, no cost of its own).
   bool isRealLaunch;
+  // ACT's own name for the kernel this launch dispatches (its act.kernel
+  // attribute, e.g. "dot_general_4x8_8x4"), when the callee carries one.
+  // Stage/fetch callees don't name a kernel, so this is empty for those.
+  std::string kernelName;
 };
 
 // The cost, in cycles, of calling `op`'s resolved callee (and whether that
@@ -201,10 +205,15 @@ std::optional<ActCalleeCost> actCalleeCostCycles(Operation *op) {
   Operation *calleeOp = cast<CallOpInterface>(op).resolveCallable();
   if (!calleeOp)
     return std::nullopt;
-  if (FloatAttr cost = calleeOp->getAttrOfType<FloatAttr>("act.cost"))
-    return ActCalleeCost{cost.getValueAsDouble(), /*isRealLaunch=*/true};
+  if (FloatAttr cost = calleeOp->getAttrOfType<FloatAttr>("act.cost")) {
+    std::string kernelName;
+    if (StringAttr name = calleeOp->getAttrOfType<StringAttr>("act.kernel"))
+      kernelName = name.getValue().str();
+    return ActCalleeCost{cost.getValueAsDouble(), /*isRealLaunch=*/true,
+                         std::move(kernelName)};
+  }
   if (calleeOp->hasAttrOfType<StringAttr>("act.role"))
-    return ActCalleeCost{0.0, /*isRealLaunch=*/false};
+    return ActCalleeCost{0.0, /*isRealLaunch=*/false, /*kernelName=*/""};
   return std::nullopt;
 }
 
@@ -224,6 +233,7 @@ void appendActCalleeNode(Operation *op, ActCalleeCost cost,
   event.kind = ScheduleEventKind::Compute;
   event.op = op;
   event.isAcceleratorLaunch = cost.isRealLaunch;
+  event.actKernelName = cost.kernelName;
   event.isolatedDuration = device.actCyclesToNs(cost.cycles);
   // The simulator (ScheduleSimulator.cpp) drives kComputeResource occupancy
   // off computeCost.flops/.bytes, not isolatedDuration directly. Leaving
@@ -693,6 +703,8 @@ std::string describeEvent(const ScheduleEvent &event) {
        << ": flops=" << llvm::format("%g", event.computeCost.flops)
        << " bytes=" << llvm::format("%g", event.computeCost.bytes)
        << " time=" << event.isolatedDuration;
+    if (!event.actKernelName.empty())
+      os << " act_kernel=" << event.actKernelName;
   } else if (event.kind == ScheduleEventKind::Communication) {
     os << "communication " << toString(event.step.kind) << " (step "
        << event.chainIndex << "): "

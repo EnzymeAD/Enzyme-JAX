@@ -57,11 +57,16 @@ void registerShardyToDistributedPipeline();
 // cloneAndApplyDecisions, so real ACT dispatch (backed by the same
 // content-hash cache and persistent worker as everywhere else) is also what
 // scores each per-candidate clone during search, not just the winner.
+// `actPatchedModuleFile` is likewise forwarded to LowerKernelsToExecutable's
+// test-only splice-in seam (mutually exclusive with the three real-dispatch
+// options above), letting a test exercise an ACT-dispatched candidate's
+// scoring/logging without a real ACT/Docker round trip.
 void buildDistributedSearchLoweringPipeline(
     OpPassManager &pm, bool lowerLogicalAxes = true,
     llvm::StringRef dumpKernelModulesTo = "", bool finalizeSchedule = true,
     llvm::StringRef actTarget = "", llvm::StringRef actWorkerDirRoot = "",
-    llvm::StringRef actWorkerScriptDir = "", bool reorderForLogging = false);
+    llvm::StringRef actWorkerScriptDir = "", bool reorderForLogging = false,
+    llvm::StringRef actPatchedModuleFile = "");
 void registerDistributedSearchLoweringPipeline();
 
 #define GEN_PASS_DECL

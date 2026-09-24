@@ -10,7 +10,8 @@ void buildDistributedSearchLoweringPipeline(
     OpPassManager &pm, bool lowerLogicalAxes,
     llvm::StringRef dumpKernelModulesTo, bool finalizeSchedule,
     llvm::StringRef actTarget, llvm::StringRef actWorkerDirRoot,
-    llvm::StringRef actWorkerScriptDir, bool reorderForLogging) {
+    llvm::StringRef actWorkerScriptDir, bool reorderForLogging,
+    llvm::StringRef actPatchedModuleFile) {
   LowerKernelsPassOptions options;
   options.lowerLogicalAxes = lowerLogicalAxes;
   // CanonicalizeShardedFactorOrder must run first: both InlineDeviceLocalAxes
@@ -97,6 +98,7 @@ void buildDistributedSearchLoweringPipeline(
   executableOptions.actTarget = actTarget.str();
   executableOptions.actWorkerDirRoot = actWorkerDirRoot.str();
   executableOptions.actWorkerScriptDir = actWorkerScriptDir.str();
+  executableOptions.actPatchedModuleFile = actPatchedModuleFile.str();
   pm.addPass(createLowerKernelsToExecutablePass(executableOptions));
 
   // Kernel inlining and collective lowering materialize real physical IR
@@ -184,6 +186,10 @@ struct DistributedSearchLoweringPipelineOptions
           "for a candidate that is not the real winner. Has no effect when "
           "finalize-schedule is true (its default). Default: false"),
       llvm::cl::init(false)};
+  Option<std::string> actPatchedModuleFile{
+      *this, "act-patched-module-file",
+      llvm::cl::desc("Forwarded to distributed-lower-kernels-to-executable."),
+      llvm::cl::init("")};
 };
 } // namespace
 
@@ -198,7 +204,7 @@ void registerDistributedSearchLoweringPipeline() {
             pm, options.lowerLogicalAxes, options.dumpKernelModulesTo,
             options.finalizeSchedule, options.actTarget,
             options.actWorkerDirRoot, options.actWorkerScriptDir,
-            options.reorderForLogging);
+            options.reorderForLogging, options.actPatchedModuleFile);
       });
 }
 

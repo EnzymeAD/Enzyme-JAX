@@ -895,7 +895,7 @@ static OwningOpRef<ModuleOp> cloneAndApplyDecisions(
     bool disableVerifier, llvm::StringRef dumpKernelModulesTo,
     llvm::StringRef actTarget, llvm::StringRef actWorkerDirRoot,
     llvm::StringRef actWorkerScriptDir, bool &pipelineOk,
-    bool suppressLogging = false) {
+    bool suppressLogging = false, llvm::StringRef actPatchedModuleFile = "") {
   IRMapping mapper;
   OwningOpRef<ModuleOp> clonedModule(
       cast<ModuleOp>(originalModule->clone(mapper)));
@@ -943,7 +943,8 @@ static OwningOpRef<ModuleOp> cloneAndApplyDecisions(
   buildDistributedSearchLoweringPipeline(
       pm, /*lowerLogicalAxes=*/false, dumpKernelModulesTo,
       /*finalizeSchedule=*/false, actTarget, actWorkerDirRoot,
-      actWorkerScriptDir, /*reorderForLogging=*/loggingActive);
+      actWorkerScriptDir, /*reorderForLogging=*/loggingActive,
+      actPatchedModuleFile);
   pipelineOk = succeeded(pm.run(*clonedModule));
   return clonedModule;
 }
@@ -1158,6 +1159,12 @@ writeScoredLog(ModuleOp originalModule, llvm::StringRef dirPath,
     llvm::json::Object nodeObj;
     nodeObj["index"] = static_cast<int64_t>(i);
     nodeObj["kind"] = toString(event.kind);
+    // Lets a timeline visualization color an ACT accelerator dispatch
+    // separately from ordinary CPU-costed compute without re-deriving that
+    // split from `description` text. Present only for Compute events; the
+    // engine distinction is meaningless for the others.
+    if (event.kind == ScheduleEventKind::Compute)
+      nodeObj["engine"] = event.isAcceleratorLaunch ? "act" : "cpu";
     nodeObj["description"] = describeEvent(event);
     nodeObj["start"] = schedule->timeline.start[i];
     nodeObj["finish"] = schedule->timeline.finish[i];
@@ -1285,6 +1292,7 @@ class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
   std::string actTarget;
   std::string actWorkerDirRoot;
   std::string actWorkerScriptDir;
+  std::string actPatchedModuleFile;
   bool failOnBadCandidate;
   bool &sawBadCandidate;
   BeamSearchQueueBase<StrategySearchNode> &queue;
@@ -1315,12 +1323,14 @@ public:
                  llvm::StringRef actWorkerScriptDir, bool failOnBadCandidate,
                  bool &sawBadCandidate,
                  BeamSearchQueueBase<StrategySearchNode> &queue,
-                 StrategyCompleterBase &completer)
+                 StrategyCompleterBase &completer,
+                 llvm::StringRef actPatchedModuleFile = "")
       : originalModule(originalModule), dumpCandidates(dumpCandidates),
         disableVerifier(disableVerifier),
         dumpKernelModulesTo(dumpKernelModulesTo), actTarget(actTarget),
         actWorkerDirRoot(actWorkerDirRoot),
         actWorkerScriptDir(actWorkerScriptDir),
+        actPatchedModuleFile(actPatchedModuleFile),
         failOnBadCandidate(failOnBadCandidate),
         sawBadCandidate(sawBadCandidate), queue(queue), completer(completer) {}
 
@@ -1376,7 +1386,8 @@ public:
     bool pipelineOk;
     OwningOpRef<ModuleOp> clonedModule = cloneAndApplyDecisions(
         originalModule, completedNode, disableVerifier, dumpKernelModulesTo,
-        actTarget, actWorkerDirRoot, actWorkerScriptDir, pipelineOk);
+        actTarget, actWorkerDirRoot, actWorkerScriptDir, pipelineOk,
+        /*suppressLogging=*/false, actPatchedModuleFile);
 
     ++numScored;
     if (!pipelineOk)
@@ -1934,6 +1945,15 @@ struct DistributedSearchStrategiesPass
       signalPassFailure();
       return;
     }
+    if (!actPatchedModuleFile.empty() && anyActDispatchOption) {
+      getOperation()->emitError()
+          << "act-patched-module-file (a test-only seam that bypasses real "
+             "ACT dispatch) is mutually exclusive with act-target/"
+             "act-worker-dir-root/act-worker-script-dir (real dispatch); set "
+             "one or the other, not both";
+      signalPassFailure();
+      return;
+    }
 
     ModuleOp moduleOp = getOperation();
     mlir::OpBuilder builder(moduleOp.getContext());
@@ -2032,7 +2052,8 @@ struct DistributedSearchStrategiesPass
     StrategyScorer scorer(moduleOp, dumpCandidates, disableVerifier,
                           dumpKernelModulesTo, actTarget, actWorkerDirRoot,
                           actWorkerScriptDir, failOnBadCandidate,
-                          sawBadCandidate, queue, completer);
+                          sawBadCandidate, queue, completer,
+                          actPatchedModuleFile);
 
     if (uctBackup != "mean" && uctBackup != "max") {
       moduleOp.emitError() << "distributed-search-strategies: unknown "
@@ -2158,7 +2179,7 @@ struct DistributedSearchStrategiesPass
         OwningOpRef<ModuleOp> clonedModule = cloneAndApplyDecisions(
             moduleOp, node, disableVerifier, /*dumpKernelModulesTo=*/"",
             actTarget, actWorkerDirRoot, actWorkerScriptDir, pipelineOk,
-            /*suppressLogging=*/true);
+            /*suppressLogging=*/true, actPatchedModuleFile);
         std::string note;
         std::optional<ScoredSchedule> schedule;
         if (pipelineOk)
@@ -2176,7 +2197,7 @@ struct DistributedSearchStrategiesPass
         OwningOpRef<ModuleOp> clonedModule = cloneAndApplyDecisions(
             moduleOp, best, disableVerifier, /*dumpKernelModulesTo=*/"",
             actTarget, actWorkerDirRoot, actWorkerScriptDir, pipelineOk,
-            /*suppressLogging=*/true);
+            /*suppressLogging=*/true, actPatchedModuleFile);
         std::string note;
         std::optional<ScoredSchedule> schedule;
         if (pipelineOk)

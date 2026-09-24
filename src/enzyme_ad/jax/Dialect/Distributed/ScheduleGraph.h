@@ -55,6 +55,13 @@ struct ScheduleEvent {
   // and the CPU remainder.
   bool isAcceleratorLaunch = false;
 
+  // Compute only, and only when isAcceleratorLaunch: ACT's own name for the
+  // dispatched kernel (its act.kernel attribute, e.g. "dot_general_4x8_8x4"),
+  // for a human-facing report or per-candidate log to identify which kernel
+  // ran without having to chase the callee symbol through the IR. Empty
+  // when the callee carries no act.kernel attribute.
+  std::string actKernelName;
+
   // FunctionCall only: the callee's own event graph, built independently as
   // its own fresh scheduling scope (see the "hard barrier" note below).
   // Always non-null and feasible for a FunctionCall event: an unresolved
