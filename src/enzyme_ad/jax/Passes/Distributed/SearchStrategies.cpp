@@ -335,6 +335,19 @@ public:
   uint64_t getUid() const { return uid; }
   std::optional<uint64_t> getParentUid() const { return parentUid; }
 
+  // getAxes(): every logical axis in this node's fixed decision order.
+  // getAxisBindings(axis): the physical factor(s) this node's decisions bind
+  // that axis to (see AxisMappingReplayTree::getBindings), used for
+  // axis_bindings logging. Empty if this node has not yet made a decision
+  // for the axis.
+  llvm::ArrayRef<TypedValue<LogicalMeshAxisType>> getAxes() const {
+    return *axes;
+  }
+  llvm::SmallVector<TypedValue<AxisFactorType>>
+  getAxisBindings(TypedValue<LogicalMeshAxisType> axis) const {
+    return decisions->getBindings(axis);
+  }
+
   // Branches the search tree: used by StrategyExplorer to turn one node into
   // several real candidates. The child gets a fresh uid with this node as
   // its parent.
@@ -1078,6 +1091,10 @@ static llvm::json::Value jsonInt64OrNull(std::optional<int64_t> value) {
 // distinct from `identity`'s uid/parent_uid (search-tree shape). They are
 // unset for the Shardy baseline, which is scored outside the search and has
 // no such position.
+//
+// `axisBindings` is this candidate's own logical-axis-to-physical-factor
+// decisions (see axisBindingsToJson), absent for the baseline, which has no
+// search decisions to report.
 static LogicalResult
 writeScoredLog(ModuleOp originalModule, llvm::StringRef dirPath,
                llvm::json::Object identity, bool pipelineOk,
@@ -1087,7 +1104,8 @@ writeScoredLog(ModuleOp originalModule, llvm::StringRef dirPath,
                std::optional<int64_t> numCollectivesAfter,
                std::optional<int64_t> scoredSequence = std::nullopt,
                std::optional<int64_t> scoredAtMs = std::nullopt,
-               std::optional<double> runningBestScore = std::nullopt) {
+               std::optional<double> runningBestScore = std::nullopt,
+               std::optional<llvm::json::Array> axisBindings = std::nullopt) {
   llvm::SmallString<128> candidateDir(dirPath);
   if (auto ec = llvm::sys::fs::create_directories(candidateDir))
     return originalModule.emitError()
@@ -1106,6 +1124,8 @@ writeScoredLog(ModuleOp originalModule, llvm::StringRef dirPath,
   // needing a second not-present check like the two integer fields above.
   info["running_best_score"] = jsonDoubleOrNull(
       runningBestScore.value_or(-std::numeric_limits<double>::infinity()));
+  if (axisBindings)
+    info["axis_bindings"] = std::move(*axisBindings);
 
   if (schedule) {
     ComputeTimeSplit split =
@@ -1154,6 +1174,41 @@ writeScoredLog(ModuleOp originalModule, llvm::StringRef dirPath,
                              llvm::json::Value(std::move(scheduleJson)));
 }
 
+// This candidate's own logical-axis-to-physical-factor decisions: for every
+// logical axis in `node`'s fixed decision order (identified by the
+// distributed.logging_id that writeLogicalAxesJson stamps on its
+// LogicalMeshAxesOp), the physical factor(s) `node`'s decisions bind it to.
+//
+// Lets a reader join this against op_axis_tags.json, which tags an op with
+// logical-axis logging ids but not physical factors, to answer "what
+// physical factor did this op's axis end up on, for this candidate": no
+// single existing log file records that, since op_axis_tags.json is written
+// once for the whole search and is shared by every candidate.
+//
+// A physical factor is reported as its axis_factor type's printed form
+// (e.g. "!axis.axis_factor<!distributed.physical_comm_axis<4, 2>, 2, 2>"),
+// the same mlir::debugString convention op_axis_tags.json uses for a
+// location: the type already names which physical axis the factor lives on
+// and its extent/stride within it.
+static llvm::json::Array axisBindingsToJson(const StrategySearchNode &node) {
+  llvm::json::Array result;
+  for (TypedValue<LogicalMeshAxisType> axis : node.getAxes()) {
+    auto loggingId =
+        axis.getDefiningOp()->getAttrOfType<IntegerAttr>("distributed.logging_id");
+    assert(loggingId && "writeLogicalAxesJson stamps every LogicalMeshAxesOp "
+                        "in the module before the search that builds `axes` "
+                        "runs");
+    llvm::json::Array factorsJson;
+    for (TypedValue<AxisFactorType> factor : node.getAxisBindings(axis))
+      factorsJson.push_back(mlir::debugString(factor.getType()));
+    llvm::json::Object entry;
+    entry["logging_id"] = loggingId.getInt();
+    entry["physical_factors"] = std::move(factorsJson);
+    result.push_back(std::move(entry));
+  }
+  return result;
+}
+
 // Writes Candidates/<uid>/ for one scored search candidate. `scoredSequence`,
 // `scoredAtMs`, and `runningBestScore` are as described on writeScoredLog
 // above.
@@ -1176,7 +1231,8 @@ static LogicalResult writeCandidateLog(
   return writeScoredLog(originalModule, candidateDir, std::move(identity),
                         pipelineOk, heuristicScore, schedule,
                         numCollectivesBefore, numCollectivesAfter,
-                        scoredSequence, scoredAtMs, runningBestScore);
+                        scoredSequence, scoredAtMs, runningBestScore,
+                        axisBindingsToJson(node));
 }
 
 // Directory of the Shardy baseline's log, relative to the logging root. It is
@@ -1351,10 +1407,17 @@ public:
       int64_t elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                               std::chrono::steady_clock::now() - startTime)
                               .count();
+      // completedNode combines node's decisions with the completer's and is
+      // what was cloned and lowered above, so it reflects the physical
+      // factors this candidate used; node's own decisions may still be
+      // partial at this search depth. clone() preserves node's uid/
+      // parentUid, so identity logging is unaffected by using completedNode
+      // here.
       if (failed(writeCandidateLog(
-              originalModule, loggingRoot.getValue(), *node, pipelineOk, result,
-              schedule, numCollectivesBefore, numCollectivesAfter,
-              static_cast<int64_t>(numScored), elapsedMs, bestScoreSoFar))) {
+              originalModule, loggingRoot.getValue(), *completedNode,
+              pipelineOk, result, schedule, numCollectivesBefore,
+              numCollectivesAfter, static_cast<int64_t>(numScored), elapsedMs,
+              bestScoreSoFar))) {
         // A write failure (already reported by writeCandidateLog) indicates a
         // broken logging destination, e.g. a full or unwritable disk. Abort
         // the whole search, as fail-on-bad-candidate does for a pipeline
