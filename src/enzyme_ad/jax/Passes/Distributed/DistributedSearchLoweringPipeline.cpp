@@ -47,6 +47,15 @@ void buildDistributedSearchLoweringPipeline(
   // casts need to already be gone for its operand/result types to line up
   // with its body's block-args/yield, which is what marks it mergeable.
   pm.addPass(createMergeAdjacentTrivialKernelsPass());
+  // Rebuilds any constant/pure computation that crosses a kernel boundary as
+  // an ordinary operand back inside the consuming kernel's own body, so
+  // ACT's closed-subgraph matcher doesn't see it as an unrecognized external
+  // input. Runs after merging so it only has to handle producer/consumer
+  // pairs merging did not already fuse into one body; the CSE after it
+  // collapses a value sunk into more than one kernel from duplicate copies
+  // of its producer chain.
+  pm.addPass(createSinkKernelBoundaryValuesPass());
+  pm.addPass(createCSEPass());
   // These two run here, after the kernel-side cleanup above and before
   // LowerKernelsToExecutable: MakeReplicationsExplicit needs a module whose
   // collectives' mesh bookkeeping is otherwise settled (no more identity

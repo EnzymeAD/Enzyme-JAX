@@ -731,15 +731,53 @@ struct PruneDeadKernelResults : public OpRewritePattern<DistributedKernelOp> {
     return success();
   }
 };
+// Rebuilds `kernel` keeping only the operands (and matching
+// argument_shardings entries) whose index is not set in `erase`;
+// partitioning_axes, result types, and output_shardings are untouched, since
+// sharding entries index into partitioning_axes, not the operand list. Runs
+// `beforeErase` on the inlined body after the region is spliced into the new
+// op but before the dropped block arguments are actually erased, so a caller
+// can redirect their uses (DedupeKernelOperands) while both the surviving and
+// the about-to-be-dropped arguments still coexist at their original indices.
+static DistributedKernelOp rebuildKernelWithOperandSubset(
+    PatternRewriter &rewriter, DistributedKernelOp kernel,
+    const BitVector &erase,
+    llvm::function_ref<void(Block &)> beforeErase = nullptr) {
+  unsigned count = kernel.getArguments().size();
+  ArrayRef<IndexedTensorShardingAttr> shardings =
+      kernel.getArgumentShardings().getShardings();
+  SmallVector<Value> operands;
+  SmallVector<IndexedTensorShardingAttr> keptShardings;
+  for (unsigned i = 0; i < count; ++i) {
+    if (erase.test(i))
+      continue;
+    operands.push_back(kernel.getArguments()[i]);
+    keptShardings.push_back(shardings[i]);
+  }
+
+  auto newKernel = DistributedKernelOp::create(
+      rewriter, kernel.getLoc(), kernel.getResultTypes(), operands,
+      kernel.getPartitioningAxes(),
+      IndexedTensorShardingPerValueAttr::get(kernel.getContext(),
+                                             keptShardings),
+      kernel.getOutputShardings());
+  newKernel->setDiscardableAttrs(kernel->getDiscardableAttrDictionary());
+  rewriter.inlineRegionBefore(kernel.getBody(), newKernel.getBody(),
+                              newKernel.getBody().end());
+  if (beforeErase)
+    beforeErase(newKernel.getBody().front());
+  rewriter.modifyOpInPlace(
+      newKernel, [&] { newKernel.getBody().front().eraseArguments(erase); });
+  rewriter.replaceOp(kernel, newKernel.getResults());
+  return newKernel;
+}
+
 // Merges kernel operands that are the same SSA value with the same sharding
 // entry into the first occurrence, replacing the later body block arguments
 // with the first one. Clustering gives each consuming cluster its own operand
 // for a shared value, and merging clusters leaves them duplicated. Downstream
 // consumers that match closed subgraphs of a kernel body (ACT's macro
 // matchers) need a value used twice to be a single argument.
-//
-// partitioning_axes is untouched: sharding entries index into it, not into the
-// operand list.
 struct DedupeKernelOperands : public OpRewritePattern<DistributedKernelOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -751,7 +789,7 @@ struct DedupeKernelOperands : public OpRewritePattern<DistributedKernelOp> {
 
     // survivor[i] is the operand index that operand i is merged into.
     SmallVector<unsigned> survivor(count);
-    SmallVector<bool> keep(count, true);
+    BitVector erase(count);
     for (unsigned i = 0; i < count; ++i) {
       survivor[i] = i;
       for (unsigned j = 0; j < i; ++j) {
@@ -759,43 +797,48 @@ struct DedupeKernelOperands : public OpRewritePattern<DistributedKernelOp> {
             kernel.getArguments()[j] == kernel.getArguments()[i] &&
             shardings[j] == shardings[i]) {
           survivor[i] = j;
-          keep[i] = false;
+          erase.set(i);
           break;
         }
       }
     }
-    if (llvm::all_of(keep, [](bool k) { return k; }))
+    if (erase.none())
       return failure();
 
-    SmallVector<Value> operands;
-    SmallVector<IndexedTensorShardingAttr> keptShardings;
+    rebuildKernelWithOperandSubset(
+        rewriter, kernel, erase, [&](Block &newBody) {
+          for (unsigned i = 0; i < count; ++i)
+            if (survivor[i] != i)
+              rewriter.replaceAllUsesWith(newBody.getArgument(i),
+                                          newBody.getArgument(survivor[i]));
+        });
+    return success();
+  }
+};
+// Drops kernel operands whose body block argument has no uses, along with
+// the matching block argument and argument_shardings entry. Such an operand
+// would otherwise still read as a real, if unused, external input to a
+// downstream consumer like ACT's macro matchers.
+//
+// Unlike PruneDeadKernelResults, a kernel pruned down to zero operands is
+// not treated specially: a kernel that only produces constants is a
+// legitimate shape once every consumer of its inputs has been sunk
+// elsewhere.
+struct PruneDeadKernelOperands : public OpRewritePattern<DistributedKernelOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(DistributedKernelOp kernel,
+                                PatternRewriter &rewriter) const override {
+    Block &body = kernel.getBody().front();
+    unsigned count = kernel.getArguments().size();
     BitVector erase(count);
-    for (unsigned i = 0; i < count; ++i) {
-      if (keep[i]) {
-        operands.push_back(kernel.getArguments()[i]);
-        keptShardings.push_back(shardings[i]);
-      } else {
-        erase.set(i);
-      }
-    }
-
-    auto newKernel = DistributedKernelOp::create(
-        rewriter, kernel.getLoc(), kernel.getResultTypes(), operands,
-        kernel.getPartitioningAxes(),
-        IndexedTensorShardingPerValueAttr::get(kernel.getContext(),
-                                               keptShardings),
-        kernel.getOutputShardings());
-    newKernel->setDiscardableAttrs(kernel->getDiscardableAttrDictionary());
-    rewriter.inlineRegionBefore(kernel.getBody(), newKernel.getBody(),
-                                newKernel.getBody().end());
-
-    Block &newBody = newKernel.getBody().front();
     for (unsigned i = 0; i < count; ++i)
-      if (survivor[i] != i)
-        rewriter.replaceAllUsesWith(newBody.getArgument(i),
-                                    newBody.getArgument(survivor[i]));
-    rewriter.modifyOpInPlace(newKernel, [&] { newBody.eraseArguments(erase); });
-    rewriter.replaceOp(kernel, newKernel.getResults());
+      if (body.getArgument(i).use_empty())
+        erase.set(i);
+    if (erase.none())
+      return failure();
+
+    rebuildKernelWithOperandSubset(rewriter, kernel, erase);
     return success();
   }
 };
@@ -803,7 +846,8 @@ struct DedupeKernelOperands : public OpRewritePattern<DistributedKernelOp> {
 
 void DistributedKernelOp::getCanonicalizationPatterns(
     RewritePatternSet &results, MLIRContext *context) {
-  results.add<PruneDeadKernelResults, DedupeKernelOperands>(context);
+  results.add<PruneDeadKernelResults, DedupeKernelOperands,
+              PruneDeadKernelOperands>(context);
 }
 
 FailureOr<SmallVector<SmallVector<Value>>>

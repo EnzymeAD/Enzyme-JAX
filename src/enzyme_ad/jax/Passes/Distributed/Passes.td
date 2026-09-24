@@ -419,6 +419,42 @@ def MergeAdjacentTrivialKernelsPass
   }];
 }
 
+def SinkKernelBoundaryValuesPass
+    : Pass<"sink-kernel-boundary-values", "::mlir::ModuleOp"> {
+  let summary = "Rebuilds a constant or arg-only pure computation inside "
+                "every consuming kernel's own body, instead of threading it "
+                "across a kernel boundary as an ordinary operand.";
+  let dependentDialects = ["enzyme::distributed::DistributedDialect"];
+  let description = [{
+    ACT matches a kernel body against a closed subgraph: every value the
+    body reads must be either a genuine data-dependent argument or a
+    constant/computation the body materializes itself. Clustering instead
+    assigns a function-level constant, or a pure computation reachable only
+    from a kernel's own arguments (e.g. a transpose of a weight argument),
+    to whichever DistributedKernelOp first needs it; a later kernel that
+    also needs the same value receives it as an ordinary cross-kernel
+    operand instead of recomputing it, which looks to ACT like an
+    unrecognized external input.
+
+    For each DistributedKernelOp operand whose defining op is another
+    DistributedKernelOp's result, this pass walks the corresponding yielded
+    value's producer chain within that kernel's body. If every op on the
+    chain is a constant or free of memory effects, and every chain leaf that
+    is a block argument corresponds to a value already present, by SSA
+    identity, among the consuming kernel's own operands (so nothing sunk
+    ever needs a new cross-kernel edge), the whole chain is cloned into the
+    consuming kernel's body and its block argument's uses are redirected to
+    the clone. The producer's result and the consumer's now-unused
+    operand are left in place for the pruning/dedup canonicalizations on
+    DistributedKernelOp to remove.
+
+    Expected to run after distributed-merge-adjacent-trivial-kernels, so it
+    only has to handle producer/consumer pairs merging did not already fuse
+    into one body, and before the canonicalizer that precedes ACT dispatch,
+    so the dead result/operand pairs it creates are cleaned up immediately.
+  }];
+}
+
 def InlineKernelsPass : Pass<"distributed-inline-kernels", "::mlir::ModuleOp"> {
   let summary = "Dissolves every distributed.DistributedKernel wrapper by "
                 "inlining its body into the surrounding block.";
