@@ -237,7 +237,8 @@ module @addmul_kernel {
   %xg = axis.product (%xf : !axis.axis_factor<!distributed.logical_mesh_axis<8>, 8, 1>)
   %yg = axis.product (%yf : !axis.axis_factor<!distributed.logical_mesh_axis<8>, 8, 1>)
   %a = tensor.empty() : tensor<1x1xf32>
-  %b = tensor.empty() : tensor<1x1xf32>
+  // A different producer than %a, so canonicalization keeps two operands.
+  %b = stablehlo.constant dense<0.0> : tensor<1x1xf32>
   %r = distributed.DistributedKernel (%a : tensor<1x1xf32>, %b : tensor<1x1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>, <dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>]>
     -> (tensor<1x1xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>]>
     axes (%xg : !axis.factor_group<8>, %yg : !axis.factor_group<8>) {
