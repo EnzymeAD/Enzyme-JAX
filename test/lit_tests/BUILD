@@ -1,9 +1,15 @@
 load("@llvm-project//llvm:lit_test.bzl", "lit_test")
 
+# Tests whose RUN lines each drive a real search over enough candidates that
+# the default "short" (60s) timeout isn't enough headroom.
+_MODERATE_TIMEOUT_TESTS = [
+    "distributed/search_twostage_surrogate.mlir",
+]
+
 [
     lit_test(
         name = "%s.test" % src,
-        timeout = "short",
+        timeout = "moderate" if src in _MODERATE_TIMEOUT_TESTS else "short",
         srcs = [src],
         data = [
             "//:enzymexlamlir-opt",
