@@ -21338,6 +21338,23 @@ struct WhileScatterAccumulatorNoAdd final
   }
 };
 
+// A function argument or the iteration argument of an enclosing while (a
+// nested loop of a raised kernel starts its variables from the outer loop's),
+// possibly seen through the layout ops a raised kernel puts on an argument
+// (reshape, bitcast_convert).
+static bool isLayoutOfLoopOrFunctionArgument(Value value) {
+  while (Operation *op = value.getDefiningOp()) {
+    if (!isa<stablehlo::ReshapeOp, stablehlo::BitcastConvertOp>(op))
+      return false;
+    value = op->getOperand(0);
+  }
+  auto BA = dyn_cast<BlockArgument>(value);
+  if (!BA)
+    return false;
+  Operation *parent = BA.getOwner()->getParentOp();
+  return isa<FunctionOpInterface>(parent) || isa<stablehlo::WhileOp>(parent);
+}
+
 // Replace while op iteration variables which are not updated with their
 // upcoming value
 struct WhileSimplify
@@ -21370,8 +21387,8 @@ struct WhileSimplify
       bool canHoist = inputValue.getDefiningOp<stablehlo::ConstantOp>();
       if (hoist_all) {
         canHoist = true;
-      } else if (auto BA = dyn_cast<BlockArgument>(inputValue)) {
-        canHoist |= isa<FunctionOpInterface>(BA.getOwner()->getParentOp());
+      } else {
+        canHoist |= isLayoutOfLoopOrFunctionArgument(inputValue);
       }
 
       Value bodyRes = bodyTerm->getOperand(i);
@@ -36179,6 +36196,17 @@ private:
 
     // size 1 index can be trivially simplified to a DUS
     if (indices.getType().getNumElements() == 1) {
+      // A scatter DROPS an out-of-bounds update while dynamic-slice and
+      // dynamic-update-slice CLAMP the start, resurrecting the write at a
+      // clamped slot: the conversion is only sound when the index lands in
+      // bounds, either provably or as asserted by whoever built the scatter
+      // (`enzymexla.inbounds`).
+      if (!op->hasAttr("enzymexla.inbounds")) {
+        auto [idxLo, idxHi] = enzyme::getProvableIntegerRange(indices);
+        if (idxLo.isNegative() ||
+            idxHi.sgt(APInt(128, inputTy.getDimSize(0) - 1)))
+          return failure();
+      }
       auto scalarIndex =
           stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), indices, {});
 
@@ -36251,7 +36279,8 @@ private:
       stride = -stride;
     }
 
-    if (limit > inputTy.getDimSize(0)) { // gather clamps indices
+    if (start < 0 || limit > inputTy.getDimSize(0)) {
+      // The slice/DUS pair clamps where the scatter would drop.
       return failure();
     }
 

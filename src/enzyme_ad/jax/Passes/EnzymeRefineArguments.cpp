@@ -223,8 +223,8 @@ EnzymeRefineArgumentsPass::refineArguments(func::FuncOp func,
     auto arg = body.getArgument(i);
     arg.setType(refinedTypes[i]);
   }
-  // Update return types to match argument types as requested by user.
-  func.setType(builder.getFunctionType(refinedTypes, refinedTypes));
+  func.setType(builder.getFunctionType(refinedTypes,
+                                       func.getFunctionType().getResults()));
 
   // Fix up wrappers if element types mismatch
   for (int64_t i = 0; i < body.getNumArguments(); ++i) {
@@ -338,6 +338,11 @@ EnzymeRefineArgumentsPass::refineArguments(func::FuncOp func,
       }
     }
     returnOp.getOperation()->setOperands(newReturnOperands);
+    // The result types follow the operands: static where the conversion
+    // rebuilt them, still dynamic for a value carried through a loop until
+    // shape refinement reaches it and updates the function type.
+    func.setType(
+        builder.getFunctionType(refinedTypes, returnOp.getOperandTypes()));
   });
 
   return success();

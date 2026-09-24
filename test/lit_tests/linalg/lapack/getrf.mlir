@@ -31,10 +31,10 @@ module {
 // CPU-NEXT:    %1 = stablehlo.subtract %0#1, %c_2 : tensor<64xi64>
 // CPU-NEXT:    %2:2 = stablehlo.while(%iterArg = %c_3, %iterArg_4 = %c) : tensor<i32>, tensor<64xi64>
 // CPU-NEXT:    cond {
-// CPU-NEXT:      %7 = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i32>, tensor<i32>) -> tensor<i1>
+// CPU-NEXT:      %7 = stablehlo.compare LT, %iterArg, %c_1 : (tensor<i32>, tensor<i32>) -> tensor<i1>
 // CPU-NEXT:      stablehlo.return %7 : tensor<i1>
 // CPU-NEXT:    } do {
-// CPU-NEXT:      %7 = stablehlo.add %iterArg, %c_0 {enzymexla.bounds = {{.*}}} : tensor<i32>
+// CPU-NEXT:      %7 = stablehlo.add %iterArg, %c_0 {enzymexla.bounds = {{\[\[}}1 : i32, 64 : i32]]} : tensor<i32>
 // CPU-NEXT:      %8 = stablehlo.dynamic_slice %1, %iterArg, sizes = [1] : (tensor<64xi64>, tensor<i32>) -> tensor<1xi64>
 // CPU-NEXT:      %9 = stablehlo.dynamic_slice %iterArg_4, %iterArg, sizes = [1] : (tensor<64xi64>, tensor<i32>) -> tensor<1xi64>
 // CPU-NEXT:      %10 = stablehlo.reshape %8 : (tensor<1xi64>) -> tensor<i64>
@@ -49,6 +49,7 @@ module {
 // CPU-NEXT:    %6 = stablehlo.convert %0#2 : (tensor<i64>) -> tensor<i32>
 // CPU-NEXT:    return %0#0, %4, %5, %6 : tensor<64x64xf32>, tensor<64xi32>, tensor<64xi32>, tensor<i32>
 // CPU-NEXT:  }
+// CPU-NEXT:}
 
 // CUDA: func.func @main(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xi32>, tensor<64xi32>, tensor<i32>) {
 // CUDA-NEXT:     %c = stablehlo.constant dense<1> : tensor<64xi32>
@@ -57,7 +58,7 @@ module {
 // CUDA-NEXT:     %2 = stablehlo.custom_call @cu_lu_pivots_to_permutation(%1) {api_version = 4 : i32, operand_layouts = [dense<0> : tensor<1xindex>], result_layouts = [dense<0> : tensor<1xindex>]} : (tensor<64xi32>) -> tensor<64xi32>
 // CUDA-NEXT:     %3 = stablehlo.add %2, %c : tensor<64xi32>
 // CUDA-NEXT:     return %0#0, %0#1, %3, %0#2 : tensor<64x64xf32>, tensor<64xi32>, tensor<64xi32>, tensor<i32>
-// CUDA-NEXT: }
+// CUDA-NEXT:   }
 
 // TPU: func.func @main(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xi32>, tensor<64xi32>, tensor<i32>) {
 // TPU-NEXT:     %c = stablehlo.constant dense<true> : tensor<i1>
@@ -70,7 +71,7 @@ module {
 // TPU-NEXT:     %5 = stablehlo.not %4 : tensor<i1>
 // TPU-NEXT:     %6 = stablehlo.convert %5 : (tensor<i1>) -> tensor<i32>
 // TPU-NEXT:     return %0#0, %1, %2, %6 : tensor<64x64xf32>, tensor<64xi32>, tensor<64xi32>, tensor<i32>
-// TPU-NEXT: }
+// TPU-NEXT:   }
 
 module {
   // CPU: enzymexla.jit_call @enzymexla_lapack_dgetrf_

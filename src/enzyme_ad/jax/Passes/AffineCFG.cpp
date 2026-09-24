@@ -1385,6 +1385,8 @@ void fully2ComposeIntegerSetAndOperands(
 
 namespace {
 struct AffineCFGPass : public enzyme::impl::AffineCFGBase<AffineCFGPass> {
+  using AffineCFGBase::AffineCFGBase;
+
   void runOnOperation() override;
 };
 } // namespace
@@ -7027,7 +7029,8 @@ struct SimplifyOrAnd : public OpRewritePattern<arith::OrIOp> {
   }
 };
 
-void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
+void mlir::enzyme::populateAffineCFGPatterns(
+    RewritePatternSet &rpl, bool enable_split_on_affine_if_constants) {
   MLIRContext *context = rpl.getContext();
   mlir::enzyme::addSingleIter(rpl, context);
   rpl.add</*SimplfyIntegerCastMath, */ CanonicalizeAffineApply, ForOpRaising,
@@ -7038,14 +7041,17 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           MoveStoreToAffine, MoveIfToAffine, MoveEnzymeRMWToAffine,
           MoveRMWToAffine, MoveLoadToAffine, MoveExtToAffine<arith::ExtUIOp>,
           MoveExtToAffine<arith::ExtSIOp>, MoveSIToFPToAffine, CmpExt,
-          MoveSelectToAffine, SplitOnAffineIfConstants<scf::ForOp>,
-          SplitOnAffineIfConstants<scf::IfOp>, AffineIfSimplification,
-          AffineIfSimplificationIsl, CombineAffineIfs,
-          MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
-          MergeNestedAffineParallelIf, MergeParallelInductions, OptimizeRem,
-          CanonicalieForBounds, SinkStoreInIf, SinkStoreInAffineIf,
-          AddAddCstEnd, LiftMemrefRead, CompareVs1, AffineForReductionIter,
-          AffineForReductionSink>(context, 2);
+          MoveSelectToAffine, AffineIfSimplification, AffineIfSimplificationIsl,
+          CombineAffineIfs, MergeNestedAffineParallelLoops,
+          PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
+          MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
+          SinkStoreInIf, SinkStoreInAffineIf, AddAddCstEnd, LiftMemrefRead,
+          CompareVs1, AffineForReductionIter, AffineForReductionSink>(context,
+                                                                      2);
+  if (enable_split_on_affine_if_constants) {
+    rpl.add<SplitOnAffineIfConstants<scf::ForOp>,
+            SplitOnAffineIfConstants<scf::IfOp>>(context, 2);
+  }
   rpl.add<FoldAffineApplyAdd, FoldAffineApplySub, FoldAffineApplyRem,
           FoldAffineApplyDiv, FoldAffineApplyMul, FoldAppliesIntoLoad>(context,
                                                                        2);
@@ -7055,7 +7061,7 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
 
 void AffineCFGPass::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
-  populateAffineCFGPatterns(rpl);
+  populateAffineCFGPatterns(rpl, enable_split_on_affine_if_constants);
   populateAffineParallelizationPattern(*getOperation()->getContext(), rpl);
   IslAnalysis islAnalysis;
   populateAffineExprSimplificationPatterns(islAnalysis, rpl);
