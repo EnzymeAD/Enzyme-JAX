@@ -3133,6 +3133,7 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
         rewriter, loc, batchedType(v.getType()), m,
         rewriter.getDenseI64ArrayAttr(dims));
   };
+  auto affine = info.getAffineIndexInfo();
   for (Operation &op : body.without_terminator()) {
     if (!llvm::any_of(op.getOperands(), isBatched) && !isChainLink(&op)) {
       Operation *c = rewriter.clone(op, map);
@@ -3271,41 +3272,127 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
       red.getBody().cloneInto(&nred.getBody(), rmap);
       n = nred;
     } else if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(&op)) {
-      // Every iteration's start indices, gathered at once.
       auto opTy = cast<RankedTensorType>(ds.getOperand().getType());
       int64_t rank = opTy.getRank();
-      Type idxElem = rewriter.getI64Type();
-      SmallVector<Value> cols;
-      for (Value st : ds.getStartIndices()) {
-        Value b = operand(st); // tensor<N x elem>
-        b = stablehlo::ReshapeOp::create(
-            rewriter, loc,
-            RankedTensorType::get(
-                {numIters, 1},
-                cast<RankedTensorType>(b.getType()).getElementType()),
-            b);
-        if (cast<RankedTensorType>(b.getType()).getElementType() != idxElem)
-          b = stablehlo::ConvertOp::create(
-              rewriter, loc, RankedTensorType::get({numIters, 1}, idxElem), b);
-        cols.push_back(b);
+
+      // A single varying start that is s + t * k in the k-th iteration reads
+      // windows at a stride of t: with them in bounds (no clamping) and apart
+      // (t >= the window), they are a slice of the operand cut into windows.
+      int64_t dim = -1, s = 0, t = 0;
+      bool asSlice = opTy.hasStaticShape();
+      for (auto [d, st] : llvm::enumerate(ds.getStartIndices())) {
+        if (!asSlice || !isBatched(st))
+          continue;
+        if (dim != -1 || !affine.contains(st)) {
+          asSlice = false;
+          continue;
+        }
+        dim = d;
       }
-      Value indices =
-          cols.size() == 1
-              ? cols[0]
-              : stablehlo::ConcatenateOp::create(rewriter, loc, cols, 1);
-      SmallVector<int64_t> offsetDims, startIndexMap;
-      for (int64_t d = 0; d < rank; ++d) {
-        offsetDims.push_back(d + 1);
-        startIndexMap.push_back(d);
+      asSlice &= dim != -1;
+      if (asSlice) {
+        auto aff = affine.lookup(ds.getStartIndices()[dim]);
+        s = aff.scale.getSExtValue() * start + aff.offset.getSExtValue();
+        t = aff.scale.getSExtValue() * step;
+        int64_t w = ds.getSliceSizes()[dim], D = opTy.getDimSize(dim);
+        asSlice = t > 0 && s >= 0 && s + (numIters - 1) * t + w <= D &&
+                  (w == 1 || (t >= w && s + numIters * t <= D));
       }
-      n = stablehlo::GatherOp::create(
-          rewriter, loc, map.lookupOrDefault(ds.getOperand()), indices,
-          stablehlo::GatherDimensionNumbersAttr::get(
-              op.getContext(), offsetDims, /*collapsedSliceDims=*/{},
-              /*operandBatchingDims=*/{}, /*startIndicesBatchingDims=*/{},
-              startIndexMap, /*indexVectorDim=*/1),
-          rewriter.getDenseI64ArrayAttr(ds.getSliceSizes()),
-          /*indices_are_sorted=*/false);
+
+      if (asSlice) {
+        int64_t w = ds.getSliceSizes()[dim], D = opTy.getDimSize(dim);
+        // The other dimensions: every iteration's window, clamped as the
+        // dynamic_slice does.
+        Value src = map.lookupOrDefault(ds.getOperand());
+        if (rank > 1) {
+          SmallVector<Value> starts;
+          SmallVector<int64_t> sizes(ds.getSliceSizes());
+          for (auto [d, st] : llvm::enumerate(ds.getStartIndices())) {
+            if ((int64_t)d == dim) {
+              starts.push_back(stablehlo::ConstantOp::create(
+                  rewriter, loc,
+                  rewriter.getZeroAttr(cast<RankedTensorType>(st.getType()))));
+              sizes[d] = D;
+            } else {
+              starts.push_back(map.lookupOrDefault(st));
+            }
+          }
+          src = stablehlo::DynamicSliceOpCreate(rewriter, loc, src, starts,
+                                                sizes);
+        }
+        auto srcShape = cast<RankedTensorType>(src.getType()).getShape();
+        SmallVector<int64_t> lo(rank, 0), hi(srcShape), strides(rank, 1);
+        lo[dim] = s;
+        if (w == 1) {
+          hi[dim] = s + (numIters - 1) * t + 1;
+          strides[dim] = t;
+        } else {
+          hi[dim] = s + numIters * t;
+        }
+        Value res =
+            stablehlo::SliceOpCreate(rewriter, loc, src, lo, hi, strides);
+
+        // Split the sliced dimension into (iteration, element of the
+        // window), then put the iteration first.
+        int64_t inner = w == 1 ? 1 : t;
+        SmallVector<int64_t> split;
+        for (int64_t d = 0; d < rank; ++d) {
+          if (d == dim) {
+            split.push_back(numIters);
+            split.push_back(inner);
+          } else {
+            split.push_back(srcShape[d]);
+          }
+        }
+        res = stablehlo::ReshapeOpCreate(rewriter, loc, res, split);
+        if (inner != w) {
+          SmallVector<int64_t> lo2(rank + 1, 0), hi2(split), str2(rank + 1, 1);
+          hi2[dim + 1] = w;
+          res = stablehlo::SliceOpCreate(rewriter, loc, res, lo2, hi2, str2);
+        }
+        SmallVector<int64_t> perm{dim};
+        for (int64_t d = 0; d < rank + 1; ++d)
+          if (d != dim)
+            perm.push_back(d);
+        // The split reshape changes the rank, so the result is always new.
+        n = stablehlo::TransposeOpCreate(rewriter, loc, res, perm)
+                .getDefiningOp();
+      } else {
+        // Otherwise every iteration's start indices, gathered at once.
+        Type idxElem = rewriter.getI64Type();
+        SmallVector<Value> cols;
+        for (Value st : ds.getStartIndices()) {
+          Value b = operand(st); // tensor<N x elem>
+          b = stablehlo::ReshapeOp::create(
+              rewriter, loc,
+              RankedTensorType::get(
+                  {numIters, 1},
+                  cast<RankedTensorType>(b.getType()).getElementType()),
+              b);
+          if (cast<RankedTensorType>(b.getType()).getElementType() != idxElem)
+            b = stablehlo::ConvertOp::create(
+                rewriter, loc, RankedTensorType::get({numIters, 1}, idxElem),
+                b);
+          cols.push_back(b);
+        }
+        Value indices =
+            cols.size() == 1
+                ? cols[0]
+                : stablehlo::ConcatenateOp::create(rewriter, loc, cols, 1);
+        SmallVector<int64_t> offsetDims, startIndexMap;
+        for (int64_t d = 0; d < rank; ++d) {
+          offsetDims.push_back(d + 1);
+          startIndexMap.push_back(d);
+        }
+        n = stablehlo::GatherOp::create(
+            rewriter, loc, map.lookupOrDefault(ds.getOperand()), indices,
+            stablehlo::GatherDimensionNumbersAttr::get(
+                op.getContext(), offsetDims, /*collapsedSliceDims=*/{},
+                /*operandBatchingDims=*/{}, /*startIndicesBatchingDims=*/{},
+                startIndexMap, /*indexVectorDim=*/1),
+            rewriter.getDenseI64ArrayAttr(ds.getSliceSizes()),
+            /*indices_are_sorted=*/false);
+      }
     } else if (auto g = dyn_cast<stablehlo::GatherOp>(&op)) {
       auto dn = g.getDimensionNumbers();
       if (!isBatched(g.getOperand())) {
