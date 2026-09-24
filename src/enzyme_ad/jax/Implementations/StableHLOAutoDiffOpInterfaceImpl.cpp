@@ -379,6 +379,21 @@ public:
   }
 };
 
+static SmallVector<Value> takeResultAdjoints(Operation *orig,
+                                             OpBuilder &builder,
+                                             MGradientUtilsReverse *gutils) {
+  SmallVector<Value> adjoints;
+  for (auto ret : orig->getResults()) {
+    if (gutils->isConstantValue(ret)) {
+      adjoints.push_back(nullptr);
+      continue;
+    }
+    adjoints.push_back(gutils->diffe(ret, builder));
+    gutils->zeroDiffe(ret, builder);
+  }
+  return adjoints;
+}
+
 class AutoDiffIfRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffIfRev,
                                                        stablehlo::IfOp> {
@@ -386,6 +401,7 @@ public:
   LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
                                          MGradientUtilsReverse *gutils,
                                          SmallVector<Value> caches) const {
+    SmallVector<Value> adjoints = takeResultAdjoints(orig, builder, gutils);
     auto revOp = stablehlo::IfOp::create(
         builder, orig->getLoc(), ArrayRef<mlir::Type>{},
         gutils->popCache(caches[0], builder), orig->getAttrs());
@@ -401,14 +417,14 @@ public:
       OpBuilder revBuilder(reverseBB, reverseBB->end());
       auto term = oBB->getTerminator();
 
-      for (auto &&[ret, op] :
-           llvm::zip_equal(orig->getResults(), term->getOperands())) {
-        if (gutils->isConstantValue(ret))
+      for (auto &&[adjoint, op] :
+           llvm::zip_equal(adjoints, term->getOperands())) {
+        if (!adjoint)
           continue;
         if (gutils->isConstantValue(op))
           continue;
 
-        gutils->addToDiffe(op, gutils->diffe(ret, revBuilder), revBuilder);
+        gutils->addToDiffe(op, adjoint, revBuilder);
       }
 
       auto first = oBB->rbegin();
@@ -504,6 +520,7 @@ public:
                                          MGradientUtilsReverse *gutils,
                                          SmallVector<Value> caches) const {
     auto caseOp = cast<stablehlo::CaseOp>(orig);
+    SmallVector<Value> adjoints = takeResultAdjoints(orig, builder, gutils);
     auto revOp = stablehlo::CaseOp::create(
         builder, orig->getLoc(), ArrayRef<mlir::Type>{},
         gutils->popCache(caches[0], builder), orig->getAttrs(),
@@ -519,14 +536,14 @@ public:
       OpBuilder revBuilder(reverseBB, reverseBB->end());
       auto term = oBB->getTerminator();
 
-      for (auto &&[ret, op] :
-           llvm::zip_equal(orig->getResults(), term->getOperands())) {
-        if (gutils->isConstantValue(ret))
+      for (auto &&[adjoint, op] :
+           llvm::zip_equal(adjoints, term->getOperands())) {
+        if (!adjoint)
           continue;
         if (gutils->isConstantValue(op))
           continue;
 
-        gutils->addToDiffe(op, gutils->diffe(ret, revBuilder), revBuilder);
+        gutils->addToDiffe(op, adjoint, revBuilder);
       }
 
       auto first = oBB->rbegin(); // terminator
@@ -3304,31 +3321,6 @@ public:
     llvm::SetVector<Value> updatedGradients;
 
     llvm::MapVector<Value, CacheInfo> cachesMap;
-
-    if (op->walk([&](enzyme::SetOp sub) {
-            if (sub->getParentOp() != op) {
-              llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
-              llvm::errs() << "op: " << *op << "\n";
-              llvm::errs() << "sub: " << sub << "\n";
-              return WalkResult::interrupt();
-            }
-            return WalkResult::advance();
-          }).wasInterrupted()) {
-      return rewriter.notifyMatchFailure(
-          op, "had set op which was not a direct descendant");
-    }
-    if (op->walk([&](enzyme::GetOp sub) {
-            if (sub->getParentOp() != op) {
-              llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
-              llvm::errs() << "op: " << *op << "\n";
-              llvm::errs() << "sub: " << sub << "\n";
-              return WalkResult::interrupt();
-            }
-            return WalkResult::advance();
-          }).wasInterrupted()) {
-      return rewriter.notifyMatchFailure(
-          op, "had get op which was not a direct descendant");
-    }
 
     for (auto &it : *body) {
       Operation *op = &it;

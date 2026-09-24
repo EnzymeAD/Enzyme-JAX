@@ -668,6 +668,41 @@ public:
     return failure();
   }
 };
+
+// The math dialect has exp and exp2 but no exp10, so base-10 exponentials need
+// an expansion rather than a direct call-to-op mapping. Rewrite them the way
+// libdevice implements them internally: exp10(x) = exp2(x * log2(10)).
+class Exp10Raising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  Exp10Raising(MLIRContext *context)
+      : OpRewritePattern<LLVM::CallOp>(context) {}
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    if (callee.getLeafReference() == "__nv_exp10" ||
+        callee.getLeafReference() == "__nv_exp10f" ||
+        callee.getLeafReference() == "__nv_fast_exp10f" ||
+        callee.getLeafReference() == "exp10" ||
+        callee.getLeafReference() == "exp10f") {
+      Location loc = op.getLoc();
+      Type type = op.getResultTypes()[0];
+      Value log2of10 = arith::ConstantOp::create(
+          rewriter, loc, type,
+          rewriter.getFloatAttr(type, 3.32192809488736234787));
+      Value scaled =
+          arith::MulFOp::create(rewriter, loc, op->getOperands()[0], log2of10);
+      rewriter.replaceOpWithNewOp<math::Exp2Op>(op, scaled);
+      return success();
+    }
+
+    return failure();
+  }
+};
 } // namespace
 
 template <typename TargetOp, typename Arg, typename... Args>
@@ -1322,6 +1357,7 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
 
   patterns.add<IsFPClassRaising>(context);
   patterns.add<RcpRaising>(context);
+  patterns.add<Exp10Raising>(context);
   patterns.add<NVVMRcpRaising>(context);
   patterns.add<BF16HalfToFloatRaising>(context);
   patterns.add<HalfMathRaising>(context);
@@ -1364,6 +1400,8 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
                                    "__nv_cosh", "coshf", "cosh");
   populateOpPatterns<math::ErfOp>(converter, patterns, "__nv_erff", "__nv_erf",
                                   "erff", "erf");
+  populateOpPatterns<math::ErfcOp>(converter, patterns, "__nv_erfcf",
+                                   "__nv_erfc", "erfcf", "erfc");
   populateOpPatterns<math::ExpOp>(converter, patterns, "__nv_expf", "__nv_exp",
                                   "__nv_fast_expf", "expf", "exp");
   populateOpPatterns<math::Exp2Op>(converter, patterns, "__nv_exp2f",

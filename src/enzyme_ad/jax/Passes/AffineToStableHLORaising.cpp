@@ -257,36 +257,6 @@ static bool isContinuousAlongIVs(affine::AffineValueMap map, AffineExpr E) {
   return computeExprRange(map, E).has_value();
 }
 
-// has single (or zero) iv per dim.
-// iv are present only at one dim.
-static bool needsGeneralScatterGather(affine::AffineValueMap accessValueMap) {
-  bool repeatingIV = false;
-  auto map = accessValueMap.getAffineMap();
-  auto sz = map.getNumDims();
-  SmallVector<bool> ivseen(sz, false);
-  for (auto E : map.getResults()) {
-    if (E.isSymbolicOrConstant())
-      continue;
-    int numIVs = 0;
-    for (int iv = 0; iv < sz; ++iv) {
-      if (!E.isFunctionOfDim(iv))
-        continue;
-      if (ivseen[iv]) {
-        repeatingIV = true;
-        break;
-      }
-      if (numIVs == 1) {
-        if (!isContinuousAlongIVs(accessValueMap, E))
-          return true;
-      } else if (numIVs >= 2)
-        return true;
-      numIVs++;
-      ivseen[iv] = true;
-    }
-  }
-  return repeatingIV;
-}
-
 static void
 emitIVToStableHLO(OpBuilder &builder, Value iv, InductionVariableRange range,
                   IRMapping &mapping,
@@ -437,6 +407,45 @@ struct ParallelContext {
   }
 };
 
+// has single (or zero) iv per dim, or a contiguous pair of batched ivs.
+// iv are present only at one dim.
+static bool needsGeneralScatterGather(affine::AffineValueMap accessValueMap,
+                                      ParallelContext &pc) {
+  bool repeatingIV = false;
+  auto map = accessValueMap.getAffineMap();
+  auto sz = map.getNumDims();
+  SmallVector<bool> ivseen(sz, false);
+  for (auto E : map.getResults()) {
+    if (E.isSymbolicOrConstant())
+      continue;
+    int numIVs = 0;
+    for (int iv = 0; iv < sz; ++iv) {
+      if (!E.isFunctionOfDim(iv))
+        continue;
+      if (ivseen[iv]) {
+        repeatingIV = true;
+        break;
+      }
+      if (numIVs == 1) {
+        if (!isContinuousAlongIVs(accessValueMap, E))
+          return true;
+        // A contiguous pair is one slice only when both inductions are
+        // batched. With one of them scalar in this iteration (`%t + %k * 8`,
+        // a lane reading its row of a scratch inside a sequential loop) the
+        // access is a per-lane index, which only the gather expresses.
+        for (int d = 0; d < sz; ++d)
+          if (E.isFunctionOfDim(d) &&
+              !pc.isParallelIV(accessValueMap.getOperand(d)))
+            return true;
+      } else if (numIVs >= 2)
+        return true;
+      numIVs++;
+      ivseen[iv] = true;
+    }
+  }
+  return repeatingIV;
+}
+
 struct ExpandedAffineDim {
   unsigned operandPosition;
   int64_t size;
@@ -524,9 +533,13 @@ getExpandedAffineDims(affine::AffineValueMap map, AffineExpr expr,
     return failure();
 
   // In row-major order, each outer IV advances by exactly the number of
-  // elements spanned by all dimensions inside it.
+  // elements spanned by all dimensions inside it. A dimension of one
+  // element (an induction the context sizes to a single iteration) spans
+  // nothing and constrains no step.
   int64_t expectedStep = dims.back().linearStep;
   for (auto dim : llvm::reverse(dims)) {
+    if (dim.size == 1)
+      continue;
     if (dim.linearStep != expectedStep)
       return failure();
     expectedStep *= dim.size;
@@ -1348,17 +1361,25 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
 static Value buildGatherScatterIndices(
     Location loc, ValueRange indexColumns, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps,
-    SmallVectorImpl<Value> &ivs, SmallVectorImpl<int64_t> &gridShape) {
+    SmallVectorImpl<Value> &ivs, SmallVectorImpl<int64_t> &gridShape,
+    ParallelContext pc) {
   Value indices = nullptr;
 
-  for (auto raisedIdx : indexColumns) {
-    auto Ty = cast<RankedTensorType>(raisedIdx.getType());
-
+  for (Value raisedIdx : indexColumns) {
     SmallVector<int64_t> dimsToBroadcast;
 
     if (!maps.count(raisedIdx))
       return nullptr;
     auto map = maps.lookup(raisedIdx);
+    // An index loaded through a contiguous pair of inductions (`t + u * 2`)
+    // carries the pair as one flattened dimension; the grid has one axis per
+    // induction, so recover them first.
+    auto expanded = expandAffineValueMap(raisedIdx, map, builder, pc);
+    if (failed(expanded))
+      return nullptr;
+    map = *expanded;
+    maps[raisedIdx] = map;
+    auto Ty = cast<RankedTensorType>(raisedIdx.getType());
 
     for (auto [i, E] : llvm::enumerate(map.getAffineMap().getResults())) {
       auto iv = getIVForExpr(map, E);
@@ -1439,10 +1460,9 @@ static Value buildGatherScatterIndices(
   return indices;
 }
 
-static Value
-emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
-                 OpBuilder &builder,
-                 llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
+static Value emitLoadAsGather(
+    Location loc, Value mappedMemref, ValueRange lIndices, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
   SmallVector<int64_t> sliceSizes(lIndices.size(), 1);
   SmallVector<int64_t> startIndexMap;
   for (int64_t i = 0, e = lIndices.size(); i < e; ++i)
@@ -1451,8 +1471,8 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
   SmallVector<int64_t> outputShape;
   SmallVector<Value> ivs;
 
-  Value indices =
-      buildGatherScatterIndices(loc, lIndices, builder, maps, ivs, outputShape);
+  Value indices = buildGatherScatterIndices(loc, lIndices, builder, maps, ivs,
+                                            outputShape, pc);
   if (!indices)
     return nullptr;
 
@@ -1502,8 +1522,8 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
   // dimensions reuses a single axis instead of forming a cartesian product.
   SmallVector<Value> ivs;
   SmallVector<int64_t> gridShape;
-  Value indices =
-      buildGatherScatterIndices(loc, sIndices, builder, maps, ivs, gridShape);
+  Value indices = buildGatherScatterIndices(loc, sIndices, builder, maps, ivs,
+                                            gridShape, pc);
   if (!indices)
     return nullptr;
 
@@ -3352,7 +3372,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed() ||
         (dynIndices &&
          llvm::any_of(strides, [](int64_t stride) { return stride != 1; })) ||
-        needsGeneralScatterGather(accessValueMap) ||
+        needsGeneralScatterGather(accessValueMap, pc) ||
         usesLaneTensorIV(accessValueMap, mapping, pc);
 
     if (emitAsGather) {
@@ -3372,7 +3392,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
       Value res = emitLoadAsGather(
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-          inputTen, lIndices, builder, maps);
+          inputTen, lIndices, builder, maps, pc);
       if (!res) {
         return op->emitError("failed to raise load (indices of rank > 1)")
                << *op;
@@ -3695,7 +3715,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     bool emitAsScatter =
         affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed() ||
         llvm::any_of(strides, [](int64_t stride) { return stride != 1; }) ||
-        needsGeneralScatterGather(accessValueMap) ||
+        needsGeneralScatterGather(accessValueMap, pc) ||
         usesLaneTensorIV(accessValueMap, mapping, pc);
 
     if (emitAsScatter) {
@@ -4590,7 +4610,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     Value res = emitLoadAsGather(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-        mapping.lookup(memref), lIndices, builder, maps);
+        mapping.lookup(memref), lIndices, builder, maps, pc);
     if (!res) {
       return failure();
     }
@@ -6771,6 +6791,11 @@ struct AffineToStableHLORaisingPass
       mapping.map(body, newBlock);
 
       SetVector<Value> operands;
+      // The host scalar each buffered device scalar was copied from, and the
+      // buffer's dealloc: a specialized scalar is passed as the host value
+      // and needs no buffer.
+      DenseMap<Value, Value> hostScalarOf;
+      DenseMap<Value, Operation *> deallocOf;
       {
         SetVector<Value> operands0;
         getUsedValuesDefinedAbove(g->getRegion(0), operands0);
@@ -7064,9 +7089,10 @@ struct AffineToStableHLORaisingPass
             }
 
             b.setInsertionPointAfter(g);
-            gpu::DeallocOp::create(
+            deallocOf[res] = gpu::DeallocOp::create(
                 b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
                 (mlir::Type) nullptr, ValueRange(), res);
+            hostScalarOf[res] = storeVal;
             buffered[arg] = ld;
             operands.insert(res);
             continue;
@@ -7147,10 +7173,87 @@ struct AffineToStableHLORaisingPass
         continue;
       }
 
+      // A scalar integer argument a while loop's exit test reads (`e < NE`)
+      // is a trip count. The runtime specializes an executable over such
+      // scalars (one per distinct value, `num_specialized` trailing inputs),
+      // which makes the loop's trip count a constant to every pass after it.
+      // Only an argument the kernel does not write qualifies: a specialized
+      // scalar is not returned.
+      SmallVector<unsigned> specialized;
+      if (specialize_loop_bounds) {
+        // An exit test `compare(%iv, %bound)` of a loop's own argument
+        // against a value from outside the loop, where the bound is a
+        // function argument, widened by converts.
+        DenseSet<Value> bounds;
+        newFunc.walk([&](stablehlo::WhileOp whileOp) {
+          auto ret = cast<stablehlo::ReturnOp>(
+              whileOp.getCond().front().getTerminator());
+          auto cmp = ret.getOperand(0).getDefiningOp<stablehlo::CompareOp>();
+          if (!cmp)
+            return;
+          Value bound;
+          for (auto [side, other] : {std::pair(cmp.getLhs(), cmp.getRhs()),
+                                     std::pair(cmp.getRhs(), cmp.getLhs())}) {
+            auto BA = dyn_cast<BlockArgument>(side);
+            if (BA && BA.getOwner() == &whileOp.getCond().front() &&
+                !whileOp->isProperAncestor(
+                    other.getParentBlock()->getParentOp()))
+              bound = other;
+          }
+          if (!bound)
+            return;
+          while (auto cvt = bound.getDefiningOp<stablehlo::ConvertOp>())
+            bound = cvt.getOperand();
+          if (auto BA = dyn_cast<BlockArgument>(bound);
+              BA && BA.getOwner() == newBlock)
+            bounds.insert(bound);
+        });
+        for (auto [i, arg] : llvm::enumerate(operands)) {
+          Value newArg = newBlock->getArgument(i);
+          auto TT = cast<RankedTensorType>(newArg.getType());
+          if (!bounds.contains(newArg) || TT.getRank() != 0 ||
+              !TT.getElementType().isInteger() || !hostScalarOf.count(arg))
+            continue;
+          bool readOnly = true;
+          for (Operation *user : arg.getUsers())
+            if (g->isAncestor(user) &&
+                !isa<affine::AffineLoadOp, memref::LoadOp>(user))
+              readOnly = false;
+          if (readOnly)
+            specialized.push_back(i);
+        }
+      }
+
+      SmallVector<Value> wrapperOperands;
       SmallVector<Value> results;
-      for (auto arg : operands) {
-        auto val = mapping.lookup(arg);
-        results.push_back(val);
+      for (auto [i, arg] : llvm::enumerate(operands)) {
+        if (llvm::is_contained(specialized, i))
+          continue;
+        wrapperOperands.push_back(arg);
+        results.push_back(mapping.lookup(arg));
+      }
+      if (!specialized.empty()) {
+        // The specialized scalars move to the end of the argument list.
+        SmallVector<Type> newTypes;
+        for (auto [i, arg] : llvm::enumerate(operands))
+          if (!llvm::is_contained(specialized, i))
+            newTypes.push_back(newBlock->getArgument(i).getType());
+        for (unsigned i : specialized) {
+          Value old = newBlock->getArgument(i);
+          Value moved = newBlock->addArgument(old.getType(), old.getLoc());
+          old.replaceAllUsesWith(moved);
+          newTypes.push_back(old.getType());
+          wrapperOperands.push_back(hostScalarOf.lookup(operands[i]));
+        }
+        llvm::BitVector erase(newBlock->getNumArguments());
+        for (unsigned i : specialized)
+          erase.set(i);
+        newBlock->eraseArguments(erase);
+        SmallVector<Type> resultTypes;
+        for (Value r : results)
+          resultTypes.push_back(r.getType());
+        newFunc.setType(
+            FunctionType::get(g->getContext(), newTypes, resultTypes));
       }
 
       func::ReturnOp::create(
@@ -7162,14 +7265,28 @@ struct AffineToStableHLORaisingPass
 
       {
         OpBuilder builder(g);
-        enzymexla::XLAWrapperOp::create(
-            builder, g->getLoc(), SymbolRefAttr::get(newFunc),
-            llvm::to_vector(operands), nullptr, nullptr);
+        auto wrapper = enzymexla::XLAWrapperOp::create(
+            builder, g->getLoc(), SymbolRefAttr::get(newFunc), wrapperOperands,
+            nullptr, nullptr);
+        if (!specialized.empty())
+          wrapper.setNumSpecialized(specialized.size());
+        // The device buffers the specialized scalars were copied into have
+        // no reader left once the wrapper region goes.
+        for (unsigned i : specialized) {
+          Value res = operands[i];
+          deallocOf.lookup(res)->erase();
+          for (Operation *user : llvm::make_early_inc_range(res.getUsers()))
+            if (!g->isAncestor(user))
+              user->erase();
+        }
         if (g->getNumResults() > 0) {
           Value zero = arith::ConstantIndexOp::create(builder, g->getLoc(), 0);
           g->getResult(0).replaceAllUsesWith(zero);
         }
         g->erase();
+        for (unsigned i : specialized)
+          if (operands[i].use_empty())
+            operands[i].getDefiningOp()->erase();
         anyRaised = true;
       }
     }
