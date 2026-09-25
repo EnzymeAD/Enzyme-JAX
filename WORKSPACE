@@ -366,3 +366,7 @@ hedron_compile_commands_setup_transitive()
 hedron_compile_commands_setup_transitive_transitive()
 
 hedron_compile_commands_setup_transitive_transitive_transitive()
+
+load("//third_party/z3:workspace.bzl", z3_workspace = "repo")
+
+z3_workspace()
