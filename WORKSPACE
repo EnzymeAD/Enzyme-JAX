@@ -196,7 +196,7 @@ load("@xla//:workspace0.bzl", "xla_workspace0")
 
 xla_workspace0()
 
-load("@jax//third_party/flatbuffers:workspace.bzl", flatbuffers = "repo")
+load("//third_party/flatbuffers:workspace.bzl", flatbuffers = "repo")
 
 flatbuffers()
 

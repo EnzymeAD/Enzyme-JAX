@@ -148,10 +148,8 @@ module {
 
 // RELU-REV-LABEL: func.func @relu_fn
 // RELU-REV: %[[Z:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
-// RELU-REV: %[[DR:.*]] = stablehlo.add %arg1, %[[Z]] : tensor<6xf32>
 // RELU-REV: %[[MASK:.*]] = stablehlo.compare  GT, %arg0, %[[Z]] : (tensor<6xf32>, tensor<6xf32>) -> tensor<6xi1>
-// RELU-REV: %[[SEL:.*]] = stablehlo.select %[[MASK]], %[[DR]], %[[Z]] : tensor<6xi1>, tensor<6xf32>
-// RELU-REV: stablehlo.add %[[SEL]], %[[Z]] : tensor<6xf32>
+// RELU-REV: %[[SEL:.*]] = stablehlo.select %[[MASK]], %arg1, %[[Z]] : tensor<6xi1>, tensor<6xf32>
 
 // GELU-NONE-REV-LABEL: func.func @gelu_none_fn(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>) -> tensor<6xf32>
 // GELU-NONE-REV: %[[NEG_HALF:.*]] = stablehlo.constant dense<-5.000000e-01> : tensor<6xf32>
@@ -159,8 +157,6 @@ module {
 // GELU-NONE-REV: %[[SQRT2:.*]] = stablehlo.constant dense<1.41421354> : tensor<6xf32>
 // GELU-NONE-REV: %[[ONE:.*]] = stablehlo.constant dense<1.000000e+00> : tensor<6xf32>
 // GELU-NONE-REV: %[[HALF:.*]] = stablehlo.constant dense<5.000000e-01> : tensor<6xf32>
-// GELU-NONE-REV: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
-// GELU-NONE-REV: %[[DR:.*]] = stablehlo.add %arg1, %[[ZERO]] : tensor<6xf32>
 // GELU-NONE-REV: %[[DIV:.*]] = stablehlo.divide %arg0, %[[SQRT2]] : tensor<6xf32>
 // GELU-NONE-REV: %[[ERF:.*]] = chlo.erf %[[DIV]] : tensor<6xf32> -> tensor<6xf32>
 // GELU-NONE-REV: %[[ONE_PLUS_ERF:.*]] = stablehlo.add %[[ONE]], %[[ERF]] : tensor<6xf32>
@@ -171,8 +167,7 @@ module {
 // GELU-NONE-REV: %[[GAUSS:.*]] = stablehlo.multiply %[[INV_SQRT_2PI]], %[[EXP]] : tensor<6xf32>
 // GELU-NONE-REV: %[[RIGHT:.*]] = stablehlo.multiply %arg0, %[[GAUSS]] : tensor<6xf32>
 // GELU-NONE-REV: %[[SUM:.*]] = stablehlo.add %[[LEFT]], %[[RIGHT]] : tensor<6xf32>
-// GELU-NONE-REV: %[[SCALED:.*]] = stablehlo.multiply %[[DR]], %[[SUM]] : tensor<6xf32>
-// GELU-NONE-REV: stablehlo.add %[[SCALED]], %[[ZERO]] : tensor<6xf32>
+// GELU-NONE-REV: %[[SCALED:.*]] = stablehlo.multiply %arg1, %[[SUM]] : tensor<6xf32>
 
 // GELU-TANH-REV-LABEL: func.func @gelu_tanh_fn(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>) -> tensor<6xf32>
 // GELU-TANH-REV: %[[A134:.*]] = stablehlo.constant dense<1.341450e-01> : tensor<6xf32>
@@ -181,8 +176,6 @@ module {
 // GELU-TANH-REV: %[[C:.*]] = stablehlo.constant dense<0.797884583> : tensor<6xf32>
 // GELU-TANH-REV: %[[ONE:.*]] = stablehlo.constant dense<1.000000e+00> : tensor<6xf32>
 // GELU-TANH-REV: %[[HALF:.*]] = stablehlo.constant dense<5.000000e-01> : tensor<6xf32>
-// GELU-TANH-REV: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
-// GELU-TANH-REV: %[[DR:.*]] = stablehlo.add %arg1, %[[ZERO]] : tensor<6xf32>
 // GELU-TANH-REV: %[[X3_0:.*]] = stablehlo.power %arg0, %[[THREE]] : tensor<6xf32>
 // GELU-TANH-REV: %[[KX3_0:.*]] = stablehlo.multiply %[[K044]], %[[X3_0]] : tensor<6xf32>
 // GELU-TANH-REV: %[[U0_ARG:.*]] = stablehlo.add %arg0, %[[KX3_0]] : tensor<6xf32>
@@ -202,14 +195,11 @@ module {
 // GELU-TANH-REV: %[[CHAIN:.*]] = stablehlo.multiply %[[ONE_MINUS]], %[[C_ONE_PLUS]] : tensor<6xf32>
 // GELU-TANH-REV: %[[TERM1:.*]] = stablehlo.multiply %[[HALF_X]], %[[CHAIN]] : tensor<6xf32>
 // GELU-TANH-REV: %[[SUM:.*]] = stablehlo.add %[[TERM0]], %[[TERM1]] : tensor<6xf32>
-// GELU-TANH-REV: %[[SCALED:.*]] = stablehlo.multiply %[[DR]], %[[SUM]] : tensor<6xf32>
-// GELU-TANH-REV: stablehlo.add %[[SCALED]], %[[ZERO]] : tensor<6xf32>
+// GELU-TANH-REV: %[[SCALED:.*]] = stablehlo.multiply %arg1, %[[SUM]] : tensor<6xf32>
 
 // GELU-SIGMOID-REV-LABEL: func.func @gelu_sigmoid_fn(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>) -> tensor<6xf32>
 // GELU-SIGMOID-REV: %[[ONE:.*]] = stablehlo.constant dense<1.000000e+00> : tensor<6xf32>
 // GELU-SIGMOID-REV: %[[K:.*]] = stablehlo.constant dense<1.702000e+00> : tensor<6xf32>
-// GELU-SIGMOID-REV: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
-// GELU-SIGMOID-REV: %[[DR:.*]] = stablehlo.add %arg1, %[[ZERO]] : tensor<6xf32>
 // GELU-SIGMOID-REV: %[[KX0:.*]] = stablehlo.multiply %[[K]], %arg0 : tensor<6xf32>
 // GELU-SIGMOID-REV: %[[S0:.*]] = stablehlo.logistic %[[KX0]] : tensor<6xf32>
 // GELU-SIGMOID-REV: %[[KX1:.*]] = stablehlo.multiply %[[K]], %arg0 : tensor<6xf32>
@@ -221,61 +211,47 @@ module {
 // GELU-SIGMOID-REV: %[[PROD:.*]] = stablehlo.multiply %[[S1]], %[[ONE_MINUS]] : tensor<6xf32>
 // GELU-SIGMOID-REV: %[[TERM1:.*]] = stablehlo.multiply %[[KX1]], %[[PROD]] : tensor<6xf32>
 // GELU-SIGMOID-REV: %[[SUM:.*]] = stablehlo.add %[[S0]], %[[TERM1]] : tensor<6xf32>
-// GELU-SIGMOID-REV: %[[SCALED:.*]] = stablehlo.multiply %[[DR]], %[[SUM]] : tensor<6xf32>
-// GELU-SIGMOID-REV: stablehlo.add %[[SCALED]], %[[ZERO]] : tensor<6xf32>
+// GELU-SIGMOID-REV: %[[SCALED:.*]] = stablehlo.multiply %arg1, %[[SUM]] : tensor<6xf32>
 
 // SOFTPLUS-REV-LABEL: func.func @softplus_fn(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>) -> tensor<6xf32>
-// SOFTPLUS-REV: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
-// SOFTPLUS-REV: %[[DR:.*]] = stablehlo.add %arg1, %[[ZERO]] : tensor<6xf32>
 // SOFTPLUS-REV: %[[SIG:.*]] = stablehlo.logistic %arg0 : tensor<6xf32>
-// SOFTPLUS-REV: %[[SCALED:.*]] = stablehlo.multiply %[[DR]], %[[SIG]] : tensor<6xf32>
-// SOFTPLUS-REV: stablehlo.add %[[SCALED]], %[[ZERO]] : tensor<6xf32>
+// SOFTPLUS-REV: %[[SCALED:.*]] = stablehlo.multiply %arg1, %[[SIG]] : tensor<6xf32>
 
 // TGAMMA-REV-LABEL: func.func @tgamma_fn(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>) -> tensor<6xf32>
 // TGAMMA-REV-DAG: %[[NAN:.*]] = stablehlo.constant dense<0x7FC00000> : tensor<6xf32>
 // TGAMMA-REV-DAG: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
-// TGAMMA-REV: %[[DR:.*]] = stablehlo.add %arg1, %[[ZERO]] : tensor<6xf32>
 // TGAMMA-REV: %[[NEG:.*]] = stablehlo.compare LT, %arg0, %[[ZERO]], FLOAT : (tensor<6xf32>, tensor<6xf32>) -> tensor<6xi1>
 // TGAMMA-REV: %[[TGAMMA:.*]] = stablehlo.select %[[NEG]], %[[NAN]], %{{.*}} : tensor<6xi1>, tensor<6xf32>
 // TGAMMA-REV: %[[PG:.*]] = chlo.polygamma %[[ZERO]], %arg0
 // TGAMMA-REV: %[[INNER:.*]] = stablehlo.multiply %[[TGAMMA]], %[[PG]] : tensor<6xf32>
-// TGAMMA-REV: %[[OUTER:.*]] = stablehlo.multiply %[[DR]], %[[INNER]] : tensor<6xf32>
-// TGAMMA-REV: stablehlo.add %[[OUTER]], %[[ZERO]] : tensor<6xf32>
+// TGAMMA-REV: %[[OUTER:.*]] = stablehlo.multiply %arg1, %[[INNER]] : tensor<6xf32>
 
 // LGAMMA-REV-LABEL: func.func @lgamma_fn(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>) -> tensor<6xf32>
-// LGAMMA-REV-DAG: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
-// LGAMMA-REV: %[[DR:.*]] = stablehlo.add %arg1, %[[ZERO]] : tensor<6xf32>
 // LGAMMA-REV: %[[DG:.*]] = chlo.digamma %arg0 : tensor<6xf32> -> tensor<6xf32>
-// LGAMMA-REV: %[[SCALED:.*]] = stablehlo.multiply %[[DR]], %[[DG]] : tensor<6xf32>
-// LGAMMA-REV: stablehlo.add %[[SCALED]], %[[ZERO]] : tensor<6xf32>
+// LGAMMA-REV: %[[SCALED:.*]] = stablehlo.multiply %arg1, %[[DG]] : tensor<6xf32>
 
 // HYPOT-REV-LABEL: func.func @hypot_fn(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>, %arg2: tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
 // HYPOT-REV-DAG: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
 // HYPOT-REV-DAG: %[[ONE:.*]] = stablehlo.constant dense<1.000000e+00> : tensor<6xf32>
-// HYPOT-REV: %[[DR:.*]] = stablehlo.add %arg2, %[[ZERO]] : tensor<6xf32>
 // HYPOT-REV: %[[ABS_X:.*]] = stablehlo.abs %arg0 : tensor<6xf32>
 // HYPOT-REV: %[[ABS_Y:.*]] = stablehlo.abs %arg1 : tensor<6xf32>
 // HYPOT-REV: %[[MAX:.*]] = stablehlo.maximum %[[ABS_X]], %[[ABS_Y]] : tensor<6xf32>
 // HYPOT-REV: %[[SQRT:.*]] = stablehlo.sqrt %{{.*}} : tensor<6xf32>
 // HYPOT-REV: %[[HYP:.*]] = stablehlo.select %{{.*}}, %[[ZERO]], %{{.*}} : tensor<6xi1>, tensor<6xf32>
 // HYPOT-REV: %[[DIV_X:.*]] = stablehlo.divide %arg0, %[[HYP]] : tensor<6xf32>
-// HYPOT-REV: %[[MUL_X:.*]] = stablehlo.multiply %[[DR]], %[[DIV_X]] : tensor<6xf32>
-// HYPOT-REV: %[[RES_X:.*]] = stablehlo.add %[[MUL_X]], %[[ZERO]] : tensor<6xf32>
+// HYPOT-REV: %[[MUL_X:.*]] = stablehlo.multiply %arg2, %[[DIV_X]] : tensor<6xf32>
 // HYPOT-REV: %[[DIV_Y:.*]] = stablehlo.divide %arg1, %{{.*}} : tensor<6xf32>
-// HYPOT-REV: %[[MUL_Y:.*]] = stablehlo.multiply %[[DR]], %[[DIV_Y]] : tensor<6xf32>
-// HYPOT-REV: %[[RES_Y:.*]] = stablehlo.add %[[MUL_Y]], %[[ZERO]] : tensor<6xf32>
-// HYPOT-REV: return %[[RES_X]], %[[RES_Y]]
+// HYPOT-REV: %[[MUL_Y:.*]] = stablehlo.multiply %arg2, %[[DIV_Y]] : tensor<6xf32>
+// HYPOT-REV: return %[[MUL_X]], %[[MUL_Y]]
 
 // SINC-REV-LABEL: func.func @sinc_fn(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>) -> tensor<6xf32>
 // SINC-REV-DAG: %[[PI:.*]] = stablehlo.constant dense<3.14159274> : tensor<6xf32>
 // SINC-REV-DAG: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
-// SINC-REV: %[[DR:.*]] = stablehlo.add %arg1, %[[ZERO]] : tensor<6xf32>
 // SINC-REV: %[[COS:.*]] = stablehlo.cosine %{{.*}} : tensor<6xf32>
 // SINC-REV: %[[SIN:.*]] = stablehlo.sine %{{.*}} : tensor<6xf32>
 // SINC-REV: %[[SUB:.*]] = stablehlo.subtract %{{.*}}, %{{.*}} : tensor<6xf32>
 // SINC-REV: %[[SEL:.*]] = stablehlo.select %{{.*}}, %[[ZERO]], %[[SUB]] : tensor<6xi1>, tensor<6xf32>
-// SINC-REV: %[[MUL:.*]] = stablehlo.multiply %[[DR]], %[[SEL]] : tensor<6xf32>
-// SINC-REV: stablehlo.add %[[MUL]], %[[ZERO]] : tensor<6xf32>
+// SINC-REV: %[[MUL:.*]] = stablehlo.multiply %arg1, %[[SEL]] : tensor<6xf32>
 
 // COSC-REV-LABEL: func.func @cosc_fn(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>) -> tensor<6xf32>
 // COSC-REV-DAG: %[[PI:.*]] = stablehlo.constant dense<3.14159274> : tensor<6xf32>
@@ -283,7 +259,6 @@ module {
 // COSC-REV-DAG: %[[PI2:.*]] = stablehlo.constant dense<-9.86960411> : tensor<6xf32>
 // COSC-REV-DAG: %[[TWO:.*]] = stablehlo.constant dense<2.000000e+00> : tensor<6xf32>
 // COSC-REV-DAG: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
-// COSC-REV: %[[DR:.*]] = stablehlo.add %arg1, %[[ZERO]] : tensor<6xf32>
 // COSC-REV: %[[COS:.*]] = stablehlo.cosine %{{.*}} : tensor<6xf32>
 // COSC-REV: %[[SIN:.*]] = stablehlo.sine %{{.*}} : tensor<6xf32>
 // COSC-REV: stablehlo.select %{{.*}}, %{{.*}}, %{{.*}} : tensor<6xi1>, tensor<6xf32>
