@@ -74,15 +74,42 @@ func.func @sinks_arg_only_pure_chain(%w: tensor<8xf32>) -> tensor<8xf32> {
 
 // -----
 
-// A genuinely data-dependent cross-kernel value (here, the first kernel's
-// own computed result, not reachable from anything the second kernel already
-// has) must stay a real operand: sinking it would either duplicate real
-// cross-kernel work or, worse, require pulling in an argument the second
-// kernel never depended on. Neither kernel's operand list changes.
+// A cross-kernel value that is also read elsewhere (here the first kernel's
+// result feeds the second kernel and a plain op) must stay a real operand:
+// sinking it into the second kernel would duplicate its computation.
+// Neither kernel's operand list changes.
 // CHECK-LABEL: func.func @keeps_real_cross_kernel_dependency
 // CHECK: %[[K1:.*]] = distributed.DistributedKernel (%{{.*}} : tensor<8xf32>)
 // CHECK: distributed.DistributedKernel (%{{.*}} : tensor<8xf32>, %[[K1]] : tensor<8xf32>)
 func.func @keeps_real_cross_kernel_dependency(%a: tensor<8xf32>, %b: tensor<8xf32>) -> tensor<8xf32> {
+  %k1 = distributed.DistributedKernel (%a : tensor<8xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      -> (tensor<8xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      axes () {
+  ^bb0(%aa: tensor<8xf32>):
+    %s = stablehlo.multiply %aa, %aa : tensor<8xf32>
+    distributed.DistributedYield (%s : tensor<8xf32>)
+  }
+  %k2 = distributed.DistributedKernel (%b : tensor<8xf32>, %k1 : tensor<8xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>, <dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      -> (tensor<8xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      axes () {
+  ^bb0(%bb: tensor<8xf32>, %sb: tensor<8xf32>):
+    %r = stablehlo.add %bb, %sb : tensor<8xf32>
+    distributed.DistributedYield (%r : tensor<8xf32>)
+  }
+  %out = stablehlo.add %k2, %k1 : tensor<8xf32>
+  return %out : tensor<8xf32>
+}
+
+// -----
+
+// A chain that depends only on a function-level value and is read by exactly
+// one later kernel is moved into that kernel, which gains the function-level
+// value as a new operand; nothing is duplicated.
+// CHECK-LABEL: func.func @moves_private_chain_with_new_operand
+// CHECK: distributed.DistributedKernel (%{{.*}} : tensor<8xf32>, %{{.*}} : tensor<8xf32>)
+// CHECK: stablehlo.multiply
+// CHECK: stablehlo.add
+func.func @moves_private_chain_with_new_operand(%a: tensor<8xf32>, %b: tensor<8xf32>) -> tensor<8xf32> {
   %k1 = distributed.DistributedKernel (%a : tensor<8xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
       -> (tensor<8xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
       axes () {
