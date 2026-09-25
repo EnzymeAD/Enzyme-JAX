@@ -645,24 +645,29 @@ public:
   }
 };
 
-// Not algorithmically fast! But we expect resonably small (10000k max,
-// maybe) and easily divisible numbers.
-static llvm::SmallVector<int64_t> uniquePrimeFactors(int64_t n) {
-  llvm::SmallVector<int64_t> primes;
-  int64_t thresh = 1;
-  int64_t i = 2;
-  while (i <= n) {
-    if (n % i == 0) {
-      if (i > thresh) {
-        primes.push_back(i);
-        thresh = i;
-      }
-      n /= i;
-    } else {
-      i++;
+// The single chunk a decision takes from a free physical factor of extent
+// `factorExtent` for an axis with `extent` left. The chunk must divide both,
+// so it is built from the prime multiset of gcd(extent, factorExtent):
+// start at the smallest prime (always taken, even above `maxDecisionExtent`,
+// since a large prime is indivisible), then keep multiplying in the next prime
+// while the product stays <= `maxDecisionExtent`. Returns 1 when the two
+// share no divisor. Deterministic, so the search does not branch on chunk
+// size. E.g. with max 8: 8 -> 8, 16 -> 8, 12 -> 4, 9 -> 3, 11 -> 11, 30 -> 6.
+static int64_t nextChunkSize(int64_t extent, int64_t factorExtent,
+                             int64_t maxDecisionExtent) {
+  int64_t g = std::gcd(extent, factorExtent);
+  int64_t chunk = 1;
+  for (int64_t p = 2; g > 1;) {
+    if (g % p != 0) {
+      ++p;
+      continue;
     }
+    if (chunk != 1 && chunk * p > maxDecisionExtent)
+      break;
+    chunk *= p;
+    g /= p;
   }
-  return primes;
+  return chunk;
 }
 
 // A chunk peeled off a physical factor: `takenFactor` is bound to the axis
@@ -673,34 +678,19 @@ struct ChunkDecision {
   SharedOpRef<AxisFactorOp> residualFactor;
 };
 
-// Attempts to peel a chunk off of `physicalFactor`, using the first entry of
-// `possibleChunks` (in the order given) whose extent evenly divides
-// `physicalFactor`'s. Returns std::nullopt if no chunk in `possibleChunks`
-// divides it.
-static std::optional<ChunkDecision>
-tryChunkFactor(SharedOpRef<AxisFactorOp> physicalFactor,
-               llvm::ArrayRef<int64_t> possibleChunks, OpBuilder &builder) {
-  // TODO do we have to swap available extent to owning things too?
+// Peels a chunk of extent `chunk` off of `physicalFactor`, which must have an
+// extent divisible by `chunk`. The chunk takes the high-stride digits and the
+// residual (extent / chunk) keeps the low ones, which holds for composite
+// chunks exactly as for primes.
+static ChunkDecision peelChunk(SharedOpRef<AxisFactorOp> physicalFactor,
+                               int64_t chunk, OpBuilder &builder) {
   int64_t factorExtent = getFactorExtent(physicalFactor->get());
-  int64_t chunkTaken = -1;
-  for (auto chunk : possibleChunks) {
-    if (chunk <= factorExtent && factorExtent % chunk == 0) {
-      chunkTaken = chunk;
-      break;
-    }
-  }
-  if (chunkTaken == -1)
-    return std::nullopt;
-
-  int64_t residualExtent = factorExtent / chunkTaken;
-
-  // We have a candidate that takes a chunk out of the physical factor,
-  // from the high stride positions. Need to take the chunk factor,
-  // and create a residual factor from the remaining extent.
+  assert(factorExtent % chunk == 0 && "chunk must divide the factor's extent");
+  int64_t residualExtent = factorExtent / chunk;
   auto takenFactor =
       sharedOpRefFromValue<TypedValue<AxisFactorType>, AxisFactorOp>(
-          createSubfactor(physicalFactor->get(), chunkTaken, residualExtent,
-                          builder, physicalFactor->get().getLoc()));
+          createSubfactor(physicalFactor->get(), chunk, residualExtent, builder,
+                          physicalFactor->get().getLoc()));
   auto residualFactor =
       sharedOpRefFromValue<TypedValue<AxisFactorType>, AxisFactorOp>(
           createSubfactor(physicalFactor->get(), residualExtent, 1, builder,
@@ -708,7 +698,7 @@ tryChunkFactor(SharedOpRef<AxisFactorOp> physicalFactor,
   return ChunkDecision{takenFactor, residualFactor};
 }
 
-// Commits a chunk decision (see tryChunkFactor) to `node`: binds the taken
+// Commits a chunk decision (see peelChunk) to `node`: binds the taken
 // chunk to the axis currently being decided, and swaps the physical factor
 // it came from for its residual in the available space.
 static void applyChunkDecision(StrategySearchNode &node,
@@ -743,14 +733,17 @@ public:
   OpBuilder &builder;
   ArrayRef<SharedOpRef<AxisFactorOp>> totalMeshSpace;
   Location defaultLoc;
+  int64_t maxDecisionExtent;
   bool logProgress;
 
   StrategyExplorer(LogicalAxisOverlap &overlap, OpBuilder &builder,
                    ArrayRef<SharedOpRef<AxisFactorOp>> totalMeshSpace,
-                   Location defaultLoc, bool logProgress = false)
+                   Location defaultLoc, int64_t maxDecisionExtent,
+                   bool logProgress = false)
       : BeamSearchExplorerBase<StrategySearchNode>(), overlap(overlap),
         builder(builder), totalMeshSpace(totalMeshSpace),
-        defaultLoc(defaultLoc), logProgress(logProgress) {}
+        defaultLoc(defaultLoc), maxDecisionExtent(maxDecisionExtent),
+        logProgress(logProgress) {}
 
   virtual std::vector<std::shared_ptr<StrategySearchNode>>
   generateCandidatesFromNode(
@@ -771,24 +764,24 @@ public:
 
     std::vector<std::shared_ptr<StrategySearchNode>> candidates;
 
-    // Decision type 1: for factor of the physical space, see if we
-    // can pull out a prime factor
+    // Decision type 1: from each free physical factor, take its
+    // nextChunkSize.
     {
-      auto possibleChunks = uniquePrimeFactors(extentRemaining);
       auto availableFactors = node->getAvailableSpace();
       for (auto physicalFactor : availableFactors) {
-        auto decision = tryChunkFactor(physicalFactor, possibleChunks, builder);
-        if (!decision)
+        int64_t factorExtent = getFactorExtent(physicalFactor->get());
+        int64_t chunk =
+            nextChunkSize(extentRemaining, factorExtent, maxDecisionExtent);
+        if (chunk == 1)
           continue;
+        ChunkDecision decision = peelChunk(physicalFactor, chunk, builder);
         auto child = node->makeChild();
-        applyChunkDecision(*child, physicalFactor, *decision);
+        applyChunkDecision(*child, physicalFactor, decision);
         child->considerNextAxis(overlap, totalMeshSpace, builder);
         if (logProgress) {
           llvm::errs() << "distributed-search-strategies:   child "
-                       << candidates.size() << ": took chunk (extent "
-                       << getFactorExtent(decision->takenFactor->get())
-                       << ") from a physical factor of extent "
-                       << getFactorExtent(physicalFactor->get())
+                       << candidates.size() << ": took chunk (extent " << chunk
+                       << ") from a physical factor of extent " << factorExtent
                        << ", now at axis depth " << child->getAxisIndex()
                        << "\n";
         }
@@ -836,14 +829,15 @@ class StrategyInOrderCompleter : public StrategyCompleterBase {
   OpBuilder &builder;
   llvm::ArrayRef<SharedOpRef<AxisFactorOp>> totalMeshSpace;
   Location defaultLoc;
+  int64_t maxDecisionExtent;
 
 public:
   StrategyInOrderCompleter(
       LogicalAxisOverlap &overlap, OpBuilder &builder,
       llvm::ArrayRef<SharedOpRef<AxisFactorOp>> totalMeshSpace,
-      Location defaultLoc)
+      Location defaultLoc, int64_t maxDecisionExtent)
       : overlap(overlap), builder(builder), totalMeshSpace(totalMeshSpace),
-        defaultLoc(defaultLoc) {}
+        defaultLoc(defaultLoc), maxDecisionExtent(maxDecisionExtent) {}
 
   void complete(StrategySearchNode &node) override {
     while (!node.finalized()) {
@@ -851,21 +845,20 @@ public:
       assert(extentRemaining > 1 &&
              "considerNextAxis should have advanced past a done axis");
 
-      // Descending order: unlike the explorer (which wants small, diverse
-      // chunks to branch on), a one-shot completer should maximize
-      // parallelism taken from each factor.
-      auto possibleChunks = uniquePrimeFactors(extentRemaining);
-      std::reverse(possibleChunks.begin(), possibleChunks.end());
-
+      // Same chunk rule as the explorer, from the first factor that can
+      // supply one.
       auto availableSnapshot = node.getAvailableSpace(); // stable copy
       bool took = false;
       for (auto physicalFactor : availableSnapshot) {
-        if (auto decision =
-                tryChunkFactor(physicalFactor, possibleChunks, builder)) {
-          applyChunkDecision(node, physicalFactor, *decision);
-          took = true;
-          break;
-        }
+        int64_t chunk = nextChunkSize(
+            extentRemaining, getFactorExtent(physicalFactor->get()),
+            maxDecisionExtent);
+        if (chunk == 1)
+          continue;
+        applyChunkDecision(node, physicalFactor,
+                           peelChunk(physicalFactor, chunk, builder));
+        took = true;
+        break;
       }
       if (!took) {
         applySerializeRemaining(node, builder, defaultLoc);
@@ -2044,10 +2037,16 @@ struct DistributedSearchStrategiesPass
     BeamSearchBreadthFirstQueue<StrategySearchNode> queue(beamSize,
                                                           progressLogger);
     queue.push(initialNode);
+    if (maxDecisionExtent < 2) {
+      moduleOp.emitError() << "distributed-search-strategies: "
+                              "max-decision-extent must be >= 2, got "
+                           << static_cast<int>(maxDecisionExtent);
+      return signalPassFailure();
+    }
     StrategyExplorer explorer(overlap, builder, physicalAxes, moduleOp.getLoc(),
-                              logProgress);
+                              maxDecisionExtent, logProgress);
     StrategyInOrderCompleter completer(overlap, builder, physicalAxes,
-                                       moduleOp.getLoc());
+                                       moduleOp.getLoc(), maxDecisionExtent);
     bool sawBadCandidate = false;
     StrategyScorer scorer(moduleOp, dumpCandidates, disableVerifier,
                           dumpKernelModulesTo, actTarget, actWorkerDirRoot,
@@ -2060,6 +2059,21 @@ struct DistributedSearchStrategiesPass
                               "uct-backup '"
                            << uctBackup << "' (known: mean, max)";
       return signalPassFailure();
+    }
+    if (mctsGreedyCompleteAfter < kGreedyCompleteAfterDisabled) {
+      moduleOp.emitError()
+          << "distributed-search-strategies: mcts-greedy-complete-after must "
+             "be -1 (fully random rollouts) or >= 0 (random steps before "
+             "greedy completion), got "
+          << static_cast<int>(mctsGreedyCompleteAfter);
+      return signalPassFailure();
+    }
+    if (mctsGreedyCompleteAfter != kGreedyCompleteAfterDisabled &&
+        searchStrategy != "mcts") {
+      moduleOp.emitWarning()
+          << "distributed-search-strategies: mcts-greedy-complete-after only "
+             "applies to search-strategy=mcts and is ignored for '"
+          << searchStrategy << "'";
     }
     if (surrogateTarget != "log" && surrogateTarget != "linear") {
       moduleOp.emitError() << "distributed-search-strategies: unknown "
@@ -2078,6 +2092,17 @@ struct DistributedSearchStrategiesPass
     //    one code path instead of one per strategy.
     BeamSearchDriver<StrategySearchNode> driver(queue, scorer, explorer);
 
+    // A real search-tree branch (makeChild) rather than scoring's discarded
+    // clone(): the completed plan is itself scored and logged, with the node
+    // where completion began as its parent. Scoring's own completion of the
+    // finalized result is then a no-op.
+    std::function<std::shared_ptr<StrategySearchNode>(
+        const std::shared_ptr<StrategySearchNode> &)>
+        greedyCompleter = [&](const std::shared_ptr<StrategySearchNode> &n) {
+          auto completed = n->makeChild();
+          completer.complete(*completed);
+          return completed;
+        };
     // One row per strategy. A new strategy is a runner and a row here.
     using Runner = std::function<std::shared_ptr<StrategySearchNode>()>;
     const bool &stop = sawBadCandidate;
@@ -2096,7 +2121,8 @@ struct DistributedSearchStrategiesPass
          [&] {
            return runMcts(initialNode, explorer, scorer, searchSamples,
                           searchSeed, uctC, uctBackup == "max", surrogatePrior,
-                          surrogateTrain, surrogateTarget != "linear", stop);
+                          surrogateTrain, surrogateTarget != "linear",
+                          mctsGreedyCompleteAfter, greedyCompleter, stop);
          }},
         {"twostage",
          [&] {

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <queue>
@@ -329,19 +330,37 @@ template <typename Node> struct UctStats {
   bool expanded = false;
 };
 
-// Monte Carlo Tree Search (UCT). Rollouts are random because the completion
-// heuristic is deterministic, and ties break at random because sibling UCB
+// Value of runMcts's `greedyCompleteAfter` that keeps every rollout fully
+// random.
+constexpr int kGreedyCompleteAfterDisabled = -1;
+
+// Monte Carlo Tree Search (UCT). Rollouts are random by default, and ties
+// break at random because sibling UCB
 // values tie often. An iteration that lands on a node already scored in an
 // earlier iteration reuses that score rather than evaluating again, so the
 // number of real evaluations can be less than `iterations`.
+//
+// With `greedyCompleteAfter` = N >= 0, a rollout takes at most N uniformly
+// random steps from the selected node and then hands the remaining decisions
+// to `completeGreedily`, which must return a new finalized node for a
+// partial one without modifying it. N = 0 is fully greedy from the selected
+// node. A greedy completion is deterministic, so with N = 0 the completed
+// leaf is cached per selected node: a later iteration reaching that node
+// reuses the leaf and its recorded score instead of re-completing and
+// re-scoring an identical plan under a new node object. For N > 0 the start
+// node of the greedy phase is new each time, so nothing is cached.
 template <typename Node>
-std::shared_ptr<Node>
-runMcts(std::shared_ptr<Node> root, BeamSearchExplorerBase<Node> &explorer,
-        BeamSearchScorerBase<Node> &scorer, unsigned iterations, unsigned seed,
-        double explorationC, bool maxBackup, double surrogateWeight,
-        unsigned surrogateTrain, bool logTarget, const bool &stop) {
+std::shared_ptr<Node> runMcts(
+    std::shared_ptr<Node> root, BeamSearchExplorerBase<Node> &explorer,
+    BeamSearchScorerBase<Node> &scorer, unsigned iterations, unsigned seed,
+    double explorationC, bool maxBackup, double surrogateWeight,
+    unsigned surrogateTrain, bool logTarget, int greedyCompleteAfter,
+    const std::function<std::shared_ptr<Node>(const std::shared_ptr<Node> &)>
+        &completeGreedily,
+    const bool &stop) {
   std::mt19937 rng(seed);
   std::shared_ptr<Node> best;
+  llvm::DenseMap<const Node *, std::shared_ptr<Node>> greedyLeaves;
 
   // Optional PUCT-style prior on the UCB score. Off by default.
   SurrogateModel model;
@@ -444,12 +463,27 @@ runMcts(std::shared_ptr<Node> root, BeamSearchExplorerBase<Node> &explorer,
 
     // Simulate.
     auto leaf = node;
-    while (!leaf->finalized()) {
+    int randomSteps = 0;
+    while (!leaf->finalized() &&
+           (greedyCompleteAfter == kGreedyCompleteAfterDisabled ||
+            randomSteps < greedyCompleteAfter)) {
       auto children = explorer.generateCandidatesFromNode(leaf);
       if (children.empty())
         break;
       std::uniform_int_distribution<size_t> pick(0, children.size() - 1);
       leaf = children[pick(rng)];
+      ++randomSteps;
+    }
+    if (!leaf->finalized() &&
+        greedyCompleteAfter != kGreedyCompleteAfterDisabled) {
+      if (randomSteps == 0) {
+        auto &cached = greedyLeaves[leaf.get()];
+        if (!cached)
+          cached = completeGreedily(leaf);
+        leaf = cached;
+      } else {
+        leaf = completeGreedily(leaf);
+      }
     }
     if (!leaf->finalized())
       continue;
