@@ -7,13 +7,18 @@
 // The shared-callee fixture of search_mode_shared_callee_split.mlir: one
 // layer function called twice from main. The deterministic beam search's
 // winner (uid 118) keeps every compute op inside the callee, so its top-level
-// schedule is just the two call barriers plus zero-cost casts. Its summary
-// still reports that compute: the breakdown walks into each call's callee
-// timeline, once per call site, so cpu_compute_time equals the whole
-// makespan and nothing is idle.
+// schedule is just the two calls plus zero-cost casts. Its summary still
+// reports that compute: the breakdown walks into each call's callee timeline,
+// once per call site, so cpu_compute_time equals the whole makespan and
+// nothing is idle. schedule.json lists each call's callee events in place of
+// the call, shifted to the call's start: the second call's matmul starts where
+// the first call ends, and depends on the first call's last event.
 // MAIN: "best_candidate_uid":118
-// SCHEDULE: "kind":"call"
-// SCHEDULE: "kind":"call"
+// SCHEDULE-NOT: "kind":"call"
+// SCHEDULE: {"call_stack":["layer"],"description":"compute stablehlo.dot_general: {{.*}}","engine":"cpu","finish":1024000,"index":4,"kind":"compute","predecessors":[2],"start":0}
+// SCHEDULE: {"call_stack":["layer"],"description":"compute distributed.CastGlobalToLocal: {{.*}}","engine":"cpu","finish":1088000,"index":10,"kind":"compute","predecessors":[9],"start":1088000}
+// SCHEDULE: {"call_stack":["layer"],"description":"compute stablehlo.dot_general: {{.*}}","engine":"cpu","finish":2112000,"index":12,"kind":"compute","predecessors":[10],"start":1088000}
+// SCHEDULE: {"call_stack":[],"description":"compute distributed.CastLocalToGlobal: flops=0 bytes=0 time=0","engine":"cpu","finish":2176000,"index":18,"kind":"compute","predecessors":[17],"start":2176000}
 // WINNER: "summary":{"accelerator_compute_time":0,"communication_time":0,"cpu_compute_time":2176000,"idle_time":0,"num_act_kernel_matches":0,"total_time":2176000}
 
 module {

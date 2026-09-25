@@ -1080,6 +1080,83 @@ static llvm::json::Value jsonInt64OrNull(std::optional<int64_t> value) {
   return value ? llvm::json::Value(*value) : llvm::json::Value(nullptr);
 }
 
+// Appends `graph`'s events to schedule.json's flat `nodes` list and returns
+// the output indices of the events nothing in `graph` depends on.
+//
+// A FunctionCall event is not emitted itself: its callee's events are,
+// recursively, from the call's own nested timeline shifted by the call's
+// start time, so a timeline shows what ran inside every call.
+// - `offset` is the start time of the call this scope runs under (0 at the
+//   top level).
+// - A callee event with no predecessor in its own scope depends on
+//   `entryPredecessors`, the call's own resolved predecessors.
+// - An event that depends on a call depends on the callee's sink events.
+// - `scope` names the enclosing calls, outermost first, as each node's
+//   `call_stack`.
+static llvm::SmallVector<int64_t>
+appendScheduleNodes(const ScheduleGraph &graph, const TimelineResult &timeline,
+                    int64_t offset, llvm::ArrayRef<int64_t> entryPredecessors,
+                    llvm::ArrayRef<std::string> scope,
+                    llvm::json::Array &nodes) {
+  // Output indices standing for each event of `graph` as a predecessor: the
+  // event's own index, or a call's callee sinks.
+  std::vector<llvm::SmallVector<int64_t>> outputsOf(graph.nodes.size());
+  llvm::SmallVector<bool> hasSuccessor(graph.nodes.size(), false);
+  for (size_t i = 0, e = graph.nodes.size(); i < e; ++i) {
+    const ScheduleEvent &event = graph.nodes[i];
+    llvm::SmallVector<int64_t> predecessors;
+    for (size_t pred : event.predecessors) {
+      assert(pred < i && "schedule graph events are in topological order");
+      hasSuccessor[pred] = true;
+      llvm::append_range(predecessors, outputsOf[pred]);
+    }
+    if (event.predecessors.empty())
+      llvm::append_range(predecessors, entryPredecessors);
+
+    if (event.kind == ScheduleEventKind::FunctionCall) {
+      llvm::SmallVector<std::string> calleeScope(scope.begin(), scope.end());
+      auto callee = llvm::dyn_cast_if_present<SymbolRefAttr>(
+          cast<CallOpInterface>(event.op).getCallableForCallee());
+      calleeScope.push_back(callee ? callee.getLeafReference().str()
+                                   : describeEvent(event));
+      outputsOf[i] = appendScheduleNodes(
+          *event.calleeGraph, *timeline.calleeTimelines[i],
+          offset + timeline.start[i], predecessors, calleeScope, nodes);
+      continue;
+    }
+
+    int64_t index = static_cast<int64_t>(nodes.size());
+    outputsOf[i] = {index};
+    llvm::json::Array predecessorsJson;
+    for (int64_t pred : predecessors)
+      predecessorsJson.push_back(pred);
+    llvm::json::Array callStack;
+    for (const std::string &name : scope)
+      callStack.push_back(name);
+    llvm::json::Object nodeObj;
+    nodeObj["index"] = index;
+    nodeObj["kind"] = toString(event.kind);
+    // Lets a timeline visualization color an ACT accelerator dispatch
+    // separately from ordinary CPU-costed compute without re-deriving that
+    // split from `description` text. Present only for Compute events; the
+    // engine distinction is meaningless for the others.
+    if (event.kind == ScheduleEventKind::Compute)
+      nodeObj["engine"] = event.isAcceleratorLaunch ? "act" : "cpu";
+    nodeObj["description"] = describeEvent(event);
+    nodeObj["start"] = offset + timeline.start[i];
+    nodeObj["finish"] = offset + timeline.finish[i];
+    nodeObj["predecessors"] = std::move(predecessorsJson);
+    nodeObj["call_stack"] = std::move(callStack);
+    nodes.push_back(std::move(nodeObj));
+  }
+
+  llvm::SmallVector<int64_t> sinks;
+  for (size_t i = 0, e = graph.nodes.size(); i < e; ++i)
+    if (!hasSuccessor[i])
+      llvm::append_range(sinks, outputsOf[i]);
+  return sinks;
+}
+
 // Writes info.json into `dir` for one scored module, plus schedule.json when
 // `schedule` is present (a feasible, fully simulated module). `identity`
 // holds the fields naming what was scored (a candidate's uid and parent_uid;
@@ -1157,26 +1234,8 @@ writeScoredLog(ModuleOp originalModule, llvm::StringRef dirPath,
     return success();
 
   llvm::json::Array nodes;
-  for (size_t i = 0, e = schedule->graph.nodes.size(); i < e; ++i) {
-    const ScheduleEvent &event = schedule->graph.nodes[i];
-    llvm::json::Array predecessors;
-    for (size_t pred : event.predecessors)
-      predecessors.push_back(static_cast<int64_t>(pred));
-    llvm::json::Object nodeObj;
-    nodeObj["index"] = static_cast<int64_t>(i);
-    nodeObj["kind"] = toString(event.kind);
-    // Lets a timeline visualization color an ACT accelerator dispatch
-    // separately from ordinary CPU-costed compute without re-deriving that
-    // split from `description` text. Present only for Compute events; the
-    // engine distinction is meaningless for the others.
-    if (event.kind == ScheduleEventKind::Compute)
-      nodeObj["engine"] = event.isAcceleratorLaunch ? "act" : "cpu";
-    nodeObj["description"] = describeEvent(event);
-    nodeObj["start"] = schedule->timeline.start[i];
-    nodeObj["finish"] = schedule->timeline.finish[i];
-    nodeObj["predecessors"] = std::move(predecessors);
-    nodes.push_back(std::move(nodeObj));
-  }
+  appendScheduleNodes(schedule->graph, schedule->timeline, /*offset=*/0,
+                      /*entryPredecessors=*/{}, /*scope=*/{}, nodes);
   llvm::json::Object scheduleJson;
   scheduleJson["makespan"] = schedule->timeline.makespan;
   scheduleJson["nodes"] = std::move(nodes);
