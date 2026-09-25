@@ -670,11 +670,19 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
 }
 
 def FuseJITPass : Pass<"fuse-jit", "mlir::ModuleOp"> {
-  let summary = "Fuse sequential JIT calls that depend on each other";
+  let summary = "Fuse JIT calls using dependency or generalized strategy";
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect",
     "LLVM::LLVMDialect",
     "stablehlo::StablehloDialect",
+  ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"strategy",
+        /*CLI argument=*/"strategy",
+        /*type=*/"std::string",
+        /*default=*/"\"generalized\"",
+        /*description=*/"Fusion strategy: dependencies or generalized">,
   ];
 }
 
