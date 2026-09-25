@@ -1,5 +1,7 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rsqrt outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=FORWARD
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rsqrt outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=REVERSE
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rsqrt_complex outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=FORWARD-COMPLEX
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rsqrt_complex outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=REVERSE-COMPLEX
 // RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt | stablehlo-translate - --interpret --allow-unregistered-dialect
 
 func.func @rsqrt(%x : tensor<2xf32>) -> tensor<2xf32> {
@@ -24,6 +26,30 @@ func.func @rsqrt(%x : tensor<2xf32>) -> tensor<2xf32> {
 // REVERSE-NEXT:    %2 = stablehlo.multiply %cst, %1 : tensor<2xf32>
 // REVERSE-NEXT:    %3 = stablehlo.divide %arg1, %2 : tensor<2xf32>
 // REVERSE-NEXT:    return %3 : tensor<2xf32>
+// REVERSE-NEXT:  }
+
+func.func @rsqrt_complex(%x : tensor<2xcomplex<f32>>) -> tensor<2xcomplex<f32>> {
+  %y = stablehlo.rsqrt %x : (tensor<2xcomplex<f32>>) -> tensor<2xcomplex<f32>>
+  func.return %y : tensor<2xcomplex<f32>>
+}
+
+// FORWARD:  func.func @rsqrt_complex(%arg0: tensor<2xcomplex<f32>>, %arg1: tensor<2xcomplex<f32>>) -> (tensor<2xcomplex<f32>>, tensor<2xcomplex<f32>>) {
+// FORWARD-NEXT:    %cst = stablehlo.constant dense<-2.000000e+00> : tensor<2xcomplex<f32>>
+// FORWARD-NEXT:    %0 = stablehlo.sqrt %arg0 : tensor<2xcomplex<f32>>
+// FORWARD-NEXT:    %1 = stablehlo.multiply %arg0, %0 : tensor<2xcomplex<f32>>
+// FORWARD-NEXT:    %2 = stablehlo.multiply %cst, %1 : tensor<2xcomplex<f32>>
+// FORWARD-NEXT:    %3 = stablehlo.divide %arg1, %2 : tensor<2xcomplex<f32>>
+// FORWARD-NEXT:    %4 = stablehlo.rsqrt %arg0 : tensor<2xcomplex<f32>>
+// FORWARD-NEXT:    return %4, %3 : tensor<2xcomplex<f32>>, tensor<2xcomplex<f32>>
+// FORWARD-NEXT:  }
+
+// REVERSE:  func.func @rsqrt_complex(%arg0: tensor<2xcomplex<f32>>, %arg1: tensor<2xcomplex<f32>>) -> tensor<2xcomplex<f32>> {
+// REVERSE-NEXT:    %cst = stablehlo.constant dense<-2.000000e+00> : tensor<2xcomplex<f32>>
+// REVERSE-NEXT:    %0 = stablehlo.sqrt %arg0 : tensor<2xcomplex<f32>>
+// REVERSE-NEXT:    %1 = stablehlo.multiply %arg0, %0 : tensor<2xcomplex<f32>>
+// REVERSE-NEXT:    %2 = stablehlo.multiply %cst, %1 : tensor<2xcomplex<f32>>
+// REVERSE-NEXT:    %3 = stablehlo.divide %arg1, %2 : tensor<2xcomplex<f32>>
+// REVERSE-NEXT:    return %3 : tensor<2xcomplex<f32>>
 // REVERSE-NEXT:  }
 
 func.func @main() {
