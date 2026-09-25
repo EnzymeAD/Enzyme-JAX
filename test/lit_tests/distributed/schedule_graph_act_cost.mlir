@@ -89,6 +89,30 @@ module {
 
 // -----
 
+// A real launch with act_kernel_launch_overhead set pays a fixed host-side
+// dispatch cost first, modeled as its own CPU compute node preceding the
+// launch node (see appendActCalleeNode): 1.0e-8 seconds * 1.0e9 ns-per-second
+// = 10ns overhead, flops back-solved to device.flops (2) * 10 = 20. The
+// launch node itself is unchanged (flops=10, time=5, as in the first case
+// above) except its sole predecessor is now the dispatch node, not the add.
+// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
+// CHECK: node 1: compute func.call: flops=20 bytes=0 time=10 preds=[0]
+// CHECK: node 2: compute func.call: flops=10 bytes=0 time=5 preds=[1]
+// CHECK: schedule graph: 3 nodes (3 compute, 0 communication, 0 call)
+module {
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e9, device_mem_bandwidth = 2.4e10, device_clock_frequency = 1.0e11, act_kernel_launch_overhead = 1.0e-8}
+
+  func.func @main(%a: tensor<4xf32>) -> tensor<4xf32> {
+    %s = stablehlo.add %a, %a : tensor<4xf32>
+    %r = func.call @act_launch(%s) : (tensor<4xf32>) -> tensor<4xf32>
+    return %r : tensor<4xf32>
+  }
+
+  func.func private @act_launch(tensor<4xf32>) -> tensor<4xf32> attributes {act.cost = 4.8e2 : f64}
+}
+
+// -----
+
 // A call to a bodyless callee that carries act.role instead of act.cost
 // (ACT's convention for an @act_stage_N/@act_fetch_N declaration: the memref
 // copy it performs is costed as part of its neighboring launch, not

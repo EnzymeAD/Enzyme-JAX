@@ -229,6 +229,27 @@ void appendActCalleeNode(Operation *op, ActCalleeCost cost,
                          std::vector<ScheduleEvent> &nodes,
                          llvm::DenseMap<Value, size_t> &valueNode,
                          llvm::DenseMap<Value, size_t> &lastMemrefToucher) {
+  // A real launch pays a fixed host-side dispatch cost before the
+  // accelerator itself runs (see DeviceCostParams::actKernelLaunchOverheadNs):
+  // modeled as its own CPU-priced Compute node immediately preceding the
+  // launch, so it competes for the device's one shared compute resource and
+  // is reported as cpu_compute_time rather than accelerator time. A
+  // stage/fetch call issues no accelerator kernel of its own, so it pays
+  // none.
+  std::optional<size_t> dispatchIndex;
+  if (cost.isRealLaunch && device.actKernelLaunchOverheadNs > 0) {
+    ScheduleEvent dispatch;
+    dispatch.kind = ScheduleEventKind::Compute;
+    dispatch.op = op;
+    dispatch.isolatedDuration = device.actKernelLaunchOverheadNs;
+    dispatch.computeCost.flops = device.flops * dispatch.isolatedDuration;
+    for (Value operand : op->getOperands())
+      if (std::optional<size_t> producer = lookup(valueNode, operand))
+        addPredecessor(dispatch, *producer);
+    dispatchIndex = nodes.size();
+    nodes.push_back(std::move(dispatch));
+  }
+
   ScheduleEvent event;
   event.kind = ScheduleEventKind::Compute;
   event.op = op;
@@ -243,9 +264,13 @@ void appendActCalleeNode(Operation *op, ActCalleeCost cost,
   // OpCost::time() formula as an ordinary op keeps its resource accounting
   // consistent with every other Compute node's.
   event.computeCost.flops = device.flops * event.isolatedDuration;
-  for (Value operand : op->getOperands())
-    if (std::optional<size_t> producer = lookup(valueNode, operand))
-      addPredecessor(event, *producer);
+  if (dispatchIndex) {
+    addPredecessor(event, *dispatchIndex);
+  } else {
+    for (Value operand : op->getOperands())
+      if (std::optional<size_t> producer = lookup(valueNode, operand))
+        addPredecessor(event, *producer);
+  }
   size_t index = nodes.size();
   // A stage/launch/fetch call's own operands are exactly the memref views it
   // reads or writes as a side effect (see ActWorkerClient.cpp's spliced

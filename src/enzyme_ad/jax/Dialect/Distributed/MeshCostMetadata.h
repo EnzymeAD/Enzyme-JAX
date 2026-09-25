@@ -43,18 +43,29 @@ struct DeviceCostParams {
   // the modeled device, or is systematically optimistic next to the
   // roofline estimate of the same kernel.
   double actCostScale;
+  // Nanoseconds of fixed host-side cost charged for every real ACT kernel
+  // launch (see appendActCalleeNode), on top of the launch's own act.cost.
+  // Zero by default: unset, a candidate that dispatches many small ACT
+  // launches instead of one large one pays no more host overhead than the
+  // large one, which understates its real cost relative to a real
+  // accelerator.
+  double actKernelLaunchOverheadNs;
 
   static constexpr double kDefaultFlops = 1.0e5;
   static constexpr double kDefaultMemBandwidth = 3.0e3;
   static constexpr double kDefaultClockFrequency = 1.5;
   static constexpr double kDefaultActCostScale = 1.0;
+  static constexpr double kDefaultActKernelLaunchOverheadNs = 0.0;
 
   DeviceCostParams(double flops = kDefaultFlops,
                    double memBandwidth = kDefaultMemBandwidth,
                    double clockFrequency = kDefaultClockFrequency,
-                   double actCostScale = kDefaultActCostScale)
+                   double actCostScale = kDefaultActCostScale,
+                   double actKernelLaunchOverheadNs =
+                       kDefaultActKernelLaunchOverheadNs)
       : flops(flops), memBandwidth(memBandwidth),
-        clockFrequency(clockFrequency), actCostScale(actCostScale) {}
+        clockFrequency(clockFrequency), actCostScale(actCostScale),
+        actKernelLaunchOverheadNs(actKernelLaunchOverheadNs) {}
 
   // Nanoseconds of an ACT launch that ACT costed at `cycles`, rounded to the
   // nearest nanosecond.

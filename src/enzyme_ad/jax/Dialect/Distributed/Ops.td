@@ -41,6 +41,14 @@ def PhysicalMeshOp
         act.cost (a cycle count) into nanoseconds.
       - act_cost_scale: dimensionless calibration multiplied into every
         act.cost before that conversion.
+      - act_kernel_launch_overhead: seconds of fixed host-side cost to
+        dispatch one real ACT kernel launch (an act.cost-bearing callee, not
+        a stage/fetch), modeled as an ordinary CPU-priced event immediately
+        before the launch -- so it competes for the device's one compute
+        resource and is reported as cpu_compute_time, not accelerator time.
+        Lets a candidate that decomposes a macro into several small ACT
+        launches be charged for each dispatch, instead of every launch
+        looking free of host overhead.
   }];
   let arguments = (ins SymbolNameAttr : $sym_name, StrAttr : $device_target,
                      ArrayAttr : $axes, // array of physical axis types.
@@ -50,7 +58,8 @@ def PhysicalMeshOp
                      OptionalAttr<F64Attr> : $device_flops,
                      OptionalAttr<F64Attr> : $device_mem_bandwidth,
                      OptionalAttr<F64Attr> : $device_clock_frequency,
-                     OptionalAttr<F64Attr> : $act_cost_scale
+                     OptionalAttr<F64Attr> : $act_cost_scale,
+                     OptionalAttr<F64Attr> : $act_kernel_launch_overhead
   );
   let assemblyFormat =
       "$sym_name `device_target` $device_target `axes` $axes attr-dict";
