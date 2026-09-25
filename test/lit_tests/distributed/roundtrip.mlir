@@ -19,7 +19,7 @@ module {
   %f1 = axis.factor %axis : !axis.shape_axis<tensor<12xf32>, 0> <2, 3>
   %ctx_callee = axis.product (%f0 : !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 6>, %f1 : !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 3>)
 
-  "distributed.DistributedFunction"(%ctx_callee) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>, function_type = (tensor<12xf32>) -> tensor<12xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = [0]>]>, sym_name = "identity"}> ({
+  "distributed.DistributedFunction"(%ctx_callee) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>, function_type = (tensor<12xf32>) -> tensor<12xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = [0]>]>, sym_name = "identity"}> ({
   ^bb0(%arg0: tensor<12xf32>):
     distributed.DistributedYield (%arg0 : tensor<12xf32>)
   }) : (!axis.factor_group<4>) -> ()
@@ -32,7 +32,7 @@ module {
 // CHECK: %{{.*}} = distributed.LogicalMeshAxes 3 : <3>
 // CHECK: %{{.*}} = distributed.ReplicationAxis 4 : <4>
 // CHECK: %{{.*}} = distributed.DeviceLocalAxis 5 : <5>
-// CHECK: "distributed.DistributedFunction"(%{{.*}}) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>, function_type = (tensor<12xf32>) -> tensor<12xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = [0]>]>, sym_name = "identity"}> ({
+// CHECK: "distributed.DistributedFunction"(%{{.*}}) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>, function_type = (tensor<12xf32>) -> tensor<12xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[}}{{\]\]}} : unreduced_axes = [0]>]>, sym_name = "identity"}> ({
 // CHECK: distributed.DistributedYield (%{{.*}} : tensor<12xf32>)
 // CHECK: }) : (!axis.factor_group<4>) -> ()
 

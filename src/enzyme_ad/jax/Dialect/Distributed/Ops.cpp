@@ -61,6 +61,33 @@ static LogicalResult verifyIndexedShardingPerValueAgainstDimensionRanges(
              << " != " << expectedDimCount << ")";
     }
 
+    // A logical axis may shard at most one dimension of a tensor, at most once,
+    // and a sharded axis is not also unreduced on that tensor.
+    llvm::SmallDenseSet<int64_t> usedAxes;
+    auto claimAxis = [&](int64_t axisIndex, StringRef where) -> LogicalResult {
+      if (usedAxes.insert(axisIndex).second) {
+        return success();
+      }
+      return op->emitOpError()
+             << "requires " << ownerName << "[" << valueIndex
+             << "] to use partitioning axis " << axisIndex
+             << " at most once, but it appears again in " << where;
+    };
+    for (auto [dimIndex, dimPartitionAxes] :
+         llvm::enumerate(sharding.getDimPartitioningAxes())) {
+      for (int64_t axisIndex : dimPartitionAxes.asArrayRef()) {
+        if (failed(claimAxis(axisIndex, "dim_partitioning_axes[" +
+                                            std::to_string(dimIndex) + "]"))) {
+          return failure();
+        }
+      }
+    }
+    for (int64_t axisIndex : sharding.getUnreducedAxes().asArrayRef()) {
+      if (failed(claimAxis(axisIndex, "unreduced_axes"))) {
+        return failure();
+      }
+    }
+
     for (auto [dimIndex, dimPartitionAxes] :
          llvm::enumerate(sharding.getDimPartitioningAxes())) {
       if (static_cast<int64_t>(dimIndex) >= expectedDimCount) {
