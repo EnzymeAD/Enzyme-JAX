@@ -196,7 +196,8 @@ void JITCallOp::getEffects(
 template <>
 enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
     PatternRewriter &rewriter, enzymexla::KernelCallOp launchOp,
-    ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
+    ArrayRef<Type> resTys, ArrayAttr outputLayouts,
+    ArrayAttr outputAliases) const {
   return enzymexla::KernelCallOp::create(
       rewriter, launchOp.getLoc(), resTys, launchOp.getFn(),
       launchOp.getGridx(), launchOp.getGridy(), launchOp.getGridz(),
@@ -204,21 +205,20 @@ enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
       launchOp.getShmem(), launchOp.getClusterx(), launchOp.getClustery(),
       launchOp.getClusterz(), launchOp.getInputs(),
       launchOp.getBackendConfigAttr(), launchOp.getOperandLayoutsAttr(),
-      /*resultLayouts*/ nullptr, launchOp.getArgAttrsAttr(),
-      launchOp.getResAttrsAttr(), outputAliases,
-      launchOp.getXlaSideEffectFreeAttr());
+      outputLayouts, launchOp.getArgAttrsAttr(), launchOp.getResAttrsAttr(),
+      outputAliases, launchOp.getXlaSideEffectFreeAttr());
 }
 
 template <>
 enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
     PatternRewriter &rewriter, enzymexla::JITCallOp launchOp,
-    ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
+    ArrayRef<Type> resTys, ArrayAttr outputLayouts,
+    ArrayAttr outputAliases) const {
   return enzymexla::JITCallOp::create(
       rewriter, launchOp.getLoc(), resTys, launchOp.getFn(),
       launchOp.getInputs(), launchOp.getBackendConfigAttr(),
-      launchOp.getOperandLayoutsAttr(),
-      /*resultLayouts*/ nullptr, launchOp.getArgAttrsAttr(),
-      launchOp.getResAttrsAttr(), outputAliases,
+      launchOp.getOperandLayoutsAttr(), outputLayouts,
+      launchOp.getArgAttrsAttr(), launchOp.getResAttrsAttr(), outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
 }
 
@@ -310,12 +310,12 @@ public:
       Value ps;
       if (PET)
         // non-opaque pointer
-        ps = enzymexla::TypeSizeOp::create(rewriter, 
+        ps = enzymexla::TypeSizeOp::create(rewriter,
             op.getLoc(), rewriter.getIndexType(), mlir::TypeAttr::get(PET));
       else
         // opaque pointer
         ps = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 1);
-      auto ms = enzymexla::TypeSizeOp::create(rewriter, 
+      auto ms = enzymexla::TypeSizeOp::create(rewriter,
           op.getLoc(), rewriter.getIndexType(), mlir::TypeAttr::get(MET));
       idx[0] = MulIOp::create(rewriter, op.getLoc(), idx[0], ms);
       idx[0] = DivUIOp::create(rewriter, op.getLoc(), idx[0], ps);
@@ -2059,7 +2059,7 @@ LogicalResult fixupGetFunc(LLVM::CallOp op, OpBuilder &rewriter,
       if (!FT2.getParams()[i].isa<MemRefType>() ||
           !args[i].getType().isa<LLVM::LLVMPointerType>())
         return failure();
-      args[i] = polygeist::Pointer2MemrefOp::create(rewriter, 
+      args[i] = polygeist::Pointer2MemrefOp::create(rewriter,
           op.getLoc(), FT2.getParams()[i], args[i]);
     }
   }
