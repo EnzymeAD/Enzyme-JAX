@@ -6,6 +6,7 @@
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/AnalysisManager.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
@@ -323,6 +324,50 @@ void SymbolFactorMerge::attemptMergeSymbols(llvm::ArrayRef<AxisSymbol> a,
     return;
   }
 
+  // A symbol on both sides sits at the same position in each (checked above),
+  // so it maps to itself and cuts both lists into segments of equal extent.
+  // Only the segments between shared symbols are unified, so each pair is
+  // merged on its own. The overlap check must not see the shared symbols: a
+  // shared symbol overlaps its neighbors on both sides, so in [a, b] ~ [a, c]
+  // it would look like a conflict between a and c, although only b and c
+  // are being unified.
+  auto isShared = [&](AxisSymbol sym) {
+    return llvm::is_contained(lhs_factors, sym) &&
+           llvm::is_contained(rhs_factors, sym);
+  };
+  if (llvm::any_of(lhs_factors, isShared)) {
+    llvm::SmallVector<AxisSymbol> lhsSegment, rhsSegment;
+    auto mergeSegments = [&]() {
+      // An empty segment is extent 1, so the other side holds only extent-1
+      // symbols and there is nothing to unify.
+      if (!lhsSegment.empty() && !rhsSegment.empty()) {
+        attemptMergeSymbols(lhsSegment, rhsSegment);
+      }
+      lhsSegment.clear();
+      rhsSegment.clear();
+    };
+    auto rhsIt = rhs_factors.begin();
+    for (AxisSymbol sym : lhs_factors) {
+      if (!isShared(sym)) {
+        lhsSegment.push_back(sym);
+        continue;
+      }
+      for (; !(*rhsIt == sym); ++rhsIt) {
+        // Positions only order shared symbols of extent > 1; two extent-1
+        // shared symbols may still appear in opposite orders.
+        if (isShared(*rhsIt)) {
+          return;
+        }
+        rhsSegment.push_back(*rhsIt);
+      }
+      ++rhsIt;
+      mergeSegments();
+    }
+    rhsSegment.append(rhsIt, rhs_factors.end());
+    mergeSegments();
+    return;
+  }
+
   auto lhs_factor_overlaps = getOverlapping(lhs_factors);
   auto rhs_factor_overlaps = getOverlapping(rhs_factors);
 
@@ -620,6 +665,18 @@ ShardyLogicalAxisAnalysis::getReductionAxes(OpResult result) {
   return reductionSymbols;
 }
 
+bool ShardyLogicalAxisAnalysis::isUnshardable(AxisSymbol symbol) {
+  if (symbolFactorMerge.isUnshardable(symbol)) {
+    return true;
+  }
+  if (!shardyBaseline) {
+    return false;
+  }
+  return llvm::all_of(symbolFactorMerge.resolve(symbol), [&](AxisSymbol root) {
+    return !getPhysicalBinding(root);
+  });
+}
+
 ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes
 ShardyLogicalAxisAnalysis::excludeUnshardable(
     const TensorAxesToPartitionAxes &axes) {
@@ -628,7 +685,7 @@ ShardyLogicalAxisAnalysis::excludeUnshardable(
   for (const auto &dimSymbols : axes) {
     auto &kept = filtered.emplace_back();
     for (AxisSymbol symbol : dimSymbols) {
-      if (!symbolFactorMerge.isUnshardable(symbol)) {
+      if (!isUnshardable(symbol)) {
         kept.push_back(symbol);
       }
     }
@@ -640,7 +697,7 @@ llvm::SmallVector<AxisSymbol> ShardyLogicalAxisAnalysis::excludeUnshardable(
     llvm::ArrayRef<AxisSymbol> symbols) {
   llvm::SmallVector<AxisSymbol> kept;
   for (AxisSymbol symbol : symbols) {
-    if (!symbolFactorMerge.isUnshardable(symbol)) {
+    if (!isUnshardable(symbol)) {
       kept.push_back(symbol);
     }
   }
@@ -669,6 +726,29 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(BlockArgument arg) {
     it->second[i] = symbolFactorMerge.resolve(it->second[i]);
   }
   return it->second;
+}
+
+// Whether two SSA factors denote the same axis factor. Axis ops without side
+// effects (factor, segment, product, and physical mesh axis lookups) are
+// values: two such ops with equivalent operands are interchangeable, and CSE
+// may merge any subset of them. Only declarative ops (a logical or
+// device-local axis declaration) carry identity of their own.
+static bool areEquivalentFactors(Value lhs, Value rhs) {
+  if (lhs == rhs) {
+    return true;
+  }
+  auto lhsResult = dyn_cast<OpResult>(lhs);
+  auto rhsResult = dyn_cast<OpResult>(rhs);
+  if (!lhsResult || !rhsResult ||
+      lhsResult.getResultNumber() != rhsResult.getResultNumber() ||
+      !isMemoryEffectFree(lhsResult.getOwner()) ||
+      !isMemoryEffectFree(rhsResult.getOwner())) {
+    return false;
+  }
+  return OperationEquivalence::isEquivalentTo(
+      lhsResult.getOwner(), rhsResult.getOwner(),
+      [](Value a, Value b) { return success(areEquivalentFactors(a, b)); },
+      /*markEquivalent=*/nullptr, OperationEquivalence::IgnoreLocations);
 }
 
 LogicalResult ShardyLogicalAxisAnalysis::assignLogicalAxis(AxisSymbol symbol,
@@ -711,7 +791,7 @@ LogicalResult ShardyLogicalAxisAnalysis::assignLogicalAxis(AxisSymbol symbol,
       logicalAxisToFactor.try_emplace(resolvedSymbol, factor);
   auto [factorIt, insertedFactor] =
       factorToLogicalAxis.try_emplace(factor, resolvedSymbol);
-  if ((!insertedSymbol && symbolIt->second != factor) ||
+  if ((!insertedSymbol && !areEquivalentFactors(symbolIt->second, factor)) ||
       (!insertedFactor && !(factorIt->second == resolvedSymbol))) {
     sdy_func->emitError() << "conflicting logical axis and SSA factor "
                           << "assignment";
@@ -1161,7 +1241,7 @@ void ShardyLogicalAxisAnalysis::validateLogicalAxisAssignments() {
     AxisSymbol resolvedSymbol = resolved.front();
     auto [it, inserted] =
         resolvedSymbolToFactor.try_emplace(resolvedSymbol, factor);
-    if (!inserted && it->second != factor) {
+    if (!inserted && !areEquivalentFactors(it->second, factor)) {
       sdy_func->emitError()
           << "unified logical axis has distinct SSA factor anchors "
           << it->second << " and " << factor;

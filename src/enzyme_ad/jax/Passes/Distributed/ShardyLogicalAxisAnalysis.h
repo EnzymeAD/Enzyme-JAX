@@ -258,11 +258,11 @@ public:
    * global result.
    */
   llvm::SmallVector<AxisSymbol> getReductionAxes(OpResult result);
-  // Whether a symbol's resolved root has been tagged unshardable (see
-  // SymbolFactorMerge::markUnshardable).
-  bool isUnshardable(AxisSymbol symbol) {
-    return symbolFactorMerge.isUnshardable(symbol);
-  }
+  // Whether a symbol is materialized as a device-local axis, so it never needs
+  // communication: its resolved root was tagged unshardable (see
+  // SymbolFactorMerge::markUnshardable), or, in Shardy baseline mode, Shardy
+  // does not shard it over any physical digits.
+  bool isUnshardable(AxisSymbol symbol);
   /**
    * Returns a copy of a tensor's per-dimension partitioning-axis lists with
    * every unshardable symbol dropped. Unshardable symbols stay in the axes a
