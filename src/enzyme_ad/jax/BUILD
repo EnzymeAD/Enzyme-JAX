@@ -1951,6 +1951,7 @@ cc_library(
         ":PerfifyPassesIncGen",
         ":PerfifyTypesIncGen",
         "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:BytecodeOpInterface",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:FunctionInterfaces",

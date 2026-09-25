@@ -10,8 +10,8 @@ include "Dialect.td"
 include "Types.td"
 
 def DefSymbolOp : PerfifyOp<"define_symbol", [Symbol]> {
-  let arguments = (ins SymbolNameAttr:$symbol, TypeAttr:$type);
-  let assemblyFormat = "$symbol `:` $type attr-dict";
+  let arguments = (ins SymbolNameAttr:$sym_name, TypeAttr:$type);
+  let assemblyFormat = "$sym_name `:` $type attr-dict";
 }
 
 def SymCostOp : PerfifyOp<"sym_cost", [
@@ -43,9 +43,9 @@ def CompareOp : PerfifyOp<"cmp", []> {
 }
 
 def ConstantCostOp : PerfifyOp<"constant_cost", []> {
-  let arguments = (ins I64Attr:$cycle_cost);
-  let assemblyFormat = "$cycle_cost attr-dict `:` type($out_cost)"; 
-  let results = (outs CostType:$out_cost);
+  let regions = (region AnyRegion:$body);
+  let assemblyFormat = "$body attr-dict `:` type($result)";
+  let results = (outs CostType:$result);
 }
 
 def ArgOp : PerfifyOp<"arg", []> {
@@ -78,7 +78,8 @@ def AssumptionsOp : PerfifyOp<"assumptions", [Terminator]> {
 }
 
 def YieldOp : PerfifyOp<"yield", [Terminator]> {
-  let assemblyFormat = "attr-dict";
+  let arguments = (ins Optional<AnyType>:$value);
+  let assemblyFormat = "attr-dict ($value^ `:` type($value))?";
 }
 
 #endif // ENZYME_AD_JAX_DIALECT_PERFIFY_OPS_TD
