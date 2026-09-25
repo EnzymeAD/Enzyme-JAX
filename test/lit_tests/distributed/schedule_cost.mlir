@@ -606,3 +606,74 @@ module {
     distributed.DistributedYield (%d : tensor<4xf32>)
   }
 }
+
+// -----
+
+// A callee called twice, whose body holds one all-reduce (16) followed by a
+// dependent kernel (3), so each call's makespan is 19. The two calls are
+// sequential hard barriers (makespan 38), and the summary covers the time
+// spent inside the callee once per call site: 2 x 16 communicating, 2 x 3
+// computing, and idle is the makespan minus that compute.
+// CHECK: node 0: call start=0 finish=19
+// CHECK: node 1: call start=19 finish=38
+// CHECK: schedule cost: makespan=38 over 2 nodes, critical path=[0, 1]
+// CHECK: schedule cost summary: communicating=32 computing=6 utilization=0.000105263 idle=32 activeUtilization=0.000666667
+module {
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e9], axis_latencies = [0.0e0], launch_latency = 0.0e0, device_flops = 2.0e12, device_mem_bandwidth = 2.0e10}
+
+  func.func @main() {
+    return
+  }
+
+  %p0 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 1>
+  %rep2 = distributed.ReplicationAxis 2 : !distributed.replication_axis<2>
+  %ti0 = axis.getaxis tensor<4xf32> 0
+  %to0 = axis.getaxis tensor<4xf32> 0
+  %f1 = axis.factor %p0 : !distributed.physical_comm_axis<2, 1> <2, 1>
+  %mesh_in0 = axis.product (%f1 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %f2 = axis.factor %p0 : !distributed.physical_comm_axis<2, 1> <2, 1>
+  %mesh_out0 = axis.product (%f2 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %f3 = axis.factor %p0 : !distributed.physical_comm_axis<2, 1> <2, 1>
+  %red0 = axis.product (%f3 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %f4 = axis.factor %ti0 : !axis.shape_axis<tensor<4xf32>, 0> <4, 1>
+  %lhs0 = axis.product (%f4 : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>)
+  %f5 = axis.factor %to0 : !axis.shape_axis<tensor<4xf32>, 0> <4, 1>
+  %rhs0 = axis.product (%f5 : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>)
+  %f6 = axis.factor %rep2 : !distributed.replication_axis<2> <2, 1>
+  %lhs1 = axis.product (%f6 : !axis.axis_factor<!distributed.replication_axis<2>, 2, 1>)
+  %f7 = axis.factor %p0 : !distributed.physical_comm_axis<2, 1> <2, 1>
+  %rhs1 = axis.product (%f7 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %map0 = axis.map %lhs0, %lhs1 to %rhs0, %rhs1 : [!axis.factor_group<4>, !axis.factor_group<2>] [!axis.factor_group<4>, !axis.factor_group<2>]
+
+  %a = tensor.empty() : tensor<4xf32>
+  %c1 = distributed.DistributedCall @callee (%a : tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+    -> (tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+    axes ()
+  %c2 = distributed.DistributedCall @callee (%c1 : tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+    -> (tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+    axes ()
+
+  "distributed.DistributedFunction"() <{
+    argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>,
+    function_type = (tensor<4xf32>) -> tensor<4xf32>,
+    output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>,
+    sym_name = "callee"
+  }> ({
+  ^bb0(%z: tensor<4xf32>):
+    %h0 = distributed.Collective %z : tensor<4xf32> on %mesh_in0 : !axis.factor_group<2> to tensor<4xf32> on %mesh_out0 : !axis.factor_group<2> reduces (%red0 : !axis.factor_group<2>) maps %map0 : !axis.map {
+    ^bb0(%lhs_v0: tensor<f32>, %rhs_v0: tensor<f32>):
+      %r0 = stablehlo.add %lhs_v0, %rhs_v0 : tensor<f32>
+      stablehlo.return %r0 : tensor<f32>
+    }
+    %v0 = distributed.Await %h0 : !distributed.asynch_handle<tensor<4xf32>> -> tensor<4xf32>
+
+    %k = distributed.DistributedKernel (%v0 : tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      -> (tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
+      axes () {
+    ^bb0(%x: tensor<4xf32>):
+      %d = stablehlo.add %x, %x : tensor<4xf32>
+      distributed.DistributedYield (%d : tensor<4xf32>)
+    }
+    distributed.DistributedYield (%k : tensor<4xf32>)
+  }) : () -> ()
+}

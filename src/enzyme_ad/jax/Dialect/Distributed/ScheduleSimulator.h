@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -96,6 +97,8 @@ struct SimPredecessor {
   size_t multiplicity = 1;
 };
 
+struct TimelineResult;
+
 // One simulated event. A plain value type: nothing here refers back to the
 // op, collective step or callee graph it was built from (see buildSimGraph
 // for that mapping).
@@ -127,6 +130,12 @@ struct SimEvent {
   // (see simulate()): unlike Compute events, these can genuinely overlap
   // (independent axes, or fair-shared time on one axis).
   bool isCommunication = false;
+  // FunctionCall only (null otherwise): the callee scope's own, already
+  // simulated timeline. The event itself is scheduled as a pure latency
+  // floor of the callee's makespan; simulate() only reads this to fold the
+  // callee's time breakdown into its own summary metrics and to expose it
+  // through TimelineResult::calleeTimelines.
+  std::shared_ptr<const TimelineResult> callee;
   std::vector<SimPredecessor> predecessors;
   // This event's position in the order the graph was built (ScheduleGraph's
   // node index, or a nested graph's own node index): used only as a
@@ -160,12 +169,20 @@ struct TimelineResult {
   // actually determined `makespan` when contention adds delay.
   std::vector<size_t> criticalPath;
 
-  // Summary metrics derived from the start/finish arrays above. Each is
-  // scoped to this TimelineResult alone: a FunctionCall event contributes
-  // only its own latency floor here (see buildSimGraph), not the
-  // compute/communication time spent inside its callee's nested simulation.
-  // A caller wanting a whole-program total must add in each FunctionCall
-  // event's callee TimelineResult explicitly.
+  // Per-event callee timelines, parallel to the SimGraph's events: the
+  // FunctionCall event's SimEvent::callee, null for every other event. Lets
+  // a consumer walk a whole-program breakdown that needs per-event detail
+  // the aggregates below do not keep (e.g. SearchStrategies.cpp's ACT/CPU
+  // compute split) through each call's own timeline.
+  std::vector<std::shared_ptr<const TimelineResult>> calleeTimelines;
+
+  // Summary metrics derived from the start/finish arrays above. Each covers
+  // the whole program under this scope: a FunctionCall event adds its
+  // callee's own totals, once per call site, so a callee called twice
+  // counts twice. A call is a hard barrier (ScheduleGraph.h), so nothing
+  // else in the caller's scope runs while it is in flight, and a callee's
+  // intervals never overlap the caller's own; adding the callee's totals
+  // therefore keeps every interval-union metric below an exact union.
 
   // Nanoseconds during which at least one Communication event was active,
   // i.e. the union of every Communication event's [start, finish) interval
@@ -176,6 +193,9 @@ struct TimelineResult {
   // event's own duration. exclusiveCompute guarantees at most one Compute
   // event is ever active, so no interval union is needed here.
   int64_t totalComputeTime = 0;
+  // Flops executed by every Compute event, the numerator of both
+  // utilization metrics below.
+  double totalFlopsExecuted = 0;
   // Time-weighted average fraction of peak compute throughput actually
   // achieved: (total flops executed) / (deviceFlops * makespan).
   //
@@ -226,7 +246,7 @@ struct DeviceCostParams;
 // recursively simulated to obtain a real makespan for the call's own
 // duration (rather than ScheduleGraph.h's own sum-of-isolated-durations
 // proxy), so translating a graph with nested calls also runs nested
-// simulations.
+// simulations; each nested result is kept on the event (SimEvent::callee).
 SimGraph buildSimGraph(const ScheduleGraph &graph, const MeshCostParams &mesh,
                        const DeviceCostParams &device,
                        size_t kMaxInFlight = kDefaultMaxInFlight);

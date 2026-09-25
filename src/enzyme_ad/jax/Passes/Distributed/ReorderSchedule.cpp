@@ -131,22 +131,16 @@ void reorderBlockByAdmission(Block &block, ArrayRef<ScheduleEvent> nodes,
 #endif
 }
 
-// Simulates `graph`'s own scope and reorders every physical block its
-// nodes' ops live in, then recurses into each FunctionCall node's callee
-// scope with a fresh simulation of its own.
+// Reorders every physical block `graph`'s nodes' ops live in by `result`,
+// `graph`'s own simulated timeline, then recurses into each FunctionCall
+// node's callee scope with that call's own nested timeline
+// (TimelineResult::calleeTimelines).
 //
-// - Module scope and a function body are two separate blocks that
-//   ScheduleGraph.h treats as one flattened scope; a nested callee scope
-//   spans only its own single-block body.
-// - Recursion into a callee is needed because the caller-level simulation
-//   only records the callee's overall makespan: buildSimGraph's
-//   FunctionCall case (ScheduleSimulator.cpp) reads `.makespan` off the
-//   nested TimelineResult and discards the rest.
+// Module scope and a function body are two separate blocks that
+// ScheduleGraph.h treats as one flattened scope; a nested callee scope spans
+// only its own single-block body.
 void reorderScopeRecursively(const ScheduleGraph &graph,
-                             const MeshCostParams &mesh,
-                             const DeviceCostParams &device) {
-  TimelineResult result = simulateScheduleGraph(graph, mesh, device);
-
+                             const TimelineResult &result) {
   llvm::SmallSetVector<Block *, 4> blocks;
   for (const ScheduleEvent &node : graph.nodes)
     if (node.op)
@@ -154,9 +148,10 @@ void reorderScopeRecursively(const ScheduleGraph &graph,
   for (Block *block : blocks)
     reorderBlockByAdmission(*block, graph.nodes, result);
 
-  for (const ScheduleEvent &node : graph.nodes)
+  for (auto [index, node] : llvm::enumerate(graph.nodes))
     if (node.kind == ScheduleEventKind::FunctionCall)
-      reorderScopeRecursively(*node.calleeGraph, mesh, device);
+      reorderScopeRecursively(*node.calleeGraph,
+                              *result.calleeTimelines[index]);
 }
 
 struct ReorderSchedulePass
@@ -186,7 +181,7 @@ struct ReorderSchedulePass
     MeshCostParams mesh = meshCostParamsFromPhysicalMesh(physicalMesh);
     DeviceCostParams device = deviceCostParamsFromPhysicalMesh(physicalMesh);
 
-    reorderScopeRecursively(graph, mesh, device);
+    reorderScopeRecursively(graph, simulateScheduleGraph(graph, mesh, device));
   }
 };
 

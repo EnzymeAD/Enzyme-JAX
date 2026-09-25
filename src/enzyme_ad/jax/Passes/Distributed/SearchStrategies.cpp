@@ -1024,18 +1024,25 @@ static LogicalResult writeJsonAtomically(ModuleOp diagnosticModule,
 
 // A feasible candidate's compute time split between real ACT accelerator
 // dispatches and everything else (ordinary ops, plus ACT's zero-cost
-// stage/fetch calls, which add no time to either bucket).
+// stage/fetch calls, which add no time to either bucket). Covers the whole
+// program, like TimelineResult's own totals: each FunctionCall event
+// contributes its callee's split once per call site.
 struct ComputeTimeSplit {
   double acceleratorTime = 0;
   double cpuTime = 0;
   int64_t numAcceleratorLaunches = 0;
 };
 
-static ComputeTimeSplit splitComputeTime(const ScheduleGraph &graph,
-                                         const TimelineResult &timeline) {
-  ComputeTimeSplit split;
+static void accumulateComputeTimeSplit(const ScheduleGraph &graph,
+                                       const TimelineResult &timeline,
+                                       ComputeTimeSplit &split) {
   for (size_t i = 0, e = graph.nodes.size(); i < e; ++i) {
     const ScheduleEvent &node = graph.nodes[i];
+    if (node.kind == ScheduleEventKind::FunctionCall) {
+      accumulateComputeTimeSplit(*node.calleeGraph,
+                                 *timeline.calleeTimelines[i], split);
+      continue;
+    }
     if (node.kind != ScheduleEventKind::Compute)
       continue;
     double duration = timeline.finish[i] - timeline.start[i];
@@ -1046,6 +1053,12 @@ static ComputeTimeSplit splitComputeTime(const ScheduleGraph &graph,
       split.cpuTime += duration;
     }
   }
+}
+
+static ComputeTimeSplit splitComputeTime(const ScheduleGraph &graph,
+                                         const TimelineResult &timeline) {
+  ComputeTimeSplit split;
+  accumulateComputeTimeSplit(graph, timeline, split);
   return split;
 }
 

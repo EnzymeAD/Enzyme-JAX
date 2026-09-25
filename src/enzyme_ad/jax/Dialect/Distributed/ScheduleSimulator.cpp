@@ -378,8 +378,12 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
   // Compute time is a plain sum of Compute events' durations: exclusiveCompute
   // already guarantees at most one is ever active, so no interval union is
   // needed.
+  //
+  // A FunctionCall event adds its callee's own totals directly: the call
+  // barrier keeps the callee's intervals disjoint from every interval in
+  // this scope, so its communication union simply adds to this one.
   std::vector<std::pair<int64_t, int64_t>> commIntervals;
-  double totalFlopsExecuted = 0;
+  result.calleeTimelines.resize(n);
   for (size_t i = 0; i < n; ++i) {
     const SimEvent &event = graph.events[i];
     if (event.isCommunication)
@@ -388,7 +392,13 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
       result.totalComputeTime += result.finish[i] - result.start[i];
       for (auto [resource, amount] : event.demand)
         if (resource == kComputeResource)
-          totalFlopsExecuted += amount;
+          result.totalFlopsExecuted += amount;
+    }
+    if (event.callee) {
+      result.totalCommunicationTime += event.callee->totalCommunicationTime;
+      result.totalComputeTime += event.callee->totalComputeTime;
+      result.totalFlopsExecuted += event.callee->totalFlopsExecuted;
+      result.calleeTimelines[i] = event.callee;
     }
   }
   llvm::sort(commIntervals);
@@ -409,13 +419,14 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
   double peakFlopsWindow =
       resources.capacity[kComputeResource] * result.makespan;
   result.averageComputeUtilization =
-      peakFlopsWindow > kEpsilon ? totalFlopsExecuted / peakFlopsWindow : 0.0;
+      peakFlopsWindow > kEpsilon ? result.totalFlopsExecuted / peakFlopsWindow
+                                 : 0.0;
   result.totalComputeIdleTime = result.makespan - result.totalComputeTime;
   double peakFlopsWhileActive =
       resources.capacity[kComputeResource] * result.totalComputeTime;
   result.averageActiveComputeUtilization =
       peakFlopsWhileActive > kEpsilon
-          ? totalFlopsExecuted / peakFlopsWhileActive
+          ? result.totalFlopsExecuted / peakFlopsWhileActive
           : 0.0;
 
   return result;
@@ -472,10 +483,11 @@ SimGraph buildSimGraph(const ScheduleGraph &graph, const MeshCostParams &mesh,
       // latency floor with no resource demand, equal to that makespan,
       // exactly reproduces "the callee runs to completion, on its own,
       // before anything after the call may start".
-      TimelineResult calleeResult =
-          simulateScheduleGraph(*node.calleeGraph, mesh, device, kMaxInFlight);
-      event.latency = calleeResult.makespan;
-      event.isolatedDuration = calleeResult.makespan;
+      auto calleeResult = std::make_shared<const TimelineResult>(
+          simulateScheduleGraph(*node.calleeGraph, mesh, device, kMaxInFlight));
+      event.latency = calleeResult->makespan;
+      event.isolatedDuration = calleeResult->makespan;
+      event.callee = std::move(calleeResult);
       break;
     }
     }
