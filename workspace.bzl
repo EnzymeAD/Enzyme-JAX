@@ -210,9 +210,6 @@ sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.
 sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"sed -i.baknneg 's\\/auto lhs = getIn().getDefiningOp<ExtUIOp>()) {\\/auto lhs = getIn().getDefiningOp<ExtUIOp>()) { setNonNeg(lhs.getNonNeg());\\/' mlir\\/lib\\/Dialect\\/Arith\\/IR\\/ArithOps.cpp\\\",/g" third_party/llvm/workspace.bzl
 """,
     """
-sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/LLVM_ENABLE_THREADS=1\\/LLVM_ENABLE_THREADS=0\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl
-""",
-    """
 sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/HAVE_MALLINFO=1\\/DONT_HAVE_ANY_MALLINFO=0\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl
 """,
     """
