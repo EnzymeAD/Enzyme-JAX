@@ -83,7 +83,7 @@ func.func @matmul_none_transpose(%A: tensor<2x4xf32>, %B: tensor<3x4xf32>) -> te
 // CHECK-NEXT: }
 
 func.func @matmul_adjoint_adjoint(%A: tensor<4x2xcomplex<f32>>, %B: tensor<3x4xcomplex<f32>>) -> tensor<2x3xcomplex<f32>> {
-    %alpha = stablehlo.constant dense<(1.0, 0.0)> : tensor<complex<f32>>
+    %alpha = stablehlo.constant dense<(1.0, 1.0)> : tensor<complex<f32>>
     %beta = stablehlo.constant dense<(0.0, 0.0)> : tensor<complex<f32>>
     %C = stablehlo.constant dense<(0.0, 0.0)> : tensor<2x3xcomplex<f32>>
     %0 = enzymexla.blas.gemm %alpha, %A, %B, %beta, %C {transa = #enzymexla.transpose<adjoint>, transb = #enzymexla.transpose<adjoint>} : (tensor<complex<f32>>, tensor<4x2xcomplex<f32>>, tensor<3x4xcomplex<f32>>, tensor<complex<f32>>, tensor<2x3xcomplex<f32>>) -> tensor<2x3xcomplex<f32>>
@@ -91,7 +91,7 @@ func.func @matmul_adjoint_adjoint(%A: tensor<4x2xcomplex<f32>>, %B: tensor<3x4xc
 }
 
 // CHECK-NEXT: func.func @matmul_adjoint_adjoint(%arg0: tensor<4x2xcomplex<f32>>, %arg1: tensor<3x4xcomplex<f32>>) -> tensor<2x3xcomplex<f32>> {
-// CHECK-NEXT:   %cst = stablehlo.constant dense<(1.000000e+00,0.000000e+00)> : tensor<2x3xcomplex<f32>>
+// CHECK-NEXT:   %cst = stablehlo.constant dense<(1.000000e+00,1.000000e+00)> : tensor<2x3xcomplex<f32>>
 // CHECK-NEXT:   %0 = chlo.conj %arg0 : tensor<4x2xcomplex<f32>> -> tensor<4x2xcomplex<f32>>
 // CHECK-NEXT:   %1 = chlo.conj %arg1 : tensor<3x4xcomplex<f32>> -> tensor<3x4xcomplex<f32>>
 // CHECK-NEXT:   %2 = stablehlo.dot_general %0, %1, contracting_dims = [0] x [1] : (tensor<4x2xcomplex<f32>>, tensor<3x4xcomplex<f32>>) -> tensor<2x3xcomplex<f32>>
