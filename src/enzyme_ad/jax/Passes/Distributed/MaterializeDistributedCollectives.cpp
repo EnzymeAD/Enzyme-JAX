@@ -71,6 +71,11 @@ struct MaterializeDistributedCollectivesPass
 
   llvm::DenseMap<AxisSymbol, TV_AxisFactor> symbolToLogicalAxis;
   ShardyLogicalAxisAnalysis axisAnalysis;
+  // The axes each terminator operand is returned with, which are the
+  // function's result axes (see recordReturnedAxes).
+  llvm::DenseMap<OpOperand *,
+                 ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes>
+      returnedAxes;
   std::optional<OpBuilder> axisBuilder;
   std::optional<Location> axisLoc;
 
@@ -254,6 +259,37 @@ struct MaterializeDistributedCollectivesPass
     return product.getProduct();
   }
 
+  // Records the axes of every value `function` returns, as the function's
+  // result axes. A terminator has no sharding rule of its own, so once a
+  // sdy.reshard feeding it is erased, these are the only record of the axes
+  // the result must be delivered in, which may differ from the reshard
+  // input's.
+  void recordReturnedAxes(DistributedFunctionOp function) {
+    for (OpOperand &operand :
+         function.getBody().front().getTerminator()->getOpOperands()) {
+      std::optional<ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes> axes;
+      if (auto result = dyn_cast<OpResult>(operand.get())) {
+        axes = axisAnalysis.getTensorPartitionDims(result);
+      } else {
+        axes = axisAnalysis.getTensorPartitionDims(
+            cast<BlockArgument>(operand.get()));
+      }
+      if (axes) {
+        returnedAxes[&operand] = std::move(*axes);
+      }
+    }
+  }
+
+  // The axes a use consumes its operand with: the function's result axes for
+  // a terminator operand, otherwise the consuming op's own view.
+  std::optional<ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes>
+  getConsumerAxes(OpOperand &use) {
+    if (auto it = returnedAxes.find(&use); it != returnedAxes.end()) {
+      return it->second;
+    }
+    return axisAnalysis.getTensorPartitionDims(use);
+  }
+
   // Scans SSA uses to find sharding conflicts and reduction requirements.
   std::vector<ShardConflict> collectShardConflicts(Block *mainBlock) {
     std::vector<ShardConflict> conflicts;
@@ -280,8 +316,7 @@ struct MaterializeDistributedCollectivesPass
           conflict.reductionAxes = std::move(reductionAxes);
 
           for (OpOperand &use : value.getUses()) {
-            auto maybeConsumerSharded =
-                axisAnalysis.getTensorPartitionDims(use);
+            auto maybeConsumerSharded = getConsumerAxes(use);
             auto isReturn =
                 isa<func::ReturnOp, distributed::DistributedYieldOp>(
                     use.getOwner());
@@ -290,9 +325,10 @@ struct MaterializeDistributedCollectivesPass
                   << value;
               continue;
             }
-            bool conflicting = !isReturn && producerShardableAxes !=
-                                                axisAnalysis.excludeUnshardable(
-                                                    *maybeConsumerSharded);
+            bool conflicting =
+                maybeConsumerSharded &&
+                producerShardableAxes !=
+                    axisAnalysis.excludeUnshardable(*maybeConsumerSharded);
             if (conflicting) {
               conflict.conflictingUses.push_back(&use);
             } else {
@@ -306,15 +342,14 @@ struct MaterializeDistributedCollectivesPass
           }
         };
 
-    // A function argument's own axes normally unify with every consumer's, so
-    // only a baseline plan, which keeps Shardy's differing shardings apart,
-    // can leave an argument needing a collective.
-    if (axisAnalysis.isShardyBaseline()) {
-      for (BlockArgument arg : mainBlock->getArguments()) {
-        auto axes = axisAnalysis.getTensorPartitionDims(arg);
-        if (axes) {
-          collectFor(arg, *axes, {}, OpShardingRuleAndReductionKind());
-        }
+    // A function argument's axes differ from a consumer's wherever the two
+    // were kept apart: across an erased sdy.reshard (in either mode) or, in a
+    // baseline plan, wherever Shardy shards them differently. Such a use
+    // needs a collective like any op result's.
+    for (BlockArgument arg : mainBlock->getArguments()) {
+      auto axes = axisAnalysis.getTensorPartitionDims(arg);
+      if (axes) {
+        collectFor(arg, *axes, {}, OpShardingRuleAndReductionKind());
       }
     }
 
@@ -543,7 +578,7 @@ struct MaterializeDistributedCollectivesPass
 
       for (OpOperand *use : conflict.conflictingUses) {
         builder.setInsertionPoint(use->getOwner());
-        auto rhsPartitioningAxes = axisAnalysis.getTensorPartitionDims(*use);
+        auto rhsPartitioningAxes = getConsumerAxes(*use);
         if (!rhsPartitioningAxes) {
           use->getOwner()->emitError()
               << "missing partitioning axes for conflicting use";
@@ -649,6 +684,7 @@ struct MaterializeDistributedCollectivesPass
     }
 
     for (DistributedFunctionOp function : functions) {
+      recordReturnedAxes(function);
       removeExistingReshards(function);
       std::vector<ShardConflict> conflicts =
           collectShardConflicts(&function.getBody().front());

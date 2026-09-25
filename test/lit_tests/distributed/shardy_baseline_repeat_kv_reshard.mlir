@@ -1,5 +1,6 @@
 // RUN: enzymexlamlir-opt --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @m device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]"' --shardy-to-distributed-pipeline=preserve-shardy-sharding=true %s | FileCheck %s --implicit-check-not="reduces (%"
 // RUN: enzymexlamlir-opt --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @m device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]"' --shardy-to-distributed-pipeline=preserve-shardy-sharding=true %s | enzymexlamlir-opt --distributed-search-lowering-pipeline="finalize-schedule=false" | FileCheck %s --check-prefix=LOWER --implicit-check-not=all_reduce
+// RUN: enzymexlamlir-opt --shardy-to-distributed-pipeline %s | FileCheck %s --check-prefix=SEARCH
 
 // Grouped-query attention scores from a fully sharded KV cache: keys and mask
 // are stored with the sequence sharded over "tile" and are all-gathered, and
@@ -52,3 +53,23 @@ module {
 // LOWER: stablehlo.broadcast_in_dim %{{.*}}, dims = [0, 2, 3] : (tensor<1x16x8xf32>) -> tensor<1x1x16x8xf32>
 // LOWER: stablehlo.dot_general %{{.*}}, %{{.*}}, batching_dims = [0] x [0], contracting_dims = [2] x [2] : (tensor<1x1x8xf32>, tensor<1x16x8xf32>) -> tensor<1x1x16xf32>
 // LOWER: stablehlo.reduce(%{{.*}} init: %{{.*}}) applies stablehlo.maximum across dimensions = [2] : (tensor<1x1x16xf32>, tensor<f32>) -> tensor<1x1xf32>
+
+// In search mode each reshard still becomes a non-reducing collective between
+// its argument and the kernel, and the only reducing collectives are the
+// contraction and the max, over axes search may bind.
+// SEARCH: ^bb0(%[[Q:.*]]: tensor<4x1x8xf32>, %[[K:.*]]: tensor<2x16x8xf32>, %[[MASK:.*]]: tensor<1x16xf32>):
+// SEARCH-DAG: %[[MASKL:.*]] = distributed.CastGlobalToLocal %[[MASK]]
+// SEARCH-DAG: %[[KL:.*]] = distributed.CastGlobalToLocal %[[K]]
+// SEARCH-DAG: %[[QL:.*]] = distributed.CastGlobalToLocal %[[Q]]
+// SEARCH: distributed.Collective %[[KL]] {{.*}} reduces ()
+// SEARCH: distributed.Collective %[[QL]] {{.*}} reduces ()
+// SEARCH: distributed.Collective %[[MASKL]] {{.*}} reduces ()
+// The resharded queries enter the scores kernel with heads over (KV group,
+// repeat), the same two axes the repeated keys and the dot_general use.
+// SEARCH: distributed.DistributedKernel (%{{.*}} : tensor<1x1x1xf32>, %{{.*}} : tensor<1x1x1xf32>) <[<dim_partitioning_axes = {{\[}}[0], [1], [2]] : unreduced_axes = []>, <dim_partitioning_axes = {{\[}}[0, 3], [], [2]] : unreduced_axes = []>]>
+// SEARCH: stablehlo.reshape {{.*}}distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[}}[0, 3], [1], [2]] : unreduced_axes = []>]>
+// SEARCH: stablehlo.dot_general {{.*}}distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[}}[0, 3], [], [2]] : unreduced_axes = []>, <dim_partitioning_axes = {{\[}}[0, 3], [1], [2]] : unreduced_axes = []>]>
+// SEARCH: distributed.Collective %{{.*}} reduces (%{{.*}} : !axis.factor_group<8>)
+// SEARCH: stablehlo.reduce
+// SEARCH: distributed.Collective %{{.*}} reduces (%{{.*}} : !axis.factor_group<16>)
+// SEARCH-NOT: distributed.Collective

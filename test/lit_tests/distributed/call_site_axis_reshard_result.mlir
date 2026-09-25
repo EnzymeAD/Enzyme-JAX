@@ -1,5 +1,6 @@
 // RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards --convert-main-to-distributed-function="dump-value-axes=true" -o /dev/null %s 2>&1 | FileCheck %s
 // RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards --convert-main-to-distributed-function="dump-value-axes=true" -o /dev/null %s 2>&1 | FileCheck %s --check-prefix=SEPARATE
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --shardy-to-distributed-pipeline %s | FileCheck %s --check-prefix=LOWER
 
 // A callee that returns a sdy.reshard result. The reshard breaks the propagation
 // dependency, so the call results carry the reshard's output axes rather than
@@ -24,6 +25,19 @@
 // SEPARATE-NOT: {{\[}}[[IN0]]{{\]}}
 // SEPARATE-NOT: {{\[}}[[IN1]]{{\]}}
 // SEPARATE: ===== End Logical Axes per Value =====
+//
+// Lowered in search mode, the callee delivers its result in the reshard's
+// output axes, so the erased reshard leaves one collective before its return,
+// shared by both call sites.
+// LOWER: sym_name = "main"
+// LOWER-NOT: distributed.Collective
+// LOWER: sym_name = "re"
+// LOWER: ^bb0(%[[H:.*]]: tensor<8x8xf32>):
+// LOWER: %[[LOCAL:.*]] = distributed.CastGlobalToLocal %[[H]]
+// LOWER: %[[C:.*]] = distributed.Collective %[[LOCAL]] {{.*}} reduces ()
+// LOWER: %[[AWAIT:.*]] = distributed.Await %[[C]]
+// LOWER: %[[RES:.*]] = distributed.CastLocalToGlobal %[[AWAIT]]
+// LOWER: distributed.DistributedYield (%[[RES]] : tensor<8x8xf32>)
 module @reshard_result {
   sdy.mesh @mesh = <["x"=2]>
 

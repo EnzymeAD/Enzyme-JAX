@@ -259,11 +259,14 @@ void SymbolFactorMerge::_factorSymbol(AxisSymbol sym,
     }
   }
 
-  const auto &overlapping_sym = getOverlapping(sym);
+  // Each factor inherits what `sym` itself overlapped. The set must be read
+  // before the factorization is recorded: afterwards `sym` resolves to its
+  // factors, and the set would be the union of the factors' own overlaps,
+  // handing every factor its siblings' unrelated conflicts.
+  OverlapSet overlaps = getOverlapping(sym);
 
   factorizations[sym] =
       llvm::SmallVector<AxisSymbol>(factors.begin(), factors.end());
-  auto overlaps = getOverlapping(sym);
   for (AxisSymbol factor : factors) {
     _appendOverlaps(overlaps, factor);
   }
