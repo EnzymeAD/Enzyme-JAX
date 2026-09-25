@@ -52,6 +52,15 @@ struct ActWorkerConfig {
   // request restarts one regardless, so it has no bearing on correctness.
   double idleTimeoutSeconds = 300.0;
 
+  // Thread pool size for act_worker.py's --workers, i.e. how many kernel
+  // compiles the worker dispatches concurrently. A fixed default here (not a
+  // pass option) because it is a resource knob for the shared worker
+  // container, not something any one caller's request should get to tune;
+  // the search driver is the only client today and issues requests from
+  // many threads/processes at once, so this just needs to be comfortably
+  // below the host's core count.
+  int workers = 8;
+
   // How long to wait for a single request's response before treating the
   // worker as unresponsive and, after re-verifying (and if needed
   // restarting) the container, retrying once. See ensureActPatchedKernel's

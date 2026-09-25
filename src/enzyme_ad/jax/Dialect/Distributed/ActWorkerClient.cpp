@@ -206,6 +206,9 @@ bool isRootlessDocker() {
   runArgs.push_back(config.target);
   runArgs.push_back("--idle-timeout");
   runArgs.push_back(idleTimeoutStr);
+  std::string workersStr = std::to_string(config.workers);
+  runArgs.push_back("--workers");
+  runArgs.push_back(workersStr);
 
   auto runResult = runDocker(runArgs, 30);
   if (!runResult) {
