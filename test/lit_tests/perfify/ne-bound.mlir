@@ -28,7 +28,7 @@ module {
      } post {
         %cost = perfify.fn_cost : !perfify.cost // compute the value of the defined operation (func.return)
         %c9 = perfify.constant_cost 9 : !perfify.cost // set up our cost as 9
-        %cmp = perfify.cmp eq, %cost, %c9
+        %cmp = perfify.cmp ne, %cost, %c9
         perfify.assume %cmp
      }
     }
@@ -61,8 +61,8 @@ module {
 // CHECK-NEXT:    } post {
 // CHECK-NEXT:      %0 = perfify.fn_cost : !perfify.cost
 // CHECK-NEXT:      %1 = perfify.constant_cost 9 : !perfify.cost
-// CHECK-NEXT:      %2 = perfify.cmp eq, %0, %1
-// CHECK-NEXT:      perfify.assume %2 {satres = true}
+// CHECK-NEXT:      %2 = perfify.cmp ne, %0, %1
+// CHECK-NEXT:      perfify.assume %2 {satres = false}
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
 // CHECK-NEXT: }
