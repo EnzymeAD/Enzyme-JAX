@@ -6324,7 +6324,24 @@ public:
           }
         }
       }
-      assert(postOp);
+      if (!postOp) {
+        for (auto operand : loadOp->getOperands()) {
+          auto ores = dyn_cast<OpResult>(operand);
+          if (!ores || ores.getOwner() != conditional)
+            continue;
+          postOp = loadOp;
+          auto rnum = ores.getResultNumber();
+          resultsNeeded.insert(rnum);
+          if (!definedOutside(trueYld->getOperand(rnum), conditional) ||
+              !definedOutside(falseYld->getOperand(rnum), conditional))
+            return rewriter.notifyMatchFailure(
+                loadOp, "conditional yields a value defined inside its "
+                        "branches, which the copy at the load cannot yield");
+        }
+      }
+      if (!postOp)
+        return rewriter.notifyMatchFailure(
+            loadOp, "no operation on the path uses the conditional's results");
       if (!outer->isAncestor(postOp))
         return rewriter.notifyMatchFailure(
             loadOp,
