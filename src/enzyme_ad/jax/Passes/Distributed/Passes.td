@@ -100,6 +100,18 @@ def InsertPhysicalMeshPass : Pass<"insert-physical-mesh", "::mlir::ModuleOp"> {
   let description = [{The configuration string / file is expected to contain a well-formed distributed.PhysicalMesh op.}];
 }
 
+def DistributedVerifyKernelsPass
+    : Pass<"distributed-verify-kernels", "::mlir::ModuleOp"> {
+  let summary = "Explicitly run the verifiers of distributed kernel, function and call ops.";
+  let description = [{
+    Fails with the op's own diagnostic when any DistributedKernelOp,
+    DistributedFunctionOp or DistributedCallOp is invalid (e.g. overlapping
+    partitioning-axis slots, or a tensor sharded twice along one axis), even
+    when the pass manager's per-pass verifier is disabled.
+  }];
+  let dependentDialects = ["enzyme::distributed::DistributedDialect"];
+}
+
 def ValidateShardyBaselineMeshPass
     : Pass<"validate-shardy-baseline-mesh", "::mlir::ModuleOp"> {
   let summary = "Check that every sdy.mesh projects onto the distributed.PhysicalMesh.";

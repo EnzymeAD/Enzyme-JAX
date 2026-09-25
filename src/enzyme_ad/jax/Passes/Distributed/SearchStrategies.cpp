@@ -1492,6 +1492,8 @@ scoreShardyBaseline(ModuleOp mainModule, llvm::StringRef path,
     return mainModule.emitError()
            << "distributed-search-strategies: failed to parse baseline-module '"
            << path << "'";
+  if (failed(verifyDistributedOps(*baseline)))
+    return failure();
   if (!(*baseline)->hasAttr(kShardyBaselineAttr))
     return mainModule.emitError()
            << "distributed-search-strategies: baseline-module '" << path

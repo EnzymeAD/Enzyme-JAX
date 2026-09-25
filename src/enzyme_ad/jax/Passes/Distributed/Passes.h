@@ -18,6 +18,11 @@ namespace distributed {
 
 void registerShardyToDistributedPipeline();
 
+// Explicitly runs the op verifiers of every DistributedKernelOp,
+// DistributedFunctionOp and DistributedCallOp under `root`, emitting each
+// failing op's own diagnostic. Independent of any PassManager verifier setting.
+LogicalResult verifyDistributedOps(Operation *root);
+
 // Lowering pipeline run on a fully-decided distributed-search candidate,
 // either for scoring (a disposable clone, see cloneAndApplyDecisions in
 // SearchStrategies.cpp) or as the real final lowering of the search's

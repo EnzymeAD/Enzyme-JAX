@@ -56,6 +56,7 @@ void registerShardyToDistributedPipeline() {
         pm.addPass(createClusterDistributedKernelsPass());
         if (options.preserveShardySharding)
           pm.addPass(mlir::sdy::createDropShardingAndMeshPass());
+        pm.addPass(createDistributedVerifyKernelsPass());
       });
 }
 
