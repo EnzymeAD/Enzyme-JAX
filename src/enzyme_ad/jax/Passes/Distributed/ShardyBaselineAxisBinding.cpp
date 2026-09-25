@@ -376,21 +376,26 @@ void ShardyLogicalAxisAnalysis::seedShardyShardings() {
         valid = false;
         return;
       }
-      if (auto reshard = dyn_cast<sdy::ReshardOp>(op)) {
+      if (std::optional<ReshardingOp> reshard = getReshardingOp(&op)) {
         // The input side carries the operand's sharding, the output side the
-        // reshard's target.
+        // op's own. An unannotated side (possible only for a reshard point,
+        // whose shardings nothing requires) stays unseeded, like any other
+        // unannotated value.
         auto seedSide = [&](llvm::StringRef side, Value value,
                             const DimToSymbol &symbols) {
           sdy::TensorShardingAttr sharding = sdy::getSharding(value);
+          if (!sharding) {
+            return;
+          }
           llvm::SmallVector<llvm::SmallVector<AxisSymbol>> dims;
           for (AxisSymbol symbol : symbols) {
             dims.push_back({symbol});
           }
           seedTensorDims(&op, ("reshard " + side).str(), value, sharding, dims);
         };
-        seedSide("input", reshard.getInput(), reshardLHSSymbols[&op]);
+        seedSide("input", reshard->input, reshardLHSSymbols[&op]);
         if (valid) {
-          seedSide("result", reshard.getResult(), reshardRHSSymbols[&op]);
+          seedSide("result", reshard->result, reshardRHSSymbols[&op]);
         }
         if (!valid) {
           return;

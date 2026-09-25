@@ -119,6 +119,44 @@ private:
 OpShardingRuleAndReductionKind
 getOrSynthesizeOpShardingRule(::mlir::Operation *op);
 
+// Custom-call target of a user-placed reshard point:
+//
+//   %y = stablehlo.custom_call @enzymexla_reshard_point(%x)
+//        {sdy.sharding_rule = #sdy.op_sharding_rule<([i, j])->([i, k]) {...},
+//                                                   custom>}
+//
+// Numerically an identity on its single tensor operand, it marks a place
+// where a resharding collective may sit. Its Shardy rule states which
+// dimensions it breaks:
+//   - a dimension whose operand and result factors differ (j vs. k above) is
+//     broken: its two sides get independent logical axes, so a collective can
+//     change that dimension's sharding here;
+//   - a dimension sharing one factor (i) passes its sharding through.
+// Keeping the tags in the rule alone means Shardy propagation and our axis
+// analysis read the same source of truth. The rule must be marked `custom`,
+// or Shardy's propagation pipeline drops it on export.
+inline constexpr ::llvm::StringLiteral kReshardPointTarget =
+    "enzymexla_reshard_point";
+
+bool isReshardPoint(::mlir::Operation *op);
+
+// Per dimension of `op`'s tensor, whether the reshard point breaks it. Emits
+// an error and fails when the op is malformed, since it comes straight from
+// a user frontend and nothing upstream checks its shape.
+::mlir::FailureOr<::llvm::SmallVector<bool>>
+getReshardPointBrokenDims(::mlir::Operation *op);
+
+// An op that only moves one tensor between shardings: an sdy.reshard or a
+// reshard point. Collective materialization replaces it with its input and
+// places whatever collective the two sides' axes then require.
+struct ReshardingOp {
+  ::mlir::Operation *op;
+  ::mlir::Value input;
+  ::mlir::Value result;
+};
+
+std::optional<ReshardingOp> getReshardingOp(::mlir::Operation *op);
+
 struct CollectiveAndAwait {
   ::mlir::enzyme::distributed::DistributedCollectiveOp collective;
   ::mlir::enzyme::distributed::DistributedAwait await;

@@ -445,11 +445,6 @@ static Operation *resolveCallee(CallOpInterface call) {
   return callee;
 }
 
-// TBD: reshard op, or CollectiveOpInterface?
-mlir::sdy::ReshardOp toCollective(Operation *op) {
-  return dyn_cast<mlir::sdy::ReshardOp>(op);
-}
-
 // These operations are introduced after Shardy propagation to materialize
 // communication and local tensor views. They intentionally have no Shardy
 // rule and should be ignored by a later analysis.
@@ -476,6 +471,43 @@ bool structurallyEqual(sdy::DimensionShardingAttr a,
     }
   }
   return true;
+}
+
+// Per dimension of a resharding op's tensor, whether the op may change that
+// dimension's sharding, i.e. whether its two sides get distinct symbols.
+//   - A reshard point says so itself (see getReshardPointBrokenDims), in
+//     search and baseline mode alike.
+//   - An sdy.reshard touches exactly the dimensions whose Shardy sharding
+//     differs across it. These shardings only recover the reshard's own
+//     structure, not any value's physical axis, so without them its
+//     semantics are unknown, which is fatal.
+// Emits an error and returns nullopt on failure.
+static std::optional<llvm::SmallVector<bool>>
+getReshardedDims(ReshardingOp reshard) {
+  if (isReshardPoint(reshard.op)) {
+    FailureOr<llvm::SmallVector<bool>> broken =
+        getReshardPointBrokenDims(reshard.op);
+    if (failed(broken)) {
+      return std::nullopt;
+    }
+    return *broken;
+  }
+  TensorShardingAttr inSharding = getSharding(reshard.input);
+  TensorShardingAttr outSharding = getSharding(reshard.result);
+  if (!inSharding || !outSharding) {
+    reshard.op->emitError()
+        << "could not recover a sharding for this reshard's "
+        << (!inSharding ? "input" : "result")
+        << "; axis analysis cannot determine the reshard's semantics "
+           "without it";
+    return std::nullopt;
+  }
+  llvm::SmallVector<bool> resharded;
+  for (auto [inDim, outDim] : llvm::zip_equal(inSharding.getDimShardings(),
+                                              outSharding.getDimShardings())) {
+    resharded.push_back(!structurallyEqual(inDim, outDim));
+  }
+  return resharded;
 }
 
 RankedTensorType getLocalTensorType(
@@ -621,10 +653,7 @@ void ShardyLogicalAxisAnalysis::markRewrite(Operation *from, Operation *to) {
 llvm::SmallVector<AxisSymbol>
 ShardyLogicalAxisAnalysis::getReductionAxes(OpResult result) {
   Operation *op = result.getOwner();
-  if (auto reshardOp = toCollective(op)) {
-    return {};
-  }
-
+  // Resharding ops have no rule, so they reduce nothing.
   OpShardingRuleAttr shardingRule = getOrSynthesizeOpShardingRule(op).rule;
   if (!shardingRule) {
     return {};
@@ -1011,58 +1040,24 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
   for (Operation &opRef : bodyBlock.getOperations()) {
     Operation *op = &opRef;
 
-    if (auto reshard_op = toCollective(op)) {
-      auto &lhs_list = reshardLHSSymbols[op];
-      auto &rhs_list = reshardRHSSymbols[op];
-      auto inputType =
-          dyn_cast<RankedTensorType>(reshard_op.getInput().getType());
-      auto outputType =
-          dyn_cast<RankedTensorType>(reshard_op.getResult().getType());
-      assert(inputType && outputType &&
-             "reshard operands must be ranked tensors for axis analysis");
-      // for each dimension in the tensor being resharded,
-      // if the input and output shardings are the same,
-      // LHS and RHS get the same symbol, otherwise different.
-      //
-      // These shardings are read purely to recover the reshard's own
-      // structural constraints: which dimensions it touches. They are not
-      // this analysis's source of truth for a value's real physical axis,
-      // which it re-derives independently. If either is missing, the
-      // reshard's semantics cannot be determined at all, which is fatal.
-      TensorShardingAttr in_sharding = getSharding(reshard_op.getInput());
-      TensorShardingAttr out_sharding = getSharding(reshard_op.getResult());
-      if (!in_sharding || !out_sharding) {
-        reshard_op.emitError()
-            << "could not recover a sharding for this reshard's "
-            << (!in_sharding ? "input" : "result")
-            << "; axis analysis cannot determine the reshard's semantics "
-               "without it";
+    if (std::optional<ReshardingOp> reshard = getReshardingOp(op)) {
+      std::optional<llvm::SmallVector<bool>> reshardedDims =
+          getReshardedDims(*reshard);
+      if (!reshardedDims) {
         valid = false;
         return;
       }
-      for (auto [dimIdx, dimShardings] :
-           llvm::enumerate(llvm::zip_equal(in_sharding.getDimShardings(),
-                                           out_sharding.getDimShardings()))) {
-        auto [in_dim, out_dim] = dimShardings;
-        assert(!inputType.isDynamicDim(dimIdx) &&
-               !outputType.isDynamicDim(dimIdx) &&
-               "reshard tensors must have static dimensions for axis analysis");
-        uint64_t lhsExtent =
-            static_cast<uint64_t>(inputType.getDimSize(dimIdx));
-        uint64_t rhsExtent =
-            static_cast<uint64_t>(outputType.getDimSize(dimIdx));
-
-        AxisSymbol lhs_sym = AxisSymbol::create(lhsExtent);
-        AxisSymbol rhs_sym = lhs_sym;
-        if (structurallyEqual(in_dim, out_dim)) {
-          assert(lhsExtent == rhsExtent &&
-                 "identity reshard dimensions must preserve extent");
-          rhs_sym = lhs_sym;
-        } else {
-          rhs_sym = AxisSymbol::create(rhsExtent);
-        }
+      auto type = cast<RankedTensorType>(reshard->result.getType());
+      assert(type.hasStaticShape() && reshard->input.getType() == type &&
+             "a resharding op keeps its static tensor type");
+      auto &lhs_list = reshardLHSSymbols[op];
+      auto &rhs_list = reshardRHSSymbols[op];
+      for (auto [dimIdx, resharded] : llvm::enumerate(*reshardedDims)) {
+        AxisSymbol lhs_sym =
+            AxisSymbol::create(static_cast<uint64_t>(type.getDimSize(dimIdx)));
         lhs_list.push_back(lhs_sym);
-        rhs_list.push_back(rhs_sym);
+        rhs_list.push_back(resharded ? AxisSymbol::create(lhs_sym.getExtent())
+                                     : lhs_sym);
       }
       symbolFactorMerge.markOverlapping(lhs_list);
       symbolFactorMerge.markOverlapping(rhs_list);
@@ -1164,11 +1159,11 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(
 }
 
 ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes
-ShardyLogicalAxisAnalysis::getTensorPartitionDims(ReshardOp op, bool isLHS,
-                                                  int valueIdx) {
+ShardyLogicalAxisAnalysis::getTensorPartitionDims(ReshardingOp reshard,
+                                                  bool isLHS) {
   TensorAxesToPartitionAxes mapping;
-  (void)valueIdx;
-  auto symbolList = isLHS ? reshardRHSSymbols[op] : reshardLHSSymbols[op];
+  auto symbolList =
+      isLHS ? reshardRHSSymbols[reshard.op] : reshardLHSSymbols[reshard.op];
   mapping.resize(symbolList.size());
   for (auto [dim, sym] : llvm::enumerate(symbolList)) {
     mapping[dim] = symbolFactorMerge.resolve(sym);
@@ -1183,8 +1178,8 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(Operation *op, bool isLHS,
           AnchorPartitioningOp>(op)) {
     return getTensorPartitionDimsFromPartitioningAxes(op);
   }
-  if (auto reshard_op = toCollective(op)) {
-    return getTensorPartitionDims(reshard_op, isLHS, valueIdx);
+  if (std::optional<ReshardingOp> reshard = getReshardingOp(op)) {
+    return getTensorPartitionDims(*reshard, isLHS);
   }
   // A localized DistributedCall is a call like any other: its operands and
   // results carry the callee's argument and result axes, and are bound to

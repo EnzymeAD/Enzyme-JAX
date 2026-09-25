@@ -1343,7 +1343,7 @@ struct CanonicalizeShardedFactorOrderPass
             break; // fall through to the exotic-op check below
           }
 
-          if (isa<sdy::ReshardOp>(op)) {
+          if (getReshardingOp(op)) {
             if (seenUnimplementedReshard.insert(op->getName()).second) {
               op->emitRemark() << op->getName()
                                << ": collective canonicalizing rewrite not yet "

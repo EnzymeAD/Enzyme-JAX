@@ -119,8 +119,10 @@ getOrSynthesizeOpShardingRule(::mlir::Operation *op) {
   // Calls, collectives and local/global boundary ops (casts, anchors,
   // kernels) have no rule of their own: their axes are carried explicitly, or
   // come from the callee. They are never sharded or clustered as computation.
-  if (!op || isa<::mlir::CallOpInterface, PartitioningAnchorOpInterface,
-                 DistributedCollectiveOp, DistributedAwait>(op)) {
+  if (!op ||
+      isa<::mlir::CallOpInterface, PartitioningAnchorOpInterface,
+          DistributedCollectiveOp, DistributedAwait>(op) ||
+      getReshardingOp(op)) {
     return {};
   }
 
@@ -210,6 +212,81 @@ getOrSynthesizeOpShardingRule(::mlir::Operation *op) {
     return reductionBody.get();
   }
   return buildSyntheticReductionBody(reductionKind, elementType, reductionBody);
+}
+
+bool isReshardPoint(::mlir::Operation *op) {
+  auto customCall = dyn_cast<::mlir::stablehlo::CustomCallOp>(op);
+  return customCall && customCall.getCallTargetName() == kReshardPointTarget;
+}
+
+::mlir::FailureOr<::llvm::SmallVector<bool>>
+getReshardPointBrokenDims(::mlir::Operation *op) {
+  assert(isReshardPoint(op) && "expected a reshard point");
+  auto fail = [&](const ::llvm::Twine &message) {
+    op->emitError() << kReshardPointTarget << ": " << message;
+    return ::mlir::failure();
+  };
+  if (op->getNumOperands() != 1 || op->getNumResults() != 1) {
+    return fail("expected exactly one operand and one result");
+  }
+  auto type = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+  if (!type || !type.hasStaticShape() || op->getOperand(0).getType() != type) {
+    return fail("expected a statically shaped tensor operand whose type "
+                "equals the result's");
+  }
+  auto rule = op->getAttrOfType<::mlir::sdy::OpShardingRuleAttr>(
+      ::mlir::sdy::kShardingRuleAttr);
+  if (!rule) {
+    return fail("expected an sdy.sharding_rule naming the broken dimensions");
+  }
+  // Each dimension maps to one factor per side. A pass-through factor sits on
+  // the same dimension of both sides and a broken dimension's two factors
+  // appear nowhere else, so Shardy couples exactly the pass-through
+  // dimensions across the op.
+  auto operandDims = rule.getOperandMapping(0).getDimMappings();
+  auto resultDims = rule.getResultMapping(0).getDimMappings();
+  ::llvm::SmallVector<int64_t> operandFactors, resultFactors;
+  ::llvm::DenseMap<int64_t, int64_t> factorUses;
+  for (auto [operandDim, resultDim] :
+       llvm::zip_equal(operandDims, resultDims)) {
+    if (operandDim.getFactorIndices().size() != 1 ||
+        resultDim.getFactorIndices().size() != 1) {
+      return fail("expected each dimension to map to exactly one factor");
+    }
+    operandFactors.push_back(operandDim.getFactorIndices().front());
+    resultFactors.push_back(resultDim.getFactorIndices().front());
+    ++factorUses[operandFactors.back()];
+    ++factorUses[resultFactors.back()];
+  }
+  ::llvm::SmallVector<bool> broken;
+  for (auto [operandFactor, resultFactor] :
+       llvm::zip_equal(operandFactors, resultFactors)) {
+    bool isBroken = operandFactor != resultFactor;
+    bool wellPlaced = isBroken ? factorUses[operandFactor] == 1 &&
+                                     factorUses[resultFactor] == 1
+                               : factorUses[operandFactor] == 2;
+    if (!wellPlaced) {
+      return fail("expected each factor on one dimension, either shared by "
+                  "both sides or private to one side");
+    }
+    broken.push_back(isBroken);
+  }
+  if (!rule.getReductionFactors().empty() ||
+      !rule.getNeedReplicationFactors().empty() ||
+      !rule.getPermutationFactors().empty()) {
+    return fail("expected only pass-through factors");
+  }
+  return broken;
+}
+
+std::optional<ReshardingOp> getReshardingOp(::mlir::Operation *op) {
+  if (auto reshard = dyn_cast<::mlir::sdy::ReshardOp>(op)) {
+    return ReshardingOp{op, reshard.getInput(), reshard.getResult()};
+  }
+  if (isReshardPoint(op)) {
+    return ReshardingOp{op, op->getOperand(0), op->getResult(0)};
+  }
+  return std::nullopt;
 }
 
 CollectiveAndAwait

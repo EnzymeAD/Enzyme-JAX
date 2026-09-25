@@ -295,6 +295,9 @@ private:
   TensorLocalSymbols operandLocalSymbols;
   TensorLocalSymbols resultLocalSymbols;
   BlockArgumentToPartitionAxes argToPartitioningAxes;
+  // Input (LHS) and result (RHS) symbols of each resharding op (see
+  // getReshardingOp), one per dimension. A dimension the op may reshard gets
+  // distinct symbols on its two sides; any other shares one.
   llvm::DenseMap<Operation *, DimToSymbol> reshardLHSSymbols;
   llvm::DenseMap<Operation *, DimToSymbol> reshardRHSSymbols;
   // Explicit view casts assign logical axes to serialized SSA factors.
@@ -406,8 +409,8 @@ private:
   getTensorPartitionDims(Operation *op,
                          mlir::sdy::OpShardingRuleAttr shardingRule, bool isLHS,
                          int valueIdx);
-  TensorAxesToPartitionAxes getTensorPartitionDims(mlir::sdy::ReshardOp op,
-                                                   bool isLHS, int valueIdx);
+  TensorAxesToPartitionAxes getTensorPartitionDims(ReshardingOp reshard,
+                                                   bool isLHS);
   // Mapping for a view cast or anchor `op`, read from its explicit
   // partitioning_axes operands.
   std::optional<TensorAxesToPartitionAxes>

@@ -34,15 +34,20 @@ static llvm::SmallVector<Value> asValues(const RangeT &groups) {
   return values;
 }
 
-// Removes explicit sdy.reshard ops after we have committed to rebuilding them.
+// Removes resharding ops (sdy.reshard and reshard points) after we have
+// committed to rebuilding them: each dimension they reshard left distinct
+// symbols on the producer and consumer sides, so the conflict detection
+// below places a collective on that edge exactly when the sides differ.
 static void removeExistingReshards(Operation *scopeOp) {
-  std::vector<sdy::ReshardOp> toRemove;
-  scopeOp->walk([&](sdy::ReshardOp reshardOp) {
-    toRemove.push_back(reshardOp);
-    reshardOp.getResult().replaceAllUsesWith(reshardOp.getInput());
+  std::vector<Operation *> toRemove;
+  scopeOp->walk([&](Operation *op) {
+    if (std::optional<ReshardingOp> reshard = getReshardingOp(op)) {
+      toRemove.push_back(op);
+      reshard->result.replaceAllUsesWith(reshard->input);
+    }
   });
-  for (sdy::ReshardOp reshardOp : toRemove) {
-    reshardOp.erase();
+  for (Operation *op : toRemove) {
+    op->erase();
   }
 }
 
