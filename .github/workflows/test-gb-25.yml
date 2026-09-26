@@ -109,7 +109,7 @@ jobs:
           version: ${{ matrix.julia_version }}
 
       - name: Load Julia packages from cache
-        uses: julia-actions/cache@v3.2.0
+        uses: julia-actions/cache@v3.3.0
         with:
           gcp-bucket: ${{ (contains(matrix.os, 'linux') && 'enzyme-ci-transient' ) || '' }}
           key-prefix: enzymejax-gb25-v2/
