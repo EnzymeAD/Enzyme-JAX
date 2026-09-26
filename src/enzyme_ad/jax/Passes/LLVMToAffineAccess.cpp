@@ -436,25 +436,31 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
         auto newLd =
             affine::AffineLoadOp::create(rewriter, ld.getLoc(), replacement,
                                          ld.getMap(), ld.getMapOperands());
+        newLd.setAlignmentAttr(ld.getAlignmentAttr());
         rewriter.replaceOpWithNewOp<arith::BitcastOp>(ld, punTy,
                                                       newLd.getResult());
       } else if (auto st = dyn_cast<affine::AffineStoreOp>(user)) {
         auto cast = arith::BitcastOp::create(rewriter, st.getLoc(), canTy,
                                              st.getValueToStore());
-        affine::AffineStoreOp::create(rewriter, st.getLoc(), cast, replacement,
-                                      st.getMap(), st.getMapOperands());
+        auto newSt =
+            affine::AffineStoreOp::create(rewriter, st.getLoc(), cast,
+                                          replacement, st.getMap(),
+                                          st.getMapOperands());
+        newSt.setAlignmentAttr(st.getAlignmentAttr());
         rewriter.eraseOp(st);
       } else if (auto ld = dyn_cast<memref::LoadOp>(user)) {
         auto newLd = memref::LoadOp::create(rewriter, ld.getLoc(), replacement,
                                             ld.getIndices());
+        newLd.setAlignmentAttr(ld.getAlignmentAttr());
         rewriter.replaceOpWithNewOp<arith::BitcastOp>(ld, punTy,
                                                       newLd.getResult());
       } else {
         auto st = cast<memref::StoreOp>(user);
         auto cast = arith::BitcastOp::create(rewriter, st.getLoc(), canTy,
                                              st.getValueToStore());
-        memref::StoreOp::create(rewriter, st.getLoc(), cast, replacement,
-                                st.getIndices());
+        auto newSt = memref::StoreOp::create(rewriter, st.getLoc(), cast,
+                                             replacement, st.getIndices());
+        newSt.setAlignmentAttr(st.getAlignmentAttr());
         rewriter.eraseOp(st);
       }
     }

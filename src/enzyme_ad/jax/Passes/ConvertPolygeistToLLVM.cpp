@@ -657,7 +657,9 @@ protected:
     if (!adaptor.getDynamicSizes().empty())
       return adaptor.getDynamicSizes().front();
 
-    Type indexType = rewriter.getIndexType();
+    // The constant feeds LLVM ops, so it has to carry the converted index
+    // type rather than IndexType.
+    Type indexType = this->getIndexType();
     return this->createIndexAttrConstant(
         rewriter, original->getLoc(), indexType,
         original.getType().getRank() == 0 ? 1
@@ -728,7 +730,7 @@ public:
         innerSizes *= size;
       totalSize = rewriter.createOrFold<LLVM::MulOp>(
           loc, outerSize,
-          createIndexAttrConstant(rewriter, loc, rewriter.getIndexType(),
+          createIndexAttrConstant(rewriter, loc, getIndexType(),
                                   innerSizes));
     }
     // Get shape of the memref as values: static sizes are constant
@@ -3025,8 +3027,11 @@ LogicalResult LegalizeLaunchFuncOpPattern::matchAndRewrite(
       uint64_t staticSize = static_cast<uint64_t>(bitwidth / 8) *
                             static_cast<uint64_t>(memrefTy.getNumElements());
 
+      // llvm.mlir.constant wants the attribute's type to match the result's,
+      // and the index type here is the converter's integer, not IndexType.
+      Type sizeTy = getIndexType();
       Value sizeArg = LLVM::ConstantOp::create(
-          rewriter, loc, getIndexType(), rewriter.getIndexAttr(staticSize));
+          rewriter, loc, sizeTy, rewriter.getIntegerAttr(sizeTy, staticSize));
       llvmArgumentsWithSizes.push_back(llvmArg); // Presumably a bare pointer.
       llvmArgumentsWithSizes.push_back(sizeArg);
     }
