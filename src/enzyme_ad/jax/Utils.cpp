@@ -972,10 +972,32 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     return State::NOTGUARANTEED;
 
   // integer ops
-  if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
-          stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp,
-          stablehlo::XorOp, stablehlo::NotOp>(op)) {
+  if (isa<stablehlo::SqrtOp, stablehlo::ExpOp, stablehlo::IotaOp,
+          stablehlo::AndOp, stablehlo::OrOp, stablehlo::XorOp,
+          stablehlo::NotOp>(op)) {
     return State::GUARANTEED;
+  }
+
+  if (auto absOp = dyn_cast<stablehlo::AbsOp>(op)) {
+    auto eltype = cast<RankedTensorType>(absOp.getType()).getElementType();
+    if (isa<FloatType>(eltype))
+      return State::GUARANTEED;
+    else {
+      // abs is not proveably nonnegative on arbitrary integers since in two
+      // complements the smallest possible integer has no positive equivalent
+      // so we have to check the bounds to not include the smallest possible
+      // integer
+      unsigned bw = eltype.getIntOrFloatBitWidth();
+      if (auto bounds = getBoundsFromIR(absOp.getOperand(), bw))
+        if (bounds->first.sgt(APInt::getSignedMinValue(bw)))
+          return State::GUARANTEED;
+
+      // Failing explicit bounds, an operand that is already non-negative is
+      // its own absolute value, so it cannot be the smallest integer either.
+      SmallVector<Value> operandsToCheck = {absOp.getOperand()};
+      return recursivelyCheckOperands(localtodo, operandsToCheck,
+                                      /*skipIntegerEltypes=*/false);
+    }
   }
 
   if (isa<chlo::ErfInvOp>(op)) {
