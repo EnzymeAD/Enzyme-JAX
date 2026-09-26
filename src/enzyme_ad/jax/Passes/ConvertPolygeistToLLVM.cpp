@@ -730,8 +730,7 @@ public:
         innerSizes *= size;
       totalSize = rewriter.createOrFold<LLVM::MulOp>(
           loc, outerSize,
-          createIndexAttrConstant(rewriter, loc, getIndexType(),
-                                  innerSizes));
+          createIndexAttrConstant(rewriter, loc, getIndexType(), innerSizes));
     }
     // Get shape of the memref as values: static sizes are constant
     // values and dynamic sizes are passed to 'alloc' as operands.
