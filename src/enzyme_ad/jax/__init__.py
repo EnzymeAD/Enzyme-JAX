@@ -9,4 +9,5 @@ from enzyme_ad.jax.primitives import (
     export,
     full_optimization_pass_pipeline,
     optimization_passes,
+    enzyme_pass,
 )
