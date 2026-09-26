@@ -135,7 +135,7 @@ public:
   ScopStmt &operator=(const ScopStmt &&) = delete;
 
   mlir::affine::FlatAffineValueConstraints *getMlirDomain();
-  isl::set getDomain() const { return isl::manage(isl_set_copy(islDomain)); }
+  isl::set getDomain() const { return islDomain; }
   isl::space getDomainSpace() const { return getDomain().get_space(); }
   isl::map getSchedule() const;
   IslScop *getParent() const { return parent; }
@@ -167,10 +167,9 @@ public:
 private:
   bool validAsyncCopy = false;
 
-  // TODO we are leaking this currently
   MemAccessesVector memoryAccesses;
 
-  isl_set *islDomain;
+  isl::set islDomain;
 
   using EnclosingOpList = llvm::SmallVector<mlir::Operation *, 8>;
 
@@ -308,8 +307,10 @@ public:
   std::shared_ptr<isl_ctx> getSharedIslCtx() { return IslCtx; }
 
   isl::space getParamSpace() const {
-    return isl::manage(
-        isl_union_set_get_space(isl_schedule_get_domain(schedule)));
+    isl_union_set *domain = isl_schedule_get_domain(schedule);
+    isl::space space = isl::manage(isl_union_set_get_space(domain));
+    isl_union_set_free(domain);
+    return space;
   }
 
   void
