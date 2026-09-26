@@ -5,7 +5,7 @@ module {
   // ASSUME: llvm.func ptx_kernelcc @foo(%arg0: !llvm.ptr<1> {enzymexla.memory_effects = ["read", "write"], llvm.align = 32 : i64, llvm.nocapture, llvm.nofree}) attributes {enzymexla.memory_effects = ["read", "write"]} {
   // NOASSUME: llvm.func ptx_kernelcc @foo(%arg0: !llvm.ptr<1> {enzymexla.memory_effects = ["read", "write"], llvm.align = 32 : i64, llvm.nocapture, llvm.nofree}) attributes {enzymexla.memory_effects = ["read", "write"]} {
   llvm.func ptx_kernelcc @foo(%arg0: !llvm.ptr<1> {llvm.align = 32, llvm.nocapture, llvm.nofree}) {
-    %c1 = llvm.mlir.constant(1 : index) : i64
+    %c1 = llvm.mlir.constant(1 : i64) : i64
     %ptr = llvm.getelementptr %arg0[%c1, %c1] : (!llvm.ptr<1>, i64, i64) -> !llvm.ptr<1>, !llvm.array<8 x i64>
     %val = llvm.load %ptr : !llvm.ptr<1> -> i64
     %ptr_str = llvm.getelementptr %arg0[%c1, %c1] : (!llvm.ptr<1>, i64, i64) -> !llvm.ptr<1>, !llvm.array<8 x i64>

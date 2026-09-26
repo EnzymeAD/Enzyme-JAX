@@ -28,7 +28,6 @@ module attributes {gpu.container_module} {
 // CHECK:           %[[MLIR_1:.*]] = llvm.mlir.constant(32 : i64) : i64
 // CHECK:           %[[MLIR_2:.*]] = llvm.mlir.addressof @__polygeist_gpumod_gpufunc_device_stub : !llvm.ptr
 // CHECK:           %[[MLIR_3:.*]] = llvm.mlir.zero : !llvm.ptr
-// CHECK:           %[[MLIR_4:.*]] = llvm.mlir.constant(1 : index) : i64
 // CHECK:           %[[MLIR_5:.*]] = llvm.mlir.constant(1 : i64) : i64
 // CHECK:           %[[MLIR_6:.*]] = llvm.mlir.constant(1 : i32) : i32
 // CHECK:           %[[ALLOCA_0:.*]] = llvm.alloca %[[MLIR_6]] x !llvm.ptr : (i32) -> !llvm.ptr

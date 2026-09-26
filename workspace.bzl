@@ -1,7 +1,7 @@
-JAX_COMMIT = "3b3bebe4d863f5a7cfbe99c6709b6c28aca1bb65"
+JAX_COMMIT = "4002243dc33ec864013d005fef1fb0c44bb710b2"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "a364a8a44185628179f5fbb8160b318a0a90bf1d"
+ENZYME_COMMIT = "b85d5011cceb243634b2d6d3da28ab268011cef0"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
@@ -111,6 +111,21 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     """,
     """
     sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/_MSC_VER\\/_WIN32\\/g' src\\/pthreads.c\\\"], strip_prefix/g" third_party/pthreadpool/workspace.bzl
+    """,
+    """
+    sed -i.bak0 "s/def repo/load(\\\"@bazel_tools\\/\\/tools\\/build_defs\\/repo:http.bzl\\\", \\\"http_archive\\\")\\ndef repo/g" third_party/slinky/workspace.bzl
+    """,
+    """
+    sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/slinky/workspace.bzl
+    """,
+    """
+    # slinky picks its aligned allocator with #ifdef _MSC_VER, but we build
+    # Windows with mingw clang, where _MSC_VER is undefined; it then falls back
+    # to posix_memalign, which mingw does not provide.  Key the four #ifdef
+    # guards off the platform instead so the _aligned_malloc/_aligned_free pair
+    # (and the malloc.h that declares them) are used together.  The remaining
+    # _MSC_VER guards are genuinely MSVC-only syntax and stay as they are.
+    sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/#ifdef _MSC_VER\\/#ifdef _WIN32\\/g' slinky\\/base\\/util.h\\\"], strip_prefix/g" third_party/slinky/workspace.bzl
     """,
     """
     # The second command disables llvm's use of __builtin_cpu_supports on apple

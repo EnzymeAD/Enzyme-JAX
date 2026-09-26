@@ -8,15 +8,15 @@ module {
     %1 = llvm.extractvalue %arg0[1] : !llvm.struct<(i64, array<1 x ptr<1>>)>
     %2 = llvm.extractvalue %1[0] : !llvm.array<1 x ptr<1>>
     %3 = llvm.bitcast %2 : !llvm.ptr<1> to !llvm.ptr<1>
-    %4 = llvm.load %3 {alignment = 1 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> i64
+    %4 = llvm.load %3 <alignment = 1, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> i64
     %5 = llvm.mul %4, %0 : i64
-    llvm.store %5, %3 {alignment = 1 : i64, tbaa = [#tbaa_tag]} : i64, !llvm.ptr<1>
+    llvm.store %5, %3 <alignment = 1, tbaa = [#tbaa_tag]> : i64, !llvm.ptr<1>
     llvm.return
   }
   llvm.func ptx_kernelcc @"##call__Z8tuplef2_5TupleI5Int6413CuTracedArrayIS0_Li0ELi1E2__EE#258"(%arg0: !llvm.ptr<1>) attributes {sym_visibility = "private"} {
     %0 = llvm.mlir.constant(1 : i64) : i64
     %1 = llvm.alloca %0 x !llvm.struct<(i64, array<1 x ptr<1>>)> : (i64) -> !llvm.ptr
-    %2 = llvm.mlir.constant(dense<[5, 0, 0, 0, 0, 0, 0, 0, 112, 231, 165, 87, 9, 117, 0, 0]> : tensor<16xui8>) : !llvm.array<16 x i8>
+    %2 = llvm.mlir.constant(dense<[5, 0, 0, 0, 0, 0, 0, 0, 112, 231, 165, 87, 9, 117, 0, 0]> : tensor<16xi8>) : !llvm.array<16 x i8>
     llvm.store %2, %1 : !llvm.array<16 x i8>, !llvm.ptr
     %3 = llvm.getelementptr %1[8] : (!llvm.ptr) -> !llvm.ptr, ui8
     llvm.store %arg0, %3 : !llvm.ptr<1>, !llvm.ptr
@@ -45,9 +45,9 @@ module {
 // CHECK-NEXT:  }
 // CHECK:  llvm.func ptx_kernelcc @"##call__Z8tuplef2_5TupleI5Int6413CuTracedArrayIS0_Li0ELi1E2__EE#258"(%arg0: !llvm.ptr<1>
 // CHECK-NEXT:    %0 = llvm.mlir.constant(5 : i64) : i64
-// CHECK-NEXT:    %1 = llvm.load %arg0 {alignment = 1 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> i64
+// CHECK-NEXT:    %1 = llvm.load %arg0 <alignment = 1, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> i64
 // CHECK-NEXT:    %2 = llvm.mul %1, %0 : i64
-// CHECK-NEXT:    llvm.store %2, %arg0 {alignment = 1 : i64, tbaa = [#tbaa_tag]} : i64, !llvm.ptr<1>
+// CHECK-NEXT:    llvm.store %2, %arg0 <alignment = 1, tbaa = [#tbaa_tag]> : i64, !llvm.ptr<1>
 // CHECK-NEXT:    llvm.return
 // CHECK-NEXT:  }
 

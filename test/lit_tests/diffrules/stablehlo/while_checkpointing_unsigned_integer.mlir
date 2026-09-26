@@ -96,7 +96,7 @@ module @reactant_gradient attributes {mhlo.num_partitions = 1 : i64, mhlo.num_re
     %3 = stablehlo.transpose %0, dims = [0] : (tensor<1xf64>) -> tensor<1xf64>
     %4 = stablehlo.transpose %1, dims = [0] : (tensor<2xui64>) -> tensor<2xui64>
     %5 = stablehlo.transpose %2, dims = [0] : (tensor<1xf64>) -> tensor<1xf64>
-    %6:3 = enzyme.autodiff @"Const{typeof(loop_rng_grad)}_autodiff"(%3, %4, %cst_2, %5) {activity = [#enzyme<activity enzyme_active>, #enzyme<activity enzyme_const>], ret_activity = [#enzyme<activity enzyme_activenoneed>, #enzyme<activity enzyme_active>, #enzyme<activity enzyme_const>]} : (tensor<1xf64>, tensor<2xui64>, tensor<f64>, tensor<1xf64>) -> (tensor<1xf64>, tensor<2xui64>, tensor<1xf64>)
+    %6:3 = enzyme.autodiff @"Const{typeof(loop_rng_grad)}_autodiff"(%3, %4, %cst_2, %5) {activity = [#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_const>], ret_activity = [#enzyme.activity<enzyme_activenoneed>, #enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_const>]} : (tensor<1xf64>, tensor<2xui64>, tensor<f64>, tensor<1xf64>) -> (tensor<1xf64>, tensor<2xui64>, tensor<1xf64>)
     %7 = stablehlo.transpose %6#0, dims = [0] : (tensor<1xf64>) -> tensor<1xf64>
     %8 = stablehlo.transpose %6#1, dims = [0] : (tensor<2xui64>) -> tensor<2xui64>
     %9 = stablehlo.transpose %6#2, dims = [0] : (tensor<1xf64>) -> tensor<1xf64>

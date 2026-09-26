@@ -190,13 +190,13 @@ module {
     %cst_1 = arith.constant 6.000000e+01 : f32
     affine.parallel (%arg3, %arg4, %arg5) = (0, 0, 0) to (10, 24, 48) {
       %0 = affine.load %arg1[%arg3 + 7, %arg4 + 7, %arg5 + 7] : memref<24x38x62xf32, 1>
-      %1 = arith.mulf %0, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
+      %1 = arith.mulf %0, %cst : f32
       %2 = affine.load %arg2[%arg3 + 7, %arg4 + 7, %arg5 + 7] : memref<24x38x62xf32, 1>
-      %3 = arith.mulf %2, %cst_0 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %4 = arith.subf %1, %3 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %3 = arith.mulf %2, %cst_0 : f32
+      %4 = arith.subf %1, %3 : f32
       %5 = affine.load %arg0[%arg3 + 7, %arg4 + 7, %arg5 + 7] : memref<24x38x62xf32, 1>
-      %6 = arith.mulf %4, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %7 = arith.addf %5, %6 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %6 = arith.mulf %4, %cst_1 : f32
+      %7 = arith.addf %5, %6 : f32
       affine.store %7, %arg0[%arg3 + 7, %arg4 + 7, %arg5 + 7] : memref<24x38x62xf32, 1>
     }
     return
@@ -394,11 +394,11 @@ module {
 // CHECK-NEXT:      %0 = affine.load %arg1[%arg3 + 7, %arg4 + 7, %arg5 + 7] : memref<24x38x62xf32, 1>
 // CHECK-NEXT:      %1 = affine.load %arg2[%arg3 + 7, %arg4 + 7, %arg5 + 7] : memref<24x38x62xf32, 1>
 // CHECK-NEXT:      %2 = affine.load %arg0[%arg3 + 7, %arg4 + 7, %arg5 + 7] : memref<24x38x62xf32, 1>
-// CHECK-NEXT:      %3 = arith.mulf %0, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:      %4 = arith.mulf %1, %cst_0 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:      %5 = arith.subf %3, %4 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:      %6 = arith.mulf %5, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:      %7 = arith.addf %2, %6 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:      %3 = arith.mulf %0, %cst : f32
+// CHECK-NEXT:      %4 = arith.mulf %1, %cst_0 : f32
+// CHECK-NEXT:      %5 = arith.subf %3, %4 : f32
+// CHECK-NEXT:      %6 = arith.mulf %5, %cst_1 : f32
+// CHECK-NEXT:      %7 = arith.addf %2, %6 : f32
 // CHECK-NEXT:      affine.store %7, %arg0[%arg3 + 7, %arg4 + 7, %arg5 + 7] : memref<24x38x62xf32, 1>
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return

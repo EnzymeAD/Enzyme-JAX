@@ -27,10 +27,10 @@
 // TD:    %[[FUNC:.+]] = transform.structured.match ops{["func.func"]} in %[[ROOT]] : (!transform.any_op) -> !transform.any_op
 // TD:    transform.apply_patterns to %[[FUNC]] {
 // FL4:     transform.apply_patterns.enzyme_hlo.broadcast_reduce
-// PARAM:   transform.apply_patterns.enzyme_hlo.broadcast_reduce {benefit = 32 : i64}
+// PARAM:   transform.apply_patterns.enzyme_hlo.broadcast_reduce <benefit = 32>
 // FL64:    transform.apply_patterns.enzyme_hlo.cse_concatenate
 // PARAM:   transform.apply_patterns.enzyme_hlo.pad_dot_general postPad = 1
-// PARAM:   transform.apply_patterns.enzyme_hlo.iota_simplify {benefit = 16 : i64, parameter = 2 : i64}
+// PARAM:   transform.apply_patterns.enzyme_hlo.iota_simplify <benefit = 16, parameter = 2>
 // TD:    } : !transform.any_op
 // TD:    transform.yield
 // TD:  }

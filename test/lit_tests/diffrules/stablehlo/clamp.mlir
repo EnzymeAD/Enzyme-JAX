@@ -18,16 +18,16 @@ module {
     %dclamp = stablehlo.constant dense<1.0> : tensor<10xf32>
 
     %res:2 = enzyme.autodiff @clamp(%min, %operand, %max, %dclamp) {
-      activity=[#enzyme<activity enzyme_const>, #enzyme<activity enzyme_active>, #enzyme<activity enzyme_const>],
-      ret_activity=[#enzyme<activity enzyme_active>]
+      activity=[#enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_const>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
     } : (tensor<10xf32>, tensor<10xf32>, tensor<10xf32>, tensor<10xf32>) -> (tensor<10xf32>, tensor<10xf32>)
 
     check.expect_eq_const %res#0, dense<[1.5, 1.5, 1.0, 1.0, 2.0, 1.5, 1.5, 1.5, 1.5, 1.5]> : tensor<10xf32>
     check.expect_eq_const %res#1, dense<[1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0]> : tensor<10xf32>
 
     %res_fwd:2 = enzyme.fwddiff @clamp(%min, %operand, %dclamp, %max) {
-      activity=[#enzyme<activity enzyme_const>, #enzyme<activity enzyme_dup>, #enzyme<activity enzyme_const>],
-      ret_activity=[#enzyme<activity enzyme_dup>]
+      activity=[#enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_const>],
+      ret_activity=[#enzyme.activity<enzyme_dup>]
     } : (tensor<10xf32>, tensor<10xf32>, tensor<10xf32>, tensor<10xf32>) -> (tensor<10xf32>, tensor<10xf32>)
 
     check.expect_eq_const %res_fwd#0, dense<[1.5, 1.5, 1.0, 1.0, 2.0, 1.5, 1.5, 1.5, 1.5, 1.5]> : tensor<10xf32>

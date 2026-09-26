@@ -71,9 +71,9 @@ module {
 // NONAN-NEXT:    return %0 : tensor<3056xi1>
 // NONAN-NEXT:  }
 // NAN:  func.func @main(%arg0: tensor<3056xf64>) -> tensor<3056xi1> {
-// NAN-NEXT:    %cst = stablehlo.constant {enzymexla.no_nan = [#enzymexla<guaranteed GUARANTEED>]} dense<0.000000e+00> : tensor<3056xf64>
-// NAN-NEXT:    %0 = stablehlo.abs %arg0 {enzymexla.no_nan = [#enzymexla<guaranteed NOTGUARANTEED>], enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>]} : tensor<3056xf64>
-// NAN-NEXT:    %1 = stablehlo.compare LT, %cst, %0, FLOAT {enzymexla.no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<3056xf64>, tensor<3056xf64>) -> tensor<3056xi1>
+// NAN-NEXT:    %cst = stablehlo.constant {enzymexla.no_nan = [#enzymexla.guaranteed<GUARANTEED>]} dense<0.000000e+00> : tensor<3056xf64>
+// NAN-NEXT:    %0 = stablehlo.abs %arg0 {enzymexla.no_nan = [#enzymexla.guaranteed<NOTGUARANTEED>], enzymexla.non_negative = [#enzymexla.guaranteed<GUARANTEED>]} : tensor<3056xf64>
+// NAN-NEXT:    %1 = stablehlo.compare LT, %cst, %0, FLOAT {enzymexla.no_nan = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<3056xf64>, tensor<3056xf64>) -> tensor<3056xi1>
 // NAN-NEXT:    return %1 : tensor<3056xi1>
 // NAN-NEXT:  }
 
@@ -82,9 +82,9 @@ module {
 // NONAN-NEXT:    return %c : tensor<4xi1>
 // NONAN-NEXT:  }
 // NAN:  func.func @ge(%arg0: tensor<4xf64>) -> tensor<4xi1> {
-// NAN-NEXT:    %cst = stablehlo.constant {enzymexla.no_nan = [#enzymexla<guaranteed GUARANTEED>]} dense<0.000000e+00> : tensor<4xf64>
-// NAN-NEXT:    %0 = stablehlo.abs %arg0 {enzymexla.no_nan = [#enzymexla<guaranteed NOTGUARANTEED>], enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>]} : tensor<4xf64>
-// NAN-NEXT:    %1 = stablehlo.compare GE, %0, %cst, FLOAT {enzymexla.no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<4xf64>, tensor<4xf64>) -> tensor<4xi1>
+// NAN-NEXT:    %cst = stablehlo.constant {enzymexla.no_nan = [#enzymexla.guaranteed<GUARANTEED>]} dense<0.000000e+00> : tensor<4xf64>
+// NAN-NEXT:    %0 = stablehlo.abs %arg0 {enzymexla.no_nan = [#enzymexla.guaranteed<NOTGUARANTEED>], enzymexla.non_negative = [#enzymexla.guaranteed<GUARANTEED>]} : tensor<4xf64>
+// NAN-NEXT:    %1 = stablehlo.compare GE, %0, %cst, FLOAT {enzymexla.no_nan = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<4xf64>, tensor<4xf64>) -> tensor<4xi1>
 // NAN-NEXT:    return %1 : tensor<4xi1>
 // NAN-NEXT:  }
 

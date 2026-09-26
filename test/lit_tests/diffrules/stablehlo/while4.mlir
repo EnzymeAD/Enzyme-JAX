@@ -211,11 +211,11 @@ module {
 // CHECK-NEXT:    %27 = stablehlo.multiply %24#5, %26 : tensor<3x2xf32>
 // CHECK-NEXT:    %28 = stablehlo.reduce(%27 init: %cst_7) applies stablehlo.add across dimensions = [1] : (tensor<3x2xf32>, tensor<f32>) -> tensor<3xf32>
 // CHECK-NEXT:    %29 = stablehlo.add %24#3, %28 : tensor<3xf32>
-// CHECK-NEXT:    %30 = stablehlo.dot_general %27, %4, contracting_dims = [1] x [0] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<3x2xf32>, tensor<2x3xf32>) -> tensor<3x3xf32>
+// CHECK-NEXT:    %30 = stablehlo.dot_general %27, %4, contracting_dims = [1] x [0] {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<3x2xf32>, tensor<2x3xf32>) -> tensor<3x3xf32>
 // CHECK-NEXT:    %31 = stablehlo.reduce(%27 init: %cst_7) applies stablehlo.add across dimensions = [1] : (tensor<3x2xf32>, tensor<f32>) -> tensor<3xf32>
 // CHECK-NEXT:    %32 = stablehlo.add %24#4, %31 : tensor<3xf32>
 // CHECK-NEXT:    %33 = stablehlo.transpose %24#2, dims = [1, 0] : (tensor<3x3xf32>) -> tensor<3x3xf32>
-// CHECK-NEXT:    %34 = stablehlo.add %30, %24#1 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3x3xf32>
+// CHECK-NEXT:    %34 = stablehlo.add %30, %24#1 {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<3x3xf32>
 // CHECK-NEXT:    %35 = stablehlo.transpose %34, dims = [1, 0] : (tensor<3x3xf32>) -> tensor<3x3xf32>
 // CHECK-NEXT:    return %13, %14, %15, %arg3, %arg4, %arg5, %35, %33, %29, %32 : tensor<6x2x3xf32>, tensor<3x3xf32>, tensor<3x3xf32>, tensor<3xf32>, tensor<3xf32>, tensor<2xui64>, tensor<3x3xf32>, tensor<3x3xf32>, tensor<3xf32>, tensor<3xf32>
 // CHECK-NEXT:  }

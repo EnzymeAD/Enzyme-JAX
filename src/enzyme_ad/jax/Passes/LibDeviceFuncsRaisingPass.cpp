@@ -901,20 +901,50 @@ public:
       }
     }
 
-    // Determine attributes for the target op
-    AttrConvertPassThrough<LLVM::ICmpOp, arith::CmpIOp> attrConvert(op);
-
     auto operands = op->getOperands();
     auto llvmNDVectorTy = operands[0].getType();
     if (isa<LLVM::LLVMArrayType, mlir::VectorType>(llvmNDVectorTy)) {
       return failure();
     }
 
-    Operation *newOp = rewriter.create(
-        op->getLoc(), rewriter.getStringAttr(arith::CmpIOp::getOperationName()),
-        operands, op->getResultTypes(), attrConvert.getAttrs());
+    // arith.cmpi keeps its predicate in a property rather than the attribute
+    // dictionary, so it has to be built with one rather than handed a dict.
+    arith::CmpIPredicate pred;
+    switch (op.getPredicate()) {
+    case LLVM::ICmpPredicate::eq:
+      pred = arith::CmpIPredicate::eq;
+      break;
+    case LLVM::ICmpPredicate::ne:
+      pred = arith::CmpIPredicate::ne;
+      break;
+    case LLVM::ICmpPredicate::slt:
+      pred = arith::CmpIPredicate::slt;
+      break;
+    case LLVM::ICmpPredicate::sle:
+      pred = arith::CmpIPredicate::sle;
+      break;
+    case LLVM::ICmpPredicate::sgt:
+      pred = arith::CmpIPredicate::sgt;
+      break;
+    case LLVM::ICmpPredicate::sge:
+      pred = arith::CmpIPredicate::sge;
+      break;
+    case LLVM::ICmpPredicate::ult:
+      pred = arith::CmpIPredicate::ult;
+      break;
+    case LLVM::ICmpPredicate::ule:
+      pred = arith::CmpIPredicate::ule;
+      break;
+    case LLVM::ICmpPredicate::ugt:
+      pred = arith::CmpIPredicate::ugt;
+      break;
+    case LLVM::ICmpPredicate::uge:
+      pred = arith::CmpIPredicate::uge;
+      break;
+    }
 
-    rewriter.replaceOp(op, newOp->getResult(0));
+    rewriter.replaceOpWithNewOp<arith::CmpIOp>(op, pred, op.getLhs(),
+                                               op.getRhs());
     return success();
   }
 };

@@ -9,19 +9,19 @@ module {
 
   func.func @gelu_tanh_const_prop() -> tensor<5xf32> {
     %arg = stablehlo.constant dense<[1.000000e-06, 1.000000e+03, -1.000000e-06, -1.000000e+03, 2.000000e+00]> : tensor<5xf32>
-    %result = enzymexla.math.gelu %arg, approximation = TANH : (tensor<5xf32>) -> tensor<5xf32>
+    %result = enzymexla.math.gelu %arg, approximation = <TANH> : (tensor<5xf32>) -> tensor<5xf32>
     return %result : tensor<5xf32>
   }
 
   func.func @gelu_sigmoid_const_prop() -> tensor<5xf32> {
     %arg = stablehlo.constant dense<[1.000000e-06, 1.000000e+03, -1.000000e-06, -1.000000e+03, 2.000000e+00]> : tensor<5xf32>
-    %result = enzymexla.math.gelu %arg, approximation = SIGMOID : (tensor<5xf32>) -> tensor<5xf32>
+    %result = enzymexla.math.gelu %arg, approximation = <SIGMOID> : (tensor<5xf32>) -> tensor<5xf32>
     return %result : tensor<5xf32>
   }
 
   func.func @gelu_none_not_const_prop() -> tensor<1xf32> {
     %arg = stablehlo.constant dense<[0.000000e+00]> : tensor<1xf32>
-    %result = enzymexla.math.gelu %arg, approximation = NONE : (tensor<1xf32>) -> tensor<1xf32>
+    %result = enzymexla.math.gelu %arg, approximation = <NONE> : (tensor<1xf32>) -> tensor<1xf32>
     return %result : tensor<1xf32>
   }
 
@@ -60,7 +60,7 @@ module {
 // CHECK-NEXT: return %cst : tensor<5xf32>
 
 // CHECK-LABEL: func.func @gelu_none_not_const_prop
-// CHECK: enzymexla.math.gelu {{.*}}approximation = NONE
+// CHECK: enzymexla.math.gelu {{.*}}approximation = <NONE>
 
 // CHECK-LABEL: func.func @softplus_const_prop
 // CHECK-NOT: enzymexla.math.softplus

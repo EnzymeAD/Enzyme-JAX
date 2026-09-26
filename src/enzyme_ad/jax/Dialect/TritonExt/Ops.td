@@ -17,11 +17,13 @@ def TensorI64
       BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(64))">;
 
 def TritonModuleOp : TritonExtOp<"module", [
-  IsolatedFromAbove, NoRegionArguments, SymbolTable, Symbol, NoTerminator
+  IsolatedFromAbove, NoRegionArguments, SymbolTable, Symbol, SymbolName,
+  SymbolVisibility, NoTerminator
 ]> {
   let summary = "Triton Module operation";
 
-  let arguments = (ins SymbolNameAttr : $sym_name);
+  let arguments = (ins SymbolNameAttr : $sym_name,
+                       OptionalAttr<StrAttr> : $sym_visibility);
   let regions = (region SizedRegion<1> : $bodyRegion);
 
   // clang-format off

@@ -60,65 +60,64 @@ module {
 // CHECK-NEXT:      %3 = llvm.mlir.constant(1 : i32) : i32
 // CHECK-NEXT:      %4 = llvm.mlir.addressof @__reactant_xla_data : !llvm.ptr
 // CHECK-NEXT:      %5 = llvm.mlir.constant(12 : i64) : i64
-// CHECK-NEXT:      %6 = llvm.mlir.constant(0 : i64) : i64
-// CHECK-NEXT:      %7 = llvm.mlir.zero : !llvm.ptr
-// CHECK-NEXT:      %8 = llvm.mlir.constant(1 : index) : i64
-// CHECK-NEXT:      %9 = llvm.mlir.constant(0 : i32) : i32
-// CHECK-NEXT:      %10 = llvm.mlir.addressof @".str" : !llvm.ptr
-// CHECK-NEXT:      %11 = llvm.mlir.constant(1.000000e+00 : f64) : f64
-// CHECK-NEXT:      %12 = llvm.mlir.constant(0.000000e+00 : f64) : f64
-// CHECK-NEXT:      %13 = llvm.mlir.constant(1.400000e+00 : f64) : f64
-// CHECK-NEXT:      %14 = llvm.mlir.constant(8 : index) : i64
-// CHECK-NEXT:      %15 = llvm.mlir.constant(1 : i64) : i64
-// CHECK-NEXT:      %16 = llvm.alloca %15 x !llvm.array<2 x i64> : (i64) -> !llvm.ptr
-// CHECK-NEXT:      %17 = llvm.alloca %15 x !llvm.array<1 x i64> : (i64) -> !llvm.ptr
-// CHECK-NEXT:      %18 = llvm.alloca %15 x !llvm.array<1 x i64> : (i64) -> !llvm.ptr
-// CHECK-NEXT:      %19 = llvm.alloca %15 x !llvm.array<1 x i64> : (i64) -> !llvm.ptr
-// CHECK-NEXT:      %20 = llvm.alloca %15 x !llvm.array<1 x i64> : (i64) -> !llvm.ptr
-// CHECK-NEXT:      %21 = llvm.alloca %8 x f64 : (i64) -> !llvm.ptr
-// CHECK-NEXT:      %22 = llvm.alloca %8 x f64 : (i64) -> !llvm.ptr
-// CHECK-NEXT:      %23 = llvm.alloca %8 x f64 : (i64) -> !llvm.ptr
-// CHECK-NEXT:      %24 = llvm.alloca %8 x f64 : (i64) -> !llvm.ptr
-// CHECK-NEXT:      %25 = llvm.getelementptr %20[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<1 x i64>
-// CHECK-NEXT:      llvm.store %15, %25 : i64, !llvm.ptr
-// CHECK-NEXT:      %26 = llvm.call @reactantXLAMalloc(%4, %5, %15, %20) : (!llvm.ptr, i64, i64, !llvm.ptr) -> !llvm.ptr
-// CHECK-NEXT:      %27 = llvm.addrspacecast %26 : !llvm.ptr to !llvm.ptr<1>
-// CHECK-NEXT:      %28 = llvm.getelementptr %19[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<1 x i64>
-// CHECK-NEXT:      llvm.store %15, %28 : i64, !llvm.ptr
-// CHECK-NEXT:      %29 = llvm.call @reactantXLAMalloc(%4, %5, %15, %19) : (!llvm.ptr, i64, i64, !llvm.ptr) -> !llvm.ptr
-// CHECK-NEXT:      %30 = llvm.getelementptr %18[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<1 x i64>
-// CHECK-NEXT:      llvm.store %15, %30 : i64, !llvm.ptr
-// CHECK-NEXT:      %31 = llvm.call @reactantXLAMalloc(%4, %5, %15, %18) : (!llvm.ptr, i64, i64, !llvm.ptr) -> !llvm.ptr
-// CHECK-NEXT:      %32 = llvm.addrspacecast %31 : !llvm.ptr to !llvm.ptr<1>
-// CHECK-NEXT:      %33 = llvm.getelementptr %17[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<1 x i64>
-// CHECK-NEXT:      llvm.store %15, %33 : i64, !llvm.ptr
-// CHECK-NEXT:      %34 = llvm.call @reactantXLAMalloc(%4, %5, %15, %17) : (!llvm.ptr, i64, i64, !llvm.ptr) -> !llvm.ptr
-// CHECK-NEXT:      llvm.store %13, %21 : f64, !llvm.ptr
-// CHECK-NEXT:      llvm.store %12, %22 : f64, !llvm.ptr
-// CHECK-NEXT:      llvm.store %11, %23 : f64, !llvm.ptr
-// CHECK-NEXT:      llvm.store %11, %24 : f64, !llvm.ptr
-// CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %26, %21, %14, %3) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
-// CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %29, %22, %14, %3) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
-// CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %31, %23, %14, %3) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
-// CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %34, %24, %14, %3) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
-// CHECK-NEXT:      %35 = llvm.getelementptr %2[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<583 x i8>
-// CHECK-NEXT:      %36 = llvm.getelementptr %16[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<2 x i64>
-// CHECK-NEXT:      llvm.store %27, %36 : !llvm.ptr<1>, !llvm.ptr
-// CHECK-NEXT:      %37 = llvm.getelementptr %16[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<2 x i64>
-// CHECK-NEXT:      llvm.store %32, %37 : !llvm.ptr<1>, !llvm.ptr
-// CHECK-NEXT:      llvm.call @reactantXLAExec(%4, %35, %1, %16, %6, %7) vararg(!llvm.func<void (ptr, ptr, i64, ptr, i64, ptr, ...)>) : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr) -> ()
-// CHECK-NEXT:      %38 = llvm.mlir.zero : i32
-// CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %21, %26, %14, %0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
-// CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %22, %29, %14, %0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
-// CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %23, %31, %14, %0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
-// CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %24, %34, %14, %0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
-// CHECK-NEXT:      %39 = llvm.load %21 : !llvm.ptr -> f64
-// CHECK-NEXT:      %40 = llvm.load %23 : !llvm.ptr -> f64
-// CHECK-NEXT:      %41 = llvm.call @printf(%10, %39, %40) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}, f64 {llvm.noundef}) -> i32
-// CHECK-NEXT:      %42 = llvm.load %22 : !llvm.ptr -> f64
-// CHECK-NEXT:      %43 = llvm.load %24 : !llvm.ptr -> f64
-// CHECK-NEXT:      %44 = llvm.call @printf(%10, %42, %43) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}, f64 {llvm.noundef}) -> i32
-// CHECK-NEXT:      llvm.return %9 : i32
+// CHECK-NEXT:      %6 = llvm.mlir.zero : !llvm.ptr
+// CHECK-NEXT:      %7 = llvm.mlir.constant(0 : i32) : i32
+// CHECK-NEXT:      %8 = llvm.mlir.addressof @".str" : !llvm.ptr
+// CHECK-NEXT:      %9 = llvm.mlir.constant(1.000000e+00 : f64) : f64
+// CHECK-NEXT:      %10 = llvm.mlir.constant(0.000000e+00 : f64) : f64
+// CHECK-NEXT:      %11 = llvm.mlir.constant(1.400000e+00 : f64) : f64
+// CHECK-NEXT:      %12 = llvm.mlir.constant(8 : i64) : i64
+// CHECK-NEXT:      %13 = llvm.mlir.constant(0 : i64) : i64
+// CHECK-NEXT:      %14 = llvm.mlir.constant(1 : i64) : i64
+// CHECK-NEXT:      %15 = llvm.alloca %14 x !llvm.array<2 x i64> : (i64) -> !llvm.ptr
+// CHECK-NEXT:      %16 = llvm.alloca %14 x !llvm.array<1 x i64> : (i64) -> !llvm.ptr
+// CHECK-NEXT:      %17 = llvm.alloca %14 x !llvm.array<1 x i64> : (i64) -> !llvm.ptr
+// CHECK-NEXT:      %18 = llvm.alloca %14 x !llvm.array<1 x i64> : (i64) -> !llvm.ptr
+// CHECK-NEXT:      %19 = llvm.alloca %14 x !llvm.array<1 x i64> : (i64) -> !llvm.ptr
+// CHECK-NEXT:      %20 = llvm.alloca %14 x f64 : (i64) -> !llvm.ptr
+// CHECK-NEXT:      %21 = llvm.alloca %14 x f64 : (i64) -> !llvm.ptr
+// CHECK-NEXT:      %22 = llvm.alloca %14 x f64 : (i64) -> !llvm.ptr
+// CHECK-NEXT:      %23 = llvm.alloca %14 x f64 : (i64) -> !llvm.ptr
+// CHECK-NEXT:      %24 = llvm.getelementptr %19[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<1 x i64>
+// CHECK-NEXT:      llvm.store %14, %24 : i64, !llvm.ptr
+// CHECK-NEXT:      %25 = llvm.call @reactantXLAMalloc(%4, %5, %14, %19) : (!llvm.ptr, i64, i64, !llvm.ptr) -> !llvm.ptr
+// CHECK-NEXT:      %26 = llvm.addrspacecast %25 : !llvm.ptr to !llvm.ptr<1>
+// CHECK-NEXT:      %27 = llvm.getelementptr %18[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<1 x i64>
+// CHECK-NEXT:      llvm.store %14, %27 : i64, !llvm.ptr
+// CHECK-NEXT:      %28 = llvm.call @reactantXLAMalloc(%4, %5, %14, %18) : (!llvm.ptr, i64, i64, !llvm.ptr) -> !llvm.ptr
+// CHECK-NEXT:      %29 = llvm.getelementptr %17[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<1 x i64>
+// CHECK-NEXT:      llvm.store %14, %29 : i64, !llvm.ptr
+// CHECK-NEXT:      %30 = llvm.call @reactantXLAMalloc(%4, %5, %14, %17) : (!llvm.ptr, i64, i64, !llvm.ptr) -> !llvm.ptr
+// CHECK-NEXT:      %31 = llvm.addrspacecast %30 : !llvm.ptr to !llvm.ptr<1>
+// CHECK-NEXT:      %32 = llvm.getelementptr %16[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<1 x i64>
+// CHECK-NEXT:      llvm.store %14, %32 : i64, !llvm.ptr
+// CHECK-NEXT:      %33 = llvm.call @reactantXLAMalloc(%4, %5, %14, %16) : (!llvm.ptr, i64, i64, !llvm.ptr) -> !llvm.ptr
+// CHECK-NEXT:      llvm.store %11, %20 : f64, !llvm.ptr
+// CHECK-NEXT:      llvm.store %10, %21 : f64, !llvm.ptr
+// CHECK-NEXT:      llvm.store %9, %22 : f64, !llvm.ptr
+// CHECK-NEXT:      llvm.store %9, %23 : f64, !llvm.ptr
+// CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %25, %20, %12, %3) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
+// CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %28, %21, %12, %3) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
+// CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %30, %22, %12, %3) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
+// CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %33, %23, %12, %3) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
+// CHECK-NEXT:      %34 = llvm.getelementptr %2[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<583 x i8>
+// CHECK-NEXT:      %35 = llvm.getelementptr %15[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<2 x i64>
+// CHECK-NEXT:      llvm.store %26, %35 : !llvm.ptr<1>, !llvm.ptr
+// CHECK-NEXT:      %36 = llvm.getelementptr %15[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<2 x i64>
+// CHECK-NEXT:      llvm.store %31, %36 : !llvm.ptr<1>, !llvm.ptr
+// CHECK-NEXT:      llvm.call @reactantXLAExec(%4, %34, %1, %15, %13, %6) vararg(!llvm.func<void (ptr, ptr, i64, ptr, i64, ptr, ...)>) : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr) -> ()
+// CHECK-NEXT:      %37 = llvm.mlir.zero : i32
+// CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %20, %25, %12, %0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
+// CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %21, %28, %12, %0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
+// CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %22, %30, %12, %0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
+// CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %23, %33, %12, %0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
+// CHECK-NEXT:      %38 = llvm.load %20 : !llvm.ptr -> f64
+// CHECK-NEXT:      %39 = llvm.load %22 : !llvm.ptr -> f64
+// CHECK-NEXT:      %40 = llvm.call @printf(%8, %38, %39) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}, f64 {llvm.noundef}) -> i32
+// CHECK-NEXT:      %41 = llvm.load %21 : !llvm.ptr -> f64
+// CHECK-NEXT:      %42 = llvm.load %23 : !llvm.ptr -> f64
+// CHECK-NEXT:      %43 = llvm.call @printf(%8, %41, %42) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}, f64 {llvm.noundef}) -> i32
+// CHECK-NEXT:      llvm.return %7 : i32
 // CHECK-NEXT:    }
 
 // CHECK:  llvm.func local_unnamed_addr @printf(!llvm.ptr {llvm.nocapture, llvm.noundef, llvm.readonly}, ...) -> (i32 {llvm.noundef}) attributes {no_unwind, passthrough = ["nofree", ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], sym_visibility = "private", target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>}
