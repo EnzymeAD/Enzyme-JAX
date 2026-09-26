@@ -1,0 +1,823 @@
+diff --git a/llvm/include/llvm/CodeGen/MachineBasicBlock.h b/llvm/include/llvm/CodeGen/MachineBasicBlock.h
+index 47430a100b3c..f70ccd70dcdc 100644
+--- a/llvm/include/llvm/CodeGen/MachineBasicBlock.h
++++ b/llvm/include/llvm/CodeGen/MachineBasicBlock.h
+@@ -905,19 +905,24 @@ public:
+     return const_cast<MachineBasicBlock *>(this)->getFirstNonPHI();
+   }
+ 
+-  /// Return the first instruction in MBB after I that is not a PHI or a label.
+-  /// This is the correct point to insert lowered copies at the beginning of a
+-  /// basic block that must be before any debugging information.
++  /// Return the first instruction in MBB after I that is not a PHI, a label or
++  /// a block prolog instruction. This is the correct point to insert lowered
++  /// copies at the beginning of a basic block that must be before any debugging
++  /// information.
+   LLVM_ABI iterator SkipPHIsAndLabels(iterator I);
+ 
+-  /// Return the first instruction in MBB after I that is not a PHI, label or
+-  /// debug.  This is the correct point to insert copies at the beginning of a
+-  /// basic block. \p Reg is the register being used by a spill or defined for a
+-  /// restore/split during register allocation.
++  /// Return the first instruction in MBB after I that is not a PHI, label,
++  /// debug or block prolog instruction. This is the correct point to insert
++  /// copies at the beginning of a basic block.
+   LLVM_ABI iterator SkipPHIsLabelsAndDebug(iterator I,
+-                                           Register Reg = Register(),
+                                            bool SkipPseudoOp = true);
+ 
++  /// Instructions [\p Begin, \p End) were inserted in front of \p End. If that
++  /// is inside the block prolog (the next instruction that is not a label,
++  /// debug instruction or pseudo probe is a prolog instruction), mark them as
++  /// prolog instructions too.
++  LLVM_ABI void inheritBBProlog(iterator Begin, iterator End);
++
+   /// Returns an iterator to the first terminator instruction of this basic
+   /// block. If a terminator does not exist, it returns end().
+   LLVM_ABI iterator getFirstTerminator();
+diff --git a/llvm/include/llvm/CodeGen/MachineInstr.h b/llvm/include/llvm/CodeGen/MachineInstr.h
+index b04018e43bbe..eb40237c2af1 100644
+--- a/llvm/include/llvm/CodeGen/MachineInstr.h
++++ b/llvm/include/llvm/CodeGen/MachineInstr.h
+@@ -128,7 +128,9 @@ public:
+     SameSign = 1 << 21,      // Both operands have the same sign.
+     InBounds = 1 << 22,      // Pointer arithmetic remains inbounds.
+                              // Implies NoUSWrap.
+-    LRSplit = 1 << 23        // Instruction for live range split.
++    LRSplit = 1 << 23,       // Instruction for live range split.
++    BBProlog = 1 << 24       // Part of the basic block prolog: must stay
++                             // ahead of everything inserted at block entry.
+   };
+ 
+ private:
+diff --git a/llvm/include/llvm/CodeGen/TargetInstrInfo.h b/llvm/include/llvm/CodeGen/TargetInstrInfo.h
+index 4749d06501cb..f8a22a1bb4dc 100644
+--- a/llvm/include/llvm/CodeGen/TargetInstrInfo.h
++++ b/llvm/include/llvm/CodeGen/TargetInstrInfo.h
+@@ -2168,15 +2168,6 @@ public:
+     return Inst.isReturn() && Inst.isCall();
+   }
+ 
+-  /// True if the instruction is bound to the top of its basic block and no
+-  /// other instructions shall be inserted before it. This can be implemented
+-  /// to prevent register allocator to insert spills for \p Reg before such
+-  /// instructions.
+-  virtual bool isBasicBlockPrologue(const MachineInstr &MI,
+-                                    Register Reg = Register()) const {
+-    return false;
+-  }
+-
+   /// Allows targets to use appropriate copy instruction while spilitting live
+   /// range of a register in register allocation.
+   virtual unsigned getLiveRangeSplitOpcode(Register Reg,
+diff --git a/llvm/lib/CodeGen/FixupStatepointCallerSaved.cpp b/llvm/lib/CodeGen/FixupStatepointCallerSaved.cpp
+index fb7b9d306b4e..05ffacd9a9cd 100644
+--- a/llvm/lib/CodeGen/FixupStatepointCallerSaved.cpp
++++ b/llvm/lib/CodeGen/FixupStatepointCallerSaved.cpp
+@@ -456,8 +456,7 @@ public:
+                         << RegToSlotIdx[Reg] << " after statepoint\n");
+ 
+       if (EHPad && RC.tryRecordReload(Reg, RegToSlotIdx[Reg], EHPad)) {
+-        auto EHPadInsertPoint =
+-            EHPad->SkipPHIsLabelsAndDebug(EHPad->begin(), Reg);
++        auto EHPadInsertPoint = EHPad->SkipPHIsLabelsAndDebug(EHPad->begin());
+         insertReloadBefore(Reg, EHPadInsertPoint, EHPad);
+         LLVM_DEBUG(dbgs() << "...also reload at EHPad "
+                           << printMBBReference(*EHPad) << "\n");
+diff --git a/llvm/lib/CodeGen/InlineSpiller.cpp b/llvm/lib/CodeGen/InlineSpiller.cpp
+index f3682a2e2480..d35f75981ec5 100644
+--- a/llvm/lib/CodeGen/InlineSpiller.cpp
++++ b/llvm/lib/CodeGen/InlineSpiller.cpp
+@@ -457,7 +457,7 @@ bool InlineSpiller::hoistSpillInsideBB(LiveInterval &SpillLI,
+   MachineBasicBlock *MBB = DefMBB;
+   MachineBasicBlock::iterator MII;
+   if (SrcVNI->isPHIDef())
+-    MII = MBB->SkipPHIsLabelsAndDebug(MBB->begin(), SrcReg);
++    MII = MBB->SkipPHIsLabelsAndDebug(MBB->begin());
+   else {
+     MachineInstr *DefMI = LIS.getInstructionFromIndex(SrcVNI->def);
+     assert(DefMI && "Defining instruction disappeared");
+@@ -500,6 +500,7 @@ bool InlineSpiller::hoistSpillInsideBB(LiveInterval &SpillLI,
+   // Insert spill without kill flag immediately after def.
+   TII.storeRegToStackSlot(*MBB, MII, SrcReg, false, StackSlot,
+                           MRI.getRegClass(SrcReg), Register());
++  MBB->inheritBBProlog(MIS.begin(), MII);
+   LIS.InsertMachineInstrRangeInMaps(MIS.begin(), MII);
+   for (const MachineInstr &MI : make_range(MIS.begin(), MII))
+     getVDefInterval(MI, LIS);
+@@ -1252,6 +1253,7 @@ void InlineSpiller::insertReload(Register NewVReg,
+   MachineInstrSpan MIS(MI, &MBB);
+   TII.loadRegFromStackSlot(MBB, MI, NewVReg, StackSlot,
+                            MRI.getRegClass(NewVReg), Register());
++  MBB.inheritBBProlog(MIS.begin(), MI);
+ 
+   LIS.InsertMachineInstrRangeInMaps(MIS.begin(), MI);
+ 
+@@ -1297,6 +1299,7 @@ void InlineSpiller::insertSpill(Register NewVReg, bool isKill,
+         .addReg(NewVReg, getKillRegState(isKill));
+ 
+   MachineBasicBlock::iterator Spill = std::next(MI);
++  MBB.inheritBBProlog(Spill, MIS.end());
+   LIS.InsertMachineInstrRangeInMaps(Spill, MIS.end());
+   for (const MachineInstr &MI : make_range(Spill, MIS.end()))
+     getVDefInterval(MI, LIS);
+@@ -1868,6 +1871,7 @@ void HoistSpillHelper::hoistAllSpills() {
+       MachineInstrSpan MIS(MII, BB);
+       TII.storeRegToStackSlot(*BB, MII, LiveReg, false, Slot,
+                               MRI.getRegClass(LiveReg), Register());
++      BB->inheritBBProlog(MIS.begin(), MII);
+       LIS.InsertMachineInstrRangeInMaps(MIS.begin(), MII);
+       for (const MachineInstr &MI : make_range(MIS.begin(), MII))
+         getVDefInterval(MI, LIS);
+diff --git a/llvm/lib/CodeGen/LiveRangeEdit.cpp b/llvm/lib/CodeGen/LiveRangeEdit.cpp
+index 09152cafab66..b95be2bda297 100644
+--- a/llvm/lib/CodeGen/LiveRangeEdit.cpp
++++ b/llvm/lib/CodeGen/LiveRangeEdit.cpp
+@@ -91,6 +91,8 @@ SlotIndex LiveRangeEdit::rematerializeAt(
+   // to false anyway in case the isDead flag of RM.OrigMI's dest register
+   // is true.
+   (*--MI).clearRegisterDeads(DestReg);
++  MI->clearFlag(MachineInstr::BBProlog);
++  MBB.inheritBBProlog(MI, std::next(MI));
+   Rematted.insert(RM.ParentVNI);
+   ++NumReMaterialization;
+ 
+diff --git a/llvm/lib/CodeGen/MIRParser/MILexer.cpp b/llvm/lib/CodeGen/MIRParser/MILexer.cpp
+index 67fbc00edd9d..1a992802174c 100644
+--- a/llvm/lib/CodeGen/MIRParser/MILexer.cpp
++++ b/llvm/lib/CodeGen/MIRParser/MILexer.cpp
+@@ -302,6 +302,7 @@ static MIToken::TokenKind getIdentifierKind(StringRef Identifier) {
+       .Case("noconvergent", MIToken::kw_noconvergent)
+       .Case("mmra", MIToken::kw_mmra)
+       .Case("lr-split", MIToken::kw_lr_split)
++      .Case("bb-prolog", MIToken::kw_bb_prolog)
+       .Default(MIToken::Identifier);
+ }
+ 
+diff --git a/llvm/lib/CodeGen/MIRParser/MILexer.h b/llvm/lib/CodeGen/MIRParser/MILexer.h
+index f5947bfe59b9..fc9a52b63e0b 100644
+--- a/llvm/lib/CodeGen/MIRParser/MILexer.h
++++ b/llvm/lib/CodeGen/MIRParser/MILexer.h
+@@ -154,6 +154,7 @@ struct MIToken {
+     kw_noconvergent,
+     kw_mmra,
+     kw_lr_split,
++    kw_bb_prolog,
+ 
+     // Metadata types.
+     kw_distinct,
+diff --git a/llvm/lib/CodeGen/MIRParser/MIParser.cpp b/llvm/lib/CodeGen/MIRParser/MIParser.cpp
+index bb0b87cc042d..6099f4445bb2 100644
+--- a/llvm/lib/CodeGen/MIRParser/MIParser.cpp
++++ b/llvm/lib/CodeGen/MIRParser/MIParser.cpp
+@@ -1537,7 +1537,8 @@ bool MIParser::parseInstruction(unsigned &OpCode, unsigned &Flags) {
+          Token.is(MIToken::kw_nusw) ||
+          Token.is(MIToken::kw_samesign) ||
+          Token.is(MIToken::kw_inbounds) ||
+-         Token.is(MIToken::kw_lr_split)) {
++         Token.is(MIToken::kw_lr_split) ||
++         Token.is(MIToken::kw_bb_prolog)) {
+     // clang-format on
+     // Mine frame and fast math flags
+     if (Token.is(MIToken::kw_frame_setup))
+@@ -1582,6 +1583,8 @@ bool MIParser::parseInstruction(unsigned &OpCode, unsigned &Flags) {
+       Flags |= MachineInstr::InBounds;
+     if (Token.is(MIToken::kw_lr_split))
+       Flags |= MachineInstr::LRSplit;
++    if (Token.is(MIToken::kw_bb_prolog))
++      Flags |= MachineInstr::BBProlog;
+ 
+     lex();
+   }
+diff --git a/llvm/lib/CodeGen/MIRPrinter.cpp b/llvm/lib/CodeGen/MIRPrinter.cpp
+index 8acd6f14ebc2..95c2997ad327 100644
+--- a/llvm/lib/CodeGen/MIRPrinter.cpp
++++ b/llvm/lib/CodeGen/MIRPrinter.cpp
+@@ -894,6 +894,8 @@ static void printMI(raw_ostream &OS, MFPrintState &State,
+     OS << "inbounds ";
+   if (MI.getFlag(MachineInstr::LRSplit))
+     OS << "lr-split ";
++  if (MI.getFlag(MachineInstr::BBProlog))
++    OS << "bb-prolog ";
+ 
+   // NOTE: Please add new MIFlags also to the MI_FLAGS_STR in
+   // llvm/utils/UpdateTestChecks/mir.py.
+diff --git a/llvm/lib/CodeGen/MachineBasicBlock.cpp b/llvm/lib/CodeGen/MachineBasicBlock.cpp
+index 08a67935b52f..304bae42b9e1 100644
+--- a/llvm/lib/CodeGen/MachineBasicBlock.cpp
++++ b/llvm/lib/CodeGen/MachineBasicBlock.cpp
+@@ -209,13 +209,22 @@ MachineBasicBlock::iterator MachineBasicBlock::getFirstNonPHI() {
+   return I;
+ }
+ 
++void MachineBasicBlock::inheritBBProlog(iterator Begin, iterator End) {
++  iterator Next = End;
++  while (Next != end() && (Next->isDebugOrPseudoInstr() || Next->isPosition()))
++    ++Next;
++  if (Next == end() || !Next->getFlag(MachineInstr::BBProlog))
++    return;
++  for (MachineInstr &MI : make_range(Begin, End))
++    if (!MI.isDebugOrPseudoInstr() && !MI.isPosition())
++      MI.setFlag(MachineInstr::BBProlog);
++}
++
+ MachineBasicBlock::iterator
+ MachineBasicBlock::SkipPHIsAndLabels(MachineBasicBlock::iterator I) {
+-  const TargetInstrInfo *TII = getParent()->getSubtarget().getInstrInfo();
+-
+   iterator E = end();
+-  while (I != E && (I->isPHI() || I->isPosition() ||
+-                    TII->isBasicBlockPrologue(*I)))
++  while (I != E &&
++         (I->isPHI() || I->isPosition() || I->getFlag(MachineInstr::BBProlog)))
+     ++I;
+   // FIXME: This needs to change if we wish to bundle labels
+   // inside the bundle.
+@@ -226,13 +235,11 @@ MachineBasicBlock::SkipPHIsAndLabels(MachineBasicBlock::iterator I) {
+ 
+ MachineBasicBlock::iterator
+ MachineBasicBlock::SkipPHIsLabelsAndDebug(MachineBasicBlock::iterator I,
+-                                          Register Reg, bool SkipPseudoOp) {
+-  const TargetInstrInfo *TII = getParent()->getSubtarget().getInstrInfo();
+-
++                                          bool SkipPseudoOp) {
+   iterator E = end();
+   while (I != E && (I->isPHI() || I->isPosition() || I->isDebugInstr() ||
+                     (SkipPseudoOp && I->isPseudoProbe()) ||
+-                    TII->isBasicBlockPrologue(*I, Reg)))
++                    I->getFlag(MachineInstr::BBProlog)))
+     ++I;
+   // FIXME: This needs to change if we wish to bundle labels / dbg_values
+   // inside the bundle.
+diff --git a/llvm/lib/CodeGen/MachineInstr.cpp b/llvm/lib/CodeGen/MachineInstr.cpp
+index 1067f186208c..6410caa5013b 100644
+--- a/llvm/lib/CodeGen/MachineInstr.cpp
++++ b/llvm/lib/CodeGen/MachineInstr.cpp
+@@ -1894,6 +1894,8 @@ void MachineInstr::print(raw_ostream &OS, ModuleSlotTracker &MST,
+     OS << "inbounds ";
+   if (getFlag(MachineInstr::LRSplit))
+     OS << "lr-split ";
++  if (getFlag(MachineInstr::BBProlog))
++    OS << "bb-prolog ";
+ 
+   // Print the opcode name.
+   if (TII)
+diff --git a/llvm/lib/CodeGen/MachineSink.cpp b/llvm/lib/CodeGen/MachineSink.cpp
+index 161407cf2cd2..9d9d5073aed7 100644
+--- a/llvm/lib/CodeGen/MachineSink.cpp
++++ b/llvm/lib/CodeGen/MachineSink.cpp
+@@ -346,7 +346,7 @@ static bool blockPrologueInterferes(const MachineBasicBlock *BB,
+   for (MachineBasicBlock::const_iterator PI = BB->getFirstNonPHI(); PI != End;
+        ++PI) {
+     // Only check target defined prologue instructions
+-    if (!TII->isBasicBlockPrologue(*PI))
++    if (!PI->getFlag(MachineInstr::BBProlog))
+       continue;
+     for (auto &MO : MI.operands()) {
+       if (!MO.isReg())
+@@ -1779,7 +1779,7 @@ bool MachineSinking::aggressivelySinkIntoCycle(
+       continue;
+     }
+     // We cannot sink before the prologue
+-    if (MI->isPosition() || TII->isBasicBlockPrologue(*MI)) {
++    if (MI->isPosition() || MI->getFlag(MachineInstr::BBProlog)) {
+       LLVM_DEBUG(dbgs() << "AggressiveCycleSink:   Use is BasicBlock prologue, "
+                            "can't sink.\n");
+       continue;
+diff --git a/llvm/lib/CodeGen/MachineVerifier.cpp b/llvm/lib/CodeGen/MachineVerifier.cpp
+index 8c22487a1a21..ba7dfc5fee06 100644
+--- a/llvm/lib/CodeGen/MachineVerifier.cpp
++++ b/llvm/lib/CodeGen/MachineVerifier.cpp
+@@ -159,6 +159,7 @@ struct MachineVerifier {
+ 
+   const MachineInstr *FirstNonPHI = nullptr;
+   const MachineInstr *FirstTerminator = nullptr;
++  const MachineInstr *FirstNonBBProlog = nullptr;
+   BlockSet FunctionBlocks;
+ 
+   BitVector regsReserved;
+@@ -742,6 +743,7 @@ void
+ MachineVerifier::visitMachineBasicBlockBefore(const MachineBasicBlock *MBB) {
+   FirstTerminator = nullptr;
+   FirstNonPHI = nullptr;
++  FirstNonBBProlog = nullptr;
+ 
+   if (MRI->tracksLiveness() && hasPHIs(*MF)) {
+     // If this block has allocatable physical registers live-in, check that
+@@ -2358,6 +2360,20 @@ void MachineVerifier::visitMachineInstrBefore(const MachineInstr *MI) {
+   } else if (FirstNonPHI == nullptr)
+     FirstNonPHI = MI;
+ 
++  // Until register allocation is done, block prolog instructions form a block
++  // prefix. Only PHIs, labels, debug instructions and pseudo probes may precede
++  // them.
++  if (!MF->getProperties().hasNoVRegs() && !MI->isPHI() && !MI->isPosition() &&
++      !MI->isDebugOrPseudoInstr()) {
++    if (!MI->getFlag(MachineInstr::BBProlog)) {
++      if (!FirstNonBBProlog)
++        FirstNonBBProlog = MI;
++    } else if (FirstNonBBProlog) {
++      report("Block prolog instruction after non-prolog instruction", MI);
++      OS << "First non-prolog instruction: " << *FirstNonBBProlog;
++    }
++  }
++
+   // Check the tied operands.
+   if (MI->isInlineAsm())
+     verifyInlineAsm(MI);
+diff --git a/llvm/lib/CodeGen/PHIElimination.cpp b/llvm/lib/CodeGen/PHIElimination.cpp
+index 054e24bc0206..57e56ab91dc8 100644
+--- a/llvm/lib/CodeGen/PHIElimination.cpp
++++ b/llvm/lib/CodeGen/PHIElimination.cpp
+@@ -423,6 +423,8 @@ void PHIEliminationImpl::LowerPHINode(MachineBasicBlock &MBB,
+     PHICopy = TII->createPHIDestinationCopy(
+         MBB, AfterPHIsIt, MPhi->getDebugLoc(), IncomingReg, DestReg);
+   }
++  MBB.inheritBBProlog(PHICopy->getIterator(),
++                      std::next(PHICopy->getIterator()));
+ 
+   if (MPhi->peekDebugInstrNum() && IncomingReg) {
+     // If referred to by debug-info, store where this PHI was.
+diff --git a/llvm/lib/CodeGen/RegAllocFast.cpp b/llvm/lib/CodeGen/RegAllocFast.cpp
+index e5b58f017caa..79768f7e6188 100644
+--- a/llvm/lib/CodeGen/RegAllocFast.cpp
++++ b/llvm/lib/CodeGen/RegAllocFast.cpp
+@@ -608,7 +608,9 @@ void RegAllocFastImpl::spill(MachineBasicBlock::iterator Before,
+   LLVM_DEBUG(dbgs() << " to stack slot #" << FI << '\n');
+ 
+   const TargetRegisterClass &RC = *MRI->getRegClass(VirtReg);
++  MachineInstrSpan MIS(Before, MBB);
+   TII->storeRegToStackSlot(*MBB, Before, AssignedReg, Kill, FI, &RC, VirtReg);
++  MBB->inheritBBProlog(MIS.begin(), Before);
+   ++NumStores;
+ 
+   MachineBasicBlock::iterator FirstTerm = MBB->getFirstTerminator();
+@@ -665,7 +667,9 @@ void RegAllocFastImpl::reload(MachineBasicBlock::iterator Before,
+                     << printReg(PhysReg, TRI) << '\n');
+   int FI = getStackSpaceFor(VirtReg);
+   const TargetRegisterClass &RC = *MRI->getRegClass(VirtReg);
++  MachineInstrSpan MIS(Before, MBB);
+   TII->loadRegFromStackSlot(*MBB, Before, PhysReg, FI, &RC, VirtReg);
++  MBB->inheritBBProlog(MIS.begin(), Before);
+   ++NumLoads;
+ }
+ 
+@@ -683,7 +687,7 @@ MachineBasicBlock::iterator RegAllocFastImpl::getMBBBeginInsertionPoint(
+     }
+ 
+     // Skip prologues and inlineasm_br spills to place reloads afterwards.
+-    if (!TII->isBasicBlockPrologue(*I) && !mayBeSpillFromInlineAsmBr(*I))
++    if (!I->getFlag(MachineInstr::BBProlog) && !mayBeSpillFromInlineAsmBr(*I))
+       break;
+ 
+     // However if a prolog instruction reads a register that needs to be
+@@ -1069,9 +1073,10 @@ bool RegAllocFastImpl::defineLiveThroughVirtReg(MachineInstr &MI,
+           std::next((MachineBasicBlock::iterator)MI.getIterator());
+       LLVM_DEBUG(dbgs() << "Copy " << printReg(LRI->PhysReg, TRI) << " to "
+                         << printReg(PrevReg, TRI) << '\n');
+-      BuildMI(*MBB, InsertBefore, MI.getDebugLoc(),
+-              TII->get(TargetOpcode::COPY), PrevReg)
+-          .addReg(LRI->PhysReg, llvm::RegState::Kill);
++      MachineInstr *Copy = BuildMI(*MBB, InsertBefore, MI.getDebugLoc(),
++                                   TII->get(TargetOpcode::COPY), PrevReg)
++                               .addReg(LRI->PhysReg, llvm::RegState::Kill);
++      MBB->inheritBBProlog(Copy->getIterator(), InsertBefore);
+     }
+     MachineOperand &MO = MI.getOperand(OpNum);
+     if (MO.getSubReg() && !MO.isUndef()) {
+@@ -1135,8 +1140,11 @@ bool RegAllocFastImpl::defineVirtReg(MachineInstr &MI, unsigned OpNum,
+         for (MachineOperand &MO : MI.operands()) {
+           if (MO.isMBB()) {
+             MachineBasicBlock *Succ = MO.getMBB();
+-            TII->storeRegToStackSlot(*Succ, Succ->begin(), PhysReg, Kill, FI,
+-                                     &RC, VirtReg);
++            MachineBasicBlock::iterator SuccBegin = Succ->begin();
++            MachineInstrSpan MIS(SuccBegin, Succ);
++            TII->storeRegToStackSlot(*Succ, SuccBegin, PhysReg, Kill, FI, &RC,
++                                     VirtReg);
++            Succ->inheritBBProlog(MIS.begin(), SuccBegin);
+             ++NumStores;
+             Succ->addLiveIn(PhysReg);
+           }
+diff --git a/llvm/lib/CodeGen/RegAllocGreedy.cpp b/llvm/lib/CodeGen/RegAllocGreedy.cpp
+index fc28b229dcdd..6aa079675414 100644
+--- a/llvm/lib/CodeGen/RegAllocGreedy.cpp
++++ b/llvm/lib/CodeGen/RegAllocGreedy.cpp
+@@ -841,8 +841,7 @@ bool RAGreedy::addThroughConstraints(InterferenceCache::Cursor Intf,
+       return false;
+ 
+     // Interference for the live-in value.
+-    Register Reg = SA->getParent().reg();
+-    auto InsertPt = MBB->SkipPHIsLabelsAndDebug(MBB->begin(), Reg);
++    auto InsertPt = MBB->SkipPHIsLabelsAndDebug(MBB->begin());
+     SlotIndex InsertIdx = InsertPt == MBB->end()
+                               ? Indexes->getMBBEndIdx(MBB)
+                               : LIS->getInstructionIndex(*InsertPt);
+diff --git a/llvm/lib/CodeGen/SplitKit.cpp b/llvm/lib/CodeGen/SplitKit.cpp
+index 404cfe43289d..76fe405e7116 100644
+--- a/llvm/lib/CodeGen/SplitKit.cpp
++++ b/llvm/lib/CodeGen/SplitKit.cpp
+@@ -672,6 +672,7 @@ VNInfo *SplitEditor::defFromParent(unsigned RegIdx, const VNInfo *ParentVNI,
+   }
+ 
+   SlotIndex Def;
++  MachineInstrSpan MIS(I, &MBB);
+   if (LaneMask.none()) {
+     const MCInstrDesc &Desc = TII.get(TargetOpcode::IMPLICIT_DEF);
+     MachineInstr *ImplicitDef = BuildMI(MBB, I, DebugLoc(), Desc, Reg);
+@@ -681,6 +682,7 @@ VNInfo *SplitEditor::defFromParent(unsigned RegIdx, const VNInfo *ParentVNI,
+     ++NumCopies;
+     Def = buildCopy(Edit->getReg(), Reg, LaneMask, MBB, I, Late, RegIdx);
+   }
++  MBB.inheritBBProlog(MIS.begin(), I);
+ 
+   // Define the value in Reg.
+   return defValue(RegIdx, ParentVNI, Def, false);
+@@ -851,9 +853,8 @@ SlotIndex SplitEditor::leaveIntvAtTop(MachineBasicBlock &MBB) {
+   }
+ 
+   unsigned RegIdx = 0;
+-  Register Reg = LIS.getInterval(Edit->get(RegIdx)).reg();
+   VNInfo *VNI = defFromParent(RegIdx, ParentVNI, Start, MBB,
+-                              MBB.SkipPHIsLabelsAndDebug(MBB.begin(), Reg));
++                              MBB.SkipPHIsLabelsAndDebug(MBB.begin()));
+   RegAssign.insert(Start, VNI->def, OpenIdx);
+   LLVM_DEBUG(dump());
+   return VNI->def;
+diff --git a/llvm/lib/CodeGen/TargetInstrInfo.cpp b/llvm/lib/CodeGen/TargetInstrInfo.cpp
+index 92fc628e888e..0a0d9261036b 100644
+--- a/llvm/lib/CodeGen/TargetInstrInfo.cpp
++++ b/llvm/lib/CodeGen/TargetInstrInfo.cpp
+@@ -788,6 +788,10 @@ MachineInstr *TargetInstrInfo::foldMemoryOperand(MachineInstr &MI,
+     // call instructions. We need copy it form old instruction.
+     NewMI->cloneInstrSymbols(MF, MI);
+ 
++    // NewMI replaces MI.
++    if (MI.getFlag(MachineInstr::BBProlog))
++      NewMI->setFlag(MachineInstr::BBProlog);
++
+     return NewMI;
+   }
+ 
+@@ -801,6 +805,7 @@ MachineInstr *TargetInstrInfo::foldMemoryOperand(MachineInstr &MI,
+ 
+   const MachineOperand &MO = MI.getOperand(1 - Ops[0]);
+   MachineBasicBlock::iterator Pos = MI;
++  MachineInstrSpan MIS(Pos, MBB);
+   if (Flags == MachineMemOperand::MOStore) {
+     if (MO.isUndef()) {
+       // If this is an undef copy, we do not need to bother we inserting spill
+@@ -812,6 +817,7 @@ MachineInstr *TargetInstrInfo::foldMemoryOperand(MachineInstr &MI,
+     }
+   } else
+     loadRegFromStackSlot(*MBB, Pos, MO.getReg(), FI, RC, Register());
++  MBB->inheritBBProlog(MIS.begin(), Pos);
+ 
+   return &*--Pos;
+ }
+diff --git a/llvm/lib/Target/AMDGPU/AMDGPUInstructionSelector.cpp b/llvm/lib/Target/AMDGPU/AMDGPUInstructionSelector.cpp
+index 3f0f3e115d90..7abd3ec2c54a 100644
+--- a/llvm/lib/Target/AMDGPU/AMDGPUInstructionSelector.cpp
++++ b/llvm/lib/Target/AMDGPU/AMDGPUInstructionSelector.cpp
+@@ -1882,8 +1882,11 @@ bool AMDGPUInstructionSelector::selectEndCfIntrinsic(MachineInstr &MI) const {
+   // FIXME: Manually selecting to avoid dealing with the SReg_1 trick
+   // SelectionDAG uses for wave32 vs wave64.
+   MachineBasicBlock *BB = MI.getParent();
+-  BuildMI(*BB, &MI, MI.getDebugLoc(), TII.get(AMDGPU::SI_END_CF))
+-      .add(MI.getOperand(1));
++  MachineInstr *EndCf =
++      BuildMI(*BB, &MI, MI.getDebugLoc(), TII.get(AMDGPU::SI_END_CF))
++          .add(MI.getOperand(1));
++  // Exec restore at the top of the join block.
++  SIInstrInfo::setBBPrologIfAtBlockStart(*EndCf);
+ 
+   Register Reg = MI.getOperand(1).getReg();
+   MI.eraseFromParent();
+diff --git a/llvm/lib/Target/AMDGPU/SIFixSGPRCopies.cpp b/llvm/lib/Target/AMDGPU/SIFixSGPRCopies.cpp
+index 6264c176d7db..6c194122c96e 100644
+--- a/llvm/lib/Target/AMDGPU/SIFixSGPRCopies.cpp
++++ b/llvm/lib/Target/AMDGPU/SIFixSGPRCopies.cpp
+@@ -445,10 +445,9 @@ static bool isReachable(const MachineInstr *From,
+ }
+ 
+ // Return the first non-prologue instruction in the block.
+-static MachineBasicBlock::iterator
+-getFirstNonPrologue(MachineBasicBlock *MBB, const TargetInstrInfo *TII) {
++static MachineBasicBlock::iterator getFirstNonPrologue(MachineBasicBlock *MBB) {
+   MachineBasicBlock::iterator I = MBB->getFirstNonPHI();
+-  while (I != MBB->end() && TII->isBasicBlockPrologue(*I))
++  while (I != MBB->end() && I->getFlag(MachineInstr::BBProlog))
+     ++I;
+ 
+   return I;
+@@ -560,7 +559,7 @@ static bool hoistAndMergeSGPRInits(unsigned Reg,
+             continue;
+           }
+ 
+-          MachineBasicBlock::iterator I = getFirstNonPrologue(MBB, TII);
++          MachineBasicBlock::iterator I = getFirstNonPrologue(MBB);
+           if (!interferes(MI1, I) && !interferes(MI2, I)) {
+             LLVM_DEBUG(dbgs()
+                        << "Erasing from "
+@@ -599,11 +598,11 @@ static bool hoistAndMergeSGPRInits(unsigned Reg,
+     auto &Defs = Init.second;
+     for (auto *MI : Defs) {
+       auto *MBB = MI->getParent();
+-      MachineInstr &BoundaryMI = *getFirstNonPrologue(MBB, TII);
++      MachineInstr &BoundaryMI = *getFirstNonPrologue(MBB);
+       MachineBasicBlock::reverse_iterator B(BoundaryMI);
+       // Check if B should actually be a boundary. If not set the previous
+       // instruction as the boundary instead.
+-      if (!TII->isBasicBlockPrologue(*B))
++      if (!B->getFlag(MachineInstr::BBProlog))
+         B++;
+ 
+       auto R = std::next(MI->getReverseIterator());
+diff --git a/llvm/lib/Target/AMDGPU/SIISelLowering.cpp b/llvm/lib/Target/AMDGPU/SIISelLowering.cpp
+index f9943c620865..1bb183a260dd 100644
+--- a/llvm/lib/Target/AMDGPU/SIISelLowering.cpp
++++ b/llvm/lib/Target/AMDGPU/SIISelLowering.cpp
+@@ -19570,6 +19570,12 @@ void SITargetLowering::AdjustInstrPostInstrSelection(MachineInstr &MI,
+   MachineFunction *MF = MI.getMF();
+   MachineRegisterInfo &MRI = MF->getRegInfo();
+ 
++  if (MI.getOpcode() == AMDGPU::SI_END_CF) {
++    // Exec restore at the top of the join block.
++    SIInstrInfo::setBBPrologIfAtBlockStart(MI);
++    return;
++  }
++
+   if (TII->isVOP3(MI.getOpcode())) {
+     // Make sure constant bus requirements are respected.
+     TII->legalizeOperandsVOP3(MRI, MI);
+diff --git a/llvm/lib/Target/AMDGPU/SIInstrInfo.cpp b/llvm/lib/Target/AMDGPU/SIInstrInfo.cpp
+index 693f557dc7be..f74340065178 100644
+--- a/llvm/lib/Target/AMDGPU/SIInstrInfo.cpp
++++ b/llvm/lib/Target/AMDGPU/SIInstrInfo.cpp
+@@ -10319,51 +10319,6 @@ unsigned SIInstrInfo::getLiveRangeSplitOpcode(Register SrcReg,
+   return AMDGPU::COPY;
+ }
+ 
+-bool SIInstrInfo::canAddToBBProlog(const MachineInstr &MI) const {
+-  uint32_t Opcode = MI.getOpcode();
+-  // Check if it is SGPR spill or wwm-register spill Opcode.
+-  if (isSGPRSpill(Opcode) || isWWMRegSpillOpcode(Opcode))
+-    return true;
+-
+-  const MachineFunction *MF = MI.getMF();
+-  const MachineRegisterInfo &MRI = MF->getRegInfo();
+-  const SIMachineFunctionInfo *MFI = MF->getInfo<SIMachineFunctionInfo>();
+-
+-  // See if this is Liverange split instruction inserted for SGPR or
+-  // wwm-register. The implicit def inserted for wwm-registers should also be
+-  // included as they can appear at the bb begin.
+-  bool IsLRSplitInst = MI.getFlag(MachineInstr::LRSplit);
+-  if (!IsLRSplitInst && Opcode != AMDGPU::IMPLICIT_DEF)
+-    return false;
+-
+-  Register Reg = MI.getOperand(0).getReg();
+-  if (RI.isSGPRClass(RI.getRegClassForReg(MRI, Reg)))
+-    return IsLRSplitInst;
+-
+-  return MFI->isWWMReg(Reg);
+-}
+-
+-bool SIInstrInfo::isBasicBlockPrologue(const MachineInstr &MI,
+-                                       Register Reg) const {
+-  // We need to handle instructions which may be inserted during register
+-  // allocation to handle the prolog. The initial prolog instruction may have
+-  // been separated from the start of the block by spills and copies inserted
+-  // needed by the prolog. However, the insertions for scalar registers can
+-  // always be placed at the BB top as they are independent of the exec mask
+-  // value.
+-  bool IsNullOrVectorRegister = true;
+-  if (Reg) {
+-    const MachineFunction *MF = MI.getMF();
+-    const MachineRegisterInfo &MRI = MF->getRegInfo();
+-    IsNullOrVectorRegister = !RI.isSGPRClass(RI.getRegClassForReg(MRI, Reg));
+-  }
+-
+-  return IsNullOrVectorRegister &&
+-         (canAddToBBProlog(MI) ||
+-          (!MI.isTerminator() && MI.getOpcode() != AMDGPU::COPY &&
+-           MI.modifiesRegister(AMDGPU::EXEC, &RI)));
+-}
+-
+ MachineInstrBuilder
+ SIInstrInfo::getAddNoCarry(MachineBasicBlock &MBB,
+                            MachineBasicBlock::iterator I,
+diff --git a/llvm/lib/Target/AMDGPU/SIInstrInfo.h b/llvm/lib/Target/AMDGPU/SIInstrInfo.h
+index 6c7b2d7d2279..0528f214c16b 100644
+--- a/llvm/lib/Target/AMDGPU/SIInstrInfo.h
++++ b/llvm/lib/Target/AMDGPU/SIInstrInfo.h
+@@ -907,6 +907,14 @@ public:
+ 
+   static bool isSpill(const MachineInstr &MI) { return isSpill(MI.getDesc()); }
+ 
++  /// Mark \p MI as a block prolog instruction if it is at the block start.
++  static void setBBPrologIfAtBlockStart(MachineInstr &MI) {
++    MachineBasicBlock &MBB = *MI.getParent();
++    if (!MI.isTerminator() &&
++        MBB.SkipPHIsLabelsAndDebug(MBB.begin()) == MI.getIterator())
++      MI.setFlag(MachineInstr::BBProlog);
++  }
++
+   static bool isWWMRegSpillOpcode(uint32_t Opcode) {
+     return Opcode == AMDGPU::SI_SPILL_WWM_V32_SAVE ||
+            Opcode == AMDGPU::SI_SPILL_WWM_AV32_SAVE ||
+@@ -1664,11 +1672,6 @@ public:
+   unsigned getLiveRangeSplitOpcode(Register Reg,
+                                    const MachineFunction &MF) const override;
+ 
+-  bool isBasicBlockPrologue(const MachineInstr &MI,
+-                            Register Reg = Register()) const override;
+-
+-  bool canAddToBBProlog(const MachineInstr &MI) const;
+-
+   MachineInstr *createPHIDestinationCopy(MachineBasicBlock &MBB,
+                                          MachineBasicBlock::iterator InsPt,
+                                          const DebugLoc &DL, Register Src,
+diff --git a/llvm/lib/Target/AMDGPU/SIInstructions.td b/llvm/lib/Target/AMDGPU/SIInstructions.td
+index 36cacfd47f62..9cb598ac415f 100644
+--- a/llvm/lib/Target/AMDGPU/SIInstructions.td
++++ b/llvm/lib/Target/AMDGPU/SIInstructions.td
+@@ -631,6 +631,7 @@ def SI_LOOP : CFPseudoInstSI <
+ def SI_END_CF : CFPseudoInstSI <
+   (outs), (ins SReg_1:$saved), [], 1, 1> {
+   let Size = 4;
++  let hasPostISelHook = 1; // Sets MachineInstr::BBProlog.
+   let isAsCheapAsAMove = 1;
+   let isReMaterializable = 1;
+   let hasSideEffects = 1;
+diff --git a/llvm/lib/Target/AMDGPU/SILowerControlFlow.cpp b/llvm/lib/Target/AMDGPU/SILowerControlFlow.cpp
+index 25694a53f35d..7afd713367a1 100644
+--- a/llvm/lib/Target/AMDGPU/SILowerControlFlow.cpp
++++ b/llvm/lib/Target/AMDGPU/SILowerControlFlow.cpp
+@@ -323,6 +323,7 @@ void SILowerControlFlow::emitElse(MachineInstr &MI) {
+   MachineInstr *OrSaveExec =
+       BuildMI(MBB, Start, DL, TII->get(LMC.OrSaveExecOpc), SaveReg)
+           .add(MI.getOperand(1)); // Saved EXEC
++  OrSaveExec->setFlag(MachineInstr::BBProlog);
+   if (LV)
+     LV->replaceKillInstruction(SrcReg, MI, *OrSaveExec);
+ 
+@@ -520,6 +521,11 @@ MachineBasicBlock *SILowerControlFlow::emitEndCf(MachineInstr &MI) {
+   MachineInstr *NewMI = BuildMI(MBB, InsPt, DL, TII->get(Opcode), LMC.ExecReg)
+                             .addReg(LMC.ExecReg)
+                             .add(MI.getOperand(0));
++  if (NeedBlockSplit)
++    NewMI->clearFlag(MachineInstr::BBProlog);
++  else
++    NewMI->setFlag(MachineInstr::BBProlog);
++
+   if (LV) {
+     LV->replaceKillInstruction(DataReg, MI, *NewMI);
+ 
+diff --git a/llvm/lib/Target/AMDGPU/SILowerSGPRSpills.cpp b/llvm/lib/Target/AMDGPU/SILowerSGPRSpills.cpp
+index 2fa7feb9d332..3834a4d78d8d 100644
+--- a/llvm/lib/Target/AMDGPU/SILowerSGPRSpills.cpp
++++ b/llvm/lib/Target/AMDGPU/SILowerSGPRSpills.cpp
+@@ -133,6 +133,7 @@ static void insertCSRSaves(const GCNSubtarget &ST, MachineBasicBlock &SaveBlock,
+   bool Success = TFI->spillCalleeSavedRegisters(SaveBlock, I, CSI, TRI);
+   assert(Success && "spillCalleeSavedRegisters should always succeed");
+   (void)Success;
++  SaveBlock.inheritBBProlog(MIS.begin(), I);
+ 
+   // TFI doesn't update Indexes and LIS, so we have to do it separately.
+   if (Indexes)
+@@ -582,6 +583,7 @@ bool SILowerSGPRSpills::run(MachineFunction &MF) {
+       MachineBasicBlock &Block = *IP.MBB;
+       DebugLoc DL = Block.findDebugLoc(IP.It);
+       auto MIB = BuildMI(Block, IP.It, DL, TII->get(AMDGPU::IMPLICIT_DEF), Reg);
++      Block.inheritBBProlog(MIB->getIterator(), IP.It);
+ 
+       // Add WWM flag to the virtual register.
+       FuncInfo->setFlag(Reg, AMDGPU::VirtRegFlag::WWM_REG);
+diff --git a/llvm/lib/Target/AMDGPU/SIRegisterInfo.cpp b/llvm/lib/Target/AMDGPU/SIRegisterInfo.cpp
+index c661787b301c..e0424ee50619 100644
+--- a/llvm/lib/Target/AMDGPU/SIRegisterInfo.cpp
++++ b/llvm/lib/Target/AMDGPU/SIRegisterInfo.cpp
+@@ -2177,6 +2177,7 @@ bool SIRegisterInfo::spillSGPR(MachineBasicBlock::iterator MI, int Index,
+          "undef spill should have been deleted earlier");
+ 
+   SGPRSpillBuilder SB(*this, *ST.getInstrInfo(), isWave32, MI, Index, RS);
++  MachineInstrSpan MIS(MI, MI->getParent());
+ 
+   ArrayRef<SpilledReg> VGPRSpills =
+       SpillToPhysVGPRLane ? SB.MFI.getSGPRSpillToPhysicalVGPRLanes(Index)
+@@ -2321,6 +2322,8 @@ bool SIRegisterInfo::spillSGPR(MachineBasicBlock::iterator MI, int Index,
+     SB.restore();
+   }
+ 
++  // The expansion replaces MI.
++  MI->getParent()->inheritBBProlog(MIS.begin(), MI);
+   MI->eraseFromParent();
+   SB.MFI.addToSpilledSGPRs(SB.NumSubRegs);
+ 
+@@ -2335,6 +2338,7 @@ bool SIRegisterInfo::restoreSGPR(MachineBasicBlock::iterator MI, int Index,
+                                  LiveIntervals *LIS, bool OnlyToVGPR,
+                                  bool SpillToPhysVGPRLane) const {
+   SGPRSpillBuilder SB(*this, *ST.getInstrInfo(), isWave32, MI, Index, RS);
++  MachineInstrSpan MIS(MI, MI->getParent());
+ 
+   ArrayRef<SpilledReg> VGPRSpills =
+       SpillToPhysVGPRLane ? SB.MFI.getSGPRSpillToPhysicalVGPRLanes(Index)
+@@ -2402,6 +2406,8 @@ bool SIRegisterInfo::restoreSGPR(MachineBasicBlock::iterator MI, int Index,
+     SB.restore();
+   }
+ 
++  // The expansion replaces MI.
++  MI->getParent()->inheritBBProlog(MIS.begin(), MI);
+   MI->eraseFromParent();
+ 
+   if (LIS)
+diff --git a/llvm/lib/Target/AMDGPU/SIWholeQuadMode.cpp b/llvm/lib/Target/AMDGPU/SIWholeQuadMode.cpp
+index 008f7f70456d..1cda639c3688 100644
+--- a/llvm/lib/Target/AMDGPU/SIWholeQuadMode.cpp
++++ b/llvm/lib/Target/AMDGPU/SIWholeQuadMode.cpp
+@@ -1230,6 +1230,7 @@ void SIWholeQuadMode::toExact(MachineBasicBlock &MBB,
+              .addReg(LiveMaskReg);
+   }
+ 
++  SIInstrInfo::setBBPrologIfAtBlockStart(*MI);
+   LIS->InsertMachineInstrInMaps(*MI);
+   LIS->removeAllRegUnitsForPhysReg(AMDGPU::EXEC);
+   StateTransition[MI] = StateExact;
+@@ -1249,6 +1250,7 @@ void SIWholeQuadMode::toWQM(MachineBasicBlock &MBB,
+              .addReg(LMC.ExecReg);
+   }
+ 
++  SIInstrInfo::setBBPrologIfAtBlockStart(*MI);
+   LIS->InsertMachineInstrInMaps(*MI);
+   StateTransition[MI] = StateWQM;
+ }
+@@ -1270,6 +1272,7 @@ void SIWholeQuadMode::toStrictMode(MachineBasicBlock &MBB,
+     MI = BuildMI(MBB, Before, DL, TII->get(AMDGPU::ENTER_STRICT_WQM), SaveOrig)
+              .addImm(-1);
+   }
++  SIInstrInfo::setBBPrologIfAtBlockStart(*MI);
+   LIS->InsertMachineInstrInMaps(*MI);
+   StateTransition[MI] = StrictStateNeeded;
+ }
+@@ -1295,6 +1298,7 @@ void SIWholeQuadMode::fromStrictMode(MachineBasicBlock &MBB,
+         BuildMI(MBB, Before, DL, TII->get(AMDGPU::EXIT_STRICT_WQM), LMC.ExecReg)
+             .addReg(SavedOrig);
+   }
++  SIInstrInfo::setBBPrologIfAtBlockStart(*MI);
+   LIS->InsertMachineInstrInMaps(*MI);
+   StateTransition[MI] = NonStrictState;
+ }
+@@ -1614,7 +1618,8 @@ void SIWholeQuadMode::lowerInitExec(MachineInstr &MI) {
+     Register EntryExec = MRI->createVirtualRegister(TRI->getBoolRC());
+     MachineInstr *SaveExec = BuildMI(*MBB, MBB->begin(), MI.getDebugLoc(),
+                                      TII->get(LMC.OrSaveExecOpc), EntryExec)
+-                                 .addImm(-1);
++                                 .addImm(-1)
++                                 .setMIFlag(MachineInstr::BBProlog);
+ 
+     // Replace all uses of MI's destination reg with EntryExec.
+     MRI->replaceRegWith(MI.getOperand(0).getReg(), EntryExec);
+@@ -1636,7 +1641,8 @@ void SIWholeQuadMode::lowerInitExec(MachineInstr &MI) {
+     // This should be before all vector instructions.
+     MachineInstr *InitMI = BuildMI(*MBB, MBB->begin(), MI.getDebugLoc(),
+                                    TII->get(LMC.MovOpc), LMC.ExecReg)
+-                               .addImm(MI.getOperand(0).getImm());
++                               .addImm(MI.getOperand(0).getImm())
++                               .setMIFlag(MachineInstr::BBProlog);
+     if (LIS) {
+       LIS->RemoveMachineInstrFromMaps(MI);
+       LIS->InsertMachineInstrInMaps(*InitMI);
+@@ -1669,6 +1675,8 @@ void SIWholeQuadMode::lowerInitExec(MachineInstr &MI) {
+         // If first instruction is definition then move pointer after it.
+         FirstMI = &*std::next(FirstMI->getIterator());
+       }
++      // The input copy feeds the exec setup below.
++      DefInstr->setFlag(MachineInstr::BBProlog);
+     }
+   }
+ 
+@@ -1688,6 +1696,8 @@ void SIWholeQuadMode::lowerInitExec(MachineInstr &MI) {
+                    .addImm(WavefrontSize);
+   auto CmovMI =
+       BuildMI(*MBB, FirstMI, DL, TII->get(LMC.CMovOpc), LMC.ExecReg).addImm(-1);
++  for (MachineInstr *I : {&*BfeMI, &*BfmMI, &*CmpMI, &*CmovMI})
++    I->setFlag(MachineInstr::BBProlog);
+ 
+   if (!LIS) {
+     MI.eraseFromParent();
+@@ -1760,6 +1770,7 @@ bool SIWholeQuadMode::run(MachineFunction &MF) {
+     MachineInstr *MI =
+         BuildMI(Entry, EntryMI, DebugLoc(), TII->get(AMDGPU::COPY), LiveMaskReg)
+             .addReg(LMC.ExecReg);
++    SIInstrInfo::setBBPrologIfAtBlockStart(*MI);
+     LIS->InsertMachineInstrInMaps(*MI);
+     Changed = true;
+   }
+@@ -1793,6 +1804,7 @@ bool SIWholeQuadMode::run(MachineFunction &MF) {
+     auto MI =
+         BuildMI(Entry, EntryMI, DebugLoc(), TII->get(LMC.WQMOpc), LMC.ExecReg)
+             .addReg(LMC.ExecReg);
++    SIInstrInfo::setBBPrologIfAtBlockStart(*MI);
+     LIS->InsertMachineInstrInMaps(*MI);
+     lowerKillInstrs(true);
+     Changed = true;
