@@ -101,6 +101,13 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     sed -i.bak0 "s/\\/\\/third_party/@xla\\/\\/third_party/g" third_party/llvm/workspace.bzl
     """,
     """
+    # Backport of llvm/llvm-project#225433: AMDGPU register allocation could
+    # place copies and spills above the exec restore of an if/else join,
+    # miscompiling kernels (llvm/llvm-project#222368). Drop once XLA's LLVM
+    # includes it.
+    sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_amdgpu_bb_prolog.patch\\\",/g" third_party/llvm/workspace.bzl
+    """,
+    """
     sed -i.bak0 "s/tf_http_archive/http_archive/g" third_party/llvm/workspace.bzl
     """,
     """
