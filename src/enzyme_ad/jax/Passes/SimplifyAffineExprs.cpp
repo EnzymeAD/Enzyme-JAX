@@ -1046,6 +1046,52 @@ handleAffineValueMap(IslAnalysis &islAnalysis, AffineValueMap avm,
   for (unsigned i = 0; i < cst.getNumSymbolVars(); i++)
     space = isl_space_set_dim_id(space, isl_dim_param, i, symbolId(i));
 
+  // A domain that pins an induction of an affine.parallel to one value (the
+  // halo rows of a 2-D launch: `%i + %j * 16 >= 1518` with `%i < 16` means
+  // `%j = 94`) lets the gist write an expression of that induction and a
+  // sibling through the sibling alone (`%i + %j * 16 + 9` as `%i + 1513`).
+  // MergeParallelInductions merges the two by re-bounding them and leaves
+  // the uses as they are, so it needs every use to read the pair together;
+  // such a result keeps its expression.
+  auto pinnedInductions = [&](AffineExpr e, DenseSet<unsigned> &dims) {
+    e.walk([&](AffineExpr sub) {
+      auto d = dyn_cast<AffineDimExpr>(sub);
+      if (!d || d.getPosition() >= map.getNumDims())
+        return;
+      auto BA = dyn_cast<BlockArgument>(avm.getOperand(d.getPosition()));
+      if (!BA || !isa<AffineParallelOp>(BA.getOwner()->getParentOp()))
+        return;
+      dims.insert(d.getPosition());
+    });
+  };
+  auto foldsPinnedInduction = [&](AffineExpr before, AffineExpr after) {
+    DenseSet<unsigned> was, is;
+    pinnedInductions(before, was);
+    pinnedInductions(after, is);
+    if (was.size() < 2)
+      return false;
+    for (unsigned dim : was) {
+      if (is.contains(dim))
+        continue;
+      // An induction of a single iteration is pinned by its own bounds, not
+      // by a guard; folding it is how the dimension goes away.
+      auto BA = cast<BlockArgument>(avm.getOperand(dim));
+      auto par = cast<AffineParallelOp>(BA.getOwner()->getParentOp());
+      auto lb = par.getLowerBoundMap(BA.getArgNumber());
+      auto ub = par.getUpperBoundMap(BA.getArgNumber());
+      if (lb.isSingleConstant() && ub.isSingleConstant() &&
+          ub.getSingleConstantResult() - lb.getSingleConstantResult() <= 1)
+        continue;
+      isl_val *v =
+          isl_set_plain_get_val_if_fixed(domain, isl_dim_set, dimPosMap[dim]);
+      bool fixed = v && !isl_val_is_nan(v);
+      isl_val_free(v);
+      if (fixed)
+        return true;
+    }
+    return false;
+  };
+
   isl_ast_build *build =
       isl_ast_build_from_context(isl_set_universe(isl_space_copy(space)));
   isl_local_space *ls = isl_local_space_from_space(isl_space_copy(space));
@@ -1076,6 +1122,8 @@ handleAffineValueMap(IslAnalysis &islAnalysis, AffineValueMap avm,
     LLVM_DEBUG(llvm::dbgs() << newMlirExpr << "\n");
     if (!newMlirExpr)
       i2m.incomplete = true;
+    else if (foldsPinnedInduction(mlirExpr, newMlirExpr))
+      newMlirExpr = mlirExpr;
     newExprs.push_back(newMlirExpr);
     if (mlirExpr != newMlirExpr)
       changed = true;
