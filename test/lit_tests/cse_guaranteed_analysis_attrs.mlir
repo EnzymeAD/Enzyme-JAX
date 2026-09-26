@@ -16,7 +16,7 @@
 func.func @bn_differs_by_cached_analysis(%x: tensor<64x128xf32>, %s: tensor<64xf32>, %o: tensor<64xf32>)
     -> (tensor<64x128xf32>, tensor<64x128xf32>) {
   %a:3 = "stablehlo.batch_norm_training"(%x, %s, %o) <{epsilon = 9.99999974E-6 : f32, feature_index = 0 : i64}> : (tensor<64x128xf32>, tensor<64xf32>, tensor<64xf32>) -> (tensor<64x128xf32>, tensor<64xf32>, tensor<64xf32>)
-  %b:3 = "stablehlo.batch_norm_training"(%x, %s, %o) <{epsilon = 9.99999974E-6 : f32, feature_index = 0 : i64}> {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>, #enzymexla<guaranteed UNKNOWN>, #enzymexla<guaranteed UNKNOWN>]} : (tensor<64x128xf32>, tensor<64xf32>, tensor<64xf32>) -> (tensor<64x128xf32>, tensor<64xf32>, tensor<64xf32>)
+  %b:3 = "stablehlo.batch_norm_training"(%x, %s, %o) <{epsilon = 9.99999974E-6 : f32, feature_index = 0 : i64}> {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>, #enzymexla.guaranteed<UNKNOWN>, #enzymexla.guaranteed<UNKNOWN>]} : (tensor<64x128xf32>, tensor<64xf32>, tensor<64xf32>) -> (tensor<64x128xf32>, tensor<64xf32>, tensor<64xf32>)
   return %a#0, %b#0 : tensor<64x128xf32>, tensor<64x128xf32>
 }
 
@@ -44,7 +44,7 @@ func.func @bn_differs_by_epsilon(%x: tensor<64x128xf32>, %s: tensor<64xf32>, %o:
 // Same story for unary math, which was likewise uncovered.
 func.func @exp_differs_by_cached_analysis(%x: tensor<64x128xf32>) -> (tensor<64x128xf32>, tensor<64x128xf32>) {
   %a = stablehlo.exponential %x : tensor<64x128xf32>
-  %b = stablehlo.exponential %x {enzymexla.no_nan = [#enzymexla<guaranteed GUARANTEED>]} : tensor<64x128xf32>
+  %b = stablehlo.exponential %x {enzymexla.no_nan = [#enzymexla.guaranteed<GUARANTEED>]} : tensor<64x128xf32>
   return %a, %b : tensor<64x128xf32>, tensor<64x128xf32>
 }
 

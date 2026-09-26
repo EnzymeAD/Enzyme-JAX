@@ -60,7 +60,8 @@ replaceWithTritonCall(stablehlo::CustomCallOp callOp, PatternRewriter &rewriter,
   rewriter.setInsertionPointToEnd(&symTable.getOp()->getRegion(0).front());
 
   auto outerMod = enzymexla::triton_ext::TritonModuleOp::create(
-      rewriter, callOp->getLoc(), "triton_module");
+      rewriter, callOp->getLoc(), "triton_module",
+      /*sym_visibility=*/nullptr);
 
   Block *b = rewriter.createBlock(&outerMod.getBodyRegion());
 

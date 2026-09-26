@@ -12,7 +12,7 @@ module {
   func.func @main(%arg0: tensor<2xf64>) -> (tensor<2xf64>, tensor<2xf64>) {
     %cst = stablehlo.constant dense<1.000000e+00> : tensor<2xf64>
     %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<2xf64>
-    %0:2 = enzyme.autodiff @sort(%arg0, %cst, %cst_0) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_activenoneed>, #enzyme<activity enzyme_active>]} : (tensor<2xf64>, tensor<2xf64>, tensor<2xf64>) -> (tensor<2xf64>, tensor<2xf64>)
+    %0:2 = enzyme.autodiff @sort(%arg0, %cst, %cst_0) {activity = [#enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_activenoneed>, #enzyme.activity<enzyme_active>]} : (tensor<2xf64>, tensor<2xf64>, tensor<2xf64>) -> (tensor<2xf64>, tensor<2xf64>)
     return %0#1, %0#0 : tensor<2xf64>, tensor<2xf64>
   }
 }
@@ -50,7 +50,7 @@ module {
   }
   func.func @main(%arg0: tensor<5x4x3x2xf32>) -> (tensor<5x4x3x2xf32>, tensor<5x4x3x2xf32>) {
     %cst = stablehlo.constant dense<1.000000e+00> : tensor<f32>
-    %0:2 = enzyme.autodiff @sort(%arg0, %cst) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_activenoneed>, #enzyme<activity enzyme_const>]} : (tensor<5x4x3x2xf32>, tensor<f32>) -> (tensor<5x4x3x2xf32>, tensor<5x4x3x2xf32>)
+    %0:2 = enzyme.autodiff @sort(%arg0, %cst) {activity = [#enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_activenoneed>, #enzyme.activity<enzyme_const>]} : (tensor<5x4x3x2xf32>, tensor<f32>) -> (tensor<5x4x3x2xf32>, tensor<5x4x3x2xf32>)
     return %0#1, %0#0 : tensor<5x4x3x2xf32>, tensor<5x4x3x2xf32>
   }
 }

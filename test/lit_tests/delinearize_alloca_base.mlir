@@ -9,7 +9,7 @@
 module {
 
   func.func @from_alloca(%v: f64) {
-    %a = memref.alloca() {alignment = 8 : i64} : memref<2x3xf64>
+    %a = memref.alloca() alignment = 8 : memref<2x3xf64>
     affine.parallel (%i, %j, %k) = (0, 0, 0) to (3, 3, 3) {
       affine.if #set(%j, %k) {
         %p = "enzymexla.memref2pointer"(%a) : (memref<2x3xf64>) -> !llvm.ptr<3>
@@ -101,7 +101,7 @@ module {
 }
 
 // CHECK:  func.func @from_alloca(%[[v1:.+]]: f64) {
-// CHECK-NEXT:  %[[v2:.+]] = memref.alloca() {alignment = 8 : i64} : memref<2x3xf64>
+// CHECK-NEXT:  %[[v2:.+]] = memref.alloca() alignment = 8 : memref<2x3xf64>
 // CHECK-NEXT:  affine.parallel (%arg1, %arg2, %arg3) = (0, 0, 0) to (3, 3, 3) {
 // CHECK-NEXT:  affine.if #set(%arg2, %arg3) {
 // CHECK-NEXT:  %[[v3:.+]] = "enzymexla.memref2pointer"(%[[v2]]) : (memref<2x3xf64>) -> !llvm.ptr<3>

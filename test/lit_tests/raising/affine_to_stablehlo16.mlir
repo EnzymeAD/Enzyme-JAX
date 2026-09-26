@@ -17,7 +17,7 @@ module {
    %c6 = arith.constant 6 : index
     affine.parallel (%arg6, %arg7, %arg8, %arg9) = (0, 0, 0, 0) to (2, 16, 12, 16) {
           %8 = affine.apply #map1(%arg9, %arg9)[%c6]
-          %10 = memref.load %arg0[%8] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<194xf64, 1>
+          %10 = memref.load %arg0[%8] alignment(8) {ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<194xf64, 1>
           affine.store %10, %arg4[%arg7 + 7, 92, %arg9 + 7] : memref<34x99x194xf64, 1>
     }
     return

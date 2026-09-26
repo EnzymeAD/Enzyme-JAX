@@ -103,8 +103,8 @@ module {
     %a = stablehlo.constant dense<2.500000e+00> : tensor<f64>
     %seed = stablehlo.constant dense<1.000000e+00> : tensor<f64>
     %expected = stablehlo.constant dense<7.000000e+00> : tensor<f64>
-    %0 = enzyme.autodiff @nested_if(%a, %seed) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_activenoneed>]} : (tensor<f64>, tensor<f64>) -> tensor<f64>
-    %1 = enzyme.autodiff @nested_case(%a, %seed) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_activenoneed>]} : (tensor<f64>, tensor<f64>) -> tensor<f64>
+    %0 = enzyme.autodiff @nested_if(%a, %seed) {activity = [#enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_activenoneed>]} : (tensor<f64>, tensor<f64>) -> tensor<f64>
+    %1 = enzyme.autodiff @nested_case(%a, %seed) {activity = [#enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_activenoneed>]} : (tensor<f64>, tensor<f64>) -> tensor<f64>
     check.expect_close %0, %expected, max_ulp_difference = 0, min_ulp_difference = 0 : tensor<f64>, tensor<f64>
     check.expect_close %1, %expected, max_ulp_difference = 0, min_ulp_difference = 0 : tensor<f64>, tensor<f64>
     return

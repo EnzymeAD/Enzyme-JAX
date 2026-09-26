@@ -23,8 +23,8 @@ module {
 // CHECK-NEXT:     %0 = stablehlo.iota dim = 0 : tensor<10xi64>
 // CHECK-NEXT:     %1 = stablehlo.negate %0 : tensor<10xi64>
 // CHECK-NEXT:     %2 = stablehlo.iota dim = 0 : tensor<10x10xi64>
-// CHECK-NEXT:     %3 = stablehlo.broadcast_in_dim %1, dims = [1] {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<10xi64>) -> tensor<10x10xi64>
-// CHECK-NEXT:     %4 = stablehlo.add %2, %3 {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<10x10xi64>
+// CHECK-NEXT:     %3 = stablehlo.broadcast_in_dim %1, dims = [1] {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<10xi64>) -> tensor<10x10xi64>
+// CHECK-NEXT:     %4 = stablehlo.add %2, %3 {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<10x10xi64>
 // CHECK-NEXT:     %5 = stablehlo.compare GE, %4, %c : (tensor<10x10xi64>, tensor<10x10xi64>) -> tensor<10x10xi1>
 // CHECK-NEXT:     %6 = stablehlo.reshape %arg1 : (tensor<100xf32>) -> tensor<10x10xf32>
 // CHECK-NEXT:     %7 = stablehlo.reshape %arg0 : (tensor<100xf32>) -> tensor<10x10xf32>

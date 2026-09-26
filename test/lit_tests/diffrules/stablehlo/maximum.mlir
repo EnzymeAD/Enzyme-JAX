@@ -35,16 +35,16 @@ func.func @main() {
 
   // fwd diff
   %fwd_res_a:2 = enzyme.fwddiff @maximum(%a, %done, %b, %dzero) {
-    activity=[#enzyme<activity enzyme_dup>, #enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
+    activity=[#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
   } : (tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>)
 
   check.expect_almost_eq %fwd_res_a#0, %output : tensor<4xf32>
   check.expect_almost_eq %fwd_res_a#1, %expected_da : tensor<4xf32>
 
   %fwd_res_b:2 = enzyme.fwddiff @maximum(%a, %dzero, %b, %done) {
-    activity=[#enzyme<activity enzyme_dup>, #enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
+    activity=[#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
   } : (tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>)
 
   check.expect_almost_eq %fwd_res_b#0, %output : tensor<4xf32>
@@ -52,8 +52,8 @@ func.func @main() {
 
   // rev diff
   %rev_res:3 = enzyme.autodiff @maximum(%a, %b, %done) {
-    activity=[#enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
+    activity=[#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
   } : (tensor<4xf32>, tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>, tensor<4xf32>)
 
   check.expect_almost_eq %rev_res#0, %output : tensor<4xf32>

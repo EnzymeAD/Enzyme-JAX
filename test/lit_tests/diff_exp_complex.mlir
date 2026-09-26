@@ -28,10 +28,10 @@ module {
     %0 = stablehlo.convert %c : (tensor<i64>) -> tensor<f64>
     %cst = stablehlo.constant dense<1.000000e+00> : tensor<f64>
 
-    %1:2 = enzyme.autodiff @real_exp_complex(%x, %cst, %0) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_activenoneed>, #enzyme<activity enzyme_active>]} : (tensor<f64>, tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
+    %1:2 = enzyme.autodiff @real_exp_complex(%x, %cst, %0) {activity = [#enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_activenoneed>, #enzyme.activity<enzyme_active>]} : (tensor<f64>, tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
     check.expect_almost_eq_const %1#1, dense<-0.8660254038> : tensor<f64>
 
-    %2:2 = enzyme.autodiff @imag_exp_complex(%x, %cst, %0) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_activenoneed>, #enzyme<activity enzyme_active>]} : (tensor<f64>, tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
+    %2:2 = enzyme.autodiff @imag_exp_complex(%x, %cst, %0) {activity = [#enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_activenoneed>, #enzyme.activity<enzyme_active>]} : (tensor<f64>, tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
     check.expect_almost_eq_const %2#1, dense<0.5> : tensor<f64>
 
     return

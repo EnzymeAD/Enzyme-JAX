@@ -47,12 +47,12 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
     %7 = llvm.alloca %c1_i32 x !llvm.ptr {alignment = 8 : i64} : (i32) -> !llvm.ptr
     %8 = llvm.call tail @_Znam(%c8388608_i64) : (i64 {llvm.noundef}) -> (!llvm.ptr {llvm.dereferenceable = 8388608 : i64, llvm.noalias, llvm.nonnull, llvm.noundef})
     %9 = llvm.call tail @_Znam(%c8388608_i64) : (i64 {llvm.noundef}) -> (!llvm.ptr {llvm.dereferenceable = 8388608 : i64, llvm.noalias, llvm.nonnull, llvm.noundef})
-    llvm.store %cst, %4 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
+    llvm.store %cst, %4 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr
     scf.for %arg0 = %c0_i64 to %c1048576_i64 step %c1_i64  : i64 {
       %20 = llvm.getelementptr inbounds|nuw %8[%arg0] : (!llvm.ptr, i64) -> !llvm.ptr, f64
-      llvm.store %cst_0, %20 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
+      llvm.store %cst_0, %20 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr
       %21 = llvm.getelementptr inbounds|nuw %9[%arg0] : (!llvm.ptr, i64) -> !llvm.ptr, f64
-      llvm.store %cst_1, %21 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
+      llvm.store %cst_1, %21 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr
     }
     %memref = gpu.alloc  (%c8388608) : memref<?xi8, 1>
     %10 = "enzymexla.memref2pointer"(%memref) : (memref<?xi8, 1>) -> !llvm.ptr
@@ -80,16 +80,16 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
           %25 = arith.index_castui %arg1 : index to i32
           %26 = arith.addi %23, %25 : i32
           %27 = llvm.getelementptr inbounds|nuw %21[0, %24] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<1024 x f64>
-          llvm.store %cst, %27 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
+          llvm.store %cst, %27 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr
           %28 = arith.cmpi slt, %26, %c1048576_i32 : i32
           scf.if %28 {
             %31 = arith.extsi %26 : i32 to i64
             %32 = llvm.getelementptr inbounds %11[%31] : (!llvm.ptr, i64) -> !llvm.ptr, f64
             %33 = llvm.getelementptr inbounds %10[%31] : (!llvm.ptr, i64) -> !llvm.ptr, f64
-            %34 = llvm.load %33 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-            %35 = llvm.load %32 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-            %36 = arith.mulf %34, %35 {fastmathFlags = #llvm.fastmath<contract>} : f64
-            llvm.store %36, %27 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
+            %34 = llvm.load %33 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+            %35 = llvm.load %32 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+            %36 = arith.mulf %34, %35 fastmath<contract> : f64
+            llvm.store %36, %27 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr
           }
           "enzymexla.barrier"(%arg1, %c0, %c0) : (index, index, index) -> ()
           %29 = scf.while (%arg2 = %c256_i32) : (i32) -> i32 {
@@ -97,12 +97,12 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
             %32 = arith.cmpi ult, %25, %31 : i32
             scf.if %32 {
               %34 = arith.addi %31, %25 : i32
-              %35 = arith.extui %34 {nonNeg} : i32 to i64
+              %35 = arith.extui %34 nneg : i32 to i64
               %36 = llvm.getelementptr inbounds|nuw %21[0, %35] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<1024 x f64>
-              %37 = llvm.load %36 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-              %38 = llvm.load %27 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-              %39 = arith.addf %37, %38 {fastmathFlags = #llvm.fastmath<contract>} : f64
-              llvm.store %39, %27 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
+              %37 = llvm.load %36 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+              %38 = llvm.load %27 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+              %39 = arith.addf %37, %38 fastmath<contract> : f64
+              llvm.store %39, %27 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr
             }
             %33 = arith.cmpi uge, %arg2, %c4_i32 : i32
             scf.condition(%33) %31 : i32
@@ -114,8 +114,8 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
           "enzymexla.barrier"(%arg1, %c0, %c0) : (index, index, index) -> ()
           %30 = arith.cmpi eq, %25, %c0_i32 : i32
           scf.if %30 {
-            %31 = llvm.load %21 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-            %32 = llvm.atomicrmw fadd %12, %31 seq_cst {alignment = 8 : i64} : !llvm.ptr, f64
+            %31 = llvm.load %21 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+            %32 = llvm.atomicrmw fadd %12, %31 seq_cst <alignment = 8> : !llvm.ptr, f64
           }
           scf.reduce 
         }
@@ -129,11 +129,11 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
     scf.if %18 {
       %20 = "enzymexla.pointer2memref"(%4) : (!llvm.ptr) -> memref<?xi8>
       enzymexla.memcpy  %20, %memref_5, %c8 : memref<?xi8>, memref<?xi8, 1>
-      %21 = llvm.load %4 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
+      %21 = llvm.load %4 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
       %22 = llvm.call @printf(%1, %21) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}) -> i32
       %23 = llvm.call @printf(%2, %cst_2) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}) -> i32
-      %24 = llvm.load %4 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-      %25 = arith.addf %24, %cst_3 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %24 = llvm.load %4 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+      %25 = arith.addf %24, %cst_3 : f64
       %26 = math.absf %25 : f64
       %27 = llvm.call @printf(%3, %26) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}) -> i32
       %28 = llvm.call @cudaFree(%10) : (!llvm.ptr {llvm.noundef}) -> i32
@@ -176,16 +176,16 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
     %7 = arith.index_castui %thread_id_x : index to i32
     %8 = arith.addi %5, %7 : i32
     %9 = llvm.getelementptr inbounds|nuw %2[0, %6] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<1024 x f64>
-    llvm.store %cst, %9 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
+    llvm.store %cst, %9 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr
     %10 = arith.cmpi slt, %8, %arg3 : i32
     scf.if %10 {
       %13 = arith.extsi %8 : i32 to i64
       %14 = llvm.getelementptr inbounds %arg1[%13] : (!llvm.ptr, i64) -> !llvm.ptr, f64
       %15 = llvm.getelementptr inbounds %arg0[%13] : (!llvm.ptr, i64) -> !llvm.ptr, f64
-      %16 = llvm.load %15 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-      %17 = llvm.load %14 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-      %18 = arith.mulf %16, %17 {fastmathFlags = #llvm.fastmath<contract>} : f64
-      llvm.store %18, %9 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
+      %16 = llvm.load %15 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+      %17 = llvm.load %14 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+      %18 = arith.mulf %16, %17 fastmath<contract> : f64
+      llvm.store %18, %9 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr
     }
     %11:2 = scf.while (%arg4 = %4, %arg5 = %c2_i32, %arg6 = %4) : (i32, i32, i32) -> (i32, i32) {
       gpu.barrier
@@ -198,12 +198,12 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
         %17 = arith.cmpi ult, %7, %16 : i32
         scf.if %17 {
           %18 = arith.addi %16, %7 : i32
-          %19 = arith.extui %18 {nonNeg} : i32 to i64
+          %19 = arith.extui %18 nneg : i32 to i64
           %20 = llvm.getelementptr inbounds|nuw %2[0, %19] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<1024 x f64>
-          %21 = llvm.load %20 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-          %22 = llvm.load %9 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-          %23 = arith.addf %21, %22 {fastmathFlags = #llvm.fastmath<contract>} : f64
-          llvm.store %23, %9 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
+          %21 = llvm.load %20 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+          %22 = llvm.load %9 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+          %23 = arith.addf %21, %22 fastmath<contract> : f64
+          llvm.store %23, %9 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr
         }
         scf.yield %16 : i32
       }
@@ -214,8 +214,8 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
     }
     %12 = arith.cmpi eq, %7, %c0_i32 : i32
     scf.if %12 {
-      %13 = llvm.load %2 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-      %14 = llvm.atomicrmw fadd %arg2, %13 seq_cst {alignment = 8 : i64} : !llvm.ptr, f64
+      %13 = llvm.load %2 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+      %14 = llvm.atomicrmw fadd %arg2, %13 seq_cst <alignment = 8> : !llvm.ptr, f64
     }
     llvm.return
   }
@@ -251,13 +251,13 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    %7 = llvm.alloca %c1_i32 x !llvm.ptr {alignment = 8 : i64} : (i32) -> !llvm.ptr
 // CHECK-NEXT:    %8 = llvm.call tail @_Znam(%c8388608_i64) : (i64 {llvm.noundef}) -> (!llvm.ptr {llvm.dereferenceable = 8388608 : i64, llvm.noalias, llvm.nonnull, llvm.noundef})
 // CHECK-NEXT:    %9 = llvm.call tail @_Znam(%c8388608_i64) : (i64 {llvm.noundef}) -> (!llvm.ptr {llvm.dereferenceable = 8388608 : i64, llvm.noalias, llvm.nonnull, llvm.noundef})
-// CHECK-NEXT:    llvm.store %cst, %4 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
+// CHECK-NEXT:    llvm.store %cst, %4 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr
 // CHECK-NEXT:    affine.for %arg0 = 0 to 1048576 {
 // CHECK-NEXT:      %20 = arith.index_cast %arg0 : index to i64
 // CHECK-NEXT:      %21 = llvm.getelementptr inbounds|nuw %8[%20] : (!llvm.ptr, i64) -> !llvm.ptr, f64
-// CHECK-NEXT:      llvm.store %cst_0, %21 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
+// CHECK-NEXT:      llvm.store %cst_0, %21 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr
 // CHECK-NEXT:      %22 = llvm.getelementptr inbounds|nuw %9[%20] : (!llvm.ptr, i64) -> !llvm.ptr, f64
-// CHECK-NEXT:      llvm.store %cst_1, %22 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
+// CHECK-NEXT:      llvm.store %cst_1, %22 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr
 // CHECK-NEXT:    }
 // CHECK-NEXT:    %memref = gpu.alloc  (%c8388608) : memref<?xi8, 1>
 // CHECK-NEXT:    %10 = "enzymexla.memref2pointer"(%memref) : (memref<?xi8, 1>) -> !llvm.ptr
@@ -285,14 +285,14 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:          %25 = arith.index_castui %arg1 : index to i32
 // CHECK-NEXT:          %26 = arith.addi %23, %25 : i32
 // CHECK-NEXT:          %27 = llvm.getelementptr inbounds|nuw %21[0, %24] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<1024 x f64>
-// CHECK-NEXT:          llvm.store %cst, %27 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
+// CHECK-NEXT:          llvm.store %cst, %27 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr
 // CHECK-NEXT:          %28 = arith.extsi %26 : i32 to i64
 // CHECK-NEXT:          %29 = llvm.getelementptr inbounds %11[%28] : (!llvm.ptr, i64) -> !llvm.ptr, f64
 // CHECK-NEXT:          %30 = llvm.getelementptr inbounds %10[%28] : (!llvm.ptr, i64) -> !llvm.ptr, f64
-// CHECK-NEXT:          %31 = llvm.load %30 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-// CHECK-NEXT:          %32 = llvm.load %29 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-// CHECK-NEXT:          %33 = arith.mulf %31, %32 {fastmathFlags = #llvm.fastmath<contract>} : f64
-// CHECK-NEXT:          llvm.store %33, %27 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
+// CHECK-NEXT:          %31 = llvm.load %30 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+// CHECK-NEXT:          %32 = llvm.load %29 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+// CHECK-NEXT:          %33 = arith.mulf %31, %32 fastmath<contract> : f64
+// CHECK-NEXT:          llvm.store %33, %27 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr
 // CHECK-NEXT:          "enzymexla.barrier"(%arg1, %c0, %c0) : (index, index, index) -> ()
 // CHECK-NEXT:          %34 = scf.while (%arg2 = %c256_i32) : (i32) -> i32 {
 // CHECK-NEXT:            %35 = arith.shrui %arg2, %c1_i32 : i32
@@ -301,10 +301,10 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:              %38 = arith.addi %35, %25 : i32
 // CHECK-NEXT:              %39 = arith.extui %38 nneg : i32 to i64 
 // CHECK-NEXT:              %40 = llvm.getelementptr inbounds|nuw %21[0, %39] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<1024 x f64>
-// CHECK-NEXT:              %41 = llvm.load %40 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-// CHECK-NEXT:              %42 = llvm.load %27 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-// CHECK-NEXT:              %43 = arith.addf %41, %42 {fastmathFlags = #llvm.fastmath<contract>} : f64
-// CHECK-NEXT:              llvm.store %43, %27 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
+// CHECK-NEXT:              %41 = llvm.load %40 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+// CHECK-NEXT:              %42 = llvm.load %27 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+// CHECK-NEXT:              %43 = arith.addf %41, %42 fastmath<contract> : f64
+// CHECK-NEXT:              llvm.store %43, %27 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr
 // CHECK-NEXT:            }
 // CHECK-NEXT:            %37 = arith.cmpi uge, %arg2, %c4_i32 : i32
 // CHECK-NEXT:            scf.condition(%37) %35 : i32
@@ -315,8 +315,8 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:          }
 // CHECK-NEXT:          "enzymexla.barrier"(%arg1, %c0, %c0) : (index, index, index) -> ()
 // CHECK-NEXT:          affine.if #set(%arg1) {
-// CHECK-NEXT:            %35 = llvm.load %21 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-// CHECK-NEXT:            %36 = llvm.atomicrmw fadd %12, %35 seq_cst {alignment = 8 : i64} : !llvm.ptr, f64
+// CHECK-NEXT:            %35 = llvm.load %21 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+// CHECK-NEXT:            %36 = llvm.atomicrmw fadd %12, %35 seq_cst <alignment = 8> : !llvm.ptr, f64
 // CHECK-NEXT:          }
 // CHECK-NEXT:        }
 // CHECK-NEXT:      }
@@ -328,11 +328,11 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    scf.if %18 {
 // CHECK-NEXT:      %20 = "enzymexla.pointer2memref"(%4) : (!llvm.ptr) -> memref<?xi8>
 // CHECK-NEXT:      enzymexla.memcpy  %20, %memref_5, %c8 : memref<?xi8>, memref<?xi8, 1>
-// CHECK-NEXT:      %21 = llvm.load %4 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
+// CHECK-NEXT:      %21 = llvm.load %4 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
 // CHECK-NEXT:      %22 = llvm.call @printf(%1, %21) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}) -> i32
 // CHECK-NEXT:      %23 = llvm.call @printf(%2, %cst_2) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}) -> i32
-// CHECK-NEXT:      %24 = llvm.load %4 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-// CHECK-NEXT:      %25 = arith.addf %24, %cst_3 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:      %24 = llvm.load %4 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+// CHECK-NEXT:      %25 = arith.addf %24, %cst_3 : f64
 // CHECK-NEXT:      %26 = math.absf %25 : f64
 // CHECK-NEXT:      %27 = llvm.call @printf(%3, %26) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}) -> i32
 // CHECK-NEXT:      %28 = llvm.call @cudaFree(%10) : (!llvm.ptr {llvm.noundef}) -> i32

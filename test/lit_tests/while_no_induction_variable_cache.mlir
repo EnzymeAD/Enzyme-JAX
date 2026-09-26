@@ -35,7 +35,7 @@ module {
   }
   func.func @main(%x: tensor<8x4xf32>) -> tensor<8x4xf32> {
     %seed = stablehlo.constant dense<1.000000e+00> : tensor<4xf32>
-    %0 = enzyme.autodiff @loop(%x, %seed) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_activenoneed>]} : (tensor<8x4xf32>, tensor<4xf32>) -> tensor<8x4xf32>
+    %0 = enzyme.autodiff @loop(%x, %seed) {activity = [#enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_activenoneed>]} : (tensor<8x4xf32>, tensor<4xf32>) -> tensor<8x4xf32>
     return %0 : tensor<8x4xf32>
   }
 }

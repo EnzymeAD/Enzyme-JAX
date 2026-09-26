@@ -449,10 +449,10 @@ module {
     %217 = arith.index_cast %210 : i32 to index
     %218 = "enzymexla.gpu_wrapper"(%217, %c1, %c1, %c1, %c2, %c1) ({
       affine.parallel (%arg3) = (0) to (symbol(%217)) {
-        %alloca = memref.alloca() {alignment = 8 : i64} : memref<1xf64>
-        %alloca_0 = memref.alloca() {alignment = 4 : i64} : memref<2xi32>
-        %alloca_1 = memref.alloca() {alignment = 4 : i64} : memref<2xi32>
-        %alloca_2 = memref.alloca() {alignment = 4 : i64} : memref<2x1xi32>
+        %alloca = memref.alloca() alignment = 8 : memref<1xf64>
+        %alloca_0 = memref.alloca() alignment = 4 : memref<2xi32>
+        %alloca_1 = memref.alloca() alignment = 4 : memref<2xi32>
+        %alloca_2 = memref.alloca() alignment = 4 : memref<2x1xi32>
         affine.parallel (%arg4) = (0) to (2) {
           affine.if #set(%arg4) {
             %488 = "enzymexla.pointer2memref"(%167) : (!llvm.ptr) -> memref<?xf64>

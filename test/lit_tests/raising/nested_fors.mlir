@@ -18,19 +18,19 @@ module @"reactant_step!" attributes {llvm.data_layout = "e-p6:32:32-i64:64-i128:
     %0 = affine.load %arg3[0] {alignment = 4 : i64, invariant, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<1xi32, 1>
     %1:2 = affine.for %arg4 = 0 to 2 iter_args(%arg5 = %cst, %arg6 = %cst_0) -> (f64, f64) {
       %8 = affine.load %arg2[%arg4] {alignment = 8 : i64, invariant, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<2xf64, 1>
-      %9 = arith.divf %cst_1, %8 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %9 = arith.divf %cst_1, %8 : f64
       %10 = affine.for %arg7 = 0 to 2 iter_args(%arg8 = %cst) -> (f64) {
         %14 = affine.load %arg0[0, -%arg7 + 1, 0] : memref<1x2x1xf64, 1>
-        %15 = arith.mulf %9, %14 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %16 = arith.subf %cst_1, %15 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %17 = arith.mulf %arg8, %16 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %18 = arith.subf %cst_1, %16 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %19 = arith.mulf %18, %cst_2 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %20 = arith.addf %17, %19 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %15 = arith.mulf %9, %14 : f64
+        %16 = arith.subf %cst_1, %15 : f64
+        %17 = arith.mulf %arg8, %16 : f64
+        %18 = arith.subf %cst_1, %16 : f64
+        %19 = arith.mulf %18, %cst_2 : f64
+        %20 = arith.addf %17, %19 : f64
         affine.yield %20 : f64
       }
-      %11 = arith.mulf %8, %10 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %12 = arith.addf %arg6, %11 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %11 = arith.mulf %8, %10 : f64
+      %12 = arith.addf %arg6, %11 : f64
       %13 = affine.if #set(%arg4) -> f64 {
         affine.yield %10 : f64
       } else {
@@ -41,9 +41,9 @@ module @"reactant_step!" attributes {llvm.data_layout = "e-p6:32:32-i64:64-i128:
     %2 = arith.index_cast %0 : i32 to index
     %3 = arith.index_cast %0 : i32 to index
     %4 = affine.load %arg1[symbol(%2) - 1, 0] : memref<1x1xf64, 1>
-    %5 = arith.mulf %1#0, %cst_3 {fastmathFlags = #llvm.fastmath<none>} : f64
-    %6 = arith.addf %1#1, %5 {fastmathFlags = #llvm.fastmath<none>} : f64
-    %7 = arith.addf %4, %6 {fastmathFlags = #llvm.fastmath<none>} : f64
+    %5 = arith.mulf %1#0, %cst_3 : f64
+    %6 = arith.addf %1#1, %5 : f64
+    %7 = arith.addf %4, %6 : f64
     affine.store %7, %arg1[symbol(%3) - 1, 0] : memref<1x1xf64, 1>
     return
   }

@@ -29,7 +29,7 @@ func.func @multiply_complex(%a : tensor<2xcomplex<f32>>, %b : tensor<2xcomplex<f
 }
 
 // FORWARD-COMPLEX:  func.func @multiply_complex(%arg0: tensor<2xcomplex<f32>>, %arg1: tensor<2xcomplex<f32>>, %arg2: tensor<2xcomplex<f32>>, %arg3: tensor<2xcomplex<f32>>) -> (tensor<2xcomplex<f32>>, tensor<2xcomplex<f32>>) {
-// FORWARD-COMPLEX-NEXT:    %0 = stablehlo.multiply %arg1, %arg2 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xcomplex<f32>>
+// FORWARD-COMPLEX-NEXT:    %0 = stablehlo.multiply %arg1, %arg2 {enzymexla.complex_is_purely_real = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xcomplex<f32>>
 // FORWARD-COMPLEX-NEXT:    %1 = stablehlo.multiply %arg3, %arg0 : tensor<2xcomplex<f32>>
 // FORWARD-COMPLEX-NEXT:    %2 = stablehlo.add %0, %1 : tensor<2xcomplex<f32>>
 // FORWARD-COMPLEX-NEXT:    %3 = stablehlo.multiply %arg0, %arg2 : tensor<2xcomplex<f32>>
@@ -37,10 +37,10 @@ func.func @multiply_complex(%a : tensor<2xcomplex<f32>>, %b : tensor<2xcomplex<f
 // FORWARD-COMPLEX-NEXT:  }
 
 // REVERSE-COMPLEX:  func.func @multiply_complex(%arg0: tensor<2xcomplex<f32>>, %arg1: tensor<2xcomplex<f32>>, %arg2: tensor<2xcomplex<f32>>) -> (tensor<2xcomplex<f32>>, tensor<2xcomplex<f32>>) {
-// REVERSE-COMPLEX-NEXT:    %0 = chlo.conj %arg2 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xcomplex<f32>> -> tensor<2xcomplex<f32>>
-// REVERSE-COMPLEX-NEXT:    %1 = stablehlo.multiply %0, %arg1 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:    %0 = chlo.conj %arg2 {enzymexla.complex_is_purely_real = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xcomplex<f32>> -> tensor<2xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:    %1 = stablehlo.multiply %0, %arg1 {enzymexla.complex_is_purely_real = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:    %2 = chlo.conj %1 : tensor<2xcomplex<f32>> -> tensor<2xcomplex<f32>>
-// REVERSE-COMPLEX-NEXT:    %3 = stablehlo.multiply %0, %arg0 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:    %3 = stablehlo.multiply %0, %arg0 {enzymexla.complex_is_purely_real = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:    %4 = chlo.conj %3 : tensor<2xcomplex<f32>> -> tensor<2xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:    return %2, %4 : tensor<2xcomplex<f32>>, tensor<2xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:  }
@@ -55,8 +55,8 @@ func.func @main() {
 
   // fwd diff wrt a
   %fwd_a:2 = enzyme.fwddiff @multiply(%a, %done, %b, %dzero) {
-    activity=[#enzyme<activity enzyme_dup>, #enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
+    activity=[#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
   } : (tensor<2xf32>, tensor<2xf32>, tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
 
   check.expect_almost_eq %fwd_a#0, %output : tensor<2xf32>
@@ -64,8 +64,8 @@ func.func @main() {
 
   // fwd diff wrt b
   %fwd_b:2 = enzyme.fwddiff @multiply(%a, %dzero, %b, %done) {
-    activity=[#enzyme<activity enzyme_dup>, #enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
+    activity=[#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
   } : (tensor<2xf32>, tensor<2xf32>, tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
 
   check.expect_almost_eq %fwd_b#0, %output : tensor<2xf32>
@@ -73,8 +73,8 @@ func.func @main() {
 
   // rev diff
   %rev:3 = enzyme.autodiff @multiply(%a, %b, %done) {
-    activity=[#enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
+    activity=[#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
   } : (tensor<2xf32>, tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>, tensor<2xf32>)
 
   check.expect_almost_eq %rev#0, %output : tensor<2xf32>

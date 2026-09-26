@@ -63,7 +63,7 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
     %2 = stablehlo.add %cst_2, %1 : tensor<3xf32>
     %3 = stablehlo.transpose %0, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
     %4 = stablehlo.transpose %2, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
-    %5:5 = enzyme.autodiff @"Const{typeof(myf)}(Main.myf)_autodiff"(%3, %arg1, %arg2, %arg3, %4) {activity = [#enzyme<activity enzyme_active>, #enzyme<activity enzyme_const>, #enzyme<activity enzyme_const>, #enzyme<activity enzyme_const>], ret_activity = [#enzyme<activity enzyme_active>, #enzyme<activity enzyme_const>, #enzyme<activity enzyme_const>, #enzyme<activity enzyme_const>]} : (tensor<3xf32>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<3xf32>) -> (tensor<3xf32>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<3xf32>)
+    %5:5 = enzyme.autodiff @"Const{typeof(myf)}(Main.myf)_autodiff"(%3, %arg1, %arg2, %arg3, %4) {activity = [#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_const>], ret_activity = [#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_const>]} : (tensor<3xf32>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<3xf32>) -> (tensor<3xf32>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<3xf32>)
     %6 = stablehlo.transpose %5#0, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
     %7 = stablehlo.transpose %5#4, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
     %8 = stablehlo.transpose %6, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>

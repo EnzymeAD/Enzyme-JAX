@@ -66,7 +66,7 @@ func.func @test3(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xf32>, %arg2: tens
 // CHECK-DAG:   %[[cst3:.+]] = stablehlo.constant dense<3.000000e+00> : tensor<f32>
 // CHECK-DAG:   %[[cst2:.+]] = stablehlo.constant dense<2.000000e+00> : tensor<f32>
 // CHECK-NEXT:   %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
-// CHECK-NEXT:   %1 = stablehlo.add %arg0, %0 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed GUARANTEED>]} : tensor<64x64xf32>
+// CHECK-NEXT:   %1 = stablehlo.add %arg0, %0 {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<GUARANTEED>]} : tensor<64x64xf32>
 // CHECK-NEXT:   %2 = stablehlo.multiply %[[cstm0]], %[[cst2]] : tensor<f32>
 // CHECK-NEXT:   %3 = stablehlo.multiply %[[cst1]], %[[cst2]] : tensor<f32>
 // CHECK-NEXT:   %4 = stablehlo.broadcast_in_dim %[[cst3]], dims = [] : (tensor<f32>) -> tensor<64x64xf32>

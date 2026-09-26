@@ -10,7 +10,7 @@ module {
       %5 = arith.index_castui %arg3 : index to i64
       %6 = arith.addi %4, %5 : i64
       %28 = llvm.getelementptr inbounds %arg[%6] : (!llvm.ptr, i64) -> !llvm.ptr, f64
-      llvm.store %cst, %28 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : f64, !llvm.ptr
+      llvm.store %cst, %28 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : f64, !llvm.ptr
     }
     return
   }

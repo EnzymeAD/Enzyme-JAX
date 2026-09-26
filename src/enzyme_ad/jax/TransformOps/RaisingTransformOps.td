@@ -10,7 +10,7 @@ class RaisingPatternOp<string mnemonic, list<Trait> traits = []>
             traits)> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit);
   list<string> patterns = [];
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
 }
 
 def ApplyRemoveIVsPatterns : RaisingPatternOp<

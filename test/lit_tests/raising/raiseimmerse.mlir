@@ -35,10 +35,10 @@ module {
       affine.if #set1(%arg4, %arg3) {
         %19 = affine.load %arg1[%arg3 floordiv 72 + 7] : memref<34xf64, 1>
         %20 = affine.load %arg2[0, %arg4 floordiv 16 + (%arg3 floordiv 12) * 16 - (%arg3 floordiv 72) * 96 + 7, %arg4 mod 16 + (%arg3 mod 12) * 16 + 7] : memref<1x99x194xf64, 1>
-        %21 = arith.cmpf ole, %19, %20 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %21 = arith.cmpf ole, %19, %20 : f64
         %22 = arith.addi %18, %c-1_i64 : i64
         %23 = affine.load %arg2[0, %arg4 floordiv 16 + (%arg3 floordiv 12) * 16 - (%arg3 floordiv 72) * 96 + 6, %arg4 mod 16 + (%arg3 mod 12) * 16 + 7] : memref<1x99x194xf64, 1>
-        %24 = arith.cmpf ole, %19, %23 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %24 = arith.cmpf ole, %19, %23 : f64
         %25 = arith.cmpi ult, %22, %c1_i64 : i64
         %26 = arith.ori %25, %24 : i1
         %27 = arith.ori %21, %26 : i1
@@ -62,9 +62,9 @@ module {
 // CHECK-NEXT:    affine.parallel (%arg3, %arg4, %arg5) = (0, 0, 0) to (20, 85, 180) {
 // CHECK-NEXT:      %[[a0:.+]] = affine.load %arg1[%arg3 + 7] : memref<34xf64, 1>
 // CHECK-NEXT:      %[[a1:.+]] = affine.load %arg2[0, %arg4 + 7, %arg5 + 7] : memref<1x99x194xf64, 1>
-// CHECK-NEXT:      %[[a2:.+]] = arith.cmpf ole, %[[a0]], %[[a1]] {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:      %[[a2:.+]] = arith.cmpf ole, %[[a0]], %[[a1]] : f64
 // CHECK-NEXT:      %[[a4:.+]] = affine.load %arg2[0, %arg4 + 6, %arg5 + 7] : memref<1x99x194xf64, 1>
-// CHECK-NEXT:      %[[a5:.+]] = arith.cmpf ole, %[[a0]], %[[a4]] {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:      %[[a5:.+]] = arith.cmpf ole, %[[a0]], %[[a4]] : f64
 // CHECK-NEXT:      %[[a6:.+]] = arith.cmpi eq, %arg4, %c0 : index
 // CHECK-NEXT:      %[[a7:.+]] = arith.ori %[[a6]], %[[a5]] : i1
 // CHECK-NEXT:      %[[a8:.+]] = arith.ori %[[a2]], %[[a7]] : i1

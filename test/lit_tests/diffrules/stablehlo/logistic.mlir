@@ -34,8 +34,8 @@ func.func @main() {
 
   // fwd diff
   %fwd_res:2 = enzyme.fwddiff @logistic(%input, %dinput) {
-    activity=[#enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
+    activity=[#enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
   } : (tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>)
 
   check.expect_almost_eq %fwd_res#0, %output : tensor<4xf32>
@@ -43,8 +43,8 @@ func.func @main() {
 
   // rev diff
   %rev_res:2 = enzyme.autodiff @logistic(%input, %dinput) {
-    activity=[#enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
+    activity=[#enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
   } : (tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>)
 
   check.expect_almost_eq %rev_res#0, %output : tensor<4xf32>

@@ -5,9 +5,9 @@
 func.func @test_non_aligned_load_store_conversion(%arg0: !llvm.ptr<1>, %idx: i64) {
   %0 = llvm.getelementptr inbounds %arg0[%idx] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
   %a = llvm.getelementptr inbounds %0[1] : (!llvm.ptr<1>) -> !llvm.ptr<1>, i8
-  %1 = llvm.load %a {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+  %1 = llvm.load %a <alignment = 1> : !llvm.ptr<1> -> i64
   %2 = llvm.mul %1, %1 : i64
-  llvm.store %2, %a {alignment = 4 : i64} : i64, !llvm.ptr<1>
+  llvm.store %2, %a <alignment = 4> : i64, !llvm.ptr<1>
   return
 }
 
@@ -28,9 +28,9 @@ func.func @test_non_aligned_load_store_conversion(%arg0: !llvm.ptr<1>, %idx: i64
 func.func @test_aligned_load_store_conversion(%arg0: !llvm.ptr<1>, %idx: i64) {
   %0 = llvm.getelementptr inbounds %arg0[%idx] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
   %a = llvm.getelementptr inbounds %0[1] : (!llvm.ptr<1>) -> !llvm.ptr<1>, i8
-  %1 = llvm.load %a {alignment = 8 : i64} : !llvm.ptr<1> -> i64
+  %1 = llvm.load %a <alignment = 8> : !llvm.ptr<1> -> i64
   %2 = llvm.mul %1, %1 : i64
-  llvm.store %2, %a {alignment = 16 : i64} : i64, !llvm.ptr<1>
+  llvm.store %2, %a <alignment = 16> : i64, !llvm.ptr<1>
   return
 }
 
@@ -50,10 +50,10 @@ func.func @test_aligned_load_store_conversion(%arg0: !llvm.ptr<1>, %idx: i64) {
 // CHECK:         }
 func.func @test_load_store_conversion(%arg0: !llvm.ptr<1>, %idx: i64) {
   %0 = llvm.getelementptr inbounds %arg0[%idx] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
-  %1 = llvm.load %0 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+  %1 = llvm.load %0 <alignment = 1> : !llvm.ptr<1> -> i64
   %2 = llvm.mul %1, %1 : i64
 
-  llvm.store %2, %0 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+  llvm.store %2, %0 <alignment = 1> : i64, !llvm.ptr<1>
 
   return
 }
@@ -65,7 +65,7 @@ func.func @test_load_store_conversion(%arg0: !llvm.ptr<1>, %idx: i64) {
 // CHECK-SAME:                                        %[[VAL_0:[^:]*]]: !llvm.ptr<1>,
 // CHECK-SAME:                                        %[[VAL_1:[^:]*]]: i64,
 // CHECK-SAME:                                        %[[VAL_2:[^:]*]]: i64) {
-// CHECK:           %[[VAL_3:.*]] = llvm.mlir.constant(1 : index) : i64
+// CHECK:           %[[VAL_3:.*]] = llvm.mlir.constant(1 : i64) : i64
 // CHECK:           %[[VAL_5:.*]] = arith.index_cast %[[VAL_2]] : i64 to index
 // CHECK:           %[[VAL_6:.*]] = arith.index_cast %[[VAL_1]] : i64 to index
 // CHECK:           %[[VAL_4:.*]] = "enzymexla.pointer2memref"(%[[VAL_0]]) : (!llvm.ptr<1>) -> memref<?xi64, 1>
@@ -79,7 +79,7 @@ func.func @test_load_store_conversion(%arg0: !llvm.ptr<1>, %idx: i64) {
 // CHECK:           return
 // CHECK:         }
 func.func @test_multidim_load_store(%arg0: !llvm.ptr<1>, %idx1: i64, %idx2: i64) {
-  %c1 = llvm.mlir.constant(1 : index) : i64
+  %c1 = llvm.mlir.constant(1 : i64) : i64
   %ptr = llvm.getelementptr %arg0[%idx1, %idx2] : (!llvm.ptr<1>, i64, i64) -> !llvm.ptr<1>, !llvm.array<8 x i64>
   %val = llvm.load %ptr : !llvm.ptr<1> -> i64
 

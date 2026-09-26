@@ -34,7 +34,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
     %10 = arith.muli %arg2, %arg1 : i32
     %11 = arith.cmpi sgt, %10, %c0_i32 : i32
     scf.if %11 {
-      %22 = arith.extui %10 {nonNeg} : i32 to i64
+      %22 = arith.extui %10 nneg : i32 to i64
       %23 = arith.maxsi %22, %c1_i64 : i64
       %24 = arith.addi %23, %c1_i64 : i64
       scf.for %arg4 = %c1_i64 to %24 step %c1_i64  : i64 {
@@ -58,17 +58,17 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
         affine.for %arg6 = 0 to %22 {
           %23 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr) -> memref<?xf64>
           %24 = affine.load %23[%arg6 * 9 + (%arg4 * symbol(%5)) * 9 + 6] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag1]} : memref<?xf64>
-          %25 = arith.negf %24 {fastmathFlags = #llvm.fastmath<contract>} : f64
+          %25 = arith.negf %24 fastmath<contract> : f64
           %26 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr) -> memref<?xf64>
           affine.store %25, %26[%arg6 * 9 + (%arg4 * symbol(%8)) * 9 + 6] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag1]} : memref<?xf64>
           %27 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr) -> memref<?xf64>
           %28 = affine.load %27[%arg6 * 9 + (%arg4 * symbol(%4)) * 9 + 7] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag2]} : memref<?xf64>
-          %29 = arith.negf %28 {fastmathFlags = #llvm.fastmath<contract>} : f64
+          %29 = arith.negf %28 fastmath<contract> : f64
           %30 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr) -> memref<?xf64>
           affine.store %29, %30[%arg6 * 9 + (%arg4 * symbol(%7)) * 9 + 7] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag2]} : memref<?xf64>
           %31 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr) -> memref<?xf64>
           %32 = affine.load %31[%arg6 * 9 + (%arg4 * symbol(%3)) * 9 + 8] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag3]} : memref<?xf64>
-          %33 = arith.negf %32 {fastmathFlags = #llvm.fastmath<contract>} : f64
+          %33 = arith.negf %32 fastmath<contract> : f64
           %34 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr) -> memref<?xf64>
           affine.store %33, %34[%arg6 * 9 + (%arg4 * symbol(%6)) * 9 + 8] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag3]} : memref<?xf64>
         }

@@ -17,16 +17,16 @@ module {
     %diff_result = stablehlo.constant dense<[1.0]> : tensor<1xf32>
 
     %result_diff:2 = enzyme.autodiff @maxpool(%value, %diff_result) {
-      activity = [#enzyme<activity enzyme_active>],
-      ret_activity = [#enzyme<activity enzyme_active>]
+      activity = [#enzyme.activity<enzyme_active>],
+      ret_activity = [#enzyme.activity<enzyme_active>]
     } : (tensor<3xf32>, tensor<1xf32>) -> (tensor<1xf32>, tensor<3xf32>)
 
     check.expect_eq_const %result_diff#0, dense<[42.0]> : tensor<1xf32>
     check.expect_eq_const %result_diff#1, dense<[1.0, 0.0, 0.0]> : tensor<3xf32>
 
     %result_meanpool_diff:2 = enzyme.autodiff @meanpool(%value, %diff_result) {
-      activity = [#enzyme<activity enzyme_active>],
-      ret_activity = [#enzyme<activity enzyme_active>]
+      activity = [#enzyme.activity<enzyme_active>],
+      ret_activity = [#enzyme.activity<enzyme_active>]
     } : (tensor<3xf32>, tensor<1xf32>) -> (tensor<1xf32>, tensor<3xf32>)
 
     check.expect_eq_const %result_meanpool_diff#0, dense<[84.0]> : tensor<1xf32>

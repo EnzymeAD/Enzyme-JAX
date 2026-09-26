@@ -142,40 +142,40 @@ module {
 
     // Compute reference gradient without checkpointing
     %diffe_no_checkpointing:2 = enzyme.autodiff @without_checkpointing(%input, %diffe) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
     } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
     // Test default sqrt checkpointing
     %diffe_sqrt:2 = enzyme.autodiff @with_sqrt_checkpointing(%input, %diffe) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
     } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
     // Test different periods
     %diffe_period_2:2 = enzyme.autodiff @with_period_2(%input, %diffe) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
     } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
     %diffe_period_1:2 = enzyme.autodiff @with_period_1(%input, %diffe) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
     } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
     %diffe_period_4:2 = enzyme.autodiff @with_period_4(%input, %diffe) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
     } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
     %diffe_period_8:2 = enzyme.autodiff @with_period_8(%input, %diffe) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
     } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
     %diffe_period_16:2 = enzyme.autodiff @with_period_16(%input, %diffe) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
     } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
     // Verify all checkpointing strategies produce the same results as no checkpointing

@@ -29,16 +29,16 @@ func.func @main() {
 
   // fwd diff
   %fwd_real:2 = enzyme.fwddiff @imag(%input, %dreal) {
-    activity=[#enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
+    activity=[#enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
   } : (tensor<2xcomplex<f32>>, tensor<2xcomplex<f32>>) -> (tensor<2xf32>, tensor<2xf32>)
 
   check.expect_almost_eq %fwd_real#0, %output : tensor<2xf32>
   check.expect_almost_eq_const %fwd_real#1, dense<0.0> : tensor<2xf32>
 
   %fwd_imag:2 = enzyme.fwddiff @imag(%input, %dimag) {
-    activity=[#enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
+    activity=[#enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
   } : (tensor<2xcomplex<f32>>, tensor<2xcomplex<f32>>) -> (tensor<2xf32>, tensor<2xf32>)
 
   check.expect_almost_eq %fwd_imag#0, %output : tensor<2xf32>
@@ -46,8 +46,8 @@ func.func @main() {
 
   // rev diff
   %rev:2 = enzyme.autodiff @imag(%input, %dcomplex) {
-    activity=[#enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
+    activity=[#enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
   } : (tensor<2xcomplex<f32>>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xcomplex<f32>>)
 
   check.expect_almost_eq %rev#0, %output : tensor<2xf32>

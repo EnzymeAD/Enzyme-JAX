@@ -13,9 +13,9 @@ module attributes {gpu.container_module} {
     ^bb1:  // pred: ^bb0
       %3 = llvm.zext %1 : i32 to i64
       %4 = llvm.getelementptr inbounds %arg0[%3] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
-      %5 = llvm.load %4 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+      %5 = llvm.load %4 <alignment = 1> : !llvm.ptr<1> -> i64
       %6 = llvm.mul %5, %5 : i64
-      llvm.store %6, %4 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+      llvm.store %6, %4 <alignment = 1> : i64, !llvm.ptr<1>
       gpu.return
     ^bb2:  // pred: ^bb0
       llvm.call fastcc @throw_boundserror_2676() : () -> ()

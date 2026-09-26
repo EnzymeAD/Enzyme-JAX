@@ -27,7 +27,7 @@ module {
   // CHECK-NEXT:    return %[[RESULT]] : tensor<3x3xf64>
   // CHECK-NEXT:  }
   func.func @test_triangular_solve_basic(%a: tensor<3x3xf64>, %b: tensor<3x3xf64>) -> tensor<3x3xf64> {
-    %result = impulse.triangular_solve %a, %b {left_side = true, lower = true, unit_diagonal = false, transpose_a = #impulse<transpose NO_TRANSPOSE>} : (tensor<3x3xf64>, tensor<3x3xf64>) -> tensor<3x3xf64>
+    %result = impulse.triangular_solve %a, %b {left_side = true, lower = true, unit_diagonal = false, transpose_a = #impulse.transpose<NO_TRANSPOSE>} : (tensor<3x3xf64>, tensor<3x3xf64>) -> tensor<3x3xf64>
     return %result : tensor<3x3xf64>
   }
 
@@ -37,7 +37,7 @@ module {
   // CHECK-NEXT:    return %[[RESULT]] : tensor<3x3xf64>
   // CHECK-NEXT:  }
   func.func @test_triangular_solve_right(%a: tensor<3x3xf64>, %b: tensor<3x3xf64>) -> tensor<3x3xf64> {
-    %result = impulse.triangular_solve %a, %b {left_side = false, lower = true, unit_diagonal = false, transpose_a = #impulse<transpose NO_TRANSPOSE>} : (tensor<3x3xf64>, tensor<3x3xf64>) -> tensor<3x3xf64>
+    %result = impulse.triangular_solve %a, %b {left_side = false, lower = true, unit_diagonal = false, transpose_a = #impulse.transpose<NO_TRANSPOSE>} : (tensor<3x3xf64>, tensor<3x3xf64>) -> tensor<3x3xf64>
     return %result : tensor<3x3xf64>
   }
 
@@ -47,7 +47,7 @@ module {
   // CHECK-NEXT:    return %[[RESULT]] : tensor<3x3xf64>
   // CHECK-NEXT:  }
   func.func @test_triangular_solve_upper(%a: tensor<3x3xf64>, %b: tensor<3x3xf64>) -> tensor<3x3xf64> {
-    %result = impulse.triangular_solve %a, %b {left_side = true, lower = false, unit_diagonal = false, transpose_a = #impulse<transpose NO_TRANSPOSE>} : (tensor<3x3xf64>, tensor<3x3xf64>) -> tensor<3x3xf64>
+    %result = impulse.triangular_solve %a, %b {left_side = true, lower = false, unit_diagonal = false, transpose_a = #impulse.transpose<NO_TRANSPOSE>} : (tensor<3x3xf64>, tensor<3x3xf64>) -> tensor<3x3xf64>
     return %result : tensor<3x3xf64>
   }
 
@@ -57,7 +57,7 @@ module {
   // CHECK-NEXT:    return %[[RESULT]] : tensor<3x3xf64>
   // CHECK-NEXT:  }
   func.func @test_triangular_solve_unit_diag(%a: tensor<3x3xf64>, %b: tensor<3x3xf64>) -> tensor<3x3xf64> {
-    %result = impulse.triangular_solve %a, %b {left_side = true, lower = true, unit_diagonal = true, transpose_a = #impulse<transpose NO_TRANSPOSE>} : (tensor<3x3xf64>, tensor<3x3xf64>) -> tensor<3x3xf64>
+    %result = impulse.triangular_solve %a, %b {left_side = true, lower = true, unit_diagonal = true, transpose_a = #impulse.transpose<NO_TRANSPOSE>} : (tensor<3x3xf64>, tensor<3x3xf64>) -> tensor<3x3xf64>
     return %result : tensor<3x3xf64>
   }
 
@@ -67,7 +67,7 @@ module {
   // CHECK-NEXT:    return %[[RESULT]] : tensor<3x3xf64>
   // CHECK-NEXT:  }
   func.func @test_triangular_solve_transpose(%a: tensor<3x3xf64>, %b: tensor<3x3xf64>) -> tensor<3x3xf64> {
-    %result = impulse.triangular_solve %a, %b {left_side = true, lower = true, unit_diagonal = false, transpose_a = #impulse<transpose TRANSPOSE>} : (tensor<3x3xf64>, tensor<3x3xf64>) -> tensor<3x3xf64>
+    %result = impulse.triangular_solve %a, %b {left_side = true, lower = true, unit_diagonal = false, transpose_a = #impulse.transpose<TRANSPOSE>} : (tensor<3x3xf64>, tensor<3x3xf64>) -> tensor<3x3xf64>
     return %result : tensor<3x3xf64>
   }
 
@@ -80,7 +80,7 @@ module {
   // CHECK-NEXT:    return %[[RESULT]] : tensor<3xf64>
   // CHECK-NEXT:  }
   func.func @test_triangular_solve_vector(%a: tensor<3x3xf64>, %b: tensor<3xf64>) -> tensor<3xf64> {
-    %result = impulse.triangular_solve %a, %b {left_side = true, lower = true, unit_diagonal = false, transpose_a = #impulse<transpose NO_TRANSPOSE>} : (tensor<3x3xf64>, tensor<3xf64>) -> tensor<3xf64>
+    %result = impulse.triangular_solve %a, %b {left_side = true, lower = true, unit_diagonal = false, transpose_a = #impulse.transpose<NO_TRANSPOSE>} : (tensor<3x3xf64>, tensor<3xf64>) -> tensor<3xf64>
     return %result : tensor<3xf64>
   }
 
