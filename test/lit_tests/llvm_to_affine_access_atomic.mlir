@@ -7,7 +7,7 @@
 
 module {
   func.func @fadd(%p: !llvm.ptr, %v: f64) {
-    %old = llvm.atomicrmw fadd %p, %v monotonic {alignment = 8 : i64} : !llvm.ptr, f64
+    %old = llvm.atomicrmw fadd %p, %v monotonic <alignment = 8> : !llvm.ptr, f64
     return
   }
 
@@ -29,7 +29,7 @@ module {
   // the address arithmetic joins the index, as it does for a load
   func.func @through_gep(%p: !llvm.ptr, %i: i64, %v: f64) {
     %g = llvm.getelementptr inbounds %p[%i] : (!llvm.ptr, i64) -> !llvm.ptr, f64
-    %old = llvm.atomicrmw fadd %g, %v monotonic {alignment = 8 : i64} : !llvm.ptr, f64
+    %old = llvm.atomicrmw fadd %g, %v monotonic <alignment = 8> : !llvm.ptr, f64
     return
   }
 

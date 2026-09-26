@@ -97,11 +97,11 @@ module {
 // CHECK-NEXT:     %c_4 = stablehlo.constant dense<16> : tensor<8xi64>
 // CHECK-NEXT:     %c_5 = stablehlo.constant dense<1> : tensor<8x16xi64>
 // CHECK-NEXT:     %c_6 = stablehlo.constant dense<0> : tensor<8x16xi64>
-// CHECK-NEXT:     %0 = stablehlo.iota dim = 0 {enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>]} : tensor<8xi64>
+// CHECK-NEXT:     %0 = stablehlo.iota dim = 0 {enzymexla.non_negative = [#enzymexla.guaranteed<GUARANTEED>]} : tensor<8xi64>
 // CHECK-NEXT:     %1 = stablehlo.multiply %0, %c_4 : tensor<8xi64>
 // CHECK-NEXT:     %2 = stablehlo.broadcast_in_dim %1, dims = [0] : (tensor<8xi64>) -> tensor<8x16xi64>
 // CHECK-NEXT:     %3 = stablehlo.iota dim = 1 : tensor<8x16xi64>
-// CHECK-NEXT:     %4 = stablehlo.add %2, %3 {enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>]} : tensor<8x16xi64>
+// CHECK-NEXT:     %4 = stablehlo.add %2, %3 {enzymexla.non_negative = [#enzymexla.guaranteed<GUARANTEED>]} : tensor<8x16xi64>
 // CHECK-NEXT:     %5 = stablehlo.compare LT, %4, %c_6 : (tensor<8x16xi64>, tensor<8x16xi64>) -> tensor<8x16xi1>
 // CHECK-NEXT:     %6 = stablehlo.negate %4 : tensor<8x16xi64>
 // CHECK-NEXT:     %7 = stablehlo.subtract %6, %c_5 : tensor<8x16xi64>
@@ -113,7 +113,7 @@ module {
 // CHECK-NEXT:     %13 = stablehlo.iota dim = 0 : tensor<16x8x16x1xi64>
 // CHECK-NEXT:     %14 = stablehlo.broadcast_in_dim %12, dims = [1, 2] : (tensor<8x16xi64>) -> tensor<16x8x16x1xi64>
 // CHECK-NEXT:     %15 = stablehlo.add %13, %14 : tensor<16x8x16x1xi64>
-// CHECK-NEXT:     %16 = stablehlo.remainder %4, %c_3 {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<8x16xi64>
+// CHECK-NEXT:     %16 = stablehlo.remainder %4, %c_3 {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<8x16xi64>
 // CHECK-NEXT:     %17 = stablehlo.compare LT, %16, %c_6 : (tensor<8x16xi64>, tensor<8x16xi64>) -> tensor<8x16xi1>
 // CHECK-NEXT:     %18 = stablehlo.add %16, %c_3 : tensor<8x16xi64>
 // CHECK-NEXT:     %19 = stablehlo.select %17, %18, %16 : tensor<8x16xi1>, tensor<8x16xi64>
@@ -121,7 +121,7 @@ module {
 // CHECK-NEXT:     %21 = stablehlo.concatenate %15, %20, dim = 3 : (tensor<16x8x16x1xi64>, tensor<16x8x16x1xi64>) -> tensor<16x8x16x2xi64>
 // CHECK-NEXT:     %22 = stablehlo.pad %21, %c_2, low = [0, 0, 0, 0], high = [0, 0, 0, 1], interior = [0, 0, 0, 0] : (tensor<16x8x16x2xi64>, tensor<i64>) -> tensor<16x8x16x3xi64>
 // CHECK-NEXT:     %23 = "stablehlo.gather"(%arg0, %22) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1, 2], start_index_map = [0, 1, 2], index_vector_dim = 3>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 1>}> : (tensor<20x50x50xf64>, tensor<16x8x16x3xi64>) -> tensor<16x8x16xf64>
-// CHECK-NEXT:     %24 = stablehlo.add %4, %c_1 {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<8x16xi64>
+// CHECK-NEXT:     %24 = stablehlo.add %4, %c_1 {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<8x16xi64>
 // CHECK-NEXT:     %25 = stablehlo.compare LT, %24, %c_6 : (tensor<8x16xi64>, tensor<8x16xi64>) -> tensor<8x16xi1>
 // CHECK-NEXT:     %26 = stablehlo.negate %24 : tensor<8x16xi64>
 // CHECK-NEXT:     %27 = stablehlo.subtract %26, %c_5 : tensor<8x16xi64>

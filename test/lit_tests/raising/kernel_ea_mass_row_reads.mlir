@@ -13,11 +13,11 @@ module {
   llvm.mlir.global private unnamed_addr constant @".str.4"("\0A ... in function: \00") {addr_space = 0 : i32, alignment = 1 : i64, dso_local}
   llvm.mlir.global private unnamed_addr constant @".str.5"("\0A ... in file: \00") {addr_space = 0 : i32, alignment = 1 : i64, dso_local}
   llvm.mlir.global private unnamed_addr constant @".str.7"("Verification failed: (\00") {addr_space = 0 : i32, alignment = 1 : i64, dso_local}
-  llvm.mlir.global private unnamed_addr constant @".str.8"("D1D <= DeviceDofQuadLimits::Get().MAX_D1D\00") {addr_space = 0 : i32, alignment = 1 : i64, dso_local}
+  llvm.mlir.global private unnamed_addr constant @".str.8"("D1D <= DeviceDofQuadLimits::Get().MAX_D1D\00") {addr_space = 0 : i32, alignment = 1, dso_local}
   llvm.mlir.global private unnamed_addr constant @".str.9"(") is false:\0A --> \00") {addr_space = 0 : i32, alignment = 1 : i64, dso_local}
   llvm.mlir.global private unnamed_addr constant @".str.10"(dense<0> : tensor<1xi8>) {addr_space = 0 : i32, alignment = 1 : i64, dso_local} : !llvm.array<1 x i8>
   llvm.mlir.global private unnamed_addr constant @".str.11"("/mnt3/wmoses/git/mfem/fem/integ/bilininteg_mass_kernels.hpp\00") {addr_space = 0 : i32, alignment = 1 : i64, dso_local}
-  llvm.mlir.global private unnamed_addr constant @".str.12"("Q1D <= DeviceDofQuadLimits::Get().MAX_Q1D\00") {addr_space = 0 : i32, alignment = 1 : i64, dso_local}
+  llvm.mlir.global private unnamed_addr constant @".str.12"("Q1D <= DeviceDofQuadLimits::Get().MAX_Q1D\00") {addr_space = 0 : i32, alignment = 1, dso_local}
   llvm.mlir.global linkonce_odr @_ZZN4mfem19DeviceDofQuadLimits3GetEvE15dof_quad_limits() {addr_space = 0 : i32, alignment = 4 : i64, dso_local} : !llvm.struct<"struct.mfem::DeviceDofQuadLimits.1", (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)> {
     %0 = llvm.mlir.zero : !llvm.struct<"struct.mfem::DeviceDofQuadLimits.1", (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)>
     llvm.return %0 : !llvm.struct<"struct.mfem::DeviceDofQuadLimits.1", (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)>
@@ -88,8 +88,8 @@ module {
     %c8 = arith.constant 8 : index
     %c0 = arith.constant 0 : index
     %15 = "enzymexla.pointer2memref"(%1) : (!llvm.ptr) -> memref<?xi8>
-    %alloca = memref.alloca() {alignment = 16 : i64} : memref<64xf64>
-    %alloca_0 = memref.alloca() {alignment = 16 : i64} : memref<64xf64>
+    %alloca = memref.alloca() alignment = 16 : memref<64xf64>
+    %alloca_0 = memref.alloca() alignment = 16 : memref<64xf64>
     %16 = llvm.alloca %c1_i32 x !llvm.struct<"class.std::__cxx11::basic_ostringstream.1", (struct<"class.std::basic_ostream.base.1", (ptr)>, struct<"class.std::__cxx11::basic_stringbuf.1", (struct<"class.std::basic_streambuf.1", (ptr, ptr, ptr, ptr, ptr, ptr, ptr, struct<"class.std::locale.1", (ptr)>)>, i32, struct<"class.std::__cxx11::basic_string.1", (struct<"struct.std::__cxx11::basic_string<char>::_Alloc_hider.1", (ptr)>, i64, struct<"union.anon.1", (i64, array<8 x i8>)>)>)>, struct<"class.std::basic_ios.1", (struct<"class.std::ios_base.1", (ptr, i64, i64, i32, i32, i32, ptr, struct<"struct.std::ios_base::_Words.1", (ptr, i64)>, array<8 x struct<"struct.std::ios_base::_Words.1", (ptr, i64)>>, i32, ptr, struct<"class.std::locale.1", (ptr)>)>, ptr, i8, i8, ptr, ptr, ptr, ptr)>)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
     %17 = llvm.alloca %c1_i32 x !llvm.struct<"class.std::__cxx11::basic_string.1", (struct<"struct.std::__cxx11::basic_string<char>::_Alloc_hider.1", (ptr)>, i64, struct<"union.anon.1", (i64, array<8 x i8>)>)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
     %18 = llvm.alloca %c1_i32 x !llvm.struct<"class.std::__cxx11::basic_ostringstream.1", (struct<"class.std::basic_ostream.base.1", (ptr)>, struct<"class.std::__cxx11::basic_stringbuf.1", (struct<"class.std::basic_streambuf.1", (ptr, ptr, ptr, ptr, ptr, ptr, ptr, struct<"class.std::locale.1", (ptr)>)>, i32, struct<"class.std::__cxx11::basic_string.1", (struct<"struct.std::__cxx11::basic_string<char>::_Alloc_hider.1", (ptr)>, i64, struct<"union.anon.1", (i64, array<8 x i8>)>)>)>, struct<"class.std::basic_ios.1", (struct<"class.std::ios_base.1", (ptr, i64, i64, i32, i32, i32, ptr, struct<"struct.std::ios_base::_Words.1", (ptr, i64)>, array<8 x struct<"struct.std::ios_base::_Words.1", (ptr, i64)>>, i32, ptr, struct<"class.std::locale.1", (ptr)>)>, ptr, i8, i8, ptr, ptr, ptr, ptr)>)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
@@ -442,9 +442,9 @@ module {
     %181 = arith.index_cast %arg0 : i32 to index
     %182 = "enzymexla.gpu_wrapper"(%181, %c1, %c1, %c8, %c8, %c1) ({
       affine.parallel (%arg7) = (0) to (symbol(%181)) {
-        %alloca_1 = memref.alloca() {alignment = 8 : i64} : memref<8x8xf64>
+        %alloca_1 = memref.alloca() alignment = 8 : memref<8x8xf64>
         affine.parallel (%arg8, %arg9) = (0, 0) to (8, 8) {
-          %alloca_2 = memref.alloca() {alignment = 8 : i64} : memref<64xf64>
+          %alloca_2 = memref.alloca() alignment = 8 : memref<64xf64>
           %491 = "enzymexla.pointer2memref"(%157) : (!llvm.ptr) -> memref<?xf64>
           %492 = affine.load %491[0] : memref<?xf64>
           affine.store %492, %alloca_2[0] : memref<64xf64>

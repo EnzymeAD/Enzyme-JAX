@@ -13,7 +13,7 @@ module @reactant_fgrad attributes {mhlo.num_partitions = 1 : i64, mhlo.num_repli
     %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<4xf64>
     %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<4x3x8x2xf64>
     %cst_2 = stablehlo.constant dense<0.000000e+00> : tensor<3x8x2xf64>
-    %0:6 = enzyme.autodiff @"Const{typeof(fprimal)}(Main.fprimal)_autodiff"(%arg0, %arg1, %arg2, %cst, %cst_1, %cst_2, %cst_0) {activity = [#enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_activenoneed>, #enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>]} : (tensor<4x3x8x2xf64>, tensor<3x8x2xf64>, tensor<4xf64>, tensor<f64>, tensor<4x3x8x2xf64>, tensor<3x8x2xf64>, tensor<4xf64>) -> (tensor<4x3x8x2xf64>, tensor<3x8x2xf64>, tensor<4xf64>, tensor<4x3x8x2xf64>, tensor<3x8x2xf64>, tensor<4xf64>)
+    %0:6 = enzyme.autodiff @"Const{typeof(fprimal)}(Main.fprimal)_autodiff"(%arg0, %arg1, %arg2, %cst, %cst_1, %cst_2, %cst_0) {activity = [#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_activenoneed>, #enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_active>]} : (tensor<4x3x8x2xf64>, tensor<3x8x2xf64>, tensor<4xf64>, tensor<f64>, tensor<4x3x8x2xf64>, tensor<3x8x2xf64>, tensor<4xf64>) -> (tensor<4x3x8x2xf64>, tensor<3x8x2xf64>, tensor<4xf64>, tensor<4x3x8x2xf64>, tensor<3x8x2xf64>, tensor<4xf64>)
     return %0#3, %0#4, %0#5, %0#0, %0#1, %0#2 : tensor<4x3x8x2xf64>, tensor<3x8x2xf64>, tensor<4xf64>, tensor<4x3x8x2xf64>, tensor<3x8x2xf64>, tensor<4xf64>
   }
 }

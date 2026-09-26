@@ -6,9 +6,9 @@ module {
     %1 = nvvm.read.ptx.sreg.tid.x : i32
     %4 = llvm.zext %1 : i32 to i64
     %5 = llvm.getelementptr inbounds %arg0[%4] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
-    %6 = llvm.load %5 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+    %6 = llvm.load %5 <alignment = 1> : !llvm.ptr<1> -> i64
     %7 = llvm.mul %6, %6 : i64
-    llvm.store %7, %5 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+    llvm.store %7, %5 <alignment = 1> : i64, !llvm.ptr<1>
     func.return
   }
   func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
@@ -39,9 +39,9 @@ module {
   ^bb1:  // pred: ^bb0
     %4 = llvm.zext %1 : i32 to i64
     %5 = llvm.getelementptr inbounds %arg0[%4] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
-    %6 = llvm.load %5 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+    %6 = llvm.load %5 <alignment = 1> : !llvm.ptr<1> -> i64
     %7 = llvm.mul %6, %6 : i64
-    llvm.store %7, %5 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+    llvm.store %7, %5 <alignment = 1> : i64, !llvm.ptr<1>
     func.return
   ^bb2:  // pred: ^bb0
     llvm.call fastcc @throw_boundserror_2676() : () -> ()
@@ -77,11 +77,11 @@ module {
     %10 = llvm.mlir.constant(1.000000e+01 : f64) : f64
     %11 = llvm.mlir.constant(2992 : i64) : i64
     %17 = nvvm.read.ptx.sreg.tid.x range <i32, 0, 256> : i32
-    %18 = arith.extui %17 {nonNeg} : i32 to i64
+    %18 = arith.extui %17 nneg : i32 to i64
     %19 = nvvm.read.ptx.sreg.ctaid.x range <i32, 0, 184> : i32
-    %20 = arith.extui %19 {nonNeg} : i32 to i64
+    %20 = arith.extui %19 nneg : i32 to i64
     %21 = arith.divui %19, %0 : i32
-    %22 = arith.extui %21 {nonNeg} : i32 to i64
+    %22 = arith.extui %21 nneg : i32 to i64
     %23 = arith.muli %22, %1 : i64
     %24 = arith.addi %23, %20 : i64
     %25 = arith.shrui %18, %2 : i64
@@ -99,22 +99,22 @@ module {
     %63 = llvm.getelementptr inbounds %arg2[%60] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
     %64 = llvm.getelementptr inbounds %63[2806544] : (!llvm.ptr<1>) -> !llvm.ptr<1>, i8
     %65 = llvm.getelementptr inbounds %64[%62] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    %66 = llvm.load %65 {alignment = 8 : i64} : !llvm.ptr<1> -> f64
-    %67 = arith.mulf %66, %10 {fastmathFlags = #llvm.fastmath<none>} : f64
+    %66 = llvm.load %65 <alignment = 8> : !llvm.ptr<1> -> f64
+    %67 = arith.mulf %66, %10 : f64
     %68 = llvm.getelementptr inbounds %arg0[%60] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
     %69 = arith.muli %30, %11 : i64
     %70 = llvm.getelementptr inbounds %68[%69] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i8
     %71 = llvm.getelementptr inbounds %70[18000] : (!llvm.ptr<1>) -> !llvm.ptr<1>, i8
-    llvm.store %67, %71 {alignment = 8 : i64} : f64, !llvm.ptr<1>
+    llvm.store %67, %71 <alignment = 8> : f64, !llvm.ptr<1>
     %72 = llvm.getelementptr inbounds %arg3[%60] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
     %73 = llvm.getelementptr inbounds %72[2827488] : (!llvm.ptr<1>) -> !llvm.ptr<1>, i8
     %74 = llvm.getelementptr inbounds %73[%62] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    %75 = llvm.load %74 {alignment = 8 : i64} : !llvm.ptr<1> -> f64
-    %76 = arith.mulf %75, %10 {fastmathFlags = #llvm.fastmath<none>} : f64
+    %75 = llvm.load %74 <alignment = 8> : !llvm.ptr<1> -> f64
+    %76 = arith.mulf %75, %10 : f64
     %77 = llvm.getelementptr inbounds %arg1[%60] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
     %78 = llvm.getelementptr inbounds %77[%69] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i8
     %79 = llvm.getelementptr inbounds %78[18000] : (!llvm.ptr<1>) -> !llvm.ptr<1>, i8
-    llvm.store %76, %79 {alignment = 8 : i64} : f64, !llvm.ptr<1>
+    llvm.store %76, %79 <alignment = 8> : f64, !llvm.ptr<1>
     func.return
   }
 
@@ -167,11 +167,11 @@ module {
     %15 = llvm.mlir.constant(403920 : i64) : i64
     %16 = llvm.mlir.constant(100 : i64) : i64
     %17 = nvvm.read.ptx.sreg.tid.x range <i32, 0, 256> : i32
-    %18 = arith.extui %17 {nonNeg} : i32 to i64
+    %18 = arith.extui %17 nneg : i32 to i64
     %19 = nvvm.read.ptx.sreg.ctaid.x range <i32, 0, 184> : i32
-    %20 = arith.extui %19 {nonNeg} : i32 to i64
+    %20 = arith.extui %19 nneg : i32 to i64
     %21 = arith.divui %19, %0 : i32
-    %22 = arith.extui %21 {nonNeg} : i32 to i64
+    %22 = arith.extui %21 nneg : i32 to i64
     %23 = arith.muli %22, %1 : i64
     %24 = arith.addi %23, %20 : i64
     %25 = arith.shrui %18, %2 : i64
@@ -186,28 +186,28 @@ module {
     %34 = arith.ori %33, %32 : i1
     llvm.cond_br %34, ^bb2, ^bb3
   ^bb1(%35: i64):  // 2 preds: ^bb1, ^bb4
-    %36 = llvm.load %71 {alignment = 8 : i64} : !llvm.ptr<1> -> f64
+    %36 = llvm.load %71 <alignment = 8> : !llvm.ptr<1> -> f64
     %37 = llvm.getelementptr %arg2[%60] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
     %38 = llvm.getelementptr %37[48] : (!llvm.ptr<1>) -> !llvm.ptr<1>, i8
     %39 = llvm.getelementptr %38[%62] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
     %40 = arith.muli %35, %14 : i64
     %41 = llvm.getelementptr %39[%40] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i8
     %42 = llvm.getelementptr %41[2405568] : (!llvm.ptr<1>) -> !llvm.ptr<1>, i8
-    %43 = llvm.load %42 {alignment = 8 : i64} : !llvm.ptr<1> -> f64
-    %44 = arith.mulf %43, %10 {fastmathFlags = #llvm.fastmath<none>} : f64
-    %45 = arith.addf %36, %44 {fastmathFlags = #llvm.fastmath<none>} : f64
-    llvm.store %45, %71 {alignment = 8 : i64} : f64, !llvm.ptr<1>
-    %46 = llvm.load %79 {alignment = 8 : i64} : !llvm.ptr<1> -> f64
+    %43 = llvm.load %42 <alignment = 8> : !llvm.ptr<1> -> f64
+    %44 = arith.mulf %43, %10 : f64
+    %45 = arith.addf %36, %44 : f64
+    llvm.store %45, %71 <alignment = 8> : f64, !llvm.ptr<1>
+    %46 = llvm.load %79 <alignment = 8> : !llvm.ptr<1> -> f64
     %47 = llvm.getelementptr %arg3[%60] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
     %48 = llvm.getelementptr %47[48] : (!llvm.ptr<1>) -> !llvm.ptr<1>, i8
     %49 = llvm.getelementptr %48[%62] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
     %50 = arith.muli %35, %15 : i64
     %51 = llvm.getelementptr %49[%50] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i8
     %52 = llvm.getelementptr %51[2423520] : (!llvm.ptr<1>) -> !llvm.ptr<1>, i8
-    %53 = llvm.load %52 {alignment = 8 : i64} : !llvm.ptr<1> -> f64
-    %54 = arith.mulf %53, %10 {fastmathFlags = #llvm.fastmath<none>} : f64
-    %55 = arith.addf %46, %54 {fastmathFlags = #llvm.fastmath<none>} : f64
-    llvm.store %55, %79 {alignment = 8 : i64} : f64, !llvm.ptr<1>
+    %53 = llvm.load %52 <alignment = 8> : !llvm.ptr<1> -> f64
+    %54 = arith.mulf %53, %10 : f64
+    %55 = arith.addf %46, %54 : f64
+    llvm.store %55, %79 <alignment = 8> : f64, !llvm.ptr<1>
     %56 = llvm.icmp "eq" %35, %16 : i64
     %57 = arith.addi %35, %4 : i64
     llvm.cond_br %56, ^bb2, ^bb1(%57 : i64)
@@ -222,22 +222,22 @@ module {
     %63 = llvm.getelementptr inbounds %arg2[%60] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
     %64 = llvm.getelementptr inbounds %63[2806544] : (!llvm.ptr<1>) -> !llvm.ptr<1>, i8
     %65 = llvm.getelementptr inbounds %64[%62] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    %66 = llvm.load %65 {alignment = 8 : i64} : !llvm.ptr<1> -> f64
-    %67 = arith.mulf %66, %10 {fastmathFlags = #llvm.fastmath<none>} : f64
+    %66 = llvm.load %65 <alignment = 8> : !llvm.ptr<1> -> f64
+    %67 = arith.mulf %66, %10 : f64
     %68 = llvm.getelementptr inbounds %arg0[%60] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
     %69 = arith.muli %30, %11 : i64
     %70 = llvm.getelementptr inbounds %68[%69] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i8
     %71 = llvm.getelementptr inbounds %70[18000] : (!llvm.ptr<1>) -> !llvm.ptr<1>, i8
-    llvm.store %67, %71 {alignment = 8 : i64} : f64, !llvm.ptr<1>
+    llvm.store %67, %71 <alignment = 8> : f64, !llvm.ptr<1>
     %72 = llvm.getelementptr inbounds %arg3[%60] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
     %73 = llvm.getelementptr inbounds %72[2827488] : (!llvm.ptr<1>) -> !llvm.ptr<1>, i8
     %74 = llvm.getelementptr inbounds %73[%62] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    %75 = llvm.load %74 {alignment = 8 : i64} : !llvm.ptr<1> -> f64
-    %76 = arith.mulf %75, %10 {fastmathFlags = #llvm.fastmath<none>} : f64
+    %75 = llvm.load %74 <alignment = 8> : !llvm.ptr<1> -> f64
+    %76 = arith.mulf %75, %10 : f64
     %77 = llvm.getelementptr inbounds %arg1[%60] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
     %78 = llvm.getelementptr inbounds %77[%69] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i8
     %79 = llvm.getelementptr inbounds %78[18000] : (!llvm.ptr<1>) -> !llvm.ptr<1>, i8
-    llvm.store %76, %79 {alignment = 8 : i64} : f64, !llvm.ptr<1>
+    llvm.store %76, %79 <alignment = 8> : f64, !llvm.ptr<1>
     llvm.cond_br %12, ^bb2, ^bb4
   ^bb4:  // pred: ^bb3
     llvm.br ^bb1(%13 : i64)
@@ -291,9 +291,9 @@ module {
     %1 = nvvm.read.ptx.sreg.tid.x : i32
     %4 = llvm.zext %1 : i32 to i64
     %5 = llvm.getelementptr inbounds %arg0[%4] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
-    %6 = llvm.load %5 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+    %6 = llvm.load %5 <alignment = 1> : !llvm.ptr<1> -> i64
     %7 = llvm.mul %6, %6 : i64
-    llvm.store %7, %5 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+    llvm.store %7, %5 <alignment = 1> : i64, !llvm.ptr<1>
     func.return
   }
   func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
@@ -319,9 +319,9 @@ module {
     %1 = nvvm.read.ptx.sreg.tid.x : i32
     %4 = llvm.zext %1 : i32 to i64
     %5 = llvm.getelementptr inbounds %arg0[%4] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
-    %6 = llvm.load %5 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+    %6 = llvm.load %5 <alignment = 1> : !llvm.ptr<1> -> i64
     %7 = llvm.mul %6, %6 : i64
-    llvm.store %7, %5 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+    llvm.store %7, %5 <alignment = 1> : i64, !llvm.ptr<1>
     func.return
   }
   func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
@@ -347,9 +347,9 @@ module {
     %1 = nvvm.read.ptx.sreg.tid.x : i32
     %4 = llvm.zext %1 : i32 to i64
     %5 = llvm.getelementptr inbounds %arg0[%4] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
-    %6 = llvm.load %5 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+    %6 = llvm.load %5 <alignment = 1> : !llvm.ptr<1> -> i64
     %7 = llvm.mul %6, %6 : i64
-    llvm.store %7, %5 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+    llvm.store %7, %5 <alignment = 1> : i64, !llvm.ptr<1>
     func.return
   }
   func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
@@ -376,9 +376,9 @@ module {
     %1 = nvvm.read.ptx.sreg.tid.x : i32
     %4 = llvm.zext %1 : i32 to i64
     %5 = llvm.getelementptr inbounds %arg0[%4] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
-    %6 = llvm.load %5 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+    %6 = llvm.load %5 <alignment = 1> : !llvm.ptr<1> -> i64
     %7 = llvm.mul %6, %6 : i64
-    llvm.store %7, %5 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+    llvm.store %7, %5 <alignment = 1> : i64, !llvm.ptr<1>
     func.return
   }
   func.func @main(%arg0: tensor<8x8xi64>) -> tensor<8x8xi64> {
@@ -400,9 +400,9 @@ module {
     %1 = nvvm.read.ptx.sreg.tid.x : i32
     %4 = llvm.zext %1 : i32 to i64
     %5 = llvm.getelementptr inbounds %arg0[%4] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
-    %6 = llvm.load %5 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+    %6 = llvm.load %5 <alignment = 1> : !llvm.ptr<1> -> i64
     %7 = llvm.mul %6, %6 : i64
-    llvm.store %7, %5 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+    llvm.store %7, %5 <alignment = 1> : i64, !llvm.ptr<1>
     return
   }
   func.func @main(%arg0: tensor<8x8xi64>) -> tensor<8x8xi64> {

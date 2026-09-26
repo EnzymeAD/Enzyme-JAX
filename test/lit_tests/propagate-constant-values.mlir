@@ -232,7 +232,7 @@ module {
     %1 = llvm.mlir.addressof @mlir.llvm.nameless_global_0 : !llvm.ptr
     %2 = llvm.alloca %0 x !llvm.struct<"printf_args.0", (i64)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
     %3 = llvm.getelementptr inbounds %2[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"printf_args.0", (i64)>
-    llvm.store %arg0, %3 {alignment = 8 : i64} : i64, !llvm.ptr
+    llvm.store %arg0, %3 <alignment = 8> : i64, !llvm.ptr
     %4 = llvm.call @vprintf(%1, %2) : (!llvm.ptr, !llvm.ptr) -> i32
     llvm.return
   }
@@ -244,8 +244,8 @@ module {
   llvm.func local_unnamed_addr @jl_int16_type() -> !llvm.ptr attributes {sym_visibility = "private"}
   llvm.func ptx_kernelcc @"##call__Z14square_kernel_13CuTracedArrayI5Int64Li1ELi1E5_64__ES1_#241"(%arg0: !llvm.ptr<1> {llvm.noalias}, %arg1: !llvm.ptr<1> {llvm.noalias}) attributes {sym_visibility = "private"} {
     %0 = llvm.mlir.constant(63 : i32) : i32
-    %1 = llvm.mlir.constant(dense<[160, 176, 104, 238, 255, 127, 0, 0]> : tensor<8xui8>) : !llvm.array<8 x i8>
-    %2 = llvm.mlir.constant(dense<[112, 176, 104, 238, 255, 127, 0, 0]> : tensor<8xui8>) : !llvm.array<8 x i8>
+    %1 = llvm.mlir.constant(dense<[160, 176, 104, 238, 255, 127, 0, 0]> : tensor<8xi8>) : !llvm.array<8 x i8>
+    %2 = llvm.mlir.constant(dense<[112, 176, 104, 238, 255, 127, 0, 0]> : tensor<8xi8>) : !llvm.array<8 x i8>
     %3 = llvm.mlir.constant(1 : i64) : i64
     %4 = llvm.alloca %3 x !llvm.array<1 x ptr<1>> : (i64) -> !llvm.ptr
     llvm.store %2, %4 : !llvm.array<8 x i8>, !llvm.ptr
@@ -265,12 +265,12 @@ module {
     %10 = llvm.extractvalue %7[0] : !llvm.array<1 x ptr<1>> 
     %11 = llvm.zext %8 : i32 to i64
     %12 = llvm.getelementptr inbounds %10[%11] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
-    %13 = llvm.load %12 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> i64
+    %13 = llvm.load %12 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> i64
     %14 = llvm.extractvalue %6[0] : !llvm.array<1 x ptr<1>> 
     %15 = llvm.getelementptr inbounds %14[%11] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
-    %16 = llvm.load %15 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> i64
+    %16 = llvm.load %15 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> i64
     %17 = llvm.mul %13, %16 : i64
-    llvm.store %17, %15 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : i64, !llvm.ptr<1>
+    llvm.store %17, %15 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : i64, !llvm.ptr<1>
     llvm.br ^bb3
   ^bb3:  // pred: ^bb2
     llvm.return

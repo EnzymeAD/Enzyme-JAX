@@ -18,7 +18,7 @@ module {
       %7 = arith.addi %5, %6 : i64
       %8 = arith.index_cast %7 : i64 to index
       %9 = "enzymexla.pointer2memref"(%0) : (!llvm.ptr<1>) -> memref<1000xf64, 1>
-      %10 = memref.load %9[%8] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<1000xf64, 1>
+      %10 = memref.load %9[%8] alignment(8) {ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<1000xf64, 1>
       %11 = "enzymexla.pointer2memref"(%1) : (!llvm.ptr<1>) -> memref<?xf64, 1>
       %12 = affine.load %11[%arg2 * 8] {alignment = 8 : i64, ordering = 0 : i64} : memref<?xf64, 1>
       %13 = arith.cmpi eq, %arg2, %c99 : index
@@ -50,7 +50,7 @@ module {
     // CHECK-NEXT:     %c10 = arith.constant 10 : index
     // CHECK-NEXT:     %10 = arith.remui %8, %c10 : index
     // CHECK-NEXT:     %11 = arith.divui %8, %c10 : index
-    // CHECK-NEXT:     %12 = memref.load %9[%11, %10] {alignment = 8 : i64} : memref<100x10xf64, 1>
+    // CHECK-NEXT:     %12 = memref.load %9[%11, %10] alignment(8) : memref<100x10xf64, 1>
     // CHECK-NEXT:     %13 = "enzymexla.pointer2memref"(%1) : (!llvm.ptr<1>) -> memref<100x10xf64, 1>
     // CHECK-NEXT:     %14 = affine.load %13[(%arg2 * 8) floordiv 10, (%arg2 * 8) mod 10] : memref<100x10xf64, 1>
     // CHECK-NEXT:     %15 = arith.cmpi eq, %arg2, %c99 : index

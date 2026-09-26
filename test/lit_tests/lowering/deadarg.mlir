@@ -8,8 +8,8 @@ module {
     return %0#0, %0#1, %0#2 : tensor<i64>, tensor<i64>, tensor<i64>
   }
   llvm.func ptx_kernelcc @k1(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>, %arg2: !llvm.ptr<1>) {
-    %a0 = llvm.load %arg0 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
-    llvm.store %a0, %arg2 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+    %a0 = llvm.load %arg0 <alignment = 1> : !llvm.ptr<1> -> i64
+    llvm.store %a0, %arg2 <alignment = 1> : i64, !llvm.ptr<1>
     llvm.return
   }
   func.func @main2(%arg0: tensor<i64>, %arg1: tensor<i64>, %arg2: tensor<i64>) -> (tensor<i64>, tensor<i64>, tensor<i64>) {
@@ -25,9 +25,9 @@ module {
     return %0#0, %0#1, %0#2 : tensor<i64>, tensor<i64>, tensor<i64>
   }
   llvm.func ptx_kernelcc @k2(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>, %arg2: !llvm.ptr<1>) {
-    %a0 = llvm.load %arg2 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+    %a0 = llvm.load %arg2 <alignment = 1> : !llvm.ptr<1> -> i64
     %t = llvm.mul %a0, %a0 : i64
-    llvm.store %t, %arg2 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+    llvm.store %t, %arg2 <alignment = 1> : i64, !llvm.ptr<1>
     llvm.return
   }
 }
@@ -39,8 +39,8 @@ module {
 // CHECK-NEXT:    return %0#0, %arg1, %0#1 : tensor<i64>, tensor<i64>, tensor<i64>
 // CHECK-NEXT:  }
 // CHECK:  llvm.func ptx_kernelcc @k1(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>) {
-// CHECK-NEXT:    %0 = llvm.load %arg0 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
-// CHECK-NEXT:    llvm.store %0, %arg1 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+// CHECK-NEXT:    %0 = llvm.load %arg0 <alignment = 1> : !llvm.ptr<1> -> i64
+// CHECK-NEXT:    llvm.store %0, %arg1 <alignment = 1> : i64, !llvm.ptr<1>
 // CHECK-NEXT:    llvm.return
 // CHECK-NEXT:  }
 // CHECK:  func.func @main2(%arg0: tensor<i64>, %arg1: tensor<i64>, %arg2: tensor<i64>) -> (tensor<i64>, tensor<i64>, tensor<i64>) {
@@ -56,8 +56,8 @@ module {
 // CHECK-NEXT:    return %arg0, %arg1, %0 : tensor<i64>, tensor<i64>, tensor<i64>
 // CHECK-NEXT:  }
 // CHECK:  llvm.func ptx_kernelcc @k2(%arg0: !llvm.ptr<1>) {
-// CHECK-NEXT:    %0 = llvm.load %arg0 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+// CHECK-NEXT:    %0 = llvm.load %arg0 <alignment = 1> : !llvm.ptr<1> -> i64
 // CHECK-NEXT:    %1 = llvm.mul %0, %0 : i64
-// CHECK-NEXT:    llvm.store %1, %arg0 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+// CHECK-NEXT:    llvm.store %1, %arg0 <alignment = 1> : i64, !llvm.ptr<1>
 // CHECK-NEXT:    llvm.return
 // CHECK-NEXT:  }

@@ -204,7 +204,7 @@ func.func @recognize_multirotate_negative(%1604: tensor<4x1520x3056xf32>) -> (te
     %2706 = "enzymexla.rotate"(%1604) <{amount = 3054 : i32, dimension = 2 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3056xf32>
     %2707 = "enzymexla.rotate"(%1604) <{amount = 3053 : i32, dimension = 2 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3056xf32>
     %2710 = "enzymexla.rotate"(%1604) <{amount = 3055 : i32, dimension = 2 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3056xf32>
-    %2715 = "enzymexla.rotate"(%1604) <{amount = 1 : i32, dimension = 2 : i32}> {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>], sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3056xf32>
+    %2715 = "enzymexla.rotate"(%1604) <{amount = 1 : i32, dimension = 2 : i32}> {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>], sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3056xf32>
     %2719 = "enzymexla.rotate"(%1604) <{amount = 2 : i32, dimension = 2 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1520x3056xf32>) -> tensor<4x1520x3056xf32>
     return %2706, %2707, %2710, %2715, %2719 : tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>
 }

@@ -17,7 +17,7 @@ llvm.func @marked_dup(%x: !llvm.ptr, %dx: !llvm.ptr, %out: !llvm.ptr, %dout: !ll
   %cast = llvm.addrspacecast %edup : !llvm.ptr<1> to !llvm.ptr
   %dupv = llvm.load %cast : !llvm.ptr -> i32
   %f = llvm.mlir.addressof @store : !llvm.ptr
-  // CHECK: enzyme.autodiff @store(%arg0, %arg1, %arg2, %arg3) {activity = [#enzyme<activity enzyme_dup>, #enzyme<activity enzyme_dup>], ret_activity = []} : (!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
+  // CHECK: enzyme.autodiff @store(%arg0, %arg1, %arg2, %arg3) {activity = [#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_dup>], ret_activity = []} : (!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
   llvm.call @_Z17__enzyme_autodiffIJiPfS0_iS0_S0_EEiPvDpT_(%f, %dupv, %x, %dx, %dupv, %out, %dout) : (!llvm.ptr, i32, !llvm.ptr, !llvm.ptr, i32, !llvm.ptr, !llvm.ptr) -> ()
   llvm.return
 }
@@ -27,7 +27,7 @@ llvm.func external @__enzyme_autodiff1(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2
 // CHECK: llvm.func @infer_dup
 llvm.func @infer_dup(%x: !llvm.ptr, %dx: !llvm.ptr, %out: !llvm.ptr, %dout: !llvm.ptr) {
   %f = llvm.mlir.addressof @store : !llvm.ptr
-  // CHECK: enzyme.autodiff @store(%arg0, %arg1, %arg2, %arg3) {activity = [#enzyme<activity enzyme_dup>, #enzyme<activity enzyme_dup>], ret_activity = []} : (!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
+  // CHECK: enzyme.autodiff @store(%arg0, %arg1, %arg2, %arg3) {activity = [#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_dup>], ret_activity = []} : (!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
   llvm.call @__enzyme_autodiff1(%f, %x, %dx, %out, %dout) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
   llvm.return
 }
@@ -40,7 +40,7 @@ llvm.func @marked_const(%x: !llvm.ptr, %out: !llvm.ptr, %dout: !llvm.ptr) {
   %cast = llvm.addrspacecast %ecst : !llvm.ptr<1> to !llvm.ptr
   %cstv = llvm.load %cast : !llvm.ptr -> i32
   %f = llvm.mlir.addressof @store : !llvm.ptr
-  // CHECK: enzyme.autodiff @store(%arg0, %arg1, %arg2) {activity = [#enzyme<activity enzyme_const>, #enzyme<activity enzyme_dup>], ret_activity = []} : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
+  // CHECK: enzyme.autodiff @store(%arg0, %arg1, %arg2) {activity = [#enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_dup>], ret_activity = []} : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
   llvm.call @__enzyme_autodiff2(%f, %cstv, %x, %out, %dout) : (!llvm.ptr, i32, !llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
   llvm.return
 }
@@ -57,7 +57,7 @@ llvm.func @with_atomic(%x: !llvm.ptr, %dx: !llvm.ptr, %out: !llvm.ptr, %dout: !l
   %cast = llvm.addrspacecast %edup : !llvm.ptr<1> to !llvm.ptr
   %dupv = llvm.load %cast : !llvm.ptr -> i32
   %f = llvm.mlir.addressof @store_cuda : !llvm.ptr
-  // CHECK: enzyme.autodiff @store_cuda(%arg0, %arg1, %arg2, %arg3) {activity = [#enzyme<activity enzyme_dup>, #enzyme<activity enzyme_dup>], atomic_add = true, ret_activity = []} : (!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
+  // CHECK: enzyme.autodiff @store_cuda(%arg0, %arg1, %arg2, %arg3) {activity = [#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_dup>], atomic_add = true, ret_activity = []} : (!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
   llvm.call @_Z17__enzyme_autodiffIJiPfS0_iS0_S0_EEiPvDpT_(%f, %dupv, %x, %dx, %dupv, %out, %dout) : (!llvm.ptr, i32, !llvm.ptr, !llvm.ptr, i32, !llvm.ptr, !llvm.ptr) -> ()
   llvm.return
 }

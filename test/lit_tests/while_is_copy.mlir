@@ -316,7 +316,7 @@ module {
 
 // CHECK: func.func @main(%arg0: tensor<10x10xf32>) -> tensor<10x10xf32> {
 // CHECK-NEXT:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<10x10xf32>
-// CHECK-NEXT:   %0 = stablehlo.multiply %arg0, %arg0 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<10x10xf32>
+// CHECK-NEXT:   %0 = stablehlo.multiply %arg0, %arg0 {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<10x10xf32>
 // CHECK-NEXT:   %1 = stablehlo.transpose %0, dims = [1, 0] : (tensor<10x10xf32>) -> tensor<10x10xf32>
 // CHECK-NEXT:   %2 = stablehlo.iota dim = 0 : tensor<10x2xi64>
 // CHECK-NEXT:   %3 = "stablehlo.gather"(%1, %2) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<10x10xf32>, tensor<10x2xi64>) -> tensor<10xf32>

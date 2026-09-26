@@ -8,7 +8,7 @@ module {
   }
   func.func @main(%arg0: tensor<5x3xf32>) -> (tensor<5x3xf32>) {
     %cst = stablehlo.constant dense<1.000000e+00> : tensor<3xf32>
-    %0 = enzyme.autodiff @"Const{typeof(simple_reduce)}(simple_reduce)_autodiff"(%arg0, %cst) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_activenoneed>]} : (tensor<5x3xf32>, tensor<3xf32>) -> (tensor<5x3xf32>)
+    %0 = enzyme.autodiff @"Const{typeof(simple_reduce)}(simple_reduce)_autodiff"(%arg0, %cst) {activity = [#enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_activenoneed>]} : (tensor<5x3xf32>, tensor<3xf32>) -> (tensor<5x3xf32>)
     return %0 : tensor<5x3xf32>
   }
 }

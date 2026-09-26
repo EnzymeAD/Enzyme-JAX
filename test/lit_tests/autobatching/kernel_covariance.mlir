@@ -35,7 +35,7 @@ module {
         %27 = stablehlo.reshape %26 : (tensor<1xf32>) -> tensor<f32>
         %28 = stablehlo.convert %23 {enzymexla.bounds = [[1, 64]]} : (tensor<i64>) -> tensor<i32>
         %29 = stablehlo.subtract %28, %c_2 {enzymexla.bounds = [[0, 63]]} : tensor<i32>
-        %30 = stablehlo.dynamic_slice %iterArg_14, %29, %25, sizes = [1, 1] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<64x32xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
+        %30 = stablehlo.dynamic_slice %iterArg_14, %29, %25, sizes = [1, 1] {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<64x32xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
         %31 = stablehlo.reshape %30 : (tensor<1x1xf32>) -> tensor<f32>
         %32 = stablehlo.add %27, %31 : tensor<f32>
         %33 = stablehlo.reshape %32 : (tensor<f32>) -> tensor<1xf32>
@@ -77,7 +77,7 @@ module {
         %10 = stablehlo.subtract %9, %c_2 : tensor<i32>
         %11 = stablehlo.convert %8 {enzymexla.bounds = [[1, 32]]} : (tensor<i64>) -> tensor<i32>
         %12 = stablehlo.subtract %11, %c_2 {enzymexla.bounds = [[0, 31]]} : tensor<i32>
-        %13 = stablehlo.dynamic_slice %iterArg_13, %10, %12, sizes = [1, 1] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<64x32xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
+        %13 = stablehlo.dynamic_slice %iterArg_13, %10, %12, sizes = [1, 1] {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<64x32xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
         %14 = stablehlo.reshape %13 : (tensor<1x1xf32>) -> tensor<f32>
         %15 = stablehlo.dynamic_slice %iterArg_12, %12, sizes = [1] : (tensor<32xf32>, tensor<i32>) -> tensor<1xf32>
         %16 = stablehlo.reshape %15 : (tensor<1xf32>) -> tensor<f32>
@@ -89,7 +89,7 @@ module {
       stablehlo.return %6, %7#1, %7#2 : tensor<i64>, tensor<32xf32>, tensor<64x32xf32>
     }
     // CHECK: stablehlo.while
-    %3:3 = stablehlo.while(%iterArg = %c_5, %iterArg_9 = %2#2, %iterArg_10 = %cst_7) : tensor<i64>, tensor<64x32xf32>, tensor<32x32xf32> attributes {enzyme.disable_mincut, enzymexla.symmetric_matrix = [#enzymexla<guaranteed UNKNOWN>, #enzymexla<guaranteed UNKNOWN>, #enzymexla<guaranteed NOTGUARANTEED>]}
+    %3:3 = stablehlo.while(%iterArg = %c_5, %iterArg_9 = %2#2, %iterArg_10 = %cst_7) : tensor<i64>, tensor<64x32xf32>, tensor<32x32xf32> attributes {enzyme.disable_mincut, enzymexla.symmetric_matrix = [#enzymexla.guaranteed<UNKNOWN>, #enzymexla.guaranteed<UNKNOWN>, #enzymexla.guaranteed<NOTGUARANTEED>]}
     cond {
       %6 = stablehlo.compare  LT, %iterArg, %c_4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %6 : tensor<i1>
@@ -116,13 +116,13 @@ module {
           %30 = stablehlo.subtract %29, %c_2 : tensor<i32>
           %31 = stablehlo.convert %iterArg_16 : (tensor<i64>) -> tensor<i32>
           %32 = stablehlo.subtract %31, %c_2 : tensor<i32>
-          %33 = stablehlo.dynamic_slice %iterArg_18, %30, %32, sizes = [1, 1] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<32x32xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
+          %33 = stablehlo.dynamic_slice %iterArg_18, %30, %32, sizes = [1, 1] {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<32x32xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
           %34 = stablehlo.reshape %33 : (tensor<1x1xf32>) -> tensor<f32>
           %35 = stablehlo.convert %28 {enzymexla.bounds = [[1, 64]]} : (tensor<i64>) -> tensor<i32>
           %36 = stablehlo.subtract %35, %c_2 {enzymexla.bounds = [[0, 63]]} : tensor<i32>
-          %37 = stablehlo.dynamic_slice %iterArg_17, %36, %30, sizes = [1, 1] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<64x32xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
+          %37 = stablehlo.dynamic_slice %iterArg_17, %36, %30, sizes = [1, 1] {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<64x32xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
           %38 = stablehlo.reshape %37 : (tensor<1x1xf32>) -> tensor<f32>
-          %39 = stablehlo.dynamic_slice %iterArg_17, %36, %32, sizes = [1, 1] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<64x32xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
+          %39 = stablehlo.dynamic_slice %iterArg_17, %36, %32, sizes = [1, 1] {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<64x32xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
           %40 = stablehlo.reshape %39 : (tensor<1x1xf32>) -> tensor<f32>
           %41 = stablehlo.multiply %38, %40 : tensor<f32>
           %42 = stablehlo.add %34, %41 : tensor<f32>
@@ -134,14 +134,14 @@ module {
         %16 = stablehlo.subtract %15, %c_2 : tensor<i32>
         %17 = stablehlo.convert %14#1 : (tensor<i64>) -> tensor<i32>
         %18 = stablehlo.subtract %17, %c_2 : tensor<i32>
-        %19 = stablehlo.dynamic_slice %14#3, %16, %18, sizes = [1, 1] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<32x32xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
+        %19 = stablehlo.dynamic_slice %14#3, %16, %18, sizes = [1, 1] {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<32x32xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
         %20 = stablehlo.convert %19 : (tensor<1x1xf32>) -> tensor<1x1xf64>
         %21 = stablehlo.reshape %20 : (tensor<1x1xf64>) -> tensor<f64>
         %22 = stablehlo.multiply %21, %cst : tensor<f64>
         %23 = stablehlo.convert %22 : (tensor<f64>) -> tensor<f32>
         %24 = stablehlo.reshape %23 : (tensor<f32>) -> tensor<1x1xf32>
         %25 = stablehlo.dynamic_update_slice %14#3, %24, %16, %18 : (tensor<32x32xf32>, tensor<1x1xf32>, tensor<i32>, tensor<i32>) -> tensor<32x32xf32>
-        %26 = stablehlo.dynamic_slice %25, %18, %16, sizes = [1, 1] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<32x32xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
+        %26 = stablehlo.dynamic_slice %25, %18, %16, sizes = [1, 1] {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<32x32xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
         %27 = stablehlo.dynamic_update_slice %14#3, %26, %16, %18 : (tensor<32x32xf32>, tensor<1x1xf32>, tensor<i32>, tensor<i32>) -> tensor<32x32xf32>
         stablehlo.return %8, %14#2, %27, %14#4 : tensor<i64>, tensor<64x32xf32>, tensor<32x32xf32>, tensor<i64>
       }

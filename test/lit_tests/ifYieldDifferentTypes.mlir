@@ -19,7 +19,7 @@ module {
       // Then branch - using f32
       %179 = arith.bitcast %147 : i32 to f32
       %180 = math.absf %179 : f32
-      %181 = arith.cmpf olt, %cst_3, %180 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %181 = arith.cmpf olt, %cst_3, %180 : f32
       %182 = arith.extui %181 : i1 to i8
       scf.yield %arg10, %182 : i32, i8
     } else {
@@ -39,7 +39,7 @@ module {
       %191 = arith.extui %186 : i32 to i64
       %192 = arith.addi %190, %191 : i64
       %193 = arith.bitcast %192 : i64 to f64
-      %194 = arith.cmpf olt, %cst_4, %193 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %194 = arith.cmpf olt, %cst_4, %193 : f64
       %195 = arith.extui %194 : i1 to i8
       scf.yield %188, %195 : i32, i8
     }
@@ -59,7 +59,7 @@ module {
 // CHECK: %[[IF_RESULT:.*]]:2 = scf.if %[[CMP]] -> (i32, i1) {
 // CHECK:   %[[BITCAST1:.*]] = arith.bitcast %[[ADD1]] : i32 to f32
 // CHECK:   %[[ABSF1:.*]] = math.absf %[[BITCAST1]] : f32
-// CHECK:   %[[CMPF1:.*]] = arith.cmpf olt, %[[CST_F32]], %[[ABSF1]] {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK:   %[[CMPF1:.*]] = arith.cmpf olt, %[[CST_F32]], %[[ABSF1]] : f32
 // CHECK:   scf.yield %[[ARG10]], %[[CMPF1]] : i32, i1
 // CHECK: } else {
 // CHECK:   %[[EXTUI1:.*]] = arith.extui %[[ADD2]] : i32 to i64
@@ -72,7 +72,7 @@ module {
 // CHECK:   %[[TRUNCI1:.*]] = arith.trunci %[[BITCAST3]] : i64 to i32
 // CHECK:   %[[SHRUI:.*]] = arith.shrui %[[BITCAST3]], %[[C32]] : i64
 // CHECK:   %[[TRUNCI2:.*]] = arith.trunci %[[SHRUI]] : i64 to i32
-// CHECK:   %[[CMPF2:.*]] = arith.cmpf olt, %[[CST_F64]], {{.*}} {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK:   %[[CMPF2:.*]] = arith.cmpf olt, %[[CST_F64]], {{.*}} : f64
 // CHECK:   scf.yield %[[TRUNCI2]], %[[CMPF2]] : i32, i1
 // CHECK: }
 // CHECK: %[[EXTUI_FINAL:.*]] = arith.extui %[[IF_RESULT]]#1 : i1 to i8

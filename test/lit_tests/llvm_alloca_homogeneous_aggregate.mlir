@@ -53,7 +53,7 @@ func.func @mixed(%d: index, %in: f64) -> !llvm.struct<(f64, i32)> {
 // CHECK:    func.func @unit_vector(%[[a1:.+]]: index) -> (f64, f64, f64) {
 // CHECK-NEXT:    %[[a2:.+]] = arith.constant 1.000000e+00 : f64
 // CHECK-NEXT:    %[[a3:.+]] = arith.constant 0.000000e+00 : f64
-// CHECK-NEXT:    %[[a4:.+]] = memref.alloca() {alignment = 8 : i64} : memref<3xf64>
+// CHECK-NEXT:    %[[a4:.+]] = memref.alloca() alignment = 8 : memref<3xf64>
 // CHECK-NEXT:    affine.store %[[a3]], %[[a4]][0] : memref<3xf64>
 // CHECK-NEXT:    affine.store %[[a3]], %[[a4]][1] : memref<3xf64>
 // CHECK-NEXT:    affine.store %[[a3]], %[[a4]][2] : memref<3xf64>

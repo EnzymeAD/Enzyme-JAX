@@ -39,31 +39,31 @@ module {
         %20 = affine.load %arg5[0, %arg8 * 16 + %arg9 + 19, %arg11 + %arg10 * 16 + 7] : memref<1x123x194xf64, 1>
         %21 = affine.load %arg0[26] {alignment = 16 : i64, ordering = 0 : i64} : memref<34xf64, 1>
         %22 = affine.load %arg4[0, %arg8 * 16 + %arg9 + 19, 7] : memref<1x123x194xf64, 1>
-        %23 = arith.cmpf ole, %21, %22 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %23 = arith.cmpf ole, %21, %22 : f64
         %24 = affine.load %arg2[%arg8 * 16 + %arg9 + 19, 7] : memref<123x194xf64, 1>
         %25 = affine.load %arg6[0, %arg8 * 16 + %arg9 + 19, 7] : memref<1x123x194xf64, 1>
-        %26 = arith.mulf %24, %25 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %26 = arith.mulf %24, %25 : f64
         %27 = arith.select %23, %cst, %26 : f64
         %28 = affine.load %arg4[0, %arg8 * 16 + %arg9 + 19, 186] : memref<1x123x194xf64, 1>
-        %29 = arith.cmpf ole, %21, %28 {fastmathFlags = #llvm.fastmath<none>} : f64 
+        %29 = arith.cmpf ole, %21, %28 : f64 
         %30 = affine.load %arg2[%arg8 * 16 + %arg9 + 19, 186] : memref<123x194xf64, 1>
         %31 = affine.load %arg6[0, %arg8 * 16 + %arg9 + 19, 186] : memref<1x123x194xf64, 1>
-        %32 = arith.mulf %30, %31 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %32 = arith.mulf %30, %31 : f64
         %33 = arith.select %29, %cst, %32 : f64
-        %34 = arith.subf %27, %33 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %34 = arith.subf %27, %33 : f64
         %35 = affine.load %arg4[0, %arg8 * 16 + %arg9 + 19, %arg11 + %arg10 * 16 + 8] : memref<1x123x194xf64, 1>
-        %36 = arith.cmpf ole, %21, %35 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %36 = arith.cmpf ole, %21, %35 : f64
         %37 = affine.load %arg2[%arg8 * 16 + %arg9 + 19, %arg11 + %arg10 * 16 + 8] : memref<123x194xf64, 1> 
         %38 = affine.load %arg6[0, %arg8 * 16 + %arg9 + 19, %arg11 + %arg10 * 16 + 8] : memref<1x123x194xf64, 1>
-        %39 = arith.mulf %37, %38 {fastmathFlags = #llvm.fastmath<none>} : f64 
+        %39 = arith.mulf %37, %38 : f64 
         %40 = arith.select %36, %cst, %39 : f64
         %41 = affine.load %arg4[0, %arg8 * 16 + %arg9 + 19, %arg11 + %arg10 * 16 + 7] : memref<1x123x194xf64, 1>
-        %42 = arith.cmpf ole, %21, %41 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %42 = arith.cmpf ole, %21, %41 : f64
         %43 = affine.load %arg2[%arg8 * 16 + %arg9 + 19, %arg11 + %arg10 * 16 + 7] : memref<123x194xf64, 1>
         %44 = affine.load %arg6[0, %arg8 * 16 + %arg9 + 19, %arg11 + %arg10 * 16 + 7] : memref<1x123x194xf64, 1>
-        %45 = arith.mulf %43, %44 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %45 = arith.mulf %43, %44 : f64
         %46 = arith.select %42, %cst, %45 : f64
-        %47 = arith.subf %40, %46 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %47 = arith.subf %40, %46 : f64
         %48 = arith.cmpi ne, %15, %c180_i64 : i64
         %49 = arith.select %48, %47, %34 {fastmathFlags = #llvm.fastmath<none>} : f64
         affine.store %49, %arg5[0, %arg8 * 16 + %arg9 + 19, %arg11 + %arg10 * 16 + 7] : memref<1x123x194xf64, 1>
@@ -95,13 +95,13 @@ module {
 // CHECK-NEXT:      } else {
 // CHECK-NEXT:        affine.yield %7, %8, %9, %10, %11, %12 : f64, f64, f64, f64, f64, f64
 // CHECK-NEXT:      }
-// CHECK-NEXT:      %14 = arith.cmpf ole, %0, %13#0 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:      %15 = arith.mulf %13#1, %13#2 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:      %14 = arith.cmpf ole, %0, %13#0 : f64
+// CHECK-NEXT:      %15 = arith.mulf %13#1, %13#2 : f64
 // CHECK-NEXT:      %16 = arith.select %14, %cst, %15 : f64
-// CHECK-NEXT:      %17 = arith.cmpf ole, %0, %13#3 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:      %18 = arith.mulf %13#4, %13#5 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:      %17 = arith.cmpf ole, %0, %13#3 : f64
+// CHECK-NEXT:      %18 = arith.mulf %13#4, %13#5 : f64
 // CHECK-NEXT:      %19 = arith.select %17, %cst, %18 : f64
-// CHECK-NEXT:      %20 = arith.subf %16, %19 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:      %20 = arith.subf %16, %19 : f64
 // CHECK-NEXT:      affine.store %20, %arg5[0, %arg8 + 19, %arg9 + 7] : memref<1x123x194xf64, 1>
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return

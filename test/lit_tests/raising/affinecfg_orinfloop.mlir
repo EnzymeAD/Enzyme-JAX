@@ -124,7 +124,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
     %14 = llvm.alloca %c1_i32 x !llvm.struct<"struct.cuda_Struct_Grid", (i8, i8, i32, i32, i32, i32, i32, i32, i32, i32)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
     %15 = llvm.alloca %c1_i32 x !llvm.struct<"struct.cuda_Struct_Grid", (i8, i8, i32, i32, i32, i32, i32, i32, i32, i32)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
     %16 = llvm.getelementptr inbounds|nuw %arg0[216] : (!llvm.ptr) -> !llvm.ptr, i8
-    %17 = llvm.load %16 {alignment = 8 : i64, tbaa = [#tbaa_tag15]} : !llvm.ptr -> !llvm.ptr
+    %17 = llvm.load %16 <alignment = 8, tbaa = [#tbaa_tag15]> : !llvm.ptr -> !llvm.ptr
     %18 = llvm.getelementptr inbounds|nuw %arg0[208] : (!llvm.ptr) -> !llvm.ptr, i8
     %19 = llvm.icmp "eq" %17, %5 : !llvm.ptr
     %20 = scf.if %19 -> (i32) {
@@ -132,12 +132,12 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
     } else {
       %23:2 = scf.while (%arg3 = %17, %arg4 = %18) : (!llvm.ptr, !llvm.ptr) -> (!llvm.ptr, !llvm.ptr) {
         %26 = llvm.getelementptr inbounds|nuw %arg3[32] : (!llvm.ptr) -> !llvm.ptr, i8
-        %27 = llvm.load %26 {alignment = 1 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> i8
+        %27 = llvm.load %26 <alignment = 1, tbaa = [#tbaa_tag]> : !llvm.ptr -> i8
         %28 = arith.cmpi slt, %27, %c121_i8 : i8
         %29 = arith.select %28, %arg4, %arg3 {fastmathFlags = #llvm.fastmath<none>} : !llvm.ptr
         %30 = arith.select %28, %c24_i64, %c16_i64 {fastmathFlags = #llvm.fastmath<none>} : i64
         %31 = llvm.getelementptr inbounds|nuw %arg3[%30] : (!llvm.ptr, i64) -> !llvm.ptr, i8
-        %32 = llvm.load %31 {alignment = 8 : i64, tbaa = [#tbaa_tag4]} : !llvm.ptr -> !llvm.ptr
+        %32 = llvm.load %31 <alignment = 8, tbaa = [#tbaa_tag4]> : !llvm.ptr -> !llvm.ptr
         %33 = llvm.icmp "eq" %32, %5 : !llvm.ptr
         %34 = arith.xori %33, %true : i1
         scf.condition(%34) %32, %29 : !llvm.ptr, !llvm.ptr
@@ -150,29 +150,29 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
         scf.yield %c0_i32 : i32
       } else {
         %26 = llvm.getelementptr inbounds|nuw %23#1[32] : (!llvm.ptr) -> !llvm.ptr, i8
-        %27 = llvm.load %26 {alignment = 1 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> i8
+        %27 = llvm.load %26 <alignment = 1, tbaa = [#tbaa_tag]> : !llvm.ptr -> i8
         %28 = arith.cmpi sgt, %27, %c121_i8 : i8
         %29 = scf.if %28 -> (i32) {
           scf.yield %c0_i32 : i32
         } else {
           %30 = llvm.getelementptr inbounds|nuw %23#1[40] : (!llvm.ptr) -> !llvm.ptr, i8
-          %31 = llvm.load %30 {alignment = 8 : i64, tbaa = [#tbaa_tag5]} : !llvm.ptr -> !llvm.ptr
+          %31 = llvm.load %30 <alignment = 8, tbaa = [#tbaa_tag5]> : !llvm.ptr -> !llvm.ptr
           %32 = llvm.getelementptr inbounds|nuw %31[16] : (!llvm.ptr) -> !llvm.ptr, i8
-          %33 = llvm.load %32 {alignment = 8 : i64, tbaa = [#tbaa_tag16]} : !llvm.ptr -> !llvm.ptr
+          %33 = llvm.load %32 <alignment = 8, tbaa = [#tbaa_tag16]> : !llvm.ptr -> !llvm.ptr
           %34 = llvm.getelementptr inbounds|nuw %arg0[368] : (!llvm.ptr) -> !llvm.ptr, i8
           %35 = llvm.getelementptr inbounds|nuw %arg0[376] : (!llvm.ptr) -> !llvm.ptr, i8
-          %36 = llvm.load %35 {alignment = 8 : i64, tbaa = [#tbaa_tag12]} : !llvm.ptr -> !llvm.ptr
-          %37 = llvm.load %34 {alignment = 8 : i64, tbaa = [#tbaa_tag13]} : !llvm.ptr -> !llvm.ptr
+          %36 = llvm.load %35 <alignment = 8, tbaa = [#tbaa_tag12]> : !llvm.ptr -> !llvm.ptr
+          %37 = llvm.load %34 <alignment = 8, tbaa = [#tbaa_tag13]> : !llvm.ptr -> !llvm.ptr
           %38 = llvm.icmp "eq" %36, %37 : !llvm.ptr
           %39:2 = scf.if %38 -> (i32, i32) {
             scf.yield %1, %c0_i32 : i32, i32
           } else {
             %43 = llvm.getelementptr inbounds|nuw %37[16] : (!llvm.ptr) -> !llvm.ptr, i8
-            %44 = llvm.load %43 {alignment = 8 : i64, tbaa = [#tbaa_tag16]} : !llvm.ptr -> !llvm.ptr
+            %44 = llvm.load %43 <alignment = 8, tbaa = [#tbaa_tag16]> : !llvm.ptr -> !llvm.ptr
             %45 = llvm.getelementptr inbounds|nuw %arg0[296] : (!llvm.ptr) -> !llvm.ptr, i8
             %46 = llvm.getelementptr inbounds|nuw %arg0[304] : (!llvm.ptr) -> !llvm.ptr, i8
-            %47 = llvm.load %46 {alignment = 8 : i64, tbaa = [#tbaa_tag12]} : !llvm.ptr -> !llvm.ptr
-            %48 = llvm.load %45 {alignment = 8 : i64, tbaa = [#tbaa_tag13]} : !llvm.ptr -> !llvm.ptr
+            %47 = llvm.load %46 <alignment = 8, tbaa = [#tbaa_tag12]> : !llvm.ptr -> !llvm.ptr
+            %48 = llvm.load %45 <alignment = 8, tbaa = [#tbaa_tag13]> : !llvm.ptr -> !llvm.ptr
             %49 = llvm.icmp "eq" %47, %48 : !llvm.ptr
             %50 = arith.xori %49, %true : i1
             %51 = arith.extui %50 : i1 to i32
@@ -180,10 +180,10 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
               scf.yield %1 : i32
             } else {
               %53 = llvm.getelementptr inbounds|nuw %48[16] : (!llvm.ptr) -> !llvm.ptr, i8
-              %54 = llvm.load %53 {alignment = 8 : i64, tbaa = [#tbaa_tag16]} : !llvm.ptr -> !llvm.ptr
+              %54 = llvm.load %53 <alignment = 8, tbaa = [#tbaa_tag16]> : !llvm.ptr -> !llvm.ptr
               %55 = llvm.getelementptr inbounds|nuw %arg0[8] : (!llvm.ptr) -> !llvm.ptr, i8
               %56 = llvm.getelementptr inbounds|nuw %arg0[168] : (!llvm.ptr) -> !llvm.ptr, i8
-              %57 = llvm.load %56 {alignment = 8 : i64, tbaa = [#tbaa_tag15]} : !llvm.ptr -> !llvm.ptr
+              %57 = llvm.load %56 <alignment = 8, tbaa = [#tbaa_tag15]> : !llvm.ptr -> !llvm.ptr
               %58 = llvm.getelementptr inbounds|nuw %arg0[160] : (!llvm.ptr) -> !llvm.ptr, i8
               %59 = llvm.icmp "eq" %57, %5 : !llvm.ptr
               %60 = scf.if %59 -> (i32) {
@@ -191,12 +191,12 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
               } else {
                 %61:2 = scf.while (%arg3 = %57, %arg4 = %58) : (!llvm.ptr, !llvm.ptr) -> (!llvm.ptr, !llvm.ptr) {
                   %64 = llvm.getelementptr inbounds|nuw %arg3[32] : (!llvm.ptr) -> !llvm.ptr, i8
-                  %65 = llvm.load %64 {alignment = 1 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> i8
+                  %65 = llvm.load %64 <alignment = 1, tbaa = [#tbaa_tag]> : !llvm.ptr -> i8
                   %66 = arith.cmpi slt, %65, %c121_i8 : i8
                   %67 = arith.select %66, %arg4, %arg3 {fastmathFlags = #llvm.fastmath<none>} : !llvm.ptr
                   %68 = arith.select %66, %c24_i64, %c16_i64 {fastmathFlags = #llvm.fastmath<none>} : i64
                   %69 = llvm.getelementptr inbounds|nuw %arg3[%68] : (!llvm.ptr, i64) -> !llvm.ptr, i8
-                  %70 = llvm.load %69 {alignment = 8 : i64, tbaa = [#tbaa_tag4]} : !llvm.ptr -> !llvm.ptr
+                  %70 = llvm.load %69 <alignment = 8, tbaa = [#tbaa_tag4]> : !llvm.ptr -> !llvm.ptr
                   %71 = llvm.icmp "eq" %70, %5 : !llvm.ptr
                   %72 = arith.xori %71, %true : i1
                   scf.condition(%72) %70, %67 : !llvm.ptr, !llvm.ptr
@@ -209,20 +209,20 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
                   scf.yield %c0_i32 : i32
                 } else {
                   %64 = llvm.getelementptr inbounds|nuw %61#1[32] : (!llvm.ptr) -> !llvm.ptr, i8
-                  %65 = llvm.load %64 {alignment = 1 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> i8
+                  %65 = llvm.load %64 <alignment = 1, tbaa = [#tbaa_tag]> : !llvm.ptr -> i8
                   %66 = arith.cmpi sgt, %65, %c121_i8 : i8
                   %67 = scf.if %66 -> (i32) {
                     scf.yield %c0_i32 : i32
                   } else {
                     %68 = llvm.getelementptr inbounds|nuw %61#1[40] : (!llvm.ptr) -> !llvm.ptr, i8
-                    %69 = llvm.load %68 {alignment = 8 : i64, tbaa = [#tbaa_tag6]} : !llvm.ptr -> !llvm.ptr
+                    %69 = llvm.load %68 <alignment = 8, tbaa = [#tbaa_tag6]> : !llvm.ptr -> !llvm.ptr
                     %70 = llvm.getelementptr inbounds|nuw %69[8] : (!llvm.ptr) -> !llvm.ptr, i8
                     %71 = llvm.getelementptr inbounds|nuw %arg0[1104] : (!llvm.ptr) -> !llvm.ptr, i8
-                    %72 = llvm.load %71 {alignment = 8 : i64, tbaa = [#tbaa_tag1]} : !llvm.ptr -> i64
+                    %72 = llvm.load %71 <alignment = 8, tbaa = [#tbaa_tag1]> : !llvm.ptr -> i64
                     %73 = llvm.getelementptr inbounds|nuw %arg0[1112] : (!llvm.ptr) -> !llvm.ptr, i8
-                    %74 = llvm.load %73 {alignment = 8 : i64, tbaa = [#tbaa_tag7]} : !llvm.ptr -> !llvm.ptr
+                    %74 = llvm.load %73 <alignment = 8, tbaa = [#tbaa_tag7]> : !llvm.ptr -> !llvm.ptr
                     %75 = llvm.getelementptr inbounds|nuw %arg0[1136] : (!llvm.ptr) -> !llvm.ptr, i8
-                    %76 = llvm.load %75 {alignment = 8 : i64, tbaa = [#tbaa_tag15]} : !llvm.ptr -> !llvm.ptr
+                    %76 = llvm.load %75 <alignment = 8, tbaa = [#tbaa_tag15]> : !llvm.ptr -> !llvm.ptr
                     %77 = llvm.getelementptr inbounds|nuw %arg0[1128] : (!llvm.ptr) -> !llvm.ptr, i8
                     %78 = llvm.icmp "eq" %76, %5 : !llvm.ptr
                     %79 = scf.if %78 -> (i32) {
@@ -230,12 +230,12 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
                     } else {
                       %80:2 = scf.while (%arg3 = %76, %arg4 = %77) : (!llvm.ptr, !llvm.ptr) -> (!llvm.ptr, !llvm.ptr) {
                         %83 = llvm.getelementptr inbounds|nuw %arg3[32] : (!llvm.ptr) -> !llvm.ptr, i8
-                        %84 = llvm.load %83 {alignment = 1 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> i8
+                        %84 = llvm.load %83 <alignment = 1, tbaa = [#tbaa_tag]> : !llvm.ptr -> i8
                         %85 = arith.cmpi slt, %84, %c121_i8 : i8
                         %86 = arith.select %85, %arg4, %arg3 {fastmathFlags = #llvm.fastmath<none>} : !llvm.ptr
                         %87 = arith.select %85, %c24_i64, %c16_i64 {fastmathFlags = #llvm.fastmath<none>} : i64
                         %88 = llvm.getelementptr inbounds|nuw %arg3[%87] : (!llvm.ptr, i64) -> !llvm.ptr, i8
-                        %89 = llvm.load %88 {alignment = 8 : i64, tbaa = [#tbaa_tag4]} : !llvm.ptr -> !llvm.ptr
+                        %89 = llvm.load %88 <alignment = 8, tbaa = [#tbaa_tag4]> : !llvm.ptr -> !llvm.ptr
                         %90 = llvm.icmp "eq" %89, %5 : !llvm.ptr
                         %91 = arith.xori %90, %true : i1
                         scf.condition(%91) %89, %86 : !llvm.ptr, !llvm.ptr
@@ -248,26 +248,26 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
                         scf.yield %c0_i32 : i32
                       } else {
                         %83 = llvm.getelementptr inbounds|nuw %80#1[32] : (!llvm.ptr) -> !llvm.ptr, i8
-                        %84 = llvm.load %83 {alignment = 1 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> i8
+                        %84 = llvm.load %83 <alignment = 1, tbaa = [#tbaa_tag]> : !llvm.ptr -> i8
                         %85 = arith.cmpi sgt, %84, %c121_i8 : i8
                         %86 = arith.select %85, %c0_i32, %c2_i32 : i32
                         %87 = arith.cmpi sle, %84, %c121_i8 : i8
                         scf.if %87 {
                           %88 = llvm.getelementptr inbounds|nuw %80#1[40] : (!llvm.ptr) -> !llvm.ptr, i8
-                          %89 = llvm.load %88 {alignment = 8 : i64, tbaa = [#tbaa_tag1]} : !llvm.ptr -> i64
+                          %89 = llvm.load %88 <alignment = 8, tbaa = [#tbaa_tag1]> : !llvm.ptr -> i64
                           %90 = llvm.getelementptr inbounds|nuw %80#1[48] : (!llvm.ptr) -> !llvm.ptr, i8
-                          %91 = llvm.load %90 {alignment = 8 : i64, tbaa = [#tbaa_tag8]} : !llvm.ptr -> !llvm.ptr
+                          %91 = llvm.load %90 <alignment = 8, tbaa = [#tbaa_tag8]> : !llvm.ptr -> !llvm.ptr
                           %92 = arith.cmpi eq, %arg1, %c-1_i32 : i32
                           %93 = llvm.getelementptr inbounds|nuw %arg0[12] : (!llvm.ptr) -> !llvm.ptr, i8
-                          %94 = llvm.load %93 {alignment = 4 : i64} : !llvm.ptr -> i32
+                          %94 = llvm.load %93 <alignment = 4> : !llvm.ptr -> i32
                           %95 = arith.select %92, %94, %arg1 {fastmathFlags = #llvm.fastmath<none>} : i32
                           %96 = arith.cmpi eq, %arg2, %c-1_i32 : i32
                           %97 = arith.select %96, %c32_i32, %arg2 {fastmathFlags = #llvm.fastmath<none>} : i32
                           %98 = llvm.getelementptr inbounds|nuw %arg0[1384] : (!llvm.ptr) -> !llvm.ptr, i8
-                          %99 = llvm.load %98 {alignment = 8 : i64, tbaa = [#tbaa_tag17]} : !llvm.ptr -> i8
+                          %99 = llvm.load %98 <alignment = 8, tbaa = [#tbaa_tag17]> : !llvm.ptr -> i8
                           %100 = arith.trunci %99 : i8 to i1
                           %101 = llvm.getelementptr inbounds|nuw %arg0[1432] : (!llvm.ptr) -> !llvm.ptr, i8
-                          %102 = llvm.load %101 {alignment = 8 : i64} : !llvm.ptr -> !llvm.ptr
+                          %102 = llvm.load %101 <alignment = 8> : !llvm.ptr -> !llvm.ptr
                           %103 = arith.select %100, %102, %5 {fastmathFlags = #llvm.fastmath<none>} : !llvm.ptr
                           %104 = arith.extui %95 : i32 to i64
                           %105 = arith.ori %104, %c4294967296_i64 {isDisjoint} : i64
@@ -275,52 +275,52 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
                           %107 = arith.ori %106, %c4294967296_i64 {isDisjoint} : i64
                           "llvm.intr.memcpy"(%15, %55, %c36_i64) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
                           "llvm.intr.memcpy"(%14, %70, %c36_i64) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
-                          llvm.store %72, %6 {alignment = 8 : i64} : i64, !llvm.ptr
+                          llvm.store %72, %6 <alignment = 8> : i64, !llvm.ptr
                           %108 = llvm.getelementptr inbounds|nuw %6[8] : (!llvm.ptr) -> !llvm.ptr, i8
-                          llvm.store %74, %108 {alignment = 8 : i64} : !llvm.ptr, !llvm.ptr
-                          llvm.store %89, %7 {alignment = 8 : i64} : i64, !llvm.ptr
+                          llvm.store %74, %108 <alignment = 8> : !llvm.ptr, !llvm.ptr
+                          llvm.store %89, %7 <alignment = 8> : i64, !llvm.ptr
                           %109 = llvm.getelementptr inbounds|nuw %7[8] : (!llvm.ptr) -> !llvm.ptr, i8
-                          llvm.store %91, %109 {alignment = 8 : i64} : !llvm.ptr, !llvm.ptr
-                          llvm.store %33, %8 {alignment = 8 : i64, tbaa = [#tbaa_tag7]} : !llvm.ptr, !llvm.ptr
-                          llvm.store %54, %9 {alignment = 8 : i64, tbaa = [#tbaa_tag7]} : !llvm.ptr, !llvm.ptr
-                          llvm.store %5, %10 {alignment = 8 : i64, tbaa = [#tbaa_tag7]} : !llvm.ptr, !llvm.ptr
-                          llvm.store %44, %11 {alignment = 8 : i64, tbaa = [#tbaa_tag7]} : !llvm.ptr, !llvm.ptr
-                          llvm.store %5, %12 {alignment = 8 : i64, tbaa = [#tbaa_tag7]} : !llvm.ptr, !llvm.ptr
-                          llvm.store %15, %13 {alignment = 8 : i64} : !llvm.ptr, !llvm.ptr
+                          llvm.store %91, %109 <alignment = 8> : !llvm.ptr, !llvm.ptr
+                          llvm.store %33, %8 <alignment = 8, tbaa = [#tbaa_tag7]> : !llvm.ptr, !llvm.ptr
+                          llvm.store %54, %9 <alignment = 8, tbaa = [#tbaa_tag7]> : !llvm.ptr, !llvm.ptr
+                          llvm.store %5, %10 <alignment = 8, tbaa = [#tbaa_tag7]> : !llvm.ptr, !llvm.ptr
+                          llvm.store %44, %11 <alignment = 8, tbaa = [#tbaa_tag7]> : !llvm.ptr, !llvm.ptr
+                          llvm.store %5, %12 <alignment = 8, tbaa = [#tbaa_tag7]> : !llvm.ptr, !llvm.ptr
+                          llvm.store %15, %13 <alignment = 8> : !llvm.ptr, !llvm.ptr
                           %110 = llvm.getelementptr inbounds|nuw %13[8] : (!llvm.ptr) -> !llvm.ptr, i8
-                          llvm.store %14, %110 {alignment = 8 : i64} : !llvm.ptr, !llvm.ptr
+                          llvm.store %14, %110 <alignment = 8> : !llvm.ptr, !llvm.ptr
                           %111 = llvm.getelementptr inbounds|nuw %13[16] : (!llvm.ptr) -> !llvm.ptr, i8
-                          llvm.store %6, %111 {alignment = 8 : i64} : !llvm.ptr, !llvm.ptr
+                          llvm.store %6, %111 <alignment = 8> : !llvm.ptr, !llvm.ptr
                           %112 = llvm.getelementptr inbounds|nuw %13[24] : (!llvm.ptr) -> !llvm.ptr, i8
-                          llvm.store %7, %112 {alignment = 8 : i64} : !llvm.ptr, !llvm.ptr
+                          llvm.store %7, %112 <alignment = 8> : !llvm.ptr, !llvm.ptr
                           %113 = llvm.getelementptr inbounds|nuw %13[32] : (!llvm.ptr) -> !llvm.ptr, i8
-                          llvm.store %8, %113 {alignment = 8 : i64} : !llvm.ptr, !llvm.ptr
+                          llvm.store %8, %113 <alignment = 8> : !llvm.ptr, !llvm.ptr
                           %114 = llvm.getelementptr inbounds|nuw %13[40] : (!llvm.ptr) -> !llvm.ptr, i8
-                          llvm.store %9, %114 {alignment = 8 : i64} : !llvm.ptr, !llvm.ptr
+                          llvm.store %9, %114 <alignment = 8> : !llvm.ptr, !llvm.ptr
                           %115 = llvm.getelementptr inbounds|nuw %13[48] : (!llvm.ptr) -> !llvm.ptr, i8
-                          llvm.store %10, %115 {alignment = 8 : i64} : !llvm.ptr, !llvm.ptr
+                          llvm.store %10, %115 <alignment = 8> : !llvm.ptr, !llvm.ptr
                           %116 = llvm.getelementptr inbounds|nuw %13[56] : (!llvm.ptr) -> !llvm.ptr, i8
-                          llvm.store %11, %116 {alignment = 8 : i64} : !llvm.ptr, !llvm.ptr
+                          llvm.store %11, %116 <alignment = 8> : !llvm.ptr, !llvm.ptr
                           %117 = llvm.getelementptr inbounds|nuw %13[64] : (!llvm.ptr) -> !llvm.ptr, i8
-                          llvm.store %12, %117 {alignment = 8 : i64} : !llvm.ptr, !llvm.ptr
+                          llvm.store %12, %117 <alignment = 8> : !llvm.ptr, !llvm.ptr
                           %118 = arith.trunci %105 : i64 to i32
                           %119 = arith.trunci %107 : i64 to i32
-                          %120 = llvm.load %13 {alignment = 8 : i64} : !llvm.ptr -> !llvm.ptr
+                          %120 = llvm.load %13 <alignment = 8> : !llvm.ptr -> !llvm.ptr
                           %121 = llvm.getelementptr inbounds %13[1] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
-                          %122 = llvm.load %121 {alignment = 8 : i64} : !llvm.ptr -> !llvm.ptr
+                          %122 = llvm.load %121 <alignment = 8> : !llvm.ptr -> !llvm.ptr
                           %123 = llvm.getelementptr inbounds %13[2] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
-                          %124 = llvm.load %123 {alignment = 8 : i64} : !llvm.ptr -> !llvm.ptr
+                          %124 = llvm.load %123 <alignment = 8> : !llvm.ptr -> !llvm.ptr
                           %125 = llvm.getelementptr inbounds %13[3] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
-                          %126 = llvm.load %125 {alignment = 8 : i64} : !llvm.ptr -> !llvm.ptr
+                          %126 = llvm.load %125 <alignment = 8> : !llvm.ptr -> !llvm.ptr
                           %127 = llvm.getelementptr inbounds %13[4] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
-                          %128 = llvm.load %127 {alignment = 8 : i64} : !llvm.ptr -> !llvm.ptr
-                          %129 = llvm.load %128 {alignment = 8 : i64} : !llvm.ptr -> !llvm.ptr
+                          %128 = llvm.load %127 <alignment = 8> : !llvm.ptr -> !llvm.ptr
+                          %129 = llvm.load %128 <alignment = 8> : !llvm.ptr -> !llvm.ptr
                           %130 = llvm.getelementptr inbounds %13[5] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
-                          %131 = llvm.load %130 {alignment = 8 : i64} : !llvm.ptr -> !llvm.ptr
-                          %132 = llvm.load %131 {alignment = 8 : i64} : !llvm.ptr -> !llvm.ptr
+                          %131 = llvm.load %130 <alignment = 8> : !llvm.ptr -> !llvm.ptr
+                          %132 = llvm.load %131 <alignment = 8> : !llvm.ptr -> !llvm.ptr
                           %133 = llvm.getelementptr inbounds %13[7] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
-                          %134 = llvm.load %133 {alignment = 8 : i64} : !llvm.ptr -> !llvm.ptr
-                          %135 = llvm.load %134 {alignment = 8 : i64} : !llvm.ptr -> !llvm.ptr
+                          %134 = llvm.load %133 <alignment = 8> : !llvm.ptr -> !llvm.ptr
+                          %135 = llvm.load %134 <alignment = 8> : !llvm.ptr -> !llvm.ptr
                           %136 = arith.index_cast %118 : i32 to index
                           %137 = arith.index_cast %119 : i32 to index
                           %138 = llvm.load %120 : !llvm.ptr -> !llvm.struct<"struct.cuda_Struct_Grid", (i8, i8, i32, i32, i32, i32, i32, i32, i32, i32)>
@@ -350,31 +350,31 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
                                 %152 = arith.index_castui %137 : index to i32
                                 %153 = arith.index_castui %arg4 : index to i32
                                 %154 = llvm.getelementptr inbounds|nuw %146[1] : (!llvm.ptr) -> !llvm.ptr, i8
-                                %155 = llvm.load %154 {alignment = 1 : i64, tbaa = [#tbaa_tag9]} : !llvm.ptr -> i8
+                                %155 = llvm.load %154 <alignment = 1, tbaa = [#tbaa_tag9]> : !llvm.ptr -> i8
                                 %156 = arith.cmpi eq, %155, %c77_i8 : i8
                                 %157 = llvm.getelementptr inbounds|nuw %146[8] : (!llvm.ptr) -> !llvm.ptr, i8
-                                %158 = llvm.load %157 {alignment = 4 : i64} : !llvm.ptr -> i32
+                                %158 = llvm.load %157 <alignment = 4> : !llvm.ptr -> i32
                                 %159 = arith.select %156, %158, %c4_i32 {fastmathFlags = #llvm.fastmath<none>} : i32
                                 %160 = arith.cmpi eq, %155, %c78_i8 : i8
                                 %161 = arith.addi %158, %c-1_i32 : i32
                                 %162 = arith.select %160, %161, %159 {fastmathFlags = #llvm.fastmath<none>} : i32
                                 %163 = llvm.getelementptr inbounds|nuw %147[8] : (!llvm.ptr) -> !llvm.ptr, i8
-                                %164 = llvm.load %163 {alignment = 4 : i64, tbaa = [#tbaa_tag10]} : !llvm.ptr -> i32
+                                %164 = llvm.load %163 <alignment = 4, tbaa = [#tbaa_tag10]> : !llvm.ptr -> i32
                                 %165 = arith.cmpi slt, %153, %164 : i32
                                 scf.if %165 {
                                   %166 = arith.index_castui %arg3 : index to i32
                                   %167 = llvm.getelementptr inbounds|nuw %147[20] : (!llvm.ptr) -> !llvm.ptr, i8
-                                  %168 = llvm.load %167 {alignment = 4 : i64, tbaa = [#tbaa_tag11]} : !llvm.ptr -> i32
+                                  %168 = llvm.load %167 <alignment = 4, tbaa = [#tbaa_tag11]> : !llvm.ptr -> i32
                                   %169 = arith.muli %168, %166 : i32
                                   %170 = llvm.getelementptr inbounds|nuw %146[20] : (!llvm.ptr) -> !llvm.ptr, i8
-                                  %171 = llvm.load %170 {alignment = 4 : i64, tbaa = [#tbaa_tag11]} : !llvm.ptr -> i32
+                                  %171 = llvm.load %170 <alignment = 4, tbaa = [#tbaa_tag11]> : !llvm.ptr -> i32
                                   %172 = arith.muli %171, %166 : i32
-                                  %173 = llvm.load %145 {alignment = 8 : i64, tbaa = [#tbaa_tag14]} : !llvm.ptr -> i64
+                                  %173 = llvm.load %145 <alignment = 8, tbaa = [#tbaa_tag14]> : !llvm.ptr -> i64
                                   %174 = arith.cmpi sgt, %173, %c0_i64 : i64
                                   %175 = llvm.getelementptr inbounds|nuw %144[8] : (!llvm.ptr) -> !llvm.ptr, i8
-                                  %176 = llvm.load %175 {alignment = 8 : i64} : !llvm.ptr -> !llvm.ptr
+                                  %176 = llvm.load %175 <alignment = 8> : !llvm.ptr -> !llvm.ptr
                                   %177 = llvm.getelementptr inbounds|nuw %145[8] : (!llvm.ptr) -> !llvm.ptr, i8
-                                  %178 = llvm.load %177 {alignment = 8 : i64} : !llvm.ptr -> !llvm.ptr
+                                  %178 = llvm.load %177 <alignment = 8> : !llvm.ptr -> !llvm.ptr
                                   %179 = arith.addi %153, %152 : i32
                                   %180 = arith.maxsi %164, %179 : i32
                                   %181 = arith.addi %180, %152 : i32
@@ -388,17 +388,17 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
                                       %190:2 = scf.for %arg6 = %c1_i64 to %185 step %c1_i64 iter_args(%arg7 = %cst, %arg8 = %0) -> (f64, f64)  : i64 {
                                         %191 = arith.addi %arg6, %c-1_i64 : i64
                                         %192 = llvm.getelementptr inbounds|nuw %176[%191] : (!llvm.ptr, i64) -> !llvm.ptr, i32
-                                        %193 = llvm.load %192 {alignment = 4 : i64, tbaa = [#tbaa_tag2]} : !llvm.ptr -> i32
+                                        %193 = llvm.load %192 <alignment = 4, tbaa = [#tbaa_tag2]> : !llvm.ptr -> i32
                                         %194 = arith.addi %189, %193 : i32
                                         %195 = arith.remsi %194, %162 : i32
                                         %196 = arith.addi %195, %172 : i32
                                         %197 = arith.extsi %196 : i32 to i64
                                         %198 = llvm.getelementptr inbounds %129[%197] : (!llvm.ptr, i64) -> !llvm.ptr, f64
-                                        %199 = llvm.load %198 {alignment = 8 : i64, tbaa = [#tbaa_tag3]} : !llvm.ptr -> f64
+                                        %199 = llvm.load %198 <alignment = 8, tbaa = [#tbaa_tag3]> : !llvm.ptr -> f64
                                         %200 = llvm.getelementptr inbounds|nuw %178[%191] : (!llvm.ptr, i64) -> !llvm.ptr, f64
-                                        %201 = llvm.load %200 {alignment = 8 : i64, tbaa = [#tbaa_tag3]} : !llvm.ptr -> f64
-                                        %202 = arith.mulf %199, %201 {fastmathFlags = #llvm.fastmath<contract>} : f64
-                                        %203 = arith.addf %arg7, %202 {fastmathFlags = #llvm.fastmath<contract>} : f64
+                                        %201 = llvm.load %200 <alignment = 8, tbaa = [#tbaa_tag3]> : !llvm.ptr -> f64
+                                        %202 = arith.mulf %199, %201 fastmath<contract> : f64
+                                        %203 = arith.addf %arg7, %202 fastmath<contract> : f64
                                         scf.yield %203, %203 : f64, f64
                                       }
                                       scf.yield %190#1 : f64
@@ -407,7 +407,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
                                     }
                                     %187 = arith.extsi %184 : i32 to i64
                                     %188 = llvm.getelementptr inbounds %135[%187] : (!llvm.ptr, i64) -> !llvm.ptr, f64
-                                    llvm.store %186, %188 {alignment = 8 : i64, tbaa = [#tbaa_tag3]} : f64, !llvm.ptr
+                                    llvm.store %186, %188 <alignment = 8, tbaa = [#tbaa_tag3]> : f64, !llvm.ptr
                                   }
                                 }
                               }

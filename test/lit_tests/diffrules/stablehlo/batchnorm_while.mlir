@@ -22,8 +22,8 @@ module {
 
   func.func @main(%x: tensor<2x3xf32>, %scale: tensor<3xf32>, %offset: tensor<3xf32>, %seed: tensor<2x3xf32>) -> (tensor<2x3xf32>, tensor<2x3xf32>, tensor<3xf32>, tensor<3xf32>) {
     %loop:4 = enzyme.autodiff @in_loop(%x, %scale, %offset, %seed) {
-      activity = [#enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>],
-      ret_activity = [#enzyme<activity enzyme_active>]
+      activity = [#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_active>],
+      ret_activity = [#enzyme.activity<enzyme_active>]
     } : (tensor<2x3xf32>, tensor<3xf32>, tensor<3xf32>, tensor<2x3xf32>) -> (tensor<2x3xf32>, tensor<2x3xf32>, tensor<3xf32>, tensor<3xf32>)
     return %loop#0, %loop#1, %loop#2, %loop#3 : tensor<2x3xf32>, tensor<2x3xf32>, tensor<3xf32>, tensor<3xf32>
   }

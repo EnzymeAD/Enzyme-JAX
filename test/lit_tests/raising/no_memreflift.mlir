@@ -65,13 +65,13 @@ func.func @f(%119: memref<?xf64>, %arg0: i32 {llvm.noundef}, %arg1: i32 {llvm.no
     %memref_4 = gpu.alloc  (%29) : memref<?xi8, 1>
     %30 = "enzymexla.memref2pointer"(%memref_4) : (memref<?xi8, 1>) -> !llvm.ptr
     %31 = arith.cmpi sgt, %arg0, %c0_i32 : i32
-      %38 = arith.extui %arg0 {nonNeg} : i32 to i64
-      %39 = arith.extui %arg0 {nonNeg} : i32 to i64
+      %38 = arith.extui %arg0 nneg : i32 to i64
+      %39 = arith.extui %arg0 nneg : i32 to i64
       %40 = arith.shli %39, %c3_i64 : i64
       %41 = arith.extsi %arg1 : i32 to i64
-      %42 = arith.extui %arg0 {nonNeg} : i32 to i64
-      %43 = arith.extui %arg0 {nonNeg} : i32 to i64
-      %44 = arith.extui %arg0 {nonNeg} : i32 to i64
+      %42 = arith.extui %arg0 nneg : i32 to i64
+      %43 = arith.extui %arg0 nneg : i32 to i64
+      %44 = arith.extui %arg0 nneg : i32 to i64
         %48 = arith.trunci %c1_i64 : i64 to i32
         %49 = arith.subi %arg0, %48 : i32
         %50 = arith.minsi %49, %arg1 : i32
@@ -101,7 +101,7 @@ func.func @f(%119: memref<?xf64>, %arg0: i32 {llvm.noundef}, %arg1: i32 {llvm.no
             %86 = scf.if %84 -> (i32) {
               %101 = "enzymexla.pointer2memref"(%66) : (!llvm.ptr) -> memref<?xf64>
               %102 = arith.addi %74, %80 : index
-              %103 = memref.load %101[%102] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "double", members = {<#llvm.tbaa_type_desc<id = "omnipotent char", members = {<#llvm.tbaa_root<id = "Simple C++ TBAA">, 0>}>, 0>}>, access_type = <id = "double", members = {<#llvm.tbaa_type_desc<id = "omnipotent char", members = {<#llvm.tbaa_root<id = "Simple C++ TBAA">, 0>}>, 0>}>, offset = 0>]} : memref<?xf64>
+              %103 = memref.load %101[%102] alignment(8) {ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "double", members = {<#llvm.tbaa_type_desc<id = "omnipotent char", members = {<#llvm.tbaa_root<id = "Simple C++ TBAA">, 0>}>, 0>}>, access_type = <id = "double", members = {<#llvm.tbaa_type_desc<id = "omnipotent char", members = {<#llvm.tbaa_root<id = "Simple C++ TBAA">, 0>}>, 0>}>, offset = 0>]} : memref<?xf64>
               %104 = math.absf %103 : f64
               %105 = arith.trunci %72 : i64 to i32
               scf.yield %105 : i32
@@ -112,7 +112,7 @@ func.func @f(%119: memref<?xf64>, %arg0: i32 {llvm.noundef}, %arg1: i32 {llvm.no
               %106 = scf.while (%arg9 = %c1_i64) : (i64) -> i64 {
                 %110 = arith.index_cast %arg9 : i64 to index
                 %117 = arith.addi %110, %103 : index
-                %118 = memref.load %119[%117] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "double", members = {<#llvm.tbaa_type_desc<id = "omnipotent char", members = {<#llvm.tbaa_root<id = "Simple C++ TBAA">, 0>}>, 0>}>, access_type = <id = "double", members = {<#llvm.tbaa_type_desc<id = "omnipotent char", members = {<#llvm.tbaa_root<id = "Simple C++ TBAA">, 0>}>, 0>}>, offset = 0>]} : memref<?xf64>
+                %118 = memref.load %119[%117] alignment(8) {ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "double", members = {<#llvm.tbaa_type_desc<id = "omnipotent char", members = {<#llvm.tbaa_root<id = "Simple C++ TBAA">, 0>}>, 0>}>, access_type = <id = "double", members = {<#llvm.tbaa_type_desc<id = "omnipotent char", members = {<#llvm.tbaa_root<id = "Simple C++ TBAA">, 0>}>, 0>}>, offset = 0>]} : memref<?xf64>
                 affine.store %118, %119[0] : memref<?xf64>
                 %121 = arith.cmpi ne, %arg9, %c1_i64 : i64
                 scf.condition(%121) %arg9 : i64
@@ -147,7 +147,7 @@ func.func @f(%119: memref<?xf64>, %arg0: i32 {llvm.noundef}, %arg1: i32 {llvm.no
 // CHECK-NEXT:    %7 = scf.while (%arg6 = %c1_i64) : (i64) -> i64 {
 // CHECK-NEXT:      %8 = arith.index_cast %arg6 : i64 to index
 // CHECK-NEXT:      %9 = arith.addi %8, %6 : index
-// CHECK-NEXT:      %10 = memref.load %arg0[%9] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<?xf64>
+// CHECK-NEXT:      %10 = memref.load %arg0[%9] alignment(8) {ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<?xf64>
 // CHECK-NEXT:      affine.store %10, %arg0[0] : memref<?xf64>
 // CHECK-NEXT:      %11 = arith.cmpi ne, %arg6, %c1_i64 : i64
 // CHECK-NEXT:      scf.condition(%11) %arg6 : i64

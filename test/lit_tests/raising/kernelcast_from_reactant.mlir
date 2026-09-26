@@ -53,16 +53,16 @@ module @reactant_bf16_sq... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %30 = llvm.getelementptr inbounds %29[%25] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f32
     llvm.cond_br %24, ^bb2, ^bb1
   ^bb1:  // pred: ^bb0
-    %31 = llvm.load %28 invariant {alignment = 4 : i64} : !llvm.ptr<1> -> f32
+    %31 = llvm.load %28 invariant <alignment = 4> : !llvm.ptr<1> -> f32
     %32 = llvm.fmul %31, %31 : f32
-    llvm.store %32, %30 {alignment = 4 : i64, tbaa = [#tbaa_tag]} : f32, !llvm.ptr<1>
+    llvm.store %32, %30 <alignment = 4, tbaa = [#tbaa_tag]> : f32, !llvm.ptr<1>
     llvm.br ^bb2
   ^bb2:  // 2 preds: ^bb0, ^bb1
     llvm.return
   }
   llvm.func local_unnamed_addr @ijl_unbox_uint64(%arg0: !llvm.ptr {llvm.nonnull, llvm.noundef, llvm.readonly}) -> i64 attributes {sym_visibility = "private"} {
     %0 = llvm.bitcast %arg0 : !llvm.ptr to !llvm.ptr
-    %1 = llvm.load %0 {alias_scopes = [#alias_scope], alignment = 8 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : !llvm.ptr -> i64
+    %1 = llvm.load %0 <alias_scopes = [#alias_scope], alignment = 8, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : !llvm.ptr -> i64
     llvm.return %1 : i64
   }
   llvm.func local_unnamed_addr @ijl_box_bool(%arg0: i8 {llvm.zeroext}) -> (!llvm.ptr {llvm.nonnull}) attributes {sym_visibility = "private"} {
@@ -87,13 +87,13 @@ module @reactant_bf16_sq... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     llvm.unreachable
   ^bb3(%13: i8):  // 2 preds: ^bb0, ^bb1
     %14 = llvm.call @gpu_malloc(%4) : (i64) -> i64
-    %15 = llvm.load %5 {alignment = 4 : i64} : !llvm.ptr -> i64
+    %15 = llvm.load %5 <alignment = 4> : !llvm.ptr -> i64
     %16 = llvm.or %15, %6 : i64
     %17 = llvm.inttoptr %14 : i64 to !llvm.ptr
-    llvm.store %16, %17 {alias_scopes = [#alias_scope], alignment = 8 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i64, !llvm.ptr
+    llvm.store %16, %17 <alias_scopes = [#alias_scope], alignment = 8, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i64, !llvm.ptr
     %18 = llvm.inttoptr %14 : i64 to !llvm.ptr
     %19 = llvm.getelementptr %18[%7] : (!llvm.ptr, i64) -> !llvm.ptr, i8
-    llvm.store %13, %19 {alias_scopes = [#alias_scope], alignment = 1 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i8, !llvm.ptr
+    llvm.store %13, %19 <alias_scopes = [#alias_scope], alignment = 1, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i8, !llvm.ptr
     %20 = llvm.bitcast %19 : !llvm.ptr to !llvm.ptr
     llvm.return %20 : !llvm.ptr
   }
@@ -111,21 +111,21 @@ module @reactant_bf16_sq... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %2 = llvm.mlir.constant(3 : i64) : i64
     %3 = llvm.mlir.constant(8 : i64) : i64
     %4 = llvm.call @gpu_malloc(%0) : (i64) -> i64
-    %5 = llvm.load %1 {alignment = 4 : i64} : !llvm.ptr -> i64
+    %5 = llvm.load %1 <alignment = 4> : !llvm.ptr -> i64
     %6 = llvm.or %5, %2 : i64
     %7 = llvm.inttoptr %4 : i64 to !llvm.ptr
-    llvm.store %6, %7 {alias_scopes = [#alias_scope], alignment = 8 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i64, !llvm.ptr
+    llvm.store %6, %7 <alias_scopes = [#alias_scope], alignment = 8, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i64, !llvm.ptr
     %8 = llvm.inttoptr %4 : i64 to !llvm.ptr
     %9 = llvm.getelementptr %8[%3] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %10 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
-    llvm.store %arg0, %10 {alias_scopes = [#alias_scope], alignment = 4 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i32, !llvm.ptr
+    llvm.store %arg0, %10 <alias_scopes = [#alias_scope], alignment = 4, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i32, !llvm.ptr
     %11 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
     llvm.return %11 : !llvm.ptr
   }
   llvm.func local_unnamed_addr @jl_int32_type() -> !llvm.ptr attributes {sym_visibility = "private"}
   llvm.func local_unnamed_addr @ijl_unbox_float32(%arg0: !llvm.ptr {llvm.nonnull, llvm.noundef, llvm.readonly}) -> f32 attributes {sym_visibility = "private"} {
     %0 = llvm.bitcast %arg0 : !llvm.ptr to !llvm.ptr
-    %1 = llvm.load %0 {alias_scopes = [#alias_scope], alignment = 4 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : !llvm.ptr -> f32
+    %1 = llvm.load %0 <alias_scopes = [#alias_scope], alignment = 4, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : !llvm.ptr -> f32
     llvm.return %1 : f32
   }
   llvm.func local_unnamed_addr @ijl_box_uint8(%arg0: i8 {llvm.zeroext}) -> (!llvm.ptr {llvm.nonnull}) attributes {sym_visibility = "private"} {
@@ -134,13 +134,13 @@ module @reactant_bf16_sq... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %2 = llvm.mlir.constant(3 : i64) : i64
     %3 = llvm.mlir.constant(8 : i64) : i64
     %4 = llvm.call @gpu_malloc(%0) : (i64) -> i64
-    %5 = llvm.load %1 {alignment = 4 : i64} : !llvm.ptr -> i64
+    %5 = llvm.load %1 <alignment = 4> : !llvm.ptr -> i64
     %6 = llvm.or %5, %2 : i64
     %7 = llvm.inttoptr %4 : i64 to !llvm.ptr
-    llvm.store %6, %7 {alias_scopes = [#alias_scope], alignment = 8 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i64, !llvm.ptr
+    llvm.store %6, %7 <alias_scopes = [#alias_scope], alignment = 8, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i64, !llvm.ptr
     %8 = llvm.inttoptr %4 : i64 to !llvm.ptr
     %9 = llvm.getelementptr %8[%3] : (!llvm.ptr, i64) -> !llvm.ptr, i8
-    llvm.store %arg0, %9 {alias_scopes = [#alias_scope], alignment = 1 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i8, !llvm.ptr
+    llvm.store %arg0, %9 <alias_scopes = [#alias_scope], alignment = 1, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i8, !llvm.ptr
     %10 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
     llvm.return %10 : !llvm.ptr
   }
@@ -152,7 +152,7 @@ module @reactant_bf16_sq... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %3 = llvm.mlir.constant(true) : i1
     %4 = llvm.alloca %0 x !llvm.struct<"printf_args", (i64, i32, i32, i32, i32, i32, i32)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
     %5 = llvm.alloca %0 x !llvm.struct<"printf_args.0", (i64)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
-    %6 = llvm.cmpxchg %1, %2, %0 acq_rel acquire {alignment = 4 : i64} : !llvm.ptr, i32
+    %6 = llvm.cmpxchg %1, %2, %0 acq_rel acquire <alignment = 4> : !llvm.ptr, i32
     %7 = llvm.extractvalue %6[0] : !llvm.struct<(i32, i1)> 
     %8 = llvm.icmp "eq" %7, %2 : i32
     %9 = llvm.xor %8, %3 : i1
@@ -165,14 +165,14 @@ module @reactant_bf16_sq... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %2 = llvm.mlir.constant(3 : i64) : i64
     %3 = llvm.mlir.constant(8 : i64) : i64
     %4 = llvm.call @gpu_malloc(%0) : (i64) -> i64
-    %5 = llvm.load %1 {alignment = 4 : i64} : !llvm.ptr -> i64
+    %5 = llvm.load %1 <alignment = 4> : !llvm.ptr -> i64
     %6 = llvm.or %5, %2 : i64
     %7 = llvm.inttoptr %4 : i64 to !llvm.ptr
-    llvm.store %6, %7 {alias_scopes = [#alias_scope], alignment = 8 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i64, !llvm.ptr
+    llvm.store %6, %7 <alias_scopes = [#alias_scope], alignment = 8, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i64, !llvm.ptr
     %8 = llvm.inttoptr %4 : i64 to !llvm.ptr
     %9 = llvm.getelementptr %8[%3] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %10 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
-    llvm.store %arg0, %10 {alias_scopes = [#alias_scope], alignment = 4 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i32, !llvm.ptr
+    llvm.store %arg0, %10 <alias_scopes = [#alias_scope], alignment = 4, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i32, !llvm.ptr
     %11 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
     llvm.return %11 : !llvm.ptr
   }
@@ -183,13 +183,13 @@ module @reactant_bf16_sq... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %2 = llvm.mlir.constant(3 : i64) : i64
     %3 = llvm.mlir.constant(8 : i64) : i64
     %4 = llvm.call @gpu_malloc(%0) : (i64) -> i64
-    %5 = llvm.load %1 {alignment = 4 : i64} : !llvm.ptr -> i64
+    %5 = llvm.load %1 <alignment = 4> : !llvm.ptr -> i64
     %6 = llvm.or %5, %2 : i64
     %7 = llvm.inttoptr %4 : i64 to !llvm.ptr
-    llvm.store %6, %7 {alias_scopes = [#alias_scope], alignment = 8 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i64, !llvm.ptr
+    llvm.store %6, %7 <alias_scopes = [#alias_scope], alignment = 8, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i64, !llvm.ptr
     %8 = llvm.inttoptr %4 : i64 to !llvm.ptr
     %9 = llvm.getelementptr %8[%3] : (!llvm.ptr, i64) -> !llvm.ptr, i8
-    llvm.store %arg0, %9 {alias_scopes = [#alias_scope], alignment = 1 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i8, !llvm.ptr
+    llvm.store %arg0, %9 <alias_scopes = [#alias_scope], alignment = 1, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i8, !llvm.ptr
     %10 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
     llvm.return %10 : !llvm.ptr
   }
@@ -202,24 +202,24 @@ module @reactant_bf16_sq... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %4 = llvm.bitcast %3 : !llvm.ptr to !llvm.ptr
     llvm.intr.lifetime.start %3 : !llvm.ptr
     %5 = llvm.getelementptr inbounds %3[%1, 0] : (!llvm.ptr, i32) -> !llvm.ptr, !llvm.struct<"printf_args.0", (i64)>
-    llvm.store %arg0, %5 {alignment = 4 : i64} : i64, !llvm.ptr
+    llvm.store %arg0, %5 <alignment = 4> : i64, !llvm.ptr
     %6 = llvm.call @vprintf(%2, %4) : (!llvm.ptr, !llvm.ptr {llvm.nonnull}) -> i32
     llvm.intr.lifetime.end %3 : !llvm.ptr
     llvm.return
   }
   llvm.func local_unnamed_addr @ijl_unbox_int8(%arg0: !llvm.ptr {llvm.nonnull, llvm.noundef, llvm.readonly}) -> i8 attributes {sym_visibility = "private"} {
     %0 = llvm.bitcast %arg0 : !llvm.ptr to !llvm.ptr
-    %1 = llvm.load %0 {alias_scopes = [#alias_scope], alignment = 1 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : !llvm.ptr -> i8
+    %1 = llvm.load %0 <alias_scopes = [#alias_scope], alignment = 1, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : !llvm.ptr -> i8
     llvm.return %1 : i8
   }
   llvm.func local_unnamed_addr @ijl_unbox_uint16(%arg0: !llvm.ptr {llvm.nonnull, llvm.noundef, llvm.readonly}) -> i16 attributes {sym_visibility = "private"} {
     %0 = llvm.bitcast %arg0 : !llvm.ptr to !llvm.ptr
-    %1 = llvm.load %0 {alias_scopes = [#alias_scope], alignment = 2 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : !llvm.ptr -> i16
+    %1 = llvm.load %0 <alias_scopes = [#alias_scope], alignment = 2, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : !llvm.ptr -> i16
     llvm.return %1 : i16
   }
   llvm.func local_unnamed_addr @ijl_unbox_bool(%arg0: !llvm.ptr {llvm.nonnull, llvm.noundef, llvm.readonly}) -> i8 attributes {sym_visibility = "private"} {
     %0 = llvm.bitcast %arg0 : !llvm.ptr to !llvm.ptr
-    %1 = llvm.load %0 {alias_scopes = [#alias_scope], alignment = 1 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : !llvm.ptr -> i8
+    %1 = llvm.load %0 <alias_scopes = [#alias_scope], alignment = 1, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : !llvm.ptr -> i8
     %2 = llvm.trunc %1 : i8 to i1
     %3 = llvm.zext %2 : i1 to i8
     llvm.return %3 : i8
@@ -230,14 +230,14 @@ module @reactant_bf16_sq... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %2 = llvm.mlir.constant(3 : i64) : i64
     %3 = llvm.mlir.constant(8 : i64) : i64
     %4 = llvm.call @gpu_malloc(%0) : (i64) -> i64
-    %5 = llvm.load %1 {alignment = 4 : i64} : !llvm.ptr -> i64
+    %5 = llvm.load %1 <alignment = 4> : !llvm.ptr -> i64
     %6 = llvm.or %5, %2 : i64
     %7 = llvm.inttoptr %4 : i64 to !llvm.ptr
-    llvm.store %6, %7 {alias_scopes = [#alias_scope], alignment = 8 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i64, !llvm.ptr
+    llvm.store %6, %7 <alias_scopes = [#alias_scope], alignment = 8, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i64, !llvm.ptr
     %8 = llvm.inttoptr %4 : i64 to !llvm.ptr
     %9 = llvm.getelementptr %8[%3] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %10 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
-    llvm.store %arg0, %10 {alias_scopes = [#alias_scope], alignment = 8 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : f64, !llvm.ptr
+    llvm.store %arg0, %10 <alias_scopes = [#alias_scope], alignment = 8, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : f64, !llvm.ptr
     %11 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
     llvm.return %11 : !llvm.ptr
   }
@@ -263,14 +263,14 @@ module @reactant_bf16_sq... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %2 = llvm.mlir.constant(3 : i64) : i64
     %3 = llvm.mlir.constant(8 : i64) : i64
     %4 = llvm.call @gpu_malloc(%0) : (i64) -> i64
-    %5 = llvm.load %1 {alignment = 4 : i64} : !llvm.ptr -> i64
+    %5 = llvm.load %1 <alignment = 4> : !llvm.ptr -> i64
     %6 = llvm.or %5, %2 : i64
     %7 = llvm.inttoptr %4 : i64 to !llvm.ptr
-    llvm.store %6, %7 {alias_scopes = [#alias_scope], alignment = 8 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i64, !llvm.ptr
+    llvm.store %6, %7 <alias_scopes = [#alias_scope], alignment = 8, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i64, !llvm.ptr
     %8 = llvm.inttoptr %4 : i64 to !llvm.ptr
     %9 = llvm.getelementptr %8[%3] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %10 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
-    llvm.store %arg0, %10 {alias_scopes = [#alias_scope], alignment = 8 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i64, !llvm.ptr
+    llvm.store %arg0, %10 <alias_scopes = [#alias_scope], alignment = 8, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i64, !llvm.ptr
     %11 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
     llvm.return %11 : !llvm.ptr
   }
@@ -281,31 +281,31 @@ module @reactant_bf16_sq... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %2 = llvm.mlir.constant(3 : i64) : i64
     %3 = llvm.mlir.constant(8 : i64) : i64
     %4 = llvm.call @gpu_malloc(%0) : (i64) -> i64
-    %5 = llvm.load %1 {alignment = 4 : i64} : !llvm.ptr -> i64
+    %5 = llvm.load %1 <alignment = 4> : !llvm.ptr -> i64
     %6 = llvm.or %5, %2 : i64
     %7 = llvm.inttoptr %4 : i64 to !llvm.ptr
-    llvm.store %6, %7 {alias_scopes = [#alias_scope], alignment = 8 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i64, !llvm.ptr
+    llvm.store %6, %7 <alias_scopes = [#alias_scope], alignment = 8, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i64, !llvm.ptr
     %8 = llvm.inttoptr %4 : i64 to !llvm.ptr
     %9 = llvm.getelementptr %8[%3] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %10 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
-    llvm.store %arg0, %10 {alias_scopes = [#alias_scope], alignment = 4 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : f32, !llvm.ptr
+    llvm.store %arg0, %10 <alias_scopes = [#alias_scope], alignment = 4, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : f32, !llvm.ptr
     %11 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
     llvm.return %11 : !llvm.ptr
   }
   llvm.func local_unnamed_addr @jl_float32_type() -> !llvm.ptr attributes {sym_visibility = "private"}
   llvm.func local_unnamed_addr @ijl_unbox_int16(%arg0: !llvm.ptr {llvm.nonnull, llvm.noundef, llvm.readonly}) -> i16 attributes {sym_visibility = "private"} {
     %0 = llvm.bitcast %arg0 : !llvm.ptr to !llvm.ptr
-    %1 = llvm.load %0 {alias_scopes = [#alias_scope], alignment = 2 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : !llvm.ptr -> i16
+    %1 = llvm.load %0 <alias_scopes = [#alias_scope], alignment = 2, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : !llvm.ptr -> i16
     llvm.return %1 : i16
   }
   llvm.func local_unnamed_addr @ijl_unbox_uint32(%arg0: !llvm.ptr {llvm.nonnull, llvm.noundef, llvm.readonly}) -> i32 attributes {sym_visibility = "private"} {
     %0 = llvm.bitcast %arg0 : !llvm.ptr to !llvm.ptr
-    %1 = llvm.load %0 {alias_scopes = [#alias_scope], alignment = 4 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : !llvm.ptr -> i32
+    %1 = llvm.load %0 <alias_scopes = [#alias_scope], alignment = 4, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : !llvm.ptr -> i32
     llvm.return %1 : i32
   }
   llvm.func local_unnamed_addr @ijl_unbox_int64(%arg0: !llvm.ptr {llvm.nonnull, llvm.noundef, llvm.readonly}) -> i64 attributes {sym_visibility = "private"} {
     %0 = llvm.bitcast %arg0 : !llvm.ptr to !llvm.ptr
-    %1 = llvm.load %0 {alias_scopes = [#alias_scope], alignment = 8 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : !llvm.ptr -> i64
+    %1 = llvm.load %0 <alias_scopes = [#alias_scope], alignment = 8, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : !llvm.ptr -> i64
     llvm.return %1 : i64
   }
   llvm.func local_unnamed_addr @ijl_box_uint64(%arg0: i64 {llvm.zeroext}) -> (!llvm.ptr {llvm.nonnull}) attributes {sym_visibility = "private"} {
@@ -314,26 +314,26 @@ module @reactant_bf16_sq... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %2 = llvm.mlir.constant(3 : i64) : i64
     %3 = llvm.mlir.constant(8 : i64) : i64
     %4 = llvm.call @gpu_malloc(%0) : (i64) -> i64
-    %5 = llvm.load %1 {alignment = 4 : i64} : !llvm.ptr -> i64
+    %5 = llvm.load %1 <alignment = 4> : !llvm.ptr -> i64
     %6 = llvm.or %5, %2 : i64
     %7 = llvm.inttoptr %4 : i64 to !llvm.ptr
-    llvm.store %6, %7 {alias_scopes = [#alias_scope], alignment = 8 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i64, !llvm.ptr
+    llvm.store %6, %7 <alias_scopes = [#alias_scope], alignment = 8, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i64, !llvm.ptr
     %8 = llvm.inttoptr %4 : i64 to !llvm.ptr
     %9 = llvm.getelementptr %8[%3] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %10 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
-    llvm.store %arg0, %10 {alias_scopes = [#alias_scope], alignment = 8 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i64, !llvm.ptr
+    llvm.store %arg0, %10 <alias_scopes = [#alias_scope], alignment = 8, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i64, !llvm.ptr
     %11 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
     llvm.return %11 : !llvm.ptr
   }
   llvm.func local_unnamed_addr @jl_uint64_type() -> !llvm.ptr attributes {sym_visibility = "private"}
   llvm.func local_unnamed_addr @ijl_unbox_int32(%arg0: !llvm.ptr {llvm.nonnull, llvm.noundef, llvm.readonly}) -> i32 attributes {sym_visibility = "private"} {
     %0 = llvm.bitcast %arg0 : !llvm.ptr to !llvm.ptr
-    %1 = llvm.load %0 {alias_scopes = [#alias_scope], alignment = 4 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : !llvm.ptr -> i32
+    %1 = llvm.load %0 <alias_scopes = [#alias_scope], alignment = 4, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : !llvm.ptr -> i32
     llvm.return %1 : i32
   }
   llvm.func local_unnamed_addr @ijl_unbox_uint8(%arg0: !llvm.ptr {llvm.nonnull, llvm.noundef, llvm.readonly}) -> i8 attributes {sym_visibility = "private"} {
     %0 = llvm.bitcast %arg0 : !llvm.ptr to !llvm.ptr
-    %1 = llvm.load %0 {alias_scopes = [#alias_scope], alignment = 1 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : !llvm.ptr -> i8
+    %1 = llvm.load %0 <alias_scopes = [#alias_scope], alignment = 1, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : !llvm.ptr -> i8
     llvm.return %1 : i8
   }
   llvm.func local_unnamed_addr @ijl_box_uint16(%arg0: i16 {llvm.zeroext}) -> (!llvm.ptr {llvm.nonnull}) attributes {sym_visibility = "private"} {
@@ -342,14 +342,14 @@ module @reactant_bf16_sq... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %2 = llvm.mlir.constant(3 : i64) : i64
     %3 = llvm.mlir.constant(8 : i64) : i64
     %4 = llvm.call @gpu_malloc(%0) : (i64) -> i64
-    %5 = llvm.load %1 {alignment = 4 : i64} : !llvm.ptr -> i64
+    %5 = llvm.load %1 <alignment = 4> : !llvm.ptr -> i64
     %6 = llvm.or %5, %2 : i64
     %7 = llvm.inttoptr %4 : i64 to !llvm.ptr
-    llvm.store %6, %7 {alias_scopes = [#alias_scope], alignment = 8 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i64, !llvm.ptr
+    llvm.store %6, %7 <alias_scopes = [#alias_scope], alignment = 8, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i64, !llvm.ptr
     %8 = llvm.inttoptr %4 : i64 to !llvm.ptr
     %9 = llvm.getelementptr %8[%3] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %10 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
-    llvm.store %arg0, %10 {alias_scopes = [#alias_scope], alignment = 2 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i16, !llvm.ptr
+    llvm.store %arg0, %10 <alias_scopes = [#alias_scope], alignment = 2, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i16, !llvm.ptr
     %11 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
     llvm.return %11 : !llvm.ptr
   }
@@ -360,21 +360,21 @@ module @reactant_bf16_sq... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %2 = llvm.mlir.constant(3 : i64) : i64
     %3 = llvm.mlir.constant(8 : i64) : i64
     %4 = llvm.call @gpu_malloc(%0) : (i64) -> i64
-    %5 = llvm.load %1 {alignment = 4 : i64} : !llvm.ptr -> i64
+    %5 = llvm.load %1 <alignment = 4> : !llvm.ptr -> i64
     %6 = llvm.or %5, %2 : i64
     %7 = llvm.inttoptr %4 : i64 to !llvm.ptr
-    llvm.store %6, %7 {alias_scopes = [#alias_scope], alignment = 8 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i64, !llvm.ptr
+    llvm.store %6, %7 <alias_scopes = [#alias_scope], alignment = 8, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i64, !llvm.ptr
     %8 = llvm.inttoptr %4 : i64 to !llvm.ptr
     %9 = llvm.getelementptr %8[%3] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %10 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
-    llvm.store %arg0, %10 {alias_scopes = [#alias_scope], alignment = 2 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : i16, !llvm.ptr
+    llvm.store %arg0, %10 <alias_scopes = [#alias_scope], alignment = 2, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : i16, !llvm.ptr
     %11 = llvm.bitcast %9 : !llvm.ptr to !llvm.ptr
     llvm.return %11 : !llvm.ptr
   }
   llvm.func local_unnamed_addr @jl_int16_type() -> !llvm.ptr attributes {sym_visibility = "private"}
   llvm.func local_unnamed_addr @ijl_unbox_float64(%arg0: !llvm.ptr {llvm.nonnull, llvm.noundef, llvm.readonly}) -> f64 attributes {sym_visibility = "private"} {
     %0 = llvm.bitcast %arg0 : !llvm.ptr to !llvm.ptr
-    %1 = llvm.load %0 {alias_scopes = [#alias_scope], alignment = 8 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]} : !llvm.ptr -> f64
+    %1 = llvm.load %0 <alias_scopes = [#alias_scope], alignment = 8, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4], tbaa = [#tbaa_tag1]> : !llvm.ptr -> f64
     llvm.return %1 : f64
   }
   llvm.func local_unnamed_addr @gpu_report_exception_frame(%arg0: i32 {llvm.signext}, %arg1: i64 {llvm.zeroext}, %arg2: i64 {llvm.zeroext}, %arg3: i32 {llvm.signext}) attributes {sym_visibility = "private"} {
@@ -383,7 +383,7 @@ module @reactant_bf16_sq... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %2 = llvm.mlir.constant(0 : i32) : i32
     %3 = llvm.mlir.constant(true) : i1
     %4 = llvm.alloca %0 x !llvm.struct<"printf_args.6", (i32, i64, i64, i32)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
-    %5 = llvm.cmpxchg %1, %2, %0 acq_rel acquire {alignment = 4 : i64} : !llvm.ptr, i32
+    %5 = llvm.cmpxchg %1, %2, %0 acq_rel acquire <alignment = 4> : !llvm.ptr, i32
     %6 = llvm.extractvalue %5[0] : !llvm.struct<(i32, i1)> 
     %7 = llvm.icmp "eq" %6, %2 : i32
     %8 = llvm.xor %7, %3 : i1
@@ -393,15 +393,15 @@ module @reactant_bf16_sq... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
   llvm.func ptx_kernelcc @"##call__Z23gpu_bf16_square_kernel_16CompilerMetadataI11DynamicSize12DynamicCheckv16CartesianIndicesILi1E5TupleI5OneToI5Int64EEE7NDRangeILi1ES0_S0_S8_S8_EE13CuTracedArrayI7Float32Li1ELi1E5_64__ESE_#254"(%arg0: !llvm.ptr<1> {llvm.noalias}, %arg1: !llvm.ptr<1> {llvm.noalias}) attributes {enzymexla.float_type = bf16, sym_visibility = "private"} {
     %0 = llvm.mlir.constant(1 : i64) : i64
     %1 = llvm.alloca %0 x !llvm.struct<(array<1 x array<1 x array<1 x i64>>>, array<2 x array<1 x array<1 x array<1 x i64>>>>)> : (i64) -> !llvm.ptr
-    %2 = llvm.mlir.constant(dense<[64, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0]> : tensor<24xui8>) : !llvm.array<24 x i8>
+    %2 = llvm.mlir.constant(dense<[64, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0]> : tensor<24xi8>) : !llvm.array<24 x i8>
     llvm.store %2, %1 : !llvm.array<24 x i8>, !llvm.ptr
     %3 = llvm.mlir.constant(1 : i64) : i64
     %4 = llvm.alloca %3 x !llvm.array<1 x ptr<1>> : (i64) -> !llvm.ptr
-    %5 = llvm.mlir.constant(dense<[32, 172, 162, 158, 124, 118, 0, 0]> : tensor<8xui8>) : !llvm.array<8 x i8>
+    %5 = llvm.mlir.constant(dense<[32, 172, 162, 158, 124, 118, 0, 0]> : tensor<8xi8>) : !llvm.array<8 x i8>
     llvm.store %5, %4 : !llvm.array<8 x i8>, !llvm.ptr
     %6 = llvm.mlir.constant(1 : i64) : i64
     %7 = llvm.alloca %6 x !llvm.array<1 x ptr<1>> : (i64) -> !llvm.ptr
-    %8 = llvm.mlir.constant(dense<[144, 211, 120, 241, 127, 118, 0, 0]> : tensor<8xui8>) : !llvm.array<8 x i8>
+    %8 = llvm.mlir.constant(dense<[144, 211, 120, 241, 127, 118, 0, 0]> : tensor<8xi8>) : !llvm.array<8 x i8>
     llvm.store %8, %7 : !llvm.array<8 x i8>, !llvm.ptr
     %9 = llvm.getelementptr %4[0] : (!llvm.ptr) -> !llvm.ptr, ui8
     llvm.store %arg0, %9 : !llvm.ptr<1>, !llvm.ptr

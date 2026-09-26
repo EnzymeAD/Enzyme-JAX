@@ -29,10 +29,10 @@ module {
         %7 = affine.apply #map2(%arg1, %arg2)
         %8 = arith.addi %7, %6 : index
         %13 = memref.load %arg0[%8, %c0, %c0] : memref<1x104x194xf64, 1>
-        %14 = arith.mulf %2, %13 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %14 = arith.mulf %2, %13 : f64
         affine.store %14, %arg0[0, %arg2 + 97, %arg1 + 7] : memref<1x104x194xf64, 1>
       }
-      %3 = arith.mulf %2, %1#2 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %3 = arith.mulf %2, %1#2 : f64
       %4 = affine.load %arg0[0, 96, %arg1 + 7] : memref<1x104x194xf64, 1>
       %5 = affine.if #set(%arg1) -> f64 {
         affine.yield %4 : f64
@@ -72,10 +72,10 @@ module {
 // CHECK-NEXT:           %8 = affine.load %arg0[%arg2 * -194 + 18437, 0, 0] : memref<1x104x194xf64, 1>
 // CHECK-NEXT:           affine.yield %c2_i64, %8 : i64, f64
 // CHECK-NEXT:         }
-// CHECK-NEXT:         %7 = arith.mulf %2, %6#1 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:         %7 = arith.mulf %2, %6#1 : f64
 // CHECK-NEXT:         affine.store %7, %arg0[0, %arg2 + 97, %arg1 + 7] : memref<1x104x194xf64, 1>
 // CHECK-NEXT:       }
-// CHECK-NEXT:       %3 = arith.mulf %2, %1#2 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:       %3 = arith.mulf %2, %1#2 : f64
 // CHECK-NEXT:       %4 = affine.load %arg0[0, 96, %arg1 + 7] : memref<1x104x194xf64, 1>
 // CHECK-NEXT:       %5 = affine.if #set1(%arg1) -> f64 {
 // CHECK-NEXT:         affine.yield %4 : f64

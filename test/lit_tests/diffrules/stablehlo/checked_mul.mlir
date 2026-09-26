@@ -6,7 +6,7 @@ func.func @square(%a : tensor<2xf32>) -> tensor<2xf32> {
 }
 
 func.func @dsquare(%x: tensor<2xf32>, %dr: tensor<2xf32>) -> tensor<2xf32> {
-  %r = enzyme.autodiff @square(%x, %dr) { activity=[#enzyme<activity enzyme_active>], ret_activity=[#enzyme<activity enzyme_activenoneed>], strong_zero=true } : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
+  %r = enzyme.autodiff @square(%x, %dr) { activity=[#enzyme.activity<enzyme_active>], ret_activity=[#enzyme.activity<enzyme_activenoneed>], strong_zero=true } : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
   return %r : tensor<2xf32>
 }
 

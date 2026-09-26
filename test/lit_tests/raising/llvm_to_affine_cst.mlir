@@ -50,11 +50,11 @@ module {
       %23 = arith.addi %22, %11 : i64
       %24 = arith.addi %23, %c3692_i64 : i64
       %25 = llvm.getelementptr inbounds %arg0[%24] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      %26 = llvm.load %25 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+      %26 = llvm.load %25 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
       %27 = arith.addi %22, %11 : i64
       %28 = arith.addi %27, %c3498_i64 : i64
       %29 = llvm.getelementptr inbounds %arg0[%28] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      llvm.store %26, %29 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr<1>
+      llvm.store %26, %29 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr<1>
       %30 = arith.subi %c181_i64, %11 : i64
       %31 = arith.addi %30, %22 : i64
       %32 = arith.addi %22, %11 : i64
@@ -65,23 +65,23 @@ module {
         %44 = arith.addi %43, %31 : i64
         %45 = arith.addi %44, %c6_i64 : i64
         %46 = llvm.getelementptr inbounds %arg0[%45] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-        %47 = llvm.load %46 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+        %47 = llvm.load %46 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
         %48 = arith.addi %41, %c104_i64 : i64
         %49 = arith.muli %48, %c194_i64 : i64
         %50 = arith.addi %49, %32 : i64
         %51 = arith.addi %50, %c6_i64 : i64
         %52 = llvm.getelementptr inbounds %arg0[%51] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-        llvm.store %47, %52 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr<1>
+        llvm.store %47, %52 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr<1>
       }
       %33 = arith.addi %31, %c19988_i64 : i64
       %34 = llvm.getelementptr inbounds %arg0[%33] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      %35 = llvm.load %34 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+      %35 = llvm.load %34 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
       %36 = arith.addi %32, %c19988_i64 : i64
       %37 = llvm.getelementptr inbounds %arg0[%36] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      %38 = llvm.load %37 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+      %38 = llvm.load %37 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
       %39 = arith.cmpi sle, %11, %c90_i64 : i64
       %40 = arith.select %39, %38, %35 {fastmathFlags = #llvm.fastmath<none>} : f64
-      llvm.store %40, %37 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr<1>
+      llvm.store %40, %37 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr<1>
     }
     llvm.return
   }

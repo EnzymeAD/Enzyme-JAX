@@ -39,7 +39,7 @@ module {
       scf.if %19 {
         %20 = arith.addi %5, %c-1_i64 : i64
         %21 = llvm.getelementptr inbounds %2[%20] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i32
-        %22 = llvm.load %21 invariant {alignment = 4 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> i32
+        %22 = llvm.load %21 invariant <alignment = 4, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> i32
         %23 = arith.extsi %22 : i32 to i64
         %24 = arith.cmpi sle, %23, %c0_i64 : i64
         %25 = arith.select %24, %c1_i64, %23 {fastmathFlags = #llvm.fastmath<none>} : i64
@@ -50,15 +50,15 @@ module {
         %30 = arith.addi %27, %c-1_i64 : i64
         %31 = arith.addi %30, %29 : i64
         %32 = llvm.getelementptr inbounds %1[%31] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-        %33 = llvm.load %32 invariant {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+        %33 = llvm.load %32 invariant <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
         %34 = arith.select %24, %cst, %33 {fastmathFlags = #llvm.fastmath<none>} : f64
         %35 = arith.muli %20, %c4_i64 : i64
         %36 = arith.addi %35, %c-1_i64 : i64
         %37 = arith.addi %36, %27 : i64
         %38 = llvm.getelementptr inbounds %0[%37] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-        %39 = llvm.load %38 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
-        %40 = arith.addf %39, %34 {fastmathFlags = #llvm.fastmath<none>} : f64
-        llvm.store %40, %38 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr<1>
+        %39 = llvm.load %38 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
+        %40 = arith.addf %39, %34 : f64
+        llvm.store %40, %38 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr<1>
       }
     }
     return
@@ -88,10 +88,10 @@ module {
 // CHECK-NEXT:      %10 = arith.divui %8, %c2 : index
 // CHECK-NEXT:      %11 = arith.remui %10, %c2 : index
 // CHECK-NEXT:      %12 = arith.divui %10, %c2 : index
-// CHECK-NEXT:      %13 = memref.load %arg1[%12, %11, %9] {alignment = 8 : i64} : memref<2x2x2xf64, 1>
+// CHECK-NEXT:      %13 = memref.load %arg1[%12, %11, %9] alignment(8) : memref<2x2x2xf64, 1>
 // CHECK-NEXT:      %14 = arith.select %2, %cst, %13 {fastmathFlags = #llvm.fastmath<none>} : f64
 // CHECK-NEXT:      %15 = affine.load %arg0[%arg3, %arg4, %arg5] : memref<3x2x2xf64, 1>
-// CHECK-NEXT:      %16 = arith.addf %15, %14 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:      %16 = arith.addf %15, %14 : f64
 // CHECK-NEXT:      affine.store %16, %arg0[%arg3, %arg4, %arg5] : memref<3x2x2xf64, 1>
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return

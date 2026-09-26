@@ -36,28 +36,28 @@ module @"reactant_run!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_repl
     affine.parallel (%arg7, %arg8) = (0, 0) to (85, 180) {
       %0 = affine.load %arg2[8] {alignment = 64 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<34xf64, 1>
       %1 = affine.load %arg5[0, %arg7 + 7, %arg8 + 7] : memref<1x99x194xf64, 1>
-      %2 = arith.cmpf ole, %0, %1 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %2 = arith.cmpf ole, %0, %1 : f64
       %3 = affine.load %arg2[7] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<34xf64, 1>
-      %4 = arith.cmpf ole, %3, %1 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %4 = arith.cmpf ole, %3, %1 : f64
       %5 = arith.ori %2, %4 : i1
       %6 = affine.load %arg5[0, %arg7 + 7, %arg8 + 6] : memref<1x99x194xf64, 1>
-      %7 = arith.cmpf ole, %0, %6 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %8 = arith.cmpf ole, %3, %6 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %7 = arith.cmpf ole, %0, %6 : f64
+      %8 = arith.cmpf ole, %3, %6 : f64
       %9 = arith.ori %7, %8 : i1
       %10 = arith.ori %5, %9 : i1
       %11 = affine.load %arg6[8, %arg7 + 7, %arg8 + 6] : memref<35x99x194xf64, 1>
       %12 = affine.load %arg6[8, %arg7 + 7, %arg8 + 7] : memref<35x99x194xf64, 1>
-      %13 = arith.addf %11, %12 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %14 = arith.mulf %13, %cst {fastmathFlags = #llvm.fastmath<none>} : f64
+      %13 = arith.addf %11, %12 : f64
+      %14 = arith.mulf %13, %cst : f64
       %15 = affine.load %arg4[7] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<34xf64, 1>
       %16 = affine.load %arg3[9] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<35xf64, 1>
-      %17 = arith.mulf %14, %cst_0 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %18 = arith.mulf %15, %16 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %19 = arith.divf %17, %18 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %17 = arith.mulf %14, %cst_0 : f64
+      %18 = arith.mulf %15, %16 : f64
+      %19 = arith.divf %17, %18 : f64
       %20 = arith.select %10, %cst_1, %19 : f64
-      %21 = arith.subf %cst_2, %20 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %21 = arith.subf %cst_2, %20 : f64
       %22 = affine.load %arg0[7, %arg7 + 7, %arg8 + 7] : memref<34x99x194xf64, 1>
-      %23 = arith.divf %22, %21 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %23 = arith.divf %22, %21 : f64
       affine.store %23, %arg0[7, %arg7 + 7, %arg8 + 7] : memref<34x99x194xf64, 1>
       %24 = affine.for %arg9 = 0 to 18 iter_args(%arg10 = %21) -> (f64) {
         %25 = arith.index_cast %arg9 : index to i64
@@ -65,22 +65,22 @@ module @"reactant_run!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_repl
         %27 = arith.addi %25, %c1_i64 : i64
         %28 = affine.load %arg2[%arg9 + 8] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<34xf64, 1>
         %29 = affine.load %arg5[0, %arg7 + 7, %arg8 + 7] : memref<1x99x194xf64, 1>
-        %30 = arith.cmpf ole, %28, %29 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %30 = arith.cmpf ole, %28, %29 : f64
         %31 = arith.cmpi slt, %26, %c1_i64 : i64
         %32 = arith.cmpi sgt, %26, %c20_i64 : i64
         %33 = arith.ori %31, %32 : i1
         %34 = arith.ori %30, %33 : i1
         %35 = affine.load %arg2[%arg9 + 7] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<34xf64, 1>
-        %36 = arith.cmpf ole, %35, %29 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %36 = arith.cmpf ole, %35, %29 : f64
         %37 = arith.cmpi slt, %27, %c1_i64 : i64
         %38 = arith.cmpi sgt, %27, %c20_i64 : i64
         %39 = arith.ori %37, %38 : i1
         %40 = arith.ori %36, %39 : i1
         %41 = arith.ori %34, %40 : i1
         %42 = affine.load %arg5[0, %arg7 + 7, %arg8 + 6] : memref<1x99x194xf64, 1>
-        %43 = arith.cmpf ole, %28, %42 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %43 = arith.cmpf ole, %28, %42 : f64
         %44 = arith.ori %43, %33 : i1
-        %45 = arith.cmpf ole, %35, %42 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %45 = arith.cmpf ole, %35, %42 : f64
         %46 = arith.ori %45, %39 : i1
         %47 = arith.ori %44, %46 : i1
         %48 = arith.ori %41, %47 : i1
@@ -89,23 +89,23 @@ module @"reactant_run!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_repl
         %51 = arith.andi %48, %50 : i1
         %52 = affine.load %arg6[%arg9 + 8, %arg7 + 7, %arg8 + 6] : memref<35x99x194xf64, 1>
         %53 = affine.load %arg6[%arg9 + 8, %arg7 + 7, %arg8 + 7] : memref<35x99x194xf64, 1>
-        %54 = arith.addf %52, %53 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %55 = arith.mulf %54, %cst {fastmathFlags = #llvm.fastmath<none>} : f64
+        %54 = arith.addf %52, %53 : f64
+        %55 = arith.mulf %54, %cst : f64
         %56 = affine.load %arg4[%arg9 + 7] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<34xf64, 1>
         %57 = affine.load %arg3[%arg9 + 9] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<35xf64, 1>
-        %58 = arith.mulf %55, %cst_0 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %59 = arith.mulf %56, %57 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %60 = arith.divf %58, %59 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %58 = arith.mulf %55, %cst_0 : f64
+        %59 = arith.mulf %56, %57 : f64
+        %60 = arith.divf %58, %59 : f64
         %61 = arith.select %51, %cst_1, %60 : f64
         %62 = arith.addi %25, %c3_i64 : i64
         %63 = affine.load %arg2[%arg9 + 9] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<34xf64, 1>
-        %64 = arith.cmpf ole, %63, %29 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %64 = arith.cmpf ole, %63, %29 : f64
         %65 = arith.cmpi slt, %62, %c1_i64 : i64
         %66 = arith.cmpi sgt, %62, %c20_i64 : i64
         %67 = arith.ori %65, %66 : i1
         %68 = arith.ori %64, %67 : i1
         %69 = arith.ori %68, %34 : i1
-        %70 = arith.cmpf ole, %63, %42 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %70 = arith.cmpf ole, %63, %42 : f64
         %71 = arith.ori %70, %67 : i1
         %72 = arith.ori %71, %44 : i1
         %73 = arith.ori %69, %72 : i1
@@ -114,30 +114,30 @@ module @"reactant_run!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_repl
         %76 = arith.andi %73, %75 : i1
         %77 = affine.load %arg6[%arg9 + 9, %arg7 + 7, %arg8 + 6] : memref<35x99x194xf64, 1>
         %78 = affine.load %arg6[%arg9 + 9, %arg7 + 7, %arg8 + 7] : memref<35x99x194xf64, 1>
-        %79 = arith.addf %77, %78 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %80 = arith.mulf %79, %cst {fastmathFlags = #llvm.fastmath<none>} : f64
+        %79 = arith.addf %77, %78 : f64
+        %80 = arith.mulf %79, %cst : f64
         %81 = affine.load %arg4[%arg9 + 8] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<34xf64, 1>
         %82 = affine.load %arg3[%arg9 + 10] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<35xf64, 1>
-        %83 = arith.mulf %80, %cst_0 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %84 = arith.mulf %81, %82 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %85 = arith.divf %83, %84 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %83 = arith.mulf %80, %cst_0 : f64
+        %84 = arith.mulf %81, %82 : f64
+        %85 = arith.divf %83, %84 : f64
         %86 = arith.select %76, %cst_1, %85 : f64
-        %87 = arith.subf %cst_2, %86 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %88 = arith.mulf %81, %57 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %89 = arith.divf %58, %88 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %87 = arith.subf %cst_2, %86 : f64
+        %88 = arith.mulf %81, %57 : f64
+        %89 = arith.divf %58, %88 : f64
         %90 = arith.select %51, %cst_1, %89 : f64
-        %91 = arith.subf %87, %90 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %92 = arith.divf %61, %arg10 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %91 = arith.subf %87, %90 : f64
+        %92 = arith.divf %61, %arg10 : f64
         affine.store %92, %arg1[%arg9 + 1, %arg7, %arg8] : memref<20x85x180xf64, 1>
-        %93 = arith.mulf %92, %90 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %94 = arith.subf %91, %93 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %93 = arith.mulf %92, %90 : f64
+        %94 = arith.subf %91, %93 : f64
         %95 = affine.load %arg0[%arg9 + 8, %arg7 + 7, %arg8 + 7] : memref<34x99x194xf64, 1>
         %96 = math.absf %94 : f64
-        %97 = arith.cmpf olt, %cst_3, %96 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %97 = arith.cmpf olt, %cst_3, %96 : f64
         %98 = affine.load %arg0[%arg9 + 7, %arg7 + 7, %arg8 + 7] : memref<34x99x194xf64, 1>
-        %99 = arith.mulf %90, %98 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %100 = arith.subf %95, %99 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %101 = arith.divf %100, %94 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %99 = arith.mulf %90, %98 : f64
+        %100 = arith.subf %95, %99 : f64
+        %101 = arith.divf %100, %94 : f64
         %102 = arith.select %97, %101, %95 : f64
         affine.store %102, %arg0[%arg9 + 8, %arg7 + 7, %arg8 + 7] : memref<34x99x194xf64, 1>
         affine.yield %94 : f64

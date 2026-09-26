@@ -14,8 +14,8 @@ func.func private @"##call__Z44gpu_solve_batched_tridiagonal_system_kernel_16Com
     %1 = affine.for %arg4 = 0 to 19 iter_args(%arg5 = %0) -> (f64) {
       %2 = affine.load %arg0[-%arg4 + 26, %arg2 + 8, %arg3 + 8] : memref<36x112x208xf64, 1>
       %3 = affine.load %arg1[-%arg4 + 19, %arg2, %arg3] : memref<20x96x192xf64, 1>
-      %4 = arith.mulf %3, %arg5 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %5 = arith.subf %2, %4 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %4 = arith.mulf %3, %arg5 : f64
+      %5 = arith.subf %2, %4 : f64
       affine.store %5, %arg0[-%arg4 + 26, %arg2 + 8, %arg3 + 8] : memref<36x112x208xf64, 1>
       affine.yield %5 : f64
     }
