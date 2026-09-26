@@ -176,6 +176,7 @@ cc_library(
         "lib/Dialect/CudaTile/IR/Attributes.cpp",
         "lib/Dialect/CudaTile/IR/CudaTile.cpp",
         "lib/Dialect/CudaTile/IR/Interfaces.cpp",
+        "lib/Dialect/CudaTile/IR/Remark.cpp",
         "lib/Dialect/CudaTile/IR/Traits.cpp",
         "lib/Dialect/CudaTile/IR/Types.cpp",
     ],
@@ -184,6 +185,7 @@ cc_library(
         "include/cuda_tile/Dialect/CudaTile/IR/Dialect.h",
         "include/cuda_tile/Dialect/CudaTile/IR/Interfaces.h",
         "include/cuda_tile/Dialect/CudaTile/IR/Ops.h",
+        "include/cuda_tile/Dialect/CudaTile/IR/Remark.h",
         "include/cuda_tile/Dialect/CudaTile/IR/SharedFuncParserAndPrinter.h",
         "include/cuda_tile/Dialect/CudaTile/IR/SharedVerifiers.h",
         "include/cuda_tile/Dialect/CudaTile/IR/Traits.h",
@@ -241,11 +243,14 @@ cc_library(
     name = "CudaTileTransforms",
     srcs = [
         "lib/Dialect/CudaTile/Transforms/FuseFMA.cpp",
+        "lib/Dialect/CudaTile/Transforms/LICM.cpp",
         "lib/Dialect/CudaTile/Transforms/LoopSplit.cpp",
         "lib/Dialect/CudaTile/Transforms/SynthesizeDebugInfoScopes.cpp",
+        "lib/Dialect/CudaTile/Transforms/TransformsUtils.cpp",
     ],
     hdrs = [
         "include/cuda_tile/Dialect/CudaTile/Transforms/Passes.h",
+        "include/cuda_tile/Dialect/CudaTile/Transforms/TransformsUtils.h",
     ],
     includes = ["include"],
     deps = [
