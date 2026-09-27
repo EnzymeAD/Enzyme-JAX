@@ -119,7 +119,36 @@ struct KernelCallToGPUWrapperPass
             "cluster launches are not supported by this pass");
     }
 
+    // Each result is the final contents of the operand buffer it aliases.
+    SmallVector<unsigned> resultOperands;
+    ArrayAttr aliases = call.getOutputOperandAliases();
+    if (aliases.size() != call.getNumResults())
+      return call.emitError("every result must alias a kernel operand");
+    for (Attribute attr : aliases) {
+      auto alias = cast<stablehlo::OutputOperandAliasAttr>(attr);
+      if (alias.getOperandIndex() >= (int64_t)call.getInputs().size())
+        return call.emitError("operand alias index out of range");
+      resultOperands.push_back(alias.getOperandIndex());
+    }
+
     OpBuilder builder(call);
+
+    SmallVector<Type> bufferTypes;
+    for (Value operand : call.getInputs()) {
+      auto T = dyn_cast<RankedTensorType>(operand.getType());
+      if (!T)
+        return call.emitError("kernel operands must be ranked tensors");
+      bufferTypes.push_back(MemRefType::get(
+          T.getShape(), T.getElementType(),
+          /* layout= */ MemRefLayoutAttrInterface{},
+          builder.getI64IntegerAttr(1)));
+    }
+
+    auto region = enzymexla::JITRegionOp::create(builder, call.getLoc(),
+                                                 call.getInputs(), bufferTypes);
+    ValueRange buffers = region.getBodyBlock()->getArguments();
+
+    builder.setInsertionPointToStart(region.getBodyBlock());
 
     SmallVector<Value> bounds;
     for (int64_t dimension : launchDims)
@@ -131,26 +160,13 @@ struct KernelCallToGPUWrapperPass
     auto wrapper =
         enzymexla::GPUWrapperOp::create(builder, call.getLoc(), bounds);
 
-    SmallVector<Value> kargMemrefs;
-    for (auto [karg, operand] :
-         llvm::zip_equal(kernel.getArguments(), call.getArgOperands())) {
-      auto T = cast<TensorType>(operand.getType());
-      auto MT = MemRefType::get(T.getShape(), T.getElementType(),
-                                /* layout= */ MemRefLayoutAttrInterface{},
-                                builder.getI64IntegerAttr(1));
-
-      builder.setInsertionPoint(wrapper);
-      Value memref = enzymexla::Tensor2MemrefOp::create(
-          builder, operand.getLoc(), MT, operand);
-      kargMemrefs.push_back(memref);
-
-      builder.setInsertionPoint(wrapper.getBody()->getTerminator());
-      Value ptr = enzymexla::Memref2PointerOp::create(builder, operand.getLoc(),
-                                                      karg.getType(), memref);
+    builder.setInsertionPoint(wrapper.getBody()->getTerminator());
+    for (auto [karg, buffer] :
+         llvm::zip_equal(kernel.getArguments(), buffers)) {
+      Value ptr = enzymexla::Memref2PointerOp::create(builder, buffer.getLoc(),
+                                                      karg.getType(), buffer);
       mapping.map(karg, ptr);
     }
-
-    builder.setInsertionPoint(wrapper.getBody()->getTerminator());
 
     MLIRContext *context = call.getContext();
     SmallVector<AffineMap> lowerMaps(6, AffineMap::getConstantMap(0, context));
@@ -232,28 +248,9 @@ struct KernelCallToGPUWrapperPass
       op.erase();
     });
 
-    // OpBuilder callBuilder(call);
-    // auto replacement = enzymexla::JITCallOp::create(
-    //     callBuilder, call.getLoc(), call.getResultTypes(),
-    //     SymbolRefAttr::get(context, helperName), call.getInputs(),
-    //     call.getBackendConfigAttr(), call.getOperandLayoutsAttr(),
-    //     call.getResultLayoutsAttr(), call.getArgAttrsAttr(),
-    //     call.getResAttrsAttr(), call.getOutputOperandAliasesAttr(),
-    //     call.getXlaSideEffectFreeAttr());
-    // call.replaceAllUsesWith(replacement.getResults());
-    builder.setInsertionPoint(call);
-
-    for (auto [result, alias_attr] :
-         llvm::zip_equal(call.getResults(), call.getOutputOperandAliases())) {
-      auto alias = cast<stablehlo::OutputOperandAliasAttr>(alias_attr);
-      auto aliasOperandIndex = alias.getOperandIndex();
-
-      Value memref = kargMemrefs[aliasOperandIndex];
-      Value tensor = enzymexla::Memref2TensorOp::create(
-          builder, result.getLoc(), result.getType(), memref);
-      result.replaceAllUsesWith(tensor);
-    }
-
+    for (auto [result, operand] :
+         llvm::zip_equal(call.getResults(), resultOperands))
+      result.replaceAllUsesWith(region.getResult(operand));
     call.erase();
     return success();
   }

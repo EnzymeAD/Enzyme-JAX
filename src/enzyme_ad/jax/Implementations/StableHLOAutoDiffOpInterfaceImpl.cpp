@@ -1434,6 +1434,9 @@ public:
       for (auto &it : oBB->getOperations()) {
         for (auto res : it.getResults()) {
           if (!gutils->isConstantValue(res)) {
+            auto iface = cast<AutoDiffTypeInterface>(res.getType());
+            if (iface.isMutable())
+              continue;
             gutils->zeroDiffe(res, bodyBuilder);
           }
         }
@@ -3321,8 +3324,8 @@ public:
 struct WhileOpMemorySlotPromotion
     : public PromotableRegionOpInterface::ExternalModel<
           WhileOpMemorySlotPromotion, stablehlo::WhileOp> {
-  bool isRegionPromotable(Operation *op, const MemorySlot &slot,
-                          Region *region, bool hasValueStores) const {
+  bool isRegionPromotable(Operation *op, const MemorySlot &slot, Region *region,
+                          bool hasValueStores) const {
     return true;
   }
 

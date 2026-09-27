@@ -631,6 +631,8 @@ def PrepareAffineGPUWrapperPass
     groups the loop dimensions by the launch bound their extents multiply to
     and rebuilds a 6-d affine.parallel whose upper bounds are the wrapper's
     bound values, delinearizing each new induction variable into its group.
+    It also drops the reductions of an affine.parallel in a gpu_wrapper whose
+    results are unused, since a launch cannot carry them.
 
     Run it immediately before lower-affine and convert-parallel-to-gpu1:
     canonicalization folds the symbolic bounds back into constants.
@@ -656,15 +658,19 @@ def KernelCallToGPUWrapperPass
 }
 
 def GPUWrapperToKernelCallPass : Pass<"gpu-wrapper-to-kernel-call", "mlir::ModuleOp"> {
-  let summary = "Expose kernel calls as differentiable GPU wrapper loops";
+  let summary = "Lower jit_regions launching GPU kernels to kernel calls";
   let description = [{
-    Outlines each gpu_wrapper op and replaces it with a kernel call op.
+    Replaces each jit_region, once its gpu_wrapper regions have been lowered
+    to gpu.launch_func ops, by the kernel_call ops of the kernels it launches.
+    The contents of each buffer of the region are tracked as a tensor, which
+    each launch passing the buffer updates.
   }];
   let dependentDialects = [
     "arith::ArithDialect",
     "enzymexla::EnzymeXLADialect",
     "func::FuncDialect",
     "LLVM::LLVMDialect",
+    "NVVM::NVVMDialect",
     "tensor::TensorDialect",
   ];
 }

@@ -206,6 +206,60 @@ def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpI
   let hasCanonicalizer = 1;
 }
 
+def JITRegionOp : EnzymeXLA_Op<"jit_region", [
+  RecursiveMemoryEffects,
+  DeclareOpInterfaceMethods<InferTypeOpInterface>,
+  SingleBlockImplicitTerminator<"enzymexla::JITRegionYieldOp">
+]> {
+  let summary = "Region bridging immutable tensors to mutable memrefs";
+  let description = [{
+    Runs its single block on mutable buffers holding the values of its tensor
+    inputs. The block has one memref argument per input, with the input's
+    shape and element type; on entry it holds the input's contents. The block
+    may read and write these buffers freely: the input tensors are values and
+    are never modified.
+
+    There is one result per input, of the same type, holding the contents of
+    the input's buffer when the block exits.
+
+    Example:
+
+    ```mlir
+    %r:2 = enzymexla.jit_region (%a, %b) : tensor<4xf32>, tensor<4xf32> {
+    ^bb0(%ma: memref<4xf32, 1>, %mb: memref<4xf32, 1>):
+      ...
+    }
+    ```
+  }];
+
+  let arguments = (ins Variadic<HLO_Tensor>:$inputs);
+  let results = (outs Variadic<HLO_Tensor>);
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = [{
+    `(` $inputs `)` attr-dict `:` type($inputs) $body
+  }];
+
+  let builders = [
+    // Creates the entry block with one argument of the given memref type per
+    // input.
+    OpBuilder<(ins "ValueRange":$inputs, "TypeRange":$argTypes)>
+  ];
+
+  let extraClassDeclaration = [{
+    Block *getBodyBlock() { return &getBody().front(); }
+  }];
+
+  let hasRegionVerifier = 1;
+}
+
+def JITRegionYieldOp : EnzymeXLA_Op<"jit_region_yield", [
+  Pure, ReturnLike, Terminator, HasParent<"JITRegionOp">
+]> {
+  let summary = "Terminator of a jit_region";
+  let assemblyFormat = "attr-dict";
+}
+
 def GetStreamOp : EnzymeXLA_Op<"get_stream", [Pure]> {
   let summary = "Get current execution stream within a jit_call operation";
   let description = [{
@@ -313,21 +367,6 @@ def XLAWrapperOp : EnzymeXLA_Op<"xla_wrapper", [
 
 }
 
-def Tensor2MemrefOp : EnzymeXLA_Op<"tensor2memref", [
-    DeclareOpInterfaceMethods<PromotableAllocationOpInterface>
-  ]> {
-  let summary = "convert tensor to memref";
-  let arguments = (ins HLO_Tensor : $tensor);
-  let results = (outs AnyType : $memref);
-}
-def Memref2TensorOp : EnzymeXLA_Op<"memref2tensor", [
-    DeclareOpInterfaceMethods<PromotableMemOpInterface>
-  ]> {
-  let summary = "convert memref to tensor";
-  let arguments = (ins AnyType : $memref);
-  let results = (outs HLO_Tensor : $tensor);
-}
-
 def GPUErrorOp : EnzymeXLA_Op<"gpu_error", [
   RecursiveMemoryEffects,
   SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]>,
@@ -394,8 +433,7 @@ def StreamToTokenOp : EnzymeXLA_Op<"stream2token", [
 }
 
 def Memref2PointerOp : EnzymeXLA_Op<"memref2pointer", [
-  ViewLikeOpInterface, Pure,
-  DeclareOpInterfaceMethods<PromotableMemOpInterface>
+  ViewLikeOpInterface, Pure
 ]> {
   let summary = "Extract and LLVM pointer from a MemRef";
 
