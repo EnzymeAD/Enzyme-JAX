@@ -1465,6 +1465,12 @@ def AutoBatchingPass : Pass<"auto-batching"> {
       /*default=*/"true",
       /*description=*/"remove loop carried deps from load operations">,
     Option<
+      /*C++ variable name=*/"parallel_while_to_batched_scatter_passes",
+      /*CLI argument=*/"parallel_while_to_batched_scatter_passes",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"A parallel while of a raised kernel with a constant trip count becomes a batched scatter">,
+    Option<
         /*C++ variable name=*/"max_iterations",
         /*CLI argument=*/"max_iterations",
         /*type=*/"int64_t",

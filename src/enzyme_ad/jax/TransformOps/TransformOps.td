@@ -1916,6 +1916,12 @@ def WhileOpInductionReplacementPatterns : EnzymeHLOPatternOp<
   let patterns = ["WhileOpInductionReplacement"];
 }
 
+def ParallelWhileToBatchedScatterPatterns : EnzymeHLOPatternOp<
+  "parallel_while_to_batched_scatter"
+> {
+  let patterns = ["ParallelWhileToBatchedScatter"];
+}
+
 def TransposeWhilePatterns : EnzymeHLOPatternOp<
   "transpose_while"
 > {
