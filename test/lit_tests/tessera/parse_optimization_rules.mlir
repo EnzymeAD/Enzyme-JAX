@@ -1,5 +1,12 @@
 // RUN: enzymexlamlir-opt %s -parse-optimization-rules | FileCheck %s
 
+// The left-hand side of each rule becomes a declarative PDL match. The
+// right-hand side does not appear in PDL at all: every rule hands its text,
+// the names it binds and the matched values to the native tesseraRewrite,
+// which builds the replacement once the callee's tessera.define is there to
+// say what types it produces. How literals on the right are typed is covered
+// by rhs_rewrite.mlir, which applies these rules.
+
 module {
   tessera.optimizations {
     tessera.optimization "tessera.shorthand(x, .5) -> tessera.mulf(x, 2.)"
@@ -27,13 +34,10 @@ module {
 // CHECK-NEXT:   %[[T1:.*]] = types
 // CHECK-NEXT:   %[[POW_CALL:.*]] = operation "tessera.call"(%[[X0]], %[[RES0]] : !pdl.value, !pdl.value)  {"callee" = %[[POW]]} -> (%[[T1]] : !pdl.range<type>)
 // CHECK-NEXT:   %[[POW_RES:.*]] = result 0 of %[[POW_CALL]]
-// CHECK-NEXT:   rewrite %[[POW_CALL]] {
-// CHECK-NEXT:     %[[MUL:.*]] = attribute = @tessera.mul
-// CHECK-NEXT:     %[[T2:.*]] = types
-// CHECK-NEXT:     %[[MUL_CALL:.*]] = operation "tessera.call"(%[[X0]], %[[X0]] : !pdl.value, !pdl.value)  {"callee" = %[[MUL]]} -> (%[[T2]] : !pdl.range<type>)
-// CHECK-NEXT:     %[[MUL_RES:.*]] = result 0 of %[[MUL_CALL]]
-// CHECK-NEXT:     replace %[[POW_CALL]] with %[[MUL_CALL]]
-// CHECK-NEXT:   }
+// CHECK-NEXT:   %[[RULE:.*]] = attribute = "tessera.pow(x, 2) -> tessera.mul(x, x)"
+// CHECK-NEXT:   %[[NAMES:.*]] = attribute = ["x"]
+// CHECK-NEXT:   apply_native_constraint "tesseraRuleApplicable"(%[[POW_CALL]], %[[RULE]] : !pdl.operation, !pdl.attribute)
+// CHECK-NEXT:   rewrite %[[POW_CALL]] with "tesseraRewrite"(%[[RULE]], %[[NAMES]], %[[X0]] : !pdl.attribute, !pdl.attribute, !pdl.value)
 // CHECK-NEXT: }
 
 // CHECK: pdl.pattern : benefit(1) {
@@ -48,13 +52,10 @@ module {
 // CHECK-NEXT:   %[[T1:.*]] = types
 // CHECK-NEXT:   %[[MAG_CALL:.*]] = operation "tessera.call"(%[[NEGF_RES]], %[[Y]], %[[Z]] : !pdl.value, !pdl.value, !pdl.value) {"callee" = %[[MAG]]} -> (%[[T1]] : !pdl.range<type>)
 // CHECK-NEXT:   %{{.*}} = result 0 of %[[MAG_CALL]]
-// CHECK-NEXT:   rewrite %[[MAG_CALL]] {
-// CHECK-NEXT:     %[[MAG2:.*]] = attribute = @eigen.mag
-// CHECK-NEXT:     %[[T2:.*]] = types
-// CHECK-NEXT:     %[[NEW_CALL:.*]] = operation "tessera.call"(%[[X0]], %[[Y]], %[[Z]] : !pdl.value, !pdl.value, !pdl.value) {"callee" = %[[MAG2]]} -> (%[[T2]] : !pdl.range<type>)
-// CHECK-NEXT:     %{{.*}} = result 0 of %[[NEW_CALL]]
-// CHECK-NEXT:     replace %[[MAG_CALL]] with %[[NEW_CALL]]
-// CHECK-NEXT:   }
+// CHECK-NEXT:   %[[RULE:.*]] = attribute = "eigen.mag(arith.negf(x),y,z) -> eigen.mag(x,y,z)"
+// CHECK-NEXT:   %[[NAMES:.*]] = attribute = ["x", "y", "z"]
+// CHECK-NEXT:   apply_native_constraint "tesseraRuleApplicable"(%[[MAG_CALL]], %[[RULE]] : !pdl.operation, !pdl.attribute)
+// CHECK-NEXT:   rewrite %[[MAG_CALL]] with "tesseraRewrite"(%[[RULE]], %[[NAMES]], %[[X0]], %[[Y]], %[[Z]] : !pdl.attribute, !pdl.attribute, !pdl.value, !pdl.value, !pdl.value)
 // CHECK-NEXT: }
 
 // CHECK: pdl.pattern : benefit(1) {
@@ -67,9 +68,10 @@ module {
 // CHECK-NEXT:   %[[T1:.*]] = types
 // CHECK-NEXT:   %[[INV2_CALL:.*]] = operation "tessera.call"(%[[INV1_RES]] : !pdl.value) {"callee" = %[[INV2]]} -> (%[[T1]] : !pdl.range<type>)
 // CHECK-NEXT:   %{{.*}} = result 0 of %[[INV2_CALL]]
-// CHECK-NEXT:   rewrite %[[INV2_CALL]] {
-// CHECK-NEXT:     replace %[[INV2_CALL]] with(%[[X0]] : !pdl.value)
-// CHECK-NEXT:   }
+// CHECK-NEXT:   %[[RULE:.*]] = attribute = "eigen.inv(eigen.inv(x)) -> x"
+// CHECK-NEXT:   %[[NAMES:.*]] = attribute = ["x"]
+// CHECK-NEXT:   apply_native_constraint "tesseraRuleApplicable"(%[[INV2_CALL]], %[[RULE]] : !pdl.operation, !pdl.attribute)
+// CHECK-NEXT:   rewrite %[[INV2_CALL]] with "tesseraRewrite"(%[[RULE]], %[[NAMES]], %[[X0]] : !pdl.attribute, !pdl.attribute, !pdl.value)
 // CHECK-NEXT: }
 
 // CHECK: pdl.pattern : benefit(1) {
@@ -83,13 +85,10 @@ module {
 // CHECK-NEXT:   %[[T1:.*]] = types
 // CHECK-NEXT:   %[[WIDE_CALL:.*]] = operation "tessera.call"(%[[X0]], %[[RES0]] : !pdl.value, !pdl.value)  {"callee" = %[[WIDE]]} -> (%[[T1]] : !pdl.range<type>)
 // CHECK-NEXT:   %{{.*}} = result 0 of %[[WIDE_CALL]]
-// CHECK-NEXT:   rewrite %[[WIDE_CALL]] {
-// CHECK-NEXT:     %[[MUL:.*]] = attribute = @tessera.mul
-// CHECK-NEXT:     %[[T2:.*]] = types
-// CHECK-NEXT:     %[[MUL_CALL:.*]] = operation "tessera.call"(%[[X0]], %[[X0]] : !pdl.value, !pdl.value)  {"callee" = %[[MUL]]} -> (%[[T2]] : !pdl.range<type>)
-// CHECK-NEXT:     %{{.*}} = result 0 of %[[MUL_CALL]]
-// CHECK-NEXT:     replace %[[WIDE_CALL]] with %[[MUL_CALL]]
-// CHECK-NEXT:   }
+// CHECK-NEXT:   %[[RULE:.*]] = attribute = "tessera.wide(x, 3000000000) -> tessera.mul(x, x)"
+// CHECK-NEXT:   %[[NAMES:.*]] = attribute = ["x"]
+// CHECK-NEXT:   apply_native_constraint "tesseraRuleApplicable"(%[[WIDE_CALL]], %[[RULE]] : !pdl.operation, !pdl.attribute)
+// CHECK-NEXT:   rewrite %[[WIDE_CALL]] with "tesseraRewrite"(%[[RULE]], %[[NAMES]], %[[X0]] : !pdl.attribute, !pdl.attribute, !pdl.value)
 // CHECK-NEXT: }
 
 // CHECK: pdl.pattern : benefit(1) {
@@ -98,16 +97,10 @@ module {
 // CHECK-NEXT:   %[[T0:.*]] = types
 // CHECK-NEXT:   %[[SCALE_CALL:.*]] = operation "tessera.call"(%[[X0]] : !pdl.value) {"callee" = %[[SCALE]]} -> (%[[T0]] : !pdl.range<type>)
 // CHECK-NEXT:   %{{.*}} = result 0 of %[[SCALE_CALL]]
-// CHECK-NEXT:   rewrite %[[SCALE_CALL]] {
-// CHECK-NEXT:     %[[BIG:.*]] = attribute = 3000000000 : i64
-// CHECK-NEXT:     %[[CST:.*]] = operation "llvm.mlir.constant" {{.*}}"value" = %[[BIG]]{{.*}}
-// CHECK-NEXT:     %[[CST_RES:.*]] = result 0 of %[[CST]]
-// CHECK-NEXT:     %[[MUL:.*]] = attribute = @tessera.mul
-// CHECK-NEXT:     %[[T1:.*]] = types
-// CHECK-NEXT:     %[[MUL_CALL:.*]] = operation "tessera.call"(%[[X0]], %[[CST_RES]] : !pdl.value, !pdl.value)  {"callee" = %[[MUL]]} -> (%[[T1]] : !pdl.range<type>)
-// CHECK-NEXT:     %{{.*}} = result 0 of %[[MUL_CALL]]
-// CHECK-NEXT:     replace %[[SCALE_CALL]] with %[[MUL_CALL]]
-// CHECK-NEXT:   }
+// CHECK-NEXT:   %[[RULE:.*]] = attribute = "tessera.scale(x) -> tessera.mul(x, 3000000000)"
+// CHECK-NEXT:   %[[NAMES:.*]] = attribute = ["x"]
+// CHECK-NEXT:   apply_native_constraint "tesseraRuleApplicable"(%[[SCALE_CALL]], %[[RULE]] : !pdl.operation, !pdl.attribute)
+// CHECK-NEXT:   rewrite %[[SCALE_CALL]] with "tesseraRewrite"(%[[RULE]], %[[NAMES]], %[[X0]] : !pdl.attribute, !pdl.attribute, !pdl.value)
 // CHECK-NEXT: }
 
 // CHECK: pdl.pattern : benefit(1) {
@@ -116,16 +109,10 @@ module {
 // CHECK-NEXT:   %[[T0:.*]] = types
 // CHECK-NEXT:   %[[CIRCLE_CALL:.*]] = operation "tessera.call"(%[[R]] : !pdl.value) {"callee" = %[[CIRCLE]]} -> (%[[T0]] : !pdl.range<type>)
 // CHECK-NEXT:   %{{.*}} = result 0 of %[[CIRCLE_CALL]]
-// CHECK-NEXT:   rewrite %[[CIRCLE_CALL]] {
-// CHECK-NEXT:     %[[PI:.*]] = attribute = {{.*}} : f64
-// CHECK-NEXT:     %[[CST:.*]] = operation "llvm.mlir.constant" {{.*}}"value" = %[[PI]]{{.*}}
-// CHECK-NEXT:     %[[CST_RES:.*]] = result 0 of %[[CST]]
-// CHECK-NEXT:     %[[MULF:.*]] = attribute = @tessera.mulf
-// CHECK-NEXT:     %[[T1:.*]] = types
-// CHECK-NEXT:     %[[MULF_CALL:.*]] = operation "tessera.call"(%[[R]], %[[CST_RES]] : !pdl.value, !pdl.value)  {"callee" = %[[MULF]]} -> (%[[T1]] : !pdl.range<type>)
-// CHECK-NEXT:     %{{.*}} = result 0 of %[[MULF_CALL]]
-// CHECK-NEXT:     replace %[[CIRCLE_CALL]] with %[[MULF_CALL]]
-// CHECK-NEXT:   }
+// CHECK-NEXT:   %[[RULE:.*]] = attribute = "tessera.circle(r) -> tessera.mulf(r, 3.141592653589793)"
+// CHECK-NEXT:   %[[NAMES:.*]] = attribute = ["r"]
+// CHECK-NEXT:   apply_native_constraint "tesseraRuleApplicable"(%[[CIRCLE_CALL]], %[[RULE]] : !pdl.operation, !pdl.attribute)
+// CHECK-NEXT:   rewrite %[[CIRCLE_CALL]] with "tesseraRewrite"(%[[RULE]], %[[NAMES]], %[[R]] : !pdl.attribute, !pdl.attribute, !pdl.value)
 // CHECK-NEXT: }
 
 // CHECK: pdl.pattern : benefit(1) {
@@ -134,16 +121,10 @@ module {
 // CHECK-NEXT:   %[[T0:.*]] = types
 // CHECK-NEXT:   %[[SQRT_CALL:.*]] = operation "tessera.call"(%[[X0]] : !pdl.value) {"callee" = %[[SQRT]]} -> (%[[T0]] : !pdl.range<type>)
 // CHECK-NEXT:   %{{.*}} = result 0 of %[[SQRT_CALL]]
-// CHECK-NEXT:   rewrite %[[SQRT_CALL]] {
-// CHECK-NEXT:     %[[POINT5:.*]] = attribute = 5.000000e-01 : f32
-// CHECK-NEXT:     %[[CST:.*]] = operation "llvm.mlir.constant" {{.*}}"value" = %[[POINT5]]{{.*}}
-// CHECK-NEXT:     %[[CST_RES:.*]] = result 0 of %[[CST]]
-// CHECK-NEXT:     %[[POW:.*]] = attribute = @tessera.pow
-// CHECK-NEXT:     %[[T1:.*]] = types
-// CHECK-NEXT:     %[[POW_CALL:.*]] = operation "tessera.call"(%[[X0]], %[[CST_RES]] : !pdl.value, !pdl.value)  {"callee" = %[[POW]]} -> (%[[T1]] : !pdl.range<type>)
-// CHECK-NEXT:     %{{.*}} = result 0 of %[[POW_CALL]]
-// CHECK-NEXT:     replace %[[SQRT_CALL]] with %[[POW_CALL]]
-// CHECK-NEXT:   }
+// CHECK-NEXT:   %[[RULE:.*]] = attribute = "tessera.sqrt(x) -> tessera.pow(x, 0.5)"
+// CHECK-NEXT:   %[[NAMES:.*]] = attribute = ["x"]
+// CHECK-NEXT:   apply_native_constraint "tesseraRuleApplicable"(%[[SQRT_CALL]], %[[RULE]] : !pdl.operation, !pdl.attribute)
+// CHECK-NEXT:   rewrite %[[SQRT_CALL]] with "tesseraRewrite"(%[[RULE]], %[[NAMES]], %[[X0]] : !pdl.attribute, !pdl.attribute, !pdl.value)
 // CHECK-NEXT: }
 
 // CHECK: pdl.pattern : benefit(1) {
@@ -157,13 +138,10 @@ module {
 // CHECK-NEXT:   %[[T1:.*]] = types
 // CHECK-NEXT:   %[[MULF_CALL:.*]] = operation "tessera.call"(%[[X0]], %[[RES0]] : !pdl.value, !pdl.value)  {"callee" = %[[MULF]]} -> (%[[T1]] : !pdl.range<type>)
 // CHECK-NEXT:   %{{.*}} = result 0 of %[[MULF_CALL]]
-// CHECK-NEXT:   rewrite %[[MULF_CALL]] {
-// CHECK-NEXT:     %[[NEGF:.*]] = attribute = @arith.negf
-// CHECK-NEXT:     %[[T2:.*]] = types
-// CHECK-NEXT:     %[[NEGF_CALL:.*]] = operation "tessera.call"(%[[X0]] : !pdl.value) {"callee" = %[[NEGF]]} -> (%[[T2]] : !pdl.range<type>)
-// CHECK-NEXT:     %{{.*}} = result 0 of %[[NEGF_CALL]]
-// CHECK-NEXT:     replace %[[MULF_CALL]] with %[[NEGF_CALL]]
-// CHECK-NEXT:   }
+// CHECK-NEXT:   %[[RULE:.*]] = attribute = "arith.mulf(x, -1.0) -> arith.negf(x)"
+// CHECK-NEXT:   %[[NAMES:.*]] = attribute = ["x"]
+// CHECK-NEXT:   apply_native_constraint "tesseraRuleApplicable"(%[[MULF_CALL]], %[[RULE]] : !pdl.operation, !pdl.attribute)
+// CHECK-NEXT:   rewrite %[[MULF_CALL]] with "tesseraRewrite"(%[[RULE]], %[[NAMES]], %[[X0]] : !pdl.attribute, !pdl.attribute, !pdl.value)
 // CHECK-NEXT: }
 
 // CHECK: pdl.pattern : benefit(1) {
@@ -177,14 +155,8 @@ module {
 // CHECK-NEXT:   %[[T1:.*]] = types
 // CHECK-NEXT:   %[[SH_CALL:.*]] = operation "tessera.call"(%[[X0]], %[[RES0]] : !pdl.value, !pdl.value)  {"callee" = %[[SH]]} -> (%[[T1]] : !pdl.range<type>)
 // CHECK-NEXT:   %{{.*}} = result 0 of %[[SH_CALL]]
-// CHECK-NEXT:   rewrite %[[SH_CALL]] {
-// CHECK-NEXT:     %[[TWO:.*]] = attribute = 2.000000e+00 : f32
-// CHECK-NEXT:     %[[CST:.*]] = operation "llvm.mlir.constant" {{.*}}"value" = %[[TWO]]{{.*}}
-// CHECK-NEXT:     %[[CST_RES:.*]] = result 0 of %[[CST]]
-// CHECK-NEXT:     %[[MULF:.*]] = attribute = @tessera.mulf
-// CHECK-NEXT:     %[[T2:.*]] = types
-// CHECK-NEXT:     %[[MULF_CALL:.*]] = operation "tessera.call"(%[[X0]], %[[CST_RES]] : !pdl.value, !pdl.value)  {"callee" = %[[MULF]]} -> (%[[T2]] : !pdl.range<type>)
-// CHECK-NEXT:     %{{.*}} = result 0 of %[[MULF_CALL]]
-// CHECK-NEXT:     replace %[[SH_CALL]] with %[[MULF_CALL]]
-// CHECK-NEXT:   }
+// CHECK-NEXT:   %[[RULE:.*]] = attribute = "tessera.shorthand(x, .5) -> tessera.mulf(x, 2.)"
+// CHECK-NEXT:   %[[NAMES:.*]] = attribute = ["x"]
+// CHECK-NEXT:   apply_native_constraint "tesseraRuleApplicable"(%[[SH_CALL]], %[[RULE]] : !pdl.operation, !pdl.attribute)
+// CHECK-NEXT:   rewrite %[[SH_CALL]] with "tesseraRewrite"(%[[RULE]], %[[NAMES]], %[[X0]] : !pdl.attribute, !pdl.attribute, !pdl.value)
 // CHECK-NEXT: }

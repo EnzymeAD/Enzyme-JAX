@@ -7,15 +7,23 @@
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/PDL/IR/PDL.h"
+#include "mlir/Dialect/PDL/IR/PDLOps.h"
 #include "mlir/Dialect/PDLInterp/IR/PDLInterp.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Predicates.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/RuleAST.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/StringSet.h"
+#include "llvm/Support/MathExtras.h"
+#include <memory>
 #include <variant>
 
 namespace mlir {
@@ -117,6 +125,11 @@ static LogicalResult isFloatConstantEqualTo(PatternRewriter &rewriter,
 static constexpr llvm::StringLiteral kAppliedRulesAttr =
     "tessera.applied_rules";
 
+// Marks a function whose body no rule may rewrite. Set by
+// lift-tessera-annotations from
+// `__attribute__((annotate("tessera_no_rewrite")))`.
+static constexpr llvm::StringLiteral kNoRewriteAttr = "tessera.no_rewrite";
+
 static bool hasRuleBeenApplied(Operation *op, StringAttr rule) {
   auto applied = op->getAttrOfType<ArrayAttr>(kAppliedRulesAttr);
   return applied && llvm::is_contained(applied.getValue(), Attribute(rule));
@@ -140,93 +153,503 @@ static LogicalResult tesseraRuleNotApplied(PatternRewriter &rewriter,
   return success(!hasRuleBeenApplied(op, rule));
 }
 
-// Build the IR for the right-hand side of a rule. This mirrors emitRewritePDL
-// in ParseOptimizationRules.cpp, except that it constructs real operations
-// rather than the PDL that would construct them: by the time a conditional
-// rule is applied, the matched values exist, so the replacement can simply be
-// built.
+static std::string calleeName(const Call &call) {
+  return call.dialect + "." + call.opname;
+}
+
+static DefineOp lookupDefine(Operation *anchor, llvm::StringRef name) {
+  return SymbolTable::lookupNearestSymbolFrom<DefineOp>(
+      anchor, StringAttr::get(anchor->getContext(), name));
+}
+
+/// How a matched op is named in a diagnostic: by callee for a call.
+static std::string describeOp(Operation *op) {
+  if (auto call = dyn_cast<CallOp>(op))
+    return call.getCallee().str();
+  return op->getName().getStringRef().str();
+}
+
+static void collectCallees(const Expr &expr, llvm::StringSet<> &callees) {
+  if (auto *call = std::get_if<Call>(&expr.data)) {
+    callees.insert(calleeName(*call));
+    for (const Expr &arg : call->args)
+      collectCallees(arg, callees);
+  }
+}
+
+//===----------------------------------------------------------------------===//
+// What the match bound
+//===----------------------------------------------------------------------===//
+
+// PDL matches a tessera.call's operands positionally against the arguments the
+// rule wrote, so argument i of a Call node in the left-hand side is operand i
+// of the op it matched. That is what lets the matched structure be recovered
+// from the root and the AST alone.
+
+/// Bind every variable in the left-hand side to the value it matched.
+static void bindLhsVars(const Expr &expr, Operation *op,
+                        llvm::StringMap<Value> &bound) {
+  auto *call = std::get_if<Call>(&expr.data);
+  if (!call || !op || op->getNumOperands() != call->args.size())
+    return;
+  for (auto [index, arg] : llvm::enumerate(call->args)) {
+    Value operand = op->getOperand(index);
+    if (auto *var = std::get_if<Var>(&arg.data))
+      bound.try_emplace(var->name, operand);
+    else if (std::holds_alternative<Call>(arg.data))
+      bindLhsVars(arg, operand.getDefiningOp(), bound);
+  }
+}
+
+/// The calls the left-hand side matched beneath its root, deepest first.
+static void collectProducers(const Expr &expr, Operation *op,
+                             llvm::SetVector<Operation *> &producers) {
+  auto *call = std::get_if<Call>(&expr.data);
+  if (!call || !op || op->getNumOperands() != call->args.size())
+    return;
+  for (auto [index, arg] : llvm::enumerate(call->args)) {
+    if (!std::holds_alternative<Call>(arg.data))
+      continue;
+    Operation *producer = op->getOperand(index).getDefiningOp();
+    collectProducers(arg, producer, producers);
+    if (producer)
+      producers.insert(producer);
+  }
+}
+
+//===----------------------------------------------------------------------===//
+// Moving a matched chain
+//===----------------------------------------------------------------------===//
+
+// A rule whose left-hand side nests calls, `f(g(x)) -> f'(g'(x))`, matches the
+// producer g as well as the root f. Replacing only the root would leave g
+// behind, still running unconditionally -- and if g has side effects, say it
+// accumulates into an output buffer as every FEM element kernel does, it then
+// runs on top of g' and the result is wrong. So the producers move with the
+// root: they are erased once the root is replaced, and a guard's else region
+// recomputes them alongside its copy of the root.
 //
-// Returns the produced operation for a call, or a null operation and the bound
-// value for a bare variable on the right-hand side (the `f(f(x)) -> x` shape).
-struct BuiltExpr {
-  Value value;
-  Operation *op = nullptr;
+// Moving a producer down to the root is only sound when nothing observes the
+// difference, which is what the plan below decides.
+
+struct ChainPlan {
+  /// Producers that move with the root, in block order.
+  SmallVector<Operation *> moved;
 };
 
-static BuiltExpr buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
-                             const llvm::StringMap<Value> &boundVars,
-                             Operation *symbolAnchor, TypeRange fallbackTypes) {
+/// Decide which matched producers move with `root`. Returns an explanation if
+/// the rule cannot be applied here without changing what the program does.
+///
+/// A producer moves when the chain is its only user and it sits in the root's
+/// block. One that cannot move may simply stay where it is if it is pure: the
+/// rewritten code refers to it, and it computes the same thing either way. A
+/// producer with side effects that cannot move blocks the rewrite, since the
+/// new code would run in addition to it.
+static std::optional<std::string> planChain(Operation *root, const Rule &rule,
+                                            ChainPlan &plan) {
+  llvm::SetVector<Operation *> producers;
+  collectProducers(rule.lhs, root, producers);
+
+  llvm::SmallPtrSet<Operation *, 8> moving;
+  moving.insert(root);
+
+  // Users before producers, so a producer is only judged once everything in
+  // the chain that uses it has been.
+  for (Operation *producer : llvm::reverse(producers)) {
+    bool onlyChainUses = llvm::all_of(
+        producer->getUsers(), [&](Operation *u) { return moving.contains(u); });
+    if (onlyChainUses && producer->getBlock() == root->getBlock()) {
+      moving.insert(producer);
+      plan.moved.push_back(producer);
+      continue;
+    }
+    if (isMemoryEffectFree(producer))
+      continue;
+
+    std::string why;
+    llvm::raw_string_ostream os(why);
+    os << "the matched call to '" << describeOp(producer)
+       << "' has side effects and ";
+    if (!onlyChainUses)
+      os << "its results are also used outside the matched expression";
+    else
+      os << "is not in the same block as the call it feeds";
+    return why;
+  }
+
+  llvm::sort(plan.moved,
+             [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+
+  // A producer with side effects is being moved down to the root, so nothing
+  // between the two may have side effects of its own: it could observe or
+  // change what the producer does.
+  for (Operation *producer : plan.moved) {
+    if (isMemoryEffectFree(producer))
+      continue;
+    for (Operation *op = producer->getNextNode(); op && op != root;
+         op = op->getNextNode()) {
+      if (moving.contains(op) || isMemoryEffectFree(op))
+        continue;
+      std::string why;
+      llvm::raw_string_ostream os(why);
+      os << "the matched call to '" << describeOp(producer)
+         << "' has side effects and would have to move past '" << describeOp(op)
+         << "', which has side effects of its own";
+      return why;
+    }
+  }
+  return std::nullopt;
+}
+
+/// Erase the producers that moved with a root that has just been replaced.
+/// Latest first, since each may be the last user of an earlier one.
+static void eraseMovedProducers(PatternRewriter &rewriter,
+                                const ChainPlan &plan) {
+  for (Operation *producer : llvm::reverse(plan.moved))
+    if (producer->use_empty())
+      rewriter.eraseOp(producer);
+}
+
+//===----------------------------------------------------------------------===//
+// Checking and building the right-hand side
+//===----------------------------------------------------------------------===//
+
+/// The type a literal is built at. A literal passed to a callee takes the type
+/// of the parameter it is passed to, and one replacing the matched call takes
+/// that call's result type; only without either is the width picked from the
+/// literal's own magnitude.
+static Type literalType(const Expr &literal, Type expected, OpBuilder &b) {
+  if (auto *n = std::get_if<IntLit>(&literal.data)) {
+    if (isa_and_nonnull<IntegerType>(expected))
+      return expected;
+    return getIntegerAttrForLiteral(b, n->value).getType();
+  }
+  auto *n = std::get_if<FloatLit>(&literal.data);
+  if (isa_and_nonnull<FloatType>(expected))
+    return expected;
+  return getFloatAttrForLiteral(b, n->value).getType();
+}
+
+/// The type a tessera.call to `define` expects at operand `index`: the pointee
+/// for an argument the call site loads, otherwise the parameter itself.
+static Type callOperandValueType(DefineOp define, unsigned index) {
+  if (Type pointee = define.getCallOperandPointeeType(index))
+    return pointee;
+  std::optional<unsigned> raw = define.getArgIndexForCallOperand(index);
+  return raw ? define.getFunctionType().getInput(*raw) : Type();
+}
+
+/// Whether a tessera.call to `define` can take a value of type `actual` at
+/// operand `index`. This follows CallOp::verifySymbolUses, a little more
+/// strictly: an argument the call site loads must be given either the pointer
+/// itself or exactly the pointee type, where the verifier accepts anything.
+static bool callOperandAccepts(DefineOp define, unsigned index, Type actual) {
+  std::optional<unsigned> raw = define.getArgIndexForCallOperand(index);
+  if (!raw)
+    return false;
+  Type formal = define.getFunctionType().getInput(*raw);
+  if (actual == formal)
+    return true;
+  Type pointee = define.getCallOperandPointeeType(index);
+  return pointee && isa<LLVM::LLVMPointerType>(formal) && actual == pointee;
+}
+
+static bool literalFits(const Expr &literal, Type type) {
+  auto *n = std::get_if<IntLit>(&literal.data);
+  auto intType = dyn_cast<IntegerType>(type);
+  if (!n || !intType)
+    return true;
+  unsigned width = intType.getWidth();
+  return width >= 64 || llvm::isIntN(width, n->value) ||
+         (n->value >= 0 && llvm::isUIntN(width, n->value));
+}
+
+/// Work out, without building anything, what the right-hand side would
+/// produce. Sets `why` and returns failure if it could not be built validly --
+/// a callee with no tessera.define, or an argument of the wrong type -- which
+/// would otherwise only surface as a verifier error on the whole module.
+static LogicalResult checkRhsCall(const Call &call, Operation *anchor,
+                                  const llvm::StringMap<Value> &bound,
+                                  SmallVectorImpl<Type> &resultTypes,
+                                  std::string &why);
+
+static Type checkRhsValue(const Expr &expr, Operation *anchor,
+                          const llvm::StringMap<Value> &bound, Type expected,
+                          std::string &why) {
   return std::visit(
       overloaded{
-          [&](const Var &v) -> BuiltExpr {
-            auto it = boundVars.find(v.name);
-            if (it == boundVars.end()) {
-              emitError(loc) << "optimization rule uses '" << v.name
-                             << "' on the right-hand side, but it is not bound "
-                                "on the left";
-              return {};
+          [&](const Var &v) -> Type {
+            if (Value value = bound.lookup(v.name))
+              return value.getType();
+            why = "'" + v.name + "' is not bound by the left-hand side";
+            return Type();
+          },
+          [&](const IntLit &) -> Type {
+            OpBuilder b(anchor->getContext());
+            return literalType(expr, expected, b);
+          },
+          [&](const FloatLit &) -> Type {
+            OpBuilder b(anchor->getContext());
+            return literalType(expr, expected, b);
+          },
+          [&](const Call &c) -> Type {
+            SmallVector<Type> results;
+            if (failed(checkRhsCall(c, anchor, bound, results, why)))
+              return Type();
+            if (results.empty()) {
+              why = "'" + calleeName(c) +
+                    "' is used as an argument, but produces no result";
+              return Type();
             }
-            return {it->second, nullptr};
-          },
-          [&](const IntLit &n) -> BuiltExpr {
-            auto attr = getIntegerAttrForLiteral(builder, n.value);
-            auto op =
-                LLVM::ConstantOp::create(builder, loc, attr.getType(), attr);
-            return {op.getResult(), op};
-          },
-          [&](const FloatLit &n) -> BuiltExpr {
-            auto attr = getFloatAttrForLiteral(builder, n.value);
-            auto op =
-                LLVM::ConstantOp::create(builder, loc, attr.getType(), attr);
-            return {op.getResult(), op};
-          },
-          [&](const Call &c) -> BuiltExpr {
-            SmallVector<Value> argValues;
-            for (const Expr &arg : c.args) {
-              BuiltExpr built = buildExprIR(arg, builder, loc, boundVars,
-                                            symbolAnchor, fallbackTypes);
-              if (!built.value)
-                return {};
-              argValues.push_back(built.value);
-            }
-
-            // Result types come from the callee's own declaration rather than
-            // being guessed, which is also what makes a nested call on the
-            // right-hand side work. When the callee is not declared, fall back
-            // to what the matched op produced and let the verifier report the
-            // unknown symbol -- it does so more precisely than this could.
-            std::string callee = c.dialect + "." + c.opname;
-            auto define = SymbolTable::lookupNearestSymbolFrom<DefineOp>(
-                symbolAnchor, StringAttr::get(builder.getContext(), callee));
-            TypeRange resultTypes =
-                define ? define.getFunctionType().getResults() : fallbackTypes;
-
-            auto call =
-                CallOp::create(builder, loc, callee, resultTypes, argValues);
-            return {call.getNumResults() ? call.getResult(0) : Value(), call};
+            // A nested call denotes its first result.
+            return results.front();
           },
       },
       expr.data);
 }
 
-// Rewrite function for a conditional rule. PDL passes the matched root first,
-// then the external arguments the pattern listed: the rule text, the names the
-// condition uses, and the matched values those names refer to.
+static LogicalResult checkRhsCall(const Call &call, Operation *anchor,
+                                  const llvm::StringMap<Value> &bound,
+                                  SmallVectorImpl<Type> &resultTypes,
+                                  std::string &why) {
+  std::string name = calleeName(call);
+  DefineOp define = lookupDefine(anchor, name);
+  if (!define) {
+    why = "its right-hand side calls '" + name +
+          "', which has no tessera.define in this module (if it is an inline "
+          "helper, nothing in this translation unit caused it to be emitted)";
+    return failure();
+  }
+  if (call.args.size() != define.getNumCallOperands()) {
+    why = "its right-hand side calls '" + name + "' with " +
+          std::to_string(call.args.size()) + " argument(s), but it takes " +
+          std::to_string(define.getNumCallOperands());
+    return failure();
+  }
+  for (auto [index, arg] : llvm::enumerate(call.args)) {
+    Type expected = callOperandValueType(define, index);
+    Type actual = checkRhsValue(arg, anchor, bound, expected, why);
+    if (!actual)
+      return failure();
+    if (!literalFits(arg, actual)) {
+      why = "literal " + renderExpr(arg) + " passed as argument " +
+            std::to_string(index) + " of '" + name + "' does not fit in its " +
+            "parameter type";
+      return failure();
+    }
+    if (!callOperandAccepts(define, index, actual)) {
+      llvm::raw_string_ostream os(why);
+      os << "argument " << index << " of '" << name << "' expects "
+         << define.getFunctionType().getInput(
+                *define.getArgIndexForCallOperand(index))
+         << ", but the rule passes it a value of type " << actual;
+      return failure();
+    }
+  }
+  resultTypes.clear();
+  llvm::append_range(resultTypes, define.getCallResultTypes());
+  return success();
+}
+
+/// Check that the right-hand side can replace `root` as a whole.
+static LogicalResult checkRhs(const Rule &rule, Operation *root,
+                              const llvm::StringMap<Value> &bound,
+                              std::string &why) {
+  if (auto *call = std::get_if<Call>(&rule.rhs.data)) {
+    SmallVector<Type> results;
+    if (failed(checkRhsCall(*call, root, bound, results, why)))
+      return failure();
+    if (!llvm::equal(results, root->getResultTypes())) {
+      llvm::raw_string_ostream os(why);
+      os << "'" << calleeName(*call) << "' produces (";
+      llvm::interleaveComma(results, os);
+      os << "), but the call it replaces produces (";
+      llvm::interleaveComma(root->getResultTypes(), os);
+      os << ")";
+      return failure();
+    }
+    return success();
+  }
+
+  if (root->getNumResults() != 1) {
+    why = "its right-hand side is a single value, but the call it replaces "
+          "produces " +
+          std::to_string(root->getNumResults()) + " results";
+    return failure();
+  }
+  Type expected = root->getResult(0).getType();
+  Type actual = checkRhsValue(rule.rhs, root, bound, expected, why);
+  if (!actual)
+    return failure();
+  if (actual != expected) {
+    llvm::raw_string_ostream os(why);
+    os << "its right-hand side is a value of type " << actual
+       << ", but the call it replaces produces " << expected;
+    return failure();
+  }
+  return success();
+}
+
+// Build the IR for the right-hand side of a rule. The matched values exist by
+// the time a rule is applied, so the replacement is constructed directly, and
+// checkRhs has already established that it will verify.
+static Value buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
+                         const llvm::StringMap<Value> &boundVars,
+                         Operation *symbolAnchor, Type expected,
+                         Operation **builtOp = nullptr) {
+  return std::visit(
+      overloaded{
+          [&](const Var &v) -> Value { return boundVars.lookup(v.name); },
+          [&](const IntLit &n) -> Value {
+            Type type = literalType(expr, expected, builder);
+            return LLVM::ConstantOp::create(
+                builder, loc, type, builder.getIntegerAttr(type, n.value));
+          },
+          [&](const FloatLit &n) -> Value {
+            Type type = literalType(expr, expected, builder);
+            return LLVM::ConstantOp::create(
+                builder, loc, type, builder.getFloatAttr(type, n.value));
+          },
+          [&](const Call &c) -> Value {
+            DefineOp define = lookupDefine(symbolAnchor, calleeName(c));
+            SmallVector<Value> argValues;
+            for (auto [index, arg] : llvm::enumerate(c.args))
+              argValues.push_back(
+                  buildExprIR(arg, builder, loc, boundVars, symbolAnchor,
+                              callOperandValueType(define, index)));
+
+            // Result types come from the callee's declaration, including the
+            // leading results its written arguments contribute, which is also
+            // what makes a nested call on the right-hand side work.
+            auto call = CallOp::create(builder, loc, calleeName(c),
+                                       define.getCallResultTypes(), argValues);
+            if (builtOp)
+              *builtOp = call;
+            return call.getNumResults() ? call.getResult(0) : Value();
+          },
+      },
+      expr.data);
+}
+
+/// Build the right-hand side and return what replaces the root with it.
+static SmallVector<Value> buildReplacement(const Rule &rule, OpBuilder &builder,
+                                           Location loc,
+                                           const llvm::StringMap<Value> &bound,
+                                           Operation *root) {
+  Type expected =
+      root->getNumResults() == 1 ? root->getResult(0).getType() : Type();
+  Operation *op = nullptr;
+  Value value = buildExprIR(rule.rhs, builder, loc, bound, root, expected, &op);
+  if (std::holds_alternative<Call>(rule.rhs.data))
+    return SmallVector<Value>(op->getResults().begin(), op->getResults().end());
+  return {value};
+}
+
+//===----------------------------------------------------------------------===//
+// State shared by the native functions
+//===----------------------------------------------------------------------===//
+
+struct ApplyState {
+  /// Each rule parsed once; the text is what the patterns carry.
+  llvm::DenseMap<Attribute, std::unique_ptr<Rule>> rules;
+
+  /// Every tessera op named on the right-hand side of some rule. No rule is
+  /// applied inside the body of one of these: a replacement's fallback path
+  /// commonly calls the very op it replaces, and rewriting that call would
+  /// turn it into a call to the replacement itself, recursing forever on
+  /// exactly the inputs the fallback exists for.
+  llvm::StringSet<> rhsCallees;
+
+  /// Warnings already given, so a rule the greedy driver tries at many sites,
+  /// or at one site many times, is reported once.
+  llvm::DenseSet<Attribute> warnedRules;
+  llvm::DenseSet<std::pair<Attribute, Operation *>> warnedSites;
+
+  const Rule *getRule(StringAttr text, Location loc) {
+    auto &slot = rules[text];
+    if (!slot) {
+      Parser parser(text.getValue().str(), loc);
+      auto rule = parser.parseRule();
+      if (!rule)
+        return nullptr;
+      slot = std::make_unique<Rule>(std::move(*rule));
+    }
+    return slot.get();
+  }
+
+  void addRule(StringAttr text, Location loc) {
+    if (const Rule *rule = getRule(text, loc))
+      collectCallees(rule->rhs, rhsCallees);
+  }
+
+  bool isExcluded(Operation *op) {
+    for (Operation *parent = op->getParentOp(); parent;
+         parent = parent->getParentOp()) {
+      if (parent->hasAttr(kNoRewriteAttr))
+        return true;
+      if (auto define = dyn_cast<DefineOp>(parent))
+        if (rhsCallees.contains(define.getSymName()))
+          return true;
+    }
+    return false;
+  }
+};
+
+/// Match-time gate for every generated pattern. Declines, without touching
+/// the IR, when:
+///
+///   - the match sits in code no rule may rewrite (see ApplyState);
+///   - the right-hand side cannot be built into valid IR here, which is
+///     reported, since the rule then silently never fires;
+///   - the matched chain cannot move with its root (see planChain), which is
+///     reported too.
+static LogicalResult tesseraRuleApplicable(ApplyState &state, Operation *root,
+                                           StringAttr ruleAttr) {
+  const Rule *rule = state.getRule(ruleAttr, root->getLoc());
+  if (!rule)
+    return failure();
+
+  if (state.isExcluded(root))
+    return failure();
+
+  llvm::StringMap<Value> bound;
+  bindLhsVars(rule->lhs, root, bound);
+
+  std::string why;
+  if (failed(checkRhs(*rule, root, bound, why))) {
+    if (state.warnedRules.insert(ruleAttr).second)
+      root->emitWarning() << "optimization rule '" << ruleAttr.getValue()
+                          << "' cannot be applied: " << why;
+    return failure();
+  }
+
+  ChainPlan plan;
+  if (auto reason = planChain(root, *rule, plan)) {
+    if (state.warnedSites.insert({ruleAttr, root}).second)
+      root->emitWarning() << "optimization rule '" << ruleAttr.getValue()
+                          << "' was not applied here: " << *reason;
+    return failure();
+  }
+  return success();
+}
+
+// Rewrite function for every generated pattern. PDL passes the matched root
+// first, then the external arguments the pattern listed: the rule text, the
+// names the rule uses, and the matched values those names refer to.
 //
-// The condition is not evaluated here. It is recorded on a tessera.guard,
-// holding the specialized rewrite and the original computation in its two
-// regions, and -tessera-lower-guards later synthesizes the check and turns the
-// guard into a branch.
+// An unconditional rule, or one whose condition is proven, replaces the root
+// outright. Otherwise the condition is not evaluated here: it is recorded on a
+// tessera.guard, holding the specialized rewrite and the original computation
+// in its two regions, and -tessera-lower-guards later synthesizes the check and
+// turns the guard into a branch.
 //
 // This never reports failure, though the signature PDL requires allows it: the
 // greedy driver has no way to recover from a failed native rewrite and aborts
-// the process instead. Everything this needs was fixed when the pattern was
-// generated, and the one thing that is not -- whether the right-hand side
-// names a real tessera.define -- is left to the verifier, which rejects a call
-// to an unknown callee with a better message than anything available here.
-static LogicalResult tesseraConditionalRewrite(PatternRewriter &rewriter,
-                                               PDLResultList &results,
-                                               ArrayRef<PDLValue> args) {
+// the process instead. Everything that could make it fail was ruled out by
+// tesseraRuleApplicable when the pattern matched.
+static LogicalResult tesseraRewrite(ApplyState &state,
+                                    PatternRewriter &rewriter,
+                                    ArrayRef<PDLValue> args) {
   Operation *root = args[0].cast<Operation *>();
   auto ruleAttr = cast<StringAttr>(args[1].cast<Attribute>());
   auto namesAttr = cast<ArrayAttr>(args[2].cast<Attribute>());
@@ -236,16 +659,23 @@ static LogicalResult tesseraConditionalRewrite(PatternRewriter &rewriter,
     values.push_back(args[i].cast<Value>());
 
   Location loc = root->getLoc();
-  Parser parser(ruleAttr.getValue().str(), loc);
-  auto rule = parser.parseRule();
-  assert(rule && rule->cond &&
-         "a conditional pattern carries a rule that already parsed once");
+  const Rule *rule = state.getRule(ruleAttr, loc);
+  assert(rule && "a pattern carries a rule that already parsed once");
+
+  ChainPlan plan;
+  [[maybe_unused]] auto reason = planChain(root, *rule, plan);
+  assert(!reason && "tesseraRuleApplicable admitted a chain it cannot move");
 
   llvm::StringMap<Value> boundVars;
   for (auto [nameAttr, value] : llvm::zip(namesAttr.getValue(), values))
     boundVars[cast<StringAttr>(nameAttr).getValue()] = value;
 
   rewriter.setInsertionPoint(root);
+
+  auto replaceRoot = [&](ValueRange replacement) {
+    rewriter.replaceOp(root, replacement);
+    eraseMovedProducers(rewriter, plan);
+  };
 
   // When the condition is already known to hold, there is nothing to test at
   // run time: apply the rewrite outright. This is a pure saving over the
@@ -270,21 +700,11 @@ static LogicalResult tesseraConditionalRewrite(PatternRewriter &rewriter,
   // would try to synthesize a real check for a branch that can never run, and
   // could fail the build over an unresolvable layout or the unroll limit. A
   // rule that provably does not apply must not be able to fail compilation, so
-  // whoever adds that source should skip the rewrite here instead, marking the
-  // root with markRuleApplied (through rewriter.modifyOpInPlace, so the greedy
-  // driver sees the change) to keep the pattern from matching it again.
-  if (proveCondition(*rule->cond, boundVars) == Proof::True) {
-    BuiltExpr built = buildExprIR(rule->rhs, rewriter, loc, boundVars, root,
-                                  root->getResultTypes());
-    if (built.op && built.op->getNumResults()) {
-      rewriter.replaceOp(root, built.op->getResults());
-      return success();
-    }
-    if (built.value) {
-      rewriter.replaceOp(root, built.value);
-      return success();
-    }
-    // Nothing usable came back; fall through and guard it instead.
+  // whoever adds that source should decline it in tesseraRuleApplicable
+  // instead, which leaves the IR untouched and so cannot loop.
+  if (!rule->cond || proveCondition(*rule->cond, boundVars) == Proof::True) {
+    replaceRoot(buildReplacement(*rule, rewriter, loc, boundVars, root));
+    return success();
   }
 
   auto guard = GuardOp::create(rewriter, loc, root->getResultTypes(),
@@ -295,27 +715,24 @@ static LogicalResult tesseraConditionalRewrite(PatternRewriter &rewriter,
   {
     Block *block = rewriter.createBlock(&guard.getThenRegion());
     rewriter.setInsertionPointToStart(block);
-    BuiltExpr built = buildExprIR(rule->rhs, rewriter, loc, boundVars, root,
-                                  root->getResultTypes());
-    SmallVector<Value> yielded;
-    if (built.op && built.op->getNumResults())
-      yielded.assign(built.op->getResults().begin(),
-                     built.op->getResults().end());
-    else if (built.value)
-      yielded.push_back(built.value);
-    YieldOp::create(rewriter, loc, yielded);
+    YieldOp::create(rewriter, loc,
+                    buildReplacement(*rule, rewriter, loc, boundVars, root));
   }
 
-  // Original path: the matched call, unchanged.
+  // Original path: the matched call, unchanged, preceded by the producers that
+  // move with it, so they run on this path only.
   {
     Block *block = rewriter.createBlock(&guard.getElseRegion());
     rewriter.setInsertionPointToStart(block);
-    Operation *clone = rewriter.clone(*root);
+    IRMapping mapping;
+    for (Operation *producer : plan.moved)
+      rewriter.clone(*producer, mapping);
+    Operation *clone = rewriter.clone(*root, mapping);
     markRuleApplied(clone, ruleAttr);
     YieldOp::create(rewriter, loc, clone->getResults());
   }
 
-  rewriter.replaceOp(root, guard.getResults());
+  replaceRoot(guard.getResults());
   return success();
 }
 
@@ -338,6 +755,19 @@ struct TesseraApplyPDLPass
       return;
     }
 
+    // Collect every generated rule up front: which ops no rule may rewrite
+    // inside depends on all of them, not only the one being matched.
+    ApplyState state;
+    patternModule.walk([&](pdl::ApplyNativeConstraintOp constraint) {
+      if (constraint.getName() != "tesseraRuleApplicable" ||
+          constraint.getArgs().size() < 2)
+        return;
+      if (auto attrOp =
+              constraint.getArgs()[1].getDefiningOp<pdl::AttributeOp>())
+        if (auto text = dyn_cast_or_null<StringAttr>(attrOp.getValueAttr()))
+          state.addRule(text, constraint.getLoc());
+    });
+
     RewritePatternSet patternList(module->getContext());
 
     // Process the pattern module.
@@ -349,12 +779,26 @@ struct TesseraApplyPDLPass
                                           isConstantEqualTo);
     pdlPattern.registerConstraintFunction("isFloatConstantEqualTo",
                                           isFloatConstantEqualTo);
-
-    // Conditional rules are applied by this, rather than declaratively.
     pdlPattern.registerConstraintFunction("tesseraRuleNotApplied",
                                           tesseraRuleNotApplied);
-    pdlPattern.registerRewriteFunction("tesseraConditionalRewrite",
-                                       tesseraConditionalRewrite);
+    pdlPattern.registerConstraintFunction(
+        "tesseraRuleApplicable",
+        [&state](PatternRewriter &rewriter, PDLResultList &results,
+                 ArrayRef<PDLValue> args) -> LogicalResult {
+          auto rule = dyn_cast<StringAttr>(args[1].cast<Attribute>());
+          if (!rule)
+            return failure();
+          return tesseraRuleApplicable(state, args[0].cast<Operation *>(),
+                                       rule);
+        });
+
+    // Every generated rule builds its right-hand side through this.
+    pdlPattern.registerRewriteFunction(
+        "tesseraRewrite",
+        [&state](PatternRewriter &rewriter, PDLResultList &results,
+                 ArrayRef<PDLValue> args) -> LogicalResult {
+          return tesseraRewrite(state, rewriter, args);
+        });
 
     patternList.add(std::move(pdlPattern));
 
