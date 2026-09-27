@@ -52,9 +52,9 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
               boundVars[v.name] = pdl::OperandOp::create(
                   builder, loc, builder.getType<pdl::ValueType>(),
                   /*type=*/mlir::Value());
-              // Track first-appearance order too: a conditional rule hands
-              // these values to its rewrite function positionally, paired with
-              // a list of the names the condition knows them by.
+              // Track first-appearance order too: the rewrite function is
+              // handed these values positionally, paired with a list of the
+              // names the rule knows them by.
               orderedVars.push_back(v.name);
             }
             return {boundVars[v.name], mlir::Value()};
@@ -140,80 +140,20 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
       expr.data);
 }
 
-std::pair<mlir::Value, mlir::Value>
-emitRewritePDL(const Expr &expr, OpBuilder &builder, Location loc,
-               llvm::StringMap<mlir::Value> &boundVars) {
-  return std::visit(
-      overloaded{
-          [&](const Var &v) -> std::pair<mlir::Value, mlir::Value> {
-            return {boundVars[v.name], mlir::Value()};
-          },
-          [&](const IntLit &n) -> std::pair<mlir::Value, mlir::Value> {
-            // NOTE: The width is chosen from the literal's magnitude
-            // (i32 when it fits, otherwise i64), which guarantees the value
-            // is representable, but it still takes no account of what the
-            // surrounding IR expects. To fix, we should eventually derive the
-            // type from context (the replaced value, or a type bound while
-            // matching) and fall back to the magnitude-based choice only
-            // when there is no context to read.
-            auto attrVal = pdl::AttributeOp::create(
-                builder, loc, getIntegerAttrForLiteral(builder, n.value));
-            auto constOp = pdl::OperationOp::create(
-                builder, loc, "llvm.mlir.constant",
-                /*operands=*/ValueRange{},
-                /*attrNames=*/ArrayRef<StringRef>{"value"},
-                /*attrs=*/ValueRange{attrVal}, /*types=*/ValueRange{});
-            return {pdl::ResultOp::create(
-                        builder, loc, builder.getType<pdl::ValueType>(),
-                        constOp, builder.getI32IntegerAttr(0)),
-                    mlir::Value()};
-          },
-          [&](const FloatLit &n) -> std::pair<mlir::Value, mlir::Value> {
-            // The same caveat as the integer case above applies, where
-            // the width is picked from the literal alone, so a value
-            // that is not exact in f32 (pi, e) always materializes as f64 even
-            // when the surrounding IR is f32, and f16/bf16 are unreachable. A
-            // literal on the right-hand side needs its type derived from
-            // context before this is dependable.
-            auto attrVal = pdl::AttributeOp::create(
-                builder, loc, getFloatAttrForLiteral(builder, n.value));
-            auto constOp = pdl::OperationOp::create(
-                builder, loc, "llvm.mlir.constant",
-                /*operands=*/ValueRange{},
-                /*attrNames=*/ArrayRef<StringRef>{"value"},
-                /*attrs=*/ValueRange{attrVal}, /*types=*/ValueRange{});
-            return {pdl::ResultOp::create(
-                        builder, loc, builder.getType<pdl::ValueType>(),
-                        constOp, builder.getI32IntegerAttr(0)),
-                    mlir::Value()};
-          },
-          [&](const Call &c) -> std::pair<mlir::Value, mlir::Value> {
-            SmallVector<mlir::Value> argValues;
-            for (int i = 0; i < c.args.size(); i++) {
-              auto argPDL = emitRewritePDL(c.args[i], builder, loc, boundVars);
-              argValues.push_back(argPDL.first);
-            }
-            auto calleeAttr = pdl::AttributeOp::create(
-                builder, loc,
-                FlatSymbolRefAttr::get(builder.getContext(),
-                                       c.dialect + "." + c.opname));
-            auto resultTypesOp = pdl::TypesOp::create(
-                builder, loc,
-                pdl::RangeType::get(builder.getType<pdl::TypeType>()),
-                /*constantTypes=*/ArrayAttr());
-            auto callOp = pdl::OperationOp::create(
-                builder, loc, "tessera.call",
-                /*operands=*/argValues,
-                /*attrNames=*/ArrayRef<StringRef>{"callee"},
-                /*attrs=*/ValueRange{calleeAttr},
-                /*types=*/ValueRange{resultTypesOp});
-            return {pdl::ResultOp::create(builder, loc,
-                                          builder.getType<pdl::ValueType>(),
-                                          callOp, builder.getI32IntegerAttr(0)),
-                    callOp};
-          },
-      },
-      expr.data);
+/// The first variable `expr` uses that the left-hand side does not bind, if
+/// any. The right-hand side is built by a native rewrite that is not allowed
+/// to fail, so an unbound name has to be caught here, where it can be reported
+/// against the rule.
+std::optional<std::string>
+findUnboundVar(const Expr &expr, const llvm::StringMap<mlir::Value> &bound) {
+  if (auto *var = std::get_if<Var>(&expr.data))
+    return bound.count(var->name) ? std::nullopt
+                                  : std::optional<std::string>(var->name);
+  if (auto *call = std::get_if<Call>(&expr.data))
+    for (const Expr &arg : call->args)
+      if (auto name = findUnboundVar(arg, bound))
+        return name;
+  return std::nullopt;
 }
 
 struct ParseOptimizationRulesPass
@@ -267,60 +207,62 @@ struct ParseOptimizationRulesPass
           return;
         }
 
-        // A conditional rule cannot be expressed declaratively: whether it
-        // rewrites directly or becomes a guard depends on what can be proven
-        // about the matched values, which is only knowable once they exist.
-        // Hand the whole rule to a native rewrite instead, along with the
-        // matched values and the names the condition calls them by.
-        if (rule->cond) {
-          auto ruleAttr = pdl::AttributeOp::create(
-              builder, loc, builder.getStringAttr(optimization_op.getRule()));
-          SmallVector<Attribute> nameAttrs;
-          for (const std::string &name : orderedVars)
-            nameAttrs.push_back(builder.getStringAttr(name));
-          auto namesAttr = pdl::AttributeOp::create(
-              builder, loc, builder.getArrayAttr(nameAttrs));
+        if (auto name = findUnboundVar(rule->rhs, boundVars)) {
+          emitError(loc) << "optimization rule uses '" << *name
+                         << "' on the right-hand side, but it is not bound on "
+                            "the left";
+          signalPassFailure();
+          return;
+        }
 
-          // The guard keeps a clone of the matched call in its else region, so
-          // without this the pattern would match that clone and nest guards
-          // without end.
+        // The right-hand side is not spelled out in PDL. It is built by a
+        // native rewrite instead, for every rule, because the things it needs
+        // to know are only knowable once the match exists:
+        //
+        //   - the result types of each call it builds, which come from the
+        //     callee's tessera.define. Those do not exist yet when this pass
+        //     runs, and PDL refuses to build a nested op whose types it cannot
+        //     infer;
+        //   - for a conditional rule, whether the condition can be proven,
+        //     which decides between rewriting outright and building a guard;
+        //   - for a chain rule, which matched producers can move along with
+        //     the call they feed.
+        //
+        // So the whole rule travels as text, along with the matched values and
+        // the names the rule calls them by, and tessera-apply-pdl re-parses it.
+        auto ruleAttr = pdl::AttributeOp::create(
+            builder, loc, builder.getStringAttr(optimization_op.getRule()));
+        SmallVector<Attribute> nameAttrs;
+        for (const std::string &name : orderedVars)
+          nameAttrs.push_back(builder.getStringAttr(name));
+        auto namesAttr = pdl::AttributeOp::create(
+            builder, loc, builder.getArrayAttr(nameAttrs));
+
+        // A guard keeps a clone of the matched call in its else region, so
+        // without this a conditional pattern would match that clone and nest
+        // guards without end. It goes first because it is the cheap one.
+        if (rule->cond)
           pdl::ApplyNativeConstraintOp::create(
               builder, loc, TypeRange{}, "tesseraRuleNotApplied",
               ValueRange{root.second, ruleAttr});
 
-          // PDL passes the matched root to the rewrite function itself, ahead
-          // of these, so it must not be listed here as well.
-          SmallVector<mlir::Value> externalArgs{ruleAttr, namesAttr};
-          for (const std::string &name : orderedVars)
-            externalArgs.push_back(boundVars[name]);
+        // Decides, from the matched IR, whether the rewrite can be built at
+        // all and is safe to apply here. Declining in the match rather than
+        // the rewrite is what keeps the greedy driver from looping on a call
+        // the rule will never change.
+        pdl::ApplyNativeConstraintOp::create(builder, loc, TypeRange{},
+                                             "tesseraRuleApplicable",
+                                             ValueRange{root.second, ruleAttr});
 
-          pdl::RewriteOp::create(
-              builder, loc, root.second,
-              builder.getStringAttr("tesseraConditionalRewrite"), externalArgs);
-          continue;
-        }
+        // PDL passes the matched root to the rewrite function itself, ahead
+        // of these, so it must not be listed here as well.
+        SmallVector<mlir::Value> externalArgs{ruleAttr, namesAttr};
+        for (const std::string &name : orderedVars)
+          externalArgs.push_back(boundVars[name]);
 
-        auto rewrite = pdl::RewriteOp::create(builder, loc, root.second,
-                                              /*name=*/StringAttr(),
-                                              /*externalArgs=*/ValueRange{});
-        Block *rewriteBlock = builder.createBlock(&rewrite.getBodyRegion());
-        builder.setInsertionPointToStart(rewriteBlock);
-
-        // Emit PDL for the right hand side of the rewrite rule (the
-        // replacement)
-        auto replacement = emitRewritePDL(rule->rhs, builder, loc, boundVars);
-        if (replacement.second) {
-          pdl::ReplaceOp::create(builder, loc, root.second, replacement.second,
-                                 ValueRange{});
-        } else if (replacement.first) {
-          pdl::ReplaceOp::create(builder, loc, root.second, mlir::Value(),
-                                 ValueRange{replacement.first});
-        } else {
-          signalPassFailure();
-          llvm::errs()
-              << "Left hand side of optimization rule must be a call\n";
-          return;
-        }
+        pdl::RewriteOp::create(builder, loc, root.second,
+                               builder.getStringAttr("tesseraRewrite"),
+                               externalArgs);
       }
     }
   }

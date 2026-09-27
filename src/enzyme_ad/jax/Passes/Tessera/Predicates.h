@@ -56,11 +56,13 @@ struct MatrixLayout {
 ///
 /// The value itself says nothing: a by-reference matrix operand is an
 /// `!llvm.ptr`. The declaration of the callee does say, so the lookup goes
-/// through the call the guard kept in its else region:
+/// through the calls the guard kept in its else region -- the matched root and,
+/// for a chain rule, the producers sunk in with it -- to whichever takes the
+/// value:
 ///
 ///   1. a `tessera.layout` dictionary on the callee's argument, or
-///   2. the argument's `argModes` lifted pointee type, walked down to its
-///      element array.
+///   2. the pointee type the callee takes that operand through (its lifted
+///      `argModes` type, or a byval type), walked down to its element array.
 ///      That gives the element type and count exactly, but neither the
 ///      rows/cols split nor the storage order, so both are assumed (square,
 ///      row-major) and `orderInferred` is set. It emits a remark either way.

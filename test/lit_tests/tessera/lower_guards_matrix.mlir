@@ -174,3 +174,35 @@ module {
     llvm.return %0 : i32
   }
 }
+
+// -----
+
+module {
+  tessera.define @lib.foo(%a: !llvm.ptr {tessera.layout = {elem = f32, rows = 2 : i64, cols = 2 : i64, row_major = true}}) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !llvm.struct<"Mat2", (array<4 x f32>)>}], pure = true} {
+    %c = llvm.mlir.constant(0.0 : f32) : f32
+    tessera.return %c : f32
+  }
+  tessera.define @lib.symmetric_foo(%a: !llvm.ptr) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !llvm.struct<"Mat2", (array<4 x f32>)>}], pure = true} {
+    %c = llvm.mlir.constant(0.0 : f32) : f32
+    tessera.return %c : f32
+  }
+
+  // A lifted argument is carried as the value the call site loaded from it, so
+  // the check takes that value apart -- through the single-member struct and
+  // into the array -- rather than reading memory.
+  // CHECK-LABEL: llvm.func @symmetric_aggregate
+  llvm.func @symmetric_aggregate(%x: !llvm.struct<"Mat2", (array<4 x f32>)>) -> f32 {
+    // CHECK: %[[E1:.*]] = llvm.extractvalue %arg0[0, 1] : !llvm.struct<"Mat2", (array<4 x f32>)>
+    // CHECK: %[[E2:.*]] = llvm.extractvalue %arg0[0, 2] : !llvm.struct<"Mat2", (array<4 x f32>)>
+    // CHECK: %[[P:.*]] = llvm.fcmp "oeq" %[[E1]], %[[E2]] : f32
+    // CHECK: llvm.cond_br %[[P]]
+    %0 = tessera.guard "symmetric(x)" args(%x) {argNames = ["x"]} : (!llvm.struct<"Mat2", (array<4 x f32>)>) -> f32 {
+      %1 = tessera.call @lib.symmetric_foo(%x) : (!llvm.struct<"Mat2", (array<4 x f32>)>) -> f32
+      tessera.yield %1 : f32
+    } else {
+      %2 = tessera.call @lib.foo(%x) : (!llvm.struct<"Mat2", (array<4 x f32>)>) -> f32
+      tessera.yield %2 : f32
+    }
+    llvm.return %0 : f32
+  }
+}
