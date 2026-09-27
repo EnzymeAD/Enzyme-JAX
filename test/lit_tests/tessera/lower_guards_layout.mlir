@@ -63,6 +63,61 @@ module {
 
 // -----
 
+// A write-only argument ahead of the matrix has no operand on the call, so the
+// call's operand 0 is the callee's argument 1. The type inferred from has to
+// be looked up by call operand -- by argument position it would be the output
+// argument's f32, which is no matrix at all.
+module {
+  tessera.define @lib.foo(%out: !llvm.ptr, %a: !llvm.ptr) -> f32 attributes {argModes = [{dir = #tessera.dir<out>, type = f32}, {dir = #tessera.dir<in>, type = !llvm.struct<"Outer", (array<4 x f32>)>}], pure = true} {
+    %c = llvm.mlir.constant(0.0 : f32) : f32
+    tessera.return %c : f32
+  }
+  tessera.define @lib.sym_foo(%a: !llvm.ptr) -> f32 attributes {argModes = [unit], pure = true} {
+    %c = llvm.mlir.constant(0.0 : f32) : f32
+    tessera.return %c : f32
+  }
+  llvm.func @after_output_argument(%x: !llvm.ptr) -> f32 {
+    // expected-remark @+1 {{assuming argument 0 of 'lib.foo' is a 2x2 row-major matrix of 'f32'}}
+    %0:2 = tessera.guard "symmetric(x)" args(%x) {argNames = ["x"]} : (!llvm.ptr) -> (f32, f32) {
+      %1 = tessera.call @lib.sym_foo(%x) : (!llvm.ptr) -> f32
+      tessera.yield %1, %1 : f32, f32
+    } else {
+      %2:2 = tessera.call @lib.foo(%x) : (!llvm.ptr) -> (f32, f32)
+      tessera.yield %2#0, %2#1 : f32, f32
+    }
+    llvm.return %0#1 : f32
+  }
+}
+
+// -----
+
+// A lifted matrix is carried as the value loaded from it. One that is not the
+// single-member-struct-around-an-array shape cannot be taken apart, and that
+// is an error rather than a check that quietly fails to be emitted.
+module {
+  tessera.define @lib.foo(%a: !llvm.ptr {tessera.layout = {elem = f32, rows = 2 : i64, cols = 2 : i64, row_major = true}}) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !llvm.struct<(f32, f32, f32, f32)>}], pure = true} {
+    %c = llvm.mlir.constant(0.0 : f32) : f32
+    tessera.return %c : f32
+  }
+  tessera.define @lib.sym_foo(%a: !llvm.ptr) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !llvm.struct<(f32, f32, f32, f32)>}], pure = true} {
+    %c = llvm.mlir.constant(0.0 : f32) : f32
+    tessera.return %c : f32
+  }
+  llvm.func @unreadable_aggregate(%x: !llvm.struct<(f32, f32, f32, f32)>) -> f32 {
+    // expected-error @+1 {{cannot read the elements of a matrix operand of type '!llvm.struct<(f32, f32, f32, f32)>' as 2x2 'f32'}}
+    %0 = tessera.guard "symmetric(x)" args(%x) {argNames = ["x"]} : (!llvm.struct<(f32, f32, f32, f32)>) -> f32 {
+      %1 = tessera.call @lib.sym_foo(%x) : (!llvm.struct<(f32, f32, f32, f32)>) -> f32
+      tessera.yield %1 : f32
+    } else {
+      %2 = tessera.call @lib.foo(%x) : (!llvm.struct<(f32, f32, f32, f32)>) -> f32
+      tessera.yield %2 : f32
+    }
+    llvm.return %0 : f32
+  }
+}
+
+// -----
+
 // The triangular pair is the exception: it is NOT transpose-invariant, so
 // reading column-major storage as row-major turns an upper triangle into a
 // lower one and the check would answer true for a matrix that is not upper
