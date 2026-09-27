@@ -117,6 +117,16 @@ def DefineOp : TesseraOp<"define", [
     // sret-excluded argument, minus the pure-output ("out") ones.
     unsigned getNumCallOperands();
 
+    // The raw argument index (sret included) that a tessera.call operand
+    // position corresponds to, or none if the position is out of range. The
+    // two diverge whenever the callee has an sret or a write-only argument.
+    std::optional<unsigned> getArgIndexForCallOperand(unsigned callOperandIdx);
+
+    // The result types a tessera.call to this callee has: the sret pointee
+    // alone, or else one leading result per written argument (in argument
+    // order) followed by the natural function_type results.
+    ::llvm::SmallVector<::mlir::Type> getCallResultTypes();
+
     //===------------------------------------------------------------------===//
     // FunctionOpInterface Methods
     //===------------------------------------------------------------------===//

@@ -69,6 +69,23 @@ module {
     }
     llvm.return %0 : f64
   }
+
+  // A float literal can carry an exponent. The rule parser renders any value
+  // too small or large for plain decimal that way, so a guard has to be able
+  // to read one back.
+  // CHECK-LABEL: llvm.func @float_exponent
+  llvm.func @float_exponent(%a: f64) -> f64 {
+    // CHECK: %[[C:.*]] = llvm.mlir.constant(9.9999999999999998E-13 : f64) : f64
+    // CHECK: llvm.fcmp "ogt" %arg0, %[[C]] : f64
+    %0 = tessera.guard "a > 9.9999999999999998e-13" args(%a) {argNames = ["a"]} : (f64) -> f64 {
+      %1 = tessera.call @lib.g(%a) : (f64) -> f64
+      tessera.yield %1 : f64
+    } else {
+      %2 = tessera.call @lib.f(%a) : (f64) -> f64
+      tessera.yield %2 : f64
+    }
+    llvm.return %0 : f64
+  }
 }
 
 // -----
