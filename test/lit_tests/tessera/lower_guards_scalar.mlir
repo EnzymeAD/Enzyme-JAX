@@ -5,11 +5,11 @@
 // LLVM dialect the phi node is a block argument on the continuation block.
 
 module {
-  tessera.define @lib.qux(%a: i512, %n: i64) -> f32 attributes {byRefTypes = [unit, unit], pure = true} {
+  tessera.define @lib.qux(%a: i512, %n: i64) -> f32 attributes {argModes = [unit, unit], pure = true} {
     %c = llvm.mlir.constant(0.0 : f32) : f32
     tessera.return %c : f32
   }
-  tessera.define @lib.tiled_qux(%a: i512, %n: i64) -> f32 attributes {byRefTypes = [unit, unit], pure = true} {
+  tessera.define @lib.tiled_qux(%a: i512, %n: i64) -> f32 attributes {argModes = [unit, unit], pure = true} {
     %c = llvm.mlir.constant(0.0 : f32) : f32
     tessera.return %c : f32
   }
@@ -47,10 +47,10 @@ module {
 // -----
 
 module {
-  tessera.define @lib.f(%a: f64) -> f64 attributes {byRefTypes = [unit], pure = true} {
+  tessera.define @lib.f(%a: f64) -> f64 attributes {argModes = [unit], pure = true} {
     tessera.return %a : f64
   }
-  tessera.define @lib.g(%a: f64) -> f64 attributes {byRefTypes = [unit], pure = true} {
+  tessera.define @lib.g(%a: f64) -> f64 attributes {argModes = [unit], pure = true} {
     tessera.return %a : f64
   }
 
@@ -74,10 +74,10 @@ module {
 // -----
 
 module {
-  tessera.define @lib.f(%a: i64, %b: i64) -> i64 attributes {byRefTypes = [unit, unit], pure = true} {
+  tessera.define @lib.f(%a: i64, %b: i64) -> i64 attributes {argModes = [unit, unit], pure = true} {
     tessera.return %a : i64
   }
-  tessera.define @lib.g(%a: i64, %b: i64) -> i64 attributes {byRefTypes = [unit, unit], pure = true} {
+  tessera.define @lib.g(%a: i64, %b: i64) -> i64 attributes {argModes = [unit, unit], pure = true} {
     tessera.return %a : i64
   }
 
@@ -108,10 +108,10 @@ module {
 // -----
 
 module {
-  tessera.define @lib.f(%a: i64) -> () attributes {byRefTypes = [unit], pure = false} {
+  tessera.define @lib.f(%a: i64) -> () attributes {argModes = [unit], pure = false} {
     tessera.return
   }
-  tessera.define @lib.g(%a: i64) -> () attributes {byRefTypes = [unit], pure = false} {
+  tessera.define @lib.g(%a: i64) -> () attributes {argModes = [unit], pure = false} {
     tessera.return
   }
 
