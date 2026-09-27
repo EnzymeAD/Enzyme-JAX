@@ -2948,9 +2948,12 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
   unsigned ivNum = cast<BlockArgument>(iv).getArgNumber();
 
   // Every carried value other than the induction variable is either
-  // unchanged or the root of a chain of scatters that is yielded, with no
-  // other use (a read of a buffer another iteration writes would not
-  // commute).
+  // unchanged or the root of a chain of writes (scatter, dynamic_update_slice)
+  // that is yielded. The buffer's only other uses, at any point of the chain,
+  // are reads: the iterations are independent, so a read sees this
+  // iteration's earlier writes over the buffer the loop started from and
+  // nothing another iteration writes, which is what a read of the batched
+  // writes up to that point returns.
   DenseMap<Value, unsigned> chainRoot; // body value -> carried arg number
   SmallVector<bool> unchanged(body.getNumArguments(), false);
   for (auto arg : body.getArguments()) {
@@ -2963,7 +2966,7 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
       continue;
     }
     Value cur = yielded;
-    SmallVector<Operation *> chain;
+    SmallVector<Value> chain{arg};
     while (cur != arg) {
       Operation *link = cur.getDefiningOp();
       Value prev;
@@ -2977,24 +2980,25 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
       } else {
         return failure();
       }
-      if (!link->hasOneUse())
+      if (chainRoot.count(cur))
         return failure();
-      chain.push_back(link);
+      chain.push_back(cur);
       cur = prev;
     }
-    if (chain.empty())
+    if (chain.size() == 1)
       return failure();
-    for (Operation *link : chain)
-      chainRoot[link->getResult(0)] = k;
-    chainRoot[arg] = k;
-    // A read of the buffer through its argument sees the state before any
-    // write of this iteration, which no other iteration changes: it reads
-    // the buffer the loop started from.
-    for (Operation *user : arg.getUsers())
-      if (user != chain.back() &&
-          !(isa<stablehlo::GatherOp, stablehlo::DynamicSliceOp>(user) &&
-            user->getOperand(0) == arg))
-        return failure();
+    for (Value v : chain)
+      chainRoot[v] = k;
+    for (Value v : chain)
+      for (Operation *user : v.getUsers()) {
+        bool write = user->getNumResults() == 1 &&
+                     chainRoot.count(user->getResult(0)) &&
+                     user->getOperand(0) == v;
+        bool read = isa<stablehlo::GatherOp, stablehlo::DynamicSliceOp>(user) &&
+                    user->getOperand(0) == v;
+        if (!write && !read && !(user == ret && v == yielded))
+          return failure();
+      }
   }
 
   // Phase 1: which body values vary with the iteration, and can every op
