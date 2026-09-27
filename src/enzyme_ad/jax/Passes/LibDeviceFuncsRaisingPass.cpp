@@ -822,6 +822,11 @@ using MaximumFOpLowering =
 using MaxNumFOpLowering =
     InvVectorConvertFromLLVMPattern<arith::MaxNumFOp, LLVM::MaxNumOp,
                                     AttrConvertFastMathFromLLVM>;
+// Like __nv_fmax/__nv_fmin, maximumnum/minimumnum treat a NaN operand as
+// missing data, which is arith.maxnumf/minnumf.
+using MaximumNumFOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::MaxNumFOp, LLVM::MaximumNumOp,
+                                    AttrConvertFastMathFromLLVM>;
 using MaxSIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::MaxSIOp, LLVM::SMaxOp>;
 using MaxUIOpLowering =
@@ -831,6 +836,9 @@ using MinimumFOpLowering =
                                     AttrConvertFastMathFromLLVM>;
 using MinNumFOpLowering =
     InvVectorConvertFromLLVMPattern<arith::MinNumFOp, LLVM::MinNumOp,
+                                    AttrConvertFastMathFromLLVM>;
+using MinimumNumFOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::MinNumFOp, LLVM::MinimumNumOp,
                                     AttrConvertFastMathFromLLVM>;
 using MinSIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::MinSIOp, LLVM::SMinOp>;
@@ -1040,32 +1048,6 @@ struct NVVMRsqrtApproxRaising : public OpRewritePattern<LLVM::CallIntrinsicOp> {
                                                  arith::FastMathFlags::afn);
     rewriter.replaceOp(op, math::RsqrtOp::create(rewriter, op.getLoc(),
                                                  op.getArgs()[0], fmfAttr));
-    return success();
-  }
-};
-
-// The minimumnum/maximumnum intrinsics have no first-class llvm dialect op,
-// so they arrive as llvm.call_intrinsic. Like __nv_fmin/__nv_fmax they treat
-// a NaN operand as missing data, which is arith.minnumf/maxnumf.
-struct MinMaxNumIntrinsicRaising
-    : public OpRewritePattern<LLVM::CallIntrinsicOp> {
-  using OpRewritePattern<LLVM::CallIntrinsicOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(LLVM::CallIntrinsicOp op,
-                                PatternRewriter &rewriter) const override {
-    StringRef intrin = op.getIntrin();
-    bool isMin = intrin.starts_with("llvm.minimumnum.");
-    if (!isMin && !intrin.starts_with("llvm.maximumnum."))
-      return failure();
-    if (op.getArgs().size() != 2 || op->getNumResults() != 1 ||
-        !isa<FloatType>(op->getResult(0).getType()))
-      return failure();
-    if (isMin)
-      rewriter.replaceOpWithNewOp<arith::MinNumFOp>(op, op.getArgs()[0],
-                                                    op.getArgs()[1]);
-    else
-      rewriter.replaceOpWithNewOp<arith::MaxNumFOp>(op, op.getArgs()[0],
-                                                    op.getArgs()[1]);
     return success();
   }
 };
@@ -1537,7 +1519,6 @@ void populateLLVMToMathPatterns(MLIRContext *context,
 
   patterns.add<BarrierConvert>(converter);
   patterns.add<NVVMRsqrtApproxRaising>(converter);
-  patterns.add<MinMaxNumIntrinsicRaising>(converter);
 
   patterns
       .add<GPUConvert<NVVM::BlockDimXOp, gpu::BlockDimOp, gpu::Dimension::x>>(
@@ -1566,9 +1547,10 @@ void populateLLVMToMathPatterns(MLIRContext *context,
            ExtUIOpLowering, FPToSIOpLowering, FPToUIOpLowering,
            // IndexCastOpSILowering,
            // IndexCastOpUILowering,
-           MaximumFOpLowering, MaxNumFOpLowering, MaxSIOpLowering,
-           MaxUIOpLowering, MinimumFOpLowering, MinNumFOpLowering,
-           MinSIOpLowering, MinUIOpLowering, MulFOpLowering, MulIOpLowering,
+           MaximumFOpLowering, MaximumNumFOpLowering, MaxNumFOpLowering,
+           MaxSIOpLowering, MaxUIOpLowering, MinimumFOpLowering,
+           MinimumNumFOpLowering, MinNumFOpLowering, MinSIOpLowering,
+           MinUIOpLowering, MulFOpLowering, MulIOpLowering,
            // MulSIExtendedOpLowering,
            // MulUIExtendedOpLowering,
            NegFOpLowering, OrIOpLowering, RemFOpLowering, RemSIOpLowering,
