@@ -370,6 +370,26 @@ struct TesseraToLLVMPass
                       "dialect operations\n";
       return signalPassFailure();
     }
+
+    // llvm-to-tessera pointed every taken address of a tessera op at a stub,
+    // since llvm.mlir.addressof cannot name a tessera.define. The op is an
+    // llvm.func of its original name again now, so point them back and drop
+    // the stubs.
+    ModuleOp module = getOperation();
+    SmallVector<LLVM::LLVMFuncOp> stubs;
+    for (auto func : module.getOps<LLVM::LLVMFuncOp>())
+      if (func->hasAttr("tessera.address_stub_for"))
+        stubs.push_back(func);
+    for (LLVM::LLVMFuncOp stub : stubs) {
+      auto target = stub->getAttrOfType<StringAttr>("tessera.address_stub_for");
+      if (!target || !module.lookupSymbol<LLVM::LLVMFuncOp>(target) ||
+          failed(SymbolTable::replaceAllSymbolUses(stub.getSymNameAttr(),
+                                                   target, module))) {
+        stub.emitError("could not restore uses of the tessera address stub");
+        return signalPassFailure();
+      }
+      stub.erase();
+    }
   }
 };
 } // namespace
