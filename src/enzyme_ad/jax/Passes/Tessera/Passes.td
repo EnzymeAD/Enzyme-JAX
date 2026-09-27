@@ -62,6 +62,13 @@ def LowerTesseraGuardsPass : Pass<"tessera-lower-guards", "ModuleOp"> {
     "LLVM::LLVMDialect",
     "enzyme::tessera::TesseraDialect"
   ];
+  let options = [
+    Option<"maxUnrolledElems", "max-unrolled-elems", "int64_t",
+           /*default=*/"64",
+           "Largest matrix, in elements, whose property check is emitted as "
+           "straight-line comparisons. A predicate declines above this rather "
+           "than emitting an unreasonable amount of code.">
+  ];
 }
 
 def TesseraApplyPDLPass : Pass<"tessera-apply-pdl", "ModuleOp"> {

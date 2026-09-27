@@ -158,6 +158,7 @@ public:
       SmallVector<NamedAttribute> newAttrs;
       for (auto attr : baseAttrs) {
         if (attr.getName() != callOp.getArgAttrsAttrName() &&
+            attr.getName() != "tessera.applied_rules" &&
             attr.getName() != "operandSegmentSizes" &&
             attr.getName() != "op_bundle_sizes")
           newAttrs.push_back(attr);
