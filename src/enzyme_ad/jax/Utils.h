@@ -1518,6 +1518,22 @@ Value getScalarValue(Operation *op, OpBuilder &builder);
 bool isScalarValue(Value val);
 bool isScalarValue(Operation *op);
 
+// The batched form of a dynamic_slice / dynamic_update_slice whose start
+// indices vary across the batch, as a gather / scatter: `mapper` gives the
+// batched start indices and update. With `operandIsBatched` the operand is
+// batched too and every batch element reads / writes its own copy; without,
+// the operand is shared, so every batch element reads / writes that one
+// tensor.
+LogicalResult batchDynamicSliceAsGather(DynamicSliceOp op, OpBuilder &builder,
+                                        IRMapping &mapper,
+                                        ArrayRef<int64_t> batchSizes,
+                                        bool operandIsBatched = true);
+LogicalResult batchDynamicUpdateSliceAsScatter(DynamicUpdateSliceOp op,
+                                               OpBuilder &builder,
+                                               IRMapping &mapper,
+                                               ArrayRef<int64_t> batchSizes,
+                                               bool operandIsBatched = true);
+
 Value copyTriangularPart(OpBuilder &builder, Value input,
                          enzymexla::LapackUplo uplo);
 
