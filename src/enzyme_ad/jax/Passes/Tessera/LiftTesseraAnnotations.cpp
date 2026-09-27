@@ -134,30 +134,45 @@ struct LiftTesseraAnnotationsPass
       }
     }
 
-    DenseMap<StringRef, StringRef> functionToAnnotation;
+    // A function can carry more than one annotation -- a tessera op that is
+    // also marked tessera_no_rewrite, say -- so keep all of them.
+    DenseMap<StringRef, SmallVector<StringRef>> functionToAnnotations;
 
     for (auto [structValue, funcName] : structToFunction) {
       if (structToAnnotation.count(structValue)) {
         StringRef annotStr = structToAnnotation[structValue];
-        functionToAnnotation[funcName] = annotStr;
+        functionToAnnotations[funcName].push_back(annotStr);
       }
     }
 
     // Apply annotations as attributes to functions
-    for (auto [funcName, annotStr] : functionToAnnotation) {
+    for (auto &[funcName, annotStrs] : functionToAnnotations) {
       auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName);
       if (!func)
         continue;
 
-      // Parse "tessera_op=string\0" and "pure_tessera_op=string\0"
-      StringRef annot(annotStr);
-      if (annot.consume_front("tessera_op=")) {
-        annot = annot.rtrim('\0');
-        func->setAttr("tessera_op", StringAttr::get(func->getContext(), annot));
-      } else if (annot.consume_front("pure_tessera_op=")) {
-        annot = annot.rtrim('\0');
-        func->setAttr("pure_tessera_op",
-                      StringAttr::get(func->getContext(), annot));
+      for (StringRef annot : annotStrs) {
+        // Parse "tessera_op=string\0" and "pure_tessera_op=string\0"
+        if (annot.consume_front("tessera_op=")) {
+          annot = annot.rtrim('\0');
+          func->setAttr("tessera_op",
+                        StringAttr::get(func->getContext(), annot));
+        } else if (annot.consume_front("pure_tessera_op=")) {
+          annot = annot.rtrim('\0');
+          func->setAttr("pure_tessera_op",
+                        StringAttr::get(func->getContext(), annot));
+        } else if (annot.rtrim('\0') == "tessera_no_rewrite") {
+          // No rule may rewrite anything in this function's body. This is
+          // how a replacement's fallback path reaches the op it replaces
+          // without being rewritten back into a call to itself.
+          //
+          // It only protects a body that is still there: the pipeline runs
+          // `inline` before this pass, so the function must also be
+          // noinline, or its body is copied into callers where nothing marks
+          // it.
+          func->setAttr("tessera.no_rewrite",
+                        UnitAttr::get(func->getContext()));
+        }
       }
     }
   }

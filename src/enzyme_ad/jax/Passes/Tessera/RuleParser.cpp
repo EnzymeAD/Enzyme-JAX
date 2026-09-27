@@ -126,14 +126,29 @@ Token Lexer::nextToken() {
     while (isDigit(peek())) {
       num += advance();
     }
+    bool isFloat = false;
     if (peek() == '.') {
+      isFloat = true;
       num += advance();
       while (isDigit(peek())) {
         num += advance();
       }
-      return Token{TokenType::Float, num};
     }
-    return Token{TokenType::Integer, num};
+    // An exponent, as in 1e-12 or 2.5E3. Only taken when digits follow, so an
+    // identifier that happens to start with 'e' is never swallowed.
+    if ((peek() == 'e' || peek() == 'E') &&
+        (isDigit(peekNext()) ||
+         ((peekNext() == '-' || peekNext() == '+') && pos + 2 < input.size() &&
+          isDigit(input[pos + 2])))) {
+      isFloat = true;
+      num += advance();
+      if (peek() == '-' || peek() == '+')
+        num += advance();
+      while (isDigit(peek())) {
+        num += advance();
+      }
+    }
+    return Token{isFloat ? TokenType::Float : TokenType::Integer, num};
   }
 
   if (peek() == '(') {
@@ -515,7 +530,17 @@ std::string renderExpr(const Expr &expr) {
                           llvm::SmallString<32> buffer;
                           llvm::raw_svector_ostream os(buffer);
                           os << llvm::format("%.17g", n.value);
-                          return std::string(buffer);
+                          // But it drops the point from an integral value,
+                          // and "0" would parse back as an integer literal.
+                          std::string out(buffer);
+                          if (out.find_first_of(".eEn") == std::string::npos)
+                            out += ".0";
+                          else if (out.find('.') == std::string::npos) {
+                            size_t exponent = out.find_first_of("eE");
+                            if (exponent != std::string::npos)
+                              out.insert(exponent, ".0");
+                          }
+                          return out;
                         },
                         [](const Call &c) {
                           std::string out = c.dialect + "." + c.opname + "(";
