@@ -28,18 +28,30 @@ template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 // Layout resolution
 //===----------------------------------------------------------------------===//
 
-/// The else region of a guard holds a clone of the call that was matched. It is
-/// the only thing that ties a value the guard carries back to the argument
-/// position it occupies, which is where the layout is declared.
-CallOp findOriginalCall(GuardOp guard) {
+/// A call in a guard's else region that takes the value being resolved, and
+/// the operand position it takes it at.
+struct OriginalUse {
+  CallOp call;
+  unsigned index;
+};
+
+/// The else region of a guard holds a clone of what was matched: the root call
+/// and, for a chain rule, the nested producers sunk in ahead of it. Those calls
+/// are the only thing tying a value the guard carries back to the argument
+/// position it occupies, which is where the layout is declared. A variable in
+/// the condition may be taken by any call in the chain, not just the root, so
+/// all of them are searched.
+SmallVector<OriginalUse> findOriginalUses(Value value, GuardOp guard) {
+  SmallVector<OriginalUse> uses;
   // The region is still intact when a predicate runs, because the check is
   // synthesized before the guard is taken apart -- but do not rely on it.
   if (guard.getElseRegion().empty())
-    return nullptr;
-  for (Operation &op : guard.getElseRegion().front())
-    if (auto call = dyn_cast<CallOp>(&op))
-      return call;
-  return nullptr;
+    return uses;
+  for (auto call : guard.getElseRegion().front().getOps<CallOp>())
+    for (auto [position, operand] : llvm::enumerate(call.getArgOperands()))
+      if (operand == value)
+        uses.push_back({call, static_cast<unsigned>(position)});
+  return uses;
 }
 
 MatrixLayout parseLayoutAttr(DictionaryAttr dict) {
@@ -82,28 +94,24 @@ namespace enzyme {
 namespace tessera {
 
 MatrixLayout resolveMatrixLayout(Value value, GuardOp guard) {
-  CallOp call = findOriginalCall(guard);
-  if (!call)
-    return {};
+  SmallVector<OriginalUse> uses = findOriginalUses(value, guard);
 
-  int64_t index = -1;
-  for (auto [position, operand] : llvm::enumerate(call.getArgOperands()))
-    if (operand == value) {
-      index = position;
-      break;
-    }
-  if (index < 0)
-    return {};
+  auto lookupDefine = [&](CallOp call) {
+    return SymbolTable::lookupNearestSymbolFrom<DefineOp>(
+        guard, call.getCalleeAttr().getAttr());
+  };
 
-  auto define = SymbolTable::lookupNearestSymbolFrom<DefineOp>(
-      guard, call.getCalleeAttr().getAttr());
-  if (!define)
-    return {};
-
-  // An explicit declaration wins: it is the only one that can describe a
-  // matrix whose shape is not recoverable from its type.
-  if (auto dict = dyn_cast_or_null<DictionaryAttr>(
-          define.getArgAttr(index, "tessera.layout"))) {
+  // An explicit declaration wins, wherever in the chain it is made: it is the
+  // only one that can describe a matrix whose shape is not recoverable from its
+  // type.
+  for (auto [call, index] : uses) {
+    DefineOp define = lookupDefine(call);
+    if (!define)
+      continue;
+    auto dict = dyn_cast_or_null<DictionaryAttr>(
+        define.getArgAttr(index, "tessera.layout"));
+    if (!dict)
+      continue;
     MatrixLayout layout = parseLayoutAttr(dict);
     if (layout.isValid())
       return layout;
@@ -115,28 +123,40 @@ MatrixLayout resolveMatrixLayout(Value value, GuardOp guard) {
   // Otherwise infer from the by-reference type. The element type and count are
   // exact; the rows/cols split and the storage order are not in the type at
   // all, so both are assumed.
-  LLVM::LLVMArrayType array = findElementArray(define.getArgLiftedType(index));
-  if (!array)
-    return {};
+  //
+  // getCallOperandPointeeType is indexed by call operand, like `index`. The
+  // argModes accessors are not: they count write-only arguments, which a call
+  // has no operand for, so with one of those ahead of the matrix they would
+  // read some other argument's type.
+  for (auto [call, index] : uses) {
+    DefineOp define = lookupDefine(call);
+    if (!define)
+      continue;
+    LLVM::LLVMArrayType array =
+        findElementArray(define.getCallOperandPointeeType(index));
+    if (!array)
+      continue;
 
-  int64_t side = integerSquareRoot(array.getNumElements());
-  if (side == 0)
-    return {};
+    int64_t side = integerSquareRoot(array.getNumElements());
+    if (side == 0)
+      continue;
 
-  MatrixLayout layout;
-  layout.elemType = array.getElementType();
-  layout.rows = layout.cols = side;
-  layout.rowMajor = true;
-  layout.orderInferred = true;
+    MatrixLayout layout;
+    layout.elemType = array.getElementType();
+    layout.rows = layout.cols = side;
+    layout.rowMajor = true;
+    layout.orderInferred = true;
 
-  // This is a guess, and a wrong guess miscompiles quietly rather than
-  // failing, so say so.
-  guard.emitRemark() << "assuming argument " << index << " of '"
-                     << call.getCallee() << "' is a " << side << "x" << side
-                     << " row-major matrix of " << layout.elemType
-                     << "; declare tessera.layout on the tessera.define to be "
-                        "certain";
-  return layout;
+    // This is a guess, and a wrong guess miscompiles quietly rather than
+    // failing, so say so.
+    guard.emitRemark() << "assuming argument " << index << " of '"
+                       << call.getCallee() << "' is a " << side << "x" << side
+                       << " row-major matrix of " << layout.elemType
+                       << "; declare tessera.layout on the tessera.define to "
+                          "be certain";
+    return layout;
+  }
+  return {};
 }
 
 } // namespace tessera
@@ -333,28 +353,60 @@ Proof proveCompare(const Compare &cmp,
 ///
 ///   - a pointer operand is read by the callee through that pointer, so the
 ///     check reads the same memory;
-///   - an integer operand carries the matrix by value, so the check takes the
-///     elements apart rather than going back to whatever memory it came from,
-///     which may since have been written to.
+///   - an integer or aggregate operand carries the matrix by value, so the
+///     check takes the elements apart rather than going back to whatever memory
+///     it came from, which may since have been written to.
+///
+/// On failure this reports why and returns a null Value, so the first element
+/// a predicate cannot read is also the only error it produces.
 Value emitElement(Value matrix, const MatrixLayout &layout, int64_t r,
                   int64_t c, CheckContext &ctx) {
   OpBuilder &b = ctx.builder;
   Location loc = ctx.loc;
   int64_t index = layout.linearIndex(r, c);
+  Type matrixType = matrix.getType();
 
-  if (isa<LLVM::LLVMPointerType>(matrix.getType())) {
+  auto unreadable = [&]() {
+    ctx.guard.emitError() << "cannot read the elements of a matrix operand of "
+                             "type "
+                          << matrixType << " as " << layout.rows << "x"
+                          << layout.cols << " " << layout.elemType;
+    return Value();
+  };
+
+  if (isa<LLVM::LLVMPointerType>(matrixType)) {
     Value offset = LLVM::ConstantOp::create(b, loc, b.getI64Type(),
                                             b.getI64IntegerAttr(index));
-    Value address = LLVM::GEPOp::create(
-        b, loc, matrix.getType(), layout.elemType, matrix, ValueRange{offset});
+    Value address = LLVM::GEPOp::create(b, loc, matrixType, layout.elemType,
+                                        matrix, ValueRange{offset});
     return LLVM::LoadOp::create(b, loc, layout.elemType, address);
+  }
+
+  // Aggregate form. A lifted argument arrives as the value loaded from its
+  // pointer, which for a fixed-size matrix is the same single-member-struct
+  // chain around one array that layout inference walks.
+  if (isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(matrixType)) {
+    SmallVector<int64_t> position;
+    Type type = matrixType;
+    while (auto structType = dyn_cast<LLVM::LLVMStructType>(type)) {
+      if (structType.getBody().size() != 1)
+        return unreadable();
+      position.push_back(0);
+      type = structType.getBody()[0];
+    }
+    auto array = dyn_cast<LLVM::LLVMArrayType>(type);
+    if (!array || array.getElementType() != layout.elemType ||
+        static_cast<uint64_t>(index) >= array.getNumElements())
+      return unreadable();
+    position.push_back(index);
+    return LLVM::ExtractValueOp::create(b, loc, matrix, position);
   }
 
   // Packed-integer form. Element 0 occupies the low bits, which is how a
   // little-endian target lays an array out when it is loaded as one integer.
-  auto intType = dyn_cast<IntegerType>(matrix.getType());
+  auto intType = dyn_cast<IntegerType>(matrixType);
   if (!intType)
-    return Value();
+    return unreadable();
 
   unsigned elemBits = layout.elemType.getIntOrFloatBitWidth();
   Value shiftAmount = LLVM::ConstantOp::create(
