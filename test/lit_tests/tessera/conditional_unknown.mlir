@@ -6,11 +6,11 @@
 // is an optimization over it, not a precondition for it.
 
 module {
-  tessera.define @lib.qux(%a: i512, %n: i64) -> f32 attributes {byRefTypes = [unit, unit], pure = true} {
+  tessera.define @lib.qux(%a: i512, %n: i64) -> f32 attributes {argModes = [unit, unit], pure = true} {
     %c = llvm.mlir.constant(0.0 : f32) : f32
     tessera.return %c : f32
   }
-  tessera.define @lib.tiled_qux(%a: i512, %n: i64) -> f32 attributes {byRefTypes = [unit, unit], pure = true} {
+  tessera.define @lib.tiled_qux(%a: i512, %n: i64) -> f32 attributes {argModes = [unit, unit], pure = true} {
     %c = llvm.mlir.constant(0.0 : f32) : f32
     tessera.return %c : f32
   }
@@ -46,15 +46,15 @@ module {
 // blanket "already rewritten" mark -- otherwise only one rule would ever fire.
 
 module {
-  tessera.define @lib.qux(%a: i512, %n: i64) -> f32 attributes {byRefTypes = [unit, unit], pure = true} {
+  tessera.define @lib.qux(%a: i512, %n: i64) -> f32 attributes {argModes = [unit, unit], pure = true} {
     %c = llvm.mlir.constant(0.0 : f32) : f32
     tessera.return %c : f32
   }
-  tessera.define @lib.tiled_qux(%a: i512, %n: i64) -> f32 attributes {byRefTypes = [unit, unit], pure = true} {
+  tessera.define @lib.tiled_qux(%a: i512, %n: i64) -> f32 attributes {argModes = [unit, unit], pure = true} {
     %c = llvm.mlir.constant(0.0 : f32) : f32
     tessera.return %c : f32
   }
-  tessera.define @lib.small_qux(%a: i512, %n: i64) -> f32 attributes {byRefTypes = [unit, unit], pure = true} {
+  tessera.define @lib.small_qux(%a: i512, %n: i64) -> f32 attributes {argModes = [unit, unit], pure = true} {
     %c = llvm.mlir.constant(0.0 : f32) : f32
     tessera.return %c : f32
   }
