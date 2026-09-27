@@ -8,6 +8,8 @@ def LiftTesseraAnnotationsPass : Pass<"lift-tessera-annotations", "ModuleOp"> {
   let summary = "Extracts tessera_op and tessera_optimize annotations from LLVM global annotations; adds MLIR tessera_op string attributes and optimization rules";
   let description = [{
     This pass finds tessera_op annotations in the LLVM global annotations and turns them MLIR tessera_op attributes on the appropriate function. It also finds tessera_optimize annotations and collects all of the rule strings into a vector which it stores as a module attribute.
+
+    A function annotated `tessera_no_rewrite` gets a `tessera.no_rewrite` attribute, which keeps tessera-apply-pdl from rewriting anything in its body. The pipeline inlines before this pass runs, so such a function must also be noinline.
   }];
   let dependentDialects = [
     "LLVM::LLVMDialect",

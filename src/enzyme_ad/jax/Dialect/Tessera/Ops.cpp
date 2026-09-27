@@ -147,12 +147,11 @@ Attribute DefineOp::getSretAttr() {
 // sret argument (if any) and any pure result/output arguments (see
 // CallOpRewrite in LLVMToTessera.cpp), so both must be skipped when mapping
 // back onto the define op's own argument list.
-static std::optional<unsigned> translateCallOperandIndex(DefineOp defineOp,
-                                                         unsigned index) {
-  unsigned offset = defineOp.getSretAttr() != nullptr ? 1 : 0;
+std::optional<unsigned> DefineOp::getArgIndexForCallOperand(unsigned index) {
+  unsigned offset = getSretAttr() != nullptr ? 1 : 0;
   unsigned seen = 0;
-  for (unsigned i = 0, e = defineOp.getArgModeEntries().size(); i != e; ++i) {
-    if (defineOp.argIsWritten(i) && !defineOp.argIsRead(i))
+  for (unsigned i = 0, e = getArgModeEntries().size(); i != e; ++i) {
+    if (argIsWritten(i) && !argIsRead(i))
       continue;
     if (seen == index)
       return i + offset;
@@ -161,11 +160,23 @@ static std::optional<unsigned> translateCallOperandIndex(DefineOp defineOp,
   return std::nullopt;
 }
 
+SmallVector<Type> DefineOp::getCallResultTypes() {
+  if (auto sret = getSretAttr())
+    return {cast<TypeAttr>(sret).getValue()};
+  SmallVector<Type> types;
+  for (unsigned i = 0, e = getArgModeEntries().size(); i != e; ++i)
+    if (argIsWritten(i))
+      if (Type type = getArgLiftedType(i))
+        types.push_back(type);
+  llvm::append_range(types, getFunctionType().getResults());
+  return types;
+}
+
 // Override getArgAttr to map call-side indices to define-side indices, so
 // that generic FunctionOpInterface callers (e.g. mem2reg) can index by a
 // tessera.call's operand position directly.
 Attribute DefineOp::getArgAttr(unsigned index, StringAttr name) {
-  auto rawIndex = translateCallOperandIndex(*this, index);
+  auto rawIndex = getArgIndexForCallOperand(index);
   if (!rawIndex)
     return nullptr;
   if (auto dict = mlir::function_interface_impl::getArgAttrDict(
@@ -175,7 +186,7 @@ Attribute DefineOp::getArgAttr(unsigned index, StringAttr name) {
 }
 
 Attribute DefineOp::getArgAttr(unsigned index, StringRef name) {
-  auto rawIndex = translateCallOperandIndex(*this, index);
+  auto rawIndex = getArgIndexForCallOperand(index);
   if (!rawIndex)
     return nullptr;
   if (auto dict = mlir::function_interface_impl::getArgAttrDict(
@@ -247,7 +258,7 @@ Type DefineOp::getCallOperandPointeeType(unsigned callOperandIdx) {
   if (auto byValAttr =
           getArgAttr(callOperandIdx, LLVM::LLVMDialect::getByValAttrName()))
     return cast<TypeAttr>(byValAttr).getValue();
-  auto rawIndex = translateCallOperandIndex(*this, callOperandIdx);
+  auto rawIndex = getArgIndexForCallOperand(callOperandIdx);
   if (!rawIndex)
     return nullptr;
   // argModes is indexed sret-exclusive, so undo the sret offset. Only a
