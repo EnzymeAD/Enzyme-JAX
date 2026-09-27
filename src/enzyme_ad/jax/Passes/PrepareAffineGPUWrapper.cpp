@@ -18,6 +18,9 @@
 // multiply to, and re-linearizes each group into one induction variable whose
 // upper bound is the wrapper's bound value itself.
 //
+// It also drops the reductions of those affine.parallel ops whose results are
+// unused, as a launch cannot carry them.
+//
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -204,6 +207,58 @@ struct AlignAffineParallelToWrapperBounds
   }
 };
 
+/// Drop the reductions of an affine.parallel in a gpu_wrapper whose results
+/// are unused. Reverse-mode AD hoists the accumulation of loop-invariant
+/// shadows into parallel reductions, which stay behind once the shadows turn
+/// out dead. A launch has no reduction semantics, and the reduction operands
+/// keep convert-parallel-to-gpu1 from moving the ops beside a nested parallel
+/// into the block, leaving the kernel to be serialized.
+struct DropUnusedParallelReductions
+    : public OpRewritePattern<affine::AffineParallelOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineParallelOp par,
+                                PatternRewriter &rewriter) const override {
+    if (!par->getParentOfType<enzymexla::GPUWrapperOp>())
+      return rewriter.notifyMatchFailure(par, "not in a gpu_wrapper");
+
+    SmallVector<unsigned> kept;
+    for (OpResult res : par->getResults())
+      if (!res.use_empty())
+        kept.push_back(res.getResultNumber());
+    if (kept.size() == par->getNumResults())
+      return rewriter.notifyMatchFailure(par, "no unused reduction");
+
+    SmallVector<Type> types;
+    SmallVector<Attribute> reductions;
+    for (unsigned i : kept) {
+      types.push_back(par->getResult(i).getType());
+      reductions.push_back(par.getReductions()[i]);
+    }
+
+    rewriter.setInsertionPoint(par);
+    auto newPar = affine::AffineParallelOp::create(
+        rewriter, par.getLoc(), types, rewriter.getArrayAttr(reductions),
+        par.getLowerBoundsMapAttr(), par.getLowerBoundsGroupsAttr(),
+        par.getUpperBoundsMapAttr(), par.getUpperBoundsGroupsAttr(),
+        par.getStepsAttr(), par.getMapOperands());
+    newPar->setDiscardableAttrs(par->getDiscardableAttrDictionary());
+    newPar.getRegion().takeBody(par.getRegion());
+
+    auto yield = cast<affine::AffineYieldOp>(newPar.getBody()->getTerminator());
+    SmallVector<Value> yielded;
+    for (unsigned i : kept)
+      yielded.push_back(yield.getOperand(i));
+    rewriter.modifyOpInPlace(yield, [&] { yield->setOperands(yielded); });
+
+    SmallVector<Value> replacements(par->getNumResults(), nullptr);
+    for (auto [i, res] : llvm::enumerate(kept))
+      replacements[res] = newPar->getResult(i);
+    rewriter.replaceOp(par, replacements);
+    return success();
+  }
+};
+
 struct PrepareAffineGPUWrapperPass
     : public mlir::enzyme::impl::PrepareAffineGPUWrapperPassBase<
           PrepareAffineGPUWrapperPass> {
@@ -211,7 +266,8 @@ struct PrepareAffineGPUWrapperPass
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns.add<AlignAffineParallelToWrapperBounds>(&getContext());
+    patterns.add<DropUnusedParallelReductions,
+                 AlignAffineParallelToWrapperBounds>(&getContext());
     // Not the greedy driver: folding affine.parallel would turn the symbolic
     // launch-bound upper bounds back into constants, and
     // convert-parallel-to-gpu1 matches the bounds by value.

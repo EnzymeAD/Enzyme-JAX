@@ -397,21 +397,6 @@ def XLAWrapperOp : EnzymeXLA_Op<"xla_wrapper", [
 
 }
 
-def Tensor2MemrefOp : EnzymeXLA_Op<"tensor2memref", [
-    DeclareOpInterfaceMethods<PromotableAllocationOpInterface>
-  ]> {
-  let summary = "convert tensor to memref";
-  let arguments = (ins HLO_Tensor : $tensor);
-  let results = (outs AnyType : $memref);
-}
-def Memref2TensorOp : EnzymeXLA_Op<"memref2tensor", [
-    DeclareOpInterfaceMethods<PromotableMemOpInterface>
-  ]> {
-  let summary = "convert memref to tensor";
-  let arguments = (ins AnyType : $memref);
-  let results = (outs HLO_Tensor : $tensor);
-}
-
 def GPUErrorOp : EnzymeXLA_Op<"gpu_error", [
   RecursiveMemoryEffects,
   SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]>,
@@ -478,8 +463,7 @@ def StreamToTokenOp : EnzymeXLA_Op<"stream2token", [
 }
 
 def Memref2PointerOp : EnzymeXLA_Op<"memref2pointer", [
-  ViewLikeOpInterface, Pure,
-  DeclareOpInterfaceMethods<PromotableMemOpInterface>
+  ViewLikeOpInterface, Pure
 ]> {
   let summary = "Extract and LLVM pointer from a MemRef";
 
