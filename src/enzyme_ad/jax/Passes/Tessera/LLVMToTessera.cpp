@@ -39,6 +39,59 @@ using namespace mlir::enzyme::tessera;
 
 namespace {
 
+// Marks the placeholder a taken address refers to while the function it names
+// is a tessera.define, holding that function's original symbol. See
+// redirectAddressUses; tessera-to-llvm undoes it.
+constexpr llvm::StringLiteral kAddressStubAttr = "tessera.address_stub_for";
+
+// llvm.mlir.addressof may only name an LLVM symbol, so a function whose address
+// is taken cannot simply become a tessera.define: the module stops verifying.
+// That is not rare -- `&DenseMatrix::Invert` does it, and so does anything
+// that puts the function in llvm.used or llvm.compiler.used.
+//
+// Point those uses at an external llvm.func declared in the function's place
+// instead, for as long as the function is in the tessera dialect. Calls
+// through such a pointer are indirect, so no rule could have matched them
+// anyway, and once tessera-to-llvm turns the define back into a function of
+// the original name, it points the uses back at it and drops the stub.
+void redirectAddressUses(LLVM::LLVMFuncOp funcOp, PatternRewriter &rewriter,
+                         ModuleOp module) {
+  auto uses = SymbolTable::getSymbolUses(funcOp.getSymNameAttr(), module);
+  if (!uses)
+    return;
+
+  SmallVector<LLVM::AddressOfOp> addressUses;
+  for (const SymbolTable::SymbolUse &use : *uses) {
+    auto addressOf = dyn_cast<LLVM::AddressOfOp>(use.getUser());
+    if (!addressOf)
+      continue;
+    // The annotation table is how the function got its tessera name in the
+    // first place, and this pass erases it once conversion is done.
+    auto global = addressOf->getParentOfType<LLVM::GlobalOp>();
+    if (global && global.getSymName() == "llvm.global.annotations")
+      continue;
+    addressUses.push_back(addressOf);
+  }
+  if (addressUses.empty())
+    return;
+
+  auto *ctx = funcOp->getContext();
+  std::string stubName = (funcOp.getName() + ".tessera_address").str();
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(funcOp);
+  auto stub = LLVM::LLVMFuncOp::create(rewriter, funcOp.getLoc(), stubName,
+                                       funcOp.getFunctionType());
+  // A plain string rather than a symbol reference: the renaming that follows
+  // rewrites every reference to the function, and this one must keep naming
+  // the original.
+  stub->setAttr(kAddressStubAttr, funcOp.getSymNameAttr());
+
+  auto stubRef = FlatSymbolRefAttr::get(ctx, stubName);
+  for (LLVM::AddressOfOp addressOf : addressUses)
+    rewriter.modifyOpInPlace(addressOf,
+                             [&] { addressOf.setGlobalNameAttr(stubRef); });
+}
+
 // Rewrite 'llvm.func' -> 'tessera.define'
 class FuncOpRewrite final : public OpRewritePattern<LLVM::LLVMFuncOp> {
 public:
@@ -183,6 +236,10 @@ public:
     auto fnType = FunctionType::get(
         ctx, params,
         isa<LLVM::LLVMVoidType>(retType) ? TypeRange{} : TypeRange{retType});
+
+    // Taken addresses are set aside first, so that only calls (and the
+    // annotation table) follow the function to its tessera name.
+    redirectAddressUses(funcOp, rewriter, module);
 
     // Replace current function name with tessera name defined in
     // tessera_op / pure_tessera_op attribute
