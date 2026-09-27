@@ -3338,11 +3338,9 @@ static DenseElementsAttr constantGlobalInitializer(LLVM::AddressOfOp addr) {
   return dense;
 }
 
-static LogicalResult
-tryRaisingOpToStableHLOImpl(Operation *op, IRMapping &mapping,
-                            OpBuilder &builder,
-                            llvm::DenseMap<Value, affine::AffineValueMap> &maps,
-                            ParallelContext pc) {
+static LogicalResult tryRaisingOpToStableHLOImpl(
+    Operation *op, IRMapping &mapping, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
 
   // Affine load inside a loop becomes a slice
   if (auto loadOp = dyn_cast<affine::AffineLoadOp>(op)) {
