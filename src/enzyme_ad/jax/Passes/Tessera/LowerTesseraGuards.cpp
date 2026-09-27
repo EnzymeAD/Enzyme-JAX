@@ -15,6 +15,7 @@
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/Predicates.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/RuleAST.h"
 #include <variant>
 
@@ -164,6 +165,51 @@ Value emitCompare(const Compare &cmp, OpBuilder &builder, Location loc,
   return Value();
 }
 
+Value emitCond(const Cond &cond, OpBuilder &builder, Location loc,
+               GuardOp guard, int64_t maxUnrolledElems);
+
+/// Resolve a named predicate and let it synthesize its own check. Its operands
+/// are looked up on the guard: a predicate tests values the rule matched, not
+/// expressions computed here.
+Value emitPredicate(const Pred &pred, OpBuilder &builder, Location loc,
+                    GuardOp guard, int64_t maxUnrolledElems) {
+  const TesseraPredicate *predicate = lookupPredicate(pred.name);
+  if (!predicate) {
+    auto diagnostic = guard.emitError()
+                      << "unknown predicate '" << pred.name << "'";
+    diagnostic << "; known predicates are ";
+    llvm::interleaveComma(getKnownPredicateNames(), diagnostic);
+    return Value();
+  }
+
+  if (pred.args.size() != predicate->arity) {
+    guard.emitError() << "predicate '" << pred.name << "' takes "
+                      << predicate->arity << " argument(s), but got "
+                      << pred.args.size();
+    return Value();
+  }
+
+  SmallVector<Value> args;
+  for (const Expr &arg : pred.args) {
+    auto *var = std::get_if<Var>(&arg.data);
+    if (!var) {
+      guard.emitError() << "predicate '" << pred.name
+                        << "' takes matched values, not expressions";
+      return Value();
+    }
+    Value value = guard.getArgForName(var->name);
+    if (!value) {
+      guard.emitError() << "condition refers to '" << var->name
+                        << "', which this guard does not carry a value for";
+      return Value();
+    }
+    args.push_back(value);
+  }
+
+  CheckContext ctx{builder, loc, guard, maxUnrolledElems};
+  return predicate->emitCheck(args, ctx);
+}
+
 /// Synthesize an i1 testing `cond`.
 ///
 /// The connectives are bitwise on i1 rather than short-circuiting. Every check
@@ -172,45 +218,44 @@ Value emitCompare(const Compare &cmp, OpBuilder &builder, Location loc,
 /// needs a pointer another part of the condition establishes, and this will
 /// need real control flow then.
 Value emitCond(const Cond &cond, OpBuilder &builder, Location loc,
-               GuardOp guard) {
-  return std::visit(overloaded{
-                        [&](const Pred &p) -> Value {
-                          guard.emitError() << "predicate '" << p.name
-                                            << "' is not supported yet";
-                          return Value();
-                        },
-                        [&](const Compare &c) -> Value {
-                          return emitCompare(c, builder, loc, guard);
-                        },
-                        [&](const NotCond &c) -> Value {
-                          Value inner =
-                              emitCond(*c.operand, builder, loc, guard);
-                          if (!inner)
-                            return Value();
-                          Value one = LLVM::ConstantOp::create(
-                              builder, loc, builder.getI1Type(),
-                              builder.getIntegerAttr(builder.getI1Type(), 1));
-                          return LLVM::XOrOp::create(builder, loc, inner, one);
-                        },
-                        [&](const AndCond &c) -> Value {
-                          Value lhs = emitCond(*c.lhs, builder, loc, guard);
-                          Value rhs = emitCond(*c.rhs, builder, loc, guard);
-                          if (!lhs || !rhs)
-                            return Value();
-                          return LLVM::AndOp::create(builder, loc, lhs, rhs);
-                        },
-                        [&](const OrCond &c) -> Value {
-                          Value lhs = emitCond(*c.lhs, builder, loc, guard);
-                          Value rhs = emitCond(*c.rhs, builder, loc, guard);
-                          if (!lhs || !rhs)
-                            return Value();
-                          return LLVM::OrOp::create(builder, loc, lhs, rhs);
-                        },
-                    },
-                    cond.data);
+               GuardOp guard, int64_t maxUnrolledElems) {
+  return std::visit(
+      overloaded{
+          [&](const Pred &p) -> Value {
+            return emitPredicate(p, builder, loc, guard, maxUnrolledElems);
+          },
+          [&](const Compare &c) -> Value {
+            return emitCompare(c, builder, loc, guard);
+          },
+          [&](const NotCond &c) -> Value {
+            Value inner =
+                emitCond(*c.operand, builder, loc, guard, maxUnrolledElems);
+            if (!inner)
+              return Value();
+            Value one = LLVM::ConstantOp::create(
+                builder, loc, builder.getI1Type(),
+                builder.getIntegerAttr(builder.getI1Type(), 1));
+            return LLVM::XOrOp::create(builder, loc, inner, one);
+          },
+          [&](const AndCond &c) -> Value {
+            Value lhs = emitCond(*c.lhs, builder, loc, guard, maxUnrolledElems);
+            Value rhs = emitCond(*c.rhs, builder, loc, guard, maxUnrolledElems);
+            if (!lhs || !rhs)
+              return Value();
+            return LLVM::AndOp::create(builder, loc, lhs, rhs);
+          },
+          [&](const OrCond &c) -> Value {
+            Value lhs = emitCond(*c.lhs, builder, loc, guard, maxUnrolledElems);
+            Value rhs = emitCond(*c.rhs, builder, loc, guard, maxUnrolledElems);
+            if (!lhs || !rhs)
+              return Value();
+            return LLVM::OrOp::create(builder, loc, lhs, rhs);
+          },
+      },
+      cond.data);
 }
 
-LogicalResult lowerGuard(GuardOp guard) {
+LogicalResult lowerGuard(GuardOp guard, int64_t maxUnrolledElems) {
   Location loc = guard.getLoc();
 
   auto cond = parseConditionText(guard.getCond(), loc);
@@ -219,8 +264,20 @@ LogicalResult lowerGuard(GuardOp guard) {
 
   Block *entry = guard->getBlock();
   Region *region = entry->getParent();
+  if (guard.getThenRegion().empty() || guard.getElseRegion().empty())
+    return guard.emitError("tessera.guard has an empty region");
   Block *thenBlock = &guard.getThenRegion().front();
   Block *elseBlock = &guard.getElseRegion().front();
+
+  // Synthesize the check first, while the guard is still intact. A predicate
+  // reads the call kept in the else region to find out how its operand is laid
+  // out, so this has to happen before that region is moved away. Inserting
+  // before the guard also puts the check in the entry block, ahead of where
+  // the split below cuts.
+  OpBuilder builder(guard);
+  Value check = emitCond(*cond, builder, loc, guard, maxUnrolledElems);
+  if (!check)
+    return failure();
 
   // Split so that everything after the guard becomes the continuation. The
   // guard itself leads the continuation block for now and is erased last.
@@ -248,13 +305,8 @@ LogicalResult lowerGuard(GuardOp guard) {
   region->getBlocks().splice(tail->getIterator(),
                              guard.getElseRegion().getBlocks());
 
-  // Everything the condition reads is a guard operand, defined before the
-  // guard, so the check can be built at the end of the entry block.
-  OpBuilder builder(entry, entry->end());
-  Value check = emitCond(*cond, builder, loc, guard);
-  if (!check)
-    return failure();
-  LLVM::CondBrOp::create(builder, loc, check, thenBlock, ValueRange{},
+  OpBuilder branchBuilder(entry, entry->end());
+  LLVM::CondBrOp::create(branchBuilder, loc, check, thenBlock, ValueRange{},
                          elseBlock, ValueRange{});
 
   guard.erase();
@@ -273,7 +325,7 @@ struct LowerTesseraGuardsPass
     getOperation()->walk([&](GuardOp guard) { guards.push_back(guard); });
 
     for (GuardOp guard : guards)
-      if (failed(lowerGuard(guard))) {
+      if (failed(lowerGuard(guard, maxUnrolledElems))) {
         signalPassFailure();
         return;
       }
