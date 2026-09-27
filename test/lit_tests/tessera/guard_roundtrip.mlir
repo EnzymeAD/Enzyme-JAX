@@ -6,11 +6,11 @@
 // parses and prints back unchanged.
 
 module {
-  tessera.define @lib.foo(%arg0: f32) -> f32 attributes {byRefTypes = [unit], pure = true} {
+  tessera.define @lib.foo(%arg0: f32) -> f32 attributes {argModes = [unit], pure = true} {
     tessera.return %arg0 : f32
   }
 
-  tessera.define @lib.symmetric_foo(%arg0: f32) -> f32 attributes {byRefTypes = [unit], pure = true} {
+  tessera.define @lib.symmetric_foo(%arg0: f32) -> f32 attributes {argModes = [unit], pure = true} {
     tessera.return %arg0 : f32
   }
 

@@ -6,7 +6,7 @@
 // results, so each yield has to agree with them.
 
 module {
-  tessera.define @f(%a: f32) -> f32 attributes {byRefTypes = [unit], pure = true} {
+  tessera.define @f(%a: f32) -> f32 attributes {argModes = [unit], pure = true} {
     tessera.return %a : f32
   }
   llvm.func @t(%x: f32) -> f32 {
@@ -25,7 +25,7 @@ module {
 // -----
 
 module {
-  tessera.define @f(%a: f32) -> f32 attributes {byRefTypes = [unit], pure = true} {
+  tessera.define @f(%a: f32) -> f32 attributes {argModes = [unit], pure = true} {
     tessera.return %a : f32
   }
   llvm.func @t(%x: f32) -> f32 {
@@ -44,7 +44,7 @@ module {
 // -----
 
 module {
-  tessera.define @f(%a: f32) -> f32 attributes {byRefTypes = [unit], pure = true} {
+  tessera.define @f(%a: f32) -> f32 attributes {argModes = [unit], pure = true} {
     tessera.return %a : f32
   }
   llvm.func @t(%x: f32) -> f32 {
@@ -63,7 +63,7 @@ module {
 // -----
 
 module {
-  tessera.define @f(%a: f32) -> f32 attributes {byRefTypes = [unit], pure = true} {
+  tessera.define @f(%a: f32) -> f32 attributes {argModes = [unit], pure = true} {
     tessera.return %a : f32
   }
   llvm.func @t(%x: f32) -> f32 {
@@ -81,7 +81,7 @@ module {
 // -----
 
 module {
-  tessera.define @f(%a: f32) -> f32 attributes {byRefTypes = [unit], pure = true} {
+  tessera.define @f(%a: f32) -> f32 attributes {argModes = [unit], pure = true} {
     tessera.return %a : f32
   }
   llvm.func @t(%x: f32) -> f32 {
