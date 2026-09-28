@@ -17,7 +17,7 @@ module @reactant_ui8_bra... attributes {llvm.data_layout = "e-p6:32:32-i64:64-i1
     %1 = "enzymexla.pointer2memref"(%0) : (!llvm.ptr<1>) -> memref<?xi8, 1>
     affine.parallel (%arg2) = (0) to (2) {
       %2 = affine.load %arg1[%arg2] {alignment = 8 : i64, invariant, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<2xf64, 1>
-      %3 = arith.cmpf ult, %2, %cst {fastmathFlags = #llvm.fastmath<none>} : f64
+      %3 = arith.cmpf ult, %2, %cst : f64
       %4 = arith.select %3, %c1_i8, %c2_i8 {fastmathFlags = #llvm.fastmath<none>} : i8
       affine.store %4, %1[%arg2] {alignment = 1 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<?xi8, 1>
     }
@@ -33,7 +33,7 @@ module @reactant_ui8_bra... attributes {llvm.data_layout = "e-p6:32:32-i64:64-i1
 // CHECK-NEXT:    %1 = "enzymexla.pointer2memref"(%0) : (!llvm.ptr<1>) -> memref<?xi8, 1>
 // CHECK-NEXT:    affine.parallel (%arg2) = (0) to (2) {
 // CHECK-NEXT:      %2 = affine.load %arg1[%arg2] {alignment = 8 : i64, invariant, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<2xf64, 1>
-// CHECK-NEXT:      %3 = arith.cmpf ult, %2, %cst {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:      %3 = arith.cmpf ult, %2, %cst : f64
 // CHECK-NEXT:      %4 = arith.select %3, %c1_i8, %c2_i8 {fastmathFlags = #llvm.fastmath<none>} : i8
 // CHECK-NEXT:      affine.store %4, %1[%arg2] {alignment = 1 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<?xi8, 1>
 // CHECK-NEXT:    }

@@ -250,7 +250,7 @@ let skipDefaultBuilders = 1;
 let builders = [OpBuilder<(ins "ValueRange" : $blockSizes)>, OpBuilder<(ins)>];
 }
 
-def TempAllocOp : EnzymeXLA_Op<"temp_alloc", [Symbol, HasParent<"ModuleOp">]> {
+def TempAllocOp : EnzymeXLA_Op<"temp_alloc", [Symbol, SymbolName, SymbolVisibility, HasParent<"ModuleOp">]> {
   let summary = "declare a module-owned persistent XLA allocation";
   let description = [{
     Declares uninitialized, statically shaped device storage allocated when

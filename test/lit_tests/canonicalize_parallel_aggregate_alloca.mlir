@@ -2,12 +2,12 @@
 
 module {
   // CHECK-LABEL: func.func @union_scratch
-  // CHECK: %[[A:.+]] = memref.alloca() {alignment = 8 : i64} : memref<4xf64>
+  // CHECK: %[[A:.+]] = memref.alloca() alignment = 8 : memref<4xf64>
   // CHECK-NEXT: memref.store %{{.*}}, %[[A]][%{{.*}}] : memref<4xf64>
   // CHECK-NEXT: memref.load %[[A]][%{{.*}}] : memref<4xf64>
   // CHECK-NOT: memref2pointer
   func.func @union_scratch(%i: index, %v: f64) -> f64 {
-    %a = memref.alloca() {alignment = 8 : i64} : memref<!llvm.struct<"union.anon", (array<2 x array<2 x f64>>)>>
+    %a = memref.alloca() alignment = 8 : memref<!llvm.struct<"union.anon", (array<2 x array<2 x f64>>)>>
     %p = "enzymexla.memref2pointer"(%a) : (memref<!llvm.struct<"union.anon", (array<2 x array<2 x f64>>)>>) -> !llvm.ptr
     %m = "enzymexla.pointer2memref"(%p) : (!llvm.ptr) -> memref<?xf64>
     memref.store %v, %m[%i] : memref<?xf64>

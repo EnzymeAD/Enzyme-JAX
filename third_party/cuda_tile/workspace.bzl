@@ -1,23 +1,19 @@
 """Loads NVIDIA CUDA Tile."""
 
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+# XLA's workspace2() declares @cuda_tile itself, with a BUILD file and the
+# patch series NVIDIA's sources need -- the archive ships no BUILD of its own.
+#
+# In WORKSPACE mode the first declaration of a repository wins, so declaring it
+# here as well does not add anything; it only decides which definition is used,
+# according to where a workspace happens to call this macro relative to
+# xla_workspace2().  Enzyme-JAX calls it after (WORKSPACE:355 vs :192) and gets
+# XLA's, while Reactant calls it before (WORKSPACE:140 vs :198) and got this
+# one, which listed cuda_tile's sources by hand and so went stale whenever a
+# release added a file -- as 13.4.0 did, breaking every Reactant_jll platform
+# on a header it does not name.
+#
+# Leave the repository to XLA, which keeps it current.  This stays a macro
+# because Reactant's WORKSPACE loads and calls it by name.
 
-CUDA_TILE_COMMIT = "0c5ec1c5b72889d58b03cf43970984747680588c"
-CUDA_TILE_SHA256 = ""
-
-CUTILE_PATCHES = [
-    """sed -i.bak "/usePropertiesForAttributes/d" include/cuda_tile/Dialect/CudaTile/IR/Dialect.td""",
-]
-
-def repo(repo_name = ""):
-    # When used as an external dependency, repo_name should be "@enzyme_ad"
-    # When used standalone, repo_name should be "" (empty string)
-    build_file_label = (repo_name + "//third_party/cuda_tile:cuda_tile.BUILD") if repo_name else "//third_party/cuda_tile:cuda_tile.BUILD"
-    http_archive(
-        name = "cuda_tile",
-        sha256 = CUDA_TILE_SHA256,
-        strip_prefix = "cuda-tile-" + CUDA_TILE_COMMIT,
-        urls = ["https://github.com/NVIDIA/cuda-tile/archive/{commit}.tar.gz".format(commit = CUDA_TILE_COMMIT)],
-        build_file = build_file_label,
-        patch_cmds = CUTILE_PATCHES,
-    )
+def repo(repo_name = ""):  # @unused
+    pass

@@ -3404,6 +3404,13 @@ struct TransposeLikeBroadcastSliceBase final
       return failure();
     }
 
+    // Above the slice the broadcast applies to the slice's operand; of a
+    // splat constant it is no longer transpose-like (see
+    // isTransposeReshapeLikeBroadcast) and SliceBroadcast would move it back.
+    if (SplatElementsAttr cstAttr;
+        matchPattern(sliceOp.getOperand(), m_Constant(&cstAttr)))
+      return failure();
+
     // If we can fuse the transpose into all of its users then we shouldn't push
     // it up (or atleast give higher priority to other passes before trying to
     // move it up)
@@ -9405,10 +9412,11 @@ struct CompareIotaConstSimplify
   }
 };
 
-struct CompareAbs
-    : public CheckedOpRewritePattern<stablehlo::CompareOp, CompareAbs> {
-  using CheckedOpRewritePattern<stablehlo::CompareOp,
-                                CompareAbs>::CheckedOpRewritePattern;
+struct NoNanCompareAbs
+    : public NoNanCheckedOpRewritePattern<stablehlo::CompareOp,
+                                          NoNanCompareAbs> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::CompareOp, NoNanCompareAbs>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
                                     PatternRewriter &rewriter) const {
@@ -9426,6 +9434,20 @@ struct CompareAbs
       }
       // now its always abs ?= 0
 
+      // Every comparison against a NaN is false, except NE which is true. Most
+      // of the folds below agree with that on a NaN input and stay valid, but
+      // GE and GT do not: abs(NaN) >= 0 is false where the fold says true, and
+      // abs(NaN) > 0 is false where the fold's x != 0 says true. Those two are
+      // only correct when the compared value cannot be a NaN. Ask about the
+      // operand of the abs rather than cmpOp.getType(): a compare always
+      // produces i1, and canApplyNoNanPattern accepts any integer type
+      // unconditionally, which would make the check vacuous.
+      auto knownNoNan = [&]() {
+        return canApplyNoNanPattern(allowOnFloatingPointMath,
+                                    abs.getOperand().getType(), cmpOp,
+                                    rewriter);
+      };
+
       // abs(x) < 0 -> false
       if (dir == stablehlo::ComparisonDirection::LT) {
         rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
@@ -9441,16 +9463,20 @@ struct CompareAbs
             stablehlo::ComparisonDirection::EQ);
         return success();
       }
-      // abs(x) >= 0 -> true
+      // abs(x) >= 0 -> true (false for a NaN x)
       if (dir == stablehlo::ComparisonDirection::GE) {
+        if (!knownNoNan())
+          return failure();
         rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
             cmpOp, cmpOp.getType(),
             SplatElementsAttr::get(cmpOp.getType(),
                                    rewriter.getBoolAttr(true)));
         return success();
       }
-      // abs(x) > 0 -> x != 0
+      // abs(x) > 0 -> x != 0 (false for a NaN x, where x != 0 is true)
       if (dir == stablehlo::ComparisonDirection::GT) {
+        if (!knownNoNan())
+          return failure();
         rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
             cmpOp, abs.getOperand(), cmpOp->getOperand(1 - i),
             stablehlo::ComparisonDirection::NE);
@@ -12573,20 +12599,23 @@ struct TransposeReduceWindow final
                             reduce.getWindowDilations()->end());
     SmallVector<int64_t> padding_dialations(2 * padding_shape[0]);
 
+    // Dimension i of the transposed operand is dimension perm[i] of the
+    // reduce_window's operand, so it takes that dimension's window.
     auto perm = op.getPermutation();
     for (int64_t i = 0; i < perm.size(); ++i) {
-      win_dim[perm[i]] = reduce.getWindowDimensions()[i];
+      win_dim[i] = reduce.getWindowDimensions()[perm[i]];
       if (reduce.getWindowStrides())
-        win_strides[perm[i]] = (*reduce.getWindowStrides())[i];
+        win_strides[i] = (*reduce.getWindowStrides())[perm[i]];
       if (reduce.getBaseDilations())
-        base_dialations[perm[i]] = (*reduce.getBaseDilations())[i];
+        base_dialations[i] = (*reduce.getBaseDilations())[perm[i]];
       if (reduce.getWindowDilations())
-        win_dialations[perm[i]] = (*reduce.getWindowDilations())[i];
+        win_dialations[i] = (*reduce.getWindowDilations())[perm[i]];
       if (reduce.getPadding()) {
-        padding_dialations[2 * perm[i]] =
-            (*(reduce.getPadding()->begin() + (2 * i))).getSExtValue();
-        padding_dialations[2 * perm[i] + 1] =
-            (*(reduce.getPadding()->begin() + (2 * i + 1))).getSExtValue();
+        padding_dialations[2 * i] =
+            (*(reduce.getPadding()->begin() + (2 * perm[i]))).getSExtValue();
+        padding_dialations[2 * i + 1] =
+            (*(reduce.getPadding()->begin() + (2 * perm[i] + 1)))
+                .getSExtValue();
       }
     }
 
@@ -13419,50 +13448,69 @@ template <typename T> struct CSE final : CheckedOpRewritePattern<T, CSE<T>> {
   bool supportsDynamicShapes() { return true; }
 
   LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
-    if (op->getNumOperands() > 0)
-      for (auto nop : op->getOperand(0).getUsers()) {
-        if (nop == op)
-          continue;
-        if (!isa<T>(nop))
-          continue;
-        if (nop->getBlock() != op->getBlock())
-          continue;
-
-        if (op->getName() != nop->getName())
-          continue;
-
-        OperationEquivalence::Flags flags =
-            OperationEquivalence::IgnoreLocations |
-            OperationEquivalence::IgnoreDiscardableAttrs;
-
-        // OperationEquivalence only checks for mlir::OpTrait::IsCommutative
-        if constexpr (!std::is_base_of_v<::mlir::OpTrait::IsCommutative<T>,
-                                         T>) {
-          flags |= OperationEquivalence::IgnoreCommutativity;
+    if (op->getNumOperands() == 0)
+      return failure();
+    // An equivalent op uses every operand of this one, so it is among the
+    // users of whichever operand has the fewest. Walk the user lists in
+    // lockstep and take the first to end: a buffer read by thousands of
+    // gathers is never scanned when each gather has its own index.
+    Value key;
+    SmallVector<Value::user_iterator> its, ends;
+    for (Value operand : op->getOperands()) {
+      its.push_back(operand.user_begin());
+      ends.push_back(operand.user_end());
+    }
+    while (!key) {
+      for (auto [i, operand] : llvm::enumerate(op->getOperands())) {
+        if (its[i] == ends[i]) {
+          key = operand;
+          break;
         }
+        ++its[i];
+      }
+    }
+    for (auto nop : key.getUsers()) {
+      if (nop == op)
+        continue;
+      if (!isa<T>(nop))
+        continue;
+      if (nop->getBlock() != op->getBlock())
+        continue;
 
-        if (!OperationEquivalence::isEquivalentTo(op, nop, flags)) {
-          // stablehlo defines a special trait for commutative operations.
-          // check for that here.
-          if constexpr (std::is_base_of_v<
-                            ::mlir::hlo::OpTrait::IsCommutative<T>, T>) {
-            auto opRange = op->getOperands();
-            auto nopRange = nop->getOperands();
-            if (!isCommutativeEquivalent(opRange, nopRange))
-              continue;
-          } else {
+      if (op->getName() != nop->getName())
+        continue;
+
+      OperationEquivalence::Flags flags =
+          OperationEquivalence::IgnoreLocations |
+          OperationEquivalence::IgnoreDiscardableAttrs;
+
+      // OperationEquivalence only checks for mlir::OpTrait::IsCommutative
+      if constexpr (!std::is_base_of_v<::mlir::OpTrait::IsCommutative<T>, T>) {
+        flags |= OperationEquivalence::IgnoreCommutativity;
+      }
+
+      if (!OperationEquivalence::isEquivalentTo(op, nop, flags)) {
+        // stablehlo defines a special trait for commutative operations.
+        // check for that here.
+        if constexpr (std::is_base_of_v<::mlir::hlo::OpTrait::IsCommutative<T>,
+                                        T>) {
+          auto opRange = op->getOperands();
+          auto nopRange = nop->getOperands();
+          if (!isCommutativeEquivalent(opRange, nopRange))
             continue;
-          }
-        }
-
-        if (nop->isBeforeInBlock(op)) {
-          rewriter.replaceOp(op, nop);
-          return success();
         } else {
-          rewriter.replaceOp(nop, op);
-          return success();
+          continue;
         }
       }
+
+      if (nop->isBeforeInBlock(op)) {
+        rewriter.replaceOp(op, nop);
+        return success();
+      } else {
+        rewriter.replaceOp(nop, op);
+        return success();
+      }
+    }
     return failure();
   }
 };
@@ -13582,6 +13630,13 @@ struct DUSSliceSimplify final
     SmallVector<int64_t> duslimitIndices = llvm::map_to_vector(
         llvm::zip(dusStartIndices, updateShape),
         [](auto p) { return std::get<0>(p) + std::get<1>(p); });
+
+    for (auto [iStart, iEnd, dStart, dEnd] : llvm::zip(
+             ignoredStart, ignoredEnd, dusStartIndices, duslimitIndices)) {
+      if (iEnd <= dStart || iStart >= dEnd)
+        return rewriter.notifyMatchFailure(
+            dusOp, "Slices do not overlap the updated region");
+    }
 
     SmallVector<int64_t> strideOne(resRank, 1);
 
@@ -14309,8 +14364,61 @@ static bool extractSplatInt(Value v, int64_t &out) {
   return false;
 }
 
+// A constant predicate that, along one dimension, is a run of one value
+// followed by a run of the other and does not vary along the remaining
+// dimensions is `iota_dim < K` (prefix true) or `iota_dim >= K` (prefix
+// false), the mask of an unrolled tree reduction step (`lane < k`).
+static bool matchConstantPrefixMask(Value pred, int64_t &dim, int64_t &K,
+                                    stablehlo::ComparisonDirection &direction) {
+  auto type = dyn_cast<RankedTensorType>(pred.getType());
+  if (!type || !type.hasStaticShape() || type.getRank() == 0)
+    return false;
+  ElementsAttr cond;
+  if (!matchPattern(pred, m_Constant(&cond)) || cond.isSplat())
+    return false;
+  SmallVector<bool> values(cond.getValues<bool>().begin(),
+                           cond.getValues<bool>().end());
+  ArrayRef<int64_t> shape = type.getShape();
+  int64_t rank = type.getRank();
+  SmallVector<int64_t> strides(rank, 1);
+  for (int64_t d = rank - 2; d >= 0; --d)
+    strides[d] = strides[d + 1] * shape[d + 1];
+  for (int64_t d = 0; d < rank; ++d) {
+    // The value at each coordinate along d, when it is uniform there.
+    SmallVector<int8_t> along(shape[d], -1);
+    bool uniform = true;
+    for (int64_t i = 0, e = values.size(); i < e && uniform; ++i) {
+      int64_t c = (i / strides[d]) % shape[d];
+      if (along[c] < 0)
+        along[c] = values[i];
+      else if (along[c] != (int8_t)values[i])
+        uniform = false;
+    }
+    if (!uniform)
+      continue;
+    int64_t split = -1;
+    for (int64_t c = 1; c < shape[d]; ++c)
+      if (along[c] != along[c - 1]) {
+        if (split >= 0) {
+          split = -2;
+          break;
+        }
+        split = c;
+      }
+    if (split < 0)
+      continue;
+    dim = d;
+    K = split;
+    direction = along[0] ? stablehlo::ComparisonDirection::LT
+                         : stablehlo::ComparisonDirection::GE;
+    return true;
+  }
+  return false;
+}
+
 // Matches: select(broadcast_in_dim(compare(iota_expr, K), [dim]), A, B)
 //      or: select(compare(iota_expr, K), A, B)   (no broadcast)
+//      or: select(constant_prefix_mask, A, B)  (see matchConstantPrefixMask)
 // where iota_expr is either iota or add(iota, const_offset).
 // Replaces with concat(slice(A|B, ...), ...) along the iota/broadcast
 // dimension.
@@ -14321,9 +14429,6 @@ struct SelectCompIotaConstSimplify final
 
   LogicalResult matchAndRewriteImpl(stablehlo::SelectOp selectOp,
                                     PatternRewriter &rewriter) const {
-    Value trueTensor = selectOp.getOnTrue();
-    Value falseTensor = selectOp.getOnFalse();
-
     // pred may come from a broadcast_in_dim wrapping a compare, or directly
     // from a compare (no broadcast).
     auto broadcast =
@@ -14334,8 +14439,13 @@ struct SelectCompIotaConstSimplify final
     } else {
       compare = selectOp.getPred().getDefiningOp<stablehlo::CompareOp>();
     }
-    if (!compare)
-      return failure();
+    if (!compare) {
+      int64_t outputDim = 0, K = 0;
+      stablehlo::ComparisonDirection direction;
+      if (!matchConstantPrefixMask(selectOp.getPred(), outputDim, K, direction))
+        return failure();
+      return rewriteAsSlices(selectOp, outputDim, K, direction, rewriter);
+    }
 
     Value cmpLHS = compare.getLhs();
     Value cmpRHS = compare.getRhs();
@@ -14418,6 +14528,17 @@ struct SelectCompIotaConstSimplify final
         return failure();
     }
 
+    return rewriteAsSlices(selectOp, outputDim, K, direction, rewriter);
+  }
+
+  // select(iota_outputDim <direction> K, onTrue, onFalse) as the
+  // concatenation, along outputDim, of the operands' slices.
+  static LogicalResult rewriteAsSlices(stablehlo::SelectOp selectOp,
+                                       int64_t outputDim, int64_t K,
+                                       stablehlo::ComparisonDirection direction,
+                                       PatternRewriter &rewriter) {
+    Value trueTensor = selectOp.getOnTrue();
+    Value falseTensor = selectOp.getOnFalse();
     auto outputShape = selectOp.getType().getShape();
     const int64_t endValue = outputShape[outputDim];
 
@@ -15963,6 +16084,9 @@ struct GridIndexingAnalysis {
   SmallVector<int64_t> sliceSizes;
   SmallVector<DimMapping> mappings;
   SmallVector<int64_t> reverseDims;
+  // Whether every index of the grid lies within the operand. A gather clamps
+  // the ones past the end; a scatter drops them.
+  bool inBounds;
 };
 
 static LogicalResult analyzeGridIndexing(Value indices, Value operand,
@@ -16086,10 +16210,10 @@ static LogicalResult analyzeGridIndexing(Value indices, Value operand,
     rem %= opStrides[k];
   }
 
+  result.inBounds = true;
   for (int64_t k = 0; k < opRank; ++k) {
-    if (result.sliceStarts[k] + result.sliceSizes[k] > result.operandShape[k]) {
-      return failure();
-    }
+    if (result.sliceStarts[k] + result.sliceSizes[k] > result.operandShape[k])
+      result.inBounds = false;
   }
 
   for (size_t m = 0; m < result.mappings.size(); ++m) {
@@ -16186,15 +16310,36 @@ struct GatherOpCanon final
         stride = -stride;
       }
 
-      if (limit > operandTy.getDimSize(0)) { // gather clamps indices
+      int64_t dim = operandTy.getDimSize(0);
+      Value result;
+      if (limit <= dim) {
+        result = stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand,
+                                          {start}, {limit}, {stride});
+        if (needsReverse) {
+          result =
+              stablehlo::ReverseOp::create(rewriter, op.getLoc(), result,
+                                           rewriter.getDenseI64ArrayAttr({0}));
+        }
+      } else if (needsReverse || start < 0) {
         return failure();
-      }
-
-      Value result = stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand,
-                                              {start}, {limit}, {stride});
-      if (needsReverse) {
-        result = stablehlo::ReverseOp::create(
-            rewriter, op.getLoc(), result, rewriter.getDenseI64ArrayAttr({0}));
+      } else {
+        // The gather clamps each index to dim - 1, so the part of the run
+        // past the end reads the last element that many times.
+        int64_t inBounds =
+            start < dim ? (dim - start + stride - 1) / stride : 0;
+        Value last = stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand,
+                                              {dim - 1}, {dim}, {1});
+        result = stablehlo::BroadcastInDimOp::create(
+            rewriter, op.getLoc(),
+            RankedTensorType::get({count - inBounds},
+                                  operandTy.getElementType()),
+            last, rewriter.getDenseI64ArrayAttr({0}));
+        if (inBounds > 0) {
+          Value head = stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand,
+                                                {start}, {dim}, {stride});
+          result = stablehlo::ConcatenateOp::create(
+              rewriter, op.getLoc(), ValueRange{head, result}, 0);
+        }
       }
 
       // The grid may carry dimensions beyond the single mapped one, along
@@ -16218,6 +16363,8 @@ struct GatherOpCanon final
     }
 
     // General case: We have multiple grid dimensions mapped.
+    if (!analysis.inBounds)
+      return failure();
     // Reshape the 1D operand to the factored multi-dimensional shape.
     Value reshapedOperand = stablehlo::ReshapeOpCreate(
         rewriter, op.getLoc(), operand, analysis.operandShape);
@@ -19793,12 +19940,11 @@ struct DUSDUSSubsuming
           originalProvenance.isEqual(it2->second.provenanceRelation)) {
         movedSlices.insert({slice.getOperation(), clonedSlice});
       } else {
-        rewriter.eraseOp(clonedSlice);
-
         // Don't forget to erase the provenance info for the op result we just
         // erased since that value address may be reused for something entirely
         // different!
         provenanceInfo.erase(clonedSlice->getResult(0));
+        rewriter.eraseOp(clonedSlice);
       }
     }
 
@@ -30880,6 +31026,86 @@ struct NoopReduceWindowOpCanon final
   }
 };
 
+// A reduce over the windowed dimension of a halving reduce_window (window 2,
+// dilation n/2 on a dimension of padded size n, unit strides) with the same
+// body and the identity as init: every input element lands in exactly one
+// window and the padding contributes the identity, so reducing the windows is
+// reducing the input. This is what an unrolled tree reduction becomes once
+// each step is recognized as a reduce_window (SumToReduceWindow).
+struct ReduceHalvingReduceWindow final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceHalvingReduceWindow> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1)
+      return failure();
+    auto rw = op.getInputs()[0].getDefiningOp<stablehlo::ReduceWindowOp>();
+    if (!rw || rw.getInputs().size() != 1 || !rw->hasOneUse())
+      return failure();
+    auto inputType = dyn_cast<RankedTensorType>(rw.getInputs()[0].getType());
+    if (!inputType || !inputType.hasStaticShape())
+      return failure();
+
+    auto strides = rw.getWindowStrides();
+    if (strides && !llvm::all_of(*strides, [](int64_t s) { return s == 1; }))
+      return failure();
+    auto baseDilations = rw.getBaseDilations();
+    if (baseDilations &&
+        !llvm::all_of(*baseDilations, [](int64_t d) { return d == 1; }))
+      return failure();
+
+    // Padding (filled with the identity init below) may only extend the
+    // halved dimension.
+    SmallVector<int64_t> padded(inputType.getShape());
+    if (auto padding = rw.getPadding()) {
+      SmallVector<int64_t> vals(padding->getValues<int64_t>());
+      for (int64_t i = 0; i < inputType.getRank(); ++i) {
+        int64_t lo = vals[2 * i], hi = vals[2 * i + 1];
+        if (lo < 0 || hi < 0)
+          return failure();
+        padded[i] += lo + hi;
+      }
+    }
+
+    auto windowDims = rw.getWindowDimensions();
+    auto windowDilations = rw.getWindowDilations();
+    int64_t halved = -1;
+    for (auto [i, w] : llvm::enumerate(windowDims)) {
+      if (w == 1) {
+        if (padded[i] != inputType.getDimSize(i))
+          return failure();
+        continue;
+      }
+      int64_t dilation = windowDilations ? (*windowDilations)[i] : 1;
+      if (w != 2 || halved != -1 || padded[i] != 2 * dilation)
+        return failure();
+      halved = i;
+    }
+    if (halved == -1 || !llvm::is_contained(op.getDimensions(), halved))
+      return failure();
+
+    auto commonRW = CheckCommonReduceWindowOp(rw);
+    if (commonRW.kind == ReduceOpKind::Unknown ||
+        !isIdentityValueForReduceOp(rw.getInitValues()[0], commonRW.kind))
+      return failure();
+    if (!OperationEquivalence::isRegionEquivalentTo(
+            &rw.getBody(), &op.getBody(),
+            OperationEquivalence::IgnoreLocations))
+      return failure();
+
+    auto newReduce = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(), TypeRange(op.getType(0)),
+        ValueRange(rw.getInputs()), ValueRange(op.getInitValues()),
+        op.getDimensions());
+    rewriter.inlineRegionBefore(op.getBody(), newReduce.getBody(),
+                                newReduce.getBody().end());
+    rewriter.replaceOp(op, newReduce.getResult(0));
+    rewriter.eraseOp(rw);
+    return success();
+  }
+};
+
 template <typename BinaryOpType, typename Child>
 struct ReduceSliceFusionBase
     : public CheckedOpRewritePattern<
@@ -36017,7 +36243,8 @@ private:
     GridIndexingAnalysis analysis;
     if (failed(analyzeGridIndexing(
             indices, operand, dimNumbers.getIndexVectorDim(),
-            dimNumbers.getScatterDimsToOperandDims(), analysis))) {
+            dimNumbers.getScatterDimsToOperandDims(), analysis)) ||
+        !analysis.inBounds) {
       return failure();
     }
 
@@ -37280,6 +37507,13 @@ void mlir::transform::addNoNanCompareSimplify(RewritePatternSet &patterns,
                                         benefit);
 }
 
+void mlir::transform::addNoNanCompareAbs(RewritePatternSet &patterns,
+                                         bool allowOnFloatingPointMath,
+                                         MLIRContext &context,
+                                         PatternBenefit benefit) {
+  patterns.insert<NoNanCompareAbs>(allowOnFloatingPointMath, &context, benefit);
+}
+
 void mlir::transform::addNoNanSelfSubSimplify(RewritePatternSet &patterns,
                                               bool allowOnFloatingPointMath,
                                               MLIRContext &context,
@@ -37458,12 +37692,11 @@ struct EnzymeHLOOptPass
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
         ConvertIotaSimplify, MinMaxIotaConstSimplify<stablehlo::MaxOp>,
         MinMaxIotaConstSimplify<stablehlo::MinOp>, ClampIotaConstSimplify,
-        CompareAbs, CompareMul, CompareConvert, AddSelects,
-        CompareNegateConstSimplify, CompareSubtractConstSimplify,
-        SelectSimplify, DynamicSliceReshapeDynamicSlice,
-        DynamicSliceReshapeSlice, SliceReshapeDynamicSlice, SliceReshapeSlice,
-        ExponentialMinusOneFuse, ExponentialMinusOneAddFuse>(
-        context, PatternBenefit(65000));
+        CompareMul, CompareConvert, AddSelects, CompareNegateConstSimplify,
+        CompareSubtractConstSimplify, SelectSimplify,
+        DynamicSliceReshapeDynamicSlice, DynamicSliceReshapeSlice,
+        SliceReshapeDynamicSlice, SliceReshapeSlice, ExponentialMinusOneFuse,
+        ExponentialMinusOneAddFuse>(context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold,
@@ -37723,9 +37956,10 @@ struct EnzymeHLOOptPass
       patterns.add<AllFiniteIsFinite, AllFiniteIsInf, AllFiniteIsPosInf,
                    AllFiniteIsNegInf>(context);
 
-    patterns.add<NoNanCompareSimplify, NoNanSelfSubSimplify,
-                 NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
-        (no_nan || all_finite), context);
+    patterns
+        .add<NoNanCompareSimplify, NoNanSelfSubSimplify, NoNanAddSubSimplify,
+             NoNanMulSimplify, NoNanDivSimplify, NoNanCompareAbs>(
+            (no_nan || all_finite), context);
 
     patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify>(
         context);
@@ -37821,6 +38055,7 @@ struct EnzymeHLOOptPass
         ConcatReshapeElementwise,
         TransposeAllUsersSlice,
         ReduceReduce,
+        ReduceHalvingReduceWindow,
         IfOpLiftCommonOps,
         InvolutionSimplify<stablehlo::NegOp>,
         InvolutionSimplify<stablehlo::NotOp>,
@@ -37913,7 +38148,7 @@ struct EnzymeHLOOptPass
 
     if (enable_auto_batching_passes) {
       mlir::enzyme::AutoBatchingPassPipelineOptions options{
-          true, true, "greedy", true, true, true};
+          true, true, "greedy", true, true, true, true};
       mlir::enzyme::populateAutoBatchingPassPatterns(patterns, context,
                                                      options);
     }

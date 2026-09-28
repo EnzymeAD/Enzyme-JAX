@@ -68,13 +68,13 @@ module {
     %diffe = stablehlo.constant dense<1.0> : tensor<3xf64>
 
     %ref_g:2 = enzyme.autodiff @ref(%input, %diffe) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
     } : (tensor<3xf64>, tensor<3xf64>) -> (tensor<3xf64>, tensor<3xf64>)
 
     %ckpt_g:2 = enzyme.autodiff @ckpt(%input, %diffe) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
     } : (tensor<3xf64>, tensor<3xf64>) -> (tensor<3xf64>, tensor<3xf64>)
 
     // Gradient with boundary-block checkpointing must match no-checkpointing.

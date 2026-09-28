@@ -55,13 +55,13 @@ module @reactant_differe... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %cst = stablehlo.constant dense<1.000000e+00> : tensor<f64>
     %cst2 = stablehlo.constant dense<15.000000e+00> : tensor<f64>
     
-    %0 = enzyme.autodiff @f(%cst0, %cst) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_activenoneed>]} : (tensor<f64>, tensor<f64>) -> (tensor<f64>)
+    %0 = enzyme.autodiff @f(%cst0, %cst) {activity = [#enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_activenoneed>]} : (tensor<f64>, tensor<f64>) -> (tensor<f64>)
     check.expect_almost_eq %0, %cst2 : tensor<f64>
     
-    %1 = enzyme.autodiff @f_mc(%cst0, %cst) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_activenoneed>]} : (tensor<f64>, tensor<f64>) -> (tensor<f64>)
+    %1 = enzyme.autodiff @f_mc(%cst0, %cst) {activity = [#enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_activenoneed>]} : (tensor<f64>, tensor<f64>) -> (tensor<f64>)
     check.expect_almost_eq %1, %cst2 : tensor<f64>
     
-    %2 = enzyme.autodiff @f_cp(%cst0, %cst) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_activenoneed>]} : (tensor<f64>, tensor<f64>) -> (tensor<f64>)
+    %2 = enzyme.autodiff @f_cp(%cst0, %cst) {activity = [#enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_activenoneed>]} : (tensor<f64>, tensor<f64>) -> (tensor<f64>)
     check.expect_almost_eq %2, %cst2 : tensor<f64>
 
     return

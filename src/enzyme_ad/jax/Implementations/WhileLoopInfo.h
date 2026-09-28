@@ -106,6 +106,15 @@ struct WhileLoopInfo {
 
   bool canHoistOperationFromLoop(mlir::stablehlo::DynamicSliceOp sliceOp,
                                  SmallVectorImpl<int64_t> &dimensions);
+  // Whether hoisting `sliceOp` over `dimensions` out of the loop can succeed,
+  // including that the region it sweeps fits `operand`. Pure: callers decide
+  // with it before creating any op, so a refused hoist leaves nothing behind.
+  bool canHoistOperationFromLoop(Value operand,
+                                 mlir::stablehlo::DynamicSliceOp sliceOp,
+                                 SmallVectorImpl<int64_t> &dimensions);
+  bool slicedRegionFitsOperand(Value operand,
+                               mlir::stablehlo::DynamicSliceOp sliceOp,
+                               int64_t sliceIndex);
   bool hoistOperationFromLoop(OpBuilder &builder, Value operand,
                               mlir::stablehlo::DynamicSliceOp sliceOp,
                               int64_t sliceIndex, Value &result);

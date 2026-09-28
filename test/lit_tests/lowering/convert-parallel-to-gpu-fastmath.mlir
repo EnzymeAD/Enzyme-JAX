@@ -28,7 +28,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
       scf.if %2 {
         %3 = memref.load %arg0[%1] : memref<100xf64, 1>
         %4 = memref.load %arg1[%1] : memref<100xf64, 1>
-        %5 = arith.addf %3, %4 {fastmathFlags = #llvm.fastmath<contract>} : f64
+        %5 = arith.addf %3, %4 fastmath<contract> : f64
         memref.store %5, %arg1[%1] : memref<100xf64, 1>
       }
       gpu.return

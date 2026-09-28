@@ -760,6 +760,7 @@ gentbl_cc_library(
 td_library(
     name = "TesseraDialectTdFiles",
     srcs = [
+        "Dialect/Tessera/Attrs.td",
         "Dialect/Tessera/Dialect.td",
         "Dialect/Tessera/Ops.td",
     ],
@@ -795,6 +796,33 @@ gentbl_cc_library(
     ],
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "Dialect/Tessera/Dialect.td",
+    deps = [
+        ":TesseraDialectTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "TesseraAttrsIncGen",
+    tbl_outs = {
+        "Dialect/Tessera/TesseraEnums.h.inc": [
+            "--gen-enum-decls",
+            "--attrdefs-dialect=tessera",
+        ],
+        "Dialect/Tessera/TesseraEnums.cpp.inc": [
+            "--gen-enum-defs",
+            "--attrdefs-dialect=tessera",
+        ],
+        "Dialect/Tessera/TesseraAttrs.h.inc": [
+            "--gen-attrdef-decls",
+            "--attrdefs-dialect=tessera",
+        ],
+        "Dialect/Tessera/TesseraAttrs.cpp.inc": [
+            "--gen-attrdef-defs",
+            "--attrdefs-dialect=tessera",
+        ],
+    },
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Tessera/Attrs.td",
     deps = [
         ":TesseraDialectTdFiles",
     ],
@@ -1365,6 +1393,7 @@ cc_library(
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformPatternsIncGen",
         ":StablehloOptPatternsIncGen",
+        ":TesseraAttrsIncGen",
         ":TesseraDialectIncGen",
         ":TesseraOpsIncGen",
         ":TesseraPassesIncGen",

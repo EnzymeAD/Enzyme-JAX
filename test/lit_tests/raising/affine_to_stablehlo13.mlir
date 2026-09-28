@@ -66,7 +66,7 @@ module {
 // CHECK-NEXT:    %0 = stablehlo.broadcast_in_dim %arg2, dims = [1] : (tensor<3xi64>) -> tensor<3x3x1xi64>
 // CHECK-NEXT:    %1 = stablehlo.iota dim = 0 : tensor<3x3x1xi64>
 // CHECK-NEXT:    %2 = stablehlo.concatenate %1, %0, dim = 2 : (tensor<3x3x1xi64>, tensor<3x3x1xi64>) -> tensor<3x3x2xi64>
-// CHECK-NEXT:    %3 = "stablehlo.gather"(%arg1, %2) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<3x3xi64>, tensor<3x3x2xi64>) -> tensor<3x3xi64>
+// CHECK-NEXT:    %3 = "stablehlo.gather"(%arg1, %2) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<3x3xi64>, tensor<3x3x2xi64>) -> tensor<3x3xi64>
 // CHECK-NEXT:    %4 = stablehlo.transpose %3, dims = [1, 0] : (tensor<3x3xi64>) -> tensor<3x3xi64>
 // CHECK-NEXT:    return %4, %arg1, %arg2 : tensor<3x3xi64>, tensor<3x3xi64>, tensor<3xi64>
 // CHECK-NEXT:  }

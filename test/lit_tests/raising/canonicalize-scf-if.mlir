@@ -14,7 +14,7 @@ module {
     %2 = llvm.mlir.addressof @_ZSt4cout : !llvm.ptr
     %c54_i64 = arith.constant 54 : i64
     %4 = llvm.mlir.zero : !llvm.ptr
-    %19 = llvm.load %2 {alignment = 8 : i64} : !llvm.ptr -> !llvm.ptr
+    %19 = llvm.load %2 <alignment = 8> : !llvm.ptr -> !llvm.ptr
     %20 = llvm.icmp "eq" %19, %4 : !llvm.ptr
     %21:2 = scf.if %20 -> (i32, i32) {
       scf.yield %0, %c0_i32 : i32, i32
@@ -30,7 +30,7 @@ module {
 // CHECK-NEXT:    %c0_i32 = arith.constant 0 : i32
 // CHECK-NEXT:    %1 = llvm.mlir.addressof @_ZSt4cout : !llvm.ptr
 // CHECK-NEXT:    %2 = llvm.mlir.zero : !llvm.ptr
-// CHECK-NEXT:    %3 = llvm.load %1 {alignment = 8 : i64} : !llvm.ptr -> !llvm.ptr
+// CHECK-NEXT:    %3 = llvm.load %1 <alignment = 8> : !llvm.ptr -> !llvm.ptr
 // CHECK-NEXT:    %4 = llvm.icmp "eq" %3, %2 : !llvm.ptr
 // CHECK-NEXT:    %5 = scf.if %4 -> (i32) {
 // CHECK-NEXT:      scf.yield %0 : i32

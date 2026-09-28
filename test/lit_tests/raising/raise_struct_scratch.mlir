@@ -4,7 +4,7 @@
 // i32 views address the fields at even/odd offsets, and the whole-pair i64
 // load reads both fields of pair zero at once.
 func.func @intpair(%out: memref<256xi32, 1>, %in: memref<256xi32, 1>) {
-  %scr = memref.alloca() {alignment = 4 : i64} : memref<256x!llvm.struct<"struct.mfem::DevicePair", (i32, i32)>>
+  %scr = memref.alloca() alignment = 4 : memref<256x!llvm.struct<"struct.mfem::DevicePair", (i32, i32)>>
   %ptr = "enzymexla.memref2pointer"(%scr) : (memref<256x!llvm.struct<"struct.mfem::DevicePair", (i32, i32)>>) -> !llvm.ptr<3>
   %c2 = arith.constant 2 : index
   affine.parallel (%t) = (0) to (256) {
@@ -34,7 +34,7 @@ func.func @intpair(%out: memref<256xi32, 1>, %in: memref<256xi32, 1>) {
 // Mixed-type pairs keep each field in its own scratch, and the whole-pair
 // memcpy between struct-strided geps becomes per-field moves.
 func.func @mixedpair(%out: memref<256xf64, 1>, %in: memref<256xf64, 1>) {
-  %scr = memref.alloca() {alignment = 8 : i64} : memref<256x!llvm.struct<"struct.mfem::DevicePair.0", (f64, i32)>>
+  %scr = memref.alloca() alignment = 8 : memref<256x!llvm.struct<"struct.mfem::DevicePair.0", (f64, i32)>>
   %ptr = "enzymexla.memref2pointer"(%scr) : (memref<256x!llvm.struct<"struct.mfem::DevicePair.0", (f64, i32)>>) -> !llvm.ptr<3>
   %gp = llvm.addrspacecast %ptr : !llvm.ptr<3> to !llvm.ptr
   %c16_i64 = arith.constant 16 : i64

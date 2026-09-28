@@ -578,6 +578,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("concat_reshape_reduce");
   list.push_back("concat_elementwise");
   list.push_back("reduce_reduce");
+  list.push_back("reduce_halving_reduce_window");
   list.push_back("conj_real");
   // Creates correctness error.
   // list.push_back("convert_mul_convert");
@@ -614,7 +615,6 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("concatenate_subtract_to_subtract_pad");
   list.push_back("concatenate_add_to_add_pad");
   list.push_back("concatenate_broadcast_in_dim");
-  list.push_back("compare_abs");
   list.push_back("compare_convert");
   list.push_back("add_selects");
   list.push_back("subtract_multiply_const_to_add_mul_const");
@@ -743,6 +743,7 @@ static void addLoopRaisingPasses(std::vector<std::string> &list) {
   list.push_back("greedy_while_loop_batch_fission");
   list.push_back("while_elementwise_reduction_to_reduce");
   list.push_back("remove_loop_carried_dependencies_from_while_load_operations");
+  list.push_back("parallel_while_to_batched_scatter");
 }
 
 static void addLICMPasses(std::vector<std::string> &list,
@@ -977,6 +978,7 @@ static void addNoNanPasses(std::vector<std::string> &list, bool noNan) {
   list.push_back(passWithArg("no_nan_add_sub_simplify", noNan));
   list.push_back(passWithArg("no_nan_mul_simplify", noNan));
   list.push_back(passWithArg("no_nan_div_simplify", noNan));
+  list.push_back(passWithArg("no_nan_compare_abs", noNan));
 }
 
 static void addAllFinitePasses(std::vector<std::string> &list) {

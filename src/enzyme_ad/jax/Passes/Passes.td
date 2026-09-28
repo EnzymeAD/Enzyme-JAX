@@ -1351,6 +1351,15 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            /*description=*/
            "Raise a constant-bound loop as a while instead of unrolling when "
            "its nested unrolled op count exceeds this. -1 for no budget">,
+       Option<
+           /*C++ variable name=*/"specialize_loop_bounds",
+           /*CLI argument=*/"specialize_loop_bounds",
+           /*type=*/"bool",
+           /*default=*/"true",
+           /*description=*/
+           "Mark the scalar arguments a raised while loop's exit test reads "
+           "as scalars the runtime specializes the executable over (trailing "
+           "xla_wrapper inputs, num_specialized)">,
   ];
 }
 
@@ -1455,6 +1464,12 @@ def AutoBatchingPass : Pass<"auto-batching"> {
       /*type=*/"bool",
       /*default=*/"true",
       /*description=*/"remove loop carried deps from load operations">,
+    Option<
+      /*C++ variable name=*/"parallel_while_to_batched_scatter_passes",
+      /*CLI argument=*/"parallel_while_to_batched_scatter_passes",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"A parallel while of a raised kernel with a constant trip count becomes a batched scatter">,
     Option<
         /*C++ variable name=*/"max_iterations",
         /*CLI argument=*/"max_iterations",

@@ -379,6 +379,21 @@ public:
   }
 };
 
+static SmallVector<Value> takeResultAdjoints(Operation *orig,
+                                             OpBuilder &builder,
+                                             MGradientUtilsReverse *gutils) {
+  SmallVector<Value> adjoints;
+  for (auto ret : orig->getResults()) {
+    if (gutils->isConstantValue(ret)) {
+      adjoints.push_back(nullptr);
+      continue;
+    }
+    adjoints.push_back(gutils->diffe(ret, builder));
+    gutils->zeroDiffe(ret, builder);
+  }
+  return adjoints;
+}
+
 class AutoDiffIfRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffIfRev,
                                                        stablehlo::IfOp> {
@@ -386,6 +401,7 @@ public:
   LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
                                          MGradientUtilsReverse *gutils,
                                          SmallVector<Value> caches) const {
+    SmallVector<Value> adjoints = takeResultAdjoints(orig, builder, gutils);
     auto revOp = stablehlo::IfOp::create(
         builder, orig->getLoc(), ArrayRef<mlir::Type>{},
         gutils->popCache(caches[0], builder), orig->getAttrs());
@@ -401,14 +417,14 @@ public:
       OpBuilder revBuilder(reverseBB, reverseBB->end());
       auto term = oBB->getTerminator();
 
-      for (auto &&[ret, op] :
-           llvm::zip_equal(orig->getResults(), term->getOperands())) {
-        if (gutils->isConstantValue(ret))
+      for (auto &&[adjoint, op] :
+           llvm::zip_equal(adjoints, term->getOperands())) {
+        if (!adjoint)
           continue;
         if (gutils->isConstantValue(op))
           continue;
 
-        gutils->addToDiffe(op, gutils->diffe(ret, revBuilder), revBuilder);
+        gutils->addToDiffe(op, adjoint, revBuilder);
       }
 
       auto first = oBB->rbegin();
@@ -504,6 +520,7 @@ public:
                                          MGradientUtilsReverse *gutils,
                                          SmallVector<Value> caches) const {
     auto caseOp = cast<stablehlo::CaseOp>(orig);
+    SmallVector<Value> adjoints = takeResultAdjoints(orig, builder, gutils);
     auto revOp = stablehlo::CaseOp::create(
         builder, orig->getLoc(), ArrayRef<mlir::Type>{},
         gutils->popCache(caches[0], builder), orig->getAttrs(),
@@ -519,14 +536,14 @@ public:
       OpBuilder revBuilder(reverseBB, reverseBB->end());
       auto term = oBB->getTerminator();
 
-      for (auto &&[ret, op] :
-           llvm::zip_equal(orig->getResults(), term->getOperands())) {
-        if (gutils->isConstantValue(ret))
+      for (auto &&[adjoint, op] :
+           llvm::zip_equal(adjoints, term->getOperands())) {
+        if (!adjoint)
           continue;
         if (gutils->isConstantValue(op))
           continue;
 
-        gutils->addToDiffe(op, gutils->diffe(ret, revBuilder), revBuilder);
+        gutils->addToDiffe(op, adjoint, revBuilder);
       }
 
       auto first = oBB->rbegin(); // terminator
@@ -2006,10 +2023,11 @@ public:
     if (isa<MaxOp>(innerOp) || isa<MinOp>(innerOp)) {
       // TODO: technically we should invert the order here to pick the last
       // value (or divide by count) if multiple are the same as the result
-      auto ores = gutils->getNewFromOriginal(op->getResult(0));
+      Value oprev = gutils->popCache(caches[0], builder);
+      Value oinit = gutils->popCache(caches[1], builder);
+      Value ores = gutils->popCache(caches[2], builder);
 
       if (!gutils->isConstantValue(op.getInputs()[0])) {
-        auto oprev = gutils->getNewFromOriginal(op.getInputs()[0]);
         auto attr = builder.getDenseI64ArrayAttr(toBroadcast);
         auto bc = BroadcastInDimOp::create(builder, op.getLoc(),
                                            oprev.getType(), ores, attr);
@@ -2025,12 +2043,10 @@ public:
         gutils->addToDiffe(op.getInputs()[0], res, builder);
       }
       if (!gutils->isConstantValue(op.getInitValues()[0])) {
-        auto oprev = gutils->getNewFromOriginal(op.getInitValues()[0]);
-
         auto zeroI = cast<AutoDiffTypeInterface>(inDiffe.getType())
                          .createNullValue(builder, op.getLoc());
 
-        auto cmp = CompareOp::create(builder, op.getLoc(), ores, oprev,
+        auto cmp = CompareOp::create(builder, op.getLoc(), ores, oinit,
                                      ComparisonDirection::EQ);
 
         auto res = stablehlo::SelectOp::create(builder, op.getLoc(), cmp,
@@ -2107,7 +2123,7 @@ public:
     }
 
     Operation &innerOp = op.getBody().front().front();
-    if (isa<MulOp>(innerOp)) {
+    if (isa<MulOp, MaxOp, MinOp>(innerOp)) {
       SmallVector<Value> caches;
 
       auto result = op.getResult(0);
@@ -2235,28 +2251,20 @@ struct SHLOTransposeOpBatchInterface
       Ty = T.clone(shape);
     }
 
-    // Remap the operands
-    SmallVector<Value, 8> operands;
-    operands.reserve(src->getNumOperands());
-    for (auto opValue : src->getOperands())
-      operands.push_back(mapper.lookup(opValue));
-
-    mlir::NamedAttrList attrs;
-    for (auto attr : src->getAttrs()) {
-      auto eattr = cast<DenseI64ArrayAttr>(attr.getValue());
-      SmallVector<int64_t> shape;
-      for (size_t i = 0; i < batchSizes.size(); i++)
-        shape.push_back(i);
-      for (auto val : eattr.asArrayRef())
-        shape.push_back(val + batchSizes.size());
-      attr.setValue(DenseI64ArrayAttr::get(src->getContext(), shape));
-      attrs.append(attr);
-    }
-    auto cop = mlir::Operation::create(
-        src->getLoc(), src->getName(), resultTypes, operands, std::move(attrs),
-        mlir::PropertyRef(), mlir::BlockRange(), 0);
-    builder.insert(cop);
-    mapper.map(src->getResult(0), cop->getResult(0));
+    // The batch dimensions lead and stay in place; the permutation moves up
+    // behind them. Any other attribute (an analysis annotation such as
+    // enzymexla.symmetric_matrix) describes the unbatched value and is left
+    // behind.
+    auto op = cast<TransposeOp>(src);
+    SmallVector<int64_t> perm;
+    for (size_t i = 0; i < batchSizes.size(); i++)
+      perm.push_back(i);
+    for (auto val : op.getPermutation())
+      perm.push_back(val + batchSizes.size());
+    Value operand = mapper.lookup(op.getOperand());
+    auto cop = TransposeOp::create(builder, src->getLoc(), resultTypes[0],
+                                   operand, perm);
+    mapper.map(src->getResult(0), cop.getResult());
     return success();
   }
 };
@@ -3305,31 +3313,6 @@ public:
     llvm::SetVector<Value> updatedGradients;
 
     llvm::MapVector<Value, CacheInfo> cachesMap;
-
-    if (op->walk([&](enzyme::SetOp sub) {
-            if (sub->getParentOp() != op) {
-              llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
-              llvm::errs() << "op: " << *op << "\n";
-              llvm::errs() << "sub: " << sub << "\n";
-              return WalkResult::interrupt();
-            }
-            return WalkResult::advance();
-          }).wasInterrupted()) {
-      return rewriter.notifyMatchFailure(
-          op, "had set op which was not a direct descendant");
-    }
-    if (op->walk([&](enzyme::GetOp sub) {
-            if (sub->getParentOp() != op) {
-              llvm::errs() << " paren: " << *sub->getParentOp() << "\n";
-              llvm::errs() << "op: " << *op << "\n";
-              llvm::errs() << "sub: " << sub << "\n";
-              return WalkResult::interrupt();
-            }
-            return WalkResult::advance();
-          }).wasInterrupted()) {
-      return rewriter.notifyMatchFailure(
-          op, "had get op which was not a direct descendant");
-    }
 
     for (auto &it : *body) {
       Operation *op = &it;
@@ -4537,34 +4520,37 @@ buildBatchedStartIndexTensor(Operation *op, OpBuilder &builder,
       .getResult();
 }
 
+} // namespace
+
 // Lowers a batched dynamic_slice whose start indices vary across the batch to
 // a gather, which can apply a distinct offset per batch element.
-static LogicalResult batchDynamicSliceAsGather(stablehlo::DynamicSliceOp op,
-                                               OpBuilder &builder,
-                                               IRMapping &mapper,
-                                               ArrayRef<int64_t> batchSizes) {
+LogicalResult mlir::stablehlo::batchDynamicSliceAsGather(
+    stablehlo::DynamicSliceOp op, OpBuilder &builder, IRMapping &mapper,
+    ArrayRef<int64_t> batchSizes, bool operandIsBatched) {
   Location loc = op.getLoc();
   int64_t numBatchDims = batchSizes.size();
+  // The leading dimensions of the operand that are batch dimensions.
+  int64_t operandBatchDims = operandIsBatched ? numBatchDims : 0;
 
   Value operand = mapper.lookup(op.getOperand());
   auto operandTy = cast<RankedTensorType>(operand.getType());
-  int64_t origRank = operandTy.getRank() - numBatchDims;
+  int64_t origRank = operandTy.getRank() - operandBatchDims;
 
   // gather clamps its start indices exactly like dynamic_slice does, so no
   // explicit clamp is needed here.
   Value startIndices = buildBatchedStartIndexTensor(
       op, builder, op.getStartIndices(), mapper, batchSizes, std::nullopt);
 
-  SmallVector<int64_t> batchDims(numBatchDims);
+  SmallVector<int64_t> batchDims(operandBatchDims);
   std::iota(batchDims.begin(), batchDims.end(), 0);
 
   SmallVector<int64_t> offsetDims(origRank);
   std::iota(offsetDims.begin(), offsetDims.end(), numBatchDims);
 
   SmallVector<int64_t> startIndexMap(origRank);
-  std::iota(startIndexMap.begin(), startIndexMap.end(), numBatchDims);
+  std::iota(startIndexMap.begin(), startIndexMap.end(), operandBatchDims);
 
-  SmallVector<int64_t> sliceSizes(numBatchDims, 1);
+  SmallVector<int64_t> sliceSizes(operandBatchDims, 1);
   llvm::append_range(sliceSizes, op.getSliceSizes());
 
   auto gatherOp = stablehlo::GatherOp::create(
@@ -4582,30 +4568,31 @@ static LogicalResult batchDynamicSliceAsGather(stablehlo::DynamicSliceOp op,
 
 // Lowers a batched dynamic_update_slice whose start indices vary across the
 // batch to a scatter, which can apply a distinct offset per batch element.
-static LogicalResult
-batchDynamicUpdateSliceAsScatter(stablehlo::DynamicUpdateSliceOp op,
-                                 OpBuilder &builder, IRMapping &mapper,
-                                 ArrayRef<int64_t> batchSizes) {
+LogicalResult mlir::stablehlo::batchDynamicUpdateSliceAsScatter(
+    stablehlo::DynamicUpdateSliceOp op, OpBuilder &builder, IRMapping &mapper,
+    ArrayRef<int64_t> batchSizes, bool operandIsBatched) {
   Location loc = op.getLoc();
   int64_t numBatchDims = batchSizes.size();
+  // The leading dimensions of the operand that are batch dimensions.
+  int64_t operandBatchDims = operandIsBatched ? numBatchDims : 0;
 
   Value operand = mapper.lookup(op.getOperand());
   Value update = mapper.lookup(op.getUpdate());
   auto operandTy = cast<RankedTensorType>(operand.getType());
   auto updateTy = cast<RankedTensorType>(update.getType());
-  int64_t origRank = operandTy.getRank() - numBatchDims;
+  int64_t origRank = operandTy.getRank() - operandBatchDims;
 
   // Largest in-bounds start index for each original dimension.
   SmallVector<int64_t> clampLimits;
   for (int64_t i = 0; i < origRank; i++)
-    clampLimits.push_back(operandTy.getShape()[numBatchDims + i] -
+    clampLimits.push_back(operandTy.getShape()[operandBatchDims + i] -
                           updateTy.getShape()[numBatchDims + i]);
 
   Value scatterIndices =
       buildBatchedStartIndexTensor(op, builder, op.getStartIndices(), mapper,
                                    batchSizes, ArrayRef<int64_t>(clampLimits));
 
-  SmallVector<int64_t> batchDims(numBatchDims);
+  SmallVector<int64_t> batchDims(operandBatchDims);
   std::iota(batchDims.begin(), batchDims.end(), 0);
 
   // The update window covers the original (non-batch) dimensions.
@@ -4614,8 +4601,9 @@ batchDynamicUpdateSliceAsScatter(stablehlo::DynamicUpdateSliceOp op,
 
   SmallVector<int64_t> scatterDimsToOperandDims(origRank);
   std::iota(scatterDimsToOperandDims.begin(), scatterDimsToOperandDims.end(),
-            numBatchDims);
+            operandBatchDims);
 
+  // Batch elements writing into one shared operand may hit the same window.
   auto scatterOp = stablehlo::ScatterOp::create(
       builder, loc, ValueRange{operand}, scatterIndices, ValueRange{update},
       stablehlo::ScatterDimensionNumbersAttr::get(
@@ -4623,7 +4611,7 @@ batchDynamicUpdateSliceAsScatter(stablehlo::DynamicUpdateSliceOp op,
           /*insertedWindowDims=*/{}, /*inputBatchingDims=*/batchDims,
           /*scatterIndicesBatchingDims=*/batchDims, scatterDimsToOperandDims,
           /*indexVectorDim=*/numBatchDims),
-      /*indicesAreSorted=*/false, /*uniqueIndices=*/true);
+      /*indicesAreSorted=*/false, /*uniqueIndices=*/operandIsBatched);
 
   {
     Block *updateBody = new Block();
@@ -4639,6 +4627,8 @@ batchDynamicUpdateSliceAsScatter(stablehlo::DynamicUpdateSliceOp op,
   mapper.map(op.getResult(), scatterOp.getResult(0));
   return success();
 }
+
+namespace {
 
 SmallVector<Value> computeBatchedStartIndices(Operation *op, OpBuilder &builder,
                                               SmallVector<Value> startIndices,

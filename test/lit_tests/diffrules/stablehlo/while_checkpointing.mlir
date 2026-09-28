@@ -38,16 +38,16 @@ module {
 
   func.func @with_checkpointing_diff(%arg0: tensor<f64>, %arg1:  tensor<f64>) -> (tensor<f64>, tensor<f64>) {
     %diffe_checkpointing:2 = enzyme.autodiff @with_checkpointing(%arg0, %arg1) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
     } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
     return %diffe_checkpointing#0, %diffe_checkpointing#1 : tensor<f64>, tensor<f64>
   }
 
   func.func @without_checkpointing_diff(%arg0: tensor<f64>, %arg1:  tensor<f64>) -> (tensor<f64>, tensor<f64>) {
     %diffe_checkpointing:2 = enzyme.autodiff @without_checkpointing(%arg0, %arg1) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
     } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
     return %diffe_checkpointing#0, %diffe_checkpointing#1 : tensor<f64>, tensor<f64>
   }
@@ -57,13 +57,13 @@ module {
     %diffe = stablehlo.constant dense<1.0> : tensor<f64>
 
     %diffe_checkpointing:2 = enzyme.autodiff @with_checkpointing(%input, %diffe) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
     } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
     %diffe_no_checkpointing:2 = enzyme.autodiff @without_checkpointing(%input, %diffe) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
     } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
     check.expect_almost_eq %diffe_checkpointing#0, %diffe_no_checkpointing#0 : tensor<f64>
