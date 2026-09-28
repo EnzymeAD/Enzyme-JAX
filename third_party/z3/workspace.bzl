@@ -46,7 +46,7 @@ def repo(build_file = "//third_party/z3:BUILD"):
     # Use the prebuilt cmake/ninja toolchains only: the source-built toolchains
     # (pkgconf/m4/make via rules_cc_autoconf) require
     # --incompatible_enable_cc_toolchain_resolution, which this build disables.
-    rules_foreign_cc_dependencies(register_built_tools = False)
+    rules_foreign_cc_dependencies()
     http_archive(
         name = "z3",
         build_file = build_file,
