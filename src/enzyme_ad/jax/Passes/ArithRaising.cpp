@@ -205,6 +205,25 @@ struct RaiseBitcast : public OpRewritePattern<arith::BitcastOp> {
   }
 };
 
+struct RaiseSinCos : public OpRewritePattern<math::SincosOp> {
+  using OpRewritePattern<math::SincosOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(math::SincosOp op,
+                                PatternRewriter &rewriter) const override {
+
+    Value x = op.getOperand();
+    if (!isa<RankedTensorType>(x.getType()))
+      return failure();
+
+    auto loc = op.getLoc();
+    auto sin = stablehlo::SineOp::create(rewriter, loc, op.getOperand());
+    auto cos = stablehlo::CosineOp::create(rewriter, loc, op.getOperand());
+    rewriter.replaceOp(op, {sin, cos});
+
+    return success();
+  }
+};
+
 // stablehlo has no fused multiply-add, so the separate mul+add is the required
 // lowering for strict fma and the permitted one for fmuladd alike.
 template <typename SrcOp> struct RaiseMulAdd : public OpRewritePattern<SrcOp> {
@@ -801,7 +820,8 @@ struct ArithRaisingPass
                RaiseMulAdd<enzymexla::FMulAddOp>, RaiseCopySign, RaiseTruncOp,
                RaiseAtan, RaiseLog10, RaiseLog2, RaiseExp2, RaiseMaxNumF,
                RaiseMinNumF, RaiseIsNaN, RaiseConstant, RaiseFPToSI,
-               RaiseSIToFP, RaiseUIToFP, RaiseSelect, RaiseCmpI>(context);
+               RaiseSIToFP, RaiseUIToFP, RaiseSelect, RaiseCmpI, RaiseSinCos>(
+              context);
 
     walkAndApplyPatterns(getOperation(), std::move(patterns));
   }
