@@ -1368,6 +1368,45 @@ public:
   }
 };
 
+class NVSinCosRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  NVSinCosRaising(MLIRContext *context)
+      : OpRewritePattern<LLVM::CallOp>(context) {};
+
+  LogicalResult matchAndRewrite(mlir::LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    StringRef name = callee.getLeafReference();
+    static constexpr StringLiteral names[] = {"__nv_sincos", "__nv_sincosf",
+                                              "__nv_fast_sincosf", "sincos",
+                                              "sincosf"};
+    if (!llvm::is_contained(names, name))
+      return failure();
+    if (op->getNumOperands() != 3 || op->getNumResults() != 0)
+      return failure();
+
+    Value x = op->getOperand(0);
+    Value sinPtr = op->getOperand(1);
+    Value cosPtr = op->getOperand(2);
+
+    Location loc = op.getLoc();
+
+    auto fmf = arith::FastMathFlagsAttr::get(op.getContext(),
+                                             name == "__nv_fast_sincosf"
+                                                 ? arith::FastMathFlags::afn
+                                                 : arith::FastMathFlags::none);
+
+    auto sincos = math::SincosOp::create(rewriter, loc, x, fmf);
+    LLVM::StoreOp::create(rewriter, loc, sincos.getSin(), sinPtr);
+    LLVM::StoreOp::create(rewriter, loc, sincos.getCos(), cosPtr);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
 } // namespace
 
 void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
@@ -1384,6 +1423,7 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
   patterns.add<BF16HalfToFloatRaising>(context);
   patterns.add<HalfMathRaising>(context);
   patterns.add<InlineAsmHalfRaising>(context);
+  patterns.add<NVSinCosRaising>(context);
   patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(context,
                                                                    "__nv_clz");
   patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(
