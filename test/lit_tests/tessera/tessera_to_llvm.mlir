@@ -36,6 +36,23 @@ tessera.define @tessera_func_with_call() attributes {argModes = [], pure = false
 
 // -----
 
+// An op only declared in the file comes after its callers, as clang emits
+// declarations last. Its calls still convert, and name it by its original name.
+llvm.func @calls_declared(%x: i32) -> i32 {
+  %r = tessera.call @tessera_declared(%x) {op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>} : (i32) -> i32
+  llvm.return %r : i32
+}
+
+tessera.define private @tessera_declared(i32) -> i32 attributes {argModes = [unit], pure = false, tessera.original_name = "declared"}
+
+// CHECK-LABEL: llvm.func @calls_declared(
+// CHECK-NEXT: %[[R:.*]] = llvm.call @declared(%arg0) : (i32) -> i32
+// CHECK-NEXT: llvm.return %[[R]] : i32
+// CHECK: llvm.func {{.*}}@declared(i32) -> i32
+// CHECK-NOT: tessera.
+
+// -----
+
 tessera.define @tessera_sret_func(%arg0: !llvm.ptr {llvm.align = 8 : i64, llvm.nonnull, llvm.sret = !llvm.struct<(f32, f32)>}, %arg1: !llvm.ptr {llvm.noundef, llvm.readonly}) 
 attributes {argModes = [{dir = #tessera.dir<in>, type = !llvm.struct<(f32, f32)>}], linkage = #llvm.linkage<external>, pure = true, tessera.original_name = "sret_func"} {
   %0 = llvm.load %arg1 <alignment = 8> : !llvm.ptr -> f32
