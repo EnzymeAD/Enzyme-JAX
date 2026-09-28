@@ -186,19 +186,53 @@ static void collectCallees(const Expr &expr, llvm::StringSet<> &callees) {
 // of the op it matched. That is what lets the matched structure be recovered
 // from the root and the AST alone.
 
-/// Bind every variable in the left-hand side to the value it matched.
-static void bindLhsVars(const Expr &expr, Operation *op,
-                        llvm::StringMap<Value> &bound) {
+/// Whether `op` really is what the left-hand side describes, binding every
+/// variable to the value it matched.
+///
+/// The pattern checks all of this too, but PDL is free to evaluate a native
+/// constraint before the pattern's own checks -- the callee, a literal, a
+/// repeated variable -- so tesseraRuleApplicable can be handed an op the
+/// pattern is about to reject. It must not report on one of those, and a
+/// warning given once per rule must not be spent on one either.
+static bool matchLhs(const Expr &expr, Operation *op,
+                     llvm::StringMap<Value> &bound) {
   auto *call = std::get_if<Call>(&expr.data);
-  if (!call || !op || op->getNumOperands() != call->args.size())
-    return;
+  auto callOp = dyn_cast_or_null<CallOp>(op);
+  if (!call || !callOp || callOp.getCallee() != calleeName(*call) ||
+      op->getNumOperands() != call->args.size())
+    return false;
   for (auto [index, arg] : llvm::enumerate(call->args)) {
     Value operand = op->getOperand(index);
-    if (auto *var = std::get_if<Var>(&arg.data))
-      bound.try_emplace(var->name, operand);
-    else if (std::holds_alternative<Call>(arg.data))
-      bindLhsVars(arg, operand.getDefiningOp(), bound);
+    bool matched = std::visit(
+        overloaded{
+            [&](const Var &v) {
+              auto [it, inserted] = bound.try_emplace(v.name, operand);
+              return inserted || it->second == operand;
+            },
+            [&](const IntLit &n) {
+              llvm::APInt value;
+              return matchPattern(operand, m_ConstantInt(&value)) &&
+                     value.getSExtValue() == n.value;
+            },
+            [&](const FloatLit &n) {
+              llvm::APFloat value(0.0);
+              if (!matchPattern(operand, m_ConstantFloat(&value)))
+                return false;
+              llvm::APFloat expected(n.value);
+              bool losesInfo = false;
+              expected.convert(value.getSemantics(),
+                               llvm::APFloat::rmNearestTiesToEven, &losesInfo);
+              return value.bitwiseIsEqual(expected);
+            },
+            [&](const Call &) {
+              return matchLhs(arg, operand.getDefiningOp(), bound);
+            },
+        },
+        arg.data);
+    if (!matched)
+      return false;
   }
+  return true;
 }
 
 /// The calls the left-hand side matched beneath its root, deepest first.
@@ -601,8 +635,11 @@ struct ApplyState {
 ///   - the match sits in code no rule may rewrite (see ApplyState);
 ///   - the right-hand side cannot be built into valid IR here, which is
 ///     reported, since the rule then silently never fires;
+///   - the condition is settled false here, which is reported as a remark,
+///     since it is the ordinary outcome for a call whose operand is not known
+///     to have a property the rule needs;
 ///   - the matched chain cannot move with its root (see planChain), which is
-///     reported too.
+///     reported as a warning.
 static LogicalResult tesseraRuleApplicable(ApplyState &state, Operation *root,
                                            StringAttr ruleAttr) {
   const Rule *rule = state.getRule(ruleAttr, root->getLoc());
@@ -613,7 +650,8 @@ static LogicalResult tesseraRuleApplicable(ApplyState &state, Operation *root,
     return failure();
 
   llvm::StringMap<Value> bound;
-  bindLhsVars(rule->lhs, root, bound);
+  if (!matchLhs(rule->lhs, root, bound))
+    return failure();
 
   std::string why;
   if (failed(checkRhs(*rule, root, bound, why))) {
@@ -621,6 +659,21 @@ static LogicalResult tesseraRuleApplicable(ApplyState &state, Operation *root,
       root->emitWarning() << "optimization rule '" << ruleAttr.getValue()
                           << "' cannot be applied: " << why;
     return failure();
+  }
+
+  // Deciding this here rather than in the rewrite is what lets a rule decline
+  // without touching the IR, so the driver cannot loop on it.
+  if (rule->cond) {
+    ResidualCondition residual = residualizeCondition(*rule->cond, bound);
+    if (residual.settled == false) {
+      if (state.warnedSites.insert({ruleAttr, root}).second)
+        root->emitRemark() << "optimization rule '" << ruleAttr.getValue()
+                           << "' was not applied here: "
+                           << (residual.unshown.empty()
+                                   ? "its condition is false here"
+                                   : "could not show " + residual.unshown);
+      return failure();
+    }
   }
 
   ChainPlan plan;
@@ -638,10 +691,10 @@ static LogicalResult tesseraRuleApplicable(ApplyState &state, Operation *root,
 // names the rule uses, and the matched values those names refer to.
 //
 // An unconditional rule, or one whose condition is proven, replaces the root
-// outright. Otherwise the condition is not evaluated here: it is recorded on a
-// tessera.guard, holding the specialized rewrite and the original computation
-// in its two regions, and -tessera-lower-guards later synthesizes the check and
-// turns the guard into a branch.
+// outright. Otherwise what remains of the condition is not evaluated here: it
+// is recorded on a tessera.guard, holding the specialized rewrite and the
+// original computation in its two regions, and -tessera-lower-guards later
+// synthesizes the check and turns the guard into a branch.
 //
 // This never reports failure, though the signature PDL requires allows it: the
 // greedy driver has no way to recover from a failed native rewrite and aborts
@@ -677,38 +730,31 @@ static LogicalResult tesseraRewrite(ApplyState &state,
     eraseMovedProducers(rewriter, plan);
   };
 
-  // When the condition is already known to hold, there is nothing to test at
-  // run time: apply the rewrite outright. This is a pure saving over the
-  // guarded form, never a precondition for it -- a condition that cannot be
-  // proven still works, it just costs a check.
+  // Whatever the IR settles about the condition is folded away first. When
+  // that settles it as true, there is nothing to test at run time: apply the
+  // rewrite outright. This is a saving over the guarded form, never a
+  // precondition for it -- a predicate with a runtime check that cannot be
+  // proven still works, it just costs a check. A condition settled as false
+  // never gets here: tesseraRuleApplicable declined it.
   //
-  // A condition provably *false* deliberately still builds a guard, rather
-  // than declining to rewrite. Keeping the outcomes down to "proven or not" is
-  // what keeps this simple, and it costs nothing today because of an invariant
-  // worth stating:
-  //
-  //   Proof::False can only originate from constant-folding a comparison.
-  //   provePropertyOfValue answers True or Unknown and never False, since
-  //   there is no way to declare that a value lacks a property. So a false
-  //   condition always lowers to a constant icmp/fcmp, which folds away along
-  //   with its dead branch.
-  //
-  // That invariant is what makes this safe, not an argument that it always
-  // would be. Adding a negative proof source -- a `tessera.guarantees_not`, or
-  // anything else letting a predicate be disproven -- breaks it: the guard for
-  // a provably false matrix predicate would reach -tessera-lower-guards, which
-  // would try to synthesize a real check for a branch that can never run, and
-  // could fail the build over an unresolvable layout or the unroll limit. A
-  // rule that provably does not apply must not be able to fail compilation, so
-  // whoever adds that source should decline it in tesseraRuleApplicable
-  // instead, which leaves the IR untouched and so cannot loop.
-  if (!rule->cond || proveCondition(*rule->cond, boundVars) == Proof::True) {
+  // Otherwise the guard tests only what is left. That is what keeps a
+  // property with no runtime check, such as `SPD`, from ever reaching
+  // -tessera-lower-guards: it is either shown here and folded to true, or
+  // counted as whichever value makes the condition false.
+  std::optional<Cond> residual;
+  if (rule->cond) {
+    ResidualCondition folded = residualizeCondition(*rule->cond, boundVars);
+    assert(folded.settled != false &&
+           "tesseraRuleApplicable admitted a condition that is false here");
+    residual = std::move(folded.cond);
+  }
+  if (!residual) {
     replaceRoot(buildReplacement(*rule, rewriter, loc, boundVars, root));
     return success();
   }
 
   auto guard = GuardOp::create(rewriter, loc, root->getResultTypes(),
-                               rewriter.getStringAttr(renderCond(*rule->cond)),
+                               rewriter.getStringAttr(renderCond(*residual)),
                                namesAttr, values);
 
   // Specialized path: the rule's right-hand side.
