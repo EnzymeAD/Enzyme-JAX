@@ -1677,11 +1677,12 @@ struct ScaledInvariantPlusDiag {
   Value diagScalar;
   Value secondInvariant;
   FloatAttr foldedDiagConst;
+  SmallVector<Value, 1> outerScales;
 };
 
 static ScaledInvariantPlusDiag
-matchScaledInvariantPlusDiagShift(Value value,
-                                  SampleDependenceAnalysis &analysis) {
+matchScaledInvariantPlusDiagSum(Value value,
+                                SampleDependenceAnalysis &analysis) {
   auto addOp = value.getDefiningOp<stablehlo::AddOp>();
   if (!addOp)
     return {};
@@ -1747,6 +1748,25 @@ matchScaledInvariantPlusDiagShift(Value value,
   return {};
 }
 
+static ScaledInvariantPlusDiag
+matchScaledInvariantPlusDiagShift(Value value,
+                                  SampleDependenceAnalysis &analysis) {
+  SmallVector<Value, 1> outerScales;
+  while (true) {
+    ScaledInvariantPlusDiag match =
+        matchScaledInvariantPlusDiagSum(value, analysis);
+    if (match.invariant) {
+      match.outerScales = std::move(outerScales);
+      return match;
+    }
+    auto [scale, inner] = decomposeScaledMatrix(value);
+    if (!scale)
+      return {};
+    outerScales.push_back(scale);
+    value = inner;
+  }
+}
+
 /// ADJOINT and TRANSPOSE coincide for the real factors these patterns target.
 static bool isAdjointLikeTranspose(stablehlo::Transpose t) {
   return t == stablehlo::Transpose::ADJOINT ||
@@ -1785,49 +1805,80 @@ static Value matchFullCholeskySolve(stablehlo::TriangularSolveOp outerSolve,
   return innerSolve.getB();
 }
 
-/// Detect diagonal extraction: multiply(cholResult, identityMatrix) or
-/// dot_general(cholResult, identity, batching=[1]x[1], contracting=[0]x[0])
-/// used to get diagonal elements for log-determinant.
-static bool isDiagonalExtraction(Operation *user, Value cholResult) {
-  // Pattern 1: element-wise multiply(L, I)
+/// L .* I, dot_general(L, I) with one batching and one contracting dim in any
+/// orientation (I is symmetric), or a stride-(n+1) slice of flat L or L^T.
+static void collectDiagonalExtractions(Operation *user, Value cholResult,
+                                       SmallVectorImpl<Operation *> &out) {
+  auto cholType = cast<RankedTensorType>(cholResult.getType());
+  if (cholType.getRank() != 2 ||
+      cholType.getShape()[0] != cholType.getShape()[1])
+    return;
+  int64_t n = cholType.getShape()[0];
+
   if (auto mulOp = dyn_cast<stablehlo::MulOp>(user)) {
     for (auto [a, b] : {std::pair{mulOp.getLhs(), mulOp.getRhs()},
                         std::pair{mulOp.getRhs(), mulOp.getLhs()}}) {
-      if (a == cholResult && isIdentityMatrix(b))
-        return true;
+      if (a == cholResult && isIdentityMatrix(b)) {
+        out.push_back(user);
+        return;
+      }
     }
-    return false;
+    return;
   }
-  // Pattern 2: dot_general(L, I, batching=[1]x[1], contracting=[0]x[0])
-  // This is the pattern Reactant produces for extracting diag(L).
+
   if (auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(user)) {
     auto dims = dotOp.getDotDimensionNumbers();
-    // Check batching_dims = [1] x [1], contracting_dims = [0] x [0]
     if (dims.getLhsBatchingDimensions().size() != 1 ||
         dims.getRhsBatchingDimensions().size() != 1 ||
         dims.getLhsContractingDimensions().size() != 1 ||
         dims.getRhsContractingDimensions().size() != 1)
-      return false;
-    if (dims.getLhsBatchingDimensions()[0] != 1 ||
-        dims.getRhsBatchingDimensions()[0] != 1 ||
-        dims.getLhsContractingDimensions()[0] != 0 ||
-        dims.getRhsContractingDimensions()[0] != 0)
-      return false;
+      return;
+    if (dims.getLhsBatchingDimensions()[0] ==
+            dims.getLhsContractingDimensions()[0] ||
+        dims.getRhsBatchingDimensions()[0] ==
+            dims.getRhsContractingDimensions()[0])
+      return;
     for (auto [a, b] : {std::pair{dotOp.getLhs(), dotOp.getRhs()},
                         std::pair{dotOp.getRhs(), dotOp.getLhs()}}) {
-      if (a == cholResult && isIdentityMatrix(b))
-        return true;
+      if (a == cholResult && isIdentityMatrix(b)) {
+        out.push_back(user);
+        return;
+      }
     }
+    return;
   }
-  return false;
+
+  if (auto transposeOp = dyn_cast<stablehlo::TransposeOp>(user)) {
+    if (transposeOp.getPermutation() != ArrayRef<int64_t>{1, 0})
+      return;
+    for (Operation *tUser : transposeOp->getUsers())
+      if (isa<stablehlo::ReshapeOp>(tUser))
+        collectDiagonalExtractions(tUser, transposeOp.getResult(), out);
+    return;
+  }
+  auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(user);
+  if (!reshapeOp)
+    return;
+  auto flatType = cast<RankedTensorType>(reshapeOp.getType());
+  if (flatType.getRank() != 1 || flatType.getShape()[0] != n * n)
+    return;
+  for (Operation *rUser : reshapeOp->getUsers()) {
+    auto sliceOp = dyn_cast<stablehlo::SliceOp>(rUser);
+    if (!sliceOp)
+      continue;
+    auto sliceType = cast<RankedTensorType>(sliceOp.getType());
+    if (sliceType.getShape()[0] == n && sliceOp.getStartIndices()[0] == 0 &&
+        sliceOp.getStrides()[0] == n + 1)
+      out.push_back(sliceOp);
+  }
 }
 
 /// factor are rewritten in terms of Q and d:
 ///   full solve chains F\(F'\b)  ->  Q diag(1/d) Q^T b
 ///   single solves F\b, F'\b    ->  Q diag(1/sqrt(d)) Q^T b
-/// chol(B). Handles A + t*I (s = 1) and a constant diagonal matrix folded by
-/// tracing in place of t*I.
-///     folded-constant diagonal form); every triangular_solve user is a
+/// chol(B). Handles A + t*I (s = 1), a constant diagonal matrix folded by
+/// recognized in every spelling of collectDiagonalExtractions.
+///     factors c; every triangular_solve user is a
 ///     left-side solve with NO_TRANSPOSE or ADJOINT; at least one user is a
 ///     recognized solve chain, single solve, or diagonal extraction;
 ///     definiteness of the original cholesky operand.
@@ -1870,8 +1921,7 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
     for (auto *user : cholResult.getUsers()) {
       auto triSolve = dyn_cast<stablehlo::TriangularSolveOp>(user);
       if (!triSolve) {
-        if (isDiagonalExtraction(user, cholResult))
-          match.diagExtractions.push_back(user);
+        collectDiagonalExtractions(user, cholResult, match.diagExtractions);
         continue;
       }
 
@@ -1938,6 +1988,24 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
       match.diagScalar = stablehlo::ConstantOp::create(
           rewriter, loc, scalarType,
           DenseElementsAttr::get(scalarType, match.foldedDiagConst));
+    }
+
+    // Distribute outer scalar factors into the sum:
+    // c * (s*A + t*B) = (c*s)*A + (c*t)*B, with s = 1 when absent.
+    if (!match.outerScales.empty()) {
+      Value c = reshapeToScalar(rewriter, loc, match.outerScales.front());
+      for (Value factor : llvm::drop_begin(match.outerScales))
+        c = stablehlo::MulOp::create(rewriter, loc, c,
+                                     reshapeToScalar(rewriter, loc, factor));
+      match.scaleScalar =
+          match.scaleScalar
+              ? stablehlo::MulOp::create(
+                    rewriter, loc, c,
+                    reshapeToScalar(rewriter, loc, match.scaleScalar))
+                    .getResult()
+              : c;
+      match.diagScalar = stablehlo::MulOp::create(
+          rewriter, loc, c, reshapeToScalar(rewriter, loc, match.diagScalar));
     }
 
     auto inputType = cast<RankedTensorType>(match.invariant.getType());
