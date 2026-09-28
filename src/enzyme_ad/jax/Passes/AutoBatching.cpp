@@ -1939,14 +1939,16 @@ bool liftReduceLikeOperation(
   }
 
   auto result = op->getResult(0);
-  if (!llvm::hasSingleElement(result.getUsers())) {
+  auto returnOp = dyn_cast<stablehlo::ReturnOp>(
+      whileOp.getBody().front().getTerminator());
+  if (!returnOp)
     return false;
-  }
-
-  auto returnOp = dyn_cast<stablehlo::ReturnOp>(*result.getUsers().begin());
-  if (!returnOp || returnOp != whileOp.getBody().front().getTerminator()) {
-    return false;
-  }
+  // The value has to leave the iteration as the yield and nothing else. It
+  // may be yielded into several carried positions: a raised kernel keeps a
+  // copy of an accumulator it also reads.
+  for (Operation *user : result.getUsers())
+    if (user != returnOp)
+      return false;
 
   auto lhs = op->getOperand(0);
   auto rhs = op->getOperand(1);
@@ -1968,16 +1970,29 @@ bool liftReduceLikeOperation(
     }
   }
 
-  // while dead args is needed to clean this up
-  if (argIdx >= whileOp->getNumResults() ||
-      whileOp->getResult(argIdx).getUsers().empty()) {
-    return false;
-  }
-
   if (isLhsLoopCarriedDep == isRhsLoopCarriedDep) {
     return false; // atmost one of lhs/rhs must be loop carried dep
   }
   if (specialOps && isRhsLoopCarriedDep) { // only lhs can be loop carried dep
+    return false;
+  }
+
+  // The carried positions this value is yielded into: the accumulator, and
+  // any value the body never reads, which therefore leaves the loop holding
+  // what the accumulator holds (the loop runs at least once).
+  SmallVector<unsigned> resultIdxs;
+  for (auto [i, operand] : llvm::enumerate(returnOp->getOperands())) {
+    if (operand != result)
+      continue;
+    if ((int64_t)i != argIdx &&
+        !whileOp.getBody().front().getArgument(i).use_empty())
+      return false;
+    resultIdxs.push_back(i);
+  }
+  // while dead args is needed to clean this up
+  if (llvm::all_of(resultIdxs, [&](unsigned i) {
+        return whileOp->getResult(i).getUsers().empty();
+      })) {
     return false;
   }
 
@@ -2080,8 +2095,9 @@ bool liftReduceLikeOperation(
   auto *finalResOp = mlir::Operation::create(finalResState);
   rewriter.insert(finalResOp);
 
-  rewriter.replaceAllUsesWith(whileOp->getResult(argIdx),
-                              finalResOp->getResult(0));
+  for (unsigned i : resultIdxs)
+    rewriter.replaceAllUsesWith(whileOp->getResult(i),
+                                finalResOp->getResult(0));
   return true;
 }
 
