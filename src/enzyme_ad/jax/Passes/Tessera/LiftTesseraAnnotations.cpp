@@ -1,8 +1,9 @@
 //===----------------------------------------------------------------------===//
 //
-// This file extracts tessera_op, pure_tessera_op, and tessera_optimize
-// global annotations and adds tessera_op / pure_tessera_op attributes
-// and tessera.optimization ops to the module.
+// This file extracts tessera_op, pure_tessera_op, tessera_optimize,
+// tessera_guarantees and tessera_preserves global annotations and adds
+// tessera_op / pure_tessera_op / tessera.guarantees / tessera.preserves
+// attributes and tessera.optimization ops to the module.
 //
 //===----------------------------------------------------------------------===//
 
@@ -13,7 +14,9 @@
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 
 namespace mlir {
@@ -30,6 +33,61 @@ using namespace mlir::enzyme;
 using namespace mlir::enzyme::tessera;
 
 namespace {
+
+// What the plugin's tessera::guarantees and tessera::preserves attributes
+// become. Argument positions count as tessera_op argument lists do: `this`
+// first for a member function, and no sret.
+//
+//   tessera_guarantees=SPD:return    the return value is SPD
+//   tessera_guarantees=SPD:arg2      argument 2 is SPD once the call returns
+//   tessera_preserves=SPD:0,1        the output is SPD if arguments 0 and 1 are
+constexpr llvm::StringLiteral kGuaranteesPrefix = "tessera_guarantees=";
+constexpr llvm::StringLiteral kPreservesPrefix = "tessera_preserves=";
+
+bool isPropertyName(StringRef name) {
+  return !name.empty() && llvm::all_of(name, [](char c) {
+    return llvm::isAlnum(c) || c == '_';
+  });
+}
+
+bool isOutputName(StringRef output) {
+  unsigned index;
+  return output == "return" ||
+         (output.consume_front("arg") && !output.getAsInteger(10, index));
+}
+
+/// Parse the part after the prefix of a guarantees annotation into
+/// {property, output}, or fail.
+FailureOr<DictionaryAttr> parseGuarantee(StringRef text, MLIRContext *ctx) {
+  auto [property, output] = text.split(':');
+  if (!isPropertyName(property) || !isOutputName(output))
+    return failure();
+  Builder b(ctx);
+  return b.getDictionaryAttr(
+      {b.getNamedAttr("property", b.getStringAttr(property)),
+       b.getNamedAttr("output", b.getStringAttr(output))});
+}
+
+/// Parse the part after the prefix of a preserves annotation into
+/// {property, inputs}, or fail.
+FailureOr<DictionaryAttr> parsePreserve(StringRef text, MLIRContext *ctx) {
+  auto [property, list] = text.split(':');
+  if (!isPropertyName(property) || list.empty())
+    return failure();
+  Builder b(ctx);
+  SmallVector<Attribute> inputs;
+  SmallVector<StringRef> parts;
+  list.split(parts, ',');
+  for (StringRef part : parts) {
+    unsigned index;
+    if (part.trim().getAsInteger(10, index))
+      return failure();
+    inputs.push_back(b.getI64IntegerAttr(index));
+  }
+  return b.getDictionaryAttr(
+      {b.getNamedAttr("property", b.getStringAttr(property)),
+       b.getNamedAttr("inputs", b.getArrayAttr(inputs))});
+}
 
 struct LiftTesseraAnnotationsPass
     : public enzyme::tessera::impl::LiftTesseraAnnotationsPassBase<
@@ -150,6 +208,34 @@ struct LiftTesseraAnnotationsPass
       auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName);
       if (!func)
         continue;
+
+      // The table is walked in no particular order, and clang can list an
+      // annotation once per redeclaration, so settle both before the
+      // annotations become ordered lists.
+      llvm::sort(annotStrs);
+      annotStrs.erase(llvm::unique(annotStrs), annotStrs.end());
+
+      SmallVector<Attribute> guarantees, preserves;
+      for (StringRef annot : annotStrs) {
+        annot = annot.rtrim('\0');
+        bool isGuarantee = annot.consume_front(kGuaranteesPrefix);
+        if (!isGuarantee && !annot.consume_front(kPreservesPrefix))
+          continue;
+        FailureOr<DictionaryAttr> entry =
+            isGuarantee ? parseGuarantee(annot, ctx) : parsePreserve(annot, ctx);
+        if (failed(entry)) {
+          func.emitError() << "malformed tessera "
+                           << (isGuarantee ? "guarantees" : "preserves")
+                           << " annotation '" << annot << "'";
+          signalPassFailure();
+          continue;
+        }
+        (isGuarantee ? guarantees : preserves).push_back(*entry);
+      }
+      if (!guarantees.empty())
+        func->setAttr("tessera.guarantees", ArrayAttr::get(ctx, guarantees));
+      if (!preserves.empty())
+        func->setAttr("tessera.preserves", ArrayAttr::get(ctx, preserves));
 
       for (StringRef annot : annotStrs) {
         // Parse "tessera_op=string\0" and "pure_tessera_op=string\0"
