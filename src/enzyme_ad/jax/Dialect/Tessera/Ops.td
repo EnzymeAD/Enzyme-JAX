@@ -127,6 +127,16 @@ def DefineOp : TesseraOp<"define", [
     // order) followed by the natural function_type results.
     ::llvm::SmallVector<::mlir::Type> getCallResultTypes();
 
+    // Which argument a tessera.call result carries back: the argModes index
+    // (sret-exclusive) of the written argument it holds, or none when it is the
+    // callee's own return value (or its sret).
+    std::optional<unsigned> getWrittenArgForCallResult(unsigned callResultIdx);
+
+    // The tessera.call operand position an argument (argModes index,
+    // sret-exclusive) is passed at, or none for a write-only argument, which
+    // has no operand. The inverse of getArgIndexForCallOperand, less the sret.
+    std::optional<unsigned> getCallOperandForArg(unsigned argIdx);
+
     //===------------------------------------------------------------------===//
     // FunctionOpInterface Methods
     //===------------------------------------------------------------------===//

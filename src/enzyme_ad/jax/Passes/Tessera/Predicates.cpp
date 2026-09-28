@@ -10,6 +10,8 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseSet.h"
+#include <functional>
 #include <variant>
 
 using namespace mlir;
@@ -192,53 +194,276 @@ bool listContains(ArrayAttr list, llvm::StringRef name) {
   return false;
 }
 
-/// Is `value` known to have the named property?
+/// Properties that bring others with them. A value declared to have the first
+/// has the second too, so a rule asking for `symmetric(A)` is satisfied by a
+/// producer that guarantees SPD.
 ///
-/// Two sources, both declarations rather than inferences:
+/// `positive_definite` here means what its runtime check tests, which includes
+/// symmetry, so it and `SPD` are the same property under two names.
+struct Implication {
+  llvm::StringLiteral from, to;
+};
+constexpr Implication kImplications[] = {
+    {"SPD", "positive_definite"},
+    {"positive_definite", "SPD"},
+    {"positive_definite", "symmetric"},
+    {"positive_definite", "invertible"},
+    {"orthogonal", "invertible"},
+    {"identity", "diagonal"},
+    {"identity", "positive_definite"},
+    {"identity", "orthogonal"},
+    {"diagonal", "symmetric"},
+    {"diagonal", "triangular_upper"},
+    {"diagonal", "triangular_lower"},
+};
+
+/// Does having `have` imply having `want`? Reflexive and transitive.
+bool implies(llvm::StringRef have, llvm::StringRef want) {
+  SmallVector<llvm::StringRef> worklist{have};
+  llvm::SmallDenseSet<llvm::StringRef> seen;
+  seen.insert(have);
+  while (!worklist.empty()) {
+    llvm::StringRef current = worklist.pop_back_val();
+    if (current == want)
+      return true;
+    for (const Implication &implication : kImplications)
+      if (implication.from == current && seen.insert(implication.to).second)
+        worklist.push_back(implication.to);
+  }
+  return false;
+}
+
+/// What a producing call's callee declares, seen from one of its results.
 ///
-///   - the value came out of a tessera.call whose callee declares the property
-///     on that result (`tessera.guarantees`), which is the useful one: written
-///     once on a producing function, it holds at every call site;
-///   - the defining operation carries `tessera.property.<name>` directly.
+/// Declarations are function attributes, set by lift-tessera-annotations from
+/// the plugin's `tessera::guarantees` and `tessera::preserves`:
 ///
-/// This answers True or Unknown and never False: nothing can declare that a
-/// value *lacks* a property. Callers in TesseraApplyPDL.cpp rely on that -- a
-/// provably false condition can therefore only come from constant-folding a
-/// comparison, which always lowers to a constant test. Adding a way to
-/// disprove a property means revisiting how a false condition is handled
-/// there; the comment on the elision path says what has to change.
-Proof provePropertyOfValue(Value value, llvm::StringRef property) {
-  value = lookThroughForwarding(value);
+///   tessera.guarantees = [{property = "SPD", output = "return"}, ...]
+///   tessera.preserves  = [{property = "SPD", inputs = [0, 1]}, ...]
+///
+/// An output is "return" or "arg<k>", and inputs are argument positions, both
+/// counted as tessera_op argument lists count them: `this` first for a member
+/// function, and no sret. A preserves entry may name its output; by default it
+/// is the return value, or the one argument the function writes if it
+/// returns nothing.
+struct ProducerView {
+  /// The output this result carries: "return" or "arg<k>".
+  std::string output;
+  /// The output a preserves entry means when it does not name one, or empty if
+  /// the callee has none that is unambiguous.
+  std::string defaultOutput;
+  ArrayAttr guarantees;
+  ArrayAttr preserves;
+  /// The per-result `tessera.guarantees` list, the older way of declaring a
+  /// guarantee on a return value, still honoured.
+  ArrayAttr resultGuarantees;
+  /// The value the call passed as argument k, or null if it passed none.
+  std::function<Value(unsigned)> input;
+};
+
+constexpr llvm::StringLiteral kGuaranteesAttr = "tessera.guarantees";
+constexpr llvm::StringLiteral kPreservesAttr = "tessera.preserves";
+
+std::string argOutput(unsigned index) { return "arg" + std::to_string(index); }
+
+ArrayAttr resultGuaranteesAt(ArrayAttr resAttrs, unsigned index) {
+  if (!resAttrs || index >= resAttrs.size())
+    return nullptr;
+  auto dict = dyn_cast<DictionaryAttr>(resAttrs[index]);
+  return dict ? dict.getAs<ArrayAttr>(kGuaranteesAttr) : nullptr;
+}
+
+std::optional<ProducerView> viewProducer(Value value) {
+  auto result = dyn_cast<OpResult>(value);
+  if (!result)
+    return std::nullopt;
+  Operation *op = result.getOwner();
+  unsigned resultNumber = result.getResultNumber();
+
+  if (auto call = dyn_cast<CallOp>(op)) {
+    auto define = SymbolTable::lookupNearestSymbolFrom<DefineOp>(
+        op, call.getCalleeAttr().getAttr());
+    if (!define)
+      return std::nullopt;
+
+    ProducerView view;
+    view.guarantees = define->getAttrOfType<ArrayAttr>(kGuaranteesAttr);
+    view.preserves = define->getAttrOfType<ArrayAttr>(kPreservesAttr);
+
+    // Written arguments come back as the leading results, so a result's
+    // number is not the index of the function result it holds.
+    if (auto arg = define.getWrittenArgForCallResult(resultNumber)) {
+      view.output = argOutput(*arg);
+    } else {
+      view.output = "return";
+      if (!define.getSretAttr())
+        view.resultGuarantees = resultGuaranteesAt(
+            define.getResAttrsAttr(),
+            resultNumber - define.getNumWrittenArgs());
+    }
+
+    if (define.getSretAttr() || define.getFunctionType().getNumResults())
+      view.defaultOutput = "return";
+    else if (define.getNumWrittenArgs() == 1)
+      if (auto only = define.getWrittenArgForCallResult(0))
+        view.defaultOutput = argOutput(*only);
+
+    view.input = [call, define](unsigned arg) mutable -> Value {
+      std::optional<unsigned> operand = define.getCallOperandForArg(arg);
+      if (!operand || *operand >= call.getArgOperands().size())
+        return Value();
+      return call.getArgOperands()[*operand];
+    };
+    return view;
+  }
+
+  // A function that is not a tessera op can still declare what it returns.
+  if (auto call = dyn_cast<LLVM::CallOp>(op)) {
+    auto calleeAttr = call.getCalleeAttr();
+    if (!calleeAttr)
+      return std::nullopt;
+    auto func =
+        SymbolTable::lookupNearestSymbolFrom<LLVM::LLVMFuncOp>(op, calleeAttr);
+    if (!func)
+      return std::nullopt;
+
+    ProducerView view;
+    view.guarantees = func->getAttrOfType<ArrayAttr>(kGuaranteesAttr);
+    view.preserves = func->getAttrOfType<ArrayAttr>(kPreservesAttr);
+    view.output = view.defaultOutput = "return";
+    view.resultGuarantees = resultGuaranteesAt(func.getResAttrsAttr(), 0);
+    view.input = [call](unsigned arg) mutable -> Value {
+      if (arg >= call.getArgOperands().size())
+        return Value();
+      return call.getArgOperands()[arg];
+    };
+    return view;
+  }
+  return std::nullopt;
+}
+
+ArrayRef<Attribute> entriesOf(ArrayAttr list) {
+  return list ? list.getValue() : ArrayRef<Attribute>();
+}
+
+/// How far back a chain of `preserves` is followed before giving up.
+constexpr unsigned kMaxPropertyDepth = 32;
+
+using PropertyCache = llvm::DenseMap<std::pair<Value, llvm::StringRef>, bool>;
+
+bool hasProperty(Value value, llvm::StringRef property, unsigned depth,
+                 PropertyCache &cache);
+
+bool hasPropertyUncached(Value value, llvm::StringRef property,
+                         unsigned depth, PropertyCache &cache) {
   Operation *op = value.getDefiningOp();
   if (!op)
-    return Proof::Unknown;
+    return false;
 
-  std::string attrName = ("tessera.property." + property).str();
-  if (op->hasAttr(attrName))
-    return Proof::True;
+  // Stated on the operation that produced the value.
+  for (NamedAttribute attr : op->getAttrs()) {
+    llvm::StringRef name = attr.getName().getValue();
+    if (name.consume_front("tessera.property.") && implies(name, property))
+      return true;
+  }
 
-  auto call = dyn_cast<CallOp>(op);
-  if (!call)
-    return Proof::Unknown;
+  std::optional<ProducerView> view = viewProducer(value);
+  if (!view)
+    return false;
 
-  auto define = SymbolTable::lookupNearestSymbolFrom<DefineOp>(
-      op, call.getCalleeAttr().getAttr());
-  if (!define)
-    return Proof::Unknown;
+  // Guaranteed by the callee, whatever its inputs were.
+  for (Attribute have : entriesOf(view->resultGuarantees))
+    if (auto name = dyn_cast<StringAttr>(have))
+      if (implies(name.getValue(), property))
+        return true;
 
-  ArrayAttr resAttrs = define.getResAttrsAttr();
-  unsigned resultNumber = cast<OpResult>(value).getResultNumber();
-  if (!resAttrs || resultNumber >= resAttrs.size())
-    return Proof::Unknown;
+  for (Attribute entry : entriesOf(view->guarantees)) {
+    auto dict = dyn_cast<DictionaryAttr>(entry);
+    if (!dict)
+      continue;
+    auto have = dict.getAs<StringAttr>("property");
+    auto output = dict.getAs<StringAttr>("output");
+    if (have && output && output.getValue() == view->output &&
+        implies(have.getValue(), property))
+      return true;
+  }
 
-  auto dict = dyn_cast<DictionaryAttr>(resAttrs[resultNumber]);
-  if (!dict)
-    return Proof::Unknown;
-
-  if (listContains(dict.getAs<ArrayAttr>("tessera.guarantees"), property))
-    return Proof::True;
-  return Proof::Unknown;
+  // Preserved by the callee: holds of the output if it held of every input
+  // the declaration lists.
+  if (depth >= kMaxPropertyDepth)
+    return false;
+  for (Attribute entry : entriesOf(view->preserves)) {
+    auto dict = dyn_cast<DictionaryAttr>(entry);
+    if (!dict)
+      continue;
+    auto kept = dict.getAs<StringAttr>("property");
+    auto inputs = dict.getAs<ArrayAttr>("inputs");
+    if (!kept || !inputs || inputs.empty() ||
+        !implies(kept.getValue(), property))
+      continue;
+    auto named = dict.getAs<StringAttr>("output");
+    llvm::StringRef output = named ? named.getValue()
+                                   : llvm::StringRef(view->defaultOutput);
+    if (output.empty() || output != view->output)
+      continue;
+    bool allInputs = llvm::all_of(inputs, [&](Attribute index) {
+      auto position = dyn_cast<IntegerAttr>(index);
+      if (!position || position.getInt() < 0)
+        return false;
+      Value in = view->input(position.getInt());
+      return in && hasProperty(in, kept.getValue(), depth + 1, cache);
+    });
+    if (allInputs)
+      return true;
+  }
+  return false;
 }
+
+bool hasProperty(Value value, llvm::StringRef property, unsigned depth,
+                 PropertyCache &cache) {
+  value = lookThroughForwarding(value);
+  auto key = std::make_pair(value, property);
+  if (auto it = cache.find(key); it != cache.end())
+    return it->second;
+  // Settled as false while the answer is worked out, so a cycle -- possible
+  // only in a graph region -- ends rather than recursing.
+  cache[key] = false;
+  bool result = hasPropertyUncached(value, property, depth, cache);
+  cache[key] = result;
+  return result;
+}
+
+} // namespace
+
+/// Is `value` known to have the named property?
+///
+/// Every source is a declaration rather than an inference from the values
+/// themselves:
+///
+///   - the defining operation carries `tessera.property.<name>`;
+///   - the value came out of a call whose callee guarantees the property on
+///     that output (`tessera.guarantees`), which is the useful one: written
+///     once on a producing function, it holds at every call site;
+///   - the callee preserves the property (`tessera.preserves`) and each input
+///     it names has it, followed back through as many calls as it takes.
+///
+/// A declared property implies others (see kImplications), so a guarantee of
+/// SPD answers a question about symmetry.
+///
+/// This works because properties belong to SSA values, not memory: a matrix a
+/// tessera op takes by `val=in` arrives as a loaded value, which nothing can
+/// change after the guarantee was made.
+///
+/// This answers True or Unknown and never False: nothing can declare that a
+/// value *lacks* a property.
+Proof mlir::enzyme::tessera::provePropertyOfValue(Value value,
+                                                  llvm::StringRef property) {
+  PropertyCache cache;
+  return hasProperty(value, property, /*depth=*/0, cache) ? Proof::True
+                                                          : Proof::Unknown;
+}
+
+namespace {
 
 /// Every predicate currently tests one matrix, so they all prove the same way.
 Proof proveMatrixProperty(llvm::StringRef name, ArrayRef<Value> args) {
@@ -726,51 +951,116 @@ namespace mlir {
 namespace enzyme {
 namespace tessera {
 
-Proof proveCondition(const Cond &cond,
-                     const llvm::StringMap<Value> &boundVars) {
+namespace {
+
+/// Whether a predicate holds of what its variables are bound to, from the IR
+/// alone. A predicate with a runtime check proves the way it says; any other
+/// name is a declared property of one value, and proves only by declaration.
+Proof provePredicate(const Pred &p, const llvm::StringMap<Value> &boundVars) {
+  SmallVector<Value> args;
+  for (const Expr &arg : p.args) {
+    auto *var = std::get_if<Var>(&arg.data);
+    if (!var)
+      return Proof::Unknown;
+    auto it = boundVars.find(var->name);
+    if (it == boundVars.end())
+      return Proof::Unknown;
+    args.push_back(it->second);
+  }
+  if (const TesseraPredicate *predicate = lookupPredicate(p.name)) {
+    if (args.size() != predicate->arity)
+      return Proof::Unknown;
+    return predicate->prove(p.name, args);
+  }
+  if (args.size() != 1)
+    return Proof::Unknown;
+  return provePropertyOfValue(args[0], p.name);
+}
+
+ResidualCondition settledAs(bool holds) {
+  ResidualCondition result;
+  result.settled = holds;
+  return result;
+}
+
+ResidualCondition remaining(Cond cond) {
+  ResidualCondition result;
+  result.cond = std::move(cond);
+  return result;
+}
+
+/// `positive` is false beneath an odd number of negations. It decides what a
+/// property that cannot be shown stands for: whichever value makes the
+/// condition as a whole false, so that not knowing never takes the rewrite.
+ResidualCondition residualize(const Cond &cond,
+                              const llvm::StringMap<Value> &boundVars,
+                              bool positive, std::string &unshown) {
   return std::visit(
       overloaded{
-          [&](const Pred &p) -> Proof {
-            const TesseraPredicate *predicate = lookupPredicate(p.name);
-            if (!predicate || p.args.size() != predicate->arity)
-              return Proof::Unknown;
-            SmallVector<Value> args;
-            for (const Expr &arg : p.args) {
-              auto *var = std::get_if<Var>(&arg.data);
-              if (!var)
-                return Proof::Unknown;
-              auto it = boundVars.find(var->name);
-              if (it == boundVars.end())
-                return Proof::Unknown;
-              args.push_back(it->second);
-            }
-            return predicate->prove(p.name, args);
+          [&](const Pred &p) -> ResidualCondition {
+            if (provePredicate(p, boundVars) == Proof::True)
+              return settledAs(true);
+            if (lookupPredicate(p.name))
+              return remaining(Cond(Pred(p)));
+            if (unshown.empty())
+              unshown = renderCond(Cond(Pred(p)));
+            return settledAs(!positive);
           },
-          [&](const Compare &c) -> Proof { return proveCompare(c, boundVars); },
-          [&](const NotCond &c) -> Proof {
-            return invertProof(proveCondition(*c.operand, boundVars));
+          [&](const Compare &c) -> ResidualCondition {
+            Proof proof = proveCompare(c, boundVars);
+            if (proof != Proof::Unknown)
+              return settledAs(proof == Proof::True);
+            return remaining(Cond(Compare(c)));
           },
-          [&](const AndCond &c) -> Proof {
-            Proof lhs = proveCondition(*c.lhs, boundVars);
-            Proof rhs = proveCondition(*c.rhs, boundVars);
-            // One false side settles it even if the other is unknown.
-            if (lhs == Proof::False || rhs == Proof::False)
-              return Proof::False;
-            if (lhs == Proof::True && rhs == Proof::True)
-              return Proof::True;
-            return Proof::Unknown;
+          [&](const NotCond &c) -> ResidualCondition {
+            ResidualCondition inner =
+                residualize(*c.operand, boundVars, !positive, unshown);
+            if (inner.settled)
+              return settledAs(!*inner.settled);
+            return remaining(Cond(NotCond{box(std::move(*inner.cond))}));
           },
-          [&](const OrCond &c) -> Proof {
-            Proof lhs = proveCondition(*c.lhs, boundVars);
-            Proof rhs = proveCondition(*c.rhs, boundVars);
-            if (lhs == Proof::True || rhs == Proof::True)
-              return Proof::True;
-            if (lhs == Proof::False && rhs == Proof::False)
-              return Proof::False;
-            return Proof::Unknown;
+          [&](const AndCond &c) -> ResidualCondition {
+            ResidualCondition lhs =
+                residualize(*c.lhs, boundVars, positive, unshown);
+            ResidualCondition rhs =
+                residualize(*c.rhs, boundVars, positive, unshown);
+            if (lhs.settled == false || rhs.settled == false)
+              return settledAs(false);
+            if (lhs.settled)
+              return rhs;
+            if (rhs.settled)
+              return lhs;
+            return remaining(Cond(
+                AndCond{box(std::move(*lhs.cond)), box(std::move(*rhs.cond))}));
+          },
+          [&](const OrCond &c) -> ResidualCondition {
+            ResidualCondition lhs =
+                residualize(*c.lhs, boundVars, positive, unshown);
+            ResidualCondition rhs =
+                residualize(*c.rhs, boundVars, positive, unshown);
+            if (lhs.settled == true || rhs.settled == true)
+              return settledAs(true);
+            if (lhs.settled)
+              return rhs;
+            if (rhs.settled)
+              return lhs;
+            return remaining(Cond(
+                OrCond{box(std::move(*lhs.cond)), box(std::move(*rhs.cond))}));
           },
       },
       cond.data);
+}
+
+} // namespace
+
+ResidualCondition
+residualizeCondition(const Cond &cond,
+                     const llvm::StringMap<Value> &boundVars) {
+  std::string unshown;
+  ResidualCondition result =
+      residualize(cond, boundVars, /*positive=*/true, unshown);
+  result.unshown = std::move(unshown);
+  return result;
 }
 
 const TesseraPredicate *lookupPredicate(llvm::StringRef name) {

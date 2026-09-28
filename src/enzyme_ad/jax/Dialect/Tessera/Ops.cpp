@@ -172,6 +172,36 @@ SmallVector<Type> DefineOp::getCallResultTypes() {
   return types;
 }
 
+// Mirrors getCallResultTypes: the leading results are the written arguments,
+// in argument order, and whatever follows is the function's own.
+std::optional<unsigned>
+DefineOp::getWrittenArgForCallResult(unsigned callResultIdx) {
+  if (getSretAttr())
+    return std::nullopt;
+  unsigned seen = 0;
+  for (unsigned i = 0, e = getArgModeEntries().size(); i != e; ++i) {
+    if (!argIsWritten(i) || !getArgLiftedType(i))
+      continue;
+    if (seen == callResultIdx)
+      return i;
+    ++seen;
+  }
+  return std::nullopt;
+}
+
+std::optional<unsigned> DefineOp::getCallOperandForArg(unsigned argIdx) {
+  auto hasOperand = [&](unsigned i) {
+    return !argIsWritten(i) || argIsRead(i);
+  };
+  if (argIdx >= getArgModeEntries().size() || !hasOperand(argIdx))
+    return std::nullopt;
+  unsigned operand = 0;
+  for (unsigned i = 0; i != argIdx; ++i)
+    if (hasOperand(i))
+      ++operand;
+  return operand;
+}
+
 // Override getArgAttr to map call-side indices to define-side indices, so
 // that generic FunctionOpInterface callers (e.g. mem2reg) can index by a
 // tessera.call's operand position directly.
