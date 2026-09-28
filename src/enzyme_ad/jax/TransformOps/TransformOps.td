@@ -1783,6 +1783,10 @@ def WhileDeadResultPatterns : EnzymeHLOPatternOp<
     "while_deadresult"> {
   let patterns = ["WhileDeadResults"];
 }
+def WhileDuplicateCarriedPatterns : EnzymeHLOPatternOp<
+    "while_duplicate_carried"> {
+  let patterns = ["WhileDuplicateCarried"];
+}
 def ApplyRemSimplifyPatterns : EnzymeHLOPatternOp<
     "rem_simplify"> {
   let patterns = ["RemSimplify"];
