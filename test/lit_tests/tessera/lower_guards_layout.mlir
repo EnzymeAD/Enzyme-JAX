@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s -tessera-lower-guards -split-input-file -verify-diagnostics
+// RUN: enzymexlamlir-opt %s -tessera-lower-guards -split-input-file -verify-diagnostics | FileCheck %s
 
 // How a matrix operand's layout is found, and what happens when it cannot be.
 //
@@ -92,8 +92,9 @@ module {
 // -----
 
 // A lifted matrix is carried as the value loaded from it. One that is not the
-// single-member-struct-around-an-array shape cannot be taken apart, and that
-// is an error rather than a check that quietly fails to be emitted.
+// single-member-struct-around-an-array shape cannot be taken apart. The rule is
+// then not applied: the guard keeps the original call and says why, rather
+// than quietly emitting a check that does not test anything.
 module {
   tessera.define @lib.foo(%a: !llvm.ptr {tessera.layout = {elem = f32, rows = 2 : i64, cols = 2 : i64, row_major = true}}) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !llvm.struct<(f32, f32, f32, f32)>}], pure = true} {
     %c = llvm.mlir.constant(0.0 : f32) : f32
@@ -103,8 +104,11 @@ module {
     %c = llvm.mlir.constant(0.0 : f32) : f32
     tessera.return %c : f32
   }
+  // CHECK-LABEL: llvm.func @unreadable_aggregate
+  // CHECK-NEXT: %[[R:.*]] = tessera.call @lib.foo(%arg0)
+  // CHECK-NEXT: llvm.return %[[R]]
   llvm.func @unreadable_aggregate(%x: !llvm.struct<(f32, f32, f32, f32)>) -> f32 {
-    // expected-error @+1 {{cannot read the elements of a matrix operand of type '!llvm.struct<(f32, f32, f32, f32)>' as 2x2 'f32'}}
+    // expected-warning @+1 {{optimization rule not applied here, the original call is kept: cannot read the elements of a matrix operand of type '!llvm.struct<(f32, f32, f32, f32)>' as 2x2 'f32'}}
     %0 = tessera.guard "symmetric(x)" args(%x) {argNames = ["x"]} : (!llvm.struct<(f32, f32, f32, f32)>) -> f32 {
       %1 = tessera.call @lib.sym_foo(%x) : (!llvm.struct<(f32, f32, f32, f32)>) -> f32
       tessera.yield %1 : f32
@@ -121,8 +125,9 @@ module {
 // The triangular pair is the exception: it is NOT transpose-invariant, so
 // reading column-major storage as row-major turns an upper triangle into a
 // lower one and the check would answer true for a matrix that is not upper
-// triangular. An assumed order is therefore refused outright rather than
-// remarked on -- this is the one place the inference could be unsound.
+// triangular. An assumed order is therefore refused outright, and the rule not
+// applied, rather than remarked on -- this is the one place the inference
+// could be unsound.
 module {
   tessera.define @lib.foo(%a: !llvm.ptr) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !llvm.struct<"Outer", (array<4 x f32>)>}], pure = true} {
     %c = llvm.mlir.constant(0.0 : f32) : f32
@@ -134,7 +139,7 @@ module {
   }
   llvm.func @triangular_inferred_order(%x: !llvm.ptr) -> f32 {
     // expected-remark @+2 {{assuming argument 0 of 'lib.foo' is a 2x2 row-major matrix of 'f32'}}
-    // expected-error @+1 {{'triangular_upper' depends on the storage order, which was assumed rather than declared; declare tessera.layout with row_major on the corresponding tessera.define argument}}
+    // expected-warning @+1 {{optimization rule not applied here, the original call is kept: 'triangular_upper' depends on the storage order, which was assumed rather than declared; declare tessera.layout with row_major on the corresponding tessera.define argument}}
     %0 = tessera.guard "triangular_upper(x)" args(%x) {argNames = ["x"]} : (!llvm.ptr) -> f32 {
       %1 = tessera.call @lib.tri_foo(%x) : (!llvm.ptr) -> f32
       tessera.yield %1 : f32
@@ -183,7 +188,7 @@ module {
     tessera.return %c : f32
   }
   llvm.func @no_layout(%x: !llvm.ptr) -> f32 {
-    // expected-error @+1 {{cannot determine the layout of the operand of 'symmetric'; declare tessera.layout on the corresponding tessera.define argument}}
+    // expected-warning @+1 {{optimization rule not applied here, the original call is kept: cannot determine the layout of the operand of 'symmetric'; declare tessera.layout on the corresponding tessera.define argument}}
     %0 = tessera.guard "symmetric(x)" args(%x) {argNames = ["x"]} : (!llvm.ptr) -> f32 {
       %1 = tessera.call @lib.sym_foo(%x) : (!llvm.ptr) -> f32
       tessera.yield %1 : f32
@@ -208,7 +213,7 @@ module {
     tessera.return %c : f32
   }
   llvm.func @unknown_predicate(%x: !llvm.ptr) -> f32 {
-    // expected-error @+1 {{unknown predicate 'orthogonal'; known predicates are symmetric, diagonal, triangular_upper, triangular_lower, identity}}
+    // expected-warning @+1 {{optimization rule not applied here, the original call is kept: unknown predicate 'orthogonal'; known predicates are symmetric, diagonal, triangular_upper, triangular_lower, identity}}
     %0 = tessera.guard "orthogonal(x)" args(%x) {argNames = ["x"]} : (!llvm.ptr) -> f32 {
       %1 = tessera.call @lib.sym_foo(%x) : (!llvm.ptr) -> f32
       tessera.yield %1 : f32
@@ -233,7 +238,7 @@ module {
     tessera.return %c : f32
   }
   llvm.func @wrong_arity(%x: !llvm.ptr, %y: !llvm.ptr) -> f32 {
-    // expected-error @+1 {{predicate 'symmetric' takes 1 argument(s), but got 2}}
+    // expected-warning @+1 {{optimization rule not applied here, the original call is kept: predicate 'symmetric' takes 1 argument(s), but got 2}}
     %0 = tessera.guard "symmetric(x, y)" args(%x, %y) {argNames = ["x", "y"]} : (!llvm.ptr, !llvm.ptr) -> f32 {
       %1 = tessera.call @lib.sym_foo(%x, %y) : (!llvm.ptr, !llvm.ptr) -> f32
       tessera.yield %1 : f32
@@ -258,7 +263,7 @@ module {
     tessera.return %c : f32
   }
   llvm.func @not_square(%x: !llvm.ptr) -> f32 {
-    // expected-error @+1 {{'symmetric' needs a square matrix, but the operand is 2x3}}
+    // expected-warning @+1 {{optimization rule not applied here, the original call is kept: 'symmetric' needs a square matrix, but the operand is 2x3}}
     %0 = tessera.guard "symmetric(x)" args(%x) {argNames = ["x"]} : (!llvm.ptr) -> f32 {
       %1 = tessera.call @lib.sym_foo(%x) : (!llvm.ptr) -> f32
       tessera.yield %1 : f32

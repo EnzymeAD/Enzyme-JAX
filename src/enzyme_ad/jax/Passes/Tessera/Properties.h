@@ -5,8 +5,9 @@
 // Two layers. Declarations are what a domain scientist or library expert
 // states about functions, through the plugin:
 //
-//   [[tessera::guarantees("SPD")]]            the output is always SPD
-//   [[tessera::assumes("SPD", "M")]]          M is always SPD on entry
+//   [[tessera::guarantees("SPD")]]            the return value is always SPD
+//   [[tessera::guarantees("SPD(M)")]]         M is always SPD on exit
+//   [[tessera::assumes("SPD(M)")]]            M is always SPD on entry
 //   [[tessera::preserves("SPD", "A", "B")]]   the output is SPD if A and B are
 //
 // Facts are what follows at a particular call: this value, passed here, is

@@ -241,7 +241,10 @@ InFlightDiagnostic Parser::error() {
   if (failed)
     return InFlightDiagnostic();
   failed = true;
-  return emitError(loc);
+  // A rule that does not parse is left out, not a reason to fail the compile.
+  InFlightDiagnostic diagnostic = emitWarning(loc);
+  diagnostic << "optimization rule ignored: ";
+  return diagnostic;
 }
 
 void Parser::advance() {

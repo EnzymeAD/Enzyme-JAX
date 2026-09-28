@@ -1,9 +1,10 @@
-// RUN: enzymexlamlir-opt %s -tessera-lower-guards="max-unrolled-elems=4" -split-input-file -verify-diagnostics
+// RUN: enzymexlamlir-opt %s -tessera-lower-guards="max-unrolled-elems=4" -split-input-file -verify-diagnostics | FileCheck %s
 
 // The comparisons a property check needs are emitted straight-line, so a large
 // matrix would turn into an unreasonable amount of code. Above the limit the
 // predicate declines rather than emitting it. A loop form would lift this; it
-// is not implemented, so this is an error and not a silent miscompile.
+// is not implemented, so the rule is not applied there: the guard keeps the
+// original call, and says why.
 
 // 2x2 is four elements, exactly at the limit, so it still lowers.
 module {
@@ -39,8 +40,12 @@ module {
     %c = llvm.mlir.constant(0.0 : f32) : f32
     tessera.return %c : f32
   }
+  // CHECK-LABEL: llvm.func @over_the_limit
+  // CHECK-NEXT: tessera.call @lib.foo
+  // CHECK-NOT: tessera.guard
+  // CHECK-NOT: lib.sym_foo
   llvm.func @over_the_limit(%x: !llvm.ptr) -> f32 {
-    // expected-error @+1 {{'symmetric' needs 9 elements checked, above the max-unrolled-elems limit of 4; a loop form is not implemented yet}}
+    // expected-warning @+1 {{'symmetric' needs 9 elements checked, above the max-unrolled-elems limit of 4; a loop form is not implemented yet}}
     %0 = tessera.guard "symmetric(x)" args(%x) {argNames = ["x"]} : (!llvm.ptr) -> f32 {
       %1 = tessera.call @lib.sym_foo(%x) : (!llvm.ptr) -> f32
       tessera.yield %1 : f32
