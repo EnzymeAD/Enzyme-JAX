@@ -125,9 +125,36 @@ struct TesseraPredicate {
   Value (*emitCheck)(ArrayRef<Value> args, CheckContext &ctx);
 };
 
-/// Decide a whole condition from the IR, given the values its variables are
-/// bound to. Used before a guard is built, to skip building one at all.
-Proof proveCondition(const Cond &cond, const llvm::StringMap<Value> &boundVars);
+/// What is left of a condition once everything the IR settles is folded away.
+struct ResidualCondition {
+  /// Set when the IR settles the whole condition: true, the rewrite applies
+  /// outright; false, it does not apply at all.
+  std::optional<bool> settled;
+
+  /// Otherwise, what remains to test at run time. Every predicate left in it
+  /// has a runtime check.
+  std::optional<Cond> cond;
+
+  /// The first declared property that could not be shown, as the rule writes
+  /// it (`SPD(A)`), for saying why a rule did not apply.
+  std::string unshown;
+};
+
+/// Decide as much of a condition as the IR allows, given the values its
+/// variables are bound to.
+///
+/// A predicate with a runtime check that cannot be proven stays in the residual
+/// condition, to be tested by the guard. A predicate with no runtime check --
+/// any name not in the registry, like `SPD` -- is a property that holds only by
+/// declaration (see provePropertyOfValue). When it cannot be shown it counts as
+/// whichever of true or false makes the whole condition false, so an unshown
+/// property never selects the rewrite, under a negation or not.
+ResidualCondition residualizeCondition(const Cond &cond,
+                                       const llvm::StringMap<Value> &boundVars);
+
+/// Whether the IR shows that `value` has the named property: see
+/// Predicates.cpp. Answers True or Unknown, never False.
+Proof provePropertyOfValue(Value value, llvm::StringRef property);
 
 /// Look a predicate up by the name a rule used, or null if there is none.
 const TesseraPredicate *lookupPredicate(llvm::StringRef name);
