@@ -1,9 +1,11 @@
-// RUN: enzymexlamlir-opt %s -parse-optimization-rules -tessera-apply-pdl -split-input-file -verify-diagnostics | FileCheck %s
+// RUN: enzymexlamlir-opt %s -parse-optimization-rules -tessera-propagate-properties -tessera-apply-pdl -split-input-file -verify-diagnostics | FileCheck %s
 
-// A property a rule's condition tests can come from declarations alone: a
-// function guarantees it of an output, and functions that preserve it carry it
-// from their inputs to their output. Nothing is checked at run time -- the
-// property is read off the calls that produced the value.
+// A property a rule's condition tests comes from declarations alone. What is
+// always true sits on the definition, as a `tessera.property` on the output
+// guaranteed or the parameter assumed; a function that preserves a property
+// carries a `tessera.preserves` rule. tessera-propagate-properties turns these
+// into facts on the call arguments, and the condition reads those. Nothing is
+// checked at run time.
 //
 // A name with no runtime check, like `SPD`, holds only by declaration. When it
 // cannot be shown the rule does not apply at that call, and says so in a
@@ -17,7 +19,7 @@
 // A guarantee on a matrix returned by value holds at every call site.
 !mat = !llvm.struct<"Mat3", (array<9 x f64>)>
 module {
-  tessera.define private @lib.mass(!llvm.ptr {llvm.sret = !mat}, i64) attributes {argModes = [unit], pure = true, tessera.guarantees = [{output = "return", property = "SPD"}]}
+  tessera.define private @lib.mass(!llvm.ptr {llvm.sret = !mat, tessera.property = ["SPD"]}, i64) attributes {argModes = [unit], pure = true}
   tessera.define private @lib.inverse(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<out>, type = !mat}], pure = true}
   tessera.define private @lib.inverse_spd(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<out>, type = !mat}], pure = true}
 
@@ -45,7 +47,7 @@ module {
 // declaration means when the function returns nothing.
 !mat = !llvm.struct<"Mat3", (array<9 x f64>)>
 module {
-  tessera.define private @lib.mass(!llvm.ptr {llvm.sret = !mat}, i64) attributes {argModes = [unit], pure = true, tessera.guarantees = [{output = "return", property = "SPD"}]}
+  tessera.define private @lib.mass(!llvm.ptr {llvm.sret = !mat, tessera.property = ["SPD"]}, i64) attributes {argModes = [unit], pure = true}
   tessera.define private @lib.stiffness(!llvm.ptr {llvm.sret = !mat}, i64) attributes {argModes = [unit], pure = true}
   tessera.define private @lib.scale(!llvm.ptr, f64, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, unit, {dir = #tessera.dir<out>, type = !mat}], pure = true, tessera.preserves = [{inputs = [0], property = "SPD"}]}
   tessera.define private @lib.add(!llvm.ptr, !llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<out>, type = !mat}], pure = true, tessera.preserves = [{inputs = [0, 1], property = "SPD"}]}
@@ -92,7 +94,7 @@ module {
 // not only for matrices: `positive` here is declared of the scalar.
 !mat = !llvm.struct<"Mat3", (array<9 x f64>)>
 module {
-  tessera.define private @lib.assemble(i64, !llvm.ptr) -> f64 attributes {argModes = [unit, {dir = #tessera.dir<out>, type = !mat}], pure = true, tessera.guarantees = [{output = "arg1", property = "SPD"}, {output = "return", property = "positive"}]}
+  tessera.define private @lib.assemble(i64, !llvm.ptr {tessera.property = ["SPD"]}) -> (f64 {tessera.property = ["positive"]}) attributes {argModes = [unit, {dir = #tessera.dir<out>, type = !mat}], pure = true}
   tessera.define private @lib.inverse(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<out>, type = !mat}], pure = true}
   tessera.define private @lib.inverse_spd(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<out>, type = !mat}], pure = true}
   tessera.define private @lib.sqrt(f64) -> f64 attributes {argModes = [unit], pure = true}
@@ -127,7 +129,7 @@ module {
 // guard, where `SPD` would not apply at all.
 !mat = !llvm.struct<"Mat3", (array<9 x f64>)>
 module {
-  tessera.define private @lib.mass(!llvm.ptr {llvm.sret = !mat}, i64) attributes {argModes = [unit], pure = true, tessera.guarantees = [{output = "return", property = "SPD"}]}
+  tessera.define private @lib.mass(!llvm.ptr {llvm.sret = !mat, tessera.property = ["SPD"]}, i64) attributes {argModes = [unit], pure = true}
   tessera.define private @lib.stiffness(!llvm.ptr {llvm.sret = !mat}, i64) attributes {argModes = [unit], pure = true}
   tessera.define private @lib.eig(!llvm.ptr) -> f64 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}], pure = true}
   tessera.define private @lib.eig_sym(!llvm.ptr) -> f64 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}], pure = true}
@@ -165,7 +167,7 @@ module {
 // Only what the IR does not settle is left for the guard to test.
 !mat = !llvm.struct<"Mat3", (array<9 x f64>)>
 module {
-  tessera.define private @lib.mass(!llvm.ptr {llvm.sret = !mat}, i64) attributes {argModes = [unit], pure = true, tessera.guarantees = [{output = "return", property = "SPD"}]}
+  tessera.define private @lib.mass(!llvm.ptr {llvm.sret = !mat, tessera.property = ["SPD"]}, i64) attributes {argModes = [unit], pure = true}
   tessera.define private @lib.solve(!llvm.ptr, i64) -> f64 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, unit], pure = true}
   tessera.define private @lib.solve_blocked(!llvm.ptr, i64) -> f64 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, unit], pure = true}
 
@@ -184,11 +186,12 @@ module {
 
 // -----
 
-// A function need not be a tessera op to declare what it returns. A library
-// handle -- a PETSc Mat, say -- is an opaque pointer that the tessera ops take
-// as it is, so the property rides on the handle.
+// A library handle -- a PETSc Mat -- is an opaque pointer to an object whose
+// entries are out of reach, so the tessera ops take it as it is and the
+// property rides on the handle. PETSc hands a new Mat back through a `Mat *`
+// out-argument, which lifts to a result holding the handle.
 module {
-  llvm.func @MatCreateMass(i64) -> !llvm.ptr attributes {tessera.guarantees = [{output = "return", property = "SPD"}]}
+  tessera.define private @petsc.assemble_mass(i64, !llvm.ptr {tessera.property = ["SPD"]}) -> i32 attributes {argModes = [unit, {dir = #tessera.dir<out>, type = !llvm.ptr}], pure = false}
   tessera.define private @petsc.solve_gmres(!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32 attributes {argModes = [unit, unit, unit], pure = false}
   tessera.define private @petsc.solve_cg(!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32 attributes {argModes = [unit, unit, unit], pure = false}
 
@@ -196,12 +199,69 @@ module {
     tessera.optimization "if SPD(A), petsc.solve_gmres(A, b, x) -> petsc.solve_cg(A, b, x)"
   }
 
-  // CHECK-LABEL: llvm.func @plain_call
-  // CHECK: tessera.call @petsc.solve_cg
-  llvm.func @plain_call(%n: i64, %b: !llvm.ptr, %x: !llvm.ptr) -> i32 {
-    %A = llvm.call @MatCreateMass(%n) : (i64) -> !llvm.ptr
-    %e = tessera.call @petsc.solve_gmres(%A, %b, %x) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+  // CHECK-LABEL: llvm.func @petsc_handle
+  // CHECK: %[[A:.*]]:2 = tessera.call @petsc.assemble_mass
+  // CHECK-NEXT: tessera.call @petsc.solve_cg(%[[A]]#0, %arg1, %arg2)
+  // CHECK-NOT: tessera.guard
+  llvm.func @petsc_handle(%n: i64, %b: !llvm.ptr, %x: !llvm.ptr) -> i32 {
+    %A:2 = tessera.call @petsc.assemble_mass(%n) : (i64) -> (!llvm.ptr, i32)
+    %e = tessera.call @petsc.solve_gmres(%A#0, %b, %x) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
     llvm.return %e : i32
+  }
+}
+
+// -----
+
+// A function need not be a tessera op to declare what it returns.
+module {
+  llvm.func @element_volume(i64) -> (f64 {tessera.property = ["positive"]})
+  tessera.define private @lib.sqrt(f64) -> f64 attributes {argModes = [unit], pure = true}
+  tessera.define private @lib.sqrt_positive(f64) -> f64 attributes {argModes = [unit], pure = true}
+
+  tessera.optimizations {
+    tessera.optimization "if positive(x), lib.sqrt(x) -> lib.sqrt_positive(x)"
+  }
+
+  // CHECK-LABEL: llvm.func @plain_call
+  // CHECK: tessera.call @lib.sqrt_positive
+  llvm.func @plain_call(%n: i64) -> f64 {
+    %v = llvm.call @element_volume(%n) : (i64) -> f64
+    %r = tessera.call @lib.sqrt(%v) : (f64) -> f64
+    llvm.return %r : f64
+  }
+}
+
+// -----
+
+// A function can assume something of a parameter: every caller promises the
+// matrix M refers to is SPD. Inside, the matrix loaded from M is SPD.
+!mat = !llvm.struct<"Mat3", (array<9 x f64>)>
+module {
+  tessera.define private @lib.inverse(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<out>, type = !mat}], pure = true}
+  tessera.define private @lib.inverse_spd(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<out>, type = !mat}], pure = true}
+
+  tessera.optimizations {
+    tessera.optimization "if SPD(m), lib.inverse(m) -> lib.inverse_spd(m)"
+  }
+
+  // CHECK-LABEL: llvm.func @assumed_parameter
+  // CHECK: tessera.call @lib.inverse_spd
+  llvm.func @assumed_parameter(%M: !llvm.ptr {tessera.property = ["SPD"]}) -> !mat {
+    %m = llvm.load %M : !llvm.ptr -> !mat
+    %r = tessera.call @lib.inverse(%m) : (!mat) -> !mat
+    llvm.return %r : !mat
+  }
+
+  // If the function could have changed the matrix first -- here by writing
+  // through M -- the assumption says nothing about what is loaded after.
+  // CHECK-LABEL: llvm.func @written_before_load
+  // CHECK: tessera.call @lib.inverse(
+  llvm.func @written_before_load(%M: !llvm.ptr {tessera.property = ["SPD"]}, %other: !mat) -> !mat {
+    llvm.store %other, %M : !mat, !llvm.ptr
+    %m = llvm.load %M : !llvm.ptr -> !mat
+    // expected-remark @below {{was not applied here: could not show SPD(m)}}
+    %r = tessera.call @lib.inverse(%m) : (!mat) -> !mat
+    llvm.return %r : !mat
   }
 }
 
