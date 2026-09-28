@@ -1371,7 +1371,7 @@ public:
 class NVSinCosRaising : public OpRewritePattern<LLVM::CallOp> {
 public:
   NVSinCosRaising(MLIRContext *context)
-      : OpRewritePattern<LLVM::CallOp>(context) {};
+      : OpRewritePattern<LLVM::CallOp>(context) {}
 
   LogicalResult matchAndRewrite(mlir::LLVM::CallOp op,
                                 PatternRewriter &rewriter) const override {
