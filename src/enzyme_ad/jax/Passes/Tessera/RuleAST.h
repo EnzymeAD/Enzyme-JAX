@@ -183,8 +183,10 @@ struct Parser {
 
   void advance();
 
-  /// Report a parse error against the rule's location, and mark the parse as
-  /// failed. Once a diagnostic has been reported this returns an inert one, so
+  /// Report why the rule does not parse against its location, and mark the
+  /// parse as failed. This is a warning: a rule that does not parse is left
+  /// out, not a reason to fail the compile. Once a diagnostic has been
+  /// reported this returns an inert one, so
   /// only the first error a rule produces is shown: everything after it is
   /// fallout from a token stream the parser has already lost track of.
   InFlightDiagnostic error();
