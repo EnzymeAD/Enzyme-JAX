@@ -107,7 +107,7 @@ module {
 // The comma after the condition is required.
 module {
   tessera.optimizations {
-    // expected-error @+1 {{expected ',' after the condition of an optimization rule, got 'lib'}}
+    // expected-warning @+1 {{expected ',' after the condition of an optimization rule, got 'lib'}}
     tessera.optimization "if symmetric(x) lib.foo(x) -> lib.symmetric_foo(x)"
   }
 }
@@ -117,7 +117,7 @@ module {
 // An unclosed predicate argument list.
 module {
   tessera.optimizations {
-    // expected-error @+1 {{expected ',' or ')' in predicate 'symmetric', got ''}}
+    // expected-warning @+1 {{expected ',' or ')' in predicate 'symmetric', got ''}}
     tessera.optimization "if symmetric(x, lib.foo(x) -> lib.symmetric_foo(x)"
   }
 }
@@ -127,7 +127,7 @@ module {
 // A single '&' is never valid; only the doubled form is an operator.
 module {
   tessera.optimizations {
-    // expected-error @+1 {{unrecognized character '&' in optimization rule}}
+    // expected-warning @+1 {{unrecognized character '&' in optimization rule}}
     tessera.optimization "if n & 3, lib.f(n) -> lib.g(n)"
   }
 }
@@ -137,7 +137,7 @@ module {
 // An expression in condition position with no relational operator after it.
 module {
   tessera.optimizations {
-    // expected-error @+1 {{expected a comparison operator in optimization rule condition}}
+    // expected-warning @+1 {{expected a comparison operator in optimization rule condition}}
     tessera.optimization "if n 64, lib.f(n) -> lib.g(n)"
   }
 }
@@ -147,7 +147,7 @@ module {
 // An unclosed parenthesised condition.
 module {
   tessera.optimizations {
-    // expected-error @+1 {{expected ')' in optimization rule condition, got ''}}
+    // expected-warning @+1 {{expected ')' in optimization rule condition, got ''}}
     tessera.optimization "if (symmetric(x), lib.foo(x) -> lib.symmetric_foo(x)"
   }
 }

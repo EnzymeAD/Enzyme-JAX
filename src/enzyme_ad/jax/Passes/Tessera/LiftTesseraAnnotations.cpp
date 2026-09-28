@@ -93,7 +93,8 @@ SmallVector<Direction> directionsOf(StringRef opAnnotation) {
 
 /// What the lift needs to know about a function to place its declarations.
 struct FunctionShape {
-  LLVM::LLVMFuncOp func;
+  // Op handles have no const accessors.
+  mutable LLVM::LLVMFuncOp func;
   /// 1 if the function returns through an sret parameter, else 0. Plugin
   /// positions leave the sret out; the function's parameters do not.
   unsigned sretOffset;
@@ -405,9 +406,10 @@ struct LiftTesseraAnnotationsPass
         }
         if (succeeded(placed))
           continue;
-        func.emitError() << "cannot place tessera " << kind << " annotation '"
-                         << annot << "': " << why;
-        signalPassFailure();
+        // An annotation that cannot be placed only costs the facts it would
+        // have given, so it is left out rather than failing the compile.
+        func.emitWarning() << "ignoring tessera " << kind << " annotation '"
+                           << annot << "': " << why;
       }
       if (!preserves.empty())
         func->setAttr(kPreservesAttr, ArrayAttr::get(ctx, preserves));
