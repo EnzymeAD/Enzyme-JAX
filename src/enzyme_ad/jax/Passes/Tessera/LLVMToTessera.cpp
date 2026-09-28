@@ -580,13 +580,22 @@ struct LLVMToTesseraPass
       }
     }
 
+    // Functions first, so that every callee is a tessera.define by the time
+    // calls are converted: CallOpRewrite only matches a call to one. In one
+    // sweep, a call reached before its callee -- any call to an op that is only
+    // declared, since clang emits declarations last -- would be picked up only
+    // because the driver sweeps again after a change, and renaming the callee
+    // does not tell it that the call has become convertible.
     patterns.add<FuncOpRewrite>(ctx, argTypesByGlobalIndices);
-    patterns.add<CallOpRewrite, ReturnOpRewrite>(ctx);
+    RewritePatternSet callPatterns(ctx);
+    callPatterns.add<CallOpRewrite, ReturnOpRewrite>(ctx);
 
     GreedyRewriteConfig config;
     config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     config.setUseTopDownTraversal(true);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config)) ||
+        failed(applyPatternsGreedily(getOperation(), std::move(callPatterns),
                                      config))) {
       llvm::errs() << "Failed to convert LLVM dialect operations to tessera "
                       "dialect operations\n";
