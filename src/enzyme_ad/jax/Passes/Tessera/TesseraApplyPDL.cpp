@@ -18,6 +18,7 @@
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Predicates.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/Properties.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/RuleAST.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
@@ -686,6 +687,16 @@ static LogicalResult tesseraRuleApplicable(ApplyState &state, Operation *root,
   return success();
 }
 
+/// Record what is known of their arguments on the calls a rewrite has just
+/// built, so a rule can go on to match them. The calls kept from before have
+/// their facts already, and the else region of a guard copies them with the
+/// calls it clones.
+template <typename Range> static void recordFactsOnNewCalls(Range &&ops) {
+  PropertyFacts facts;
+  for (Operation &op : ops)
+    op.walk([&](CallOp call) { facts.annotate(call); });
+}
+
 // Rewrite function for every generated pattern. PDL passes the matched root
 // first, then the external arguments the pattern listed: the rule text, the
 // names the rule uses, and the matched values those names refer to.
@@ -749,7 +760,13 @@ static LogicalResult tesseraRewrite(ApplyState &state,
     residual = std::move(folded.cond);
   }
   if (!residual) {
-    replaceRoot(buildReplacement(*rule, rewriter, loc, boundVars, root));
+    Operation *before = root->getPrevNode();
+    SmallVector<Value> replacement =
+        buildReplacement(*rule, rewriter, loc, boundVars, root);
+    Block::iterator first =
+        before ? std::next(before->getIterator()) : root->getBlock()->begin();
+    recordFactsOnNewCalls(llvm::make_range(first, root->getIterator()));
+    replaceRoot(replacement);
     return success();
   }
 
@@ -763,6 +780,7 @@ static LogicalResult tesseraRewrite(ApplyState &state,
     rewriter.setInsertionPointToStart(block);
     YieldOp::create(rewriter, loc,
                     buildReplacement(*rule, rewriter, loc, boundVars, root));
+    recordFactsOnNewCalls(*block);
   }
 
   // Original path: the matched call, unchanged, preceded by the producers that
