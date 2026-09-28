@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s -parse-optimization-rules -tessera-apply-pdl -split-input-file | FileCheck %s
+// RUN: enzymexlamlir-opt %s -parse-optimization-rules -tessera-propagate-properties -tessera-apply-pdl -split-input-file | FileCheck %s
 
 // When the condition is already known to hold, the rewrite is applied outright
 // and no check is emitted. This is a saving over the guarded form, never a
@@ -13,7 +13,7 @@
 // declaration, it holds at every call site.
 !mat = !llvm.struct<"Mat3", (array<9 x f64>)>
 module {
-  tessera.define private @lib.build_cov(!llvm.ptr {llvm.sret = !mat}, i64) attributes {argModes = [unit], pure = true, tessera.guarantees = [{output = "return", property = "symmetric"}]}
+  tessera.define private @lib.build_cov(!llvm.ptr {llvm.sret = !mat, tessera.property = ["symmetric"]}, i64) attributes {argModes = [unit], pure = true}
   tessera.define private @lib.foo(!llvm.ptr) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}], pure = true}
   tessera.define private @lib.symmetric_foo(!llvm.ptr) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}], pure = true}
 
@@ -72,7 +72,7 @@ module {
   // CHECK: tessera.call @lib.diagonal_foo
   // CHECK-NOT: tessera.guard
   llvm.func @property_on_value() -> f32 {
-    %0 = llvm.mlir.zero {"tessera.property.diagonal"} : !mat
+    %0 = llvm.mlir.zero {tessera.property = ["diagonal"]} : !mat
     %1 = tessera.call @lib.foo(%0) : (!mat) -> f32
     llvm.return %1 : f32
   }
@@ -127,7 +127,7 @@ module {
 // Conjunction: both sides provable, so the whole condition is.
 !mat = !llvm.struct<"Mat3", (array<9 x f64>)>
 module {
-  tessera.define private @lib.build_cov(!llvm.ptr {llvm.sret = !mat}, i64) attributes {argModes = [unit], pure = true, tessera.guarantees = [{output = "return", property = "symmetric"}]}
+  tessera.define private @lib.build_cov(!llvm.ptr {llvm.sret = !mat, tessera.property = ["symmetric"]}, i64) attributes {argModes = [unit], pure = true}
   tessera.define private @lib.qux(!llvm.ptr, i64) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, unit], pure = true}
   tessera.define private @lib.special_qux(!llvm.ptr, i64) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, unit], pure = true}
 

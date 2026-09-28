@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s -parse-optimization-rules -tessera-apply-pdl -tessera-lower-guards -tessera-to-llvm -split-input-file | FileCheck %s
+// RUN: enzymexlamlir-opt %s -parse-optimization-rules -tessera-propagate-properties -tessera-apply-pdl -tessera-lower-guards -tessera-to-llvm -split-input-file | FileCheck %s
 
 // A conditional rule the whole way through: parsed into a pattern, applied
 // into a guard, lowered into a branch, and finally out of the tessera dialect
@@ -59,7 +59,7 @@ module {
 // elided outright, so what comes out the far end is a single direct call with
 // no branch at all.
 module {
-  tessera.define @lib.build_cov() -> (!llvm.ptr {tessera.guarantees = ["symmetric"]}) attributes {argModes = [], pure = true, tessera.original_name = "build_cov"} {
+  tessera.define @lib.build_cov() -> (!llvm.ptr {tessera.property = ["symmetric"]}) attributes {argModes = [], pure = true, tessera.original_name = "build_cov"} {
     %c = llvm.mlir.zero : !llvm.ptr
     tessera.return %c : !llvm.ptr
   }
