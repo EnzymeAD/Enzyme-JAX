@@ -358,15 +358,25 @@ struct TesseraToLLVMPass
   void runOnOperation() override {
     MLIRContext *ctx = &getContext();
     LLVMTypeConverter typeConverter(ctx);
-    RewritePatternSet patterns(ctx);
+    GreedyRewriteConfig config;
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
 
-    patterns.add<DefineOpRewrite>(typeConverter, ctx);
-    patterns.add<CallOpRewrite, ReturnOpRewrite>(ctx);
+    // Calls first, while their callees are still tessera.define: CallOpRewrite
+    // reads the define, and converting a define renames the symbol every call
+    // to it names. In one sweep the result would depend on the order the
+    // driver visits ops in, and a define that comes after its callers -- as
+    // any op that is only declared in the file does -- would convert first
+    // and strand them.
+    RewritePatternSet callPatterns(ctx);
+    callPatterns.add<CallOpRewrite>(ctx);
+    RewritePatternSet definePatterns(ctx);
+    definePatterns.add<DefineOpRewrite>(typeConverter, ctx);
+    definePatterns.add<ReturnOpRewrite>(ctx);
 
-    if (failed(applyPatternsGreedily(
-            getOperation(), std::move(patterns),
-            GreedyRewriteConfig().setRegionSimplificationLevel(
-                GreedySimplifyRegionLevel::Normal)))) {
+    if (failed(applyPatternsGreedily(getOperation(), std::move(callPatterns),
+                                     config)) ||
+        failed(applyPatternsGreedily(getOperation(), std::move(definePatterns),
+                                     config))) {
       llvm::errs() << "Failed to convert tessera dialect operations to LLVM "
                       "dialect operations\n";
       return signalPassFailure();
