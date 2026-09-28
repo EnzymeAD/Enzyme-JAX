@@ -1,9 +1,9 @@
 //===----------------------------------------------------------------------===//
 //
 // This file extracts tessera_op, pure_tessera_op, tessera_optimize,
-// tessera_guarantees and tessera_preserves global annotations and adds
-// tessera_op / pure_tessera_op / tessera.guarantees / tessera.preserves
-// attributes and tessera.optimization ops to the module.
+// tessera_guarantees, tessera_assumes and tessera_preserves global annotations
+// and adds tessera_op / pure_tessera_op / tessera.property /
+// tessera.preserves attributes and tessera.optimization ops to the module.
 //
 //===----------------------------------------------------------------------===//
 
@@ -14,6 +14,7 @@
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/Properties.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -34,14 +35,23 @@ using namespace mlir::enzyme::tessera;
 
 namespace {
 
-// What the plugin's tessera::guarantees and tessera::preserves attributes
-// become. Argument positions count as tessera_op argument lists do: `this`
-// first for a member function, and no sret.
+// What the plugin's tessera::guarantees, tessera::assumes and
+// tessera::preserves attributes become. Argument positions count as tessera_op
+// argument lists do: `this` first for a member function, and no sret.
 //
-//   tessera_guarantees=SPD:return    the return value is SPD
-//   tessera_guarantees=SPD:arg2      argument 2 is SPD once the call returns
+//   tessera_guarantees=SPD:return    the return value is always SPD
+//   tessera_guarantees=SPD:arg2      argument 2 is always SPD on exit
+//   tessera_assumes=SPD:arg1         argument 1 is always SPD on entry
 //   tessera_preserves=SPD:0,1        the output is SPD if arguments 0 and 1 are
+//
+// What is always true goes on the definition, as a `tessera.property` on the
+// output or parameter it is true of (see Properties.h). A preserves is only
+// true given its inputs, so it stays a rule on the function, with inputs
+// renumbered to the function's own parameters, sret included:
+//
+//   tessera.preserves = [{property = "SPD", inputs = [0, 1]}]
 constexpr llvm::StringLiteral kGuaranteesPrefix = "tessera_guarantees=";
+constexpr llvm::StringLiteral kAssumesPrefix = "tessera_assumes=";
 constexpr llvm::StringLiteral kPreservesPrefix = "tessera_preserves=";
 
 bool isPropertyName(StringRef name) {
@@ -50,39 +60,195 @@ bool isPropertyName(StringRef name) {
   });
 }
 
-bool isOutputName(StringRef output) {
+/// A result or a parameter of an llvm.func.
+struct OutputSlot {
+  bool isResult;
   unsigned index;
-  return output == "return" ||
-         (output.consume_front("arg") && !output.getAsInteger(10, index));
+};
+
+/// How a function's tessera_op says it treats an argument.
+enum class Direction { Unmarked, In, Out, InOut };
+
+/// The direction a tessera_op annotation gives each argument position:
+/// "name(x:val=in, y:val=out):globals=1".
+SmallVector<Direction> directionsOf(StringRef opAnnotation) {
+  SmallVector<Direction> directions;
+  size_t open = opAnnotation.find('(');
+  if (open == StringRef::npos)
+    return directions;
+  StringRef list = opAnnotation.slice(open + 1, opAnnotation.find(')', open));
+  if (list.trim().empty())
+    return directions;
+  SmallVector<StringRef> parts;
+  list.split(parts, ',');
+  for (StringRef part : parts) {
+    StringRef marker = part.split(':').second.trim();
+    directions.push_back(marker == "val=in"      ? Direction::In
+                         : marker == "val=out"   ? Direction::Out
+                         : marker == "val=inout" ? Direction::InOut
+                                                 : Direction::Unmarked);
+  }
+  return directions;
 }
 
-/// Parse the part after the prefix of a guarantees annotation into
-/// {property, output}, or fail.
-FailureOr<DictionaryAttr> parseGuarantee(StringRef text, MLIRContext *ctx) {
-  auto [property, output] = text.split(':');
-  if (!isPropertyName(property) || !isOutputName(output))
+/// What the lift needs to know about a function to place its declarations.
+struct FunctionShape {
+  LLVM::LLVMFuncOp func;
+  /// 1 if the function returns through an sret parameter, else 0. Plugin
+  /// positions leave the sret out; the function's parameters do not.
+  unsigned sretOffset;
+  bool returnsValue;
+  /// Per position (sret-exclusive), as its tessera_op marks it.
+  SmallVector<Direction> directions;
+
+  Direction directionOf(unsigned position) const {
+    return position < directions.size() ? directions[position]
+                                        : Direction::Unmarked;
+  }
+
+  FailureOr<OutputSlot> returnSlot() const {
+    if (sretOffset)
+      return OutputSlot{false, 0};
+    if (returnsValue)
+      return OutputSlot{true, 0};
     return failure();
-  Builder b(ctx);
-  return b.getDictionaryAttr(
-      {b.getNamedAttr("property", b.getStringAttr(property)),
-       b.getNamedAttr("output", b.getStringAttr(output))});
+  }
+
+  FailureOr<OutputSlot> argSlot(unsigned position) const {
+    unsigned param = position + sretOffset;
+    if (param >= func.getNumArguments())
+      return failure();
+    return OutputSlot{false, param};
+  }
+
+  /// Whether a preserves declaration has an output to apply to: the return
+  /// value, or else the one argument the function writes.
+  bool hasPreservedOutput() const {
+    if (succeeded(returnSlot()))
+      return true;
+    return llvm::count_if(directions, [](Direction d) {
+             return d == Direction::Out || d == Direction::InOut;
+           }) == 1;
+  }
+};
+
+FunctionShape shapeOf(LLVM::LLVMFuncOp func, ArrayRef<StringRef> annotations) {
+  FunctionShape shape{func, 0, false, {}};
+  if (func.getNumArguments() &&
+      func.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName()))
+    shape.sretOffset = 1;
+  shape.returnsValue =
+      !isa<LLVM::LLVMVoidType>(func.getFunctionType().getReturnType());
+  for (StringRef annot : annotations) {
+    annot = annot.rtrim('\0');
+    if (annot.consume_front("tessera_op=") ||
+        annot.consume_front("pure_tessera_op="))
+      shape.directions = directionsOf(annot);
+  }
+  return shape;
 }
 
-/// Parse the part after the prefix of a preserves annotation into
-/// {property, inputs}, or fail.
-FailureOr<DictionaryAttr> parsePreserve(StringRef text, MLIRContext *ctx) {
+/// Add a property to the `tessera.property` list on a result or parameter.
+void addProperty(LLVM::LLVMFuncOp func, OutputSlot slot, StringRef property) {
+  ArrayAttr existing =
+      slot.isResult
+          ? func.getResultAttrOfType<ArrayAttr>(slot.index, kPropertyAttr)
+          : func.getArgAttrOfType<ArrayAttr>(slot.index, kPropertyAttr);
+  SmallVector<Attribute> list;
+  if (existing)
+    llvm::append_range(list, existing.getValue());
+  list.push_back(StringAttr::get(func.getContext(), property));
+  auto updated = ArrayAttr::get(func.getContext(), list);
+  if (slot.isResult)
+    func.setResultAttr(slot.index, kPropertyAttr, updated);
+  else
+    func.setArgAttr(slot.index, kPropertyAttr, updated);
+}
+
+/// Place one guarantees ("SPD:return", "SPD:arg2") or assumes ("SPD:arg1")
+/// annotation, or explain why it cannot be.
+LogicalResult placeFact(const FunctionShape &shape, StringRef text,
+                        bool isGuarantee, std::string &why) {
+  auto [property, target] = text.split(':');
+  if (!isPropertyName(property)) {
+    why = "'" + property.str() + "' is not a property name";
+    return failure();
+  }
+
+  if (target == "return") {
+    FailureOr<OutputSlot> slot = shape.returnSlot();
+    if (!isGuarantee || failed(slot)) {
+      why = isGuarantee ? "the function returns nothing"
+                        : "a return value cannot be assumed";
+      return failure();
+    }
+    addProperty(shape.func, *slot, property);
+    return success();
+  }
+
+  unsigned position;
+  if (!target.consume_front("arg") || target.getAsInteger(10, position)) {
+    why = "'" + target.str() + "' is neither 'return' nor 'arg<N>'";
+    return failure();
+  }
+  FailureOr<OutputSlot> slot = shape.argSlot(position);
+  if (failed(slot)) {
+    why = "argument " + std::to_string(position) + " does not exist";
+    return failure();
+  }
+
+  // On a definition, a parameter's property is read as holding on entry if
+  // the function reads the parameter and on exit if it only writes it. One
+  // it does both to would be ambiguous, and one it is not known to write
+  // cannot come out of the call with anything it did not have going in.
+  Direction direction = shape.directionOf(position);
+  if (direction == Direction::InOut) {
+    why = "argument " + std::to_string(position) +
+          " is val=inout, so a property on it could mean on entry or on exit";
+    return failure();
+  }
+  if (isGuarantee && direction != Direction::Out) {
+    why = "argument " + std::to_string(position) +
+          " is not one the function writes; guaranteeing a property of an "
+          "argument needs a tessera_op marking it val=out";
+    return failure();
+  }
+  if (!isGuarantee && direction == Direction::Out) {
+    why = "argument " + std::to_string(position) +
+          " is val=out, so it has no value on entry to assume anything of";
+    return failure();
+  }
+  addProperty(shape.func, *slot, property);
+  return success();
+}
+
+/// Parse one preserves annotation ("SPD:0,1") into a rule for the function,
+/// or explain why it cannot be.
+FailureOr<DictionaryAttr> parsePreserve(const FunctionShape &shape,
+                                        StringRef text, std::string &why) {
   auto [property, list] = text.split(':');
-  if (!isPropertyName(property) || list.empty())
+  if (!isPropertyName(property) || list.empty()) {
+    why = "expected '<property>:<argument>,...'";
     return failure();
-  Builder b(ctx);
+  }
+  if (!shape.hasPreservedOutput()) {
+    why = "the function neither returns a value nor writes exactly one "
+          "argument its tessera_op marks val=out or val=inout, so there is no "
+          "output for the property to be preserved in";
+    return failure();
+  }
+  Builder b(shape.func.getContext());
   SmallVector<Attribute> inputs;
   SmallVector<StringRef> parts;
   list.split(parts, ',');
   for (StringRef part : parts) {
-    unsigned index;
-    if (part.trim().getAsInteger(10, index))
+    unsigned position;
+    if (part.trim().getAsInteger(10, position) ||
+        failed(shape.argSlot(position))) {
+      why = "'" + part.trim().str() + "' is not an argument position";
       return failure();
-    inputs.push_back(b.getI64IntegerAttr(index));
+    }
+    inputs.push_back(b.getI64IntegerAttr(position + shape.sretOffset));
   }
   return b.getDictionaryAttr(
       {b.getNamedAttr("property", b.getStringAttr(property)),
@@ -215,27 +381,36 @@ struct LiftTesseraAnnotationsPass
       llvm::sort(annotStrs);
       annotStrs.erase(llvm::unique(annotStrs), annotStrs.end());
 
-      SmallVector<Attribute> guarantees, preserves;
+      FunctionShape shape = shapeOf(func, annotStrs);
+      SmallVector<Attribute> preserves;
       for (StringRef annot : annotStrs) {
         annot = annot.rtrim('\0');
-        bool isGuarantee = annot.consume_front(kGuaranteesPrefix);
-        if (!isGuarantee && !annot.consume_front(kPreservesPrefix))
-          continue;
-        FailureOr<DictionaryAttr> entry =
-            isGuarantee ? parseGuarantee(annot, ctx) : parsePreserve(annot, ctx);
-        if (failed(entry)) {
-          func.emitError() << "malformed tessera "
-                           << (isGuarantee ? "guarantees" : "preserves")
-                           << " annotation '" << annot << "'";
-          signalPassFailure();
+        StringRef kind;
+        std::string why;
+        LogicalResult placed = success();
+        if (annot.consume_front(kGuaranteesPrefix)) {
+          kind = "guarantees";
+          placed = placeFact(shape, annot, /*isGuarantee=*/true, why);
+        } else if (annot.consume_front(kAssumesPrefix)) {
+          kind = "assumes";
+          placed = placeFact(shape, annot, /*isGuarantee=*/false, why);
+        } else if (annot.consume_front(kPreservesPrefix)) {
+          kind = "preserves";
+          FailureOr<DictionaryAttr> rule = parsePreserve(shape, annot, why);
+          if (succeeded(rule))
+            preserves.push_back(*rule);
+          placed = failure(failed(rule));
+        } else {
           continue;
         }
-        (isGuarantee ? guarantees : preserves).push_back(*entry);
+        if (succeeded(placed))
+          continue;
+        func.emitError() << "cannot place tessera " << kind << " annotation '"
+                         << annot << "': " << why;
+        signalPassFailure();
       }
-      if (!guarantees.empty())
-        func->setAttr("tessera.guarantees", ArrayAttr::get(ctx, guarantees));
       if (!preserves.empty())
-        func->setAttr("tessera.preserves", ArrayAttr::get(ctx, preserves));
+        func->setAttr(kPreservesAttr, ArrayAttr::get(ctx, preserves));
 
       for (StringRef annot : annotStrs) {
         // Parse "tessera_op=string\0" and "pure_tessera_op=string\0"

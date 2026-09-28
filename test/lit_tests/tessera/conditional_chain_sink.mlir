@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s -parse-optimization-rules -tessera-apply-pdl -split-input-file -verify-diagnostics | FileCheck %s
+// RUN: enzymexlamlir-opt %s -parse-optimization-rules -tessera-propagate-properties -tessera-apply-pdl -split-input-file -verify-diagnostics | FileCheck %s
 
 // A chain rule matches a nested producer as well as the root. The producer has
 // to move with the root: if it stayed where it was, it would still run
@@ -229,7 +229,7 @@ module {
 // A proven condition rewrites outright, and the producer goes with the root
 // here too.
 module {
-  tessera.define private @exa.build() -> (!llvm.ptr {tessera.guarantees = ["symmetric"]}) attributes {argModes = [], pure = false}
+  tessera.define private @exa.build() -> (!llvm.ptr {tessera.property = ["symmetric"]}) attributes {argModes = [], pure = false}
   tessera.define private @exa.btcb(!llvm.ptr, !llvm.ptr, !llvm.ptr, i64) -> !llvm.ptr attributes {argModes = [unit, unit, unit, unit], pure = false}
   tessera.define private @exa.btcb_packed(!llvm.ptr, !llvm.ptr, !llvm.ptr, i64) -> !llvm.ptr attributes {argModes = [unit, unit, unit, unit], pure = false}
   tessera.define private @exa.assemble(!llvm.ptr, !llvm.ptr, !llvm.ptr, i64) -> f64 attributes {argModes = [unit, unit, unit, unit], pure = false}
