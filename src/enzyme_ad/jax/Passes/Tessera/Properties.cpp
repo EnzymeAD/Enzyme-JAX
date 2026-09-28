@@ -6,9 +6,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/enzyme_ad/jax/Passes/Tessera/Properties.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Pass/Pass.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -194,6 +201,262 @@ DictionaryAttr assumedOf(BlockArgument arg) {
   return nullptr;
 }
 
+//===----------------------------------------------------------------------===//
+// Facts about handles
+//===----------------------------------------------------------------------===//
+
+/// Operations that hand a pointer on as it is, or view the memory it points
+/// to as a memref.
+bool isPointerView(Operation *op) {
+  return isa<LLVM::BitcastOp, LLVM::AddrSpaceCastOp, LLVM::FreezeOp,
+             enzymexla::Pointer2MemrefOp>(op);
+}
+
+/// A handle kept in a stack slot. C code keeps `Mat A` in one as soon as
+/// `MatCreate(comm, &A)` takes its address, and loads it afresh for each use,
+/// so two calls given `A` are given different SSA values. They are the same
+/// handle as long as nothing puts another one in the slot in between, and the
+/// operations that could are all listed here.
+struct HandleSlot {
+  /// The slot's address and every view of it.
+  DenseSet<Value> views;
+  /// The loads of the handle from the slot.
+  DenseSet<Value> loads;
+  /// Operations that may leave another handle in the slot, or end its life:
+  /// stores into it, lifetime markers, and calls given its address.
+  DenseSet<Operation *> writers;
+
+  bool isHandle(Value value) const {
+    return loads.contains(lookThroughForwarding(value));
+  }
+};
+
+/// Whether a loaded handle goes nowhere but into calls and guards (that read
+/// it) and pointer comparisons. A handle copied anywhere else -- stored into
+/// another variable, say -- could reach a call this does not see as taking
+/// it.
+bool onlyPassedToCalls(Value handle) {
+  return llvm::all_of(handle.getUses(), [](OpOperand &use) {
+    Operation *user = use.getOwner();
+    if (isa<LLVM::BitcastOp, LLVM::AddrSpaceCastOp, LLVM::FreezeOp>(user))
+      return onlyPassedToCalls(user->getResult(0));
+    // Given to a call, rather than called: an indirect call's callee is its
+    // first operand.
+    if (auto call = dyn_cast<LLVM::CallOp>(user))
+      return call.getCalleeAttr() || use.getOperandNumber() != 0;
+    return isa<CallOp, GuardOp, LLVM::ICmpOp>(user);
+  });
+}
+
+/// The slot `handle` was loaded from, or nothing if it was not loaded from a
+/// stack slot, or the slot or a handle loaded from it is used in some way this
+/// cannot follow.
+std::optional<HandleSlot> slotOf(Value handle) {
+  Operation *load = lookThroughForwarding(handle).getDefiningOp();
+  Value address;
+  if (auto llvmLoad = dyn_cast_or_null<LLVM::LoadOp>(load))
+    address = llvmLoad.getAddr();
+  else if (auto affineLoad = dyn_cast_or_null<affine::AffineLoadOp>(load))
+    address = affineLoad.getMemref();
+  else if (auto memrefLoad = dyn_cast_or_null<memref::LoadOp>(load))
+    address = memrefLoad.getMemref();
+  else
+    return std::nullopt;
+  while (Operation *def = address.getDefiningOp()) {
+    if (!isPointerView(def))
+      break;
+    address = def->getOperand(0);
+  }
+
+  // One pointer, so that every load reads the same one.
+  auto alloca = address.getDefiningOp<LLVM::AllocaOp>();
+  if (!alloca || !isa<LLVM::LLVMPointerType>(alloca.getElemType()) ||
+      !matchPattern(alloca.getArraySize(), m_One()))
+    return std::nullopt;
+
+  HandleSlot slot;
+  SmallVector<Value> worklist{alloca.getResult()};
+  while (!worklist.empty()) {
+    Value view = worklist.pop_back_val();
+    if (!slot.views.insert(view).second)
+      continue;
+    for (OpOperand &use : view.getUses()) {
+      Operation *user = use.getOwner();
+      if (isPointerView(user)) {
+        worklist.push_back(user->getResult(0));
+        continue;
+      }
+      if (isa<LLVM::LoadOp, affine::AffineLoadOp, memref::LoadOp>(user)) {
+        slot.loads.insert(user->getResult(0));
+        continue;
+      }
+      // The slot as the address stored to, not as the value stored.
+      bool isStoreInto =
+          (isa<LLVM::StoreOp>(user) &&
+           cast<LLVM::StoreOp>(user).getAddr() == view) ||
+          (isa<affine::AffineStoreOp>(user) &&
+           cast<affine::AffineStoreOp>(user).getMemref() == view) ||
+          (isa<memref::StoreOp>(user) &&
+           cast<memref::StoreOp>(user).getMemref() == view);
+      if (isStoreInto ||
+          isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp, CallOp, LLVM::CallOp>(
+              user)) {
+        slot.writers.insert(user);
+        continue;
+      }
+      // Its address escapes, or is offset into: anything could write it.
+      return std::nullopt;
+    }
+  }
+
+  if (!llvm::all_of(slot.loads, onlyPassedToCalls))
+    return std::nullopt;
+  return slot;
+}
+
+/// The attributes of the parameter a call passes argument `index` to, or null.
+DictionaryAttr paramAttrs(Operation *op, unsigned index) {
+  if (auto call = dyn_cast<CallOp>(op)) {
+    auto define = SymbolTable::lookupNearestSymbolFrom<DefineOp>(
+        op, call.getCalleeAttr().getAttr());
+    if (!define)
+      return nullptr;
+    std::optional<unsigned> param = define.getArgIndexForCallOperand(index);
+    return param ? attrsAt(define.getArgAttrsAttr(), *param) : nullptr;
+  }
+  if (auto call = dyn_cast<LLVM::CallOp>(op)) {
+    auto calleeAttr = call.getCalleeAttr();
+    if (!calleeAttr)
+      return nullptr;
+    auto func =
+        SymbolTable::lookupNearestSymbolFrom<LLVM::LLVMFuncOp>(op, calleeAttr);
+    // Past the declared parameters, a variadic argument has none.
+    if (!func || index >= func.getNumArguments())
+      return nullptr;
+    return attrsAt(func.getArgAttrsAttr(), index);
+  }
+  return nullptr;
+}
+
+/// What an operation does to the object a handle names.
+enum class HandleEffect { None, Establishes, Changes };
+
+/// What `op` itself, not counting anything in its regions, does to the
+/// handle in `slot`. If it establishes properties, they are added to
+/// `established`.
+HandleEffect effectOn(Operation *op, const HandleSlot &slot,
+                      SmallVectorImpl<StringAttr> &established) {
+  if (slot.writers.contains(op))
+    return HandleEffect::Changes;
+
+  ValueRange args;
+  if (auto call = dyn_cast<CallOp>(op))
+    args = call.getArgOperands();
+  else if (auto call = dyn_cast<LLVM::CallOp>(op))
+    args = call.getArgOperands();
+  else
+    // Only calls can be given a handle (see onlyPassedToCalls); a guard
+    // only reads it, and a comparison only compares it.
+    return HandleEffect::None;
+
+  // A call that establishes a property does so on exit, whatever else it
+  // does to the object on the way.
+  bool establishes = false, changes = false;
+  for (auto [index, arg] : llvm::enumerate(args)) {
+    if (!slot.isHandle(arg))
+      continue;
+    DictionaryAttr attrs = paramAttrs(op, index);
+    if (Attribute properties = attrs ? attrs.get(kEstablishesAttr) : nullptr) {
+      addProperties(established, properties);
+      establishes = true;
+    } else if (!attrs || !attrs.get(kReadonlyAttr)) {
+      changes = true;
+    }
+  }
+  return establishes ? HandleEffect::Establishes
+         : changes   ? HandleEffect::Changes
+                     : HandleEffect::None;
+}
+
+/// Whether anything in `op`, its regions included, might change the object
+/// in `slot`. Here an establishing call counts as a change: it may or may not
+/// run, or run before something else that changes the object.
+bool mayChange(Operation *op, const HandleSlot &slot) {
+  return op
+      ->walk([&](Operation *nested) {
+        SmallVector<StringAttr> ignored;
+        return effectOn(nested, slot, ignored) == HandleEffect::None
+                   ? WalkResult::advance()
+                   : WalkResult::interrupt();
+      })
+      .wasInterrupted();
+}
+
+/// The properties established of the object the handle passed as argument
+/// `index` of `use` names, and not changed since.
+///
+/// The walk goes back from `use` through the operations that run before it:
+/// earlier operations in its block, then out to the operation holding the
+/// region and on before that. An earlier operation with regions of its own,
+/// such as an `scf.if`, might have run any part of them, so anything in them
+/// that might change the object ends the walk. So does leaving a loop's body
+/// if anything in the loop might change the object, since that could run on
+/// an earlier iteration. The walk gives up at a region of more than one
+/// block, and at the function's entry.
+SmallVector<StringAttr> handleFactsAt(CallOp use, unsigned index) {
+  Value handle = use.getArgOperands()[index];
+  if (!isa<LLVM::LLVMPointerType>(handle.getType()))
+    return {};
+  // What is recorded on an argument is read as true of the value passed
+  // there, wherever else it goes (PropertyFacts::derive, hasRecordedProperty).
+  // A fact of the object holds only here, so it is recorded only on a handle
+  // loaded for this call alone.
+  if (lookThroughForwarding(handle) != handle ||
+      !llvm::all_of(handle.getUsers(),
+                    [&](Operation *user) { return user == use; }))
+    return {};
+  std::optional<HandleSlot> slot = slotOf(handle);
+  if (!slot)
+    return {};
+
+  Operation *point = use;
+  while (true) {
+    for (Operation *op = point->getPrevNode(); op; op = op->getPrevNode()) {
+      if (op->getNumRegions() != 0) {
+        if (mayChange(op, *slot))
+          return {};
+        continue;
+      }
+      SmallVector<StringAttr> established;
+      switch (effectOn(op, *slot, established)) {
+      case HandleEffect::None:
+        continue;
+      case HandleEffect::Establishes:
+        return established;
+      case HandleEffect::Changes:
+        return {};
+      }
+    }
+
+    Region *region = point->getParentRegion();
+    Operation *parent = region->getParentOp();
+    if (!region->hasOneBlock() || !parent || isa<FunctionOpInterface>(parent))
+      return {};
+    bool repeats;
+    if (isa<GuardOp>(parent))
+      repeats = false;
+    else if (auto branch = dyn_cast<RegionBranchOpInterface>(parent))
+      repeats = branch.isRepetitiveRegion(region->getRegionNumber());
+    else if (isa<LoopLikeOpInterface>(parent))
+      repeats = true;
+    else
+      return {};
+    if (repeats && mayChange(parent, *slot))
+      return {};
+    point = parent;
+  }
+}
+
 } // namespace
 
 bool mlir::enzyme::tessera::impliesProperty(llvm::StringRef have,
@@ -329,6 +592,9 @@ void PropertyFacts::annotate(CallOp call) {
     SmallVector<StringAttr> facts;
     addProperties(facts, dict);
     for (StringAttr name : of(call.getArgOperands()[i]))
+      if (!llvm::is_contained(facts, name))
+        facts.push_back(name);
+    for (StringAttr name : handleFactsAt(call, i))
       if (!llvm::is_contained(facts, name))
         facts.push_back(name);
 

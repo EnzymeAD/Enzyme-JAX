@@ -1,9 +1,10 @@
 //===----------------------------------------------------------------------===//
 //
 // This file extracts tessera_op, pure_tessera_op, tessera_optimize,
-// tessera_guarantees, tessera_assumes and tessera_preserves global annotations
-// and adds tessera_op / pure_tessera_op / tessera.property /
-// tessera.preserves attributes and tessera.optimization ops to the module.
+// tessera_guarantees, tessera_assumes, tessera_preserves and tessera_readonly
+// global annotations and adds tessera_op / pure_tessera_op /
+// tessera.property / tessera.establishes / tessera.preserves /
+// tessera.readonly attributes and tessera.optimization ops to the module.
 //
 //===----------------------------------------------------------------------===//
 
@@ -43,16 +44,22 @@ namespace {
 //   tessera_guarantees=SPD:arg2      argument 2 is always SPD on exit
 //   tessera_assumes=SPD:arg1         argument 1 is always SPD on entry
 //   tessera_preserves=SPD:0,1        the output is SPD if arguments 0 and 1 are
+//   tessera_readonly=arg0            the object argument 0 points to is left
+//                                    as it was
 //
 // What is always true goes on the definition, as a `tessera.property` on the
-// output or parameter it is true of (see Properties.h). A preserves is only
-// true given its inputs, so it stays a rule on the function, with inputs
-// renumbered to the function's own parameters, sret included:
+// output or parameter it is true of (see Properties.h). A guarantee on a
+// pointer the function takes as it is -- a handle, such as a PETSc Mat --
+// is about the object it points to, from the call on, so it goes on the
+// parameter as `tessera.establishes` instead. A preserves is only true given
+// its inputs, so it stays a rule on the function, with inputs renumbered to
+// the function's own parameters, sret included:
 //
 //   tessera.preserves = [{property = "SPD", inputs = [0, 1]}]
 constexpr llvm::StringLiteral kGuaranteesPrefix = "tessera_guarantees=";
 constexpr llvm::StringLiteral kAssumesPrefix = "tessera_assumes=";
 constexpr llvm::StringLiteral kPreservesPrefix = "tessera_preserves=";
+constexpr llvm::StringLiteral kReadonlyPrefix = "tessera_readonly=";
 
 bool isPropertyName(StringRef name) {
   return !name.empty() && llvm::all_of(name, [](char c) {
@@ -149,21 +156,39 @@ FunctionShape shapeOf(LLVM::LLVMFuncOp func, ArrayRef<StringRef> annotations) {
   return shape;
 }
 
-/// Add a property to the `tessera.property` list on a result or parameter.
-void addProperty(LLVM::LLVMFuncOp func, OutputSlot slot, StringRef property) {
+/// Add a property to the list named `attrName` (`tessera.property`, or
+/// `tessera.establishes`) on a result or parameter.
+void addProperty(LLVM::LLVMFuncOp func, OutputSlot slot, StringRef property,
+                 StringRef attrName = kPropertyAttr) {
   ArrayAttr existing =
-      slot.isResult
-          ? func.getResultAttrOfType<ArrayAttr>(slot.index, kPropertyAttr)
-          : func.getArgAttrOfType<ArrayAttr>(slot.index, kPropertyAttr);
+      slot.isResult ? func.getResultAttrOfType<ArrayAttr>(slot.index, attrName)
+                    : func.getArgAttrOfType<ArrayAttr>(slot.index, attrName);
   SmallVector<Attribute> list;
   if (existing)
     llvm::append_range(list, existing.getValue());
   list.push_back(StringAttr::get(func.getContext(), property));
   auto updated = ArrayAttr::get(func.getContext(), list);
   if (slot.isResult)
-    func.setResultAttr(slot.index, kPropertyAttr, updated);
+    func.setResultAttr(slot.index, attrName, updated);
   else
-    func.setArgAttr(slot.index, kPropertyAttr, updated);
+    func.setArgAttr(slot.index, attrName, updated);
+}
+
+/// Parse "arg<N>" into the parameter it names, or explain why it cannot be.
+FailureOr<OutputSlot> parseArgSlot(const FunctionShape &shape, StringRef target,
+                                   unsigned &position, std::string &why) {
+  if (!target.consume_front("arg") || target.getAsInteger(10, position)) {
+    why = "'" + target.str() + "' is neither 'return' nor 'arg<N>'";
+    return failure();
+  }
+  FailureOr<OutputSlot> slot = shape.argSlot(position);
+  if (failed(slot))
+    why = "argument " + std::to_string(position) + " does not exist";
+  return slot;
+}
+
+bool isPointerParam(const FunctionShape &shape, OutputSlot slot) {
+  return isa<LLVM::LLVMPointerType>(shape.func.getArgumentTypes()[slot.index]);
 }
 
 /// Place one guarantees ("SPD:return", "SPD:arg2") or assumes ("SPD:arg1")
@@ -188,21 +213,25 @@ LogicalResult placeFact(const FunctionShape &shape, StringRef text,
   }
 
   unsigned position;
-  if (!target.consume_front("arg") || target.getAsInteger(10, position)) {
-    why = "'" + target.str() + "' is neither 'return' nor 'arg<N>'";
+  FailureOr<OutputSlot> slot = parseArgSlot(shape, target, position, why);
+  if (failed(slot))
     return failure();
-  }
-  FailureOr<OutputSlot> slot = shape.argSlot(position);
-  if (failed(slot)) {
-    why = "argument " + std::to_string(position) + " does not exist";
-    return failure();
+
+  // A pointer the function takes as it is, rather than one a tessera_op
+  // lifts the value behind, is a handle to an object the function can change
+  // in place: the pointer is the same on exit, the object not. What the
+  // function guarantees is of that object, from the call on.
+  Direction direction = shape.directionOf(position);
+  if (isGuarantee && direction == Direction::Unmarked &&
+      isPointerParam(shape, *slot)) {
+    addProperty(shape.func, *slot, property, kEstablishesAttr);
+    return success();
   }
 
   // On a definition, a parameter's property is read as holding on entry if
   // the function reads the parameter and on exit if it only writes it. One
   // it does both to would be ambiguous, and one it is not known to write
   // cannot come out of the call with anything it did not have going in.
-  Direction direction = shape.directionOf(position);
   if (direction == Direction::InOut) {
     why = "argument " + std::to_string(position) +
           " is val=inout, so a property on it could mean on entry or on exit";
@@ -210,8 +239,12 @@ LogicalResult placeFact(const FunctionShape &shape, StringRef text,
   }
   if (isGuarantee && direction != Direction::Out) {
     why = "argument " + std::to_string(position) +
-          " is not one the function writes; guaranteeing a property of an "
-          "argument needs a tessera_op marking it val=out";
+          (direction == Direction::In
+               ? " is val=in, so the function only reads the value behind "
+                 "it; guaranteeing a property of an argument needs a "
+                 "tessera_op marking it val=out, or a pointer it does not lift"
+               : " is not a pointer, so the function cannot give it a "
+                 "property");
     return failure();
   }
   if (!isGuarantee && direction == Direction::Out) {
@@ -220,6 +253,23 @@ LogicalResult placeFact(const FunctionShape &shape, StringRef text,
     return failure();
   }
   addProperty(shape.func, *slot, property);
+  return success();
+}
+
+/// Place one readonly annotation ("arg0"), or explain why it cannot be.
+LogicalResult placeReadonly(const FunctionShape &shape, StringRef target,
+                            std::string &why) {
+  unsigned position;
+  FailureOr<OutputSlot> slot = parseArgSlot(shape, target, position, why);
+  if (failed(slot))
+    return failure();
+  if (!isPointerParam(shape, *slot)) {
+    why = "argument " + std::to_string(position) +
+          " is not a pointer, so there is no object to leave alone";
+    return failure();
+  }
+  shape.func.setArgAttr(slot->index, kReadonlyAttr,
+                        UnitAttr::get(shape.func.getContext()));
   return success();
 }
 
@@ -395,6 +445,9 @@ struct LiftTesseraAnnotationsPass
         } else if (annot.consume_front(kAssumesPrefix)) {
           kind = "assumes";
           placed = placeFact(shape, annot, /*isGuarantee=*/false, why);
+        } else if (annot.consume_front(kReadonlyPrefix)) {
+          kind = "readonly";
+          placed = placeReadonly(shape, annot, why);
         } else if (annot.consume_front(kPreservesPrefix)) {
           kind = "preserves";
           FailureOr<DictionaryAttr> rule = parsePreserve(shape, annot, why);
