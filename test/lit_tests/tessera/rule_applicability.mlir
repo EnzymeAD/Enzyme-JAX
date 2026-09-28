@@ -136,10 +136,29 @@ module {
 // -----
 
 // A name the right-hand side uses but the left does not bind has no value to
-// stand for. That is a mistake in the rule, reported when it is parsed.
+// stand for. That is a mistake in the rule, reported when it is parsed. The
+// rule is left out and the rest still apply: a mistake in one rule costs only
+// that rule, never the compile.
 module {
+  tessera.define private @lib.foo(f64) -> f64 attributes {argModes = [unit], pure = true}
+  tessera.define private @lib.bar(f64, f64) -> f64 attributes {argModes = [unit, unit], pure = true}
+  tessera.define private @lib.baz(f64) -> f64 attributes {argModes = [unit], pure = true}
+  tessera.define private @lib.fast_baz(f64) -> f64 attributes {argModes = [unit], pure = true}
+
   tessera.optimizations {
-    // expected-error @+1 {{optimization rule uses 'y' on the right-hand side, but it is not bound on the left}}
+    // expected-warning @+1 {{optimization rule ignored: it uses 'y' on the right-hand side, but it is not bound on the left}}
     tessera.optimization "lib.foo(x) -> lib.bar(x, y)"
+    // expected-warning @+1 {{optimization rule ignored: expected ',' after the condition of an optimization rule}}
+    tessera.optimization "if symmetric(x) lib.foo(x) -> lib.bar(x, x)"
+    tessera.optimization "lib.baz(x) -> lib.fast_baz(x)"
+  }
+
+  // CHECK-LABEL: llvm.func @other_rules_apply
+  // CHECK: tessera.call @lib.foo(%arg0)
+  // CHECK: tessera.call @lib.fast_baz
+  llvm.func @other_rules_apply(%x: f64) -> f64 {
+    %0 = tessera.call @lib.foo(%x) : (f64) -> f64
+    %1 = tessera.call @lib.baz(%0) : (f64) -> f64
+    llvm.return %1 : f64
   }
 }

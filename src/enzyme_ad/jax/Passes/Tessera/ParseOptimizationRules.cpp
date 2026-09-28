@@ -172,18 +172,18 @@ struct ParseOptimizationRulesPass
     ModuleOp patternsModule =
         mlir::ModuleOp::create(builder, location, "patterns");
 
-    // Find optimization ops and parse rewrite rules
+    // Find optimization ops and parse rewrite rules. A rule that cannot be
+    // used is reported as a warning and left out; the others still apply, and
+    // the program compiles as it would have without it.
     for (auto optimizations_op : module.getOps<tessera::OptimizationsOp>()) {
       for (auto optimization_op :
            optimizations_op.getBody().getOps<tessera::OptimizationOp>()) {
         Location loc = optimization_op.getLoc();
         Parser parser = Parser(optimization_op.getRule().str(), loc);
         auto rule = parser.parseRule();
-        if (!rule) {
-          signalPassFailure();
-          llvm::errs() << "Pass failure\n";
-          return;
-        }
+        // The parser has already said what is wrong with it.
+        if (!rule)
+          continue;
 
         // Create pdl.pattern op that will store PDL for parsed rewrite rule
         builder.setInsertionPointToStart(patternsModule.getBody());
@@ -201,18 +201,18 @@ struct ParseOptimizationRulesPass
         auto root =
             emitMatchPDL(rule->lhs, builder, loc, boundVars, orderedVars);
         if (!root.second) {
-          signalPassFailure();
-          llvm::errs()
-              << "Left hand side of optimization rule must be a call\n";
-          return;
+          emitWarning(loc) << "optimization rule ignored: its left-hand side "
+                              "must be a call";
+          pattern.erase();
+          continue;
         }
 
         if (auto name = findUnboundVar(rule->rhs, boundVars)) {
-          emitError(loc) << "optimization rule uses '" << *name
-                         << "' on the right-hand side, but it is not bound on "
-                            "the left";
-          signalPassFailure();
-          return;
+          emitWarning(loc) << "optimization rule ignored: it uses '" << *name
+                           << "' on the right-hand side, but it is not bound "
+                              "on the left";
+          pattern.erase();
+          continue;
         }
 
         // The right-hand side is not spelled out in PDL. It is built by a

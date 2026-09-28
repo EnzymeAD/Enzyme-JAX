@@ -99,16 +99,17 @@ Value resolveOperand(const Expr &expr, OpBuilder &builder, Location loc,
           [&](const Var &v) -> Value {
             Value value = guard.getArgForName(v.name);
             if (!value)
-              guard.emitError()
+              emitCheckWarning(guard)
                   << "condition refers to '" << v.name
                   << "', which this guard does not carry a value for";
             return value;
           },
           [&](const IntLit &n) -> Value {
             if (!hint || !isa<IntegerType>(hint)) {
-              guard.emitError() << "integer literal " << n.value
-                                << " in a condition has no integer operand to "
-                                   "take its type from";
+              emitCheckWarning(guard)
+                  << "integer literal " << n.value
+                  << " in a condition has no integer operand to "
+                     "take its type from";
               return Value();
             }
             return LLVM::ConstantOp::create(
@@ -116,17 +117,19 @@ Value resolveOperand(const Expr &expr, OpBuilder &builder, Location loc,
           },
           [&](const FloatLit &n) -> Value {
             if (!hint || !isa<FloatType>(hint)) {
-              guard.emitError() << "float literal " << n.value
-                                << " in a condition has no float operand to "
-                                   "take its type from";
+              emitCheckWarning(guard)
+                  << "float literal " << n.value
+                  << " in a condition has no float operand to "
+                     "take its type from";
               return Value();
             }
             return LLVM::ConstantOp::create(
                 builder, loc, hint, builder.getFloatAttr(hint, n.value));
           },
           [&](const Call &c) -> Value {
-            guard.emitError() << "a call is not supported as a comparison "
-                                 "operand in a condition yet";
+            emitCheckWarning(guard)
+                << "a call is not supported as a comparison "
+                   "operand in a condition yet";
             return Value();
           },
       },
@@ -147,9 +150,9 @@ Value emitCompare(const Compare &cmp, OpBuilder &builder, Location loc,
     return Value();
 
   if (lhs.getType() != rhs.getType()) {
-    guard.emitError() << "operands of '" << getCmpOpSpelling(cmp.op)
-                      << "' in a condition have different types ("
-                      << lhs.getType() << " and " << rhs.getType() << ")";
+    emitCheckWarning(guard) << "operands of '" << getCmpOpSpelling(cmp.op)
+                            << "' in a condition have different types ("
+                            << lhs.getType() << " and " << rhs.getType() << ")";
     return Value();
   }
 
@@ -160,8 +163,8 @@ Value emitCompare(const Compare &cmp, OpBuilder &builder, Location loc,
     return LLVM::FCmpOp::create(builder, loc, toFCmpPredicate(cmp.op), lhs,
                                 rhs);
 
-  guard.emitError() << "cannot compare values of type " << lhs.getType()
-                    << " in a condition";
+  emitCheckWarning(guard) << "cannot compare values of type " << lhs.getType()
+                          << " in a condition";
   return Value();
 }
 
@@ -175,7 +178,7 @@ Value emitPredicate(const Pred &pred, OpBuilder &builder, Location loc,
                     GuardOp guard, int64_t maxUnrolledElems) {
   const TesseraPredicate *predicate = lookupPredicate(pred.name);
   if (!predicate) {
-    auto diagnostic = guard.emitError()
+    auto diagnostic = emitCheckWarning(guard)
                       << "unknown predicate '" << pred.name << "'";
     diagnostic << "; known predicates are ";
     llvm::interleaveComma(getKnownPredicateNames(), diagnostic);
@@ -183,9 +186,9 @@ Value emitPredicate(const Pred &pred, OpBuilder &builder, Location loc,
   }
 
   if (pred.args.size() != predicate->arity) {
-    guard.emitError() << "predicate '" << pred.name << "' takes "
-                      << predicate->arity << " argument(s), but got "
-                      << pred.args.size();
+    emitCheckWarning(guard)
+        << "predicate '" << pred.name << "' takes " << predicate->arity
+        << " argument(s), but got " << pred.args.size();
     return Value();
   }
 
@@ -193,14 +196,15 @@ Value emitPredicate(const Pred &pred, OpBuilder &builder, Location loc,
   for (const Expr &arg : pred.args) {
     auto *var = std::get_if<Var>(&arg.data);
     if (!var) {
-      guard.emitError() << "predicate '" << pred.name
-                        << "' takes matched values, not expressions";
+      emitCheckWarning(guard) << "predicate '" << pred.name
+                              << "' takes matched values, not expressions";
       return Value();
     }
     Value value = guard.getArgForName(var->name);
     if (!value) {
-      guard.emitError() << "condition refers to '" << var->name
-                        << "', which this guard does not carry a value for";
+      emitCheckWarning(guard)
+          << "condition refers to '" << var->name
+          << "', which this guard does not carry a value for";
       return Value();
     }
     args.push_back(value);
@@ -255,17 +259,32 @@ Value emitCond(const Cond &cond, OpBuilder &builder, Location loc,
       cond.data);
 }
 
-LogicalResult lowerGuard(GuardOp guard, int64_t maxUnrolledElems) {
+/// Replace `guard` with its else region, the computation the rule would have
+/// replaced. That is always correct, so it is what a guard whose condition
+/// cannot be checked becomes: the rule is not applied here, and nothing else
+/// changes.
+void keepOriginal(GuardOp guard) {
+  Block &elseBlock = guard.getElseRegion().front();
+  auto yield = cast<YieldOp>(elseBlock.getTerminator());
+  guard->replaceAllUsesWith(yield.getOperands());
+  guard->getBlock()->getOperations().splice(
+      guard->getIterator(), elseBlock.getOperations(), elseBlock.begin(),
+      yield->getIterator());
+  guard.erase();
+}
+
+void lowerGuard(GuardOp guard, int64_t maxUnrolledElems) {
   Location loc = guard.getLoc();
 
+  // The parser reports why, if it does not parse.
   auto cond = parseConditionText(guard.getCond(), loc);
-  if (!cond)
-    return failure();
+  if (!cond) {
+    keepOriginal(guard);
+    return;
+  }
 
   Block *entry = guard->getBlock();
   Region *region = entry->getParent();
-  if (guard.getThenRegion().empty() || guard.getElseRegion().empty())
-    return guard.emitError("tessera.guard has an empty region");
   Block *thenBlock = &guard.getThenRegion().front();
   Block *elseBlock = &guard.getElseRegion().front();
 
@@ -274,10 +293,20 @@ LogicalResult lowerGuard(GuardOp guard, int64_t maxUnrolledElems) {
   // out, so this has to happen before that region is moved away. Inserting
   // before the guard also puts the check in the entry block, ahead of where
   // the split below cuts.
+  Operation *beforeCheck = guard->getPrevNode();
   OpBuilder builder(guard);
   Value check = emitCond(*cond, builder, loc, guard, maxUnrolledElems);
-  if (!check)
-    return failure();
+  if (!check) {
+    // Whatever part of the check was built before it gave up is unused.
+    // Each op is only used by ones built after it, so erase back to front.
+    while (Operation *op = guard->getPrevNode()) {
+      if (op == beforeCheck)
+        break;
+      op->erase();
+    }
+    keepOriginal(guard);
+    return;
+  }
 
   // Split so that everything after the guard becomes the continuation. The
   // guard itself leads the continuation block for now and is erased last.
@@ -310,7 +339,6 @@ LogicalResult lowerGuard(GuardOp guard, int64_t maxUnrolledElems) {
                          elseBlock, ValueRange{});
 
   guard.erase();
-  return success();
 }
 
 struct LowerTesseraGuardsPass
@@ -325,10 +353,7 @@ struct LowerTesseraGuardsPass
     getOperation()->walk([&](GuardOp guard) { guards.push_back(guard); });
 
     for (GuardOp guard : guards)
-      if (failed(lowerGuard(guard, maxUnrolledElems))) {
-        signalPassFailure();
-        return;
-      }
+      lowerGuard(guard, maxUnrolledElems);
   }
 };
 

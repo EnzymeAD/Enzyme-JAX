@@ -84,6 +84,12 @@ struct CheckContext {
   int64_t maxUnrolledElems;
 };
 
+/// Report why the check for `guard`'s condition cannot be built. The guard
+/// then keeps the original computation, which is always correct, so this is a
+/// warning: a rule that cannot be checked is not applied, and nothing else
+/// changes.
+InFlightDiagnostic emitCheckWarning(GuardOp guard);
+
 /// What the IR alone says about a condition.
 ///
 /// This is an internal three-way answer, not a third outcome: only `True`
