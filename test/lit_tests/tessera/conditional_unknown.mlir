@@ -5,12 +5,13 @@
 // the original in the second. This is the default path -- proving a condition
 // is an optimization over it, not a precondition for it.
 
+!mat = !llvm.struct<"Mat3", (array<9 x f64>)>
 module {
-  tessera.define @lib.qux(%a: i512, %n: i64) -> f32 attributes {argModes = [unit, unit], pure = true} {
+  tessera.define @lib.qux(%a: !llvm.ptr, %n: i64) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, unit], pure = true} {
     %c = llvm.mlir.constant(0.0 : f32) : f32
     tessera.return %c : f32
   }
-  tessera.define @lib.tiled_qux(%a: i512, %n: i64) -> f32 attributes {argModes = [unit, unit], pure = true} {
+  tessera.define @lib.tiled_qux(%a: !llvm.ptr, %n: i64) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, unit], pure = true} {
     %c = llvm.mlir.constant(0.0 : f32) : f32
     tessera.return %c : f32
   }
@@ -20,10 +21,10 @@ module {
   }
 
   // CHECK-LABEL: llvm.func @main
-  llvm.func @main(%x: i512, %n: i64) -> f32 {
+  llvm.func @main(%x: !mat, %n: i64) -> f32 {
     // The guard carries the condition alone, not the whole rule, and names the
     // values it refers to.
-    // CHECK: %[[G:.*]] = tessera.guard "n > 64" args(%arg0, %arg1) {argNames = ["x", "n"]} : (i512, i64) -> f32 {
+    // CHECK: %[[G:.*]] = tessera.guard "n > 64" args(%arg0, %arg1) {argNames = ["x", "n"]} : (!llvm.struct<"Mat3", (array<9 x f64>)>, i64) -> f32 {
     // CHECK-NEXT: %[[S:.*]] = tessera.call @lib.tiled_qux(%arg0, %arg1)
     // CHECK-NEXT: tessera.yield %[[S]] : f32
     // CHECK-NEXT: } else {
@@ -33,7 +34,7 @@ module {
     // CHECK-NEXT: %[[O:.*]] = tessera.call @lib.qux(%arg0, %arg1) {tessera.applied_rules = ["if n > 64, lib.qux(x, n) -> lib.tiled_qux(x, n)"]}
     // CHECK-NEXT: tessera.yield %[[O]] : f32
     // CHECK-NEXT: }
-    %0 = tessera.call @lib.qux(%x, %n) : (i512, i64) -> f32
+    %0 = tessera.call @lib.qux(%x, %n) : (!mat, i64) -> f32
     // CHECK: llvm.return %[[G]]
     llvm.return %0 : f32
   }
@@ -45,16 +46,17 @@ module {
 // the first one's guard kept, so the tagging has to be per rule rather than a
 // blanket "already rewritten" mark -- otherwise only one rule would ever fire.
 
+!mat = !llvm.struct<"Mat3", (array<9 x f64>)>
 module {
-  tessera.define @lib.qux(%a: i512, %n: i64) -> f32 attributes {argModes = [unit, unit], pure = true} {
+  tessera.define @lib.qux(%a: !llvm.ptr, %n: i64) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, unit], pure = true} {
     %c = llvm.mlir.constant(0.0 : f32) : f32
     tessera.return %c : f32
   }
-  tessera.define @lib.tiled_qux(%a: i512, %n: i64) -> f32 attributes {argModes = [unit, unit], pure = true} {
+  tessera.define @lib.tiled_qux(%a: !llvm.ptr, %n: i64) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, unit], pure = true} {
     %c = llvm.mlir.constant(0.0 : f32) : f32
     tessera.return %c : f32
   }
-  tessera.define @lib.small_qux(%a: i512, %n: i64) -> f32 attributes {argModes = [unit, unit], pure = true} {
+  tessera.define @lib.small_qux(%a: !llvm.ptr, %n: i64) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, unit], pure = true} {
     %c = llvm.mlir.constant(0.0 : f32) : f32
     tessera.return %c : f32
   }
@@ -69,8 +71,8 @@ module {
   // CHECK: tessera.call @lib.small_qux
   // CHECK: tessera.guard
   // CHECK: tessera.call @lib.tiled_qux
-  llvm.func @two_rules(%x: i512, %n: i64) -> f32 {
-    %0 = tessera.call @lib.qux(%x, %n) : (i512, i64) -> f32
+  llvm.func @two_rules(%x: !mat, %n: i64) -> f32 {
+    %0 = tessera.call @lib.qux(%x, %n) : (!mat, i64) -> f32
     llvm.return %0 : f32
   }
 }
