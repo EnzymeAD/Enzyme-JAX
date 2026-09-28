@@ -2251,28 +2251,20 @@ struct SHLOTransposeOpBatchInterface
       Ty = T.clone(shape);
     }
 
-    // Remap the operands
-    SmallVector<Value, 8> operands;
-    operands.reserve(src->getNumOperands());
-    for (auto opValue : src->getOperands())
-      operands.push_back(mapper.lookup(opValue));
-
-    mlir::NamedAttrList attrs;
-    for (auto attr : src->getAttrs()) {
-      auto eattr = cast<DenseI64ArrayAttr>(attr.getValue());
-      SmallVector<int64_t> shape;
-      for (size_t i = 0; i < batchSizes.size(); i++)
-        shape.push_back(i);
-      for (auto val : eattr.asArrayRef())
-        shape.push_back(val + batchSizes.size());
-      attr.setValue(DenseI64ArrayAttr::get(src->getContext(), shape));
-      attrs.append(attr);
-    }
-    auto cop = mlir::Operation::create(
-        src->getLoc(), src->getName(), resultTypes, operands, std::move(attrs),
-        mlir::PropertyRef(), mlir::BlockRange(), 0);
-    builder.insert(cop);
-    mapper.map(src->getResult(0), cop->getResult(0));
+    // The batch dimensions lead and stay in place; the permutation moves up
+    // behind them. Any other attribute (an analysis annotation such as
+    // enzymexla.symmetric_matrix) describes the unbatched value and is left
+    // behind.
+    auto op = cast<TransposeOp>(src);
+    SmallVector<int64_t> perm;
+    for (size_t i = 0; i < batchSizes.size(); i++)
+      perm.push_back(i);
+    for (auto val : op.getPermutation())
+      perm.push_back(val + batchSizes.size());
+    Value operand = mapper.lookup(op.getOperand());
+    auto cop = TransposeOp::create(builder, src->getLoc(), resultTypes[0],
+                                   operand, perm);
+    mapper.map(src->getResult(0), cop.getResult());
     return success();
   }
 };
