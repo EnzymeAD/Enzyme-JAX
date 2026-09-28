@@ -19,6 +19,8 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/MapVector.h"
 
 namespace mlir {
 namespace enzyme {
@@ -92,6 +94,161 @@ void redirectAddressUses(LLVM::LLVMFuncOp funcOp, PatternRewriter &rewriter,
                              [&] { addressOf.setGlobalNameAttr(stubRef); });
 }
 
+/// The tessera_op or pure_tessera_op marking on `funcOp`, if it has one.
+StringAttr getMarking(LLVM::LLVMFuncOp funcOp, bool &isPure) {
+  isPure = false;
+  if (auto attr = funcOp->getAttrOfType<StringAttr>("tessera_op"))
+    return attr;
+  if (auto attr = funcOp->getAttrOfType<StringAttr>("pure_tessera_op")) {
+    isPure = true;
+    return attr;
+  }
+  return {};
+}
+
+/// The tessera op name a marking gives its function: everything before '('.
+StringRef getTesseraName(StringRef marking) {
+  return marking.take_while([](char c) { return c != '('; });
+}
+
+/// Work out the argModes of the tessera.define that `funcOp` becomes, from its
+/// marking. Fails, with the reason in `why`, if the marking is malformed or
+/// does not fit the function, since lifting it anyway would produce a
+/// tessera.define that does not verify.
+///
+/// The marking has the form "name(arg1:val=in, arg2, ...):globals=index1,...".
+/// index1,... corresponds positionally, in left-to-right order, to the marked
+/// args, one global counter index per marked arg, and is used to look up each
+/// arg's type in argTypesByGlobalIndices.
+FailureOr<ArrayAttr> buildArgModes(
+    LLVM::LLVMFuncOp funcOp, StringRef raw,
+    const llvm::DenseMap<unsigned, mlir::Type> &argTypesByGlobalIndices,
+    std::string &why) {
+  MLIRContext *ctx = funcOp->getContext();
+  if (getTesseraName(raw).trim().empty()) {
+    why = "it does not name a tessera op";
+    return failure();
+  }
+
+  // Parse args in parentheses. A marking without them lists no arguments.
+  StringRef argList = raw.contains('(')
+                          ? raw.slice(raw.find('(') + 1, raw.find(')'))
+                          : StringRef();
+  SmallVector<StringRef> argParts;
+  if (!argList.trim().empty())
+    argList.split(argParts, ',');
+
+  // One entry per argument, not counting an sret pointer, which is the
+  // return value rather than an argument of the op.
+  unsigned sretOffset =
+      funcOp.getNumArguments() > 0 &&
+              funcOp.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName())
+          ? 1
+          : 0;
+  unsigned numArgs = funcOp.getNumArguments() - sretOffset;
+  if (argParts.size() != numArgs) {
+    why = "its argument list names " + std::to_string(argParts.size()) +
+          " argument(s), but the function takes " + std::to_string(numArgs);
+    return failure();
+  }
+
+  // Parse indices after ":globals=" (order corresponds to the order marked
+  // args appear in argList)
+  SmallVector<StringRef> indexList;
+  StringRef indicesStr = raw.substr(raw.find(')') + 1);
+  if (!indicesStr.empty() && indicesStr.consume_front(":globals=")) {
+    indicesStr.split(indexList, ',');
+  }
+
+  // Identify which args carry a lifting marker and look up their pointee
+  // types. Marked args consume the :globals= index list in left-to-right arg
+  // order, one index each.
+  SmallVector<Attribute> argModes;
+  unsigned numIndicesFound = 0;
+  for (unsigned i = 0, e = argParts.size(); i != e; ++i) {
+    StringRef arg = argParts[i].trim();
+    StringRef marker = arg.split(':').second.trim();
+    if (marker.empty()) {
+      // Unmarked: not lifted. Push a unit attribute so that argModes has
+      // the same size as the number of args.
+      argModes.push_back(UnitAttr::get(ctx));
+      continue;
+    }
+
+    // Expect the form "arg:val=<dir>", disregarding additional spaces.
+    StringRef dir = marker;
+    bool wellFormed = dir.consume_front("val");
+    if (wellFormed) {
+      dir = dir.ltrim();
+      wellFormed = dir.consume_front("=");
+      dir = dir.trim();
+    }
+    std::optional<ArgDirection> argDirection =
+        wellFormed ? symbolizeArgDirection(dir) : std::nullopt;
+    if (!argDirection) {
+      why = "argument '" + arg.str() + "' has invalid marker '" + marker.str() +
+            "', expected :val=in, :val=out, or :val=inout";
+      return failure();
+    }
+
+    // Only an argument passed through a pointer has a pointee to lift.
+    if (!isa<LLVM::LLVMPointerType>(
+            funcOp.getArgumentTypes()[i + sretOffset])) {
+      why = "argument '" + arg.str() +
+            "' is marked, but is not passed through a pointer";
+      return failure();
+    }
+    if (sretOffset && *argDirection != ArgDirection::in) {
+      why = "argument '" + arg.str() +
+            "' is marked as written, but the function already returns "
+            "through an sret pointer";
+      return failure();
+    }
+
+    // Find the pointee type of the marked argument by looking for the global
+    // variable named "__tessera_arg_type_<idx>", where <idx> is the next
+    // number after "globals=".
+    if (numIndicesFound >= indexList.size()) {
+      why = "not enough global indices for marked args";
+      return failure();
+    }
+    StringRef indexStr = indexList[numIndicesFound++];
+    unsigned idx;
+    if (indexStr.trim().getAsInteger(10, idx)) {
+      why = "invalid type index for arg: " + indexStr.str();
+      return failure();
+    }
+    auto it = argTypesByGlobalIndices.find(idx);
+    if (it == argTypesByGlobalIndices.end()) {
+      why = "no lifting entry found for arg at index " + std::to_string(idx);
+      return failure();
+    }
+    argModes.push_back(DictionaryAttr::get(
+        ctx, {NamedAttribute(StringAttr::get(ctx, "type"),
+                             TypeAttr::get(it->second)),
+              NamedAttribute(StringAttr::get(ctx, "dir"),
+                             ArgDirectionAttr::get(ctx, *argDirection))}));
+  }
+
+  // The format guarantees one global index per marked arg.
+  // A mismatch means the annotation string is malformed or the Clang
+  // plugin's emission order has drifted from this parser's assumption.
+  if (numIndicesFound != indexList.size()) {
+    why = "mismatch between marked arg count and global index count";
+    return failure();
+  }
+  return ArrayAttr::get(ctx, argModes);
+}
+
+/// Leave `funcOp` as an ordinary function, saying why its marking is not used.
+void dropMarking(LLVM::LLVMFuncOp funcOp, StringAttr marking,
+                 const Twine &why) {
+  funcOp.emitWarning() << "ignoring tessera op marking '" << marking.getValue()
+                       << "': " << why;
+  funcOp->removeAttr("tessera_op");
+  funcOp->removeAttr("pure_tessera_op");
+}
+
 // Rewrite 'llvm.func' -> 'tessera.define'
 class FuncOpRewrite final : public OpRewritePattern<LLVM::LLVMFuncOp> {
 public:
@@ -108,125 +265,19 @@ public:
     auto *ctx = funcOp->getContext();
 
     // Only rewrite if op has tessera_op or pure_tessera_op attribute
-    StringAttr tesseraOpAttr;
     bool isPure = false;
-
-    if (auto attr = funcOp->getAttrOfType<StringAttr>("tessera_op")) {
-      tesseraOpAttr = attr;
-    } else if (auto attr =
-                   funcOp->getAttrOfType<StringAttr>("pure_tessera_op")) {
-      tesseraOpAttr = attr;
-      isPure = true;
-    }
-
+    StringAttr tesseraOpAttr = getMarking(funcOp, isPure);
     if (!tesseraOpAttr)
       return failure();
 
-    // Parse the tessera op attribute, which is expected to be in the format:
-    // "tessera_op(arg1:val=in, arg2, ...):globals=index1,..." or
-    // "pure_tessera_op(arg1:val=in, arg2, ...):globals=index1,...".
-    //
-    // index1,... corresponds positionally, in left-to-right order, to the
-    // marked args, one global counter index per marked arg, and is used to
-    // look up each arg's type in argTypesByGlobalIndices.
-    StringRef raw = tesseraOpAttr.getValue();
-
-    // Parse op name (everything before the '(')
-    StringRef tesseraName = raw.take_while([](char c) { return c != '('; });
-
-    // Parse args in parentheses
-    StringRef argList = raw.slice(raw.find('(') + 1, raw.find(')'));
-
-    // Parse indices after ":globals=" (order corresponds to the order marked
-    // args appear in argList)
-    SmallVector<StringRef> indexList;
-    StringRef indicesStr = raw.substr(raw.find(')') + 1);
-    if (!indicesStr.empty() && indicesStr.consume_front(":globals=")) {
-      indicesStr.split(indexList, ',');
-    }
-
-    // Identify which args carry a lifting marker and look up their pointee
-    // types in the look up each map. Marked args consume the :globals=
-    // index list in left-to-right arg order, one index each.
-    SmallVector<Attribute> argModes;
-    unsigned numIndicesFound = 0;
-
-    // Consumes the next global index for a marked arg, looks up its type
-    // by that index in argTypesByGlobalIndices, and returns the mode dictionary
-    // pairing that type with `dir`.
-    auto consumeMarkedArg = [&](ArgDirection dir) -> Attribute {
-      if (numIndicesFound >= indexList.size()) {
-        funcOp->emitError("tessera: not enough global indices for marked args");
-        return nullptr;
-      }
-      // Find the pointee types of the marked arguments by looking for global
-      // variables with names that match the pattern "__tessera_arg_type_<idx>"
-      // where <idx> is a number parsed in the tessera_op attribute after
-      // "globals=".
-      StringRef indexStr = indexList[numIndicesFound++];
-      unsigned idx;
-      if (indexStr.trim().getAsInteger(10, idx)) {
-        funcOp->emitError("tessera: invalid type index for arg: ") << indexStr;
-        return nullptr;
-      }
-      auto it = argTypesByGlobalIndices.find(idx);
-      if (it == argTypesByGlobalIndices.end()) {
-        funcOp->emitError("tessera: no lifting entry found for arg at index: ")
-            << idx;
-        return nullptr;
-      }
-      return DictionaryAttr::get(
-          ctx, {NamedAttribute(StringAttr::get(ctx, "type"),
-                               TypeAttr::get(it->second)),
-                NamedAttribute(StringAttr::get(ctx, "dir"),
-                               ArgDirectionAttr::get(ctx, dir))});
-    };
-
-    if (!argList.trim().empty()) {
-      SmallVector<StringRef> argParts;
-      argList.split(argParts, ',');
-      for (unsigned i = 0, e = argParts.size(); i != e; ++i) {
-        StringRef arg = argParts[i].trim();
-        StringRef marker = arg.split(':').second.trim();
-        if (marker.empty()) {
-          // Unmarked: not lifted. Push a unit attribute so that argModes has
-          // the same size as the number of args.
-          argModes.push_back(UnitAttr::get(ctx));
-          continue;
-        }
-
-        // Expect the form "arg:val=<dir>", disregarding additional spaces.
-        StringRef dir = marker;
-        bool wellFormed = dir.consume_front("val");
-        if (wellFormed) {
-          dir = dir.ltrim();
-          wellFormed = dir.consume_front("=");
-          dir = dir.trim();
-        }
-        std::optional<ArgDirection> argDirection =
-            wellFormed ? symbolizeArgDirection(dir) : std::nullopt;
-        if (!argDirection) {
-          funcOp->emitError("tessera: argument '")
-              << arg << "' has invalid marker '" << marker
-              << "', expected :val=in, :val=out, or :val=inout";
-          return failure();
-        }
-
-        Attribute mode = consumeMarkedArg(*argDirection);
-        if (!mode)
-          return failure();
-        argModes.push_back(mode);
-      }
-    }
-
-    // The format guarantees one global index per marked arg.
-    // A mismatch means the annotation string is malformed or the Clang
-    // plugin's emission order has drifted from this parser's assumption.
-    if (numIndicesFound != indexList.size()) {
-      funcOp->emitError("tessera: mismatch between marked arg count and "
-                        "global index count");
+    // The pass has already dropped every marking this cannot build from, and
+    // said why.
+    std::string why;
+    FailureOr<ArrayAttr> argModes = buildArgModes(
+        funcOp, tesseraOpAttr.getValue(), argTypesByGlobalIndices, why);
+    if (failed(argModes))
       return failure();
-    }
+    StringRef tesseraName = getTesseraName(tesseraOpAttr.getValue());
 
     auto funcName = funcOp.getName();
     auto llvmFuncType = funcOp.getFunctionType();
@@ -254,8 +305,7 @@ public:
     // rejects a body-less symbol with public visibility, unlike
     // llvm.func where a public extern declaration is normal.
     auto tesseraDefineOp = tessera::DefineOp::create(
-        rewriter, funcOp.getLoc(), tesseraName.str(), fnType,
-        ArrayAttr::get(ctx, argModes), isPure,
+        rewriter, funcOp.getLoc(), tesseraName.str(), fnType, *argModes, isPure,
         funcOp.isExternal() ? rewriter.getStringAttr("private") : StringAttr());
 
     // Copy over all attributes other than the function name and type
@@ -471,6 +521,7 @@ struct LLVMToTesseraPass
     // Each tessera.define op's own index list (from its "globals=" attribute)
     // is later resolved against this map, avoiding a full module rescan per op.
     llvm::DenseMap<unsigned, mlir::Type> argTypesByGlobalIndices;
+    llvm::DenseSet<unsigned> ambiguousIndices;
     StringRef prefix = "__tessera_arg_type_";
     for (auto global : module.getOps<mlir::LLVM::GlobalOp>()) {
       StringRef name = global.getSymName();
@@ -484,11 +535,48 @@ struct LLVMToTesseraPass
 
       auto [it, inserted] =
           argTypesByGlobalIndices.try_emplace(idx, global.getType());
-      if (!inserted) {
-        llvm::errs()
-            << "Tessera: found multiple globals matching argument type index "
-            << idx << ":\n";
-        return signalPassFailure();
+      if (!inserted && ambiguousIndices.insert(idx).second)
+        global.emitWarning()
+            << "found multiple globals for tessera argument type index " << idx
+            << "; functions that use it are not lifted";
+    }
+    // Neither type can be trusted, so the functions using the index are
+    // dropped below like any other marking that cannot be built.
+    for (unsigned idx : ambiguousIndices)
+      argTypesByGlobalIndices.erase(idx);
+
+    // Check every marking before rewriting anything. One that cannot become a
+    // valid tessera.define is reported once, here, and its function is left
+    // as an ordinary one: a mistake in a marking should cost only the rewrites
+    // it would have allowed, never the compile.
+    llvm::MapVector<StringRef, SmallVector<LLVM::LLVMFuncOp>> byTesseraName;
+    for (auto funcOp : module.getOps<LLVM::LLVMFuncOp>()) {
+      bool isPure;
+      StringAttr marking = getMarking(funcOp, isPure);
+      if (!marking)
+        continue;
+      std::string why;
+      if (failed(buildArgModes(funcOp, marking.getValue(),
+                               argTypesByGlobalIndices, why))) {
+        dropMarking(funcOp, marking, why);
+        continue;
+      }
+      byTesseraName[getTesseraName(marking.getValue())].push_back(funcOp);
+    }
+    // Two functions cannot both take one tessera name, and neither can one
+    // take the name of an existing symbol. Which one a rule meant cannot be
+    // known, so none of them is lifted.
+    for (auto &[tesseraName, funcs] : byTesseraName) {
+      Operation *existing = module.lookupSymbol(tesseraName);
+      bool clashes = funcs.size() > 1 ||
+                     (existing && existing != funcs.front().getOperation());
+      if (!clashes)
+        continue;
+      for (LLVM::LLVMFuncOp funcOp : funcs) {
+        bool isPure;
+        dropMarking(funcOp, getMarking(funcOp, isPure),
+                    "another symbol already has the name '" + tesseraName +
+                        "'");
       }
     }
 

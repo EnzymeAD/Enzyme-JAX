@@ -94,6 +94,13 @@ namespace mlir {
 namespace enzyme {
 namespace tessera {
 
+InFlightDiagnostic emitCheckWarning(GuardOp guard) {
+  InFlightDiagnostic diagnostic = guard.emitWarning();
+  diagnostic << "optimization rule not applied here, the original call is "
+                "kept: ";
+  return diagnostic;
+}
+
 MatrixLayout resolveMatrixLayout(Value value, GuardOp guard) {
   SmallVector<OriginalUse> uses = findOriginalUses(value, guard);
 
@@ -116,9 +123,10 @@ MatrixLayout resolveMatrixLayout(Value value, GuardOp guard) {
     MatrixLayout layout = parseLayoutAttr(dict);
     if (layout.isValid())
       return layout;
-    define.emitError() << "tessera.layout on argument " << index
-                       << " is incomplete: it needs elem, rows and cols";
-    return {};
+    // A malformed declaration is left out, as though it were not there.
+    define.emitWarning() << "tessera.layout on argument " << index
+                         << " is incomplete: it needs elem, rows and cols; it "
+                            "is ignored";
   }
 
   // Otherwise infer from the by-reference type. The element type and count are
@@ -311,10 +319,11 @@ Value emitElement(Value matrix, const MatrixLayout &layout, int64_t r,
   Type matrixType = matrix.getType();
 
   auto unreadable = [&]() {
-    ctx.guard.emitError() << "cannot read the elements of a matrix operand of "
-                             "type "
-                          << matrixType << " as " << layout.rows << "x"
-                          << layout.cols << " " << layout.elemType;
+    emitCheckWarning(ctx.guard)
+        << "cannot read the elements of a matrix operand of "
+           "type "
+        << matrixType << " as " << layout.rows << "x" << layout.cols << " "
+        << layout.elemType;
     return Value();
   };
 
@@ -408,14 +417,14 @@ bool prepareMatrix(llvm::StringRef name, Value matrix, CheckContext &ctx,
                    MatrixLayout &layout) {
   layout = resolveMatrixLayout(matrix, ctx.guard);
   if (!layout.isValid()) {
-    ctx.guard.emitError()
+    emitCheckWarning(ctx.guard)
         << "cannot determine the layout of the operand of '" << name
         << "'; declare tessera.layout on the corresponding tessera.define "
            "argument";
     return false;
   }
   if (orderMatters && layout.orderInferred) {
-    ctx.guard.emitError()
+    emitCheckWarning(ctx.guard)
         << "'" << name
         << "' depends on the storage order, which was assumed "
            "rather than declared; declare tessera.layout with row_major on the "
@@ -423,14 +432,15 @@ bool prepareMatrix(llvm::StringRef name, Value matrix, CheckContext &ctx,
     return false;
   }
   if (requireSquare && !layout.isSquare()) {
-    ctx.guard.emitError() << "'" << name << "' needs a square matrix, but the "
-                          << "operand is " << layout.rows << "x" << layout.cols;
+    emitCheckWarning(ctx.guard)
+        << "'" << name << "' needs a square matrix, but the " << "operand is "
+        << layout.rows << "x" << layout.cols;
     return false;
   }
   if (layout.numElements() > ctx.maxUnrolledElems) {
     // The comparisons are emitted straight-line, so a large matrix would turn
     // into an unreasonable amount of code. A loop form would lift this.
-    ctx.guard.emitError()
+    emitCheckWarning(ctx.guard)
         << "'" << name << "' needs " << layout.numElements()
         << " elements checked, above the max-unrolled-elems limit of "
         << ctx.maxUnrolledElems << "; a loop form is not implemented yet";
