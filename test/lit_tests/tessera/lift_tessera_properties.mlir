@@ -132,12 +132,14 @@ module {
 
 module {
   llvm.mlir.global private unnamed_addr constant @".str.sym_arg0"("tessera_guarantees=symmetric:arg0\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.op_reads"("tessera_op=lib.reads(A:val=in)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.file"("file.cpp\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
-  llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>> {
+  llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>> {
     %zero = llvm.mlir.zero : !llvm.ptr
     %line = llvm.mlir.constant(1 : i32) : i32
     %file = llvm.mlir.addressof @".str.file" : !llvm.ptr
     %sym_arg0 = llvm.mlir.addressof @".str.sym_arg0" : !llvm.ptr
+    %op_reads = llvm.mlir.addressof @".str.op_reads" : !llvm.ptr
     %f_reads_only = llvm.mlir.addressof @reads_only : !llvm.ptr
     %undef = llvm.mlir.undef : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
     %e0a = llvm.insertvalue %f_reads_only, %undef[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
@@ -145,19 +147,96 @@ module {
     %e0c = llvm.insertvalue %file, %e0b[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
     %e0d = llvm.insertvalue %line, %e0c[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
     %e0 = llvm.insertvalue %zero, %e0d[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
-    %t = llvm.mlir.undef : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
-    %t0 = llvm.insertvalue %e0, %t[0] : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
-    llvm.return %t0 : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %e1a = llvm.insertvalue %f_reads_only, %undef[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e1b = llvm.insertvalue %op_reads, %e1a[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e1c = llvm.insertvalue %file, %e1b[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e1d = llvm.insertvalue %line, %e1c[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e1 = llvm.insertvalue %zero, %e1d[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %t = llvm.mlir.undef : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %t0 = llvm.insertvalue %e0, %t[0] : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %t1 = llvm.insertvalue %e1, %t0[1] : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    llvm.return %t1 : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
   }
 
   // A property on a parameter of a definition is read as holding on entry
-  // unless the function is known to write it, so a guarantee there would be
-  // misread as an assumption. It is left out with a warning, and the compile
-  // goes on without it.
+  // unless the function is known to write it, so a guarantee on a matrix the
+  // tessera_op only reads would be misread as an assumption. It is left out
+  // with a warning, and the compile goes on without it.
   // CHECK-LABEL: llvm.func @reads_only
   // CHECK-NOT: tessera.property
-  // expected-warning @below {{ignoring tessera guarantees annotation 'symmetric:arg0': argument 0 is not one the function writes}}
+  // CHECK-NOT: tessera.establishes
+  // expected-warning @below {{ignoring tessera guarantees annotation 'symmetric:arg0': argument 0 is val=in, so the function only reads the value behind it}}
   llvm.func @reads_only(%A: !llvm.ptr) attributes {no_inline} {
     llvm.return
   }
+}
+
+// -----
+
+// A pointer a function takes as it is, with no tessera_op lifting the value
+// behind it, is a handle to an object the function may change in place, like
+// a PETSc Mat. A guarantee on it is about that object from the call on, so it
+// becomes `tessera.establishes`, never a `tessera.property` that would be read
+// as true of the pointer. A readonly says a function leaves the object alone,
+// and works on a declaration too.
+module {
+  llvm.mlir.global private unnamed_addr constant @".str.spd_arg0"("tessera_guarantees=SPD:arg0\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.spd_arg1"("tessera_guarantees=SPD:arg1\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.ro_arg0"("tessera_readonly=arg0\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.ro_arg1"("tessera_readonly=arg1\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.file"("file.c\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<4 x struct<(ptr, ptr, ptr, i32, ptr)>> {
+    %zero = llvm.mlir.zero : !llvm.ptr
+    %line = llvm.mlir.constant(1 : i32) : i32
+    %file = llvm.mlir.addressof @".str.file" : !llvm.ptr
+    %spd_arg0 = llvm.mlir.addressof @".str.spd_arg0" : !llvm.ptr
+    %spd_arg1 = llvm.mlir.addressof @".str.spd_arg1" : !llvm.ptr
+    %ro_arg0 = llvm.mlir.addressof @".str.ro_arg0" : !llvm.ptr
+    %ro_arg1 = llvm.mlir.addressof @".str.ro_arg1" : !llvm.ptr
+    %f_fill = llvm.mlir.addressof @fill_coo : !llvm.ptr
+    %f_mult = llvm.mlir.addressof @mat_mult : !llvm.ptr
+    %f_shift = llvm.mlir.addressof @mat_shift : !llvm.ptr
+    %undef = llvm.mlir.undef : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e0a = llvm.insertvalue %f_fill, %undef[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e0b = llvm.insertvalue %spd_arg0, %e0a[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e0c = llvm.insertvalue %file, %e0b[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e0d = llvm.insertvalue %line, %e0c[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e0 = llvm.insertvalue %zero, %e0d[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e1a = llvm.insertvalue %f_mult, %undef[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e1b = llvm.insertvalue %ro_arg0, %e1a[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e1c = llvm.insertvalue %file, %e1b[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e1d = llvm.insertvalue %line, %e1c[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e1 = llvm.insertvalue %zero, %e1d[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e2a = llvm.insertvalue %f_shift, %undef[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e2b = llvm.insertvalue %spd_arg1, %e2a[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e2c = llvm.insertvalue %file, %e2b[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e2d = llvm.insertvalue %line, %e2c[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e2 = llvm.insertvalue %zero, %e2d[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e3a = llvm.insertvalue %f_shift, %undef[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e3b = llvm.insertvalue %ro_arg1, %e3a[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e3c = llvm.insertvalue %file, %e3b[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e3d = llvm.insertvalue %line, %e3c[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e3 = llvm.insertvalue %zero, %e3d[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %t = llvm.mlir.undef : !llvm.array<4 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %t0 = llvm.insertvalue %e0, %t[0] : !llvm.array<4 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %t1 = llvm.insertvalue %e1, %t0[1] : !llvm.array<4 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %t2 = llvm.insertvalue %e2, %t1[2] : !llvm.array<4 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %t3 = llvm.insertvalue %e3, %t2[3] : !llvm.array<4 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    llvm.return %t3 : !llvm.array<4 x struct<(ptr, ptr, ptr, i32, ptr)>>
+  }
+
+  // CHECK: llvm.func @fill_coo(%arg0: !llvm.ptr {tessera.establishes = ["SPD"]}, %arg1: !llvm.ptr) -> i32
+  llvm.func @fill_coo(%A: !llvm.ptr, %ctx: !llvm.ptr) -> i32 attributes {no_inline} {
+    %c0 = llvm.mlir.constant(0 : i32) : i32
+    llvm.return %c0 : i32
+  }
+
+  // CHECK: llvm.func @mat_mult(!llvm.ptr {tessera.readonly}, !llvm.ptr, !llvm.ptr) -> i32
+  llvm.func @mat_mult(!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+
+  // Neither can say anything about a value passed by value.
+  // CHECK: llvm.func @mat_shift(!llvm.ptr, f64) -> i32
+  // expected-warning @below {{ignoring tessera guarantees annotation 'SPD:arg1': argument 1 is not a pointer, so the function cannot give it a property}}
+  // expected-warning @below {{ignoring tessera readonly annotation 'arg1': argument 1 is not a pointer, so there is no object to leave alone}}
+  llvm.func @mat_shift(!llvm.ptr, f64) -> i32
 }
