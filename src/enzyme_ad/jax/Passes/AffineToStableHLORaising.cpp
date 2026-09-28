@@ -7183,7 +7183,10 @@ struct AffineToStableHLORaisingPass
       if (specialize_loop_bounds) {
         // An exit test `compare(%iv, %bound)` of a loop's own argument
         // against a value from outside the loop, where the bound is a
-        // function argument, widened by converts.
+        // function argument, or a scalar elementwise expression of function
+        // arguments (`min(NE, chunk)`, widening converts): each argument it
+        // reads is specialized, and the expression folds to a constant after
+        // them.
         DenseSet<Value> bounds;
         newFunc.walk([&](stablehlo::WhileOp whileOp) {
           auto ret = cast<stablehlo::ReturnOp>(
@@ -7202,11 +7205,22 @@ struct AffineToStableHLORaisingPass
           }
           if (!bound)
             return;
-          while (auto cvt = bound.getDefiningOp<stablehlo::ConvertOp>())
-            bound = cvt.getOperand();
-          if (auto BA = dyn_cast<BlockArgument>(bound);
-              BA && BA.getOwner() == newBlock)
-            bounds.insert(bound);
+          SmallVector<Value> work{bound};
+          while (!work.empty()) {
+            Value v = work.pop_back_val();
+            if (auto BA = dyn_cast<BlockArgument>(v)) {
+              if (BA.getOwner() == newBlock)
+                bounds.insert(v);
+              continue;
+            }
+            Operation *def = v.getDefiningOp();
+            if (def && def->hasTrait<OpTrait::Elementwise>() &&
+                llvm::all_of(def->getOperands(), [](Value o) {
+                  auto t = dyn_cast<RankedTensorType>(o.getType());
+                  return t && t.getRank() == 0;
+                }))
+              work.append(def->operand_begin(), def->operand_end());
+          }
         });
         for (auto [i, arg] : llvm::enumerate(operands)) {
           Value newArg = newBlock->getArgument(i);
