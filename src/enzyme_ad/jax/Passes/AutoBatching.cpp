@@ -3025,6 +3025,242 @@ static SmallVector<int64_t> shifted(ArrayRef<int64_t> dims) {
 }
 
 namespace {
+// The elements of a rank-1 buffer one iteration addresses: concrete offsets,
+// all shifted by one loop-invariant base the iterations share. The base is the
+// same value in every iteration, so it cancels when two iterations are
+// compared and the offsets alone decide whether they overlap.
+struct IterationIndices {
+  SmallVector<int64_t> offsets;
+  Value base;
+};
+
+// Evaluates an index of the loop body for one iteration, as far as constants,
+// the induction variable and a single loop-invariant addend allow.
+struct IndexEvaluator {
+  Region &body;
+  Value iv;
+  int64_t start, step;
+
+  bool invariant(Value v) const {
+    return !body.isAncestor(v.getParentRegion());
+  }
+
+  std::optional<IterationIndices> eval(Value v, int64_t iter) {
+    if (v == iv)
+      return IterationIndices{{start + iter * step}, Value()};
+    Operation *op = v.getDefiningOp();
+    if (!op)
+      return std::nullopt;
+    if (isa<stablehlo::ReshapeOp, stablehlo::ConvertOp,
+            stablehlo::BroadcastInDimOp>(op))
+      return eval(op->getOperand(0), iter);
+    if (auto cst = dyn_cast<stablehlo::ConstantOp>(op)) {
+      auto attr = dyn_cast<DenseIntElementsAttr>(cst.getValue());
+      if (!attr)
+        return std::nullopt;
+      IterationIndices out;
+      out.base = Value();
+      for (const APInt &e : attr.getValues<APInt>())
+        out.offsets.push_back(e.getSExtValue());
+      return out;
+    }
+    if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(op))
+      return evalTableRow(ds, iter);
+    if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp>(op))
+      return evalArith(op, iter);
+    return std::nullopt;
+  }
+
+  // A row (or window) of a constant table, selected by this iteration.
+  std::optional<IterationIndices> evalTableRow(stablehlo::DynamicSliceOp ds,
+                                               int64_t iter) {
+    auto cst = ds.getOperand().getDefiningOp<stablehlo::ConstantOp>();
+    if (!cst)
+      return std::nullopt;
+    auto attr = dyn_cast<DenseIntElementsAttr>(cst.getValue());
+    auto ty = dyn_cast<RankedTensorType>(ds.getOperand().getType());
+    if (!attr || !ty || !ty.hasStaticShape())
+      return std::nullopt;
+    ArrayRef<int64_t> shape = ty.getShape();
+    ArrayRef<int64_t> sizes = ds.getSliceSizes();
+    SmallVector<int64_t> starts;
+    for (Value s : ds.getStartIndices()) {
+      auto e = eval(s, iter);
+      if (!e || e->base || e->offsets.size() != 1)
+        return std::nullopt;
+      starts.push_back(e->offsets[0]);
+    }
+    if (starts.size() != shape.size() || sizes.size() != shape.size())
+      return std::nullopt;
+    // stablehlo clamps a start so the window stays inside the operand
+    for (auto [i, s] : llvm::enumerate(starts))
+      starts[i] = std::min(std::max<int64_t>(s, 0), shape[i] - sizes[i]);
+    auto values = attr.getValues<APInt>();
+    IterationIndices out;
+    out.base = Value();
+    SmallVector<int64_t> idx(shape.size(), 0);
+    int64_t count = 1;
+    for (int64_t n : sizes)
+      count *= n;
+    for (int64_t c = 0; c < count; ++c) {
+      int64_t rest = c, flat = 0;
+      for (int64_t d = shape.size() - 1; d >= 0; --d) {
+        int64_t within = rest % sizes[d];
+        rest /= sizes[d];
+        idx[d] = starts[d] + within;
+      }
+      for (int64_t d = 0; d < (int64_t)shape.size(); ++d)
+        flat = flat * shape[d] + idx[d];
+      out.offsets.push_back(values[flat].getSExtValue());
+    }
+    return out;
+  }
+
+  // An index shifted or scaled by a constant, or shifted by a value the loop
+  // does not change.
+  std::optional<IterationIndices> evalArith(Operation *op, int64_t iter) {
+    auto lhs = eval(op->getOperand(0), iter);
+    auto rhs = eval(op->getOperand(1), iter);
+    bool isAdd = isa<stablehlo::AddOp>(op);
+    if (lhs && rhs) {
+      if (lhs->base || rhs->base)
+        return std::nullopt;
+      // one side may be a scalar the other is taken against elementwise
+      SmallVector<int64_t> &a = lhs->offsets, &b = rhs->offsets;
+      if (a.size() != b.size() && a.size() != 1 && b.size() != 1)
+        return std::nullopt;
+      IterationIndices out;
+      out.base = Value();
+      size_t n = std::max(a.size(), b.size());
+      for (size_t i = 0; i < n; ++i) {
+        int64_t x = a[a.size() == 1 ? 0 : i], y = b[b.size() == 1 ? 0 : i];
+        out.offsets.push_back(isa<stablehlo::MulOp>(op)  ? x * y
+                              : isAdd                    ? x + y
+                                                         : x - y);
+      }
+      return out;
+    }
+    // A loop-invariant addend shifts every iteration alike, so it cancels.
+    if (!isAdd)
+      return std::nullopt;
+    Value other = lhs ? op->getOperand(1) : op->getOperand(0);
+    auto known = lhs ? lhs : rhs;
+    if (!known || known->base || !invariant(other))
+      return std::nullopt;
+    known->base = other;
+    return known;
+  }
+};
+
+// Iterations of a loop that is not tagged parallel may still run at once when
+// no iteration can observe another's writes: every read and every write of a
+// carried buffer addresses a set of its elements, and the sets of two
+// iterations never meet. Only rank-1 buffers addressed one element at a time
+// are proved here, which is the shape a raised kernel's dof loop has.
+static LogicalResult
+proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
+                           int64_t numIters, int64_t start, int64_t step,
+                           const DenseMap<Value, unsigned> &chainRoot) {
+  // The proof enumerates the elements of every iteration, so it is only run
+  // for a loop short enough for that to be cheap.
+  if (numIters > 64)
+    return failure();
+  IndexEvaluator eval{whileOp.getBody(), iv, start, step};
+  // carried argument -> the elements each iteration touches
+  DenseMap<unsigned, SmallVector<DenseSet<int64_t>>> touched;
+  DenseMap<unsigned, Value> bases;
+  // `clamps` says the access clamps an index that falls outside the buffer,
+  // as a gather and a dynamic slice do: two indices that differ may then land
+  // on the same element, so only indices proved to stay inside are admitted.
+  // A scatter drops such an update instead, in the loop and in its batched
+  // form alike, so its indices need no range.
+  auto record = [&](unsigned arg, Value buffer, Value idx, int64_t window,
+                    bool clamps) -> LogicalResult {
+    auto &sets = touched[arg];
+    if (sets.empty())
+      sets.resize(numIters);
+    int64_t dim = cast<RankedTensorType>(buffer.getType()).getDimSize(0);
+    for (int64_t k = 0; k < numIters; ++k) {
+      auto e = eval.eval(idx, k);
+      if (!e)
+        return failure();
+      auto it = bases.find(arg);
+      if (it == bases.end())
+        bases[arg] = e->base;
+      else if (it->second != e->base)
+        return failure();
+      for (int64_t o : e->offsets) {
+        // An index out of the buffer's range is clamped by a gather and
+        // dropped by a scatter, so two of them can meet where their values
+        // say they do not. Only a proof over indices that stay inside holds.
+        if (clamps && !e->base && (o < 0 || o + window > dim))
+          return failure();
+        for (int64_t w = 0; w < window; ++w)
+          sets[k].insert(o + w);
+      }
+    }
+    return success();
+  };
+  for (Operation &op : body.without_terminator()) {
+    Value buffer = op.getNumOperands() ? op.getOperand(0) : Value();
+    auto root = buffer ? chainRoot.find(buffer) : chainRoot.end();
+    if (!buffer || root == chainRoot.end())
+      continue;
+    auto rank1 = [&](Value v) {
+      auto t = dyn_cast<RankedTensorType>(v.getType());
+      return t && t.getRank() == 1 && t.hasStaticShape();
+    };
+    if (auto sc = dyn_cast<stablehlo::ScatterOp>(&op)) {
+      auto dn = sc.getScatterDimensionNumbers();
+      if (!rank1(buffer) || sc.getInputs().size() != 1 ||
+          dn.getScatterDimsToOperandDims() != ArrayRef<int64_t>{0} ||
+          dn.getInsertedWindowDims() != ArrayRef<int64_t>{0} ||
+          !dn.getUpdateWindowDims().empty() ||
+          !dn.getInputBatchingDims().empty())
+        return failure();
+      if (failed(record(root->second, buffer, sc.getScatterIndices(), 1,
+                        /*clamps=*/false)))
+        return failure();
+    } else if (auto g = dyn_cast<stablehlo::GatherOp>(&op)) {
+      // one element per start index, whether the size-1 dimension is kept as
+      // an offset dimension or collapsed away
+      auto dn = g.getDimensionNumbers();
+      if (!rank1(buffer) || dn.getStartIndexMap() != ArrayRef<int64_t>{0} ||
+          !dn.getOperandBatchingDims().empty() ||
+          g.getSliceSizes() != ArrayRef<int64_t>{1})
+        return failure();
+      if (failed(record(root->second, buffer, g.getStartIndices(), 1,
+                        /*clamps=*/true)))
+        return failure();
+    } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&op)) {
+      auto ut = dyn_cast<RankedTensorType>(dus.getUpdate().getType());
+      if (!rank1(buffer) || !ut || ut.getRank() != 1 || !ut.hasStaticShape() ||
+          failed(record(root->second, buffer, dus.getStartIndices()[0],
+                        ut.getDimSize(0), /*clamps=*/true)))
+        return failure();
+    } else if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(&op)) {
+      if (!rank1(buffer) ||
+          failed(record(root->second, buffer, ds.getStartIndices()[0],
+                        ds.getSliceSizes()[0], /*clamps=*/true)))
+        return failure();
+    } else {
+      return failure(); // some other reach into a carried buffer
+    }
+  }
+  if (touched.empty())
+    return failure();
+  for (auto &[arg, sets] : touched)
+    for (int64_t i = 0; i < numIters; ++i)
+      for (int64_t j = i + 1; j < numIters; ++j)
+        for (int64_t e : sets[i])
+          if (sets[j].contains(e))
+            return failure();
+  return success();
+}
+
+} // namespace
+
+namespace {
 // Batches the body of an enzymexla.parallel while over its iterations: a value
 // that varies with the iteration gains a leading dimension of the trip count,
 // a write into a carried buffer becomes one scatter of every iteration's
@@ -3464,7 +3700,10 @@ struct ParallelWhileBatcher {
 
 LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
-  if (!whileOp->hasAttr("enzymexla.parallel"))
+  // The tag says the raiser made this loop out of a parallel dimension of a
+  // kernel; an untagged loop has to earn the same conclusion from its indices.
+  bool tagged = whileOp->hasAttr("enzymexla.parallel");
+  if (!tagged && !prove_independent_iterations)
     return failure();
   enzyme::WhileLoopInfo info(whileOp);
   if (failed(info.computeInfo()) || !info.isValid() || !info.isConstant())
@@ -3494,6 +3733,11 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
     else if (failed(batcher.analyzeChain(arg, ret, k)))
       return failure();
   }
+  int64_t start = *info.getConstantStart(), step = *info.getConstantStep();
+  if (!tagged &&
+      failed(proveIterationsIndependent(whileOp, body, iv, numIters, start,
+                                        step, batcher.chainRoot)))
+    return failure();
   if (failed(batcher.analyzeBlock(body)))
     return failure();
 
@@ -3504,7 +3748,6 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
   Value iota = stablehlo::IotaOp::create(
       rewriter, loc, RankedTensorType::get({numIters}, ivTy.getElementType()),
       0);
-  int64_t start = *info.getConstantStart(), step = *info.getConstantStep();
   if (step != 1)
     iota = stablehlo::MulOp::create(
         rewriter, loc, iota,
