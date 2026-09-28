@@ -39,6 +39,28 @@
 // the same reason a fact survives a rewrite: a correct rewrite produces the
 // same value, so what was true of the old one is true of the new.
 //
+// Handles are the exception. A PETSc `Mat` is a pointer to an object the
+// library owns, and a function like `FillCOO(Mat A, ...)` fills that object
+// in place: the pointer is the same before and after, but the object is only
+// SPD from then on, and only until something changes it. So a guarantee on a
+// pointer parameter that is not lifted is a fact about the object at a point
+// in the program, recorded on the parameter as
+//
+//   tessera.establishes = ["SPD"]    the object is SPD once the call returns
+//
+// and never read as true of the pointer value. A function can also declare
+// that it leaves an object alone:
+//
+//   tessera.readonly                 the call does not change the object
+//
+// At a tessera.call taking a handle, tessera-propagate-properties walks back
+// through the calls before it. The handle's properties hold if it reaches a
+// call establishing them, passing only calls that take the handle read-only
+// or not at all. This assumes that only a call given the handle, or the
+// variable holding it, can change the object it names: what a handle API's
+// annotations claim, and true of PETSc objects. See handleFactsAt in
+// Properties.cpp for how far the walk follows.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef ENZYME_AD_JAX_PASSES_TESSERA_PROPERTIES_H
@@ -57,6 +79,8 @@ namespace tessera {
 
 constexpr llvm::StringLiteral kPropertyAttr = "tessera.property";
 constexpr llvm::StringLiteral kPreservesAttr = "tessera.preserves";
+constexpr llvm::StringLiteral kEstablishesAttr = "tessera.establishes";
+constexpr llvm::StringLiteral kReadonlyAttr = "tessera.readonly";
 
 /// Does having `have` imply having `want`? Reflexive and transitive: SPD
 /// implies symmetric, so a rule asking for `symmetric(A)` is satisfied by a
@@ -74,7 +98,8 @@ public:
   llvm::SmallVector<StringAttr> of(Value value);
 
   /// Record, on each argument of `call`, what is known of the value passed
-  /// there. Facts already recorded are kept.
+  /// there, and of the object a handle passed there names. Facts already
+  /// recorded are kept.
   void annotate(CallOp call);
 
 private:
