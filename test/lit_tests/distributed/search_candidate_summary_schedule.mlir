@@ -40,7 +40,7 @@
 // to a device_local_axis factor here: "fully serializes both logical axes
 // within one device" is exactly this candidate keeping both axes off the
 // physical mesh.
-// WINNERINFO: {"axis_bindings":[{"logging_id":1,"physical_factors":["!axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>"]},{"logging_id":2,"physical_factors":["!axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>"]}],"heuristic_score":0,"num_collectives_after":0,"num_collectives_before":0,"parent_uid":4,"pipeline_ok":true,"running_best_score":0,"scored_at_ms":{{[0-9]+}},"scored_sequence":12,"summary":{"accelerator_compute_time":0,"communication_time":0,"cpu_compute_time":0,"idle_time":0,"num_act_kernel_matches":0,"total_time":0},"uid":13}
+// WINNERINFO: {"act_requests_total":0,"axis_bindings":[{"logging_id":1,"physical_factors":["!axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>"]},{"logging_id":2,"physical_factors":["!axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>"]}],"heuristic_score":0,"num_collectives_after":0,"num_collectives_before":0,"parent_uid":4,"pipeline_ok":true,"running_best_score":0,"scored_at_ms":{{[0-9]+}},"scored_sequence":12,"summary":{"accelerator_compute_time":0,"communication_time":0,"cpu_compute_time":0,"idle_time":0,"num_act_kernel_matches":0,"total_time":0},"uid":13}
 
 // uid 13's schedule.json: two independent stablehlo.dot_general compute
 // nodes (this candidate fully serializes both logical axes within one
@@ -67,7 +67,7 @@
 // that axis is the one this candidate ships across the physical mesh,
 // matching its real communication (its child, uid 13 above, binds the same
 // axis to a device_local_axis factor instead).
-// PARENTINFO: {"axis_bindings":[{"logging_id":1,"physical_factors":["!axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>"]},{"logging_id":2,"physical_factors":["!axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>"]}],"heuristic_score":-6000,"num_collectives_after":1,"num_collectives_before":1,"parent_uid":1,"pipeline_ok":true,"running_best_score":-6000,"scored_at_ms":{{[0-9]+}},"scored_sequence":3,"summary":{"accelerator_compute_time":0,"communication_time":6000,"cpu_compute_time":0,"idle_time":6000,"num_act_kernel_matches":0,"total_time":6000},"uid":4}
+// PARENTINFO: {"act_requests_total":0,"axis_bindings":[{"logging_id":1,"physical_factors":["!axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>"]},{"logging_id":2,"physical_factors":["!axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>"]}],"heuristic_score":-6000,"num_collectives_after":1,"num_collectives_before":1,"parent_uid":1,"pipeline_ok":true,"running_best_score":-6000,"scored_at_ms":{{[0-9]+}},"scored_sequence":3,"summary":{"accelerator_compute_time":0,"communication_time":6000,"cpu_compute_time":0,"idle_time":6000,"num_act_kernel_matches":0,"total_time":6000},"uid":4}
 
 module {
   sdy.mesh @mesh = <["x"=2, "y"=2]>

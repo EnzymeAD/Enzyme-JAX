@@ -535,4 +535,11 @@ llvm::StringMap<PerWorkerActCache> &inProcessActCache() {
   return spliceKernelBodyModule(kernelOp, patchedModuleHandle);
 }
 
+int64_t getNumActInProcessCacheEntries() {
+  int64_t total = 0;
+  for (const auto &worker : inProcessActCache())
+    total += worker.getValue().byHash.size();
+  return total;
+}
+
 } // namespace mlir::enzyme::distributed

@@ -97,6 +97,13 @@ struct ActWorkerConfig {
 ::mlir::LogicalResult ensureActPatchedKernel(DistributedKernelOp kernelOp,
                                              const ActWorkerConfig &config);
 
+// Number of distinct kernel bodies ensureActPatchedKernel has resolved so
+// far in this process, summed across every worker key: the number of ACT
+// requests this process would have made starting from an empty disk cache.
+// An in-process miss served by the on-disk cache still counts, since that
+// entry only exists because an earlier run made the request.
+int64_t getNumActInProcessCacheEntries();
+
 } // namespace mlir::enzyme::distributed
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_ACTWORKERCLIENT_H

@@ -6,6 +6,7 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/ShardyLogicalAxisAnalysis.h"
 
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
+#include "src/enzyme_ad/jax/Dialect/Distributed/ActWorkerClient.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/ComputeCost.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/MeshCostMetadata.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/ScheduleGraph.h"
@@ -1210,6 +1211,11 @@ writeScoredLog(ModuleOp originalModule, llvm::StringRef dirPath,
       runningBestScore.value_or(-std::numeric_limits<double>::infinity()));
   if (axisBindings)
     info["axis_bindings"] = std::move(*axisBindings);
+  // Cumulative over this process, so it includes every module scored before
+  // this one (the baseline first, when there is one). Differencing it across
+  // scored_sequence gives each candidate's own new ACT requests, as counted
+  // by getNumActInProcessCacheEntries.
+  info["act_requests_total"] = getNumActInProcessCacheEntries();
 
   if (schedule) {
     ComputeTimeSplit split =
