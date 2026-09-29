@@ -15989,8 +15989,8 @@ struct SliceReverse final
       }
     }
 
-    if (!changed || !remainingDims.empty() &&
-                        !llvm::hasSingleElement(reverse.getResult().getUses()))
+    if (!changed || (!remainingDims.empty() &&
+                     !llvm::hasSingleElement(reverse.getResult().getUses())))
       return failure();
 
     // If any reversed dims remain (not eliminated), we must re-apply the
