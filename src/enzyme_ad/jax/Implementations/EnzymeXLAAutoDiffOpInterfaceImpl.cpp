@@ -30,6 +30,7 @@
 
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Implementations/LinalgUtils.h"
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
 
 using namespace mlir;
@@ -331,6 +332,174 @@ struct GPUWrapperOpInterfaceReverse
   }
 };
 
+static LogicalResult checkSquareLU(LUFactorizationOp op) {
+  auto ty = cast<RankedTensorType>(op.getInput().getType());
+  int64_t rank = ty.getRank();
+  if (ty.getDimSize(rank - 1) == ty.getDimSize(rank - 2))
+    return success();
+  return op->emitError(
+      "enzymexla.linalg.lu: derivatives are implemented for square matrices");
+}
+
+// the matrix P of the 1-based row permutation perm, with P input = L U
+static Value luPermutationMatrix(OpBuilder &builder, Location loc, Value perm,
+                                 Value like) {
+  auto likeTy = cast<RankedTensorType>(like.getType());
+  auto permTy = cast<RankedTensorType>(perm.getType());
+  int64_t rank = likeTy.getRank();
+  auto indexTy =
+      RankedTensorType::get(likeTy.getShape(), permTy.getElementType());
+  SmallVector<int64_t> dims(rank - 1);
+  std::iota(dims.begin(), dims.end(), 0);
+  Value rows =
+      stablehlo::BroadcastInDimOp::create(builder, loc, indexTy, perm, dims);
+  Value cols = stablehlo::IotaOp::create(builder, loc, indexTy, rank - 1);
+  Value one = stablehlo::ConstantOp::create(
+      builder, loc, indexTy,
+      cast<ElementsAttr>(makeAttr(indexTy, static_cast<int64_t>(1))));
+  Value match = stablehlo::CompareOp::create(
+      builder, loc, rows, stablehlo::AddOp::create(builder, loc, cols, one),
+      stablehlo::ComparisonDirection::EQ);
+  return stablehlo::SelectOp::create(builder, loc, match,
+                                     splatLike(builder, loc, like, 1.0),
+                                     splatLike(builder, loc, like, 0.0));
+}
+
+static Value luLowerFactor(OpBuilder &builder, Location loc, Value lu) {
+  Value eye = stablehlo::SelectOp::create(
+      builder, loc,
+      matrixIndexPredicate(builder, loc, lu,
+                           stablehlo::ComparisonDirection::EQ),
+      splatLike(builder, loc, lu, 1.0), splatLike(builder, loc, lu, 0.0));
+  return stablehlo::SelectOp::create(
+      builder, loc,
+      matrixIndexPredicate(builder, loc, lu,
+                           stablehlo::ComparisonDirection::GT),
+      lu, eye);
+}
+
+static Value luUpperFactor(OpBuilder &builder, Location loc, Value lu) {
+  return keepTriangle(builder, loc, lu, stablehlo::ComparisonDirection::LE);
+}
+
+class AutoDiffLUFactorizationFwd
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffLUFactorizationFwd,
+                                                LUFactorizationOp> {
+public:
+  LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+    auto op = cast<LUFactorizationOp>(orig);
+    if (gutils->isConstantInstruction(op) ||
+        gutils->isConstantValue(op.getOutput()))
+      return success();
+    if (failed(checkSquareLU(op)))
+      return failure();
+
+    // the tangent uses the primal results
+    builder.setInsertionPointAfter(gutils->getNewFromOriginal(orig));
+    Location loc = op.getLoc();
+    int64_t width = gutils->width;
+    Value lu = broadcastToWidth(
+        builder, loc, gutils->getNewFromOriginal(op.getOutput()), width);
+    Value perm = broadcastToWidth(
+        builder, loc, gutils->getNewFromOriginal(op.getPermutation()), width);
+    auto none = stablehlo::Transpose::NO_TRANSPOSE;
+
+    // F = L^-1 P dA U^-1, dL = L tril(F, -1), dU = triu(F) U
+    Value x =
+        batchedMatmul(builder, loc, luPermutationMatrix(builder, loc, perm, lu),
+                      gutils->invertPointerM(op.getInput(), builder));
+    Value y = triangularSolve(builder, loc, lu, x, /*leftSide=*/true,
+                              /*lower=*/true, /*unitDiagonal=*/true, none);
+    Value f = triangularSolve(builder, loc, lu, y, /*leftSide=*/false,
+                              /*lower=*/false, /*unitDiagonal=*/false, none);
+    Value dL = batchedMatmul(
+        builder, loc, luLowerFactor(builder, loc, lu),
+        keepTriangle(builder, loc, f, stablehlo::ComparisonDirection::GT));
+    Value dU = batchedMatmul(
+        builder, loc,
+        keepTriangle(builder, loc, f, stablehlo::ComparisonDirection::LE),
+        luUpperFactor(builder, loc, lu));
+    gutils->setDiffe(op.getOutput(),
+                     stablehlo::AddOp::create(builder, loc, dL, dU), builder);
+    return success();
+  }
+};
+
+class AutoDiffLUFactorizationRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<
+          AutoDiffLUFactorizationRev, LUFactorizationOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<LUFactorizationOp>(orig);
+    if (gutils->isConstantInstruction(op) ||
+        gutils->isConstantValue(op.getOutput()))
+      return success();
+    if (failed(checkSquareLU(op)))
+      return failure();
+
+    Value g = gutils->diffe(op.getOutput(), builder);
+    gutils->zeroDiffe(op.getOutput(), builder);
+    if (gutils->isConstantValue(op.getInput()))
+      return success();
+
+    Location loc = op.getLoc();
+    int64_t width = gutils->width;
+    Value lu = broadcastToWidth(builder, loc,
+                                gutils->popCache(caches[0], builder), width);
+    Value perm = broadcastToWidth(builder, loc,
+                                  gutils->popCache(caches[1], builder), width);
+    auto adj = adjointTranspose(lu);
+
+    // F_bar = tril(L^H G, -1) + triu(G U^H), A_bar = P^T L^-H F_bar U^-H
+    Value lhg = batchedMatmul(
+        builder, loc,
+        conjIfComplex(builder, loc, luLowerFactor(builder, loc, lu)), g,
+        /*transposeLhs=*/true);
+    Value guh = batchedMatmul(
+        builder, loc, g,
+        conjIfComplex(builder, loc, luUpperFactor(builder, loc, lu)),
+        /*transposeLhs=*/false, /*transposeRhs=*/true);
+    Value fbar = stablehlo::SelectOp::create(
+        builder, loc,
+        matrixIndexPredicate(builder, loc, g,
+                             stablehlo::ComparisonDirection::GT),
+        lhg, guh);
+    Value y = triangularSolve(builder, loc, lu, fbar, /*leftSide=*/true,
+                              /*lower=*/true, /*unitDiagonal=*/true, adj);
+    Value z = triangularSolve(builder, loc, lu, y, /*leftSide=*/false,
+                              /*lower=*/false, /*unitDiagonal=*/false, adj);
+    Value abar = batchedMatmul(builder, loc,
+                               luPermutationMatrix(builder, loc, perm, lu), z,
+                               /*transposeLhs=*/true);
+    gutils->addToDiffe(op.getInput(), abar, builder);
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    auto op = cast<LUFactorizationOp>(orig);
+    if (gutils->isConstantInstruction(op) ||
+        gutils->isConstantValue(op.getOutput()) ||
+        gutils->isConstantValue(op.getInput()))
+      return {};
+    Operation *newOp = gutils->getNewFromOriginal(orig);
+    OpBuilder cacheBuilder(newOp);
+    cacheBuilder.setInsertionPointAfter(newOp);
+    return {gutils->initAndPushCache(gutils->getNewFromOriginal(op.getOutput()),
+                                     cacheBuilder),
+            gutils->initAndPushCache(
+                gutils->getNewFromOriginal(op.getPermutation()), cacheBuilder)};
+  }
+
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
@@ -344,6 +513,9 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
         ViewCastOpInterfaceReverse<Pointer2MemrefOp>>(*context);
     Memref2PointerOp::attachInterface<
         ViewCastOpInterfaceReverse<Memref2PointerOp>>(*context);
+
+    LUFactorizationOp::attachInterface<AutoDiffLUFactorizationFwd>(*context);
+    LUFactorizationOp::attachInterface<AutoDiffLUFactorizationRev>(*context);
 
     // Register batching interfaces
     JITCallOp::attachInterface<SHLOGenericBatchOpInterface<JITCallOp>>(
