@@ -533,6 +533,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("reduce_window_wrap<1>");
   list.push_back("slice_reduce_window<1>");
   list.push_back("while_deadresult");
+  list.push_back("while_duplicate_carried");
   list.push_back("while_idempotent_dus");
   list.push_back("while_dus");
   list.push_back("while_updatewithoutcorners");

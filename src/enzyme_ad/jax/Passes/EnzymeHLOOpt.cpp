@@ -5344,6 +5344,44 @@ struct ShiftRightLogicalSimplify final
   }
 };
 
+// A loop that carries the same value in two positions carries it once. Two
+// positions that start from one value and yield one value hold that value in
+// every iteration, so the later one's argument and result are the earlier
+// one's; dead result removal then drops the position. A raised kernel yields
+// such a pair whenever it keeps a copy of an accumulator it also reads.
+struct WhileDuplicateCarried final
+    : CheckedOpRewritePattern<stablehlo::WhileOp, WhileDuplicateCarried> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
+                                    PatternRewriter &rewriter) const {
+    Block &body = op.getBody().front();
+    Block &cond = op.getCond().front();
+    auto ret = dyn_cast<stablehlo::ReturnOp>(body.getTerminator());
+    if (!ret)
+      return failure();
+    bool changed = false;
+    for (unsigned j = 0, e = op.getNumOperands(); j < e; ++j) {
+      for (unsigned i = 0; i < j; ++i) {
+        if (op->getOperand(i) != op->getOperand(j) ||
+            ret.getOperand(i) != ret.getOperand(j))
+          continue;
+        // Already nothing reads the later position; removing it is the dead
+        // result pattern's to do, and saying so here would never settle.
+        if (body.getArgument(j).use_empty() &&
+            cond.getArgument(j).use_empty() && op->getResult(j).use_empty())
+          break;
+        rewriter.replaceAllUsesWith(body.getArgument(j), body.getArgument(i));
+        rewriter.replaceAllUsesWith(cond.getArgument(j), cond.getArgument(i));
+        rewriter.replaceAllUsesWith(op->getResult(j), op->getResult(i));
+        changed = true;
+        break;
+      }
+    }
+    return success(changed);
+  }
+};
+
 struct WhileDeadResults final
     : CheckedOpRewritePattern<stablehlo::WhileOp, WhileDeadResults> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -38032,7 +38070,7 @@ struct EnzymeHLOOptPass
         TransposeIsReshape,
         BroadcastInDimIsReshape,
         ReshuffleAndsCompares,
-        WhileDeadResults,
+        WhileDeadResults, WhileDuplicateCarried,
         ZeroExtentTensorCanon,
         CompareSelectSimplify,
         NotSelectSimplify,
