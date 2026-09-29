@@ -175,6 +175,10 @@ Value resolveOperand(const Expr &expr, OpBuilder &builder, Location loc,
             return LLVM::ConstantOp::create(
                 builder, loc, hint, builder.getFloatAttr(hint, n.value));
           },
+          [&](const StrLit &) -> Value {
+            llvm_unreachable("the parser only allows a string on the "
+                             "right-hand side of a rule");
+          },
           [&](const Call &c) -> Value {
             return emitCall(c, builder, loc, guard);
           },
