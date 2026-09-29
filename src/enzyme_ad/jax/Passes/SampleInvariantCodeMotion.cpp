@@ -2576,6 +2576,9 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
   }
 };
 
+// s_k of beta, a bare s_j a ones column, and sample-invariant terms move to the
+// y side. The summation root may also be the self-contraction dot_general(W, W)
+// that canonicalize makes of `sum(W .^ 2)`.
 // sum by an equal scalar computed from the hoistable statistics Q1, R, c, rem,
 // dropping the per-gradient residual cost from O(N D) to O(D^2). The QR
 // emission carries no large-magnitude cancellation and ships in the aggregate
@@ -2588,6 +2591,17 @@ struct SicmAffineStep {
   Value scalar;
 };
 
+/// ones column), negated when it enters the mean with a minus sign.
+struct AffineMeanTerm {
+  Value coef;
+  Value col;
+  bool negate;
+};
+struct AffineMeanOffset {
+  Value v;
+  bool negate;
+};
+
 struct GaussianStatsMatch {
   Value X, y, beta;
   int64_t N = 0, D = 0;
@@ -2596,6 +2610,10 @@ struct GaussianStatsMatch {
   bool hasFactor = false;
   Value factorScalar;
   bool factorIsDivide = false;
+  bool affineMean = false;
+  SmallVector<AffineMeanTerm> terms;
+  SmallVector<AffineMeanOffset> offsets;
+  bool squareSumRoot = false;
 };
 
 static bool isScalarShapedValue(Value v) {
@@ -2716,6 +2734,27 @@ static FailureOr<SicmEventSum> matchEventSumDot(stablehlo::DotGeneralOp op) {
   return failure();
 }
 
+static Value matchSquareSumDot(stablehlo::DotGeneralOp op) {
+  auto resT = dyn_cast<RankedTensorType>(op.getType());
+  if (!resT || resT.getRank() != 0)
+    return nullptr;
+  if (op.getLhs() != op.getRhs())
+    return nullptr;
+  auto dn = op.getDotDimensionNumbersAttr();
+  if (!dn.getLhsBatchingDimensions().empty() ||
+      !dn.getRhsBatchingDimensions().empty())
+    return nullptr;
+  if (dn.getLhsContractingDimensions().size() != 1 ||
+      dn.getRhsContractingDimensions().size() != 1 ||
+      dn.getLhsContractingDimensions()[0] != 0 ||
+      dn.getRhsContractingDimensions()[0] != 0)
+    return nullptr;
+  auto wt = dyn_cast<RankedTensorType>(op.getLhs().getType());
+  if (!wt || wt.getRank() != 1 || wt.isDynamicDim(0))
+    return nullptr;
+  return op.getLhs();
+}
+
 static Value stripAffineScalarWrappers(Value K,
                                        SmallVectorImpl<SicmAffineStep> &steps) {
   Value cur = K;
@@ -2820,7 +2859,73 @@ struct GaussianResidualMatch {
   Value X, y, beta;
   int64_t N, D;
   int64_t xContractDim;
+  bool affineMean = false;
+  SmallVector<AffineMeanTerm> terms;
+  SmallVector<AffineMeanOffset> offsets;
 };
+
+/// `broadcast_in_dim(s)` of a sample-dependent effectively scalar `s` (rank 0
+/// or shape (1,)); returns `s`, or null.
+static Value getDependentScalarLeaf(Value v,
+                                    SampleDependenceAnalysis &analysis) {
+  auto bc = v.getDefiningOp<stablehlo::BroadcastInDimOp>();
+  if (!bc)
+    return nullptr;
+  Value s = bc.getOperand();
+  if (!isEffectivelyScalar(s) || !analysis.isSampleDependent(s))
+    return nullptr;
+  return s;
+}
+
+/// Decompose the length-N mean `v` into sample-dependent scalar times
+/// sample-invariant vector terms, bare sample-dependent scalars (ones column)
+/// and sample-invariant summands, through add / subtract / negate / multiply.
+/// Fails on any other sample-dependent op, in particular on a sample-dependent
+/// vector leaf (no identity design is assumed).
+static bool collectAffineMeanTerms(Value v, bool negate, int64_t N,
+                                   SampleDependenceAnalysis &analysis,
+                                   SmallVectorImpl<AffineMeanTerm> &terms,
+                                   SmallVectorImpl<AffineMeanOffset> &offsets,
+                                   unsigned depth) {
+  constexpr unsigned kMaxDepth = 16, kMaxTerms = 16;
+  if (depth > kMaxDepth || terms.size() + offsets.size() >= kMaxTerms)
+    return false;
+  auto vt = dyn_cast<RankedTensorType>(v.getType());
+  if (!vt || vt.getRank() != 1 || vt.isDynamicDim(0) || vt.getDimSize(0) != N)
+    return false;
+  if (!analysis.isSampleDependent(v)) {
+    offsets.push_back({v, negate});
+    return true;
+  }
+  if (Value s = getDependentScalarLeaf(v, analysis)) {
+    terms.push_back({s, Value(), negate});
+    return true;
+  }
+  auto recurse = [&](Value w, bool neg) {
+    return collectAffineMeanTerms(w, neg, N, analysis, terms, offsets,
+                                  depth + 1);
+  };
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return false;
+  if (auto add = dyn_cast<stablehlo::AddOp>(def))
+    return recurse(add.getLhs(), negate) && recurse(add.getRhs(), negate);
+  if (auto sub = dyn_cast<stablehlo::SubtractOp>(def))
+    return recurse(sub.getLhs(), negate) && recurse(sub.getRhs(), !negate);
+  if (auto neg = dyn_cast<stablehlo::NegOp>(def))
+    return recurse(neg.getOperand(), !negate);
+  if (auto mul = dyn_cast<stablehlo::MulOp>(def)) {
+    for (auto [a, b] : {std::pair{mul.getLhs(), mul.getRhs()},
+                        std::pair{mul.getRhs(), mul.getLhs()}}) {
+      Value s = getDependentScalarLeaf(a, analysis);
+      if (s && !analysis.isSampleDependent(b)) {
+        terms.push_back({s, b, negate});
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 /// Either subtract order: the residual is squared.
 static FailureOr<GaussianResidualMatch>
@@ -2877,7 +2982,50 @@ matchGaussianResidual(Value R, SampleDependenceAnalysis &analysis) {
       continue;
     return GaussianResidualMatch{X, maybeY, beta, N, D, cd};
   }
+  for (auto [maybeMean, maybeY] : {std::pair{sub.getLhs(), sub.getRhs()},
+                                   std::pair{sub.getRhs(), sub.getLhs()}}) {
+    if (analysis.isSampleDependent(maybeY))
+      continue;
+    auto yt = dyn_cast<RankedTensorType>(maybeY.getType());
+    if (!yt || yt.getRank() != 1 || yt.isDynamicDim(0))
+      continue;
+    GaussianResidualMatch rm;
+    rm.N = yt.getDimSize(0);
+    if (!collectAffineMeanTerms(maybeMean, /*negate=*/false, rm.N, analysis,
+                                rm.terms, rm.offsets, /*depth=*/0) ||
+        rm.terms.empty())
+      continue;
+    rm.y = maybeY;
+    rm.D = rm.terms.size();
+    rm.xContractDim = 1;
+    rm.affineMean = true;
+    return rm;
+  }
   return failure();
+}
+
+static FailureOr<GaussianStatsMatch>
+matchGaussianSquaredResidual(GaussianStatsMatch m, Value W, int64_t N,
+                             SampleDependenceAnalysis &analysis, int64_t cThr) {
+  Value R;
+  m.hasFactor = peelScalarFactor(W, R, m.factorScalar, m.factorIsDivide);
+  auto rm = matchGaussianResidual(R, analysis);
+  if (failed(rm))
+    return failure();
+  if (rm->N != N)
+    return failure();
+  if (rm->D <= 0 || rm->N < cThr * rm->D)
+    return failure();
+  m.X = rm->X;
+  m.y = rm->y;
+  m.beta = rm->beta;
+  m.N = rm->N;
+  m.D = rm->D;
+  m.xContractDim = rm->xContractDim;
+  m.affineMean = rm->affineMean;
+  m.terms = rm->terms;
+  m.offsets = rm->offsets;
+  return m;
 }
 
 static FailureOr<GaussianStatsMatch>
@@ -2888,22 +3036,68 @@ matchGaussianSufficientStats(const SicmEventSum &es,
   Value W = matchSquare(SQ);
   if (!W)
     return failure();
-  Value R;
-  m.hasFactor = peelScalarFactor(W, R, m.factorScalar, m.factorIsDivide);
-  auto rm = matchGaussianResidual(R, analysis);
-  if (failed(rm))
+  return matchGaussianSquaredResidual(m, W, es.N, analysis, cThr);
+}
+
+static FailureOr<GaussianStatsMatch>
+matchGaussianSufficientStatsDot(stablehlo::DotGeneralOp sumOp,
+                                SampleDependenceAnalysis &analysis,
+                                int64_t cThr) {
+  auto es = matchEventSumDot(sumOp);
+  if (succeeded(es))
+    return matchGaussianSufficientStats(*es, analysis, cThr);
+  Value W = matchSquareSumDot(sumOp);
+  if (!W)
     return failure();
-  if (rm->N != es.N)
-    return failure();
-  if (rm->D <= 0 || rm->N < cThr * rm->D)
-    return failure();
-  m.X = rm->X;
-  m.y = rm->y;
-  m.beta = rm->beta;
-  m.N = rm->N;
-  m.D = rm->D;
-  m.xContractDim = rm->xContractDim;
-  return m;
+  GaussianStatsMatch m;
+  m.squareSumRoot = true;
+  return matchGaussianSquaredResidual(
+      m, W, cast<RankedTensorType>(W.getType()).getDimSize(0), analysis, cThr);
+}
+
+/// Build X (N x D, sample-invariant columns), beta (D, sample-dependent
+/// coefficients) and y' = y - (invariant summands) for an affine-mean match.
+/// A negated term negates its (invariant, hoistable) column.
+static void materializeAffineMean(OpBuilder &b, Location loc,
+                                  GaussianStatsMatch &m) {
+  if (!m.affineMean)
+    return;
+  Type elem = cast<RankedTensorType>(m.y.getType()).getElementType();
+  auto colTy = RankedTensorType::get({m.N, 1}, elem);
+  auto oneTy = RankedTensorType::get({1}, elem);
+  SmallVector<Value> cols, coefs;
+  Value onesCol;
+  for (const AffineMeanTerm &t : m.terms) {
+    Value col;
+    if (t.col) {
+      col = stablehlo::ReshapeOp::create(b, loc, colTy, t.col);
+    } else {
+      if (!onesCol)
+        onesCol = stablehlo::ConstantOp::create(
+            b, loc, colTy,
+            DenseElementsAttr::get(colTy, b.getFloatAttr(elem, 1.0)));
+      col = onesCol;
+    }
+    if (t.negate)
+      col = stablehlo::NegOp::create(b, loc, col);
+    cols.push_back(col);
+    Value c = t.coef;
+    if (c.getType() != oneTy)
+      c = stablehlo::ReshapeOp::create(b, loc, oneTy, c);
+    coefs.push_back(c);
+  }
+  m.X = cols.size() == 1
+            ? cols.front()
+            : stablehlo::ConcatenateOp::create(b, loc, cols, 1).getResult();
+  m.beta = coefs.size() == 1
+               ? coefs.front()
+               : stablehlo::ConcatenateOp::create(b, loc, coefs, 0).getResult();
+  Value y = m.y;
+  for (const AffineMeanOffset &o : m.offsets)
+    y = o.negate ? stablehlo::AddOp::create(b, loc, y, o.v).getResult()
+                 : stablehlo::SubtractOp::create(b, loc, y, o.v).getResult();
+  m.y = y;
+  m.xContractDim = 1;
 }
 
 static Value getDesignND(OpBuilder &b, Location loc,
@@ -2967,6 +3161,8 @@ static Value finishGaussianScalar(OpBuilder &b, Location loc, Value q,
                 ? stablehlo::DivOp::create(b, loc, q, ssq).getResult()
                 : stablehlo::MulOp::create(b, loc, q, ssq).getResult();
   }
+  if (m.squareSumRoot && m.affine.empty())
+    return sumSQ;
   auto [A, B] = composeAffine(b, loc, elemType, m.affine);
   Value Aterm = stablehlo::MulOp::create(b, loc, A, sumSQ);
   Value Nc = sicmScalarConst(b, loc, elemType, (double)m.N);
@@ -2984,7 +3180,8 @@ static RankedTensorType qrInfoType(OpBuilder &b) {
 /// `c - R beta`. No cancellation, no numeric gate; registered in the aggregate
 /// SicmPatterns set (Section 3.6/3.7).
 static Value emitGaussianStatsQR(PatternRewriter &rewriter, Location loc,
-                                 const GaussianStatsMatch &m) {
+                                 GaussianStatsMatch m) {
+  materializeAffineMean(rewriter, loc, m);
   Type elem = cast<RankedTensorType>(m.X.getType()).getElementType();
   Value X = getDesignND(rewriter, loc, m);
 
@@ -3024,10 +3221,7 @@ struct GaussianSufficientStatsHLO
     auto analysis = analyzeEnclosingRegion(sumOp);
     if (!analysis)
       return failure();
-    auto es = matchEventSumDot(sumOp);
-    if (failed(es))
-      return failure();
-    auto match = matchGaussianSufficientStats(*es, *analysis, /*cThr=*/2);
+    auto match = matchGaussianSufficientStatsDot(sumOp, *analysis, /*cThr=*/2);
     if (failed(match))
       return failure();
     rewriter.replaceOp(sumOp,
@@ -3063,7 +3257,8 @@ struct GaussianSufficientStatsReduceHLO
 };
 
 static Value emitGaussianStatsGram(PatternRewriter &rewriter, Location loc,
-                                   const GaussianStatsMatch &m) {
+                                   GaussianStatsMatch m) {
+  materializeAffineMean(rewriter, loc, m);
   Type elem = cast<RankedTensorType>(m.X.getType()).getElementType();
   Value X = getDesignND(rewriter, loc, m);
 
@@ -3087,7 +3282,7 @@ static Value emitGaussianStatsGram(PatternRewriter &rewriter, Location loc,
 
 /// The normal equations cancel badly at high R^2, worse in f32.
 static bool gramElemTypeOk(const GaussianStatsMatch &m) {
-  return cast<RankedTensorType>(m.X.getType()).getElementType().isF64();
+  return cast<RankedTensorType>(m.y.getType()).getElementType().isF64();
 }
 
 struct GaussianSufficientStatsGramHLO
@@ -3101,10 +3296,7 @@ struct GaussianSufficientStatsGramHLO
     auto analysis = analyzeEnclosingRegion(sumOp);
     if (!analysis)
       return failure();
-    auto es = matchEventSumDot(sumOp);
-    if (failed(es))
-      return failure();
-    auto match = matchGaussianSufficientStats(*es, *analysis, /*cThr=*/2);
+    auto match = matchGaussianSufficientStatsDot(sumOp, *analysis, /*cThr=*/2);
     if (failed(match) || !gramElemTypeOk(*match))
       return failure();
     rewriter.replaceOp(sumOp,
