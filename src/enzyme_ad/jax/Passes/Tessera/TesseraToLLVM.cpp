@@ -21,6 +21,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/Properties.h"
 
 namespace mlir {
 namespace enzyme {
@@ -551,6 +552,26 @@ struct TesseraToLLVMPass
         return signalPassFailure();
       }
       stub.erase();
+    }
+
+    // A fact stated on a statement arrived as a call to a marker that does
+    // nothing (see Properties.h). Everything that reads facts has run, so the
+    // calls go, and the markers with them.
+    SmallVector<LLVM::LLVMFuncOp> markers;
+    for (auto func : module.getOps<LLVM::LLVMFuncOp>())
+      if (func->hasAttr(kFactMarkerAttr))
+        markers.push_back(func);
+    for (LLVM::LLVMFuncOp marker : markers) {
+      SmallVector<LLVM::CallOp> calls;
+      module.walk([&](LLVM::CallOp call) {
+        if (call.getCallee() == marker.getSymName())
+          calls.push_back(call);
+      });
+      for (LLVM::CallOp call : calls)
+        call.erase();
+      // Only calls are expected; anything else that names the marker keeps it.
+      if (SymbolTable::symbolKnownUseEmpty(marker, module))
+        marker.erase();
     }
   }
 };
