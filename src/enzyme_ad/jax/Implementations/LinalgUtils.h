@@ -6,6 +6,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include <numeric>
+#include <utility>
 
 // Helpers for the derivatives of linear algebra ops. The last two dimensions
 // are the matrix dimensions, the others are batch dimensions.
@@ -35,6 +36,16 @@ inline Value broadcastToWidth(OpBuilder &builder, Location loc, Value v,
   std::iota(dims.begin(), dims.end(), 1);
   return stablehlo::BroadcastInDimOp::create(
       builder, loc, RankedTensorType::get(shape, ty.getElementType()), v, dims);
+}
+
+// conjugate transpose
+inline Value adjointMatrix(OpBuilder &builder, Location loc, Value v) {
+  int64_t rank = cast<RankedTensorType>(v.getType()).getRank();
+  SmallVector<int64_t> perm(rank);
+  std::iota(perm.begin(), perm.end(), 0);
+  std::swap(perm[rank - 1], perm[rank - 2]);
+  Value t = stablehlo::TransposeOp::create(builder, loc, v, perm);
+  return conjIfComplex(builder, loc, t);
 }
 
 // batched matrix product, optionally of the transposed operands

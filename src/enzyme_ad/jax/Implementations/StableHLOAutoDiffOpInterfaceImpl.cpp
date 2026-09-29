@@ -3441,6 +3441,130 @@ public:
   }
 };
 
+// the strict triangle of v plus half of its diagonal
+static Value phiTriangle(OpBuilder &builder, Location loc, Value v,
+                         bool lower) {
+  Value strict =
+      matrixIndexPredicate(builder, loc, v,
+                           lower ? stablehlo::ComparisonDirection::GT
+                                 : stablehlo::ComparisonDirection::LT);
+  Value diag =
+      matrixIndexPredicate(builder, loc, v, stablehlo::ComparisonDirection::EQ);
+  Value half = stablehlo::MulOp::create(builder, loc, v,
+                                        splatLike(builder, loc, v, 0.5));
+  Value onDiag = stablehlo::SelectOp::create(builder, loc, diag, half,
+                                             splatLike(builder, loc, v, 0.0));
+  return stablehlo::SelectOp::create(builder, loc, strict, v, onDiag);
+}
+
+class AutoDiffCholeskyFwd
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffCholeskyFwd,
+                                                CholeskyOp> {
+public:
+  LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+    auto op = cast<CholeskyOp>(orig);
+    if (gutils->isConstantInstruction(op) ||
+        gutils->isConstantValue(op.getResult()))
+      return success();
+
+    // the tangent uses the primal result
+    builder.setInsertionPointAfter(gutils->getNewFromOriginal(orig));
+    Location loc = op.getLoc();
+    bool lower = op.getLower();
+    // the other triangle of the result is implementation-defined
+    Value c = keepTriangle(
+        builder, loc,
+        broadcastToWidth(builder, loc,
+                         gutils->getNewFromOriginal(op.getResult()),
+                         gutils->width),
+        readTriangle(lower, /*unitDiagonal=*/false));
+    // only one triangle of the hermitian operand is read
+    Value z = phiTriangle(builder, loc,
+                          gutils->invertPointerM(op.getA(), builder), lower);
+    Value dS = stablehlo::AddOp::create(builder, loc, z,
+                                        adjointMatrix(builder, loc, z));
+    // dL = L phi(L^-1 dS L^-H), dU = phi(U^-H dS U^-1) U
+    auto adj = adjointTranspose(c);
+    auto none = stablehlo::Transpose::NO_TRANSPOSE;
+    Value y = triangularSolve(builder, loc, c, dS, /*leftSide=*/true, lower,
+                              /*unitDiagonal=*/false, lower ? none : adj);
+    Value p = triangularSolve(builder, loc, c, y, /*leftSide=*/false, lower,
+                              /*unitDiagonal=*/false, lower ? adj : none);
+    Value phi = phiTriangle(builder, loc, p, lower);
+    Value dC = lower ? batchedMatmul(builder, loc, c, phi)
+                     : batchedMatmul(builder, loc, phi, c);
+    gutils->setDiffe(op.getResult(), dC, builder);
+    return success();
+  }
+};
+
+class AutoDiffCholeskyRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffCholeskyRev,
+                                                       CholeskyOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<CholeskyOp>(orig);
+    if (gutils->isConstantInstruction(op) ||
+        gutils->isConstantValue(op.getResult()))
+      return success();
+
+    Value g = gutils->diffe(op.getResult(), builder);
+    gutils->zeroDiffe(op.getResult(), builder);
+    if (gutils->isConstantValue(op.getA()))
+      return success();
+
+    Location loc = op.getLoc();
+    bool lower = op.getLower();
+    Value c = keepTriangle(
+        builder, loc,
+        broadcastToWidth(builder, loc, gutils->popCache(caches[0], builder),
+                         gutils->width),
+        readTriangle(lower, /*unitDiagonal=*/false));
+    // S_bar = L^-H phi(L^H L_bar) L^-1 or U^-1 phi(U_bar U^H) U^-H
+    auto adj = adjointTranspose(c);
+    auto none = stablehlo::Transpose::NO_TRANSPOSE;
+    Value cc = conjIfComplex(builder, loc, c);
+    Value prod =
+        lower ? batchedMatmul(builder, loc, cc, g, /*transposeLhs=*/true)
+              : batchedMatmul(builder, loc, g, cc, /*transposeLhs=*/false,
+                              /*transposeRhs=*/true);
+    Value q = phiTriangle(builder, loc, prod, lower);
+    Value y = triangularSolve(builder, loc, c, q, /*leftSide=*/true, lower,
+                              /*unitDiagonal=*/false, lower ? adj : none);
+    Value sbar = triangularSolve(builder, loc, c, y, /*leftSide=*/false, lower,
+                                 /*unitDiagonal=*/false, lower ? none : adj);
+    Value abar =
+        phiTriangle(builder, loc,
+                    stablehlo::AddOp::create(builder, loc, sbar,
+                                             adjointMatrix(builder, loc, sbar)),
+                    lower);
+    gutils->addToDiffe(op.getA(), abar, builder);
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    auto op = cast<CholeskyOp>(orig);
+    if (gutils->isConstantInstruction(op) ||
+        gutils->isConstantValue(op.getResult()) ||
+        gutils->isConstantValue(op.getA()))
+      return {};
+    Operation *newOp = gutils->getNewFromOriginal(orig);
+    OpBuilder cacheBuilder(newOp);
+    cacheBuilder.setInsertionPointAfter(newOp);
+    return {gutils->initAndPushCache(gutils->getNewFromOriginal(op.getResult()),
+                                     cacheBuilder)};
+  }
+
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
+    return success();
+  }
+};
+
 struct WhileOpEnzymeOpsRemover
     : public EnzymeOpsRemoverOpInterface::ExternalModel<WhileOpEnzymeOpsRemover,
                                                         stablehlo::WhileOp> {
@@ -5312,6 +5436,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         *context);
     TriangularSolveOp::attachInterface<AutoDiffTriangularSolveFwd>(*context);
     TriangularSolveOp::attachInterface<AutoDiffTriangularSolveRev>(*context);
+    CholeskyOp::attachInterface<AutoDiffCholeskyFwd>(*context);
+    CholeskyOp::attachInterface<AutoDiffCholeskyRev>(*context);
 
     ConstantOp::attachInterface<
         HLOConstantOpBatchInterface<stablehlo::ConstantOp>>(*context);
