@@ -772,35 +772,27 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     }
   }
 
-  // Use worklist to compute transitive "depends on related op" set
-  // Start with ops that directly depend on related ops, then propagate to users
+  // The ops of the range that read a related op's result, directly or
+  // through another such op. A value is read by an op when the op takes it as
+  // an operand and when an op nested in one of its regions captures it, so
+  // ask about every op the range op contains. Definitions precede their uses
+  // in the block, so one pass in program order reaches them all.
   llvm::SmallPtrSet<Operation *, 16> dependsOnRelated;
-  llvm::SmallVector<Operation *> worklist;
-
-  // Initialize worklist with non-related ops that directly depend on related
-  // ops
-  for (Operation *op : nonRelatedOps) {
-    for (Value operand : op->getOperands()) {
-      if (Operation *defOp = operand.getDefiningOp()) {
-        if (relatedOpsSet.contains(defOp)) {
-          dependsOnRelated.insert(op);
-          worklist.push_back(op);
-          break;
-        }
+  for (auto it = rangeBegin; it != rangeEnd; ++it) {
+    Operation *op = &*it;
+    if (relatedOpsSet.contains(op))
+      continue;
+    bool reads = false;
+    op->walk([&](Operation *inner) {
+      for (Value v : inner->getOperands()) {
+        Operation *defOp = v.getDefiningOp();
+        if (defOp &&
+            (relatedOpsSet.contains(defOp) || dependsOnRelated.contains(defOp)))
+          reads = true;
       }
-    }
-  }
-
-  // Propagate: if op depends on related, all its users in range also depend
-  while (!worklist.empty()) {
-    Operation *op = worklist.pop_back_val();
-    for (Operation *user : op->getUsers()) {
-      if (opsInRange.contains(user) && !relatedOpsSet.contains(user) &&
-          !dependsOnRelated.contains(user)) {
-        dependsOnRelated.insert(user);
-        worklist.push_back(user);
-      }
-    }
+    });
+    if (reads)
+      dependsOnRelated.insert(op);
   }
 
   // Partition non-related ops into preOps and postOps
