@@ -1143,7 +1143,11 @@ struct LowerJITPass
             }
           }
           if (!layout) {
-            llvm_unreachable("each result should match to an operand");
+            op->emitError() << "each result should match to an operand, could "
+                               "not find operand for result #"
+                            << idx;
+            signalPassFailure();
+            return;
           }
           layouts.push_back(layout);
         }
