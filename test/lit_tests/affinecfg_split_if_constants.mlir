@@ -55,15 +55,15 @@ func.func @split_if(%d: i32, %out: memref<?xi32>, %v: i32) {
   return
 }
 
-// CHECK-DAG: #[[S1:.+]] = affine_set<(d0)[s0] : (-d0 + s0 - 2 >= 0)>
-// CHECK-DAG: #[[S2:.+]] = affine_set<(d0)[s0] : (-d0 + s0 - 1 >= 0)>
+// CHECK-DAG: #[[$S1:.+]] = affine_set<(d0)[s0] : (-d0 + s0 - 2 >= 0)>
+// CHECK-DAG: #[[$S2:.+]] = affine_set<(d0)[s0] : (-d0 + s0 - 1 >= 0)>
 // CHECK-LABEL: func.func @split_if
 // CHECK-NOT: scf.if
 // CHECK-NOT: arith.cmpi
 // CHECK: affine.if #{{.+}}(%{{.+}}) {
-// CHECK-NEXT: affine.if #[[S1]](
+// CHECK-NEXT: affine.if #[[$S1]](
 // CHECK: } else {
-// CHECK-NEXT: affine.if #[[S2]](
+// CHECK-NEXT: affine.if #[[$S2]](
 
 // -----
 
