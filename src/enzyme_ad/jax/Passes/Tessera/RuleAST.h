@@ -37,10 +37,12 @@ enum class TokenType {
   Ident,
   Integer,
   Float,
+  String,
   LParen,
   RParen,
   Dot,
   Comma,
+  Semicolon,
   Arrow,
   // Condition operators.
   Bang,
@@ -88,6 +90,14 @@ struct FloatLit {
   double value;
 };
 
+/// A string literal, `'cg'`. Only allowed on the right-hand side of a rule,
+/// where it is passed as a pointer to a NUL-terminated constant, as C passes
+/// one: it is how a library that names things by string, as PETSc names its
+/// solvers, is told which one to use.
+struct StrLit {
+  std::string value;
+};
+
 struct Expr;
 
 struct Call {
@@ -96,12 +106,13 @@ struct Call {
 };
 
 struct Expr {
-  std::variant<Var, IntLit, FloatLit, Call> data;
+  std::variant<Var, IntLit, FloatLit, StrLit, Call> data;
 
   Expr() = default; // default constructor
   Expr(Var v) : data(v) {}
   Expr(IntLit n) : data(n) {}
   Expr(FloatLit n) : data(n) {}
+  Expr(StrLit s) : data(std::move(s)) {}
   Expr(Call c) : data(std::move(c)) {} // move because Call has a vector
 };
 
@@ -163,12 +174,20 @@ inline std::unique_ptr<Cond> box(Cond c) {
 // Rules
 //===----------------------------------------------------------------------===//
 
-/// A rewrite rule: `[ 'if' cond ',' ] lhs '->' rhs`. An absent condition means
-/// the rewrite is unconditional.
+/// A rewrite rule: `[ 'if' cond ',' ] lhs '->' rhs { ';' rhs }`. An absent
+/// condition means the rewrite is unconditional.
+///
+/// The right-hand side runs in order, like C statements, and the last
+/// expression replaces the matched call. Every expression before it is a call
+/// made for its effect, whose results are discarded: `f(x) -> g(x); f(x)` adds
+/// a call to g ahead of f.
 struct Rule {
   std::optional<Cond> cond;
   Expr lhs;
-  Expr rhs;
+  std::vector<Expr> rhs;
+
+  /// The expression whose value replaces the matched call.
+  const Expr &result() const { return rhs.back(); }
 };
 
 struct Parser {
@@ -176,6 +195,8 @@ struct Parser {
   Token current;
   Location loc;
   bool failed = false;
+  /// String literals are only allowed on the right-hand side of a rule.
+  bool allowStrings = false;
 
   Parser(std::string input, Location location) : lexer{input}, loc{location} {
     advance();
