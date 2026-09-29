@@ -420,6 +420,14 @@ bool WhileLoopInfo::isConstantAcrossIterations(Value v, bool checkOperands) {
 bool WhileLoopInfo::isConstantAcrossIterations(
     Value v, Value &outerValue, SmallVector<Operation *> &canBeHoisted,
     bool checkOperands) {
+  DenseSet<Value> varies;
+  return isConstantAcrossIterations(v, outerValue, canBeHoisted, checkOperands,
+                                    varies);
+}
+
+bool WhileLoopInfo::isConstantAcrossIterations(
+    Value v, Value &outerValue, SmallVector<Operation *> &canBeHoisted,
+    bool checkOperands, DenseSet<Value> &varies) {
   if (definedOutside(v, op)) {
     outerValue = v;
     return true;
@@ -441,15 +449,21 @@ bool WhileLoopInfo::isConstantAcrossIterations(
   if (!checkOperands)
     return false;
 
-  auto defOp = v.getDefiningOp();
-  if (!defOp)
+  if (varies.contains(v))
     return false;
+
+  auto defOp = v.getDefiningOp();
+  if (!defOp) {
+    varies.insert(v);
+    return false;
+  }
 
   // bail out if the operation is not isolated from above. we need to analyze
   // all the operations in the regions to ensure that this is constant across
   // iterations
   if (defOp->getNumRegions() != 0 &&
       !defOp->hasTrait<mlir::OpTrait::IsIsolatedFromAbove>()) {
+    varies.insert(v);
     return false;
   }
 
@@ -457,12 +471,13 @@ bool WhileLoopInfo::isConstantAcrossIterations(
   // don't populate the outerValue in this case
   if (llvm::all_of(defOp->getOperands(), [&](Value operand) {
         return isConstantAcrossIterations(operand, outerValue, canBeHoisted,
-                                          true);
+                                          true, varies);
       })) {
     outerValue = nullptr;
     canBeHoisted.push_back(defOp);
     return true;
   }
+  varies.insert(v);
   return false;
 }
 

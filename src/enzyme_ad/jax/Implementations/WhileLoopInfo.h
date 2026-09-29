@@ -104,6 +104,18 @@ struct WhileLoopInfo {
                                   SmallVector<Operation *> &canBeHoisted,
                                   bool checkOperands = true);
 
+private:
+  // The walk over a value's operands, carrying the values it has already
+  // found to vary with the iteration. Reaching one again over another path
+  // gives the same answer, and the branch that said so records nothing, so
+  // the answer is remembered rather than recomputed: a shared subgraph is
+  // otherwise walked once per path that reaches it. The set lives for one
+  // call, since the IR may change between calls.
+  bool isConstantAcrossIterations(Value v, Value &outerValue,
+                                  SmallVector<Operation *> &canBeHoisted,
+                                  bool checkOperands, DenseSet<Value> &varies);
+
+public:
   bool canHoistOperationFromLoop(mlir::stablehlo::DynamicSliceOp sliceOp,
                                  SmallVectorImpl<int64_t> &dimensions);
   // Whether hoisting `sliceOp` over `dimensions` out of the loop can succeed,
