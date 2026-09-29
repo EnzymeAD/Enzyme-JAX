@@ -225,6 +225,10 @@ struct HandleSlot {
   /// Operations that may leave another handle in the slot, or end its life:
   /// stores into it, lifetime markers, and calls given its address.
   DenseSet<Operation *> writers;
+  /// Calls to a fact marker given the slot's address (see Properties.h).
+  /// They establish what the marker's parameter carries of whichever handle
+  /// the slot holds at that point, and change nothing.
+  DenseSet<Operation *> factSites;
 
   bool isHandle(Value value) const {
     return loads.contains(lookThroughForwarding(value));
@@ -246,6 +250,19 @@ bool onlyPassedToCalls(Value handle) {
       return call.getCalleeAttr() || use.getOperandNumber() != 0;
     return isa<CallOp, GuardOp, LLVM::ICmpOp>(user);
   });
+}
+
+/// Whether `op` calls a marker the plugin generated for a fact stated on a
+/// statement. The marker's body is empty, so given a slot's address it leaves
+/// the slot as it was. Only a marker: any other call given the address may
+/// put another handle there, as MatDestroy(&A) does.
+bool isFactMarkerCall(Operation *op) {
+  auto call = dyn_cast<LLVM::CallOp>(op);
+  if (!call || !call.getCalleeAttr())
+    return false;
+  auto func = SymbolTable::lookupNearestSymbolFrom<LLVM::LLVMFuncOp>(
+      op, call.getCalleeAttr());
+  return func && func->hasAttr(kFactMarkerAttr);
 }
 
 /// The slot `handle` was loaded from, or nothing if it was not loaded from a
@@ -288,6 +305,10 @@ std::optional<HandleSlot> slotOf(Value handle) {
       }
       if (isa<LLVM::LoadOp, affine::AffineLoadOp, memref::LoadOp>(user)) {
         slot.loads.insert(user->getResult(0));
+        continue;
+      }
+      if (isFactMarkerCall(user)) {
+        slot.factSites.insert(user);
         continue;
       }
       // The slot as the address stored to, not as the value stored.
@@ -348,6 +369,16 @@ HandleEffect effectOn(Operation *op, const HandleSlot &slot,
                       SmallVectorImpl<StringAttr> &established) {
   if (slot.writers.contains(op))
     return HandleEffect::Changes;
+
+  // A fact stated of the variable, of whatever handle it holds here.
+  if (slot.factSites.contains(op)) {
+    for (auto [index, arg] :
+         llvm::enumerate(cast<LLVM::CallOp>(op).getArgOperands()))
+      if (slot.views.contains(arg))
+        if (DictionaryAttr attrs = paramAttrs(op, index))
+          addProperties(established, attrs.get(kEstablishesAttr));
+    return established.empty() ? HandleEffect::None : HandleEffect::Establishes;
+  }
 
   ValueRange args;
   if (auto call = dyn_cast<CallOp>(op))
