@@ -44,10 +44,17 @@ module {
   // CHECK-NEXT: %[[LPR:.+]] = stablehlo.reshape %[[PROPV]] : (tensor<3xf64>) -> tensor<3x1xf64>
   // CHECK-NEXT: %[[LPS:.+]] = stablehlo.slice %[[LPR]] [0:1, 0:1] : (tensor<3x1xf64>) -> tensor<1x1xf64>
   // CHECK-NEXT: %[[NEWWT:.+]] = stablehlo.reshape %[[LPS]] : (tensor<1x1xf64>) -> tensor<f64>
+  // CHECK-NEXT: %[[OSL:.+]] = impulse.slice %[[TRA]] {limit_indices = array<i64: 1, 3>, start_indices = array<i64: 0, 0>, strides = array<i64: 1, 1>} : (tensor<1x3xf64>) -> tensor<1x3xf64>
+  // CHECK-NEXT: %[[OV:.+]] = impulse.reshape %[[OSL]] : (tensor<1x3xf64>) -> tensor<3xf64>
+  // CHECK-NEXT: %[[OR:.+]] = stablehlo.reshape %[[OV]] : (tensor<3xf64>) -> tensor<3x1xf64>
+  // CHECK-NEXT: %[[OS:.+]] = stablehlo.slice %[[OR]] [0:1, 0:1] : (tensor<3x1xf64>) -> tensor<1x1xf64>
+  // CHECK-NEXT: %[[OLDWT:.+]] = stablehlo.reshape %[[OS]] : (tensor<1x1xf64>) -> tensor<f64>
+  // CHECK-NEXT: %[[CORR:.+]] = arith.subf %[[NEWWT]], %[[OLDWT]] : tensor<f64>
   // CHECK-NEXT: %[[WDIFF:.+]] = arith.subf %[[NEWWT]], %[[WTA]] : tensor<f64>
+  // CHECK-NEXT: %[[ALPHA:.+]] = arith.subf %[[WDIFF]], %[[CORR]] : tensor<f64>
   // CHECK-NEXT: %[[NEWRNG:.+]], %[[U:.+]] = impulse.random %[[RNGA]], %[[ZERO]], %[[ONE]] {rng_distribution = #impulse<rng_distribution UNIFORM>} : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
   // CHECK-NEXT: %[[LOGU:.+]] = math.log %[[U]] : tensor<f64>
-  // CHECK-NEXT: %[[ACC:.+]] = arith.cmpf olt, %[[LOGU]], %[[WDIFF]] : tensor<f64>
+  // CHECK-NEXT: %[[ACC:.+]] = arith.cmpf olt, %[[LOGU]], %[[ALPHA]] : tensor<f64>
   // CHECK-NEXT: %[[SELTR:.+]] = impulse.select %[[ACC]], %[[NEWTR]], %[[TRA]] : (tensor<i1>, tensor<1x3xf64>, tensor<1x3xf64>) -> tensor<1x3xf64>
   // CHECK-NEXT: %[[SELWT:.+]] = arith.select %[[ACC]], %[[NEWWT]], %[[WTA]] : tensor<i1>, tensor<f64>
   // CHECK-NEXT: impulse.yield %[[SELTR]], %[[SELWT]], %[[NEWRNG]], %[[ACC]] : tensor<1x3xf64>, tensor<f64>, tensor<2xui64>, tensor<i1>
