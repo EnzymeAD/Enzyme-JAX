@@ -1,10 +1,11 @@
 //===----------------------------------------------------------------------===//
 //
 // This file extracts tessera_op, pure_tessera_op, tessera_optimize,
-// tessera_guarantees, tessera_assumes, tessera_preserves and tessera_readonly
-// global annotations and adds tessera_op / pure_tessera_op /
+// tessera_guarantees, tessera_assumes, tessera_preserves, tessera_readonly and
+// tessera_fact global annotations and adds tessera_op / pure_tessera_op /
 // tessera.property / tessera.establishes / tessera.preserves /
-// tessera.readonly attributes and tessera.optimization ops to the module.
+// tessera.readonly / tessera.fact_marker attributes and tessera.optimization
+// ops to the module.
 //
 //===----------------------------------------------------------------------===//
 
@@ -488,6 +489,10 @@ struct LiftTesseraAnnotationsPass
           // it.
           func->setAttr("tessera.no_rewrite",
                         UnitAttr::get(func->getContext()));
+        } else if (annot.rtrim('\0') == "tessera_fact") {
+          // Generated for a fact stated on a statement: the function does
+          // nothing but establish it, and goes once the facts are used.
+          func->setAttr(kFactMarkerAttr, UnitAttr::get(func->getContext()));
         }
       }
     }
