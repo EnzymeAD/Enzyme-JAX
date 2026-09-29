@@ -106,6 +106,10 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
                         constOp, builder.getI32IntegerAttr(0)),
                     mlir::Value()};
           },
+          [&](const StrLit &) -> std::pair<mlir::Value, mlir::Value> {
+            llvm_unreachable("the parser only allows a string on the "
+                             "right-hand side");
+          },
           [&](const Call &c) -> std::pair<mlir::Value, mlir::Value> {
             SmallVector<mlir::Value> argValues;
             for (int i = 0; i < c.args.size(); i++) {
@@ -207,8 +211,12 @@ struct ParseOptimizationRulesPass
           continue;
         }
 
-        if (auto name = findUnboundVar(rule->rhs, boundVars)) {
-          emitWarning(loc) << "optimization rule ignored: it uses '" << *name
+        std::optional<std::string> unbound;
+        for (const Expr &expr : rule->rhs)
+          if ((unbound = findUnboundVar(expr, boundVars)))
+            break;
+        if (unbound) {
+          emitWarning(loc) << "optimization rule ignored: it uses '" << *unbound
                            << "' on the right-hand side, but it is not bound "
                               "on the left";
           pattern.erase();
@@ -240,8 +248,13 @@ struct ParseOptimizationRulesPass
 
         // A guard keeps a clone of the matched call in its else region, so
         // without this a conditional pattern would match that clone and nest
-        // guards without end. It goes first because it is the cheap one.
-        if (rule->cond)
+        // guards without end. A right-hand side that repeats the matched call,
+        // as `f(x) -> g(x); f(x)` does, would likewise match its own output.
+        // It goes first because it is the cheap one.
+        std::string lhsText = renderExpr(rule->lhs);
+        if (rule->cond || llvm::any_of(rule->rhs, [&](const Expr &expr) {
+              return renderExpr(expr) == lhsText;
+            }))
           pdl::ApplyNativeConstraintOp::create(
               builder, loc, TypeRange{}, "tesseraRuleNotApplied",
               ValueRange{root.second, ruleAttr});
