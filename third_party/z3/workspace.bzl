@@ -40,7 +40,7 @@ def prereqs():
         url = "https://github.com/bazel-contrib/rules_foreign_cc/releases/download/0.16.0/rules_foreign_cc-0.16.0.tar.gz",
     )
 
-def repo(build_file = "//third_party/z3:BUILD"):
+def repo(build_file = Label("//third_party/z3:BUILD")):
     prereqs()
 
     # Use the prebuilt cmake/ninja toolchains only: the source-built toolchains
