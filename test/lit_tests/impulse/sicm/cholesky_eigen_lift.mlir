@@ -1,7 +1,5 @@
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=impulse.sicm_cholesky_eigen_lift" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s
 
-// cholesky(s*A + t*I) followed by the full solve chain F\(F'\b) is rewritten
-// and every factor user a recognized left-side solve.
 module {
   func.func private @halfnormal_sampler(%rng : tensor<2xui64>, %std : tensor<f64>) -> (tensor<2xui64>, tensor<f64>) {
     %sample = stablehlo.abs %std : tensor<f64>
@@ -50,8 +48,8 @@ module {
       // CHECK-NEXT: %[[INVDB:.+]] = stablehlo.broadcast_in_dim %[[INVD]], dims = [0] : (tensor<3xf64>) -> tensor<3x1xf64>
       // CHECK-NEXT: %[[SCALED:.+]] = stablehlo.multiply %[[INVDB]], %[[QTB]] : tensor<3x1xf64>
       // CHECK-NEXT: %[[RES:.+]] = stablehlo.dot_general %[[Q]], %[[SCALED]], contracting_dims = [1] x [0] : (tensor<3x3xf64>, tensor<3x1xf64>) -> tensor<3x1xf64>
-      %inner = "stablehlo.triangular_solve"(%F, %arg_b) {left_side = true, lower = true, unit_diagonal = false, transpose_a = #stablehlo<transpose ADJOINT>} : (tensor<3x3xf64>, tensor<3x1xf64>) -> tensor<3x1xf64>
-      %outer = "stablehlo.triangular_solve"(%F, %inner) {left_side = true, lower = true, unit_diagonal = false, transpose_a = #stablehlo<transpose NO_TRANSPOSE>} : (tensor<3x3xf64>, tensor<3x1xf64>) -> tensor<3x1xf64>
+      %inner = "stablehlo.triangular_solve"(%F, %arg_b) {left_side = true, lower = true, unit_diagonal = false, transpose_a = #stablehlo<transpose NO_TRANSPOSE>} : (tensor<3x3xf64>, tensor<3x1xf64>) -> tensor<3x1xf64>
+      %outer = "stablehlo.triangular_solve"(%F, %inner) {left_side = true, lower = true, unit_diagonal = false, transpose_a = #stablehlo<transpose ADJOINT>} : (tensor<3x3xf64>, tensor<3x1xf64>) -> tensor<3x1xf64>
       // CHECK-NEXT: impulse.yield %[[TAU]]#0, %[[RES]] : tensor<2xui64>, tensor<3x1xf64>
       impulse.yield %tau#0, %outer : tensor<2xui64>, tensor<3x1xf64>
     } logpdf {

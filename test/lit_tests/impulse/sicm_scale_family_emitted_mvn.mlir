@@ -1,8 +1,6 @@
 // RUN: enzymexlamlir-opt %s --pass-pipeline='builtin.module(inline-infer-regions,canonicalize,cse,lower-impulse-to-stablehlo{math-twins-only=true},arith-raise{stablehlo=true},canonicalize,cse,sicm)' | FileCheck %s
 
 // the density region, exactly as it does on a traced StableHLO MVN body.
-// The fn-absent emitted MVN site is written in generic op form because the
-// pretty `impulse.sample(...)` form does not round-trip through the parser.
 
 module {
   func.func private @halfnormal_sampler(%rng : tensor<2xui64>, %std : tensor<f64>) -> (tensor<2xui64>, tensor<f64>) {

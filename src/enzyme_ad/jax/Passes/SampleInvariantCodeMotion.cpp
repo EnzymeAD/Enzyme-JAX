@@ -426,7 +426,6 @@ struct DotGeneralScaleFactorizationHLO
   }
 };
 
-///     scalar;
 ///   dependence: L and b sample-invariant, s sample-dependent;
 struct TriangularSolveScaleFactorizationHLO
     : public OpRewritePattern<stablehlo::TriangularSolveOp> {
@@ -437,6 +436,8 @@ struct TriangularSolveScaleFactorizationHLO
   static FailureOr<ScaledInvariant>
   checkPreconditions(stablehlo::TriangularSolveOp solveOp,
                      SampleDependenceAnalysis &analysis) {
+    if (solveOp.getUnitDiagonal())
+      return failure();
     auto scaled = matchScaledInvariant(solveOp.getA(), analysis);
     if (failed(scaled))
       return failure();
@@ -1773,35 +1774,37 @@ static bool isAdjointLikeTranspose(stablehlo::Transpose t) {
          t == stablehlo::Transpose::TRANSPOSE;
 }
 
-/// Detect chained triangular_solve pairs that compute Σ^{-1}b.
-///
-/// Pattern: triangular_solve(F, triangular_solve(F, b, ADJOINT), NO_TRANSPOSE)
-/// where F is a Cholesky factor (upper or lower). The outer solve's `b` operand
-/// IS the inner solve result. (The inner solve may use TRANSPOSE instead of
-/// ADJOINT — equivalent for the real factors here.)
-static Value matchFullCholeskySolve(stablehlo::TriangularSolveOp outerSolve,
-                                    Value cholResult) {
-  // The outer solve must use Cholesky result directly, NO_TRANSPOSE
-  if (outerSolve.getA() != cholResult)
-    return nullptr;
-  if (!outerSolve.getLeftSide())
-    return nullptr;
-  if (outerSolve.getTransposeA() != stablehlo::Transpose::NO_TRANSPOSE)
-    return nullptr;
+/// w = F^{-1} b (lower) or F^{-T} b (upper), so |w|^2 = b^T K^{-1} b. The solve
+/// must read the triangle the Cholesky wrote; the other is unspecified.
+static bool isWhiteningSolve(stablehlo::TriangularSolveOp solve,
+                             bool cholLower) {
+  if (!solve.getLeftSide() || solve.getUnitDiagonal() ||
+      solve.getLower() != cholLower)
+    return false;
+  return cholLower ? solve.getTransposeA() == stablehlo::Transpose::NO_TRANSPOSE
+                   : isAdjointLikeTranspose(solve.getTransposeA());
+}
 
-  // The outer solve's B must come from an inner triangular_solve using the
-  // same Cholesky, with ADJOINT (or, equivalently, TRANSPOSE) transpose
+static bool isColoringSolve(stablehlo::TriangularSolveOp solve,
+                            bool cholLower) {
+  if (!solve.getLeftSide() || solve.getUnitDiagonal() ||
+      solve.getLower() != cholLower)
+    return false;
+  return cholLower
+             ? isAdjointLikeTranspose(solve.getTransposeA())
+             : solve.getTransposeA() == stablehlo::Transpose::NO_TRANSPOSE;
+}
+
+static Value matchFullCholeskySolve(stablehlo::TriangularSolveOp outerSolve,
+                                    Value cholResult, bool cholLower) {
+  if (outerSolve.getA() != cholResult ||
+      !isColoringSolve(outerSolve, cholLower))
+    return nullptr;
   auto innerSolve =
       outerSolve.getB().getDefiningOp<stablehlo::TriangularSolveOp>();
-  if (!innerSolve)
+  if (!innerSolve || innerSolve.getA() != cholResult ||
+      !isWhiteningSolve(innerSolve, cholLower))
     return nullptr;
-  if (innerSolve.getA() != cholResult)
-    return nullptr;
-  if (!innerSolve.getLeftSide())
-    return nullptr;
-  if (!isAdjointLikeTranspose(innerSolve.getTransposeA()))
-    return nullptr;
-
   return innerSolve.getB();
 }
 
@@ -1873,14 +1876,368 @@ static void collectDiagonalExtractions(Operation *user, Value cholResult,
   }
 }
 
+static bool isSplatOne(Value value) {
+  DenseFPElementsAttr attr;
+  return matchPattern(value, m_Constant(&attr)) && attr.isSplat() &&
+         attr.getSplatValue<APFloat>().isExactlyValue(1.0);
+}
+
+static bool isSingleInputReduce(stablehlo::ReduceOp reduce, OpOperand &use,
+                                stablehlo::ReduceOpKind kind) {
+  return reduce.getInputs().size() == 1 && use.getOperandNumber() == 0 &&
+         stablehlo::CheckCommonReduceOp(reduce).kind == kind;
+}
+
+static bool isOnlyFullySummed(Value value) {
+  int64_t rank = cast<RankedTensorType>(value.getType()).getRank();
+  for (OpOperand &use : value.getUses()) {
+    Operation *user = use.getOwner();
+    if (auto reshape = dyn_cast<stablehlo::ReshapeOp>(user)) {
+      if (!isOnlyFullySummed(reshape.getResult()))
+        return false;
+      continue;
+    }
+    if (auto reduce = dyn_cast<stablehlo::ReduceOp>(user)) {
+      if (!isSingleInputReduce(reduce, use, stablehlo::ReduceOpKind::Add) ||
+          (int64_t)reduce.getDimensions().size() != rank)
+        return false;
+      continue;
+    }
+    if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(user)) {
+      auto dims = dot.getDotDimensionNumbers();
+      bool onLhs = use.getOperandNumber() == 0;
+      Value other = onLhs ? dot.getRhs() : dot.getLhs();
+      auto contracting = onLhs ? dims.getLhsContractingDimensions()
+                               : dims.getRhsContractingDimensions();
+      if (!dims.getLhsBatchingDimensions().empty() ||
+          (int64_t)contracting.size() != rank || !isSplatOne(other))
+        return false;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+/// The lift changes the diagonal entries but not their product, so only
+/// sum(log(diag)) and prod(diag) uses are allowed.
+static bool isLogDetOnlyVector(Value diag) {
+  int64_t rank = cast<RankedTensorType>(diag.getType()).getRank();
+  for (OpOperand &use : diag.getUses()) {
+    Operation *user = use.getOwner();
+    if (auto reshape = dyn_cast<stablehlo::ReshapeOp>(user)) {
+      if (!isLogDetOnlyVector(reshape.getResult()))
+        return false;
+      continue;
+    }
+    if (auto log = dyn_cast<stablehlo::LogOp>(user)) {
+      if (!isOnlyFullySummed(log.getResult()))
+        return false;
+      continue;
+    }
+    if (auto reduce = dyn_cast<stablehlo::ReduceOp>(user)) {
+      if (!isSingleInputReduce(reduce, use, stablehlo::ReduceOpKind::Mul) ||
+          (int64_t)reduce.getDimensions().size() != rank)
+        return false;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+/// F .* I (replaced by diag(sqrt d)) must first be reduced to the diagonal
+/// vector: an add-reduce over one axis, or a dot_general contracting one axis
+/// with a splat 1.0 vector.
+static bool isLogDetOnlyDiagonal(Operation *extraction) {
+  Value diag = extraction->getResult(0);
+  if (cast<RankedTensorType>(diag.getType()).getRank() == 1)
+    return isLogDetOnlyVector(diag);
+  for (OpOperand &use : diag.getUses()) {
+    Operation *user = use.getOwner();
+    Value vector;
+    if (auto reduce = dyn_cast<stablehlo::ReduceOp>(user)) {
+      if (!isSingleInputReduce(reduce, use, stablehlo::ReduceOpKind::Add) ||
+          reduce.getDimensions().size() != 1)
+        return false;
+      vector = reduce.getResult(0);
+    } else if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(user)) {
+      auto dims = dot.getDotDimensionNumbers();
+      bool onLhs = use.getOperandNumber() == 0;
+      Value other = onLhs ? dot.getRhs() : dot.getLhs();
+      if (!dims.getLhsBatchingDimensions().empty() ||
+          dims.getLhsContractingDimensions().size() != 1 ||
+          cast<RankedTensorType>(other.getType()).getRank() != 1 ||
+          !isSplatOne(other))
+        return false;
+      vector = dot.getResult();
+    } else {
+      return false;
+    }
+    if (!isLogDetOnlyVector(vector))
+      return false;
+  }
+  return true;
+}
+
+/// factor) by W b with W = Q diag(1/sqrt d) Q^T (times L_B^{-1} when
+class RotationConsumerCheck {
+public:
+  explicit RotationConsumerCheck(unsigned numSeeds) {
+    for (unsigned i = 0; i < numSeeds; ++i)
+      parent.push_back(i);
+  }
+
+  SmallVector<bool> run(ArrayRef<Value> seeds) {
+    for (auto [i, seed] : llvm::enumerate(seeds))
+      assign(seed, {/*product=*/false, /*axis=*/0, (unsigned)i});
+    while (!worklist.empty()) {
+      Value value = worklist.pop_back_val();
+      Form form = state.lookup(value);
+      for (OpOperand &use : value.getUses())
+        if (!visit(use, form))
+          failed.push_back(form.group);
+    }
+    for (auto [value, group] : mustBeExact)
+      if (state.count(value))
+        failed.push_back(group);
+    for (auto [value, group] : mustBeRotated)
+      if (!state.count(value))
+        failed.push_back(group);
+    DenseSet<unsigned> failedRoots;
+    for (unsigned group : failed)
+      failedRoots.insert(find(group));
+    SmallVector<bool> ok;
+    for (unsigned i = 0; i < seeds.size(); ++i)
+      ok.push_back(!failedRoots.contains(find(i)));
+    return ok;
+  }
+
+private:
+  struct Form {
+    bool product;
+    int64_t axis;
+    unsigned group;
+  };
+
+  DenseMap<Value, Form> state;
+  SmallVector<Value> worklist;
+  SmallVector<unsigned> parent;
+  SmallVector<unsigned> failed;
+  SmallVector<std::pair<Value, unsigned>> mustBeExact;
+  SmallVector<std::pair<Value, unsigned>> mustBeRotated;
+
+  unsigned find(unsigned g) {
+    while (parent[g] != g)
+      g = parent[g] = parent[parent[g]];
+    return g;
+  }
+  void unite(unsigned a, unsigned b) { parent[find(a)] = find(b); }
+
+  void assign(Value value, Form form) {
+    auto [it, inserted] = state.try_emplace(value, form);
+    if (inserted) {
+      worklist.push_back(value);
+      return;
+    }
+    unite(it->second.group, form.group);
+    if (it->second.product != form.product || it->second.axis != form.axis)
+      failed.push_back(form.group);
+  }
+
+  static std::optional<int64_t>
+  reshapeAxis(RankedTensorType in, RankedTensorType out, int64_t axis) {
+    if (!in.hasStaticShape() || !out.hasStaticShape() ||
+        in.getDimSize(axis) == 1)
+      return std::nullopt;
+    SmallVector<int64_t> inDims, outDims;
+    for (int64_t i = 0; i < in.getRank(); ++i)
+      if (in.getDimSize(i) != 1)
+        inDims.push_back(i);
+    for (int64_t i = 0; i < out.getRank(); ++i)
+      if (out.getDimSize(i) != 1)
+        outDims.push_back(i);
+    if (inDims.size() != outDims.size())
+      return std::nullopt;
+    std::optional<int64_t> result;
+    for (auto [i, o] : llvm::zip(inDims, outDims)) {
+      if (in.getDimSize(i) != out.getDimSize(o))
+        return std::nullopt;
+      if (i == axis)
+        result = o;
+    }
+    return result;
+  }
+
+  static bool isConstantAlong(Value value, int64_t axis) {
+    DenseElementsAttr attr;
+    if (matchPattern(value, m_Constant(&attr)))
+      return attr.isSplat();
+    auto bcast = value.getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!bcast)
+      return false;
+    auto srcType = cast<RankedTensorType>(bcast.getOperand().getType());
+    for (auto [i, d] : llvm::enumerate(bcast.getBroadcastDimensions()))
+      if (d == axis && srcType.getDimSize(i) != 1)
+        return false;
+    return true;
+  }
+
+  bool visitBinary(Operation *op, unsigned idx, Form form) {
+    Value other = op->getOperand(1 - idx);
+    Value result = op->getResult(0);
+    bool isMul = isa<stablehlo::MulOp>(op);
+    bool isDiv = isa<stablehlo::DivOp>(op);
+    auto it = state.find(other);
+    if (it != state.end()) {
+      Form otherForm = it->second;
+      unite(form.group, otherForm.group);
+      if (form.axis != otherForm.axis || isDiv)
+        return false;
+      if (isMul) {
+        if (form.product || otherForm.product)
+          return false;
+        assign(result, {true, form.axis, form.group});
+        return true;
+      }
+      if (form.product != otherForm.product)
+        return false;
+      assign(result, form);
+      return true;
+    }
+    if (isMul || (isDiv && idx == 0)) {
+      if (!isConstantAlong(other, form.axis))
+        return false;
+      mustBeExact.push_back({other, form.group});
+      assign(result, form);
+      return true;
+    }
+    if (isDiv)
+      return false;
+    // The other operand must become rotated; the op is handled from there.
+    mustBeRotated.push_back({other, form.group});
+    return true;
+  }
+
+  bool visitDot(stablehlo::DotGeneralOp dot, unsigned idx, Form form) {
+    auto dims = dot.getDotDimensionNumbers();
+    bool onLhs = idx == 0;
+    Value other = onLhs ? dot.getRhs() : dot.getLhs();
+    ArrayRef<int64_t> ownContract = onLhs ? dims.getLhsContractingDimensions()
+                                          : dims.getRhsContractingDimensions();
+    ArrayRef<int64_t> otherContract = onLhs
+                                          ? dims.getRhsContractingDimensions()
+                                          : dims.getLhsContractingDimensions();
+    ArrayRef<int64_t> ownBatch = onLhs ? dims.getLhsBatchingDimensions()
+                                       : dims.getRhsBatchingDimensions();
+    if (llvm::is_contained(ownBatch, form.axis))
+      return false;
+    auto contractPos = llvm::find(ownContract, form.axis);
+    bool contracted = contractPos != ownContract.end();
+
+    if (form.product) {
+      DenseElementsAttr attr;
+      return contracted && matchPattern(other, m_Constant(&attr)) &&
+             attr.isSplat();
+    }
+
+    auto it = state.find(other);
+    if (it != state.end()) {
+      // Exact iff both rotated axes are contracted together (O^T O = I).
+      Form otherForm = it->second;
+      unite(form.group, otherForm.group);
+      if (!contracted || otherForm.product)
+        return false;
+      int64_t pos = contractPos - ownContract.begin();
+      return otherContract[pos] == otherForm.axis;
+    }
+    if (contracted) {
+      // Only valid as the rotated-rotated sink above.
+      mustBeRotated.push_back({other, form.group});
+      return true;
+    }
+    // r stays a free dimension: dot(O v, x) = O dot(v, x) for exact x.
+    mustBeExact.push_back({other, form.group});
+    int64_t axis = ownBatch.size();
+    if (!onLhs)
+      axis += cast<RankedTensorType>(dot.getLhs().getType()).getRank() -
+              dims.getLhsBatchingDimensions().size() -
+              dims.getLhsContractingDimensions().size();
+    for (int64_t d = 0; d < form.axis; ++d)
+      if (!llvm::is_contained(ownContract, d) &&
+          !llvm::is_contained(ownBatch, d))
+        ++axis;
+    assign(dot.getResult(), {false, axis, form.group});
+    return true;
+  }
+
+  bool visit(OpOperand &use, Form form) {
+    Operation *user = use.getOwner();
+    unsigned idx = use.getOperandNumber();
+    if (auto reshape = dyn_cast<stablehlo::ReshapeOp>(user)) {
+      auto axis =
+          reshapeAxis(cast<RankedTensorType>(reshape.getOperand().getType()),
+                      cast<RankedTensorType>(reshape.getType()), form.axis);
+      if (!axis)
+        return false;
+      assign(reshape.getResult(), {form.product, *axis, form.group});
+      return true;
+    }
+    if (auto transpose = dyn_cast<stablehlo::TransposeOp>(user)) {
+      auto perm = transpose.getPermutation();
+      int64_t axis = llvm::find(perm, form.axis) - perm.begin();
+      assign(transpose.getResult(), {form.product, axis, form.group});
+      return true;
+    }
+    if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(user)) {
+      auto resultType = cast<RankedTensorType>(bcast.getType());
+      int64_t axis = bcast.getBroadcastDimensions()[form.axis];
+      if (resultType.getDimSize(axis) !=
+          cast<RankedTensorType>(bcast.getOperand().getType())
+              .getDimSize(form.axis))
+        return false;
+      assign(bcast.getResult(), {form.product, axis, form.group});
+      return true;
+    }
+    if (auto neg = dyn_cast<stablehlo::NegOp>(user)) {
+      assign(neg.getResult(), form);
+      return true;
+    }
+    if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp,
+            stablehlo::DivOp>(user))
+      return visitBinary(user, idx, form);
+    if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(user))
+      return visitDot(dot, idx, form);
+    if (auto reduce = dyn_cast<stablehlo::ReduceOp>(user)) {
+      if (!isSingleInputReduce(reduce, use, stablehlo::ReduceOpKind::Add))
+        return false;
+      auto dims = reduce.getDimensions();
+      if (llvm::is_contained(dims, form.axis))
+        return form.product;
+      if (form.product)
+        return false;
+      int64_t axis = form.axis;
+      for (int64_t d : dims)
+        if (d < form.axis)
+          --axis;
+      assign(reduce.getResult(0), {false, axis, form.group});
+      return true;
+    }
+    return false;
+  }
+};
+
 /// factor are rewritten in terms of Q and d:
 ///   full solve chains F\(F'\b)  ->  Q diag(1/d) Q^T b
 ///   single solves F\b, F'\b    ->  Q diag(1/sqrt(d)) Q^T b
 /// chol(B). Handles A + t*I (s = 1), a constant diagonal matrix folded by
 /// recognized in every spelling of collectDiagonalExtractions.
-///     factors c; every triangular_solve user is a
-///     left-side solve with NO_TRANSPOSE or ADJOINT; at least one user is a
-///     recognized solve chain, single solve, or diagonal extraction;
+/// Only the full solve chain is replaced exactly; the other two replacements
+/// preserve a function of the user's result, not the result:
+///   single solve:  Q diag(1/sqrt d) Q^T b = O (F^{-1} b) for an orthogonal O,
+///                  so only norms |F^{-1} b|^2 (and inner products of two such
+///                  solves) are preserved;
+///     replaced diagonal only the log-determinant;
 ///     definiteness of the original cholesky operand.
 struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
   CholeskyEigenLiftHLO(MLIRContext *context, PatternBenefit benefit = 1)
@@ -1915,56 +2272,59 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
       return failure();
 
     Value cholResult = cholOp.getResult();
+    bool cholLower = cholOp.getLower();
 
     // Chains first, so their inner solves are not taken as single solves.
-    DenseSet<Operation *> innerSolveOps;
+    DenseSet<Operation *> chainSolveOps;
+    SmallVector<Operation *> diagCandidates;
     for (auto *user : cholResult.getUsers()) {
       auto triSolve = dyn_cast<stablehlo::TriangularSolveOp>(user);
       if (!triSolve) {
-        collectDiagonalExtractions(user, cholResult, match.diagExtractions);
+        collectDiagonalExtractions(user, cholResult, diagCandidates);
         continue;
       }
 
       if (!triSolve.getLeftSide())
         return failure();
 
-      if (triSolve.getTransposeA() == stablehlo::Transpose::NO_TRANSPOSE) {
-        Value rhs = matchFullCholeskySolve(triSolve, cholResult);
-        if (rhs) {
-          auto innerSolve =
-              triSolve.getB().getDefiningOp<stablehlo::TriangularSolveOp>();
-          match.fullSolves.push_back({triSolve, innerSolve, rhs});
-          innerSolveOps.insert(innerSolve.getOperation());
-          continue;
-        }
+      if (Value rhs = matchFullCholeskySolve(triSolve, cholResult, cholLower)) {
+        auto innerSolve =
+            triSolve.getB().getDefiningOp<stablehlo::TriangularSolveOp>();
+        match.fullSolves.push_back({triSolve, innerSolve, rhs});
+        chainSolveOps.insert(triSolve.getOperation());
+        chainSolveOps.insert(innerSolve.getOperation());
       }
     }
 
+    SmallVector<stablehlo::TriangularSolveOp> singleCandidates;
     for (auto *user : cholResult.getUsers()) {
       auto triSolve = dyn_cast<stablehlo::TriangularSolveOp>(user);
-      if (!triSolve)
+      if (!triSolve || chainSolveOps.contains(triSolve.getOperation()) ||
+          !isWhiteningSolve(triSolve, cholLower))
         continue;
-      if (innerSolveOps.count(triSolve.getOperation()))
+      if (llvm::is_contained(singleCandidates, triSolve))
         continue;
-      bool isFullSolveOuter = false;
-      for (auto &fs : match.fullSolves) {
-        if (fs.outerSolve == triSolve) {
-          isFullSolveOuter = true;
-          break;
-        }
-      }
-      if (isFullSolveOuter)
-        continue;
+      singleCandidates.push_back(triSolve);
+    }
+    SmallVector<Value> seeds;
+    for (auto solve : singleCandidates)
+      seeds.push_back(solve.getResult());
+    SmallVector<bool> normOnly = RotationConsumerCheck(seeds.size()).run(seeds);
+    for (auto [solve, ok] : llvm::zip(singleCandidates, normOnly)) {
+      if (ok)
+        match.singleSolves.push_back({solve, !cholLower});
+      else
+        LLVM_DEBUG(llvm::dbgs() << "SICM: CholeskyEigenLift keeps a solve "
+                                   "with a consumer that is not norm-only\n");
+    }
 
-      auto transpose = triSolve.getTransposeA();
-      if (transpose == stablehlo::Transpose::NO_TRANSPOSE) {
-        match.singleSolves.push_back({triSolve, /*isAdjoint=*/false});
-      } else if (isAdjointLikeTranspose(transpose)) {
-        // ADJOINT or TRANSPOSE — equivalent for the real factors here.
-        match.singleSolves.push_back({triSolve, /*isAdjoint=*/true});
-      } else {
-        return failure();
-      }
+    for (Operation *diagOp : diagCandidates) {
+      if (isLogDetOnlyDiagonal(diagOp))
+        match.diagExtractions.push_back(diagOp);
+      else
+        LLVM_DEBUG(llvm::dbgs() << "SICM: CholeskyEigenLift keeps a diagonal "
+                                   "with a consumer that is not "
+                                   "log-determinant-only\n");
     }
 
     if (match.fullSolves.empty() && match.singleSolves.empty() &&

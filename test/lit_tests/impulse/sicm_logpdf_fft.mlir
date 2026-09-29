@@ -35,8 +35,6 @@ module {
     %init_pos = stablehlo.constant dense<0.0> : tensor<1x8xf64>
     %step_size = stablehlo.constant dense<0.1> : tensor<f64>
     %imm = stablehlo.constant dense<1.0> : tensor<8xf64>
-    // Custom-logpdf-mode infer op. The pretty form is not round-trippable when
-    // `fn` is absent, so use the generic form (as mcmc_custom_logpdf.mlir does).
     %res:4 = "impulse.infer"(%rng, %B, %imm, %step_size, %init_pos) {
       logpdf_fn = @model_logpdf,
       nuts_config = #impulse.nuts_config<max_tree_depth = 3, max_delta_energy = 1000.0, adapt_step_size = false, adapt_mass_matrix = false>,
