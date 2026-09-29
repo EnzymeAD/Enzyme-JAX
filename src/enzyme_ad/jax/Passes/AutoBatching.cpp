@@ -1952,7 +1952,7 @@ bool liftReduceLikeOperation(
   auto rhs = op->getOperand(1);
 
   bool isLhsLoopCarriedDep = false, isRhsLoopCarriedDep = false;
-  int64_t argIdx;
+  int64_t argIdx = -1;
   if (auto lhsBlockArg = dyn_cast<BlockArgument>(lhs)) {
     if (lhsBlockArg.getOwner() == &whileOp.getBody().front() &&
         returnOp->getOperand(lhsBlockArg.getArgNumber()) == result) {
@@ -1968,16 +1968,19 @@ bool liftReduceLikeOperation(
     }
   }
 
-  // while dead args is needed to clean this up
-  if (argIdx >= whileOp->getNumResults() ||
-      whileOp->getResult(argIdx).getUsers().empty()) {
-    return false;
-  }
-
   if (isLhsLoopCarriedDep == isRhsLoopCarriedDep) {
     return false; // atmost one of lhs/rhs must be loop carried dep
   }
   if (specialOps && isRhsLoopCarriedDep) { // only lhs can be loop carried dep
+    return false;
+  }
+
+  // Only now does argIdx hold the position the carried value came from: it is
+  // set by whichever of the two branches above found one, and asking about it
+  // before they have agreed on exactly one reads it unset.
+  // while dead args is needed to clean this up
+  if (argIdx >= whileOp->getNumResults() ||
+      whileOp->getResult(argIdx).getUsers().empty()) {
     return false;
   }
 
