@@ -61,6 +61,28 @@
 // annotations claim, and true of PETSc objects. See handleFactsAt in
 // Properties.cpp for how far the walk follows.
 //
+// A fact can also be stated on a statement, of a variable, for a handle that
+// no function builds:
+//
+//   PetscCall(MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY));
+//   __attribute__((tessera_guarantees("SPD(A)")));
+//
+// The plugin makes that a call, right after the statement, to a generated
+// function that does nothing and whose parameter establishes the fact. The
+// function is marked
+//
+//   tessera.fact_marker
+//
+// and tessera-to-llvm removes it, and every call to it, once the facts have
+// been used.
+//
+// The marker is given the variable's address, `__tessera_fact_0(&A)`, not the
+// handle loaded from it: the fact is of whatever handle the variable holds
+// there, and a loaded value need not be recognizably a load of the variable
+// -- where A may have been replaced in a branch, LLVM passes the merged
+// value. A marker given the slot's address is the one call the walk does not
+// take to change what the slot holds.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef ENZYME_AD_JAX_PASSES_TESSERA_PROPERTIES_H
@@ -81,6 +103,7 @@ constexpr llvm::StringLiteral kPropertyAttr = "tessera.property";
 constexpr llvm::StringLiteral kPreservesAttr = "tessera.preserves";
 constexpr llvm::StringLiteral kEstablishesAttr = "tessera.establishes";
 constexpr llvm::StringLiteral kReadonlyAttr = "tessera.readonly";
+constexpr llvm::StringLiteral kFactMarkerAttr = "tessera.fact_marker";
 
 /// Does having `have` imply having `want`? Reflexive and transitive: SPD
 /// implies symmetric, so a rule asking for `symmetric(A)` is satisfied by a
