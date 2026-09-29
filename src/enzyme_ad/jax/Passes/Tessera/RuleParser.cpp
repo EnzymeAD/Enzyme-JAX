@@ -4,18 +4,23 @@
 //
 // Grammar:
 //
-//   rule  ::= [ 'if' cond ',' ] expr '->' expr
+//   rule  ::= [ 'if' cond ',' ] expr '->' { call ';' } expr
 //   cond  ::= conj { '||' conj }
 //   conj  ::= unary { '&&' unary }
 //   unary ::= '!' unary | '(' cond ')' | pred
 //   pred  ::= ident '(' [ expr { ',' expr } ] ')'
 //           | expr relop expr
 //   relop ::= '==' | '!=' | '<' | '<=' | '>' | '>='
-//   expr  ::= call | var | int | float
+//   expr  ::= call | var | int | float | string
 //   call  ::= ident '.' ident '(' [ expr { ',' expr } ] ')'
 //   var   ::= ident
+//   string ::= "'" { any character but "'" } "'"
 //
 // A rule with no condition is unconditional and rewrites exactly as before.
+// The right-hand side runs in order and its last expression replaces the
+// matched call; the calls before it are made for their effects. A string is
+// only allowed there, and is written with single quotes so that a rule can sit
+// inside a C string, as `#pragma optimize "..."` puts it, without escaping.
 //
 //===----------------------------------------------------------------------===//
 
@@ -171,6 +176,28 @@ Token Lexer::nextToken() {
     return Token{TokenType::Comma, ""};
   }
 
+  if (peek() == ';') {
+    advance();
+    return Token{TokenType::Semicolon, ""};
+  }
+
+  // A string has no escapes: nothing a rule passes needs a quote in it. One
+  // that is never closed comes back as an error token holding just the quote.
+  if (peek() == '\'') {
+    size_t start = pos;
+    advance();
+    std::string s;
+    while (peek() != '\'') {
+      if (peek() == '\0') {
+        pos = start + 1;
+        return Token{TokenType::Error, "'"};
+      }
+      s += advance();
+    }
+    advance();
+    return Token{TokenType::String, s};
+  }
+
   if (peek() == '-' && peekNext() == '>') {
     advance();
     advance();
@@ -250,8 +277,11 @@ InFlightDiagnostic Parser::error() {
 void Parser::advance() {
   current = lexer.nextToken();
   if (current.type == TokenType::Error) {
-    error() << "unrecognized character '" << current.value
-            << "' in optimization rule";
+    if (current.value == "'")
+      error() << "unterminated string in optimization rule";
+    else
+      error() << "unrecognized character '" << current.value
+              << "' in optimization rule";
   }
 }
 
@@ -327,6 +357,18 @@ std::optional<Expr> Parser::parseExpr() {
     }
     advance();
     return Expr(FloatLit{n});
+  }
+  if (current.type == TokenType::String) {
+    // A string can be passed to a call the rewrite builds, but there is
+    // nothing to compare it with in a match or a condition.
+    if (!allowStrings) {
+      error() << "a string can only be used on the right-hand side of an "
+                 "optimization rule";
+      return std::nullopt;
+    }
+    std::string s = current.value;
+    advance();
+    return Expr(StrLit{std::move(s)});
   }
   error() << "invalid optimization rule expression";
   return std::nullopt;
@@ -454,10 +496,26 @@ std::optional<Rule> Parser::parseRule() {
     return std::nullopt;
   }
   advance();
-  auto rhs = parseExpr();
-  if (!rhs)
-    return std::nullopt;
-  return Rule{std::move(cond), std::move(*lhs), std::move(*rhs)};
+  allowStrings = true;
+  std::vector<Expr> rhs;
+  while (true) {
+    auto expr = parseExpr();
+    if (!expr)
+      return std::nullopt;
+    rhs.push_back(std::move(*expr));
+    if (current.type != TokenType::Semicolon)
+      break;
+    // Only the last expression has a value that is used, so anything before
+    // it must be a call, made for what it does.
+    if (!std::holds_alternative<Call>(rhs.back().data)) {
+      error() << "'" << renderExpr(rhs.back())
+              << "' is followed by ';' in an optimization rule, but only a "
+                 "call can be";
+      return std::nullopt;
+    }
+    advance();
+  }
+  return Rule{std::move(cond), std::move(*lhs), std::move(rhs)};
 }
 
 //===----------------------------------------------------------------------===//
@@ -526,6 +584,7 @@ std::string renderExpr(const Expr &expr) {
   return std::visit(overloaded{
                         [](const Var &v) { return v.name; },
                         [](const IntLit &n) { return std::to_string(n.value); },
+                        [](const StrLit &s) { return "'" + s.value + "'"; },
                         [](const FloatLit &n) {
                           // %.17g is the shortest format guaranteed to
                           // round-trip a double, which matters because this
