@@ -22,8 +22,10 @@
 #include "src/enzyme_ad/jax/Passes/Tessera/RuleAST.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/xxhash.h"
 #include <memory>
 #include <variant>
 
@@ -225,6 +227,7 @@ static bool matchLhs(const Expr &expr, Operation *op,
                                llvm::APFloat::rmNearestTiesToEven, &losesInfo);
               return value.bitwiseIsEqual(expected);
             },
+            [&](const StrLit &) { return false; },
             [&](const Call &) {
               return matchLhs(arg, operand.getDefiningOp(), bound);
             },
@@ -427,6 +430,9 @@ static Type checkRhsValue(const Expr &expr, Operation *anchor,
             OpBuilder b(anchor->getContext());
             return literalType(expr, expected, b);
           },
+          [&](const StrLit &) -> Type {
+            return LLVM::LLVMPointerType::get(anchor->getContext());
+          },
           [&](const Call &c) -> Type {
             SmallVector<Type> results;
             if (failed(checkRhsCall(c, anchor, bound, results, why)))
@@ -490,7 +496,17 @@ static LogicalResult checkRhsCall(const Call &call, Operation *anchor,
 static LogicalResult checkRhs(const Rule &rule, Operation *root,
                               const llvm::StringMap<Value> &bound,
                               std::string &why) {
-  if (auto *call = std::get_if<Call>(&rule.rhs.data)) {
+  // The calls made for their effect need only be buildable: their results are
+  // discarded. The parser has ensured each of them is a call.
+  for (const Expr &expr : llvm::drop_end(rule.rhs)) {
+    SmallVector<Type> results;
+    if (failed(
+            checkRhsCall(std::get<Call>(expr.data), root, bound, results, why)))
+      return failure();
+  }
+
+  const Expr &result = rule.result();
+  if (auto *call = std::get_if<Call>(&result.data)) {
     SmallVector<Type> results;
     if (failed(checkRhsCall(*call, root, bound, results, why)))
       return failure();
@@ -513,7 +529,7 @@ static LogicalResult checkRhs(const Rule &rule, Operation *root,
     return failure();
   }
   Type expected = root->getResult(0).getType();
-  Type actual = checkRhsValue(rule.rhs, root, bound, expected, why);
+  Type actual = checkRhsValue(result, root, bound, expected, why);
   if (!actual)
     return failure();
   if (actual != expected) {
@@ -523,6 +539,27 @@ static LogicalResult checkRhs(const Rule &rule, Operation *root,
     return failure();
   }
   return success();
+}
+
+/// The address of a NUL-terminated constant holding `text`, as C passes a
+/// string literal. Every rewrite that passes the same string shares one
+/// private global, named for its contents.
+static Value buildStringLiteral(llvm::StringRef text, OpBuilder &builder,
+                                Location loc, Operation *anchor) {
+  auto module = anchor->getParentOfType<ModuleOp>();
+  std::string name =
+      "__tessera_str_" + llvm::utohexstr(llvm::xxh3_64bits(text));
+  auto global = module.lookupSymbol<LLVM::GlobalOp>(name);
+  if (!global) {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(module.getBody());
+    std::string data = text.str() + '\0';
+    auto type = LLVM::LLVMArrayType::get(builder.getI8Type(), data.size());
+    global = LLVM::GlobalOp::create(builder, loc, type, /*isConstant=*/true,
+                                    LLVM::Linkage::Private, name,
+                                    builder.getStringAttr(data));
+  }
+  return LLVM::AddressOfOp::create(builder, loc, global);
 }
 
 // Build the IR for the right-hand side of a rule. The matched values exist by
@@ -544,6 +581,9 @@ static Value buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
             Type type = literalType(expr, expected, builder);
             return LLVM::ConstantOp::create(
                 builder, loc, type, builder.getFloatAttr(type, n.value));
+          },
+          [&](const StrLit &s) -> Value {
+            return buildStringLiteral(s.value, builder, loc, symbolAnchor);
           },
           [&](const Call &c) -> Value {
             DefineOp define = lookupDefine(symbolAnchor, calleeName(c));
@@ -567,15 +607,33 @@ static Value buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
 }
 
 /// Build the right-hand side and return what replaces the root with it.
-static SmallVector<Value> buildReplacement(const Rule &rule, OpBuilder &builder,
-                                           Location loc,
+///
+/// A call that repeats the matched one is marked as having had the rule
+/// applied: `f(x) -> g(x); f(x)` would otherwise match the new f and add a
+/// call to g ahead of it, and again, without end.
+static SmallVector<Value> buildReplacement(const Rule &rule,
+                                           StringAttr ruleAttr,
+                                           OpBuilder &builder, Location loc,
                                            const llvm::StringMap<Value> &bound,
                                            Operation *root) {
+  std::string lhsText = renderExpr(rule.lhs);
+  auto build = [&](const Expr &expr, Type expected) {
+    Operation *op = nullptr;
+    Value value = buildExprIR(expr, builder, loc, bound, root, expected, &op);
+    if (op && renderExpr(expr) == lhsText)
+      markRuleApplied(op, ruleAttr);
+    return std::make_pair(value, op);
+  };
+
+  // The calls made for their effect come first, in the order written.
+  for (const Expr &expr : llvm::drop_end(rule.rhs))
+    build(expr, Type());
+
+  const Expr &result = rule.result();
   Type expected =
       root->getNumResults() == 1 ? root->getResult(0).getType() : Type();
-  Operation *op = nullptr;
-  Value value = buildExprIR(rule.rhs, builder, loc, bound, root, expected, &op);
-  if (std::holds_alternative<Call>(rule.rhs.data))
+  auto [value, op] = build(result, expected);
+  if (std::holds_alternative<Call>(result.data))
     return SmallVector<Value>(op->getResults().begin(), op->getResults().end());
   return {value};
 }
@@ -614,7 +672,8 @@ struct ApplyState {
 
   void addRule(StringAttr text, Location loc) {
     if (const Rule *rule = getRule(text, loc))
-      collectCallees(rule->rhs, rhsCallees);
+      for (const Expr &expr : rule->rhs)
+        collectCallees(expr, rhsCallees);
   }
 
   bool isExcluded(Operation *op) {
@@ -762,7 +821,7 @@ static LogicalResult tesseraRewrite(ApplyState &state,
   if (!residual) {
     Operation *before = root->getPrevNode();
     SmallVector<Value> replacement =
-        buildReplacement(*rule, rewriter, loc, boundVars, root);
+        buildReplacement(*rule, ruleAttr, rewriter, loc, boundVars, root);
     Block::iterator first =
         before ? std::next(before->getIterator()) : root->getBlock()->begin();
     recordFactsOnNewCalls(llvm::make_range(first, root->getIterator()));
@@ -778,8 +837,9 @@ static LogicalResult tesseraRewrite(ApplyState &state,
   {
     Block *block = rewriter.createBlock(&guard.getThenRegion());
     rewriter.setInsertionPointToStart(block);
-    YieldOp::create(rewriter, loc,
-                    buildReplacement(*rule, rewriter, loc, boundVars, root));
+    YieldOp::create(
+        rewriter, loc,
+        buildReplacement(*rule, ruleAttr, rewriter, loc, boundVars, root));
     recordFactsOnNewCalls(*block);
   }
 
