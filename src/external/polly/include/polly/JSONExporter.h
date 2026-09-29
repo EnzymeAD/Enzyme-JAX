@@ -19,14 +19,14 @@ llvm::Pass *createJSONImporterPrinterLegacyPass(llvm::raw_ostream &OS);
 
 /// This pass exports a scop to a jscop file. The filename is generated from the
 /// concatenation of the function and scop name.
-struct JSONExportPass final : llvm::PassInfoMixin<JSONExportPass> {
+struct JSONExportPass final : llvm::OptionalPassInfoMixin<JSONExportPass> {
   llvm::PreservedAnalyses run(Scop &, ScopAnalysisManager &,
                               ScopStandardAnalysisResults &, SPMUpdater &);
 };
 
 /// This pass imports a scop from a jscop file. The filename is deduced from the
 /// concatenation of the function and scop name.
-struct JSONImportPass final : llvm::PassInfoMixin<JSONExportPass> {
+struct JSONImportPass final : llvm::OptionalPassInfoMixin<JSONExportPass> {
   llvm::PreservedAnalyses run(Scop &, ScopAnalysisManager &,
                               ScopStandardAnalysisResults &, SPMUpdater &);
 };

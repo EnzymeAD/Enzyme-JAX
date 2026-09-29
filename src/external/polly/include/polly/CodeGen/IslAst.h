@@ -199,7 +199,8 @@ public:
 llvm::Pass *createIslAstInfoWrapperPassPass();
 llvm::Pass *createIslAstInfoPrinterLegacyPass(llvm::raw_ostream &OS);
 
-struct IslAstPrinterPass final : PassInfoMixin<IslAstPrinterPass> {
+struct IslAstPrinterPass final
+    : llvm::RequiredPassInfoMixin<IslAstPrinterPass> {
   IslAstPrinterPass(raw_ostream &OS) : OS(OS) {}
 
   PreservedAnalyses run(Scop &S, ScopAnalysisManager &SAM,
