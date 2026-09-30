@@ -9,11 +9,13 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -38,6 +40,120 @@ using namespace mlir::enzyme::tessera;
 //===----------------------------------------------------------------------===//
 
 namespace {
+
+/// For each tessera.call, the address to pass for each operand that can be
+/// passed as the pointer it was loaded through, or null (see findAddresses).
+using CallAddresses = DenseMap<Operation *, SmallVector<Value>>;
+
+/// Whether `op`, and everything nested in it, leaves memory as it is, except
+/// perhaps through calls that write none of their arguments: the checks a
+/// guard makes before its branch, such as mpfi_is_empty.
+bool writesNothing(Operation *op) {
+  WalkResult result = op->walk([](Operation *nested) {
+    if (auto call = dyn_cast<tessera::CallOp>(nested)) {
+      auto define = SymbolTable::lookupNearestSymbolFrom<tessera::DefineOp>(
+          call, call.getCalleeAttr());
+      return define && define.getNumWrittenArgs() == 0
+                 ? WalkResult::advance()
+                 : WalkResult::interrupt();
+    }
+    // Its nested ops are walked on their own.
+    if (nested->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
+      return WalkResult::advance();
+    auto effects = dyn_cast<MemoryEffectOpInterface>(nested);
+    if (effects && !effects.hasEffect<MemoryEffects::Write>() &&
+        !effects.hasEffect<MemoryEffects::Free>())
+      return WalkResult::advance();
+    return WalkResult::interrupt();
+  });
+  return !result.wasInterrupted();
+}
+
+/// The address `value` was loaded from, if memory there still holds it when
+/// `call` runs, so the call can be given that address instead of a copy: the
+/// value is a load, and nothing that runs between the two may write memory.
+///
+/// Between them are the ops after the load in its block, any blocks control
+/// can pass through on the way to the call (a guard at function level branches
+/// between blocks), and, where the call is nested in an scf.if (a guard in a
+/// loop body becomes one), the ops ahead of it at each level. A loop between
+/// them would run the call again after whatever follows it, so none may be.
+Value addressAt(Value value, Operation *call) {
+  auto load = value.getDefiningOp<LLVM::LoadOp>();
+  if (!load || load.getVolatile_())
+    return Value();
+  Block *loadBlock = load->getBlock();
+  Region *region = loadBlock->getParent();
+
+  // The ops ahead of the call at each level it is nested below the load's.
+  Operation *outer = region->findAncestorOpInRegion(*call);
+  if (!outer)
+    return Value();
+  for (Operation *op = call; op != outer; op = op->getParentOp()) {
+    if (!isa<scf::IfOp>(op->getParentOp()) || !op->getBlock()->isEntryBlock())
+      return Value();
+    for (Operation *prev = op->getPrevNode(); prev; prev = prev->getPrevNode())
+      if (!writesNothing(prev))
+        return Value();
+  }
+
+  // The blocks between the load and the call.
+  Block *callBlock = outer->getBlock();
+  auto after = [&](Operation *from, Operation *until) {
+    for (Operation *op = from; op && op != until; op = op->getNextNode())
+      if (!writesNothing(op))
+        return false;
+    return true;
+  };
+  if (callBlock == loadBlock)
+    return load->isBeforeInBlock(outer) && after(load->getNextNode(), outer)
+               ? load.getAddr()
+               : Value();
+  if (!after(load->getNextNode(), nullptr) ||
+      !after(&callBlock->front(), outer))
+    return Value();
+  SmallVector<Block *> worklist(callBlock->getPredecessors());
+  DenseSet<Block *> seen;
+  while (!worklist.empty()) {
+    Block *block = worklist.pop_back_val();
+    if (block == loadBlock || !seen.insert(block).second)
+      continue;
+    if (block == callBlock || !after(&block->front(), nullptr))
+      return Value();
+    llvm::append_range(worklist, block->getPredecessors());
+  }
+  return load.getAddr();
+}
+
+/// Decide, before any call is converted, which operands each tessera.call can
+/// be passed by their original address. That is what the call this came from
+/// passed, so the callee sees the same pointers: MPFR and MPFI test whether
+/// operands alias by comparing them, and two copies of values that point to
+/// the same limbs look like different operands while sharing those limbs.
+/// Decided up front because a guard's checks, which may run in between, are
+/// recognized as writing nothing while they are still tessera.calls.
+CallAddresses findAddresses(ModuleOp module) {
+  CallAddresses addresses;
+  module.walk([&](tessera::CallOp call) {
+    auto define = SymbolTable::lookupNearestSymbolFrom<tessera::DefineOp>(
+        call, call.getCalleeAttr());
+    if (!define)
+      return;
+    SmallVector<Value> perOperand;
+    bool any = false;
+    for (auto [i, operand] : llvm::enumerate(call.getOperands())) {
+      Value address;
+      if (!isa<LLVM::LLVMPointerType>(operand.getType()) &&
+          define.getCallOperandPointeeType(i))
+        address = addressAt(operand, call);
+      any |= static_cast<bool>(address);
+      perOperand.push_back(address);
+    }
+    if (any)
+      addresses[call] = std::move(perOperand);
+  });
+  return addresses;
+}
 
 // Rewrite 'tessera.define' -> 'llvm.func'
 class DefineOpRewrite final : public OpRewritePattern<tessera::DefineOp> {
@@ -107,7 +223,8 @@ private:
 // Rewrite 'tessera.call' -> 'llvm.call'
 class CallOpRewrite final : public OpRewritePattern<tessera::CallOp> {
 public:
-  using OpRewritePattern<tessera::CallOp>::OpRewritePattern;
+  CallOpRewrite(const CallAddresses &addresses, MLIRContext *ctx)
+      : OpRewritePattern(ctx), addresses(addresses) {}
 
   LogicalResult matchAndRewrite(tessera::CallOp callOp,
                                 PatternRewriter &rewriter) const override {
@@ -124,12 +241,29 @@ public:
       return failure();
 
     // Any operand the callee takes through a pointer was loaded from
-    // memory when converting LLVM to tessera, so put it back: allocate
-    // fresh stack storage, store the operand's value into it, and substitute
-    // that pointer in its place. All other operands pass through unchanged.
+    // memory when converting LLVM to tessera, so put it back. Where memory
+    // at the address it was loaded from still holds it, pass that address, as
+    // the original call did (see findAddresses). Otherwise allocate fresh
+    // stack storage, store the operand's value into it, and substitute that
+    // pointer in its place. All other operands pass through unchanged.
+    //
+    // A value passed at several positions gets one allocation passed at each
+    // of them, as in mpfi_mul(r, r, y): two copies would share whatever the
+    // value points to without sharing the storage, and the callee could no
+    // longer see that the operands alias.
+    auto known = addresses.find(callOp);
     Value one;
     SmallVector<Value> reconstructedOperands;
+    DenseMap<Value, Value> storageFor;
     for (auto [i, operand] : llvm::enumerate(callOp.getOperands())) {
+      if (known != addresses.end() && known->second[i]) {
+        reconstructedOperands.push_back(known->second[i]);
+        continue;
+      }
+      if (Value storage = storageFor.lookup(operand)) {
+        reconstructedOperands.push_back(storage);
+        continue;
+      }
       if (!isa<LLVM::LLVMPointerType>(operand.getType()) &&
           defineOp.getCallOperandPointeeType(i)) {
         if (!one)
@@ -147,6 +281,7 @@ public:
         Value AI = AIOp;
         LLVM::StoreOp::create(rewriter, callOp.getLoc(), operand, AI);
         reconstructedOperands.push_back(AI);
+        storageFor[operand] = AI;
       } else {
         reconstructedOperands.push_back(operand);
       }
@@ -343,6 +478,9 @@ public:
 
     return success();
   }
+
+private:
+  const CallAddresses &addresses;
 };
 
 // Rewrite 'tessera.return' -> 'llvm.return'
@@ -379,8 +517,9 @@ struct TesseraToLLVMPass
     // driver visits ops in, and a define that comes after its callers -- as
     // any op that is only declared in the file does -- would convert first
     // and strand them.
+    CallAddresses addresses = findAddresses(getOperation());
     RewritePatternSet callPatterns(ctx);
-    callPatterns.add<CallOpRewrite>(ctx);
+    callPatterns.add<CallOpRewrite>(addresses, ctx);
     RewritePatternSet definePatterns(ctx);
     definePatterns.add<DefineOpRewrite>(typeConverter, ctx);
     definePatterns.add<ReturnOpRewrite>(ctx);
