@@ -2253,6 +2253,11 @@ def WhileDUS : EnzymeHLOPatternOp<
   let patterns = ["WhileDUS"];
 }
 
+def WhilePassThroughSlice : EnzymeHLOPatternOp<
+    "while_passthrough_slice"> {
+  let patterns = ["WhilePassThroughSlice"];
+}
+
 def WhileUpdateWithoutCorners : EnzymeHLOPatternOp<
     "while_updatewithoutcorners"> {
   let patterns = ["WhileUpdateWithoutCorners"];

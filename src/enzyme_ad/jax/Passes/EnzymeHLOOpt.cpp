@@ -23501,6 +23501,151 @@ struct ConcatToOneDimDUS final
   }
 };
 
+// A slice of a while argument inside a range that the yielded value passes
+// through unchanged reads the loop input (by induction on the iteration
+// count), so it becomes the same slice of the while operand.
+struct WhilePassThroughSlice
+    : public CheckedOpRewritePattern<stablehlo::WhileOp,
+                                     WhilePassThroughSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  using Interval = std::pair<int64_t, int64_t>;
+
+  // Intervals [j0, j1) of dimension d where v[j] == arg[base + j].
+  static SmallVector<Interval> passThrough(Value v, BlockArgument arg,
+                                           int64_t d, int64_t base, int depth) {
+    auto ty = cast<RankedTensorType>(arg.getType());
+    auto vt = dyn_cast<RankedTensorType>(v.getType());
+    if (!vt || vt.getRank() != ty.getRank() || !vt.hasStaticShape())
+      return {};
+    for (int64_t i = 0; i < vt.getRank(); ++i)
+      if (i != d && vt.getDimSize(i) != ty.getDimSize(i))
+        return {};
+    int64_t len = vt.getDimSize(d);
+    auto shiftClip = [&](ArrayRef<Interval> in, int64_t shift) {
+      SmallVector<Interval> out;
+      for (auto [a0, a1] : in) {
+        int64_t b0 = std::max<int64_t>(a0 + shift, 0);
+        int64_t b1 = std::min<int64_t>(a1 + shift, len);
+        if (b0 < b1)
+          out.push_back({b0, b1});
+      }
+      return out;
+    };
+    if (v == arg)
+      return base == 0 ? SmallVector<Interval>{{0, len}}
+                       : SmallVector<Interval>{};
+    if (depth > 32)
+      return {};
+    if (auto sl = v.getDefiningOp<stablehlo::SliceOp>()) {
+      // v[j] = w[s + j]; other dimensions must be taken whole.
+      auto wt = cast<RankedTensorType>(sl.getOperand().getType());
+      for (int64_t i = 0; i < wt.getRank(); ++i)
+        if (sl.getStrides()[i] != 1 ||
+            (i != d && (sl.getStartIndices()[i] != 0 ||
+                        sl.getLimitIndices()[i] != wt.getDimSize(i))))
+          return {};
+      int64_t st = sl.getStartIndices()[d];
+      return shiftClip(
+          passThrough(sl.getOperand(), arg, d, base - st, depth + 1), -st);
+    }
+    if (auto concat = v.getDefiningOp<stablehlo::ConcatenateOp>()) {
+      if ((int64_t)concat.getDimension() != d)
+        return {};
+      SmallVector<Interval> out;
+      int64_t off = 0;
+      for (Value x : concat.getOperands()) {
+        int64_t xl = cast<RankedTensorType>(x.getType()).getDimSize(d);
+        for (auto [a0, a1] : passThrough(x, arg, d, base + off, depth + 1))
+          out.push_back({a0 + off, a1 + off});
+        off += xl;
+      }
+      return out;
+    }
+    if (auto sel = v.getDefiningOp<stablehlo::SelectOp>()) {
+      if (cast<RankedTensorType>(sel.getPred().getType()).getRank() != 0)
+        return {};
+      auto l = passThrough(sel.getOnTrue(), arg, d, base, depth + 1);
+      if (l.empty())
+        return {};
+      auto r = passThrough(sel.getOnFalse(), arg, d, base, depth + 1);
+      SmallVector<Interval> out;
+      for (auto [a0, a1] : l)
+        for (auto [b0, b1] : r)
+          if (std::max(a0, b0) < std::min(a1, b1))
+            out.push_back({std::max(a0, b0), std::min(a1, b1)});
+      return out;
+    }
+    if (auto dus = v.getDefiningOp<stablehlo::DynamicUpdateSliceOp>()) {
+      auto ut = cast<RankedTensorType>(dus.getUpdate().getType());
+      for (int64_t i = 0; i < ut.getRank(); ++i)
+        if (i != d && ut.getDimSize(i) != vt.getDimSize(i))
+          return {};
+      DenseIntElementsAttr idx;
+      if (!matchPattern(dus.getStartIndices()[d], m_Constant(&idx)))
+        return {};
+      int64_t ul = ut.getDimSize(d);
+      // dynamic_update_slice clamps the start so that the update fits.
+      int64_t w0 =
+          std::clamp<int64_t>((*idx.begin()).getSExtValue(), 0, len - ul);
+      int64_t w1 = w0 + ul;
+      SmallVector<Interval> out;
+      for (auto [a0, a1] :
+           passThrough(dus.getOperand(), arg, d, base, depth + 1)) {
+        if (a0 < std::min(a1, w0))
+          out.push_back({a0, std::min(a1, w0)});
+        if (std::max(a0, w1) < a1)
+          out.push_back({std::max(a0, w1), a1});
+      }
+      // Inside the window v[j] = u[j - w0].
+      for (auto [a0, a1] :
+           passThrough(dus.getUpdate(), arg, d, base + w0, depth + 1))
+        out.push_back({a0 + w0, a1 + w0});
+      return out;
+    }
+    return {};
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
+    auto yield =
+        cast<stablehlo::ReturnOp>(whileOp.getBody().front().getTerminator());
+    bool changed = false;
+    for (unsigned i = 0; i < whileOp->getNumOperands(); ++i) {
+      auto ty = dyn_cast<RankedTensorType>(whileOp->getOperand(i).getType());
+      if (!ty || !ty.hasStaticShape())
+        continue;
+      BlockArgument arg = whileOp.getBody().getArgument(i);
+      for (int64_t d = 0; d < ty.getRank(); ++d) {
+        SmallVector<Interval> pts =
+            passThrough(yield.getOperand(i), arg, d, /*base=*/0, 0);
+        if (pts.empty())
+          continue;
+        for (BlockArgument a : {arg, whileOp.getCond().getArgument(i)}) {
+          for (Operation *user : llvm::make_early_inc_range(a.getUsers())) {
+            auto sl = dyn_cast<stablehlo::SliceOp>(user);
+            if (!sl || sl.getOperand() != a)
+              continue;
+            int64_t s0 = sl.getStartIndices()[d], s1 = sl.getLimitIndices()[d];
+            if (!llvm::any_of(pts, [&](Interval p) {
+                  return p.first <= s0 && s1 <= p.second;
+                }))
+              continue;
+            OpBuilder::InsertionGuard g(rewriter);
+            rewriter.setInsertionPoint(whileOp);
+            auto hoisted = stablehlo::SliceOp::create(
+                rewriter, sl.getLoc(), whileOp->getOperand(i),
+                sl.getStartIndices(), sl.getLimitIndices(), sl.getStrides());
+            rewriter.replaceOp(sl, hoisted.getResult());
+            changed = true;
+          }
+        }
+      }
+    }
+    return success(changed);
+  }
+};
+
 struct WhileDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
@@ -46025,6 +46170,7 @@ struct EnzymeHLOOptPass
         WhileDUSDSSimplify,
         WhileDUSDUSSimplify,
         WhileDUS,
+        WhilePassThroughSlice,
         DeleteDimsReduce,
         ReduceDeleteDims,
         DotGeneralInsertDimContractionSimplification,

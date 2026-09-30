@@ -55,7 +55,10 @@ module {
   // CHECK-NEXT: %[[NEWRNG:.+]], %[[U:.+]] = impulse.random %[[RNGA]], %[[ZERO]], %[[ONE]] {rng_distribution = #impulse<rng_distribution UNIFORM>} : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
   // CHECK-NEXT: %[[LOGU:.+]] = math.log %[[U]] : tensor<f64>
   // CHECK-NEXT: %[[ACC:.+]] = arith.cmpf olt, %[[LOGU]], %[[ALPHA]] : tensor<f64>
-  // CHECK-NEXT: %[[SELTR:.+]] = impulse.select %[[ACC]], %[[NEWTR]], %[[TRA]] : (tensor<i1>, tensor<1x3xf64>, tensor<1x3xf64>) -> tensor<1x3xf64>
+  // CHECK-NEXT: %[[NEWW:.+]] = impulse.slice %[[NEWTR]] {limit_indices = array<i64: 1, 3>, start_indices = array<i64: 0, 0>, strides = array<i64: 1, 1>} : (tensor<1x3xf64>) -> tensor<1x3xf64>
+  // CHECK-NEXT: %[[OLDW:.+]] = impulse.slice %[[TRA]] {limit_indices = array<i64: 1, 3>, start_indices = array<i64: 0, 0>, strides = array<i64: 1, 1>} : (tensor<1x3xf64>) -> tensor<1x3xf64>
+  // CHECK-NEXT: %[[SELW:.+]] = impulse.select %[[ACC]], %[[NEWW]], %[[OLDW]] : (tensor<i1>, tensor<1x3xf64>, tensor<1x3xf64>) -> tensor<1x3xf64>
+  // CHECK-NEXT: %[[SELTR:.+]] = impulse.dynamic_update_slice %[[TRA]], %[[SELW]], %[[C0]], %[[C0]] : (tensor<1x3xf64>, tensor<1x3xf64>, tensor<i64>, tensor<i64>) -> tensor<1x3xf64>
   // CHECK-NEXT: %[[SELWT:.+]] = arith.select %[[ACC]], %[[NEWWT]], %[[WTA]] : tensor<i1>, tensor<f64>
   // CHECK-NEXT: impulse.yield %[[SELTR]], %[[SELWT]], %[[NEWRNG]], %[[ACC]] : tensor<1x3xf64>, tensor<f64>, tensor<2xui64>, tensor<i1>
   // CHECK: return %[[LOOP]]#0, %[[LOOP]]#3, %[[LOOP]]#2, %[[LOOP]]#1 : tensor<1x3xf64>, tensor<i1>, tensor<2xui64>, tensor<f64>
