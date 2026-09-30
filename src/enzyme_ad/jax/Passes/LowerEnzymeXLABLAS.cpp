@@ -145,7 +145,7 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
   SymmOpLowering(std::string backend, int64_t blasIntWidth,
                  MLIRContext *context, PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend),
-        blasIntWidth(blasIntWidth) {}
+        blasIntWidth(blasIntWidth){}
 
   LogicalResult matchAndRewrite(enzymexla::SymmOp op,
                                 PatternRewriter &rewriter) const override {
