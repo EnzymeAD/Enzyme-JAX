@@ -3060,6 +3060,22 @@ struct IndexEvaluator {
     return !body.isAncestor(v.getParentRegion());
   }
 
+  // A value that holds one number, however it is shaped.
+  static bool isSplat(Value v) {
+    auto ty = dyn_cast<RankedTensorType>(v.getType());
+    if (ty && ty.getNumElements() == 1)
+      return true;
+    Operation *op = v.getDefiningOp();
+    if (!op)
+      return false;
+    if (auto cst = dyn_cast<stablehlo::ConstantOp>(op))
+      return cast<ElementsAttr>(cst.getValue()).isSplat();
+    if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
+            stablehlo::ConvertOp>(op))
+      return isSplat(op->getOperand(0));
+    return false;
+  }
+
   std::optional<IterationIndices> eval(Value v, int64_t iter) {
     if (v == iv)
       return IterationIndices{{start + iter * step}, Value()};
@@ -3138,20 +3154,27 @@ struct IndexEvaluator {
     auto rhs = eval(op->getOperand(1), iter);
     bool isAdd = isa<stablehlo::AddOp>(op);
     if (lhs && rhs) {
-      if (lhs->base || rhs->base)
+      // A based side keeps its base when the other side has none and the op
+      // adds, or subtracts it: the shift is still the same one.
+      if (lhs->base && rhs->base)
         return std::nullopt;
+      if ((lhs->base || rhs->base) && isa<stablehlo::MulOp>(op))
+        return std::nullopt;
+      if (rhs->base && !isAdd)
+        return std::nullopt;
+      Value base = lhs->base ? lhs->base : rhs->base;
       // one side may be a scalar the other is taken against elementwise
       SmallVector<int64_t> &a = lhs->offsets, &b = rhs->offsets;
       if (a.size() != b.size() && a.size() != 1 && b.size() != 1)
         return std::nullopt;
       IterationIndices out;
-      out.base = Value();
+      out.base = base;
       size_t n = std::max(a.size(), b.size());
       for (size_t i = 0; i < n; ++i) {
         int64_t x = a[a.size() == 1 ? 0 : i], y = b[b.size() == 1 ? 0 : i];
-        out.offsets.push_back(isa<stablehlo::MulOp>(op)  ? x * y
-                              : isAdd                    ? x + y
-                                                         : x - y);
+        out.offsets.push_back(isa<stablehlo::MulOp>(op) ? x * y
+                              : isAdd                   ? x + y
+                                                        : x - y);
       }
       return out;
     }
@@ -3161,6 +3184,11 @@ struct IndexEvaluator {
     Value other = lhs ? op->getOperand(1) : op->getOperand(0);
     auto known = lhs ? lhs : rhs;
     if (!known || known->base || !invariant(other))
+      return std::nullopt;
+    // The shift cancels between two accesses only when it is the same for
+    // every element: the base is a scalar, or a splat of one. A vector base
+    // shifts elements differently and offsets alone would then not decide.
+    if (!isSplat(other))
       return std::nullopt;
     known->base = other;
     return known;
