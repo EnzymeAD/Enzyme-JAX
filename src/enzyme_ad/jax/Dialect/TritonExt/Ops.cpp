@@ -14,15 +14,15 @@ namespace enzymexla {
 template <>
 triton_ext::TritonCallOp ReadOnlyArg<triton_ext::TritonCallOp>::create(
     PatternRewriter &rewriter, triton_ext::TritonCallOp launchOp,
-    ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
+    ArrayRef<Type> resTys, ArrayAttr outputLayouts,
+    ArrayAttr outputAliases) const {
   return triton_ext::TritonCallOp::create(
       rewriter, launchOp.getLoc(), resTys, launchOp.getFn(),
       launchOp.getGridx(), launchOp.getGridy(), launchOp.getGridz(),
       launchOp.getClusterx(), launchOp.getClustery(), launchOp.getClusterz(),
       launchOp.getInputs(), launchOp.getBackendConfigAttr(),
-      launchOp.getOperandLayoutsAttr(),
-      /*resultLayouts*/ nullptr, launchOp.getArgAttrsAttr(),
-      launchOp.getResAttrsAttr(), outputAliases,
+      launchOp.getOperandLayoutsAttr(), outputLayouts,
+      launchOp.getArgAttrsAttr(), launchOp.getResAttrsAttr(), outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
 }
 
