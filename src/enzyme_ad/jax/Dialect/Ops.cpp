@@ -318,12 +318,12 @@ public:
       Value ps;
       if (PET)
         // non-opaque pointer
-        ps = enzymexla::TypeSizeOp::create(rewriter,
+        ps = enzymexla::TypeSizeOp::create(rewriter, 
             op.getLoc(), rewriter.getIndexType(), mlir::TypeAttr::get(PET));
       else
         // opaque pointer
         ps = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 1);
-      auto ms = enzymexla::TypeSizeOp::create(rewriter,
+      auto ms = enzymexla::TypeSizeOp::create(rewriter, 
           op.getLoc(), rewriter.getIndexType(), mlir::TypeAttr::get(MET));
       idx[0] = MulIOp::create(rewriter, op.getLoc(), idx[0], ms);
       idx[0] = DivUIOp::create(rewriter, op.getLoc(), idx[0], ps);
@@ -2067,7 +2067,7 @@ LogicalResult fixupGetFunc(LLVM::CallOp op, OpBuilder &rewriter,
       if (!FT2.getParams()[i].isa<MemRefType>() ||
           !args[i].getType().isa<LLVM::LLVMPointerType>())
         return failure();
-      args[i] = polygeist::Pointer2MemrefOp::create(rewriter,
+      args[i] = polygeist::Pointer2MemrefOp::create(rewriter, 
           op.getLoc(), FT2.getParams()[i], args[i]);
     }
   }
