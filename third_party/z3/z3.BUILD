@@ -209,6 +209,10 @@ cc_library(
         "-D_MP_INTERNAL",  # Z3_USE_LIB_GMP=OFF
         "-D_EXTERNAL_RELEASE",  # CMAKE_BUILD_TYPE=Release
         "-w",
+        # std::format fallback for toolchains without it (added by
+        # std_format_shim.patch; resolved through the `src` include path).
+        "-include",
+        "util/z3_std_format.h",
     ] + select({
         # z3 relies on SSE2 for deterministic floating point on x86.
         "@platforms//cpu:x86_64": [
