@@ -1927,6 +1927,6 @@ cc_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:LLVMDialect",
         "@llvm-project//mlir:Pass",
-        "@z3",
+        "@z3//:z3_static",
     ],
 )
