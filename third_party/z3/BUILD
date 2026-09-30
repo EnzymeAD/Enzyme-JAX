@@ -20,7 +20,6 @@ cmake(
     name = "z3_dynamic",
     generate_args = [
         "-G Ninja",
-        "-D Z3_BUILD_EXECUTABLE=OFF",
     ],
     lib_source = ":all_files",
     out_binaries = ["z3"],
@@ -38,7 +37,6 @@ cmake(
     name = "z3_static_cmake",
     generate_args = [
         "-G Ninja",
-        "-D Z3_BUILD_EXECUTABLE=OFF",
     ],
     lib_source = ":all_files",
     out_binaries = ["z3"],
