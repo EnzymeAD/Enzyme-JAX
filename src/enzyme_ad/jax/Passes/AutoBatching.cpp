@@ -733,6 +733,25 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
   relatedSlices = std::move(sortedSlices);
   relatedOps = std::move(sortedOps);
 
+  // The pieces the ops read are stacked into the batched operand. Pieces that
+  // follow one another merge into one slice; any others can only be stacked
+  // by concatenating them. For a convert that is not a form the
+  // simplifications keep: ConvertConcat distributes a convert over a
+  // concatenate's inputs unconditionally, a slice of the result then selects
+  // one of them, and the converts this pattern batched stand again for it to
+  // batch once more. Other ops over such a stack are left as they are
+  // (ConcatElementwise refuses converts for the same reason). It is decided
+  // here, before anything is built: a pattern that builds and then declines
+  // is offered its own leavings for as long as the driver runs.
+  if (isa<stablehlo::ConvertOp>(relatedOps[0])) {
+    for (size_t i = 1, e = relatedSlices.size(); i < e; ++i) {
+      if (!stablehlo::canMergeSlicesAlongAxis(
+              sliceDim, relatedSlices[i - 1].sliceOp, relatedSlices[i].sliceOp))
+        return rewriter.notifyMatchFailure(
+            sliceOp, "converts of pieces that do not follow one another");
+    }
+  }
+
   // quite an expensive check, so run at the very end
   if (::utils::anyOpsAreDataDependent(relatedOps)) {
     return rewriter.notifyMatchFailure(sliceOp, "ops are data dependent");
@@ -772,35 +791,27 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     }
   }
 
-  // Use worklist to compute transitive "depends on related op" set
-  // Start with ops that directly depend on related ops, then propagate to users
+  // The ops of the range that read a related op's result, directly or
+  // through another such op. A value is read by an op when the op takes it as
+  // an operand and when an op nested in one of its regions captures it, so
+  // ask about every op the range op contains. Definitions precede their uses
+  // in the block, so one pass in program order reaches them all.
   llvm::SmallPtrSet<Operation *, 16> dependsOnRelated;
-  llvm::SmallVector<Operation *> worklist;
-
-  // Initialize worklist with non-related ops that directly depend on related
-  // ops
-  for (Operation *op : nonRelatedOps) {
-    for (Value operand : op->getOperands()) {
-      if (Operation *defOp = operand.getDefiningOp()) {
-        if (relatedOpsSet.contains(defOp)) {
-          dependsOnRelated.insert(op);
-          worklist.push_back(op);
-          break;
-        }
+  for (auto it = rangeBegin; it != rangeEnd; ++it) {
+    Operation *op = &*it;
+    if (relatedOpsSet.contains(op))
+      continue;
+    bool reads = false;
+    op->walk([&](Operation *inner) {
+      for (Value v : inner->getOperands()) {
+        Operation *defOp = v.getDefiningOp();
+        if (defOp &&
+            (relatedOpsSet.contains(defOp) || dependsOnRelated.contains(defOp)))
+          reads = true;
       }
-    }
-  }
-
-  // Propagate: if op depends on related, all its users in range also depend
-  while (!worklist.empty()) {
-    Operation *op = worklist.pop_back_val();
-    for (Operation *user : op->getUsers()) {
-      if (opsInRange.contains(user) && !relatedOpsSet.contains(user) &&
-          !dependsOnRelated.contains(user)) {
-        dependsOnRelated.insert(user);
-        worklist.push_back(user);
-      }
-    }
+    });
+    if (reads)
+      dependsOnRelated.insert(op);
   }
 
   // Partition non-related ops into preOps and postOps
@@ -1960,7 +1971,7 @@ bool liftReduceLikeOperation(
   auto rhs = op->getOperand(1);
 
   bool isLhsLoopCarriedDep = false, isRhsLoopCarriedDep = false;
-  int64_t argIdx;
+  int64_t argIdx = -1;
   if (auto lhsBlockArg = dyn_cast<BlockArgument>(lhs)) {
     if (lhsBlockArg.getOwner() == &whileOp.getBody().front() &&
         returnOp->getOperand(lhsBlockArg.getArgNumber()) == result) {
@@ -1976,16 +1987,19 @@ bool liftReduceLikeOperation(
     }
   }
 
-  // while dead args is needed to clean this up
-  if (argIdx >= whileOp->getNumResults() ||
-      whileOp->getResult(argIdx).getUsers().empty()) {
-    return false;
-  }
-
   if (isLhsLoopCarriedDep == isRhsLoopCarriedDep) {
     return false; // atmost one of lhs/rhs must be loop carried dep
   }
   if (specialOps && isRhsLoopCarriedDep) { // only lhs can be loop carried dep
+    return false;
+  }
+
+  // Only now does argIdx hold the position the carried value came from: it is
+  // set by whichever of the two branches above found one, and asking about it
+  // before they have agreed on exactly one reads it unset.
+  // while dead args is needed to clean this up
+  if (argIdx >= whileOp->getNumResults() ||
+      whileOp->getResult(argIdx).getUsers().empty()) {
     return false;
   }
 

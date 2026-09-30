@@ -42,6 +42,9 @@ base_paths = [
 path = os.path.pathsep.join(base_paths)  # + config.extra_paths)
 config.environment["PATH"] = path
 config.environment["ENZYME_TEST_NOWHEEL"] = "1"
+# Match LLVM/MLIR (and google3): FileCheck variables are scoped to each
+# CHECK-LABEL block unless they are global ($-prefixed).
+config.environment["FILECHECK_OPTS"] = "-enable-var-scope"
 if getattr(config, "enable_triton", True):
     config.available_features.add("triton")
 

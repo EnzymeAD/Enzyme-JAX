@@ -24,7 +24,7 @@ class raw_ostream;
 namespace polly {
 llvm::Pass *createDeadCodeElimWrapperPass();
 
-struct DeadCodeElimPass final : llvm::PassInfoMixin<DeadCodeElimPass> {
+struct DeadCodeElimPass final : llvm::OptionalPassInfoMixin<DeadCodeElimPass> {
   DeadCodeElimPass() {}
 
   llvm::PreservedAnalyses run(Scop &S, ScopAnalysisManager &SAM,

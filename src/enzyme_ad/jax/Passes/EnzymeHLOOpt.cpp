@@ -895,14 +895,16 @@ struct ReshapeDUS final
                      ? cast<RankedTensorType>(startIndices[0].getType())
                      : RankedTensorType::get({}, rewriter.getI64Type());
 
+    // A dimension the reshape adds takes a zero start index. That constant
+    // is made only once every check has passed: an index the transform
+    // fills is a null placeholder until then, which the removal check reads
+    // as the zero it stands for. A pattern that creates and then declines
+    // leaves the constant behind, and the driver revisits it without end.
     if (!transformReshapeSlice<mlir::Value>(
-            op, startIndices, /*toFill*/
-            [&]() -> mlir::Value {
-              return stablehlo::ConstantOp::create(
-                  rewriter, dus.getLoc(), itype,
-                  cast<ElementsAttr>(makeAttr(itype, 0)));
-            },
-            [](mlir::Value v) -> bool { return matchPattern(v, m_Zero()); }))
+            op, startIndices, /*toFill*/ []() -> mlir::Value { return {}; },
+            [](mlir::Value v) -> bool {
+              return !v || matchPattern(v, m_Zero());
+            }))
       return failure();
 
     SmallVector<int64_t> updateShape(
@@ -914,6 +916,16 @@ struct ReshapeDUS final
                                         /*checkRemoved*/ &one))
       return failure();
 
+    Value zero;
+    for (Value &index : startIndices) {
+      if (index)
+        continue;
+      if (!zero)
+        zero = stablehlo::ConstantOp::create(
+            rewriter, dus.getLoc(), itype,
+            cast<ElementsAttr>(makeAttr(itype, 0)));
+      index = zero;
+    }
     auto newOperand = stablehlo::ReshapeOpCreate(
         rewriter, op.getLoc(), dus.getOperand(),
         cast<RankedTensorType>(op.getType()).getShape());
@@ -1023,14 +1035,16 @@ struct ReshapeDynamicSlice final
                      ? cast<RankedTensorType>(startIndices[0].getType())
                      : RankedTensorType::get({}, rewriter.getI64Type());
 
+    // A dimension the reshape adds takes a zero start index. That constant
+    // is made only once every check has passed: an index the transform
+    // fills is a null placeholder until then, which the removal check reads
+    // as the zero it stands for. A pattern that creates and then declines
+    // leaves the constant behind, and the driver revisits it without end.
     if (!transformReshapeSlice<mlir::Value>(
-            op, startIndices, /*toFill*/
-            [&]() -> mlir::Value {
-              return stablehlo::ConstantOp::create(
-                  rewriter, slice.getLoc(), itype,
-                  cast<ElementsAttr>(makeAttr(itype, 0)));
-            },
-            [](mlir::Value v) -> bool { return matchPattern(v, m_Zero()); }))
+            op, startIndices, /*toFill*/ []() -> mlir::Value { return {}; },
+            [](mlir::Value v) -> bool {
+              return !v || matchPattern(v, m_Zero());
+            }))
       return failure();
 
     SmallVector<int64_t> sliceSizes = llvm::to_vector(slice.getSliceSizes());
@@ -1048,6 +1062,16 @@ struct ReshapeDynamicSlice final
                                         /*checkRemoved*/ &one))
       return failure();
 
+    Value zero;
+    for (Value &index : startIndices) {
+      if (index)
+        continue;
+      if (!zero)
+        zero = stablehlo::ConstantOp::create(
+            rewriter, slice.getLoc(), itype,
+            cast<ElementsAttr>(makeAttr(itype, 0)));
+      index = zero;
+    }
     auto newOperand = stablehlo::ReshapeOpCreate(
         rewriter, op.getLoc(), slice.getOperand(), operandShape);
 
@@ -5341,6 +5365,44 @@ struct ShiftRightLogicalSimplify final
       return success();
     }
     return failure();
+  }
+};
+
+// A loop that carries the same value in two positions carries it once. Two
+// positions that start from one value and yield one value hold that value in
+// every iteration, so the later one's argument and result are the earlier
+// one's; dead result removal then drops the position. A raised kernel yields
+// such a pair whenever it keeps a copy of an accumulator it also reads.
+struct WhileDuplicateCarried final
+    : CheckedOpRewritePattern<stablehlo::WhileOp, WhileDuplicateCarried> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
+                                    PatternRewriter &rewriter) const {
+    Block &body = op.getBody().front();
+    Block &cond = op.getCond().front();
+    auto ret = dyn_cast<stablehlo::ReturnOp>(body.getTerminator());
+    if (!ret)
+      return failure();
+    bool changed = false;
+    for (unsigned j = 0, e = op.getNumOperands(); j < e; ++j) {
+      for (unsigned i = 0; i < j; ++i) {
+        if (op->getOperand(i) != op->getOperand(j) ||
+            ret.getOperand(i) != ret.getOperand(j))
+          continue;
+        // Already nothing reads the later position; removing it is the dead
+        // result pattern's to do, and saying so here would never settle.
+        if (body.getArgument(j).use_empty() &&
+            cond.getArgument(j).use_empty() && op->getResult(j).use_empty())
+          break;
+        rewriter.replaceAllUsesWith(body.getArgument(j), body.getArgument(i));
+        rewriter.replaceAllUsesWith(cond.getArgument(j), cond.getArgument(i));
+        rewriter.replaceAllUsesWith(op->getResult(j), op->getResult(i));
+        changed = true;
+        break;
+      }
+    }
+    return success(changed);
   }
 };
 
@@ -15951,8 +16013,8 @@ struct SliceReverse final
       }
     }
 
-    if (!changed || !remainingDims.empty() &&
-                        !llvm::hasSingleElement(reverse.getResult().getUses()))
+    if (!changed || (!remainingDims.empty() &&
+                     !llvm::hasSingleElement(reverse.getResult().getUses())))
       return failure();
 
     // If any reversed dims remain (not eliminated), we must re-apply the
@@ -38032,7 +38094,7 @@ struct EnzymeHLOOptPass
         TransposeIsReshape,
         BroadcastInDimIsReshape,
         ReshuffleAndsCompares,
-        WhileDeadResults,
+        WhileDeadResults, WhileDuplicateCarried,
         ZeroExtentTensorCanon,
         CompareSelectSimplify,
         NotSelectSimplify,

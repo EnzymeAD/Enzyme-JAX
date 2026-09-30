@@ -24,10 +24,10 @@ module {
   }
 }
 
-// CHECK: #[[SET:.+]] = affine_set<(d0) : (d0 - 3 >= 0)>
+// CHECK: #[[$SET:.+]] = affine_set<(d0) : (d0 - 3 >= 0)>
 // CHECK-LABEL: func.func @f
 // CHECK:         affine.for %[[I:.+]] = 1 to %{{.*}} {
 // CHECK-NEXT:      %[[IC:.+]] = arith.index_cast %[[I]] : index to i64
 // CHECK:           affine.parallel (%[[T:.+]]) = (0) to (256) {
-// CHECK-NEXT:        affine.if #[[SET]](%[[I]]) {
+// CHECK-NEXT:        affine.if #[[$SET]](%[[I]]) {
 // CHECK-NEXT:          affine.store %[[IC]], %{{.*}}[%[[T]]] : memref<?xi64>
