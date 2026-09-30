@@ -97,6 +97,10 @@ void ApplyCholeskyLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addCholeskyLICM(patterns, getParameter(), *getContext(),
                   PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyQRLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addQRLICM(patterns, getParameter(), *getContext(),
+            PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyReverseLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addReverseLICM(patterns, getParameter(), *getContext(),
                  PatternBenefit(getBenefit().value_or(1)));

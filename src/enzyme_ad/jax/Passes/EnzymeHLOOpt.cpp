@@ -45242,6 +45242,12 @@ void mlir::transform::addCholeskyLICM(RewritePatternSet &patterns,
   patterns.insert<LICM<stablehlo::CholeskyOp>>(single_user, &context, benefit);
 }
 
+void mlir::transform::addQRLICM(RewritePatternSet &patterns, bool single_user,
+                                MLIRContext &context, PatternBenefit benefit) {
+  patterns.insert<LICM<enzymexla::QRFactorizationOp>>(single_user, &context,
+                                                      benefit);
+}
+
 void mlir::transform::addReverseLICM(RewritePatternSet &patterns,
                                      bool single_user, MLIRContext &context,
                                      PatternBenefit benefit) {
@@ -45837,6 +45843,7 @@ struct EnzymeHLOOptPass
       patterns.add<LICM<stablehlo::SliceOp>>(false, context);
       patterns.add<LICM<stablehlo::DotGeneralOp>>(false, context);
       patterns.add<LICM<stablehlo::CholeskyOp>>(false, context);
+      patterns.add<LICM<enzymexla::QRFactorizationOp>>(false, context);
       patterns.add<LICM<stablehlo::ReverseOp>>(false, context);
       patterns.add<LICM<stablehlo::ReduceOp>>(false, context);
       patterns.add<LICM<stablehlo::ReduceWindowOp>>(false, context);
