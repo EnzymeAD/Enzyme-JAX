@@ -145,3 +145,65 @@ module {
     llvm.return %0 : f32
   }
 }
+
+// -----
+
+// power_of_two on a constant is settled at compile time, both ways: a power of
+// two takes the rewrite with no check, anything else -- zero included -- keeps
+// the original call with no check.
+module {
+  tessera.define private @lib.div_ui(f64, i64) -> f64 attributes {argModes = [unit, unit], pure = true}
+  tessera.define private @lib.shift(f64, i64) -> f64 attributes {argModes = [unit, unit], pure = true}
+
+  tessera.optimizations {
+    tessera.optimization "if power_of_two(n), lib.div_ui(x, n) -> lib.shift(x, n)"
+  }
+
+  // CHECK-LABEL: llvm.func @constant_power_of_two
+  // CHECK: tessera.call @lib.shift
+  // CHECK-NOT: tessera.guard
+  llvm.func @constant_power_of_two(%x: f64) -> f64 {
+    %n = llvm.mlir.constant(8 : i64) : i64
+    %0 = tessera.call @lib.div_ui(%x, %n) : (f64, i64) -> f64
+    llvm.return %0 : f64
+  }
+
+  // CHECK-LABEL: llvm.func @constant_not_power_of_two
+  // CHECK-NOT: tessera.guard
+  // CHECK-NOT: tessera.call @lib.shift
+  // CHECK: tessera.call @lib.div_ui
+  // CHECK-NEXT: llvm.return
+  llvm.func @constant_not_power_of_two(%x: f64) -> f64 {
+    %n = llvm.mlir.constant(6 : i64) : i64
+    %0 = tessera.call @lib.div_ui(%x, %n) : (f64, i64) -> f64
+    llvm.return %0 : f64
+  }
+
+  // CHECK-LABEL: llvm.func @constant_zero
+  // CHECK-NOT: tessera.guard
+  // CHECK-NOT: tessera.call @lib.shift
+  // CHECK: tessera.call @lib.div_ui
+  // CHECK-NEXT: llvm.return
+  llvm.func @constant_zero(%x: f64) -> f64 {
+    %n = llvm.mlir.constant(0 : i64) : i64
+    %0 = tessera.call @lib.div_ui(%x, %n) : (f64, i64) -> f64
+    llvm.return %0 : f64
+  }
+
+  // The top bit alone is a power of two for an unsigned count.
+  // CHECK-LABEL: llvm.func @constant_top_bit
+  // CHECK: tessera.call @lib.shift
+  // CHECK-NOT: tessera.guard
+  llvm.func @constant_top_bit(%x: f64) -> f64 {
+    %n = llvm.mlir.constant(-9223372036854775808 : i64) : i64
+    %0 = tessera.call @lib.div_ui(%x, %n) : (f64, i64) -> f64
+    llvm.return %0 : f64
+  }
+
+  // CHECK-LABEL: llvm.func @dynamic_power_of_two
+  // CHECK: tessera.guard "power_of_two(n)"
+  llvm.func @dynamic_power_of_two(%x: f64, %n: i64) -> f64 {
+    %0 = tessera.call @lib.div_ui(%x, %n) : (f64, i64) -> f64
+    llvm.return %0 : f64
+  }
+}
