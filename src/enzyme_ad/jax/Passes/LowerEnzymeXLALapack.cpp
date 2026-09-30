@@ -1426,6 +1426,7 @@ private:
 
     auto inputType = cast<RankedTensorType>(input.getType());
     auto pivotType = cast<RankedTensorType>(op.getResult(1).getType());
+    auto permutationType = cast<RankedTensorType>(op.getResult(2).getType());
     auto infoType = cast<RankedTensorType>(op.getResult(3).getType());
 
     auto inputElementType = inputType.getElementType();
@@ -1538,6 +1539,8 @@ private:
         unbatchedPivotType.getShape(), rewriter.getIntegerType(blasIntWidth));
     auto blasPivotType = RankedTensorType::get(
         pivotType.getShape(), rewriter.getIntegerType(blasIntWidth));
+    auto blasPermutationType = RankedTensorType::get(
+        permutationType.getShape(), rewriter.getIntegerType(blasIntWidth));
     auto unbatchedBLASInfoType = RankedTensorType::get(
         unbatchedInfoType.getShape(), rewriter.getIntegerType(blasIntWidth));
     auto blasInfoType = RankedTensorType::get(
@@ -1607,12 +1610,12 @@ private:
             cast<ElementsAttr>(makeAttr(blasPivotType, 1))));
 
     auto permutation = stablehlo::IotaOp::create(
-        rewriter, op.getLoc(), blasPivotType,
-        rewriter.getI64IntegerAttr(blasPivotType.getRank() - 1));
+        rewriter, op.getLoc(), blasPermutationType,
+        rewriter.getI64IntegerAttr(blasPermutationType.getRank() - 1));
 
-    auto pivotToPermReturnTypes = {iterType, blasPivotType};
+    auto pivotToPermReturnTypes = {iterType, blasPermutationType};
     auto pivotToPermWhileOp = stablehlo::WhileOp::create(
-        rewriter, op.getLoc(), TypeRange{iterType, blasPivotType},
+        rewriter, op.getLoc(), TypeRange{iterType, blasPermutationType},
         ValueRange{iter, permutation});
 
     {
@@ -1742,8 +1745,8 @@ private:
     auto finalPermutation = stablehlo::AddOp::create(
         rewriter, op.getLoc(), pivotToPermWhileOp.getResult(1),
         stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), blasPivotType,
-            cast<ElementsAttr>(makeAttr(blasPivotType, 1))));
+            rewriter, op.getLoc(), blasPermutationType,
+            cast<ElementsAttr>(makeAttr(blasPermutationType, 1))));
 
     rewriter.replaceAllUsesWith(op.getResult(0), factorizedResult);
     rewriter.replaceAllUsesWith(
@@ -1751,7 +1754,7 @@ private:
                                                       pivotType, pivotResult));
     rewriter.replaceAllUsesWith(
         op.getResult(2),
-        stablehlo::ConvertOp::create(rewriter, op.getLoc(), pivotType,
+        stablehlo::ConvertOp::create(rewriter, op.getLoc(), permutationType,
                                      finalPermutation));
     rewriter.replaceAllUsesWith(
         op.getResult(3), stablehlo::ConvertOp::create(rewriter, op.getLoc(),
