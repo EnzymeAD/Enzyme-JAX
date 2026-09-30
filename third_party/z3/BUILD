@@ -20,9 +20,7 @@ cmake(
     name = "z3_dynamic",
     generate_args = [
         "-G Ninja",
-        "-D CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY",
         "-D Z3_BUILD_EXECUTABLE=OFF",
-        "-D Z3_EXPORTED_TARGETS=",  # prevents installation, leaving symlinks between dylibs intact on copy
     ],
     lib_source = ":all_files",
     out_binaries = ["z3"],
@@ -40,9 +38,6 @@ cmake(
     name = "z3_static_cmake",
     generate_args = [
         "-G Ninja",
-        "-D CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY",
-        "-D BUILD_SHARED_LIBS=OFF",
-        "-D Z3_BUILD_LIBZ3_SHARED=OFF",
         "-D Z3_BUILD_EXECUTABLE=OFF",
     ],
     lib_source = ":all_files",
