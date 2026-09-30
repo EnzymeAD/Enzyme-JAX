@@ -117,3 +117,28 @@ llvm.func @result_arg_func_caller() {
 // CHECK-NEXT: llvm.store %[[LOAD]], %[[AL]] : i32, !llvm.ptr
 // CHECK-NEXT: llvm.return
 // CHECK-NEXT: }
+// -----
+
+// A tail call promises the callee does not access the caller's allocas. Once
+// the call is given stack copies of its lifted arguments that no longer holds,
+// so the marker is dropped: kept, LLVM would assume the callee leaves the copy
+// of the inout argument alone and fold the value read back after the call to
+// the one stored before it, losing what the callee wrote.
+
+tessera.define private @tessera_update(!llvm.ptr) -> i32 attributes {argModes = [{dir = #tessera.dir<inout>, type = !llvm.struct<(i64, i32)>}], pure = false, tessera.original_name = "update"}
+tessera.define private @tessera_plain(i64) -> i32 attributes {argModes = [unit], pure = false, tessera.original_name = "plain"}
+
+llvm.func @tail_caller(%p: !llvm.ptr, %n: i64) -> i32 {
+  %v = llvm.load %p : !llvm.ptr -> !llvm.struct<(i64, i32)>
+  %r:2 = tessera.call @tessera_update(%v) {TailCallKind = #llvm.tailcallkind<tail>} : (!llvm.struct<(i64, i32)>) -> (!llvm.struct<(i64, i32)>, i32)
+  llvm.store %r#0, %p : !llvm.struct<(i64, i32)>, !llvm.ptr
+  %s = tessera.call @tessera_plain(%n) {TailCallKind = #llvm.tailcallkind<tail>} : (i64) -> i32
+  llvm.return %s : i32
+}
+
+// CHECK-LABEL: llvm.func @tail_caller
+// CHECK: %[[COPY:.*]] = llvm.alloca
+// CHECK: llvm.call @update(%[[COPY]]) : (!llvm.ptr) -> i32
+// CHECK: llvm.load %[[COPY]]
+// A call given no stack copy keeps its marker.
+// CHECK: llvm.call tail @plain(%arg1)
