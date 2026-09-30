@@ -849,6 +849,24 @@ bool transformReshapeSlice(stablehlo::ReshapeOp op, SmallVectorImpl<T> &start,
                                   start, toFill, checkRemovedFn);
 }
 
+// Start indices of the unit dimensions a reshape inserts are zero.
+// transformReshapeSlice leaves them as null placeholders, so that a pattern
+// whose later checks fail has not changed the IR. Replace them with one zero
+// constant once the rewrite is known to apply.
+void fillInsertedStartIndices(PatternRewriter &rewriter, Location loc,
+                              RankedTensorType itype,
+                              SmallVectorImpl<Value> &startIndices) {
+  Value zero;
+  for (auto &start : startIndices) {
+    if (start)
+      continue;
+    if (!zero)
+      zero = stablehlo::ConstantOp::create(
+          rewriter, loc, itype, cast<ElementsAttr>(makeAttr(itype, 0)));
+    start = zero;
+  }
+}
+
 stablehlo::Element conj(const stablehlo::Element &orig) {
   if (stablehlo::isSupportedComplexType(orig.getType())) {
     mlir::Complex<APFloat> val = orig.getComplexValue();
@@ -896,13 +914,10 @@ struct ReshapeDUS final
                      : RankedTensorType::get({}, rewriter.getI64Type());
 
     if (!transformReshapeSlice<mlir::Value>(
-            op, startIndices, /*toFill*/
-            [&]() -> mlir::Value {
-              return stablehlo::ConstantOp::create(
-                  rewriter, dus.getLoc(), itype,
-                  cast<ElementsAttr>(makeAttr(itype, 0)));
-            },
-            [](mlir::Value v) -> bool { return matchPattern(v, m_Zero()); }))
+            op, startIndices, /*toFill*/ mlir::Value(),
+            [](mlir::Value v) -> bool {
+              return !v || matchPattern(v, m_Zero());
+            }))
       return failure();
 
     SmallVector<int64_t> updateShape(
@@ -913,6 +928,8 @@ struct ReshapeDUS final
     if (!transformReshapeSlice<int64_t>(op, updateShape, /*toFill*/ 1,
                                         /*checkRemoved*/ &one))
       return failure();
+
+    fillInsertedStartIndices(rewriter, dus.getLoc(), itype, startIndices);
 
     auto newOperand = stablehlo::ReshapeOpCreate(
         rewriter, op.getLoc(), dus.getOperand(),
@@ -1024,13 +1041,10 @@ struct ReshapeDynamicSlice final
                      : RankedTensorType::get({}, rewriter.getI64Type());
 
     if (!transformReshapeSlice<mlir::Value>(
-            op, startIndices, /*toFill*/
-            [&]() -> mlir::Value {
-              return stablehlo::ConstantOp::create(
-                  rewriter, slice.getLoc(), itype,
-                  cast<ElementsAttr>(makeAttr(itype, 0)));
-            },
-            [](mlir::Value v) -> bool { return matchPattern(v, m_Zero()); }))
+            op, startIndices, /*toFill*/ mlir::Value(),
+            [](mlir::Value v) -> bool {
+              return !v || matchPattern(v, m_Zero());
+            }))
       return failure();
 
     SmallVector<int64_t> sliceSizes = llvm::to_vector(slice.getSliceSizes());
@@ -1047,6 +1061,8 @@ struct ReshapeDynamicSlice final
     if (!transformReshapeSlice<int64_t>(op, operandShape, /*toFill*/ 1,
                                         /*checkRemoved*/ &one))
       return failure();
+
+    fillInsertedStartIndices(rewriter, slice.getLoc(), itype, startIndices);
 
     auto newOperand = stablehlo::ReshapeOpCreate(
         rewriter, op.getLoc(), slice.getOperand(), operandShape);

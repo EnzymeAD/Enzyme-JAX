@@ -115,6 +115,38 @@ module {
   // CHECK-NEXT:   return %1 : tensor<1x2032xf64>
   // CHECK-NEXT: }
 
+  // Test that a failing match leaves the IR unchanged. The reshape adds a unit
+  // dimension in front of the sliced one, whose start is not a constant zero.
+
+  func.func @reshape_slice_add_unit_dim_before_dynamic_start(%arg0: tensor<2x3xf64>, %arg1: tensor<i32>) -> tensor<1x2xf64> {
+    %c0 = stablehlo.constant dense<0> : tensor<i32>
+    %0 = stablehlo.dynamic_slice %arg0, %c0, %arg1, sizes = [2, 1] : (tensor<2x3xf64>, tensor<i32>, tensor<i32>) -> tensor<2x1xf64>
+    %1 = stablehlo.reshape %0 : (tensor<2x1xf64>) -> tensor<1x2xf64>
+    return %1 : tensor<1x2xf64>
+  }
+
+  // CHECK: func.func @reshape_slice_add_unit_dim_before_dynamic_start(%arg0: tensor<2x3xf64>, %arg1: tensor<i32>) -> tensor<1x2xf64> {
+  // CHECK-NEXT:   %c = stablehlo.constant dense<0> : tensor<i32>
+  // CHECK-NEXT:   %0 = stablehlo.dynamic_slice %arg0, %c, %arg1, sizes = [2, 1] : (tensor<2x3xf64>, tensor<i32>, tensor<i32>) -> tensor<2x1xf64>
+  // CHECK-NEXT:   %1 = stablehlo.reshape %0 : (tensor<2x1xf64>) -> tensor<1x2xf64>
+  // CHECK-NEXT:   return %1 : tensor<1x2xf64>
+  // CHECK-NEXT: }
+
+  // Same, where the slice itself reduces the dropped dimension to one.
+
+  func.func @reshape_slice_add_unit_dim_before_sliced_dim(%arg0: tensor<4x3xf64>, %arg1: tensor<i32>) -> tensor<1x2xf64> {
+    %c0 = stablehlo.constant dense<0> : tensor<i32>
+    %0 = stablehlo.dynamic_slice %arg0, %arg1, %c0, sizes = [2, 1] : (tensor<4x3xf64>, tensor<i32>, tensor<i32>) -> tensor<2x1xf64>
+    %1 = stablehlo.reshape %0 : (tensor<2x1xf64>) -> tensor<1x2xf64>
+    return %1 : tensor<1x2xf64>
+  }
+
+  // CHECK: func.func @reshape_slice_add_unit_dim_before_sliced_dim(%arg0: tensor<4x3xf64>, %arg1: tensor<i32>) -> tensor<1x2xf64> {
+  // CHECK-NEXT:   %c = stablehlo.constant dense<0> : tensor<i32>
+  // CHECK-NEXT:   %0 = stablehlo.dynamic_slice %arg0, %arg1, %c, sizes = [2, 1] : (tensor<4x3xf64>, tensor<i32>, tensor<i32>) -> tensor<2x1xf64>
+  // CHECK-NEXT:   %1 = stablehlo.reshape %0 : (tensor<2x1xf64>) -> tensor<1x2xf64>
+  // CHECK-NEXT:   return %1 : tensor<1x2xf64>
+  // CHECK-NEXT: }
 }
 
 module {
