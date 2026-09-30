@@ -895,14 +895,16 @@ struct ReshapeDUS final
                      ? cast<RankedTensorType>(startIndices[0].getType())
                      : RankedTensorType::get({}, rewriter.getI64Type());
 
+    // A dimension the reshape adds takes a zero start index. That constant
+    // is made only once every check has passed: an index the transform
+    // fills is a null placeholder until then, which the removal check reads
+    // as the zero it stands for. A pattern that creates and then declines
+    // leaves the constant behind, and the driver revisits it without end.
     if (!transformReshapeSlice<mlir::Value>(
-            op, startIndices, /*toFill*/
-            [&]() -> mlir::Value {
-              return stablehlo::ConstantOp::create(
-                  rewriter, dus.getLoc(), itype,
-                  cast<ElementsAttr>(makeAttr(itype, 0)));
-            },
-            [](mlir::Value v) -> bool { return matchPattern(v, m_Zero()); }))
+            op, startIndices, /*toFill*/ []() -> mlir::Value { return {}; },
+            [](mlir::Value v) -> bool {
+              return !v || matchPattern(v, m_Zero());
+            }))
       return failure();
 
     SmallVector<int64_t> updateShape(
@@ -914,6 +916,16 @@ struct ReshapeDUS final
                                         /*checkRemoved*/ &one))
       return failure();
 
+    Value zero;
+    for (Value &index : startIndices) {
+      if (index)
+        continue;
+      if (!zero)
+        zero = stablehlo::ConstantOp::create(
+            rewriter, dus.getLoc(), itype,
+            cast<ElementsAttr>(makeAttr(itype, 0)));
+      index = zero;
+    }
     auto newOperand = stablehlo::ReshapeOpCreate(
         rewriter, op.getLoc(), dus.getOperand(),
         cast<RankedTensorType>(op.getType()).getShape());
@@ -1023,14 +1035,16 @@ struct ReshapeDynamicSlice final
                      ? cast<RankedTensorType>(startIndices[0].getType())
                      : RankedTensorType::get({}, rewriter.getI64Type());
 
+    // A dimension the reshape adds takes a zero start index. That constant
+    // is made only once every check has passed: an index the transform
+    // fills is a null placeholder until then, which the removal check reads
+    // as the zero it stands for. A pattern that creates and then declines
+    // leaves the constant behind, and the driver revisits it without end.
     if (!transformReshapeSlice<mlir::Value>(
-            op, startIndices, /*toFill*/
-            [&]() -> mlir::Value {
-              return stablehlo::ConstantOp::create(
-                  rewriter, slice.getLoc(), itype,
-                  cast<ElementsAttr>(makeAttr(itype, 0)));
-            },
-            [](mlir::Value v) -> bool { return matchPattern(v, m_Zero()); }))
+            op, startIndices, /*toFill*/ []() -> mlir::Value { return {}; },
+            [](mlir::Value v) -> bool {
+              return !v || matchPattern(v, m_Zero());
+            }))
       return failure();
 
     SmallVector<int64_t> sliceSizes = llvm::to_vector(slice.getSliceSizes());
@@ -1048,6 +1062,16 @@ struct ReshapeDynamicSlice final
                                         /*checkRemoved*/ &one))
       return failure();
 
+    Value zero;
+    for (Value &index : startIndices) {
+      if (index)
+        continue;
+      if (!zero)
+        zero = stablehlo::ConstantOp::create(
+            rewriter, slice.getLoc(), itype,
+            cast<ElementsAttr>(makeAttr(itype, 0)));
+      index = zero;
+    }
     auto newOperand = stablehlo::ReshapeOpCreate(
         rewriter, op.getLoc(), slice.getOperand(), operandShape);
 
