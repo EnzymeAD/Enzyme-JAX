@@ -6994,6 +6994,18 @@ struct ClampConstProp final
       maxTen = stablehlo::makeTensor(maxAttr.resizeSplat(inputTy));
       inputTen = stablehlo::makeTensor(inputAttr.resizeSplat(inputTy));
     } else {
+      // A bound may be a scalar the operand is clamped against elementwise,
+      // which the reference clamp does not take: it indexes every bound as it
+      // does the operand. A splat bound is resized to the operand's shape; a
+      // bound of another shape that is not a splat is left alone.
+      auto inputTy = cast<ShapedType>(inputAttr.getType());
+      for (DenseElementsAttr *bound : {&minAttr, &maxAttr}) {
+        if (bound->getType() == inputTy)
+          continue;
+        if (!bound->isSplat())
+          return failure();
+        *bound = bound->resizeSplat(inputTy);
+      }
       minTen = stablehlo::constantOp(minAttr);
       maxTen = stablehlo::constantOp(maxAttr);
       inputTen = stablehlo::constantOp(inputAttr);
