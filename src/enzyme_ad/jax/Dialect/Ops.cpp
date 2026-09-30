@@ -193,6 +193,16 @@ void JITCallOp::getEffects(
   addMemoryEffectsFromAttr(effects, effectsAttr);
 }
 
+LogicalResult KernelCallOp::verify() {
+  return verifyResultsAliasOperands(getOperation(), getOutputOperandAliases(),
+                                    getInputs().size());
+}
+
+LogicalResult JITCallOp::verify() {
+  return verifyResultsAliasOperands(getOperation(), getOutputOperandAliases(),
+                                    getInputs().size());
+}
+
 template <>
 enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
     PatternRewriter &rewriter, enzymexla::KernelCallOp launchOp,

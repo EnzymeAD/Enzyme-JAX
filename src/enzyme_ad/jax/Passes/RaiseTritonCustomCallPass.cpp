@@ -97,6 +97,44 @@ replaceWithTritonCall(stablehlo::CustomCallOp callOp, PatternRewriter &rewriter,
   Value blockyVal = TI64(rewriter, callOp->getLoc(), 1);
   Value blockzVal = TI64(rewriter, callOp->getLoc(), 1);
 
+  // Every result of the call has to alias an operand. Outputs the custom call
+  // allocates itself get a zero-filled operand to alias.
+  SmallVector<Value> inputs(callOp.getInputs());
+  SmallVector<Attribute> aliases;
+  SmallVector<Attribute> operandLayouts;
+  if (auto layouts = callOp.getOperandLayoutsAttr())
+    operandLayouts.append(layouts.begin(), layouts.end());
+  bool hasLayouts = !operandLayouts.empty();
+
+  unsigned numResults = callOp->getNumResults();
+  SmallVector<bool> aliased(numResults, false);
+  for (auto attr : callOp.getOutputOperandAliasesAttr()
+                       ? callOp.getOutputOperandAliasesAttr().getValue()
+                       : ArrayRef<Attribute>()) {
+    aliases.push_back(attr);
+    auto outIdxs =
+        cast<stablehlo::OutputOperandAliasAttr>(attr).getOutputTupleIndices();
+    aliased[numResults == 1 || outIdxs.empty() ? 0 : outIdxs[0]] = true;
+  }
+  for (unsigned i = 0; i < numResults; i++) {
+    if (aliased[i])
+      continue;
+    auto resTy = cast<RankedTensorType>(callOp->getResult(i).getType());
+    inputs.push_back(stablehlo::ConstantOp::create(
+        rewriter, callOp->getLoc(), resTy,
+        cast<ElementsAttr>(mlir::enzyme::makeAttr(resTy, 0))));
+    aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+        callOp.getContext(),
+        numResults == 1 ? ArrayRef<int64_t>{} : ArrayRef<int64_t>{(int64_t)i},
+        inputs.size() - 1, {}));
+    if (hasLayouts) {
+      SmallVector<int64_t> minorToMajor;
+      for (int64_t d = resTy.getRank() - 1; d >= 0; --d)
+        minorToMajor.push_back(d);
+      operandLayouts.push_back(rewriter.getIndexTensorAttr(minorToMajor));
+    }
+  }
+
   rewriter.replaceOpWithNewOp<enzymexla::triton_ext::TritonCallOp>(
       callOp, callOp->getResultTypes(), fn,
 
@@ -104,12 +142,12 @@ replaceWithTritonCall(stablehlo::CustomCallOp callOp, PatternRewriter &rewriter,
 
       blockxVal, blockyVal, blockzVal,
 
-      callOp.getInputs(),
+      inputs,
       /* backendConfig */ StringAttr::get(callOp.getContext(), ""),
-      callOp.getOperandLayoutsAttr(),
+      hasLayouts ? rewriter.getArrayAttr(operandLayouts) : nullptr,
       /* argAttrs */ mlir::ArrayAttr::get(callOp.getContext(), {}),
       /* resAttrs */ mlir::ArrayAttr::get(callOp.getContext(), {}),
-      callOp.getOutputOperandAliasesAttr(),
+      rewriter.getArrayAttr(aliases),
       callOp.getHasSideEffect() ? nullptr : rewriter.getUnitAttr());
 
   return success();

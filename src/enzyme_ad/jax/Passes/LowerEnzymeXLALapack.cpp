@@ -2824,10 +2824,10 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
 
     SmallVector<Attribute> aliases{
         // `A` is overwritten with the output
-        stablehlo::OutputOperandAliasAttr::get(ctx, {}, 2, {}),
+        stablehlo::OutputOperandAliasAttr::get(ctx, {0}, 2, {}),
 
         // `info` is output argument
-        stablehlo::OutputOperandAliasAttr::get(ctx, {}, 4, {}),
+        stablehlo::OutputOperandAliasAttr::get(ctx, {1}, 4, {}),
     };
 
     auto jit_call_op = enzymexla::JITCallOp::create(

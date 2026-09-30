@@ -71,6 +71,7 @@ def TritonCallOp : TritonExtOp<"call", [
   }];
   // clang-format on
 
+  let hasVerifier = 1;
   let hasCanonicalizer = 1;
 }
 
