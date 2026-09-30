@@ -38,6 +38,9 @@ cmake(
 
 cmake(
     name = "z3_static_cmake",
+    env = {
+        "LD_LIBRARY_PATH": "/usr/lib/csl-musl-x86_64:/usr/lib/csl-glibc-x86_64",
+    },
     generate_args = [
         "-G Ninja",
         "-D BUILD_SHARED_LIBS=OFF",
