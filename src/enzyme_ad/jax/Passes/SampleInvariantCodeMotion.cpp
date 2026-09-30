@@ -2576,9 +2576,7 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
   }
 };
 
-// s_k of beta, a bare s_j a ones column, and sample-invariant terms move to the
-// y side. The summation root may also be the self-contraction dot_general(W, W)
-// that canonicalize makes of `sum(W .^ 2)`.
+// sample-invariant terms move to the y side. A non-constant scalar that is
 // sum by an equal scalar computed from the hoistable statistics Q1, R, c, rem,
 // dropping the per-gradient residual cost from O(N D) to O(D^2). The QR
 // emission carries no large-magnitude cancellation and ships in the aggregate
@@ -2596,6 +2594,7 @@ struct AffineMeanTerm {
   Value coef;
   Value col;
   bool negate;
+  bool dependent;
 };
 struct AffineMeanOffset {
   Value v;
@@ -2864,24 +2863,19 @@ struct GaussianResidualMatch {
   SmallVector<AffineMeanOffset> offsets;
 };
 
-/// `broadcast_in_dim(s)` of a sample-dependent effectively scalar `s` (rank 0
-/// or shape (1,)); returns `s`, or null.
-static Value getDependentScalarLeaf(Value v,
-                                    SampleDependenceAnalysis &analysis) {
+/// Region-invariant non-constant scalars also stay coefficients, so that the
+/// statistics depend on X and y only.
+static Value getScalarCoefLeaf(Value v) {
   auto bc = v.getDefiningOp<stablehlo::BroadcastInDimOp>();
   if (!bc)
     return nullptr;
   Value s = bc.getOperand();
-  if (!isEffectivelyScalar(s) || !analysis.isSampleDependent(s))
+  if (!isEffectivelyScalar(s) || matchPattern(s, m_Constant()))
     return nullptr;
   return s;
 }
 
-/// Decompose the length-N mean `v` into sample-dependent scalar times
-/// sample-invariant vector terms, bare sample-dependent scalars (ones column)
-/// and sample-invariant summands, through add / subtract / negate / multiply.
-/// Fails on any other sample-dependent op, in particular on a sample-dependent
-/// vector leaf (no identity design is assumed).
+/// the ones column (bare scalar), plus sample-invariant summands without such a
 static bool collectAffineMeanTerms(Value v, bool negate, int64_t N,
                                    SampleDependenceAnalysis &analysis,
                                    SmallVectorImpl<AffineMeanTerm> &terms,
@@ -2893,36 +2887,37 @@ static bool collectAffineMeanTerms(Value v, bool negate, int64_t N,
   auto vt = dyn_cast<RankedTensorType>(v.getType());
   if (!vt || vt.getRank() != 1 || vt.isDynamicDim(0) || vt.getDimSize(0) != N)
     return false;
-  if (!analysis.isSampleDependent(v)) {
-    offsets.push_back({v, negate});
-    return true;
-  }
-  if (Value s = getDependentScalarLeaf(v, analysis)) {
-    terms.push_back({s, Value(), negate});
+  if (Value s = getScalarCoefLeaf(v)) {
+    terms.push_back({s, Value(), negate, analysis.isSampleDependent(s)});
     return true;
   }
   auto recurse = [&](Value w, bool neg) {
     return collectAffineMeanTerms(w, neg, N, analysis, terms, offsets,
                                   depth + 1);
   };
+  bool invariant = !analysis.isSampleDependent(v);
   Operation *def = v.getDefiningOp();
-  if (!def)
-    return false;
-  if (auto add = dyn_cast<stablehlo::AddOp>(def))
-    return recurse(add.getLhs(), negate) && recurse(add.getRhs(), negate);
-  if (auto sub = dyn_cast<stablehlo::SubtractOp>(def))
-    return recurse(sub.getLhs(), negate) && recurse(sub.getRhs(), !negate);
-  if (auto neg = dyn_cast<stablehlo::NegOp>(def))
-    return recurse(neg.getOperand(), !negate);
-  if (auto mul = dyn_cast<stablehlo::MulOp>(def)) {
-    for (auto [a, b] : {std::pair{mul.getLhs(), mul.getRhs()},
-                        std::pair{mul.getRhs(), mul.getLhs()}}) {
-      Value s = getDependentScalarLeaf(a, analysis);
-      if (s && !analysis.isSampleDependent(b)) {
-        terms.push_back({s, b, negate});
-        return true;
+  if (def) {
+    if (auto add = dyn_cast<stablehlo::AddOp>(def))
+      return recurse(add.getLhs(), negate) && recurse(add.getRhs(), negate);
+    if (auto sub = dyn_cast<stablehlo::SubtractOp>(def))
+      return recurse(sub.getLhs(), negate) && recurse(sub.getRhs(), !negate);
+    if (auto neg = dyn_cast<stablehlo::NegOp>(def))
+      return recurse(neg.getOperand(), !negate);
+    if (auto mul = dyn_cast<stablehlo::MulOp>(def)) {
+      for (auto [a, b] : {std::pair{mul.getLhs(), mul.getRhs()},
+                          std::pair{mul.getRhs(), mul.getLhs()}}) {
+        Value s = getScalarCoefLeaf(a);
+        if (s && !analysis.isSampleDependent(b) && !getScalarCoefLeaf(b)) {
+          terms.push_back({s, b, negate, analysis.isSampleDependent(s)});
+          return true;
+        }
       }
     }
+  }
+  if (invariant) {
+    offsets.push_back({v, negate});
+    return true;
   }
   return false;
 }
@@ -2993,10 +2988,17 @@ matchGaussianResidual(Value R, SampleDependenceAnalysis &analysis) {
     rm.N = yt.getDimSize(0);
     if (!collectAffineMeanTerms(maybeMean, /*negate=*/false, rm.N, analysis,
                                 rm.terms, rm.offsets, /*depth=*/0) ||
-        rm.terms.empty())
+        llvm::none_of(rm.terms,
+                      [](const AffineMeanTerm &t) { return t.dependent; }))
       continue;
     rm.y = maybeY;
-    rm.D = rm.terms.size();
+    // One column per distinct design column (terms sharing a column, e.g.
+    // several bare scalars on the ones column, are merged).
+    SmallVector<Value> distinctCols;
+    for (const AffineMeanTerm &t : rm.terms)
+      if (!llvm::is_contained(distinctCols, t.col))
+        distinctCols.push_back(t.col);
+    rm.D = distinctCols.size();
     rm.xContractDim = 1;
     rm.affineMean = true;
     return rm;
@@ -3055,9 +3057,7 @@ matchGaussianSufficientStatsDot(stablehlo::DotGeneralOp sumOp,
       m, W, cast<RankedTensorType>(W.getType()).getDimSize(0), analysis, cThr);
 }
 
-/// Build X (N x D, sample-invariant columns), beta (D, sample-dependent
-/// coefficients) and y' = y - (invariant summands) for an affine-mean match.
-/// A negated term negates its (invariant, hoistable) column.
+/// (invariant, hoistable) column; terms sharing a column are merged.
 static void materializeAffineMean(OpBuilder &b, Location loc,
                                   GaussianStatsMatch &m) {
   if (!m.affineMean)
@@ -3067,10 +3067,23 @@ static void materializeAffineMean(OpBuilder &b, Location loc,
   auto oneTy = RankedTensorType::get({1}, elem);
   SmallVector<Value> cols, coefs;
   Value onesCol;
+  // A lone term negates its invariant, hoisted column rather than beta.
+  SmallVector<Value> groupCols;
+  SmallVector<SmallVector<const AffineMeanTerm *>> groups;
   for (const AffineMeanTerm &t : m.terms) {
+    auto it = llvm::find(groupCols, t.col);
+    if (it == groupCols.end()) {
+      groupCols.push_back(t.col);
+      groups.push_back({&t});
+    } else {
+      groups[it - groupCols.begin()].push_back(&t);
+    }
+  }
+  for (auto &g : groups) {
+    const AffineMeanTerm &t0 = *g.front();
     Value col;
-    if (t.col) {
-      col = stablehlo::ReshapeOp::create(b, loc, colTy, t.col);
+    if (t0.col) {
+      col = stablehlo::ReshapeOp::create(b, loc, colTy, t0.col);
     } else {
       if (!onesCol)
         onesCol = stablehlo::ConstantOp::create(
@@ -3078,12 +3091,28 @@ static void materializeAffineMean(OpBuilder &b, Location loc,
             DenseElementsAttr::get(colTy, b.getFloatAttr(elem, 1.0)));
       col = onesCol;
     }
-    if (t.negate)
-      col = stablehlo::NegOp::create(b, loc, col);
+    auto asOne = [&](Value c) {
+      return c.getType() == oneTy
+                 ? c
+                 : stablehlo::ReshapeOp::create(b, loc, oneTy, c).getResult();
+    };
+    Value c;
+    if (g.size() == 1) {
+      if (t0.negate)
+        col = stablehlo::NegOp::create(b, loc, col);
+      c = asOne(t0.coef);
+    } else {
+      for (const AffineMeanTerm *t : g) {
+        Value ti = asOne(t->coef);
+        if (!c)
+          c = t->negate ? stablehlo::NegOp::create(b, loc, ti).getResult() : ti;
+        else
+          c = t->negate
+                  ? stablehlo::SubtractOp::create(b, loc, c, ti).getResult()
+                  : stablehlo::AddOp::create(b, loc, c, ti).getResult();
+      }
+    }
     cols.push_back(col);
-    Value c = t.coef;
-    if (c.getType() != oneTy)
-      c = stablehlo::ReshapeOp::create(b, loc, oneTy, c);
     coefs.push_back(c);
   }
   m.X = cols.size() == 1
