@@ -543,6 +543,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("while_idempotent_dus");
   list.push_back("while_dus");
   list.push_back("while_passthrough_slice");
+  list.push_back("while_invariant_concat_range");
   list.push_back("while_updatewithoutcorners");
   list.push_back("while_op_induction_replacement");
   list.push_back("while_scatter_accumulator_no_add");

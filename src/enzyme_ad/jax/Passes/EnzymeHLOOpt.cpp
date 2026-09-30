@@ -23646,6 +23646,154 @@ struct WhilePassThroughSlice
   }
 };
 
+// Drops from a while iter-arg the range that each iteration overwrites with a
+// loop-invariant concatenate operand K and the loop never reads; after the
+// loop it is select(ran, K, init range), `ran` the condition on the inputs.
+struct WhileInvariantConcatRange
+    : public CheckedOpRewritePattern<stablehlo::WhileOp,
+                                     WhileInvariantConcatRange> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
+    Block &body = whileOp.getBody().front();
+    Block &cond = whileOp.getCond().front();
+    auto yield = cast<stablehlo::ReturnOp>(body.getTerminator());
+    for (unsigned i = 0; i < whileOp->getNumOperands(); ++i) {
+      auto ty = dyn_cast<RankedTensorType>(whileOp->getOperand(i).getType());
+      if (!ty || !ty.hasStaticShape())
+        continue;
+      auto concat =
+          yield.getOperand(i).getDefiningOp<stablehlo::ConcatenateOp>();
+      if (!concat || concat->getBlock() != &body)
+        continue;
+      int64_t d = concat.getDimension();
+      int64_t n = ty.getDimSize(d);
+      // Largest operand defined outside the loop.
+      int64_t a = -1, b = -1, off = 0;
+      unsigned kIdx = 0;
+      for (auto [k, x] : llvm::enumerate(concat.getOperands())) {
+        int64_t len = cast<RankedTensorType>(x.getType()).getDimSize(d);
+        if (definedOutside(x, whileOp) && len > b - a) {
+          a = off;
+          b = off + len;
+          kIdx = k;
+        }
+        off += len;
+      }
+      if (a < 0 || b - a == n)
+        continue;
+      auto disjointSlices = [&](BlockArgument arg) {
+        for (Operation *u : arg.getUsers()) {
+          auto sl = dyn_cast<stablehlo::SliceOp>(u);
+          if (!sl)
+            return false;
+          int64_t s0 = sl.getStartIndices()[d], s1 = sl.getLimitIndices()[d];
+          if (!(s1 <= a || s0 >= b))
+            return false;
+        }
+        return true;
+      };
+      BlockArgument bodyArg = body.getArgument(i);
+      BlockArgument condArg = cond.getArgument(i);
+      if (!disjointSlices(bodyArg) || !disjointSlices(condArg))
+        continue;
+
+      Location loc = whileOp.getLoc();
+      int64_t w = b - a;
+      Value init = whileOp->getOperand(i);
+      Value K = concat.getOperand(kIdx);
+      auto sliceAlong = [&](Value v, int64_t s0, int64_t s1) -> Value {
+        auto vt = cast<RankedTensorType>(v.getType());
+        SmallVector<int64_t> st(vt.getRank(), 0), lim(vt.getShape()),
+            str(vt.getRank(), 1);
+        st[d] = s0;
+        lim[d] = s1;
+        return stablehlo::SliceOp::create(rewriter, loc, v, st, lim, str);
+      };
+      auto concatAlong = [&](ArrayRef<Value> parts) -> Value {
+        SmallVector<Value> nz;
+        for (Value p : parts)
+          if (cast<RankedTensorType>(p.getType()).getDimSize(d) > 0)
+            nz.push_back(p);
+        if (nz.size() == 1)
+          return nz.front();
+        return stablehlo::ConcatenateOp::create(rewriter, loc, nz, d);
+      };
+
+      rewriter.setInsertionPoint(whileOp);
+      SmallVector<Value> initParts;
+      if (a > 0)
+        initParts.push_back(sliceAlong(init, 0, a));
+      if (b < n)
+        initParts.push_back(sliceAlong(init, b, n));
+      Value newInit = concatAlong(initParts);
+      IRMapping condMap;
+      for (auto [ca, opnd] :
+           llvm::zip(cond.getArguments(), whileOp->getOperands()))
+        condMap.map(ca, opnd);
+      for (Operation &op : cond.without_terminator())
+        rewriter.clone(op, condMap);
+      Value ran = condMap.lookupOrDefault(
+          cast<stablehlo::ReturnOp>(cond.getTerminator()).getOperand(0));
+      Value initRange = sliceAlong(init, a, b);
+
+      SmallVector<Value> newOperands(whileOp->getOperands());
+      newOperands[i] = newInit;
+      auto newWhile = stablehlo::WhileOp::create(rewriter, loc, newOperands,
+                                                 whileOp->getAttrs());
+      newWhile.getCond().takeBody(whileOp.getCond());
+      newWhile.getBody().takeBody(whileOp.getBody());
+      Block &nbody = newWhile.getBody().front();
+      Block &ncond = newWhile.getCond().front();
+      auto newTy = cast<RankedTensorType>(newInit.getType());
+      for (BlockArgument arg : {nbody.getArgument(i), ncond.getArgument(i)}) {
+        arg.setType(newTy);
+        for (Operation *u : llvm::make_early_inc_range(arg.getUsers())) {
+          auto sl = cast<stablehlo::SliceOp>(u);
+          SmallVector<int64_t> st(sl.getStartIndices()),
+              lim(sl.getLimitIndices());
+          if (st[d] >= b) {
+            st[d] -= w;
+            lim[d] -= w;
+          }
+          rewriter.setInsertionPoint(sl);
+          auto ns = stablehlo::SliceOp::create(rewriter, sl.getLoc(), arg, st,
+                                               lim, sl.getStrides());
+          rewriter.replaceOp(sl, ns.getResult());
+        }
+      }
+      auto nyield = cast<stablehlo::ReturnOp>(nbody.getTerminator());
+      auto oldConcat =
+          nyield.getOperand(i).getDefiningOp<stablehlo::ConcatenateOp>();
+      rewriter.setInsertionPoint(nyield);
+      SmallVector<Value> keep;
+      for (auto [k, x] : llvm::enumerate(oldConcat.getOperands()))
+        if (k != kIdx)
+          keep.push_back(x);
+      Value ny = concatAlong(keep);
+      rewriter.modifyOpInPlace(nyield, [&] { nyield->setOperand(i, ny); });
+
+      rewriter.setInsertionPointAfter(newWhile);
+      Value red = newWhile->getResult(i);
+      Value range =
+          stablehlo::SelectOp::create(rewriter, loc, ran, K, initRange);
+      SmallVector<Value> parts;
+      if (a > 0)
+        parts.push_back(sliceAlong(red, 0, a));
+      parts.push_back(range);
+      if (b < n)
+        parts.push_back(sliceAlong(red, a, n - w));
+      Value full = concatAlong(parts);
+      SmallVector<Value> results(newWhile->getResults());
+      results[i] = full;
+      rewriter.replaceOp(whileOp, results);
+      return success();
+    }
+    return failure();
+  }
+};
+
 struct WhileDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
@@ -46171,6 +46319,7 @@ struct EnzymeHLOOptPass
         WhileDUSDUSSimplify,
         WhileDUS,
         WhilePassThroughSlice,
+        WhileInvariantConcatRange,
         DeleteDimsReduce,
         ReduceDeleteDims,
         DotGeneralInsertDimContractionSimplification,

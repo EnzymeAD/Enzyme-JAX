@@ -2258,6 +2258,11 @@ def WhilePassThroughSlice : EnzymeHLOPatternOp<
   let patterns = ["WhilePassThroughSlice"];
 }
 
+def WhileInvariantConcatRange : EnzymeHLOPatternOp<
+    "while_invariant_concat_range"> {
+  let patterns = ["WhileInvariantConcatRange"];
+}
+
 def WhileUpdateWithoutCorners : EnzymeHLOPatternOp<
     "while_updatewithoutcorners"> {
   let patterns = ["WhileUpdateWithoutCorners"];
