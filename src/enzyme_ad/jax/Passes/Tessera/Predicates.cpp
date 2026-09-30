@@ -192,7 +192,7 @@ Proof mlir::enzyme::tessera::provePropertyOfValue(Value value,
 
 namespace {
 
-/// Every predicate currently tests one matrix, so they all prove the same way.
+/// The matrix predicates each test one matrix, so they all prove the same way.
 Proof proveMatrixProperty(llvm::StringRef name, ArrayRef<Value> args) {
   return provePropertyOfValue(args[0], name);
 }
@@ -664,7 +664,44 @@ Value emitIdentity(ArrayRef<Value> args, CheckContext &ctx) {
   return emitConjunction(terms, ctx);
 }
 
+//===----------------------------------------------------------------------===//
+// Integer predicates
+//===----------------------------------------------------------------------===//
+
+/// A constant settles `power_of_two` at compile time, so a call that passes a
+/// literal, like `div_ui(x, 2)`, is rewritten with no check at all.
+Proof provePowerOfTwo(llvm::StringRef, ArrayRef<Value> args) {
+  llvm::APInt value;
+  if (matchPattern(args[0], m_ConstantInt(&value)))
+    return fromBool(value.isPowerOf2());
+  return Proof::Unknown;
+}
+
+/// Exactly one bit set: `n != 0 && (n & (n - 1)) == 0`. Exact.
+///
+/// The bits are read as unsigned, as for an `unsigned long` count, so the
+/// most negative value of a signed type passes; a rule on a signed operand
+/// says `n > 0` as well if that matters.
+Value emitPowerOfTwo(ArrayRef<Value> args, CheckContext &ctx) {
+  Value n = args[0];
+  auto type = dyn_cast<IntegerType>(n.getType());
+  if (!type) {
+    emitCheckWarning(ctx.guard)
+        << "predicate 'power_of_two' takes an integer, but got "
+        << n.getType();
+    return Value();
+  }
+  Value zero = emitScalarConstant(type, 0, ctx);
+  Value one = emitScalarConstant(type, 1, ctx);
+  Value below = LLVM::SubOp::create(ctx.builder, ctx.loc, n, one);
+  Value shared = LLVM::AndOp::create(ctx.builder, ctx.loc, n, below);
+  Value nonzero = LLVM::ICmpOp::create(ctx.builder, ctx.loc,
+                                       LLVM::ICmpPredicate::ne, n, zero);
+  return emitConjunction({nonzero, emitEqual(shared, zero, ctx)}, ctx);
+}
+
 constexpr TesseraPredicate kPredicates[] = {
+    {"power_of_two", 1, provePowerOfTwo, emitPowerOfTwo},
     {"symmetric", 1, proveMatrixProperty, emitSymmetric},
     {"diagonal", 1, proveMatrixProperty, emitDiagonal},
     {"triangular_upper", 1, proveMatrixProperty, emitTriangularUpper},
@@ -727,8 +764,12 @@ ResidualCondition residualize(const Cond &cond,
   return std::visit(
       overloaded{
           [&](const Pred &p) -> ResidualCondition {
-            if (provePredicate(p, boundVars) == Proof::True)
-              return settledAs(true);
+            // Only a predicate with a compile-time answer, like
+            // power_of_two(6), is ever proven false; a declared property is
+            // either shown or not known.
+            Proof proof = provePredicate(p, boundVars);
+            if (proof != Proof::Unknown)
+              return settledAs(proof == Proof::True);
             if (lookupPredicate(p.name))
               return remaining(Cond(Pred(p)));
             if (unshown.empty())
