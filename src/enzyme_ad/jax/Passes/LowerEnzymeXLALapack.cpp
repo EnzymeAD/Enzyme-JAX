@@ -2091,6 +2091,7 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
   auto type_llvm_int64 = typeConverter.convertType(type_lapack_int64);
   auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
   auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
+  auto type_llvm_input_element = typeConverter.convertType(inputElementType);
   auto type_input_element_real = inputElementType;
   bool isComplex = false;
   if (auto complex_type = dyn_cast<ComplexType>(type_input_element_real)) {
@@ -2173,9 +2174,9 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
                                            type_lapack_int, const1);
     LLVM::StoreOp::create(rewriter, op.getLoc(), constM1, lworkptr);
 
-    // first call extracts the optimal size for the workspace
+    // WORK has the input element type, including for the workspace query.
     auto workBuffer1 = LLVM::AllocaOp::create(
-        rewriter, op.getLoc(), type_llvm_ptr, type_input_element_real, const1);
+        rewriter, op.getLoc(), type_llvm_ptr, type_llvm_input_element, const1);
 
     if (algorithm == enzymexla::SVDAlgorithm::QRIteration) {
       auto jobuptr = LLVM::AllocaOp::create(
@@ -2284,7 +2285,7 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
           // 7*minmn
           rworkSize = arith::MulIOp::create(rewriter, op.getLoc(), c7, minMN);
         } else {
-          // minmn*max(5*minmn+7, 2*max(m,n)+2*minmn
+          // minmn*max(5*minmn+7, 2*max(m,n)+2*minmn+1)
           auto maxMN =
               arith::MaxSIOp::create(rewriter, op.getLoc(), MVal, NVal);
 
@@ -2308,9 +2309,10 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
           // 2*minmn
           auto twoMin = arith::MulIOp::create(rewriter, op.getLoc(), c2, minMN);
 
-          // 2*max(m,n) + 2*minmn
+          // 2*max(m,n) + 2*minmn + 1
           auto termB =
               arith::AddIOp::create(rewriter, op.getLoc(), twoMax, twoMin);
+          termB = arith::AddIOp::create(rewriter, op.getLoc(), termB, const1);
 
           // max(termA, termB)
           auto maxTerm =
@@ -2332,14 +2334,14 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
     LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{},
                          SymbolRefAttr::get(ctx, bind_fn), ValueRange(args));
 
-    // load and allocate the optimal size for the workspace
+    // The real component of WORK(1) holds the optimal element count.
     auto workSpaceSizeFloat = LLVM::LoadOp::create(
         rewriter, op.getLoc(), type_input_element_real, workBuffer1);
     auto workSpaceSize = LLVM::FPToSIOp::create(
         rewriter, op.getLoc(), type_llvm_lapack_int, workSpaceSizeFloat);
     auto workspace =
         LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
-                               type_input_element_real, workSpaceSize);
+                               type_llvm_input_element, workSpaceSize);
 
     LLVM::StoreOp::create(rewriter, op.getLoc(), workSpaceSize, lworkptr);
 
