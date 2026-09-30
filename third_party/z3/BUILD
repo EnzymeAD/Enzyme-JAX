@@ -38,12 +38,18 @@ cmake(
 
 cmake(
     name = "z3_static_cmake",
-    env = {
-        "LD_LIBRARY_PATH": "/usr/lib/csl-musl-x86_64:/usr/lib/csl-glibc-x86_64",
-    },
     generate_args = [
         "-G Ninja",
-    ],
+        "-D BUILD_SHARED_LIBS=OFF",
+        "-D Z3_BUILD_LIBZ3_SHARED=OFF",
+    ] + select({
+        "@platforms//os:linux": ["-D 'CMAKE_CXX_STANDARD_LIBRARIES=-lstdc++ -lm'"],
+        "@platforms//os:macos": [
+            "-D CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY",
+            "-D 'CMAKE_CXX_LINK_EXECUTABLE=<CMAKE_CXX_COMPILER> <FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES> -fuse-ld=lld -twolevel_namespace -lc++ -lm'",
+        ],
+        "//conditions:default": [],
+    }),
     lib_source = ":all_files",
     out_binaries = ["z3"],
     out_include_dir = "include",
