@@ -204,7 +204,10 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       pass_pipeline += ",affine-cfg," + canonicalize +
                        ",llvm-to-affine-access," + canonicalize + ",";
       pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
-      "dump_failed_lockstep=true}," + canonicalize + ",arith-raise{stablehlo=true},"
+      "dump_failed_lockstep=true";
+      if (options->specializeIndexStrides)
+        pass_pipeline += " specialize_index_strides=true";
+      pass_pipeline += "}," + canonicalize + ",arith-raise{stablehlo=true},"
       "cse,enzyme-hlo-opt," + canonicalize + ","
       "symbol-dce";
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
