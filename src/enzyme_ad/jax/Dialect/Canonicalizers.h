@@ -15,7 +15,7 @@ public:
   using OpRewritePattern<OpTy>::OpRewritePattern;
 
   OpTy create(PatternRewriter &rewriter, OpTy launchOp, ArrayRef<Type> resTys,
-              ArrayAttr outputLayouts, ArrayAttr outputAliases) const;
+              ArrayAttr outputAliases) const;
 
   LogicalResult matchAndRewrite(OpTy launchOp,
                                 PatternRewriter &rewriter) const override {
@@ -48,9 +48,6 @@ public:
     }
     if (!changed)
       return failure();
-    ArrayAttr curOutputLayouts = llvm::dyn_cast_if_present<ArrayAttr>(
-        launchOp.getResultLayouts().value_or(nullptr));
-    SmallVector<Attribute> outputLayouts;
     SmallVector<Attribute> outputAliases;
     SmallVector<Type> resTys;
     size_t out_idx = 0;
@@ -79,16 +76,11 @@ public:
         outputAliases.push_back(stablehlo::OutputOperandAliasAttr::get(
             launchOp->getContext(), {(long)out_idx}, operandIndex, {}));
       }
-      if (curOutputLayouts)
-        outputLayouts.push_back(curOutputLayouts[out_idx]);
       out_idx++;
     }
 
-    auto newOp = create(
-        rewriter, launchOp, resTys,
-        curOutputLayouts ? ArrayAttr::get(launchOp->getContext(), outputLayouts)
-                         : nullptr,
-        ArrayAttr::get(launchOp->getContext(), outputAliases));
+    auto newOp = create(rewriter, launchOp, resTys,
+                        ArrayAttr::get(launchOp->getContext(), outputAliases));
 
     assert(outputAliases.size() == newOp.getNumResults());
     SmallVector<Value> replacements;

@@ -196,8 +196,7 @@ void JITCallOp::getEffects(
 template <>
 enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
     PatternRewriter &rewriter, enzymexla::KernelCallOp launchOp,
-    ArrayRef<Type> resTys, ArrayAttr outputLayouts,
-    ArrayAttr outputAliases) const {
+    ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
   return enzymexla::KernelCallOp::create(
       rewriter, launchOp.getLoc(), resTys, launchOp.getFn(),
       launchOp.getGridx(), launchOp.getGridy(), launchOp.getGridz(),
@@ -205,20 +204,19 @@ enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
       launchOp.getShmem(), launchOp.getClusterx(), launchOp.getClustery(),
       launchOp.getClusterz(), launchOp.getInputs(),
       launchOp.getBackendConfigAttr(), launchOp.getOperandLayoutsAttr(),
-      outputLayouts, launchOp.getArgAttrsAttr(), launchOp.getResAttrsAttr(),
-      outputAliases, launchOp.getXlaSideEffectFreeAttr());
+      launchOp.getArgAttrsAttr(), launchOp.getResAttrsAttr(), outputAliases,
+      launchOp.getXlaSideEffectFreeAttr());
 }
 
 template <>
 enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
     PatternRewriter &rewriter, enzymexla::JITCallOp launchOp,
-    ArrayRef<Type> resTys, ArrayAttr outputLayouts,
-    ArrayAttr outputAliases) const {
+    ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
   return enzymexla::JITCallOp::create(
       rewriter, launchOp.getLoc(), resTys, launchOp.getFn(),
       launchOp.getInputs(), launchOp.getBackendConfigAttr(),
-      launchOp.getOperandLayoutsAttr(), outputLayouts,
-      launchOp.getArgAttrsAttr(), launchOp.getResAttrsAttr(), outputAliases,
+      launchOp.getOperandLayoutsAttr(), launchOp.getArgAttrsAttr(),
+      launchOp.getResAttrsAttr(), outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
 }
 

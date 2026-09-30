@@ -106,7 +106,7 @@ replaceWithTritonCall(stablehlo::CustomCallOp callOp, PatternRewriter &rewriter,
 
       callOp.getInputs(),
       /* backendConfig */ StringAttr::get(callOp.getContext(), ""),
-      callOp.getOperandLayoutsAttr(), callOp.getResultLayoutsAttr(),
+      callOp.getOperandLayoutsAttr(),
       /* argAttrs */ mlir::ArrayAttr::get(callOp.getContext(), {}),
       /* resAttrs */ mlir::ArrayAttr::get(callOp.getContext(), {}),
       callOp.getOutputOperandAliasesAttr(),
