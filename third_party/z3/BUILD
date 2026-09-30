@@ -18,6 +18,9 @@ filegroup(
 
 cmake(
     name = "z3_dynamic",
+    env = {
+        "LD_LIBRARY_PATH": "/usr/lib/csl-musl-x86_64:/usr/lib/csl-glibc-x86_64",
+    },
     generate_args = [
         "-G Ninja",
     ],
@@ -35,6 +38,9 @@ cmake(
 
 cmake(
     name = "z3_static_cmake",
+    env = {
+        "LD_LIBRARY_PATH": "/usr/lib/csl-musl-x86_64:/usr/lib/csl-glibc-x86_64",
+    },
     generate_args = [
         "-G Ninja",
     ],
@@ -52,6 +58,9 @@ cmake(
 
 cc_library(
     name = "z3_static",
+    env = {
+        "LD_LIBRARY_PATH": "/usr/lib/csl-musl-x86_64:/usr/lib/csl-glibc-x86_64",
+    },
     hdrs = glob([
         "src/api/*.h",
         "src/api/*.hpp",
