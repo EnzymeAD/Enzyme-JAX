@@ -155,8 +155,20 @@ public:
     auto buildNewAttrs = [&](ArrayRef<NamedAttribute> baseAttrs,
                              int32_t numOperands,
                              std::optional<ArrayAttr> argAttrsOverride) {
+      // A tail call promises that the callee does not access the caller's
+      // allocas. The call this came from may have kept that promise, but one
+      // given the stack storage allocated here (`one` is set exactly when
+      // there is some) breaks it, and LLVM takes it at its word: it assumes
+      // the callee leaves that storage alone and folds a result read back from
+      // it to the value stored before the call, losing what the callee wrote.
+      bool passesAllocas = static_cast<bool>(one);
+      StringAttr tailCallKind =
+          LLVM::CallOp::getTailCallKindAttrName(OperationName(
+              LLVM::CallOp::getOperationName(), rewriter.getContext()));
       SmallVector<NamedAttribute> newAttrs;
       for (auto attr : baseAttrs) {
+        if (passesAllocas && attr.getName() == tailCallKind)
+          continue;
         if (attr.getName() != callOp.getArgAttrsAttrName() &&
             attr.getName() != "tessera.applied_rules" &&
             attr.getName() != "operandSegmentSizes" &&
