@@ -55,17 +55,41 @@ module {
 module {
   func.func @main(%arg0: tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xf32>, tensor<64x64xcomplex<f32>>, tensor<i64>) {
     // CPU: enzymexla.jit_call @enzymexla_wrapper_lapack_cgesdd_
+    // CPU: llvm.mul
+    // CPU-NEXT: %[[IWORK:.+]] = llvm.alloca
+    // CPU: %[[RWORK:.+]] = llvm.alloca %{{.+}} x f32
+    // CPU-NEXT: llvm.call @enzymexla_lapack_cgesdd_({{.*}}, %[[RWORK]], %[[IWORK]], %arg9, %{{[0-9]+}})
+    // CPU: llvm.call @enzymexla_lapack_cgesdd_({{.*}}, %[[RWORK]], %[[IWORK]], %arg9, %{{[0-9]+}})
     %0:4 = enzymexla.lapack.gesdd %arg0 : (tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xf32>, tensor<64x64xcomplex<f32>>, tensor<i64>)
     return %0#0, %0#1, %0#2, %0#3 : tensor<64x64xcomplex<f32>>, tensor<64xf32>, tensor<64x64xcomplex<f32>>, tensor<i64>
   }
 }
 
 module {
-  // complex ones have rwork as extra argument
+  // complex ones have rwork as extra argument, before iwork
   // CPU: enzymexla.jit_call @enzymexla_wrapper_lapack_zgesdd_
+  // CPU: llvm.mul
+  // CPU-NEXT: %[[IWORK:.+]] = llvm.alloca
+  // CPU: %[[RWORK:.+]] = llvm.alloca %{{.+}} x f64
+  // CPU-NEXT: llvm.call @enzymexla_lapack_zgesdd_({{.*}}, %[[RWORK]], %[[IWORK]], %arg9, %{{[0-9]+}})
+  // CPU: llvm.call @enzymexla_lapack_zgesdd_({{.*}}, %[[RWORK]], %[[IWORK]], %arg9, %{{[0-9]+}})
   // CPU: llvm.func @enzymexla_lapack_zgesdd_(!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, i64)
   func.func @main(%arg0: tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xf64>, tensor<64x64xcomplex<f64>>, tensor<i64>) {
     %0:4 = enzymexla.lapack.gesdd %arg0 : (tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xf64>, tensor<64x64xcomplex<f64>>, tensor<i64>)
     return %0#0, %0#1, %0#2, %0#3 : tensor<64x64xcomplex<f64>>, tensor<64xf64>, tensor<64x64xcomplex<f64>>, tensor<i64>
+  }
+}
+
+module {
+  // without the singular vectors
+  // CPU: enzymexla.jit_call @enzymexla_wrapper_lapack_zgesdd_
+  // CPU: llvm.mul
+  // CPU-NEXT: %[[IWORK:.+]] = llvm.alloca
+  // CPU: %[[RWORK:.+]] = llvm.alloca %{{.+}} x f64
+  // CPU-NEXT: llvm.call @enzymexla_lapack_zgesdd_({{.*}}, %[[RWORK]], %[[IWORK]], %arg9, %{{[0-9]+}})
+  // CPU: llvm.call @enzymexla_lapack_zgesdd_({{.*}}, %[[RWORK]], %[[IWORK]], %arg9, %{{[0-9]+}})
+  func.func @main(%arg0: tensor<64x64xcomplex<f64>>) -> tensor<64xf64> {
+    %0:4 = enzymexla.lapack.gesdd %arg0 {compute_uv = false} : (tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xf64>, tensor<64x64xcomplex<f64>>, tensor<i64>)
+    return %0#1 : tensor<64xf64>
   }
 }

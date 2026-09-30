@@ -2279,11 +2279,10 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
         auto c7 = LLVM::ConstantOp::create(
             rewriter, op.getLoc(), type_llvm_lapack_int,
             rewriter.getIntegerAttr(type_llvm_lapack_int, 7));
+        Value rworkSize;
         if (lapackJob == 'N') {
           // 7*minmn
-          auto sevenMin =
-              arith::MulIOp::create(rewriter, op.getLoc(), c7, minMN);
-          args.insert(args.begin() + 13, sevenMin);
+          rworkSize = arith::MulIOp::create(rewriter, op.getLoc(), c7, minMN);
         } else {
           // minmn*max(5*minmn+7, 2*max(m,n)+2*minmn
           auto maxMN =
@@ -2317,15 +2316,16 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
           auto maxTerm =
               arith::MaxSIOp::create(rewriter, op.getLoc(), termA, termB);
 
-          auto rworkSize =
+          rworkSize =
               arith::MulIOp::create(rewriter, op.getLoc(), minMN, maxTerm);
-
-          auto rworkptr =
-              LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
-                                     type_input_element_real, rworkSize);
-
-          args.insert(args.begin() + 13, rworkptr);
         }
+
+        auto rworkptr =
+            LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
+                                   type_input_element_real, rworkSize);
+
+        // gesdd takes rwork before iwork
+        args.insert(args.begin() + 12, rworkptr);
       }
     }
 
