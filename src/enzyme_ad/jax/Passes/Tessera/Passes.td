@@ -61,6 +61,11 @@ def LowerTesseraGuardsPass : Pass<"tessera-lower-guards", "ModuleOp"> {
     two regions: the specialized rewrite when the condition holds, the original
     computation when it does not. It runs before tessera-to-llvm, so both
     branches still contain tessera.call ops.
+
+    A condition may call a tessera op that returns one value and writes none of
+    its arguments, `mpfr.cmp_d(y, 0.5) == 0`; the call is emitted as a
+    tessera.call ahead of the branch. A `&&` or `||` whose right side makes such
+    a call short-circuits, as in C, so a rule can make the call safe first.
   }];
   let dependentDialects = [
     "LLVM::LLVMDialect",
