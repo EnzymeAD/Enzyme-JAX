@@ -57,7 +57,7 @@ module @reactant_f attributes {llvm.data_layout = "e-p6:32:32-i64:64-i128:128-i2
     %1 = llvm.mlir.addressof @mlir.llvm.nameless_global_0 : !llvm.ptr
     %2 = llvm.alloca %0 x !llvm.struct<"printf_args.5.1", (i64)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
     llvm.intr.lifetime.start %2 : !llvm.ptr
-    llvm.store %arg0, %2 {alignment = 8 : i64} : i64, !llvm.ptr
+    llvm.store %arg0, %2 <alignment = 8> : i64, !llvm.ptr
     %3 = llvm.call @vprintf(%1, %2) : (!llvm.ptr {llvm.nonnull, llvm.noundef}, !llvm.ptr {llvm.align = 8 : i64, llvm.nonnull, llvm.noundef}) -> i32
     llvm.intr.lifetime.end %2 : !llvm.ptr
     llvm.return
@@ -103,10 +103,10 @@ module @reactant_f attributes {llvm.data_layout = "e-p6:32:32-i64:64-i128:128-i2
     llvm.unreachable
   ^bb2:  // pred: ^bb4
     %29 = llvm.getelementptr inbounds %arg1[%35] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    %30 = llvm.load %29 invariant {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+    %30 = llvm.load %29 invariant <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
     %31 = llvm.fmul %30, %8 : f64
     %32 = llvm.getelementptr inbounds %arg0[%35] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    llvm.store %31, %32 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr<1>
+    llvm.store %31, %32 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr<1>
     llvm.br ^bb3
   ^bb3:  // 2 preds: ^bb0, ^bb2
     llvm.br ^bb5
