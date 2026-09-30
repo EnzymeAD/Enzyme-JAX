@@ -5412,7 +5412,7 @@ static LogicalResult tryRaisingOpToStableHLOImpl(
   if (isa<LLVM::AssumeOp>(op))
     return success();
 
-  return op->emitError("cannot raise op to stablehlo") << *op;
+  return failure();
 }
 
 static LogicalResult
