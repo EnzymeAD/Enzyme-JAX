@@ -219,8 +219,10 @@ def JITRegionOp : EnzymeXLA_Op<"jit_region", [
     may read and write these buffers freely: the input tensors are values and
     are never modified.
 
-    There is one result per input, of the same type, holding the contents of
-    the input's buffer when the block exits.
+    Each result holds the contents of one of the buffers when the block exits,
+    and has the type of the corresponding input. The result `i` is read from
+    the buffer of the input `output_operand_aliases[i].operand_index`; without
+    `output_operand_aliases`, there is one result per input.
 
     Example:
 
@@ -232,7 +234,13 @@ def JITRegionOp : EnzymeXLA_Op<"jit_region", [
     ```
   }];
 
-  let arguments = (ins Variadic<HLO_Tensor>:$inputs);
+  let arguments = (ins
+    Variadic<HLO_Tensor>:$inputs,
+    OptionalAttr<AnyAttr>:$operand_layouts,
+    DefaultValuedOptionalAttr<
+        ArrayAttr, "{}">:$output_operand_aliases,
+    OptionalAttr<UnitAttr>:$xla_side_effect_free
+  );
   let results = (outs Variadic<HLO_Tensor>);
   let regions = (region SizedRegion<1>:$body);
 
@@ -240,16 +248,18 @@ def JITRegionOp : EnzymeXLA_Op<"jit_region", [
     `(` $inputs `)` attr-dict `:` type($inputs) $body
   }];
 
-  let builders = [
-    // Creates the entry block with one argument of the given memref type per
-    // input.
-    OpBuilder<(ins "ValueRange":$inputs, "TypeRange":$argTypes)>
-  ];
-
   let extraClassDeclaration = [{
     Block *getBodyBlock() { return &getBody().front(); }
+
+    // The index of the input whose buffer the result `resultIndex` is read
+    // from.
+    unsigned getAliasedInputIndex(unsigned resultIndex);
+
+    // The result read from the buffer of the input `inputIndex`, if any.
+    OpResult getAliasingResult(unsigned inputIndex);
   }];
 
+  let hasVerifier = 1;
   let hasRegionVerifier = 1;
 }
 

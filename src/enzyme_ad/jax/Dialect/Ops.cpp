@@ -1392,15 +1392,19 @@ void CommRegionOp::getSuccessorRegions(
 // JITRegionOp
 //===----------------------------------------------------------------------===//
 
-void JITRegionOp::build(OpBuilder &builder, OperationState &state,
-                        ValueRange inputs, TypeRange argTypes) {
-  state.addOperands(inputs);
-  state.addTypes(inputs.getTypes());
-  Region *body = state.addRegion();
-  OpBuilder::InsertionGuard guard(builder);
-  builder.createBlock(body, {}, argTypes,
-                      SmallVector<Location>(argTypes.size(), state.location));
-  JITRegionYieldOp::create(builder, state.location);
+unsigned JITRegionOp::getAliasedInputIndex(unsigned resultIndex) {
+  ArrayAttr aliases = getOutputOperandAliases();
+  if (aliases.empty())
+    return resultIndex;
+  return cast<stablehlo::OutputOperandAliasAttr>(aliases[resultIndex])
+      .getOperandIndex();
+}
+
+OpResult JITRegionOp::getAliasingResult(unsigned inputIndex) {
+  for (OpResult result : getResults())
+    if (getAliasedInputIndex(result.getResultNumber()) == inputIndex)
+      return result;
+  return nullptr;
 }
 
 LogicalResult JITRegionOp::inferReturnTypes(
@@ -1408,7 +1412,47 @@ LogicalResult JITRegionOp::inferReturnTypes(
     ValueRange operands, DictionaryAttr attributes,
     mlir::PropertyRef properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
-  llvm::append_range(inferredReturnTypes, operands.getTypes());
+  JITRegionOpAdaptor adaptor(operands, attributes, properties, regions);
+  ArrayAttr aliases = adaptor.getOutputOperandAliases();
+  // While parsing, the inherent attributes are not yet in the properties.
+  if (attributes)
+    if (auto parsed = attributes.getAs<ArrayAttr>("output_operand_aliases"))
+      aliases = parsed;
+  if (aliases.empty()) {
+    llvm::append_range(inferredReturnTypes, operands.getTypes());
+    return success();
+  }
+  for (Attribute attr : aliases) {
+    auto alias = dyn_cast<stablehlo::OutputOperandAliasAttr>(attr);
+    if (!alias || alias.getOperandIndex() < 0 ||
+        alias.getOperandIndex() >= (int64_t)operands.size())
+      return emitOptionalError(location,
+                               "invalid output_operand_aliases entry ", attr);
+    inferredReturnTypes.push_back(
+        operands[alias.getOperandIndex()].getType());
+  }
+  return success();
+}
+
+LogicalResult JITRegionOp::verify() {
+  ArrayAttr aliases = getOutputOperandAliases();
+  if (aliases.empty())
+    return success();
+
+  // Each buffer is read by at most one result.
+  llvm::SmallDenseSet<int64_t> aliased;
+  for (Attribute attr : aliases) {
+    auto alias = dyn_cast<stablehlo::OutputOperandAliasAttr>(attr);
+    if (!alias)
+      return emitOpError() << "invalid output_operand_aliases entry " << attr;
+    if (!alias.getOutputTupleIndices().empty() ||
+        !alias.getOperandTupleIndices().empty())
+      return emitOpError() << "tuple indices are not supported in "
+                              "output_operand_aliases";
+    if (!aliased.insert(alias.getOperandIndex()).second)
+      return emitOpError() << "input #" << alias.getOperandIndex()
+                           << " is aliased by more than one result";
+  }
   return success();
 }
 

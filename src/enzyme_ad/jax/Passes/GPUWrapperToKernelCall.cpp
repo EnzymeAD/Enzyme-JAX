@@ -334,9 +334,9 @@ struct GPUWrapperToKernelCallPass
         op.moveBefore(region);
     }
 
-    for (auto [result, arg] :
-         llvm::zip_equal(region.getResults(), body->getArguments()))
-      result.replaceAllUsesWith(contents[arg]);
+    for (OpResult result : region.getResults())
+      result.replaceAllUsesWith(contents[body->getArgument(
+          region.getAliasedInputIndex(result.getResultNumber()))]);
     region.erase();
     return success();
   }

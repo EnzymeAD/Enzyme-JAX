@@ -120,7 +120,6 @@ struct KernelCallToGPUWrapperPass
     }
 
     // Each result is the final contents of the operand buffer it aliases.
-    SmallVector<unsigned> resultOperands;
     ArrayAttr aliases = call.getOutputOperandAliases();
     if (aliases.size() != call.getNumResults())
       return call.emitError("every result must alias a kernel operand");
@@ -128,7 +127,6 @@ struct KernelCallToGPUWrapperPass
       auto alias = cast<stablehlo::OutputOperandAliasAttr>(attr);
       if (alias.getOperandIndex() >= (int64_t)call.getInputs().size())
         return call.emitError("operand alias index out of range");
-      resultOperands.push_back(alias.getOperandIndex());
     }
 
     OpBuilder builder(call);
@@ -138,17 +136,24 @@ struct KernelCallToGPUWrapperPass
       auto T = dyn_cast<RankedTensorType>(operand.getType());
       if (!T)
         return call.emitError("kernel operands must be ranked tensors");
-      bufferTypes.push_back(MemRefType::get(
-          T.getShape(), T.getElementType(),
-          /* layout= */ MemRefLayoutAttrInterface{},
-          builder.getI64IntegerAttr(1)));
+      bufferTypes.push_back(
+          MemRefType::get(T.getShape(), T.getElementType(),
+                          /* layout= */ MemRefLayoutAttrInterface{},
+                          builder.getI64IntegerAttr(1)));
     }
 
-    auto region = enzymexla::JITRegionOp::create(builder, call.getLoc(),
-                                                 call.getInputs(), bufferTypes);
-    ValueRange buffers = region.getBodyBlock()->getArguments();
+    // Without aliases, a jit_region has one result per input; those of a
+    // kernel_call without results are unused.
+    auto region = enzymexla::JITRegionOp::create(
+        builder, call.getLoc(), call.getInputs(), call.getOperandLayoutsAttr(),
+        aliases, call.getXlaSideEffectFreeAttr());
+    Block *body = builder.createBlock(
+        &region.getBody(), {}, bufferTypes,
+        SmallVector<Location>(bufferTypes.size(), call.getLoc()));
+    enzymexla::JITRegionYieldOp::create(builder, call.getLoc());
+    ValueRange buffers = body->getArguments();
 
-    builder.setInsertionPointToStart(region.getBodyBlock());
+    builder.setInsertionPointToStart(body);
 
     SmallVector<Value> bounds;
     for (int64_t dimension : launchDims)
@@ -248,9 +253,8 @@ struct KernelCallToGPUWrapperPass
       op.erase();
     });
 
-    for (auto [result, operand] :
-         llvm::zip_equal(call.getResults(), resultOperands))
-      result.replaceAllUsesWith(region.getResult(operand));
+    if (!aliases.empty())
+      call.replaceAllUsesWith(region.getResults());
     call.erase();
     return success();
   }
