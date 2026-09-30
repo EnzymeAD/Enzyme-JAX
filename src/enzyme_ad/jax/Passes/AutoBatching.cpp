@@ -733,6 +733,25 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
   relatedSlices = std::move(sortedSlices);
   relatedOps = std::move(sortedOps);
 
+  // The pieces the ops read are stacked into the batched operand. Pieces that
+  // follow one another merge into one slice; any others can only be stacked
+  // by concatenating them. For a convert that is not a form the
+  // simplifications keep: ConvertConcat distributes a convert over a
+  // concatenate's inputs unconditionally, a slice of the result then selects
+  // one of them, and the converts this pattern batched stand again for it to
+  // batch once more. Other ops over such a stack are left as they are
+  // (ConcatElementwise refuses converts for the same reason). It is decided
+  // here, before anything is built: a pattern that builds and then declines
+  // is offered its own leavings for as long as the driver runs.
+  if (isa<stablehlo::ConvertOp>(relatedOps[0])) {
+    for (size_t i = 1, e = relatedSlices.size(); i < e; ++i) {
+      if (!stablehlo::canMergeSlicesAlongAxis(
+              sliceDim, relatedSlices[i - 1].sliceOp, relatedSlices[i].sliceOp))
+        return rewriter.notifyMatchFailure(
+            sliceOp, "converts of pieces that do not follow one another");
+    }
+  }
+
   // quite an expensive check, so run at the very end
   if (::utils::anyOpsAreDataDependent(relatedOps)) {
     return rewriter.notifyMatchFailure(sliceOp, "ops are data dependent");
