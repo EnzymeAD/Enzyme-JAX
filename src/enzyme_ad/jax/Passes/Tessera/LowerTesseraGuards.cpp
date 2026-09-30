@@ -6,11 +6,13 @@
 // time, together with the specialized rewrite and the original computation.
 // This pass synthesizes the code that tests the condition and replaces the
 // guard with an ordinary conditional branch between the two, so nothing
-// tessera-specific survives.
+// tessera-specific survives. Where the guard sits in a region that must stay
+// one block, such as a loop body, the branch is an scf.if instead.
 //
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
@@ -290,7 +292,7 @@ Value emitCompare(const Compare &cmp, OpBuilder &builder, Location loc,
 }
 
 Value emitCond(const Cond &cond, OpBuilder &builder, Location loc,
-               GuardOp guard, int64_t maxUnrolledElems);
+               GuardOp guard, int64_t maxUnrolledElems, bool structured);
 
 /// Resolve a named predicate and let it synthesize its own check. Its operands
 /// are looked up on the guard: a predicate tests values the rule matched, not
@@ -344,14 +346,40 @@ Value emitPredicate(const Pred &pred, OpBuilder &builder, Location loc,
 /// This needs blocks: lhs branches to one evaluating rhs or straight to a join
 /// block, whose argument is the result. Both are inserted after the current
 /// block, and the builder is left at the end of the join.
+///
+/// When `structured`, the check has to stay one block, and an scf.if on lhs
+/// yields the result instead, evaluating rhs in the branch where lhs does not
+/// decide it. The builder is left after the scf.if.
 Value emitShortCircuit(const Cond &lhsCond, const Cond &rhsCond, bool isAnd,
                        OpBuilder &builder, Location loc, GuardOp guard,
-                       int64_t maxUnrolledElems) {
-  Value lhs = emitCond(lhsCond, builder, loc, guard, maxUnrolledElems);
+                       int64_t maxUnrolledElems, bool structured) {
+  Value lhs =
+      emitCond(lhsCond, builder, loc, guard, maxUnrolledElems, structured);
   if (!lhs)
     return Value();
 
   Type i1 = builder.getI1Type();
+  if (structured) {
+    auto ifOp = scf::IfOp::create(builder, loc, TypeRange{i1}, lhs,
+                                  /*addThenBlock=*/true, /*addElseBlock=*/true);
+    OpBuilder::InsertionGuard afterIf(builder);
+    Block *rhsBlock = isAnd ? ifOp.thenBlock() : ifOp.elseBlock();
+    Block *decidedBlock = isAnd ? ifOp.elseBlock() : ifOp.thenBlock();
+
+    builder.setInsertionPointToEnd(decidedBlock);
+    Value decided = LLVM::ConstantOp::create(
+        builder, loc, i1, builder.getIntegerAttr(i1, isAnd ? 0 : 1));
+    scf::YieldOp::create(builder, loc, decided);
+
+    builder.setInsertionPointToEnd(rhsBlock);
+    Value rhs =
+        emitCond(rhsCond, builder, loc, guard, maxUnrolledElems, structured);
+    if (!rhs)
+      return Value();
+    scf::YieldOp::create(builder, loc, rhs);
+    return ifOp.getResult(0);
+  }
+
   Block *current = builder.getInsertionBlock();
   Region::BlockListType &blocks = current->getParent()->getBlocks();
   auto *join = new Block();
@@ -371,7 +399,8 @@ Value emitShortCircuit(const Cond &lhsCond, const Cond &rhsCond, bool isAnd,
                            rhsBlock, ValueRange{});
 
   builder.setInsertionPointToEnd(rhsBlock);
-  Value rhs = emitCond(rhsCond, builder, loc, guard, maxUnrolledElems);
+  Value rhs =
+      emitCond(rhsCond, builder, loc, guard, maxUnrolledElems, structured);
   if (!rhs)
     return Value();
   LLVM::BrOp::create(builder, loc, ValueRange{rhs}, join);
@@ -387,7 +416,7 @@ Value emitShortCircuit(const Cond &lhsCond, const Cond &rhsCond, bool isAnd,
 /// reads only memory the guarded call would read anyway, so evaluating both
 /// sides is safe, and keeps the check straight-line code.
 Value emitCond(const Cond &cond, OpBuilder &builder, Location loc,
-               GuardOp guard, int64_t maxUnrolledElems) {
+               GuardOp guard, int64_t maxUnrolledElems, bool structured) {
   return std::visit(
       overloaded{
           [&](const Pred &p) -> Value {
@@ -397,8 +426,8 @@ Value emitCond(const Cond &cond, OpBuilder &builder, Location loc,
             return emitCompare(c, builder, loc, guard);
           },
           [&](const NotCond &c) -> Value {
-            Value inner =
-                emitCond(*c.operand, builder, loc, guard, maxUnrolledElems);
+            Value inner = emitCond(*c.operand, builder, loc, guard,
+                                   maxUnrolledElems, structured);
             if (!inner)
               return Value();
             Value one = LLVM::ConstantOp::create(
@@ -409,9 +438,11 @@ Value emitCond(const Cond &cond, OpBuilder &builder, Location loc,
           [&](const AndCond &c) -> Value {
             if (containsCall(*c.rhs))
               return emitShortCircuit(*c.lhs, *c.rhs, /*isAnd=*/true, builder,
-                                      loc, guard, maxUnrolledElems);
-            Value lhs = emitCond(*c.lhs, builder, loc, guard, maxUnrolledElems);
-            Value rhs = emitCond(*c.rhs, builder, loc, guard, maxUnrolledElems);
+                                      loc, guard, maxUnrolledElems, structured);
+            Value lhs = emitCond(*c.lhs, builder, loc, guard, maxUnrolledElems,
+                                 structured);
+            Value rhs = emitCond(*c.rhs, builder, loc, guard, maxUnrolledElems,
+                                 structured);
             if (!lhs || !rhs)
               return Value();
             return LLVM::AndOp::create(builder, loc, lhs, rhs);
@@ -419,9 +450,11 @@ Value emitCond(const Cond &cond, OpBuilder &builder, Location loc,
           [&](const OrCond &c) -> Value {
             if (containsCall(*c.rhs))
               return emitShortCircuit(*c.lhs, *c.rhs, /*isAnd=*/false, builder,
-                                      loc, guard, maxUnrolledElems);
-            Value lhs = emitCond(*c.lhs, builder, loc, guard, maxUnrolledElems);
-            Value rhs = emitCond(*c.rhs, builder, loc, guard, maxUnrolledElems);
+                                      loc, guard, maxUnrolledElems, structured);
+            Value lhs = emitCond(*c.lhs, builder, loc, guard, maxUnrolledElems,
+                                 structured);
+            Value rhs = emitCond(*c.rhs, builder, loc, guard, maxUnrolledElems,
+                                 structured);
             if (!lhs || !rhs)
               return Value();
             return LLVM::OrOp::create(builder, loc, lhs, rhs);
@@ -444,6 +477,30 @@ void keepOriginal(GuardOp guard) {
   guard.erase();
 }
 
+/// Replace `guard` with an scf.if on `check`, which `start` computes. This is
+/// the form for a guard in a region that must stay one block: the check goes
+/// in ahead of the guard and the guard's two regions become the scf.if's.
+void replaceWithIf(GuardOp guard, Block *start, Value check) {
+  Location loc = guard.getLoc();
+  guard->getBlock()->getOperations().splice(guard->getIterator(),
+                                            start->getOperations());
+
+  OpBuilder builder(guard);
+  auto ifOp = scf::IfOp::create(builder, loc, guard.getResultTypes(), check,
+                                /*addThenBlock=*/false, /*addElseBlock=*/false);
+  ifOp.getThenRegion().takeBody(guard.getThenRegion());
+  ifOp.getElseRegion().takeBody(guard.getElseRegion());
+  for (Region *region : {&ifOp.getThenRegion(), &ifOp.getElseRegion()}) {
+    auto yield = cast<YieldOp>(region->front().getTerminator());
+    OpBuilder yieldBuilder(yield);
+    scf::YieldOp::create(yieldBuilder, loc, yield.getOperands());
+    yield.erase();
+  }
+
+  guard->replaceAllUsesWith(ifOp.getResults());
+  guard.erase();
+}
+
 void lowerGuard(GuardOp guard, int64_t maxUnrolledElems) {
   Location loc = guard.getLoc();
 
@@ -453,6 +510,11 @@ void lowerGuard(GuardOp guard, int64_t maxUnrolledElems) {
     keepOriginal(guard);
     return;
   }
+
+  // A branch splits the guard's block, which the body of an scf.for, scf.if or
+  // affine.for must not be: those regions are one block each. A guard there
+  // becomes an scf.if, and its check stays one block too.
+  bool structured = guard->getParentOp()->hasTrait<OpTrait::SingleBlock>();
 
   Block *entry = guard->getBlock();
   Region *region = entry->getParent();
@@ -464,18 +526,23 @@ void lowerGuard(GuardOp guard, int64_t maxUnrolledElems) {
   // out, so this has to happen before that region is moved away.
   //
   // It is built in a scratch region and moved into place once complete: a
-  // check that short-circuits needs blocks of its own, and one that gives up
-  // part way must leave nothing behind.
+  // check that short-circuits needs blocks of its own (unless structured), and
+  // one that gives up part way must leave nothing behind.
   Region scratch;
   Block *start = new Block();
   scratch.push_back(start);
   // The scratch region belongs to no op, so it has no context to offer.
   OpBuilder builder(guard.getContext());
   builder.setInsertionPointToEnd(start);
-  Value check = emitCond(*cond, builder, loc, guard, maxUnrolledElems);
+  Value check =
+      emitCond(*cond, builder, loc, guard, maxUnrolledElems, structured);
   if (!check) {
     scratch.dropAllReferences();
     keepOriginal(guard);
+    return;
+  }
+  if (structured) {
+    replaceWithIf(guard, start, check);
     return;
   }
   // The block the check ends in, which branches on it.
