@@ -2063,6 +2063,7 @@ public:
       Value cachedValue = gutils->popCache(caches[0], builder);
       Value cachedInit = gutils->popCache(caches[1], builder);
       Value cachedResult = gutils->popCache(caches[2], builder);
+      bool isComplex = isa<ComplexType>(inTy.getElementType());
 
       if (!gutils->isConstantValue(value)) {
         auto binDiffe = stablehlo::BroadcastInDimOp::create(
@@ -2073,11 +2074,13 @@ public:
             builder, op.getLoc(), inTy, cachedResult,
             builder.getDenseI64ArrayAttr(toBroadcast));
 
-        // valueDiffe = inDiffe * cachedResult / cachedValue
-        Value outDiffe = stablehlo::MulOp::create(
-            builder, op.getLoc(), binDiffe,
-            stablehlo::DivOp::create(builder, op.getLoc(), resultBroadcasted,
-                                     cachedValue));
+        // valueDiffe = inDiffe * conj(cachedResult / cachedValue)
+        Value quotient = stablehlo::DivOp::create(
+            builder, op.getLoc(), resultBroadcasted, cachedValue);
+        if (isComplex)
+          quotient = chlo::ConjOp::create(builder, op.getLoc(), quotient);
+        Value outDiffe =
+            stablehlo::MulOp::create(builder, op.getLoc(), binDiffe, quotient);
 
         gutils->addToDiffe(value, outDiffe, builder);
       }
@@ -2087,6 +2090,8 @@ public:
             builder.getDenseI64ArrayAttr({}));
         Value divResInit = stablehlo::DivOp::create(
             builder, op.getLoc(), cachedResult, broadcastedInit);
+        if (isComplex)
+          divResInit = chlo::ConjOp::create(builder, op.getLoc(), divResInit);
         Value broadcastedInitDiffe =
             stablehlo::MulOp::create(builder, op.getLoc(), divResInit, inDiffe);
 
@@ -2104,7 +2109,7 @@ public:
         createAddRegion(initDiffeSum);
         Value initDiffe = initDiffeSum->getResult(0);
 
-        // initDiffe = sum(inDifffe * result / init);
+        // initDiffe = sum(inDiffe * conj(result / init));
         gutils->addToDiffe(init, initDiffe, builder);
       }
       return success();
