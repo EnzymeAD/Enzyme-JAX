@@ -5049,8 +5049,15 @@ struct WidenWrap final
           withReshape = prevTy.getRank() - postRsTy.getRank();
         }
 
+        // The wrap takes its `lhs` elements from the end of the operand, so
+        // it only grows while they stay inside the operand.
+        int64_t extent =
+            cast<RankedTensorType>(wrap.getOperand().getType()).getShape()[dim];
         if (isSliceOf(wrapOperand, prev, dim + withReshape,
-                      /*widenOperandOnLeft*/ true, wrap.getLhs())) {
+                      /*widenOperandOnLeft*/ true, wrap.getLhs()) &&
+            wrap.getLhs() + cast<RankedTensorType>(prev.getType())
+                                .getShape()[dim + withReshape] <=
+                extent) {
           Value newWrap = enzymexla::WrapOp::create(
               rewriter, wrap.getLoc(), wrap.getOperand(),
               wrap.getLhs() + cast<RankedTensorType>(prev.getType())
@@ -5082,8 +5089,13 @@ struct WidenWrap final
           withReshape = prevTy.getRank() - postRsTy.getRank();
         }
 
+        int64_t extent =
+            cast<RankedTensorType>(wrap.getOperand().getType()).getShape()[dim];
         if (isSliceOf(wrapOperand, prev, dim + withReshape,
-                      /*widenOperandOnLeft*/ false, wrap.getRhs())) {
+                      /*widenOperandOnLeft*/ false, wrap.getRhs()) &&
+            wrap.getRhs() + cast<RankedTensorType>(prev.getType())
+                                .getShape()[dim + withReshape] <=
+                extent) {
           auto newWrap = enzymexla::WrapOp::create(
               rewriter, wrap.getLoc(), wrap.getOperand(), wrap.getLhs(),
               wrap.getRhs() + cast<RankedTensorType>(prev.getType())
