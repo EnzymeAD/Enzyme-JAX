@@ -5049,8 +5049,15 @@ struct WidenWrap final
           withReshape = prevTy.getRank() - postRsTy.getRank();
         }
 
+        // The wrap takes its `lhs` elements from the end of the operand, so
+        // it only grows while they stay inside the operand.
+        int64_t extent =
+            cast<RankedTensorType>(wrap.getOperand().getType()).getShape()[dim];
         if (isSliceOf(wrapOperand, prev, dim + withReshape,
-                      /*widenOperandOnLeft*/ true, wrap.getLhs())) {
+                      /*widenOperandOnLeft*/ true, wrap.getLhs()) &&
+            wrap.getLhs() + cast<RankedTensorType>(prev.getType())
+                                .getShape()[dim + withReshape] <=
+                extent) {
           Value newWrap = enzymexla::WrapOp::create(
               rewriter, wrap.getLoc(), wrap.getOperand(),
               wrap.getLhs() + cast<RankedTensorType>(prev.getType())
@@ -5082,8 +5089,13 @@ struct WidenWrap final
           withReshape = prevTy.getRank() - postRsTy.getRank();
         }
 
+        int64_t extent =
+            cast<RankedTensorType>(wrap.getOperand().getType()).getShape()[dim];
         if (isSliceOf(wrapOperand, prev, dim + withReshape,
-                      /*widenOperandOnLeft*/ false, wrap.getRhs())) {
+                      /*widenOperandOnLeft*/ false, wrap.getRhs()) &&
+            wrap.getRhs() + cast<RankedTensorType>(prev.getType())
+                                .getShape()[dim + withReshape] <=
+                extent) {
           auto newWrap = enzymexla::WrapOp::create(
               rewriter, wrap.getLoc(), wrap.getOperand(), wrap.getLhs(),
               wrap.getRhs() + cast<RankedTensorType>(prev.getType())
@@ -5128,7 +5140,12 @@ struct WidenExtend final
         continue;
       }
 
-      if (newOperands.size()) {
+      // An extend repeats the first `lhs` elements before the operand and
+      // the last `rhs` after it (see lowerExtend), so a boundary element
+      // next to it only folds in while that side is still empty: with one
+      // already repeated, the two together would be [x0, x0], which is not
+      // the prefix [x0, x1] a larger amount stands for.
+      if (newOperands.size() && extend.getLhs() == 0) {
         auto prev = newOperands.back();
         if (isExtendOf(extend.getOperand(), prev, dim,
                        /*widenOperandOnLeft*/ true)) {
@@ -5144,7 +5161,7 @@ struct WidenExtend final
         }
       }
 
-      if (i + 1 < e) {
+      if (i + 1 < e && extend.getRhs() == 0) {
         auto prev = op->getOperand(i + 1);
         if (isExtendOf(extend.getOperand(), prev, dim,
                        /*widenOperandOnLeft*/ false)) {
@@ -6994,6 +7011,18 @@ struct ClampConstProp final
       maxTen = stablehlo::makeTensor(maxAttr.resizeSplat(inputTy));
       inputTen = stablehlo::makeTensor(inputAttr.resizeSplat(inputTy));
     } else {
+      // A bound may be a scalar the operand is clamped against elementwise,
+      // which the reference clamp does not take: it indexes every bound as it
+      // does the operand. A splat bound is resized to the operand's shape; a
+      // bound of another shape that is not a splat is left alone.
+      auto inputTy = cast<ShapedType>(inputAttr.getType());
+      for (DenseElementsAttr *bound : {&minAttr, &maxAttr}) {
+        if (bound->getType() == inputTy)
+          continue;
+        if (!bound->isSplat())
+          return failure();
+        *bound = bound->resizeSplat(inputTy);
+      }
       minTen = stablehlo::constantOp(minAttr);
       maxTen = stablehlo::constantOp(maxAttr);
       inputTen = stablehlo::constantOp(inputAttr);
@@ -9677,6 +9706,75 @@ struct CompareConvert
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
                                     PatternRewriter &rewriter) const {
+    // An equality test of a masked integer extension can be performed in the
+    // source width when both constants use only source-width bits. The mask
+    // discards all extension bits, including the sign extension of negative
+    // inputs. Reshapes preserve the element order and can use the narrow type.
+    auto direction = cmpOp.getComparisonDirection();
+    if (direction == stablehlo::ComparisonDirection::EQ ||
+        direction == stablehlo::ComparisonDirection::NE) {
+      for (int i = 0; i < 2; ++i) {
+        auto andOp = cmpOp->getOperand(i).getDefiningOp<stablehlo::AndOp>();
+        DenseIntElementsAttr expected;
+        if (!andOp || !andOp->hasOneUse() ||
+            !matchPattern(cmpOp->getOperand(1 - i), m_Constant(&expected)))
+          continue;
+        for (int j = 0; j < 2; ++j) {
+          DenseIntElementsAttr mask;
+          if (!matchPattern(andOp->getOperand(1 - j), m_Constant(&mask)))
+            continue;
+          Value input = andOp->getOperand(j);
+          SmallVector<stablehlo::ReshapeOp> reshapes;
+          while (auto reshape = input.getDefiningOp<stablehlo::ReshapeOp>()) {
+            reshapes.push_back(reshape);
+            input = reshape.getOperand();
+          }
+          auto convert = input.getDefiningOp<stablehlo::ConvertOp>();
+          if (!convert)
+            continue;
+          auto narrowType = dyn_cast<IntegerType>(
+              convert.getOperand().getType().getElementType());
+          auto wideType =
+              dyn_cast<IntegerType>(convert.getType().getElementType());
+          if (!narrowType || !wideType ||
+              narrowType.getWidth() >= wideType.getWidth())
+            continue;
+          unsigned width = narrowType.getWidth();
+          auto fits = [width](DenseIntElementsAttr attr) {
+            auto fitsValue = [width](const APInt &value) {
+              return value.getActiveBits() <= width;
+            };
+            if (attr.isSplat())
+              return fitsValue(attr.getSplatValue<APInt>());
+            return llvm::all_of(attr.getValues<APInt>(), fitsValue);
+          };
+          if (!fits(mask) || !fits(expected))
+            continue;
+
+          Value narrowInput = convert.getOperand();
+          for (auto reshape : llvm::reverse(reshapes))
+            narrowInput = stablehlo::ReshapeOp::create(
+                rewriter, reshape.getLoc(), reshape.getType().clone(narrowType),
+                narrowInput);
+          auto narrowConstant = [&](DenseIntElementsAttr attr) {
+            auto value = attr.mapValues(
+                narrowType, [width](const APInt &v) { return v.trunc(width); });
+            return stablehlo::ConstantOp::create(rewriter, cmpOp.getLoc(),
+                                                 value);
+          };
+          Value narrowMask = narrowConstant(mask);
+          Value narrowExpected = narrowConstant(expected);
+          Value narrowAnd = stablehlo::AndOp::create(rewriter, andOp.getLoc(),
+                                                     narrowInput, narrowMask);
+          rewriter.modifyOpInPlace(cmpOp, [&] {
+            cmpOp->setOperand(i, narrowAnd);
+            cmpOp->setOperand(1 - i, narrowExpected);
+          });
+          return success();
+        }
+      }
+    }
+
     for (int i = 0; i < 2; i++) {
       auto operand = cmpOp->getOperand(i);
       auto conv = operand.getDefiningOp<stablehlo::ConvertOp>();
@@ -32463,8 +32561,22 @@ struct SplitReduceAddMulToAddDotGeneral final
         rhsRewritten = true;
       }
 
+      // The new reduce goes right after its input, unless the init value is
+      // not defined by then: it then goes where the reduce it replaces was.
+      auto afterInputOrHere = [&](Value input) {
+        rewriter.setInsertionPointAfterValue(input);
+        Operation *init = initVal.getDefiningOp();
+        Block *b = rewriter.getInsertionBlock();
+        auto ip = rewriter.getInsertionPoint();
+        if (init && init->getBlock() == b && ip != b->end() &&
+            !init->isBeforeInBlock(&*ip))
+          rewriter.setInsertionPoint(op);
+        else if (init && init->getBlock() != b &&
+                 !init->getBlock()->getParent()->isAncestor(b->getParent()))
+          rewriter.setInsertionPoint(op);
+      };
       if (rhsRewritten && !lhsRewritten) { // insert a reduceOp
-        rewriter.setInsertionPointAfterValue(lhs);
+        afterInputOrHere(lhs);
         auto newLhsReduce = stablehlo::ReduceOp::create(
             rewriter, op->getLoc(), ValueRange(lhs), ValueRange(initVal),
             op.getDimensions());
@@ -32474,7 +32586,7 @@ struct SplitReduceAddMulToAddDotGeneral final
       }
 
       if (lhsRewritten && !rhsRewritten) { // insert a reduceOp
-        rewriter.setInsertionPointAfterValue(rhs);
+        afterInputOrHere(rhs);
         auto newRhsReduce = stablehlo::ReduceOp::create(
             rewriter, op->getLoc(), ValueRange(rhs), ValueRange(initVal),
             op.getDimensions());

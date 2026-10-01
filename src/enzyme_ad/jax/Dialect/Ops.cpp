@@ -1321,6 +1321,21 @@ WrapOp::inferReturnTypes(MLIRContext * /*context*/,
   return success();
 }
 
+// The wrap takes its `lhs` elements from the end of the operand and its
+// `rhs` from the start: neither can reach past the operand.
+LogicalResult enzymexla::WrapOp::verify() {
+  auto ty = cast<RankedTensorType>(getOperand().getType());
+  int64_t extent = ty.getDimSize(getDimension());
+  if (ShapedType::isDynamic(extent))
+    return success();
+  if (getLhs() > extent || getRhs() > extent)
+    return emitOpError("amounts ")
+           << getLhs() << " and " << getRhs()
+           << " must not exceed the operand's extent " << extent
+           << " along dimension " << getDimension();
+  return success();
+}
+
 LogicalResult
 ExtendOp::inferReturnTypes(MLIRContext * /*context*/,
                            std::optional<Location> location,

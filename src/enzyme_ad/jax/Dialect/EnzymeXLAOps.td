@@ -537,6 +537,7 @@ def WrapOp: EnzymeXLA_Op<
   );
 
   let hasFolder = 1;
+  let hasVerifier = 1;
   let results = (outs HLO_Tensor:$result);
 }
 
