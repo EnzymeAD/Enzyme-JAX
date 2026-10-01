@@ -21,21 +21,21 @@ module {
         %2 = affine.apply #map(%arg4)
         %3 = arith.index_cast %2 : index to i64
         %4 = arith.sitofp %3 : i64 to f64
-        %5 = arith.mulf %4, %cst_0 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %6 = arith.mulf %4, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %5 = arith.mulf %4, %cst_0 : f64
+        %6 = arith.mulf %4, %cst_1 : f64
         %7 = math.absf %5 : f64
-        %8 = arith.cmpf olt, %cst_2, %7 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %8 = arith.cmpf olt, %cst_2, %7 : f64
         %9 = arith.select %8, %5, %cst_2 : f64
         %10 = arith.select %8, %cst_2, %5 : f64
-        %11 = arith.addf %9, %10 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %12 = arith.subf %9, %11 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %13 = arith.addf %10, %12 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %14 = arith.addf %6, %cst_3 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %15 = arith.addf %14, %13 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %16 = arith.addf %11, %15 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %17 = arith.cmpf ole, %16, %0 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %11 = arith.addf %9, %10 : f64
+        %12 = arith.subf %9, %11 : f64
+        %13 = arith.addf %10, %12 : f64
+        %14 = arith.addf %6, %cst_3 : f64
+        %15 = arith.addf %14, %13 : f64
+        %16 = arith.addf %11, %15 : f64
+        %17 = arith.cmpf ole, %16, %0 : f64
         %18 = arith.select %17, %cst, %cst_4 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %19 = arith.subf %arg5, %18 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %19 = arith.subf %arg5, %18 : f64
         affine.store %19, %arg0[%arg4 + 5, %arg2 + 1, %arg3 + 1] : memref<40x200x104xf64, 1>
         affine.yield %19 : f64
       }
@@ -98,26 +98,26 @@ module {
 // CHECK-NEXT:    %14 = stablehlo.add %12, %13 : tensor<4xi64>
 // CHECK-NEXT:    %15 = arith.sitofp %14 : tensor<4xi64> to tensor<4xf64>
 // CHECK-NEXT:    %16 = stablehlo.broadcast_in_dim %cst_0, dims = [] : (tensor<f64>) -> tensor<4xf64>
-// CHECK-NEXT:    %17 = arith.mulf %15, %16 {fastmathFlags = #llvm.fastmath<none>} : tensor<4xf64>
+// CHECK-NEXT:    %17 = arith.mulf %15, %16 : tensor<4xf64>
 // CHECK-NEXT:    %18 = stablehlo.broadcast_in_dim %cst_1, dims = [] : (tensor<f64>) -> tensor<4xf64>
-// CHECK-NEXT:    %19 = arith.mulf %15, %18 {fastmathFlags = #llvm.fastmath<none>} : tensor<4xf64>
+// CHECK-NEXT:    %19 = arith.mulf %15, %18 : tensor<4xf64>
 // CHECK-NEXT:    %20 = math.absf %17 : tensor<4xf64>
 // CHECK-NEXT:    %21 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<4xf64>
-// CHECK-NEXT:    %22 = arith.cmpf olt, %21, %20 {fastmathFlags = #llvm.fastmath<none>} : tensor<4xf64>
+// CHECK-NEXT:    %22 = arith.cmpf olt, %21, %20 : tensor<4xf64>
 // CHECK-NEXT:    %23 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<4xf64>
 // CHECK-NEXT:    %24 = arith.select %22, %17, %23 : tensor<4xi1>, tensor<4xf64>
 // CHECK-NEXT:    %25 = stablehlo.broadcast_in_dim %cst_2, dims = [] : (tensor<f64>) -> tensor<4xf64>
 // CHECK-NEXT:    %26 = arith.select %22, %25, %17 : tensor<4xi1>, tensor<4xf64>
-// CHECK-NEXT:    %27 = arith.addf %24, %26 {fastmathFlags = #llvm.fastmath<none>} : tensor<4xf64>
-// CHECK-NEXT:    %28 = arith.subf %24, %27 {fastmathFlags = #llvm.fastmath<none>} : tensor<4xf64>
-// CHECK-NEXT:    %29 = arith.addf %26, %28 {fastmathFlags = #llvm.fastmath<none>} : tensor<4xf64>
+// CHECK-NEXT:    %27 = arith.addf %24, %26 : tensor<4xf64>
+// CHECK-NEXT:    %28 = arith.subf %24, %27 : tensor<4xf64>
+// CHECK-NEXT:    %29 = arith.addf %26, %28 : tensor<4xf64>
 // CHECK-NEXT:    %30 = stablehlo.broadcast_in_dim %cst_3, dims = [] : (tensor<f64>) -> tensor<4xf64>
-// CHECK-NEXT:    %31 = arith.addf %19, %30 {fastmathFlags = #llvm.fastmath<none>} : tensor<4xf64>
-// CHECK-NEXT:    %32 = arith.addf %31, %29 {fastmathFlags = #llvm.fastmath<none>} : tensor<4xf64>
-// CHECK-NEXT:    %33 = arith.addf %27, %32 {fastmathFlags = #llvm.fastmath<none>} : tensor<4xf64>
+// CHECK-NEXT:    %31 = arith.addf %19, %30 : tensor<4xf64>
+// CHECK-NEXT:    %32 = arith.addf %31, %29 : tensor<4xf64>
+// CHECK-NEXT:    %33 = arith.addf %27, %32 : tensor<4xf64>
 // CHECK-NEXT:    %34 = stablehlo.broadcast_in_dim %33, dims = [0] : (tensor<4xf64>) -> tensor<4x198x102xf64>
 // CHECK-NEXT:    %35 = stablehlo.broadcast_in_dim %9, dims = [1, 2] : (tensor<198x102xf64>) -> tensor<4x198x102xf64>
-// CHECK-NEXT:    %36 = arith.cmpf ole, %34, %35 {fastmathFlags = #llvm.fastmath<none>} : tensor<4x198x102xf64>
+// CHECK-NEXT:    %36 = arith.cmpf ole, %34, %35 : tensor<4x198x102xf64>
 // CHECK-NEXT:    %37 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<f64>) -> tensor<4x198x102xf64>
 // CHECK-NEXT:    %38 = stablehlo.broadcast_in_dim %cst_4, dims = [] : (tensor<f64>) -> tensor<4x198x102xf64>
 // CHECK-NEXT:    %39 = arith.select %36, %37, %38 {fastmathFlags = #llvm.fastmath<none>} : tensor<4x198x102xi1>, tensor<4x198x102xf64>

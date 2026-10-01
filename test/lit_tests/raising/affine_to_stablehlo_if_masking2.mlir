@@ -59,7 +59,7 @@ module @reactant_dot_gat... attributes {llvm.data_layout = "e-p6:32:32-i64:64-i1
         %26 = arith.remui %25, %c3 : index
         %27 = arith.divui %25, %c3 : index
         %28 = memref.load %arg1[%27, %26, %24, %c0] : memref<2x3x4x1xf64, 1>
-        %29 = arith.mulf %18, %28 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %29 = arith.mulf %18, %28 : f64
         %30 = arith.index_cast %14 : i64 to index
         %31 = arith.addi %30, %c1 : index
         %32 = arith.remui %31, %c4 : index
@@ -73,8 +73,8 @@ module @reactant_dot_gat... attributes {llvm.data_layout = "e-p6:32:32-i64:64-i1
         %40 = arith.remui %39, %c3 : index
         %41 = arith.divui %39, %c3 : index
         %42 = memref.load %arg1[%41, %40, %38, %c0] : memref<2x3x4x1xf64, 1>
-        %43 = arith.mulf %34, %42 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %44 = arith.addf %29, %43 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %43 = arith.mulf %34, %42 : f64
+        %44 = arith.addf %29, %43 : f64
         %45 = arith.index_cast %14 : i64 to index
         %46 = arith.addi %45, %c2 : index
         %47 = arith.remui %46, %c4 : index
@@ -88,8 +88,8 @@ module @reactant_dot_gat... attributes {llvm.data_layout = "e-p6:32:32-i64:64-i1
         %55 = arith.remui %54, %c3 : index
         %56 = arith.divui %54, %c3 : index
         %57 = memref.load %arg1[%56, %55, %53, %c0] : memref<2x3x4x1xf64, 1>
-        %58 = arith.mulf %49, %57 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %59 = arith.addf %44, %58 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %58 = arith.mulf %49, %57 : f64
+        %59 = arith.addf %44, %58 : f64
         %60 = arith.index_cast %14 : i64 to index
         %61 = arith.addi %60, %c3 : index
         %62 = arith.remui %61, %c4 : index
@@ -103,10 +103,10 @@ module @reactant_dot_gat... attributes {llvm.data_layout = "e-p6:32:32-i64:64-i1
         %70 = arith.remui %69, %c3 : index
         %71 = arith.divui %69, %c3 : index
         %72 = memref.load %arg1[%71, %70, %68, %c0] : memref<2x3x4x1xf64, 1>
-        %73 = arith.mulf %64, %72 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %74 = arith.addf %59, %73 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %73 = arith.mulf %64, %72 : f64
+        %74 = arith.addf %59, %73 : f64
         %75 = affine.load %arg0[%arg6, %arg7 + 1, 0] : memref<2x4x1xf64, 1>
-        %76 = arith.addf %75, %74 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %76 = arith.addf %75, %74 : f64
         affine.store %76, %arg0[%arg6, %arg7 + 1, 0] : memref<2x4x1xf64, 1>
       }
     }
@@ -191,7 +191,7 @@ module @reactant_dot_gat... attributes {llvm.data_layout = "e-p6:32:32-i64:64-i1
 // CHECK-NEXT:    %[[a74:.+]] = "stablehlo.gather"(%[[a2]], %[[a73]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1, 2, 3], start_index_map = [0, 1, 2, 3], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 1, 1>}> : (tensor<2x3x4x1xf64>, tensor<3x2x4xi64>) -> tensor<3x2xf64>
 // CHECK-NEXT:    %[[a75:.+]] = stablehlo.broadcast_in_dim %[[a49]], dims = [0] : (tensor<2xf64>) -> tensor<2x3xf64>
 // CHECK-NEXT:    %[[a76:.+]] = stablehlo.broadcast_in_dim %[[a74]], dims = [1, 0] : (tensor<3x2xf64>) -> tensor<2x3xf64>
-// CHECK-NEXT:    %[[a77:.+]] = arith.mulf %[[a75]], %[[a76]] {fastmathFlags = #llvm.fastmath<none>} : tensor<2x3xf64>
+// CHECK-NEXT:    %[[a77:.+]] = arith.mulf %[[a75]], %[[a76]] : tensor<2x3xf64>
 // CHECK-NEXT:    %[[a78:.+]] = stablehlo.broadcast_in_dim %[[a16]], dims = [] : (tensor<i64>) -> tensor<2xi64>
 // CHECK-NEXT:    %[[a79:.+]] = arith.addi %[[a41]], %[[a78]] : tensor<2xi64>
 // CHECK-NEXT:    %[[a80:.+]] = stablehlo.broadcast_in_dim %[[a12]], dims = [] : (tensor<i64>) -> tensor<2xi64>
@@ -227,8 +227,8 @@ module @reactant_dot_gat... attributes {llvm.data_layout = "e-p6:32:32-i64:64-i1
 // CHECK-NEXT:    %[[a110:.+]] = "stablehlo.gather"(%[[a2]], %[[a109]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1, 2, 3], start_index_map = [0, 1, 2, 3], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 1, 1>}> : (tensor<2x3x4x1xf64>, tensor<3x2x4xi64>) -> tensor<3x2xf64>
 // CHECK-NEXT:    %[[a111:.+]] = stablehlo.broadcast_in_dim %[[a87]], dims = [0] : (tensor<2xf64>) -> tensor<2x3xf64>
 // CHECK-NEXT:    %[[a112:.+]] = stablehlo.broadcast_in_dim %[[a110]], dims = [1, 0] : (tensor<3x2xf64>) -> tensor<2x3xf64>
-// CHECK-NEXT:    %[[a113:.+]] = arith.mulf %[[a111]], %[[a112]] {fastmathFlags = #llvm.fastmath<none>} : tensor<2x3xf64>
-// CHECK-NEXT:    %[[a114:.+]] = arith.addf %[[a77]], %[[a113]] {fastmathFlags = #llvm.fastmath<none>} : tensor<2x3xf64>
+// CHECK-NEXT:    %[[a113:.+]] = arith.mulf %[[a111]], %[[a112]] : tensor<2x3xf64>
+// CHECK-NEXT:    %[[a114:.+]] = arith.addf %[[a77]], %[[a113]] : tensor<2x3xf64>
 // CHECK-NEXT:    %[[a115:.+]] = stablehlo.broadcast_in_dim %[[a14]], dims = [] : (tensor<i64>) -> tensor<2xi64>
 // CHECK-NEXT:    %[[a116:.+]] = arith.addi %[[a41]], %[[a115]] : tensor<2xi64>
 // CHECK-NEXT:    %[[a117:.+]] = stablehlo.broadcast_in_dim %[[a12]], dims = [] : (tensor<i64>) -> tensor<2xi64>
@@ -264,8 +264,8 @@ module @reactant_dot_gat... attributes {llvm.data_layout = "e-p6:32:32-i64:64-i1
 // CHECK-NEXT:    %[[a147:.+]] = "stablehlo.gather"(%[[a2]], %[[a146]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1, 2, 3], start_index_map = [0, 1, 2, 3], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 1, 1>}> : (tensor<2x3x4x1xf64>, tensor<3x2x4xi64>) -> tensor<3x2xf64>
 // CHECK-NEXT:    %[[a148:.+]] = stablehlo.broadcast_in_dim %[[a124]], dims = [0] : (tensor<2xf64>) -> tensor<2x3xf64>
 // CHECK-NEXT:    %[[a149:.+]] = stablehlo.broadcast_in_dim %[[a147]], dims = [1, 0] : (tensor<3x2xf64>) -> tensor<2x3xf64>
-// CHECK-NEXT:    %[[a150:.+]] = arith.mulf %[[a148]], %[[a149]] {fastmathFlags = #llvm.fastmath<none>} : tensor<2x3xf64>
-// CHECK-NEXT:    %[[a151:.+]] = arith.addf %[[a114]], %[[a150]] {fastmathFlags = #llvm.fastmath<none>} : tensor<2x3xf64>
+// CHECK-NEXT:    %[[a150:.+]] = arith.mulf %[[a148]], %[[a149]] : tensor<2x3xf64>
+// CHECK-NEXT:    %[[a151:.+]] = arith.addf %[[a114]], %[[a150]] : tensor<2x3xf64>
 // CHECK-NEXT:    %[[a152:.+]] = stablehlo.broadcast_in_dim %[[a13]], dims = [] : (tensor<i64>) -> tensor<2xi64>
 // CHECK-NEXT:    %[[a153:.+]] = arith.addi %[[a41]], %[[a152]] : tensor<2xi64>
 // CHECK-NEXT:    %[[a154:.+]] = stablehlo.broadcast_in_dim %[[a12]], dims = [] : (tensor<i64>) -> tensor<2xi64>
@@ -301,11 +301,11 @@ module @reactant_dot_gat... attributes {llvm.data_layout = "e-p6:32:32-i64:64-i1
 // CHECK-NEXT:    %[[a184:.+]] = "stablehlo.gather"(%[[a2]], %[[a183]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1, 2, 3], start_index_map = [0, 1, 2, 3], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 1, 1>}> : (tensor<2x3x4x1xf64>, tensor<3x2x4xi64>) -> tensor<3x2xf64>
 // CHECK-NEXT:    %[[a185:.+]] = stablehlo.broadcast_in_dim %[[a161]], dims = [0] : (tensor<2xf64>) -> tensor<2x3xf64>
 // CHECK-NEXT:    %[[a186:.+]] = stablehlo.broadcast_in_dim %[[a184]], dims = [1, 0] : (tensor<3x2xf64>) -> tensor<2x3xf64>
-// CHECK-NEXT:    %[[a187:.+]] = arith.mulf %[[a185]], %[[a186]] {fastmathFlags = #llvm.fastmath<none>} : tensor<2x3xf64>
-// CHECK-NEXT:    %[[a188:.+]] = arith.addf %[[a151]], %[[a187]] {fastmathFlags = #llvm.fastmath<none>} : tensor<2x3xf64>
+// CHECK-NEXT:    %[[a187:.+]] = arith.mulf %[[a185]], %[[a186]] : tensor<2x3xf64>
+// CHECK-NEXT:    %[[a188:.+]] = arith.addf %[[a151]], %[[a187]] : tensor<2x3xf64>
 // CHECK-NEXT:    %[[a189:.+]] = stablehlo.slice %[[a1]] [0:2, 1:4, 0:1] : (tensor<2x4x1xf64>) -> tensor<2x3x1xf64>
 // CHECK-NEXT:    %[[a190:.+]] = stablehlo.reshape %[[a189]] : (tensor<2x3x1xf64>) -> tensor<2x3xf64>
-// CHECK-NEXT:    %[[a191:.+]] = arith.addf %[[a190]], %[[a188]] {fastmathFlags = #llvm.fastmath<none>} : tensor<2x3xf64>
+// CHECK-NEXT:    %[[a191:.+]] = arith.addf %[[a190]], %[[a188]] : tensor<2x3xf64>
 // CHECK-NEXT:    %[[a192:.+]] = stablehlo.broadcast_in_dim %[[a191]], dims = [0, 1] : (tensor<2x3xf64>) -> tensor<2x3x1xf64>
 // CHECK-NEXT:    %[[a193:.+]] = stablehlo.slice %[[a1]] [0:2, 1:4, 0:1] : (tensor<2x4x1xf64>) -> tensor<2x3x1xf64>
 // CHECK-NEXT:    %[[a194:.+]] = stablehlo.reshape %[[a192]] : (tensor<2x3x1xf64>) -> tensor<2x3xf64>

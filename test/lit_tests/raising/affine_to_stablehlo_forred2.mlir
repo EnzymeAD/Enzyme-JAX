@@ -10,14 +10,14 @@ module {
     affine.parallel (%arg2, %arg3, %arg4, %arg5, %arg6) = (0, 0, 0, 0, 0) to (32, 2, 2, 2, 16) {
       %0 = affine.load %arg1[7, %arg2, %arg6] : memref<9x32x16xf64, 1>
       %1 = affine.load %arg1[8, %arg2, %arg6] : memref<9x32x16xf64, 1>
-      %2 = arith.addf %0, %1 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %2 = arith.addf %0, %1 : f64
       affine.store %2, %arg0[7, %arg2, %arg6] : memref<9x32x16xf64, 1>
       %3 = affine.load %arg0[7, %arg2, %arg6] : memref<9x32x16xf64, 1>
       %4 = affine.for %arg7 = 0 to 7 iter_args(%arg8 = %3) -> (f64) {
         %5 = affine.load %arg1[-%arg7 + 6, %arg2, %arg6] : memref<9x32x16xf64, 1>
         %6 = affine.load %arg1[-%arg7 + 7, %arg2, %arg6] : memref<9x32x16xf64, 1>
-        %7 = arith.addf %arg8, %5 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %8 = arith.addf %7, %6 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %7 = arith.addf %arg8, %5 : f64
+        %8 = arith.addf %7, %6 : f64
         affine.store %8, %arg0[-%arg7 + 6, %arg2, %arg6] : memref<9x32x16xf64, 1>
         affine.yield %8 : f64
       }
@@ -32,7 +32,7 @@ module {
 // CHECK-NEXT:    %1 = stablehlo.reshape %0 : (tensor<1x32x16xf64>) -> tensor<32x16xf64>
 // CHECK-NEXT:    %2 = stablehlo.slice %arg1 [8:9, 0:32, 0:16] : (tensor<9x32x16xf64>) -> tensor<1x32x16xf64>
 // CHECK-NEXT:    %3 = stablehlo.reshape %2 : (tensor<1x32x16xf64>) -> tensor<32x16xf64>
-// CHECK-NEXT:    %4 = arith.addf %1, %3 {fastmathFlags = #llvm.fastmath<none>} : tensor<32x16xf64>
+// CHECK-NEXT:    %4 = arith.addf %1, %3 : tensor<32x16xf64>
 // CHECK-NEXT:    %5 = stablehlo.reshape %4 : (tensor<32x16xf64>) -> tensor<1x32x16xf64>
 // CHECK-NEXT:    %6 = stablehlo.slice %arg0 [8:9, 0:32, 0:16] : (tensor<9x32x16xf64>) -> tensor<1x32x16xf64>
 // CHECK-NEXT:    %7 = stablehlo.slice %arg1 [0:7, 0:32, 0:16] : (tensor<9x32x16xf64>) -> tensor<7x32x16xf64>

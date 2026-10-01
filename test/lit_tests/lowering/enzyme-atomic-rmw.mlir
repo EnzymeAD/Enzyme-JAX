@@ -10,6 +10,6 @@ func.func @atomic_rmw(%idx: index, %x: f32, %mem: memref<?xf32>) {
 // CHECK-SAME:      %[[ARG1:.*]]: f32,
 // CHECK-SAME:      %[[ARG2:.*]]: !llvm.ptr) {
 // CHECK:           %[[GETELEMENTPTR_0:.*]] = llvm.getelementptr %[[ARG2]]{{\[}}%[[ARG0]]] : (!llvm.ptr, i64) -> !llvm.ptr, f32
-// CHECK:           %[[ATOMICRMW_0:.*]] = llvm.atomicrmw fadd %[[GETELEMENTPTR_0]], %[[ARG1]] monotonic {alignment = 4 : i64} : !llvm.ptr, f32
+// CHECK:           %[[ATOMICRMW_0:.*]] = llvm.atomicrmw fadd %[[GETELEMENTPTR_0]], %[[ARG1]] monotonic <alignment = 4> : !llvm.ptr, f32
 // CHECK:           llvm.return
 // CHECK:         }

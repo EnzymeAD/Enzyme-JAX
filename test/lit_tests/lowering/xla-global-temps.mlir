@@ -29,32 +29,32 @@ module {
   func.func private @consume(memref<i32, 1>, memref<i32, 1>)
 }
 
-// CHECK-DAG: llvm.mlir.global internal @[[BOUND:__reactant_temp_bound]]
-// CHECK-DAG: llvm.mlir.global internal @[[OTHER:__reactant_temp_other]]
+// CHECK-DAG: llvm.mlir.global internal @[[$BOUND:__reactant_temp_bound]]
+// CHECK-DAG: llvm.mlir.global internal @[[$OTHER:__reactant_temp_other]]
 // CHECK-LABEL: llvm.func @update(
 // CHECK-NOT: llvm.call @reactantXLAMalloc
-// CHECK: llvm.mlir.addressof @[[BOUND]]
+// CHECK: llvm.mlir.addressof @[[$BOUND]]
 // CHECK: llvm.load
 // CHECK: llvm.call @reactantXLAMemcpy
 // CHECK-NOT: llvm.call @reactantXLAFree
 // CHECK: llvm.return
 // CHECK-LABEL: llvm.func @get_bound(
 // CHECK-NOT: llvm.call @reactantXLAMalloc
-// CHECK: llvm.mlir.addressof @[[BOUND]]
+// CHECK: llvm.mlir.addressof @[[$BOUND]]
 // CHECK: llvm.load
 // CHECK-NOT: llvm.call @reactantXLAFree
 // CHECK: llvm.return
 // CHECK-LABEL: llvm.func internal @__reactant_temps_init()
-// CHECK-DAG: %[[INIT_BOUND:.*]] = llvm.mlir.addressof @[[BOUND]]
-// CHECK-DAG: %[[INIT_OTHER:.*]] = llvm.mlir.addressof @[[OTHER]]
+// CHECK-DAG: %[[INIT_BOUND:.*]] = llvm.mlir.addressof @[[$BOUND]]
+// CHECK-DAG: %[[INIT_OTHER:.*]] = llvm.mlir.addressof @[[$OTHER]]
 // CHECK: llvm.call @reactantXLAMalloc
 // CHECK: llvm.store %{{.*}}, %[[INIT_BOUND]] : !llvm.ptr<1>, !llvm.ptr
 // CHECK: llvm.call @reactantXLAMalloc
 // CHECK: llvm.store %{{.*}}, %[[INIT_OTHER]] : !llvm.ptr<1>, !llvm.ptr
 // CHECK: llvm.return
 // CHECK-LABEL: llvm.func internal @__reactant_temps_deinit()
-// CHECK-DAG: %[[FINI_BOUND:.*]] = llvm.mlir.addressof @[[BOUND]]
-// CHECK-DAG: %[[FINI_OTHER:.*]] = llvm.mlir.addressof @[[OTHER]]
+// CHECK-DAG: %[[FINI_BOUND:.*]] = llvm.mlir.addressof @[[$BOUND]]
+// CHECK-DAG: %[[FINI_OTHER:.*]] = llvm.mlir.addressof @[[$OTHER]]
 // CHECK-DAG: %[[NULL:.*]] = llvm.mlir.zero : !llvm.ptr<1>
 // CHECK: llvm.load %[[FINI_OTHER]]
 // CHECK: llvm.call @reactantXLAFree
