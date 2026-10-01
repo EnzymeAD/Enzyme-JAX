@@ -12427,6 +12427,121 @@ struct SliceReshape
   }
 };
 
+// A strided slice takes every s-th element of a dimension from a start
+// before s. Those elements are one column of the dimension split into
+// (extent / s, s), so the slice is a reshape, a slice of stride one along the
+// columns, and a reshape back; the pieces of a buffer rebuilt from such slices
+// then read as slices of one view of it. One op becomes three, so the
+// rewrite is only made when the view pays for itself: another column of the
+// same split is read too (one view then serves both), or the operand is a
+// reshape or a constant the view folds into.
+struct StridedSliceToReshape final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, StridedSliceToReshape> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // The dimension a slice strides along and the shape of the operand with
+  // that dimension split into (rows, stride), when the slice is a column of
+  // it: one strided dimension, a stride that divides the extent, a start
+  // before the stride.
+  static std::optional<std::pair<int64_t, SmallVector<int64_t>>>
+  splitOf(stablehlo::SliceOp op) {
+    auto ty = dyn_cast<RankedTensorType>(op.getOperand().getType());
+    if (!ty || !ty.hasStaticShape())
+      return std::nullopt;
+    int64_t dim = -1;
+    for (auto [d, s] : llvm::enumerate(op.getStrides())) {
+      if (s == 1)
+        continue;
+      if (dim != -1)
+        return std::nullopt;
+      dim = d;
+    }
+    if (dim == -1)
+      return std::nullopt;
+    int64_t stride = op.getStrides()[dim], extent = ty.getDimSize(dim);
+    if (extent % stride != 0 || op.getStartIndices()[dim] >= stride)
+      return std::nullopt;
+    SmallVector<int64_t> split(ty.getShape());
+    split[dim] = extent / stride;
+    split.insert(split.begin() + dim + 1, stride);
+    return std::make_pair(dim, split);
+  }
+
+  // Whether the split view of the operand is shared with another column, or
+  // folds into what the operand is.
+  static bool viewPays(stablehlo::SliceOp op, int64_t dim,
+                       ArrayRef<int64_t> split) {
+    Value operand = op.getOperand();
+    if (operand.getDefiningOp<stablehlo::ReshapeOp>() ||
+        operand.getDefiningOp<stablehlo::ConstantOp>())
+      return true;
+    for (Operation *user : operand.getUsers()) {
+      if (user == op.getOperation())
+        continue;
+      if (auto rs = dyn_cast<stablehlo::ReshapeOp>(user)) {
+        if (rs.getType().getShape() == split)
+          return true; // a column already taken through the view
+        continue;
+      }
+      auto other = dyn_cast<stablehlo::SliceOp>(user);
+      if (!other || other.getOperand() != operand)
+        continue;
+      auto os = splitOf(other);
+      if (os && os->first == dim && os->second == split &&
+          other.getStartIndices()[dim] != op.getStartIndices()[dim])
+        return true;
+    }
+    return false;
+  }
+
+  // The split view of the operand another column already took, where the
+  // slice can read it: before the slice, or before the op of its block that
+  // holds the slice.
+  static Value existingView(stablehlo::SliceOp op, ArrayRef<int64_t> split) {
+    for (Operation *user : op.getOperand().getUsers()) {
+      auto rs = dyn_cast<stablehlo::ReshapeOp>(user);
+      if (!rs || rs.getType().getShape() != split)
+        continue;
+      Operation *holder = rs->getBlock()->findAncestorOpInBlock(*op);
+      if (holder && rs->isBeforeInBlock(holder))
+        return rs.getResult();
+    }
+    return Value();
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto found = splitOf(op);
+    if (!found)
+      return failure();
+    auto [dim, split] = *found;
+    if (!viewPays(op, dim, split))
+      return failure();
+    int64_t stride = op.getStrides()[dim], start = op.getStartIndices()[dim],
+            limit = op.getLimitIndices()[dim];
+    int64_t taken = limit > start ? (limit - start + stride - 1) / stride : 0;
+    SmallVector<int64_t> starts(op.getStartIndices()),
+        limits(op.getLimitIndices());
+    starts[dim] = 0;
+    limits[dim] = taken;
+    starts.insert(starts.begin() + dim + 1, start);
+    limits.insert(limits.begin() + dim + 1, start + 1);
+    SmallVector<int64_t> ones(split.size(), 1);
+    Value view = existingView(op, split);
+    if (!view) {
+      // next to the operand, where every other column can read it too
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointAfterValue(op.getOperand());
+      view = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), op.getOperand(),
+                                        split);
+    }
+    auto column = stablehlo::SliceOp::create(rewriter, op.getLoc(), view,
+                                             starts, limits, ones);
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), column);
+    return success();
+  }
+};
+
 // slice(reshape(pad x)) -> pad(slice x)
 struct SliceReshapePad final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshapePad> {
@@ -38917,6 +39032,7 @@ struct EnzymeHLOOptPass
         FuseReshapeCollapseOrExpandDimsIntoReduce,
         GatherOfScatterSimplify,
         ScatterOfGatherIdentity,
+        StridedSliceToReshape,
         ReduceWindowWrapSimplify,
         SplitComplexScatter,
         SplitComplexGather,
