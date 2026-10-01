@@ -19,7 +19,8 @@ include "Dialect.td"
 
 def DefineOp : TesseraOp<"define", [
   AffineScope, AutomaticAllocationScope,
-  FunctionOpInterface, IsolatedFromAbove, OpAsmOpInterface
+  SymbolName, SymbolVisibility, FunctionOpInterface, IsolatedFromAbove,
+  OpAsmOpInterface
 ]> {
   let summary = "define operation";
   let description = [{

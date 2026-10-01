@@ -53,7 +53,7 @@ module {
 // CHECK-NEXT:     %2 = "stablehlo.scatter"(%cst, %c, %1) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
 // CHECK-NEXT:     ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
 // CHECK-NEXT:       stablehlo.return %arg3 : tensor<f64>
-// CHECK-NEXT:     }) {enzymexla.symmetric_matrix = [#enzymexla<guaranteed GUARANTEED>]} : (tensor<4x4xf64>, tensor<4x2xi64>, tensor<4xf64>) -> tensor<4x4xf64>
+// CHECK-NEXT:     }) {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<GUARANTEED>]} : (tensor<4x4xf64>, tensor<4x2xi64>, tensor<4xf64>) -> tensor<4x4xf64>
 // CHECK-NEXT:     %3 = stablehlo.divide %2, %arg0 : tensor<4x4xf64>
 // CHECK-NEXT:     return %3 : tensor<4x4xf64>
 // CHECK-NEXT: }

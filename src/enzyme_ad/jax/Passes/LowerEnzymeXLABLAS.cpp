@@ -280,11 +280,8 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     SmallVector<bool> isColMajorArr(12, false);
     SmallVector<int64_t> operandRanks = {
         0, 0, 0, 0, 0, 2, 0, op.getB().getType().getRank(), 0, 0, 2, 0};
-    SmallVector<int64_t> outputRanks = {2};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
-    auto resultLayouts =
-        getSHLOLayout(rewriter, outputRanks, SmallVector<bool>{false}, 2);
 
     SmallVector<Attribute> aliases;
     aliases.push_back(
@@ -358,7 +355,6 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
                      ldc},
           rewriter.getStringAttr(""),
           /*operand_layouts=*/operandLayouts,
-          /*result_layouts=*/resultLayouts,
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
@@ -680,10 +676,8 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     SmallVector<bool> isColMajorArr = {false, false, false, false, false,
                                        false, false, false, false, false};
     SmallVector<int64_t> operandRanks = {0, 0, 0, 0, 0, 2, 0, 0, 2, 0};
-    SmallVector<int64_t> outputRanks = {2};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
-    auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
     SmallVector<Attribute> aliases;
     aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
@@ -759,7 +753,6 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
                      C, ldc},
           rewriter.getStringAttr(""),
           /*operand_layouts=*/operandLayouts,
-          /*result_layouts=*/resultLayouts,
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),

@@ -28,16 +28,16 @@ func.func @main() {
   %d = stablehlo.constant dense<1.0> : tensor<2xf32>
 
   %fwd:2 = enzyme.fwddiff @sine(%x, %d) {
-    activity=[#enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
+    activity=[#enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
   } : (tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
 
   check.expect_almost_eq %fwd#0, %out : tensor<2xf32>
   check.expect_almost_eq %fwd#1, %expected : tensor<2xf32>
 
   %rev:2 = enzyme.autodiff @sine(%x, %d) {
-    activity=[#enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
+    activity=[#enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
   } : (tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
 
   check.expect_almost_eq %rev#0, %out : tensor<2xf32>

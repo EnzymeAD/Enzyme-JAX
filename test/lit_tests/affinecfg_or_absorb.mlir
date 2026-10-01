@@ -29,12 +29,12 @@ func.func @absorb(%e : i32, %n : i32, %m : i32, %A : memref<?xf64>) {
   return
 }
 
-// CHECK: #[[set:.+]] = affine_set<()[s0, s1] : (s0 - 1 >= 0, s1 - 1 >= 0)>
+// CHECK: #[[$set:.+]] = affine_set<()[s0, s1] : (s0 - 1 >= 0, s1 - 1 >= 0)>
 // CHECK-LABEL:   func.func @absorb(
 // CHECK-SAME:      %[[e:.*]]: i32, %[[n:.*]]: i32, %[[m:.*]]: i32, %[[A:.*]]: memref<?xf64>) {
 // CHECK-DAG:       %[[ni:.*]] = arith.index_cast %[[n]] : i32 to index
 // CHECK-DAG:       %[[mi:.*]] = arith.index_cast %[[m]] : i32 to index
 // CHECK:           affine.parallel (%[[b:.*]]) = (0) to (symbol(%{{.*}})) {
 // CHECK-NOT:         scf.if
-// CHECK:             affine.if #[[set]]()[%[[ni]], %[[mi]]] {
+// CHECK:             affine.if #[[$set]]()[%[[ni]], %[[mi]]] {
 // CHECK:               affine.store %{{.*}}, %[[A]][%[[b]]] : memref<?xf64>

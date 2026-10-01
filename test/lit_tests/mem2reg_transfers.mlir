@@ -208,7 +208,7 @@ llvm.func @copy_states_alignment(%dst: !llvm.ptr, %val: i32) {
 
 // CHECK-LABEL: llvm.func @copy_states_alignment(
 // CHECK-SAME: %[[DST:[a-z0-9]+]]: !llvm.ptr, %[[VAL:[a-z0-9]+]]: i32
-// CHECK: llvm.store %[[VAL]], %[[DST]] {alignment = 4 : i64}
+// CHECK: llvm.store %[[VAL]], %[[DST]] <alignment = 4>
 
 // -----
 
@@ -225,7 +225,7 @@ llvm.func @copy_states_nothing(%dst: !llvm.ptr, %val: i32) {
 
 // CHECK-LABEL: llvm.func @copy_states_nothing(
 // CHECK-SAME: %[[DST:[a-z0-9]+]]: !llvm.ptr, %[[VAL:[a-z0-9]+]]: i32
-// CHECK: llvm.store %[[VAL]], %[[DST]] {alignment = 1 : i64}
+// CHECK: llvm.store %[[VAL]], %[[DST]] <alignment = 1>
 
 // -----
 

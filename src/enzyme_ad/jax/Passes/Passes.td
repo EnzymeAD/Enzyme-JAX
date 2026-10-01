@@ -1420,6 +1420,14 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            "Mark the scalar arguments a raised while loop's exit test reads "
            "as scalars the runtime specializes the executable over (trailing "
            "xla_wrapper inputs, num_specialized)">,
+       Option<
+           /*C++ variable name=*/"specialize_index_strides",
+           /*CLI argument=*/"specialize_index_strides",
+           /*type=*/"bool",
+           /*default=*/"false",
+           /*description=*/
+           "Specialize the kernel over a scalar argument an access index reads, "
+           "such as a stride, so the index folds to a constant">,
   ];
 }
 
@@ -1524,6 +1532,12 @@ def AutoBatchingPass : Pass<"auto-batching"> {
       /*type=*/"bool",
       /*default=*/"true",
       /*description=*/"remove loop carried deps from load operations">,
+    Option<
+      /*C++ variable name=*/"parallel_while_to_batched_scatter_passes",
+      /*CLI argument=*/"parallel_while_to_batched_scatter_passes",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"A parallel while of a raised kernel with a constant trip count becomes a batched scatter">,
     Option<
         /*C++ variable name=*/"max_iterations",
         /*CLI argument=*/"max_iterations",

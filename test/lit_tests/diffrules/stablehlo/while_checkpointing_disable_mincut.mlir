@@ -26,8 +26,8 @@ module {
 
   func.func @ckpt_diff(%arg0: tensor<f64>, %arg1: tensor<f64>) -> (tensor<f64>, tensor<f64>) {
     %d:2 = enzyme.autodiff @ckpt(%arg0, %arg1) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
     } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
     return %d#0, %d#1 : tensor<f64>, tensor<f64>
   }

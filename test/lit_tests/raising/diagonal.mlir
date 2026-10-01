@@ -5,7 +5,7 @@ module {
     %cst = arith.constant 2.000000e+00 : f64
     affine.parallel (%arg2) = (0) to (289) {
       %0 = affine.load %arg1[%arg2, %arg2] : memref<17x17xf64, 1>
-      %1 = arith.mulf %0, %cst {fastmathFlags = #llvm.fastmath<none>} : f64
+      %1 = arith.mulf %0, %cst : f64
       affine.store %1, %arg0[%arg2, %arg2] : memref<17x17xf64, 1>
     }
     return

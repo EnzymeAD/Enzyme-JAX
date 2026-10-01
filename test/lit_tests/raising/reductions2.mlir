@@ -11,36 +11,36 @@ module {
     affine.parallel (%arg4, %arg5) = (0, 0) to (20, 45) {
       %0 = affine.load %arg3[7] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<24xf64, 1>
       %1 = affine.load %arg2[9] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<25xf64, 1>
-      %2 = arith.mulf %0, %1 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %3 = arith.divf %cst, %2 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %4 = arith.subf %cst_0, %3 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %2 = arith.mulf %0, %1 : f64
+      %3 = arith.divf %cst, %2 : f64
+      %4 = arith.subf %cst_0, %3 : f64
       %5 = affine.load %arg0[7, %arg4 + 7, %arg5 + 7] : memref<24x35x59xf64, 1>
-      %6 = arith.divf %5, %4 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %6 = arith.divf %5, %4 : f64
       affine.store %6, %arg0[7, %arg4 + 7, %arg5 + 7] : memref<24x35x59xf64, 1>
       %7 = affine.for %arg6 = 0 to 8 iter_args(%arg7 = %4) -> (f64) {
         %8 = affine.load %arg3[%arg6 + 7] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<24xf64, 1>
         %9 = affine.load %arg2[%arg6 + 9] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<25xf64, 1>
-        %10 = arith.mulf %8, %9 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %11 = arith.divf %cst, %10 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %10 = arith.mulf %8, %9 : f64
+        %11 = arith.divf %cst, %10 : f64
         %12 = affine.load %arg3[%arg6 + 8] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<24xf64, 1>
         %13 = affine.load %arg2[%arg6 + 10] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<25xf64, 1>
-        %14 = arith.mulf %12, %13 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %15 = arith.divf %cst, %14 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %16 = arith.subf %cst_0, %15 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %17 = arith.mulf %12, %9 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %18 = arith.divf %cst, %17 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %19 = arith.subf %16, %18 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %20 = arith.divf %11, %arg7 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %14 = arith.mulf %12, %13 : f64
+        %15 = arith.divf %cst, %14 : f64
+        %16 = arith.subf %cst_0, %15 : f64
+        %17 = arith.mulf %12, %9 : f64
+        %18 = arith.divf %cst, %17 : f64
+        %19 = arith.subf %16, %18 : f64
+        %20 = arith.divf %11, %arg7 : f64
         affine.store %20, %arg1[%arg6 + 1, %arg4, %arg5] : memref<10x20x45xf64, 1>
-        %21 = arith.mulf %20, %18 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %22 = arith.subf %19, %21 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %21 = arith.mulf %20, %18 : f64
+        %22 = arith.subf %19, %21 : f64
         %23 = affine.load %arg0[%arg6 + 8, %arg4 + 7, %arg5 + 7] : memref<24x35x59xf64, 1>
         %24 = math.absf %22 : f64
-        %25 = arith.cmpf olt, %cst_1, %24 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %25 = arith.cmpf olt, %cst_1, %24 : f64
         %26 = affine.load %arg0[%arg6 + 7, %arg4 + 7, %arg5 + 7] : memref<24x35x59xf64, 1>
-        %27 = arith.mulf %18, %26 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %28 = arith.subf %23, %27 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %29 = arith.divf %28, %22 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %27 = arith.mulf %18, %26 : f64
+        %28 = arith.subf %23, %27 : f64
+        %29 = arith.divf %28, %22 : f64
         %30 = arith.select %25, %29, %23 : f64
         affine.store %30, %arg0[%arg6 + 8, %arg4 + 7, %arg5 + 7] : memref<24x35x59xf64, 1>
         affine.yield %22 : f64
@@ -49,8 +49,8 @@ module {
         %8 = affine.load %arg0[-%arg6 + 15, %arg4 + 7, %arg5 + 7] : memref<24x35x59xf64, 1>
         %9 = affine.load %arg1[-%arg6 + 9, %arg4, %arg5] : memref<10x20x45xf64, 1>
         %10 = affine.load %arg0[-%arg6 + 16, %arg4 + 7, %arg5 + 7] : memref<24x35x59xf64, 1>
-        %11 = arith.mulf %9, %10 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %12 = arith.subf %8, %11 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %11 = arith.mulf %9, %10 : f64
+        %12 = arith.subf %8, %11 : f64
         affine.store %12, %arg0[-%arg6 + 15, %arg4 + 7, %arg5 + 7] : memref<24x35x59xf64, 1>
       }
     }
@@ -65,36 +65,36 @@ module {
 // CHECK-NEXT:    affine.parallel (%arg4, %arg5) = (0, 0) to (20, 45) {
 // CHECK-NEXT:      %0 = affine.load %arg3[7] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<24xf64, 1>
 // CHECK-NEXT:      %1 = affine.load %arg2[9] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<25xf64, 1>
-// CHECK-NEXT:      %2 = arith.mulf %0, %1 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:      %3 = arith.divf %cst, %2 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:      %4 = arith.subf %cst_0, %3 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:      %2 = arith.mulf %0, %1 : f64
+// CHECK-NEXT:      %3 = arith.divf %cst, %2 : f64
+// CHECK-NEXT:      %4 = arith.subf %cst_0, %3 : f64
 // CHECK-NEXT:      %5 = affine.load %arg0[7, %arg4 + 7, %arg5 + 7] : memref<24x35x59xf64, 1>
-// CHECK-NEXT:      %6 = arith.divf %5, %4 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:      %6 = arith.divf %5, %4 : f64
 // CHECK-NEXT:      affine.store %6, %arg0[7, %arg4 + 7, %arg5 + 7] : memref<24x35x59xf64, 1>
 // CHECK-NEXT:      %7 = affine.load %arg0[7, %arg4 + 7, %arg5 + 7] : memref<24x35x59xf64, 1>
 // CHECK-NEXT:      %8:2 = affine.for %arg6 = 0 to 8 iter_args(%arg7 = %4, %arg8 = %7) -> (f64, f64) {
 // CHECK-NEXT:        %11 = affine.load %arg3[%arg6 + 7] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<24xf64, 1>
 // CHECK-NEXT:        %12 = affine.load %arg2[%arg6 + 9] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<25xf64, 1>
-// CHECK-NEXT:        %13 = arith.mulf %11, %12 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:        %14 = arith.divf %cst, %13 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:        %13 = arith.mulf %11, %12 : f64
+// CHECK-NEXT:        %14 = arith.divf %cst, %13 : f64
 // CHECK-NEXT:        %15 = affine.load %arg3[%arg6 + 8] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<24xf64, 1>
 // CHECK-NEXT:        %16 = affine.load %arg2[%arg6 + 10] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<25xf64, 1>
-// CHECK-NEXT:        %17 = arith.mulf %15, %16 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:        %18 = arith.divf %cst, %17 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:        %19 = arith.subf %cst_0, %18 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:        %20 = arith.mulf %15, %12 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:        %21 = arith.divf %cst, %20 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:        %22 = arith.subf %19, %21 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:        %23 = arith.divf %14, %arg7 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:        %17 = arith.mulf %15, %16 : f64
+// CHECK-NEXT:        %18 = arith.divf %cst, %17 : f64
+// CHECK-NEXT:        %19 = arith.subf %cst_0, %18 : f64
+// CHECK-NEXT:        %20 = arith.mulf %15, %12 : f64
+// CHECK-NEXT:        %21 = arith.divf %cst, %20 : f64
+// CHECK-NEXT:        %22 = arith.subf %19, %21 : f64
+// CHECK-NEXT:        %23 = arith.divf %14, %arg7 : f64
 // CHECK-NEXT:        affine.store %23, %arg1[%arg6 + 1, %arg4, %arg5] : memref<10x20x45xf64, 1>
-// CHECK-NEXT:        %24 = arith.mulf %23, %21 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:        %25 = arith.subf %22, %24 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:        %24 = arith.mulf %23, %21 : f64
+// CHECK-NEXT:        %25 = arith.subf %22, %24 : f64
 // CHECK-NEXT:        %26 = affine.load %arg0[%arg6 + 8, %arg4 + 7, %arg5 + 7] : memref<24x35x59xf64, 1>
 // CHECK-NEXT:        %27 = math.absf %25 : f64
-// CHECK-NEXT:        %28 = arith.cmpf olt, %cst_1, %27 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:        %29 = arith.mulf %21, %arg8 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:        %30 = arith.subf %26, %29 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:        %31 = arith.divf %30, %25 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:        %28 = arith.cmpf olt, %cst_1, %27 : f64
+// CHECK-NEXT:        %29 = arith.mulf %21, %arg8 : f64
+// CHECK-NEXT:        %30 = arith.subf %26, %29 : f64
+// CHECK-NEXT:        %31 = arith.divf %30, %25 : f64
 // CHECK-NEXT:        %32 = arith.select %28, %31, %26 : f64
 // CHECK-NEXT:        affine.store %32, %arg0[%arg6 + 8, %arg4 + 7, %arg5 + 7] : memref<24x35x59xf64, 1>
 // CHECK-NEXT:        affine.yield %25, %32 : f64, f64
@@ -103,8 +103,8 @@ module {
 // CHECK-NEXT:      %10 = affine.for %arg6 = 0 to 9 iter_args(%arg7 = %9) -> (f64) {
 // CHECK-NEXT:        %11 = affine.load %arg0[-%arg6 + 15, %arg4 + 7, %arg5 + 7] : memref<24x35x59xf64, 1>
 // CHECK-NEXT:        %12 = affine.load %arg1[-%arg6 + 9, %arg4, %arg5] : memref<10x20x45xf64, 1>
-// CHECK-NEXT:        %13 = arith.mulf %12, %arg7 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:        %14 = arith.subf %11, %13 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:        %13 = arith.mulf %12, %arg7 : f64
+// CHECK-NEXT:        %14 = arith.subf %11, %13 : f64
 // CHECK-NEXT:        affine.store %14, %arg0[-%arg6 + 15, %arg4 + 7, %arg5 + 7] : memref<24x35x59xf64, 1>
 // CHECK-NEXT:        affine.yield %14 : f64
 // CHECK-NEXT:      }

@@ -1518,6 +1518,22 @@ Value getScalarValue(Operation *op, OpBuilder &builder);
 bool isScalarValue(Value val);
 bool isScalarValue(Operation *op);
 
+// The batched form of a dynamic_slice / dynamic_update_slice whose start
+// indices vary across the batch, as a gather / scatter: `mapper` gives the
+// batched start indices and update. With `operandIsBatched` the operand is
+// batched too and every batch element reads / writes its own copy; without,
+// the operand is shared, so every batch element reads / writes that one
+// tensor.
+LogicalResult batchDynamicSliceAsGather(DynamicSliceOp op, OpBuilder &builder,
+                                        IRMapping &mapper,
+                                        ArrayRef<int64_t> batchSizes,
+                                        bool operandIsBatched = true);
+LogicalResult batchDynamicUpdateSliceAsScatter(DynamicUpdateSliceOp op,
+                                               OpBuilder &builder,
+                                               IRMapping &mapper,
+                                               ArrayRef<int64_t> batchSizes,
+                                               bool operandIsBatched = true);
+
 Value copyTriangularPart(OpBuilder &builder, Value input,
                          enzymexla::LapackUplo uplo);
 
@@ -1851,6 +1867,39 @@ void ExtractBlockIntoFunction(Block *block, ModuleOp modOp, func::FuncOp &func,
                               OpBuilder &builder);
 
 } // namespace stablehlo
+
+/// Result layouts of a custom call whose results all alias an operand: each
+/// result takes the layout of the operand it aliases. Returns null (and emits
+/// an error on `op`) if some result aliases no operand.
+static ArrayAttr getAliasedResultLayouts(Operation *op,
+                                         ArrayAttr operandLayouts,
+                                         ArrayAttr outputOperandAliases) {
+  SmallVector<Attribute> layouts;
+  for (unsigned idx = 0, e = op->getNumResults(); idx < e; ++idx) {
+    Attribute layout = nullptr;
+    if (outputOperandAliases) {
+      for (auto attr : outputOperandAliases) {
+        auto alias = cast<stablehlo::OutputOperandAliasAttr>(attr);
+        auto outIdxs = alias.getOutputTupleIndices();
+        bool matches = e == 1 ? outIdxs.empty()
+                              : (outIdxs.size() == 1 && outIdxs[0] == idx);
+        if (matches && alias.getOperandTupleIndices().empty() &&
+            alias.getOperandIndex() < (int64_t)operandLayouts.size()) {
+          layout = operandLayouts[alias.getOperandIndex()];
+          break;
+        }
+      }
+    }
+    if (!layout) {
+      op->emitError() << "each result should match to an operand, could "
+                         "not find operand for result #"
+                      << idx;
+      return nullptr;
+    }
+    layouts.push_back(layout);
+  }
+  return ArrayAttr::get(op->getContext(), layouts);
+}
 
 static InFlightDiagnostic &operator<<(InFlightDiagnostic &diag, AffineMap map) {
   std::string str;

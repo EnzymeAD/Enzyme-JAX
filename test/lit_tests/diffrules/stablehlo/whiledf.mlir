@@ -38,7 +38,7 @@ module @reactant_differe... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
   func.func @main(%arg0: tensor<63x63xf64> {tf.aliasing_output = 1 : i32}) -> (tensor<63x63xf64>, tensor<63x63xf64>) {
     %cst = stablehlo.constant dense<1.000000e+00> : tensor<f64>
     %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<63x63xf64>
-    %0:2 = enzyme.autodiff @"Const{typeof(estimate_tracer_error)}(Main.estimate_tracer_error)_autodiff"(%arg0, %cst, %cst_0) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_activenoneed>, #enzyme<activity enzyme_active>], strong_zero = true} : (tensor<63x63xf64>, tensor<f64>, tensor<63x63xf64>) -> (tensor<63x63xf64>, tensor<63x63xf64>)
+    %0:2 = enzyme.autodiff @"Const{typeof(estimate_tracer_error)}(Main.estimate_tracer_error)_autodiff"(%arg0, %cst, %cst_0) {activity = [#enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_activenoneed>, #enzyme.activity<enzyme_active>], strong_zero = true} : (tensor<63x63xf64>, tensor<f64>, tensor<63x63xf64>) -> (tensor<63x63xf64>, tensor<63x63xf64>)
     return %0#1, %0#0 : tensor<63x63xf64>, tensor<63x63xf64>
   }
 }

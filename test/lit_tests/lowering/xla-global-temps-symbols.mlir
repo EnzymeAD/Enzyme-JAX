@@ -15,15 +15,15 @@ module {
 }
 
 // CHECK: llvm.mlir.global external @__reactant_temp_bound()
-// CHECK: llvm.mlir.global internal @[[SLOT:__reactant_temp_bound_[0-9]+]]()
+// CHECK: llvm.mlir.global internal @[[$SLOT:__reactant_temp_bound_[0-9]+]]()
 // CHECK-LABEL: llvm.func @get_bound()
-// CHECK: llvm.mlir.addressof @[[SLOT]]
+// CHECK: llvm.mlir.addressof @[[$SLOT]]
 // CHECK: llvm.load
 // CHECK: llvm.func internal @[[CTOR:__reactant_temps_init_[0-9]+]]()
-// CHECK: llvm.mlir.addressof @[[SLOT]]
+// CHECK: llvm.mlir.addressof @[[$SLOT]]
 // CHECK: llvm.call @reactantXLAMalloc
 // CHECK: llvm.func internal @[[DTOR:__reactant_temps_deinit_[0-9]+]]()
-// CHECK: llvm.mlir.addressof @[[SLOT]]
+// CHECK: llvm.mlir.addressof @[[$SLOT]]
 // CHECK: llvm.call @reactantXLAFree
 // CHECK: llvm.mlir.global_ctors ctors = [@[[CTOR]]]
 // CHECK: llvm.mlir.global_dtors dtors = [@[[DTOR]]]

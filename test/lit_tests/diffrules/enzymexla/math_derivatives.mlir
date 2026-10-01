@@ -17,17 +17,17 @@ module {
   }
 
   func.func @gelu_none_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
-    %0 = enzymexla.math.gelu %x, approximation = NONE : (tensor<6xf32>) -> tensor<6xf32>
+    %0 = enzymexla.math.gelu %x, approximation = <NONE> : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 
   func.func @gelu_tanh_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
-    %0 = enzymexla.math.gelu %x, approximation = TANH : (tensor<6xf32>) -> tensor<6xf32>
+    %0 = enzymexla.math.gelu %x, approximation = <TANH> : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 
   func.func @gelu_sigmoid_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
-    %0 = enzymexla.math.gelu %x, approximation = SIGMOID : (tensor<6xf32>) -> tensor<6xf32>
+    %0 = enzymexla.math.gelu %x, approximation = <SIGMOID> : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 
@@ -66,8 +66,8 @@ module {
     %d_common = stablehlo.constant dense<1.0> : tensor<6xf32>
 
     %relu_res:2 = enzyme.autodiff @relu_fn(%x_common, %d_common) {
-      activity = [#enzyme<activity enzyme_active>],
-      ret_activity = [#enzyme<activity enzyme_active>]
+      activity = [#enzyme.activity<enzyme_active>],
+      ret_activity = [#enzyme.activity<enzyme_active>]
     } : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
 
     // d/dx relu([0, -1, 1, 2, 100, -100]) = [0, 0, 1, 1, 1, 0]
@@ -75,43 +75,43 @@ module {
 
     // GELU derivativ
     %gelu_none_res:2 = enzyme.autodiff @gelu_none_fn(%x_common, %d_common) {
-      activity = [#enzyme<activity enzyme_active>],
-      ret_activity = [#enzyme<activity enzyme_active>]
+      activity = [#enzyme.activity<enzyme_active>],
+      ret_activity = [#enzyme.activity<enzyme_active>]
     } : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
     check.expect_almost_eq_const %gelu_none_res#1, dense<[0.5, -8.331547e-02, 1.0833155, 1.0852318, 1.0, 0.0]> : tensor<6xf32>
 
     %gelu_tanh_res:2 = enzyme.autodiff @gelu_tanh_fn(%x_common, %d_common) {
-      activity = [#enzyme<activity enzyme_active>],
-      ret_activity = [#enzyme<activity enzyme_active>]
+      activity = [#enzyme.activity<enzyme_active>],
+      ret_activity = [#enzyme.activity<enzyme_active>]
     } : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
     check.expect_almost_eq_const %gelu_tanh_res#1, dense<[0.5, -8.296408e-02, 1.0829641, 1.0860993, 1.0, 0.0]> : tensor<6xf32>
 
     %gelu_sigmoid_res:2 = enzyme.autodiff @gelu_sigmoid_fn(%x_common, %d_common) {
-      activity = [#enzyme<activity enzyme_active>],
-      ret_activity = [#enzyme<activity enzyme_active>]
+      activity = [#enzyme.activity<enzyme_active>],
+      ret_activity = [#enzyme.activity<enzyme_active>]
     } : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
     check.expect_almost_eq_const %gelu_sigmoid_res#1, dense<[0.5, -6.777961e-02, 1.0677796, 1.0738153, 1.0, 0.0]> : tensor<6xf32>
 
     // d/dx softplus(x) = sigmoid(x)
     %softplus_res:2 = enzyme.autodiff @softplus_fn(%x_common, %d_common) {
-      activity = [#enzyme<activity enzyme_active>],
-      ret_activity = [#enzyme<activity enzyme_active>]
+      activity = [#enzyme.activity<enzyme_active>],
+      ret_activity = [#enzyme.activity<enzyme_active>]
     } : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
     check.expect_almost_eq_const %softplus_res#1, dense<[0.5, 0.26894143, 0.7310586, 0.8807971, 1.0, 0.0]> : tensor<6xf32>
 
     // d/dx tgamma(x) = tgamma(x) * polygamma(0, x)
     %x_tgamma = stablehlo.constant dense<[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]> : tensor<6xf32>
     %tgamma_res:2 = enzyme.autodiff @tgamma_fn(%x_tgamma, %d_common) {
-      activity = [#enzyme<activity enzyme_active>],
-      ret_activity = [#enzyme<activity enzyme_active>]
+      activity = [#enzyme.activity<enzyme_active>],
+      ret_activity = [#enzyme.activity<enzyme_active>]
     } : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
     check.expect_almost_eq_const %tgamma_res#1, dense<[-0.577215672, 0.422784328, 1.84556866, 7.53670597, 36.1468239, 204.734329]> : tensor<6xf32>
 
     // d/dx lgamma(x) = polygamma(0, x) = digamma(x)
     %x_lgamma = stablehlo.constant dense<[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]> : tensor<6xf32>
     %lgamma_res:2 = enzyme.autodiff @lgamma_fn(%x_lgamma, %d_common) {
-      activity = [#enzyme<activity enzyme_active>],
-      ret_activity = [#enzyme<activity enzyme_active>]
+      activity = [#enzyme.activity<enzyme_active>],
+      ret_activity = [#enzyme.activity<enzyme_active>]
     } : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
     check.expect_almost_eq_const %lgamma_res#1, dense<[-0.577215672, 0.422784328, 0.922784328, 1.25611770, 1.50611770, 1.70611768]> : tensor<6xf32>
 
@@ -119,8 +119,8 @@ module {
     %x_hypot = stablehlo.constant dense<[3.0, 5.0, 0.0, 1.0, -3.0, 8.0]> : tensor<6xf32>
     %y_hypot = stablehlo.constant dense<[4.0, 12.0, 2.0, 1.0, 4.0, 15.0]> : tensor<6xf32>
     %hypot_res:3 = enzyme.autodiff @hypot_fn(%x_hypot, %y_hypot, %d_common) {
-      activity = [#enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>],
-      ret_activity = [#enzyme<activity enzyme_active>]
+      activity = [#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_active>],
+      ret_activity = [#enzyme.activity<enzyme_active>]
     } : (tensor<6xf32>, tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>, tensor<6xf32>)
     check.expect_almost_eq_const %hypot_res#1, dense<[0.6, 0.38461538, 0.0, 0.70710678, -0.6, 0.47058823]> : tensor<6xf32>
     check.expect_almost_eq_const %hypot_res#2, dense<[0.8, 0.92307692, 1.0, 0.70710678, 0.8, 0.88235294]> : tensor<6xf32>
@@ -128,16 +128,16 @@ module {
     // d/dx sinc(x) = cosc(x)
     %x_sinc = stablehlo.constant dense<[0.0, 0.5, 1.0, 1.5, 2.0, -0.5]> : tensor<6xf32>
     %sinc_res:2 = enzyme.autodiff @sinc_fn(%x_sinc, %d_common) {
-      activity = [#enzyme<activity enzyme_active>],
-      ret_activity = [#enzyme<activity enzyme_active>]
+      activity = [#enzyme.activity<enzyme_active>],
+      ret_activity = [#enzyme.activity<enzyme_active>]
     } : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
     check.expect_almost_eq_const %sinc_res#1, dense<[0.0, -1.27323954, -1.0, 0.14147106, 0.5, 1.27323954]> : tensor<6xf32>
 
     // d/dx cosc(x) = -pi^2 * sinc(x) - 2 * cosc(x) / x
     %x_cosc = stablehlo.constant dense<[0.0, 0.5, 1.0, 1.5, 2.0, -0.5]> : tensor<6xf32>
     %cosc_res:2 = enzyme.autodiff @cosc_fn(%x_cosc, %d_common) {
-      activity = [#enzyme<activity enzyme_active>],
-      ret_activity = [#enzyme<activity enzyme_active>]
+      activity = [#enzyme.activity<enzyme_active>],
+      ret_activity = [#enzyme.activity<enzyme_active>]
     } : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
     check.expect_almost_eq_const %cosc_res#1, dense<[-3.28986813, -1.1902271, 2.0, 1.905767, -0.5, -1.1902271]> : tensor<6xf32>
 

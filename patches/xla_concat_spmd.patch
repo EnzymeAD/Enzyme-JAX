@@ -1,0 +1,299 @@
+diff --git a/xla/service/spmd/spmd_partitioner.cc b/xla/service/spmd/spmd_partitioner.cc
+index 676f7a5..15f2bb0 100644
+--- a/xla/service/spmd/spmd_partitioner.cc
++++ b/xla/service/spmd/spmd_partitioner.cc
+@@ -2987,6 +2987,13 @@ absl::Status SpmdPartitioningVisitor::HandleTriangularSolve(
+ }
+ 
+ absl::Status SpmdPartitioningVisitor::HandleConcatenate(HloInstruction* hlo) {
++  if (module_->config().debug_options().xla_enable_enzyme_comms_opt()) {
++    ABSL_ASSIGN_OR_RETURN(bool handled,
++                          TryHandleConcatenateWithConstantOffsets(hlo));
++    if (handled) {
++      return absl::OkStatus();
++    }
++  }
+   return HandleElementwiseWithDimsToReplicate(hlo,
+                                               {hlo->concatenate_dimension()});
+ }
+@@ -5059,9 +5066,15 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
+     bool enableBroadcastOptimization =
+         actual_update->operand(0)->shape().dimensions().empty();
+     if (enableBroadcastOptimization) {
++      // The concatenate handler has no input tensor; the target is the
++      // result's shard shape either way.
++      Shape broadcast_shape =
++          input_tensor != nullptr
++              ? GetPartitionedHlo(input_tensor).hlo()->shape()
++              : MakePartitionedShape(hlo->shape(), hlo->sharding());
+       newOperand = add_hlo(HloInstruction::CreateBroadcast(
+-          GetPartitionedHlo(input_tensor).hlo()->shape(),
+-          GetPartitionedHlo(actual_update->operand(0)).hlo(), {}));
++          broadcast_shape, GetPartitionedHlo(actual_update->operand(0)).hlo(),
++          {}));
+       newOperand->set_sharding(hlo->sharding());
+     }
+   } else {
+@@ -5370,8 +5383,15 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
+               break;
+             }
+             if (ShardCountAtDim(hlo->sharding(), i) > 1) {
++              // A concatenate handled through this path has no
++              // dynamic-update-slice; the piece's own start is what the
++              // index would say.
+               int64_t dus_start =
+-                  dus->operand(i + 2)->literal().GetIntegralAsS64({}).value();
++                  dus != nullptr ? dus->operand(i + 2)
++                                       ->literal()
++                                       .GetIntegralAsS64({})
++                                       .value()
++                                 : piece_dus_starts[i];
+               int64_t slice_start = slice->slice_starts(i);
+               if (absl::c_linear_search(reverse_dims, i)) {
+                 slice_start = slice->operand(0)->shape().dimensions(i) -
+@@ -5528,6 +5548,89 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
+   return newOperand;
+ }
+ 
++absl::StatusOr<bool>
++SpmdPartitioningVisitor::TryHandleConcatenateWithConstantOffsets(
++    HloInstruction* hlo) {
++  const HloSharding& sharding = hlo->sharding();
++  if (hlo->shape().IsTuple() || sharding.IsReplicatedOrSingleDevice() ||
++      sharding.IsManual() || !sharding.IsTiled() || hlo->operand_count() < 2) {
++    return false;
++  }
++  const int64_t dim = hlo->concatenate_dimension();
++  const int64_t num_shards = sharding.dimension(dim);
++  if (num_shards <= 1) {
++    return false;
++  }
++  // Every operand has to be laid out like the result, so that the only data
++  // movement is the shift along the concatenate dimension.
++  for (const HloInstruction* operand : hlo->operands()) {
++    if (!operand->has_sharding() || operand->sharding() != sharding) {
++      return false;
++    }
++  }
++
++  const int64_t rank = hlo->shape().dimensions().size();
++  const int64_t full_size = hlo->shape().dimensions(dim);
++  const int64_t shard_size = CeilOfRatio(full_size, num_shards);
++
++  // The largest operand stays where it is; the others are written in around
++  // it.
++  int64_t largest = 0;
++  std::vector<int64_t> offsets(hlo->operand_count());
++  int64_t offset = 0;
++  for (int64_t i = 0; i < hlo->operand_count(); ++i) {
++    offsets[i] = offset;
++    offset += hlo->operand(i)->shape().dimensions(dim);
++    if (hlo->operand(i)->shape().dimensions(dim) >
++        hlo->operand(largest)->shape().dimensions(dim)) {
++      largest = i;
++    }
++  }
++  // Halo exchange only reaches the direct neighbour, so every shift has to be
++  // smaller than a shard: the largest operand's offset, and the size of each
++  // operand written in over it.
++  if (offsets[largest] >= shard_size) {
++    return false;
++  }
++  for (int64_t i = 0; i < hlo->operand_count(); ++i) {
++    if (i != largest &&
++        hlo->operand(i)->shape().dimensions(dim) >= shard_size) {
++      return false;
++    }
++  }
++
++  PaddingConfig padding_config;
++  for (int64_t d = 0; d < rank; ++d) {
++    auto* padding_dim = padding_config.add_dimensions();
++    padding_dim->set_interior_padding(0);
++    padding_dim->set_edge_padding_low(d == dim ? offsets[largest] : 0);
++    padding_dim->set_edge_padding_high(
++        d == dim ? full_size - offsets[largest] -
++                       hlo->operand(largest)->shape().dimensions(dim)
++                 : 0);
++  }
++  HloInstruction* zero = b_.AddInstruction(HloInstruction::CreateConstant(
++      LiteralUtil::Zero(hlo->shape().element_type())));
++  HloInstruction* current =
++      PadHelper(*this, GetPartitionedHlo(hlo->operand(largest)), zero,
++                padding_config, hlo->shape(), sharding);
++  if (current == nullptr) {
++    return false;
++  }
++  for (int64_t i = 0; i < hlo->operand_count(); ++i) {
++    if (i == largest) {
++      continue;
++    }
++    std::vector<int64_t> starts(rank, 0);
++    starts[dim] = offsets[i];
++    ABSL_ASSIGN_OR_RETURN(
++        current, ProcessUpdatePiece(hlo, /*input_tensor=*/nullptr,
++                                    hlo->operand(i), starts, current));
++  }
++  SetPartitionedHlo(hlo, current);
++  return true;
++}
++
+ absl::Status
+ SpmdPartitioningVisitor::HandleDUSAllPartitionedSliceDimsHaveConstantIndices(
+     HloInstruction* hlo, const HloInstruction* input_tensor,
+diff --git a/xla/service/spmd/spmd_partitioner.h b/xla/service/spmd/spmd_partitioner.h
+index 3aa388b..7d4e437 100644
+--- a/xla/service/spmd/spmd_partitioner.h
++++ b/xla/service/spmd/spmd_partitioner.h
+@@ -963,6 +963,16 @@ class SpmdPartitioningVisitor : public DfsHloVisitorWithDefault {
+       std::vector<int64_t> partitioned_slice_dims);
+   // Method 3: All partitioned slice dimensions have compile-time constant
+   // indices.
++  // Partitions a concatenate along a partitioned dimension without
++  // replicating that dimension: the largest operand is padded into its place
++  // in the result, and each remaining operand is written in at its constant
++  // offset the way a dynamic-update-slice with constant indices is, so data
++  // only moves between neighbouring shards. Returns false, having done
++  // nothing, when the concatenate does not fit the shapes this handles. Only
++  // used with xla_enable_enzyme_comms_opt.
++  absl::StatusOr<bool> TryHandleConcatenateWithConstantOffsets(
++      HloInstruction* hlo);
++
+   absl::Status HandleDUSAllPartitionedSliceDimsHaveConstantIndices(
+       HloInstruction* hlo, const HloInstruction* input_tensor,
+       const HloInstruction* update_tensor);
+diff --git a/xla/service/spmd/spmd_partitioner_test.cc b/xla/service/spmd/spmd_partitioner_test.cc
+index 5986010..3b3fa8a 100644
+--- a/xla/service/spmd/spmd_partitioner_test.cc
++++ b/xla/service/spmd/spmd_partitioner_test.cc
+@@ -19591,6 +19591,130 @@ ENTRY entry {
+   EXPECT_TRUE(has_scatter);
+ }
+ 
++// A row spliced in front of a tensor along a dimension partitioned two ways.
++// Replicating the concatenate dimension to do this is an all-to-all on a 2x2
++// mesh; with the enzyme comms opt the row is written in at its offset instead
++// and only the shard boundary moves, between neighbours.
++TEST_P(SpmdPartitioningTest, ConcatenateAlongPartitionedDimWithEnzymeOpt) {
++  absl::string_view hlo_string = R"(
++HloModule module
++
++ENTRY entry {
++  %row = f32[4,1,8] parameter(0), sharding={devices=[1,2,2]<=[4]}
++  %x = f32[4,7,8] parameter(1), sharding={devices=[1,2,2]<=[4]}
++  ROOT %concat = f32[4,8,8] concatenate(%row, %x), dimensions={1},
++    sharding={devices=[1,2,2]<=[4]}
++})";
++  ASSERT_OK_AND_ASSIGN(auto module,
++                       PartitionComputation(hlo_string, /*num_devices=*/4,
++                                            SpmdPartitionerOptions(),
++                                            /*enable_enzyme_opt=*/true));
++  VLOG(1) << module->ToString();
++  const HloComputation* entry = module->entry_computation();
++  EXPECT_EQ(NumOfInstructions(entry, HloOpcode::kAllToAll), 0);
++  EXPECT_EQ(NumOfInstructions(entry, HloOpcode::kAllGather), 0);
++  EXPECT_EQ(NumOfInstructions(entry, HloOpcode::kAllReduce), 0);
++  EXPECT_GT(NumOfInstructions(entry, HloOpcode::kCollectivePermute), 0);
++  EXPECT_THAT(entry->root_instruction(), op::Shape("f32[4,4,4]"));
++}
++
++// The same with the row at the end, the other form the algebraic simplifier
++// produces from a dynamic-update-slice into a pad.
++TEST_P(SpmdPartitioningTest,
++       ConcatenateAlongPartitionedDimTrailingOperandWithEnzymeOpt) {
++  absl::string_view hlo_string = R"(
++HloModule module
++
++ENTRY entry {
++  %x = f32[4,7,8] parameter(0), sharding={devices=[1,2,2]<=[4]}
++  %row = f32[4,1,8] parameter(1), sharding={devices=[1,2,2]<=[4]}
++  ROOT %concat = f32[4,8,8] concatenate(%x, %row), dimensions={1},
++    sharding={devices=[1,2,2]<=[4]}
++})";
++  ASSERT_OK_AND_ASSIGN(auto module,
++                       PartitionComputation(hlo_string, /*num_devices=*/4,
++                                            SpmdPartitionerOptions(),
++                                            /*enable_enzyme_opt=*/true));
++  VLOG(1) << module->ToString();
++  const HloComputation* entry = module->entry_computation();
++  EXPECT_EQ(NumOfInstructions(entry, HloOpcode::kAllToAll), 0);
++  EXPECT_EQ(NumOfInstructions(entry, HloOpcode::kAllGather), 0);
++  EXPECT_EQ(NumOfInstructions(entry, HloOpcode::kAllReduce), 0);
++  EXPECT_GT(NumOfInstructions(entry, HloOpcode::kCollectivePermute), 0);
++  EXPECT_THAT(entry->root_instruction(), op::Shape("f32[4,4,4]"));
++}
++
++// Operands laid out differently from the result are left to the default
++// handling.
++TEST_P(SpmdPartitioningTest,
++       ConcatenateAlongPartitionedDimMismatchedOperandShardingWithEnzymeOpt) {
++  absl::string_view hlo_string = R"(
++HloModule module
++
++ENTRY entry {
++  %row = f32[4,1,8] parameter(0), sharding={devices=[1,2,2]<=[4]}
++  %x = f32[4,7,8] parameter(1), sharding={devices=[2,1,2]<=[4]}
++  ROOT %concat = f32[4,8,8] concatenate(%row, %x), dimensions={1},
++    sharding={devices=[1,2,2]<=[4]}
++})";
++  ASSERT_OK_AND_ASSIGN(auto module,
++                       PartitionComputation(hlo_string, /*num_devices=*/4,
++                                            SpmdPartitionerOptions(),
++                                            /*enable_enzyme_opt=*/true));
++  EXPECT_THAT(module->entry_computation()->root_instruction(),
++              op::Shape("f32[4,4,4]"));
++}
++
++// The device order GB-25 actually uses: the tile assignment is transposed.
++TEST_P(SpmdPartitioningTest,
++       ConcatenateAlongPartitionedDimTransposedDevicesWithEnzymeOpt) {
++  absl::string_view hlo_string = R"(
++HloModule module
++
++ENTRY entry {
++  %row = f64[4,1,8] parameter(0), sharding={devices=[1,2,2]<=[2,2]T(1,0)}
++  %x = f64[4,7,8] parameter(1), sharding={devices=[1,2,2]<=[2,2]T(1,0)}
++  ROOT %concat = f64[4,8,8] concatenate(%row, %x), dimensions={1},
++    sharding={devices=[1,2,2]<=[2,2]T(1,0)}
++})";
++  ASSERT_OK_AND_ASSIGN(auto module,
++                       PartitionComputation(hlo_string, /*num_devices=*/4,
++                                            SpmdPartitionerOptions(),
++                                            /*enable_enzyme_opt=*/true));
++  VLOG(1) << module->ToString();
++  const HloComputation* entry = module->entry_computation();
++  EXPECT_EQ(NumOfInstructions(entry, HloOpcode::kAllToAll), 0);
++  EXPECT_EQ(NumOfInstructions(entry, HloOpcode::kAllGather), 0);
++  EXPECT_EQ(NumOfInstructions(entry, HloOpcode::kAllReduce), 0);
++  EXPECT_GT(NumOfInstructions(entry, HloOpcode::kCollectivePermute), 0);
++  EXPECT_THAT(entry->root_instruction(), op::Shape("f64[4,4,4]"));
++}
++
++// More than one operand written in around the largest.
++TEST_P(SpmdPartitioningTest,
++       ConcatenateAlongPartitionedDimThreeOperandsWithEnzymeOpt) {
++  absl::string_view hlo_string = R"(
++HloModule module
++
++ENTRY entry {
++  %lo = f32[4,1,8] parameter(0), sharding={devices=[1,2,2]<=[4]}
++  %x = f32[4,6,8] parameter(1), sharding={devices=[1,2,2]<=[4]}
++  %hi = f32[4,1,8] parameter(2), sharding={devices=[1,2,2]<=[4]}
++  ROOT %concat = f32[4,8,8] concatenate(%lo, %x, %hi), dimensions={1},
++    sharding={devices=[1,2,2]<=[4]}
++})";
++  ASSERT_OK_AND_ASSIGN(auto module,
++                       PartitionComputation(hlo_string, /*num_devices=*/4,
++                                            SpmdPartitionerOptions(),
++                                            /*enable_enzyme_opt=*/true));
++  VLOG(1) << module->ToString();
++  const HloComputation* entry = module->entry_computation();
++  EXPECT_EQ(NumOfInstructions(entry, HloOpcode::kAllToAll), 0);
++  EXPECT_EQ(NumOfInstructions(entry, HloOpcode::kAllGather), 0);
++  EXPECT_EQ(NumOfInstructions(entry, HloOpcode::kAllReduce), 0);
++  EXPECT_THAT(entry->root_instruction(), op::Shape("f32[4,4,4]"));
++}
++
+ }  // namespace
+ }  // namespace spmd
+ }  // namespace xla

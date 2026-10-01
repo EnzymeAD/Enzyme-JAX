@@ -193,6 +193,16 @@ void JITCallOp::getEffects(
   addMemoryEffectsFromAttr(effects, effectsAttr);
 }
 
+LogicalResult KernelCallOp::verify() {
+  return verifyResultsAliasOperands(getOperation(), getOutputOperandAliases(),
+                                    getInputs().size());
+}
+
+LogicalResult JITCallOp::verify() {
+  return verifyResultsAliasOperands(getOperation(), getOutputOperandAliases(),
+                                    getInputs().size());
+}
+
 template <>
 enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
     PatternRewriter &rewriter, enzymexla::KernelCallOp launchOp,
@@ -204,8 +214,7 @@ enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
       launchOp.getShmem(), launchOp.getClusterx(), launchOp.getClustery(),
       launchOp.getClusterz(), launchOp.getInputs(),
       launchOp.getBackendConfigAttr(), launchOp.getOperandLayoutsAttr(),
-      /*resultLayouts*/ nullptr, launchOp.getArgAttrsAttr(),
-      launchOp.getResAttrsAttr(), outputAliases,
+      launchOp.getArgAttrsAttr(), launchOp.getResAttrsAttr(), outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
 }
 
@@ -216,8 +225,7 @@ enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
   return enzymexla::JITCallOp::create(
       rewriter, launchOp.getLoc(), resTys, launchOp.getFn(),
       launchOp.getInputs(), launchOp.getBackendConfigAttr(),
-      launchOp.getOperandLayoutsAttr(),
-      /*resultLayouts*/ nullptr, launchOp.getArgAttrsAttr(),
+      launchOp.getOperandLayoutsAttr(), launchOp.getArgAttrsAttr(),
       launchOp.getResAttrsAttr(), outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
 }
@@ -1310,6 +1318,21 @@ WrapOp::inferReturnTypes(MLIRContext * /*context*/,
     resShape[adaptor.getDimension()] += adaptor.getLhs() + adaptor.getRhs();
   inferredReturnTypes.push_back(
       RankedTensorType::get(resShape, RT.getElementType()));
+  return success();
+}
+
+// The wrap takes its `lhs` elements from the end of the operand and its
+// `rhs` from the start: neither can reach past the operand.
+LogicalResult enzymexla::WrapOp::verify() {
+  auto ty = cast<RankedTensorType>(getOperand().getType());
+  int64_t extent = ty.getDimSize(getDimension());
+  if (ShapedType::isDynamic(extent))
+    return success();
+  if (getLhs() > extent || getRhs() > extent)
+    return emitOpError("amounts ")
+           << getLhs() << " and " << getRhs()
+           << " must not exceed the operand's extent " << extent
+           << " along dimension " << getDimension();
   return success();
 }
 

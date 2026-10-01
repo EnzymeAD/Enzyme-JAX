@@ -822,6 +822,11 @@ using MaximumFOpLowering =
 using MaxNumFOpLowering =
     InvVectorConvertFromLLVMPattern<arith::MaxNumFOp, LLVM::MaxNumOp,
                                     AttrConvertFastMathFromLLVM>;
+// Like __nv_fmax/__nv_fmin, maximumnum/minimumnum treat a NaN operand as
+// missing data, which is arith.maxnumf/minnumf.
+using MaximumNumFOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::MaxNumFOp, LLVM::MaximumNumOp,
+                                    AttrConvertFastMathFromLLVM>;
 using MaxSIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::MaxSIOp, LLVM::SMaxOp>;
 using MaxUIOpLowering =
@@ -831,6 +836,9 @@ using MinimumFOpLowering =
                                     AttrConvertFastMathFromLLVM>;
 using MinNumFOpLowering =
     InvVectorConvertFromLLVMPattern<arith::MinNumFOp, LLVM::MinNumOp,
+                                    AttrConvertFastMathFromLLVM>;
+using MinimumNumFOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::MinNumFOp, LLVM::MinimumNumOp,
                                     AttrConvertFastMathFromLLVM>;
 using MinSIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::MinSIOp, LLVM::SMinOp>;
@@ -901,20 +909,50 @@ public:
       }
     }
 
-    // Determine attributes for the target op
-    AttrConvertPassThrough<LLVM::ICmpOp, arith::CmpIOp> attrConvert(op);
-
     auto operands = op->getOperands();
     auto llvmNDVectorTy = operands[0].getType();
     if (isa<LLVM::LLVMArrayType, mlir::VectorType>(llvmNDVectorTy)) {
       return failure();
     }
 
-    Operation *newOp = rewriter.create(
-        op->getLoc(), rewriter.getStringAttr(arith::CmpIOp::getOperationName()),
-        operands, op->getResultTypes(), attrConvert.getAttrs());
+    // arith.cmpi keeps its predicate in a property rather than the attribute
+    // dictionary, so it has to be built with one rather than handed a dict.
+    arith::CmpIPredicate pred;
+    switch (op.getPredicate()) {
+    case LLVM::ICmpPredicate::eq:
+      pred = arith::CmpIPredicate::eq;
+      break;
+    case LLVM::ICmpPredicate::ne:
+      pred = arith::CmpIPredicate::ne;
+      break;
+    case LLVM::ICmpPredicate::slt:
+      pred = arith::CmpIPredicate::slt;
+      break;
+    case LLVM::ICmpPredicate::sle:
+      pred = arith::CmpIPredicate::sle;
+      break;
+    case LLVM::ICmpPredicate::sgt:
+      pred = arith::CmpIPredicate::sgt;
+      break;
+    case LLVM::ICmpPredicate::sge:
+      pred = arith::CmpIPredicate::sge;
+      break;
+    case LLVM::ICmpPredicate::ult:
+      pred = arith::CmpIPredicate::ult;
+      break;
+    case LLVM::ICmpPredicate::ule:
+      pred = arith::CmpIPredicate::ule;
+      break;
+    case LLVM::ICmpPredicate::ugt:
+      pred = arith::CmpIPredicate::ugt;
+      break;
+    case LLVM::ICmpPredicate::uge:
+      pred = arith::CmpIPredicate::uge;
+      break;
+    }
 
-    rewriter.replaceOp(op, newOp->getResult(0));
+    rewriter.replaceOpWithNewOp<arith::CmpIOp>(op, pred, op.getLhs(),
+                                               op.getRhs());
     return success();
   }
 };
@@ -1010,32 +1048,6 @@ struct NVVMRsqrtApproxRaising : public OpRewritePattern<LLVM::CallIntrinsicOp> {
                                                  arith::FastMathFlags::afn);
     rewriter.replaceOp(op, math::RsqrtOp::create(rewriter, op.getLoc(),
                                                  op.getArgs()[0], fmfAttr));
-    return success();
-  }
-};
-
-// The minimumnum/maximumnum intrinsics have no first-class llvm dialect op,
-// so they arrive as llvm.call_intrinsic. Like __nv_fmin/__nv_fmax they treat
-// a NaN operand as missing data, which is arith.minnumf/maxnumf.
-struct MinMaxNumIntrinsicRaising
-    : public OpRewritePattern<LLVM::CallIntrinsicOp> {
-  using OpRewritePattern<LLVM::CallIntrinsicOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(LLVM::CallIntrinsicOp op,
-                                PatternRewriter &rewriter) const override {
-    StringRef intrin = op.getIntrin();
-    bool isMin = intrin.starts_with("llvm.minimumnum.");
-    if (!isMin && !intrin.starts_with("llvm.maximumnum."))
-      return failure();
-    if (op.getArgs().size() != 2 || op->getNumResults() != 1 ||
-        !isa<FloatType>(op->getResult(0).getType()))
-      return failure();
-    if (isMin)
-      rewriter.replaceOpWithNewOp<arith::MinNumFOp>(op, op.getArgs()[0],
-                                                    op.getArgs()[1]);
-    else
-      rewriter.replaceOpWithNewOp<arith::MaxNumFOp>(op, op.getArgs()[0],
-                                                    op.getArgs()[1]);
     return success();
   }
 };
@@ -1356,6 +1368,45 @@ public:
   }
 };
 
+class NVSinCosRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  NVSinCosRaising(MLIRContext *context)
+      : OpRewritePattern<LLVM::CallOp>(context) {}
+
+  LogicalResult matchAndRewrite(mlir::LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    StringRef name = callee.getLeafReference();
+    static constexpr StringLiteral names[] = {"__nv_sincos", "__nv_sincosf",
+                                              "__nv_fast_sincosf", "sincos",
+                                              "sincosf"};
+    if (!llvm::is_contained(names, name))
+      return failure();
+    if (op->getNumOperands() != 3 || op->getNumResults() != 0)
+      return failure();
+
+    Value x = op->getOperand(0);
+    Value sinPtr = op->getOperand(1);
+    Value cosPtr = op->getOperand(2);
+
+    Location loc = op.getLoc();
+
+    auto fmf = arith::FastMathFlagsAttr::get(op.getContext(),
+                                             name == "__nv_fast_sincosf"
+                                                 ? arith::FastMathFlags::afn
+                                                 : arith::FastMathFlags::none);
+
+    auto sincos = math::SincosOp::create(rewriter, loc, x, fmf);
+    LLVM::StoreOp::create(rewriter, loc, sincos.getSin(), sinPtr);
+    LLVM::StoreOp::create(rewriter, loc, sincos.getCos(), cosPtr);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
 } // namespace
 
 void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
@@ -1372,6 +1423,7 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
   patterns.add<BF16HalfToFloatRaising>(context);
   patterns.add<HalfMathRaising>(context);
   patterns.add<InlineAsmHalfRaising>(context);
+  patterns.add<NVSinCosRaising>(context);
   patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(context,
                                                                    "__nv_clz");
   patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(
@@ -1507,7 +1559,6 @@ void populateLLVMToMathPatterns(MLIRContext *context,
 
   patterns.add<BarrierConvert>(converter);
   patterns.add<NVVMRsqrtApproxRaising>(converter);
-  patterns.add<MinMaxNumIntrinsicRaising>(converter);
 
   patterns
       .add<GPUConvert<NVVM::BlockDimXOp, gpu::BlockDimOp, gpu::Dimension::x>>(
@@ -1536,9 +1587,10 @@ void populateLLVMToMathPatterns(MLIRContext *context,
            ExtUIOpLowering, FPToSIOpLowering, FPToUIOpLowering,
            // IndexCastOpSILowering,
            // IndexCastOpUILowering,
-           MaximumFOpLowering, MaxNumFOpLowering, MaxSIOpLowering,
-           MaxUIOpLowering, MinimumFOpLowering, MinNumFOpLowering,
-           MinSIOpLowering, MinUIOpLowering, MulFOpLowering, MulIOpLowering,
+           MaximumFOpLowering, MaximumNumFOpLowering, MaxNumFOpLowering,
+           MaxSIOpLowering, MaxUIOpLowering, MinimumFOpLowering,
+           MinimumNumFOpLowering, MinNumFOpLowering, MinSIOpLowering,
+           MinUIOpLowering, MulFOpLowering, MulIOpLowering,
            // MulSIExtendedOpLowering,
            // MulUIExtendedOpLowering,
            NegFOpLowering, OrIOpLowering, RemFOpLowering, RemSIOpLowering,

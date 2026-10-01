@@ -5,10 +5,10 @@
 // per constraint, while the if brings its own dim/symbol numbering and an
 // unrelated number of constraints and operands, so both must be rebased.
 
-// CHECK-DAG: #[[SET0:.+]] = affine_set<(d0)[s0] : (d0 - 5 >= 0, -d0 + s0 - 1 >= 0)>
-// CHECK-DAG: #[[SET1:.+]] = affine_set<(d0)[s0, s1] : (d0 - s0 >= 0, -d0 + s1 - 1 >= 0)>
-// CHECK-DAG: #[[SET2:.+]] = affine_set<(d0)[s0] : (d0 - 5 >= 0, -d0 + 90 >= 0, -d0 + s0 - 1 >= 0)>
-// CHECK-DAG: #[[SET3:.+]] = affine_set<(d0, d1)[s0, s1] : (d0 + d1 - s0 >= 0, -d0 + s1 - 1 >= 0)>
+// CHECK-DAG: #[[$SET0:.+]] = affine_set<(d0)[s0] : (d0 - 5 >= 0, -d0 + s0 - 1 >= 0)>
+// CHECK-DAG: #[[$SET1:.+]] = affine_set<(d0)[s0, s1] : (d0 - s0 >= 0, -d0 + s1 - 1 >= 0)>
+// CHECK-DAG: #[[$SET2:.+]] = affine_set<(d0)[s0] : (d0 - 5 >= 0, -d0 + 90 >= 0, -d0 + s0 - 1 >= 0)>
+// CHECK-DAG: #[[$SET3:.+]] = affine_set<(d0, d1)[s0, s1] : (d0 + d1 - s0 >= 0, -d0 + s1 - 1 >= 0)>
 
 module {
   // One dim, no symbols, one constraint: the dim must survive the rebase onto
@@ -34,7 +34,7 @@ module {
 // CHECK-LABEL:   func.func @if_cond_dim(
 // CHECK-SAME:      %[[OUT:[^:]+]]: memref<100xf64>, %[[A:[^:]+]]: f64, %[[B:[^:]+]]: f64, %[[N:[^:]+]]: index
 // CHECK:           affine.parallel (%[[I:.+]]) = (0) to (100) {
-// CHECK-NEXT:        %[[V:.+]] = affine.if #[[SET0]](%[[I]])[%[[N]]] -> f64 {
+// CHECK-NEXT:        %[[V:.+]] = affine.if #[[$SET0]](%[[I]])[%[[N]]] -> f64 {
 // CHECK-NEXT:          affine.yield %[[A]] : f64
 // CHECK-NEXT:        } else {
 // CHECK-NEXT:          affine.yield %[[B]] : f64
@@ -62,7 +62,7 @@ module {
 // CHECK-LABEL:   func.func @if_cond_dim_symbol(
 // CHECK-SAME:      %[[OUT:[^:]+]]: memref<100xf64>, %[[A:[^:]+]]: f64, %[[B:[^:]+]]: f64, %[[N:[^:]+]]: index, %[[M:[^:]+]]: index
 // CHECK:           affine.parallel (%[[I:.+]]) = (0) to (100) {
-// CHECK-NEXT:        %[[V:.+]] = affine.if #[[SET1]](%[[I]])[%[[M]], %[[N]]] -> f64 {
+// CHECK-NEXT:        %[[V:.+]] = affine.if #[[$SET1]](%[[I]])[%[[M]], %[[N]]] -> f64 {
 // CHECK-NEXT:          affine.yield %[[A]] : f64
 // CHECK-NEXT:        } else {
 // CHECK-NEXT:          affine.yield %[[B]] : f64
@@ -89,7 +89,7 @@ module {
 // CHECK-LABEL:   func.func @if_cond_two_constraints(
 // CHECK-SAME:      %[[OUT:[^:]+]]: memref<100xf64>, %[[A:[^:]+]]: f64, %[[B:[^:]+]]: f64, %[[N:[^:]+]]: index
 // CHECK:           affine.parallel (%[[I:.+]]) = (0) to (100) {
-// CHECK-NEXT:        %[[V:.+]] = affine.if #[[SET2]](%[[I]])[%[[N]]] -> f64 {
+// CHECK-NEXT:        %[[V:.+]] = affine.if #[[$SET2]](%[[I]])[%[[N]]] -> f64 {
 // CHECK-NEXT:          affine.yield %[[A]] : f64
 // CHECK-NEXT:        } else {
 // CHECK-NEXT:          affine.yield %[[B]] : f64
@@ -119,7 +119,7 @@ module {
 // CHECK-LABEL:   func.func @if_cond_many_operands(
 // CHECK-SAME:      %[[OUT:[^:]+]]: memref<100x100xf64>, %[[A:[^:]+]]: f64, %[[B:[^:]+]]: f64, %[[N:[^:]+]]: index, %[[M:[^:]+]]: index
 // CHECK:           affine.parallel (%[[I:.+]], %[[J:.+]]) = (0, 0) to (100, 100) {
-// CHECK-NEXT:        %[[V:.+]] = affine.if #[[SET3]](%[[I]], %[[J]])[%[[M]], %[[N]]] -> f64 {
+// CHECK-NEXT:        %[[V:.+]] = affine.if #[[$SET3]](%[[I]], %[[J]])[%[[M]], %[[N]]] -> f64 {
 // CHECK-NEXT:          affine.yield %[[A]] : f64
 // CHECK-NEXT:        } else {
 // CHECK-NEXT:          affine.yield %[[B]] : f64

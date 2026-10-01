@@ -22,7 +22,7 @@ module {
 // CPU-NEXT:  llvm.func @enzymexla_lapacke_sormqr_(i64, i8, i8, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, !llvm.ptr, i64) -> i64
 // CPU-NEXT:  func.func @main(%arg0: tensor<32x64xf32>, %arg1: tensor<32xf32>, %arg2: tensor<32x64xf32>) -> tensor<32x64xf32> {
 // CPU-NEXT:    %0 = stablehlo.slice %arg0 [0:32, 0:32] : (tensor<32x64xf32>) -> tensor<32x32xf32>
-// CPU-NEXT:    %1 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sormqr_[[WRAPPER_ID]] (%0, %arg1, %arg2) {operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 2, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>], xla_side_effect_free} : (tensor<32x32xf32>, tensor<32xf32>, tensor<32x64xf32>) -> tensor<32x64xf32>
+// CPU-NEXT:    %1 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sormqr_[[WRAPPER_ID]] (%0, %arg1, %arg2) {operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 2, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<32x32xf32>, tensor<32xf32>, tensor<32x64xf32>) -> tensor<32x64xf32>
 // CPU-NEXT:    return %1 : tensor<32x64xf32>
 // CPU-NEXT:  }
 
@@ -46,7 +46,7 @@ module {
 // CPU-NEXT:  llvm.func @enzymexla_lapacke_sormqr_(i64, i8, i8, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, !llvm.ptr, i64) -> i64
 // CPU-NEXT:  func.func @main(%arg0: tensor<32x64xf32>, %arg1: tensor<32xf32>, %arg2: tensor<32x64xf32>) -> tensor<32x64xf32> {
 // CPU-NEXT:    %0 = stablehlo.slice %arg0 [0:32, 0:32] : (tensor<32x64xf32>) -> tensor<32x32xf32>
-// CPU-NEXT:    %1 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sormqr_[[WRAPPER_ID]] (%0, %arg1, %arg2) {operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 2, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>], xla_side_effect_free} : (tensor<32x32xf32>, tensor<32xf32>, tensor<32x64xf32>) -> tensor<32x64xf32>
+// CPU-NEXT:    %1 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sormqr_[[WRAPPER_ID]] (%0, %arg1, %arg2) {operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 2, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<32x32xf32>, tensor<32xf32>, tensor<32x64xf32>) -> tensor<32x64xf32>
 // CPU-NEXT:    return %1 : tensor<32x64xf32>
 // CPU-NEXT:  }
 
@@ -70,7 +70,7 @@ module {
 // CPU-NEXT:  llvm.func @enzymexla_lapacke_sormqr_(i64, i8, i8, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, !llvm.ptr, i64) -> i64
 // CPU-NEXT:  func.func @main(%arg0: tensor<32x64xf32>, %arg1: tensor<32xf32>, %arg2: tensor<64x32xf32>) -> tensor<64x32xf32> {
 // CPU-NEXT:    %0 = stablehlo.slice %arg0 [0:32, 0:32] : (tensor<32x64xf32>) -> tensor<32x32xf32>
-// CPU-NEXT:    %1 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sormqr_[[WRAPPER_ID]] (%0, %arg1, %arg2) {operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 2, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>], xla_side_effect_free} : (tensor<32x32xf32>, tensor<32xf32>, tensor<64x32xf32>) -> tensor<64x32xf32>
+// CPU-NEXT:    %1 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sormqr_[[WRAPPER_ID]] (%0, %arg1, %arg2) {operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 2, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<32x32xf32>, tensor<32xf32>, tensor<64x32xf32>) -> tensor<64x32xf32>
 // CPU-NEXT:    return %1 : tensor<64x32xf32>
 // CPU-NEXT:  }
 
@@ -94,7 +94,7 @@ module {
 // CPU-NEXT:  llvm.func @enzymexla_lapacke_sormqr_(i64, i8, i8, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, !llvm.ptr, i64) -> i64
 // CPU-NEXT:  func.func @main(%arg0: tensor<32x64xf32>, %arg1: tensor<32xf32>, %arg2: tensor<64x32xf32>) -> tensor<64x32xf32> {
 // CPU-NEXT:    %0 = stablehlo.slice %arg0 [0:32, 0:32] : (tensor<32x64xf32>) -> tensor<32x32xf32>
-// CPU-NEXT:    %1 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sormqr_[[WRAPPER_ID]] (%0, %arg1, %arg2) {operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 2, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>], xla_side_effect_free} : (tensor<32x32xf32>, tensor<32xf32>, tensor<64x32xf32>) -> tensor<64x32xf32>
+// CPU-NEXT:    %1 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sormqr_[[WRAPPER_ID]] (%0, %arg1, %arg2) {operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 2, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<32x32xf32>, tensor<32xf32>, tensor<64x32xf32>) -> tensor<64x32xf32>
 // CPU-NEXT:    return %1 : tensor<64x32xf32>
 // CPU-NEXT:  }
 

@@ -18,9 +18,9 @@ func.func @irfft(%x : tensor<3xcomplex<f64>>) -> tensor<4xf64> {
 
 // REVERSE-IRFFT: func.func private @irfft_revdiff(%arg0: tensor<3xcomplex<f64>>, %arg1: tensor<4xf64>) -> tensor<3xcomplex<f64>> {
 // REVERSE-IRFFT-NEXT:      %cst = stablehlo.constant dense<[(2.500000e-01,0.000000e+00), (5.000000e-01,0.000000e+00), (2.500000e-01,0.000000e+00)]> : tensor<3xcomplex<f64>>
-// REVERSE-IRFFT-NEXT:      %0 = stablehlo.fft %arg1, type =  RFFT, length = [4] {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<4xf64>) -> tensor<3xcomplex<f64>>
-// REVERSE-IRFFT-NEXT:      %1 = chlo.conj %0 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xcomplex<f64>> -> tensor<3xcomplex<f64>>
-// REVERSE-IRFFT-NEXT:      %2 = stablehlo.multiply %1, %cst {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3xcomplex<f64>>
+// REVERSE-IRFFT-NEXT:      %0 = stablehlo.fft %arg1, type =  RFFT, length = [4] {enzymexla.complex_is_purely_real = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<4xf64>) -> tensor<3xcomplex<f64>>
+// REVERSE-IRFFT-NEXT:      %1 = chlo.conj %0 {enzymexla.complex_is_purely_real = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<3xcomplex<f64>> -> tensor<3xcomplex<f64>>
+// REVERSE-IRFFT-NEXT:      %2 = stablehlo.multiply %1, %cst {enzymexla.complex_is_purely_real = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<3xcomplex<f64>>
 // REVERSE-IRFFT-NEXT:      %3 = chlo.conj %2 : tensor<3xcomplex<f64>> -> tensor<3xcomplex<f64>>
 // REVERSE-IRFFT-NEXT:      return %3 : tensor<3xcomplex<f64>>
 // REVERSE-IRFFT-NEXT:    }
@@ -33,8 +33,8 @@ func.func @main() {
   %dinput_fwd_0_real = stablehlo.constant dense<[(1.0, 0.0), (0.0, 0.0), (0.0, 0.0)]> : tensor<3xcomplex<f64>>
 
   %fwd_0_real:2 = enzyme.fwddiff @irfft(%input, %dinput_fwd_0_real) {
-    activity=[#enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
+    activity=[#enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
   } : (tensor<3xcomplex<f64>>, tensor<3xcomplex<f64>>) -> (tensor<4xf64>, tensor<4xf64>)
 
   check.expect_almost_eq %fwd_0_real#0, %output : tensor<4xf64>
@@ -44,8 +44,8 @@ func.func @main() {
   %dinput_fwd_0_imag = stablehlo.constant dense<[(0.0, 1.0), (0.0, 0.0), (0.0, 0.0)]> : tensor<3xcomplex<f64>>
 
   %fwd_0_imag:2 = enzyme.fwddiff @irfft(%input, %dinput_fwd_0_imag) {
-    activity=[#enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
+    activity=[#enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
   } : (tensor<3xcomplex<f64>>, tensor<3xcomplex<f64>>) -> (tensor<4xf64>, tensor<4xf64>)
 
   check.expect_almost_eq %fwd_0_imag#0, %output : tensor<4xf64>
@@ -55,8 +55,8 @@ func.func @main() {
   %dinput_fwd_1_real = stablehlo.constant dense<[(0.0, 0.0), (1.0, 0.0), (0.0, 0.0)]> : tensor<3xcomplex<f64>>
 
   %fwd_1_real:2 = enzyme.fwddiff @irfft(%input, %dinput_fwd_1_real) {
-    activity=[#enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
+    activity=[#enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
   } : (tensor<3xcomplex<f64>>, tensor<3xcomplex<f64>>) -> (tensor<4xf64>, tensor<4xf64>)
 
   check.expect_almost_eq %fwd_1_real#0, %output : tensor<4xf64>
@@ -66,8 +66,8 @@ func.func @main() {
   %dinput_fwd_1_imag = stablehlo.constant dense<[(0.0, 0.0), (0.0, 1.0), (0.0, 0.0)]> : tensor<3xcomplex<f64>>
 
   %fwd_1_imag:2 = enzyme.fwddiff @irfft(%input, %dinput_fwd_1_imag) {
-    activity=[#enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
+    activity=[#enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
   } : (tensor<3xcomplex<f64>>, tensor<3xcomplex<f64>>) -> (tensor<4xf64>, tensor<4xf64>)
 
   check.expect_almost_eq %fwd_1_imag#0, %output : tensor<4xf64>
@@ -77,8 +77,8 @@ func.func @main() {
   %dinput_fwd_2_real = stablehlo.constant dense<[(0.0, 0.0), (0.0, 0.0), (1.0, 0.0)]> : tensor<3xcomplex<f64>>
 
   %fwd_2_real:2 = enzyme.fwddiff @irfft(%input, %dinput_fwd_2_real) {
-    activity=[#enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
+    activity=[#enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
   } : (tensor<3xcomplex<f64>>, tensor<3xcomplex<f64>>) -> (tensor<4xf64>, tensor<4xf64>)
 
   check.expect_almost_eq %fwd_2_real#0, %output : tensor<4xf64>
@@ -88,8 +88,8 @@ func.func @main() {
   %dinput_fwd_2_imag = stablehlo.constant dense<[(0.0, 0.0), (0.0, 0.0), (0.0, 1.0)]> : tensor<3xcomplex<f64>>
 
   %fwd_2_imag:2 = enzyme.fwddiff @irfft(%input, %dinput_fwd_2_imag) {
-    activity=[#enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
+    activity=[#enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
   } : (tensor<3xcomplex<f64>>, tensor<3xcomplex<f64>>) -> (tensor<4xf64>, tensor<4xf64>)
 
   check.expect_almost_eq %fwd_2_imag#0, %output : tensor<4xf64>
@@ -99,8 +99,8 @@ func.func @main() {
   %dinput_rev_0 = stablehlo.constant dense<[1.0, 0.0, 0.0, 0.0]> : tensor<4xf64>
 
   %rev_0:2 = enzyme.autodiff @irfft(%input, %dinput_rev_0) {
-    activity=[#enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
+    activity=[#enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
   } : (tensor<3xcomplex<f64>>, tensor<4xf64>) -> (tensor<4xf64>, tensor<3xcomplex<f64>>)
 
   check.expect_almost_eq %rev_0#0, %output : tensor<4xf64>
@@ -110,8 +110,8 @@ func.func @main() {
   %dinput_rev_1 = stablehlo.constant dense<[0.0, 1.0, 0.0, 0.0]> : tensor<4xf64>
 
   %rev_1:2 = enzyme.autodiff @irfft(%input, %dinput_rev_1) {
-    activity=[#enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
+    activity=[#enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
   } : (tensor<3xcomplex<f64>>, tensor<4xf64>) -> (tensor<4xf64>, tensor<3xcomplex<f64>>)
 
   check.expect_almost_eq %rev_1#0, %output : tensor<4xf64>
@@ -121,8 +121,8 @@ func.func @main() {
   %dinput_rev_2 = stablehlo.constant dense<[0.0, 0.0, 1.0, 0.0]> : tensor<4xf64>
 
   %rev_2:2 = enzyme.autodiff @irfft(%input, %dinput_rev_2) {
-    activity=[#enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
+    activity=[#enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
   } : (tensor<3xcomplex<f64>>, tensor<4xf64>) -> (tensor<4xf64>, tensor<3xcomplex<f64>>)
 
   check.expect_almost_eq %rev_2#0, %output : tensor<4xf64>
@@ -132,8 +132,8 @@ func.func @main() {
   %dinput_rev_3 = stablehlo.constant dense<[0.0, 0.0, 0.0, 1.0]> : tensor<4xf64>
 
   %rev_3:2 = enzyme.autodiff @irfft(%input, %dinput_rev_3) {
-    activity=[#enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
+    activity=[#enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
   } : (tensor<3xcomplex<f64>>, tensor<4xf64>) -> (tensor<4xf64>, tensor<3xcomplex<f64>>)
 
   check.expect_almost_eq %rev_3#0, %output : tensor<4xf64>

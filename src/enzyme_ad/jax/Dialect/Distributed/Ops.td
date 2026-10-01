@@ -10,9 +10,10 @@ include "Interfaces.td"
 
 // Device definition ops
 
-def ChannelOp : DistributedOp<"Channel", [Symbol, ChannelDefTrait, DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
+def ChannelOp : DistributedOp<"Channel", [Symbol, SymbolName, SymbolVisibility, ChannelDefTrait, DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
     let arguments = (ins 
         SymbolNameAttr:$sym_name,
+        OptionalAttr<StrAttr>:$sym_visibility,
         // a variadic list of devices connected by this channel
         ArrayAttr:$sending_devices,
         ArrayAttr:$receiving_devices
@@ -21,17 +22,19 @@ def ChannelOp : DistributedOp<"Channel", [Symbol, ChannelDefTrait, DeclareOpInte
     let assemblyFormat = "$sym_name $sending_devices $receiving_devices attr-dict";
 }
 
-def LeafDeviceOp : DistributedOp<"LeafDevice", [Symbol, DeviceDefTrait]>{
+def LeafDeviceOp : DistributedOp<"LeafDevice", [Symbol, SymbolName, SymbolVisibility, DeviceDefTrait]>{
     let arguments = (ins 
-        SymbolNameAttr:$sym_name
+        SymbolNameAttr:$sym_name,
+        OptionalAttr<StrAttr>:$sym_visibility
         // TODO: device type, e.g. TPU, GPU, CPU, and other attributes
     );
     let assemblyFormat = "$sym_name attr-dict";
 }
 
-def DeviceGroupOp : DistributedOp<"DeviceGroup", [Symbol, DeviceDefTrait, DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
+def DeviceGroupOp : DistributedOp<"DeviceGroup", [Symbol, SymbolName, SymbolVisibility, DeviceDefTrait, DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
     let arguments = (ins
         SymbolNameAttr:$sym_name,
+        OptionalAttr<StrAttr>:$sym_visibility,
         // a variadic list of devices in the group
         ArrayAttr:$devices, // TODO verify array of SymbolRefAttr of devices
         // Interconnects between devices
@@ -39,9 +42,10 @@ def DeviceGroupOp : DistributedOp<"DeviceGroup", [Symbol, DeviceDefTrait, Declar
     );
     let assemblyFormat = "$sym_name $devices $channels attr-dict";
 }
-def DeviceMeshOp : DistributedOp<"DeviceMesh", [Symbol, DeviceDefTrait, DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
+def DeviceMeshOp : DistributedOp<"DeviceMesh", [Symbol, SymbolName, SymbolVisibility, DeviceDefTrait, DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
     let arguments = (ins
         SymbolNameAttr:$sym_name,
+        OptionalAttr<StrAttr>:$sym_visibility,
         SymbolRefAttr:$device_type,
         ArrayAttr:$shape
         // TODO attributes of mesh interconnect

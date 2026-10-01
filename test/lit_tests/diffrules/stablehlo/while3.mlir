@@ -8,8 +8,8 @@ module {
     %c2 = stablehlo.constant dense<2.0> : tensor<f64>
     %cst = stablehlo.constant dense<1.0> : tensor<f64>
     %0:2 = enzyme.autodiff @f(%c2, %cst) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
     } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
     check.expect_eq_const %0#0, dense<256.0> : tensor<f64>
     check.expect_eq_const %0#1, dense<1024.0> : tensor<f64>

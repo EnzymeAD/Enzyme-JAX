@@ -506,8 +506,10 @@ struct ParseOptimizationRulesPass
         // Create pdl.pattern op that will store PDL for parsed rewrite rule
         builder.setInsertionPointToStart(patternsModule.getBody());
         auto pattern = pdl::PatternOp::create(builder, loc, /*benefit=*/1,
-                                              /*sym_name=*/nullptr);
-        Block *patternBlock = builder.createBlock(&pattern.getBodyRegion());
+                                              /*sym_name=*/std::nullopt);
+        // PatternOp::build emplaces the body block itself, so take that one
+        // rather than adding a second.
+        Block *patternBlock = &pattern.getBodyRegion().front();
         builder.setInsertionPointToStart(patternBlock);
         llvm::StringMap<mlir::Value> boundVars;
 

@@ -11,8 +11,8 @@ module {
   func.func @diff_load_via_p2m(%ptr: !llvm.ptr, %d_ptr: !llvm.ptr,
                                 %i: index, %seed: f64) {
     enzyme.autodiff @load_via_p2m(%ptr, %d_ptr, %i, %seed) {
-      activity = [#enzyme<activity enzyme_dup>, #enzyme<activity enzyme_const>],
-      ret_activity = [#enzyme<activity enzyme_activenoneed>]
+      activity = [#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_const>],
+      ret_activity = [#enzyme.activity<enzyme_activenoneed>]
     } : (!llvm.ptr, !llvm.ptr, index, f64) -> ()
     return
   }
@@ -26,8 +26,8 @@ module {
   func.func @diff_load_via_m2p(%mem: memref<?xf64>, %d_mem: memref<?xf64>,
                                 %seed: f64) {
     enzyme.autodiff @load_via_m2p(%mem, %d_mem, %seed) {
-      activity = [#enzyme<activity enzyme_dup>],
-      ret_activity = [#enzyme<activity enzyme_activenoneed>]
+      activity = [#enzyme.activity<enzyme_dup>],
+      ret_activity = [#enzyme.activity<enzyme_activenoneed>]
     } : (memref<?xf64>, memref<?xf64>, f64) -> ()
     return
   }
@@ -50,9 +50,9 @@ module {
   func.func @diff_nested_cast(%mem: memref<?xf64>, %d_mem: memref<?xf64>,
                               %cond: i1, %i: index) {
     enzyme.autodiff @nested_cast(%mem, %d_mem, %cond, %i) {
-      activity = [#enzyme<activity enzyme_dup>,
-                  #enzyme<activity enzyme_const>,
-                  #enzyme<activity enzyme_const>],
+      activity = [#enzyme.activity<enzyme_dup>,
+                  #enzyme.activity<enzyme_const>,
+                  #enzyme.activity<enzyme_const>],
       ret_activity = []
     } : (memref<?xf64>, memref<?xf64>, i1, index) -> ()
     return

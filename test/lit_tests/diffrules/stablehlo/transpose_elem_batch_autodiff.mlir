@@ -11,7 +11,7 @@ module @reactant_vector_... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
   func.func @main(%arg0: tensor<2x2xf32> {tf.aliasing_output = 4 : i32}) -> (tensor<f32>, tensor<f32>, tensor<f32>, tensor<f32>, tensor<2x2xf32>) {
     %cst = stablehlo.constant dense<[[[1.000000e+00, 0.000000e+00], [0.000000e+00, 0.000000e+00]], [[0.000000e+00, 1.000000e+00], [0.000000e+00, 0.000000e+00]], [[0.000000e+00, 0.000000e+00], [1.000000e+00, 0.000000e+00]], [[0.000000e+00, 0.000000e+00], [0.000000e+00, 1.000000e+00]]]> : tensor<4x2x2xf32>
     %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<2x2xf32>) -> tensor<2x2xf32>
-    %1:3 = enzyme.fwddiff @"Const{typeof(fn)}(Main.fn)_autodiff"(%0, %cst) {activity = [#enzyme<activity enzyme_dup>], ret_activity = [#enzyme<activity enzyme_dupnoneed>, #enzyme<activity enzyme_dup>], width = 4 : i64} : (tensor<2x2xf32>, tensor<4x2x2xf32>) -> (tensor<4xf32>, tensor<2x2xf32>, tensor<4x2x2xf32>)
+    %1:3 = enzyme.fwddiff @"Const{typeof(fn)}(Main.fn)_autodiff"(%0, %cst) {activity = [#enzyme.activity<enzyme_dup>], ret_activity = [#enzyme.activity<enzyme_dupnoneed>, #enzyme.activity<enzyme_dup>], width = 4 : i64} : (tensor<2x2xf32>, tensor<4x2x2xf32>) -> (tensor<4xf32>, tensor<2x2xf32>, tensor<4x2x2xf32>)
     %2 = stablehlo.slice %1#0 [0:1] : (tensor<4xf32>) -> tensor<1xf32>
     %3 = stablehlo.reshape %2 : (tensor<1xf32>) -> tensor<f32>
     %4 = stablehlo.slice %1#0 [1:2] : (tensor<4xf32>) -> tensor<1xf32>

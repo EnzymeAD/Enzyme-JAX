@@ -15,12 +15,12 @@ func.func @extsi_dim(%d: i32, %out: memref<?xi32>) {
   return
 }
 
-// CHECK:       #[[SET:.+]] = affine_set<(d0) : (d0 - 1 >= 0)>
+// CHECK:       #[[$SET:.+]] = affine_set<(d0) : (d0 - 1 >= 0)>
 // CHECK-LABEL: func.func @extsi_dim
 // CHECK-DAG:     %[[M1:.+]] = arith.constant -1 : i32
 // CHECK-DAG:     %[[Z:.+]] = arith.constant 0 : i32
 // CHECK:         affine.parallel (%[[T:.+]], %[[C:.+]]) = (0, 0) to (8, 2)
-// CHECK-NEXT:      %[[E:.+]] = affine.if #[[SET]](%[[C]]) -> i32 {
+// CHECK-NEXT:      %[[E:.+]] = affine.if #[[$SET]](%[[C]]) -> i32 {
 // CHECK-NEXT:        affine.yield %[[M1]] : i32
 // CHECK-NEXT:      } else {
 // CHECK-NEXT:        affine.yield %[[Z]] : i32

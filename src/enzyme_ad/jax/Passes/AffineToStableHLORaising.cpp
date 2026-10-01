@@ -7183,11 +7183,16 @@ struct AffineToStableHLORaisingPass
       // Only an argument the kernel does not write qualifies: a specialized
       // scalar is not returned.
       SmallVector<unsigned> specialized;
+      // the arguments the two walks below ask to specialize
+      DenseSet<Value> wanted;
       if (specialize_loop_bounds) {
         // An exit test `compare(%iv, %bound)` of a loop's own argument
         // against a value from outside the loop, where the bound is a
-        // function argument, widened by converts.
-        DenseSet<Value> bounds;
+        // function argument, or a scalar elementwise expression of function
+        // arguments (`min(NE, chunk)`, widening converts): each argument it
+        // reads is specialized, and the expression folds to a constant after
+        // them.
+        DenseSet<Value> &bounds = wanted;
         newFunc.walk([&](stablehlo::WhileOp whileOp) {
           auto ret = cast<stablehlo::ReturnOp>(
               whileOp.getCond().front().getTerminator());
@@ -7205,16 +7210,73 @@ struct AffineToStableHLORaisingPass
           }
           if (!bound)
             return;
-          while (auto cvt = bound.getDefiningOp<stablehlo::ConvertOp>())
-            bound = cvt.getOperand();
-          if (auto BA = dyn_cast<BlockArgument>(bound);
-              BA && BA.getOwner() == newBlock)
-            bounds.insert(bound);
+          SmallVector<Value> work{bound};
+          while (!work.empty()) {
+            Value v = work.pop_back_val();
+            if (auto BA = dyn_cast<BlockArgument>(v)) {
+              if (BA.getOwner() == newBlock)
+                bounds.insert(v);
+              continue;
+            }
+            Operation *def = v.getDefiningOp();
+            if (def && def->hasTrait<OpTrait::Elementwise>() &&
+                llvm::all_of(def->getOperands(), [](Value o) {
+                  auto t = dyn_cast<RankedTensorType>(o.getType());
+                  return t && t.getRank() == 0;
+                }))
+              work.append(def->operand_begin(), def->operand_end());
+          }
         });
+      }
+      // A scalar argument an access index reads (`e * ND + d`) is a stride.
+      // Specialized, the index folds to a constant: a gather of constant
+      // indices becomes a slice, and a pass after this can tell which
+      // elements each iteration of a loop touches, where `row * ND + col`
+      // with ND a runtime value is decidable only with a bound on ND, which
+      // nothing carries. Every scalar reached from an index qualifies, so a
+      // scalar that differs from call to call costs an executable per value;
+      // this is opt-in for that reason.
+      if (specialize_index_strides) {
+        newFunc.walk([&](Operation *op) {
+          SmallVector<Value> work;
+          if (auto sc = dyn_cast<stablehlo::ScatterOp>(op))
+            work.push_back(sc.getScatterIndices());
+          else if (auto g = dyn_cast<stablehlo::GatherOp>(op))
+            work.push_back(g.getStartIndices());
+          else if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(op))
+            work.append(ds.getStartIndices().begin(),
+                        ds.getStartIndices().end());
+          else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(op))
+            work.append(dus.getStartIndices().begin(),
+                        dus.getStartIndices().end());
+          else
+            return;
+          DenseSet<Value> seen;
+          while (!work.empty()) {
+            Value v = work.pop_back_val();
+            if (!seen.insert(v).second)
+              continue;
+            if (auto BA = dyn_cast<BlockArgument>(v)) {
+              // a scalar argument of the kernel; a loop's own argument is
+              // the induction variable, and a buffer is not a stride
+              auto TT = dyn_cast<RankedTensorType>(BA.getType());
+              if (BA.getOwner() == newBlock && TT && TT.getRank() == 0)
+                wanted.insert(v);
+              continue;
+            }
+            Operation *def = v.getDefiningOp();
+            if (!def || def->getNumRegions() != 0 ||
+                isa<stablehlo::ConstantOp, stablehlo::IotaOp>(def))
+              continue;
+            work.append(def->operand_begin(), def->operand_end());
+          }
+        });
+      }
+      if (!wanted.empty()) {
         for (auto [i, arg] : llvm::enumerate(operands)) {
           Value newArg = newBlock->getArgument(i);
           auto TT = cast<RankedTensorType>(newArg.getType());
-          if (!bounds.contains(newArg) || TT.getRank() != 0 ||
+          if (!wanted.contains(newArg) || TT.getRank() != 0 ||
               !TT.getElementType().isInteger() || !hostScalarOf.count(arg))
             continue;
           bool readOnly = true;

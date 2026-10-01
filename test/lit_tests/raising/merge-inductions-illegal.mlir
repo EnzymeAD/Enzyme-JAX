@@ -64,73 +64,73 @@ module {
       %21 = arith.addi %14, %c5_i64 : i64
       %22 = arith.addi %21, %20 : i64
       %23 = llvm.getelementptr inbounds %2[%22] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      %24 = llvm.load %23 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> f64
+      %24 = llvm.load %23 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> f64
       %25 = arith.addi %19, %c6 : index
       %26 = arith.index_castui %25 : index to i64
       %27 = llvm.getelementptr inbounds %1[%26] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      %28 = llvm.load %27 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> f64
+      %28 = llvm.load %27 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> f64
       %29 = arith.addi %19, %c21 : index
       %30 = arith.index_castui %29 : index to i64
       %31 = llvm.getelementptr inbounds %1[%30] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      %32 = llvm.load %31 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> f64
-      %33 = arith.subf %28, %32 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %32 = llvm.load %31 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> f64
+      %33 = arith.subf %28, %32 : f64
       %34 = llvm.getelementptr inbounds %1[%22] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      %35 = llvm.load %34 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> f64
+      %35 = llvm.load %34 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> f64
       %36 = arith.addi %14, %c4_i64 : i64
       %37 = arith.addi %36, %20 : i64
       %38 = llvm.getelementptr inbounds %1[%37] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      %39 = llvm.load %38 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> f64
-      %40 = arith.subf %35, %39 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %39 = llvm.load %38 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> f64
+      %40 = arith.subf %35, %39 : f64
       %41 = arith.cmpi ne, %14, %c1_i64 : i64
       %42 = arith.select %41, %40, %33 {fastmathFlags = #llvm.fastmath<none>} : f64
       %43 = llvm.getelementptr inbounds %0[%18] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      %44 = llvm.load %43 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> f64
-      %45 = arith.divf %42, %44 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %46 = arith.mulf %45, %cst {fastmathFlags = #llvm.fastmath<none>} : f64
+      %44 = llvm.load %43 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> f64
+      %45 = arith.divf %42, %44 : f64
+      %46 = arith.mulf %45, %cst : f64
       %47 = llvm.getelementptr inbounds %7[%22] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      %48 = llvm.load %47 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> f64
-      %49 = arith.addf %48, %46 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %50 = arith.mulf %49, %cst_0 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %51 = arith.addf %24, %50 {fastmathFlags = #llvm.fastmath<none>} : f64
-      llvm.store %51, %23 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : f64, !llvm.ptr<1>
+      %48 = llvm.load %47 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> f64
+      %49 = arith.addf %48, %46 : f64
+      %50 = arith.mulf %49, %cst_0 : f64
+      %51 = arith.addf %24, %50 : f64
+      llvm.store %51, %23 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : f64, !llvm.ptr<1>
       %52 = llvm.getelementptr inbounds %3[%22] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      %53 = llvm.load %52 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> f64
-      %54 = llvm.load %34 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> f64
+      %53 = llvm.load %52 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> f64
+      %54 = llvm.load %34 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> f64
       %55 = arith.addi %arg9, %c5 : index
       %56 = arith.muli %55, %c28 : index
       %57 = arith.index_castui %56 : index to i64
       %58 = arith.addi %21, %57 : i64
       %59 = llvm.getelementptr inbounds %1[%58] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      %60 = llvm.load %59 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> f64
-      %61 = arith.subf %54, %60 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %60 = llvm.load %59 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> f64
+      %61 = arith.subf %54, %60 : f64
       %62 = arith.cmpi ne, %16, %c1_i64 : i64
       %63 = arith.select %62, %61, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %64 = arith.divf %63, %cst_2 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %65 = arith.mulf %64, %cst {fastmathFlags = #llvm.fastmath<none>} : f64
+      %64 = arith.divf %63, %cst_2 : f64
+      %65 = arith.mulf %64, %cst : f64
       %66 = llvm.getelementptr inbounds %8[%22] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      %67 = llvm.load %66 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> f64
-      %68 = arith.addf %67, %65 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %69 = arith.mulf %68, %cst_0 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %70 = arith.addf %53, %69 {fastmathFlags = #llvm.fastmath<none>} : f64
-      llvm.store %70, %52 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : f64, !llvm.ptr<1>
+      %67 = llvm.load %66 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> f64
+      %68 = arith.addf %67, %65 : f64
+      %69 = arith.mulf %68, %cst_0 : f64
+      %70 = arith.addf %53, %69 : f64
+      llvm.store %70, %52 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : f64, !llvm.ptr<1>
       %71 = llvm.getelementptr inbounds %4[%22] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      %72 = llvm.load %71 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> f64
-      %73 = llvm.load %34 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> f64
-      %74 = arith.mulf %73, %cst_3 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %75 = arith.addf %72, %74 {fastmathFlags = #llvm.fastmath<none>} : f64
-      llvm.store %75, %71 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : f64, !llvm.ptr<1>
+      %72 = llvm.load %71 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> f64
+      %73 = llvm.load %34 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> f64
+      %74 = arith.mulf %73, %cst_3 : f64
+      %75 = arith.addf %72, %74 : f64
+      llvm.store %75, %71 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : f64, !llvm.ptr<1>
       %76 = llvm.getelementptr inbounds %5[%22] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      %77 = llvm.load %76 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> f64
-      %78 = llvm.load %23 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> f64
-      %79 = arith.mulf %78, %cst_3 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %80 = arith.addf %77, %79 {fastmathFlags = #llvm.fastmath<none>} : f64
-      llvm.store %80, %76 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : f64, !llvm.ptr<1>
+      %77 = llvm.load %76 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> f64
+      %78 = llvm.load %23 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> f64
+      %79 = arith.mulf %78, %cst_3 : f64
+      %80 = arith.addf %77, %79 : f64
+      llvm.store %80, %76 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : f64, !llvm.ptr<1>
       %81 = llvm.getelementptr inbounds %6[%22] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      %82 = llvm.load %81 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> f64
-      %83 = llvm.load %52 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : !llvm.ptr<1> -> f64
-      %84 = arith.mulf %83, %cst_3 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %85 = arith.addf %82, %84 {fastmathFlags = #llvm.fastmath<none>} : f64
-      llvm.store %85, %81 {alignment = 8 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : f64, !llvm.ptr<1>
+      %82 = llvm.load %81 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> f64
+      %83 = llvm.load %52 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : !llvm.ptr<1> -> f64
+      %84 = arith.mulf %83, %cst_3 : f64
+      %85 = arith.addf %82, %84 : f64
+      llvm.store %85, %81 <alignment = 8, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : f64, !llvm.ptr<1>
     }
     return
   }

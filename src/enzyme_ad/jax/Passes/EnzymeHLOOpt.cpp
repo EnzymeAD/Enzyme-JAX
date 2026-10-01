@@ -895,14 +895,16 @@ struct ReshapeDUS final
                      ? cast<RankedTensorType>(startIndices[0].getType())
                      : RankedTensorType::get({}, rewriter.getI64Type());
 
+    // A dimension the reshape adds takes a zero start index. That constant
+    // is made only once every check has passed: an index the transform
+    // fills is a null placeholder until then, which the removal check reads
+    // as the zero it stands for. A pattern that creates and then declines
+    // leaves the constant behind, and the driver revisits it without end.
     if (!transformReshapeSlice<mlir::Value>(
-            op, startIndices, /*toFill*/
-            [&]() -> mlir::Value {
-              return stablehlo::ConstantOp::create(
-                  rewriter, dus.getLoc(), itype,
-                  cast<ElementsAttr>(makeAttr(itype, 0)));
-            },
-            [](mlir::Value v) -> bool { return matchPattern(v, m_Zero()); }))
+            op, startIndices, /*toFill*/ []() -> mlir::Value { return {}; },
+            [](mlir::Value v) -> bool {
+              return !v || matchPattern(v, m_Zero());
+            }))
       return failure();
 
     SmallVector<int64_t> updateShape(
@@ -914,6 +916,16 @@ struct ReshapeDUS final
                                         /*checkRemoved*/ &one))
       return failure();
 
+    Value zero;
+    for (Value &index : startIndices) {
+      if (index)
+        continue;
+      if (!zero)
+        zero = stablehlo::ConstantOp::create(
+            rewriter, dus.getLoc(), itype,
+            cast<ElementsAttr>(makeAttr(itype, 0)));
+      index = zero;
+    }
     auto newOperand = stablehlo::ReshapeOpCreate(
         rewriter, op.getLoc(), dus.getOperand(),
         cast<RankedTensorType>(op.getType()).getShape());
@@ -1023,14 +1035,16 @@ struct ReshapeDynamicSlice final
                      ? cast<RankedTensorType>(startIndices[0].getType())
                      : RankedTensorType::get({}, rewriter.getI64Type());
 
+    // A dimension the reshape adds takes a zero start index. That constant
+    // is made only once every check has passed: an index the transform
+    // fills is a null placeholder until then, which the removal check reads
+    // as the zero it stands for. A pattern that creates and then declines
+    // leaves the constant behind, and the driver revisits it without end.
     if (!transformReshapeSlice<mlir::Value>(
-            op, startIndices, /*toFill*/
-            [&]() -> mlir::Value {
-              return stablehlo::ConstantOp::create(
-                  rewriter, slice.getLoc(), itype,
-                  cast<ElementsAttr>(makeAttr(itype, 0)));
-            },
-            [](mlir::Value v) -> bool { return matchPattern(v, m_Zero()); }))
+            op, startIndices, /*toFill*/ []() -> mlir::Value { return {}; },
+            [](mlir::Value v) -> bool {
+              return !v || matchPattern(v, m_Zero());
+            }))
       return failure();
 
     SmallVector<int64_t> sliceSizes = llvm::to_vector(slice.getSliceSizes());
@@ -1048,6 +1062,16 @@ struct ReshapeDynamicSlice final
                                         /*checkRemoved*/ &one))
       return failure();
 
+    Value zero;
+    for (Value &index : startIndices) {
+      if (index)
+        continue;
+      if (!zero)
+        zero = stablehlo::ConstantOp::create(
+            rewriter, slice.getLoc(), itype,
+            cast<ElementsAttr>(makeAttr(itype, 0)));
+      index = zero;
+    }
     auto newOperand = stablehlo::ReshapeOpCreate(
         rewriter, op.getLoc(), slice.getOperand(), operandShape);
 
@@ -5025,8 +5049,15 @@ struct WidenWrap final
           withReshape = prevTy.getRank() - postRsTy.getRank();
         }
 
+        // The wrap takes its `lhs` elements from the end of the operand, so
+        // it only grows while they stay inside the operand.
+        int64_t extent =
+            cast<RankedTensorType>(wrap.getOperand().getType()).getShape()[dim];
         if (isSliceOf(wrapOperand, prev, dim + withReshape,
-                      /*widenOperandOnLeft*/ true, wrap.getLhs())) {
+                      /*widenOperandOnLeft*/ true, wrap.getLhs()) &&
+            wrap.getLhs() + cast<RankedTensorType>(prev.getType())
+                                .getShape()[dim + withReshape] <=
+                extent) {
           Value newWrap = enzymexla::WrapOp::create(
               rewriter, wrap.getLoc(), wrap.getOperand(),
               wrap.getLhs() + cast<RankedTensorType>(prev.getType())
@@ -5058,8 +5089,13 @@ struct WidenWrap final
           withReshape = prevTy.getRank() - postRsTy.getRank();
         }
 
+        int64_t extent =
+            cast<RankedTensorType>(wrap.getOperand().getType()).getShape()[dim];
         if (isSliceOf(wrapOperand, prev, dim + withReshape,
-                      /*widenOperandOnLeft*/ false, wrap.getRhs())) {
+                      /*widenOperandOnLeft*/ false, wrap.getRhs()) &&
+            wrap.getRhs() + cast<RankedTensorType>(prev.getType())
+                                .getShape()[dim + withReshape] <=
+                extent) {
           auto newWrap = enzymexla::WrapOp::create(
               rewriter, wrap.getLoc(), wrap.getOperand(), wrap.getLhs(),
               wrap.getRhs() + cast<RankedTensorType>(prev.getType())
@@ -5104,7 +5140,12 @@ struct WidenExtend final
         continue;
       }
 
-      if (newOperands.size()) {
+      // An extend repeats the first `lhs` elements before the operand and
+      // the last `rhs` after it (see lowerExtend), so a boundary element
+      // next to it only folds in while that side is still empty: with one
+      // already repeated, the two together would be [x0, x0], which is not
+      // the prefix [x0, x1] a larger amount stands for.
+      if (newOperands.size() && extend.getLhs() == 0) {
         auto prev = newOperands.back();
         if (isExtendOf(extend.getOperand(), prev, dim,
                        /*widenOperandOnLeft*/ true)) {
@@ -5120,7 +5161,7 @@ struct WidenExtend final
         }
       }
 
-      if (i + 1 < e) {
+      if (i + 1 < e && extend.getRhs() == 0) {
         auto prev = op->getOperand(i + 1);
         if (isExtendOf(extend.getOperand(), prev, dim,
                        /*widenOperandOnLeft*/ false)) {
@@ -5341,6 +5382,44 @@ struct ShiftRightLogicalSimplify final
       return success();
     }
     return failure();
+  }
+};
+
+// A loop that carries the same value in two positions carries it once. Two
+// positions that start from one value and yield one value hold that value in
+// every iteration, so the later one's argument and result are the earlier
+// one's; dead result removal then drops the position. A raised kernel yields
+// such a pair whenever it keeps a copy of an accumulator it also reads.
+struct WhileDuplicateCarried final
+    : CheckedOpRewritePattern<stablehlo::WhileOp, WhileDuplicateCarried> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
+                                    PatternRewriter &rewriter) const {
+    Block &body = op.getBody().front();
+    Block &cond = op.getCond().front();
+    auto ret = dyn_cast<stablehlo::ReturnOp>(body.getTerminator());
+    if (!ret)
+      return failure();
+    bool changed = false;
+    for (unsigned j = 0, e = op.getNumOperands(); j < e; ++j) {
+      for (unsigned i = 0; i < j; ++i) {
+        if (op->getOperand(i) != op->getOperand(j) ||
+            ret.getOperand(i) != ret.getOperand(j))
+          continue;
+        // Already nothing reads the later position; removing it is the dead
+        // result pattern's to do, and saying so here would never settle.
+        if (body.getArgument(j).use_empty() &&
+            cond.getArgument(j).use_empty() && op->getResult(j).use_empty())
+          break;
+        rewriter.replaceAllUsesWith(body.getArgument(j), body.getArgument(i));
+        rewriter.replaceAllUsesWith(cond.getArgument(j), cond.getArgument(i));
+        rewriter.replaceAllUsesWith(op->getResult(j), op->getResult(i));
+        changed = true;
+        break;
+      }
+    }
+    return success(changed);
   }
 };
 
@@ -6932,6 +7011,18 @@ struct ClampConstProp final
       maxTen = stablehlo::makeTensor(maxAttr.resizeSplat(inputTy));
       inputTen = stablehlo::makeTensor(inputAttr.resizeSplat(inputTy));
     } else {
+      // A bound may be a scalar the operand is clamped against elementwise,
+      // which the reference clamp does not take: it indexes every bound as it
+      // does the operand. A splat bound is resized to the operand's shape; a
+      // bound of another shape that is not a splat is left alone.
+      auto inputTy = cast<ShapedType>(inputAttr.getType());
+      for (DenseElementsAttr *bound : {&minAttr, &maxAttr}) {
+        if (bound->getType() == inputTy)
+          continue;
+        if (!bound->isSplat())
+          return failure();
+        *bound = bound->resizeSplat(inputTy);
+      }
       minTen = stablehlo::constantOp(minAttr);
       maxTen = stablehlo::constantOp(maxAttr);
       inputTen = stablehlo::constantOp(inputAttr);
@@ -9615,6 +9706,75 @@ struct CompareConvert
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
                                     PatternRewriter &rewriter) const {
+    // An equality test of a masked integer extension can be performed in the
+    // source width when both constants use only source-width bits. The mask
+    // discards all extension bits, including the sign extension of negative
+    // inputs. Reshapes preserve the element order and can use the narrow type.
+    auto direction = cmpOp.getComparisonDirection();
+    if (direction == stablehlo::ComparisonDirection::EQ ||
+        direction == stablehlo::ComparisonDirection::NE) {
+      for (int i = 0; i < 2; ++i) {
+        auto andOp = cmpOp->getOperand(i).getDefiningOp<stablehlo::AndOp>();
+        DenseIntElementsAttr expected;
+        if (!andOp || !andOp->hasOneUse() ||
+            !matchPattern(cmpOp->getOperand(1 - i), m_Constant(&expected)))
+          continue;
+        for (int j = 0; j < 2; ++j) {
+          DenseIntElementsAttr mask;
+          if (!matchPattern(andOp->getOperand(1 - j), m_Constant(&mask)))
+            continue;
+          Value input = andOp->getOperand(j);
+          SmallVector<stablehlo::ReshapeOp> reshapes;
+          while (auto reshape = input.getDefiningOp<stablehlo::ReshapeOp>()) {
+            reshapes.push_back(reshape);
+            input = reshape.getOperand();
+          }
+          auto convert = input.getDefiningOp<stablehlo::ConvertOp>();
+          if (!convert)
+            continue;
+          auto narrowType = dyn_cast<IntegerType>(
+              convert.getOperand().getType().getElementType());
+          auto wideType =
+              dyn_cast<IntegerType>(convert.getType().getElementType());
+          if (!narrowType || !wideType ||
+              narrowType.getWidth() >= wideType.getWidth())
+            continue;
+          unsigned width = narrowType.getWidth();
+          auto fits = [width](DenseIntElementsAttr attr) {
+            auto fitsValue = [width](const APInt &value) {
+              return value.getActiveBits() <= width;
+            };
+            if (attr.isSplat())
+              return fitsValue(attr.getSplatValue<APInt>());
+            return llvm::all_of(attr.getValues<APInt>(), fitsValue);
+          };
+          if (!fits(mask) || !fits(expected))
+            continue;
+
+          Value narrowInput = convert.getOperand();
+          for (auto reshape : llvm::reverse(reshapes))
+            narrowInput = stablehlo::ReshapeOp::create(
+                rewriter, reshape.getLoc(), reshape.getType().clone(narrowType),
+                narrowInput);
+          auto narrowConstant = [&](DenseIntElementsAttr attr) {
+            auto value = attr.mapValues(
+                narrowType, [width](const APInt &v) { return v.trunc(width); });
+            return stablehlo::ConstantOp::create(rewriter, cmpOp.getLoc(),
+                                                 value);
+          };
+          Value narrowMask = narrowConstant(mask);
+          Value narrowExpected = narrowConstant(expected);
+          Value narrowAnd = stablehlo::AndOp::create(rewriter, andOp.getLoc(),
+                                                     narrowInput, narrowMask);
+          rewriter.modifyOpInPlace(cmpOp, [&] {
+            cmpOp->setOperand(i, narrowAnd);
+            cmpOp->setOperand(1 - i, narrowExpected);
+          });
+          return success();
+        }
+      }
+    }
+
     for (int i = 0; i < 2; i++) {
       auto operand = cmpOp->getOperand(i);
       auto conv = operand.getDefiningOp<stablehlo::ConvertOp>();
@@ -15950,8 +16110,8 @@ struct SliceReverse final
       }
     }
 
-    if (!changed || !remainingDims.empty() &&
-                        !llvm::hasSingleElement(reverse.getResult().getUses()))
+    if (!changed || (!remainingDims.empty() &&
+                     !llvm::hasSingleElement(reverse.getResult().getUses())))
       return failure();
 
     // If any reversed dims remain (not eliminated), we must re-apply the
@@ -25222,8 +25382,14 @@ struct RecognizeWrap
       stablehlo::SliceOp sl0;
       auto mid = operands[i - 1];
       stablehlo::SliceOp sl1;
+      // the pieces must fit in `mid`: a wrap takes its amounts from inside
+      // its operand
       if (isWrapLike(concatDim, operands[i - 2], mid, operands[i], &sl0,
-                     &sl1)) {
+                     &sl1) &&
+          sl0.getType().getShape()[concatDim] <=
+              cast<RankedTensorType>(mid.getType()).getShape()[concatDim] &&
+          sl1.getType().getShape()[concatDim] <=
+              cast<RankedTensorType>(mid.getType()).getShape()[concatDim]) {
         auto wrap = enzymexla::WrapOp::create(
             rewriter, sl0.getLoc(), mid, sl0.getType().getShape()[concatDim],
             sl1.getType().getShape()[concatDim], concatDim);
@@ -25254,7 +25420,13 @@ struct RecognizeWrap
       if (rs0 && rsmid && rs1 && isOuterReducingReshape(rs0) &&
           isOuterReducingReshape(rsmid) && isOuterReducingReshape(rs1)) {
         if (isWrapLike(concatDim + 1, rs0.getOperand(), rsmid.getOperand(),
-                       rs1.getOperand(), &sl0, &sl1)) {
+                       rs1.getOperand(), &sl0, &sl1) &&
+            sl0.getType().getShape()[concatDim + 1] <=
+                cast<RankedTensorType>(rsmid.getOperand().getType())
+                    .getShape()[concatDim + 1] &&
+            sl1.getType().getShape()[concatDim + 1] <=
+                cast<RankedTensorType>(rsmid.getOperand().getType())
+                    .getShape()[concatDim + 1]) {
           auto wrap = enzymexla::WrapOp::create(
               rewriter, sl0.getLoc(), rsmid.getOperand(),
               sl0.getType().getShape()[concatDim + 1],
@@ -32400,8 +32572,22 @@ struct SplitReduceAddMulToAddDotGeneral final
         rhsRewritten = true;
       }
 
+      // The new reduce goes right after its input, unless the init value is
+      // not defined by then: it then goes where the reduce it replaces was.
+      auto afterInputOrHere = [&](Value input) {
+        rewriter.setInsertionPointAfterValue(input);
+        Operation *init = initVal.getDefiningOp();
+        Block *b = rewriter.getInsertionBlock();
+        auto ip = rewriter.getInsertionPoint();
+        if (init && init->getBlock() == b && ip != b->end() &&
+            !init->isBeforeInBlock(&*ip))
+          rewriter.setInsertionPoint(op);
+        else if (init && init->getBlock() != b &&
+                 !init->getBlock()->getParent()->isAncestor(b->getParent()))
+          rewriter.setInsertionPoint(op);
+      };
       if (rhsRewritten && !lhsRewritten) { // insert a reduceOp
-        rewriter.setInsertionPointAfterValue(lhs);
+        afterInputOrHere(lhs);
         auto newLhsReduce = stablehlo::ReduceOp::create(
             rewriter, op->getLoc(), ValueRange(lhs), ValueRange(initVal),
             op.getDimensions());
@@ -32411,7 +32597,7 @@ struct SplitReduceAddMulToAddDotGeneral final
       }
 
       if (lhsRewritten && !rhsRewritten) { // insert a reduceOp
-        rewriter.setInsertionPointAfterValue(rhs);
+        afterInputOrHere(rhs);
         auto newRhsReduce = stablehlo::ReduceOp::create(
             rewriter, op->getLoc(), ValueRange(rhs), ValueRange(initVal),
             op.getDimensions());
@@ -38031,7 +38217,7 @@ struct EnzymeHLOOptPass
         TransposeIsReshape,
         BroadcastInDimIsReshape,
         ReshuffleAndsCompares,
-        WhileDeadResults,
+        WhileDeadResults, WhileDuplicateCarried,
         ZeroExtentTensorCanon,
         CompareSelectSimplify,
         NotSelectSimplify,
@@ -38147,7 +38333,7 @@ struct EnzymeHLOOptPass
 
     if (enable_auto_batching_passes) {
       mlir::enzyme::AutoBatchingPassPipelineOptions options{
-          true, true, "greedy", true, true, true};
+          true, true, "greedy", true, true, true, true};
       mlir::enzyme::populateAutoBatchingPassPatterns(patterns, context,
                                                      options);
     }

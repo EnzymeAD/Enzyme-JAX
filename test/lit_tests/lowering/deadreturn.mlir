@@ -8,13 +8,13 @@ module {
     return %0#0, %0#1, %0#2 : tensor<i64>, tensor<i64>, tensor<i64>
   }
   llvm.func ptx_kernelcc @k1(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1> {llvm.readonly}, %arg2: !llvm.ptr<1>) {
-    %0 = llvm.load %arg1 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
-    %1 = llvm.load %arg0 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+    %0 = llvm.load %arg1 <alignment = 1> : !llvm.ptr<1> -> i64
+    %1 = llvm.load %arg0 <alignment = 1> : !llvm.ptr<1> -> i64
     %2 = llvm.mul %1, %0 : i64
-    llvm.store %2, %arg0 {alignment = 1 : i64} : i64, !llvm.ptr<1>
-    %3 = llvm.load %arg2 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+    llvm.store %2, %arg0 <alignment = 1> : i64, !llvm.ptr<1>
+    %3 = llvm.load %arg2 <alignment = 1> : !llvm.ptr<1> -> i64
     %4 = llvm.mul %3, %0 : i64
-    llvm.store %4, %arg2 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+    llvm.store %4, %arg2 <alignment = 1> : i64, !llvm.ptr<1>
     llvm.return
   }
   func.func @main2(%arg0: tensor<i64>, %arg1: tensor<i64>) -> (tensor<i64>, tensor<i64>) {
@@ -24,10 +24,10 @@ module {
     return %0#0, %0#1 : tensor<i64>, tensor<i64>
   }
   llvm.func ptx_kernelcc @k2(%arg1: !llvm.ptr<1> {llvm.readonly}, %arg2: !llvm.ptr<1>) {
-    %0 = llvm.load %arg1 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
-    %3 = llvm.load %arg2 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+    %0 = llvm.load %arg1 <alignment = 1> : !llvm.ptr<1> -> i64
+    %3 = llvm.load %arg2 <alignment = 1> : !llvm.ptr<1> -> i64
     %4 = llvm.mul %3, %0 : i64
-    llvm.store %4, %arg2 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+    llvm.store %4, %arg2 <alignment = 1> : i64, !llvm.ptr<1>
     llvm.return
   }
 }
@@ -39,13 +39,13 @@ module {
 // CHECK-NEXT:     return %0#0, %arg1, %0#1 : tensor<i64>, tensor<i64>, tensor<i64>
 // CHECK-NEXT:   }
 // CHECK:   llvm.func ptx_kernelcc @k1(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1> {llvm.readonly}, %arg2: !llvm.ptr<1>) {
-// CHECK-NEXT:     %0 = llvm.load %arg1 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
-// CHECK-NEXT:     %1 = llvm.load %arg0 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+// CHECK-NEXT:     %0 = llvm.load %arg1 <alignment = 1> : !llvm.ptr<1> -> i64
+// CHECK-NEXT:     %1 = llvm.load %arg0 <alignment = 1> : !llvm.ptr<1> -> i64
 // CHECK-NEXT:     %2 = llvm.mul %1, %0 : i64
-// CHECK-NEXT:     llvm.store %2, %arg0 {alignment = 1 : i64} : i64, !llvm.ptr<1>
-// CHECK-NEXT:     %3 = llvm.load %arg2 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+// CHECK-NEXT:     llvm.store %2, %arg0 <alignment = 1> : i64, !llvm.ptr<1>
+// CHECK-NEXT:     %3 = llvm.load %arg2 <alignment = 1> : !llvm.ptr<1> -> i64
 // CHECK-NEXT:     %4 = llvm.mul %3, %0 : i64
-// CHECK-NEXT:     llvm.store %4, %arg2 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+// CHECK-NEXT:     llvm.store %4, %arg2 <alignment = 1> : i64, !llvm.ptr<1>
 // CHECK-NEXT:     llvm.return
 // CHECK-NEXT:   }
 // CHECK:   func.func @main2(%arg0: tensor<i64>, %arg1: tensor<i64>) -> (tensor<i64>, tensor<i64>) {
@@ -55,10 +55,10 @@ module {
 // CHECK-NEXT:     return %arg0, %0 : tensor<i64>, tensor<i64>
 // CHECK-NEXT:   }
 // CHECK:   llvm.func ptx_kernelcc @k2(%arg0: !llvm.ptr<1> {llvm.readonly}, %arg1: !llvm.ptr<1>) {
-// CHECK-NEXT:     %0 = llvm.load %arg0 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
-// CHECK-NEXT:     %1 = llvm.load %arg1 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+// CHECK-NEXT:     %0 = llvm.load %arg0 <alignment = 1> : !llvm.ptr<1> -> i64
+// CHECK-NEXT:     %1 = llvm.load %arg1 <alignment = 1> : !llvm.ptr<1> -> i64
 // CHECK-NEXT:     %2 = llvm.mul %1, %0 : i64
-// CHECK-NEXT:     llvm.store %2, %arg1 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+// CHECK-NEXT:     llvm.store %2, %arg1 <alignment = 1> : i64, !llvm.ptr<1>
 // CHECK-NEXT:     llvm.return
 // CHECK-NEXT:   }
 // CHECK-NEXT: }
