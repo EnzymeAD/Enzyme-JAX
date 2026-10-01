@@ -1,0 +1,39 @@
+name: Clang-Format
+
+on:
+  push:
+    paths:
+      - '.github/workflows/format.yml'
+      - '.clang-format'
+      - '.clang-format-ignore'
+      - 'src/**/*.c'
+      - 'src/**/*.cc'
+      - 'src/**/*.cpp'
+      - 'src/**/*.h'
+      - 'src/**/*.td'
+      - '!src/external'
+  pull_request:
+    paths:
+      - '.github/workflows/format.yml'
+      - '.clang-format'
+      - '.clang-format-ignore'
+      - 'src/**/*.c'
+      - 'src/**/*.cc'
+      - 'src/**/*.cpp'
+      - 'src/**/*.h'
+      - 'src/**/*.td'
+      - '!src/external'
+  merge_group:
+
+jobs:
+  build:
+    name: Format
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+    - uses: DoozyX/clang-format-lint-action@v0.20
+      with:
+        source: 'src'
+        style: 'llvm'
+        clangFormatVersion: 16
