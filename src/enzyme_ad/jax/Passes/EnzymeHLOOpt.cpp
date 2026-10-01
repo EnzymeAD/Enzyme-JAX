@@ -35133,6 +35133,83 @@ struct GatherOfScatterSimplify final
   }
 };
 
+// A scatter that writes every slot the value it holds, the gather of the same
+// slots of the same buffer, with an overwrite body: the result is the buffer.
+// The gather may keep a slot dimension as a window of size one that a
+// reshape then drops.
+struct ScatterOfGatherIdentity final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterOfGatherIdentity> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // the positions, among the dimensions of size other than one, of those of
+  // `dims` that are not of size one
+  static SmallVector<int64_t> nonUnitPositions(ArrayRef<int64_t> shape,
+                                               ArrayRef<int64_t> dims) {
+    SmallVector<int64_t> out;
+    for (int64_t d : dims) {
+      if (shape[d] == 1)
+        continue;
+      int64_t pos = 0;
+      for (int64_t k = 0; k < d; ++k)
+        pos += shape[k] != 1;
+      out.push_back(pos);
+    }
+    return out;
+  }
+
+  static SmallVector<int64_t> nonUnit(ArrayRef<int64_t> shape) {
+    SmallVector<int64_t> out;
+    for (int64_t d : shape)
+      if (d != 1)
+        out.push_back(d);
+    return out;
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) {
+    if (op.getInputs().size() != 1)
+      return failure();
+    Value input = op.getInputs()[0];
+    Value upd = op.getUpdates()[0];
+    auto updTy = cast<RankedTensorType>(upd.getType());
+    while (auto rs = upd.getDefiningOp<stablehlo::ReshapeOp>())
+      upd = rs.getOperand();
+    auto gather = upd.getDefiningOp<stablehlo::GatherOp>();
+    if (!gather || gather.getOperand() != input ||
+        gather.getStartIndices() != op.getScatterIndices())
+      return failure();
+    auto gTy = cast<RankedTensorType>(gather.getType());
+    if (!updTy.hasStaticShape() || !gTy.hasStaticShape() ||
+        nonUnit(updTy.getShape()) != nonUnit(gTy.getShape()))
+      return failure();
+    SplatElementsAttr constant;
+    if (!detectConstantSetindexScatterOp(
+             op, true, [](Value) { return true; }, constant)
+             .ok())
+      return failure();
+    // the slots the scatter writes, read as a gather: the same windows at
+    // the same places, a dimension the scatter inserts kept at most as a
+    // window of one
+    auto want =
+        getGatherDims(op.getContext(), op.getScatterDimensionNumbersAttr());
+    auto dn = gather.getDimensionNumbers();
+    if (computeGatherSliceSizes(op) !=
+            SmallVector<int64_t>(gather.getSliceSizes()) ||
+        want.getStartIndexMap() != dn.getStartIndexMap() ||
+        want.getIndexVectorDim() != dn.getIndexVectorDim() ||
+        !dn.getOperandBatchingDims().empty() ||
+        !want.getOperandBatchingDims().empty() ||
+        nonUnitPositions(gTy.getShape(), dn.getOffsetDims()) !=
+            nonUnitPositions(updTy.getShape(), want.getOffsetDims()))
+      return failure();
+    for (int64_t d : dn.getCollapsedSliceDims())
+      if (!llvm::is_contained(want.getCollapsedSliceDims(), d))
+        return failure();
+    rewriter.replaceOp(op, input);
+    return success();
+  }
+};
+
 // jax doesn't control size of constants, we try to recover patterns that can
 // produce these constants. We do the following:
 //    1. iota detection
@@ -38469,6 +38546,7 @@ struct EnzymeHLOOptPass
         DotGeneralInsertDimContractionSimplification,
         FuseReshapeCollapseOrExpandDimsIntoReduce,
         GatherOfScatterSimplify,
+        ScatterOfGatherIdentity,
         ReduceWindowWrapSimplify,
         SplitComplexScatter,
         SplitComplexGather,
