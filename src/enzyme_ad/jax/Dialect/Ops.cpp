@@ -193,6 +193,16 @@ void JITCallOp::getEffects(
   addMemoryEffectsFromAttr(effects, effectsAttr);
 }
 
+LogicalResult KernelCallOp::verify() {
+  return verifyResultsAliasOperands(getOperation(), getOutputOperandAliases(),
+                                    getInputs().size());
+}
+
+LogicalResult JITCallOp::verify() {
+  return verifyResultsAliasOperands(getOperation(), getOutputOperandAliases(),
+                                    getInputs().size());
+}
+
 template <>
 enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
     PatternRewriter &rewriter, enzymexla::KernelCallOp launchOp,
@@ -204,8 +214,7 @@ enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
       launchOp.getShmem(), launchOp.getClusterx(), launchOp.getClustery(),
       launchOp.getClusterz(), launchOp.getInputs(),
       launchOp.getBackendConfigAttr(), launchOp.getOperandLayoutsAttr(),
-      /*resultLayouts*/ nullptr, launchOp.getArgAttrsAttr(),
-      launchOp.getResAttrsAttr(), outputAliases,
+      launchOp.getArgAttrsAttr(), launchOp.getResAttrsAttr(), outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
 }
 
@@ -216,8 +225,7 @@ enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
   return enzymexla::JITCallOp::create(
       rewriter, launchOp.getLoc(), resTys, launchOp.getFn(),
       launchOp.getInputs(), launchOp.getBackendConfigAttr(),
-      launchOp.getOperandLayoutsAttr(),
-      /*resultLayouts*/ nullptr, launchOp.getArgAttrsAttr(),
+      launchOp.getOperandLayoutsAttr(), launchOp.getArgAttrsAttr(),
       launchOp.getResAttrsAttr(), outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
 }

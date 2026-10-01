@@ -83,7 +83,6 @@ def KernelCallOp : EnzymeXLA_Op<"kernel_call", [
     Variadic<AnyType>:$inputs,
     DefaultValuedStrAttr<StrAttr, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,
-    OptionalAttr<AnyAttr>:$result_layouts,
     OptionalAttr<DictArrayAttr>:$arg_attrs,
     OptionalAttr<DictArrayAttr>:$res_attrs,
     DefaultValuedOptionalAttr<
@@ -103,6 +102,7 @@ def KernelCallOp : EnzymeXLA_Op<"kernel_call", [
     attr-dict `:` functional-type($inputs, results)
   }];
 
+  let hasVerifier = 1;
   let hasCanonicalizer = 1;
 }
 
@@ -189,7 +189,6 @@ def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpI
     Variadic<AnyType>:$inputs,
     DefaultValuedStrAttr<StrAttr, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,
-    OptionalAttr<AnyAttr>:$result_layouts,
     OptionalAttr<DictArrayAttr>:$arg_attrs,
     OptionalAttr<DictArrayAttr>:$res_attrs,
     DefaultValuedOptionalAttr<
@@ -203,6 +202,7 @@ def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpI
     $fn ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
   }];
 
+  let hasVerifier = 1;
   let hasCanonicalizer = 1;
 }
 

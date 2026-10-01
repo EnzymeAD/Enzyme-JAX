@@ -7,6 +7,41 @@
 namespace mlir {
 namespace enzymexla {
 
+inline LogicalResult verifyResultsAliasOperands(Operation *op,
+                                                ArrayAttr outputOperandAliases,
+                                                unsigned numInputs) {
+  unsigned numResults = op->getNumResults();
+  if (numResults == 0)
+    return success();
+  SmallVector<bool> aliased(numResults, false);
+  for (auto attr : outputOperandAliases) {
+    auto alias = dyn_cast<stablehlo::OutputOperandAliasAttr>(attr);
+    if (!alias)
+      return op->emitOpError("output_operand_aliases must contain "
+                             "#stablehlo.output_operand_alias attributes");
+    if (alias.getOperandIndex() < 0 ||
+        alias.getOperandIndex() >= (int64_t)numInputs)
+      return op->emitOpError("output_operand_alias refers to operand ")
+             << alias.getOperandIndex() << ", but there are only " << numInputs
+             << " inputs";
+    auto outIdxs = alias.getOutputTupleIndices();
+    if (numResults == 1 ? !outIdxs.empty() : outIdxs.size() != 1)
+      return op->emitOpError("output_operand_alias must index the result "
+                             "with `output_tuple_indices = [<result>]` "
+                             "(empty only for a single result)");
+    int64_t idx = numResults == 1 ? 0 : outIdxs[0];
+    if (idx < 0 || idx >= (int64_t)numResults)
+      return op->emitOpError("output_operand_alias refers to result ")
+             << idx << ", but there are only " << numResults << " results";
+    aliased[idx] = true;
+  }
+  for (unsigned i = 0; i < numResults; i++)
+    if (!aliased[i])
+      return op->emitOpError("result #")
+             << i << " has no matching operand in output_operand_aliases";
+  return success();
+}
+
 /// Replace cast(subindex(x, InterimType), FinalType) with subindex(x,
 /// FinalType)
 template <typename OpTy>

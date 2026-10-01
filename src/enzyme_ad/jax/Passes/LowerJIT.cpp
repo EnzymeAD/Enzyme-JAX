@@ -1104,10 +1104,16 @@ struct LowerJITPass
           op.getOperandLayouts()
               ? cast<mlir::ArrayAttr>(*op.getOperandLayouts())
               : nullptr;
-      mlir::ArrayAttr result_layouts =
-          op.getResultLayouts() ? cast<mlir::ArrayAttr>(*op.getResultLayouts())
-                                : nullptr;
       mlir::ArrayAttr output_operand_aliases = op.getOutputOperandAliases();
+      mlir::ArrayAttr result_layouts = nullptr;
+      if (operand_layouts) {
+        result_layouts = getAliasedResultLayouts(op, operand_layouts,
+                                                 output_operand_aliases);
+        if (!result_layouts) {
+          signalPassFailure();
+          return;
+        }
+      }
 
       auto *symbolOp = symbolTable.lookupNearestSymbolFrom(op, op.getFnAttr());
       auto fn = cast<FunctionOpInterface>(symbolOp);
