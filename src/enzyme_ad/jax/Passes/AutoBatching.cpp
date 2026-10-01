@@ -3164,6 +3164,8 @@ struct IndexEvaluator {
     }
     if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(op))
       return evalTableRow(ds, iter);
+    if (auto g = dyn_cast<stablehlo::GatherOp>(op))
+      return evalGathered(g, iter);
     if (auto sl = dyn_cast<stablehlo::SliceOp>(op))
       return evalStaticWindow(sl, iter);
     if (auto pad = dyn_cast<stablehlo::PadOp>(op))
@@ -3296,6 +3298,62 @@ struct IndexEvaluator {
         flat = flat * shape[d] + idx[d];
       out.offsets.push_back((*values)[flat]);
     }
+    return out;
+  }
+
+  // One element of a table per index row: a gather of unit windows, the
+  // row's position giving the batching dimensions.
+  std::optional<IterationIndices> evalGathered(stablehlo::GatherOp g,
+                                               ArrayRef<int64_t> iter) {
+    auto ty = dyn_cast<RankedTensorType>(g.getOperand().getType());
+    auto ity = dyn_cast<RankedTensorType>(g.getStartIndices().getType());
+    auto rty = dyn_cast<RankedTensorType>(g.getType());
+    if (!ty || !ity || !rty || !ty.hasStaticShape() || !ity.hasStaticShape())
+      return std::nullopt;
+    if (llvm::any_of(g.getSliceSizes(), [](int64_t n) { return n != 1; }))
+      return std::nullopt;
+    const SmallVector<int64_t> *values = table(g.getOperand(), iter);
+    if (!values)
+      return std::nullopt;
+    auto idx = eval(g.getStartIndices(), iter);
+    if (!idx || idx->base)
+      return std::nullopt;
+    auto dn = g.getDimensionNumbers();
+    ArrayRef<int64_t> shape = ty.getShape(), ishape = ity.getShape();
+    int64_t ivd = dn.getIndexVectorDim();
+    int64_t cols = ivd < ity.getRank() ? ishape[ivd] : 1;
+    if ((int64_t)dn.getStartIndexMap().size() != cols)
+      return std::nullopt;
+    IterationIndices out;
+    out.base = Value();
+    SmallVector<int64_t> coord(ity.getRank(), 0), pos(ty.getRank(), 0);
+    int64_t n = ity.getNumElements();
+    for (int64_t flat = 0; flat < n; ++flat) {
+      int64_t rest = flat;
+      for (int64_t d = ity.getRank() - 1; d >= 0; --d) {
+        coord[d] = rest % ishape[d];
+        rest /= ishape[d];
+      }
+      if (ivd < ity.getRank() && coord[ivd] != 0)
+        continue; // one row per position of the other dimensions
+      std::fill(pos.begin(), pos.end(), 0);
+      for (auto [p, d] : llvm::enumerate(dn.getOperandBatchingDims()))
+        pos[d] = coord[dn.getStartIndicesBatchingDims()[p]];
+      // the index values of the row: at the row's coordinates with the
+      // vector dimension running over the columns
+      for (auto [c, d] : llvm::enumerate(dn.getStartIndexMap())) {
+        int64_t at = 0;
+        for (int64_t k = 0; k < ity.getRank(); ++k)
+          at = at * ishape[k] + (k == ivd ? c : coord[k]);
+        pos[d] = std::min(std::max<int64_t>(idx->offsets[at], 0), shape[d] - 1);
+      }
+      int64_t f = 0;
+      for (int64_t d = 0; d < ty.getRank(); ++d)
+        f = f * shape[d] + pos[d];
+      out.offsets.push_back((*values)[f]);
+    }
+    if ((int64_t)out.offsets.size() != rty.getNumElements())
+      return std::nullopt;
     return out;
   }
 
