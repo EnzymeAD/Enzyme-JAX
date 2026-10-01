@@ -66,11 +66,34 @@ LogicalResult unrollWhileOp(mlir::stablehlo::WhileOp op, RewriterBase &rewriter,
   auto iters = info.getConstantNumIters();
   if (maxNumIterations != -1 && iters > maxNumIterations)
     return failure();
+  // The unrolled copies hand each yielded value straight to the next copy's
+  // uses and to the loop's results: a value shaped less precisely than the
+  // result (a body may yield a dynamically shaped value for a static carried
+  // type) would then reach uses that rely on the static shape.
+  for (auto [y, r] : llvm::zip(bodyTerm.getOperands(), op->getResultTypes())) {
+    auto yt = dyn_cast<RankedTensorType>(y.getType());
+    auto rt = dyn_cast<RankedTensorType>(r);
+    if (!yt || !rt || yt.getRank() != rt.getRank())
+      continue;
+    for (auto [yd, rd] : llvm::zip(yt.getShape(), rt.getShape()))
+      if (ShapedType::isDynamic(yd) && !ShapedType::isDynamic(rd))
+        return failure();
+  }
 
+  // A body over the threshold still unrolls when the copies together stay
+  // within the same budget as the threshold allows at the full iteration
+  // limit: a few iterations of a long body cost no more than many of a
+  // short one.
   if (iters > 1 && maxOperationThreshold > -1 &&
       std::distance(loopBodyBlock->begin(), loopBodyBlock->end()) >
-          maxOperationThreshold)
-    return failure();
+          maxOperationThreshold) {
+    // every op the copies would carry, those of nested regions included
+    int64_t ops = 0;
+    op.getBody().walk([&](Operation *) { ++ops; });
+    if (maxNumIterations == -1 ||
+        iters * ops > maxNumIterations * maxOperationThreshold)
+      return failure();
+  }
 
   SmallVector<Value> results(op.getOperands().begin(), op.getOperands().end());
 
