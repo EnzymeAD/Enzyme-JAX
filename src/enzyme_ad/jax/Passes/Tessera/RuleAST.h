@@ -100,9 +100,13 @@ struct StrLit {
 
 struct Expr;
 
+/// A call to a library op, `blas.gemm(...)`, or, with no dialect, to one of
+/// the functions the right-hand side can compute an argument with, `log2(n)`.
 struct Call {
   std::string dialect, opname;
   std::vector<Expr> args;
+
+  bool isBuiltin() const { return dialect.empty(); }
 };
 
 struct Expr {
@@ -195,7 +199,8 @@ struct Parser {
   Token current;
   Location loc;
   bool failed = false;
-  /// String literals are only allowed on the right-hand side of a rule.
+  /// String literals and built-in functions are only allowed on the
+  /// right-hand side of a rule.
   bool allowStrings = false;
 
   Parser(std::string input, Location location) : lexer{input}, loc{location} {
