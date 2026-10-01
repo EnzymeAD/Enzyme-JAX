@@ -38563,6 +38563,13 @@ void mlir::transform::addTransposeElementwise(RewritePatternSet &patterns,
   patterns.insert<TransposeElementwise>(onlySingleUser, &context, benefit);
 }
 
+void mlir::transform::addTransposeElementwiseTranspose(
+    RewritePatternSet &patterns, bool allowPartial, MLIRContext &context,
+    PatternBenefit benefit) {
+  patterns.insert<TransposeElementwiseTransposeSimplify>(&context, benefit,
+                                                         allowPartial);
+}
+
 void mlir::transform::addTransposeLikeBroadcastElementwise(
     RewritePatternSet &patterns, bool onlySingleUser, MLIRContext &context,
     PatternBenefit benefit) {

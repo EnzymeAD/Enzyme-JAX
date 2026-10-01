@@ -527,7 +527,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("dus_dus");
   list.push_back("dus_dus_concat");
   list.push_back("abs_positive_simplify");
-  list.push_back("transpose_elementwise_transpose");
+  list.push_back("transpose_elementwise_transpose(1)");
   list.push_back("select_comp_iota_const_simplify");
   list.push_back("sign_abs_simplify<1>");
   list.push_back("broadcastindim_is_reshape");

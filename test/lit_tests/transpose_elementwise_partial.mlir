@@ -1,5 +1,5 @@
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-opt | FileCheck %s
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=transpose_elementwise_transpose" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=transpose_elementwise_transpose(1)" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-opt --inline --canonicalize --symbol-dce | stablehlo-translate --interpret
 
 // Cancel the inverse transposes on the predicate and false value, moving the
