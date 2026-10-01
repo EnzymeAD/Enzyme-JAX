@@ -5140,7 +5140,12 @@ struct WidenExtend final
         continue;
       }
 
-      if (newOperands.size()) {
+      // An extend repeats the first `lhs` elements before the operand and
+      // the last `rhs` after it (see lowerExtend), so a boundary element
+      // next to it only folds in while that side is still empty: with one
+      // already repeated, the two together would be [x0, x0], which is not
+      // the prefix [x0, x1] a larger amount stands for.
+      if (newOperands.size() && extend.getLhs() == 0) {
         auto prev = newOperands.back();
         if (isExtendOf(extend.getOperand(), prev, dim,
                        /*widenOperandOnLeft*/ true)) {
@@ -5156,7 +5161,7 @@ struct WidenExtend final
         }
       }
 
-      if (i + 1 < e) {
+      if (i + 1 < e && extend.getRhs() == 0) {
         auto prev = op->getOperand(i + 1);
         if (isExtendOf(extend.getOperand(), prev, dim,
                        /*widenOperandOnLeft*/ false)) {
