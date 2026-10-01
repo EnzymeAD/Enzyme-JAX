@@ -667,6 +667,57 @@ func.func @computed_table(%y: tensor<24xf64>, %x: tensor<4x2xf64>) -> tensor<24x
 
 // -----
 
+// Slots clamped from below with a maximum and spread by an elementwise
+// division: the evaluator follows both.
+func.func @max_div_index(%y: tensor<16xf64>, %x: tensor<4x2xf64>) -> tensor<16xf64> {
+  %c0 = stablehlo.constant dense<0> : tensor<i64>
+  %c1 = stablehlo.constant dense<1> : tensor<i64>
+  %c4 = stablehlo.constant dense<4> : tensor<i64>
+  %tbl = stablehlo.constant dense<[[-2, 1], [2, 5], [6, 9], [10, 13]]> : tensor<4x2xi64>
+  %div = stablehlo.constant dense<[[1], [1]]> : tensor<2x1xi64>
+  %zero = stablehlo.constant dense<0> : tensor<2x1xi64>
+  %0:2 = stablehlo.while(%i = %c0, %acc = %y) : tensor<i64>, tensor<16xf64>
+   cond {
+    %c = stablehlo.compare LT, %i, %c4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+    stablehlo.return %c : tensor<i1>
+  } do {
+    %row = stablehlo.dynamic_slice %tbl, %i, %c0, sizes = [1, 2] : (tensor<4x2xi64>, tensor<i64>, tensor<i64>) -> tensor<1x2xi64>
+    %r = stablehlo.reshape %row : (tensor<1x2xi64>) -> tensor<2x1xi64>
+    %m = stablehlo.maximum %r, %zero : tensor<2x1xi64>
+    %idx = stablehlo.divide %m, %div : tensor<2x1xi64>
+    %v = stablehlo.dynamic_slice %x, %i, %c0, sizes = [1, 2] : (tensor<4x2xf64>, tensor<i64>, tensor<i64>) -> tensor<1x2xf64>
+    %u = stablehlo.reshape %v : (tensor<1x2xf64>) -> tensor<2xf64>
+    %s = "stablehlo.scatter"(%acc, %idx, %u) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, unique_indices = false}> ({
+    ^bb0(%a: tensor<f64>, %bv: tensor<f64>):
+      stablehlo.return %bv : tensor<f64>
+    }) : (tensor<16xf64>, tensor<2x1xi64>, tensor<2xf64>) -> tensor<16xf64>
+    %n = stablehlo.add %i, %c1 : tensor<i64>
+    stablehlo.return %n, %s : tensor<i64>, tensor<16xf64>
+  }
+  return %0#1 : tensor<16xf64>
+}
+
+// CHECK:  func.func @max_div_index(%arg0: tensor<16xf64>, %arg1: tensor<4x2xf64>) -> tensor<16xf64> {
+// CHECK-NEXT:  %c = stablehlo.constant dense<{{\[\[}}-2, 1], [2, 5], [6, 9], [10, 13{{\]\]}}> : tensor<4x2xi64>
+// CHECK-NEXT:  %c_0 = stablehlo.constant dense<1> : tensor<2x1xi64>
+// CHECK-NEXT:  %c_1 = stablehlo.constant dense<0> : tensor<2x1xi64>
+// CHECK-NEXT:  %0 = stablehlo.reshape %c : (tensor<4x2xi64>) -> tensor<4x1x2xi64>
+// CHECK-NEXT:  %1 = stablehlo.reshape %0 : (tensor<4x1x2xi64>) -> tensor<4x2x1xi64>
+// CHECK-NEXT:  %2 = stablehlo.broadcast_in_dim %c_1, dims = [1, 2] : (tensor<2x1xi64>) -> tensor<4x2x1xi64>
+// CHECK-NEXT:  %3 = stablehlo.maximum %1, %2 : tensor<4x2x1xi64>
+// CHECK-NEXT:  %4 = stablehlo.broadcast_in_dim %c_0, dims = [1, 2] : (tensor<2x1xi64>) -> tensor<4x2x1xi64>
+// CHECK-NEXT:  %5 = stablehlo.divide %3, %4 : tensor<4x2x1xi64>
+// CHECK-NEXT:  %6 = stablehlo.reshape %arg1 : (tensor<4x2xf64>) -> tensor<4x1x2xf64>
+// CHECK-NEXT:  %7 = stablehlo.reshape %6 : (tensor<4x1x2xf64>) -> tensor<4x2xf64>
+// CHECK-NEXT:  %8 = "stablehlo.scatter"(%arg0, %5, %7) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 2>, unique_indices = false}> ({
+// CHECK-NEXT:  ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
+// CHECK-NEXT:  stablehlo.return %arg3 : tensor<f64>
+// CHECK-NEXT:  }) : (tensor<16xf64>, tensor<4x2x1xi64>, tensor<4x2xf64>) -> tensor<16xf64>
+// CHECK-NEXT:  return %8 : tensor<16xf64>
+// CHECK-NEXT:  }
+
+// -----
+
 // Iteration i writes slot i+1, and slot 0 inside a nested loop: every
 // iteration writes slot 0, so the iterations are not independent. A chain
 // through a nested loop is not proved; the loop is kept.
