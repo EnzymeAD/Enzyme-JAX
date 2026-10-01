@@ -7,8 +7,8 @@
 #include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
 #include "z3++.h"
 #include <cstdint>
-#include <unordered_map>
 #include <string>
+#include <unordered_map>
 namespace mlir {
 namespace enzyme {
 namespace perfify {
@@ -135,7 +135,7 @@ struct SimpleCycleAnalysisPass
           constant_costs.find(static_cast<HoareStates>(region_num));
       if (pre_post_cost == constant_costs.end()) {
         llvm::outs() << "no cost hypothesis for region " << region_num << "\n";
-        return;  
+        return;
       }
       z3::expr p = solver.ctx().bool_val(true);
       z3::expr q =
