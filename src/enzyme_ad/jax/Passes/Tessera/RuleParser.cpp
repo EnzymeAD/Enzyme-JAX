@@ -338,6 +338,37 @@ std::optional<Expr> Parser::parseExpr() {
         return std::nullopt;
       return Expr(std::move(*call));
     }
+    // An unqualified call is a built-in function, which computes an argument
+    // for a call the rewrite builds. The one there is, log2, gives the
+    // exponent of a power of two, for a library function that takes a shift
+    // count where the matched call took the divisor. It is exact only on a
+    // power of two, which the rule's condition has to guarantee.
+    if (current.type == TokenType::LParen) {
+      if (!allowStrings) {
+        error() << "'" << s
+                << "(...)' can only be used on the right-hand side of an "
+                   "optimization rule";
+        return std::nullopt;
+      }
+      if (s != "log2") {
+        error() << "unknown function '" << s
+                << "' in optimization rule: a library call is written "
+                   "'dialect.op(...)', and the only built-in function is log2";
+        return std::nullopt;
+      }
+      advance(); // consume '('
+      auto arg = parseExpr();
+      if (!arg)
+        return std::nullopt;
+      if (current.type != TokenType::RParen) {
+        error() << "log2 takes one argument, got '" << current.value << "'";
+        return std::nullopt;
+      }
+      advance(); // consume ')'
+      std::vector<Expr> args;
+      args.push_back(std::move(*arg));
+      return Expr(Call{"", s, std::move(args)});
+    }
     return Var{s};
   }
   if (current.type == TokenType::Integer) {
@@ -507,7 +538,8 @@ std::optional<Rule> Parser::parseRule() {
       break;
     // Only the last expression has a value that is used, so anything before
     // it must be a call, made for what it does.
-    if (!std::holds_alternative<Call>(rhs.back().data)) {
+    auto *call = std::get_if<Call>(&rhs.back().data);
+    if (!call || call->isBuiltin()) {
       error() << "'" << renderExpr(rhs.back())
               << "' is followed by ';' in an optimization rule, but only a "
                  "call can be";
@@ -605,7 +637,9 @@ std::string renderExpr(const Expr &expr) {
                           return out;
                         },
                         [](const Call &c) {
-                          std::string out = c.dialect + "." + c.opname + "(";
+                          std::string out =
+                              (c.isBuiltin() ? "" : c.dialect + ".") +
+                              c.opname + "(";
                           for (size_t i = 0; i < c.args.size(); ++i) {
                             if (i)
                               out += ", ";
