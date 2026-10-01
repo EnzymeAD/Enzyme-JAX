@@ -1360,6 +1360,14 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            "Mark the scalar arguments a raised while loop's exit test reads "
            "as scalars the runtime specializes the executable over (trailing "
            "xla_wrapper inputs, num_specialized)">,
+       Option<
+           /*C++ variable name=*/"specialize_index_strides",
+           /*CLI argument=*/"specialize_index_strides",
+           /*type=*/"bool",
+           /*default=*/"false",
+           /*description=*/
+           "Specialize the kernel over a scalar argument an access index reads, "
+           "such as a stride, so the index folds to a constant">,
   ];
 }
 
