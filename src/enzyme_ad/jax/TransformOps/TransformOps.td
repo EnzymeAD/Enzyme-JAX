@@ -780,9 +780,19 @@ def ApplyCommonAssociativeCommutativeOpReorderPatterns : EnzymeHLOPatternOp<
   let patterns = ["CommonAssociativeCommutativeOpReorder"];
 }
 
-def ApplyTransposeElementwiseTransposeAbsPatterns : EnzymeHLOPatternOp<
+def ApplyTransposeElementwiseTransposeAbsPatterns : EnzymeHLOParameterizedPatternOp<
     "transpose_elementwise_transpose"> {
-  let patterns = ["TransposeElementwiseTransposeSimplify"];
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "prop-dict attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
 }
 
 def TransposeBroadcastInDimToBroadcastInDimPatterns : EnzymeHLOPatternOp<
