@@ -101,12 +101,18 @@ Two pieces handle this:
   `GB-25/*.xla`, because GitLab uploads artifacts after `after_script` has run.
   `RUNNER_AFTER_SCRIPT_TIMEOUT` is raised to 20m because deleting the Bazel tree on
   Lustre takes ~8 min.
-- **`hooks:pre_get_sources_script`** makes every directory in the slot writable
-  before the runner's wipe. Bazel leaves some outputs read-only (e.g. the
-  rules_foreign_cc z3 build under `bazel-out/k8-opt/bin/external/z3/`). When
-  `after_script` didn't run (Slurm timeout, cancel), the runner's plain `rm` then
-  fails with `Permission denied`, `get_sources` fails after ~30 s, and that slot is
-  broken for every later job until someone fixes the permissions.
+- **`hooks:pre_get_sources_script`** gives the owner full access to every
+  directory in the slot before the runner's wipe. Bazel leaves some outputs
+  read-only (e.g. the rules_foreign_cc z3 build under
+  `bazel-out/k8-opt/bin/external/z3/`) and creates a mode-000
+  `sandbox/inaccessibleHelperDir`. When `after_script` didn't run (Slurm timeout,
+  cancel), the runner's plain `rm` then fails with `Permission denied`,
+  `get_sources` fails after ~30 s, and that slot is broken for every later job until
+  someone fixes the permissions.
+
+Both use `find … -exec chmod u+rwx {} \;` rather than `{} +`: with `+` the chmod
+runs only after the walk, so `find` first fails to enter the mode-000 dir, exits 1,
+and under the runner's `set -e` stops `after_script` before its `rm`.
 
 `after_script` runs inside the job's `SLURM_TIMELIMIT`, so a run that uses almost
 all of it can still be cut off; the hook covers that case on the slot's next job.
@@ -114,7 +120,7 @@ To clear finished slots by hand, first check `squeue -u $USER` shows no job in t
 
 ```
 for d in $SCRATCH/gitlab-runner/f7t/*/<project-id>/.bazel; do
-  find "$d" -type d ! -perm -u+w -exec chmod u+w {} + && rm -rf "$d"
+  find "$d" -type d ! -perm -u=rwx -exec chmod u+rwx {} \; && rm -rf "$d"
 done
 ```
 

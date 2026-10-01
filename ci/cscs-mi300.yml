@@ -41,7 +41,7 @@ include:
   # runner's own wipe fails. See cscs-mi300.md: "Job directory cleanup".
   hooks:
     pre_get_sources_script:
-      - find "${CI_PROJECT_DIR}" -type d ! -perm -u+w -exec chmod u+w {} + 2>/dev/null || true
+      - find "${CI_PROJECT_DIR}" -type d ! -perm -u=rwx -exec chmod u+rwx {} \; 2>/dev/null || true
 
   script:
     # Create all job-scoped directories up front
@@ -179,8 +179,10 @@ include:
       for p in "${BAZEL_OUTPUT_ROOT}" "${JULIA_DEPOT_PATH}" "${BAZELISK_HOME}" "${REACTANT_DIR}" \
                "${LOCAL_BIN}" "${CI_PROJECT_DIR}/.rocm" "${GB25_DIR}"; do
         [[ -d "${p}" ]] || continue
-        # Bazel leaves read-only dirs, whose entries rm -rf cannot remove
-        find "${p}" -type d ! -perm -u+w -exec chmod u+w {} +
+        # Bazel leaves read-only dirs (rm -rf can't empty them) and a mode-000 sandbox
+        # dir find can't enter. "\;" fixes each dir before find descends into it, so
+        # find doesn't fail and stop this set -e script before the rm.
+        find "${p}" -type d ! -perm -u=rwx -exec chmod u+rwx {} \;
         if [[ "${p}" == "${GB25_DIR}" ]]; then
           find "${p}" -mindepth 1 -maxdepth 1 ! -name 'optimised_sharded_baroclinic_instability*.xla' -exec rm -rf {} +
         else
