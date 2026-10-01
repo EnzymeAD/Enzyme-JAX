@@ -7,7 +7,7 @@
 #include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
 #include "z3++.h"
 #include <cstdint>
-#include <iostream>
+#include <unordered_map>
 #include <string>
 namespace mlir {
 namespace enzyme {
@@ -30,7 +30,7 @@ struct SimpleCycleAnalysisPass
     : public enzyme::perfify::impl::SimpleCycleAnalysisPassBase<
           SimpleCycleAnalysisPass> {
   using SimpleCycleAnalysisPassBase::SimpleCycleAnalysisPassBase;
-  mlir::Region *analysis_func;
+  mlir::Region *analysis_func = NULL;
   std::unordered_map<std::string, int64_t> cost_map;
   llvm::DenseMap<mlir::Value, int64_t> args;
   std::unordered_map<HoareStates, int64_t> constant_costs;
@@ -104,9 +104,10 @@ struct SimpleCycleAnalysisPass
     } else if (auto funcCost = dyn_cast<FnCostOp>(op)) {
       // TODO: Make this symbolic
       llvm::SmallVector<mlir::Operation *> allOps;
-
-      analysis_func->walk(
-          [&allOps](mlir::Operation *op) { allOps.push_back(op); });
+      if (analysis_func != NULL) {
+        analysis_func->walk(
+            [&allOps](mlir::Operation *op) { allOps.push_back(op); });
+      }
       for (Operation *region_op : allOps) {
         auto cost_map_res =
             cost_map.find(region_op->getName().getStringRef().str());
@@ -132,6 +133,10 @@ struct SimpleCycleAnalysisPass
       auto region_num = cmpOp->getParentRegion()->getRegionNumber();
       auto pre_post_cost =
           constant_costs.find(static_cast<HoareStates>(region_num));
+      if (pre_post_cost == constant_costs.end()) {
+        llvm::outs() << "no cost hypothesis for region " << region_num << "\n";
+        return;  
+      }
       z3::expr p = solver.ctx().bool_val(true);
       z3::expr q =
           solver.ctx().bool_val(false); // should return false if nothing else?
