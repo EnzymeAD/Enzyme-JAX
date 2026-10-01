@@ -41,7 +41,9 @@ func.func @rmw_rowwise(%a: tensor<16x8xf64>, %c: tensor<16x8xf64>, %beta: tensor
 
 // The same loop, but reading the row ahead of the one it writes: a genuine
 // recurrence, whose iterations are not independent and which no amount of
-// batching collapses. Nothing may be hoisted here.
+// batching collapses. `a[i] * beta` does not depend on it, so it is still
+// batched out across all 16 rows; the read of the carried buffer, and the add
+// it feeds, stay behind.
 
 func.func @rmw_shifted(%a: tensor<16x8xf64>, %c: tensor<16x8xf64>, %beta: tensor<8xf64>) -> tensor<16x8xf64> {
   %c0 = stablehlo.constant dense<0> : tensor<i64>
@@ -67,22 +69,24 @@ func.func @rmw_shifted(%a: tensor<16x8xf64>, %c: tensor<16x8xf64>, %beta: tensor
 }
 
 // CHECK-LABEL: func.func @rmw_shifted
+// CHECK:         %[[BETA:.+]] = stablehlo.broadcast_in_dim %arg2, dims = [1] : (tensor<8xf64>) -> tensor<16x8xf64>
+// CHECK:         %[[SCALED:.+]] = stablehlo.multiply %arg0, %[[BETA]] : tensor<16x8xf64>
 // CHECK:         stablehlo.while
 // CHECK:         } do {
-// CHECK:           %[[ROW:.+]] = stablehlo.dynamic_slice %arg0
-// CHECK:           %[[FLAT:.+]] = stablehlo.reshape %[[ROW]]
-// CHECK:           stablehlo.multiply %[[FLAT]], %arg2 : tensor<8xf64>
+// CHECK-NOT:       stablehlo.multiply
+// CHECK:           stablehlo.dynamic_slice %[[SCALED]]
+// CHECK:           %[[NEXT:.+]] = stablehlo.dynamic_slice %iterArg_2
+// CHECK:           %[[FLAT:.+]] = stablehlo.reshape %[[NEXT]]
+// CHECK:           stablehlo.add %{{.+}}, %[[FLAT]] : tensor<8xf64>
 
 // -----
 
 // `alpha * a[k]` is consumed inside the nested loop, so it is recomputed on
 // every one of its iterations. The inner loop's own fission lifts it into the
-// outer body, which is the loop-invariant code motion that matters. The outer
-// loop then leaves it alone: its result is consumed inside the surviving inner
-// loop, reaching neither the terminator nor a store to a carried buffer, so
-// batching it across the outer trip count would only materialize a temporary
-// without shrinking either loop. Both loops are scatters into a carried
-// buffer, and both survive.
+// outer body, and the outer loop's fission then batches it across the outer
+// trip count as well, so that both loops are left with nothing but slices of a
+// 4x8 product. Both loops are scatters into a carried buffer, and both
+// survive.
 
 func.func @nested_consumer(%a: tensor<4xf64>, %b: tensor<8xf64>, %alpha: tensor<f64>, %out: tensor<8xf64>) -> tensor<8xf64> {
   %c0 = stablehlo.constant dense<0> : tensor<i64>
@@ -120,22 +124,24 @@ func.func @nested_consumer(%a: tensor<4xf64>, %b: tensor<8xf64>, %alpha: tensor<
 }
 
 // CHECK-LABEL: func.func @nested_consumer
+// CHECK:         %[[SCALED:.+]] = stablehlo.multiply %{{.+}}, %arg0 : tensor<4xf64>
+// CHECK:         %[[PROD:.+]] = stablehlo.multiply %{{.+}}, %{{.+}} : tensor<4x8xf64>
 // CHECK:         stablehlo.while
-// The product is hoisted out of the inner loop, into the outer body, and stays
-// a per-outer-iteration 8-element computation rather than a 4x8 one.
-// CHECK:           stablehlo.multiply %{{.+}}, %{{.+}} : tensor<f64>
-// CHECK:           %[[PROD:.+]] = stablehlo.multiply %{{.+}}, %{{.+}} : tensor<8xf64>
+// CHECK-NOT:       stablehlo.multiply
+// CHECK:           %[[ROW:.+]] = stablehlo.dynamic_slice %[[PROD]]
+// CHECK:           %[[FLAT:.+]] = stablehlo.reshape %[[ROW]]
 // CHECK:           stablehlo.while
-// CHECK:             stablehlo.dynamic_slice %[[PROD]]
+// CHECK:             stablehlo.dynamic_slice %[[FLAT]]
 // CHECK-NOT:         stablehlo.multiply
+// CHECK:           stablehlo.return
 
 // -----
 
 // The computation forks and never merges back: `a[i] * beta + gamma` feeds two
-// separate stores. A forked frontier is not hoisted as such -- growth follows
-// it to the end and then falls back to the last point where it was a single
-// value. So the prefix the two branches share is batched out and only the fork
-// is left behind in the loop.
+// separate stores. Growth follows the fork to the end, and since every branch
+// lands in a carried buffer at the lane the iteration owns, the whole
+// computation is batched out -- both branches along with the shared prefix --
+// and the loop is left doing nothing but copying rows.
 
 func.func @fork(%a: tensor<16x8xf64>, %beta: tensor<8xf64>, %gamma: tensor<8xf64>,
                 %o1: tensor<16x8xf64>, %o2: tensor<16x8xf64>) -> (tensor<16x8xf64>, tensor<16x8xf64>) {
@@ -164,16 +170,20 @@ func.func @fork(%a: tensor<16x8xf64>, %beta: tensor<8xf64>, %gamma: tensor<8xf64
 }
 
 // CHECK-LABEL: func.func @fork
-// The shared prefix is hoisted, across all 16 rows at once.
+// The shared prefix and both branches are hoisted, across all 16 rows at once.
 // CHECK:         %[[SCALED:.+]] = stablehlo.multiply %arg0, %{{.+}} : tensor<16x8xf64>
 // CHECK:         %[[SHIFTED:.+]] = stablehlo.add %[[SCALED]], %{{.+}} : tensor<16x8xf64>
+// CHECK:         %[[LEFT:.+]] = stablehlo.multiply %[[SHIFTED]], %{{.+}} : tensor<16x8xf64>
+// CHECK:         %[[RIGHT:.+]] = stablehlo.subtract %[[SHIFTED]], %{{.+}} : tensor<16x8xf64>
 // CHECK:         stablehlo.while
 // CHECK:         } do {
-// CHECK:           %[[ROW:.+]] = stablehlo.dynamic_slice %[[SHIFTED]]
-// The two branches of the fork stay behind.
-// CHECK:           %[[FLAT:.+]] = stablehlo.reshape %[[ROW]]
-// CHECK:           stablehlo.multiply %[[FLAT]], %arg1 : tensor<8xf64>
-// CHECK:           stablehlo.subtract %[[FLAT]], %arg2 : tensor<8xf64>
+// CHECK-NOT:       stablehlo.multiply
+// CHECK-NOT:       stablehlo.subtract
+// CHECK:           stablehlo.dynamic_slice %[[LEFT]]
+// CHECK:           stablehlo.dynamic_slice %[[RIGHT]]
+// CHECK-NOT:       stablehlo.multiply
+// CHECK-NOT:       stablehlo.subtract
+// CHECK:           stablehlo.return
 
 // -----
 

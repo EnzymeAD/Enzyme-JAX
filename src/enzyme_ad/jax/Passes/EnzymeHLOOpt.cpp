@@ -13369,7 +13369,7 @@ bool DSDSSimplificationSingleUserCheckException(SmallVector<Operation *> ops) {
   // check that atleast one of the dynamic slices have a loop iteration argument
   // as their start index.
   WhileLoopInfo loopInfo(whileOp);
-  if (loopInfo.computeInfo().succeeded() && !loopInfo.isValid()) {
+  if (!loopInfo.computeInfo().succeeded() || !loopInfo.isValid()) {
     return false;
   }
 
@@ -13437,8 +13437,7 @@ struct SliceReshapeDynamicSlice final
     if (!prev)
       return failure();
 
-    if (!llvm::hasSingleElement(reshape->getUsers()) &&
-        !DSDSSimplificationSingleUserCheckException({reshape, op, prev}))
+    if (!llvm::hasSingleElement(reshape->getUsers()))
       return failure();
 
     SmallVector<int64_t> starts, limits, strides;
