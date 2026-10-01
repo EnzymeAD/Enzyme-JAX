@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-opt="enable_auto_batching_passes=true" --enzyme-hlo-generate-td="patterns=reshape_elementwise(1)" --transform-interpreter --enzyme-hlo-remove-transform --enzyme-hlo-opt="enable_auto_batching_passes=true" %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-opt="enable_auto_batching_passes=true parallel_while_to_batched_scatter_passes=false" --enzyme-hlo-generate-td="patterns=reshape_elementwise(1)" --transform-interpreter --enzyme-hlo-remove-transform --enzyme-hlo-opt="enable_auto_batching_passes=true" %s | FileCheck %s
 
 module {
   func.func @main(%arg0: tensor<10xf64>, %arg1: tensor<10xf64>) -> tensor<10xf32> {

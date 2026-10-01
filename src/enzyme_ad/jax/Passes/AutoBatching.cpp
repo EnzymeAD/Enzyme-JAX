@@ -3044,17 +3044,32 @@ namespace {
 // all shifted by one loop-invariant base the iterations share. The base is the
 // same value in every iteration, so it cancels when two iterations are
 // compared and the offsets alone decide whether they overlap.
+// The indices an index value holds in one iteration: offsets, from zero or
+// from `scale` times a value the loop does not change (`base`).
 struct IterationIndices {
   SmallVector<int64_t> offsets;
   Value base;
+  int64_t scale = 1;
 };
 
 // Evaluates an index of the loop body for one iteration, as far as constants,
 // the induction variable and a single loop-invariant addend allow.
-struct IndexEvaluator {
-  Region &body;
+// An induction variable, with the value it takes in iteration i:
+// start + i * step.
+struct Induction {
   Value iv;
   int64_t start, step;
+};
+
+// Evaluates an index for one iteration of the loop being proved and, for an
+// index inside a nested loop, one iteration of every loop in between:
+// `iter` holds the iteration numbers from the outermost in.
+struct IndexEvaluator {
+  Region &body;
+  SmallVector<Induction> ivs;
+  // the counters of the loops around the one being proved, each at the one
+  // value the proof is being run for
+  SmallVector<std::pair<Value, int64_t>> enclosing;
 
   bool invariant(Value v) const {
     return !body.isAncestor(v.getParentRegion());
@@ -3076,15 +3091,47 @@ struct IndexEvaluator {
     return false;
   }
 
-  std::optional<IterationIndices> eval(Value v, int64_t iter) {
-    if (v == iv)
-      return IterationIndices{{start + iter * step}, Value()};
+  std::optional<IterationIndices> eval(Value v, ArrayRef<int64_t> iter) {
+    for (auto [i, in] : llvm::enumerate(ivs))
+      if (v == in.iv)
+        return IterationIndices{{in.start + iter[i] * in.step}, Value()};
+    for (auto &[ev, val] : enclosing)
+      if (v == ev)
+        return IterationIndices{{val}, Value()};
     Operation *op = v.getDefiningOp();
     if (!op)
       return std::nullopt;
-    if (isa<stablehlo::ReshapeOp, stablehlo::ConvertOp,
-            stablehlo::BroadcastInDimOp>(op))
+    if (isa<stablehlo::ReshapeOp, stablehlo::ConvertOp>(op))
       return eval(op->getOperand(0), iter);
+    if (auto bc = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+      // one number stays one number; a vector is laid out at the result's
+      // positions through the dimension map
+      auto e = eval(bc.getOperand(), iter);
+      if (!e || e->offsets.size() == 1)
+        return e;
+      auto it = cast<RankedTensorType>(bc.getOperand().getType());
+      auto rt = cast<RankedTensorType>(bc.getType());
+      if (!it.hasStaticShape() || !rt.hasStaticShape() ||
+          (int64_t)e->offsets.size() != it.getNumElements())
+        return std::nullopt;
+      IterationIndices out;
+      out.base = e->base;
+      ArrayRef<int64_t> rs = rt.getShape(), is = it.getShape();
+      auto dims = bc.getBroadcastDimensions();
+      SmallVector<int64_t> coord(rs.size(), 0);
+      for (int64_t n = 0; n < rt.getNumElements(); ++n) {
+        int64_t rest = n;
+        for (int64_t d = rs.size() - 1; d >= 0; --d) {
+          coord[d] = rest % rs[d];
+          rest /= rs[d];
+        }
+        int64_t flat = 0;
+        for (auto [i, d] : llvm::enumerate(dims))
+          flat = flat * is[i] + (is[i] == 1 ? 0 : coord[d]);
+        out.offsets.push_back(e->offsets[flat]);
+      }
+      return out;
+    }
     if (auto cst = dyn_cast<stablehlo::ConstantOp>(op)) {
       auto attr = dyn_cast<DenseIntElementsAttr>(cst.getValue());
       if (!attr)
@@ -3095,8 +3142,34 @@ struct IndexEvaluator {
         out.offsets.push_back(e.getSExtValue());
       return out;
     }
+    if (auto iota = dyn_cast<stablehlo::IotaOp>(op)) {
+      // the position along the iota's dimension, at every element
+      auto ty = cast<RankedTensorType>(iota.getType());
+      if (!ty.hasStaticShape())
+        return std::nullopt;
+      IterationIndices out;
+      out.base = Value();
+      ArrayRef<int64_t> shape = ty.getShape();
+      int64_t dim = iota.getIotaDimension();
+      for (int64_t n = 0; n < ty.getNumElements(); ++n) {
+        int64_t rest = n, pos = 0;
+        for (int64_t d = shape.size() - 1; d >= 0; --d) {
+          if (d == dim)
+            pos = rest % shape[d];
+          rest /= shape[d];
+        }
+        out.offsets.push_back(pos);
+      }
+      return out;
+    }
     if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(op))
       return evalTableRow(ds, iter);
+    if (auto sl = dyn_cast<stablehlo::SliceOp>(op))
+      return evalStaticWindow(sl, iter);
+    if (auto pad = dyn_cast<stablehlo::PadOp>(op))
+      return evalPadded(pad, iter);
+    if (auto cl = dyn_cast<stablehlo::ClampOp>(op))
+      return evalClamped(cl, iter);
     if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp>(op))
       return evalArith(op, iter);
     return std::nullopt;
@@ -3104,7 +3177,7 @@ struct IndexEvaluator {
 
   // A row (or window) of a constant table, selected by this iteration.
   std::optional<IterationIndices> evalTableRow(stablehlo::DynamicSliceOp ds,
-                                               int64_t iter) {
+                                               ArrayRef<int64_t> iter) {
     auto cst = ds.getOperand().getDefiningOp<stablehlo::ConstantOp>();
     if (!cst)
       return std::nullopt;
@@ -3147,28 +3220,144 @@ struct IndexEvaluator {
     return out;
   }
 
+  // The elements of a value laid out in its shape, from a splat or from
+  // one offset per element.
+  static bool layout(Value v, const IterationIndices &e,
+                     SmallVectorImpl<int64_t> &shape,
+                     SmallVectorImpl<int64_t> &values) {
+    auto ty = dyn_cast<RankedTensorType>(v.getType());
+    if (!ty || !ty.hasStaticShape())
+      return false;
+    shape.assign(ty.getShape().begin(), ty.getShape().end());
+    if (e.offsets.size() == 1)
+      values.assign(ty.getNumElements(), e.offsets[0]);
+    else if ((int64_t)e.offsets.size() == ty.getNumElements())
+      values.assign(e.offsets.begin(), e.offsets.end());
+    else
+      return false;
+    return true;
+  }
+
+  // A fixed window of an index tensor.
+  std::optional<IterationIndices> evalStaticWindow(stablehlo::SliceOp sl,
+                                                   ArrayRef<int64_t> iter) {
+    auto e = eval(sl.getOperand(), iter);
+    if (!e)
+      return std::nullopt;
+    if (e->offsets.size() == 1)
+      return e;
+    SmallVector<int64_t> shape, values;
+    if (!layout(sl.getOperand(), *e, shape, values))
+      return std::nullopt;
+    IterationIndices out;
+    out.base = e->base;
+    SmallVector<int64_t> sizes;
+    for (auto [d, lim] : llvm::enumerate(sl.getLimitIndices()))
+      sizes.push_back(std::max<int64_t>(
+          0, (lim - sl.getStartIndices()[d] + sl.getStrides()[d] - 1) /
+                 sl.getStrides()[d]));
+    int64_t count = 1;
+    for (int64_t n : sizes)
+      count *= n;
+    for (int64_t c = 0; c < count; ++c) {
+      int64_t rest = c, flat = 0;
+      SmallVector<int64_t> coord(shape.size());
+      for (int64_t d = shape.size() - 1; d >= 0; --d) {
+        coord[d] =
+            sl.getStartIndices()[d] + (rest % sizes[d]) * sl.getStrides()[d];
+        rest /= sizes[d];
+      }
+      for (size_t d = 0; d < shape.size(); ++d)
+        flat = flat * shape[d] + coord[d];
+      out.offsets.push_back(values[flat]);
+    }
+    return out;
+  }
+
+  // An index tensor with a constant around it: the padding is an index like
+  // any other (one that points outside, usually, to be dropped or clamped).
+  std::optional<IterationIndices> evalPadded(stablehlo::PadOp pad,
+                                             ArrayRef<int64_t> iter) {
+    auto e = eval(pad.getOperand(), iter);
+    auto pv = eval(pad.getPaddingValue(), iter);
+    if (!e || !pv || pv->base || pv->offsets.size() != 1 ||
+        llvm::any_of(pad.getInteriorPadding(),
+                     [](int64_t p) { return p != 0; }) ||
+        llvm::any_of(pad.getEdgePaddingLow(),
+                     [](int64_t p) { return p < 0; }) ||
+        llvm::any_of(pad.getEdgePaddingHigh(), [](int64_t p) { return p < 0; }))
+      return std::nullopt;
+    // a padded base would shift the padding too, which it must not
+    if (e->base)
+      return std::nullopt;
+    SmallVector<int64_t> shape, values;
+    if (!layout(pad.getOperand(), *e, shape, values))
+      return std::nullopt;
+    auto rt = cast<RankedTensorType>(pad.getType());
+    ArrayRef<int64_t> rs = rt.getShape();
+    IterationIndices out;
+    out.base = Value();
+    SmallVector<int64_t> coord(rs.size());
+    for (int64_t n = 0; n < rt.getNumElements(); ++n) {
+      int64_t rest = n, flat = 0;
+      bool inside = true;
+      for (int64_t d = rs.size() - 1; d >= 0; --d) {
+        coord[d] = rest % rs[d] - pad.getEdgePaddingLow()[d];
+        rest /= rs[d];
+        inside &= coord[d] >= 0 && coord[d] < shape[d];
+      }
+      if (inside)
+        for (size_t d = 0; d < shape.size(); ++d)
+          flat = flat * shape[d] + coord[d];
+      out.offsets.push_back(inside ? values[flat] : pv->offsets[0]);
+    }
+    return out;
+  }
+
+  // An index held within constant bounds.
+  std::optional<IterationIndices> evalClamped(stablehlo::ClampOp cl,
+                                              ArrayRef<int64_t> iter) {
+    auto lo = eval(cl.getMin(), iter);
+    auto e = eval(cl.getOperand(), iter);
+    auto hi = eval(cl.getMax(), iter);
+    if (!lo || !e || !hi || lo->base || hi->base || e->base ||
+        lo->offsets.size() != 1 || hi->offsets.size() != 1)
+      return std::nullopt;
+    for (int64_t &o : e->offsets)
+      o = std::min(std::max(o, lo->offsets[0]), hi->offsets[0]);
+    return e;
+  }
+
   // An index shifted or scaled by a constant, or shifted by a value the loop
   // does not change.
-  std::optional<IterationIndices> evalArith(Operation *op, int64_t iter) {
+  std::optional<IterationIndices> evalArith(Operation *op,
+                                            ArrayRef<int64_t> iter) {
     auto lhs = eval(op->getOperand(0), iter);
     auto rhs = eval(op->getOperand(1), iter);
     bool isAdd = isa<stablehlo::AddOp>(op);
     if (lhs && rhs) {
       // A based side keeps its base when the other side has none and the op
-      // adds, or subtracts it: the shift is still the same one.
+      // adds, or subtracts it: the shift is still the same one. A product
+      // with one number scales the base along with the offsets.
       if (lhs->base && rhs->base)
         return std::nullopt;
-      if ((lhs->base || rhs->base) && isa<stablehlo::MulOp>(op))
-        return std::nullopt;
-      if (rhs->base && !isAdd)
+      if (rhs->base && isa<stablehlo::SubtractOp>(op))
         return std::nullopt;
       Value base = lhs->base ? lhs->base : rhs->base;
+      int64_t scale = lhs->base ? lhs->scale : rhs->scale;
+      if (base && isa<stablehlo::MulOp>(op)) {
+        auto &other = lhs->base ? rhs->offsets : lhs->offsets;
+        if (other.size() != 1)
+          return std::nullopt;
+        scale *= other[0];
+      }
       // one side may be a scalar the other is taken against elementwise
       SmallVector<int64_t> &a = lhs->offsets, &b = rhs->offsets;
       if (a.size() != b.size() && a.size() != 1 && b.size() != 1)
         return std::nullopt;
       IterationIndices out;
       out.base = base;
+      out.scale = scale;
       size_t n = std::max(a.size(), b.size());
       for (size_t i = 0; i < n; ++i) {
         int64_t x = a[a.size() == 1 ? 0 : i], y = b[b.size() == 1 ? 0 : i];
@@ -3203,101 +3392,461 @@ struct IndexEvaluator {
 static LogicalResult
 proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
                            int64_t numIters, int64_t start, int64_t step,
-                           const DenseMap<Value, unsigned> &chainRoot) {
+                           const DenseMap<Value, unsigned> &chainRoot,
+                           const DenseMap<Value, unsigned> &privateRoot,
+                           const DenseSet<Operation *> &passThrough,
+                           const DenseMap<Operation *, unsigned> &innerIv) {
   // The proof enumerates the elements of every iteration, so it is only run
   // for a loop short enough for that to be cheap.
   if (numIters > 64)
     return failure();
-  IndexEvaluator eval{whileOp.getBody(), iv, start, step};
-  // carried argument -> the elements each iteration touches
-  DenseMap<unsigned, SmallVector<DenseSet<int64_t>>> touched;
-  DenseMap<unsigned, Value> bases;
-  // `clamps` says the access clamps an index that falls outside the buffer,
-  // as a gather and a dynamic slice do: two indices that differ may then land
-  // on the same element, so only indices proved to stay inside are admitted.
-  // A scatter drops such an update instead, in the loop and in its batched
-  // form alike, so its indices need no range.
-  auto record = [&](unsigned arg, Value buffer, Value idx, int64_t window,
-                    bool clamps) -> LogicalResult {
-    auto &sets = touched[arg];
-    if (sets.empty())
-      sets.resize(numIters);
-    int64_t dim = cast<RankedTensorType>(buffer.getType()).getDimSize(0);
-    for (int64_t k = 0; k < numIters; ++k) {
-      auto e = eval.eval(idx, k);
-      if (!e)
+  IndexEvaluator eval{whileOp.getBody(), {{iv, start, step}}};
+  // Elements are counted in row-major order over the buffer's shape, which
+  // a reshape keeps, so one count serves every view of a buffer.
+  // carried argument -> the elements each iteration writes, and reads: two
+  // iterations may read the same element, what they may not share is an
+  // element one of them writes
+  DenseMap<unsigned, SmallVector<DenseSet<int64_t>>> written, readFrom;
+  DenseMap<unsigned, std::pair<Value, int64_t>> bases;
+  // A private buffer is one each iteration of the loop has its own copy of,
+  // after the loop nothing reads it, and the only thing an iteration may
+  // read of it is what it wrote itself earlier: the elements written so far
+  // in the iteration being enumerated, per private argument.
+  DenseMap<unsigned, SmallVector<DenseSet<int64_t>>> writtenHere;
+  int64_t budget = 1 << 22; // elements enumerated in all, over every access
+  auto shapeOf = [](Value v) -> std::optional<SmallVector<int64_t>> {
+    auto t = dyn_cast<RankedTensorType>(v.getType());
+    if (!t || !t.hasStaticShape())
+      return std::nullopt;
+    return SmallVector<int64_t>(t.getShape());
+  };
+  // The linear elements of a box: `starts` and `sizes` per dimension, with
+  // `strides` between the elements taken along each. Empty when the box
+  // leaves the buffer.
+  auto box = [&](ArrayRef<int64_t> shape, ArrayRef<int64_t> starts,
+                 ArrayRef<int64_t> sizes, ArrayRef<int64_t> strides,
+                 SmallVectorImpl<int64_t> &out) -> bool {
+    int64_t count = 1;
+    for (auto [d, n] : llvm::enumerate(sizes)) {
+      if (starts[d] < 0 || n < 0 ||
+          (n > 0 && starts[d] + (n - 1) * strides[d] >= shape[d]))
+        return false;
+      count *= n;
+    }
+    if ((budget -= count) < 0)
+      return false;
+    SmallVector<int64_t> coord(shape.size(), 0);
+    for (int64_t c = 0; c < count; ++c) {
+      int64_t rest = c, flat = 0;
+      for (int64_t d = shape.size() - 1; d >= 0; --d) {
+        coord[d] = starts[d] + (rest % sizes[d]) * strides[d];
+        rest /= sizes[d];
+      }
+      for (size_t d = 0; d < shape.size(); ++d)
+        flat = flat * shape[d] + coord[d];
+      out.push_back(flat);
+    }
+    return true;
+  };
+  // What one iteration touches through a scatter or a gather: one window per
+  // row of the index tensor, placed by the row's index components along
+  // `indexed` operand dimensions and by the row's position along the
+  // batching ones (`opBatch` paired with `idxBatch`), starting at zero along
+  // the rest. A window that leaves the buffer is clamped into it by a
+  // gather and dropped by a scatter, so it is refused for the one and
+  // skipped for the other.
+  struct Rows {
+    SmallVector<int64_t> elems;
+    Value base;
+    int64_t scale = 1;
+  };
+  auto rows = [&](Value buffer, Value indices, int64_t indexVectorDim,
+                  ArrayRef<int64_t> indexed, ArrayRef<int64_t> opBatch,
+                  ArrayRef<int64_t> idxBatch, ArrayRef<int64_t> window,
+                  bool dropsOutside,
+                  ArrayRef<int64_t> iters) -> std::optional<Rows> {
+    auto shape = shapeOf(buffer);
+    auto ishape = shapeOf(indices);
+    if (!shape || !ishape || (int64_t)window.size() != (int64_t)shape->size())
+      return std::nullopt;
+    auto e = eval.eval(indices, iters);
+    if (!e)
+      return std::nullopt;
+    int64_t rank = ishape->size();
+    bool implicitVector = indexVectorDim == rank;
+    if (implicitVector)
+      ishape->push_back(1);
+    int64_t vec = (*ishape)[indexVectorDim];
+    if (vec != (int64_t)indexed.size())
+      return std::nullopt;
+    int64_t total = 1;
+    for (int64_t n : *ishape)
+      total *= n;
+    if ((int64_t)e->offsets.size() != total && e->offsets.size() != 1)
+      return std::nullopt;
+    if (e->base && (!opBatch.empty() || indexed.size() != 1 ||
+                    llvm::any_of(window, [](int64_t w) { return w != 1; })))
+      return std::nullopt;
+    Rows out;
+    out.base = e->base;
+    out.scale = e->scale;
+    SmallVector<int64_t> coord(ishape->size(), 0);
+    SmallVector<int64_t> starts(shape->size(), 0);
+    SmallVector<int64_t> ones(shape->size(), 1);
+    int64_t nrows = total / vec;
+    for (int64_t r = 0; r < nrows; ++r) {
+      // the row's position in the index tensor, skipping the vector dim
+      int64_t rest = r;
+      for (int64_t d = ishape->size() - 1; d >= 0; --d) {
+        if (d == indexVectorDim)
+          continue;
+        coord[d] = rest % (*ishape)[d];
+        rest /= (*ishape)[d];
+      }
+      std::fill(starts.begin(), starts.end(), 0);
+      for (auto [i, od] : llvm::enumerate(indexed)) {
+        coord[indexVectorDim] = i;
+        int64_t flat = 0;
+        for (size_t d = 0; d < ishape->size(); ++d)
+          flat = flat * (*ishape)[d] + coord[d];
+        starts[od] = e->offsets[e->offsets.size() == 1 ? 0 : flat];
+      }
+      for (auto [od, id] : llvm::zip(opBatch, idxBatch))
+        starts[od] = coord[id];
+      if (out.base) {
+        // offsets alone, against the same base elsewhere
+        out.elems.push_back(starts[indexed[0]]);
+        continue;
+      }
+      SmallVector<int64_t> here;
+      if (!box(*shape, starts, window, ones, here)) {
+        if (budget < 0 || !dropsOutside)
+          return std::nullopt;
+        continue;
+      }
+      out.elems.append(here);
+    }
+    return out;
+  };
+  // the window of a scatter's rows: the update's extent along every operand
+  // dimension that keeps a window, one along the rest
+  auto scatterWindow = [&](stablehlo::ScatterOp sc,
+                           SmallVectorImpl<int64_t> &window) -> bool {
+    auto dn = sc.getScatterDimensionNumbers();
+    auto shape = shapeOf(sc.getInputs()[0]);
+    auto ushape = shapeOf(sc.getUpdates()[0]);
+    if (!shape || !ushape)
+      return false;
+    window.assign(shape->size(), 1);
+    size_t next = 0;
+    for (size_t d = 0; d < shape->size(); ++d) {
+      if (llvm::is_contained(dn.getInsertedWindowDims(), d) ||
+          llvm::is_contained(dn.getInputBatchingDims(), d))
+        continue;
+      if (next >= dn.getUpdateWindowDims().size())
+        return false;
+      window[d] = (*ushape)[dn.getUpdateWindowDims()[next++]];
+    }
+    return next == dn.getUpdateWindowDims().size();
+  };
+  // The starts of a window, one number each. A start shifted by a value
+  // the loop does not change keeps that value as the window's base; only
+  // the one start of a rank-1 buffer may carry one, so that the offsets of
+  // every access to the buffer are measured from the same place.
+  auto scalarStarts = [&](ValueRange idx, ArrayRef<int64_t> iters,
+                          SmallVectorImpl<int64_t> &starts, Value &base,
+                          int64_t &scale) -> bool {
+    for (Value s : idx) {
+      auto e = eval.eval(s, iters);
+      if (!e || e->offsets.size() != 1)
+        return false;
+      if (e->base) {
+        if (base || idx.size() != 1)
+          return false;
+        base = e->base;
+        scale = e->scale;
+      }
+      starts.push_back(e->offsets[0]);
+    }
+    return true;
+  };
+  // The elements an op touches in iteration k, or nothing when the op is
+  // not an access the proof understands, or one of its windows leaves the
+  // buffer where the op would clamp it back in.
+  auto access = [&](Operation *op, Value buffer, ArrayRef<int64_t> iters,
+                    bool &write) -> std::optional<Rows> {
+    Rows out;
+    auto shape = shapeOf(buffer);
+    if (!shape)
+      return std::nullopt;
+    write = false;
+    if (auto sc = dyn_cast<stablehlo::ScatterOp>(op)) {
+      auto dn = sc.getScatterDimensionNumbers();
+      SmallVector<int64_t> window;
+      if (sc.getInputs().size() != 1 || !scatterWindow(sc, window))
+        return std::nullopt;
+      write = true;
+      return rows(buffer, sc.getScatterIndices(), dn.getIndexVectorDim(),
+                  dn.getScatterDimsToOperandDims(), dn.getInputBatchingDims(),
+                  dn.getScatterIndicesBatchingDims(), window,
+                  /*dropsOutside=*/true, iters);
+    }
+    if (auto g = dyn_cast<stablehlo::GatherOp>(op)) {
+      auto dn = g.getDimensionNumbers();
+      return rows(buffer, g.getStartIndices(), dn.getIndexVectorDim(),
+                  dn.getStartIndexMap(), dn.getOperandBatchingDims(),
+                  dn.getStartIndicesBatchingDims(), g.getSliceSizes(),
+                  /*dropsOutside=*/false, iters);
+    }
+    SmallVector<int64_t> starts, sizes;
+    SmallVector<int64_t> strides(shape->size(), 1);
+    if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(op)) {
+      auto us = shapeOf(dus.getUpdate());
+      if (!us || !scalarStarts(dus.getStartIndices(), iters, starts, out.base,
+                               out.scale))
+        return std::nullopt;
+      sizes = *us;
+      write = true;
+    } else if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(op)) {
+      if (!scalarStarts(ds.getStartIndices(), iters, starts, out.base,
+                        out.scale))
+        return std::nullopt;
+      sizes.assign(ds.getSliceSizes().begin(), ds.getSliceSizes().end());
+    } else if (auto sl = dyn_cast<stablehlo::SliceOp>(op)) {
+      starts.assign(sl.getStartIndices().begin(), sl.getStartIndices().end());
+      strides.assign(sl.getStrides().begin(), sl.getStrides().end());
+      for (auto [d, lim] : llvm::enumerate(sl.getLimitIndices()))
+        sizes.push_back(std::max<int64_t>(
+            0, (lim - starts[d] + strides[d] - 1) / strides[d]));
+    } else if (auto cc = dyn_cast<stablehlo::ConcatenateOp>(op)) {
+      // the pieces that are not the buffer's own slices, written in place
+      int64_t d = cc.getDimension(), at = 0;
+      write = true;
+      for (Value piece : cc.getOperands()) {
+        auto ps = shapeOf(piece);
+        if (!ps)
+          return std::nullopt;
+        if (!passThrough.contains(piece.getDefiningOp())) {
+          SmallVector<int64_t> st(shape->size(), 0);
+          st[d] = at;
+          if (!box(*shape, st, *ps, strides, out.elems))
+            return std::nullopt;
+        }
+        at += (*ps)[d];
+      }
+      return out;
+    } else if (auto pad = dyn_cast<stablehlo::PadOp>(op)) {
+      // the padding, written around the buffer's own slice
+      auto ps = shapeOf(pad.getOperand());
+      if (!ps)
+        return std::nullopt;
+      write = true;
+      for (size_t d = 0; d < shape->size(); ++d) {
+        SmallVector<int64_t> st(shape->size(), 0), sz(*shape);
+        sz[d] = pad.getEdgePaddingLow()[d];
+        if (!box(*shape, st, sz, strides, out.elems))
+          return std::nullopt;
+        st[d] = (*shape)[d] - pad.getEdgePaddingHigh()[d];
+        sz[d] = pad.getEdgePaddingHigh()[d];
+        if (!box(*shape, st, sz, strides, out.elems))
+          return std::nullopt;
+      }
+      return out;
+    } else {
+      return std::nullopt;
+    }
+    if (starts.size() != shape->size() || sizes.size() != shape->size())
+      return std::nullopt;
+    if (out.base) {
+      // offsets from the base, against the same base elsewhere
+      for (int64_t o = 0; o < sizes[0]; ++o)
+        out.elems.push_back(starts[0] + o);
+      return out;
+    }
+    if (!box(*shape, starts, sizes, strides, out.elems))
+      return std::nullopt;
+    return out;
+  };
+  // Every op of the body in program order, one outer iteration at a time.
+  // A nested loop that carries a buffer runs its own iterations inside the
+  // outer one, so its accesses are enumerated over both counters; another
+  // nested region's ops are enumerated as if unconditional, which can only
+  // add accesses. An index that depends on a counter the evaluator does
+  // not know (a loop that carries no buffer, say) is not evaluated, and the
+  // proof declines.
+  std::function<LogicalResult(Block &, SmallVectorImpl<int64_t> &)> visit =
+      [&](Block &blk, SmallVectorImpl<int64_t> &iters) -> LogicalResult {
+    int64_t k = iters[0];
+    for (Operation &op : blk.without_terminator()) {
+      if (auto w = dyn_cast<stablehlo::WhileOp>(&op)) {
+        bool carries = llvm::any_of(
+            w->getOperands(), [&](Value o) { return chainRoot.count(o); });
+        if (llvm::any_of(w->getOperands(),
+                         [&](Value o) { return privateRoot.count(o); }))
+          return failure(); // a private buffer is not followed into a loop
+        if (!carries) {
+          for (Region &r : w->getRegions())
+            for (Block &b : r)
+              if (failed(visit(b, iters)))
+                return failure();
+          continue;
+        }
+        enzyme::WhileLoopInfo wi(w);
+        auto ivIt = innerIv.find(w);
+        if (failed(wi.computeInfo()) || !wi.isValid() || !wi.isConstant() ||
+            ivIt == innerIv.end() || wi.getConstantNumIters() > 64)
+          return failure();
+        eval.ivs.push_back({w.getBody().front().getArgument(ivIt->second),
+                            *wi.getConstantStart(), *wi.getConstantStep()});
+        iters.push_back(0);
+        for (int64_t j = 0; j < wi.getConstantNumIters(); ++j) {
+          iters.back() = j;
+          if (failed(visit(w.getBody().front(), iters)))
+            return failure();
+        }
+        iters.pop_back();
+        eval.ivs.pop_back();
+        continue;
+      }
+      for (Region &r : op.getRegions())
+        for (Block &b : r)
+          if (failed(visit(b, iters)))
+            return failure();
+      Value buffer = op.getNumOperands() ? op.getOperand(0) : Value();
+      if (!buffer)
+        continue;
+      if (isa<stablehlo::ReshapeOp>(&op))
+        continue; // another shape of the same buffer, no access of its own
+      if (passThrough.contains(&op))
+        continue; // a slice that only goes back where it came from
+      auto priv = privateRoot.find(buffer);
+      auto root = chainRoot.find(buffer);
+      if (auto cc = dyn_cast<stablehlo::ConcatenateOp>(&op)) {
+        // a concatenate over the buffer's own slices: the buffer is the one
+        // the slices read
+        for (Value piece : cc.getOperands())
+          if (passThrough.contains(piece.getDefiningOp())) {
+            buffer = piece.getDefiningOp()->getOperand(0);
+            priv = privateRoot.find(buffer);
+            root = chainRoot.find(buffer);
+            break;
+          }
+      } else if (auto pad = dyn_cast<stablehlo::PadOp>(&op)) {
+        if (passThrough.contains(pad.getOperand().getDefiningOp())) {
+          buffer = pad.getOperand().getDefiningOp()->getOperand(0);
+          priv = privateRoot.find(buffer);
+          root = chainRoot.find(buffer);
+        }
+      }
+      bool isPrivate = priv != privateRoot.end();
+      if (!isPrivate && root == chainRoot.end())
+        continue;
+      unsigned arg = isPrivate ? priv->second : root->second;
+      bool write;
+      auto a = access(&op, buffer, iters, write);
+      if (!a)
+        return failure();
+      if (isPrivate) {
+        // An access to a private buffer: a write adds its elements to what
+        // this iteration has written, a read must find all of its elements
+        // there. Every index has to stay inside, so that nothing is clamped
+        // or dropped.
+        if (a->base)
+          return failure();
+        auto &sets = writtenHere[arg];
+        if (sets.empty())
+          sets.resize(numIters);
+        for (int64_t e : a->elems) {
+          if (write)
+            sets[k].insert(e);
+          else if (!sets[k].contains(e))
+            return failure();
+        }
+        continue;
+      }
+      // A pad or a concatenate writes the same place every iteration, and
+      // so would conflict with itself; a write of a carried buffer is
+      // placed by an index.
+      if (write && isa<stablehlo::ConcatenateOp, stablehlo::PadOp>(&op))
         return failure();
       auto it = bases.find(arg);
       if (it == bases.end())
-        bases[arg] = e->base;
-      else if (it->second != e->base)
+        bases[arg] = {a->base, a->scale};
+      else if (it->second != std::make_pair(a->base, a->scale))
         return failure();
-      for (int64_t o : e->offsets) {
-        // An index out of the buffer's range is clamped by a gather and
-        // dropped by a scatter, so two of them can meet where their values
-        // say they do not. Only a proof over indices that stay inside holds.
-        if (clamps && !e->base && (o < 0 || o + window > dim))
-          return failure();
-        for (int64_t w = 0; w < window; ++w)
-          sets[k].insert(o + w);
-      }
+      auto &sets = write ? written[arg] : readFrom[arg];
+      if (sets.empty())
+        sets.resize(numIters);
+      sets[k].insert(a->elems.begin(), a->elems.end());
     }
     return success();
   };
-  for (Operation &op : body.without_terminator()) {
-    Value buffer = op.getNumOperands() ? op.getOperand(0) : Value();
-    auto root = buffer ? chainRoot.find(buffer) : chainRoot.end();
-    if (!buffer || root == chainRoot.end())
+  auto runOnce = [&]() -> LogicalResult {
+    written.clear();
+    readFrom.clear();
+    writtenHere.clear();
+    bases.clear();
+    for (int64_t k = 0; k < numIters; ++k) {
+      SmallVector<int64_t> iters{k};
+      if (failed(visit(body, iters)))
+        return failure();
+    }
+    if (written.empty() && writtenHere.empty())
+      return failure();
+    for (auto &[arg, w] : written) {
+      auto rit = readFrom.find(arg);
+      for (int64_t i = 0; i < numIters; ++i)
+        for (int64_t j = 0; j < numIters; ++j) {
+          if (i == j)
+            continue;
+          for (int64_t e : w[i]) {
+            if (i < j && w[j].contains(e))
+              return failure(); // written by both
+            if (rit != readFrom.end() && rit->second[j].contains(e))
+              return failure(); // written by one, read by the other
+          }
+        }
+    }
+    return success();
+  };
+  // An index may read the counter of a loop around this one. Such a counter
+  // is one number for the whole run of this loop, so the proof is run once
+  // for every value a constant-trip enclosing loop gives it, innermost
+  // first, as long as the runs stay few; a counter beyond that stays a base
+  // the offsets are measured from.
+  struct Around {
+    Induction in;
+    int64_t n;
+  };
+  SmallVector<Around> around;
+  int64_t runs = 1;
+  for (Operation *p = whileOp->getParentOp(); p; p = p->getParentOp()) {
+    auto w = dyn_cast<stablehlo::WhileOp>(p);
+    if (!w)
       continue;
-    auto rank1 = [&](Value v) {
-      auto t = dyn_cast<RankedTensorType>(v.getType());
-      return t && t.getRank() == 1 && t.hasStaticShape();
-    };
-    if (auto sc = dyn_cast<stablehlo::ScatterOp>(&op)) {
-      auto dn = sc.getScatterDimensionNumbers();
-      if (!rank1(buffer) || sc.getInputs().size() != 1 ||
-          dn.getScatterDimsToOperandDims() != ArrayRef<int64_t>{0} ||
-          dn.getInsertedWindowDims() != ArrayRef<int64_t>{0} ||
-          !dn.getUpdateWindowDims().empty() ||
-          !dn.getInputBatchingDims().empty())
-        return failure();
-      if (failed(record(root->second, buffer, sc.getScatterIndices(), 1,
-                        /*clamps=*/false)))
-        return failure();
-    } else if (auto g = dyn_cast<stablehlo::GatherOp>(&op)) {
-      // one element per start index, whether the size-1 dimension is kept as
-      // an offset dimension or collapsed away
-      auto dn = g.getDimensionNumbers();
-      if (!rank1(buffer) || dn.getStartIndexMap() != ArrayRef<int64_t>{0} ||
-          !dn.getOperandBatchingDims().empty() ||
-          g.getSliceSizes() != ArrayRef<int64_t>{1})
-        return failure();
-      if (failed(record(root->second, buffer, g.getStartIndices(), 1,
-                        /*clamps=*/true)))
-        return failure();
-    } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&op)) {
-      auto ut = dyn_cast<RankedTensorType>(dus.getUpdate().getType());
-      if (!rank1(buffer) || !ut || ut.getRank() != 1 || !ut.hasStaticShape() ||
-          failed(record(root->second, buffer, dus.getStartIndices()[0],
-                        ut.getDimSize(0), /*clamps=*/true)))
-        return failure();
-    } else if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(&op)) {
-      if (!rank1(buffer) ||
-          failed(record(root->second, buffer, ds.getStartIndices()[0],
-                        ds.getSliceSizes()[0], /*clamps=*/true)))
-        return failure();
-    } else {
-      return failure(); // some other reach into a carried buffer
+    enzyme::WhileLoopInfo wi(w);
+    if (failed(wi.computeInfo()) || !wi.isValid() || !wi.isConstant() ||
+        !wi.getInductionVariable() || wi.getConstantNumIters() <= 0 ||
+        runs * wi.getConstantNumIters() > 64)
+      break;
+    runs *= wi.getConstantNumIters();
+    around.push_back({{wi.getInductionVariable(), *wi.getConstantStart(),
+                       *wi.getConstantStep()},
+                      wi.getConstantNumIters()});
+    eval.enclosing.push_back({wi.getInductionVariable(), 0});
+  }
+  SmallVector<int64_t> at(around.size(), 0);
+  for (int64_t r = 0; r < runs; ++r) {
+    for (auto [i, a] : llvm::enumerate(around))
+      eval.enclosing[i].second = a.in.start + at[i] * a.in.step;
+    if (failed(runOnce()))
+      return failure();
+    for (size_t i = 0; i < around.size(); ++i) {
+      if (++at[i] < around[i].n)
+        break;
+      at[i] = 0;
     }
   }
-  if (touched.empty())
-    return failure();
-  for (auto &[arg, sets] : touched)
-    for (int64_t i = 0; i < numIters; ++i)
-      for (int64_t j = i + 1; j < numIters; ++j)
-        for (int64_t e : sets[i])
-          if (sets[j].contains(e))
-            return failure();
   return success();
 }
 
@@ -3329,8 +3878,10 @@ struct ParallelWhileBatcher {
 
   bool isBatched(Value v) const { return batched.contains(v); }
   bool isChainLink(Operation *op) const {
-    return isa<stablehlo::ScatterOp, stablehlo::DynamicUpdateSliceOp>(op) &&
-           chainRoot.count(op->getOperand(0));
+    return isa<stablehlo::ScatterOp, stablehlo::DynamicUpdateSliceOp,
+               stablehlo::ReshapeOp>(op) &&
+           chainRoot.count(op->getOperand(0)) &&
+           chainRoot.count(op->getResult(0));
   }
   static int64_t invariantElements(Value v) {
     auto t = dyn_cast<RankedTensorType>(v.getType());
@@ -3389,6 +3940,9 @@ struct ParallelWhileBatcher {
         prev = dus.getOperand();
       } else if (auto w = dyn_cast_or_null<stablehlo::WhileOp>(link)) {
         prev = w->getOperand(cast<OpResult>(cur).getResultNumber());
+      } else if (auto rs = dyn_cast_or_null<stablehlo::ReshapeOp>(link)) {
+        // the same elements in the same order, seen through another shape
+        prev = rs.getOperand();
       } else {
         return failure();
       }
@@ -3399,6 +3953,15 @@ struct ParallelWhileBatcher {
     }
     for (Value v : chain)
       chainRoot[v] = k;
+    // A reshape of a chain value is another view of the same buffer, read
+    // (and only read) the way the value is.
+    for (size_t i = 0; i < chain.size(); ++i)
+      for (Operation *user : chain[i].getUsers())
+        if (auto rs = dyn_cast<stablehlo::ReshapeOp>(user);
+            rs && !chainRoot.count(rs.getResult())) {
+          chainRoot[rs.getResult()] = k;
+          chain.push_back(rs.getResult());
+        }
     for (Value v : chain)
       for (Operation *user : v.getUsers()) {
         // The next write: the buffer goes in as the operand whose result
@@ -3407,7 +3970,8 @@ struct ParallelWhileBatcher {
         for (auto [i, o] : llvm::enumerate(user->getOperands()))
           write |= o == v && i < user->getNumResults() &&
                    chainRoot.count(user->getResult(i));
-        bool read = isa<stablehlo::GatherOp, stablehlo::DynamicSliceOp>(user) &&
+        bool read = isa<stablehlo::GatherOp, stablehlo::DynamicSliceOp,
+                        stablehlo::SliceOp>(user) &&
                     user->getOperand(0) == v;
         if (!write && !read && !(user == ret && v == yielded))
           return failure();
@@ -3524,6 +4088,15 @@ struct ParallelWhileBatcher {
            isa<stablehlo::SelectOp>(&op)) &&
           op.getNumResults() == 1) {
         // A broadcast feeding an elementwise op is fused by XLA; no budget.
+      } else if (auto cl = dyn_cast<stablehlo::ClampOp>(&op)) {
+        // elementwise in its operand; a bound that is one number stays one
+        auto scalar = [](Value v) {
+          return cast<RankedTensorType>(v.getType()).getRank() == 0;
+        };
+        if (!isBatched(cl.getOperand()) ||
+            !(scalar(cl.getMin()) || isBatched(cl.getMin())) ||
+            !(scalar(cl.getMax()) || isBatched(cl.getMax())))
+          return failure();
       } else if (isa<stablehlo::ReshapeOp, stablehlo::BroadcastInDimOp,
                      stablehlo::TransposeOp, stablehlo::SliceOp,
                      stablehlo::ReverseOp, stablehlo::ConcatenateOp>(&op)) {
@@ -3615,6 +4188,64 @@ struct ParallelWhileBatcher {
       map.map(o, n);
   }
 
+  // A window whose start along one dimension is affine in the induction
+  // variable, at a stride equal to the window's extent there, with every
+  // other start the same each iteration: the iterations' windows lie one
+  // after the other, so the batched updates, laid along that dimension, are
+  // one slab written by one dynamic_update_slice. Returns false when the
+  // write is not of that shape.
+  bool emitTiledWindows(stablehlo::DynamicUpdateSliceOp dus, IRMapping &bm) {
+    auto ut = cast<RankedTensorType>(dus.getUpdate().getType());
+    auto bt = cast<RankedTensorType>(dus.getOperand().getType());
+    if (!ut.hasStaticShape() || !bt.hasStaticShape())
+      return false;
+    auto affine = info.getAffineIndexInfo();
+    int64_t dim = -1, scale = 0, offset = 0;
+    for (auto [i, st] : llvm::enumerate(dus.getStartIndices())) {
+      if (info.isConstantAcrossIterations(st))
+        continue;
+      auto it = affine.find(st);
+      if (it == affine.end() || dim != -1)
+        return false;
+      dim = i;
+      scale = it->second.scale.getSExtValue();
+      offset = it->second.offset.getSExtValue();
+    }
+    int64_t start = *info.getConstantStart(), step = *info.getConstantStep();
+    int64_t w = dim == -1 ? 0 : ut.getDimSize(dim);
+    if (dim == -1 || scale * step != w)
+      return false;
+    // every window inside the buffer, so none is clamped on its own
+    int64_t first = start * scale + offset;
+    if (first < 0 || first + numIters * w > bt.getDimSize(dim))
+      return false;
+    Value u = bm.lookup(dus.getUpdate()); // [iterations, window...]
+    if (dim != 0) {
+      SmallVector<int64_t> perm;
+      for (int64_t d = 1; d <= dim; ++d)
+        perm.push_back(d);
+      perm.push_back(0);
+      for (int64_t d = dim + 1; d <= ut.getRank(); ++d)
+        perm.push_back(d);
+      u = stablehlo::TransposeOpCreate(rewriter, loc, u, perm);
+    }
+    SmallVector<int64_t> slab(ut.getShape());
+    slab[dim] = numIters * w;
+    u = stablehlo::ReshapeOpCreate(rewriter, loc, u, slab);
+    SmallVector<Value> starts;
+    for (auto [i, st] : llvm::enumerate(dus.getStartIndices()))
+      starts.push_back(
+          (int64_t)i == dim
+              ? stablehlo::ConstantOp::create(
+                    rewriter, loc,
+                    cast<ElementsAttr>(makeAttr(st.getType(), first)))
+              : map.lookupOrDefault(st));
+    auto nd = stablehlo::DynamicUpdateSliceOp::create(
+        rewriter, loc, bm.lookup(dus.getOperand()), u, starts);
+    bm.map(dus.getResult(), nd.getResult());
+    return true;
+  }
+
   void emitBlock(Block &body) {
     ArrayRef<int64_t> batchSizes(numIters);
     for (Operation &op : body.without_terminator()) {
@@ -3622,9 +4253,12 @@ struct ParallelWhileBatcher {
         emitWhile(w);
         continue;
       }
-      if (!llvm::any_of(op.getOperands(),
-                        [&](Value v) { return isBatched(v); }) &&
-          !isChainLink(&op)) {
+      if ((!llvm::any_of(op.getOperands(),
+                         [&](Value v) { return isBatched(v); }) &&
+           !isChainLink(&op)) ||
+          (isChainLink(&op) && isa<stablehlo::ReshapeOp>(&op))) {
+        // Loop-invariant, or a reshape of the carried buffer, which every
+        // iteration shares: cloned as is.
         Operation *c = rewriter.clone(op, map);
         for (auto [o, n] : llvm::zip(op.getResults(), c->getResults()))
           map.map(o, n);
@@ -3639,13 +4273,19 @@ struct ParallelWhileBatcher {
            !isBatched(op.getOperand(0))))
         shared = op.getOperand(0);
       IRMapping bm;
-      for (Value v : op.getOperands())
-        bm.map(v, v == shared ? map.lookupOrDefault(v) : operand(v));
+      for (Value v : op.getOperands()) {
+        bool scalarBound =
+            isa<stablehlo::ClampOp>(&op) && v != op.getOperand(1) &&
+            cast<RankedTensorType>(v.getType()).getRank() == 0 && !isBatched(v);
+        bm.map(v, v == shared || scalarBound ? map.lookupOrDefault(v)
+                                             : operand(v));
+      }
       if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&op);
           dus && isChainLink(&op)) {
-        // Every iteration's window, written by one scatter into the buffer.
-        (void)stablehlo::batchDynamicUpdateSliceAsScatter(
-            dus, rewriter, bm, batchSizes, /*operandIsBatched=*/false);
+        if (!emitTiledWindows(dus, bm))
+          // Every iteration's window, written by one scatter into the buffer.
+          (void)stablehlo::batchDynamicUpdateSliceAsScatter(
+              dus, rewriter, bm, batchSizes, /*operandIsBatched=*/false);
       } else if (auto sc = dyn_cast<stablehlo::ScatterOp>(&op);
                  sc && isChainLink(&op)) {
         // Every iteration's scatter into the buffer at once: its indices and
@@ -3757,22 +4397,109 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
   batcher.batched.insert(iv);
   // Every carried value other than the induction variable is either
   // unchanged or a buffer written through a chain of writes.
+  // A carried buffer nothing reads after the loop is scratch: each
+  // iteration may have its own copy, seeded with the loop's operand, so it
+  // is batched like any value of the iteration rather than carried. Its
+  // writes and reads are followed the way a chain's are; the proof then
+  // holds every read to what the same iteration wrote before it.
   SmallVector<bool> unchanged(body.getNumArguments(), false);
+  DenseMap<Value, unsigned> privateRoot;
+  SmallVector<bool> isPrivate(body.getNumArguments(), false);
   for (auto arg : body.getArguments()) {
     unsigned k = arg.getArgNumber();
-    if (k == ivNum)
+    if (k == ivNum || ret.getOperand(k) == arg ||
+        !whileOp->getResult(k).use_empty() ||
+        !isa<RankedTensorType>(arg.getType()))
+      continue;
+    privateRoot[arg] = k;
+    isPrivate[k] = true;
+  }
+  // A slice of a private buffer that only goes back where it came from,
+  // as a piece of a concatenate or the operand of a pad that rebuilds the
+  // buffer's shape with the slice in its own place: the slice reads
+  // nothing, the concatenate or pad writes the rest.
+  DenseSet<Operation *> passThrough;
+  auto inPlace = [](stablehlo::SliceOp sl, Operation *user) {
+    auto st = dyn_cast<RankedTensorType>(sl.getOperand().getType());
+    auto rt = dyn_cast<RankedTensorType>(user->getResult(0).getType());
+    if (!st || !rt || st != rt ||
+        llvm::any_of(sl.getStrides(), [](int64_t s) { return s != 1; }))
+      return false;
+    int64_t rank = st.getRank();
+    SmallVector<int64_t> at(rank, 0);
+    if (auto cc = dyn_cast<stablehlo::ConcatenateOp>(user)) {
+      for (Value piece : cc.getOperands()) {
+        if (piece == sl.getResult())
+          break;
+        at[cc.getDimension()] += cast<RankedTensorType>(piece.getType())
+                                     .getDimSize(cc.getDimension());
+      }
+    } else if (auto pad = dyn_cast<stablehlo::PadOp>(user)) {
+      if (llvm::any_of(pad.getInteriorPadding(),
+                       [](int64_t p) { return p != 0; }))
+        return false;
+      at.assign(pad.getEdgePaddingLow().begin(), pad.getEdgePaddingLow().end());
+    } else {
+      return false;
+    }
+    for (int64_t d = 0; d < rank; ++d)
+      if (sl.getStartIndices()[d] != at[d])
+        return false;
+    return true;
+  };
+  for (Operation &op : body.without_terminator()) {
+    if (isa<stablehlo::ScatterOp, stablehlo::DynamicUpdateSliceOp,
+            stablehlo::ReshapeOp>(&op) &&
+        privateRoot.count(op.getOperand(0))) {
+      privateRoot[op.getResult(0)] = privateRoot.lookup(op.getOperand(0));
+      continue;
+    }
+    auto sl = dyn_cast<stablehlo::SliceOp>(&op);
+    if (!sl || !privateRoot.count(sl.getOperand()) || sl->use_empty() ||
+        !llvm::all_of(sl->getUsers(),
+                      [&](Operation *u) { return inPlace(sl, u); }))
+      continue;
+    passThrough.insert(&op);
+    for (Operation *u : sl->getUsers())
+      privateRoot[u->getResult(0)] = privateRoot.lookup(sl.getOperand());
+  }
+  for (auto &[v, k] : privateRoot)
+    for (Operation *user : v.getUsers()) {
+      if ((isa<stablehlo::ScatterOp, stablehlo::DynamicUpdateSliceOp,
+               stablehlo::GatherOp, stablehlo::DynamicSliceOp,
+               stablehlo::SliceOp, stablehlo::ReshapeOp>(user) &&
+           user->getOperand(0) == v) ||
+          (user == ret && ret.getOperand(k) == v))
+        continue;
+      // a concatenate or pad over the buffer's own slices: every other
+      // operand is a value of the iteration, not another view of a buffer
+      if (isa<stablehlo::ConcatenateOp, stablehlo::PadOp>(user) &&
+          privateRoot.count(user->getResult(0)) &&
+          llvm::none_of(user->getOperands(), [&](Value o) {
+            return privateRoot.count(o) || batcher.chainRoot.count(o);
+          }))
+        continue;
+      return failure();
+    }
+  for (auto arg : body.getArguments()) {
+    unsigned k = arg.getArgNumber();
+    if (k == ivNum || isPrivate[k])
       continue;
     if (ret.getOperand(k) == arg)
       unchanged[k] = true;
     else if (failed(batcher.analyzeChain(arg, ret, k)))
       return failure();
   }
+  for (auto arg : body.getArguments())
+    if (isPrivate[arg.getArgNumber()])
+      batcher.batched.insert(arg);
   int64_t start = *info.getConstantStart(), step = *info.getConstantStep();
+  if (failed(batcher.analyzeBlock(body)))
+    return failure();
   if (!tagged &&
       failed(proveIterationsIndependent(whileOp, body, iv, numIters, start,
-                                        step, batcher.chainRoot)))
-    return failure();
-  if (failed(batcher.analyzeBlock(body)))
+                                        step, batcher.chainRoot, privateRoot,
+                                        passThrough, batcher.innerIv)))
     return failure();
 
   // Emit before the loop.
@@ -3794,9 +4521,21 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
             rewriter, loc,
             cast<ElementsAttr>(makeAttr(iota.getType(), start))));
   batcher.map.map(iv, iota);
-  for (auto arg : body.getArguments())
-    if (unchanged[arg.getArgNumber()] || batcher.chainRoot.count(arg))
-      batcher.map.map(arg, whileOp->getOperand(arg.getArgNumber()));
+  for (auto arg : body.getArguments()) {
+    unsigned k = arg.getArgNumber();
+    if (unchanged[k] || batcher.chainRoot.count(arg))
+      batcher.map.map(arg, whileOp->getOperand(k));
+    else if (isPrivate[k] && tagged)
+      batcher.map.map(arg, batcher.operand(whileOp->getOperand(k)));
+    else if (isPrivate[k])
+      // The proof held every read of the buffer to what the iteration wrote
+      // before it, so no copy ever shows its initial contents: they need
+      // not be the loop's operand, which may be another loop's scratch.
+      batcher.map.map(arg, stablehlo::ConstantOp::create(
+                               rewriter, loc,
+                               cast<ElementsAttr>(makeAttr(
+                                   batcher.batchedType(arg.getType()), 0))));
+  }
   batcher.emitBlock(body);
 
   SmallVector<Value> results;
@@ -3806,6 +4545,8 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
       results.push_back(stablehlo::ConstantOp::create(
           rewriter, loc,
           cast<ElementsAttr>(makeAttr(ivTy, start + numIters * step))));
+    } else if (isPrivate[k]) {
+      results.push_back(whileOp->getOperand(k)); // nothing reads it
     } else {
       results.push_back(batcher.map.lookup(ret.getOperand(k)));
     }
