@@ -2601,6 +2601,9 @@ struct AffineMeanOffset {
   bool negate;
 };
 
+/// Minimum removed work N * D (pass option `sufficient-stats-min-work`).
+constexpr int64_t kGaussianStatsDefaultMinWork = 64;
+
 struct GaussianStatsMatch {
   Value X, y, beta;
   int64_t N = 0, D = 0;
@@ -3008,7 +3011,8 @@ matchGaussianResidual(Value R, SampleDependenceAnalysis &analysis) {
 
 static FailureOr<GaussianStatsMatch>
 matchGaussianSquaredResidual(GaussianStatsMatch m, Value W, int64_t N,
-                             SampleDependenceAnalysis &analysis, int64_t cThr) {
+                             SampleDependenceAnalysis &analysis, int64_t cThr,
+                             int64_t minWork) {
   Value R;
   m.hasFactor = peelScalarFactor(W, R, m.factorScalar, m.factorIsDivide);
   auto rm = matchGaussianResidual(R, analysis);
@@ -3017,6 +3021,8 @@ matchGaussianSquaredResidual(GaussianStatsMatch m, Value W, int64_t N,
   if (rm->N != N)
     return failure();
   if (rm->D <= 0 || rm->N < cThr * rm->D)
+    return failure();
+  if (rm->N * rm->D < minWork)
     return failure();
   m.X = rm->X;
   m.y = rm->y;
@@ -3032,29 +3038,31 @@ matchGaussianSquaredResidual(GaussianStatsMatch m, Value W, int64_t N,
 
 static FailureOr<GaussianStatsMatch>
 matchGaussianSufficientStats(const SicmEventSum &es,
-                             SampleDependenceAnalysis &analysis, int64_t cThr) {
+                             SampleDependenceAnalysis &analysis, int64_t cThr,
+                             int64_t minWork) {
   GaussianStatsMatch m;
   Value SQ = stripAffineScalarWrappers(es.K, m.affine);
   Value W = matchSquare(SQ);
   if (!W)
     return failure();
-  return matchGaussianSquaredResidual(m, W, es.N, analysis, cThr);
+  return matchGaussianSquaredResidual(m, W, es.N, analysis, cThr, minWork);
 }
 
 static FailureOr<GaussianStatsMatch>
 matchGaussianSufficientStatsDot(stablehlo::DotGeneralOp sumOp,
                                 SampleDependenceAnalysis &analysis,
-                                int64_t cThr) {
+                                int64_t cThr, int64_t minWork) {
   auto es = matchEventSumDot(sumOp);
   if (succeeded(es))
-    return matchGaussianSufficientStats(*es, analysis, cThr);
+    return matchGaussianSufficientStats(*es, analysis, cThr, minWork);
   Value W = matchSquareSumDot(sumOp);
   if (!W)
     return failure();
   GaussianStatsMatch m;
   m.squareSumRoot = true;
   return matchGaussianSquaredResidual(
-      m, W, cast<RankedTensorType>(W.getType()).getDimSize(0), analysis, cThr);
+      m, W, cast<RankedTensorType>(W.getType()).getDimSize(0), analysis, cThr,
+      minWork);
 }
 
 /// (invariant, hoistable) column; terms sharing a column are merged.
@@ -3242,15 +3250,18 @@ static Value emitGaussianStatsQR(PatternRewriter &rewriter, Location loc,
 
 struct GaussianSufficientStatsHLO
     : public OpRewritePattern<stablehlo::DotGeneralOp> {
-  GaussianSufficientStatsHLO(MLIRContext *context, PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit) {}
+  int64_t minWork;
+  GaussianSufficientStatsHLO(MLIRContext *context, PatternBenefit benefit = 1,
+                             int64_t minWork = kGaussianStatsDefaultMinWork)
+      : OpRewritePattern(context, benefit), minWork(minWork) {}
 
   LogicalResult matchAndRewrite(stablehlo::DotGeneralOp sumOp,
                                 PatternRewriter &rewriter) const override {
     auto analysis = analyzeEnclosingRegion(sumOp);
     if (!analysis)
       return failure();
-    auto match = matchGaussianSufficientStatsDot(sumOp, *analysis, /*cThr=*/2);
+    auto match =
+        matchGaussianSufficientStatsDot(sumOp, *analysis, /*cThr=*/2, minWork);
     if (failed(match))
       return failure();
     rewriter.replaceOp(sumOp,
@@ -3262,9 +3273,11 @@ struct GaussianSufficientStatsHLO
 
 struct GaussianSufficientStatsReduceHLO
     : public OpRewritePattern<stablehlo::ReduceOp> {
-  GaussianSufficientStatsReduceHLO(MLIRContext *context,
-                                   PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit) {}
+  int64_t minWork;
+  GaussianSufficientStatsReduceHLO(
+      MLIRContext *context, PatternBenefit benefit = 1,
+      int64_t minWork = kGaussianStatsDefaultMinWork)
+      : OpRewritePattern(context, benefit), minWork(minWork) {}
 
   LogicalResult matchAndRewrite(stablehlo::ReduceOp sumOp,
                                 PatternRewriter &rewriter) const override {
@@ -3274,7 +3287,8 @@ struct GaussianSufficientStatsReduceHLO
     auto es = matchEventSumReduce(sumOp);
     if (failed(es))
       return failure();
-    auto match = matchGaussianSufficientStats(*es, *analysis, /*cThr=*/2);
+    auto match =
+        matchGaussianSufficientStats(*es, *analysis, /*cThr=*/2, minWork);
     if (failed(match))
       return failure();
     rewriter.replaceOp(sumOp,
@@ -3316,16 +3330,19 @@ static bool gramElemTypeOk(const GaussianStatsMatch &m) {
 
 struct GaussianSufficientStatsGramHLO
     : public OpRewritePattern<stablehlo::DotGeneralOp> {
+  int64_t minWork;
   GaussianSufficientStatsGramHLO(MLIRContext *context,
-                                 PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit) {}
+                                 PatternBenefit benefit = 1,
+                                 int64_t minWork = kGaussianStatsDefaultMinWork)
+      : OpRewritePattern(context, benefit), minWork(minWork) {}
 
   LogicalResult matchAndRewrite(stablehlo::DotGeneralOp sumOp,
                                 PatternRewriter &rewriter) const override {
     auto analysis = analyzeEnclosingRegion(sumOp);
     if (!analysis)
       return failure();
-    auto match = matchGaussianSufficientStatsDot(sumOp, *analysis, /*cThr=*/2);
+    auto match =
+        matchGaussianSufficientStatsDot(sumOp, *analysis, /*cThr=*/2, minWork);
     if (failed(match) || !gramElemTypeOk(*match))
       return failure();
     rewriter.replaceOp(sumOp,
@@ -3337,9 +3354,11 @@ struct GaussianSufficientStatsGramHLO
 
 struct GaussianSufficientStatsGramReduceHLO
     : public OpRewritePattern<stablehlo::ReduceOp> {
-  GaussianSufficientStatsGramReduceHLO(MLIRContext *context,
-                                       PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit) {}
+  int64_t minWork;
+  GaussianSufficientStatsGramReduceHLO(
+      MLIRContext *context, PatternBenefit benefit = 1,
+      int64_t minWork = kGaussianStatsDefaultMinWork)
+      : OpRewritePattern(context, benefit), minWork(minWork) {}
 
   LogicalResult matchAndRewrite(stablehlo::ReduceOp sumOp,
                                 PatternRewriter &rewriter) const override {
@@ -3349,7 +3368,8 @@ struct GaussianSufficientStatsGramReduceHLO
     auto es = matchEventSumReduce(sumOp);
     if (failed(es))
       return failure();
-    auto match = matchGaussianSufficientStats(*es, *analysis, /*cThr=*/2);
+    auto match =
+        matchGaussianSufficientStats(*es, *analysis, /*cThr=*/2, minWork);
     if (failed(match) || !gramElemTypeOk(*match))
       return failure();
     rewriter.replaceOp(sumOp,
@@ -3371,11 +3391,27 @@ struct SICMPass : public enzyme::impl::SICMPassBase<SICMPass> {
       RewritePatternSet patterns(getOperation()->getContext());
       mlir::transform::populateSicmPatterns(
           patterns, *getOperation()->getContext(), PatternBenefit(1));
+      // default profitability threshold; re-add them with the pass option.
+      if (sufficientStatsMinWork != kGaussianStatsDefaultMinWork) {
+        auto &native = patterns.getNativePatterns();
+        native.erase(
+            llvm::remove_if(native,
+                            [](const std::unique_ptr<RewritePattern> &p) {
+                              return p->getDebugName().contains(
+                                  "GaussianSufficientStats");
+                            }),
+            native.end());
+        patterns
+            .add<GaussianSufficientStatsHLO, GaussianSufficientStatsReduceHLO>(
+                getOperation()->getContext(), PatternBenefit(1),
+                sufficientStatsMinWork);
+      }
       // Benefit 2 so the Gram form pre-empts the QR form on the same match.
       if (gramFormSufficientStats)
         patterns.add<GaussianSufficientStatsGramHLO,
                      GaussianSufficientStatsGramReduceHLO>(
-            getOperation()->getContext(), PatternBenefit(2));
+            getOperation()->getContext(), PatternBenefit(2),
+            sufficientStatsMinWork);
       GreedyRewriteConfig config;
       bool patternChanged = false;
       (void)applyPatternsGreedily(getOperation(), std::move(patterns), config,

@@ -858,6 +858,11 @@ def SICMPass : Pass<"sicm"> {
            "sufficient-statistics rewrite instead of the default QR form. "
            "Portability fallback (dot_general only, no LAPACK); "
            "accuracy-changing (Section 3.5 of GRAM_RULE_DESIGN.md), f64 only.">,
+    Option<"sufficientStatsMinWork", "sufficient-stats-min-work", "int64_t",
+           "64",
+           "Profitability guard of the Gaussian sufficient-statistics "
+           "rewrite: it fires only when the removed per-evaluation residual "
+           "work N * D is at least this (in addition to N >= 2 D).">,
   ];
 }
 
