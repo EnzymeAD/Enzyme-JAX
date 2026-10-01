@@ -174,7 +174,8 @@ static std::string describeOp(Operation *op) {
 
 static void collectCallees(const Expr &expr, llvm::StringSet<> &callees) {
   if (auto *call = std::get_if<Call>(&expr.data)) {
-    callees.insert(calleeName(*call));
+    if (!call->isBuiltin())
+      callees.insert(calleeName(*call));
     for (const Expr &arg : call->args)
       collectCallees(arg, callees);
   }
@@ -434,6 +435,18 @@ static Type checkRhsValue(const Expr &expr, Operation *anchor,
             return LLVM::LLVMPointerType::get(anchor->getContext());
           },
           [&](const Call &c) -> Type {
+            // log2 gives a count of the same width as its argument.
+            if (c.isBuiltin()) {
+              Type type =
+                  checkRhsValue(c.args.front(), anchor, bound, expected, why);
+              if (type && !isa<IntegerType>(type)) {
+                llvm::raw_string_ostream os(why);
+                os << "log2 takes an integer, but is given a value of type "
+                   << type;
+                return Type();
+              }
+              return type;
+            }
             SmallVector<Type> results;
             if (failed(checkRhsCall(c, anchor, bound, results, why)))
               return Type();
@@ -506,7 +519,8 @@ static LogicalResult checkRhs(const Rule &rule, Operation *root,
   }
 
   const Expr &result = rule.result();
-  if (auto *call = std::get_if<Call>(&result.data)) {
+  auto *call = std::get_if<Call>(&result.data);
+  if (call && !call->isBuiltin()) {
     SmallVector<Type> results;
     if (failed(checkRhsCall(*call, root, bound, results, why)))
       return failure();
@@ -586,6 +600,20 @@ static Value buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
             return buildStringLiteral(s.value, builder, loc, symbolAnchor);
           },
           [&](const Call &c) -> Value {
+            // log2 of a power of two is its count of trailing zeros. A
+            // constant is folded here, so a rule applied to a literal leaves
+            // nothing to compute at run time.
+            if (c.isBuiltin()) {
+              Value n = buildExprIR(c.args.front(), builder, loc, boundVars,
+                                    symbolAnchor, expected);
+              llvm::APInt value;
+              if (matchPattern(n, m_ConstantInt(&value)))
+                return LLVM::ConstantOp::create(
+                    builder, loc, n.getType(),
+                    builder.getIntegerAttr(n.getType(), value.countr_zero()));
+              return LLVM::CountTrailingZerosOp::create(
+                  builder, loc, n.getType(), n, /*is_zero_poison=*/false);
+            }
             DefineOp define = lookupDefine(symbolAnchor, calleeName(c));
             SmallVector<Value> argValues;
             for (auto [index, arg] : llvm::enumerate(c.args))
@@ -633,7 +661,8 @@ static SmallVector<Value> buildReplacement(const Rule &rule,
   Type expected =
       root->getNumResults() == 1 ? root->getResult(0).getType() : Type();
   auto [value, op] = build(result, expected);
-  if (std::holds_alternative<Call>(result.data))
+  auto *call = std::get_if<Call>(&result.data);
+  if (call && !call->isBuiltin())
     return SmallVector<Value>(op->getResults().begin(), op->getResults().end());
   return {value};
 }
