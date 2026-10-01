@@ -333,6 +333,38 @@ struct GPUWrapperOpInterfaceReverse
 
 } // namespace
 
+// Batched, the ops that act along one dimension of their operand act along
+// the same dimension past the batch dimensions.
+template <typename OpTy>
+struct DimensionedOpBatchInterface
+    : public BatchOpInterface::ExternalModel<DimensionedOpBatchInterface<OpTy>,
+                                             OpTy> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<OpTy>(src);
+    auto n = OpTy::create(builder, op.getLoc(), mapper.lookup(op.getOperand()),
+                          op.getLhs(), op.getRhs(),
+                          op.getDimension() + batchSizes.size());
+    mapper.map(src->getResult(0), n.getResult());
+    return success();
+  }
+};
+
+struct RotateOpBatchInterface
+    : public BatchOpInterface::ExternalModel<RotateOpBatchInterface, RotateOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<RotateOp>(src);
+    auto n =
+        RotateOp::create(builder, op.getLoc(), mapper.lookup(op.getOperand()),
+                         op.getAmount(), op.getDimension() + batchSizes.size());
+    mapper.map(src->getResult(0), n.getResult());
+    return success();
+  }
+};
+
 void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
     DialectRegistry &registry) {
   registry.addExtension(+[](MLIRContext *context, EnzymeXLADialect *) {
@@ -348,6 +380,9 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
     // Register batching interfaces
     JITCallOp::attachInterface<SHLOGenericBatchOpInterface<JITCallOp>>(
         *context);
+    WrapOp::attachInterface<DimensionedOpBatchInterface<WrapOp>>(*context);
+    ExtendOp::attachInterface<DimensionedOpBatchInterface<ExtendOp>>(*context);
+    RotateOp::attachInterface<RotateOpBatchInterface>(*context);
 
     context->loadDialect<stablehlo::StablehloDialect>();
   });
