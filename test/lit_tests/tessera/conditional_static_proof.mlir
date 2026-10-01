@@ -207,3 +207,79 @@ module {
     llvm.return %0 : f64
   }
 }
+
+// -----
+
+// constant(n) is what __builtin_constant_p is to a C macro. Whether a value is
+// a constant is only known to the compiler, so it is always settled at compile
+// time: a rule that requires it rewrites a literal, and leaves anything else
+// alone, with no check at run time either way.
+module {
+  tessera.define private @lib.div_ui(f64, i64) -> f64 attributes {argModes = [unit, unit], pure = true}
+  tessera.define private @lib.shift(f64, i64) -> f64 attributes {argModes = [unit, unit], pure = true}
+
+  tessera.optimizations {
+    tessera.optimization "if constant(n) && power_of_two(n), lib.div_ui(x, n) -> lib.shift(x, n)"
+  }
+
+  // CHECK-LABEL: llvm.func @literal_power_of_two
+  // CHECK-NOT: tessera.guard
+  // CHECK: tessera.call @lib.shift
+  // CHECK-NEXT: llvm.return
+  llvm.func @literal_power_of_two(%x: f64) -> f64 {
+    %n = llvm.mlir.constant(8 : i64) : i64
+    %0 = tessera.call @lib.div_ui(%x, %n) : (f64, i64) -> f64
+    llvm.return %0 : f64
+  }
+
+  // CHECK-LABEL: llvm.func @literal_other
+  // CHECK-NOT: tessera.guard
+  // CHECK-NOT: tessera.call @lib.shift
+  // CHECK: tessera.call @lib.div_ui
+  // CHECK-NEXT: llvm.return
+  llvm.func @literal_other(%x: f64) -> f64 {
+    %n = llvm.mlir.constant(6 : i64) : i64
+    %0 = tessera.call @lib.div_ui(%x, %n) : (f64, i64) -> f64
+    llvm.return %0 : f64
+  }
+
+  // Not a constant: the rule does not apply, and nothing is checked.
+  // CHECK-LABEL: llvm.func @not_constant
+  // CHECK-NOT: tessera.guard
+  // CHECK-NOT: tessera.call @lib.shift
+  // CHECK: tessera.call @lib.div_ui
+  // CHECK-NEXT: llvm.return
+  llvm.func @not_constant(%x: f64, %n: i64) -> f64 {
+    %0 = tessera.call @lib.div_ui(%x, %n) : (f64, i64) -> f64
+    llvm.return %0 : f64
+  }
+}
+
+// -----
+
+// Settled under a negation too.
+module {
+  tessera.define private @lib.f(i64) -> i64 attributes {argModes = [unit], pure = true}
+  tessera.define private @lib.g(i64) -> i64 attributes {argModes = [unit], pure = true}
+
+  tessera.optimizations {
+    tessera.optimization "if !constant(n), lib.f(n) -> lib.g(n)"
+  }
+
+  // CHECK-LABEL: llvm.func @dynamic_negated
+  // CHECK-NOT: tessera.guard
+  // CHECK: tessera.call @lib.g
+  llvm.func @dynamic_negated(%n: i64) -> i64 {
+    %0 = tessera.call @lib.f(%n) : (i64) -> i64
+    llvm.return %0 : i64
+  }
+
+  // CHECK-LABEL: llvm.func @literal_negated
+  // CHECK-NOT: tessera.guard
+  // CHECK: tessera.call @lib.f
+  llvm.func @literal_negated() -> i64 {
+    %n = llvm.mlir.constant(3 : i64) : i64
+    %0 = tessera.call @lib.f(%n) : (i64) -> i64
+    llvm.return %0 : i64
+  }
+}
