@@ -1172,16 +1172,10 @@ struct HoistableSliceComputation {
   SetVector<Value> results;   // frontier: values escaping `ops`
   DenseMap<Value, bool> batchableCache;
 
-  // The last state whose frontier was a single value; grow() falls back to it
+  // The last state whose frontier was profitable; grow() falls back to it
   // rather than leaving the computation forked.
   SetVector<Operation *> checkpointedOps;
   SetVector<Value> checkpointedResults;
-
-  // Whether growth ran out while forked and had to fall back. The prefix it
-  // fell back to is worth hoisting on its own: the fork means that value is
-  // consumed more than once in the loop, so every consumer left behind pays
-  // back the hoist.
-  bool rolledBack = false;
 
   HoistableSliceComputation(
       stablehlo::WhileOp whileOp, WhileLoopInfo &info,
@@ -1199,27 +1193,17 @@ struct HoistableSliceComputation {
 
   Block &body() { return whileOp.getBody().front(); }
 
-  // Extend the computation until the frontier is back down to a single value,
-  // or until it can take no more values.
-  LogicalResult grow() {
+  void grow() {
     while (absorbOneLayer()) {
-      if (results.size() == 1) {
+      if (isProfitable()) {
         checkpoint();
-        return success();
       }
     }
 
     restoreCheckpoint();
-    return failure();
   }
 
   bool isProfitable() {
-    // Only a single value is ever hoisted; a forked frontier was rolled back to
-    // a checkpoint by grow(), so this holds unless nothing grew at all.
-    if (results.size() != 1) {
-      return false;
-    }
-
     // A DAG of nothing but the slice and some reshapes has nothing to batch.
     if (!llvm::any_of(ops, [&](Operation *op) {
           return op != sInfo.sliceOp.getOperation() &&
@@ -1228,15 +1212,18 @@ struct HoistableSliceComputation {
       return false;
     }
 
-    // A fork is its own justification, whatever the branches go on to do: the
-    // value is consumed more than once in the loop, so the hoist is paid back
-    // by every consumer that stays behind. Only a computation that grew to a
-    // single value and stopped there has to say where it ends.
-    if (rolledBack) {
+    // A single value is always worth hoisting: whatever stays behind in the
+    // loop, the batched computation replaces a per-iteration one.
+    if (results.size() == 1) {
       return true;
     }
 
-    return endsWell(results.front());
+    // Every value of a forked frontier is materialized across the whole trip
+    // count and sliced back in the loop, so it is only worth it when every
+    // branch goes on to empty the loop. Otherwise grow() falls back to the
+    // last single value.
+    return llvm::all_of(results,
+                        [&](Value result) { return endsWell(result); });
   }
 
   // Does hoisting the computation that produces `result` actually shrink the
@@ -1320,7 +1307,6 @@ private:
   }
 
   void restoreCheckpoint() {
-    rolledBack |= ops.size() > checkpointedOps.size();
     ops = checkpointedOps;
     results = checkpointedResults;
   }
@@ -1635,8 +1621,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   for (auto &slice : candidateSlices) {
     HoistableSliceComputation computation(whileOp, info, candidateSlices,
                                           userOpToSlicesMap, slice);
-    while (succeeded(computation.grow())) {
-    }
+    computation.grow();
 
     if (computation.isProfitable()) {
       profitable.push_back(std::move(computation));
