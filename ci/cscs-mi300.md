@@ -84,6 +84,40 @@ The shims **refuse to run** if `BAZEL_OUTPUT_ROOT` is unset or points outside
 separate step then asserts `command -v bazelisk` resolves to the shim, catching a
 mis-ordered `PATH` before the ~25 min build rather than after.
 
+### Job directory cleanup
+
+The FirecREST runner gives each job a slot directory,
+`$SCRATCH/gitlab-runner/f7t/<slot>/<project-id>`, and does **not** empty it when the
+job ends. It wipes it only in `get_sources` of the next job that lands in the same
+slot. Without cleanup, every slot keeps its last job's `.bazel` (~600k files, 12 GB),
+`.julia`, `.rocm`, `Reactant.jl` and `GB-25`. That fills the 1M-file `$SCRATCH`
+quota, and sbatch then rejects every CI job running as this user with
+`scratch inode quota exceeded`. The output root is never reused across jobs, so
+keeping it buys no caching.
+
+Two pieces handle this:
+
+- **`after_script`** deletes those trees once the job finishes, keeping only
+  `GB-25/*.xla`, because GitLab uploads artifacts after `after_script` has run.
+  `RUNNER_AFTER_SCRIPT_TIMEOUT` is raised to 20m because deleting the Bazel tree on
+  Lustre takes ~8 min.
+- **`hooks:pre_get_sources_script`** makes every directory in the slot writable
+  before the runner's wipe. Bazel leaves some outputs read-only (e.g. the
+  rules_foreign_cc z3 build under `bazel-out/k8-opt/bin/external/z3/`). When
+  `after_script` didn't run (Slurm timeout, cancel), the runner's plain `rm` then
+  fails with `Permission denied`, `get_sources` fails after ~30 s, and that slot is
+  broken for every later job until someone fixes the permissions.
+
+`after_script` runs inside the job's `SLURM_TIMELIMIT`, so a run that uses almost
+all of it can still be cut off; the hook covers that case on the slot's next job.
+To clear finished slots by hand, first check `squeue -u $USER` shows no job in them:
+
+```
+for d in $SCRATCH/gitlab-runner/f7t/*/<project-id>/.bazel; do
+  find "$d" -type d ! -perm -u+w -exec chmod u+w {} + && rm -rf "$d"
+done
+```
+
 ### LLVM headers
 
 The overlay seeds `${ROCM_PATH}/include` from the UENV view. `rocm_configure` globs
