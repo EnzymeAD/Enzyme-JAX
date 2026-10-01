@@ -4670,7 +4670,11 @@ struct ParallelWhileBatcher {
             !broadcastable(rw.getInputs()[0]))
           return failure();
       } else if (auto red = dyn_cast<stablehlo::ReduceOp>(&op)) {
-        if (red.getInputs().size() != 1 || isBatched(red.getInitValues()[0]))
+        // the batch interface takes each init back to its scalar; an input
+        // that is the same every iteration is broadcast
+        if (llvm::any_of(red.getInitValues(),
+                         [&](Value v) { return isBatched(v); }) ||
+            !llvm::all_of(red.getInputs(), broadcastable))
           return failure();
       } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&op)) {
         // A write into a tensor of this iteration: every iteration's copy is
