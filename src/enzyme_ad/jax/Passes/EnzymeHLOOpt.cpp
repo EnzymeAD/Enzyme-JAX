@@ -2867,6 +2867,19 @@ struct DynamicUpdateToConcat final
       return failure();
     auto dim = mismatches[0];
 
+    // XLA CPU fuses a minor-dim (< 128) concatenate with its producers and
+    // re-evaluates them per element, so keep a loop-carried DUS chain there.
+    if (dim + 1 == (size_t)type.getRank() && type.getShape()[dim] < 128) {
+      Value base = op.getOperand();
+      while (auto prev = base.getDefiningOp<stablehlo::DynamicUpdateSliceOp>())
+        base = prev.getOperand();
+      if (auto arg = dyn_cast<BlockArgument>(base))
+        if (auto w =
+                dyn_cast<stablehlo::WhileOp>(arg.getOwner()->getParentOp()))
+          if (arg.getOwner() == &w.getBody().front())
+            return failure();
+    }
+
     DenseIntElementsAttr startattr;
     if (!matchPattern(op.getStartIndices()[dim], m_Constant(&startattr))) {
       return failure();

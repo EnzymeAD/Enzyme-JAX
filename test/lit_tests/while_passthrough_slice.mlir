@@ -12,21 +12,20 @@
 // The second move slices the intermediate DUS result; left to the OPT run.
 // CHECK: stablehlo.slice %{{.+}} [0:1, 2:13] : (tensor<1x16xf64>) -> tensor<1x11xf64>
 
-// columns leave the loop, and while_invariant_concat_range then drops the ys
-// columns from the loop-carried trace (1x5: two values and three tails); the
-// full trace is reassembled after the loop.
+// columns leave the loop. The trace (minor dimension 16 < 128) keeps its
+// in-place dynamic_update_slice write-back of the value and tail windows; no
+// ys-wide op remains in the loop body.
 // OPT-LABEL: func.func @dus_chain
 // OPT-SAME: (%[[T0:.+]]: tensor<1x16xf64>,
 // OPT: %[[YS:.+]] = stablehlo.slice %[[T0]] [0:1, 2:13] : (tensor<1x16xf64>) -> tensor<1x11xf64>
 // OPT: stablehlo.dot_general
 // OPT: stablehlo.dot_general
-// OPT: %[[W:.+]]:2 = stablehlo.while(%{{.+}} = %{{.+}}, %{{.+}} = %{{.+}}) : tensor<i64>, tensor<1x5xf64>
+// OPT: %{{.+}}:2 = stablehlo.while(%{{.+}} = %{{.+}}, %{{.+}} = %[[T0]]) : tensor<i64>, tensor<1x16xf64>
 // OPT-NOT: stablehlo.dot_general
 // OPT-NOT: tensor<1x11xf64>
+// OPT: stablehlo.dynamic_update_slice
+// OPT-NOT: stablehlo.concatenate
 // OPT: return
-// OPT: %[[LO:.+]] = stablehlo.slice %[[W]]#1 [0:1, 0:2] : (tensor<1x5xf64>) -> tensor<1x2xf64>
-// OPT-NEXT: %[[HI:.+]] = stablehlo.slice %[[W]]#1 [0:1, 2:5] : (tensor<1x5xf64>) -> tensor<1x3xf64>
-// OPT-NEXT: %{{.+}} = stablehlo.concatenate %[[LO]], %[[YS]], %[[HI]], dim = 1 : (tensor<1x2xf64>, tensor<1x11xf64>, tensor<1x3xf64>) -> tensor<1x16xf64>
 func.func @dus_chain(%T0: tensor<1x16xf64>, %X: tensor<11x2xf64>, %n: tensor<i64>, %u: tensor<2xf64>) -> tensor<1x16xf64> {
   %c0 = stablehlo.constant dense<0> : tensor<i64>
   %c1 = stablehlo.constant dense<1> : tensor<i64>
