@@ -38950,7 +38950,13 @@ struct EnzymeHLOOptPass
 
     if (enable_auto_batching_passes) {
       mlir::enzyme::AutoBatchingPassPipelineOptions options{
-          true, true, "greedy", true, true, true, true};
+          true,
+          true,
+          "greedy",
+          true,
+          true,
+          true,
+          parallel_while_to_batched_scatter_passes};
       mlir::enzyme::populateAutoBatchingPassPatterns(patterns, context,
                                                      options);
     }
