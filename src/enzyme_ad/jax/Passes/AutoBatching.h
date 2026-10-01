@@ -321,7 +321,10 @@ private:
 // carries are written only through scatters. Such a loop is the batched
 // computation of every iteration's indices and updates over an iota of the
 // trip count, followed by one scatter per scatter of the body: a few kernels
-// instead of a host-driven loop of trip-count iterations.
+// instead of a host-driven loop of trip-count iterations. A constant-trip
+// loop nested in the body (a raised kernel's loop over quadrature points or
+// degrees of freedom) keeps running, over the batched values: the parallel
+// loop and it interchange.
 struct ParallelWhileToBatchedScatter
     : public mlir::enzyme::CheckedOpRewritePattern<
           mlir::stablehlo::WhileOp, ParallelWhileToBatchedScatter> {
