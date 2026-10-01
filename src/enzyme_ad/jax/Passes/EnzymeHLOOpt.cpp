@@ -25383,8 +25383,14 @@ struct RecognizeWrap
       stablehlo::SliceOp sl0;
       auto mid = operands[i - 1];
       stablehlo::SliceOp sl1;
+      // the pieces must fit in `mid`: a wrap takes its amounts from inside
+      // its operand
       if (isWrapLike(concatDim, operands[i - 2], mid, operands[i], &sl0,
-                     &sl1)) {
+                     &sl1) &&
+          sl0.getType().getShape()[concatDim] <=
+              cast<RankedTensorType>(mid.getType()).getShape()[concatDim] &&
+          sl1.getType().getShape()[concatDim] <=
+              cast<RankedTensorType>(mid.getType()).getShape()[concatDim]) {
         auto wrap = enzymexla::WrapOp::create(
             rewriter, sl0.getLoc(), mid, sl0.getType().getShape()[concatDim],
             sl1.getType().getShape()[concatDim], concatDim);
@@ -25415,7 +25421,13 @@ struct RecognizeWrap
       if (rs0 && rsmid && rs1 && isOuterReducingReshape(rs0) &&
           isOuterReducingReshape(rsmid) && isOuterReducingReshape(rs1)) {
         if (isWrapLike(concatDim + 1, rs0.getOperand(), rsmid.getOperand(),
-                       rs1.getOperand(), &sl0, &sl1)) {
+                       rs1.getOperand(), &sl0, &sl1) &&
+            sl0.getType().getShape()[concatDim + 1] <=
+                cast<RankedTensorType>(rsmid.getOperand().getType())
+                    .getShape()[concatDim + 1] &&
+            sl1.getType().getShape()[concatDim + 1] <=
+                cast<RankedTensorType>(rsmid.getOperand().getType())
+                    .getShape()[concatDim + 1]) {
           auto wrap = enzymexla::WrapOp::create(
               rewriter, sl0.getLoc(), rsmid.getOperand(),
               sl0.getType().getShape()[concatDim + 1],
