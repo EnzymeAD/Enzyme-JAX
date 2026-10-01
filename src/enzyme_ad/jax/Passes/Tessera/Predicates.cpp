@@ -700,7 +700,24 @@ Value emitPowerOfTwo(ArrayRef<Value> args, CheckContext &ctx) {
   return emitConjunction({nonzero, emitEqual(shared, zero, ctx)}, ctx);
 }
 
+/// Whether the value is a compile-time constant: what __builtin_constant_p is
+/// to a C macro. Only the compiler can know that, so it is always settled at
+/// compile time, and a rule that requires it is applied to a literal or not
+/// at all, never checked at run time.
+Proof proveConstant(llvm::StringRef, ArrayRef<Value> args) {
+  return fromBool(matchPattern(args[0], m_Constant()));
+}
+
+/// Never reached, since proveConstant always settles; false keeps the
+/// original call if it were.
+Value emitConstant(ArrayRef<Value>, CheckContext &ctx) {
+  return LLVM::ConstantOp::create(ctx.builder, ctx.loc,
+                                  ctx.builder.getI1Type(),
+                                  ctx.builder.getBoolAttr(false));
+}
+
 constexpr TesseraPredicate kPredicates[] = {
+    {"constant", 1, proveConstant, emitConstant},
     {"power_of_two", 1, provePowerOfTwo, emitPowerOfTwo},
     {"symmetric", 1, proveMatrixProperty, emitSymmetric},
     {"diagonal", 1, proveMatrixProperty, emitDiagonal},
