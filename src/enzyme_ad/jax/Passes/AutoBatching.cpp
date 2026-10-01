@@ -118,11 +118,61 @@ bool anyOpsAreDataDependent(ArrayRef<Operation *> ops) {
   return false;
 }
 
+// The values the regions of `ops` read from outside `ops`. A clone of the
+// ops into a wrapper function keeps those references, which then reach
+// across the function boundary: a constant can be cloned alongside, anything
+// else cannot be taken.
+static void collectRegionCaptures(ArrayRef<Operation *> ops,
+                                  SmallVectorImpl<Value> &captures) {
+  llvm::SmallPtrSet<Operation *, 4> roots(ops.begin(), ops.end());
+  DenseSet<Value> seen;
+  for (Operation *op : ops) {
+    for (Region &region : op->getRegions()) {
+      region.walk([&](Operation *inner) {
+        for (Value v : inner->getOperands()) {
+          if (!seen.insert(v).second)
+            continue;
+          Operation *def = v.getDefiningOp();
+          Region *home = def ? def->getParentRegion() : v.getParentRegion();
+          bool inside = false;
+          for (Region *r = home; r; r = r->getParentRegion())
+            if (roots.contains(r->getParentOp())) {
+              inside = true;
+              break;
+            }
+          if (!inside)
+            captures.push_back(v);
+        }
+      });
+    }
+  }
+}
+
+bool regionsCaptureOnlyConstants(ArrayRef<Operation *> ops) {
+  SmallVector<Value> captures;
+  collectRegionCaptures(ops, captures);
+  return llvm::all_of(captures, [](Value v) {
+    return v.getDefiningOp<stablehlo::ConstantOp>() != nullptr;
+  });
+}
+
+bool regionsCaptureOnlyConstants(Operation *op) {
+  return regionsCaptureOnlyConstants(ArrayRef<Operation *>(op));
+}
+
 func::FuncOp CreateWrapperUnbatchedFunction(
     mlir::ModuleOp modOp, PatternRewriter &rewriter, std::string funcName,
     std::optional<SmallVector<BatchLiftingMode>> batchLiftingModes,
     ArrayRef<Operation *> ops, std::optional<SmallVector<int64_t>> inShape,
     std::optional<SmallVector<int64_t>> outShape, FunctionType calleeType) {
+  // A region that reads a value from outside the ops keeps reading it from
+  // inside the wrapper: a constant is cloned in, anything else refuses the
+  // wrapper, and the callers decide this before they build anything.
+  SmallVector<Value> captures;
+  collectRegionCaptures(ops, captures);
+  for (Value v : captures)
+    if (!v.getDefiningOp<stablehlo::ConstantOp>())
+      return nullptr;
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPointToStart(modOp.getBody());
 
@@ -162,6 +212,33 @@ func::FuncOp CreateWrapperUnbatchedFunction(
 
   for (auto op : ops) {
     auto clonedOp = rewriter.clone(*op, mapper);
+    // A constant the regions read from outside is cloned into the block
+    // that reads it, so the region stands on its own: a batch interface
+    // clones a region with a mapping of its own, and a value the region
+    // took from the wrapper's body would be left behind when the wrapper
+    // is inlined and erased.
+    for (Region &region : clonedOp->getRegions()) {
+      for (Block &block : region) {
+        OpBuilder::InsertionGuard g(rewriter);
+        rewriter.setInsertionPointToStart(&block);
+        DenseMap<Value, Value> local;
+        block.walk([&](Operation *inner) {
+          for (OpOperand &use : inner->getOpOperands()) {
+            Value v = use.get();
+            if (!llvm::is_contained(captures, v))
+              continue;
+            auto it = local.find(v);
+            if (it == local.end())
+              it =
+                  local
+                      .insert(
+                          {v, rewriter.clone(*v.getDefiningOp())->getResult(0)})
+                      .first;
+            use.set(it->second);
+          }
+        });
+      }
+    }
     for (size_t i = 0; i < op->getNumResults(); i++) {
       mapper.map(op->getResult(i), clonedOp->getResult(i));
     }
@@ -530,6 +607,8 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
     }
 
     auto vdefOp = isValidTargetOp(definingOp->getOperand(0).getDefiningOp());
+    if (vdefOp && !::utils::regionsCaptureOnlyConstants(vdefOp))
+      vdefOp = nullptr;
     if (!vdefOp) {
       return rewriter.notifyMatchFailure(concatOp, "not a valid target op");
     }
@@ -572,6 +651,8 @@ LogicalResult ConcatInsertDimToBatchBase::matchAndRewriteImpl(
   func::FuncOp func = ::utils::CreateWrapperUnbatchedFunction(
       moduleOp, rewriter, "enzymexla_unbatched_ConcatInsertDimToBatch_",
       liftingModes, concatOpOperands[0], explicitReshapeShape);
+  if (!func)
+    return failure();
 
   outputShape.insert(outputShape.begin(), concatShape[concatDim]);
   auto batchOp = enzyme::BatchOp::create(
@@ -622,6 +703,9 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
 
     Operation *onlyUser = *candidateSlice.getResult().getUsers().begin();
     Operation *candidateTargetOp = isValidTargetOp(onlyUser);
+    if (candidateTargetOp &&
+        !::utils::regionsCaptureOnlyConstants(candidateTargetOp))
+      candidateTargetOp = nullptr;
 
     bool isIntermediateReshape = false;
     Operation *preceedingOp = candidateSlice;
@@ -867,6 +951,8 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
   func::FuncOp func = ::utils::CreateWrapperUnbatchedFunction(
       moduleOp, rewriter, "enzymexla_unbatched_SliceToBatch_", liftingModes,
       relatedOps[0], std::nullopt);
+  if (!func)
+    return failure();
 
   SmallVector<int64_t> outputShape;
   outputShape.push_back(relatedSlices.size());
@@ -2368,6 +2454,13 @@ bool liftOperationByBatching(
   SmallVector<SliceInfo<stablehlo::DynamicSliceOp>> mappedSliceInfos;
   DenseMap<Value, SmallVector<Operation *>> hoistMap;
 
+  // The op's regions may read the loop body, as a scatter that writes a
+  // constant made there does. The wrapper the lift clones the op into can
+  // take a constant along and nothing else; decided here, before anything is
+  // built.
+  if (!::utils::regionsCaptureOnlyConstants(op))
+    return false;
+
   auto opOperands = llvm::to_vector(op->getOperands());
   if (!traverseOperandsForHoisting(opOperands, whileOp, slices, info,
                                    batchLiftingModes, batchOperands, sliceDims,
@@ -2387,6 +2480,8 @@ bool liftOperationByBatching(
   func::FuncOp func = ::utils::CreateWrapperUnbatchedFunction(
       moduleOp, rewriter, "enzymexla_unbatched_WhileLoopBatchFission_",
       batchLiftingModes, op, std::nullopt);
+  if (!func)
+    return false;
 
   rewriter.setInsertionPoint(whileOp);
 
