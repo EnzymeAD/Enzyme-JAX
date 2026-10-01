@@ -12364,6 +12364,55 @@ struct SliceReshape
   }
 };
 
+// A strided slice takes every s-th element of a dimension from a start
+// before s. Those elements are one column of the dimension split into
+// (extent / s, s), so the slice is a reshape, a slice of stride one along the
+// columns, and a reshape back; the pieces of a buffer rebuilt from such slices
+// then read as slices of one view of it.
+struct StridedSliceToReshape final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, StridedSliceToReshape> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto ty = dyn_cast<RankedTensorType>(op.getOperand().getType());
+    if (!ty || !ty.hasStaticShape())
+      return failure();
+    int64_t dim = -1;
+    for (auto [d, s] : llvm::enumerate(op.getStrides())) {
+      if (s == 1)
+        continue;
+      if (dim != -1)
+        return failure();
+      dim = d;
+    }
+    if (dim == -1)
+      return failure();
+    int64_t stride = op.getStrides()[dim], start = op.getStartIndices()[dim],
+            limit = op.getLimitIndices()[dim], extent = ty.getDimSize(dim);
+    if (extent % stride != 0 || start >= stride)
+      return failure();
+    int64_t rows = extent / stride;
+    int64_t taken = limit > start ? (limit - start + stride - 1) / stride : 0;
+    SmallVector<int64_t> split(ty.getShape());
+    split[dim] = rows;
+    split.insert(split.begin() + dim + 1, stride);
+    SmallVector<int64_t> starts(op.getStartIndices()),
+        limits(op.getLimitIndices());
+    starts[dim] = 0;
+    limits[dim] = taken;
+    starts.insert(starts.begin() + dim + 1, start);
+    limits.insert(limits.begin() + dim + 1, start + 1);
+    SmallVector<int64_t> ones(split.size(), 1);
+    auto view = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(),
+                                           op.getOperand(), split);
+    auto column = stablehlo::SliceOp::create(rewriter, op.getLoc(), view,
+                                             starts, limits, ones);
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), column);
+    return success();
+  }
+};
+
 // slice(reshape(pad x)) -> pad(slice x)
 struct SliceReshapePad final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshapePad> {
@@ -38469,6 +38518,7 @@ struct EnzymeHLOOptPass
         DotGeneralInsertDimContractionSimplification,
         FuseReshapeCollapseOrExpandDimsIntoReduce,
         GatherOfScatterSimplify,
+        StridedSliceToReshape,
         ReduceWindowWrapSimplify,
         SplitComplexScatter,
         SplitComplexGather,

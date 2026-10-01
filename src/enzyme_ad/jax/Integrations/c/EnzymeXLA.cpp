@@ -700,6 +700,7 @@ static void addScatterGatherPasses(std::vector<std::string> &list,
   list.push_back("gather_elementwise");
   list.push_back("elementwise_gather");
   list.push_back("gather_of_scatter_simplify");
+  list.push_back("strided_slice_to_reshape");
   // const prop patterns
   list.push_back("gather_const_prop");
   list.push_back(passWithArg("scatter_const_fold", maxConstThreshold));

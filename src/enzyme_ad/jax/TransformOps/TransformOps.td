@@ -3352,6 +3352,11 @@ def ApplyGatherOfScatterSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["GatherOfScatterSimplify"];
 }
 
+def ApplyStridedSliceToReshapePatterns : EnzymeHLOPatternOp<
+    "strided_slice_to_reshape"> {
+  let patterns = ["StridedSliceToReshape"];
+}
+
 def ApplyDeleteDimsBroadcastPatterns : EnzymeHLOPatternOp<
     "delete_dims_broadcast"> {
   let patterns = ["DeleteDimsBroadcast"];
