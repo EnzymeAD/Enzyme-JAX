@@ -3039,9 +3039,705 @@ static SmallVector<int64_t> shifted(ArrayRef<int64_t> dims) {
   return r;
 }
 
+namespace {
+// The elements of a rank-1 buffer one iteration addresses: concrete offsets,
+// all shifted by one loop-invariant base the iterations share. The base is the
+// same value in every iteration, so it cancels when two iterations are
+// compared and the offsets alone decide whether they overlap.
+struct IterationIndices {
+  SmallVector<int64_t> offsets;
+  Value base;
+};
+
+// Evaluates an index of the loop body for one iteration, as far as constants,
+// the induction variable and a single loop-invariant addend allow.
+struct IndexEvaluator {
+  Region &body;
+  Value iv;
+  int64_t start, step;
+
+  bool invariant(Value v) const {
+    return !body.isAncestor(v.getParentRegion());
+  }
+
+  // A value that holds one number, however it is shaped.
+  static bool isSplat(Value v) {
+    auto ty = dyn_cast<RankedTensorType>(v.getType());
+    if (ty && ty.getNumElements() == 1)
+      return true;
+    Operation *op = v.getDefiningOp();
+    if (!op)
+      return false;
+    if (auto cst = dyn_cast<stablehlo::ConstantOp>(op))
+      return cast<ElementsAttr>(cst.getValue()).isSplat();
+    if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
+            stablehlo::ConvertOp>(op))
+      return isSplat(op->getOperand(0));
+    return false;
+  }
+
+  std::optional<IterationIndices> eval(Value v, int64_t iter) {
+    if (v == iv)
+      return IterationIndices{{start + iter * step}, Value()};
+    Operation *op = v.getDefiningOp();
+    if (!op)
+      return std::nullopt;
+    if (isa<stablehlo::ReshapeOp, stablehlo::ConvertOp,
+            stablehlo::BroadcastInDimOp>(op))
+      return eval(op->getOperand(0), iter);
+    if (auto cst = dyn_cast<stablehlo::ConstantOp>(op)) {
+      auto attr = dyn_cast<DenseIntElementsAttr>(cst.getValue());
+      if (!attr)
+        return std::nullopt;
+      IterationIndices out;
+      out.base = Value();
+      for (const APInt &e : attr.getValues<APInt>())
+        out.offsets.push_back(e.getSExtValue());
+      return out;
+    }
+    if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(op))
+      return evalTableRow(ds, iter);
+    if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp>(op))
+      return evalArith(op, iter);
+    return std::nullopt;
+  }
+
+  // A row (or window) of a constant table, selected by this iteration.
+  std::optional<IterationIndices> evalTableRow(stablehlo::DynamicSliceOp ds,
+                                               int64_t iter) {
+    auto cst = ds.getOperand().getDefiningOp<stablehlo::ConstantOp>();
+    if (!cst)
+      return std::nullopt;
+    auto attr = dyn_cast<DenseIntElementsAttr>(cst.getValue());
+    auto ty = dyn_cast<RankedTensorType>(ds.getOperand().getType());
+    if (!attr || !ty || !ty.hasStaticShape())
+      return std::nullopt;
+    ArrayRef<int64_t> shape = ty.getShape();
+    ArrayRef<int64_t> sizes = ds.getSliceSizes();
+    SmallVector<int64_t> starts;
+    for (Value s : ds.getStartIndices()) {
+      auto e = eval(s, iter);
+      if (!e || e->base || e->offsets.size() != 1)
+        return std::nullopt;
+      starts.push_back(e->offsets[0]);
+    }
+    if (starts.size() != shape.size() || sizes.size() != shape.size())
+      return std::nullopt;
+    // stablehlo clamps a start so the window stays inside the operand
+    for (auto [i, s] : llvm::enumerate(starts))
+      starts[i] = std::min(std::max<int64_t>(s, 0), shape[i] - sizes[i]);
+    auto values = attr.getValues<APInt>();
+    IterationIndices out;
+    out.base = Value();
+    SmallVector<int64_t> idx(shape.size(), 0);
+    int64_t count = 1;
+    for (int64_t n : sizes)
+      count *= n;
+    for (int64_t c = 0; c < count; ++c) {
+      int64_t rest = c, flat = 0;
+      for (int64_t d = shape.size() - 1; d >= 0; --d) {
+        int64_t within = rest % sizes[d];
+        rest /= sizes[d];
+        idx[d] = starts[d] + within;
+      }
+      for (int64_t d = 0; d < (int64_t)shape.size(); ++d)
+        flat = flat * shape[d] + idx[d];
+      out.offsets.push_back(values[flat].getSExtValue());
+    }
+    return out;
+  }
+
+  // An index shifted or scaled by a constant, or shifted by a value the loop
+  // does not change.
+  std::optional<IterationIndices> evalArith(Operation *op, int64_t iter) {
+    auto lhs = eval(op->getOperand(0), iter);
+    auto rhs = eval(op->getOperand(1), iter);
+    bool isAdd = isa<stablehlo::AddOp>(op);
+    if (lhs && rhs) {
+      // A based side keeps its base when the other side has none and the op
+      // adds, or subtracts it: the shift is still the same one.
+      if (lhs->base && rhs->base)
+        return std::nullopt;
+      if ((lhs->base || rhs->base) && isa<stablehlo::MulOp>(op))
+        return std::nullopt;
+      if (rhs->base && !isAdd)
+        return std::nullopt;
+      Value base = lhs->base ? lhs->base : rhs->base;
+      // one side may be a scalar the other is taken against elementwise
+      SmallVector<int64_t> &a = lhs->offsets, &b = rhs->offsets;
+      if (a.size() != b.size() && a.size() != 1 && b.size() != 1)
+        return std::nullopt;
+      IterationIndices out;
+      out.base = base;
+      size_t n = std::max(a.size(), b.size());
+      for (size_t i = 0; i < n; ++i) {
+        int64_t x = a[a.size() == 1 ? 0 : i], y = b[b.size() == 1 ? 0 : i];
+        out.offsets.push_back(isa<stablehlo::MulOp>(op) ? x * y
+                              : isAdd                   ? x + y
+                                                        : x - y);
+      }
+      return out;
+    }
+    // A loop-invariant addend shifts every iteration alike, so it cancels.
+    if (!isAdd)
+      return std::nullopt;
+    Value other = lhs ? op->getOperand(1) : op->getOperand(0);
+    auto known = lhs ? lhs : rhs;
+    if (!known || known->base || !invariant(other))
+      return std::nullopt;
+    // The shift cancels between two accesses only when it is the same for
+    // every element: the base is a scalar, or a splat of one. A vector base
+    // shifts elements differently and offsets alone would then not decide.
+    if (!isSplat(other))
+      return std::nullopt;
+    known->base = other;
+    return known;
+  }
+};
+
+// Iterations of a loop that is not tagged parallel may still run at once when
+// no iteration can observe another's writes: every read and every write of a
+// carried buffer addresses a set of its elements, and the sets of two
+// iterations never meet. Only rank-1 buffers addressed one element at a time
+// are proved here, which is the shape a raised kernel's dof loop has.
+static LogicalResult
+proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
+                           int64_t numIters, int64_t start, int64_t step,
+                           const DenseMap<Value, unsigned> &chainRoot) {
+  // The proof enumerates the elements of every iteration, so it is only run
+  // for a loop short enough for that to be cheap.
+  if (numIters > 64)
+    return failure();
+  IndexEvaluator eval{whileOp.getBody(), iv, start, step};
+  // carried argument -> the elements each iteration touches
+  DenseMap<unsigned, SmallVector<DenseSet<int64_t>>> touched;
+  DenseMap<unsigned, Value> bases;
+  // `clamps` says the access clamps an index that falls outside the buffer,
+  // as a gather and a dynamic slice do: two indices that differ may then land
+  // on the same element, so only indices proved to stay inside are admitted.
+  // A scatter drops such an update instead, in the loop and in its batched
+  // form alike, so its indices need no range.
+  auto record = [&](unsigned arg, Value buffer, Value idx, int64_t window,
+                    bool clamps) -> LogicalResult {
+    auto &sets = touched[arg];
+    if (sets.empty())
+      sets.resize(numIters);
+    int64_t dim = cast<RankedTensorType>(buffer.getType()).getDimSize(0);
+    for (int64_t k = 0; k < numIters; ++k) {
+      auto e = eval.eval(idx, k);
+      if (!e)
+        return failure();
+      auto it = bases.find(arg);
+      if (it == bases.end())
+        bases[arg] = e->base;
+      else if (it->second != e->base)
+        return failure();
+      for (int64_t o : e->offsets) {
+        // An index out of the buffer's range is clamped by a gather and
+        // dropped by a scatter, so two of them can meet where their values
+        // say they do not. Only a proof over indices that stay inside holds.
+        if (clamps && !e->base && (o < 0 || o + window > dim))
+          return failure();
+        for (int64_t w = 0; w < window; ++w)
+          sets[k].insert(o + w);
+      }
+    }
+    return success();
+  };
+  for (Operation &op : body.without_terminator()) {
+    Value buffer = op.getNumOperands() ? op.getOperand(0) : Value();
+    auto root = buffer ? chainRoot.find(buffer) : chainRoot.end();
+    if (!buffer || root == chainRoot.end())
+      continue;
+    auto rank1 = [&](Value v) {
+      auto t = dyn_cast<RankedTensorType>(v.getType());
+      return t && t.getRank() == 1 && t.hasStaticShape();
+    };
+    if (auto sc = dyn_cast<stablehlo::ScatterOp>(&op)) {
+      auto dn = sc.getScatterDimensionNumbers();
+      if (!rank1(buffer) || sc.getInputs().size() != 1 ||
+          dn.getScatterDimsToOperandDims() != ArrayRef<int64_t>{0} ||
+          dn.getInsertedWindowDims() != ArrayRef<int64_t>{0} ||
+          !dn.getUpdateWindowDims().empty() ||
+          !dn.getInputBatchingDims().empty())
+        return failure();
+      if (failed(record(root->second, buffer, sc.getScatterIndices(), 1,
+                        /*clamps=*/false)))
+        return failure();
+    } else if (auto g = dyn_cast<stablehlo::GatherOp>(&op)) {
+      // one element per start index, whether the size-1 dimension is kept as
+      // an offset dimension or collapsed away
+      auto dn = g.getDimensionNumbers();
+      if (!rank1(buffer) || dn.getStartIndexMap() != ArrayRef<int64_t>{0} ||
+          !dn.getOperandBatchingDims().empty() ||
+          g.getSliceSizes() != ArrayRef<int64_t>{1})
+        return failure();
+      if (failed(record(root->second, buffer, g.getStartIndices(), 1,
+                        /*clamps=*/true)))
+        return failure();
+    } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&op)) {
+      auto ut = dyn_cast<RankedTensorType>(dus.getUpdate().getType());
+      if (!rank1(buffer) || !ut || ut.getRank() != 1 || !ut.hasStaticShape() ||
+          failed(record(root->second, buffer, dus.getStartIndices()[0],
+                        ut.getDimSize(0), /*clamps=*/true)))
+        return failure();
+    } else if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(&op)) {
+      if (!rank1(buffer) ||
+          failed(record(root->second, buffer, ds.getStartIndices()[0],
+                        ds.getSliceSizes()[0], /*clamps=*/true)))
+        return failure();
+    } else {
+      return failure(); // some other reach into a carried buffer
+    }
+  }
+  if (touched.empty())
+    return failure();
+  for (auto &[arg, sets] : touched)
+    for (int64_t i = 0; i < numIters; ++i)
+      for (int64_t j = i + 1; j < numIters; ++j)
+        for (int64_t e : sets[i])
+          if (sets[j].contains(e))
+            return failure();
+  return success();
+}
+
+} // namespace
+
+namespace {
+// Batches the body of an enzymexla.parallel while over its iterations: a value
+// that varies with the iteration gains a leading dimension of the trip count,
+// a write into a carried buffer becomes one scatter of every iteration's
+// write, and a constant-trip loop nested in the body keeps running, over the
+// batched values (the iterations of the parallel loop are independent, so it
+// and the parallel loop interchange).
+struct ParallelWhileBatcher {
+  PatternRewriter &rewriter;
+  Location loc;
+  enzyme::WhileLoopInfo &info;
+  int64_t numIters;
+  DenseSet<Value> batched;
+  DenseMap<Value, unsigned> chainRoot; // buffer value -> carried arg number
+  IRMapping map; // body value -> value emitted in its place
+  DenseMap<Operation *, unsigned> innerIv; // nested while -> its iv arg
+  Region *loopBody;                        // the parallel loop's body
+
+  ParallelWhileBatcher(PatternRewriter &rewriter, Location loc,
+                       enzyme::WhileLoopInfo &info, int64_t numIters,
+                       Region *loopBody)
+      : rewriter(rewriter), loc(loc), info(info), numIters(numIters),
+        loopBody(loopBody) {}
+
+  bool isBatched(Value v) const { return batched.contains(v); }
+  bool isChainLink(Operation *op) const {
+    return isa<stablehlo::ScatterOp, stablehlo::DynamicUpdateSliceOp>(op) &&
+           chainRoot.count(op->getOperand(0));
+  }
+  static int64_t invariantElements(Value v) {
+    auto t = dyn_cast<RankedTensorType>(v.getType());
+    return t && t.hasStaticShape() ? t.getNumElements() : -1;
+  }
+  // A region (a scatter's update computation, a reduce body) may capture
+  // values of the loop body. An op that keeps its region as is (hoisted, or a
+  // write into a carried buffer) takes loop-invariant ones out of the loop
+  // along with it, but a per-iteration one cannot be batched inside a scalar
+  // region; the batching interfaces take no capture along at all.
+  bool captures(Operation *op, bool onlyBatched) const {
+    bool found = false;
+    for (Region &r : op->getRegions())
+      r.walk([&](Operation *inner) {
+        for (Value v : inner->getOperands())
+          if (!r.isAncestor(v.getParentRegion()) &&
+              (!onlyBatched || isBatched(v)))
+            found = true;
+      });
+    return found;
+  }
+
+  bool capturesFromLoop(Operation *op) const {
+    bool found = false;
+    for (Region &r : op->getRegions())
+      r.walk([&](Operation *inner) {
+        for (Value v : inner->getOperands())
+          if (!r.isAncestor(v.getParentRegion()) &&
+              (isBatched(v) || loopBody->isAncestor(v.getParentRegion())))
+            found = true;
+      });
+    return found;
+  }
+
+  // A carried buffer is the root of a chain of writes (scatter,
+  // dynamic_update_slice, a nested loop it is carried through) that ends at
+  // the yield, and its only other uses, at any point of the chain, are reads
+  // (gather, dynamic_slice): the iterations are independent, so a read sees
+  // this iteration's earlier writes over the buffer the loop started from and
+  // nothing another iteration writes, which is what a read of the batched
+  // writes up to that point returns.
+  LogicalResult analyzeChain(BlockArgument arg, Operation *ret, unsigned k) {
+    if (auto it = chainRoot.find(arg); it != chainRoot.end())
+      return success(it->second == k);
+    Value yielded = ret->getOperand(arg.getArgNumber());
+    SmallVector<Value> chain{arg};
+    for (Value cur = yielded; cur != arg;) {
+      Operation *link = cur.getDefiningOp();
+      Value prev;
+      if (auto sc = dyn_cast_or_null<stablehlo::ScatterOp>(link)) {
+        if (sc.getInputs().size() != 1)
+          return failure();
+        prev = sc.getInputs()[0];
+      } else if (auto dus =
+                     dyn_cast_or_null<stablehlo::DynamicUpdateSliceOp>(link)) {
+        prev = dus.getOperand();
+      } else if (auto w = dyn_cast_or_null<stablehlo::WhileOp>(link)) {
+        prev = w->getOperand(cast<OpResult>(cur).getResultNumber());
+      } else {
+        return failure();
+      }
+      if (chainRoot.count(cur))
+        return failure();
+      chain.push_back(cur);
+      cur = prev;
+    }
+    for (Value v : chain)
+      chainRoot[v] = k;
+    for (Value v : chain)
+      for (Operation *user : v.getUsers()) {
+        // The next write: the buffer goes in as the operand whose result
+        // continues the chain.
+        bool write = false;
+        for (auto [i, o] : llvm::enumerate(user->getOperands()))
+          write |= o == v && i < user->getNumResults() &&
+                   chainRoot.count(user->getResult(i));
+        bool read = isa<stablehlo::GatherOp, stablehlo::DynamicSliceOp>(user) &&
+                    user->getOperand(0) == v;
+        if (!write && !read && !(user == ret && v == yielded))
+          return failure();
+      }
+    return success();
+  }
+
+  // A loop nested in the body runs the same number of times in every
+  // iteration of the parallel loop, over values that may vary with it.
+  LogicalResult analyzeWhile(stablehlo::WhileOp w) {
+    enzyme::WhileLoopInfo wi(w);
+    if (failed(wi.computeInfo()) || !wi.isValid() || !wi.isConstant() ||
+        !isMemoryEffectFree(w))
+      return failure();
+    Value wiv = wi.getInductionVariable();
+    if (!wiv)
+      return failure();
+    unsigned ivn = cast<BlockArgument>(wiv).getArgNumber();
+    innerIv[w] = ivn;
+    // Nothing the condition reads varies with the parallel iteration.
+    for (Operation &c : w.getCond().front())
+      for (Value v : c.getOperands()) {
+        if (auto ca = dyn_cast<BlockArgument>(v);
+            ca && ca.getOwner() == &w.getCond().front()) {
+          if (ca.getArgNumber() != ivn)
+            return failure();
+        } else if (isBatched(v) || chainRoot.count(v)) {
+          return failure();
+        }
+      }
+    Block &b = w.getBody().front();
+    Operation *wret = b.getTerminator();
+    for (auto arg : b.getArguments()) {
+      unsigned k = arg.getArgNumber();
+      if (k == ivn)
+        continue;
+      Value init = w->getOperand(k);
+      if (chainRoot.count(init)) {
+        if (failed(analyzeChain(arg, wret, chainRoot.lookup(init))))
+          return failure();
+      } else if (isBatched(init)) {
+        batched.insert(arg);
+      }
+    }
+    // A carried value varies with the parallel iteration when its initial
+    // value or the value the body yields does.
+    size_t before;
+    do {
+      before = batched.size();
+      if (failed(analyzeBlock(b)))
+        return failure();
+      for (auto arg : b.getArguments()) {
+        unsigned k = arg.getArgNumber();
+        if (k != ivn && !chainRoot.count(arg) && isBatched(wret->getOperand(k)))
+          batched.insert(arg);
+      }
+    } while (before != batched.size());
+    for (auto arg : b.getArguments())
+      if (arg.getArgNumber() != ivn && isBatched(arg))
+        batched.insert(w.getResult(arg.getArgNumber()));
+    return success();
+  }
+
+  // Which body values vary with the iteration, and can every op that does be
+  // batched.
+  LogicalResult analyzeBlock(Block &body) {
+    for (Operation &op : body.without_terminator()) {
+      if (auto w = dyn_cast<stablehlo::WhileOp>(&op)) {
+        if (failed(analyzeWhile(w)))
+          return failure();
+        continue;
+      }
+      if (isChainLink(&op)) {
+        // A write into a carried buffer: its indices and update are batched
+        // (or the same every iteration); the buffer itself is not.
+        if (auto sc = dyn_cast<stablehlo::ScatterOp>(&op);
+            sc && sc.getScatterIndices().getType().getRank() == 0)
+          return failure();
+        if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&op);
+            dus && (!dus.getOperand().getType().hasStaticShape() ||
+                    !dus.getUpdate().getType().hasStaticShape()))
+          return failure();
+        if (captures(&op, /*onlyBatched=*/true))
+          return failure();
+        continue;
+      }
+      bool any =
+          llvm::any_of(op.getOperands(), [&](Value v) { return isBatched(v); });
+      if (!any) {
+        // Loop-invariant computation: hoisted as is, so it runs once instead of
+        // once per iteration. Region ops are only fine when they read nothing
+        // carried.
+        if (!isMemoryEffectFree(&op))
+          return failure();
+        if (op.getNumRegions() &&
+            (!isa<stablehlo::ReduceOp, stablehlo::ScatterOp>(&op) ||
+             captures(&op, /*onlyBatched=*/true)))
+          return failure();
+        continue;
+      }
+      // The batching interfaces clone a region as is: a capture of a value
+      // of the loop (batched or not) would dangle.
+      if (!isMemoryEffectFree(&op) || capturesFromLoop(&op))
+        return failure();
+      auto broadcastable = [&](Value v) {
+        if (isBatched(v))
+          return true;
+        int64_t n = invariantElements(v);
+        return n >= 0 &&
+               n * numIters <=
+                   ParallelWhileToBatchedScatter::kMaxBroadcastElements;
+      };
+      if ((op.hasTrait<OpTrait::Elementwise>() ||
+           isa<stablehlo::SelectOp>(&op)) &&
+          op.getNumResults() == 1) {
+        // A broadcast feeding an elementwise op is fused by XLA; no budget.
+      } else if (isa<stablehlo::ReshapeOp, stablehlo::BroadcastInDimOp,
+                     stablehlo::TransposeOp, stablehlo::SliceOp,
+                     stablehlo::ReverseOp, stablehlo::ConcatenateOp>(&op)) {
+        // batched along the new leading dimension
+      } else if (auto pad = dyn_cast<stablehlo::PadOp>(&op)) {
+        if (isBatched(pad.getPaddingValue()))
+          return failure();
+      } else if (auto rw = dyn_cast<stablehlo::ReduceWindowOp>(&op)) {
+        // the batch interface takes the init back to its scalar constant
+        if (rw.getInputs().size() != 1 || isBatched(rw.getInitValues()[0]) ||
+            !rw.getInitValues()[0].getDefiningOp<stablehlo::ConstantOp>() ||
+            !broadcastable(rw.getInputs()[0]))
+          return failure();
+      } else if (auto red = dyn_cast<stablehlo::ReduceOp>(&op)) {
+        if (red.getInputs().size() != 1 || isBatched(red.getInitValues()[0]))
+          return failure();
+      } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&op)) {
+        // A write into a tensor of this iteration: every iteration's copy is
+        // written (the batch interface makes a scatter with batching dims).
+        if (!broadcastable(dus.getOperand()))
+          return failure();
+      } else if (isa<stablehlo::DynamicSliceOp>(&op)) {
+        // batched along the new leading dimension, or gathered when the
+        // start indices vary
+      } else if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(&op)) {
+        // the batch interface adds the leading dimension as a batching one
+        if (!broadcastable(dot.getLhs()) || !broadcastable(dot.getRhs()))
+          return failure();
+      } else if (isa<stablehlo::GatherOp>(&op)) {
+        // the indices gain the leading dimension (and the operand when it
+        // varies), existing batching dimensions shift
+      } else if (auto sc = dyn_cast<stablehlo::ScatterOp>(&op)) {
+        if (sc.getInputs().size() != 1 || !broadcastable(sc.getInputs()[0]))
+          return failure();
+      } else {
+        return failure();
+      }
+      for (Value r : op.getResults())
+        batched.insert(r);
+    }
+    return success();
+  }
+
+  Type batchedType(Type t) const {
+    auto rt = cast<RankedTensorType>(t);
+    return RankedTensorType::get(prepend(numIters, rt.getShape()),
+                                 rt.getElementType());
+  }
+  // A value as an operand of a batched op: itself when batched, otherwise
+  // broadcast along the new leading dimension.
+  Value operand(Value v) {
+    Value m = map.lookupOrDefault(v);
+    return isBatched(v) ? m : broadcastToIterations(rewriter, loc, m, numIters);
+  }
+
+  // The nested loop again, carrying the batched values with their leading
+  // dimension and a buffer as the chain of scatters so far.
+  void emitWhile(stablehlo::WhileOp w) {
+    Block &b = w.getBody().front();
+    Operation *wret = b.getTerminator();
+    SmallVector<Value> inits;
+    SmallVector<Type> types;
+    for (auto arg : b.getArguments()) {
+      Value init = w->getOperand(arg.getArgNumber());
+      inits.push_back(isBatched(arg) ? operand(init)
+                                     : map.lookupOrDefault(init));
+      types.push_back(inits.back().getType());
+    }
+    auto nw = stablehlo::WhileOp::create(rewriter, loc, types, inits);
+    {
+      IRMapping cm = map;
+      w.getCond().cloneInto(&nw.getCond(), cm);
+      for (auto [na, t] : llvm::zip(nw.getCond().front().getArguments(), types))
+        na.setType(t);
+    }
+    SmallVector<Location> locs(types.size(), loc);
+    Block *nb = rewriter.createBlock(&nw.getBody(), {}, types, locs);
+    for (auto [oa, na] : llvm::zip(b.getArguments(), nb->getArguments()))
+      map.map(oa, na);
+    emitBlock(b);
+    SmallVector<Value> yields;
+    for (auto arg : b.getArguments()) {
+      Value y = wret->getOperand(arg.getArgNumber());
+      yields.push_back(isBatched(arg) ? operand(y) : map.lookupOrDefault(y));
+    }
+    stablehlo::ReturnOp::create(rewriter, loc, yields);
+    rewriter.setInsertionPointAfter(nw);
+    for (auto [o, n] : llvm::zip(w.getResults(), nw.getResults()))
+      map.map(o, n);
+  }
+
+  void emitBlock(Block &body) {
+    ArrayRef<int64_t> batchSizes(numIters);
+    for (Operation &op : body.without_terminator()) {
+      if (auto w = dyn_cast<stablehlo::WhileOp>(&op)) {
+        emitWhile(w);
+        continue;
+      }
+      if (!llvm::any_of(op.getOperands(),
+                        [&](Value v) { return isBatched(v); }) &&
+          !isChainLink(&op)) {
+        Operation *c = rewriter.clone(op, map);
+        for (auto [o, n] : llvm::zip(op.getResults(), c->getResults()))
+          map.map(o, n);
+        continue;
+      }
+      // The operands of the batched op, for the batching interfaces. A carried
+      // buffer written into, or the operand a dynamic_slice or gather reads, is
+      // one tensor that every iteration shares.
+      Value shared;
+      if (isChainLink(&op) ||
+          (isa<stablehlo::DynamicSliceOp, stablehlo::GatherOp>(&op) &&
+           !isBatched(op.getOperand(0))))
+        shared = op.getOperand(0);
+      IRMapping bm;
+      for (Value v : op.getOperands())
+        bm.map(v, v == shared ? map.lookupOrDefault(v) : operand(v));
+      if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&op);
+          dus && isChainLink(&op)) {
+        // Every iteration's window, written by one scatter into the buffer.
+        (void)stablehlo::batchDynamicUpdateSliceAsScatter(
+            dus, rewriter, bm, batchSizes, /*operandIsBatched=*/false);
+      } else if (auto sc = dyn_cast<stablehlo::ScatterOp>(&op);
+                 sc && isChainLink(&op)) {
+        // Every iteration's scatter into the buffer at once: its indices and
+        // updates gain the leading dimension, the buffer does not.
+        auto dn = sc.getScatterDimensionNumbers();
+        auto ndn = stablehlo::ScatterDimensionNumbersAttr::get(
+            op.getContext(), shifted(dn.getUpdateWindowDims()),
+            dn.getInsertedWindowDims(), dn.getInputBatchingDims(),
+            shifted(dn.getScatterIndicesBatchingDims()),
+            dn.getScatterDimsToOperandDims(), dn.getIndexVectorDim() + 1);
+        auto nsc = stablehlo::ScatterOp::create(
+            rewriter, loc, ValueRange{bm.lookup(sc.getInputs()[0])},
+            bm.lookup(sc.getScatterIndices()),
+            ValueRange{bm.lookup(sc.getUpdates()[0])}, ndn,
+            /*indices_are_sorted=*/false, /*unique_indices=*/false);
+        IRMapping rmap = map;
+        sc.getUpdateComputation().cloneInto(&nsc.getUpdateComputation(), rmap);
+        bm.map(sc.getResult(0), nsc.getResult(0));
+      } else if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(&op);
+                 ds && !isBatched(ds.getOperand())) {
+        // The operand is the same every iteration. With a single
+        // start affine in the induction variable and the others the same every
+        // iteration too, the windows of all iterations are a slice of it.
+        Value src = bm.lookup(ds.getOperand());
+        SmallVector<int64_t> dims;
+        bool othersInvariant = true;
+        for (auto [d, st] : llvm::enumerate(ds.getStartIndices())) {
+          if (isBatched(st))
+            dims.push_back(d);
+          else
+            othersInvariant &= info.isConstantAcrossIterations(st);
+        }
+        Value windows;
+        if (othersInvariant && dims.size() == 1 &&
+            info.canHoistOperationFromLoop(src, ds, dims) &&
+            info.hoistOperationFromLoop(rewriter, src, ds, dims[0], windows)) {
+          // The windows lie one after the other along the sliced dimension:
+          // split it into (iteration, window), then put the iteration first.
+          int64_t dim = dims[0];
+          SmallVector<int64_t> split(ds.getSliceSizes());
+          split.insert(split.begin() + dim, numIters);
+          windows = stablehlo::ReshapeOpCreate(rewriter, loc, windows, split);
+          SmallVector<int64_t> perm{dim};
+          for (int64_t d = 0; d < (int64_t)split.size(); ++d)
+            if (d != dim)
+              perm.push_back(d);
+          bm.map(ds.getResult(),
+                 stablehlo::TransposeOpCreate(rewriter, loc, windows, perm));
+        } else {
+          // Otherwise every iteration's start indices, gathered at once.
+          (void)stablehlo::batchDynamicSliceAsGather(
+              ds, rewriter, bm, batchSizes,
+              /*operandIsBatched=*/false);
+        }
+      } else if (auto g = dyn_cast<stablehlo::GatherOp>(&op);
+                 g && !isBatched(g.getOperand())) {
+        // Every iteration gathers from the same operand: only the indices gain
+        // the leading dimension, rather than broadcasting the operand.
+        auto dn = g.getDimensionNumbers();
+        auto ng = stablehlo::GatherOp::create(
+            rewriter, loc, bm.lookup(g.getOperand()),
+            bm.lookup(g.getStartIndices()),
+            stablehlo::GatherDimensionNumbersAttr::get(
+                op.getContext(), shifted(dn.getOffsetDims()),
+                dn.getCollapsedSliceDims(), dn.getOperandBatchingDims(),
+                shifted(dn.getStartIndicesBatchingDims()),
+                dn.getStartIndexMap(), dn.getIndexVectorDim() + 1),
+            g.getSliceSizesAttr(), /*indices_are_sorted=*/false);
+        bm.map(g.getResult(), ng.getResult());
+      } else if (auto iface = dyn_cast<BatchOpInterface>(&op);
+                 iface &&
+                 succeeded(iface.createBatch(rewriter, bm, batchSizes))) {
+        // Batched by the regular batching machinery.
+      } else {
+        // Elementwise ops and reshapes batch as themselves on batched types.
+        Operation *n = rewriter.clone(op, bm);
+        for (Value r : n->getResults())
+          r.setType(batchedType(r.getType()));
+      }
+      for (Value r : op.getResults())
+        map.map(r, bm.lookup(r));
+    }
+  }
+};
+} // namespace
+
 LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
-  if (!whileOp->hasAttr("enzymexla.parallel"))
+  // The tag says the raiser made this loop out of a parallel dimension of a
+  // kernel; an untagged loop has to earn the same conclusion from its indices.
+  bool tagged = whileOp->hasAttr("enzymexla.parallel");
+  if (!tagged && !prove_independent_iterations)
     return failure();
   enzyme::WhileLoopInfo info(whileOp);
   if (failed(info.computeInfo()) || !info.isValid() || !info.isConstant())
@@ -3056,175 +3752,36 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
   auto ret = cast<stablehlo::ReturnOp>(body.getTerminator());
   unsigned ivNum = cast<BlockArgument>(iv).getArgNumber();
 
+  ParallelWhileBatcher batcher(rewriter, whileOp.getLoc(), info, numIters,
+                               &whileOp.getBody());
+  batcher.batched.insert(iv);
   // Every carried value other than the induction variable is either
-  // unchanged or the root of a chain of writes (scatter, dynamic_update_slice)
-  // that is yielded. The buffer's only other uses, at any point of the chain,
-  // are reads: the iterations are independent, so a read sees this
-  // iteration's earlier writes over the buffer the loop started from and
-  // nothing another iteration writes, which is what a read of the batched
-  // writes up to that point returns.
-  DenseMap<Value, unsigned> chainRoot; // body value -> carried arg number
+  // unchanged or a buffer written through a chain of writes.
   SmallVector<bool> unchanged(body.getNumArguments(), false);
   for (auto arg : body.getArguments()) {
     unsigned k = arg.getArgNumber();
     if (k == ivNum)
       continue;
-    Value yielded = ret.getOperand(k);
-    if (yielded == arg) {
+    if (ret.getOperand(k) == arg)
       unchanged[k] = true;
-      continue;
-    }
-    Value cur = yielded;
-    SmallVector<Value> chain{arg};
-    while (cur != arg) {
-      Operation *link = cur.getDefiningOp();
-      Value prev;
-      if (auto sc = dyn_cast_or_null<stablehlo::ScatterOp>(link)) {
-        if (sc.getInputs().size() != 1)
-          return failure();
-        prev = sc.getInputs()[0];
-      } else if (auto dus =
-                     dyn_cast_or_null<stablehlo::DynamicUpdateSliceOp>(link)) {
-        prev = dus.getOperand();
-      } else {
-        return failure();
-      }
-      if (chainRoot.count(cur))
-        return failure();
-      chain.push_back(cur);
-      cur = prev;
-    }
-    if (chain.size() == 1)
+    else if (failed(batcher.analyzeChain(arg, ret, k)))
       return failure();
-    for (Value v : chain)
-      chainRoot[v] = k;
-    for (Value v : chain)
-      for (Operation *user : v.getUsers()) {
-        bool write = user->getNumResults() == 1 &&
-                     chainRoot.count(user->getResult(0)) &&
-                     user->getOperand(0) == v;
-        bool read = isa<stablehlo::GatherOp, stablehlo::DynamicSliceOp>(user) &&
-                    user->getOperand(0) == v;
-        if (!write && !read && !(user == ret && v == yielded))
-          return failure();
-      }
   }
+  int64_t start = *info.getConstantStart(), step = *info.getConstantStep();
+  if (!tagged &&
+      failed(proveIterationsIndependent(whileOp, body, iv, numIters, start,
+                                        step, batcher.chainRoot)))
+    return failure();
+  if (failed(batcher.analyzeBlock(body)))
+    return failure();
 
-  // Phase 1: which body values vary with the iteration, and can every op
-  // that does be batched.
-  DenseSet<Value> batched;
-  batched.insert(iv);
-  auto isBatched = [&](Value v) { return batched.contains(v); };
-  auto invariantElements = [&](Value v) -> int64_t {
-    auto t = dyn_cast<RankedTensorType>(v.getType());
-    return t && t.hasStaticShape() ? t.getNumElements() : -1;
-  };
-  auto isChainLink = [&](Operation *op) {
-    return isa<stablehlo::ScatterOp, stablehlo::DynamicUpdateSliceOp>(op) &&
-           chainRoot.count(op->getOperand(0));
-  };
-  // A region (a scatter's update computation, a reduce body) may capture
-  // values of the loop body. An op that keeps its region as is (hoisted, or a
-  // write into a carried buffer) takes loop-invariant ones out of the loop
-  // along with it, but a per-iteration one cannot be batched inside a scalar
-  // region; the batching interfaces take no capture along at all.
-  auto captures = [&](Operation *op, bool onlyBatched) {
-    bool found = false;
-    for (Region &r : op->getRegions())
-      r.walk([&](Operation *inner) {
-        for (Value v : inner->getOperands())
-          if (!r.isAncestor(v.getParentRegion()) &&
-              (!onlyBatched || isBatched(v)))
-            found = true;
-      });
-    return found;
-  };
-  for (Operation &op : body.without_terminator()) {
-    if (isChainLink(&op)) {
-      // A write into a carried buffer: its indices and update are batched
-      // (or the same every iteration); the buffer itself is not.
-      if (auto sc = dyn_cast<stablehlo::ScatterOp>(&op);
-          sc &&
-          (sc.getScatterIndices().getType().getRank() == 0 ||
-           !sc.getScatterDimensionNumbers().getInputBatchingDims().empty()))
-        return failure();
-      if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&op);
-          dus && (!dus.getOperand().getType().hasStaticShape() ||
-                  !dus.getUpdate().getType().hasStaticShape()))
-        return failure();
-      if (captures(&op, /*onlyBatched=*/true))
-        return failure();
-      continue;
-    }
-    for (Value v : op.getOperands())
-      if (auto BA = dyn_cast<BlockArgument>(v))
-        if (BA.getOwner() == &body && BA != iv &&
-            !unchanged[BA.getArgNumber()] &&
-            !(chainRoot.count(BA) && v == op.getOperand(0) &&
-              isa<stablehlo::GatherOp, stablehlo::DynamicSliceOp>(&op)))
-          return failure(); // a read of a buffer another iteration writes
-    bool any = llvm::any_of(op.getOperands(), isBatched);
-    if (!any) {
-      // Loop-invariant computation: hoisted as is, so it runs once instead of
-      // once per iteration. Region ops are only fine when they read nothing
-      // carried.
-      if (!isMemoryEffectFree(&op))
-        return failure();
-      if (op.getNumRegions() &&
-          (!isa<stablehlo::ReduceOp, stablehlo::ScatterOp>(&op) ||
-           captures(&op, /*onlyBatched=*/true)))
-        return failure();
-      continue;
-    }
-    if (!isMemoryEffectFree(&op) || captures(&op, /*onlyBatched=*/false))
-      return failure();
-    auto broadcastable = [&](Value v) {
-      if (isBatched(v))
-        return true;
-      int64_t n = invariantElements(v);
-      return n >= 0 && n * numIters <= kMaxBroadcastElements;
-    };
-    if ((op.hasTrait<OpTrait::Elementwise>() ||
-         isa<stablehlo::SelectOp>(&op)) &&
-        op.getNumResults() == 1) {
-      // A broadcast feeding an elementwise op is fused by XLA; no budget.
-    } else if (isa<stablehlo::ReshapeOp, stablehlo::BroadcastInDimOp,
-                   stablehlo::TransposeOp, stablehlo::SliceOp,
-                   stablehlo::ReverseOp, stablehlo::ConcatenateOp>(&op)) {
-      // batched along the new leading dimension
-    } else if (auto pad = dyn_cast<stablehlo::PadOp>(&op)) {
-      if (isBatched(pad.getPaddingValue()))
-        return failure();
-    } else if (auto red = dyn_cast<stablehlo::ReduceOp>(&op)) {
-      if (red.getInputs().size() != 1 || isBatched(red.getInitValues()[0]))
-        return failure();
-    } else if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(&op)) {
-      if (isBatched(ds.getOperand()))
-        return failure();
-    } else if (auto g = dyn_cast<stablehlo::GatherOp>(&op)) {
-      auto dn = g.getDimensionNumbers();
-      if (!dn.getOperandBatchingDims().empty())
-        return failure();
-    } else if (auto sc = dyn_cast<stablehlo::ScatterOp>(&op)) {
-      auto dn = sc.getScatterDimensionNumbers();
-      if (sc.getInputs().size() != 1 || !dn.getInputBatchingDims().empty() ||
-          !broadcastable(sc.getInputs()[0]))
-        return failure();
-    } else {
-      return failure();
-    }
-    for (Value r : op.getResults())
-      batched.insert(r);
-  }
-
-  // Phase 2: emit before the loop.
+  // Emit before the loop.
   Location loc = whileOp.getLoc();
   rewriter.setInsertionPoint(whileOp);
   auto ivTy = cast<RankedTensorType>(iv.getType());
   Value iota = stablehlo::IotaOp::create(
       rewriter, loc, RankedTensorType::get({numIters}, ivTy.getElementType()),
       0);
-  int64_t start = *info.getConstantStart(), step = *info.getConstantStep();
   if (step != 1)
     iota = stablehlo::MulOp::create(
         rewriter, loc, iota,
@@ -3236,127 +3793,11 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
         stablehlo::ConstantOp::create(
             rewriter, loc,
             cast<ElementsAttr>(makeAttr(iota.getType(), start))));
-
-  IRMapping map; // body value -> value before the loop (batched or hoisted)
-  map.map(iv, iota);
+  batcher.map.map(iv, iota);
   for (auto arg : body.getArguments())
-    if (unchanged[arg.getArgNumber()] || chainRoot.count(arg))
-      map.map(arg, whileOp->getOperand(arg.getArgNumber()));
-  auto batchedType = [&](Type t) {
-    auto rt = cast<RankedTensorType>(t);
-    return RankedTensorType::get(prepend(numIters, rt.getShape()),
-                                 rt.getElementType());
-  };
-  // A value as an operand of a batched op: itself when batched, otherwise
-  // broadcast along the new leading dimension.
-  auto operand = [&](Value v) -> Value {
-    Value m = map.lookupOrDefault(v);
-    return isBatched(v) ? m : broadcastToIterations(rewriter, loc, m, numIters);
-  };
-  ArrayRef<int64_t> batchSizes(numIters);
-  for (Operation &op : body.without_terminator()) {
-    if (!llvm::any_of(op.getOperands(), isBatched) && !isChainLink(&op)) {
-      Operation *c = rewriter.clone(op, map);
-      for (auto [o, n] : llvm::zip(op.getResults(), c->getResults()))
-        map.map(o, n);
-      continue;
-    }
-    // The operands of the batched op, for the batching interfaces. A carried
-    // buffer written into, or the operand a dynamic_slice or gather reads, is
-    // one tensor that every iteration shares.
-    Value shared;
-    if (isChainLink(&op) ||
-        (isa<stablehlo::DynamicSliceOp, stablehlo::GatherOp>(&op) &&
-         !isBatched(op.getOperand(0))))
-      shared = op.getOperand(0);
-    IRMapping bm;
-    for (Value v : op.getOperands())
-      bm.map(v, v == shared ? map.lookupOrDefault(v) : operand(v));
-    if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&op);
-        dus && isChainLink(&op)) {
-      // Every iteration's window, written by one scatter into the buffer.
-      (void)stablehlo::batchDynamicUpdateSliceAsScatter(
-          dus, rewriter, bm, batchSizes, /*operandIsBatched=*/false);
-    } else if (auto sc = dyn_cast<stablehlo::ScatterOp>(&op);
-               sc && isChainLink(&op)) {
-      // Every iteration's scatter into the buffer at once: its indices and
-      // updates gain the leading dimension, the buffer does not.
-      auto dn = sc.getScatterDimensionNumbers();
-      auto ndn = stablehlo::ScatterDimensionNumbersAttr::get(
-          op.getContext(), shifted(dn.getUpdateWindowDims()),
-          dn.getInsertedWindowDims(), dn.getInputBatchingDims(),
-          dn.getScatterIndicesBatchingDims(), dn.getScatterDimsToOperandDims(),
-          dn.getIndexVectorDim() + 1);
-      auto nsc = stablehlo::ScatterOp::create(
-          rewriter, loc, ValueRange{bm.lookup(sc.getInputs()[0])},
-          bm.lookup(sc.getScatterIndices()),
-          ValueRange{bm.lookup(sc.getUpdates()[0])}, ndn,
-          /*indices_are_sorted=*/false, /*unique_indices=*/false);
-      IRMapping rmap = map;
-      sc.getUpdateComputation().cloneInto(&nsc.getUpdateComputation(), rmap);
-      bm.map(sc.getResult(0), nsc.getResult(0));
-    } else if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(&op)) {
-      // The operand is the same every iteration (phase 1). With a single start
-      // affine in the induction variable and the others the same every
-      // iteration too, the windows of all iterations are a slice of it.
-      Value src = bm.lookup(ds.getOperand());
-      SmallVector<int64_t> dims;
-      bool othersInvariant = true;
-      for (auto [d, st] : llvm::enumerate(ds.getStartIndices())) {
-        if (isBatched(st))
-          dims.push_back(d);
-        else
-          othersInvariant &= info.isConstantAcrossIterations(st);
-      }
-      Value windows;
-      if (othersInvariant && dims.size() == 1 &&
-          info.canHoistOperationFromLoop(src, ds, dims) &&
-          info.hoistOperationFromLoop(rewriter, src, ds, dims[0], windows)) {
-        // The windows lie one after the other along the sliced dimension:
-        // split it into (iteration, window), then put the iteration first.
-        int64_t dim = dims[0];
-        SmallVector<int64_t> split(ds.getSliceSizes());
-        split.insert(split.begin() + dim, numIters);
-        windows = stablehlo::ReshapeOpCreate(rewriter, loc, windows, split);
-        SmallVector<int64_t> perm{dim};
-        for (int64_t d = 0; d < (int64_t)split.size(); ++d)
-          if (d != dim)
-            perm.push_back(d);
-        bm.map(ds.getResult(),
-               stablehlo::TransposeOpCreate(rewriter, loc, windows, perm));
-      } else {
-        // Otherwise every iteration's start indices, gathered at once.
-        (void)stablehlo::batchDynamicSliceAsGather(ds, rewriter, bm, batchSizes,
-                                                   /*operandIsBatched=*/false);
-      }
-    } else if (auto g = dyn_cast<stablehlo::GatherOp>(&op);
-               g && !isBatched(g.getOperand())) {
-      // Every iteration gathers from the same operand: only the indices gain
-      // the leading dimension, rather than broadcasting the operand.
-      auto dn = g.getDimensionNumbers();
-      auto ng = stablehlo::GatherOp::create(
-          rewriter, loc, bm.lookup(g.getOperand()),
-          bm.lookup(g.getStartIndices()),
-          stablehlo::GatherDimensionNumbersAttr::get(
-              op.getContext(), shifted(dn.getOffsetDims()),
-              dn.getCollapsedSliceDims(), dn.getOperandBatchingDims(),
-              dn.getStartIndicesBatchingDims(), dn.getStartIndexMap(),
-              dn.getIndexVectorDim() + 1),
-          g.getSliceSizesAttr(), /*indices_are_sorted=*/false);
-      bm.map(g.getResult(), ng.getResult());
-    } else if (auto iface = dyn_cast<BatchOpInterface>(&op);
-               iface &&
-               succeeded(iface.createBatch(rewriter, bm, batchSizes))) {
-      // Batched by the regular batching machinery.
-    } else {
-      // Elementwise ops and reshapes batch as themselves on batched types.
-      Operation *n = rewriter.clone(op, bm);
-      for (Value r : n->getResults())
-        r.setType(batchedType(r.getType()));
-    }
-    for (Value r : op.getResults())
-      map.map(r, bm.lookup(r));
-  }
+    if (unchanged[arg.getArgNumber()] || batcher.chainRoot.count(arg))
+      batcher.map.map(arg, whileOp->getOperand(arg.getArgNumber()));
+  batcher.emitBlock(body);
 
   SmallVector<Value> results;
   for (auto arg : body.getArguments()) {
@@ -3366,7 +3807,7 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
           rewriter, loc,
           cast<ElementsAttr>(makeAttr(ivTy, start + numIters * step))));
     } else {
-      results.push_back(map.lookup(ret.getOperand(k)));
+      results.push_back(batcher.map.lookup(ret.getOperand(k)));
     }
   }
   rewriter.replaceOp(whileOp, results);

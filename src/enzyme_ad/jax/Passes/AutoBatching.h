@@ -321,7 +321,10 @@ private:
 // carries are written only through scatters. Such a loop is the batched
 // computation of every iteration's indices and updates over an iota of the
 // trip count, followed by one scatter per scatter of the body: a few kernels
-// instead of a host-driven loop of trip-count iterations.
+// instead of a host-driven loop of trip-count iterations. A constant-trip
+// loop nested in the body (a raised kernel's loop over quadrature points or
+// degrees of freedom) keeps running, over the batched values: the parallel
+// loop and it interchange.
 struct ParallelWhileToBatchedScatter
     : public mlir::enzyme::CheckedOpRewritePattern<
           mlir::stablehlo::WhileOp, ParallelWhileToBatchedScatter> {
@@ -334,6 +337,10 @@ struct ParallelWhileToBatchedScatter
   // that would be large (a table read through dynamic_slice is gathered, not
   // broadcast).
   static constexpr int64_t kMaxBroadcastElements = int64_t(1) << 24;
+
+  // Whether a loop the raiser did not tag may be admitted by proving its
+  // iterations address disjoint elements of the buffers they write.
+  bool prove_independent_iterations = true;
 
   mlir::LogicalResult
   matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
