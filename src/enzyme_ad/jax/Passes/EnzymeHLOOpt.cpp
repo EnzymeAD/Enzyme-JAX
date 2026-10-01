@@ -15694,6 +15694,173 @@ struct DynamicBroadcastInDimAllDimsNonExpanding final
   }
 };
 
+// A reduce of a constant over a constant init with one of the usual
+// associative bodies (add, mul, max, min, and, or) is a constant. A splat
+// operand folds in one step under max, min, and, or; anything else folds
+// element by element while the operand is small.
+struct ReduceConstProp final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // the output index of an input index: drop the reduced dimensions
+  static int64_t outputIndex(int64_t flat, ArrayRef<int64_t> shape,
+                             ArrayRef<bool> reduced) {
+    SmallVector<int64_t> coord(shape.size());
+    for (int64_t d = shape.size() - 1; d >= 0; --d) {
+      coord[d] = flat % shape[d];
+      flat /= shape[d];
+    }
+    int64_t out = 0;
+    for (size_t d = 0; d < shape.size(); ++d)
+      if (!reduced[d])
+        out = out * shape[d] + coord[d];
+    return out;
+  }
+
+  // v multiplied with itself n times, n >= 1
+  template <typename T> static T power(T v, int64_t n) {
+    T acc = v;
+    for (n -= 1; n; n >>= 1) {
+      v = v * v;
+      if (n & 1)
+        acc = acc * v;
+    }
+    return acc;
+  }
+
+  static APInt step(Operation &fold, IntegerType ty, const APInt &acc,
+                    const APInt &v) {
+    if (isa<stablehlo::AddOp>(fold))
+      return acc + v;
+    if (isa<stablehlo::MulOp>(fold))
+      return acc * v;
+    if (isa<stablehlo::AndOp>(fold))
+      return acc & v;
+    if (isa<stablehlo::OrOp>(fold))
+      return acc | v;
+    bool less = ty.isUnsigned() ? v.ult(acc) : v.slt(acc);
+    if (isa<stablehlo::MinOp>(fold))
+      return less ? v : acc;
+    return less ? acc : v; // max
+  }
+
+  static APFloat step(Operation &fold, const APFloat &acc, const APFloat &v) {
+    if (isa<stablehlo::AddOp>(fold))
+      return acc + v;
+    if (isa<stablehlo::MulOp>(fold))
+      return acc * v;
+    // stablehlo max/min propagate NaN
+    if (acc.isNaN())
+      return acc;
+    if (v.isNaN())
+      return v;
+    if (isa<stablehlo::MinOp>(fold))
+      return v < acc ? v : acc;
+    return acc < v ? v : acc;
+  }
+
+  // the splat value v folded into init over count elements
+  static APInt splat(Operation &fold, IntegerType ty, const APInt &init,
+                     const APInt &v, int64_t count) {
+    if (count == 0)
+      return init;
+    if (isa<stablehlo::AddOp>(fold))
+      return init + v * APInt(v.getBitWidth(), count);
+    if (isa<stablehlo::MulOp>(fold))
+      return init * power(v, count);
+    return step(fold, ty, init, v);
+  }
+
+  static APFloat splat(Operation &fold, const APFloat &init, const APFloat &v,
+                       int64_t count) {
+    if (count == 0)
+      return init;
+    if (isa<stablehlo::AddOp>(fold)) {
+      APFloat n(v.getSemantics());
+      n.convertFromAPInt(APInt(64, count), false, APFloat::rmNearestTiesToEven);
+      return init + v * n;
+    }
+    if (isa<stablehlo::MulOp>(fold))
+      return init * power(v, count);
+    return step(fold, init, v);
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return failure();
+    DenseElementsAttr input, init;
+    if (!matchPattern(op.getInputs()[0], m_Constant(&input)) ||
+        !matchPattern(op.getInitValues()[0], m_Constant(&init)))
+      return failure();
+    auto inTy = dyn_cast<RankedTensorType>(op.getInputs()[0].getType());
+    auto outTy = dyn_cast<RankedTensorType>(op.getType(0));
+    if (!inTy || !outTy || !inTy.hasStaticShape() || !outTy.hasStaticShape())
+      return failure();
+    Block &body = op.getBody().front();
+    if (body.getOperations().size() != 2 || body.getNumArguments() != 2)
+      return failure();
+    Operation &fold = body.front();
+    auto ret = dyn_cast<stablehlo::ReturnOp>(body.getTerminator());
+    if (!ret || ret.getNumOperands() != 1 ||
+        ret.getOperand(0) != fold.getResult(0) || fold.getNumOperands() != 2 ||
+        !((fold.getOperand(0) == body.getArgument(0) &&
+           fold.getOperand(1) == body.getArgument(1)) ||
+          (fold.getOperand(0) == body.getArgument(1) &&
+           fold.getOperand(1) == body.getArgument(0))))
+      return failure();
+    if (!isa<stablehlo::AddOp, stablehlo::MulOp, stablehlo::MaxOp,
+             stablehlo::MinOp, stablehlo::AndOp, stablehlo::OrOp>(fold))
+      return failure();
+
+    ArrayRef<int64_t> shape = inTy.getShape();
+    SmallVector<bool> reduced(shape.size(), false);
+    int64_t count = 1;
+    for (int64_t d : op.getDimensions()) {
+      reduced[d] = true;
+      count *= shape[d];
+    }
+
+    Attribute result;
+    if (auto ity = dyn_cast<IntegerType>(inTy.getElementType())) {
+      APInt seed = init.getSplatValue<APInt>();
+      if (input.isSplat()) {
+        result = DenseElementsAttr::get(
+            outTy, splat(fold, ity, seed, input.getSplatValue<APInt>(), count));
+      } else {
+        SmallVector<APInt> acc(outTy.getNumElements(), seed);
+        int64_t i = 0;
+        for (const APInt &v : input.getValues<APInt>()) {
+          int64_t o = outputIndex(i++, shape, reduced);
+          acc[o] = step(fold, ity, acc[o], v);
+        }
+        result = DenseElementsAttr::get(outTy, acc);
+      }
+    } else if (isa<FloatType>(inTy.getElementType())) {
+      if (isa<stablehlo::AndOp, stablehlo::OrOp>(fold))
+        return failure();
+      APFloat seed = init.getSplatValue<APFloat>();
+      if (input.isSplat()) {
+        result = DenseElementsAttr::get(
+            outTy, splat(fold, seed, input.getSplatValue<APFloat>(), count));
+      } else {
+        SmallVector<APFloat> acc(outTy.getNumElements(), seed);
+        int64_t i = 0;
+        for (const APFloat &v : input.getValues<APFloat>()) {
+          int64_t o = outputIndex(i++, shape, reduced);
+          acc[o] = step(fold, acc[o], v);
+        }
+        result = DenseElementsAttr::get(outTy, acc);
+      }
+    } else {
+      return failure();
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, outTy, cast<ElementsAttr>(result));
+    return success();
+  }
+};
+
 struct NoopReduceOpCanon final
     : CheckedOpRewritePattern<stablehlo::ReduceOp, NoopReduceOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -38090,6 +38257,7 @@ struct EnzymeHLOOptPass
         ImagOpCanon,
         MergeConsecutiveReshapes,
         NoopReduceOpCanon,
+        ReduceConstProp,
         RealOpCanon,
         ReorderElementwiseAndShapeOp,
         ReshapeOpCanon,
