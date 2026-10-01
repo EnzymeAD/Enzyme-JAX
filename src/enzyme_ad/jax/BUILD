@@ -2015,8 +2015,12 @@ cc_library(
         "-Werror=unused-result",
     ],
     deps = [
+        ":PerfifyAttributesIncGen",
         ":PerfifyDialectIncGen",
+        ":PerfifyEnumsIncGen",
         ":PerfifyOpsIncGen",
+        ":PerfifyPassesIncGen",
+        ":PerfifyTypesIncGen",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:BytecodeOpInterface",
         "@llvm-project//mlir:FuncDialect",
