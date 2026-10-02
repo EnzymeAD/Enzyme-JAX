@@ -53,6 +53,7 @@
 
 #include "Interfaces/AutoDiffTypeInterface.h"
 
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 
@@ -5888,24 +5889,28 @@ struct BinopPadToConcat final
         } else if (isa<stablehlo::MulOp>(op)) {
           match = padIsOne || padIsZero;
         }
+        // With any other padding value the split pays only when some of the
+        // pieces go unread: the result, through adds and multiplies, must be
+        // read by slices alone, and they must leave some of the padded
+        // dimension unread (slices that read all of it just take the pieces
+        // of a batched op apart, and the batching puts them back together).
+        SmallVector<stablehlo::SliceOp> readers;
         if (!match) {
           SmallVector<Operation *> ops = {op};
-          bool legal = true;
           while (!ops.empty()) {
             auto cur = ops.pop_back_val();
-            if (isa<stablehlo::SliceOp>(cur))
+            if (auto reader = dyn_cast<stablehlo::SliceOp>(cur)) {
+              readers.push_back(reader);
               continue;
+            }
             if (isa<stablehlo::AddOp, stablehlo::MulOp>(cur)) {
               for (auto u : cur->getResult(0).getUsers()) {
                 ops.push_back(u);
               }
               continue;
             }
-            legal = false;
-            break;
-          }
-          if (!legal)
             return failure();
+          }
         }
 
         bool legal = true;
@@ -5936,6 +5941,14 @@ struct BinopPadToConcat final
             lhs.getOperand().getType().getShape()[idxs[0]] * 2 <=
                 type.getShape()[idxs[0]]) {
           auto idx = idxs[0];
+          if (!match) {
+            llvm::BitVector read(type.getShape()[idx]);
+            for (auto reader : readers)
+              read.set(reader.getStartIndices()[idx],
+                       reader.getLimitIndices()[idx]);
+            if (read.all())
+              return failure();
+          }
 
           SmallVector<int64_t> strides(type.getShape().size(), 1);
           SmallVector<int64_t> starts(type.getShape().size(), 0);
