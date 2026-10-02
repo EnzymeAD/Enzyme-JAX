@@ -1,4 +1,5 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -147,10 +148,15 @@ struct LowerTritonPass
           ::mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI);
 
       if (auto attr = ttCallOp.getOperandLayoutsAttr()) {
-        customCall.setOperandLayoutsAttr(mlir::cast<ArrayAttr>(attr));
-      }
-      if (auto attr = ttCallOp.getResultLayoutsAttr()) {
-        customCall.setResultLayoutsAttr(mlir::cast<ArrayAttr>(attr));
+        auto operandLayouts = mlir::cast<ArrayAttr>(attr);
+        auto resultLayouts = getAliasedResultLayouts(
+            ttCallOp, operandLayouts, ttCallOp.getOutputOperandAliasesAttr());
+        if (!resultLayouts) {
+          anyFailed = true;
+          continue;
+        }
+        customCall.setOperandLayoutsAttr(operandLayouts);
+        customCall.setResultLayoutsAttr(resultLayouts);
       }
       if (auto attr = ttCallOp.getOutputOperandAliasesAttr()) {
         customCall.setOutputOperandAliasesAttr(mlir::cast<ArrayAttr>(attr));

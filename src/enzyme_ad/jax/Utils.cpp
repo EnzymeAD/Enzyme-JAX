@@ -973,8 +973,8 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 
   // integer ops
   if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
-          stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp,
-          stablehlo::XorOp, stablehlo::NotOp>(op)) {
+          stablehlo::IotaOp, stablehlo::OrOp, stablehlo::XorOp,
+          stablehlo::NotOp>(op)) {
     return State::GUARANTEED;
   }
 
@@ -982,9 +982,10 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     return State::NOTGUARANTEED;
   }
 
-  // Any non-negative operation that produces a non-negative result
+  // Either non-negative operand guarantees a non-negative maximum or bitwise
+  // AND result. For AND, that operand clears the sign bit.
   // Here we recur on the rhs, as that is more likely to be a constant.
-  if (isa<stablehlo::MaxOp>(op)) {
+  if (isa<stablehlo::MaxOp, stablehlo::AndOp>(op)) {
     if (guaranteed(op->getOperand(1), rewriter)) {
       return State::GUARANTEED;
     }

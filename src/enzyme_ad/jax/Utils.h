@@ -1868,6 +1868,39 @@ void ExtractBlockIntoFunction(Block *block, ModuleOp modOp, func::FuncOp &func,
 
 } // namespace stablehlo
 
+/// Result layouts of a custom call whose results all alias an operand: each
+/// result takes the layout of the operand it aliases. Returns null (and emits
+/// an error on `op`) if some result aliases no operand.
+static ArrayAttr getAliasedResultLayouts(Operation *op,
+                                         ArrayAttr operandLayouts,
+                                         ArrayAttr outputOperandAliases) {
+  SmallVector<Attribute> layouts;
+  for (unsigned idx = 0, e = op->getNumResults(); idx < e; ++idx) {
+    Attribute layout = nullptr;
+    if (outputOperandAliases) {
+      for (auto attr : outputOperandAliases) {
+        auto alias = cast<stablehlo::OutputOperandAliasAttr>(attr);
+        auto outIdxs = alias.getOutputTupleIndices();
+        bool matches = e == 1 ? outIdxs.empty()
+                              : (outIdxs.size() == 1 && outIdxs[0] == idx);
+        if (matches && alias.getOperandTupleIndices().empty() &&
+            alias.getOperandIndex() < (int64_t)operandLayouts.size()) {
+          layout = operandLayouts[alias.getOperandIndex()];
+          break;
+        }
+      }
+    }
+    if (!layout) {
+      op->emitError() << "each result should match to an operand, could "
+                         "not find operand for result #"
+                      << idx;
+      return nullptr;
+    }
+    layouts.push_back(layout);
+  }
+  return ArrayAttr::get(op->getContext(), layouts);
+}
+
 static InFlightDiagnostic &operator<<(InFlightDiagnostic &diag, AffineMap map) {
   std::string str;
   llvm::raw_string_ostream os(str);
