@@ -92,17 +92,14 @@ func.func @pingpong(%a: memref<100xf64, 1>, %b: memref<100xf64, 1>, %ni: index) 
 // CHECK-NEXT:    %[[a4:.+]] = memref.alloca() : memref<i64>
 // CHECK-NEXT:    %[[a5:.+]] = arith.constant 1 : index
 // CHECK-NEXT:    %[[a6:.+]] = arith.constant 100 : index
-// CHECK-NEXT:    %[[a7:.+]] = gpu.alloc  () : memref<i64, 1>
 // CHECK-NEXT:    %[[a8:.+]] = arith.index_cast %[[a3]] : index to i64
 // CHECK-NEXT:    affine.store %[[a8]], %[[a4]][] : memref<i64>
 // CHECK-NEXT:    %[[a9:.+]] = arith.constant 8 : index
-// CHECK-NEXT:    enzymexla.memcpy  %[[a7]], %[[a4]], %[[a9]] : memref<i64, 1>, memref<i64>
-// CHECK-NEXT:    enzymexla.xla_wrapper @rxla$raised_0 (%[[a1]], %[[a2]], %[[a7]]) : (memref<100xf64, 1>, memref<100xf64, 1>, memref<i64, 1>) -> ()
+// CHECK-NEXT:    enzymexla.xla_wrapper @rxla$raised_0 (%[[a1]], %[[a2]], %[[a8]]) {num_specialized = 1 : i64} : (memref<100xf64, 1>, memref<100xf64, 1>, i64) -> ()
 // CHECK-NEXT:    %[[a10:.+]] = arith.constant 0 : index
-// CHECK-NEXT:    gpu.dealloc  %[[a7]] : memref<i64, 1>
 // CHECK-NEXT:    return
 // CHECK-NEXT:  }
-// CHECK-NEXT:  func.func private @rxla$raised_0(%[[a1]]: tensor<100xf64>, %[[a2]]: tensor<100xf64>, %[[a3]]: tensor<i64>) -> (tensor<100xf64>, tensor<100xf64>, tensor<i64>) {
+// CHECK-NEXT:  func.func private @rxla$raised_0(%[[a1]]: tensor<100xf64>, %[[a2]]: tensor<100xf64>, %[[a3]]: tensor<i64>) -> (tensor<100xf64>, tensor<100xf64>) {
 // CHECK-NEXT:    %[[a11:.+]] = stablehlo.constant dense<0> : tensor<i64>
 // CHECK-NEXT:    %[[a12:.+]] = stablehlo.constant dense<1> : tensor<i64>
 // CHECK-NEXT:    %[[a8]]:3 = stablehlo.while(%[[a13:.+]] = %[[a11]], %[[a14:.+]] = %[[a1]], %[[a15:.+]] = %[[a2]]) : tensor<i64>, tensor<100xf64>, tensor<100xf64> attributes {enzymexla.parallel}
@@ -157,7 +154,7 @@ func.func @pingpong(%a: memref<100xf64, 1>, %b: memref<100xf64, 1>, %ni: index) 
 // CHECK-NEXT:      %[[a60:.+]] = stablehlo.add %[[a13]], %[[a12]] : tensor<i64>
 // CHECK-NEXT:      stablehlo.return %[[a60]], %[[a59]], %[[a49]] : tensor<i64>, tensor<100xf64>, tensor<100xf64>
 // CHECK-NEXT:    }
-// CHECK-NEXT:    return %[[a8]]#1, %[[a8]]#2, %[[a3]] : tensor<100xf64>, tensor<100xf64>, tensor<i64>
+// CHECK-NEXT:    return %[[a8]]#1, %[[a8]]#2 : tensor<100xf64>, tensor<100xf64>
 // CHECK-NEXT:  }
 
 // -----

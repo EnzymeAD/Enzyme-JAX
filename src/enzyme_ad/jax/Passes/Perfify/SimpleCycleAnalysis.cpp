@@ -11,6 +11,7 @@
 #include <iostream>
 #include <optional>
 #include <string>
+#include <unordered_map>
 namespace mlir {
 namespace enzyme {
 namespace perfify {
@@ -32,7 +33,7 @@ struct SimpleCycleAnalysisPass
     : public enzyme::perfify::impl::SimpleCycleAnalysisPassBase<
           SimpleCycleAnalysisPass> {
   using SimpleCycleAnalysisPassBase::SimpleCycleAnalysisPassBase;
-  mlir::Region *analysis_func;
+  mlir::Region *analysis_func = NULL;
   std::unordered_map<std::string, mlir::Region *> cost_map;
   llvm::DenseMap<mlir::Value, int64_t> args;
   std::unordered_map<HoareStates, mlir::Region *> constant_costs;
@@ -90,9 +91,10 @@ struct SimpleCycleAnalysisPass
       funcMap[func.getNameAttr()] = &func.getBody();
     } else if (auto funcCost = dyn_cast<FnCostOp>(op)) {
       llvm::SmallVector<mlir::Operation *> allOps;
-
-      analysis_func->walk(
-          [&allOps](mlir::Operation *op) { allOps.push_back(op); });
+      if (analysis_func != NULL) {
+        analysis_func->walk(
+            [&allOps](mlir::Operation *op) { allOps.push_back(op); });
+      }
       for (Operation *region_op : allOps) {
         auto cost_map_res =
             cost_map.find(region_op->getName().getStringRef().str());

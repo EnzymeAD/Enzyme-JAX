@@ -8,7 +8,7 @@ module {
       affine.if #set2(%arg2, %arg1) {
         affine.for %arg3 = 0 to 50 {
           %0 = affine.load %arg0[0, -%arg3 + 136, -%arg2 - %arg1 * 16 + 186] : memref<1x187x194xf64, 1>
-          %1 = arith.mulf %0, %cst {fastmathFlags = #llvm.fastmath<none>} : f64
+          %1 = arith.mulf %0, %cst : f64
           affine.store %1, %arg0[0, %arg3 + 135, %arg2 + %arg1 * 16 + 7] : memref<1x187x194xf64, 1>
         }
       }
@@ -22,7 +22,7 @@ module {
 // CHECK-NEXT:    affine.parallel (%[[iv1:.+]]) = (0) to (180) {
 // CHECK-NEXT:      affine.for %[[iv2:.+]] = 0 to 50 {
 // CHECK-NEXT:        %[[loaded:.+]] = affine.load %[[memref]][0, -%[[iv2]] + 136, -%[[iv1]] + 186] : memref<1x187x194xf64, 1>
-// CHECK-NEXT:        %[[stored:.+]] = arith.mulf %[[loaded]], %[[mone]] {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:        %[[stored:.+]] = arith.mulf %[[loaded]], %[[mone]] : f64
 // CHECK-NEXT:        affine.store %[[stored]], %arg0[0, %[[iv2]] + 135, %[[iv1]] + 7] : memref<1x187x194xf64, 1>
 // CHECK-NEXT:      }
 // CHECK-NEXT:    }

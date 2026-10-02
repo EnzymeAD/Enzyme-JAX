@@ -2938,8 +2938,13 @@ bool canMergeSlicesAlongAxis(int dimension, ArrayRef<int64_t> sliceStarts,
 
   for (int d = 0, ndims = sliceStarts.size(); d < ndims; ++d) {
     if (d == dimension) {
-      canMerge &= sliceLimits[d] == otherSliceStarts[d] &&
-                  sliceStrides[d] == otherSliceStrides[d];
+      // The merged slice keeps the first slice's stride, so the second slice
+      // must begin at the index the first would take next: one stride past
+      // its last element, not merely at its limit.
+      int64_t stride = sliceStrides[d];
+      int64_t taken = (sliceLimits[d] - sliceStarts[d] + stride - 1) / stride;
+      canMerge &= stride == otherSliceStrides[d] &&
+                  otherSliceStarts[d] == sliceStarts[d] + taken * stride;
     } else {
       canMerge &= sliceStarts[d] == otherSliceStarts[d] &&
                   sliceLimits[d] == otherSliceLimits[d] &&

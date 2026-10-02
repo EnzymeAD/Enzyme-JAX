@@ -1,7 +1,7 @@
-JAX_COMMIT = "90eac75fcafcc36cc0a59cce35c05a78fa1199f7"
+JAX_COMMIT = "f5181873d99ced80117f03b93ec41d4d15225bf6"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "3e7cc67727eadcdb6cc19bc24292a6fe7aed100c"
+ENZYME_COMMIT = "211923c20b6b70851f69ceeb25009a9338d1af8f"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
@@ -101,6 +101,13 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     sed -i.bak0 "s/\\/\\/third_party/@xla\\/\\/third_party/g" third_party/llvm/workspace.bzl
     """,
     """
+    # Backport of llvm/llvm-project#225433: AMDGPU register allocation could
+    # place copies and spills above the exec restore of an if/else join,
+    # miscompiling kernels (llvm/llvm-project#222368). Drop once XLA's LLVM
+    # includes it.
+    sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_amdgpu_bb_prolog.patch\\\",/g" third_party/llvm/workspace.bzl
+    """,
+    """
     sed -i.bak0 "s/tf_http_archive/http_archive/g" third_party/llvm/workspace.bzl
     """,
     """
@@ -111,6 +118,21 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     """,
     """
     sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/_MSC_VER\\/_WIN32\\/g' src\\/pthreads.c\\\"], strip_prefix/g" third_party/pthreadpool/workspace.bzl
+    """,
+    """
+    sed -i.bak0 "s/def repo/load(\\\"@bazel_tools\\/\\/tools\\/build_defs\\/repo:http.bzl\\\", \\\"http_archive\\\")\\ndef repo/g" third_party/slinky/workspace.bzl
+    """,
+    """
+    sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/slinky/workspace.bzl
+    """,
+    """
+    # slinky picks its aligned allocator with #ifdef _MSC_VER, but we build
+    # Windows with mingw clang, where _MSC_VER is undefined; it then falls back
+    # to posix_memalign, which mingw does not provide.  Key the four #ifdef
+    # guards off the platform instead so the _aligned_malloc/_aligned_free pair
+    # (and the malloc.h that declares them) are used together.  The remaining
+    # _MSC_VER guards are genuinely MSVC-only syntax and stay as they are.
+    sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/#ifdef _MSC_VER\\/#ifdef _WIN32\\/g' slinky\\/base\\/util.h\\\"], strip_prefix/g" third_party/slinky/workspace.bzl
     """,
     """
     # The second command disables llvm's use of __builtin_cpu_supports on apple
@@ -208,9 +230,6 @@ sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.
 # changes: extui nneg i8->i32 over extui i1->i8 becomes extui nneg i1->i32,
 # poison whenever the bool is true. Keep nneg only if the inner ext had it.
 sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"sed -i.baknneg 's\\/auto lhs = getIn().getDefiningOp<ExtUIOp>()) {\\/auto lhs = getIn().getDefiningOp<ExtUIOp>()) { setNonNeg(lhs.getNonNeg());\\/' mlir\\/lib\\/Dialect\\/Arith\\/IR\\/ArithOps.cpp\\\",/g" third_party/llvm/workspace.bzl
-""",
-    """
-sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/LLVM_ENABLE_THREADS=1\\/LLVM_ENABLE_THREADS=0\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl
 """,
     """
 sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/HAVE_MALLINFO=1\\/DONT_HAVE_ANY_MALLINFO=0\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl

@@ -11,10 +11,10 @@ module {
       %1 = arith.index_castui %0 : index to i64
       %2 = affine.load %arg1[%arg3 + 7] : memref<34xf64, 1>
       %3 = affine.load %arg2[0, %arg4 + 7, %arg5 + 7] : memref<1x99x194xf64, 1>
-      %4 = arith.cmpf ole, %2, %3 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %4 = arith.cmpf ole, %2, %3 : f64
       %5 = arith.addi %1, %c-1_i64 : i64
       %6 = affine.load %arg2[0, %arg4 + 6, %arg5 + 7] : memref<1x99x194xf64, 1>
-      %7 = arith.cmpf ole, %2, %6 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %7 = arith.cmpf ole, %2, %6 : f64
       %8 = arith.cmpi ult, %5, %c1_i64 : i64
       %9 = arith.ori %8, %7 : i1
       %10 = arith.ori %4, %9 : i1

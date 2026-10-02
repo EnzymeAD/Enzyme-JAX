@@ -177,7 +177,7 @@ func.func @zero_le_nonneg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
 // abs(x) is always >= 0 for floats, so abs(x) < -5.0 is always false
 func.func @nonneg_lt_neg_float(%arg0: tensor<4xf64>) -> tensor<4xi1> {
     %c = stablehlo.constant dense<-5.0> : tensor<4xf64>
-    %0 = stablehlo.abs %arg0 {enzymexla.no_nan = [#enzymexla<guaranteed GUARANTEED>]} : tensor<4xf64>
+    %0 = stablehlo.abs %arg0 {enzymexla.no_nan = [#enzymexla.guaranteed<GUARANTEED>]} : tensor<4xf64>
     %cmp = stablehlo.compare LT, %0, %c, FLOAT : (tensor<4xf64>, tensor<4xf64>) -> tensor<4xi1>
     return %cmp : tensor<4xi1>
 }
@@ -188,7 +188,7 @@ func.func @nonneg_lt_neg_float(%arg0: tensor<4xf64>) -> tensor<4xi1> {
 // abs(x) >= -5.0 is always true for floats
 func.func @nonneg_ge_neg_float(%arg0: tensor<4xf64>) -> tensor<4xi1> {
     %c = stablehlo.constant dense<-5.0> : tensor<4xf64>
-    %0 = stablehlo.abs %arg0 {enzymexla.no_nan = [#enzymexla<guaranteed GUARANTEED>]} : tensor<4xf64>
+    %0 = stablehlo.abs %arg0 {enzymexla.no_nan = [#enzymexla.guaranteed<GUARANTEED>]} : tensor<4xf64>
     %cmp = stablehlo.compare GE, %0, %c, FLOAT : (tensor<4xf64>, tensor<4xf64>) -> tensor<4xi1>
     return %cmp : tensor<4xi1>
 }
@@ -199,7 +199,7 @@ func.func @nonneg_ge_neg_float(%arg0: tensor<4xf64>) -> tensor<4xi1> {
 // x*x >= 0.0 is always true for floats (when x is not NaN)
 func.func @square_ge_zero_float(%arg0: tensor<4xf64>) -> tensor<4xi1> {
     %c = stablehlo.constant dense<0.0> : tensor<4xf64>
-    %0 = stablehlo.multiply %arg0, %arg0 {enzymexla.no_nan = [#enzymexla<guaranteed GUARANTEED>]} : tensor<4xf64>
+    %0 = stablehlo.multiply %arg0, %arg0 {enzymexla.no_nan = [#enzymexla.guaranteed<GUARANTEED>]} : tensor<4xf64>
     %cmp = stablehlo.compare GE, %0, %c, FLOAT : (tensor<4xf64>, tensor<4xf64>) -> tensor<4xi1>
     return %cmp : tensor<4xi1>
 }

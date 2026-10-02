@@ -5,8 +5,8 @@ module attributes {gpu.container_module} {
     gpu.func @kern(%out: memref<?xf64, 1>) kernel {
       %c0 = arith.constant 0 : index
       %plain = memref.alloca() : memref<2xi32, 5>
-      %aligned = memref.alloca() {alignment = 8 : i64} : memref<3xf64, 5>
-      %over = memref.alloca() {alignment = 32 : i64} : memref<2x8xf64, 5>
+      %aligned = memref.alloca() alignment = 8 : memref<3xf64, 5>
+      %over = memref.alloca() alignment = 32 : memref<2x8xf64, 5>
       %one = llvm.mlir.constant(1 : i64) : i64
       %raw = llvm.alloca %one x !llvm.array<4 x f64> {alignment = 16 : i64} : (i64) -> !llvm.ptr<5>
       %raw2 = llvm.alloca %one x !llvm.array<2 x f64> : (i64) -> !llvm.ptr<5>
@@ -29,7 +29,7 @@ module attributes {gpu.container_module} {
 }
 
 // CHECK-DAG: memref.global @shared_mem_{{[0-9]+}} : memref<2xi32, 3> = uninitialized{{$}}
-// CHECK-DAG: memref.global @shared_mem_{{[0-9]+}} : memref<3xf64, 3> = uninitialized {alignment = 8 : i64}
-// CHECK-DAG: memref.global @shared_mem_{{[0-9]+}} : memref<2x8xf64, 3> = uninitialized {alignment = 32 : i64}
+// CHECK-DAG: memref.global @shared_mem_{{[0-9]+}} : memref<3xf64, 3> = uninitialized alignment = 8
+// CHECK-DAG: memref.global @shared_mem_{{[0-9]+}} : memref<2x8xf64, 3> = uninitialized alignment = 32
 // CHECK-DAG: llvm.mlir.global internal @shared_mem_{{[0-9]+}}() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<4 x f64>
 // CHECK-DAG: llvm.mlir.global internal @shared_mem_{{[0-9]+}}() {addr_space = 3 : i32} : !llvm.array<2 x f64>

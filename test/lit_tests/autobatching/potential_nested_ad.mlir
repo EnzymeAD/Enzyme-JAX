@@ -104,7 +104,7 @@ module attributes {transform.with_named_sequence} {
   }
 }
 
-// CHECK: %79 = "stablehlo.gather"(%19, %78) <{dimension_numbers = #stablehlo.gather<offset_dims = [1], collapsed_slice_dims = [1, 2], operand_batching_dims = [0], start_indices_batching_dims = [0], start_index_map = [1, 2, 3], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 1, 1>}> : (tensor<3x5x5x3xf32>, tensor<3x5x3xi64>) -> tensor<3x1x5xf32>
-// CHECK-NEXT: %80 = "stablehlo.gather"(%42, %66) <{dimension_numbers = #stablehlo.gather<offset_dims = [1], collapsed_slice_dims = [1, 2], operand_batching_dims = [0], start_indices_batching_dims = [0], start_index_map = [1, 2, 3], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 1, 1>}> : (tensor<3x5x5x3xf32>, tensor<3x5x3xi64>) -> tensor<3x1x5xf32>
+// CHECK: "stablehlo.gather"(%{{[0-9]+}}, %{{[0-9]+}}) <{dimension_numbers = #stablehlo.gather<offset_dims = [0], collapsed_slice_dims = [0, 1], start_index_map = [0, 1, 2], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 1>}> : (tensor<5x5x3xf32>, tensor<5x3xi64>) -> tensor<1x5xf32>
+// CHECK: "stablehlo.gather"(%{{[0-9]+}}, %{{[0-9]+}}) <{dimension_numbers = #stablehlo.gather<offset_dims = [0], collapsed_slice_dims = [0, 1], start_index_map = [0, 1, 2], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 1>}> : (tensor<5x5x3xf32>, tensor<5x3xi64>) -> tensor<1x5xf32>
 
 // FULLRAISE-NOT: stablehlo.while

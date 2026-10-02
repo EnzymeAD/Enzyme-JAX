@@ -50,6 +50,10 @@ struct MLIRRoundTripOptions {
   // Mode for the GPU serializer's late sink: 0 disables it, 1 sinks only
   // within the defining loop, 2 also rematerializes into deeper loops.
   int lateSink;
+  bool exportMLIROnly;
+  // Specialize a kernel over the scalars its access indices read (the
+  // strides), not only its loop bounds; the raising pass option of that name.
+  bool specializeIndexStrides;
 };
 
 extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,

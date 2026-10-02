@@ -30,7 +30,7 @@ module {
     %p = llvm.invoke @_Znwm(%c32) to ^ok unwind ^lp : (i64) -> !llvm.ptr
   ^ok:
     %q = llvm.getelementptr inbounds %p[%n] : (!llvm.ptr, i64) -> !llvm.ptr, f64
-    %v = llvm.load %q {alignment = 8 : i64} : !llvm.ptr -> f64
+    %v = llvm.load %q <alignment = 8> : !llvm.ptr -> f64
     llvm.call @sink(%v) : (f64) -> ()
     llvm.return
   ^lp:
@@ -45,7 +45,7 @@ module {
     %i = llvm.invoke @maythrow() to ^ok unwind ^lp : () -> i32
   ^ok:
     %q = llvm.getelementptr inbounds %p[%i] : (!llvm.ptr, i32) -> !llvm.ptr, f64
-    %v = llvm.load %q {alignment = 8 : i64} : !llvm.ptr -> f64
+    %v = llvm.load %q <alignment = 8> : !llvm.ptr -> f64
     llvm.call @sink(%v) : (f64) -> ()
     llvm.return
   ^lp:

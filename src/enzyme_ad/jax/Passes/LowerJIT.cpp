@@ -23,6 +23,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
@@ -79,22 +80,6 @@
 #include "mlir/Conversion/SCFToOpenMP/SCFToOpenMP.h"
 
 #include "mlir/Target/LLVMIR/Export.h"
-
-#if (defined(_WIN32) || defined(__CYGWIN__)) &&                                \
-    !defined(MLIR_CAPI_ENABLE_WINDOWS_DLL_DECLSPEC)
-// Visibility annotations disabled.
-#define MLIR_CAPI_EXPORTED
-#elif defined(_WIN32) || defined(__CYGWIN__)
-// Windows visibility declarations.
-#if MLIR_CAPI_BUILDING_LIBRARY
-#define MLIR_CAPI_EXPORTED __declspec(dllexport)
-#else
-#define MLIR_CAPI_EXPORTED __declspec(dllimport)
-#endif
-#else
-// Non-windows: use visibility attributes.
-#define MLIR_CAPI_EXPORTED __attribute__((visibility("default")))
-#endif
 
 #define DEBUG_TYPE "lower-jit"
 
@@ -247,22 +232,22 @@ llvm::orc::SymbolMap MappedSymbols;
 
 bool initJIT();
 
-extern "C" MLIR_CAPI_EXPORTED int EnzymeJaXLookupSymbol(const char *name,
-                                                        void **symbol) {
+llvm::Expected<void *> mlir::enzyme::lookupSymbol(const char *name) {
   if (!JIT)
-    return -1;
+    return llvm::make_error<llvm::StringError>("JIT not initialized",
+                                               llvm::inconvertibleErrorCode());
 
   auto mangled_name = JIT->mangleAndIntern(name);
   if (!MappedSymbols.contains(mangled_name))
-    return -1;
+    return llvm::make_error<llvm::StringError>("Symbol not found: " +
+                                                   std::string(name),
+                                               llvm::inconvertibleErrorCode());
 
   auto addr = MappedSymbols[mangled_name];
-  *symbol = addr.toPtr<void *>();
-  return 0;
+  return addr.toPtr<void *>();
 }
 
-extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
-                                                      void *symbol) {
+extern "C" void EnzymeJaXMapSymbol(const char *name, void *symbol) {
   initJIT();
   MappedSymbols[JIT->mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(symbol), llvm::JITSymbolFlags());

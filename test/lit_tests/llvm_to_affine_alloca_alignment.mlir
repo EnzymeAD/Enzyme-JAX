@@ -18,7 +18,7 @@ func.func @over_aligned() {
   return
 }
 
-// CHECK: memref.alloca() {alignment = 16 : i64} : memref<12xi32>
+// CHECK: memref.alloca() alignment = 16 : memref<12xi32>
 
 // -----
 
