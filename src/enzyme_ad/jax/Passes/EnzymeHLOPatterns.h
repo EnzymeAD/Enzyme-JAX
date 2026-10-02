@@ -116,6 +116,9 @@ void addConcatenateOpCanon(RewritePatternSet &patterns,
                            PatternBenefit benefit);
 void addTransposeElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                              MLIRContext &context, PatternBenefit benefit);
+void addTransposeElementwiseTranspose(RewritePatternSet &patterns,
+                                      bool allowPartial, MLIRContext &context,
+                                      PatternBenefit benefit);
 void addTransposeLikeBroadcastElementwise(RewritePatternSet &patterns,
                                           bool onlySingleUser,
                                           MLIRContext &context,
