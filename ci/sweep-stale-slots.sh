@@ -97,6 +97,7 @@ sweep_pass() {
   wait
 }
 
+log "started for ${slots_root}/*/${project} (own slot excluded), every ${REPEAT_EVERY_S} s for ${REPEAT_MIN} min, stale after ${STALE_MIN} min"
 end=$((SECONDS + REPEAT_MIN * 60))
 while :; do
   sweep_pass
