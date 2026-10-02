@@ -3085,8 +3085,14 @@ struct IndexEvaluator {
       if (v == ev)
         return IterationIndices{{val}, Value()};
     Operation *op = v.getDefiningOp();
-    if (!op)
+    if (!op) {
+      // the counter of a loop around this one, beyond the runs the proof
+      // enumerates: one number for the whole run, a base the offsets are
+      // measured from
+      if (invariant(v) && isSplat(v))
+        return IterationIndices{{0}, v, 1};
       return std::nullopt;
+    }
     if (isa<stablehlo::ReshapeOp, stablehlo::ConvertOp>(op))
       return eval(op->getOperand(0), iter);
     if (auto bc = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
@@ -4276,7 +4282,8 @@ static LogicalResult proveIterationsIndependent(
     const DenseMap<Operation *, unsigned> &innerIv,
     SmallVectorImpl<Accumulation> &accumulations,
     DenseMap<Operation *, Value> &scatterAccum,
-    DenseMap<Operation *, Value> &entryReads) {
+    DenseMap<Operation *, Value> &entryReads,
+    const DenseMap<Operation *, Value> &guards) {
   // A chain of plain reads and writes is decided on the symbolic form of
   // its indices, whatever the trip count, and the walk below skips it. A
   // loop whose every chain is so decided, with no private buffer, needs no
@@ -4302,6 +4309,29 @@ static LogicalResult proveIterationsIndependent(
   if (numIters > 1024)
     return failure();
   IndexEvaluator eval{whileOp.getBody(), {{iv, start, step}}};
+  // An op whose every use feeds links taken under one predicate is under it
+  // too: what it reads is discarded with them where the predicate fails.
+  DenseMap<Operation *, Value> under(guards.begin(), guards.end());
+  for (bool grown = true; grown;) {
+    grown = false;
+    whileOp.getBody().walk([&](Operation *op) {
+      if (under.count(op) || op->use_empty() || op->getNumRegions())
+        return;
+      Value g;
+      for (Operation *user : op->getUsers()) {
+        auto it = under.find(user);
+        if (it == under.end() || (g && it->second != g)) {
+          g = Value();
+          return;
+        }
+        g = it->second;
+      }
+      if (g) {
+        under[op] = g;
+        grown = true;
+      }
+    });
+  }
   // Elements are counted in row-major order over the buffer's shape, which
   // a reshape keeps, so one count serves every view of a buffer.
   // carried argument -> the elements each iteration writes, and reads: two
@@ -4830,6 +4860,17 @@ static LogicalResult proveIterationsIndependent(
                           ? linkOf.lookup(op.getOperand(0))
                       : isa<stablehlo::WhileOp>(&op) ? -1
                                                      : ++links;
+      if (isa<stablehlo::SelectOp>(&op) && chainRoot.count(op.getResult(0)))
+        continue; // the chain after some links or before them: no access
+      if (auto git = under.find(&op); git != under.end()) {
+        // a link taken only where its predicate holds, or a read that only
+        // such links use
+        auto p = eval.eval(git->second, iters);
+        if (!p || p->base || p->offsets.size() != 1)
+          return failure();
+        if (p->offsets[0] == 0)
+          continue;
+      }
       if (auto w = dyn_cast<stablehlo::WhileOp>(&op)) {
         bool carries = llvm::any_of(
             w->getOperands(), [&](Value o) { return chainRoot.count(o); });
@@ -5207,14 +5248,23 @@ struct ParallelWhileBatcher {
   // reads the proof found to see the loop-entry buffer: the carried argument
   // they are taken from
   DenseMap<Operation *, Value> entryReads;
+  // links that count only where a scalar predicate holds: the chain passes
+  // through `select(p, after them, before them)`, as a loop unrolled past
+  // its certain trips leaves it
+  DenseMap<Operation *, Value> guards;
   // The operand a link of a chain takes the buffer in as, or null when `op`
-  // is not one: a write into the buffer, a reshape of it, or an add to it. A
+  // is not one: a write into the buffer, a reshape of it, an add to it, or a
+  // select between two of its states (the state after the links it chooses
+  // between, as the buffer the batched choice shares). A
   // concatenate rebuilding the buffer takes it in through its slices, so it
   // is a link when its result is a state of the buffer.
   OpOperand *chainLinkOperand(Operation *op) const {
     if (!isa<stablehlo::ScatterOp, stablehlo::DynamicUpdateSliceOp,
-             stablehlo::ReshapeOp, stablehlo::AddOp>(op))
+             stablehlo::ReshapeOp, stablehlo::AddOp, stablehlo::SelectOp>(op))
       return nullptr;
+    if (isa<stablehlo::SelectOp>(op))
+      return chainLinks.count(&op->getOpOperand(1)) ? &op->getOpOperand(1)
+                                                    : nullptr;
     for (OpOperand &in : op->getOpOperands())
       if (chainLinks.count(&in))
         return &in;
@@ -5301,10 +5351,24 @@ struct ParallelWhileBatcher {
     OpOperand &yield = ret->getOpOperand(arg.getArgNumber());
     SmallVector<Value> chain{arg};
     SmallVector<OpOperand *> links;
+    // the chain state a select falls back to, and its predicate: the links
+    // walked until that state is reached are taken only where it holds
+    SmallVector<std::pair<Value, Value>> pending;
     for (Value cur = yield.get(); cur != arg;) {
+      while (!pending.empty() && cur == pending.back().first)
+        pending.pop_back();
       Operation *link = cur.getDefiningOp();
       Value prev;
-      if (auto sc = dyn_cast_or_null<stablehlo::ScatterOp>(link)) {
+      if (auto sel = dyn_cast_or_null<stablehlo::SelectOp>(link)) {
+        // the chain after some links, or before them: it takes the buffer in
+        // as both
+        auto pty = dyn_cast<RankedTensorType>(sel.getPred().getType());
+        if (!pty || pty.getRank() != 0 || !pending.empty())
+          return failure();
+        pending.push_back({sel.getOnFalse(), sel.getPred()});
+        links.push_back(&sel->getOpOperand(2));
+        links.push_back(&sel->getOpOperand(1));
+      } else if (auto sc = dyn_cast_or_null<stablehlo::ScatterOp>(link)) {
         if (sc.getInputs().size() != 1)
           return failure();
         links.push_back(&sc->getOpOperand(0));
@@ -5313,6 +5377,10 @@ struct ParallelWhileBatcher {
         // a window written, or the same elements in the same order seen
         // through another shape
         links.push_back(&link->getOpOperand(0));
+      } else if (!pending.empty()) {
+        // only a scatter, or a window written as one, can be made to write
+        // nothing where the predicate does not hold
+        return failure();
       } else if (auto w = dyn_cast_or_null<stablehlo::WhileOp>(link)) {
         links.push_back(
             &w->getOpOperand(cast<OpResult>(cur).getResultNumber()));
@@ -5340,11 +5408,23 @@ struct ParallelWhileBatcher {
       }
       if (!prev)
         prev = links.back()->get();
+      if (!pending.empty() && !isa<stablehlo::SelectOp>(link)) {
+        // the predicate must be known before the link is written
+        Operation *pd = pending.back().second.getDefiningOp();
+        if (pd && pd->getBlock() == link->getBlock() &&
+            !pd->isBeforeInBlock(link))
+          return failure();
+        guards[link] = pending.back().second;
+      }
       if (chainRoot.count(cur))
         return failure();
       chain.push_back(cur);
       cur = prev;
     }
+    while (!pending.empty() && pending.back().first == arg)
+      pending.pop_back(); // a select back to the argument itself
+    if (!pending.empty())
+      return failure(); // the fallback state is not on the chain
     for (Value v : chain)
       chainRoot[v] = k;
     // A reshape of a chain value is another view of the same buffer, read
@@ -5580,6 +5660,23 @@ struct ParallelWhileBatcher {
     return isBatched(v) ? m : broadcastToIterations(rewriter, loc, m, numIters);
   }
 
+  // The batched indices of a guarded link: an iteration that does not take
+  // it sends its rows out of the buffer, where the scatter drops them.
+  Value droppedWhereNotTaken(Value idx, Value guard, Type bufferType) {
+    auto ity = cast<RankedTensorType>(idx.getType());
+    int64_t out = 0;
+    for (int64_t n : cast<RankedTensorType>(bufferType).getShape())
+      out = std::max(out, n);
+    Value p = operand(guard); // one per iteration
+    Value pb = stablehlo::BroadcastInDimOp::create(
+        rewriter, loc, ity.clone(rewriter.getI1Type()), p,
+        rewriter.getDenseI64ArrayAttr({0}));
+    Value dropped = stablehlo::ConstantOp::create(
+        rewriter, loc,
+        DenseElementsAttr::get(ity, APInt(ity.getElementTypeBitWidth(), out)));
+    return stablehlo::SelectOp::create(rewriter, loc, pb, idx, dropped);
+  }
+
   // The nested loop again, carrying the batched values with their leading
   // dimension and a buffer as the chain of scatters so far.
   void emitWhile(stablehlo::WhileOp w) {
@@ -5712,8 +5809,13 @@ struct ParallelWhileBatcher {
         bm.map(v, v == shared || scalarBound ? map.lookupOrDefault(src)
                                              : operand(src));
       }
-      if (auto cc = dyn_cast<stablehlo::ConcatenateOp>(&op);
-          cc && isChainLink(&op)) {
+      if (auto sel = dyn_cast<stablehlo::SelectOp>(&op);
+          sel && isChainLink(&op)) {
+        // The links it chooses between were written by every iteration that
+        // takes them, so the shared buffer after them is the choice.
+        bm.map(sel.getResult(), map.lookupOrDefault(sel.getOnTrue()));
+      } else if (auto cc = dyn_cast<stablehlo::ConcatenateOp>(&op);
+                 cc && isChainLink(&op)) {
         // Another view of the shared buffer; what its pieces add to it is
         // applied once, after the body, with the iterations summed.
         bm.map(cc.getResult(), map.lookupOrDefault(concatSource(cc)));
@@ -5724,7 +5826,21 @@ struct ParallelWhileBatcher {
         bm.map(add.getResult(), map.lookupOrDefault(prev));
       } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&op);
                  dus && isChainLink(&op)) {
-        if (!emitTiledWindows(dus, bm))
+        auto git = guards.find(&op);
+        if (git != guards.end()) {
+          // Every iteration's window as one scatter, the windows of the
+          // iterations that do not take the link dropped.
+          (void)stablehlo::batchDynamicUpdateSliceAsScatter(
+              dus, rewriter, bm, batchSizes, /*operandIsBatched=*/false);
+          auto nsc =
+              bm.lookup(dus.getResult()).getDefiningOp<stablehlo::ScatterOp>();
+          OpBuilder::InsertionGuard g(rewriter);
+          rewriter.setInsertionPoint(nsc);
+          Value masked = droppedWhereNotTaken(
+              nsc.getScatterIndices(), git->second, dus.getOperand().getType());
+          rewriter.modifyOpInPlace(
+              nsc, [&]() { nsc.getScatterIndicesMutable().assign(masked); });
+        } else if (!emitTiledWindows(dus, bm))
           // Every iteration's window, written by one scatter into the buffer.
           (void)stablehlo::batchDynamicUpdateSliceAsScatter(
               dus, rewriter, bm, batchSizes, /*operandIsBatched=*/false);
@@ -5741,9 +5857,13 @@ struct ParallelWhileBatcher {
         auto acc = scatterAccum.find(&op);
         Value upd = acc != scatterAccum.end() ? operand(acc->second)
                                               : bm.lookup(sc.getUpdates()[0]);
+        Value idx = bm.lookup(sc.getScatterIndices());
+        if (auto git = guards.find(&op); git != guards.end())
+          idx = droppedWhereNotTaken(idx, git->second,
+                                     sc.getInputs()[0].getType());
         auto nsc = stablehlo::ScatterOp::create(
-            rewriter, loc, ValueRange{bm.lookup(sc.getInputs()[0])},
-            bm.lookup(sc.getScatterIndices()), ValueRange{upd}, ndn,
+            rewriter, loc, ValueRange{bm.lookup(sc.getInputs()[0])}, idx,
+            ValueRange{upd}, ndn,
             /*indices_are_sorted=*/false, /*unique_indices=*/false);
         if (acc != scatterAccum.end()) {
           // every iteration's x added to the element, duplicates included
@@ -5964,7 +6084,7 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
                      whileOp, body, info, batcher.chains, batcher.chainLinks,
                      iv, numIters, start, step, batcher.chainRoot, privateRoot,
                      passThrough, batcher.innerIv, accumulations,
-                     batcher.scatterAccum, batcher.entryReads)))
+                     batcher.scatterAccum, batcher.entryReads, batcher.guards)))
     return failure();
   // Without the proof (a tagged loop) a concatenate rebuilding a buffer, or
   // an add to it, is only understood as accumulation when proved so.
