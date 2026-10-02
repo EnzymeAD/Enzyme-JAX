@@ -3684,6 +3684,20 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
   DenseMap<unsigned, SmallVector<DenseSet<int64_t>>> readEntry;
   DenseSet<Operation *> notEntry;
   DenseMap<Operation *, Value> entryCandidates;
+  // The links of the chain in body order, and every write of an element as
+  // (iteration, link). A read of a chain value after link L, batched, sees
+  // the entry buffer with every iteration's writes up to L; sequentially it
+  // sees the writes of the earlier iterations and its own up to L. The two
+  // agree for an element unless an earlier iteration writes it after L or a
+  // later one up to L.
+  DenseMap<Value, int64_t> linkOf;
+  int64_t links = 0;
+  DenseMap<unsigned, DenseMap<int64_t, SmallVector<int64_t, 4>>> writesAt;
+  struct ReadAt {
+    int64_t iter, link;
+    SmallVector<int64_t> elems;
+  };
+  DenseMap<unsigned, SmallVector<ReadAt>> readsAt;
   // the slots every iteration adds to: they may repeat between iterations,
   // but no iteration may plainly read or write them
   DenseMap<unsigned, SmallVector<DenseSet<int64_t>>> accumulated;
@@ -4176,6 +4190,12 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
       [&](Block &blk, SmallVectorImpl<int64_t> &iters) -> LogicalResult {
     int64_t k = iters[0];
     for (Operation &op : blk.without_terminator()) {
+      for (Value r : op.getResults())
+        if (chainRoot.count(r) && !linkOf.count(r))
+          linkOf[r] = isa<stablehlo::ReshapeOp>(&op)
+                          ? linkOf.lookup(op.getOperand(0))
+                      : isa<stablehlo::WhileOp>(&op) ? -1
+                                                     : ++links;
       if (auto w = dyn_cast<stablehlo::WhileOp>(&op)) {
         bool carries = llvm::any_of(
             w->getOperands(), [&](Value o) { return chainRoot.count(o); });
@@ -4204,6 +4224,9 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
         }
         iters.pop_back();
         eval.ivs.pop_back();
+        for (Value r : op.getResults())
+          if (linkOf.lookup(r) == -1)
+            linkOf[r] = links;
         continue;
       }
       for (Region &r : op.getRegions())
@@ -4356,6 +4379,18 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
       sets[k].insert(a->elems.begin(), a->elems.end());
       if (entry)
         entryCandidates[&op] = body.getArgument(arg);
+      if (!isPrivate && !scatterAccum.count(&op)) {
+        if (write) {
+          int64_t link = linkOf.lookup(op.getResult(0));
+          auto &at = writesAt[arg];
+          for (int64_t e : a->elems)
+            at[e].push_back(k * (int64_t(1) << 32) + link);
+        } else if (!entry) {
+          readsAt[arg].push_back(
+              {k, linkOf.lookup(buffer),
+               SmallVector<int64_t>(a->elems.begin(), a->elems.end())});
+        }
+      }
     }
     return success();
   };
@@ -4365,6 +4400,8 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
     readFrom.clear();
     readEntry.clear();
     entryCandidates.clear();
+    writesAt.clear();
+    readsAt.clear();
     writtenHere.clear();
     accumulated.clear();
     accumulatedAnywhere.clear();
@@ -4400,12 +4437,37 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
           for (int64_t e : w[i]) {
             if (i < j && w[j].contains(e))
               return failure(); // written by both
-            if (rit != readFrom.end() && rit->second[j].contains(e))
-              return failure(); // written by one, read by the other
-            if (j > i && eit != readEntry.end() && eit->second[j].contains(e))
-              return failure(); // written, then read from the entry buffer
+            if (j > i && eit != readEntry.end() && eit->second[j].contains(e)) {
+              // written, then read from the entry buffer: those reads are
+              // taken from the chain instead, and judged by their link
+              for (auto &[op, v] : entryCandidates)
+                if (cast<BlockArgument>(v).getArgNumber() == arg)
+                  notEntry.insert(op);
+              return success(); // the proof is repeated
+            }
             if (ait != accumulated.end() && ait->second[j].contains(e))
               return failure(); // written by one, added to by the other
+          }
+        }
+      (void)rit;
+    }
+    // a read of the chain after link L by iteration j: no earlier iteration
+    // writes the element after L, no later one up to L
+    for (auto &[arg, reads] : readsAt) {
+      auto wit = writesAt.find(arg);
+      if (wit == writesAt.end())
+        continue;
+      for (ReadAt &rd : reads)
+        for (int64_t e : rd.elems) {
+          auto it = wit->second.find(e);
+          if (it == wit->second.end())
+            continue;
+          for (int64_t w : it->second) {
+            int64_t i = w >> 32, l = w & 0xffffffff;
+            if (i == rd.iter)
+              continue;
+            if ((i < rd.iter && l > rd.link) || (i > rd.iter && l <= rd.link))
+              return failure();
           }
         }
     }
