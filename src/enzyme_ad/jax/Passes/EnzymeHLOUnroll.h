@@ -26,12 +26,20 @@ struct WhileUnroll
 
   int64_t maxNumIterations = -1;
   int64_t maxOperationThreshold = -1;
+  // a loop whose limit is only bounded: the most trips it may unroll to
+  // (-1: as maxNumIterations), and whether the copies past the certain
+  // trips go under a stablehlo.if rather than a select of their results
+  int64_t maxBoundedIterations = -1;
+  bool boundedGuardIf = false;
 
   WhileUnroll(int64_t maxNumIterations, int64_t maxOperationThreshold,
-              MLIRContext *ctx, PatternBenefit benefit = 1)
+              MLIRContext *ctx, PatternBenefit benefit = 1,
+              int64_t maxBoundedIterations = -1, bool boundedGuardIf = false)
       : CheckedOpRewritePattern<stablehlo::WhileOp, WhileUnroll>(ctx, benefit),
         maxNumIterations(maxNumIterations),
-        maxOperationThreshold(maxOperationThreshold) {}
+        maxOperationThreshold(maxOperationThreshold),
+        maxBoundedIterations(maxBoundedIterations),
+        boundedGuardIf(boundedGuardIf) {}
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
                                     PatternRewriter &rewriter) const;
@@ -40,4 +48,6 @@ struct WhileUnroll
 LogicalResult unrollWhileOp(mlir::stablehlo::WhileOp op, RewriterBase &rewriter,
                             int64_t maxNumIterations = -1,
                             int64_t maxOperationThreshold = -1,
-                            SmallVectorImpl<Value> *replacements = nullptr);
+                            SmallVectorImpl<Value> *replacements = nullptr,
+                            int64_t maxBoundedIterations = -1,
+                            bool boundedGuardIf = false);
