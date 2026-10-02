@@ -162,3 +162,17 @@ func.func @main() {
 
   return
 }
+
+// With static bounds on both operands the op becomes a lookup into a
+// compile-time table indexed by (num_steps, budget); the bounds are inclusive.
+func.func @bounded(%n: tensor<i64>, %s: tensor<i64>) -> tensor<i64> {
+  %r = enzyme.binomial_progress %n, %s {max_num_steps = 4 : i64, max_budget = 2 : i64} : tensor<i64>
+  return %r : tensor<i64>
+}
+
+// CHECK-LABEL: func.func @bounded(
+// CHECK-SAME:    %[[N:.+]]: tensor<i64>, %[[S:.+]]: tensor<i64>
+// CHECK-NEXT:    %[[T:.+]] = stablehlo.constant dense<{{\[}}[0, 0, 0], [1, 1, 1], [2, 2, 1], [3, 3, 2], [4, 4, 3]{{\]}}> : tensor<5x3xi64>
+// CHECK-NEXT:    %[[DS:.+]] = stablehlo.dynamic_slice %[[T]], %[[N]], %[[S]], sizes = [1, 1]
+// CHECK-NEXT:    %[[R:.+]] = stablehlo.reshape %[[DS]] : (tensor<1x1xi64>) -> tensor<i64>
+// CHECK-NEXT:    return %[[R]] : tensor<i64>
