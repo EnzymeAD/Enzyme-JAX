@@ -226,10 +226,9 @@ struct GPUWrapperToKernelCallPass
     Value blockx = toTensorI64(launch.getBlockSizeX());
     Value blocky = toTensorI64(launch.getBlockSizeY());
     Value blockz = toTensorI64(launch.getBlockSizeZ());
-    Value shmem =
-        launch.getDynamicSharedMemorySize()
-            ? toTensorI64(launch.getDynamicSharedMemorySize())
-            : details::makeI64Constant(launch.getLoc(), builder, 0);
+    Value shmem = launch.getDynamicSharedMemorySize()
+                      ? toTensorI64(launch.getDynamicSharedMemorySize())
+                      : details::makeI64Constant(launch.getLoc(), builder, 0);
     if (!gridx || !gridy || !gridz || !blockx || !blocky || !blockz || !shmem)
       return launch.emitError("launch dimensions must be constants");
 
@@ -244,10 +243,15 @@ struct GPUWrapperToKernelCallPass
 
     MLIRContext *ctx = launch.getContext();
     SmallVector<Attribute> aliases;
-    for (unsigned i = 0, e = operands.size(); i < e; ++i)
+    // Result i aliases operand i; a single result is not indexed.
+    for (unsigned i = 0, e = operands.size(); i < e; ++i) {
+      SmallVector<int64_t> outputTupleIndices;
+      if (e != 1)
+        outputTupleIndices.push_back(i);
       aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
-          ctx, /*outputTupleIndices=*/{}, /*operandIndex=*/i,
+          ctx, outputTupleIndices, /*operandIndex=*/i,
           /*operandTupleIndices=*/{}));
+    }
 
     auto gpuFunc = symbolTables.lookupNearestSymbolFrom<gpu::GPUFuncOp>(
         launch, launch.getKernel());
@@ -259,7 +263,7 @@ struct GPUWrapperToKernelCallPass
         SymbolRefAttr::get(fn.getSymNameAttr()), gridx, gridy, gridz, blockx,
         blocky, blockz, shmem, clusterx, clustery, clusterz, operands,
         /*backend_config=*/builder.getStringAttr(""),
-        /*operand_layouts=*/nullptr, /*result_layouts=*/nullptr,
+        /*operand_layouts=*/nullptr,
         /*arg_attrs=*/nullptr, /*res_attrs=*/nullptr,
         ArrayAttr::get(ctx, aliases), /*xla_side_effect_free=*/nullptr);
   }

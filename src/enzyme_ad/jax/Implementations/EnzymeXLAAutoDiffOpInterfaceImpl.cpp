@@ -377,12 +377,42 @@ static RankedTensorType getTensorType(Value buffer) {
   return RankedTensorType::get(type.getShape(), type.getElementType());
 }
 
+// The layout of the input `i` of a jit_region, or null if it has no
+// operand_layouts.
+static Attribute getInputLayout(JITRegionOp region, unsigned i) {
+  auto layouts = dyn_cast_or_null<ArrayAttr>(region.getOperandLayoutsAttr());
+  return layouts ? layouts[i] : nullptr;
+}
+
+// The layouts of the inputs of a jit_region, null if it has no
+// operand_layouts.
+static SmallVector<Attribute> getInputLayouts(JITRegionOp region) {
+  SmallVector<Attribute> layouts;
+  for (unsigned i = 0, e = region.getInputs().size(); i < e; ++i)
+    layouts.push_back(getInputLayout(region, i));
+  return layouts;
+}
+
+// The default, row-major, layout of a buffer.
+static Attribute getDefaultLayout(Builder &builder, Type type) {
+  int64_t rank = cast<ShapedType>(type).getRank();
+  return builder.getIndexTensorAttr(
+      llvm::to_vector(llvm::reverse(llvm::seq<int64_t>(0, rank))));
+}
+
 // Moves the body of a jit_region to a new one with the given inputs, with one
-// result per input.
+// result per input. If the region has operand_layouts, the input `i` of the
+// new region has the layout `layouts[i]`.
 static JITRegionOp rebuildJITRegion(RewriterBase &rewriter, JITRegionOp region,
-                                    ValueRange inputs) {
+                                    ValueRange inputs,
+                                    ArrayRef<Attribute> layouts) {
   NamedAttrList attrs(region->getAttrDictionary());
   attrs.erase(region.getOutputOperandAliasesAttrName());
+  if (region.getOperandLayoutsAttr()) {
+    assert(layouts.size() == inputs.size() && "expected a layout per input");
+    attrs.set(region.getOperandLayoutsAttrName(),
+              rewriter.getArrayAttr(layouts));
+  }
   auto newRegion = JITRegionOp::create(rewriter, region.getLoc(),
                                        inputs.getTypes(), inputs, attrs);
   rewriter.inlineRegionBefore(region.getBody(), newRegion.getBody(),
@@ -473,6 +503,13 @@ struct JITRegionOpInterfaceReverse
 
     auto revRegion = JITRegionOp::create(builder, region.getLoc(),
                                          ValueRange(seeds).getTypes(), seeds);
+    // The kernels index a shadow like its primal buffer.
+    if (region.getOperandLayoutsAttr()) {
+      SmallVector<Attribute> layouts;
+      for (BlockArgument arg : activeBuffers)
+        layouts.push_back(getInputLayout(region, arg.getArgNumber()));
+      revRegion.setOperandLayoutsAttr(builder.getArrayAttr(layouts));
+    }
 
     Block *revBB;
     {
@@ -562,6 +599,7 @@ struct JITRegionOpInterfaceReverse
     // gradient tensor.
     Block *newBB = newRegion.getBodyBlock();
     SmallVector<Value> inputs(newRegion.getInputs());
+    SmallVector<Attribute> layouts = getInputLayouts(newRegion);
     SmallVector<int64_t> shadowInputs;
     for (BlockArgument arg : activeBuffers) {
       BlockArgument shadow = newBB->addArgument(
@@ -569,11 +607,12 @@ struct JITRegionOpInterfaceReverse
       shadowInputs.push_back(inputs.size());
       inputs.push_back(cast<AutoDiffTypeInterface>(getTensorType(shadow))
                            .createNullValue(builder, arg.getLoc()));
+      layouts.push_back(getInputLayout(newRegion, arg.getArgNumber()));
       gutils->invertedPointers.map(arg, shadow);
     }
 
     IRRewriter rewriter(builder);
-    auto augmented = rebuildJITRegion(rewriter, newRegion, inputs);
+    auto augmented = rebuildJITRegion(rewriter, newRegion, inputs, layouts);
     augmented->setAttr(kJITRegionShadowsAttrName,
                        builder.getDenseI64ArrayAttr(shadowInputs));
     for (OpResult result : region->getResults()) {
@@ -633,7 +672,9 @@ public:
       rewriter.setInsertionPoint(rev);
       SmallVector<Value> inputs(rev.getInputs());
       llvm::append_range(inputs, revNewInputs);
-      auto newRev = rebuild(rev, inputs);
+      SmallVector<Attribute> layouts = getInputLayouts(rev);
+      llvm::append_range(layouts, revNewLayouts);
+      auto newRev = rebuild(rev, inputs, layouts);
       replaceJITRegion(rewriter, rev, newRev);
       rev = newRev;
     }
@@ -644,11 +685,14 @@ public:
       // The allocations are uninitialized: any contents will do.
       rewriter.setInsertionPoint(fwd);
       SmallVector<Value> inputs(fwd.getInputs());
-      for (Value alloc : newBuffers)
+      SmallVector<Attribute> layouts = getInputLayouts(fwd);
+      for (Value alloc : newBuffers) {
         inputs.push_back(cast<AutoDiffTypeInterface>(getTensorType(alloc))
                              .createNullValue(rewriter, alloc.getLoc()));
+        layouts.push_back(getDefaultLayout(rewriter, alloc.getType()));
+      }
 
-      auto newFwd = rebuild(fwd, inputs);
+      auto newFwd = rebuild(fwd, inputs, layouts);
       Block *body = newFwd.getBodyBlock();
       for (Value alloc : newBuffers) {
         BlockArgument arg = body->addArgument(alloc.getType(), alloc.getLoc());
@@ -671,8 +715,9 @@ public:
   }
 
 private:
-  JITRegionOp rebuild(JITRegionOp region, ValueRange inputs) {
-    return rebuildJITRegion(rewriter, region, inputs);
+  JITRegionOp rebuild(JITRegionOp region, ValueRange inputs,
+                      ArrayRef<Attribute> layouts) {
+    return rebuildJITRegion(rewriter, region, inputs, layouts);
   }
 
   Block *revBody() { return rev.getBodyBlock(); }
@@ -702,12 +747,16 @@ private:
              << "cannot carry a buffer of type " << buffer.getType()
              << " out of a jit_region for the reverse pass";
 
+    // The reverse buffer has the layout of the forward one, so that the
+    // kernels find the contents where they left them.
     unsigned resultNumber;
     if (auto arg = dyn_cast<BlockArgument>(buffer)) {
       resultNumber = arg.getArgNumber();
+      revNewLayouts.push_back(getInputLayout(fwd, resultNumber));
     } else {
       resultNumber = fwd.getInputs().size() + newBuffers.size();
       newBuffers.push_back(buffer);
+      revNewLayouts.push_back(getDefaultLayout(rewriter, type));
     }
 
     RankedTensorType tensorType = getTensorType(buffer);
@@ -801,6 +850,8 @@ private:
   SmallVector<Value> newBuffers;
   // Contents of the forward buffers to pass to the reverse region.
   SmallVector<Value> revNewInputs;
+  // Their layouts, null if the forward region has no operand_layouts.
+  SmallVector<Attribute> revNewLayouts;
   // The caches of the forward results passed to the reverse region.
   SmallVector<std::pair<Value, unsigned>> exports;
 };
@@ -927,14 +978,17 @@ struct JITRegionOpEnzymeOpsRemover
     for (int64_t input : shadows.asArrayRef())
       isShadow.set(input);
     SmallVector<Value> inputs;
+    SmallVector<Attribute> layouts;
     for (auto [i, input] : llvm::enumerate(fwd.getInputs()))
-      if (!isShadow.test(i))
+      if (!isShadow.test(i)) {
         inputs.push_back(input);
+        layouts.push_back(getInputLayout(fwd, i));
+      }
     body->eraseArguments(isShadow);
 
     // The augmented region has one result per input.
     rewriter.setInsertionPoint(fwd);
-    auto stripped = rebuildJITRegion(rewriter, fwd, inputs);
+    auto stripped = rebuildJITRegion(rewriter, fwd, inputs, layouts);
     stripped->removeAttr(kJITRegionShadowsAttrName);
     unsigned next = 0;
     for (auto [i, result] : llvm::enumerate(fwd->getResults()))
