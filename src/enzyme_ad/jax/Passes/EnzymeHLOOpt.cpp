@@ -15871,17 +15871,273 @@ struct ReduceConstProp final
     return step(fold, init, v);
   }
 
+  // The type of `t` with the dimensions `dims` dropped.
+  static RankedTensorType dropped(RankedTensorType t, ArrayRef<int64_t> dims) {
+    SmallVector<int64_t> shape;
+    for (auto [d, n] : llvm::enumerate(t.getShape()))
+      if (!llvm::is_contained(dims, (int64_t)d))
+        shape.push_back(n);
+    return RankedTensorType::get(shape, t.getElementType());
+  }
+
+  // The position of dimension `d` once `dims` are dropped.
+  static int64_t position(int64_t d, ArrayRef<int64_t> dims) {
+    int64_t p = 0;
+    for (int64_t k = 0; k < d; ++k)
+      p += !llvm::is_contained(dims, k);
+    return p;
+  }
+
+  // The value with `dims` dropped, when it is the same along them: a splat,
+  // a broadcast from other dimensions, or a convert of one. Decides first,
+  // and builds only once every check has passed; without a builder it only
+  // decides (and returns a null value).
+  static std::optional<Value> invariant(Value v, ArrayRef<int64_t> dims,
+                                        OpBuilder *b, Location loc) {
+    auto ty = dyn_cast<RankedTensorType>(v.getType());
+    if (!ty || !ty.hasStaticShape())
+      return std::nullopt;
+    Operation *op = v.getDefiningOp();
+    if (!op)
+      return std::nullopt;
+    SplatElementsAttr splat;
+    if (matchPattern(v, m_Constant(&splat))) {
+      if (!b)
+        return Value();
+      return stablehlo::ConstantOp::create(
+          *b, loc, splat.resizeSplat(dropped(ty, dims)));
+    }
+    if (auto bc = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+      SmallVector<int64_t> map;
+      for (int64_t d : bc.getBroadcastDimensions()) {
+        if (llvm::is_contained(dims, d))
+          return std::nullopt;
+        map.push_back(position(d, dims));
+      }
+      if (!b)
+        return Value();
+      return stablehlo::BroadcastInDimOp::create(*b, loc, dropped(ty, dims),
+                                                 bc.getOperand(), map);
+    }
+    if (auto cv = dyn_cast<stablehlo::ConvertOp>(op)) {
+      auto in = invariant(cv.getOperand(), dims, b, loc);
+      if (!in)
+        return std::nullopt;
+      if (!b)
+        return Value();
+      return stablehlo::ConvertOp::create(*b, loc, dropped(ty, dims), *in);
+    }
+    return std::nullopt;
+  }
+
+  // The largest (largest) or smallest element over the dimensions `dims` of
+  // an integer value, as a value of the shape that leaves: a value the same
+  // along them is itself, an iota's is an end, an add or subtract moves
+  // with its side that varies, a product or quotient by a constant with the
+  // constant's sign, a maximum (minimum) is the largest (smallest) of its
+  // sides', and (max(c, x) + k) - x, the shape of the lanes' trip counts,
+  // is max(c - x, 0) + k. Each value is visited once.
+  //
+  // The same code decides and builds: called without a builder it only
+  // decides, and every case checks its operands before it creates an op, so
+  // nothing is built on a path that fails. With a builder it is called only
+  // once the decision was yes, and then cannot fail.
+  using Cache = DenseMap<std::pair<Value, int>, Value>;
+  static std::optional<Value> extremum(Value v, ArrayRef<int64_t> dims,
+                                       bool largest, OpBuilder *b, Location loc,
+                                       Cache &cache) {
+    if (auto it = cache.find({v, (int)largest}); it != cache.end())
+      return it->second;
+    auto r = extremumOf(v, dims, largest, b, loc, cache);
+    assert((!b || r) && "decided legal, then built");
+    if (r)
+      cache[{v, (int)largest}] = *r;
+    return r;
+  }
+
+  static std::optional<Value> extremumOf(Value v, ArrayRef<int64_t> dims,
+                                         bool largest, OpBuilder *b,
+                                         Location loc, Cache &cache) {
+    auto ty = dyn_cast<RankedTensorType>(v.getType());
+    if (!ty || !ty.hasStaticShape() || !isa<IntegerType>(ty.getElementType()))
+      return std::nullopt;
+    if (invariant(v, dims, nullptr, loc))
+      return b ? invariant(v, dims, b, loc) : Value();
+    Operation *op = v.getDefiningOp();
+    if (!op)
+      return std::nullopt;
+    auto ity = cast<IntegerType>(ty.getElementType());
+    auto rty = dropped(ty, dims);
+    if (auto iota = dyn_cast<stablehlo::IotaOp>(op)) {
+      int64_t d = iota.getIotaDimension();
+      if (!b)
+        return Value();
+      if (!llvm::is_contained(dims, d))
+        return stablehlo::IotaOp::create(*b, loc, rty, position(d, dims));
+      return stablehlo::ConstantOp::create(
+          *b, loc,
+          DenseElementsAttr::get(
+              rty, APInt(ity.getWidth(), largest ? ty.getDimSize(d) - 1 : 0)));
+    }
+    if (auto bc = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+      // the operand's dimensions that land in a reduced one are reduced
+      SmallVector<int64_t> inner, map;
+      for (auto [i, d] : llvm::enumerate(bc.getBroadcastDimensions()))
+        if (llvm::is_contained(dims, d))
+          inner.push_back(i);
+        else
+          map.push_back(position(d, dims));
+      auto in = extremum(bc.getOperand(), inner, largest, b, loc, cache);
+      if (!in)
+        return std::nullopt;
+      if (!b)
+        return Value();
+      return stablehlo::BroadcastInDimOp::create(*b, loc, rty, *in, map);
+    }
+    if (auto cv = dyn_cast<stablehlo::ConvertOp>(op)) {
+      // a widening between signed integers keeps the order
+      auto fty = dyn_cast<IntegerType>(
+          cast<RankedTensorType>(cv.getOperand().getType()).getElementType());
+      if (!fty || fty.isUnsigned() || ity.isUnsigned() ||
+          fty.getWidth() > ity.getWidth())
+        return std::nullopt;
+      auto in = extremum(cv.getOperand(), dims, largest, b, loc, cache);
+      if (!in)
+        return std::nullopt;
+      if (!b)
+        return Value();
+      return stablehlo::ConvertOp::create(*b, loc, rty, *in);
+    }
+    if (isa<stablehlo::NegOp>(op)) {
+      auto in = extremum(op->getOperand(0), dims, !largest, b, loc, cache);
+      if (!in)
+        return std::nullopt;
+      if (!b)
+        return Value();
+      return stablehlo::NegOp::create(*b, loc, *in);
+    }
+    if (op->getNumOperands() != 2)
+      return std::nullopt;
+    Value lhs = op->getOperand(0), rhs = op->getOperand(1);
+    if (isa<stablehlo::AddOp, stablehlo::SubtractOp>(op)) {
+      bool sub = isa<stablehlo::SubtractOp>(op);
+      // the side that is the same along the dimensions moves the other
+      if (invariant(rhs, dims, nullptr, loc)) {
+        auto l = extremum(lhs, dims, largest, b, loc, cache);
+        if (!l)
+          return std::nullopt;
+        if (!b)
+          return Value();
+        Value same = *invariant(rhs, dims, b, loc);
+        return sub ? stablehlo::SubtractOp::create(*b, loc, *l, same)
+                         .getResult()
+                   : stablehlo::AddOp::create(*b, loc, *l, same).getResult();
+      }
+      if (invariant(lhs, dims, nullptr, loc)) {
+        auto r = extremum(rhs, dims, sub ? !largest : largest, b, loc, cache);
+        if (!r)
+          return std::nullopt;
+        if (!b)
+          return Value();
+        Value same = *invariant(lhs, dims, b, loc);
+        return sub ? stablehlo::SubtractOp::create(*b, loc, same, *r)
+                         .getResult()
+                   : stablehlo::AddOp::create(*b, loc, same, *r).getResult();
+      }
+      if (!sub)
+        return std::nullopt;
+      // (max(c, x) + k) - x is max(c - x, 0) + k, the lanes' trip count of
+      // the sum-factorized kernels: with c and k the same along the
+      // dimensions, its largest is max(c - smallest x, 0) + k (and the
+      // smallest of (min(c, x) + k) - x is min(c - largest x, 0) + k)
+      Value a = lhs, k;
+      if (auto add = a.getDefiningOp<stablehlo::AddOp>()) {
+        if (invariant(add.getRhs(), dims, nullptr, loc)) {
+          a = add.getLhs();
+          k = add.getRhs();
+        } else if (invariant(add.getLhs(), dims, nullptr, loc)) {
+          a = add.getRhs();
+          k = add.getLhs();
+        }
+      }
+      Operation *mm = a.getDefiningOp();
+      if (!mm ||
+          !(largest ? isa<stablehlo::MaxOp>(mm) : isa<stablehlo::MinOp>(mm)))
+        return std::nullopt;
+      Value c = mm->getOperand(0) == rhs   ? mm->getOperand(1)
+                : mm->getOperand(1) == rhs ? mm->getOperand(0)
+                                           : Value();
+      if (!c || !invariant(c, dims, nullptr, loc))
+        return std::nullopt;
+      auto x = extremum(rhs, dims, !largest, b, loc, cache);
+      if (!x)
+        return std::nullopt;
+      if (!b)
+        return Value();
+      Value d = stablehlo::SubtractOp::create(*b, loc,
+                                              *invariant(c, dims, b, loc), *x);
+      Value zero = stablehlo::ConstantOp::create(
+          *b, loc, cast<ElementsAttr>(b->getZeroAttr(rty)));
+      Value e = largest
+                    ? stablehlo::MaxOp::create(*b, loc, d, zero).getResult()
+                    : stablehlo::MinOp::create(*b, loc, d, zero).getResult();
+      if (!k)
+        return e;
+      return stablehlo::AddOp::create(*b, loc, e, *invariant(k, dims, b, loc))
+          .getResult();
+    }
+    if (isa<stablehlo::MulOp, stablehlo::DivOp>(op)) {
+      // by a constant: its sign says which end the other side takes
+      SplatElementsAttr k;
+      bool left = false;
+      if (!matchPattern(rhs, m_Constant(&k))) {
+        if (isa<stablehlo::DivOp>(op) || !matchPattern(lhs, m_Constant(&k)))
+          return std::nullopt;
+        left = true;
+      }
+      APInt c = k.getSplatValue<APInt>();
+      bool neg = ity.isUnsigned() ? false : c.isNegative();
+      if (isa<stablehlo::DivOp>(op) && c.isZero())
+        return std::nullopt;
+      auto other = extremum(left ? rhs : lhs, dims, neg ? !largest : largest, b,
+                            loc, cache);
+      if (!other)
+        return std::nullopt;
+      if (!b)
+        return Value();
+      Value kk = stablehlo::ConstantOp::create(*b, loc, k.resizeSplat(rty));
+      if (isa<stablehlo::DivOp>(op))
+        return stablehlo::DivOp::create(*b, loc, *other, kk).getResult();
+      return stablehlo::MulOp::create(*b, loc, *other, kk).getResult();
+    }
+    if ((isa<stablehlo::MaxOp>(op) && largest) ||
+        (isa<stablehlo::MinOp>(op) && !largest)) {
+      auto l = extremum(lhs, dims, largest, b, loc, cache);
+      auto r = extremum(rhs, dims, largest, b, loc, cache);
+      if (!l || !r)
+        return std::nullopt;
+      if (!b)
+        return Value();
+      if (largest)
+        return stablehlo::MaxOp::create(*b, loc, *l, *r).getResult();
+      return stablehlo::MinOp::create(*b, loc, *l, *r).getResult();
+    }
+    return std::nullopt;
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
                                     PatternRewriter &rewriter) const {
     if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
       return failure();
     DenseElementsAttr input, init;
-    if (!matchPattern(op.getInputs()[0], m_Constant(&input)) ||
-        !matchPattern(op.getInitValues()[0], m_Constant(&init)))
+    if (!matchPattern(op.getInitValues()[0], m_Constant(&init)))
       return failure();
+    bool constantInput = matchPattern(op.getInputs()[0], m_Constant(&input));
     auto inTy = dyn_cast<RankedTensorType>(op.getInputs()[0].getType());
     auto outTy = dyn_cast<RankedTensorType>(op.getType(0));
     if (!inTy || !outTy || !inTy.hasStaticShape() || !outTy.hasStaticShape())
+      return failure();
+    if (!constantInput && !isa<IntegerType>(inTy.getElementType()))
       return failure();
     Block &body = op.getBody().front();
     if (body.getOperations().size() != 2 || body.getNumArguments() != 2)
@@ -15910,10 +16166,10 @@ struct ReduceConstProp final
     Attribute result;
     if (auto ity = dyn_cast<IntegerType>(inTy.getElementType())) {
       APInt seed = init.getSplatValue<APInt>();
-      if (input.isSplat()) {
+      if (constantInput && input.isSplat()) {
         result = DenseElementsAttr::get(
             outTy, splat(fold, ity, seed, input.getSplatValue<APInt>(), count));
-      } else {
+      } else if (constantInput) {
         SmallVector<APInt> acc(outTy.getNumElements(), seed);
         int64_t i = 0;
         for (const APInt &v : input.getValues<APInt>()) {
@@ -15921,8 +16177,35 @@ struct ReduceConstProp final
           acc[o] = step(fold, ity, acc[o], v);
         }
         result = DenseElementsAttr::get(outTy, acc);
+      } else {
+        // the largest or smallest element of a function of the lane, the
+        // loop bound made of the lanes' trip counts, as a value of the
+        // reduce's own shape
+        if (!isa<stablehlo::MaxOp, stablehlo::MinOp>(fold))
+          return failure();
+        bool largest = isa<stablehlo::MaxOp>(fold);
+        Value in = op.getInputs()[0];
+        Cache cache;
+        // decide first, with no builder: nothing is created on a path that
+        // fails; then build, which cannot fail
+        if (!extremum(in, op.getDimensions(), largest, nullptr, op.getLoc(),
+                      cache))
+          return failure();
+        cache.clear();
+        auto ext = extremum(in, op.getDimensions(), largest, &rewriter,
+                            op.getLoc(), cache);
+        Value initB = stablehlo::ConstantOp::create(rewriter, op.getLoc(),
+                                                    init.resizeSplat(outTy));
+        Value r =
+            largest
+                ? stablehlo::MaxOp::create(rewriter, op.getLoc(), initB, *ext)
+                      .getResult()
+                : stablehlo::MinOp::create(rewriter, op.getLoc(), initB, *ext)
+                      .getResult();
+        rewriter.replaceOp(op, r);
+        return success();
       }
-    } else if (isa<FloatType>(inTy.getElementType())) {
+    } else if (constantInput && isa<FloatType>(inTy.getElementType())) {
       if (isa<stablehlo::AndOp, stablehlo::OrOp>(fold))
         return failure();
       APFloat seed = init.getSplatValue<APFloat>();
