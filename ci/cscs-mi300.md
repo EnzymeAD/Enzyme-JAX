@@ -87,16 +87,31 @@ mis-ordered `PATH` before the ~25 min build rather than after.
 ### Job directory cleanup
 
 The FirecREST runner gives each job a slot directory,
-`$SCRATCH/gitlab-runner/f7t/<slot>/<project-id>`, and does **not** empty it when the
-job ends. It wipes it only in `get_sources` of the next job that lands in the same
-slot. Without cleanup, every slot keeps its last job's `.bazel` (~600k files, 12 GB),
-`.julia`, `.rocm`, `Reactant.jl` and `GB-25`. That fills the 1M-file `$SCRATCH`
-quota, and sbatch then rejects every CI job running as this user with
-`scratch inode quota exceeded`. The output root is never reused across jobs, so
-keeping it buys no caching.
+`$SCRATCH/gitlab-runner/f7t/<slot>/<project-id>`. When a job ends normally, the
+runner deletes it. When a job is **cancelled**, the cancel kills its Slurm
+allocation first. Then neither `after_script` nor the runner's cleanup runs: the
+log shows "Running after_script", and seconds later `after_script failed … exit
+status 0` and `Cleanup script failed`. CSCS cancels a PR's previous pipeline within
+about a minute of every new push, so this is the common case, not an edge case.
 
-Two pieces handle this:
+The slot then keeps that job's `.bazel` (~700k files), `.julia`, `.rocm`,
+`Reactant.jl` and `GB-25` until another job of this project lands in the same
+slot. Two such leftovers fill the 1M-file `$SCRATCH` quota, and sbatch then rejects
+every CI job running as this user with `scratch inode quota exceeded`. The output
+root is never reused across jobs, so keeping it buys no caching.
 
+Three pieces handle this:
+
+- **[`sweep-stale-slots.sh`](sweep-stale-slots.sh)** removes the build trees from
+  this project's *other* slots whose job is gone. A slot qualifies when its newest
+  `script_*` names a CI job with no `ci-<id>` left in `squeue`, and nothing at its
+  top level changed in the last 5 min. The push that caused a cancel also starts
+  the job that cleans up after it. The cancel only lands ~1 min after the new
+  pipeline starts, so the first `script:` step runs the sweep in the background:
+  one pass every 2 min for 20 min, alongside the build. Its output goes to
+  `sweep.log`, which `after_script` prints. A background process writing to the
+  job log could hold the step open after an early failure, so it writes to the
+  file instead. `DRY_RUN=1` only reports, including every skipped slot and why.
 - **`after_script`** deletes those trees once the job finishes, keeping only
   `GB-25/*.xla`, because GitLab uploads artifacts after `after_script` has run.
   `RUNNER_AFTER_SCRIPT_TIMEOUT` is raised to 20m because deleting the Bazel tree on
@@ -110,12 +125,12 @@ Two pieces handle this:
   `get_sources` fails after ~30 s, and that slot is broken for every later job until
   someone fixes the permissions.
 
-Both use `find … -exec chmod u+rwx {} \;` rather than `{} +`: with `+` the chmod
+All three use `find … -exec chmod u+rwx {} \;` rather than `{} +`: with `+` the chmod
 runs only after the walk, so `find` first fails to enter the mode-000 dir, exits 1,
 and under the runner's `set -e` stops `after_script` before its `rm`.
 
 `after_script` runs inside the job's `SLURM_TIMELIMIT`, so a run that uses almost
-all of it can still be cut off; the hook covers that case on the slot's next job.
+all of it can still be cut off; the sweep or the hook covers that case later.
 To clear finished slots by hand, first check `squeue -u $USER` shows no job in them:
 
 ```
