@@ -53,6 +53,7 @@
 
 #include "Interfaces/AutoDiffTypeInterface.h"
 
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
@@ -4263,9 +4264,31 @@ struct ConvertConvertFloat final
       return failure();
 
     auto prev = conv0.getOperand();
-    if (isa<FloatType>(prev.getType().getElementType()) &&
-        isa<FloatType>(op.getType().getElementType()) &&
-        isa<FloatType>(conv0.getType().getElementType())) {
+    auto prevFloat = dyn_cast<FloatType>(prev.getType().getElementType());
+    auto midFloat = dyn_cast<FloatType>(conv0.getType().getElementType());
+    if (prevFloat && midFloat &&
+        isa<FloatType>(op.getType().getElementType())) {
+      // Removing the intermediate conversion is safe only when the first
+      // conversion is exact. Otherwise it loses rounding, including double
+      // rounding when the final type differs from the source type.
+      if (prevFloat != midFloat) {
+        // Be conservative for formats with different special-value semantics.
+        if (!isa<Float16Type, BFloat16Type, Float32Type, Float64Type>(
+                prevFloat) ||
+            !isa<Float16Type, BFloat16Type, Float32Type, Float64Type>(midFloat))
+          return rewriter.notifyMatchFailure(op, "unsupported float semantics");
+
+        const auto &prevSemantics = prevFloat.getFloatSemantics();
+        const auto &midSemantics = midFloat.getFloatSemantics();
+        if (llvm::APFloat::semanticsPrecision(prevSemantics) >
+                llvm::APFloat::semanticsPrecision(midSemantics) ||
+            llvm::APFloat::semanticsMinExponent(prevSemantics) <
+                llvm::APFloat::semanticsMinExponent(midSemantics) ||
+            llvm::APFloat::semanticsMaxExponent(prevSemantics) >
+                llvm::APFloat::semanticsMaxExponent(midSemantics))
+          return rewriter.notifyMatchFailure(
+              op, "intermediate float conversion may lose information");
+      }
       if (prev.getType() == op.getType()) {
         rewriter.replaceOp(op, prev);
         return success();
