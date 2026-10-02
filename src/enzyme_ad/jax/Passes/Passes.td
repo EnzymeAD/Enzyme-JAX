@@ -263,7 +263,19 @@ def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {
         /*CLI argument=*/"max-operation-threshold",
         /*type=*/"int",
         /*default=*/"-1",
-        /*description=*/"Only unroll if total operations is less than this value. If -1, no limit.">
+        /*description=*/"Only unroll if total operations is less than this value. If -1, no limit.">,
+    Option<
+        /*C++ variable name=*/"maxBoundedIterations",
+        /*CLI argument=*/"max-bounded-iterations",
+        /*type=*/"int",
+        /*default=*/"-1",
+        /*description=*/"A loop whose limit is only bounded unrolls to at most this many trips. If -1, as max-num-iterations.">,
+    Option<
+        /*C++ variable name=*/"boundedGuardIf",
+        /*CLI argument=*/"bounded-guard-if",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Put the copies past a bounded loop's certain trips under a stablehlo.if rather than run them and select their results.">
   ];
 }
 
