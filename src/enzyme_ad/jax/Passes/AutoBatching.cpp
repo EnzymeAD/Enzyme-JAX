@@ -3572,6 +3572,43 @@ static bool sliceInPlace(stablehlo::SliceOp sl, Operation *user) {
   return true;
 }
 
+// A piece of a concatenate at its place in the buffer the concatenate
+// rebuilds.
+struct ConcatLeaf {
+  Value value;
+  SmallVector<int64_t> starts;
+};
+
+// The pieces `piece` is made of, at their places, starting at `starts`: the
+// piece itself, or, for a concatenate (along any dimension) that is not a
+// state of a carried or private buffer, the pieces of its pieces. Those
+// nested concatenates are collected in `nested`. False when a shape is not
+// static.
+static bool concatLeaves(Value piece, ArrayRef<int64_t> starts,
+                         const DenseMap<Value, unsigned> &chainRoot,
+                         const DenseMap<Value, unsigned> &privateRoot,
+                         SmallVectorImpl<ConcatLeaf> &leaves,
+                         SmallVectorImpl<Value> &nested) {
+  auto inner = piece.getDefiningOp<stablehlo::ConcatenateOp>();
+  if (!inner || chainRoot.count(piece) || privateRoot.count(piece)) {
+    leaves.push_back({piece, SmallVector<int64_t>(starts)});
+    return true;
+  }
+  int64_t dim = inner.getDimension(), at = 0;
+  for (Value sub : inner.getOperands()) {
+    auto ty = dyn_cast<RankedTensorType>(sub.getType());
+    if (!ty || !ty.hasStaticShape())
+      return false;
+    SmallVector<int64_t> subStarts(starts);
+    subStarts[dim] += at;
+    at += ty.getDimSize(dim);
+    if (!concatLeaves(sub, subStarts, chainRoot, privateRoot, leaves, nested))
+      return false;
+  }
+  nested.push_back(piece);
+  return true;
+}
+
 // The source a concatenate rebuilds: the one value its in-place slices read.
 static Value concatSource(stablehlo::ConcatenateOp cc) {
   Value src;
@@ -4582,36 +4619,58 @@ static LogicalResult proveIterationsIndependent(
       at += (*ps)[d];
       if (passThrough.contains(piece.getDefiningOp()))
         continue;
-      auto add = piece.getDefiningOp<stablehlo::AddOp>();
-      if (!add)
+      // A piece at `st` accumulates when it is `read of its own slot + x`. A
+      // piece that is itself a concatenate, along any dimension, accumulates
+      // when every piece of it does: its slots are then those of the pieces.
+      SmallVector<ConcatLeaf> leaves;
+      SmallVector<Value> nested;
+      if (!concatLeaves(piece, st, chainRoot, privateRoot, leaves, nested))
         continue;
-      for (int side = 0; side < 2; ++side) {
-        Value r = add->getOperand(side), x = add->getOperand(1 - side);
-        Operation *rd = r.getDefiningOp();
-        while (rd && isa<stablehlo::ReshapeOp>(rd))
-          rd = rd->getOperand(0).getDefiningOp();
-        auto sl = dyn_cast_or_null<stablehlo::SliceOp>(rd);
-        if (!sl)
-          continue;
-        auto rit = chainRoot.find(sl.getOperand());
-        if (rit == chainRoot.end() || rit->second != root->second ||
-            chainRoot.count(x) || privateRoot.count(x))
-          continue;
-        SmallVector<int64_t> here;
-        SmallVector<int64_t> ones(shape->size(), 1);
-        bool w;
-        auto read = access(sl, sl.getOperand(), {0}, w);
-        if (!read || read->base || !box(*shape, st, *ps, ones, here))
-          continue;
-        llvm::sort(here);
-        llvm::sort(read->elems);
-        if (here != read->elems)
-          continue;
-        accumPieces.insert(piece);
-        accumReads.insert(sl);
-        accumOf[cc].push_back({piece, add, x, st, *ps});
-        break;
+      SmallVector<Piece> recs;
+      SmallVector<Operation *> reads;
+      for (ConcatLeaf &leaf : leaves) {
+        auto ls = shapeOf(leaf.value);
+        auto add = leaf.value.getDefiningOp<stablehlo::AddOp>();
+        if (!ls || !add)
+          break;
+        bool matched = false;
+        for (int side = 0; side < 2 && !matched; ++side) {
+          Value r = add->getOperand(side), x = add->getOperand(1 - side);
+          Operation *rd = r.getDefiningOp();
+          while (rd && isa<stablehlo::ReshapeOp>(rd))
+            rd = rd->getOperand(0).getDefiningOp();
+          auto sl = dyn_cast_or_null<stablehlo::SliceOp>(rd);
+          if (!sl)
+            continue;
+          auto rit = chainRoot.find(sl.getOperand());
+          if (rit == chainRoot.end() || rit->second != root->second ||
+              chainRoot.count(x) || privateRoot.count(x))
+            continue;
+          SmallVector<int64_t> here;
+          SmallVector<int64_t> ones(shape->size(), 1);
+          bool w;
+          auto read = access(sl, sl.getOperand(), {0}, w);
+          if (!read || read->base || !box(*shape, leaf.starts, *ls, ones, here))
+            continue;
+          llvm::sort(here);
+          llvm::sort(read->elems);
+          if (here != read->elems)
+            continue;
+          recs.push_back({leaf.value, add, x, leaf.starts, *ls});
+          reads.push_back(sl);
+          matched = true;
+        }
+        if (!matched)
+          break;
       }
+      if (recs.size() != leaves.size())
+        continue;
+      for (Piece &r : recs) {
+        accumOf[cc].push_back(r);
+        accumPieces.insert(r.piece);
+      }
+      accumPieces.insert(nested.begin(), nested.end());
+      accumReads.insert(reads.begin(), reads.end());
     }
   }
   // A link that adds to the whole buffer: `prev + x` yielded on.
