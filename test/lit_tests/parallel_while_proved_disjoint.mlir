@@ -439,3 +439,66 @@ func.func @scatter_accumulate(%x: tensor<4xf64>, %y: tensor<8xf64>) -> tensor<8x
 // CHECK-NEXT:   }) : (tensor<8xf64>, tensor<4x1x1xi64>, tensor<4x1xf64>) -> tensor<8xf64>
 // CHECK-NEXT:   return %2 : tensor<8xf64>
 // CHECK-NEXT: }
+
+// -----
+
+// Every iteration writes its own slot and reads the next one, which a later
+// iteration writes: sequentially the read sees the value the loop was entered
+// with, so batched it is taken from the entry buffer.
+func.func @reads_later_slot(%y: tensor<8xf64>, %x: tensor<4xf64>, %out: tensor<4xf64>) -> (tensor<8xf64>, tensor<4xf64>) {
+  %c0 = stablehlo.constant dense<0> : tensor<i64>
+  %c1 = stablehlo.constant dense<1> : tensor<i64>
+  %c4 = stablehlo.constant dense<4> : tensor<i64>
+  %0:3 = stablehlo.while(%i = %c0, %acc = %y, %o = %out) : tensor<i64>, tensor<8xf64>, tensor<4xf64>
+   cond {
+    %c = stablehlo.compare LT, %i, %c4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+    stablehlo.return %c : tensor<i1>
+  } do {
+    %v = stablehlo.dynamic_slice %x, %i, sizes = [1] : (tensor<4xf64>, tensor<i64>) -> tensor<1xf64>
+    %w = stablehlo.dynamic_update_slice %acc, %v, %i : (tensor<8xf64>, tensor<1xf64>, tensor<i64>) -> tensor<8xf64>
+    %n = stablehlo.add %i, %c1 : tensor<i64>
+    %r = stablehlo.dynamic_slice %w, %n, sizes = [1] : (tensor<8xf64>, tensor<i64>) -> tensor<1xf64>
+    %u = stablehlo.dynamic_update_slice %o, %r, %i : (tensor<4xf64>, tensor<1xf64>, tensor<i64>) -> tensor<4xf64>
+    stablehlo.return %n, %w, %u : tensor<i64>, tensor<8xf64>, tensor<4xf64>
+  }
+  return %0#1, %0#2 : tensor<8xf64>, tensor<4xf64>
+}
+
+// CHECK:  func.func @reads_later_slot(%arg0: tensor<8xf64>, %arg1: tensor<4xf64>, %arg2: tensor<4xf64>) -> (tensor<8xf64>, tensor<4xf64>) {
+// CHECK-NEXT:  %c = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:  %0 = stablehlo.reshape %arg1 : (tensor<4xf64>) -> tensor<4x1xf64>
+// CHECK-NEXT:  %1 = stablehlo.reshape %0 : (tensor<4x1xf64>) -> tensor<4xf64>
+// CHECK-NEXT:  %2 = stablehlo.dynamic_update_slice %arg0, %1, %c : (tensor<8xf64>, tensor<4xf64>, tensor<i64>) -> tensor<8xf64>
+// CHECK-NEXT:  %3 = stablehlo.slice %arg0 [1:5] : (tensor<8xf64>) -> tensor<4xf64>
+// CHECK-NEXT:  %4 = stablehlo.reshape %3 : (tensor<4xf64>) -> tensor<4x1xf64>
+// CHECK-NEXT:  %5 = stablehlo.reshape %4 : (tensor<4x1xf64>) -> tensor<4xf64>
+// CHECK-NEXT:  %6 = stablehlo.dynamic_update_slice %arg2, %5, %c : (tensor<4xf64>, tensor<4xf64>, tensor<i64>) -> tensor<4xf64>
+// CHECK-NEXT:  return %2, %6 : tensor<8xf64>, tensor<4xf64>
+// CHECK-NEXT:  }
+
+// -----
+
+// The slot read here was written by the previous iteration (and by this one
+// for the first, whose index clamps to its own): the loop stays.
+func.func @reads_earlier_slot(%y: tensor<8xf64>, %x: tensor<4xf64>, %out: tensor<4xf64>) -> (tensor<8xf64>, tensor<4xf64>) {
+  %c0 = stablehlo.constant dense<0> : tensor<i64>
+  %c1 = stablehlo.constant dense<1> : tensor<i64>
+  %c4 = stablehlo.constant dense<4> : tensor<i64>
+  %0:3 = stablehlo.while(%i = %c0, %acc = %y, %o = %out) : tensor<i64>, tensor<8xf64>, tensor<4xf64>
+   cond {
+    %c = stablehlo.compare LT, %i, %c4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+    stablehlo.return %c : tensor<i1>
+  } do {
+    %v = stablehlo.dynamic_slice %x, %i, sizes = [1] : (tensor<4xf64>, tensor<i64>) -> tensor<1xf64>
+    %w = stablehlo.dynamic_update_slice %acc, %v, %i : (tensor<8xf64>, tensor<1xf64>, tensor<i64>) -> tensor<8xf64>
+    %p = stablehlo.subtract %i, %c1 : tensor<i64>
+    %r = stablehlo.dynamic_slice %w, %p, sizes = [1] : (tensor<8xf64>, tensor<i64>) -> tensor<1xf64>
+    %u = stablehlo.dynamic_update_slice %o, %r, %i : (tensor<4xf64>, tensor<1xf64>, tensor<i64>) -> tensor<4xf64>
+    %n = stablehlo.add %i, %c1 : tensor<i64>
+    stablehlo.return %n, %w, %u : tensor<i64>, tensor<8xf64>, tensor<4xf64>
+  }
+  return %0#1, %0#2 : tensor<8xf64>, tensor<4xf64>
+}
+
+// CHECK:  func.func @reads_earlier_slot
+// CHECK:    stablehlo.while
