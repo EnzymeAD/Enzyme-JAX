@@ -606,3 +606,49 @@ func.func @max_div_index(%y: tensor<16xf64>, %x: tensor<4x2xf64>) -> tensor<16xf
 // CHECK-NEXT:  }) : (tensor<16xf64>, tensor<4x2x1xi64>, tensor<4x2xf64>) -> tensor<16xf64>
 // CHECK-NEXT:  return %8 : tensor<16xf64>
 // CHECK-NEXT:  }
+
+// -----
+
+// The buffer rebuilt as a concatenate whose second piece is a concatenate
+// along the other dimension of two accumulating slots.
+func.func @nested_accumulate(%x: tensor<4x3xf64>, %z: tensor<4x3xf64>, %y: tensor<2x6xf64>) -> tensor<2x6xf64> {
+  %c0 = stablehlo.constant dense<0> : tensor<i64>
+  %c1 = stablehlo.constant dense<1> : tensor<i64>
+  %c4 = stablehlo.constant dense<4> : tensor<i64>
+  %0:2 = stablehlo.while(%i = %c0, %acc = %y) : tensor<i64>, tensor<2x6xf64>
+   cond {
+    %c = stablehlo.compare LT, %i, %c4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+    stablehlo.return %c : tensor<i1>
+  } do {
+    %top = stablehlo.slice %acc [0:1, 0:6] : (tensor<2x6xf64>) -> tensor<1x6xf64>
+    %l = stablehlo.slice %acc [1:2, 0:3] : (tensor<2x6xf64>) -> tensor<1x3xf64>
+    %r = stablehlo.slice %acc [1:2, 3:6] : (tensor<2x6xf64>) -> tensor<1x3xf64>
+    %xi = stablehlo.dynamic_slice %x, %i, %c0, sizes = [1, 3] : (tensor<4x3xf64>, tensor<i64>, tensor<i64>) -> tensor<1x3xf64>
+    %zi = stablehlo.dynamic_slice %z, %i, %c0, sizes = [1, 3] : (tensor<4x3xf64>, tensor<i64>, tensor<i64>) -> tensor<1x3xf64>
+    %la = stablehlo.add %l, %xi : tensor<1x3xf64>
+    %ra = stablehlo.add %r, %zi : tensor<1x3xf64>
+    %bot = stablehlo.concatenate %la, %ra, dim = 1 : (tensor<1x3xf64>, tensor<1x3xf64>) -> tensor<1x6xf64>
+    %u = stablehlo.concatenate %top, %bot, dim = 0 : (tensor<1x6xf64>, tensor<1x6xf64>) -> tensor<2x6xf64>
+    %n = stablehlo.add %i, %c1 : tensor<i64>
+    stablehlo.return %n, %u : tensor<i64>, tensor<2x6xf64>
+  }
+  return %0#1 : tensor<2x6xf64>
+}
+
+// CHECK:  func.func @nested_accumulate(%arg0: tensor<4x3xf64>, %arg1: tensor<4x3xf64>, %arg2: tensor<2x6xf64>) -> tensor<2x6xf64> {
+// CHECK-NEXT:  %c = stablehlo.constant dense<3> : tensor<i64>
+// CHECK-NEXT:  %c_0 = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:  %c_1 = stablehlo.constant dense<1> : tensor<i64>
+// CHECK-NEXT:  %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT:  %0 = stablehlo.reshape %arg0 : (tensor<4x3xf64>) -> tensor<4x1x3xf64>
+// CHECK-NEXT:  %1 = stablehlo.reshape %arg1 : (tensor<4x3xf64>) -> tensor<4x1x3xf64>
+// CHECK-NEXT:  %2 = stablehlo.slice %arg2 [1:2, 0:3] : (tensor<2x6xf64>) -> tensor<1x3xf64>
+// CHECK-NEXT:  %3 = stablehlo.reduce(%0 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<4x1x3xf64>, tensor<f64>) -> tensor<1x3xf64>
+// CHECK-NEXT:  %4 = stablehlo.add %2, %3 : tensor<1x3xf64>
+// CHECK-NEXT:  %5 = stablehlo.dynamic_update_slice %arg2, %4, %c_1, %c_0 : (tensor<2x6xf64>, tensor<1x3xf64>, tensor<i64>, tensor<i64>) -> tensor<2x6xf64>
+// CHECK-NEXT:  %6 = stablehlo.slice %5 [1:2, 3:6] : (tensor<2x6xf64>) -> tensor<1x3xf64>
+// CHECK-NEXT:  %7 = stablehlo.reduce(%1 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<4x1x3xf64>, tensor<f64>) -> tensor<1x3xf64>
+// CHECK-NEXT:  %8 = stablehlo.add %6, %7 : tensor<1x3xf64>
+// CHECK-NEXT:  %9 = stablehlo.dynamic_update_slice %5, %8, %c_1, %c : (tensor<2x6xf64>, tensor<1x3xf64>, tensor<i64>, tensor<i64>) -> tensor<2x6xf64>
+// CHECK-NEXT:  return %9 : tensor<2x6xf64>
+// CHECK-NEXT:  }

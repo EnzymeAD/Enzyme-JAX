@@ -1,4 +1,5 @@
 #include "src/enzyme_ad/jax/Passes/AutoBatching.h"
+#include <functional>
 
 #include "Enzyme/MLIR/Passes/EnzymeBatchPass.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
@@ -4005,19 +4006,38 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
     auto shape = shapeOf(cc.getResult());
     if (!shape)
       continue;
-    int64_t d = cc.getDimension(), at = 0;
-    for (Value piece : cc.getOperands()) {
+    // A piece at `st` accumulates when it is `read of its own slot + x`. A
+    // piece that is itself a concatenate, along any dimension, accumulates
+    // when every piece of it does: its slots are then those of the pieces.
+    std::function<bool(Value, ArrayRef<int64_t>, SmallVectorImpl<Piece> &,
+                       SmallVectorImpl<Value> &,
+                       SmallVectorImpl<Operation *> &)>
+        absorb = [&](Value piece, ArrayRef<int64_t> st,
+                     SmallVectorImpl<Piece> &recs,
+                     SmallVectorImpl<Value> &marks,
+                     SmallVectorImpl<Operation *> &reads) -> bool {
       auto ps = shapeOf(piece);
       if (!ps)
-        break;
-      SmallVector<int64_t> st(shape->size(), 0);
-      st[d] = at;
-      at += (*ps)[d];
-      if (passThrough.contains(piece.getDefiningOp()))
-        continue;
+        return false;
+      if (auto inner = piece.getDefiningOp<stablehlo::ConcatenateOp>();
+          inner && !chainRoot.count(piece) && !privateRoot.count(piece)) {
+        int64_t di = inner.getDimension(), ati = 0;
+        for (Value sub : inner.getOperands()) {
+          auto ss = shapeOf(sub);
+          if (!ss)
+            return false;
+          SmallVector<int64_t> sst(st);
+          sst[di] += ati;
+          ati += (*ss)[di];
+          if (!absorb(sub, sst, recs, marks, reads))
+            return false;
+        }
+        marks.push_back(piece);
+        return true;
+      }
       auto add = piece.getDefiningOp<stablehlo::AddOp>();
       if (!add)
-        continue;
+        return false;
       for (int side = 0; side < 2; ++side) {
         Value r = add->getOperand(side), x = add->getOperand(1 - side);
         Operation *rd = r.getDefiningOp();
@@ -4040,11 +4060,32 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
         llvm::sort(read->elems);
         if (here != read->elems)
           continue;
-        accumPieces.insert(piece);
-        accumReads.insert(sl);
-        accumOf[cc].push_back({piece, add, x, st, *ps});
-        break;
+        recs.push_back({piece, add, x, SmallVector<int64_t>(st), *ps});
+        marks.push_back(piece);
+        reads.push_back(sl);
+        return true;
       }
+      return false;
+    };
+    int64_t d = cc.getDimension(), at = 0;
+    for (Value piece : cc.getOperands()) {
+      auto ps = shapeOf(piece);
+      if (!ps)
+        break;
+      SmallVector<int64_t> st(shape->size(), 0);
+      st[d] = at;
+      at += (*ps)[d];
+      if (passThrough.contains(piece.getDefiningOp()))
+        continue;
+      SmallVector<Piece> recs;
+      SmallVector<Value> marks;
+      SmallVector<Operation *> reads;
+      if (!absorb(piece, st, recs, marks, reads))
+        continue;
+      for (Piece &r : recs)
+        accumOf[cc].push_back(r);
+      accumPieces.insert(marks.begin(), marks.end());
+      accumReads.insert(reads.begin(), reads.end());
     }
   }
   // A link that adds to the whole buffer: `prev + x` yielded on.
