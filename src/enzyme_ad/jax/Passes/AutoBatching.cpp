@@ -3184,14 +3184,18 @@ struct IndexEvaluator {
       return e;
     }
     if (isa<stablehlo::DivOp, stablehlo::RemOp>(op)) {
-      // by one number, of indices with no base
+      // of indices with no base, by one number or elementwise
       auto l = eval(op->getOperand(0), iter);
       auto r = eval(op->getOperand(1), iter);
-      if (!l || !r || l->base || r->base || r->offsets.size() != 1 ||
-          r->offsets[0] == 0)
+      if (!l || !r || l->base || r->base ||
+          (r->offsets.size() != 1 && r->offsets.size() != l->offsets.size()))
         return std::nullopt;
-      for (int64_t &o : l->offsets)
-        o = isa<stablehlo::DivOp>(op) ? o / r->offsets[0] : o % r->offsets[0];
+      for (auto [i, o] : llvm::enumerate(l->offsets)) {
+        int64_t d = r->offsets[r->offsets.size() == 1 ? 0 : i];
+        if (d == 0)
+          return std::nullopt;
+        o = isa<stablehlo::DivOp>(op) ? o / d : o % d;
+      }
       return l;
     }
     if (auto bc = dyn_cast<stablehlo::BitcastConvertOp>(op)) {
@@ -3251,7 +3255,8 @@ struct IndexEvaluator {
       }
       return out;
     }
-    if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp>(op))
+    if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp,
+            stablehlo::MaxOp, stablehlo::MinOp>(op))
       return evalArith(op, iter);
     return std::nullopt;
   }
@@ -3550,15 +3555,22 @@ struct IndexEvaluator {
       SmallVector<int64_t> &a = lhs->offsets, &b = rhs->offsets;
       if (a.size() != b.size() && a.size() != 1 && b.size() != 1)
         return std::nullopt;
+      // the larger or smaller of two offsets is one of them, which a base
+      // would move
+      bool minmax = isa<stablehlo::MaxOp, stablehlo::MinOp>(op);
+      if (minmax && base)
+        return std::nullopt;
       IterationIndices out;
       out.base = base;
       out.scale = scale;
       size_t n = std::max(a.size(), b.size());
       for (size_t i = 0; i < n; ++i) {
         int64_t x = a[a.size() == 1 ? 0 : i], y = b[b.size() == 1 ? 0 : i];
-        out.offsets.push_back(isa<stablehlo::MulOp>(op) ? x * y
-                              : isAdd                   ? x + y
-                                                        : x - y);
+        out.offsets.push_back(isa<stablehlo::MulOp>(op)   ? x * y
+                              : isAdd                     ? x + y
+                              : isa<stablehlo::MaxOp>(op) ? std::max(x, y)
+                              : isa<stablehlo::MinOp>(op) ? std::min(x, y)
+                                                          : x - y);
       }
       return out;
     }
@@ -3683,7 +3695,7 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
   // read of it is what it wrote itself earlier: the elements written so far
   // in the iteration being enumerated, per private argument.
   DenseMap<unsigned, SmallVector<DenseSet<int64_t>>> writtenHere;
-  int64_t budget = 1 << 22;    // elements enumerated in all, over every access
+  int64_t budget = 1 << 24;    // elements enumerated in all, over every access
   DenseSet<Value> accumPieces; // concatenate pieces that accumulate
   DenseSet<Operation *> accumReads; // the reads those pieces add to
   struct Piece {
@@ -4604,6 +4616,12 @@ struct ParallelWhileBatcher {
         bool read = isa<stablehlo::GatherOp, stablehlo::DynamicSliceOp,
                         stablehlo::SliceOp>(user) &&
                     user->getOperand(0) == v;
+        // an elementwise op takes the buffer whole (the proof holds it to
+        // what no other iteration writes)
+        read |= (user->hasTrait<OpTrait::Elementwise>() ||
+                 isa<stablehlo::SelectOp>(user)) &&
+                user->getNumResults() == 1 &&
+                !chainRoot.count(user->getResult(0));
         if (!write && !read && !(user == ret && v == yielded))
           return failure();
       }
