@@ -479,7 +479,8 @@ func.func @reads_later_slot(%y: tensor<8xf64>, %x: tensor<4xf64>, %out: tensor<4
 // -----
 
 // The slot read here was written by the previous iteration (and by this one
-// for the first, whose index clamps to its own): the loop stays.
+// for the first, whose index clamps to its own), before the read in the
+// chain: batched, the read of the chain after that write sees it too.
 func.func @reads_earlier_slot(%y: tensor<8xf64>, %x: tensor<4xf64>, %out: tensor<4xf64>) -> (tensor<8xf64>, tensor<4xf64>) {
   %c0 = stablehlo.constant dense<0> : tensor<i64>
   %c1 = stablehlo.constant dense<1> : tensor<i64>
@@ -501,6 +502,37 @@ func.func @reads_earlier_slot(%y: tensor<8xf64>, %x: tensor<4xf64>, %out: tensor
 }
 
 // CHECK:  func.func @reads_earlier_slot
+// CHECK-NOT: stablehlo.while
+
+// -----
+
+// The slot of the previous iteration is read before, in the chain, that
+// iteration writes it: sequentially the read sees the write, batched it
+// would not. The loop stays.
+func.func @reads_before_later_write(%y: tensor<8xf64>, %x: tensor<4xf64>, %out: tensor<4xf64>) -> (tensor<8xf64>, tensor<4xf64>) {
+  %c0 = stablehlo.constant dense<0> : tensor<i64>
+  %c1 = stablehlo.constant dense<1> : tensor<i64>
+  %c4 = stablehlo.constant dense<4> : tensor<i64>
+  %0:3 = stablehlo.while(%i = %c0, %acc = %y, %o = %out) : tensor<i64>, tensor<8xf64>, tensor<4xf64>
+   cond {
+    %c = stablehlo.compare LT, %i, %c4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+    stablehlo.return %c : tensor<i1>
+  } do {
+    %v = stablehlo.dynamic_slice %x, %i, sizes = [1] : (tensor<4xf64>, tensor<i64>) -> tensor<1xf64>
+    %hi = stablehlo.add %i, %c4 : tensor<i64>
+    %w = stablehlo.dynamic_update_slice %acc, %v, %hi : (tensor<8xf64>, tensor<1xf64>, tensor<i64>) -> tensor<8xf64>
+    %p = stablehlo.subtract %i, %c1 : tensor<i64>
+    %r = stablehlo.dynamic_slice %w, %p, sizes = [5] : (tensor<8xf64>, tensor<i64>) -> tensor<5xf64>
+    %r0 = stablehlo.slice %r [0:1] : (tensor<5xf64>) -> tensor<1xf64>
+    %u = stablehlo.dynamic_update_slice %o, %r0, %i : (tensor<4xf64>, tensor<1xf64>, tensor<i64>) -> tensor<4xf64>
+    %w2 = stablehlo.dynamic_update_slice %w, %v, %i : (tensor<8xf64>, tensor<1xf64>, tensor<i64>) -> tensor<8xf64>
+    %n = stablehlo.add %i, %c1 : tensor<i64>
+    stablehlo.return %n, %w2, %u : tensor<i64>, tensor<8xf64>, tensor<4xf64>
+  }
+  return %0#1, %0#2 : tensor<8xf64>, tensor<4xf64>
+}
+
+// CHECK:  func.func @reads_before_later_write
 // CHECK:    stablehlo.while
 
 // -----
