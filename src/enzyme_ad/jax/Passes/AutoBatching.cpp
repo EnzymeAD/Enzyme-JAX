@@ -3693,19 +3693,19 @@ static bool sameOrDropped(Value gathered, Value scattered, Value buffer) {
 // carried buffer addresses a set of its elements, and the sets of two
 // iterations never meet. Only rank-1 buffers addressed one element at a time
 // are proved here, which is the shape a raised kernel's dof loop has.
-static LogicalResult
-proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
-                           int64_t numIters, int64_t start, int64_t step,
-                           const DenseMap<Value, unsigned> &chainRoot,
-                           const DenseMap<Value, unsigned> &privateRoot,
-                           const DenseSet<Operation *> &passThrough,
-                           const DenseMap<Operation *, Value> &maskedPieces,
-                           const DenseMap<Operation *, unsigned> &innerIv,
-                           SmallVectorImpl<Accumulation> &accumulations,
-                           DenseMap<Operation *, Value> &scatterAccum,
-                           DenseMap<Operation *, Value> &entryReads,
-                           const DenseMap<Operation *, Value> &guards,
-                           DenseSet<unsigned> &privateEntryReads) {
+static LogicalResult proveIterationsIndependent(
+    stablehlo::WhileOp whileOp, Block &body, Value iv, int64_t numIters,
+    int64_t start, int64_t step, const DenseMap<Value, unsigned> &chainRoot,
+    const DenseMap<Value, unsigned> &privateRoot,
+    const DenseSet<Operation *> &passThrough,
+    const DenseMap<Operation *, Value> &maskedPieces,
+    const DenseMap<Operation *, unsigned> &innerIv,
+    SmallVectorImpl<Accumulation> &accumulations,
+    DenseMap<Operation *, Value> &scatterAccum,
+    DenseMap<Operation *, Value> &entryReads,
+    DenseMap<Operation *, SmallVector<int8_t>> &entryLanes,
+    const DenseMap<Operation *, Value> &guards,
+    DenseSet<unsigned> &privateEntryReads) {
   // The proof enumerates the elements of every iteration, so it is only run
   // for a loop short enough for that to be cheap.
   if (numIters > 1024)
@@ -3752,6 +3752,9 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
   DenseMap<unsigned, SmallVector<DenseSet<int64_t>>> readEntry;
   DenseSet<Operation *> notEntry;
   DenseMap<Operation *, Value> entryCandidates;
+  // per read and iteration: 1 where the read sees the entry buffer, 0 where
+  // it sees what the iteration wrote before it; the same in every run
+  DenseMap<Operation *, SmallVector<int8_t>> lanes;
   // The links of the chain in body order, and every write of an element as
   // (iteration, link). A read of a chain value after link L, batched, sees
   // the entry buffer with every iteration's writes up to L; sequentially it
@@ -4491,8 +4494,15 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
                 llvm::none_of(a->elems, [&](int64_t e) {
                   return wit->second[k].contains(e);
                 });
-        if (!entry)
+        // the read may see the entry buffer in some iterations and the
+        // iteration's own write in others; each iteration must see the same
+        // in every run of the loops around
+        auto &ln = lanes[&op];
+        if (ln.empty())
+          ln.assign(numIters, -1);
+        if (ln[k] != -1 && ln[k] != (entry ? 1 : 0))
           notEntry.insert(&op);
+        ln[k] = entry ? 1 : 0;
       }
       auto &sets = scatterAccum.count(&op) ? accumulated[arg]
                    : write                 ? written[arg]
@@ -4670,8 +4680,10 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
       break;
   }
   for (auto &[op, arg] : entryCandidates)
-    if (!notEntry.count(op))
+    if (!notEntry.count(op)) {
       entryReads[op] = arg;
+      entryLanes[op] = lanes[op];
+    }
   return success();
 }
 
@@ -4705,8 +4717,29 @@ struct ParallelWhileBatcher {
   // scatter -> the x it adds to the elements it writes (from the proof)
   DenseMap<Operation *, Value> scatterAccum;
   // reads the proof found to see the loop-entry buffer: the carried argument
-  // they are taken from
+  // they are taken from, and per iteration whether they do (1) or see what
+  // the iteration wrote before them (0)
   DenseMap<Operation *, Value> entryReads;
+  DenseMap<Operation *, SmallVector<int8_t>> entryLanes;
+
+  // The buffer a read takes when it sees the entry buffer in some iterations
+  // and the chain in the others: each broadcast along the iterations, and
+  // chosen per iteration by a constant mask.
+  Value entryOrChain(ArrayRef<int8_t> lanes, Value chain, Value entry) {
+    SmallVector<bool> mask;
+    for (int8_t l : lanes)
+      mask.push_back(l == 1);
+    auto maskTy = RankedTensorType::get({numIters}, rewriter.getI1Type());
+    Value m = stablehlo::ConstantOp::create(
+        rewriter, loc, DenseElementsAttr::get(maskTy, ArrayRef<bool>(mask)));
+    auto bty = cast<RankedTensorType>(batchedType(chain.getType()));
+    Value mb = stablehlo::BroadcastInDimOp::create(
+        rewriter, loc,
+        RankedTensorType::get(bty.getShape(), rewriter.getI1Type()), m,
+        rewriter.getDenseI64ArrayAttr({0}));
+    return stablehlo::SelectOp::create(rewriter, loc, mb, operand(entry),
+                                       operand(chain));
+  }
   // links that count only where a scalar predicate holds: the chain passes
   // through `select(p, after them, before them)`, as a loop unrolled past
   // its certain trips leaves it
@@ -5205,13 +5238,26 @@ struct ParallelWhileBatcher {
         emitWhile(w);
         continue;
       }
-      if ((!llvm::any_of(op.getOperands(),
-                         [&](Value v) { return isBatched(v); }) &&
-           !isChainLink(&op)) ||
-          (isChainLink(&op) && isa<stablehlo::ReshapeOp>(&op))) {
+      auto er = entryReads.find(&op);
+      // a read that sees the entry buffer in some iterations only takes, per
+      // iteration, the entry buffer or the chain: a batched operand
+      bool mixedEntry = false;
+      if (er != entryReads.end()) {
+        auto ln = entryLanes.find(&op);
+        mixedEntry =
+            ln != entryLanes.end() && llvm::is_contained(ln->second, (int8_t)0);
+      }
+      if (!mixedEntry &&
+          ((!llvm::any_of(op.getOperands(),
+                          [&](Value v) { return isBatched(v); }) &&
+            !isChainLink(&op)) ||
+           (isChainLink(&op) && isa<stablehlo::ReshapeOp>(&op)))) {
         // Loop-invariant, or a reshape of the carried buffer, which every
-        // iteration shares: cloned as is.
+        // iteration shares: cloned as is (a read the proof moved to the
+        // loop-entry buffer takes that buffer).
         Operation *c = rewriter.clone(op, map);
+        if (er != entryReads.end())
+          c->setOperand(0, map.lookupOrDefault(er->second));
         for (auto [o, n] : llvm::zip(op.getResults(), c->getResults()))
           map.map(o, n);
         continue;
@@ -5219,14 +5265,26 @@ struct ParallelWhileBatcher {
       // The operands of the batched op, for the batching interfaces. A carried
       // buffer written into, or the operand a dynamic_slice or gather reads, is
       // one tensor that every iteration shares.
+      Value perLane;
+      if (mixedEntry) {
+        perLane =
+            entryOrChain(entryLanes.lookup(&op), op.getOperand(0), er->second);
+        // read from a batched operand: its results vary with the iteration
+        for (Value r : op.getResults())
+          batched.insert(r);
+      }
       Value shared;
-      if (isChainLink(&op) ||
-          (isa<stablehlo::DynamicSliceOp, stablehlo::GatherOp>(&op) &&
-           !isBatched(op.getOperand(0))))
+      if (!perLane &&
+          (isChainLink(&op) ||
+           (isa<stablehlo::DynamicSliceOp, stablehlo::GatherOp>(&op) &&
+            !isBatched(op.getOperand(0)))))
         shared = op.getOperand(0);
       IRMapping bm;
-      auto er = entryReads.find(&op);
       for (Value v : op.getOperands()) {
+        if (perLane && v == op.getOperand(0)) {
+          bm.map(v, perLane);
+          continue;
+        }
         // a read the proof moved to the loop-entry buffer
         Value src =
             er != entryReads.end() && v == op.getOperand(0) ? er->second : v;
@@ -5309,7 +5367,7 @@ struct ParallelWhileBatcher {
         }
         bm.map(sc.getResult(0), nsc.getResult(0));
       } else if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(&op);
-                 ds && !isBatched(ds.getOperand())) {
+                 ds && !isBatched(ds.getOperand()) && !perLane) {
         // The operand is the same every iteration. With a single
         // start affine in the induction variable and the others the same every
         // iteration too, the windows of all iterations are a slice of it.
@@ -5345,7 +5403,7 @@ struct ParallelWhileBatcher {
               /*operandIsBatched=*/false);
         }
       } else if (auto g = dyn_cast<stablehlo::GatherOp>(&op);
-                 g && !isBatched(g.getOperand())) {
+                 g && !isBatched(g.getOperand()) && !perLane) {
         // Every iteration gathers from the same operand: only the indices gain
         // the leading dimension, rather than broadcasting the operand.
         auto dn = g.getDimensionNumbers();
@@ -5535,11 +5593,12 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
                      batcher.chainPassThrough.end());
   SmallVector<Accumulation> accumulations;
   DenseSet<unsigned> privateEntryReads;
-  if (!tagged && failed(proveIterationsIndependent(
-                     whileOp, body, iv, numIters, start, step,
-                     batcher.chainRoot, privateRoot, passThrough, maskedPieces,
-                     batcher.innerIv, accumulations, batcher.scatterAccum,
-                     batcher.entryReads, batcher.guards, privateEntryReads)))
+  if (!tagged &&
+      failed(proveIterationsIndependent(
+          whileOp, body, iv, numIters, start, step, batcher.chainRoot,
+          privateRoot, passThrough, maskedPieces, batcher.innerIv,
+          accumulations, batcher.scatterAccum, batcher.entryReads,
+          batcher.entryLanes, batcher.guards, privateEntryReads)))
     return failure();
   // Without the proof (a tagged loop) a concatenate rebuilding a buffer, or
   // an add to it, is only understood as accumulation when proved so.
