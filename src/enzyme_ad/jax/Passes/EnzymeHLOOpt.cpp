@@ -23652,6 +23652,49 @@ struct WhilePassThroughSlice
             rewriter.replaceOp(sl, hoisted.getResult());
             changed = true;
           }
+          // Also slices through a reshape that only adds or drops unit dims.
+          for (Operation *user : llvm::make_early_inc_range(a.getUsers())) {
+            auto rs = dyn_cast<stablehlo::ReshapeOp>(user);
+            if (!rs || rs.getOperand() != a)
+              continue;
+            auto rt = cast<RankedTensorType>(rs.getType());
+            SmallVector<int64_t> argDims, resDims;
+            for (int64_t k = 0; k < ty.getRank(); ++k)
+              if (ty.getDimSize(k) != 1)
+                argDims.push_back(k);
+            for (int64_t k = 0; k < rt.getRank(); ++k)
+              if (rt.getDimSize(k) != 1)
+                resDims.push_back(k);
+            if (argDims.size() != resDims.size())
+              continue;
+            bool sameSizes = true;
+            for (auto [x, y] : llvm::zip(argDims, resDims))
+              sameSizes &= ty.getDimSize(x) == rt.getDimSize(y);
+            auto it = llvm::find(argDims, d);
+            if (!sameSizes || it == argDims.end())
+              continue;
+            int64_t dr = resDims[it - argDims.begin()];
+            for (Operation *ru : llvm::make_early_inc_range(rs->getUsers())) {
+              auto sl = dyn_cast<stablehlo::SliceOp>(ru);
+              if (!sl)
+                continue;
+              int64_t s0 = sl.getStartIndices()[dr],
+                      s1 = sl.getLimitIndices()[dr];
+              if (!llvm::any_of(pts, [&](Interval p) {
+                    return p.first <= s0 && s1 <= p.second;
+                  }))
+                continue;
+              OpBuilder::InsertionGuard g(rewriter);
+              rewriter.setInsertionPoint(whileOp);
+              auto rsInit = stablehlo::ReshapeOp::create(
+                  rewriter, rs.getLoc(), rt, whileOp->getOperand(i));
+              auto hoisted = stablehlo::SliceOp::create(
+                  rewriter, sl.getLoc(), rsInit, sl.getStartIndices(),
+                  sl.getLimitIndices(), sl.getStrides());
+              rewriter.replaceOp(sl, hoisted.getResult());
+              changed = true;
+            }
+          }
         }
       }
     }

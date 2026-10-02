@@ -133,3 +133,34 @@ func.func @neg_overlap(%T0: tensor<1x16xf64>, %X: tensor<11x2xf64>, %n: tensor<i
   }
   return %r#1 : tensor<1x16xf64>
 }
+
+// CHECK-LABEL: func.func @reshape_slice
+// CHECK-SAME: (%[[T0:.+]]: tensor<1x16xf64>, %[[X:.+]]: tensor<11x2xf64>,
+// CHECK: %[[R0:.+]] = stablehlo.reshape %[[T0]] : (tensor<1x16xf64>) -> tensor<16xf64>
+// CHECK-NEXT: %[[YS:.+]] = stablehlo.slice %[[R0]] [2:13] : (tensor<16xf64>) -> tensor<11xf64>
+// CHECK-NEXT: %{{.+}}:2 = stablehlo.while
+// CHECK: } do {
+// CHECK-NEXT: %{{.+}} = stablehlo.add
+// CHECK-NEXT: %{{.+}} = stablehlo.dot_general %[[X]], %[[YS]], contracting_dims = [0] x [0] : (tensor<11x2xf64>, tensor<11xf64>) -> tensor<2xf64>
+func.func @reshape_slice(%T0: tensor<1x16xf64>, %X: tensor<11x2xf64>, %n: tensor<i64>, %v: tensor<1x2xf64>) -> tensor<1x16xf64> {
+  %c0 = stablehlo.constant dense<0> : tensor<i64>
+  %c1 = stablehlo.constant dense<1> : tensor<i64>
+  %c13 = stablehlo.constant dense<13> : tensor<i64>
+  %r:2 = stablehlo.while(%i = %c0, %T = %T0) : tensor<i64>, tensor<1x16xf64>
+  cond {
+    %p = stablehlo.compare LT, %i, %n : (tensor<i64>, tensor<i64>) -> tensor<i1>
+    stablehlo.return %p : tensor<i1>
+  } do {
+    %ip = stablehlo.add %i, %c1 : tensor<i64>
+    %flat = stablehlo.reshape %T : (tensor<1x16xf64>) -> tensor<16xf64>
+    %ys = stablehlo.slice %flat [2:13] : (tensor<16xf64>) -> tensor<11xf64>
+    %c = stablehlo.dot_general %X, %ys, contracting_dims = [0] x [0] : (tensor<11x2xf64>, tensor<11xf64>) -> tensor<2xf64>
+    %t = stablehlo.slice %c [0:1] : (tensor<2xf64>) -> tensor<1xf64>
+    %t2 = stablehlo.reshape %t : (tensor<1xf64>) -> tensor<1x1xf64>
+    %tail = stablehlo.broadcast_in_dim %t2, dims = [0, 1] : (tensor<1x1xf64>) -> tensor<1x3xf64>
+    %T1 = stablehlo.dynamic_update_slice %T, %v, %c0, %c0 : (tensor<1x16xf64>, tensor<1x2xf64>, tensor<i64>, tensor<i64>) -> tensor<1x16xf64>
+    %T2 = stablehlo.dynamic_update_slice %T1, %tail, %c0, %c13 : (tensor<1x16xf64>, tensor<1x3xf64>, tensor<i64>, tensor<i64>) -> tensor<1x16xf64>
+    stablehlo.return %ip, %T2 : tensor<i64>, tensor<1x16xf64>
+  }
+  return %r#1 : tensor<1x16xf64>
+}
