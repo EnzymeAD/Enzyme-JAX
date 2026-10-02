@@ -3664,6 +3664,30 @@ struct Accumulation {
   SmallVector<int64_t> viewShape, starts, sizes;
 };
 
+// Whether a scatter's indices are a gather's, or the gather's with some lanes
+// sent past the buffer, where the scatter drops them: the gather then reads
+// a clamped slot for those lanes, but what it reads is dropped with them.
+static bool sameOrDropped(Value gathered, Value scattered, Value buffer) {
+  if (gathered == scattered)
+    return true;
+  auto sel = scattered.getDefiningOp<stablehlo::SelectOp>();
+  if (!sel || sel.getOnTrue() != gathered)
+    return false;
+  SplatElementsAttr off;
+  if (!matchPattern(sel.getOnFalse(), m_Constant(&off)) ||
+      !isa<IntegerType>(off.getElementType()))
+    return false;
+  auto bufTy = dyn_cast<RankedTensorType>(buffer.getType());
+  if (!bufTy || !bufTy.hasStaticShape())
+    return false;
+  int64_t c = off.getSplatValue<APInt>().getSExtValue();
+  // past every dimension of the buffer, whichever one the index addresses
+  for (int64_t n : bufTy.getShape())
+    if (c >= 0 && c < n)
+      return false;
+  return true;
+}
+
 // Iterations of a loop that is not tagged parallel may still run at once when
 // no iteration can observe another's writes: every read and every write of a
 // carried buffer addresses a set of its elements, and the sets of two
@@ -3675,16 +3699,19 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
                            const DenseMap<Value, unsigned> &chainRoot,
                            const DenseMap<Value, unsigned> &privateRoot,
                            const DenseSet<Operation *> &passThrough,
+                           const DenseMap<Operation *, Value> &maskedPieces,
                            const DenseMap<Operation *, unsigned> &innerIv,
                            SmallVectorImpl<Accumulation> &accumulations,
                            DenseMap<Operation *, Value> &scatterAccum,
                            DenseMap<Operation *, Value> &entryReads,
-                           const DenseMap<Operation *, Value> &guards) {
+                           const DenseMap<Operation *, Value> &guards,
+                           DenseSet<unsigned> &privateEntryReads) {
   // The proof enumerates the elements of every iteration, so it is only run
   // for a loop short enough for that to be cheap.
   if (numIters > 1024)
     return failure();
   IndexEvaluator eval{whileOp.getBody(), {{iv, start, step}}};
+  auto ret = cast<stablehlo::ReturnOp>(body.getTerminator());
   // An op whose every use feeds links taken under one predicate is under it
   // too: what it reads is discarded with them where the predicate fails.
   DenseMap<Operation *, Value> under(guards.begin(), guards.end());
@@ -3751,6 +3778,10 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
   // read of it is what it wrote itself earlier: the elements written so far
   // in the iteration being enumerated, per private argument.
   DenseMap<unsigned, SmallVector<DenseSet<int64_t>>> writtenHere;
+  // the elements of a private buffer some iteration read before writing
+  // them: they hold the loop's operand, which seeds every copy, as long as no
+  // iteration writes them at all
+  DenseMap<unsigned, DenseSet<int64_t>> readUnwrittenHere;
   int64_t budget = 1 << 24;    // elements enumerated in all, over every access
   DenseSet<Value> accumPieces; // concatenate pieces that accumulate
   DenseSet<Operation *> accumReads; // the reads those pieces add to
@@ -3983,7 +4014,7 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
         if (!ps)
           return std::nullopt;
         if (!passThrough.contains(piece.getDefiningOp()) &&
-            !accumPieces.contains(piece)) {
+            !accumPieces.contains(piece) && !privateRoot.count(piece)) {
           SmallVector<int64_t> st(shape->size(), 0);
           st[d] = at;
           if (!box(*shape, st, *ps, strides, out.elems))
@@ -4196,7 +4227,8 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
       auto rit = chainRoot.find(g.getOperand());
       if (rit == chainRoot.end() || rit->second != root->second ||
           chainRoot.count(x) || privateRoot.count(x) ||
-          g.getStartIndices() != sc.getScatterIndices())
+          !sameOrDropped(g.getStartIndices(), sc.getScatterIndices(),
+                         sc.getInputs()[0]))
         continue;
       // the same elements: one per index row on both sides
       auto gdn = g.getDimensionNumbers();
@@ -4290,6 +4322,45 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
         continue;
       if (isa<stablehlo::ReshapeOp>(&op))
         continue; // another shape of the same buffer, no access of its own
+      if (auto mp = maskedPieces.find(&op); mp != maskedPieces.end()) {
+        // the elements of the slice's place that the mask takes from the
+        // new values are written; the others pass through
+        auto sel = cast<stablehlo::SelectOp>(&op);
+        auto sl = cast<stablehlo::SliceOp>(mp->second.getDefiningOp());
+        unsigned arg = privateRoot.lookup(sl.getOperand());
+        auto m = eval.eval(sel.getPred(), iters);
+        auto shape = shapeOf(sl.getOperand());
+        auto ps = shapeOf(sl.getResult());
+        if (!m || m->base || !shape || !ps)
+          return failure();
+        int64_t count = 1;
+        for (int64_t n : *ps)
+          count *= n;
+        if ((int64_t)m->offsets.size() != count && m->offsets.size() != 1)
+          return failure();
+        if ((budget -= count) < 0)
+          return failure();
+        auto &sets = writtenHere[arg];
+        if (sets.empty())
+          sets.resize(numIters);
+        bool sliceOnTrue = sel.getOnTrue() == mp->second;
+        for (int64_t c = 0; c < count; ++c) {
+          bool pred = m->offsets[m->offsets.size() == 1 ? 0 : c] != 0;
+          if (pred == sliceOnTrue)
+            continue;
+          int64_t rest = c, flat = 0;
+          SmallVector<int64_t> coord(ps->size());
+          for (int64_t d = (int64_t)ps->size() - 1; d >= 0; --d) {
+            coord[d] = sl.getStartIndices()[d] +
+                       (rest % (*ps)[d]) * sl.getStrides()[d];
+            rest /= (*ps)[d];
+          }
+          for (size_t d = 0; d < shape->size(); ++d)
+            flat = flat * (*shape)[d] + coord[d];
+          sets[k].insert(flat);
+        }
+        continue;
+      }
       if (passThrough.contains(&op) || accumReads.contains(&op))
         continue; // a slice that only goes back where it came from, or
                   // that a slot is accumulated through
@@ -4365,9 +4436,10 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
         return failure();
       if (isPrivate) {
         // An access to a private buffer: a write adds its elements to what
-        // this iteration has written, a read must find all of its elements
-        // there. Every index has to stay inside, so that nothing is clamped
-        // or dropped.
+        // this iteration has written, a read finds its elements there or
+        // reads the operand's, which is what they hold if no iteration
+        // writes them (checked once every iteration is visited). Every index
+        // has to stay inside, so that nothing is clamped or dropped.
         if (a->base)
           return failure();
         auto &sets = writtenHere[arg];
@@ -4377,7 +4449,7 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
           if (write)
             sets[k].insert(e);
           else if (!sets[k].contains(e))
-            return failure();
+            readUnwrittenHere[arg].insert(e);
         }
         continue;
       }
@@ -4455,6 +4527,8 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
     writesAt.clear();
     readsAt.clear();
     writtenHere.clear();
+    readUnwrittenHere.clear();
+    privateEntryReads.clear();
     accumulated.clear();
     accumulatedAnywhere.clear();
     bases.clear();
@@ -4473,6 +4547,21 @@ proveIterationsIndependent(stablehlo::WhileOp whileOp, Block &body, Value iv,
     if (written.empty() && writtenHere.empty() && accumulated.empty() &&
         accumulatedAnywhere.empty())
       return failure();
+    // What an iteration read of a private buffer before writing it is the
+    // loop's operand only if every iteration hands those elements on as they
+    // are: the yield must come out of the buffer's own links (which write
+    // nothing but what the proof saw written) and no iteration may write
+    // them. The copies then need the loop's operand.
+    for (auto &[arg, reads] : readUnwrittenHere) {
+      auto yielded = privateRoot.find(ret.getOperand(arg));
+      if (yielded == privateRoot.end() || yielded->second != arg)
+        return failure();
+      for (auto &set : writtenHere[arg])
+        for (int64_t e : reads)
+          if (set.contains(e))
+            return failure();
+      privateEntryReads.insert(arg);
+    }
     // added to somewhere: nothing may plainly read or write the buffer
     for (unsigned arg : accumulatedAnywhere) {
       if (written.count(arg) || readFrom.count(arg) || readEntry.count(arg))
@@ -5334,7 +5423,7 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
   // buffer's shape with the slice in its own place: the slice reads
   // nothing, the concatenate or pad writes the rest.
   DenseSet<Operation *> passThrough;
-  auto inPlace = [](stablehlo::SliceOp sl, Operation *user) {
+  auto inPlace = [](stablehlo::SliceOp sl, Operation *user, Value standing) {
     auto st = dyn_cast<RankedTensorType>(sl.getOperand().getType());
     auto rt = dyn_cast<RankedTensorType>(user->getResult(0).getType());
     if (!st || !rt || st != rt ||
@@ -5344,7 +5433,7 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
     SmallVector<int64_t> at(rank, 0);
     if (auto cc = dyn_cast<stablehlo::ConcatenateOp>(user)) {
       for (Value piece : cc.getOperands()) {
-        if (piece == sl.getResult())
+        if (piece == standing)
           break;
         at[cc.getDimension()] += cast<RankedTensorType>(piece.getType())
                                      .getDimSize(cc.getDimension());
@@ -5362,6 +5451,23 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
         return false;
     return true;
   };
+  // A select between new values and such a slice, standing in the slice's
+  // place: a write of the elements the mask takes from the new values.
+  DenseMap<Operation *, Value> maskedPieces;
+  auto maskedPiece = [&](stablehlo::SliceOp sl, Operation *u) {
+    auto sel = dyn_cast<stablehlo::SelectOp>(u);
+    if (!sel || sel.getPred().getType() == sel.getType() ||
+        (sel.getOnTrue() == sl.getResult()) ==
+            (sel.getOnFalse() == sl.getResult()))
+      return false;
+    Value fresh =
+        sel.getOnTrue() == sl.getResult() ? sel.getOnFalse() : sel.getOnTrue();
+    return !privateRoot.count(fresh) && !batcher.chainRoot.count(fresh) &&
+           !sel->use_empty() &&
+           llvm::all_of(sel->getUsers(), [&](Operation *cu) {
+             return inPlace(sl, cu, sel.getResult());
+           });
+  };
   for (Operation &op : body.without_terminator()) {
     if (isa<stablehlo::ScatterOp, stablehlo::DynamicUpdateSliceOp,
             stablehlo::ReshapeOp>(&op) &&
@@ -5371,12 +5477,22 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
     }
     auto sl = dyn_cast<stablehlo::SliceOp>(&op);
     if (!sl || !privateRoot.count(sl.getOperand()) || sl->use_empty() ||
-        !llvm::all_of(sl->getUsers(),
-                      [&](Operation *u) { return inPlace(sl, u); }))
+        !llvm::all_of(sl->getUsers(), [&](Operation *u) {
+          return inPlace(sl, u, sl.getResult()) || maskedPiece(sl, u);
+        }))
       continue;
     passThrough.insert(&op);
-    for (Operation *u : sl->getUsers())
-      privateRoot[u->getResult(0)] = privateRoot.lookup(sl.getOperand());
+    unsigned root = privateRoot.lookup(sl.getOperand());
+    for (Operation *u : sl->getUsers()) {
+      if (isa<stablehlo::SelectOp>(u)) {
+        maskedPieces[u] = sl.getResult();
+        passThrough.insert(u);
+        for (Operation *cu : u->getUsers())
+          privateRoot[cu->getResult(0)] = root;
+      } else {
+        privateRoot[u->getResult(0)] = root;
+      }
+    }
   }
   for (auto &[v, k] : privateRoot)
     for (Operation *user : v.getUsers()) {
@@ -5418,11 +5534,12 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
   passThrough.insert(batcher.chainPassThrough.begin(),
                      batcher.chainPassThrough.end());
   SmallVector<Accumulation> accumulations;
-  if (!tagged &&
-      failed(proveIterationsIndependent(
-          whileOp, body, iv, numIters, start, step, batcher.chainRoot,
-          privateRoot, passThrough, batcher.innerIv, accumulations,
-          batcher.scatterAccum, batcher.entryReads, batcher.guards)))
+  DenseSet<unsigned> privateEntryReads;
+  if (!tagged && failed(proveIterationsIndependent(
+                     whileOp, body, iv, numIters, start, step,
+                     batcher.chainRoot, privateRoot, passThrough, maskedPieces,
+                     batcher.innerIv, accumulations, batcher.scatterAccum,
+                     batcher.entryReads, batcher.guards, privateEntryReads)))
     return failure();
   // Without the proof (a tagged loop) a concatenate rebuilding a buffer, or
   // an add to it, is only understood as accumulation when proved so.
@@ -5455,7 +5572,7 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
     unsigned k = arg.getArgNumber();
     if (unchanged[k] || batcher.chainRoot.count(arg))
       batcher.map.map(arg, whileOp->getOperand(k));
-    else if (isPrivate[k] && tagged)
+    else if (isPrivate[k] && (tagged || privateEntryReads.count(k)))
       batcher.map.map(arg, batcher.operand(whileOp->getOperand(k)));
     else if (isPrivate[k])
       // The proof held every read of the buffer to what the iteration wrote
