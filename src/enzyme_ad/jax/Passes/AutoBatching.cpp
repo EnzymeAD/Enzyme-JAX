@@ -3181,7 +3181,11 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
       if (isBatched(pad.getPaddingValue()))
         return failure();
     } else if (auto red = dyn_cast<stablehlo::ReduceOp>(&op)) {
-      if (red.getInputs().size() != 1 || isBatched(red.getInitValues()[0]))
+      // the batch interface takes each init back to its scalar; an input
+      // that is the same every iteration is broadcast
+      if (llvm::any_of(red.getInitValues(),
+                       [&](Value v) { return isBatched(v); }) ||
+          !llvm::all_of(red.getInputs(), broadcastable))
         return failure();
     } else if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(&op)) {
       if (isBatched(ds.getOperand()))
@@ -3194,6 +3198,11 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
       auto dn = sc.getScatterDimensionNumbers();
       if (sc.getInputs().size() != 1 || !dn.getInputBatchingDims().empty() ||
           !broadcastable(sc.getInputs()[0]))
+        return failure();
+    } else if (isa<enzymexla::WrapOp, enzymexla::ExtendOp, enzymexla::RotateOp>(
+                   &op)) {
+      // along the same dimension past the batch one
+      if (!broadcastable(op.getOperand(0)))
         return failure();
     } else {
       return failure();
