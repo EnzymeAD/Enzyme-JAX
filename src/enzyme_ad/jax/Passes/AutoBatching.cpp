@@ -3574,12 +3574,23 @@ struct IndexEvaluator {
     if (!known || known->base || !invariant(other))
       return std::nullopt;
     // The shift cancels between two accesses only when it is the same for
-    // every element: the base is a scalar, or a splat of one. A vector base
-    // shifts elements differently and offsets alone would then not decide.
-    if (!isSplat(other))
+    // every element: the base is a scalar, or a splat of one. A vector that
+    // the loop does not change shifts elements differently; when it is a
+    // table the proof can read (a constant, or computed outside every loop)
+    // its elements are added, and otherwise offsets alone would not decide.
+    if (isSplat(other)) {
+      known->base = other;
+      return known;
+    }
+    const SmallVector<int64_t> *values = table(other, iter);
+    if (!values ||
+        (known->offsets.size() != 1 && known->offsets.size() != values->size()))
       return std::nullopt;
-    known->base = other;
-    return known;
+    IterationIndices out;
+    for (auto [i, t] : llvm::enumerate(*values))
+      out.offsets.push_back(known->offsets[known->offsets.size() == 1 ? 0 : i] +
+                            t);
+    return out;
   }
 };
 
