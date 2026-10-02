@@ -783,6 +783,7 @@ bool transformReshapeSlice(
       j++;
       continue;
     }
+    return false;
   }
   assert(start.size() == toShape.size());
   return true;
