@@ -378,6 +378,15 @@ void WhileLoopInfo::propagateAffineIndexInfo(
       if (iotaDetection && sliceDim == iotaDetection.value().dimension &&
           isa<mlir::IntegerType>(
               iotaDetection.value().tensorType.getElementType())) {
+        // The walk also visits slices in nested regions. Their index need
+        // not be an affine function of this loop's induction variable.
+        // Looking it up with operator[] would invent a zero-scale mapping
+        // and incorrectly make the slice result constant in this loop.
+        auto indexIt =
+            affineIndexInfo.find(sliceOp.getStartIndices()[sliceDim]);
+        if (indexIt == affineIndexInfo.end())
+          return WalkResult::advance();
+
         // Extract integer values from TypedAttr
         auto startAttr = dyn_cast<IntegerAttr>(iotaDetection.value().start);
         auto scaleAttr = dyn_cast<IntegerAttr>(iotaDetection.value().scale);
@@ -386,7 +395,7 @@ void WhileLoopInfo::propagateAffineIndexInfo(
         }
 
         anyNewPropagated = true;
-        auto indexInfo = affineIndexInfo[sliceOp.getStartIndices()[sliceDim]];
+        auto indexInfo = indexIt->second;
         auto offset = indexInfo.offset.getSExtValue();
         auto iotaStart = startAttr.getValue().getSExtValue();
         auto iotaScale = scaleAttr.getValue().getSExtValue();
