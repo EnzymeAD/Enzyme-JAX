@@ -12457,8 +12457,15 @@ struct SliceIf : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceIf> {
     SmallVector<Type> ifResultTypes = llvm::to_vector(ifop->getResultTypes());
     ifResultTypes[opIdx] = op.getType();
 
-    auto newIf = stablehlo::IfOp::create(rewriter, ifop.getLoc(), ifResultTypes,
-                                         ifop.getPred());
+    stablehlo::IfOp newIf;
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      // Unsliced results can have users before the slice. Keep the
+      // replacement at the original if so it dominates every such user.
+      rewriter.setInsertionPoint(ifop);
+      newIf = stablehlo::IfOp::create(rewriter, ifop.getLoc(), ifResultTypes,
+                                      ifop.getPred());
+    }
 
     Operation *trueTerm = ifop.getTrueBranch().front().getTerminator();
     Operation *falseTerm = ifop.getFalseBranch().front().getTerminator();
