@@ -2804,12 +2804,16 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
+    // A row-major buffer is the transpose of LAPACK's column-major view, so
+    // uplo=U runs potrf('L') with no relayout; 'L' is faster in OpenBLAS.
+    bool rowMajor = op.getUplo() == enzymexla::LapackUplo::U;
+    char uploChar = rowMajor ? 'L' : op.getUploAttr().getBlasChar();
+
     // emit constants for the wrapper function call
     auto type_uplo = RankedTensorType::get({}, type_lapack_char);
     auto uplo = stablehlo::ConstantOp::create(
         rewriter, op.getLoc(), type_uplo,
-        cast<ElementsAttr>(
-            makeAttr(type_uplo, op.getUploAttr().getBlasChar())));
+        cast<ElementsAttr>(makeAttr(type_uplo, uploChar)));
 
     auto type_n = RankedTensorType::get({}, type_lapack_int);
     auto n = stablehlo::ConstantOp::create(
@@ -2827,7 +2831,7 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
         rewriter, op.getLoc(), type_info,
         cast<ElementsAttr>(makeAttr(type_info, -1)));
 
-    SmallVector<bool> isColMajorArr = {true, true, true, true, true};
+    SmallVector<bool> isColMajorArr(5, !rowMajor);
     SmallVector<int64_t> operandRanks = {0, 0, 2, 0, 0};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);

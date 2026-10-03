@@ -958,8 +958,8 @@ struct TrsmOpLowering : public OpRewritePattern<enzymexla::TrsmOp> {
       : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
-  // CPU, unbatched: call BLAS trsm directly through a jit_call (column-major
-  // layouts; the layout system relayouts row-major tensors around the call).
+  // CPU, unbatched: call BLAS trsm directly through a jit_call on the
+  // row-major buffers (see below for the side/triangle mapping).
   LogicalResult matchAndRewriteCPU(enzymexla::TrsmOp op,
                                    PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
@@ -1032,19 +1032,26 @@ struct TrsmOpLowering : public OpRewritePattern<enzymexla::TrsmOp> {
                                            cast<ElementsAttr>(makeAttr(ty, v)));
     };
 
+    // A and B stay row-major. The column-major view of a row-major matrix is
+    // its transpose, so op(A) X = alpha B on the row-major buffers is
+    // X^T op(A^T) = alpha B^T on their column-major views: BLAS solves with the
+    // side and the triangle flipped, the same transpose flag, and B^T of size
+    // n x m with leading dimension n. No relayout copies are needed.
     int64_t m = BType.getShape()[0];
     int64_t n = BType.getShape()[1];
-    Value side = charConst(op.getSideAttr().getBlasChar());
-    Value uplo = charConst(op.getUploAttr().getBlasChar());
+    bool left = op.getSide() == enzymexla::LapackSide::left;
+    bool lowerA = op.getUplo() == enzymexla::LapackUplo::L;
+    Value side = charConst(left ? 'R' : 'L');
+    Value uplo = charConst(lowerA ? 'U' : 'L');
     Value transa = charConst(op.getTransaAttr().getBlasChar());
     Value diag = charConst(op.getUnitDiagonal() ? 'U' : 'N');
-    Value mV = intConst(m);
-    Value nV = intConst(n);
+    Value mV = intConst(n);
+    Value nV = intConst(m);
     Value lda = intConst(AType.getShape()[0]);
-    Value ldb = intConst(m);
+    Value ldb = intConst(n);
 
     // {side, uplo, transa, diag, m, n, alpha, A, lda, B, ldb}
-    SmallVector<bool> isColMajorArr(11, true);
+    SmallVector<bool> isColMajorArr(11, false);
     SmallVector<int64_t> operandRanks = {0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0};
     SmallVector<int64_t> outputRanks = {2};
     auto operandLayouts =
