@@ -9,8 +9,9 @@ include "mlir/IR/SymbolInterfaces.td"
 include "Dialect.td"
 include "Types.td"
 
-def DefSymbolOp : PerfifyOp<"define_symbol", [Symbol]> {
-  let arguments = (ins SymbolNameAttr:$sym_name, TypeAttr:$type);
+def DefSymbolOp : PerfifyOp<"define_symbol", [Symbol, SymbolName, SymbolVisibility]> {
+  let arguments = (ins SymbolNameAttr:$sym_name, TypeAttr:$type,
+                   OptionalAttr<StrAttr>:$sym_visibility);
   let assemblyFormat = "$sym_name `:` $type attr-dict";
 }
 
