@@ -1411,6 +1411,114 @@ void CommRegionOp::getSuccessorRegions(
       point.getTerminatorPredecessorOrNull()->getParentRegion()));
 }
 
+// ------------------
+// JITRegionOp
+// ------------------
+
+//===----------------------------------------------------------------------===//
+// JITRegionOp
+//===----------------------------------------------------------------------===//
+
+unsigned JITRegionOp::getAliasedInputIndex(unsigned resultIndex) {
+  ArrayAttr aliases = getOutputOperandAliases();
+  if (aliases.empty())
+    return resultIndex;
+  return cast<stablehlo::OutputOperandAliasAttr>(aliases[resultIndex])
+      .getOperandIndex();
+}
+
+OpResult JITRegionOp::getAliasingResult(unsigned inputIndex) {
+  for (OpResult result : getResults())
+    if (getAliasedInputIndex(result.getResultNumber()) == inputIndex)
+      return result;
+  return nullptr;
+}
+
+LogicalResult JITRegionOp::inferReturnTypes(
+    MLIRContext * /*context*/, std::optional<Location> location,
+    ValueRange operands, DictionaryAttr attributes,
+    mlir::PropertyRef properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  JITRegionOpAdaptor adaptor(operands, attributes, properties, regions);
+  ArrayAttr aliases = adaptor.getOutputOperandAliases();
+  // While parsing, the inherent attributes are not yet in the properties.
+  if (attributes)
+    if (auto parsed = attributes.getAs<ArrayAttr>("output_operand_aliases"))
+      aliases = parsed;
+  if (aliases.empty()) {
+    llvm::append_range(inferredReturnTypes, operands.getTypes());
+    return success();
+  }
+  for (Attribute attr : aliases) {
+    auto alias = dyn_cast<stablehlo::OutputOperandAliasAttr>(attr);
+    if (!alias || alias.getOperandIndex() < 0 ||
+        alias.getOperandIndex() >= (int64_t)operands.size())
+      return emitOptionalError(location,
+                               "invalid output_operand_aliases entry ", attr);
+    inferredReturnTypes.push_back(
+        operands[alias.getOperandIndex()].getType());
+  }
+  return success();
+}
+
+LogicalResult JITRegionOp::verify() {
+  if (auto attrs = getOperandAttrsAttr();
+      attrs && attrs.size() != getInputs().size())
+    return emitOpError() << "expects one operand_attrs entry per input, got "
+                         << attrs.size() << " for " << getInputs().size()
+                         << " inputs";
+  if (auto attrs = getResultAttrsAttr();
+      attrs && attrs.size() != getNumResults())
+    return emitOpError() << "expects one result_attrs entry per result, got "
+                         << attrs.size() << " for " << getNumResults()
+                         << " results";
+
+  ArrayAttr aliases = getOutputOperandAliases();
+  if (aliases.empty())
+    return success();
+
+  // Each buffer is read by at most one result.
+  llvm::SmallDenseSet<int64_t> aliased;
+  for (Attribute attr : aliases) {
+    auto alias = dyn_cast<stablehlo::OutputOperandAliasAttr>(attr);
+    if (!alias)
+      return emitOpError() << "invalid output_operand_aliases entry " << attr;
+    if (!alias.getOutputTupleIndices().empty() ||
+        !alias.getOperandTupleIndices().empty())
+      return emitOpError() << "tuple indices are not supported in "
+                              "output_operand_aliases";
+    if (!aliased.insert(alias.getOperandIndex()).second)
+      return emitOpError() << "input #" << alias.getOperandIndex()
+                           << " is aliased by more than one result";
+  }
+  return success();
+}
+
+LogicalResult JITRegionOp::verifyRegions() {
+  Block *block = getBodyBlock();
+  if (block->getNumArguments() != getInputs().size())
+    return emitOpError() << "expects one block argument per input, got "
+                         << block->getNumArguments() << " for "
+                         << getInputs().size() << " inputs";
+
+  // A tensor and the buffer holding its value agree on shape and element
+  // type; the memref's layout and memory space are left to the region.
+  for (auto [i, input, arg] :
+       llvm::enumerate(getInputs(), block->getArguments())) {
+    auto buffer = dyn_cast<MemRefType>(arg.getType());
+    auto tensor = dyn_cast<RankedTensorType>(input.getType());
+    if (!buffer || !tensor || buffer.getShape() != tensor.getShape() ||
+        buffer.getElementType() != tensor.getElementType())
+      return emitOpError() << "block argument #" << i << " of type "
+                           << arg.getType() << " cannot hold input of type "
+                           << input.getType();
+  }
+
+  return success();
+}
+
+// MemcpyOp
+
 LogicalResult enzymexla::MemcpyOp::verify() {
   auto srcType = getSource().getType();
   auto dstType = getTarget().getType();
