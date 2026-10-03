@@ -37,6 +37,7 @@
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
 #include "src/enzyme_ad/jax/Utils.h"
+#include <algorithm>
 #include <cstdint>
 #include <utility>
 
@@ -5215,38 +5216,65 @@ static Value createSplatF(OpBuilder &builder, Location loc,
                                        SplatElementsAttr::get(type, attr));
 }
 
-static Value triWithHalvedDiag(OpBuilder &builder, Location loc, Value S,
-                               bool lower) {
-  auto matType = cast<RankedTensorType>(S.getType());
-  auto shape = matType.getShape();
-  auto rank = matType.getRank();
+static Value sliceMat(OpBuilder &builder, Location loc, Value x, int64_t r0,
+                      int64_t r1, int64_t c0, int64_t c1) {
+  auto shape = cast<RankedTensorType>(x.getType()).getShape();
+  int64_t rank = shape.size();
+  if (r0 == 0 && c0 == 0 && r1 == shape[rank - 2] && c1 == shape[rank - 1])
+    return x;
+  SmallVector<int64_t> start(rank, 0), limit(shape.begin(), shape.end()),
+      strides(rank, 1);
+  start[rank - 2] = r0;
+  start[rank - 1] = c0;
+  limit[rank - 2] = r1;
+  limit[rank - 1] = c1;
+  return stablehlo::SliceOp::create(builder, loc, x, start, limit, strides);
+}
 
-  auto intType = RankedTensorType::get(shape, builder.getI64Type());
+static Value dotMat(OpBuilder &builder, Location loc, Value lhs, bool lhsT,
+                    Value rhs, bool rhsT) {
+  auto lhsType = cast<RankedTensorType>(lhs.getType());
+  auto rhsShape = cast<RankedTensorType>(rhs.getType()).getShape();
+  auto lhsShape = lhsType.getShape();
+  int64_t rank = lhsShape.size();
+  SmallVector<int64_t> batch;
+  SmallVector<int64_t> resultShape;
+  for (int64_t i = 0; i < rank - 2; i++) {
+    batch.push_back(i);
+    resultShape.push_back(lhsShape[i]);
+  }
+  int64_t lhsContract = lhsT ? rank - 2 : rank - 1;
+  int64_t rhsContract = rhsT ? rank - 1 : rank - 2;
+  resultShape.push_back(lhsShape[lhsT ? rank - 1 : rank - 2]);
+  resultShape.push_back(rhsShape[rhsT ? rank - 2 : rank - 1]);
+  auto dotDims = stablehlo::DotDimensionNumbersAttr::get(
+      builder.getContext(), batch, batch, {lhsContract}, {rhsContract});
+  return stablehlo::DotGeneralOp::create(
+      builder, loc,
+      RankedTensorType::get(resultShape, lhsType.getElementType()), lhs, rhs,
+      dotDims, nullptr, nullptr);
+}
+
+/// `dim` is 0 (rows) or 1 (columns) of the trailing matrix dimensions.
+static Value concatMat(OpBuilder &builder, Location loc, ValueRange xs,
+                       int64_t dim) {
+  int64_t rank = cast<RankedTensorType>(xs.front().getType()).getRank();
+  return stablehlo::ConcatenateOp::create(builder, loc, xs, rank - 2 + dim);
+}
+
+static Value scaleMat(OpBuilder &builder, Location loc, Value x, double c) {
+  auto ty = cast<RankedTensorType>(x.getType());
+  return stablehlo::MulOp::create(builder, loc, x,
+                                  createSplatF(builder, loc, ty, c));
+}
+
+static Value indexMask(OpBuilder &builder, Location loc, RankedTensorType ty,
+                       ComparisonDirection dir) {
+  auto intType = RankedTensorType::get(ty.getShape(), builder.getI64Type());
+  int64_t rank = ty.getRank();
   auto rowIdx = stablehlo::IotaOp::create(builder, loc, intType, rank - 2);
   auto colIdx = stablehlo::IotaOp::create(builder, loc, intType, rank - 1);
-
-  Value strictMask;
-  if (lower)
-    strictMask = stablehlo::CompareOp::create(builder, loc, rowIdx, colIdx,
-                                              ComparisonDirection::GT);
-  else
-    strictMask = stablehlo::CompareOp::create(builder, loc, rowIdx, colIdx,
-                                              ComparisonDirection::LT);
-
-  auto diagMask = stablehlo::CompareOp::create(builder, loc, rowIdx, colIdx,
-                                               ComparisonDirection::EQ);
-
-  auto zero = createSplatF(builder, loc, matType, 0.0);
-  auto half = createSplatF(builder, loc, matType, 0.5);
-
-  auto strictTri =
-      stablehlo::SelectOp::create(builder, loc, matType, strictMask, S, zero);
-
-  auto halfS = stablehlo::MulOp::create(builder, loc, S, half);
-  auto halfDiag =
-      stablehlo::SelectOp::create(builder, loc, matType, diagMask, halfS, zero);
-
-  return stablehlo::AddOp::create(builder, loc, strictTri, halfDiag);
+  return stablehlo::CompareOp::create(builder, loc, rowIdx, colIdx, dir);
 }
 
 static Value maskToTriangle(OpBuilder &builder, Location loc, Value input,
@@ -5392,16 +5420,17 @@ public:
   }
 };
 
-/// For L = chol(A) where A = LL^T (lower=true):
-///   S = L^T @ L_bar
-///   Phi = tril(S) with halved diagonal
-///   A_bar = sym(L^{-T} Phi L^{-1})
-/// For U = chol(A) where A = U^TU (lower=false):
-///   S = U @ U_bar^T
-///   Phi = tril(S) with halved diagonal  (always lower triangle)
-///   A_bar = sym(U^{-1} Phi U^{-T})
-///
-/// Reference: Murray (2016), "Differentiation of the Cholesky decomposition"
+/// Block size n / 5 clamped to [20, 40], tuned on single-core XLA:CPU.
+static SmallVector<int64_t> choleskyAdjointBlockEdges(int64_t n) {
+  int64_t target = std::clamp<int64_t>(n / 5, 20, 40);
+  int64_t numBlocks = std::max<int64_t>(1, (n + target - 1) / target);
+  SmallVector<int64_t> edges;
+  for (int64_t i = 0; i <= numBlocks; i++)
+    edges.push_back(i * n / numBlocks);
+  return edges;
+}
+
+/// Murray (2016), blocked reverse sweep as in Stan Math.
 class AutoDiffCholeskyRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffCholeskyRev,
                                                        stablehlo::CholeskyOp> {
@@ -5417,63 +5446,104 @@ public:
     if (gutils->isConstantValue(op.getOperand()))
       return success();
 
+    auto matType = cast<RankedTensorType>(op.getResult().getType());
+    if (!matType.hasStaticShape())
+      return op.emitError("cholesky reverse mode requires a static shape");
+
     auto lBar = gutils->diffe(op, builder);
     gutils->zeroDiffe(op, builder);
 
-    Value L = gutils->popCache(caches[0], builder);
-
+    // For lower=false, F holds U = L^T and F_bar holds U_bar = L_bar^T.
+    Value F = gutils->popCache(caches[0], builder);
+    Value FBar = lBar;
     bool lower = op.getLower();
-    auto matType = cast<RankedTensorType>(L.getType());
+    int64_t n = matType.getShape().back();
 
-    // Step 1: S = L^T @ L_bar (lower) or U @ U_bar^T (upper)
-    Value S;
-    if (lower)
-      S = matMul2D(builder, loc, transpose2D(builder, loc, L), lBar);
-    else
-      S = matMul2D(builder, loc, L, transpose2D(builder, loc, lBar));
+    auto edges = choleskyAdjointBlockEdges(n);
+    Value T; // finished trailing adjoint A_bar[k:n, k:n]
+    for (int64_t blk = edges.size() - 2; blk >= 0; blk--) {
+      int64_t j = edges[blk], k = edges[blk + 1], m = n - k;
 
-    // Step 2: Phi = tril(S) with halved diagonal
-    // Always use lower=true because the Phi function from Murray's formula
-    // always extracts the lower triangle (even for upper Cholesky, since
-    // we converted via L = U^T).
-    Value phi = triWithHalvedDiag(builder, loc, S, /*lower=*/true);
+      Value D = sliceMat(builder, loc, F, j, k, j, k);
+      Value DBar = sliceMat(builder, loc, FBar, j, k, j, k);
+      auto blockType = cast<RankedTensorType>(D.getType());
 
-    // Steps 3-4: A_bar via two triangular solves on Phi directly.
-    // The final symmetrization 0.5*(aBar + aBar^T) in step 5 effectively
-    // computes sym(L^{-T} Phi L^{-1}) = 0.5 * L^{-T} (Phi+Phi^T) L^{-1}.
-    Value aBar;
-    if (lower) {
-      // Y = L^{-T} Phi  (solve L^T Y = Phi)
-      Value Y = stablehlo::TriangularSolveOp::create(
-          builder, loc, matType, L, phi, /*leftSide=*/true, /*lower=*/true,
-          /*unitDiagonal=*/false, stablehlo::Transpose::TRANSPOSE);
-      // Z = L^{-T} Y^T  (solve L^T Z = Y^T)
-      Value Z = stablehlo::TriangularSolveOp::create(
-          builder, loc, matType, L, transpose2D(builder, loc, Y),
-          /*leftSide=*/true, /*lower=*/true, /*unitDiagonal=*/false,
-          stablehlo::Transpose::TRANSPOSE);
-      aBar = transpose2D(builder, loc, Z);
-    } else {
-      // Y = U^{-1} Phi  (solve U Y = Phi)
-      Value Y = stablehlo::TriangularSolveOp::create(
-          builder, loc, matType, L, phi, /*leftSide=*/true, /*lower=*/false,
-          /*unitDiagonal=*/false, stablehlo::Transpose::NO_TRANSPOSE);
-      // Z = U^{-1} Y^T  (solve U Z = Y^T)
-      Value Z = stablehlo::TriangularSolveOp::create(
-          builder, loc, matType, L, transpose2D(builder, loc, Y),
-          /*leftSide=*/true, /*lower=*/false, /*unitDiagonal=*/false,
-          stablehlo::Transpose::NO_TRANSPOSE);
-      aBar = transpose2D(builder, loc, Z);
+      Value diagMask =
+          indexMask(builder, loc, blockType, ComparisonDirection::EQ);
+      Value onesBlk = createSplatF(builder, loc, blockType, 1.0);
+      Value zerosBlk = createSplatF(builder, loc, blockType, 0.0);
+      Value eye = stablehlo::SelectOp::create(builder, loc, diagMask, onesBlk,
+                                              zerosBlk);
+      Value DinvT = stablehlo::TriangularSolveOp::create(
+          builder, loc, blockType, D, eye, /*leftSide=*/true, lower,
+          /*unitDiagonal=*/false,
+          lower ? stablehlo::Transpose::TRANSPOSE
+                : stablehlo::Transpose::NO_TRANSPOSE);
+
+      Value S;
+      Value halfM; // M / 2 as m x b (lower) or b x m (upper)
+      if (m == 0) {
+        // S = D^T D_bar
+        S = lower ? dotMat(builder, loc, D, true, DBar, false)
+                  : dotMat(builder, loc, D, false, DBar, true);
+      } else if (lower) {
+        Value C = sliceMat(builder, loc, F, k, n, j, k);
+        Value CBar = sliceMat(builder, loc, FBar, k, n, j, k);
+        CBar = stablehlo::SubtractOp::create(
+            builder, loc, CBar,
+            scaleMat(builder, loc, dotMat(builder, loc, T, false, C, false),
+                     2.0));
+        // M = C_bar D^{-1}
+        Value M = dotMat(builder, loc, CBar, false, DinvT, true);
+        // S = [D; C_bar]^T [D_bar; -C]
+        Value negC = stablehlo::NegOp::create(builder, loc, C);
+        Value lhsCat = concatMat(builder, loc, {D, CBar}, 0);
+        Value rhsCat = concatMat(builder, loc, {DBar, negC}, 0);
+        S = dotMat(builder, loc, lhsCat, true, rhsCat, false);
+        halfM = scaleMat(builder, loc, M, 0.5);
+      } else {
+        Value Ct = sliceMat(builder, loc, F, j, k, k, n);
+        Value CBarT = sliceMat(builder, loc, FBar, j, k, k, n);
+        CBarT = stablehlo::SubtractOp::create(
+            builder, loc, CBarT,
+            scaleMat(builder, loc, dotMat(builder, loc, Ct, false, T, false),
+                     2.0));
+        // M^T = D^{-T} C_bar^T
+        Value Mt = dotMat(builder, loc, DinvT, false, CBarT, false);
+        // S = [U_jj, -C_bar^T] [U_bar_jj, C^T]^T
+        Value negCBarT = stablehlo::NegOp::create(builder, loc, CBarT);
+        Value lhsCat = concatMat(builder, loc, {D, negCBarT}, 1);
+        Value rhsCat = concatMat(builder, loc, {DBar, Ct}, 1);
+        S = dotMat(builder, loc, lhsCat, false, rhsCat, true);
+        halfM = scaleMat(builder, loc, Mt, 0.5);
+      }
+
+      // A_bar_jj = D^{-T} sym(Phi(S)) D^{-1}, with
+      // 2 sym(Phi(S)) = tril(S) + tril(S, -1)^T.
+      Value lowerMask =
+          indexMask(builder, loc, blockType, ComparisonDirection::GE);
+      Value St = transpose2D(builder, loc, S);
+      Value P = stablehlo::SelectOp::create(builder, loc, lowerMask, S, St);
+      Value Z =
+          dotMat(builder, loc, dotMat(builder, loc, DinvT, false, P, false),
+                 false, DinvT, true);
+      Value ABarJJ =
+          scaleMat(builder, loc,
+                   stablehlo::AddOp::create(builder, loc, Z,
+                                            transpose2D(builder, loc, Z)),
+                   0.25);
+
+      if (m == 0) {
+        T = ABarJJ;
+        continue;
+      }
+      Value halfMt = transpose2D(builder, loc, halfM);
+      Value top = concatMat(builder, loc, {ABarJJ, lower ? halfMt : halfM}, 1);
+      Value bottom = concatMat(builder, loc, {lower ? halfM : halfMt, T}, 1);
+      T = concatMat(builder, loc, {top, bottom}, 0);
     }
 
-    // Step 6: Symmetrize for numerical stability
-    auto half = createSplatF(builder, loc, matType, 0.5);
-    auto aBarSum = stablehlo::AddOp::create(builder, loc, aBar,
-                                            transpose2D(builder, loc, aBar));
-    aBar = stablehlo::MulOp::create(builder, loc, aBarSum, half);
-
-    gutils->addToDiffe(op.getOperand(), aBar, builder);
-
+    gutils->addToDiffe(op.getOperand(), T, builder);
     return success();
   }
 
