@@ -651,6 +651,170 @@ struct JITRegionOpEnzymeOpsRemover
     // if (!caches.empty())
     //   return op->emitError("could not remove all caches from jit region op");
 
+    return cacheBuffersAsTensors(fwd, rev, caches, rewriter);
+  }
+
+  // Whether `op` allocates a statically shaped buffer, synchronously.
+  static bool isStaticAlloc(Operation *op) {
+    if (isa<memref::AllocOp, memref::AllocaOp>(op))
+      return op->getNumOperands() == 0;
+    if (auto alloc = dyn_cast<gpu::AllocOp>(op))
+      return op->getNumOperands() == 0 && !alloc.getAsyncToken() &&
+             !alloc.getHostShared();
+    return false;
+  }
+
+  // Erases the deallocations of `buffer`.
+  static void eraseDeallocs(Value buffer, PatternRewriter &rewriter) {
+    for (Operation *user : llvm::make_early_inc_range(buffer.getUsers())) {
+      if (isa<memref::DeallocOp>(user))
+        rewriter.eraseOp(user);
+      else if (auto dealloc = dyn_cast<gpu::DeallocOp>(user);
+               dealloc && !dealloc.getAsyncToken())
+        rewriter.eraseOp(user);
+    }
+  }
+
+  // A buffer does not outlive the jit_region it lives in, so a cache of a
+  // buffer pushed in the augmented region and popped in the reverse one is
+  // carried between the two as a tensor, the buffer becoming a new buffer of
+  // both regions:
+  //
+  //   jit_region(%x) { ^bb0(%m): %b = memref.alloc(); push(%c, %b) }
+  //   jit_region(%dr) { ^bb0(%dm): %b = pop(%c); use(%b) }
+  //
+  // becomes
+  //
+  //   %r:2 = jit_region(%x, %zero) { ^bb0(%m, %b): }
+  //   push(%c', %r#1)
+  //   %t = pop(%c')
+  //   jit_region(%dr, %t) { ^bb0(%dm, %b): use(%b) }
+  //
+  // A cache of a buffer holds the buffer, not its contents at the push: the
+  // pop sees the contents the buffer has when the region exits, which is what
+  // the result read from the new buffer holds.
+  static LogicalResult cacheBuffersAsTensors(JITRegionOp fwd, JITRegionOp rev,
+                                             ArrayRef<CacheInfo> caches,
+                                             PatternRewriter &rewriter) {
+    Block *body = fwd.getBodyBlock();
+    Block *revBody = rev.getBodyBlock();
+
+    SmallVector<CacheInfo> bufferCaches;
+    for (CacheInfo info : caches) {
+      Value buffer = info.pushedValue();
+      auto type = dyn_cast<MemRefType>(buffer.getType());
+      if (!type)
+        continue;
+      if (info.pushOp->getBlock() != body || buffer.getParentBlock() != body ||
+          !rev.getBody().isAncestor(info.popOp->getParentRegion()))
+        return info.pushOp->emitError(
+            "cannot carry a cache of a buffer pushed in a nested block of a "
+            "jit_region");
+      if (!type.hasStaticShape())
+        return info.pushOp->emitError(
+            "cannot carry a cache of a dynamically shaped buffer out of a "
+            "jit_region");
+      bufferCaches.push_back(info);
+    }
+    if (bufferCaches.empty())
+      return success();
+
+    // The buffer of the augmented region holding each cached buffer, and
+    // where it was pushed.
+    SmallVector<unsigned> fwdBuffers;
+    SmallVector<Location> pushLocs;
+    SmallVector<Value> fwdInputs(fwd.getInputs());
+    SmallVector<Attribute> fwdLayouts = getInputLayouts(fwd);
+    for (CacheInfo info : bufferCaches) {
+      Value buffer = info.pushedValue();
+      Location loc = buffer.getLoc();
+      pushLocs.push_back(info.pushOp.getLoc());
+      rewriter.eraseOp(info.pushOp);
+
+      // A buffer of the region is already read by its result.
+      if (auto arg = dyn_cast<BlockArgument>(buffer)) {
+        fwdBuffers.push_back(arg.getArgNumber());
+        continue;
+      }
+
+      fwdBuffers.push_back(fwdInputs.size());
+      RankedTensorType tensorType = getTensorType(buffer);
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(fwd);
+        fwdInputs.push_back(cast<AutoDiffTypeInterface>(tensorType)
+                                .createNullValue(rewriter, loc));
+      }
+      fwdLayouts.push_back(getDefaultLayout(rewriter, tensorType));
+      BlockArgument arg = body->addArgument(buffer.getType(), loc);
+
+      // An allocation of the region becomes the new buffer; any other buffer
+      // is copied to it once the region is done with it.
+      Operation *alloc = buffer.getDefiningOp();
+      if (alloc && isStaticAlloc(alloc)) {
+        eraseDeallocs(buffer, rewriter);
+        rewriter.replaceAllUsesWith(buffer, arg);
+        rewriter.eraseOp(alloc);
+      } else {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(body->getTerminator());
+        memref::CopyOp::create(rewriter, loc, buffer, arg);
+      }
+    }
+
+    rewriter.setInsertionPoint(fwd);
+    JITRegionOp newFwd = rebuildJITRegion(rewriter, fwd, fwdInputs, fwdLayouts);
+    for (OpResult result : fwd.getResults())
+      rewriter.replaceAllUsesWith(result, getRebuiltResult(newFwd, result));
+    rewriter.eraseOp(fwd);
+
+    // Each cached buffer is pushed once the augmented region exits, and popped
+    // before the reverse one is entered, in the opposite order.
+    SmallVector<Value> inits;
+    rewriter.setInsertionPointAfter(newFwd);
+    for (auto [info, index, loc] :
+         llvm::zip_equal(bufferCaches, fwdBuffers, pushLocs)) {
+      Value tensor = newFwd->getResult(index);
+      enzyme::InitOp init;
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(info.initOp);
+        init = enzyme::InitOp::create(
+            rewriter, loc,
+            enzyme::CacheType::get(rewriter.getContext(), tensor.getType()));
+      }
+      enzyme::PushOp::create(rewriter, loc, init, tensor);
+      inits.push_back(init);
+    }
+
+    rewriter.setInsertionPoint(rev);
+    unsigned numRevInputs = rev.getInputs().size();
+    SmallVector<Value> revInputs(rev.getInputs());
+    SmallVector<Attribute> revLayouts = getInputLayouts(rev);
+    revInputs.resize(numRevInputs + bufferCaches.size());
+    for (unsigned i = bufferCaches.size(); i-- > 0;) {
+      Type type = cast<enzyme::CacheType>(inits[i].getType()).getType();
+      revInputs[numRevInputs + i] = enzyme::PopOp::create(
+          rewriter, bufferCaches[i].popOp.getLoc(), type, inits[i]);
+    }
+
+    // The pop of a cached buffer in the reverse region becomes its new buffer.
+    for (CacheInfo info : bufferCaches) {
+      BlockArgument arg = revBody->addArgument(info.popOp.getType(),
+                                               info.popOp.getLoc());
+      revLayouts.push_back(getDefaultLayout(rewriter, getTensorType(arg)));
+      // The region owns its buffers: the reverse region no longer frees the
+      // buffer the augmented one allocated.
+      eraseDeallocs(info.popOp.getResult(), rewriter);
+      rewriter.replaceAllUsesWith(info.popOp.getResult(), arg);
+      rewriter.eraseOp(info.popOp);
+      rewriter.eraseOp(info.initOp);
+    }
+
+    JITRegionOp newRev = rebuildJITRegion(rewriter, rev, revInputs, revLayouts);
+    for (OpResult result : rev.getResults())
+      rewriter.replaceAllUsesWith(result, getRebuiltResult(newRev, result));
+    rewriter.eraseOp(rev);
     return success();
   }
 };
