@@ -1,7 +1,5 @@
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=impulse.sicm_gaussian_sufficient_stats" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s
 
-// ||c - R beta||^2 + rem: enzymexla.linalg.qr X is emitted (its Q1/R/c/rem are
-// sample-invariant and hoist), and the in-loop chain is a D-vector
 module {
   func.func private @normal_sampler(%rng : tensor<2xui64>, %std : tensor<f64>) -> (tensor<2xui64>, tensor<f64>) {
     return %rng, %std : tensor<2xui64>, tensor<f64>
@@ -14,23 +12,29 @@ module {
   // CHECK-LABEL: func.func @linreg_qr
   // CHECK: ^bb0(%{{.+}}: tensor<2xui64>, %[[X:.+]]: tensor<64x3xf64>, %[[Y:.+]]: tensor<64xf64>):
   // CHECK: %[[TAU:.+]]:2 = impulse.sample_region
-  // The invariant thin-QR statistics (hoisted on the next fixpoint iteration):
-  // R = Q1'X, c = Q1'y, and the stable remainder ||y - Q1 c||^2.
   // CHECK: %[[BETA:.+]] = stablehlo.broadcast_in_dim %[[TAU]]#1, dims = [] : (tensor<f64>) -> tensor<3xf64>
-  // CHECK-NEXT: %[[Q:.+]], %[[RPACK:.+]], %[[INFO:.+]] = enzymexla.linalg.qr %[[X]] : (tensor<64x3xf64>) -> (tensor<64x3xf64>, tensor<64x3xf64>, tensor<i32>)
-  // CHECK-NEXT: %[[RMAT:.+]] = stablehlo.dot_general %[[Q]], %[[X]], contracting_dims = [0] x [0] : (tensor<64x3xf64>, tensor<64x3xf64>) -> tensor<3x3xf64>
-  // CHECK-NEXT: %[[C:.+]] = stablehlo.dot_general %[[Q]], %[[Y]], contracting_dims = [0] x [0] : (tensor<64x3xf64>, tensor<64xf64>) -> tensor<3xf64>
-  // CHECK-NEXT: %[[Q1C:.+]] = stablehlo.dot_general %[[Q]], %[[C]], contracting_dims = [1] x [0] : (tensor<64x3xf64>, tensor<3xf64>) -> tensor<64xf64>
-  // CHECK-NEXT: %[[RESID:.+]] = stablehlo.subtract %[[Y]], %[[Q1C]] : tensor<64xf64>
-  // CHECK-NEXT: %[[REM:.+]] = stablehlo.dot_general %[[RESID]], %[[RESID]], contracting_dims = [0] x [0] : (tensor<64xf64>, tensor<64xf64>) -> tensor<f64>
+  // CHECK-NEXT: %[[YCOL:.+]] = stablehlo.reshape %[[Y]] : (tensor<64xf64>) -> tensor<64x1xf64>
+  // CHECK-NEXT: %[[AUG:.+]] = stablehlo.concatenate %[[X]], %[[YCOL]], dim = 1 : (tensor<64x3xf64>, tensor<64x1xf64>) -> tensor<64x4xf64>
+  // CHECK-NEXT: %[[Q:.+]], %[[P:.+]], %{{.+}} = enzymexla.linalg.qr %[[AUG]] : (tensor<64x4xf64>) -> (tensor<64x4xf64>, tensor<64x4xf64>, tensor<i32>)
+  // CHECK-NEXT: %[[RPACK:.+]] = stablehlo.slice %[[P]] [0:3, 0:3] : (tensor<64x4xf64>) -> tensor<3x3xf64>
+  // CHECK-NEXT: %[[ROWS:.+]] = stablehlo.iota dim = 0 : tensor<3x3xi64>
+  // CHECK-NEXT: %[[COLS:.+]] = stablehlo.iota dim = 1 : tensor<3x3xi64>
+  // CHECK-NEXT: %[[UPPER:.+]] = stablehlo.compare LE, %[[ROWS]], %[[COLS]] : (tensor<3x3xi64>, tensor<3x3xi64>) -> tensor<3x3xi1>
+  // CHECK-NEXT: %[[MASK:.+]] = stablehlo.convert %[[UPPER]] : (tensor<3x3xi1>) -> tensor<3x3xf64>
+  // CHECK-NEXT: %[[RMAT:.+]] = stablehlo.multiply %[[RPACK]], %[[MASK]] : tensor<3x3xf64>
+  // CHECK-NEXT: %[[CCOL:.+]] = stablehlo.slice %[[P]] [0:3, 3:4] : (tensor<64x4xf64>) -> tensor<3x1xf64>
+  // CHECK-NEXT: %[[C:.+]] = stablehlo.reshape %[[CCOL]] : (tensor<3x1xf64>) -> tensor<3xf64>
+  // CHECK-NEXT: %[[PDD:.+]] = stablehlo.slice %[[P]] [3:4, 3:4] : (tensor<64x4xf64>) -> tensor<1x1xf64>
+  // CHECK-NEXT: %[[PD:.+]] = stablehlo.reshape %[[PDD]] : (tensor<1x1xf64>) -> tensor<f64>
+  // CHECK-NEXT: %[[REM:.+]] = stablehlo.multiply %[[PD]], %[[PD]] : tensor<f64>
   // CHECK-NEXT: %[[RB:.+]] = stablehlo.dot_general %[[RMAT]], %[[BETA]], contracting_dims = [1] x [0] : (tensor<3x3xf64>, tensor<3xf64>) -> tensor<3xf64>
   // CHECK-NEXT: %[[D:.+]] = stablehlo.subtract %[[C]], %[[RB]] : tensor<3xf64>
   // CHECK-NEXT: %[[DD:.+]] = stablehlo.dot_general %[[D]], %[[D]], contracting_dims = [0] x [0] : (tensor<3xf64>, tensor<3xf64>) -> tensor<f64>
   // CHECK-NEXT: %[[RSS:.+]] = stablehlo.add %[[DD]], %[[REM]] : tensor<f64>
   // CHECK-NEXT: %[[SIG2:.+]] = stablehlo.multiply %[[TAU]]#1, %[[TAU]]#1 : tensor<f64>
   // CHECK-NEXT: %[[SUMSQ:.+]] = stablehlo.divide %[[RSS]], %[[SIG2]] : tensor<f64>
-  // The original O(N D) mean contraction dot_general(X, beta) is gone.
   // CHECK-NOT: stablehlo.dot_general %[[X]], %[[BETA]]
+  // CHECK-NOT: %[[Q]]
   func.func @linreg_qr(%rng : tensor<2xui64>, %X : tensor<64x3xf64>, %y : tensor<64xf64>, %trace : tensor<1x1xf64>) -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>) {
     %step_size = stablehlo.constant dense<0.1> : tensor<f64>
     %std = stablehlo.constant dense<1.0> : tensor<f64>
@@ -68,7 +72,8 @@ module {
   // CHECK-LABEL: func.func @linreg_qr_reduce
   // CHECK: ^bb0(%{{.+}}: tensor<2xui64>, %[[X:.+]]: tensor<64x3xf64>, %[[Y:.+]]: tensor<64xf64>):
   // CHECK: %[[TAU:.+]]:2 = impulse.sample_region
-  // CHECK: %[[Q:.+]], %{{.+}}, %{{.+}} = enzymexla.linalg.qr %[[X]] : (tensor<64x3xf64>) -> (tensor<64x3xf64>, tensor<64x3xf64>, tensor<i32>)
+  // CHECK: %[[AUG:.+]] = stablehlo.concatenate %[[X]], %{{.+}}, dim = 1 : (tensor<64x3xf64>, tensor<64x1xf64>) -> tensor<64x4xf64>
+  // CHECK-NEXT: %{{.+}}, %{{.+}}, %{{.+}} = enzymexla.linalg.qr %[[AUG]] : (tensor<64x4xf64>) -> (tensor<64x4xf64>, tensor<64x4xf64>, tensor<i32>)
   // CHECK: %[[RB:.+]] = stablehlo.dot_general %{{.+}}, %{{.+}}, contracting_dims = [1] x [0] : (tensor<3x3xf64>, tensor<3xf64>) -> tensor<3xf64>
   // CHECK-NOT: stablehlo.reduce
   // CHECK-NOT: stablehlo.dot_general %[[X]], %{{.+}} : (tensor<64x3xf64>, tensor<3xf64>)

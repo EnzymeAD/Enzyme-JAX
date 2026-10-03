@@ -623,9 +623,8 @@ struct DotAbsorbDiagMulHLO : public OpRewritePattern<stablehlo::DotGeneralOp> {
   }
 };
 
-///   structure: rhs (through an optional reshape) is fft(x); the single lhs
-///     contracting dimension is the first or last and its extent equals the
-///     product of the FFT lengths;
+/// Only FFT and IFFT: their matrix F is symmetric, so transforming A's
+/// contracting slice gives A F. RFFT and IRFFT change type and extent.
 struct DotAbsorbFFTHLO : public OpRewritePattern<stablehlo::DotGeneralOp> {
   DotAbsorbFFTHLO(MLIRContext *context, PatternBenefit benefit = 4)
       : OpRewritePattern(context, benefit) {}
@@ -646,6 +645,9 @@ struct DotAbsorbFFTHLO : public OpRewritePattern<stablehlo::DotGeneralOp> {
     auto [rhsInner, reshapeOp] = lookThroughReshape(dotOp.getRhs());
     auto fftOp = rhsInner.getDefiningOp<stablehlo::FftOp>();
     if (!fftOp)
+      return failure();
+    if (fftOp.getFftType() != stablehlo::FftType::FFT &&
+        fftOp.getFftType() != stablehlo::FftType::IFFT)
       return failure();
     if (!analysis.isSampleDependent(fftOp.getOperand()))
       return failure();
@@ -938,6 +940,8 @@ static std::pair<Value, int64_t> matchChannelSlice(Value val,
   return {sliceOp.getOperand(), channelDim};
 }
 
+/// An overwrite scatter keeps one update per position but the gathered dot
+/// sums all; without unique_indices keep only the last (StableHLO permits it).
 struct DotAbsorbScatterHLO : public OpRewritePattern<stablehlo::DotGeneralOp> {
   DotAbsorbScatterHLO(MLIRContext *context, PatternBenefit benefit = 5)
       : OpRewritePattern(context, benefit) {}
@@ -981,6 +985,7 @@ struct DotAbsorbScatterHLO : public OpRewritePattern<stablehlo::DotGeneralOp> {
     Value dataRe, dataIm;
     Value updates;
     int64_t channelUpdateDim;
+    bool uniqueIndices = false;
   };
 
   static FailureOr<Match>
@@ -1000,6 +1005,7 @@ struct DotAbsorbScatterHLO : public OpRewritePattern<stablehlo::DotGeneralOp> {
       match.scatterOp = directScatter;
       match.scatterIndices = directScatter.getScatterIndices();
       match.data = directData;
+      match.uniqueIndices = directScatter.getUniqueIndices();
     }
 
     if (!match.scatterOp) {
@@ -1013,6 +1019,9 @@ struct DotAbsorbScatterHLO : public OpRewritePattern<stablehlo::DotGeneralOp> {
           match.scatterIndices = scatterRe.getScatterIndices();
           match.dataRe = dataRe;
           match.dataIm = dataIm;
+          // The indices are shared, so either promise covers both.
+          match.uniqueIndices =
+              scatterRe.getUniqueIndices() || scatterIm.getUniqueIndices();
         }
       }
     }
@@ -1059,6 +1068,7 @@ struct DotAbsorbScatterHLO : public OpRewritePattern<stablehlo::DotGeneralOp> {
       match.scatterIndices = scatter.getScatterIndices();
       match.updates = updates;
       match.channelUpdateDim = channelUpdateDim;
+      match.uniqueIndices = scatter.getUniqueIndices();
 
       auto scatterInputShapeRef =
           cast<RankedTensorType>(scatter.getInputs()[0].getType()).getShape();
@@ -1191,6 +1201,57 @@ struct DotAbsorbScatterHLO : public OpRewritePattern<stablehlo::DotGeneralOp> {
     llvm_unreachable("unknown scatter data kind");
   }
 
+  static Value maskToLastOccurrence(PatternRewriter &rewriter, Location loc,
+                                    Value gathered, Value linearIdx, int64_t K,
+                                    int64_t P, int64_t contractDim) {
+    MLIRContext *ctx = rewriter.getContext();
+    auto i64Type = rewriter.getI64Type();
+    auto scalarI64 = RankedTensorType::get({}, i64Type);
+    auto kType = RankedTensorType::get({K}, i64Type);
+    auto pType = RankedTensorType::get({P}, i64Type);
+
+    Value position = stablehlo::IotaOp::create(rewriter, loc, kType, 0);
+    Value none = stablehlo::ConstantOp::create(
+        rewriter, loc, pType, cast<ElementsAttr>(makeAttr(pType, -1)));
+    auto winnerScatter = stablehlo::ScatterOp::create(
+        rewriter, loc, ValueRange{none}, linearIdx, ValueRange{position},
+        stablehlo::ScatterDimensionNumbersAttr::get(
+            ctx, /*updateWindowDims=*/{}, /*insertedWindowDims=*/{0},
+            /*inputBatchingDims=*/{}, /*scatterIndicesBatchingDims=*/{},
+            /*scatterDimsToOperandDims=*/{0}, /*indexVectorDim=*/1),
+        /*indicesAreSorted=*/false, /*uniqueIndices=*/false);
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      Block *body =
+          rewriter.createBlock(&winnerScatter.getUpdateComputation(), {},
+                               {scalarI64, scalarI64}, {loc, loc});
+      rewriter.setInsertionPointToStart(body);
+      Value later = stablehlo::MaxOp::create(
+          rewriter, loc, body->getArgument(0), body->getArgument(1));
+      stablehlo::ReturnOp::create(rewriter, loc, later);
+    }
+
+    Value winnerAt = stablehlo::GatherOp::create(
+        rewriter, loc, kType, winnerScatter.getResult(0), linearIdx,
+        stablehlo::GatherDimensionNumbersAttr::get(
+            ctx, /*offsetDims=*/{}, /*collapsedSliceDims=*/{0},
+            /*operandBatchingDims=*/{}, /*startIndicesBatchingDims=*/{},
+            /*startIndexMap=*/{0}, /*indexVectorDim=*/1),
+        rewriter.getDenseI64ArrayAttr({1}));
+    Value isLast = stablehlo::CompareOp::create(
+        rewriter, loc, winnerAt, position, stablehlo::ComparisonDirection::EQ);
+
+    // A 0/1 multiply, not a select, so while-loop LICM hoists it.
+    auto gatheredType = cast<RankedTensorType>(gathered.getType());
+    Value keep = stablehlo::ConvertOp::create(
+        rewriter, loc,
+        RankedTensorType::get({K}, gatheredType.getElementType()), isLast);
+    Value keepB = stablehlo::BroadcastInDimOp::create(
+        rewriter, loc, gatheredType, keep,
+        rewriter.getDenseI64ArrayAttr({contractDim}));
+    return stablehlo::MulOp::create(rewriter, loc, gathered, keepB);
+  }
+
   static Value applyRewrite(PatternRewriter &rewriter,
                             stablehlo::DotGeneralOp dotOp, Match match) {
     Location loc = dotOp.getLoc();
@@ -1272,6 +1333,9 @@ struct DotAbsorbScatterHLO : public OpRewritePattern<stablehlo::DotGeneralOp> {
     Value gatheredLhs = stablehlo::GatherOp::create(
         rewriter, loc, gatheredType, lhs, linearIdx, gatherDimNumbers,
         rewriter.getDenseI64ArrayAttr(sliceSizes));
+    if (!match.uniqueIndices)
+      gatheredLhs = maskToLastOccurrence(rewriter, loc, gatheredLhs, linearIdx,
+                                         K, lhsShape[contractDim], contractDim);
 
     auto dataType = cast<RankedTensorType>(newRhsData.getType());
     Value finalRhs = newRhsData;
@@ -2577,12 +2641,6 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
 };
 
 // sample-invariant terms move to the y side. A non-constant scalar that is
-// sum by an equal scalar computed from the hoistable statistics Q1, R, c, rem,
-// dropping the per-gradient residual cost from O(N D) to O(D^2). The QR
-// emission carries no large-magnitude cancellation and ships in the aggregate
-// pattern set; the Gram emission (yty - 2 beta'Xty + beta'G beta) is the
-// portability fallback behind an opt-in flag (Section 3.5/3.7 of
-// GRAM_RULE_DESIGN.md).
 enum class SicmAffineKind { Mul, Div, Add, SubRhs, SubLhs };
 struct SicmAffineStep {
   SicmAffineKind kind;
@@ -3211,35 +3269,49 @@ static RankedTensorType qrInfoType(OpBuilder &b) {
   return RankedTensorType::get({}, b.getIntegerType(32));
 }
 
-/// GaussianSufficientStats, QR form (default). Emits `enzymexla.linalg.qr X`
-/// (the invariant Q1/R statistics hoist), computes c = Q1'y and the stable
-/// remainder ||y - Q1 c||^2, and rewrites the in-loop residual as the D-vector
-/// `c - R beta`. No cancellation, no numeric gate; registered in the aggregate
-/// SicmPatterns set (Section 3.6/3.7).
+/// Householder QR factors the leading D columns of [X y] as X alone, so
+/// R = triu(P[:D, :D]), c = P[:D, D] and rem = P[D, D]^2.
 static Value emitGaussianStatsQR(PatternRewriter &rewriter, Location loc,
                                  GaussianStatsMatch m) {
   materializeAffineMean(rewriter, loc, m);
   Type elem = cast<RankedTensorType>(m.X.getType()).getElementType();
   Value X = getDesignND(rewriter, loc, m);
+  int64_t N = m.N, D = m.D;
 
-  auto qTy = RankedTensorType::get({m.N, m.D}, elem);
-  auto rPackedTy = RankedTensorType::get({m.N, m.D}, elem);
-  auto qr = enzymexla::QRFactorizationOp::create(
-      rewriter, loc, TypeRange{qTy, rPackedTy, qrInfoType(rewriter)}, X);
-  Value Q1 = qr.getQ(); // (N, D), orthonormal columns
-
-  auto ddTy = RankedTensorType::get({m.D, m.D}, elem);
-  auto dTy = RankedTensorType::get({m.D}, elem);
-  auto nTy = RankedTensorType::get({m.N}, elem);
+  auto ddTy = RankedTensorType::get({D, D}, elem);
+  auto dTy = RankedTensorType::get({D}, elem);
   auto scalarTy = RankedTensorType::get({}, elem);
 
-  // Invariant statistics (hoisted by the fixpoint): R = Q1'X, c = Q1'y, and the
-  // stable remainder rem = ||y - Q1 c||^2.
-  Value R = emitContractDot(rewriter, loc, ddTy, Q1, X, {0}, {0});
-  Value c = emitContractDot(rewriter, loc, dTy, Q1, m.y, {0}, {0});
-  Value Q1c = emitContractDot(rewriter, loc, nTy, Q1, c, {1}, {0});
-  Value resid = stablehlo::SubtractOp::create(rewriter, loc, m.y, Q1c);
-  Value rem = emitContractDot(rewriter, loc, scalarTy, resid, resid, {0}, {0});
+  // The match guarantees N >= 2 D, so row D of P exists.
+  Value yCol = stablehlo::ReshapeOp::create(
+      rewriter, loc, RankedTensorType::get({N, 1}, elem), m.y);
+  Value A =
+      stablehlo::ConcatenateOp::create(rewriter, loc, ValueRange{X, yCol}, 1);
+  auto augTy = RankedTensorType::get({N, D + 1}, elem);
+  auto qr = enzymexla::QRFactorizationOp::create(
+      rewriter, loc, TypeRange{augTy, augTy, qrInfoType(rewriter)}, A);
+  Value P = qr.getR(); // R on and above the diagonal, reflectors below
+  auto sliceP = [&](ArrayRef<int64_t> start, ArrayRef<int64_t> limit) -> Value {
+    auto ty =
+        RankedTensorType::get({limit[0] - start[0], limit[1] - start[1]}, elem);
+    return stablehlo::SliceOp::create(rewriter, loc, ty, P,
+                                      rewriter.getDenseI64ArrayAttr(start),
+                                      rewriter.getDenseI64ArrayAttr(limit),
+                                      rewriter.getDenseI64ArrayAttr({1, 1}));
+  };
+  // A 0/1 multiply, not a select, so while-loop LICM hoists it.
+  Value RPacked = sliceP({0, 0}, {D, D});
+  auto idxTy = RankedTensorType::get({D, D}, rewriter.getI64Type());
+  Value rows = stablehlo::IotaOp::create(rewriter, loc, idxTy, 0);
+  Value cols = stablehlo::IotaOp::create(rewriter, loc, idxTy, 1);
+  Value upper = stablehlo::CompareOp::create(
+      rewriter, loc, rows, cols, stablehlo::ComparisonDirection::LE);
+  Value upperMask = stablehlo::ConvertOp::create(rewriter, loc, ddTy, upper);
+  Value R = stablehlo::MulOp::create(rewriter, loc, RPacked, upperMask);
+  Value c = stablehlo::ReshapeOp::create(rewriter, loc, dTy,
+                                         sliceP({0, D}, {D, D + 1}));
+  Value pDD = reshapeToScalar(rewriter, loc, sliceP({D, D}, {D + 1, D + 1}));
+  Value rem = stablehlo::MulOp::create(rewriter, loc, pDD, pDD);
 
   Value Rb = emitContractDot(rewriter, loc, dTy, R, m.beta, {1}, {0});
   Value d = stablehlo::SubtractOp::create(rewriter, loc, c, Rb);

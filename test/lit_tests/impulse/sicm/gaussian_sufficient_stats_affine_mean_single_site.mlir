@@ -1,6 +1,5 @@
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=impulse.sicm_gaussian_sufficient_stats" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s
 
-// offset), so that c = Q1'y and the remainder stay functions of X and y only
 module {
   func.func private @normal_sampler(%rng : tensor<2xui64>, %std : tensor<f64>) -> (tensor<2xui64>, tensor<f64>) {
     return %rng, %std : tensor<2xui64>, tensor<f64>
@@ -18,11 +17,9 @@ module {
   // CHECK: %[[C1COL:.+]] = stablehlo.reshape %[[C1]] : (tensor<64xf64>) -> tensor<64x1xf64>
   // CHECK-NEXT: %[[X:.+]] = stablehlo.concatenate %[[C1COL]], %[[ONES]], dim = 1 : (tensor<64x1xf64>, tensor<64x1xf64>) -> tensor<64x2xf64>
   // CHECK-NEXT: %[[BETA:.+]] = stablehlo.concatenate %[[S1]]#1, %[[B]], dim = 0 : (tensor<1xf64>, tensor<1xf64>) -> tensor<2xf64>
-  // CHECK-NEXT: %[[Q:.+]], %{{.+}}, %{{.+}} = enzymexla.linalg.qr %[[X]] : (tensor<64x2xf64>) -> (tensor<64x2xf64>, tensor<64x2xf64>, tensor<i32>)
-  // CHECK-NEXT: %{{.+}} = stablehlo.dot_general %[[Q]], %[[X]], contracting_dims = [0] x [0] : (tensor<64x2xf64>, tensor<64x2xf64>) -> tensor<2x2xf64>
-  // CHECK-NEXT: %[[C:.+]] = stablehlo.dot_general %[[Q]], %[[Y]], contracting_dims = [0] x [0] : (tensor<64x2xf64>, tensor<64xf64>) -> tensor<2xf64>
-  // CHECK-NEXT: %[[Q1C:.+]] = stablehlo.dot_general %[[Q]], %[[C]], contracting_dims = [1] x [0] : (tensor<64x2xf64>, tensor<2xf64>) -> tensor<64xf64>
-  // CHECK-NEXT: %{{.+}} = stablehlo.subtract %[[Y]], %[[Q1C]] : tensor<64xf64>
+  // CHECK-NEXT: %[[YCOL:.+]] = stablehlo.reshape %[[Y]] : (tensor<64xf64>) -> tensor<64x1xf64>
+  // CHECK-NEXT: %[[AUG:.+]] = stablehlo.concatenate %[[X]], %[[YCOL]], dim = 1 : (tensor<64x2xf64>, tensor<64x1xf64>) -> tensor<64x3xf64>
+  // CHECK-NEXT: %{{.+}}, %{{.+}}, %{{.+}} = enzymexla.linalg.qr %[[AUG]] : (tensor<64x3xf64>) -> (tensor<64x3xf64>, tensor<64x3xf64>, tensor<i32>)
   // CHECK: %{{.+}} = stablehlo.dot_general %{{.+}}, %[[BETA]], contracting_dims = [1] x [0] : (tensor<2x2xf64>, tensor<2xf64>) -> tensor<2xf64>
   func.func @single_address(%rng : tensor<2xui64>, %c1 : tensor<64xf64>, %y : tensor<64xf64>, %b : tensor<1xf64>, %trace : tensor<1x1xf64>) -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>) {
     %step_size = stablehlo.constant dense<0.1> : tensor<f64>
@@ -60,7 +57,9 @@ module {
   // CHECK-NEXT: %[[SUM:.+]] = stablehlo.subtract %[[S2]]#1, %[[B]] : tensor<1xf64>
   // CHECK-NEXT: %[[X:.+]] = stablehlo.concatenate %[[C1COL]], %[[ONES]], dim = 1 : (tensor<64x1xf64>, tensor<64x1xf64>) -> tensor<64x2xf64>
   // CHECK-NEXT: %[[BETA:.+]] = stablehlo.concatenate %[[S1]]#1, %[[SUM]], dim = 0 : (tensor<1xf64>, tensor<1xf64>) -> tensor<2xf64>
-  // CHECK-NEXT: %{{.+}}, %{{.+}}, %{{.+}} = enzymexla.linalg.qr %[[X]] : (tensor<64x2xf64>) -> (tensor<64x2xf64>, tensor<64x2xf64>, tensor<i32>)
+  // CHECK-NEXT: %[[YCOL:.+]] = stablehlo.reshape %[[Y]] : (tensor<64xf64>) -> tensor<64x1xf64>
+  // CHECK-NEXT: %[[AUG:.+]] = stablehlo.concatenate %[[X]], %[[YCOL]], dim = 1 : (tensor<64x2xf64>, tensor<64x1xf64>) -> tensor<64x3xf64>
+  // CHECK-NEXT: %{{.+}}, %{{.+}}, %{{.+}} = enzymexla.linalg.qr %[[AUG]] : (tensor<64x3xf64>) -> (tensor<64x3xf64>, tensor<64x3xf64>, tensor<i32>)
   func.func @merged_ones(%rng : tensor<2xui64>, %c1 : tensor<64xf64>, %y : tensor<64xf64>, %b : tensor<1xf64>, %trace : tensor<1x2xf64>) -> (tensor<1x2xf64>, tensor<1xi1>, tensor<2xui64>) {
     %step_size = stablehlo.constant dense<0.1> : tensor<f64>
     %std = stablehlo.constant dense<1.0> : tensor<f64>
@@ -105,9 +104,9 @@ module {
   // CHECK: %[[K:.+]] = stablehlo.broadcast_in_dim %{{.+}}, dims = [0] : (tensor<1xf64>) -> tensor<64xf64>
   // CHECK-NEXT: %[[X:.+]] = stablehlo.reshape %[[C1]] : (tensor<64xf64>) -> tensor<64x1xf64>
   // CHECK-NEXT: %[[YP:.+]] = stablehlo.subtract %[[Y]], %[[K]] : tensor<64xf64>
-  // CHECK-NEXT: %[[Q:.+]], %{{.+}}, %{{.+}} = enzymexla.linalg.qr %[[X]] : (tensor<64x1xf64>) -> (tensor<64x1xf64>, tensor<64x1xf64>, tensor<i32>)
-  // CHECK-NEXT: %{{.+}} = stablehlo.dot_general %[[Q]], %[[X]], contracting_dims = [0] x [0] : (tensor<64x1xf64>, tensor<64x1xf64>) -> tensor<1x1xf64>
-  // CHECK-NEXT: %{{.+}} = stablehlo.dot_general %[[Q]], %[[YP]], contracting_dims = [0] x [0] : (tensor<64x1xf64>, tensor<64xf64>) -> tensor<1xf64>
+  // CHECK-NEXT: %[[YCOL:.+]] = stablehlo.reshape %[[YP]] : (tensor<64xf64>) -> tensor<64x1xf64>
+  // CHECK-NEXT: %[[AUG:.+]] = stablehlo.concatenate %[[X]], %[[YCOL]], dim = 1 : (tensor<64x1xf64>, tensor<64x1xf64>) -> tensor<64x2xf64>
+  // CHECK-NEXT: %{{.+}}, %{{.+}}, %{{.+}} = enzymexla.linalg.qr %[[AUG]] : (tensor<64x2xf64>) -> (tensor<64x2xf64>, tensor<64x2xf64>, tensor<i32>)
   func.func @constant_offset(%rng : tensor<2xui64>, %c1 : tensor<64xf64>, %y : tensor<64xf64>, %b : tensor<1xf64>, %trace : tensor<1x1xf64>) -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>) {
     %step_size = stablehlo.constant dense<0.1> : tensor<f64>
     %std = stablehlo.constant dense<1.0> : tensor<f64>

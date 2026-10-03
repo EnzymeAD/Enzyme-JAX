@@ -8,12 +8,12 @@
 // DEFAULT-NOT: enzymexla.linalg.qr
 // DEFAULT: stablehlo.dot_general %[[R:.+]], %[[R]], contracting_dims = [0] x [0] : (tensor<11xf64>, tensor<11xf64>) -> tensor<f64>
 // DEFAULT-LABEL: func.func @at
-// DEFAULT: enzymexla.linalg.qr %{{.+}} : (tensor<32x2xf64>) -> (tensor<32x2xf64>, tensor<32x2xf64>, tensor<i32>)
+// DEFAULT: enzymexla.linalg.qr %{{.+}} : (tensor<32x3xf64>) -> (tensor<32x3xf64>, tensor<32x3xf64>, tensor<i32>)
 
 // LOW-LABEL: func.func @below
-// LOW: enzymexla.linalg.qr %{{.+}} : (tensor<11x2xf64>) -> (tensor<11x2xf64>, tensor<11x2xf64>, tensor<i32>)
+// LOW: enzymexla.linalg.qr %{{.+}} : (tensor<11x3xf64>) -> (tensor<11x3xf64>, tensor<11x3xf64>, tensor<i32>)
 // LOW-LABEL: func.func @at
-// LOW: enzymexla.linalg.qr %{{.+}} : (tensor<32x2xf64>) -> (tensor<32x2xf64>, tensor<32x2xf64>, tensor<i32>)
+// LOW: enzymexla.linalg.qr %{{.+}} : (tensor<32x3xf64>) -> (tensor<32x3xf64>, tensor<32x3xf64>, tensor<i32>)
 
 // HIGH-LABEL: func.func @below
 // HIGH-NOT: enzymexla.linalg.qr
