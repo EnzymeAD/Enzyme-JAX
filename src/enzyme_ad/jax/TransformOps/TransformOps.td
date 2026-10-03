@@ -737,6 +737,11 @@ def ApplyFactorScalarsInDotGeneral : EnzymeHLOPatternOp<
   let patterns = ["FactorScalarsInDotGeneral"];
 }
 
+def ApplyDotGeneralOuterProductReassociate : EnzymeHLOPatternOp<
+    "dot_general_outer_product_reassociate"> {
+  let patterns = ["DotGeneralOuterProductReassociate"];
+}
+
 def ApplyTransposeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
     "transpose_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);

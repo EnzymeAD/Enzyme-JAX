@@ -35474,6 +35474,90 @@ private:
   }
 };
 
+/// dot_general(A, u (x) v) -> (A u) (x) v, and mirrored: a matrix-vector and
+/// an outer product instead of a matrix-matrix product.
+struct DotGeneralOuterProductReassociate final
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     DotGeneralOuterProductReassociate> {
+  using CheckedOpRewritePattern<
+      stablehlo::DotGeneralOp,
+      DotGeneralOuterProductReassociate>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dims = op.getDotDimensionNumbers();
+    if (!dims.getLhsBatchingDimensions().empty() ||
+        dims.getLhsContractingDimensions().size() != 1)
+      return failure();
+    int64_t lhsContract = dims.getLhsContractingDimensions()[0];
+    int64_t rhsContract = dims.getRhsContractingDimensions()[0];
+
+    Value u, v;
+    if (isVectorOuterProduct(op.getRhs(), u, v) &&
+        op.getLhs().getType().getRank() >= 2) {
+      // Result dims: [lhs free..., kept].
+      Value contracted = rhsContract == 0 ? u : v;
+      Value kept = rhsContract == 0 ? v : u;
+      Value av =
+          createDot(rewriter, op, op.getLhs(), contracted, lhsContract, 0);
+      rewriter.replaceOp(op, createDot(rewriter, op, av, kept, -1, -1));
+      return success();
+    }
+    if (isVectorOuterProduct(op.getLhs(), u, v) &&
+        op.getRhs().getType().getRank() >= 2) {
+      // Result dims: [kept, rhs free...].
+      Value contracted = lhsContract == 0 ? u : v;
+      Value kept = lhsContract == 0 ? v : u;
+      Value vb =
+          createDot(rewriter, op, contracted, op.getRhs(), 0, rhsContract);
+      rewriter.replaceOp(op, createDot(rewriter, op, kept, vb, -1, -1));
+      return success();
+    }
+    return failure();
+  }
+
+private:
+  static bool isVectorOuterProduct(Value x, Value &u, Value &v) {
+    auto dot = x.getDefiningOp<stablehlo::DotGeneralOp>();
+    if (!dot)
+      return false;
+    auto dims = dot.getDotDimensionNumbers();
+    if (!dims.getLhsBatchingDimensions().empty() ||
+        !dims.getLhsContractingDimensions().empty() ||
+        dot.getLhs().getType().getRank() != 1 ||
+        dot.getRhs().getType().getRank() != 1)
+      return false;
+    u = dot.getLhs();
+    v = dot.getRhs();
+    return true;
+  }
+
+  // lhsDim = rhsDim = -1: no contraction (an outer product).
+  static Value createDot(PatternRewriter &rewriter, stablehlo::DotGeneralOp op,
+                         Value lhs, Value rhs, int64_t lhsDim, int64_t rhsDim) {
+    auto lhsShape = cast<RankedTensorType>(lhs.getType()).getShape();
+    auto rhsShape = cast<RankedTensorType>(rhs.getType()).getShape();
+    SmallVector<int64_t> shape;
+    for (int64_t i = 0, e = lhsShape.size(); i < e; i++)
+      if (i != lhsDim)
+        shape.push_back(lhsShape[i]);
+    for (int64_t i = 0, e = rhsShape.size(); i < e; i++)
+      if (i != rhsDim)
+        shape.push_back(rhsShape[i]);
+    SmallVector<int64_t> lhsContract, rhsContract;
+    if (lhsDim >= 0) {
+      lhsContract.push_back(lhsDim);
+      rhsContract.push_back(rhsDim);
+    }
+    auto dotDims = stablehlo::DotDimensionNumbersAttr::get(
+        op.getContext(), {}, {}, lhsContract, rhsContract);
+    return stablehlo::DotGeneralOp::create(
+        rewriter, op.getLoc(),
+        RankedTensorType::get(shape, op.getType().getElementType()), lhs, rhs,
+        dotDims, op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+  }
+};
+
 struct ChainedMultiplyToPower final
     : public CheckedOpRewritePattern<stablehlo::MulOp, ChainedMultiplyToPower> {
   using CheckedOpRewritePattern<
