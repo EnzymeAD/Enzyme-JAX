@@ -114,7 +114,7 @@ func.func @unhandled_op() -> tensor<2xi1> {
 // CHECK:  func.func @unhandled_op() -> tensor<2xi1> {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<3.000000e+00> : tensor<2xf32>
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %0 = stablehlo.multiply %cst, %cst {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xf32>
+// CHECK-NEXT:    %0 = stablehlo.multiply %cst, %cst {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xf32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %cst_0, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // CHECK-NEXT:    return %1 : tensor<2xi1>
 // CHECK-NEXT:  }
@@ -143,7 +143,7 @@ func.func @const_int_has_zero() -> tensor<3xi1> {
 }
 
 // CHECK:  func.func @const_int_has_zero() -> tensor<3xi1> {
-// CHECK-NEXT:    %c = stablehlo.constant {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<[1, 0, 3]> : tensor<3xi32>
+// CHECK-NEXT:    %c = stablehlo.constant {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} dense<[1, 0, 3]> : tensor<3xi32>
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<0> : tensor<3xi32>
 // CHECK-NEXT:    %0 = stablehlo.compare NE, %c, %c_0, SIGNED : (tensor<3xi32>, tensor<3xi32>) -> tensor<3xi1>
 // CHECK-NEXT:    return %0 : tensor<3xi1>
@@ -169,7 +169,7 @@ func.func @const_float_has_zero() -> tensor<3xi1> {
 }
 
 // CHECK:  func.func @const_float_has_zero() -> tensor<3xi1> {
-// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<[1.000000e+00, 0.000000e+00, 3.000000e+00]> : tensor<3xf32>
+// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} dense<[1.000000e+00, 0.000000e+00, 3.000000e+00]> : tensor<3xf32>
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<3xf32>
 // CHECK-NEXT:    %0 = stablehlo.compare NE, %cst, %cst_0, FLOAT : (tensor<3xf32>, tensor<3xf32>) -> tensor<3xi1>
 // CHECK-NEXT:    return %0 : tensor<3xi1>
@@ -184,7 +184,7 @@ func.func @const_float_negative_zero() -> tensor<2xi1> {
 }
 
 // CHECK:  func.func @const_float_negative_zero() -> tensor<2xi1> {
-// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<-0.000000e+00> : tensor<2xf32>
+// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} dense<-0.000000e+00> : tensor<2xf32>
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
 // CHECK-NEXT:    %0 = stablehlo.compare NE, %cst, %cst_0, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // CHECK-NEXT:    return %0 : tensor<2xi1>
@@ -199,7 +199,7 @@ func.func @const_float_denormal() -> tensor<2xi1> {
 }
 
 // CHECK:  func.func @const_float_denormal() -> tensor<2xi1> {
-// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<9.999880e-321> : tensor<2xf64>
+// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} dense<9.999880e-321> : tensor<2xf64>
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<2xf64>
 // CHECK-NEXT:    %0 = stablehlo.compare NE, %cst, %cst_0, FLOAT : (tensor<2xf64>, tensor<2xf64>) -> tensor<2xi1>
 // CHECK-NEXT:    return %0 : tensor<2xi1>
@@ -250,10 +250,10 @@ func.func @int_range_straddles_zero(%arg0: tensor<4xi32>) -> tensor<4xi1> {
 }
 
 // CHECK:  func.func @int_range_straddles_zero(%arg0: tensor<4xi32>) -> tensor<4xi1> {
-// CHECK-NEXT:    %c = stablehlo.constant {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>], enzymexla.non_zero = [#enzymexla<guaranteed GUARANTEED>]} dense<-10> : tensor<4xi32>
+// CHECK-NEXT:    %c = stablehlo.constant {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>], enzymexla.non_zero = [#enzymexla.guaranteed<GUARANTEED>]} dense<-10> : tensor<4xi32>
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<10> : tensor<4xi32>
 // CHECK-NEXT:    %c_1 = stablehlo.constant dense<0> : tensor<4xi32>
-// CHECK-NEXT:    %0 = stablehlo.clamp %c, %arg0, %c_0 {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<4xi32>
+// CHECK-NEXT:    %0 = stablehlo.clamp %c, %arg0, %c_0 {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<4xi32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %c_1, SIGNED : (tensor<4xi32>, tensor<4xi32>) -> tensor<4xi1>
 // CHECK-NEXT:    return %1 : tensor<4xi1>
 // CHECK-NEXT:  }
@@ -273,7 +273,7 @@ func.func @int_range_may_wrap() -> tensor<8xi1> {
 // CHECK-NEXT:    %c = stablehlo.constant dense<1> : tensor<8xi64>
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<0> : tensor<8xi64>
 // CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<8xi64>
-// CHECK-NEXT:    %1 = stablehlo.add %0, %c {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<8xi64>
+// CHECK-NEXT:    %1 = stablehlo.add %0, %c {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<8xi64>
 // CHECK-NEXT:    %2 = stablehlo.compare NE, %1, %c_0, SIGNED : (tensor<8xi64>, tensor<8xi64>) -> tensor<8xi1>
 // CHECK-NEXT:    return %2 : tensor<8xi1>
 // CHECK-NEXT:  }
@@ -319,7 +319,7 @@ func.func @exp_of_unknown(%arg0: tensor<2xf32>) -> tensor<2xi1> {
 
 // CHECK:  func.func @exp_of_unknown(%arg0: tensor<2xf32>) -> tensor<2xi1> {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %0 = stablehlo.exponential %arg0 {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xf32>
+// CHECK-NEXT:    %0 = stablehlo.exponential %arg0 {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xf32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %cst, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // CHECK-NEXT:    return %1 : tensor<2xi1>
 // CHECK-NEXT:  }
@@ -347,7 +347,7 @@ func.func @logistic_of_unknown(%arg0: tensor<2xf32>) -> tensor<2xi1> {
 
 // CHECK:  func.func @logistic_of_unknown(%arg0: tensor<2xf32>) -> tensor<2xi1> {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %0 = stablehlo.logistic %arg0 {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xf32>
+// CHECK-NEXT:    %0 = stablehlo.logistic %arg0 {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xf32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %cst, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // CHECK-NEXT:    return %1 : tensor<2xi1>
 // CHECK-NEXT:  }
@@ -390,7 +390,7 @@ func.func @rsqrt_of_unknown(%arg0: tensor<2xf32>) -> tensor<2xi1> {
 
 // CHECK:  func.func @rsqrt_of_unknown(%arg0: tensor<2xf32>) -> tensor<2xi1> {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %0 = stablehlo.rsqrt %arg0 {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xf32>
+// CHECK-NEXT:    %0 = stablehlo.rsqrt %arg0 {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xf32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %cst, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // CHECK-NEXT:    return %1 : tensor<2xi1>
 // CHECK-NEXT:  }
@@ -426,9 +426,9 @@ func.func @add_both_may_be_zero(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> t
 
 // CHECK:  func.func @add_both_may_be_zero(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> tensor<2xi1> {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %0 = stablehlo.abs %arg0 {enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>], enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xf32>
-// CHECK-NEXT:    %1 = stablehlo.abs %arg1 {enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>], enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xf32>
-// CHECK-NEXT:    %2 = stablehlo.add %0, %1 {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xf32>
+// CHECK-NEXT:    %0 = stablehlo.abs %arg0 {enzymexla.non_negative = [#enzymexla.guaranteed<GUARANTEED>], enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xf32>
+// CHECK-NEXT:    %1 = stablehlo.abs %arg1 {enzymexla.non_negative = [#enzymexla.guaranteed<GUARANTEED>], enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xf32>
+// CHECK-NEXT:    %2 = stablehlo.add %0, %1 {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xf32>
 // CHECK-NEXT:    %3 = stablehlo.compare NE, %2, %cst, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // CHECK-NEXT:    return %3 : tensor<2xi1>
 // CHECK-NEXT:  }
@@ -445,7 +445,7 @@ func.func @add_operand_may_be_negative(%arg0: tensor<2xf32>) -> tensor<2xi1> {
 // CHECK:  func.func @add_operand_may_be_negative(%arg0: tensor<2xf32>) -> tensor<2xi1> {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<1.000000e+00> : tensor<2xf32>
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %0 = stablehlo.add %arg0, %cst {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xf32>
+// CHECK-NEXT:    %0 = stablehlo.add %arg0, %cst {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xf32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %cst_0, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // CHECK-NEXT:    return %1 : tensor<2xi1>
 // CHECK-NEXT:  }
@@ -466,7 +466,7 @@ func.func @add_integer_not_folded(%arg0: tensor<4xi32>) -> tensor<4xi1> {
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<10> : tensor<4xi32>
 // CHECK-NEXT:    %c_1 = stablehlo.constant dense<0> : tensor<4xi32>
 // CHECK-NEXT:    %0 = stablehlo.clamp %c, %arg0, %c_0 : tensor<4xi32>
-// CHECK-NEXT:    %1 = stablehlo.add %0, %arg0 {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<4xi32>
+// CHECK-NEXT:    %1 = stablehlo.add %0, %arg0 {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<4xi32>
 // CHECK-NEXT:    %2 = stablehlo.compare NE, %1, %c_1, SIGNED : (tensor<4xi32>, tensor<4xi32>) -> tensor<4xi1>
 // CHECK-NEXT:    return %2 : tensor<4xi1>
 // CHECK-NEXT:  }
@@ -518,7 +518,7 @@ func.func @sqrt_of_unknown(%arg0: tensor<2xf32>) -> tensor<2xi1> {
 
 // CHECK:  func.func @sqrt_of_unknown(%arg0: tensor<2xf32>) -> tensor<2xi1> {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %0 = stablehlo.sqrt %arg0 {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xf32>
+// CHECK-NEXT:    %0 = stablehlo.sqrt %arg0 {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xf32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %cst, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // CHECK-NEXT:    return %1 : tensor<2xi1>
 // CHECK-NEXT:  }
@@ -604,7 +604,7 @@ func.func @reshape_of_unknown(%arg0: tensor<2x3xf32>) -> tensor<6xi1> {
 
 // CHECK:  func.func @reshape_of_unknown(%arg0: tensor<2x3xf32>) -> tensor<6xi1> {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
-// CHECK-NEXT:    %0 = stablehlo.reshape %arg0 {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<2x3xf32>) -> tensor<6xf32>
+// CHECK-NEXT:    %0 = stablehlo.reshape %arg0 {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<2x3xf32>) -> tensor<6xf32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %cst, FLOAT : (tensor<6xf32>, tensor<6xf32>) -> tensor<6xi1>
 // CHECK-NEXT:    return %1 : tensor<6xi1>
 // CHECK-NEXT:  }
@@ -637,10 +637,10 @@ func.func @pad_zero_padding_value() -> tensor<4xi1> {
 }
 
 // CHECK:  func.func @pad_zero_padding_value() -> tensor<4xi1> {
-// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla<guaranteed GUARANTEED>]} dense<3.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %cst_0 = stablehlo.constant {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla.guaranteed<GUARANTEED>]} dense<3.000000e+00> : tensor<2xf32>
+// CHECK-NEXT:    %cst_0 = stablehlo.constant {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} dense<0.000000e+00> : tensor<f32>
 // CHECK-NEXT:    %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<4xf32>
-// CHECK-NEXT:    %0 = stablehlo.pad %cst, %cst_0, low = [1], high = [1], interior = [0] {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<2xf32>, tensor<f32>) -> tensor<4xf32>
+// CHECK-NEXT:    %0 = stablehlo.pad %cst, %cst_0, low = [1], high = [1], interior = [0] {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<2xf32>, tensor<f32>) -> tensor<4xf32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %cst_1, FLOAT : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>
 // CHECK-NEXT:    return %1 : tensor<4xi1>
 // CHECK-NEXT:  }
@@ -675,12 +675,12 @@ func.func @dynamic_pad_zero_padding_value() -> tensor<4xi1> {
 }
 
 // CHECK:  func.func @dynamic_pad_zero_padding_value() -> tensor<4xi1> {
-// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla<guaranteed GUARANTEED>]} dense<3.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %cst_0 = stablehlo.constant {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla.guaranteed<GUARANTEED>]} dense<3.000000e+00> : tensor<2xf32>
+// CHECK-NEXT:    %cst_0 = stablehlo.constant {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} dense<0.000000e+00> : tensor<f32>
 // CHECK-NEXT:    %c = stablehlo.constant dense<1> : tensor<1xi64>
 // CHECK-NEXT:    %c_1 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %cst_2 = stablehlo.constant dense<0.000000e+00> : tensor<4xf32>
-// CHECK-NEXT:    %0 = stablehlo.dynamic_pad %cst, %cst_0, %c, %c, %c_1 {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<2xf32>, tensor<f32>, tensor<1xi64>, tensor<1xi64>, tensor<1xi64>) -> tensor<4xf32>
+// CHECK-NEXT:    %0 = stablehlo.dynamic_pad %cst, %cst_0, %c, %c, %c_1 {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<2xf32>, tensor<f32>, tensor<1xi64>, tensor<1xi64>, tensor<1xi64>) -> tensor<4xf32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %cst_2, FLOAT : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>
 // CHECK-NEXT:    return %1 : tensor<4xi1>
 // CHECK-NEXT:  }
@@ -708,9 +708,9 @@ func.func @concatenate_one_unknown(%arg0: tensor<2xf32>) -> tensor<4xi1> {
 }
 
 // CHECK:  func.func @concatenate_one_unknown(%arg0: tensor<2xf32>) -> tensor<4xi1> {
-// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla<guaranteed GUARANTEED>]} dense<3.000000e+00> : tensor<2xf32>
+// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla.guaranteed<GUARANTEED>]} dense<3.000000e+00> : tensor<2xf32>
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<4xf32>
-// CHECK-NEXT:    %0 = stablehlo.concatenate %cst, %arg0, dim = 0 {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<2xf32>, tensor<2xf32>) -> tensor<4xf32>
+// CHECK-NEXT:    %0 = stablehlo.concatenate %cst, %arg0, dim = 0 {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<2xf32>, tensor<2xf32>) -> tensor<4xf32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %cst_0, FLOAT : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>
 // CHECK-NEXT:    return %1 : tensor<4xi1>
 // CHECK-NEXT:  }
@@ -758,9 +758,9 @@ func.func @max_with_negative_constant(%arg0: tensor<2xf32>) -> tensor<2xi1> {
 }
 
 // CHECK:  func.func @max_with_negative_constant(%arg0: tensor<2xf32>) -> tensor<2xi1> {
-// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<-1.000000e+00> : tensor<2xf32>
+// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>]} dense<-1.000000e+00> : tensor<2xf32>
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %0 = stablehlo.maximum %arg0, %cst {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xf32>
+// CHECK-NEXT:    %0 = stablehlo.maximum %arg0, %cst {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xf32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %cst_0, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // CHECK-NEXT:    return %1 : tensor<2xi1>
 // CHECK-NEXT:  }
@@ -788,9 +788,9 @@ func.func @min_one_unknown(%arg0: tensor<2xf32>) -> tensor<2xi1> {
 }
 
 // CHECK:  func.func @min_one_unknown(%arg0: tensor<2xf32>) -> tensor<2xi1> {
-// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla<guaranteed GUARANTEED>]} dense<-3.000000e+00> : tensor<2xf32>
+// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla.guaranteed<GUARANTEED>]} dense<-3.000000e+00> : tensor<2xf32>
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %0 = stablehlo.minimum %cst, %arg0 {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xf32>
+// CHECK-NEXT:    %0 = stablehlo.minimum %cst, %arg0 {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xf32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %cst_0, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // CHECK-NEXT:    return %1 : tensor<2xi1>
 // CHECK-NEXT:  }
@@ -820,9 +820,9 @@ func.func @select_one_zero(%pred: tensor<2xi1>) -> tensor<2xi1> {
 }
 
 // CHECK:  func.func @select_one_zero(%arg0: tensor<2xi1>) -> tensor<2xi1> {
-// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla<guaranteed GUARANTEED>]} dense<1.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %cst_0 = stablehlo.constant {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<0.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %0 = stablehlo.select %arg0, %cst, %cst_0 {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xi1>, tensor<2xf32>
+// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla.guaranteed<GUARANTEED>]} dense<1.000000e+00> : tensor<2xf32>
+// CHECK-NEXT:    %cst_0 = stablehlo.constant {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} dense<0.000000e+00> : tensor<2xf32>
+// CHECK-NEXT:    %0 = stablehlo.select %arg0, %cst, %cst_0 {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xi1>, tensor<2xf32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %cst_0, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // CHECK-NEXT:    return %1 : tensor<2xi1>
 // CHECK-NEXT:  }
@@ -868,10 +868,10 @@ func.func @clamp_operand_unknown(%arg0: tensor<2xf32>) -> tensor<2xi1> {
 }
 
 // CHECK:  func.func @clamp_operand_unknown(%arg0: tensor<2xf32>) -> tensor<2xi1> {
-// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>], enzymexla.non_zero = [#enzymexla<guaranteed GUARANTEED>]} dense<-5.000000e+00> : tensor<2xf32>
+// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>], enzymexla.non_zero = [#enzymexla.guaranteed<GUARANTEED>]} dense<-5.000000e+00> : tensor<2xf32>
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<5.000000e+00> : tensor<2xf32>
 // CHECK-NEXT:    %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %0 = stablehlo.clamp %cst, %arg0, %cst_0 {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xf32>
+// CHECK-NEXT:    %0 = stablehlo.clamp %cst, %arg0, %cst_0 {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xf32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %cst_1, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // CHECK-NEXT:    return %1 : tensor<2xi1>
 // CHECK-NEXT:  }
@@ -919,7 +919,7 @@ func.func @convert_int_narrowing() -> tensor<2xi1> {
 // CHECK:  func.func @convert_int_narrowing() -> tensor<2xi1> {
 // CHECK-NEXT:    %c = stablehlo.constant dense<[1, -2]> : tensor<2xi32>
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<0> : tensor<2xi8>
-// CHECK-NEXT:    %0 = stablehlo.convert %c {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<2xi32>) -> tensor<2xi8>
+// CHECK-NEXT:    %0 = stablehlo.convert %c {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<2xi32>) -> tensor<2xi8>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %c_0, SIGNED : (tensor<2xi8>, tensor<2xi8>) -> tensor<2xi1>
 // CHECK-NEXT:    return %1 : tensor<2xi1>
 // CHECK-NEXT:  }
@@ -964,7 +964,7 @@ func.func @convert_float_narrowing() -> tensor<2xi1> {
 // CHECK:  func.func @convert_float_narrowing() -> tensor<2xi1> {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<[1.000000e+00, -2.000000e+00]> : tensor<2xf64>
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %0 = stablehlo.convert %cst {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<2xf64>) -> tensor<2xf32>
+// CHECK-NEXT:    %0 = stablehlo.convert %cst {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<2xf64>) -> tensor<2xf32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %cst_0, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // CHECK-NEXT:    return %1 : tensor<2xi1>
 // CHECK-NEXT:  }
@@ -981,7 +981,7 @@ func.func @convert_float_to_int() -> tensor<2xi1> {
 // CHECK:  func.func @convert_float_to_int() -> tensor<2xi1> {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<[5.000000e-01, -2.000000e+00]> : tensor<2xf32>
 // CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<2xi32>
-// CHECK-NEXT:    %0 = stablehlo.convert %cst {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<2xf32>) -> tensor<2xi32>
+// CHECK-NEXT:    %0 = stablehlo.convert %cst {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<2xf32>) -> tensor<2xi32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %c, SIGNED : (tensor<2xi32>, tensor<2xi32>) -> tensor<2xi1>
 // CHECK-NEXT:    return %1 : tensor<2xi1>
 // CHECK-NEXT:  }
@@ -999,9 +999,9 @@ func.func @complex_constant() -> tensor<2xi1> {
 }
 
 // CHECK:  func.func @complex_constant() -> tensor<2xi1> {
-// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<(1.000000e+00,2.000000e+00)> : tensor<2xcomplex<f32>>
+// CHECK-NEXT:    %cst = stablehlo.constant {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} dense<(1.000000e+00,2.000000e+00)> : tensor<2xcomplex<f32>>
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %0 = stablehlo.abs %cst {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<2xcomplex<f32>>) -> tensor<2xf32>
+// CHECK-NEXT:    %0 = stablehlo.abs %cst {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<2xcomplex<f32>>) -> tensor<2xf32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %cst_0, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // CHECK-NEXT:    return %1 : tensor<2xi1>
 // CHECK-NEXT:  }
@@ -1018,8 +1018,8 @@ func.func @complex_bails_out(%arg0: tensor<2xcomplex<f32>>) -> tensor<2xi1> {
 // CHECK:  func.func @complex_bails_out(%arg0: tensor<2xcomplex<f32>>) -> tensor<2xi1> {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<1.000000e+00> : tensor<2xf32>
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %0 = stablehlo.complex %cst, %cst_0 {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xcomplex<f32>>
-// CHECK-NEXT:    %1 = stablehlo.abs %0 {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<2xcomplex<f32>>) -> tensor<2xf32>
+// CHECK-NEXT:    %0 = stablehlo.complex %cst, %cst_0 {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xcomplex<f32>>
+// CHECK-NEXT:    %1 = stablehlo.abs %0 {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<2xcomplex<f32>>) -> tensor<2xf32>
 // CHECK-NEXT:    %2 = stablehlo.compare NE, %1, %cst_0, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // CHECK-NEXT:    return %2 : tensor<2xi1>
 // CHECK-NEXT:  }
@@ -1030,7 +1030,7 @@ func.func @complex_bails_out(%arg0: tensor<2xcomplex<f32>>) -> tensor<2xi1> {
 
 func.func @preexisting_guaranteed_attr(%arg0: tensor<2xf32>) -> tensor<2xi1> {
   %zero = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
-  %0 = stablehlo.multiply %arg0, %arg0 {enzymexla.non_zero = [#enzymexla<guaranteed GUARANTEED>]} : tensor<2xf32>
+  %0 = stablehlo.multiply %arg0, %arg0 {enzymexla.non_zero = [#enzymexla.guaranteed<GUARANTEED>]} : tensor<2xf32>
   %1 = stablehlo.compare NE, %0, %zero, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
   return %1 : tensor<2xi1>
 }
@@ -1042,14 +1042,14 @@ func.func @preexisting_guaranteed_attr(%arg0: tensor<2xf32>) -> tensor<2xi1> {
 
 func.func @preexisting_notguaranteed_attr(%arg0: tensor<2xf32>) -> tensor<2xi1> {
   %zero = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
-  %0 = chlo.cosh %arg0 {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xf32> -> tensor<2xf32>
+  %0 = chlo.cosh %arg0 {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xf32> -> tensor<2xf32>
   %1 = stablehlo.compare NE, %0, %zero, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
   return %1 : tensor<2xi1>
 }
 
 // CHECK:  func.func @preexisting_notguaranteed_attr(%arg0: tensor<2xf32>) -> tensor<2xi1> {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:    %0 = chlo.cosh %arg0 {enzymexla.non_zero = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xf32> -> tensor<2xf32>
+// CHECK-NEXT:    %0 = chlo.cosh %arg0 {enzymexla.non_zero = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xf32> -> tensor<2xf32>
 // CHECK-NEXT:    %1 = stablehlo.compare NE, %0, %cst, FLOAT : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // CHECK-NEXT:    return %1 : tensor<2xi1>
 // CHECK-NEXT:  }
