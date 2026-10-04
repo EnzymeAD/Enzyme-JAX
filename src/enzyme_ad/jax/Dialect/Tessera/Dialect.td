@@ -18,6 +18,10 @@ def TesseraDialect : Dialect {
     }];
     let cppNamespace = "::mlir::enzyme::tessera";
     let useDefaultAttributePrinterParser = 1;
+
+  // Keep printing and parsing inherent properties through attr-dict, as
+  // before MLIR made strict properties the default (llvm/llvm-project#225742).
+  let useStrictPropertiesInAssemblyFormat = 0;
 }
 
 //===----------------------------------------------------------------------===//

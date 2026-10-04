@@ -18,6 +18,10 @@ def PerfifyDialect : Dialect {
         Leverages SAT solvers to automatically prove this, or interactive theorem provers to allow for complete proofs. 
     }];
     let cppNamespace = "::mlir::enzyme::perfify";
+
+  // Keep printing and parsing inherent properties through attr-dict, as
+  // before MLIR made strict properties the default (llvm/llvm-project#225742).
+  let useStrictPropertiesInAssemblyFormat = 0;
 }
 
 //===----------------------------------------------------------------------===//

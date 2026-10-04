@@ -29,6 +29,10 @@ def EnzymeXLA_Dialect : Dialect {
                            "mlir::memref::MemRefDialect",
                            "mlir::arith::ArithDialect", "mlir::scf::SCFDialect",
                            "mlir::affine::AffineDialect"];
+
+  // Keep printing and parsing inherent properties through attr-dict, as
+  // before MLIR made strict properties the default (llvm/llvm-project#225742).
+  let useStrictPropertiesInAssemblyFormat = 0;
 }
 
 //===----------------------------------------------------------------------===//

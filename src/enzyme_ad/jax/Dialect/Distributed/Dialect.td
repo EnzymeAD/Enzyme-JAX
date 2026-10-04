@@ -11,6 +11,10 @@ def DistributedDialect : Dialect {
     let description = [{}];
     let cppNamespace = "::mlir::enzyme::distributed";
     let useDefaultTypePrinterParser = 1;
+
+  // Keep printing and parsing inherent properties through attr-dict, as
+  // before MLIR made strict properties the default (llvm/llvm-project#225742).
+  let useStrictPropertiesInAssemblyFormat = 0;
 }
 
 class DistributedType<string name, string type_mnemonic, list<Trait> traits = []> : TypeDef<DistributedDialect, name, traits>{

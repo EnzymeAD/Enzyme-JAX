@@ -12,6 +12,10 @@ def Comm_Dialect : Dialect {
   let cppNamespace = "::mlir::comm";
   let useDefaultAttributePrinterParser = 1;
   let useDefaultTypePrinterParser = 1;
+
+  // Keep printing and parsing inherent properties through attr-dict, as
+  // before MLIR made strict properties the default (llvm/llvm-project#225742).
+  let useStrictPropertiesInAssemblyFormat = 0;
 }
 
 class Comm_Type<string name, string typeMnemonic, list<Trait> traits = []> : TypeDef<Comm_Dialect, name, traits> {
