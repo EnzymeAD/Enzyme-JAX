@@ -44,6 +44,12 @@ include:
       - find "${CI_PROJECT_DIR}" -type d ! -perm -u=rwx -exec chmod u+rwx {} \; 2>/dev/null || true
 
   script:
+    # Clear what cancelled jobs left in this project's other slots (a cancel skips
+    # after_script). The job this one supersedes is cancelled only ~1 min from now,
+    # so keep sweeping in the background for 20 min; after_script prints the log.
+    # See cscs-mi300.md: "Job directory cleanup".
+    - REPEAT_MIN=20 bash "${CI_PROJECT_DIR}/ci/sweep-stale-slots.sh" > "${CI_PROJECT_DIR}/sweep.log" 2>&1 &
+
     # Create all job-scoped directories up front
     - mkdir -p "${LOCAL_BIN}" "${JULIA_DEPOT_PATH}" "${BAZELISK_HOME}" "${BAZEL_OUTPUT_ROOT}"
 
@@ -171,10 +177,11 @@ include:
     # Test correctness
     - ${SRUN_UENV} timeout 19m "${CI_PROJECT_DIR}/run_julia.sh" --project="${GB25_DIR}" ${JULIA_FLAGS} "${GB25_DIR}/correctness/correctness_sharded_baroclinic_instability_simulation_run.jl" ${FLOAT_TYPE}
 
-  # The runner keeps the job directory until the next job in this slot, so remove
-  # the build trees here. GitLab uploads artifacts only after after_script, so the
-  # .xla files in GB-25/ stay. See cscs-mi300.md: "Job directory cleanup".
+  # Remove the build trees as soon as the job ends. GitLab uploads artifacts only
+  # after after_script, so the .xla files in GB-25/ stay. A cancelled job never gets
+  # here; the sweep step above covers it. See cscs-mi300.md: "Job directory cleanup".
   after_script:
+    - cat "${CI_PROJECT_DIR}/sweep.log" 2>/dev/null || true
     - |
       for p in "${BAZEL_OUTPUT_ROOT}" "${JULIA_DEPOT_PATH}" "${BAZELISK_HOME}" "${REACTANT_DIR}" \
                "${LOCAL_BIN}" "${CI_PROJECT_DIR}/.rocm" "${GB25_DIR}"; do

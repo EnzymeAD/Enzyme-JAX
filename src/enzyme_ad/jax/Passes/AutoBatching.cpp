@@ -3199,6 +3199,11 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
       if (sc.getInputs().size() != 1 || !dn.getInputBatchingDims().empty() ||
           !broadcastable(sc.getInputs()[0]))
         return failure();
+    } else if (isa<enzymexla::WrapOp, enzymexla::ExtendOp, enzymexla::RotateOp>(
+                   &op)) {
+      // along the same dimension past the batch one
+      if (!broadcastable(op.getOperand(0)))
+        return failure();
     } else {
       return failure();
     }

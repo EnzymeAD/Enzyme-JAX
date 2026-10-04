@@ -196,7 +196,7 @@ cc_library(
             "src/**/*.def",
             "src/api/c++/*.h",
         ],
-        exclude = _NOT_LIBZ3,
+        exclude = [e for e in _NOT_LIBZ3 if e != "src/api/c++/**"],
     ) + _PYG_HEADERS + [
         "src/api/api_log_macros.h",
         "src/ast/pattern/database.h",

@@ -626,8 +626,7 @@ public:
         callee.getLeafReference() == "__nv_isinff") {
       rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
           op, op->getResultTypes(),
-          math::IsFiniteOp::create(rewriter, op.getLoc(),
-                                   op->getOperands()[0]));
+          math::IsInfOp::create(rewriter, op.getLoc(), op->getOperands()[0]));
       return success();
     }
 
