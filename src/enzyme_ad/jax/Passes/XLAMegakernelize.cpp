@@ -7,18 +7,28 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 
 #include "Enzyme/MLIR/Interfaces/Utils.h"
+#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "stablehlo/dialect/StablehloOps.h"
+
+#include "llvm/ADT/APInt.h"
+
+#include <type_traits>
 
 namespace mlir {
 namespace enzyme {
@@ -97,6 +107,15 @@ static void createRaisedReturn(PatternRewriter &rewriter,
   Operation *returnOp = rewriter.cloneWithoutRegions(
       *source.getFunctionBody().front().getTerminator());
   returnOp->setOperands(results);
+}
+
+static ArrayAttr prependBoundAttrs(ArrayAttr attrs, unsigned numBounds) {
+  if (!attrs)
+    return {};
+  SmallVector<Attribute> newAttrs(numBounds,
+                                  DictionaryAttr::get(attrs.getContext()));
+  llvm::append_range(newAttrs, attrs);
+  return ArrayAttr::get(attrs.getContext(), newAttrs);
 }
 
 static bool hasMetadata(ArrayAttr attributes) {
@@ -314,13 +333,305 @@ private:
   mutable unsigned nextMegakernelId = 0;
 };
 
+/// Move a host loop with one XLA wrapper into a stablehlo.while.
+/// Pass the updated tensors directly from one iteration to the next.
+template <typename LoopOp>
+class LiftXLAWrapperLoop final : public OpRewritePattern<LoopOp> {
+public:
+  using OpRewritePattern<LoopOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LoopOp loop,
+                                PatternRewriter &rewriter) const override {
+    if (loop.getNumResults() != 0)
+      return failure();
+
+    Value induction = loop.getInductionVar();
+    Region &region = loop.getRegion();
+    if (!induction.use_empty() || !region.hasOneBlock())
+      return failure();
+
+    Block *body = &region.front();
+    if (body->getNumArguments() != 1 ||
+        !body->getTerminator()->getOperands().empty())
+      return failure();
+
+    enzymexla::XLAWrapperOp wrapper;
+    for (Operation &operation : body->without_terminator()) {
+      if (auto candidate = dyn_cast<enzymexla::XLAWrapperOp>(&operation)) {
+        if (wrapper)
+          return failure();
+        wrapper = candidate;
+        continue;
+      }
+
+      // Move only pure operations without regions out of the loop.
+      // These operations must be safe when the loop has zero iterations.
+      // The unused induction variable makes their inputs loop-invariant.
+      if (operation.getNumRegions() != 0 || !isPure(&operation))
+        return failure();
+    }
+    if (!wrapper)
+      return failure();
+
+    auto function = dyn_cast_or_null<FunctionOpInterface>(
+        SymbolTable::lookupNearestSymbolFrom(wrapper, wrapper.getFnAttr()));
+    if (!function || !isRaisedWrapperFunction(function, wrapper))
+      return failure();
+
+    Type hostBoundType = induction.getType();
+    Type scalarType = hostBoundType;
+    if (isa<IndexType>(hostBoundType)) {
+      scalarType = rewriter.getI64Type();
+    } else {
+      auto integerType = dyn_cast<IntegerType>(hostBoundType);
+      if (!integerType || !integerType.isSignless())
+        return failure();
+    }
+
+    ModuleOp module = loop->template getParentOfType<ModuleOp>();
+    // Keep symbol references in the same scope.
+    if (!module || function->getParentOp() != module.getOperation())
+      return failure();
+
+    Block *allocaBlock = enzyme::getAllocaBlock(loop);
+    if (!allocaBlock)
+      return failure();
+
+    // Expand only the bounds of this loop. Use the maximum lower bound
+    // and the minimum upper bound when an affine map has several results.
+    SmallVector<Value, 3> boundValues;
+    bool unsignedCmp = false;
+    if constexpr (std::is_same_v<LoopOp, affine::AffineForOp>) {
+      boundValues = {lowerAffineLowerBound(loop, rewriter),
+                     lowerAffineUpperBound(loop, rewriter),
+                     arith::ConstantIndexOp::create(rewriter, loop.getLoc(),
+                                                    loop.getStepAsInt())};
+    } else {
+      boundValues = {loop.getLowerBound(), loop.getUpperBound(),
+                     loop.getStep()};
+      unsignedCmp = loop.getUnsignedCmp();
+    }
+    SmallVector<std::optional<APInt>, 3> constantBounds(3);
+    SmallVector<unsigned, 3> dynamicBoundIndices;
+    unsigned scalarBitWidth = cast<IntegerType>(scalarType).getWidth();
+    for (auto [index, bound] : llvm::enumerate(boundValues)) {
+      APInt constant;
+      if (matchPattern(bound, m_ConstantInt(&constant))) {
+        constantBounds[index] = constant.sextOrTrunc(scalarBitWidth);
+        continue;
+      }
+      dynamicBoundIndices.push_back(index);
+    }
+
+    // Round the copy size up to a whole number of bytes.
+    uint64_t scalarByteWidth = (scalarBitWidth + 7) / 8;
+
+    Location location =
+        FusedLoc::get(loop->getContext(), {loop->getLoc(), wrapper.getLoc()});
+    auto scalarTensorType = RankedTensorType::get({}, scalarType);
+
+    SmallVector<Type> megakernelTypes(dynamicBoundIndices.size(),
+                                      scalarTensorType);
+    megakernelTypes.append(function.getArgumentTypes().begin(),
+                           function.getArgumentTypes().end());
+    SmallVector<Type> megakernelResults(dynamicBoundIndices.size(),
+                                        scalarTensorType);
+    llvm::append_range(megakernelResults, function.getResultTypes());
+    Type megakernelType =
+        function.cloneTypeWith(megakernelTypes, megakernelResults);
+
+    // Add empty attributes for the new bound slots. Keep attributes on the
+    // original inputs and results, including the trailing specialized inputs.
+    ArrayAttr functionArgAttrs = prependBoundAttrs(function.getAllArgAttrs(),
+                                                   dynamicBoundIndices.size());
+    ArrayAttr functionResAttrs = prependBoundAttrs(function.getAllResultAttrs(),
+                                                   dynamicBoundIndices.size());
+
+    FunctionOpInterface megakernel = function;
+    Block *originalBody = nullptr;
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      Block *entry;
+      if (canReuseFunction(function, wrapper, {}, module)) {
+        // Keep the original body until its operations and return are copied.
+        originalBody = &function.getFunctionBody().front();
+        entry = rewriter.createBlock(
+            &function.getFunctionBody(), function.getFunctionBody().end(),
+            megakernelTypes,
+            SmallVector<Location>(megakernelTypes.size(), location));
+      } else {
+        rewriter.setInsertionPointToEnd(module.getBody());
+        std::string name = getUniqueMegakernelName(module, nextMegakernelId);
+        megakernel = createRaisedFunction(rewriter, function, location, name,
+                                          megakernelType);
+        entry = &megakernel.front();
+      }
+      rewriter.setInsertionPointToEnd(entry);
+
+      SmallVector<Value, 3> hloBounds(3);
+      unsigned nextDynamicBound = 0;
+      for (unsigned index = 0; index < boundValues.size(); ++index) {
+        if (constantBounds[index]) {
+          Attribute scalarAttr =
+              IntegerAttr::get(scalarType, *constantBounds[index]);
+          auto tensorAttr = SplatElementsAttr::get(
+              scalarTensorType, ArrayRef<Attribute>{scalarAttr});
+          hloBounds[index] = stablehlo::ConstantOp::create(
+              rewriter, location, scalarTensorType, tensorAttr);
+          continue;
+        }
+        hloBounds[index] = entry->getArgument(nextDynamicBound++);
+      }
+
+      // Only the induction variable and updated buffers change each iteration.
+      // Capture the limit, step, and specialized scalars from the entry block.
+      SmallVector<Value> initialState{hloBounds[0]};
+      llvm::append_range(initialState,
+                         entry->getArguments().slice(dynamicBoundIndices.size(),
+                                                     function.getNumResults()));
+
+      SmallVector<Type> stateTypes{scalarTensorType};
+      llvm::append_range(stateTypes, function.getResultTypes());
+      auto whileOp = stablehlo::WhileOp::create(rewriter, location, stateTypes,
+                                                initialState);
+
+      Block *condition = rewriter.createBlock(&whileOp.getCond());
+      for (Type type : stateTypes)
+        condition->addArgument(type, location);
+      rewriter.setInsertionPointToStart(condition);
+      stablehlo::ComparisonType comparisonType =
+          unsignedCmp ? stablehlo::ComparisonType::UNSIGNED
+                      : stablehlo::ComparisonType::SIGNED;
+      Value keepGoing = stablehlo::CompareOp::create(
+          rewriter, location, condition->getArgument(0), hloBounds[1],
+          stablehlo::ComparisonDirection::LT, comparisonType);
+      stablehlo::ReturnOp::create(rewriter, location, keepGoing);
+
+      Block *whileBody = rewriter.createBlock(&whileOp.getBody());
+      for (Type type : stateTypes)
+        whileBody->addArgument(type, location);
+      rewriter.setInsertionPointToStart(whileBody);
+
+      Value nextInduction = stablehlo::AddOp::create(
+          rewriter, location, whileBody->getArgument(0), hloBounds[2]);
+      SmallVector<Value> yielded{nextInduction};
+      SmallVector<Value> functionArguments(
+          whileBody->getArguments().drop_front());
+      llvm::append_range(functionArguments, entry->getArguments().take_back(
+                                                wrapper.getNumSpecialized()));
+      llvm::append_range(yielded, cloneRaisedFunctionBody(rewriter, function,
+                                                          functionArguments));
+      stablehlo::ReturnOp::create(rewriter, location, yielded);
+
+      rewriter.setInsertionPointAfter(whileOp);
+      // Return the bound buffers unchanged to preserve the wrapper signature.
+      SmallVector<Value> results(
+          entry->getArguments().take_front(dynamicBoundIndices.size()));
+      llvm::append_range(results, whileOp.getResults().drop_front());
+      createRaisedReturn(rewriter, function, results);
+    }
+
+    if (originalBody) {
+      rewriter.eraseBlock(originalBody);
+      rewriter.modifyOpInPlace(megakernel, [&] {
+        megakernel.setType(megakernelType);
+        megakernel->setLoc(location);
+      });
+    }
+
+    rewriter.modifyOpInPlace(megakernel, [&] {
+      if (functionArgAttrs)
+        megakernel.setAllArgAttrs(functionArgAttrs);
+      if (functionResAttrs)
+        megakernel.setAllResultAttrs(functionResAttrs);
+    });
+
+    rewriter.setInsertionPoint(loop.getOperation());
+    SmallVector<Value> newWrapperInputs;
+    auto hostMemrefType = MemRefType::get({}, scalarType);
+    auto deviceMemrefType =
+        MemRefType::get({}, scalarType, MemRefLayoutAttrInterface{},
+                        rewriter.getI64IntegerAttr(1));
+
+    // Allocate each bound once when the module starts. Copy its current
+    // value before each call. The module frees the storage at shutdown.
+    // Calls to this loop must not overlap: they share the bound storage.
+    SymbolTable symbols(module);
+    std::string name = SymbolTable::getSymbolName(megakernel).getValue().str();
+    Value copySize;
+    if (!dynamicBoundIndices.empty())
+      copySize = arith::ConstantIndexOp::create(
+          rewriter, location, static_cast<int64_t>(scalarByteWidth));
+    for (unsigned index : dynamicBoundIndices) {
+      Value bound = boundValues[index];
+      if (isa<IndexType>(hostBoundType))
+        bound =
+            arith::IndexCastOp::create(rewriter, location, scalarType, bound);
+
+      Value hostStorage;
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(allocaBlock);
+        hostStorage =
+            memref::AllocaOp::create(rewriter, location, hostMemrefType);
+      }
+      memref::StoreOp::create(rewriter, location, bound, hostStorage,
+                              ValueRange());
+      enzymexla::TempAllocOp allocation;
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToEnd(module.getBody());
+        allocation = enzymexla::TempAllocOp::create(
+            rewriter, location, name + "_bound_" + std::to_string(index),
+            rewriter.getStringAttr("private"), deviceMemrefType);
+        symbols.insert(allocation);
+      }
+      Value deviceStorage = enzymexla::GetGlobalTempOp::create(
+          rewriter, location, deviceMemrefType,
+          FlatSymbolRefAttr::get(allocation));
+      enzymexla::MemcpyOp::create(rewriter, location,
+                                  /*asyncToken=*/(Type) nullptr,
+                                  /*asyncDependencies=*/ValueRange(),
+                                  deviceStorage, hostStorage, copySize);
+      newWrapperInputs.push_back(deviceStorage);
+    }
+
+    // Copy the pure operations before the new call. Keep values from
+    // outside the loop unchanged.
+    IRMapping mapping;
+    for (Operation &operation : body->without_terminator()) {
+      if (&operation != wrapper.getOperation())
+        rewriter.clone(operation, mapping);
+    }
+    for (Value input : wrapper.getInputs())
+      newWrapperInputs.push_back(mapping.lookupOrDefault(input));
+
+    auto newWrapper = cast<enzymexla::XLAWrapperOp>(rewriter.clone(*wrapper));
+    newWrapper->setLoc(location);
+    newWrapper.setFnAttr(SymbolRefAttr::get(megakernel));
+    newWrapper.getInputsMutable().assign(newWrapperInputs);
+    if (auto attrs = wrapper.getArgAttrsAttr())
+      newWrapper.setArgAttrsAttr(
+          prependBoundAttrs(attrs, dynamicBoundIndices.size()));
+    if (auto attrs = wrapper.getResAttrsAttr())
+      newWrapper.setResAttrsAttr(
+          prependBoundAttrs(attrs, dynamicBoundIndices.size()));
+    rewriter.eraseOp(loop.getOperation());
+    return success();
+  }
+
+private:
+  mutable unsigned nextMegakernelId = 0;
+};
+
 struct XLAMegakernelizePass
     : public enzyme::impl::XLAMegakernelizePassBase<XLAMegakernelizePass> {
   using XLAMegakernelizePassBase::XLAMegakernelizePassBase;
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns.add<FuseSequentialXLAWrappers>(&getContext());
+    patterns.add<FuseSequentialXLAWrappers, LiftXLAWrapperLoop<scf::ForOp>,
+                 LiftXLAWrapperLoop<affine::AffineForOp>>(&getContext());
     enzymexla::XLAWrapperOp::getCanonicalizationPatterns(patterns,
                                                          &getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
