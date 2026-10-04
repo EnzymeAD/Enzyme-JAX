@@ -1384,7 +1384,7 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
 }
 
 def XLAMegakernelizePass : Pass<"xla-megakernelize", "ModuleOp"> {
-  let summary = "Fuse sequential XLA wrappers";
+  let summary = "Fuse XLA wrappers and lift wrapper loops into megakernels";
   let description = [{
     Fuse compatible sequential enzymexla.xla_wrapper operations. The fused
     wrapper takes the union of their inputs and threads updated tensor state
@@ -1395,13 +1395,23 @@ def XLAMegakernelizePass : Pass<"xla-megakernelize", "ModuleOp"> {
     New inputs must dominate the first wrapper. Argument and result metadata
     and specialized scalar inputs are not composed.
 
+    Move an scf.for or affine.for into a stablehlo.while when it contains
+    one wrapper and pure operations without regions. The loop must have no
+    results, and its induction variable must be unused. Copy dynamic bounds
+    to module-owned device storage before each call. Allocate this storage
+    at module initialization and free it at module finalization. Calls to
+    the same loop must not overlap because they share this storage. Put
+    constant bounds directly in the raised function.
+
     The resulting function is compiled as one XLA program. Fusion into GPU
     kernels remains a backend decision.
   }];
   let dependentDialects = [
+    "arith::ArithDialect",
     "enzymexla::EnzymeXLADialect",
     "func::FuncDialect",
     "memref::MemRefDialect",
+    "scf::SCFDialect",
     "stablehlo::StablehloDialect",
   ];
 }

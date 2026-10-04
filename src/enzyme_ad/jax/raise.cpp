@@ -207,7 +207,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "dump_failed_lockstep=true";
       if (options->specializeIndexStrides)
         pass_pipeline += " specialize_index_strides=true";
-      pass_pipeline += "}," + canonicalize + ",arith-raise{stablehlo=true},"
+      pass_pipeline += "},canonicalize,arith-raise{stablehlo=true},"
       "cse,enzyme-hlo-opt," + canonicalize + ","
       "symbol-dce";
       pass_pipeline += ",xla-megakernelize,symbol-dce";
