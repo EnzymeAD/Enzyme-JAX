@@ -38,10 +38,10 @@ module {
                                       [2.0, 0.0, 2.0, 0.0, 2.0, 0.0, 2.0, 0.0],
                                       [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]]> : tensor<4x8xf32>
 
-    %res:2 = enzyme.autodiff @in_loop(%x, %seed) {
+    %res:2 = enzyme.autodiff @in_loop(%x, %seed) <{
       activity = [#enzyme.activity<enzyme_active>],
       ret_activity = [#enzyme.activity<enzyme_active>]
-    } : (tensor<4x8xf32>, tensor<4x8xf32>) -> (tensor<4x8xf32>, tensor<4x8xf32>)
+    }> : (tensor<4x8xf32>, tensor<4x8xf32>) -> (tensor<4x8xf32>, tensor<4x8xf32>)
 
     check.expect_eq_const %res#0, dense<[[-3.0, 0.0, -6.0, 0.0, -6.0, 0.0, -3.0, -5.0],
                                          [0.0, -3.0, -3.0, -6.0, 0.0, -6.0, -7.0, -1.0],

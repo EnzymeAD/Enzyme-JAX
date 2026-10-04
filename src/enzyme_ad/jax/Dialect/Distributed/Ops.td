@@ -19,7 +19,7 @@ def ChannelOp : DistributedOp<"Channel", [Symbol, SymbolName, SymbolVisibility, 
         ArrayAttr:$receiving_devices
         // TODO: channel type, bandwidth, latency, etc
     );
-    let assemblyFormat = "$sym_name $sending_devices $receiving_devices attr-dict";
+    let assemblyFormat = "$sym_name $sending_devices $receiving_devices prop-dict attr-dict";
 }
 
 def LeafDeviceOp : DistributedOp<"LeafDevice", [Symbol, SymbolName, SymbolVisibility, DeviceDefTrait]>{
@@ -28,7 +28,7 @@ def LeafDeviceOp : DistributedOp<"LeafDevice", [Symbol, SymbolName, SymbolVisibi
         OptionalAttr<StrAttr>:$sym_visibility
         // TODO: device type, e.g. TPU, GPU, CPU, and other attributes
     );
-    let assemblyFormat = "$sym_name attr-dict";
+    let assemblyFormat = "$sym_name prop-dict attr-dict";
 }
 
 def DeviceGroupOp : DistributedOp<"DeviceGroup", [Symbol, SymbolName, SymbolVisibility, DeviceDefTrait, DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
@@ -40,7 +40,7 @@ def DeviceGroupOp : DistributedOp<"DeviceGroup", [Symbol, SymbolName, SymbolVisi
         // Interconnects between devices
         ArrayAttr:$channels // TODO verify array of SymbolRefAttr of channels
     );
-    let assemblyFormat = "$sym_name $devices $channels attr-dict";
+    let assemblyFormat = "$sym_name $devices $channels prop-dict attr-dict";
 }
 def DeviceMeshOp : DistributedOp<"DeviceMesh", [Symbol, SymbolName, SymbolVisibility, DeviceDefTrait, DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
     let arguments = (ins
@@ -50,7 +50,7 @@ def DeviceMeshOp : DistributedOp<"DeviceMesh", [Symbol, SymbolName, SymbolVisibi
         ArrayAttr:$shape
         // TODO attributes of mesh interconnect
     );
-    let assemblyFormat = "$sym_name $device_type $shape attr-dict";
+    let assemblyFormat = "$sym_name $device_type $shape prop-dict attr-dict";
 }
 
 // Ops for breaking down computation across the device hierarchy

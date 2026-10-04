@@ -95,7 +95,7 @@ func.func @pingpong(%a: memref<100xf64, 1>, %b: memref<100xf64, 1>, %ni: index) 
 // CHECK-NEXT:    %[[a8:.+]] = arith.index_cast %[[a3]] : index to i64
 // CHECK-NEXT:    affine.store %[[a8]], %[[a4]][] : memref<i64>
 // CHECK-NEXT:    %[[a9:.+]] = arith.constant 8 : index
-// CHECK-NEXT:    enzymexla.xla_wrapper @rxla$raised_0 (%[[a1]], %[[a2]], %[[a8]]) {num_specialized = 1 : i64} : (memref<100xf64, 1>, memref<100xf64, 1>, i64) -> ()
+// CHECK-NEXT:    enzymexla.xla_wrapper @rxla$raised_0 (%[[a1]], %[[a2]], %[[a8]]) <num_specialized = 1> : (memref<100xf64, 1>, memref<100xf64, 1>, i64) -> ()
 // CHECK-NEXT:    %[[a10:.+]] = arith.constant 0 : index
 // CHECK-NEXT:    return
 // CHECK-NEXT:  }

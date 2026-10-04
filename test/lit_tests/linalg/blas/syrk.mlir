@@ -6,7 +6,7 @@ module {
     func.func @main1(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>) -> tensor<64x64xf32> {
         %alpha = stablehlo.constant dense<2.0> : tensor<f32>
         %beta = stablehlo.constant dense<3.0> : tensor<f32>
-        %0 = enzymexla.blas.syrk %arg0, %arg1, %alpha, %beta {output_uplo = #enzymexla.uplo<F>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<U>} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+        %0 = enzymexla.blas.syrk %arg0, %arg1, %alpha, %beta <{output_uplo = #enzymexla.uplo<F>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<U>}> : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
         return %0 : tensor<64x64xf32>
     }
 }
@@ -16,7 +16,7 @@ module {
 // CPU-NEXT:   %c_0 = stablehlo.constant dense<76> : tensor<ui8>
 // CPU-NEXT:   %c_1 = stablehlo.constant dense<64> : tensor<i64>
 // CPU-NEXT:   %c_2 = stablehlo.constant dense<32> : tensor<i64>
-// CPU-NEXT:   %0 = enzymexla.jit_call @enzymexla_blas_ssyrk_wrapper (%c_0, %c, %c_1, %c_2, %arg2, %arg0, %c_2, %arg3, %arg1, %c_1) {operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 8, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<ui8>, tensor<ui8>, tensor<i64>, tensor<i64>, tensor<f32>, tensor<64x32xf32>, tensor<i64>, tensor<f32>, tensor<64x64xf32>, tensor<i64>) -> tensor<64x64xf32>
+// CPU-NEXT:   %0 = enzymexla.jit_call @enzymexla_blas_ssyrk_wrapper (%c_0, %c, %c_1, %c_2, %arg2, %arg0, %c_2, %arg3, %arg1, %c_1) <operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 8, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<ui8>, tensor<ui8>, tensor<i64>, tensor<i64>, tensor<f32>, tensor<64x32xf32>, tensor<i64>, tensor<f32>, tensor<64x64xf32>, tensor<i64>) -> tensor<64x64xf32>
 // CPU-NEXT:   return %0 : tensor<64x64xf32>
 // CPU-NEXT: }
 // CPU-NEXT: llvm.func private @enzymexla_blas_ssyrk_wrapper(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: !llvm.ptr) {
@@ -68,7 +68,7 @@ module {
     func.func @main2(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>) -> tensor<64x64xf32> {
         %alpha = stablehlo.constant dense<2.0> : tensor<f32>
         %beta = stablehlo.constant dense<3.0> : tensor<f32>
-        %0 = enzymexla.blas.syrk %arg0, %arg1, %alpha, %beta {output_uplo = #enzymexla.uplo<L>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<L>} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+        %0 = enzymexla.blas.syrk %arg0, %arg1, %alpha, %beta <{output_uplo = #enzymexla.uplo<L>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<L>}> : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
         return %0 : tensor<64x64xf32>
     }
 }
@@ -78,7 +78,7 @@ module {
 // CPU-NEXT:   %c_0 = stablehlo.constant dense<85> : tensor<ui8>
 // CPU-NEXT:   %c_1 = stablehlo.constant dense<64> : tensor<i64>
 // CPU-NEXT:   %c_2 = stablehlo.constant dense<32> : tensor<i64>
-// CPU-NEXT:   %0 = enzymexla.jit_call @enzymexla_blas_ssyrk_wrapper (%c_0, %c, %c_1, %c_2, %arg2, %arg0, %c_2, %arg3, %arg1, %c_1) {operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 8, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<ui8>, tensor<ui8>, tensor<i64>, tensor<i64>, tensor<f32>, tensor<64x32xf32>, tensor<i64>, tensor<f32>, tensor<64x64xf32>, tensor<i64>) -> tensor<64x64xf32>
+// CPU-NEXT:   %0 = enzymexla.jit_call @enzymexla_blas_ssyrk_wrapper (%c_0, %c, %c_1, %c_2, %arg2, %arg0, %c_2, %arg3, %arg1, %c_1) <operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 8, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<ui8>, tensor<ui8>, tensor<i64>, tensor<i64>, tensor<f32>, tensor<64x32xf32>, tensor<i64>, tensor<f32>, tensor<64x64xf32>, tensor<i64>) -> tensor<64x64xf32>
 // CPU-NEXT:   return %0 : tensor<64x64xf32>
 // CPU-NEXT: }
 // CPU-NEXT: llvm.func private @enzymexla_blas_ssyrk_wrapper(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: !llvm.ptr) {
@@ -120,7 +120,7 @@ module {
     func.func @main3(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>) -> tensor<64x64xf32> {
         %alpha = stablehlo.constant dense<2.0> : tensor<f32>
         %beta = stablehlo.constant dense<3.0> : tensor<f32>
-        %0 = enzymexla.blas.syrk %arg0, %arg1, %alpha, %beta {output_uplo = #enzymexla.uplo<L>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<F>} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+        %0 = enzymexla.blas.syrk %arg0, %arg1, %alpha, %beta <{output_uplo = #enzymexla.uplo<L>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<F>}> : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
         return %0 : tensor<64x64xf32>
     }
 }
@@ -130,7 +130,7 @@ module {
 // CPU-NEXT:   %c_0 = stablehlo.constant dense<85> : tensor<ui8>
 // CPU-NEXT:   %c_1 = stablehlo.constant dense<64> : tensor<i64>
 // CPU-NEXT:   %c_2 = stablehlo.constant dense<32> : tensor<i64>
-// CPU-NEXT:   %0 = enzymexla.jit_call @enzymexla_blas_ssyrk_wrapper (%c_0, %c, %c_1, %c_2, %arg2, %arg0, %c_2, %arg3, %arg1, %c_1) {operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 8, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<ui8>, tensor<ui8>, tensor<i64>, tensor<i64>, tensor<f32>, tensor<64x32xf32>, tensor<i64>, tensor<f32>, tensor<64x64xf32>, tensor<i64>) -> tensor<64x64xf32>
+// CPU-NEXT:   %0 = enzymexla.jit_call @enzymexla_blas_ssyrk_wrapper (%c_0, %c, %c_1, %c_2, %arg2, %arg0, %c_2, %arg3, %arg1, %c_1) <operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 8, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<ui8>, tensor<ui8>, tensor<i64>, tensor<i64>, tensor<f32>, tensor<64x32xf32>, tensor<i64>, tensor<f32>, tensor<64x64xf32>, tensor<i64>) -> tensor<64x64xf32>
 // CPU-NEXT:   return %0 : tensor<64x64xf32>
 // CPU-NEXT: }
 // CPU-NEXT: llvm.func private @enzymexla_blas_ssyrk_wrapper(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: !llvm.ptr) {
@@ -169,7 +169,7 @@ module {
         %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<4x4xf32>
         %cst_1 = stablehlo.constant dense<1.000000e+00> : tensor<f32>
         %cst_2 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-        %0 = enzymexla.blas.syrk %arg0, %cst_0, %cst_1, %cst_2 {output_uplo = #enzymexla.uplo<F>, transpose = #enzymexla.transpose<transpose>, uplo = #enzymexla.uplo<U>} : (tensor<5x4xf32>, tensor<4x4xf32>, tensor<f32>, tensor<f32>) -> tensor<4x4xf32>
+        %0 = enzymexla.blas.syrk %arg0, %cst_0, %cst_1, %cst_2 <{output_uplo = #enzymexla.uplo<F>, transpose = #enzymexla.transpose<transpose>, uplo = #enzymexla.uplo<U>}> : (tensor<5x4xf32>, tensor<4x4xf32>, tensor<f32>, tensor<f32>) -> tensor<4x4xf32>
         %1 = stablehlo.multiply %cst, %arg1 : tensor<4x4xf32>
         %2 = stablehlo.add %0, %1 : tensor<4x4xf32>
         return %2 : tensor<4x4xf32>
@@ -181,7 +181,7 @@ module {
 // CPU-NEXT:   %c_0 = stablehlo.constant dense<76> : tensor<ui8>
 // CPU-NEXT:   %c_1 = stablehlo.constant dense<4> : tensor<i64>
 // CPU-NEXT:   %c_2 = stablehlo.constant dense<5> : tensor<i64>
-// CPU-NEXT:   %0 = enzymexla.jit_call @enzymexla_blas_ssyrk_wrapper (%c_0, %c, %c_1, %c_2, %arg2, %arg0, %c_1, %arg3, %arg1, %c_1) {operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 8, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<ui8>, tensor<ui8>, tensor<i64>, tensor<i64>, tensor<f32>, tensor<5x4xf32>, tensor<i64>, tensor<f32>, tensor<4x4xf32>, tensor<i64>) -> tensor<4x4xf32>
+// CPU-NEXT:   %0 = enzymexla.jit_call @enzymexla_blas_ssyrk_wrapper (%c_0, %c, %c_1, %c_2, %arg2, %arg0, %c_1, %arg3, %arg1, %c_1) <operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 8, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<ui8>, tensor<ui8>, tensor<i64>, tensor<i64>, tensor<f32>, tensor<5x4xf32>, tensor<i64>, tensor<f32>, tensor<4x4xf32>, tensor<i64>) -> tensor<4x4xf32>
 // CPU-NEXT:   return %0 : tensor<4x4xf32>
 // CPU-NEXT: }
 // CPU-NEXT: llvm.func private @enzymexla_blas_ssyrk_wrapper(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: !llvm.ptr) {
@@ -226,7 +226,7 @@ module {
 
 module {
     func.func @main(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>, %alpha: tensor<f32>, %beta: tensor<f32>) -> tensor<64x64xf32> {
-        %0 = enzymexla.blas.syrk %arg0, %arg1, %alpha, %beta {output_uplo = #enzymexla.uplo<F>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<U>} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+        %0 = enzymexla.blas.syrk %arg0, %arg1, %alpha, %beta <{output_uplo = #enzymexla.uplo<F>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<U>}> : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
         return %0 : tensor<64x64xf32>
     }
 }
@@ -243,7 +243,7 @@ module {
 
 module {
     func.func @main(%arg0: tensor<64x32xf32>, %arg1: tensor<64x64xf32>, %alpha: tensor<f32>, %beta: tensor<f32>) -> tensor<64x64xf32> {
-        %0 = enzymexla.blas.syrk %arg0, %arg1, %alpha, %beta {output_uplo = #enzymexla.uplo<L>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<U>} : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+        %0 = enzymexla.blas.syrk %arg0, %arg1, %alpha, %beta <{output_uplo = #enzymexla.uplo<L>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<U>}> : (tensor<64x32xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
         return %0 : tensor<64x64xf32>
     }
 }

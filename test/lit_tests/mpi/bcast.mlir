@@ -4,7 +4,7 @@ module {
   func.func @main(%arg0: tensor<4xi32> {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}) -> tensor<4xi32> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
     %c = stablehlo.constant dense<4> : tensor<i32>
     %c_0 = stablehlo.constant dense<0> : tensor<i32>
-    %0 = enzymexla.mpi.bcast(%arg0, %c, %c_0) {datatype = #enzymexla.datatype<MPI_INT>} : (tensor<4xi32>, tensor<i32>, tensor<i32>) -> tensor<4xi32>
+    %0 = enzymexla.mpi.bcast(%arg0, %c, %c_0) <{datatype = #enzymexla.datatype<MPI_INT>}> : (tensor<4xi32>, tensor<i32>, tensor<i32>) -> tensor<4xi32>
     return %0 : tensor<4xi32>
   }
 }
@@ -24,7 +24,7 @@ module {
 // CPU-NEXT:    func.func @main(%arg0: tensor<4xi32> {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}) -> tensor<4xi32> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
 // CPU-NEXT:      %c = stablehlo.constant dense<4> : tensor<i32>
 // CPU-NEXT:      %c_0 = stablehlo.constant dense<0> : tensor<i32>
-// CPU-NEXT:      %0 = enzymexla.jit_call @enzymexla_wrapper_MPI_Bcast_MPI_INT (%arg0, %c, %c_0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<4xi32>, tensor<i32>, tensor<i32>) -> tensor<4xi32>
+// CPU-NEXT:      %0 = enzymexla.jit_call @enzymexla_wrapper_MPI_Bcast_MPI_INT (%arg0, %c, %c_0) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]> : (tensor<4xi32>, tensor<i32>, tensor<i32>) -> tensor<4xi32>
 // CPU-NEXT:      return %0 : tensor<4xi32>
 // CPU-NEXT:    }
 // CPU-NEXT:  }

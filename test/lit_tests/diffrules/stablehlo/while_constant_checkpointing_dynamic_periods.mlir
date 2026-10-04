@@ -76,18 +76,18 @@ module {
   func.func @main() {
     %input = stablehlo.constant dense<1.0> : tensor<f64>
     %diffe = stablehlo.constant dense<1.0> : tensor<f64>
-    %diffe_3:2 = enzyme.autodiff @with_period_3(%input, %diffe) {
+    %diffe_3:2 = enzyme.autodiff @with_period_3(%input, %diffe) <{
       activity=[#enzyme.activity<enzyme_active>],
       ret_activity=[#enzyme.activity<enzyme_active>]
-    } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
-    %diffe_5:2 = enzyme.autodiff @with_period_5(%input, %diffe) {
+    }> : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
+    %diffe_5:2 = enzyme.autodiff @with_period_5(%input, %diffe) <{
       activity=[#enzyme.activity<enzyme_active>],
       ret_activity=[#enzyme.activity<enzyme_active>]
-    } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
-    %diffe_7:2 = enzyme.autodiff @with_period_7(%input, %diffe) {
+    }> : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
+    %diffe_7:2 = enzyme.autodiff @with_period_7(%input, %diffe) <{
       activity=[#enzyme.activity<enzyme_active>],
       ret_activity=[#enzyme.activity<enzyme_active>]
-    } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
+    }> : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
     return
   }
 }

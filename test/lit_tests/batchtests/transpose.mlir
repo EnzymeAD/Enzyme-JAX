@@ -5,7 +5,7 @@ func.func private @relu_broadcast_scalar(%arg0: tensor<3x4xf64>) -> (tensor<4x3x
     return %1 : tensor<4x3xf64>
   }
   func.func @main(%arg0: tensor<2x5x3x4xf64>) -> (tensor<2x5x4x3xf64>) {
-    %1 = enzyme.batch @relu_broadcast_scalar(%arg0) {batch_shape = array<i64: 2, 5>} : (tensor<2x5x3x4xf64>) -> (tensor<2x5x4x3xf64>)
+    %1 = enzyme.batch @relu_broadcast_scalar(%arg0) <{batch_shape = array<i64: 2, 5>}> : (tensor<2x5x3x4xf64>) -> (tensor<2x5x4x3xf64>)
     return %1 : tensor<2x5x4x3xf64>
   }
 
