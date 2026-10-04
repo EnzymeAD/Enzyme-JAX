@@ -105,7 +105,7 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     # place copies and spills above the exec restore of an if/else join,
     # miscompiling kernels (llvm/llvm-project#222368). Drop once XLA's LLVM
     # includes it.
-    sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_amdgpu_bb_prolog.patch\\\",/g" third_party/llvm/workspace.bzl
+    sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_amdgpu_bb_prolog.patch\\\", \\\"\\/\\/:patches\\/llvm_orc_unw_revert.patch\\\",/g" third_party/llvm/workspace.bzl
     """,
     """
     sed -i.bak0 "s/tf_http_archive/http_archive/g" third_party/llvm/workspace.bzl
