@@ -300,6 +300,11 @@ def XLAWrapperOp : EnzymeXLA_Op<"xla_wrapper", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "XLA Call operation";
+  let description = [{
+    Calls a raised function whose input/output pairs represent device buffers.
+    The corresponding function result replaces each buffer's contents. Trailing
+    specialized scalar inputs are compile-time values rather than device buffers.
+  }];
 
   let arguments = (ins SymbolRefAttr:$fn, Variadic<AnyType>:$inputs,
       OptionalAttr<DictArrayAttr>:$arg_attrs,
@@ -312,6 +317,7 @@ def XLAWrapperOp : EnzymeXLA_Op<"xla_wrapper", [
     $fn ` ` `(` $inputs `)` prop-dict attr-dict `:` functional-type($inputs, results)
   }];
 
+  let hasCanonicalizer = 1;
 }
 
 def GPUErrorOp : EnzymeXLA_Op<"gpu_error", [
