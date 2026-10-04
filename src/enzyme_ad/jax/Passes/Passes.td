@@ -1383,6 +1383,29 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
   ];
 }
 
+def XLAMegakernelizePass : Pass<"xla-megakernelize", "ModuleOp"> {
+  let summary = "Fuse sequential XLA wrappers";
+  let description = [{
+    Fuse compatible sequential enzymexla.xla_wrapper operations. The fused
+    wrapper takes the union of their inputs and threads updated tensor state
+    through equal buffer identities. Distinct inputs keep separate tensor
+    state. Skip wrappers that still have duplicate inputs. Apply the registered
+    XLA wrapper canonicalization patterns.
+
+    New inputs must dominate the first wrapper. Argument and result metadata
+    and specialized scalar inputs are not composed.
+
+    The resulting function is compiled as one XLA program. Fusion into GPU
+    kernels remains a backend decision.
+  }];
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "memref::MemRefDialect",
+    "stablehlo::StablehloDialect",
+  ];
+}
+
 def ParallelLower : Pass<"parallel-lower"> {
   let summary = "Lower gpu launch op to parallel ops";
   let dependentDialects = [
