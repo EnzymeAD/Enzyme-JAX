@@ -37,6 +37,10 @@ def SicmDotGeneralScalePatterns : ImpulsePatternOp<
     "sicm_dot_general_scale"> {
   let patterns = ["DotGeneralScaleFactorizationHLO"];
 }
+def SicmDotGeneralShiftPatterns : ImpulsePatternOp<
+    "sicm_dot_general_shift"> {
+  let patterns = ["DotGeneralShiftFactorizationHLO"];
+}
 def SicmTriangularSolveScalePatterns : ImpulsePatternOp<
     "sicm_triangular_solve_scale"> {
   let patterns = ["TriangularSolveScaleFactorizationHLO"];
@@ -107,6 +111,7 @@ def SicmPatterns : ImpulsePatternOp<"sicm"> {
     "CholeskyOuterProductScaleHLO",
     "CholeskyEigenLiftHLO",
     "DotGeneralScaleFactorizationHLO",
+    "DotGeneralShiftFactorizationHLO",
     "TriangularSolveScaleFactorizationHLO",
     "LogMultiplyDistributionHLO",
     "DotAbsorbDiagMulHLO",

@@ -486,30 +486,60 @@ struct TriangularSolveScaleFactorizationHLO
   }
 };
 
-/// log(s * A) = log(s) + log(A)
-///   structure/dimension: operand is s * A with s effectively scalar;
+static bool isScaleCommutingDataMovement(Operation *op) {
+  return isa<stablehlo::ReshapeOp, impulse::ReshapeOp, stablehlo::TransposeOp,
+             stablehlo::SliceOp, stablehlo::BroadcastInDimOp>(op);
+}
+
+/// element-selecting ops (reshape, transpose, slice, broadcast_in_dim), each of
+/// which commutes with the scalar scaling. The chain covers the strided-slice
+/// spelling of a diagonal, log(slice(reshape(transpose?(s * L)), [0:n*n:n+1]))
+/// (`LinearAlgebra.diag` of a scaled factor), as well as any other
+/// rearrangement; the dot-with-identity spelling dot_general(s * L, I) is
+/// first rewritten to s * dot_general(L, I) by DotGeneralScaleFactorization.
 ///   dependence: A sample-invariant, s sample-dependent;
 struct LogMultiplyDistributionHLO : public OpRewritePattern<stablehlo::LogOp> {
   LogMultiplyDistributionHLO(MLIRContext *context, PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit) {}
 
-  static FailureOr<ScaledInvariant>
-  checkPreconditions(stablehlo::LogOp logOp, SampleDependenceAnalysis &analysis,
-                     PatternRewriter &rewriter) {
-    auto scaled = matchScaledInvariant(logOp.getOperand(), analysis);
-    if (failed(scaled))
-      return failure();
+  struct Match {
+    ScaledInvariant scaled;
+    // The element-selecting chain f, outermost (the log operand) first.
+    SmallVector<Operation *> chain;
+  };
+
+  static FailureOr<Match> checkPreconditions(stablehlo::LogOp logOp,
+                                             SampleDependenceAnalysis &analysis,
+                                             PatternRewriter &rewriter) {
+    Match match;
+    Value value = logOp.getOperand();
+    FailureOr<ScaledInvariant> scaled;
+    while (failed(scaled = matchScaledInvariant(value, analysis))) {
+      Operation *def = value.getDefiningOp();
+      if (!def || !isScaleCommutingDataMovement(def))
+        return failure();
+      match.chain.push_back(def);
+      value = def->getOperand(0);
+    }
     if (!isNonnegative(scaled->scale, rewriter))
       return failure();
-    return scaled;
+    match.scaled = *scaled;
+    return match;
   }
 
   static Value applyRewrite(PatternRewriter &rewriter, stablehlo::LogOp logOp,
-                            const ScaledInvariant &match) {
+                            const Match &m) {
     Location loc = logOp.getLoc();
     auto resultType = cast<RankedTensorType>(logOp.getType());
+    const ScaledInvariant &match = m.scaled;
+    Value invariant = match.invariant;
+    for (Operation *op : llvm::reverse(m.chain)) {
+      IRMapping mapping;
+      mapping.map(op->getOperand(0), invariant);
+      invariant = rewriter.clone(*op, mapping)->getResult(0);
+    }
     auto logInvariant =
-        stablehlo::LogOp::create(rewriter, loc, resultType, match.invariant);
+        stablehlo::LogOp::create(rewriter, loc, resultType, invariant);
     Value scalarScale = reshapeToScalar(rewriter, loc, match.scale);
     auto logScale = stablehlo::LogOp::create(
         rewriter, loc, scalarScale.getType(), scalarScale);
@@ -1832,6 +1862,127 @@ matchScaledInvariantPlusDiagShift(Value value,
   }
 }
 
+static void materializeShiftScalars(OpBuilder &rewriter, Location loc,
+                                    ScaledInvariantPlusDiag &match) {
+  if (!match.diagScalar) {
+    auto scalarType =
+        RankedTensorType::get({}, match.foldedDiagConst.getType());
+    match.diagScalar = stablehlo::ConstantOp::create(
+        rewriter, loc, scalarType,
+        DenseElementsAttr::get(scalarType, match.foldedDiagConst));
+  }
+
+  if (match.outerScales.empty())
+    return;
+  Value c = reshapeToScalar(rewriter, loc, match.outerScales.front());
+  for (Value factor : llvm::drop_begin(match.outerScales))
+    c = stablehlo::MulOp::create(rewriter, loc, c,
+                                 reshapeToScalar(rewriter, loc, factor));
+  match.scaleScalar =
+      match.scaleScalar ? stablehlo::MulOp::create(
+                              rewriter, loc, c,
+                              reshapeToScalar(rewriter, loc, match.scaleScalar))
+                              .getResult()
+                        : c;
+  match.diagScalar = stablehlo::MulOp::create(
+      rewriter, loc, c, reshapeToScalar(rewriter, loc, match.diagScalar));
+}
+
+struct DotGeneralShiftFactorizationHLO
+    : public OpRewritePattern<stablehlo::DotGeneralOp> {
+  DotGeneralShiftFactorizationHLO(MLIRContext *context,
+                                  PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit) {}
+
+  struct Match {
+    ScaledInvariantPlusDiag shift;
+    bool shiftOnLhs;
+  };
+
+  static FailureOr<Match>
+  checkPreconditions(stablehlo::DotGeneralOp dotOp,
+                     SampleDependenceAnalysis &analysis) {
+    auto dims = dotOp.getDotDimensionNumbers();
+    if (!dims.getLhsBatchingDimensions().empty() ||
+        dims.getLhsContractingDimensions().size() != 1)
+      return failure();
+    auto resultType = cast<RankedTensorType>(dotOp.getType());
+    for (bool onLhs : {true, false}) {
+      Value shifted = onLhs ? dotOp.getLhs() : dotOp.getRhs();
+      Value other = onLhs ? dotOp.getRhs() : dotOp.getLhs();
+      if (cast<RankedTensorType>(other.getType()).getElementType() !=
+          resultType.getElementType())
+        continue;
+      if (!analysis.isSampleDependent(shifted))
+        continue;
+      ScaledInvariantPlusDiag shift =
+          matchScaledInvariantPlusDiagShift(shifted, analysis);
+      if (!shift.invariant || shift.secondInvariant)
+        continue;
+      return Match{shift, onLhs};
+    }
+    return failure();
+  }
+
+  static Value applyRewrite(PatternRewriter &rewriter,
+                            stablehlo::DotGeneralOp dotOp, Match match) {
+    Location loc = dotOp.getLoc();
+    auto resultType = cast<RankedTensorType>(dotOp.getType());
+    materializeShiftScalars(rewriter, loc, match.shift);
+
+    Value newLhs = match.shiftOnLhs ? match.shift.invariant : dotOp.getLhs();
+    Value newRhs = match.shiftOnLhs ? dotOp.getRhs() : match.shift.invariant;
+    Value product = stablehlo::DotGeneralOp::create(
+        rewriter, loc, resultType, newLhs, newRhs,
+        dotOp.getDotDimensionNumbersAttr(), dotOp.getPrecisionConfigAttr(),
+        dotOp.getAlgorithmAttr());
+    if (match.shift.scaleScalar)
+      product = stablehlo::MulOp::create(
+          rewriter, loc, resultType,
+          broadcastScalarToShape(rewriter, loc, match.shift.scaleScalar,
+                                 resultType),
+          product);
+
+    // dot_general(I, x) is x with dim k moved to the front (lhs) or back.
+    auto dims = dotOp.getDotDimensionNumbers();
+    Value x = match.shiftOnLhs ? dotOp.getRhs() : dotOp.getLhs();
+    int64_t k = match.shiftOnLhs ? dims.getRhsContractingDimensions()[0]
+                                 : dims.getLhsContractingDimensions()[0];
+    int64_t rank = cast<RankedTensorType>(x.getType()).getRank();
+    SmallVector<int64_t> perm;
+    if (match.shiftOnLhs)
+      perm.push_back(k);
+    for (int64_t d = 0; d < rank; ++d)
+      if (d != k)
+        perm.push_back(d);
+    if (!match.shiftOnLhs)
+      perm.push_back(k);
+    if (!llvm::equal(perm, llvm::seq<int64_t>(0, rank)))
+      x = stablehlo::TransposeOp::create(rewriter, loc, resultType, x,
+                                         rewriter.getDenseI64ArrayAttr(perm));
+    Value shiftTerm = stablehlo::MulOp::create(
+        rewriter, loc, resultType,
+        broadcastScalarToShape(rewriter, loc, match.shift.diagScalar,
+                               resultType),
+        x);
+    return stablehlo::AddOp::create(rewriter, loc, resultType, product,
+                                    shiftTerm);
+  }
+
+  LogicalResult matchAndRewrite(stablehlo::DotGeneralOp dotOp,
+                                PatternRewriter &rewriter) const override {
+    auto analysis = analyzeEnclosingRegion(dotOp);
+    if (!analysis)
+      return failure();
+    auto match = checkPreconditions(dotOp, *analysis);
+    if (failed(match))
+      return failure();
+    rewriter.replaceOp(dotOp, applyRewrite(rewriter, dotOp, *match));
+    LLVM_DEBUG(llvm::dbgs() << "SICM: DotGeneralShift fired\n");
+    return success();
+  }
+};
+
 /// ADJOINT and TRANSPOSE coincide for the real factors these patterns target.
 static bool isAdjointLikeTranspose(stablehlo::Transpose t) {
   return t == stablehlo::Transpose::ADJOINT ||
@@ -2010,9 +2161,6 @@ static bool isLogDetOnlyVector(Value diag) {
   return true;
 }
 
-/// F .* I (replaced by diag(sqrt d)) must first be reduced to the diagonal
-/// vector: an add-reduce over one axis, or a dot_general contracting one axis
-/// with a splat 1.0 vector.
 static bool isLogDetOnlyDiagonal(Operation *extraction) {
   Value diag = extraction->getResult(0);
   if (cast<RankedTensorType>(diag.getType()).getRank() == 1)
@@ -2022,7 +2170,8 @@ static bool isLogDetOnlyDiagonal(Operation *extraction) {
     Value vector;
     if (auto reduce = dyn_cast<stablehlo::ReduceOp>(user)) {
       if (!isSingleInputReduce(reduce, use, stablehlo::ReduceOpKind::Add) ||
-          reduce.getDimensions().size() != 1)
+          reduce.getDimensions().size() != 1 ||
+          !matchPattern(reduce.getInitValues()[0], m_AnyZeroFloat()))
         return false;
       vector = reduce.getResult(0);
     } else if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(user)) {
@@ -2044,7 +2193,8 @@ static bool isLogDetOnlyDiagonal(Operation *extraction) {
   return true;
 }
 
-/// factor) by W b with W = Q diag(1/sqrt d) Q^T (times L_B^{-1} when
+/// The lift turns a whitening solve w into O w, O orthogonal, so each use must
+/// be invariant under O along the solved axis. Merged groups go all or none.
 class RotationConsumerCheck {
 public:
   explicit RotationConsumerCheck(unsigned numSeeds) {
@@ -2291,17 +2441,161 @@ private:
   }
 };
 
-/// factor are rewritten in terms of Q and d:
-///   full solve chains F\(F'\b)  ->  Q diag(1/d) Q^T b
-///   single solves F\b, F'\b    ->  Q diag(1/sqrt(d)) Q^T b
-/// chol(B). Handles A + t*I (s = 1), a constant diagonal matrix folded by
-/// recognized in every spelling of collectDiagonalExtractions.
-/// Only the full solve chain is replaced exactly; the other two replacements
-/// preserve a function of the user's result, not the result:
-///   single solve:  Q diag(1/sqrt d) Q^T b = O (F^{-1} b) for an orthogonal O,
-///                  so only norms |F^{-1} b|^2 (and inner products of two such
-///                  solves) are preserved;
-///     replaced diagonal only the log-determinant;
+static bool isAnyReshape(Operation *op) {
+  return isa<stablehlo::ReshapeOp, impulse::ReshapeOp>(op);
+}
+
+/// Both reshapes keep the row-major element order.
+static Value lookThroughAnyReshapes(Value value) {
+  while (Operation *def = value.getDefiningOp()) {
+    if (!isAnyReshape(def))
+      break;
+    value = def->getOperand(0);
+  }
+  return value;
+}
+
+/// `between` lists users before producers.
+static bool collectFullSums(Value value, SmallVectorImpl<Operation *> &sinks,
+                            SmallVectorImpl<Operation *> &between) {
+  if (value.use_empty())
+    return false;
+  int64_t rank = cast<RankedTensorType>(value.getType()).getRank();
+  for (OpOperand &use : value.getUses()) {
+    Operation *user = use.getOwner();
+    if (isAnyReshape(user)) {
+      if (!collectFullSums(user->getResult(0), sinks, between))
+        return false;
+      between.push_back(user);
+      continue;
+    }
+    if (auto reduce = dyn_cast<stablehlo::ReduceOp>(user)) {
+      if (!isSingleInputReduce(reduce, use, stablehlo::ReduceOpKind::Add) ||
+          (int64_t)reduce.getDimensions().size() != rank)
+        return false;
+      sinks.push_back(user);
+      continue;
+    }
+    if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(user)) {
+      auto dims = dot.getDotDimensionNumbers();
+      bool onLhs = use.getOperandNumber() == 0;
+      Value other = onLhs ? dot.getRhs() : dot.getLhs();
+      auto contracting = onLhs ? dims.getLhsContractingDimensions()
+                               : dims.getRhsContractingDimensions();
+      if (!dims.getLhsBatchingDimensions().empty() ||
+          (int64_t)contracting.size() != rank || !isSplatOne(other))
+        return false;
+      sinks.push_back(user);
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+/// Every use of z = K^{-1} b must be a full contraction <b, z> with b and z of
+/// the same shape up to reshapes.
+static bool collectQuadFormSinks(Value z, Value bRoot,
+                                 SmallVectorImpl<Operation *> &sinks,
+                                 SmallVectorImpl<Operation *> &between) {
+  if (z.use_empty())
+    return false;
+  int64_t rank = cast<RankedTensorType>(z.getType()).getRank();
+  for (OpOperand &use : z.getUses()) {
+    Operation *user = use.getOwner();
+    if (isAnyReshape(user)) {
+      if (!collectQuadFormSinks(user->getResult(0), bRoot, sinks, between))
+        return false;
+      between.push_back(user);
+      continue;
+    }
+    if (!isa<stablehlo::DotGeneralOp, stablehlo::MulOp>(user))
+      return false;
+    Value other = user->getOperand(1 - use.getOperandNumber());
+    if (other.getType() != z.getType() ||
+        lookThroughAnyReshapes(other) != bRoot)
+      return false;
+    if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(user)) {
+      auto dims = dot.getDotDimensionNumbers();
+      auto all = llvm::to_vector(llvm::seq<int64_t>(0, rank));
+      if (!dims.getLhsBatchingDimensions().empty() ||
+          dims.getLhsContractingDimensions() != ArrayRef<int64_t>(all) ||
+          dims.getRhsContractingDimensions() != ArrayRef<int64_t>(all))
+        return false;
+      sinks.push_back(user);
+      continue;
+    }
+    if (!collectFullSums(user->getResult(0), sinks, between))
+      return false;
+    between.push_back(user);
+  }
+  return true;
+}
+
+struct RhsTerm {
+  Value value;
+  bool negate;
+  bool product;
+};
+
+/// Reshapes that keep the leading axis keep its rows together, so for a linear
+/// T on that axis T b = sum_i (+-) T term_i and T (M v) = (T M) v.
+static bool decomposeRhs(Value x, int64_t n, bool negate,
+                         SampleDependenceAnalysis &analysis,
+                         SmallVectorImpl<RhsTerm> &terms) {
+  auto type = cast<RankedTensorType>(x.getType());
+  if (type.getRank() < 1 || type.getDimSize(0) != n)
+    return false;
+  if (!analysis.isSampleDependent(x)) {
+    terms.push_back({x, negate, false});
+    return true;
+  }
+  Operation *def = x.getDefiningOp();
+  if (!def)
+    return false;
+  if (isAnyReshape(def))
+    return decomposeRhs(def->getOperand(0), n, negate, analysis, terms);
+  if (auto add = dyn_cast<stablehlo::AddOp>(def))
+    return decomposeRhs(add.getLhs(), n, negate, analysis, terms) &&
+           decomposeRhs(add.getRhs(), n, negate, analysis, terms);
+  if (auto sub = dyn_cast<stablehlo::SubtractOp>(def))
+    return decomposeRhs(sub.getLhs(), n, negate, analysis, terms) &&
+           decomposeRhs(sub.getRhs(), n, !negate, analysis, terms);
+  if (auto neg = dyn_cast<stablehlo::NegOp>(def))
+    return decomposeRhs(neg.getOperand(), n, !negate, analysis, terms);
+  if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(def)) {
+    auto dims = dot.getDotDimensionNumbers();
+    Value M = dot.getLhs();
+    auto mType = cast<RankedTensorType>(M.getType());
+    if (analysis.isSampleDependent(M) || mType.getRank() != 2 ||
+        mType.getDimSize(0) != n || !dims.getLhsBatchingDimensions().empty() ||
+        dims.getLhsContractingDimensions() != ArrayRef<int64_t>{1})
+      return false;
+    terms.push_back({x, negate, true});
+    return true;
+  }
+  return false;
+}
+
+static SmallVector<RhsTerm> splitRhs(Value b,
+                                     SampleDependenceAnalysis &analysis) {
+  int64_t n = cast<RankedTensorType>(b.getType()).getDimSize(0);
+  SmallVector<RhsTerm> terms;
+  if (!decomposeRhs(b, n, /*negate=*/false, analysis, terms))
+    return {};
+  int64_t width = 0;
+  for (const RhsTerm &term : terms)
+    if (term.product)
+      width += cast<RankedTensorType>(
+                   term.value.getDefiningOp<stablehlo::DotGeneralOp>()
+                       .getLhs()
+                       .getType())
+                   .getDimSize(1);
+  if (width == 0 || width >= n)
+    return {};
+  return terms;
+}
+
 ///     definiteness of the original cholesky operand.
 struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
   CholeskyEigenLiftHLO(MLIRContext *context, PatternBenefit benefit = 1)
@@ -2311,10 +2605,14 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
     stablehlo::TriangularSolveOp outerSolve;
     stablehlo::TriangularSolveOp innerSolve;
     Value rhs;
+    SmallVector<RhsTerm> rhsTerms;
+    SmallVector<Operation *> quadSinks;
+    SmallVector<Operation *> quadBetween;
   };
   struct SingleSolveInfo {
     stablehlo::TriangularSolveOp solve;
     bool isAdjoint;
+    SmallVector<RhsTerm> rhsTerms;
   };
   struct Match {
     ScaledInvariantPlusDiag decomposed;
@@ -2354,7 +2652,18 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
       if (Value rhs = matchFullCholeskySolve(triSolve, cholResult, cholLower)) {
         auto innerSolve =
             triSolve.getB().getDefiningOp<stablehlo::TriangularSolveOp>();
-        match.fullSolves.push_back({triSolve, innerSolve, rhs});
+        FullSolveInfo fs;
+        fs.outerSolve = triSolve;
+        fs.innerSolve = innerSolve;
+        fs.rhs = rhs;
+        fs.rhsTerms = splitRhs(rhs, analysis);
+        if (!collectQuadFormSinks(triSolve.getResult(),
+                                  lookThroughAnyReshapes(rhs), fs.quadSinks,
+                                  fs.quadBetween)) {
+          fs.quadSinks.clear();
+          fs.quadBetween.clear();
+        }
+        match.fullSolves.push_back(std::move(fs));
         chainSolveOps.insert(triSolve.getOperation());
         chainSolveOps.insert(innerSolve.getOperation());
       }
@@ -2376,7 +2685,8 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
     SmallVector<bool> normOnly = RotationConsumerCheck(seeds.size()).run(seeds);
     for (auto [solve, ok] : llvm::zip(singleCandidates, normOnly)) {
       if (ok)
-        match.singleSolves.push_back({solve, !cholLower});
+        match.singleSolves.push_back(
+            {solve, !cholLower, splitRhs(solve.getB(), analysis)});
       else
         LLVM_DEBUG(llvm::dbgs() << "SICM: CholeskyEigenLift keeps a solve "
                                    "with a consumer that is not norm-only\n");
@@ -2406,31 +2716,7 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
     auto &singleSolves = m.singleSolves;
     auto &diagExtractions = m.diagExtractions;
 
-    if (!match.diagScalar) {
-      auto scalarType =
-          RankedTensorType::get({}, match.foldedDiagConst.getType());
-      match.diagScalar = stablehlo::ConstantOp::create(
-          rewriter, loc, scalarType,
-          DenseElementsAttr::get(scalarType, match.foldedDiagConst));
-    }
-
-    // Distribute outer scalar factors into the sum:
-    // c * (s*A + t*B) = (c*s)*A + (c*t)*B, with s = 1 when absent.
-    if (!match.outerScales.empty()) {
-      Value c = reshapeToScalar(rewriter, loc, match.outerScales.front());
-      for (Value factor : llvm::drop_begin(match.outerScales))
-        c = stablehlo::MulOp::create(rewriter, loc, c,
-                                     reshapeToScalar(rewriter, loc, factor));
-      match.scaleScalar =
-          match.scaleScalar
-              ? stablehlo::MulOp::create(
-                    rewriter, loc, c,
-                    reshapeToScalar(rewriter, loc, match.scaleScalar))
-                    .getResult()
-              : c;
-      match.diagScalar = stablehlo::MulOp::create(
-          rewriter, loc, c, reshapeToScalar(rewriter, loc, match.diagScalar));
-    }
+    materializeShiftScalars(rewriter, loc, match);
 
     auto inputType = cast<RankedTensorType>(match.invariant.getType());
     int64_t N = inputType.getShape()[0];
@@ -2497,40 +2783,126 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
         /*lhsBatchingDims=*/{}, /*rhsBatchingDims=*/{},
         /*lhsContractingDims=*/{1}, /*rhsContractingDims=*/{0});
 
-    // Helper: compute Q @ diag(scale) @ Q^T @ b
-    auto emitEigenSolve = [&](Value b, Value scaleVec,
-                              RankedTensorType resultType) -> Value {
-      Value QTb = stablehlo::DotGeneralOp::create(
-          rewriter, loc, resultType, QT, b, dotDims,
-          /*precision_config=*/nullptr, /*algorithm=*/nullptr);
-      Value scaleBcast = stablehlo::BroadcastInDimOp::create(
-          rewriter, loc, resultType, scaleVec,
-          rewriter.getDenseI64ArrayAttr({0}));
-      Value scaled =
-          stablehlo::MulOp::create(rewriter, loc, resultType, scaleBcast, QTb);
+    auto projectWhole = [&](Value x) -> Value {
+      auto xType = cast<RankedTensorType>(x.getType());
+      Value y = x;
+      if (LB) {
+        auto solveType = RankedTensorType::get({N, xType.getNumElements() / N},
+                                               xType.getElementType());
+        if (solveType != xType)
+          y = stablehlo::ReshapeOp::create(rewriter, loc, solveType, y);
+        y = stablehlo::TriangularSolveOp::create(
+                rewriter, loc, solveType, LB, y,
+                /*left_side=*/true, /*lower=*/true,
+                /*unit_diagonal=*/false, stablehlo::Transpose::NO_TRANSPOSE)
+                .getResult();
+        if (solveType != xType)
+          y = stablehlo::ReshapeOp::create(rewriter, loc, xType, y);
+      }
       return stablehlo::DotGeneralOp::create(
-          rewriter, loc, resultType, Q, scaled, dotDims,
+          rewriter, loc, xType, QT, y, dotDims,
           /*precision_config=*/nullptr, /*algorithm=*/nullptr);
     };
+    auto project = [&](Value b, ArrayRef<RhsTerm> terms) -> Value {
+      if (terms.empty())
+        return projectWhole(b);
+      Value sum;
+      for (const RhsTerm &term : terms) {
+        Value t;
+        if (term.product) {
+          auto dot = term.value.getDefiningOp<stablehlo::DotGeneralOp>();
+          t = stablehlo::DotGeneralOp::create(
+              rewriter, loc, term.value.getType(), projectWhole(dot.getLhs()),
+              dot.getRhs(), dot.getDotDimensionNumbersAttr(),
+              dot.getPrecisionConfigAttr(), dot.getAlgorithmAttr());
+        } else {
+          t = projectWhole(term.value);
+        }
+        if (t.getType() != b.getType())
+          t = stablehlo::ReshapeOp::create(rewriter, loc, b.getType(), t);
+        if (!sum)
+          sum = term.negate
+                    ? stablehlo::NegOp::create(rewriter, loc, t).getResult()
+                    : t;
+        else if (term.negate)
+          sum = stablehlo::SubtractOp::create(rewriter, loc, sum, t);
+        else
+          sum = stablehlo::AddOp::create(rewriter, loc, sum, t);
+      }
+      return sum;
+    };
+    auto scaleRows = [&](Value scaleVec, Value x) -> Value {
+      auto xType = cast<RankedTensorType>(x.getType());
+      Value scaleBcast = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, xType, scaleVec, rewriter.getDenseI64ArrayAttr({0}));
+      return stablehlo::MulOp::create(rewriter, loc, xType, scaleBcast, x);
+    };
 
+    Value invSqrtShifted;
+    auto getInvSqrtShifted = [&]() -> Value {
+      if (!invSqrtShifted) {
+        Value sqrtShifted =
+            stablehlo::SqrtOp::create(rewriter, loc, eigvalsType, shifted);
+        invSqrtShifted = stablehlo::DivOp::create(rewriter, loc, eigvalsType,
+                                                  ones, sqrtShifted);
+      }
+      return invSqrtShifted;
+    };
+    if (llvm::any_of(fullSolves, [](const FullSolveInfo &fs) {
+          return !fs.quadSinks.empty();
+        }))
+      getInvSqrtShifted();
+
+    // K^{-1} b = L_B^{-T} Q diag(1/d) T b; b^T K^{-1} b = |T b / sqrt(d)|^2.
     if (!fullSolves.empty()) {
-      Value invShifted =
-          stablehlo::DivOp::create(rewriter, loc, eigvalsType, ones, shifted);
+      Value invShifted;
+      if (llvm::any_of(fullSolves, [](const FullSolveInfo &fs) {
+            return fs.quadSinks.empty();
+          }))
+        invShifted =
+            stablehlo::DivOp::create(rewriter, loc, eigvalsType, ones, shifted);
       for (auto &fs : fullSolves) {
         rewriter.setInsertionPoint(fs.outerSolve);
         auto resultType = cast<RankedTensorType>(fs.outerSolve.getType());
-        Value rhs = fs.rhs;
 
-        if (LB) {
-          // z1 = L_B^{-1} @ b
-          rhs = stablehlo::TriangularSolveOp::create(
-                    rewriter, loc, resultType, LB, rhs,
-                    /*left_side=*/true, /*lower=*/true,
-                    /*unit_diagonal=*/false, stablehlo::Transpose::NO_TRANSPOSE)
-                    .getResult();
+        if (!fs.quadSinks.empty()) {
+          Value u = scaleRows(invSqrtShifted, project(fs.rhs, fs.rhsTerms));
+          auto all = llvm::to_vector(llvm::seq<int64_t>(
+              0, cast<RankedTensorType>(u.getType()).getRank()));
+          auto quadDims = stablehlo::DotDimensionNumbersAttr::get(
+              rewriter.getContext(), /*lhsBatchingDims=*/{},
+              /*rhsBatchingDims=*/{}, /*lhsContractingDims=*/all,
+              /*rhsContractingDims=*/all);
+          Value quad = stablehlo::DotGeneralOp::create(
+              rewriter, loc, RankedTensorType::get({}, elemType), u, u,
+              quadDims, /*precision_config=*/nullptr, /*algorithm=*/nullptr);
+          for (Operation *sink : fs.quadSinks) {
+            rewriter.setInsertionPoint(sink);
+            auto sinkType =
+                cast<RankedTensorType>(sink->getResult(0).getType());
+            Value value = broadcastScalarToShape(rewriter, loc, quad, sinkType);
+            // A reduce adds its init value once.
+            if (auto reduce = dyn_cast<stablehlo::ReduceOp>(sink)) {
+              Value init = reduce.getInitValues()[0];
+              if (!matchPattern(init, m_AnyZeroFloat()))
+                value = stablehlo::AddOp::create(rewriter, loc, value, init);
+            }
+            rewriter.replaceOp(sink, value);
+          }
+          for (Operation *op : fs.quadBetween)
+            if (op->use_empty())
+              rewriter.eraseOp(op);
+          if (fs.outerSolve->use_empty())
+            rewriter.eraseOp(fs.outerSolve);
+          if (fs.innerSolve->use_empty())
+            rewriter.eraseOp(fs.innerSolve);
+          continue;
         }
 
-        Value result = emitEigenSolve(rhs, invShifted, resultType);
+        Value result = stablehlo::DotGeneralOp::create(
+            rewriter, loc, resultType, Q,
+            scaleRows(invShifted, project(fs.rhs, fs.rhsTerms)), dotDims,
+            /*precision_config=*/nullptr, /*algorithm=*/nullptr);
 
         if (LB) {
           result = stablehlo::TriangularSolveOp::create(
@@ -2546,34 +2918,21 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
       }
     }
 
-    // 6. Replace single solves: L^{-1}b or L^{-H}b
-    //   Identity case:   Q @ diag(1/sqrt(d)) @ Q^T @ b
-    //   Generalized:     Q @ diag(1/sqrt(d)) @ Q^T @ L_B^{-1} @ b
-    //   Both preserve |L^{-1}b|^2 = b^T K^{-1} b.
     if (!singleSolves.empty()) {
-      Value sqrtShifted =
-          stablehlo::SqrtOp::create(rewriter, loc, eigvalsType, shifted);
-      Value invSqrtShifted = stablehlo::DivOp::create(
-          rewriter, loc, eigvalsType, ones, sqrtShifted);
+      // The cholesky dominates every user; the last insertion point may be
+      // erased.
+      rewriter.setInsertionPoint(cholOp);
+      getInvSqrtShifted();
       for (auto &ss : singleSolves) {
         rewriter.setInsertionPoint(ss.solve);
-        auto resultType = cast<RankedTensorType>(ss.solve.getType());
-        Value rhs = ss.solve.getB();
-
-        if (LB) {
-          rhs = stablehlo::TriangularSolveOp::create(
-                    rewriter, loc, resultType, LB, rhs,
-                    /*left_side=*/true, /*lower=*/true,
-                    /*unit_diagonal=*/false, stablehlo::Transpose::NO_TRANSPOSE)
-                    .getResult();
-        }
-
-        Value result = emitEigenSolve(rhs, invSqrtShifted, resultType);
+        Value result =
+            scaleRows(invSqrtShifted, project(ss.solve.getB(), ss.rhsTerms));
         rewriter.replaceOp(ss.solve, result);
       }
     }
 
     if (!diagExtractions.empty()) {
+      rewriter.setInsertionPoint(cholOp);
       Value sqrtShiftedForDiag =
           stablehlo::SqrtOp::create(rewriter, loc, eigvalsType, shifted);
 
@@ -2597,28 +2956,14 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
       }
 
       for (auto *diagOp : diagExtractions) {
-        rewriter.setInsertionPoint(diagOp);
-        auto resultType =
-            cast<RankedTensorType>(diagOp->getResult(0).getType());
-        Value replacement;
-        if (resultType.getRank() == 1) {
-          replacement = diagVec;
-        } else {
-          Value bcast = stablehlo::BroadcastInDimOp::create(
-              rewriter, loc, RankedTensorType::get({N, N}, elemType), diagVec,
-              rewriter.getDenseI64ArrayAttr({0}));
-          SmallVector<Attribute> identityVals(
-              N * N, rewriter.getFloatAttr(elemType, 0.0));
-          for (int64_t i = 0; i < N; ++i)
-            identityVals[i * N + i] = rewriter.getFloatAttr(elemType, 1.0);
-          Value identity = stablehlo::ConstantOp::create(
-              rewriter, loc,
-              DenseElementsAttr::get(RankedTensorType::get({N, N}, elemType),
-                                     identityVals));
-          replacement = stablehlo::MulOp::create(rewriter, loc, resultType,
-                                                 bcast, identity);
+        Value diag = diagOp->getResult(0);
+        if (cast<RankedTensorType>(diag.getType()).getRank() == 1) {
+          rewriter.replaceOp(diagOp, diagVec);
+          continue;
         }
-        rewriter.replaceOp(diagOp, replacement);
+        for (Operation *reduction : llvm::make_early_inc_range(diag.getUsers()))
+          rewriter.replaceOp(reduction, diagVec);
+        rewriter.eraseOp(diagOp);
       }
     }
 

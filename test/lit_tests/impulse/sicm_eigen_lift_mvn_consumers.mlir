@@ -3,11 +3,13 @@
 
 // consumes its upper factor U = chol(K) only through the solve chain
 // U^{-1} U^{-T} (y - mu) of the quadratic form and through
-// sum(log(diag(U .* I))) of the log-determinant, so both the full-solve
-// replacement (exact, Q diag(1/d) Q^T) and the diagonal replacement
-// (sqrt(d), valid only under the log-determinant) pass the consumer check and
-// no cholesky is left in the joint logpdf. The emitted MVN site is written in
-// the pretty callee-less form `impulse.sample(...)`.
+// sum(log(diag(U .* I))) of the log-determinant, so both pass the consumer
+// check and no cholesky is left in the joint logpdf. The chain is read only
+// by the quadratic form sum((y - mu) .* K^{-1} (y - mu)), which is replaced by
+// |diag(1/sqrt(d)) Q^T (y - mu)|^2 (no product with Q); the masked diagonal
+// U .* I is read only through its reduction to the diagonal vector with
+// ones, which is replaced by sqrt(d) (no 3x3 matrix). The emitted MVN site is
+// written in the pretty callee-less form `impulse.sample(...)`.
 
 module {
   func.func private @halfnormal_sampler(%rng : tensor<2xui64>, %std : tensor<f64>) -> (tensor<2xui64>, tensor<f64>) {
@@ -46,7 +48,6 @@ module {
   // CHECK-NEXT: %[[DIFFCOL:.+]] = impulse.reshape %[[DIFF]] : (tensor<3xf64>) -> tensor<3x1xf64>
   // CHECK-NEXT: %[[QTB:.+]] = stablehlo.dot_general %[[QT]], %[[DIFFCOL]], contracting_dims = [1] x [0] : (tensor<3x3xf64>, tensor<3x1xf64>) -> tensor<3x1xf64>
   // CHECK-NEXT: impulse.infer_region @model
-  // The joint logpdf, line by line: no cholesky and no triangular_solve.
   // CHECK: impulse.yield %{{.+}}#0, %{{.+}}#1 : tensor<2xui64>, tensor<3xf64>
   // CHECK-NEXT: } logpdf {
   // CHECK-NEXT: ^bb0(%[[S:.+]]: tensor<f64>, %[[T:.+]]: tensor<f64>):
@@ -57,22 +58,15 @@ module {
   // CHECK-NEXT: %[[SL:.+]] = stablehlo.multiply %[[SB]], %[[LAMBDA]] : tensor<3xf64>
   // CHECK-NEXT: %[[TB:.+]] = stablehlo.broadcast_in_dim %[[T]], dims = [] : (tensor<f64>) -> tensor<3xf64>
   // CHECK-NEXT: %[[D:.+]] = stablehlo.add %[[SL]], %[[TB]] : tensor<3xf64>
-  // Full solve chain: K^{-1} (y - mu) = Q diag(1/d) Q^T (y - mu).
-  // CHECK-NEXT: %[[INVD:.+]] = stablehlo.divide %[[ONES:.+]], %[[D]] : tensor<3xf64>
-  // CHECK-NEXT: %[[INVDB:.+]] = stablehlo.broadcast_in_dim %[[INVD]], dims = [0] : (tensor<3xf64>) -> tensor<3x1xf64>
-  // CHECK-NEXT: %[[SCALED:.+]] = stablehlo.multiply %[[INVDB]], %[[QTB]] : tensor<3x1xf64>
-  // CHECK-NEXT: %[[ALPHA:.+]] = stablehlo.dot_general %[[Q]], %[[SCALED]], contracting_dims = [1] x [0] : (tensor<3x3xf64>, tensor<3x1xf64>) -> tensor<3x1xf64>
   // CHECK-NEXT: %[[SQD:.+]] = stablehlo.sqrt %[[D]] : tensor<3xf64>
-  // CHECK-NEXT: %[[ALPHAV:.+]] = impulse.reshape %[[ALPHA]] : (tensor<3x1xf64>) -> tensor<3xf64>
-  // CHECK-NEXT: %[[DA:.+]] = stablehlo.multiply %[[DIFF]], %[[ALPHAV]] : tensor<3xf64>
-  // CHECK-NEXT: %[[MAHA:.+]] = stablehlo.dot_general %[[DA]], %[[ONES]], contracting_dims = [0] x [0] : (tensor<3xf64>, tensor<3xf64>) -> tensor<f64>
+  // CHECK-NEXT: %[[ISQD:.+]] = stablehlo.divide %[[ONES:.+]], %[[SQD]] : tensor<3xf64>
+  // CHECK-NEXT: %[[SQDD:.+]] = stablehlo.sqrt %[[D]] : tensor<3xf64>
+  // Quadratic form: (y - mu)^T K^{-1} (y - mu) = |diag(1/sqrt(d)) Q^T (y - mu)|^2.
+  // CHECK-NEXT: %[[ISQDB:.+]] = stablehlo.broadcast_in_dim %[[ISQD]], dims = [0] : (tensor<3xf64>) -> tensor<3x1xf64>
+  // CHECK-NEXT: %[[U:.+]] = stablehlo.multiply %[[ISQDB]], %[[QTB]] : tensor<3x1xf64>
+  // CHECK-NEXT: %[[MAHA:.+]] = stablehlo.dot_general %[[U]], %[[U]], contracting_dims = [0, 1] x [0, 1] : (tensor<3x1xf64>, tensor<3x1xf64>) -> tensor<f64>
   // CHECK-NEXT: %{{.+}} = stablehlo.multiply %[[MAHA]], %{{.+}} : tensor<f64>
-  // Masked diagonal U .* I -> diag(sqrt(d)), reduced to the diagonal with
-  // ones, then log and summed with ones: the log-determinant.
-  // CHECK-NEXT: %[[SQDB:.+]] = stablehlo.broadcast_in_dim %[[SQD]], dims = [0] : (tensor<3xf64>) -> tensor<3x3xf64>
-  // CHECK-NEXT: %[[MASKED:.+]] = stablehlo.multiply %[[SQDB]], %{{.+}} : tensor<3x3xf64>
-  // CHECK-NEXT: %[[DIAG:.+]] = stablehlo.dot_general %[[MASKED]], %[[ONES]], contracting_dims = [0] x [0] : (tensor<3x3xf64>, tensor<3xf64>) -> tensor<3xf64>
-  // CHECK-NEXT: %[[LOGD:.+]] = stablehlo.log %[[DIAG]] : tensor<3xf64>
+  // CHECK-NEXT: %[[LOGD:.+]] = stablehlo.log %[[SQDD]] : tensor<3xf64>
   // CHECK-NEXT: %{{.+}} = stablehlo.dot_general %[[LOGD]], %[[ONES]], contracting_dims = [0] x [0] : (tensor<3xf64>, tensor<3xf64>) -> tensor<f64>
 
   // LOOP-LABEL: func.func @main

@@ -1,8 +1,7 @@
 // RUN: enzymexlamlir-opt %s --inline-infer-regions --sicm | FileCheck %s
 // RUN: enzymexlamlir-opt %s --inline-infer-regions --sicm --expand-impulse | FileCheck %s --check-prefix=LOOP
 
-// K = L L^T. The chain L^{-T} (L^{-1} y) is K^{-1} y and is replaced by
-// Q diag(1/d) Q^T y. The chain L^{-1} (L^{-T} y) is (L^T L)^{-1} y, which is
+// L^{-1} (L^{-T} y) is (L^T L)^{-1} y, not K^{-1} y, so it keeps the factor.
 
 module {
   func.func private @halfnormal_sampler(%rng : tensor<2xui64>, %std : tensor<f64>)
@@ -88,13 +87,12 @@ module {
   // CHECK-NEXT: %[[SL:.+]] = stablehlo.multiply %[[SB]], %[[LAMBDA]] : tensor<3xf64>
   // CHECK-NEXT: %[[TB:.+]] = stablehlo.broadcast_in_dim %[[T]], dims = [] : (tensor<f64>) -> tensor<3xf64>
   // CHECK-NEXT: %[[D:.+]] = stablehlo.add %[[SL]], %[[TB]] : tensor<3xf64>
-  // CHECK-NEXT: %[[INVD:.+]] = stablehlo.divide %{{.+}}, %[[D]] : tensor<3xf64>
+  // CHECK-NEXT: %[[SQD:.+]] = stablehlo.sqrt %[[D]] : tensor<3xf64>
+  // CHECK-NEXT: %[[ISQD:.+]] = stablehlo.divide %{{.+}}, %[[SQD]] : tensor<3xf64>
   // CHECK-NEXT: %[[L:.+]] = stablehlo.cholesky %[[K]], lower = true : tensor<3x3xf64>
-  // L^{-T} (L^{-1} y) -> Q diag(1/d) Q^T y
-  // CHECK-NEXT: %[[B:.+]] = stablehlo.broadcast_in_dim %[[INVD]], dims = [0] : (tensor<3xf64>) -> tensor<3x1xf64>
-  // CHECK-NEXT: %[[M:.+]] = stablehlo.multiply %[[B]], %[[QTY]] : tensor<3x1xf64>
-  // CHECK-NEXT: %[[KY:.+]] = stablehlo.dot_general %[[Q]], %[[M]], contracting_dims = [1] x [0] : (tensor<3x3xf64>, tensor<3x1xf64>) -> tensor<3x1xf64>
-  // CHECK-NEXT: %{{.+}} = stablehlo.dot_general %[[YCOL]], %[[KY]], contracting_dims = [0, 1] x [0, 1] : (tensor<3x1xf64>, tensor<3x1xf64>) -> tensor<f64>
+  // CHECK-NEXT: %[[B:.+]] = stablehlo.broadcast_in_dim %[[ISQD]], dims = [0] : (tensor<3xf64>) -> tensor<3x1xf64>
+  // CHECK-NEXT: %[[U:.+]] = stablehlo.multiply %[[B]], %[[QTY]] : tensor<3x1xf64>
+  // CHECK-NEXT: %{{.+}} = stablehlo.dot_general %[[U]], %[[U]], contracting_dims = [0, 1] x [0, 1] : (tensor<3x1xf64>, tensor<3x1xf64>) -> tensor<f64>
   // CHECK-NEXT: %[[IN:.+]] = "stablehlo.triangular_solve"(%[[L]], %[[YCOL]]) <{left_side = true, lower = true, transpose_a = #stablehlo<transpose TRANSPOSE>, unit_diagonal = false}> : (tensor<3x3xf64>, tensor<3x1xf64>) -> tensor<3x1xf64>
   // CHECK-NEXT: %[[OUT:.+]] = "stablehlo.triangular_solve"(%[[L]], %[[IN]]) <{left_side = true, lower = true, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<3x3xf64>, tensor<3x1xf64>) -> tensor<3x1xf64>
   // CHECK-NEXT: %{{.+}} = stablehlo.dot_general %[[YCOL]], %[[OUT]], contracting_dims = [0, 1] x [0, 1] : (tensor<3x1xf64>, tensor<3x1xf64>) -> tensor<f64>

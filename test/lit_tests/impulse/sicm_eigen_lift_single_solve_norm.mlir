@@ -1,8 +1,6 @@
 // RUN: enzymexlamlir-opt %s --inline-infer-regions --sicm | FileCheck %s
 // RUN: enzymexlamlir-opt %s --inline-infer-regions --sicm --expand-impulse | FileCheck %s --check-prefix=LOOP
 
-// Both solves are replaced by W = Q diag(1/sqrt(d)) Q^T, W = O L^{-1} with O
-// orthogonal. The consumer check follows L^{-1} X through the product with
 module {
   func.func private @halfnormal_sampler(%rng : tensor<2xui64>, %std : tensor<f64>)
       -> (tensor<2xui64>, tensor<f64>) {
@@ -92,17 +90,13 @@ module {
   // CHECK-NEXT: %[[SL:.+]] = stablehlo.multiply %[[SB]], %[[LAMBDA]] : tensor<3xf64>
   // CHECK-NEXT: %[[TB:.+]] = stablehlo.broadcast_in_dim %[[T]], dims = [] : (tensor<f64>) -> tensor<3xf64>
   // CHECK-NEXT: %[[D:.+]] = stablehlo.add %[[SL]], %[[TB]] : tensor<3xf64>
-  // L^{-1} y -> Q diag(1/sqrt(d)) Q^T y
   // CHECK-NEXT: %[[SQD:.+]] = stablehlo.sqrt %[[D]] : tensor<3xf64>
   // CHECK-NEXT: %[[ISQD:.+]] = stablehlo.divide %{{.+}}, %[[SQD]] : tensor<3xf64>
-  // CHECK-NEXT: %[[B1:.+]] = stablehlo.broadcast_in_dim %[[ISQD]], dims = [0] : (tensor<3xf64>) -> tensor<3x1xf64>
-  // CHECK-NEXT: %[[M1:.+]] = stablehlo.multiply %[[B1]], %[[QTY]] : tensor<3x1xf64>
-  // CHECK-NEXT: %[[W:.+]] = stablehlo.dot_general %[[Q]], %[[M1]], contracting_dims = [1] x [0] : (tensor<3x3xf64>, tensor<3x1xf64>) -> tensor<3x1xf64>
   // CHECK-NEXT: %[[SQDD:.+]] = stablehlo.sqrt %[[D]] : tensor<3xf64>
-  // L^{-1} X -> Q diag(1/sqrt(d)) Q^T X
+  // CHECK-NEXT: %[[B1:.+]] = stablehlo.broadcast_in_dim %[[ISQD]], dims = [0] : (tensor<3xf64>) -> tensor<3x1xf64>
+  // CHECK-NEXT: %[[W:.+]] = stablehlo.multiply %[[B1]], %[[QTY]] : tensor<3x1xf64>
   // CHECK-NEXT: %[[B2:.+]] = stablehlo.broadcast_in_dim %[[ISQD]], dims = [0] : (tensor<3xf64>) -> tensor<3x2xf64>
-  // CHECK-NEXT: %[[M2:.+]] = stablehlo.multiply %[[B2]], %[[QTX]] : tensor<3x2xf64>
-  // CHECK-NEXT: %[[V:.+]] = stablehlo.dot_general %[[Q]], %[[M2]], contracting_dims = [1] x [0] : (tensor<3x3xf64>, tensor<3x2xf64>) -> tensor<3x2xf64>
+  // CHECK-NEXT: %[[V:.+]] = stablehlo.multiply %[[B2]], %[[QTX]] : tensor<3x2xf64>
   // CHECK-NEXT: %[[VB:.+]] = stablehlo.dot_general %[[V]], %{{.+}}, contracting_dims = [1] x [0] : (tensor<3x2xf64>, tensor<2xf64>) -> tensor<3xf64>
   // CHECK-NEXT: %[[VBCOL:.+]] = stablehlo.reshape %[[VB]] : (tensor<3xf64>) -> tensor<3x1xf64>
   // CHECK-NEXT: %[[R:.+]] = stablehlo.subtract %[[W]], %[[VBCOL]] : tensor<3x1xf64>
