@@ -63,8 +63,7 @@ echo "" >> third_party/stablehlo/temporary.patch
 echo "diff --git a/stablehlo/reference/InterpreterOps.cpp b/stablehlo/reference/InterpreterOps.cpp" >> third_party/stablehlo/temporary.patch
 echo "--- a/stablehlo/reference/InterpreterOps.cpp" >> third_party/stablehlo/temporary.patch
 echo "+++ b/stablehlo/reference/InterpreterOps.cpp" >> third_party/stablehlo/temporary.patch
-echo "@@ -172,6 +172,10 @@" >> third_party/stablehlo/temporary.patch
-echo " SmallVector<InterpreterValue> evalRunParallelOp(" >> third_party/stablehlo/temporary.patch
+echo "@@ -175,6 +175,9 @@ SmallVector<InterpreterValue> evalRunParallelOp(" >> third_party/stablehlo/temporary.patch
 echo "     ArrayRef<InterpreterValue> inputs, std::queue<StringAttr>& infeed," >> third_party/stablehlo/temporary.patch
 echo "     SmallVector<SmallVector<StringAttr>> programs, SymbolTable& symbolTable," >> third_party/stablehlo/temporary.patch
 echo "     InterpreterFallback* fallback) {" >> third_party/stablehlo/temporary.patch
@@ -72,9 +71,10 @@ echo "+#if (defined(_WIN32) || defined(__CYGWIN__))" >> third_party/stablehlo/te
 echo "+  llvm::report_fatal_error(\\"Op not supported on windows due to std::future\\");" >> third_party/stablehlo/temporary.patch
 echo "+#else" >> third_party/stablehlo/temporary.patch
 echo "   llvm::DefaultThreadPool threadPool;" >> third_party/stablehlo/temporary.patch
-echo "   SmallVector<std::shared_future<SmallVector<InterpreterValue>>> futures;" >> third_party/stablehlo/temporary.patch
-echo "@@ -207,6 +211,7 @@" >> third_party/stablehlo/temporary.patch
-echo "   for (auto& future : futures) results.append(future.get());" >> third_party/stablehlo/temporary.patch
+echo "   llvm::ThreadPoolTaskGroup taskGroup(threadPool);" >> third_party/stablehlo/temporary.patch
+echo " " >> third_party/stablehlo/temporary.patch
+echo "@@ -211,6 +214,7 @@ SmallVector<InterpreterValue> evalRunParallelOp(" >> third_party/stablehlo/temporary.patch
+echo "   for (auto& output : taskOutputs) results.append(output);" >> third_party/stablehlo/temporary.patch
 echo "   // TODO(#1725): Figure out how to test the outfeed queue." >> third_party/stablehlo/temporary.patch
 echo "   return results;" >> third_party/stablehlo/temporary.patch
 echo "+#endif" >> third_party/stablehlo/temporary.patch
