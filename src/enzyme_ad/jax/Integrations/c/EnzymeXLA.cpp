@@ -373,6 +373,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("chained_dynamic_broadcast_in_dim_canonicalization<16>");
   list.push_back("dynamic_broadcast_in_dim_all_dims_non_expanding<16>");
   list.push_back("noop_reduce_op_canon<16>");
+  list.push_back("reduce_const_prop<16>");
   list.push_back("noop_reduce_window_op_canon<16>");
   list.push_back("empty_reduce_op_canon<16>");
   list.push_back("dynamic_reshape_op_canon<16>");
@@ -699,6 +700,7 @@ static void addScatterGatherPasses(std::vector<std::string> &list,
   list.push_back("gather_elementwise");
   list.push_back("elementwise_gather");
   list.push_back("gather_of_scatter_simplify");
+  list.push_back("scatter_of_gather_identity");
   // const prop patterns
   list.push_back("gather_const_prop");
   list.push_back(passWithArg("scatter_const_fold", maxConstThreshold));

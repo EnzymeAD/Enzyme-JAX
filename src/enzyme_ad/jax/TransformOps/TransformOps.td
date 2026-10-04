@@ -1188,6 +1188,11 @@ def NoopReduceOpCanonPatterns : EnzymeHLOPatternOp<
   let patterns = ["NoopReduceOpCanon"];
 }
 
+def ReduceConstPropPatterns : EnzymeHLOPatternOp<
+    "reduce_const_prop"> {
+  let patterns = ["ReduceConstProp"];
+}
+
 def NoopReduceWindowOpCanonPatterns : EnzymeHLOPatternOp<
     "noop_reduce_window_op_canon"> {
   let patterns = ["NoopReduceWindowOpCanon"];
@@ -3345,6 +3350,11 @@ def ApplyWhileElementwiseReductionToReducePatterns : EnzymeHLOPatternOp<
 def ApplyGatherOfScatterSimplifyPatterns : EnzymeHLOPatternOp<
     "gather_of_scatter_simplify"> {
   let patterns = ["GatherOfScatterSimplify"];
+}
+
+def ApplyScatterOfGatherIdentityPatterns : EnzymeHLOPatternOp<
+    "scatter_of_gather_identity"> {
+  let patterns = ["ScatterOfGatherIdentity"];
 }
 
 def ApplyDeleteDimsBroadcastPatterns : EnzymeHLOPatternOp<

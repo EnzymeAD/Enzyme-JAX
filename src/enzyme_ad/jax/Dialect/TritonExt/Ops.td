@@ -52,7 +52,6 @@ def TritonCallOp : TritonExtOp<"call", [
     Variadic<AnyType>:$inputs,
     DefaultValuedStrAttr<StrAttr, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,
-    OptionalAttr<AnyAttr>:$result_layouts,
     OptionalAttr<DictArrayAttr>:$arg_attrs,
     OptionalAttr<DictArrayAttr>:$res_attrs,
     DefaultValuedOptionalAttr<
@@ -72,6 +71,7 @@ def TritonCallOp : TritonExtOp<"call", [
   }];
   // clang-format on
 
+  let hasVerifier = 1;
   let hasCanonicalizer = 1;
 }
 
