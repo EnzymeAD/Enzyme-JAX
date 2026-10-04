@@ -49,6 +49,7 @@
 #include "stablehlo/transforms/ChloDecompositionUtils.h"
 #include "stablehlo/transforms/PassUtils.h"
 #include "stablehlo/transforms/Passes.h"
+#include "stablehlo/transforms/StablehloRefineShapes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 #include "Interfaces/AutoDiffTypeInterface.h"
@@ -32248,6 +32249,9 @@ struct DynamicPadToPad
   using CheckedOpRewritePattern<stablehlo::DynamicPadOp,
                                 DynamicPadToPad>::CheckedOpRewritePattern;
 
+  // the result is dynamic until this pattern refines it
+  bool supportsDynamicShapes() { return true; }
+
   LogicalResult matchAndRewriteImpl(stablehlo::DynamicPadOp op,
                                     PatternRewriter &rewriter) const {
     auto operand = op.getOperand();
@@ -32262,6 +32266,27 @@ struct DynamicPadToPad
         !matchPattern(edgePaddingHigh, m_Constant(&edgePaddingHighAttr)) ||
         !matchPattern(interiorPadding, m_Constant(&interiorPaddingAttr)))
       return rewriter.notifyMatchFailure(op, "edge padding is not a constant");
+
+    // With the amounts constant the result's shape follows from the
+    // operand's; a dynamic result type is refined first, as shape refinement
+    // would have done had the amounts been constants then (a loop yielding
+    // such a pad to a static carried value is otherwise left alone by every
+    // pattern that reads the carried types).
+    auto operandTy = dyn_cast<RankedTensorType>(operand.getType());
+    if (operandTy && operandTy.hasStaticShape() &&
+        !cast<ShapedType>(op.getType()).hasStaticShape()) {
+      SmallVector<int64_t> lows, highs, interiors;
+      for (auto [vals, out] : {std::pair{edgePaddingLowAttr, &lows},
+                               std::pair{edgePaddingHighAttr, &highs},
+                               std::pair{interiorPaddingAttr, &interiors}})
+        for (const APInt &v : vals.getValues<APInt>())
+          out->push_back(v.getSExtValue());
+      SmallVector<Type> inferred;
+      if (failed(hlo::inferPadOp({}, operandTy, paddingValue.getType(), lows,
+                                 highs, interiors, inferred)) ||
+          failed(stablehlo::refineReturnTypes(rewriter, op, inferred)))
+        return failure();
+    }
 
     rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
         op, op.getType(), operand, paddingValue,
