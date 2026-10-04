@@ -5388,14 +5388,41 @@ struct ShiftRightLogicalSimplify final
   }
 };
 
-// A loop that carries the same value in two positions carries it once. Two
-// positions that start from one value and yield one value hold that value in
-// every iteration, so the later one's argument and result are the earlier
-// one's; dead result removal then drops the position. A raised kernel yields
-// such a pair whenever it keeps a copy of an accumulator it also reads.
+// A loop that carries the same value in two positions carries it once, and
+// so does one that carries a value and a function of it. Two positions that
+// start from v and f(v) and yield w and f(w), for one pure op f of a single
+// operand, hold v and f(v) in every iteration, so the later one's argument
+// and result are f of the earlier one's; dead result removal then drops the
+// position. A raised kernel yields such a pair whenever it keeps a copy of an
+// accumulator it also reads, or keeps it in a second layout (the transpose of
+// a gradient it also adds to).
 struct WhileDuplicateCarried final
     : CheckedOpRewritePattern<stablehlo::WhileOp, WhileDuplicateCarried> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // The pure op of one operand that computes `derived` from `base`, if any.
+  static Operation *functionOf(Value derived, Value base) {
+    Operation *op = derived.getDefiningOp();
+    if (!op || op->getNumOperands() != 1 || op->getNumResults() != 1 ||
+        op->getNumRegions() != 0 || op->getOperand(0) != base ||
+        !isMemoryEffectFree(op))
+      return nullptr;
+    return op;
+  }
+
+  // Whether two ops apply the same function to their operands.
+  static bool sameFunction(Operation *a, Operation *b) {
+    return OperationEquivalence::isEquivalentTo(
+        a, b, OperationEquivalence::ignoreValueEquivalence, nullptr,
+        OperationEquivalence::IgnoreLocations);
+  }
+
+  // f applied to base, at the rewriter's insertion point.
+  static Value apply(PatternRewriter &rewriter, Operation *f, Value base) {
+    IRMapping map;
+    map.map(f->getOperand(0), base);
+    return rewriter.clone(*f, map)->getResult(0);
+  }
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
                                     PatternRewriter &rewriter) const {
@@ -5407,17 +5434,38 @@ struct WhileDuplicateCarried final
     bool changed = false;
     for (unsigned j = 0, e = op.getNumOperands(); j < e; ++j) {
       for (unsigned i = 0; i < j; ++i) {
+        // the function f, or null when the positions hold the same value
+        Operation *f = nullptr;
         if (op->getOperand(i) != op->getOperand(j) ||
-            ret.getOperand(i) != ret.getOperand(j))
-          continue;
+            ret.getOperand(i) != ret.getOperand(j)) {
+          Operation *atStart = functionOf(op->getOperand(j), op->getOperand(i));
+          f = functionOf(ret.getOperand(j), ret.getOperand(i));
+          if (!atStart || !f || !sameFunction(atStart, f))
+            continue;
+        }
         // Already nothing reads the later position; removing it is the dead
         // result pattern's to do, and saying so here would never settle.
         if (body.getArgument(j).use_empty() &&
             cond.getArgument(j).use_empty() && op->getResult(j).use_empty())
           break;
-        rewriter.replaceAllUsesWith(body.getArgument(j), body.getArgument(i));
-        rewriter.replaceAllUsesWith(cond.getArgument(j), cond.getArgument(i));
-        rewriter.replaceAllUsesWith(op->getResult(j), op->getResult(i));
+        OpBuilder::InsertionGuard guard(rewriter);
+        if (!body.getArgument(j).use_empty()) {
+          rewriter.setInsertionPointToStart(&body);
+          Value v =
+              f ? apply(rewriter, f, body.getArgument(i)) : body.getArgument(i);
+          rewriter.replaceAllUsesWith(body.getArgument(j), v);
+        }
+        if (!cond.getArgument(j).use_empty()) {
+          rewriter.setInsertionPointToStart(&cond);
+          Value v =
+              f ? apply(rewriter, f, cond.getArgument(i)) : cond.getArgument(i);
+          rewriter.replaceAllUsesWith(cond.getArgument(j), v);
+        }
+        if (!op->getResult(j).use_empty()) {
+          rewriter.setInsertionPointAfter(op);
+          Value v = f ? apply(rewriter, f, op->getResult(i)) : op->getResult(i);
+          rewriter.replaceAllUsesWith(op->getResult(j), v);
+        }
         changed = true;
         break;
       }
