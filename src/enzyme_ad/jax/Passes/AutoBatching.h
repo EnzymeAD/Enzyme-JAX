@@ -227,6 +227,24 @@ private:
                                  mlir::stablehlo::WhileOp whileOp) const;
 };
 
+// A constant-trip loop whose carried values are reductions (add, multiply,
+// max, min) of values of the iteration, or first-order linear recurrences
+// whose addend reads such reductions, each possibly kept back where a value
+// of the iteration says so, is replaced by its closed form: reduces, and
+// running products for the recurrences, over every iteration's values at
+// once.
+struct WhileRecurrenceToReduce
+    : public mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::WhileOp,
+                                                   WhileRecurrenceToReduce> {
+  using Base = mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::WhileOp,
+                                                     WhileRecurrenceToReduce>;
+  using Base::Base;
+
+  mlir::LogicalResult
+  matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
+                      mlir::PatternRewriter &rewriter) const;
+};
+
 struct WhileElementwiseReductionToReduce
     : public mlir::enzyme::CheckedOpRewritePattern<
           mlir::stablehlo::WhileOp, WhileElementwiseReductionToReduce> {
