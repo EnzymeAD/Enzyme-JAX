@@ -19,6 +19,8 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/MathExtras.h"
 
+#include "isl/isl-noexceptions.h"
+#include "isl/options.h"
 #include <algorithm>
 #include <llvm/ADT/STLExtras.h>
 #include <numeric>
@@ -3415,194 +3417,98 @@ chainAccesses(ArrayRef<Value> chain,
 
 // One element of an access: iteration k touches the `window` elements from
 // scale * k + offset, or, for an element read from a table, from at[k].
-struct ElementAccess {
-  int64_t scale, offset, window;
-  bool write;
-  SmallVector<int64_t> at;
-};
-
-static __int128 floorDiv(__int128 a, __int128 b) {
-  __int128 q = a / b;
-  return (a % b != 0 && ((a < 0) != (b < 0))) ? q - 1 : q;
-}
-static __int128 ceilDiv(__int128 a, __int128 b) { return -floorDiv(-a, b); }
-
-// The m with lo <= c + d * m <= hi, as an interval [mLo, mHi]; every m when
-// d is zero and c lies in [lo, hi], none when it does not.
-static bool stepRange(__int128 c, __int128 d, __int128 lo, __int128 hi,
-                      __int128 &mLo, __int128 &mHi) {
-  if (d == 0)
-    return lo <= c && c <= hi;
-  __int128 a = d > 0 ? ceilDiv(lo - c, d) : ceilDiv(hi - c, d);
-  __int128 b = d > 0 ? floorDiv(hi - c, d) : floorDiv(lo - c, d);
-  mLo = std::max(mLo, a);
-  mHi = std::min(mHi, b);
-  return mLo <= mHi;
+// One disjunct of the elements an access touches: the iterations `iters`,
+// each touching `window` elements from scale * k + offset (+ b).
+static void printTouched(llvm::raw_ostream &os, StringRef iters, int64_t scale,
+                         int64_t offset, bool base, int64_t window) {
+  std::string start = std::to_string(scale) + " * k + " +
+                      std::to_string(offset) + (base ? " + b" : "");
+  os << "[k] -> [p] : " << iters << " and " << start << " <= p < " << start
+     << " + " << window << "; ";
 }
 
-// Whether a * k - b * k2 = t for some k != k2 in [0, n).
-static bool solvesApart(int64_t a, int64_t b, int64_t t, int64_t n) {
-  if (a == 0 && b == 0)
-    return t == 0;
-  if (a == 0 || b == 0) {
-    // one side is fixed, the other free to be any other iteration
-    int64_t c = a == 0 ? -b : a;
-    return t % c == 0 && t / c >= 0 && t / c < n;
-  }
-  // extended Euclid on |a|, |b|: x * a + y * b = g
-  __int128 r0 = a, r1 = b, x0 = 1, x1 = 0, y0 = 0, y1 = 1;
-  while (r1 != 0) {
-    __int128 q = floorDiv(r0, r1);
-    std::tie(r0, r1) = std::make_tuple(r1, r0 - q * r1);
-    std::tie(x0, x1) = std::make_tuple(x1, x0 - q * x1);
-    std::tie(y0, y1) = std::make_tuple(y1, y0 - q * y1);
-  }
-  __int128 g = r0;
-  if (t % g != 0)
-    return false;
-  // a * x0 + b * y0 = g, so k = x0 * t / g, k2 = -y0 * t / g solves it, and
-  // so does every k + (b / g) * m, k2 + (a / g) * m
-  __int128 k = x0 * (t / g), k2 = -y0 * (t / g), dk = b / g, dk2 = a / g;
-  __int128 mLo = std::numeric_limits<int64_t>::min(),
-           mHi = std::numeric_limits<int64_t>::max();
-  if (!stepRange(k, dk, 0, n - 1, mLo, mHi) ||
-      !stepRange(k2, dk2, 0, n - 1, mLo, mHi))
-    return false;
-  // k - k2 vanishes for at most one m unless it never changes
-  __int128 diff = k - k2, ddiff = dk - dk2;
-  if (ddiff == 0)
-    return diff != 0;
-  if (mHi > mLo)
-    return true;
-  return diff + ddiff * mLo != 0;
-}
-
-// Whether two affine elements meet in two different iterations: some
-// k != k2 has x's window from x.scale * k + x.offset overlap y's window from
-// y.scale * k2 + y.offset. Windows [X, X + x.window) and [Y, Y + y.window)
-// overlap when X - Y lies in (-x.window, y.window), a few values, each a
-// linear equation in k and k2.
-static bool affineMeet(const ElementAccess &x, const ElementAccess &y,
-                       int64_t n) {
-  for (int64_t d = 1 - x.window; d < y.window; ++d) {
-    // x.scale * k - y.scale * k2 = y.offset - x.offset + d
-    int64_t t;
-    if (llvm::SubOverflow(y.offset, x.offset, t) || llvm::AddOverflow(t, d, t))
-      return true;
-    if (solvesApart(x.scale, y.scale, t, n))
-      return true;
-  }
-  return false;
-}
-
-// Whether a table element meets an affine one in two different iterations.
-static bool tableMeetsAffine(const ElementAccess &x, const ElementAccess &y,
-                             int64_t n) {
-  for (int64_t k = 0; k < n; ++k) {
-    // y's window starts in (x.at[k] - y.window, x.at[k] + x.window)
-    __int128 lo = (__int128)x.at[k] - y.offset - y.window + 1,
-             hi = (__int128)x.at[k] - y.offset + x.window - 1;
-    __int128 mLo = 0, mHi = n - 1;
-    if (y.scale == 0) {
-      if (lo <= 0 && 0 <= hi)
-        return true; // every other iteration
+// The elements each iteration k of the loop touches through `idx`, as the
+// isl map { [k] -> [p] } over the parameter b, the loop-invariant base the
+// indices share: one disjunct per element of the index, and per iteration too
+// for an index that reads a table.
+static std::optional<std::string> touchedElements(const SymIndex &idx,
+                                                  int64_t window, int64_t n) {
+  std::string out = "[b] -> { ";
+  llvm::raw_string_ostream os(out);
+  std::string all = "0 <= k < " + std::to_string(n);
+  for (auto [e, off] : llvm::enumerate(idx.offsets)) {
+    if (!idx.table) {
+      printTouched(os, all, idx.scale, off, (bool)idx.base, window);
       continue;
     }
-    if (!stepRange(0, y.scale, lo, hi, mLo, mHi))
-      continue;
-    if (mHi > mLo || mLo != k)
-      return true;
+    for (int64_t k = 0; k < n; ++k) {
+      __int128 v = (__int128)idx.table->mult * tableAt(*idx.table, k, e) +
+                   (__int128)idx.scale * k + off;
+      if (v < std::numeric_limits<int64_t>::min() / 2 ||
+          v > std::numeric_limits<int64_t>::max() / 2)
+        return std::nullopt;
+      printTouched(os, "k = " + std::to_string(k), 0, v, (bool)idx.base,
+                   window);
+    }
   }
-  return false;
-}
-
-// Whether table elements meet in two different iterations: the windows they
-// touch, by start, each against the ones starting before it ends.
-static bool tablesMeet(ArrayRef<const ElementAccess *> xs, int64_t n) {
-  struct Span {
-    int64_t start, end, iter;
-    bool write;
-  };
-  SmallVector<Span> spans;
-  for (const ElementAccess *x : xs)
-    for (int64_t k = 0; k < n; ++k)
-      spans.push_back({x->at[k], x->at[k] + x->window, k, x->write});
-  llvm::sort(spans,
-             [](const Span &a, const Span &b) { return a.start < b.start; });
-  for (size_t i = 0; i < spans.size(); ++i)
-    for (size_t j = i + 1; j < spans.size() && spans[j].start < spans[i].end;
-         ++j)
-      if (spans[i].iter != spans[j].iter && (spans[i].write || spans[j].write))
-        return true;
-  return false;
+  os << "}";
+  return out;
 }
 
 // Whether no two iterations of the loop meet through the accesses of one
-// chain, decided on the indices' symbolic form: no element of one iteration
-// meets one of another unless both only read. An access that clamps must stay
+// chain, decided by isl on the indices' symbolic form: no element one
+// iteration writes is touched by another. An access that clamps must stay
 // inside the buffer, a loop-invariant base anywhere in its range.
-static LogicalResult chainDisjoint(SymbolicIndices &sym,
+static LogicalResult chainDisjoint(isl::ctx ctx, SymbolicIndices &sym,
                                    ArrayRef<ChainAccess> accesses, int64_t n) {
-  std::optional<Value> base;
-  SmallVector<ElementAccess> elems;
+  std::vector<SymIndex> indices;
   for (const ChainAccess &a : accesses) {
     auto idx = sym.eval(a.getIndex());
     if (!idx)
       return failure();
-    if (!base)
-      base = idx->base;
-    else if (*base != idx->base)
+    if (!indices.empty() && indices.front().base != idx->base)
       return failure(); // shifts that need not cancel
-    int64_t lo = 0, hi = 0;
-    if (idx->base) {
-      auto range = getProvableIntegerRange(idx->base);
-      if (range.first.getSignificantBits() > 64 ||
-          range.second.getSignificantBits() > 64)
-        return failure();
-      lo = range.first.getSExtValue();
-      hi = range.second.getSExtValue();
-    }
-    int64_t dim = cast<RankedTensorType>(a.getBuffer().getType()).getDimSize(0);
-    for (auto [e, off] : llvm::enumerate(idx->offsets)) {
-      ElementAccess x{idx->scale, off, a.getWindow(), a.writes(), {}};
-      // the first and last iteration bound every other's
-      __int128 first = off, last = (__int128)idx->scale * (n - 1) + off;
-      __int128 low = std::min(first, last), high = std::max(first, last);
-      if (idx->table) {
-        low = std::numeric_limits<int64_t>::max();
-        high = std::numeric_limits<int64_t>::min();
-        for (int64_t k = 0; k < n; ++k) {
-          __int128 v = (__int128)idx->table->mult * tableAt(*idx->table, k, e) +
-                       (__int128)idx->scale * k + off;
-          if (v < std::numeric_limits<int64_t>::min() / 2 ||
-              v > std::numeric_limits<int64_t>::max() / 2)
-            return failure();
-          x.at.push_back(v);
-          low = std::min(low, v);
-          high = std::max(high, v);
-        }
-      }
-      if (a.clamps() && (low + lo < 0 || high + hi + a.getWindow() > dim))
-        return failure();
-      elems.push_back(std::move(x));
-    }
+    indices.push_back(std::move(*idx));
   }
-  if (n <= 1)
-    return success(); // no two iterations to meet
-  SmallVector<const ElementAccess *> tables;
-  for (const ElementAccess &x : elems)
-    if (!x.at.empty())
-      tables.push_back(&x);
-  if (tablesMeet(tables, n))
-    return failure();
-  for (const ElementAccess &x : elems)
-    for (const ElementAccess &y : elems) {
-      if ((!x.write && !y.write) || !y.at.empty())
-        continue;
-      if (x.at.empty() ? affineMeet(x, y, n) : tableMeetsAffine(x, y, n))
+  Value base = indices.front().base;
+  isl::set bases(ctx, "[b] -> { : }");
+  if (base) {
+    auto range = getProvableIntegerRange(base);
+    if (range.first.getSignificantBits() > 64 ||
+        range.second.getSignificantBits() > 64)
+      return failure();
+    bases = isl::set(
+        ctx, "[b] -> { : " + std::to_string(range.first.getSExtValue()) +
+                 " <= b <= " + std::to_string(range.second.getSExtValue()) +
+                 " }");
+  }
+  isl::space iters = isl::space(ctx, 1, 1).set_dim_id(
+      isl::dim::param, 0, isl::id::alloc(ctx, "b", nullptr));
+  isl::map touched = isl::map::empty(iters.map_from_set()), written = touched;
+  for (auto [a, idx] : llvm::zip_equal(accesses, indices)) {
+    auto text = touchedElements(idx, a.getWindow(), n);
+    llvm::errs() << "\n";
+    if (!text)
+      return failure();
+    isl::map m = isl::map(ctx, *text).intersect_params(bases).coalesce();
+    if (m.is_null())
+      return failure();
+    if (a.clamps()) {
+      int64_t dim =
+          cast<RankedTensorType>(a.getBuffer().getType()).getDimSize(0);
+      isl::set inside(ctx,
+                      "[b] -> { [p] : 0 <= p < " + std::to_string(dim) + " }");
+      if (!m.range().is_subset(inside).is_true())
         return failure();
     }
-  return success();
+    touched = touched.unite(m);
+    if (a.writes())
+      written = written.unite(m);
+  }
+  // pairs of iterations k -> k2 where k writes an element k2 touches
+  isl::map meet = written.coalesce().apply_range(touched.coalesce().reverse());
+  isl::map apart = isl::map::lex_lt(iters).unite(isl::map::lex_gt(iters));
+  return success(meet.intersect(apart).is_empty().is_true());
 }
 
 // Iterations of a loop that is not tagged parallel may still run at once when
@@ -3620,18 +3526,25 @@ static LogicalResult proveIterationsIndependent(
     const DenseMap<OpOperand *, unsigned> &chainLinks) {
   auto affine = info.getAffineIndexInfo();
   SymbolicIndices sym{whileOp.getBody(), affine, iv, start, step, numIters};
-  bool any = false;
+  isl_ctx *ctx = isl_ctx_alloc();
+  isl_options_set_on_error(ctx, ISL_ON_ERROR_CONTINUE);
+  bool any = false, apart = true;
   for (auto &[root, chain] : chains) {
     SmallVector<ChainAccess> accesses;
-    if (failed(chainAccesses(chain, chainLinks, accesses)))
-      return failure();
+    if (failed(chainAccesses(chain, chainLinks, accesses))) {
+      apart = false;
+      break;
+    }
     if (accesses.empty())
       continue;
     any = true;
-    if (failed(chainDisjoint(sym, accesses, numIters)))
-      return failure();
+    if (failed(chainDisjoint(ctx, sym, accesses, numIters))) {
+      apart = false;
+      break;
+    }
   }
-  return success(any);
+  isl_ctx_free(ctx);
+  return success(any && apart);
 }
 
 } // namespace
