@@ -3038,6 +3038,8 @@ struct ParallelWhileBatcher {
   int64_t numIters;
   DenseSet<Value> batched;
   DenseMap<Value, unsigned> chainRoot; // buffer value -> carried arg number
+  // the operand a link of a chain takes the buffer in as -> carried arg number
+  DenseMap<OpOperand *, unsigned> chainLinks;
   IRMapping map; // body value -> value emitted in its place
   DenseMap<Operation *, unsigned> innerIv; // nested while -> its iv arg
   Region *loopBody;                        // the parallel loop's body
@@ -3049,10 +3051,17 @@ struct ParallelWhileBatcher {
         loopBody(loopBody) {}
 
   bool isBatched(Value v) const { return batched.contains(v); }
-  bool isChainLink(Operation *op) const {
-    return isa<stablehlo::ScatterOp, stablehlo::DynamicUpdateSliceOp>(op) &&
-           chainRoot.count(op->getOperand(0));
+  // The operand a write into a carried buffer takes the buffer in as, or
+  // null when `op` is not a link of a chain.
+  OpOperand *chainLinkOperand(Operation *op) const {
+    if (isa<stablehlo::WhileOp>(op))
+      return nullptr;
+    for (OpOperand &o : op->getOpOperands())
+      if (chainLinks.count(&o))
+        return &o;
+    return nullptr;
   }
+  bool isChainLink(Operation *op) const { return chainLinkOperand(op); }
   static int64_t invariantElements(Value v) {
     auto t = dyn_cast<RankedTensorType>(v.getType());
     return t && t.hasStaticShape() ? t.getNumElements() : -1;
@@ -3096,41 +3105,42 @@ struct ParallelWhileBatcher {
   LogicalResult analyzeChain(BlockArgument arg, Operation *ret, unsigned k) {
     if (auto it = chainRoot.find(arg); it != chainRoot.end())
       return success(it->second == k);
-    Value yielded = ret->getOperand(arg.getArgNumber());
+    OpOperand &yield = ret->getOpOperand(arg.getArgNumber());
     SmallVector<Value> chain{arg};
-    for (Value cur = yielded; cur != arg;) {
+    SmallVector<OpOperand *> links;
+    for (Value cur = yield.get(); cur != arg;) {
       Operation *link = cur.getDefiningOp();
-      Value prev;
+      OpOperand *in;
       if (auto sc = dyn_cast_or_null<stablehlo::ScatterOp>(link)) {
         if (sc.getInputs().size() != 1)
           return failure();
-        prev = sc.getInputs()[0];
+        in = &sc->getOpOperand(0);
       } else if (auto dus =
                      dyn_cast_or_null<stablehlo::DynamicUpdateSliceOp>(link)) {
-        prev = dus.getOperand();
+        in = &dus->getOpOperand(0);
       } else if (auto w = dyn_cast_or_null<stablehlo::WhileOp>(link)) {
-        prev = w->getOperand(cast<OpResult>(cur).getResultNumber());
+        in = &w->getOpOperand(cast<OpResult>(cur).getResultNumber());
       } else {
         return failure();
       }
       if (chainRoot.count(cur))
         return failure();
       chain.push_back(cur);
-      cur = prev;
+      links.push_back(in);
+      cur = in->get();
     }
     for (Value v : chain)
       chainRoot[v] = k;
+    for (OpOperand *in : links)
+      chainLinks[in] = k;
+    // Every use of a state of the buffer is the link that makes the next
+    // state, a read of some of its elements, or the yield of the last one.
     for (Value v : chain)
-      for (Operation *user : v.getUsers()) {
-        // The next write: the buffer goes in as the operand whose result
-        // continues the chain.
-        bool write = false;
-        for (auto [i, o] : llvm::enumerate(user->getOperands()))
-          write |= o == v && i < user->getNumResults() &&
-                   chainRoot.count(user->getResult(i));
+      for (OpOperand &use : v.getUses()) {
+        Operation *user = use.getOwner();
         bool read = isa<stablehlo::GatherOp, stablehlo::DynamicSliceOp>(user) &&
-                    user->getOperand(0) == v;
-        if (!write && !read && !(user == ret && v == yielded))
+                    use.getOperandNumber() == 0;
+        if (!chainLinks.count(&use) && !read && &use != &yield)
           return failure();
       }
     return success();
@@ -3364,9 +3374,10 @@ struct ParallelWhileBatcher {
       // buffer written into, or the operand a dynamic_slice or gather reads, is
       // one tensor that every iteration shares.
       Value shared;
-      if (isChainLink(&op) ||
-          (isa<stablehlo::DynamicSliceOp, stablehlo::GatherOp>(&op) &&
-           !isBatched(op.getOperand(0))))
+      if (OpOperand *link = chainLinkOperand(&op))
+        shared = link->get();
+      else if (isa<stablehlo::DynamicSliceOp, stablehlo::GatherOp>(&op) &&
+               !isBatched(op.getOperand(0)))
         shared = op.getOperand(0);
       IRMapping bm;
       for (Value v : op.getOperands())
