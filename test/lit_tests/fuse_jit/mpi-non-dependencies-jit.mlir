@@ -1,7 +1,6 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-mpi{backend=cpu},fuse-jit)" %s | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-mpi{backend=cpu},fuse-jit{strategy=generalized})" %s | FileCheck %s
 
-// Lower five independent MPI calls, then fuse them into one JIT while
-// preserving call order, request buffers, and output aliases.
+// Lower five independent MPI calls, then fuse them into one JIT 
 
 module {
   func.func @mpi_order(%sendbuf: tensor<5xi32>, %recvbuf: tensor<5xi32> {enzymexla.memory_effects = ["read", "write", "allocate", "free"], tf.aliasing_output = 0 : i32}, %control: tensor<1xi32>) -> tensor<5xi32> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
@@ -10,11 +9,10 @@ module {
     %tag_a = stablehlo.constant dense<10> : tensor<i32>
     %tag_b = stablehlo.constant dense<20> : tensor<i32>
     %tag_control = stablehlo.constant dense<30> : tensor<i32>
-    %send_request = enzymexla.mpi.isend(%sendbuf, %count, %peer, %tag_a) {datatype = #enzymexla.datatype<MPI_INT>} : (tensor<5xi32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<i32>
-    %outbuf, %recv_request = enzymexla.mpi.irecv(%recvbuf, %count, %peer, %tag_b) {datatype = #enzymexla.datatype<MPI_INT>} : (tensor<5xi32>, tensor<i32>, tensor<i32>, tensor<i32>) -> (tensor<5xi32>, tensor<i32>)
+    %send_request = enzymexla.mpi.isend(%sendbuf, %count, %peer, %tag_a) <{datatype = #enzymexla.datatype<MPI_INT>}> : (tensor<5xi32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<i32>
+    %outbuf, %recv_request = enzymexla.mpi.irecv(%recvbuf, %count, %peer, %tag_b) <{datatype = #enzymexla.datatype<MPI_INT>}> : (tensor<5xi32>, tensor<i32>, tensor<i32>, tensor<i32>) -> (tensor<5xi32>, tensor<i32>)
     enzymexla.mpi.wait(%send_request) : tensor<i32>
-    // Reuse peer=1 as the control message count (one element) and destination.
-    enzymexla.mpi.send(%control, %peer, %peer, %tag_control) {datatype = #enzymexla.datatype<MPI_INT>} : tensor<1xi32>, tensor<i32>, tensor<i32>, tensor<i32>
+    enzymexla.mpi.send(%control, %peer, %peer, %tag_control) <{datatype = #enzymexla.datatype<MPI_INT>}> : tensor<1xi32>, tensor<i32>, tensor<i32>, tensor<i32>
     enzymexla.mpi.wait(%recv_request) : tensor<i32>
     return %outbuf : tensor<5xi32>
   }
@@ -57,6 +55,8 @@ module {
 // CHECK-DAG: %[[TAG_B:.*]] = stablehlo.constant dense<20> : tensor<i32>
 // CHECK-DAG: %[[CONTROL_TAG:.*]] = stablehlo.constant dense<30> : tensor<i32>
 // CHECK-NOT: enzymexla.jit_call
-// CHECK: %[[MPI:.*]]:3 = enzymexla.jit_call @fused__enzymexla_wrapper_MPI_Isend_MPI_INT_enzymexla_wrapper_MPI_Irecv_MPI_INT_enzymexla_wrapper_MPI_Wait_enzymexla_wrapper_MPI_Send_MPI_INT_enzymexla_wrapper_MPI_Wait (%[[SEND]], %[[COUNT]], %[[PEER]], %[[TAG_A]], %{{[^ ,]+}}, %[[RECV]], %[[TAG_B]], %{{[^ ,]+}}, %[[CONTROL]], %[[CONTROL_TAG]]) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 5, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 4, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 7, operand_tuple_indices = []>]} : {{.*}} -> (tensor<5xi32>, tensor<i32>, tensor<i32>)
+// CHECK: %[[MPI:.*]]:3 = enzymexla.jit_call @fused__enzymexla_wrapper_MPI_Isend_MPI_INT_enzymexla_wrapper_MPI_Irecv_MPI_INT_enzymexla_wrapper_MPI_Wait_enzymexla_wrapper_MPI_Send_MPI_INT_enzymexla_wrapper_MPI_Wait (%[[SEND]], %[[COUNT]], %[[PEER]], %[[TAG_A]], %{{[^ ,]+}}, %[[RECV]], %[[TAG_B]], %{{[^ ,]+}}, %[[CONTROL]], %[[CONTROL_TAG]])
+// CHECK-SAME: output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 5, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 4, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 7, operand_tuple_indices = []>]
+// CHECK-SAME: : {{.*}} -> (tensor<5xi32>, tensor<i32>, tensor<i32>)
 // CHECK-NEXT: return %[[MPI]]#0 : tensor<5xi32>
 // CHECK-NEXT: }
