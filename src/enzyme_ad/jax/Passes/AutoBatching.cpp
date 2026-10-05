@@ -3572,7 +3572,37 @@ static bool sliceInPlace(stablehlo::SliceOp sl, Operation *user) {
   return true;
 }
 
-// The source a concatenate rebuilds: the one value its in-place slices read.
+// An earlier concatenate of the same shape along the same dimension whose
+// leading pieces are `cc`'s, the most of them: `cc` then holds those places
+// as they were there. A buffer rebuilt slot by slot ends in a concatenate of
+// every slot, none of them a slice in place, that differs from the one
+// before it only in its last pieces.
+static Value sharedPrefixSource(stablehlo::ConcatenateOp cc) {
+  stablehlo::ConcatenateOp best;
+  size_t bestShared = 0;
+  for (Operation *user : cc.getOperand(0).getUsers()) {
+    auto d = dyn_cast<stablehlo::ConcatenateOp>(user);
+    if (!d || d == cc || d.getDimension() != cc.getDimension() ||
+        d.getType() != cc.getType() || d->getBlock() != cc->getBlock() ||
+        !d->isBeforeInBlock(cc))
+      continue;
+    size_t shared = 0;
+    while (shared < d.getNumOperands() && shared < cc.getNumOperands() &&
+           d.getOperand(shared) == cc.getOperand(shared))
+      ++shared;
+    if (shared == d.getNumOperands())
+      continue;
+    if (shared > bestShared ||
+        (shared == bestShared && best && best->isBeforeInBlock(d))) {
+      best = d;
+      bestShared = shared;
+    }
+  }
+  return best ? best.getResult() : Value();
+}
+
+// The source a concatenate rebuilds: the one value its in-place slices read,
+// or, with no slice in place, the concatenate its leading pieces come from.
 static Value concatSource(stablehlo::ConcatenateOp cc) {
   Value src;
   for (Value piece : cc.getOperands())
@@ -3582,7 +3612,7 @@ static Value concatSource(stablehlo::ConcatenateOp cc) {
         return nullptr;
       src = sl.getOperand();
     }
-  return src;
+  return src ? src : sharedPrefixSource(cc);
 }
 
 // A slot of a carried buffer that every iteration adds to: a piece of a
@@ -4773,6 +4803,14 @@ static LogicalResult proveIterationsIndependent(
             priv = privateRoot.find(buffer);
             root = chainRoot.find(buffer);
             break;
+          }
+        // with no slice in place, a link of the chain rebuilds the
+        // concatenate its leading pieces come from
+        if (priv == privateRoot.end() && root == chainRoot.end() &&
+            chainRoot.count(cc.getResult()))
+          if (Value src = concatSource(cc); src && chainRoot.count(src)) {
+            buffer = src;
+            root = chainRoot.find(buffer);
           }
       } else if (auto pad = dyn_cast<stablehlo::PadOp>(&op)) {
         if (passThrough.contains(pad.getOperand().getDefiningOp())) {
