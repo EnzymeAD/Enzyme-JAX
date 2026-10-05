@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt="enable_auto_batching_passes=true" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt="enable_auto_batching_passes=true parallel_while_to_batched_scatter_passes=false" | FileCheck %s
 
 module {
   func.func @main(%arg0: tensor<3x2xf64>, %arg1: tensor<3x2xf64>, %arg2: tensor<3x2xf64>) -> (tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<3x2xf64>) {
