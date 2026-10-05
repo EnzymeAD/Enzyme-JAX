@@ -701,3 +701,67 @@ func.func @inner_loop(%x: tensor<8xf64>, %y: tensor<24xf64>) -> tensor<24xf64> {
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return %6#2 : tensor<24xf64>
 // CHECK-NEXT: }
+
+// -----
+
+// The buffer goes into a nested loop twice: one copy is written, the other
+// handed back unchanged and read after it. Only the first use is a link of
+// the chain; the second is neither a link, nor a read of elements, nor the
+// yield, so the loop is kept rather than batch a copy no chain follows.
+func.func @forked_buffer(%v: tensor<4xf64>, %buf: tensor<4xf64>, %out: tensor<4xf64>) -> (tensor<4xf64>, tensor<4xf64>) {
+  %c0 = stablehlo.constant dense<0> : tensor<i64>
+  %c1 = stablehlo.constant dense<1> : tensor<i64>
+  %c2 = stablehlo.constant dense<2> : tensor<i64>
+  %c3 = stablehlo.constant dense<3> : tensor<i64>
+  %c4 = stablehlo.constant dense<4> : tensor<i64>
+  %0:3 = stablehlo.while(%i = %c0, %b = %buf, %o = %out) : tensor<i64>, tensor<4xf64>, tensor<4xf64> attributes {enzymexla.parallel}
+   cond {
+    %c = stablehlo.compare LT, %i, %c4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+    stablehlo.return %c : tensor<i1>
+  } do {
+    %x1 = stablehlo.dynamic_slice %v, %i, sizes = [1] : (tensor<4xf64>, tensor<i64>) -> tensor<1xf64>
+    %1:3 = stablehlo.while(%j = %c0, %w = %b, %keep = %b) : tensor<i64>, tensor<4xf64>, tensor<4xf64>
+     cond {
+      %g = stablehlo.compare LT, %j, %c2 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+      stablehlo.return %g : tensor<i1>
+    } do {
+      %w1 = stablehlo.dynamic_update_slice %w, %x1, %i : (tensor<4xf64>, tensor<1xf64>, tensor<i64>) -> tensor<4xf64>
+      %jn = stablehlo.add %j, %c1 : tensor<i64>
+      stablehlo.return %jn, %w1, %keep : tensor<i64>, tensor<4xf64>, tensor<4xf64>
+    }
+    %r = stablehlo.dynamic_slice %1#2, %i, sizes = [1] : (tensor<4xf64>, tensor<i64>) -> tensor<1xf64>
+    %o1 = stablehlo.dynamic_update_slice %o, %r, %i : (tensor<4xf64>, tensor<1xf64>, tensor<i64>) -> tensor<4xf64>
+    %ni = stablehlo.add %i, %c1 : tensor<i64>
+    stablehlo.return %ni, %1#1, %o1 : tensor<i64>, tensor<4xf64>, tensor<4xf64>
+  }
+  return %0#1, %0#2 : tensor<4xf64>, tensor<4xf64>
+}
+
+// CHECK:  func.func @forked_buffer(%arg0: tensor<4xf64>, %arg1: tensor<4xf64>, %arg2: tensor<4xf64>) -> (tensor<4xf64>, tensor<4xf64>) {
+// CHECK-NEXT:   %c = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:   %c_0 = stablehlo.constant dense<1> : tensor<i64>
+// CHECK-NEXT:   %c_1 = stablehlo.constant dense<2> : tensor<i64>
+// CHECK-NEXT:   %c_2 = stablehlo.constant dense<4> : tensor<i64>
+// CHECK-NEXT:   %0:3 = stablehlo.while(%iterArg = %c, %iterArg_3 = %arg1, %iterArg_4 = %arg2) : tensor<i64>, tensor<4xf64>, tensor<4xf64> attributes {enzymexla.parallel}
+// CHECK-NEXT:   cond {
+// CHECK-NEXT:     %1 = stablehlo.compare LT, %iterArg, %c_2 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:     stablehlo.return %1 : tensor<i1>
+// CHECK-NEXT:   } do {
+// CHECK-NEXT:     %1 = stablehlo.dynamic_slice %arg0, %iterArg, sizes = [1] : (tensor<4xf64>, tensor<i64>) -> tensor<1xf64>
+// CHECK-NEXT:     %2:3 = stablehlo.while(%iterArg_5 = %c, %iterArg_6 = %iterArg_3, %iterArg_7 = %iterArg_3) : tensor<i64>, tensor<4xf64>, tensor<4xf64>
+// CHECK-NEXT:     cond {
+// CHECK-NEXT:       %6 = stablehlo.compare LT, %iterArg_5, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:       stablehlo.return %6 : tensor<i1>
+// CHECK-NEXT:     } do {
+// CHECK-NEXT:       %6 = stablehlo.dynamic_update_slice %iterArg_6, %1, %iterArg : (tensor<4xf64>, tensor<1xf64>, tensor<i64>) -> tensor<4xf64>
+// CHECK-NEXT:       %7 = stablehlo.add %iterArg_5, %c_0 : tensor<i64>
+// CHECK-NEXT:       stablehlo.return %7, %6, %iterArg_7 : tensor<i64>, tensor<4xf64>, tensor<4xf64>
+// CHECK-NEXT:     }
+// CHECK-NEXT:     %3 = stablehlo.dynamic_slice %2#2, %iterArg, sizes = [1] : (tensor<4xf64>, tensor<i64>) -> tensor<1xf64>
+// CHECK-NEXT:     %4 = stablehlo.dynamic_update_slice %iterArg_4, %3, %iterArg : (tensor<4xf64>, tensor<1xf64>, tensor<i64>) -> tensor<4xf64>
+// CHECK-NEXT:     %5 = stablehlo.add %iterArg, %c_0 : tensor<i64>
+// CHECK-NEXT:     stablehlo.return %5, %2#1, %4 : tensor<i64>, tensor<4xf64>, tensor<4xf64>
+// CHECK-NEXT:   }
+// CHECK-NEXT:   return %0#1, %0#2 : tensor<4xf64>, tensor<4xf64>
+// CHECK-NEXT: }
+
