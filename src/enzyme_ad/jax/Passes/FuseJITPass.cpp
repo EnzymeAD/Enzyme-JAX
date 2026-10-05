@@ -68,8 +68,7 @@ FailureOr<LLVM::LLVMFuncOp> lookupFusionFunction(ModuleOp module,
   // TODO: Remap layouts and argument/result attrs to fused slots. Backend
   // config is opaque, so it needs an explicit composition rule before fusion.
   if (!call.getBackendConfig().empty() || call.getOperandLayoutsAttr() ||
-      call.getResultLayoutsAttr() || call.getArgAttrsAttr() ||
-      call.getResAttrsAttr())
+      call.getArgAttrsAttr() || call.getResAttrsAttr())
     return failure();
 
   // Fusion currently supports single-block, pointer-only, void wrappers.
@@ -557,7 +556,6 @@ LogicalResult rewriteFusion(enzymexla::JITCallOp firstCall,
       mlir::FlatSymbolRefAttr::get(rewriter.getContext(), fusedName), fusedArgs,
       StringAttr::get(rewriter.getContext(), ""),
       /*operand_layouts=*/nullptr,
-      /*result_layouts=*/nullptr,
       /*arg_attrs=*/nullptr,
       /*res_attrs=*/nullptr,
       /*output_operand_aliases=*/rewriter.getArrayAttr(fusedOutputAliases),
