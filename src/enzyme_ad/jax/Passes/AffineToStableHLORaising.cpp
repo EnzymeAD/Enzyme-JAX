@@ -2584,6 +2584,10 @@ static LogicalResult raiseLoopToMaskedWhile(
   }
 
   auto whileOp = stablehlo::WhileOp::create(builder, wloc, inits);
+  // Lanes that run out of iterations are masked off, so the iterations of
+  // each lane are those of the loop: still independent when it is tagged.
+  if (loopOp->hasAttr("enzymexla.parallel"))
+    whileOp->setAttr("enzymexla.parallel", builder.getUnitAttr());
   whileOp->getRegion(0).push_back(cond);
   whileOp->getRegion(1).push_back(body);
 

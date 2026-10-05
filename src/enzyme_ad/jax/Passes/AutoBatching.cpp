@@ -3531,6 +3531,57 @@ struct ParallelWhileBatcher {
 };
 } // namespace
 
+// The combiner of a reduction the loop carries in `arg`: the one use of the
+// argument is an add, a product, a min, a max or a bitwise and, or or xor of
+// it and a value each iteration computes, whose result the loop yields as the
+// argument's next value and uses nowhere else. The tagged iterations are
+// independent but for such reductions, so the value each one combines in can
+// be computed for all at once, and combined in a reduce.
+static Operation *reductionCombiner(BlockArgument arg,
+                                    stablehlo::ReturnOp ret) {
+  if (!arg.hasOneUse())
+    return nullptr;
+  Operation *combiner = *arg.getUsers().begin();
+  if (!stablehlo::canFuseIntoReduce(combiner) ||
+      combiner->getBlock() != arg.getOwner() ||
+      combiner->getOperand(0) == combiner->getOperand(1) ||
+      ret.getOperand(arg.getArgNumber()) != combiner->getResult(0) ||
+      llvm::any_of(combiner->getUsers(),
+                   [&](Operation *u) { return u != ret.getOperation(); }))
+    return nullptr;
+  return combiner;
+}
+
+// The reduction of `values` over the iterations (dimension 0) by
+// `combiner`'s operation, combined with `init`.
+static Value emitReduction(PatternRewriter &rewriter, Location loc,
+                           Operation *combiner, Value values, Value init) {
+  auto ty = cast<RankedTensorType>(init.getType());
+  Type elem = ty.getElementType();
+  Value identity = stablehlo::getIdentityValue(rewriter, loc, elem, combiner);
+  auto reduce = stablehlo::ReduceOp::create(
+      rewriter, loc, TypeRange{ty}, ValueRange{values}, ValueRange{identity},
+      rewriter.getDenseI64ArrayAttr({0}));
+  auto scalar = RankedTensorType::get({}, elem);
+  Block *block = rewriter.createBlock(&reduce.getBody());
+  block->addArgument(scalar, loc);
+  block->addArgument(scalar, loc);
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(block);
+    OperationState state(loc, combiner->getName());
+    state.addOperands(block->getArguments());
+    state.addTypes(scalar);
+    Operation *op = rewriter.create(state);
+    stablehlo::ReturnOp::create(rewriter, loc, op->getResult(0));
+  }
+  rewriter.setInsertionPointAfter(reduce);
+  OperationState state(loc, combiner->getName());
+  state.addOperands({init, reduce.getResult(0)});
+  state.addTypes(ty);
+  return rewriter.create(state)->getResult(0);
+}
+
 LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
   if (!whileOp->hasAttr("enzymexla.parallel"))
@@ -3552,15 +3603,22 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
                                &whileOp.getBody());
   batcher.batched.insert(iv);
   // Every carried value other than the induction variable is either
-  // unchanged or a buffer written through a chain of writes.
+  // unchanged, a reduction, or a buffer written through a chain of writes.
   SmallVector<bool> unchanged(body.getNumArguments(), false);
+  llvm::MapVector<unsigned, Operation *> reductions;
+  for (auto arg : body.getArguments())
+    if (arg.getArgNumber() != ivNum)
+      if (Operation *combiner = reductionCombiner(arg, ret))
+        reductions[arg.getArgNumber()] = combiner;
   for (auto arg : body.getArguments()) {
     unsigned k = arg.getArgNumber();
-    if (k == ivNum)
+    if (k == ivNum || reductions.count(k))
       continue;
-    if (ret.getOperand(k) == arg)
+    if (ret.getOperand(k) == arg) {
       unchanged[k] = true;
-    else if (failed(batcher.analyzeChain(arg, ret, k)))
+      continue;
+    }
+    if (failed(batcher.analyzeChain(arg, ret, k)))
       return failure();
   }
   if (failed(batcher.analyzeBlock(body)))
@@ -3589,7 +3647,31 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
   for (auto arg : body.getArguments())
     if (unchanged[arg.getArgNumber()] || batcher.chainRoot.count(arg))
       batcher.map.map(arg, whileOp->getOperand(arg.getArgNumber()));
+  // A reduction starts every iteration from the identity, so each combines
+  // in only its own value; the reduce below combines them all.
+  for (auto &[k, combiner] : reductions) {
+    auto ty = cast<RankedTensorType>(body.getArgument(k).getType());
+    Value identity = stablehlo::getIdentityValue(rewriter, loc,
+                                                 ty.getElementType(), combiner);
+    if (identity.getType() != ty)
+      identity = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, ty, identity, ArrayRef<int64_t>{});
+    batcher.map.map(body.getArgument(k), identity);
+  }
   batcher.emitBlock(body);
+  DenseMap<unsigned, Value> reduced;
+  for (auto &[k, combiner] : reductions) {
+    Value v = combiner->getResult(0);
+    Value values = batcher.map.lookup(v);
+    // a value no iteration changes is combined in by every one of them
+    if (!batcher.isBatched(v))
+      values = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, batcher.batchedType(values.getType()), values,
+          llvm::to_vector(llvm::seq<int64_t>(
+              1, cast<RankedTensorType>(values.getType()).getRank() + 1)));
+    reduced[k] =
+        emitReduction(rewriter, loc, combiner, values, whileOp->getOperand(k));
+  }
 
   SmallVector<Value> results;
   for (auto arg : body.getArguments()) {
@@ -3598,6 +3680,8 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
       results.push_back(stablehlo::ConstantOp::create(
           rewriter, loc,
           cast<ElementsAttr>(makeAttr(ivTy, start + numIters * step))));
+    } else if (reduced.count(k)) {
+      results.push_back(reduced[k]);
     } else {
       results.push_back(batcher.map.lookup(ret.getOperand(k)));
     }
