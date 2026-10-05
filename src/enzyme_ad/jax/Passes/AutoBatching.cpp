@@ -3245,12 +3245,11 @@ struct IndexEvaluator {
   // A row (or window) of a constant table, selected by this iteration.
   std::optional<IterationIndices> evalTableRow(stablehlo::DynamicSliceOp ds,
                                                ArrayRef<int64_t> iter) {
-    auto cst = ds.getOperand().getDefiningOp<stablehlo::ConstantOp>();
-    if (!cst)
-      return std::nullopt;
-    auto attr = dyn_cast<DenseIntElementsAttr>(cst.getValue());
     auto ty = dyn_cast<RankedTensorType>(ds.getOperand().getType());
-    if (!attr || !ty || !ty.hasStaticShape())
+    if (!ty || !ty.hasStaticShape())
+      return std::nullopt;
+    const SmallVector<int64_t> *values = table(ds.getOperand(), iter);
+    if (!values)
       return std::nullopt;
     ArrayRef<int64_t> shape = ty.getShape();
     ArrayRef<int64_t> sizes = ds.getSliceSizes();
@@ -3266,7 +3265,6 @@ struct IndexEvaluator {
     // stablehlo clamps a start so the window stays inside the operand
     for (auto [i, s] : llvm::enumerate(starts))
       starts[i] = std::min(std::max<int64_t>(s, 0), shape[i] - sizes[i]);
-    auto values = attr.getValues<APInt>();
     IterationIndices out;
     out.base = Value();
     SmallVector<int64_t> idx(shape.size(), 0);
@@ -3282,9 +3280,36 @@ struct IndexEvaluator {
       }
       for (int64_t d = 0; d < (int64_t)shape.size(); ++d)
         flat = flat * shape[d] + idx[d];
-      out.offsets.push_back(values[flat].getSExtValue());
+      out.offsets.push_back((*values)[flat]);
     }
     return out;
+  }
+
+  // The elements of a table: a constant, or a value computed outside every
+  // loop from iotas and constants, the same for every iteration and every
+  // run of the proof, evaluated once.
+  DenseMap<Value, SmallVector<int64_t>> tables{};
+  const SmallVector<int64_t> *table(Value v, ArrayRef<int64_t> iter) {
+    auto it = tables.find(v);
+    if (it != tables.end())
+      return &it->second;
+    SmallVector<int64_t> values;
+    if (auto cst = v.getDefiningOp<stablehlo::ConstantOp>()) {
+      auto attr = dyn_cast<DenseIntElementsAttr>(cst.getValue());
+      if (!attr)
+        return nullptr;
+      for (const APInt &e : attr.getValues<APInt>())
+        values.push_back(e.getSExtValue());
+    } else {
+      Operation *def = v.getDefiningOp();
+      if (!def || def->getParentOfType<stablehlo::WhileOp>())
+        return nullptr;
+      auto e = eval(v, iter);
+      if (!e || e->base)
+        return nullptr;
+      values = std::move(e->offsets);
+    }
+    return &tables.insert({v, std::move(values)}).first->second;
   }
 
   // The elements of a value laid out in its shape, from a splat or from
