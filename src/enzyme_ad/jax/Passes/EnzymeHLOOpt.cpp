@@ -15997,14 +15997,105 @@ struct ReduceConstProp final
   // an integer value, as a value of the shape that leaves: a value the same
   // along them is itself, an iota's is an end, an add or subtract moves
   // with its side that varies, a product or quotient by a constant with the
-  // constant's sign, a maximum (minimum) is the largest (smallest) of its
-  // sides', and (max(c, x) + k) - x, the shape of the lanes' trip counts,
-  // is max(c - x, 0) + k. Each value is visited once.
+  // constant's sign, a value of constants alone is evaluated, a maximum
+  // (minimum) is the largest (smallest) of its sides', and
+  // (max(c, x) + k) - x, the shape of the lanes' trip counts, is
+  // max(c - x, 0) + k. Each value is visited once.
   //
   // The same code decides and builds: called without a builder it only
   // decides, and every case checks its operands before it creates an op, so
   // nothing is built on a path that fails. With a builder it is called only
   // once the decision was yes, and then cannot fail.
+  // An elementwise op, a broadcast, a reshape or a conversion applied to
+  // constant operands by the reference ops, giving a value of type `ty`.
+  static stablehlo::Tensor
+  evaluate(Operation *op, ArrayRef<stablehlo::Tensor> in, ShapedType ty) {
+    return TypeSwitch<Operation *, stablehlo::Tensor>(op)
+        .Case([&](stablehlo::AddOp) {
+          return stablehlo::addOp(in[0], in[1], ty);
+        })
+        .Case([&](stablehlo::SubtractOp) {
+          return stablehlo::subtractOp(in[0], in[1], ty);
+        })
+        .Case([&](stablehlo::MulOp) {
+          return stablehlo::multiplyOp(in[0], in[1], ty);
+        })
+        .Case([&](stablehlo::DivOp) {
+          return stablehlo::divideOp(in[0], in[1], ty);
+        })
+        .Case([&](stablehlo::RemOp) {
+          return stablehlo::remOp(in[0], in[1], ty);
+        })
+        .Case([&](stablehlo::MaxOp) {
+          return stablehlo::maxOp(in[0], in[1], ty);
+        })
+        .Case([&](stablehlo::MinOp) {
+          return stablehlo::minOp(in[0], in[1], ty);
+        })
+        .Case([&](stablehlo::BroadcastInDimOp bc) {
+          return stablehlo::broadcastInDimOp(
+              in[0], stablehlo::Axes(bc.getBroadcastDimensions()), ty);
+        })
+        .Case([&](stablehlo::ReshapeOp) {
+          return stablehlo::reshapeOp(in[0], ty);
+        })
+        .Case([&](stablehlo::ConvertOp) {
+          return stablehlo::convertOp(in[0], ty);
+        });
+  }
+
+  // The elements of an integer value computed from constants alone, through
+  // elementwise arithmetic, broadcasts, reshapes and conversions, by the
+  // reference ops, or nothing when it is not one. Splat operands give a
+  // splat, computed on the one element; a value that is not a splat is
+  // evaluated up to 2^16 elements.
+  static std::optional<DenseElementsAttr> constantOf(Value v, int depth = 0) {
+    auto ty = dyn_cast<RankedTensorType>(v.getType());
+    if (!ty || !ty.hasStaticShape() || !isa<IntegerType>(ty.getElementType()) ||
+        depth > 16)
+      return std::nullopt;
+    DenseElementsAttr attr;
+    if (matchPattern(v, m_Constant(&attr)))
+      return attr;
+    Operation *op = v.getDefiningOp();
+    if (!op || !isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp,
+                    stablehlo::DivOp, stablehlo::RemOp, stablehlo::MaxOp,
+                    stablehlo::MinOp, stablehlo::BroadcastInDimOp,
+                    stablehlo::ReshapeOp, stablehlo::ConvertOp>(op))
+      return std::nullopt;
+    SmallVector<DenseElementsAttr> operands;
+    bool splat = true;
+    for (Value o : op->getOperands()) {
+      auto c = constantOf(o, depth + 1);
+      if (!c)
+        return std::nullopt;
+      // the reference ops trap on a division by zero
+      if (isa<stablehlo::DivOp, stablehlo::RemOp>(op) && o == op->getOperand(1))
+        for (const APInt &e : c->getValues<APInt>())
+          if (e.isZero())
+            return std::nullopt;
+      splat &= c->isSplat();
+      operands.push_back(*c);
+    }
+    SmallVector<stablehlo::Tensor> in;
+    if (splat) {
+      // one element, whatever the shape: a broadcast or a reshape of it is
+      // itself, the rest act on it alone
+      auto scalar = RankedTensorType::get({}, ty.getElementType());
+      if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp>(op))
+        return operands[0].resizeSplat(ty);
+      for (DenseElementsAttr c : operands)
+        in.push_back(stablehlo::makeTensor(c.resizeSplat(RankedTensorType::get(
+            {}, cast<ShapedType>(c.getType()).getElementType()))));
+      return fromTensor(evaluate(op, in, scalar)).resizeSplat(ty);
+    }
+    if (ty.getNumElements() > (1 << 16))
+      return std::nullopt;
+    for (DenseElementsAttr c : operands)
+      in.push_back(stablehlo::constantOp(c));
+    return fromTensor(evaluate(op, in, ty));
+  }
+
   using Cache = DenseMap<std::pair<Value, int>, Value>;
   static std::optional<Value> extremum(Value v, ArrayRef<int64_t> dims,
                                        bool largest, OpBuilder *b, Location loc,
@@ -16031,6 +16122,32 @@ struct ReduceConstProp final
       return std::nullopt;
     auto ity = cast<IntegerType>(ty.getElementType());
     auto rty = dropped(ty, dims);
+    if (auto cst = constantOf(v)) {
+      // a value of constants alone: its own largest (smallest) element along
+      // them
+      if (!b)
+        return Value();
+      if (cst->isSplat())
+        return stablehlo::ConstantOp::create(
+            *b, loc, DenseElementsAttr::get(rty, cst->getSplatValue<APInt>()));
+      SmallVector<bool> reduced(ty.getRank(), false);
+      for (int64_t d : dims)
+        reduced[d] = true;
+      SmallVector<std::optional<APInt>> best(rty.getNumElements());
+      for (auto [i, e] : llvm::enumerate(cst->getValues<APInt>())) {
+        auto &o = best[outputIndex(i, ty.getShape(), reduced)];
+        if (!o)
+          o = e;
+        else if (largest ? (ity.isUnsigned() ? e.ugt(*o) : e.sgt(*o))
+                         : (ity.isUnsigned() ? e.ult(*o) : e.slt(*o)))
+          o = e;
+      }
+      SmallVector<APInt> values;
+      for (auto &o : best)
+        values.push_back(*o);
+      return stablehlo::ConstantOp::create(*b, loc,
+                                           DenseElementsAttr::get(rty, values));
+    }
     if (auto iota = dyn_cast<stablehlo::IotaOp>(op)) {
       int64_t d = iota.getIotaDimension();
       if (!b)
