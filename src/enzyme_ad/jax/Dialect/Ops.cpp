@@ -9,6 +9,7 @@
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "Dialect.h"
 #include "Interfaces/AutoDiffTypeInterface.h"
+#include "Interfaces/Utils.h"
 #include "Ops.h"
 #include "src/enzyme_ad/jax/Dialect/Canonicalizers.h"
 #include "src/enzyme_ad/jax/Dialect/Utils.h"
@@ -2308,22 +2309,6 @@ public:
   }
 };
 
-/// Remove casts that preserve the buffer address. Keep views that change it.
-static Value getXLAWrapperBufferIdentity(Value value) {
-  while (Operation *definingOp = value.getDefiningOp()) {
-    if (auto pointerToMemref = dyn_cast<Pointer2MemrefOp>(definingOp)) {
-      value = pointerToMemref.getSource();
-      continue;
-    }
-    if (auto cast = dyn_cast<memref::CastOp>(definingOp)) {
-      value = cast.getSource();
-      continue;
-    }
-    break;
-  }
-  return value;
-}
-
 /// Merge equal inputs only when their returned values also agree.
 /// Clone the function because other calls can pass distinct buffers.
 class DeduplicateXLAWrapperInputs final
@@ -2364,8 +2349,8 @@ public:
     SmallVector<unsigned> representatives;
     llvm::BitVector duplicates(function.getNumArguments());
     for (auto [index, input] : llvm::enumerate(op.getInputs())) {
-      auto [entry, inserted] =
-          identities.try_emplace(getXLAWrapperBufferIdentity(input), index);
+      auto [entry, inserted] = identities.try_emplace(
+          enzyme::oputils::getBaseObject(input, /*offsetAllowed=*/false), index);
       unsigned representative = entry->second;
       representatives.push_back(representative);
       if (inserted)
