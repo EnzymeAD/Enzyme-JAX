@@ -96,6 +96,10 @@ struct ConcatInsertDimElementwiseToBatch : public ConcatInsertDimToBatchBase {
 template <typename OpTy>
 mlir::Operation *checkValidReduceOpForBatching(mlir::Operation *op) {
   if (auto reduceOp = llvm::dyn_cast_or_null<OpTy>(op)) {
+    // one input: the batching lifts the input the slices feed and takes
+    // nothing else along
+    if (reduceOp.getInputs().size() != 1)
+      return nullptr;
     return llvm::all_of(reduceOp.getInitValues(),
                         [](mlir::Value v) {
                           mlir::SplatElementsAttr attr;
