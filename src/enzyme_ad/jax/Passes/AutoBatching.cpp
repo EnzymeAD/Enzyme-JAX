@@ -3274,8 +3274,11 @@ struct ParallelWhileBatcher {
         // batched along the new leading dimension, or gathered when the
         // start indices vary
       } else if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(&op)) {
-        // the batch interface adds the leading dimension as a batching one
-        if (!broadcastable(dot.getLhs()) || !broadcastable(dot.getRhs()))
+        // the batch interface adds the leading dimension as a batching one;
+        // with one side the same every iteration, it is a free dimension of
+        // the other side instead, and nothing is broadcast
+        if (isBatched(dot.getLhs()) == isBatched(dot.getRhs()) &&
+            (!broadcastable(dot.getLhs()) || !broadcastable(dot.getRhs())))
           return failure();
       } else if (isa<stablehlo::GatherOp>(&op)) {
         // the indices gain the leading dimension (and the operand when it
@@ -3311,6 +3314,55 @@ struct ParallelWhileBatcher {
 
   // The nested loop again, carrying the batched values with their leading
   // dimension and a buffer as the chain of scatters so far.
+  // A dot_general with one side the same every iteration: the other side's
+  // leading dimension rides along as a free dimension of it, so the shared
+  // side is used as it is, and the result is transposed to put the
+  // iterations first.
+  void emitOneSidedDot(stablehlo::DotGeneralOp dot, IRMapping &bm) {
+    bool lhsVaries = isBatched(dot.getLhs());
+    auto dn = dot.getDotDimensionNumbers();
+    Value lhs = bm.lookup(dot.getLhs()), rhs = bm.lookup(dot.getRhs());
+    SmallVector<int64_t> lb(dn.getLhsBatchingDimensions()),
+        rb(dn.getRhsBatchingDimensions()), lc(dn.getLhsContractingDimensions()),
+        rc(dn.getRhsContractingDimensions());
+    if (lhsVaries) {
+      lb = shifted(lb);
+      lc = shifted(lc);
+    } else {
+      rb = shifted(rb);
+      rc = shifted(rc);
+    }
+    auto ndn = stablehlo::DotDimensionNumbersAttr::get(dot.getContext(), lb, rb,
+                                                       lc, rc);
+    // [batching..., lhs free..., rhs free...], the iterations the first free
+    // dimension of the side that varies
+    auto lt = cast<RankedTensorType>(lhs.getType());
+    auto rt = cast<RankedTensorType>(rhs.getType());
+    SmallVector<int64_t> shape;
+    for (int64_t d : lb)
+      shape.push_back(lt.getDimSize(d));
+    int64_t lhsFree = 0;
+    for (int64_t d = 0; d < lt.getRank(); ++d)
+      if (!llvm::is_contained(lb, d) && !llvm::is_contained(lc, d)) {
+        shape.push_back(lt.getDimSize(d));
+        ++lhsFree;
+      }
+    for (int64_t d = 0; d < rt.getRank(); ++d)
+      if (!llvm::is_contained(rb, d) && !llvm::is_contained(rc, d))
+        shape.push_back(rt.getDimSize(d));
+    auto ety = cast<RankedTensorType>(dot.getType()).getElementType();
+    auto nd = stablehlo::DotGeneralOp::create(
+        rewriter, loc, RankedTensorType::get(shape, ety), lhs, rhs, ndn,
+        dot.getPrecisionConfigAttr(), dot.getAlgorithmAttr());
+    int64_t at = (int64_t)lb.size() + (lhsVaries ? 0 : lhsFree);
+    SmallVector<int64_t> perm{at};
+    for (int64_t d = 0; d < (int64_t)shape.size(); ++d)
+      if (d != at)
+        perm.push_back(d);
+    bm.map(dot.getResult(),
+           stablehlo::TransposeOpCreate(rewriter, loc, nd.getResult(), perm));
+  }
+
   void emitWhile(stablehlo::WhileOp w) {
     Block &b = w.getBody().front();
     Operation *wret = b.getTerminator();
@@ -3368,6 +3420,9 @@ struct ParallelWhileBatcher {
           (isa<stablehlo::DynamicSliceOp, stablehlo::GatherOp>(&op) &&
            !isBatched(op.getOperand(0))))
         shared = op.getOperand(0);
+      if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(&op);
+          dot && isBatched(dot.getLhs()) != isBatched(dot.getRhs()))
+        shared = isBatched(dot.getLhs()) ? dot.getRhs() : dot.getLhs();
       IRMapping bm;
       for (Value v : op.getOperands())
         bm.map(v, v == shared ? map.lookupOrDefault(v) : operand(v));
@@ -3445,6 +3500,9 @@ struct ParallelWhileBatcher {
                 dn.getStartIndexMap(), dn.getIndexVectorDim() + 1),
             g.getSliceSizesAttr(), /*indices_are_sorted=*/false);
         bm.map(g.getResult(), ng.getResult());
+      } else if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(&op);
+                 dot && isBatched(dot.getLhs()) != isBatched(dot.getRhs())) {
+        emitOneSidedDot(dot, bm);
       } else if (auto iface = dyn_cast<BatchOpInterface>(&op);
                  iface &&
                  succeeded(iface.createBatch(rewriter, bm, batchSizes))) {
