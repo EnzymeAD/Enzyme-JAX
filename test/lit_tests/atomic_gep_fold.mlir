@@ -9,7 +9,7 @@ module {
     %g = llvm.getelementptr inbounds %p[%i] : (!llvm.ptr, i64) -> !llvm.ptr, f64
     %m = "enzymexla.pointer2memref"(%g) : (!llvm.ptr) -> memref<?xf64>
     %c0 = arith.constant 0 : index
-    %old = enzyme.atomic_rmw addf %v, %m[%c0] monotonic {alignment = 8 : i64} : (f64, memref<?xf64>) -> f64
+    %old = enzyme.atomic_rmw addf %v, %m[%c0] monotonic <{alignment = 8 : i64}> : (f64, memref<?xf64>) -> f64
     return
   }
 
@@ -34,7 +34,7 @@ module {
 // CHECK:  func.func @enzyme_atomic(%[[a1:.+]]: !llvm.ptr, %[[a2:.+]]: i64, %[[a3:.+]]: f64) {
 // CHECK-NEXT:  %[[a4:.+]] = "enzymexla.pointer2memref"(%[[a1]]) : (!llvm.ptr) -> memref<?xf64>
 // CHECK-NEXT:  %[[a5:.+]] = arith.index_cast %[[a2]] : i64 to index
-// CHECK-NEXT:  %[[a6:.+]] = enzyme.atomic_rmw addf %[[a3]], %[[a4]][%[[a5]]] monotonic {alignment = 8 : i64} : (f64, memref<?xf64>) -> f64
+// CHECK-NEXT:  %[[a6:.+]] = enzyme.atomic_rmw addf %[[a3]], %[[a4]][%[[a5]]] monotonic <alignment = 8> : (f64, memref<?xf64>) -> f64
 // CHECK-NEXT:  return
 // CHECK-NEXT:  }
 

@@ -7,7 +7,7 @@ module {
     return %2 : tensor<i64>
   }
   func.func @main(%arg0: tensor<3x5x2xi64>) -> (tensor<3xi64>) {
-    %2 = enzyme.batch @unbatched_f2(%arg0) {batch_shape = array<i64: 3>} : (tensor<3x5x2xi64>) -> tensor<3xi64>
+    %2 = enzyme.batch @unbatched_f2(%arg0) <{batch_shape = array<i64: 3>}> : (tensor<3x5x2xi64>) -> tensor<3xi64>
     return %2 : tensor<3xi64>
   }
 }

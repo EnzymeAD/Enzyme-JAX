@@ -57,12 +57,12 @@ module {
 // CHECK-NEXT:      %0 = perfify.arg 0
 // CHECK-NEXT:      %1 = perfify.constant_cost 0 : !perfify.cost
 // CHECK-NEXT:      %2 = perfify.cmp eq, %1, %0
-// CHECK-NEXT:      perfify.assume %2 {satres = true}
+// CHECK-NEXT:      perfify.assume %2 <satres = true>
 // CHECK-NEXT:    } post {
 // CHECK-NEXT:      %0 = perfify.fn_cost : !perfify.cost
 // CHECK-NEXT:      %1 = perfify.constant_cost 9 : !perfify.cost
 // CHECK-NEXT:      %2 = perfify.cmp ne, %0, %1
-// CHECK-NEXT:      perfify.assume %2 {satres = false}
+// CHECK-NEXT:      perfify.assume %2 <satres = false>
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
 // CHECK-NEXT: }

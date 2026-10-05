@@ -283,7 +283,7 @@ module {
     %1 = stablehlo.transpose %arg1, dims = [0] : (tensor<64xi64>) -> tensor<64xi64>
     %2 = stablehlo.transpose %0, dims = [0] : (tensor<64xi64>) -> tensor<64xi64>
     %3 = stablehlo.transpose %1, dims = [0] : (tensor<64xi64>) -> tensor<64xi64>
-    %4:2 = enzymexla.kernel_call @"##call__Z14square_kernel_13CuTracedArrayI5Int64Li1ELi1E5_64__ES1_#241" blocks in(%c_1, %c_1, %c_1) threads in(%c_0, %c_1, %c_1) shmem = %c (%2, %3) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>]} : (tensor<64xi64>, tensor<64xi64>) -> (tensor<64xi64>, tensor<64xi64>)
+    %4:2 = enzymexla.kernel_call @"##call__Z14square_kernel_13CuTracedArrayI5Int64Li1ELi1E5_64__ES1_#241" blocks in(%c_1, %c_1, %c_1) threads in(%c_0, %c_1, %c_1) shmem = %c (%2, %3) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>]}> : (tensor<64xi64>, tensor<64xi64>) -> (tensor<64xi64>, tensor<64xi64>)
     %5 = stablehlo.transpose %4#0, dims = [0] : (tensor<64xi64>) -> tensor<64xi64>
     %6 = stablehlo.transpose %4#1, dims = [0] : (tensor<64xi64>) -> tensor<64xi64>
     %7 = stablehlo.transpose %5, dims = [0] : (tensor<64xi64>) -> tensor<64xi64>

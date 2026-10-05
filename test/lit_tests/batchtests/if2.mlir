@@ -16,7 +16,7 @@ module {
     return %0 : tensor<f32>
   }
   func.func @main(%arg0: tensor<10xf32>, %arg1: tensor<10xf32>) -> tensor<10xf32> {
-    %0 = enzyme.batch @if_to_select(%arg0, %arg1) {batch_shape = array<i64: 10>} : (tensor<10xf32>, tensor<10xf32>) -> tensor<10xf32>
+    %0 = enzyme.batch @if_to_select(%arg0, %arg1) <{batch_shape = array<i64: 10>}> : (tensor<10xf32>, tensor<10xf32>) -> tensor<10xf32>
     return %0 : tensor<10xf32>
   }
 }

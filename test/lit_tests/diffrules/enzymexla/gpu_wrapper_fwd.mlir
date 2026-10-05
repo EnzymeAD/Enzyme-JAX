@@ -16,10 +16,10 @@ func.func private @gpu_wrapper(%ptr: !llvm.ptr) {
 }
 
 func.func @dgpu_wrapper(%ptr: !llvm.ptr, %dptr: !llvm.ptr) {
-  enzyme.fwddiff @gpu_wrapper(%ptr, %dptr) {
+  enzyme.fwddiff @gpu_wrapper(%ptr, %dptr) <{
     activity = [#enzyme.activity<enzyme_dup>],
     ret_activity = []
-  } : (!llvm.ptr, !llvm.ptr) -> ()
+  }> : (!llvm.ptr, !llvm.ptr) -> ()
   return
 }
 

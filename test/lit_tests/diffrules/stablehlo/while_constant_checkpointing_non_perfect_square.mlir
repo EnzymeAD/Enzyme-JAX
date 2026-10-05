@@ -83,27 +83,27 @@ module {
     %diffe = stablehlo.constant dense<1.0> : tensor<f64>
 
     // Compute reference gradient without checkpointing
-    %diffe_no_checkpointing:2 = enzyme.autodiff @without_checkpointing(%input, %diffe) {
+    %diffe_no_checkpointing:2 = enzyme.autodiff @without_checkpointing(%input, %diffe) <{
       activity=[#enzyme.activity<enzyme_active>],
       ret_activity=[#enzyme.activity<enzyme_active>]
-    } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
+    }> : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
     // Test default sqrt checkpointing
-    %diffe_sqrt:2 = enzyme.autodiff @with_sqrt_checkpointing(%input, %diffe) {
+    %diffe_sqrt:2 = enzyme.autodiff @with_sqrt_checkpointing(%input, %diffe) <{
       activity=[#enzyme.activity<enzyme_active>],
       ret_activity=[#enzyme.activity<enzyme_active>]
-    } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
+    }> : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
     // Test explicit periods
-    %diffe_period_3:2 = enzyme.autodiff @with_period_3(%input, %diffe) {
+    %diffe_period_3:2 = enzyme.autodiff @with_period_3(%input, %diffe) <{
       activity=[#enzyme.activity<enzyme_active>],
       ret_activity=[#enzyme.activity<enzyme_active>]
-    } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
+    }> : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
-    %diffe_period_5:2 = enzyme.autodiff @with_period_5(%input, %diffe) {
+    %diffe_period_5:2 = enzyme.autodiff @with_period_5(%input, %diffe) <{
       activity=[#enzyme.activity<enzyme_active>],
       ret_activity=[#enzyme.activity<enzyme_active>]
-    } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
+    }> : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
     // Verify all checkpointing strategies produce the same results as no checkpointing
     check.expect_almost_eq %diffe_sqrt#0, %diffe_no_checkpointing#0 : tensor<f64>

@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt %s  --pass-pipeline="builtin.module(canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true})" | FileCheck %s
 
-// CHECK: %{{.+}} = enzymexla.kernel_call @"##call__Z10gpu_scale_16CompilerMetadataI11DynamicSize12DynamicCheckv16CartesianIndicesILi2E5TupleI5OneToI5Int64ES6_EE7NDRangeILi2ES0_S0_S8_S8_EE13CuTracedArrayI7Float64Li2ELi1E7_16__3_ESE_SD_#300" blocks in(%c_1, %c_1, %c_1) threads in(%c, %c_1, %c_1) shmem = %c_0 (%{{.+}}, %{{.+}}) {operand_layouts = [dense<[1, 0]> : tensor<2xindex>, dense<[1, 0]> : tensor<2xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<3x16xf64>, tensor<3x16xf64>) -> tensor<3x16xf64>
+// CHECK: %{{.+}} = enzymexla.kernel_call @"##call__Z10gpu_scale_16CompilerMetadataI11DynamicSize12DynamicCheckv16CartesianIndicesILi2E5TupleI5OneToI5Int64ES6_EE7NDRangeILi2ES0_S0_S8_S8_EE13CuTracedArrayI7Float64Li2ELi1E7_16__3_ESE_SD_#300" blocks in(%c_1, %c_1, %c_1) threads in(%c, %c_1, %c_1) shmem = %c_0 (%{{.+}}, %{{.+}}) <operand_layouts = [dense<[1, 0]> : tensor<2xindex>, dense<[1, 0]> : tensor<2xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<3x16xf64>, tensor<3x16xf64>) -> tensor<3x16xf64>
 
 #tbaa_root = #llvm.tbaa_root<id = "custom_tbaa">
 #tbaa_type_desc = #llvm.tbaa_type_desc<id = "custom_tbaa_addrspace(1)", members = {<#tbaa_root, 0>}>
@@ -28,12 +28,12 @@ module @reactant_f attributes {llvm.data_layout = "e-p6:32:32-i64:64-i128:128-i2
       %10 = stablehlo.add %iterArg, %c_1 : tensor<i64>
       %11 = stablehlo.transpose %iterArg_5, dims = [1, 0] : (tensor<16x3xf64>) -> tensor<3x16xf64>
       %12 = stablehlo.transpose %iterArg_3, dims = [1, 0] : (tensor<16x3xf64>) -> tensor<3x16xf64>
-      %13:2 = enzymexla.kernel_call @"##call__Z10gpu_scale_16CompilerMetadataI11DynamicSize12DynamicCheckv16CartesianIndicesILi2E5TupleI5OneToI5Int64ES6_EE7NDRangeILi2ES0_S0_S8_S8_EE13CuTracedArrayI7Float64Li2ELi1E7_16__3_ESE_SD_#300" blocks in(%c_1, %c_1, %c_1) threads in(%c, %c_1, %c_1) shmem = %c_0 (%11, %12) {operand_layouts = [dense<[1, 0]> : tensor<2xindex>, dense<[1, 0]> : tensor<2xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<3x16xf64>, tensor<3x16xf64>) -> (tensor<3x16xf64>, tensor<3x16xf64>)
+      %13:2 = enzymexla.kernel_call @"##call__Z10gpu_scale_16CompilerMetadataI11DynamicSize12DynamicCheckv16CartesianIndicesILi2E5TupleI5OneToI5Int64ES6_EE7NDRangeILi2ES0_S0_S8_S8_EE13CuTracedArrayI7Float64Li2ELi1E7_16__3_ESE_SD_#300" blocks in(%c_1, %c_1, %c_1) threads in(%c, %c_1, %c_1) shmem = %c_0 (%11, %12) <{operand_layouts = [dense<[1, 0]> : tensor<2xindex>, dense<[1, 0]> : tensor<2xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>], xla_side_effect_free}> : (tensor<3x16xf64>, tensor<3x16xf64>) -> (tensor<3x16xf64>, tensor<3x16xf64>)
       %14 = stablehlo.transpose %13#0, dims = [1, 0] : (tensor<3x16xf64>) -> tensor<16x3xf64>
       %15 = stablehlo.transpose %13#1, dims = [1, 0] : (tensor<3x16xf64>) -> tensor<16x3xf64>
       stablehlo.return %10, %iterArg_2, %15, %iterArg_4, %14, %iterArg_6 : tensor<i64>, tensor<i64>, tensor<16x3xf64>, tensor<i64>, tensor<16x3xf64>, tensor<i64>
     }
-    %6 = enzyme.batch @identity_broadcast_scalar(%5#4) {batch_shape = array<i64: 16, 3>} : (tensor<16x3xf64>) -> tensor<16x3xf64>
+    %6 = enzyme.batch @identity_broadcast_scalar(%5#4) <{batch_shape = array<i64: 16, 3>}> : (tensor<16x3xf64>) -> tensor<16x3xf64>
     %7 = stablehlo.reduce(%6 init: %cst) applies stablehlo.add across dimensions = [0, 1] : (tensor<16x3xf64>, tensor<f64>) -> tensor<f64>
     %8 = stablehlo.transpose %5#2, dims = [1, 0] : (tensor<16x3xf64>) -> tensor<3x16xf64>
     %9 = stablehlo.transpose %6, dims = [1, 0] : (tensor<16x3xf64>) -> tensor<3x16xf64>

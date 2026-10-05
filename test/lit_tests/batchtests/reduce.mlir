@@ -6,7 +6,7 @@ func.func private @sum(%arg0: tensor<16xf64>) -> (tensor<f64>) {
     return %1 : tensor<f64>
 }
 func.func @main(%arg0: tensor<4x16xf64>) -> (tensor<4xf64>) {
-    %1 = enzyme.batch @sum(%arg0) {batch_shape = array<i64: 4>} : (tensor<4x16xf64>) -> (tensor<4xf64>)
+    %1 = enzyme.batch @sum(%arg0) <{batch_shape = array<i64: 4>}> : (tensor<4x16xf64>) -> (tensor<4xf64>)
     return %1 : tensor<4xf64>
 }
 

@@ -60,7 +60,7 @@ module @reactant_gradient attributes {mhlo.num_partitions = 1 : i64, mhlo.num_re
       %26 = stablehlo.reshape %25 : (tensor<2xui64>) -> tensor<2xui64>
       %27 = stablehlo.transpose %26, dims = [0] : (tensor<2xui64>) -> tensor<2xui64>
       %cst_22 = stablehlo.constant dense<0.000000e+00> : tensor<f64>
-      %28 = enzyme.batch @identity_broadcast_scalar(%23) {batch_shape = array<i64: 64>} : (tensor<64xf64>) -> tensor<64xf64>
+      %28 = enzyme.batch @identity_broadcast_scalar(%23) <{batch_shape = array<i64: 64>}> : (tensor<64xf64>) -> tensor<64xf64>
       %cst_23 = stablehlo.constant dense<0.000000e+00> : tensor<f64>
       %cst_24 = stablehlo.constant dense<0.000000e+00> : tensor<f64>
       %29 = stablehlo.reduce(%28 init: %cst_22) applies stablehlo.add across dimensions = [0] : (tensor<64xf64>, tensor<f64>) -> tensor<f64>
@@ -71,13 +71,13 @@ module @reactant_gradient attributes {mhlo.num_partitions = 1 : i64, mhlo.num_re
       %32 = stablehlo.broadcast_in_dim %iterArg_14, dims = [0] : (tensor<1xf64>) -> tensor<1xf64>
       %33 = stablehlo.broadcast_in_dim %32, dims = [0] : (tensor<1xf64>) -> tensor<1xf64>
       %34 = stablehlo.broadcast_in_dim %29, dims = [] : (tensor<f64>) -> tensor<1xf64>
-      %35:3 = enzyme.batch @"*_broadcast_scalar"(%33, %34) {batch_shape = array<i64: 1>} : (tensor<1xf64>, tensor<1xf64>) -> (tensor<1xf64>, tensor<1xf64>, tensor<1xf64>)
+      %35:3 = enzyme.batch @"*_broadcast_scalar"(%33, %34) <{batch_shape = array<i64: 1>}> : (tensor<1xf64>, tensor<1xf64>) -> (tensor<1xf64>, tensor<1xf64>, tensor<1xf64>)
       %36 = stablehlo.broadcast_in_dim %35#0, dims = [0] : (tensor<1xf64>) -> tensor<1xf64>
-      %37:3 = enzyme.batch @"+_broadcast_scalar"(%31, %36) {batch_shape = array<i64: 1>} : (tensor<1xf64>, tensor<1xf64>) -> (tensor<1xf64>, tensor<1xf64>, tensor<1xf64>)
+      %37:3 = enzyme.batch @"+_broadcast_scalar"(%31, %36) <{batch_shape = array<i64: 1>}> : (tensor<1xf64>, tensor<1xf64>) -> (tensor<1xf64>, tensor<1xf64>, tensor<1xf64>)
       stablehlo.return %13, %iterArg_9, %37#0, %iterArg_11, %27, %iterArg_13, %iterArg_14 : tensor<i64>, tensor<i64>, tensor<1xf64>, tensor<i64>, tensor<2xui64>, tensor<i64>, tensor<1xf64>
     }
     %cst_6 = stablehlo.constant dense<0.000000e+00> : tensor<f64>
-    %7 = enzyme.batch @identity_broadcast_scalar_1(%6#2) {batch_shape = array<i64: 1>} : (tensor<1xf64>) -> tensor<1xf64>
+    %7 = enzyme.batch @identity_broadcast_scalar_1(%6#2) <{batch_shape = array<i64: 1>}> : (tensor<1xf64>) -> tensor<1xf64>
     %cst_7 = stablehlo.constant dense<0.000000e+00> : tensor<f64>
     %cst_8 = stablehlo.constant dense<0.000000e+00> : tensor<f64>
     %8 = stablehlo.reduce(%7 init: %cst_6) applies stablehlo.add across dimensions = [0] : (tensor<1xf64>, tensor<f64>) -> tensor<f64>
@@ -96,7 +96,7 @@ module @reactant_gradient attributes {mhlo.num_partitions = 1 : i64, mhlo.num_re
     %3 = stablehlo.transpose %0, dims = [0] : (tensor<1xf64>) -> tensor<1xf64>
     %4 = stablehlo.transpose %1, dims = [0] : (tensor<2xui64>) -> tensor<2xui64>
     %5 = stablehlo.transpose %2, dims = [0] : (tensor<1xf64>) -> tensor<1xf64>
-    %6:3 = enzyme.autodiff @"Const{typeof(loop_rng_grad)}_autodiff"(%3, %4, %cst_2, %5) {activity = [#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_const>], ret_activity = [#enzyme.activity<enzyme_activenoneed>, #enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_const>]} : (tensor<1xf64>, tensor<2xui64>, tensor<f64>, tensor<1xf64>) -> (tensor<1xf64>, tensor<2xui64>, tensor<1xf64>)
+    %6:3 = enzyme.autodiff @"Const{typeof(loop_rng_grad)}_autodiff"(%3, %4, %cst_2, %5) <{activity = [#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_const>], ret_activity = [#enzyme.activity<enzyme_activenoneed>, #enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_const>]}> : (tensor<1xf64>, tensor<2xui64>, tensor<f64>, tensor<1xf64>) -> (tensor<1xf64>, tensor<2xui64>, tensor<1xf64>)
     %7 = stablehlo.transpose %6#0, dims = [0] : (tensor<1xf64>) -> tensor<1xf64>
     %8 = stablehlo.transpose %6#1, dims = [0] : (tensor<2xui64>) -> tensor<2xui64>
     %9 = stablehlo.transpose %6#2, dims = [0] : (tensor<1xf64>) -> tensor<1xf64>

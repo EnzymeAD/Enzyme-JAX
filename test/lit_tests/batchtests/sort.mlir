@@ -10,7 +10,7 @@ module {
     return %0 : tensor<32xf32>
   }
   func.func @main(%arg0: tensor<4x32xf32>) -> tensor<4x32xf32> {
-    %0 = enzyme.batch @unbatched_sort(%arg0) {batch_shape = array<i64: 4>} : (tensor<4x32xf32>) -> tensor<4x32xf32>
+    %0 = enzyme.batch @unbatched_sort(%arg0) <{batch_shape = array<i64: 4>}> : (tensor<4x32xf32>) -> tensor<4x32xf32>
     return %0 : tensor<4x32xf32>
   }
 }

@@ -37,7 +37,7 @@ module {
 
 // CHECK:  func.func @fadd(%[[c1:.+]]: !llvm.ptr, %[[c2:.+]]: f64) {
 // CHECK-NEXT:  %[[c3:.+]] = "enzymexla.pointer2memref"(%[[c1]]) : (!llvm.ptr) -> memref<?xf64>
-// CHECK-NEXT:  %[[c4:.+]] = enzyme.affine_atomic_rmw addf %[[c2]], %[[c3]], (#map) [] monotonic {alignment = 8 : i64} : (f64, memref<?xf64>) -> f64
+// CHECK-NEXT:  %[[c4:.+]] = enzyme.affine_atomic_rmw addf %[[c2]], %[[c3]], (#map) [] monotonic <alignment = 8> : (f64, memref<?xf64>) -> f64
 // CHECK-NEXT:  return
 // CHECK-NEXT:  }
 
@@ -61,6 +61,6 @@ module {
 // CHECK:  func.func @through_gep(%[[c1:.+]]: !llvm.ptr, %[[c2:.+]]: i64, %[[c3:.+]]: f64) {
 // CHECK-NEXT:  %[[c4:.+]] = arith.index_cast %[[c2]] : i64 to index
 // CHECK-NEXT:  %[[c5:.+]] = "enzymexla.pointer2memref"(%[[c1]]) : (!llvm.ptr) -> memref<?xf64>
-// CHECK-NEXT:  %[[c6:.+]] = enzyme.affine_atomic_rmw addf %[[c3]], %[[c5]], (#map1) [%[[c4]]] monotonic {alignment = 8 : i64} : (f64, memref<?xf64>) -> f64
+// CHECK-NEXT:  %[[c6:.+]] = enzyme.affine_atomic_rmw addf %[[c3]], %[[c5]], (#map1) [%[[c4]]] monotonic <alignment = 8> : (f64, memref<?xf64>) -> f64
 // CHECK-NEXT:  return
 // CHECK-NEXT:  }

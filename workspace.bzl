@@ -1,7 +1,7 @@
-JAX_COMMIT = "f5181873d99ced80117f03b93ec41d4d15225bf6"
+JAX_COMMIT = "fbf6588d55c5662ccf98558015d5b2c4c4a7bf6f"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "3cfc955c9c73ad7c54334e0db15b46000932297a"
+ENZYME_COMMIT = "d7420561ea325d0f9f6977b0532aae801fce20cc"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
@@ -63,8 +63,7 @@ echo "" >> third_party/stablehlo/temporary.patch
 echo "diff --git a/stablehlo/reference/InterpreterOps.cpp b/stablehlo/reference/InterpreterOps.cpp" >> third_party/stablehlo/temporary.patch
 echo "--- a/stablehlo/reference/InterpreterOps.cpp" >> third_party/stablehlo/temporary.patch
 echo "+++ b/stablehlo/reference/InterpreterOps.cpp" >> third_party/stablehlo/temporary.patch
-echo "@@ -172,6 +172,10 @@" >> third_party/stablehlo/temporary.patch
-echo " SmallVector<InterpreterValue> evalRunParallelOp(" >> third_party/stablehlo/temporary.patch
+echo "@@ -175,6 +175,9 @@ SmallVector<InterpreterValue> evalRunParallelOp(" >> third_party/stablehlo/temporary.patch
 echo "     ArrayRef<InterpreterValue> inputs, std::queue<StringAttr>& infeed," >> third_party/stablehlo/temporary.patch
 echo "     SmallVector<SmallVector<StringAttr>> programs, SymbolTable& symbolTable," >> third_party/stablehlo/temporary.patch
 echo "     InterpreterFallback* fallback) {" >> third_party/stablehlo/temporary.patch
@@ -72,9 +71,10 @@ echo "+#if (defined(_WIN32) || defined(__CYGWIN__))" >> third_party/stablehlo/te
 echo "+  llvm::report_fatal_error(\\"Op not supported on windows due to std::future\\");" >> third_party/stablehlo/temporary.patch
 echo "+#else" >> third_party/stablehlo/temporary.patch
 echo "   llvm::DefaultThreadPool threadPool;" >> third_party/stablehlo/temporary.patch
-echo "   SmallVector<std::shared_future<SmallVector<InterpreterValue>>> futures;" >> third_party/stablehlo/temporary.patch
-echo "@@ -207,6 +211,7 @@" >> third_party/stablehlo/temporary.patch
-echo "   for (auto& future : futures) results.append(future.get());" >> third_party/stablehlo/temporary.patch
+echo "   llvm::ThreadPoolTaskGroup taskGroup(threadPool);" >> third_party/stablehlo/temporary.patch
+echo " " >> third_party/stablehlo/temporary.patch
+echo "@@ -211,6 +214,7 @@ SmallVector<InterpreterValue> evalRunParallelOp(" >> third_party/stablehlo/temporary.patch
+echo "   for (auto& output : taskOutputs) results.append(output);" >> third_party/stablehlo/temporary.patch
 echo "   // TODO(#1725): Figure out how to test the outfeed queue." >> third_party/stablehlo/temporary.patch
 echo "   return results;" >> third_party/stablehlo/temporary.patch
 echo "+#endif" >> third_party/stablehlo/temporary.patch
@@ -105,7 +105,7 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     # place copies and spills above the exec restore of an if/else join,
     # miscompiling kernels (llvm/llvm-project#222368). Drop once XLA's LLVM
     # includes it.
-    sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_amdgpu_bb_prolog.patch\\\",/g" third_party/llvm/workspace.bzl
+    sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_amdgpu_bb_prolog.patch\\\", \\\"\\/\\/:patches\\/llvm_orc_unw_revert.patch\\\",/g" third_party/llvm/workspace.bzl
     """,
     """
     sed -i.bak0 "s/tf_http_archive/http_archive/g" third_party/llvm/workspace.bzl
@@ -200,7 +200,7 @@ sed -i.bak0 "/D_FORTIFY_SOURCE/d" third_party/gpus/crosstool/cc_toolchain_config
 sed -i.bak0 "1s|^|load(\\\"@bazel_tools//tools/build_defs/repo:http.bzl\\\", \\\"http_archive\\\")\\n|" workspace3.bzl
 """,
     """
-sed -i.bak0 '$!N; s|tf_http_archive(\\n\\([ ]*\\)name = "rules_ml_toolchain",|http_archive(\\n\\1name = "rules_ml_toolchain", patch_cmds = [\\\"sed -i.bak0 '/D_FORTIFY_SOURCE/d' cc/features/BUILD gpu/cuda/legacy/crosstool/cc_toolchain_config.bzl.tpl\\\"],|; P; D;' workspace3.bzl
+sed -i.bak0 '$!N; s|tf_http_archive(\\n\\([ ]*\\)name = "rules_ml_toolchain",|http_archive(\\n\\1name = "rules_ml_toolchain", patch_cmds = [\\\"sed -i.bak0 '/D_FORTIFY_SOURCE/d' cc/features/BUILD gpu/cuda/legacy/crosstool/cc_toolchain_config.bzl.tpl\\\"], patches = [\\\"\\/\\/:patches\\/ml_toolchain_static_cuda.patch\\\"], patch_args = [\\\"-p1\\\"],|; P; D;' workspace3.bzl
 """,
     """
 sed -i.bak0 "s/i64/LL/g" xla/tsl/platform/windows/env_time.cc

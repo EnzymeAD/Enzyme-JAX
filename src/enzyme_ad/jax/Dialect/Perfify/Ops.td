@@ -43,7 +43,7 @@ def ArgOp : PerfifyOp<"arg", []> {
 
 def AssumeOp : PerfifyOp<"assume", [HasParent<"ConditionsOp">, Terminator]> {
   let arguments = (ins I1:$condition, OptionalAttr<BoolAttr>:$satres);
-  let assemblyFormat = "$condition attr-dict";
+  let assemblyFormat = "$condition prop-dict attr-dict";
 }
 
 def ConditionsOp : PerfifyOp<"conditions", [HasParent<"AssumptionsOp">, Terminator]> {

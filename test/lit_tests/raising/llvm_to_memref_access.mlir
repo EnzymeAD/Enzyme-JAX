@@ -15,7 +15,7 @@ module {
     %c0 = stablehlo.constant dense<0> : tensor<i64>
     %c1 = stablehlo.constant dense<1> : tensor<i64>
     %c40 = stablehlo.constant dense<40> : tensor<i64>
-    %0 = enzymexla.kernel_call @single_block_kern blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
+    %0 = enzymexla.kernel_call @single_block_kern blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%arg0) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<64xi64>) -> tensor<64xi64>
     return %0 : tensor<64xi64>
   }
 }
@@ -51,7 +51,7 @@ module {
     %c0 = stablehlo.constant dense<0> : tensor<i64>
     %c1 = stablehlo.constant dense<1> : tensor<i64>
     %c40 = stablehlo.constant dense<40> : tensor<i64>
-    %0 = enzymexla.kernel_call @simple_multi_blocks_kern blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
+    %0 = enzymexla.kernel_call @simple_multi_blocks_kern blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%arg0) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<64xi64>) -> tensor<64xi64>
     return %0 : tensor<64xi64>
   }
 }
@@ -123,7 +123,7 @@ module {
     %c_8 = stablehlo.constant dense<0> : tensor<i64>
     %c_9 = stablehlo.constant dense<256> : tensor<i64>
     %c_10 = stablehlo.constant dense<1> : tensor<i64>
-    %13:2 = enzymexla.kernel_call @"multi_args_kern" blocks in(%c_3, %c_10, %c_10) threads in(%c_9, %c_10, %c_10) shmem = %c_8 (%arg8, %arg13, %arg14, %arg15) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>]} : (tensor<1x134x374xf64>, tensor<1x135x374xf64>, tensor<114x134x374xf64>, tensor<114x135x374xf64>) -> (tensor<1x134x374xf64>, tensor<1x135x374xf64>)
+    %13:2 = enzymexla.kernel_call @"multi_args_kern" blocks in(%c_3, %c_10, %c_10) threads in(%c_9, %c_10, %c_10) shmem = %c_8 (%arg8, %arg13, %arg14, %arg15) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>]}> : (tensor<1x134x374xf64>, tensor<1x135x374xf64>, tensor<114x134x374xf64>, tensor<114x135x374xf64>) -> (tensor<1x134x374xf64>, tensor<1x135x374xf64>)
     return %13 : tensor<1x134x374xf64>
   }
 }
@@ -260,7 +260,7 @@ module {
     %c_9 = stablehlo.constant dense<256> : tensor<i64>
     %c_10 = stablehlo.constant dense<1> : tensor<i64>
     %c_11 = stablehlo.constant dense<2> : tensor<i64>
-    %13:2 = enzymexla.kernel_call @"loop_kern" blocks in(%c_3, %c_10, %c_10) threads in(%c_9, %c_10, %c_10) shmem = %c_8 (%arg8, %arg13, %arg14, %arg15) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>]} : (tensor<1x134x374xf64>, tensor<1x135x374xf64>, tensor<114x134x374xf64>, tensor<114x135x374xf64>) -> (tensor<1x134x374xf64>, tensor<1x135x374xf64>)
+    %13:2 = enzymexla.kernel_call @"loop_kern" blocks in(%c_3, %c_10, %c_10) threads in(%c_9, %c_10, %c_10) shmem = %c_8 (%arg8, %arg13, %arg14, %arg15) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>]}> : (tensor<1x134x374xf64>, tensor<1x135x374xf64>, tensor<114x134x374xf64>, tensor<114x135x374xf64>) -> (tensor<1x134x374xf64>, tensor<1x135x374xf64>)
     return %13 : tensor<1x134x374xf64>
   }
 }
@@ -300,8 +300,8 @@ module {
     %c0 = stablehlo.constant dense<0> : tensor<i64>
     %c1 = stablehlo.constant dense<1> : tensor<i64>
     %c40 = stablehlo.constant dense<40> : tensor<i64>
-    %0 = enzymexla.kernel_call @multi_callers_kern blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
-    %1 = enzymexla.kernel_call @multi_callers_kern blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
+    %0 = enzymexla.kernel_call @multi_callers_kern blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%arg0) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<64xi64>) -> tensor<64xi64>
+    %1 = enzymexla.kernel_call @multi_callers_kern blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%0) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<64xi64>) -> tensor<64xi64>
     return %1 : tensor<64xi64>
   }
 }
@@ -328,8 +328,8 @@ module {
     %c0 = stablehlo.constant dense<0> : tensor<i64>
     %c1 = stablehlo.constant dense<1> : tensor<i64>
     %c40 = stablehlo.constant dense<40> : tensor<i64>
-    %0 = enzymexla.kernel_call @multi_callers_different_elty_kern blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi32>
-    %1 = enzymexla.kernel_call @multi_callers_different_elty_kern blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi32>) -> tensor<64xi64>
+    %0 = enzymexla.kernel_call @multi_callers_different_elty_kern blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%arg0) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<64xi64>) -> tensor<64xi32>
+    %1 = enzymexla.kernel_call @multi_callers_different_elty_kern blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%0) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<64xi32>) -> tensor<64xi64>
     return %1 : tensor<64xi64>
   }
 }
@@ -356,8 +356,8 @@ module {
     %c0 = stablehlo.constant dense<0> : tensor<i64>
     %c1 = stablehlo.constant dense<1> : tensor<i64>
     %c40 = stablehlo.constant dense<40> : tensor<i64>
-    %0 = enzymexla.kernel_call @multi_callers_different_shape_kern blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<8x8xi64>
-    %1 = enzymexla.kernel_call @multi_callers_different_shape_kern blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<8x8xi64>) -> tensor<64xi64>
+    %0 = enzymexla.kernel_call @multi_callers_different_shape_kern blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%arg0) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<64xi64>) -> tensor<8x8xi64>
+    %1 = enzymexla.kernel_call @multi_callers_different_shape_kern blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%0) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<8x8xi64>) -> tensor<64xi64>
     return %1 : tensor<64xi64>
   }
 }
@@ -382,7 +382,7 @@ module {
     func.return
   }
   func.func @main(%arg0: tensor<8x8xi64>) -> tensor<8x8xi64> {
-    %0 = enzymexla.jit_call @jitcall (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<8x8xi64>) -> tensor<8x8xi64>
+    %0 = enzymexla.jit_call @jitcall (%arg0) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<8x8xi64>) -> tensor<8x8xi64>
     return %0 : tensor<8x8xi64>
   }
 }
@@ -406,7 +406,7 @@ module {
     return
   }
   func.func @main(%arg0: tensor<8x8xi64>) -> tensor<8x8xi64> {
-    %0 = enzymexla.jit_call @jitcall (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<8x8xi64>) -> tensor<8x8xi64>
+    %0 = enzymexla.jit_call @jitcall (%arg0) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<8x8xi64>) -> tensor<8x8xi64>
     return %0 : tensor<8x8xi64>
   }
 }

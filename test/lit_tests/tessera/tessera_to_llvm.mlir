@@ -48,7 +48,7 @@ llvm.func @caller() {
   %1 = llvm.alloca %0 x !llvm.struct<(f32, f32)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
   %2 = llvm.alloca %0 x !llvm.struct<(f32, f32)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
   %3 = llvm.load %2 : !llvm.ptr -> !llvm.struct<(f32, f32)>
-  %4 = tessera.call @tessera_sret_func(%3) {arg_attrs = [{llvm.nonnull, llvm.noundef}], op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>} : (!llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
+  %4 = tessera.call @tessera_sret_func(%3) <{arg_attrs = [{llvm.nonnull, llvm.noundef}]}> {op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>} : (!llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
   llvm.store %4, %1 : !llvm.struct<(f32, f32)>, !llvm.ptr
   llvm.return
 }

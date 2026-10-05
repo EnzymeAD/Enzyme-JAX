@@ -3,7 +3,7 @@
 module {
   llvm.module_flags [#llvm.mlir.module_flag<warning, "Dwarf Version", 2>, #llvm.mlir.module_flag<warning, "Debug Info Version", 3>]
   func.func @"problem_kernel!"(%arg0: tensor<9x32x16xf64>, %arg1: tensor<9x32x16xf64>) -> (tensor<9x32x16xf64>, tensor<9x32x16xf64>) {
-    %0 = enzymexla.jit_call @"##call__Z14gpu__integral_16CompilerMetadataI10StaticSizeI11_16__32__8_E12DynamicCheckvv7NDRangeILi3ES0_I9_1__2__8_ES0_I11_16__16__1_EvvEE13CuTracedArrayI7Float64Li3ELi1E11_16__32__9_E5Int64SA_#358$par13" (%arg0, %arg1) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<9x32x16xf64>, tensor<9x32x16xf64>) -> tensor<9x32x16xf64>
+    %0 = enzymexla.jit_call @"##call__Z14gpu__integral_16CompilerMetadataI10StaticSizeI11_16__32__8_E12DynamicCheckvv7NDRangeILi3ES0_I9_1__2__8_ES0_I11_16__16__1_EvvEE13CuTracedArrayI7Float64Li3ELi1E11_16__32__9_E5Int64SA_#358$par13" (%arg0, %arg1) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<9x32x16xf64>, tensor<9x32x16xf64>) -> tensor<9x32x16xf64>
     return %0, %arg1 : tensor<9x32x16xf64>, tensor<9x32x16xf64>
   }
   func.func private @"##call__Z14gpu__integral_16CompilerMetadataI10StaticSizeI11_16__32__8_E12DynamicCheckvv7NDRangeILi3ES0_I9_1__2__8_ES0_I11_16__16__1_EvvEE13CuTracedArrayI7Float64Li3ELi1E11_16__32__9_E5Int64SA_#358$par13"(%arg0: memref<9x32x16xf64, 1>, %arg1: memref<9x32x16xf64, 1>) {

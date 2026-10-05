@@ -5,7 +5,7 @@ func.func private @concat(%arg0: tensor<3x4xf64>) -> (tensor<3x8xf64>) {
     return %1 : tensor<3x8xf64>
 }
 func.func @main(%arg0: tensor<2x5x3x4xf64>) -> (tensor<2x5x3x8xf64>) {
-    %1 = enzyme.batch @concat(%arg0) {batch_shape = array<i64: 2, 5>} : (tensor<2x5x3x4xf64>) -> (tensor<2x5x3x8xf64>)
+    %1 = enzyme.batch @concat(%arg0) <{batch_shape = array<i64: 2, 5>}> : (tensor<2x5x3x4xf64>) -> (tensor<2x5x3x8xf64>)
     return %1 : tensor<2x5x3x8xf64>
 }
 

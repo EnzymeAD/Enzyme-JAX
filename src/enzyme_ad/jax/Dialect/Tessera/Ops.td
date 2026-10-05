@@ -171,7 +171,7 @@ def CallOp : TesseraOp<"call",
   let results = (outs Variadic<AnyType>);
 
   let assemblyFormat = [{
-    $callee `(` $operands `)` attr-dict `:` functional-type($operands, results)
+    $callee `(` $operands `)` prop-dict attr-dict `:` functional-type($operands, results)
   }];
   
   let builders = [
