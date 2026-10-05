@@ -184,7 +184,7 @@ module {
     enzymexla.xla_wrapper @scale_data (%data, %spare, %scale) :
         (memref<4xf32>, memref<4xf32>, memref<4xf32>) -> ()
     enzymexla.xla_wrapper @scale_data (%data, %spare, %scale)
-        {arg_attrs = [{}, {test.keep}, {}]} :
+        <{arg_attrs = [{}, {test.keep}, {}]}> :
         (memref<4xf32>, memref<4xf32>, memref<4xf32>) -> ()
     return
   }
@@ -213,7 +213,7 @@ module {
 // CHECK-SAME: %[[SCALE:[^:]+]]: memref<4xf32>) {
 // CHECK-NEXT: enzymexla.xla_wrapper @scale_data_without_unused (%[[DATA]], %[[SCALE]]) : (memref<4xf32>, memref<4xf32>) -> ()
 // CHECK-NEXT: enzymexla.xla_wrapper @scale_data_without_unused (%[[DATA]], %[[SCALE]]) : (memref<4xf32>, memref<4xf32>) -> ()
-// CHECK-NEXT: enzymexla.xla_wrapper @scale_data (%[[DATA]], %[[SPARE]], %[[SCALE]]) {arg_attrs = [{}, {test.keep}, {}]} : (memref<4xf32>, memref<4xf32>, memref<4xf32>) -> ()
+// CHECK-NEXT: enzymexla.xla_wrapper @scale_data (%[[DATA]], %[[SPARE]], %[[SCALE]]) <{arg_attrs = [{}, {test.keep}, {}]}> : (memref<4xf32>, memref<4xf32>, memref<4xf32>) -> ()
 // CHECK-NEXT: return
 // CHECK-NEXT: }
 
@@ -325,11 +325,11 @@ module {
 // to argument/result attributes or the specialized scalar input mapping.
 module {
   func.func @keep_metadata(%buffer: memref<4xf32>, %bound: i64) {
-    enzymexla.xla_wrapper @identity (%buffer) {arg_attrs = [{test.keep}]} : (memref<4xf32>) -> ()
-    enzymexla.xla_wrapper @identity (%buffer) {res_attrs = [{test.keep}]} : (memref<4xf32>) -> ()
+    enzymexla.xla_wrapper @identity (%buffer) <{arg_attrs = [{test.keep}]}> : (memref<4xf32>) -> ()
+    enzymexla.xla_wrapper @identity (%buffer) <{res_attrs = [{test.keep}]}> : (memref<4xf32>) -> ()
     enzymexla.xla_wrapper @arg_metadata (%buffer) : (memref<4xf32>) -> ()
     enzymexla.xla_wrapper @result_metadata (%buffer) : (memref<4xf32>) -> ()
-    enzymexla.xla_wrapper @specialized (%buffer, %bound) {num_specialized = 1 : i64} : (memref<4xf32>, i64) -> ()
+    enzymexla.xla_wrapper @specialized (%buffer, %bound) <{num_specialized = 1 : i64}> : (memref<4xf32>, i64) -> ()
     return
   }
   func.func private @identity(%a: tensor<4xf32>) -> tensor<4xf32> {
@@ -348,11 +348,11 @@ module {
 
 // CHECK-LABEL: func.func @keep_metadata(
 // CHECK-SAME: %[[BUFFER:[^:]+]]: memref<4xf32>, %[[BOUND:[^:]+]]: i64) {
-// CHECK-NEXT: enzymexla.xla_wrapper @identity (%[[BUFFER]]) {arg_attrs = [{test.keep}]} : (memref<4xf32>) -> ()
-// CHECK-NEXT: enzymexla.xla_wrapper @identity (%[[BUFFER]]) {res_attrs = [{test.keep}]} : (memref<4xf32>) -> ()
+// CHECK-NEXT: enzymexla.xla_wrapper @identity (%[[BUFFER]]) <{arg_attrs = [{test.keep}]}> : (memref<4xf32>) -> ()
+// CHECK-NEXT: enzymexla.xla_wrapper @identity (%[[BUFFER]]) <{res_attrs = [{test.keep}]}> : (memref<4xf32>) -> ()
 // CHECK-NEXT: enzymexla.xla_wrapper @arg_metadata (%[[BUFFER]]) : (memref<4xf32>) -> ()
 // CHECK-NEXT: enzymexla.xla_wrapper @result_metadata (%[[BUFFER]]) : (memref<4xf32>) -> ()
-// CHECK-NEXT: enzymexla.xla_wrapper @specialized (%[[BUFFER]], %[[BOUND]]) {num_specialized = 1 : i64} : (memref<4xf32>, i64) -> ()
+// CHECK-NEXT: enzymexla.xla_wrapper @specialized (%[[BUFFER]], %[[BOUND]]) <{num_specialized = 1 : i64}> : (memref<4xf32>, i64) -> ()
 // CHECK-NEXT: return
 // CHECK-NEXT: }
 
