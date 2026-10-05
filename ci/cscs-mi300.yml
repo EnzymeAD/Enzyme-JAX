@@ -19,23 +19,24 @@ include:
     SLURM_NTASKS_PER_NODE: 1
     SLURM_GPUS_PER_TASK: 4
     SLURM_TIMELIMIT: "02:30:00"
-    # Paths — all under CI_PROJECT_DIR (scratch) to avoid touching user home/cache
+    # Paths — nothing in user home/cache. The checkout and small trees live under
+    # CI_PROJECT_DIR ($SCRATCH); the build outputs (~700k files) under SHM_ROOT in
+    # node-local /dev/shm, off the scratch inode quota. See cscs-mi300.md:
+    # "Build outputs in /dev/shm".
     BUILD_ROOT: "${CI_PROJECT_DIR}"           # ci/local/build.sh reads this
     REACTANT_DIR: "${CI_PROJECT_DIR}/Reactant.jl"
     GB25_DIR: "${CI_PROJECT_DIR}/GB-25"
     LOCAL_BIN: "${CI_PROJECT_DIR}/bin"
-    JULIA_DEPOT_PATH: "${CI_PROJECT_DIR}/.julia"    # overrides default ~/.julia
-    BAZELISK_HOME: "${CI_PROJECT_DIR}/.bazelisk"   # overrides default ~/.cache/bazelisk
-    BAZEL_OUTPUT_ROOT: "${CI_PROJECT_DIR}/.bazel"  # used by the bazel wrapper
+    SHM_ROOT: "/dev/shm/ci-${CI_JOB_ID}"
+    JULIA_DEPOT_PATH: "${SHM_ROOT}/.julia"    # overrides default ~/.julia
+    BAZELISK_HOME: "${SHM_ROOT}/.bazelisk"   # overrides default ~/.cache/bazelisk
+    BAZEL_OUTPUT_ROOT: "${SHM_ROOT}/.bazel"  # used by the bazel wrapper
     # ROCm path — UENV-specific, update when the UENV hash changes.
     # ROCM_PATH is overridden in the script to point at the overlay (view + MIOpen).
     ROCM_PATH: "/user-environment/env/default"
     # Clique init measured at ~57 s here, so the 10 s default floods the log with
     # "may be stuck" warnings it then retracts. See cscs-mi300.md: "Collective timeouts".
     XLA_FLAGS: "--xla_gpu_first_collective_call_warn_stuck_timeout_seconds=120 --xla_gpu_first_collective_call_terminate_timeout_seconds=600"
-    # Deleting the ~600k-file Bazel output root on Lustre takes ~8 min; the default is 5m.
-    # See cscs-mi300.md: "Job directory cleanup".
-    RUNNER_AFTER_SCRIPT_TIMEOUT: 20m
 
   # A job killed before after_script leaves read-only Bazel dirs behind, on which the
   # runner's own wipe fails. See cscs-mi300.md: "Job directory cleanup".
@@ -50,8 +51,18 @@ include:
     # See cscs-mi300.md: "Job directory cleanup".
     - REPEAT_MIN=20 bash "${CI_PROJECT_DIR}/ci/sweep-stale-slots.sh" > "${CI_PROJECT_DIR}/sweep.log" 2>&1 &
 
-    # Create all job-scoped directories up front
+    # Create all job-scoped directories up front; show the room in /dev/shm (node RAM).
+    # The check catches a variable left unexpanded, which would put a build tree back
+    # on $SCRATCH under a literal "${SHM_ROOT}" dir.
+    - |
+      for v in JULIA_DEPOT_PATH BAZELISK_HOME BAZEL_OUTPUT_ROOT; do
+        if [[ "${SHM_ROOT}" != /dev/shm/ci-* || "${!v}" != "${SHM_ROOT}"/* ]]; then
+          echo "ERROR: ${v} (${!v}) is not under SHM_ROOT (${SHM_ROOT})" >&2
+          exit 1
+        fi
+      done
     - mkdir -p "${LOCAL_BIN}" "${JULIA_DEPOT_PATH}" "${BAZELISK_HOME}" "${BAZEL_OUTPUT_ROOT}"
+    - df -h /dev/shm
 
     # Shorthands for the repeated compute-step invocations. Plain shell vars: all
     # script steps share one shell (as the PATH export below already relies on).
@@ -71,8 +82,8 @@ include:
         echo "ERROR: BAZEL_OUTPUT_ROOT is not set. Refusing to run (would write to ~/.cache/bazel)." >&2
         exit 1
       fi
-      if [[ "${BAZEL_OUTPUT_ROOT}" != "${CI_PROJECT_DIR}"* ]]; then
-        echo "ERROR: BAZEL_OUTPUT_ROOT (${BAZEL_OUTPUT_ROOT}) is not under CI_PROJECT_DIR (${CI_PROJECT_DIR})." >&2
+      if [[ -z "${SHM_ROOT:-}" || "${BAZEL_OUTPUT_ROOT}" != "${SHM_ROOT}"/* ]]; then
+        echo "ERROR: BAZEL_OUTPUT_ROOT (${BAZEL_OUTPUT_ROOT}) is not under SHM_ROOT (${SHM_ROOT:-unset})." >&2
         exit 1
       fi
       exec "$(dirname "$0")/bazelisk-real" --output_user_root="${BAZEL_OUTPUT_ROOT}" "$@"
@@ -177,14 +188,16 @@ include:
     # Test correctness
     - ${SRUN_UENV} timeout 19m "${CI_PROJECT_DIR}/run_julia.sh" --project="${GB25_DIR}" ${JULIA_FLAGS} "${GB25_DIR}/correctness/correctness_sharded_baroclinic_instability_simulation_run.jl" ${FLOAT_TYPE}
 
-  # Remove the build trees as soon as the job ends. GitLab uploads artifacts only
-  # after after_script, so the .xla files in GB-25/ stay. A cancelled job never gets
-  # here; the sweep step above covers it. See cscs-mi300.md: "Job directory cleanup".
+  # Remove the build trees as soon as the job ends: SHM_ROOT from node RAM, the rest
+  # from the job dir. GitLab uploads artifacts only after after_script, so the .xla
+  # files in GB-25/ stay. A cancelled job never gets here; /dev/shm is wiped with the
+  # job, and the sweep step above covers the job dir. See cscs-mi300.md: "Job
+  # directory cleanup".
   after_script:
     - cat "${CI_PROJECT_DIR}/sweep.log" 2>/dev/null || true
+    - du -sh "${SHM_ROOT}" 2>/dev/null || true
     - |
-      for p in "${BAZEL_OUTPUT_ROOT}" "${JULIA_DEPOT_PATH}" "${BAZELISK_HOME}" "${REACTANT_DIR}" \
-               "${LOCAL_BIN}" "${CI_PROJECT_DIR}/.rocm" "${GB25_DIR}"; do
+      for p in "${SHM_ROOT}" "${REACTANT_DIR}" "${LOCAL_BIN}" "${CI_PROJECT_DIR}/.rocm" "${GB25_DIR}"; do
         [[ -d "${p}" ]] || continue
         # Bazel leaves read-only dirs (rm -rf can't empty them) and a mode-000 sandbox
         # dir find can't enter. "\;" fixes each dir before find descends into it, so
