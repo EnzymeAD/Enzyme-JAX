@@ -4238,7 +4238,8 @@ static LogicalResult proveIterationsIndependent(
     const DenseSet<Operation *> &passThrough,
     const DenseMap<Operation *, unsigned> &innerIv,
     SmallVectorImpl<Accumulation> &accumulations,
-    DenseMap<Operation *, Value> &scatterAccum) {
+    DenseMap<Operation *, Value> &scatterAccum,
+    DenseMap<Operation *, Value> &entryReads) {
   // A chain of plain reads and writes is decided on the symbolic form of
   // its indices, whatever the trip count, and the walk below skips it. A
   // loop whose every chain is so decided, with no private buffer, needs no
@@ -4270,6 +4271,17 @@ static LogicalResult proveIterationsIndependent(
   // iterations may read the same element, what they may not share is an
   // element one of them writes
   DenseMap<unsigned, SmallVector<DenseSet<int64_t>>> written, readFrom;
+  // Reads that see the loop-entry buffer: the reading iteration has written
+  // none of their elements before them, so sequentially they see what the
+  // loop was entered with unless an earlier iteration wrote it. Batched, such
+  // a read is taken from the entry buffer, and conflicts only with a write
+  // of an earlier iteration. Any other read sees, in the batched body, the
+  // writes of every iteration before it, and conflicts with any other
+  // iteration's write. An op is a read of the entry buffer in every
+  // iteration or in none: one found otherwise repeats the proof.
+  DenseMap<unsigned, SmallVector<DenseSet<int64_t>>> readEntry;
+  DenseSet<Operation *> notEntry;
+  DenseMap<Operation *, Value> entryCandidates;
   // the slots every iteration adds to: they may repeat between iterations,
   // but no iteration may plainly read or write them
   DenseMap<unsigned, SmallVector<DenseSet<int64_t>>> accumulated;
@@ -4922,18 +4934,36 @@ static LogicalResult proveIterationsIndependent(
         bases[arg] = {a->base, a->scale};
       else if (it->second != std::make_pair(a->base, a->scale))
         return failure();
+      bool entry = false;
+      if (!write && !scatterAccum.count(&op) && !notEntry.count(&op) &&
+          isa<stablehlo::GatherOp, stablehlo::DynamicSliceOp,
+              stablehlo::SliceOp>(&op)) {
+        auto wit = written.find(arg);
+        entry = wit == written.end() || wit->second.empty() ||
+                llvm::none_of(a->elems, [&](int64_t e) {
+                  return wit->second[k].contains(e);
+                });
+        if (!entry)
+          notEntry.insert(&op);
+      }
       auto &sets = scatterAccum.count(&op) ? accumulated[arg]
                    : write                 ? written[arg]
+                   : entry                 ? readEntry[arg]
                                            : readFrom[arg];
       if (sets.empty())
         sets.resize(numIters);
       sets[k].insert(a->elems.begin(), a->elems.end());
+      if (entry)
+        entryCandidates[&op] = body.getArgument(arg);
     }
     return success();
   };
   auto runOnce = [&]() -> LogicalResult {
+    size_t entryBefore = notEntry.size();
     written.clear();
     readFrom.clear();
+    readEntry.clear();
+    entryCandidates.clear();
     writtenHere.clear();
     accumulated.clear();
     accumulatedAnywhere.clear();
@@ -4948,16 +4978,19 @@ static LogicalResult proveIterationsIndependent(
       if (failed(visit(body, iters)))
         return failure();
     }
+    if (notEntry.size() != entryBefore)
+      return success(); // a read classified anew: the proof is repeated
     if (decided.empty() && written.empty() && writtenHere.empty() &&
         accumulated.empty() && accumulatedAnywhere.empty())
       return failure();
     // added to somewhere: nothing may plainly read or write the buffer
     for (unsigned arg : accumulatedAnywhere) {
-      if (written.count(arg) || readFrom.count(arg))
+      if (written.count(arg) || readFrom.count(arg) || readEntry.count(arg))
         return failure();
     }
     for (auto &[arg, w] : written) {
       auto rit = readFrom.find(arg);
+      auto eit = readEntry.find(arg);
       auto ait = accumulated.find(arg);
       for (int64_t i = 0; i < numIters; ++i)
         for (int64_t j = 0; j < numIters; ++j) {
@@ -4968,22 +5001,25 @@ static LogicalResult proveIterationsIndependent(
               return failure(); // written by both
             if (rit != readFrom.end() && rit->second[j].contains(e))
               return failure(); // written by one, read by the other
+            if (j > i && eit != readEntry.end() && eit->second[j].contains(e))
+              return failure(); // written, then read from the entry buffer
             if (ait != accumulated.end() && ait->second[j].contains(e))
               return failure(); // written by one, added to by the other
           }
         }
     }
     // an accumulated slot is read by no iteration, this one included
-    for (auto &[arg, a] : accumulated) {
-      auto rit = readFrom.find(arg);
-      if (rit == readFrom.end())
-        continue;
-      for (int64_t i = 0; i < numIters; ++i)
-        for (int64_t j = 0; j < numIters; ++j)
-          for (int64_t e : a[i])
-            if (rit->second[j].contains(e))
-              return failure();
-    }
+    for (auto &[arg, a] : accumulated)
+      for (auto *reads : {&readFrom, &readEntry}) {
+        auto rit = reads->find(arg);
+        if (rit == reads->end())
+          continue;
+        for (int64_t i = 0; i < numIters; ++i)
+          for (int64_t j = 0; j < numIters; ++j)
+            for (int64_t e : a[i])
+              if (rit->second[j].contains(e))
+                return failure();
+      }
     return success();
   };
   // An index may read the counter of a loop around this one. Such a counter
@@ -5012,18 +5048,26 @@ static LogicalResult proveIterationsIndependent(
                       wi.getConstantNumIters()});
     eval.enclosing.push_back({wi.getInductionVariable(), 0});
   }
-  SmallVector<int64_t> at(around.size(), 0);
-  for (int64_t r = 0; r < runs; ++r) {
-    for (auto [i, a] : llvm::enumerate(around))
-      eval.enclosing[i].second = a.in.start + at[i] * a.in.step;
-    if (failed(runOnce()))
-      return failure();
-    for (size_t i = 0; i < around.size(); ++i) {
-      if (++at[i] < around[i].n)
-        break;
-      at[i] = 0;
+  for (;;) {
+    size_t before = notEntry.size();
+    SmallVector<int64_t> at(around.size(), 0);
+    for (int64_t r = 0; r < runs && notEntry.size() == before; ++r) {
+      for (auto [i, a] : llvm::enumerate(around))
+        eval.enclosing[i].second = a.in.start + at[i] * a.in.step;
+      if (failed(runOnce()))
+        return failure();
+      for (size_t i = 0; i < around.size(); ++i) {
+        if (++at[i] < around[i].n)
+          break;
+        at[i] = 0;
+      }
     }
+    if (notEntry.size() == before)
+      break;
   }
+  for (auto &[op, arg] : entryCandidates)
+    if (!notEntry.count(op))
+      entryReads[op] = arg;
   return success();
 }
 
@@ -5061,6 +5105,9 @@ struct ParallelWhileBatcher {
   bool isBatched(Value v) const { return batched.contains(v); }
   // scatter -> the x it adds to the elements it writes (from the proof)
   DenseMap<Operation *, Value> scatterAccum;
+  // reads the proof found to see the loop-entry buffer: the carried argument
+  // they are taken from
+  DenseMap<Operation *, Value> entryReads;
   // The operand a link of a chain takes the buffer in as, or null when `op`
   // is not one: a write into the buffer, a reshape of it, or an add to it. A
   // concatenate rebuilding the buffer takes it in through its slices, so it
@@ -5549,12 +5596,16 @@ struct ParallelWhileBatcher {
            !isBatched(op.getOperand(0))))
         shared = op.getOperand(0);
       IRMapping bm;
+      auto er = entryReads.find(&op);
       for (Value v : op.getOperands()) {
+        // a read the proof moved to the loop-entry buffer
+        Value src =
+            er != entryReads.end() && v == op.getOperand(0) ? er->second : v;
         bool scalarBound =
             isa<stablehlo::ClampOp>(&op) && v != op.getOperand(1) &&
             cast<RankedTensorType>(v.getType()).getRank() == 0 && !isBatched(v);
-        bm.map(v, v == shared || scalarBound ? map.lookupOrDefault(v)
-                                             : operand(v));
+        bm.map(v, v == shared || scalarBound ? map.lookupOrDefault(src)
+                                             : operand(src));
       }
       if (auto cc = dyn_cast<stablehlo::ConcatenateOp>(&op);
           cc && isChainLink(&op)) {
@@ -5804,11 +5855,11 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
   passThrough.insert(batcher.chainPassThrough.begin(),
                      batcher.chainPassThrough.end());
   SmallVector<Accumulation> accumulations;
-  if (!tagged &&
-      failed(proveIterationsIndependent(
-          whileOp, body, info, batcher.chains, batcher.chainLinks, iv, numIters,
-          start, step, batcher.chainRoot, privateRoot, passThrough,
-          batcher.innerIv, accumulations, batcher.scatterAccum)))
+  if (!tagged && failed(proveIterationsIndependent(
+                     whileOp, body, info, batcher.chains, batcher.chainLinks,
+                     iv, numIters, start, step, batcher.chainRoot, privateRoot,
+                     passThrough, batcher.innerIv, accumulations,
+                     batcher.scatterAccum, batcher.entryReads)))
     return failure();
   // Without the proof (a tagged loop) a concatenate rebuilding a buffer, or
   // an add to it, is only understood as accumulation when proved so.

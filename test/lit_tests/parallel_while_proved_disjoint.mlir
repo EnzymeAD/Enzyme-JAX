@@ -551,6 +551,69 @@ func.func @nested_accumulate(%x: tensor<4x3xf64>, %z: tensor<4x3xf64>, %y: tenso
 
 // -----
 
+// Every iteration writes its own slot and reads the next one, which a later
+// iteration writes: sequentially the read sees the value the loop was entered
+// with, so batched it is taken from the entry buffer.
+func.func @reads_later_slot(%y: tensor<8xf64>, %x: tensor<4xf64>, %out: tensor<4xf64>) -> (tensor<8xf64>, tensor<4xf64>) {
+  %c0 = stablehlo.constant dense<0> : tensor<i64>
+  %c1 = stablehlo.constant dense<1> : tensor<i64>
+  %c4 = stablehlo.constant dense<4> : tensor<i64>
+  %0:3 = stablehlo.while(%i = %c0, %acc = %y, %o = %out) : tensor<i64>, tensor<8xf64>, tensor<4xf64>
+   cond {
+    %c = stablehlo.compare LT, %i, %c4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+    stablehlo.return %c : tensor<i1>
+  } do {
+    %v = stablehlo.dynamic_slice %x, %i, sizes = [1] : (tensor<4xf64>, tensor<i64>) -> tensor<1xf64>
+    %w = stablehlo.dynamic_update_slice %acc, %v, %i : (tensor<8xf64>, tensor<1xf64>, tensor<i64>) -> tensor<8xf64>
+    %n = stablehlo.add %i, %c1 : tensor<i64>
+    %r = stablehlo.dynamic_slice %w, %n, sizes = [1] : (tensor<8xf64>, tensor<i64>) -> tensor<1xf64>
+    %u = stablehlo.dynamic_update_slice %o, %r, %i : (tensor<4xf64>, tensor<1xf64>, tensor<i64>) -> tensor<4xf64>
+    stablehlo.return %n, %w, %u : tensor<i64>, tensor<8xf64>, tensor<4xf64>
+  }
+  return %0#1, %0#2 : tensor<8xf64>, tensor<4xf64>
+}
+
+// CHECK:  func.func @reads_later_slot(%arg0: tensor<8xf64>, %arg1: tensor<4xf64>, %arg2: tensor<4xf64>) -> (tensor<8xf64>, tensor<4xf64>) {
+// CHECK-NEXT:  %c = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:  %0 = stablehlo.reshape %arg1 : (tensor<4xf64>) -> tensor<4x1xf64>
+// CHECK-NEXT:  %1 = stablehlo.reshape %0 : (tensor<4x1xf64>) -> tensor<4xf64>
+// CHECK-NEXT:  %2 = stablehlo.dynamic_update_slice %arg0, %1, %c : (tensor<8xf64>, tensor<4xf64>, tensor<i64>) -> tensor<8xf64>
+// CHECK-NEXT:  %3 = stablehlo.slice %arg0 [1:5] : (tensor<8xf64>) -> tensor<4xf64>
+// CHECK-NEXT:  %4 = stablehlo.reshape %3 : (tensor<4xf64>) -> tensor<4x1xf64>
+// CHECK-NEXT:  %5 = stablehlo.reshape %4 : (tensor<4x1xf64>) -> tensor<4xf64>
+// CHECK-NEXT:  %6 = stablehlo.dynamic_update_slice %arg2, %5, %c : (tensor<4xf64>, tensor<4xf64>, tensor<i64>) -> tensor<4xf64>
+// CHECK-NEXT:  return %2, %6 : tensor<8xf64>, tensor<4xf64>
+// CHECK-NEXT:  }
+
+// -----
+
+// The slot read here was written by the previous iteration (and by this one
+// for the first, whose index clamps to its own): the loop stays.
+func.func @reads_earlier_slot(%y: tensor<8xf64>, %x: tensor<4xf64>, %out: tensor<4xf64>) -> (tensor<8xf64>, tensor<4xf64>) {
+  %c0 = stablehlo.constant dense<0> : tensor<i64>
+  %c1 = stablehlo.constant dense<1> : tensor<i64>
+  %c4 = stablehlo.constant dense<4> : tensor<i64>
+  %0:3 = stablehlo.while(%i = %c0, %acc = %y, %o = %out) : tensor<i64>, tensor<8xf64>, tensor<4xf64>
+   cond {
+    %c = stablehlo.compare LT, %i, %c4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+    stablehlo.return %c : tensor<i1>
+  } do {
+    %v = stablehlo.dynamic_slice %x, %i, sizes = [1] : (tensor<4xf64>, tensor<i64>) -> tensor<1xf64>
+    %w = stablehlo.dynamic_update_slice %acc, %v, %i : (tensor<8xf64>, tensor<1xf64>, tensor<i64>) -> tensor<8xf64>
+    %p = stablehlo.subtract %i, %c1 : tensor<i64>
+    %r = stablehlo.dynamic_slice %w, %p, sizes = [1] : (tensor<8xf64>, tensor<i64>) -> tensor<1xf64>
+    %u = stablehlo.dynamic_update_slice %o, %r, %i : (tensor<4xf64>, tensor<1xf64>, tensor<i64>) -> tensor<4xf64>
+    %n = stablehlo.add %i, %c1 : tensor<i64>
+    stablehlo.return %n, %w, %u : tensor<i64>, tensor<8xf64>, tensor<4xf64>
+  }
+  return %0#1, %0#2 : tensor<8xf64>, tensor<4xf64>
+}
+
+// CHECK:  func.func @reads_earlier_slot
+// CHECK:    stablehlo.while
+
+// -----
+
 // Iteration i writes slot i+1, and slot 0 inside a nested loop: every
 // iteration writes slot 0, so the iterations are not independent. A chain
 // through a nested loop is not proved; the loop is kept.
@@ -773,7 +836,9 @@ func.func @affine_disjoint(%y: tensor<64xf64>) -> tensor<64xf64> {
 // -----
 
 // Iteration i reads slot i+1, which iteration i+1 writes: the closed form
-// finds the windows of two iterations one apart meet. Kept.
+// finds the windows of two iterations one apart meet, and leaves the loop to
+// the enumeration. That finds iteration i reads slot i+1 before any iteration
+// writes it, so the read sees the entry buffer: batched.
 func.func @affine_overlap(%y: tensor<33xf64>) -> tensor<33xf64> {
   %c0 = stablehlo.constant dense<0> : tensor<i64>
   %c1 = stablehlo.constant dense<1> : tensor<i64>
@@ -794,20 +859,11 @@ func.func @affine_overlap(%y: tensor<33xf64>) -> tensor<33xf64> {
 
 // CHECK:  func.func @affine_overlap(%arg0: tensor<33xf64>) -> tensor<33xf64> {
 // CHECK-NEXT:   %c = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:   %c_0 = stablehlo.constant dense<1> : tensor<i64>
-// CHECK-NEXT:   %c_1 = stablehlo.constant dense<32> : tensor<i64>
-// CHECK-NEXT:   %0:2 = stablehlo.while(%iterArg = %c, %iterArg_2 = %arg0) : tensor<i64>, tensor<33xf64>
-// CHECK-NEXT:   cond {
-// CHECK-NEXT:     %1 = stablehlo.compare LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:     stablehlo.return %1 : tensor<i1>
-// CHECK-NEXT:   } do {
-// CHECK-NEXT:     %1 = stablehlo.add %iterArg, %c_0 : tensor<i64>
-// CHECK-NEXT:     %2 = stablehlo.dynamic_slice %iterArg_2, %1, sizes = [1] : (tensor<33xf64>, tensor<i64>) -> tensor<1xf64>
-// CHECK-NEXT:     %3 = stablehlo.dynamic_update_slice %iterArg_2, %2, %iterArg : (tensor<33xf64>, tensor<1xf64>, tensor<i64>) -> tensor<33xf64>
-// CHECK-NEXT:     %4 = stablehlo.add %iterArg, %c_0 : tensor<i64>
-// CHECK-NEXT:     stablehlo.return %4, %3 : tensor<i64>, tensor<33xf64>
-// CHECK-NEXT:   }
-// CHECK-NEXT:   return %0#1 : tensor<33xf64>
+// CHECK-NEXT:   %0 = stablehlo.slice %arg0 [1:33] : (tensor<33xf64>) -> tensor<32xf64>
+// CHECK-NEXT:   %1 = stablehlo.reshape %0 : (tensor<32xf64>) -> tensor<32x1xf64>
+// CHECK-NEXT:   %2 = stablehlo.reshape %1 : (tensor<32x1xf64>) -> tensor<32xf64>
+// CHECK-NEXT:   %3 = stablehlo.dynamic_update_slice %arg0, %2, %c : (tensor<33xf64>, tensor<32xf64>, tensor<i64>) -> tensor<33xf64>
+// CHECK-NEXT:   return %3 : tensor<33xf64>
 // CHECK-NEXT: }
 
 // -----
