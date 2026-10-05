@@ -314,8 +314,8 @@ module {
                                   %b: !llvm.ptr {llvm.noalias}) {
     %ma = "enzymexla.pointer2memref"(%a) : (!llvm.ptr) -> memref<?xf32>
     %mb = "enzymexla.pointer2memref"(%b) : (!llvm.ptr) -> memref<?xf32>
-    enzymexla.xla_wrapper @update (%ma) {arg_attrs = [{test.tag = "first"}]} : (memref<?xf32>) -> ()
-    enzymexla.xla_wrapper @update (%mb) {res_attrs = [{test.tag = "second"}]} : (memref<?xf32>) -> ()
+    enzymexla.xla_wrapper @update (%ma) <{arg_attrs = [{test.tag = "first"}]}> : (memref<?xf32>) -> ()
+    enzymexla.xla_wrapper @update (%mb) <{res_attrs = [{test.tag = "second"}]}> : (memref<?xf32>) -> ()
     llvm.return
   }
   func.func private @update(%a: tensor<?xf32>) -> tensor<?xf32> {
@@ -324,8 +324,8 @@ module {
   }
 }
 // CHECK-LABEL: llvm.func @do_not_fuse_metadata
-// CHECK: enzymexla.xla_wrapper @update ({{.*}}) {arg_attrs = [{test.tag = "first"}]}
-// CHECK: enzymexla.xla_wrapper @update ({{.*}}) {res_attrs = [{test.tag = "second"}]}
+// CHECK: enzymexla.xla_wrapper @update ({{.*}}) <{arg_attrs = [{test.tag = "first"}]}>
+// CHECK: enzymexla.xla_wrapper @update ({{.*}}) <{res_attrs = [{test.tag = "second"}]}>
 // CHECK: llvm.return
 // CHECK-NOT: @rxla$megakernel
 
