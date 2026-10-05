@@ -103,15 +103,29 @@ root is never reused across jobs, so keeping it buys no caching.
 Three pieces handle this:
 
 - **[`sweep-stale-slots.sh`](sweep-stale-slots.sh)** removes the build trees from
-  this project's *other* slots whose job is gone. A slot qualifies when its newest
-  `script_*` names a CI job with no `ci-<id>` left in `squeue`, and nothing at its
-  top level changed in the last 5 min. The push that caused a cancel also starts
-  the job that cleans up after it. The cancel only lands ~1 min after the new
-  pipeline starts, so the first `script:` step runs the sweep in the background:
-  one pass every 2 min for 20 min, alongside the build. Its output goes to
-  `sweep.log`, which `after_script` prints. A background process writing to the
+  this project's *other* slots whose job is gone. The push that caused a cancel
+  also starts the job that cleans up after it. The cancel only lands ~1 min after
+  the new pipeline starts, so the first `script:` step runs the sweep in the
+  background: one pass every 2 min for 20 min, alongside the build. Its output goes
+  to `sweep.log`, which `after_script` prints. A background process writing to the
   job log could hold the step open after an early failure, so it writes to the
-  file instead. `DRY_RUN=1` only reports, including every skipped slot and why.
+  file instead.
+  - **Which slots:** a slot qualifies when its newest `script_*` names a CI job
+    that `squeue` no longer lists, or lists only as `COMPLETING`. A cancelled job
+    whose processes are stuck can stay `COMPLETING` for up to an hour
+    (`UnkillableStepTimeout`), but its CI stages are over by then. Nothing at the
+    slot's top level may have changed in the last 5 min.
+  - **One sweeper per dir:** jobs that start together sweep at the same moment. Two
+    `rm -rf` racing over the same tree on Lustre flood the log with `Stale file
+    handle` and repeat the work. So each build dir is first claimed by renaming it
+    to `.swept.<job id>.<name>`. The rename is atomic, so only one sweeper gets it,
+    and only that sweeper deletes it. A claim whose sweeper job is gone, because it
+    was killed mid-delete, is claimed again later.
+  - **Deletions don't block:** a 700k-file `.bazel` takes ~5 min to delete. The
+    deletions run in the background so the 2-min passes keep going.
+  - **Logging:** `sweep.log` gives each slot's skip reason ("still active",
+    "waiting until nothing changed", …) once, and again whenever it changes.
+    `DRY_RUN=1` reports what would be claimed and changes nothing.
 - **`after_script`** deletes those trees once the job finishes, keeping only
   `GB-25/*.xla`, because GitLab uploads artifacts after `after_script` has run.
   `RUNNER_AFTER_SCRIPT_TIMEOUT` is raised to 20m because deleting the Bazel tree on
@@ -131,13 +145,18 @@ and under the runner's `set -e` stops `after_script` before its `rm`.
 
 `after_script` runs inside the job's `SLURM_TIMELIMIT`, so a run that uses almost
 all of it can still be cut off; the sweep or the hook covers that case later.
-To clear finished slots by hand, first check `squeue -u $USER` shows no job in them:
+
+To clear finished slots by hand, run the sweep itself from a login node. The slot
+name `manual` doesn't exist, so no slot is excluded:
 
 ```
-for d in $SCRATCH/gitlab-runner/f7t/*/<project-id>/.bazel; do
-  find "$d" -type d ! -perm -u=rwx -exec chmod u+rwx {} \; && rm -rf "$d"
-done
+CI_PROJECT_DIR=$SCRATCH/gitlab-runner/f7t/manual/<project-id> DRY_RUN=1 bash ci/sweep-stale-slots.sh
+CI_PROJECT_DIR=$SCRATCH/gitlab-runner/f7t/manual/<project-id> bash ci/sweep-stale-slots.sh
 ```
+
+It applies the same checks as in CI, and claims before it deletes. That matters by
+hand too: a new job can take a slot while its old `.bazel` is being deleted. A
+plain loop over `.julia`, `GB-25` etc. would then delete the new job's directories.
 
 ### LLVM headers
 
