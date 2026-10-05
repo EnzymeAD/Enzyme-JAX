@@ -7946,10 +7946,16 @@ struct TransposeElementwiseTransposeSimplify
         return failure();
       auto inner = operand.getDefiningOp<stablehlo::TransposeOp>();
       if (inner && inner.getPermutationAttr() == invPerm) {
-        cancelsTranspose = true;
-        if (singleUse &&
-            llvm::all_of(inner->getUsers(),
-                         [&](Operation *user) { return user == elem; }) &&
+        bool isConstant = matchPattern(inner.getOperand(), m_Constant());
+        cancelsTranspose |= !isConstant;
+        bool hasOtherUser = false;
+        for (Operation *user : inner->getUsers()) {
+          if (user != elem) {
+            hasOtherUser = true;
+            break;
+          }
+        }
+        if (singleUse && !hasOtherUser && !isConstant &&
             removableInputs.insert(inner).second)
           ++removedTransposes;
         continue;
@@ -7964,7 +7970,8 @@ struct TransposeElementwiseTransposeSimplify
     // Partial cancellation must strictly reduce transposes, without duplicating
     // shared arithmetic. Neutral layout changes can cycle with transpose
     // factoring and CSE. Shared input transposes only count as removed when all
-    // of their users disappear.
+    // of their users disappear. Do not count constant transposes as savings.
+    // Cancel at least one nonconstant input transpose to avoid constant cycles.
     if ((!allowPartial && !allOperandsCancel) || !cancelsTranspose ||
         (!allOperandsCancel && !singleUse) ||
         (addedTransposes && addedTransposes >= removedTransposes))
@@ -7985,9 +7992,11 @@ struct TransposeElementwiseTransposeSimplify
       }
     }
 
-    Operation *newElem = rewriter.clone(*elem);
-    newElem->setOperands(newOperands);
-    newElem->getResult(0).setType(op.getType());
+    Operation *newElem = Operation::create(
+        elem->getLoc(), elem->getName(), {op.getType()}, newOperands,
+        elem->getRawDictionaryAttrs(), elem->getPropertiesStorage(),
+        elem->getSuccessors(), 0);
+    rewriter.insert(newElem);
     rewriter.replaceOp(op, newElem);
     return success();
   }
@@ -38745,7 +38754,7 @@ struct EnzymeHLOOptPass
                  AssociativeBinaryOpReordering,
                  CommonAssociativeCommutativeOpReorder>(context);
     patterns.add<TransposeElementwiseTransposeSimplify>(
-        context, PatternBenefit(1), /*allowPartial=*/false);
+        context, PatternBenefit(1), /*allowPartial=*/true);
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad,
@@ -39138,19 +39147,6 @@ struct EnzymeHLOOptPass
     config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {
-      signalPassFailure();
-      return;
-    }
-
-    // Partial transpose cancellation moves layouts across shared expression
-    // boundaries. Run it after transpose factoring and CSE have converged, so
-    // those patterns cannot recreate the intermediate transposes it removes.
-    RewritePatternSet transposeCleanup(context);
-    transposeCleanup.add<TransposeElementwiseTransposeSimplify>(context);
-    if (passses & 2048)
-      transposeCleanup.add<TransposeTranspose>(context);
-    if (failed(applyPatternsGreedily(getOperation(),
-                                     std::move(transposeCleanup), config))) {
       signalPassFailure();
       return;
     }

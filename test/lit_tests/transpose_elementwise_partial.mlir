@@ -1,5 +1,5 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt | FileCheck %s
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=transpose_elementwise_transpose(1)" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt | FileCheck %s --check-prefixes=CHECK,NORMAL
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=transpose_elementwise_transpose(1)" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s --check-prefixes=CHECK,ISOLATED
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-opt --inline --canonicalize --symbol-dce | stablehlo-translate --interpret
 
 // Cancel the inverse transposes on the predicate and false value, moving the
@@ -99,6 +99,83 @@ func.func @three_axes_partial(%x: tensor<2x3x4xi32>, %y: tensor<4x2x3xi32>) -> t
   %s = stablehlo.subtract %tx, %y : tensor<4x2x3xi32>
   %r = stablehlo.transpose %s, dims = [1, 2, 0] : (tensor<4x2x3xi32>) -> tensor<2x3x4xi32>
   return %r : tensor<2x3x4xi32>
+}
+
+// Keep the comparison direction and signedness when creating the new operation.
+// CHECK-LABEL: func.func @compare_partial(
+// CHECK-SAME: %[[X:.*]]: tensor<2x3xi32>, %[[Y:.*]]: tensor<3x2xi32>
+// CHECK-NEXT: %[[TY:.*]] = stablehlo.transpose %[[Y]], dims = [1, 0] : (tensor<3x2xi32>) -> tensor<2x3xi32>
+// CHECK-NEXT: %[[R:.*]] = stablehlo.compare LT, %[[X]], %[[TY]], SIGNED : (tensor<2x3xi32>, tensor<2x3xi32>) -> tensor<2x3xi1>
+// CHECK-NEXT: return %[[R]] : tensor<2x3xi1>
+func.func @compare_partial(%x: tensor<2x3xi32>, %y: tensor<3x2xi32>) -> tensor<2x3xi1> {
+  %tx = stablehlo.transpose %x, dims = [1, 0] : (tensor<2x3xi32>) -> tensor<3x2xi32>
+  %compare = stablehlo.compare LT, %tx, %y, SIGNED : (tensor<3x2xi32>, tensor<3x2xi32>) -> tensor<3x2xi1>
+  %result = stablehlo.transpose %compare, dims = [1, 0] : (tensor<3x2xi1>) -> tensor<2x3xi1>
+  return %result : tensor<2x3xi1>
+}
+
+// The normal pass folds this constant transpose. Removing it saves no work.
+// Keep the output transpose to prevent a cycle with transpose factoring.
+// CHECK-LABEL: func.func @constant_transpose_cost(
+// CHECK-SAME: %[[X:.*]]: tensor<3x2xf32>
+// NORMAL-NEXT: %[[C:.*]] = stablehlo.constant dense<2.000000e+00> : tensor<3x2xf32>
+// NORMAL-NEXT: %[[M:.*]] = stablehlo.multiply %[[C]], %[[X]] : tensor<3x2xf32>
+// NORMAL-NEXT: %[[R:.*]] = stablehlo.transpose %[[M]], dims = [1, 0] : (tensor<3x2xf32>) -> tensor<2x3xf32>
+// NORMAL-NEXT: return %[[R]] : tensor<2x3xf32>
+// ISOLATED-NEXT: %[[C:.*]] = stablehlo.constant dense<2.000000e+00> : tensor<2x3xf32>
+// ISOLATED-NEXT: %[[TC:.*]] = stablehlo.transpose %[[C]], dims = [1, 0] : (tensor<2x3xf32>) -> tensor<3x2xf32>
+// ISOLATED-NEXT: %[[M:.*]] = stablehlo.multiply %[[TC]], %[[X]] : tensor<3x2xf32>
+// ISOLATED-NEXT: %[[R:.*]] = stablehlo.transpose %[[M]], dims = [1, 0] : (tensor<3x2xf32>) -> tensor<2x3xf32>
+// ISOLATED-NEXT: return %[[R]] : tensor<2x3xf32>
+func.func @constant_transpose_cost(%x: tensor<3x2xf32>) -> tensor<2x3xf32> {
+  %c = stablehlo.constant dense<2.000000e+00> : tensor<2x3xf32>
+  %tc = stablehlo.transpose %c, dims = [1, 0] : (tensor<2x3xf32>) -> tensor<3x2xf32>
+  %product = stablehlo.multiply %tc, %x : tensor<3x2xf32>
+  %result = stablehlo.transpose %product, dims = [1, 0] : (tensor<3x2xf32>) -> tensor<2x3xf32>
+  return %result : tensor<2x3xf32>
+}
+
+// Factoring also transposes dense constants. Fold the constant and stop.
+// Check this interaction in the normal pass, which includes both patterns.
+// CHECK-LABEL: func.func @dense_constant_transpose_cost(
+// CHECK-SAME: %[[X:.*]]: tensor<3x2xf32>
+// NORMAL-NEXT: %[[C:.*]] = stablehlo.constant dense<{{\[\[}}2.000000e+00, 5.000000e+00], [3.000000e+00, 6.000000e+00], [4.000000e+00, 7.000000e+00]]> : tensor<3x2xf32>
+// NORMAL-NEXT: %[[M:.*]] = stablehlo.multiply %[[C]], %[[X]] : tensor<3x2xf32>
+// NORMAL-NEXT: %[[R:.*]] = stablehlo.transpose %[[M]], dims = [1, 0] : (tensor<3x2xf32>) -> tensor<2x3xf32>
+// NORMAL-NEXT: return %[[R]] : tensor<2x3xf32>
+// ISOLATED-NEXT: %[[C:.*]] = stablehlo.constant dense<{{\[\[}}2.000000e+00, 3.000000e+00, 4.000000e+00], [5.000000e+00, 6.000000e+00, 7.000000e+00]]> : tensor<2x3xf32>
+// ISOLATED-NEXT: %[[TX:.*]] = stablehlo.transpose %[[X]], dims = [1, 0] : (tensor<3x2xf32>) -> tensor<2x3xf32>
+// ISOLATED-NEXT: %[[M:.*]] = stablehlo.multiply %[[C]], %[[TX]] : tensor<2x3xf32>
+// ISOLATED-NEXT: return %[[M]] : tensor<2x3xf32>
+func.func @dense_constant_transpose_cost(%x: tensor<3x2xf32>) -> tensor<2x3xf32> {
+  %c = stablehlo.constant dense<[[2.0, 3.0, 4.0], [5.0, 6.0, 7.0]]> : tensor<2x3xf32>
+  %tx = stablehlo.transpose %x, dims = [1, 0] : (tensor<3x2xf32>) -> tensor<2x3xf32>
+  %product = stablehlo.multiply %c, %tx : tensor<2x3xf32>
+  return %product : tensor<2x3xf32>
+}
+
+// Constants cannot justify moving a transpose through a scalar select.
+// This case must converge when partial cancellation runs with factoring.
+// CHECK-LABEL: func.func @constant_select_cost(
+// CHECK-SAME: %[[P:.*]]: tensor<i1>
+// NORMAL-NEXT: %[[A:.*]] = stablehlo.constant dense<2> : tensor<3x2xi32>
+// NORMAL-NEXT: %[[B:.*]] = stablehlo.constant dense<3> : tensor<3x2xi32>
+// NORMAL-NEXT: %[[S:.*]] = stablehlo.select %[[P]], %[[A]], %[[B]] : tensor<i1>, tensor<3x2xi32>
+// NORMAL-NEXT: %[[R:.*]] = stablehlo.transpose %[[S]], dims = [1, 0] : (tensor<3x2xi32>) -> tensor<2x3xi32>
+// NORMAL-NEXT: return %[[R]] : tensor<2x3xi32>
+// ISOLATED-NEXT: %[[A:.*]] = stablehlo.constant dense<2> : tensor<3x2xi32>
+// ISOLATED-NEXT: %[[B:.*]] = stablehlo.constant dense<3> : tensor<2x3xi32>
+// ISOLATED-NEXT: %[[TB:.*]] = stablehlo.transpose %[[B]], dims = [1, 0] : (tensor<2x3xi32>) -> tensor<3x2xi32>
+// ISOLATED-NEXT: %[[S:.*]] = stablehlo.select %[[P]], %[[A]], %[[TB]] : tensor<i1>, tensor<3x2xi32>
+// ISOLATED-NEXT: %[[R:.*]] = stablehlo.transpose %[[S]], dims = [1, 0] : (tensor<3x2xi32>) -> tensor<2x3xi32>
+// ISOLATED-NEXT: return %[[R]] : tensor<2x3xi32>
+func.func @constant_select_cost(%p: tensor<i1>) -> tensor<2x3xi32> {
+  %a = stablehlo.constant dense<2> : tensor<3x2xi32>
+  %b = stablehlo.constant dense<3> : tensor<2x3xi32>
+  %tb = stablehlo.transpose %b, dims = [1, 0] : (tensor<2x3xi32>) -> tensor<3x2xi32>
+  %selected = stablehlo.select %p, %a, %tb : tensor<i1>, tensor<3x2xi32>
+  %result = stablehlo.transpose %selected, dims = [1, 0] : (tensor<3x2xi32>) -> tensor<2x3xi32>
+  return %result : tensor<2x3xi32>
 }
 
 func.func @main() {
