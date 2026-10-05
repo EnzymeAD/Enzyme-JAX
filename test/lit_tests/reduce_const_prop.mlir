@@ -210,3 +210,73 @@ func.func @iota_bound_unknown(%x: tensor<1024xi32>) -> tensor<i32> {
 
 // CHECK:  func.func @iota_bound_unknown
 // CHECK:    stablehlo.reduce
+
+// A loop bound over constant lanes whose difference has another user, so it
+// is not folded first: the constant's elements give the largest directly.
+func.func @max_of_constant_lanes() -> (tensor<i64>, tensor<6xi64>) {
+  %c5 = stablehlo.constant dense<5> : tensor<6xi64>
+  %lanes = stablehlo.constant dense<[0, 0, 0, 1, 1, 1]> : tensor<6xi64>
+  %zero = stablehlo.constant dense<0> : tensor<6xi64>
+  %init = stablehlo.constant dense<0> : tensor<i64>
+  %d = stablehlo.subtract %c5, %lanes : tensor<6xi64>
+  %m = stablehlo.maximum %d, %zero : tensor<6xi64>
+  %0 = stablehlo.reduce(%m init: %init) applies stablehlo.maximum across dimensions = [0] : (tensor<6xi64>, tensor<i64>) -> tensor<i64>
+  return %0, %d : tensor<i64>, tensor<6xi64>
+}
+
+// CHECK:  func.func @max_of_constant_lanes() -> (tensor<i64>, tensor<6xi64>) {
+// CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:    %c_0 = stablehlo.constant dense<5> : tensor<i64>
+// CHECK-NEXT:    %c_1 = stablehlo.constant dense<5> : tensor<6xi64>
+// CHECK-NEXT:    %c_2 = stablehlo.constant dense<[0, 0, 0, 1, 1, 1]> : tensor<6xi64>
+// CHECK-NEXT:    %0 = stablehlo.subtract %c_1, %c_2 : tensor<6xi64>
+// CHECK-NEXT:    %1 = stablehlo.maximum %c, %c_0 : tensor<i64>
+// CHECK-NEXT:    return %1, %0 : tensor<i64>, tensor<6xi64>
+// CHECK-NEXT:  }
+
+
+// Lanes' trip counts from constants that do not fold first: the sum of two
+// constants with differing elements is evaluated, and its largest taken.
+func.func @max_of_constant_sum() -> (tensor<i32>, tensor<2x3xi32>) {
+  %a = stablehlo.constant dense<[[3, 3, 3], [2, 2, 2]]> : tensor<2x3xi32>
+  %b = stablehlo.constant dense<[[3, 4, 5], [3, 4, 5]]> : tensor<2x3xi32>
+  %c = stablehlo.constant dense<[[0, -1, -2], [0, -1, -2]]> : tensor<2x3xi32>
+  %three = stablehlo.constant dense<3> : tensor<2x3xi32>
+  %init = stablehlo.constant dense<0> : tensor<i32>
+  %m = stablehlo.maximum %a, %b : tensor<2x3xi32>
+  %s = stablehlo.add %m, %c : tensor<2x3xi32>
+  %q = stablehlo.divide %s, %three : tensor<2x3xi32>
+  %0 = stablehlo.reduce(%q init: %init) applies stablehlo.maximum across dimensions = [0, 1] : (tensor<2x3xi32>, tensor<i32>) -> tensor<i32>
+  return %0, %m : tensor<i32>, tensor<2x3xi32>
+}
+
+// CHECK:  func.func @max_of_constant_sum() -> (tensor<i32>, tensor<2x3xi32>) {
+// CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<i32>
+// CHECK-NEXT:    %c_0 = stablehlo.constant dense<1> : tensor<i32>
+// CHECK-NEXT:    %c_1 = stablehlo.constant dense<{{\[\[}}3, 3, 3], [2, 2, 2{{\]\]}}> : tensor<2x3xi32>
+// CHECK-NEXT:    %c_2 = stablehlo.constant dense<{{\[\[}}3, 4, 5], [3, 4, 5{{\]\]}}> : tensor<2x3xi32>
+// CHECK-NEXT:    %0 = stablehlo.maximum %c_1, %c_2 : tensor<2x3xi32>
+// CHECK-NEXT:    %1 = stablehlo.maximum %c, %c_0 : tensor<i32>
+// CHECK-NEXT:    return %1, %0 : tensor<i32>, tensor<2x3xi32>
+// CHECK-NEXT:  }
+
+// Splats on every side, at a size not worth materializing: the bound is
+// computed on the one element.
+func.func @max_of_large_splats() -> (tensor<i64>, tensor<1048576xi64>) {
+  %a = stablehlo.constant dense<7> : tensor<1048576xi64>
+  %b = stablehlo.constant dense<2> : tensor<1048576xi64>
+  %init = stablehlo.constant dense<0> : tensor<i64>
+  %d = stablehlo.subtract %a, %b : tensor<1048576xi64>
+  %0 = stablehlo.reduce(%d init: %init) applies stablehlo.maximum across dimensions = [0] : (tensor<1048576xi64>, tensor<i64>) -> tensor<i64>
+  return %0, %d : tensor<i64>, tensor<1048576xi64>
+}
+
+// CHECK:  func.func @max_of_large_splats() -> (tensor<i64>, tensor<1048576xi64>) {
+// CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:    %c_0 = stablehlo.constant dense<5> : tensor<i64>
+// CHECK-NEXT:    %c_1 = stablehlo.constant dense<7> : tensor<1048576xi64>
+// CHECK-NEXT:    %c_2 = stablehlo.constant dense<2> : tensor<1048576xi64>
+// CHECK-NEXT:    %0 = stablehlo.subtract %c_1, %c_2 : tensor<1048576xi64>
+// CHECK-NEXT:    %1 = stablehlo.maximum %c, %c_0 : tensor<i64>
+// CHECK-NEXT:    return %1, %0 : tensor<i64>, tensor<1048576xi64>
+// CHECK-NEXT:  }
