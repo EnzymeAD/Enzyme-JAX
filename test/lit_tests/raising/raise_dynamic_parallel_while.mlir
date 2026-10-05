@@ -134,4 +134,37 @@ func.func @lanes(%out: memref<4x100xf64, 1>, %nbuf: memref<i64, 1>) {
 // CHECK-NEXT:     stablehlo.return %31, %30, %iterArg_10 : tensor<i64>, tensor<4x100xf64>, tensor<i64>
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return %19#1, %19#2 : tensor<4x100xf64>, tensor<i64>
+
+// -----
+
+// A reducing parallel axis of a runtime extent: the peeled loop carries the
+// reduction from the kind's identity, each iteration adding its value in.
+func.func @dynreduce(%x: memref<100xf64, 1>, %out: memref<f64, 1>, %nbuf: memref<i64, 1>) {
+  %n = affine.load %nbuf[] : memref<i64, 1>
+  %ni = arith.index_cast %n : i64 to index
+  %r = affine.parallel (%i) = (0) to (symbol(%ni)) reduce ("addf") -> (f64) {
+    %v = affine.load %x[%i] : memref<100xf64, 1>
+    affine.yield %v : f64
+  }
+  affine.store %r, %out[] : memref<f64, 1>
+  return
+}
+
+// CHECK:  func.func private @dynreduce_raised(%arg0: tensor<100xf64>, %arg1: tensor<f64>, %arg2: tensor<i64>) -> (tensor<100xf64>, tensor<f64>, tensor<i64>) {
+// CHECK-NEXT:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT:   %c = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:   %c_0 = stablehlo.constant dense<1> : tensor<i64>
+// CHECK-NEXT:   %0:5 = stablehlo.while(%iterArg = %c, %iterArg_1 = %cst, %iterArg_2 = %arg0, %iterArg_3 = %arg1, %iterArg_4 = %arg2) : tensor<i64>, tensor<f64>, tensor<100xf64>, tensor<f64>, tensor<i64> attributes {enzymexla.parallel}
+// CHECK-NEXT:   cond {
+// CHECK-NEXT:     %2 = stablehlo.compare LT, %iterArg, %arg2 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:     stablehlo.return %2 : tensor<i1>
+// CHECK-NEXT:   } do {
+// CHECK-NEXT:     %2 = stablehlo.dynamic_slice %iterArg_2, %iterArg, sizes = [1] : (tensor<100xf64>, tensor<i64>) -> tensor<1xf64>
+// CHECK-NEXT:     %3 = stablehlo.reshape %2 : (tensor<1xf64>) -> tensor<f64>
+// CHECK-NEXT:     %4 = arith.addf %iterArg_1, %3 : tensor<f64>
+// CHECK-NEXT:     %5 = stablehlo.add %iterArg, %c_0 : tensor<i64>
+// CHECK-NEXT:     stablehlo.return %5, %4, %iterArg_2, %iterArg_3, %iterArg_4 : tensor<i64>, tensor<f64>, tensor<100xf64>, tensor<f64>, tensor<i64>
+// CHECK-NEXT:   }
+// CHECK-NEXT:   %1 = stablehlo.dynamic_update_slice %0#3, %0#1 : (tensor<f64>, tensor<f64>) -> tensor<f64>
+// CHECK-NEXT:   return %0#2, %1, %0#4 : tensor<100xf64>, tensor<f64>, tensor<i64>
 // CHECK-NEXT: }

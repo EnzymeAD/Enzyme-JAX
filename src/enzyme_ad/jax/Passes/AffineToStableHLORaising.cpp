@@ -6180,8 +6180,6 @@ struct AffineToStableHLORaisingPass
     SmallVector<affine::AffineParallelOp> worklist;
     root->walk([&](affine::AffineParallelOp par) { worklist.push_back(par); });
     for (auto par : worklist) {
-      if (!par.getReductions().empty())
-        continue;
       unsigned n = par.getNumDims();
       SmallVector<unsigned> dyn, stat;
       for (unsigned i = 0; i < n; ++i) {
@@ -6194,20 +6192,40 @@ struct AffineToStableHLORaisingPass
       if (dyn.empty())
         continue;
 
+      // A reduction the loop computes is carried through the peeled loops,
+      // from the kind's identity, each iteration combining its value in.
+      SmallVector<arith::AtomicRMWKind> kinds;
+      for (Attribute r : par.getReductions())
+        kinds.push_back(cast<arith::AtomicRMWKindAttr>(r).getValue());
+      TypeRange types = par.getResultTypes();
+
       OpBuilder b(par);
       Location loc = par.getLoc();
+      SmallVector<Value> acc;
+      for (auto [kind, ty] : llvm::zip_equal(kinds, types))
+        acc.push_back(arith::getIdentityValue(kind, ty, b, loc));
       SmallVector<Value> ivRepl(n);
+      SmallVector<affine::AffineForOp> fors;
       for (unsigned idx : dyn) {
         auto forOp = affine::AffineForOp::create(
             b, loc, par.getLowerBoundsOperands(), par.getLowerBoundMap(idx),
             par.getUpperBoundsOperands(), par.getUpperBoundMap(idx),
-            par.getSteps()[idx]);
+            par.getSteps()[idx], acc);
+        forOp->setDiscardableAttrs(par->getDiscardableAttrDictionary());
         forOp->setAttr("enzymexla.parallel", b.getUnitAttr());
+        // the yields are added below, carrying the reductions
+        if (!forOp.getBody()->empty())
+          forOp.getBody()->getTerminator()->erase();
         ivRepl[idx] = forOp.getInductionVar();
+        acc.assign(forOp.getRegionIterArgs().begin(),
+                   forOp.getRegionIterArgs().end());
+        fors.push_back(forOp);
         b.setInsertionPointToStart(forOp.getBody());
       }
 
-      Block *target;
+      Block *oldBody = par.getBody();
+      Operation *oldYield = oldBody->getTerminator();
+      SmallVector<Value> values;
       if (!stat.empty()) {
         SmallVector<AffineExpr> lbounds, ubounds;
         SmallVector<int32_t> lboundGroup, uboundGroup;
@@ -6222,7 +6240,7 @@ struct AffineToStableHLORaisingPass
           steps.push_back(par.getSteps()[idx]);
         }
         auto inner = affine::AffineParallelOp::create(
-            b, loc, TypeRange(), b.getArrayAttr({}),
+            b, loc, types, par.getReductions(),
             AffineMapAttr::get(
                 AffineMap::get(par.getLowerBoundsMap().getNumDims(),
                                par.getLowerBoundsMap().getNumSymbols(), lbounds,
@@ -6234,24 +6252,37 @@ struct AffineToStableHLORaisingPass
                                par.getContext())),
             b.getI32TensorAttr(uboundGroup), b.getI64ArrayAttr(steps),
             par.getOperands());
+        inner->setDiscardableAttrs(par->getDiscardableAttrDictionary());
         Block *blk = new Block();
         for (auto [j, idx] : llvm::enumerate(stat))
           ivRepl[idx] = blk->addArgument(b.getIndexType(), loc);
         inner.getRegion().push_back(blk);
-        b.setInsertionPointToEnd(blk);
-        affine::AffineYieldOp::create(b, loc);
-        target = blk;
+        for (unsigned i = 0; i < n; ++i)
+          oldBody->getArgument(i).replaceAllUsesWith(ivRepl[i]);
+        // the body, its yield included, is the inner loop's
+        blk->getOperations().splice(blk->end(), oldBody->getOperations());
+        values.assign(inner.getResults().begin(), inner.getResults().end());
       } else {
-        target = b.getInsertionBlock();
+        for (unsigned i = 0; i < n; ++i)
+          oldBody->getArgument(i).replaceAllUsesWith(ivRepl[i]);
+        Block *target = b.getInsertionBlock();
+        target->getOperations().splice(target->end(), oldBody->getOperations(),
+                                       oldBody->begin(),
+                                       std::prev(oldBody->end()));
+        values.assign(oldYield->getOperands().begin(),
+                      oldYield->getOperands().end());
+        oldYield->erase();
       }
-
-      Block *oldBody = par.getBody();
-      for (unsigned i = 0; i < n; ++i)
-        oldBody->getArgument(i).replaceAllUsesWith(ivRepl[i]);
-      target->getOperations().splice(std::prev(target->getOperations().end()),
-                                     oldBody->getOperations(),
-                                     oldBody->getOperations().begin(),
-                                     std::prev(oldBody->getOperations().end()));
+      b.setInsertionPointToEnd(fors.back().getBody());
+      SmallVector<Value> next;
+      for (auto [kind, a, v] : llvm::zip_equal(kinds, acc, values))
+        next.push_back(arith::getReductionOp(kind, b, loc, a, v));
+      affine::AffineYieldOp::create(b, loc, next);
+      for (size_t k = fors.size() - 1; k > 0; --k) {
+        b.setInsertionPointToEnd(fors[k - 1].getBody());
+        affine::AffineYieldOp::create(b, loc, fors[k].getResults());
+      }
+      par.replaceAllUsesWith(fors.front().getResults());
       par.erase();
     }
   }
