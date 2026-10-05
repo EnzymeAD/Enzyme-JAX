@@ -32,16 +32,6 @@ using namespace mlir;
 
 namespace {
 
-// Pointer2MemrefOp is a local view operation. Unwrap it between calls to the
-// shared helper, which preserves offsets and stops at unknown view operations.
-static Value getBufferIdentity(Value value) {
-  value = enzyme::oputils::getBaseObject(value, /*offsetAllowed=*/false);
-  if (auto pointerToMemref = value.getDefiningOp<enzymexla::Pointer2MemrefOp>())
-    return enzyme::oputils::getBaseObject(pointerToMemref.getSource(),
-                                          /*offsetAllowed=*/false);
-  return value;
-}
-
 static bool isRaisedWrapperFunction(FunctionOpInterface function,
                                     enzymexla::XLAWrapperOp wrapper) {
   if (function.isExternal() || !function.getFunctionBody().hasOneBlock())
@@ -160,11 +150,13 @@ public:
     SmallVector<Type> fusedTypes(firstFunction.getArgumentTypes());
     SmallVector<Value> fusedIdentities;
     for (Value input : fusedInputs)
-      fusedIdentities.push_back(getBufferIdentity(input));
+      fusedIdentities.push_back(
+          enzyme::oputils::getBaseObject(input, /*offsetAllowed=*/false));
 
     SmallVector<Value> secondIdentities;
     for (Value input : second.getInputs())
-      secondIdentities.push_back(getBufferIdentity(input));
+      secondIdentities.push_back(
+          enzyme::oputils::getBaseObject(input, /*offsetAllowed=*/false));
 
     // Do not fuse duplicate inputs whose outputs can disagree. Wrapper
     // canonicalization can remove duplicates when their outputs agree.
