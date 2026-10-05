@@ -8207,8 +8207,9 @@ struct NoNanSelfSubSimplify
     if (op.getLhs() == op.getRhs()) {
       if (canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(),
                                op.getLhs().getType(), op, rewriter)) {
+        // getZeroAttr returns null for complex types
         rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            op, rewriter.getZeroAttr(op.getType()));
+            op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 0)));
         return success();
       }
     }
@@ -10308,8 +10309,9 @@ struct DotGeneralSimplify
                      matchPattern(lhsAttr, m_AnyZeroComplex()))) ||
         (rhsAttr && (matchPattern(rhsAttr, m_AnyZeroFloat()) ||
                      matchPattern(rhsAttr, m_AnyZeroComplex())))) {
+      // getZeroAttr returns null for complex types
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, rewriter.getZeroAttr(op.getType()));
+          op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 0)));
       return success();
     }
 
