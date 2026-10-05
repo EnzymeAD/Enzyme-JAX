@@ -72,7 +72,8 @@ curl -fsSL "https://raw.githubusercontent.com/openxla/xla/$XLA/third_party/trito
 
 Bazel and bazelisk default to `~/.cache/`, which on Alps is a small, shared home
 directory — a full XLA build fills it and the failure is confusing. `BAZELISK_HOME`
-and `JULIA_DEPOT_PATH` are redirected under `CI_PROJECT_DIR` by job variables, but
+and `JULIA_DEPOT_PATH` are redirected under `SHM_ROOT` by job variables (see "Build
+outputs in /dev/shm"), but
 Bazel's own output base is only settable per-invocation, and Reactant's
 `build_local.jl` calls `bazelisk` **by name** rather than through a configurable
 path. So the job writes `bin/bazelisk` and `bin/bazel` shims that inject
@@ -80,9 +81,36 @@ path. So the job writes `bin/bazelisk` and `bin/bazel` shims that inject
 `bin/` to `PATH`. Both names are shimmed because different call sites use each.
 
 The shims **refuse to run** if `BAZEL_OUTPUT_ROOT` is unset or points outside
-`CI_PROJECT_DIR`, so a mistake fails loudly instead of silently filling `$HOME`. A
+`SHM_ROOT`, so a mistake fails loudly instead of silently filling `$HOME`. A
 separate step then asserts `command -v bazelisk` resolves to the shim, catching a
 mis-ordered `PATH` before the ~25 min build rather than after.
+
+### Build outputs in /dev/shm
+
+The build writes ~700k files: Bazel's output root (`.bazel`, 12–16 GB), the Julia
+depot (`.julia`, ~7 GB) and bazelisk's cache. On `$SCRATCH` they count against the
+1M-file inode quota of the user the CI runs as. Two concurrent builds exceeded it on
+their own, and a cancelled job's trees stayed until swept (see "Job directory
+cleanup"). Over quota, sbatch rejects every CI job of that user.
+
+So they live in node-local `/dev/shm` instead, under
+`SHM_ROOT=/dev/shm/ci-${CI_JOB_ID}`. `BAZEL_OUTPUT_ROOT`, `JULIA_DEPOT_PATH` and
+`BAZELISK_HOME` all point there. The checkout, the `.rocm` overlay, `Reactant.jl` and
+`GB-25` stay in `CI_PROJECT_DIR` on `$SCRATCH`, a few thousand files.
+
+- **Room:** `/dev/shm` is RAM. A job puts ~20–25 GB there, and MI300 nodes have
+  513 GB, allocated exclusively with no per-job memory cap below that. These files
+  are real memory use, not cache: the OS won't free them if the GB-25 steps need
+  more, so those steps have ~25 GB less host memory. The job prints
+  `df -h /dev/shm` before the build and the size of `SHM_ROOT` in `after_script`.
+- **Cleanup:** `after_script` deletes `SHM_ROOT`, which takes seconds in RAM. A
+  cancelled or timed-out job skips `after_script`, but Slurm's epilog wipes
+  `/dev/shm` whenever a job ends (confirmed by CSCS, ticket SD-71371).
+- **No caching lost:** the output root was never reused across jobs. Every job
+  starts from a fresh checkout (`Created fresh repository` in each log).
+- **Alternative:** `CSCS_OVERRIDE_BASE_DIR: /dev/shm` moves the whole job directory,
+  checkout included. CSCS recommends keeping the default base directory, and this
+  setup does.
 
 ### Job directory cleanup
 
@@ -94,11 +122,10 @@ log shows "Running after_script", and seconds later `after_script failed … exi
 status 0` and `Cleanup script failed`. CSCS cancels a PR's previous pipeline within
 about a minute of every new push, so this is the common case, not an edge case.
 
-The slot then keeps that job's `.bazel` (~700k files), `.julia`, `.rocm`,
-`Reactant.jl` and `GB-25` until another job of this project lands in the same
-slot. Two such leftovers fill the 1M-file `$SCRATCH` quota, and sbatch then rejects
-every CI job running as this user with `scratch inode quota exceeded`. The output
-root is never reused across jobs, so keeping it buys no caching.
+The slot then keeps that job's `.rocm`, `Reactant.jl` and `GB-25` until another
+job of this project lands in the same slot. That's a few thousand files now. Before
+the build outputs moved to `/dev/shm`, it also kept `.bazel` (~700k files) and
+`.julia`, and two such leftovers filled the 1M-file `$SCRATCH` quota.
 
 Three pieces handle this:
 
@@ -121,15 +148,15 @@ Three pieces handle this:
     to `.swept.<job id>.<name>`. The rename is atomic, so only one sweeper gets it,
     and only that sweeper deletes it. A claim whose sweeper job is gone, because it
     was killed mid-delete, is claimed again later.
-  - **Deletions don't block:** a 700k-file `.bazel` takes ~5 min to delete. The
-    deletions run in the background so the 2-min passes keep going.
+  - **Deletions don't block:** deleting a large tree on Lustre takes minutes (a
+    700k-file `.bazel` took ~5 min). The deletions run in the background so the
+    2-min passes keep going.
   - **Logging:** `sweep.log` gives each slot's skip reason ("still active",
     "waiting until nothing changed", …) once, and again whenever it changes.
     `DRY_RUN=1` reports what would be claimed and changes nothing.
-- **`after_script`** deletes those trees once the job finishes, keeping only
-  `GB-25/*.xla`, because GitLab uploads artifacts after `after_script` has run.
-  `RUNNER_AFTER_SCRIPT_TIMEOUT` is raised to 20m because deleting the Bazel tree on
-  Lustre takes ~8 min.
+- **`after_script`** deletes `SHM_ROOT` and those trees once the job finishes,
+  keeping only `GB-25/*.xla`, because GitLab uploads artifacts after `after_script`
+  has run.
 - **`hooks:pre_get_sources_script`** gives the owner full access to every
   directory in the slot before the runner's wipe. Bazel leaves some outputs
   read-only (e.g. the rules_foreign_cc z3 build under
@@ -137,7 +164,10 @@ Three pieces handle this:
   `sandbox/inaccessibleHelperDir`. When `after_script` didn't run (Slurm timeout,
   cancel), the runner's plain `rm` then fails with `Permission denied`,
   `get_sources` fails after ~30 s, and that slot is broken for every later job until
-  someone fixes the permissions.
+  someone fixes the permissions. With the build outputs in `/dev/shm`, the slot
+  rarely holds such dirs any more. Since 2026-10-05 the runner itself makes the
+  tree writable before deleting it (gitlab-runner-firecrest `f684e06`), so this hook
+  is redundant.
 
 All three use `find … -exec chmod u+rwx {} \;` rather than `{} +`: with `+` the chmod
 runs only after the walk, so `find` first fails to enter the mode-000 dir, exits 1,
