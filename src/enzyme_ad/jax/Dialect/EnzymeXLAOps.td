@@ -1615,10 +1615,12 @@ def MPIWaitOp : EnzymeXLA_Op<"mpi.wait", []> {
 }
 
 def MPIWaitallOp : EnzymeXLA_Op<"mpi.waitall", []> {
-  let summary = "Equivalent to `MPI_Waitall`";
+  let summary = "Equivalent to "
+                "`MPI_Waitall(&request, &status)`";
 
   let arguments = (
-    ins Variadic<TensorOf<[I32]>> : $requests
+    ins TensorOf<[I32]> : $count,
+    TensorOf<[I32]> : $request
   );
 
   let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";

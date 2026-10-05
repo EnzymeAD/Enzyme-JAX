@@ -1307,21 +1307,17 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
       auto i32Type = IntegerType::get(context, 32);
 
       std::string mpiFunctionName = "MPI_Waitall";
-      auto requests = op.getRequests();
-      unsigned numRequests = requests.size();
 
       // Generate the enzymexla_wrapper LLVM function body
-      std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName +
-                                        "_" + std::to_string(numRequests);
+      std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName;
 
       if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
         // Create the wrapper function decl
-        SmallVector<Type> wrapperArgumentTypes(numRequests, llvmPtrType);
         auto funcType = LLVM::LLVMFunctionType::get(
-            llvmVoidType, wrapperArgumentTypes, false);
+            llvmVoidType, {llvmPtrType, llvmPtrType}, false);
 
         auto wrapperFunc = LLVM::LLVMFuncOp::create(
             rewriter, op.getLoc(), wrapperFunctionName, funcType);
@@ -1337,31 +1333,18 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
         rewriter.setInsertionPointToStart(entryBlock);
 
         // Add argument-level memory effects attribute to all arguments
-        for (unsigned i = 0; i < numRequests; ++i) {
+        for (unsigned i = 0; i < 2; ++i) {
           wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
                                  memoryEffectsAttr);
         }
 
-        Value count = arith::ConstantOp::create(
-            rewriter, op.getLoc(), i32Type,
-            rewriter.getI32IntegerAttr(static_cast<int32_t>(numRequests)));
+        // Get the function argument
+        Value countPtr = entryBlock->getArgument(0);
+        Value requestPtr = entryBlock->getArgument(1);
 
-        // Pack the scalar requests into the native contiguous request array.
-        Value requestsPtr = LLVM::AllocaOp::create(rewriter, op.getLoc(),
-                                                   llvmPtrType, i32Type, count);
-        SmallVector<Value> requestElementPtrs;
-        requestElementPtrs.reserve(numRequests);
-        for (unsigned index = 0; index < numRequests; ++index) {
-          Value requestPtr = entryBlock->getArgument(index);
-          Value request =
-              LLVM::LoadOp::create(rewriter, op.getLoc(), i32Type, requestPtr);
-          Value requestElementPtr = LLVM::GEPOp::create(
-              rewriter, op.getLoc(), llvmPtrType, i32Type, requestsPtr,
-              ArrayRef<LLVM::GEPArg>{static_cast<int32_t>(index)});
-          LLVM::StoreOp::create(rewriter, op.getLoc(), request,
-                                requestElementPtr);
-          requestElementPtrs.push_back(requestElementPtr);
-        }
+        // Load the count value
+        Value count =
+            LLVM::LoadOp::create(rewriter, op.getLoc(), i32Type, countPtr);
 
         // Allocate a count x !llvm.array<6 x i32> for the array of statuses
         // Size of status is implem dependendent, 6 should cover the max
@@ -1376,16 +1359,7 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
         // TODO returns i32 error code which we're ignoring here
         LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{i32Type},
                              SymbolRefAttr::get(context, mpiFunctionName),
-                             ValueRange{count, requestsPtr, statusPtr});
-
-        // MPI_Waitall sets completed requests to MPI_REQUEST_NULL.
-        for (unsigned index = 0; index < numRequests; ++index) {
-          Value requestPtr = entryBlock->getArgument(index);
-          Value requestElementPtr = requestElementPtrs[index];
-          Value request = LLVM::LoadOp::create(rewriter, op.getLoc(), i32Type,
-                                               requestElementPtr);
-          LLVM::StoreOp::create(rewriter, op.getLoc(), request, requestPtr);
-        }
+                             ValueRange{count, requestPtr, statusPtr});
 
         LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
       }
@@ -1402,11 +1376,14 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
                                  funcType, LLVM::Linkage::External);
       }
 
+      // Get all orinigal op operands
+      auto opOperands = op.getOperands();
+
       // Call the LLVM function with enzymexla.jit_call
       enzymexla::JITCallOp::create(
           rewriter, op.getLoc(), TypeRange{},
-          mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName), requests,
-          rewriter.getStringAttr(""),
+          mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+          ValueRange{opOperands}, rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr,
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
