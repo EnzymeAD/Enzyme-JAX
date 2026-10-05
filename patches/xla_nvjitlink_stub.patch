@@ -1,0 +1,13 @@
+diff --git a/xla/tsl/cuda/BUILD.bazel b/xla/tsl/cuda/BUILD.bazel
+index 12b161e..90763e5 100644
+--- a/xla/tsl/cuda/BUILD.bazel
++++ b/xla/tsl/cuda/BUILD.bazel
+@@ -484,7 +484,7 @@ cc_library(
+ 
+ alias(
+     name = "nvjitlink",  # buildifier: disable=duplicated-name
+-    actual = if_cuda_libs("@cuda_nvjitlink//:nvjitlink", ":nvjitlink_stub"),
++    actual = ":nvjitlink_stub",
+     visibility = ["//visibility:public"],
+ )
+ 
