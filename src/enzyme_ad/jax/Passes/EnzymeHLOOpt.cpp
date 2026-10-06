@@ -1782,15 +1782,17 @@ struct SliceInternal final
     }
     if (auto extend = slice.getOperand().getDefiningOp<enzymexla::ExtendOp>()) {
       concatDim = extend.getDimension();
-      inputSizes.push_back(extend.getLhs());
-      inputSizes.push_back(cast<RankedTensorType>(extend.getOperand().getType())
-                               .getShape()[concatDim]);
-      inputSizes.push_back(extend.getRhs());
-      actualStartSizes.push_back(0);
-      actualStartSizes.push_back(0);
-      actualStartSizes.push_back(
+      int64_t operandSize =
           cast<RankedTensorType>(extend.getOperand().getType())
-              .getShape()[concatDim]);
+              .getShape()[concatDim];
+      inputSizes.push_back(extend.getLhs());
+      inputSizes.push_back(operandSize);
+      inputSizes.push_back(extend.getRhs());
+      // The rhs region repeats the last `rhs` elements of the operand, so it
+      // starts at operandSize - rhs on the operand, not at operandSize.
+      actualStartSizes.push_back(0);
+      actualStartSizes.push_back(0);
+      actualStartSizes.push_back(operandSize - extend.getRhs());
       legal = true;
       operand = extend.getOperand();
     }
