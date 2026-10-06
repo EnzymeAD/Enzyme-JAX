@@ -350,41 +350,6 @@ bool getEffectsAfter(Operation *op,
   return !conservative;
 }
 
-Value getBase(Value v) {
-  while (true) {
-    // if (auto s = v.getDefiningOp<SubIndexOp>()) {
-    //   v = s.getSource();
-    //   continue;
-    // }
-    if (auto s = v.getDefiningOp<enzymexla::Memref2PointerOp>()) {
-      v = s.getSource();
-      continue;
-    }
-    if (auto s = v.getDefiningOp<enzymexla::Pointer2MemrefOp>()) {
-      v = s.getSource();
-      continue;
-    }
-    if (auto s = v.getDefiningOp<LLVM::GEPOp>()) {
-      v = s.getBase();
-      continue;
-    }
-    if (auto s = v.getDefiningOp<LLVM::BitcastOp>()) {
-      v = s.getArg();
-      continue;
-    }
-    if (auto s = v.getDefiningOp<LLVM::AddrSpaceCastOp>()) {
-      v = s.getArg();
-      continue;
-    }
-    if (auto s = v.getDefiningOp<memref::CastOp>()) {
-      v = s.getSource();
-      continue;
-    }
-    break;
-  }
-  return v;
-}
-
 bool isStackAlloca(Value v) {
   return v.getDefiningOp<memref::AllocaOp>() ||
          v.getDefiningOp<memref::AllocOp>() ||
@@ -426,7 +391,7 @@ bool mayWriteTo(Operation *op, Value val, bool ignoreBarrier) {
   // Calls which do not use a derived pointer of a known alloca, which is not
   // captured can not write to said memory.
   if (auto callOp = dyn_cast<CallOpInterface>(op)) {
-    auto base = getBase(val);
+    auto base = enzyme::oputils::getBaseObject(val);
     bool seenuse = false;
     if (isStackAlloca(base) &&
         !enzyme::oputils::isCaptured(base, op, &seenuse) && !seenuse) {
@@ -1329,7 +1294,7 @@ bool mayReadFrom(Operation *op, Value val) {
     return false;
   }
   if (auto callOp = dyn_cast<CallOpInterface>(op)) {
-    auto base = getBase(val);
+    auto base = enzyme::oputils::getBaseObject(val);
     bool seenuse = false;
     if (isStackAlloca(base) &&
         !enzyme::oputils::isCaptured(base, op, &seenuse) && !seenuse) {
