@@ -8843,7 +8843,12 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
   // Dep check depth would be number of enclosing loops + 1.
   unsigned depth = ::getNestingDepth(forOp) + 1;
 
-  // Check dependences between all pairs of ops in 'loadAndStoreOps'.
+  // Check dependences between all pairs of ops in 'loadAndStoreOps', on the
+  // access relations isLoopMemoryParallel builds (loop-invariant terms
+  // abstracted, with what the nest's in-bounds accesses and the checks on the
+  // way to it establish). Accesses to different memrefs, or that only read,
+  // have none.
+  InvariantTerms terms(forOp);
   for (auto *srcOp : loadAndStoreOps) {
     MemRefAccess srcAccess(srcOp);
     for (auto *dstOp : loadAndStoreOps) {
@@ -8851,9 +8856,18 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
                               << "src: " << *srcOp << "\n"
                               << "dst: " << *dstOp << "\n");
       MemRefAccess dstAccess(dstOp);
-      SmallVector<DependenceComponent, 2> dcs;
-      DependenceResult result = checkMemrefAccessDependence(
-          srcAccess, dstAccess, depth, nullptr, &dcs);
+      DependenceResult result(DependenceResult::NoDependence);
+      if (srcAccess.memref == dstAccess.memref &&
+          (isa<AffineWriteOpInterface>(srcOp) ||
+           isa<AffineWriteOpInterface>(dstOp))) {
+        presburger::IntegerRelation srcRel(
+            presburger::PresburgerSpace::getRelationSpace()),
+            dstRel(presburger::PresburgerSpace::getRelationSpace());
+        if (failed(terms.accessRelation(srcOp, srcRel)) ||
+            failed(terms.accessRelation(dstOp, dstRel)))
+          return false;
+        result = checkAccessDependence(srcRel, dstRel, depth);
+      }
 
       if (result.value == DependenceResult::Failure) {
         LLVM_DEBUG(llvm::dbgs() << "Failed\n");
