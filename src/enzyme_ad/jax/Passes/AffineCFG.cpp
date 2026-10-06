@@ -7212,6 +7212,52 @@ struct SCFForCopyCarry : public OpRewritePattern<scf::ForOp> {
   }
 };
 
+// Drops the carried values of an affine.for whose result and argument are
+// both unused (scf.for's canonicalization does this for scf.for).
+struct AffineForDeadCarry : public OpRewritePattern<AffineForOp> {
+  using OpRewritePattern<AffineForOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(AffineForOp forOp,
+                                PatternRewriter &rewriter) const override {
+    auto args = forOp.getRegionIterArgs();
+    SmallVector<unsigned> kept;
+    for (unsigned k = 0, e = args.size(); k < e; ++k)
+      if (!args[k].use_empty() || !forOp.getResult(k).use_empty())
+        kept.push_back(k);
+    if (kept.size() == args.size())
+      return failure();
+    SmallVector<Value> inits;
+    for (unsigned k : kept)
+      inits.push_back(forOp.getInits()[k]);
+    auto newFor = AffineForOp::create(
+        rewriter, forOp.getLoc(), forOp.getLowerBoundOperands(),
+        forOp.getLowerBoundMap(), forOp.getUpperBoundOperands(),
+        forOp.getUpperBoundMap(), forOp.getStepAsInt(), inits);
+    newFor->setDiscardableAttrs(forOp->getDiscardableAttrDictionary());
+    Block *body = newFor.getBody();
+    if (!body->empty())
+      rewriter.eraseOp(body->getTerminator());
+    // the dropped arguments have no uses: any value of their type will do
+    SmallVector<Value> argRepl{newFor.getInductionVar()};
+    unsigned next = 0;
+    for (unsigned k = 0, e = args.size(); k < e; ++k)
+      argRepl.push_back(next < kept.size() && kept[next] == k
+                            ? newFor.getRegionIterArgs()[next++]
+                            : forOp.getInits()[k]);
+    rewriter.mergeBlocks(forOp.getBody(), body, argRepl);
+    auto yield = cast<AffineYieldOp>(body->getTerminator());
+    SmallVector<Value> yielded;
+    for (unsigned k : kept)
+      yielded.push_back(yield.getOperand(k));
+    rewriter.setInsertionPoint(yield);
+    rewriter.replaceOpWithNewOp<AffineYieldOp>(yield, yielded);
+    SmallVector<Value> results(forOp.getNumResults(), nullptr);
+    for (auto [n, k] : llvm::enumerate(kept))
+      results[k] = newFor.getResult(n);
+    rewriter.replaceOp(forOp, results);
+    return success();
+  }
+};
+
 void mlir::enzyme::populateAffineCFGPatterns(
     RewritePatternSet &rpl, bool enable_split_on_affine_if_constants) {
   MLIRContext *context = rpl.getContext();
@@ -7240,6 +7286,7 @@ void mlir::enzyme::populateAffineCFGPatterns(
                                                                        2);
   rpl.add<SimplifyAndOr, SimplifyOrAnd>(context, 2);
   rpl.add<AffineForCopyCarry, SCFForCopyCarry>(context, 2);
+  rpl.add<AffineForDeadCarry>(context, 2);
   rpl.add<SplitParallelInductions, MaskedAffineParallel>(context, 1);
 }
 
