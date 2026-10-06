@@ -35654,6 +35654,62 @@ struct FuseReshapeCollapseOrExpandDimsIntoReduce final
   }
 };
 
+// The sizes of shape other than one.
+static SmallVector<int64_t> nonUnitSizes(ArrayRef<int64_t> shape) {
+  SmallVector<int64_t> out;
+  for (int64_t d : shape)
+    if (d != 1)
+      out.push_back(d);
+  return out;
+}
+
+// The positions, among the dimensions of shape of size other than one, of
+// those of dims that are not of size one.
+static SmallVector<int64_t> nonUnitPositions(ArrayRef<int64_t> shape,
+                                             ArrayRef<int64_t> dims) {
+  SmallVector<int64_t> out;
+  for (int64_t d : dims) {
+    if (shape[d] == 1)
+      continue;
+    int64_t pos = 0;
+    for (int64_t k = 0; k < d; ++k)
+      pos += shape[k] != 1;
+    out.push_back(pos);
+  }
+  return out;
+}
+
+// Whether gather reads the slots scatter writes, in the order updates (of
+// the scatter's shape of updates) holds them: the same windows at the same
+// places of the same batches, a dimension the scatter inserts kept at most
+// as a window of one. The gather's result is then updates up to dimensions
+// of size one.
+static bool gatherReadsScatterSlots(stablehlo::ScatterOp scatter,
+                                    stablehlo::GatherOp gather, Value updates) {
+  if (gather.getStartIndices() != scatter.getScatterIndices())
+    return false;
+  auto updTy = cast<RankedTensorType>(updates.getType());
+  auto gTy = cast<RankedTensorType>(gather.getType());
+  if (!updTy.hasStaticShape() || !gTy.hasStaticShape() ||
+      nonUnitSizes(updTy.getShape()) != nonUnitSizes(gTy.getShape()))
+    return false;
+  auto want = getGatherDims(scatter.getContext(),
+                            scatter.getScatterDimensionNumbersAttr());
+  auto dn = gather.getDimensionNumbers();
+  if (computeGatherSliceSizes(scatter) !=
+          SmallVector<int64_t>(gather.getSliceSizes()) ||
+      want.getStartIndexMap() != dn.getStartIndexMap() ||
+      want.getIndexVectorDim() != dn.getIndexVectorDim() ||
+      want.getOperandBatchingDims() != dn.getOperandBatchingDims() ||
+      want.getStartIndicesBatchingDims() != dn.getStartIndicesBatchingDims() ||
+      nonUnitPositions(gTy.getShape(), dn.getOffsetDims()) !=
+          nonUnitPositions(updTy.getShape(), want.getOffsetDims()))
+    return false;
+  return llvm::all_of(dn.getCollapsedSliceDims(), [&](int64_t d) {
+    return llvm::is_contained(want.getCollapsedSliceDims(), d);
+  });
+}
+
 struct GatherOfScatterSimplify final
     : CheckedOpRewritePattern<stablehlo::GatherOp, GatherOfScatterSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -35663,17 +35719,14 @@ struct GatherOfScatterSimplify final
     auto input = gatherOp.getOperand();
     auto scatterOp = input.getDefiningOp<stablehlo::ScatterOp>();
 
-    if (!scatterOp ||
-        scatterOp.getScatterIndices() != gatherOp.getStartIndices() ||
-        computeGatherSliceSizes(scatterOp) != gatherOp.getSliceSizes() ||
-        getGatherDims(scatterOp->getContext(),
-                      scatterOp.getScatterDimensionNumbersAttr()) !=
-            gatherOp.getDimensionNumbersAttr()) {
+    if (!scatterOp)
       return failure();
-    }
 
     auto opResult = cast<OpResult>(input);
     auto opNum = opResult.getResultNumber();
+    Value updates = scatterOp.getUpdates()[opNum];
+    if (!gatherReadsScatterSlots(scatterOp, gatherOp, updates))
+      return failure();
 
     SplatElementsAttr constSetIndexValue;
     if (!detectConstantSetindexScatterOp(
@@ -35695,7 +35748,8 @@ struct GatherOfScatterSimplify final
       return failure();
     }
 
-    auto newResult = scatterOp.getUpdates()[opNum];
+    Value newResult = stablehlo::ReshapeOpCreate(
+        rewriter, gatherOp.getLoc(), updates, gatherOp.getType().getShape());
     rewriter.replaceOp(gatherOp, newResult);
     return success();
   }
@@ -35709,70 +35763,23 @@ struct ScatterOfGatherIdentity final
     : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterOfGatherIdentity> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  // the positions, among the dimensions of size other than one, of those of
-  // `dims` that are not of size one
-  static SmallVector<int64_t> nonUnitPositions(ArrayRef<int64_t> shape,
-                                               ArrayRef<int64_t> dims) {
-    SmallVector<int64_t> out;
-    for (int64_t d : dims) {
-      if (shape[d] == 1)
-        continue;
-      int64_t pos = 0;
-      for (int64_t k = 0; k < d; ++k)
-        pos += shape[k] != 1;
-      out.push_back(pos);
-    }
-    return out;
-  }
-
-  static SmallVector<int64_t> nonUnit(ArrayRef<int64_t> shape) {
-    SmallVector<int64_t> out;
-    for (int64_t d : shape)
-      if (d != 1)
-        out.push_back(d);
-    return out;
-  }
-
   LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
                                     PatternRewriter &rewriter) {
     if (op.getInputs().size() != 1)
       return failure();
     Value input = op.getInputs()[0];
     Value upd = op.getUpdates()[0];
-    auto updTy = cast<RankedTensorType>(upd.getType());
     while (auto rs = upd.getDefiningOp<stablehlo::ReshapeOp>())
       upd = rs.getOperand();
     auto gather = upd.getDefiningOp<stablehlo::GatherOp>();
     if (!gather || gather.getOperand() != input ||
-        gather.getStartIndices() != op.getScatterIndices())
-      return failure();
-    auto gTy = cast<RankedTensorType>(gather.getType());
-    if (!updTy.hasStaticShape() || !gTy.hasStaticShape() ||
-        nonUnit(updTy.getShape()) != nonUnit(gTy.getShape()))
+        !gatherReadsScatterSlots(op, gather, op.getUpdates()[0]))
       return failure();
     SplatElementsAttr constant;
     if (!detectConstantSetindexScatterOp(
              op, true, [](Value) { return true; }, constant)
              .ok())
       return failure();
-    // the slots the scatter writes, read as a gather: the same windows at
-    // the same places, a dimension the scatter inserts kept at most as a
-    // window of one
-    auto want =
-        getGatherDims(op.getContext(), op.getScatterDimensionNumbersAttr());
-    auto dn = gather.getDimensionNumbers();
-    if (computeGatherSliceSizes(op) !=
-            SmallVector<int64_t>(gather.getSliceSizes()) ||
-        want.getStartIndexMap() != dn.getStartIndexMap() ||
-        want.getIndexVectorDim() != dn.getIndexVectorDim() ||
-        !dn.getOperandBatchingDims().empty() ||
-        !want.getOperandBatchingDims().empty() ||
-        nonUnitPositions(gTy.getShape(), dn.getOffsetDims()) !=
-            nonUnitPositions(updTy.getShape(), want.getOffsetDims()))
-      return failure();
-    for (int64_t d : dn.getCollapsedSliceDims())
-      if (!llvm::is_contained(want.getCollapsedSliceDims(), d))
-        return failure();
     rewriter.replaceOp(op, input);
     return success();
   }
