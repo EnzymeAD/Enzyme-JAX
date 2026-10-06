@@ -250,51 +250,54 @@ tryFindReshapeDimMapping(stablehlo::ReshapeOp op) {
 
 class StaticSlice {
 private:
-  using VecTy = SmallVector<int64_t>;
   using TensorValue = TypedValue<RankedTensorType>;
-  VecTy starts;
-  VecTy limits;
-  VecTy inputShape;
-  VecTy outputShape;
-  VecTy strides;
-  unsigned rank;
   TensorValue input, output;
-  RankedTensorType inputTy, outputTy;
+  ArrayRef<int64_t> startIndices, limitIndices, sliceStrides;
 
 public:
-  TensorValue getOutput() { return output; }
-  TensorValue getInput() { return input; }
-  int64_t getBeginOffset(unsigned dim) { return starts[dim]; }
-  int64_t getEndOffset(unsigned dim) { return inputShape[dim] - limits[dim]; }
+  TensorValue getOutput() const { return output; }
+  TensorValue getInput() const { return input; }
+  // The bounds of the slice: when the value is no slice, the whole of itself.
+  ArrayRef<int64_t> starts() const { return startIndices; }
+  ArrayRef<int64_t> limits() const { return limitIndices; }
+  ArrayRef<int64_t> strides() const { return sliceStrides; }
+  ArrayRef<int64_t> inputShape() const { return input.getType().getShape(); }
+  ArrayRef<int64_t> outputShape() const { return output.getType().getShape(); }
+  unsigned rank() const { return output.getType().getRank(); }
+
+  int64_t getBeginOffset(unsigned dim) const { return starts()[dim]; }
+  int64_t getEndOffset(unsigned dim) const {
+    return inputShape()[dim] - limits()[dim];
+  }
 
   int64_t getOutputShape(unsigned dim) const {
-    assert(dim < rank);
-    return outputShape[dim];
+    assert(dim < rank());
+    return outputShape()[dim];
   }
 
   bool isFullInDim(unsigned dim) const {
-    assert(dim < rank);
-    return starts[dim] == 0 && limits[dim] == inputShape[dim];
+    assert(dim < rank());
+    return starts()[dim] == 0 && limits()[dim] == inputShape()[dim];
   }
 
   bool isSliceInDim(unsigned dim) const {
-    assert(dim < rank);
-    return starts[dim] != 0 || limits[dim] != inputShape[dim];
+    assert(dim < rank());
+    return starts()[dim] != 0 || limits()[dim] != inputShape()[dim];
   }
 
   bool isFromStartInDim(unsigned dim) const {
-    assert(dim < rank);
-    return starts[dim] == 0;
+    assert(dim < rank());
+    return starts()[dim] == 0;
   }
 
   bool isToEndInDim(unsigned dim) const {
-    assert(dim < rank);
-    return limits[dim] == inputShape[dim];
+    assert(dim < rank());
+    return limits()[dim] == inputShape()[dim];
   }
 
   std::optional<unsigned> isOneDimSlice() const {
     std::optional<unsigned> found = std::nullopt;
-    for (unsigned i = 0; i < rank; i++) {
+    for (unsigned i = 0; i < rank(); i++) {
       if (isSliceInDim(i)) {
         if (!found)
           found = i;
@@ -306,45 +309,48 @@ public:
   }
 
   bool isFullSlice() const {
-    for (unsigned i = 0; i < rank; i++)
+    for (unsigned i = 0; i < rank(); i++)
       if (isSliceInDim(i))
         return false;
     return true;
   }
 
-  bool isStrideOneAtDim(unsigned dim) const { return strides[dim] == 1; }
+  bool isStrideOneAtDim(unsigned dim) const { return strides()[dim] == 1; }
 
   bool isStrideOne() const {
-    return llvm::all_of(strides, [](int64_t stride) { return stride == 1; });
+    return llvm::all_of(strides(), [](int64_t stride) { return stride == 1; });
   }
 
   static bool isEquivalentInDim(const StaticSlice &a, const StaticSlice &b,
                                 unsigned dim) {
-    if (a.rank != b.rank)
+    if (a.rank() != b.rank())
       return false;
     if (a.input != b.input)
       return false;
 
-    return a.starts[dim] == b.starts[dim] && a.limits[dim] == b.limits[dim];
+    return a.starts()[dim] == b.starts()[dim] &&
+           a.limits()[dim] == b.limits()[dim];
   }
 
   static bool isPrefixInDim(const StaticSlice &a, const StaticSlice &b,
                             unsigned dim) {
     if (!isEquivalentExceptDim(a, b, dim))
       return false;
-    return a.starts[dim] == b.starts[dim] && a.limits[dim] <= b.limits[dim];
+    return a.starts()[dim] == b.starts()[dim] &&
+           a.limits()[dim] <= b.limits()[dim];
   }
 
   static bool isSuffixInDim(const StaticSlice &a, const StaticSlice &b,
                             unsigned dim) {
     if (!isEquivalentExceptDim(a, b, dim))
       return false;
-    return a.starts[dim] >= b.starts[dim] && a.limits[dim] == b.limits[dim];
+    return a.starts()[dim] >= b.starts()[dim] &&
+           a.limits()[dim] == b.limits()[dim];
   }
 
   static bool isEquivalentExceptDim(const StaticSlice &a, const StaticSlice &b,
                                     unsigned dim) {
-    return llvm::all_of(llvm::seq(a.rank), [&](unsigned i) {
+    return llvm::all_of(llvm::seq(a.rank()), [&](unsigned i) {
       return dim == i || isEquivalentInDim(a, b, i);
     });
   }
@@ -352,33 +358,27 @@ public:
   static std::optional<StaticSlice> get(Value v) {
     if (!v)
       return std::nullopt;
-
-    StaticSlice res;
-    RankedTensorType ty = dyn_cast<RankedTensorType>(v.getType());
+    auto ty = dyn_cast<RankedTensorType>(v.getType());
     if (!ty)
       return std::nullopt;
 
-    unsigned rank = ty.getRank();
-    res.rank = rank;
-    res.output = cast<TypedValue<RankedTensorType>>(v);
-    res.outputTy = ty;
-
-    if (stablehlo::SliceOp slice = v.getDefiningOp<stablehlo::SliceOp>()) {
-      res.inputTy = slice.getOperand().getType();
-      res.starts = VecTy(slice.getStartIndices());
-      res.limits = VecTy(slice.getLimitIndices());
-      res.strides = VecTy(slice.getStrides());
+    StaticSlice res;
+    res.output = cast<TensorValue>(v);
+    if (auto slice = v.getDefiningOp<stablehlo::SliceOp>()) {
       res.input = slice.getOperand();
-    } else {
-      res.inputTy = ty;
-      res.starts = VecTy(rank, 0);
-      res.limits = VecTy(ty.getShape());
-      res.strides = VecTy(rank, 1);
-      res.input = res.output;
+      res.startIndices = slice.getStartIndices();
+      res.limitIndices = slice.getLimitIndices();
+      res.sliceStrides = slice.getStrides();
+      return res;
     }
-    res.inputShape = VecTy(res.inputTy.getShape());
-    res.outputShape = VecTy(res.outputTy.getShape());
-
+    // the whole of v: bounds held by uniqued attributes, as a slice's are
+    MLIRContext *ctx = v.getContext();
+    res.input = res.output;
+    res.startIndices =
+        DenseI64ArrayAttr::get(ctx, SmallVector<int64_t>(ty.getRank(), 0));
+    res.limitIndices = ty.getShape();
+    res.sliceStrides =
+        DenseI64ArrayAttr::get(ctx, SmallVector<int64_t>(ty.getRank(), 1));
     return res;
   }
 };
