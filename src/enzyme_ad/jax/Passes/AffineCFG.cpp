@@ -7481,6 +7481,31 @@ struct HoistParallelOutOfRunsCheck : public OpRewritePattern<AffineIfOp> {
   }
 };
 
+// +0.0 added to a sum an affine.parallel reduces: the sum starts from the
+// reduction's identity, +0.0, so it is never -0.0 (adding anything to +0.0
+// never gives -0.0), and adding +0.0 to it leaves it as it is, without
+// asking for no signed zeros. Parallelizing a loop that accumulates from 0.0
+// leaves this addition of the loop's initial value.
+struct ParallelSumPlusZero : public OpRewritePattern<arith::AddFOp> {
+  using OpRewritePattern<arith::AddFOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(arith::AddFOp add,
+                                PatternRewriter &rewriter) const override {
+    for (unsigned side = 0; side < 2; ++side) {
+      auto sum = dyn_cast<OpResult>(add.getOperand(side));
+      auto par = sum ? dyn_cast<AffineParallelOp>(sum.getOwner()) : nullptr;
+      if (!par || !matchPattern(add.getOperand(1 - side), m_PosZeroFloat()))
+        continue;
+      auto kind =
+          cast<AtomicRMWKindAttr>(par.getReductions()[sum.getResultNumber()]);
+      if (kind.getValue() != AtomicRMWKind::addf)
+        continue;
+      rewriter.replaceOp(add, sum);
+      return success();
+    }
+    return failure();
+  }
+};
+
 void mlir::enzyme::populateAffineCFGPatterns(
     RewritePatternSet &rpl, bool enable_split_on_affine_if_constants) {
   MLIRContext *context = rpl.getContext();
@@ -7497,9 +7522,9 @@ void mlir::enzyme::populateAffineCFGPatterns(
           CombineAffineIfs, MergeNestedAffineParallelLoops,
           PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
           MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
-          SinkStoreInIf, SinkStoreInAffineIf, AddAddCstEnd, LiftMemrefRead,
-          CompareVs1, AffineForReductionIter, AffineForReductionSink>(context,
-                                                                      2);
+          SinkStoreInIf, SinkStoreInAffineIf, ParallelSumPlusZero, AddAddCstEnd,
+          LiftMemrefRead, CompareVs1, AffineForReductionIter,
+          AffineForReductionSink>(context, 2);
   if (enable_split_on_affine_if_constants) {
     rpl.add<SplitOnAffineIfConstants<scf::ForOp>,
             SplitOnAffineIfConstants<scf::IfOp>>(context, 2);
