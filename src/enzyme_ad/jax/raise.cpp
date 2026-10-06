@@ -201,8 +201,13 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   if (StringRef(backend).starts_with("xla")) {
       // Differentiation and its cleanups disturb the affine structure the
       // raiser wants; rebuild it the way the shared prefix does.
+      // affine-cfg again once llvm-to-affine-access has turned the loops'
+      // llvm loads and stores into affine ones: only then can it prove a loop
+      // parallel (an llvm access is an opaque memory effect to it), and the
+      // raiser tags a parallel loop's while for batching.
       pass_pipeline += ",affine-cfg," + canonicalize +
-                       ",llvm-to-affine-access," + canonicalize + ",";
+                       ",llvm-to-affine-access," + canonicalize +
+                       ",affine-cfg," + canonicalize + ",";
       pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true";
       if (options->specializeIndexStrides)
