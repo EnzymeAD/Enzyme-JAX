@@ -7079,6 +7079,17 @@ static IntegerSet runsOnceSet(AffineForOp forOp,
                      operands);
 }
 
+static IntegerSet runsOnceSet(AffineParallelOp par,
+                              SmallVectorImpl<Value> &operands) {
+  SmallVector<AffineMap> lbs, ubs;
+  for (unsigned d = 0, e = par.getNumDims(); d < e; ++d) {
+    lbs.push_back(par.getLowerBoundMap(d));
+    ubs.push_back(par.getUpperBoundMap(d));
+  }
+  return runsOnceSet(lbs, par.getLowerBoundsOperands(), ubs,
+                     par.getUpperBoundsOperands(), operands);
+}
+
 // The carried value at `j` of a loop whose body never reads it, though the
 // loop's result is used, handed the same value as the one at `i`, which the
 // body reads: a value only the last iteration sets, as mem2reg leaves a
@@ -7258,6 +7269,149 @@ struct AffineForDeadCarry : public OpRewritePattern<AffineForOp> {
   }
 };
 
+namespace {
+// The constraints of an integer set over its operands.
+struct SetConstraints : public FlatLinearValueConstraints {
+  SetConstraints(IntegerSet set, ValueRange operands, bool *error)
+      : FlatLinearValueConstraints(set, operands, error) {}
+};
+} // namespace
+
+// Whether every point of `a` (over `aOperands`) lies in `b` (over
+// `bOperands`): the points of a outside each constraint of b are none.
+static bool setImplies(IntegerSet a, ValueRange aOperands, IntegerSet b,
+                       ValueRange bOperands) {
+  for (auto [k, c] : llvm::enumerate(b.getConstraints())) {
+    // c >= 0 fails where -c - 1 >= 0; c == 0 where c - 1 >= 0 or -c - 1 >= 0
+    SmallVector<AffineExpr> negations{-c - 1};
+    if (b.isEq(k))
+      negations.push_back(c - 1);
+    for (AffineExpr n : negations) {
+      bool error = false;
+      SetConstraints cst(a, aOperands, &error);
+      SetConstraints neg(
+          IntegerSet::get(b.getNumDims(), b.getNumSymbols(), n, false),
+          bOperands, &error);
+      if (error)
+        return false;
+      cst.mergeAndAlignVarsWithOther(0, &neg);
+      cst.append(neg);
+      if (!cst.isEmpty())
+        return false;
+    }
+  }
+  return true;
+}
+
+// Whether `loop`, an op of the then branch of `ifOp`, can run before the if
+// instead: the rest of the branch has no effect it could see, it reads
+// nothing the if computes, and where the if's check fails it runs no
+// iteration.
+static bool runsBeforeCheck(Operation *loop, AffineIfOp ifOp, IntegerSet runs,
+                            ValueRange runsOperands) {
+  Block *thenBlock = ifOp.getThenBlock();
+  for (Operation &op : thenBlock->without_terminator())
+    if (&op != loop && !isMemoryEffectFree(&op))
+      return false;
+  auto inIf = [&](Value v) {
+    return ifOp->isAncestor(v.getParentRegion()->getParentOp());
+  };
+  if (llvm::any_of(loop->getOperands(), inIf))
+    return false;
+  llvm::SetVector<Value> captured;
+  getUsedValuesDefinedAbove(loop->getRegions(), captured);
+  if (llvm::any_of(captured, inIf))
+    return false;
+  return setImplies(runs, runsOperands, ifOp.getIntegerSet(),
+                    ifOp.getOperands());
+}
+
+// An affine.if that only checks a loop runs, as in a rotated loop
+// (`if (n > 0) { for ... }`), where the loop is the last op of the then
+// branch, the then branch yields a result of the loop and the else branch
+// that result's initial value: the loop moves out, running no iteration
+// where the check fails, and the if's result is the loop's.
+struct HoistForOutOfRunsCheck : public OpRewritePattern<AffineIfOp> {
+  using OpRewritePattern<AffineIfOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(AffineIfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (!ifOp.hasElse() || ifOp.getNumResults() == 0)
+      return failure();
+    Operation *thenYield = ifOp.getThenBlock()->getTerminator();
+    auto forOp = dyn_cast_or_null<AffineForOp>(thenYield->getPrevNode());
+    if (!forOp)
+      return failure();
+    Operation *elseYield = ifOp.getElseBlock()->getTerminator();
+    SmallVector<std::pair<unsigned, Value>> taken;
+    for (unsigned p = 0, e = ifOp.getNumResults(); p < e; ++p) {
+      auto r = dyn_cast<OpResult>(thenYield->getOperand(p));
+      if (r && r.getOwner() == forOp &&
+          elseYield->getOperand(p) == forOp.getInits()[r.getResultNumber()])
+        taken.push_back({p, r});
+    }
+    SmallVector<Value> runsOperands;
+    IntegerSet runs = runsOnceSet(forOp, runsOperands);
+    if (taken.empty() || !runsBeforeCheck(forOp, ifOp, runs, runsOperands))
+      return failure();
+    rewriter.moveOpBefore(forOp, ifOp);
+    for (auto [p, v] : taken)
+      rewriter.replaceAllUsesWith(ifOp.getResult(p), v);
+    return success();
+  }
+};
+
+// The same for a reducing affine.parallel, whose result the then branch
+// combines with a value the else branch yields: where the check fails the
+// loop runs no iteration and reduces to the identity, which combines to
+// that value.
+struct HoistParallelOutOfRunsCheck : public OpRewritePattern<AffineIfOp> {
+  using OpRewritePattern<AffineIfOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(AffineIfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (!ifOp.hasElse() || ifOp.getNumResults() == 0)
+      return failure();
+    Operation *thenYield = ifOp.getThenBlock()->getTerminator();
+    Operation *elseYield = ifOp.getElseBlock()->getTerminator();
+    AffineParallelOp par;
+    SmallVector<std::pair<unsigned, Operation *>> taken;
+    for (unsigned p = 0, e = ifOp.getNumResults(); p < e; ++p) {
+      Operation *combine = thenYield->getOperand(p).getDefiningOp();
+      if (!combine || combine->getBlock() != ifOp.getThenBlock() ||
+          combine->getNumOperands() != 2 || !combine->hasOneUse())
+        continue;
+      for (unsigned side = 0; side < 2; ++side) {
+        auto r = dyn_cast<OpResult>(combine->getOperand(side));
+        auto rPar = r ? dyn_cast<AffineParallelOp>(r.getOwner()) : nullptr;
+        Value other = combine->getOperand(1 - side);
+        if (!rPar || (par && rPar != par) ||
+            elseYield->getOperand(p) != other ||
+            other.getParentBlock() == ifOp.getThenBlock())
+          continue;
+        auto kind = reductionKind(combine);
+        auto parKind =
+            cast<AtomicRMWKindAttr>(rPar.getReductions()[r.getResultNumber()]);
+        if (!kind || *kind != parKind.getValue())
+          continue;
+        par = rPar;
+        taken.push_back({p, combine});
+        break;
+      }
+    }
+    if (taken.empty())
+      return failure();
+    SmallVector<Value> runsOperands;
+    IntegerSet runs = runsOnceSet(par, runsOperands);
+    if (!runsBeforeCheck(par, ifOp, runs, runsOperands))
+      return failure();
+    rewriter.moveOpBefore(par, ifOp);
+    for (auto [p, combine] : taken) {
+      rewriter.moveOpBefore(combine, ifOp);
+      rewriter.replaceAllUsesWith(ifOp.getResult(p), combine->getResult(0));
+    }
+    return success();
+  }
+};
+
 void mlir::enzyme::populateAffineCFGPatterns(
     RewritePatternSet &rpl, bool enable_split_on_affine_if_constants) {
   MLIRContext *context = rpl.getContext();
@@ -7287,6 +7441,7 @@ void mlir::enzyme::populateAffineCFGPatterns(
   rpl.add<SimplifyAndOr, SimplifyOrAnd>(context, 2);
   rpl.add<AffineForCopyCarry, SCFForCopyCarry>(context, 2);
   rpl.add<AffineForDeadCarry>(context, 2);
+  rpl.add<HoistForOutOfRunsCheck, HoistParallelOutOfRunsCheck>(context, 2);
   rpl.add<SplitParallelInductions, MaskedAffineParallel>(context, 1);
 }
 
