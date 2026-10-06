@@ -6500,6 +6500,28 @@ struct ConcatPushBinop final
   }
 };
 
+// The operands of concatenating along dim, those of nested concats along the
+// same dim included all the way down (one rewrite then flattens a deep
+// nest, rather than one level per rewrite with every user woken at each),
+// and those empty along dim dropped.
+static void flattenConcatOperands(ValueRange operands, uint64_t dim,
+                                  SmallVectorImpl<Value> &vals, bool &changed) {
+  for (Value v : operands) {
+    if (auto c2 = v.getDefiningOp<stablehlo::ConcatenateOp>()) {
+      if (c2.getDimension() == dim) {
+        flattenConcatOperands(c2.getInputs(), dim, vals, changed);
+        changed = true;
+        continue;
+      }
+    }
+    if (cast<RankedTensorType>(v.getType()).getShape()[dim] == 0) {
+      changed = true;
+      continue;
+    }
+    vals.push_back(v);
+  }
+}
+
 struct ConcatFuse final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatFuse> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -6513,22 +6535,7 @@ struct ConcatFuse final
     }
     SmallVector<Value> vals;
     bool changed = false;
-    for (auto v : op->getOperands()) {
-      if (auto c2 = v.getDefiningOp<stablehlo::ConcatenateOp>()) {
-        if (c2.getDimension() == op.getDimension()) {
-          for (auto v2 : c2->getOperands())
-            vals.push_back(v2);
-          changed = true;
-          continue;
-        }
-      }
-      if (cast<RankedTensorType>(v.getType()).getShape()[op.getDimension()] ==
-          0) {
-        changed = true;
-        continue;
-      }
-      vals.push_back(v);
-    }
+    flattenConcatOperands(op.getOperands(), op.getDimension(), vals, changed);
     if (!changed)
       return failure();
     rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
