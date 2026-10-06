@@ -23494,6 +23494,10 @@ private:
   };
 };
 
+// The most scatter indices ScatterIndicesAreUnique evaluates to tell whether
+// they are unique.
+static constexpr int64_t kMaxEvaluatedScatterIndices = 1 << 16;
+
 struct ScatterIndicesAreUnique
     : public CheckedOpRewritePattern<stablehlo::ScatterOp,
                                      ScatterIndicesAreUnique> {
@@ -23507,7 +23511,6 @@ struct ScatterIndicesAreUnique
 
     auto scatterIndices = op.getScatterIndices();
     auto dimNumbers = op.getScatterDimensionNumbers();
-    Attribute scatterIndicesAttr;
     bool uniqueIndices = false;
 
     if (scatterIndices.getType().getNumElements() == 1) {
@@ -23553,8 +23556,11 @@ struct ScatterIndicesAreUnique
         // tuple [0, 1, ..., shape[v]-1] → not unique (the single-
         // scatter-point case is already handled by getNumElements()==1).
       }
-    } else if (matchPattern(scatterIndices, m_Constant(&scatterIndicesAttr))) {
-      auto denseAttr = dyn_cast<DenseIntElementsAttr>(scatterIndicesAttr);
+    } else if (auto evaluated = tryEvaluateSmallTreeToConstant(
+                   scatterIndices, kMaxEvaluatedScatterIndices)) {
+      auto denseAttr = dyn_cast<DenseIntElementsAttr>(*evaluated);
+      if (!denseAttr)
+        return failure();
 
       auto shape = cast<ShapedType>(scatterIndices.getType()).getShape();
       if (shape.empty())
@@ -23562,7 +23568,9 @@ struct ScatterIndicesAreUnique
 
       int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
 
-      int64_t tupleSize = shape[indexVectorDim];
+      // an index vector dim one past the last holds scalar indices
+      int64_t tupleSize =
+          indexVectorDim < (int64_t)shape.size() ? shape[indexVectorDim] : 1;
 
       SmallVector<int64_t> strides(shape.size());
       strides[shape.size() - 1] = 1;
@@ -23607,6 +23615,12 @@ struct ScatterIndicesAreUnique
                 std::advance(it, linearIdx);
                 indexTuple.push_back((*it).getSExtValue());
               }
+              // A scatter point at another position along a batching dim
+              // writes another batch of the input: its position there is
+              // part of where it writes.
+              for (int64_t d : dimNumbers.getScatterIndicesBatchingDims())
+                indexTuple.push_back(
+                    currentIndices[d < indexVectorDim ? d : d - 1]);
               indexTuples.push_back(indexTuple);
               return;
             }

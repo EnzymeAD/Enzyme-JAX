@@ -1301,6 +1301,14 @@ struct IotaLikeTensor {
   mlir::RankedTensorType tensorType;
 };
 
+// The value of val, when it is computed from constants and iotas by
+// elementwise arithmetic, clamps, reshapes, slices and broadcasts, without
+// folding any of them in the IR (const prop leaves a non-splat constant with
+// several users alone). Splats stay splats; no value spelled out element by
+// element may hold more than maxElements.
+std::optional<DenseElementsAttr>
+tryEvaluateSmallTreeToConstant(mlir::Value val, int64_t maxElements = 1024);
+
 std::optional<IotaLikeTensor> detectIotaLikeTensor(DenseElementsAttr attr);
 std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor);
 
