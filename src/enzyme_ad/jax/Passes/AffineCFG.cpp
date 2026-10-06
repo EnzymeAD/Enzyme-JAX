@@ -6,6 +6,7 @@
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -8211,6 +8212,128 @@ static LogicalResult nestDomain(ArrayRef<Operation *> ops,
   return success();
 }
 
+// `v` as an index: itself, or an index cast of it that dominates `at`.
+static Value asIndex(Value v, Operation *at, DominanceInfo &dom) {
+  if (v.getType().isIndex())
+    return v;
+  for (Operation *user : v.getUsers())
+    if (auto ic = dyn_cast<arith::IndexCastOp>(user))
+      if (ic.getType().isIndex() &&
+          dom.properlyDominates(ic.getOperation(), at))
+        return ic.getResult();
+  return nullptr;
+}
+
+// The constraints that `cond` taking the value `holds` gives over the values
+// it compares (as indices), appended to `facts`/`eqs` over `syms`: an and
+// that holds or an or that fails gives each of its operands, a signed
+// comparison a linear constraint. A sign-extending cast keeps a signed
+// comparison.
+static void addConditionFacts(Value cond, bool holds, Operation *at,
+                              DominanceInfo &dom, SmallVectorImpl<Value> &syms,
+                              SmallVectorImpl<AffineExpr> &facts,
+                              SmallVectorImpl<bool> &eqs) {
+  Operation *def = cond.getDefiningOp();
+  if (!def)
+    return;
+  if ((holds && isa<arith::AndIOp>(def)) ||
+      (!holds && isa<arith::OrIOp>(def))) {
+    for (Value operand : def->getOperands())
+      addConditionFacts(operand, holds, at, dom, syms, facts, eqs);
+    return;
+  }
+  auto cmp = dyn_cast<arith::CmpIOp>(def);
+  if (!cmp)
+    return;
+  MLIRContext *ctx = def->getContext();
+  auto side = [&](Value v) -> AffineExpr {
+    APInt c;
+    if (matchPattern(v, m_ConstantInt(&c)))
+      return getAffineConstantExpr(c.getSExtValue(), ctx);
+    Value idx = asIndex(v, at, dom);
+    if (!idx)
+      return AffineExpr();
+    auto it = llvm::find(syms, idx);
+    if (it == syms.end()) {
+      syms.push_back(idx);
+      it = std::prev(syms.end());
+    }
+    return getAffineSymbolExpr(it - syms.begin(), ctx);
+  };
+  AffineExpr a = side(cmp.getLhs()), b = side(cmp.getRhs());
+  if (!a || !b)
+    return;
+  auto pred =
+      holds ? cmp.getPredicate() : arith::invertPredicate(cmp.getPredicate());
+  switch (pred) {
+  case arith::CmpIPredicate::slt:
+    facts.push_back(b - a - 1);
+    break;
+  case arith::CmpIPredicate::sle:
+    facts.push_back(b - a);
+    break;
+  case arith::CmpIPredicate::sgt:
+    facts.push_back(a - b - 1);
+    break;
+  case arith::CmpIPredicate::sge:
+    facts.push_back(a - b);
+    break;
+  case arith::CmpIPredicate::eq:
+    facts.push_back(a - b);
+    eqs.push_back(true);
+    return;
+  default:
+    return;
+  }
+  eqs.push_back(false);
+}
+
+// Whether `to` is reachable from `from` along the successors of the blocks
+// of their region.
+static bool reaches(Block *from, Block *to) {
+  SmallVector<Block *> work{from};
+  llvm::SmallPtrSet<Block *, 16> seen{from};
+  while (!work.empty()) {
+    Block *b = work.pop_back_val();
+    if (b == to)
+      return true;
+    for (Block *succ : b->getSuccessors())
+      if (seen.insert(succ).second)
+        work.push_back(succ);
+  }
+  return false;
+}
+
+// The facts the conditional branches of the function on the way to `at`, an
+// op of its body, give: where one successor of a branch that dominates its
+// block cannot reach it, it only runs with the condition taking the other
+// way, as past an MFEM_VERIFY, whose failing side ends in a call that does
+// not return. The values compared are read as index casts dominating `at`.
+static IntegerSet guardFacts(Operation *at, DominanceInfo &dom,
+                             SmallVectorImpl<Value> &syms) {
+  SmallVector<AffineExpr> facts;
+  SmallVector<bool> eqs;
+  Block *block = at->getBlock();
+  Region *region = block->getParent();
+  if (region->hasOneBlock())
+    return IntegerSet();
+  auto &tree = dom.getDomTree(region);
+  for (auto *node = tree.getNode(block); node && node->getIDom();
+       node = node->getIDom()) {
+    Block *d = node->getIDom()->getBlock();
+    auto br = dyn_cast<cf::CondBranchOp>(d->getTerminator());
+    if (!br)
+      continue;
+    bool fromTrue = reaches(br.getTrueDest(), block);
+    bool fromFalse = reaches(br.getFalseDest(), block);
+    if (fromTrue != fromFalse)
+      addConditionFacts(br.getCondition(), fromTrue, at, dom, syms, facts, eqs);
+  }
+  if (facts.empty())
+    return IntegerSet();
+  return IntegerSet::get(0, syms.size(), facts, eqs);
+}
+
 // The facts the accesses of `block` give about the values outside a loop
 // nest: an access to a statically shaped memref directly in the block runs
 // at every point of the nest whenever any point runs (the enclosing ops are
@@ -8419,6 +8542,35 @@ struct InvariantTerms {
     return getAffineBinaryOpExpr(bin.getKind(), lhs, rhs);
   }
 
+  // The facts of the function's branches on the way to `op`, per op of the
+  // function's body that holds it.
+  DominanceInfo dom;
+  llvm::DenseMap<Operation *, std::pair<IntegerSet, SmallVector<Value>>> guards;
+
+  void addGuardFacts(Operation *op, FlatAffineValueConstraints &domain) {
+    auto fn = op->getParentOfType<FunctionOpInterface>();
+    if (!fn || fn->getNumRegions() == 0)
+      return;
+    Operation *at = fn->getRegion(0).findAncestorOpInRegion(*op);
+    if (!at)
+      return;
+    auto it = guards.find(at);
+    if (it == guards.end()) {
+      SmallVector<Value> syms;
+      IntegerSet set = guardFacts(at, dom, syms);
+      it = guards.try_emplace(at, set, syms).first;
+    }
+    auto &[set, syms] = it->second;
+    if (!set)
+      return;
+    bool error = false;
+    SetConstraints cst(set, syms, &error);
+    if (error)
+      return;
+    domain.mergeAndAlignVarsWithOther(0, &cst);
+    domain.append(cst);
+  }
+
   // The access relation of `op`, as MemRefAccess::getAccessRelation builds
   // it, with the invariant terms abstracted.
   LogicalResult accessRelation(Operation *op,
@@ -8429,6 +8581,7 @@ struct InvariantTerms {
     if (failed(nestDomain(enclosing, domain)))
       return failure();
     addInBoundsFacts(op->getBlock(), enclosing, domain);
+    addGuardFacts(op, domain);
     AffineValueMap access;
     MemRefAccess(op).getAccessMap(&access);
     AffineMap map = access.getAffineMap();
