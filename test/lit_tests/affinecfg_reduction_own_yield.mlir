@@ -47,11 +47,9 @@ func.func @sum(%x: memref<?xf64>, %n: index) -> f64 {
 }
 
 // CHECK:  func.func @sum(%arg0: memref<?xf64>, %arg1: index) -> f64 {
-// CHECK-NEXT:   %cst = arith.constant 0.000000e+00 : f64
 // CHECK-NEXT:   %0 = affine.parallel (%arg2) = (0) to (symbol(%arg1)) reduce ("addf") -> (f64) {
-// CHECK-NEXT:     %2 = affine.load %arg0[%arg2] : memref<?xf64>
-// CHECK-NEXT:     affine.yield %2 : f64
+// CHECK-NEXT:     %1 = affine.load %arg0[%arg2] : memref<?xf64>
+// CHECK-NEXT:     affine.yield %1 : f64
 // CHECK-NEXT:   }
-// CHECK-NEXT:   %1 = arith.addf %0, %cst : f64
-// CHECK-NEXT:   return %1 : f64
+// CHECK-NEXT:   return %0 : f64
 // CHECK-NEXT: }

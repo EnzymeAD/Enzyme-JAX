@@ -45,16 +45,14 @@ func.func @row_dot(%x: memref<?xf64>, %y: memref<?xf64>, %out: memref<?xf64>, %n
 }
 
 // CHECK:  func.func @row_dot(%arg0: memref<?xf64>, %arg1: memref<?xf64>, %arg2: memref<?xf64>, %arg3: index, %arg4: index) {
-// CHECK-NEXT:   %cst = arith.constant 0.000000e+00 : f64
 // CHECK-NEXT:   affine.parallel (%arg5) = (0) to (symbol(%arg3)) {
 // CHECK-NEXT:     %0 = affine.parallel (%arg6) = (0) to (symbol(%arg4)) reduce ("addf") -> (f64) {
-// CHECK-NEXT:       %2 = affine.load %arg0[%arg6 + %arg5 * symbol(%arg4)] : memref<?xf64>
-// CHECK-NEXT:       %3 = affine.load %arg1[%arg6 + %arg5 * symbol(%arg4)] : memref<?xf64>
-// CHECK-NEXT:       %4 = arith.mulf %2, %3 : f64
-// CHECK-NEXT:       affine.yield %4 : f64
+// CHECK-NEXT:       %1 = affine.load %arg0[%arg6 + %arg5 * symbol(%arg4)] : memref<?xf64>
+// CHECK-NEXT:       %2 = affine.load %arg1[%arg6 + %arg5 * symbol(%arg4)] : memref<?xf64>
+// CHECK-NEXT:       %3 = arith.mulf %1, %2 : f64
+// CHECK-NEXT:       affine.yield %3 : f64
 // CHECK-NEXT:     }
-// CHECK-NEXT:     %1 = arith.addf %0, %cst : f64
-// CHECK-NEXT:     affine.store %1, %arg2[%arg5] : memref<?xf64>
+// CHECK-NEXT:     affine.store %0, %arg2[%arg5] : memref<?xf64>
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return
 // CHECK-NEXT: }
