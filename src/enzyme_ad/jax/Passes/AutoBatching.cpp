@@ -993,13 +993,12 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
       SmallVector<int64_t> strides(batchedShape.size(), 1);
       startIndices[0] = idx;
       endIndices[0] = idx + 1;
-      auto slicedOp = stablehlo::SliceOp::create(
-          rewriter, sliceOp.getLoc(), batched,
-          rewriter.getDenseI64ArrayAttr(startIndices),
-          rewriter.getDenseI64ArrayAttr(endIndices),
-          rewriter.getDenseI64ArrayAttr(strides));
-      replacements.push_back(stablehlo::ReshapeOp::create(
-          rewriter, sliceOp.getLoc(), result.getType(), slicedOp));
+      auto sliced =
+          stablehlo::SliceOpCreate(rewriter, sliceOp.getLoc(), batched,
+                                   startIndices, endIndices, strides);
+      replacements.push_back(stablehlo::ReshapeOpCreate(
+          rewriter, sliceOp.getLoc(), sliced,
+          cast<RankedTensorType>(result.getType()).getShape()));
     }
     rewriter.replaceOp(otherOp, replacements);
   }
