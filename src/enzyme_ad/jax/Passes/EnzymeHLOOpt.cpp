@@ -4669,9 +4669,8 @@ LogicalResult sliceConcatHelper(stablehlo::ConcatenateOp concat,
     nend[dim] -= curdim;
     if (nend[dim] > nextdim)
       nend[dim] = nextdim;
-    auto subslice = stablehlo::SliceOp::create(rewriter, concat.getLoc(), v,
-                                               nstart, nend, strides);
-    postConcat.push_back(subslice);
+    postConcat.push_back(stablehlo::SliceOpCreate(rewriter, concat.getLoc(), v,
+                                                  nstart, nend, strides));
     curdim += nextdim;
   }
   return success();
@@ -5214,6 +5213,16 @@ struct SliceConcat final
              .succeeded())
       return failure();
 
+    // a slice of all of the concat is the concat
+    if (llvm::equal(postConcat, concat.getInputs())) {
+      rewriter.replaceOp(op, concat);
+      return success();
+    }
+    // a slice within one operand is that operand's piece
+    if (postConcat.size() == 1) {
+      rewriter.replaceOp(op, postConcat[0]);
+      return success();
+    }
     rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, postConcat, dim);
     return success();
   }
