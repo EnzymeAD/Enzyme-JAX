@@ -127,10 +127,10 @@ diff --git a/xla/pjrt/distributed/topology_util.cc b/xla/pjrt/distributed/topolo
      *topology = local_topology;
 -    for (DeviceProto& device : *topology->mutable_devices()) {
 -      device.set_global_device_id(device.local_device_ordinal());
-+    for (int i = 0; i < topology->devices_size(); ++i) {
-+      DeviceProto* device = topology->mutable_devices(i);
-+      device->set_global_device_id(
-+          assign_global_device_ids ? i : device->local_device_ordinal());
++    if (assign_global_device_ids) {
++      for (int i = 0; i < topology->devices_size(); ++i) {
++        topology->mutable_devices(i)->set_global_device_id(i);
++      }
      }
      return absl::OkStatus();
    }
