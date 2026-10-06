@@ -5293,6 +5293,30 @@ struct SplitParallelInductions
   }
 };
 
+// The coefficient the outer of two merged inductions must have in an access:
+// that of the inner one, `ivBeingAdded`, times its trip count `bound`. The
+// trip count is a constant or a value, which the access names as one of its
+// own dims or symbols. Null if the access does not use the inner induction or
+// does not name the value.
+static AffineExpr mergedStride(const std::map<size_t, AffineExpr> &usage,
+                               size_t ivBeingAdded, const ValueOrInt &bound,
+                               ArrayRef<Value> accessOperands,
+                               size_t accessNumDims, MLIRContext *ctx) {
+  auto found = usage.find(ivBeingAdded);
+  if (found == usage.end())
+    return nullptr;
+  if (!bound.isValue)
+    return found->second * bound.i_val.getSExtValue();
+  for (auto [i, v] : llvm::enumerate(accessOperands)) {
+    if (v != bound.v_val)
+      continue;
+    return found->second * (i < accessNumDims
+                                ? getAffineDimExpr(i, ctx)
+                                : getAffineSymbolExpr(i - accessNumDims, ctx));
+  }
+  return nullptr;
+}
+
 struct MergeParallelInductions
     : public OpRewritePattern<affine::AffineParallelOp> {
   using OpRewritePattern<affine::AffineParallelOp>::OpRewritePattern;
@@ -5641,18 +5665,19 @@ struct MergeParallelInductions
       // where ivBeingAdded = 0 ... C
       auto ivBeingAdded = pair.first;
       ssize_t ivBeingMuled = -1;
-      size_t upperBound;
-      if (fixedUpperBounds[ivBeingAdded].isValue)
-        continue;
-      upperBound = fixedUpperBounds[ivBeingAdded].i_val.getSExtValue();
+      const ValueOrInt &addedBound = fixedUpperBounds[ivBeingAdded];
 
+      AffineExpr stride = mergedStride(indUsage, ivBeingAdded, addedBound,
+                                       operands, numDim, op.getContext());
+      if (!stride)
+        continue;
       for (auto pair1 : indUsage) {
         // This expression is something of the form
         //    ivBeingAdded : A
         //    ivBeingMuled : A * B
         if (pair1.first == ivBeingAdded)
           continue;
-        if (indUsage[ivBeingAdded] * upperBound == pair1.second) {
+        if (stride == pair1.second) {
           ivBeingMuled = pair1.first;
           break;
         }
@@ -5669,7 +5694,9 @@ struct MergeParallelInductions
 
       bool legalPair = true;
       for (auto &&[indUsage2, operands2, numDim2] : pair.second) {
-        if (indUsage2[ivBeingAdded] * upperBound != indUsage2[ivBeingMuled]) {
+        AffineExpr stride2 = mergedStride(indUsage2, ivBeingAdded, addedBound,
+                                          operands2, numDim2, op.getContext());
+        if (!stride2 || stride2 != indUsage2[ivBeingMuled]) {
           legalPair = false;
           break;
         }
@@ -5700,6 +5727,27 @@ struct MergeParallelInductions
 
       ubounds[off1] = ubounds[off1] * ubounds[off2];
       ubounds[off2] = getAffineConstantExpr(1, op.getContext());
+
+      // A bound C that is a value may be negative, which leaves the nest
+      // without iterations; the merged bound is the product of the two, and
+      // that of two negatives is positive. Run the merged loop only where C
+      // is not negative, as an operand of the same kind as in the bound.
+      if (addedBound.isValue) {
+        auto ubOperands = op.getUpperBoundsOperands();
+        unsigned ubDims = op.getUpperBoundsMap().getNumDims();
+        unsigned pos =
+            llvm::find(ubOperands, addedBound.v_val) - ubOperands.begin();
+        bool isDim = pos < ubDims;
+        auto nonNegative =
+            IntegerSet::get(isDim, !isDim,
+                            {isDim ? getAffineDimExpr(0, op.getContext())
+                                   : getAffineSymbolExpr(0, op.getContext())},
+                            {false});
+        auto guard = affine::AffineIfOp::create(
+            rewriter, op.getLoc(), TypeRange(), nonNegative,
+            ValueRange(addedBound.v_val), /*withElseRegion=*/false);
+        rewriter.setInsertionPointToStart(guard.getThenBlock());
+      }
 
       affine::AffineParallelOp affineLoop = affine::AffineParallelOp::create(
           rewriter, op.getLoc(), op.getResultTypes(), op.getReductionsAttr(),
