@@ -2567,6 +2567,34 @@ struct DUSDUSConcat final
   }
 };
 
+LogicalResult sliceConcatHelper(stablehlo::ConcatenateOp concat,
+                                PatternRewriter &rewriter,
+                                ArrayRef<int64_t> starts,
+                                ArrayRef<int64_t> limits,
+                                ArrayRef<int64_t> strides,
+                                SmallVectorImpl<Value> &postConcat);
+
+// Appends to pieces the slice of v from starts to limits: the pieces of v's
+// own operands when v concatenates along dim, so that a concatenate of the
+// pieces is as flat as v was.
+static void appendSlicePieces(PatternRewriter &rewriter, Location loc, Value v,
+                              int64_t dim, ArrayRef<int64_t> starts,
+                              ArrayRef<int64_t> limits,
+                              ArrayRef<int64_t> strides,
+                              SmallVectorImpl<Value> &pieces) {
+  if (auto concat = v.getDefiningOp<stablehlo::ConcatenateOp>()) {
+    SmallVector<Value> own;
+    if (concat.getDimension() == (uint64_t)dim &&
+        succeeded(sliceConcatHelper(concat, rewriter, starts, limits, strides,
+                                    own))) {
+      pieces.append(own);
+      return;
+    }
+  }
+  pieces.push_back(
+      stablehlo::SliceOpCreate(rewriter, loc, v, starts, limits, strides));
+}
+
 struct DynamicUpdateToConcat final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
                               DynamicUpdateToConcat> {
@@ -2620,8 +2648,8 @@ struct DynamicUpdateToConcat final
                                 op.getType().getShape().end());
       SmallVector<int64_t> steps(op.getType().getShape().size(), 1);
       ends[dim] = startv;
-      toConcat.push_back(stablehlo::SliceOp::create(
-          rewriter, op.getLoc(), op.getOperand(), starts, ends, steps));
+      appendSlicePieces(rewriter, op.getLoc(), op.getOperand(), dim, starts,
+                        ends, steps, toConcat);
     }
     toConcat.push_back(op.getUpdate());
     auto update_size = op.getUpdate().getType().getShape()[dim];
@@ -2632,8 +2660,8 @@ struct DynamicUpdateToConcat final
                                 op.getType().getShape().end());
       SmallVector<int64_t> steps(op.getType().getShape().size(), 1);
       starts[dim] = startv + update_size;
-      toConcat.push_back(stablehlo::SliceOp::create(
-          rewriter, op.getLoc(), op.getOperand(), starts, ends, steps));
+      appendSlicePieces(rewriter, op.getLoc(), op.getOperand(), dim, starts,
+                        ends, steps, toConcat);
     }
 
     rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, op.getType(),
