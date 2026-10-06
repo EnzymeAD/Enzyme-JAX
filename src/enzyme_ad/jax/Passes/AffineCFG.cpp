@@ -1,7 +1,9 @@
 #include "Enzyme/MLIR/Dialect/Ops.h"
+#include "Enzyme/MLIR/Interfaces/Utils.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
+#include "mlir/Dialect/Affine/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -7697,6 +7699,116 @@ static unsigned getNestingDepth(Operation *op) {
   return depth;
 }
 
+namespace {
+// The loop-invariant terms an access of a loop indexes with that the affine
+// dependence analysis cannot flatten, each standing for a symbol of its own:
+// a product e * nd of an enclosing loop's induction variable and a runtime
+// width, say, which is only an offset for this loop. The symbol is a
+// placeholder value, never inserted into the IR, over the values the term
+// reads; the same term in two accesses is the same placeholder.
+struct InvariantTerms {
+  AffineForOp loop;
+  Block placeholders;
+  DenseMap<std::pair<AffineExpr, ArrayRef<Value>>, Value> terms;
+  std::deque<SmallVector<Value>> operandLists;
+
+  explicit InvariantTerms(AffineForOp loop) : loop(loop) {}
+
+  static Value operandOf(AffineExpr e, ValueRange operands, unsigned numDims) {
+    if (auto d = dyn_cast<AffineDimExpr>(e))
+      return operands[d.getPosition()];
+    if (auto s = dyn_cast<AffineSymbolExpr>(e))
+      return operands[numDims + s.getPosition()];
+    return nullptr;
+  }
+
+  // Whether `e` reads only operands that keep their value through every
+  // iteration of the loop.
+  bool isInvariant(AffineExpr e, ValueRange operands, unsigned numDims) const {
+    bool invariant = true;
+    e.walk([&](AffineExpr sub) {
+      Value v = operandOf(sub, operands, numDims);
+      if (v && loop->isAncestor(v.getParentRegion()->getParentOp()))
+        invariant = false;
+    });
+    return invariant;
+  }
+
+  Value placeholder(AffineExpr e, ValueRange operands, unsigned numDims) {
+    // the term over the operands it reads, numbered in order
+    SmallVector<Value> reads;
+    DenseMap<AffineExpr, AffineExpr> renumber;
+    e.walk([&](AffineExpr sub) {
+      Value v = operandOf(sub, operands, numDims);
+      if (!v || renumber.count(sub))
+        return;
+      renumber[sub] = getAffineSymbolExpr(reads.size(), e.getContext());
+      reads.push_back(v);
+    });
+    AffineExpr key = e.replace(renumber);
+    operandLists.push_back(reads);
+    auto [it, inserted] =
+        terms.try_emplace({key, ArrayRef<Value>(operandLists.back())});
+    if (!inserted) {
+      operandLists.pop_back();
+      return it->second;
+    }
+    OpBuilder b(loop.getContext());
+    b.setInsertionPointToEnd(&placeholders);
+    it->second = UnrealizedConversionCastOp::create(b, loop.getLoc(),
+                                                    b.getIndexType(), reads)
+                     .getResult(0);
+    return it->second;
+  }
+
+  // `e` with each largest loop-invariant subexpression that is not affine
+  // replaced by its placeholder, appended to `symbols`.
+  AffineExpr abstract(AffineExpr e, ValueRange operands, unsigned numDims,
+                      SmallVectorImpl<Value> &symbols) {
+    if (!e.isPureAffine() && isInvariant(e, operands, numDims)) {
+      Value v = placeholder(e, operands, numDims);
+      auto *it = llvm::find(symbols, v);
+      unsigned pos = std::distance(symbols.begin(), it);
+      if (it == symbols.end())
+        symbols.push_back(v);
+      return getAffineSymbolExpr(pos, e.getContext());
+    }
+    auto bin = dyn_cast<AffineBinaryOpExpr>(e);
+    if (!bin)
+      return e;
+    AffineExpr lhs = abstract(bin.getLHS(), operands, numDims, symbols);
+    AffineExpr rhs = abstract(bin.getRHS(), operands, numDims, symbols);
+    return getAffineBinaryOpExpr(bin.getKind(), lhs, rhs);
+  }
+
+  // The access relation of `op`, as MemRefAccess::getAccessRelation builds
+  // it, with the invariant terms abstracted.
+  LogicalResult accessRelation(Operation *op,
+                               presburger::IntegerRelation &rel) {
+    SmallVector<Operation *> enclosing;
+    getEnclosingAffineOps(*op, &enclosing);
+    FlatAffineValueConstraints domain;
+    if (failed(getIndexSet(enclosing, &domain)))
+      return failure();
+    AffineValueMap access;
+    MemRefAccess(op).getAccessMap(&access);
+    AffineMap map = access.getAffineMap();
+    SmallVector<Value> operands(access.getOperands());
+    unsigned numDims = map.getNumDims();
+    SmallVector<Value> symbols(ValueRange(operands).drop_front(numDims));
+    SmallVector<AffineExpr> results;
+    for (AffineExpr e : map.getResults())
+      results.push_back(abstract(e, operands, numDims, symbols));
+    SmallVector<Value> newOperands(ValueRange(operands).take_front(numDims));
+    newOperands.append(symbols);
+    AffineValueMap abstracted(
+        AffineMap::get(numDims, symbols.size(), results, map.getContext()),
+        newOperands);
+    return getAccessRelation(abstracted, domain, rel);
+  }
+};
+} // namespace
+
 static bool isLoopMemoryParallel(AffineForOp forOp) {
   // Any memref-typed iteration arguments are treated as serializing.
   if (llvm::any_of(forOp.getResultTypes(), llvm::IsaPred<BaseMemRefType>))
@@ -7729,16 +7841,41 @@ static bool isLoopMemoryParallel(AffineForOp forOp) {
   if (walkResult.wasInterrupted())
     return false;
 
+  // The dependence analysis compares the accesses of each memref value with
+  // each other only, taking two memref values never to alias, which holds
+  // for distinct buffers but not for two views of one: a loop that writes a
+  // buffer it also reaches through another view of it is not parallel.
+  llvm::MapVector<Value, SmallPtrSet<Value, 2>> views;
+  DenseSet<Value> written;
+  for (Operation *op : loadAndStoreOps) {
+    Value memref = MemRefAccess(op).memref;
+    views[enzyme::oputils::getBaseObject(memref)].insert(memref);
+    if (isa<AffineWriteOpInterface>(op))
+      written.insert(enzyme::oputils::getBaseObject(memref));
+  }
+  for (auto &[base, memrefs] : views)
+    if (written.count(base) && memrefs.size() > 1)
+      return false;
+
   // Dep check depth would be number of enclosing loops + 1.
   unsigned depth = ::getNestingDepth(forOp) + 1;
 
-  // Check dependences between all pairs of ops in 'loadAndStoreOps'.
+  // Check dependences between all pairs of ops in 'loadAndStoreOps', on
+  // access relations whose loop-invariant terms are abstracted.
+  InvariantTerms terms(forOp);
   for (auto *srcOp : loadAndStoreOps) {
-    MemRefAccess srcAccess(srcOp);
     for (auto *dstOp : loadAndStoreOps) {
-      MemRefAccess dstAccess(dstOp);
-      DependenceResult result =
-          checkMemrefAccessDependence(srcAccess, dstAccess, depth);
+      if (MemRefAccess(srcOp).memref != MemRefAccess(dstOp).memref ||
+          (!isa<AffineWriteOpInterface>(srcOp) &&
+           !isa<AffineWriteOpInterface>(dstOp)))
+        continue;
+      presburger::IntegerRelation srcRel(
+          presburger::PresburgerSpace::getRelationSpace()),
+          dstRel(presburger::PresburgerSpace::getRelationSpace());
+      if (failed(terms.accessRelation(srcOp, srcRel)) ||
+          failed(terms.accessRelation(dstOp, dstRel)))
+        return false;
+      DependenceResult result = checkAccessDependence(srcRel, dstRel, depth);
       if (result.value != DependenceResult::NoDependence)
         return false;
     }
@@ -7983,6 +8120,7 @@ struct AffineParallelizePattern : public OpRewritePattern<affine::AffineForOp> {
         llvm::ArrayRef(lowerBoundMap), lowerBoundOperands,
         llvm::ArrayRef(upperBoundMap), upperBoundOperands,
         llvm::ArrayRef(forOp.getStepAsInt()));
+    newPloop->setDiscardableAttrs(forOp->getDiscardableAttrDictionary());
 
     Operation *yieldOp = forOp.getBody()->getTerminator();
 
