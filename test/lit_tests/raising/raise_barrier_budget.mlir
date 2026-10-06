@@ -114,10 +114,9 @@ func.func @budget(%out: memref<1024xf64, 1>, %in: memref<1024xf64, 1>, %qbuf: me
 // CHECK-NEXT:     %35 = stablehlo.reshape %34 : (tensor<1x32x32xf64>) -> tensor<32x32xf64>
 // CHECK-NEXT:     %36 = stablehlo.broadcast_in_dim %35, dims = [1, 0] : (tensor<32x32xf64>) -> tensor<32x32xf64>
 // CHECK-NEXT:     %37 = stablehlo.reshape %36 : (tensor<32x32xf64>) -> tensor<1024xf64>
-// CHECK-NEXT:     %38 = stablehlo.reshape %37 : (tensor<1024xf64>) -> tensor<32x32xf64>
-// CHECK-NEXT:     %39 = stablehlo.reshape %arg1 : (tensor<1024xf64>) -> tensor<32x32xf64>
-// CHECK-NEXT:     %40 = stablehlo.select %26, %38, %39 : tensor<32x32xi1>, tensor<32x32xf64>
-// CHECK-NEXT:     %41 = stablehlo.reshape %40 : (tensor<32x32xf64>) -> tensor<1024xf64>
-// CHECK-NEXT:     %42 = stablehlo.dynamic_update_slice %arg1, %41, %c_35 : (tensor<1024xf64>, tensor<1024xf64>, tensor<i64>) -> tensor<1024xf64>
-// CHECK-NEXT:     return %arg0, %42, %arg2 : tensor<1024xf64>, tensor<1024xf64>, tensor<i32>
+// CHECK-NEXT:     %38 = stablehlo.reshape %arg1 : (tensor<1024xf64>) -> tensor<32x32xf64>
+// CHECK-NEXT:     %39 = stablehlo.select %26, %36, %38 : tensor<32x32xi1>, tensor<32x32xf64>
+// CHECK-NEXT:     %40 = stablehlo.reshape %39 : (tensor<32x32xf64>) -> tensor<1024xf64>
+// CHECK-NEXT:     %41 = stablehlo.dynamic_update_slice %arg1, %40, %c_35 : (tensor<1024xf64>, tensor<1024xf64>, tensor<i64>) -> tensor<1024xf64>
+// CHECK-NEXT:     return %arg0, %41, %arg2 : tensor<1024xf64>, tensor<1024xf64>, tensor<i32>
 // CHECK-NEXT:   }
