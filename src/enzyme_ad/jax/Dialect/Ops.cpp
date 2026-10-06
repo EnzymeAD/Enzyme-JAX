@@ -2201,30 +2201,60 @@ void XLAWrapperOp::getEffects(
   effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Write>());
 }
 
-/// Remove a state slot if the function only returns its input unchanged.
+static bool hasXLAWrapperSignature(XLAWrapperOp wrapper,
+                                   FunctionOpInterface function) {
+  int64_t numSpecialized = wrapper.getNumSpecialized();
+  if (numSpecialized < 0 ||
+      numSpecialized > static_cast<int64_t>(wrapper.getInputs().size()))
+    return false;
+  unsigned numBuffers = wrapper.getInputs().size() - numSpecialized;
+  return function.getNumArguments() == wrapper.getInputs().size() &&
+         function.getNumResults() == numBuffers &&
+         function.getArgumentTypes().take_front(numBuffers) ==
+             function.getResultTypes() &&
+         (!wrapper.getArgAttrsAttr() ||
+          wrapper.getArgAttrsAttr().size() == wrapper.getInputs().size()) &&
+         (!wrapper.getResAttrsAttr() ||
+          wrapper.getResAttrsAttr().size() == numBuffers);
+}
+
+static ArrayAttr removeWrapperAttrs(ArrayAttr attributes,
+                                    const llvm::BitVector &removed) {
+  SmallVector<Attribute> remaining;
+  for (auto [index, attribute] : llvm::enumerate(attributes))
+    if (!removed.test(index))
+      remaining.push_back(attribute);
+  return ArrayAttr::get(attributes.getContext(), remaining);
+}
+
+static void removeWrapperInputs(XLAWrapperOp wrapper,
+                                const llvm::BitVector &arguments,
+                                const llvm::BitVector &results) {
+  if (auto attributes = wrapper.getArgAttrsAttr())
+    wrapper.setArgAttrsAttr(removeWrapperAttrs(attributes, arguments));
+  if (auto attributes = wrapper.getResAttrsAttr())
+    wrapper.setResAttrsAttr(removeWrapperAttrs(attributes, results));
+  unsigned numSpecialized =
+      wrapper.getNumSpecialized() - (arguments.count() - results.count());
+  wrapper->eraseOperands(arguments);
+  wrapper.setNumSpecialized(numSpecialized);
+}
+
+/// Remove a buffer slot if the function only returns its input unchanged.
+/// Remove a specialized scalar input if the function does not use it.
 /// Change a private function in place if every use supports the rewrite.
 /// Otherwise, use one clone for compatible wrappers and keep other calls.
 class RemoveUnusedXLAWrapperInputs final
     : public OpRewritePattern<XLAWrapperOp> {
-  static bool canRewrite(XLAWrapperOp wrapper) {
-    return !wrapper.getArgAttrsAttr() && !wrapper.getResAttrsAttr() &&
-           !wrapper.getNumSpecialized();
-  }
-
 public:
   using OpRewritePattern<XLAWrapperOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(XLAWrapperOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!canRewrite(op))
-      return failure();
-
     auto function = dyn_cast_or_null<FunctionOpInterface>(
         SymbolTable::lookupNearestSymbolFrom(op, op.getFnAttr()));
     if (!function || !function.getFunctionBody().hasOneBlock() ||
-        function.getNumArguments() != op.getInputs().size() ||
-        function.getArgumentTypes() != function.getResultTypes() ||
-        function.getAllArgAttrs() || function.getAllResultAttrs())
+        !hasXLAWrapperSignature(op, function))
       return failure();
 
     // Keep relative symbol references in the cloned body in the same scope.
@@ -2234,21 +2264,31 @@ public:
 
     Block &body = function.getFunctionBody().front();
     Operation *returnOp = body.getTerminator();
+    unsigned numBuffers = function.getNumResults();
     if (!returnOp->hasTrait<OpTrait::ReturnLike>() ||
-        returnOp->getNumOperands() != function.getNumArguments())
+        returnOp->getNumOperands() != numBuffers)
       return failure();
 
-    llvm::BitVector unused(function.getNumArguments());
+    llvm::BitVector unusedArguments(function.getNumArguments());
+    llvm::BitVector unusedResults(numBuffers);
     for (BlockArgument argument : body.getArguments()) {
       unsigned index = argument.getArgNumber();
-      if (argument.hasOneUse() && returnOp->getOperand(index) == argument)
-        unused.set(index);
+      if (index < numBuffers) {
+        if (argument.hasOneUse() && returnOp->getOperand(index) == argument) {
+          unusedArguments.set(index);
+          unusedResults.set(index);
+        }
+      } else if (argument.use_empty()) {
+        unusedArguments.set(index);
+      }
     }
-    if (unused.none())
+    if (unusedArguments.none())
       return failure();
 
-    Type type = function.getTypeWithoutArgsAndResults(unused, unused);
-    if (!type)
+    Type withoutArguments = function.getTypeWithoutArgs(unusedArguments);
+    Type type =
+        function.getTypeWithoutArgsAndResults(unusedArguments, unusedResults);
+    if (!withoutArguments || !type)
       return failure();
 
     llvm::SmallSetVector<Operation *, 4> callers;
@@ -2260,9 +2300,8 @@ public:
     if (uses) {
       for (const auto &use : *uses) {
         auto wrapper = dyn_cast<XLAWrapperOp>(use.getUser());
-        if (wrapper && canRewrite(wrapper) &&
-            wrapper.getFnAttr() == op.getFnAttr() &&
-            wrapper.getInputs().size() == function.getNumArguments() &&
+        if (wrapper && wrapper.getFnAttr() == op.getFnAttr() &&
+            hasXLAWrapperSignature(wrapper, function) &&
             SymbolTable::getNearestSymbolTable(wrapper) == scope)
           callers.insert(wrapper);
         else
@@ -2289,19 +2328,21 @@ public:
     }
 
     rewriter.startOpModification(specialized);
-    Block &specializedBody = specialized.getFunctionBody().front();
-    Operation *specializedReturn = specializedBody.getTerminator();
+    Operation *specializedReturn =
+        specialized.getFunctionBody().front().getTerminator();
     rewriter.startOpModification(specializedReturn);
-    specializedReturn->eraseOperands(unused);
-    specializedBody.eraseArguments(unused);
-    specialized.setType(type);
+    specializedReturn->eraseOperands(unusedResults);
+    function_interface_impl::eraseFunctionArguments(
+        specialized, unusedArguments, withoutArguments);
+    function_interface_impl::eraseFunctionResults(specialized, unusedResults,
+                                                  type);
     rewriter.finalizeOpModification(specializedReturn);
     rewriter.finalizeOpModification(specialized);
 
     for (Operation *caller : callers) {
       auto wrapper = cast<XLAWrapperOp>(caller);
       rewriter.startOpModification(wrapper);
-      wrapper->eraseOperands(unused);
+      removeWrapperInputs(wrapper, unusedArguments, unusedResults);
       wrapper.setFnAttr(FlatSymbolRefAttr::get(op.getContext(), name));
       rewriter.finalizeOpModification(wrapper);
     }
@@ -2309,30 +2350,34 @@ public:
   }
 };
 
-/// Merge equal inputs only when their returned values also agree.
+/// Merge equal buffer inputs only when their returned values and attributes
+/// also agree. Keep specialized scalar inputs at the end of the input list.
 /// Clone the function because other calls can pass distinct buffers.
 class DeduplicateXLAWrapperInputs final
     : public OpRewritePattern<XLAWrapperOp> {
+  static Value canonicalResult(Value result, Block &body,
+                               ArrayRef<unsigned> representatives) {
+    if (auto argument = dyn_cast<BlockArgument>(result);
+        argument && argument.getOwner() == &body &&
+        argument.getArgNumber() < representatives.size())
+      return body.getArgument(representatives[argument.getArgNumber()]);
+    return result;
+  }
+
+  static bool sameAttributes(ArrayAttr attributes, unsigned first,
+                             unsigned second) {
+    return !attributes || attributes[first] == attributes[second];
+  }
+
 public:
   using OpRewritePattern<XLAWrapperOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(XLAWrapperOp op,
                                 PatternRewriter &rewriter) const override {
-    if (op.getArgAttrsAttr() || op.getResAttrsAttr() || op.getNumSpecialized())
-      return failure();
-
     auto function = dyn_cast_or_null<FunctionOpInterface>(
         SymbolTable::lookupNearestSymbolFrom(op, op.getFnAttr()));
-    auto hasMetadata = [](ArrayAttr attributes) {
-      return attributes && llvm::any_of(attributes, [](Attribute attribute) {
-               return !cast<DictionaryAttr>(attribute).empty();
-             });
-    };
     if (!function || !function.getFunctionBody().hasOneBlock() ||
-        function.getNumArguments() != op.getInputs().size() ||
-        function.getArgumentTypes() != function.getResultTypes() ||
-        hasMetadata(function.getAllArgAttrs()) ||
-        hasMetadata(function.getAllResultAttrs()))
+        !hasXLAWrapperSignature(op, function))
       return failure();
 
     Operation *scope = SymbolTable::getNearestSymbolTable(op);
@@ -2341,43 +2386,48 @@ public:
 
     Block &body = function.getFunctionBody().front();
     Operation *returnOp = body.getTerminator();
+    unsigned numBuffers = function.getNumResults();
     if (!returnOp->hasTrait<OpTrait::ReturnLike>() ||
-        returnOp->getNumOperands() != function.getNumArguments())
+        returnOp->getNumOperands() != numBuffers)
       return failure();
 
     DenseMap<Value, unsigned> identities;
     SmallVector<unsigned> representatives;
-    llvm::BitVector duplicates(function.getNumArguments());
-    for (auto [index, input] : llvm::enumerate(op.getInputs())) {
+    llvm::BitVector duplicateArguments(function.getNumArguments());
+    llvm::BitVector duplicateResults(numBuffers);
+    for (auto [index, input] :
+         llvm::enumerate(op.getInputs().take_front(numBuffers))) {
       auto [entry, inserted] = identities.try_emplace(
-          enzyme::oputils::getBaseObject(input, /*offsetAllowed=*/false), index);
+          enzyme::oputils::getBaseObject(input, /*offsetAllowed=*/false),
+          index);
       unsigned representative = entry->second;
       representatives.push_back(representative);
       if (inserted)
         continue;
       if (input.getType() != op.getInputs()[representative].getType() ||
           function.getArgumentTypes()[index] !=
-              function.getArgumentTypes()[representative])
+              function.getArgumentTypes()[representative] ||
+          !sameAttributes(op.getArgAttrsAttr(), index, representative) ||
+          !sameAttributes(op.getResAttrsAttr(), index, representative) ||
+          !sameAttributes(function.getAllArgAttrs(), index, representative) ||
+          !sameAttributes(function.getAllResultAttrs(), index, representative))
         return failure();
-      duplicates.set(index);
+      duplicateArguments.set(index);
+      duplicateResults.set(index);
     }
-    if (duplicates.none())
+    if (duplicateArguments.none())
       return failure();
 
-    auto canonicalResult = [&](Value result) {
-      if (auto argument = dyn_cast<BlockArgument>(result);
-          argument && argument.getOwner() == &body)
-        return Value(
-            function.getArgument(representatives[argument.getArgNumber()]));
-      return result;
-    };
     for (auto [index, representative] : llvm::enumerate(representatives))
-      if (canonicalResult(returnOp->getOperand(index)) !=
-          canonicalResult(returnOp->getOperand(representative)))
+      if (canonicalResult(returnOp->getOperand(index), body, representatives) !=
+          canonicalResult(returnOp->getOperand(representative), body,
+                          representatives))
         return failure();
 
-    Type type = function.getTypeWithoutArgsAndResults(duplicates, duplicates);
-    if (!type)
+    Type withoutArguments = function.getTypeWithoutArgs(duplicateArguments);
+    Type type = function.getTypeWithoutArgsAndResults(duplicateArguments,
+                                                      duplicateResults);
+    if (!withoutArguments || !type)
       return failure();
 
     SymbolTable symbols(scope);
@@ -2390,12 +2440,14 @@ public:
     auto specialized = cast<FunctionOpInterface>(clone);
     Block &specializedBody = specialized.getFunctionBody().front();
     for (auto [index, representative] : llvm::enumerate(representatives))
-      if (duplicates.test(index))
+      if (duplicateArguments.test(index))
         specializedBody.getArgument(index).replaceAllUsesWith(
             specializedBody.getArgument(representative));
-    specializedBody.getTerminator()->eraseOperands(duplicates);
-    specializedBody.eraseArguments(duplicates);
-    specialized.setType(type);
+    specializedBody.getTerminator()->eraseOperands(duplicateResults);
+    function_interface_impl::eraseFunctionArguments(
+        specialized, duplicateArguments, withoutArguments);
+    function_interface_impl::eraseFunctionResults(specialized, duplicateResults,
+                                                  type);
     SymbolTable::setSymbolName(clone, name);
     SymbolTable::setSymbolVisibility(clone, SymbolTable::Visibility::Private);
     {
@@ -2404,10 +2456,10 @@ public:
       rewriter.insert(clone);
     }
 
-    rewriter.modifyOpInPlace(op, [&] {
-      op->eraseOperands(duplicates);
-      op.setFnAttr(FlatSymbolRefAttr::get(op.getContext(), name));
-    });
+    rewriter.startOpModification(op);
+    removeWrapperInputs(op, duplicateArguments, duplicateResults);
+    op.setFnAttr(FlatSymbolRefAttr::get(op.getContext(), name));
+    rewriter.finalizeOpModification(op);
     return success();
   }
 };

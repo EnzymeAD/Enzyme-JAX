@@ -162,12 +162,12 @@ module {
 // Remove the middle buffer: no operation reads or changes spare.
 // Before: wrapper @scale_data(data, spare, scale)
 //         scale_data(data, spare, scale) -> (data * scale, spare, scale)
-// After:  wrapper @scale_data_without_unused(data, scale)
-//         scale_data_without_unused(data, scale) -> (data * scale, scale)
+// After:  wrapper @scale_data(data, scale)
+//         scale_data(data, scale) -> (data * scale, scale)
 //
 // Keep scale: the multiplication reads it, even though it is returned unchanged.
-// Use one clone for all three compatible wrappers in the two host functions.
-// The wrapper with metadata needs the original signature, so cloning is required.
+// Update all four wrappers and the private function. Remove the attributes
+// for spare from the wrapper that has argument attributes.
 module {
   func.func @drop_unused_middle_buffer(%data: memref<4xf32>,
                                       %spare: memref<4xf32>,
@@ -202,32 +202,23 @@ module {
 // CHECK-SAME: %[[DATA:[^:]+]]: memref<4xf32>,
 // CHECK-SAME: %[[SPARE:[^:]+]]: memref<4xf32>,
 // CHECK-SAME: %[[SCALE:[^:]+]]: memref<4xf32>) {
-// CHECK-NEXT: enzymexla.xla_wrapper @scale_data_without_unused (%[[DATA]], %[[SCALE]]) : (memref<4xf32>, memref<4xf32>) -> ()
+// CHECK-NEXT: enzymexla.xla_wrapper @scale_data (%[[DATA]], %[[SCALE]]) : (memref<4xf32>, memref<4xf32>) -> ()
 // CHECK-NEXT: return
 // CHECK-NEXT: }
 
-// These wrappers share the same clone. The wrapper with metadata stays intact.
+// All wrappers now use the same reduced function.
 // CHECK-LABEL: func.func @share_reduced_function(
 // CHECK-SAME: %[[DATA:[^:]+]]: memref<4xf32>,
 // CHECK-SAME: %[[SPARE:[^:]+]]: memref<4xf32>,
 // CHECK-SAME: %[[SCALE:[^:]+]]: memref<4xf32>) {
-// CHECK-NEXT: enzymexla.xla_wrapper @scale_data_without_unused (%[[DATA]], %[[SCALE]]) : (memref<4xf32>, memref<4xf32>) -> ()
-// CHECK-NEXT: enzymexla.xla_wrapper @scale_data_without_unused (%[[DATA]], %[[SCALE]]) : (memref<4xf32>, memref<4xf32>) -> ()
-// CHECK-NEXT: enzymexla.xla_wrapper @scale_data (%[[DATA]], %[[SPARE]], %[[SCALE]]) <{arg_attrs = [{}, {test.keep}, {}]}> : (memref<4xf32>, memref<4xf32>, memref<4xf32>) -> ()
+// CHECK-NEXT: enzymexla.xla_wrapper @scale_data (%[[DATA]], %[[SCALE]]) : (memref<4xf32>, memref<4xf32>) -> ()
+// CHECK-NEXT: enzymexla.xla_wrapper @scale_data (%[[DATA]], %[[SCALE]]) : (memref<4xf32>, memref<4xf32>) -> ()
+// CHECK-NEXT: enzymexla.xla_wrapper @scale_data (%[[DATA]], %[[SCALE]]) <arg_attrs = [{}, {}]> : (memref<4xf32>, memref<4xf32>) -> ()
 // CHECK-NEXT: return
 // CHECK-NEXT: }
 
-// The original function retains the spare argument and its matching result.
+// The private function has two arguments and two results.
 // CHECK-LABEL: func.func private @scale_data(
-// CHECK-SAME: %[[DATA:[^:]+]]: tensor<4xf32>,
-// CHECK-SAME: %[[SPARE:[^:]+]]: tensor<4xf32>,
-// CHECK-SAME: %[[SCALE:[^:]+]]: tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>, tensor<4xf32>) {
-// CHECK-NEXT: %[[SCALED:[^ ]+]] = stablehlo.multiply %[[DATA]], %[[SCALE]] : tensor<4xf32>
-// CHECK-NEXT: return %[[SCALED]], %[[SPARE]], %[[SCALE]] : tensor<4xf32>, tensor<4xf32>, tensor<4xf32>
-// CHECK-NEXT: }
-
-// The clone has two arguments and two results. The multiplication is unchanged.
-// CHECK-LABEL: func.func private @scale_data_without_unused(
 // CHECK-SAME: %[[DATA:[^:]+]]: tensor<4xf32>,
 // CHECK-SAME: %[[SCALE:[^:]+]]: tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>) {
 // CHECK-NEXT: %[[SCALED:[^ ]+]] = stablehlo.multiply %[[DATA]], %[[SCALE]] : tensor<4xf32>
@@ -321,10 +312,10 @@ module {
 
 // -----
 
-// Keep these calls unchanged. Removing a position would also require changes
-// to argument/result attributes or the specialized scalar input mapping.
+// Remove the only buffer and its attributes from each call and function.
+// The specialized function does not use its scalar input, so remove it too.
 module {
-  func.func @keep_metadata(%buffer: memref<4xf32>, %bound: i64) {
+  func.func @remove_unused_metadata(%buffer: memref<4xf32>, %bound: i64) {
     enzymexla.xla_wrapper @identity (%buffer) <{arg_attrs = [{test.keep}]}> : (memref<4xf32>) -> ()
     enzymexla.xla_wrapper @identity (%buffer) <{res_attrs = [{test.keep}]}> : (memref<4xf32>) -> ()
     enzymexla.xla_wrapper @arg_metadata (%buffer) : (memref<4xf32>) -> ()
@@ -346,13 +337,13 @@ module {
   }
 }
 
-// CHECK-LABEL: func.func @keep_metadata(
+// CHECK-LABEL: func.func @remove_unused_metadata(
 // CHECK-SAME: %[[BUFFER:[^:]+]]: memref<4xf32>, %[[BOUND:[^:]+]]: i64) {
-// CHECK-NEXT: enzymexla.xla_wrapper @identity (%[[BUFFER]]) <{arg_attrs = [{test.keep}]}> : (memref<4xf32>) -> ()
-// CHECK-NEXT: enzymexla.xla_wrapper @identity (%[[BUFFER]]) <{res_attrs = [{test.keep}]}> : (memref<4xf32>) -> ()
-// CHECK-NEXT: enzymexla.xla_wrapper @arg_metadata (%[[BUFFER]]) : (memref<4xf32>) -> ()
-// CHECK-NEXT: enzymexla.xla_wrapper @result_metadata (%[[BUFFER]]) : (memref<4xf32>) -> ()
-// CHECK-NEXT: enzymexla.xla_wrapper @specialized (%[[BUFFER]], %[[BOUND]]) <{num_specialized = 1 : i64}> : (memref<4xf32>, i64) -> ()
+// CHECK-NEXT: enzymexla.xla_wrapper @identity () <arg_attrs = []> : () -> ()
+// CHECK-NEXT: enzymexla.xla_wrapper @identity () <res_attrs = []> : () -> ()
+// CHECK-NEXT: enzymexla.xla_wrapper @arg_metadata () : () -> ()
+// CHECK-NEXT: enzymexla.xla_wrapper @result_metadata () : () -> ()
+// CHECK-NEXT: enzymexla.xla_wrapper @specialized () : () -> ()
 // CHECK-NEXT: return
 // CHECK-NEXT: }
 
