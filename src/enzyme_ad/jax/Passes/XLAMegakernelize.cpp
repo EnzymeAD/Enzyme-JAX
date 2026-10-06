@@ -136,7 +136,7 @@ public:
       next = next->getNextNode();
 
     auto second = dyn_cast_or_null<enzymexla::XLAWrapperOp>(next);
-    if (!second || first.getInputs().empty() || second.getInputs().empty())
+    if (!second)
       return failure();
 
     // Do not combine argument or result metadata.
