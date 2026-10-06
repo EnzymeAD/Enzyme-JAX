@@ -8011,6 +8011,15 @@ struct InvariantTerms {
 };
 } // namespace
 
+// Whether `op` only structures the ops nested in it, whose effects are all
+// the effects it has: the walk over a loop's body reaches those ops itself.
+// An access under an scf.if is analyzed as if it always ran, which only
+// adds dependences.
+static bool isStructural(Operation *op) {
+  return isa<AffineForOp, AffineYieldOp, AffineIfOp, AffineParallelOp,
+             scf::IfOp, scf::YieldOp>(op);
+}
+
 static bool isLoopMemoryParallel(AffineForOp forOp) {
   // Any memref-typed iteration arguments are treated as serializing.
   if (llvm::any_of(forOp.getResultTypes(), llvm::IsaPred<BaseMemRefType>))
@@ -8027,7 +8036,7 @@ static bool isLoopMemoryParallel(AffineForOp forOp) {
       // Filter out stores the same way as above.
       if (!isLocallyDefined(writeOp.getMemRef(), forOp))
         loadAndStoreOps.push_back(op);
-    } else if (!isa<AffineForOp, AffineYieldOp, AffineIfOp>(op) &&
+    } else if (!isStructural(op) &&
                !hasSingleEffect<MemoryEffects::Allocate>(op) &&
                !isMemoryEffectFree(op)) {
       // Alloc-like ops inside `forOp` are fine (they don't impact
