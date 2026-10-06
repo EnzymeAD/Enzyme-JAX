@@ -7046,6 +7046,170 @@ struct SimplifyOrAnd : public OpRewritePattern<arith::OrIOp> {
   }
 };
 
+// The set of the outer values for which a loop runs at least once: along
+// each dimension, every upper bound exceeds every lower bound (the steps are
+// positive). The bounds of every dimension read the same operands.
+static IntegerSet runsOnceSet(ArrayRef<AffineMap> lbs, ValueRange lbOperands,
+                              ArrayRef<AffineMap> ubs, ValueRange ubOperands,
+                              SmallVectorImpl<Value> &operands) {
+  unsigned ld = lbs.front().getNumDims(), ls = lbs.front().getNumSymbols();
+  unsigned ud = ubs.front().getNumDims(), us = ubs.front().getNumSymbols();
+  SmallVector<AffineExpr> constraints;
+  for (auto [lb, ub] : llvm::zip_equal(lbs, ubs))
+    for (AffineExpr l : lb.getResults())
+      for (AffineExpr u : ub.getResults())
+        constraints.push_back(u.shiftDims(ud, ld).shiftSymbols(us, ls) - l - 1);
+  operands.append(lbOperands.begin(), lbOperands.begin() + ld);
+  operands.append(ubOperands.begin(), ubOperands.begin() + ud);
+  operands.append(lbOperands.begin() + ld, lbOperands.end());
+  operands.append(ubOperands.begin() + ud, ubOperands.end());
+  IntegerSet set =
+      IntegerSet::get(ld + ud, ls + us, constraints,
+                      SmallVector<bool>(constraints.size(), false));
+  canonicalizeSetAndOperands(&set, &operands);
+  return set;
+}
+
+static IntegerSet runsOnceSet(AffineForOp forOp,
+                              SmallVectorImpl<Value> &operands) {
+  return runsOnceSet(forOp.getLowerBoundMap(), forOp.getLowerBoundOperands(),
+                     forOp.getUpperBoundMap(), forOp.getUpperBoundOperands(),
+                     operands);
+}
+
+// The carried value at `j` of a loop whose body never reads it, though the
+// loop's result is used, handed the same value as the one at `i`, which the
+// body reads: a value only the last iteration sets, as mem2reg leaves a
+// rotated loop's live-out (`if (n > 0) do { s = f(s); } while (...)` carries
+// s and a copy of it). After an iteration it is the result at `i`, and before
+// any its own initial value.
+template <typename ForOp>
+static std::optional<std::pair<unsigned, unsigned>> copyCarry(ForOp forOp) {
+  Operation *yield = forOp.getBody()->getTerminator();
+  auto args = forOp.getRegionIterArgs();
+  for (unsigned j = 0, e = args.size(); j < e; ++j) {
+    if (!args[j].use_empty() || forOp->getResult(j).use_empty())
+      continue;
+    for (unsigned i = 0; i < e; ++i)
+      if (i != j && !args[i].use_empty() &&
+          yield->getOperand(i) == yield->getOperand(j))
+        return std::make_pair(i, j);
+  }
+  return std::nullopt;
+}
+
+// The loop's carried values but the one at `j`, which the body must not
+// read, moved into a new loop: its body, the yield without `j`.
+static AffineForOp eraseCarry(PatternRewriter &rewriter, AffineForOp forOp,
+                              unsigned j) {
+  SmallVector<Value> inits(forOp.getInits());
+  inits.erase(inits.begin() + j);
+  auto newFor = AffineForOp::create(
+      rewriter, forOp.getLoc(), forOp.getLowerBoundOperands(),
+      forOp.getLowerBoundMap(), forOp.getUpperBoundOperands(),
+      forOp.getUpperBoundMap(), forOp.getStepAsInt(), inits);
+  newFor->setDiscardableAttrs(forOp->getDiscardableAttrDictionary());
+  Block *body = newFor.getBody();
+  if (!body->empty())
+    rewriter.eraseOp(body->getTerminator());
+  SmallVector<Value> args(newFor.getBody()->getArguments());
+  // the argument at `j` has no uses: its initial value stands in
+  args.insert(args.begin() + 1 + j, forOp.getInits()[j]);
+  rewriter.mergeBlocks(forOp.getBody(), body, args);
+  auto yield = cast<AffineYieldOp>(body->getTerminator());
+  SmallVector<Value> yielded(yield.getOperands());
+  yielded.erase(yielded.begin() + j);
+  rewriter.setInsertionPoint(yield);
+  rewriter.replaceOpWithNewOp<AffineYieldOp>(yield, yielded);
+  return newFor;
+}
+
+static scf::ForOp eraseCarry(PatternRewriter &rewriter, scf::ForOp forOp,
+                             unsigned j) {
+  SmallVector<Value> inits(forOp.getInitArgs());
+  inits.erase(inits.begin() + j);
+  auto newFor =
+      scf::ForOp::create(rewriter, forOp.getLoc(), forOp.getLowerBound(),
+                         forOp.getUpperBound(), forOp.getStep(), inits);
+  newFor.setUnsignedCmp(forOp.getUnsignedCmp());
+  newFor->setDiscardableAttrs(forOp->getDiscardableAttrDictionary());
+  Block *body = newFor.getBody();
+  if (!body->empty())
+    rewriter.eraseOp(body->getTerminator());
+  SmallVector<Value> args(newFor.getBody()->getArguments());
+  args.insert(args.begin() + 1 + j, forOp.getInitArgs()[j]);
+  rewriter.mergeBlocks(forOp.getBody(), body, args);
+  auto yield = cast<scf::YieldOp>(body->getTerminator());
+  SmallVector<Value> yielded(yield.getOperands());
+  yielded.erase(yielded.begin() + j);
+  rewriter.setInsertionPoint(yield);
+  rewriter.replaceOpWithNewOp<scf::YieldOp>(yield, yielded);
+  return newFor;
+}
+
+// The results of `forOp` from those of `newFor`, which lacks the carried
+// value at `j`, that one standing for `copy`.
+static SmallVector<Value> resultsWithout(Operation *newFor, unsigned j,
+                                         Value copy) {
+  SmallVector<Value> results(newFor->getResults());
+  results.insert(results.begin() + j, copy);
+  return results;
+}
+
+// A copy carry goes, its result `the loop runs ? the result it copies : its
+// initial value`, an affine.if on the bounds, which the conditions around
+// the loop may decide.
+struct AffineForCopyCarry : public OpRewritePattern<AffineForOp> {
+  using OpRewritePattern<AffineForOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(AffineForOp forOp,
+                                PatternRewriter &rewriter) const override {
+    auto copy = copyCarry(forOp);
+    if (!copy)
+      return failure();
+    auto [i, j] = *copy;
+    SmallVector<Value> operands;
+    IntegerSet runs = runsOnceSet(forOp, operands);
+    Value init = forOp.getInits()[j];
+    rewriter.setInsertionPoint(forOp);
+    AffineForOp newFor = eraseCarry(rewriter, forOp, j);
+    Value copied = newFor.getResult(i < j ? i : i - 1);
+    rewriter.setInsertionPointAfter(newFor);
+    auto ifOp = AffineIfOp::create(rewriter, forOp.getLoc(), init.getType(),
+                                   runs, operands, /*withElseRegion=*/true);
+    rewriter.setInsertionPointToEnd(ifOp.getThenBlock());
+    AffineYieldOp::create(rewriter, forOp.getLoc(), copied);
+    rewriter.setInsertionPointToEnd(ifOp.getElseBlock());
+    AffineYieldOp::create(rewriter, forOp.getLoc(), init);
+    rewriter.replaceOp(forOp, resultsWithout(newFor, j, ifOp.getResult(0)));
+    return success();
+  }
+};
+
+// The same for an scf.for, as a select on the bounds.
+struct SCFForCopyCarry : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(scf::ForOp forOp,
+                                PatternRewriter &rewriter) const override {
+    auto copy = copyCarry(forOp);
+    if (!copy)
+      return failure();
+    auto [i, j] = *copy;
+    Value init = forOp.getInitArgs()[j];
+    rewriter.setInsertionPoint(forOp);
+    scf::ForOp newFor = eraseCarry(rewriter, forOp, j);
+    Value copied = newFor.getResult(i < j ? i : i - 1);
+    rewriter.setInsertionPointAfter(newFor);
+    Value runs = arith::CmpIOp::create(
+        rewriter, forOp.getLoc(),
+        forOp.getUnsignedCmp() ? CmpIPredicate::ult : CmpIPredicate::slt,
+        forOp.getLowerBound(), forOp.getUpperBound());
+    Value select =
+        arith::SelectOp::create(rewriter, forOp.getLoc(), runs, copied, init);
+    rewriter.replaceOp(forOp, resultsWithout(newFor, j, select));
+    return success();
+  }
+};
+
 void mlir::enzyme::populateAffineCFGPatterns(
     RewritePatternSet &rpl, bool enable_split_on_affine_if_constants) {
   MLIRContext *context = rpl.getContext();
@@ -7073,6 +7237,7 @@ void mlir::enzyme::populateAffineCFGPatterns(
           FoldAffineApplyDiv, FoldAffineApplyMul, FoldAppliesIntoLoad>(context,
                                                                        2);
   rpl.add<SimplifyAndOr, SimplifyOrAnd>(context, 2);
+  rpl.add<AffineForCopyCarry, SCFForCopyCarry>(context, 2);
   rpl.add<SplitParallelInductions, MaskedAffineParallel>(context, 1);
 }
 
