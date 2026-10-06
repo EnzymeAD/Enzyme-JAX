@@ -26381,11 +26381,36 @@ struct WrapElementwise
   }
 };
 
+// What StaticSlice::get(v) takes as v's input: the sliced value for a slice,
+// else v itself.
+static Value staticSliceInput(Value v) {
+  if (auto slice = v.getDefiningOp<stablehlo::SliceOp>())
+    return slice.getOperand();
+  return v;
+}
+
+// Whether v is one wide along dim.
+static bool isUnitInDim(Value v, int dim) {
+  auto ty = dyn_cast<RankedTensorType>(v.getType());
+  return ty && dim < ty.getRank() && ty.getShape()[dim] == 1;
+}
+
 LogicalResult isExtendLike(int dim, Value _lhs, Value _mid, Value _rhs,
                            Location loc, RewriterBase &rewriter,
                            StaticSlice *lhsSS = nullptr,
                            StaticSlice *midSS = nullptr,
                            StaticSlice *rhsSS = nullptr) {
+  // The checks below that need no StaticSlice, first: a concatenate many
+  // operands wide is tried at every window of three, and building the
+  // slices of each costs far more than these.
+  if (!_mid || (!_lhs && !_rhs))
+    return failure();
+  Value input = staticSliceInput(_mid);
+  if (_lhs && (staticSliceInput(_lhs) != input || !isUnitInDim(_lhs, dim)))
+    return failure();
+  if (_rhs && (staticSliceInput(_rhs) != input || !isUnitInDim(_rhs, dim)))
+    return failure();
+
   std::optional<StaticSlice> lhs, mid, rhs;
   if (_lhs)
     lhs = StaticSlice::get(_lhs);
