@@ -1,6 +1,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Pass/Pass.h"
@@ -87,8 +88,8 @@ struct SimpleCycleAnalysisPass
                      << op->getAttrs()[1].getName().getValue() << "\n";
       }
 
-    } else if (auto func = dyn_cast<mlir::func::FuncOp>(op)) {
-      funcMap[func.getNameAttr()] = &func.getBody();
+    } else if (auto func = dyn_cast<FunctionOpInterface>(op)) {
+      funcMap[func.getNameAttr()] = &func.getFunctionBody();
     } else if (auto funcCost = dyn_cast<FnCostOp>(op)) {
       llvm::SmallVector<mlir::Operation *> allOps;
       if (analysis_func != NULL) {
