@@ -33,7 +33,8 @@ func.func @flattened(%n: index, %x: memref<?xf64>, %y: memref<?xf64>) {
 // CHECK-NEXT: }
 
 // The same under a check of the count: a condition on no loop variable holds
-// at every point of the nest or at none.
+// at every point of the nest or at none. (The check, which the nest needs no
+// longer, then goes.)
 func.func @under_check(%n: index, %x: memref<?xf64>, %y: memref<?xf64>) {
   %a = memref.alloca() : memref<375xf64>
   affine.if affine_set<()[s0] : (s0 - 1 >= 0)>()[%n] {
@@ -54,12 +55,10 @@ func.func @under_check(%n: index, %x: memref<?xf64>, %y: memref<?xf64>) {
 
 // CHECK:  func.func @under_check(%arg0: index, %arg1: memref<?xf64>, %arg2: memref<?xf64>) {
 // CHECK-NEXT:   %alloca = memref.alloca() : memref<375xf64>
-// CHECK-NEXT:   affine.if #set()[%arg0] {
-// CHECK-NEXT:     affine.parallel (%arg3, %arg4, %arg5) = (0, 0, 0) to (symbol(%arg0), symbol(%arg0), symbol(%arg0)) {
-// CHECK-NEXT:       %1 = affine.load %arg1[%arg3] : memref<?xf64>
-// CHECK-NEXT:       affine.store %1, %alloca[%arg3 + %arg5 * 5 + %arg4 * 25] : memref<375xf64>
-// CHECK-NEXT:       affine.store %1, %alloca[%arg3 + %arg5 * 5 + %arg4 * 25 + 250] : memref<375xf64>
-// CHECK-NEXT:     }
+// CHECK-NEXT:   affine.parallel (%arg3, %arg4, %arg5) = (0, 0, 0) to (symbol(%arg0), symbol(%arg0), symbol(%arg0)) {
+// CHECK-NEXT:     %1 = affine.load %arg1[%arg3] : memref<?xf64>
+// CHECK-NEXT:     affine.store %1, %alloca[%arg3 + %arg5 * 5 + %arg4 * 25] : memref<375xf64>
+// CHECK-NEXT:     affine.store %1, %alloca[%arg3 + %arg5 * 5 + %arg4 * 25 + 250] : memref<375xf64>
 // CHECK-NEXT:   }
 // CHECK-NEXT:   %0 = affine.load %alloca[7] : memref<375xf64>
 // CHECK-NEXT:   affine.store %0, %arg2[0] : memref<?xf64>
@@ -130,7 +129,7 @@ func.func @conditional(%n: index, %x: memref<?xf64>, %y: memref<?xf64>) {
 // CHECK-NEXT:       affine.parallel (%arg5) = (0) to (symbol(%arg0)) {
 // CHECK-NEXT:         %1 = affine.load %arg1[%arg3] : memref<?xf64>
 // CHECK-NEXT:         affine.store %1, %alloca[%arg3 + %arg5 * 5 + %arg4 * 25] : memref<375xf64>
-// CHECK-NEXT:         affine.if #set1(%arg3) {
+// CHECK-NEXT:         affine.if #set(%arg3) {
 // CHECK-NEXT:           affine.store %1, %alloca[%arg3 + %arg5 * 5 + %arg4 * 25 + 250] : memref<375xf64>
 // CHECK-NEXT:         }
 // CHECK-NEXT:       }
