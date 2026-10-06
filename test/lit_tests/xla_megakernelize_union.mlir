@@ -29,10 +29,10 @@ module {
 // CHECK: %[[MA:.*]] = "enzymexla.pointer2memref"
 // CHECK: %[[MB:.*]] = "enzymexla.pointer2memref"
 // CHECK: %[[MC:.*]] = "enzymexla.pointer2memref"
-// CHECK: enzymexla.xla_wrapper @rxla$megakernel_0 (%[[MA]], %[[MB]], %[[MC]])
+// CHECK: enzymexla.xla_wrapper @first (%[[MA]], %[[MB]], %[[MC]])
 // CHECK-NOT: enzymexla.xla_wrapper
 // CHECK: llvm.return
-// CHECK-LABEL: func.func private @rxla$megakernel_0(
+// CHECK-LABEL: func.func private @first(
 // CHECK-SAME: %[[A:.*]]: tensor<?xf32>, %[[B:.*]]: tensor<?xf32>, %[[C:.*]]: tensor<?xf32>
 // CHECK: %[[SUM:.*]] = stablehlo.add %[[A]], %[[B]]
 // CHECK: %[[PRODUCT:.*]] = stablehlo.multiply %[[SUM]], %[[C]]
@@ -65,10 +65,10 @@ module {
 // CHECK-LABEL: llvm.func @fuse_subset
 // CHECK: %[[MA:.*]] = "enzymexla.pointer2memref"
 // CHECK: %[[MB:.*]] = "enzymexla.pointer2memref"
-// CHECK: enzymexla.xla_wrapper @rxla$megakernel_0 (%[[MA]], %[[MB]])
+// CHECK: enzymexla.xla_wrapper @first (%[[MA]], %[[MB]])
 // CHECK-NOT: enzymexla.xla_wrapper
 // CHECK: llvm.return
-// CHECK-LABEL: func.func private @rxla$megakernel_0(
+// CHECK-LABEL: func.func private @first(
 // CHECK-SAME: %[[A:.*]]: tensor<?xf32>, %[[B:.*]]: tensor<?xf32>
 // CHECK: %[[SUM:.*]] = stablehlo.add %[[A]], %[[B]]
 // CHECK: %[[DIFF:.*]] = stablehlo.subtract %[[A]], %[[B]]
@@ -101,10 +101,10 @@ module {
 // CHECK-LABEL: llvm.func @fuse_superset
 // CHECK: %[[MA:.*]] = "enzymexla.pointer2memref"
 // CHECK: %[[MB:.*]] = "enzymexla.pointer2memref"
-// CHECK: enzymexla.xla_wrapper @rxla$megakernel_0 (%[[MA]], %[[MB]])
+// CHECK: enzymexla.xla_wrapper @first (%[[MA]], %[[MB]])
 // CHECK-NOT: enzymexla.xla_wrapper
 // CHECK: llvm.return
-// CHECK-LABEL: func.func private @rxla$megakernel_0(
+// CHECK-LABEL: func.func private @first(
 // CHECK-SAME: %[[A:.*]]: tensor<?xf32>, %[[B:.*]]: tensor<?xf32>
 // CHECK: %[[NEG:.*]] = stablehlo.negate %[[A]]
 // CHECK: %[[SUM:.*]] = stablehlo.add %[[B]], %[[NEG]]
@@ -134,10 +134,10 @@ module {
 // CHECK-LABEL: llvm.func @fuse_disjoint_sets
 // CHECK: %[[MA:.*]] = "enzymexla.pointer2memref"
 // CHECK: %[[MB:.*]] = "enzymexla.pointer2memref"
-// CHECK: enzymexla.xla_wrapper @rxla$megakernel_0 (%[[MA]], %[[MB]])
+// CHECK: enzymexla.xla_wrapper @first (%[[MA]], %[[MB]])
 // CHECK-NOT: enzymexla.xla_wrapper
 // CHECK: llvm.return
-// CHECK-LABEL: func.func private @rxla$megakernel_0(
+// CHECK-LABEL: func.func private @first(
 // CHECK-SAME: %[[A:.*]]: tensor<?xf32>, %[[B:.*]]: tensor<?xi32>
 // CHECK: %[[NEG:.*]] = stablehlo.negate %[[A]]
 // CHECK: %[[SUM:.*]] = stablehlo.add %[[B]], %[[B]]
@@ -162,10 +162,10 @@ module {
 // CHECK-LABEL: llvm.func @fuse_distinct_pointer_values
 // CHECK: %[[MA:.*]] = "enzymexla.pointer2memref"
 // CHECK: %[[MB:.*]] = "enzymexla.pointer2memref"
-// CHECK: enzymexla.xla_wrapper @rxla$megakernel_0 (%[[MA]], %[[MB]])
+// CHECK: enzymexla.xla_wrapper @update (%[[MA]], %[[MB]])
 // CHECK-NOT: enzymexla.xla_wrapper
 // CHECK: llvm.return
-// CHECK-LABEL: func.func private @rxla$megakernel_0(
+// CHECK-LABEL: func.func private @update(
 // CHECK-SAME: %[[A:.*]]: tensor<?xf32>, %[[B:.*]]: tensor<?xf32>
 // CHECK: %[[NA:.*]] = stablehlo.negate %[[A]]
 // CHECK: %[[NB:.*]] = stablehlo.negate %[[B]]
@@ -193,10 +193,10 @@ module {
 // CHECK: %[[OFFSET:[^ ]+]] = llvm.getelementptr %[[BASE]][1] : (!llvm.ptr) -> !llvm.ptr, f32
 // CHECK: %[[FIRST:[^ ]+]] = "enzymexla.pointer2memref"(%[[BASE]]) : (!llvm.ptr) -> memref<?xf32>
 // CHECK: %[[SECOND:[^ ]+]] = "enzymexla.pointer2memref"(%[[OFFSET]]) : (!llvm.ptr) -> memref<?xf32>
-// CHECK: enzymexla.xla_wrapper @rxla$megakernel_0 (%[[FIRST]], %[[SECOND]]) : (memref<?xf32>, memref<?xf32>) -> ()
+// CHECK: enzymexla.xla_wrapper @update (%[[FIRST]], %[[SECOND]]) : (memref<?xf32>, memref<?xf32>) -> ()
 // CHECK-NOT: enzymexla.xla_wrapper
 // CHECK: llvm.return
-// CHECK-LABEL: func.func private @rxla$megakernel_0(
+// CHECK-LABEL: func.func private @update(
 // CHECK-SAME: %[[A:[^:]+]]: tensor<?xf32>, %[[B:[^:]+]]: tensor<?xf32>) -> (tensor<?xf32>, tensor<?xf32>) {
 // CHECK-NEXT: %[[NEG_A:[^ ]+]] = stablehlo.negate %[[A]] : tensor<?xf32>
 // CHECK-NEXT: %[[NEG_B:[^ ]+]] = stablehlo.negate %[[B]] : tensor<?xf32>
@@ -232,10 +232,10 @@ module {
 // CHECK-SAME: %[[BASE:[^:]+]]: memref<8xf32, strided<[1], offset: ?>>) {
 // CHECK-NEXT: %[[FIRST:[^ ]+]] = memref.subview %[[BASE]][0] [4] [1] : memref<8xf32, strided<[1], offset: ?>> to memref<4xf32, strided<[1], offset: ?>>
 // CHECK-NEXT: %[[SECOND:[^ ]+]] = memref.subview %[[BASE]][4] [4] [1] : memref<8xf32, strided<[1], offset: ?>> to memref<4xf32, strided<[1], offset: ?>>
-// CHECK-NEXT: enzymexla.xla_wrapper @rxla$megakernel_0 (%[[FIRST]], %[[SECOND]]) : (memref<4xf32, strided<[1], offset: ?>>, memref<4xf32, strided<[1], offset: ?>>) -> ()
+// CHECK-NEXT: enzymexla.xla_wrapper @update (%[[FIRST]], %[[SECOND]]) : (memref<4xf32, strided<[1], offset: ?>>, memref<4xf32, strided<[1], offset: ?>>) -> ()
 // CHECK-NEXT: return
 // CHECK-NEXT: }
-// CHECK-LABEL: func.func private @rxla$megakernel_0(
+// CHECK-LABEL: func.func private @update(
 // CHECK-SAME: %[[A:[^:]+]]: tensor<4xf32>, %[[B:[^:]+]]: tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>) {
 // CHECK-NEXT: %[[NEG_A:[^ ]+]] = stablehlo.negate %[[A]] : tensor<4xf32>
 // CHECK-NEXT: %[[NEG_B:[^ ]+]] = stablehlo.negate %[[B]] : tensor<4xf32>
@@ -269,10 +269,10 @@ module {
 // CHECK-SAME: %[[BASE:[^:]+]]: !llvm.ptr) {
 // CHECK-NEXT: %[[OFFSET:[^ ]+]] = llvm.getelementptr %[[BASE]][4] : (!llvm.ptr) -> !llvm.ptr, f32
 // CHECK-NEXT: %[[BUFFER:[^ ]+]] = "enzymexla.pointer2memref"(%[[OFFSET]]) : (!llvm.ptr) -> memref<?xf32>
-// CHECK-NEXT: enzymexla.xla_wrapper @rxla$megakernel_0 (%[[BUFFER]]) : (memref<?xf32>) -> ()
+// CHECK-NEXT: enzymexla.xla_wrapper @negate (%[[BUFFER]]) : (memref<?xf32>) -> ()
 // CHECK-NEXT: llvm.return
 // CHECK-NEXT: }
-// CHECK-LABEL: func.func private @rxla$megakernel_0(
+// CHECK-LABEL: func.func private @negate(
 // CHECK-SAME: %[[A:[^:]+]]: tensor<?xf32>) -> tensor<?xf32> {
 // CHECK-NEXT: %[[NEGATED:[^ ]+]] = stablehlo.negate %[[A]] : tensor<?xf32>
 // CHECK-NEXT: %[[DOUBLED:[^ ]+]] = stablehlo.add %[[NEGATED]], %[[NEGATED]] : tensor<?xf32>
@@ -324,8 +324,8 @@ module {
   }
 }
 // CHECK-LABEL: llvm.func @do_not_fuse_metadata
-// CHECK: enzymexla.xla_wrapper @update ({{.*}}) <{arg_attrs = [{test.tag = "first"}]}>
-// CHECK: enzymexla.xla_wrapper @update ({{.*}}) <{res_attrs = [{test.tag = "second"}]}>
+// CHECK: enzymexla.xla_wrapper @update ({{.*}}) <arg_attrs = [{test.tag = "first"}]>
+// CHECK: enzymexla.xla_wrapper @update ({{.*}}) <res_attrs = [{test.tag = "second"}]>
 // CHECK: llvm.return
 // CHECK-NOT: @rxla$megakernel
 

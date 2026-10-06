@@ -80,24 +80,30 @@ module {
 // CHECK-LABEL: llvm.func @fuse_ping_pong
 // CHECK:         %[[A:.*]] = "enzymexla.pointer2memref"
 // CHECK:         %[[B:.*]] = "enzymexla.pointer2memref"
-// CHECK:         enzymexla.xla_wrapper @[[$PING_PONG:rxla\$megakernel_[0-9]+]] (%[[A]], %[[B]])
+// CHECK:         enzymexla.xla_wrapper @update_b (%[[A]], %[[B]])
 // CHECK-NOT:     enzymexla.xla_wrapper
 // CHECK:         llvm.return
 
-// CHECK-NOT:     func.func private @update_b
-// CHECK-NOT:     func.func private @update_a
-
-// CHECK-LABEL: llvm.func @fuse_distinct_inputs
-// CHECK:         enzymexla.xla_wrapper @{{rxla\$megakernel_[0-9]+}}
-// CHECK-NOT:     enzymexla.xla_wrapper
-// CHECK:         llvm.return
-
-// CHECK-LABEL: llvm.func @do_not_fuse_duplicate_buffer
-// CHECK:         enzymexla.xla_wrapper @duplicate_first
-// CHECK:         enzymexla.xla_wrapper @duplicate_second
-
-// CHECK: func.func private @[[$PING_PONG]](
+// Reuse the private first function. Its only caller is replaced by the fused call.
+// CHECK-LABEL: func.func private @update_b(
 // CHECK-SAME:      %[[ARG0:.*]]: tensor<?xf32>, %[[ARG1:.*]]: tensor<?xf32>
 // CHECK:         %[[UPDATED_B:.*]] = stablehlo.add %[[ARG0]], %[[ARG1]]
 // CHECK:         %[[UPDATED_A:.*]] = stablehlo.multiply %[[UPDATED_B]], %[[ARG0]]
 // CHECK:         return %[[UPDATED_A]], %[[UPDATED_B]]
+// CHECK-NOT:     func.func private @update_a
+
+// CHECK-LABEL: llvm.func @fuse_distinct_inputs
+// CHECK:         enzymexla.xla_wrapper @may_update_b
+// CHECK-NOT:     enzymexla.xla_wrapper
+// CHECK:         llvm.return
+// CHECK-LABEL: func.func private @may_update_b(
+// CHECK-SAME:      %[[ARG0:.*]]: tensor<?xf32>, %[[ARG1:.*]]: tensor<?xf32>
+// CHECK:         %[[UPDATED_B:.*]] = stablehlo.add %[[ARG0]], %[[ARG1]]
+// CHECK:         %[[UPDATED_A:.*]] = stablehlo.multiply %[[UPDATED_B]], %[[ARG0]]
+// CHECK:         return %[[UPDATED_A]], %[[UPDATED_B]]
+// CHECK-NOT:     func.func private @may_update_a
+
+// CHECK-LABEL: llvm.func @do_not_fuse_duplicate_buffer
+// CHECK:         enzymexla.xla_wrapper @duplicate_first
+// CHECK:         enzymexla.xla_wrapper @duplicate_second
+// CHECK-NOT:     @rxla$megakernel

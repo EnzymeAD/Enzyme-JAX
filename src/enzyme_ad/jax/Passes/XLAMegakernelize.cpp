@@ -14,7 +14,6 @@
 #include "Enzyme/MLIR/Interfaces/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -37,9 +36,14 @@ static bool isRaisedWrapperFunction(FunctionOpInterface function,
   if (function.isExternal() || !function.getFunctionBody().hasOneBlock())
     return false;
 
+  if (wrapper.getNumSpecialized() > wrapper.getInputs().size())
+    return false;
+  unsigned numBuffers =
+      wrapper.getInputs().size() - wrapper.getNumSpecialized();
   if (function.getNumArguments() != wrapper.getInputs().size() ||
-      function.getNumResults() != wrapper.getInputs().size() ||
-      function.getArgumentTypes() != function.getResultTypes())
+      function.getNumResults() != numBuffers ||
+      function.getArgumentTypes().take_front(numBuffers) !=
+          function.getResultTypes())
     return false;
 
   Block &body = function.getFunctionBody().front();
@@ -101,6 +105,22 @@ static bool hasMetadata(ArrayAttr attributes) {
          });
 }
 
+static bool canReuseFunction(FunctionOpInterface function,
+                             enzymexla::XLAWrapperOp first,
+                             enzymexla::XLAWrapperOp second, ModuleOp module) {
+  if (SymbolTable::getSymbolVisibility(function) !=
+          SymbolTable::Visibility::Private ||
+      function->isAncestor(first))
+    return false;
+  auto uses = SymbolTable::getSymbolUses(function.getOperation(), module);
+  if (!uses)
+    return false;
+  for (const auto &use : *uses)
+    if (use.getUser() != first && use.getUser() != second)
+      return false;
+  return true;
+}
+
 /// Fuse two wrappers separated only by memory-effect-free bookkeeping. The
 /// fused wrapper shares tensor state for equal buffer identities and retains
 /// separate state for distinct inputs.
@@ -119,10 +139,9 @@ public:
     if (!second || first.getInputs().empty() || second.getInputs().empty())
       return failure();
 
-    // Do not combine metadata or specialized scalar inputs.
+    // Do not combine argument or result metadata.
     if (first.getArgAttrsAttr() || first.getResAttrsAttr() ||
-        second.getArgAttrsAttr() || second.getResAttrsAttr() ||
-        first.getNumSpecialized() || second.getNumSpecialized())
+        second.getArgAttrsAttr() || second.getResAttrsAttr())
       return failure();
 
     auto firstFunction = dyn_cast_or_null<FunctionOpInterface>(
@@ -145,16 +164,19 @@ public:
         hasMetadata(secondFunction.getAllResultAttrs()))
       return failure();
 
-    SmallVector<Value> fusedInputs(first.getInputs().begin(),
-                                   first.getInputs().end());
-    SmallVector<Type> fusedTypes(firstFunction.getArgumentTypes());
+    unsigned firstNumSpecialized = first.getNumSpecialized();
+    unsigned secondNumSpecialized = second.getNumSpecialized();
+    auto firstBuffers = first.getInputs().drop_back(firstNumSpecialized);
+    auto secondBuffers = second.getInputs().drop_back(secondNumSpecialized);
+    SmallVector<Value> fusedInputs(firstBuffers.begin(), firstBuffers.end());
+    SmallVector<Type> fusedTypes(firstFunction.getResultTypes());
     SmallVector<Value> fusedIdentities;
     for (Value input : fusedInputs)
       fusedIdentities.push_back(
           enzyme::oputils::getBaseObject(input, /*offsetAllowed=*/false));
 
     SmallVector<Value> secondIdentities;
-    for (Value input : second.getInputs())
+    for (Value input : secondBuffers)
       secondIdentities.push_back(
           enzyme::oputils::getBaseObject(input, /*offsetAllowed=*/false));
 
@@ -183,11 +205,11 @@ public:
       if (!mappedIndex) {
         // Add a separate state slot for this input.
         mappedIndex = fusedInputs.size();
-        fusedInputs.push_back(second.getInputs()[secondIndex]);
+        fusedInputs.push_back(secondBuffers[secondIndex]);
         fusedTypes.push_back(secondFunction.getArgumentTypes()[secondIndex]);
         fusedIdentities.push_back(identity);
       } else if (fusedInputs[*mappedIndex].getType() !=
-                     second.getInputs()[secondIndex].getType() ||
+                     secondBuffers[secondIndex].getType() ||
                  fusedTypes[*mappedIndex] !=
                      secondFunction.getArgumentTypes()[secondIndex]) {
         return failure();
@@ -195,42 +217,69 @@ public:
       secondToFused.push_back(*mappedIndex);
     }
 
+    // Keep all specialized inputs after the buffer union, in call order.
+    unsigned numBuffers = fusedInputs.size();
+    SmallVector<Type> fusedResults(fusedTypes);
+    llvm::append_range(fusedInputs,
+                       first.getInputs().take_back(firstNumSpecialized));
+    llvm::append_range(fusedInputs,
+                       second.getInputs().take_back(secondNumSpecialized));
+    llvm::append_range(fusedTypes, firstFunction.getArgumentTypes().take_back(
+                                       firstNumSpecialized));
+    llvm::append_range(fusedTypes, secondFunction.getArgumentTypes().take_back(
+                                       secondNumSpecialized));
+
     // Reuse the first wrapper's views for shared buffers. New inputs must
     // already exist at the first call; do not move their definitions.
-    DominanceInfo dominance;
     for (Value input : fusedInputs)
-      if (!dominance.properlyDominates(input, first))
-        return failure();
-    Type fusedType = firstFunction.cloneTypeWith(fusedTypes, fusedTypes);
+      if (Operation *definition = input.getDefiningOp())
+        if (definition->getBlock() == first->getBlock() &&
+            !definition->isBeforeInBlock(first))
+          return failure();
+    Type fusedType = firstFunction.cloneTypeWith(fusedTypes, fusedResults);
     if (!fusedType)
       return failure();
-    std::string name = getUniqueMegakernelName(module, nextMegakernelId);
 
     Location location =
         FusedLoc::get(first.getContext(), {first.getLoc(), second.getLoc()});
 
     OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToEnd(module.getBody());
-    auto fusedFunction = createRaisedFunction(rewriter, firstFunction, location,
-                                              name, fusedType);
-    // The first function's effect summary does not describe the combined body.
-    fusedFunction->removeAttr("enzymexla.memory_effects");
-    fusedFunction->removeAttr("memory_effects");
-    Block *fusedBody = &fusedFunction.getFunctionBody().front();
+    FunctionOpInterface fusedFunction = firstFunction;
+    Block *originalBody = nullptr;
+    Block *fusedBody;
+    if (canReuseFunction(firstFunction, first, second, module)) {
+      // Keep the source block intact until both calls have been copied.
+      originalBody = &firstFunction.getFunctionBody().front();
+      fusedBody = rewriter.createBlock(
+          &firstFunction.getFunctionBody(),
+          firstFunction.getFunctionBody().end(), fusedTypes,
+          SmallVector<Location>(fusedTypes.size(), location));
+    } else {
+      rewriter.setInsertionPointToEnd(module.getBody());
+      std::string name = getUniqueMegakernelName(module, nextMegakernelId);
+      fusedFunction = createRaisedFunction(rewriter, firstFunction, location,
+                                           name, fusedType);
+      fusedBody = &fusedFunction.getFunctionBody().front();
+    }
     rewriter.setInsertionPointToEnd(fusedBody);
 
-    SmallVector<Value> bufferState(fusedBody->getArguments().begin(),
-                                   fusedBody->getArguments().end());
+    SmallVector<Value> bufferState(
+        fusedBody->getArguments().take_front(numBuffers));
 
-    SmallVector<Value> firstResults = cloneRaisedFunctionBody(
-        rewriter, firstFunction,
-        ArrayRef<Value>(bufferState).take_front(first.getInputs().size()));
+    SmallVector<Value> firstArguments(
+        ArrayRef<Value>(bufferState).take_front(firstBuffers.size()));
+    llvm::append_range(firstArguments, fusedBody->getArguments().slice(
+                                           numBuffers, firstNumSpecialized));
+    SmallVector<Value> firstResults =
+        cloneRaisedFunctionBody(rewriter, firstFunction, firstArguments);
     for (auto [firstIndex, result] : llvm::enumerate(firstResults))
       bufferState[firstIndex] = result;
 
     SmallVector<Value> secondArguments;
     for (unsigned fusedIndex : secondToFused)
       secondArguments.push_back(bufferState[fusedIndex]);
+    llvm::append_range(secondArguments, fusedBody->getArguments().take_back(
+                                            secondNumSpecialized));
     SmallVector<Value> secondResults =
         cloneRaisedFunctionBody(rewriter, secondFunction, secondArguments);
     for (auto [secondIndex, fusedIndex] : llvm::enumerate(secondToFused))
@@ -238,10 +287,24 @@ public:
 
     createRaisedReturn(rewriter, firstFunction, bufferState);
 
+    if (originalBody)
+      rewriter.eraseBlock(originalBody);
+    rewriter.modifyOpInPlace(fusedFunction, [&] {
+      fusedFunction.setType(fusedType);
+      fusedFunction->setLoc(location);
+      // The first function's effect summary does not describe the combined
+      // body.
+      fusedFunction->removeAttr("enzymexla.memory_effects");
+      fusedFunction->removeAttr("memory_effects");
+    });
+
     rewriter.setInsertionPoint(first);
-    enzymexla::XLAWrapperOp::create(
+    auto fusedWrapper = enzymexla::XLAWrapperOp::create(
         rewriter, location, SymbolRefAttr::get(fusedFunction), fusedInputs,
         /*arg_attrs=*/nullptr, /*res_attrs=*/nullptr);
+    if (firstNumSpecialized || secondNumSpecialized)
+      fusedWrapper.setNumSpecialized(firstNumSpecialized +
+                                     secondNumSpecialized);
     rewriter.eraseOp(second);
     rewriter.eraseOp(first);
     return success();
