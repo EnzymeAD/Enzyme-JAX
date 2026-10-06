@@ -52,16 +52,11 @@ func.func @copy_in_check(%x: memref<?xf64>, %n: index, %junk: f64) -> f64 {
 
 // CHECK:  func.func @copy_in_check(%arg0: memref<?xf64>, %arg1: index, %arg2: f64) -> f64 {
 // CHECK-NEXT:   %cst = arith.constant 0.000000e+00 : f64
-// CHECK-NEXT:   %0 = affine.if #set()[%arg1] -> f64 {
-// CHECK-NEXT:     %1 = affine.for %arg3 = 0 to %arg1 iter_args(%arg4 = %cst) -> (f64) {
-// CHECK-NEXT:       %2 = affine.load %arg0[%arg3] : memref<?xf64>
-// CHECK-NEXT:       %3 = arith.addf %arg4, %2 : f64
-// CHECK-NEXT:       affine.store %3, %arg0[%arg3 + 1] : memref<?xf64>
-// CHECK-NEXT:       affine.yield %3 : f64
-// CHECK-NEXT:     }
-// CHECK-NEXT:     affine.yield %1 : f64
-// CHECK-NEXT:   } else {
-// CHECK-NEXT:     affine.yield %cst : f64
+// CHECK-NEXT:   %0 = affine.for %arg3 = 0 to %arg1 iter_args(%arg4 = %cst) -> (f64) {
+// CHECK-NEXT:     %1 = affine.load %arg0[%arg3] : memref<?xf64>
+// CHECK-NEXT:     %2 = arith.addf %arg4, %1 : f64
+// CHECK-NEXT:     affine.store %2, %arg0[%arg3 + 1] : memref<?xf64>
+// CHECK-NEXT:     affine.yield %2 : f64
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return %0 : f64
 // CHECK-NEXT: }
