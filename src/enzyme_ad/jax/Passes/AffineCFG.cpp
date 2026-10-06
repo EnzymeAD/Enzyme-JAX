@@ -8149,6 +8149,10 @@ static bool isLoopMemoryParallel(AffineForOp forOp) {
 
   // Collect all load and store ops in loop nest rooted at 'forOp'.
   SmallVector<Operation *, 8> loadAndStoreOps;
+  // Reads at indices the analysis cannot follow (a gather through an index
+  // table): they meet no write as long as nothing in the loop writes the
+  // buffer they read.
+  SmallVector<memref::LoadOp> opaqueReads;
   auto walkResult = forOp.walk([&](Operation *op) -> WalkResult {
     if (auto readOp = dyn_cast<AffineReadOpInterface>(op)) {
       // Memrefs that are allocated inside `forOp` need not be considered.
@@ -8158,6 +8162,9 @@ static bool isLoopMemoryParallel(AffineForOp forOp) {
       // Filter out stores the same way as above.
       if (!isLocallyDefined(writeOp.getMemRef(), forOp))
         loadAndStoreOps.push_back(op);
+    } else if (auto load = dyn_cast<memref::LoadOp>(op)) {
+      if (!isLocallyDefined(load.getMemRef(), forOp))
+        opaqueReads.push_back(load);
     } else if (!isStructural(op) &&
                !hasSingleEffect<MemoryEffects::Allocate>(op) &&
                !isMemoryEffectFree(op)) {
@@ -8180,15 +8187,22 @@ static bool isLoopMemoryParallel(AffineForOp forOp) {
   // buffer it also reaches through another view of it is not parallel.
   llvm::MapVector<Value, SmallPtrSet<Value, 2>> views;
   DenseSet<Value> written;
+  SmallVector<Value> writtenMemrefs;
   for (Operation *op : loadAndStoreOps) {
     Value memref = MemRefAccess(op).memref;
     views[enzyme::oputils::getBaseObject(memref)].insert(memref);
-    if (isa<AffineWriteOpInterface>(op))
+    if (isa<AffineWriteOpInterface>(op)) {
       written.insert(enzyme::oputils::getBaseObject(memref));
+      writtenMemrefs.push_back(memref);
+    }
   }
   for (auto &[base, memrefs] : views)
     if (written.count(base) && memrefs.size() > 1)
       return false;
+  for (memref::LoadOp load : opaqueReads)
+    for (Value memref : writtenMemrefs)
+      if (enzyme::oputils::mayAlias(load.getMemRef(), memref))
+        return false;
 
   // Dep check depth would be number of enclosing loops + 1.
   unsigned depth = ::getNestingDepth(forOp) + 1;
