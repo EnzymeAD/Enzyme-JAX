@@ -782,11 +782,12 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     return rewriter.notifyMatchFailure(sliceOp, "slice operand not found");
   }
 
-  // The batch op carries one result, the target op's: an op with several
-  // (a variadic reduce, say) would leave the rest unbatched.
-  if (targetOp->getNumResults() != 1) {
+  // Each result of the target op (a variadic reduce has several) is stacked
+  // into a result of the batch op, so all of them must be ranked tensors.
+  if (!llvm::all_of(targetOp->getResultTypes(),
+                    [](Type t) { return isa<RankedTensorType>(t); })) {
     return rewriter.notifyMatchFailure(sliceOp,
-                                       "target op has more than one result");
+                                       "target op has a non-tensor result");
   }
 
   if (llvm::any_of(allHaveIntermediateReshapes, [=](bool b) {
@@ -961,38 +962,46 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
   if (!func)
     return failure();
 
-  SmallVector<int64_t> outputShape;
-  outputShape.push_back(relatedSlices.size());
-  auto relatedOpsType =
-      cast<RankedTensorType>(relatedOps[0]->getResult(0).getType());
-  auto funcRetShape = relatedOpsType.getShape();
-  outputShape.append(funcRetShape.begin(), funcRetShape.end());
+  // One batch result per result of the ops, with the batch as the leading
+  // dimension.
+  SmallVector<Type> batchResultTypes;
+  for (Type resultType : relatedOps[0]->getResultTypes()) {
+    auto tensorType = cast<RankedTensorType>(resultType);
+    SmallVector<int64_t> outputShape;
+    outputShape.push_back(relatedSlices.size());
+    llvm::append_range(outputShape, tensorType.getShape());
+    batchResultTypes.push_back(
+        RankedTensorType::get(outputShape, tensorType.getElementType()));
+  }
 
   auto batchOp = enzyme::BatchOp::create(
-      rewriter, sliceOp.getLoc(),
-      RankedTensorType::get(outputShape, relatedOpsType.getElementType()),
+      rewriter, sliceOp.getLoc(), batchResultTypes,
       mlir::FlatSymbolRefAttr::get(sliceOp.getContext(), func.getName()),
       ValueRange(batchOpOperands),
       rewriter.getDenseI64ArrayAttr(
           {static_cast<int64_t>(relatedSlices.size())}));
 
-  SmallVector<int64_t> startIndices(outputShape.size(), 0);
-  SmallVector<int64_t> endIndices;
-  endIndices.append(outputShape.begin(), outputShape.end());
-  SmallVector<int64_t> strides(outputShape.size(), 1);
   for (auto [idx, sliceInfoAndOp] :
        llvm::enumerate(llvm::zip_equal(relatedSlices, relatedOps))) {
     auto &[sliceInfo, otherOp] = sliceInfoAndOp;
-    startIndices[0] = idx;
-    endIndices[0] = idx + 1;
-
-    auto slicedOp = stablehlo::SliceOp::create(
-        rewriter, sliceOp.getLoc(), batchOp->getResult(0),
-        rewriter.getDenseI64ArrayAttr(startIndices),
-        rewriter.getDenseI64ArrayAttr(endIndices),
-        rewriter.getDenseI64ArrayAttr(strides));
-    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
-        otherOp, otherOp->getResult(0).getType(), slicedOp);
+    SmallVector<Value> replacements;
+    for (auto [result, batched] :
+         llvm::zip_equal(otherOp->getResults(), batchOp->getResults())) {
+      auto batchedShape = cast<RankedTensorType>(batched.getType()).getShape();
+      SmallVector<int64_t> startIndices(batchedShape.size(), 0);
+      SmallVector<int64_t> endIndices(batchedShape.begin(), batchedShape.end());
+      SmallVector<int64_t> strides(batchedShape.size(), 1);
+      startIndices[0] = idx;
+      endIndices[0] = idx + 1;
+      auto slicedOp = stablehlo::SliceOp::create(
+          rewriter, sliceOp.getLoc(), batched,
+          rewriter.getDenseI64ArrayAttr(startIndices),
+          rewriter.getDenseI64ArrayAttr(endIndices),
+          rewriter.getDenseI64ArrayAttr(strides));
+      replacements.push_back(stablehlo::ReshapeOp::create(
+          rewriter, sliceOp.getLoc(), result.getType(), slicedOp));
+    }
+    rewriter.replaceOp(otherOp, replacements);
   }
 
   enzyme::batchutils::batchOperationInline(
