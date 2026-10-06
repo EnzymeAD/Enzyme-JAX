@@ -3508,6 +3508,11 @@ Value ReshapeOpCreate(OpBuilder &builder, Location loc, Value input,
     return input;
   }
 
+  for (auto reshape = input.getDefiningOp<stablehlo::ReshapeOp>(); reshape;
+       reshape = reshape.getOperand().getDefiningOp<stablehlo::ReshapeOp>())
+    if (reshape.getOperand().getType().getShape() == shape)
+      return reshape.getOperand();
+
   RankedTensorType resultTy =
       RankedTensorType::get(shape, inputTy.getElementType());
 
