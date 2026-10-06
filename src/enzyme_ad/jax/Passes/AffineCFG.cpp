@@ -7506,6 +7506,99 @@ struct ParallelSumPlusZero : public OpRewritePattern<arith::AddFOp> {
   }
 };
 
+// The constant c and the other operand x of a max or min of `v` with a
+// constant, looking through a signed cast to index (which commutes with the
+// signed max and min): x as an index value already in use before `before`
+// when there is one (so it is the same symbol as the index math reads),
+// else null. isMax tells which it is.
+static bool matchExtremumWithConstant(Value v, Operation *before, Value &x,
+                                      int64_t &c, bool &isMax) {
+  Value inner = v;
+  bool cast = false;
+  if (auto ic = v.getDefiningOp<arith::IndexCastOp>()) {
+    inner = ic.getIn();
+    cast = true;
+  }
+  Operation *op = inner.getDefiningOp();
+  if (!isa_and_nonnull<arith::MaxSIOp, arith::MinSIOp>(op))
+    return false;
+  isMax = isa<arith::MaxSIOp>(op);
+  APInt cv;
+  Value other;
+  if (matchPattern(op->getOperand(1), m_ConstantInt(&cv)))
+    other = op->getOperand(0);
+  else if (matchPattern(op->getOperand(0), m_ConstantInt(&cv)))
+    other = op->getOperand(1);
+  else
+    return false;
+  c = cv.getSExtValue();
+  x = nullptr;
+  if (!cast) {
+    x = other;
+    return true;
+  }
+  DominanceInfo dom;
+  for (Operation *user : other.getUsers()) {
+    auto ic = dyn_cast<arith::IndexCastOp>(user);
+    if (ic && ic.getType().isIndex() &&
+        dom.properlyDominates(ic.getOperation(), before)) {
+      x = ic.getResult();
+      return true;
+    }
+  }
+  return true;
+}
+
+// Inside an affine.if whose condition decides a max or min of a value with
+// a constant that the branch reads, as a rotated loop's trip count
+// (`if (n >= 1) for (0 .. max(n, 1))`) is: the operand it equals there.
+struct ExtremumUnderAffineIf : public OpRewritePattern<AffineIfOp> {
+  using OpRewritePattern<AffineIfOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(AffineIfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    llvm::SetVector<Value> captured;
+    getUsedValuesDefinedAbove(ifOp.getThenRegion(), captured);
+    IntegerSet cond = ifOp.getIntegerSet();
+    SmallVector<Value> condOperands(ifOp.getOperands());
+    bool changed = false;
+    for (Value v : captured) {
+      Value x;
+      int64_t c;
+      bool isMax;
+      if (!v.getType().isIndex() ||
+          !matchExtremumWithConstant(v, ifOp, x, c, isMax) || !x ||
+          !isValidSymbol(x))
+        continue;
+      // x - c >= 0 makes a max x and a min c; c - x >= 0 the other way
+      MLIRContext *ctx = ifOp.getContext();
+      AffineExpr s0 = getAffineSymbolExpr(0, ctx);
+      bool xWins;
+      if (setImplies(cond, condOperands,
+                     IntegerSet::get(0, 1, isMax ? s0 - c : c - s0, false), x))
+        xWins = true;
+      else if (setImplies(cond, condOperands,
+                          IntegerSet::get(0, 1, isMax ? c - s0 : s0 - c, false),
+                          x))
+        xWins = false;
+      else
+        continue;
+      Value replacement = x;
+      if (!xWins) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(ifOp);
+        replacement =
+            arith::ConstantIndexOp::create(rewriter, ifOp.getLoc(), c);
+      }
+      rewriter.replaceUsesWithIf(v, replacement, [&](OpOperand &use) {
+        return ifOp.getThenRegion().isAncestor(
+            use.getOwner()->getParentRegion());
+      });
+      changed = true;
+    }
+    return success(changed);
+  }
+};
+
 void mlir::enzyme::populateAffineCFGPatterns(
     RewritePatternSet &rpl, bool enable_split_on_affine_if_constants) {
   MLIRContext *context = rpl.getContext();
@@ -7522,9 +7615,9 @@ void mlir::enzyme::populateAffineCFGPatterns(
           CombineAffineIfs, MergeNestedAffineParallelLoops,
           PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
           MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
-          SinkStoreInIf, SinkStoreInAffineIf, ParallelSumPlusZero, AddAddCstEnd,
-          LiftMemrefRead, CompareVs1, AffineForReductionIter,
-          AffineForReductionSink>(context, 2);
+          SinkStoreInIf, SinkStoreInAffineIf, ParallelSumPlusZero,
+          ExtremumUnderAffineIf, AddAddCstEnd, LiftMemrefRead, CompareVs1,
+          AffineForReductionIter, AffineForReductionSink>(context, 2);
   if (enable_split_on_affine_if_constants) {
     rpl.add<SplitOnAffineIfConstants<scf::ForOp>,
             SplitOnAffineIfConstants<scf::IfOp>>(context, 2);
