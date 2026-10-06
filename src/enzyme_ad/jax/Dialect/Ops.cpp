@@ -1262,6 +1262,14 @@ void Pointer2MemrefOp::getCanonicalizationPatterns(RewritePatternSet &results,
                  */
 }
 
+LogicalResult Pointer2MemrefOp::verify() {
+  SmallVector<int64_t> strides;
+  int64_t offset;
+  if (failed(getType().getStridesAndOffset(strides, offset)) || offset != 0)
+    return emitOpError("requires a result layout with zero offset");
+  return success();
+}
+
 OpFoldResult Pointer2MemrefOp::fold(FoldAdaptor adaptor) {
   /// Simplify pointer2memref(cast(x)) to pointer2memref(x)
   if (auto mc = getSource().getDefiningOp<LLVM::BitcastOp>()) {

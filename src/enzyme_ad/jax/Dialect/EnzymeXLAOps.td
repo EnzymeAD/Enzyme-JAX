@@ -11,6 +11,7 @@
 #define ENZYMEXLA_OPS
 
 include "Enzyme/MLIR/Dialect/Dialect.td"
+include "Enzyme/MLIR/Interfaces/OffsetViewInterface.td"
 include "Dialect.td"
 include "EnzymeXLAAttrs.td"
 
@@ -379,7 +380,7 @@ def StreamToTokenOp : EnzymeXLA_Op<"stream2token", [
 }
 
 def Memref2PointerOp : EnzymeXLA_Op<"memref2pointer", [
-  ViewLikeOpInterface, Pure
+  OffsetViewInterface, Pure
 ]> {
   let summary = "Extract and LLVM pointer from a MemRef";
 
@@ -395,7 +396,7 @@ def Memref2PointerOp : EnzymeXLA_Op<"memref2pointer", [
 }
 
 def Pointer2MemrefOp : EnzymeXLA_Op<"pointer2memref", [
-  ViewLikeOpInterface, Pure
+  OffsetViewInterface, Pure
 ]> {
   let summary = "Upgrade a pointer to a memref";
 
@@ -404,6 +405,7 @@ def Pointer2MemrefOp : EnzymeXLA_Op<"pointer2memref", [
 
   let hasFolder = 1;
   let hasCanonicalizer = 1;
+  let hasVerifier = 1;
 
   let extraClassDeclaration = [{
     ::mlir::Value getViewSource() { return getSource(); }
