@@ -68,9 +68,126 @@ module {
 
 // -----
 
+// Only the middle input is unused. It is a specialized scalar, so remove its
+// argument without removing a buffer result. Keep increment at the end.
+// Before: add_increment(data, unused, increment) -> data + increment
+// After:  add_increment(data, increment) -> data + increment
+// num_specialized changes from 2 to 1. There is still one buffer result.
+module {
+  func.func @remove_one_specialized_scalar(%data: memref<i32>, %unused: i32,
+                                           %increment: i32) {
+    enzymexla.xla_wrapper @add_increment (%data, %unused, %increment)
+        <{num_specialized = 2 : i64}> : (memref<i32>, i32, i32) -> ()
+    return
+  }
+  func.func private @add_increment(%data: tensor<i32>, %unused: tensor<i32>,
+                                   %increment: tensor<i32>) -> tensor<i32> {
+    %sum = stablehlo.add %data, %increment : tensor<i32>
+    return %sum : tensor<i32>
+  }
+}
+
+// CHECK-LABEL: func.func @remove_one_specialized_scalar(
+// CHECK-SAME: %[[DATA:[^:]+]]: memref<i32>, %[[UNUSED:[^:]+]]: i32, %[[INC:[^:]+]]: i32) {
+// CHECK-NEXT: enzymexla.xla_wrapper @add_increment (%[[DATA]], %[[INC]]) <num_specialized = 1> : (memref<i32>, i32) -> ()
+// CHECK-NEXT: return
+// CHECK-LABEL: func.func private @add_increment(
+// CHECK-SAME: %[[DATA:[^:]+]]: tensor<i32>, %[[INC:[^:]+]]: tensor<i32>) -> tensor<i32> {
+// CHECK-NEXT: %[[SUM:[^ ]+]] = stablehlo.add %[[DATA]], %[[INC]] : tensor<i32>
+// CHECK-NEXT: return %[[SUM]] : tensor<i32>
+
+// -----
+
+// Both increment arguments are used, but the wrapper passes the same scalar
+// to both. Merge those arguments and use the remaining argument twice.
+// Keep the buffer and the later scale argument in their original order.
+// Before: advance(data, increment, increment, scale)
+// After:  advance_without_duplicates(data, increment, scale)
+// Both compute (data + increment + increment) * scale.
+// num_specialized changes from 3 to 2. There is still one buffer result.
+// A second caller passes distinct scalars. Keep that call and the original
+// function so that it still computes (data + first + second) * scale.
+module {
+  func.func @deduplicate_specialized_scalar(%data: memref<i32>, %increment: i32,
+                                            %scale: i32) {
+    enzymexla.xla_wrapper @advance (%data, %increment, %increment, %scale)
+        <{num_specialized = 3 : i64}> : (memref<i32>, i32, i32, i32) -> ()
+    return
+  }
+  func.func @keep_distinct_specialized_scalars(%data: memref<i32>, %first: i32,
+                                               %second: i32, %scale: i32) {
+    enzymexla.xla_wrapper @advance (%data, %first, %second, %scale)
+        <{num_specialized = 3 : i64}> : (memref<i32>, i32, i32, i32) -> ()
+    return
+  }
+  func.func private @advance(%data: tensor<i32>, %first: tensor<i32>,
+                             %second: tensor<i32>, %scale: tensor<i32>)
+      -> tensor<i32> {
+    %once = stablehlo.add %data, %first : tensor<i32>
+    %twice = stablehlo.add %once, %second : tensor<i32>
+    %scaled = stablehlo.multiply %twice, %scale : tensor<i32>
+    return %scaled : tensor<i32>
+  }
+}
+
+// CHECK-LABEL: func.func @deduplicate_specialized_scalar(
+// CHECK-SAME: %[[DATA:[^:]+]]: memref<i32>, %[[INC:[^:]+]]: i32, %[[SCALE:[^:]+]]: i32) {
+// CHECK-NEXT: enzymexla.xla_wrapper @advance_without_duplicates (%[[DATA]], %[[INC]], %[[SCALE]]) <num_specialized = 2> : (memref<i32>, i32, i32) -> ()
+// CHECK-NEXT: return
+// CHECK-LABEL: func.func @keep_distinct_specialized_scalars(
+// CHECK-SAME: %[[DATA:[^:]+]]: memref<i32>, %[[FIRST:[^:]+]]: i32, %[[SECOND:[^:]+]]: i32, %[[SCALE:[^:]+]]: i32) {
+// CHECK-NEXT: enzymexla.xla_wrapper @advance (%[[DATA]], %[[FIRST]], %[[SECOND]], %[[SCALE]]) <num_specialized = 3> : (memref<i32>, i32, i32, i32) -> ()
+// CHECK-NEXT: return
+// CHECK-LABEL: func.func private @advance(
+// CHECK-SAME: %[[DATA:[^:]+]]: tensor<i32>, %[[FIRST:[^:]+]]: tensor<i32>, %[[SECOND:[^:]+]]: tensor<i32>, %[[SCALE:[^:]+]]: tensor<i32>) -> tensor<i32> {
+// CHECK-NEXT: %[[ONCE:[^ ]+]] = stablehlo.add %[[DATA]], %[[FIRST]] : tensor<i32>
+// CHECK-NEXT: %[[TWICE:[^ ]+]] = stablehlo.add %[[ONCE]], %[[SECOND]] : tensor<i32>
+// CHECK-NEXT: %[[SCALED:[^ ]+]] = stablehlo.multiply %[[TWICE]], %[[SCALE]] : tensor<i32>
+// CHECK-NEXT: return %[[SCALED]] : tensor<i32>
+// CHECK-LABEL: func.func private @advance_without_duplicates(
+// CHECK-SAME: %[[DATA:[^:]+]]: tensor<i32>, %[[INC:[^:]+]]: tensor<i32>, %[[SCALE:[^:]+]]: tensor<i32>) -> tensor<i32> {
+// CHECK-NEXT: %[[ONCE:[^ ]+]] = stablehlo.add %[[DATA]], %[[INC]] : tensor<i32>
+// CHECK-NEXT: %[[TWICE:[^ ]+]] = stablehlo.add %[[ONCE]], %[[INC]] : tensor<i32>
+// CHECK-NEXT: %[[SCALED:[^ ]+]] = stablehlo.multiply %[[TWICE]], %[[SCALE]] : tensor<i32>
+// CHECK-NEXT: return %[[SCALED]] : tensor<i32>
+
+// -----
+
+// Both buffer positions refer to data. Their results are different scalar
+// arguments, but the wrapper supplies the same value for those arguments.
+// Merge the scalar arguments first when comparing the buffer results. Then
+// both results agree, so one buffer input and one buffer result can be removed.
+// Before: write_pair(data, data, value, value) -> (value, value)
+// After:  write_pair_without_duplicates(data, value) -> value
+// num_specialized changes from 2 to 1. Two buffer results become one.
+module {
+  func.func @deduplicate_buffers_and_scalars(%data: memref<i32>, %value: i32) {
+    enzymexla.xla_wrapper @write_pair (%data, %data, %value, %value)
+        <{num_specialized = 2 : i64}> : (memref<i32>, memref<i32>, i32, i32) -> ()
+    return
+  }
+  func.func private @write_pair(%first_buffer: tensor<i32>,
+                                %second_buffer: tensor<i32>,
+                                %first_value: tensor<i32>,
+                                %second_value: tensor<i32>)
+      -> (tensor<i32>, tensor<i32>) {
+    return %first_value, %second_value : tensor<i32>, tensor<i32>
+  }
+}
+
+// CHECK-LABEL: func.func @deduplicate_buffers_and_scalars(
+// CHECK-SAME: %[[DATA:[^:]+]]: memref<i32>, %[[VALUE:[^:]+]]: i32) {
+// CHECK-NEXT: enzymexla.xla_wrapper @write_pair_without_duplicates (%[[DATA]], %[[VALUE]]) <num_specialized = 1> : (memref<i32>, i32) -> ()
+// CHECK-NEXT: return
+// CHECK-LABEL: func.func private @write_pair_without_duplicates(
+// CHECK-SAME: %[[DATA:[^:]+]]: tensor<i32>, %[[VALUE:[^:]+]]: tensor<i32>) -> tensor<i32> {
+// CHECK-NEXT: return %[[VALUE]] : tensor<i32>
+
+// -----
+
 // Both buffer positions write the same specialized scalar to the same buffer.
-// Remove the second buffer and its attributes. Keep both scalar positions and
-// their attributes, even though the wrapper passes the same scalar to both.
+// Remove the second buffer and its attributes. The scalar positions have
+// different attributes, so keep both even though their values are equal.
 // The first scalar supplies the result; the side effect reads the second.
 // Before: write(data, data, value, value) -> (value, value)
 // After:  write_without_duplicates(data, value, value) -> value

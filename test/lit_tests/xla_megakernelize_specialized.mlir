@@ -61,8 +61,9 @@ module {
 // -----
 
 // first(A, n), second(B, A, m, k) becomes first(A, B, n, m, k).
-// Here n and m receive the same host SSA value, but remain separate specialized
-// arguments. Only A and B have results, in the union's buffer order.
+// Here n and m receive the same host SSA value. Canonicalization merges those
+// arguments, so the final call is first_without_duplicates(A, B, n, k).
+// Only A and B have results, in the union's buffer order.
 module {
   func.func @different_specialized_counts(%a: memref<i32>, %b: memref<i32>,
                                           %n: i32, %k: i64) {
@@ -85,12 +86,12 @@ module {
 }
 // CHECK-LABEL: func.func @different_specialized_counts(
 // CHECK-SAME: %[[HOST_A:.*]]: memref<i32>, %[[HOST_B:.*]]: memref<i32>, %[[HOST_N:.*]]: i32, %[[HOST_K:.*]]: i64)
-// CHECK-NEXT: enzymexla.xla_wrapper @first (%[[HOST_A]], %[[HOST_B]], %[[HOST_N]], %[[HOST_N]], %[[HOST_K]]) <num_specialized = 3> : (memref<i32>, memref<i32>, i32, i32, i64) -> ()
+// CHECK-NEXT: enzymexla.xla_wrapper @first_without_duplicates (%[[HOST_A]], %[[HOST_B]], %[[HOST_N]], %[[HOST_K]]) <num_specialized = 2> : (memref<i32>, memref<i32>, i32, i64) -> ()
 // CHECK-NEXT: return
-// CHECK-LABEL: func.func private @first(
-// CHECK-SAME: %[[A:.*]]: tensor<i32>, %[[B:.*]]: tensor<i32>, %[[N:.*]]: tensor<i32>, %[[M:.*]]: tensor<i32>, %[[K:.*]]: tensor<i64>) -> (tensor<i32>, tensor<i32>)
+// CHECK-LABEL: func.func private @first_without_duplicates(
+// CHECK-SAME: %[[A:.*]]: tensor<i32>, %[[B:.*]]: tensor<i32>, %[[N:.*]]: tensor<i32>, %[[K:.*]]: tensor<i64>) -> (tensor<i32>, tensor<i32>)
 // CHECK-NEXT: %[[FIRST_SUM:.*]] = stablehlo.add %[[A]], %[[N]] : tensor<i32>
-// CHECK-NEXT: %[[SCALED:.*]] = stablehlo.multiply %[[B]], %[[M]] : tensor<i32>
+// CHECK-NEXT: %[[SCALED:.*]] = stablehlo.multiply %[[B]], %[[N]] : tensor<i32>
 // CHECK-NEXT: %[[K32:.*]] = stablehlo.convert %[[K]] : (tensor<i64>) -> tensor<i32>
 // CHECK-NEXT: %[[SECOND_SUM:.*]] = stablehlo.add %[[FIRST_SUM]], %[[K32]] : tensor<i32>
 // CHECK-NEXT: return %[[SECOND_SUM]], %[[SCALED]] : tensor<i32>, tensor<i32>

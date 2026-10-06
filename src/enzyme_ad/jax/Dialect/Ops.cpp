@@ -2351,15 +2351,14 @@ public:
 };
 
 /// Merge equal buffer inputs only when their returned values and attributes
-/// also agree. Keep specialized scalar inputs at the end of the input list.
-/// Clone the function because other calls can pass distinct buffers.
+/// also agree. Merge equal specialized scalar inputs if their attributes agree.
+/// Clone the function because other calls can pass distinct inputs.
 class DeduplicateXLAWrapperInputs final
     : public OpRewritePattern<XLAWrapperOp> {
   static Value canonicalResult(Value result, Block &body,
                                ArrayRef<unsigned> representatives) {
     if (auto argument = dyn_cast<BlockArgument>(result);
-        argument && argument.getOwner() == &body &&
-        argument.getArgNumber() < representatives.size())
+        argument && argument.getOwner() == &body)
       return body.getArgument(representatives[argument.getArgNumber()]);
     return result;
   }
@@ -2395,30 +2394,44 @@ public:
     SmallVector<unsigned> representatives;
     llvm::BitVector duplicateArguments(function.getNumArguments());
     llvm::BitVector duplicateResults(numBuffers);
-    for (auto [index, input] :
-         llvm::enumerate(op.getInputs().take_front(numBuffers))) {
-      auto [entry, inserted] = identities.try_emplace(
-          enzyme::oputils::getBaseObject(input, /*offsetAllowed=*/false),
-          index);
+    for (auto [index, input] : llvm::enumerate(op.getInputs())) {
+      bool isBuffer = index < numBuffers;
+      // Match scalars by SSA value. Keep buffer addresses separate.
+      if (index == numBuffers)
+        identities.clear();
+      Value identity =
+          isBuffer
+              ? enzyme::oputils::getBaseObject(input, /*offsetAllowed=*/false)
+              : input;
+      auto [entry, inserted] = identities.try_emplace(identity, index);
       unsigned representative = entry->second;
-      representatives.push_back(representative);
+      representatives.push_back(index);
       if (inserted)
         continue;
       if (input.getType() != op.getInputs()[representative].getType() ||
           function.getArgumentTypes()[index] !=
               function.getArgumentTypes()[representative] ||
           !sameAttributes(op.getArgAttrsAttr(), index, representative) ||
-          !sameAttributes(op.getResAttrsAttr(), index, representative) ||
-          !sameAttributes(function.getAllArgAttrs(), index, representative) ||
-          !sameAttributes(function.getAllResultAttrs(), index, representative))
+          !sameAttributes(function.getAllArgAttrs(), index, representative)) {
+        if (isBuffer)
+          return failure();
+        continue;
+      }
+      if (isBuffer &&
+          (!sameAttributes(op.getResAttrsAttr(), index, representative) ||
+           !sameAttributes(function.getAllResultAttrs(), index,
+                           representative)))
         return failure();
+      representatives.back() = representative;
       duplicateArguments.set(index);
-      duplicateResults.set(index);
+      if (isBuffer)
+        duplicateResults.set(index);
     }
     if (duplicateArguments.none())
       return failure();
 
-    for (auto [index, representative] : llvm::enumerate(representatives))
+    for (auto [index, representative] :
+         llvm::enumerate(ArrayRef(representatives).take_front(numBuffers)))
       if (canonicalResult(returnOp->getOperand(index), body, representatives) !=
           canonicalResult(returnOp->getOperand(representative), body,
                           representatives))
