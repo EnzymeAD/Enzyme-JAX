@@ -784,10 +784,10 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
 
   // Each result of the target op (a variadic reduce has several) is stacked
   // into a result of the batch op, so all of them must be ranked tensors.
-  if (!llvm::all_of(targetOp->getResultTypes(),
-                    [](Type t) { return isa<RankedTensorType>(t); })) {
-    return rewriter.notifyMatchFailure(sliceOp,
-                                       "target op has a non-tensor result");
+  for (Type resultType : targetOp->getResultTypes()) {
+    if (!isa<RankedTensorType>(resultType))
+      return rewriter.notifyMatchFailure(sliceOp,
+                                         "target op has a non-tensor result");
   }
 
   if (llvm::any_of(allHaveIntermediateReshapes, [=](bool b) {
