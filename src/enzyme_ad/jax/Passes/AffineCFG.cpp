@@ -7888,17 +7888,70 @@ static bool isLocallyDefined(Value v, Operation *enclosingOp) {
 }
 
 /// Returns the nesting depth of this statement, i.e., the number of loops
-/// surrounding this statement.
+/// surrounding this statement within its affine scope: the loops the
+/// dependence analysis puts in an access's domain (getEnclosingAffineOps stops
+/// at the scope), not those around it, as around a kernel launched in a loop
+/// of the host.
 static unsigned getNestingDepth(Operation *op) {
   Operation *currOp = op;
   unsigned depth = 0;
   while ((currOp = currOp->getParentOp())) {
+    if (currOp->hasTrait<OpTrait::AffineScope>())
+      break;
     if (isa<AffineForOp>(currOp))
       depth++;
     if (auto parOp = dyn_cast<AffineParallelOp>(currOp))
       depth += parOp.getNumDims();
   }
   return depth;
+}
+
+// Registers as a symbol of `domain` each of `operands` defined outside
+// `outer` that the domain would otherwise reject: a value that is not a valid
+// symbol where it is defined (one computed in a conditional of the function,
+// above the affine scope the nest is in) keeps its value through the nest.
+static void addOuterOperandsAsSymbols(FlatAffineValueConstraints &domain,
+                                      Operation *outer, ValueRange operands) {
+  for (Value v : operands)
+    if (!domain.containsVar(v) && !isAffineInductionVar(v) &&
+        !isValidSymbol(v) && !v.getDefiningOp<AffineApplyOp>() &&
+        !outer->isAncestor(v.getParentRegion()->getParentOp()))
+      domain.appendSymbolVar(v);
+}
+
+// affine::getIndexSet of the affine ops `ops` enclosing an access, outermost
+// first, where a bound or condition operand defined outside the nest counts
+// as a symbol (see addOuterOperandsAsSymbols); getIndexSet fails on one that
+// is not a valid symbol where it is defined.
+static LogicalResult nestDomain(ArrayRef<Operation *> ops,
+                                FlatAffineValueConstraints &domain) {
+  SmallVector<Operation *> loops;
+  for (Operation *op : ops) {
+    if (!isa<AffineForOp, AffineIfOp, AffineParallelOp>(op))
+      return failure();
+    if (isa<AffineForOp, AffineParallelOp>(op))
+      loops.push_back(op);
+  }
+  SmallVector<Value> indices;
+  extractInductionVars(loops, indices);
+  domain = FlatAffineValueConstraints(indices.size(), /*numSymbols=*/0,
+                                      /*numLocals=*/0, indices);
+  if (ops.empty())
+    return success();
+  for (Operation *op : ops)
+    addOuterOperandsAsSymbols(domain, ops.front(), op->getOperands());
+  for (Operation *op : ops) {
+    if (auto forOp = dyn_cast<AffineForOp>(op)) {
+      if (failed(domain.addAffineForOpDomain(forOp)))
+        return failure();
+    } else if (auto ifOp = dyn_cast<AffineIfOp>(op)) {
+      domain.addAffineIfOpDomain(ifOp);
+    } else if (failed(domain.addAffineParallelOpDomain(
+                   cast<AffineParallelOp>(op)))) {
+      return failure();
+    }
+  }
+  return success();
 }
 
 namespace {
@@ -7990,7 +8043,7 @@ struct InvariantTerms {
     SmallVector<Operation *> enclosing;
     getEnclosingAffineOps(*op, &enclosing);
     FlatAffineValueConstraints domain;
-    if (failed(getIndexSet(enclosing, &domain)))
+    if (failed(nestDomain(enclosing, domain)))
       return failure();
     AffineValueMap access;
     MemRefAccess(op).getAccessMap(&access);
