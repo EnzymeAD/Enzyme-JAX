@@ -7822,6 +7822,7 @@ struct ElementwiseAllTransposeOperandsSimplifyBase
     SmallVector<OperandKind> kinds;
     DenseI64ArrayAttr permutation;
     bool foundTranspose = false;
+    bool hasNonConstantTranspose = false;
     for (auto operand : op->getOperands()) {
       auto type = dyn_cast<RankedTensorType>(operand.getType());
       if (!type)
@@ -7839,6 +7840,8 @@ struct ElementwiseAllTransposeOperandsSimplifyBase
         continue;
       } else if (auto transposeOp =
                      operand.getDefiningOp<stablehlo::TransposeOp>()) {
+        hasNonConstantTranspose |=
+            !matchPattern(transposeOp.getOperand(), m_Constant());
         if (!foundTranspose) {
           foundTranspose = true;
           permutation = transposeOp.getPermutationAttr();
@@ -7859,10 +7862,12 @@ struct ElementwiseAllTransposeOperandsSimplifyBase
           "either constants or transpose ops");
     }
 
-    if (!foundTranspose)
+    // Constant transposes can fold. Factoring them can move a transpose between
+    // constant operands without reaching a fixed point.
+    if (!hasNonConstantTranspose)
       return rewriter.notifyMatchFailure(
           op, "ElementwiseAllTransposeOperandsSimplify needs at least one "
-              "transpose op");
+              "nonconstant transpose operand");
 
     auto invPerm =
         rewriter.getDenseI64ArrayAttr(getInversePermutation(permutation));
@@ -7909,36 +7914,103 @@ using BroadcastingElementwiseAllTransposeOperandsSimplify =
 struct TransposeElementwiseTransposeSimplify
     : public CheckedOpRewritePattern<stablehlo::TransposeOp,
                                      TransposeElementwiseTransposeSimplify> {
-  using CheckedOpRewritePattern<
-      stablehlo::TransposeOp,
-      TransposeElementwiseTransposeSimplify>::CheckedOpRewritePattern;
+  bool allowPartial;
+
+  TransposeElementwiseTransposeSimplify(MLIRContext *context,
+                                        PatternBenefit benefit = 1,
+                                        bool allowPartial = true)
+      : CheckedOpRewritePattern(context, benefit), allowPartial(allowPartial) {}
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
     auto elem = op.getOperand().getDefiningOp();
-    if (!elem)
+    if (!elem ||
+        (!stablehlo::hasTraitElementwise(elem) &&
+         !isa<stablehlo::SelectOp>(elem)) ||
+        elem->getNumResults() != 1 || elem->getNumRegions() != 0)
       return failure();
-    if (!stablehlo::hasTraitElementwise(elem))
-      return failure();
-
-    SmallVector<Value> newOperands;
 
     auto invPerm = rewriter.getDenseI64ArrayAttr(
         getInversePermutation(op.getPermutation()));
-
-    for (auto operand : elem->getOperands()) {
-      auto innerTransposeOp = operand.getDefiningOp<stablehlo::TransposeOp>();
-      if (!innerTransposeOp)
+    bool singleUse = elem->hasOneUse();
+    bool cancelsTranspose = false;
+    bool allOperandsCancel = true;
+    unsigned addedTransposes = 0;
+    unsigned removedTransposes = 1;
+    SmallPtrSet<Operation *, 4> removableInputs;
+    for (Value operand : elem->getOperands()) {
+      auto type = dyn_cast<RankedTensorType>(operand.getType());
+      if (!type)
         return failure();
-      if (innerTransposeOp.getPermutationAttr() != invPerm)
+      // Select also permits a scalar predicate. It has no axes to permute.
+      if (type.getRank() == 0) {
+        allOperandsCancel = false;
+        continue;
+      }
+      if (type.getRank() != op.getType().getRank())
         return failure();
-      newOperands.push_back(innerTransposeOp.getOperand());
+      auto inner = operand.getDefiningOp<stablehlo::TransposeOp>();
+      if (inner && inner.getPermutationAttr() == invPerm) {
+        bool isConstant = matchPattern(inner.getOperand(), m_Constant());
+        cancelsTranspose |= !isConstant;
+        bool hasOtherUser = false;
+        for (Operation *user : inner->getUsers()) {
+          if (user != elem) {
+            hasOtherUser = true;
+            break;
+          }
+        }
+        if (singleUse && !hasOtherUser && !isConstant &&
+            removableInputs.insert(inner).second)
+          ++removedTransposes;
+        continue;
+      }
+      allOperandsCancel = false;
+      // Keep scatter results available to the sparse elementwise rewrites.
+      Value source = operand;
+      while (Operation *producer = source.getDefiningOp()) {
+        if (isa<stablehlo::ScatterOp>(producer))
+          return failure();
+        if (!stablehlo::hasTraitElementwise(producer) ||
+            producer->getNumOperands() != 1)
+          break;
+        source = producer->getOperand(0);
+      }
+      SplatElementsAttr splat;
+      if (!matchPattern(operand, m_Constant(&splat)))
+        ++addedTransposes;
     }
 
-    auto newElem = Operation::create(elem->getLoc(), elem->getName(),
-                                     {op->getResult(0).getType()}, newOperands,
-                                     elem->getAttrs(), mlir::PropertyRef(),
-                                     elem->getSuccessors(), 0);
+    // T(select(T^-1(p), x, T^-1(y))) becomes select(p, T(x), y).
+    // Partial cancellation must strictly reduce transposes, without duplicating
+    // shared arithmetic. Neutral layout changes can cycle with transpose
+    // factoring and CSE. Shared input transposes only count as removed when all
+    // of their users disappear. Do not count constant transposes as savings.
+    // Cancel at least one nonconstant input transpose to avoid constant cycles.
+    if ((!allowPartial && !allOperandsCancel) || !cancelsTranspose ||
+        (!allOperandsCancel && !singleUse) ||
+        (addedTransposes && addedTransposes >= removedTransposes))
+      return failure();
+
+    SmallVector<Value> newOperands;
+    for (Value operand : elem->getOperands()) {
+      if (cast<RankedTensorType>(operand.getType()).getRank() == 0) {
+        newOperands.push_back(operand);
+        continue;
+      }
+      auto inner = operand.getDefiningOp<stablehlo::TransposeOp>();
+      if (inner && inner.getPermutationAttr() == invPerm) {
+        newOperands.push_back(inner.getOperand());
+      } else {
+        newOperands.push_back(stablehlo::TransposeOp::create(
+            rewriter, op.getLoc(), operand, op.getPermutation()));
+      }
+    }
+
+    Operation *newElem = Operation::create(
+        elem->getLoc(), elem->getName(), {op.getType()}, newOperands,
+        elem->getRawDictionaryAttrs(), elem->getPropertiesStorage(),
+        elem->getSuccessors(), 0);
     rewriter.insert(newElem);
     rewriter.replaceOp(op, newElem);
     return success();
@@ -38515,6 +38587,13 @@ void mlir::transform::addTransposeElementwise(RewritePatternSet &patterns,
   patterns.insert<TransposeElementwise>(onlySingleUser, &context, benefit);
 }
 
+void mlir::transform::addTransposeElementwiseTranspose(
+    RewritePatternSet &patterns, bool allowPartial, MLIRContext &context,
+    PatternBenefit benefit) {
+  patterns.insert<TransposeElementwiseTransposeSimplify>(&context, benefit,
+                                                         allowPartial);
+}
+
 void mlir::transform::addTransposeLikeBroadcastElementwise(
     RewritePatternSet &patterns, bool onlySingleUser, MLIRContext &context,
     PatternBenefit benefit) {
@@ -38687,9 +38766,10 @@ struct EnzymeHLOOptPass
 
     patterns.add<ElementwiseAllTransposeOperandsSimplify,
                  BroadcastingElementwiseAllTransposeOperandsSimplify,
-                 TransposeElementwiseTransposeSimplify,
                  AssociativeBinaryOpReordering,
                  CommonAssociativeCommutativeOpReorder>(context);
+    patterns.add<TransposeElementwiseTransposeSimplify>(
+        context, PatternBenefit(1), /*allowPartial=*/true);
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad,
@@ -39083,6 +39163,7 @@ struct EnzymeHLOOptPass
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {
       signalPassFailure();
+      return;
     }
   }
 };
