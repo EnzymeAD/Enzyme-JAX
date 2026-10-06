@@ -24,10 +24,8 @@ func.func @max_checked(%n32: i32, %x: memref<?xf64>, %y: memref<?xindex>) {
 // CHECK-NEXT:   %0 = arith.index_cast %arg0 : i32 to index
 // CHECK-NEXT:   %1 = arith.maxsi %arg0, %c1_i32 : i32
 // CHECK-NEXT:   %2 = arith.index_cast %1 : i32 to index
-// CHECK-NEXT:   affine.if #set()[%0] {
-// CHECK-NEXT:     affine.parallel (%arg3) = (0) to (symbol(%0)) {
-// CHECK-NEXT:       affine.store %cst, %arg1[%arg3 + symbol(%0)] : memref<?xf64>
-// CHECK-NEXT:     }
+// CHECK-NEXT:   affine.parallel (%arg3) = (0) to (symbol(%0)) {
+// CHECK-NEXT:     affine.store %cst, %arg1[%arg3 + symbol(%0)] : memref<?xf64>
 // CHECK-NEXT:   }
 // CHECK-NEXT:   affine.store %2, %arg2[0] : memref<?xindex>
 // CHECK-NEXT:   return
@@ -51,7 +49,7 @@ func.func @min_checked(%n32: i32, %x: memref<?xf64>) {
 // CHECK:  func.func @min_checked(%arg0: i32, %arg1: memref<?xf64>) {
 // CHECK-NEXT:   %cst = arith.constant 0.000000e+00 : f64
 // CHECK-NEXT:   %0 = arith.index_cast %arg0 : i32 to index
-// CHECK-NEXT:   affine.if #set1()[%0] {
+// CHECK-NEXT:   affine.if #set()[%0] {
 // CHECK-NEXT:     affine.parallel (%arg2) = (0) to (symbol(%0)) {
 // CHECK-NEXT:       affine.store %cst, %arg1[%arg2] : memref<?xf64>
 // CHECK-NEXT:     }
@@ -77,7 +75,7 @@ func.func @max_constant(%n32: i32, %x: memref<?xf64>) {
 // CHECK:  func.func @max_constant(%arg0: i32, %arg1: memref<?xf64>) {
 // CHECK-NEXT:   %cst = arith.constant 0.000000e+00 : f64
 // CHECK-NEXT:   %0 = arith.index_cast %arg0 : i32 to index
-// CHECK-NEXT:   affine.if #set2()[%0] {
+// CHECK-NEXT:   affine.if #set1()[%0] {
 // CHECK-NEXT:     affine.store %cst, %arg1[0] : memref<?xf64>
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return
@@ -104,7 +102,7 @@ func.func @unrelated(%n32: i32, %k: index, %x: memref<?xf64>) {
 // CHECK-NEXT:   %0 = arith.index_cast %arg0 : i32 to index
 // CHECK-NEXT:   %1 = arith.maxsi %arg0, %c1_i32 : i32
 // CHECK-NEXT:   %2 = arith.index_cast %1 : i32 to index
-// CHECK-NEXT:   affine.if #set()[%arg1] {
+// CHECK-NEXT:   affine.if #set2()[%arg1] {
 // CHECK-NEXT:     affine.parallel (%arg3) = (0) to (symbol(%2)) {
 // CHECK-NEXT:       affine.store %cst, %arg2[%arg3 + symbol(%0)] : memref<?xf64>
 // CHECK-NEXT:     }
