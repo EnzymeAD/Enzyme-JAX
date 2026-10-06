@@ -210,6 +210,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       pass_pipeline += "}," + canonicalize + ",arith-raise{stablehlo=true},"
       "cse,enzyme-hlo-opt," + canonicalize + ","
       "symbol-dce";
+      pass_pipeline += ",xla-megakernelize,symbol-dce";
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += ",print{filename="+outfile+".mlir}";
       }
