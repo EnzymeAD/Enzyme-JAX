@@ -29,6 +29,7 @@
 
 #include <deque>
 #include <isl/aff.h>
+#include <isl/id.h>
 #include <isl/set.h>
 #include <isl/val.h>
 #include <numeric>
@@ -3551,13 +3552,33 @@ static void replaceOpWithRegion(PatternRewriter &rewriter, Operation *op,
   rewriter.eraseOp(terminator);
 }
 
+// The domain of `op` with each parameter named after the value it stands
+// for. The condition of an if can bring in a symbol the domain around it lacks,
+// and isl only aligns the parameters of two sets by name.
+static isl_set *getDomainWithNamedParams(IslAnalysis &ia, Operation *op) {
+  auto [domain, cst] = ia.getDomainAndValueConstraints(op);
+  if (!domain)
+    return nullptr;
+  SmallVector<Value> symbols;
+  cst.getValues(cst.getNumDimVars(), cst.getNumDimAndSymbolVars(), &symbols);
+  for (auto [i, v] : llvm::enumerate(symbols)) {
+    if (!v)
+      return isl_set_free(domain);
+    domain = isl_set_set_dim_id(
+        domain, isl_dim_param, i,
+        isl_id_alloc(isl_set_get_ctx(domain), "sym", v.getAsOpaquePointer()));
+  }
+  return domain;
+}
+
 struct AffineIfSimplificationIsl : public OpRewritePattern<affine::AffineIfOp> {
   using OpRewritePattern<affine::AffineIfOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(affine::AffineIfOp ifOp,
                                 PatternRewriter &rewriter) const override {
     IslAnalysis ia;
-    isl_set *inThen = ia.getDomain(&ifOp.getThenBlock()->front());
-    isl_set *outsideIf = ia.getDomain(ifOp);
+    isl_set *inThen =
+        getDomainWithNamedParams(ia, &ifOp.getThenBlock()->front());
+    isl_set *outsideIf = getDomainWithNamedParams(ia, ifOp);
     isl_set *inElse =
         isl_set_subtract(isl_set_copy(outsideIf), isl_set_copy(inThen));
 
