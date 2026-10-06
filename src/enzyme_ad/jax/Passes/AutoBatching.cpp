@@ -3057,7 +3057,13 @@ struct ParallelWhileBatcher {
   DenseMap<OpOperand *, unsigned> chainLinks;
   IRMapping map; // body value -> value emitted in its place
   DenseMap<Operation *, unsigned> innerIv; // nested while -> its iv arg
-  Region *loopBody;                        // the parallel loop's body
+  // Nested loops whose trip count is not a constant: they run until no
+  // iteration's condition holds, each iteration's values kept once its own
+  // fails.
+  DenseSet<Operation *> maskedLoops;
+  // While the body of such a loop is emitted, the iterations still in it.
+  Value activeLanes;
+  Region *loopBody; // the parallel loop's body
 
   ParallelWhileBatcher(PatternRewriter &rewriter, Location loc,
                        enzyme::WhileLoopInfo &info, int64_t numIters,
@@ -3164,10 +3170,12 @@ struct ParallelWhileBatcher {
   // A loop nested in the body runs the same number of times in every
   // iteration of the parallel loop, over values that may vary with it.
   LogicalResult analyzeWhile(stablehlo::WhileOp w) {
-    enzyme::WhileLoopInfo wi(w);
-    if (failed(wi.computeInfo()) || !wi.isValid() || !wi.isConstant() ||
-        !isMemoryEffectFree(w))
+    if (!isMemoryEffectFree(w))
       return failure();
+    enzyme::WhileLoopInfo wi(w);
+    if (failed(wi.computeInfo()) || !wi.isValid() || !wi.isConstant())
+      return succeeded(analyzeUniformWhile(w)) ? success()
+                                               : analyzeMaskedWhile(w);
     Value wiv = wi.getInductionVariable();
     if (!wiv)
       return failure();
@@ -3215,6 +3223,125 @@ struct ParallelWhileBatcher {
       if (arg.getArgNumber() != ivn && isBatched(arg))
         batched.insert(w.getResult(arg.getArgNumber()));
     return success();
+  }
+
+  // Whether `v`, read by the condition of nested loop `w`, is the same in
+  // every iteration of the parallel loop.
+  bool uniformInCondition(stablehlo::WhileOp w, Value v) {
+    if (auto a = dyn_cast<BlockArgument>(v);
+        a && a.getOwner() == &w.getCond().front()) {
+      Value carried = w.getBody().front().getArgument(a.getArgNumber());
+      return !isBatched(carried) && !chainRoot.count(carried);
+    }
+    return !isBatched(v) && !chainRoot.count(v);
+  }
+
+  bool conditionUniform(stablehlo::WhileOp w, Block &blk) {
+    for (Operation &op : blk) {
+      for (Value v : op.getOperands()) {
+        // a value computed in the condition is as uniform as what it reads
+        Operation *def = v.getDefiningOp();
+        if (def && w.getCond().isAncestor(def->getParentRegion()))
+          continue;
+        if (!uniformInCondition(w, v))
+          return false;
+      }
+      for (Region &r : op.getRegions())
+        for (Block &inner : r)
+          if (!conditionUniform(w, inner))
+            return false;
+    }
+    return true;
+  }
+
+  // A nested loop whose trip count is not known here but whose condition
+  // reads nothing that varies with the parallel iteration: it runs as many
+  // times in every iteration, and is batched like a counted one.
+  LogicalResult analyzeUniformWhile(stablehlo::WhileOp w) {
+    Block &b = w.getBody().front();
+    Operation *wret = b.getTerminator();
+    for (auto arg : b.getArguments()) {
+      Value init = w->getOperand(arg.getArgNumber());
+      if (chainRoot.count(init)) {
+        if (failed(analyzeChain(arg, wret, chainRoot.lookup(init))))
+          return failure();
+      } else if (isBatched(init)) {
+        batched.insert(arg);
+      }
+    }
+    size_t before;
+    do {
+      before = batched.size();
+      if (failed(analyzeBlock(b)))
+        return failure();
+      for (auto arg : b.getArguments()) {
+        unsigned k = arg.getArgNumber();
+        if (!chainRoot.count(arg) && isBatched(wret->getOperand(k)))
+          batched.insert(arg);
+      }
+    } while (before != batched.size());
+    if (!conditionUniform(w, w.getCond().front()))
+      return failure();
+    for (auto arg : b.getArguments())
+      if (isBatched(arg))
+        batched.insert(w.getResult(arg.getArgNumber()));
+    return success();
+  }
+
+  // A nested loop whose trip count may differ between the iterations of the
+  // parallel loop: every value it carries but a buffer varies with the
+  // iteration, its condition is one per iteration, and the buffers' links
+  // in it are writes an iteration that has left the loop can drop. A loop
+  // of this kind is not followed into another.
+  LogicalResult analyzeMaskedWhile(stablehlo::WhileOp w) {
+    for (Operation *p = w->getParentOp(); p; p = p->getParentOp())
+      if (maskedLoops.contains(p))
+        return failure();
+    // A counted loop whose limit the raiser bounded unrolls to its most
+    // trips instead (WhileUnroll), leaving a parallel loop with no loop in
+    // it; batched here first, it would stay a loop.
+    enzyme::WhileLoopInfo wi(w);
+    if (succeeded(wi.computeInfo()) && wi.isValid()) {
+      auto limitTy = dyn_cast<RankedTensorType>(wi.getLimit().getType());
+      if (limitTy && isa<IntegerType>(limitTy.getElementType()) &&
+          getBoundsFromIR(wi.getLimit(), limitTy.getElementTypeBitWidth()))
+        return failure();
+    }
+    Block &b = w.getBody().front(), &cb = w.getCond().front();
+    Operation *wret = b.getTerminator();
+    for (auto arg : b.getArguments()) {
+      unsigned k = arg.getArgNumber();
+      Value init = w->getOperand(k);
+      if (chainRoot.count(init)) {
+        if (failed(analyzeChain(arg, wret, chainRoot.lookup(init))) ||
+            !cb.getArgument(k).use_empty())
+          return failure();
+        continue;
+      }
+      batched.insert(arg);
+      batched.insert(cb.getArgument(k));
+      batched.insert(w.getResult(k));
+    }
+    maskedLoops.insert(w);
+    if (failed(analyzeBlock(cb)) || failed(analyzeBlock(b)))
+      return failure();
+    return success(linksDroppable(w.getBody()));
+  }
+
+  // Whether every link of a carried buffer in `r` is a write whose rows an
+  // iteration can drop: a scatter or a dynamic_update_slice, not a
+  // concatenate or an add over the whole buffer.
+  bool linksDroppable(Region &r) {
+    for (Block &blk : r)
+      for (Operation &op : blk) {
+        if (isChainLink(&op) &&
+            isa<stablehlo::ConcatenateOp, stablehlo::AddOp>(&op))
+          return false;
+        for (Region &inner : op.getRegions())
+          if (!linksDroppable(inner))
+            return false;
+      }
+    return true;
   }
 
   // Which body values vary with the iteration, and can every op that does be
@@ -3337,6 +3464,103 @@ struct ParallelWhileBatcher {
     return isBatched(v) ? m : broadcastToIterations(rewriter, loc, m, numIters);
   }
 
+  // The batched indices of a write, the rows of the iterations where `p`
+  // (one per iteration) is false sent out of the buffer.
+  Value droppedWhere(Value idx, Value p, Type bufferType) {
+    auto ity = cast<RankedTensorType>(idx.getType());
+    int64_t out = 0;
+    for (int64_t n : cast<RankedTensorType>(bufferType).getShape())
+      out = std::max(out, n);
+    Value pb = stablehlo::BroadcastInDimOp::create(
+        rewriter, loc, ity.clone(rewriter.getI1Type()), p,
+        rewriter.getDenseI64ArrayAttr({0}));
+    Value dropped = stablehlo::ConstantOp::create(
+        rewriter, loc,
+        DenseElementsAttr::get(ity, APInt(ity.getElementTypeBitWidth(), out)));
+    return stablehlo::SelectOp::create(rewriter, loc, pb, idx, dropped);
+  }
+
+  // The condition of a nested loop on the carried values `vals`, one per
+  // iteration of the parallel loop.
+  Value laneCondition(stablehlo::WhileOp w, ValueRange vals) {
+    Block &cb = w.getCond().front();
+    for (auto [a, v] : llvm::zip(cb.getArguments(), vals))
+      map.map(a, v);
+    emitBlock(cb);
+    return operand(cb.getTerminator()->getOperand(0));
+  }
+
+  // A nested loop whose trip count differs between the iterations: it runs
+  // while any iteration's condition holds, carrying which ones still do; an
+  // iteration that has left keeps its values, and its writes are dropped.
+  void emitMaskedWhile(stablehlo::WhileOp w) {
+    Block &b = w.getBody().front();
+    Operation *wret = b.getTerminator();
+    SmallVector<Value> inits;
+    SmallVector<Type> types;
+    for (auto arg : b.getArguments()) {
+      Value init = w->getOperand(arg.getArgNumber());
+      inits.push_back(isBatched(arg) ? operand(init)
+                                     : map.lookupOrDefault(init));
+      types.push_back(inits.back().getType());
+    }
+    Value active = laneCondition(w, inits);
+    inits.push_back(active);
+    types.push_back(active.getType());
+    auto nw = stablehlo::WhileOp::create(rewriter, loc, types, inits);
+    SmallVector<Location> locs(types.size(), loc);
+    {
+      OpBuilder::InsertionGuard g(rewriter);
+      Block *cb = rewriter.createBlock(&nw.getCond(), {}, types, locs);
+      auto bty = RankedTensorType::get({}, rewriter.getI1Type());
+      Value none = stablehlo::ConstantOp::create(
+          rewriter, loc, DenseElementsAttr::get(bty, false));
+      auto any = stablehlo::ReduceOp::create(
+          rewriter, loc, TypeRange{bty}, ValueRange{cb->getArguments().back()},
+          ValueRange{none}, rewriter.getDenseI64ArrayAttr({0}));
+      {
+        OpBuilder::InsertionGuard g2(rewriter);
+        Block *rb =
+            rewriter.createBlock(&any.getBody(), {}, {bty, bty}, {loc, loc});
+        Value either = stablehlo::OrOp::create(
+            rewriter, loc, rb->getArgument(0), rb->getArgument(1));
+        stablehlo::ReturnOp::create(rewriter, loc, either);
+      }
+      stablehlo::ReturnOp::create(rewriter, loc, any.getResult(0));
+    }
+    Block *nb = rewriter.createBlock(&nw.getBody(), {}, types, locs);
+    for (auto [oa, na] : llvm::zip(b.getArguments(), nb->getArguments()))
+      map.map(oa, na);
+    Value lanes = nb->getArguments().back();
+    Value outer = activeLanes;
+    activeLanes = lanes;
+    emitBlock(b);
+    activeLanes = outer;
+    SmallVector<Value> yields;
+    for (auto arg : b.getArguments()) {
+      Value y = wret->getOperand(arg.getArgNumber());
+      if (!isBatched(arg)) {
+        yields.push_back(map.lookupOrDefault(y));
+        continue;
+      }
+      Value next = operand(y);
+      auto ty = cast<RankedTensorType>(next.getType());
+      Value keep = lanes;
+      if (ty.getRank() != 1)
+        keep = stablehlo::BroadcastInDimOp::create(
+            rewriter, loc, ty.clone(rewriter.getI1Type()), lanes,
+            rewriter.getDenseI64ArrayAttr({0}));
+      yields.push_back(stablehlo::SelectOp::create(
+          rewriter, loc, keep, next, nb->getArgument(arg.getArgNumber())));
+    }
+    Value still = laneCondition(w, yields);
+    yields.push_back(stablehlo::AndOp::create(rewriter, loc, lanes, still));
+    stablehlo::ReturnOp::create(rewriter, loc, yields);
+    rewriter.setInsertionPointAfter(nw);
+    for (auto [o, n] : llvm::zip(w.getResults(), nw.getResults()))
+      map.map(o, n);
+  }
+
   // The nested loop again, carrying the batched values with their leading
   // dimension and a buffer as the chain of scatters so far.
   // A dot_general with one side the same every iteration: the other side's
@@ -3389,6 +3613,10 @@ struct ParallelWhileBatcher {
   }
 
   void emitWhile(stablehlo::WhileOp w) {
+    if (maskedLoops.contains(w)) {
+      emitMaskedWhile(w);
+      return;
+    }
     Block &b = w.getBody().front();
     Operation *wret = b.getTerminator();
     SmallVector<Value> inits;
@@ -3454,9 +3682,21 @@ struct ParallelWhileBatcher {
         bm.map(v, v == shared ? map.lookupOrDefault(v) : operand(v));
       if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&op);
           dus && isChainLink(&op)) {
-        // Every iteration's window, written by one scatter into the buffer.
+        // Every iteration's window, written by one scatter into the buffer;
+        // the windows of the iterations that have left the loop it is in
+        // dropped.
         (void)stablehlo::batchDynamicUpdateSliceAsScatter(
             dus, rewriter, bm, batchSizes, /*operandIsBatched=*/false);
+        if (activeLanes) {
+          auto nsc =
+              bm.lookup(dus.getResult()).getDefiningOp<stablehlo::ScatterOp>();
+          OpBuilder::InsertionGuard g(rewriter);
+          rewriter.setInsertionPoint(nsc);
+          Value masked = droppedWhere(nsc.getScatterIndices(), activeLanes,
+                                      dus.getOperand().getType());
+          rewriter.modifyOpInPlace(
+              nsc, [&]() { nsc.getScatterIndicesMutable().assign(masked); });
+        }
       } else if (auto sc = dyn_cast<stablehlo::ScatterOp>(&op);
                  sc && isChainLink(&op)) {
         // Every iteration's scatter into the buffer at once: its indices and
@@ -3467,9 +3707,11 @@ struct ParallelWhileBatcher {
             dn.getInsertedWindowDims(), dn.getInputBatchingDims(),
             shifted(dn.getScatterIndicesBatchingDims()),
             dn.getScatterDimsToOperandDims(), dn.getIndexVectorDim() + 1);
+        Value idx = bm.lookup(sc.getScatterIndices());
+        if (activeLanes)
+          idx = droppedWhere(idx, activeLanes, sc.getInputs()[0].getType());
         auto nsc = stablehlo::ScatterOp::create(
-            rewriter, loc, ValueRange{bm.lookup(sc.getInputs()[0])},
-            bm.lookup(sc.getScatterIndices()),
+            rewriter, loc, ValueRange{bm.lookup(sc.getInputs()[0])}, idx,
             ValueRange{bm.lookup(sc.getUpdates()[0])}, ndn,
             /*indices_are_sorted=*/false, /*unique_indices=*/false);
         IRMapping rmap = map;
