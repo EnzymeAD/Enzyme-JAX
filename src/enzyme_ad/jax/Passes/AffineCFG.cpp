@@ -8211,6 +8211,132 @@ static LogicalResult nestDomain(ArrayRef<Operation *> ops,
   return success();
 }
 
+// The facts the accesses of `block` give about the values outside a loop
+// nest: an access to a statically shaped memref directly in the block runs
+// at every point of the nest whenever any point runs (the enclosing ops are
+// loops whose bounds read only values outside them), so at the corners of
+// the nest too, where it must stay in bounds as an access out of bounds is
+// undefined. The nest is that of `enclosing`, whose affine.ifs may only
+// read values outside its loops.
+static void addInBoundsFacts(Block *block, ArrayRef<Operation *> enclosing,
+                             FlatAffineValueConstraints &domain) {
+  MLIRContext *ctx = block->getParentOp()->getContext();
+  SmallVector<Value> syms;
+  auto symFor = [&](Value v) {
+    auto it = llvm::find(syms, v);
+    if (it == syms.end()) {
+      syms.push_back(v);
+      it = std::prev(syms.end());
+    }
+    return getAffineSymbolExpr(it - syms.begin(), ctx);
+  };
+  // each loop variable's first and last value, over the values outside
+  SmallVector<Value> ivs;
+  SmallVector<AffineExpr> firsts, lasts;
+  auto addBounds = [&](Value iv, AffineMap lb, ValueRange lbOperands,
+                       AffineMap ub, ValueRange ubOperands) {
+    if (lb.getNumResults() != 1 || ub.getNumResults() != 1)
+      return false;
+    auto toSyms = [&](AffineExpr e, AffineMap map, ValueRange operands) {
+      SmallVector<AffineExpr> repl;
+      for (Value v : operands) {
+        if (llvm::is_contained(ivs, v))
+          return AffineExpr();
+        repl.push_back(symFor(v));
+      }
+      return e.replaceDimsAndSymbols(
+          ArrayRef(repl).take_front(map.getNumDims()),
+          ArrayRef(repl).drop_front(map.getNumDims()));
+    };
+    AffineExpr first = toSyms(lb.getResult(0), lb, lbOperands);
+    AffineExpr last = toSyms(ub.getResult(0), ub, ubOperands);
+    if (!first || !last)
+      return false;
+    ivs.push_back(iv);
+    firsts.push_back(first);
+    lasts.push_back(last - 1);
+    return true;
+  };
+  for (Operation *op : enclosing) {
+    if (auto forOp = dyn_cast<AffineForOp>(op)) {
+      if (forOp.getStepAsInt() != 1 ||
+          !addBounds(forOp.getInductionVar(), forOp.getLowerBoundMap(),
+                     forOp.getLowerBoundOperands(), forOp.getUpperBoundMap(),
+                     forOp.getUpperBoundOperands()))
+        return;
+    } else if (auto par = dyn_cast<AffineParallelOp>(op)) {
+      for (unsigned d = 0, e = par.getNumDims(); d < e; ++d)
+        if (par.getSteps()[d] != 1 ||
+            !addBounds(par.getIVs()[d], par.getLowerBoundMap(d),
+                       par.getLowerBoundsOperands(), par.getUpperBoundMap(d),
+                       par.getUpperBoundsOperands()))
+          return;
+    } else if (auto ifOp = dyn_cast<AffineIfOp>(op)) {
+      // a condition on no loop variable holds at every point or none
+      if (llvm::any_of(ifOp.getOperands(),
+                       [&](Value v) { return llvm::is_contained(ivs, v); }))
+        return;
+    } else {
+      return;
+    }
+  }
+
+  SmallVector<AffineExpr> facts;
+  for (Operation &op : *block) {
+    if (!isa<AffineReadOpInterface, AffineWriteOpInterface>(op))
+      continue;
+    MemRefAccess access(&op);
+    auto type = dyn_cast<MemRefType>(access.memref.getType());
+    if (!type || !type.hasStaticShape())
+      continue;
+    AffineValueMap avm;
+    access.getAccessMap(&avm);
+    AffineMap map = avm.getAffineMap();
+    for (auto [d, e] : llvm::enumerate(map.getResults())) {
+      // the index as loop variables (dims, in the order of ivs) over the
+      // values outside
+      SmallVector<AffineExpr> dimRepl, symRepl;
+      bool ok = true;
+      for (unsigned k = 0, n = map.getNumInputs(); k < n && ok; ++k) {
+        Value v = avm.getOperand(k);
+        auto pos = llvm::find(ivs, v);
+        AffineExpr r = pos != ivs.end()
+                           ? getAffineDimExpr(pos - ivs.begin(), ctx)
+                           : symFor(v);
+        (k < map.getNumDims() ? dimRepl : symRepl).push_back(r);
+      }
+      AffineExpr idx = e.replaceDimsAndSymbols(dimRepl, symRepl);
+      SmallVector<int64_t> flat;
+      if (!idx.isPureAffine() ||
+          failed(getFlattenedAffineExpr(idx, ivs.size(), syms.size(), &flat)) ||
+          flat.size() != ivs.size() + syms.size() + 1)
+        continue;
+      // the rest: the index with every loop variable at zero
+      AffineExpr rest = getAffineConstantExpr(flat.back(), ctx);
+      for (unsigned j = 0; j < syms.size(); ++j)
+        rest = rest + getAffineSymbolExpr(j, ctx) * flat[ivs.size() + j];
+      AffineExpr lo = rest, hi = rest;
+      for (unsigned k = 0; k < ivs.size(); ++k) {
+        int64_t c = flat[k];
+        lo = lo + (c > 0 ? firsts[k] : lasts[k]) * c;
+        hi = hi + (c > 0 ? lasts[k] : firsts[k]) * c;
+      }
+      facts.push_back(lo);
+      facts.push_back(type.getDimSize(d) - 1 - hi);
+    }
+  }
+  if (facts.empty())
+    return;
+  bool error = false;
+  SetConstraints cst(IntegerSet::get(0, syms.size(), facts,
+                                     SmallVector<bool>(facts.size(), false)),
+                     syms, &error);
+  if (error)
+    return;
+  domain.mergeAndAlignVarsWithOther(0, &cst);
+  domain.append(cst);
+}
+
 namespace {
 // The loop-invariant terms an access of a loop indexes with that the affine
 // dependence analysis cannot flatten, each standing for a symbol of its own:
@@ -8302,6 +8428,7 @@ struct InvariantTerms {
     FlatAffineValueConstraints domain;
     if (failed(nestDomain(enclosing, domain)))
       return failure();
+    addInBoundsFacts(op->getBlock(), enclosing, domain);
     AffineValueMap access;
     MemRefAccess(op).getAccessMap(&access);
     AffineMap map = access.getAffineMap();
