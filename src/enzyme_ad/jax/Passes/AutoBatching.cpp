@@ -782,6 +782,13 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     return rewriter.notifyMatchFailure(sliceOp, "slice operand not found");
   }
 
+  // The batch op carries one result, the target op's: an op with several
+  // (a variadic reduce, say) would leave the rest unbatched.
+  if (targetOp->getNumResults() != 1) {
+    return rewriter.notifyMatchFailure(sliceOp,
+                                       "target op has more than one result");
+  }
+
   if (llvm::any_of(allHaveIntermediateReshapes, [=](bool b) {
         return b != allHaveIntermediateReshapes[0];
       })) {
