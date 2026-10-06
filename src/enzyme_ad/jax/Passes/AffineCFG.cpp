@@ -7549,6 +7549,52 @@ static bool matchExtremumWithConstant(Value v, Operation *before, Value &x,
   return true;
 }
 
+// Within `region`, where `cond` (over `condOperands`) holds, the max or min
+// of a value with a constant that the region reads and `cond` decides: the
+// operand it equals there, the constant or the value as an index already in
+// use before `before` (the same symbol the index math reads). Whether any
+// was rewritten.
+static bool rewriteDecidedExtrema(Region &region, IntegerSet cond,
+                                  ValueRange condOperands, Operation *before,
+                                  PatternRewriter &rewriter) {
+  llvm::SetVector<Value> captured;
+  getUsedValuesDefinedAbove(region, captured);
+  AffineExpr s0 = getAffineSymbolExpr(0, before->getContext());
+  bool changed = false;
+  for (Value v : captured) {
+    Value x;
+    int64_t c;
+    bool isMax;
+    if (!v.getType().isIndex() ||
+        !matchExtremumWithConstant(v, before, x, c, isMax) || !x ||
+        !isValidSymbol(x))
+      continue;
+    // x - c >= 0 makes a max x and a min c; c - x >= 0 the other way
+    bool xWins;
+    if (setImplies(cond, condOperands,
+                   IntegerSet::get(0, 1, isMax ? s0 - c : c - s0, false), x))
+      xWins = true;
+    else if (setImplies(cond, condOperands,
+                        IntegerSet::get(0, 1, isMax ? c - s0 : s0 - c, false),
+                        x))
+      xWins = false;
+    else
+      continue;
+    Value replacement = x;
+    if (!xWins) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(before);
+      replacement =
+          arith::ConstantIndexOp::create(rewriter, before->getLoc(), c);
+    }
+    rewriter.replaceUsesWithIf(v, replacement, [&](OpOperand &use) {
+      return region.isAncestor(use.getOwner()->getParentRegion());
+    });
+    changed = true;
+  }
+  return changed;
+}
+
 // Inside an affine.if whose condition decides a max or min of a value with
 // a constant that the branch reads, as a rotated loop's trip count
 // (`if (n >= 1) for (0 .. max(n, 1))`) is: the operand it equals there.
@@ -7556,46 +7602,68 @@ struct ExtremumUnderAffineIf : public OpRewritePattern<AffineIfOp> {
   using OpRewritePattern<AffineIfOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(AffineIfOp ifOp,
                                 PatternRewriter &rewriter) const override {
-    llvm::SetVector<Value> captured;
-    getUsedValuesDefinedAbove(ifOp.getThenRegion(), captured);
+    SmallVector<Value> operands(ifOp.getOperands());
+    return success(rewriteDecidedExtrema(
+        ifOp.getThenRegion(), ifOp.getIntegerSet(), operands, ifOp, rewriter));
+  }
+};
+
+// The same inside the body of a loop, where the loop runs: every upper
+// bound exceeds every lower bound (`for (0 .. n) { ... max(n, 1) ... }` reads
+// n there).
+template <typename LoopOp>
+struct ExtremumInAffineLoop : public OpRewritePattern<LoopOp> {
+  using OpRewritePattern<LoopOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(LoopOp loop,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<Value> operands;
+    IntegerSet runs = runsOnceSet(loop, operands);
+    return success(rewriteDecidedExtrema(loop.getRegion(), runs, operands, loop,
+                                         rewriter));
+  }
+};
+
+// Whether `op`, in the then branch of an affine.if on `cond`, does nothing
+// where cond fails: a loop that runs no iteration there, an affine.if
+// without results or else of such ops, or a pure op.
+static bool noOpUnless(Operation *op, IntegerSet cond, ValueRange operands) {
+  SmallVector<Value> runsOperands;
+  if (auto forOp = dyn_cast<AffineForOp>(op))
+    return setImplies(runsOnceSet(forOp, runsOperands), runsOperands, cond,
+                      operands);
+  if (auto par = dyn_cast<AffineParallelOp>(op))
+    return setImplies(runsOnceSet(par, runsOperands), runsOperands, cond,
+                      operands);
+  if (auto ifOp = dyn_cast<AffineIfOp>(op))
+    return !ifOp.hasElse() && ifOp.getNumResults() == 0 &&
+           llvm::all_of(ifOp.getThenBlock()->without_terminator(),
+                        [&](Operation &inner) {
+                          return noOpUnless(&inner, cond, operands);
+                        });
+  return isPure(op);
+}
+
+// An affine.if without results or else whose branch does nothing where its
+// condition fails, as the check that a rotated loop nest runs: the branch
+// runs unconditionally.
+struct HoistBranchOutOfRunsCheck : public OpRewritePattern<AffineIfOp> {
+  using OpRewritePattern<AffineIfOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(AffineIfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (ifOp.hasElse() || ifOp.getNumResults() != 0)
+      return failure();
+    Block *thenBlock = ifOp.getThenBlock();
+    if (thenBlock->without_terminator().empty())
+      return failure();
     IntegerSet cond = ifOp.getIntegerSet();
-    SmallVector<Value> condOperands(ifOp.getOperands());
-    bool changed = false;
-    for (Value v : captured) {
-      Value x;
-      int64_t c;
-      bool isMax;
-      if (!v.getType().isIndex() ||
-          !matchExtremumWithConstant(v, ifOp, x, c, isMax) || !x ||
-          !isValidSymbol(x))
-        continue;
-      // x - c >= 0 makes a max x and a min c; c - x >= 0 the other way
-      MLIRContext *ctx = ifOp.getContext();
-      AffineExpr s0 = getAffineSymbolExpr(0, ctx);
-      bool xWins;
-      if (setImplies(cond, condOperands,
-                     IntegerSet::get(0, 1, isMax ? s0 - c : c - s0, false), x))
-        xWins = true;
-      else if (setImplies(cond, condOperands,
-                          IntegerSet::get(0, 1, isMax ? c - s0 : s0 - c, false),
-                          x))
-        xWins = false;
-      else
-        continue;
-      Value replacement = x;
-      if (!xWins) {
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPoint(ifOp);
-        replacement =
-            arith::ConstantIndexOp::create(rewriter, ifOp.getLoc(), c);
-      }
-      rewriter.replaceUsesWithIf(v, replacement, [&](OpOperand &use) {
-        return ifOp.getThenRegion().isAncestor(
-            use.getOwner()->getParentRegion());
-      });
-      changed = true;
-    }
-    return success(changed);
+    SmallVector<Value> operands(ifOp.getOperands());
+    for (Operation &op : thenBlock->without_terminator())
+      if (!noOpUnless(&op, cond, operands))
+        return failure();
+    rewriter.eraseOp(thenBlock->getTerminator());
+    rewriter.inlineBlockBefore(thenBlock, ifOp);
+    rewriter.eraseOp(ifOp);
+    return success();
   }
 };
 
@@ -7616,8 +7684,10 @@ void mlir::enzyme::populateAffineCFGPatterns(
           PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
           MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
           SinkStoreInIf, SinkStoreInAffineIf, ParallelSumPlusZero,
-          ExtremumUnderAffineIf, AddAddCstEnd, LiftMemrefRead, CompareVs1,
-          AffineForReductionIter, AffineForReductionSink>(context, 2);
+          ExtremumUnderAffineIf, ExtremumInAffineLoop<AffineForOp>,
+          ExtremumInAffineLoop<AffineParallelOp>, HoistBranchOutOfRunsCheck,
+          AddAddCstEnd, LiftMemrefRead, CompareVs1, AffineForReductionIter,
+          AffineForReductionSink>(context, 2);
   if (enable_split_on_affine_if_constants) {
     rpl.add<SplitOnAffineIfConstants<scf::ForOp>,
             SplitOnAffineIfConstants<scf::IfOp>>(context, 2);
