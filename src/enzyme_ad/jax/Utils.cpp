@@ -350,85 +350,6 @@ bool getEffectsAfter(Operation *op,
   return !conservative;
 }
 
-bool isCaptured(Value v, Operation *potentialUser = nullptr,
-                bool *seenuse = nullptr) {
-  SmallVector<Value> todo = {v};
-  while (todo.size()) {
-    Value v = todo.pop_back_val();
-    for (auto u : v.getUsers()) {
-      if (seenuse && u == potentialUser)
-        *seenuse = true;
-      if (isa<memref::LoadOp, LLVM::LoadOp, affine::AffineLoadOp>(u))
-        continue;
-      // if (isa<polygeist::CacheLoad>(u)) continue
-      if (auto s = dyn_cast<memref::StoreOp>(u)) {
-        if (s.getValue() == v)
-          return true;
-        continue;
-      }
-      if (auto s = dyn_cast<affine::AffineStoreOp>(u)) {
-        if (s.getValue() == v)
-          return true;
-        continue;
-      }
-      if (auto s = dyn_cast<LLVM::StoreOp>(u)) {
-        if (s.getValue() == v)
-          return true;
-        continue;
-      }
-      if (auto sub = dyn_cast<LLVM::GEPOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto sub = dyn_cast<LLVM::BitcastOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto sub = dyn_cast<LLVM::AddrSpaceCastOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto sub = dyn_cast<func::ReturnOp>(u)) {
-        continue;
-      }
-      if (auto sub = dyn_cast<LLVM::MemsetOp>(u)) {
-        continue;
-      }
-      if (auto sub = dyn_cast<LLVM::MemcpyOp>(u)) {
-        continue;
-      }
-      if (auto sub = dyn_cast<LLVM::MemmoveOp>(u)) {
-        continue;
-      }
-      if (auto sub = dyn_cast<memref::CastOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto sub = dyn_cast<memref::DeallocOp>(u)) {
-        continue;
-      }
-      // if (auto sub = dyn_cast<polygeist::SubIndexOp>(u)) {
-      //   todo.push_back(sub);
-      // }
-      if (auto sub = dyn_cast<enzymexla::Memref2PointerOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto sub = dyn_cast<enzymexla::Pointer2MemrefOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto cop = dyn_cast<LLVM::CallOp>(u)) {
-        if (auto callee = cop.getCallee()) {
-          if (getNonCapturingFunctions().count(callee->str()))
-            continue;
-        }
-      }
-      if (auto cop = dyn_cast<func::CallOp>(u)) {
-        if (getNonCapturingFunctions().count(cop.getCallee().str()))
-          continue;
-      }
-      return true;
-    }
-  }
-
-  return false;
-}
-
 Value getBase(Value v) {
   while (true) {
     // if (auto s = v.getDefiningOp<SubIndexOp>()) {
@@ -507,7 +428,8 @@ bool mayWriteTo(Operation *op, Value val, bool ignoreBarrier) {
   if (auto callOp = dyn_cast<CallOpInterface>(op)) {
     auto base = getBase(val);
     bool seenuse = false;
-    if (isStackAlloca(base) && !isCaptured(base, op, &seenuse) && !seenuse) {
+    if (isStackAlloca(base) &&
+        !enzyme::oputils::isCaptured(base, op, &seenuse) && !seenuse) {
       return false;
     }
   }
@@ -1409,7 +1331,8 @@ bool mayReadFrom(Operation *op, Value val) {
   if (auto callOp = dyn_cast<CallOpInterface>(op)) {
     auto base = getBase(val);
     bool seenuse = false;
-    if (isStackAlloca(base) && !isCaptured(base, op, &seenuse) && !seenuse) {
+    if (isStackAlloca(base) &&
+        !enzyme::oputils::isCaptured(base, op, &seenuse) && !seenuse) {
       return false;
     }
   }
