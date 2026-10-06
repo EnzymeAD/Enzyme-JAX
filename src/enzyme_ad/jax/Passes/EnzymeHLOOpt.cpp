@@ -1788,8 +1788,6 @@ struct SliceInternal final
       inputSizes.push_back(extend.getLhs());
       inputSizes.push_back(operandSize);
       inputSizes.push_back(extend.getRhs());
-      // The rhs region repeats the last `rhs` elements of the operand, so it
-      // starts at operandSize - rhs on the operand, not at operandSize.
       actualStartSizes.push_back(0);
       actualStartSizes.push_back(0);
       actualStartSizes.push_back(operandSize - extend.getRhs());
