@@ -8100,6 +8100,19 @@ static bool isLoopParallel(AffineForOp forOp,
   // Find supported reductions of requested.
   if (parallelReductions) {
     getSupportedReductions(forOp, *parallelReductions);
+    // matchReduction follows the combining op's one use to the first
+    // terminator it reaches, which may be that of an affine.if in the loop
+    // rather than the loop's own: the loop then yields the if's result, no
+    // reduction. Keep the reductions whose combining op, in the loop's body,
+    // takes the carried value and is what the loop yields.
+    Operation *yield = forOp.getBody()->getTerminator();
+    llvm::erase_if(*parallelReductions, [&](const LoopReduction &red) {
+      unsigned pos = red.iterArgPosition;
+      Operation *combiner = yield->getOperand(pos).getDefiningOp();
+      return !combiner || combiner->getBlock() != forOp.getBody() ||
+             !llvm::is_contained(combiner->getOperands(),
+                                 forOp.getRegionIterArgs()[pos]);
+    });
     // Return later to allow for identifying all parallel reductions even if
     // the loop is not parallel.
     if (parallelReductions->size() != numIterArgs)
