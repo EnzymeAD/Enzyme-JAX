@@ -8701,6 +8701,31 @@ static bool isLoopMemoryParallel(AffineForOp forOp) {
 /// Returns true if `forOp' is a parallel loop. If `parallelReductions` is
 /// provided, populates it with descriptors of the parallelizable reductions
 /// and treats them as not preventing parallelization.
+// The multiply-add accumulations `acc = fmuladd(a, b, acc)` a loop carries,
+// added to `reductions` (kept in the order of the carried values) as addf
+// reductions of the products: fmuladd permits but does not require fusing,
+// so it is `acc + a * b`. Their reduced value is left null, for the
+// parallelization to make as the product.
+static void addFMulAddReductions(AffineForOp forOp,
+                                 SmallVectorImpl<LoopReduction> &reductions) {
+  Operation *yield = forOp.getBody()->getTerminator();
+  for (auto [pos, acc] : llvm::enumerate(forOp.getRegionIterArgs())) {
+    if (llvm::any_of(reductions, [&](const LoopReduction &red) {
+          return red.iterArgPosition == pos;
+        }))
+      continue;
+    auto fma = yield->getOperand(pos).getDefiningOp<enzymexla::FMulAddOp>();
+    if (!fma || fma->getBlock() != forOp.getBody() || fma.getC() != acc ||
+        !acc.hasOneUse() || !fma->hasOneUse())
+      continue;
+    reductions.push_back(
+        LoopReduction{arith::AtomicRMWKind::addf, (unsigned)pos, Value()});
+  }
+  llvm::sort(reductions, [](const LoopReduction &a, const LoopReduction &b) {
+    return a.iterArgPosition < b.iterArgPosition;
+  });
+}
+
 static bool isLoopParallel(AffineForOp forOp,
                            SmallVectorImpl<LoopReduction> *parallelReductions) {
   unsigned numIterArgs = forOp.getNumIterOperands();
@@ -8726,6 +8751,7 @@ static bool isLoopParallel(AffineForOp forOp,
              !llvm::is_contained(combiner->getOperands(),
                                  forOp.getRegionIterArgs()[pos]);
     });
+    addFMulAddReductions(forOp, *parallelReductions);
     // Return later to allow for identifying all parallel reductions even if
     // the loop is not parallel.
     if (parallelReductions->size() != numIterArgs)
@@ -8938,6 +8964,24 @@ struct AffineParallelizePattern : public OpRewritePattern<affine::AffineForOp> {
     AffineMap upperBoundMap = forOp.getUpperBoundMap();
     ValueRange upperBoundOperands = forOp.getUpperBoundOperands();
 
+    // A multiply-add accumulation reduces the products: each iteration
+    // yields a * b (contractible, as the multiply-add was).
+    auto contract = arith::FastMathFlagsAttr::get(
+        rewriter.getContext(), arith::FastMathFlags::contract);
+    for (LoopReduction &red : reductions) {
+      if (red.value)
+        continue;
+      auto fma =
+          cast<enzymexla::FMulAddOp>(forOp.getBody()
+                                         ->getTerminator()
+                                         ->getOperand(red.iterArgPosition)
+                                         .getDefiningOp());
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(fma);
+      red.value = arith::MulFOp::create(rewriter, fma.getLoc(), fma.getA(),
+                                        fma.getB(), contract);
+    }
+
     // Creating empty 1-D affine.parallel op.
     auto reducedValues = llvm::to_vector(llvm::map_range(
         reductions, [](const LoopReduction &red) { return red.value; }));
@@ -8966,6 +9010,13 @@ struct AffineParallelizePattern : public OpRewritePattern<affine::AffineForOp> {
       Operation *reductionOp = yieldOp->getOperand(i).getDefiningOp();
       assert(reductionOp &&
              "yielded value is expected to be produced by an op");
+
+      if (isa<enzymexla::FMulAddOp>(reductionOp)) {
+        Value sum = arith::AddFOp::create(rewriter, loc, init,
+                                          newPloop->getResult(i), contract);
+        newResults.push_back(sum);
+        continue;
+      }
 
       IRMapping irMapping;
       unsigned initPos =
