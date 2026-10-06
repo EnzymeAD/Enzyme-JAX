@@ -509,6 +509,7 @@ td_library(
     includes = ["."],
     deps = [
         "@enzyme//:EnzymeDialectTdFiles",
+        "@enzyme//:OffsetViewInterfaceTdFiles",
         "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
         "@llvm-project//mlir:FunctionInterfacesTdFiles",
         "@llvm-project//mlir:InferTypeOpInterface",
