@@ -5335,6 +5335,24 @@ struct SplitParallelInductions
                                                         U->getOperand(1));
           } else if (isa<arith::RemUIOp>(U)) {
             rewriter.replaceAllUsesWith(U->getResult(0), newIv);
+          } else if (isa<affine::AffineDialect>(U->getDialect())) {
+            // An affine use, as a loop bound, reads the variable as an
+            // affine.apply of the two: a valid dim, where the arith form
+            // below is not.
+            rewriter.setInsertionPoint(U);
+            auto ctx = iv.getContext();
+            SmallVector<Value> operands{iv, newIv};
+            if (base.isValue)
+              operands.push_back(base.v_val);
+            auto replacement = affine::AffineApplyOp::create(
+                rewriter, U->getLoc(),
+                AffineMap::get(2, base.isValue ? 1 : 0,
+                               getAffineDimExpr(0, ctx) * baseExpr +
+                                   getAffineDimExpr(1, ctx)),
+                operands);
+            rewriter.replaceUsesWithIf(
+                iv, replacement.getResult(),
+                [&](OpOperand &op) { return op.getOwner() == U; });
           } else {
             rewriter.setInsertionPoint(U);
             auto replacement = arith::MulIOp::create(
