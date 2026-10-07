@@ -297,6 +297,7 @@ struct ParallelContext {
     bool preferWhileRaising = true;
     bool strip_llvm_debuginfo = false;
     int64_t unrollBudget = 1 << 16;
+    Operation **unraisedOp = nullptr;
   } options;
 
   explicit ParallelContext(Options &options) : options(options) {}
@@ -3341,10 +3342,9 @@ static DenseElementsAttr constantGlobalInitializer(LLVM::AddressOfOp addr) {
   return dense;
 }
 
-static LogicalResult
-tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
-                        llvm::DenseMap<Value, affine::AffineValueMap> &maps,
-                        ParallelContext pc) {
+static LogicalResult tryRaisingOpToStableHLOImpl(
+    Operation *op, IRMapping &mapping, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
 
   // Affine load inside a loop becomes a slice
   if (auto loadOp = dyn_cast<affine::AffineLoadOp>(op)) {
@@ -5416,7 +5416,26 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   if (isa<LLVM::AssumeOp>(op))
     return success();
 
-  return op->emitError("cannot raise op to stablehlo") << *op;
+  return failure();
+}
+
+static LogicalResult
+tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
+                        llvm::DenseMap<Value, affine::AffineValueMap> &maps,
+                        ParallelContext pc) {
+  Operation **unraisedOp = pc.options.unraisedOp;
+  Operation *prev = unraisedOp ? *unraisedOp : nullptr;
+  LogicalResult result =
+      tryRaisingOpToStableHLOImpl(op, mapping, builder, maps, pc);
+  if (!unraisedOp)
+    return result;
+  // Nested ops fail first, so the first op recorded is the innermost. A
+  // failure recovered from by a fallback strategy is forgotten.
+  if (succeeded(result))
+    *unraisedOp = prev;
+  else if (!*unraisedOp)
+    *unraisedOp = op;
+  return result;
 }
 
 static void
@@ -5454,7 +5473,8 @@ replaceAffineFuncWithStableHLOFunc(func::FuncOp oldFunc, func::FuncOp newFunc,
 
 static bool tryRaisingToStableHLO(func::FuncOp func,
                                   ArrayRef<Operation *> users,
-                                  ParallelContext::Options &options) {
+                                  ParallelContext::Options &options,
+                                  bool errIfNotFullyRaised) {
   Block *body = &func->getRegion(0).front();
   Block *newBlock = new Block();
 
@@ -5497,7 +5517,10 @@ static bool tryRaisingToStableHLO(func::FuncOp func,
 
   llvm::DenseMap<Value, affine::AffineValueMap> maps;
 
-  ParallelContext emptyPc = ParallelContext::getEmpty(options);
+  Operation *unraisedOp = nullptr;
+  ParallelContext::Options opOptions = options;
+  opOptions.unraisedOp = &unraisedOp;
+  ParallelContext emptyPc = ParallelContext::getEmpty(opOptions);
   for (auto &it : body->without_terminator()) {
     anyFailed =
         tryRaisingOpToStableHLO(&it, mapping, builder, maps, emptyPc).failed();
@@ -5506,6 +5529,12 @@ static bool tryRaisingToStableHLO(func::FuncOp func,
   }
 
   if (anyFailed) {
+    if (errIfNotFullyRaised) {
+      assert(unraisedOp && "failure without an unraised op");
+      unraisedOp->emitError("failed to raise operation")
+              .attachNote(func.getLoc())
+          << "within function '" << func.getSymName() << "'";
+    }
     newFunc->erase();
     return false;
   }
@@ -6798,12 +6827,11 @@ struct AffineToStableHLORaisingPass
     while (!funcs.empty()) {
       auto kernelFunc = funcs.back();
       ArrayRef<Operation *> users = userMap.getUsers(kernelFunc);
-      bool raised = tryRaisingToStableHLO(kernelFunc, users, options);
+      bool raised = tryRaisingToStableHLO(kernelFunc, users, options,
+                                          err_if_not_fully_raised);
       anyRaised |= raised;
-      if (!raised && err_if_not_fully_raised) {
-        llvm::errs() << "failed to raise func: " << *kernelFunc << "\n";
+      if (!raised && err_if_not_fully_raised)
         signalPassFailure();
-      }
       funcs.pop_back();
     }
     std::vector<enzymexla::GPUWrapperOp> gwrap;
@@ -7155,8 +7183,13 @@ struct AffineToStableHLORaisingPass
         if (!MT) {
           failed = true;
           if (err_if_not_fully_raised) {
-            llvm::errs() << "failed to raise operand: " << arg << "\n"
-                         << " within " << g << "\n";
+            Operation *def = arg.getDefiningOp();
+            InFlightDiagnostic diag =
+                (def ? def : g.getOperation())
+                    ->emitError("failed to raise operand of type ")
+                << arg.getType();
+            if (def)
+              diag.attachNote(g.getLoc()) << "used within this gpu_wrapper";
             signalPassFailure();
           }
           break;
@@ -7188,15 +7221,20 @@ struct AffineToStableHLORaisingPass
 
       bool anyFailed = false;
 
-      ParallelContext emptyPc = ParallelContext::getEmpty(options);
+      Operation *unraisedOp = nullptr;
+      ParallelContext::Options opOptions = options;
+      opOptions.unraisedOp = &unraisedOp;
+      ParallelContext emptyPc = ParallelContext::getEmpty(opOptions);
       for (auto &it : body->without_terminator()) {
         anyFailed =
             tryRaisingOpToStableHLO(&it, mapping, builder, maps, emptyPc)
                 .failed();
         if (anyFailed) {
           if (err_if_not_fully_raised) {
-            llvm::errs() << "failed to raise operation: " << *&it << "\n"
-                         << " within " << g << "\n";
+            assert(unraisedOp && "failure without an unraised op");
+            unraisedOp->emitError("failed to raise operation")
+                    .attachNote(g.getLoc())
+                << "within this gpu_wrapper";
             signalPassFailure();
           }
           break;
