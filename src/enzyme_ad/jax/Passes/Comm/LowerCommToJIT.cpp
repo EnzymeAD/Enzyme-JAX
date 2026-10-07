@@ -1269,7 +1269,8 @@ struct LowerCommMpiWaitallOpToJIT
               .getResult();
 
       for (int i = 0; i < num_requests; ++i) {
-        auto request = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, entryBlock->getArgument(i));
+        auto request = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                                            entryBlock->getArgument(i));
         auto gep_op =
             LLVM::GEPOp::create(rewriter, op.getLoc(), type_ptr, type_ptr,
                                 array_of_requests, ValueRange{});
