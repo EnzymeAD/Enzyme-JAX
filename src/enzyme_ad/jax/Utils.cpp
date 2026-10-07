@@ -37,6 +37,8 @@
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/reference/Ops.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 #include <cassert>
 #include <cmath>
@@ -1662,58 +1664,113 @@ detectIotaLikeTensor(DenseElementsAttr denseAttr) {
   return std::nullopt;
 }
 
+// What the reference interpreter takes for attr: when scalar, the single
+// element of a splat.
+static stablehlo::Tensor interpreterTensor(DenseElementsAttr attr,
+                                           bool scalar) {
+  if (scalar)
+    return stablehlo::constantOp(
+        attr.resizeSplat(RankedTensorType::get({}, attr.getElementType())));
+  return stablehlo::constantOp(attr);
+}
+
+// The value of type op computes from the constants operands. A reshape
+// moves no element, nor does a slice or broadcast of a splat; an elementwise
+// op of splats is evaluated on their single elements into a splat; anything
+// else is evaluated in full by the reference interpreter, when type holds no
+// more than maxElements.
+static DenseElementsAttr
+evaluateOnConstants(Operation *op, ArrayRef<DenseElementsAttr> operands,
+                    RankedTensorType type, int64_t maxElements) {
+  DenseElementsAttr first = operands[0];
+  if (isa<stablehlo::ReshapeOp>(op))
+    return first.reshape(type);
+  bool splat = llvm::all_of(
+      operands, [](DenseElementsAttr operand) { return operand.isSplat(); });
+  if (splat && isa<stablehlo::SliceOp, stablehlo::BroadcastInDimOp>(op))
+    return first.resizeSplat(type);
+  if (!splat && type.getNumElements() > maxElements)
+    return nullptr;
+
+  RankedTensorType evalType =
+      splat ? RankedTensorType::get({}, type.getElementType()) : type;
+  SmallVector<stablehlo::Tensor> in;
+  for (DenseElementsAttr operand : operands)
+    in.push_back(interpreterTensor(operand, splat));
+  auto result =
+      llvm::TypeSwitch<Operation *, std::optional<stablehlo::Tensor>>(op)
+          .Case([&](stablehlo::AddOp) {
+            return stablehlo::addOp(in[0], in[1], evalType);
+          })
+          .Case([&](stablehlo::SubtractOp) {
+            return stablehlo::subtractOp(in[0], in[1], evalType);
+          })
+          .Case([&](stablehlo::MulOp) {
+            return stablehlo::multiplyOp(in[0], in[1], evalType);
+          })
+          .Case([&](stablehlo::MinOp) {
+            return stablehlo::minOp(in[0], in[1], evalType);
+          })
+          .Case([&](stablehlo::MaxOp) {
+            return stablehlo::maxOp(in[0], in[1], evalType);
+          })
+          .Case([&](stablehlo::ClampOp) {
+            return stablehlo::clampOp(in[0], in[1], in[2], evalType);
+          })
+          .Case([&](stablehlo::ConvertOp) {
+            return stablehlo::convertOp(in[0], evalType);
+          })
+          .Case([&](stablehlo::SliceOp slice) {
+            return stablehlo::sliceOp(
+                in[0], stablehlo::Sizes(slice.getStartIndices()),
+                stablehlo::Sizes(slice.getStrides()), evalType);
+          })
+          .Case([&](stablehlo::BroadcastInDimOp broadcast) {
+            return stablehlo::broadcastInDimOp(
+                in[0], stablehlo::Axes(broadcast.getBroadcastDimensions()),
+                evalType);
+          })
+          .Default([](Operation *) { return std::nullopt; });
+  if (!result)
+    return nullptr;
+  DenseElementsAttr attr = stablehlo::makeDenseElementsAttr(*result);
+  return splat ? attr.resizeSplat(type) : attr;
+}
+
 std::optional<DenseElementsAttr>
-tryEvaluateSmallTreeToConstant(mlir::Value val, int64_t maxElements = 1024) {
+tryEvaluateSmallTreeToConstant(mlir::Value val, int64_t maxElements) {
   auto type = dyn_cast<RankedTensorType>(val.getType());
-  if (!type || !type.hasStaticShape() || type.getNumElements() > maxElements)
+  if (!type || !type.hasStaticShape())
     return std::nullopt;
 
-  if (auto constOp = val.getDefiningOp<stablehlo::ConstantOp>()) {
-    return dyn_cast_or_null<DenseElementsAttr>(constOp.getValue());
-  }
-
-  if (auto iotaOp = val.getDefiningOp<stablehlo::IotaOp>()) {
-    int64_t iotaDim = iotaOp.getIotaDimension();
-    auto elemTy = type.getElementType();
-    auto strides = computeStrides(type.getShape());
-    int64_t numElements = type.getNumElements();
-
-    if (isa<IntegerType>(elemTy)) {
-      SmallVector<APInt> values;
-      values.reserve(numElements);
-      for (int64_t i = 0; i < numElements; ++i) {
-        SmallVector<int64_t> multiIndex;
-        linearToMultiIndex(i, strides, multiIndex);
-        values.push_back(
-            APInt(elemTy.getIntOrFloatBitWidth(), multiIndex[iotaDim], true));
-      }
-      return DenseElementsAttr::get(type, values);
-    }
-    // Only integer for now
-    return std::nullopt;
-  }
+  DenseElementsAttr attr;
+  if (matchPattern(val, m_Constant(&attr)))
+    return attr;
 
   Operation *op = val.getDefiningOp();
-  if (!op)
+  if (auto iota = dyn_cast_or_null<stablehlo::IotaOp>(op)) {
+    if (type.getNumElements() > maxElements)
+      return std::nullopt;
+    return stablehlo::makeDenseElementsAttr(
+        stablehlo::iotaOp(iota.getIotaDimension(), type));
+  }
+  if (!isa_and_nonnull<stablehlo::AddOp, stablehlo::SubtractOp,
+                       stablehlo::MulOp, stablehlo::MinOp, stablehlo::MaxOp,
+                       stablehlo::ClampOp, stablehlo::ConvertOp,
+                       stablehlo::ReshapeOp, stablehlo::SliceOp,
+                       stablehlo::BroadcastInDimOp>(op))
     return std::nullopt;
 
-  if (isa<stablehlo::ReshapeOp, stablehlo::AddOp, stablehlo::MulOp>(op)) {
-    SmallVector<Attribute> operands;
-    for (auto operand : op->getOperands()) {
-      auto evalOp = tryEvaluateSmallTreeToConstant(operand, maxElements);
-      if (!evalOp)
-        return std::nullopt;
-      operands.push_back(*evalOp);
-    }
-
-    SmallVector<OpFoldResult> foldResults;
-    if (succeeded(op->fold(operands, foldResults)) && foldResults.size() == 1) {
-      if (auto attr = llvm::dyn_cast_if_present<Attribute>(foldResults[0])) {
-        return dyn_cast<DenseElementsAttr>(attr);
-      }
-    }
+  SmallVector<DenseElementsAttr> operands;
+  for (Value operand : op->getOperands()) {
+    auto evaluated = tryEvaluateSmallTreeToConstant(operand, maxElements);
+    if (!evaluated)
+      return std::nullopt;
+    operands.push_back(*evaluated);
   }
-
+  if (DenseElementsAttr result =
+          evaluateOnConstants(op, operands, type, maxElements))
+    return result;
   return std::nullopt;
 }
 

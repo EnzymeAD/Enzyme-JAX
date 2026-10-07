@@ -1118,6 +1118,7 @@ cc_library(
         "@stablehlo//:base",
         "@stablehlo//:chlo_ops",
         "@stablehlo//:stablehlo_ops",
+        "@stablehlo//:reference_ops",
     ],
 )
 
