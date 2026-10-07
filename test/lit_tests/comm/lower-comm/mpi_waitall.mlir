@@ -17,13 +17,15 @@ func.func @main(%req1 : !comm.mpi.request, %req2 : !comm.mpi.request) {
 // JIT-SAME:                                            (%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
 // JIT-NEXT:   %0 = llvm.mlir.constant(2 : i32) : i32
 // JIT-NEXT:   %1 = llvm.alloca %0 x !llvm.ptr : (i32) -> !llvm.ptr 
-// JIT-NEXT:   %2 = llvm.getelementptr %1[0] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr 
-// JIT-NEXT:   llvm.store %arg0, %2 : !llvm.ptr, !llvm.ptr 
-// JIT-NEXT:   %3 = llvm.getelementptr %1[1] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr 
-// JIT-NEXT:   llvm.store %arg1, %3 : !llvm.ptr, !llvm.ptr 
-// JIT-NEXT:   %4 = llvm.getelementptr %1[] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr 
-// JIT-NEXT:   %5 = llvm.mlir.addressof @MPI_STATUSES_IGNORE : !llvm.ptr
-// JIT-NEXT:   %6 = llvm.call @MPI_Waitall(%0, %4, %5) : (i32, !llvm.ptr, !llvm.ptr) -> i32
+// JIT-NEXT:   %2 = llvm.load %arg0 : !llvm.ptr -> !llvm.ptr
+// JIT-NEXT:   %3 = llvm.getelementptr %1[0] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr 
+// JIT-NEXT:   llvm.store %2, %3 : !llvm.ptr, !llvm.ptr 
+// JIT-NEXT:   %4 = llvm.load %arg1 : !llvm.ptr -> !llvm.ptr
+// JIT-NEXT:   %5 = llvm.getelementptr %1[1] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr 
+// JIT-NEXT:   llvm.store %4, %5 : !llvm.ptr, !llvm.ptr 
+// JIT-NEXT:   %6 = llvm.getelementptr %1[] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr 
+// JIT-NEXT:   %7 = llvm.mlir.addressof @MPI_STATUSES_IGNORE : !llvm.ptr
+// JIT-NEXT:   %8 = llvm.call @MPI_Waitall(%0, %6, %7) : (i32, !llvm.ptr, !llvm.ptr) -> i32
 // JIT-NEXT:   llvm.return
 // JIT-NEXT: }
 // JIT-LABEL: func.func @main
