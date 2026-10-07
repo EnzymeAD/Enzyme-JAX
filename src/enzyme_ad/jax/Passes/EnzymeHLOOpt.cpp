@@ -34747,6 +34747,15 @@ LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
     return success();
   }
 
+  // A slice that ends before the update starts, or starts past its end,
+  // reads none of it: that is the no-overlap helper's case, which reads the
+  // operand. A slice that starts before the update but reaches into it is
+  // read from the update and padded below.
+  for (size_t i = 0; i < dusOp.getStartIndices().size(); ++i)
+    if (sliceStarts[i] + dsSliceSizes[i] <= 0 ||
+        sliceStarts[i] >= updateShape[i])
+      return failure();
+
   bool allOffsetsZero =
       llvm::all_of(sliceStarts, [](int64_t offset) { return offset == 0; });
 
