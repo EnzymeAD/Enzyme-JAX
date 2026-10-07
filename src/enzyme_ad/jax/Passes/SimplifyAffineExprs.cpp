@@ -1076,6 +1076,14 @@ handleAffineValueMap(IslAnalysis &islAnalysis, AffineValueMap avm,
     LLVM_DEBUG(llvm::dbgs() << newMlirExpr << "\n");
     if (!newMlirExpr)
       i2m.incomplete = true;
+    // isl writes the expression with its common factor outside, which the
+    // affine simplifier of the other patterns multiplies back in: the
+    // expression is written as they would, and is a change only if that
+    // differs from the original, or the two would trade it forever.
+    if (newMlirExpr)
+      newMlirExpr = sortSum(mlir::enzyme::recreateExpr(
+          simplifyAffineExpr(newMlirExpr, map.getNumDims() + extraDims.size(),
+                             map.getNumSymbols() + extraSymbols.size())));
     newExprs.push_back(newMlirExpr);
     if (mlirExpr != newMlirExpr)
       changed = true;
