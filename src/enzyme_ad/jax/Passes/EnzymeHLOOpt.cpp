@@ -6165,8 +6165,13 @@ struct BroadcastIota final
     if (!iota)
       return failure();
 
-    rewriter.replaceOpWithNewOp<stablehlo::IotaOp>(
-        op, op.getType(), op.getBroadcastDimensions()[iota.getIotaDimension()]);
+    int64_t iotaDim = iota.getIotaDimension();
+    int64_t resultDim = op.getBroadcastDimensions()[iotaDim];
+    if (iota.getType().getDimSize(iotaDim) !=
+        op.getType().getDimSize(resultDim))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::IotaOp>(op, op.getType(), resultDim);
     return success();
   }
 };
