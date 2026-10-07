@@ -7668,6 +7668,85 @@ struct HoistBranchOutOfRunsCheck : public OpRewritePattern<AffineIfOp> {
   }
 };
 
+// A value an affine.for carries that each iteration advances by the same
+// integer, `x = x + c` with c defined outside the loop: an induction
+// variable. In the k-th iteration (k = (iv - lb) floordiv step) it is
+// init + k * c, and after the loop init + n * c for the loop's n iterations,
+// all in the value's own type, which wraps as the repeated additions do. Its
+// uses become those, and the carry, then unused, goes.
+struct CarriedInduction : public OpRewritePattern<AffineForOp> {
+  using OpRewritePattern<AffineForOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(AffineForOp forOp,
+                                PatternRewriter &rewriter) const override {
+    if (forOp.getLowerBoundMap().getNumResults() != 1 ||
+        forOp.getUpperBoundMap().getNumResults() != 1)
+      return failure();
+    Operation *yield = forOp.getBody()->getTerminator();
+    for (auto [pos, arg] : llvm::enumerate(forOp.getRegionIterArgs())) {
+      auto type = dyn_cast<IntegerType>(arg.getType());
+      if (!type || type.getWidth() == 1 || arg.use_empty())
+        continue;
+      auto add = yield->getOperand(pos).getDefiningOp<arith::AddIOp>();
+      if (!add || add->getBlock() != forOp.getBody())
+        continue;
+      Value step = add.getLhs() == arg   ? add.getRhs()
+                   : add.getRhs() == arg ? add.getLhs()
+                                         : Value();
+      if (!step || step == arg ||
+          forOp->isAncestor(step.getParentRegion()->getParentOp()))
+        continue;
+      Value init = forOp.getInits()[pos];
+      Location loc = forOp.getLoc();
+      MLIRContext *ctx = forOp.getContext();
+      int64_t loopStep = forOp.getStepAsInt();
+
+      // in the body: init + ((iv - lb) floordiv step) * c
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(forOp.getBody());
+        AffineMap lb = forOp.getLowerBoundMap();
+        AffineExpr k = (getAffineDimExpr(0, ctx) -
+                        lb.getResult(0).shiftDims(lb.getNumDims(), 1))
+                           .floorDiv(loopStep);
+        SmallVector<Value> operands{forOp.getInductionVar()};
+        llvm::append_range(operands, forOp.getLowerBoundOperands());
+        Value kIndex = AffineApplyOp::create(
+            rewriter, loc,
+            AffineMap::get(1 + lb.getNumDims(), lb.getNumSymbols(), k),
+            operands);
+        Value kInt = arith::IndexCastOp::create(rewriter, loc, type, kIndex);
+        Value offset = arith::MulIOp::create(rewriter, loc, kInt, step);
+        Value value = arith::AddIOp::create(rewriter, loc, init, offset);
+        rewriter.replaceAllUsesWith(arg, value);
+      }
+
+      // after the loop: init + max(0, (ub - lb) ceildiv step) * c
+      Value result = forOp.getResult(pos);
+      if (!result.use_empty()) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointAfter(forOp);
+        Value lbV =
+            AffineApplyOp::create(rewriter, loc, forOp.getLowerBoundMap(),
+                                  forOp.getLowerBoundOperands());
+        Value ubV =
+            AffineApplyOp::create(rewriter, loc, forOp.getUpperBoundMap(),
+                                  forOp.getUpperBoundOperands());
+        Value span = arith::SubIOp::create(rewriter, loc, ubV, lbV);
+        Value stepV = arith::ConstantIndexOp::create(rewriter, loc, loopStep);
+        Value trips = arith::CeilDivSIOp::create(rewriter, loc, span, stepV);
+        Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+        Value n = arith::MaxSIOp::create(rewriter, loc, trips, zero);
+        Value nInt = arith::IndexCastOp::create(rewriter, loc, type, n);
+        Value offset = arith::MulIOp::create(rewriter, loc, nInt, step);
+        Value last = arith::AddIOp::create(rewriter, loc, init, offset);
+        rewriter.replaceAllUsesWith(result, last);
+      }
+      return success();
+    }
+    return failure();
+  }
+};
+
 void mlir::enzyme::populateAffineCFGPatterns(
     RewritePatternSet &rpl, bool enable_split_on_affine_if_constants) {
   MLIRContext *context = rpl.getContext();
@@ -7685,7 +7764,8 @@ void mlir::enzyme::populateAffineCFGPatterns(
           PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
           MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
           SinkStoreInIf, SinkStoreInAffineIf, ParallelSumPlusZero,
-          ExtremumUnderAffineIf, ExtremumInAffineLoop<AffineForOp>,
+          ExtremumUnderAffineIf, CarriedInduction,
+          ExtremumInAffineLoop<AffineForOp>,
           ExtremumInAffineLoop<AffineParallelOp>, HoistBranchOutOfRunsCheck,
           AddAddCstEnd, LiftMemrefRead, CompareVs1, AffineForReductionIter,
           AffineForReductionSink>(context, 2);

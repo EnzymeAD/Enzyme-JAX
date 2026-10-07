@@ -19,7 +19,9 @@ module {
         }
         "enzymexla.polygeist_yield"() : () -> ()
       }) : (index, index, index, index, index, index) -> index
-      %next = arith.addi %acc, %c1_i32 : i32
+      // doubling, not stepping by a constant: no induction variable, the
+      // value stays carried
+      %next = arith.addi %acc, %acc : i32
       affine.yield %next : i32
     }
     return
