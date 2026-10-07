@@ -1,13 +1,14 @@
 // RUN: enzymexlamlir-opt %s --affine-cfg | FileCheck %s
 
-// y(i, e) += x(i, e) over rows of a runtime width nd: for the inner loop the
-// offset e * nd of a row is invariant, though the dependence analysis cannot
-// flatten it, so the analysis reads it as a symbol of its own and proves the
-// iterations independent. The parallel loop keeps the loop's attributes.
-func.func @add_rows(%x: memref<?xf64>, %y: memref<?xf64>, %ne: index, %nd: index) {
+// y(i, e) += y(i, e + 1) over rows of a runtime width nd: for the inner loop
+// the offset e * nd of a row is invariant, though the dependence analysis
+// cannot flatten it, so the analysis reads it as a symbol of its own and
+// proves the iterations independent. The rows themselves depend on each
+// other. The parallel loop keeps the loop's attributes.
+func.func @add_rows(%y: memref<?xf64>, %ne: index, %nd: index) {
   affine.for %e = 0 to %ne {
     affine.for %i = 0 to %nd {
-      %a = affine.load %x[%i + %e * symbol(%nd)] : memref<?xf64>
+      %a = affine.load %y[%i + (%e + 1) * symbol(%nd)] : memref<?xf64>
       %b = affine.load %y[%i + %e * symbol(%nd)] : memref<?xf64>
       %c = arith.addf %a, %b : f64
       affine.store %c, %y[%i + %e * symbol(%nd)] : memref<?xf64>
@@ -16,13 +17,13 @@ func.func @add_rows(%x: memref<?xf64>, %y: memref<?xf64>, %ne: index, %nd: index
   return
 }
 
-// CHECK:  func.func @add_rows(%arg0: memref<?xf64>, %arg1: memref<?xf64>, %arg2: index, %arg3: index) {
-// CHECK-NEXT:   affine.for %arg4 = 0 to %arg2 {
-// CHECK-NEXT:     affine.parallel (%arg5) = (0) to (symbol(%arg3)) {
-// CHECK-NEXT:       %0 = affine.load %arg0[%arg5 + %arg4 * symbol(%arg3)] : memref<?xf64>
-// CHECK-NEXT:       %1 = affine.load %arg1[%arg5 + %arg4 * symbol(%arg3)] : memref<?xf64>
+// CHECK:  func.func @add_rows(%arg0: memref<?xf64>, %arg1: index, %arg2: index) {
+// CHECK-NEXT:   affine.for %arg3 = 0 to %arg1 {
+// CHECK-NEXT:     affine.parallel (%arg4) = (0) to (symbol(%arg2)) {
+// CHECK-NEXT:       %0 = affine.load %arg0[%arg4 + (%arg3 + 1) * symbol(%arg2)] : memref<?xf64>
+// CHECK-NEXT:       %1 = affine.load %arg0[%arg4 + %arg3 * symbol(%arg2)] : memref<?xf64>
 // CHECK-NEXT:       %2 = arith.addf %0, %1 : f64
-// CHECK-NEXT:       affine.store %2, %arg1[%arg5 + %arg4 * symbol(%arg3)] : memref<?xf64>
+// CHECK-NEXT:       affine.store %2, %arg0[%arg4 + %arg3 * symbol(%arg2)] : memref<?xf64>
 // CHECK-NEXT:     } {test.kept}
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return
@@ -93,6 +94,36 @@ func.func @two_views(%y: memref<?xf64>, %n: index) {
 // CHECK-NEXT:   affine.for %arg2 = 0 to %arg1 {
 // CHECK-NEXT:     %0 = affine.load %arg0[%arg2] : memref<?xf64>
 // CHECK-NEXT:     affine.store %0, %arg0[%arg2 + 1] : memref<?xf64>
+// CHECK-NEXT:   }
+// CHECK-NEXT:   return
+// CHECK-NEXT: }
+
+// Three rows of a block written from the first row of the next: the offsets
+// (e * 3) * nd, (e * 3 + 1) * nd, (e * 3 + 2) * nd and (e * 3 + 3) * nd are
+// the one invariant product e * nd under a coefficient and a multiple of nd,
+// not four terms that might meet, so the row loop is parallel; the blocks
+// depend on each other.
+func.func @block_rows(%y: memref<?xf64>, %ne: index, %nd: index) {
+  affine.for %e = 0 to %ne {
+    affine.for %i = 0 to %nd {
+      %a = affine.load %y[%i + (%e * 3 + 3) * symbol(%nd)] : memref<?xf64>
+      affine.store %a, %y[%i + (%e * 3) * symbol(%nd)] : memref<?xf64>
+      affine.store %a, %y[%i + (%e * 3 + 1) * symbol(%nd)] : memref<?xf64>
+      affine.store %a, %y[%i + (%e * 3 + 2) * symbol(%nd)] : memref<?xf64>
+    }
+  }
+  return
+}
+
+
+// CHECK:  func.func @block_rows(%arg0: memref<?xf64>, %arg1: index, %arg2: index) {
+// CHECK-NEXT:   affine.for %arg3 = 0 to %arg1 {
+// CHECK-NEXT:     affine.parallel (%arg4) = (0) to (symbol(%arg2)) {
+// CHECK-NEXT:       %0 = affine.load %arg0[%arg4 + (%arg3 * 3 + 3) * symbol(%arg2)] : memref<?xf64>
+// CHECK-NEXT:       affine.store %0, %arg0[%arg4 + (%arg3 * symbol(%arg2)) * 3] : memref<?xf64>
+// CHECK-NEXT:       affine.store %0, %arg0[%arg4 + (%arg3 * 3 + 1) * symbol(%arg2)] : memref<?xf64>
+// CHECK-NEXT:       affine.store %0, %arg0[%arg4 + (%arg3 * 3 + 2) * symbol(%arg2)] : memref<?xf64>
+// CHECK-NEXT:     }
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return
 // CHECK-NEXT: }
