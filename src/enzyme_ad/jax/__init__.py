@@ -1,5 +1,7 @@
 from enzyme_ad.jax.primitives import (
+    checkpoint,
     cpp_call,
+    CHECKPOINT_SCHEDULES,
     ffi_call,
     hlo_call,
     enzyme_jax_ir,

@@ -1032,6 +1032,20 @@ def LLVMToMemrefAccessPass : Pass<"llvm-to-memref-access"> {
   ];
 }
 
+def CheckpointScopesPass : Pass<"enzyme-checkpoint-scopes"> {
+  let summary = "Checkpoint the loops JAX lowered in an enzyme_checkpoint "
+                "name scope";
+  let description = [{
+    enzyme_ad.jax.checkpoint("binomial", 4) is the JAX name scope
+    `enzyme_checkpoint[binomial,4]`. A stablehlo.while JAX lowered directly in
+    it, whose location's name ends in `enzyme_checkpoint[binomial,4]/while`,
+    gets the attributes that ask Enzyme-MLIR to checkpoint it with that
+    schedule of enzyme/checkpoint_schedule.h ("binomial", "revolve",
+    "periodic", "store_all" or "none") and budget (the number of
+    checkpoints, 0 for the default).
+  }];
+}
+
 def SCFCanonicalizeFor : Pass<"canonicalize-scf-for"> {
   let summary = "Run some additional canonicalization for scf::for";
   let dependentDialects = [

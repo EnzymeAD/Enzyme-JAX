@@ -3,6 +3,7 @@
 from functools import partial
 from collections.abc import Callable, Sequence
 from typing import Any
+import operator
 import inspect
 import itertools
 import os
@@ -208,11 +209,15 @@ def full_optimization_pass_pipeline(**kwargs):
 
     return ",".join(
         [
+            # For pipelines that differentiate with the enzyme pass below
+            # rather than enzyme-wrap: before anything rewrites the loops.
+            "enzyme-checkpoint-scopes",
             "mark-func-memory-effects",
             opt_passes,
             "enzyme-batch",
             opt_passes,
             enzyme_pass,
+            "lower-enzymexla-math",
             opt_passes,
             "canonicalize",
             "remove-unnecessary-enzyme-ops",
@@ -221,6 +226,40 @@ def full_optimization_pass_pipeline(**kwargs):
             propagate_down_passes,
         ]
     )
+
+
+# The schedules of enzyme/checkpoint_schedule.h, by the names Enzyme's loop
+# annotations give them.
+CHECKPOINT_SCHEDULES = ("binomial", "revolve", "periodic", "store_all", "none")
+
+
+def checkpoint(schedule: str = "binomial", budget: int = 0):
+    """Checkpoint the loop run in this scope when Enzyme differentiates it.
+
+    A context manager around one ``lax.fori_loop``, ``lax.while_loop`` or
+    ``lax.scan``: when Enzyme-MLIR differentiates the function in reverse mode
+    (``enzyme_jax_ir`` with a ``JaXPipeline`` that runs the
+    ``enzyme-checkpoint-scopes`` pass, as the default one does), it keeps
+    ``budget`` checkpoints of the loop's state instead of every iteration's,
+    and recomputes the iterations in between. ``schedule`` is one of
+    ``CHECKPOINT_SCHEDULES``, as in C's ``[[enzyme::checkpoint("binomial",
+    4)]]``; a budget of 0 asks for the schedule's default (the square root of
+    the number of iterations). Loops nested in the body are not affected.
+
+    It is a ``jax.named_scope``, so the primal computation is unchanged::
+
+        with enzyme_ad.jax.checkpoint("binomial", 4):
+            u = jax.lax.fori_loop(0, n, step, u0)
+    """
+    if schedule not in CHECKPOINT_SCHEDULES:
+        raise ValueError(
+            f"unknown checkpointing schedule {schedule!r}, expected one of "
+            f"{', '.join(CHECKPOINT_SCHEDULES)}"
+        )
+    budget = operator.index(budget)
+    if budget < 0:
+        raise ValueError(f"checkpointing budget must not be negative, got {budget}")
+    return jax.named_scope(f"enzyme_checkpoint[{schedule},{budget}]")
 
 
 DefaultCPPPipeline = XLAPipeline()
@@ -1177,12 +1216,18 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
         outshapes = kwargs["out_shapes"]
         ret_act_tup = ",".join(["enzyme_dup"] * len(outshapes))
         afterad = (
-            "arith-raise{stablehlo=true},enzyme-batch-to-stablehlo, "
+            # lower-enzymexla-math expands the enzyme.binomial_progress a
+            # binomially checkpointed loop leaves behind.
+            "arith-raise{stablehlo=true},enzyme-batch-to-stablehlo,"
+            + "lower-enzymexla-math, "
             + optimization_passes()
             + ", cse, canonicalize"
         )
         newpasses = (
-            "inline{default-pipeline=canonicalize max-iterations=4},"
+            # enzyme-wrap differentiates: loops marked by
+            # enzyme_ad.jax.checkpoint have to say so before it.
+            "enzyme-checkpoint-scopes,"
+            + "inline{default-pipeline=canonicalize max-iterations=4},"
             + optimization_passes()
             + ", cse,enzyme-wrap{infn=main outfn= retTys="
             + ret_act_tup
