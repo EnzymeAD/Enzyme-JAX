@@ -8602,10 +8602,74 @@ struct InvariantTerms {
     return it->second;
   }
 
+  // A product of operands with a coefficient: one term of an expression
+  // multiplied out.
+  struct Monomial {
+    int64_t coeff;
+    SmallVector<AffineExpr> vars; // dims and symbols, sorted
+  };
+
+  // `e`, a tree of sums and products over the operands and constants,
+  // multiplied out into monomials; nullopt when it divides or takes a
+  // remainder, which do not distribute.
+  static std::optional<SmallVector<Monomial>> expand(AffineExpr e) {
+    if (auto c = dyn_cast<AffineConstantExpr>(e))
+      return SmallVector<Monomial>{{c.getValue(), {}}};
+    if (isa<AffineDimExpr, AffineSymbolExpr>(e))
+      return SmallVector<Monomial>{{1, {e}}};
+    auto bin = dyn_cast<AffineBinaryOpExpr>(e);
+    if (!bin)
+      return std::nullopt;
+    auto lhs = expand(bin.getLHS()), rhs = expand(bin.getRHS());
+    if (!lhs || !rhs)
+      return std::nullopt;
+    SmallVector<Monomial> out;
+    if (bin.getKind() == AffineExprKind::Add) {
+      out = *lhs;
+      out.append(rhs->begin(), rhs->end());
+    } else if (bin.getKind() == AffineExprKind::Mul) {
+      for (const Monomial &a : *lhs)
+        for (const Monomial &b : *rhs) {
+          Monomial m{a.coeff * b.coeff, a.vars};
+          m.vars.append(b.vars.begin(), b.vars.end());
+          llvm::sort(m.vars, [](AffineExpr x, AffineExpr y) {
+            return x.getAsOpaquePointer() < y.getAsOpaquePointer();
+          });
+          out.push_back(std::move(m));
+        }
+    } else {
+      return std::nullopt;
+    }
+    return out;
+  }
+
   // `e` with each largest loop-invariant subexpression that is not affine
-  // replaced by its placeholder, appended to `symbols`.
+  // replaced by its placeholder, appended to `symbols`. A sum of products is
+  // multiplied out first, so that the invariant product under a different
+  // coefficient or offset in another access, (e * 3 + 1) * n against
+  // (e * 3) * n, say, is the same placeholder in both.
   AffineExpr abstract(AffineExpr e, ValueRange operands, unsigned numDims,
                       SmallVectorImpl<Value> &symbols) {
+    if (!e.isPureAffine())
+      if (auto monomials = expand(e)) {
+        MLIRContext *ctx = e.getContext();
+        AffineExpr sum = getAffineConstantExpr(0, ctx);
+        for (Monomial &m : *monomials) {
+          AffineExpr term = getAffineConstantExpr(1, ctx);
+          for (AffineExpr v : m.vars)
+            term = term * v;
+          if (!term.isPureAffine() && isInvariant(term, operands, numDims)) {
+            Value v = placeholder(term, operands, numDims);
+            auto *it = llvm::find(symbols, v);
+            unsigned pos = std::distance(symbols.begin(), it);
+            if (it == symbols.end())
+              symbols.push_back(v);
+            term = getAffineSymbolExpr(pos, ctx);
+          }
+          sum = sum + term * m.coeff;
+        }
+        return sum;
+      }
     if (!e.isPureAffine() && isInvariant(e, operands, numDims)) {
       Value v = placeholder(e, operands, numDims);
       auto *it = llvm::find(symbols, v);
