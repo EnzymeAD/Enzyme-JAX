@@ -8304,11 +8304,26 @@ static Value asIndex(Value v, Operation *at, DominanceInfo &dom) {
   return nullptr;
 }
 
+// Every index `v` is read as that dominates `at`: its index casts, and the
+// index casts of its extensions. They all agree where v is non-negative.
+static void indexForms(Value v, Operation *at, DominanceInfo &dom,
+                       SmallVectorImpl<Value> &forms) {
+  for (Operation *user : v.getUsers()) {
+    if (isa<arith::IndexCastOp, arith::IndexCastUIOp>(user) &&
+        user->getResult(0).getType().isIndex() &&
+        dom.properlyDominates(user, at))
+      forms.push_back(user->getResult(0));
+    else if (isa<arith::ExtUIOp, arith::ExtSIOp>(user))
+      indexForms(user->getResult(0), at, dom, forms);
+  }
+}
+
 // The constraints that `cond` taking the value `holds` gives over the values
 // it compares (as indices), appended to `facts`/`eqs` over `syms`: an and
 // that holds or an or that fails gives each of its operands, a signed
 // comparison a linear constraint. A sign-extending cast keeps a signed
-// comparison.
+// comparison. A value compared to a constant and found non-negative is read
+// the same through each of its index forms, which are then one value.
 static void addConditionFacts(Value cond, bool holds, Operation *at,
                               DominanceInfo &dom, SmallVectorImpl<Value> &syms,
                               SmallVectorImpl<AffineExpr> &facts,
@@ -8340,11 +8355,77 @@ static void addConditionFacts(Value cond, bool holds, Operation *at,
     }
     return getAffineSymbolExpr(it - syms.begin(), ctx);
   };
+  auto pred =
+      holds ? cmp.getPredicate() : arith::invertPredicate(cmp.getPredicate());
+  // x != 0, which a strict comparison with 0 gives too: the square of x,
+  // x * x without signed wrap, is at least 1. Its index forms read as such, as
+  // the count NQ = Q1D * Q1D of a kernel does past a check on Q1D.
+  {
+    Value x;
+    APInt c;
+    if (matchPattern(cmp.getRhs(), m_ConstantInt(&c)) && c.isZero())
+      x = cmp.getLhs();
+    else if (matchPattern(cmp.getLhs(), m_ConstantInt(&c)) && c.isZero())
+      x = cmp.getRhs();
+    if (x && (pred == arith::CmpIPredicate::ne ||
+              pred == arith::CmpIPredicate::sgt ||
+              pred == arith::CmpIPredicate::slt)) {
+      for (Operation *user : x.getUsers()) {
+        auto mul = dyn_cast<arith::MulIOp>(user);
+        if (!mul || mul.getLhs() != x || mul.getRhs() != x ||
+            !bitEnumContainsAll(mul.getOverflowFlags(),
+                                arith::IntegerOverflowFlags::nsw))
+          continue;
+        SmallVector<Value> forms;
+        indexForms(mul.getResult(), at, dom, forms);
+        if (Value idx = asIndex(mul.getResult(), at, dom))
+          forms.push_back(idx);
+        for (Value form : forms) {
+          AffineExpr e = side(form);
+          if (!e)
+            continue;
+          facts.push_back(e - 1);
+          eqs.push_back(false);
+        }
+      }
+    }
+  }
   AffineExpr a = side(cmp.getLhs()), b = side(cmp.getRhs());
   if (!a || !b)
     return;
-  auto pred =
-      holds ? cmp.getPredicate() : arith::invertPredicate(cmp.getPredicate());
+  // v > c or v >= c for a constant c >= 0 (or -1 for >): v is non-negative,
+  // and its other index forms equal the one read
+  {
+    Value v;
+    APInt c;
+    bool nonneg = false;
+    if (matchPattern(cmp.getRhs(), m_ConstantInt(&c))) {
+      v = cmp.getLhs();
+      nonneg = (pred == arith::CmpIPredicate::sgt && c.sge(-1)) ||
+               (pred == arith::CmpIPredicate::sge && c.sge(0)) ||
+               (pred == arith::CmpIPredicate::eq && c.sge(0));
+    } else if (matchPattern(cmp.getLhs(), m_ConstantInt(&c))) {
+      v = cmp.getRhs();
+      nonneg = (pred == arith::CmpIPredicate::slt && c.sge(-1)) ||
+               (pred == arith::CmpIPredicate::sle && c.sge(0)) ||
+               (pred == arith::CmpIPredicate::eq && c.sge(0));
+    }
+    if (nonneg) {
+      SmallVector<Value> forms;
+      indexForms(v, at, dom, forms);
+      Value first = asIndex(v, at, dom);
+      AffineExpr firstExpr = side(first);
+      for (Value form : forms) {
+        if (form == first)
+          continue;
+        AffineExpr e = side(form);
+        if (!e)
+          continue;
+        facts.push_back(e - firstExpr);
+        eqs.push_back(true);
+      }
+    }
+  }
   switch (pred) {
   case arith::CmpIPredicate::slt:
     facts.push_back(b - a - 1);
@@ -8388,26 +8469,39 @@ static bool reaches(Block *from, Block *to) {
 // op of its body, give: where one successor of a branch that dominates its
 // block cannot reach it, it only runs with the condition taking the other
 // way, as past an MFEM_VERIFY, whose failing side ends in a call that does
-// not return. The values compared are read as index casts dominating `at`.
-static IntegerSet guardFacts(Operation *at, DominanceInfo &dom,
+// not return; and an scf.if `at` is under runs only with its condition
+// taking the way to the region it is in. The values compared are read as
+// index casts dominating `at`.
+static IntegerSet guardFacts(Operation *at, Operation *loop, DominanceInfo &dom,
                              SmallVectorImpl<Value> &syms) {
   SmallVector<AffineExpr> facts;
   SmallVector<bool> eqs;
   Block *block = at->getBlock();
   Region *region = block->getParent();
-  if (region->hasOneBlock())
-    return IntegerSet();
-  auto &tree = dom.getDomTree(region);
-  for (auto *node = tree.getNode(block); node && node->getIDom();
-       node = node->getIDom()) {
-    Block *d = node->getIDom()->getBlock();
-    auto br = dyn_cast<cf::CondBranchOp>(d->getTerminator());
-    if (!br)
+  if (!region->hasOneBlock()) {
+    auto &tree = dom.getDomTree(region);
+    for (auto *node = tree.getNode(block); node && node->getIDom();
+         node = node->getIDom()) {
+      Block *d = node->getIDom()->getBlock();
+      auto br = dyn_cast<cf::CondBranchOp>(d->getTerminator());
+      if (!br)
+        continue;
+      bool fromTrue = reaches(br.getTrueDest(), block);
+      bool fromFalse = reaches(br.getFalseDest(), block);
+      if (fromTrue != fromFalse)
+        addConditionFacts(br.getCondition(), fromTrue, at, dom, syms, facts,
+                          eqs);
+    }
+  }
+  // the scf.ifs the loop analyzed is under, which are above every access
+  // of the loop
+  for (Operation *op = loop->getParentOp(); op && !isa<FunctionOpInterface>(op);
+       op = op->getParentOp()) {
+    auto ifOp = dyn_cast<scf::IfOp>(op);
+    if (!ifOp)
       continue;
-    bool fromTrue = reaches(br.getTrueDest(), block);
-    bool fromFalse = reaches(br.getFalseDest(), block);
-    if (fromTrue != fromFalse)
-      addConditionFacts(br.getCondition(), fromTrue, at, dom, syms, facts, eqs);
+    bool inThen = ifOp.getThenRegion().isAncestor(loop->getParentRegion());
+    addConditionFacts(ifOp.getCondition(), inThen, loop, dom, syms, facts, eqs);
   }
   if (facts.empty())
     return IntegerSet();
@@ -8701,7 +8795,7 @@ struct InvariantTerms {
     auto it = guards.find(at);
     if (it == guards.end()) {
       SmallVector<Value> syms;
-      IntegerSet set = guardFacts(at, dom, syms);
+      IntegerSet set = guardFacts(at, loop, dom, syms);
       it = guards.try_emplace(at, set, syms).first;
     }
     auto &[set, syms] = it->second;
