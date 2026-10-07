@@ -79,6 +79,15 @@ static Value makeI64Constant(Location loc, OpBuilder &builder, int64_t val) {
   return makeIntegerConstant(loc, builder, builder.getI64Type(), val);
 }
 
+// `index`, a loop's counter, converted to `type`: an index of a tensor the
+// loop fills, whose other start indices are of that type.
+static Value convertIndex(OpBuilder &builder, Location loc, Value index,
+                          Type type) {
+  if (index.getType() == type)
+    return index;
+  return stablehlo::ConvertOp::create(builder, loc, type, index);
+}
+
 static Value makeI32Constant(Location loc, OpBuilder &builder, int32_t val) {
   return makeIntegerConstant(loc, builder, builder.getI32Type(), val);
 }
@@ -657,7 +666,11 @@ class AutoDiffWhileRev
   static Value setIndex(OpBuilder &builder, Value arr, Value index, Value val) {
     SmallVector<int64_t> updateShape{1};
     SmallVector<Value> startIndices{index};
-    Value zero = makeI64Constant(val.getLoc(), builder, 0);
+    // All start indices have one type: the index's, which is the loop's
+    // (tensor<i32> for JAX's loops).
+    Value zero = makeIntegerConstant(
+        val.getLoc(), builder, cast<ShapedType>(index.getType()).getElementType(),
+        0);
     for (auto s : cast<ShapedType>(val.getType()).getShape()) {
       startIndices.push_back(zero);
       updateShape.push_back(s);
@@ -941,7 +954,9 @@ public:
                                              stablehlo::WhileOp op,
                                              ValueRange state,
                                              MGradientUtilsReverse *gutils) {
-    SmallVector<Value> results{materializeUpperBound(builder, loc, op, gutils)};
+    Value limit = materializeUpperBound(builder, loc, op, gutils);
+    SmallVector<Value> results{
+        castToType(builder, loc, limit, op->getResult(0).getType())};
     results.append(state.begin(), state.end());
     return results;
   }
@@ -971,7 +986,8 @@ public:
     sliceSizes[0] = 1;
 
     SmallVector<Value> startIndices{slot};
-    Value zero = makeI64Constant(loc, b, 0);
+    Value zero = makeIntegerConstant(
+        loc, b, cast<ShapedType>(slot.getType()).getElementType(), 0);
     for (int64_t i = 1, e = storeTy.getRank(); i < e; ++i)
       startIndices.push_back(zero);
 
@@ -3599,7 +3615,10 @@ public:
           auto shape = TT.getShape();
 
           SmallVector<Value> startIndices(shape.size() + 1, zero);
-          startIndices[0] = inductionVariable;
+          // The cache counts in zero's type, which need not be the loop's
+          // (JAX's loops count in tensor<i32>).
+          startIndices[0] = convertIndex(rewriter, cinfo.pushOp->getLoc(),
+                                         inductionVariable, zero.getType());
 
           SmallVector<int64_t> updateShape;
           updateShape.push_back(1);
@@ -3787,7 +3806,8 @@ public:
         if (auto TT = dyn_cast<TensorType>(info.cachedType())) {
           auto shape = TT.getShape();
           SmallVector<Value> startIndices(shape.size() + 1, zero);
-          startIndices[0] = newInductionVariable;
+          startIndices[0] = convertIndex(rewriter, info.popOp->getLoc(),
+                                         newInductionVariable, zero.getType());
           SmallVector<int64_t> sliceSizes;
           sliceSizes.reserve(shape.size() + 1);
           sliceSizes.push_back(1);
