@@ -49,9 +49,52 @@ using namespace mlir::arith;
 using namespace mlir::affine;
 using namespace mlir::enzyme;
 
+// How many of the low bits of `v` are known to be zero: those a shift left,
+// or a multiply, by a constant clears, seen through the casts between.
+static unsigned knownTrailingZeros(Value v) {
+  APInt cst;
+  if (matchPattern(v, m_ConstantInt(&cst)))
+    return cst.countr_zero();
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return 0;
+  if (isa<ExtUIOp, ExtSIOp, IndexCastOp, IndexCastUIOp>(def))
+    return knownTrailingZeros(def->getOperand(0));
+  unsigned width =
+      v.getType().isIndex() ? 64 : v.getType().getIntOrFloatBitWidth();
+  if (auto trunc = dyn_cast<TruncIOp>(def))
+    return std::min(knownTrailingZeros(trunc.getIn()), width);
+  if (auto shl = dyn_cast<ShLIOp>(def)) {
+    APInt amount;
+    if (!matchPattern(shl.getRhs(), m_ConstantInt(&amount)) ||
+        amount.uge(width))
+      return 0;
+    return std::min<unsigned>(
+        knownTrailingZeros(shl.getLhs()) + amount.getZExtValue(), width);
+  }
+  if (auto mul = dyn_cast<MulIOp>(def))
+    return std::min(knownTrailingZeros(mul.getLhs()) +
+                        knownTrailingZeros(mul.getRhs()),
+                    width);
+  return 0;
+}
+
+// An or that adds: imported as one, or setting with a constant only bits the
+// other operand is known to leave zero, as `(e << 2) | k` with k < 4 does.
 bool isDisjoint(Value v) {
-  if (auto op = v.getDefiningOp()) {
-    return op->hasAttr("isDisjoint");
+  Operation *op = v.getDefiningOp();
+  if (!op)
+    return false;
+  if (op->hasAttr("isDisjoint"))
+    return true;
+  auto orOp = dyn_cast<OrIOp>(op);
+  if (!orOp)
+    return false;
+  for (unsigned i = 0; i < 2; ++i) {
+    APInt cst;
+    if (matchPattern(orOp->getOperand(1 - i), m_ConstantInt(&cst)) &&
+        cst.getActiveBits() <= knownTrailingZeros(orOp->getOperand(i)))
+      return true;
   }
   return false;
 }
