@@ -8690,6 +8690,16 @@ static bool isStructural(Operation *op) {
              scf::IfOp, scf::YieldOp>(op);
 }
 
+// Whether two accesses index one buffer, so that their relations compare:
+// two memref values of one type that are views of one object at no offset
+// from it, as the same pointer2memref taken in each arm of a branch the loop
+// body was duplicated under, index the same elements.
+static bool sameBuffer(Value a, Value b) {
+  return a.getType() == b.getType() &&
+         enzyme::oputils::getBaseObject(a, /*offsetAllowed=*/false) ==
+             enzyme::oputils::getBaseObject(b, /*offsetAllowed=*/false);
+}
+
 static bool isLoopMemoryParallel(AffineForOp forOp) {
   // Any memref-typed iteration arguments are treated as serializing.
   if (llvm::any_of(forOp.getResultTypes(), llvm::IsaPred<BaseMemRefType>))
@@ -8729,24 +8739,23 @@ static bool isLoopMemoryParallel(AffineForOp forOp) {
   if (walkResult.wasInterrupted())
     return false;
 
-  // The dependence analysis compares the accesses of each memref value with
-  // each other only, taking two memref values never to alias, which holds
-  // for distinct buffers but not for two views of one: a loop that writes a
-  // buffer it also reaches through another view of it is not parallel.
-  llvm::MapVector<Value, SmallPtrSet<Value, 2>> views;
-  DenseSet<Value> written;
+  // The dependence analysis compares the accesses of one buffer with each
+  // other only, taking two buffers never to alias, which holds for distinct
+  // objects but not for two views of one at an offset from each other: a
+  // loop that writes an object it also reaches through such a view is not
+  // parallel.
   SmallVector<Value> writtenMemrefs;
+  for (Operation *op : loadAndStoreOps)
+    if (isa<AffineWriteOpInterface>(op))
+      writtenMemrefs.push_back(MemRefAccess(op).memref);
   for (Operation *op : loadAndStoreOps) {
     Value memref = MemRefAccess(op).memref;
-    views[enzyme::oputils::getBaseObject(memref)].insert(memref);
-    if (isa<AffineWriteOpInterface>(op)) {
-      written.insert(enzyme::oputils::getBaseObject(memref));
-      writtenMemrefs.push_back(memref);
-    }
+    for (Value written : writtenMemrefs)
+      if (!sameBuffer(memref, written) &&
+          enzyme::oputils::getBaseObject(memref) ==
+              enzyme::oputils::getBaseObject(written))
+        return false;
   }
-  for (auto &[base, memrefs] : views)
-    if (written.count(base) && memrefs.size() > 1)
-      return false;
   for (memref::LoadOp load : opaqueReads)
     for (Value memref : writtenMemrefs)
       if (enzyme::oputils::mayAlias(load.getMemRef(), memref))
@@ -8760,7 +8769,7 @@ static bool isLoopMemoryParallel(AffineForOp forOp) {
   InvariantTerms terms(forOp);
   for (auto *srcOp : loadAndStoreOps) {
     for (auto *dstOp : loadAndStoreOps) {
-      if (MemRefAccess(srcOp).memref != MemRefAccess(dstOp).memref ||
+      if (!sameBuffer(MemRefAccess(srcOp).memref, MemRefAccess(dstOp).memref) ||
           (!isa<AffineWriteOpInterface>(srcOp) &&
            !isa<AffineWriteOpInterface>(dstOp)))
         continue;
@@ -9119,7 +9128,7 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
                               << "dst: " << *dstOp << "\n");
       MemRefAccess dstAccess(dstOp);
       DependenceResult result(DependenceResult::NoDependence);
-      if (srcAccess.memref == dstAccess.memref &&
+      if (sameBuffer(srcAccess.memref, dstAccess.memref) &&
           (isa<AffineWriteOpInterface>(srcOp) ||
            isa<AffineWriteOpInterface>(dstOp))) {
         presburger::IntegerRelation srcRel(
