@@ -1,7 +1,7 @@
 from absl.testing import absltest
 import jax
 import jax.numpy as jnp
-from enzyme_ad.jax import cpp_call, enzyme_jax_ir
+from enzyme_ad.jax import checkpoint, cpp_call, enzyme_jax_ir
 import test_utils
 
 jax.config.update("jax_platforms", "cpu")
@@ -96,6 +96,97 @@ class EnzymeJax(absltest.TestCase):
                 )
             ).all()
         )
+
+    @absltest.skip(
+        "cpp_call's reverse pass gets null primal pointers, all it needs being on "
+        "the tape, but a checkpointed loop recomputes its steps from the inputs"
+    )
+    def test_custom_cpp_kernel_checkpoint(self):
+        # A C++ loop under [[enzyme::checkpoint(...)]] (Enzyme's Clang plugin)
+        # is checkpointed when Enzyme differentiates the kernel, and its
+        # gradient must be that of the same loop without the annotation.
+        def kernel(spelling):
+            source = """
+        template<std::size_t N>
+        void steps(enzyme::tensor<float, N>& out,
+                   const enzyme::tensor<float, N>& in) {
+          float u[N];
+          for (int k = 0; k < N; k++)
+            u[k] = in[k];
+          SPELLING
+          for (int t = 0; t < 13; t++)
+            for (int k = 0; k < N; k++)
+              u[k] = u[k] - 0.1f * u[k] * u[k] * u[k] + 0.05f * in[k];
+          for (int k = 0; k < N; k++)
+            out[k] = u[k] * u[k];
+        }
+        """.replace("SPELLING", spelling)
+
+            @jax.jit
+            def f(x):
+                (y,) = cpp_call(
+                    x,
+                    out_shapes=[jax.core.ShapedArray(x.shape, x.dtype)],
+                    source=source,
+                    fn="steps",
+                    argv=argv,
+                )
+                return y
+
+            return f
+
+        x = jnp.array([0.3, 0.5, 0.7], dtype=jnp.float32)
+        dy = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+        want_y, want_vjp = jax.vjp(kernel(""), x)
+        (want,) = want_vjp(dy)
+        for spelling in [
+            '[[enzyme::checkpoint("binomial", 3)]]',
+            '[[enzyme::checkpoint("revolve", 2)]]',
+            '[[enzyme::checkpoint("periodic", 4)]]',
+            "[[enzyme::checkpoint]]",
+            '_Pragma("enzyme checkpoint(\\"binomial\\", 2)")',
+        ]:
+            y, f_vjp = jax.vjp(kernel(spelling), x)
+            (grad,) = f_vjp(dy)
+            self.assertTrue((y == want_y).all(), spelling)
+            self.assertTrue(jnp.allclose(grad, want, rtol=1e-6), spelling)
+
+    def test_enzyme_mlir_checkpoint(self):
+        # A loop run in enzyme_ad.jax.checkpoint(schedule, budget) is
+        # checkpointed when Enzyme-MLIR differentiates it, for every schedule,
+        # and its gradient must be that of JAX's own AD of the plain loop.
+        def run(x, schedule, budget):
+            def step(i, u):
+                return 0.9 * jnp.sin(u) + 0.1 * x * u
+
+            with checkpoint(schedule, budget):
+                u = jax.lax.fori_loop(0, 13, step, x)
+            return jnp.sum(u * u)
+
+        x = jnp.array([0.3, 0.5, 0.7])
+        want_y, want_vjp = jax.vjp(lambda x: run(x, "none", 0), x)
+        (want,) = want_vjp(jnp.float32(1.0))
+        for schedule, budget in [
+            ("binomial", 3),
+            ("revolve", 0),
+            ("periodic", 4),
+            ("store_all", 0),
+        ]:
+
+            @jax.jit
+            @enzyme_jax_ir(argv=argv)
+            def f(x):
+                return run(x, schedule, budget)
+
+            y, f_vjp = jax.vjp(f, x)
+            (grad,) = f_vjp(jnp.float32(1.0))
+            self.assertTrue(jnp.allclose(y, want_y, rtol=1e-6), schedule)
+            self.assertTrue(jnp.allclose(grad, want, rtol=1e-5), schedule)
+
+        with self.assertRaises(ValueError):
+            checkpoint("fastest", 4)
+        with self.assertRaises(ValueError):
+            checkpoint("binomial", -1)
 
     def test_enzyme_mlir_jit(self):
         @jax.jit

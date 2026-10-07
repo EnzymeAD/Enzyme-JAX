@@ -80,6 +80,9 @@
 
 #include "Integrations/c/EnzymeXLA.h"
 
+// Enzyme's checkpointing runtime (Enzyme/CheckpointRuntime.cpp).
+extern "C" void *EnzymeCheckpointRuntimeSymbol(const char *name);
+
 namespace {
 class CpuKernel {
   // static llvm::orc::ExecutionSession ES;
@@ -229,6 +232,27 @@ public:
       }
       JIT = std::move(tJIT.get());
       assert(JIT);
+
+      // The built-in checkpointing schedules of enzyme/checkpoint.h, which a
+      // checkpointed loop ([[enzyme::checkpoint("binomial", 4)]]) of a module
+      // without schedule tables of its own calls.
+      llvm::orc::SymbolMap checkpointRuntime;
+      for (const char *name :
+           {"__enzyme_checkpoint_builtin", "__enzyme_ckpt_schedule_begin",
+            "__enzyme_ckpt_schedule_next", "__enzyme_ckpt_schedule_flag",
+            "__enzyme_ckpt_schedule_iteration", "__enzyme_ckpt_schedule_start",
+            "__enzyme_ckpt_schedule_slot", "__enzyme_ckpt_schedule_slots",
+            "__enzyme_ckpt_schedule_end"})
+        if (void *fn = EnzymeCheckpointRuntimeSymbol(name))
+          checkpointRuntime[JIT->mangleAndIntern(name)] = {
+              llvm::orc::ExecutorAddr::fromPtr(fn),
+              llvm::JITSymbolFlags::Exported};
+      // Every kernel's JITDylib links against the process symbols' one.
+      if (auto Err = JIT->getProcessSymbolsJITDylib()->define(
+              llvm::orc::absoluteSymbols(std::move(checkpointRuntime)))) {
+        llvm::errs() << Err << "\n";
+        throw nanobind::value_error("failed to define checkpointing runtime");
+      }
     }
 
     auto LibA = JIT->createJITDylib("enzymedl_" + std::to_string(identifier));
