@@ -12,9 +12,9 @@ module {
   ^bb1:  // pred: ^bb0
     %4 = llvm.zext %1 : i32 to i64
     %5 = llvm.getelementptr inbounds %arg0[%4] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
-    %6 = llvm.load %5 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+    %6 = llvm.load %5 <alignment = 1> : !llvm.ptr<1> -> i64
     %7 = llvm.mul %6, %6 : i64
-    llvm.store %7, %5 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+    llvm.store %7, %5 <alignment = 1> : i64, !llvm.ptr<1>
     llvm.return
   ^bb2:  // pred: ^bb0
     llvm.call fastcc @throw_boundserror_2676() : () -> ()
@@ -25,7 +25,7 @@ module {
     %c1 = stablehlo.constant dense<1> : tensor<i64>
     %c2 = stablehlo.constant dense<2> : tensor<i64>
     %c40 = stablehlo.constant dense<40> : tensor<i64>
-    %0 = enzymexla.kernel_call @kern clusters in (%c2, %c1, %c1) blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
+    %0 = enzymexla.kernel_call @kern clusters in (%c2, %c1, %c1) blocks in (%c1, %c1, %c1) threads in (%c1, %c1, %c40) shmem=%c0 (%arg0) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<64xi64>) -> tensor<64xi64>
     return %0 : tensor<64xi64>
   }
 }
@@ -42,9 +42,9 @@ module {
 // CHECK-NEXT:    ^bb1:  // pred: ^bb0
 // CHECK-NEXT:      %3 = llvm.zext %1 : i32 to i64
 // CHECK-NEXT:      %4 = llvm.getelementptr inbounds %arg0[%3] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
-// CHECK-NEXT:      %5 = llvm.load %4 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+// CHECK-NEXT:      %5 = llvm.load %4 <alignment = 1> : !llvm.ptr<1> -> i64
 // CHECK-NEXT:      %6 = llvm.mul %5, %5 : i64
-// CHECK-NEXT:      llvm.store %6, %4 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+// CHECK-NEXT:      llvm.store %6, %4 <alignment = 1> : i64, !llvm.ptr<1>
 // CHECK-NEXT:      gpu.return
 // CHECK-NEXT:    ^bb2:  // pred: ^bb0
 // CHECK-NEXT:      llvm.call fastcc @throw_boundserror_2676() : () -> ()
@@ -61,6 +61,6 @@ module {
 // CHECK-NEXT:    return
 // CHECK-NEXT:  }
 // CHECK:  func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
-// CHECK-NEXT:    %0 = enzymexla.jit_call @kern$call$1 (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
+// CHECK-NEXT:    %0 = enzymexla.jit_call @kern$call$1 (%arg0) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]> : (tensor<64xi64>) -> tensor<64xi64>
 // CHECK-NEXT:    return %0 : tensor<64xi64>
 // CHECK-NEXT:  }

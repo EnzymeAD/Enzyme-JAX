@@ -37,28 +37,28 @@ func.func @main() {
   %done = stablehlo.constant dense<1.0> : tensor<2xf32>
 
   // fwd diff wrt a
-  %fwd_a:2 = enzyme.fwddiff @divide(%a, %done, %b, %dzero) {
-    activity=[#enzyme<activity enzyme_dup>, #enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
-  } : (tensor<2xf32>, tensor<2xf32>, tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
+  %fwd_a:2 = enzyme.fwddiff @divide(%a, %done, %b, %dzero) <{
+    activity=[#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
+  }> : (tensor<2xf32>, tensor<2xf32>, tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
 
   check.expect_almost_eq %fwd_a#0, %output : tensor<2xf32>
   check.expect_almost_eq %fwd_a#1, %expected_da : tensor<2xf32>
 
   // fwd diff wrt b
-  %fwd_b:2 = enzyme.fwddiff @divide(%a, %dzero, %b, %done) {
-    activity=[#enzyme<activity enzyme_dup>, #enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
-  } : (tensor<2xf32>, tensor<2xf32>, tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
+  %fwd_b:2 = enzyme.fwddiff @divide(%a, %dzero, %b, %done) <{
+    activity=[#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
+  }> : (tensor<2xf32>, tensor<2xf32>, tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
 
   check.expect_almost_eq %fwd_b#0, %output : tensor<2xf32>
   check.expect_almost_eq %fwd_b#1, %expected_db : tensor<2xf32>
 
   // rev diff
-  %rev:3 = enzyme.autodiff @divide(%a, %b, %done) {
-    activity=[#enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
-  } : (tensor<2xf32>, tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>, tensor<2xf32>)
+  %rev:3 = enzyme.autodiff @divide(%a, %b, %done) <{
+    activity=[#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
+  }> : (tensor<2xf32>, tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>, tensor<2xf32>)
 
   check.expect_almost_eq %rev#0, %output : tensor<2xf32>
   check.expect_almost_eq %rev#1, %expected_da : tensor<2xf32>

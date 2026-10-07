@@ -30,7 +30,8 @@ class SliceOp;
 
 namespace enzyme {
 
-void populateAffineCFGPatterns(RewritePatternSet &rpl);
+void populateAffineCFGPatterns(
+    RewritePatternSet &rpl, bool enable_split_on_affine_if_constants = false);
 void populateInlineNeverLoopingWhilePattern(RewritePatternSet &patterns);
 
 #define GEN_PASS_DECL

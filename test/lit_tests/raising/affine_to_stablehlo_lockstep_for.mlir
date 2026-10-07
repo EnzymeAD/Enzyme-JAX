@@ -24,7 +24,7 @@ module {
       %6 = arith.cmpi slt, %5, %c1_i64 : i64
       affine.for %arg11 = 0 to 20 {
         %72 = affine.load %arg2[%arg11 + 8, %arg9 + 1, %arg10 + 1] : memref<35x104x194xf64, 1>
-        %73 = arith.subf %72, %cst2 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %73 = arith.subf %72, %cst2 : f64
         affine.store %73, %arg2[%arg11 + 7, %arg9 + 1, %arg10 + 1] : memref<35x104x194xf64, 1>
       }
     }
@@ -58,7 +58,7 @@ module {
       %6 = arith.cmpi slt, %5, %c1_i64 : i64
       affine.for %arg11 = 0 to 20 {
         %72 = affine.load %arg2[%arg11 + 7, %arg9 + 1, %arg10 + 1] : memref<35x104x194xf64, 1>
-        %73 = arith.subf %72, %cst2 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %73 = arith.subf %72, %cst2 : f64
         affine.store %73, %arg2[%arg11 + 7, %arg9 + 1, %arg10 + 1] : memref<35x104x194xf64, 1>
       }
     }

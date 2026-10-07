@@ -39,15 +39,15 @@ module {
     %diffe = stablehlo.constant dense<1.0> : tensor<f64>
     %n10 = stablehlo.constant dense<10> : tensor<i64>
 
-    %ckpt:2 = enzyme.autodiff @with_checkpointing(%input, %n10, %diffe) {
-      activity=[#enzyme<activity enzyme_active>, #enzyme<activity enzyme_const>],
-      ret_activity=[#enzyme<activity enzyme_active>]
-    } : (tensor<f64>, tensor<i64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
+    %ckpt:2 = enzyme.autodiff @with_checkpointing(%input, %n10, %diffe) <{
+      activity=[#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_const>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
+    }> : (tensor<f64>, tensor<i64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
-    %plain:2 = enzyme.autodiff @without_checkpointing(%input, %n10, %diffe) {
-      activity=[#enzyme<activity enzyme_active>, #enzyme<activity enzyme_const>],
-      ret_activity=[#enzyme<activity enzyme_active>]
-    } : (tensor<f64>, tensor<i64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
+    %plain:2 = enzyme.autodiff @without_checkpointing(%input, %n10, %diffe) <{
+      activity=[#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_const>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
+    }> : (tensor<f64>, tensor<i64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
     check.expect_almost_eq %ckpt#0, %plain#0 : tensor<f64>
     check.expect_almost_eq %ckpt#1, %plain#1 : tensor<f64>

@@ -177,10 +177,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
 
     SmallVector<bool> isColMajorArr = {true, true, true};
     SmallVector<int64_t> operandRanks = {2, 1, 0};
-    SmallVector<int64_t> outputRanks = {2, 1, 0};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
-    auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
     SmallVector<Attribute> aliases;
     for (int i = 0; i < 3; ++i) {
@@ -194,7 +192,6 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
         ValueRange{input, tau.getResult(), info.getResult()},
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
-        /*result_layouts=*/resultLayouts,
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
@@ -476,10 +473,8 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
 
     SmallVector<bool> isColMajorArr = {true, true, true};
     SmallVector<int64_t> operandRanks = {2, 2, 0};
-    SmallVector<int64_t> outputRanks = {2, 2, 0};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
-    auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
     SmallVector<Attribute> aliases;
     for (int i = 0; i < 3; ++i) {
@@ -493,7 +488,6 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
         ValueRange{input, T.getResult(), info.getResult()},
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
-        /*result_layouts=*/resultLayouts,
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
@@ -655,10 +649,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     // emit the `enzymexla.jit_call` op to `(or|un)gqr` wrapper
     SmallVector<bool> isColMajorArr = {true, true};
     SmallVector<int64_t> operandRanks = {2, 1};
-    SmallVector<int64_t> outputRanks = {2};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
-    auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
     SmallVector<Attribute> aliases;
     aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, {}, 0, {}));
@@ -668,7 +660,6 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
         mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn), ValueRange{input, tau},
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
-        /*result_layouts=*/resultLayouts,
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
@@ -990,10 +981,8 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
     // emit the `enzymexla.jit_call` op to `(or|un)mqr` wrapper
     SmallVector<bool> isColMajorArr = {true, true, true};
     SmallVector<int64_t> operandRanks = {2, 1, 2};
-    SmallVector<int64_t> outputRanks = {2};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
-    auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
     SmallVector<Attribute> aliases;
     aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, {}, 2, {}));
@@ -1003,7 +992,6 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
         mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn), ValueRange{A, tau, C},
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
-        /*result_layouts=*/resultLayouts,
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
@@ -1265,10 +1253,8 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
     // emit the `enzymexla.jit_call` op to `(or|un)mqr` wrapper
     SmallVector<bool> isColMajorArr = {true, true, true};
     SmallVector<int64_t> operandRanks = {2, 2, 2};
-    SmallVector<int64_t> outputRanks = {2};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
-    auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
     SmallVector<Attribute> aliases;
     aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, {}, 2, {}));
@@ -1278,7 +1264,6 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
         mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn), ValueRange{V, T, C},
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
-        /*result_layouts=*/resultLayouts,
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
@@ -1362,8 +1347,7 @@ private:
       RankedTensorType inputType, RankedTensorType blasPivotType,
       RankedTensorType blasInfoType, Type blasIntType,
       const std::string &fnName, enzymexla::GetrfOp op,
-      ArrayAttr operandLayouts, ArrayAttr resultLayouts,
-      ArrayAttr outputOperandAliases) const {
+      ArrayAttr operandLayouts, ArrayAttr outputOperandAliases) const {
     auto ctx = op->getContext();
 
     OpBuilder::InsertionGuard guard(rewriter);
@@ -1404,7 +1388,6 @@ private:
         ValueRange{mSize, nSize, input, mSize, pivot, info},
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
-        /*result_layouts=*/resultLayouts,
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/outputOperandAliases,
@@ -1546,9 +1529,6 @@ private:
     auto operandLayouts =
         getSHLOLayout(rewriter, SmallVector<int64_t, 6>{0, 0, 2, 0, 1, 0},
                       SmallVector<bool, 6>(6, true), 2);
-    auto resultLayouts =
-        getSHLOLayout(rewriter, SmallVector<int64_t, 3>{2, 1, 0},
-                      SmallVector<bool, 3>(3, true), 2);
 
     Value factorizedResult, pivotResult, infoResult;
     static int64_t fnNum = 0;
@@ -1557,7 +1537,7 @@ private:
     func::FuncOp func = createWrapperFuncOpCPULapack(
         rewriter, lapackFnWrapper, unbatchedInputType, unbatchedBLASPivotType,
         unbatchedBLASInfoType, blasIntType, wrapperFnName, op, operandLayouts,
-        resultLayouts, rewriter.getArrayAttr(aliases));
+        rewriter.getArrayAttr(aliases));
     if (!func)
       return rewriter.notifyMatchFailure(op,
                                          "failed to create wrapper function");
@@ -1719,6 +1699,8 @@ private:
                                     permutationX.getType().getElementType()),
               permutationX)),
           scatterDims);
+      // LAPACK guarantees every pivot lands in [1, n].
+      permutationUpdate2->setAttr("enzymexla.inbounds", rewriter.getUnitAttr());
 
       {
         OpBuilder::InsertionGuard guard(rewriter);
@@ -1952,7 +1934,7 @@ func::FuncOp createSVDAlgorithmWrapperFuncOpCPULapack(
     RankedTensorType inputType, RankedTensorType UType, RankedTensorType SType,
     RankedTensorType VType, Type infoType, Type blasIntType,
     const std::string &fnName, OpTy op, ArrayAttr operandLayouts,
-    ArrayAttr resultLayouts, ArrayAttr outputOperandAliases) {
+    ArrayAttr outputOperandAliases) {
   auto ctx = op->getContext();
 
   OpBuilder::InsertionGuard guard(rewriter);
@@ -2020,7 +2002,6 @@ func::FuncOp createSVDAlgorithmWrapperFuncOpCPULapack(
       ValueRange{mSize, nSize, input, mSize, S, U, ldu, VT, ldvt, info},
       rewriter.getStringAttr(""),
       /*operand_layouts=*/operandLayouts,
-      /*result_layouts=*/resultLayouts,
       /*arg_attrs=*/nullptr,
       /*res_attrs=*/nullptr,
       /*output_operand_aliases=*/outputOperandAliases,
@@ -2357,9 +2338,7 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
 
   SmallVector<bool> isColMajorArr(10, true);
   SmallVector<int64_t> operandRanks = {0, 0, 2, 0, 1, 2, 0, 2, 0, 0};
-  SmallVector<int64_t> outputRanks = {2, 1, 2, 0, 2};
   auto operandLayouts = getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
-  auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
   SmallVector<Attribute> aliases;
   aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
@@ -2412,7 +2391,7 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
   func::FuncOp func = createSVDAlgorithmWrapperFuncOpCPULapack(
       rewriter, wrapper_fn, unbatchedInputType, unbatchedUResultType,
       unbatchedSResultType, unbatchedVTResultType, unbatchedInfoType,
-      blasIntType, shlo_wrapper_fn, op, operandLayouts, resultLayouts,
+      blasIntType, shlo_wrapper_fn, op, operandLayouts,
       rewriter.getArrayAttr(aliases));
   if (!func)
     return rewriter.notifyMatchFailure(op, "failed to create wrapper function");
@@ -2840,17 +2819,15 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
 
     SmallVector<bool> isColMajorArr = {true, true, true, true, true};
     SmallVector<int64_t> operandRanks = {0, 0, 2, 0, 0};
-    SmallVector<int64_t> outputRanks = {2, 0};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
-    auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
     SmallVector<Attribute> aliases{
         // `A` is overwritten with the output
-        stablehlo::OutputOperandAliasAttr::get(ctx, {}, 2, {}),
+        stablehlo::OutputOperandAliasAttr::get(ctx, {0}, 2, {}),
 
         // `info` is output argument
-        stablehlo::OutputOperandAliasAttr::get(ctx, {}, 4, {}),
+        stablehlo::OutputOperandAliasAttr::get(ctx, {1}, 4, {}),
     };
 
     auto jit_call_op = enzymexla::JITCallOp::create(
@@ -2859,7 +2836,6 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
         ValueRange{uplo, n, input, lda, info.getResult()},
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
-        /*result_layouts=*/resultLayouts,
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),

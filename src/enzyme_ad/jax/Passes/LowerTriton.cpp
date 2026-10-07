@@ -1,4 +1,5 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -10,6 +11,15 @@
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "llvm/ADT/DenseMap.h"
+
+#ifndef ENZYME_JAX_ENABLE_TRITON
+#define ENZYME_JAX_ENABLE_TRITON 0
+#endif
+
+#if ENZYME_JAX_ENABLE_TRITON
+#include "mlir/Interfaces/FunctionInterfaces.h"
+#include "triton/Dialect/Triton/IR/Types.h"
+#endif
 
 #define DEBUG_TYPE "lower-triton"
 
@@ -50,6 +60,31 @@ void collectTritonKernels(
 
   tritonKernels[op] = {wrappedMod, ttModOP};
   return;
+}
+
+// XLA's Triton custom call passes the kernel one pointer per operand followed
+// by one per result, even when a result aliases an operand. A tt_ext.call's
+// kernel takes only its operands and writes its (aliased) results in place, so
+// give the kernel in `mod` an unused pointer argument for each result.
+static LogicalResult appendResultArguments(ModuleOp mod, StringRef funcName,
+                                           triton_ext::TritonCallOp call) {
+#if ENZYME_JAX_ENABLE_TRITON
+  auto fn = dyn_cast_or_null<FunctionOpInterface>(
+      SymbolTable::lookupSymbolIn(mod, funcName));
+  if (!fn)
+    return call.emitError()
+           << "Failed to find function '" << funcName << "' in module";
+  unsigned index = fn.getNumArguments();
+  for (Type resultType : call.getResultTypes()) {
+    Type pointerType = triton::PointerType::get(
+        getElementTypeOrSelf(resultType), triton::PtrAddrSpace::Global);
+    if (failed(fn.insertArgument(index++, pointerType, DictionaryAttr(),
+                                 call.getLoc())))
+      return call.emitError()
+             << "Failed to add result arguments to '" << funcName << "'";
+  }
+#endif
+  return success();
 }
 
 static std::optional<uint64_t> getIntFromConstant(Value v) {
@@ -97,16 +132,22 @@ struct LowerTritonPass
                         .getInt();
       }
 
+      std::string funcName = ttCallOp.getFn().getLeafReference().str();
+
+      OwningOpRef<ModuleOp> kernelMod = cast<ModuleOp>(innerMod->clone());
+      if (failed(appendResultArguments(*kernelMod, funcName, ttCallOp))) {
+        anyFailed = true;
+        continue;
+      }
+
       std::string bytecode;
       llvm::raw_string_ostream os(bytecode);
-      if (failed(writeBytecodeToFile(innerMod, os))) {
+      if (failed(writeBytecodeToFile(*kernelMod, os))) {
         ttCallOp.emitError("Failed to write bytecode");
         anyFailed = true;
         continue;
       }
       os.flush();
-
-      std::string funcName = ttCallOp.getFn().getLeafReference().str();
 
       auto gx = getIntFromConstant(ttCallOp.getGridx());
       auto gy = getIntFromConstant(ttCallOp.getGridy());
@@ -147,10 +188,15 @@ struct LowerTritonPass
           ::mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI);
 
       if (auto attr = ttCallOp.getOperandLayoutsAttr()) {
-        customCall.setOperandLayoutsAttr(mlir::cast<ArrayAttr>(attr));
-      }
-      if (auto attr = ttCallOp.getResultLayoutsAttr()) {
-        customCall.setResultLayoutsAttr(mlir::cast<ArrayAttr>(attr));
+        auto operandLayouts = mlir::cast<ArrayAttr>(attr);
+        auto resultLayouts = getAliasedResultLayouts(
+            ttCallOp, operandLayouts, ttCallOp.getOutputOperandAliasesAttr());
+        if (!resultLayouts) {
+          anyFailed = true;
+          continue;
+        }
+        customCall.setOperandLayoutsAttr(operandLayouts);
+        customCall.setResultLayoutsAttr(resultLayouts);
       }
       if (auto attr = ttCallOp.getOutputOperandAliasesAttr()) {
         customCall.setOutputOperandAliasesAttr(mlir::cast<ArrayAttr>(attr));

@@ -263,7 +263,19 @@ def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {
         /*CLI argument=*/"max-operation-threshold",
         /*type=*/"int",
         /*default=*/"-1",
-        /*description=*/"Only unroll if total operations is less than this value. If -1, no limit.">
+        /*description=*/"Only unroll if total operations is less than this value. If -1, no limit.">,
+    Option<
+        /*C++ variable name=*/"maxBoundedIterations",
+        /*CLI argument=*/"max-bounded-iterations",
+        /*type=*/"int",
+        /*default=*/"-1",
+        /*description=*/"A loop whose limit is only bounded unrolls to at most this many trips. If -1, as max-num-iterations.">,
+    Option<
+        /*C++ variable name=*/"boundedGuardIf",
+        /*CLI argument=*/"bounded-guard-if",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Put the copies past a bounded loop's certain trips under a stablehlo.if rather than run them and select their results.">
   ];
 }
 
@@ -923,6 +935,31 @@ def LowerJITPass : Pass<"lower-jit"> {
   ];
 }
 
+def MapSymbolPass : Pass<"map-symbol"> {
+  let summary = "Register a symbol to address mapping";
+  let description = [{
+    Register a symbol to address mapping, mainly used for JIT.
+
+    This pass is not thought to be used on a regular pipeline. It exists because
+    some transformation passes fail to run when run through `enzymexlamlir-opt`. 
+    As they rely on taking symbols from the symbol table, it fails because such
+    symbols are registered on runtime initialization by a frontend (e.g.
+    Reactant).
+
+    This pass is a workaround to register the symbols with mock values as if you
+    were calling `EnzymeJaxMapSymbol`. This pass should only be used for
+    testing.
+  }];
+  let dependentDialects = [];
+  let options = [
+    ListOption<
+      /*C++ variable name=*/"symbols",
+      /*CLI argument=*/"symbols",
+      /*type=*/"std::string",
+      /*description=*/"List of symbols to register with mock values">
+  ];
+}
+
 //===----------------------------------------------------------------------===//
 // LLVMToControlFlow
 //===----------------------------------------------------------------------===//
@@ -1011,6 +1048,14 @@ def AffineCFG : Pass<"affine-cfg"> {
     "affine::AffineDialect",
     "enzyme::EnzymeDialect",
   ];
+  let options = [
+    Option<
+      /*C++ variable name=*/"enable_split_on_affine_if_constants",
+      /*CLI argument=*/"enable_split_on_affine_if_constants",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Enable the SplitOnAffineIfConstants pattern">,
+    ];
 }
 
 def CuDNNHLOOpt : Pass<"enzymexla-cudnn-hlo-opt"> {
@@ -1318,6 +1363,46 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            /*description=*/
            "Raise a constant-bound loop as a while instead of unrolling when "
            "its nested unrolled op count exceeds this. -1 for no budget">,
+       Option<
+           /*C++ variable name=*/"specialize_loop_bounds",
+           /*CLI argument=*/"specialize_loop_bounds",
+           /*type=*/"bool",
+           /*default=*/"true",
+           /*description=*/
+           "Mark the scalar arguments a raised while loop's exit test reads "
+           "as scalars the runtime specializes the executable over (trailing "
+           "xla_wrapper inputs, num_specialized)">,
+       Option<
+           /*C++ variable name=*/"specialize_index_strides",
+           /*CLI argument=*/"specialize_index_strides",
+           /*type=*/"bool",
+           /*default=*/"false",
+           /*description=*/
+           "Specialize the kernel over a scalar argument an access index reads, "
+           "such as a stride, so the index folds to a constant">,
+  ];
+}
+
+def XLAMegakernelizePass : Pass<"xla-megakernelize", "ModuleOp"> {
+  let summary = "Fuse sequential XLA wrappers";
+  let description = [{
+    Fuse compatible sequential enzymexla.xla_wrapper operations. The fused
+    wrapper takes the union of their inputs and threads updated tensor state
+    through equal buffer identities. Distinct inputs keep separate tensor
+    state. Skip wrappers that still have duplicate inputs. Apply the registered
+    XLA wrapper canonicalization patterns.
+
+    New inputs must dominate the first wrapper. Argument and result metadata
+    and specialized scalar inputs are not composed.
+
+    The resulting function is compiled as one XLA program. Fusion into GPU
+    kernels remains a backend decision.
+  }];
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "memref::MemRefDialect",
+    "stablehlo::StablehloDialect",
   ];
 }
 
@@ -1422,6 +1507,12 @@ def AutoBatchingPass : Pass<"auto-batching"> {
       /*type=*/"bool",
       /*default=*/"true",
       /*description=*/"remove loop carried deps from load operations">,
+    Option<
+      /*C++ variable name=*/"parallel_while_to_batched_scatter_passes",
+      /*CLI argument=*/"parallel_while_to_batched_scatter_passes",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"A parallel while of a raised kernel with a constant trip count becomes a batched scatter">,
     Option<
         /*C++ variable name=*/"max_iterations",
         /*CLI argument=*/"max_iterations",

@@ -24,7 +24,7 @@ namespace polly {
 llvm::Pass *createPruneUnprofitableWrapperPass();
 
 struct PruneUnprofitablePass final
-    : llvm::PassInfoMixin<PruneUnprofitablePass> {
+    : llvm::OptionalPassInfoMixin<PruneUnprofitablePass> {
   PruneUnprofitablePass() {}
 
   llvm::PreservedAnalyses run(Scop &S, ScopAnalysisManager &SAM,

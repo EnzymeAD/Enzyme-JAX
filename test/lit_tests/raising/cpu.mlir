@@ -13,9 +13,9 @@ module {
       ^bb1:  // pred: ^bb0
         %3 = llvm.zext %1 : i32 to i64
         %4 = llvm.getelementptr inbounds %arg0[%3] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
-        %5 = llvm.load %4 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+        %5 = llvm.load %4 <alignment = 1> : !llvm.ptr<1> -> i64
         %6 = llvm.mul %5, %5 : i64
-        llvm.store %6, %4 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+        llvm.store %6, %4 <alignment = 1> : i64, !llvm.ptr<1>
         scf.yield
       ^bb2:  // pred: ^bb0
         llvm.call fastcc @throw_boundserror_2676() : () -> ()
@@ -25,7 +25,7 @@ module {
     return
   }
   func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
-    %0 = enzymexla.jit_call @kern$par0 (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
+    %0 = enzymexla.jit_call @kern$par0 (%arg0) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<64xi64>) -> tensor<64xi64>
     return %0 : tensor<64xi64>
   }
 }

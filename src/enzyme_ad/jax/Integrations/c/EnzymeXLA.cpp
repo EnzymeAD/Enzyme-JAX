@@ -364,6 +364,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
                                    int64_t maxConstThreshold,
                                    int64_t whileUnrollThreshold) {
   list.push_back("compare_op_canon<16>");
+  list.push_back("compare_bool_const<16>");
+  list.push_back("compare_ext<16>");
   list.push_back("transpose_transpose<16>");
   list.push_back("broadcast_in_dim_op_canon<16>");
   list.push_back("convert_op_canon<16>");
@@ -371,6 +373,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("chained_dynamic_broadcast_in_dim_canonicalization<16>");
   list.push_back("dynamic_broadcast_in_dim_all_dims_non_expanding<16>");
   list.push_back("noop_reduce_op_canon<16>");
+  list.push_back("reduce_const_prop<16>");
   list.push_back("noop_reduce_window_op_canon<16>");
   list.push_back("empty_reduce_op_canon<16>");
   list.push_back("dynamic_reshape_op_canon<16>");
@@ -524,13 +527,14 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("dus_dus");
   list.push_back("dus_dus_concat");
   list.push_back("abs_positive_simplify");
-  list.push_back("transpose_elementwise_transpose");
+  list.push_back("transpose_elementwise_transpose(1)");
   list.push_back("select_comp_iota_const_simplify");
   list.push_back("sign_abs_simplify<1>");
   list.push_back("broadcastindim_is_reshape");
   list.push_back("reduce_window_wrap<1>");
   list.push_back("slice_reduce_window<1>");
   list.push_back("while_deadresult");
+  list.push_back("while_duplicate_carried");
   list.push_back("while_idempotent_dus");
   list.push_back("while_dus");
   list.push_back("while_updatewithoutcorners");
@@ -576,6 +580,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("concat_reshape_reduce");
   list.push_back("concat_elementwise");
   list.push_back("reduce_reduce");
+  list.push_back("reduce_halving_reduce_window");
   list.push_back("conj_real");
   // Creates correctness error.
   // list.push_back("convert_mul_convert");
@@ -612,7 +617,6 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("concatenate_subtract_to_subtract_pad");
   list.push_back("concatenate_add_to_add_pad");
   list.push_back("concatenate_broadcast_in_dim");
-  list.push_back("compare_abs");
   list.push_back("compare_convert");
   list.push_back("add_selects");
   list.push_back("subtract_multiply_const_to_add_mul_const");
@@ -696,6 +700,7 @@ static void addScatterGatherPasses(std::vector<std::string> &list,
   list.push_back("gather_elementwise");
   list.push_back("elementwise_gather");
   list.push_back("gather_of_scatter_simplify");
+  list.push_back("scatter_of_gather_identity");
   // const prop patterns
   list.push_back("gather_const_prop");
   list.push_back(passWithArg("scatter_const_fold", maxConstThreshold));
@@ -741,6 +746,7 @@ static void addLoopRaisingPasses(std::vector<std::string> &list) {
   list.push_back("greedy_while_loop_batch_fission");
   list.push_back("while_elementwise_reduction_to_reduce");
   list.push_back("remove_loop_carried_dependencies_from_while_load_operations");
+  list.push_back("parallel_while_to_batched_scatter");
 }
 
 static void addLICMPasses(std::vector<std::string> &list,
@@ -975,6 +981,7 @@ static void addNoNanPasses(std::vector<std::string> &list, bool noNan) {
   list.push_back(passWithArg("no_nan_add_sub_simplify", noNan));
   list.push_back(passWithArg("no_nan_mul_simplify", noNan));
   list.push_back(passWithArg("no_nan_div_simplify", noNan));
+  list.push_back(passWithArg("no_nan_compare_abs", noNan));
 }
 
 static void addAllFinitePasses(std::vector<std::string> &list) {

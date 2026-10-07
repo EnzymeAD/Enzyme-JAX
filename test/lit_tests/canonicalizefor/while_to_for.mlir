@@ -123,7 +123,7 @@ module {
         %29 = arith.addi %28, %27 : i64
         %30 = llvm.getelementptr inbounds %0[%29] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
         %31 = llvm.load %30 : !llvm.ptr<1> -> f64
-        %32 = arith.divf %31, %cst {fastmathFlags = #llvm.fastmath<none>} : f64
+        %32 = arith.divf %31, %cst : f64
         llvm.store %32, %30 : f64, !llvm.ptr<1>
         %33 = arith.subi %22, %c1_i64 : i64
         %34 = arith.muli %33, %c32_i64 : i64
@@ -132,16 +132,16 @@ module {
         %37 = arith.addi %20, %c7_i64 : i64
         %38 = arith.addi %37, %27 : i64
         %39:2 = scf.while (%arg4 = %c2_i64, %arg5 = %cst) : (i64, f64) -> (i64, f64) {
-          %40 = arith.divf %cst_0, %arg5 {fastmathFlags = #llvm.fastmath<none>} : f64
+          %40 = arith.divf %cst_0, %arg5 : f64
           %41 = arith.subi %arg4, %c1_i64 : i64
           %42 = arith.muli %41, %c1024_i64 : i64
           %43 = arith.addi %36, %42 : i64
           %44 = llvm.getelementptr inbounds %1[%43] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
           llvm.store %40, %44  : f64, !llvm.ptr<1>
-          %45 = arith.mulf %40, %cst {fastmathFlags = #llvm.fastmath<none>} : f64
-          %46 = arith.addf %45, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f64
+          %45 = arith.mulf %40, %cst : f64
+          %46 = arith.addf %45, %cst_1 : f64
           %47 = math.absf %46 : f64
-          %48 = arith.cmpf olt, %cst_2, %47 {fastmathFlags = #llvm.fastmath<none>} : f64
+          %48 = arith.cmpf olt, %cst_2, %47 : f64
           %49 = arith.addi %arg4, %c6_i64 : i64
           %50 = arith.muli %49, %c2304_i64 : i64
           %51 = arith.addi %38, %50 : i64

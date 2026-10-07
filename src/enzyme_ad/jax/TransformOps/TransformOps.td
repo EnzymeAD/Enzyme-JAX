@@ -27,7 +27,7 @@ class EnzymeHLOPatternOp<string mnemonic, list<Trait> traits = []>
             traits)> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit);
   list<string> patterns = [];
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
 }
 
 class EnzymeHLOParameterizedPatternOp<string mnemonic, list<Trait> traits = []>
@@ -112,7 +112,7 @@ def ApplySliceSlicePatterns : EnzymeHLOPatternOp<
 def ApplyPadSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
     "pad_simplify"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -360,7 +360,7 @@ def ApplyDotReshapeDotPatterns : EnzymeHLOPatternOp<
 def ApplyConcatConstPropPatterns : EnzymeHLOParameterizedPatternOp<
     "concat_const_prop"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -374,7 +374,7 @@ def ApplyConcatConstPropPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyScatterConstFoldPatterns : EnzymeHLOParameterizedPatternOp<
     "scatter_const_fold"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -388,7 +388,7 @@ def ApplyScatterConstFoldPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyDynamicUpdateSliceConstPropPatterns : EnzymeHLOParameterizedPatternOp<
     "dynamic_update_slice_const_prop"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -596,7 +596,7 @@ def ApplyConcatReshapeElementwisePatterns : EnzymeHLOPatternOp<
 def ApplyNoNanCompareSimplify : EnzymeHLOParameterizedPatternOp<
     "no_nan_compare_simplify"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -611,7 +611,7 @@ def ApplyNoNanCompareSimplify : EnzymeHLOParameterizedPatternOp<
 def ApplyNoNanSelfSubSimplify : EnzymeHLOParameterizedPatternOp<
     "no_nan_self_sub_simplify"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -627,7 +627,7 @@ def ApplyNoNanSelfSubSimplify : EnzymeHLOParameterizedPatternOp<
 def ApplyNoNanAddSubSimplify : EnzymeHLOParameterizedPatternOp<
     "no_nan_add_sub_simplify"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -642,7 +642,7 @@ def ApplyNoNanAddSubSimplify : EnzymeHLOParameterizedPatternOp<
 def ApplyNoNanMulSimplify : EnzymeHLOParameterizedPatternOp<
     "no_nan_mul_simplify"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -657,7 +657,7 @@ def ApplyNoNanMulSimplify : EnzymeHLOParameterizedPatternOp<
 def ApplyNoNanDivSimplify : EnzymeHLOParameterizedPatternOp<
     "no_nan_div_simplify"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -672,7 +672,7 @@ def ApplyNoNanDivSimplify : EnzymeHLOParameterizedPatternOp<
 def ApplyNoNanZeroBasePowSimplify : EnzymeHLOParameterizedPatternOp<
     "no_nan_zero_base_pow_simplify"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -702,7 +702,7 @@ def ApplyFactorScalarsInDotGeneral : EnzymeHLOPatternOp<
 def ApplyTransposeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
     "transpose_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -717,7 +717,7 @@ def ApplyTransposeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyTransposeLikeBroadcastElementwisePatterns : EnzymeHLOParameterizedPatternOp<
     "transpose_like_broadcast_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -780,9 +780,19 @@ def ApplyCommonAssociativeCommutativeOpReorderPatterns : EnzymeHLOPatternOp<
   let patterns = ["CommonAssociativeCommutativeOpReorder"];
 }
 
-def ApplyTransposeElementwiseTransposeAbsPatterns : EnzymeHLOPatternOp<
+def ApplyTransposeElementwiseTransposeAbsPatterns : EnzymeHLOParameterizedPatternOp<
     "transpose_elementwise_transpose"> {
-  let patterns = ["TransposeElementwiseTransposeSimplify"];
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "prop-dict attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
 }
 
 def TransposeBroadcastInDimToBroadcastInDimPatterns : EnzymeHLOPatternOp<
@@ -1113,9 +1123,19 @@ def ApplyCSEConjPatterns : EnzymeHLOPatternOp<
   let patterns = ["CSE<chlo::ConjOp>"];
 }
 
-def CompareAbs : EnzymeHLOPatternOp<
-    "compare_abs"> {
-  let patterns = ["CompareAbs"];
+def ApplyNoNanCompareAbs : EnzymeHLOParameterizedPatternOp<
+    "no_nan_compare_abs"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "prop-dict attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
 }
 
 def CompareMul : EnzymeHLOPatternOp<
@@ -1136,6 +1156,11 @@ def AddSelects : EnzymeHLOPatternOp<
 def CompareOpCanonPatterns : EnzymeHLOPatternOp<
     "compare_op_canon"> {
   let patterns = ["CompareOpCanon"];
+}
+
+def CompareBoolConstPatterns : EnzymeHLOPatternOp<
+    "compare_bool_const"> {
+  let patterns = ["CompareBoolConst"];
 }
 
 def CompareExtPatterns : EnzymeHLOPatternOp<
@@ -1171,6 +1196,11 @@ def DynamicBroadcastInDimAlDimsNonExpandingPatterns : EnzymeHLOPatternOp<
 def NoopReduceOpCanonPatterns : EnzymeHLOPatternOp<
     "noop_reduce_op_canon"> {
   let patterns = ["NoopReduceOpCanon"];
+}
+
+def ReduceConstPropPatterns : EnzymeHLOPatternOp<
+    "reduce_const_prop"> {
+  let patterns = ["ReduceConstProp"];
 }
 
 def NoopReduceWindowOpCanonPatterns : EnzymeHLOPatternOp<
@@ -1277,7 +1307,7 @@ def ApplyReverseTransposePatterns : EnzymeHLOPatternOp<
 def ApplyWhileSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
     "while_simplify"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1292,7 +1322,7 @@ def ApplyWhileSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyWhileLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "while_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1307,7 +1337,7 @@ def ApplyWhileLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyLoopUnswitchPatterns : EnzymeHLOParameterizedPatternOp<
     "loop_unswitch"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
     static getPossibleAttrCombinations(::mlir::Builder &builder) {
@@ -1321,7 +1351,7 @@ def ApplyLoopUnswitchPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplySliceLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "slice_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1336,7 +1366,7 @@ def ApplySliceLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyDotGeneralLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "dot_general_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1351,7 +1381,7 @@ def ApplyDotGeneralLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyReverseLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "reverse_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1366,7 +1396,7 @@ def ApplyReverseLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyReduceLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "reduce_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1381,7 +1411,7 @@ def ApplyReduceLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyReduceWindowLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "reduce_window_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1396,7 +1426,7 @@ def ApplyReduceWindowLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyDUSLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "dus_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1411,7 +1441,7 @@ def ApplyDUSLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyPadLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "pad_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1426,7 +1456,7 @@ def ApplyPadLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyElementwiseLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "elementwise_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1441,7 +1471,7 @@ def ApplyElementwiseLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyConcatenateLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "concatenate_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1456,7 +1486,7 @@ def ApplyConcatenateLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyBroadcastInDimLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "broadcastindim_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1471,7 +1501,7 @@ def ApplyBroadcastInDimLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyReshapeLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "reshape_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1486,7 +1516,7 @@ def ApplyReshapeLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyTransposeLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "transpose_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1501,7 +1531,7 @@ def ApplyTransposeLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyConvolutionLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "convolution_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1516,7 +1546,7 @@ def ApplyConvolutionLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyDynamicSliceLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "dynamic_slice_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1531,7 +1561,7 @@ def ApplyDynamicSliceLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyGatherLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "gather_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1546,7 +1576,7 @@ def ApplyGatherLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyScatterLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "scatter_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1561,7 +1591,7 @@ def ApplyScatterLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyIotaLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "iota_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1576,7 +1606,7 @@ def ApplyIotaLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyRotateLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "rotate_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1591,7 +1621,7 @@ def ApplyRotateLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyWrapLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "wrap_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1606,7 +1636,7 @@ def ApplyWrapLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyExtendLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "extend_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1768,6 +1798,10 @@ def WhileDeadResultPatterns : EnzymeHLOPatternOp<
     "while_deadresult"> {
   let patterns = ["WhileDeadResults"];
 }
+def WhileDuplicateCarriedPatterns : EnzymeHLOPatternOp<
+    "while_duplicate_carried"> {
+  let patterns = ["WhileDuplicateCarried"];
+}
 def ApplyRemSimplifyPatterns : EnzymeHLOPatternOp<
     "rem_simplify"> {
   let patterns = ["RemSimplify"];
@@ -1901,6 +1935,12 @@ def WhileOpInductionReplacementPatterns : EnzymeHLOPatternOp<
   let patterns = ["WhileOpInductionReplacement"];
 }
 
+def ParallelWhileToBatchedScatterPatterns : EnzymeHLOPatternOp<
+  "parallel_while_to_batched_scatter"
+> {
+  let patterns = ["ParallelWhileToBatchedScatter"];
+}
+
 def TransposeWhilePatterns : EnzymeHLOPatternOp<
   "transpose_while"
 > {
@@ -1987,7 +2027,7 @@ def ApplyReshapeDUSPatterns : EnzymeHLOPatternOp<
 def ApplyReshapeSlicePatterns : EnzymeHLOParameterizedPatternOp<
     "reshape_slice"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -2002,7 +2042,7 @@ def ApplyReshapeSlicePatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyReshapeDynamicSlicePatterns : EnzymeHLOParameterizedPatternOp<
     "reshape_dynamic_slice"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -2017,7 +2057,7 @@ def ApplyReshapeDynamicSlicePatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyReshapeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
     "reshape_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -2032,7 +2072,7 @@ def ApplyReshapeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyReshapeElementwiseOnlyFusiblePatterns : EnzymeHLOParameterizedPatternOp<
     "reshape_elementwise_only_fusible"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -2179,7 +2219,7 @@ def TransposeSelect : EnzymeHLOPatternOp<
 def ApplySumToConvPatterns : EnzymeHLOParameterizedPatternOp<
     "sum_to_conv"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -2208,7 +2248,7 @@ def SumToReduceWindow : EnzymeHLOPatternOp<
 def ApplyIotaSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
     "iota_simplify"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -2222,7 +2262,7 @@ def ApplyIotaSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyRecognizeFromConstantPatterns : EnzymeHLOParameterizedPatternOp<
     "recognize_from_constant"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -2236,7 +2276,7 @@ def ApplyRecognizeFromConstantPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyBroadcastInDimSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
     "broadcast_in_dim_simplify"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -2250,7 +2290,7 @@ def ApplyBroadcastInDimSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
 def SelectOpCanonPatterns : EnzymeHLOParameterizedPatternOp<
     "select_op_canon"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -2264,7 +2304,7 @@ def SelectOpCanonPatterns : EnzymeHLOParameterizedPatternOp<
 def ConcatenateOpCanonPatterns : EnzymeHLOParameterizedPatternOp<
     "concatenate_op_canon"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -2279,7 +2319,7 @@ def ConcatenateOpCanonPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyPadDotGeneralPatterns : EnzymeHLOParameterizedPatternOp<
     "pad_dot_general"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
-  let assemblyFormat = "`postPad` `=` $parameter attr-dict";
+  let assemblyFormat = "`postPad` `=` $parameter prop-dict attr-dict";
   // TODO: the following can be automated by tablegen or some sort of
   // lighter-weight introspection of searchable attributes.
   let extraClassDeclaration = [{
@@ -2386,7 +2426,7 @@ def ExtendSplat : EnzymeHLOPatternOp<
 def ExtendUnaryElementwise : EnzymeHLOParameterizedPatternOp<
   "extend_unary_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -2409,7 +2449,7 @@ def ExtendElementwise : EnzymeHLOPatternOp<
 def WrapUnaryElementwise : EnzymeHLOParameterizedPatternOp<
   "wrap_unary_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -2652,6 +2692,11 @@ def ConcatTranspose : EnzymeHLOPatternOp<
 def ReduceReduce : EnzymeHLOPatternOp<
   "reduce_reduce"> {
   let patterns = ["ReduceReduce"];
+}
+
+def ReduceHalvingReduceWindow : EnzymeHLOPatternOp<
+  "reduce_halving_reduce_window"> {
+  let patterns = ["ReduceHalvingReduceWindow"];
 }
 
 def ConjReal : EnzymeHLOPatternOp<
@@ -2940,7 +2985,7 @@ def ApplyTrivialReduceWindowToReduceOpPatterns : EnzymeHLOPatternOp<
 
 def ApplySelfSubtractToConvolutionLikePatterns : EnzymeHLOParameterizedPatternOp<"self_subtract_to_convolution_like"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -2954,7 +2999,7 @@ def ApplySelfSubtractToConvolutionLikePatterns : EnzymeHLOParameterizedPatternOp
 
 def ApplySelfAddToConvolutionLikePatterns : EnzymeHLOParameterizedPatternOp<"self_add_to_convolution_like"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -2968,7 +3013,7 @@ def ApplySelfAddToConvolutionLikePatterns : EnzymeHLOParameterizedPatternOp<"sel
 
 def ApplySelfMulToConvolutionLikePatterns : EnzymeHLOParameterizedPatternOp<"self_mul_to_convolution_like"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -3166,7 +3211,7 @@ def ApplyRemoveLoopCarriedDependenciesFromWhileLoadOperationsPatterns : EnzymeHL
 def EnzymeHLOUnroll : EnzymeHLOParameterizedPatternOp<
     "enzyme_hlo_unroll"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -3315,6 +3360,11 @@ def ApplyWhileElementwiseReductionToReducePatterns : EnzymeHLOPatternOp<
 def ApplyGatherOfScatterSimplifyPatterns : EnzymeHLOPatternOp<
     "gather_of_scatter_simplify"> {
   let patterns = ["GatherOfScatterSimplify"];
+}
+
+def ApplyScatterOfGatherIdentityPatterns : EnzymeHLOPatternOp<
+    "scatter_of_gather_identity"> {
+  let patterns = ["ScatterOfGatherIdentity"];
 }
 
 def ApplyDeleteDimsBroadcastPatterns : EnzymeHLOPatternOp<

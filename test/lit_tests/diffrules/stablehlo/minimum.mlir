@@ -34,27 +34,27 @@ func.func @main() {
   %done = stablehlo.constant dense<1.0> : tensor<4xf32>
 
   // fwd diff
-  %fwd_res_a:2 = enzyme.fwddiff @minimum(%a, %done, %b, %dzero) {
-    activity=[#enzyme<activity enzyme_dup>, #enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
-  } : (tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>)
+  %fwd_res_a:2 = enzyme.fwddiff @minimum(%a, %done, %b, %dzero) <{
+    activity=[#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
+  }> : (tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>)
 
   check.expect_almost_eq %fwd_res_a#0, %output : tensor<4xf32>
   check.expect_almost_eq %fwd_res_a#1, %expected_da : tensor<4xf32>
 
-  %fwd_res_b:2 = enzyme.fwddiff @minimum(%a, %dzero, %b, %done) {
-    activity=[#enzyme<activity enzyme_dup>, #enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
-  } : (tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>)
+  %fwd_res_b:2 = enzyme.fwddiff @minimum(%a, %dzero, %b, %done) <{
+    activity=[#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
+  }> : (tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>)
 
   check.expect_almost_eq %fwd_res_b#0, %output : tensor<4xf32>
   check.expect_almost_eq %fwd_res_b#1, %expected_db : tensor<4xf32>
 
   // rev diff
-  %rev_res:3 = enzyme.autodiff @minimum(%a, %b, %done) {
-    activity=[#enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
-  } : (tensor<4xf32>, tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>, tensor<4xf32>)
+  %rev_res:3 = enzyme.autodiff @minimum(%a, %b, %done) <{
+    activity=[#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
+  }> : (tensor<4xf32>, tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>, tensor<4xf32>)
 
   check.expect_almost_eq %rev_res#0, %output : tensor<4xf32>
   check.expect_almost_eq %rev_res#1, %expected_da : tensor<4xf32>

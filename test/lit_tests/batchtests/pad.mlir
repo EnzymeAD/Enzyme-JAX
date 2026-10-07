@@ -7,7 +7,7 @@ module {
     return %0 : tensor<19xf64>
   }
   func.func @main(%arg0: tensor<4x16xf64>) -> (tensor<4x19xf64>) {
-    %1 = enzyme.batch @pad(%arg0) {batch_shape = array<i64: 4>} : (tensor<4x16xf64>) -> (tensor<4x19xf64>)
+    %1 = enzyme.batch @pad(%arg0) <{batch_shape = array<i64: 4>}> : (tensor<4x16xf64>) -> (tensor<4x19xf64>)
     return %1 : tensor<4x19xf64>
   }
 }
@@ -24,7 +24,7 @@ module {
     return %0 : tensor<19xf64>
   }
   func.func @main(%arg0: tensor<4x16xf64>, %arg1: tensor<4xf64>) -> (tensor<4x19xf64>) {
-    %1 = enzyme.batch @pad2(%arg0, %arg1) {batch_shape = array<i64: 4>} : (tensor<4x16xf64>, tensor<4xf64>) -> (tensor<4x19xf64>)
+    %1 = enzyme.batch @pad2(%arg0, %arg1) <{batch_shape = array<i64: 4>}> : (tensor<4x16xf64>, tensor<4xf64>) -> (tensor<4x19xf64>)
     return %1 : tensor<4x19xf64>
   }
 }

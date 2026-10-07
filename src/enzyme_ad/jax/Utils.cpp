@@ -350,120 +350,6 @@ bool getEffectsAfter(Operation *op,
   return !conservative;
 }
 
-bool isCaptured(Value v, Operation *potentialUser = nullptr,
-                bool *seenuse = nullptr) {
-  SmallVector<Value> todo = {v};
-  while (todo.size()) {
-    Value v = todo.pop_back_val();
-    for (auto u : v.getUsers()) {
-      if (seenuse && u == potentialUser)
-        *seenuse = true;
-      if (isa<memref::LoadOp, LLVM::LoadOp, affine::AffineLoadOp>(u))
-        continue;
-      // if (isa<polygeist::CacheLoad>(u)) continue
-      if (auto s = dyn_cast<memref::StoreOp>(u)) {
-        if (s.getValue() == v)
-          return true;
-        continue;
-      }
-      if (auto s = dyn_cast<affine::AffineStoreOp>(u)) {
-        if (s.getValue() == v)
-          return true;
-        continue;
-      }
-      if (auto s = dyn_cast<LLVM::StoreOp>(u)) {
-        if (s.getValue() == v)
-          return true;
-        continue;
-      }
-      if (auto sub = dyn_cast<LLVM::GEPOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto sub = dyn_cast<LLVM::BitcastOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto sub = dyn_cast<LLVM::AddrSpaceCastOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto sub = dyn_cast<func::ReturnOp>(u)) {
-        continue;
-      }
-      if (auto sub = dyn_cast<LLVM::MemsetOp>(u)) {
-        continue;
-      }
-      if (auto sub = dyn_cast<LLVM::MemcpyOp>(u)) {
-        continue;
-      }
-      if (auto sub = dyn_cast<LLVM::MemmoveOp>(u)) {
-        continue;
-      }
-      if (auto sub = dyn_cast<memref::CastOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto sub = dyn_cast<memref::DeallocOp>(u)) {
-        continue;
-      }
-      // if (auto sub = dyn_cast<polygeist::SubIndexOp>(u)) {
-      //   todo.push_back(sub);
-      // }
-      if (auto sub = dyn_cast<enzymexla::Memref2PointerOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto sub = dyn_cast<enzymexla::Pointer2MemrefOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto cop = dyn_cast<LLVM::CallOp>(u)) {
-        if (auto callee = cop.getCallee()) {
-          if (getNonCapturingFunctions().count(callee->str()))
-            continue;
-        }
-      }
-      if (auto cop = dyn_cast<func::CallOp>(u)) {
-        if (getNonCapturingFunctions().count(cop.getCallee().str()))
-          continue;
-      }
-      return true;
-    }
-  }
-
-  return false;
-}
-
-Value getBase(Value v) {
-  while (true) {
-    // if (auto s = v.getDefiningOp<SubIndexOp>()) {
-    //   v = s.getSource();
-    //   continue;
-    // }
-    if (auto s = v.getDefiningOp<enzymexla::Memref2PointerOp>()) {
-      v = s.getSource();
-      continue;
-    }
-    if (auto s = v.getDefiningOp<enzymexla::Pointer2MemrefOp>()) {
-      v = s.getSource();
-      continue;
-    }
-    if (auto s = v.getDefiningOp<LLVM::GEPOp>()) {
-      v = s.getBase();
-      continue;
-    }
-    if (auto s = v.getDefiningOp<LLVM::BitcastOp>()) {
-      v = s.getArg();
-      continue;
-    }
-    if (auto s = v.getDefiningOp<LLVM::AddrSpaceCastOp>()) {
-      v = s.getArg();
-      continue;
-    }
-    if (auto s = v.getDefiningOp<memref::CastOp>()) {
-      v = s.getSource();
-      continue;
-    }
-    break;
-  }
-  return v;
-}
-
 bool isStackAlloca(Value v) {
   return v.getDefiningOp<memref::AllocaOp>() ||
          v.getDefiningOp<memref::AllocOp>() ||
@@ -505,9 +391,10 @@ bool mayWriteTo(Operation *op, Value val, bool ignoreBarrier) {
   // Calls which do not use a derived pointer of a known alloca, which is not
   // captured can not write to said memory.
   if (auto callOp = dyn_cast<CallOpInterface>(op)) {
-    auto base = getBase(val);
+    auto base = enzyme::oputils::getBaseObject(val);
     bool seenuse = false;
-    if (isStackAlloca(base) && !isCaptured(base, op, &seenuse) && !seenuse) {
+    if (isStackAlloca(base) &&
+        !enzyme::oputils::isCaptured(base, op, &seenuse) && !seenuse) {
       return false;
     }
   }
@@ -973,8 +860,8 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 
   // integer ops
   if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
-          stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp,
-          stablehlo::XorOp, stablehlo::NotOp>(op)) {
+          stablehlo::IotaOp, stablehlo::OrOp, stablehlo::XorOp,
+          stablehlo::NotOp>(op)) {
     return State::GUARANTEED;
   }
 
@@ -982,9 +869,10 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     return State::NOTGUARANTEED;
   }
 
-  // Any non-negative operation that produces a non-negative result
+  // Either non-negative operand guarantees a non-negative maximum or bitwise
+  // AND result. For AND, that operand clears the sign bit.
   // Here we recur on the rhs, as that is more likely to be a constant.
-  if (isa<stablehlo::MaxOp>(op)) {
+  if (isa<stablehlo::MaxOp, stablehlo::AndOp>(op)) {
     if (guaranteed(op->getOperand(1), rewriter)) {
       return State::GUARANTEED;
     }
@@ -1406,9 +1294,10 @@ bool mayReadFrom(Operation *op, Value val) {
     return false;
   }
   if (auto callOp = dyn_cast<CallOpInterface>(op)) {
-    auto base = getBase(val);
+    auto base = enzyme::oputils::getBaseObject(val);
     bool seenuse = false;
-    if (isStackAlloca(base) && !isCaptured(base, op, &seenuse) && !seenuse) {
+    if (isStackAlloca(base) &&
+        !enzyme::oputils::isCaptured(base, op, &seenuse) && !seenuse) {
       return false;
     }
   }
@@ -2938,8 +2827,13 @@ bool canMergeSlicesAlongAxis(int dimension, ArrayRef<int64_t> sliceStarts,
 
   for (int d = 0, ndims = sliceStarts.size(); d < ndims; ++d) {
     if (d == dimension) {
-      canMerge &= sliceLimits[d] == otherSliceStarts[d] &&
-                  sliceStrides[d] == otherSliceStrides[d];
+      // The merged slice keeps the first slice's stride, so the second slice
+      // must begin at the index the first would take next: one stride past
+      // its last element, not merely at its limit.
+      int64_t stride = sliceStrides[d];
+      int64_t taken = (sliceLimits[d] - sliceStarts[d] + stride - 1) / stride;
+      canMerge &= stride == otherSliceStrides[d] &&
+                  otherSliceStarts[d] == sliceStarts[d] + taken * stride;
     } else {
       canMerge &= sliceStarts[d] == otherSliceStarts[d] &&
                   sliceLimits[d] == otherSliceLimits[d] &&
@@ -3613,6 +3507,11 @@ Value ReshapeOpCreate(OpBuilder &builder, Location loc, Value input,
   if (inputTy.getShape() == shape) {
     return input;
   }
+
+  for (auto reshape = input.getDefiningOp<stablehlo::ReshapeOp>(); reshape;
+       reshape = reshape.getOperand().getDefiningOp<stablehlo::ReshapeOp>())
+    if (reshape.getOperand().getType().getShape() == shape)
+      return reshape.getOperand();
 
   RankedTensorType resultTy =
       RankedTensorType::get(shape, inputTy.getElementType());

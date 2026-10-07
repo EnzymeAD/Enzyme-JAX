@@ -1,11 +1,11 @@
 // RUN: enzymexlamlir-opt %s -tessera-apply-pdl | FileCheck %s
 
 module {
-  tessera.define @eigen.mag(%arg0 : f32, %arg1 : f32, %arg2 : f32) -> f32 attributes {byRefTypes = [unit, unit, unit], pure = true} {
+  tessera.define @eigen.mag(%arg0 : f32, %arg1 : f32, %arg2 : f32) -> f32 attributes {argModes = [unit, unit, unit], pure = true} {
       tessera.return %arg0 : f32
   }
   
-  tessera.define @arith.negf(%arg0 : f32) -> f32 attributes {byRefTypes = [unit], pure = true} {
+  tessera.define @arith.negf(%arg0 : f32) -> f32 attributes {argModes = [unit], pure = true} {
       tessera.return %arg0 : f32
   }
 
@@ -19,19 +19,19 @@ module {
     pdl.pattern : benefit(1) {
       %0 = operand
       %1 = attribute = @arith.negf
-      %2 = type
-      %3 = operation "tessera.call"(%0 : !pdl.value)  {"callee" = %1} -> (%2 : !pdl.type)
+      %2 = types
+      %3 = operation "tessera.call"(%0 : !pdl.value)  {"callee" = %1} -> (%2 : !pdl.range<type>)
       %4 = result 0 of %3
       %5 = operand
       %6 = operand
       %7 = attribute = @eigen.mag
-      %8 = type
-      %9 = operation "tessera.call"(%4, %5, %6 : !pdl.value, !pdl.value, !pdl.value)  {"callee" = %7} -> (%8 : !pdl.type)
+      %8 = types
+      %9 = operation "tessera.call"(%4, %5, %6 : !pdl.value, !pdl.value, !pdl.value)  {"callee" = %7} -> (%8 : !pdl.range<type>)
       %10 = result 0 of %9
       rewrite %9 {
         %11 = attribute = @eigen.mag
-        %12 = type
-        %13 = operation "tessera.call"(%0, %5, %6 : !pdl.value, !pdl.value, !pdl.value)  {"callee" = %11} -> (%12 : !pdl.type)
+        %12 = types
+        %13 = operation "tessera.call"(%0, %5, %6 : !pdl.value, !pdl.value, !pdl.value)  {"callee" = %11} -> (%12 : !pdl.range<type>)
         %14 = result 0 of %13
         replace %9 with %13
       }
@@ -39,10 +39,10 @@ module {
   }
 }
 
-// CHECK: tessera.define @eigen.mag(%arg0: f32, %arg1: f32, %arg2: f32) -> f32 attributes {byRefTypes = [unit, unit, unit], pure = true} {
+// CHECK: tessera.define @eigen.mag(%arg0: f32, %arg1: f32, %arg2: f32) -> f32 attributes {argModes = [unit, unit, unit], pure = true} {
 // CHECK-NEXT: tessera.return %arg0 : f32
 // CHECK-NEXT: }
-// CHECK-NEXT: tessera.define @arith.negf(%arg0: f32) -> f32 attributes {byRefTypes = [unit], pure = true} {
+// CHECK-NEXT: tessera.define @arith.negf(%arg0: f32) -> f32 attributes {argModes = [unit], pure = true} {
 // CHECK-NEXT: tessera.return %arg0 : f32
 // CHECK-NEXT: }
 // CHECK-NEXT: llvm.func @main(%arg0: f32, %arg1: f32, %arg2: f32) -> f32 {

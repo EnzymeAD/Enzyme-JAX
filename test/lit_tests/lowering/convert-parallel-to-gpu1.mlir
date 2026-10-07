@@ -33,7 +33,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
     %3 = memref.load %2[%c1_5] : memref<?x!llvm.ptr>
     %4 = llvm.call @__isoc23_strtol(%3, %1, %c10_i32) {no_unwind} : (!llvm.ptr {llvm.nonnull, llvm.noundef}, !llvm.ptr {llvm.noundef}, i32 {llvm.noundef}) -> i64
     %5 = arith.shli %4, %c32_i64 : i64
-    %6 = arith.shrsi %5, %c29_i64 {isExact} : i64
+    %6 = arith.shrsi %5, %c29_i64 exact : i64
     %7 = arith.index_cast %6 : i64 to index
     %8 = arith.divui %7, %c8 : index
     %memref = gpu.alloc  (%8) : memref<?xf64, 1>
@@ -69,7 +69,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
       scf.parallel (%arg2) = (%c0_16) to (%c100_17) step (%c1_18) {
         %36 = memref.load %memref[%arg2] : memref<?xf64, 1>
         %37 = memref.load %memref_7[%arg2] : memref<?xf64, 1>
-        %38 = arith.addf %36, %37 {fastmathFlags = #llvm.fastmath<contract>} : f64
+        %38 = arith.addf %36, %37 fastmath<contract> : f64
         memref.store %38, %memref_7[%arg2] : memref<?xf64, 1>
         scf.reduce 
       }
@@ -85,7 +85,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
       scf.parallel (%arg2) = (%c0_16) to (%23) step (%c1_17) {
         %36 = memref.load %memref[%arg2] : memref<?xf64, 1>
         %37 = memref.load %memref_7[%arg2] : memref<?xf64, 1>
-        %38 = arith.addf %36, %37 {fastmathFlags = #llvm.fastmath<contract>} : f64
+        %38 = arith.addf %36, %37 fastmath<contract> : f64
         memref.store %38, %memref_7[%arg2] : memref<?xf64, 1>
         scf.reduce 
       }

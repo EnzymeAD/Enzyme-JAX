@@ -8,25 +8,25 @@ module @"reactant_loop!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_rep
     affine.parallel (%arg5, %arg6) = (0, 0) to (20, 45) {
       %0 = affine.load %arg2[7] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<24xf64, 1>
       %1 = affine.load %arg3[7, %arg5 + 7, %arg6 + 7] : memref<24x34x59xf64, 1>
-      %2 = arith.mulf %0, %1 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %2 = arith.mulf %0, %1 : f64
       affine.store %2, %arg0[0, %arg5 + 7, %arg6 + 7] : memref<1x34x59xf64, 1>
       %3 = affine.load %arg2[7] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<24xf64, 1>
       %4 = affine.load %arg4[7, %arg5 + 7, %arg6 + 7] : memref<24x35x59xf64, 1>
-      %5 = arith.mulf %3, %4 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %5 = arith.mulf %3, %4 : f64
       affine.store %5, %arg1[0, %arg5 + 7, %arg6 + 7] : memref<1x35x59xf64, 1>
       %6 = affine.load %arg0[0, %arg5 + 7, %arg6 + 7] : memref<1x34x59xf64, 1>
       %7 = affine.load %arg1[0, %arg5 + 7, %arg6 + 7] : memref<1x35x59xf64, 1>
       %8:2 = affine.parallel (%arg7) = (0) to (9) reduce ("addf", "addf") -> (f64, f64) {
         %11 = affine.load %arg2[%arg7 + 8] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<24xf64, 1>
         %12 = affine.load %arg3[%arg7 + 8, %arg5 + 7, %arg6 + 7] : memref<24x34x59xf64, 1>
-        %13 = arith.mulf %11, %12 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %13 = arith.mulf %11, %12 : f64
         %14 = affine.load %arg2[%arg7 + 8] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<24xf64, 1>
         %15 = affine.load %arg4[%arg7 + 8, %arg5 + 7, %arg6 + 7] : memref<24x35x59xf64, 1>
-        %16 = arith.mulf %14, %15 {fastmathFlags = #llvm.fastmath<none>} : f64
+        %16 = arith.mulf %14, %15 : f64
         affine.yield %13, %16 : f64, f64
       }
-      %9 = arith.addf %6, %8#0 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %10 = arith.addf %7, %8#1 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %9 = arith.addf %6, %8#0 : f64
+      %10 = arith.addf %7, %8#1 : f64
       affine.store %10, %arg1[0, %arg5 + 7, %arg6 + 7] : memref<1x35x59xf64, 1>
       affine.store %9, %arg0[0, %arg5 + 7, %arg6 + 7] : memref<1x34x59xf64, 1>
     }
@@ -42,20 +42,20 @@ module @"reactant_loop!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_rep
 // CHECK-NEXT:    %[[a2:.+]] = stablehlo.slice %arg3 [7:8, 7:27, 7:52] : (tensor<24x34x59xf64>) -> tensor<1x20x45xf64>
 // CHECK-NEXT:    %[[a3:.+]] = stablehlo.reshape %[[a2]] : (tensor<1x20x45xf64>) -> tensor<20x45xf64>
 // CHECK-NEXT:    %[[a4:.+]] = stablehlo.broadcast_in_dim %[[a0]], dims = [0] : (tensor<1xf64>) -> tensor<20x45xf64>
-// CHECK-NEXT:    %[[a5:.+]] = arith.mulf %[[a4]], %[[a3]] {fastmathFlags = #llvm.fastmath<none>} : tensor<20x45xf64>
+// CHECK-NEXT:    %[[a5:.+]] = arith.mulf %[[a4]], %[[a3]] : tensor<20x45xf64>
 // CHECK-NEXT:    %[[a6:.+]] = stablehlo.slice %arg4 [7:8, 7:27, 7:52] : (tensor<24x35x59xf64>) -> tensor<1x20x45xf64>
 // CHECK-NEXT:    %[[a7:.+]] = stablehlo.reshape %[[a6]] : (tensor<1x20x45xf64>) -> tensor<20x45xf64>
-// CHECK-NEXT:    %[[a8:.+]] = arith.mulf %[[a4]], %[[a7]] {fastmathFlags = #llvm.fastmath<none>} : tensor<20x45xf64>
+// CHECK-NEXT:    %[[a8:.+]] = arith.mulf %[[a4]], %[[a7]] : tensor<20x45xf64>
 // CHECK-NEXT:    %[[a9:.+]] = stablehlo.slice %arg2 [8:17] : (tensor<24xf64>) -> tensor<9xf64>
 // CHECK-NEXT:    %[[a10:.+]] = stablehlo.slice %arg3 [8:17, 7:27, 7:52] : (tensor<24x34x59xf64>) -> tensor<9x20x45xf64>
 // CHECK-NEXT:    %[[a11:.+]] = stablehlo.broadcast_in_dim %[[a9]], dims = [0] : (tensor<9xf64>) -> tensor<9x20x45xf64>
-// CHECK-NEXT:    %[[a12:.+]] = arith.mulf %[[a11]], %[[a10]] {fastmathFlags = #llvm.fastmath<none>} : tensor<9x20x45xf64>
+// CHECK-NEXT:    %[[a12:.+]] = arith.mulf %[[a11]], %[[a10]] : tensor<9x20x45xf64>
 // CHECK-NEXT:    %[[a13:.+]] = stablehlo.slice %arg4 [8:17, 7:27, 7:52] : (tensor<24x35x59xf64>) -> tensor<9x20x45xf64>
-// CHECK-NEXT:    %[[a14:.+]] = arith.mulf %[[a11]], %[[a13]] {fastmathFlags = #llvm.fastmath<none>} : tensor<9x20x45xf64>
+// CHECK-NEXT:    %[[a14:.+]] = arith.mulf %[[a11]], %[[a13]] : tensor<9x20x45xf64>
 // CHECK-NEXT:    %[[a15:.+]] = stablehlo.reduce(%[[a12]] init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<9x20x45xf64>, tensor<f64>) -> tensor<20x45xf64>
 // CHECK-NEXT:    %[[a16:.+]] = stablehlo.reduce(%[[a14]] init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<9x20x45xf64>, tensor<f64>) -> tensor<20x45xf64>
-// CHECK-NEXT:    %[[a17:.+]] = arith.addf %[[a5]], %[[a15]] {fastmathFlags = #llvm.fastmath<none>} : tensor<20x45xf64>
-// CHECK-NEXT:    %[[a18:.+]] = arith.addf %[[a8]], %[[a16]] {fastmathFlags = #llvm.fastmath<none>} : tensor<20x45xf64>
+// CHECK-NEXT:    %[[a17:.+]] = arith.addf %[[a5]], %[[a15]] : tensor<20x45xf64>
+// CHECK-NEXT:    %[[a18:.+]] = arith.addf %[[a8]], %[[a16]] : tensor<20x45xf64>
 // CHECK-NEXT:    %[[a19:.+]] = stablehlo.reshape %[[a18]] : (tensor<20x45xf64>) -> tensor<1x20x45xf64>
 // CHECK-NEXT:    %[[a20:.+]] = stablehlo.dynamic_update_slice %arg1, %[[a19]], %c_0, %c, %c : (tensor<1x35x59xf64>, tensor<1x20x45xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x35x59xf64>
 // CHECK-NEXT:    %[[a21:.+]] = stablehlo.reshape %[[a17]] : (tensor<20x45xf64>) -> tensor<1x20x45xf64>

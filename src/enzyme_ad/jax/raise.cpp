@@ -201,12 +201,21 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   if (StringRef(backend).starts_with("xla")) {
       // Differentiation and its cleanups disturb the affine structure the
       // raiser wants; rebuild it the way the shared prefix does.
+      // affine-cfg again once llvm-to-affine-access has turned the loops'
+      // llvm loads and stores into affine ones: only then can it prove a loop
+      // parallel (an llvm access is an opaque memory effect to it), and the
+      // raiser tags a parallel loop's while for batching.
       pass_pipeline += ",affine-cfg," + canonicalize +
-                       ",llvm-to-affine-access," + canonicalize + ",";
+                       ",llvm-to-affine-access," + canonicalize +
+                       ",affine-cfg," + canonicalize + ",";
       pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
-      "dump_failed_lockstep=true}," + canonicalize + ",arith-raise{stablehlo=true},"
+      "dump_failed_lockstep=true";
+      if (options->specializeIndexStrides)
+        pass_pipeline += " specialize_index_strides=true";
+      pass_pipeline += "}," + canonicalize + ",arith-raise{stablehlo=true},"
       "cse,enzyme-hlo-opt," + canonicalize + ","
       "symbol-dce";
+      pass_pipeline += ",xla-megakernelize,symbol-dce";
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += ",print{filename="+outfile+".mlir}";
       }
@@ -296,6 +305,13 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   if (!options->verifyEach && mlir::failed(mlir::verify(*mod))) {
     llvm::errs() << error_stream.str() << "\n";
     return "";
+  }
+
+  if (options->exportMLIROnly) {
+    std::string res;
+    llvm::raw_string_ostream ss(res);
+    mod->print(ss, flags);
+    return res;
   }
 
   if (getenv("DEBUG_REACTANT")) {

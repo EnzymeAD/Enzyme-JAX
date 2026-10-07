@@ -41,6 +41,9 @@ void addNoNanDivSimplify(RewritePatternSet &patterns,
 void addNoNanZeroBasePowSimplify(RewritePatternSet &patterns,
                                  bool allowOnFloatingPointMath,
                                  MLIRContext &context, PatternBenefit benefit);
+void addNoNanCompareAbs(RewritePatternSet &patterns,
+                        bool allowOnFloatingPointMath, MLIRContext &context,
+                        PatternBenefit benefit);
 void addIotaSimplify(RewritePatternSet &patterns, int64_t maxConstantExpansion,
                      MLIRContext &context, PatternBenefit benefit);
 void addRecognizeFromConstant(RewritePatternSet &patterns, int64_t minFoldSize,
@@ -113,6 +116,9 @@ void addConcatenateOpCanon(RewritePatternSet &patterns,
                            PatternBenefit benefit);
 void addTransposeElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                              MLIRContext &context, PatternBenefit benefit);
+void addTransposeElementwiseTranspose(RewritePatternSet &patterns,
+                                      bool allowPartial, MLIRContext &context,
+                                      PatternBenefit benefit);
 void addTransposeLikeBroadcastElementwise(RewritePatternSet &patterns,
                                           bool onlySingleUser,
                                           MLIRContext &context,

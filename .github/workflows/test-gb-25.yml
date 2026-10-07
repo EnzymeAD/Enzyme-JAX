@@ -109,7 +109,7 @@ jobs:
           version: ${{ matrix.julia_version }}
 
       - name: Load Julia packages from cache
-        uses: julia-actions/cache@v3.2.0
+        uses: julia-actions/cache@v3.4.0
         with:
           gcp-bucket: ${{ (contains(matrix.os, 'linux') && 'enzyme-ci-transient' ) || '' }}
           key-prefix: enzymejax-gb25-v2/
@@ -213,16 +213,32 @@ jobs:
         shell: bash
         run: |
           OK="true"
+
+          for OP in "stablehlo.gather" "stablehlo.scatter"; do
+            NON_AFFINE=$(find . -name 'before_jit_sharded_baroclinic_instability_simulation_*.mlir' -exec grep --with-filename --line-number "${OP}" '{}' \; | sort)
+            if [[ -n "${NON_AFFINE}" ]]
+            then
+              NUM_NON_AFFINE=$(echo "${NON_AFFINE}" | wc -l | xargs)
+              MSG="There are ${NUM_NON_AFFINE} remaining ${OP} operations"
+              echo "::error title=${{ matrix.os }} - Remaining ${OP} Operations:: ${MSG}"
+              echo
+              echo "----------"
+              echo "${NON_AFFINE}"
+              echo "----------"
+              OK="false"
+            fi
+          done
+
           if [[ '${{ contains(matrix.os, 'a100') }}' == 'true' ]]; then
-              ALL_TO_ALL_THRESHOLD=1000
-              ALL_GATHER_THRESHOLD=1000
-              ALL_REDUCE_THRESHOLD=1000
-              COLLECTIVE_PERMUTE_THRESHOLD=29900
+              ALL_TO_ALL_THRESHOLD=0
+              ALL_GATHER_THRESHOLD=0
+              ALL_REDUCE_THRESHOLD=0
+              COLLECTIVE_PERMUTE_THRESHOLD=299
           elif [[ '${{ contains(matrix.os, 'tpu') }}' == 'true' ]]; then
-              ALL_TO_ALL_THRESHOLD=1000
-              ALL_GATHER_THRESHOLD=1000
-              ALL_REDUCE_THRESHOLD=1000
-              COLLECTIVE_PERMUTE_THRESHOLD=109200
+              ALL_TO_ALL_THRESHOLD=0
+              ALL_GATHER_THRESHOLD=0
+              ALL_REDUCE_THRESHOLD=0
+              COLLECTIVE_PERMUTE_THRESHOLD=832
           fi
 
           for OP in "all-to-all" "all-gather" "all-reduce" "%collective-permute-start.* ="; do

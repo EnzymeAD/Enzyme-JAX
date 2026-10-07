@@ -1,7 +1,7 @@
-JAX_COMMIT = "90eac75fcafcc36cc0a59cce35c05a78fa1199f7"
+JAX_COMMIT = "fbf6588d55c5662ccf98558015d5b2c4c4a7bf6f"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "3e7cc67727eadcdb6cc19bc24292a6fe7aed100c"
+ENZYME_COMMIT = "56b02e7e94265e7af38fe95e9fbf9818ef1d09c0"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
@@ -63,8 +63,7 @@ echo "" >> third_party/stablehlo/temporary.patch
 echo "diff --git a/stablehlo/reference/InterpreterOps.cpp b/stablehlo/reference/InterpreterOps.cpp" >> third_party/stablehlo/temporary.patch
 echo "--- a/stablehlo/reference/InterpreterOps.cpp" >> third_party/stablehlo/temporary.patch
 echo "+++ b/stablehlo/reference/InterpreterOps.cpp" >> third_party/stablehlo/temporary.patch
-echo "@@ -172,6 +172,10 @@" >> third_party/stablehlo/temporary.patch
-echo " SmallVector<InterpreterValue> evalRunParallelOp(" >> third_party/stablehlo/temporary.patch
+echo "@@ -175,6 +175,9 @@ SmallVector<InterpreterValue> evalRunParallelOp(" >> third_party/stablehlo/temporary.patch
 echo "     ArrayRef<InterpreterValue> inputs, std::queue<StringAttr>& infeed," >> third_party/stablehlo/temporary.patch
 echo "     SmallVector<SmallVector<StringAttr>> programs, SymbolTable& symbolTable," >> third_party/stablehlo/temporary.patch
 echo "     InterpreterFallback* fallback) {" >> third_party/stablehlo/temporary.patch
@@ -72,9 +71,10 @@ echo "+#if (defined(_WIN32) || defined(__CYGWIN__))" >> third_party/stablehlo/te
 echo "+  llvm::report_fatal_error(\\"Op not supported on windows due to std::future\\");" >> third_party/stablehlo/temporary.patch
 echo "+#else" >> third_party/stablehlo/temporary.patch
 echo "   llvm::DefaultThreadPool threadPool;" >> third_party/stablehlo/temporary.patch
-echo "   SmallVector<std::shared_future<SmallVector<InterpreterValue>>> futures;" >> third_party/stablehlo/temporary.patch
-echo "@@ -207,6 +211,7 @@" >> third_party/stablehlo/temporary.patch
-echo "   for (auto& future : futures) results.append(future.get());" >> third_party/stablehlo/temporary.patch
+echo "   llvm::ThreadPoolTaskGroup taskGroup(threadPool);" >> third_party/stablehlo/temporary.patch
+echo " " >> third_party/stablehlo/temporary.patch
+echo "@@ -211,6 +214,7 @@ SmallVector<InterpreterValue> evalRunParallelOp(" >> third_party/stablehlo/temporary.patch
+echo "   for (auto& output : taskOutputs) results.append(output);" >> third_party/stablehlo/temporary.patch
 echo "   // TODO(#1725): Figure out how to test the outfeed queue." >> third_party/stablehlo/temporary.patch
 echo "   return results;" >> third_party/stablehlo/temporary.patch
 echo "+#endif" >> third_party/stablehlo/temporary.patch
@@ -101,6 +101,13 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     sed -i.bak0 "s/\\/\\/third_party/@xla\\/\\/third_party/g" third_party/llvm/workspace.bzl
     """,
     """
+    # Backport of llvm/llvm-project#225433: AMDGPU register allocation could
+    # place copies and spills above the exec restore of an if/else join,
+    # miscompiling kernels (llvm/llvm-project#222368). Drop once XLA's LLVM
+    # includes it.
+    sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_amdgpu_bb_prolog.patch\\\", \\\"\\/\\/:patches\\/llvm_mlir_import_inrange_width.patch\\\", \\\"\\/\\/:patches\\/llvm_orc_unw_revert.patch\\\",/g" third_party/llvm/workspace.bzl
+    """,
+    """
     sed -i.bak0 "s/tf_http_archive/http_archive/g" third_party/llvm/workspace.bzl
     """,
     """
@@ -111,6 +118,21 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     """,
     """
     sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/_MSC_VER\\/_WIN32\\/g' src\\/pthreads.c\\\"], strip_prefix/g" third_party/pthreadpool/workspace.bzl
+    """,
+    """
+    sed -i.bak0 "s/def repo/load(\\\"@bazel_tools\\/\\/tools\\/build_defs\\/repo:http.bzl\\\", \\\"http_archive\\\")\\ndef repo/g" third_party/slinky/workspace.bzl
+    """,
+    """
+    sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/slinky/workspace.bzl
+    """,
+    """
+    # slinky picks its aligned allocator with #ifdef _MSC_VER, but we build
+    # Windows with mingw clang, where _MSC_VER is undefined; it then falls back
+    # to posix_memalign, which mingw does not provide.  Key the four #ifdef
+    # guards off the platform instead so the _aligned_malloc/_aligned_free pair
+    # (and the malloc.h that declares them) are used together.  The remaining
+    # _MSC_VER guards are genuinely MSVC-only syntax and stay as they are.
+    sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/#ifdef _MSC_VER\\/#ifdef _WIN32\\/g' slinky\\/base\\/util.h\\\"], strip_prefix/g" third_party/slinky/workspace.bzl
     """,
     """
     # The second command disables llvm's use of __builtin_cpu_supports on apple
@@ -178,7 +200,7 @@ sed -i.bak0 "/D_FORTIFY_SOURCE/d" third_party/gpus/crosstool/cc_toolchain_config
 sed -i.bak0 "1s|^|load(\\\"@bazel_tools//tools/build_defs/repo:http.bzl\\\", \\\"http_archive\\\")\\n|" workspace3.bzl
 """,
     """
-sed -i.bak0 '$!N; s|tf_http_archive(\\n\\([ ]*\\)name = "rules_ml_toolchain",|http_archive(\\n\\1name = "rules_ml_toolchain", patch_cmds = [\\\"sed -i.bak0 '/D_FORTIFY_SOURCE/d' cc/features/BUILD gpu/cuda/legacy/crosstool/cc_toolchain_config.bzl.tpl\\\"],|; P; D;' workspace3.bzl
+sed -i.bak0 '$!N; s|tf_http_archive(\\n\\([ ]*\\)name = "rules_ml_toolchain",|http_archive(\\n\\1name = "rules_ml_toolchain", patch_cmds = [\\\"sed -i.bak0 '/D_FORTIFY_SOURCE/d' cc/features/BUILD gpu/cuda/legacy/crosstool/cc_toolchain_config.bzl.tpl\\\"], patches = [\\\"\\/\\/:patches\\/ml_toolchain_static_cuda.patch\\\"], patch_args = [\\\"-p1\\\"],|; P; D;' workspace3.bzl
 """,
     """
 sed -i.bak0 "s/i64/LL/g" xla/tsl/platform/windows/env_time.cc
@@ -208,9 +230,6 @@ sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.
 # changes: extui nneg i8->i32 over extui i1->i8 becomes extui nneg i1->i32,
 # poison whenever the bool is true. Keep nneg only if the inner ext had it.
 sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"sed -i.baknneg 's\\/auto lhs = getIn().getDefiningOp<ExtUIOp>()) {\\/auto lhs = getIn().getDefiningOp<ExtUIOp>()) { setNonNeg(lhs.getNonNeg());\\/' mlir\\/lib\\/Dialect\\/Arith\\/IR\\/ArithOps.cpp\\\",/g" third_party/llvm/workspace.bzl
-""",
-    """
-sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/LLVM_ENABLE_THREADS=1\\/LLVM_ENABLE_THREADS=0\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl
 """,
     """
 sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/HAVE_MALLINFO=1\\/DONT_HAVE_ANY_MALLINFO=0\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl

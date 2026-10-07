@@ -11,6 +11,7 @@
 #define ENZYMEXLA_OPS
 
 include "Enzyme/MLIR/Dialect/Dialect.td"
+include "Enzyme/MLIR/Interfaces/OffsetViewInterface.td"
 include "Dialect.td"
 include "EnzymeXLAAttrs.td"
 
@@ -83,7 +84,6 @@ def KernelCallOp : EnzymeXLA_Op<"kernel_call", [
     Variadic<AnyType>:$inputs,
     DefaultValuedStrAttr<StrAttr, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,
-    OptionalAttr<AnyAttr>:$result_layouts,
     OptionalAttr<DictArrayAttr>:$arg_attrs,
     OptionalAttr<DictArrayAttr>:$res_attrs,
     DefaultValuedOptionalAttr<
@@ -100,9 +100,10 @@ def KernelCallOp : EnzymeXLA_Op<"kernel_call", [
     `threads` `in` `(` $blockx `,` $blocky `,` $blockz `)`
     `shmem` `=` $shmem ` `
     `(` $inputs `)`
-    attr-dict `:` functional-type($inputs, results)
+    prop-dict attr-dict `:` functional-type($inputs, results)
   }];
 
+  let hasVerifier = 1;
   let hasCanonicalizer = 1;
 }
 
@@ -189,7 +190,6 @@ def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpI
     Variadic<AnyType>:$inputs,
     DefaultValuedStrAttr<StrAttr, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,
-    OptionalAttr<AnyAttr>:$result_layouts,
     OptionalAttr<DictArrayAttr>:$arg_attrs,
     OptionalAttr<DictArrayAttr>:$res_attrs,
     DefaultValuedOptionalAttr<
@@ -200,9 +200,10 @@ def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpI
   let results = (outs Variadic<AnyType>);
 
   let assemblyFormat = [{
-    $fn ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
+    $fn ` ` `(` $inputs `)` prop-dict attr-dict `:` functional-type($inputs, results)
   }];
 
+  let hasVerifier = 1;
   let hasCanonicalizer = 1;
 }
 
@@ -250,7 +251,7 @@ let skipDefaultBuilders = 1;
 let builders = [OpBuilder<(ins "ValueRange" : $blockSizes)>, OpBuilder<(ins)>];
 }
 
-def TempAllocOp : EnzymeXLA_Op<"temp_alloc", [Symbol, HasParent<"ModuleOp">]> {
+def TempAllocOp : EnzymeXLA_Op<"temp_alloc", [Symbol, SymbolName, SymbolVisibility, HasParent<"ModuleOp">]> {
   let summary = "declare a module-owned persistent XLA allocation";
   let description = [{
     Declares uninitialized, statically shaped device storage allocated when
@@ -299,6 +300,11 @@ def XLAWrapperOp : EnzymeXLA_Op<"xla_wrapper", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "XLA Call operation";
+  let description = [{
+    Calls a raised function whose input/output pairs represent device buffers.
+    The corresponding function result replaces each buffer's contents. Trailing
+    specialized scalar inputs are compile-time values rather than device buffers.
+  }];
 
   let arguments = (ins SymbolRefAttr:$fn, Variadic<AnyType>:$inputs,
       OptionalAttr<DictArrayAttr>:$arg_attrs,
@@ -308,9 +314,10 @@ def XLAWrapperOp : EnzymeXLA_Op<"xla_wrapper", [
       DefaultValuedAttr<I64Attr, "0">:$num_specialized);
 
   let assemblyFormat = [{
-    $fn ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
+    $fn ` ` `(` $inputs `)` prop-dict attr-dict `:` functional-type($inputs, results)
   }];
 
+  let hasCanonicalizer = 1;
 }
 
 def GPUErrorOp : EnzymeXLA_Op<"gpu_error", [
@@ -379,7 +386,7 @@ def StreamToTokenOp : EnzymeXLA_Op<"stream2token", [
 }
 
 def Memref2PointerOp : EnzymeXLA_Op<"memref2pointer", [
-  ViewLikeOpInterface, Pure
+  OffsetViewInterface, Pure
 ]> {
   let summary = "Extract and LLVM pointer from a MemRef";
 
@@ -395,7 +402,7 @@ def Memref2PointerOp : EnzymeXLA_Op<"memref2pointer", [
 }
 
 def Pointer2MemrefOp : EnzymeXLA_Op<"pointer2memref", [
-  ViewLikeOpInterface, Pure
+  OffsetViewInterface, Pure
 ]> {
   let summary = "Upgrade a pointer to a memref";
 
@@ -404,6 +411,7 @@ def Pointer2MemrefOp : EnzymeXLA_Op<"pointer2memref", [
 
   let hasFolder = 1;
   let hasCanonicalizer = 1;
+  let hasVerifier = 1;
 
   let extraClassDeclaration = [{
     ::mlir::Value getViewSource() { return getSource(); }
@@ -537,6 +545,7 @@ def WrapOp: EnzymeXLA_Op<
   );
 
   let hasFolder = 1;
+  let hasVerifier = 1;
   let results = (outs HLO_Tensor:$result);
 }
 
@@ -634,7 +643,7 @@ def GemmOp : EnzymeXLA_Op<"blas.gemm", [Pure, SameOperandsAndResultElementType]>
   );
 
   let assemblyFormat = [{
-    $alpha `,` $A `,` $B `,` $beta `,` $C attr-dict `:` functional-type(operands, results)
+    $alpha `,` $A `,` $B `,` $beta `,` $C prop-dict attr-dict `:` functional-type(operands, results)
   }];
 
   let hasVerifier = 1;
@@ -668,7 +677,7 @@ def SymmOp : EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]>
   );
 
   let assemblyFormat = [{
-    $A `,` $B `,` $C `,` $alpha `,` $beta attr-dict `:` functional-type(operands, results)
+    $A `,` $B `,` $C `,` $alpha `,` $beta prop-dict attr-dict `:` functional-type(operands, results)
   }];
 }
 
@@ -706,7 +715,7 @@ def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> 
   );
 
   let assemblyFormat = [{
-    $A `,` $C `,` $alpha `,` $beta attr-dict `:` functional-type(operands, results)
+    $A `,` $C `,` $alpha `,` $beta prop-dict attr-dict `:` functional-type(operands, results)
   }];
 
   let hasVerifier = 1;
@@ -736,7 +745,7 @@ def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> 
   );
 
   let assemblyFormat = [{
-    $A `,` $B `,` $alpha attr-dict `:` functional-type(operands, results)
+    $A `,` $B `,` $alpha prop-dict attr-dict `:` functional-type(operands, results)
   }];
 }
 
@@ -763,7 +772,7 @@ def TrsmOp : EnzymeXLA_Op<"blas.trsm", [Pure]> {
   );
 
   let assemblyFormat = [{
-    $alpha `,` $A `,` $B attr-dict `:` functional-type(operands, results)
+    $alpha `,` $A `,` $B prop-dict attr-dict `:` functional-type(operands, results)
   }];
 }
 
@@ -863,7 +872,7 @@ def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
   );
 
   let assemblyFormat = [{
-    $input attr-dict `:` functional-type($input, results)
+    $input prop-dict attr-dict `:` functional-type($input, results)
   }];
 }
 
@@ -917,7 +926,7 @@ def GeqrtOp : EnzymeXLA_Op<"lapack.geqrt", [Pure]> {
   );
 
   let assemblyFormat = [{
-    $input attr-dict `:` functional-type($input, results)
+    $input prop-dict attr-dict `:` functional-type($input, results)
   }];
 }
 
@@ -968,7 +977,7 @@ def OrmqrOp : EnzymeXLA_Op<"lapack.ormqr", [Pure]> {
   );
 
   let assemblyFormat = [{
-    $A `,` $tau `,` $C attr-dict `:` functional-type(operands, results)
+    $A `,` $tau `,` $C prop-dict attr-dict `:` functional-type(operands, results)
   }];
 }
 
@@ -995,7 +1004,7 @@ def GemqrtOp : EnzymeXLA_Op<"lapack.gemqrt", [Pure]> {
   );
 
   let assemblyFormat = [{
-    $V `,` $T `,` $C attr-dict `:` functional-type(operands, results)
+    $V `,` $T `,` $C prop-dict attr-dict `:` functional-type(operands, results)
   }];
 }
 
@@ -1050,7 +1059,7 @@ def GesddOp : EnzymeXLA_Op<"lapack.gesdd", [Pure]> {
   );
 
   let assemblyFormat = [{
-    $input attr-dict `:` functional-type($input, results)
+    $input prop-dict attr-dict `:` functional-type($input, results)
   }];
 }
 
@@ -1071,7 +1080,7 @@ def GesvdOp : EnzymeXLA_Op<"lapack.gesvd", [Pure]> {
   );
 
   let assemblyFormat = [{
-    $input attr-dict `:` functional-type($input, results)
+    $input prop-dict attr-dict `:` functional-type($input, results)
   }];
 }
 
@@ -1092,7 +1101,7 @@ def GesvjOp : EnzymeXLA_Op<"lapack.gesvj", [Pure]> {
   );
 
   let assemblyFormat = [{
-    $input attr-dict `:` functional-type($input, results)
+    $input prop-dict attr-dict `:` functional-type($input, results)
   }];
 }
 
@@ -1110,7 +1119,7 @@ def PotrfOp : EnzymeXLA_Op<"lapack.potrf", [Pure]> {
   );
 
   let assemblyFormat = [{
-    $input attr-dict `:` functional-type(operands, results)
+    $input prop-dict attr-dict `:` functional-type(operands, results)
   }];
 }
 
@@ -1537,7 +1546,7 @@ def MPISendOp : EnzymeXLA_Op<"mpi.send", []> {
     EnzymeXLA_MPIDatatypeAttr:$datatype
   );
 
-  let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
+  let assemblyFormat = "`(` operands `)` prop-dict attr-dict `:` type(operands)";
 }
 
 def MPIRecvOp : EnzymeXLA_Op<"mpi.recv", []> {
@@ -1556,7 +1565,7 @@ def MPIRecvOp : EnzymeXLA_Op<"mpi.recv", []> {
     outs AnyTensor : $outbuf
   );
 
-  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "`(` operands `)` prop-dict attr-dict `:` functional-type(operands, results)";
 }
 
 def MPIIsendOp : EnzymeXLA_Op<"mpi.isend", []> {
@@ -1575,7 +1584,7 @@ def MPIIsendOp : EnzymeXLA_Op<"mpi.isend", []> {
     outs TensorOf<[I32]> : $request
   );
 
-  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "`(` operands `)` prop-dict attr-dict `:` functional-type(operands, results)";
 }
 
 def MPIIrecvOp : EnzymeXLA_Op<"mpi.irecv", []> {
@@ -1595,7 +1604,7 @@ def MPIIrecvOp : EnzymeXLA_Op<"mpi.irecv", []> {
     TensorOf<[I32]> : $request
   );
 
-  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "`(` operands `)` prop-dict attr-dict `:` functional-type(operands, results)";
 }
 
 def MPIWaitOp : EnzymeXLA_Op<"mpi.wait", []> {
@@ -1633,7 +1642,7 @@ def MPIAllreduceOp : EnzymeXLA_Op<"mpi.allreduce", []> {
     outs AnyTensor : $outbuf
   );
 
-  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "`(` operands `)` prop-dict attr-dict `:` functional-type(operands, results)";
 }
 
 def MPIBcastOp : EnzymeXLA_Op<"mpi.bcast", []> {
@@ -1651,7 +1660,7 @@ def MPIBcastOp : EnzymeXLA_Op<"mpi.bcast", []> {
     outs AnyTensor : $outbuf
   );
 
-  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "`(` operands `)` prop-dict attr-dict `:` functional-type(operands, results)";
 }
 
 #endif // ENZYMEXLA_OPS
