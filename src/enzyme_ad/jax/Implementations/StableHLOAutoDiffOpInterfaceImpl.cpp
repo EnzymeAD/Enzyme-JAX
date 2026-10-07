@@ -1794,6 +1794,51 @@ static void makeAddBlock(Region &region, Location loc,
   stablehlo::ReturnOp::create(builder, loc, addOp.getResult());
 }
 
+// Returns the padding of a cumulative sum's adjoint (the scanned dimension's
+// padding mirrored), or nullptr when `op` is not a cumulative sum.
+static DenseIntElementsAttr cumulativeSumAdjointPadding(ReduceWindowOp op,
+                                                        OpBuilder &builder) {
+  auto operandType = cast<RankedTensorType>(op.getInputs()[0].getType());
+  if (!operandType.hasStaticShape())
+    return nullptr;
+
+  auto allOnes = [](std::optional<ArrayRef<int64_t>> values) {
+    return !values.has_value() ||
+           llvm::all_of(*values, [](int64_t v) { return v == 1; });
+  };
+  if (!allOnes(op.getWindowStrides()) || !allOnes(op.getBaseDilations()) ||
+      !allOnes(op.getWindowDilations()))
+    return nullptr;
+
+  int64_t rank = operandType.getRank();
+  SmallVector<int64_t> padding(2 * rank, 0);
+  if (auto initialPadding = op.getPadding())
+    padding.assign(initialPadding->value_begin<int64_t>(),
+                   initialPadding->value_end<int64_t>());
+
+  ArrayRef<int64_t> window = op.getWindowDimensions();
+  int64_t scanDim = -1;
+  for (int64_t i = 0; i < rank; ++i) {
+    if (window[i] == 1 && padding[2 * i] == 0 && padding[2 * i + 1] == 0)
+      continue;
+    if (scanDim != -1)
+      return nullptr;
+    scanDim = i;
+  }
+  if (scanDim == -1)
+    return nullptr;
+
+  int64_t n = operandType.getDimSize(scanDim);
+  int64_t low = padding[2 * scanDim], high = padding[2 * scanDim + 1];
+  if (window[scanDim] != n ||
+      !((low == n - 1 && high == 0) || (low == 0 && high == n - 1)))
+    return nullptr;
+
+  std::swap(padding[2 * scanDim], padding[2 * scanDim + 1]);
+  return DenseIntElementsAttr::get(
+      RankedTensorType::get({rank, 2}, builder.getI64Type()), padding);
+}
+
 class AutoDiffReduceWindowRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffReduceWindowRev,
                                                        ReduceWindowOp> {
@@ -1850,6 +1895,21 @@ public:
     if (isadd) {
       auto operandType = cast<RankedTensorType>(op->getOperand(0).getType());
       auto outputType = cast<RankedTensorType>(op->getResult(0).getType());
+
+      // Keep the padded-window form: XLA:CPU turns it into an O(n) scan, while
+      // the general pad + window path below is an O(n^2) window sum.
+      if (auto adjointPadding = cumulativeSumAdjointPadding(op, builder)) {
+        auto zero = cast<AutoDiffTypeInterface>(unrankedTensorType)
+                        .createNullValue(builder, op.getLoc());
+        auto revOp = stablehlo::ReduceWindowOp::create(
+            builder, op.getLoc(), operandType, inDiffe, /*init_value*/ zero,
+            op.getWindowDimensionsAttr(), op.getWindowStridesAttr(),
+            op.getBaseDilationsAttr(), op.getWindowDilationsAttr(),
+            adjointPadding);
+        makeAddBlock(revOp.getBody(), op.getLoc(), unrankedTensorType);
+        gutils->addToDiffe(op.getOperand(0), revOp.getResult(0), builder);
+        return success();
+      }
 
       // Compute padding similarly to conv lhs grad.
       int64_t N = cast<RankedTensorType>(operandType).getShape().size();
