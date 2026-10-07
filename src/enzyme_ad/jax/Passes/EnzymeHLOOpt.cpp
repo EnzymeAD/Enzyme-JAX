@@ -8928,13 +8928,20 @@ struct IotaSimplify
 
   LogicalResult matchAndRewriteImpl(stablehlo::IotaOp op,
                                     PatternRewriter &rewriter) const {
-    if (op.getType().getNumElements() >= max_constant_expansion) {
-      return failure();
-    }
-
     // Bail out on degenerate iota ops (e.g. rank-0 tensors) where the iota
     // dimension is out of bounds for the result type's rank.
     if (op.getIotaDimension() >= op.getType().getRank()) {
+      return failure();
+    }
+
+    // Counting along a dimension of size 1 never gets past 0.
+    if (op.getType().getDimSize(op.getIotaDimension()) == 1) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+      return success();
+    }
+
+    if (op.getType().getNumElements() >= max_constant_expansion) {
       return failure();
     }
 
