@@ -20,6 +20,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "src/enzyme_ad/jax/Passes/CheckpointSchedule.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/SelectPatterns.h"
 
@@ -3950,13 +3951,12 @@ struct ForLoopApplyEnzymeAttributes
         continue;
       }
 
-      bool enable = ckptType.getSExtValue() >= 1,
-           enableBinomial = ckptType.getSExtValue() == 2, hasPeriod = false;
-
       APInt checkpointingPeriod;
-      if (user->getNumOperands() >= 2)
-        hasPeriod = matchPattern(user->getOperand(1),
-                                 m_ConstantInt(&checkpointingPeriod));
+      int64_t budget = 0;
+      if (user->getNumOperands() >= 2 &&
+          matchPattern(user->getOperand(1),
+                       m_ConstantInt(&checkpointingPeriod)))
+        budget = checkpointingPeriod.getSExtValue();
 
       Operation *loop = user->getParentOp();
       while (loop && !isa<scf::ForOp, scf::WhileOp>(loop)) {
@@ -3965,21 +3965,23 @@ struct ForLoopApplyEnzymeAttributes
 
       if (loop && isa<scf::ForOp, scf::WhileOp>(loop)) {
         if (isMincutAttr) {
-          if (!enable)
+          // __enzyme_set_mincut(0) disables mincut.
+          if (ckptType.getSExtValue() < 1)
             loop->setAttr("enzyme.disable_mincut", rewriter.getUnitAttr());
         } else {
+          // __enzyme_set_checkpointing(schedule, budget), as Enzyme's loop
+          // annotations ([[enzyme::checkpoint("binomial", 4)]], `#pragma
+          // enzyme checkpoint`) emit it.
           assert(isCheckpointingAttr);
-          loop->setAttr("enzyme.enable_checkpointing",
-                        rewriter.getBoolAttr(enable));
-
-          if (enableBinomial) {
-            loop->setAttr("enzyme.binomial_checkpointing",
-                          rewriter.getUnitAttr());
-          }
-          if (hasPeriod && !checkpointingPeriod.isAllOnes()) {
-            loop->setAttr("enzyme.checkpoint_period",
-                          rewriter.getIntegerAttr(rewriter.getI64Type(),
-                                                  checkpointingPeriod));
+          bool known = false;
+          rewriter.modifyOpInPlace(loop, [&]() {
+            known = enzyme::setCheckpointSchedule(loop, ckptType.getSExtValue(),
+                                                  budget);
+          });
+          if (!known) {
+            user->emitWarning()
+                << "unknown checkpointing schedule " << ckptType.getSExtValue();
+            continue;
           }
         }
       }
