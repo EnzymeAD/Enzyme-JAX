@@ -8806,6 +8806,161 @@ static void addFMulAddReductions(AffineForOp forOp,
   });
 }
 
+// The reduction kind of `combined`, a combination of `acc` with a value
+// that does not read it: a multiply-add of acc adds a product.
+static std::optional<arith::AtomicRMWKind> accumulationKind(Value combined,
+                                                            Value acc) {
+  Operation *op = combined.getDefiningOp();
+  if (!op || op->getNumResults() != 1)
+    return std::nullopt;
+  if (auto fma = dyn_cast<enzymexla::FMulAddOp>(op)) {
+    if (fma.getC() != acc || fma.getA() == acc || fma.getB() == acc)
+      return std::nullopt;
+    return arith::AtomicRMWKind::addf;
+  }
+  if (op->getNumOperands() != 2 ||
+      (op->getOperand(0) == acc) == (op->getOperand(1) == acc))
+    return std::nullopt;
+  return llvm::TypeSwitch<Operation *, std::optional<arith::AtomicRMWKind>>(op)
+      .Case([](arith::AddFOp) { return arith::AtomicRMWKind::addf; })
+      .Case([](arith::MulFOp) { return arith::AtomicRMWKind::mulf; })
+      .Case([](arith::AddIOp) { return arith::AtomicRMWKind::addi; })
+      .Case([](arith::MulIOp) { return arith::AtomicRMWKind::muli; })
+      .Case([](arith::OrIOp) { return arith::AtomicRMWKind::ori; })
+      .Case([](arith::AndIOp) { return arith::AtomicRMWKind::andi; })
+      .Case([](arith::XOrIOp) { return arith::AtomicRMWKind::xori; })
+      .Default([](Operation *) { return std::nullopt; });
+}
+
+// A value an affine.for carries that it accumulates only where a condition
+// holds, `acc = c ? acc + x : acc`, through an scf.if, affine.if or select
+// (`cond`, its result `r`): the arm, or operand, that combines acc with x is
+// `combined`.
+struct ConditionalAccumulation {
+  Operation *cond;
+  unsigned r;
+  Value combined;
+  arith::AtomicRMWKind kind;
+};
+
+static std::optional<ConditionalAccumulation>
+matchConditionalAccumulation(AffineForOp forOp, unsigned pos) {
+  Value acc = forOp.getRegionIterArgs()[pos];
+  auto res =
+      dyn_cast<OpResult>(forOp.getBody()->getTerminator()->getOperand(pos));
+  if (!res || res.getOwner()->getBlock() != forOp.getBody() || !res.hasOneUse())
+    return std::nullopt;
+  Operation *cond = res.getOwner();
+  Value combined;
+  Operation *accUser = cond;
+  if (auto sel = dyn_cast<arith::SelectOp>(cond)) {
+    if (sel.getTrueValue() == acc)
+      combined = sel.getFalseValue();
+    else if (sel.getFalseValue() == acc)
+      combined = sel.getTrueValue();
+  } else if (isa<scf::IfOp, AffineIfOp>(cond) && !cond->getRegion(1).empty()) {
+    Operation *thenYield = cond->getRegion(0).front().getTerminator();
+    Operation *elseYield = cond->getRegion(1).front().getTerminator();
+    unsigned r = res.getResultNumber();
+    if (elseYield->getOperand(r) == acc) {
+      combined = thenYield->getOperand(r);
+      accUser = elseYield;
+    } else if (thenYield->getOperand(r) == acc) {
+      combined = elseYield->getOperand(r);
+      accUser = thenYield;
+    }
+    if (combined && combined.getDefiningOp() &&
+        combined.getDefiningOp()->getParentOp() != cond)
+      return std::nullopt;
+  }
+  if (!combined || combined == acc || !combined.hasOneUse())
+    return std::nullopt;
+  Operation *comb = combined.getDefiningOp();
+  // acc is read only by the combination and as the unchanged value
+  if (!comb || llvm::any_of(acc.getUsers(), [&](Operation *u) {
+        return u != comb && u != accUser;
+      }))
+    return std::nullopt;
+  auto kind = accumulationKind(combined, acc);
+  if (!kind)
+    return std::nullopt;
+  return ConditionalAccumulation{cond, res.getResultNumber(), combined, *kind};
+}
+
+// The conditional accumulations a loop carries, added to `reductions` (kept
+// in the order of the carried values): it accumulates `c ? x : id`, with id
+// the combination's identity, wherever, a reduction. Their reduced value is
+// left null, for the parallelization to make.
+static void
+addConditionalReductions(AffineForOp forOp,
+                         SmallVectorImpl<LoopReduction> &reductions) {
+  for (unsigned pos = 0, e = forOp.getNumIterOperands(); pos < e; ++pos) {
+    if (llvm::any_of(reductions, [&](const LoopReduction &red) {
+          return red.iterArgPosition == pos;
+        }))
+      continue;
+    if (auto match = matchConditionalAccumulation(forOp, pos))
+      reductions.push_back(LoopReduction{match->kind, pos, Value()});
+  }
+  llvm::sort(reductions, [](const LoopReduction &a, const LoopReduction &b) {
+    return a.iterArgPosition < b.iterArgPosition;
+  });
+}
+
+// Rewrites the conditional accumulation `match` of `acc` so that what its if
+// or select gives is what it adds, x where the condition holds and the
+// combination's identity elsewhere (-0.0 for addf, which leaves a -0.0 sum
+// one): the if keeps its branches, nothing in them runs where it did not.
+// Returns that value.
+static Value rewriteConditionalAccumulation(const ConditionalAccumulation &m,
+                                            Value acc,
+                                            PatternRewriter &rewriter) {
+  Operation *comb = m.combined.getDefiningOp();
+  Location loc = comb->getLoc();
+  Value x;
+  if (auto fma = dyn_cast<enzymexla::FMulAddOp>(comb)) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(fma);
+    x = arith::MulFOp::create(
+        rewriter, loc, fma.getA(), fma.getB(),
+        arith::FastMathFlagsAttr::get(rewriter.getContext(),
+                                      arith::FastMathFlags::contract));
+  } else {
+    x = comb->getOperand(0) == acc ? comb->getOperand(1) : comb->getOperand(0);
+  }
+  Type type = acc.getType();
+  Value id;
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(m.cond);
+    TypedAttr attr =
+        m.kind == arith::AtomicRMWKind::addf
+            ? TypedAttr(rewriter.getFloatAttr(type, -0.0))
+            : arith::getIdentityValueAttr(m.kind, type, rewriter, loc);
+    id = arith::ConstantOp::create(rewriter, loc, attr);
+  }
+  if (auto sel = dyn_cast<arith::SelectOp>(m.cond)) {
+    bool accTrue = sel.getTrueValue() == acc;
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(sel);
+    Value added =
+        arith::SelectOp::create(rewriter, sel.getLoc(), sel.getCondition(),
+                                accTrue ? id : x, accTrue ? x : id);
+    rewriter.replaceOp(sel, added);
+    rewriter.eraseOp(comb);
+    return added;
+  }
+  Operation *thenYield = m.cond->getRegion(0).front().getTerminator();
+  Operation *elseYield = m.cond->getRegion(1).front().getTerminator();
+  bool accInElse = elseYield->getOperand(m.r) == acc;
+  Operation *combYield = accInElse ? thenYield : elseYield;
+  Operation *accYield = accInElse ? elseYield : thenYield;
+  rewriter.modifyOpInPlace(combYield, [&] { combYield->setOperand(m.r, x); });
+  rewriter.modifyOpInPlace(accYield, [&] { accYield->setOperand(m.r, id); });
+  rewriter.eraseOp(comb);
+  return m.cond->getResult(m.r);
+}
+
 static bool isLoopParallel(AffineForOp forOp,
                            SmallVectorImpl<LoopReduction> *parallelReductions) {
   unsigned numIterArgs = forOp.getNumIterOperands();
@@ -8832,6 +8987,7 @@ static bool isLoopParallel(AffineForOp forOp,
                                  forOp.getRegionIterArgs()[pos]);
     });
     addFMulAddReductions(forOp, *parallelReductions);
+    addConditionalReductions(forOp, *parallelReductions);
     // Return later to allow for identifying all parallel reductions even if
     // the loop is not parallel.
     if (parallelReductions->size() != numIterArgs)
@@ -9065,11 +9221,17 @@ struct AffineParallelizePattern : public OpRewritePattern<affine::AffineForOp> {
     for (LoopReduction &red : reductions) {
       if (red.value)
         continue;
-      auto fma =
-          cast<enzymexla::FMulAddOp>(forOp.getBody()
-                                         ->getTerminator()
-                                         ->getOperand(red.iterArgPosition)
-                                         .getDefiningOp());
+      Value yielded =
+          forOp.getBody()->getTerminator()->getOperand(red.iterArgPosition);
+      auto fma = yielded.getDefiningOp<enzymexla::FMulAddOp>();
+      if (!fma) {
+        // an accumulation under a condition: what the if or select gives
+        // becomes what it adds
+        auto match = matchConditionalAccumulation(forOp, red.iterArgPosition);
+        red.value = rewriteConditionalAccumulation(
+            *match, forOp.getRegionIterArgs()[red.iterArgPosition], rewriter);
+        continue;
+      }
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(fma);
       red.value = arith::MulFOp::create(rewriter, fma.getLoc(), fma.getA(),
@@ -9111,6 +9273,13 @@ struct AffineParallelizePattern : public OpRewritePattern<affine::AffineForOp> {
         newResults.push_back(sum);
         continue;
       }
+      // an accumulation under a condition yields what it adds: combine the
+      // initial value with the reduction
+      if (yieldOp->getOperand(i) == reductions[i].value) {
+        newResults.push_back(arith::getReductionOp(
+            reductions[i].kind, rewriter, loc, init, newPloop->getResult(i)));
+        continue;
+      }
 
       IRMapping irMapping;
       unsigned initPos =
@@ -9137,6 +9306,8 @@ struct AffineParallelizePattern : public OpRewritePattern<affine::AffineForOp> {
 
     SetVector<Operation *> opsToErase;
     for (unsigned i = 0; i < numReductions; ++i) {
+      if (yieldOp->getOperand(i) == reductions[i].value)
+        continue;
       Operation *reductionOp = yieldOp->getOperand(i).getDefiningOp();
       opsToErase.insert(reductionOp);
     }
