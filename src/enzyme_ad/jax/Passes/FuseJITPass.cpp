@@ -575,8 +575,7 @@ LogicalResult rewriteFusion(enzymexla::JITCallOp firstCall,
 }
 
 // fuses SSA-connected calls
-struct FuseDAG
-    : public OpRewritePattern<enzymexla::JITCallOp> {
+struct FuseDAG : public OpRewritePattern<enzymexla::JITCallOp> {
   using OpRewritePattern<enzymexla::JITCallOp>::OpRewritePattern;
 
   bool generalized;
@@ -606,7 +605,8 @@ struct FuseJITPass : public impl::FuseJITPassBase<FuseJITPass> {
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(top_down);
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns), config))) {
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       signalPassFailure();
     }
   }
