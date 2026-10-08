@@ -99,3 +99,90 @@ func.func @two_intervals(%input: tensor<16xf32>, %update: tensor<10xf32>) -> ten
 // CHECK-NEXT:    %3 = stablehlo.concatenate %1, %2, dim = 0 : (tensor<10xf32>, tensor<6xf32>) -> tensor<16xf32>
 // CHECK-NEXT:    return %3 : tensor<16xf32>
 // CHECK-NEXT:  }
+
+// The mask as it comes back after specialization: the compares folded to
+// constant prefixes along each lane dimension, broadcast onto the grid and
+// anded; the box is rows below 4 and columns below 3.
+func.func @constant_mask(%input: tensor<100xf32>, %update: tensor<10x10xf32>) -> tensor<100xf32> {
+  %c10 = stablehlo.constant dense<10> : tensor<10xi64>
+  %off = stablehlo.constant dense<-1> : tensor<10x10x1xi64>
+  %rowsok = stablehlo.constant dense<[true, true, true, true, false, false, false, false, false, false]> : tensor<10xi1>
+  %colsok = stablehlo.constant dense<[true, true, true, false, false, false, false, false, false, false]> : tensor<10xi1>
+  %i = stablehlo.iota dim = 0 : tensor<10xi64>
+  %row = stablehlo.multiply %i, %c10 : tensor<10xi64>
+  %rowb = stablehlo.broadcast_in_dim %row, dims = [0] : (tensor<10xi64>) -> tensor<10x10x1xi64>
+  %cols = stablehlo.iota dim = 1 : tensor<10x10x1xi64>
+  %lin = stablehlo.add %rowb, %cols : tensor<10x10x1xi64>
+  %r2 = stablehlo.broadcast_in_dim %rowsok, dims = [0] : (tensor<10xi1>) -> tensor<10x10xi1>
+  %c2 = stablehlo.broadcast_in_dim %colsok, dims = [1] : (tensor<10xi1>) -> tensor<10x10xi1>
+  %both = stablehlo.and %r2, %c2 : tensor<10x10xi1>
+  %pred = stablehlo.broadcast_in_dim %both, dims = [0, 1] : (tensor<10x10xi1>) -> tensor<10x10x1xi1>
+  %idx = stablehlo.select %pred, %lin, %off : tensor<10x10x1xi1>, tensor<10x10x1xi64>
+  %0 = "stablehlo.scatter"(%input, %idx, %update) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 2>, unique_indices = false}> ({
+  ^bb0(%a: tensor<f32>, %b: tensor<f32>):
+    stablehlo.return %b : tensor<f32>
+  }) : (tensor<100xf32>, tensor<10x10x1xi64>, tensor<10x10xf32>) -> tensor<100xf32>
+  return %0 : tensor<100xf32>
+}
+
+// CHECK:  func.func @constant_mask(%arg0: tensor<100xf32>, %arg1: tensor<10x10xf32>) -> tensor<100xf32> {
+// CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<i32>
+// CHECK-NEXT:    %0 = stablehlo.slice %arg1 [0:4, 0:3] : (tensor<10x10xf32>) -> tensor<4x3xf32>
+// CHECK-NEXT:    %1 = stablehlo.reshape %arg0 : (tensor<100xf32>) -> tensor<10x10xf32>
+// CHECK-NEXT:    %2 = stablehlo.dynamic_update_slice %1, %0, %c, %c : (tensor<10x10xf32>, tensor<4x3xf32>, tensor<i32>, tensor<i32>) -> tensor<10x10xf32>
+// CHECK-NEXT:    %3 = stablehlo.reshape %2 : (tensor<10x10xf32>) -> tensor<100xf32>
+// CHECK-NEXT:    return %3 : tensor<100xf32>
+// CHECK-NEXT:  }
+
+// A term of extent one broadcast over the lanes holds for all of them (a
+// flag the kernel was specialized on): no box from it; the live box is
+// the other term's, rows below 4.
+func.func @expanded_term(%input: tensor<100xf32>, %update: tensor<10x10xf32>) -> tensor<100xf32> {
+  %c10 = stablehlo.constant dense<10> : tensor<10xi64>
+  %off = stablehlo.constant dense<-1> : tensor<10x10x1xi64>
+  %rowsok = stablehlo.constant dense<[true, true, true, true, false, false, false, false, false, false]> : tensor<10xi1>
+  %flag = stablehlo.constant dense<[true]> : tensor<1xi1>
+  %i = stablehlo.iota dim = 0 : tensor<10xi64>
+  %row = stablehlo.multiply %i, %c10 : tensor<10xi64>
+  %rowb = stablehlo.broadcast_in_dim %row, dims = [0] : (tensor<10xi64>) -> tensor<10x10x1xi64>
+  %cols = stablehlo.iota dim = 1 : tensor<10x10x1xi64>
+  %lin = stablehlo.add %rowb, %cols : tensor<10x10x1xi64>
+  %r2 = stablehlo.broadcast_in_dim %rowsok, dims = [0] : (tensor<10xi1>) -> tensor<10x10xi1>
+  %f2 = stablehlo.broadcast_in_dim %flag, dims = [1] : (tensor<1xi1>) -> tensor<10x10xi1>
+  %both = stablehlo.and %r2, %f2 : tensor<10x10xi1>
+  %pred = stablehlo.broadcast_in_dim %both, dims = [0, 1] : (tensor<10x10xi1>) -> tensor<10x10x1xi1>
+  %idx = stablehlo.select %pred, %lin, %off : tensor<10x10x1xi1>, tensor<10x10x1xi64>
+  %0 = "stablehlo.scatter"(%input, %idx, %update) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 2>, unique_indices = false}> ({
+  ^bb0(%a: tensor<f32>, %b: tensor<f32>):
+    stablehlo.return %b : tensor<f32>
+  }) : (tensor<100xf32>, tensor<10x10x1xi64>, tensor<10x10xf32>) -> tensor<100xf32>
+  return %0 : tensor<100xf32>
+}
+
+// CHECK:  func.func @expanded_term(%arg0: tensor<100xf32>, %arg1: tensor<10x10xf32>) -> tensor<100xf32> {
+// CHECK-NEXT:    %0 = stablehlo.slice %arg1 [0:4, 0:10] : (tensor<10x10xf32>) -> tensor<4x10xf32>
+// CHECK-NEXT:    %1 = stablehlo.reshape %arg0 : (tensor<100xf32>) -> tensor<10x10xf32>
+// CHECK-NEXT:    %2 = stablehlo.slice %1 [4:10, 0:10] : (tensor<10x10xf32>) -> tensor<6x10xf32>
+// CHECK-NEXT:    %3 = stablehlo.concatenate %0, %2, dim = 0 : (tensor<4x10xf32>, tensor<6x10xf32>) -> tensor<10x10xf32>
+// CHECK-NEXT:    %4 = stablehlo.reshape %3 : (tensor<10x10xf32>) -> tensor<100xf32>
+// CHECK-NEXT:    return %4 : tensor<100xf32>
+// CHECK-NEXT:  }
+
+// One scatter point under a mask that is false: nothing is written. (A
+// zero-dimensional lane grid has no box to carry that: it was read as
+// full.)
+func.func @point_off(%input: tensor<16xf32>, %update: tensor<f32>) -> tensor<16xf32> {
+  %off = stablehlo.constant dense<-1> : tensor<1xi64>
+  %at = stablehlo.constant dense<5> : tensor<1xi64>
+  %no = stablehlo.constant dense<false> : tensor<i1>
+  %idx = stablehlo.select %no, %at, %off : tensor<i1>, tensor<1xi64>
+  %0 = "stablehlo.scatter"(%input, %idx, %update) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 0>, unique_indices = false}> ({
+  ^bb0(%a: tensor<f32>, %b: tensor<f32>):
+    stablehlo.return %b : tensor<f32>
+  }) : (tensor<16xf32>, tensor<1xi64>, tensor<f32>) -> tensor<16xf32>
+  return %0 : tensor<16xf32>
+}
+
+// CHECK:  func.func @point_off(%arg0: tensor<16xf32>, %arg1: tensor<f32>) -> tensor<16xf32> {
+// CHECK-NEXT:    return %arg0 : tensor<16xf32>
+// CHECK-NEXT:  }

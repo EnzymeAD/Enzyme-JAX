@@ -37019,6 +37019,26 @@ struct ScatterMaskedIndexSlice final
     return std::make_pair(*lo, *hi);
   }
 
+  // The positions where `mask` holds, when they form one interval.
+  template <typename Range>
+  static std::optional<std::pair<int64_t, int64_t>> trueInterval(Range mask) {
+    std::optional<int64_t> lo, hi;
+    int64_t k = 0;
+    for (bool holds : mask) {
+      if (holds) {
+        if (hi && *hi != k)
+          return std::nullopt; // a second interval
+        if (!lo)
+          lo = k;
+        hi = k + 1;
+      }
+      ++k;
+    }
+    if (!lo)
+      return std::make_pair(int64_t(0), int64_t(0));
+    return std::make_pair(*lo, *hi);
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
                                     PatternRewriter &rewriter) const {
     if (op.getInputs().size() != 1)
@@ -37075,14 +37095,56 @@ struct ScatterMaskedIndexSlice final
       return predDim;
     };
 
-    // Intersect the box over every compare the mask ands together.
+    // Intersect the box over every term the mask ands together, each read
+    // through the broadcasts that put it on the grid (`dimMap`: the term's
+    // dimension -> the mask's): a compare of an iota against a constant, or
+    // a constant along one dimension (such a compare, folded once the
+    // extent it compared against became known).
     SmallVector<int64_t> lo(grid.size(), 0), hi(grid.begin(), grid.end());
-    SmallVector<Value> terms{sel.getPred()};
+    // A term false everywhere: no lane is live (the grid may have no
+    // dimension to carry that in the box).
+    bool nowhere = false;
+    SmallVector<int64_t> identity(predTy.getRank());
+    std::iota(identity.begin(), identity.end(), 0);
+    SmallVector<std::pair<Value, SmallVector<int64_t>>> terms{
+        {sel.getPred(), identity}};
     while (!terms.empty()) {
-      Value term = terms.pop_back_val();
+      auto [term, dimMap] = terms.pop_back_val();
       if (auto andOp = term.getDefiningOp<stablehlo::AndOp>()) {
-        terms.push_back(andOp.getLhs());
-        terms.push_back(andOp.getRhs());
+        terms.push_back({andOp.getLhs(), dimMap});
+        terms.push_back({andOp.getRhs(), dimMap});
+        continue;
+      }
+      if (auto bcast = term.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        // A dimension of one the broadcast expands holds one value for the
+        // whole grid dimension: no position along it (-1).
+        auto fromTy = cast<RankedTensorType>(bcast.getOperand().getType());
+        auto toTy = cast<RankedTensorType>(bcast.getType());
+        SmallVector<int64_t> inner;
+        for (auto [i, d] : llvm::enumerate(bcast.getBroadcastDimensions()))
+          inner.push_back(fromTy.getDimSize(i) == 1 && toTy.getDimSize(d) != 1
+                              ? -1
+                              : dimMap[d]);
+        terms.push_back({bcast.getOperand(), inner});
+        continue;
+      }
+      DenseElementsAttr mask;
+      if (matchPattern(term, m_Constant(&mask))) {
+        auto maskTy = cast<RankedTensorType>(mask.getType());
+        if (mask.isSplat()) {
+          nowhere |= !mask.getSplatValue<bool>();
+          continue;
+        }
+        if (maskTy.getRank() != 1 || dimMap[0] < 0)
+          return failure();
+        auto gridDim = gridDimOf(dimMap[0]);
+        if (!gridDim)
+          return failure();
+        auto interval = trueInterval(mask.getValues<bool>());
+        if (!interval)
+          return failure();
+        lo[*gridDim] = std::max(lo[*gridDim], interval->first);
+        hi[*gridDim] = std::min(hi[*gridDim], interval->second);
         continue;
       }
       auto cmp = term.getDefiningOp<stablehlo::CompareOp>();
@@ -37097,16 +37159,24 @@ struct ScatterMaskedIndexSlice final
         if (!iota || !matchPattern(cmp.getLhs(), m_Constant(&cst)))
           return failure();
       }
-      auto gridDim = gridDimOf(iota->dimension);
-      if (!gridDim)
-        return failure();
       int64_t start = cast<IntegerAttr>(iota->start).getValue().getSExtValue();
       int64_t scale =
           iota->scale ? cast<IntegerAttr>(iota->scale).getValue().getSExtValue()
                       : 1;
+      int64_t constant = cst.getSplatValue<APInt>().getSExtValue();
+      if (dimMap[iota->dimension] < 0) {
+        // One value for the whole grid: the compare at the iota's only
+        // position holds everywhere or nowhere.
+        auto one = compareInterval(cmp.getComparisonDirection(), start, scale,
+                                   constant, 1, iotaOnLeft);
+        nowhere |= one->second <= one->first;
+        continue;
+      }
+      auto gridDim = gridDimOf(dimMap[iota->dimension]);
+      if (!gridDim)
+        return failure();
       auto interval =
-          compareInterval(cmp.getComparisonDirection(), start, scale,
-                          cst.getSplatValue<APInt>().getSExtValue(),
+          compareInterval(cmp.getComparisonDirection(), start, scale, constant,
                           grid[*gridDim], iotaOnLeft);
       if (!interval)
         return failure();
@@ -37117,7 +37187,7 @@ struct ScatterMaskedIndexSlice final
     auto loc = op.getLoc();
     Value live = stablehlo::ReshapeOpCreate(rewriter, loc, sel.getOnTrue(),
                                             idxTy.getShape());
-    bool full = true, empty = false;
+    bool full = true, empty = nowhere;
     for (size_t d = 0; d < grid.size(); ++d) {
       full &= lo[d] == 0 && hi[d] == grid[d];
       empty |= hi[d] <= lo[d];
