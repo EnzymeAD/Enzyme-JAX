@@ -6844,16 +6844,71 @@ struct CompareVs1 : public OpRewritePattern<arith::CmpIOp> {
   }
 };
 
+static IntegerSet runsOnceSet(AffineForOp forOp,
+                              SmallVectorImpl<Value> &operands);
+
+// Whether two stores to one buffer, over the same operands, write different
+// elements in every iteration: their indices differ by a nonzero constant,
+// as two accumulators a loop keeps in one scratch (w[i] and w[i + 25]).
+static bool storesApart(affine::AffineStoreOp a, affine::AffineStoreOp b) {
+  if (a.getMemRef() != b.getMemRef() ||
+      !llvm::equal(a.getMapOperands(), b.getMapOperands()))
+    return false;
+  AffineMap am = a.getAffineMap(), bm = b.getAffineMap();
+  if (am.getNumResults() != bm.getNumResults())
+    return false;
+  bool apart = false;
+  for (auto [x, y] : llvm::zip_equal(am.getResults(), bm.getResults())) {
+    auto c = dyn_cast<AffineConstantExpr>(
+        simplifyAffineExpr(x - y, am.getNumDims(), am.getNumSymbols()));
+    if (!c)
+      return false;
+    if (c.getValue() != 0)
+      apart = true;
+  }
+  return apart;
+}
+
 struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
   using OpRewritePattern<affine::AffineForOp>::OpRewritePattern;
+
+  // The load carried into `forOp`, in place of `load`: the store's address
+  // over its operands, the loop variable at its first value `first`, read
+  // as `map`, with the load's attributes (its alignment, its aliasing).
+  static affine::AffineLoadOp loadBefore(affine::AffineForOp forOp, Value first,
+                                         affine::AffineLoadOp load,
+                                         affine::AffineStoreOp store,
+                                         AffineMap map,
+                                         PatternRewriter &rewriter) {
+    SmallVector<Value> operands(store.getMapOperands());
+    for (Value &v : operands)
+      if (v == forOp.getInductionVar())
+        v = first;
+    auto moved = affine::AffineLoadOp::create(
+        rewriter, load.getLoc(), store.getMemRef(), map, operands,
+        llvm::MaybeAlign(load.getAlignment().value_or(0)));
+    preserveDiscardableAttributes(moved, load);
+    return moved;
+  }
 
   LogicalResult matchAndRewrite(affine::AffineForOp forOp,
                                 PatternRewriter &rewriter) const override {
     auto limit = affine::getConstantTripCount(forOp);
-    if (!limit)
+    if (limit && *limit == 0)
       return failure();
-    if ((*limit) == 0)
+    // A loop that may run no times reads its accumulator only where it
+    // runs: the load carried in is guarded, and the value it is not is
+    // never read, as the store carried out is guarded the same way.
+    std::optional<std::pair<IntegerSet, SmallVector<Value>>> guard;
+    if (!limit) {
+      SmallVector<Value> operands;
+      IntegerSet runs = runsOnceSet(forOp, operands);
+      guard.emplace(runs, std::move(operands));
+    }
+    // the first iteration, where the value carried in is read
+    if (!forOp.hasConstantLowerBound())
       return failure();
+    int64_t lb = forOp.getConstantLowerBound();
     Block *block = forOp.getBody();
     SmallVector<affine::AffineStoreOp> stores;
     block->walk([&](affine::AffineStoreOp store) {
@@ -6866,7 +6921,8 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
           continue;
         if (!forOp->isAncestor(user))
           continue;
-        legal &= isReadOnly(user);
+        auto other = dyn_cast<affine::AffineStoreOp>(user);
+        legal &= isReadOnly(user) || (other && storesApart(store, other));
       }
       if (legal)
         stores.push_back(store);
@@ -6881,10 +6937,31 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
         if (!forOp->isAncestor(user))
           continue;
         if (auto load = dyn_cast<affine::AffineLoadOp>(user)) {
-          if (load.getMapOperands() != store.getMapOperands())
-            continue;
+          // the load's map over the store's operands, which may order them
+          // differently
+          AffineMap storeMap = store.getAffineMap();
+          ValueRange storeOperands = store.getMapOperands();
           AffineMap loadMap = load.getAffineMap();
           bool legal = true;
+          SmallVector<AffineExpr> loadDimReps, loadSymReps;
+          for (auto [i, v] : llvm::enumerate(load.getMapOperands())) {
+            auto it = llvm::find(storeOperands, v);
+            if (it == storeOperands.end()) {
+              legal = false;
+              break;
+            }
+            unsigned pos = it - storeOperands.begin();
+            AffineExpr e =
+                pos < storeMap.getNumDims()
+                    ? rewriter.getAffineDimExpr(pos)
+                    : rewriter.getAffineSymbolExpr(pos - storeMap.getNumDims());
+            (i < loadMap.getNumDims() ? loadDimReps : loadSymReps).push_back(e);
+          }
+          if (!legal)
+            continue;
+          loadMap = loadMap.replaceDimsAndSymbols(loadDimReps, loadSymReps,
+                                                  storeMap.getNumDims(),
+                                                  storeMap.getNumSymbols());
           SmallVector<AffineExpr> dimReps;
           SmallVector<AffineExpr> dimReps2;
           SmallVector<AffineExpr> symReps;
@@ -6894,14 +6971,17 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
           }
           for (int i = 0; i < loadMap.getNumSymbols(); i++)
             symReps.push_back(rewriter.getAffineSymbolExpr(i));
-          for (auto &&[i, val] : llvm::enumerate(load.getMapOperands())) {
+          for (auto &&[i, val] : llvm::enumerate(storeOperands)) {
             if (val == forOp.getInductionVar()) {
-              if (i >= loadMap.getNumDims()) {
+              // a value carried from one element to the next needs the
+              // trip count, to know the last; one accumulated in place
+              // does not
+              if (i >= loadMap.getNumDims() || guard) {
                 legal = false;
                 break;
               }
               dimReps[i] = dimReps[i] + rewriter.getAffineConstantExpr(1);
-              dimReps2[i] = rewriter.getAffineConstantExpr(0);
+              dimReps2[i] = rewriter.getAffineConstantExpr(lb);
             }
           }
           if (!legal)
@@ -6909,7 +6989,7 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
           auto loadMap2 = loadMap.replaceDimsAndSymbols(
               dimReps, symReps, loadMap.getNumDims(), loadMap.getNumSymbols());
           loadMap2 = simplifyAffineMap(loadMap2);
-          if (store.getAffineMap() != loadMap2)
+          if (simplifyAffineMap(store.getAffineMap()) != loadMap2)
             continue;
           Operation *loadParen = load;
           while (loadParen->getParentOp() != forOp)
@@ -6932,14 +7012,30 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
     SmallVector<Value, 4> newIterArgs;
     llvm::append_range(newIterArgs, forOp.getInits());
     rewriter.setInsertionPoint(forOp);
-    IRMapping map;
-    map.map(forOp.getInductionVar(),
-            arith::ConstantIndexOp::create(rewriter, forOp.getLoc(), 0));
+    Value first = arith::ConstantIndexOp::create(rewriter, forOp.getLoc(), lb);
     for (auto &&[store, loads] : todo) {
-      auto movedLoad =
-          cast<affine::AffineLoadOp>(rewriter.clone(*loads[0].first, map));
-      movedLoad.setMap(loads[0].second);
-      newIterArgs.push_back(movedLoad);
+      Value init;
+      if (guard) {
+        auto ifOp = affine::AffineIfOp::create(
+            rewriter, forOp.getLoc(), loads[0].first.getType(), guard->first,
+            guard->second, /*withElseRegion=*/true);
+        rewriter.setInsertionPointToStart(ifOp.getThenBlock());
+        auto movedLoad = loadBefore(forOp, first, loads[0].first, store,
+                                    loads[0].second, rewriter);
+        affine::AffineYieldOp::create(rewriter, forOp.getLoc(),
+                                      movedLoad.getResult());
+        rewriter.setInsertionPointToStart(ifOp.getElseBlock());
+        Value unread = arith::ConstantOp::create(
+            rewriter, forOp.getLoc(),
+            rewriter.getZeroAttr(loads[0].first.getType()));
+        affine::AffineYieldOp::create(rewriter, forOp.getLoc(), unread);
+        rewriter.setInsertionPoint(forOp);
+        init = ifOp.getResult(0);
+      } else {
+        init = loadBefore(forOp, first, loads[0].first, store, loads[0].second,
+                          rewriter);
+      }
+      newIterArgs.push_back(init);
     }
 
     // create the for.
@@ -6994,19 +7090,24 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
   LogicalResult matchAndRewrite(affine::AffineForOp forOp,
                                 PatternRewriter &rewriter) const override {
     auto limit = affine::getConstantTripCount(forOp);
-    if (!limit)
-      return failure();
-    if ((*limit) == 0)
+    if (limit && *limit == 0)
       return failure();
     if (forOp.getStep() != 1)
       return failure();
     auto ubMap = forOp.getUpperBoundMap();
     if (ubMap.getNumResults() != 1)
       return failure();
-    auto ubExpr = dyn_cast<AffineConstantExpr>(ubMap.getResult(0));
-    if (!ubExpr)
-      return failure();
-    auto ub = ubExpr.getValue();
+    // A loop that may run no times stores only where it runs; its store
+    // must then not read the variable, which its last value would replace.
+    std::optional<std::pair<IntegerSet, SmallVector<Value>>> guard;
+    std::optional<int64_t> ub;
+    if (auto ubExpr = dyn_cast<AffineConstantExpr>(ubMap.getResult(0)))
+      ub = ubExpr.getValue();
+    if (!limit) {
+      SmallVector<Value> operands;
+      IntegerSet runs = runsOnceSet(forOp, operands);
+      guard.emplace(runs, std::move(operands));
+    }
 
     Block *block = forOp.getBody();
     SmallVector<affine::AffineStoreOp> stores;
@@ -7020,7 +7121,9 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
           continue;
         if (!forOp->isAncestor(user))
           continue;
-        legal = false;
+        auto other = dyn_cast<affine::AffineStoreOp>(user);
+        if (!other || !storesApart(store, other))
+          legal = false;
       }
       if (legal)
         stores.push_back(store);
@@ -7053,8 +7156,12 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
       if (!legal)
         continue;
 
-      auto inp = forOp.getInits()[yldIdx].getDefiningOp<affine::AffineLoadOp>();
-      if (!inp)
+      // the value carried in is a load, or one guarded by the loop running
+      Value init = forOp.getInits()[yldIdx];
+      if (auto guarded = init.getDefiningOp<affine::AffineIfOp>())
+        if (guarded.hasElse() && guarded.getNumResults() == 1)
+          init = guarded.getThenBlock()->getTerminator()->getOperand(0);
+      if (!init.getDefiningOp<affine::AffineLoadOp>())
         continue;
 
       SmallVector<AffineExpr> dimReps;
@@ -7070,12 +7177,12 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
 
       for (auto &&[i, val] : llvm::enumerate(store.getMapOperands())) {
         if (val == forOp.getInductionVar()) {
-          if (i >= map.getNumDims()) {
+          if (i >= map.getNumDims() || !ub) {
             legal = false;
             break;
           }
           dimReps[i] = rewriter.getAffineConstantExpr(0);
-          dimReps2[i] = rewriter.getAffineConstantExpr(ub - 1);
+          dimReps2[i] = rewriter.getAffineConstantExpr(*ub - 1);
         }
       }
       if (!legal)
@@ -7084,7 +7191,7 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
       auto loadMap = map.replaceDimsAndSymbols(
           dimReps, symReps, map.getNumDims(), map.getNumSymbols());
       loadMap = simplifyAffineMap(loadMap);
-      if (store.getAffineMap() != loadMap)
+      if (simplifyAffineMap(store.getAffineMap()) != loadMap)
         continue;
 
       auto storeMap2 = map.replaceDimsAndSymbols(
@@ -7103,6 +7210,13 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
         store->moveAfter(forOp);
         store.getValueMutable().set(forOp->getResult(yldIdx));
       });
+      if (guard) {
+        rewriter.setInsertionPointAfter(forOp);
+        auto ifOp = affine::AffineIfOp::create(rewriter, store.getLoc(),
+                                               guard->first, guard->second,
+                                               /*withElseRegion=*/false);
+        rewriter.moveOpBefore(store, ifOp.getThenBlock()->getTerminator());
+      }
       changed = true;
     }
 
