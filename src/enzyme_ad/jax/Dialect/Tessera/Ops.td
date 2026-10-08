@@ -304,7 +304,7 @@ def GuardOp : TesseraOp<"guard", [SingleBlock]> {
                         SizedRegion<1>:$elseRegion);
 
   let assemblyFormat = [{
-    $cond `args` `(` $args `)` attr-dict `:` functional-type($args, results)
+    $cond `args` `(` $args `)` `{` $argNames `}` attr-dict `:` functional-type($args, results)
     $thenRegion `else` $elseRegion
   }];
 
