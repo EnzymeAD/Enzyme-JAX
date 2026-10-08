@@ -22,6 +22,8 @@
 #include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/Support/DebugLog.h"
 
+#include "mlir/IR/Verifier.h"
+
 #include <queue>
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -85,7 +87,7 @@ LogicalResult hoistAllocs(enzymexla::GPUWrapperOp wrapperOp) {
   // lulesh also has 2 iterators
   SmallVector<Value> dynSizes;
   auto blockDims = wrapperOp.getBlockDims();
-  dynSizes.push_back(blockDims[1]);
+  // dynSizes.push_back(blockDims[1]);
   dynSizes.push_back(arith::MulIOp::create(rewriter, wrapperOp.getLoc(),
                                            blockDims[0], blockDims[3]));
   scf::ParallelOp parallelOp;
@@ -105,10 +107,10 @@ LogicalResult hoistAllocs(enzymexla::GPUWrapperOp wrapperOp) {
     }
 
     SmallVector<int64_t> shape;
+    // shape.push_back(ShapedType::kDynamic);
     shape.push_back(ShapedType::kDynamic);
-    shape.push_back(ShapedType::kDynamic);
-    shape.append({hardcodedDim, 8});
-    // shape.push_back(hardcodedDim);
+    // shape.append({hardcodedDim, 8});
+    shape.push_back(hardcodedDim);
     MemRefType cacheType = MemRefType::get(
         shape, allocOp.getType().getElementType(),
         /*layout=*/rewriter.getMultiDimIdentityMap(shape.size()),
@@ -305,68 +307,8 @@ void generateLoopIterFuncs(Operation *moduleOp) {
         total = arith::MulIOp::create(builder, loc, total, blockDim);
       }
       total = arith::AddIOp::create(builder, loc, total, c1);
-      Value c0 = arith::ConstantIndexOp::create(builder, loc, 0);
-      Value cumulativeSum = memref::AllocOp::create(
-          builder, loc,
-          MemRefType::get(ShapedType::kDynamic, builder.getI32Type()), total);
-      scf::ForOp::create(
-          builder, loc, c0, total, c1, /*initArgs=*/{},
-          [&](OpBuilder &builder, Location loc, Value iv, ValueRange iterArgs) {
-            args[0] = iv;
-            Value iterCount = func::CallOp::create(builder, wrapperOp.getLoc(),
-                                                   loopIterFunc, args)
-                                  .getResult(0);
-            // if (iv == 0) {
-            //    store 0, cumulativesum[0];
-            //    store iterCount, cumulativesum[1];
-            // } else {
-            //    store iterCount + cumulativesum[iv], cumulativesum[iv + 1]
-            // }
-            Value cond = arith::CmpIOp::create(
-                builder, loc, arith::CmpIPredicate::eq, iv, c0);
-            scf::IfOp::create(
-                builder, loc, cond,
-                [&](OpBuilder &builder, Location loc) {
-                  Value zeroVal = arith::ConstantOp::create(
-                      builder, loc,
-                      builder.getIntegerAttr(forOp.getUpperBound().getType(),
-                                             0));
-                  memref::StoreOp::create(builder, loc, zeroVal, cumulativeSum,
-                                          c0, /*nontemporal=*/false,
-                                          llvm::MaybeAlign(4));
-                  memref::StoreOp::create(
-                      builder, loc, iterCount, cumulativeSum, c1,
-                      /*nontemporal=*/false, llvm::MaybeAlign(4));
-                  scf::YieldOp::create(builder, loc);
-                },
-                [&](OpBuilder &builder, Location loc) {
-                  Value nextIV = arith::AddIOp::create(builder, loc, iv, c1);
-                  Value currSum =
-                      memref::LoadOp::create(builder, loc, cumulativeSum, iv);
-                  iterCount =
-                      arith::AddIOp::create(builder, loc, iterCount, currSum);
-                  memref::StoreOp::create(
-                      builder, loc, iterCount, cumulativeSum, nextIV,
-                      /*nontemporal=*/false, llvm::MaybeAlign(4));
-                  scf::YieldOp::create(builder, loc);
-                });
-            scf::YieldOp::create(builder, loc);
-          });
-      // The total size of the data is at cumulativeSum[-1]
-      Value lastIdx = arith::SubIOp::create(builder, loc, total, c1);
-      Value dataSize =
-          memref::LoadOp::create(builder, loc, cumulativeSum, lastIdx);
-      dataSize = arith::IndexCastOp::create(builder, loc,
-                                            builder.getIndexType(), dataSize);
+      // Value c0 = arith::ConstantIndexOp::create(builder, loc, 0);
       auto deviceMemorySpaceAttr = builder.getI64IntegerAttr(1);
-      auto gpuAlloc = gpu::AllocOp::create(
-          builder, loc,
-          MemRefType::get(
-              ShapedType::kDynamic, allocOp.getType().getElementType(),
-              builder.getMultiDimIdentityMap(1), deviceMemorySpaceAttr),
-          /*asyncDependencies=*/ValueRange(), dataSize,
-          /*symbolOperands=*/ValueRange());
-      gpuAlloc->setAttr("enzyme.hoisted_cache", builder.getUnitAttr());
       auto deviceIndices = gpu::AllocOp::create(
           builder, loc,
           MemRefType::get(ShapedType::kDynamic, builder.getI32Type(),
@@ -375,45 +317,156 @@ void generateLoopIterFuncs(Operation *moduleOp) {
           /*asyncDependencies=*/ValueRange(), total,
           /*symbolOperands=*/ValueRange());
       deviceIndices->setAttr("enzyme.device_indices", builder.getUnitAttr());
-      enzymexla::MemcpyOp::create(
-          builder, loc, Type(), /*asyncDependencies=*/ValueRange(),
-          deviceIndices.getMemref(), cumulativeSum, total);
 
-      // Replace loads and stores
-      builder.setInsertionPointToStart(parallelOp.getBody());
-      Value startIdx =
-          memref::LoadOp::create(builder, loc, deviceIndices.getMemref(),
-                                 parallelOp.getInductionVars());
-      startIdx = arith::IndexCastOp::create(builder, loc,
-                                            builder.getIndexType(), startIdx);
-
-      PatternRewriter rewriter(builder.getContext());
-      if (parallelOp.getNumLoops() != 1) {
-        llvm::errs() << "[hoist] warning: multiple parallel iterators not yet "
-                        "implemented\n";
-      }
-
-      std::function<void(OpOperand &)> visit = [&](OpOperand &use) {
-        if (auto storeOp = dyn_cast<memref::StoreOp>(use.getOwner())) {
-          rewriter.setInsertionPoint(storeOp);
-          Value idx = arith::AddIOp::create(rewriter, loc, startIdx,
-                                            storeOp.getIndices().front());
-          memref::StoreOp::create(rewriter, storeOp.getLoc(),
-                                  storeOp.getValue(), gpuAlloc.getMemref(),
-                                  idx);
-          rewriter.eraseOp(storeOp);
-        } else if (auto loadOp = dyn_cast<memref::LoadOp>(use.getOwner())) {
-          rewriter.setInsertionPoint(loadOp);
-          Value idx = arith::AddIOp::create(rewriter, loc, startIdx,
-                                            loadOp.getIndices().front());
-          auto newLoad =
-              memref::LoadOp::create(rewriter, loc, gpuAlloc.getMemref(), idx);
-          rewriter.replaceOp(loadOp, newLoad);
+      {
+        // Create a second wrapper op that just computes the number of times
+        // each thread executes. Give it the same launch parameters and
+        // iterators as the original wrapper.
+        OpBuilder::InsertionGuard guard(builder);
+        auto iterCountWrapper = enzymexla::GPUWrapperOp::create(
+            builder, loc, wrapperOp.getBlockDims());
+        // iterCountWrapper->setAttr("enzyme.iter_counts",
+        // builder.getUnitAttr());
+        IRMapping map;
+        builder.setInsertionPointToStart(iterCountWrapper.getBody());
+        for (Operation &op : wrapperOp.getBodyRegion().getOps()) {
+          if (op.getNumRegions() == 0 &&
+              &op != wrapperOp.getBody()->getTerminator()) {
+            builder.clone(op, map);
+          }
         }
-      };
-      for (OpOperand &use :
-           llvm::make_early_inc_range(allocOp.getMemref().getUses())) {
-        visit(use);
+        auto lowerBounds =
+            llvm::map_to_vector(parallelOp.getLowerBound(), [&](Value val) {
+              return map.lookupOrDefault(val);
+            });
+        auto upperBounds =
+            llvm::map_to_vector(parallelOp.getUpperBound(), [&](Value val) {
+              return map.lookupOrDefault(val);
+            });
+        auto steps = llvm::map_to_vector(parallelOp.getStep(), [&](Value val) {
+          return map.lookupOrDefault(val);
+        });
+        scf::ParallelOp::create(
+            builder, loc, lowerBounds, upperBounds, steps,
+            [&](OpBuilder &builder, Location loc, ValueRange ivs) {
+              args[0] = ivs.front();
+              Value iterCount =
+                  func::CallOp::create(builder, wrapperOp.getLoc(),
+                                       loopIterFunc, args)
+                      .getResult(0);
+              memref::StoreOp::create(builder, loc, iterCount,
+                                      deviceIndices.getMemref(), ivs.front());
+              Value lastIdx =
+                  arith::SubIOp::create(builder, loc, upperBounds.front(), c1);
+              Value cond = arith::CmpIOp::create(
+                  builder, loc, arith::CmpIPredicate::eq, ivs.front(), lastIdx);
+              // Have the last thread also write a 0 to the last index
+              scf::IfOp::create(
+                  builder, loc, cond, [&](OpBuilder &builder, Location loc) {
+                    Value c0i32 = arith::ConstantOp::create(
+                        builder, loc, builder.getI32IntegerAttr(0));
+                    memref::StoreOp::create(builder, loc, c0i32,
+                                            deviceIndices.getMemref(), lastIdx);
+                    scf::YieldOp::create(builder, loc);
+                  });
+              scf::ReduceOp::create(builder, loc);
+            });
+
+        // Emit the exclusive sum
+        builder.setInsertionPoint(
+            iterCountWrapper->getParentOfType<FunctionOpInterface>());
+        auto ptrType = LLVM::LLVMPointerType::get(builder.getContext());
+        auto funcType =
+            builder.getFunctionType({builder.getI32Type(), ptrType}, {});
+        auto exclSumFunc = func::FuncOp::create(
+            builder, wrapperOp.getLoc(), "cubDeviceExclusiveSum", funcType);
+        exclSumFunc.setPrivate();
+
+        builder.setInsertionPointAfter(iterCountWrapper);
+        Value totalI32 = arith::IndexCastOp::create(
+            builder, loc, builder.getI32Type(), total);
+        Value deviceIndicesPtr = enzymexla::Memref2PointerOp::create(
+            builder, loc, ptrType, deviceIndices.getMemref());
+        func::CallOp::create(builder, loc, exclSumFunc,
+                             {totalI32, deviceIndicesPtr});
+
+        // Figure out how much data to allocate in total. Copy the size back to
+        // the host
+        Value lastIdx = arith::SubIOp::create(builder, loc, total, c1);
+        lastIdx = arith::IndexCastOp::create(builder, loc, builder.getI64Type(),
+                                             lastIdx);
+        // auto subviewType = memref::SubViewOp::inferRankReducedResultType(
+        //     /*resultShape=*/{}, deviceIndices.getMemref().getType(),
+        //     {ShapedType::kDynamic}, {1}, {1});
+        // llvm::errs() << "subview type: " << subviewType << "\n";
+        // SmallVector<OpFoldResult> offsets = {lastIdx};
+        // SmallVector<OpFoldResult> sizes = {builder.getIndexAttr(1)};
+        // SmallVector<OpFoldResult> strides = {builder.getIndexAttr(1)};
+        // auto subviewOp = memref::SubViewOp::create(builder, loc, subviewType,
+        //                                            deviceIndices.getMemref(),
+        //                                            offsets, sizes, strides);
+        Value gepRes = LLVM::GEPOp::create(
+            builder, loc, ptrType, builder.getI32Type(), deviceIndicesPtr,
+            lastIdx, LLVM::GEPNoWrapFlags::inbounds);
+        gepRes = enzymexla::Pointer2MemrefOp::create(
+            builder, loc, deviceIndices.getMemref().getType(), gepRes);
+        auto elementType = deviceIndices.getMemref().getType().getElementType();
+        Value dataSizeMem = memref::AllocaOp::create(
+            builder, loc, MemRefType::get({}, elementType));
+        Value sizeOfInt = arith::ConstantIndexOp::create(
+            builder, loc, elementType.getIntOrFloatBitWidth() / 8);
+        enzymexla::MemcpyOp::create(builder, loc, /*asyncToken=*/Type(),
+                                    /*asyncDependencies=*/ValueRange(),
+                                    dataSizeMem, gepRes, sizeOfInt);
+
+        Value dataSize = memref::LoadOp::create(builder, loc, dataSizeMem);
+        dataSize = arith::IndexCastOp::create(builder, loc,
+                                              builder.getIndexType(), dataSize);
+        auto gpuAlloc = gpu::AllocOp::create(
+            builder, loc,
+            MemRefType::get(
+                ShapedType::kDynamic, allocOp.getType().getElementType(),
+                builder.getMultiDimIdentityMap(1), deviceMemorySpaceAttr),
+            /*asyncDependencies=*/ValueRange(), dataSize,
+            /*symbolOperands=*/ValueRange());
+        gpuAlloc->setAttr("enzyme.hoisted_cache", builder.getUnitAttr());
+
+        // Replace loads and stores
+        builder.setInsertionPointToStart(parallelOp.getBody());
+        Value startIdx =
+            memref::LoadOp::create(builder, loc, deviceIndices.getMemref(),
+                                   parallelOp.getInductionVars());
+        startIdx = arith::IndexCastOp::create(builder, loc,
+                                              builder.getIndexType(), startIdx);
+
+        PatternRewriter rewriter(builder.getContext());
+        if (parallelOp.getNumLoops() != 1) {
+          llvm::errs() << "[hoist] warning: multiple parallel iterators not "
+                          "yet implemented\n";
+        }
+
+        std::function<void(OpOperand &)> visit = [&](OpOperand &use) {
+          if (auto storeOp = dyn_cast<memref::StoreOp>(use.getOwner())) {
+            rewriter.setInsertionPoint(storeOp);
+            Value idx = arith::AddIOp::create(rewriter, loc, startIdx,
+                                              storeOp.getIndices().front());
+            memref::StoreOp::create(rewriter, storeOp.getLoc(),
+                                    storeOp.getValue(), gpuAlloc.getMemref(),
+                                    idx);
+            rewriter.eraseOp(storeOp);
+          } else if (auto loadOp = dyn_cast<memref::LoadOp>(use.getOwner())) {
+            rewriter.setInsertionPoint(loadOp);
+            Value idx = arith::AddIOp::create(rewriter, loc, startIdx,
+                                              loadOp.getIndices().front());
+            auto newLoad = memref::LoadOp::create(rewriter, loc,
+                                                  gpuAlloc.getMemref(), idx);
+            rewriter.replaceOp(loadOp, newLoad);
+          }
+        };
+        for (OpOperand &use :
+             llvm::make_early_inc_range(allocOp.getMemref().getUses())) {
+          visit(use);
+        }
       }
     });
   });
