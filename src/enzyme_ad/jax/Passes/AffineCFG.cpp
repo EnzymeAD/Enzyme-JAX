@@ -3164,6 +3164,29 @@ static SmallVector<Value> raisedOperands(scf::IfOp op) {
   return {op.getCondition()};
 }
 
+// The constant bounds [lo, hi) of a loop variable, if it has them.
+static std::optional<std::pair<int64_t, int64_t>> constantIVBounds(Value iv) {
+  if (auto forOp = affine::getForInductionVarOwner(iv)) {
+    if (!forOp.hasConstantBounds() || forOp.getStepAsInt() != 1)
+      return std::nullopt;
+    return std::make_pair(forOp.getConstantLowerBound(),
+                          forOp.getConstantUpperBound());
+  }
+  if (auto par = affine::getAffineParallelInductionVarOwner(iv)) {
+    unsigned d = cast<BlockArgument>(iv).getArgNumber();
+    AffineMap lb = par.getLowerBoundMap(d), ub = par.getUpperBoundMap(d);
+    if (par.getSteps()[d] != 1 || lb.getNumResults() != 1 ||
+        ub.getNumResults() != 1)
+      return std::nullopt;
+    auto lbc = dyn_cast<AffineConstantExpr>(lb.getResult(0));
+    auto ubc = dyn_cast<AffineConstantExpr>(ub.getResult(0));
+    if (!lbc || !ubc)
+      return std::nullopt;
+    return std::make_pair(lbc.getValue(), ubc.getValue());
+  }
+  return std::nullopt;
+}
+
 // An affine.if over dims yielding constants is a select no affine expression
 // expresses, so an scf.for or scf.if whose bounds or condition derive from it
 // cannot raise. Splitting the op on the conditional puts a copy under each
@@ -3172,9 +3195,16 @@ template <typename OpTy>
 struct SplitOnAffineIfConstants : public OpRewritePattern<OpTy> {
   using OpRewritePattern<OpTy>::OpRewritePattern;
 
-  // The conditional of constants some raised operand of `op` derives from
-  // through pure region-free ops, when its result is not a symbol already.
-  static affine::AffineIfOp findConditional(OpTy op, Region *scope) {
+  // The conditional some raised operand of `op` derives from through pure
+  // region-free ops, when its result is not a symbol already, and its arms
+  // yield what `arms` accepts (constants, by default).
+  static affine::AffineIfOp findConditional(
+      OpTy op, Region *scope,
+      llvm::function_ref<bool(Value, Value, Region *)> arms =
+          [](Value t, Value e, Region *) {
+            return matchPattern(t, m_Constant()) &&
+                   matchPattern(e, m_Constant());
+          }) {
     SmallVector<Value> todo = raisedOperands(op);
     DenseSet<Value> seen;
     while (!todo.empty()) {
@@ -3193,11 +3223,12 @@ struct SplitOnAffineIfConstants : public OpRewritePattern<OpTy> {
               return isValidSymbolInt(o, /*recur*/ true, scope);
             }))
           continue;
-        auto isConstant = [](Value v) { return matchPattern(v, m_Constant()); };
-        if (llvm::all_of(ifOp.getThenBlock()->getTerminator()->getOperands(),
-                         isConstant) &&
-            llvm::all_of(ifOp.getElseBlock()->getTerminator()->getOperands(),
-                         isConstant))
+        if (llvm::all_of(
+                llvm::zip(ifOp.getThenBlock()->getTerminator()->getOperands(),
+                          ifOp.getElseBlock()->getTerminator()->getOperands()),
+                [&](auto te) {
+                  return arms(std::get<0>(te), std::get<1>(te), scope);
+                }))
           return ifOp;
         continue;
       }
@@ -3262,6 +3293,150 @@ struct SplitOnAffineIfConstants : public OpRewritePattern<OpTy> {
         affine::AffineYieldOp::create(rewriter, loc, copy->getResults());
     }
     rewriter.replaceOp(op, split.getResults());
+    return success();
+  }
+};
+
+// The constant `a - b` where a is b plus a constant, or b is a plus one.
+static std::optional<int64_t> constantApart(Value a, Value b) {
+  if (a == b)
+    return 0;
+  for (auto [x, y, sign] : {std::tuple(a, b, 1), std::tuple(b, a, -1)}) {
+    auto add = x.getDefiningOp<arith::AddIOp>();
+    APInt k;
+    if (add && add.getLhs() == y &&
+        matchPattern(add.getRhs(), m_ConstantInt(&k)))
+      return sign * k.getSExtValue();
+    auto sub = x.getDefiningOp<arith::SubIOp>();
+    if (sub && sub.getLhs() == y &&
+        matchPattern(sub.getRhs(), m_ConstantInt(&k)))
+      return -sign * k.getSExtValue();
+  }
+  return std::nullopt;
+}
+
+// Whether `v` is defined at the top level of the affine scope `scope`, where
+// a cast of it is a symbol.
+static bool isScopeLevelValue(Value v, Region *scope) {
+  if (auto arg = dyn_cast<BlockArgument>(v))
+    return arg.getOwner()->getParent() == scope;
+  return v.getDefiningOp()->getParentRegion() == scope;
+}
+
+// `v` as an index, cast where it is defined.
+static Value indexOf(Value v, PatternRewriter &rewriter) {
+  if (v.getType().isIndex())
+    return v;
+  OpBuilder::InsertionGuard guard(rewriter);
+  if (auto arg = dyn_cast<BlockArgument>(v))
+    rewriter.setInsertionPointToStart(arg.getOwner());
+  else
+    rewriter.setInsertionPointAfter(v.getDefiningOp());
+  return arith::IndexCastOp::create(rewriter, v.getLoc(),
+                                    rewriter.getIndexType(), v);
+}
+
+// An affine.if over the variables of loops with constant bounds, yielding a
+// constant in each arm, as the closed form `b + (a - b) * [c >= 0]`: over
+// the range [lo, hi] of the constraint c, the indicator [c >= 0] is
+// (c + M) floordiv M for M = max(hi + 1, -lo), and [c == 0] is
+// [c >= 0] + [-c >= 0] - 1. Written so where an scf.for's bounds or an
+// scf.if's condition derive from the conditional, as a loop bound chosen
+// by the component, `D1D - (c == 2)`: the bound is then affine and the
+// loop raises, where the branch had kept it an scf.for. Elsewhere the
+// conditional stays, a set the domain simplifications read.
+template <typename OpTy>
+struct AffineIfConstantsAsIndicator : public OpRewritePattern<OpTy> {
+  using OpRewritePattern<OpTy>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpTy op,
+                                PatternRewriter &rewriter) const override {
+    Region *scope = getLocalAffineScope(op);
+    AffineIfOp ifOp = SplitOnAffineIfConstants<OpTy>::findConditional(
+        op, scope, [](Value t, Value e, Region *scope) {
+          return (matchPattern(t, m_Constant()) &&
+                  matchPattern(e, m_Constant())) ||
+                 (constantApart(t, e) && isScopeLevelValue(e, scope));
+        });
+    if (!ifOp)
+      return failure();
+    IntegerSet set = ifOp.getIntegerSet();
+    if (set.getNumConstraints() != 1 || set.getNumSymbols() != 0)
+      return failure();
+    // each result as `base + step * indicator`: two constants, or two
+    // values a constant apart, the else arm's a symbol
+    SmallVector<int64_t> steps;
+    SmallVector<std::optional<int64_t>> baseConsts;
+    SmallVector<Value> baseValues;
+    for (auto [t, e] :
+         llvm::zip(ifOp.getThenBlock()->getTerminator()->getOperands(),
+                   ifOp.getElseBlock()->getTerminator()->getOperands())) {
+      APInt tc, ec;
+      if (matchPattern(t, m_ConstantInt(&tc)) &&
+          matchPattern(e, m_ConstantInt(&ec))) {
+        steps.push_back(tc.getSExtValue() - ec.getSExtValue());
+        baseConsts.push_back(ec.getSExtValue());
+        baseValues.push_back(nullptr);
+        continue;
+      }
+      auto apart = constantApart(t, e);
+      if (!apart || !isScopeLevelValue(e, scope))
+        return failure();
+      steps.push_back(*apart);
+      baseConsts.push_back(std::nullopt);
+      baseValues.push_back(e);
+    }
+    AffineExpr c = set.getConstraint(0);
+    SmallVector<int64_t> flat;
+    if (failed(getFlattenedAffineExpr(c, set.getNumDims(), 0, &flat)) ||
+        flat.size() != set.getNumDims() + 1)
+      return failure();
+    int64_t lo = flat.back(), hi = flat.back();
+    for (auto [i, iv] : llvm::enumerate(ifOp.getOperands())) {
+      auto bounds = constantIVBounds(iv);
+      if (!bounds || bounds->second <= bounds->first)
+        return failure();
+      int64_t coef = flat[i], first = bounds->first, last = bounds->second - 1;
+      lo += coef * (coef > 0 ? first : last);
+      hi += coef * (coef > 0 ? last : first);
+    }
+    MLIRContext *ctx = ifOp.getContext();
+    // [e >= 0] over [lo, hi]
+    auto indicator = [&](AffineExpr e, int64_t lo, int64_t hi) {
+      if (lo >= 0)
+        return getAffineConstantExpr(1, ctx);
+      if (hi < 0)
+        return getAffineConstantExpr(0, ctx);
+      int64_t m = std::max(hi + 1, -lo);
+      return (e + m).floorDiv(m);
+    };
+    AffineExpr ind = indicator(c, lo, hi);
+    if (set.isEq(0))
+      ind = ind + indicator(-c, -hi, -lo) - 1;
+    Location loc = ifOp.getLoc();
+    OpBuilder::InsertionGuard guard(rewriter);
+    SmallVector<Value> results;
+    for (auto [r, step, baseConst, baseValue] :
+         llvm::zip(ifOp.getResults(), steps, baseConsts, baseValues)) {
+      SmallVector<Value> operands(ifOp.getOperands());
+      AffineExpr base;
+      if (baseConst) {
+        base = getAffineConstantExpr(*baseConst, ctx);
+      } else {
+        base = getAffineSymbolExpr(0, ctx);
+        operands.push_back(indexOf(baseValue, rewriter));
+      }
+      rewriter.setInsertionPoint(ifOp);
+      Value v = affine::AffineApplyOp::create(
+          rewriter, loc,
+          AffineMap::get(set.getNumDims(), baseConst ? 0 : 1, base + step * ind,
+                         ctx),
+          operands);
+      if (!isa<IndexType>(r.getType()))
+        v = arith::IndexCastOp::create(rewriter, loc, r.getType(), v);
+      results.push_back(v);
+    }
+    rewriter.replaceOp(ifOp, results);
     return success();
   }
 };
@@ -7987,6 +8162,8 @@ void mlir::enzyme::populateAffineCFGPatterns(
     rpl.add<SplitOnAffineIfConstants<scf::ForOp>,
             SplitOnAffineIfConstants<scf::IfOp>>(context, 2);
   }
+  rpl.add<AffineIfConstantsAsIndicator<scf::ForOp>,
+          AffineIfConstantsAsIndicator<scf::IfOp>>(context, 2);
   rpl.add<FoldAffineApplyAdd, FoldAffineApplySub, FoldAffineApplyRem,
           FoldAffineApplyDiv, FoldAffineApplyMul, FoldAppliesIntoLoad>(context,
                                                                        2);
