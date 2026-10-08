@@ -3687,12 +3687,25 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         builder,
         rewriteLocation(newVal.getLoc(), pc.options.strip_llvm_debuginfo),
         newVal, dynShape);
-    mapping.map(val, newVal);
-
     affine::AffineValueMap dynAffineValueMap(
         AffineMap::get(affineMap.getNumDims(), affineMap.getNumSymbols(),
                        dynExprs, newVal.getContext()),
         accessValueMap.getOperands());
+    // A load of the whole buffer is the buffer's tensor itself, and its
+    // map is recorded on that value: a second such load, over other
+    // variables, would overwrite it, and the two would read as one. The
+    // second load gets a value of its own: an identity reshape, created
+    // directly, as ReshapeOpCreate folds one away and would hand back the
+    // buffer's tensor.
+    auto recorded = maps.find(newVal);
+    if (recorded != maps.end() &&
+        (recorded->second.getAffineMap() != dynAffineValueMap.getAffineMap() ||
+         recorded->second.getOperands() != dynAffineValueMap.getOperands()))
+      newVal = stablehlo::ReshapeOp::create(
+          builder,
+          rewriteLocation(newVal.getLoc(), pc.options.strip_llvm_debuginfo),
+          newVal.getType(), newVal);
+    mapping.map(val, newVal);
     maps[newVal] = dynAffineValueMap;
 
     return success();
