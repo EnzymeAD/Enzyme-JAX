@@ -2370,7 +2370,8 @@ void AffineFixup<affine::AffineLoadOp>::replaceAffineOp(
     ArrayRef<Value> mapOperands) const {
   auto attrs = load->getDiscardableAttrDictionary();
   auto newLoad = rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
-      load, load.getMemRef(), map, mapOperands);
+      load, load.getMemRef(), map, mapOperands,
+      llvm::MaybeAlign(load.getAlignment().value_or(0)));
   for (NamedAttribute attr : attrs)
     newLoad->setAttr(attr.getName(), attr.getValue());
 }
@@ -2389,7 +2390,8 @@ void AffineFixup<affine::AffineStoreOp>::replaceAffineOp(
     ArrayRef<Value> mapOperands) const {
   auto attrs = store->getDiscardableAttrDictionary();
   auto newStore = rewriter.replaceOpWithNewOp<affine::AffineStoreOp>(
-      store, store.getValueToStore(), store.getMemRef(), map, mapOperands);
+      store, store.getValueToStore(), store.getMemRef(), map, mapOperands,
+      llvm::MaybeAlign(store.getAlignment().value_or(0)));
   for (NamedAttribute attr : attrs)
     newStore->setAttr(attr.getName(), attr.getValue());
 }
