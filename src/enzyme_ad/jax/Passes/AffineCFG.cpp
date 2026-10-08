@@ -3228,6 +3228,150 @@ struct SplitOnAffineIfConstants : public OpRewritePattern<OpTy> {
   }
 };
 
+// Whether the value derives from `from` through pure region-free ops.
+static bool derivesFromValue(Value value, Value from) {
+  SmallVector<Value> todo = {value};
+  DenseSet<Value> seen;
+  while (!todo.empty()) {
+    Value cur = todo.pop_back_val();
+    if (!seen.insert(cur).second)
+      continue;
+    if (cur == from)
+      return true;
+    Operation *def = cur.getDefiningOp();
+    if (!def || def->getNumRegions() || !isPure(def))
+      continue;
+    todo.append(def->getOperands().begin(), def->getOperands().end());
+  }
+  return false;
+}
+
+// Whether the value derives from the variable of a loop through pure
+// region-free ops.
+static bool readsLoopVariable(Value value) {
+  SmallVector<Value> todo = {value};
+  DenseSet<Value> seen;
+  while (!todo.empty()) {
+    Value cur = todo.pop_back_val();
+    if (!seen.insert(cur).second)
+      continue;
+    if (auto arg = dyn_cast<BlockArgument>(cur)) {
+      if (isa<LoopLikeOpInterface>(arg.getOwner()->getParentOp()))
+        return true;
+      continue;
+    }
+    Operation *def = cur.getDefiningOp();
+    if (def->getNumRegions() || !isPure(def))
+      continue;
+    todo.append(def->getOperands().begin(), def->getOperands().end());
+  }
+  return false;
+}
+
+// A flag of the kernel, a boolean the function takes, that a loop's bound
+// or an if's condition combines with a loop variable through boolean
+// arithmetic (the extent `D1D + ((c == 2) xor transposed)` of a
+// component), is affine in neither value of the flag at once. Splitting
+// the op on the flag puts a copy under each value, with the flag a
+// constant in it, and the arithmetic folds to a conditional of the loop
+// variable the raising then handles. A bound that reads the flag without
+// a loop variable, `transposed ? n : m`, is a symbol as it is.
+template <typename OpTy> struct SplitOnFlag : public OpRewritePattern<OpTy> {
+  using OpRewritePattern<OpTy>::OpRewritePattern;
+
+  // The flag some raised operand of `op` combines with a loop variable in
+  // a boolean op.
+  static Value findFlag(OpTy op) {
+    SmallVector<Value> todo = raisedOperands(op);
+    DenseSet<Value> seen;
+    while (!todo.empty()) {
+      Value cur = todo.pop_back_val();
+      if (!seen.insert(cur).second)
+        continue;
+      Operation *def = cur.getDefiningOp();
+      if (!def || def->getNumRegions() || !isPure(def))
+        continue;
+      if (isa<arith::XOrIOp, arith::AndIOp, arith::OrIOp, arith::SelectOp>(
+              def)) {
+        Value flag;
+        bool variable = false;
+        for (Value operand : def->getOperands()) {
+          auto arg = dyn_cast<BlockArgument>(operand);
+          if (arg && arg.getType().isInteger(1) &&
+              isa<FunctionOpInterface>(arg.getOwner()->getParentOp()))
+            flag = arg;
+          else if (readsLoopVariable(operand))
+            variable = true;
+        }
+        if (flag && variable)
+          return flag;
+      }
+      todo.append(def->getOperands().begin(), def->getOperands().end());
+    }
+    return nullptr;
+  }
+
+  // Whether an op enclosing `op` reads the flag the same way: that one is
+  // split first, and its copies hold the flag constant throughout, so the
+  // inner ops split once rather than each on its own, doubling the copies
+  // of every outer one.
+  static bool underSplittable(Operation *op) {
+    for (Operation *parent = op->getParentOp();
+         parent && !isa<FunctionOpInterface>(parent);
+         parent = parent->getParentOp()) {
+      if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+        if (forOp->getNumResults() == 0 &&
+            SplitOnFlag<scf::ForOp>::findFlag(forOp))
+          return true;
+      } else if (auto ifOp = dyn_cast<scf::IfOp>(parent)) {
+        if (ifOp->getNumResults() == 0 &&
+            SplitOnFlag<scf::IfOp>::findFlag(ifOp))
+          return true;
+      }
+    }
+    return false;
+  }
+
+  LogicalResult matchAndRewrite(OpTy op,
+                                PatternRewriter &rewriter) const override {
+    if (op->getNumResults() != 0)
+      return failure();
+    Value flag = findFlag(op);
+    if (!flag || underSplittable(op))
+      return failure();
+
+    // Values from outside the op that the copies read, the derived ones among
+    // them to be recomputed under each branch.
+    SetVector<Value> external(op->operand_begin(), op->operand_end());
+    getUsedValuesDefinedAbove(op->getRegions(), external);
+
+    Location loc = op.getLoc();
+    auto split =
+        scf::IfOp::create(rewriter, loc, flag, /*withElseRegion=*/true);
+    for (int i = 0; i < 2; i++) {
+      Block *block = i == 0 ? split.thenBlock() : split.elseBlock();
+      rewriter.setInsertionPoint(block->getTerminator());
+      IRMapping mapping;
+      mapping.map(flag, arith::ConstantOp::create(rewriter, loc,
+                                                  rewriter.getBoolAttr(i == 0))
+                            .getResult());
+      std::function<void(Value)> remap = [&](Value value) {
+        if (mapping.contains(value) || !derivesFromValue(value, flag))
+          return;
+        Operation *def = value.getDefiningOp();
+        for (Value operand : def->getOperands())
+          remap(operand);
+        rewriter.clone(*def, mapping);
+      };
+      for (Value value : external)
+        remap(value);
+      rewriter.clone(*op, mapping);
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -7834,6 +7978,7 @@ void mlir::enzyme::populateAffineCFGPatterns(
     rpl.add<SplitOnAffineIfConstants<scf::ForOp>,
             SplitOnAffineIfConstants<scf::IfOp>>(context, 2);
   }
+  rpl.add<SplitOnFlag<scf::ForOp>, SplitOnFlag<scf::IfOp>>(context, 2);
   rpl.add<FoldAffineApplyAdd, FoldAffineApplySub, FoldAffineApplyRem,
           FoldAffineApplyDiv, FoldAffineApplyMul, FoldAppliesIntoLoad>(context,
                                                                        2);
