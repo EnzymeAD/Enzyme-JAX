@@ -1855,6 +1855,11 @@ def ApplyScatterIndicesAreUniquePatterns : EnzymeHLOPatternOp<
   let patterns = ["ScatterIndicesAreUnique"];
 }
 
+def ApplyScatterOutOfBoundsNoopPatterns : EnzymeHLOPatternOp<
+    "scatter_out_of_bounds_noop"> {
+  let patterns = ["ScatterOutOfBoundsNoop"];
+}
+
 def ApplyReduceTransposeSimplifyPatterns : EnzymeHLOPatternOp<
     "reduce_transpose_simplify"> {
   let patterns = ["ReduceTransposeSimplify"];

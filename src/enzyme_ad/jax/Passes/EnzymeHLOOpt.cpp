@@ -23547,6 +23547,38 @@ static ArrayRef<int64_t> indexTuple(ArrayRef<int64_t> tuples, int64_t p,
   return tuples.slice(p * size, size);
 }
 
+// A scatter whose every index is the same tuple, with a component out of the
+// operand's range: the update of an out-of-range index is dropped, so it
+// writes nothing. A dead branch of a specialized kernel leaves such scatters
+// (its masked stores went to index -1), with the work that fed them.
+struct ScatterOutOfBoundsNoop
+    : public CheckedOpRewritePattern<stablehlo::ScatterOp,
+                                     ScatterOutOfBoundsNoop> {
+  using CheckedOpRewritePattern<
+      stablehlo::ScatterOp, ScatterOutOfBoundsNoop>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
+    SplatElementsAttr splat;
+    if (!matchPattern(op.getScatterIndices(), m_Constant(&splat)))
+      return failure();
+    int64_t index = splat.getSplatValue<APInt>().getSExtValue();
+    auto dims = op.getScatterDimensionNumbers();
+    auto operandTy = cast<RankedTensorType>(op.getInputs()[0].getType());
+    // Negative is out of range whatever the window; a non-negative index
+    // is out of range along a dimension of window 1 at or past its size.
+    bool out = index < 0;
+    for (int64_t dim : dims.getScatterDimsToOperandDims())
+      if (llvm::is_contained(dims.getInsertedWindowDims(), dim) &&
+          !operandTy.isDynamicDim(dim) && index >= operandTy.getDimSize(dim))
+        out = true;
+    if (!out)
+      return failure();
+    rewriter.replaceOp(op, op.getInputs());
+    return success();
+  }
+};
+
 struct ScatterIndicesAreUnique
     : public CheckedOpRewritePattern<stablehlo::ScatterOp,
                                      ScatterIndicesAreUnique> {
@@ -39184,7 +39216,7 @@ struct EnzymeHLOOptPass
         NotSelectSimplify,
         CommonCompareExpressionRewrite,
         ScatterUpdateComputationConstProp,
-        ScatterIndicesAreUnique,
+        ScatterIndicesAreUnique, ScatterOutOfBoundsNoop,
         ReduceTransposeSimplify,
         WhileScatterAccumulatorNoAdd,
         BroadcastIotaSimplify,

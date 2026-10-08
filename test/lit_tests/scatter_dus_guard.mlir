@@ -121,13 +121,9 @@ module {
   }
 }
 
+// The index is past the end: the update is dropped, nothing is written.
 // CHECK:  func.func @const_oob_single_scatter(%arg0: tensor<12xf64>, %arg1: tensor<f64>) -> tensor<12xf64> {
-// CHECK-NEXT:    %c = stablehlo.constant dense<12> : tensor<1xi64>
-// CHECK-NEXT:    %0 = "stablehlo.scatter"(%arg0, %c, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>, unique_indices = true}> ({
-// CHECK-NEXT:    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
-// CHECK-NEXT:      stablehlo.return %arg3 : tensor<f64>
-// CHECK-NEXT:    }) : (tensor<12xf64>, tensor<1xi64>, tensor<f64>) -> tensor<12xf64>
-// CHECK-NEXT:    return %0 : tensor<12xf64>
+// CHECK-NEXT:    return %arg0 : tensor<12xf64>
 // CHECK-NEXT:  }
 
 // -----
