@@ -690,12 +690,18 @@ def FuseJITPass : Pass<"fuse-jit", "mlir::ModuleOp"> {
   ];
   let options = [
     Option<
-        /*C++ variable name=*/"strategy",
-        /*CLI argument=*/"strategy",
-        /*type=*/"std::string",
-        /*default=*/"\"generalized\"",
-        /*description=*/"Fusion strategy: dependencies or generalized">,
-  ];
+        /*C++ variable name=*/"top_down",
+        /*CLI argument=*/"top_down",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Use top down traversal">,
+    Option<
+        /*C++ variable name=*/"generalized",
+        /*CLI argument=*/"generalized",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Fuse JIT calls using generalized strategy">
+    ];
 }
 
 def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {

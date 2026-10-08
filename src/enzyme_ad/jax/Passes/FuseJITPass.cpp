@@ -574,31 +574,22 @@ LogicalResult rewriteFusion(enzymexla::JITCallOp firstCall,
   return success();
 }
 
-struct FuseJITPattern : public OpRewritePattern<enzymexla::JITCallOp> {
-  using OpRewritePattern<enzymexla::JITCallOp>::OpRewritePattern;
-
-  void initialize() { setHasBoundedRewriteRecursion(); }
-
-  LogicalResult matchAndRewrite(enzymexla::JITCallOp jitCallOp,
-                                PatternRewriter &rewriter) const override {
-    JITFusionInfo fusionInfo = collectGeneralizedFusionInfo(jitCallOp);
-    if (fusionInfo.fusionCalls.size() < 2)
-      return failure();
-    return rewriteFusion(jitCallOp, rewriter, fusionInfo);
-  }
-};
-
-struct FuseJITDependencyPattern
+// fuses SSA-connected calls
+struct FuseDAG
     : public OpRewritePattern<enzymexla::JITCallOp> {
   using OpRewritePattern<enzymexla::JITCallOp>::OpRewritePattern;
 
+  bool generalized;
+  FuseDAG(bool generalized, MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern<enzymexla::JITCallOp>(context, benefit),
+        generalized(generalized) {}
   void initialize() { setHasBoundedRewriteRecursion(); }
 
   LogicalResult matchAndRewrite(enzymexla::JITCallOp jitCallOp,
                                 PatternRewriter &rewriter) const override {
     JITFusionInfo fusionInfo = collectDependencyFusionInfo(jitCallOp);
     if (fusionInfo.fusionCalls.size() < 2 ||
-        fusionInfo.fusionCalls.front() != jitCallOp)
+        (generalized && fusionInfo.fusionCalls.front() != jitCallOp))
       return failure();
     return rewriteFusion(jitCallOp, rewriter, fusionInfo);
   }
@@ -608,26 +599,14 @@ struct FuseJITPass : public impl::FuseJITPassBase<FuseJITPass> {
   using FuseJITPassBase::FuseJITPassBase;
 
   void runOnOperation() override {
-    ModuleOp module = getOperation();
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
 
-    // `dependencies` fuses SSA-connected calls; `generalized` scans a lexical
-    // prefix and can include independent calls.
-    if (strategy == "dependencies") {
-      patterns.add<FuseJITDependencyPattern>(context);
-    } else if (strategy == "generalized") {
-      patterns.add<FuseJITPattern>(context);
-    } else {
-      module.emitError() << "unknown fuse-jit strategy '" << strategy
-                         << "' (expected 'dependencies' or 'generalized')";
-      signalPassFailure();
-      return;
-    }
+    patterns.add<FuseDAG>(generalized, context);
 
     GreedyRewriteConfig config;
-    config.setUseTopDownTraversal(true);
-    if (failed(applyPatternsGreedily(module, std::move(patterns), config))) {
+    config.setUseTopDownTraversal(top_down);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns), config))) {
       signalPassFailure();
     }
   }
