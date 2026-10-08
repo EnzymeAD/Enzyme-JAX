@@ -97,10 +97,6 @@ class EnzymeJax(absltest.TestCase):
             ).all()
         )
 
-    @absltest.skip(
-        "cpp_call's reverse pass gets null primal pointers, all it needs being on "
-        "the tape, but a checkpointed loop recomputes its steps from the inputs"
-    )
     def test_custom_cpp_kernel_checkpoint(self):
         # A C++ loop under [[enzyme::checkpoint(...)]] (Enzyme's Clang plugin)
         # is checkpointed when Enzyme differentiates the kernel, and its

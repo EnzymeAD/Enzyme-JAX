@@ -987,9 +987,15 @@ def _enzyme_rev_lowering(
 
     in_shapes = list(map(maketup, pre_in_types))
 
-    out_shapes = list(map(lambda x: maketup(x.type), args_flat[1:]))
+    # The tape, the output adjoints, then the primal inputs (see enzyme_vjp).
+    num_in = len(pre_in_types)
+    tape_arg = args_flat[0]
+    dout_args = args_flat[1 : len(args_flat) - num_in]
+    primal_args = args_flat[len(args_flat) - num_in :]
 
-    in_args = (*args_flat,)
+    out_shapes = list(map(lambda x: maketup(x.type), dout_args))
+
+    in_args = (tape_arg, *dout_args, *primal_args)
 
     rev_return_types = pre_in_types
 
@@ -1004,7 +1010,11 @@ def _enzyme_rev_lowering(
         mhlo = lowered_func.compiler_ir(dialect="stablehlo")
         source = mhlo.operation.get_asm(enable_debug_info=True)
         kept = lowered_func.compile()._executable._kept_var_idx
-        # in_args = tuple(arg for (i, arg) in enumerate(in_args) if i in kept)
+        in_args = (
+            tape_arg,
+            *dout_args,
+            *(arg for (i, arg) in enumerate(primal_args) if i in kept),
+        )
         in_shapes = [shape for (i, shape) in enumerate(in_shapes) if i in kept]
         rev_return_types = tuple(
             retty for (i, retty) in enumerate(rev_return_types) if i in kept
@@ -1522,7 +1532,9 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
     )
     in_shapes = tuple((a.shape, jaxify(a.dtype)) for a in prim_args)
 
-    args = (tape,) + tuple(shadow_rets)
+    # The primal inputs go along: a loop the kernel checkpoints
+    # ([[enzyme::checkpoint]]) recomputes its steps from them.
+    args = (tape,) + tuple(shadow_rets) + prim_args
     shadconv = _enzyme_rev_p.bind(*args, **kwargs, in_shapes=in_shapes)
     res = (None,) + tuple(None for _ in range(len(shadconv))) + tuple(shadconv)
     return res

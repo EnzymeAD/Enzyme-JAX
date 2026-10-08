@@ -1240,6 +1240,18 @@ createLLVMMod(std::string fn, llvm::StringRef source,
       out_off++;
     }
   }
+  // The reverse pass gets the primal inputs too, after the output
+  // adjoints: what it needs of them is mostly on the tape, but a checkpointed
+  // loop ([[enzyme::checkpoint]]) recomputes its steps from them.
+  if (mode == ABI::Reverse) {
+    for (size_t i = 0; i < in_shapes.size(); i++) {
+      ss << " " << make_type(in_names[i], in_shapes[i], true, lang) << "& in_"
+         << i << " = "
+         << "*(" << make_type(in_names[i], in_shapes[i], true, lang) << "*)ins["
+         << in_off << "];\n";
+      in_off++;
+    }
+  }
   if (mode == ABI::Augmented) {
     ss << " void*& tape = "
        << "*(void**)outs[" << out_off << "];\n";
@@ -1374,7 +1386,7 @@ createLLVMMod(std::string fn, llvm::StringRef source,
       ss << ", enzyme_dup, &tmpBuf, &dtmpBuf";
     }
     for (size_t i = 0; i < in_shapes.size(); i++) {
-      ss << ", enzyme_dup, nullptr, &din_" << i;
+      ss << ", enzyme_dup, &in_" << i << ", &din_" << i;
     }
     ss << ");\n";
     ss << "prevent_stores(";
