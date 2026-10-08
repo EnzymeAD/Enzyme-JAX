@@ -3110,6 +3110,96 @@ static bool isTransposeReshapeLikeBroadcast(stablehlo::BroadcastInDimOp op) {
 }
 
 // slice(broadcast x) -> broadcast(slice x)
+// A slice of a gather along its batch dimensions is the gather over the
+// start indices sliced the same way (and, for a batching pair, the operand
+// along its paired dimension): the lanes outside the slice are never read.
+struct SliceGather final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceGather> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto gather = op.getOperand().getDefiningOp<stablehlo::GatherOp>();
+    if (!gather)
+      return failure();
+    auto resultTy = cast<RankedTensorType>(gather.getType());
+    if (!resultTy.hasStaticShape())
+      return failure();
+    // Every user a slice, and the slices less than the whole: the whole
+    // gather is then never needed, and gathering the slices is less work
+    // (slices that make up the whole, halves say, would gather as much
+    // through more ops).
+    int64_t slicedElements = 0;
+    for (Operation *user : gather->getUsers()) {
+      auto slice = dyn_cast<stablehlo::SliceOp>(user);
+      if (!slice)
+        return failure();
+      slicedElements +=
+          cast<RankedTensorType>(slice.getType()).getNumElements();
+    }
+    if (slicedElements >= resultTy.getNumElements())
+      return failure();
+    auto dims = gather.getDimensionNumbers();
+    auto indicesTy = cast<RankedTensorType>(gather.getStartIndices().getType());
+    auto operandTy = cast<RankedTensorType>(gather.getOperand().getType());
+    if (!indicesTy.hasStaticShape() || !operandTy.hasStaticShape())
+      return failure();
+    int64_t vectorDim = dims.getIndexVectorDim();
+    // Result dimension -> start indices dimension, for the batch
+    // dimensions: the index dimensions but the index vector one, in order.
+    SmallVector<int64_t> indexDims;
+    for (int64_t d = 0; d < indicesTy.getRank(); ++d)
+      if (d != vectorDim)
+        indexDims.push_back(d);
+    SmallVector<int64_t> idxStarts(indicesTy.getRank(), 0), idxLimits,
+        idxStrides(indicesTy.getRank(), 1);
+    llvm::append_range(idxLimits, indicesTy.getShape());
+    SmallVector<int64_t> opStarts(operandTy.getRank(), 0), opLimits,
+        opStrides(operandTy.getRank(), 1);
+    llvm::append_range(opLimits, operandTy.getShape());
+    bool sliced = false;
+    for (int64_t r = 0, b = 0; r < resultTy.getRank(); ++r) {
+      bool offset = llvm::is_contained(dims.getOffsetDims(), r);
+      int64_t start = op.getStartIndices()[r], limit = op.getLimitIndices()[r],
+              stride = op.getStrides()[r];
+      bool whole = start == 0 && limit == resultTy.getDimSize(r) && stride == 1;
+      if (offset) {
+        if (!whole)
+          return failure();
+        continue;
+      }
+      int64_t indexDim = indexDims[b++];
+      if (whole)
+        continue;
+      sliced = true;
+      idxStarts[indexDim] = start;
+      idxLimits[indexDim] = limit;
+      idxStrides[indexDim] = stride;
+      auto pair = llvm::find(dims.getStartIndicesBatchingDims(), indexDim);
+      if (pair != dims.getStartIndicesBatchingDims().end()) {
+        int64_t operandDim =
+            dims.getOperandBatchingDims()
+                [pair - dims.getStartIndicesBatchingDims().begin()];
+        opStarts[operandDim] = start;
+        opLimits[operandDim] = limit;
+        opStrides[operandDim] = stride;
+      }
+    }
+    if (!sliced)
+      return failure();
+    Value indices = stablehlo::SliceOpCreate(rewriter, op.getLoc(),
+                                             gather.getStartIndices(),
+                                             idxStarts, idxLimits, idxStrides);
+    Value operand =
+        stablehlo::SliceOpCreate(rewriter, op.getLoc(), gather.getOperand(),
+                                 opStarts, opLimits, opStrides);
+    rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
+        op, op.getType(), operand, indices, dims, gather.getSliceSizesAttr(),
+        gather.getIndicesAreSortedAttr());
+    return success();
+  }
+};
+
 struct SliceBroadcast final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceBroadcast> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -38890,8 +38980,8 @@ struct EnzymeHLOOptPass
     if (passses & 1)
       patterns.add<SliceTransposeBase<stablehlo::SliceOp>,
                    SliceTransposeBase<stablehlo::DynamicSliceOp>,
-                   SliceReshapeTranspose, SliceBroadcast, SliceReduceWindow>(
-          context);
+                   SliceReshapeTranspose, SliceBroadcast, SliceGather,
+                   SliceReduceWindow>(context);
 
     if (passses & 2)
       patterns.add<ReducePad, BroadcastPad>(context);
