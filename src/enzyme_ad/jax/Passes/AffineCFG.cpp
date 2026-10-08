@@ -11488,14 +11488,12 @@ struct SinkForIntoParallel : public OpRewritePattern<affine::AffineForOp> {
             (!isa<AffineWriteOpInterface>(srcOp) &&
              !isa<AffineWriteOpInterface>(dstOp)))
           continue;
-        presburger::IntegerRelation srcRel(
-            presburger::PresburgerSpace::getRelationSpace()),
-            dstRel(presburger::PresburgerSpace::getRelationSpace());
-        if (failed(terms.accessRelation(srcOp, srcRel)) ||
-            failed(terms.accessRelation(dstOp, dstRel)))
+        const presburger::IntegerRelation *srcRel = terms.accessRelation(srcOp),
+                                          *dstRel = terms.accessRelation(dstOp);
+        if (!srcRel || !dstRel)
           return rewriter.notifyMatchFailure(forOp, "access not affine");
         for (Value iv : par.getIVs())
-          if (dependsAcrossIterations(srcRel, dstRel, forOp.getInductionVar(),
+          if (dependsAcrossIterations(*srcRel, *dstRel, forOp.getInductionVar(),
                                       iv))
             return rewriter.notifyMatchFailure(forOp, "lanes depend");
       }
