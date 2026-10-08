@@ -23541,6 +23541,12 @@ private:
   };
 };
 
+// Tuple `p` of `tuples`, laid out `size` values per tuple.
+static ArrayRef<int64_t> indexTuple(ArrayRef<int64_t> tuples, int64_t p,
+                                    int64_t size) {
+  return tuples.slice(p * size, size);
+}
+
 struct ScatterIndicesAreUnique
     : public CheckedOpRewritePattern<stablehlo::ScatterOp,
                                      ScatterIndicesAreUnique> {
@@ -23602,72 +23608,59 @@ struct ScatterIndicesAreUnique
       }
     } else if (matchPattern(scatterIndices, m_Constant(&scatterIndicesAttr))) {
       auto denseAttr = dyn_cast<DenseIntElementsAttr>(scatterIndicesAttr);
-
+      if (!denseAttr)
+        return failure();
       auto shape = cast<ShapedType>(scatterIndices.getType()).getShape();
       if (shape.empty())
         return failure();
-
       int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
-
-      int64_t tupleSize = shape[indexVectorDim];
-
-      SmallVector<int64_t> strides(shape.size());
-      strides[shape.size() - 1] = 1;
-      for (int64_t i = shape.size() - 2; i >= 0; --i) {
-        strides[i] = strides[i + 1] * shape[i + 1];
-      }
-
-      SmallVector<int64_t> nonIndexVectorShape;
-      for (int64_t i = 0; i < shape.size(); ++i) {
-        if (i != indexVectorDim) {
-          nonIndexVectorShape.push_back(shape[i]);
+      int64_t tupleSize =
+          indexVectorDim < (int64_t)shape.size() ? shape[indexVectorDim] : 1;
+      int64_t numPoints = denseAttr.getNumElements() / tupleSize;
+      if (denseAttr.isSplat()) {
+        uniqueIndices = numPoints == 1;
+      } else {
+        // The index tuples, each the tupleSize values along the index
+        // vector dimension of one scatter point, laid out point by point.
+        SmallVector<int64_t> strides(shape.size());
+        strides.back() = 1;
+        for (int64_t i = shape.size() - 2; i >= 0; --i)
+          strides[i] = strides[i + 1] * shape[i + 1];
+        SmallVector<int64_t> flat;
+        flat.reserve(denseAttr.getNumElements());
+        for (const APInt &v : denseAttr.getValues<APInt>())
+          flat.push_back(v.getSExtValue());
+        SmallVector<int64_t> tuples(numPoints * tupleSize);
+        for (int64_t point = 0; point < numPoints; ++point) {
+          // the point's multi-index over the non-index-vector dimensions,
+          // row-major, as a linear offset into the tensor
+          int64_t rest = point, base = 0;
+          for (int64_t d = shape.size() - 1; d >= 0; --d) {
+            if (d == indexVectorDim)
+              continue;
+            base += (rest % shape[d]) * strides[d];
+            rest /= shape[d];
+          }
+          int64_t step = indexVectorDim < (int64_t)shape.size()
+                             ? strides[indexVectorDim]
+                             : 0;
+          for (int64_t c = 0; c < tupleSize; ++c)
+            tuples[point * tupleSize + c] = flat[base + c * step];
         }
+        SmallVector<int64_t> order(numPoints);
+        std::iota(order.begin(), order.end(), 0);
+        llvm::sort(order, [&](int64_t a, int64_t b) {
+          return indexTuple(tuples, a, tupleSize) <
+                 indexTuple(tuples, b, tupleSize);
+        });
+        uniqueIndices = true;
+        for (int64_t i = 1; i < numPoints; ++i)
+          if (indexTuple(tuples, order[i - 1], tupleSize) ==
+              indexTuple(tuples, order[i], tupleSize)) {
+            uniqueIndices = false;
+            break;
+          }
       }
-
-      // Iterate over the scatter indices tensor to extract tuples
-      SmallVector<SmallVector<int64_t>> indexTuples;
-      auto values = denseAttr.getValues<APInt>();
-
-      std::function<void(SmallVector<int64_t>, int64_t)> extractTuples =
-          [&](SmallVector<int64_t> currentIndices, int64_t dim) {
-            if (dim == nonIndexVectorShape.size()) {
-              SmallVector<int64_t> indexTuple;
-              for (int64_t component = 0; component < tupleSize; ++component) {
-                // Build full multi-dimensional index
-                SmallVector<int64_t> fullIndex;
-                int64_t nonIndexDim = 0;
-                for (int64_t d = 0; d < shape.size(); ++d) {
-                  if (d == indexVectorDim) {
-                    fullIndex.push_back(component);
-                  } else {
-                    fullIndex.push_back(currentIndices[nonIndexDim++]);
-                  }
-                }
-
-                // Convert to linear index
-                int64_t linearIdx = 0;
-                for (int64_t d = 0; d < shape.size(); ++d) {
-                  linearIdx += fullIndex[d] * strides[d];
-                }
-
-                auto it = values.begin();
-                std::advance(it, linearIdx);
-                indexTuple.push_back((*it).getSExtValue());
-              }
-              indexTuples.push_back(indexTuple);
-              return;
-            }
-
-            for (int64_t i = 0; i < nonIndexVectorShape[dim]; ++i) {
-              SmallVector<int64_t> newIndices = currentIndices;
-              newIndices.push_back(i);
-              extractTuples(newIndices, dim + 1);
-            }
-          };
-
-      extractTuples({}, 0);
-
-      uniqueIndices = areIndexTuplesUnique(indexTuples);
     }
 
     if (!uniqueIndices) {
@@ -23681,18 +23674,6 @@ struct ScatterIndicesAreUnique
     newOp.getUpdateComputation().takeBody(op.getUpdateComputation());
     rewriter.replaceOp(op, newOp);
     return success();
-  }
-
-private:
-  bool areIndexTuplesUnique(
-      const SmallVector<SmallVector<int64_t>> &indexTuples) const {
-    std::set<SmallVector<int64_t>> uniqueSet;
-    for (const auto &tuple : indexTuples) {
-      if (!uniqueSet.insert(tuple).second) {
-        return false; // Duplicate found
-      }
-    }
-    return true;
   }
 };
 
