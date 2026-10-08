@@ -3428,11 +3428,12 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
 
 // The reduction kind whose combining op `op` is (the inverse of
 // arith::getReductionOp), where affine.parallel admits that kind on op's
-// type: its signed and unsigned min/max want an integer of that signedness.
+// type: its signed and unsigned min/max want an integer not of the other
+// signedness.
 static std::optional<AtomicRMWKind> reductionKind(Operation *op) {
   auto intType = dyn_cast<IntegerType>(op->getResult(0).getType());
-  bool isSigned = intType && intType.isSigned();
-  bool isUnsigned = intType && intType.isUnsigned();
+  bool isSigned = intType && !intType.isUnsigned();
+  bool isUnsigned = intType && !intType.isSigned();
   auto ifType = [](bool ok,
                    AtomicRMWKind kind) -> std::optional<AtomicRMWKind> {
     if (ok)

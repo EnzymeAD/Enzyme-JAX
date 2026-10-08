@@ -3088,6 +3088,43 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
             builder.getOneAttr(unrankedTensorType));
         innerRedName = "stablehlo.multiply";
         break;
+      case arith::AtomicRMWKind::maxs:
+        inits[0] = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            SplatElementsAttr::get(unrankedTensorType,
+                                   ArrayRef<Attribute>(IntegerAttr::get(
+                                       ET, APInt::getSignedMinValue(
+                                               ET.getIntOrFloatBitWidth())))));
+        innerRedName = "stablehlo.maximum";
+        break;
+      case arith::AtomicRMWKind::mins:
+        inits[0] = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            SplatElementsAttr::get(unrankedTensorType,
+                                   ArrayRef<Attribute>(IntegerAttr::get(
+                                       ET, APInt::getSignedMaxValue(
+                                               ET.getIntOrFloatBitWidth())))));
+        innerRedName = "stablehlo.minimum";
+        break;
+      case arith::AtomicRMWKind::maxu:
+        inits[0] = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            builder.getZeroAttr(unrankedTensorType));
+        innerRedName = "arith.maxui";
+        break;
+      case arith::AtomicRMWKind::minu:
+        inits[0] = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            SplatElementsAttr::get(
+                unrankedTensorType,
+                ArrayRef<Attribute>(IntegerAttr::get(
+                    ET, APInt::getAllOnes(ET.getIntOrFloatBitWidth())))));
+        innerRedName = "arith.minui";
+        break;
       case arith::AtomicRMWKind::ori:
         inits[0] = stablehlo::ConstantOp::create(
             builder,
