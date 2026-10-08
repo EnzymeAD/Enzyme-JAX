@@ -3043,9 +3043,10 @@ namespace {
 // Batches the body of an enzymexla.parallel while over its iterations: a value
 // that varies with the iteration gains a leading dimension of the trip count,
 // a write into a carried buffer becomes one scatter of every iteration's
-// write, and a constant-trip loop nested in the body keeps running, over the
-// batched values (the iterations of the parallel loop are independent, so it
-// and the parallel loop interchange).
+// write, and a loop nested in the body whose trip count is the same for
+// every iteration keeps running, over the batched values (the iterations of
+// the parallel loop are independent, so it and the parallel loop
+// interchange).
 struct ParallelWhileBatcher {
   PatternRewriter &rewriter;
   Location loc;
@@ -3165,8 +3166,8 @@ struct ParallelWhileBatcher {
   // iteration of the parallel loop, over values that may vary with it.
   LogicalResult analyzeWhile(stablehlo::WhileOp w) {
     enzyme::WhileLoopInfo wi(w);
-    if (failed(wi.computeInfo()) || !wi.isValid() || !wi.isConstant() ||
-        !isMemoryEffectFree(w))
+    if (failed(wi.computeInfo()) || !wi.isValid() || !wi.isConstantStart() ||
+        !wi.isConstantStep() || !isMemoryEffectFree(w))
       return failure();
     Value wiv = wi.getInductionVariable();
     if (!wiv)
