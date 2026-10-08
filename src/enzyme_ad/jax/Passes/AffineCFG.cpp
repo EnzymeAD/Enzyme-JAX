@@ -8919,7 +8919,80 @@ static bool sameBuffer(Value a, Value b) {
              enzyme::oputils::getBaseObject(b, /*offsetAllowed=*/false);
 }
 
-static bool isLoopMemoryParallel(AffineForOp forOp) {
+// Whether `op` is in `block`, or nested in an op that is.
+static bool blockHolds(Block *block, Operation *op) {
+  for (Block *b = op->getBlock(); b; b = b->getParentOp()->getBlock())
+    if (b == block)
+      return true;
+  return false;
+}
+
+// Whether every iteration of `forOp` runs `block`: it is the loop's body, or
+// the single block of a loop guaranteed at least one iteration whose block
+// is.
+static bool runsEveryIteration(Block *block, AffineForOp forOp) {
+  while (block != forOp.getBody()) {
+    Operation *parent = block->getParentOp();
+    if (parent->getNumRegions() != 1 || !parent->getRegion(0).hasOneBlock() ||
+        !guaranteedAtLeastOneIteration(parent))
+      return false;
+    block = parent->getBlock();
+  }
+  return true;
+}
+
+// A scratch of static shape an iteration of `forOp` writes whole before it
+// reads any of it, so that nothing flows through it from one iteration to
+// the next: MFEM's per-point matrix, real_t J[9], filled and inverted at
+// every quadrature point. It is private to the iteration, and a parallel
+// form of the loop gives each iteration its own. The users of the scratch,
+// loads and stores, all lie under `forOp`, in one block or nested in ops in
+// it (a user in another arm of a branch, or another block of a region, is
+// not held: it would read what an earlier iteration wrote); the block runs
+// in every iteration, and in it the stores directly in the block at
+// constant indices cover every element before any load, nested anywhere in
+// the block.
+static bool privateScratch(Value memref, AffineForOp forOp) {
+  auto type = dyn_cast<MemRefType>(memref.getType());
+  if (!type || !type.hasStaticShape() || type.getRank() != 1 ||
+      !memref.getDefiningOp<memref::AllocaOp>())
+    return false;
+  Block *block = nullptr;
+  for (Operation *user : memref.getUsers()) {
+    if (!isa<affine::AffineLoadOp, affine::AffineStoreOp>(user) ||
+        !forOp->isProperAncestor(user))
+      return false;
+    if (!block)
+      block = user->getBlock();
+    // up to the innermost block holding this user too (forOp's body, a
+    // single block, holds them all)
+    while (!blockHolds(block, user))
+      block = block->getParentOp()->getBlock();
+  }
+  if (!block || !runsEveryIteration(block, forOp))
+    return false;
+  llvm::SmallBitVector written(type.getDimSize(0));
+  for (Operation &op : *block) {
+    bool loads = false;
+    op.walk([&](affine::AffineLoadOp load) {
+      if (load.getMemRef() == memref)
+        loads = true;
+    });
+    if (loads)
+      break;
+    auto store = dyn_cast<affine::AffineStoreOp>(op);
+    if (!store || store.getMemRef() != memref)
+      continue;
+    auto index =
+        dyn_cast<AffineConstantExpr>(store.getAffineMap().getResult(0));
+    if (index && index.getValue() >= 0 && index.getValue() < type.getDimSize(0))
+      written.set(index.getValue());
+  }
+  return written.all();
+}
+
+static bool isLoopMemoryParallel(AffineForOp forOp,
+                                 SmallVectorImpl<Value> *privatized = nullptr) {
   // Any memref-typed iteration arguments are treated as serializing.
   if (llvm::any_of(forOp.getResultTypes(), llvm::IsaPred<BaseMemRefType>))
     return false;
@@ -8930,14 +9003,25 @@ static bool isLoopMemoryParallel(AffineForOp forOp) {
   // table): they meet no write as long as nothing in the loop writes the
   // buffer they read.
   SmallVector<memref::LoadOp> opaqueReads;
+  // the scratches found private to an iteration, and those found not
+  DenseMap<Value, bool> scratches;
+  auto isPrivate = [&](Value memref) {
+    auto it = scratches.find(memref);
+    if (it == scratches.end())
+      it = scratches.try_emplace(memref, privateScratch(memref, forOp)).first;
+    return it->second;
+  };
   auto walkResult = forOp.walk([&](Operation *op) -> WalkResult {
     if (auto readOp = dyn_cast<AffineReadOpInterface>(op)) {
-      // Memrefs that are allocated inside `forOp` need not be considered.
-      if (!isLocallyDefined(readOp.getMemRef(), forOp))
+      // Memrefs that are allocated inside `forOp` need not be considered,
+      // nor those private to an iteration.
+      if (!isLocallyDefined(readOp.getMemRef(), forOp) &&
+          !isPrivate(readOp.getMemRef()))
         loadAndStoreOps.push_back(op);
     } else if (auto writeOp = dyn_cast<AffineWriteOpInterface>(op)) {
       // Filter out stores the same way as above.
-      if (!isLocallyDefined(writeOp.getMemRef(), forOp))
+      if (!isLocallyDefined(writeOp.getMemRef(), forOp) &&
+          !isPrivate(writeOp.getMemRef()))
         loadAndStoreOps.push_back(op);
     } else if (auto load = dyn_cast<memref::LoadOp>(op)) {
       if (!isLocallyDefined(load.getMemRef(), forOp))
@@ -9003,6 +9087,10 @@ static bool isLoopMemoryParallel(AffineForOp forOp) {
         return false;
     }
   }
+  if (privatized)
+    for (auto &[memref, isPrivate] : scratches)
+      if (isPrivate)
+        privatized->push_back(memref);
   return true;
 }
 
@@ -9190,7 +9278,8 @@ static Value rewriteConditionalAccumulation(const ConditionalAccumulation &m,
 }
 
 static bool isLoopParallel(AffineForOp forOp,
-                           SmallVectorImpl<LoopReduction> *parallelReductions) {
+                           SmallVectorImpl<LoopReduction> *parallelReductions,
+                           SmallVectorImpl<Value> *privatized = nullptr) {
   unsigned numIterArgs = forOp.getNumIterOperands();
 
   // Loop is not parallel if it has SSA loop-carried dependences and reduction
@@ -9223,7 +9312,7 @@ static bool isLoopParallel(AffineForOp forOp,
   }
 
   // Check memory dependences.
-  return ::isLoopMemoryParallel(forOp);
+  return ::isLoopMemoryParallel(forOp, privatized);
 }
 
 /// Returns the closest surrounding block common to `opA` and `opB`. `opA` and
@@ -9427,7 +9516,9 @@ struct AffineParallelizePattern : public OpRewritePattern<affine::AffineForOp> {
   LogicalResult matchAndRewrite(affine::AffineForOp forOp,
                                 PatternRewriter &rewriter) const override {
     SmallVector<LoopReduction> reductions;
-    if (!::isLoopParallel(forOp, parallelReductions ? &reductions : nullptr))
+    SmallVector<Value> privatized;
+    if (!::isLoopParallel(forOp, parallelReductions ? &reductions : nullptr,
+                          &privatized))
       return rewriter.notifyMatchFailure(forOp, "!isLoopParallel");
 
     // Fail early if there are iter arguments that are not reductions.
@@ -9555,6 +9646,12 @@ struct AffineParallelizePattern : public OpRewritePattern<affine::AffineForOp> {
     rewriter.mergeBlocks(&newPloop.getBodyRegion().getBlocks().back(),
                          &newPloop.getBodyRegion().getBlocks().front(),
                          iterArgReplacements);
+
+    // A scratch private to an iteration is each lane's own: its allocation
+    // moves into the body.
+    for (Value memref : privatized)
+      rewriter.moveOpBefore(memref.getDefiningOp(),
+                            &newPloop.getBody()->front());
 
     return success();
   }
