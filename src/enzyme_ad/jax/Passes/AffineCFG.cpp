@@ -1624,7 +1624,7 @@ struct CanonicalizeAffineApply
     map = removeDuplicateExprs(map);
     map = recreateExpr(map);
 
-    if (map == prevMap)
+    if (map == prevMap && llvm::equal(mapOperands, affineOp.getMapOperands()))
       return failure();
 
     rewriter.replaceOpWithNewOp<affine::AffineApplyOp>(affineOp, map,
