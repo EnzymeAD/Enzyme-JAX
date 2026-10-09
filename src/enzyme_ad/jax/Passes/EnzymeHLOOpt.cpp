@@ -4867,6 +4867,84 @@ struct ConcatWrap final
   }
 };
 
+// Two rotates along the same dimension by the same amount commute with a
+// concatenate along any other dimension:
+//   concat(rotate(a), rotate(b), dim) == rotate(concat(a, b, dim)).
+bool canMergeRotatesAlongAxis(int dimension, enzymexla::RotateOp rotate,
+                              enzymexla::RotateOp otherRotate) {
+  if (rotate.getDimension() != otherRotate.getDimension())
+    return false;
+
+  if (dimension == rotate.getDimension())
+    return false;
+
+  if (rotate.getAmount() != otherRotate.getAmount())
+    return false;
+
+  return true;
+}
+
+// Rotate analog of ConcatWrap: merge runs of compatible rotates among the
+// operands of a concatenate into a single rotate of their concatenation, so
+// that the operands (e.g. adjacent slices) become fusible.
+struct ConcatRotate final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dim = op.getDimension();
+
+    SmallVector<Value> newOperands;
+    bool changed = false;
+
+    for (int i = 0, e = op->getNumOperands(); i < e; ++i) {
+      auto operand = op->getOperand(i);
+      auto rotate = operand.getDefiningOp<enzymexla::RotateOp>();
+
+      if (!rotate) {
+        newOperands.push_back(operand);
+        continue;
+      }
+
+      // Collect the run of rotates compatible with this one.
+      SmallVector<Value> run{rotate.getOperand()};
+      enzymexla::RotateOp otherRotate;
+      while (i + 1 < e &&
+             (otherRotate =
+                  op->getOperand(i + 1).getDefiningOp<enzymexla::RotateOp>()) &&
+             canMergeRotatesAlongAxis(dim, rotate, otherRotate)) {
+        run.push_back(otherRotate.getOperand());
+        i++;
+      }
+
+      if (run.size() == 1) {
+        newOperands.push_back(operand);
+        continue;
+      }
+
+      changed = true;
+      auto subConcat =
+          stablehlo::ConcatenateOp::create(rewriter, op.getLoc(), run, dim);
+      auto newRotate = enzymexla::RotateOp::create(
+          rewriter, rotate->getLoc(), subConcat, rotate.getAmount(),
+          rotate.getDimension());
+      newOperands.push_back(newRotate.getResult());
+    }
+
+    if (!changed)
+      return failure();
+
+    if (newOperands.size() == 1) {
+      rewriter.replaceOp(op, newOperands[0]);
+      return success();
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, newOperands, dim);
+    return success();
+  }
+};
+
 bool isOuterReducingReshape(stablehlo::ReshapeOp op) {
   auto prevT = cast<RankedTensorType>(op.getOperand().getType());
   if (prevT.getShape().size() != op.getType().getShape().size() + 1)
@@ -26733,6 +26811,14 @@ bool isAxisFusible(int dimension, ArrayRef<Value> vals) {
   }
 
   for (int i = 1; i < vals.size(); i++) {
+    auto r0 = vals[i - 1].getDefiningOp<enzymexla::RotateOp>();
+    auto r1 = vals[i].getDefiningOp<enzymexla::RotateOp>();
+    if (r0 && r1 && canMergeRotatesAlongAxis(dimension, r0, r1)) {
+      return true;
+    }
+  }
+
+  for (int i = 1; i < vals.size(); i++) {
     if (isRotateLike(dimension, vals[i - 1], vals[i])) {
       return true;
     }
@@ -38796,8 +38882,9 @@ struct EnzymeHLOOptPass
         ConcatToBroadcast, ConcatSlicesToReverse, PadPad, PadReshapePad,
         ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
         ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
-        ConcatWrap, WidenWrap, WidenExtend, ConcatConcatAxisSwap, SliceConcat,
-        SliceIf, SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
+        ConcatWrap, ConcatRotate, WidenWrap, WidenExtend, ConcatConcatAxisSwap,
+        SliceConcat, SliceIf, SliceReshapeConcat,
+        BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
         BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal,

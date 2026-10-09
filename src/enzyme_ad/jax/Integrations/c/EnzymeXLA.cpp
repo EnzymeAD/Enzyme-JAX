@@ -554,6 +554,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("slice_extend");
   list.push_back("slice_of_updatewithoutcorners");
   list.push_back("concat_wrap");
+  list.push_back("concat_rotate");
   list.push_back("cse_updatewithoutcorners<16>");
   list.push_back("cse_extend<16>");
   list.push_back("cse_wrap<16>");
