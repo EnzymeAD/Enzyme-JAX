@@ -1873,6 +1873,11 @@ def ApplyGatherOfMaskedScatterPatterns : EnzymeHLOPatternOp<
   let patterns = ["GatherOfMaskedScatter"];
 }
 
+def ApplyGatherScatterConstantForwardPatterns : EnzymeHLOPatternOp<
+    "gather_scatter_constant_forward"> {
+  let patterns = ["GatherScatterConstantForward", "ScatterChainConstantToGather"];
+}
+
 def ApplyGatherOfBroadcastBatchingDimsPatterns : EnzymeHLOPatternOp<
     "gather_of_broadcast_batching_dims"> {
   let patterns = ["GatherOfBroadcastBatchingDims"];

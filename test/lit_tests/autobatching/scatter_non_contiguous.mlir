@@ -1,14 +1,15 @@
 // RUN: enzymexlamlir-opt --enzyme-hlo-opt="enable_auto_batching_passes=true" %s | FileCheck %s
 
+// The batched scatter writes every element of a constant input at constant
+// indices: it is the gather of the update at the inverse permutation.
 // CHECK-LABEL: func.func @scatter_non_contiguous
 // CHECK-NOT: stablehlo.while
-// CHECK: %[[INDICES:.*]] = stablehlo.constant dense<{{.*}}> : tensor<4x1xi32>
-// CHECK: %[[RESULT:.*]] = "stablehlo.scatter"(%{{.*}}, %[[INDICES]], %arg0)
-// CHECK-SAME: inserted_window_dims = [0]
-// CHECK-SAME: scatter_dims_to_operand_dims = [0]
+// CHECK: %[[INDICES:.*]] = stablehlo.constant dense<{{\[\[}}1{{\]}}, {{\[}}3{{\]}}, {{\[}}0{{\]}}, {{\[}}2{{\]\]}}> : tensor<4x1xi64>
+// CHECK: %[[RESULT:.*]] = "stablehlo.gather"(%arg0, %[[INDICES]])
+// CHECK-SAME: collapsed_slice_dims = [0]
+// CHECK-SAME: start_index_map = [0]
 // CHECK-SAME: index_vector_dim = 1
-// CHECK-SAME: unique_indices = true
-// CHECK: stablehlo.return %{{.*}} : tensor<f64>
+// CHECK-NOT: stablehlo.scatter
 // CHECK: return %[[RESULT]] : tensor<4xf64>
 func.func @scatter_non_contiguous(%arg0: tensor<4xf64>) -> tensor<4xf64> {
   %zero_i32 = stablehlo.constant dense<0> : tensor<i32>
