@@ -2003,6 +2003,11 @@ def TransposeConcatPatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeConcat"];
 }
 
+def TransposeLikeBroadcastConcatPatterns
+    : EnzymeHLOPatternOp<"transpose_like_broadcast_concat"> {
+  let patterns = ["TransposeLikeBroadcastConcat"];
+}
+
 def TransposeIotaPatterns : EnzymeHLOPatternOp<
   "transpose_iota"
 > {

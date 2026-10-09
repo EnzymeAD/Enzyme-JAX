@@ -13091,6 +13091,50 @@ struct TransposeConcat final
   }
 };
 
+// broadcast_in_dim(concat(xs, dim), dims) -> concat(broadcast_in_dim(xs, dims),
+// dims[dim]) when the broadcast only permutes and inserts unit dimensions (see
+// isTransposeReshapeLikeBroadcast). The transpose analog is TransposeConcat;
+// such a broadcast arises when a transpose and a reshape are fused, and without
+// this it stops above the concatenate instead of reaching the operands, where
+// it can be absorbed by the transposes/slices that produced them.
+struct TransposeLikeBroadcastConcat final
+    : CheckedOpRewritePattern<stablehlo::BroadcastInDimOp,
+                              TransposeLikeBroadcastConcat> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::BroadcastInDimOp op,
+                                    PatternRewriter &rewriter) const {
+    if (!isTransposeReshapeLikeBroadcast(op))
+      return failure();
+
+    auto concat = op.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concat)
+      return failure();
+
+    if (!llvm::hasSingleElement(concat->getUsers()))
+      return failure();
+
+    auto dims = op.getBroadcastDimensions();
+    auto outShape = op.getType().getShape();
+
+    SmallVector<Value> ops;
+    for (auto v : concat.getOperands()) {
+      auto vTy = cast<RankedTensorType>(v.getType());
+      SmallVector<int64_t> shape(outShape.begin(), outShape.end());
+      for (auto &&[i, d] : llvm::enumerate(dims))
+        shape[d] = vTy.getDimSize(i);
+      ops.push_back(stablehlo::BroadcastInDimOp::create(
+          rewriter, op.getLoc(),
+          RankedTensorType::get(shape, vTy.getElementType()), v, dims));
+    }
+
+    auto newDim = dims[concat.getDimension()];
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, ops, newDim);
+    rewriter.eraseOp(concat);
+    return success();
+  }
+};
+
 struct TransposeIota final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeIota> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -39345,15 +39389,16 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 32)) {
-      patterns.add<TransposeWhile, TransposeSliceBase<stablehlo::SliceOp>,
-                   TransposeLikeBroadcastSliceBase<stablehlo::SliceOp>,
-                   TransposeConcat, TransposeDUS, TransposeIota,
-                   TransposeReduceWindow, TransposeReduce, TransposeSelect,
-                   TransposeSliceBase<stablehlo::DynamicSliceOp>,
-                   TransposeLikeBroadcastSliceBase<stablehlo::DynamicSliceOp>,
-                   TransposeReverse, TransposeBatchNormTraining,
-                   TransposeBatchNormInference, TransposeBatchNormGrad,
-                   TransposeIf, TransposeFFT, TransposeReshape>(context);
+      patterns
+          .add<TransposeWhile, TransposeSliceBase<stablehlo::SliceOp>,
+               TransposeLikeBroadcastSliceBase<stablehlo::SliceOp>,
+               TransposeConcat, TransposeLikeBroadcastConcat, TransposeDUS,
+               TransposeIota, TransposeReduceWindow, TransposeReduce,
+               TransposeSelect, TransposeSliceBase<stablehlo::DynamicSliceOp>,
+               TransposeLikeBroadcastSliceBase<stablehlo::DynamicSliceOp>,
+               TransposeReverse, TransposeBatchNormTraining,
+               TransposeBatchNormInference, TransposeBatchNormGrad, TransposeIf,
+               TransposeFFT, TransposeReshape>(context);
       patterns.add<TransposeElementwise>(true, context);
     }
 
