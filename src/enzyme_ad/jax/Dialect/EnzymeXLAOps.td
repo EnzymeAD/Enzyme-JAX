@@ -220,22 +220,33 @@ def JITRegionOp : EnzymeXLA_Op<"jit_region", [
     are never modified.
 
     Each result holds the contents of one of the buffers when the block exits,
-    and has the type of the corresponding input. The result `i` is read from
-    the buffer of the input `output_operand_aliases[i].operand_index`; without
-    `output_operand_aliases`, there is one result per input.
+    and has the type of the corresponding input. As for `jit_call`, every
+    result maps to an input through an entry of `output_operand_aliases`: the
+    result `output_tuple_indices[0]` (or the only result, with empty
+    `output_tuple_indices`) is read from the buffer of the input
+    `operand_index`. The buffer of an input is read by at most one result.
 
     `operand_attrs` and `result_attrs`, if present, hold one dictionary of
-    attributes per input and per result respectively. In the custom format,
-    each input's dictionary follows the input, when it is not empty.
+    attributes per input and per result respectively.
 
     Example:
 
     ```mlir
-    %r:2 = enzymexla.jit_region(%a, %b {enzymexla.reverse_operand_index = 0 : i64})
-        : tensor<4xf32>, tensor<4xf32> {
+    %r:2 = "enzymexla.jit_region"(%a, %b) <{
+      operand_attrs = [{}, {enzymexla.reverse_operand_index = 0 : i64} ],
+      output_operand_aliases = [
+        #stablehlo.output_operand_alias<output_tuple_indices = [0],
+                                        operand_index = 0,
+                                        operand_tuple_indices = []>,
+        #stablehlo.output_operand_alias<output_tuple_indices = [1],
+                                        operand_index = 1,
+                                        operand_tuple_indices = []>
+      ]
+    }> ({
     ^bb0(%ma: memref<4xf32, 1>, %mb: memref<4xf32, 1>):
       ...
-    }
+      "enzymexla.jit_region_yield"() : () -> ()
+    }) : (tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>)
     ```
   }];
 
@@ -251,11 +262,6 @@ def JITRegionOp : EnzymeXLA_Op<"jit_region", [
   let results = (outs Variadic<HLO_Tensor>);
   let regions = (region SizedRegion<1>:$body);
 
-  let assemblyFormat = [{
-    custom<JITRegionInputs>($inputs, $operand_attrs) attr-dict `:`
-    type($inputs) $body
-  }];
-
   let extraClassDeclaration = [{
     Block *getBodyBlock() { return &getBody().front(); }
 
@@ -265,10 +271,16 @@ def JITRegionOp : EnzymeXLA_Op<"jit_region", [
 
     // The result read from the buffer of the input `inputIndex`, if any.
     OpResult getAliasingResult(unsigned inputIndex);
+
+    // The output_operand_aliases of a jit_region whose result `i` is read
+    // from the buffer of the input `inputIndices[i]`.
+    static ArrayAttr buildOutputOperandAliases(MLIRContext *context,
+                                               ArrayRef<int64_t> inputIndices);
   }];
 
   let hasVerifier = 1;
   let hasRegionVerifier = 1;
+  let hasCanonicalizer = 1;
 }
 
 def JITRegionYieldOp : EnzymeXLA_Op<"jit_region_yield", [

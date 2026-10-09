@@ -1419,12 +1419,23 @@ void CommRegionOp::getSuccessorRegions(
 // JITRegionOp
 //===----------------------------------------------------------------------===//
 
+// The result an entry of the output_operand_aliases of an op with
+// `numResults` results stands for, or -1 if it is not a valid entry.
+static int64_t getAliasResultIndex(Attribute attr, unsigned numResults) {
+  auto alias = dyn_cast<stablehlo::OutputOperandAliasAttr>(attr);
+  if (!alias)
+    return -1;
+  ArrayRef<int64_t> indices = alias.getOutputTupleIndices();
+  if (numResults == 1)
+    return indices.empty() ? 0 : -1;
+  return indices.size() == 1 ? indices[0] : -1;
+}
+
 unsigned JITRegionOp::getAliasedInputIndex(unsigned resultIndex) {
-  ArrayAttr aliases = getOutputOperandAliases();
-  if (aliases.empty())
-    return resultIndex;
-  return cast<stablehlo::OutputOperandAliasAttr>(aliases[resultIndex])
-      .getOperandIndex();
+  for (Attribute attr : getOutputOperandAliases())
+    if (getAliasResultIndex(attr, getNumResults()) == resultIndex)
+      return cast<stablehlo::OutputOperandAliasAttr>(attr).getOperandIndex();
+  llvm_unreachable("every result of a jit_region aliases an input");
 }
 
 OpResult JITRegionOp::getAliasingResult(unsigned inputIndex) {
@@ -1434,29 +1445,46 @@ OpResult JITRegionOp::getAliasingResult(unsigned inputIndex) {
   return nullptr;
 }
 
-LogicalResult JITRegionOp::inferReturnTypes(
-    MLIRContext * /*context*/, std::optional<Location> location,
-    ValueRange operands, DictionaryAttr attributes,
-    mlir::PropertyRef properties, RegionRange regions,
-    SmallVectorImpl<Type> &inferredReturnTypes) {
+ArrayAttr
+JITRegionOp::buildOutputOperandAliases(MLIRContext *context,
+                                       ArrayRef<int64_t> inputIndices) {
+  SmallVector<Attribute> aliases;
+  for (auto [result, input] : llvm::enumerate(inputIndices)) {
+    SmallVector<int64_t> outputIndices;
+    if (inputIndices.size() != 1)
+      outputIndices.push_back(result);
+    aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+        context, outputIndices, input, /*operandTupleIndices=*/{}));
+  }
+  return ArrayAttr::get(context, aliases);
+}
+
+LogicalResult
+JITRegionOp::inferReturnTypes(MLIRContext * /*context*/,
+                              std::optional<Location> location,
+                              ValueRange operands, DictionaryAttr attributes,
+                              mlir::PropertyRef properties, RegionRange regions,
+                              SmallVectorImpl<Type> &inferredReturnTypes) {
   JITRegionOpAdaptor adaptor(operands, attributes, properties, regions);
   ArrayAttr aliases = adaptor.getOutputOperandAliases();
   // While parsing, the inherent attributes are not yet in the properties.
   if (attributes)
     if (auto parsed = attributes.getAs<ArrayAttr>("output_operand_aliases"))
       aliases = parsed;
-  if (aliases.empty()) {
-    llvm::append_range(inferredReturnTypes, operands.getTypes());
-    return success();
-  }
+  // There is one result per alias, of the type of the input it aliases.
+  inferredReturnTypes.assign(aliases.size(), Type());
   for (Attribute attr : aliases) {
-    auto alias = dyn_cast<stablehlo::OutputOperandAliasAttr>(attr);
-    if (!alias || alias.getOperandIndex() < 0 ||
-        alias.getOperandIndex() >= (int64_t)operands.size())
+    int64_t result = getAliasResultIndex(attr, aliases.size());
+    if (result < 0 || result >= (int64_t)aliases.size() ||
+        inferredReturnTypes[result])
       return emitOptionalError(location,
                                "invalid output_operand_aliases entry ", attr);
-    inferredReturnTypes.push_back(
-        operands[alias.getOperandIndex()].getType());
+    int64_t input =
+        cast<stablehlo::OutputOperandAliasAttr>(attr).getOperandIndex();
+    if (input < 0 || input >= (int64_t)operands.size())
+      return emitOptionalError(location,
+                               "invalid output_operand_aliases entry ", attr);
+    inferredReturnTypes[result] = operands[input].getType();
   }
   return success();
 }
@@ -1474,24 +1502,69 @@ LogicalResult JITRegionOp::verify() {
                          << " results";
 
   ArrayAttr aliases = getOutputOperandAliases();
-  if (aliases.empty())
-    return success();
+  if (aliases.size() != getNumResults())
+    return emitOpError() << "expects one output_operand_aliases entry per "
+                            "result, got "
+                         << aliases.size() << " for " << getNumResults()
+                         << " results";
+  if (failed(verifyResultsAliasOperands(getOperation(), aliases,
+                                        getInputs().size())))
+    return failure();
 
   // Each buffer is read by at most one result.
   llvm::SmallDenseSet<int64_t> aliased;
   for (Attribute attr : aliases) {
-    auto alias = dyn_cast<stablehlo::OutputOperandAliasAttr>(attr);
-    if (!alias)
-      return emitOpError() << "invalid output_operand_aliases entry " << attr;
-    if (!alias.getOutputTupleIndices().empty() ||
-        !alias.getOperandTupleIndices().empty())
-      return emitOpError() << "tuple indices are not supported in "
+    auto alias = cast<stablehlo::OutputOperandAliasAttr>(attr);
+    if (!alias.getOperandTupleIndices().empty())
+      return emitOpError() << "operand tuple indices are not supported in "
                               "output_operand_aliases";
     if (!aliased.insert(alias.getOperandIndex()).second)
       return emitOpError() << "input #" << alias.getOperandIndex()
                            << " is aliased by more than one result";
   }
   return success();
+}
+
+// The buffer of an input is dropped from the results when the result read
+// from it is unused.
+template <>
+BitVector
+ReadOnlyArg<JITRegionOp>::getReadOnlyOperands(JITRegionOp region) const {
+  BitVector readonly(region.getInputs().size(), false);
+  for (OpResult result : region.getResults())
+    readonly[region.getAliasedInputIndex(result.getResultNumber())] =
+        result.use_empty();
+  return readonly;
+}
+
+template <>
+JITRegionOp ReadOnlyArg<JITRegionOp>::create(PatternRewriter &rewriter,
+                                             JITRegionOp region,
+                                             ArrayRef<Type> resTys,
+                                             ArrayAttr outputAliases) const {
+  NamedAttrList attrs(region->getAttrDictionary());
+  attrs.set(region.getOutputOperandAliasesAttrName(), outputAliases);
+  // The result attributes follow the results that are kept, in order.
+  if (ArrayAttr resultAttrs = region.getResultAttrsAttr()) {
+    SmallVector<Attribute> newAttrs;
+    for (Attribute attr : outputAliases) {
+      unsigned input =
+          cast<stablehlo::OutputOperandAliasAttr>(attr).getOperandIndex();
+      newAttrs.push_back(
+          resultAttrs[region.getAliasingResult(input).getResultNumber()]);
+    }
+    attrs.set(region.getResultAttrsAttrName(), rewriter.getArrayAttr(newAttrs));
+  }
+  auto newRegion = JITRegionOp::create(rewriter, region.getLoc(), resTys,
+                                       region.getInputs(), attrs);
+  rewriter.inlineRegionBefore(region.getBody(), newRegion.getBody(),
+                              newRegion.getBody().end());
+  return newRegion;
+}
+
+void JITRegionOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                              MLIRContext *context) {
+  results.insert<ReadOnlyArg<JITRegionOp>>(context);
 }
 
 LogicalResult JITRegionOp::verifyRegions() {
