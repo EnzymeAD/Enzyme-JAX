@@ -1864,6 +1864,11 @@ def ApplyScatterOutOfBoundsNoopPatterns : EnzymeHLOPatternOp<
   let patterns = ["ScatterOutOfBoundsNoop"];
 }
 
+def ApplyGatherOfMaskedScatterPatterns : EnzymeHLOPatternOp<
+    "gather_of_masked_scatter"> {
+  let patterns = ["GatherOfMaskedScatter"];
+}
+
 def ApplyReduceTransposeSimplifyPatterns : EnzymeHLOPatternOp<
     "reduce_transpose_simplify"> {
   let patterns = ["ReduceTransposeSimplify"];

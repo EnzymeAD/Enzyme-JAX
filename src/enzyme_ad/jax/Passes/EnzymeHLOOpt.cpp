@@ -23669,6 +23669,74 @@ struct ScatterOutOfBoundsNoop
   }
 };
 
+// A gather, element by element, of a scatter that overwrote the same
+// slots but for those masked off (their index a negative sentinel): what
+// the scatter put there where the mask holds, what was there otherwise. A
+// kernel's masked store followed by the load of the same address.
+struct GatherOfMaskedScatter final
+    : CheckedOpRewritePattern<stablehlo::GatherOp, GatherOfMaskedScatter> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
+    auto scatter = op.getOperand().getDefiningOp<stablehlo::ScatterOp>();
+    if (!scatter || scatter.getInputs().size() != 1 ||
+        !isSetindexBlock(&scatter.getUpdateComputation().front()))
+      return failure();
+    auto select =
+        scatter.getScatterIndices().getDefiningOp<stablehlo::SelectOp>();
+    if (!select)
+      return failure();
+    SplatElementsAttr sentinel;
+    Value mask = select.getPred();
+    bool maskedWrites; // the mask true where the write goes through
+    if (select.getOnTrue() == op.getStartIndices() &&
+        matchPattern(select.getOnFalse(), m_Constant(&sentinel)))
+      maskedWrites = true;
+    else if (select.getOnFalse() == op.getStartIndices() &&
+             matchPattern(select.getOnTrue(), m_Constant(&sentinel)))
+      maskedWrites = false;
+    else
+      return failure();
+    if (!sentinel.getSplatValue<APInt>().isNegative())
+      return failure();
+    // Element by element, the same way, on both sides.
+    auto gdims = op.getDimensionNumbers();
+    auto sdims = scatter.getScatterDimensionNumbers();
+    int64_t rank = cast<RankedTensorType>(op.getOperand().getType()).getRank();
+    if (!gdims.getOffsetDims().empty() ||
+        !gdims.getOperandBatchingDims().empty() ||
+        !sdims.getUpdateWindowDims().empty() ||
+        !sdims.getInputBatchingDims().empty() ||
+        gdims.getIndexVectorDim() != sdims.getIndexVectorDim() ||
+        gdims.getCollapsedSliceDims() != sdims.getInsertedWindowDims() ||
+        gdims.getStartIndexMap() != sdims.getScatterDimsToOperandDims() ||
+        (int64_t)gdims.getCollapsedSliceDims().size() != rank ||
+        llvm::any_of(op.getSliceSizes(), [](int64_t s) { return s != 1; }) ||
+        scatter.getUpdates()[0].getType() != op.getType())
+      return failure();
+    // The mask is over the index tuples (an index vector dimension of
+    // size 1 at the end, or none): dropped to the gather's shape.
+    auto maskTy = cast<RankedTensorType>(mask.getType());
+    auto resultTy = cast<RankedTensorType>(op.getType());
+    if (maskTy.getShape() != resultTy.getShape()) {
+      if (maskTy.getNumElements() != resultTy.getNumElements())
+        return failure();
+      mask = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), mask,
+                                        resultTy.getShape());
+    }
+    Value before = stablehlo::GatherOp::create(
+        rewriter, op.getLoc(), resultTy, scatter.getInputs()[0],
+        op.getStartIndices(), op.getDimensionNumbers(), op.getSliceSizes(),
+        op.getIndicesAreSorted());
+    Value written = scatter.getUpdates()[0];
+    rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
+        op, mask, maskedWrites ? written : before,
+        maskedWrites ? before : written);
+    return success();
+  }
+};
+
 struct ScatterIndicesAreUnique
     : public CheckedOpRewritePattern<stablehlo::ScatterOp,
                                      ScatterIndicesAreUnique> {
@@ -29062,10 +29130,6 @@ struct ScatterOfScatterSimplify final
     if (innerScatter.getInputs().size() != 1)
       return failure();
 
-    // Both must have unique_indices
-    if (!outerScatter.getUniqueIndices() || !innerScatter.getUniqueIndices())
-      return failure();
-
     // Same scatter indices
     if (outerScatter.getScatterIndices() != innerScatter.getScatterIndices())
       return failure();
@@ -29085,6 +29149,12 @@ struct ScatterOfScatterSimplify final
     auto innerCheck = stablehlo::CheckCommonScatterOp(innerScatter);
     auto outerCheck = stablehlo::CheckCommonScatterOp(outerScatter);
 
+    // The outer overwriting every slot the inner wrote (the same indices,
+    // the same slots dropped as out of range) leaves nothing of the inner,
+    // whether the indices repeat or not. A kernel's accumulation into a
+    // buffer raises as such a chain, each store the running sum (the
+    // raising forwards what the last store put there), so only the last
+    // store counts.
     // When the outer body completely ignores the current value (Setindex or
     // ConstantSetindex), the inner scatter is irrelevant — just replace the
     // input with the inner's input.
@@ -29105,6 +29175,10 @@ struct ScatterOfScatterSimplify final
       rewriter.replaceOp(outerScatter, newScatter);
       return success();
     }
+
+    // Both must have unique_indices
+    if (!outerScatter.getUniqueIndices() || !innerScatter.getUniqueIndices())
+      return failure();
 
     // When the inner scatter is ConstantSetindex(c1), the value at scattered
     // positions after the inner is always c1. So the outer body sees c1 as
@@ -39307,6 +39381,7 @@ struct EnzymeHLOOptPass
         CommonCompareExpressionRewrite,
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique, ScatterOutOfBoundsNoop,
+        GatherOfMaskedScatter,
         ReduceTransposeSimplify,
         WhileScatterAccumulatorNoAdd,
         BroadcastIotaSimplify,
