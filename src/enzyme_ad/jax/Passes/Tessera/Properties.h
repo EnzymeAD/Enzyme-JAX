@@ -68,8 +68,11 @@
 //   __attribute__((tessera_guarantees("SPD(A)")));
 //
 // The plugin makes that a call, right after the statement, to a generated
-// function that does nothing and whose parameter establishes the fact. The
-// function is marked
+// function that does nothing and whose parameter establishes the fact.
+// `tessera_assumes("SPD(A)")` on a statement does the same, with the
+// assumption on the parameter as `tessera.property`: the function does
+// nothing, so what it assumes on entry holds on exit too. The function is
+// marked
 //
 //   tessera.fact_marker
 //

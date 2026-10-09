@@ -304,7 +304,7 @@ def GuardOp : TesseraOp<"guard", [SingleBlock]> {
                         SizedRegion<1>:$elseRegion);
 
   let assemblyFormat = [{
-    $cond `args` `(` $args `)` `{` $argNames `}` attr-dict `:` functional-type($args, results)
+    $cond `args` `(` $args `)` `{` `argNames` `=` $argNames `}` attr-dict `:` functional-type($args, results)
     $thenRegion `else` $elseRegion
   }];
 
@@ -372,6 +372,26 @@ def OptimizationsOp : TesseraOp<"optimizations", [Pure, NoTerminator]> {
       tessera.optimization "mag(-x,y,z) -> mag(x,y,z)"
     }
 ```
+  }];
+
+  let arguments = (ins);
+  let results = (outs);
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = "$body attr-dict";
+}
+
+//===----------------------------------------------------------------------===//
+// EquivalenceOp
+//===----------------------------------------------------------------------===//
+
+def EquivalenceOp : TesseraOp<"equivalent_to", [Pure, NoTerminator]> {
+  let summary = "equivalence operation";
+  let description = [{
+    The 'tessera.equivalent_to' operation is region containing functions that
+    are all equivalent to one another, matching CPU routines with GPU routines.
+    It also contains variants, such as functions that perform the same operation
+    but on different kinds of arguments, like symmetric vs non-symmetric matrices.
   }];
 
   let arguments = (ins);
