@@ -1380,6 +1380,14 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            /*description=*/
            "Specialize the kernel over a scalar argument an access index reads, "
            "such as a stride, so the index folds to a constant">,
+       Option<
+           /*C++ variable name=*/"specialize_int_scalars",
+           /*CLI argument=*/"specialize_int_scalars",
+           /*type=*/"bool",
+           /*default=*/"false",
+           /*description=*/
+           "Specialize the kernel over every scalar integer argument it only "
+           "reads (lengths, flags), so none reaches the device as a buffer">,
   ];
 }
 
