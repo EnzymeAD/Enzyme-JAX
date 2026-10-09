@@ -23,7 +23,7 @@ module {
   // Found through separate loads of one slot, a readonly call, and two
   // levels of error checks. Both operands that are the handle get it.
   // CHECK-LABEL: llvm.func @found
-  // CHECK: tessera.call @petsc.ksp_set_operators(%{{.*}}, %[[A:[0-9]+]], %[[A]]) {arg_attrs = [{}, {tessera.property = ["SPD"]}, {tessera.property = ["SPD"]}]}
+  // CHECK: tessera.call @petsc.ksp_set_operators(%{{.*}}, %[[A:[0-9]+]], %[[A]]) <arg_attrs = [{}, {tessera.property = ["SPD"]}, {tessera.property = ["SPD"]}]>
   llvm.func @found(%ksp: !llvm.ptr, %x: !llvm.ptr) -> i32 {
     %c1 = llvm.mlir.constant(1 : i32) : i32
     %c0 = llvm.mlir.constant(0 : i32) : i32
@@ -154,7 +154,7 @@ module {
   llvm.func @mat_scale(!llvm.ptr, f64) -> i32
 
   // CHECK-LABEL: llvm.func @readonly_loop
-  // CHECK: tessera.call @petsc.ksp_set_operators({{.*}}) {arg_attrs = [{}, {tessera.property = ["SPD"]}, {tessera.property = ["SPD"]}]}
+  // CHECK: tessera.call @petsc.ksp_set_operators({{.*}}) <arg_attrs = [{}, {tessera.property = ["SPD"]}, {tessera.property = ["SPD"]}]>
   llvm.func @readonly_loop(%ksp: !llvm.ptr, %x: !llvm.ptr) -> i32 {
     %c1 = llvm.mlir.constant(1 : i32) : i32
     %lb = arith.constant 0 : index

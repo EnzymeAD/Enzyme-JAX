@@ -370,13 +370,18 @@ HandleEffect effectOn(Operation *op, const HandleSlot &slot,
   if (slot.writers.contains(op))
     return HandleEffect::Changes;
 
-  // A fact stated of the variable, of whatever handle it holds here.
+  // A fact stated of the variable, of whatever handle it holds here. The
+  // marker does nothing, so what it assumes of the object on entry
+  // (tessera_assumes on the statement) holds on exit as much as what it
+  // guarantees.
   if (slot.factSites.contains(op)) {
     for (auto [index, arg] :
          llvm::enumerate(cast<LLVM::CallOp>(op).getArgOperands()))
       if (slot.views.contains(arg))
-        if (DictionaryAttr attrs = paramAttrs(op, index))
+        if (DictionaryAttr attrs = paramAttrs(op, index)) {
           addProperties(established, attrs.get(kEstablishesAttr));
+          addProperties(established, attrs.get(kPropertyAttr));
+        }
     return established.empty() ? HandleEffect::None : HandleEffect::Establishes;
   }
 
