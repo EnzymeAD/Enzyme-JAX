@@ -934,6 +934,7 @@ static void addTransposePropagateUpPasses(std::vector<std::string> &list,
   list.push_back("transpose_slice");
   list.push_back("transpose_like_broadcast_slice");
   list.push_back("transpose_concat");
+  list.push_back("transpose_like_broadcast_concat");
   list.push_back("transpose_iota");
   list.push_back("transpose_reduce");
   list.push_back("transpose_reduce_window");
