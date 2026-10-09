@@ -2154,10 +2154,9 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
 
     // `work` holds elements of the input type, and a complex element takes two
     // reals
-    auto realsPerElement =
-        LLVM::ConstantOp::create(rewriter, op.getLoc(), type_llvm_lapack_int,
-                                 rewriter.getIntegerAttr(type_lapack_int,
-                                                         isComplex ? 2 : 1));
+    auto realsPerElement = LLVM::ConstantOp::create(
+        rewriter, op.getLoc(), type_llvm_lapack_int,
+        rewriter.getIntegerAttr(type_lapack_int, isComplex ? 2 : 1));
 
     // first call extracts the optimal size for the workspace
     auto workBuffer1 =
@@ -2277,16 +2276,22 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
           // minmn*max(5*minmn+5, 2*max(m,n)+2*minmn+1)
           auto maxMN =
               arith::MaxSIOp::create(rewriter, op.getLoc(), MVal, NVal);
-          auto termA = arith::AddIOp::create(
-              rewriter, op.getLoc(),
-              arith::MulIOp::create(rewriter, op.getLoc(), constInt(5), minMN),
-              constInt(5));
-          auto termB = arith::AddIOp::create(
-              rewriter, op.getLoc(),
-              arith::MulIOp::create(
-                  rewriter, op.getLoc(), constInt(2),
-                  arith::AddIOp::create(rewriter, op.getLoc(), maxMN, minMN)),
-              constInt(1));
+          auto c1 = constInt(1);
+          auto c2 = constInt(2);
+          auto c5 = constInt(5);
+
+          // 5*minmn + 5
+          auto fiveMin =
+              arith::MulIOp::create(rewriter, op.getLoc(), c5, minMN);
+          auto termA =
+              arith::AddIOp::create(rewriter, op.getLoc(), fiveMin, c5);
+
+          // 2*(max(m,n) + minmn) + 1
+          auto sumMN =
+              arith::AddIOp::create(rewriter, op.getLoc(), maxMN, minMN);
+          auto twoSum = arith::MulIOp::create(rewriter, op.getLoc(), c2, sumMN);
+          auto termB = arith::AddIOp::create(rewriter, op.getLoc(), twoSum, c1);
+
           auto maxTerm =
               arith::MaxSIOp::create(rewriter, op.getLoc(), termA, termB);
           rworkSize =
@@ -2312,8 +2317,8 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
         rewriter, op.getLoc(), type_llvm_lapack_int, workSpaceSizeFloat);
     Value workSpaceReals = workSpaceSize;
     if (isComplex)
-      workSpaceReals = LLVM::MulOp::create(rewriter, op.getLoc(),
-                                           workSpaceSize, realsPerElement);
+      workSpaceReals = LLVM::MulOp::create(rewriter, op.getLoc(), workSpaceSize,
+                                           realsPerElement);
     auto workspace =
         LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
                                type_input_element_real, workSpaceReals);
