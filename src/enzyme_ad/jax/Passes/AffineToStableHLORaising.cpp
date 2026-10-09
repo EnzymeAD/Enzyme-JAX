@@ -4141,8 +4141,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                 RankedTensorType::get(
                     cast<RankedTensorType>(updAligned.getType()).getShape(),
                     builder.getI1Type())) {
-          // The mask spans axes the update lacks: pick in the union space,
-          // keeping the axes the store indexes.
+          // The mask spans axes the update lacks, or orders them
+          // differently: pick in the union space, keeping the axes the
+          // store indexes. Those are the expanded grid axes, as for the
+          // broadcast dims above: a flat index like `qx + dy * 4` is one
+          // store dimension over two of them.
           auto loc =
               rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo);
           auto AT = cast<RankedTensorType>(updAligned.getType());
@@ -4156,15 +4159,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
             Value uiv = getIVForExpr(unionMap, E);
             int64_t storeDim = -1;
             if (uiv)
-              for (auto [k, SE] : llvm::enumerate(
-                       accessValueMap.getAffineMap().getResults())) {
-                if (SE.isSymbolicOrConstant())
-                  continue;
-                if (getIVForExpr(accessValueMap,
-                                 accessValueMap.getAffineMap().getResult(k)) ==
-                    uiv)
+              for (auto [k, targetIV] : llvm::enumerate(expandedUpdateIVs))
+                if (targetIV == uiv)
                   storeDim = (int64_t)k;
-              }
             if (uiv && storeDim != -1) {
               keptShape.push_back(AT.getShape()[i]);
               keptExprs.push_back(E);
