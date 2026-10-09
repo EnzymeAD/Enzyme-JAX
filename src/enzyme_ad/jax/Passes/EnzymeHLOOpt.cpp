@@ -5491,6 +5491,40 @@ struct RotatePad final
   }
 };
 
+// rotate(rotate(x, a, dim), b, dim) -> rotate(x, (a + b) mod size(dim), dim)
+struct RotateRotate final
+    : CheckedOpRewritePattern<enzymexla::RotateOp, RotateRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::RotateOp rotate,
+                                    PatternRewriter &rewriter) const {
+    auto inner = rotate.getOperand().getDefiningOp<enzymexla::RotateOp>();
+    if (!inner)
+      return failure();
+
+    if (inner.getDimension() != rotate.getDimension())
+      return failure();
+
+    auto type = cast<RankedTensorType>(rotate.getType());
+    if (type.isDynamicDim(rotate.getDimension()))
+      return failure();
+
+    int64_t size = type.getDimSize(rotate.getDimension());
+    int64_t amount = (int64_t(inner.getAmount()) + rotate.getAmount()) % size;
+
+    if (amount == 0) {
+      rewriter.replaceOp(rotate, inner.getOperand());
+      return success();
+    }
+
+    rewriter.modifyOpInPlace(rotate, [&]() {
+      rotate.setOperand(inner.getOperand());
+      rotate.setAmount(amount);
+    });
+    return success();
+  }
+};
+
 struct ShiftRightLogicalSimplify final
     : CheckedOpRewritePattern<stablehlo::ShiftRightLogicalOp,
                               ShiftRightLogicalSimplify> {
@@ -39056,7 +39090,7 @@ struct EnzymeHLOOptPass
         SliceIf, SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
-        BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal,
+        BinBroadcastSplat<stablehlo::MulOp>, RotatePad, RotateRotate, ConjReal,
         ConvertMulConvert, ConvertBinopConvert<stablehlo::MinOp>,
         ConvertBinopConvert<stablehlo::MaxOp>, NegateReduceWindowSub>(context);
 
