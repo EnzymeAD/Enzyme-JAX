@@ -140,8 +140,8 @@ func.func private @"##call__Z39gpu__compute_integrated_ab2_tendencies_16Compiler
 // CHECK-NEXT:      }
 // CHECK-NEXT:      %15 = arith.mulf %8, %14 : f32
 // CHECK-NEXT:      affine.store %15, %arg1[0, %arg7 + 8, %arg8 + 8] : memref<1x78x78xf32, 1>
-// CHECK-NEXT:      %16 = affine.load %arg1[0, %arg7 + 8, %arg8 + 8] : memref<1x78x78xf32, 1>
-// CHECK-NEXT:      %17 = affine.load %arg0[0, %arg7 + 8, %arg8 + 8] : memref<1x78x78xf32, 1>
+// CHECK-NEXT:      %16 = affine.load %arg0[0, %arg7 + 8, %arg8 + 8] : memref<1x78x78xf32, 1>
+// CHECK-NEXT:      %17 = affine.load %arg1[0, %arg7 + 8, %arg8 + 8] : memref<1x78x78xf32, 1>
 // CHECK-NEXT:      %18:2 = affine.parallel (%arg9) = (0) to (14) reduce ("addf", "addf") -> (f32, f32) {
 // CHECK-NEXT:        %21 = affine.load %arg2[%arg9 + 9] {alignment = 4 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<31xf32, 1>
 // CHECK-NEXT:        %22 = affine.load %arg5[%arg9 + 9, %arg7 + 8, %arg8 + 8] : memref<31x78x78xf32, 1>
@@ -167,12 +167,12 @@ func.func private @"##call__Z39gpu__compute_integrated_ab2_tendencies_16Compiler
 // CHECK-NEXT:          affine.yield %cst_1 : f32
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %36 = arith.mulf %29, %35 : f32
-// CHECK-NEXT:        affine.yield %36, %28 : f32, f32
+// CHECK-NEXT:        affine.yield %28, %36 : f32, f32
 // CHECK-NEXT:      }
 // CHECK-NEXT:      %19 = arith.addf %16, %18#0 : f32
 // CHECK-NEXT:      %20 = arith.addf %17, %18#1 : f32
-// CHECK-NEXT:      affine.store %20, %arg0[0, %arg7 + 8, %arg8 + 8] : memref<1x78x78xf32, 1>
-// CHECK-NEXT:      affine.store %19, %arg1[0, %arg7 + 8, %arg8 + 8] : memref<1x78x78xf32, 1>
+// CHECK-NEXT:      affine.store %20, %arg1[0, %arg7 + 8, %arg8 + 8] : memref<1x78x78xf32, 1>
+// CHECK-NEXT:      affine.store %19, %arg0[0, %arg7 + 8, %arg8 + 8] : memref<1x78x78xf32, 1>
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return
 // CHECK-NEXT:  }

@@ -155,24 +155,31 @@ func.func @under_branch(%J: memref<?xf64>, %out: memref<?xf64>, %n: index, %c: i
 // CHECK-NEXT: }
 
 // CHECK:  func.func @reads_previous(%arg0: memref<?xf64>, %arg1: memref<?xf64>, %arg2: index) {
+// CHECK-NEXT:   %cst = arith.constant 0.000000e+00 : f64
 // CHECK-NEXT:   %alloca = memref.alloca() : memref<4xf64>
-// CHECK-NEXT:   affine.for %arg3 = 0 to %arg2 {
-// CHECK-NEXT:     %0 = affine.load %arg0[%arg3 * 4] : memref<?xf64>
-// CHECK-NEXT:     %1 = affine.load %arg0[%arg3 * 4 + 1] : memref<?xf64>
-// CHECK-NEXT:     %2 = affine.load %arg0[%arg3 * 4 + 2] : memref<?xf64>
-// CHECK-NEXT:     %3 = affine.load %arg0[%arg3 * 4 + 3] : memref<?xf64>
-// CHECK-NEXT:     %4 = affine.load %alloca[3] : memref<4xf64>
-// CHECK-NEXT:     %5 = arith.addf %3, %4 : f64
-// CHECK-NEXT:     affine.store %5, %alloca[0] : memref<4xf64>
-// CHECK-NEXT:     affine.store %1, %alloca[1] : memref<4xf64>
-// CHECK-NEXT:     affine.store %2, %alloca[2] : memref<4xf64>
-// CHECK-NEXT:     affine.store %0, %alloca[3] : memref<4xf64>
-// CHECK-NEXT:     affine.parallel (%arg4) = (0) to (2) {
-// CHECK-NEXT:       %6 = affine.load %alloca[%arg4 * 2] : memref<4xf64>
-// CHECK-NEXT:       %7 = affine.load %alloca[%arg4 * 2 + 1] : memref<4xf64>
-// CHECK-NEXT:       %8 = arith.addf %6, %7 : f64
-// CHECK-NEXT:       affine.store %8, %arg1[%arg4 + %arg3 * 2] : memref<?xf64>
+// CHECK-NEXT:   %0 = affine.if #set()[%arg2] -> f64 {
+// CHECK-NEXT:     %2 = affine.load %alloca[3] : memref<4xf64>
+// CHECK-NEXT:     affine.yield %2 : f64
+// CHECK-NEXT:   } else {
+// CHECK-NEXT:     affine.yield %cst : f64
+// CHECK-NEXT:   }
+// CHECK-NEXT:   %1 = affine.for %arg3 = 0 to %arg2 iter_args(%arg4 = %0) -> (f64) {
+// CHECK-NEXT:     %2 = affine.load %arg0[%arg3 * 4] : memref<?xf64>
+// CHECK-NEXT:     %3 = affine.load %arg0[%arg3 * 4 + 1] : memref<?xf64>
+// CHECK-NEXT:     %4 = affine.load %arg0[%arg3 * 4 + 2] : memref<?xf64>
+// CHECK-NEXT:     %5 = affine.load %arg0[%arg3 * 4 + 3] : memref<?xf64>
+// CHECK-NEXT:     %6 = arith.addf %5, %arg4 : f64
+// CHECK-NEXT:     affine.store %6, %alloca[0] : memref<4xf64>
+// CHECK-NEXT:     affine.store %3, %alloca[1] : memref<4xf64>
+// CHECK-NEXT:     affine.store %4, %alloca[2] : memref<4xf64>
+// CHECK-NEXT:     affine.store %2, %alloca[3] : memref<4xf64>
+// CHECK-NEXT:     affine.parallel (%arg5) = (0) to (2) {
+// CHECK-NEXT:       %7 = affine.load %alloca[%arg5 * 2] : memref<4xf64>
+// CHECK-NEXT:       %8 = affine.load %alloca[%arg5 * 2 + 1] : memref<4xf64>
+// CHECK-NEXT:       %9 = arith.addf %7, %8 : f64
+// CHECK-NEXT:       affine.store %9, %arg1[%arg5 + %arg3 * 2] : memref<?xf64>
 // CHECK-NEXT:     }
+// CHECK-NEXT:     affine.yield %2 : f64
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return
 // CHECK-NEXT: }
