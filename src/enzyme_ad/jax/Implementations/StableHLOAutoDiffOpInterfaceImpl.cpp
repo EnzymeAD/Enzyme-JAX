@@ -655,6 +655,35 @@ class AutoDiffWhileRev
       }
   }
 
+  // forceAugmentedReturns gives each block nested in the augmented body of
+  // `orig` a shadow argument after each active mutable argument (e.g. the
+  // buffers of a jit_region). Checkpointing copies that body into primal-only
+  // recompute loops and erases it before any reverse rule gets to use the
+  // shadows, so the copies would keep arguments nothing provides. Drop them up
+  // front; reverse rules visiting the replayed body re-create what they need.
+  static void dropNestedShadowArgs(Operation *orig,
+                                   MGradientUtilsReverse *gutils) {
+    orig->walk([&](Block *blk) {
+      Block *nblk = gutils->getNewFromOriginal(blk);
+      if (nblk->getNumArguments() == blk->getNumArguments())
+        return;
+      for (BlockArgument val : llvm::reverse(blk->getArguments())) {
+        if (gutils->isConstantValue(val))
+          continue;
+        auto iface = dyn_cast<AutoDiffTypeInterface>(val.getType());
+        if (!iface || !iface.isMutable())
+          continue;
+        unsigned pos =
+            cast<BlockArgument>(gutils->getNewFromOriginal(val)).getArgNumber() +
+            1;
+        if (!nblk->getArgument(pos).use_empty())
+          continue;
+        nblk->eraseArgument(pos);
+        gutils->invertedPointers.erase(val);
+      }
+    });
+  }
+
   // arr[index:index+1, :, :, :] = val
   static Value setIndex(OpBuilder &builder, Value arr, Value index, Value val) {
     SmallVector<int64_t> updateShape{1};
@@ -1516,6 +1545,7 @@ public:
 
         if (needsCheckpointing(whileOp) ||
             needsBinomialCheckpointing(whileOp)) {
+          dropNestedShadowArgs(orig, gutils);
           Operation *scope = newWhile->getParentOp();
           if (auto caches = markScaffoldLoops(
                   scope, [&] { return tryCacheValues(whileOp, orig, gutils); }))
