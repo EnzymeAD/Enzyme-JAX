@@ -1869,6 +1869,11 @@ def ApplyGatherOfMaskedScatterPatterns : EnzymeHLOPatternOp<
   let patterns = ["GatherOfMaskedScatter"];
 }
 
+def ApplyGatherScatterConstantForwardPatterns : EnzymeHLOPatternOp<
+    "gather_scatter_constant_forward"> {
+  let patterns = ["GatherScatterConstantForward", "ScatterChainConstantToGather"];
+}
+
 def ApplyReduceTransposeSimplifyPatterns : EnzymeHLOPatternOp<
     "reduce_transpose_simplify"> {
   let patterns = ["ReduceTransposeSimplify"];

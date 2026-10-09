@@ -23737,6 +23737,329 @@ struct GatherOfMaskedScatter final
   }
 };
 
+// A chain of scatters, element by element at constant indices, that
+// overwrite (a kernel's per-lane scratch: the raising stores through it by
+// index tensors it knows, then loads it back the same way, and both become
+// scatters and gathers once the lanes are batched), read either by a
+// gather at constant indices or whole. Every element read is known: the
+// update of the last scatter in the chain writing it, or the chain's
+// input. The read becomes gathers of those directly, selected together
+// where there are several sources.
+namespace scatterchain {
+
+// Whether `op` reads one element per index tuple, each tuple of all
+// operand dimensions in order, the index vector dimension last.
+static bool elementwiseGather(stablehlo::GatherOp op) {
+  auto dims = op.getDimensionNumbers();
+  auto operandTy = cast<RankedTensorType>(op.getOperand().getType());
+  auto indicesTy = cast<RankedTensorType>(op.getStartIndices().getType());
+  int64_t rank = operandTy.getRank();
+  if (!dims.getOffsetDims().empty() || !dims.getOperandBatchingDims().empty() ||
+      !operandTy.hasStaticShape() || !indicesTy.hasStaticShape() ||
+      dims.getIndexVectorDim() != indicesTy.getRank() - 1 ||
+      indicesTy.getDimSize(indicesTy.getRank() - 1) != rank ||
+      (int64_t)dims.getCollapsedSliceDims().size() != rank ||
+      (int64_t)dims.getStartIndexMap().size() != rank)
+    return false;
+  for (int64_t d = 0; d < rank; d++)
+    if (dims.getCollapsedSliceDims()[d] != d ||
+        dims.getStartIndexMap()[d] != d || op.getSliceSizes()[d] != 1)
+      return false;
+  return true;
+}
+
+// Whether `op` writes one element per index tuple (as above), the update
+// taking the place of what was there, at constant indices.
+static bool elementwiseSetScatter(stablehlo::ScatterOp op,
+                                  DenseIntElementsAttr &indices) {
+  if (op.getInputs().size() != 1 ||
+      !isSetindexBlock(&op.getUpdateComputation().front()) ||
+      !matchPattern(op.getScatterIndices(), m_Constant(&indices)))
+    return false;
+  auto dims = op.getScatterDimensionNumbers();
+  auto operandTy = cast<RankedTensorType>(op.getInputs()[0].getType());
+  auto indicesTy = cast<RankedTensorType>(op.getScatterIndices().getType());
+  int64_t rank = operandTy.getRank();
+  if (!dims.getUpdateWindowDims().empty() ||
+      !dims.getInputBatchingDims().empty() || !operandTy.hasStaticShape() ||
+      !indicesTy.hasStaticShape() ||
+      dims.getIndexVectorDim() != indicesTy.getRank() - 1 ||
+      indicesTy.getDimSize(indicesTy.getRank() - 1) != rank ||
+      (int64_t)dims.getInsertedWindowDims().size() != rank ||
+      (int64_t)dims.getScatterDimsToOperandDims().size() != rank)
+    return false;
+  for (int64_t d = 0; d < rank; d++)
+    if (dims.getInsertedWindowDims()[d] != d ||
+        dims.getScatterDimsToOperandDims()[d] != d)
+      return false;
+  return true;
+}
+
+// The operand's linear index of each index tuple of `indices` (one tuple
+// per position, in order): clamped into range, or -1 out of it.
+static SmallVector<int64_t> linearIndices(DenseIntElementsAttr indices,
+                                          ArrayRef<int64_t> shape, bool clamp) {
+  int64_t rank = shape.size();
+  SmallVector<int64_t> linear;
+  auto values = indices.getValues<APInt>();
+  auto it = values.begin();
+  int64_t count = indices.getNumElements() / rank;
+  for (int64_t p = 0; p < count; p++) {
+    int64_t index = 0;
+    bool inRange = true;
+    for (int64_t d = 0; d < rank; d++, ++it) {
+      int64_t j = (*it).getSExtValue();
+      if (clamp)
+        j = std::min(std::max<int64_t>(j, 0), shape[d] - 1);
+      else if (j < 0 || j >= shape[d])
+        inRange = false;
+      index = index * shape[d] + j;
+    }
+    linear.push_back(inRange ? index : -1);
+  }
+  return linear;
+}
+
+// The chain `value` is, latest first, and the input it starts from. A link
+// is a scatter as above, or a select over a constant mask between a value
+// and the rest of the chain (what the forwarding itself makes of a chain
+// read whole, a later store then continuing it). Per link, the value it
+// takes its elements from and, per operand element it writes, the
+// position read in that value: a scatter's update at the update position,
+// a select's operand at the same position -- or, when that operand is a
+// gather at constant indices, the gathered value at the index read. (A
+// scatter writing one position twice ends the chain: which wins is not
+// defined.)
+struct Chain {
+  SmallVector<Operation *> links;
+  SmallVector<Value> sources;
+  SmallVector<DenseMap<int64_t, int64_t>> writes;
+  Value input;
+  bool hasScatter = false;
+};
+
+// Whether `value` is a gather at constant indices, element by element.
+static bool knownGather(Value value) {
+  auto gather = value.getDefiningOp<stablehlo::GatherOp>();
+  DenseIntElementsAttr indices;
+  return gather && elementwiseGather(gather) &&
+         matchPattern(gather.getStartIndices(), m_Constant(&indices));
+}
+
+static Chain chainOf(Value value) {
+  Chain chain;
+  while (Operation *op = value.getDefiningOp()) {
+    auto shape = cast<RankedTensorType>(value.getType()).getShape();
+    DenseMap<int64_t, int64_t> write;
+    if (auto scatter = dyn_cast<stablehlo::ScatterOp>(op)) {
+      DenseIntElementsAttr indices;
+      if (!elementwiseSetScatter(scatter, indices))
+        break;
+      bool unique = true;
+      for (auto [q, index] :
+           llvm::enumerate(linearIndices(indices, shape, /*clamp=*/false)))
+        if (index >= 0 && !write.try_emplace(index, q).second)
+          unique = false;
+      if (!unique)
+        break;
+      chain.links.push_back(op);
+      chain.sources.push_back(scatter.getUpdates()[0]);
+      chain.writes.push_back(std::move(write));
+      chain.hasScatter = true;
+      value = scatter.getInputs()[0];
+      continue;
+    }
+    auto select = dyn_cast<stablehlo::SelectOp>(op);
+    DenseElementsAttr mask;
+    if (!select || !matchPattern(select.getPred(), m_Constant(&mask)) ||
+        cast<RankedTensorType>(select.getPred().getType()).getShape() != shape)
+      break;
+    // The side taken where the mask holds is the link's, unless only the
+    // other side reads something at known positions.
+    Value taken = select.getOnTrue(), rest = select.getOnFalse();
+    bool takenWhere = true;
+    if (!knownGather(taken) && knownGather(rest)) {
+      std::swap(taken, rest);
+      takenWhere = false;
+    }
+    Value source = taken;
+    SmallVector<int64_t> positions;
+    if (knownGather(taken)) {
+      auto gather = taken.getDefiningOp<stablehlo::GatherOp>();
+      DenseIntElementsAttr indices;
+      (void)matchPattern(gather.getStartIndices(), m_Constant(&indices));
+      source = gather.getOperand();
+      positions = linearIndices(
+          indices, cast<RankedTensorType>(source.getType()).getShape(),
+          /*clamp=*/true);
+    }
+    for (auto [p, bit] : llvm::enumerate(mask.getValues<bool>()))
+      if (bit == takenWhere)
+        write[p] = positions.empty() ? (int64_t)p : positions[p];
+    chain.links.push_back(op);
+    chain.sources.push_back(source);
+    chain.writes.push_back(std::move(write));
+    value = rest;
+  }
+  chain.input = value;
+  return chain;
+}
+
+// The value of the reads `reads` (operand linear indices, one per
+// position of `batchShape`) of the chain: gathers of the sources written
+// last, selected over `unwritten` (a value of the result's type for the
+// positions no link wrote).
+static Value forward(PatternRewriter &rewriter, Location loc,
+                     const Chain &chain, ArrayRef<int64_t> reads,
+                     ArrayRef<int64_t> batchShape, RankedTensorType resultTy,
+                     function_ref<Value()> unwritten) {
+  SmallVector<int64_t> sourceOf(reads.size(), -1), positionIn(reads.size());
+  SmallVector<bool> used(chain.links.size(), false);
+  bool anyUnwritten = false;
+  for (auto [p, index] : llvm::enumerate(reads)) {
+    for (auto [n, write] : llvm::enumerate(chain.writes)) {
+      auto found = write.find(index);
+      if (found != write.end()) {
+        sourceOf[p] = n;
+        positionIn[p] = found->second;
+        used[n] = true;
+        break;
+      }
+    }
+    anyUnwritten |= sourceOf[p] < 0;
+  }
+  // The gather of a link's source at the positions it is the source of
+  // (any position elsewhere).
+  auto gatherFrom = [&](Value source, int64_t n) -> Value {
+    auto ty = cast<RankedTensorType>(source.getType());
+    int64_t rank = ty.getRank();
+    SmallVector<int64_t> idxShape(batchShape);
+    idxShape.push_back(rank);
+    SmallVector<int64_t> values;
+    for (auto [p, src] : llvm::enumerate(sourceOf)) {
+      int64_t linear = src == n ? positionIn[p] : 0;
+      SmallVector<int64_t> tuple(rank);
+      for (int64_t d = rank - 1; d >= 0; d--) {
+        tuple[d] = linear % ty.getDimSize(d);
+        linear /= ty.getDimSize(d);
+      }
+      values.append(tuple);
+    }
+    auto idxTy = RankedTensorType::get(idxShape, rewriter.getI64Type());
+    Value indices = stablehlo::ConstantOp::create(
+        rewriter, loc, DenseIntElementsAttr::get(idxTy, values));
+    SmallVector<int64_t> all(rank), ones(rank, 1);
+    std::iota(all.begin(), all.end(), 0);
+    auto dims = stablehlo::GatherDimensionNumbersAttr::get(
+        rewriter.getContext(), /*offsetDims=*/{}, /*collapsedSliceDims=*/all,
+        /*operandBatchingDims=*/{}, /*startIndicesBatchingDims=*/{},
+        /*startIndexMap=*/all, /*indexVectorDim=*/(int64_t)batchShape.size());
+    return stablehlo::GatherOp::create(rewriter, loc, resultTy, source, indices,
+                                       dims,
+                                       rewriter.getDenseI64ArrayAttr(ones),
+                                       /*indicesAreSorted=*/false);
+  };
+  Value result = anyUnwritten ? unwritten() : nullptr;
+  for (auto [n, source] : llvm::enumerate(chain.sources)) {
+    if (!used[n])
+      continue;
+    Value fromSource = gatherFrom(source, n);
+    if (!result) {
+      result = fromSource;
+      continue;
+    }
+    SmallVector<bool> mask;
+    for (int64_t src : sourceOf)
+      mask.push_back(src == (int64_t)n);
+    auto maskTy = RankedTensorType::get(batchShape, rewriter.getI1Type());
+    Value maskCst = stablehlo::ConstantOp::create(
+        rewriter, loc, DenseElementsAttr::get(maskTy, mask));
+    result =
+        stablehlo::SelectOp::create(rewriter, loc, maskCst, fromSource, result);
+  }
+  return result;
+}
+
+} // namespace scatterchain
+
+// gather(chain) at constant indices: the reads forwarded, the unwritten
+// positions read from the chain's input by the same gather.
+struct GatherScatterConstantForward final
+    : CheckedOpRewritePattern<stablehlo::GatherOp,
+                              GatherScatterConstantForward> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
+    using namespace scatterchain;
+    DenseIntElementsAttr gatherIndices;
+    if (!elementwiseGather(op) ||
+        !matchPattern(op.getStartIndices(), m_Constant(&gatherIndices)))
+      return failure();
+    Chain chain = chainOf(op.getOperand());
+    if (chain.links.empty())
+      return failure();
+    auto operandTy = cast<RankedTensorType>(op.getOperand().getType());
+    auto resultTy = cast<RankedTensorType>(op.getType());
+    auto indicesTy = cast<RankedTensorType>(op.getStartIndices().getType());
+    SmallVector<int64_t> batchShape(indicesTy.getShape().drop_back());
+    auto reads = linearIndices(gatherIndices, operandTy.getShape(),
+                               /*clamp=*/true);
+    Value result = forward(rewriter, op.getLoc(), chain, reads, batchShape,
+                           resultTy, [&]() -> Value {
+                             return stablehlo::GatherOp::create(
+                                 rewriter, op.getLoc(), resultTy, chain.input,
+                                 op.getStartIndices(), op.getDimensionNumbers(),
+                                 op.getSliceSizes(), op.getIndicesAreSorted());
+                           });
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
+// The top of a chain (a scatter no further such scatter continues), read
+// otherwise than by a gather at constant indices: the whole of it
+// forwarded, the unwritten positions the chain's input. A lone scatter
+// into a value that is not a constant is left as it is: it updates in
+// place, where the select would read the whole of its input.
+struct ScatterChainConstantToGather final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp,
+                              ScatterChainConstantToGather> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
+    using namespace scatterchain;
+    // (a chain of selects only is what this makes of one: left as it is)
+    Chain chain = chainOf(op.getResult(0));
+    if (chain.links.empty() || chain.links.front() != op.getOperation() ||
+        !chain.hasScatter)
+      return failure();
+    if (chain.links.size() == 1 && !matchPattern(chain.input, m_Constant()))
+      return failure();
+    for (Operation *user : op->getUsers()) {
+      DenseIntElementsAttr indices;
+      if (auto scatter = dyn_cast<stablehlo::ScatterOp>(user))
+        if (elementwiseSetScatter(scatter, indices) &&
+            scatter.getInputs()[0] == op.getResult(0))
+          return failure(); // the chain goes on
+      if (auto gather = dyn_cast<stablehlo::GatherOp>(user))
+        if (elementwiseGather(gather) &&
+            matchPattern(gather.getStartIndices(), m_Constant(&indices)))
+          return failure(); // forwarded through the gather instead
+    }
+    auto operandTy = cast<RankedTensorType>(op.getType(0));
+    int64_t numElements = operandTy.getNumElements();
+    SmallVector<int64_t> reads(numElements);
+    std::iota(reads.begin(), reads.end(), 0);
+    Value result =
+        forward(rewriter, op.getLoc(), chain, reads, operandTy.getShape(),
+                operandTy, [&]() { return chain.input; });
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
 struct ScatterIndicesAreUnique
     : public CheckedOpRewritePattern<stablehlo::ScatterOp,
                                      ScatterIndicesAreUnique> {
@@ -39382,6 +39705,8 @@ struct EnzymeHLOOptPass
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique, ScatterOutOfBoundsNoop,
         GatherOfMaskedScatter,
+        GatherScatterConstantForward,
+        ScatterChainConstantToGather,
         ReduceTransposeSimplify,
         WhileScatterAccumulatorNoAdd,
         BroadcastIotaSimplify,
