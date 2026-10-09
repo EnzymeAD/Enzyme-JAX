@@ -110,6 +110,49 @@ static bool isConstantInt(Value v, int64_t c) {
   return matchPattern(v, m_ConstantInt(&cst)) && cst.getSExtValue() == c;
 }
 
+// Adds `scale * v` to `terms` and `constant`, reading through addi, subi and
+// multiplications by a constant; anything else is a term of its own.
+static void addLinearTerms(Value v, int64_t scale,
+                           llvm::SmallDenseMap<Value, int64_t> &terms,
+                           int64_t &constant) {
+  APInt cst;
+  if (matchPattern(v, m_ConstantInt(&cst))) {
+    constant += scale * cst.getSExtValue();
+    return;
+  }
+  if (auto add = v.getDefiningOp<AddIOp>()) {
+    addLinearTerms(add.getLhs(), scale, terms, constant);
+    addLinearTerms(add.getRhs(), scale, terms, constant);
+    return;
+  }
+  if (auto sub = v.getDefiningOp<SubIOp>()) {
+    addLinearTerms(sub.getLhs(), scale, terms, constant);
+    addLinearTerms(sub.getRhs(), -scale, terms, constant);
+    return;
+  }
+  if (auto mul = v.getDefiningOp<MulIOp>()) {
+    for (unsigned i = 0; i < 2; ++i)
+      if (matchPattern(mul->getOperand(i), m_ConstantInt(&cst))) {
+        addLinearTerms(mul->getOperand(1 - i), scale * cst.getSExtValue(),
+                       terms, constant);
+        return;
+      }
+  }
+  terms[v] += scale;
+}
+
+// Whether `v` computes `sign * x + c`. The expansion writes the arms of a
+// lowered division as `-1 - x` or `x - 1`, but a canonicalization after it
+// folds them into x's own arithmetic: with x = 1 - c, `-1 - x` is `c - 2`.
+static bool isLinearIn(Value v, Value x, int64_t sign, int64_t c) {
+  llvm::SmallDenseMap<Value, int64_t> terms;
+  int64_t constant = 0;
+  addLinearTerms(v, 1, terms, constant);
+  addLinearTerms(x, -sign, terms, constant);
+  return constant == c &&
+         llvm::all_of(terms, [](auto &term) { return term.second == 0; });
+}
+
 static LoweredDiv matchLoweredDiv(Value v, Value &lhs, Value &rhs) {
   auto sel = v.getDefiningOp<SelectOp>();
   if (!sel)
@@ -137,11 +180,8 @@ static LoweredDiv matchLoweredDiv(Value v, Value &lhs, Value &rhs) {
       return LoweredDiv::None;
     auto dividend = quotient.getLhs().getDefiningOp<SelectOp>();
     if (!dividend || dividend.getCondition() != cmp.getResult() ||
-        dividend.getFalseValue() != x)
-      return LoweredDiv::None;
-    auto negated = dividend.getTrueValue().getDefiningOp<SubIOp>();
-    if (!negated || !isConstantInt(negated.getLhs(), -1) ||
-        negated.getRhs() != x)
+        dividend.getFalseValue() != x ||
+        !isLinearIn(dividend.getTrueValue(), x, -1, -1))
       return LoweredDiv::None;
     lhs = x;
     rhs = quotient.getRhs();
@@ -159,13 +199,9 @@ static LoweredDiv matchLoweredDiv(Value v, Value &lhs, Value &rhs) {
     if (!quotient || incrementedQuotient.getLhs() != quotient.getResult())
       return LoweredDiv::None;
     auto dividend = quotient.getLhs().getDefiningOp<SelectOp>();
-    if (!dividend || dividend.getCondition() != cmp.getResult())
-      return LoweredDiv::None;
-    auto negated = dividend.getTrueValue().getDefiningOp<SubIOp>();
-    auto decremented = dividend.getFalseValue().getDefiningOp<SubIOp>();
-    if (!negated || !decremented || !isConstantInt(negated.getLhs(), 0) ||
-        negated.getRhs() != x || decremented.getLhs() != x ||
-        !isConstantInt(decremented.getRhs(), 1))
+    if (!dividend || dividend.getCondition() != cmp.getResult() ||
+        !isLinearIn(dividend.getTrueValue(), x, -1, 0) ||
+        !isLinearIn(dividend.getFalseValue(), x, 1, -1))
       return LoweredDiv::None;
     lhs = x;
     rhs = quotient.getRhs();
