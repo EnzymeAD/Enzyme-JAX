@@ -24,13 +24,13 @@ module {
     %k = tessera.call @lib.stiffness(%n) : (i64) -> !mat
 
     // Both terms are SPD, and so is the sum.
-    // CHECK: %[[S:.*]] = tessera.call @lib.add(%[[A]], %[[B]]) {arg_attrs = [{tessera.property = ["SPD"]}, {tessera.property = ["SPD"]}]}
-    // CHECK: tessera.call @lib.use(%[[S]]) {arg_attrs = [{tessera.property = ["SPD"]}]}
+    // CHECK: %[[S:.*]] = tessera.call @lib.add(%[[A]], %[[B]]) <arg_attrs = [{tessera.property = ["SPD"]}, {tessera.property = ["SPD"]}]>
+    // CHECK: tessera.call @lib.use(%[[S]]) <arg_attrs = [{tessera.property = ["SPD"]}]>
     %s = tessera.call @lib.add(%a, %b) : (!mat, !mat) -> !mat
     %u1 = tessera.call @lib.use(%s) : (!mat) -> f64
 
     // One term is not known to be SPD, so the sum is not either.
-    // CHECK: %[[T:.*]] = tessera.call @lib.add(%[[A]], %[[K]]) {arg_attrs = [{tessera.property = ["SPD"]}, {}]}
+    // CHECK: %[[T:.*]] = tessera.call @lib.add(%[[A]], %[[K]]) <arg_attrs = [{tessera.property = ["SPD"]}, {}]>
     // CHECK: tessera.call @lib.use(%[[T]]) :
     %t = tessera.call @lib.add(%a, %k) : (!mat, !mat) -> !mat
     %u2 = tessera.call @lib.use(%t) : (!mat) -> f64
@@ -50,7 +50,7 @@ module {
   tessera.define private @petsc.solve(!llvm.ptr) -> i32 attributes {argModes = [unit], pure = false}
 
   // CHECK-LABEL: llvm.func @assumed
-  // CHECK: tessera.call @lib.use(%{{.*}}) {arg_attrs = [{tessera.property = ["SPD"]}]}
+  // CHECK: tessera.call @lib.use(%{{.*}}) <arg_attrs = [{tessera.property = ["SPD"]}]>
   llvm.func @assumed(%M: !llvm.ptr {tessera.property = ["SPD"]}) -> f64 {
     %m = llvm.load %M : !llvm.ptr -> !mat
     %r = tessera.call @lib.use(%m) : (!mat) -> f64
@@ -59,7 +59,7 @@ module {
 
   // A handle is passed as it is, so the fact is of the handle.
   // CHECK-LABEL: llvm.func @assumed_handle
-  // CHECK: tessera.call @petsc.solve(%arg0) {arg_attrs = [{tessera.property = ["SPD"]}]}
+  // CHECK: tessera.call @petsc.solve(%arg0) <arg_attrs = [{tessera.property = ["SPD"]}]>
   llvm.func @assumed_handle(%A: !llvm.ptr {tessera.property = ["SPD"]}) -> i32 {
     %r = tessera.call @petsc.solve(%A) : (!llvm.ptr) -> i32
     llvm.return %r : i32
