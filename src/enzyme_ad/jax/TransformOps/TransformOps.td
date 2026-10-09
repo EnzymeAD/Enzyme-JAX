@@ -2623,6 +2623,10 @@ def ConcatWrap : EnzymeHLOPatternOp<
   let patterns = ["ConcatWrap"];
 }
 
+def ConcatRotate : EnzymeHLOPatternOp<"concat_rotate"> {
+  let patterns = ["ConcatRotate"];
+}
+
 def WidenWrap : EnzymeHLOPatternOp<
     "widen_wrap"> {
   let patterns = ["WidenWrap"];
