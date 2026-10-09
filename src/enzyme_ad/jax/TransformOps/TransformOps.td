@@ -2629,6 +2629,10 @@ def RotatePad : EnzymeHLOPatternOp<
   let patterns = ["RotatePad"];
 }
 
+def RotateRotate : EnzymeHLOPatternOp<"rotate_rotate"> {
+  let patterns = ["RotateRotate"];
+}
+
 def ConcatToOneDimDUS : EnzymeHLOPatternOp<
     "concat_to_onedim_dus"> {
   let patterns = ["ConcatToOneDimDUS"];
