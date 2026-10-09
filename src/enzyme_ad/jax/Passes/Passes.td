@@ -682,7 +682,7 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
 }
 
 def FuseJITPass : Pass<"fuse-jit", "mlir::ModuleOp"> {
-  let summary = "Fuse JIT calls using dependency or generalized strategy";
+  let summary = "Fuse JIT calls";
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect",
     "LLVM::LLVMDialect",
@@ -696,11 +696,17 @@ def FuseJITPass : Pass<"fuse-jit", "mlir::ModuleOp"> {
         /*default=*/"false",
         /*description=*/"Use top down traversal">,
     Option<
-        /*C++ variable name=*/"generalized",
-        /*CLI argument=*/"generalized",
+        /*C++ variable name=*/"dag",
+        /*CLI argument=*/"dag",
         /*type=*/"bool",
         /*default=*/"false",
-        /*description=*/"Fuse JIT calls using generalized strategy">
+        /*description=*/"Fuse JIT calls connected by data dependency">,
+    Option<
+        /*C++ variable name=*/"adjacent",
+        /*CLI argument=*/"adjacent",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Fuse adjacent JIT calls">,
     ];
 }
 

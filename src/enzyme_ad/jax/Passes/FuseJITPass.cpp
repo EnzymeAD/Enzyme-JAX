@@ -215,9 +215,9 @@ LogicalResult validateFusionExtension(
   return success();
 }
 
+// Scan forward in block order, allowing effect-free non-JIT ops between
+// calls. Keep the longest supported prefix with effects or escaping results.
 JITFusionInfo collectGeneralizedFusionInfo(enzymexla::JITCallOp firstCall) {
-  // Scan forward in block order, allowing effect-free non-JIT ops between
-  // calls. Keep the longest supported prefix with effects or escaping results.
   JITFusionInfo info;
   DominanceInfo dominance;
   if (!dominance.hasSSADominance(firstCall->getBlock()))
@@ -577,18 +577,26 @@ LogicalResult rewriteFusion(enzymexla::JITCallOp firstCall,
 // fuses SSA-connected calls
 struct FuseDAG : public OpRewritePattern<enzymexla::JITCallOp> {
   using OpRewritePattern<enzymexla::JITCallOp>::OpRewritePattern;
-
-  bool generalized;
-  FuseDAG(bool generalized, MLIRContext *context, PatternBenefit benefit = 1)
-      : OpRewritePattern<enzymexla::JITCallOp>(context, benefit),
-        generalized(generalized) {}
   void initialize() { setHasBoundedRewriteRecursion(); }
 
   LogicalResult matchAndRewrite(enzymexla::JITCallOp jitCallOp,
                                 PatternRewriter &rewriter) const override {
     JITFusionInfo fusionInfo = collectDependencyFusionInfo(jitCallOp);
-    if (fusionInfo.fusionCalls.size() < 2 ||
-        (generalized && fusionInfo.fusionCalls.front() != jitCallOp))
+    if (fusionInfo.fusionCalls.size() < 2)
+      return failure();
+    return rewriteFusion(jitCallOp, rewriter, fusionInfo);
+  }
+};
+
+// fuses adjacent jit_calls
+struct FuseAdjacent : public OpRewritePattern<enzymexla::JITCallOp> {
+  using OpRewritePattern<enzymexla::JITCallOp>::OpRewritePattern;
+  void initialize() { setHasBoundedRewriteRecursion(); }
+
+  LogicalResult matchAndRewrite(enzymexla::JITCallOp jitCallOp,
+                                PatternRewriter &rewriter) const override {
+    JITFusionInfo fusionInfo = collectGeneralizedFusionInfo(jitCallOp);
+    if (fusionInfo.fusionCalls.size() < 2)
       return failure();
     return rewriteFusion(jitCallOp, rewriter, fusionInfo);
   }
@@ -601,7 +609,8 @@ struct FuseJITPass : public impl::FuseJITPassBase<FuseJITPass> {
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<FuseDAG>(generalized, context);
+    if (dag) patterns.add<FuseDAG>(context);
+    if (adjacent) patterns.add<FuseAdjacent>(context);
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(top_down);
