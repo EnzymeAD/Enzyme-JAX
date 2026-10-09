@@ -574,20 +574,21 @@ LogicalResult rewriteFusion(enzymexla::JITCallOp firstCall,
   return success();
 }
 
-struct FuseJITPattern : public OpRewritePattern<enzymexla::JITCallOp> {
-  using Collector = JITFusionInfo (*)(enzymexla::JITCallOp);
+// fuses SSA-connected calls
+struct FuseDAG : public OpRewritePattern<enzymexla::JITCallOp> {
+  using OpRewritePattern<enzymexla::JITCallOp>::OpRewritePattern;
 
-  Collector collector;
-  FuseJITPattern(MLIRContext *context, Collector collector)
-      : OpRewritePattern<enzymexla::JITCallOp>(context), collector(collector) {}
-
+  bool generalized;
+  FuseDAG(bool generalized, MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern<enzymexla::JITCallOp>(context, benefit),
+        generalized(generalized) {}
   void initialize() { setHasBoundedRewriteRecursion(); }
 
   LogicalResult matchAndRewrite(enzymexla::JITCallOp jitCallOp,
                                 PatternRewriter &rewriter) const override {
-    JITFusionInfo fusionInfo = collector(jitCallOp);
+    JITFusionInfo fusionInfo = collectDependencyFusionInfo(jitCallOp);
     if (fusionInfo.fusionCalls.size() < 2 ||
-        fusionInfo.fusionCalls.front() != jitCallOp)
+        (generalized && fusionInfo.fusionCalls.front() != jitCallOp))
       return failure();
     return rewriteFusion(jitCallOp, rewriter, fusionInfo);
   }
@@ -600,22 +601,10 @@ struct FuseJITPass : public impl::FuseJITPassBase<FuseJITPass> {
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
 
-    FuseJITPattern::Collector collector;
-    if (strategy == "generalized") {
-      collector = collectGeneralizedFusionInfo;
-    } else if (strategy == "dependencies") {
-      collector = collectDependencyFusionInfo;
-    } else {
-      getOperation().emitError()
-          << "unknown fuse-jit strategy '" << strategy
-          << "' (expected 'dependencies' or 'generalized')";
-      signalPassFailure();
-      return;
-    }
-    patterns.add<FuseJITPattern>(context, collector);
+    patterns.add<FuseDAG>(generalized, context);
 
     GreedyRewriteConfig config;
-    config.setUseTopDownTraversal(true);
+    config.setUseTopDownTraversal(top_down);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {
       signalPassFailure();
