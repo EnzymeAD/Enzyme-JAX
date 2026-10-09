@@ -374,7 +374,7 @@ void generateLoopIterFuncs(Operation *moduleOp) {
 
         // Emit the exclusive sum
         builder.setInsertionPoint(
-            iterCountWrapper->getParentOfType<FunctionOpInterface>());
+            wrapperOp->getParentOfType<FunctionOpInterface>());
         auto ptrType = LLVM::LLVMPointerType::get(builder.getContext());
         auto funcType =
             builder.getFunctionType({builder.getI32Type(), ptrType}, {});
@@ -382,7 +382,8 @@ void generateLoopIterFuncs(Operation *moduleOp) {
             builder, wrapperOp.getLoc(), "cubDeviceExclusiveSum", funcType);
         exclSumFunc.setPrivate();
 
-        builder.setInsertionPointAfter(iterCountWrapper);
+        // builder.setInsertionPointAfter(iterCountWrapper);
+        builder.setInsertionPoint(wrapperOp);
         Value totalI32 = arith::IndexCastOp::create(
             builder, loc, builder.getI32Type(), total);
         Value deviceIndicesPtr = enzymexla::Memref2PointerOp::create(
@@ -395,16 +396,6 @@ void generateLoopIterFuncs(Operation *moduleOp) {
         Value lastIdx = arith::SubIOp::create(builder, loc, total, c1);
         lastIdx = arith::IndexCastOp::create(builder, loc, builder.getI64Type(),
                                              lastIdx);
-        // auto subviewType = memref::SubViewOp::inferRankReducedResultType(
-        //     /*resultShape=*/{}, deviceIndices.getMemref().getType(),
-        //     {ShapedType::kDynamic}, {1}, {1});
-        // llvm::errs() << "subview type: " << subviewType << "\n";
-        // SmallVector<OpFoldResult> offsets = {lastIdx};
-        // SmallVector<OpFoldResult> sizes = {builder.getIndexAttr(1)};
-        // SmallVector<OpFoldResult> strides = {builder.getIndexAttr(1)};
-        // auto subviewOp = memref::SubViewOp::create(builder, loc, subviewType,
-        //                                            deviceIndices.getMemref(),
-        //                                            offsets, sizes, strides);
         Value gepRes = LLVM::GEPOp::create(
             builder, loc, ptrType, builder.getI32Type(), deviceIndicesPtr,
             lastIdx, LLVM::GEPNoWrapFlags::inbounds);
@@ -461,12 +452,25 @@ void generateLoopIterFuncs(Operation *moduleOp) {
             auto newLoad = memref::LoadOp::create(rewriter, loc,
                                                   gpuAlloc.getMemref(), idx);
             rewriter.replaceOp(loadOp, newLoad);
+          } else if (auto deallocOp =
+                         dyn_cast<memref::DeallocOp>(use.getOwner())) {
+            OpBuilder::InsertionGuard guard(rewriter);
+            rewriter.setInsertionPointAfter(wrapperOp);
+            gpu::DeallocOp::create(rewriter, deallocOp.getLoc(),
+                                   /*resultTypes=*/TypeRange(),
+                                   /*asyncDependencies=*/ValueRange(),
+                                   gpuAlloc.getMemref());
+            rewriter.eraseOp(deallocOp);
+          } else {
+            llvm::errs() << "[debug] found use of alloc op: " << *use.getOwner()
+                         << "\n";
           }
         };
         for (OpOperand &use :
              llvm::make_early_inc_range(allocOp.getMemref().getUses())) {
           visit(use);
         }
+        allocOp.erase();
       }
     });
   });
