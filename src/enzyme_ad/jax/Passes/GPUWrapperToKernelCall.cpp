@@ -259,8 +259,7 @@ struct GPUWrapperToKernelCallPass
         SymbolRefAttr::get(fn.getSymNameAttr()), gridx, gridy, gridz, blockx,
         blocky, blockz, shmem, clusterx, clustery, clusterz, operands,
         /*backend_config=*/builder.getStringAttr(""),
-        /*operand_layouts=*/nullptr, /*result_layouts=*/nullptr,
-        /*arg_attrs=*/nullptr, /*res_attrs=*/nullptr,
+        /*operand_layouts=*/nullptr, /*arg_attrs=*/nullptr, /*res_attrs=*/nullptr,
         ArrayAttr::get(ctx, aliases), /*xla_side_effect_free=*/nullptr);
   }
 
