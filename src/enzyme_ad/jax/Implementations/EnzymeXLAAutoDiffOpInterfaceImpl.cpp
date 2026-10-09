@@ -381,6 +381,14 @@ static Attribute getDefaultLayout(Builder &builder, Type type) {
       llvm::to_vector(llvm::reverse(llvm::seq<int64_t>(0, rank))));
 }
 
+// The output_operand_aliases of a jit_region with `numInputs` inputs whose
+// result `i` is read from the buffer of the input `i`.
+static ArrayAttr getOneResultPerInputAliases(MLIRContext *context,
+                                             unsigned numInputs) {
+  return JITRegionOp::buildOutputOperandAliases(
+      context, llvm::to_vector(llvm::seq<int64_t>(0, numInputs)));
+}
+
 // The result of a jit_region rebuilt by rebuildJITRegion standing for the
 // result `result` of the original region.
 static OpResult getRebuiltResult(JITRegionOp rebuilt, OpResult result) {
@@ -395,7 +403,8 @@ static JITRegionOp rebuildJITRegion(RewriterBase &rewriter, JITRegionOp region,
                                     ValueRange inputs,
                                     ArrayRef<Attribute> layouts) {
   NamedAttrList attrs(region->getAttrDictionary());
-  attrs.erase(region.getOutputOperandAliasesAttrName());
+  attrs.set(region.getOutputOperandAliasesAttrName(),
+            getOneResultPerInputAliases(rewriter.getContext(), inputs.size()));
   if (region.getOperandLayoutsAttr()) {
     assert(layouts.size() == inputs.size() && "expected a layout per input");
     attrs.set(region.getOperandLayoutsAttrName(),
@@ -489,8 +498,13 @@ struct JITRegionOpInterfaceReverse
       shadowLocs.push_back(arg.getLoc());
     }
 
-    auto revRegion = JITRegionOp::create(builder, region.getLoc(),
-                                         ValueRange(seeds).getTypes(), seeds);
+    NamedAttrList revAttrs;
+    revAttrs.set(
+        region.getOutputOperandAliasesAttrName(),
+        getOneResultPerInputAliases(builder.getContext(), seeds.size()));
+    auto revRegion =
+        JITRegionOp::create(builder, region.getLoc(),
+                            ValueRange(seeds).getTypes(), seeds, revAttrs);
     // The kernels index a shadow like its primal buffer.
     if (region.getOperandLayoutsAttr()) {
       SmallVector<Attribute> layouts;
@@ -582,6 +596,11 @@ struct JITRegionOpInterfaceReverse
     }
     augmented.setOperandAttrsAttr(rewriter.getArrayAttr(operandAttrs));
 
+    SmallVector<Value> replacements =
+        llvm::map_to_vector(newRegion.getResults(), [&](OpResult result) {
+          return Value(getRebuiltResult(augmented, result));
+        });
+    gutils->replaceOrigOpWith(op, replacements);
     gutils->originalToNewFnOps[op] = augmented;
     gutils->erase(newRegion);
     return success();
@@ -800,8 +819,8 @@ struct JITRegionOpEnzymeOpsRemover
 
     // The pop of a cached buffer in the reverse region becomes its new buffer.
     for (CacheInfo info : bufferCaches) {
-      BlockArgument arg = revBody->addArgument(info.popOp.getType(),
-                                               info.popOp.getLoc());
+      BlockArgument arg =
+          revBody->addArgument(info.popOp.getType(), info.popOp.getLoc());
       revLayouts.push_back(getDefaultLayout(rewriter, getTensorType(arg)));
       // The region owns its buffers: the reverse region no longer frees the
       // buffer the augmented one allocated.

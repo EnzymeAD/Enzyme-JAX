@@ -63,53 +63,6 @@ static void printAsyncDependencies(mlir::OpAsmPrinter &printer,
   printer << llvm::interleaved_array(asyncDependencies);
 }
 
-/// Parses the inputs of a jit_region, each optionally followed by its
-/// dictionary of attributes.
-///   `(` (ssa-id attr-dict?)* `)`
-static llvm::ParseResult parseJITRegionInputs(
-    mlir::OpAsmParser &parser,
-    llvm::SmallVectorImpl<mlir::OpAsmParser::UnresolvedOperand> &inputs,
-    mlir::ArrayAttr &operandAttrs) {
-  using namespace mlir;
-  SmallVector<Attribute> attrs;
-  bool anyAttrs = false;
-  if (parser.parseCommaSeparatedList(
-          OpAsmParser::Delimiter::Paren, [&]() -> ParseResult {
-            if (parser.parseOperand(inputs.emplace_back()))
-              return failure();
-            NamedAttrList attrList;
-            if (parser.parseOptionalAttrDict(attrList))
-              return failure();
-            anyAttrs |= !attrList.empty();
-            attrs.push_back(attrList.getDictionary(parser.getContext()));
-            return success();
-          }))
-    return failure();
-  if (anyAttrs)
-    operandAttrs = parser.getBuilder().getArrayAttr(attrs);
-  return success();
-}
-
-/// Prints the inputs of a jit_region, each followed by its non-empty
-/// dictionary of attributes.
-static void printJITRegionInputs(mlir::OpAsmPrinter &printer,
-                                 mlir::Operation *op,
-                                 mlir::OperandRange inputs,
-                                 mlir::ArrayAttr operandAttrs) {
-  printer << '(';
-  llvm::interleaveComma(llvm::enumerate(inputs), printer, [&](auto it) {
-    printer.printOperand(it.value());
-    if (operandAttrs && it.index() < operandAttrs.size())
-      if (auto dict = llvm::dyn_cast<mlir::DictionaryAttr>(
-              operandAttrs[it.index()]);
-          dict && !dict.empty()) {
-        printer << ' ';
-        printer.printAttributeWithoutType(dict);
-      }
-  });
-  printer << ')';
-}
-
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAOps.cpp.inc"
 
