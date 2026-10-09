@@ -1384,24 +1384,53 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
 }
 
 def XLAMegakernelizePass : Pass<"xla-megakernelize", "ModuleOp"> {
-  let summary = "Fuse sequential XLA wrappers";
+  let summary = "Fuse XLA wrappers and move host loops into XLA";
   let description = [{
-    Fuse compatible sequential enzymexla.xla_wrapper operations. The fused
-    wrapper takes the union of their inputs and threads updated tensor state
-    through equal buffer identities. Distinct inputs keep separate tensor
-    state. Skip wrappers that still have duplicate inputs. Apply the registered
-    XLA wrapper canonicalization patterns.
+    Combine compatible sequential enzymexla.xla_wrapper calls into one call.
+    Operations between the calls must have no memory effects. Use one tensor
+    state for each shared buffer. Pass the updated state from the first
+    computation to the second computation. Keep separate state for other
+    buffers. Do not fuse a call that still has duplicate buffer inputs.
+    Also apply the registered XLA wrapper canonicalization patterns.
 
-    New inputs must dominate the first wrapper. Argument and result metadata
-    and specialized scalar inputs are not composed.
+    All inputs to the combined call must be available before the first call.
+    Put specialized scalar inputs after the buffer inputs, in call order.
+    Add the specialized input counts. Do not return results for these scalars.
+    Do not combine calls with argument or result metadata.
 
-    The resulting function is compiled as one XLA program. Fusion into GPU
-    kernels remains a backend decision.
+    Replace an scf.for or affine.for with one XLA wrapper call. Put a
+    stablehlo.while in the new function to execute the loop. The host loop
+    must have one body block, no results, and an unused induction variable.
+    Its body must contain exactly one wrapper call. Other body operations
+    must have no regions and must be pure. These operations must be safe to
+    execute even when the loop has zero iterations. Move them before the
+    new wrapper call. The called StableHLO function must have one body block.
+
+    Pass the induction variable and updated tensors to the next iteration.
+    Read the upper bound, step, and specialized scalars from the new function's
+    entry block. Do not pass them as loop state. Put constant bounds and steps
+    directly in the new function.
+
+    Use module-owned device storage for each dynamic bound or step. Later
+    lowering passes allocate this storage at module initialization and free
+    it at module finalization. Copy the current value to this storage before
+    each call. Calls to the same loop must not overlap because they share
+    this storage.
+
+    Keep function references in the same symbol scope. Preserve the wrapper
+    and function attributes. Add empty argument and result attributes for
+    new bound buffers. Keep specialized inputs and their attributes at the end
+    of the input list. Do not add results for specialized inputs.
+
+    Compile the new function as one XLA program. The XLA backend determines
+    the number of GPU kernels.
   }];
   let dependentDialects = [
+    "arith::ArithDialect",
     "enzymexla::EnzymeXLADialect",
     "func::FuncDialect",
     "memref::MemRefDialect",
+    "scf::SCFDialect",
     "stablehlo::StablehloDialect",
   ];
 }

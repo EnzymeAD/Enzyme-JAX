@@ -53,6 +53,18 @@ using namespace mlir::arith;
 namespace mlir {
 namespace enzyme {
 
+Block *getAllocaBlock(Operation *op) {
+  Operation *currentOp = op;
+  while (Operation *parentOp = currentOp->getParentOp()) {
+    if (parentOp->mightHaveTrait<OpTrait::IsIsolatedFromAbove>() ||
+        parentOp->mightHaveTrait<OpTrait::AutomaticAllocationScope>()) {
+      return &currentOp->getParentRegion()->front();
+    }
+    currentOp = parentOp;
+  }
+  return nullptr;
+}
+
 void commonLowerUpdateWithoutCorners(enzymexla::UpdateWithoutCornersOp extend,
                                      PatternRewriter &rewriter) {
 

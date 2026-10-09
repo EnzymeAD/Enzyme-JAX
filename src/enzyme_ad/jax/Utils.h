@@ -60,6 +60,10 @@
 namespace mlir {
 namespace enzyme {
 
+/// Get the entry block of the nearest enclosing allocation scope or isolated
+/// operation. Return nullptr if there is no such operation.
+Block *getAllocaBlock(Operation *op);
+
 llvm::Expected<void *> lookupSymbol(const char *name);
 extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
                                                       void *symbol);
