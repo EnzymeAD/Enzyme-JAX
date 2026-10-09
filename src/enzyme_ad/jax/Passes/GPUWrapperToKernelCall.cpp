@@ -243,11 +243,16 @@ struct GPUWrapperToKernelCallPass
     }
 
     MLIRContext *ctx = launch.getContext();
+    // Result i aliases operand i; a single result is indexed with `[]`.
     SmallVector<Attribute> aliases;
-    for (unsigned i = 0, e = operands.size(); i < e; ++i)
+    for (unsigned i = 0, e = operands.size(); i < e; ++i) {
+      SmallVector<int64_t> outputTupleIndices;
+      if (e != 1)
+        outputTupleIndices.push_back(i);
       aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
-          ctx, /*outputTupleIndices=*/{}, /*operandIndex=*/i,
+          ctx, outputTupleIndices, /*operandIndex=*/i,
           /*operandTupleIndices=*/{}));
+    }
 
     auto gpuFunc = symbolTables.lookupNearestSymbolFrom<gpu::GPUFuncOp>(
         launch, launch.getKernel());

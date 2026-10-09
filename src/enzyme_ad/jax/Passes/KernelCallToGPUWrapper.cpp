@@ -120,7 +120,6 @@ struct KernelCallToGPUWrapperPass
     }
 
     // Each result is the final contents of the operand buffer it aliases.
-    SmallVector<unsigned> resultOperands;
     ArrayAttr aliases = call.getOutputOperandAliases();
     if (aliases.size() != call.getNumResults())
       return call.emitError("every result must alias a kernel operand");
@@ -128,7 +127,6 @@ struct KernelCallToGPUWrapperPass
       auto alias = cast<stablehlo::OutputOperandAliasAttr>(attr);
       if (alias.getOperandIndex() >= (int64_t)call.getInputs().size())
         return call.emitError("operand alias index out of range");
-      resultOperands.push_back(alias.getOperandIndex());
     }
 
     OpBuilder builder(call);
@@ -144,8 +142,19 @@ struct KernelCallToGPUWrapperPass
           builder.getI64IntegerAttr(1)));
     }
 
+    // The region has the results, aliases and attributes of the call: each
+    // result is read from the buffer of the operand it aliases.
     auto region = enzymexla::JITRegionOp::create(
-        builder, call.getLoc(), call.getInputs().getTypes(), call.getInputs());
+        builder, call.getLoc(), call.getResultTypes(), call.getInputs());
+    region.setOutputOperandAliasesAttr(aliases);
+    if (Attribute layouts = call.getOperandLayoutsAttr())
+      region.setOperandLayoutsAttr(layouts);
+    if (ArrayAttr argAttrs = call.getArgAttrsAttr())
+      region.setOperandAttrsAttr(argAttrs);
+    if (ArrayAttr resAttrs = call.getResAttrsAttr())
+      region.setResultAttrsAttr(resAttrs);
+    if (call.getXlaSideEffectFree())
+      region.setXlaSideEffectFree(true);
     {
       OpBuilder::InsertionGuard guard(builder);
       builder.createBlock(&region.getBody(), {}, bufferTypes,
@@ -255,9 +264,7 @@ struct KernelCallToGPUWrapperPass
       op.erase();
     });
 
-    for (auto [result, operand] :
-         llvm::zip_equal(call.getResults(), resultOperands))
-      result.replaceAllUsesWith(region.getResult(operand));
+    call.replaceAllUsesWith(region.getResults());
     call.erase();
     return success();
   }
