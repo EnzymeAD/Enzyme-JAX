@@ -5422,8 +5422,15 @@ struct RotateRotate final
     int64_t size = type.getDimSize(rotate.getDimension());
     int64_t amount = (int64_t(inner.getAmount()) + rotate.getAmount()) % size;
 
-    rewriter.replaceOpWithNewOp<enzymexla::RotateOp>(
-        rotate, inner.getOperand(), amount, rotate.getDimension());
+    if (amount == 0) {
+      rewriter.replaceOp(rotate, inner.getOperand());
+      return success();
+    }
+
+    rewriter.modifyOpInPlace(rotate, [&]() {
+      rotate.setOperand(inner.getOperand());
+      rotate.setAmount(amount);
+    });
     return success();
   }
 };
