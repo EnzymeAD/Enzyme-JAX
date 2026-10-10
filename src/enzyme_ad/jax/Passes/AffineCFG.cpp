@@ -6819,6 +6819,126 @@ struct FoldAppliesIntoLoad : public OpRewritePattern<memref::LoadOp> {
   }
 };
 
+// The value under its extensions and index casts.
+static Value underCasts(Value v) {
+  while (Operation *def = v.getDefiningOp()) {
+    if (!isa<arith::IndexCastOp, arith::IndexCastUIOp, arith::ExtUIOp,
+             arith::ExtSIOp>(def))
+      break;
+    v = def->getOperand(0);
+  }
+  return v;
+}
+
+// The bound a guard on the way to `at` gives `v` (the same value, or an
+// extension or index cast of it): the then-regions of the scf.ifs `at` is
+// under hold their conditions, the else-regions their negations, and a
+// condition that is an `and` of comparisons holds each.
+static std::optional<int64_t> guardedBound(Value v, Operation *at, bool lower) {
+  std::optional<int64_t> best;
+  auto better = [&](int64_t b) {
+    if (!best || (lower ? b > *best : b < *best))
+      best = b;
+  };
+  Value base = underCasts(v);
+  std::function<void(Value, bool)> facts = [&](Value cond, bool holds) {
+    Operation *def = cond.getDefiningOp();
+    if (!def)
+      return;
+    if ((holds && isa<arith::AndIOp>(def)) ||
+        (!holds && isa<arith::OrIOp>(def))) {
+      for (Value operand : def->getOperands())
+        facts(operand, holds);
+      return;
+    }
+    auto cmp = dyn_cast<arith::CmpIOp>(def);
+    if (!cmp)
+      return;
+    auto pred =
+        holds ? cmp.getPredicate() : arith::invertPredicate(cmp.getPredicate());
+    Value lhs = cmp.getLhs(), rhs = cmp.getRhs();
+    if (underCasts(rhs) == base) {
+      std::swap(lhs, rhs);
+      pred = swapPredicate(pred);
+    }
+    APInt c;
+    if (underCasts(lhs) != base || !matchPattern(rhs, m_ConstantInt(&c)))
+      return;
+    int64_t k = c.getSExtValue();
+    switch (pred) {
+    case arith::CmpIPredicate::sgt:
+      if (lower)
+        better(k + 1);
+      break;
+    case arith::CmpIPredicate::sge:
+      if (lower)
+        better(k);
+      break;
+    case arith::CmpIPredicate::slt:
+      if (!lower)
+        better(k - 1);
+      break;
+    case arith::CmpIPredicate::sle:
+      if (!lower)
+        better(k);
+      break;
+    case arith::CmpIPredicate::eq:
+      better(k);
+      break;
+    default:
+      break;
+    }
+  };
+  for (Operation *op = at->getParentOp(); op && !isa<FunctionOpInterface>(op);
+       op = op->getParentOp()) {
+    auto ifOp = dyn_cast<scf::IfOp>(op);
+    if (!ifOp)
+      continue;
+    facts(ifOp.getCondition(),
+          ifOp.getThenRegion().isAncestor(at->getParentRegion()));
+  }
+  return best;
+}
+
+// A max or min against a constant, read under a guard that already holds
+// it: the rotation of a loop that might run no times bounds it by
+// max(n, 1), while the kernel runs the loop under `if (n > 0)`; there the
+// bound is n, over which the loop raises where the max kept it from
+// raising. The uses under such guards read the value itself.
+template <typename OpTy, bool IsMax>
+struct FoldExtremumUnderGuard : public OpRewritePattern<OpTy> {
+  using OpRewritePattern<OpTy>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpTy op,
+                                PatternRewriter &rewriter) const override {
+    APInt c;
+    Value v;
+    if (matchPattern(op.getRhs(), m_ConstantInt(&c)))
+      v = op.getLhs();
+    else if (matchPattern(op.getLhs(), m_ConstantInt(&c)))
+      v = op.getRhs();
+    else
+      return failure();
+    int64_t k = c.getSExtValue();
+    // every use, through the casts of the value, is under such a guard
+    std::function<bool(Value)> held = [&](Value val) {
+      if (val.use_empty())
+        return false;
+      return llvm::all_of(val.getUsers(), [&](Operation *user) {
+        if (isa<arith::IndexCastOp, arith::IndexCastUIOp, arith::ExtUIOp,
+                arith::ExtSIOp>(user))
+          return held(user->getResult(0));
+        auto bound = guardedBound(v, user, /*lower=*/IsMax);
+        return bound && (IsMax ? *bound >= k : *bound <= k);
+      });
+    };
+    if (!held(op.getResult()))
+      return failure();
+    rewriter.replaceOp(op, v);
+    return success();
+  }
+};
+
 struct CompareVs1 : public OpRewritePattern<arith::CmpIOp> {
   using OpRewritePattern<arith::CmpIOp>::OpRewritePattern;
 
@@ -7982,7 +8102,8 @@ void mlir::enzyme::populateAffineCFGPatterns(
           ExtremumInAffineLoop<AffineForOp>,
           ExtremumInAffineLoop<AffineParallelOp>, HoistBranchOutOfRunsCheck,
           AddAddCstEnd, LiftMemrefRead, CompareVs1, AffineForReductionIter,
-          AffineForReductionSink>(context, 2);
+          AffineForReductionSink, FoldExtremumUnderGuard<arith::MaxSIOp, true>,
+          FoldExtremumUnderGuard<arith::MinSIOp, false>>(context, 2);
   if (enable_split_on_affine_if_constants) {
     rpl.add<SplitOnAffineIfConstants<scf::ForOp>,
             SplitOnAffineIfConstants<scf::IfOp>>(context, 2);
