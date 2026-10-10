@@ -699,13 +699,13 @@ def FuseJITPass : Pass<"fuse-jit", "mlir::ModuleOp"> {
         /*C++ variable name=*/"dag",
         /*CLI argument=*/"dag",
         /*type=*/"bool",
-        /*default=*/"false",
+        /*default=*/"true",
         /*description=*/"Fuse JIT calls connected by data dependency">,
     Option<
         /*C++ variable name=*/"adjacent",
         /*CLI argument=*/"adjacent",
         /*type=*/"bool",
-        /*default=*/"false",
+        /*default=*/"true",
         /*description=*/"Fuse adjacent JIT calls">,
     ];
 }
