@@ -7339,6 +7339,16 @@ struct AffineToStableHLORaisingPass
           }
         });
       }
+      // Every scalar integer argument (a length, a flag): the host passes it
+      // by value, and specialized it never reaches the device as a buffer
+      // of its own -- an allocation, a copy and a free each launch. A scalar
+      // that differs from call to call costs an executable per value.
+      if (specialize_int_scalars)
+        for (BlockArgument arg : newBlock->getArguments()) {
+          auto TT = dyn_cast<RankedTensorType>(arg.getType());
+          if (TT && TT.getRank() == 0 && TT.getElementType().isInteger())
+            wanted.insert(arg);
+        }
       if (!wanted.empty()) {
         for (auto [i, arg] : llvm::enumerate(operands)) {
           Value newArg = newBlock->getArgument(i);

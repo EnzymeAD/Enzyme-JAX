@@ -222,6 +222,8 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "dump_failed_lockstep=true";
       if (options->specializeIndexStrides)
         pass_pipeline += " specialize_index_strides=true";
+      if (options->specializeIntScalars)
+        pass_pipeline += " specialize_int_scalars=true";
       pass_pipeline += "}," + canonicalize + ",arith-raise{stablehlo=true},"
       "cse,enzyme-hlo-opt," + canonicalize + ","
       "symbol-dce";
