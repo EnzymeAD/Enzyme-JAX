@@ -22,6 +22,7 @@
 #include "mlir/Transforms/RegionUtils.h"
 #include "src/enzyme_ad/jax/Passes/AffineUtils.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
 
@@ -8726,14 +8727,108 @@ static IntegerSet guardFacts(Operation *at, Operation *loop, DominanceInfo &dom,
   return IntegerSet::get(0, syms.size(), facts, eqs);
 }
 
+// The constraints of `set`, over the values `syms`, that say something
+// about the values `seeds`: those reading one, and those reading a value
+// another kept constraint reads, except a constraint that is the only one
+// reading some value other than a seed, which that value alone satisfies.
+// The others would give every relation of a nest a symbol of their own,
+// whose rows every dependence test then carries: the hundreds of guards of
+// an MFEM kernel's host function, or one value compared through hundreds of
+// index casts, each equal to the first. Returns the set over the symbols
+// read, `keptSyms`, or a null set when nothing is kept.
+static IntegerSet constraintsReaching(IntegerSet set, ArrayRef<Value> syms,
+                                      ArrayRef<Value> seeds,
+                                      SmallVectorImpl<Value> &keptSyms) {
+  MLIRContext *ctx = set.getContext();
+  SmallVector<llvm::SmallBitVector> reads;
+  for (AffineExpr c : set.getConstraints()) {
+    llvm::SmallBitVector read(syms.size());
+    c.walk([&](AffineExpr e) {
+      if (auto sym = dyn_cast<AffineSymbolExpr>(e))
+        read.set(sym.getPosition());
+    });
+    reads.push_back(read);
+  }
+  llvm::SmallBitVector isSeed(syms.size());
+  for (Value v : seeds)
+    if (auto it = llvm::find(syms, v); it != syms.end())
+      isSeed.set(it - syms.begin());
+  llvm::SmallBitVector relevant = isSeed;
+  llvm::SmallBitVector kept(reads.size());
+  for (bool grown = true; grown;) {
+    grown = false;
+    for (auto [k, read] : llvm::enumerate(reads)) {
+      if (kept[k] || !read.anyCommon(relevant))
+        continue;
+      kept.set(k);
+      relevant |= read;
+      grown = true;
+    }
+  }
+  // a value only one kept constraint reads
+  SmallVector<unsigned> readers(syms.size(), 0);
+  for (auto [k, read] : llvm::enumerate(reads))
+    if (kept[k])
+      for (unsigned j : read.set_bits())
+        ++readers[j];
+  for (bool dropped = true; dropped;) {
+    dropped = false;
+    for (auto [k, read] : llvm::enumerate(reads)) {
+      if (!kept[k])
+        continue;
+      bool dangling = false;
+      for (unsigned j : read.set_bits())
+        if (!isSeed[j] && readers[j] == 1)
+          dangling = true;
+      if (!dangling)
+        continue;
+      kept.reset(k);
+      for (unsigned j : read.set_bits())
+        --readers[j];
+      dropped = true;
+    }
+  }
+  if (!kept.any())
+    return IntegerSet();
+  SmallVector<AffineExpr> symRepl;
+  for (auto [j, v] : llvm::enumerate(syms)) {
+    symRepl.push_back(getAffineSymbolExpr(keptSyms.size(), ctx));
+    if (readers[j]) {
+      keptSyms.push_back(v);
+    }
+  }
+  SmallVector<AffineExpr> constraints;
+  SmallVector<bool> eqs;
+  for (auto [k, c] : llvm::enumerate(set.getConstraints()))
+    if (kept[k]) {
+      constraints.push_back(c.replaceDimsAndSymbols({}, symRepl));
+      eqs.push_back(set.isEq(k));
+    }
+  return IntegerSet::get(0, keptSyms.size(), constraints, eqs);
+}
+
+// The values a nest's domain and an access read: the seeds of the facts
+// worth adding to the domain.
+static SmallVector<Value> valuesRead(const FlatAffineValueConstraints &domain,
+                                     ValueRange access) {
+  SmallVector<Value> values;
+  for (std::optional<Value> v : domain.getMaybeValues())
+    if (v)
+      values.push_back(*v);
+  values.append(access.begin(), access.end());
+  return values;
+}
+
 // The facts the accesses of `block` give about the values outside a loop
 // nest: an access to a statically shaped memref directly in the block runs
 // at every point of the nest whenever any point runs (the enclosing ops are
 // loops whose bounds read only values outside them), so at the corners of
 // the nest too, where it must stay in bounds as an access out of bounds is
 // undefined. The nest is that of `enclosing`, whose affine.ifs may only
-// read values outside its loops.
+// read values outside its loops. Only the facts reaching the values the
+// domain and `access` read are added.
 static void addInBoundsFacts(Block *block, ArrayRef<Operation *> enclosing,
+                             ValueRange access,
                              FlatAffineValueConstraints &domain) {
   MLIRContext *ctx = block->getParentOp()->getContext();
   SmallVector<Value> syms;
@@ -8842,10 +8937,15 @@ static void addInBoundsFacts(Block *block, ArrayRef<Operation *> enclosing,
   }
   if (facts.empty())
     return;
+  SmallVector<Value> keptSyms;
+  IntegerSet set = constraintsReaching(
+      IntegerSet::get(0, syms.size(), facts,
+                      SmallVector<bool>(facts.size(), false)),
+      syms, valuesRead(domain, access), keptSyms);
+  if (!set)
+    return;
   bool error = false;
-  SetConstraints cst(IntegerSet::get(0, syms.size(), facts,
-                                     SmallVector<bool>(facts.size(), false)),
-                     syms, &error);
+  SetConstraints cst(set, keptSyms, &error);
   if (error)
     return;
   domain.mergeAndAlignVarsWithOther(0, &cst);
@@ -8999,11 +9099,13 @@ struct InvariantTerms {
   }
 
   // The facts of the function's branches on the way to `op`, per op of the
-  // function's body that holds it.
+  // function's body that holds it. Only those reaching the values the
+  // domain and the access read are added.
   DominanceInfo dom;
   llvm::DenseMap<Operation *, std::pair<IntegerSet, SmallVector<Value>>> guards;
 
-  void addGuardFacts(Operation *op, FlatAffineValueConstraints &domain) {
+  void addGuardFacts(Operation *op, ValueRange access,
+                     FlatAffineValueConstraints &domain) {
     auto fn = op->getParentOfType<FunctionOpInterface>();
     if (!fn || fn->getNumRegions() == 0)
       return;
@@ -9016,11 +9118,16 @@ struct InvariantTerms {
       IntegerSet set = guardFacts(at, loop, dom, syms);
       it = guards.try_emplace(at, set, syms).first;
     }
-    auto &[set, syms] = it->second;
+    auto &[allFacts, syms] = it->second;
+    if (!allFacts)
+      return;
+    SmallVector<Value> keptSyms;
+    IntegerSet set = constraintsReaching(allFacts, syms,
+                                         valuesRead(domain, access), keptSyms);
     if (!set)
       return;
     bool error = false;
-    SetConstraints cst(set, syms, &error);
+    SetConstraints cst(set, keptSyms, &error);
     if (error)
       return;
     domain.mergeAndAlignVarsWithOther(0, &cst);
@@ -9036,8 +9143,8 @@ struct InvariantTerms {
     FlatAffineValueConstraints domain;
     if (failed(nestDomain(enclosing, domain)))
       return failure();
-    addInBoundsFacts(op->getBlock(), enclosing, domain);
-    addGuardFacts(op, domain);
+    addInBoundsFacts(op->getBlock(), enclosing, op->getOperands(), domain);
+    addGuardFacts(op, op->getOperands(), domain);
     AffineValueMap access;
     MemRefAccess(op).getAccessMap(&access);
     AffineMap map = access.getAffineMap();
