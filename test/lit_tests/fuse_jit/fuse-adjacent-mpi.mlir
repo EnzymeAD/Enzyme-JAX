@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --fuse-jit="strategy=generalized" %s | FileCheck %s
+// RUN enzymexlamlir-opt --fuse-jit={dag=false,adjacent=true} %s | FileCheck %s
 
 // Fuse two independent lowered request chains and a control send into one JIT
 // call.

@@ -217,117 +217,117 @@ LogicalResult validateFusionExtension(
 
 // Scan forward in block order, allowing effect-free non-JIT ops between
 // calls. Keep the longest supported prefix with effects or escaping results.
-JITFusionInfo collectGeneralizedFusionInfo(enzymexla::JITCallOp firstCall) {
-  JITFusionInfo info;
-  DominanceInfo dominance;
-  if (!dominance.hasSSADominance(firstCall->getBlock()))
-    return info;
-  auto module = firstCall->getParentOfType<ModuleOp>();
-  DenseMap<Value, unsigned> readOnlyArgs;
-  SmallPtrSet<Operation *, 8> movedConstants;
-  DenseMap<Value, size_t> outsideUses;
-  size_t escapingResults = 0;
-  bool hasEffects = false;
-  size_t legalCalls = 0, legalArgs = 0, legalConstants = 0;
+// JITFusionInfo collectGeneralizedFusionInfo(enzymexla::JITCallOp firstCall) {
+//   JITFusionInfo info;
+//   DominanceInfo dominance;
+//   if (!dominance.hasSSADominance(firstCall->getBlock()))
+//     return info;
+//   auto module = firstCall->getParentOfType<ModuleOp>();
+//   DenseMap<Value, unsigned> readOnlyArgs;
+//   SmallPtrSet<Operation *, 8> movedConstants;
+//   DenseMap<Value, size_t> outsideUses;
+//   size_t escapingResults = 0;
+//   bool hasEffects = false;
+//   size_t legalCalls = 0, legalArgs = 0, legalConstants = 0;
 
-  // Boundary bookkeeping does bounded work per operand/result/use per attempt.
-  // Alias searches, greedy revisits and repeated wrapper cloning can cost more.
-  for (Operation *op = firstCall; op; op = op->getNextNode()) {
-    if (op->hasTrait<OpTrait::IsTerminator>())
-      break;
-    auto call = dyn_cast<enzymexla::JITCallOp>(op);
-    if (!call) {
-      // Effects may only be crossed when their JIT bodies join the group.
-      if (!isMemoryEffectFree(op))
-        break;
-      continue;
-    }
+//   // Boundary bookkeeping does bounded work per operand/result/use per attempt.
+//   // Alias searches, greedy revisits and repeated wrapper cloning can cost more.
+//   for (Operation *op = firstCall; op; op = op->getNextNode()) {
+//     if (op->hasTrait<OpTrait::IsTerminator>())
+//       break;
+//     auto call = dyn_cast<enzymexla::JITCallOp>(op);
+//     if (!call) {
+//       // Effects may only be crossed when their JIT bodies join the group.
+//       if (!isMemoryEffectFree(op))
+//         break;
+//       continue;
+//     }
 
-    FailureOr<LLVM::LLVMFuncOp> func = lookupFusionFunction(module, call);
-    if (failed(func))
-      break;
-    JITFusionExtension extension;
-    if (failed(validateFusionExtension(call, func.value(), firstCall, dominance,
-                                       info, readOnlyArgs, movedConstants,
-                                       extension)))
-      break;
+//     FailureOr<LLVM::LLVMFuncOp> func = lookupFusionFunction(module, call);
+//     if (failed(func))
+//       break;
+//     JITFusionExtension extension;
+//     if (failed(validateFusionExtension(call, func.value(), firstCall, dominance,
+//                                        info, readOnlyArgs, movedConstants,
+//                                        extension)))
+//       break;
 
-    // Commit the extension only after its complete preflight succeeds.
-    info.fusionCalls.push_back(call);
-    info.fusionFuncs.push_back(func.value());
-    info.callOperandSlots.push_back(std::move(extension.operandSlots));
-    llvm::append_range(info.fusedArgs, extension.newArgs);
-    readOnlyArgs.insert(extension.readOnlyArgs.begin(),
-                        extension.readOnlyArgs.end());
-    for (Operation *constant : extension.constantsToMove)
-      movedConstants.insert(constant);
-    llvm::append_range(info.constantsToMove, extension.constantsToMove);
-    for (Value operand : call.getOperands()) {
-      auto useIt = outsideUses.find(operand);
-      if (useIt != outsideUses.end()) {
-        assert(useIt->second != 0 && "missing external operand use");
-        // Repeated operands consume separate uses of the same result.
-        if (--useIt->second == 0)
-          --escapingResults;
-      }
-    }
-    for (auto [idx, result] : llvm::enumerate(call.getResults())) {
-      size_t uses = std::distance(result.use_begin(), result.use_end());
-      outsideUses[result] = uses;
-      escapingResults += uses != 0;
-      info.resultSlotMap[result] = extension.resultSlots[idx];
-    }
-    hasEffects |= !isMemoryEffectFree(call);
-    if (info.fusionCalls.size() >= 2 && (hasEffects || escapingResults != 0)) {
-      legalCalls = info.fusionCalls.size();
-      legalArgs = info.fusedArgs.size();
-      legalConstants = info.constantsToMove.size();
-    }
-  }
+//     // Commit the extension only after its complete preflight succeeds.
+//     info.fusionCalls.push_back(call);
+//     info.fusionFuncs.push_back(func.value());
+//     info.callOperandSlots.push_back(std::move(extension.operandSlots));
+//     llvm::append_range(info.fusedArgs, extension.newArgs);
+//     readOnlyArgs.insert(extension.readOnlyArgs.begin(),
+//                         extension.readOnlyArgs.end());
+//     for (Operation *constant : extension.constantsToMove)
+//       movedConstants.insert(constant);
+//     llvm::append_range(info.constantsToMove, extension.constantsToMove);
+//     for (Value operand : call.getOperands()) {
+//       auto useIt = outsideUses.find(operand);
+//       if (useIt != outsideUses.end()) {
+//         assert(useIt->second != 0 && "missing external operand use");
+//         // Repeated operands consume separate uses of the same result.
+//         if (--useIt->second == 0)
+//           --escapingResults;
+//       }
+//     }
+//     for (auto [idx, result] : llvm::enumerate(call.getResults())) {
+//       size_t uses = std::distance(result.use_begin(), result.use_end());
+//       outsideUses[result] = uses;
+//       escapingResults += uses != 0;
+//       info.resultSlotMap[result] = extension.resultSlots[idx];
+//     }
+//     hasEffects |= !isMemoryEffectFree(call);
+//     if (info.fusionCalls.size() >= 2 && (hasEffects || escapingResults != 0)) {
+//       legalCalls = info.fusionCalls.size();
+//       legalArgs = info.fusedArgs.size();
+//       legalConstants = info.constantsToMove.size();
+//     }
+//   }
 
-  if (legalCalls == 0)
-    return JITFusionInfo();
+//   if (legalCalls == 0)
+//     return JITFusionInfo();
 
-  // A pure suffix may hide all escaping results. Rewind it once to the last
-  // observable group, without revalidating prefixes or copying growing maps.
-  for (size_t i = info.fusionCalls.size(); i > legalCalls; --i) {
-    auto call = info.fusionCalls[i - 1];
-    for (Value operand : call.getOperands()) {
-      auto useIt = outsideUses.find(operand);
-      if (useIt != outsideUses.end())
-        ++useIt->second;
-    }
-    for (Value result : call.getResults()) {
-      outsideUses.erase(result);
-      info.resultSlotMap.erase(result);
-    }
-  }
-  info.fusionCalls.resize(legalCalls);
-  info.fusionFuncs.resize(legalCalls);
-  info.callOperandSlots.resize(legalCalls);
-  info.fusedArgs.resize(legalArgs);
-  info.constantsToMove.resize(legalConstants);
+//   // A pure suffix may hide all escaping results. Rewind it once to the last
+//   // observable group, without revalidating prefixes or copying growing maps.
+//   for (size_t i = info.fusionCalls.size(); i > legalCalls; --i) {
+//     auto call = info.fusionCalls[i - 1];
+//     for (Value operand : call.getOperands()) {
+//       auto useIt = outsideUses.find(operand);
+//       if (useIt != outsideUses.end())
+//         ++useIt->second;
+//     }
+//     for (Value result : call.getResults()) {
+//       outsideUses.erase(result);
+//       info.resultSlotMap.erase(result);
+//     }
+//   }
+//   info.fusionCalls.resize(legalCalls);
+//   info.fusionFuncs.resize(legalCalls);
+//   info.callOperandSlots.resize(legalCalls);
+//   info.fusedArgs.resize(legalArgs);
+//   info.constantsToMove.resize(legalConstants);
 
-  // Keep external results first, in lexical result order.
-  DenseSet<unsigned> returnedSlots;
-  for (auto call : info.fusionCalls) {
-    for (Value result : call.getResults()) {
-      if (outsideUses.lookup(result) != 0) {
-        info.fusedReturns.push_back(result);
-        returnedSlots.insert(info.resultSlotMap.lookup(result));
-      }
-    }
-  }
-  // Preserve an alias for every written input, even if its result is internal
-  // or unused. Otherwise constant request buffers can be treated as read-only.
-  for (auto call : info.fusionCalls) {
-    for (Value result : call.getResults()) {
-      if (returnedSlots.insert(info.resultSlotMap.lookup(result)).second)
-        info.fusedReturns.push_back(result);
-    }
-  }
-  return info;
-}
+//   // Keep external results first, in lexical result order.
+//   DenseSet<unsigned> returnedSlots;
+//   for (auto call : info.fusionCalls) {
+//     for (Value result : call.getResults()) {
+//       if (outsideUses.lookup(result) != 0) {
+//         info.fusedReturns.push_back(result);
+//         returnedSlots.insert(info.resultSlotMap.lookup(result));
+//       }
+//     }
+//   }
+//   // Preserve an alias for every written input, even if its result is internal
+//   // or unused. Otherwise constant request buffers can be treated as read-only.
+//   for (auto call : info.fusionCalls) {
+//     for (Value result : call.getResults()) {
+//       if (returnedSlots.insert(info.resultSlotMap.lookup(result)).second)
+//         info.fusedReturns.push_back(result);
+//     }
+//   }
+//   return info;
+// }
 
 JITFusionInfo collectDependencyFusionInfo(enzymexla::JITCallOp seedCall) {
   // Collect the same-block component connected by direct JIT result/operand
@@ -589,18 +589,18 @@ struct FuseDAG : public OpRewritePattern<enzymexla::JITCallOp> {
 };
 
 // fuses adjacent jit_calls
-struct FuseAdjacent : public OpRewritePattern<enzymexla::JITCallOp> {
-  using OpRewritePattern<enzymexla::JITCallOp>::OpRewritePattern;
-  void initialize() { setHasBoundedRewriteRecursion(); }
+// struct FuseAdjacent : public OpRewritePattern<enzymexla::JITCallOp> {
+//   using OpRewritePattern<enzymexla::JITCallOp>::OpRewritePattern;
+//   void initialize() { setHasBoundedRewriteRecursion(); }
 
-  LogicalResult matchAndRewrite(enzymexla::JITCallOp jitCallOp,
-                                PatternRewriter &rewriter) const override {
-    JITFusionInfo fusionInfo = collectGeneralizedFusionInfo(jitCallOp);
-    if (fusionInfo.fusionCalls.size() < 2)
-      return failure();
-    return rewriteFusion(jitCallOp, rewriter, fusionInfo);
-  }
-};
+//   LogicalResult matchAndRewrite(enzymexla::JITCallOp jitCallOp,
+//                                 PatternRewriter &rewriter) const override {
+//     JITFusionInfo fusionInfo = collectGeneralizedFusionInfo(jitCallOp);
+//     if (fusionInfo.fusionCalls.size() < 2)
+//       return failure();
+//     return rewriteFusion(jitCallOp, rewriter, fusionInfo);
+//   }
+// };
 
 struct FuseJITPass : public impl::FuseJITPassBase<FuseJITPass> {
   using FuseJITPassBase::FuseJITPassBase;
@@ -610,7 +610,7 @@ struct FuseJITPass : public impl::FuseJITPassBase<FuseJITPass> {
     RewritePatternSet patterns(context);
 
     if (dag) patterns.add<FuseDAG>(context);
-    if (adjacent) patterns.add<FuseAdjacent>(context);
+    // if (adjacent) patterns.add<FuseAdjacent>(context);
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(top_down);
