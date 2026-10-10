@@ -2603,6 +2603,624 @@ mlir::LogicalResult WhileElementwiseReductionToReduce::matchAndRewriteImpl(
   return success(anyRewritten);
 }
 
+namespace {
+// The combining op of a reduction a loop carries, by kind.
+enum class Combine { Add, Mul, Max, Min };
+
+// One term of the addend of a linear recurrence: `coeff` (one when null),
+// a value of the iteration, times the value the reduction carried at
+// position `carry` holds when the iteration starts.
+struct RecurrenceTerm {
+  Value coeff;
+  unsigned carry;
+};
+
+// How a value the loop carries changes in one iteration. Where `keep` (a
+// value of the iteration) equals `keepWhen`, the iteration leaves it as it
+// was; elsewhere:
+//  - Reduce: x = x combine f (f negated first when `negate`);
+//  - Linear: x = x * f + sum(terms) + sum(addends);
+//  - Copy: x is the value carry `source` takes in the iteration.
+struct CarryStep {
+  enum Kind { Invariant, Reduce, Linear, Copy } kind = Invariant;
+  Value keep;
+  bool keepWhen = true;
+  Combine combine = Combine::Add;
+  bool negate = false;
+  Value f;
+  SmallVector<RecurrenceTerm> terms;
+  SmallVector<Value> addends;
+  unsigned source = 0;
+};
+
+// What the analysis of a loop body knows: the values that depend on a carried
+// value other than the counter (the recurrent ones), and the ops the
+// recognized updates are made of.
+struct RecurrenceBody {
+  Block &body;
+  unsigned ivNum;
+  DenseSet<Value> recurrent;
+  DenseSet<Operation *> consumed;
+
+  bool isIterationValue(Value v) const { return !recurrent.contains(v); }
+};
+
+static std::optional<Combine> combineOf(Operation *op) {
+  if (isa<stablehlo::AddOp>(op))
+    return Combine::Add;
+  if (isa<stablehlo::MulOp>(op))
+    return Combine::Mul;
+  if (isa<stablehlo::MaxOp>(op))
+    return Combine::Max;
+  if (isa<stablehlo::MinOp>(op))
+    return Combine::Min;
+  return std::nullopt;
+}
+
+// The addend of a linear recurrence, as a sum of values of the iteration and
+// of reductions' values at the start of the iteration, scaled by values of
+// the iteration.
+static bool addendTerms(RecurrenceBody &rb, Value b, CarryStep &step) {
+  if (rb.isIterationValue(b)) {
+    step.addends.push_back(b);
+    return true;
+  }
+  if (auto arg = dyn_cast<BlockArgument>(b)) {
+    if (arg.getOwner() != &rb.body)
+      return false;
+    step.terms.push_back({Value(), arg.getArgNumber()});
+    return true;
+  }
+  Operation *op = b.getDefiningOp();
+  if (auto add = dyn_cast_or_null<stablehlo::AddOp>(op)) {
+    rb.consumed.insert(op);
+    return addendTerms(rb, add.getLhs(), step) &&
+           addendTerms(rb, add.getRhs(), step);
+  }
+  if (auto mul = dyn_cast_or_null<stablehlo::MulOp>(op)) {
+    for (int side = 0; side < 2; ++side) {
+      auto arg = dyn_cast<BlockArgument>(mul->getOperand(side));
+      Value coeff = mul->getOperand(1 - side);
+      if (!arg || arg.getOwner() != &rb.body || !rb.isIterationValue(coeff))
+        continue;
+      rb.consumed.insert(op);
+      step.terms.push_back({coeff, arg.getArgNumber()});
+      return true;
+    }
+  }
+  return false;
+}
+
+// The update of carried argument `x` in the value `u` the iteration computes
+// for it: a reduction with a value of the iteration, or x times a value of
+// the iteration plus an addend.
+static bool updateOf(RecurrenceBody &rb, BlockArgument x, Value u,
+                     CarryStep &step) {
+  Operation *op = u.getDefiningOp();
+  if (!op || op->getBlock() != &rb.body)
+    return false;
+  if (auto sub = dyn_cast<stablehlo::SubtractOp>(op)) {
+    if (sub.getLhs() == x && rb.isIterationValue(sub.getRhs())) {
+      rb.consumed.insert(op);
+      step.kind = CarryStep::Reduce;
+      step.combine = Combine::Add;
+      step.negate = true;
+      step.f = sub.getRhs();
+      return true;
+    }
+    return false;
+  }
+  auto combine = combineOf(op);
+  if (!combine)
+    return false;
+  for (int side = 0; side < 2; ++side) {
+    Value other = op->getOperand(1 - side);
+    if (op->getOperand(side) == x && rb.isIterationValue(other)) {
+      rb.consumed.insert(op);
+      step.kind = CarryStep::Reduce;
+      step.combine = *combine;
+      step.f = other;
+      return true;
+    }
+  }
+  if (*combine != Combine::Add)
+    return false;
+  // x * a + b, in either order
+  for (int side = 0; side < 2; ++side) {
+    auto mul = op->getOperand(side).getDefiningOp<stablehlo::MulOp>();
+    if (!mul)
+      continue;
+    Value a = mul.getLhs() == x   ? mul.getRhs()
+              : mul.getRhs() == x ? mul.getLhs()
+                                  : Value();
+    if (!a || !rb.isIterationValue(a))
+      continue;
+    CarryStep linear;
+    linear.kind = CarryStep::Linear;
+    linear.f = a;
+    RecurrenceBody trial = rb;
+    trial.consumed.insert(op);
+    trial.consumed.insert(mul);
+    if (!addendTerms(trial, op->getOperand(1 - side), linear))
+      continue;
+    rb.consumed = std::move(trial.consumed);
+    linear.keep = step.keep;
+    linear.keepWhen = step.keepWhen;
+    step = std::move(linear);
+    return true;
+  }
+  return false;
+}
+
+// The step of carried argument `x`, yielded as `y`: an update, possibly kept
+// back where a value of the iteration says so.
+static bool stepOf(RecurrenceBody &rb, BlockArgument x, Value y,
+                   CarryStep &step) {
+  if (auto sel = y.getDefiningOp<stablehlo::SelectOp>();
+      sel && sel->getBlock() == &rb.body &&
+      rb.isIterationValue(sel.getPred())) {
+    for (int side = 0; side < 2; ++side) {
+      Value kept = side == 0 ? sel.getOnTrue() : sel.getOnFalse();
+      Value updated = side == 0 ? sel.getOnFalse() : sel.getOnTrue();
+      if (kept != x)
+        continue;
+      RecurrenceBody trial = rb;
+      CarryStep s;
+      s.keep = sel.getPred();
+      s.keepWhen = side == 0;
+      if (!updateOf(trial, x, updated, s))
+        continue;
+      trial.consumed.insert(sel);
+      rb.consumed = std::move(trial.consumed);
+      step = std::move(s);
+      return true;
+    }
+    return false;
+  }
+  return updateOf(rb, x, y, step);
+}
+} // namespace
+
+namespace {
+// The value a reduction starts from, of `ty`'s element type and shape.
+static Value identityOf(OpBuilder &b, Location loc, RankedTensorType ty,
+                        Combine c) {
+  Type et = ty.getElementType();
+  Attribute e;
+  if (auto ft = dyn_cast<FloatType>(et)) {
+    const auto &sem = ft.getFloatSemantics();
+    APFloat v = c == Combine::Add   ? APFloat::getZero(sem)
+                : c == Combine::Mul ? APFloat::getOne(sem)
+                : c == Combine::Max ? APFloat::getInf(sem, /*Negative=*/true)
+                                    : APFloat::getInf(sem);
+    e = b.getFloatAttr(et, v);
+  } else {
+    unsigned w = cast<IntegerType>(et).getWidth();
+    APInt v = c == Combine::Add   ? APInt(w, 0)
+              : c == Combine::Mul ? APInt(w, 1)
+              : c == Combine::Max ? APInt::getSignedMinValue(w)
+                                  : APInt::getSignedMaxValue(w);
+    e = b.getIntegerAttr(et, v);
+  }
+  return stablehlo::ConstantOp::create(
+      b, loc,
+      cast<ElementsAttr>(SplatElementsAttr::get(ty, cast<TypedAttr>(e))));
+}
+
+static Value combineValues(OpBuilder &b, Location loc, Combine c, Value x,
+                           Value y) {
+  switch (c) {
+  case Combine::Add:
+    return stablehlo::AddOp::create(b, loc, x, y);
+  case Combine::Mul:
+    return stablehlo::MulOp::create(b, loc, x, y);
+  case Combine::Max:
+    return stablehlo::MaxOp::create(b, loc, x, y);
+  case Combine::Min:
+    return stablehlo::MinOp::create(b, loc, x, y);
+  }
+  llvm_unreachable("combine");
+}
+
+// The body of a reduce or reduce_window that combines two scalars.
+static void combineBody(OpBuilder &b, Location loc, Region &region,
+                        Type element, Combine c) {
+  OpBuilder::InsertionGuard g(b);
+  auto sty = RankedTensorType::get({}, element);
+  Block *blk = b.createBlock(&region, {}, {sty, sty}, {loc, loc});
+  Value r = combineValues(b, loc, c, blk->getArgument(0), blk->getArgument(1));
+  stablehlo::ReturnOp::create(b, loc, r);
+}
+
+// `t` combined over its leading dimension.
+static Value reduceFirst(OpBuilder &b, Location loc, Value t, Combine c) {
+  auto ty = cast<RankedTensorType>(t.getType());
+  auto out =
+      RankedTensorType::get(ty.getShape().drop_front(), ty.getElementType());
+  Value init =
+      identityOf(b, loc, RankedTensorType::get({}, ty.getElementType()), c);
+  auto red = stablehlo::ReduceOp::create(b, loc, TypeRange{out}, ValueRange{t},
+                                         ValueRange{init},
+                                         b.getDenseI64ArrayAttr({0}));
+  combineBody(b, loc, red.getBody(), ty.getElementType(), c);
+  return red.getResult(0);
+}
+
+// The running combination of `t` along its leading dimension, of the
+// elements before each (exclusive), from the front or from the back.
+static Value scanFirst(OpBuilder &b, Location loc, Value t, Combine c,
+                       bool fromBack) {
+  auto ty = cast<RankedTensorType>(t.getType());
+  int64_t n = ty.getDimSize(0), rank = ty.getRank();
+  SmallVector<int64_t> window(rank, 1), ones(rank, 1), padding(2 * rank, 0);
+  window[0] = n;
+  padding[fromBack ? 1 : 0] = n - 1;
+  Value init =
+      identityOf(b, loc, RankedTensorType::get({}, ty.getElementType()), c);
+  auto rw = stablehlo::ReduceWindowOp::create(
+      b, loc, TypeRange{ty}, ValueRange{t}, ValueRange{init},
+      b.getDenseI64ArrayAttr(window), b.getDenseI64ArrayAttr(ones),
+      b.getDenseI64ArrayAttr(ones), b.getDenseI64ArrayAttr(ones),
+      DenseIntElementsAttr::get(
+          RankedTensorType::get({rank, 2}, b.getIntegerType(64)), padding));
+  combineBody(b, loc, rw.getBody(), ty.getElementType(), c);
+  // inclusive to exclusive: shift by one, the identity entering at the end
+  // the scan starts from
+  SmallVector<int64_t> one(ty.getShape());
+  one[0] = 1;
+  Value id =
+      identityOf(b, loc, RankedTensorType::get(one, ty.getElementType()), c);
+  SmallVector<int64_t> lo(rank, 0), hi(ty.getShape()), st(rank, 1);
+  if (fromBack)
+    lo[0] = 1;
+  else
+    hi[0] = n - 1;
+  Value part = stablehlo::SliceOp::create(b, loc, rw.getResult(0), lo, hi, st);
+  SmallVector<Value> pieces =
+      fromBack ? SmallVector<Value>{part, id} : SmallVector<Value>{id, part};
+  return stablehlo::ConcatenateOp::create(b, loc, pieces, 0);
+}
+
+// `v` (of shape [n] or [n, s...]) laid out as `ty` ([n, s...]).
+static Value expandTo(OpBuilder &b, Location loc, Value v,
+                      RankedTensorType ty) {
+  auto vt = cast<RankedTensorType>(v.getType());
+  if (vt.getShape() == ty.getShape())
+    return v;
+  auto out = RankedTensorType::get(ty.getShape(), vt.getElementType());
+  return stablehlo::BroadcastInDimOp::create(b, loc, out, v,
+                                             b.getDenseI64ArrayAttr({0}));
+}
+
+// The values of the iteration the updates read, every iteration's at once:
+// a value of the body is written by a loop tagged parallel, one row per
+// iteration, which the batcher then makes one batched computation; a value
+// defined outside the body is the same row repeated.
+struct IterationRows {
+  OpBuilder &b;
+  Location loc;
+  int64_t n;
+  DenseMap<Value, Value> rows{};
+
+  Value of(Value v) {
+    if (auto it = rows.find(v); it != rows.end())
+      return it->second;
+    auto ty = cast<RankedTensorType>(v.getType());
+    SmallVector<int64_t> shape{n};
+    shape.append(ty.getShape().begin(), ty.getShape().end());
+    SmallVector<int64_t> dims;
+    for (int64_t d = 1; d <= ty.getRank(); ++d)
+      dims.push_back(d);
+    return stablehlo::BroadcastInDimOp::create(
+        b, loc, RankedTensorType::get(shape, ty.getElementType()), v,
+        b.getDenseI64ArrayAttr(dims));
+  }
+};
+
+// The operands of `op` and of every op nested in it.
+static void operandsWithin(Operation *op, SmallVectorImpl<Value> &out) {
+  out.append(op->operand_begin(), op->operand_end());
+  for (Region &r : op->getRegions())
+    for (Block &b : r)
+      for (Operation &inner : b)
+        operandsWithin(&inner, out);
+}
+
+static void wantValue(Block &body, Value v, SetVector<Value> &wanted) {
+  if (v && body.getParent()->isAncestor(v.getParentRegion()))
+    wanted.insert(v);
+}
+
+// The ops of the body `wanted` is computed from, in body order.
+static SetVector<Operation *> sliceOf(Block &body, ArrayRef<Value> wanted) {
+  DenseSet<Operation *> in;
+  SmallVector<Value> work(wanted.begin(), wanted.end());
+  while (!work.empty()) {
+    Value v = work.pop_back_val();
+    Operation *op = v.getDefiningOp();
+    if (!op)
+      continue;
+    Operation *top = body.findAncestorOpInBlock(*op);
+    if (!top || !in.insert(top).second)
+      continue;
+    operandsWithin(top, work);
+  }
+  SetVector<Operation *> ordered;
+  for (Operation &op : body.without_terminator())
+    if (in.contains(&op))
+      ordered.insert(&op);
+  return ordered;
+}
+} // namespace
+
+mlir::LogicalResult
+WhileRecurrenceToReduce::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                             PatternRewriter &rewriter) const {
+  WhileLoopInfo info(whileOp);
+  if (failed(info.computeInfo()) || !info.isValid() || !info.isConstant())
+    return failure();
+  int64_t n = info.getConstantNumIters();
+  auto start = info.getConstantStart(), stride = info.getConstantStep();
+  Value iv = info.getInductionVariable();
+  if (n <= 0 || !start || !stride || *stride <= 0 || !iv)
+    return failure();
+  Block &body = whileOp.getBody().front();
+  auto ret = cast<stablehlo::ReturnOp>(body.getTerminator());
+  unsigned ivNum = cast<BlockArgument>(iv).getArgNumber();
+
+  // Carried values the loop hands on unchanged are values of the iteration
+  // like the counter; the rest, and everything computed from them, recur.
+  RecurrenceBody rb{body, ivNum, {}, {}};
+  SmallVector<CarryStep> steps(body.getNumArguments());
+  SmallVector<unsigned> recurring;
+  for (BlockArgument arg : body.getArguments()) {
+    unsigned k = arg.getArgNumber();
+    if (k == ivNum || ret.getOperand(k) == arg)
+      continue;
+    rb.recurrent.insert(arg);
+    recurring.push_back(k);
+  }
+  if (recurring.empty())
+    return failure();
+  for (Operation &op : body.without_terminator()) {
+    SmallVector<Value> read;
+    operandsWithin(&op, read);
+    bool reads = false;
+    for (Value o : read)
+      reads |= rb.recurrent.contains(o);
+    if (reads)
+      for (Value r : op.getResults())
+        rb.recurrent.insert(r);
+  }
+  // The condition decides the trip count from the counter alone.
+  for (BlockArgument arg : whileOp.getCond().front().getArguments())
+    if (arg.getArgNumber() != ivNum &&
+        rb.recurrent.contains(body.getArgument(arg.getArgNumber())) &&
+        !arg.use_empty())
+      return failure();
+
+  SmallVector<unsigned> copies;
+  bool any = false;
+  for (unsigned k : recurring) {
+    if (stepOf(rb, body.getArgument(k), ret.getOperand(k), steps[k]))
+      any = true;
+    else
+      copies.push_back(k);
+  }
+  if (!any)
+    return failure();
+  for (unsigned k : copies) {
+    unsigned j = 0;
+    for (; j < steps.size(); ++j)
+      if (steps[j].kind != CarryStep::Invariant &&
+          steps[j].kind != CarryStep::Copy &&
+          ret.getOperand(j) == ret.getOperand(k))
+        break;
+    if (j == steps.size())
+      return failure();
+    steps[k].kind = CarryStep::Copy;
+    steps[k].source = j;
+  }
+  // A term reads a reduction's value at the start of the iteration.
+  for (unsigned k : recurring)
+    for (RecurrenceTerm &t : steps[k].terms)
+      if (steps[t.carry].kind != CarryStep::Reduce)
+        return failure();
+  // Nothing recurrent may be read but by the updates recognized.
+  for (Operation &op : body.without_terminator())
+    if (op.getNumResults() && rb.recurrent.contains(op.getResult(0)) &&
+        !rb.consumed.contains(&op))
+      return failure();
+  for (Value v : rb.recurrent)
+    for (Operation *user : v.getUsers())
+      if (user != ret && !rb.consumed.contains(user))
+        return failure();
+  for (unsigned k : recurring) {
+    auto ty = dyn_cast<RankedTensorType>(body.getArgument(k).getType());
+    if (!ty || !ty.hasStaticShape() ||
+        !isa<FloatType, IntegerType>(ty.getElementType()))
+      return failure();
+  }
+
+  // Every iteration's values of the iteration, written by a parallel loop.
+  Location loc = whileOp.getLoc();
+  SetVector<Value> wanted;
+  for (unsigned k : recurring) {
+    CarryStep &s = steps[k];
+    wantValue(body, s.keep, wanted);
+    wantValue(body, s.f, wanted);
+    for (RecurrenceTerm &t : s.terms)
+      wantValue(body, t.coeff, wanted);
+    for (Value a : s.addends)
+      wantValue(body, a, wanted);
+  }
+  IterationRows rows{rewriter, loc, n};
+  if (!wanted.empty()) {
+    auto ivTy = cast<RankedTensorType>(iv.getType());
+    SmallVector<Value> inits{whileOp->getOperand(ivNum)};
+    SmallVector<Type> types{ivTy};
+    for (Value w : wanted) {
+      auto ty = cast<RankedTensorType>(w.getType());
+      SmallVector<int64_t> shape{n};
+      shape.append(ty.getShape().begin(), ty.getShape().end());
+      auto rowTy = RankedTensorType::get(shape, ty.getElementType());
+      types.push_back(rowTy);
+      inits.push_back(stablehlo::ConstantOp::create(
+          rewriter, loc, cast<ElementsAttr>(rewriter.getZeroAttr(rowTy))));
+    }
+    auto fw = stablehlo::WhileOp::create(rewriter, loc, types, inits);
+    fw->setAttr("enzymexla.parallel", rewriter.getUnitAttr());
+    SmallVector<Location> locs(types.size(), loc);
+    {
+      OpBuilder::InsertionGuard g(rewriter);
+      Block *cond =
+          rewriter.createBlock(&fw.getCond(), {}, TypeRange(types), locs);
+      Value limit = stablehlo::ConstantOp::create(
+          rewriter, loc,
+          cast<ElementsAttr>(makeAttr(ivTy, *start + n * *stride)));
+      Value lt = stablehlo::CompareOp::create(
+          rewriter, loc, cond->getArgument(0), limit,
+          stablehlo::ComparisonDirection::LT);
+      stablehlo::ReturnOp::create(rewriter, loc, lt);
+
+      Block *nb =
+          rewriter.createBlock(&fw.getBody(), {}, TypeRange(types), locs);
+      IRMapping map;
+      for (BlockArgument arg : body.getArguments()) {
+        unsigned k = arg.getArgNumber();
+        if (k == ivNum)
+          map.map(arg, nb->getArgument(0));
+        else if (!rb.recurrent.contains(arg))
+          map.map(arg, whileOp->getOperand(k));
+      }
+      for (Operation *op : sliceOf(body, wanted.getArrayRef()))
+        rewriter.clone(*op, map);
+      // the row of this iteration: (iv - start) / step
+      Value row = stablehlo::SubtractOp::create(
+          rewriter, loc, nb->getArgument(0),
+          stablehlo::ConstantOp::create(
+              rewriter, loc, cast<ElementsAttr>(makeAttr(ivTy, *start))));
+      if (*stride != 1)
+        row = stablehlo::DivOp::create(
+            rewriter, loc, row,
+            stablehlo::ConstantOp::create(
+                rewriter, loc, cast<ElementsAttr>(makeAttr(ivTy, *stride))));
+      Value zero = stablehlo::ConstantOp::create(
+          rewriter, loc, cast<ElementsAttr>(makeAttr(ivTy, 0)));
+      SmallVector<Value> yields{stablehlo::AddOp::create(
+          rewriter, loc, nb->getArgument(0),
+          stablehlo::ConstantOp::create(
+              rewriter, loc, cast<ElementsAttr>(makeAttr(ivTy, *stride))))};
+      for (auto [i, w] : llvm::enumerate(wanted)) {
+        auto rowTy = cast<RankedTensorType>(types[i + 1]);
+        SmallVector<int64_t> one(rowTy.getShape());
+        one[0] = 1;
+        Value v = stablehlo::ReshapeOpCreate(rewriter, loc,
+                                             map.lookupOrDefault(w), one);
+        SmallVector<Value> starts(rowTy.getRank(), zero);
+        starts[0] = row;
+        yields.push_back(stablehlo::DynamicUpdateSliceOp::create(
+            rewriter, loc, nb->getArgument(i + 1), v, starts));
+      }
+      stablehlo::ReturnOp::create(rewriter, loc, yields);
+    }
+    for (auto [i, w] : llvm::enumerate(wanted))
+      rows.rows[w] = fw.getResult(i + 1);
+  }
+
+  // Every iteration's contribution, an identity where the iteration keeps
+  // the value as it was.
+  SmallVector<Value> results(whileOp->getResults().size());
+  DenseMap<unsigned, Value> contribution;
+  for (unsigned k : recurring) {
+    CarryStep &s = steps[k];
+    if (s.kind != CarryStep::Reduce && s.kind != CarryStep::Linear)
+      continue;
+    auto xty = cast<RankedTensorType>(body.getArgument(k).getType());
+    SmallVector<int64_t> shape{n};
+    shape.append(xty.getShape().begin(), xty.getShape().end());
+    auto rowTy = RankedTensorType::get(shape, xty.getElementType());
+    Combine c = s.kind == CarryStep::Reduce ? s.combine : Combine::Mul;
+    Value f = expandTo(rewriter, loc, rows.of(s.f), rowTy);
+    if (s.negate)
+      f = stablehlo::NegOp::create(rewriter, loc, f);
+    if (s.keep) {
+      Value keep = expandTo(rewriter, loc, rows.of(s.keep),
+                            RankedTensorType::get(shape, rewriter.getI1Type()));
+      Value id = identityOf(rewriter, loc, rowTy, c);
+      f = s.keepWhen ? stablehlo::SelectOp::create(rewriter, loc, keep, id, f)
+                     : stablehlo::SelectOp::create(rewriter, loc, keep, f, id);
+    }
+    contribution[k] = f;
+  }
+  for (unsigned k : recurring) {
+    CarryStep &s = steps[k];
+    Value x0 = whileOp->getOperand(k);
+    if (s.kind == CarryStep::Reduce) {
+      results[k] =
+          combineValues(rewriter, loc, s.combine, x0,
+                        reduceFirst(rewriter, loc, contribution[k], s.combine));
+    } else if (s.kind == CarryStep::Linear) {
+      // x_n = x_0 * prod(a) + sum_k b_k * prod(a_j for j > k)
+      Value a = contribution[k];
+      auto rowTy = cast<RankedTensorType>(a.getType());
+      Value b;
+      for (RecurrenceTerm &t : s.terms) {
+        CarryStep &r = steps[t.carry];
+        Value start0 = rows.of(whileOp->getOperand(t.carry));
+        Value startRows = expandTo(rewriter, loc, start0, rowTy);
+        Value prefix = scanFirst(rewriter, loc, contribution[t.carry],
+                                 r.combine, /*fromBack=*/false);
+        Value before =
+            combineValues(rewriter, loc, r.combine, startRows, prefix);
+        if (t.coeff)
+          before = stablehlo::MulOp::create(
+              rewriter, loc, before,
+              expandTo(rewriter, loc, rows.of(t.coeff), rowTy));
+        b = b ? stablehlo::AddOp::create(rewriter, loc, b, before) : before;
+      }
+      for (Value addend : s.addends) {
+        Value v = expandTo(rewriter, loc, rows.of(addend), rowTy);
+        b = b ? stablehlo::AddOp::create(rewriter, loc, b, v) : v;
+      }
+      Value scaled = stablehlo::MulOp::create(
+          rewriter, loc, x0, reduceFirst(rewriter, loc, a, Combine::Mul));
+      if (b) {
+        if (s.keep) {
+          Value keep = expandTo(
+              rewriter, loc, rows.of(s.keep),
+              RankedTensorType::get(rowTy.getShape(), rewriter.getI1Type()));
+          Value zero = identityOf(rewriter, loc, rowTy, Combine::Add);
+          b = s.keepWhen
+                  ? stablehlo::SelectOp::create(rewriter, loc, keep, zero, b)
+                  : stablehlo::SelectOp::create(rewriter, loc, keep, b, zero);
+        }
+        Value after = scanFirst(rewriter, loc, a, Combine::Mul,
+                                /*fromBack=*/true);
+        Value sum = reduceFirst(
+            rewriter, loc, stablehlo::MulOp::create(rewriter, loc, b, after),
+            Combine::Add);
+        scaled = stablehlo::AddOp::create(rewriter, loc, scaled, sum);
+      }
+      results[k] = scaled;
+    }
+  }
+  for (unsigned k : recurring)
+    if (steps[k].kind == CarryStep::Copy)
+      results[k] = results[steps[k].source];
+  for (BlockArgument arg : body.getArguments()) {
+    unsigned k = arg.getArgNumber();
+    if (k == ivNum)
+      results[k] = stablehlo::ConstantOp::create(
+          rewriter, loc,
+          cast<ElementsAttr>(makeAttr(arg.getType(), *start + n * *stride)));
+    else if (!results[k])
+      results[k] = whileOp->getOperand(k);
+  }
+  rewriter.replaceOp(whileOp, results);
+  return success();
+}
+
 mlir::LogicalResult
 RemoveLoopCarriedDependenciesFromWhileLoadOperations::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
@@ -3750,6 +4368,7 @@ void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
   }
 
   if (options.enableWhileElementwiseReductionToReduce) {
+    patterns.add<WhileRecurrenceToReduce>(ctx);
     patterns.add<WhileElementwiseReductionToReduce>(ctx);
   }
 
