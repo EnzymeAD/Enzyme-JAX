@@ -1,5 +1,6 @@
 // RUN: enzymexlamlir-opt %s --unroll-small-loops=max_trip_count=3 --canonicalize | FileCheck %s
 // RUN: enzymexlamlir-opt %s --split-input-file --unroll-small-loops=max_trip_count=0 | FileCheck %s --check-prefix=OFF
+// RUN: enzymexlamlir-opt %s --split-input-file --unroll-small-loops="max_trip_count=3 max_nested_ops=8" | FileCheck %s --check-prefix=BUDGET
 
 // A loop over the three components sizing an inner loop by the component,
 // `D1Dz = (c == 2) ? D1D : D1D - 1`: written out, each copy's bound is D1D
@@ -129,3 +130,47 @@ func.func @trivial(%x: memref<?xf64>, %init: f64) -> f64 {
 // OFF-NEXT:   }
 // OFF-NEXT:   return %1 : f64
 // OFF-NEXT: }
+
+// -----
+
+// A nest of small loops multiplies. With room for 8 operations, the inner
+// loop (3 iterations of 2 operations) is written out; the outer one would
+// leave 2 copies of those 6 and stays a loop.
+func.func @budget(%x: memref<?xf64>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c3 = arith.constant 3 : index
+  %cst = arith.constant 0.0 : f64
+  scf.for %i = %c0 to %c2 step %c1 {
+    scf.for %j = %c0 to %c3 step %c1 {
+      %k = arith.addi %i, %j : index
+      memref.store %cst, %x[%k] : memref<?xf64>
+    }
+  }
+  return
+}
+
+// BUDGET: func.func @budget(%arg0: memref<?xf64>) {
+// BUDGET-NEXT:   %c0 = arith.constant 0 : index
+// BUDGET-NEXT:   %c1 = arith.constant 1 : index
+// BUDGET-NEXT:   %c2 = arith.constant 2 : index
+// BUDGET-NEXT:   %c3 = arith.constant 3 : index
+// BUDGET-NEXT:   %cst = arith.constant 0.000000e+00 : f64
+// BUDGET-NEXT:   scf.for %arg1 = %c0 to %c2 step %c1 {
+// BUDGET-NEXT:     %c3_0 = arith.constant 3 : index
+// BUDGET-NEXT:     %0 = arith.addi %arg1, %c0 : index
+// BUDGET-NEXT:     memref.store %cst, %arg0[%0] : memref<?xf64>
+// BUDGET-NEXT:     %c1_1 = arith.constant 1 : index
+// BUDGET-NEXT:     %1 = arith.muli %c1, %c1_1 : index
+// BUDGET-NEXT:     %2 = arith.addi %c0, %1 : index
+// BUDGET-NEXT:     %3 = arith.addi %arg1, %2 : index
+// BUDGET-NEXT:     memref.store %cst, %arg0[%3] : memref<?xf64>
+// BUDGET-NEXT:     %c2_2 = arith.constant 2 : index
+// BUDGET-NEXT:     %4 = arith.muli %c1, %c2_2 : index
+// BUDGET-NEXT:     %5 = arith.addi %c0, %4 : index
+// BUDGET-NEXT:     %6 = arith.addi %arg1, %5 : index
+// BUDGET-NEXT:     memref.store %cst, %arg0[%6] : memref<?xf64>
+// BUDGET-NEXT:   }
+// BUDGET-NEXT:   return
+// BUDGET-NEXT: }

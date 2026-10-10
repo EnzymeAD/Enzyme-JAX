@@ -1,8 +1,9 @@
 //===- UnrollSmallLoops.cpp - Fully unroll loops of few iterations --------===//
 //
 // Fully unrolls every scf.for and affine.for whose trip count is a compile
-// time constant of at most `max_trip_count`, and always one of no iteration
-// or a single one. A loop over the components of a vector, `for (int c = 0;
+// time constant of at most `max_trip_count` whose unrolled body is at most
+// `max_nested_ops` operations, and always one of no iteration or a single
+// one. A loop over the components of a vector, `for (int c = 0;
 // c < 3; ++c)`, written out leaves each copy with `c` a constant: a bound
 // chosen by the component, `(c == 2) ? D1D : D1D - 1`, is then a symbol,
 // where over the loop it was a function of the induction variable that no
@@ -51,6 +52,18 @@ struct UnrollSmallLoops
         loops.emplace_back(op, *trips);
     });
     for (auto [op, trips] : loops) {
+      // What unrolling leaves in place of the loop: its body, inner loops
+      // already unrolled, once per iteration. A nest of small loops
+      // multiplies, so the size is what is bounded, not each trip count.
+      if (trips >= 2 && max_nested_ops >= 0) {
+        int64_t nested = 0;
+        op->walk([&](Operation *inner) {
+          if (inner != op && !inner->hasTrait<OpTrait::IsTerminator>())
+            ++nested;
+        });
+        if ((int64_t)trips * nested > max_nested_ops)
+          continue;
+      }
       if (trips == 0) {
         auto loop = cast<LoopLikeOpInterface>(op);
         SmallVector<Value> inits(loop.getInits());
