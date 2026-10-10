@@ -9816,8 +9816,187 @@ struct AffineParallelizePattern : public OpRewritePattern<affine::AffineForOp> {
   bool parallelReductions = true;
 };
 
+// Whether the two accesses, both under the loops `outer` and `iv`, touch
+// one element from two different values of iv within one iteration of the
+// outer loops, in either order: the dependence polyhedron of
+// checkAccessDependence, with the outer loops' variables equal and cut by
+// iv_src < iv_dst and by iv_src > iv_dst.
+static bool dependsAcrossIterations(presburger::IntegerRelation srcRel,
+                                    presburger::IntegerRelation dstRel,
+                                    Value outer, Value iv) {
+  FlatAffineValueConstraints srcDomain(srcRel.getDomainSet());
+  unsigned pos, outerPos;
+  if (!srcDomain.findVar(iv, &pos) || !srcDomain.findVar(outer, &outerPos))
+    return true;
+  unsigned numSrcDims = srcDomain.getNumDimVars();
+  dstRel.inverse();
+  if (!dstRel.getSpace().isUsingIds())
+    dstRel.resetIds();
+  if (!srcRel.getSpace().isUsingIds())
+    srcRel.resetIds();
+  dstRel.mergeAndCompose(srcRel);
+  dstRel.convertVarKind(presburger::VarKind::Domain, 0,
+                        dstRel.getNumDomainVars(), presburger::VarKind::Range,
+                        0);
+  presburger::IntegerPolyhedron dependence(dstRel);
+  for (unsigned k = 0; k < outerPos; ++k) {
+    SmallVector<int64_t> eq(dependence.getNumCols(), 0);
+    eq[k] = 1;
+    eq[numSrcDims + k] = -1;
+    dependence.addEquality(eq);
+  }
+  for (int64_t sign : {1, -1}) {
+    presburger::IntegerPolyhedron cut(dependence);
+    SmallVector<int64_t> ineq(cut.getNumCols(), 0);
+    ineq[pos] = sign;
+    ineq[numSrcDims + pos] = -sign;
+    ineq.back() = -1;
+    cut.addInequality(ineq);
+    if (!cut.isEmpty())
+      return true;
+  }
+  return false;
+}
+
+// A serial loop whose body is a prefix of pure ops and reads, then one
+// parallel loop (MFEM's transposed interpolators: `for i { a = x[i];
+// parallel j { w[j] += a * G[i, j] } }`) is a reduction over i that each
+// lane j can carry on its own. The parallel loop moves outside:
+//
+//   parallel j { for i { prefix; w[j] += a * G[i, j] } }
+//
+// which the reduction patterns then carry in a register, and the raising
+// batches over j. Each lane repeats the prefix, which reads nothing the
+// lanes write. The lanes stay independent of each other over the whole
+// (i, j) space: no lane touches, in any iteration, an element another
+// lane writes in any iteration.
+struct SinkForIntoParallel : public OpRewritePattern<affine::AffineForOp> {
+  using OpRewritePattern<affine::AffineForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineForOp forOp,
+                                PatternRewriter &rewriter) const override {
+    if (forOp.getNumIterOperands() != 0 || forOp.getNumResults() != 0)
+      return failure();
+    Block *body = forOp.getBody();
+    auto par = dyn_cast<AffineParallelOp>(body->getTerminator()->getPrevNode());
+    if (!par || par.getNumResults() != 0 || !par.getReductions().empty())
+      return failure();
+    for (Value operand : par.getOperands())
+      if (forOp->isAncestor(operand.getParentRegion()->getParentOp()))
+        return rewriter.notifyMatchFailure(forOp,
+                                           "parallel bounds vary in the loop");
+    if (::isLoopMemoryParallel(forOp))
+      return rewriter.notifyMatchFailure(forOp, "parallel itself");
+
+    SmallVector<Operation *> accesses;
+    SmallVector<memref::LoadOp> opaqueReads;
+    SmallVector<Value> written;
+    auto walkResult = par.walk([&](Operation *op) -> WalkResult {
+      if (auto readOp = dyn_cast<AffineReadOpInterface>(op)) {
+        if (!isLocallyDefined(readOp.getMemRef(), par))
+          accesses.push_back(op);
+      } else if (auto writeOp = dyn_cast<AffineWriteOpInterface>(op)) {
+        if (!isLocallyDefined(writeOp.getMemRef(), par)) {
+          accesses.push_back(op);
+          written.push_back(writeOp.getMemRef());
+        }
+      } else if (auto load = dyn_cast<memref::LoadOp>(op)) {
+        if (!isLocallyDefined(load.getMemRef(), par))
+          opaqueReads.push_back(load);
+      } else if (!isStructural(op) &&
+                 !hasSingleEffect<MemoryEffects::Allocate>(op) &&
+                 !isMemoryEffectFree(op)) {
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (walkResult.wasInterrupted())
+      return rewriter.notifyMatchFailure(forOp, "side effects in the lanes");
+
+    // The prefix: pure ops, and reads of buffers no lane writes.
+    auto readsWritten = [&](Value memref, bool opaque) {
+      for (Value w : written)
+        if (opaque ? enzyme::oputils::mayAlias(memref, w)
+                   : enzyme::oputils::getBaseObject(memref) ==
+                         enzyme::oputils::getBaseObject(w))
+          return true;
+      return false;
+    };
+    for (Operation &op : body->getOperations()) {
+      if (&op == par.getOperation())
+        break;
+      auto prefixResult = op.walk([&](Operation *nested) -> WalkResult {
+        if (auto readOp = dyn_cast<AffineReadOpInterface>(nested))
+          return readsWritten(readOp.getMemRef(), false)
+                     ? WalkResult::interrupt()
+                     : WalkResult::advance();
+        if (auto load = dyn_cast<memref::LoadOp>(nested))
+          return readsWritten(load.getMemRef(), true) ? WalkResult::interrupt()
+                                                      : WalkResult::advance();
+        if (isStructural(nested) || isMemoryEffectFree(nested))
+          return WalkResult::advance();
+        return WalkResult::interrupt();
+      });
+      if (prefixResult.wasInterrupted())
+        return rewriter.notifyMatchFailure(forOp, "prefix is not pure");
+    }
+    for (Value memref : written)
+      for (memref::LoadOp load : opaqueReads)
+        if (enzyme::oputils::mayAlias(load.getMemRef(), memref))
+          return rewriter.notifyMatchFailure(forOp, "opaque read of a write");
+    for (Operation *op : accesses) {
+      Value memref = MemRefAccess(op).memref;
+      for (Value w : written)
+        if (!sameBuffer(memref, w) && enzyme::oputils::getBaseObject(memref) ==
+                                          enzyme::oputils::getBaseObject(w))
+          return rewriter.notifyMatchFailure(forOp, "offset views of a write");
+    }
+
+    InvariantTerms terms(forOp);
+    for (Operation *srcOp : accesses) {
+      for (Operation *dstOp : accesses) {
+        if (!sameBuffer(MemRefAccess(srcOp).memref,
+                        MemRefAccess(dstOp).memref) ||
+            (!isa<AffineWriteOpInterface>(srcOp) &&
+             !isa<AffineWriteOpInterface>(dstOp)))
+          continue;
+        presburger::IntegerRelation srcRel(
+            presburger::PresburgerSpace::getRelationSpace()),
+            dstRel(presburger::PresburgerSpace::getRelationSpace());
+        if (failed(terms.accessRelation(srcOp, srcRel)) ||
+            failed(terms.accessRelation(dstOp, dstRel)))
+          return rewriter.notifyMatchFailure(forOp, "access not affine");
+        for (Value iv : par.getIVs())
+          if (dependsAcrossIterations(srcRel, dstRel, forOp.getInductionVar(),
+                                      iv))
+            return rewriter.notifyMatchFailure(forOp, "lanes depend");
+      }
+    }
+
+    // parallel { for { prefix; lane body } }: the loop moves into a copy
+    // of the parallel op, and the lane body takes the parallel op's place.
+    Location loc = forOp.getLoc();
+    rewriter.setInsertionPoint(forOp);
+    auto newPar = cast<AffineParallelOp>(rewriter.cloneWithoutRegions(*par));
+    Block *lane = rewriter.createBlock(&newPar.getRegion());
+    SmallVector<Value> ivs;
+    for (Value iv : par.getIVs())
+      ivs.push_back(lane->addArgument(iv.getType(), loc));
+    rewriter.setInsertionPointToEnd(lane);
+    auto yield = AffineYieldOp::create(rewriter, loc);
+    rewriter.moveOpBefore(forOp, yield);
+    Block *laneBody = par.getBody();
+    Operation *laneYield = laneBody->getTerminator();
+    rewriter.inlineBlockBefore(laneBody, par, ivs);
+    rewriter.eraseOp(laneYield);
+    rewriter.eraseOp(par);
+    return success();
+  }
+};
+
 void populateAffineParallelizationPattern(MLIRContext &context,
                                           RewritePatternSet &patterns) {
   patterns.insert<AffineParallelizePattern>(/*parallelReductions=*/true,
                                             &context);
+  patterns.insert<SinkForIntoParallel>(&context);
 }
