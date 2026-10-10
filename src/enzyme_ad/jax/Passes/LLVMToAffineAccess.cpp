@@ -121,6 +121,69 @@ static bool onlyAccessedThrough(enzymexla::Pointer2MemrefOp view) {
   });
 }
 
+// Rewrites every access through `p2m`, a view of an aggregate whose leaves are
+// all one scalar, into one access per leaf through `replacement`, a view of
+// the same memory as that scalar.
+static void expandAggregateView(enzymexla::Pointer2MemrefOp p2m,
+                                Value replacement,
+                                ArrayRef<SmallVector<int64_t>> paths,
+                                RewriterBase &rewriter) {
+  Type aggregate = p2m.getType().getElementType();
+  int64_t leaves = paths.size();
+  // The leaf-th element of the aggregate at element `index` of the view.
+  auto leafMap = [&](AffineMap map, int64_t leaf) {
+    AffineExpr expr = map.getResult(0) * leaves + leaf;
+    return AffineMap::get(map.getNumDims(), map.getNumSymbols(), expr,
+                          map.getContext());
+  };
+  auto leafIndex = [&](Location loc, Value index, int64_t leaf) -> Value {
+    Value scaled = arith::MulIOp::create(
+        rewriter, loc, index,
+        arith::ConstantIndexOp::create(rewriter, loc, leaves));
+    return arith::AddIOp::create(
+        rewriter, loc, scaled,
+        arith::ConstantIndexOp::create(rewriter, loc, leaf));
+  };
+  for (Operation *user : llvm::make_early_inc_range(p2m->getUsers())) {
+    rewriter.setInsertionPoint(user);
+    Location loc = user->getLoc();
+    if (auto st = dyn_cast<affine::AffineStoreOp>(user)) {
+      for (auto [leaf, path] : llvm::enumerate(paths)) {
+        Value piece = LLVM::ExtractValueOp::create(rewriter, loc,
+                                                   st.getValueToStore(), path);
+        affine::AffineStoreOp::create(rewriter, loc, piece, replacement,
+                                      leafMap(st.getMap(), leaf),
+                                      st.getMapOperands());
+      }
+      rewriter.eraseOp(st);
+    } else if (auto st = dyn_cast<memref::StoreOp>(user)) {
+      for (auto [leaf, path] : llvm::enumerate(paths)) {
+        Value piece = LLVM::ExtractValueOp::create(rewriter, loc,
+                                                   st.getValueToStore(), path);
+        memref::StoreOp::create(rewriter, loc, piece, replacement,
+                                leafIndex(loc, st.getIndices()[0], leaf));
+      }
+      rewriter.eraseOp(st);
+    } else {
+      Value value = LLVM::UndefOp::create(rewriter, loc, aggregate);
+      for (auto [leaf, path] : llvm::enumerate(paths)) {
+        Value piece;
+        if (auto ld = dyn_cast<affine::AffineLoadOp>(user))
+          piece = affine::AffineLoadOp::create(rewriter, loc, replacement,
+                                               leafMap(ld.getMap(), leaf),
+                                               ld.getMapOperands());
+        else
+          piece = memref::LoadOp::create(
+              rewriter, loc, replacement,
+              leafIndex(loc, cast<memref::LoadOp>(user).getIndices()[0], leaf));
+        value = LLVM::InsertValueOp::create(rewriter, loc, value, piece, path);
+      }
+      rewriter.replaceOp(user, value);
+    }
+  }
+  rewriter.eraseOp(p2m);
+}
+
 template <typename FromAlloc, bool inPlace = false>
 static LogicalResult
 convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
@@ -481,62 +544,7 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
     if (replacement.getType() != viewType)
       replacement =
           memref::CastOp::create(rewriter, p2m.getLoc(), viewType, replacement);
-    Type aggregate = p2m.getType().getElementType();
-    int64_t leaves = paths.size();
-    // The leaf-th element of the aggregate at element `index` of the view.
-    auto leafMap = [&](AffineMap map, int64_t leaf) {
-      AffineExpr expr = map.getResult(0) * leaves + leaf;
-      return AffineMap::get(map.getNumDims(), map.getNumSymbols(), expr,
-                            map.getContext());
-    };
-    auto leafIndex = [&](Location loc, Value index, int64_t leaf) -> Value {
-      Value scaled = arith::MulIOp::create(
-          rewriter, loc, index,
-          arith::ConstantIndexOp::create(rewriter, loc, leaves));
-      return arith::AddIOp::create(
-          rewriter, loc, scaled,
-          arith::ConstantIndexOp::create(rewriter, loc, leaf));
-    };
-    for (Operation *user : llvm::make_early_inc_range(p2m->getUsers())) {
-      rewriter.setInsertionPoint(user);
-      Location loc = user->getLoc();
-      if (auto st = dyn_cast<affine::AffineStoreOp>(user)) {
-        for (auto [leaf, path] : llvm::enumerate(paths)) {
-          Value piece = LLVM::ExtractValueOp::create(
-              rewriter, loc, st.getValueToStore(), path);
-          affine::AffineStoreOp::create(rewriter, loc, piece, replacement,
-                                        leafMap(st.getMap(), leaf),
-                                        st.getMapOperands());
-        }
-        rewriter.eraseOp(st);
-      } else if (auto st = dyn_cast<memref::StoreOp>(user)) {
-        for (auto [leaf, path] : llvm::enumerate(paths)) {
-          Value piece = LLVM::ExtractValueOp::create(
-              rewriter, loc, st.getValueToStore(), path);
-          memref::StoreOp::create(rewriter, loc, piece, replacement,
-                                  leafIndex(loc, st.getIndices()[0], leaf));
-        }
-        rewriter.eraseOp(st);
-      } else {
-        Value value = LLVM::UndefOp::create(rewriter, loc, aggregate);
-        for (auto [leaf, path] : llvm::enumerate(paths)) {
-          Value piece;
-          if (auto ld = dyn_cast<affine::AffineLoadOp>(user))
-            piece = affine::AffineLoadOp::create(rewriter, loc, replacement,
-                                                 leafMap(ld.getMap(), leaf),
-                                                 ld.getMapOperands());
-          else
-            piece = memref::LoadOp::create(
-                rewriter, loc, replacement,
-                leafIndex(loc, cast<memref::LoadOp>(user).getIndices()[0],
-                          leaf));
-          value =
-              LLVM::InsertValueOp::create(rewriter, loc, value, piece, path);
-        }
-        rewriter.replaceOp(user, value);
-      }
-    }
-    rewriter.eraseOp(p2m);
+    expandAggregateView(p2m, replacement, paths, rewriter);
   }
 
   for (auto other : others) {
@@ -684,6 +692,47 @@ struct ConvertLLVMAllocaToMemrefAlloca
                                 PatternRewriter &rewriter) const override {
     auto dataLayout = dl.getAtOrAbove(alloc);
     return convertLLVMAllocaToMemrefAlloca(alloc, rewriter, dataLayout);
+  }
+};
+
+// A view of a buffer of scalars as an aggregate of that scalar throughout
+// (a kernel reading a complex buffer, passed as interleaved reals, as its
+// [2 x T] numbers) reads or writes several of the buffer's elements at once,
+// which has no tensor form: view the buffer as its scalar instead, each access
+// becoming one per leaf.
+struct ExpandAggregateViewOfScalarMemref final
+    : public OpRewritePattern<enzymexla::Pointer2MemrefOp> {
+  using OpRewritePattern<enzymexla::Pointer2MemrefOp>::OpRewritePattern;
+  const DataLayoutAnalysis &dl;
+  ExpandAggregateViewOfScalarMemref(MLIRContext *context,
+                                    const DataLayoutAnalysis &dl)
+      : OpRewritePattern<enzymexla::Pointer2MemrefOp>(context), dl(dl) {}
+
+  LogicalResult matchAndRewrite(enzymexla::Pointer2MemrefOp p2m,
+                                PatternRewriter &rewriter) const override {
+    auto m2p = p2m.getSource().getDefiningOp<enzymexla::Memref2PointerOp>();
+    if (!m2p)
+      return failure();
+    Type scalar = cast<MemRefType>(m2p.getSource().getType()).getElementType();
+    auto MT = p2m.getType();
+    if (!scalar.isIntOrFloat() || MT.getElementType() == scalar ||
+        MT.getRank() != 1 || !MT.getLayout().isIdentity())
+      return failure();
+    SmallVector<SmallVector<int64_t>> paths;
+    auto leaf = enzyme::homogeneousLeaves(MT.getElementType(),
+                                          dl.getAtOrAbove(p2m), paths);
+    if (!leaf || *leaf != scalar || !onlyAccessedThrough(p2m))
+      return failure();
+    int64_t size = MT.getDimSize(0);
+    if (size != ShapedType::kDynamic)
+      size *= paths.size();
+    auto viewType = MemRefType::get({size}, scalar, MemRefLayoutAttrInterface{},
+                                    MT.getMemorySpace());
+    rewriter.setInsertionPoint(p2m);
+    Value replacement = enzymexla::Pointer2MemrefOp::create(
+        rewriter, p2m.getLoc(), viewType, p2m.getSource());
+    expandAggregateView(p2m, replacement, paths, rewriter);
+    return success();
   }
 };
 
@@ -2623,8 +2672,9 @@ convertLLVMToAffineAccess(Operation *op,
     patterns.insert<ConvertLLVMAllocaToMemrefAlloca, GEPOfMemRefLoad,
                     SimplifyInPlaceAlloc<memref::AllocOp>,
                     SimplifyInPlaceAlloc<memref::AllocaOp>,
-                    SimplifyInPlaceAlloc<gpu::AllocOp>>(context,
-                                                        dataLayoutAnalysis);
+                    SimplifyInPlaceAlloc<gpu::AllocOp>,
+                    ExpandAggregateViewOfScalarMemref>(context,
+                                                       dataLayoutAnalysis);
     patterns.insert<MemsetZeroToAffineFill>(context);
     patterns.insert<IndexCastAddSub, MemrefLoadAffineApply, SelectCSE,
                     SelectAddrCast>(context);
