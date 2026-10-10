@@ -2683,6 +2683,33 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     }
   }
 
+  // The ops the walk below has anything to do with, block by block in order:
+  // the slot's loads and stores, the transfers through it, and every op whose
+  // regions hold one of those. Any other op neither reads nor writes the slot,
+  // and stepping over it -- every op of every block, for each slot of each
+  // allocation -- was most of what forwarding cost on a large body.
+  DenseMap<Block *, SmallVector<Operation *>> relevantOps;
+  {
+    SmallPtrSet<Operation *, 16> marked;
+    auto mark = [&](Operation *op) {
+      for (; op && op->getBlock() && marked.insert(op).second;
+           op = op->getParentOp())
+        relevantOps[op->getBlock()].push_back(op);
+    };
+    for (Operation *op : loadOps)
+      mark(op);
+    for (Operation *op : transferLoads)
+      mark(op);
+    for (Operation *op : allStoreOps)
+      mark(op);
+    for (Operation *op : StoringOperations)
+      mark(op);
+    for (auto &entry : relevantOps)
+      llvm::sort(entry.second, [](Operation *a, Operation *b) {
+        return a->isBeforeInBlock(b);
+      });
+  }
+
   ReplacementHandler metaMap(elType);
 
   // Last value stored in an individual block and the operation which stored it
@@ -2778,9 +2805,9 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       [&](Block &block, ValueOrPlaceholder *lastVal) {
         valueAtStartOfBlock.emplace(&block, lastVal);
         SmallVector<Operation *, 10> ops;
-        for (auto &a : block) {
-          ops.push_back(&a);
-        }
+        auto relevant = relevantOps.find(&block);
+        if (relevant != relevantOps.end())
+          ops.assign(relevant->second.begin(), relevant->second.end());
         LLVM_DEBUG(llvm::dbgs()
                        << "\nstarting block: lastVal=" << *lastVal << "\n";
                    block.print(llvm::dbgs()); llvm::dbgs() << "\n";);
