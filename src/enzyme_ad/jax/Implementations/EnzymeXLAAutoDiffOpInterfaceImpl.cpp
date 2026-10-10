@@ -331,6 +331,513 @@ struct GPUWrapperOpInterfaceReverse
   }
 };
 
+struct JITRegionOpADDataFlow
+    : public ADDataFlowOpInterface::ExternalModel<JITRegionOpADDataFlow,
+                                                  JITRegionOp> {
+  SmallVector<Value> getPotentialIncomingValuesRes(Operation *op,
+                                                   OpResult v) const {
+    auto region = cast<JITRegionOp>(op);
+    SmallVector<Value> sources(region.getInputs());
+    llvm::append_range(sources, region.getBodyBlock()->getArguments());
+    return sources;
+  }
+
+  SmallVector<Value> getPotentialIncomingValuesArg(Operation *op,
+                                                   BlockArgument v) const {
+    return llvm::to_vector(cast<JITRegionOp>(op).getInputs());
+  }
+
+  SmallVector<Value> getPotentialTerminatorUsers(Operation *op, Operation *term,
+                                                 Value v) const {
+    return {};
+  }
+};
+
+static RankedTensorType getTensorType(Value buffer) {
+  auto type = cast<MemRefType>(buffer.getType());
+  return RankedTensorType::get(type.getShape(), type.getElementType());
+}
+
+// The layout of the input `i` of a jit_region, or null if it has no
+// operand_layouts.
+static Attribute getInputLayout(JITRegionOp region, unsigned i) {
+  auto layouts = dyn_cast_or_null<ArrayAttr>(region.getOperandLayoutsAttr());
+  return layouts ? layouts[i] : nullptr;
+}
+
+// The layouts of the inputs of a jit_region, null if it has no
+// operand_layouts.
+static SmallVector<Attribute> getInputLayouts(JITRegionOp region) {
+  SmallVector<Attribute> layouts;
+  for (unsigned i = 0, e = region.getInputs().size(); i < e; ++i)
+    layouts.push_back(getInputLayout(region, i));
+  return layouts;
+}
+
+// The default, row-major, layout of a buffer.
+static Attribute getDefaultLayout(Builder &builder, Type type) {
+  int64_t rank = cast<ShapedType>(type).getRank();
+  return builder.getIndexTensorAttr(
+      llvm::to_vector(llvm::reverse(llvm::seq<int64_t>(0, rank))));
+}
+
+// The output_operand_aliases of a jit_region with `numInputs` inputs whose
+// result `i` is read from the buffer of the input `i`.
+static ArrayAttr getOneResultPerInputAliases(MLIRContext *context,
+                                             unsigned numInputs) {
+  return JITRegionOp::buildOutputOperandAliases(
+      context, llvm::to_vector(llvm::seq<int64_t>(0, numInputs)));
+}
+
+// The result of a jit_region rebuilt by rebuildJITRegion standing for the
+// result `result` of the original region.
+static OpResult getRebuiltResult(JITRegionOp rebuilt, OpResult result) {
+  auto region = cast<JITRegionOp>(result.getOwner());
+  return rebuilt->getResult(
+      region.getAliasedInputIndex(result.getResultNumber()));
+}
+
+// Rebuilds `region` with the inputs `inputs`, the inputs of `region` followed
+// by new ones, and one result per input.
+static JITRegionOp rebuildJITRegion(RewriterBase &rewriter, JITRegionOp region,
+                                    ValueRange inputs,
+                                    ArrayRef<Attribute> layouts) {
+  NamedAttrList attrs(region->getAttrDictionary());
+  attrs.set(region.getOutputOperandAliasesAttrName(),
+            getOneResultPerInputAliases(rewriter.getContext(), inputs.size()));
+  if (region.getOperandLayoutsAttr()) {
+    assert(layouts.size() == inputs.size() && "expected a layout per input");
+    attrs.set(region.getOperandLayoutsAttrName(),
+              rewriter.getArrayAttr(layouts));
+  }
+  // The new inputs, and the results read from buffers no result of `region`
+  // was read from, have no attributes.
+  auto empty = rewriter.getDictionaryAttr({});
+  if (ArrayAttr operandAttrs = region.getOperandAttrsAttr()) {
+    SmallVector<Attribute> newAttrs(operandAttrs.getValue());
+    newAttrs.resize(inputs.size(), empty);
+    attrs.set(region.getOperandAttrsAttrName(),
+              rewriter.getArrayAttr(newAttrs));
+  }
+  if (ArrayAttr resultAttrs = region.getResultAttrsAttr()) {
+    SmallVector<Attribute> newAttrs(inputs.size(), empty);
+    for (OpResult result : region.getResults())
+      newAttrs[region.getAliasedInputIndex(result.getResultNumber())] =
+          resultAttrs[result.getResultNumber()];
+    attrs.set(region.getResultAttrsAttrName(), rewriter.getArrayAttr(newAttrs));
+  }
+  auto newRegion = JITRegionOp::create(rewriter, region.getLoc(),
+                                       inputs.getTypes(), inputs, attrs);
+  rewriter.inlineRegionBefore(region.getBody(), newRegion.getBody(),
+                              newRegion.getBody().end());
+  return newRegion;
+}
+
+// Reverse of
+//
+//   %r = jit_region(%x) { ^bb0(%m): body }
+//
+// is a jit_region whose buffers are the shadows of the primal buffers:
+//
+//   %dx = jit_region(%dr) { ^bb0(%dm): reverse(body) }
+//
+// Each shadow buffer starts out holding the adjoint of the result read from
+// it, and ends holding the adjoint of the input it was initialized from.
+//
+// In the augmented primal, the shadow of a primal buffer is an extra buffer of
+// the region, initialized from a zero gradient tensor passed as a new input.
+// It stands for the buffer of the reverse region holding the shadow: the
+// caches the augmented primal pushes on it are rematerialized on the latter by
+// JITRegionOpEnzymeOpsRemover, which then drops the extra buffers.
+struct JITRegionOpInterfaceReverse
+    : public ReverseAutoDiffOpInterface::ExternalModel<
+          JITRegionOpInterfaceReverse, JITRegionOp> {
+  // The primal buffers that have a shadow.
+  static SmallVector<BlockArgument> getActiveBuffers(JITRegionOp region,
+                                                     MGradientUtils *gutils) {
+    SmallVector<BlockArgument> active;
+    for (BlockArgument arg : region.getBodyBlock()->getArguments())
+      if (!gutils->isConstantValue(arg))
+        active.push_back(arg);
+    return active;
+  }
+
+  LogicalResult createReverseModeAdjoint(Operation *op, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto region = cast<JITRegionOp>(op);
+    Block *oBB = region.getBodyBlock();
+
+    for (BlockArgument arg : oBB->getArguments()) {
+      OpResult result = region.getAliasingResult(arg.getArgNumber());
+      if (result && !gutils->isConstantValue(result) &&
+          gutils->isConstantValue(arg))
+        return region.emitError()
+               << "active result #" << result.getResultNumber()
+               << " of a jit_region is read from an inactive buffer";
+    }
+
+    // The adjoint of a result seeds the shadow of the buffer it is read from.
+    SmallVector<BlockArgument> activeBuffers = getActiveBuffers(region, gutils);
+    SmallVector<Value> seeds;
+    SmallVector<Type> shadowTypes;
+    SmallVector<Location> shadowLocs;
+    for (BlockArgument arg : activeBuffers) {
+      OpResult result = region.getAliasingResult(arg.getArgNumber());
+      Value seed;
+      if (result && !gutils->isConstantValue(result)) {
+        seed = gutils->diffe(result, builder);
+        gutils->zeroDiffe(result, builder);
+      } else {
+        seed = cast<AutoDiffTypeInterface>(
+                   region.getInputs()[arg.getArgNumber()].getType())
+                   .createNullValue(builder, region.getLoc());
+      }
+      seeds.push_back(seed);
+      shadowTypes.push_back(gutils->getShadowType(arg.getType()));
+      shadowLocs.push_back(arg.getLoc());
+    }
+
+    NamedAttrList revAttrs;
+    revAttrs.set(
+        region.getOutputOperandAliasesAttrName(),
+        getOneResultPerInputAliases(builder.getContext(), seeds.size()));
+    auto revRegion =
+        JITRegionOp::create(builder, region.getLoc(),
+                            ValueRange(seeds).getTypes(), seeds, revAttrs);
+    // The kernels index a shadow like its primal buffer.
+    if (region.getOperandLayoutsAttr()) {
+      SmallVector<Attribute> layouts;
+      for (BlockArgument arg : activeBuffers)
+        layouts.push_back(getInputLayout(region, arg.getArgNumber()));
+      revRegion.setOperandLayoutsAttr(builder.getArrayAttr(layouts));
+    }
+
+    Block *revBB;
+    {
+      OpBuilder::InsertionGuard guard(builder);
+      revBB = builder.createBlock(&revRegion.getBody(), {}, shadowTypes,
+                                  shadowLocs);
+      JITRegionYieldOp::create(builder, region.getLoc());
+    }
+
+    // No gradient of a value of the region can outlive it. The reverse rules
+    // of nested ops only localize the gradients of their own block, if at all,
+    // so localize those of every block of the region.
+    OpBuilder bodyBuilder(revBB, revBB->begin());
+    region.getBody().walk(
+        [&](Block *block) { localizeGradients(bodyBuilder, gutils, block); });
+    bodyBuilder.setInsertionPoint(revBB->getTerminator());
+
+    bool valid = true;
+    for (Operation &inner :
+         llvm::drop_begin(llvm::reverse(oBB->getOperations()))) {
+      valid &=
+          gutils->Logic.visitChild(&inner, bodyBuilder, gutils).succeeded();
+    }
+
+    // The final contents of a shadow are the adjoint of the input the primal
+    // buffer was initialized from.
+    for (auto [arg, gradient] :
+         llvm::zip_equal(activeBuffers, revRegion.getResults())) {
+      Value input = region.getInputs()[arg.getArgNumber()];
+      if (!gutils->isConstantValue(input))
+        gutils->addToDiffe(input, gradient, builder);
+    }
+
+    return success(valid);
+  }
+
+  SmallVector<Value> cacheValues(Operation *op,
+                                 MGradientUtilsReverse *gutils) const {
+    return {};
+  }
+
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
+    auto region = cast<JITRegionOp>(op);
+    auto newRegion = cast<JITRegionOp>(gutils->getNewFromOriginal(op));
+
+    SmallVector<BlockArgument> activeBuffers = getActiveBuffers(region, gutils);
+    if (activeBuffers.empty())
+      return success();
+
+    SmallVector<Value> inputs =
+        llvm::map_to_vector(region.getInputs(), [&](Value input) {
+          return gutils->getNewFromOriginal(input);
+        });
+    SmallVector<Attribute> layouts = getInputLayouts(newRegion);
+
+    Block *newBB = newRegion.getBodyBlock();
+    for (auto [i, arg] : llvm::enumerate(activeBuffers)) {
+      BlockArgument shadow = newBB->getArgument(arg.getArgNumber() + i + 1);
+      layouts.push_back(getInputLayout(newRegion, arg.getArgNumber()));
+      inputs.push_back(cast<AutoDiffTypeInterface>(getTensorType(shadow))
+                           .createNullValue(builder, arg.getLoc()));
+    }
+
+    IRRewriter rewriter(builder);
+    auto augmented = rebuildJITRegion(rewriter, newRegion, inputs, layouts);
+
+    // Each shadow input points to the input of the reverse region holding the
+    // same shadow: the reverse region has one input per active buffer, in
+    // order.
+    SmallVector<Attribute> operandAttrs(augmented.getNumOperands(),
+                                        rewriter.getDictionaryAttr({}));
+    if (ArrayAttr attrs = augmented.getOperandAttrsAttr())
+      llvm::copy(attrs.getValue(), operandAttrs.begin());
+    unsigned numPrimalInputs = region.getInputs().size();
+    for (unsigned i = 0, e = activeBuffers.size(); i < e; ++i) {
+      NamedAttrList attrs(
+          cast<DictionaryAttr>(operandAttrs[numPrimalInputs + i]));
+      attrs.set("enzymexla.reverse_operand_index",
+                rewriter.getI64IntegerAttr(i));
+      operandAttrs[numPrimalInputs + i] = attrs.getDictionary(op->getContext());
+    }
+    augmented.setOperandAttrsAttr(rewriter.getArrayAttr(operandAttrs));
+
+    SmallVector<Value> replacements =
+        llvm::map_to_vector(newRegion.getResults(), [&](OpResult result) {
+          return Value(getRebuiltResult(augmented, result));
+        });
+    gutils->replaceOrigOpWith(op, replacements);
+    gutils->originalToNewFnOps[op] = augmented;
+    gutils->erase(newRegion);
+    return success();
+  }
+};
+
+struct JITRegionOpEnzymeOpsRemover
+    : public EnzymeOpsRemoverOpInterface::ExternalModel<
+          JITRegionOpEnzymeOpsRemover, JITRegionOp> {
+
+  LogicalResult removeEnzymeOps(Operation *op,
+                                PatternRewriter &rewriter) const {
+    auto fwd = cast<JITRegionOp>(op);
+    JITRegionOp rev = nullptr;
+    Block *body = fwd.getBodyBlock();
+
+    SmallVector<Value> gradients;
+
+    SmallVector<CacheInfo> caches;
+
+    for (Operation &inner : *body) {
+      if (auto push = dyn_cast<enzyme::PushOp>(&inner)) {
+        CacheInfo info(push.getCache());
+
+        auto popContainer = dyn_cast<JITRegionOp>(info.popOp->getParentOp());
+
+        if (!popContainer || (rev && popContainer != rev)) {
+          push->emitError("push and pop are not in jit regions both.");
+          return failure();
+        }
+
+        rev = popContainer;
+        caches.push_back(info);
+        continue;
+      }
+
+      if (isa<GetOp, SetOp>(&inner)) {
+        gradients.push_back(inner.getOperand(0));
+      }
+    }
+
+    if (!gradients.empty())
+      return op->emitError("cannot handle set / get in jit region yet.");
+
+    if (caches.empty())
+      return success();
+
+    // A shadow buffer of the augmented region stands for the buffer of the
+    // reverse region holding the same shadow.
+    IRMapping fwdrevmap;
+    Block *revBody = rev.getBodyBlock();
+    if (auto operandAttrs = fwd.getOperandAttrs()) {
+      for (auto [attr, arg] :
+           llvm::zip_equal(*operandAttrs, body->getArguments())) {
+        auto index = cast<DictionaryAttr>(attr).getAs<IntegerAttr>(
+            "enzymexla.reverse_operand_index");
+        if (!index)
+          continue;
+        fwdrevmap.map(arg, revBody->getArgument(index.getInt()));
+      }
+    }
+
+    rewriter.setInsertionPointToStart(revBody);
+    minCutCache(body, revBody, caches, rewriter, fwdrevmap);
+
+    // TODO: remove the unused shadows in the primal
+    // if (!caches.empty())
+    //   return op->emitError("could not remove all caches from jit region op");
+
+    return cacheBuffersAsTensors(fwd, rev, caches, rewriter);
+  }
+
+  // Whether `op` allocates a statically shaped buffer, synchronously.
+  static bool isStaticAlloc(Operation *op) {
+    if (isa<memref::AllocOp, memref::AllocaOp>(op))
+      return op->getNumOperands() == 0;
+    if (auto alloc = dyn_cast<gpu::AllocOp>(op))
+      return op->getNumOperands() == 0 && !alloc.getAsyncToken() &&
+             !alloc.getHostShared();
+    return false;
+  }
+
+  // Erases the deallocations of `buffer`.
+  static void eraseDeallocs(Value buffer, PatternRewriter &rewriter) {
+    for (Operation *user : llvm::make_early_inc_range(buffer.getUsers())) {
+      if (isa<memref::DeallocOp>(user))
+        rewriter.eraseOp(user);
+      else if (auto dealloc = dyn_cast<gpu::DeallocOp>(user);
+               dealloc && !dealloc.getAsyncToken())
+        rewriter.eraseOp(user);
+    }
+  }
+
+  // A buffer does not outlive the jit_region it lives in, so a cache of a
+  // buffer pushed in the augmented region and popped in the reverse one is
+  // carried between the two as a tensor, the buffer becoming a new buffer of
+  // both regions:
+  //
+  //   jit_region(%x) { ^bb0(%m): %b = memref.alloc(); push(%c, %b) }
+  //   jit_region(%dr) { ^bb0(%dm): %b = pop(%c); use(%b) }
+  //
+  // becomes
+  //
+  //   %r:2 = jit_region(%x, %zero) { ^bb0(%m, %b): }
+  //   push(%c', %r#1)
+  //   %t = pop(%c')
+  //   jit_region(%dr, %t) { ^bb0(%dm, %b): use(%b) }
+  //
+  // A cache of a buffer holds the buffer, not its contents at the push: the
+  // pop sees the contents the buffer has when the region exits, which is what
+  // the result read from the new buffer holds.
+  static LogicalResult cacheBuffersAsTensors(JITRegionOp fwd, JITRegionOp rev,
+                                             ArrayRef<CacheInfo> caches,
+                                             PatternRewriter &rewriter) {
+    Block *body = fwd.getBodyBlock();
+    Block *revBody = rev.getBodyBlock();
+
+    SmallVector<CacheInfo> bufferCaches;
+    for (CacheInfo info : caches) {
+      Value buffer = info.pushedValue();
+      auto type = dyn_cast<MemRefType>(buffer.getType());
+      if (!type)
+        continue;
+      if (info.pushOp->getBlock() != body || buffer.getParentBlock() != body ||
+          !rev.getBody().isAncestor(info.popOp->getParentRegion()))
+        return info.pushOp->emitError(
+            "cannot carry a cache of a buffer pushed in a nested block of a "
+            "jit_region");
+      if (!type.hasStaticShape())
+        return info.pushOp->emitError(
+            "cannot carry a cache of a dynamically shaped buffer out of a "
+            "jit_region");
+      bufferCaches.push_back(info);
+    }
+    if (bufferCaches.empty())
+      return success();
+
+    // The buffer of the augmented region holding each cached buffer, and
+    // where it was pushed.
+    SmallVector<unsigned> fwdBuffers;
+    SmallVector<Location> pushLocs;
+    SmallVector<Value> fwdInputs(fwd.getInputs());
+    SmallVector<Attribute> fwdLayouts = getInputLayouts(fwd);
+    for (CacheInfo info : bufferCaches) {
+      Value buffer = info.pushedValue();
+      Location loc = buffer.getLoc();
+      pushLocs.push_back(info.pushOp.getLoc());
+      rewriter.eraseOp(info.pushOp);
+
+      // A buffer of the region is already read by its result.
+      if (auto arg = dyn_cast<BlockArgument>(buffer)) {
+        fwdBuffers.push_back(arg.getArgNumber());
+        continue;
+      }
+
+      fwdBuffers.push_back(fwdInputs.size());
+      RankedTensorType tensorType = getTensorType(buffer);
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(fwd);
+        fwdInputs.push_back(cast<AutoDiffTypeInterface>(tensorType)
+                                .createNullValue(rewriter, loc));
+      }
+      fwdLayouts.push_back(getDefaultLayout(rewriter, tensorType));
+      BlockArgument arg = body->addArgument(buffer.getType(), loc);
+
+      // An allocation of the region becomes the new buffer; any other buffer
+      // is copied to it once the region is done with it.
+      Operation *alloc = buffer.getDefiningOp();
+      if (alloc && isStaticAlloc(alloc)) {
+        eraseDeallocs(buffer, rewriter);
+        rewriter.replaceAllUsesWith(buffer, arg);
+        rewriter.eraseOp(alloc);
+      } else {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(body->getTerminator());
+        memref::CopyOp::create(rewriter, loc, buffer, arg);
+      }
+    }
+
+    rewriter.setInsertionPoint(fwd);
+    JITRegionOp newFwd = rebuildJITRegion(rewriter, fwd, fwdInputs, fwdLayouts);
+    for (OpResult result : fwd.getResults())
+      rewriter.replaceAllUsesWith(result, getRebuiltResult(newFwd, result));
+    rewriter.eraseOp(fwd);
+
+    // Each cached buffer is pushed once the augmented region exits, and popped
+    // before the reverse one is entered, in the opposite order.
+    SmallVector<Value> inits;
+    rewriter.setInsertionPointAfter(newFwd);
+    for (auto [info, index, loc] :
+         llvm::zip_equal(bufferCaches, fwdBuffers, pushLocs)) {
+      Value tensor = newFwd->getResult(index);
+      enzyme::InitOp init;
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(info.initOp);
+        init = enzyme::InitOp::create(
+            rewriter, loc,
+            enzyme::CacheType::get(rewriter.getContext(), tensor.getType()));
+      }
+      enzyme::PushOp::create(rewriter, loc, init, tensor);
+      inits.push_back(init);
+    }
+
+    rewriter.setInsertionPoint(rev);
+    unsigned numRevInputs = rev.getInputs().size();
+    SmallVector<Value> revInputs(rev.getInputs());
+    SmallVector<Attribute> revLayouts = getInputLayouts(rev);
+    revInputs.resize(numRevInputs + bufferCaches.size());
+    for (unsigned i = bufferCaches.size(); i-- > 0;) {
+      Type type = cast<enzyme::CacheType>(inits[i].getType()).getType();
+      revInputs[numRevInputs + i] = enzyme::PopOp::create(
+          rewriter, bufferCaches[i].popOp.getLoc(), type, inits[i]);
+    }
+
+    // The pop of a cached buffer in the reverse region becomes its new buffer.
+    for (CacheInfo info : bufferCaches) {
+      BlockArgument arg =
+          revBody->addArgument(info.popOp.getType(), info.popOp.getLoc());
+      revLayouts.push_back(getDefaultLayout(rewriter, getTensorType(arg)));
+      // The region owns its buffers: the reverse region no longer frees the
+      // buffer the augmented one allocated.
+      eraseDeallocs(info.popOp.getResult(), rewriter);
+      rewriter.replaceAllUsesWith(info.popOp.getResult(), arg);
+      rewriter.eraseOp(info.popOp);
+      rewriter.eraseOp(info.initOp);
+    }
+
+    JITRegionOp newRev = rebuildJITRegion(rewriter, rev, revInputs, revLayouts);
+    for (OpResult result : rev.getResults())
+      rewriter.replaceAllUsesWith(result, getRebuiltResult(newRev, result));
+    rewriter.eraseOp(rev);
+    return success();
+  }
+};
+
 } // namespace
 
 // Batched, the ops that act along one dimension of their operand act along
@@ -383,6 +890,10 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
     WrapOp::attachInterface<DimensionedOpBatchInterface<WrapOp>>(*context);
     ExtendOp::attachInterface<DimensionedOpBatchInterface<ExtendOp>>(*context);
     RotateOp::attachInterface<RotateOpBatchInterface>(*context);
+
+    JITRegionOp::attachInterface<JITRegionOpADDataFlow>(*context);
+    JITRegionOp::attachInterface<JITRegionOpInterfaceReverse>(*context);
+    JITRegionOp::attachInterface<JITRegionOpEnzymeOpsRemover>(*context);
 
     context->loadDialect<stablehlo::StablehloDialect>();
   });
