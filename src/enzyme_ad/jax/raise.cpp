@@ -139,7 +139,15 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "func.func(canonicalize-loops),"
       "llvm.func(canonicalize-loops),"
       "canonicalize-scf-for,"
-      "" + canonicalize + ",affine-cfg," + canonicalize + ","
+      "" + canonicalize + ",";
+  // A loop of a few iterations known at compile time, such as one over the
+  // components of a vector, written out: a bound or a branch chosen by the
+  // iteration is then a constant or a symbol in each copy. Loops of zero or
+  // one iteration go whatever the maximum.
+  pass_pipeline += "unroll-small-loops{max_trip_count=" +
+                   std::to_string(options->unrollMaxTripCount) + "}," +
+                   canonicalize + ",";
+  pass_pipeline += "affine-cfg," + canonicalize + ","
       "split-branched-accesses," + canonicalize + ",polygeist-mem2reg,"
       "" + canonicalize + ","
       "func.func(canonicalize-loops),"
