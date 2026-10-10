@@ -1,5 +1,6 @@
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "Enzyme/MLIR/Interfaces/Utils.h"
+#include "mlir/Analysis/Presburger/Simplex.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
@@ -34,6 +35,7 @@
 #include <isl/set.h>
 #include <isl/val.h>
 #include <numeric>
+#include <unordered_map>
 
 #define DEBUG_TYPE "affine-cfg"
 
@@ -8852,6 +8854,97 @@ static void addInBoundsFacts(Block *block, ArrayRef<Operation *> enclosing,
   domain.append(cst);
 }
 
+// The value `v` is a cast of, through the casts the normalizer reads through.
+static Value throughCasts(Value v) {
+  while (Operation *def = v.getDefiningOp()) {
+    if (!isa<arith::IndexCastOp, arith::IndexCastUIOp, arith::ExtUIOp,
+             arith::ExtSIOp>(def))
+      break;
+    v = def->getOperand(0);
+  }
+  return v;
+}
+
+// A bound that is `max(n, 1)`, as the rotation of a loop that might run no
+// times leaves it, with n as an index that dominates `at`.
+static Value maxOneBoundOf(Value bound, Operation *at, DominanceInfo &dom) {
+  auto max = throughCasts(bound).getDefiningOp<arith::MaxSIOp>();
+  if (!max)
+    return nullptr;
+  for (unsigned i = 0; i < 2; ++i) {
+    APInt c;
+    if (matchPattern(max->getOperand(1 - i), m_ConstantInt(&c)) && c == 1)
+      return asIndex(throughCasts(max->getOperand(i)), at, dom);
+  }
+  return nullptr;
+}
+
+// Whether `domain` has no point with `e` (over `syms`) at most zero: e >= 1
+// throughout.
+// Whether `domain` and the constraints `cst` over its values have no point
+// in common: a rational check, which the simplex makes in polynomial time
+// where the elimination of isEmpty takes exponential, and which only ever
+// finds fewer sets empty, so a fact is only ever not proven.
+static bool noCommonPoint(const FlatAffineValueConstraints &domain,
+                          FlatLinearValueConstraints &cst) {
+  FlatAffineValueConstraints test(domain);
+  test.mergeAndAlignVarsWithOther(0, &cst);
+  test.append(cst);
+  return presburger::Simplex(test).isEmpty();
+}
+
+static bool domainImpliesPositive(const FlatAffineValueConstraints &domain,
+                                  AffineExpr e, ValueRange syms) {
+  bool error = false;
+  SetConstraints cst(IntegerSet::get(0, syms.size(), -e, false), syms, &error);
+  if (error)
+    return false;
+  return noCommonPoint(domain, cst);
+}
+
+// A loop bounded by max(n, 1) runs over [0, n) wherever n >= 1 holds, which
+// the facts on the way to the access may give: the bound is then n, the
+// value the loop's accesses stride by, and iterations stay apart that the
+// opaque bound let meet.
+static void addMaxBoundFacts(Operation *at, ArrayRef<Operation *> enclosing,
+                             DominanceInfo &dom,
+                             FlatAffineValueConstraints &domain) {
+  MLIRContext *ctx = at->getContext();
+  // the upper bound operands of the loops of the nest, each the one symbol
+  // its bound reads
+  SmallVector<Value> bounds;
+  for (Operation *op : enclosing) {
+    if (auto forOp = dyn_cast<AffineForOp>(op)) {
+      AffineMap ub = forOp.getUpperBoundMap();
+      if (ub.getNumResults() == 1 && isa<AffineSymbolExpr>(ub.getResult(0)) &&
+          forOp.getUpperBoundOperands().size() == 1)
+        bounds.push_back(forOp.getUpperBoundOperands().front());
+    } else if (auto par = dyn_cast<AffineParallelOp>(op)) {
+      for (unsigned d = 0, e = par.getNumDims(); d < e; ++d) {
+        AffineMap ub = par.getUpperBoundMap(d);
+        if (auto sym = dyn_cast<AffineSymbolExpr>(ub.getResult(0)))
+          bounds.push_back(par.getUpperBoundsOperands()[ub.getNumDims() +
+                                                        sym.getPosition()]);
+      }
+    }
+  }
+  for (Value bound : bounds) {
+    Value n = maxOneBoundOf(bound, at, dom);
+    if (!n)
+      continue;
+    SmallVector<Value> syms{bound, n};
+    AffineExpr b = getAffineSymbolExpr(0, ctx), e = getAffineSymbolExpr(1, ctx);
+    if (!domainImpliesPositive(domain, e, syms))
+      continue;
+    bool error = false;
+    SetConstraints cst(IntegerSet::get(0, 2, {b - e}, {true}), syms, &error);
+    if (error)
+      continue;
+    domain.mergeAndAlignVarsWithOther(0, &cst);
+    domain.append(cst);
+  }
+}
+
 namespace {
 // The loop-invariant terms an access of a loop indexes with that the affine
 // dependence analysis cannot flatten, each standing for a symbol of its own:
@@ -8955,6 +9048,22 @@ struct InvariantTerms {
     return out;
   }
 
+  // The product of a monomial's variables, in the order of the operands
+  // they stand for: the same product in two accesses whose maps number
+  // the operands differently is then one expression, and one placeholder.
+  AffineExpr product(const Monomial &m, ValueRange operands,
+                     unsigned numDims) const {
+    SmallVector<AffineExpr> vars(m.vars);
+    llvm::sort(vars, [&](AffineExpr x, AffineExpr y) {
+      return operandOf(x, operands, numDims).getAsOpaquePointer() <
+             operandOf(y, operands, numDims).getAsOpaquePointer();
+    });
+    AffineExpr term = getAffineConstantExpr(1, m.vars.front().getContext());
+    for (AffineExpr v : vars)
+      term = term * v;
+    return term;
+  }
+
   // `e` with each largest loop-invariant subexpression that is not affine
   // replaced by its placeholder, appended to `symbols`. A sum of products is
   // multiplied out first, so that the invariant product under a different
@@ -8967,9 +9076,8 @@ struct InvariantTerms {
         MLIRContext *ctx = e.getContext();
         AffineExpr sum = getAffineConstantExpr(0, ctx);
         for (Monomial &m : *monomials) {
-          AffineExpr term = getAffineConstantExpr(1, ctx);
-          for (AffineExpr v : m.vars)
-            term = term * v;
+          AffineExpr term = m.vars.empty() ? getAffineConstantExpr(1, ctx)
+                                           : product(m, operands, numDims);
           if (!term.isPureAffine() && isInvariant(term, operands, numDims)) {
             Value v = placeholder(term, operands, numDims);
             auto *it = llvm::find(symbols, v);
@@ -9027,10 +9135,508 @@ struct InvariantTerms {
     domain.append(cst);
   }
 
+  // Whether `domain` lies within the facts `cond` taking `holds` gives.
+  bool domainImpliesCondition(const FlatAffineValueConstraints &domain,
+                              Value cond, bool holds, Operation *at) {
+    SmallVector<Value> syms;
+    SmallVector<AffineExpr> facts;
+    SmallVector<bool> eqs;
+    addConditionFacts(cond, holds, at, dom, syms, facts, eqs);
+    if (facts.empty())
+      return false;
+    IntegerSet set = IntegerSet::get(0, syms.size(), facts, eqs);
+    for (auto [k, c] : llvm::enumerate(set.getConstraints())) {
+      // c >= 0 fails where -c - 1 >= 0; c == 0 where c - 1 >= 0 too
+      SmallVector<AffineExpr> negations{-c - 1};
+      if (set.isEq(k))
+        negations.push_back(c - 1);
+      for (AffineExpr n : negations) {
+        bool error = false;
+        SetConstraints neg(IntegerSet::get(0, syms.size(), n, false), syms,
+                           &error);
+        if (error)
+          return false;
+        if (!noCommonPoint(domain, neg))
+          return false;
+      }
+    }
+    return true;
+  }
+
+  // A symbol an access reads that is a choice between two constants, as a
+  // layout's size is by a flag (symmetric ? 3 : 4): the one chosen where
+  // the domain decides the flag, as under a branch on it, else between them.
+  void addSelectFacts(ValueRange symbols, Operation *at,
+                      FlatAffineValueConstraints &domain) {
+    for (Value v : symbols) {
+      auto sel = throughCasts(v).getDefiningOp<arith::SelectOp>();
+      APInt a, b;
+      if (!sel || !matchPattern(sel.getTrueValue(), m_ConstantInt(&a)) ||
+          !matchPattern(sel.getFalseValue(), m_ConstantInt(&b)))
+        continue;
+      int64_t lo = std::min(a.getSExtValue(), b.getSExtValue()),
+              hi = std::max(a.getSExtValue(), b.getSExtValue());
+      if (domainImpliesCondition(domain, sel.getCondition(), true, at))
+        lo = hi = a.getSExtValue();
+      else if (domainImpliesCondition(domain, sel.getCondition(), false, at))
+        lo = hi = b.getSExtValue();
+      MLIRContext *ctx = v.getContext();
+      AffineExpr s = getAffineSymbolExpr(0, ctx);
+      bool error = false;
+      SetConstraints cst(
+          IntegerSet::get(0, 1, {s - lo, hi - s}, {false, false}), v, &error);
+      if (error)
+        continue;
+      domain.mergeAndAlignVarsWithOther(0, &cst);
+      domain.append(cst);
+    }
+  }
+
+  // A clamp of a value: the chain of min and max against constants it
+  // goes through, outermost first, from the value `base`.
+  struct Clamp {
+    Value base;
+    SmallVector<std::pair<bool, int64_t>> steps; // (isMin, constant)
+    int64_t at(int64_t x) const {
+      for (auto [isMin, c] : llvm::reverse(steps))
+        x = isMin ? std::min(x, c) : std::max(x, c);
+      return x;
+    }
+  };
+
+  static std::optional<Clamp> clampOf(Value v) {
+    Clamp clamp;
+    v = throughCasts(v);
+    while (Operation *def = v.getDefiningOp()) {
+      bool isMin = isa<arith::MinSIOp>(def);
+      if (!isMin && !isa<arith::MaxSIOp>(def))
+        break;
+      APInt c;
+      unsigned other = 0;
+      if (matchPattern(def->getOperand(1), m_ConstantInt(&c)))
+        other = 0;
+      else if (matchPattern(def->getOperand(0), m_ConstantInt(&c)))
+        other = 1;
+      else
+        break;
+      clamp.steps.push_back({isMin, c.getSExtValue()});
+      v = throughCasts(def->getOperand(other));
+    }
+    if (clamp.steps.empty())
+      return std::nullopt;
+    clamp.base = v;
+    return clamp;
+  }
+
+  // The sizes a kernel reads are clamps of one value: the loop bound
+  // max(min(d1d, 14), 1) of a rotated loop over the clamped size, the
+  // stride min(d1d, 24) of the host's clamp. As functions of d1d they are
+  // piecewise linear and monotone, so one is at most the other over the
+  // values of d1d the domain admits where it is at each constant of either
+  // and at the ends of the range; such a pair gives the domain that
+  // ordering, which the levels of the strides need (`q < stride` from
+  // `q < bound`).
+  void addClampFacts(ArrayRef<Value> values, Operation *at,
+                     FlatAffineValueConstraints &domain) {
+    SmallVector<std::pair<Value, Clamp>> clamps;
+    for (Value v : values)
+      if (v.getType().isIndex())
+        if (auto clamp = clampOf(v))
+          clamps.push_back({v, *clamp});
+    MLIRContext *ctx = at->getContext();
+    for (unsigned i = 0; i < clamps.size(); ++i) {
+      for (unsigned j = i + 1; j < clamps.size(); ++j) {
+        auto &[v1, c1] = clamps[i];
+        auto &[v2, c2] = clamps[j];
+        if (c1.base != c2.base || v1 == v2)
+          continue;
+        // the range of the base the domain admits, through an index form
+        int64_t lo = std::numeric_limits<int64_t>::min() / 4,
+                hi = std::numeric_limits<int64_t>::max() / 4;
+        if (Value idx = asIndex(c1.base, at, dom)) {
+          unsigned pos;
+          if (domain.findVar(idx, &pos)) {
+            if (auto b =
+                    domain.getConstantBound64(presburger::BoundType::LB, pos))
+              lo = *b;
+            if (auto b =
+                    domain.getConstantBound64(presburger::BoundType::UB, pos))
+              hi = *b;
+          }
+        }
+        if (lo > hi)
+          continue;
+        SmallVector<int64_t> points{lo, hi};
+        for (auto &c : {c1, c2})
+          for (auto [isMin, k] : c.steps)
+            if (k >= lo && k <= hi)
+              points.push_back(k);
+        bool le = true, ge = true;
+        for (int64_t x : points) {
+          int64_t a = c1.at(x), b = c2.at(x);
+          le &= a <= b;
+          ge &= a >= b;
+        }
+        if (!le && !ge)
+          continue;
+        AffineExpr s1 = getAffineSymbolExpr(0, ctx),
+                   s2 = getAffineSymbolExpr(1, ctx);
+        SmallVector<AffineExpr> facts;
+        if (le)
+          facts.push_back(s2 - s1);
+        if (ge)
+          facts.push_back(s1 - s2);
+        bool error = false;
+        SetConstraints cst(
+            IntegerSet::get(0, 2, facts,
+                            SmallVector<bool>(facts.size(), false)),
+            ValueRange{v1, v2}, &error);
+        if (error)
+          continue;
+        domain.mergeAndAlignVarsWithOther(0, &cst);
+        domain.append(cst);
+      }
+    }
+  }
+
+  // An index read from an integer: the integer, and whether the casts on
+  // the way extend its sign (index_cast and extsi do, extui and
+  // index_castui do not).
+  static std::optional<std::pair<Value, bool>> indexForm(Value v) {
+    if (!v.getType().isIndex())
+      return std::nullopt;
+    bool isSigned = true;
+    bool cast = false;
+    while (Operation *def = v.getDefiningOp()) {
+      if (isa<arith::IndexCastOp, arith::ExtSIOp>(def))
+        isSigned = true;
+      else if (isa<arith::IndexCastUIOp, arith::ExtUIOp>(def))
+        isSigned = false;
+      else
+        break;
+      // the widening cast nearest the integer decides the sign
+      cast = true;
+      v = def->getOperand(0);
+    }
+    if (!cast || v.getType().isIndex())
+      return std::nullopt;
+    return std::make_pair(v, isSigned);
+  }
+
+  // Two indices read from one integer through different casts, the loop
+  // bound index_cast(extui(n)) and the stride index_cast(n) of a kernel,
+  // say, are one value where the integer is non-negative, which the domain
+  // knows where a loop over one of them runs: they are then equal.
+  void addCastFacts(ArrayRef<Value> values,
+                    FlatAffineValueConstraints &domain) {
+    SmallVector<std::pair<Value, std::pair<Value, bool>>> forms;
+    for (Value v : values)
+      if (auto form = indexForm(v))
+        forms.push_back({v, *form});
+    if (forms.empty())
+      return;
+    MLIRContext *ctx = forms.front().first.getContext();
+    for (unsigned i = 0; i < forms.size(); ++i) {
+      for (unsigned j = i + 1; j < forms.size(); ++j) {
+        auto &[v1, f1] = forms[i];
+        auto &[v2, f2] = forms[j];
+        if (f1.first != f2.first || v1 == v2)
+          continue;
+        // the sign-extended form is the integer's value; the zero-extended
+        // one agrees where that is non-negative
+        if (f1.second != f2.second) {
+          Value signedForm = f1.second ? v1 : v2;
+          if (!domainImplies(domain, getAffineSymbolExpr(0, ctx), 0,
+                             signedForm))
+            continue;
+        }
+        bool error = false;
+        SetConstraints cst(IntegerSet::get(0, 2,
+                                           {getAffineSymbolExpr(0, ctx) -
+                                            getAffineSymbolExpr(1, ctx)},
+                                           {true}),
+                           ValueRange{v1, v2}, &error);
+        if (error)
+          continue;
+        domain.mergeAndAlignVarsWithOther(0, &cst);
+        domain.append(cst);
+      }
+    }
+  }
+
+  // Whether `domain` holds `e >= 0` (over the map's operands, `dims` of
+  // them loop variables) at every point.
+  static bool domainImplies(const FlatAffineValueConstraints &domain,
+                            AffineExpr e, unsigned dims, ValueRange operands) {
+    bool error = false;
+    SetConstraints cst(
+        IntegerSet::get(dims, operands.size() - dims, -e - 1, false), operands,
+        &error);
+    if (error)
+      return false;
+    return noCommonPoint(domain, cst);
+  }
+
+  // A flat index c + q * D + e * D * N into a buffer laid out by runtime
+  // sizes, as the tuple (e, q, c) when each level stays in its bounds: the
+  // index is the sum over levels k of S_k * E_k, with strides S_0 = 1 and
+  // S_{k+1} = S_k * Q_k for a size Q_k, and the domain gives 0 <= E_k < Q_k
+  // at every level but the last. Two points then index the same element
+  // only where every E_k agrees, which the levels as separate results of the
+  // map let the dependence analysis see. The flat index otherwise.
+  // A level's stride, as the symbols (over the access's operands) it
+  // multiplies.
+  using Stride = SmallVector<Value>;
+  // A term of an index that keeps its value through the loop, as the
+  // operands it multiplies with its coefficient: the element of a batch
+  // (e * NQ * ND) an inner nest works within.
+  using Offset = std::pair<int64_t, SmallVector<const void *>>;
+
+  // The terms of `r` scaled by a size whose loop variable is one of an
+  // enclosing loop (`e * N` for the batch an inner nest works within):
+  // in every iteration of the loop the dependence analysis compares, they
+  // are one offset for every access of the buffer, cancelling between two
+  // points, so the levels of the rest decide whether two points meet. They
+  // are set aside before the levels are built and added back to the
+  // innermost level afterwards. `reconcile` keeps the accesses of a buffer
+  // to the same offset.
+  SmallVector<AffineExpr> delinearize(AffineExpr r, unsigned numDims,
+                                      ValueRange operands,
+                                      const FlatAffineValueConstraints &domain,
+                                      ArrayRef<Stride> alsoStrides,
+                                      SmallVectorImpl<Stride> *strides,
+                                      SmallVectorImpl<Offset> *offsets) {
+    MLIRContext *ctx = r.getContext();
+    auto monomials = expand(r);
+    if (!monomials)
+      return {r};
+    // per stride (a product of symbols), the sum of what is scaled by it
+    struct Level {
+      SmallVector<AffineExpr> stride;
+      AffineExpr sum;
+    };
+    SmallVector<Level> levels;
+    auto levelFor = [&](ArrayRef<AffineExpr> stride) -> Level & {
+      for (Level &l : levels)
+        if (ArrayRef<AffineExpr>(l.stride) == stride)
+          return l;
+      levels.push_back(
+          {SmallVector<AffineExpr>(stride), getAffineConstantExpr(0, ctx)});
+      return levels.back();
+    };
+    AffineExpr offset = getAffineConstantExpr(0, ctx);
+    // the monomials of symbols only, placed once the levels the loop
+    // variables index are known
+    SmallVector<std::pair<int64_t, SmallVector<AffineExpr>>> symbolic;
+    for (Monomial &m : *monomials) {
+      SmallVector<AffineExpr> dims, syms;
+      for (AffineExpr v : m.vars)
+        (isa<AffineDimExpr>(v) ? dims : syms).push_back(v);
+      if (dims.size() > 1)
+        return {r};
+      if (dims.empty()) {
+        symbolic.push_back({m.coeff, syms});
+        continue;
+      }
+      AffineExpr rest = getAffineConstantExpr(m.coeff, ctx) * dims.front();
+      if (!syms.empty() && isInvariant(dims.front(), operands, numDims)) {
+        offset = offset + product(m, operands, numDims) * m.coeff;
+        if (offsets) {
+          SmallVector<const void *> vars;
+          for (AffineExpr v : m.vars)
+            vars.push_back(
+                operandOf(v, operands, numDims).getAsOpaquePointer());
+          llvm::sort(vars);
+          offsets->push_back({m.coeff, vars});
+        }
+        continue;
+      }
+      Level &l = levelFor(syms);
+      l.sum = l.sum + rest;
+    }
+    // the levels another access of the buffer has that this one does not
+    // index: at zero here
+    for (const Stride &stride : alsoStrides) {
+      SmallVector<AffineExpr> syms;
+      for (Value v : stride) {
+        auto it = llvm::find(operands, v);
+        if (it == operands.end() || it - operands.begin() < (long)numDims)
+          return {r};
+        syms.push_back(
+            getAffineSymbolExpr(it - operands.begin() - numDims, ctx));
+      }
+      llvm::sort(syms, [](AffineExpr x, AffineExpr y) {
+        return x.getAsOpaquePointer() < y.getAsOpaquePointer();
+      });
+      levelFor(syms);
+    }
+    // A monomial of symbols only is an offset at the stride of all of
+    // them, a level of its own when no loop variable has that stride,
+    // which the chain below then has to pass through: `k * NQ` next to
+    // `q + e * sel * NQ` is row k of the block, below the sel rows of
+    // one. Where no level's stride holds all of them, it is an offset at
+    // the largest stride a level has among them, the rest a symbolic part
+    // of that level's sum: a row chosen between constants, `sel * NQ`
+    // next to `q + (i + 3) * NQ`, puts the loop at row i + 3 + sel.
+    // Between two strides it could be at, a level of its own.
+    auto contains = [](ArrayRef<AffineExpr> outer, ArrayRef<AffineExpr> inner) {
+      return llvm::all_of(
+          inner, [&](AffineExpr v) { return llvm::is_contained(outer, v); });
+    };
+    for (auto &[coeff, syms] : symbolic) {
+      AffineExpr rest = getAffineConstantExpr(coeff, ctx);
+      bool within = llvm::any_of(
+          levels, [&](Level &l) { return contains(l.stride, syms); });
+      Level *at = nullptr;
+      bool ambiguous = false;
+      if (!within)
+        for (Level &l : levels) {
+          if (!contains(syms, l.stride))
+            continue;
+          if (!at || l.stride.size() > at->stride.size()) {
+            at = &l;
+            ambiguous = false;
+          } else if (l.stride.size() == at->stride.size()) {
+            ambiguous = true;
+          }
+        }
+      if (within || !at || ambiguous) {
+        Level &l = levelFor(syms);
+        l.sum = l.sum + rest;
+        continue;
+      }
+      for (AffineExpr v : syms)
+        if (!llvm::is_contained(at->stride, v))
+          rest = rest * v;
+      at->sum = at->sum + rest;
+    }
+    if (levels.size() < 2)
+      return {r};
+    llvm::sort(levels, [](const Level &a, const Level &b) {
+      return a.stride.size() < b.stride.size();
+    });
+    if (!levels.front().stride.empty())
+      return {r};
+    for (unsigned k = 0; k + 1 < levels.size(); ++k) {
+      ArrayRef<AffineExpr> a = levels[k].stride, b = levels[k + 1].stride;
+      if (b.size() <= a.size())
+        return {r};
+      // the next stride over this one: the sizes of this level and of the
+      // levels between that no access indexes, each at least 1, this level
+      // below its own
+      SmallVector<AffineExpr> sizes(b);
+      for (AffineExpr v : a) {
+        auto *it = llvm::find(sizes, v);
+        if (it == sizes.end())
+          return {r};
+        sizes.erase(it);
+      }
+      AffineExpr e = levels[k].sum;
+      if (!e.isPureAffine() || !domainImplies(domain, e, numDims, operands))
+        return {r};
+      bool below = false;
+      for (AffineExpr size : sizes) {
+        if (!domainImplies(domain, size - 1, numDims, operands))
+          return {r};
+        if (!below && domainImplies(domain, size - 1 - e, numDims, operands))
+          below = true;
+      }
+      if (!below)
+        return {r};
+    }
+    SmallVector<AffineExpr> results;
+    for (Level &l : llvm::reverse(levels)) {
+      results.push_back(l.sum);
+      if (strides) {
+        Stride stride;
+        for (AffineExpr v : l.stride)
+          stride.push_back(
+              operands[numDims + cast<AffineSymbolExpr>(v).getPosition()]);
+        strides->push_back(stride);
+      }
+    }
+    results.back() = results.back() + offset;
+    if (offsets)
+      llvm::sort(*offsets);
+    return results;
+  }
+
+  // The relation of each access built so far: an access meets every other
+  // one of its buffer, and its relation is the same each time.
+  // Node-based: the relations are handed out by pointer.
+  std::unordered_map<Operation *, std::optional<presburger::IntegerRelation>>
+      relations;
+  // The levels of an index are only comparable with the levels of another
+  // over the same strides, so the accesses of a buffer split over the
+  // strides any of them has, or none do: per access, the strides of the
+  // other accesses of its buffer, and the strides it split by.
+  DenseMap<Operation *, SmallVector<Stride>> alsoStrides, usedStrides;
+  // per access, the offset it set aside (see delinearize)
+  DenseMap<Operation *, SmallVector<Offset>> usedOffsets;
+  DenseSet<Operation *> flat;
+
+  // Builds the relations of `ops`, the accesses of a loop, so that those of
+  // one buffer all split over the same strides.
+  void reconcile(ArrayRef<Operation *> ops) {
+    llvm::MapVector<Value, SmallVector<Operation *>> byMemref;
+    for (Operation *op : ops)
+      byMemref[MemRefAccess(op).memref].push_back(op);
+    for (auto &[memref, accesses] : byMemref) {
+      // the strides any access of the buffer splits by, each once
+      SmallVector<Stride> all;
+      for (Operation *op : accesses) {
+        (void)accessRelation(op);
+        for (Stride &stride : usedStrides[op])
+          if (!llvm::is_contained(all, stride))
+            all.push_back(stride);
+      }
+      bool agree = true;
+      for (Operation *op : accesses)
+        if (usedStrides[op].size() != all.size())
+          agree = false;
+      // an offset set aside cancels only between accesses that share it
+      for (Operation *op : accesses)
+        if (usedOffsets[op] != usedOffsets[accesses.front()]) {
+          agree = false;
+          all.clear();
+        }
+      if (agree)
+        continue;
+      // rebuild each over all of them; where one still cannot, none split
+      bool split = true;
+      for (Operation *op : accesses) {
+        alsoStrides[op] = all;
+        relations.erase(op);
+        (void)accessRelation(op);
+        if (usedStrides[op].size() != all.size())
+          split = false;
+      }
+      if (split)
+        continue;
+      for (Operation *op : accesses) {
+        flat.insert(op);
+        relations.erase(op);
+      }
+    }
+  }
+
   // The access relation of `op`, as MemRefAccess::getAccessRelation builds
-  // it, with the invariant terms abstracted.
-  LogicalResult accessRelation(Operation *op,
-                               presburger::IntegerRelation &rel) {
+  // it, with a flat index over runtime sizes split into its levels and the
+  // invariant terms abstracted.
+  const presburger::IntegerRelation *accessRelation(Operation *op) {
+    auto it = relations.find(op);
+    if (it == relations.end()) {
+      presburger::IntegerRelation built(
+          presburger::PresburgerSpace::getRelationSpace());
+      bool ok = succeeded(buildAccessRelation(op, built));
+      it = relations.try_emplace(op, ok ? std::optional(built) : std::nullopt)
+               .first;
+    }
+    return it->second ? &*it->second : nullptr;
+  }
+
+  LogicalResult buildAccessRelation(Operation *op,
+                                    presburger::IntegerRelation &rel) {
     SmallVector<Operation *> enclosing;
     getEnclosingAffineOps(*op, &enclosing);
     FlatAffineValueConstraints domain;
@@ -9038,15 +9644,31 @@ struct InvariantTerms {
       return failure();
     addInBoundsFacts(op->getBlock(), enclosing, domain);
     addGuardFacts(op, domain);
+    addMaxBoundFacts(op, enclosing, dom, domain);
     AffineValueMap access;
     MemRefAccess(op).getAccessMap(&access);
     AffineMap map = access.getAffineMap();
     SmallVector<Value> operands(access.getOperands());
     unsigned numDims = map.getNumDims();
+    addSelectFacts(ValueRange(operands).drop_front(numDims), op, domain);
+    SmallVector<Value> sizes(ValueRange(operands).drop_front(numDims));
+    for (std::optional<Value> v : domain.getMaybeValues())
+      if (v && !llvm::is_contained(sizes, *v))
+        sizes.push_back(*v);
+    addClampFacts(sizes, op, domain);
+    addCastFacts(sizes, domain);
     SmallVector<Value> symbols(ValueRange(operands).drop_front(numDims));
     SmallVector<AffineExpr> results;
-    for (AffineExpr e : map.getResults())
-      results.push_back(abstract(e, operands, numDims, symbols));
+    usedStrides[op].clear();
+    usedOffsets[op].clear();
+    for (AffineExpr e : map.getResults()) {
+      SmallVector<AffineExpr> levels{e};
+      if (map.getNumResults() == 1 && !e.isPureAffine() && !flat.count(op))
+        levels = delinearize(e, numDims, operands, domain, alsoStrides[op],
+                             &usedStrides[op], &usedOffsets[op]);
+      for (AffineExpr level : levels)
+        results.push_back(abstract(level, operands, numDims, symbols));
+    }
     SmallVector<Value> newOperands(ValueRange(operands).take_front(numDims));
     newOperands.append(symbols);
     AffineValueMap abstracted(
@@ -9227,19 +9849,18 @@ static bool isLoopMemoryParallel(AffineForOp forOp,
   // Check dependences between all pairs of ops in 'loadAndStoreOps', on
   // access relations whose loop-invariant terms are abstracted.
   InvariantTerms terms(forOp);
+  terms.reconcile(loadAndStoreOps);
   for (auto *srcOp : loadAndStoreOps) {
     for (auto *dstOp : loadAndStoreOps) {
       if (!sameBuffer(MemRefAccess(srcOp).memref, MemRefAccess(dstOp).memref) ||
           (!isa<AffineWriteOpInterface>(srcOp) &&
            !isa<AffineWriteOpInterface>(dstOp)))
         continue;
-      presburger::IntegerRelation srcRel(
-          presburger::PresburgerSpace::getRelationSpace()),
-          dstRel(presburger::PresburgerSpace::getRelationSpace());
-      if (failed(terms.accessRelation(srcOp, srcRel)) ||
-          failed(terms.accessRelation(dstOp, dstRel)))
+      const presburger::IntegerRelation *srcRel = terms.accessRelation(srcOp),
+                                        *dstRel = terms.accessRelation(dstOp);
+      if (!srcRel || !dstRel)
         return false;
-      DependenceResult result = checkAccessDependence(srcRel, dstRel, depth);
+      DependenceResult result = checkAccessDependence(*srcRel, *dstRel, depth);
       if (result.value != DependenceResult::NoDependence)
         return false;
     }
@@ -9585,6 +10206,7 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
   // way to it establish). Accesses to different memrefs, or that only read,
   // have none.
   InvariantTerms terms(forOp);
+  terms.reconcile(loadAndStoreOps);
   for (auto *srcOp : loadAndStoreOps) {
     MemRefAccess srcAccess(srcOp);
     for (auto *dstOp : loadAndStoreOps) {
@@ -9596,13 +10218,11 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
       if (sameBuffer(srcAccess.memref, dstAccess.memref) &&
           (isa<AffineWriteOpInterface>(srcOp) ||
            isa<AffineWriteOpInterface>(dstOp))) {
-        presburger::IntegerRelation srcRel(
-            presburger::PresburgerSpace::getRelationSpace()),
-            dstRel(presburger::PresburgerSpace::getRelationSpace());
-        if (failed(terms.accessRelation(srcOp, srcRel)) ||
-            failed(terms.accessRelation(dstOp, dstRel)))
+        const presburger::IntegerRelation *srcRel = terms.accessRelation(srcOp),
+                                          *dstRel = terms.accessRelation(dstOp);
+        if (!srcRel || !dstRel)
           return false;
-        result = checkAccessDependence(srcRel, dstRel, depth);
+        result = checkAccessDependence(*srcRel, *dstRel, depth);
       }
 
       if (result.value == DependenceResult::Failure) {
