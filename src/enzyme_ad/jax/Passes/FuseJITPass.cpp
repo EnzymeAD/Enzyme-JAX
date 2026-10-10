@@ -230,9 +230,10 @@ LogicalResult validateFusionExtension(
 //   bool hasEffects = false;
 //   size_t legalCalls = 0, legalArgs = 0, legalConstants = 0;
 
-//   // Boundary bookkeeping does bounded work per operand/result/use per attempt.
-//   // Alias searches, greedy revisits and repeated wrapper cloning can cost more.
-//   for (Operation *op = firstCall; op; op = op->getNextNode()) {
+//   // Boundary bookkeeping does bounded work per operand/result/use per
+//   attempt.
+//   // Alias searches, greedy revisits and repeated wrapper cloning can cost
+//   more. for (Operation *op = firstCall; op; op = op->getNextNode()) {
 //     if (op->hasTrait<OpTrait::IsTerminator>())
 //       break;
 //     auto call = dyn_cast<enzymexla::JITCallOp>(op);
@@ -247,7 +248,8 @@ LogicalResult validateFusionExtension(
 //     if (failed(func))
 //       break;
 //     JITFusionExtension extension;
-//     if (failed(validateFusionExtension(call, func.value(), firstCall, dominance,
+//     if (failed(validateFusionExtension(call, func.value(), firstCall,
+//     dominance,
 //                                        info, readOnlyArgs, movedConstants,
 //                                        extension)))
 //       break;
@@ -278,7 +280,8 @@ LogicalResult validateFusionExtension(
 //       info.resultSlotMap[result] = extension.resultSlots[idx];
 //     }
 //     hasEffects |= !isMemoryEffectFree(call);
-//     if (info.fusionCalls.size() >= 2 && (hasEffects || escapingResults != 0)) {
+//     if (info.fusionCalls.size() >= 2 && (hasEffects || escapingResults != 0))
+//     {
 //       legalCalls = info.fusionCalls.size();
 //       legalArgs = info.fusedArgs.size();
 //       legalConstants = info.constantsToMove.size();
@@ -318,9 +321,10 @@ LogicalResult validateFusionExtension(
 //       }
 //     }
 //   }
-//   // Preserve an alias for every written input, even if its result is internal
-//   // or unused. Otherwise constant request buffers can be treated as read-only.
-//   for (auto call : info.fusionCalls) {
+//   // Preserve an alias for every written input, even if its result is
+//   internal
+//   // or unused. Otherwise constant request buffers can be treated as
+//   read-only. for (auto call : info.fusionCalls) {
 //     for (Value result : call.getResults()) {
 //       if (returnedSlots.insert(info.resultSlotMap.lookup(result)).second)
 //         info.fusedReturns.push_back(result);
@@ -609,7 +613,8 @@ struct FuseJITPass : public impl::FuseJITPassBase<FuseJITPass> {
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
 
-    if (dag) patterns.add<FuseDAG>(context);
+    if (dag)
+      patterns.add<FuseDAG>(context);
     // if (adjacent) patterns.add<FuseAdjacent>(context);
 
     GreedyRewriteConfig config;
