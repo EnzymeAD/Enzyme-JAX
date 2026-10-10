@@ -1463,6 +1463,30 @@ def ConvertCudaRTtoHipRT : Pass<"convert-cudart-to-hiprt", "mlir::ModuleOp"> {
   ];
 }
 
+def UnrollSmallLoops : Pass<"unroll-small-loops"> {
+  let summary = "Fully unroll scf.for and affine.for loops of few iterations";
+  let description = [{
+    Fully unrolls every scf.for and affine.for whose trip count is a compile
+    time constant of at most max_trip_count. A loop of no iteration (replaced
+    by its initial values) or of a single one (by its body) is always
+    removed, whatever max_trip_count. No loop is partially unrolled.
+  }];
+  let dependentDialects = [
+    "scf::SCFDialect",
+    "affine::AffineDialect",
+    "arith::ArithDialect",
+  ];
+  let options = [
+    Option<
+      /*C++ variable name=*/"max_trip_count",
+      /*CLI argument=*/"max_trip_count",
+      /*type=*/"int64_t",
+      /*default=*/"0",
+      /*description=*/"Unroll a loop of at most this many iterations; loops "
+                      "of zero or one iteration are always removed">,
+  ];
+}
+
 def SCFParallelLoopUnroll : Pass<"scf-parallel-loop-unroll"> {
   let summary = "Unroll and interleave scf parallel loops";
   let dependentDialects = [
