@@ -46,14 +46,13 @@ module {
 }
 
 // CHECK: func.func @main(%arg0: tensor<4x4xf64>, %arg1: tensor<f32>) -> tensor<4x4xf64> {
-// CHECK-NEXT{LITERAL}:     %c = stablehlo.constant dense<[[0, 0], [1, 1], [2, 2], [3, 3]]> : tensor<4x2xi64>
-// CHECK-NEXT:     %cst = stablehlo.constant dense<1.000000e+00> : tensor<4x4xf64>
-// CHECK-NEXT:     %0 = stablehlo.convert %arg1 : (tensor<f32>) -> tensor<f64>
-// CHECK-NEXT:     %1 = stablehlo.broadcast_in_dim %0, dims = [] : (tensor<f64>) -> tensor<4xf64>
-// CHECK-NEXT:     %2 = "stablehlo.scatter"(%cst, %c, %1) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
-// CHECK-NEXT:     ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
-// CHECK-NEXT:       stablehlo.return %arg3 : tensor<f64>
-// CHECK-NEXT:     }) {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<GUARANTEED>]} : (tensor<4x4xf64>, tensor<4x2xi64>, tensor<4xf64>) -> tensor<4x4xf64>
-// CHECK-NEXT:     %3 = stablehlo.divide %2, %arg0 : tensor<4x4xf64>
-// CHECK-NEXT:     return %3 : tensor<4x4xf64>
+// CHECK-NEXT{LITERAL}:   %c = stablehlo.constant dense<[[true, false, false, false], [false, true, false, false], [false, false, true, false], [false, false, false, true]]> : tensor<4x4xi1>
+// CHECK-NEXT{LITERAL}:   %c_0 = stablehlo.constant dense<[[[0], [0], [0], [0]], [[0], [1], [0], [0]], [[0], [0], [2], [0]], [[0], [0], [0], [3]]]> : tensor<4x4x1xi64>
+// CHECK-NEXT:   %cst = stablehlo.constant dense<1.000000e+00> : tensor<4x4xf64>
+// CHECK-NEXT:   %0 = stablehlo.convert %arg1 : (tensor<f32>) -> tensor<f64>
+// CHECK-NEXT:   %1 = stablehlo.broadcast_in_dim %0, dims = [] : (tensor<f64>) -> tensor<4xf64>
+// CHECK-NEXT:   %2 = "stablehlo.gather"(%1, %c_0) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<4xf64>, tensor<4x4x1xi64>) -> tensor<4x4xf64>
+// CHECK-NEXT:   %3 = stablehlo.select %c, %2, %cst : tensor<4x4xi1>, tensor<4x4xf64>
+// CHECK-NEXT:   %4 = stablehlo.divide %3, %arg0 : tensor<4x4xf64>
+// CHECK-NEXT:   return %4 : tensor<4x4xf64>
 // CHECK-NEXT: }
