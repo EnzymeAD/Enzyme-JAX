@@ -2152,9 +2152,16 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
                                            type_lapack_int, const1);
     LLVM::StoreOp::create(rewriter, op.getLoc(), constM1, lworkptr);
 
+    // `work` holds elements of the input type, and a complex element takes two
+    // reals
+    auto realsPerElement = LLVM::ConstantOp::create(
+        rewriter, op.getLoc(), type_llvm_lapack_int,
+        rewriter.getIntegerAttr(type_lapack_int, isComplex ? 2 : 1));
+
     // first call extracts the optimal size for the workspace
-    auto workBuffer1 = LLVM::AllocaOp::create(
-        rewriter, op.getLoc(), type_llvm_ptr, type_input_element_real, const1);
+    auto workBuffer1 =
+        LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
+                               type_input_element_real, realsPerElement);
 
     if (algorithm == enzymexla::SVDAlgorithm::QRIteration) {
       auto jobuptr = LLVM::AllocaOp::create(
@@ -2255,56 +2262,48 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
       };
 
       if (isComplex) {
-        auto c7 = LLVM::ConstantOp::create(
-            rewriter, op.getLoc(), type_llvm_lapack_int,
-            rewriter.getIntegerAttr(type_llvm_lapack_int, 7));
+        auto constInt = [&](int64_t value) {
+          return LLVM::ConstantOp::create(
+              rewriter, op.getLoc(), type_llvm_lapack_int,
+              rewriter.getIntegerAttr(type_llvm_lapack_int, value));
+        };
+        Value rworkSize;
         if (lapackJob == 'N') {
           // 7*minmn
-          auto sevenMin =
-              arith::MulIOp::create(rewriter, op.getLoc(), c7, minMN);
-          args.insert(args.begin() + 13, sevenMin);
+          rworkSize =
+              arith::MulIOp::create(rewriter, op.getLoc(), constInt(7), minMN);
         } else {
-          // minmn*max(5*minmn+7, 2*max(m,n)+2*minmn
+          // minmn*max(5*minmn+5, 2*max(m,n)+2*minmn+1)
           auto maxMN =
               arith::MaxSIOp::create(rewriter, op.getLoc(), MVal, NVal);
+          auto c1 = constInt(1);
+          auto c2 = constInt(2);
+          auto c5 = constInt(5);
 
-          // 5 * minmn
-          auto c5 = LLVM::ConstantOp::create(
-              rewriter, op.getLoc(), type_llvm_lapack_int,
-              rewriter.getIntegerAttr(type_llvm_lapack_int, 5));
+          // 5*minmn + 5
           auto fiveMin =
               arith::MulIOp::create(rewriter, op.getLoc(), c5, minMN);
-
-          // 5*minmn + 7
           auto termA =
-              arith::AddIOp::create(rewriter, op.getLoc(), fiveMin, c7);
+              arith::AddIOp::create(rewriter, op.getLoc(), fiveMin, c5);
 
-          // 2 * max(m,n)
-          auto c2 = LLVM::ConstantOp::create(
-              rewriter, op.getLoc(), type_llvm_lapack_int,
-              rewriter.getIntegerAttr(type_llvm_lapack_int, 2));
-          auto twoMax = arith::MulIOp::create(rewriter, op.getLoc(), c2, maxMN);
+          // 2*(max(m,n) + minmn) + 1
+          auto sumMN =
+              arith::AddIOp::create(rewriter, op.getLoc(), maxMN, minMN);
+          auto twoSum = arith::MulIOp::create(rewriter, op.getLoc(), c2, sumMN);
+          auto termB = arith::AddIOp::create(rewriter, op.getLoc(), twoSum, c1);
 
-          // 2*minmn
-          auto twoMin = arith::MulIOp::create(rewriter, op.getLoc(), c2, minMN);
-
-          // 2*max(m,n) + 2*minmn
-          auto termB =
-              arith::AddIOp::create(rewriter, op.getLoc(), twoMax, twoMin);
-
-          // max(termA, termB)
           auto maxTerm =
               arith::MaxSIOp::create(rewriter, op.getLoc(), termA, termB);
-
-          auto rworkSize =
+          rworkSize =
               arith::MulIOp::create(rewriter, op.getLoc(), minMN, maxTerm);
-
-          auto rworkptr =
-              LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
-                                     type_input_element_real, rworkSize);
-
-          args.insert(args.begin() + 13, rworkptr);
         }
+
+        auto rworkptr =
+            LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
+                                   type_input_element_real, rworkSize);
+
+        // ?gesdd takes rwork between lwork and iwork
+        args.insert(args.begin() + 12, rworkptr);
       }
     }
 
@@ -2316,9 +2315,13 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
         rewriter, op.getLoc(), type_input_element_real, workBuffer1);
     auto workSpaceSize = LLVM::FPToSIOp::create(
         rewriter, op.getLoc(), type_llvm_lapack_int, workSpaceSizeFloat);
+    Value workSpaceReals = workSpaceSize;
+    if (isComplex)
+      workSpaceReals = LLVM::MulOp::create(rewriter, op.getLoc(), workSpaceSize,
+                                           realsPerElement);
     auto workspace =
         LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
-                               type_input_element_real, workSpaceSize);
+                               type_input_element_real, workSpaceReals);
 
     LLVM::StoreOp::create(rewriter, op.getLoc(), workSpaceSize, lworkptr);
 
