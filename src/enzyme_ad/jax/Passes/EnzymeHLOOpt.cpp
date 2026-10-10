@@ -63,6 +63,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <limits>
 #include <llvm/ADT/MapVector.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallVector.h>
@@ -4183,167 +4184,149 @@ struct ReducePad
           op, "only single-operand single-init reduce is supported");
     }
 
-    Value input = op.getInputs()[0];
-    auto pad = input.getDefiningOp<stablehlo::PadOp>();
+    auto pad = op.getInputs()[0].getDefiningOp<stablehlo::PadOp>();
     if (!pad)
       return rewriter.notifyMatchFailure(op, "input source is not a pad op");
     if (anyPadSizesNegative(pad))
       return failure();
 
-    auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
-
+    auto checkCommonReduce = stablehlo::CheckCommonReduceOp(op);
     switch (checkCommonReduce.kind) {
     case stablehlo::ReduceOpKind::Add:
-      return matchAndRewriteReduceAdd(op, rewriter, pad, input);
     case stablehlo::ReduceOpKind::Min:
-      return matchAndRewriteReduceMin(op, rewriter, pad, input);
     case stablehlo::ReduceOpKind::Max:
-      return matchAndRewriteReduceMax(op, rewriter, pad, input);
     case stablehlo::ReduceOpKind::Mul:
-      return matchAndRewriteReduceMul(op, rewriter, pad, input);
+      break;
     default:
       return failure();
     }
-  }
 
-private:
-  struct PostReduceInfo {
-    Value res;
-    SmallVector<int64_t> low;
-    SmallVector<int64_t> high;
-    SmallVector<int64_t> inner;
-    bool needsPostPad;
-    int64_t numElementsReduced;
-  };
+    auto inputType = pad.getOperand().getType();
+    auto paddedType = pad.getType();
+    if (!inputType.hasStaticShape() || !paddedType.hasStaticShape())
+      return failure();
+    Type elementType = inputType.getElementType();
+    if (getElementTypeOrSelf(op.getInitValues()[0]) != elementType ||
+        getElementTypeOrSelf(op.getResult(0)) != elementType ||
+        llvm::any_of(op.getBody().front().getArgumentTypes(), [&](Type type) {
+          return getElementTypeOrSelf(type) != elementType;
+        }))
+      return failure();
 
-  LogicalResult matchAndRewriteReduceMin(stablehlo::ReduceOp op,
-                                         PatternRewriter &rewriter,
-                                         stablehlo::PadOp pad,
-                                         Value input) const {
-    auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
-    Value res = stablehlo::MinOpCreate(rewriter, op.getLoc(), reduceInfo.res,
-                                       pad.getPaddingValue());
+    Attribute paddingAttr;
+    bool zeroPadding =
+        checkCommonReduce.kind == stablehlo::ReduceOpKind::Add &&
+        matchPattern(pad.getPaddingValue(), m_Constant(&paddingAttr)) &&
+        (matchPattern(paddingAttr, m_AnyZeroFloat()) ||
+         matchPattern(paddingAttr, m_AnyZeroComplex()) ||
+         matchPattern(paddingAttr, m_Zero()));
+    bool booleanAdd = checkCommonReduce.kind == stablehlo::ReduceOpKind::Add &&
+                      elementType.isInteger(1);
 
-    if (reduceInfo.needsPostPad) {
-      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
-                                     pad.getPaddingValue(), reduceInfo.low,
-                                     reduceInfo.high, reduceInfo.inner);
-    }
-    rewriter.replaceOp(op, res);
-    return success();
-  }
-
-  LogicalResult matchAndRewriteReduceMax(stablehlo::ReduceOp op,
-                                         PatternRewriter &rewriter,
-                                         stablehlo::PadOp pad,
-                                         Value input) const {
-    auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
-    Value res = stablehlo::MaxOpCreate(rewriter, op.getLoc(), reduceInfo.res,
-                                       pad.getPaddingValue());
-
-    if (reduceInfo.needsPostPad) {
-      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
-                                     pad.getPaddingValue(), reduceInfo.low,
-                                     reduceInfo.high, reduceInfo.inner);
-    }
-    rewriter.replaceOp(op, res);
-    return success();
-  }
-
-  LogicalResult matchAndRewriteReduceMul(stablehlo::ReduceOp op,
-                                         PatternRewriter &rewriter,
-                                         stablehlo::PadOp pad,
-                                         Value input) const {
-    auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
-    Value res = reduceInfo.res;
-
-    // compute padValue ^ numElementsReduced and multiply this to the result
-    auto cType = RankedTensorType::get(
-        {}, cast<RankedTensorType>(pad.getPaddingValue().getType())
-                .getElementType());
-    auto mulConst = stablehlo::PowOp::create(
-        rewriter, op.getLoc(), pad.getPaddingValue(),
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), cType,
-            cast<ElementsAttr>(
-                makeAttr(cType, reduceInfo.numElementsReduced))));
-    res = stablehlo::MulOpCreate(rewriter, op.getLoc(), res, mulConst);
-
-    if (reduceInfo.needsPostPad) {
-      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
-                                     pad.getPaddingValue(), reduceInfo.low,
-                                     reduceInfo.high, reduceInfo.inner);
-    }
-    rewriter.replaceOp(op, res);
-    return success();
-  }
-
-  LogicalResult matchAndRewriteReduceAdd(stablehlo::ReduceOp op,
-                                         PatternRewriter &rewriter,
-                                         stablehlo::PadOp pad,
-                                         Value input) const {
-    auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
-    Value res = reduceInfo.res;
-
-    Attribute padValAttr;
-    bool padValConst =
-        matchPattern(pad.getPaddingValue(), m_Constant(&padValAttr));
-    if (!padValConst || (!matchPattern(padValAttr, m_AnyZeroFloat()) &&
-                         !matchPattern(padValAttr, m_AnyZeroComplex()) &&
-                         !matchPattern(padValAttr, m_Zero()))) {
-      // compute padValue * numElementsReduced and add this to the result
-      auto cType = RankedTensorType::get(
-          {}, cast<RankedTensorType>(pad.getPaddingValue().getType())
-                  .getElementType());
-      auto mulConst = stablehlo::MulOp::create(
-          rewriter, op.getLoc(), pad.getPaddingValue(),
-          stablehlo::ConstantOp::create(
-              rewriter, op.getLoc(), cType,
-              cast<ElementsAttr>(
-                  makeAttr(cType, reduceInfo.numElementsReduced))));
-      res = stablehlo::AddOpCreate(rewriter, op.getLoc(), res, mulConst);
-    }
-
-    if (reduceInfo.needsPostPad) {
-      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
-                                     pad.getPaddingValue(), reduceInfo.low,
-                                     reduceInfo.high, reduceInfo.inner);
-    }
-    rewriter.replaceOp(op, res);
-    return success();
-  }
-
-  PostReduceInfo matchAndRewriteReduce(stablehlo::ReduceOp op,
-                                       PatternRewriter &rewriter,
-                                       stablehlo::PadOp pad,
-                                       Value input) const {
     SmallVector<int64_t> low, high, inner;
-    int64_t numElementsReduced = 0;
-    bool needsPostPad = false;
-    for (auto en : llvm::enumerate(
-             cast<RankedTensorType>(pad.getOperand().getType()).getShape())) {
-      int64_t lowPad = pad.getEdgePaddingLow()[en.index()];
-      int64_t highPad = pad.getEdgePaddingHigh()[en.index()];
-      int64_t interiorPad = pad.getInteriorPadding()[en.index()];
+    int64_t inputElements = 1, paddedElements = 1;
+    for (auto en : llvm::enumerate(inputType.getShape())) {
       if (llvm::is_contained(op.getDimensions(), en.index())) {
-        numElementsReduced +=
-            lowPad + highPad +
-            std::max(static_cast<int32_t>(en.value() - 1), 0) * interiorPad;
+        int64_t paddedSize = paddedType.getDimSize(en.index());
+        if ((en.value() && inputElements > std::numeric_limits<int64_t>::max() /
+                                               en.value()) ||
+            (paddedSize &&
+             paddedElements > std::numeric_limits<int64_t>::max() / paddedSize))
+          return failure();
+        inputElements *= en.value();
+        paddedElements *= paddedSize;
         continue;
       }
-      low.push_back(lowPad);
-      high.push_back(highPad);
-      inner.push_back(interiorPad);
-      needsPostPad = true;
+      low.push_back(pad.getEdgePaddingLow()[en.index()]);
+      high.push_back(pad.getEdgePaddingHigh()[en.index()]);
+      inner.push_back(pad.getInteriorPadding()[en.index()]);
     }
+
+    if (checkCommonReduce.kind == stablehlo::ReduceOpKind::Mul ||
+        (checkCommonReduce.kind == stablehlo::ReduceOpKind::Add &&
+         !zeroPadding)) {
+      if (auto type = dyn_cast<IntegerType>(elementType);
+          type && checkCommonReduce.kind == stablehlo::ReduceOpKind::Mul) {
+        unsigned width = type.getWidth();
+        if (width < 64 &&
+            paddedElements >
+                (std::numeric_limits<int64_t>::max() >> (64 - width)))
+          return failure();
+      }
+      Type factorType = elementType;
+      if (auto type = dyn_cast<ComplexType>(factorType))
+        factorType = type.getElementType();
+      if (auto type = dyn_cast<FloatType>(factorType)) {
+        // Rounding a count can overflow an additive factor or change a power.
+        // makeAttr also passes integer values through a double.
+        for (int64_t count : {paddedElements, paddedElements - inputElements}) {
+          llvm::APInt integer(64, count);
+          llvm::APFloat factor(type.getFloatSemantics());
+          llvm::APFloat doubleFactor(llvm::APFloat::IEEEdouble());
+          if (factor.convertFromAPInt(integer, false,
+                                      llvm::APFloat::rmNearestTiesToEven) !=
+                  llvm::APFloat::opOK ||
+              doubleFactor.convertFromAPInt(
+                  integer, false, llvm::APFloat::rmNearestTiesToEven) !=
+                  llvm::APFloat::opOK)
+            return failure();
+        }
+      }
+    }
+
+    auto foldPadding = [&](Value init, int64_t count) -> Value {
+      if (!count || zeroPadding)
+        return init;
+      Value value = pad.getPaddingValue();
+      if (count != 1 &&
+          ((checkCommonReduce.kind == stablehlo::ReduceOpKind::Add &&
+            !booleanAdd) ||
+           checkCommonReduce.kind == stablehlo::ReduceOpKind::Mul)) {
+        if (checkCommonReduce.kind == stablehlo::ReduceOpKind::Add &&
+            isa<ComplexType>(elementType)) {
+          auto real = stablehlo::RealOp::create(rewriter, op.getLoc(), value);
+          auto imag = stablehlo::ImagOp::create(rewriter, op.getLoc(), value);
+          auto factor = stablehlo::ConstantOp::create(
+              rewriter, op.getLoc(), makeAttr(real.getType(), count));
+          auto realScaled =
+              stablehlo::MulOp::create(rewriter, op.getLoc(), real, factor);
+          auto imagScaled =
+              stablehlo::MulOp::create(rewriter, op.getLoc(), imag, factor);
+          value = stablehlo::ComplexOp::create(rewriter, op.getLoc(),
+                                               realScaled, imagScaled);
+        } else {
+          auto factor = stablehlo::ConstantOp::create(
+              rewriter, op.getLoc(), makeAttr(value.getType(), count));
+          if (checkCommonReduce.kind == stablehlo::ReduceOpKind::Add)
+            value =
+                stablehlo::MulOp::create(rewriter, op.getLoc(), value, factor);
+          else
+            value =
+                stablehlo::PowOp::create(rewriter, op.getLoc(), value, factor);
+        }
+      }
+      return checkCommonReduce.createEquivalentOperation(rewriter, op.getLoc(),
+                                                         init, value);
+    };
 
     auto newReduction = stablehlo::ReduceOp::create(
         rewriter, op.getLoc(), ValueRange(pad.getOperand()), op.getInitValues(),
         op.getDimensions());
     newReduction.getRegion().takeBody(op.getRegion());
+    Value res =
+        foldPadding(newReduction.getResult(0), paddedElements - inputElements);
 
-    Value res = newReduction->getResult(0);
-    return {res, low, high, inner, needsPostPad, numElementsReduced};
+    if (llvm::any_of(low, [](int64_t n) { return n != 0; }) ||
+        llvm::any_of(high, [](int64_t n) { return n != 0; }) ||
+        llvm::any_of(inner, [](int64_t n) { return n != 0; })) {
+      // A padded output lane reduces a full slice of the padding value,
+      // including the reduction's initial value, rather than just one copy.
+      Value padding = foldPadding(op.getInitValues()[0], paddedElements);
+      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res, padding, low,
+                                     high, inner);
+    }
+    rewriter.replaceOp(op, res);
+    return success();
   }
 };
 
