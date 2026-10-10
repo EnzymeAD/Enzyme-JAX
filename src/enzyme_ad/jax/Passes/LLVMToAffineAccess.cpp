@@ -121,28 +121,32 @@ static bool onlyAccessedThrough(enzymexla::Pointer2MemrefOp view) {
   });
 }
 
+// The position of leaf `leaf` of the aggregate at element `index` of a view,
+// as indices into the memory the view is replaced by.
+using LeafExprs =
+    function_ref<SmallVector<AffineExpr>(AffineExpr index, int64_t leaf)>;
+
 // Rewrites every access through `p2m`, a view of an aggregate whose leaves are
-// all one scalar, into one access per leaf through `replacement`, a view of
-// the same memory as that scalar.
+// all one scalar, into one access per leaf through `replacement`, a memref of
+// that scalar over the same memory, at the indices `leafExprs` gives.
 static void expandAggregateView(enzymexla::Pointer2MemrefOp p2m,
                                 Value replacement,
                                 ArrayRef<SmallVector<int64_t>> paths,
-                                RewriterBase &rewriter) {
+                                LeafExprs leafExprs, RewriterBase &rewriter) {
   Type aggregate = p2m.getType().getElementType();
-  int64_t leaves = paths.size();
-  // The leaf-th element of the aggregate at element `index` of the view.
   auto leafMap = [&](AffineMap map, int64_t leaf) {
-    AffineExpr expr = map.getResult(0) * leaves + leaf;
-    return AffineMap::get(map.getNumDims(), map.getNumSymbols(), expr,
-                          map.getContext());
+    return AffineMap::get(map.getNumDims(), map.getNumSymbols(),
+                          leafExprs(map.getResult(0), leaf), map.getContext());
   };
-  auto leafIndex = [&](Location loc, Value index, int64_t leaf) -> Value {
-    Value scaled = arith::MulIOp::create(
-        rewriter, loc, index,
-        arith::ConstantIndexOp::create(rewriter, loc, leaves));
-    return arith::AddIOp::create(
-        rewriter, loc, scaled,
-        arith::ConstantIndexOp::create(rewriter, loc, leaf));
+  auto leafIndex = [&](Location loc, Value index,
+                       int64_t leaf) -> SmallVector<Value> {
+    AffineMap map = leafMap(
+        AffineMap::get(1, 0, getAffineDimExpr(0, rewriter.getContext())), leaf);
+    SmallVector<Value> indices;
+    for (unsigned i = 0; i < map.getNumResults(); i++)
+      indices.push_back(affine::AffineApplyOp::create(
+          rewriter, loc, map.getSubMap({i}), ValueRange{index}));
+    return indices;
   };
   for (Operation *user : llvm::make_early_inc_range(p2m->getUsers())) {
     rewriter.setInsertionPoint(user);
@@ -544,7 +548,13 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
     if (replacement.getType() != viewType)
       replacement =
           memref::CastOp::create(rewriter, p2m.getLoc(), viewType, replacement);
-    expandAggregateView(p2m, replacement, paths, rewriter);
+    int64_t leaves = paths.size();
+    expandAggregateView(
+        p2m, replacement, paths,
+        [&](AffineExpr index, int64_t leaf) -> SmallVector<AffineExpr> {
+          return {index * leaves + leaf};
+        },
+        rewriter);
   }
 
   for (auto other : others) {
@@ -713,9 +723,13 @@ struct ExpandAggregateViewOfScalarMemref final
     auto m2p = p2m.getSource().getDefiningOp<enzymexla::Memref2PointerOp>();
     if (!m2p)
       return failure();
-    Type scalar = cast<MemRefType>(m2p.getSource().getType()).getElementType();
+    Value src = m2p.getSource();
+    auto srcType = cast<MemRefType>(src.getType());
+    Type scalar = srcType.getElementType();
     auto MT = p2m.getType();
-    if (!scalar.isIntOrFloat() || MT.getElementType() == scalar ||
+    // Only a float's fields: an integer aggregate (e.g. [8 x i8]) is more
+    // likely a byte-wise move than a number made of fields.
+    if (!isa<FloatType>(scalar) || MT.getElementType() == scalar ||
         MT.getRank() != 1 || !MT.getLayout().isIdentity())
       return failure();
     SmallVector<SmallVector<int64_t>> paths;
@@ -723,15 +737,60 @@ struct ExpandAggregateViewOfScalarMemref final
                                           dl.getAtOrAbove(p2m), paths);
     if (!leaf || *leaf != scalar || !onlyAccessedThrough(p2m))
       return failure();
+    int64_t leaves = paths.size();
+    rewriter.setInsertionPoint(p2m);
+
+    // Index the buffer itself where its shape spells out the aggregates: flat,
+    // or with a trailing dimension of one aggregate's leaves (a complex buffer
+    // as interleaved reals), the outer dimensions delinearizing the view's
+    // index.
+    ArrayRef<int64_t> shape = srcType.getShape();
+    bool direct =
+        srcType.getLayout().isIdentity() &&
+        srcType.getMemorySpace() == MT.getMemorySpace() &&
+        (shape.size() == 1 || (shape.back() == leaves &&
+                               llvm::none_of(shape.drop_front().drop_back(),
+                                             ShapedType::isDynamic)));
+    if (direct) {
+      expandAggregateView(
+          p2m, src, paths,
+          [&](AffineExpr index, int64_t leaf) -> SmallVector<AffineExpr> {
+            if (shape.size() == 1)
+              return {index * leaves + leaf};
+            ArrayRef<int64_t> outer = shape.drop_back();
+            SmallVector<AffineExpr> exprs;
+            int64_t stride = 1;
+            for (int64_t d : outer.drop_front())
+              stride *= d;
+            for (auto [k, d] : llvm::enumerate(outer)) {
+              AffineExpr e = index.floorDiv(stride);
+              if (k != 0)
+                e = e % d;
+              exprs.push_back(e);
+              if (k + 1 < outer.size())
+                stride /= outer[k + 1];
+            }
+            exprs.push_back(getAffineConstantExpr(leaf, index.getContext()));
+            return exprs;
+          },
+          rewriter);
+      return success();
+    }
+
+    // Otherwise view the buffer flat, as its scalar.
     int64_t size = MT.getDimSize(0);
     if (size != ShapedType::kDynamic)
-      size *= paths.size();
+      size *= leaves;
     auto viewType = MemRefType::get({size}, scalar, MemRefLayoutAttrInterface{},
                                     MT.getMemorySpace());
-    rewriter.setInsertionPoint(p2m);
     Value replacement = enzymexla::Pointer2MemrefOp::create(
         rewriter, p2m.getLoc(), viewType, p2m.getSource());
-    expandAggregateView(p2m, replacement, paths, rewriter);
+    expandAggregateView(
+        p2m, replacement, paths,
+        [&](AffineExpr index, int64_t leaf) -> SmallVector<AffineExpr> {
+          return {index * leaves + leaf};
+        },
+        rewriter);
     return success();
   }
 };
