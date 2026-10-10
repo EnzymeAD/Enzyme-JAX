@@ -10206,6 +10206,43 @@ struct CompareConvert
   }
 };
 
+struct NonZeroCompareFold final
+    : public CheckedOpRewritePattern<stablehlo::CompareOp, NonZeroCompareFold> {
+  using CheckedOpRewritePattern<stablehlo::CompareOp,
+                                NonZeroCompareFold>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dir = op.getComparisonDirection();
+    if (dir != stablehlo::ComparisonDirection::EQ &&
+        dir != stablehlo::ComparisonDirection::NE)
+      return failure();
+
+    if (auto ct = op.getCompareType();
+        ct && *ct == stablehlo::ComparisonType::TOTALORDER)
+      return failure();
+
+    auto isZero = [](Value v) {
+      return matchPattern(v, m_AnyZeroFloat()) || matchPattern(v, m_Zero());
+    };
+    Value x;
+    if (isZero(op.getRhs()))
+      x = op.getLhs();
+    else if (isZero(op.getLhs()))
+      x = op.getRhs();
+    else
+      return failure();
+
+    if (!guaranteedNonZeroResult(x, rewriter))
+      return failure();
+
+    bool result = dir == stablehlo::ComparisonDirection::NE;
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, DenseElementsAttr::get(cast<ShapedType>(op.getType()), result));
+    return success();
+  }
+};
+
 bool isAddOfSelects(Value lhs, Value rhs, Value &tval, Value &fval) {
   auto sel1 = lhs.getDefiningOp<stablehlo::SelectOp>();
   if (!sel1)
@@ -39196,11 +39233,12 @@ struct EnzymeHLOOptPass
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
         ConvertIotaSimplify, MinMaxIotaConstSimplify<stablehlo::MaxOp>,
         MinMaxIotaConstSimplify<stablehlo::MinOp>, ClampIotaConstSimplify,
-        CompareMul, CompareConvert, AddSelects, CompareNegateConstSimplify,
-        CompareSubtractConstSimplify, SelectSimplify,
-        DynamicSliceReshapeDynamicSlice, DynamicSliceReshapeSlice,
-        SliceReshapeDynamicSlice, SliceReshapeSlice, ExponentialMinusOneFuse,
-        ExponentialMinusOneAddFuse>(context, PatternBenefit(65000));
+        CompareMul, CompareConvert, NonZeroCompareFold, AddSelects,
+        CompareNegateConstSimplify, CompareSubtractConstSimplify,
+        SelectSimplify, DynamicSliceReshapeDynamicSlice,
+        DynamicSliceReshapeSlice, SliceReshapeDynamicSlice, SliceReshapeSlice,
+        ExponentialMinusOneFuse, ExponentialMinusOneAddFuse>(
+        context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold,
