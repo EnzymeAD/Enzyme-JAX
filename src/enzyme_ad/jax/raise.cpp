@@ -145,7 +145,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   // iteration is then a constant or a symbol in each copy. Loops of zero or
   // one iteration go whatever the maximum.
   pass_pipeline += "unroll-small-loops{max_trip_count=" +
-                   std::to_string(options->unrollMaxTripCount) + "}," +
+                   std::to_string(options->unrollMaxTripCount) +
+                   " max_nested_ops=" +
+                   std::to_string(options->unrollMaxNestedOps) + "}," +
                    canonicalize + ",";
   pass_pipeline += "affine-cfg," + canonicalize + ","
       "split-branched-accesses," + canonicalize + ",polygeist-mem2reg,"
