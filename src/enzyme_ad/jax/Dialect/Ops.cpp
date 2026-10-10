@@ -3256,11 +3256,72 @@ struct AlwaysAllocaScopeHoister : public OpRewritePattern<T> {
   }
 };
 
+// An allocation whose automatic allocation scope is an scf.for or an
+// affine.for: hoisted, with the pure values it reads, out of the loop, to
+// before the outermost op under the next scope out. Rooted at the
+// allocation so that each is looked at when it changes, not every time
+// anything in a loop around it does.
+template <typename AllocT>
+struct HoistAllocaOutOfLoops : public OpRewritePattern<AllocT> {
+  using OpRewritePattern<AllocT>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(AllocT alloc,
+                                PatternRewriter &rewriter) const override {
+    Operation *op = alloc;
+    if (!isGuaranteedAutomaticAllocation(op))
+      return failure();
+    Operation *scope = op->getParentOp();
+    while (scope && !scope->hasTrait<OpTrait::AutomaticAllocationScope>())
+      scope = scope->getParentOp();
+    if (!scope || !isa<scf::ForOp, affine::AffineForOp>(scope))
+      return failure();
+    Operation *top = scope;
+    while (top->getParentOp() &&
+           !top->getParentOp()->hasTrait<OpTrait::AutomaticAllocationScope>())
+      top = top->getParentOp();
+    if (!top->getParentOp())
+      return failure();
+    Region *containingRegion = nullptr;
+    for (Region &r : top->getRegions())
+      if (r.isAncestor(op->getParentRegion()))
+        containingRegion = &r;
+
+    SetVector<Operation *> toHoist;
+    std::function<bool(Value)> fix = [&](Value v) -> /*legal*/ bool {
+      if (!containingRegion->isAncestor(v.getParentRegion()))
+        return true;
+      Operation *def = v.getDefiningOp();
+      if (!def)
+        return false;
+      if (toHoist.count(def))
+        return true;
+      if (!isReadNone(def))
+        return false;
+      for (Value o : def->getOperands())
+        if (!fix(o))
+          return false;
+      toHoist.insert(def);
+      return true;
+    };
+    if (!llvm::all_of(op->getOperands(), fix))
+      return failure();
+    toHoist.insert(op);
+
+    rewriter.setInsertionPoint(top);
+    IRMapping map;
+    for (Operation *h : toHoist) {
+      Operation *cloned = rewriter.clone(*h, map);
+      rewriter.replaceOp(h, cloned->getResults());
+    }
+    return success();
+  }
+};
+
 void TypeAlignOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                               MLIRContext *context) {
   results.insert<AlwaysAllocaScopeHoister<memref::AllocaScopeOp>,
-                 AlwaysAllocaScopeHoister<scf::ForOp>,
-                 AlwaysAllocaScopeHoister<affine::AffineForOp>>(context);
+                 HoistAllocaOutOfLoops<memref::AllocaOp>,
+                 HoistAllocaOutOfLoops<LLVM::AllocaOp>>(context);
 }
 
 /// Simplify select subindex(x), subindex(y) to subindex(select x, y)
