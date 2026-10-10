@@ -36207,6 +36207,543 @@ struct ScatterOfGatherIdentity final
   }
 };
 
+// A chain of scatters that overwrite slots of a rank-one buffer with elements
+// gathered from the buffer, or from an earlier state of the chain, permutes
+// the buffer: the in-place block transposes of MFEM's element assembly, once
+// batched, are such chains, each scatter moving one slot of every block. The
+// chain is followed from its root, every index tensor evaluated by the
+// reference interpreter from the constants and iotas it is built of (and
+// never materialized in the IR), and the permutation it ends with is matched:
+// the identity is the root, and a permutation that reads some view of the
+// buffer axis by axis, in another order or backwards, is a transpose, or a
+// reverse, of that view (the block transposes of the assembly kernels, and
+// the transposes that also swap pairs of blocks). Any other permutation
+// leaves the chain as it is.
+struct ScatterChainPermutation final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterChainPermutation> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // of the buffer, and of any index tensor
+  static constexpr int64_t maxElements = 1 << 20;
+
+  using Table = SmallVector<int64_t>;
+
+  struct Chain {
+    Value root;
+    int64_t size;
+    // the permutation each state of the chain holds: slot of the state to
+    // slot of the root
+    DenseMap<Value, std::unique_ptr<Table>> perms;
+    // index tensors and the values they are built of, evaluated
+    DenseMap<Value, std::unique_ptr<Table>> indices;
+  };
+
+  static bool isZero(ArrayRef<int64_t> dims) {
+    return dims.size() == 1 && dims[0] == 0;
+  }
+
+  // the row-major strides of a shape
+  static SmallVector<int64_t> strides(ArrayRef<int64_t> shape) {
+    SmallVector<int64_t> out(shape.size(), 1);
+    for (int64_t d = (int64_t)shape.size() - 2; d >= 0; --d)
+      out[d] = out[d + 1] * shape[d + 1];
+    return out;
+  }
+
+  // A scatter that overwrites single slots of a rank-one buffer, the slot of
+  // each update given by an index vector of one.
+  static bool isLink(stablehlo::ScatterOp s) {
+    if (s.getInputs().size() != 1)
+      return false;
+    auto bufTy = dyn_cast<RankedTensorType>(s.getInputs()[0].getType());
+    auto idxTy = dyn_cast<RankedTensorType>(s.getScatterIndices().getType());
+    if (!bufTy || !idxTy || !bufTy.hasStaticShape() ||
+        !idxTy.hasStaticShape() || bufTy.getRank() != 1 ||
+        idxTy.getRank() == 0 || idxTy.getShape().back() != 1 ||
+        bufTy.getNumElements() > maxElements ||
+        idxTy.getNumElements() > maxElements)
+      return false;
+    auto dn = s.getScatterDimensionNumbers();
+    if (!dn.getUpdateWindowDims().empty() ||
+        !isZero(dn.getInsertedWindowDims()) ||
+        !isZero(dn.getScatterDimsToOperandDims()) ||
+        !dn.getInputBatchingDims().empty() ||
+        dn.getIndexVectorDim() != idxTy.getRank() - 1)
+      return false;
+    return detectConstantSetindexScatterOp(s, true, [](Value) { return true; })
+        .ok();
+  }
+
+  // An element as a value of the type: wrapped to its width, an i1 as 0 or
+  // 1, any other signless integer read as signed.
+  static int64_t wrap(int64_t x, unsigned width) {
+    if (width == 1)
+      return x & 1;
+    if (width >= 64)
+      return x;
+    return llvm::SignExtend64(x, width);
+  }
+
+  // The coordinates of row-major position `flat` in `shape`.
+  static void unflatten(int64_t flat, ArrayRef<int64_t> shape,
+                        SmallVectorImpl<int64_t> &coord) {
+    coord.resize(shape.size());
+    for (int64_t d = (int64_t)shape.size() - 1; d >= 0; --d) {
+      coord[d] = flat % shape[d];
+      flat /= shape[d];
+    }
+  }
+
+  // One op of an index computation, elementwise or moving elements, on its
+  // operands' elements in row-major order. Integers only; anything else, and
+  // a division that is undefined, is not evaluated.
+  // Element f of operand k, a scalar operand standing for every element.
+  static int64_t elem(ArrayRef<const Table *> in, unsigned k, int64_t f) {
+    return (*in[k])[in[k]->size() == 1 ? 0 : f];
+  }
+
+  static std::optional<Table> kernel(Operation *op, ArrayRef<const Table *> in,
+                                     RankedTensorType ty) {
+    unsigned width = ty.getElementTypeBitWidth();
+    int64_t n = ty.getNumElements();
+    ArrayRef<int64_t> shape = ty.getShape();
+    Table out;
+    out.reserve(n);
+    if (auto cst = dyn_cast<stablehlo::ConstantOp>(op)) {
+      auto attr = dyn_cast<DenseIntElementsAttr>(cst.getValue());
+      if (!attr)
+        return std::nullopt;
+      if (attr.isSplat()) {
+        out.assign(n, wrap(attr.getSplatValue<APInt>().getSExtValue(), width));
+        return out;
+      }
+      for (const APInt &e : attr.getValues<APInt>())
+        out.push_back(wrap(e.getSExtValue(), width));
+      return out;
+    }
+    SmallVector<int64_t> coord;
+    if (auto iota = dyn_cast<stablehlo::IotaOp>(op)) {
+      for (int64_t f = 0; f < n; ++f) {
+        unflatten(f, shape, coord);
+        out.push_back(wrap(coord[iota.getIotaDimension()], width));
+      }
+      return out;
+    }
+    if (isa<stablehlo::ReshapeOp>(op))
+      return *in[0];
+    if (isa<stablehlo::ConvertOp>(op)) {
+      for (int64_t x : *in[0])
+        out.push_back(wrap(x, width));
+      return out;
+    }
+    if (auto bc = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+      auto inShape =
+          cast<RankedTensorType>(bc.getOperand().getType()).getShape();
+      auto dims = bc.getBroadcastDimensions();
+      for (int64_t f = 0; f < n; ++f) {
+        unflatten(f, shape, coord);
+        int64_t from = 0;
+        for (auto [i, d] : llvm::enumerate(dims))
+          from = from * inShape[i] + (inShape[i] == 1 ? 0 : coord[d]);
+        out.push_back((*in[0])[from]);
+      }
+      return out;
+    }
+    if (auto sl = dyn_cast<stablehlo::SliceOp>(op)) {
+      auto inShape =
+          cast<RankedTensorType>(sl.getOperand().getType()).getShape();
+      for (int64_t f = 0; f < n; ++f) {
+        unflatten(f, shape, coord);
+        int64_t from = 0;
+        for (size_t d = 0; d < shape.size(); ++d)
+          from = from * inShape[d] + sl.getStartIndices()[d] +
+                 coord[d] * sl.getStrides()[d];
+        out.push_back((*in[0])[from]);
+      }
+      return out;
+    }
+    if (auto pad = dyn_cast<stablehlo::PadOp>(op)) {
+      auto inShape =
+          cast<RankedTensorType>(pad.getOperand().getType()).getShape();
+      out.assign(n, (*in[1])[0]);
+      SmallVector<int64_t> at;
+      for (int64_t f = 0; f < (int64_t)in[0]->size(); ++f) {
+        unflatten(f, inShape, at);
+        int64_t to = 0;
+        bool inside = true;
+        for (size_t d = 0; d < shape.size(); ++d) {
+          int64_t c = pad.getEdgePaddingLow()[d] +
+                      at[d] * (pad.getInteriorPadding()[d] + 1);
+          inside &= c >= 0 && c < shape[d];
+          to = to * shape[d] + c;
+        }
+        if (inside)
+          out[to] = (*in[0])[f];
+      }
+      return out;
+    }
+    if (auto cc = dyn_cast<stablehlo::ConcatenateOp>(op)) {
+      int64_t dim = cc.getDimension();
+      for (int64_t f = 0; f < n; ++f) {
+        unflatten(f, shape, coord);
+        size_t k = 0;
+        for (Value piece : cc.getInputs()) {
+          int64_t extent =
+              cast<RankedTensorType>(piece.getType()).getDimSize(dim);
+          if (coord[dim] < extent)
+            break;
+          coord[dim] -= extent;
+          ++k;
+        }
+        auto pShape =
+            cast<RankedTensorType>(cc.getInputs()[k].getType()).getShape();
+        int64_t from = 0;
+        for (size_t d = 0; d < shape.size(); ++d)
+          from = from * pShape[d] + coord[d];
+        out.push_back((*in[k])[from]);
+      }
+      return out;
+    }
+    // elementwise: every operand has the result's shape, but a clamp's bounds
+    // may be scalars
+    for (int64_t f = 0; f < n; ++f) {
+      int64_t r;
+      if (isa<stablehlo::AddOp>(op))
+        r = elem(in, 0, f) + elem(in, 1, f);
+      else if (isa<stablehlo::SubtractOp>(op))
+        r = elem(in, 0, f) - elem(in, 1, f);
+      else if (isa<stablehlo::MulOp>(op))
+        r = elem(in, 0, f) * elem(in, 1, f);
+      else if (isa<stablehlo::DivOp, stablehlo::RemOp>(op)) {
+        if (elem(in, 1, f) == 0 ||
+            (elem(in, 1, f) == -1 && elem(in, 0, f) == INT64_MIN))
+          return std::nullopt;
+        r = isa<stablehlo::DivOp>(op) ? elem(in, 0, f) / elem(in, 1, f)
+                                      : elem(in, 0, f) % elem(in, 1, f);
+      } else if (isa<stablehlo::NegOp>(op))
+        r = -elem(in, 0, f);
+      else if (isa<stablehlo::MaxOp>(op))
+        r = std::max(elem(in, 0, f), elem(in, 1, f));
+      else if (isa<stablehlo::MinOp>(op))
+        r = std::min(elem(in, 0, f), elem(in, 1, f));
+      else if (isa<stablehlo::ClampOp>(op))
+        r = std::min(std::max(elem(in, 1, f), elem(in, 0, f)), elem(in, 2, f));
+      else if (isa<stablehlo::SelectOp>(op))
+        r = elem(in, 0, f) ? elem(in, 1, f) : elem(in, 2, f);
+      else if (isa<stablehlo::AndOp>(op))
+        r = elem(in, 0, f) & elem(in, 1, f);
+      else if (isa<stablehlo::OrOp>(op))
+        r = elem(in, 0, f) | elem(in, 1, f);
+      else if (isa<stablehlo::NotOp>(op))
+        r = width == 1 ? !elem(in, 0, f) : ~elem(in, 0, f);
+      else if (auto cmp = dyn_cast<stablehlo::CompareOp>(op)) {
+        int64_t x = elem(in, 0, f), y = elem(in, 1, f);
+        switch (cmp.getComparisonDirection()) {
+        case stablehlo::ComparisonDirection::EQ:
+          r = x == y;
+          break;
+        case stablehlo::ComparisonDirection::NE:
+          r = x != y;
+          break;
+        case stablehlo::ComparisonDirection::LT:
+          r = x < y;
+          break;
+        case stablehlo::ComparisonDirection::LE:
+          r = x <= y;
+          break;
+        case stablehlo::ComparisonDirection::GT:
+          r = x > y;
+          break;
+        case stablehlo::ComparisonDirection::GE:
+          r = x >= y;
+          break;
+        }
+      } else
+        return std::nullopt;
+      out.push_back(wrap(r, width));
+    }
+    return out;
+  }
+
+  // The elements of an integer tensor built of constants and iotas, in
+  // row-major order, every value computed once.
+  static const Table *evaluate(Value v, Chain &c) {
+    auto found = c.indices.find(v);
+    if (found != c.indices.end())
+      return found->second.get();
+    auto ty = dyn_cast<RankedTensorType>(v.getType());
+    Operation *op = v.getDefiningOp();
+    // signless integers only (an unsigned type, or an unsigned comparison,
+    // would read elements differently)
+    if (!op || !ty || !ty.hasStaticShape() ||
+        ty.getNumElements() > maxElements ||
+        !ty.getElementType().isSignlessInteger())
+      return nullptr;
+    if (auto cmp = dyn_cast<stablehlo::CompareOp>(op);
+        cmp && cmp.getCompareType() &&
+        *cmp.getCompareType() == stablehlo::ComparisonType::UNSIGNED)
+      return nullptr;
+    SmallVector<const Table *> in;
+    for (Value operand : op->getOperands()) {
+      const Table *t = evaluate(operand, c);
+      if (!t)
+        return nullptr;
+      in.push_back(t);
+    }
+    auto t = kernel(op, in, ty);
+    if (!t)
+      return nullptr;
+    return (c.indices[v] = std::make_unique<Table>(std::move(*t))).get();
+  }
+
+  // For every element of an update, the slot of the root it holds: every
+  // element is gathered from a state of the chain, then perhaps reshaped,
+  // sliced and concatenated.
+  static std::optional<Table> sources(Value u, Chain &c) {
+    Operation *def = u.getDefiningOp();
+    if (!def)
+      return std::nullopt;
+    if (auto rs = dyn_cast<stablehlo::ReshapeOp>(def))
+      return sources(rs.getOperand(), c);
+    if (auto g = dyn_cast<stablehlo::GatherOp>(def)) {
+      auto idxTy = dyn_cast<RankedTensorType>(g.getStartIndices().getType());
+      auto dn = g.getDimensionNumbers();
+      if (!idxTy || !idxTy.hasStaticShape() || idxTy.getRank() == 0 ||
+          idxTy.getShape().back() != 1 ||
+          idxTy.getNumElements() > maxElements ||
+          dn.getIndexVectorDim() != idxTy.getRank() - 1 ||
+          !isZero(dn.getStartIndexMap()) ||
+          !dn.getOperandBatchingDims().empty() ||
+          !dn.getStartIndicesBatchingDims().empty() ||
+          g.getSliceSizes().size() != 1 || g.getSliceSizes()[0] != 1)
+        return std::nullopt;
+      // the slot is dropped, or kept as a dimension of one: either way the
+      // result is laid out as the indices are
+      if (!(dn.getOffsetDims().empty() && isZero(dn.getCollapsedSliceDims())) &&
+          !(dn.getOffsetDims().size() == 1 &&
+            dn.getCollapsedSliceDims().empty()))
+        return std::nullopt;
+      const Table *state = perm(g.getOperand(), c);
+      if (!state)
+        return std::nullopt;
+      const Table *idx = evaluate(g.getStartIndices(), c);
+      if (!idx)
+        return std::nullopt;
+      Table out;
+      // a start index past the end is clamped
+      for (int64_t i : *idx)
+        out.push_back((*state)[std::clamp<int64_t>(i, 0, c.size - 1)]);
+      return out;
+    }
+    if (auto sl = dyn_cast<stablehlo::SliceOp>(def)) {
+      auto in = sources(sl.getOperand(), c);
+      if (!in)
+        return std::nullopt;
+      auto inTy = cast<RankedTensorType>(sl.getOperand().getType());
+      auto outTy = cast<RankedTensorType>(sl.getType());
+      auto inStrides = strides(inTy.getShape());
+      Table out;
+      for (int64_t flat = 0; flat < outTy.getNumElements(); ++flat) {
+        int64_t rest = flat, from = 0;
+        for (int64_t d = outTy.getRank() - 1; d >= 0; --d) {
+          int64_t coord = rest % outTy.getDimSize(d);
+          rest /= outTy.getDimSize(d);
+          from += (sl.getStartIndices()[d] + coord * sl.getStrides()[d]) *
+                  inStrides[d];
+        }
+        out.push_back((*in)[from]);
+      }
+      return out;
+    }
+    if (auto cc = dyn_cast<stablehlo::ConcatenateOp>(def)) {
+      auto outTy = cast<RankedTensorType>(cc.getType());
+      int64_t dim = cc.getDimension();
+      SmallVector<Table> ins;
+      for (Value operand : cc.getInputs()) {
+        auto in = sources(operand, c);
+        if (!in)
+          return std::nullopt;
+        ins.push_back(std::move(*in));
+      }
+      Table out;
+      for (int64_t flat = 0; flat < outTy.getNumElements(); ++flat) {
+        int64_t rest = flat;
+        SmallVector<int64_t> coord(outTy.getRank());
+        for (int64_t d = outTy.getRank() - 1; d >= 0; --d) {
+          coord[d] = rest % outTy.getDimSize(d);
+          rest /= outTy.getDimSize(d);
+        }
+        size_t which = 0;
+        for (Value operand : cc.getInputs()) {
+          int64_t extent =
+              cast<RankedTensorType>(operand.getType()).getDimSize(dim);
+          if (coord[dim] < extent)
+            break;
+          coord[dim] -= extent;
+          ++which;
+        }
+        auto inTy = cast<RankedTensorType>(cc.getInputs()[which].getType());
+        int64_t from = 0;
+        for (auto [co, st] : llvm::zip(coord, strides(inTy.getShape())))
+          from += co * st;
+        out.push_back(ins[which][from]);
+      }
+      return out;
+    }
+    return std::nullopt;
+  }
+
+  // The permutation a state of the chain holds.
+  static const Table *perm(Value state, Chain &c) {
+    auto found = c.perms.find(state);
+    if (found != c.perms.end())
+      return found->second.get();
+    auto out = std::make_unique<Table>();
+    if (state == c.root) {
+      out->resize(c.size);
+      std::iota(out->begin(), out->end(), 0);
+      return (c.perms[state] = std::move(out)).get();
+    }
+    auto s = state.getDefiningOp<stablehlo::ScatterOp>();
+    if (!s || !isLink(s))
+      return nullptr;
+    auto src = sources(s.getUpdates()[0], c);
+    if (!src)
+      return nullptr;
+    const Table *idx = evaluate(s.getScatterIndices(), c);
+    if (!idx || idx->size() != src->size())
+      return nullptr;
+    const Table *prev = perm(s.getInputs()[0], c);
+    if (!prev)
+      return nullptr;
+    *out = *prev;
+    // a slot past the end is dropped; one that two updates of the scatter
+    // write is given in no defined order
+    llvm::BitVector written(c.size);
+    for (auto [i, v] : llvm::zip(*idx, *src)) {
+      if (i < 0 || i >= c.size)
+        continue;
+      if (written.test(i) && (*out)[i] != v)
+        return nullptr;
+      written.set(i);
+      (*out)[i] = v;
+    }
+    return (c.perms[state] = std::move(out)).get();
+  }
+
+  // A view of the buffer the permutation reads axis by axis, in some order,
+  // some axes backwards.
+  struct View {
+    SmallVector<int64_t> shape;
+    // the axes read backwards
+    SmallVector<int64_t> reversed;
+    // the result's axis t is the view's axis perm[t]
+    SmallVector<int64_t> perm;
+  };
+
+  static std::optional<View> stridedView(const Table &p) {
+    int64_t n = p.size();
+    // the result's axes from the innermost out, each a count of blocks that
+    // repeat the block before them shifted by a stride
+    SmallVector<std::pair<int64_t, int64_t>> axes;
+    int64_t block = 1;
+    while (block < n) {
+      int64_t stride = p[block] - p[0];
+      int64_t count = 1;
+      while ((count + 1) * block <= n) {
+        bool shifted = stride != 0;
+        for (int64_t i = 0; i < block && shifted; ++i)
+          shifted = p[count * block + i] == p[i] + count * stride;
+        if (!shifted)
+          break;
+        ++count;
+      }
+      if (count == 1)
+        return std::nullopt;
+      axes.push_back({count, stride});
+      block *= count;
+    }
+    if (block != n)
+      return std::nullopt;
+    // by decreasing stride the axes are the buffer's, each dense in the ones
+    // after it, and the first slot is the corner the reversed axes start from
+    SmallVector<int64_t> order(axes.size());
+    std::iota(order.begin(), order.end(), 0);
+    llvm::sort(order, [&](int64_t a, int64_t b) {
+      return std::abs(axes[a].second) > std::abs(axes[b].second);
+    });
+    View v;
+    int64_t dense = 1, first = 0;
+    for (int64_t k = (int64_t)order.size() - 1; k >= 0; --k) {
+      auto [count, stride] = axes[order[k]];
+      if (std::abs(stride) != dense)
+        return std::nullopt;
+      if (stride < 0) {
+        v.reversed.push_back(k);
+        first += (count - 1) * dense;
+      }
+      dense *= count;
+    }
+    if (first != p[0])
+      return std::nullopt;
+    llvm::sort(v.reversed);
+    for (int64_t k : order)
+      v.shape.push_back(axes[k].first);
+    for (int64_t t = (int64_t)axes.size() - 1; t >= 0; --t)
+      v.perm.push_back(llvm::find(order, t) - order.begin());
+    return v;
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) {
+    if (!isLink(op))
+      return failure();
+    // the chain is matched once, at its end: a link that the next one writes
+    // into is part of a longer chain
+    for (Operation *user : op->getUsers())
+      if (auto next = dyn_cast<stablehlo::ScatterOp>(user);
+          next && next.getInputs()[0] == op.getResult(0) && isLink(next))
+        return failure();
+    Chain c;
+    c.root = op.getInputs()[0];
+    while (auto s = c.root.getDefiningOp<stablehlo::ScatterOp>()) {
+      if (!isLink(s))
+        break;
+      c.root = s.getInputs()[0];
+    }
+    c.size = cast<RankedTensorType>(c.root.getType()).getNumElements();
+    const Table *p = perm(op.getResult(0), c);
+    if (!p)
+      return failure();
+    bool identity = true;
+    for (auto [i, v] : llvm::enumerate(*p))
+      identity &= (int64_t)i == v;
+    if (identity) {
+      rewriter.replaceOp(op, c.root);
+      return success();
+    }
+    auto view = stridedView(*p);
+    if (!view)
+      return failure();
+    auto rootTy = cast<RankedTensorType>(c.root.getType());
+    Value v = c.root;
+    if (ArrayRef<int64_t>(view->shape) != rootTy.getShape())
+      v = stablehlo::ReshapeOp::create(
+          rewriter, op.getLoc(),
+          RankedTensorType::get(view->shape, rootTy.getElementType()), v);
+    if (!view->reversed.empty())
+      v = stablehlo::ReverseOp::create(rewriter, op.getLoc(), v,
+                                       view->reversed);
+    if (!llvm::is_sorted(view->perm))
+      v = stablehlo::TransposeOp::create(rewriter, op.getLoc(), v, view->perm);
+    if (v.getType() != op.getResult(0).getType())
+      v = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
+                                       op.getResult(0).getType(), v);
+    rewriter.replaceOp(op, v);
+    return success();
+  }
+};
+
 // jax doesn't control size of constants, we try to recover patterns that can
 // produce these constants. We do the following:
 //    1. iota detection
@@ -39625,6 +40162,7 @@ struct EnzymeHLOOptPass
         FuseReshapeCollapseOrExpandDimsIntoReduce,
         GatherOfScatterSimplify,
         ScatterOfGatherIdentity,
+        ScatterChainPermutation,
         ReduceWindowWrapSimplify,
         SplitComplexScatter,
         SplitComplexGather,
