@@ -172,6 +172,7 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
           opName == "no_nan_self_sub_simplify" ||
           opName == "no_nan_compare_simplify" ||
           opName == "no_nan_compare_abs" ||
+          opName == "no_nan_zeros_scatter_multiply_simplify" ||
           opName == "self_subtract_to_convolution_like" ||
           opName == "self_add_to_convolution_like" ||
           opName == "self_mul_to_convolution_like")
