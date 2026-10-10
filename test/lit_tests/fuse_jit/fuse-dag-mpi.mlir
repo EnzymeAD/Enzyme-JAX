@@ -1,7 +1,4 @@
-// RUN: enzymexlamlir-opt --fuse-jit="strategy=dependencies" %s | FileCheck %s
-
-// Fuse the lowered Irecv/Wait and Isend/Wait calls. Keep the add between them:
-// the send needs its result.
+// RUN: enzymexlamlir-opt --fuse-jit={dag=true} %s | FileCheck %s
 
 module {
   llvm.func @MPI_Isend(!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
@@ -31,7 +28,7 @@ module {
     %5 = llvm.call @MPI_Irecv(%arg0, %0, %1, %2, %3, %4, %arg6) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
     llvm.return
   }
-  func.func @computed_send(%arg0: tensor<4xi32>, %arg1: tensor<i64>) -> tensor<4xi32> {
+  func.func @main(%arg0: tensor<4xi32>, %arg1: tensor<i64>) -> tensor<4xi32> {
     %c = stablehlo.constant dense<1> : tensor<i32>
     %c_0 = stablehlo.constant dense<10> : tensor<i32>
     %c_1 = stablehlo.constant dense<20> : tensor<i32>
@@ -72,7 +69,7 @@ module {
 // CHECK: llvm.return
 // CHECK-NEXT: }
 
-// CHECK-LABEL: func.func @computed_send(
+// CHECK-LABEL: func.func @main(
 // CHECK-SAME: %[[DELTA:[^ :]+]]: tensor<4xi32>, %[[COMM:[^ :]+]]: tensor<i64>)
 // CHECK-NOT: enzymexla.jit_call
 // CHECK-DAG: %[[BUFFER:.*]] = stablehlo.constant dense<0> : tensor<4xi32>

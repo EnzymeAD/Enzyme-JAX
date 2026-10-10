@@ -50,30 +50,28 @@ module {
 
 // CHECK-LABEL: llvm.func @fused__enzymexla_jitwrap_MPI_Isend_enzymexla_jitwrap_MPI_Irecv_enzymexla_jitwrap_MPI_Waitall_2
 // CHECK-SAME:                                                                                                           (%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: !llvm.ptr, %arg10: !llvm.ptr) {
-// CHECK-NEXT:   %0 = llvm.mlir.constant(1 : i32) : i32
-// CHECK-NEXT:   %1 = llvm.mlir.constant(2 : i32) : i32
-// CHECK-NEXT:   %2 = llvm.mlir.addressof @MPI_STATUSES_IGNORE : !llvm.ptr
-// CHECK-NEXT:   %3 = llvm.load %arg1 : !llvm.ptr -> i32
-// CHECK-NEXT:   %4 = llvm.load %arg2 : !llvm.ptr -> !llvm.ptr
-// CHECK-NEXT:   %5 = llvm.load %arg3 : !llvm.ptr -> i32
-// CHECK-NEXT:   %6 = llvm.load %arg4 : !llvm.ptr -> i32
-// CHECK-NEXT:   %7 = llvm.load %arg5 : !llvm.ptr -> !llvm.ptr
-// CHECK-NEXT:   %8 = llvm.call @MPI_Isend(%arg0, %3, %4, %5, %6, %7, %arg6) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
-// CHECK-NEXT:   %9 = llvm.load %arg1 : !llvm.ptr -> i32
-// CHECK-NEXT:   %10 = llvm.load %arg2 : !llvm.ptr -> !llvm.ptr
-// CHECK-NEXT:   %11 = llvm.load %arg8 : !llvm.ptr -> i32
-// CHECK-NEXT:   %12 = llvm.load %arg9 : !llvm.ptr -> i32
-// CHECK-NEXT:   %13 = llvm.load %arg5 : !llvm.ptr -> !llvm.ptr
-// CHECK-NEXT:   %14 = llvm.call @MPI_Irecv(%arg7, %9, %10, %11, %12, %13, %arg10) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
-// CHECK-NEXT:   %15 = llvm.alloca %0 x !llvm.array<2 x ptr> : (i32) -> !llvm.ptr
-// CHECK-NEXT:   %16 = llvm.load %arg10 : !llvm.ptr -> !llvm.ptr
-// CHECK-NEXT:   llvm.store %16, %15 : !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:   %17 = llvm.load %arg6 : !llvm.ptr -> !llvm.ptr
-// CHECK-NEXT:   %18 = llvm.getelementptr %15[1] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:   llvm.store %17, %18 : !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:   %19 = llvm.call @MPI_Waitall(%1, %15, %2) : (i32, !llvm.ptr, !llvm.ptr) -> i32
+// CHECK-NEXT:   %0 = llvm.mlir.constant(2 : i32) : i32
+// CHECK-NEXT:   %1 = llvm.mlir.addressof @MPI_STATUSES_IGNORE : !llvm.ptr
+// CHECK-NEXT:   %2 = llvm.load %arg1 : !llvm.ptr -> i32
+// CHECK-NEXT:   %3 = llvm.load %arg2 : !llvm.ptr -> !llvm.ptr
+// CHECK-NEXT:   %4 = llvm.load %arg3 : !llvm.ptr -> i32
+// CHECK-NEXT:   %5 = llvm.load %arg4 : !llvm.ptr -> i32
+// CHECK-NEXT:   %6 = llvm.load %arg5 : !llvm.ptr -> !llvm.ptr
+// CHECK-NEXT:   %7 = llvm.call @MPI_Isend(%arg0, %2, %3, %4, %5, %6, %arg6) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
+// CHECK-NEXT:   %8 = llvm.load %arg1 : !llvm.ptr -> i32
+// CHECK-NEXT:   %9 = llvm.load %arg2 : !llvm.ptr -> !llvm.ptr
+// CHECK-NEXT:   %10 = llvm.load %arg8 : !llvm.ptr -> i32
+// CHECK-NEXT:   %11 = llvm.load %arg9 : !llvm.ptr -> i32
+// CHECK-NEXT:   %12 = llvm.load %arg5 : !llvm.ptr -> !llvm.ptr
+// CHECK-NEXT:   %13 = llvm.call @MPI_Irecv(%arg7, %8, %9, %10, %11, %12, %arg10) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
+// CHECK-NEXT:   %14 = llvm.alloca %0 x !llvm.ptr : (i32) -> !llvm.ptr
+// CHECK-NEXT:   %15 = llvm.load %arg10 : !llvm.ptr -> !llvm.ptr
+// CHECK-NEXT:   llvm.store %15, %14 : !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:   %16 = llvm.load %arg6 : !llvm.ptr -> !llvm.ptr
+// CHECK-NEXT:   %17 = llvm.getelementptr %14[1] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:   llvm.store %16, %17 : !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:   %18 = llvm.call @MPI_Waitall(%0, %14, %1) : (i32, !llvm.ptr, !llvm.ptr) -> i32
 // CHECK-NEXT:   llvm.return
-// CHECK-NEXT: }
 
 // CHECK-LABEL: func.func @main
 // CHECK-SAME:                 (%arg0: tensor<4xf64>, %arg1: tensor<i32>, %arg2: tensor<i32>, %arg3: tensor<i32>, %arg4: tensor<i32>, %arg5: tensor<i32>, %arg6: tensor<i64>) -> tensor<4xf64> {
