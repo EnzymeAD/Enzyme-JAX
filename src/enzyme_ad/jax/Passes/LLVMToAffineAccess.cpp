@@ -1384,7 +1384,26 @@ struct AffineExprBuilder {
         }
       } else if (isa<LLVM::ZExtOp, LLVM::SExtOp, arith::ExtSIOp, arith::ExtUIOp,
                      arith::IndexCastOp, arith::IndexCastUIOp>(op)) {
-        return getExpr(op->getOperand(0));
+        // A symbol is cast to index sign-extending. Through a zero
+        // extension that reads the same value only for a non-negative
+        // operand: an i1 `true` zero-extends to 1 but sign-extends to -1.
+        Value in = op->getOperand(0);
+        bool widensUnsigned =
+            isa<LLVM::ZExtOp, arith::ExtUIOp>(op) ||
+            (isa<arith::IndexCastUIOp>(op) && !in.getType().isIndex());
+        if (!widensUnsigned || valueCmp(Cmp::GE, in, 0))
+          return getExpr(in);
+        // The operand zero-extended to index, a symbol or a dim where the
+        // operand is one.
+        OpBuilder builder(context);
+        setInsertionPointAfterValue(builder, in);
+        Value zext = arith::IndexCastUIOp::create(builder, in.getLoc(),
+                                                  builder.getIndexType(), in);
+        if (affine::isValidSymbol(zext))
+          return getAffineSymbolExpr(getSymbolPosition(zext), context);
+        if (affine::isValidDim(zext))
+          return getAffineDimExpr(getDimPosition(zext), context);
+        zext.getDefiningOp()->erase();
       }
     }
 

@@ -8067,8 +8067,12 @@ bool valueCmp(Cmp cmp, Value bval, ValueOrInt val) {
   }
 
   if (auto baval = dyn_cast<BlockArgument>(bval)) {
-    if (affine::AffineForOp afFor =
-            dyn_cast<affine::AffineForOp>(baval.getOwner()->getParentOp())) {
+    // Only the induction variable is bounded by the loop's maps; a carried
+    // value is anything.
+    auto afFor = dyn_cast<affine::AffineForOp>(baval.getOwner()->getParentOp());
+    if (afFor && afFor.getInductionVar() != baval)
+      return false;
+    if (afFor) {
       auto for_lb = afFor.getLowerBoundMap().getResults()[baval.getArgNumber()];
       auto for_ub = afFor.getUpperBoundMap().getResults()[baval.getArgNumber()];
       switch (cmp) {
