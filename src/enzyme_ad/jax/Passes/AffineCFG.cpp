@@ -9225,8 +9225,13 @@ static bool isLoopMemoryParallel(AffineForOp forOp,
   unsigned depth = ::getNestingDepth(forOp) + 1;
 
   // Check dependences between all pairs of ops in 'loadAndStoreOps', on
-  // access relations whose loop-invariant terms are abstracted.
+  // access relations whose loop-invariant terms are abstracted. A loop that
+  // runs at most once carries nothing from one iteration to the next, so its
+  // accesses need not be compared, however many it makes.
   InvariantTerms terms(forOp);
+  std::optional<uint64_t> tripCount = getConstantTripCount(forOp);
+  if (tripCount && *tripCount <= 1)
+    loadAndStoreOps.clear();
   for (auto *srcOp : loadAndStoreOps) {
     for (auto *dstOp : loadAndStoreOps) {
       if (!sameBuffer(MemRefAccess(srcOp).memref, MemRefAccess(dstOp).memref) ||
