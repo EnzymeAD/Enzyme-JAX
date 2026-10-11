@@ -4525,7 +4525,7 @@ populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
     } else if (gpuTarget == "rocm") {
       mlir::populateGpuToROCDLConversionPatterns(typeConverter, patterns,
                                                  mlir::gpu::amd::Runtime::HIP,
-                                                 amdgpu::Chipset());
+                                                 ROCDL::TargetInfo());
     }
   }
 }

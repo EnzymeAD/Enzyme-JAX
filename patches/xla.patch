@@ -1,9 +1,9 @@
 diff --git a/third_party/gpus/rocm/BUILD.tpl b/third_party/gpus/rocm/BUILD.tpl
-index 6e05471a99..c29d37acd3 100644
+index 09432ba..c2bf315 100644
 --- a/third_party/gpus/rocm/BUILD.tpl
 +++ b/third_party/gpus/rocm/BUILD.tpl
-@@ -468,6 +468,36 @@ cc_library(
-     data = [":system_libs_data"],
+@@ -570,6 +570,36 @@ rocm_lib_import(
+     deps = [":system_libs"],
  )
  
 +sh_binary(
@@ -40,10 +40,10 @@ index 6e05471a99..c29d37acd3 100644
      name = "toolchain_data",
      srcs = glob(
 diff --git a/third_party/rocm_device_libs/build_defs.bzl b/third_party/rocm_device_libs/build_defs.bzl
-index 5b9aee4f08..f55aabe5ad 100644
+index 49c0119..bd4ea0c 100644
 --- a/third_party/rocm_device_libs/build_defs.bzl
 +++ b/third_party/rocm_device_libs/build_defs.bzl
-@@ -111,6 +111,7 @@ def _bitcode_library_impl(ctx):
+@@ -124,6 +124,7 @@ def _bitcode_library_impl(ctx):
          inputs = [strip_out],
          outputs = [final_bc],
          arguments = [strip_out.path, "-o", final_bc.path],
@@ -51,7 +51,7 @@ index 5b9aee4f08..f55aabe5ad 100644
          progress_message = "Preparing final bitcode for {}".format(ctx.label.name),
          mnemonic = "BitcodeFinalize",
      )
-@@ -127,17 +128,17 @@ bitcode_library = rule(
+@@ -139,17 +140,17 @@ bitcode_library = rule(
          "hdrs": attr.label_list(allow_files = [".h"]),
          "file_specific_flags": attr.string_list_dict(),
          "_clang": attr.label(
@@ -73,10 +73,10 @@ index 5b9aee4f08..f55aabe5ad 100644
              cfg = "exec",
          ),
 diff --git a/third_party/rocm_device_libs/rocm_device_libs.BUILD b/third_party/rocm_device_libs/rocm_device_libs.BUILD
-index ee162b63ab..98a55618a4 100644
+index 1709a6b..8994c5f 100644
 --- a/third_party/rocm_device_libs/rocm_device_libs.BUILD
 +++ b/third_party/rocm_device_libs/rocm_device_libs.BUILD
-@@ -28,36 +28,12 @@ cc_binary(
+@@ -43,36 +43,12 @@ cc_binary(
      ],
  )
  
@@ -117,20 +117,3 @@ index ee162b63ab..98a55618a4 100644
 -    },
 +    actual = "@local_config_rocm//rocm:ocml"
  )
-
-diff --git a/xla/pjrt/distributed/topology_util.cc b/xla/pjrt/distributed/topology_util.cc
---- a/xla/pjrt/distributed/topology_util.cc
-+++ b/xla/pjrt/distributed/topology_util.cc
-@@ -307,8 +307,10 @@ absl::Status ExchangeTopologies(absl::string_view platform, int node_id,
-   if (num_nodes == 1) {
-     LocalTopologyProto* topology = global_topology->add_processes();
-     *topology = local_topology;
--    for (DeviceProto& device : *topology->mutable_devices()) {
--      device.set_global_device_id(device.local_device_ordinal());
-+    if (assign_global_device_ids) {
-+      for (int i = 0; i < topology->devices_size(); ++i) {
-+        topology->mutable_devices(i)->set_global_device_id(i);
-+      }
-     }
-     return absl::OkStatus();
-   }
