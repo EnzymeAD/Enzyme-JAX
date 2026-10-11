@@ -4,8 +4,9 @@
 // element at a time and read back as scalars: the allocation is an aggregate
 // of one scalar throughout, so it converts to a flat memref of that scalar,
 // and the aggregate view's store becomes one store per leaf. The lifetime
-// markers go with the allocation. A view of an aggregate with mixed leaves
-// keeps the allocation as it is.
+// markers go with the allocation. An allocation of an aggregate with mixed
+// leaves stays as it is, but its aggregate view is read leaf by leaf, each
+// through a view of that leaf's scalar.
 
 func.func @unit_vector(%d: index) -> (f64, f64, f64) {
   %c1 = arith.constant 1 : i32
@@ -78,11 +79,16 @@ func.func @mixed(%d: index, %in: f64) -> !llvm.struct<(f64, i32)> {
 // CHECK-NEXT:    return %[[a14]] : !llvm.array<2 x array<2 x f64>>
 // CHECK-NEXT:  }
 // CHECK-NEXT:  func.func @mixed(%[[a1]]: index, %[[a8]]: f64) -> !llvm.struct<(f64, i32)> {
-// CHECK-NEXT:    %[[a15:.+]] = arith.constant 1 : i32
-// CHECK-NEXT:    %[[a5]] = llvm.alloca %[[a15]] x !llvm.struct<(f64, i32)> : (i32) -> !llvm.ptr
-// CHECK-NEXT:    %[[a6]] = "enzymexla.pointer2memref"(%[[a5]]) : (!llvm.ptr) -> memref<?xf64>
-// CHECK-NEXT:    affine.store %[[a8]], %[[a6]][0] : memref<?xf64>
-// CHECK-NEXT:    %[[a7]] = "enzymexla.pointer2memref"(%[[a5]]) : (!llvm.ptr) -> memref<?x!llvm.struct<(f64, i32)>>
-// CHECK-NEXT:    %[[a9]] = affine.load %[[a7]][0] : memref<?x!llvm.struct<(f64, i32)>>
-// CHECK-NEXT:    return %[[a9]] : !llvm.struct<(f64, i32)>
+// CHECK-NEXT:    %[[m0:.+]] = llvm.mlir.undef : !llvm.struct<(f64, i32)>
+// CHECK-NEXT:    %[[m1:.+]] = arith.constant 1 : i32
+// CHECK-NEXT:    %[[m2:.+]] = llvm.alloca %[[m1]] x !llvm.struct<(f64, i32)> : (i32) -> !llvm.ptr
+// CHECK-NEXT:    %[[m3:.+]] = "enzymexla.pointer2memref"(%[[m2]]) : (!llvm.ptr) -> memref<?xf64>
+// CHECK-NEXT:    affine.store %[[a8]], %[[m3]][0] : memref<?xf64>
+// CHECK-NEXT:    %[[m4:.+]] = "enzymexla.pointer2memref"(%[[m2]]) : (!llvm.ptr) -> memref<?xf64>
+// CHECK-NEXT:    %[[m5:.+]] = "enzymexla.pointer2memref"(%[[m2]]) : (!llvm.ptr) -> memref<?xi32>
+// CHECK-NEXT:    %[[m6:.+]] = affine.load %[[m4]][0] : memref<?xf64>
+// CHECK-NEXT:    %[[m7:.+]] = llvm.insertvalue %[[m6]], %[[m0]][0] : !llvm.struct<(f64, i32)>
+// CHECK-NEXT:    %[[m8:.+]] = affine.load %[[m5]][2] : memref<?xi32>
+// CHECK-NEXT:    %[[m9:.+]] = llvm.insertvalue %[[m8]], %[[m7]][1] : !llvm.struct<(f64, i32)>
+// CHECK-NEXT:    return %[[m9]] : !llvm.struct<(f64, i32)>
 // CHECK-NEXT:  }
