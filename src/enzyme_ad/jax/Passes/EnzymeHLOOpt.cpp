@@ -14631,7 +14631,7 @@ struct CompareOpCanon final
                 ? stablehlo::makeTensor(rhs.resizeSplat(RankedTensorType::get(
                       {}, rhs.getType().getElementType())))
                 : stablehlo::constantOp(rhs),
-            op.getComparisonDirection(), ty));
+            op.getComparisonDirection(), op.getCompareType(), ty));
         if (isSplat)
           out = out.resizeSplat(op.getType());
 
