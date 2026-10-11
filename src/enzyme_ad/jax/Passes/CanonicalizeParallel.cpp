@@ -589,6 +589,9 @@ struct IfOfDifferentBaseGEPs : public OpRewritePattern<IfT> {
         cloned.setOperand(0, v);
         // Neither arm's guarantees hold on the other's path.
         cloned.setNoWrapFlags(g.getNoWrapFlags() & other[i].getNoWrapFlags());
+        // inrange is legal only on a constant GEP, which one with a chosen
+        // base is not (C++ vtable addresses carry it).
+        cloned.removeInrangeAttr();
         v = cloned.getResult();
       }
       results.push_back(v);
@@ -618,6 +621,7 @@ struct SelectOfDifferentBaseGEPs : public OpRewritePattern<arith::SelectOp> {
     auto cloned = cast<LLVM::GEPOp>(rewriter.clone(*t.getOperation()));
     cloned.setOperand(0, base);
     cloned.setNoWrapFlags(t.getNoWrapFlags() & f.getNoWrapFlags());
+    cloned.removeInrangeAttr();
     rewriter.replaceOp(sel, cloned.getResult());
     return success();
   }

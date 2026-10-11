@@ -193,3 +193,56 @@ module {
 // CHECK-NEXT:  %[[f6:.+]] = llvm.getelementptr inbounds %[[f1]][%[[f5]]] : (!llvm.ptr<3>, i64) -> !llvm.ptr<3>, f64
 // CHECK-NEXT:  return %[[f6]] : !llvm.ptr<3>
 // CHECK-NEXT:  }
+
+// -----
+
+// A C++ vtable slot is a constant gep carrying inrange, which LLVM IR permits
+// only on constant geps. Choosing between two classes' vtables makes the gep's
+// base a select (or a branch result), no longer a constant, so the merged gep
+// drops inrange.
+
+module {
+  llvm.mlir.global external constant @vtA() : !llvm.struct<(array<4 x ptr>)>
+  llvm.mlir.global external constant @vtB() : !llvm.struct<(array<4 x ptr>)>
+  func.func private @sel_vtable(%c: i1) -> !llvm.ptr {
+    %a = llvm.mlir.addressof @vtA : !llvm.ptr
+    %b = llvm.mlir.addressof @vtB : !llvm.ptr
+    %o = llvm.mlir.constant(16 : i64) : i64
+    %ga = llvm.getelementptr inbounds|nuw inrange <i64, -16, 16> %a[%o] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    %gb = llvm.getelementptr inbounds|nuw inrange <i64, -16, 16> %b[%o] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    %r = arith.select %c, %ga, %gb : !llvm.ptr
+    return %r : !llvm.ptr
+  }
+  func.func private @if_vtable(%s: index) -> !llvm.ptr {
+    %o = llvm.mlir.constant(16 : i64) : i64
+    %r = affine.if affine_set<()[s0] : (s0 >= 1)>()[%s] -> !llvm.ptr {
+      %a = llvm.mlir.addressof @vtA : !llvm.ptr
+      %ga = llvm.getelementptr inbounds|nuw inrange <i64, -16, 16> %a[%o] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      affine.yield %ga : !llvm.ptr
+    } else {
+      %b = llvm.mlir.addressof @vtB : !llvm.ptr
+      %gb = llvm.getelementptr inbounds|nuw inrange <i64, -16, 16> %b[%o] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      affine.yield %gb : !llvm.ptr
+    }
+    return %r : !llvm.ptr
+  }
+}
+
+// CHECK: func.func private @sel_vtable(%arg0: i1) -> !llvm.ptr {
+// CHECK-NEXT: %0 = llvm.mlir.addressof @vtA : !llvm.ptr
+// CHECK-NEXT: %1 = llvm.mlir.addressof @vtB : !llvm.ptr
+// CHECK-NEXT: %2 = arith.select %arg0, %0, %1 : !llvm.ptr
+// CHECK-NEXT: %3 = llvm.getelementptr inbounds|nuw %2[16] : (!llvm.ptr) -> !llvm.ptr, i8
+// CHECK-NEXT: return %3 : !llvm.ptr
+// CHECK-NEXT: }
+// CHECK: func.func private @if_vtable(%arg0: index) -> !llvm.ptr {
+// CHECK-NEXT: %0 = llvm.mlir.addressof @vtB : !llvm.ptr
+// CHECK-NEXT: %1 = llvm.mlir.addressof @vtA : !llvm.ptr
+// CHECK-NEXT: %2 = affine.if #set()[%arg0] -> !llvm.ptr {
+// CHECK-NEXT: affine.yield %1 : !llvm.ptr
+// CHECK-NEXT: } else {
+// CHECK-NEXT: affine.yield %0 : !llvm.ptr
+// CHECK-NEXT: }
+// CHECK-NEXT: %3 = llvm.getelementptr inbounds|nuw %2[16] : (!llvm.ptr) -> !llvm.ptr, i8
+// CHECK-NEXT: return %3 : !llvm.ptr
+// CHECK-NEXT: }
