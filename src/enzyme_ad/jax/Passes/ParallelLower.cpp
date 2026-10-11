@@ -98,6 +98,14 @@ using namespace mlir::func;
 using namespace mlir::enzymexla;
 using namespace mlir::enzyme;
 
+// gpu.launch_func takes i32 or i64 dimensions; gpu.launch, and the wrapper
+// built from it, take index.
+static Value castToIndex(OpBuilder &builder, Location loc, Value v) {
+  if (!v || v.getType().isIndex())
+    return v;
+  return IndexCastOp::create(builder, loc, builder.getIndexType(), v);
+}
+
 namespace {
 // The store to load forwarding relies on three conditions:
 //
@@ -698,17 +706,24 @@ void ParallelLower::runOnOperation() {
       return;
 
     OpBuilder builder(launchOp);
+    Location loc = launchOp.getLoc();
+    Value gridX = castToIndex(builder, loc, launchOp.getGridSizeX());
+    Value gridY = castToIndex(builder, loc, launchOp.getGridSizeY());
+    Value gridZ = castToIndex(builder, loc, launchOp.getGridSizeZ());
+    Value blockX = castToIndex(builder, loc, launchOp.getBlockSizeX());
+    Value blockY = castToIndex(builder, loc, launchOp.getBlockSizeY());
+    Value blockZ = castToIndex(builder, loc, launchOp.getBlockSizeZ());
+    Value clusterX = castToIndex(builder, loc, launchOp.getClusterSizeX());
+    Value clusterY = castToIndex(builder, loc, launchOp.getClusterSizeY());
+    Value clusterZ = castToIndex(builder, loc, launchOp.getClusterSizeZ());
     auto op = mlir::gpu::LaunchOp::create(
-        builder, launchOp.getLoc(), launchOp.getGridSizeX(),
-        launchOp.getGridSizeY(), launchOp.getGridSizeZ(),
-        launchOp.getBlockSizeX(), launchOp.getBlockSizeY(),
-        launchOp.getBlockSizeZ(), launchOp.getDynamicSharedMemorySize(),
+        builder, loc, gridX, gridY, gridZ, blockX, blockY, blockZ,
+        launchOp.getDynamicSharedMemorySize(),
         launchOp.getNumResults() ? launchOp.getResultTypes()[0] : nullptr,
         launchOp.getAsyncDependencies(),
         /*asyncObject=*/nullptr,
         /*workgroup*/ TypeRange(),
-        /*private*/ TypeRange(), launchOp.getClusterSizeX(),
-        launchOp.getClusterSizeY(), launchOp.getClusterSizeZ());
+        /*private*/ TypeRange(), clusterX, clusterY, clusterZ);
 
     builder.setInsertionPointToStart(&op.getRegion().front());
     func::CallOp::create(builder, launchOp.getLoc(), launchOp.getKernel(),
