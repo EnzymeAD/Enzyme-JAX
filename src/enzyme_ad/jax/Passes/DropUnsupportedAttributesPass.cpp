@@ -86,14 +86,15 @@ struct DropUnsupportedAttributesPass
     moduleOp->removeAttr("llvm.data_layout");
 
     if (enzymexla_analysis_result) {
-      SmallVector<StringRef, 6> enzymexlaAnalysisResultAttrs = {
+      SmallVector<StringRef, 8> enzymexlaAnalysisResultAttrs = {
           "enzymexla.symmetric_matrix",
           "enzymexla.non_negative",
           "enzymexla.finite",
           "enzymexla.bounds",
           "enzymexla.no_nan",
           "enzymexla.complex_is_purely_real",
-          "enzymexla.complex_is_purely_imaginary"};
+          "enzymexla.complex_is_purely_imaginary",
+          "enzymexla.non_zero"};
 
       moduleOp->walk([&](Operation *op) {
         for (auto removeAttr : enzymexlaAnalysisResultAttrs) {
