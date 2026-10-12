@@ -5624,6 +5624,100 @@ struct AffineToStableHLORaisingPass
       cmp->moveBefore(g);
   }
 
+  // Whether `ptr` is the address of an object in host memory: an alloca, or a
+  // function argument passed by value or by reference (byval, or
+  // dereferenceable), through constant offsets. A pointer read out of memory
+  // may be a device buffer's.
+  static bool isHostObject(Value ptr) {
+    while (auto gep = ptr.getDefiningOp<LLVM::GEPOp>()) {
+      if (!gep.getDynamicIndices().empty())
+        return false;
+      ptr = gep.getBase();
+    }
+    if (ptr.getDefiningOp<LLVM::AllocaOp>())
+      return true;
+    auto arg = dyn_cast<BlockArgument>(ptr);
+    if (!arg || !arg.getOwner()->isEntryBlock())
+      return false;
+    auto fn = dyn_cast<FunctionOpInterface>(arg.getOwner()->getParentOp());
+    if (!fn)
+      return false;
+    unsigned i = arg.getArgNumber();
+    return fn.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName()) ||
+           fn.getArgAttr(i, LLVM::LLVMDialect::getDereferenceableAttrName());
+  }
+
+  // A kernel reads its by-value lambda through the address of the host's copy
+  // of it, which the kernel only reads, at constant places, for the members
+  // it uses: sizes, and the pointers of the buffers it works on. A tensor of
+  // pointers has no form, and a buffer reached through a pointer loaded
+  // inside the kernel cannot be captured, so such a read is the host's to
+  // make before the launch. Reads through the address of a host object
+  // defined outside the wrapper, which nothing inside writes through, at
+  // indices known before the wrapper, move out of it.
+  static void hoistWrapperInvariantPointerLoads(Operation *g) {
+    auto definedOutside = [&](Value v) {
+      if (auto ba = dyn_cast<BlockArgument>(v))
+        return !g->isProperAncestor(ba.getOwner()->getParentOp()) &&
+               ba.getOwner()->getParentOp() != g;
+      return !g->isProperAncestor(v.getDefiningOp());
+    };
+    auto knownBefore = [&](Value v) {
+      return definedOutside(v) || matchPattern(v, m_Constant());
+    };
+    // The host objects defined outside that the wrapper only reads.
+    DenseMap<Value, bool> readOnly;
+    g->walk([&](enzymexla::Pointer2MemrefOp view) {
+      Value ptr = view.getSource();
+      if (!definedOutside(ptr) || !isHostObject(ptr))
+        return;
+      auto [it, inserted] = readOnly.try_emplace(ptr, true);
+      if (inserted)
+        for (Operation *user : ptr.getUsers())
+          if (g->isProperAncestor(user) &&
+              !isa<enzymexla::Pointer2MemrefOp>(user))
+            it->second = false;
+      for (Operation *user : view->getUsers())
+        if (!isa<affine::AffineLoadOp, memref::LoadOp>(user))
+          it->second = false;
+    });
+    SmallVector<Operation *> loads;
+    g->walk([&](Operation *op) {
+      Value memref;
+      ValueRange indices;
+      if (auto ld = dyn_cast<affine::AffineLoadOp>(op)) {
+        memref = ld.getMemRef();
+        indices = ld.getMapOperands();
+      } else if (auto ld = dyn_cast<memref::LoadOp>(op)) {
+        memref = ld.getMemRef();
+        indices = ld.getIndices();
+      } else {
+        return;
+      }
+      auto view = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>();
+      if (!view || !readOnly.lookup(view.getSource()) ||
+          !llvm::all_of(indices, knownBefore))
+        return;
+      loads.push_back(op);
+    });
+    for (Operation *ld : loads) {
+      OpBuilder b(g);
+      IRMapping map;
+      Operation *view = ld->getOperand(0).getDefiningOp();
+      b.clone(*view, map);
+      for (Value index : ld->getOperands().drop_front())
+        if (!definedOutside(index))
+          b.clone(*index.getDefiningOp(), map);
+      Operation *hoisted = b.clone(*ld, map);
+      ld->replaceAllUsesWith(hoisted);
+      ld->erase();
+      // A view left with nothing to read would still be a use of the pointer
+      // inside the kernel.
+      if (view->use_empty())
+        view->erase();
+    }
+  }
+
   // An access does not care about the address space of its base, but the
   // raising identifies buffers by SSA root: a memory_space_cast view would
   // split one buffer into two roots and lose store propagation. Retarget the
@@ -6848,6 +6942,7 @@ struct AffineToStableHLORaisingPass
       stripAccessMemorySpaceCasts(g);
       splitStructScratch(g);
       hoistWrapperInvariantPointerCompares(g);
+      hoistWrapperInvariantPointerLoads(g);
       boundParallelAxes(g);
       peelDynamicParallelDims(g);
     }
