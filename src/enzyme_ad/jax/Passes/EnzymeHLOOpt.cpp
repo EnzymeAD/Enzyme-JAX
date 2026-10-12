@@ -17247,33 +17247,6 @@ static bool extractGridIotasFromAttr(DenseElementsAttr constAttr,
   return true;
 }
 
-static bool extractGridIotas(Value val,
-                             SmallVectorImpl<IotaLikeTensor> &result) {
-  if (auto iota = detectIotaLikeTensor(val)) {
-    result.push_back(*iota);
-    return true;
-  }
-
-  if (auto addOp = val.getDefiningOp<stablehlo::AddOp>()) {
-    SmallVector<IotaLikeTensor> lhsIotas;
-    if (!extractGridIotas(addOp.getLhs(), lhsIotas)) {
-      return false;
-    }
-    SmallVector<IotaLikeTensor> rhsIotas;
-    if (!extractGridIotas(addOp.getRhs(), rhsIotas)) {
-      return false;
-    }
-    result.append(lhsIotas.begin(), lhsIotas.end());
-    result.append(rhsIotas.begin(), rhsIotas.end());
-    return true;
-  }
-
-  DenseElementsAttr constAttr;
-  if (matchPattern(val, m_Constant(&constAttr)))
-    return extractGridIotasFromAttr(constAttr, result);
-  return false;
-}
-
 // The grid terms of component `comp` of the index vectors in `indices`
 // (along `indexVectorDim`; a whole index tensor when that dimension is past
 // its rank), with dimensions numbered as `indices` numbers them.
@@ -17281,16 +17254,23 @@ static bool extractComponentIotas(Value indices, int64_t indexVectorDim,
                                   int64_t comp,
                                   SmallVectorImpl<IotaLikeTensor> &result) {
   auto ty = dyn_cast<RankedTensorType>(indices.getType());
-  if (!ty || !ty.hasStaticShape())
+  if (!ty || !ty.hasStaticShape() || !isa<IntegerType>(ty.getElementType()))
     return false;
   int64_t rank = ty.getRank();
-  if (indexVectorDim >= rank ||
-      (ty.getDimSize(indexVectorDim) == 1 && comp == 0))
-    return extractGridIotas(indices, result);
+  // Every element is a whole index vector.
+  bool whole = indexVectorDim >= rank || ty.getDimSize(indexVectorDim) == 1;
+  if (whole && comp != 0)
+    return false;
+  if (whole) {
+    if (auto iota = detectIotaLikeTensor(indices)) {
+      result.push_back(*iota);
+      return true;
+    }
+  }
 
   DenseElementsAttr attr;
   if (matchPattern(indices, m_Constant(&attr))) {
-    if (attr.isSplat())
+    if (whole || attr.isSplat())
       return extractGridIotasFromAttr(attr, result);
     // The component on its own, the index vector dimension kept as one.
     SmallVector<int64_t> shape(ty.getShape());
@@ -17311,7 +17291,7 @@ static bool extractComponentIotas(Value indices, int64_t indexVectorDim,
   }
 
   if (auto cat = indices.getDefiningOp<stablehlo::ConcatenateOp>()) {
-    if ((int64_t)cat.getDimension() != indexVectorDim)
+    if (whole || (int64_t)cat.getDimension() != indexVectorDim)
       return false;
     for (Value in : cat.getInputs()) {
       int64_t size =
@@ -17354,7 +17334,93 @@ static bool extractComponentIotas(Value indices, int64_t indexVectorDim,
     return extractComponentIotas(add.getLhs(), indexVectorDim, comp, result) &&
            extractComponentIotas(add.getRhs(), indexVectorDim, comp, result);
 
+  // Each term times a constant factor.
+  auto scaled = [&](Value v, const APInt &factor) {
+    SmallVector<IotaLikeTensor> inner;
+    if (!extractComponentIotas(v, indexVectorDim, comp, inner))
+      return false;
+    for (IotaLikeTensor iota : inner) {
+      auto times = [&](TypedAttr a) -> TypedAttr {
+        APInt x = cast<IntegerAttr>(a).getValue();
+        return IntegerAttr::get(a.getType(),
+                                x * factor.sextOrTrunc(x.getBitWidth()));
+      };
+      iota.start = times(iota.start);
+      iota.scale = times(iota.scale);
+      iota.tensorType = ty;
+      result.push_back(iota);
+    }
+    return true;
+  };
+
+  if (auto sub = indices.getDefiningOp<stablehlo::SubtractOp>()) {
+    APInt minusOne = APInt::getAllOnes(ty.getElementTypeBitWidth());
+    return extractComponentIotas(sub.getLhs(), indexVectorDim, comp, result) &&
+           scaled(sub.getRhs(), minusOne);
+  }
+
+  if (auto mul = indices.getDefiningOp<stablehlo::MulOp>()) {
+    for (int k = 0; k < 2; ++k) {
+      SplatElementsAttr factor;
+      if (matchPattern(mul->getOperand(1 - k), m_Constant(&factor)))
+        return scaled(mul->getOperand(k), factor.getSplatValue<APInt>());
+    }
+    return false;
+  }
+
+  if (auto shl = indices.getDefiningOp<stablehlo::ShiftLeftOp>()) {
+    SplatElementsAttr shift;
+    if (!matchPattern(shl.getRhs(), m_Constant(&shift)))
+      return false;
+    APInt amount = shift.getSplatValue<APInt>();
+    unsigned width = ty.getElementTypeBitWidth();
+    if (amount.isNegative() || amount.uge(width))
+      return false;
+    return scaled(shl.getLhs(),
+                  APInt::getOneBitSet(width, amount.getZExtValue()));
+  }
+
+  // A widening integer conversion keeps every value.
+  if (auto conv = indices.getDefiningOp<stablehlo::ConvertOp>()) {
+    auto from = dyn_cast<IntegerType>(
+        cast<RankedTensorType>(conv.getOperand().getType()).getElementType());
+    if (!from || from.getWidth() > ty.getElementTypeBitWidth() ||
+        from.isUnsigned())
+      return false;
+    SmallVector<IotaLikeTensor> inner;
+    if (!extractComponentIotas(conv.getOperand(), indexVectorDim, comp, inner))
+      return false;
+    // The narrower arithmetic wraps, which the terms do not: they hold only
+    // when every value they give fits the narrower type.
+    if (from.getWidth() < 64) {
+      auto fromTy = cast<RankedTensorType>(conv.getOperand().getType());
+      int64_t lo = 0, hi = 0;
+      for (auto &iota : inner) {
+        int64_t start = cast<IntegerAttr>(iota.start).getValue().getSExtValue();
+        int64_t scale = cast<IntegerAttr>(iota.scale).getValue().getSExtValue();
+        int64_t span =
+            scale == 0 ? 0 : scale * (fromTy.getDimSize(iota.dimension) - 1);
+        lo += start + std::min<int64_t>(span, 0);
+        hi += start + std::max<int64_t>(span, 0);
+      }
+      if (lo < APInt::getSignedMinValue(from.getWidth()).getSExtValue() ||
+          hi > APInt::getSignedMaxValue(from.getWidth()).getSExtValue())
+        return false;
+    }
+    for (IotaLikeTensor iota : inner) {
+      iota.tensorType = ty;
+      result.push_back(iota);
+    }
+    return true;
+  }
+
   return false;
+}
+
+static bool extractGridIotas(Value val,
+                             SmallVectorImpl<IotaLikeTensor> &result) {
+  return extractComponentIotas(
+      val, cast<RankedTensorType>(val.getType()).getRank(), 0, result);
 }
 
 struct GridIndexingAnalysis {
