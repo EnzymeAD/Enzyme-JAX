@@ -31,7 +31,6 @@ def LegalizeMpiToNcclPass : Pass<"legalize-mpi-to-nccl"> {
   let dependentDialects = [
     "comm::CommDialect",
     "stablehlo::StablehloDialect",
-    "LLVM::LLVMDialect",
   ];
 }
 
