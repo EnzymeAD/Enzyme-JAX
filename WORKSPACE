@@ -129,9 +129,10 @@ load("//third_party/ml_toolchain:workspace.bzl", ml_toolchain_workspace = "repo"
 
 jax_workspace()
 
+load("//:workspace.bzl", "XLA_COMMIT_OVERRIDE")
 load("//third_party/xla:workspace.bzl", xla_workspace = "repo")
 
-xla_workspace()
+xla_workspace(override_commit = XLA_COMMIT_OVERRIDE)
 
 load("@xla//:workspace4.bzl", "xla_workspace4")
 
