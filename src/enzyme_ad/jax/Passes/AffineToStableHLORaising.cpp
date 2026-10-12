@@ -3373,6 +3373,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   // Affine load inside a loop becomes a slice
   if (auto loadOp = dyn_cast<affine::AffineLoadOp>(op)) {
+    // A pointer read inside the kernel is no value a tensor holds.
+    if (isa<LLVM::LLVMPointerType>(loadOp.getType()))
+      return failure();
     affine::MemRefAccess access(loadOp);
 
     affine::AffineValueMap accessValueMap;
