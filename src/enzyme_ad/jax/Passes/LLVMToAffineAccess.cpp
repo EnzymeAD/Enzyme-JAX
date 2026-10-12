@@ -710,6 +710,112 @@ struct ConvertLLVMAllocaToMemrefAlloca
 // [2 x T] numbers) reads or writes several of the buffer's elements at once,
 // which has no tensor form: view the buffer as its scalar instead, each access
 // becoming one per leaf.
+// The byte at which the member `path` names lies in `type`, and its type.
+static std::optional<std::pair<int64_t, Type>>
+memberAt(Type type, ArrayRef<int64_t> path, const DataLayout &dl) {
+  int64_t at = 0;
+  for (int64_t i : path) {
+    if (auto st = dyn_cast<LLVM::LLVMStructType>(type)) {
+      if (i < 0 || (size_t)i >= st.getBody().size())
+        return std::nullopt;
+      int64_t byte = 0;
+      for (auto [j, member] : llvm::enumerate(st.getBody())) {
+        if (!st.isPacked())
+          byte = llvm::alignTo(byte, dl.getTypeABIAlignment(member));
+        if ((int64_t)j == i)
+          break;
+        byte += dl.getTypeSize(member);
+      }
+      at += byte;
+      type = st.getBody()[i];
+    } else if (auto arr = dyn_cast<LLVM::LLVMArrayType>(type)) {
+      if (i < 0 || (uint64_t)i >= arr.getNumElements())
+        return std::nullopt;
+      at += i * dl.getTypeSize(arr.getElementType());
+      type = arr.getElementType();
+    } else {
+      return std::nullopt;
+    }
+  }
+  return std::make_pair(at, type);
+}
+
+// A load of a whole aggregate through a view of a pointer, of which only
+// members are taken out, is a load of each of those members: a by-value
+// lambda a host function is handed by reference (MFEM's dfem forall) is
+// loaded whole for the members its kernel reads, and nothing stores into it
+// there for forwarding to answer. Each member is loaded where the aggregate
+// was, through a view of its own type at its byte. Only views of raw
+// pointers: a typed buffer's are ExpandAggregateViewOfScalarMemref's.
+template <typename LoadOp>
+struct NarrowAggregateLoad final : public OpRewritePattern<LoadOp> {
+  const DataLayoutAnalysis &dl;
+  NarrowAggregateLoad(MLIRContext *context, const DataLayoutAnalysis &dl)
+      : OpRewritePattern<LoadOp>(context), dl(dl) {}
+
+  LogicalResult matchAndRewrite(LoadOp ld,
+                                PatternRewriter &rewriter) const override {
+    auto view =
+        ld.getMemRef().template getDefiningOp<enzymexla::Pointer2MemrefOp>();
+    // A view of a typed buffer is ExpandAggregateViewOfScalarMemref's to
+    // decide on, which leaves one of another scalar alone.
+    if (!view ||
+        view.getSource().template getDefiningOp<enzymexla::Memref2PointerOp>())
+      return failure();
+    MemRefType viewType = view.getType();
+    Type aggregate = viewType.getElementType();
+    if (viewType.getRank() != 1 || !viewType.getLayout().isIdentity() ||
+        !isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(aggregate) ||
+        ld->use_empty() ||
+        !llvm::all_of(ld->getUsers(), llvm::IsaPred<LLVM::ExtractValueOp>))
+      return failure();
+    std::optional<int64_t> index;
+    if constexpr (std::is_same_v<LoadOp, affine::AffineLoadOp>) {
+      if (ld.getAffineMap().isSingleConstant())
+        index = ld.getAffineMap().getSingleConstantResult();
+    } else {
+      index = getConstantIntValue(ld.getIndices()[0]);
+    }
+    if (!index)
+      return failure();
+    const DataLayout &layout = dl.getAtOrAbove(ld);
+    int64_t base = *index * (int64_t)layout.getTypeSize(aggregate);
+
+    SmallVector<std::pair<LLVM::ExtractValueOp, std::pair<int64_t, Type>>>
+        members;
+    for (Operation *user : ld->getUsers()) {
+      auto extract = cast<LLVM::ExtractValueOp>(user);
+      auto member = memberAt(aggregate, extract.getPosition(), layout);
+      if (!member)
+        return failure();
+      members.push_back({extract, *member});
+    }
+
+    Value ptr = view.getSource();
+    Location loc = ld.getLoc();
+    for (auto [extract, member] : members) {
+      rewriter.setInsertionPoint(ld);
+      auto [at, type] = member;
+      Value memberPtr = ptr;
+      if (base + at)
+        memberPtr = LLVM::GEPOp::create(rewriter, loc, ptr.getType(),
+                                        rewriter.getI8Type(), ptr,
+                                        ArrayRef<LLVM::GEPArg>{base + at});
+      auto memberType = MemRefType::get({ShapedType::kDynamic}, type,
+                                        MemRefLayoutAttrInterface{},
+                                        viewType.getMemorySpace());
+      Value memberView = enzymexla::Pointer2MemrefOp::create(
+          rewriter, loc, memberType, memberPtr);
+      Value value = affine::AffineLoadOp::create(
+          rewriter, loc, memberView,
+          AffineMap::getConstantMap(0, rewriter.getContext()), ValueRange());
+      rewriter.replaceOp(extract, value);
+    }
+    rewriter.eraseOp(ld);
+    return success();
+  }
+};
+
 struct ExpandAggregateViewOfScalarMemref final
     : public OpRewritePattern<enzymexla::Pointer2MemrefOp> {
   using OpRewritePattern<enzymexla::Pointer2MemrefOp>::OpRewritePattern;
@@ -2732,8 +2838,10 @@ convertLLVMToAffineAccess(Operation *op,
                     SimplifyInPlaceAlloc<memref::AllocOp>,
                     SimplifyInPlaceAlloc<memref::AllocaOp>,
                     SimplifyInPlaceAlloc<gpu::AllocOp>,
-                    ExpandAggregateViewOfScalarMemref>(context,
-                                                       dataLayoutAnalysis);
+                    ExpandAggregateViewOfScalarMemref,
+                    NarrowAggregateLoad<affine::AffineLoadOp>,
+                    NarrowAggregateLoad<memref::LoadOp>>(context,
+                                                         dataLayoutAnalysis);
     patterns.insert<MemsetZeroToAffineFill>(context);
     patterns.insert<IndexCastAddSub, MemrefLoadAffineApply, SelectCSE,
                     SelectAddrCast>(context);
