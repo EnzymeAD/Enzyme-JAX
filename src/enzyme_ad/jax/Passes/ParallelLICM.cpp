@@ -10,6 +10,7 @@
 // This file implements a pass to print the MLIR module
 //===----------------------------------------------------------------------===//
 
+#include "Enzyme/MLIR/Interfaces/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -728,33 +729,10 @@ void moveSerialLoopInvariantCode(affine::AffineForOp looplike) {
   LLVM_DEBUG(looplike.print(llvm::dbgs() << "\n\nModified loop:\n"));
 }
 
-// Whether `ptr` is the address of an object in host memory: an alloca, or a
-// function argument passed by value or by reference (byval, or
-// dereferenceable), through constant offsets. A pointer read out of memory
-// may be a device buffer's.
-static bool isHostObject(Value ptr) {
-  while (auto gep = ptr.getDefiningOp<LLVM::GEPOp>()) {
-    if (!gep.getDynamicIndices().empty())
-      return false;
-    ptr = gep.getBase();
-  }
-  if (ptr.getDefiningOp<LLVM::AllocaOp>())
-    return true;
-  auto arg = dyn_cast<BlockArgument>(ptr);
-  if (!arg || !arg.getOwner()->isEntryBlock())
-    return false;
-  auto fn = dyn_cast<FunctionOpInterface>(arg.getOwner()->getParentOp());
-  if (!fn)
-    return false;
-  unsigned i = arg.getArgNumber();
-  return fn.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName()) ||
-         fn.getArgAttr(i, LLVM::LLVMDialect::getDereferenceableAttrName());
-}
-
-// Whether `op` can run on the host before a kernel's launch instead of in
-// the kernel: it computes without memory, or it reads through the address of
-// a host object. Thread and block indices are the kernel's own.
-static bool runsOnHost(Operation *op) {
+// Whether `op` can run on the host before the launch `wrapper` instead of in
+// its kernel: it computes without memory, or it reads an alloca the host made
+// before the launch. Thread and block indices are the kernel's own.
+static bool runsOnHost(Operation *op, Operation *wrapper) {
   if (op->getNumRegions())
     return false;
   if (Dialect *dialect = op->getDialect())
@@ -771,24 +749,44 @@ static bool runsOnHost(Operation *op) {
     addr = load.getAddr();
   else
     return false;
-  if (auto view = addr.getDefiningOp<enzymexla::Pointer2MemrefOp>())
-    addr = view.getSource();
-  return isHostObject(addr);
+  Operation *base = enzyme::oputils::getBaseObject(addr).getDefiningOp();
+  return isa_and_nonnull<LLVM::AllocaOp, memref::AllocaOp>(base) &&
+         !wrapper->isAncestor(base);
+}
+
+// Whether `op`, or an op nested in it, may write or free memory.
+static bool mayWrite(Operation *op) {
+  auto effects = getEffectsRecursively(op);
+  return !effects ||
+         llvm::any_of(*effects, [](const MemoryEffects::EffectInstance &e) {
+           return isa<MemoryEffects::Write, MemoryEffects::Free>(e.getEffect());
+         });
 }
 
 // A kernel reads a by-value argument (a lambda's captures) through the
-// address of the host's copy of it. What the kernel computes from such reads
-// alone, before writing anything they read, the host can compute before the
-// launch: the launch is invariant code's loop. Raising needs it so, since a
-// buffer whose pointer is read inside the kernel cannot be captured.
+// address of the host's copy of it. The top of a launch runs once, in order,
+// so what the host can run of it -- whatever it needs having moved too, and
+// for a read, nothing before it that stays in the launch writing memory --
+// runs before the launch instead. Raising needs it so, since a buffer whose
+// pointer is read inside the kernel cannot be captured.
 static void moveWrapperInvariantCode(enzymexla::GPUWrapperOp wrapper) {
-  SmallPtrSet<Operation *, 8> willBeMovedSet;
+  SmallPtrSet<Operation *, 8> moved;
   SmallVector<Operation *, 8> opsToMove;
-  for (Operation &op : wrapper.getRegion().front().without_terminator())
-    if (runsOnHost(&op) && canBeParallelHoisted(&op, wrapper, willBeMovedSet)) {
+  bool written = false;
+  for (Operation &op : wrapper.getRegion().front().without_terminator()) {
+    bool available = llvm::all_of(op.getOperands(), [&](Value v) {
+      Operation *def = v.getDefiningOp();
+      return (def && moved.count(def)) ||
+             !wrapper->isAncestor(v.getParentRegion()->getParentOp());
+    });
+    if (available && runsOnHost(&op, wrapper) &&
+        (!written || isMemoryEffectFree(&op))) {
       opsToMove.push_back(&op);
-      willBeMovedSet.insert(&op);
+      moved.insert(&op);
+      continue;
     }
+    written |= mayWrite(&op);
+  }
   for (Operation *op : opsToMove)
     op->moveBefore(wrapper);
 }

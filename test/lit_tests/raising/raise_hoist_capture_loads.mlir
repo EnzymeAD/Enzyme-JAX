@@ -1,12 +1,13 @@
 // RUN: enzymexlamlir-opt %s --parallel-licm --canonicalize --raise-affine-to-stablehlo | FileCheck %s
 
-// A kernel reads its by-value lambda (here the host's byval copy) for the
-// pointer of the buffer it writes and a count. parallel-licm moves those
-// reads out of the lanes and then ahead of the launch, so the raiser captures
-// the buffer and takes the count as a scalar, rather than a tensor of
-// pointers no form exists for.
+// A kernel reads its lambda (the host's copy, an alloca made before the
+// launch) for the pointer of the buffer it writes and a count. parallel-licm
+// moves those reads out of the lanes and then ahead of the launch, so the
+// raiser captures the buffer and takes the count as a scalar, rather than a
+// tensor of pointers no form exists for.
 module {
-  func.func @capture(%cap: !llvm.ptr {llvm.byval = !llvm.struct<(ptr, i32)>, llvm.align = 8 : i64}) {
+  func.func @capture(%c1i: i64) {
+    %cap = llvm.alloca %c1i x !llvm.struct<(ptr, i32)> : (i64) -> !llvm.ptr
     %c1 = arith.constant 1 : index
     %c10 = arith.constant 10 : index
     %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c10, %c1, %c1) ({
@@ -26,26 +27,26 @@ module {
 }
 
 // CHECK-LABEL: func.func @capture(
-// CHECK-SAME: %[[V0:[^ ,:)]+]]: !llvm.ptr {llvm.align = 8 : i64, llvm.byval = !llvm.struct<(ptr, i32)>}) {
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: i64) {
 // CHECK-NEXT: %[[V1:[^ ,:)]+]] = memref.alloca() : memref<f64>
-// CHECK-NEXT: %[[V2:[^ ,:)]+]] = arith.constant 1 : index
-// CHECK-NEXT: %[[V3:[^ ,:)]+]] = arith.constant 10 : index
-// CHECK-NEXT: %[[V4:[^ ,:)]+]] = "enzymexla.pointer2memref"(%[[V0]]) : (!llvm.ptr) -> memref<?x!llvm.ptr>
-// CHECK-NEXT: %[[V5:[^ ,:)]+]] = "enzymexla.pointer2memref"(%[[V0]]) : (!llvm.ptr) -> memref<?xi32>
-// CHECK-NEXT: %[[V6:[^ ,:)]+]] = affine.load %[[V4]][0] : memref<?x!llvm.ptr>
-// CHECK-NEXT: %[[V7:[^ ,:)]+]] = affine.load %[[V5]][2] : memref<?xi32>
-// CHECK-NEXT: %[[V8:[^ ,:)]+]] = arith.sitofp %[[V7]] : i32 to f64
-// CHECK-NEXT: %[[V9:[^ ,:)]+]] = "enzymexla.pointer2memref"(%[[V6]]) : (!llvm.ptr) -> memref<?xf64>
-// CHECK-NEXT: %[[V10:[^ ,:)]+]] = gpu.alloc  () : memref<f64, 1>
-// CHECK-NEXT: affine.store %[[V8]], %[[V1]][] : memref<f64>
-// CHECK-NEXT: %[[V11:[^ ,:)]+]] = arith.constant 8 : index
-// CHECK-NEXT: enzymexla.memcpy  %[[V10]], %[[V1]], %[[V11]] : memref<f64, 1>, memref<f64>
-// CHECK-NEXT: enzymexla.xla_wrapper @rxla$raised_0 (%[[V10]], %[[V9]]) : (memref<f64, 1>, memref<?xf64>) -> ()
-// CHECK-NEXT: %[[V12:[^ ,:)]+]] = arith.constant 0 : index
-// CHECK-NEXT: gpu.dealloc  %[[V10]] : memref<f64, 1>
+// CHECK-NEXT: %[[V2:[^ ,:)]+]] = arith.constant 10 : index
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = arith.constant 1 : index
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = llvm.alloca %[[V0]] x !llvm.struct<(ptr, i32)> : (i64) -> !llvm.ptr
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = "enzymexla.pointer2memref"(%[[V4]]) : (!llvm.ptr) -> memref<?x!llvm.ptr>
+// CHECK-NEXT: %[[V6:[^ ,:)]+]] = "enzymexla.pointer2memref"(%[[V4]]) : (!llvm.ptr) -> memref<?xi32>
+// CHECK-NEXT: %[[V7:[^ ,:)]+]] = affine.load %[[V5]][0] : memref<?x!llvm.ptr>
+// CHECK-NEXT: %[[V8:[^ ,:)]+]] = affine.load %[[V6]][2] : memref<?xi32>
+// CHECK-NEXT: %[[V9:[^ ,:)]+]] = arith.sitofp %[[V8]] : i32 to f64
+// CHECK-NEXT: %[[V10:[^ ,:)]+]] = "enzymexla.pointer2memref"(%[[V7]]) : (!llvm.ptr) -> memref<?xf64>
+// CHECK-NEXT: %[[V11:[^ ,:)]+]] = gpu.alloc  () : memref<f64, 1>
+// CHECK-NEXT: affine.store %[[V9]], %[[V1]][] : memref<f64>
+// CHECK-NEXT: %[[V12:[^ ,:)]+]] = arith.constant 8 : index
+// CHECK-NEXT: enzymexla.memcpy  %[[V11]], %[[V1]], %[[V12]] : memref<f64, 1>, memref<f64>
+// CHECK-NEXT: enzymexla.xla_wrapper @rxla$raised_0 (%[[V11]], %[[V10]]) : (memref<f64, 1>, memref<?xf64>) -> ()
+// CHECK-NEXT: %[[V13:[^ ,:)]+]] = arith.constant 0 : index
+// CHECK-NEXT: gpu.dealloc  %[[V11]] : memref<f64, 1>
 // CHECK-NEXT: return
 // CHECK-NEXT: }
-
 
 // CHECK-LABEL: func.func private @rxla$raised_0(
 // CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<f64>, %[[V1:[^ ,:)]+]]: tensor<?xf64>) -> (tensor<f64>, tensor<?xf64>) {
