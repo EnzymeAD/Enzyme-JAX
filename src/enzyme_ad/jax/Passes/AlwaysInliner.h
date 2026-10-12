@@ -55,8 +55,10 @@ struct AlwaysInlinerInterface : public mlir::InlinerInterface {
   /// Handle the given inlined terminator by replacing it with a new operation
   /// as necessary.
   void handleTerminator(mlir::Operation *op, mlir::Block *newDest) const final {
-    // Only "std.return" needs to be handled here.
-    if (!isa<mlir::func::ReturnOp, mlir::LLVM::ReturnOp>(op))
+    // Only returns need to be handled here; a GPU kernel inlined into its
+    // launch ends in gpu.return.
+    if (!isa<mlir::func::ReturnOp, mlir::LLVM::ReturnOp, mlir::gpu::ReturnOp>(
+            op))
       return;
 
     // Replace the return with a branch to the dest.
