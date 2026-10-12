@@ -176,22 +176,15 @@ module {
 // CHECK-NEXT:  }
 
 // OPT:  module {
-// OPT-NEXT:  func.func private @lane_memref_raised(%arg0: tensor<16xf64>, %arg1: tensor<16xf64>) -> (tensor<16xf64>, tensor<16xf64>) {
-// OPT-NEXT:    %c = stablehlo.constant dense<{{\[\[}}0, 1], [1, 1], [2, 1], [3, 1], [4, 1], [5, 1], [6, 1], [7, 1], [8, 1], [9, 1], [10, 1], [11, 1], [12, 1], [13, 1], [14, 1], [15, 1]]> : tensor<16x2xi64>
-// OPT-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<16x2xf64>
-// OPT-NEXT:    %c_0 = stablehlo.constant dense<{{\[\[}}0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [6, 0], [7, 0], [8, 0], [9, 0], [10, 0], [11, 0], [12, 0], [13, 0], [14, 0], [15, 0]]> : tensor<16x2xi64>
-// OPT-NEXT:    %0 = "stablehlo.scatter"(%cst, %c_0, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
-// OPT-NEXT:    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
-// OPT-NEXT:      stablehlo.return %arg3 : tensor<f64>
-// OPT-NEXT:    }) : (tensor<16x2xf64>, tensor<16x2xi64>, tensor<16xf64>) -> tensor<16x2xf64>
-// OPT-NEXT:    %1 = "stablehlo.scatter"(%0, %c, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
-// OPT-NEXT:    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
-// OPT-NEXT:      stablehlo.return %arg3 : tensor<f64>
-// OPT-NEXT:    }) : (tensor<16x2xf64>, tensor<16x2xi64>, tensor<16xf64>) -> tensor<16x2xf64>
-// OPT-NEXT:    %2 = "stablehlo.gather"(%1, %c_0) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<16x2xf64>, tensor<16x2xi64>) -> tensor<16xf64>
-// OPT-NEXT:    %3 = arith.addf %2, %arg1 : tensor<16xf64>
-// OPT-NEXT:    return %3, %arg1 : tensor<16xf64>, tensor<16xf64>
-// OPT-NEXT:  }
+// OPT: func.func private @lane_memref_raised(%arg0: tensor<16xf64>, %arg1: tensor<16xf64>) -> (tensor<16xf64>, tensor<16xf64>) {
+// OPT-NEXT{LITERAL}:   %c = stablehlo.constant dense<[[0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [6, 0], [7, 0], [8, 0], [9, 0], [10, 0], [11, 0], [12, 0], [13, 0], [14, 0], [15, 0]]> : tensor<16x2xi64>
+// OPT-NEXT:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// OPT-NEXT:   %0 = stablehlo.reshape %arg1 : (tensor<16xf64>) -> tensor<16x1xf64>
+// OPT-NEXT:   %1 = stablehlo.pad %0, %cst, low = [0, 0], high = [0, 1], interior = [0, 0] : (tensor<16x1xf64>, tensor<f64>) -> tensor<16x2xf64>
+// OPT-NEXT:   %2 = "stablehlo.gather"(%1, %c) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<16x2xf64>, tensor<16x2xi64>) -> tensor<16xf64>
+// OPT-NEXT:   %3 = arith.addf %2, %arg1 : tensor<16xf64>
+// OPT-NEXT:   return %3, %arg1 : tensor<16xf64>, tensor<16xf64>
+// OPT-NEXT: }
 
 // -----
 // Scratch between the two parallels is one copy per outer iteration, shared
@@ -320,18 +313,14 @@ module {
 // CHECK-NEXT:  }
 
 // OPT:  module {
-// OPT-NEXT:  func.func private @lane_atomic_raised(%arg0: tensor<16xf64>, %arg1: tensor<16xf64>) -> (tensor<16xf64>, tensor<16xf64>) {
-// OPT-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<16x1xf64>
-// OPT-NEXT:    %c = stablehlo.constant dense<{{\[\[}}0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [6, 0], [7, 0], [8, 0], [9, 0], [10, 0], [11, 0], [12, 0], [13, 0], [14, 0], [15, 0]]> : tensor<16x2xi64>
-// OPT-NEXT:    %0 = "stablehlo.scatter"(%cst, %c, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
-// OPT-NEXT:    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
-// OPT-NEXT:      stablehlo.return %arg3 : tensor<f64>
-// OPT-NEXT:    }) : (tensor<16x1xf64>, tensor<16x2xi64>, tensor<16xf64>) -> tensor<16x1xf64>
-// OPT-NEXT:    %1 = "stablehlo.scatter"(%0, %c, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
-// OPT-NEXT:    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
-// OPT-NEXT:      %3 = stablehlo.add %arg2, %arg3 : tensor<f64>
-// OPT-NEXT:      stablehlo.return %3 : tensor<f64>
-// OPT-NEXT:    }) : (tensor<16x1xf64>, tensor<16x2xi64>, tensor<16xf64>) -> tensor<16x1xf64>
-// OPT-NEXT:    %2 = stablehlo.reshape %1 : (tensor<16x1xf64>) -> tensor<16xf64>
-// OPT-NEXT:    return %2, %arg1 : tensor<16xf64>, tensor<16xf64>
-// OPT-NEXT:  }
+// OPT: func.func private @lane_atomic_raised(%arg0: tensor<16xf64>, %arg1: tensor<16xf64>) -> (tensor<16xf64>, tensor<16xf64>) {
+// OPT-NEXT{LITERAL}:   %c = stablehlo.constant dense<[[0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [6, 0], [7, 0], [8, 0], [9, 0], [10, 0], [11, 0], [12, 0], [13, 0], [14, 0], [15, 0]]> : tensor<16x2xi64>
+// OPT-NEXT:   %0 = stablehlo.reshape %arg1 : (tensor<16xf64>) -> tensor<16x1xf64>
+// OPT-NEXT:   %1 = "stablehlo.scatter"(%0, %c, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
+// OPT-NEXT:   ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
+// OPT-NEXT:     %3 = stablehlo.add %arg2, %arg3 : tensor<f64>
+// OPT-NEXT:     stablehlo.return %3 : tensor<f64>
+// OPT-NEXT:   }) : (tensor<16x1xf64>, tensor<16x2xi64>, tensor<16xf64>) -> tensor<16x1xf64>
+// OPT-NEXT:   %2 = stablehlo.reshape %1 : (tensor<16x1xf64>) -> tensor<16xf64>
+// OPT-NEXT:   return %2, %arg1 : tensor<16xf64>, tensor<16xf64>
+// OPT-NEXT: }
