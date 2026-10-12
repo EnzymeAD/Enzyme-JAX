@@ -37562,12 +37562,20 @@ struct ScatterMaskedIndexSlice final
 };
 
 // Whether an index tensor maps every grid position to a distinct value: a
-// sum of iota-like terms, each along its own grid dimension, whose strides
-// make the sum injective (the raising's row-major linearization of a store's
-// lane grid, `i * N1 + j`), plus a constant. Dimensions of extent one need
-// no term.
+// constant whose values are distinct, or a sum of iota-like terms, each along
+// its own grid dimension, whose strides make the sum injective (the raising's
+// row-major linearization of a store's lane grid, `i * N1 + j`), plus a splat
+// constant. Dimensions of extent one need no term.
 static bool isInjectiveGridIndex(Value index) {
   auto ty = cast<RankedTensorType>(index.getType());
+  DenseIntElementsAttr values;
+  if (matchPattern(index, m_Constant(&values)) && !values.isSplat()) {
+    DenseSet<int64_t> seen;
+    for (const APInt &v : values.getValues<APInt>())
+      if (!seen.insert(v.getSExtValue()).second)
+        return false;
+    return true;
+  }
   SmallVector<Value> terms{index};
   SmallVector<std::pair<int64_t, int64_t>> strides; // (|scale|, dimension)
   DenseSet<int64_t> covered;
@@ -37578,7 +37586,10 @@ static bool isInjectiveGridIndex(Value index) {
       terms.push_back(add.getRhs());
       continue;
     }
-    if (matchPattern(term, m_Constant()))
+    // An offset the same at every position keeps the sum injective; one
+    // that differs could bring two positions together.
+    SplatElementsAttr offset;
+    if (matchPattern(term, m_Constant(&offset)))
       continue;
     auto iota = detectIotaLikeTensor(term);
     if (!iota || !iota->scale || iota->dimension >= ty.getRank() ||
