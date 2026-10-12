@@ -1398,7 +1398,11 @@ def XLAMegakernelizePass : Pass<"xla-megakernelize", "ModuleOp"> {
     Operations between the calls must have no memory effects. Use one tensor
     state for each shared buffer. Pass the updated state from the first
     computation to the second computation. Keep separate state for other
-    buffers. Do not fuse a call that still has duplicate buffer inputs.
+    buffers. Allow duplicate buffer inputs when each view returns its input
+    unchanged. For contiguous views of equal total size, use bitcasts and
+    reshapes to read the shared state with a different shape or element type.
+    Get dynamic buffer sizes from the runtime. Do not combine writes through
+    duplicate inputs or views with different total sizes.
     Also apply the registered XLA wrapper canonicalization patterns.
 
     All inputs to the combined call must be available before the first call.

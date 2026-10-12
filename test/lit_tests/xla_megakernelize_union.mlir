@@ -281,9 +281,9 @@ module {
 
 // -----
 
-// Equal identities must have the same logical buffer types.
+// Full-buffer views with equal element widths share state through bitcasts.
 module {
-  llvm.func @do_not_fuse_mismatched_types(%a: !llvm.ptr {llvm.noalias}) {
+  llvm.func @fuse_equal_width_views(%a: !llvm.ptr {llvm.noalias}) {
     %ma = "enzymexla.pointer2memref"(%a) : (!llvm.ptr) -> memref<?xf32>
     %mb = "enzymexla.pointer2memref"(%a) : (!llvm.ptr) -> memref<?xi32>
     enzymexla.xla_wrapper @first (%ma) : (memref<?xf32>) -> ()
@@ -299,11 +299,17 @@ module {
     return %negated : tensor<?xi32>
   }
 }
-// CHECK-LABEL: llvm.func @do_not_fuse_mismatched_types
+// CHECK-LABEL: llvm.func @fuse_equal_width_views
 // CHECK: enzymexla.xla_wrapper @first
-// CHECK: enzymexla.xla_wrapper @second
+// CHECK-NOT: enzymexla.xla_wrapper
 // CHECK: llvm.return
-// CHECK-NOT: @rxla$megakernel
+// CHECK-LABEL: func.func private @first(
+// CHECK-SAME: %[[A:[^:]+]]: tensor<?xf32>) -> tensor<?xf32>
+// CHECK: %[[FLOATS:.*]] = stablehlo.negate %[[A]] : tensor<?xf32>
+// CHECK: %[[INTS:.*]] = stablehlo.bitcast_convert %[[FLOATS]] : (tensor<?xf32>) -> tensor<?xi32>
+// CHECK: %[[UPDATED:.*]] = stablehlo.negate %[[INTS]] : tensor<?xi32>
+// CHECK: %[[RESULT:.*]] = stablehlo.bitcast_convert %[[UPDATED]] : (tensor<?xi32>) -> tensor<?xf32>
+// CHECK: return %[[RESULT]] : tensor<?xf32>
 
 // -----
 
