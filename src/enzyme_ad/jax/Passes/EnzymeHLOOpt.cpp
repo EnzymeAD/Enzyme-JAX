@@ -34636,17 +34636,18 @@ struct GatherOperandBox final
     : CheckedOpRewritePattern<stablehlo::GatherOp, GatherOperandBox> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  // Bounds the elements of large constants are scanned for.
-  static constexpr int64_t kMaxScan = 1 << 20;
-  // Bounds how deep index arithmetic is followed.
+  // Bounds the elements of constants scanned for their range.
+  static constexpr int64_t kMaxScan = 1024;
+  // Bounds how deep index computations are followed.
   static constexpr unsigned kMaxDepth = 12;
 
   // The smallest and largest value component `comp` of the index vectors in
   // `idx` takes (along dimension `ivd`; `ivd` equal to the rank means each
   // element is a whole index vector of one component).
-  static std::optional<std::pair<int64_t, int64_t>>
-  componentRange(Value idx, int64_t ivd, int64_t comp, unsigned depth = 0) {
-    // Index arithmetic shares its terms: bound the walk.
+  using Range = std::optional<std::pair<int64_t, int64_t>>;
+
+  static Range componentRange(Value idx, int64_t ivd, int64_t comp,
+                              unsigned depth = 0) {
     if (depth > kMaxDepth)
       return std::nullopt;
     auto ty = dyn_cast<RankedTensorType>(idx.getType());
@@ -34731,23 +34732,6 @@ struct GatherOperandBox final
       return componentRange(conv.getOperand(), ivd, comp, depth + 1);
     }
 
-    if (auto add = idx.getDefiningOp<stablehlo::AddOp>()) {
-      auto a = componentRange(add.getLhs(), ivd, comp, depth + 1);
-      auto b = componentRange(add.getRhs(), ivd, comp, depth + 1);
-      if (!a || !b)
-        return std::nullopt;
-      return std::make_pair(a->first + b->first, a->second + b->second);
-    }
-
-    if (auto sel = idx.getDefiningOp<stablehlo::SelectOp>()) {
-      auto a = componentRange(sel.getOnTrue(), ivd, comp, depth + 1);
-      auto b = componentRange(sel.getOnFalse(), ivd, comp, depth + 1);
-      if (!a || !b)
-        return std::nullopt;
-      return std::make_pair(std::min(a->first, b->first),
-                            std::max(a->second, b->second));
-    }
-
     if (auto slice = idx.getDefiningOp<stablehlo::SliceOp>()) {
       if (ivd < rank)
         comp = slice.getStartIndices()[ivd] + comp * slice.getStrides()[ivd];
@@ -34790,6 +34774,11 @@ struct GatherOperandBox final
     Value src = op.getOperand();
     auto ty = dyn_cast<RankedTensorType>(src.getType());
     if (!ty || !ty.hasStaticShape())
+      return failure();
+    // The value's gathers are judged together, from its oldest use: uses
+    // are added at the front of the list, so a gather made later (cutting
+    // one of them) does not judge them all again.
+    if (op->getOpOperand(0).getNextOperandUsingThisValue())
       return failure();
     SmallVector<stablehlo::GatherOp> gathers;
     SmallVector<int64_t> extent(ty.getRank(), 0);
