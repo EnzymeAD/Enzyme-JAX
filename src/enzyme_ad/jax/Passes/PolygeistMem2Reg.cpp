@@ -2206,6 +2206,9 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   DenseMap<mlir::Operation *, uint64_t> containedLoads;
   mlir::Location loc = AI.getLoc();
   std::set<mlir::Operation *> allStoreOps;
+  // Copies reaching over the whole slot and more, and where in what they copy
+  // the slot lies.
+  DenseMap<mlir::Operation *, uint64_t> copiedAt;
   // Reads standing for what a transfer moved. One is worth the load it costs
   // only where something went on to ask for it: left behind unasked for, it is
   // a read of the other side of the transfer, which promoting that side sees,
@@ -2489,6 +2492,13 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
                 allStoreOps.insert(user);
                 break;
               }
+            } else if (auto at = touched.containsAt(idx, dl); at && elType) {
+              // A copy reaching over the whole slot leaves in it the bytes of
+              // its source at the slot's place in the copy.
+              LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *user << "\n");
+              allStoreOps.insert(user);
+              copiedAt[user] = *at;
+              break;
             }
             LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << *user << "\n");
             AliasingStoreOperations.insert(user);
@@ -2875,8 +2885,15 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
               if (!LLVM::isCompatibleType(moved)) {
                 // Nothing to name it with.
               } else if (Value src = transferSource(a)) {
+                unsigned align = transferAlignment(a, 1);
+                if (uint64_t at = copiedAt.lookup(a)) {
+                  src = LLVM::GEPOp::create(
+                      builder, a->getLoc(), src.getType(), builder.getI8Type(),
+                      src, ArrayRef<LLVM::GEPArg>{(int64_t)at});
+                  align = llvm::MinAlign(align, at);
+                }
                 written = LLVM::LoadOp::create(builder, a->getLoc(), moved, src,
-                                               transferAlignment(a, 1));
+                                               align);
                 transferReads.push_back(written.getDefiningOp());
               } else {
                 written = LLVM::ZeroOp::create(builder, a->getLoc(), moved);
@@ -3210,6 +3227,27 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
   // Whether anything writes the allocation at all.
   bool anyWrite = false;
 
+  // A load of a whole aggregate that is taken apart with extractvalue reads
+  // each field it extracts, and those are slots too: a store or copy of the
+  // field alone can say what is in one when nothing says what is in the whole.
+  auto noteFields = [&](Operation *load, const OffsetTree &read) {
+    Type type = load->getResult(0).getType();
+    if (!isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(type))
+      return;
+    for (Operation *user : load->getResult(0).getUsers()) {
+      auto extract = dyn_cast<LLVM::ExtractValueOp>(user);
+      if (!extract)
+        continue;
+      auto field = aggregateFieldOffset(type, extract.getPosition(), dl);
+      if (!field)
+        continue;
+      OffsetTree at(field->second,
+                    {Offset((int64_t)field->first, AI.getContext())},
+                    {OffsetType::bytes(1)});
+      lastStored[slotOf(read.add(at, dl))]++;
+    }
+  };
+
   std::deque<std::pair<mlir::Value, OffsetTree>> list = {{AI, OffsetTree()}};
 
   while (list.size()) {
@@ -3223,9 +3261,11 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
                                    SO.getIndices(), dl),
                      dl))]++;
       } else if (auto LO = dyn_cast<memref::LoadOp>(U)) {
-        lastStored[slotOf(tree.add(
+        OffsetTree read = tree.add(
             accessOffsets(LO.getType(), LO.getMemRef(), LO.getIndices(), dl),
-            dl))]++;
+            dl);
+        lastStored[slotOf(read)]++;
+        noteFields(LO, read);
       } else if (auto SO = dyn_cast<affine::AffineStoreOp>(U)) {
         anyWrite = true;
         lastStored[slotOf(
@@ -3234,17 +3274,21 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
                                    SO.getMapOperands(), dl),
                      dl))]++;
       } else if (auto LO = dyn_cast<affine::AffineLoadOp>(U)) {
-        lastStored[slotOf(
+        OffsetTree read =
             tree.add(accessOffsets(LO.getType(), LO.getMemRef(),
                                    LO.getAffineMapAttr().getValue(),
                                    LO.getMapOperands(), dl),
-                     dl))]++;
+                     dl);
+        lastStored[slotOf(read)]++;
+        noteFields(LO, read);
       } else if (auto SO = dyn_cast<LLVM::StoreOp>(U)) {
         anyWrite = true;
         lastStored[slotOf(
             tree.add(accessOffsets(SO.getValue().getType()), dl))]++;
       } else if (auto LO = dyn_cast<LLVM::LoadOp>(U)) {
-        lastStored[slotOf(tree.add(accessOffsets(LO.getType()), dl))]++;
+        OffsetTree read = tree.add(accessOffsets(LO.getType()), dl);
+        lastStored[slotOf(read)]++;
+        noteFields(LO, read);
       } else if (isa<LLVM::MemcpyOp, LLVM::MemmoveOp, LLVM::MemsetOp>(U)) {
         if (transferDest(U) == val)
           anyWrite = true;
