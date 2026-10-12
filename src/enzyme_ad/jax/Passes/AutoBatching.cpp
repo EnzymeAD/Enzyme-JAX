@@ -3059,6 +3059,8 @@ struct ParallelWhileBatcher {
   IRMapping map; // body value -> value emitted in its place
   DenseMap<Operation *, unsigned> innerIv; // nested while -> its iv arg
   Region *loopBody;                        // the parallel loop's body
+  // Whether the batch is every iteration of the loop, or a chunk of them.
+  bool wholeRange = true;
 
   ParallelWhileBatcher(PatternRewriter &rewriter, Location loc,
                        enzyme::WhileLoopInfo &info, int64_t numIters,
@@ -3491,7 +3493,7 @@ struct ParallelWhileBatcher {
             othersInvariant &= info.isConstantAcrossIterations(st);
         }
         Value windows;
-        if (othersInvariant && dims.size() == 1 &&
+        if (wholeRange && othersInvariant && dims.size() == 1 &&
             info.canHoistOperationFromLoop(src, ds, dims) &&
             info.hoistOperationFromLoop(rewriter, src, ds, dims[0], windows)) {
           // The windows lie one after the other along the sliced dimension:
@@ -3615,9 +3617,6 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
   auto ret = cast<stablehlo::ReturnOp>(body.getTerminator());
   unsigned ivNum = cast<BlockArgument>(iv).getArgNumber();
 
-  ParallelWhileBatcher batcher(rewriter, whileOp.getLoc(), info, numIters,
-                               &whileOp.getBody());
-  batcher.batched.insert(iv);
   // Every carried value other than the induction variable is either
   // unchanged, a reduction, or a buffer written through a chain of writes.
   SmallVector<bool> unchanged(body.getNumArguments(), false);
@@ -3626,81 +3625,191 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
     if (arg.getArgNumber() != ivNum)
       if (Operation *combiner = reductionCombiner(arg, ret))
         reductions[arg.getArgNumber()] = combiner;
-  for (auto arg : body.getArguments()) {
-    unsigned k = arg.getArgNumber();
-    if (k == ivNum || reductions.count(k))
-      continue;
-    if (ret.getOperand(k) == arg) {
-      unchanged[k] = true;
-      continue;
+  // The loop analyzed for a batch of `n` of its iterations.
+  auto analyze = [&](std::optional<ParallelWhileBatcher> &batcher,
+                     int64_t n) -> LogicalResult {
+    batcher.emplace(rewriter, whileOp.getLoc(), info, n, &whileOp.getBody());
+    batcher->batched.insert(iv);
+    for (auto arg : body.getArguments()) {
+      unsigned k = arg.getArgNumber();
+      if (k == ivNum || reductions.count(k))
+        continue;
+      if (ret.getOperand(k) == arg) {
+        unchanged[k] = true;
+        continue;
+      }
+      if (failed(batcher->analyzeChain(arg, ret, k)))
+        return failure();
     }
-    if (failed(batcher.analyzeChain(arg, ret, k)))
-      return failure();
-  }
-  if (failed(batcher.analyzeBlock(body)))
+    return batcher->analyzeBlock(body);
+  };
+  std::optional<ParallelWhileBatcher> batcher;
+  if (failed(analyze(batcher, numIters)))
     return failure();
 
-  // Emit before the loop.
-  Location loc = whileOp.getLoc();
-  rewriter.setInsertionPoint(whileOp);
-  auto ivTy = cast<RankedTensorType>(iv.getType());
-  Value iota = stablehlo::IotaOp::create(
-      rewriter, loc, RankedTensorType::get({numIters}, ivTy.getElementType()),
-      0);
-  int64_t start = *info.getConstantStart(), step = *info.getConstantStep();
-  if (step != 1)
-    iota = stablehlo::MulOp::create(
-        rewriter, loc, iota,
-        stablehlo::ConstantOp::create(
-            rewriter, loc, cast<ElementsAttr>(makeAttr(iota.getType(), step))));
-  if (start != 0)
-    iota = stablehlo::AddOp::create(
-        rewriter, loc, iota,
-        stablehlo::ConstantOp::create(
-            rewriter, loc,
-            cast<ElementsAttr>(makeAttr(iota.getType(), start))));
-  batcher.map.map(iv, iota);
-  for (auto arg : body.getArguments())
-    if (unchanged[arg.getArgNumber()] || batcher.chainRoot.count(arg))
-      batcher.map.map(arg, whileOp->getOperand(arg.getArgNumber()));
-  // A reduction starts every iteration from the identity, so each combines
-  // in only its own value; the reduce below combines them all.
-  for (auto &[k, combiner] : reductions) {
-    auto ty = cast<RankedTensorType>(body.getArgument(k).getType());
-    Value identity = stablehlo::getIdentityValue(rewriter, loc,
-                                                 ty.getElementType(), combiner);
-    if (identity.getType() != ty)
-      identity = stablehlo::BroadcastInDimOp::create(
-          rewriter, loc, ty, identity, ArrayRef<int64_t>{});
-    batcher.map.map(body.getArgument(k), identity);
+  // Batched, every value an iteration computes is computed for every
+  // iteration at once, and XLA keeps many of them: past kMaxBatchedBytes,
+  // the iterations are batched a chunk at a time, in a loop over the chunks
+  // (the largest chunk that divides the loop and fits, of no fewer than
+  // numIters / kMaxChunks iterations).
+  int64_t perIteration = 0;
+  body.walk([&](Operation *op) {
+    for (Value r : op->getResults())
+      if (batcher->isBatched(r))
+        if (auto t = dyn_cast<RankedTensorType>(r.getType());
+            t && t.hasStaticShape())
+          perIteration += t.getNumElements() *
+                          std::max<int64_t>(1, t.getElementTypeBitWidth() / 8);
+  });
+  int64_t chunk = numIters;
+  if (perIteration > kMaxBatchedBytes / numIters) {
+    int64_t fits = std::max<int64_t>(1, kMaxBatchedBytes / perIteration);
+    for (int64_t c = std::min(fits, numIters); c >= 1; --c)
+      if (numIters % c == 0) {
+        chunk = c;
+        break;
+      }
+    if (numIters / chunk > kMaxChunks)
+      chunk = numIters;
+    if (chunk != numIters && failed(analyze(batcher, chunk)))
+      return failure();
+    batcher->wholeRange = chunk == numIters;
   }
-  batcher.emitBlock(body);
-  DenseMap<unsigned, Value> reduced;
-  for (auto &[k, combiner] : reductions) {
-    Value v = combiner->getResult(0);
-    Value values = batcher.map.lookup(v);
-    // a value no iteration changes is combined in by every one of them
-    if (!batcher.isBatched(v))
-      values = stablehlo::BroadcastInDimOp::create(
-          rewriter, loc, batcher.batchedType(values.getType()), values,
-          llvm::to_vector(llvm::seq<int64_t>(
-              1, cast<RankedTensorType>(values.getType()).getRank() + 1)));
-    reduced[k] =
-        emitReduction(rewriter, loc, combiner, values, whileOp->getOperand(k));
+
+  Location loc = whileOp.getLoc();
+  auto ivTy = cast<RankedTensorType>(iv.getType());
+  int64_t start = *info.getConstantStart(), step = *info.getConstantStep();
+  auto constant = [&](RankedTensorType ty, int64_t v) -> Value {
+    return stablehlo::ConstantOp::create(rewriter, loc,
+                                         cast<ElementsAttr>(makeAttr(ty, v)));
+  };
+  // The batch starting at iteration `first` (a scalar of the induction
+  // variable's type; null for the loop's first), each carried buffer and
+  // reduction starting from
+  // `init(k)`: the value of every carried argument after it, but the
+  // induction variable's.
+  auto emit = [&](Value first,
+                  function_ref<Value(unsigned)> init) -> SmallVector<Value> {
+    ParallelWhileBatcher &b = *batcher;
+    auto batchTy = RankedTensorType::get({b.numIters}, ivTy.getElementType());
+    Value iota = stablehlo::IotaOp::create(rewriter, loc, batchTy, 0);
+    if (step != 1)
+      iota = stablehlo::MulOp::create(rewriter, loc, iota,
+                                      constant(batchTy, step));
+    if (first) {
+      Value firsts = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, batchTy, first, ArrayRef<int64_t>{});
+      iota = stablehlo::AddOp::create(rewriter, loc, iota, firsts);
+    } else if (start != 0) {
+      iota = stablehlo::AddOp::create(rewriter, loc, iota,
+                                      constant(batchTy, start));
+    }
+    b.map.map(iv, iota);
+    for (auto arg : body.getArguments()) {
+      unsigned k = arg.getArgNumber();
+      if (unchanged[k])
+        b.map.map(arg, whileOp->getOperand(k));
+      else if (b.chainRoot.count(arg))
+        b.map.map(arg, init(k));
+    }
+    // A reduction starts every iteration from the identity, so each combines
+    // in only its own value; the reduce below combines them all.
+    for (auto &[k, combiner] : reductions) {
+      auto ty = cast<RankedTensorType>(body.getArgument(k).getType());
+      Value identity = stablehlo::getIdentityValue(
+          rewriter, loc, ty.getElementType(), combiner);
+      if (identity.getType() != ty)
+        identity = stablehlo::BroadcastInDimOp::create(
+            rewriter, loc, ty, identity, ArrayRef<int64_t>{});
+      b.map.map(body.getArgument(k), identity);
+    }
+    b.emitBlock(body);
+    SmallVector<Value> after;
+    for (auto arg : body.getArguments()) {
+      unsigned k = arg.getArgNumber();
+      if (k == ivNum) {
+        after.push_back(nullptr);
+        continue;
+      }
+      Operation *combiner = reductions.lookup(k);
+      if (!combiner) {
+        after.push_back(b.map.lookup(ret.getOperand(k)));
+        continue;
+      }
+      Value v = combiner->getResult(0);
+      Value values = b.map.lookup(v);
+      // a value no iteration changes is combined in by every one of them
+      if (!b.isBatched(v))
+        values = stablehlo::BroadcastInDimOp::create(
+            rewriter, loc, b.batchedType(values.getType()), values,
+            llvm::to_vector(llvm::seq<int64_t>(
+                1, cast<RankedTensorType>(values.getType()).getRank() + 1)));
+      after.push_back(emitReduction(rewriter, loc, combiner, values, init(k)));
+    }
+    return after;
+  };
+
+  // Emit before the loop.
+  rewriter.setInsertionPoint(whileOp);
+  SmallVector<Value> after;
+  if (chunk == numIters) {
+    after = emit(nullptr, [&](unsigned k) { return whileOp->getOperand(k); });
+  } else {
+    // The loop over the chunks carries its counter and the values the
+    // batches change: the buffers written and the reductions.
+    SmallVector<unsigned> carried;
+    SmallVector<Value> inits{constant(ivTy, 0)};
+    for (auto arg : body.getArguments()) {
+      unsigned k = arg.getArgNumber();
+      if (k != ivNum && !unchanged[k]) {
+        carried.push_back(k);
+        inits.push_back(whileOp->getOperand(k));
+      }
+    }
+    auto chunks = stablehlo::WhileOp::create(
+        rewriter, loc, ValueRange(inits).getTypes(), inits);
+    SmallVector<Location> locs(inits.size(), loc);
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      Block *cond = rewriter.createBlock(&chunks.getCond(), {},
+                                         ValueRange(inits).getTypes(), locs);
+      Value more = stablehlo::CompareOp::create(
+          rewriter, loc, cond->getArgument(0), constant(ivTy, numIters / chunk),
+          stablehlo::ComparisonDirection::LT);
+      stablehlo::ReturnOp::create(rewriter, loc, more);
+      Block *next = rewriter.createBlock(&chunks.getBody(), {},
+                                         ValueRange(inits).getTypes(), locs);
+      Value counter = next->getArgument(0);
+      Value stride = constant(ivTy, chunk * step);
+      Value first = stablehlo::MulOp::create(rewriter, loc, counter, stride);
+      if (start != 0) {
+        Value origin = constant(ivTy, start);
+        first = stablehlo::AddOp::create(rewriter, loc, first, origin);
+      }
+      DenseMap<unsigned, Value> current;
+      for (auto [i, k] : llvm::enumerate(carried))
+        current[k] = next->getArgument(i + 1);
+      SmallVector<Value> batchAfter =
+          emit(first, [&](unsigned k) { return current.lookup(k); });
+      SmallVector<Value> yields{
+          stablehlo::AddOp::create(rewriter, loc, counter, constant(ivTy, 1))};
+      for (unsigned k : carried)
+        yields.push_back(batchAfter[k]);
+      stablehlo::ReturnOp::create(rewriter, loc, yields);
+    }
+    after.assign(body.getNumArguments(), nullptr);
+    for (auto [i, k] : llvm::enumerate(carried))
+      after[k] = chunks.getResult(i + 1);
+    for (auto arg : body.getArguments())
+      if (unchanged[arg.getArgNumber()])
+        after[arg.getArgNumber()] = whileOp->getOperand(arg.getArgNumber());
   }
 
   SmallVector<Value> results;
   for (auto arg : body.getArguments()) {
     unsigned k = arg.getArgNumber();
-    if (k == ivNum) {
-      results.push_back(stablehlo::ConstantOp::create(
-          rewriter, loc,
-          cast<ElementsAttr>(makeAttr(ivTy, start + numIters * step))));
-    } else if (reduced.count(k)) {
-      results.push_back(reduced[k]);
-    } else {
-      results.push_back(batcher.map.lookup(ret.getOperand(k)));
-    }
+    results.push_back(k == ivNum ? constant(ivTy, start + numIters * step)
+                                 : after[k]);
   }
   rewriter.replaceOp(whileOp, results);
   return success();

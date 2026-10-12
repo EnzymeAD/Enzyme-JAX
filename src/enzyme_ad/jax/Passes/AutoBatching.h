@@ -337,6 +337,10 @@ struct ParallelWhileToBatchedScatter
   // that would be large (a table read through dynamic_slice is gathered, not
   // broadcast).
   static constexpr int64_t kMaxBroadcastElements = int64_t(1) << 24;
+  // The bytes of the values a batch computes, past which the iterations are
+  // batched a chunk at a time, and the most chunks to split a loop into.
+  static constexpr int64_t kMaxBatchedBytes = int64_t(8) << 30;
+  static constexpr int64_t kMaxChunks = 1024;
 
   mlir::LogicalResult
   matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
