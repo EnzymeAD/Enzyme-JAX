@@ -140,6 +140,148 @@ static bool canReuseFunction(FunctionOpInterface function,
   return true;
 }
 
+/// A dynamic tensor gets its buffer size from the runtime.
+static int64_t getBufferSizeInBits(RankedTensorType type) {
+  return type.hasStaticShape()
+             ? type.getNumElements() *
+                   type.getElementType().getIntOrFloatBitWidth()
+             : ShapedType::kDynamic;
+}
+
+/// Share contiguous views when their total sizes agree.
+static bool canShareBufferState(Value first, Type firstType, Value second,
+                                Type secondType) {
+  if (first.getType() == second.getType() && firstType == secondType)
+    return true;
+  auto firstMemref = dyn_cast<MemRefType>(first.getType());
+  auto secondMemref = dyn_cast<MemRefType>(second.getType());
+  auto source = dyn_cast<RankedTensorType>(firstType);
+  auto target = dyn_cast<RankedTensorType>(secondType);
+  if (!firstMemref || !secondMemref || !source || !target ||
+      firstMemref.getMemorySpace() != secondMemref.getMemorySpace() ||
+      !firstMemref.getLayout().isIdentity() ||
+      !secondMemref.getLayout().isIdentity() ||
+      !source.getElementType().isIntOrFloat() ||
+      !target.getElementType().isIntOrFloat())
+    return false;
+
+  unsigned sourceWidth = source.getElementType().getIntOrFloatBitWidth();
+  unsigned targetWidth = target.getElementType().getIntOrFloatBitWidth();
+  // Reinterpret whole bytes; bitcast conversion needs an integral width ratio.
+  if (sourceWidth % 8 || targetWidth % 8 ||
+      std::max(sourceWidth, targetWidth) % std::min(sourceWidth, targetWidth))
+    return false;
+  // ReshapeOpCreate can infer one dynamic dimension from the element count.
+  for (auto type : {source, target})
+    if (!type.hasStaticShape() && (type.getNumDynamicDims() != 1 ||
+                                   llvm::is_contained(type.getShape(), 0)))
+      return false;
+  return getBufferSizeInBits(source) == getBufferSizeInBits(target);
+}
+
+static LogicalResult addBuffers(ValueRange buffers,
+                                FunctionOpInterface function,
+                                SmallVectorImpl<Value> &fusedInputs,
+                                SmallVectorImpl<Type> &fusedTypes,
+                                DenseMap<Value, unsigned> &fusedIdentities,
+                                SmallVectorImpl<unsigned> &mapping) {
+  DenseMap<Value, bool> readOnly;
+  auto results =
+      function.getFunctionBody().front().getTerminator()->getOperands();
+  for (auto [index, input] : llvm::enumerate(buffers)) {
+    Value identity =
+        enzyme::oputils::getBaseObject(input, /*offsetAllowed=*/false);
+    bool unchanged = results[index] == function.getArgument(index);
+    auto [previous, inserted] = readOnly.try_emplace(identity, unchanged);
+    // All views of a repeated buffer must return their input unchanged.
+    if (!inserted && (!previous->second || !unchanged))
+      return failure();
+
+    Type type = function.getArgumentTypes()[index];
+    auto [entry, newBuffer] =
+        fusedIdentities.try_emplace(identity, fusedInputs.size());
+    unsigned slot = entry->second;
+    if (newBuffer) {
+      fusedInputs.push_back(input);
+      fusedTypes.push_back(type);
+    } else if (!canShareBufferState(fusedInputs[slot], fusedTypes[slot], input,
+                                    type))
+      return failure();
+    mapping.push_back(slot);
+  }
+  return success();
+}
+
+/// Reshape and reinterpret the shared tensor without changing its bits.
+static Value viewBufferState(PatternRewriter &rewriter, Location loc,
+                             Value value, Type type) {
+  if (value.getType() == type)
+    return value;
+  auto source = cast<RankedTensorType>(value.getType());
+  auto target = cast<RankedTensorType>(type);
+  unsigned sourceWidth = source.getElementType().getIntOrFloatBitWidth();
+  unsigned targetWidth = target.getElementType().getIntOrFloatBitWidth();
+  int64_t sourceSize =
+      source.hasStaticShape() ? source.getNumElements() : ShapedType::kDynamic;
+  int64_t targetSize =
+      target.hasStaticShape() ? target.getNumElements() : ShapedType::kDynamic;
+  value = stablehlo::ReshapeOpCreate(rewriter, loc, value, {sourceSize});
+  if (sourceWidth <= targetWidth) {
+    SmallVector<int64_t> shape(target.getShape());
+    if (sourceWidth < targetWidth)
+      shape.push_back(targetWidth / sourceWidth);
+    value = stablehlo::ReshapeOpCreate(rewriter, loc, value, shape);
+    return stablehlo::BitcastConvertOp::create(rewriter, loc, target, value);
+  }
+
+  SmallVector<int64_t> bitcastShape{sourceSize, sourceWidth / targetWidth};
+  Value flatSize;
+  if (!source.hasStaticShape()) {
+    // Read the size before the bitcast so shape refinement can resolve it.
+    flatSize = stablehlo::GetDimensionSizeOp::create(rewriter, loc, value, 0);
+    auto sizeType = RankedTensorType::get({1}, rewriter.getI32Type());
+    flatSize = stablehlo::ReshapeOp::create(rewriter, loc, sizeType, flatSize);
+    Value ratio = stablehlo::ConstantOp::create(
+        rewriter, loc,
+        DenseIntElementsAttr::get(sizeType,
+                                  int32_t(sourceWidth / targetWidth)));
+    flatSize = stablehlo::MulOp::create(rewriter, loc, flatSize, ratio);
+  }
+  value = stablehlo::BitcastConvertOp::create(
+      rewriter, loc,
+      RankedTensorType::get(bitcastShape, target.getElementType()), value);
+  // Flatten first so the dynamic reshape divides by the target's static size.
+  if (flatSize)
+    value = stablehlo::DynamicReshapeOp::create(
+        rewriter, loc,
+        RankedTensorType::get({targetSize}, target.getElementType()), value,
+        flatSize);
+  else
+    value = stablehlo::ReshapeOpCreate(rewriter, loc, value, {targetSize});
+  return stablehlo::ReshapeOpCreate(rewriter, loc, value, target.getShape());
+}
+
+static void cloneCall(PatternRewriter &rewriter, Location location,
+                      FunctionOpInterface function, ArrayRef<unsigned> mapping,
+                      ValueRange specialized,
+                      SmallVectorImpl<Value> &bufferState) {
+  SmallVector<Value> arguments;
+  for (auto [index, slot] : llvm::enumerate(mapping))
+    arguments.push_back(viewBufferState(rewriter, location, bufferState[slot],
+                                        function.getArgumentTypes()[index]));
+  llvm::append_range(arguments, specialized);
+  SmallVector<Value> results =
+      cloneRaisedFunctionBody(rewriter, function, arguments);
+  for (auto [index, slot] : llvm::enumerate(mapping)) {
+    // Read-only views do not replace the shared state with a conversion
+    // of the old value. Only a changed result updates the buffer.
+    if (results[index] == arguments[index])
+      continue;
+    bufferState[slot] = viewBufferState(rewriter, location, results[index],
+                                        bufferState[slot].getType());
+  }
+}
+
 /// Fuse two wrappers separated only by memory-effect-free bookkeeping. The
 /// fused wrapper shares tensor state for equal buffer identities and retains
 /// separate state for distinct inputs.
@@ -187,54 +329,15 @@ public:
     unsigned secondNumSpecialized = second.getNumSpecialized();
     auto firstBuffers = first.getInputs().drop_back(firstNumSpecialized);
     auto secondBuffers = second.getInputs().drop_back(secondNumSpecialized);
-    SmallVector<Value> fusedInputs(firstBuffers.begin(), firstBuffers.end());
-    SmallVector<Type> fusedTypes(firstFunction.getResultTypes());
-    SmallVector<Value> fusedIdentities;
-    for (Value input : fusedInputs)
-      fusedIdentities.push_back(
-          enzyme::oputils::getBaseObject(input, /*offsetAllowed=*/false));
-
-    SmallVector<Value> secondIdentities;
-    for (Value input : secondBuffers)
-      secondIdentities.push_back(
-          enzyme::oputils::getBaseObject(input, /*offsetAllowed=*/false));
-
-    // Do not fuse duplicate inputs whose outputs can disagree. Wrapper
-    // canonicalization can remove duplicates when their outputs agree.
-    DenseSet<Value> distinct;
-    for (Value identity : fusedIdentities)
-      if (!distinct.insert(identity).second)
-        return failure();
-    distinct.clear();
-    for (Value identity : secondIdentities)
-      if (!distinct.insert(identity).second)
-        return failure();
-
-    SmallVector<unsigned> secondToFused;
-    for (auto [secondIndex, identity] : llvm::enumerate(secondIdentities)) {
-      std::optional<unsigned> mappedIndex;
-      for (auto [fusedIndex, fusedIdentity] :
-           llvm::enumerate(fusedIdentities)) {
-        if (identity == fusedIdentity) {
-          mappedIndex = fusedIndex;
-          break;
-        }
-      }
-
-      if (!mappedIndex) {
-        // Add a separate state slot for this input.
-        mappedIndex = fusedInputs.size();
-        fusedInputs.push_back(secondBuffers[secondIndex]);
-        fusedTypes.push_back(secondFunction.getArgumentTypes()[secondIndex]);
-        fusedIdentities.push_back(identity);
-      } else if (fusedInputs[*mappedIndex].getType() !=
-                     secondBuffers[secondIndex].getType() ||
-                 fusedTypes[*mappedIndex] !=
-                     secondFunction.getArgumentTypes()[secondIndex]) {
-        return failure();
-      }
-      secondToFused.push_back(*mappedIndex);
-    }
+    SmallVector<Value> fusedInputs;
+    SmallVector<Type> fusedTypes;
+    DenseMap<Value, unsigned> fusedIdentities;
+    SmallVector<unsigned> firstToFused, secondToFused;
+    if (failed(addBuffers(firstBuffers, firstFunction, fusedInputs, fusedTypes,
+                          fusedIdentities, firstToFused)) ||
+        failed(addBuffers(secondBuffers, secondFunction, fusedInputs,
+                          fusedTypes, fusedIdentities, secondToFused)))
+      return failure();
 
     // Keep all specialized inputs after the buffer union, in call order.
     unsigned numBuffers = fusedInputs.size();
@@ -285,24 +388,12 @@ public:
     SmallVector<Value> bufferState(
         fusedBody->getArguments().take_front(numBuffers));
 
-    SmallVector<Value> firstArguments(
-        ArrayRef<Value>(bufferState).take_front(firstBuffers.size()));
-    llvm::append_range(firstArguments, fusedBody->getArguments().slice(
-                                           numBuffers, firstNumSpecialized));
-    SmallVector<Value> firstResults =
-        cloneRaisedFunctionBody(rewriter, firstFunction, firstArguments);
-    for (auto [firstIndex, result] : llvm::enumerate(firstResults))
-      bufferState[firstIndex] = result;
-
-    SmallVector<Value> secondArguments;
-    for (unsigned fusedIndex : secondToFused)
-      secondArguments.push_back(bufferState[fusedIndex]);
-    llvm::append_range(secondArguments, fusedBody->getArguments().take_back(
-                                            secondNumSpecialized));
-    SmallVector<Value> secondResults =
-        cloneRaisedFunctionBody(rewriter, secondFunction, secondArguments);
-    for (auto [secondIndex, fusedIndex] : llvm::enumerate(secondToFused))
-      bufferState[fusedIndex] = secondResults[secondIndex];
+    cloneCall(rewriter, location, firstFunction, firstToFused,
+              fusedBody->getArguments().slice(numBuffers, firstNumSpecialized),
+              bufferState);
+    cloneCall(rewriter, location, secondFunction, secondToFused,
+              fusedBody->getArguments().take_back(secondNumSpecialized),
+              bufferState);
 
     createRaisedReturn(rewriter, firstFunction, bufferState);
 
