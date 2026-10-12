@@ -17169,6 +17169,84 @@ struct SliceReverse final
 // Recursively extracts components of a grid index expression (like additions
 // of iotas and splat constants) to represent them as a list of
 // IotaLikeTensors.
+// The affine form of a constant index tensor: an offset and a scale per
+// dimension, when every element follows them.
+static bool extractGridIotasFromAttr(DenseElementsAttr constAttr,
+                                     SmallVectorImpl<IotaLikeTensor> &result) {
+  auto tensorType = cast<RankedTensorType>(constAttr.getType());
+  auto elemType = tensorType.getElementType();
+  if (!isa<IntegerType>(elemType)) {
+    return false;
+  }
+  if (constAttr.isSplat()) {
+    TypedAttr zeroScale = IntegerAttr::get(elemType, 0);
+    IotaLikeTensor constIota;
+    constIota.dimension = 0;
+    constIota.scale = zeroScale;
+    constIota.start = constAttr.getSplatValue<TypedAttr>();
+    constIota.tensorType = tensorType;
+    result.push_back(constIota);
+    return true;
+  }
+
+  int64_t rank = tensorType.getRank();
+  auto shape = tensorType.getShape();
+  auto strides = computeStrides(shape);
+  int64_t numElements = tensorType.getNumElements();
+
+  auto values = constAttr.getValues<APInt>();
+
+  // 1. Find offset (value at index 0,0,...,0)
+  APInt offset = values[0];
+
+  // 2. Find scales for each dimension
+  SmallVector<APInt> scales;
+  scales.reserve(rank);
+  for (int64_t d = 0; d < rank; d++) {
+    if (shape[d] > 1) {
+      int64_t linearIdx = strides[d];
+      scales.push_back(values[linearIdx] - offset);
+    } else {
+      scales.push_back(APInt(elemType.getIntOrFloatBitWidth(), 0));
+    }
+  }
+
+  // 3. Verify that the linear relationship holds for all elements
+  SmallVector<int64_t> multiIndex;
+  for (int64_t idx = 0; idx < numElements; idx++) {
+    linearToMultiIndex(idx, strides, multiIndex);
+    APInt expected = offset;
+    for (int64_t d = 0; d < rank; d++) {
+      if (multiIndex[d] != 0 && !scales[d].isZero()) {
+        expected += scales[d] * APInt(scales[d].getBitWidth(), multiIndex[d]);
+      }
+    }
+    if (values[idx] != expected) {
+      return false;
+    }
+  }
+
+  // 4. If verified, create IotaLikeTensors for offset and each non-zero
+  // scale
+  for (int64_t d = 0; d < rank; d++) {
+    if (!scales[d].isZero()) {
+      IotaLikeTensor iota;
+      iota.dimension = d;
+      iota.scale = IntegerAttr::get(elemType, scales[d]);
+      iota.start = IntegerAttr::get(elemType, 0);
+      iota.tensorType = tensorType;
+      result.push_back(iota);
+    }
+  }
+  IotaLikeTensor offsetIota;
+  offsetIota.dimension = 0;
+  offsetIota.scale = IntegerAttr::get(elemType, 0);
+  offsetIota.start = IntegerAttr::get(elemType, offset);
+  offsetIota.tensorType = tensorType;
+  result.push_back(offsetIota);
+  return true;
+}
+
 static bool extractGridIotas(Value val,
                              SmallVectorImpl<IotaLikeTensor> &result) {
   if (auto iota = detectIotaLikeTensor(val)) {
@@ -17191,80 +17269,90 @@ static bool extractGridIotas(Value val,
   }
 
   DenseElementsAttr constAttr;
-  if (matchPattern(val, m_Constant(&constAttr))) {
-    auto tensorType = cast<RankedTensorType>(constAttr.getType());
-    auto elemType = tensorType.getElementType();
-    if (!isa<IntegerType>(elemType)) {
+  if (matchPattern(val, m_Constant(&constAttr)))
+    return extractGridIotasFromAttr(constAttr, result);
+  return false;
+}
+
+// The grid terms of component `comp` of the index vectors in `indices`
+// (along `indexVectorDim`; a whole index tensor when that dimension is past
+// its rank), with dimensions numbered as `indices` numbers them.
+static bool extractComponentIotas(Value indices, int64_t indexVectorDim,
+                                  int64_t comp,
+                                  SmallVectorImpl<IotaLikeTensor> &result) {
+  auto ty = dyn_cast<RankedTensorType>(indices.getType());
+  if (!ty || !ty.hasStaticShape())
+    return false;
+  int64_t rank = ty.getRank();
+  if (indexVectorDim >= rank ||
+      (ty.getDimSize(indexVectorDim) == 1 && comp == 0))
+    return extractGridIotas(indices, result);
+
+  DenseElementsAttr attr;
+  if (matchPattern(indices, m_Constant(&attr))) {
+    if (attr.isSplat())
+      return extractGridIotasFromAttr(attr, result);
+    // The component on its own, the index vector dimension kept as one.
+    SmallVector<int64_t> shape(ty.getShape());
+    shape[indexVectorDim] = 1;
+    auto strides = computeStrides(ty.getShape());
+    auto all = attr.getValues<Attribute>();
+    SmallVector<Attribute> values;
+    SmallVector<int64_t> coord;
+    for (int64_t i = 0, e = ty.getNumElements(); i < e; ++i) {
+      linearToMultiIndex(i, strides, coord);
+      if (coord[indexVectorDim] == comp)
+        values.push_back(all[i]);
+    }
+    return extractGridIotasFromAttr(
+        DenseElementsAttr::get(
+            RankedTensorType::get(shape, ty.getElementType()), values),
+        result);
+  }
+
+  if (auto cat = indices.getDefiningOp<stablehlo::ConcatenateOp>()) {
+    if ((int64_t)cat.getDimension() != indexVectorDim)
       return false;
+    for (Value in : cat.getInputs()) {
+      int64_t size =
+          cast<RankedTensorType>(in.getType()).getDimSize(indexVectorDim);
+      if (comp < size)
+        return extractComponentIotas(in, indexVectorDim, comp, result);
+      comp -= size;
     }
-    if (constAttr.isSplat()) {
-      TypedAttr zeroScale = IntegerAttr::get(elemType, 0);
-      IotaLikeTensor constIota;
-      constIota.dimension = 0;
-      constIota.scale = zeroScale;
-      constIota.start = constAttr.getSplatValue<TypedAttr>();
-      constIota.tensorType = tensorType;
-      result.push_back(constIota);
-      return true;
-    }
+    return false;
+  }
 
-    int64_t rank = tensorType.getRank();
-    auto shape = tensorType.getShape();
-    auto strides = computeStrides(shape);
-    int64_t numElements = tensorType.getNumElements();
-
-    auto values = constAttr.getValues<APInt>();
-
-    // 1. Find offset (value at index 0,0,...,0)
-    APInt offset = values[0];
-
-    // 2. Find scales for each dimension
-    SmallVector<APInt> scales;
-    scales.reserve(rank);
-    for (int64_t d = 0; d < rank; d++) {
-      if (shape[d] > 1) {
-        int64_t linearIdx = strides[d];
-        scales.push_back(values[linearIdx] - offset);
-      } else {
-        scales.push_back(APInt(elemType.getIntOrFloatBitWidth(), 0));
+  if (auto bcast = indices.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+    auto oty = cast<RankedTensorType>(bcast.getOperand().getType());
+    auto dims = bcast.getBroadcastDimensions();
+    // Where the operand holds the components, if it does; otherwise every
+    // component is the operand's value.
+    int64_t innerDim = oty.getRank(), innerComp = 0;
+    for (auto [d, r] : llvm::enumerate(dims))
+      if (r == indexVectorDim) {
+        innerDim = d;
+        innerComp = oty.getDimSize(d) == 1 ? 0 : comp;
       }
+    SmallVector<IotaLikeTensor> inner;
+    if (!extractComponentIotas(bcast.getOperand(), innerDim, innerComp, inner))
+      return false;
+    for (IotaLikeTensor iota : inner) {
+      int64_t scale = cast<IntegerAttr>(iota.scale).getValue().getSExtValue();
+      // A term along a dimension of one is its start, everywhere.
+      if (scale != 0 && oty.getDimSize(iota.dimension) == 1)
+        iota.scale = IntegerAttr::get(iota.scale.getType(), 0);
+      iota.dimension =
+          iota.dimension < oty.getRank() ? dims[iota.dimension] : 0;
+      iota.tensorType = ty;
+      result.push_back(iota);
     }
-
-    // 3. Verify that the linear relationship holds for all elements
-    SmallVector<int64_t> multiIndex;
-    for (int64_t idx = 0; idx < numElements; idx++) {
-      linearToMultiIndex(idx, strides, multiIndex);
-      APInt expected = offset;
-      for (int64_t d = 0; d < rank; d++) {
-        if (multiIndex[d] != 0 && !scales[d].isZero()) {
-          expected += scales[d] * APInt(scales[d].getBitWidth(), multiIndex[d]);
-        }
-      }
-      if (values[idx] != expected) {
-        return false;
-      }
-    }
-
-    // 4. If verified, create IotaLikeTensors for offset and each non-zero
-    // scale
-    for (int64_t d = 0; d < rank; d++) {
-      if (!scales[d].isZero()) {
-        IotaLikeTensor iota;
-        iota.dimension = d;
-        iota.scale = IntegerAttr::get(elemType, scales[d]);
-        iota.start = IntegerAttr::get(elemType, 0);
-        iota.tensorType = tensorType;
-        result.push_back(iota);
-      }
-    }
-    IotaLikeTensor offsetIota;
-    offsetIota.dimension = 0;
-    offsetIota.scale = IntegerAttr::get(elemType, 0);
-    offsetIota.start = IntegerAttr::get(elemType, offset);
-    offsetIota.tensorType = tensorType;
-    result.push_back(offsetIota);
     return true;
   }
+
+  if (auto add = indices.getDefiningOp<stablehlo::AddOp>())
+    return extractComponentIotas(add.getLhs(), indexVectorDim, comp, result) &&
+           extractComponentIotas(add.getRhs(), indexVectorDim, comp, result);
 
   return false;
 }
@@ -17276,6 +17364,8 @@ struct GridIndexingAnalysis {
     int64_t absScale;
   };
   Value grid;
+  // The index grid: the index tensor's dimensions but the index vector one.
+  SmallVector<int64_t> gridShape;
   int64_t minTotalOffset;
   SmallVector<int64_t> operandShape;
   SmallVector<int64_t> sliceStarts;
@@ -17287,42 +17377,107 @@ struct GridIndexingAnalysis {
   bool inBounds;
 };
 
-static LogicalResult analyzeGridIndexing(Value indices, Value operand,
-                                         int64_t indexVectorDim,
-                                         ArrayRef<int64_t> dimsToOperandDims,
-                                         GridIndexingAnalysis &result) {
+// A multi-dimensional index into an operand of any rank is a linear index
+// into the operand's row-major flattening: the sum of each component times
+// the stride of the operand dimension it indexes, and of each batching
+// dimension's position times its stride. When every component is a grid of
+// iota-like terms, so is that linear index, and the operand is analyzed as
+// its flattening.
+static LogicalResult
+analyzeGridIndexing(Value indices, Value operand, int64_t indexVectorDim,
+                    ArrayRef<int64_t> dimsToOperandDims,
+                    GridIndexingAnalysis &result,
+                    ArrayRef<int64_t> operandBatchingDims = {},
+                    ArrayRef<int64_t> indicesBatchingDims = {}) {
   auto operandTy = cast<RankedTensorType>(operand.getType());
-  if (operandTy.getRank() != 1) {
+  auto indicesTy = cast<RankedTensorType>(indices.getType());
+  if (!operandTy.hasStaticShape() || !indicesTy.hasStaticShape())
     return failure();
-  }
 
-  if (cast<ShapedType>(indices.getType()).getNumElements() == 1) {
+  if (indicesTy.getNumElements() == 1) {
     return failure();
-  }
-
-  result.grid = indices;
-  if (auto reshapeOp = indices.getDefiningOp<stablehlo::ReshapeOp>()) {
-    result.grid = reshapeOp.getOperand();
   }
 
   SmallVector<IotaLikeTensor> iotas;
-  if (!extractGridIotas(result.grid, iotas)) {
-    return failure();
-  }
+  int64_t gridRank;
+  if (operandTy.getRank() == 1 && operandBatchingDims.empty()) {
+    result.grid = indices;
+    if (auto reshapeOp = indices.getDefiningOp<stablehlo::ReshapeOp>()) {
+      result.grid = reshapeOp.getOperand();
+    }
 
-  auto gridTy = cast<RankedTensorType>(result.grid.getType());
-  int64_t gridRank = gridTy.getRank();
-  if (gridRank == 0) {
-    return failure();
-  }
+    if (!extractGridIotas(result.grid, iotas)) {
+      return failure();
+    }
 
-  auto indicesTy = cast<RankedTensorType>(indices.getType());
-  if (indexVectorDim < indicesTy.getRank() &&
-      indicesTy.getDimSize(indexVectorDim) != 1) {
-    return failure();
-  }
-  if (dimsToOperandDims.size() != 1 || dimsToOperandDims[0] != 0) {
-    return failure();
+    auto gridTy = cast<RankedTensorType>(result.grid.getType());
+    result.gridShape = llvm::to_vector(gridTy.getShape());
+    gridRank = gridTy.getRank();
+    if (gridRank == 0) {
+      return failure();
+    }
+
+    if (indexVectorDim < indicesTy.getRank() &&
+        indicesTy.getDimSize(indexVectorDim) != 1) {
+      return failure();
+    }
+    if (dimsToOperandDims.size() != 1 || dimsToOperandDims[0] != 0) {
+      return failure();
+    }
+  } else {
+    // The grid is the index tensor without its index vector dimension.
+    int64_t idxRank = indicesTy.getRank();
+    SmallVector<int64_t> gridOf(idxRank, -1);
+    for (int64_t d = 0; d < idxRank; ++d)
+      if (d != indexVectorDim) {
+        gridOf[d] = result.gridShape.size();
+        result.gridShape.push_back(indicesTy.getDimSize(d));
+      }
+    gridRank = result.gridShape.size();
+    if (gridRank == 0)
+      return failure();
+    auto operandStrides = computeStrides(operandTy.getShape());
+    auto elemType = indicesTy.getElementType();
+    auto term = [&](int64_t dim, int64_t start, int64_t scale) {
+      IotaLikeTensor iota;
+      iota.dimension = dim;
+      iota.start = IntegerAttr::get(elemType, start);
+      iota.scale = IntegerAttr::get(elemType, scale);
+      iota.tensorType = indicesTy;
+      iotas.push_back(iota);
+    };
+    for (auto [comp, dim] : llvm::enumerate(dimsToOperandDims)) {
+      SmallVector<IotaLikeTensor> parts;
+      if (!extractComponentIotas(indices, indexVectorDim, comp, parts))
+        return failure();
+      // Each component stays within its own dimension: gather clamps, and
+      // scatter drops, each one on its own, not the linear index.
+      int64_t lo = 0, hi = 0;
+      for (auto &part : parts) {
+        int64_t start = cast<IntegerAttr>(part.start).getValue().getSExtValue();
+        int64_t scale = cast<IntegerAttr>(part.scale).getValue().getSExtValue();
+        lo += start;
+        hi += start;
+        if (scale == 0) {
+          term(0, start * operandStrides[dim], 0);
+          continue;
+        }
+        if (part.dimension == indexVectorDim || part.dimension >= idxRank)
+          return failure();
+        int64_t span = scale * (indicesTy.getDimSize(part.dimension) - 1);
+        (span < 0 ? lo : hi) += span;
+        term(gridOf[part.dimension], start * operandStrides[dim],
+             scale * operandStrides[dim]);
+      }
+      if (lo < 0 || hi >= operandTy.getDimSize(dim))
+        return failure();
+    }
+    for (auto [dim, idxDim] :
+         llvm::zip_equal(operandBatchingDims, indicesBatchingDims)) {
+      if (indicesTy.getDimSize(idxDim) != operandTy.getDimSize(dim))
+        return failure();
+      term(gridOf[idxDim], 0, operandStrides[dim]);
+    }
   }
 
   // Sum the scales and constant offsets for each grid dimension.
@@ -17356,7 +17511,7 @@ static LogicalResult analyzeGridIndexing(Value indices, Value operand,
     return a.absScale > b.absScale;
   });
 
-  int64_t N = operandTy.getDimSize(0);
+  int64_t N = operandTy.getNumElements();
 
   // Factorize the 1D operand size N into a multi-dimensional shape where each
   // stride corresponds to one of the grid dimension scales.
@@ -17386,7 +17541,7 @@ static LogicalResult analyzeGridIndexing(Value indices, Value operand,
   int64_t minTotalOffset = totalStart;
   for (int64_t d = 0; d < gridRank; ++d) {
     if (dimScales[d] < 0) {
-      minTotalOffset += (gridTy.getDimSize(d) - 1) * dimScales[d];
+      minTotalOffset += (result.gridShape[d] - 1) * dimScales[d];
     }
   }
 
@@ -17398,7 +17553,7 @@ static LogicalResult analyzeGridIndexing(Value indices, Value operand,
   result.sliceSizes.resize(opRank, 1);
   for (size_t m = 0; m < result.mappings.size(); ++m) {
     int64_t gridDim = result.mappings[m].gridDim;
-    result.sliceSizes[m] = gridTy.getDimSize(gridDim);
+    result.sliceSizes[m] = result.gridShape[gridDim];
   }
 
   result.sliceStarts.resize(opRank, 0);
@@ -17450,11 +17605,8 @@ struct GatherOpCanon final
   LogicalResult
   tryRewriteGatherWithIotaIndexing(stablehlo::GatherOp op,
                                    PatternRewriter &rewriter) const {
-    auto operand = op.getOperand();
+    Value operand = op.getOperand();
     auto operandTy = cast<RankedTensorType>(operand.getType());
-    if (operandTy.getRank() != 1) {
-      return failure();
-    }
 
     for (auto size : op.getSliceSizes()) {
       if (size != 1) {
@@ -17464,7 +17616,8 @@ struct GatherOpCanon final
 
     auto indices = op.getStartIndices();
 
-    if (cast<ShapedType>(indices.getType()).getNumElements() == 1) {
+    if (operandTy.getRank() == 1 &&
+        cast<ShapedType>(indices.getType()).getNumElements() == 1) {
       auto scalarIndex =
           stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), indices, {});
       auto dsOp = stablehlo::DynamicSliceOpCreate(rewriter, op.getLoc(),
@@ -17480,11 +17633,20 @@ struct GatherOpCanon final
     GridIndexingAnalysis analysis;
     if (failed(analyzeGridIndexing(indices, operand,
                                    dimNumbers.getIndexVectorDim(),
-                                   dimNumbers.getStartIndexMap(), analysis))) {
+                                   dimNumbers.getStartIndexMap(), analysis,
+                                   dimNumbers.getOperandBatchingDims(),
+                                   dimNumbers.getStartIndicesBatchingDims()))) {
       return failure();
     }
 
-    auto gridTy = cast<RankedTensorType>(analysis.grid.getType());
+    // The analysis reads an operand of higher rank as its flattening.
+    if (operandTy.getRank() != 1) {
+      operand = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), operand,
+                                           {operandTy.getNumElements()});
+      operandTy = cast<RankedTensorType>(operand.getType());
+    }
+    auto gridTy =
+        RankedTensorType::get(analysis.gridShape, rewriter.getI64Type());
 
     // Special case: If there is only one active grid dimension mapping, we can
     // slice directly out of the 1D operand without reshaping/broadcasting.
@@ -38075,12 +38237,19 @@ private:
     GridIndexingAnalysis analysis;
     if (failed(analyzeGridIndexing(
             indices, operand, dimNumbers.getIndexVectorDim(),
-            dimNumbers.getScatterDimsToOperandDims(), analysis)) ||
+            dimNumbers.getScatterDimsToOperandDims(), analysis,
+            dimNumbers.getInputBatchingDims(),
+            dimNumbers.getScatterIndicesBatchingDims())) ||
         !analysis.inBounds) {
       return failure();
     }
 
-    auto gridTy = cast<RankedTensorType>(analysis.grid.getType());
+    auto gridTy =
+        RankedTensorType::get(analysis.gridShape, rewriter.getI64Type());
+    // Each position of the grid writes one element.
+    if (cast<RankedTensorType>(update.getType()).getNumElements() !=
+        gridTy.getNumElements())
+      return failure();
     int64_t gridRank = gridTy.getRank();
 
     Value reshapedOperand = stablehlo::ReshapeOpCreate(
