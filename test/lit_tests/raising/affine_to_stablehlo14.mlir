@@ -37,16 +37,10 @@ module {
   }
 }
 // CHECK:    func.func private @with_constant_raised(%arg0: tensor<3x3xi64>, %arg1: tensor<3x3xi64>) -> (tensor<3x3xi64>, tensor<3x3xi64>) {
-// CHECK-NEXT:      %c = stablehlo.constant dense<0> : tensor<i64>
 // CHECK-NEXT:      %0 = stablehlo.slice %arg1 [0:3, 0:1] : (tensor<3x3xi64>) -> tensor<3x1xi64>
-// CHECK-NEXT:      %1 = stablehlo.reshape %0 : (tensor<3x1xi64>) -> tensor<3xi64>
-// CHECK-NEXT:      %2 = stablehlo.iota dim = 0 : tensor<3x1xi64>
-// CHECK-NEXT:      %3 = stablehlo.pad %2, %c, low = [0, 0], high = [0, 1], interior = [0, 0] : (tensor<3x1xi64>, tensor<i64>) -> tensor<3x2xi64>
-// CHECK-NEXT:      %4 = "stablehlo.scatter"(%arg0, %3, %1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
-// CHECK-NEXT:      ^bb0(%arg2: tensor<i64>, %arg3: tensor<i64>):
-// CHECK-NEXT:        stablehlo.return %arg3 : tensor<i64>
-// CHECK-NEXT:      }) : (tensor<3x3xi64>, tensor<3x2xi64>, tensor<3xi64>) -> tensor<3x3xi64>
-// CHECK-NEXT:      return %4, %arg1 : tensor<3x3xi64>, tensor<3x3xi64>
+// CHECK-NEXT:      %1 = stablehlo.slice %arg0 [0:3, 1:3] : (tensor<3x3xi64>) -> tensor<3x2xi64>
+// CHECK-NEXT:      %2 = stablehlo.concatenate %0, %1, dim = 1 : (tensor<3x1xi64>, tensor<3x2xi64>) -> tensor<3x3xi64>
+// CHECK-NEXT:      return %2, %arg1 : tensor<3x3xi64>, tensor<3x3xi64>
 // CHECK-NEXT:    }
 
 module {
