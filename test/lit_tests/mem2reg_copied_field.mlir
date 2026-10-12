@@ -29,17 +29,9 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr = dense<64> : vector<4
 // CHECK-SAME: %[[V0:[^ ,:)]+]]: !llvm.ptr, %[[V1:[^ ,:)]+]]: f64, %[[V2:[^ ,:)]+]]: memref<2xf64>) {
 // CHECK-NEXT: %[[V3:[^ ,:)]+]] = arith.constant 1 : i64
 // CHECK-NEXT: %[[V4:[^ ,:)]+]] = arith.constant 16 : i64
-// CHECK-NEXT: %[[V5:[^ ,:)]+]] = llvm.alloca %[[V3]] x !llvm.struct<(array<2 x f64>, struct<(f64, f64)>)> : (i64) -> !llvm.ptr
-// CHECK-NEXT: %[[V6:[^ ,:)]+]] = "enzymexla.pointer2memref"(%[[V5]]) : (!llvm.ptr) -> memref<?xf64>
-// CHECK-NEXT: affine.store %[[V1]], %[[V6]][0] : memref<?xf64>
-// CHECK-NEXT: affine.store %[[V1]], %[[V6]][1] : memref<?xf64>
-// CHECK-NEXT: %[[V7:[^ ,:)]+]] = llvm.getelementptr %[[V5]][16] : (!llvm.ptr) -> !llvm.ptr, i8
-// CHECK-NEXT: %[[V8:[^ ,:)]+]] = llvm.getelementptr %[[V0]][8] : (!llvm.ptr) -> !llvm.ptr, i8
-// CHECK-NEXT: %[[V9:[^ ,:)]+]] = llvm.load %[[V8]] <alignment = 1> : !llvm.ptr -> f64
-// CHECK-NEXT: "llvm.intr.memcpy"(%[[V7]], %[[V0]], %[[V4]]) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
-// CHECK-NEXT: %[[V10:[^ ,:)]+]] = "enzymexla.pointer2memref"(%[[V5]]) : (!llvm.ptr) -> memref<?x!llvm.struct<(array<2 x f64>, struct<(f64, f64)>)>>
-// CHECK-NEXT: %[[V11:[^ ,:)]+]] = affine.load %[[V10]][0] : memref<?x!llvm.struct<(array<2 x f64>, struct<(f64, f64)>)>>
-// CHECK-NEXT: affine.store %[[V9]], %[[V2]][1] : memref<2xf64>
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = llvm.getelementptr %[[V0]][8] : (!llvm.ptr) -> !llvm.ptr, i8
+// CHECK-NEXT: %[[V6:[^ ,:)]+]] = llvm.load %[[V5]] <alignment = 1> : !llvm.ptr -> f64
+// CHECK-NEXT: affine.store %[[V6]], %[[V2]][1] : memref<2xf64>
 // CHECK-NEXT: affine.store %[[V1]], %[[V2]][0] : memref<2xf64>
 // CHECK-NEXT: return
 // CHECK-NEXT: }
