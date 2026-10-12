@@ -34638,12 +34638,17 @@ struct GatherOperandBox final
 
   // Bounds the elements of large constants are scanned for.
   static constexpr int64_t kMaxScan = 1 << 20;
+  // Bounds how deep index arithmetic is followed.
+  static constexpr unsigned kMaxDepth = 12;
 
   // The smallest and largest value component `comp` of the index vectors in
   // `idx` takes (along dimension `ivd`; `ivd` equal to the rank means each
   // element is a whole index vector of one component).
   static std::optional<std::pair<int64_t, int64_t>>
-  componentRange(Value idx, int64_t ivd, int64_t comp) {
+  componentRange(Value idx, int64_t ivd, int64_t comp, unsigned depth = 0) {
+    // Index arithmetic shares its terms: bound the walk.
+    if (depth > kMaxDepth)
+      return std::nullopt;
     auto ty = dyn_cast<RankedTensorType>(idx.getType());
     if (!ty || !ty.hasStaticShape() || !ty.getElementType().isIntOrIndex())
       return std::nullopt;
@@ -34688,7 +34693,7 @@ struct GatherOperandBox final
       if (dim != ivd) {
         std::optional<std::pair<int64_t, int64_t>> range;
         for (Value in : cat.getInputs()) {
-          auto r = componentRange(in, ivd, comp);
+          auto r = componentRange(in, ivd, comp, depth + 1);
           if (!r)
             return std::nullopt;
           range = range ? std::make_pair(std::min(range->first, r->first),
@@ -34700,7 +34705,7 @@ struct GatherOperandBox final
       for (Value in : cat.getInputs()) {
         int64_t size = cast<RankedTensorType>(in.getType()).getDimSize(dim);
         if (comp < size)
-          return componentRange(in, ivd, comp);
+          return componentRange(in, ivd, comp, depth + 1);
         comp -= size;
       }
       return std::nullopt;
@@ -34712,9 +34717,9 @@ struct GatherOperandBox final
       for (auto [d, r] : llvm::enumerate(dims))
         if (r == ivd)
           return componentRange(bcast.getOperand(), d,
-                                oty.getDimSize(d) == 1 ? 0 : comp);
+                                oty.getDimSize(d) == 1 ? 0 : comp, depth + 1);
       // Every component is the operand's value.
-      return componentRange(bcast.getOperand(), oty.getRank(), 0);
+      return componentRange(bcast.getOperand(), oty.getRank(), 0, depth + 1);
     }
 
     if (auto conv = idx.getDefiningOp<stablehlo::ConvertOp>()) {
@@ -34723,20 +34728,20 @@ struct GatherOperandBox final
           oty.getElementType().getIntOrFloatBitWidth() >
               ty.getElementType().getIntOrFloatBitWidth())
         return std::nullopt;
-      return componentRange(conv.getOperand(), ivd, comp);
+      return componentRange(conv.getOperand(), ivd, comp, depth + 1);
     }
 
     if (auto add = idx.getDefiningOp<stablehlo::AddOp>()) {
-      auto a = componentRange(add.getLhs(), ivd, comp);
-      auto b = componentRange(add.getRhs(), ivd, comp);
+      auto a = componentRange(add.getLhs(), ivd, comp, depth + 1);
+      auto b = componentRange(add.getRhs(), ivd, comp, depth + 1);
       if (!a || !b)
         return std::nullopt;
       return std::make_pair(a->first + b->first, a->second + b->second);
     }
 
     if (auto sel = idx.getDefiningOp<stablehlo::SelectOp>()) {
-      auto a = componentRange(sel.getOnTrue(), ivd, comp);
-      auto b = componentRange(sel.getOnFalse(), ivd, comp);
+      auto a = componentRange(sel.getOnTrue(), ivd, comp, depth + 1);
+      auto b = componentRange(sel.getOnFalse(), ivd, comp, depth + 1);
       if (!a || !b)
         return std::nullopt;
       return std::make_pair(std::min(a->first, b->first),
@@ -34746,7 +34751,7 @@ struct GatherOperandBox final
     if (auto slice = idx.getDefiningOp<stablehlo::SliceOp>()) {
       if (ivd < rank)
         comp = slice.getStartIndices()[ivd] + comp * slice.getStrides()[ivd];
-      return componentRange(slice.getOperand(), ivd, comp);
+      return componentRange(slice.getOperand(), ivd, comp, depth + 1);
     }
 
     return std::nullopt;
