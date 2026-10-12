@@ -3515,6 +3515,11 @@ def ApplyGatherOfScatterSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["GatherOfScatterSimplify"];
 }
 
+def ApplyGatherOfDisjointScatterPatterns : EnzymeHLOPatternOp<
+    "gather_of_disjoint_scatter"> {
+  let patterns = ["GatherOfDisjointScatter"];
+}
+
 def ApplyScatterOfGatherIdentityPatterns : EnzymeHLOPatternOp<
     "scatter_of_gather_identity"> {
   let patterns = ["ScatterOfGatherIdentity"];
