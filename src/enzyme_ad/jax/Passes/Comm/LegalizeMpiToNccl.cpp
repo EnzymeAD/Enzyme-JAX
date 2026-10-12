@@ -117,6 +117,7 @@ struct FoldMpiWaitOp : public OpRewritePattern<comm::MpiWaitOp> {
 
     if (auto isend = dyn_cast<comm::MpiIsendOp>(producer)) {
       rewriter.eraseOp(op);
+      rewriter.setInsertionPoint(isend);
       rewriter.replaceOpWithNewOp<comm::MpiSendOp>(
           isend, isend.getBuffer(), isend.getDest(), isend.getTag(),
           isend.getComm());
@@ -204,6 +205,7 @@ struct FoldMpiWaitallOp : public OpRewritePattern<comm::MpiWaitallOp> {
     Operation *lastReplacement = nullptr;
     for (Operation *producer : orderedProducers) {
       if (auto isend = dyn_cast<comm::MpiIsendOp>(producer)) {
+        rewriter.setInsertionPoint(isend);
         auto send = rewriter.replaceOpWithNewOp<comm::MpiSendOp>(
             isend, isend.getBuffer(), isend.getDest(), isend.getTag(),
             isend.getComm());
