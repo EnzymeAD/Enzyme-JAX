@@ -29,6 +29,90 @@ func.func @real_to_complex(%out: memref<4x2xf64, 1>, %in: memref<4xf64, 1>) {
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return
 
+// A complex constant stored whole (out[i] = 1 + 2im) is a constant aggregate:
+// the extractvalue of each field folds to a scalar llvm.mlir.constant, which
+// the pass raises to an arith constant, the raising of the input's constants
+// having run long before.
+func.func @complex_constant(%out: memref<8x2xf32, 1>) {
+  %c = llvm.mlir.constant(dense<[1.000000e+00, 2.000000e+00]> : tensor<2xf32>) : !llvm.array<2 x f32>
+  %p = "enzymexla.memref2pointer"(%out) : (memref<8x2xf32, 1>) -> !llvm.ptr<1>
+  affine.parallel (%i) = (0) to (8) {
+    %v = "enzymexla.pointer2memref"(%p) : (!llvm.ptr<1>) -> memref<?x!llvm.array<2 x f32>, 1>
+    affine.store %c, %v[%i] : memref<?x!llvm.array<2 x f32>, 1>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @complex_constant
+// CHECK-SAME: (%[[OUT:.+]]: memref<8x2xf32, 1>)
+// CHECK-NOT:     llvm.mlir.constant
+// CHECK-DAG:     %[[RE:.+]] = arith.constant 1.000000e+00 : f32
+// CHECK-DAG:     %[[IM:.+]] = arith.constant 2.000000e+00 : f32
+// CHECK:         affine.parallel (%[[I:.+]]) = (0) to (8) {
+// CHECK-NEXT:      affine.store %[[RE]], %[[OUT]][%[[I]], 0] : memref<8x2xf32, 1>
+// CHECK-NEXT:      affine.store %[[IM]], %[[OUT]][%[[I]], 1] : memref<8x2xf32, 1>
+// CHECK-NEXT:    }
+// CHECK-NOT:     llvm.mlir.constant
+
+// A complex zero (out[i] = 0) is a zero-initialized aggregate.
+func.func @complex_zero(%out: memref<8x2xf32, 1>) {
+  %c = llvm.mlir.zero : !llvm.array<2 x f32>
+  %p = "enzymexla.memref2pointer"(%out) : (memref<8x2xf32, 1>) -> !llvm.ptr<1>
+  affine.parallel (%i) = (0) to (8) {
+    %v = "enzymexla.pointer2memref"(%p) : (!llvm.ptr<1>) -> memref<?x!llvm.array<2 x f32>, 1>
+    affine.store %c, %v[%i] : memref<?x!llvm.array<2 x f32>, 1>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @complex_zero
+// CHECK-SAME: (%[[OUT:.+]]: memref<8x2xf32, 1>)
+// CHECK-NOT:     llvm.mlir.zero
+// CHECK:         %[[ZERO:.+]] = arith.constant 0.000000e+00 : f32
+// CHECK:         affine.parallel (%[[I:.+]]) = (0) to (8) {
+// CHECK-NEXT:      affine.store %[[ZERO]], %[[OUT]][%[[I]], 0] : memref<8x2xf32, 1>
+// CHECK-NEXT:      affine.store %[[ZERO]], %[[OUT]][%[[I]], 1] : memref<8x2xf32, 1>
+// CHECK-NEXT:    }
+// CHECK-NOT:     llvm.mlir.zero
+
+// A struct constant carries its fields as an array attribute.
+func.func @struct_constant(%out: memref<8x2xf64, 1>) {
+  %c = llvm.mlir.constant([3.000000e+00 : f64, 4.000000e+00 : f64]) : !llvm.struct<(f64, f64)>
+  %p = "enzymexla.memref2pointer"(%out) : (memref<8x2xf64, 1>) -> !llvm.ptr<1>
+  affine.parallel (%i) = (0) to (8) {
+    %v = "enzymexla.pointer2memref"(%p) : (!llvm.ptr<1>) -> memref<?x!llvm.struct<(f64, f64)>, 1>
+    affine.store %c, %v[%i] : memref<?x!llvm.struct<(f64, f64)>, 1>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @struct_constant
+// CHECK-SAME: (%[[OUT:.+]]: memref<8x2xf64, 1>)
+// CHECK-NOT:     llvm.mlir.constant
+// CHECK-DAG:     %[[RE:.+]] = arith.constant 3.000000e+00 : f64
+// CHECK-DAG:     %[[IM:.+]] = arith.constant 4.000000e+00 : f64
+// CHECK:         affine.parallel (%[[I:.+]]) = (0) to (8) {
+// CHECK-NEXT:      affine.store %[[RE]], %[[OUT]][%[[I]], 0] : memref<8x2xf64, 1>
+// CHECK-NEXT:      affine.store %[[IM]], %[[OUT]][%[[I]], 1] : memref<8x2xf64, 1>
+// CHECK-NEXT:    }
+// CHECK-NOT:     llvm.mlir.constant
+
+// Scalar llvm constants become arith constants outright; aggregates are left.
+func.func @scalars() -> (f32, i64, f64, !llvm.array<2 x f32>) {
+  %f = llvm.mlir.constant(1.500000e+00 : f32) : f32
+  %i = llvm.mlir.constant(7 : i64) : i64
+  %z = llvm.mlir.zero : f64
+  %a = llvm.mlir.constant(dense<0.000000e+00> : tensor<2xf32>) : !llvm.array<2 x f32>
+  return %f, %i, %z, %a : f32, i64, f64, !llvm.array<2 x f32>
+}
+
+// CHECK-LABEL: func.func @scalars
+// CHECK-DAG:     %[[F:.+]] = arith.constant 1.500000e+00 : f32
+// CHECK-DAG:     %[[I:.+]] = arith.constant 7 : i64
+// CHECK-DAG:     %[[Z:.+]] = arith.constant 0.000000e+00 : f64
+// CHECK-DAG:     %[[A:.+]] = llvm.mlir.constant(dense<0.000000e+00> : tensor<2xf32>) : !llvm.array<2 x f32>
+// CHECK:         return %[[F]], %[[I]], %[[Z]], %[[A]]
+
 func.func @complex_to_real(%out: memref<2xf32, 1>, %in: memref<2x2xf32, 1>) {
   %p = "enzymexla.memref2pointer"(%in) : (memref<2x2xf32, 1>) -> !llvm.ptr<1>
   affine.parallel (%i) = (0) to (2) {
