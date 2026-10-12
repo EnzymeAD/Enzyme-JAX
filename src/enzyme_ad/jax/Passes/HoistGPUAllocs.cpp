@@ -74,6 +74,27 @@ void computeDependentOps(enzymexla::GPUWrapperOp wrapperOp,
   }
 }
 
+static Value computeFlatIndex(ValueRange ivs, ValueRange sizes,
+                              ImplicitLocOpBuilder &builder) {
+  Value flatIndex = ivs[0];
+  for (int64_t dim = 1; dim < ivs.size(); dim++) {
+    Value bound = sizes[dim];
+    flatIndex = arith::MulIOp::create(builder, flatIndex, bound);
+    flatIndex = arith::AddIOp::create(builder, flatIndex, ivs[dim]);
+  }
+  return flatIndex;
+}
+
+static FailureOr<scf::ParallelOp>
+findParallelOp(enzymexla::GPUWrapperOp wrapperOp) {
+  for (auto &op : *wrapperOp.getBody()) {
+    if (auto parallelOp = dyn_cast<scf::ParallelOp>(op)) {
+      return parallelOp;
+    }
+  }
+  return failure();
+}
+
 LogicalResult hoistAllocs(enzymexla::GPUWrapperOp wrapperOp) {
   // for RSBench/XSBench, hardcode the dynamic dimension of the memref to its
   // max (321)
@@ -87,7 +108,7 @@ LogicalResult hoistAllocs(enzymexla::GPUWrapperOp wrapperOp) {
   // lulesh also has 2 iterators
   SmallVector<Value> dynSizes;
   auto blockDims = wrapperOp.getBlockDims();
-  // dynSizes.push_back(blockDims[1]);
+  dynSizes.push_back(blockDims[1]);
   dynSizes.push_back(arith::MulIOp::create(rewriter, wrapperOp.getLoc(),
                                            blockDims[0], blockDims[3]));
   scf::ParallelOp parallelOp;
@@ -107,10 +128,10 @@ LogicalResult hoistAllocs(enzymexla::GPUWrapperOp wrapperOp) {
     }
 
     SmallVector<int64_t> shape;
-    // shape.push_back(ShapedType::kDynamic);
     shape.push_back(ShapedType::kDynamic);
-    // shape.append({hardcodedDim, 8});
-    shape.push_back(hardcodedDim);
+    shape.push_back(ShapedType::kDynamic);
+    shape.append({hardcodedDim, 8});
+    // shape.push_back(hardcodedDim);
     MemRefType cacheType = MemRefType::get(
         shape, allocOp.getType().getElementType(),
         /*layout=*/rewriter.getMultiDimIdentityMap(shape.size()),
@@ -206,15 +227,20 @@ void generateLoopIterFuncs(Operation *moduleOp) {
   unsigned counter = 0;
   DenseSet<Operation *> processed;
   DenseSet<Value> processedVals;
-  moduleOp->walk([&](memref::AllocOp allocOp) {
-    if (!allocOp->hasAttr("enzyme.cache_alloc"))
+  moduleOp->walk([&](enzymexla::GPUWrapperOp wrapperOp) {
+    auto maybeParallelOp = findParallelOp(wrapperOp);
+    if (failed(maybeParallelOp))
       return;
-    auto wrapperOp = allocOp->getParentOfType<enzymexla::GPUWrapperOp>();
-    auto parallelOp = allocOp->getParentOfType<scf::ParallelOp>();
-    if (!processed.insert(wrapperOp).second)
-      return;
-    assert(parallelOp);
+    scf::ParallelOp parallelOp = maybeParallelOp.value();
+    SmallVector<memref::AllocOp> cacheAllocs;
+    wrapperOp.walk([&](memref::AllocOp allocOp) {
+      if (!allocOp->hasAttr("enzyme.cache_alloc"))
+        return;
+      cacheAllocs.push_back(allocOp);
+    });
 
+    if (cacheAllocs.empty())
+      return;
     SetVector<Operation *> ops;
     // Function arguments used to compute the number of iterations
     SmallVector<BlockArgument> args;
@@ -232,14 +258,14 @@ void generateLoopIterFuncs(Operation *moduleOp) {
       worklist.push(forOp.getUpperBound());
       visited.insert(forOp.getUpperBound());
       SetVector<Value> freeVars;
-      SetVector<Value> threadIDs;
       while (!worklist.empty()) {
         Value curr = worklist.front();
         worklist.pop();
 
         if (auto arg = dyn_cast<BlockArgument>(curr)) {
-          if (isa<scf::ParallelOp>(arg.getOwner()->getParentOp())) {
-            threadIDs.insert(arg);
+          if (arg.getOwner()->getParentOp() == parallelOp) {
+            // We don't need to do anything here
+            // threadIDs.insert(arg);
           } else if (arg.getOwner()->getParent()->isAncestor(
                          &wrapperOp.getBodyRegion())) {
             freeVars.insert(arg);
@@ -269,7 +295,7 @@ void generateLoopIterFuncs(Operation *moduleOp) {
       }
       ops = topologicalSort(ops);
       SmallVector<Value> args;
-      args.append(threadIDs.begin(), threadIDs.end());
+      args.append(parallelOp.getInductionVars());
       args.append(freeVars.begin(), freeVars.end());
       SmallVector<Type> argTypes =
           llvm::map_to_vector(args, [](Value arg) { return arg.getType(); });
@@ -307,7 +333,6 @@ void generateLoopIterFuncs(Operation *moduleOp) {
         total = arith::MulIOp::create(builder, loc, total, blockDim);
       }
       total = arith::AddIOp::create(builder, loc, total, c1);
-      // Value c0 = arith::ConstantIndexOp::create(builder, loc, 0);
       auto deviceMemorySpaceAttr = builder.getI64IntegerAttr(1);
       auto deviceIndices = gpu::AllocOp::create(
           builder, loc,
@@ -349,17 +374,27 @@ void generateLoopIterFuncs(Operation *moduleOp) {
         scf::ParallelOp::create(
             builder, loc, lowerBounds, upperBounds, steps,
             [&](OpBuilder &builder, Location loc, ValueRange ivs) {
-              args[0] = ivs.front();
+              for (unsigned i = 0; i < ivs.size(); i++) {
+                args[i] = ivs[i];
+              }
+
               Value iterCount =
                   func::CallOp::create(builder, wrapperOp.getLoc(),
                                        loopIterFunc, args)
                       .getResult(0);
+
+              // Flatten the ivs
+              ImplicitLocOpBuilder implBuilder(loc, builder);
+              Value flatIV = computeFlatIndex(ivs, upperBounds, implBuilder);
+
               memref::StoreOp::create(builder, loc, iterCount,
-                                      deviceIndices.getMemref(), ivs.front());
-              Value lastIdx =
-                  arith::SubIOp::create(builder, loc, upperBounds.front(), c1);
+                                      deviceIndices.getMemref(), flatIV);
+
+              // Determine if this is the last thread
+              Value lastIdx = arith::SubIOp::create(builder, loc, total, c1);
+              Value lastIV = arith::SubIOp::create(builder, loc, lastIdx, c1);
               Value cond = arith::CmpIOp::create(
-                  builder, loc, arith::CmpIPredicate::eq, ivs.front(), lastIdx);
+                  builder, loc, arith::CmpIPredicate::eq, flatIV, lastIV);
               // Have the last thread also write a 0 to the last index
               scf::IfOp::create(
                   builder, loc, cond, [&](OpBuilder &builder, Location loc) {
@@ -382,7 +417,6 @@ void generateLoopIterFuncs(Operation *moduleOp) {
             builder, wrapperOp.getLoc(), "cubDeviceExclusiveSum", funcType);
         exclSumFunc.setPrivate();
 
-        // builder.setInsertionPointAfter(iterCountWrapper);
         builder.setInsertionPoint(wrapperOp);
         Value totalI32 = arith::IndexCastOp::create(
             builder, loc, builder.getI32Type(), total);
@@ -413,64 +447,73 @@ void generateLoopIterFuncs(Operation *moduleOp) {
         Value dataSize = memref::LoadOp::create(builder, loc, dataSizeMem);
         dataSize = arith::IndexCastOp::create(builder, loc,
                                               builder.getIndexType(), dataSize);
-        auto gpuAlloc = gpu::AllocOp::create(
-            builder, loc,
-            MemRefType::get(
-                ShapedType::kDynamic, allocOp.getType().getElementType(),
-                builder.getMultiDimIdentityMap(1), deviceMemorySpaceAttr),
-            /*asyncDependencies=*/ValueRange(), dataSize,
-            /*symbolOperands=*/ValueRange());
-        gpuAlloc->setAttr("enzyme.hoisted_cache", builder.getUnitAttr());
+        for (memref::AllocOp allocOp : cacheAllocs) {
+          builder.setInsertionPoint(wrapperOp);
+          auto gpuAlloc = gpu::AllocOp::create(
+              builder, loc,
+              MemRefType::get(allocOp.getType().getShape(),
+                              allocOp.getType().getElementType(),
+                              builder.getMultiDimIdentityMap(1),
+                              deviceMemorySpaceAttr),
+              /*asyncDependencies=*/ValueRange(), dataSize,
+              /*symbolOperands=*/ValueRange());
+          gpuAlloc->setAttr("enzyme.hoisted_cache", builder.getUnitAttr());
 
-        // Replace loads and stores
-        builder.setInsertionPointToStart(parallelOp.getBody());
-        Value startIdx =
-            memref::LoadOp::create(builder, loc, deviceIndices.getMemref(),
-                                   parallelOp.getInductionVars());
-        startIdx = arith::IndexCastOp::create(builder, loc,
-                                              builder.getIndexType(), startIdx);
+          // Replace loads and stores
+          builder.setInsertionPointToStart(parallelOp.getBody());
+          ImplicitLocOpBuilder locBuilder(loc, builder);
+          Value flatIV =
+              computeFlatIndex(parallelOp.getInductionVars(),
+                               parallelOp.getUpperBound(), locBuilder);
+          Value startIdx = memref::LoadOp::create(
+              builder, loc, deviceIndices.getMemref(), flatIV);
+          startIdx = arith::IndexCastOp::create(
+              builder, loc, builder.getIndexType(), startIdx);
 
-        PatternRewriter rewriter(builder.getContext());
-        if (parallelOp.getNumLoops() != 1) {
-          llvm::errs() << "[hoist] warning: multiple parallel iterators not "
-                          "yet implemented\n";
-        }
+          PatternRewriter rewriter(builder.getContext());
 
-        std::function<void(OpOperand &)> visit = [&](OpOperand &use) {
-          if (auto storeOp = dyn_cast<memref::StoreOp>(use.getOwner())) {
-            rewriter.setInsertionPoint(storeOp);
-            Value idx = arith::AddIOp::create(rewriter, loc, startIdx,
-                                              storeOp.getIndices().front());
-            memref::StoreOp::create(rewriter, storeOp.getLoc(),
-                                    storeOp.getValue(), gpuAlloc.getMemref(),
-                                    idx);
-            rewriter.eraseOp(storeOp);
-          } else if (auto loadOp = dyn_cast<memref::LoadOp>(use.getOwner())) {
-            rewriter.setInsertionPoint(loadOp);
-            Value idx = arith::AddIOp::create(rewriter, loc, startIdx,
-                                              loadOp.getIndices().front());
-            auto newLoad = memref::LoadOp::create(rewriter, loc,
-                                                  gpuAlloc.getMemref(), idx);
-            rewriter.replaceOp(loadOp, newLoad);
-          } else if (auto deallocOp =
-                         dyn_cast<memref::DeallocOp>(use.getOwner())) {
-            OpBuilder::InsertionGuard guard(rewriter);
-            rewriter.setInsertionPointAfter(wrapperOp);
-            gpu::DeallocOp::create(rewriter, deallocOp.getLoc(),
-                                   /*resultTypes=*/TypeRange(),
-                                   /*asyncDependencies=*/ValueRange(),
-                                   gpuAlloc.getMemref());
-            rewriter.eraseOp(deallocOp);
-          } else {
-            llvm::errs() << "[debug] found use of alloc op: " << *use.getOwner()
-                         << "\n";
+          std::function<void(OpOperand &)> visit = [&](OpOperand &use) {
+            if (auto storeOp = dyn_cast<memref::StoreOp>(use.getOwner())) {
+              rewriter.setInsertionPoint(storeOp);
+              SmallVector<Value> indices;
+              indices.append(storeOp.getIndices().begin(),
+                             storeOp.getIndices().end());
+              indices[0] = arith::AddIOp::create(rewriter, loc, startIdx,
+                                                 storeOp.getIndices().front());
+              memref::StoreOp::create(rewriter, storeOp.getLoc(),
+                                      storeOp.getValue(), gpuAlloc.getMemref(),
+                                      indices);
+              rewriter.eraseOp(storeOp);
+            } else if (auto loadOp = dyn_cast<memref::LoadOp>(use.getOwner())) {
+              rewriter.setInsertionPoint(loadOp);
+              SmallVector<Value> indices;
+              indices.append(loadOp.getIndices().begin(),
+                             loadOp.getIndices().end());
+              indices[0] = arith::AddIOp::create(rewriter, loc, startIdx,
+                                                 loadOp.getIndices().front());
+              auto newLoad = memref::LoadOp::create(
+                  rewriter, loc, gpuAlloc.getMemref(), indices);
+              rewriter.replaceOp(loadOp, newLoad);
+            } else if (auto deallocOp =
+                           dyn_cast<memref::DeallocOp>(use.getOwner())) {
+              OpBuilder::InsertionGuard guard(rewriter);
+              rewriter.setInsertionPointAfter(wrapperOp);
+              gpu::DeallocOp::create(rewriter, deallocOp.getLoc(),
+                                     /*resultTypes=*/TypeRange(),
+                                     /*asyncDependencies=*/ValueRange(),
+                                     gpuAlloc.getMemref());
+              rewriter.eraseOp(deallocOp);
+            } else {
+              llvm::errs() << "[debug] found use of alloc op: "
+                           << *use.getOwner() << "\n";
+            }
+          };
+          for (OpOperand &use :
+               llvm::make_early_inc_range(allocOp.getMemref().getUses())) {
+            visit(use);
           }
-        };
-        for (OpOperand &use :
-             llvm::make_early_inc_range(allocOp.getMemref().getUses())) {
-          visit(use);
+          allocOp.erase();
         }
-        allocOp.erase();
       }
     });
   });
