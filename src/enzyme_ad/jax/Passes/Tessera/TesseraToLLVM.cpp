@@ -1,12 +1,13 @@
 //===----------------------------------------------------------------------===//
 //
-// This file implements patterns to convert operations in the Tessera dialect to
-// operations in the LLVM dialect.
+// This file implements patterns to convert operations in the Tessera dialect
+// back to the function dialect they were lifted from (LLVM or func).
 //
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -39,7 +40,29 @@ using namespace mlir::enzyme::tessera;
 
 namespace {
 
-// Rewrite 'tessera.define' -> 'llvm.func'
+// The name of the function op a tessera.define was lifted from. Defines
+// without a recorded op predate func.func support and come from llvm.func.
+static StringRef getOriginalOpName(tessera::DefineOp defineOp) {
+  if (auto attr = defineOp->getAttrOfType<StringAttr>("tessera.original_op"))
+    return attr.getValue();
+  return LLVM::LLVMFuncOp::getOperationName();
+}
+
+static bool isLiftedFromFunc(tessera::DefineOp defineOp) {
+  return getOriginalOpName(defineOp) == func::FuncOp::getOperationName();
+}
+
+// Attributes that only exist for the tessera dialect and must not be copied
+// back onto the original function op.
+static bool isTesseraOnlyAttr(tessera::DefineOp defineOp, StringAttr name) {
+  return name == SymbolTable::getSymbolAttrName() ||
+         name == defineOp.getFunctionTypeAttrName() ||
+         name == defineOp.getArgModesAttrName() ||
+         name == defineOp.getPureAttrName() ||
+         name == "tessera.original_name" || name == "tessera.original_op";
+}
+
+// Rewrite 'tessera.define' -> 'llvm.func' or 'func.func'
 class DefineOpRewrite final : public OpRewritePattern<tessera::DefineOp> {
 public:
   DefineOpRewrite(LLVMTypeConverter &typeConverter, MLIRContext *ctx)
@@ -56,6 +79,24 @@ public:
     auto *ctx = defineOp->getContext();
     auto fnType = defineOp.getFunctionType();
 
+    // Replace tessera name with original function name
+    if (failed(SymbolTable::replaceAllSymbolUses(
+            defineOp.getSymNameAttr(), StringAttr::get(ctx, funcName), module)))
+      return failure();
+
+    if (isLiftedFromFunc(defineOp)) {
+      auto funcOp =
+          func::FuncOp::create(rewriter, defineOp.getLoc(), funcName, fnType);
+      for (const auto &namedAttr : defineOp->getAttrs())
+        if (!isTesseraOnlyAttr(defineOp, namedAttr.getName()))
+          funcOp->setAttr(namedAttr.getName(), namedAttr.getValue());
+      if (!defineOp.isExternal())
+        rewriter.inlineRegionBefore(defineOp.getBody(), funcOp.getBody(),
+                                    funcOp.end());
+      rewriter.eraseOp(defineOp);
+      return success();
+    }
+
     // Convert argument types
     SmallVector<Type> argTypes;
     for (auto type : fnType.getInputs())
@@ -69,11 +110,6 @@ public:
     if (!llvmFuncType)
       return failure();
 
-    // Replace tessera name with original function name
-    if (failed(SymbolTable::replaceAllSymbolUses(
-            defineOp.getSymNameAttr(), StringAttr::get(ctx, funcName), module)))
-      return failure();
-
     // Create the `llvm.func` op
     auto funcOp = LLVM::LLVMFuncOp::create(rewriter, defineOp.getLoc(),
                                            funcName, llvmFuncType);
@@ -81,11 +117,7 @@ public:
     // Copy over attributes other than the function name and type, arg modes,
     // pure, and other attributes used only for tessera conversion
     for (const auto &namedAttr : defineOp->getAttrs()) {
-      if (namedAttr.getName() != SymbolTable::getSymbolAttrName() &&
-          namedAttr.getName() != defineOp.getFunctionTypeAttrName() &&
-          namedAttr.getName() != defineOp.getArgModesAttrName() &&
-          namedAttr.getName() != defineOp.getPureAttrName() &&
-          namedAttr.getName() != "tessera.original_name")
+      if (!isTesseraOnlyAttr(defineOp, namedAttr.getName()))
         funcOp->setAttr(namedAttr.getName(), namedAttr.getValue());
     }
 
@@ -104,7 +136,7 @@ private:
   LLVMTypeConverter &typeConverter;
 };
 
-// Rewrite 'tessera.call' -> 'llvm.call'
+// Rewrite 'tessera.call' -> 'llvm.call' or 'func.call'
 class CallOpRewrite final : public OpRewritePattern<tessera::CallOp> {
 public:
   using OpRewritePattern<tessera::CallOp>::OpRewritePattern;
@@ -122,6 +154,19 @@ public:
     auto defineOp = dyn_cast_or_null<tessera::DefineOp>(callee);
     if (!defineOp)
       return failure();
+
+    // Values never get lifted out of memory for func.func, so the call maps
+    // one-to-one onto a func.call.
+    if (isLiftedFromFunc(defineOp)) {
+      auto newCall =
+          func::CallOp::create(rewriter, callOp.getLoc(), calleeAttr,
+                               callOp.getResultTypes(), callOp.getOperands());
+      for (auto attr : callOp->getAttrs())
+        if (attr.getName() != callOp.getCalleeAttrName())
+          newCall->setAttr(attr.getName(), attr.getValue());
+      rewriter.replaceOp(callOp, newCall);
+      return success();
+    }
 
     // Any operand the callee takes through a pointer was loaded from
     // memory when converting LLVM to tessera, so put it back: allocate
@@ -332,16 +377,19 @@ public:
   }
 };
 
-// Rewrite 'tessera.return' -> 'llvm.return'
+// Rewrite 'tessera.return' -> 'llvm.return' or 'func.return'
 class ReturnOpRewrite final : public OpRewritePattern<tessera::ReturnOp> {
 public:
   using OpRewritePattern<tessera::ReturnOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(tessera::ReturnOp returnOp,
                                 PatternRewriter &rewriter) const override {
-
-    rewriter.replaceOpWithNewOp<LLVM::ReturnOp>(returnOp,
-                                                returnOp.getOperands());
+    if (isLiftedFromFunc(cast<tessera::DefineOp>(returnOp->getParentOp())))
+      rewriter.replaceOpWithNewOp<func::ReturnOp>(returnOp,
+                                                  returnOp.getOperands());
+    else
+      rewriter.replaceOpWithNewOp<LLVM::ReturnOp>(returnOp,
+                                                  returnOp.getOperands());
     return success();
   }
 };
@@ -357,15 +405,34 @@ struct TesseraToLLVMPass
   void runOnOperation() override {
     MLIRContext *ctx = &getContext();
     LLVMTypeConverter typeConverter(ctx);
-    RewritePatternSet patterns(ctx);
 
-    patterns.add<DefineOpRewrite>(typeConverter, ctx);
-    patterns.add<CallOpRewrite, ReturnOpRewrite>(ctx);
+    bool unsupported = false;
+    getOperation()->walk([&](tessera::DefineOp defineOp) {
+      StringRef opName = getOriginalOpName(defineOp);
+      if (opName != LLVM::LLVMFuncOp::getOperationName() &&
+          opName != func::FuncOp::getOperationName()) {
+        defineOp.emitError("tessera: cannot convert back to '")
+            << opName << "', only llvm.func and func.func are supported";
+        unsupported = true;
+      }
+    });
+    if (unsupported)
+      return signalPassFailure();
 
-    if (failed(applyPatternsGreedily(
-            getOperation(), std::move(patterns),
-            GreedyRewriteConfig().setRegionSimplificationLevel(
-                GreedySimplifyRegionLevel::Normal)))) {
+    auto config = GreedyRewriteConfig().setRegionSimplificationLevel(
+        GreedySimplifyRegionLevel::Normal);
+
+    // Calls and returns are converted first: both decide what to become by
+    // looking at their tessera.define, which converting it would remove.
+    RewritePatternSet callPatterns(ctx);
+    callPatterns.add<CallOpRewrite, ReturnOpRewrite>(ctx);
+    RewritePatternSet definePatterns(ctx);
+    definePatterns.add<DefineOpRewrite>(typeConverter, ctx);
+
+    if (failed(applyPatternsGreedily(getOperation(), std::move(callPatterns),
+                                     config)) ||
+        failed(applyPatternsGreedily(getOperation(), std::move(definePatterns),
+                                     config))) {
       llvm::errs() << "Failed to convert tessera dialect operations to LLVM "
                       "dialect operations\n";
       return signalPassFailure();

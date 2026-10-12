@@ -1,7 +1,8 @@
 //===----------------------------------------------------------------------===//
 //
-// This file implements patterns to convert operations in the LLVM dialect to
-// operations in the Tessera dialect.
+// This file implements patterns to convert annotated functions (any
+// FunctionOpInterface op, e.g. llvm.func or func.func), the calls to them, and
+// their returns into operations in the Tessera dialect.
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,17 +40,20 @@ using namespace mlir::enzyme::tessera;
 
 namespace {
 
-// Rewrite 'llvm.func' -> 'tessera.define'
-class FuncOpRewrite final : public OpRewritePattern<LLVM::LLVMFuncOp> {
+// Rewrite a function op (e.g. 'llvm.func', 'func.func') -> 'tessera.define'
+class FuncOpRewrite final
+    : public OpInterfaceRewritePattern<FunctionOpInterface> {
 public:
   FuncOpRewrite(
       MLIRContext *ctx,
       const llvm::DenseMap<unsigned, mlir::Type> &argTypesByGlobalIndices)
-      : OpRewritePattern<LLVM::LLVMFuncOp>(ctx),
+      : OpInterfaceRewritePattern<FunctionOpInterface>(ctx),
         argTypesByGlobalIndices(argTypesByGlobalIndices) {}
 
-  LogicalResult matchAndRewrite(LLVM::LLVMFuncOp funcOp,
+  LogicalResult matchAndRewrite(FunctionOpInterface funcOp,
                                 PatternRewriter &rewriter) const override {
+    if (isa<tessera::DefineOp>(funcOp))
+      return failure();
 
     auto module = funcOp->getParentOfType<ModuleOp>();
     auto *ctx = funcOp->getContext();
@@ -176,19 +180,16 @@ public:
     }
 
     auto funcName = funcOp.getName();
-    auto llvmFuncType = funcOp.getFunctionType();
-    auto params = llvmFuncType.getParams();
-    auto retType = llvmFuncType.getReturnType();
-
-    auto fnType = FunctionType::get(
-        ctx, params,
-        isa<LLVM::LLVMVoidType>(retType) ? TypeRange{} : TypeRange{retType});
+    auto symNameAttr = funcOp.getNameAttr();
+    // The interface reports a void llvm.func as having no results.
+    auto fnType = FunctionType::get(ctx, funcOp.getArgumentTypes(),
+                                    funcOp.getResultTypes());
+    StringRef originalOpName = funcOp->getName().getStringRef();
 
     // Replace current function name with tessera name defined in
     // tessera_op / pure_tessera_op attribute
     if (failed(SymbolTable::replaceAllSymbolUses(
-            funcOp.getSymNameAttr(), StringAttr::get(ctx, tesseraName),
-            module)))
+            symNameAttr, StringAttr::get(ctx, tesseraName), module)))
       return failure();
 
     // Create the tessera.define op with the new name, function type, per-arg
@@ -202,22 +203,28 @@ public:
         funcOp.isExternal() ? rewriter.getStringAttr("private") : StringAttr());
 
     // Copy over all attributes other than the function name and type
-    // and tessera_op / pure_tessera_op attribute.
+    // and tessera_op / pure_tessera_op attribute. The define op's own
+    // visibility was decided above; an external func.func is already private.
     for (const auto &namedAttr : funcOp->getAttrs()) {
       if (namedAttr.getName() != SymbolTable::getSymbolAttrName() &&
-          namedAttr.getName() != funcOp.getFunctionTypeAttrName() &&
+          namedAttr.getName() != "function_type" &&
           namedAttr.getName() != "tessera_op" &&
-          namedAttr.getName() != "pure_tessera_op")
+          namedAttr.getName() != "pure_tessera_op" &&
+          !(funcOp.isExternal() && namedAttr.getName() == "sym_visibility"))
         tesseraDefineOp->setAttr(namedAttr.getName(), namedAttr.getValue());
     }
 
-    // Store the original function name so we can convert back to it later
+    // Store the original function name and op so we can convert back to it
+    // later.
     tesseraDefineOp->setAttr("tessera.original_name",
                              rewriter.getStringAttr(funcName));
+    tesseraDefineOp->setAttr("tessera.original_op",
+                             rewriter.getStringAttr(originalOpName));
 
     // Clone body of function
     if (!funcOp.isExternal()) {
-      rewriter.inlineRegionBefore(funcOp.getBody(), tesseraDefineOp.getBody(),
+      rewriter.inlineRegionBefore(funcOp.getFunctionBody(),
+                                  tesseraDefineOp.getBody(),
                                   tesseraDefineOp.end());
     }
 
@@ -229,17 +236,20 @@ private:
   const llvm::DenseMap<unsigned, mlir::Type> &argTypesByGlobalIndices;
 };
 
-// Rewrite 'llvm.call' -> 'tessera.call'
-class CallOpRewrite final : public OpRewritePattern<LLVM::CallOp> {
+// Rewrite a call op (e.g. 'llvm.call', 'func.call') -> 'tessera.call'
+class CallOpRewrite final : public OpInterfaceRewritePattern<CallOpInterface> {
 public:
-  using OpRewritePattern<LLVM::CallOp>::OpRewritePattern;
+  using OpInterfaceRewritePattern<CallOpInterface>::OpInterfaceRewritePattern;
 
-  LogicalResult matchAndRewrite(LLVM::CallOp callOp,
+  LogicalResult matchAndRewrite(CallOpInterface callOp,
                                 PatternRewriter &rewriter) const override {
+    if (isa<tessera::CallOp>(callOp))
+      return failure();
 
     auto module = callOp->getParentOfType<ModuleOp>();
 
-    auto calleeAttr = callOp.getCalleeAttr();
+    // Indirect calls cannot target a tessera.define.
+    auto calleeAttr = dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee());
     if (!calleeAttr)
       return failure();
 
@@ -251,7 +261,7 @@ public:
 
     Value sretPtr;
     Type sretType;
-    auto operands = callOp.getOperands();
+    auto operands = callOp.getArgOperands();
     auto argAttrs = callOp.getArgAttrsAttr();
     SmallVector<Attribute> newArgAttrs;
     SmallVector<NamedAttribute> newAttrs;
@@ -261,7 +271,7 @@ public:
     // than writing through a pointer.
     if (!operands.empty() && argAttrs) {
       if (auto sretAttr = defineOp.getSretAttr()) {
-        sretPtr = callOp.getOperand(0);
+        sretPtr = operands[0];
         sretType = cast<TypeAttr>(sretAttr).getValue();
       }
     }
@@ -280,14 +290,19 @@ public:
           newArgAttrs.push_back(argAttrs[i]);
       }
       for (auto attr : callOp->getAttrs()) {
-        if (attr.getName() != callOp.getArgAttrsAttrName())
+        if (attr.getName() != "arg_attrs" && attr.getName() != "callee")
           newAttrs.push_back(attr);
       }
       newAttrs.push_back(rewriter.getNamedAttr(
-          callOp.getArgAttrsAttrName(), rewriter.getArrayAttr(newArgAttrs)));
+          "arg_attrs", rewriter.getArrayAttr(newArgAttrs)));
     } else {
-      newAttrs.append(callOp->getAttrs().begin(), callOp->getAttrs().end());
+      for (auto attr : callOp->getAttrs())
+        if (attr.getName() != "callee")
+          newAttrs.push_back(attr);
     }
+    // The original op may name its callee differently, so set tessera.call's
+    // explicitly.
+    newAttrs.push_back(rewriter.getNamedAttr("callee", calleeAttr));
 
     // Build operands without first element if sretPtr is present.
     // If a pointer operand has a LLVM byVal attribute or was lifted by the
@@ -300,7 +315,7 @@ public:
     int argOffset = sretPtr ? 1 : 0;
 
     for (unsigned i = 0; i < operands.size() - argOffset; i++) {
-      auto operand = callOp.getOperand(i + argOffset);
+      auto operand = operands[i + argOffset];
 
       if (!isa<LLVM::LLVMPointerType>(operand.getType())) {
         newOperands.push_back(operand);
@@ -357,8 +372,8 @@ public:
       // output-param value rather than the natural/ternary return.
       SmallVector<Type> newResultTypes(resultArgTypes.begin(),
                                        resultArgTypes.end());
-      newResultTypes.append(callOp.getResultTypes().begin(),
-                            callOp.getResultTypes().end());
+      newResultTypes.append(callOp->getResultTypes().begin(),
+                            callOp->getResultTypes().end());
       auto newCall = tessera::CallOp::create(
           rewriter, callOp.getLoc(), newResultTypes, newOperands, newAttrs);
       // Store each leading result back through its original pointer so any
@@ -370,7 +385,7 @@ public:
       }
       // If the original call had any (natural) results, replace them with
       // the new call's trailing results.
-      unsigned originalNumResults = callOp.getNumResults();
+      unsigned originalNumResults = callOp->getNumResults();
       rewriter.replaceOp(callOp,
                          newCall.getResults().take_back(originalNumResults));
     }
@@ -378,20 +393,24 @@ public:
   }
 };
 
-// Rewrite 'llvm.return' -> 'tessera.return'
-class ReturnOpRewrite final : public OpRewritePattern<LLVM::ReturnOp> {
+// Rewrite the function's return (e.g. 'llvm.return', 'func.return') ->
+// 'tessera.return'
+class ReturnOpRewrite final : public RewritePattern {
 public:
-  using OpRewritePattern<LLVM::ReturnOp>::OpRewritePattern;
+  ReturnOpRewrite(MLIRContext *ctx)
+      : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, ctx) {}
 
-  LogicalResult matchAndRewrite(LLVM::ReturnOp returnOp,
+  LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
-
-    // Only rewrite if parent op is a tessera.define op
-    if (!isa<tessera::DefineOp>(returnOp->getParentOp()))
+    if (isa<tessera::ReturnOp>(op) || !op->hasTrait<OpTrait::ReturnLike>() ||
+        !op->hasTrait<OpTrait::IsTerminator>())
       return failure();
 
-    rewriter.replaceOpWithNewOp<tessera::ReturnOp>(returnOp,
-                                                   returnOp.getOperands());
+    // Only rewrite if parent op is a tessera.define op
+    if (!isa<tessera::DefineOp>(op->getParentOp()))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<tessera::ReturnOp>(op, op->getOperands());
     return success();
   }
 };
