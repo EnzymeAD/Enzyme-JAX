@@ -29,7 +29,7 @@ struct LegalizeMpiConstantOpToNccl
       return rewriter.notifyMatchFailure(
           op, "only MPI_COMM_WORLD can be lowered to an NCCL communicator");
 
-    rewriter.replaceOpWithNewOp<comm::NcclConstantOp>(
+    rewriter.replaceOpWithNewOp<comm::NcclGetCommOp>(
         op, comm::NcclCommType::get(op.getContext()));
     return success();
   }
@@ -328,7 +328,7 @@ struct LegalizeMpiToNcclPass
     target.addLegalOp<comm::MpiCommRankOp, comm::MpiCommSizeOp>();
 
     target.addLegalOp<
-        comm::NcclConstantOp, comm::NcclGroupStartOp, comm::NcclGroupEndOp,
+        comm::NcclGetCommOp, comm::NcclGroupStartOp, comm::NcclGroupEndOp,
         comm::NcclBarrierOp, comm::NcclCommSplitOp, comm::NcclCommFinalizeOp,
         comm::NcclCommDestroyOp, comm::NcclCommAbortOp, comm::NcclCommCountOp,
         comm::NcclCommCuDeviceOp, comm::NcclCommUserRankOp,
