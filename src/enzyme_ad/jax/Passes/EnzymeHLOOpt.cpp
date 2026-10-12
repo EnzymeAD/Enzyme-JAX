@@ -21055,6 +21055,22 @@ struct DUSDUSSubsuming
     DenseMap<Value, TensorValueProvenance> provenanceInfo;
     computeTensorValueProvenanceImpl(dusResults, provenanceInfo);
 
+    // Moving the slices of dus2 onto dus only helps when dus is then replaced,
+    // which leaves dus2 to die; on its own it is undone by SliceOfDynamicUpdate
+    // (a slice of a DUS clear of its update is a slice of its operand), and the
+    // two would trade the slices forever. The replacement creates nothing when
+    // it cannot be made.
+    auto dusProvenance = provenanceInfo.find(dus.getResult())->second;
+    rewriter.setInsertionPoint(dus);
+    Value replacement = rematerializeByPiecewiseSelect(
+        rewriter, dus.getLoc(), dus.getResult().getType().getShape(),
+        dusProvenance);
+    // TODO: this is a WORKING fallback to create a lot of concats
+    //   Value rematerializedValue =
+    //       rematerializeByConcat(rewriter, dus.getLoc(), dusProvenance);
+    if (!replacement || replacement == dus)
+      return failure();
+
     DominanceInfo domInfo;
     llvm::MapVector<Operation *, Operation *> movedSlices;
     SmallVector<Operation *> originalUsers =
@@ -21112,28 +21128,10 @@ struct DUSDUSSubsuming
       }
     }
 
-    bool didSomething = false;
-    for (auto [oldSliceOp, newSliceOp] : movedSlices) {
+    for (auto [oldSliceOp, newSliceOp] : movedSlices)
       rewriter.replaceOp(oldSliceOp, newSliceOp->getResult(0));
-      didSomething = true;
-    }
-
-    auto dusProvenance = provenanceInfo.find(dus.getResult())->second;
-    rewriter.setInsertionPoint(dus);
-    Value replacement = rematerializeByPiecewiseSelect(
-        rewriter, dus.getLoc(), dus.getResult().getType().getShape(),
-        dusProvenance);
-    if (replacement && replacement != dus) {
-      rewriter.replaceOp(dus, replacement);
-      didSomething = true;
-      // TODO: this is a WORKING fallback to create a lot of concats
-      // } else {
-      //   Value rematerializedValue =
-      //       rematerializeByConcat(rewriter, dus.getLoc(), dusProvenance);
-      //   rewriter.replaceOp(dus, rematerializedValue);
-      //   didSomething = true;
-    }
-    return success(didSomething);
+    rewriter.replaceOp(dus, replacement);
+    return success();
   }
 };
 
