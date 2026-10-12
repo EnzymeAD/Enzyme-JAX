@@ -42650,6 +42650,149 @@ static bool gatherReadsScatterSlots(stablehlo::ScatterOp scatter,
   });
 }
 
+// A gather that reads no position a scatter writes reads the scatter's input
+// instead: the gather analog of slicing outside a dynamic_update_slice's
+// update. The positions are those of constant indices; a scatter window with
+// an index out of bounds writes nothing.
+struct GatherOfDisjointScatter final
+    : CheckedOpRewritePattern<stablehlo::GatherOp, GatherOfDisjointScatter> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // Bounds the positions enumerated on either side.
+  static constexpr int64_t kMaxPositions = 1 << 20;
+
+  static SmallVector<int64_t> stridesOf(ArrayRef<int64_t> shape) {
+    SmallVector<int64_t> strides(shape.size(), 1);
+    for (int64_t d = (int64_t)shape.size() - 2; d >= 0; --d)
+      strides[d] = strides[d + 1] * shape[d + 1];
+    return strides;
+  }
+
+  // Calls `visit` with the start index of each index vector in `indices`, laid
+  // out over the operand's dimensions through `toOperand` (the dimensions it
+  // does not index start at 0). False when the indices are not constant.
+  static bool forEachStart(Value indices, int64_t ivd,
+                           ArrayRef<int64_t> toOperand, int64_t operandRank,
+                           llvm::function_ref<void(ArrayRef<int64_t>)> visit) {
+    DenseIntElementsAttr attr;
+    if (!matchPattern(indices, m_Constant(&attr)))
+      return false;
+    auto ty = cast<RankedTensorType>(indices.getType());
+    auto values = llvm::to_vector(attr.getValues<APInt>());
+    if (attr.isSplat())
+      values.assign(ty.getNumElements(), *attr.getValues<APInt>().begin());
+    int64_t comps = ivd < ty.getRank() ? ty.getDimSize(ivd) : 1;
+    int64_t compStride = ivd < ty.getRank() ? stridesOf(ty.getShape())[ivd] : 1;
+    SmallVector<int64_t> start(operandRank, 0);
+    for (int64_t i = 0, e = ty.getNumElements(); i < e; ++i) {
+      // Visit each index vector once, from its first component.
+      if (ivd < ty.getRank() && (i / compStride) % comps != 0)
+        continue;
+      for (int64_t j = 0; j < comps; ++j)
+        start[toOperand[j]] = values[i + j * compStride].getSExtValue();
+      visit(start);
+    }
+    return true;
+  }
+
+  // Calls `visit` with the linear position of each element of the window of
+  // `sizes` at `start` in an operand of `shape`.
+  static void forEachInWindow(ArrayRef<int64_t> start, ArrayRef<int64_t> sizes,
+                              ArrayRef<int64_t> strides,
+                              llvm::function_ref<void(int64_t)> visit) {
+    SmallVector<int64_t> offset(sizes.size(), 0);
+    while (true) {
+      int64_t pos = 0;
+      for (size_t d = 0; d < sizes.size(); ++d)
+        pos += (start[d] + offset[d]) * strides[d];
+      visit(pos);
+      int64_t d = (int64_t)sizes.size() - 1;
+      for (; d >= 0; --d) {
+        if (++offset[d] < sizes[d])
+          break;
+        offset[d] = 0;
+      }
+      if (d < 0)
+        return;
+    }
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
+    auto result = dyn_cast<OpResult>(op.getOperand());
+    if (!result)
+      return failure();
+    auto scatter = dyn_cast<stablehlo::ScatterOp>(result.getOwner());
+    if (!scatter)
+      return failure();
+    auto ty = dyn_cast<RankedTensorType>(op.getOperand().getType());
+    if (!ty || !ty.hasStaticShape())
+      return failure();
+    auto shape = ty.getShape();
+    auto strides = stridesOf(shape);
+    int64_t rank = ty.getRank();
+
+    // The windows the scatter writes.
+    auto sdn = scatter.getScatterDimensionNumbers();
+    if (!sdn.getInputBatchingDims().empty())
+      return failure();
+    auto updTy = cast<RankedTensorType>(
+        scatter.getUpdates()[result.getResultNumber()].getType());
+    SmallVector<int64_t> window(rank, 1);
+    for (int64_t b = 0, w = 0; b < rank; ++b)
+      if (!llvm::is_contained(sdn.getInsertedWindowDims(), b))
+        window[b] = updTy.getDimSize(sdn.getUpdateWindowDims()[w++]);
+    int64_t windowSize = 1;
+    for (int64_t s : window)
+      windowSize *= s;
+    auto sidxTy = cast<RankedTensorType>(scatter.getScatterIndices().getType());
+    if (sidxTy.getNumElements() * windowSize > kMaxPositions)
+      return failure();
+    DenseSet<int64_t> written;
+    if (!forEachStart(scatter.getScatterIndices(), sdn.getIndexVectorDim(),
+                      sdn.getScatterDimsToOperandDims(), rank,
+                      [&](ArrayRef<int64_t> start) {
+                        for (int64_t d = 0; d < rank; ++d)
+                          if (start[d] < 0 || start[d] + window[d] > shape[d])
+                            return;
+                        forEachInWindow(start, window, strides,
+                                        [&](int64_t p) { written.insert(p); });
+                      }))
+      return failure();
+
+    // The positions the gather reads, its starts clamped to fit its window.
+    auto gdn = op.getDimensionNumbers();
+    if (!gdn.getOperandBatchingDims().empty())
+      return failure();
+    auto sizes = op.getSliceSizes();
+    int64_t sliceSize = 1;
+    for (int64_t s : sizes)
+      sliceSize *= s;
+    auto gidxTy = cast<RankedTensorType>(op.getStartIndices().getType());
+    if (gidxTy.getNumElements() * sliceSize > kMaxPositions)
+      return failure();
+    bool overlaps = false;
+    SmallVector<int64_t> clamped(rank);
+    if (!forEachStart(op.getStartIndices(), gdn.getIndexVectorDim(),
+                      gdn.getStartIndexMap(), rank,
+                      [&](ArrayRef<int64_t> start) {
+                        for (int64_t d = 0; d < rank; ++d)
+                          clamped[d] = std::clamp<int64_t>(start[d], 0,
+                                                           shape[d] - sizes[d]);
+                        forEachInWindow(clamped, sizes, strides,
+                                        [&](int64_t p) {
+                                          overlaps |= written.contains(p);
+                                        });
+                      }) ||
+        overlaps)
+      return failure();
+
+    Value input = scatter.getInputs()[result.getResultNumber()];
+    rewriter.modifyOpInPlace(op, [&] { op.getOperandMutable().assign(input); });
+    return success();
+  }
+};
+
 struct GatherOfScatterSimplify final
     : CheckedOpRewritePattern<stablehlo::GatherOp, GatherOfScatterSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
