@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-mpi{backend=cpu})" %s | FileCheck %s --check-prefix=CPU
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-mpi{backend=cpu},canonicalize)" %s | FileCheck %s --check-prefix=CPU
 
 module {
   func.func @main(%arg0: tensor<5xf64> {enzymexla.memory_effects = ["read", "write", "allocate", "free"], tf.aliasing_output = 0 : i32}) -> tensor<5xf64> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
@@ -15,6 +15,13 @@ module {
 }
 
 // CPU:  module {
+// CPU-NEXT:    llvm.func @MPI_Wait(!llvm.ptr, !llvm.ptr) -> i32
+// CPU-NEXT:    llvm.func @enzymexla_wrapper_MPI_Wait(%arg0: !llvm.ptr {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}) attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
+// CPU-NEXT:      %c1_i32 = arith.constant 1 : i32
+// CPU-NEXT:      %0 = llvm.alloca %c1_i32 x !llvm.array<6 x i32> : (i32) -> !llvm.ptr
+// CPU-NEXT:      %1 = llvm.call @MPI_Wait(%arg0, %0) : (!llvm.ptr, !llvm.ptr) -> i32
+// CPU-NEXT:      llvm.return
+// CPU-NEXT:    }
 // CPU-NEXT:    llvm.mlir.global external constant @MPI_INT() {addr_space = 0 : i32} : !llvm.ptr
 // CPU-NEXT:    llvm.mlir.global external constant @MPI_COMM_WORLD() {addr_space = 0 : i32} : !llvm.ptr
 // CPU-NEXT:    llvm.func @MPI_Irecv(!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
@@ -25,13 +32,6 @@ module {
 // CPU-NEXT:      %3 = llvm.load %arg2 : !llvm.ptr -> i32
 // CPU-NEXT:      %4 = llvm.load %arg3 : !llvm.ptr -> i32
 // CPU-NEXT:      %5 = llvm.call @MPI_Irecv(%arg0, %2, %1, %3, %4, %0, %arg4) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
-// CPU-NEXT:      llvm.return
-// CPU-NEXT:    }
-// CPU-NEXT:    llvm.func @MPI_Wait(!llvm.ptr, !llvm.ptr) -> i32
-// CPU-NEXT:    llvm.func @enzymexla_wrapper_MPI_Wait(%arg0: !llvm.ptr {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}) attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
-// CPU-NEXT:      %c1_i32 = arith.constant 1 : i32
-// CPU-NEXT:      %0 = llvm.alloca %c1_i32 x !llvm.array<6 x i32> : (i32) -> !llvm.ptr
-// CPU-NEXT:      %1 = llvm.call @MPI_Wait(%arg0, %0) : (!llvm.ptr, !llvm.ptr) -> i32
 // CPU-NEXT:      llvm.return
 // CPU-NEXT:    }
 // CPU-NEXT:    func.func @main(%arg0: tensor<5xf64> {enzymexla.memory_effects = ["read", "write", "allocate", "free"], tf.aliasing_output = 0 : i32}) -> tensor<5xf64> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {

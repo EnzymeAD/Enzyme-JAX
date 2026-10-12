@@ -3,7 +3,7 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/WalkPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/LinalgUtils.h"
@@ -2000,10 +2000,6 @@ struct LowerEnzymeXLAMPIPass
     patterns.add<MPIAllreduceOpLowering>(backend, ncclCommPtr, context);
     patterns.add<MPIBcastOpLowering>(backend, context);
 
-    GreedyRewriteConfig config;
-    config.enableFolding();
-    if (failed(applyPatternsGreedily(module, std::move(patterns), config))) {
-      signalPassFailure();
-    }
+    walkAndApplyPatterns(module, std::move(patterns));
   }
 };
