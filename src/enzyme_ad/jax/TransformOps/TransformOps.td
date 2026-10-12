@@ -503,6 +503,10 @@ def ApplySliceBroadcastPatterns : EnzymeHLOPatternOp<
     "slice_broadcast"> {
   let patterns = ["SliceBroadcast"];
 }
+def SliceIota : EnzymeHLOPatternOp<
+    "slice_iota"> {
+  let patterns = ["SliceIota"];
+}
 def ApplySliceGatherPatterns : EnzymeHLOPatternOp<
     "slice_gather"> {
   let patterns = ["SliceGather"];

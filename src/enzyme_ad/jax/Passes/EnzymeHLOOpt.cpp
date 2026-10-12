@@ -3200,6 +3200,40 @@ struct SliceGather final
   }
 };
 
+// A slice of an iota is an iota of the slice's shape, scaled by the stride
+// and offset by the start along the iota's dimension.
+struct SliceIota final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceIota> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto iota = op.getOperand().getDefiningOp<stablehlo::IotaOp>();
+    if (!iota)
+      return failure();
+    auto type = cast<RankedTensorType>(op.getType());
+    if (!type.getElementType().isIntOrIndex())
+      return failure();
+    int64_t dim = iota.getIotaDimension();
+    int64_t start = op.getStartIndices()[dim];
+    int64_t stride = op.getStrides()[dim];
+    auto loc = op.getLoc();
+    Value result = stablehlo::IotaOp::create(rewriter, loc, type, dim);
+    if (stride != 1) {
+      auto scale = stablehlo::ConstantOp::create(
+          rewriter, loc, type, cast<ElementsAttr>(makeAttr(type, stride)));
+      result = stablehlo::MulOp::create(rewriter, loc, result, scale);
+    }
+    if (start != 0) {
+      auto offset = stablehlo::ConstantOp::create(
+          rewriter, loc, type, cast<ElementsAttr>(makeAttr(type, start)));
+      result = stablehlo::AddOp::create(rewriter, loc, result, offset);
+    }
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
 struct SliceBroadcast final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceBroadcast> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
