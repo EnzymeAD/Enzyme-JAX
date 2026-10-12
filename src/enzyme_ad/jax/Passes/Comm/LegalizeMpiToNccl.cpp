@@ -1,7 +1,5 @@
-#include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -320,8 +318,7 @@ struct LegalizeMpiToNcclPass
     ConversionTarget target(*context);
 
     target.addLegalDialect<stablehlo::StablehloDialect,
-                           enzymexla::EnzymeXLADialect,
-                           mlir::LLVM::LLVMDialect>();
+                           enzymexla::EnzymeXLADialect>();
 
     target.addIllegalDialect<comm::CommDialect>();
 
