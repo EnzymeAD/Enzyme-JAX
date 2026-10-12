@@ -1628,6 +1628,27 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   if (info.getConstantNumIters() <= 0)
     return rewriter.notifyMatchFailure(whileOp, "loop runs no iterations");
 
+  // Every op lifted out of the loop computes its value for every iteration
+  // at once, whatever the size. A parallel loop the raising tagged whose
+  // values would not fit in a batch is left whole to
+  // parallel_while_to_batched_scatter, which batches it a chunk at a time.
+  // (A value of a carried buffer's type is that buffer, written in place.)
+  if (whileOp->hasAttr("enzymexla.parallel")) {
+    DenseSet<Type> carried(llvm::from_range, whileOp->getResultTypes());
+    int64_t perIteration = 0;
+    whileOp.getBody().walk([&](Operation *op) {
+      for (Value r : op->getResults())
+        if (auto t = dyn_cast<RankedTensorType>(r.getType());
+            t && t.hasStaticShape() && !carried.contains(t))
+          perIteration += t.getNumElements() *
+                          std::max<int64_t>(1, t.getElementTypeBitWidth() / 8);
+    });
+    if (perIteration > ParallelWhileToBatchedScatter::kMaxBatchedBytes /
+                           info.getConstantNumIters())
+      return rewriter.notifyMatchFailure(
+          whileOp, "a parallel loop too large to batch at once");
+  }
+
   auto &whileBody = whileOp.getBody().front();
 
   auto affineIndexInfoMap = info.getAffineIndexInfo();
