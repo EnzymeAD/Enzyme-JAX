@@ -109,8 +109,8 @@ llvm.func @memset_nonzero() -> i32 {
 
 // -----
 
-// Reading part of what an allocation holds is not reading the value in it, so
-// the copy stays and so does what it copies from.
+// Reading part of what an allocation holds is reading the bits of the value
+// in it at that place: the copy of the low two bytes of an i32 stores them.
 llvm.func @partial_copy(%dst: !llvm.ptr) {
   %c1 = llvm.mlir.constant(1 : i32) : i32
   %len = llvm.mlir.constant(2 : i64) : i64
@@ -122,8 +122,12 @@ llvm.func @partial_copy(%dst: !llvm.ptr) {
 }
 
 // CHECK-LABEL: llvm.func @partial_copy(
-// CHECK: llvm.alloca
-// CHECK: "llvm.intr.memcpy"
+// CHECK-SAME: %[[DST:[a-z0-9]+]]: !llvm.ptr
+// CHECK: %[[VAL:.+]] = llvm.mlir.constant(42 : i32) : i32
+// CHECK: %[[LOW:.+]] = arith.trunci %[[VAL]] : i32 to i16
+// CHECK: llvm.store %[[LOW]], %[[DST]] <alignment = 1> : i16, !llvm.ptr
+// CHECK-NOT: llvm.alloca
+// CHECK: llvm.return
 
 // -----
 
