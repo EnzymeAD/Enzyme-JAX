@@ -86,12 +86,7 @@ def : EnzymeXLADerivative<"ReluOp", (Op $input),
                         (DiffeRet),
                         (HLOConstantFP<"0"> $input)
                       )
-                    ],
-                    (Select
-                        (Compare $input, (HLOConstantFP<"0"> $input), (GT)),
-                        (Shadow $input),
-                        (HLOConstantFP<"0"> $input)
-                    )
+                    ]
                   >;
 
 def : EnzymeXLADerivative<"SoftplusOp", (Op $input),
