@@ -11,6 +11,7 @@
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/PatternMatch.h"
+#include "src/enzyme_ad/jax/Passes/AutoBatching.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/TransformOps/OpInterfaces.cpp.inc"
 
@@ -184,6 +185,11 @@ void ApplyConcatConstPropPatterns::populatePatterns(
     RewritePatternSet &patterns) {
   addConcatConstProp(patterns, getParameter(), *getContext(),
                      PatternBenefit(getBenefit().value_or(1)));
+}
+void ParallelWhileToBatchedScatterChunkedPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  patterns.add<ParallelWhileToBatchedScatter>(
+      getContext(), getParameter(), PatternBenefit(getBenefit().value_or(1)));
 }
 void ApplyScatterConstFoldPatterns::populatePatterns(
     RewritePatternSet &patterns) {
