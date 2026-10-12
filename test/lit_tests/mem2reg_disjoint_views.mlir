@@ -43,7 +43,8 @@ func.func @overlapping_byte_store(%b: i8) -> i32 {
 // -----
 
 // A load through another view reads and so clobbers nothing, wherever it
-// lands.
+// lands. The byte it reads was never written, so once the bytes accessed are
+// split apart it reads an allocation of its own and is undef.
 
 func.func @disjoint_byte_load() -> (i32, i8) {
   %c1 = arith.constant 1 : i32
@@ -58,7 +59,7 @@ func.func @disjoint_byte_load() -> (i32, i8) {
 }
 
 // CHECK-LABEL: func.func @disjoint_byte_load(
-// CHECK: %[[q:.+]] = affine.load
+// CHECK: %[[q:.+]] = llvm.mlir.undef : i8
 // CHECK: return %c42_i32, %[[q]] : i32, i8
 
 // -----

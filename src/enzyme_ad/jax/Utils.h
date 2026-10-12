@@ -1363,6 +1363,18 @@ inline mlir::TypedAttr createAttrFromDouble(mlir::MLIRContext *ctx,
   return nullptr;
 }
 
+// The least and greatest values `v` takes, when they are constants: a
+// constant, the induction variable of an affine or scf loop or parallel with
+// constant bounds, or sums, differences and constant multiples of those,
+// through index casts and extensions. The values in between need not all be
+// taken (a loop with a step skips some).
+std::optional<std::pair<int64_t, int64_t>> getConstantRange(mlir::Value v);
+
+// The least and greatest values the single result of `map` takes over
+// `operands`, when it is linear in operands getConstantRange bounds.
+std::optional<std::pair<int64_t, int64_t>>
+getConstantRange(mlir::AffineMap map, mlir::ValueRange operands);
+
 // TODO: we can do a full analysis and return if the access is on a specific set
 // of diagonals. Checks that all accesses for this Op and its users thereoff are
 // along the diagonal.

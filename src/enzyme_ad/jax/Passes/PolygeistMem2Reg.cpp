@@ -13,6 +13,7 @@
 // SSA scalars live out of 'affine.for'/'affine.if' statements is available.
 //===----------------------------------------------------------------------===//
 #include "Enzyme/MLIR/Interfaces/AutoDiffOpInterface.h"
+#include "mlir/Analysis/FlatLinearValueConstraints.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -3696,6 +3697,438 @@ static bool splitSelectIndexedAccesses(Value AI) {
   return !toSplit.empty();
 }
 
+// The scalar leaves of an LLVM aggregate in memory order: the path to each, its
+// type and its byte offset; false when a leaf is not an integer, a float or a
+// pointer.
+static bool aggregateLeaves(Type type, int64_t offset, const DataLayout &dl,
+                            SmallVectorImpl<int64_t> &path,
+                            SmallVectorImpl<SmallVector<int64_t>> &paths,
+                            SmallVectorImpl<Type> &types,
+                            SmallVectorImpl<int64_t> &offsets) {
+  if (auto at = dyn_cast<LLVM::LLVMArrayType>(type)) {
+    auto size = typeSize(at.getElementType(), dl);
+    if (!size)
+      return false;
+    for (int64_t i = 0; i < at.getNumElements(); ++i) {
+      path.push_back(i);
+      if (!aggregateLeaves(at.getElementType(), offset + i * *size, dl, path,
+                           paths, types, offsets))
+        return false;
+      path.pop_back();
+    }
+    return true;
+  }
+  if (auto st = dyn_cast<LLVM::LLVMStructType>(type)) {
+    if (st.isOpaque())
+      return false;
+    int64_t fieldOffset = 0;
+    for (auto [i, field] : llvm::enumerate(st.getBody())) {
+      auto size = typeSize(field, dl);
+      if (!size)
+        return false;
+      if (!st.isPacked())
+        fieldOffset = llvm::alignTo(fieldOffset, dl.getTypeABIAlignment(field));
+      path.push_back(i);
+      if (!aggregateLeaves(field, offset + fieldOffset, dl, path, paths, types,
+                           offsets))
+        return false;
+      path.pop_back();
+      fieldOffset += *size;
+    }
+    return true;
+  }
+  if (!type.isIntOrFloat() && !isa<LLVM::LLVMPointerType>(type))
+    return false;
+  paths.push_back(SmallVector<int64_t>(path.begin(), path.end()));
+  types.push_back(type);
+  offsets.push_back(offset);
+  return true;
+}
+
+namespace {
+// A scalar access of an allocation being split, and the bytes it can reach: a
+// load or store through a view, or a leaf extracted from a load of a whole
+// aggregate.
+struct SplitAccess {
+  Operation *op;
+  Type type;
+  int64_t size, lo, hi;
+  // Where element zero of the view it is through falls.
+  int64_t base;
+};
+// A run of bytes of the allocation that its scalar accesses reach, read and
+// written as one scalar: the allocation it becomes.
+struct SplitPiece {
+  int64_t start, end;
+  Type type;
+  int64_t size;
+  Value memref;
+};
+// A whole aggregate stored or loaded at a constant byte of the allocation.
+struct SplitAggregate {
+  Operation *op;
+  int64_t offset;
+};
+// A copy into the allocation from memory it does not own.
+struct SplitCopy {
+  LLVM::MemcpyOp op;
+  int64_t offset, length;
+};
+} // namespace
+
+// The leaf of `type` that `path` names: its index among the leaves
+// aggregateLeaves lists, or none.
+static std::optional<unsigned> leafIndex(ArrayRef<SmallVector<int64_t>> paths,
+                                         ArrayRef<int64_t> path) {
+  auto it = llvm::find(paths, path);
+  if (it == paths.end())
+    return std::nullopt;
+  return it - paths.begin();
+}
+
+// Scalar replacement of an aggregate allocation forwarding cannot remove: the
+// runs of bytes its accesses reach become allocations of their own, each of
+// one scalar, so that what reads one run no longer reads through the rest. A
+// GPU lane's copy of a by-value lambda is the case in point: the whole capture
+// is stored into it, a few members are read back at indices that depend on the
+// lane, and a pointer among the captures would otherwise reach the kernel. The
+// capture the host builds is another: member by member, some copied in from
+// memory it does not own, and loaded whole only for the members the kernel
+// extracts.
+//
+// The allocation must be reached only through constant getelementptrs, rank-1
+// views, lifetime markers and copies into it of a constant length. Each access
+// through a view is an affine or memref load or store at an index linear in
+// values of known range, so the bytes it reaches are known. Scalar accesses
+// that overlap form one run, which must be accessed as a single scalar aligned
+// to it. A whole aggregate may be stored at a constant position: each of its
+// leaves goes to the run that holds it, and a leaf that lies in none is never
+// read, so its store goes away. A whole aggregate may be loaded at a constant
+// position when only its scalar leaves are used: each of those is a read of
+// its run. A copy fills each run it covers from the matching bytes of its
+// source, and must cover a run it reaches entirely.
+static bool splitAggregateAlloca(LLVM::AllocaOp alloc) {
+  Type elem = alloc.getElemType();
+  auto count = getConstantIntValue(alloc.getArraySize());
+  if (!count || !isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(elem))
+    return false;
+  DataLayout dl = DataLayout::closest(alloc);
+  auto elemSize = typeSize(elem, dl);
+  if (!elemSize)
+    return false;
+  int64_t total = *count * *elemSize;
+
+  // Everything that points into the allocation, at the byte it points to.
+  SmallVector<std::pair<Value, int64_t>> pointers = {{alloc, 0}};
+  SmallVector<LLVM::GEPOp> geps;
+  SmallVector<std::pair<enzymexla::Pointer2MemrefOp, int64_t>> views;
+  SmallVector<Operation *> markers;
+  SmallVector<SplitCopy> copies;
+  for (unsigned i = 0; i < pointers.size(); ++i) {
+    auto [pointer, base] = pointers[i];
+    for (OpOperand &use : pointer.getUses()) {
+      Operation *user = use.getOwner();
+      if (auto gep = dyn_cast<LLVM::GEPOp>(user);
+          gep && gep.getBase() == pointer) {
+        auto bytes = gepOffsets(gep, dl).constantBytes();
+        if (!bytes)
+          return false;
+        geps.push_back(gep);
+        pointers.push_back({gep, base + (int64_t)*bytes});
+      } else if (auto view = dyn_cast<enzymexla::Pointer2MemrefOp>(user)) {
+        if (view.getType().getRank() != 1 ||
+            !view.getType().getLayout().isIdentity())
+          return false;
+        views.push_back({view, base});
+      } else if (isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(user)) {
+        markers.push_back(user);
+      } else if (auto copy = dyn_cast<LLVM::MemcpyOp>(user);
+                 copy && copy.getDst() == pointer && !copy.getIsVolatile()) {
+        auto length = getConstantIntValue(copy.getLen());
+        if (!length || base < 0 || base + *length > total)
+          return false;
+        copies.push_back({copy, base, *length});
+      } else {
+        return false;
+      }
+    }
+  }
+  // A copy out of the allocation reads bytes no run may hold.
+  for (SplitCopy &copy : copies)
+    if (llvm::any_of(pointers, [&](auto pointer) {
+          return pointer.first == copy.op.getSrc();
+        }))
+      return false;
+  if (views.empty())
+    return false;
+  Attribute memorySpace = views.front().first.getType().getMemorySpace();
+
+  SmallVector<SplitAccess> scalars;
+  SmallVector<SplitAggregate> aggregateStores, aggregateLoads;
+  for (auto [view, base] : views) {
+    if (view.getType().getMemorySpace() != memorySpace)
+      return false;
+    Type type = view.getType().getElementType();
+    auto size = typeSize(type, dl);
+    if (!size || *size == 0)
+      return false;
+    bool aggregate = isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(type);
+    if (!aggregate && base % (int64_t)*size)
+      return false;
+    for (Operation *user : view->getUsers()) {
+      std::optional<std::pair<int64_t, int64_t>> range;
+      if (auto ld = dyn_cast<affine::AffineLoadOp>(user))
+        range =
+            enzyme::getConstantRange(ld.getAffineMap(), ld.getMapOperands());
+      else if (auto st = dyn_cast<affine::AffineStoreOp>(user);
+               st && st.getValueToStore() != view.getResult())
+        range =
+            enzyme::getConstantRange(st.getAffineMap(), st.getMapOperands());
+      else if (auto ld = dyn_cast<memref::LoadOp>(user))
+        range = enzyme::getConstantRange(ld.getIndices()[0]);
+      else if (auto st = dyn_cast<memref::StoreOp>(user);
+               st && st.getValueToStore() != view.getResult())
+        range = enzyme::getConstantRange(st.getIndices()[0]);
+      else
+        return false;
+      if (!range)
+        return false;
+      int64_t lo = base + range->first * (int64_t)*size,
+              hi = base + range->second * (int64_t)*size + (int64_t)*size - 1;
+      if (lo < 0 || hi >= total)
+        return false;
+      if (!aggregate) {
+        if (!type.isIntOrFloat() && !isa<LLVM::LLVMPointerType>(type))
+          return false;
+        scalars.push_back({user, type, (int64_t)*size, lo, hi, base});
+        continue;
+      }
+      if (range->first != range->second)
+        return false;
+      if (isa<affine::AffineStoreOp, memref::StoreOp>(user)) {
+        aggregateStores.push_back({user, lo});
+        continue;
+      }
+      SmallVector<int64_t> path, offsets;
+      SmallVector<SmallVector<int64_t>> paths;
+      SmallVector<Type> types;
+      if (!aggregateLeaves(type, lo, dl, path, paths, types, offsets))
+        return false;
+      for (Operation *extractUser : user->getUsers()) {
+        auto extract = dyn_cast<LLVM::ExtractValueOp>(extractUser);
+        if (!extract)
+          return false;
+        auto leaf = leafIndex(paths, extract.getPosition());
+        if (!leaf)
+          return false;
+        auto leafSize = typeSize(types[*leaf], dl);
+        if (!leafSize)
+          return false;
+        scalars.push_back({extract, types[*leaf], (int64_t)*leafSize,
+                           offsets[*leaf],
+                           offsets[*leaf] + (int64_t)*leafSize - 1, 0});
+      }
+      aggregateLoads.push_back({user, lo});
+    }
+  }
+  if (scalars.empty())
+    return false;
+
+  // The runs: overlapping scalar accesses, each run one scalar throughout.
+  llvm::stable_sort(scalars, [](const SplitAccess &a, const SplitAccess &b) {
+    return a.lo < b.lo;
+  });
+  SmallVector<SplitPiece> pieces;
+  DenseMap<Operation *, unsigned> pieceOf;
+  for (const SplitAccess &access : scalars) {
+    if (pieces.empty() || access.lo > pieces.back().end)
+      pieces.push_back(
+          {access.lo, access.hi, access.type, access.size, Value()});
+    SplitPiece &piece = pieces.back();
+    if (access.type != piece.type)
+      return false;
+    piece.end = std::max(piece.end, access.hi);
+    pieceOf[access.op] = pieces.size() - 1;
+  }
+  for (const SplitPiece &piece : pieces)
+    if (piece.start % piece.size || (piece.end + 1 - piece.start) % piece.size)
+      return false;
+  // One run over the whole allocation, accessed only in pieces, gains nothing.
+  if (aggregateStores.empty() && aggregateLoads.empty() && copies.empty() &&
+      pieces.size() == 1 && pieces.front().start == 0 &&
+      pieces.front().end + 1 == total)
+    return false;
+  // Every access through a view lands at whole elements of its run.
+  for (const SplitAccess &access : scalars)
+    if ((access.lo - pieces[pieceOf[access.op]].start) % access.size)
+      return false;
+
+  // Where each leaf of each aggregate store lands, or nowhere.
+  struct LeafStore {
+    SmallVector<int64_t> path;
+    unsigned piece;
+    int64_t index;
+  };
+  SmallVector<SmallVector<LeafStore>> leafStores;
+  for (const SplitAggregate &store : aggregateStores) {
+    SmallVector<int64_t> path, offsets;
+    SmallVector<SmallVector<int64_t>> paths;
+    SmallVector<Type> types;
+    if (!aggregateLeaves(cast<enzyme::StoreLikeInterface>(store.op)
+                             .getStoredValue()
+                             .getType(),
+                         store.offset, dl, path, paths, types, offsets))
+      return false;
+    auto &stores = leafStores.emplace_back();
+    for (auto [leafPath, type, offset] : llvm::zip(paths, types, offsets)) {
+      auto size = typeSize(type, dl);
+      if (!size)
+        return false;
+      int64_t lo = offset, hi = offset + *size - 1;
+      auto it = llvm::find_if(pieces, [&](const SplitPiece &piece) {
+        return piece.start <= hi && lo <= piece.end;
+      });
+      if (it == pieces.end())
+        continue;
+      if (it->type != type || lo < it->start || hi > it->end ||
+          (lo - it->start) % it->size)
+        return false;
+      stores.push_back({leafPath, (unsigned)(it - pieces.begin()),
+                        (lo - it->start) / it->size});
+    }
+  }
+  // The runs each copy fills, which it must cover whole.
+  SmallVector<SmallVector<unsigned>> copied;
+  for (const SplitCopy &copy : copies) {
+    auto &filled = copied.emplace_back();
+    for (auto [i, piece] : llvm::enumerate(pieces)) {
+      if (piece.end < copy.offset || copy.offset + copy.length <= piece.start)
+        continue;
+      if (piece.start < copy.offset || copy.offset + copy.length <= piece.end)
+        return false;
+      filled.push_back(i);
+    }
+  }
+
+  OpBuilder builder(alloc);
+  for (SplitPiece &piece : pieces) {
+    auto type =
+        MemRefType::get({(piece.end + 1 - piece.start) / piece.size},
+                        piece.type, MemRefLayoutAttrInterface{}, memorySpace);
+    piece.memref = memref::AllocaOp::create(builder, alloc.getLoc(), type);
+  }
+
+  // A leaf extracted from a whole load reads its run where the load did.
+  DenseMap<Operation *, Operation *> loadOfExtract;
+  for (const SplitAggregate &load : aggregateLoads)
+    for (Operation *user : load.op->getUsers())
+      loadOfExtract[user] = load.op;
+  for (const SplitAccess &access : scalars) {
+    const SplitPiece &piece = pieces[pieceOf[access.op]];
+    if (auto extract = dyn_cast<LLVM::ExtractValueOp>(access.op)) {
+      builder.setInsertionPoint(loadOfExtract[extract]);
+      AffineMap at = AffineMap::getConstantMap(
+          (access.lo - piece.start) / piece.size, extract.getContext());
+      Value value = affine::AffineLoadOp::create(
+          builder, extract.getLoc(), piece.memref, at, ValueRange());
+      extract.replaceAllUsesWith(value);
+      extract.erase();
+      continue;
+    }
+    int64_t shift = (piece.start - access.base) / piece.size;
+    builder.setInsertionPoint(access.op);
+    if (isa<memref::LoadOp, memref::StoreOp>(access.op)) {
+      unsigned at = isa<memref::LoadOp>(access.op) ? 1 : 2;
+      Value index = access.op->getOperand(at);
+      Value offset =
+          arith::ConstantIndexOp::create(builder, access.op->getLoc(), shift);
+      Value rebased =
+          arith::SubIOp::create(builder, access.op->getLoc(), index, offset);
+      access.op->setOperand(at - 1, piece.memref);
+      access.op->setOperand(at, rebased);
+      continue;
+    }
+    if (auto ld = dyn_cast<affine::AffineLoadOp>(access.op)) {
+      AffineMap map = ld.getAffineMap();
+      AffineMap shifted =
+          AffineMap::get(map.getNumDims(), map.getNumSymbols(),
+                         map.getResult(0) - shift, map.getContext());
+      Value value = affine::AffineLoadOp::create(
+          builder, ld.getLoc(), piece.memref, shifted, ld.getMapOperands());
+      ld.replaceAllUsesWith(value);
+      ld.erase();
+    } else {
+      auto st = cast<affine::AffineStoreOp>(access.op);
+      AffineMap map = st.getAffineMap();
+      AffineMap shifted =
+          AffineMap::get(map.getNumDims(), map.getNumSymbols(),
+                         map.getResult(0) - shift, map.getContext());
+      affine::AffineStoreOp::create(builder, st.getLoc(), st.getValueToStore(),
+                                    piece.memref, shifted, st.getMapOperands());
+      st.erase();
+    }
+  }
+  for (auto [store, leaves] : llvm::zip_equal(aggregateStores, leafStores)) {
+    Value value = cast<enzyme::StoreLikeInterface>(store.op).getStoredValue();
+    builder.setInsertionPoint(store.op);
+    for (const LeafStore &leaf : leaves) {
+      Value piece = LLVM::ExtractValueOp::create(builder, store.op->getLoc(),
+                                                 value, leaf.path);
+      AffineMap at =
+          AffineMap::getConstantMap(leaf.index, store.op->getContext());
+      affine::AffineStoreOp::create(builder, store.op->getLoc(), piece,
+                                    pieces[leaf.piece].memref, at,
+                                    ValueRange());
+    }
+    store.op->erase();
+  }
+  for (auto [copy, filled] : llvm::zip_equal(copies, copied)) {
+    LLVM::MemcpyOp op = copy.op;
+    builder.setInsertionPoint(op);
+    for (unsigned i : filled) {
+      const SplitPiece &piece = pieces[i];
+      Value source = op.getSrc();
+      if (piece.start != copy.offset)
+        source = LLVM::GEPOp::create(
+            builder, op.getLoc(), source.getType(), builder.getI8Type(), source,
+            ArrayRef<LLVM::GEPArg>{piece.start - copy.offset});
+      auto sourceType =
+          MemRefType::get({ShapedType::kDynamic}, piece.type,
+                          MemRefLayoutAttrInterface{}, memorySpace);
+      Value view = enzymexla::Pointer2MemrefOp::create(builder, op.getLoc(),
+                                                       sourceType, source);
+      for (int64_t j = 0, n = (piece.end + 1 - piece.start) / piece.size; j < n;
+           ++j) {
+        AffineMap at = AffineMap::getConstantMap(j, op.getContext());
+        Value value = affine::AffineLoadOp::create(builder, op.getLoc(), view,
+                                                   at, ValueRange());
+        affine::AffineStoreOp::create(builder, op.getLoc(), value, piece.memref,
+                                      at, ValueRange());
+      }
+    }
+    op.erase();
+  }
+  for (const SplitAggregate &load : aggregateLoads)
+    load.op->erase();
+  for (auto [view, base] : views)
+    view.erase();
+  for (Operation *marker : markers)
+    marker->erase();
+  for (LLVM::GEPOp gep : llvm::reverse(geps))
+    gep.erase();
+  alloc.erase();
+  return true;
+}
+
+static bool splitAggregateAllocas(Operation *f) {
+  SmallVector<LLVM::AllocaOp> allocs;
+  f->walk([&](LLVM::AllocaOp alloc) { allocs.push_back(alloc); });
+  bool changed = false;
+  for (LLVM::AllocaOp alloc : allocs)
+    changed |= splitAggregateAlloca(alloc);
+  return changed;
+}
+
 void PolygeistMem2Reg::runOnOperation() {
   auto *f = getOperation();
 
@@ -3858,5 +4291,11 @@ void PolygeistMem2Reg::runOnOperation() {
         // llvm::errs() << " failed to remove: " << memref << "\n";
       }
     }
+
+    // Once forwarding has done all it can, an aggregate allocation still
+    // standing may split into allocations of the runs of bytes it is accessed
+    // through, which forwarding then gets another go at.
+    if (!changed)
+      changed = splitAggregateAllocas(f);
   } while (changed);
 }

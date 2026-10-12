@@ -12,6 +12,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include <functional>
 
+#include "mlir/Analysis/FlatLinearValueConstraints.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
@@ -2236,6 +2237,106 @@ bool allAccessesAreOnMainDiagonal(stablehlo::ReshapeOp op,
 bool allAccessesAreOnMainDiagonal(stablehlo::GatherOp op,
                                   llvm::SetVector<Operation *> &opsToReplace) {
   return false; // TODO: implement this where we are doing gather with iota
+}
+
+std::optional<std::pair<int64_t, int64_t>> getConstantRange(Value v) {
+  if (auto c = getConstantIntValue(v))
+    return std::make_pair(*c, *c);
+  if (auto arg = dyn_cast<BlockArgument>(v)) {
+    Operation *owner = arg.getOwner()->getParentOp();
+    std::optional<int64_t> lb, ub, step;
+    if (auto forOp = dyn_cast_or_null<scf::ForOp>(owner);
+        forOp && forOp.getInductionVar() == v) {
+      lb = getConstantIntValue(forOp.getLowerBound());
+      ub = getConstantIntValue(forOp.getUpperBound());
+      step = getConstantIntValue(forOp.getStep());
+    } else if (auto par = dyn_cast_or_null<scf::ParallelOp>(owner);
+               par && arg.getArgNumber() < par.getNumLoops()) {
+      unsigned i = arg.getArgNumber();
+      lb = getConstantIntValue(par.getLowerBound()[i]);
+      ub = getConstantIntValue(par.getUpperBound()[i]);
+      step = getConstantIntValue(par.getStep()[i]);
+    }
+    if (lb && ub && step) {
+      if (*step <= 0 || *ub <= *lb)
+        return std::nullopt;
+      return std::make_pair(*lb, *lb + (*ub - 1 - *lb) / *step * *step);
+    }
+  }
+  if (auto cast = v.getDefiningOp<arith::IndexCastOp>())
+    return getConstantRange(cast.getIn());
+  if (auto cast = v.getDefiningOp<arith::IndexCastUIOp>())
+    return getConstantRange(cast.getIn());
+  if (auto ext = v.getDefiningOp<arith::ExtSIOp>())
+    return getConstantRange(ext.getIn());
+  if (auto ext = v.getDefiningOp<arith::ExtUIOp>()) {
+    auto range = getConstantRange(ext.getIn());
+    if (range && range->first >= 0)
+      return range;
+    return std::nullopt;
+  }
+  if (auto add = v.getDefiningOp<arith::AddIOp>()) {
+    auto l = getConstantRange(add.getLhs()), r = getConstantRange(add.getRhs());
+    if (!l || !r)
+      return std::nullopt;
+    return std::make_pair(l->first + r->first, l->second + r->second);
+  }
+  if (auto sub = v.getDefiningOp<arith::SubIOp>()) {
+    auto l = getConstantRange(sub.getLhs()), r = getConstantRange(sub.getRhs());
+    if (!l || !r)
+      return std::nullopt;
+    return std::make_pair(l->first - r->second, l->second - r->first);
+  }
+  if (auto mul = v.getDefiningOp<arith::MulIOp>()) {
+    auto l = getConstantRange(mul.getLhs()), r = getConstantRange(mul.getRhs());
+    if (!l || !r || (l->first != l->second && r->first != r->second))
+      return std::nullopt;
+    if (r->first != r->second)
+      std::swap(l, r);
+    int64_t c = r->first;
+    return std::make_pair(std::min(l->first * c, l->second * c),
+                          std::max(l->first * c, l->second * c));
+  }
+  if (auto forOp = affine::getForInductionVarOwner(v)) {
+    if (!forOp.hasConstantBounds() ||
+        forOp.getConstantUpperBound() <= forOp.getConstantLowerBound())
+      return std::nullopt;
+    return std::make_pair(forOp.getConstantLowerBound(),
+                          forOp.getConstantUpperBound() - 1);
+  }
+  if (auto par = affine::getAffineParallelInductionVarOwner(v)) {
+    unsigned i = cast<BlockArgument>(v).getArgNumber();
+    AffineMap lb = par.getLowerBoundMap(i), ub = par.getUpperBoundMap(i);
+    if (!lb.isSingleConstant() || !ub.isSingleConstant() ||
+        ub.getSingleConstantResult() <= lb.getSingleConstantResult())
+      return std::nullopt;
+    return std::make_pair(lb.getSingleConstantResult(),
+                          ub.getSingleConstantResult() - 1);
+  }
+  return std::nullopt;
+}
+
+std::optional<std::pair<int64_t, int64_t>>
+getConstantRange(AffineMap map, ValueRange operands) {
+  if (map.getNumResults() != 1)
+    return std::nullopt;
+  SmallVector<int64_t> flat;
+  if (failed(getFlattenedAffineExpr(map.getResult(0), map.getNumDims(),
+                                    map.getNumSymbols(), &flat)) ||
+      flat.size() != operands.size() + 1)
+    return std::nullopt;
+  int64_t lo = flat.back(), hi = flat.back();
+  for (auto [coef, operand] :
+       llvm::zip_equal(ArrayRef(flat).drop_back(), operands)) {
+    if (coef == 0)
+      continue;
+    auto range = getConstantRange(operand);
+    if (!range)
+      return std::nullopt;
+    lo += std::min(coef * range->first, coef * range->second);
+    hi += std::max(coef * range->first, coef * range->second);
+  }
+  return std::make_pair(lo, hi);
 }
 
 } // namespace enzyme
