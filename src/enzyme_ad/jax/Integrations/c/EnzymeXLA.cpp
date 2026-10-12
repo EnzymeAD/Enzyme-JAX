@@ -953,6 +953,8 @@ static void addTransposePropagateUpPasses(std::vector<std::string> &list,
   list.push_back("transpose_extend");
   list.push_back("transpose_rotate");
   list.push_back("transpose_dynamic_slice");
+  list.push_back("transpose_gather");
+  list.push_back("transpose_scatter");
   list.push_back("transpose_like_broadcast_dynamic_slice");
   list.push_back("transpose_reverse");
   list.push_back("transpose_batch_norm_training");

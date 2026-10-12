@@ -511,6 +511,14 @@ def ApplySliceGatherPatterns : EnzymeHLOPatternOp<
     "slice_gather"> {
   let patterns = ["SliceGather"];
 }
+def ApplyTransposeGatherPatterns : EnzymeHLOPatternOp<
+    "transpose_gather"> {
+  let patterns = ["TransposeGather"];
+}
+def ApplyTransposeScatterPatterns : EnzymeHLOPatternOp<
+    "transpose_scatter"> {
+  let patterns = ["TransposeScatter"];
+}
 def ApplyReducePadPatterns : EnzymeHLOPatternOp<
     "reduce_pad"> {
   let patterns = ["ReducePad"];
