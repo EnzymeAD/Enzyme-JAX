@@ -60,7 +60,7 @@ static bool canBeParallelHoisted(Operation *op, Operation *scope,
         return true;
     auto *definingOp = value.getDefiningOp();
     if ((definingOp && !!willBeMoved.count(definingOp)) ||
-        !scope->isAncestor(value.getParentRegion()->getParentOp()))
+        cast<LoopLikeOpInterface>(scope).isDefinedOutsideOfLoop(value))
       return true;
     LLVM_DEBUG(llvm::dbgs()
                << " - cannot hoist due to operand: " << value << "\n");
