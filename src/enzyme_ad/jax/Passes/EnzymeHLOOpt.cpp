@@ -3109,6 +3109,125 @@ static bool isTransposeReshapeLikeBroadcast(stablehlo::BroadcastInDimOp op) {
   return false;
 }
 
+// A transpose of a gather that keeps its offset dimensions in place is the
+// gather over its start indices transposed the same way: the batch dimensions
+// of a gather's result follow its start indices'.
+struct TransposeGather final
+    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeGather> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto gather = op.getOperand().getDefiningOp<stablehlo::GatherOp>();
+    if (!gather || !gather->hasOneUse())
+      return failure();
+    auto dims = gather.getDimensionNumbers();
+    auto indicesTy =
+        dyn_cast<RankedTensorType>(gather.getStartIndices().getType());
+    if (!indicesTy)
+      return failure();
+    auto perm = op.getPermutation();
+    int64_t rank = perm.size();
+    for (int64_t offset : dims.getOffsetDims())
+      if (perm[offset] != offset)
+        return failure();
+    int64_t vectorDim = dims.getIndexVectorDim();
+    int64_t idxRank = indicesTy.getRank();
+    // The start indices dimension of each batch dimension of the result.
+    SmallVector<int64_t> indexDims;
+    for (int64_t d = 0; d < idxRank; ++d)
+      if (d != vectorDim)
+        indexDims.push_back(d);
+    SmallVector<int64_t> indexDimOf(rank, -1);
+    for (int64_t r = 0, b = 0; r < rank; ++r)
+      if (!llvm::is_contained(dims.getOffsetDims(), r))
+        indexDimOf[r] = indexDims[b++];
+    SmallVector<int64_t> idxPerm(idxRank);
+    for (int64_t d = 0; d < idxRank; ++d)
+      idxPerm[d] = d;
+    for (int64_t r = 0; r < rank; ++r)
+      if (indexDimOf[r] >= 0)
+        idxPerm[indexDimOf[r]] = indexDimOf[perm[r]];
+    SmallVector<int64_t> batching;
+    for (int64_t d : dims.getStartIndicesBatchingDims())
+      batching.push_back(llvm::find(idxPerm, d) - idxPerm.begin());
+
+    auto indices = stablehlo::TransposeOp::create(
+        rewriter, gather.getLoc(), gather.getStartIndices(), idxPerm);
+    auto newDims = stablehlo::GatherDimensionNumbersAttr::get(
+        op.getContext(), dims.getOffsetDims(), dims.getCollapsedSliceDims(),
+        dims.getOperandBatchingDims(), batching, dims.getStartIndexMap(),
+        vectorDim);
+    rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
+        op, op.getType(), gather.getOperand(), indices, newDims,
+        gather.getSliceSizes(), gather.getIndicesAreSorted());
+    return success();
+  }
+};
+
+// A transpose of a scatter is the scatter into its input transposed the same
+// way, each operand dimension the scatter names renamed by the transpose; the
+// updates stay as they are when the transpose keeps the window dimensions in
+// their order.
+struct TransposeScatter final
+    : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeScatter> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto scatter = op.getOperand().getDefiningOp<stablehlo::ScatterOp>();
+    if (!scatter || scatter.getInputs().size() != 1 || !scatter->hasOneUse())
+      return failure();
+    auto dims = scatter.getScatterDimensionNumbers();
+    auto perm = op.getPermutation();
+    int64_t rank = perm.size();
+    // The transposed dimension of each input dimension.
+    SmallVector<int64_t> to(rank);
+    for (int64_t d = 0; d < rank; ++d)
+      to[perm[d]] = d;
+    int64_t last = -1;
+    for (int64_t d = 0; d < rank; ++d) {
+      if (llvm::is_contained(dims.getInsertedWindowDims(), d) ||
+          llvm::is_contained(dims.getInputBatchingDims(), d))
+        continue;
+      if (to[d] < last)
+        return failure();
+      last = to[d];
+    }
+    SmallVector<int64_t> inserted;
+    for (int64_t d : dims.getInsertedWindowDims())
+      inserted.push_back(to[d]);
+    llvm::sort(inserted);
+    SmallVector<std::pair<int64_t, int64_t>> batching;
+    for (auto [d, i] : llvm::zip_equal(dims.getInputBatchingDims(),
+                                       dims.getScatterIndicesBatchingDims()))
+      batching.push_back({to[d], i});
+    llvm::sort(batching);
+    SmallVector<int64_t> inputBatching, indicesBatching;
+    for (auto [d, i] : batching) {
+      inputBatching.push_back(d);
+      indicesBatching.push_back(i);
+    }
+    SmallVector<int64_t> toOperand;
+    for (int64_t d : dims.getScatterDimsToOperandDims())
+      toOperand.push_back(to[d]);
+
+    auto input = stablehlo::TransposeOp::create(rewriter, scatter.getLoc(),
+                                                scatter.getInputs()[0], perm);
+    auto newDims = stablehlo::ScatterDimensionNumbersAttr::get(
+        op.getContext(), dims.getUpdateWindowDims(), inserted, inputBatching,
+        indicesBatching, toOperand, dims.getIndexVectorDim());
+    auto newScatter = stablehlo::ScatterOp::create(
+        rewriter, scatter.getLoc(), TypeRange{op.getType()}, ValueRange{input},
+        scatter.getScatterIndices(), scatter.getUpdates(), newDims,
+        scatter.getIndicesAreSorted(), scatter.getUniqueIndices());
+    newScatter.getUpdateComputation().takeBody(scatter.getUpdateComputation());
+    rewriter.replaceOp(op, newScatter);
+    rewriter.eraseOp(scatter);
+    return success();
+  }
+};
+
 // slice(broadcast x) -> broadcast(slice x)
 // A slice of a gather along its batch dimensions is the gather over the
 // start indices sliced the same way (and, for a batching pair, the operand
