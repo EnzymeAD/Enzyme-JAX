@@ -377,14 +377,19 @@ void ParallelLower::runOnOperation() {
   std::function<void(enzyme::AutoDiffOp)> autodiffInliner;
   std::function<void(LLVM::CallOp)> LLVMcallInliner;
   SmallPtrSet<Operation *, 1> replacedCallables;
+  // Inlines `callableOp` at `caller`, whatever the callee `caller` names.
+  std::function<void(CallOp, CallableOpInterface)> inlineCallTo;
   std::function<void(CallOp)> callInliner = [&](CallOp caller) {
-    // Build the inliner interface.
-    AlwaysInlinerInterface interface(&getContext());
-
     CallableOpInterface callableOp = dyn_cast_or_null<CallableOpInterface>(
         caller.resolveCallableInTable(&symbolTable));
     if (!callableOp)
       return;
+    inlineCallTo(caller, callableOp);
+  };
+  inlineCallTo = [&](CallOp caller, CallableOpInterface callableOp) {
+    // Build the inliner interface.
+    AlwaysInlinerInterface interface(&getContext());
+
     Region *targetRegion = callableOp.getCallableRegion();
     if (!targetRegion)
       return;
@@ -725,10 +730,16 @@ void ParallelLower::runOnOperation() {
         /*workgroup*/ TypeRange(),
         /*private*/ TypeRange(), clusterX, clusterY, clusterZ);
 
+    // The kernel lives in the GPU module, which a func.call cannot name:
+    // the call only carries its operands into the inlining, which is given
+    // the kernel itself.
     builder.setInsertionPointToStart(&op.getRegion().front());
-    func::CallOp::create(builder, launchOp.getLoc(), launchOp.getKernel(),
-                         TypeRange(), launchOp.getKernelOperands());
+    auto call =
+        func::CallOp::create(builder, launchOp.getLoc(),
+                             FlatSymbolRefAttr::get(launchOp.getKernelName()),
+                             TypeRange(), launchOp.getKernelOperands());
     gpu::TerminatorOp::create(builder, launchOp.getLoc());
+    inlineCallTo(call, cast<CallableOpInterface>(fn.getOperation()));
     for (auto &&[lhs, rhs] :
          llvm::zip_equal(launchOp->getResults(), op->getResults())) {
       lhs.replaceAllUsesWith(rhs);
