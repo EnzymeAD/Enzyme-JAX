@@ -17366,8 +17366,70 @@ static bool extractComponentIotas(Value indices, int64_t indexVectorDim,
   }
 
   if (auto cat = indices.getDefiningOp<stablehlo::ConcatenateOp>()) {
-    if (whole || (int64_t)cat.getDimension() != indexVectorDim)
-      return false;
+    int64_t catDim = cat.getDimension();
+    // Along a dimension of the grid: the pieces are one grid when their
+    // terms are, each piece's start where the whole one's runs to.
+    if (whole || catDim != indexVectorDim) {
+      int64_t catScale = 0, start = 0, offset = 0;
+      bool catScaleKnown = false;
+      SmallVector<int64_t> scales(rank, 0);
+      SmallVector<bool> known(rank, false);
+      for (auto [p, in] : llvm::enumerate(cat.getInputs())) {
+        auto inTy = cast<RankedTensorType>(in.getType());
+        SmallVector<IotaLikeTensor> parts;
+        if (!extractComponentIotas(in, indexVectorDim, comp, parts))
+          return false;
+        int64_t inStart = 0;
+        SmallVector<int64_t> inScales(rank, 0);
+        for (auto &part : parts) {
+          inStart += cast<IntegerAttr>(part.start).getValue().getSExtValue();
+          inScales[part.dimension] +=
+              cast<IntegerAttr>(part.scale).getValue().getSExtValue();
+        }
+        for (int64_t d = 0; d < rank; ++d) {
+          if (inTy.getDimSize(d) == 1)
+            continue;
+          if (d == catDim) {
+            if (catScaleKnown && inScales[d] != catScale)
+              return false;
+            catScale = inScales[d];
+            catScaleKnown = true;
+          } else if (known[d] && inScales[d] != scales[d]) {
+            return false;
+          } else {
+            scales[d] = inScales[d];
+            known[d] = true;
+          }
+        }
+        if (p == 0) {
+          start = inStart;
+        } else if (!catScaleKnown) {
+          // Only the starts tell the step between the pieces.
+          if (offset == 0 || (inStart - start) % offset != 0)
+            return false;
+          catScale = (inStart - start) / offset;
+          catScaleKnown = true;
+        } else if (inStart != start + catScale * offset) {
+          return false;
+        }
+        offset += inTy.getDimSize(catDim);
+      }
+      scales[catDim] = catScale;
+      auto elemType = ty.getElementType();
+      auto term = [&](int64_t dimension, int64_t termStart, int64_t scale) {
+        IotaLikeTensor iota;
+        iota.dimension = dimension;
+        iota.start = IntegerAttr::get(elemType, termStart);
+        iota.scale = IntegerAttr::get(elemType, scale);
+        iota.tensorType = ty;
+        result.push_back(iota);
+      };
+      term(0, start, 0);
+      for (int64_t d = 0; d < rank; ++d)
+        if (scales[d] != 0)
+          term(d, 0, scales[d]);
+      return true;
+    }
     for (Value in : cat.getInputs()) {
       int64_t size =
           cast<RankedTensorType>(in.getType()).getDimSize(indexVectorDim);
@@ -17408,6 +17470,99 @@ static bool extractComponentIotas(Value indices, int64_t indexVectorDim,
   if (auto add = indices.getDefiningOp<stablehlo::AddOp>())
     return extractComponentIotas(add.getLhs(), indexVectorDim, comp, result) &&
            extractComponentIotas(add.getRhs(), indexVectorDim, comp, result);
+
+  if (auto slice = indices.getDefiningOp<stablehlo::SliceOp>()) {
+    auto starts = slice.getStartIndices();
+    auto strides = slice.getStrides();
+    int64_t innerComp = comp;
+    if (!whole)
+      innerComp = starts[indexVectorDim] + comp * strides[indexVectorDim];
+    else if (indexVectorDim < rank && starts[indexVectorDim] != 0)
+      return false;
+    SmallVector<IotaLikeTensor> inner;
+    if (!extractComponentIotas(slice.getOperand(), indexVectorDim, innerComp,
+                               inner))
+      return false;
+    // Position x of the slice is position start + stride * x of its operand.
+    for (IotaLikeTensor iota : inner) {
+      APInt start = cast<IntegerAttr>(iota.start).getValue();
+      APInt scale = cast<IntegerAttr>(iota.scale).getValue();
+      if (!scale.isZero()) {
+        unsigned width = scale.getBitWidth();
+        start += scale * APInt(width, starts[iota.dimension], true);
+        scale *= APInt(width, strides[iota.dimension], true);
+      }
+      iota.start = IntegerAttr::get(iota.start.getType(), start);
+      iota.scale = IntegerAttr::get(iota.scale.getType(), scale);
+      iota.tensorType = ty;
+      result.push_back(iota);
+    }
+    return true;
+  }
+
+  // A reshape that only inserts or drops dimensions of one.
+  if (auto reshape = indices.getDefiningOp<stablehlo::ReshapeOp>()) {
+    auto oty = cast<RankedTensorType>(reshape.getOperand().getType());
+    SmallVector<int64_t> toNew(oty.getRank(), -1);
+    int64_t d = 0;
+    for (int64_t o = 0; o < oty.getRank(); ++o) {
+      if (oty.getDimSize(o) == 1)
+        continue;
+      while (d < rank && ty.getDimSize(d) == 1)
+        ++d;
+      if (d == rank || ty.getDimSize(d) != oty.getDimSize(o))
+        return false;
+      toNew[o] = d++;
+    }
+    while (d < rank && ty.getDimSize(d) == 1)
+      ++d;
+    if (d != rank)
+      return false;
+    // The operand dimension holding the components, if there are several.
+    int64_t innerVectorDim = oty.getRank();
+    if (!whole) {
+      auto at = llvm::find(toNew, indexVectorDim);
+      if (at == toNew.end())
+        return false;
+      innerVectorDim = at - toNew.begin();
+    }
+    SmallVector<IotaLikeTensor> inner;
+    if (!extractComponentIotas(reshape.getOperand(), innerVectorDim, comp,
+                               inner))
+      return false;
+    for (IotaLikeTensor iota : inner) {
+      if (cast<IntegerAttr>(iota.scale).getValue().isZero() ||
+          toNew[iota.dimension] < 0) {
+        iota.scale = IntegerAttr::get(iota.scale.getType(), 0);
+        iota.dimension = 0;
+      } else {
+        iota.dimension = toNew[iota.dimension];
+      }
+      iota.tensorType = ty;
+      result.push_back(iota);
+    }
+    return true;
+  }
+
+  // Dimension d of a transpose is dimension perm[d] of its operand.
+  if (auto transpose = indices.getDefiningOp<stablehlo::TransposeOp>()) {
+    auto perm = transpose.getPermutation();
+    int64_t innerVectorDim =
+        indexVectorDim < rank ? perm[indexVectorDim] : rank;
+    SmallVector<IotaLikeTensor> inner;
+    if (!extractComponentIotas(transpose.getOperand(), innerVectorDim, comp,
+                               inner))
+      return false;
+    for (IotaLikeTensor iota : inner) {
+      if (cast<IntegerAttr>(iota.scale).getValue().isZero())
+        iota.dimension = 0;
+      else
+        iota.dimension = llvm::find(perm, iota.dimension) - perm.begin();
+      iota.tensorType = ty;
+      result.push_back(iota);
+    }
+    return true;
+  }
 
   // Each term times a constant factor.
   auto scaled = [&](Value v, const APInt &factor) {
