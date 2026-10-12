@@ -21966,6 +21966,163 @@ struct WhileInductionReduction
 
 // TODO: this is not valid in general but presumes the inner structure is valid
 // from the input
+// A loop-carried value the loop only combines elementwise into its next
+// value -- an accumulator -- and that is only read after the loop through
+// slices: the loop need only carry the box the slices read, computed from
+// that box of every other operand.
+struct WhileSliceElementwiseCarry final
+    : CheckedOpRewritePattern<stablehlo::WhileOp, WhileSliceElementwiseCarry> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  static bool isElementwiseLike(Operation *op) {
+    return op->getNumRegions() == 0 && op->getNumResults() == 1 &&
+           (op->hasTrait<OpTrait::Elementwise>() ||
+            isa<stablehlo::SelectOp, stablehlo::ClampOp>(op));
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
+    Block &body = whileOp.getBody().front();
+    auto yield = cast<stablehlo::ReturnOp>(body.getTerminator());
+    for (unsigned idx = 0; idx < whileOp.getNumResults(); ++idx) {
+      Value res = whileOp.getResult(idx);
+      auto ty = dyn_cast<RankedTensorType>(res.getType());
+      if (!ty || !ty.hasStaticShape() || ty.getRank() == 0 || res.use_empty())
+        continue;
+      if (!whileOp.getCond().getArgument(idx).use_empty())
+        continue;
+
+      // The box the slices of the result read.
+      SmallVector<int64_t> lo(ty.getShape()), hi(ty.getRank(), 0);
+      bool sliced = true;
+      for (Operation *user : res.getUsers()) {
+        auto slice = dyn_cast<stablehlo::SliceOp>(user);
+        if (!slice || llvm::any_of(slice.getStrides(),
+                                   [](int64_t s) { return s != 1; })) {
+          sliced = false;
+          break;
+        }
+        for (int64_t d = 0; d < ty.getRank(); ++d) {
+          lo[d] = std::min(lo[d], slice.getStartIndices()[d]);
+          hi[d] = std::max(hi[d], slice.getLimitIndices()[d]);
+        }
+      }
+      if (!sliced)
+        continue;
+      bool full = true;
+      for (int64_t d = 0; d < ty.getRank(); ++d)
+        full &= lo[d] == 0 && hi[d] == ty.getDimSize(d);
+      if (full)
+        continue;
+
+      // The ops the carried value reaches in the body: elementwise, of its
+      // shape, and used only by each other and by its own yield.
+      BlockArgument arg = body.getArgument(idx);
+      SetVector<Operation *> chain;
+      SmallVector<Value> todo{arg};
+      bool local = true;
+      while (!todo.empty() && local) {
+        Value v = todo.pop_back_val();
+        for (OpOperand &use : v.getUses()) {
+          Operation *user = use.getOwner();
+          if (user == yield) {
+            local = use.getOperandNumber() == idx;
+          } else if (user->getBlock() != &body || !isElementwiseLike(user) ||
+                     cast<RankedTensorType>(user->getResult(0).getType())
+                             .getShape() != ty.getShape()) {
+            local = false;
+          } else if (chain.insert(user)) {
+            todo.push_back(user->getResult(0));
+          }
+          if (!local)
+            break;
+        }
+      }
+      Value next = yield.getOperand(idx);
+      if (!local || (next != arg && !chain.contains(next.getDefiningOp())))
+        continue;
+
+      rewrite(whileOp, idx, lo, hi, chain, rewriter);
+      return success();
+    }
+    return failure();
+  }
+
+  static void rewrite(stablehlo::WhileOp whileOp, unsigned idx,
+                      ArrayRef<int64_t> lo, ArrayRef<int64_t> hi,
+                      SetVector<Operation *> &chain,
+                      PatternRewriter &rewriter) {
+    auto loc = whileOp.getLoc();
+    auto ty = cast<RankedTensorType>(whileOp.getResult(idx).getType());
+    SmallVector<int64_t> boxShape, strides(lo.size(), 1);
+    for (auto [l, h] : llvm::zip(lo, hi))
+      boxShape.push_back(h - l);
+    auto boxTy = RankedTensorType::get(boxShape, ty.getElementType());
+
+    SmallVector<Value> inits(whileOp.getOperands());
+    inits[idx] =
+        stablehlo::SliceOp::create(rewriter, loc, inits[idx], lo, hi, strides);
+    SmallVector<Type> types(whileOp.getResultTypes());
+    types[idx] = boxTy;
+    auto newWhile = stablehlo::WhileOp::create(rewriter, loc, types, inits,
+                                               whileOp->getAttrs());
+    rewriter.inlineRegionBefore(whileOp.getCond(), newWhile.getCond(),
+                                newWhile.getCond().end());
+    rewriter.inlineRegionBefore(whileOp.getBody(), newWhile.getBody(),
+                                newWhile.getBody().end());
+    newWhile.getCond().getArgument(idx).setType(boxTy);
+    BlockArgument arg = newWhile.getBody().getArgument(idx);
+    arg.setType(boxTy);
+
+    // Every other operand of the chain enters it through the box.
+    SmallVector<Operation *> ordered(chain.begin(), chain.end());
+    llvm::sort(ordered, [](Operation *a, Operation *b) {
+      return a->isBeforeInBlock(b);
+    });
+    for (Operation *op : ordered) {
+      rewriter.setInsertionPoint(op);
+      SmallVector<Value> operands;
+      for (Value operand : op->getOperands()) {
+        auto oty = cast<RankedTensorType>(operand.getType());
+        if (operand == arg || chain.contains(operand.getDefiningOp()) ||
+            oty.getRank() == 0) {
+          operands.push_back(operand);
+          continue;
+        }
+        auto sliced = stablehlo::SliceOp::create(rewriter, op->getLoc(),
+                                                 operand, lo, hi, strides);
+        operands.push_back(sliced);
+      }
+      auto rty = cast<RankedTensorType>(op->getResult(0).getType());
+      rewriter.modifyOpInPlace(op, [&] {
+        op->setOperands(operands);
+        op->getResult(0).setType(
+            RankedTensorType::get(boxShape, rty.getElementType()));
+      });
+    }
+
+    // The reads of the result read the box.
+    Value res = newWhile.getResult(idx);
+    for (Operation *user :
+         llvm::make_early_inc_range(whileOp.getResult(idx).getUsers())) {
+      auto slice = cast<stablehlo::SliceOp>(user);
+      SmallVector<int64_t> start, limit;
+      for (int64_t d = 0; d < ty.getRank(); ++d) {
+        start.push_back(slice.getStartIndices()[d] - lo[d]);
+        limit.push_back(slice.getLimitIndices()[d] - lo[d]);
+      }
+      rewriter.setInsertionPoint(slice);
+      rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(slice, res, start, limit,
+                                                      slice.getStrides());
+    }
+    for (unsigned i = 0; i < whileOp.getNumResults(); ++i)
+      if (i != idx)
+        rewriter.replaceAllUsesWith(whileOp.getResult(i),
+                                    newWhile.getResult(i));
+    rewriter.eraseOp(whileOp);
+  }
+};
+
 struct WhileConcat
     : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
