@@ -2680,20 +2680,45 @@ struct SliceOfDynamicUpdate final
     if (!type)
       return failure();
 
-    auto dyn = op.getOperand().getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+    // A slice of a transpose of the update slices the update along the
+    // dimensions the transpose moves there.
+    auto transpose = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
+    if (transpose && !transpose->hasOneUse())
+      return failure();
+    Value updated = transpose ? transpose.getOperand() : op.getOperand();
+    auto dyn = updated.getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
     if (!dyn)
       return failure();
+    int64_t rank = type.getRank();
+    SmallVector<int64_t> sliceStart(rank), sliceLimit(rank), sliceStride(rank);
+    for (int64_t d = 0; d < rank; ++d) {
+      int64_t from = transpose ? transpose.getPermutation()[d] : d;
+      sliceStart[from] = op.getStartIndices()[d];
+      sliceLimit[from] = op.getLimitIndices()[d];
+      sliceStride[from] = op.getStrides()[d];
+    }
+    auto replace = [&](Value source, ArrayRef<int64_t> start,
+                       ArrayRef<int64_t> limit) {
+      if (!transpose) {
+        rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, source, start,
+                                                        limit, sliceStride);
+        return;
+      }
+      auto slice = stablehlo::SliceOp::create(rewriter, op.getLoc(), source,
+                                              start, limit, sliceStride);
+      rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
+          op, slice, transpose.getPermutation());
+    };
 
     // Try to use the updated value
     {
       SmallVector<int64_t> start;
       SmallVector<int64_t> end;
-      SmallVector<int64_t> step;
 
       bool legal = true;
-      for (auto &&[nstart, nend, nstep, update_start, update_size] : llvm::zip(
-               op.getStartIndices(), op.getLimitIndices(), op.getStrides(),
-               dyn.getStartIndices(), dyn.getUpdate().getType().getShape())) {
+      for (auto &&[nstart, nend, update_start, update_size] :
+           llvm::zip(sliceStart, sliceLimit, dyn.getStartIndices(),
+                     dyn.getUpdate().getType().getShape())) {
         DenseIntElementsAttr startattr;
         if (!matchPattern(update_start, m_Constant(&startattr))) {
           legal = false;
@@ -2721,12 +2746,10 @@ struct SliceOfDynamicUpdate final
 
         start.push_back(nstart - startv);
         end.push_back(nend - startv);
-        step.push_back(nstep);
       }
 
       if (legal) {
-        rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, dyn.getUpdate(),
-                                                        start, end, step);
+        replace(dyn.getUpdate(), start, end);
         return success();
       }
     }
@@ -2735,9 +2758,9 @@ struct SliceOfDynamicUpdate final
     {
       bool no_overlap = false;
 
-      for (auto &&[nstart, nend, nstep, update_start, update_size] : llvm::zip(
-               op.getStartIndices(), op.getLimitIndices(), op.getStrides(),
-               dyn.getStartIndices(), dyn.getUpdate().getType().getShape())) {
+      for (auto &&[nstart, nend, update_start, update_size] :
+           llvm::zip(sliceStart, sliceLimit, dyn.getStartIndices(),
+                     dyn.getUpdate().getType().getShape())) {
         DenseIntElementsAttr startattr;
         if (!matchPattern(update_start, m_Constant(&startattr))) {
           continue;
@@ -2758,9 +2781,7 @@ struct SliceOfDynamicUpdate final
       }
 
       if (no_overlap) {
-        rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
-            op, dyn.getOperand(), op.getStartIndices(), op.getLimitIndices(),
-            op.getStrides());
+        replace(dyn.getOperand(), sliceStart, sliceLimit);
         return success();
       }
     }
