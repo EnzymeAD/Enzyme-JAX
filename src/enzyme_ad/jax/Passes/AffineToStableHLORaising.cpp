@@ -5659,7 +5659,8 @@ struct AffineToStableHLORaisingPass
     for (auto c : casts) {
       if (!llvm::all_of(c->getUsers(), [](Operation *u) {
             return isa<affine::AffineLoadOp, affine::AffineStoreOp,
-                       memref::LoadOp, memref::StoreOp>(u);
+                       memref::LoadOp, memref::StoreOp, enzyme::AtomicRMWOp,
+                       enzyme::AffineAtomicRMWOp>(u);
           }))
         continue;
       for (Operation *u : llvm::make_early_inc_range(c->getUsers()))
