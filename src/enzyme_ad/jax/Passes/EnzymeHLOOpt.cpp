@@ -6866,6 +6866,46 @@ struct ConcatSlicesToReverse final
   }
 };
 
+// What `v` broadcasts, and to which of its dimensions, when it repeats along
+// dimension `dim`: the operand of a broadcast_in_dim (or `v` itself, to all
+// its dimensions), seen through a reshape that only inserts dimensions of
+// one, and one wide where it reaches `dim`. Pieces broadcasting one value the
+// same way concatenate to that broadcast.
+static std::optional<std::pair<Value, SmallVector<int64_t>>>
+repeatedAlong(Value v, int64_t dim) {
+  Value source = v;
+  SmallVector<int64_t> dims = llvm::to_vector(
+      llvm::seq<int64_t>(cast<RankedTensorType>(v.getType()).getRank()));
+  if (auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+    source = bcast.getOperand();
+    dims = llvm::to_vector(bcast.getBroadcastDimensions());
+  }
+  if (auto reshape = source.getDefiningOp<stablehlo::ReshapeOp>()) {
+    auto inShape =
+        cast<RankedTensorType>(reshape.getOperand().getType()).getShape();
+    auto shape = cast<RankedTensorType>(source.getType()).getShape();
+    SmallVector<int64_t> kept;
+    size_t j = 0;
+    for (size_t k = 0; k < shape.size(); ++k) {
+      if (j < inShape.size() && inShape[j] == shape[k]) {
+        kept.push_back(dims[k]);
+        ++j;
+      } else if (shape[k] != 1) {
+        break;
+      }
+    }
+    if (j == inShape.size() && kept.size() == inShape.size()) {
+      source = reshape.getOperand();
+      dims = kept;
+    }
+  }
+  auto sourceTy = cast<RankedTensorType>(source.getType());
+  for (auto [i, d] : llvm::enumerate(dims))
+    if (d == dim && sourceTy.getDimSize(i) != 1)
+      return std::nullopt;
+  return std::make_pair(source, dims);
+}
+
 struct ConcatToBroadcast final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatToBroadcast> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -6874,6 +6914,41 @@ struct ConcatToBroadcast final
                                     PatternRewriter &rewriter) const {
     if (op->getNumOperands() <= 1)
       return failure();
+    // concat(x, a, broadcast(a), a, y): adjacent pieces that each repeat one
+    // value along the concatenated dimension are that value broadcast along
+    // it (as when a nested concat(a, a, a) was made a broadcast first).
+    int64_t dim = op.getDimension();
+    auto operands = llvm::to_vector(op->getOperands());
+    SmallVector<Value> pieces;
+    bool merged = false;
+    for (size_t b = 0, e; b < operands.size(); b = e) {
+      auto source = repeatedAlong(operands[b], dim);
+      int64_t width = 0;
+      for (e = b; e < operands.size() &&
+                  (e == b ? source.has_value()
+                          : repeatedAlong(operands[e], dim) == source);
+           ++e)
+        width += cast<RankedTensorType>(operands[e].getType()).getDimSize(dim);
+      if (e - b < 2) {
+        e = b + 1;
+        pieces.append(operands.begin() + b, operands.begin() + e);
+        continue;
+      }
+      SmallVector<int64_t> shape(op.getType().getShape());
+      shape[dim] = width;
+      pieces.push_back(stablehlo::BroadcastInDimOp::create(
+          rewriter, op.getLoc(),
+          RankedTensorType::get(shape, op.getType().getElementType()),
+          source->first, rewriter.getDenseI64ArrayAttr(source->second)));
+      merged = true;
+    }
+    if (merged) {
+      if (pieces.size() == 1)
+        rewriter.replaceOp(op, pieces[0]);
+      else
+        rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, pieces, dim);
+      return success();
+    }
     for (auto opv : op->getOperands())
       if (opv != op->getOperand(0))
         return failure();
@@ -27507,6 +27582,12 @@ bool canFuseIntoSingleSlice(enzymexla::ExtendOp op) {
 
 bool isAxisFusible(int dimension, ArrayRef<Value> vals) {
   assert(vals.size());
+
+  for (int i = 1; i < vals.size(); i++) {
+    auto source = repeatedAlong(vals[i - 1], dimension);
+    if (source && repeatedAlong(vals[i], dimension) == source)
+      return true;
+  }
 
   for (int i = 0; i < vals.size(); i++) {
     if (auto concat = vals[i].getDefiningOp<stablehlo::ConcatenateOp>()) {
