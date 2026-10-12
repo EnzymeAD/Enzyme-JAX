@@ -123,23 +123,18 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr = dense<64> : vector<4
   }
 }
 
-// CHECK-LABEL:   func.func @copied(
-// CHECK-SAME:                      %[[ARG0:[a-z0-9]+]]: !llvm.ptr,
-// CHECK-SAME:                      %[[ARG1:[a-z0-9]+]]: f64,
-// CHECK-SAME:                      %[[ARG2:[a-z0-9]+]]: !llvm.ptr,
-// CHECK-SAME:                      %[[ARG3:[a-z0-9]+]]: memref<3xf64>) {
-// CHECK:           %[[CONSTANT_0:.*]] = arith.constant 1 : i64
-// CHECK:           %[[CONSTANT_1:.*]] = arith.constant 16 : i64
-// CHECK:           %[[POINTER2MEMREF_0:.*]] = "enzymexla.pointer2memref"(%[[ARG0]]) : (!llvm.ptr) -> memref<?xf64>
-// CHECK:           %[[LOAD_0:.*]] = affine.load %[[POINTER2MEMREF_0]][0] : memref<?xf64>
-// CHECK:           %[[GETELEMENTPTR_0:.*]] = llvm.getelementptr %[[ARG0]][8] : (!llvm.ptr) -> !llvm.ptr, i8
-// CHECK:           %[[POINTER2MEMREF_1:.*]] = "enzymexla.pointer2memref"(%[[GETELEMENTPTR_0]]) : (!llvm.ptr) -> memref<?xf64>
-// CHECK:           %[[LOAD_1:.*]] = affine.load %[[POINTER2MEMREF_1]][0] : memref<?xf64>
-// CHECK:           affine.store %[[ARG1]], %[[ARG3]][0] : memref<3xf64>
-// CHECK:           affine.store %[[LOAD_0]], %[[ARG3]][1] : memref<3xf64>
-// CHECK:           affine.store %[[LOAD_1]], %[[ARG3]][2] : memref<3xf64>
-// CHECK:           return
-// CHECK:         }
+// CHECK-LABEL: func.func @copied(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: !llvm.ptr, %[[V1:[^ ,:)]+]]: f64, %[[V2:[^ ,:)]+]]: !llvm.ptr, %[[V3:[^ ,:)]+]]: memref<3xf64>) {
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = arith.constant 1 : i64
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = arith.constant 16 : i64
+// CHECK-NEXT: %[[V6:[^ ,:)]+]] = llvm.load %[[V0]] <alignment = 1> : !llvm.ptr -> f64
+// CHECK-NEXT: %[[V7:[^ ,:)]+]] = llvm.getelementptr %[[V0]][8] : (!llvm.ptr) -> !llvm.ptr, i8
+// CHECK-NEXT: %[[V8:[^ ,:)]+]] = llvm.load %[[V7]] <alignment = 1> : !llvm.ptr -> f64
+// CHECK-NEXT: affine.store %[[V1]], %[[V3]][0] : memref<3xf64>
+// CHECK-NEXT: affine.store %[[V6]], %[[V3]][1] : memref<3xf64>
+// CHECK-NEXT: affine.store %[[V8]], %[[V3]][2] : memref<3xf64>
+// CHECK-NEXT: return
+// CHECK-NEXT: }
 
 // -----
 
