@@ -90,7 +90,7 @@ module {
       activity = [#enzyme.activity<enzyme_active>],
       ret_activity = [#enzyme.activity<enzyme_active>]
     }> : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
-    check.expect_almost_eq_const %gelu_sigmoid_res#1, dense<[0.5, -8.296408e-02, 1.0829641, 1.0860993, 1.0, 0.0]> : tensor<6xf32>
+    check.expect_almost_eq_const %gelu_sigmoid_res#1, dense<[0.5, -6.777961e-02, 1.0677796, 1.0738153, 1.0, 0.0]> : tensor<6xf32>
 
     // d/dx softplus(x) = sigmoid(x)
     %softplus_res:2 = enzyme.autodiff @softplus_fn(%x_common, %d_common) <{
@@ -165,7 +165,7 @@ module {
       activity = [#enzyme.activity<enzyme_dup>],
       ret_activity = [#enzyme.activity<enzyme_dup>]
     }> : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
-    check.expect_almost_eq_const %gelu_sigmoid_fwd#1, dense<[-0.5, -0.16592816, -3.2488923, 0.54304963, -1.0, 0.0]> : tensor<6xf32>
+    check.expect_almost_eq_const %gelu_sigmoid_fwd#1, dense<[-0.5, -0.13555921, -3.2033388, 0.53690768, -1.0, 0.0]> : tensor<6xf32>
 
     %softplus_fwd:2 = enzyme.fwddiff @softplus_fn(%x_common, %t_common) <{
       activity = [#enzyme.activity<enzyme_dup>],
@@ -251,27 +251,18 @@ module {
 // GELU-TANH-REV: %[[SCALED:.*]] = stablehlo.multiply %arg1, %[[SUM]] : tensor<6xf32>
 
 // GELU-SIGMOID-REV-LABEL: func.func @gelu_sigmoid_fn(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>) -> tensor<6xf32>
-// GELU-SIGMOID-REV-DAG: %[[A134:.*]] = stablehlo.constant dense<1.341450e-01> : tensor<6xf32>
-// GELU-SIGMOID-REV-DAG: %[[THREE:.*]] = stablehlo.constant dense<3.000000e+00> : tensor<6xf32>
-// GELU-SIGMOID-REV-DAG: %[[K044:.*]] = stablehlo.constant dense<4.471500e-02> : tensor<6xf32>
-// GELU-SIGMOID-REV-DAG: %[[C:.*]] = stablehlo.constant dense<1.59576{{[0-9]*}}> : tensor<6xf32>
-// GELU-SIGMOID-REV-DAG: %[[ONE:.*]] = stablehlo.constant dense<1.000000e+00> : tensor<6xf32>
-// GELU-SIGMOID-REV-NOT: dense<1.702000e+00>
-// GELU-SIGMOID-REV: %[[X3_0:.*]] = stablehlo.power %arg0, %[[THREE]] : tensor<6xf32>
-// GELU-SIGMOID-REV: %[[KX3_0:.*]] = stablehlo.multiply %[[K044]], %[[X3_0]] : tensor<6xf32>
-// GELU-SIGMOID-REV: %[[V0_ARG:.*]] = stablehlo.add %arg0, %[[KX3_0]] : tensor<6xf32>
-// GELU-SIGMOID-REV: %[[V0:.*]] = stablehlo.multiply %[[C]], %[[V0_ARG]] : tensor<6xf32>
-// GELU-SIGMOID-REV: %[[S0:.*]] = stablehlo.logistic %[[V0]] : tensor<6xf32>
-// GELU-SIGMOID-REV: %[[S1:.*]] = stablehlo.logistic {{.*}} : tensor<6xf32>
-// GELU-SIGMOID-REV: %[[S2:.*]] = stablehlo.logistic {{.*}} : tensor<6xf32>
+// GELU-SIGMOID-REV: %[[ONE:.*]] = stablehlo.constant dense<1.000000e+00> : tensor<6xf32>
+// GELU-SIGMOID-REV: %[[K:.*]] = stablehlo.constant dense<1.702000e+00> : tensor<6xf32>
+// GELU-SIGMOID-REV: %[[KX0:.*]] = stablehlo.multiply %[[K]], %arg0 : tensor<6xf32>
+// GELU-SIGMOID-REV: %[[S0:.*]] = stablehlo.logistic %[[KX0]] : tensor<6xf32>
+// GELU-SIGMOID-REV: %[[KX1:.*]] = stablehlo.multiply %[[K]], %arg0 : tensor<6xf32>
+// GELU-SIGMOID-REV: %[[KX2:.*]] = stablehlo.multiply %[[K]], %arg0 : tensor<6xf32>
+// GELU-SIGMOID-REV: %[[S1:.*]] = stablehlo.logistic %[[KX2]] : tensor<6xf32>
+// GELU-SIGMOID-REV: %[[KX3:.*]] = stablehlo.multiply %[[K]], %arg0 : tensor<6xf32>
+// GELU-SIGMOID-REV: %[[S2:.*]] = stablehlo.logistic %[[KX3]] : tensor<6xf32>
 // GELU-SIGMOID-REV: %[[ONE_MINUS:.*]] = stablehlo.subtract %[[ONE]], %[[S2]] : tensor<6xf32>
-// GELU-SIGMOID-REV: %[[DSIG:.*]] = stablehlo.multiply %[[S1]], %[[ONE_MINUS]] : tensor<6xf32>
-// GELU-SIGMOID-REV: %[[X2:.*]] = stablehlo.multiply %arg0, %arg0 : tensor<6xf32>
-// GELU-SIGMOID-REV: %[[A134X2:.*]] = stablehlo.multiply %[[A134]], %[[X2]] : tensor<6xf32>
-// GELU-SIGMOID-REV: %[[ONE_PLUS:.*]] = stablehlo.add %[[ONE]], %[[A134X2]] : tensor<6xf32>
-// GELU-SIGMOID-REV: %[[C_ONE_PLUS:.*]] = stablehlo.multiply %[[C]], %[[ONE_PLUS]] : tensor<6xf32>
-// GELU-SIGMOID-REV: %[[CHAIN:.*]] = stablehlo.multiply %[[DSIG]], %[[C_ONE_PLUS]] : tensor<6xf32>
-// GELU-SIGMOID-REV: %[[TERM1:.*]] = stablehlo.multiply %arg0, %[[CHAIN]] : tensor<6xf32>
+// GELU-SIGMOID-REV: %[[PROD:.*]] = stablehlo.multiply %[[S1]], %[[ONE_MINUS]] : tensor<6xf32>
+// GELU-SIGMOID-REV: %[[TERM1:.*]] = stablehlo.multiply %[[KX1]], %[[PROD]] : tensor<6xf32>
 // GELU-SIGMOID-REV: %[[SUM:.*]] = stablehlo.add %[[S0]], %[[TERM1]] : tensor<6xf32>
 // GELU-SIGMOID-REV: %[[SCALED:.*]] = stablehlo.multiply %arg1, %[[SUM]] : tensor<6xf32>
 
