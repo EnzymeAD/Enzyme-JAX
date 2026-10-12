@@ -2155,13 +2155,27 @@ aggregateFieldOffset(Type from, ArrayRef<int64_t> pos, const DataLayout &dl) {
   return std::make_pair(at, cur);
 }
 
+// The way into a value of type `from` to the `want` at byte `at` of it: the
+// indices of extractvalue through aggregates, and, when `bytesAt` is given and
+// the way ends inside an integer wider than what is read (a copy the compiler
+// made of several members at once, as an i320), the byte of that integer the
+// read starts at, which the bits of are shifted down from (a little-endian
+// layout only).
 static bool extractPath(Type from, uint64_t at, Type want, const DataLayout &dl,
-                        SmallVectorImpl<int64_t> &path) {
+                        SmallVectorImpl<int64_t> &path,
+                        std::optional<uint64_t> *bytesAt = nullptr) {
   auto wantSize = typeSize(want, dl), fromSize = typeSize(from, dl);
   if (!wantSize || !fromSize || at + *wantSize > *fromSize)
     return false;
   if (at == 0 && *wantSize == *fromSize)
     return true;
+
+  if (bytesAt && isa<IntegerType>(from) &&
+      (want.isIntOrFloat() || isa<LLVM::LLVMPointerType>(want)) &&
+      !isa<IndexType>(want) && dl.getEndianness() == Attribute()) {
+    *bytesAt = at;
+    return true;
+  }
 
   if (auto ST = dyn_cast<LLVM::LLVMStructType>(from)) {
     uint64_t byte = 0;
@@ -2173,7 +2187,7 @@ static bool extractPath(Type from, uint64_t at, Type want, const DataLayout &dl,
         byte = llvm::alignTo(byte, dl.getTypeABIAlignment(member));
       if (at >= byte && at + *wantSize <= byte + *size) {
         path.push_back(i);
-        return extractPath(member, at - byte, want, dl, path);
+        return extractPath(member, at - byte, want, dl, path, bytesAt);
       }
       byte += *size;
     }
@@ -2188,10 +2202,126 @@ static bool extractPath(Type from, uint64_t at, Type want, const DataLayout &dl,
     if (index >= AT.getNumElements() || at % *size + *wantSize > *size)
       return false;
     path.push_back(index);
-    return extractPath(AT.getElementType(), at % *size, want, dl, path);
+    return extractPath(AT.getElementType(), at % *size, want, dl, path,
+                       bytesAt);
   }
 
   return false;
+}
+
+// The scalar types an aggregate is made of, in order.
+static void leafTypes(Type type, SmallVectorImpl<Type> &leaves) {
+  if (auto ST = dyn_cast<LLVM::LLVMStructType>(type)) {
+    for (Type member : ST.getBody())
+      leafTypes(member, leaves);
+  } else if (auto AT = dyn_cast<LLVM::LLVMArrayType>(type)) {
+    for (uint64_t i = 0; i < AT.getNumElements(); ++i)
+      leafTypes(AT.getElementType(), leaves);
+  } else {
+    leaves.push_back(type);
+  }
+}
+
+// Whether castToType can make a `to` out of a `from`, case for case.
+static bool castsTo(Type from, Type to, const DataLayout &dl) {
+  if (from == to)
+    return true;
+  bool fromScalar = isa<IntegerType, FloatType>(from);
+  bool toScalar = isa<IntegerType, FloatType>(to);
+  if ((isa<IntegerType>(from) && isa<LLVM::LLVMPointerType>(to)) ||
+      (isa<LLVM::LLVMPointerType>(from) && isa<IntegerType>(to)))
+    return true;
+  if (fromScalar && toScalar)
+    return from.getIntOrFloatBitWidth() == to.getIntOrFloatBitWidth();
+  if (isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(from)) {
+    if (auto ST = dyn_cast<LLVM::LLVMStructType>(from);
+        ST && ST.getBody().size() == 1)
+      return castsTo(ST.getBody()[0], to, dl);
+    if (auto AT = dyn_cast<LLVM::LLVMArrayType>(from);
+        AT && AT.getNumElements() == 1)
+      return castsTo(AT.getElementType(), to, dl);
+    SmallVector<Type> leaves;
+    leafTypes(from, leaves);
+    if (leaves.empty() || !llvm::all_equal(leaves) ||
+        !VectorType::isValidElementType(leaves[0]))
+      return false;
+    return castsTo(VectorType::get(leaves.size(), leaves[0]), to, dl);
+  }
+  if (isa<VectorType>(from)) {
+    auto fromSize = typeSize(from, dl), toSize = typeSize(to, dl);
+    return toScalar && fromSize && toSize && *fromSize == *toSize;
+  }
+  if (auto ST = dyn_cast<LLVM::LLVMStructType>(to);
+      ST && ST.getBody().size() == 1)
+    return castsTo(from, ST.getBody()[0], dl);
+  if (auto AT = dyn_cast<LLVM::LLVMArrayType>(to);
+      AT && AT.getNumElements() == 1)
+    return castsTo(from, AT.getElementType(), dl);
+  return false;
+}
+
+// Whether takePiece can give the `want` at byte `at` of a `whole`.
+static bool hasPiece(Type whole, uint64_t at, Type want, const DataLayout &dl) {
+  SmallVector<int64_t> path;
+  std::optional<uint64_t> bytesAt;
+  if (!extractPath(whole, at, want, dl, path, &bytesAt))
+    return false;
+  if (bytesAt)
+    return true;
+  Type piece = whole;
+  for (int64_t i : path) {
+    if (auto ST = dyn_cast<LLVM::LLVMStructType>(piece))
+      piece = ST.getBody()[i];
+    else
+      piece = cast<LLVM::LLVMArrayType>(piece).getElementType();
+  }
+  return castsTo(piece, want, dl);
+}
+
+// The `want` at byte `at` of `whole`, by the way extractPath finds into it.
+static Value takePiece(OpBuilder &builder, Location loc, Value whole,
+                       uint64_t at, Type want, const DataLayout &dl,
+                       Operation *op, SmallVectorImpl<Operation *> &created) {
+  SmallVector<int64_t> path;
+  std::optional<uint64_t> bytesAt;
+  bool found = extractPath(whole.getType(), at, want, dl, path, &bytesAt);
+  (void)found;
+  assert(found && "a piece that was named cannot be reached");
+  Value piece = whole;
+  if (!path.empty())
+    piece = LLVM::ExtractValueOp::create(builder, loc, whole, path);
+  if (bytesAt) {
+    // The piece is some of the bits of an integer: shifted down to the
+    // bottom and cut to its width.
+    auto wide = cast<IntegerType>(piece.getType());
+    auto bits = *typeSize(want, dl) * 8;
+    if (*bytesAt) {
+      Value shift = arith::ConstantOp::create(
+          builder, loc, builder.getIntegerAttr(wide, *bytesAt * 8));
+      piece = arith::ShRUIOp::create(builder, loc, piece, shift);
+    }
+    if (bits < wide.getWidth())
+      piece = arith::TruncIOp::create(builder, loc,
+                                      builder.getIntegerType(bits), piece);
+  }
+  Value result = castToType(want, piece, op);
+  // What it made, from the value back to the whole, with the operands it made
+  // along the way.
+  SmallVector<Operation *> made;
+  for (Value v = result; v != whole;) {
+    Operation *def = v.getDefiningOp();
+    if (!def || !isMemoryEffectFree(def))
+      break;
+    made.push_back(def);
+    if (def->getNumOperands() == 0)
+      break;
+    for (Value operand : def->getOperands().drop_front())
+      if (Operation *c = operand.getDefiningOp<arith::ConstantOp>())
+        made.push_back(c);
+    v = def->getOperand(0);
+  }
+  created.append(made.begin(), made.end());
+  return result;
 }
 
 bool PolygeistMem2Reg::forwardStoreToLoad(
@@ -2210,6 +2340,9 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   // Copies reaching over the whole slot and more, and where in what they copy
   // the slot lies.
   DenseMap<mlir::Operation *, uint64_t> copiedAt;
+  // Stores of a value reaching over the whole slot and more, and where in the
+  // value the slot lies.
+  DenseMap<mlir::Operation *, uint64_t> storedAt;
   // Reads standing for what a transfer moved. One is worth the load it costs
   // only where something went on to ask for it: left behind unasked for, it is
   // a read of the other side of the transfer, which promoting that side sees,
@@ -2217,7 +2350,13 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   // round after, so neither side ever settles. There are several ways out of
   // this function and the reads have to go on all of them.
   SmallVector<Operation *> transferReads;
-  auto dropUnaskedReads = llvm::scope_exit([&transferReads]() {
+  // What was made to take a piece out of a stored or read value, which no
+  // one may end up asking for either; it would keep a transfer's read alive.
+  SmallVector<Operation *> pieceOps;
+  auto dropUnaskedReads = llvm::scope_exit([&transferReads, &pieceOps]() {
+    for (auto *op : pieceOps)
+      if (op->use_empty())
+        op->erase();
     for (auto *read : llvm::reverse(transferReads))
       if (read->getResult(0).use_empty())
         read->erase();
@@ -2315,7 +2454,8 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
           // long as there is a way into it that reaches that piece.
           Type held = elType ? elType : idx.getBase();
           SmallVector<int64_t> path;
-          if (!held || !extractPath(held, at, read, dl, path))
+          std::optional<uint64_t> bytesAt;
+          if (!held || !extractPath(held, at, read, dl, path, &bytesAt))
             return;
           containedLoads[loadOp] = at;
           break;
@@ -2348,7 +2488,8 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
               continue;
             uint64_t at = field->first - *slotAt;
             SmallVector<int64_t> path;
-            if (!extractPath(held, at, field->second, dl, path))
+            std::optional<uint64_t> bytesAt;
+            if (!extractPath(held, at, field->second, dl, path, &bytesAt))
               continue;
             containedLoads[ev] = at;
             loadOps.insert(ev);
@@ -2373,11 +2514,25 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
           allStoreOps.insert(storeOp);
           break;
         case Match::Contains:
-        case Match::Maybe:
+        case Match::Maybe: {
+          // A store reaching over the whole slot leaves in it the piece of
+          // the stored value at the slot's place, when there is a way to it.
+          Type want = elType ? elType : idx.getBase();
+          Type held = cast<enzyme::StoreLikeInterface>(storeOp)
+                          .getStoredValue()
+                          .getType();
+          if (auto at = stored.containsAt(idx, dl);
+              at && want && hasPiece(held, *at, want, dl)) {
+            LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *storeOp << "\n");
+            allStoreOps.insert(storeOp);
+            storedAt[storeOp] = *at;
+            break;
+          }
           LLVM_DEBUG(llvm::dbgs()
                      << "Mabye Aliasing Store: " << *storeOp << "\n");
           AliasingStoreOperations.insert(storeOp);
           break;
+        }
         case Match::None:
           break;
         }
@@ -2627,6 +2782,22 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     }
   }
 
+  // A store over the slot was matched by the type the slot was then known to
+  // hold; what it holds in the end may be read as another, out of which the
+  // stored value has no piece to give: such a store only overwrites the slot.
+  for (auto it = storedAt.begin(); it != storedAt.end();) {
+    Type want = elType ? elType : idx.getBase();
+    Type held =
+        cast<enzyme::StoreLikeInterface>(it->first).getStoredValue().getType();
+    if (want && hasPiece(held, it->second, want, dl)) {
+      ++it;
+      continue;
+    }
+    allStoreOps.erase(it->first);
+    AliasingStoreOperations.insert(it->first);
+    storedAt.erase(it++);
+  }
+
   if (loadOps.size() == 0 && transferLoads.size() == 0) {
     return changed;
   }
@@ -2742,19 +2913,12 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     auto contained = containedLoads.find(orig.getDefiningOp());
     if (contained == containedLoads.end())
       return castToType(elType, slotValue, orig.getDefiningOp());
-    SmallVector<int64_t> path;
-    bool found =
-        extractPath(elType, contained->second, orig.getType(), dl, path);
-    (void)found;
-    assert(found && "a piece that was named cannot be reached");
     OpBuilder builder(orig.getDefiningOp());
-    Value piece = slotValue.getType() == elType
+    Value whole = slotValue.getType() == elType
                       ? slotValue
                       : castToType(elType, slotValue, orig.getDefiningOp());
-    if (!path.empty())
-      piece =
-          LLVM::ExtractValueOp::create(builder, orig.getLoc(), slotValue, path);
-    return castToType(orig.getType(), piece, orig.getDefiningOp());
+    return takePiece(builder, orig.getLoc(), whole, contained->second,
+                     orig.getType(), dl, orig.getDefiningOp(), pieceOps);
   };
 
   auto replaceValue =
@@ -2903,7 +3067,14 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
             }
           } else if (auto storeOp = dyn_cast<enzyme::StoreLikeInterface>(a)) {
             if (allStoreOps.count(storeOp)) {
-              lastVal = metaMap.get(storeOp.getStoredValue());
+              Value stored = storeOp.getStoredValue();
+              if (auto at = storedAt.find(a); at != storedAt.end()) {
+                OpBuilder builder(a);
+                stored =
+                    takePiece(builder, a->getLoc(), stored, at->second,
+                              elType ? elType : idx.getBase(), dl, a, pieceOps);
+              }
+              lastVal = metaMap.get(stored);
             }
           } else {
             // since not storing operation the value at the start of every block
