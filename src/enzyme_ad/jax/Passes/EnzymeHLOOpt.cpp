@@ -23823,6 +23823,69 @@ struct ScatterOutOfBoundsNoop
   }
 };
 
+// A gather of a broadcast along the dimensions it batches over reads, in
+// every batch, the same tensor: gather from that tensor, without those
+// batching dimensions (the start indices' batching dimensions become plain
+// batch dimensions, so the result is the same). Batching a loop's gather
+// from a buffer the loop does not change makes such a broadcast, which XLA
+// would otherwise materialize, one copy of the buffer per iteration.
+struct GatherOfBroadcastBatchingDims final
+    : CheckedOpRewritePattern<stablehlo::GatherOp,
+                              GatherOfBroadcastBatchingDims> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
+    auto bcast = op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!bcast)
+      return failure();
+    auto dn = op.getDimensionNumbers();
+    if (dn.getOperandBatchingDims().empty())
+      return failure();
+    auto srcTy = cast<RankedTensorType>(bcast.getOperand().getType());
+    auto resTy = cast<RankedTensorType>(bcast.getType());
+    // The source's dimensions keep their order and extent.
+    ArrayRef<int64_t> dims = bcast.getBroadcastDimensions();
+    SmallVector<int64_t> toSrc(resTy.getRank(), -1);
+    for (auto [i, d] : llvm::enumerate(dims)) {
+      if ((i > 0 && d <= dims[i - 1]) ||
+          srcTy.getDimSize(i) != resTy.getDimSize(d))
+        return failure();
+      toSrc[d] = i;
+    }
+    // Every dimension the broadcast adds is one the gather batches over.
+    for (int64_t d = 0; d < resTy.getRank(); ++d)
+      if (toSrc[d] < 0 && !llvm::is_contained(dn.getOperandBatchingDims(), d))
+        return failure();
+    if (srcTy.getRank() == resTy.getRank())
+      return failure();
+
+    SmallVector<int64_t> operandBatching, indicesBatching;
+    for (auto [d, s] : llvm::zip_equal(dn.getOperandBatchingDims(),
+                                       dn.getStartIndicesBatchingDims()))
+      if (toSrc[d] >= 0) {
+        operandBatching.push_back(toSrc[d]);
+        indicesBatching.push_back(s);
+      }
+    auto mapped = [&](ArrayRef<int64_t> ds) {
+      return llvm::map_to_vector(ds, [&](int64_t d) { return toSrc[d]; });
+    };
+    SmallVector<int64_t> sliceSizes;
+    for (auto [d, size] : llvm::enumerate(op.getSliceSizes()))
+      if (toSrc[d] >= 0)
+        sliceSizes.push_back(size);
+    auto newDn = stablehlo::GatherDimensionNumbersAttr::get(
+        op.getContext(), dn.getOffsetDims(), mapped(dn.getCollapsedSliceDims()),
+        operandBatching, indicesBatching, mapped(dn.getStartIndexMap()),
+        dn.getIndexVectorDim());
+    rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
+        op, op.getType(), bcast.getOperand(), op.getStartIndices(), newDn,
+        rewriter.getDenseI64ArrayAttr(sliceSizes),
+        op.getIndicesAreSortedAttr());
+    return success();
+  }
+};
+
 // A gather, element by element, of a scatter that overwrote the same
 // slots but for those masked off (their index a negative sentinel): what
 // the scatter put there where the mask holds, what was there otherwise. A
@@ -39545,7 +39608,7 @@ struct EnzymeHLOOptPass
         CommonCompareExpressionRewrite,
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique, ScatterOutOfBoundsNoop,
-        GatherOfMaskedScatter,
+        GatherOfMaskedScatter, GatherOfBroadcastBatchingDims,
         ReduceTransposeSimplify,
         WhileScatterAccumulatorNoAdd,
         BroadcastIotaSimplify,
