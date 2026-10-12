@@ -6,6 +6,6 @@ func.func @main() -> !comm.mpi.comm {
 }
 
 // CHECK-LABEL: func.func @main() -> !comm.nccl.comm {
-// CHECK-NEXT: %[[COMM:.*]] = comm.nccl.constant : !comm.nccl.comm
+// CHECK-NEXT: %[[COMM:.*]] = comm.nccl.get_comm : !comm.nccl.comm
 // CHECK-NEXT: return %[[COMM]] : !comm.nccl.comm
 // CHECK-NEXT: }
