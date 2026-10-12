@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -58,7 +59,7 @@ static bool canBeParallelHoisted(Operation *op, Operation *scope,
         return true;
     auto *definingOp = value.getDefiningOp();
     if ((definingOp && !!willBeMoved.count(definingOp)) ||
-        cast<LoopLikeOpInterface>(scope).isDefinedOutsideOfLoop(value))
+        !scope->isAncestor(value.getParentRegion()->getParentOp()))
       return true;
     LLVM_DEBUG(llvm::dbgs()
                << " - cannot hoist due to operand: " << value << "\n");
@@ -441,6 +442,18 @@ void moveParallelLoopInvariantCode(scf::ParallelOp looplike) {
 }
 
 // TODO affine parallel licm
+// Whether a loop's constant bounds make it run its body: hoisting what it
+// reads out of it needs no guard then.
+static bool runsAtLeastOnce(affine::AffineParallelOp loop) {
+  auto ranges = loop.getConstantRanges();
+  return ranges && llvm::all_of(*ranges, [](int64_t r) { return r > 0; });
+}
+
+static bool runsAtLeastOnce(affine::AffineForOp loop) {
+  return loop.hasConstantBounds() &&
+         loop.getConstantLowerBound() < loop.getConstantUpperBound();
+}
+
 void moveParallelLoopInvariantCode(affine::AffineParallelOp looplike) {
 
   // We use two collections here as we need to preserve the order for insertion
@@ -468,7 +481,8 @@ void moveParallelLoopInvariantCode(affine::AffineParallelOp looplike) {
 
   // For all instructions that we found to be invariant, move outside of the
   // loop.
-  if (!llvm::all_of(opsToMove, polygeist::isSpeculatable)) {
+  if (!llvm::all_of(opsToMove, polygeist::isSpeculatable) &&
+      !runsAtLeastOnce(looplike)) {
     OpBuilder b(looplike);
 
     // TODO properly fill exprs and eqflags
@@ -633,7 +647,8 @@ void moveSerialLoopInvariantCode(affine::AffineForOp looplike) {
 
   // For all instructions that we found to be invariant, move outside of the
   // loop.
-  if (!llvm::all_of(opsToMove, polygeist::isSpeculatable)) {
+  if (!llvm::all_of(opsToMove, polygeist::isSpeculatable) &&
+      !runsAtLeastOnce(looplike)) {
     OpBuilder b(looplike);
 
     // TODO properly fill exprs and eqflags
@@ -713,6 +728,71 @@ void moveSerialLoopInvariantCode(affine::AffineForOp looplike) {
   LLVM_DEBUG(looplike.print(llvm::dbgs() << "\n\nModified loop:\n"));
 }
 
+// Whether `ptr` is the address of an object in host memory: an alloca, or a
+// function argument passed by value or by reference (byval, or
+// dereferenceable), through constant offsets. A pointer read out of memory
+// may be a device buffer's.
+static bool isHostObject(Value ptr) {
+  while (auto gep = ptr.getDefiningOp<LLVM::GEPOp>()) {
+    if (!gep.getDynamicIndices().empty())
+      return false;
+    ptr = gep.getBase();
+  }
+  if (ptr.getDefiningOp<LLVM::AllocaOp>())
+    return true;
+  auto arg = dyn_cast<BlockArgument>(ptr);
+  if (!arg || !arg.getOwner()->isEntryBlock())
+    return false;
+  auto fn = dyn_cast<FunctionOpInterface>(arg.getOwner()->getParentOp());
+  if (!fn)
+    return false;
+  unsigned i = arg.getArgNumber();
+  return fn.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName()) ||
+         fn.getArgAttr(i, LLVM::LLVMDialect::getDereferenceableAttrName());
+}
+
+// Whether `op` can run on the host before a kernel's launch instead of in
+// the kernel: it computes without memory, or it reads through the address of
+// a host object. Thread and block indices are the kernel's own.
+static bool runsOnHost(Operation *op) {
+  if (op->getNumRegions())
+    return false;
+  if (Dialect *dialect = op->getDialect())
+    if (llvm::is_contained({"gpu", "nvvm", "rocdl"}, dialect->getNamespace()))
+      return false;
+  if (isMemoryEffectFree(op))
+    return true;
+  Value addr;
+  if (auto load = dyn_cast<affine::AffineLoadOp>(op))
+    addr = load.getMemRef();
+  else if (auto load = dyn_cast<memref::LoadOp>(op))
+    addr = load.getMemRef();
+  else if (auto load = dyn_cast<LLVM::LoadOp>(op))
+    addr = load.getAddr();
+  else
+    return false;
+  if (auto view = addr.getDefiningOp<enzymexla::Pointer2MemrefOp>())
+    addr = view.getSource();
+  return isHostObject(addr);
+}
+
+// A kernel reads a by-value argument (a lambda's captures) through the
+// address of the host's copy of it. What the kernel computes from such reads
+// alone, before writing anything they read, the host can compute before the
+// launch: the launch is invariant code's loop. Raising needs it so, since a
+// buffer whose pointer is read inside the kernel cannot be captured.
+static void moveWrapperInvariantCode(enzymexla::GPUWrapperOp wrapper) {
+  SmallPtrSet<Operation *, 8> willBeMovedSet;
+  SmallVector<Operation *, 8> opsToMove;
+  for (Operation &op : wrapper.getRegion().front().without_terminator())
+    if (runsOnHost(&op) && canBeParallelHoisted(&op, wrapper, willBeMovedSet)) {
+      opsToMove.push_back(&op);
+      willBeMovedSet.insert(&op);
+    }
+  for (Operation *op : opsToMove)
+    op->moveBefore(wrapper);
+}
+
 void ParallelLICM::runOnOperation() {
   getOperation()->walk([&](LoopLikeOpInterface loopLike) {
     LLVM_DEBUG(loopLike.print(llvm::dbgs() << "\nOriginal loop:\n"));
@@ -728,5 +808,8 @@ void ParallelLICM::runOnOperation() {
                    dyn_cast<affine::AffineForOp>((Operation *)loopLike)) {
       moveSerialLoopInvariantCode(par);
     }
+  });
+  getOperation()->walk([&](enzymexla::GPUWrapperOp wrapper) {
+    moveWrapperInvariantCode(wrapper);
   });
 }
