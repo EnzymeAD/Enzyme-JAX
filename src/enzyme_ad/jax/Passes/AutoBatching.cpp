@@ -3152,14 +3152,21 @@ struct ParallelWhileBatcher {
     // Every use of a state of the buffer is the link that makes the next
     // state, a read of some of its elements, or the yield of the last one.
     for (Value v : chain)
-      for (OpOperand &use : v.getUses()) {
-        Operation *user = use.getOwner();
-        bool read = isa<stablehlo::GatherOp, stablehlo::DynamicSliceOp>(user) &&
-                    use.getOperandNumber() == 0;
-        if (!chainLinks.count(&use) && !read && &use != &yield)
+      for (OpOperand &use : v.getUses())
+        if (!chainLinks.count(&use) && !isRead(use) && &use != &yield)
           return failure();
-      }
     return success();
+  }
+
+  // Whether `use` reads elements of the buffer: a gather or dynamic_slice of
+  // it, or a reshape of it that only such reads use.
+  static bool isRead(OpOperand &use) {
+    Operation *user = use.getOwner();
+    if (isa<stablehlo::GatherOp, stablehlo::DynamicSliceOp>(user))
+      return use.getOperandNumber() == 0;
+    if (isa<stablehlo::ReshapeOp>(user))
+      return llvm::all_of(user->getResult(0).getUses(), isRead);
+    return false;
   }
 
   // A loop nested in the body runs the same number of times in every
