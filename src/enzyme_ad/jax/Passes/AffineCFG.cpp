@@ -7507,6 +7507,99 @@ struct SCFForCopyCarry : public OpRewritePattern<scf::ForOp> {
   }
 };
 
+// An affine.for that runs at most once is not a loop: one that never runs
+// gives its initial values, one that runs once is its body at the lower
+// bound, and one that may run once or not at all, its upper bound a minimum
+// that includes the lower bound plus one step, is that body under the
+// condition that every upper bound exceeds the lower. Left a loop, it would
+// only reach the parallelization, whose dependence check compares every pair
+// of its accesses to find nothing to carry.
+struct AffineForAtMostOnce : public OpRewritePattern<AffineForOp> {
+  using OpRewritePattern<AffineForOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(AffineForOp forOp,
+                                PatternRewriter &rewriter) const override {
+    AffineMap lbMap = forOp.getLowerBoundMap();
+    AffineMap ubMap = forOp.getUpperBoundMap();
+    if (lbMap.getNumResults() != 1)
+      return failure();
+
+    // Each upper bound less the lower, over both bounds' operands: the dims
+    // of each, then the symbols of each.
+    unsigned lbDims = lbMap.getNumDims(), ubDims = ubMap.getNumDims();
+    unsigned lbSyms = lbMap.getNumSymbols(), ubSyms = ubMap.getNumSymbols();
+    auto lbOperands = forOp.getLowerBoundOperands();
+    auto ubOperands = forOp.getUpperBoundOperands();
+    SmallVector<Value> operands(lbOperands.begin(),
+                                lbOperands.begin() + lbDims);
+    operands.append(ubOperands.begin(), ubOperands.begin() + ubDims);
+    operands.append(lbOperands.begin() + lbDims, lbOperands.end());
+    operands.append(ubOperands.begin() + ubDims, ubOperands.end());
+    AffineExpr lb = lbMap.getResult(0);
+    SmallVector<AffineExpr> diffs;
+    for (AffineExpr ub : ubMap.getResults())
+      diffs.push_back(
+          ub.shiftDims(ubDims, lbDims).shiftSymbols(ubSyms, lbSyms) - lb);
+    AffineMap diffMap = AffineMap::get(lbDims + ubDims, lbSyms + ubSyms, diffs,
+                                       forOp.getContext());
+    affine::canonicalizeMapAndOperands(&diffMap, &operands);
+    diffMap = simplifyAffineMap(diffMap);
+
+    int64_t step = forOp.getStepAsInt();
+    bool atMostOnce = false, never = false;
+    SmallVector<AffineExpr> runs;
+    for (AffineExpr diff : diffMap.getResults()) {
+      if (auto c = dyn_cast<AffineConstantExpr>(diff)) {
+        atMostOnce |= c.getValue() <= step;
+        never |= c.getValue() <= 0;
+        continue;
+      }
+      runs.push_back(diff - 1);
+    }
+    if (!atMostOnce)
+      return failure();
+    if (never) {
+      rewriter.replaceOp(forOp, forOp.getInits());
+      return success();
+    }
+
+    Location loc = forOp.getLoc();
+    Value iv = affine::AffineApplyOp::create(rewriter, loc, lbMap, lbOperands);
+    SmallVector<Value> args{iv};
+    llvm::append_range(args, forOp.getInits());
+    if (runs.empty()) {
+      auto yield = cast<AffineYieldOp>(forOp.getBody()->getTerminator());
+      SmallVector<Value> results(yield.getOperands());
+      rewriter.eraseOp(yield);
+      rewriter.inlineBlockBefore(forOp.getBody(), forOp, args);
+      rewriter.replaceOp(forOp, results);
+      return success();
+    }
+
+    IntegerSet set =
+        IntegerSet::get(diffMap.getNumDims(), diffMap.getNumSymbols(), runs,
+                        SmallVector<bool>(runs.size(), false));
+    SmallVector<Value> setOperands(operands);
+    affine::canonicalizeSetAndOperands(&set, &setOperands);
+    auto ifOp = AffineIfOp::create(rewriter, loc, forOp.getResultTypes(), set,
+                                   setOperands,
+                                   /*withElseRegion=*/forOp.getNumResults());
+    Block *thenBlock = ifOp.getThenBlock();
+    if (!thenBlock->empty())
+      rewriter.eraseOp(thenBlock->getTerminator());
+    rewriter.inlineBlockBefore(forOp.getBody(), thenBlock, thenBlock->end(),
+                               args);
+    if (forOp.getNumResults()) {
+      Block *elseBlock = ifOp.getElseBlock();
+      if (!elseBlock->empty())
+        rewriter.eraseOp(elseBlock->getTerminator());
+      rewriter.setInsertionPointToEnd(elseBlock);
+      AffineYieldOp::create(rewriter, loc, forOp.getInits());
+    }
+    rewriter.replaceOp(forOp, ifOp.getResults());
+    return success();
+  }
+};
+
 // Drops the carried values of an affine.for whose result and argument are
 // both unused (scf.for's canonicalization does this for scf.for).
 struct AffineForDeadCarry : public OpRewritePattern<AffineForOp> {
@@ -7993,6 +8086,8 @@ void mlir::enzyme::populateAffineCFGPatterns(
   rpl.add<SimplifyAndOr, SimplifyOrAnd>(context, 2);
   rpl.add<AffineForCopyCarry, SCFForCopyCarry>(context, 2);
   rpl.add<AffineForDeadCarry>(context, 2);
+  // ahead of the parallelization, which would otherwise take the loop first
+  rpl.add<AffineForAtMostOnce>(context, 3);
   rpl.add<HoistForOutOfRunsCheck, HoistParallelOutOfRunsCheck>(context, 2);
   rpl.add<SplitParallelInductions, MaskedAffineParallel>(context, 1);
 }
