@@ -3940,7 +3940,8 @@ struct SplitAggregate {
   Operation *op;
   int64_t offset;
 };
-// A copy into the allocation from memory it does not own.
+// A copy into the allocation from memory it does not own, or out of it into
+// such memory.
 struct SplitCopy {
   LLVM::MemcpyOp op;
   int64_t offset, length;
@@ -3994,7 +3995,7 @@ static bool splitAggregateAlloca(LLVM::AllocaOp alloc) {
   SmallVector<LLVM::GEPOp> geps;
   SmallVector<std::pair<enzymexla::Pointer2MemrefOp, int64_t>> views;
   SmallVector<Operation *> markers;
-  SmallVector<SplitCopy> copies;
+  SmallVector<SplitCopy> copies, copiesOut;
   for (unsigned i = 0; i < pointers.size(); ++i) {
     auto [pointer, base] = pointers[i];
     for (OpOperand &use : pointer.getUses()) {
@@ -4014,17 +4015,20 @@ static bool splitAggregateAlloca(LLVM::AllocaOp alloc) {
       } else if (isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(user)) {
         markers.push_back(user);
       } else if (auto copy = dyn_cast<LLVM::MemcpyOp>(user);
-                 copy && copy.getDst() == pointer && !copy.getIsVolatile()) {
+                 copy && !copy.getIsVolatile() &&
+                 (copy.getDst() == pointer || copy.getSrc() == pointer)) {
         auto length = getConstantIntValue(copy.getLen());
         if (!length || base < 0 || base + *length > total)
           return false;
-        copies.push_back({copy, base, *length});
+        (copy.getDst() == pointer ? copies : copiesOut)
+            .push_back({copy, base, *length});
       } else {
         return false;
       }
     }
   }
-  // A copy out of the allocation reads bytes no run may hold.
+  // A copy from one place of the allocation to another moves bytes between
+  // runs.
   for (SplitCopy &copy : copies)
     if (llvm::any_of(pointers, [&](auto pointer) {
           return pointer.first == copy.op.getSrc();
@@ -4181,6 +4185,27 @@ static bool splitAggregateAlloca(LLVM::AllocaOp alloc) {
     }
   }
 
+  // The runs each copy out reads, which must make up all it copies: a byte of
+  // it no run holds may hold what an aggregate store put there.
+  SmallVector<SmallVector<unsigned>> copiedOut;
+  for (SplitCopy &copy : copiesOut) {
+    auto &read = copiedOut.emplace_back();
+    int64_t next = copy.offset;
+    for (auto [i, piece] : llvm::enumerate(pieces)) {
+      if (piece.end < copy.offset || copy.offset + copy.length <= piece.start)
+        continue;
+      if (piece.start != next || copy.offset + copy.length <= piece.end)
+        return false;
+      read.push_back(i);
+      next = piece.end + 1;
+    }
+    if (next != copy.offset + copy.length)
+      return false;
+    auto dstType = cast<LLVM::LLVMPointerType>(copy.op.getDst().getType());
+    if (dstType.getAddressSpace() != 0)
+      return false;
+  }
+
   OpBuilder builder(alloc);
   for (SplitPiece &piece : pieces) {
     auto type =
@@ -4275,6 +4300,30 @@ static bool splitAggregateAlloca(LLVM::AllocaOp alloc) {
                                                    at, ValueRange());
         affine::AffineStoreOp::create(builder, op.getLoc(), value, piece.memref,
                                       at, ValueRange());
+      }
+    }
+    op.erase();
+  }
+  for (auto [copy, read] : llvm::zip_equal(copiesOut, copiedOut)) {
+    LLVM::MemcpyOp op = copy.op;
+    builder.setInsertionPoint(op);
+    for (unsigned i : read) {
+      const SplitPiece &piece = pieces[i];
+      Value dest = op.getDst();
+      if (piece.start != copy.offset)
+        dest = LLVM::GEPOp::create(
+            builder, op.getLoc(), dest.getType(), builder.getI8Type(), dest,
+            ArrayRef<LLVM::GEPArg>{piece.start - copy.offset});
+      auto destType = MemRefType::get({ShapedType::kDynamic}, piece.type);
+      Value view = enzymexla::Pointer2MemrefOp::create(builder, op.getLoc(),
+                                                       destType, dest);
+      for (int64_t j = 0, n = (piece.end + 1 - piece.start) / piece.size; j < n;
+           ++j) {
+        AffineMap at = AffineMap::getConstantMap(j, op.getContext());
+        Value value = affine::AffineLoadOp::create(
+            builder, op.getLoc(), piece.memref, at, ValueRange());
+        affine::AffineStoreOp::create(builder, op.getLoc(), value, view, at,
+                                      ValueRange());
       }
     }
     op.erase();
