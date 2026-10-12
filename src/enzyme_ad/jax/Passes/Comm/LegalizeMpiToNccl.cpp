@@ -338,6 +338,8 @@ struct LegalizeMpiToNcclPass
 
     comm::MpiToNcclTypeConverter converter;
 
+    // TODO: for @main, don't convert an MpiComm to NcclComm. We will need to 
+    // worry about this once we support communicators crossing the compile boundary
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
       return converter.isSignatureLegal(op.getFunctionType());
     });
