@@ -337,6 +337,11 @@ struct ParallelWhileToBatchedScatter
   // that would be large (a table read through dynamic_slice is gathered, not
   // broadcast).
   static constexpr int64_t kMaxBroadcastElements = int64_t(1) << 24;
+  // A tensor the same every iteration that each iteration writes (its
+  // scratch, a scatter or dynamic_update_slice into a constant) is broadcast
+  // into the copy every iteration writes: the batched write's result, no
+  // more than the batch needs anyway. Only the memory bounds it.
+  static constexpr int64_t kMaxWrittenCopyBytes = int64_t(4) << 30;
 
   mlir::LogicalResult
   matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,

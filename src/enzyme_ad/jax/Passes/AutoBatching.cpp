@@ -3259,13 +3259,22 @@ struct ParallelWhileBatcher {
       // of the loop (batched or not) would dangle.
       if (!isMemoryEffectFree(&op) || capturesFromLoop(&op))
         return failure();
-      auto broadcastable = [&](Value v) {
+      auto fitsBatch = [&](Value v, int64_t budget) {
         if (isBatched(v))
           return true;
         int64_t n = invariantElements(v);
-        return n >= 0 &&
-               n * numIters <=
-                   ParallelWhileToBatchedScatter::kMaxBroadcastElements;
+        return n >= 0 && n * numIters <= budget;
+      };
+      auto broadcastable = [&](Value v) {
+        return fitsBatch(v,
+                         ParallelWhileToBatchedScatter::kMaxBroadcastElements);
+      };
+      auto writtenCopy = [&](Value v) {
+        int64_t bytes = std::max<int64_t>(
+            1,
+            cast<RankedTensorType>(v.getType()).getElementTypeBitWidth() / 8);
+        return fitsBatch(
+            v, ParallelWhileToBatchedScatter::kMaxWrittenCopyBytes / bytes);
       };
       if ((op.hasTrait<OpTrait::Elementwise>() ||
            isa<stablehlo::SelectOp>(&op)) &&
@@ -3294,7 +3303,7 @@ struct ParallelWhileBatcher {
       } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&op)) {
         // A write into a tensor of this iteration: every iteration's copy is
         // written (the batch interface makes a scatter with batching dims).
-        if (!broadcastable(dus.getOperand()))
+        if (!writtenCopy(dus.getOperand()))
           return failure();
       } else if (isa<stablehlo::DynamicSliceOp>(&op)) {
         // batched along the new leading dimension, or gathered when the
@@ -3310,7 +3319,7 @@ struct ParallelWhileBatcher {
         // the indices gain the leading dimension (and the operand when it
         // varies), existing batching dimensions shift
       } else if (auto sc = dyn_cast<stablehlo::ScatterOp>(&op)) {
-        if (sc.getInputs().size() != 1 || !broadcastable(sc.getInputs()[0]))
+        if (sc.getInputs().size() != 1 || !writtenCopy(sc.getInputs()[0]))
           return failure();
       } else if (isa<enzymexla::WrapOp, enzymexla::ExtendOp,
                      enzymexla::RotateOp>(&op)) {
