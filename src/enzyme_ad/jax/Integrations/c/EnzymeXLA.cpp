@@ -546,6 +546,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("sink_dus");
   list.push_back("hoist_slice");
   list.push_back("while_induction_reduction");
+  list.push_back("while_slice_elementwise_carry");
   list.push_back("slice_broadcast");
   list.push_back("slice_gather");
   list.push_back("associative_common_mul_op_reordering");

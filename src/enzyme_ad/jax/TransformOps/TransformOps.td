@@ -2190,6 +2190,11 @@ def WhileInductionReduction : EnzymeHLOPatternOp<
   let patterns = ["WhileInductionReduction"];
 }
 
+def WhileSliceElementwiseCarry : EnzymeHLOPatternOp<
+    "while_slice_elementwise_carry"> {
+  let patterns = ["WhileSliceElementwiseCarry"];
+}
+
 def SinkDUS : EnzymeHLOPatternOp<
     "sink_dus"> {
   let patterns = ["SinkDUS"];
