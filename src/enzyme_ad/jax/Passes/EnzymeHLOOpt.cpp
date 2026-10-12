@@ -37549,24 +37549,38 @@ struct ScatterMaskedIndexSlice final
     return std::make_pair(*lo, *hi);
   }
 
-  // The positions where `mask` holds, when they form one interval.
-  template <typename Range>
-  static std::optional<std::pair<int64_t, int64_t>> trueInterval(Range mask) {
-    std::optional<int64_t> lo, hi;
-    int64_t k = 0;
-    for (bool holds : mask) {
+  // The smallest box holding every position where `mask` holds, by
+  // dimension, and whether the mask holds on all of it; none when it holds
+  // nowhere.
+  static std::optional<
+      std::pair<SmallVector<std::pair<int64_t, int64_t>>, bool>>
+  trueBox(DenseElementsAttr mask) {
+    auto shape = cast<RankedTensorType>(mask.getType()).getShape();
+    SmallVector<std::pair<int64_t, int64_t>> box;
+    for (int64_t size : shape)
+      box.push_back({size, 0});
+    SmallVector<int64_t> coord(shape.size(), 0);
+    int64_t count = 0;
+    for (bool holds : mask.getValues<bool>()) {
       if (holds) {
-        if (hi && *hi != k)
-          return std::nullopt; // a second interval
-        if (!lo)
-          lo = k;
-        hi = k + 1;
+        ++count;
+        for (auto [d, c] : llvm::enumerate(coord)) {
+          box[d].first = std::min(box[d].first, c);
+          box[d].second = std::max(box[d].second, c + 1);
+        }
       }
-      ++k;
+      for (int64_t d = (int64_t)shape.size() - 1; d >= 0; --d) {
+        if (++coord[d] < shape[d])
+          break;
+        coord[d] = 0;
+      }
     }
-    if (!lo)
-      return std::make_pair(int64_t(0), int64_t(0));
-    return std::make_pair(*lo, *hi);
+    if (count == 0)
+      return std::nullopt;
+    int64_t volume = 1;
+    for (auto [l, h] : box)
+      volume *= h - l;
+    return std::make_pair(box, volume == count);
   }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
@@ -37576,13 +37590,13 @@ struct ScatterMaskedIndexSlice final
     auto &block = op.getUpdateComputation().front();
     if (!isSetindexBlock(&block))
       return failure();
+    // Each grid position writes one element, at an index whose every
+    // component is negative when masked off.
     auto inputTy = cast<RankedTensorType>(op.getInputs()[0].getType());
-    if (inputTy.getRank() != 1)
-      return failure();
     auto dims = op.getScatterDimensionNumbers();
-    if (dims.getInsertedWindowDims() != ArrayRef<int64_t>{0} ||
-        dims.getScatterDimsToOperandDims() != ArrayRef<int64_t>{0} ||
-        !dims.getUpdateWindowDims().empty())
+    if ((int64_t)dims.getInsertedWindowDims().size() != inputTy.getRank() ||
+        !dims.getUpdateWindowDims().empty() ||
+        !dims.getInputBatchingDims().empty())
       return failure();
     Value indices = op.getScatterIndices();
     auto idxTy = cast<RankedTensorType>(indices.getType());
@@ -37628,9 +37642,12 @@ struct ScatterMaskedIndexSlice final
     // Intersect the box over every term the mask ands together, each read
     // through the broadcasts that put it on the grid (`dimMap`: the term's
     // dimension -> the mask's): a compare of an iota against a constant, or
-    // a constant along one dimension (such a compare, folded once the
-    // extent it compared against became known).
+    // a constant (such compares, folded once the extent they compared
+    // against became known). A term of another form, or one whose true
+    // positions are not a box, only bounds the box: `exact` records whether
+    // the box is the mask.
     SmallVector<int64_t> lo(grid.size(), 0), hi(grid.begin(), grid.end());
+    bool exact = true;
     // A term false everywhere: no lane is live (the grid may have no
     // dimension to carry that in the box).
     bool nowhere = false;
@@ -37658,6 +37675,33 @@ struct ScatterMaskedIndexSlice final
         terms.push_back({bcast.getOperand(), inner});
         continue;
       }
+      if (auto rs = term.getDefiningOp<stablehlo::ReshapeOp>()) {
+        // A reshape that only adds or drops dimensions of one keeps the
+        // others in order.
+        auto fromTy = cast<RankedTensorType>(rs.getOperand().getType());
+        auto toTy = cast<RankedTensorType>(rs.getType());
+        SmallVector<int64_t> inner;
+        int64_t t = 0;
+        bool kept = true;
+        for (int64_t d = 0; d < fromTy.getRank() && kept; ++d) {
+          if (fromTy.getDimSize(d) == 1) {
+            inner.push_back(-1);
+            continue;
+          }
+          while (t < toTy.getRank() && toTy.getDimSize(t) == 1)
+            ++t;
+          kept =
+              t < toTy.getRank() && toTy.getDimSize(t) == fromTy.getDimSize(d);
+          inner.push_back(kept ? dimMap[t++] : -1);
+        }
+        for (; t < toTy.getRank(); ++t)
+          kept &= toTy.getDimSize(t) == 1;
+        if (kept)
+          terms.push_back({rs.getOperand(), inner});
+        else
+          exact = false;
+        continue;
+      }
       DenseElementsAttr mask;
       if (matchPattern(term, m_Constant(&mask))) {
         auto maskTy = cast<RankedTensorType>(mask.getType());
@@ -37665,29 +37709,50 @@ struct ScatterMaskedIndexSlice final
           nowhere |= !mask.getSplatValue<bool>();
           continue;
         }
-        if (maskTy.getRank() != 1 || dimMap[0] < 0)
-          return failure();
-        auto gridDim = gridDimOf(dimMap[0]);
-        if (!gridDim)
-          return failure();
-        auto interval = trueInterval(mask.getValues<bool>());
-        if (!interval)
-          return failure();
-        lo[*gridDim] = std::max(lo[*gridDim], interval->first);
-        hi[*gridDim] = std::min(hi[*gridDim], interval->second);
+        // The grid dimension of each of the constant's: a dimension of one
+        // has none to bound.
+        SmallVector<std::optional<int64_t>> gridDims;
+        bool onGrid = true;
+        for (int64_t d = 0; d < maskTy.getRank(); ++d) {
+          std::optional<int64_t> g =
+              dimMap[d] < 0 ? std::nullopt : gridDimOf(dimMap[d]);
+          if (!g && maskTy.getDimSize(d) != 1)
+            onGrid = false;
+          gridDims.push_back(g);
+        }
+        if (!onGrid) {
+          exact = false;
+          continue;
+        }
+        auto box = trueBox(mask);
+        if (!box) {
+          nowhere = true;
+          continue;
+        }
+        exact &= box->second;
+        for (int64_t d = 0; d < maskTy.getRank(); ++d) {
+          if (!gridDims[d])
+            continue;
+          lo[*gridDims[d]] = std::max(lo[*gridDims[d]], box->first[d].first);
+          hi[*gridDims[d]] = std::min(hi[*gridDims[d]], box->first[d].second);
+        }
         continue;
       }
       auto cmp = term.getDefiningOp<stablehlo::CompareOp>();
-      if (!cmp)
-        return failure();
+      if (!cmp) {
+        exact = false;
+        continue;
+      }
       bool iotaOnLeft = true;
       auto iota = detectIotaLikeTensor(cmp.getLhs());
       SplatElementsAttr cst;
       if (!iota || !matchPattern(cmp.getRhs(), m_Constant(&cst))) {
         iotaOnLeft = false;
         iota = detectIotaLikeTensor(cmp.getRhs());
-        if (!iota || !matchPattern(cmp.getLhs(), m_Constant(&cst)))
-          return failure();
+        if (!iota || !matchPattern(cmp.getLhs(), m_Constant(&cst))) {
+          exact = false;
+          continue;
+        }
       }
       int64_t start = cast<IntegerAttr>(iota->start).getValue().getSExtValue();
       int64_t scale =
@@ -37703,20 +37768,22 @@ struct ScatterMaskedIndexSlice final
         continue;
       }
       auto gridDim = gridDimOf(dimMap[iota->dimension]);
-      if (!gridDim)
-        return failure();
+      if (!gridDim) {
+        exact = false;
+        continue;
+      }
       auto interval =
           compareInterval(cmp.getComparisonDirection(), start, scale, constant,
                           grid[*gridDim], iotaOnLeft);
-      if (!interval)
-        return failure();
+      if (!interval) {
+        exact = false;
+        continue;
+      }
       lo[*gridDim] = std::max(lo[*gridDim], interval->first);
       hi[*gridDim] = std::min(hi[*gridDim], interval->second);
     }
 
     auto loc = op.getLoc();
-    Value live = stablehlo::ReshapeOpCreate(rewriter, loc, sel.getOnTrue(),
-                                            idxTy.getShape());
     bool full = true, empty = nowhere;
     for (size_t d = 0; d < grid.size(); ++d) {
       full &= lo[d] == 0 && hi[d] == grid[d];
@@ -37726,6 +37793,11 @@ struct ScatterMaskedIndexSlice final
       rewriter.replaceOp(op, op.getInputs()[0]);
       return success();
     }
+    // A box that only bounds the mask keeps the mask, on the box.
+    if (!exact && full)
+      return failure();
+    Value live = stablehlo::ReshapeOpCreate(
+        rewriter, loc, exact ? sel.getOnTrue() : indices, idxTy.getShape());
     if (!full) {
       SmallVector<int64_t> idxLo, idxHi, idxStride(idxTy.getRank(), 1);
       for (int64_t d = 0, g = 0; d < idxTy.getRank(); ++d) {
