@@ -17542,6 +17542,126 @@ static bool extractGridIotasFromAttr(DenseElementsAttr constAttr,
 // The grid terms of component `comp` of the index vectors in `indices`
 // (along `indexVectorDim`; a whole index tensor when that dimension is past
 // its rank), with dimensions numbered as `indices` numbers them.
+// Bounds the elements of each value `evaluateStaticIndex` computes.
+static constexpr int64_t kMaxEvaluatedIndexElements = 4096;
+
+// The values of the integer computation `v` when it is built of constants and
+// iotas alone, through ops the reference interpreter evaluates, each of at
+// most kMaxEvaluatedIndexElements elements: an index the structure of which
+// does not show its grid (a lane or-ed together from bits, a divide or a
+// remainder by a constant), read without putting its values in the IR.
+static std::optional<stablehlo::Tensor>
+evaluateStaticIndex(Value v, DenseMap<Value, stablehlo::Tensor> &memo,
+                    unsigned depth = 0) {
+  auto ty = dyn_cast<RankedTensorType>(v.getType());
+  if (!ty || !ty.hasStaticShape() || !ty.getElementType().isIntOrIndex() ||
+      ty.getNumElements() > kMaxEvaluatedIndexElements || depth > 32)
+    return std::nullopt;
+  if (auto found = memo.find(v); found != memo.end())
+    return found->second;
+  Operation *op = v.getDefiningOp();
+  if (!op || op->getNumResults() != 1)
+    return std::nullopt;
+
+  std::optional<stablehlo::Tensor> value;
+  DenseElementsAttr attr;
+  if (matchPattern(v, m_Constant(&attr))) {
+    value = stablehlo::constantOp(attr);
+  } else if (auto iota = dyn_cast<stablehlo::IotaOp>(op)) {
+    value = stablehlo::iotaOp(iota.getIotaDimension(), ty);
+  } else {
+    SmallVector<stablehlo::Tensor> args;
+    for (Value operand : op->getOperands()) {
+      auto arg = evaluateStaticIndex(operand, memo, depth + 1);
+      if (!arg)
+        return std::nullopt;
+      args.push_back(*arg);
+    }
+    if (isa<stablehlo::AddOp>(op))
+      value = stablehlo::addOp(args[0], args[1], ty);
+    else if (isa<stablehlo::SubtractOp>(op))
+      value = stablehlo::subtractOp(args[0], args[1], ty);
+    else if (isa<stablehlo::MulOp>(op))
+      value = stablehlo::multiplyOp(args[0], args[1], ty);
+    else if (isa<stablehlo::DivOp>(op))
+      value = stablehlo::divideOp(args[0], args[1], ty);
+    else if (isa<stablehlo::RemOp>(op))
+      value = stablehlo::remOp(args[0], args[1], ty);
+    else if (isa<stablehlo::AndOp>(op))
+      value = stablehlo::andOp(args[0], args[1], ty);
+    else if (isa<stablehlo::OrOp>(op))
+      value = stablehlo::orOp(args[0], args[1], ty);
+    else if (isa<stablehlo::XorOp>(op))
+      value = stablehlo::xorOp(args[0], args[1], ty);
+    else if (isa<stablehlo::ShiftLeftOp>(op))
+      value = stablehlo::shiftLeftOp(args[0], args[1], ty);
+    else if (isa<stablehlo::ShiftRightLogicalOp>(op))
+      value = stablehlo::shiftRightLogicalOp(args[0], args[1], ty);
+    else if (isa<stablehlo::ShiftRightArithmeticOp>(op))
+      value = stablehlo::shiftRightArithmeticOp(args[0], args[1], ty);
+    else if (isa<stablehlo::MaxOp>(op))
+      value = stablehlo::maxOp(args[0], args[1], ty);
+    else if (isa<stablehlo::MinOp>(op))
+      value = stablehlo::minOp(args[0], args[1], ty);
+    else if (isa<stablehlo::NegOp>(op))
+      value = stablehlo::negOp(args[0], ty);
+    else if (auto cmp = dyn_cast<stablehlo::CompareOp>(op))
+      value =
+          stablehlo::compareOp(args[0], args[1], cmp.getComparisonDirection(),
+                               cmp.getCompareType(), ty);
+    else if (isa<stablehlo::SelectOp>(op))
+      value = stablehlo::selectOp(args[0], args[1], args[2], ty);
+    else if (isa<stablehlo::ConvertOp>(op))
+      value = stablehlo::convertOp(args[0], ty);
+    else if (isa<stablehlo::ReshapeOp>(op))
+      value = stablehlo::reshapeOp(args[0], ty);
+    else if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op))
+      value = stablehlo::broadcastInDimOp(
+          args[0], stablehlo::Axes(bcast.getBroadcastDimensions()), ty);
+    else if (auto tr = dyn_cast<stablehlo::TransposeOp>(op))
+      value = stablehlo::transposeOp(args[0],
+                                     stablehlo::Axes(tr.getPermutation()), ty);
+    else if (auto slice = dyn_cast<stablehlo::SliceOp>(op))
+      value =
+          stablehlo::sliceOp(args[0], stablehlo::Sizes(slice.getStartIndices()),
+                             stablehlo::Sizes(slice.getStrides()), ty);
+    else if (auto cat = dyn_cast<stablehlo::ConcatenateOp>(op))
+      value = stablehlo::concatenateOp(args, cat.getDimension(), ty);
+  }
+  if (value)
+    memo.try_emplace(v, *value);
+  return value;
+}
+
+// The iota-like terms of component `comp` of the constant index vectors
+// `attr` (along `indexVectorDim`).
+static bool
+extractComponentIotasFromAttr(DenseElementsAttr attr, int64_t indexVectorDim,
+                              int64_t comp,
+                              SmallVectorImpl<IotaLikeTensor> &result) {
+  auto ty = cast<RankedTensorType>(attr.getType());
+  int64_t rank = ty.getRank();
+  if (indexVectorDim >= rank || ty.getDimSize(indexVectorDim) == 1 ||
+      attr.isSplat())
+    return extractGridIotasFromAttr(attr, result);
+  // The component on its own, the index vector dimension kept as one.
+  SmallVector<int64_t> shape(ty.getShape());
+  shape[indexVectorDim] = 1;
+  auto strides = computeStrides(ty.getShape());
+  auto all = attr.getValues<Attribute>();
+  SmallVector<Attribute> values;
+  SmallVector<int64_t> coord;
+  for (int64_t i = 0, e = ty.getNumElements(); i < e; ++i) {
+    linearToMultiIndex(i, strides, coord);
+    if (coord[indexVectorDim] == comp)
+      values.push_back(all[i]);
+  }
+  return extractGridIotasFromAttr(
+      DenseElementsAttr::get(RankedTensorType::get(shape, ty.getElementType()),
+                             values),
+      result);
+}
+
 static bool extractComponentIotas(Value indices, int64_t indexVectorDim,
                                   int64_t comp,
                                   SmallVectorImpl<IotaLikeTensor> &result) {
@@ -17561,26 +17681,8 @@ static bool extractComponentIotas(Value indices, int64_t indexVectorDim,
   }
 
   DenseElementsAttr attr;
-  if (matchPattern(indices, m_Constant(&attr))) {
-    if (whole || attr.isSplat())
-      return extractGridIotasFromAttr(attr, result);
-    // The component on its own, the index vector dimension kept as one.
-    SmallVector<int64_t> shape(ty.getShape());
-    shape[indexVectorDim] = 1;
-    auto strides = computeStrides(ty.getShape());
-    auto all = attr.getValues<Attribute>();
-    SmallVector<Attribute> values;
-    SmallVector<int64_t> coord;
-    for (int64_t i = 0, e = ty.getNumElements(); i < e; ++i) {
-      linearToMultiIndex(i, strides, coord);
-      if (coord[indexVectorDim] == comp)
-        values.push_back(all[i]);
-    }
-    return extractGridIotasFromAttr(
-        DenseElementsAttr::get(
-            RankedTensorType::get(shape, ty.getElementType()), values),
-        result);
-  }
+  if (matchPattern(indices, m_Constant(&attr)))
+    return extractComponentIotasFromAttr(attr, indexVectorDim, comp, result);
 
   if (auto cat = indices.getDefiningOp<stablehlo::ConcatenateOp>()) {
     int64_t catDim = cat.getDimension();
@@ -17861,6 +17963,12 @@ static bool extractComponentIotas(Value indices, int64_t indexVectorDim,
     return true;
   }
 
+  // Built of constants and iotas the reading above does not follow: its
+  // values.
+  DenseMap<Value, stablehlo::Tensor> memo;
+  if (auto values = evaluateStaticIndex(indices, memo))
+    return extractComponentIotasFromAttr(fromTensor(*values), indexVectorDim,
+                                         comp, result);
   return false;
 }
 
