@@ -12,6 +12,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 
 namespace mlir {
@@ -63,55 +64,75 @@ struct RemoveDuplicateFuncDefPass
         body1, body2, OperationEquivalence::IgnoreLocations);
   }
 
+  // Outlining emits one gpu.module per launch site, so a kernel launched from
+  // several places (e.g. a ping-pong loop, or the augmented forward and
+  // gradient of one kernel) yields byte-identical modules that each get their
+  // own binary, stub and registration ctor.
+  static bool areEquivalent(gpu::GPUModuleOp moduleOp1,
+                            gpu::GPUModuleOp moduleOp2) {
+    if (moduleOp1 == moduleOp2)
+      return true;
+
+    // Everything but the name -- targets, offloading handler, ... -- has to
+    // agree for the modules to compile to the same binary.
+    auto attrsWithoutName = [](gpu::GPUModuleOp moduleOp) {
+      NamedAttrList attrs(moduleOp->getAttrDictionary());
+      attrs.erase(SymbolTable::getSymbolAttrName());
+      return attrs.getDictionary(moduleOp.getContext());
+    };
+    if (attrsWithoutName(moduleOp1) != attrsWithoutName(moduleOp2))
+      return false;
+
+    return OperationEquivalence::isRegionEquivalentTo(
+        &moduleOp1.getBodyRegion(), &moduleOp2.getBodyRegion(),
+        OperationEquivalence::IgnoreLocations);
+  }
+
+  // Point every use of `duplicate` at `canonicalName` and mark it for removal.
+  // Bails out if the uses cannot all be rewritten, since erasing it would then
+  // leave a dangling symbol reference.
+  template <typename OpT>
+  static void mergeInto(OpT &duplicate, StringAttr canonicalName,
+                        ModuleOp moduleOp,
+                        SmallVectorImpl<Operation *> &toRemove) {
+    if (failed(SymbolTable::replaceAllSymbolUses(duplicate, canonicalName,
+                                                 moduleOp)))
+      return;
+    toRemove.push_back(duplicate);
+    duplicate = nullptr;
+  }
+
+  // Deduplicate `ops`, which must all live directly in `moduleOp`.
+  template <typename OpT>
+  static void deduplicate(SmallVectorImpl<OpT> &ops, ModuleOp moduleOp,
+                          SmallVectorImpl<Operation *> &toRemove) {
+    for (size_t i = 0, e = ops.size(); i < e; ++i) {
+      if (!ops[i])
+        continue;
+      for (size_t j = i + 1; j < e; ++j) {
+        if (!ops[j] || !areEquivalent(ops[i], ops[j]))
+          continue;
+        mergeInto(ops[j], ops[i].getSymNameAttr(), moduleOp, toRemove);
+      }
+    }
+  }
+
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
-    SymbolTable symbolTable(moduleOp);
+    SmallVector<Operation *> toRemove;
 
-    // TODO: Use CallableOpInterface.
-    SmallVector<LLVM::LLVMFuncOp> funcOps;
-    moduleOp->walk([&](LLVM::LLVMFuncOp funcOp) { funcOps.push_back(funcOp); });
+    // Only symbols owned by this module's symbol table are considered: names
+    // are unique within a symbol table, but a gpu.module is one of its own, so
+    // kernels outlined from the same source share a name across modules.
+    auto funcOps = llvm::to_vector(moduleOp.getOps<LLVM::LLVMFuncOp>());
+    deduplicate(funcOps, moduleOp, toRemove);
 
-    DenseMap<StringRef, StringRef> equivalenceMap;
-    SmallVector<CallableOpInterface> toRemove;
-    for (size_t i = 0, e = funcOps.size(); i < e; ++i) {
-      // Already found equivalent.
-      if (equivalenceMap.count(funcOps[i].getSymName()))
-        continue;
-      // Find *all* the possible equivalent functions to funcOps[i].
-      for (size_t j = i + 1; j < e; ++j) {
-        if (areEquivalent(funcOps[i], funcOps[j])) {
-          equivalenceMap[funcOps[j].getSymName()] = funcOps[i].getSymName();
-          toRemove.push_back(funcOps[j]);
-          // llvm::errs() << funcOps[j].getSymName() << " is equivalent to "
-          //              << funcOps[i].getSymName() << "\n";
-        }
-      }
-    }
+    auto gpuModuleOps = llvm::to_vector(moduleOp.getOps<gpu::GPUModuleOp>());
+    deduplicate(gpuModuleOps, moduleOp, toRemove);
 
-    SmallVector<SymbolUserOpInterface> callOps;
-    moduleOp->walk(
-        [&](SymbolUserOpInterface callOp) { callOps.push_back(callOp); });
-
-    for (SymbolUserOpInterface symbolUserOp : callOps) {
-      if (auto callOp =
-              dyn_cast<CallOpInterface>(symbolUserOp.getOperation())) {
-        SymbolRefAttr sym = llvm::dyn_cast_if_present<SymbolRefAttr>(
-            callOp.getCallableForCallee());
-        if (!sym)
-          continue;
-        Operation *op = SymbolTable::lookupNearestSymbolFrom(callOp, sym);
-        assert(op && "Kernel function not found");
-        auto funcOp = dyn_cast<FunctionOpInterface>(op);
-        assert(funcOp && "Kernel function is not a function");
-        if (equivalenceMap.count(funcOp.getNameAttr()))
-          callOp.setCalleeFromCallable(SymbolRefAttr::get(
-              op->getContext(), equivalenceMap[funcOp.getNameAttr()]));
-      }
-    }
-
-    // At this point it should be safe to remove the duplicate functions.
-    for (CallableOpInterface callableOp : toRemove)
-      callableOp.erase();
+    // At this point it should be safe to remove the duplicates.
+    for (Operation *op : toRemove)
+      op->erase();
   }
 };
 } // end anonymous namespace
