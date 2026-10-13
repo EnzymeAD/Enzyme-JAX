@@ -4182,6 +4182,15 @@ struct SliceElementwise final
   }
 };
 
+// The first k < count whose position start + k * step is at or past `pos`
+// (count when none is).
+static int64_t firstStrideAtOrPast(int64_t pos, int64_t start, int64_t step,
+                                   int64_t count) {
+  if (pos <= start)
+    return 0;
+  return std::min<int64_t>((pos - start + step - 1) / step, count);
+}
+
 LogicalResult slicePadHelper(
     stablehlo::PadOp pad, ArrayRef<int64_t> starts, ArrayRef<int64_t> limits,
     ArrayRef<int64_t> strides, SmallVectorImpl<int64_t> &start,
@@ -4203,48 +4212,30 @@ LogicalResult slicePadHelper(
   if (anyPadSizesNegative(pad))
     return failure();
 
-  for (auto &&[nstart, nend, nstep, lpad, hpad, interior, inshape, outshape] :
+  for (auto &&[nstart, nend, nstep, lpad, interior, inshape] :
        llvm::zip(starts, limits, strides, pad.getEdgePaddingLow(),
-                 pad.getEdgePaddingHigh(), pad.getInteriorPadding(),
-                 pad.getOperand().getType().getShape(),
-                 pad.getType().getShape())) {
-    if (nstep != 1)
-      return failure();
+                 pad.getInteriorPadding(),
+                 pad.getOperand().getType().getShape())) {
     if (interior != 0)
       return failure();
 
-    // slice goes from [nstart, nend]
-    // pad result is [0..lpad][lpad... outshape - hpad][outshape - hpad...
-    // outshape]
-
-    // start of slice starts after end of value being padded
-    if (nstart >= outshape - hpad) {
+    // The slice reads positions nstart + k * nstep, k < count, of the pad's
+    // result; the operand covers [lpad, lpad + inshape) of it. The positions
+    // before it, and those past it, read the padding value.
+    int64_t count = (nend - nstart + nstep - 1) / nstep;
+    int64_t inFirst = firstStrideAtOrPast(lpad, nstart, nstep, count);
+    int64_t inEnd = firstStrideAtOrPast(lpad + inshape, nstart, nstep, count);
+    // no position reads the operand
+    if (inFirst >= inEnd) {
       broadcastres = true;
       return success();
     }
-    // slice ends before the start of value being padded
-    if (nend <= lpad) {
-      broadcastres = true;
-      return success();
-    }
-    if (nstart - lpad < 0) {
-      start.push_back(0);
-      lpads.push_back(lpad - nstart);
-      needspad = true;
-    } else {
-      start.push_back(nstart - lpad);
-      lpads.push_back(0);
-    }
-    if (nend - lpad > inshape) {
-      end.push_back(inshape);
-      hpads.push_back(nend - lpad - inshape);
-      needspad = true;
-    } else {
-      end.push_back(nend - lpad);
-      hpads.push_back(0);
-    }
-
-    step.push_back(1);
+    start.push_back(nstart + inFirst * nstep - lpad);
+    end.push_back(nstart + (inEnd - 1) * nstep - lpad + 1);
+    step.push_back(nstep);
+    lpads.push_back(inFirst);
+    hpads.push_back(count - inEnd);
+    needspad |= inFirst != 0 || inEnd != count;
     interiors.push_back(0);
   }
   return success();
@@ -4983,31 +4974,27 @@ LogicalResult sliceConcatHelper(stablehlo::ConcatenateOp concat,
                                 ArrayRef<int64_t> strides,
                                 SmallVectorImpl<Value> &postConcat) {
   auto dim = concat.getDimension();
-
-  if (strides[dim] != 1)
-    return failure();
+  int64_t stride = strides[dim];
 
   assert(postConcat.size() == 0);
-  size_t curdim = 0;
+  int64_t curdim = 0;
   for (auto v : concat.getInputs()) {
     auto ty = cast<RankedTensorType>(v.getType());
-    auto nextdim = ty.getShape()[dim];
-    if (starts[dim] >= curdim + nextdim) {
-      curdim += nextdim;
-      continue;
-    }
-    if (limits[dim] <= curdim) {
+    int64_t nextdim = ty.getShape()[dim];
+    // The first position the slice reads in this input (the slice reads
+    // starts + k * stride), and one past its last.
+    int64_t first = starts[dim];
+    if (first < curdim)
+      first += (curdim - first + stride - 1) / stride * stride;
+    int64_t last = std::min<int64_t>(limits[dim], curdim + nextdim);
+    if (first >= last) {
       curdim += nextdim;
       continue;
     }
     SmallVector<int64_t> nstart(starts.begin(), starts.end());
     SmallVector<int64_t> nend(limits.begin(), limits.end());
-    nstart[dim] -= curdim;
-    if (nstart[dim] < 0)
-      nstart[dim] = 0;
-    nend[dim] -= curdim;
-    if (nend[dim] > nextdim)
-      nend[dim] = nextdim;
+    nstart[dim] = first - curdim;
+    nend[dim] = last - curdim;
     postConcat.push_back(stablehlo::SliceOpCreate(rewriter, concat.getLoc(), v,
                                                   nstart, nend, strides));
     curdim += nextdim;
