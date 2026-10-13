@@ -89,10 +89,10 @@ module {
 }
 
 // CHECK:   func.func private @"##call__Z38gpu__fill_periodic_west_and_east_halo_16CompilerMetadataI16OffsetStaticSizeI12_1_50__1_20_E12DynamicCheckvv7NDRangeILi2E10StaticSizeI6_4__2_ES4_I8_16__16_E5TupleI5Int64S8_ES0_I6_0__0_EEE11OffsetArrayI7Float64Li3E13CuTracedArrayISE_Li3ELi1E12_50__50__20_EE3ValILi40EESI_ILi5EE#864$par100_raised"(%arg0: tensor<20x50x50xf64>, %arg1: tensor<8x256xf64>) -> (tensor<20x50x50xf64>, tensor<8x256xf64>) {
-// CHECK-NEXT:   %c = stablehlo.constant dense<0> : tensor<4x16xi64>
-// CHECK-NEXT:   %c_0 = stablehlo.constant dense<50> : tensor<4x16xi64>
-// CHECK-NEXT:   %c_1 = stablehlo.constant dense<-14> : tensor<4x16xi64>
-// CHECK-NEXT:   %c_2 = stablehlo.constant dense<15> : tensor<16x4x16x1xi64>
+// CHECK-NEXT:   %c = stablehlo.constant dense<-14> : tensor<4x16xi64>
+// CHECK-NEXT:   %c_0 = stablehlo.constant dense<15> : tensor<16x4x16x1xi64>
+// CHECK-NEXT:   %c_1 = stablehlo.constant dense<0> : tensor<4x16xi64>
+// CHECK-NEXT:   %c_2 = stablehlo.constant dense<50> : tensor<4x16xi64>
 // CHECK-NEXT:   %c_3 = stablehlo.constant dense<1> : tensor<4x16xi64>
 // CHECK-NEXT:   %c_4 = stablehlo.constant dense<-50> : tensor<4x16xi64>
 // CHECK-NEXT:   %c_5 = stablehlo.constant dense<9> : tensor<i64>
@@ -103,50 +103,50 @@ module {
 // CHECK-NEXT:   %3 = stablehlo.iota dim = 1 : tensor<8x16xi64>
 // CHECK-NEXT:   %4 = stablehlo.add %2, %3 {enzymexla.non_negative = [#enzymexla.guaranteed<GUARANTEED>]} : tensor<8x16xi64>
 // CHECK-NEXT:   %5 = stablehlo.iota dim = 0 : tensor<16x8x16x1xi64>
-// CHECK-NEXT:   %6 = stablehlo.slice %5 [0:16, 4:8, 0:16, 0:1] : (tensor<16x8x16x1xi64>) -> tensor<16x4x16x1xi64>
-// CHECK-NEXT:   %7 = stablehlo.slice %4 [4:8, 0:16] : (tensor<8x16xi64>) -> tensor<4x16xi64>
-// CHECK-NEXT:   %8 = stablehlo.add %7, %c_1 {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<4x16xi64>
-// CHECK-NEXT:   %9 = stablehlo.compare LT, %8, %c : (tensor<4x16xi64>, tensor<4x16xi64>) -> tensor<4x16xi1>
-// CHECK-NEXT:   %10 = stablehlo.negate %8 : tensor<4x16xi64>
-// CHECK-NEXT:   %11 = stablehlo.subtract %10, %c_3 : tensor<4x16xi64>
-// CHECK-NEXT:   %12 = stablehlo.select %9, %11, %8 : tensor<4x16xi1>, tensor<4x16xi64>
-// CHECK-NEXT:   %13 = stablehlo.divide %12, %c_4 : tensor<4x16xi64>
-// CHECK-NEXT:   %14 = stablehlo.subtract %13, %c_3 : tensor<4x16xi64>
-// CHECK-NEXT:   %15 = stablehlo.divide %12, %c_0 : tensor<4x16xi64>
-// CHECK-NEXT:   %16 = stablehlo.select %9, %14, %15 : tensor<4x16xi1>, tensor<4x16xi64>
-// CHECK-NEXT:   %17 = stablehlo.broadcast_in_dim %16, dims = [1, 2] : (tensor<4x16xi64>) -> tensor<16x4x16x1xi64>
-// CHECK-NEXT:   %18 = stablehlo.add %6, %17 : tensor<16x4x16x1xi64>
-// CHECK-NEXT:   %19 = stablehlo.add %18, %c_2 : tensor<16x4x16x1xi64>
-// CHECK-NEXT:   %20 = stablehlo.multiply %16, %c_4 : tensor<4x16xi64>
-// CHECK-NEXT:   %21 = stablehlo.add %7, %20 : tensor<4x16xi64>
-// CHECK-NEXT:   %22 = stablehlo.add %21, %c_1 : tensor<4x16xi64>
-// CHECK-NEXT:   %23 = stablehlo.broadcast_in_dim %22, dims = [1, 2] : (tensor<4x16xi64>) -> tensor<16x4x16x1xi64>
-// CHECK-NEXT:   %24 = stablehlo.concatenate %19, %23, dim = 3 : (tensor<16x4x16x1xi64>, tensor<16x4x16x1xi64>) -> tensor<16x4x16x2xi64>
-// CHECK-NEXT:   %25 = stablehlo.pad %24, %c_5, low = [0, 0, 0, 0], high = [0, 0, 0, 1], interior = [0, 0, 0, 0] : (tensor<16x4x16x2xi64>, tensor<i64>) -> tensor<16x4x16x3xi64>
-// CHECK-NEXT:   %26 = "stablehlo.gather"(%arg0, %25) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1, 2], start_index_map = [0, 1, 2], index_vector_dim = 3>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 1>}> : (tensor<20x50x50xf64>, tensor<16x4x16x3xi64>) -> tensor<16x4x16xf64>
-// CHECK-NEXT:   %27 = stablehlo.transpose %26, dims = [1, 0, 2] : (tensor<16x4x16xf64>) -> tensor<4x16x16xf64>
-// CHECK-NEXT:   %28 = stablehlo.slice %5 [0:16, 0:4, 0:16, 0:1] : (tensor<16x8x16x1xi64>) -> tensor<16x4x16x1xi64>
-// CHECK-NEXT:   %29 = stablehlo.slice %4 [0:4, 0:16] {enzymexla.non_negative = [#enzymexla.guaranteed<GUARANTEED>]} : (tensor<8x16xi64>) -> tensor<4x16xi64>
-// CHECK-NEXT:   %30 = stablehlo.compare LT, %29, %c : (tensor<4x16xi64>, tensor<4x16xi64>) -> tensor<4x16xi1>
-// CHECK-NEXT:   %31 = stablehlo.negate %29 : tensor<4x16xi64>
-// CHECK-NEXT:   %32 = stablehlo.subtract %31, %c_3 : tensor<4x16xi64>
-// CHECK-NEXT:   %33 = stablehlo.select %30, %32, %29 : tensor<4x16xi1>, tensor<4x16xi64>
-// CHECK-NEXT:   %34 = stablehlo.divide %33, %c_4 : tensor<4x16xi64>
-// CHECK-NEXT:   %35 = stablehlo.subtract %34, %c_3 : tensor<4x16xi64>
-// CHECK-NEXT:   %36 = stablehlo.divide %33, %c_0 : tensor<4x16xi64>
-// CHECK-NEXT:   %37 = stablehlo.select %30, %35, %36 : tensor<4x16xi1>, tensor<4x16xi64>
-// CHECK-NEXT:   %38 = stablehlo.broadcast_in_dim %37, dims = [1, 2] : (tensor<4x16xi64>) -> tensor<16x4x16x1xi64>
-// CHECK-NEXT:   %39 = stablehlo.add %28, %38 : tensor<16x4x16x1xi64>
-// CHECK-NEXT:   %40 = stablehlo.remainder %29, %c_0 {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<4x16xi64>
-// CHECK-NEXT:   %41 = stablehlo.compare LT, %40, %c : (tensor<4x16xi64>, tensor<4x16xi64>) -> tensor<4x16xi1>
-// CHECK-NEXT:   %42 = stablehlo.add %40, %c_0 : tensor<4x16xi64>
-// CHECK-NEXT:   %43 = stablehlo.select %41, %42, %40 : tensor<4x16xi1>, tensor<4x16xi64>
-// CHECK-NEXT:   %44 = stablehlo.broadcast_in_dim %43, dims = [1, 2] : (tensor<4x16xi64>) -> tensor<16x4x16x1xi64>
-// CHECK-NEXT:   %45 = stablehlo.concatenate %39, %44, dim = 3 : (tensor<16x4x16x1xi64>, tensor<16x4x16x1xi64>) -> tensor<16x4x16x2xi64>
-// CHECK-NEXT:   %46 = stablehlo.pad %45, %c_5, low = [0, 0, 0, 0], high = [0, 0, 0, 1], interior = [0, 0, 0, 0] : (tensor<16x4x16x2xi64>, tensor<i64>) -> tensor<16x4x16x3xi64>
-// CHECK-NEXT:   %47 = "stablehlo.gather"(%arg0, %46) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1, 2], start_index_map = [0, 1, 2], index_vector_dim = 3>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 1>}> : (tensor<20x50x50xf64>, tensor<16x4x16x3xi64>) -> tensor<16x4x16xf64>
-// CHECK-NEXT:   %48 = stablehlo.transpose %47, dims = [1, 0, 2] : (tensor<16x4x16xf64>) -> tensor<4x16x16xf64>
-// CHECK-NEXT:   %49 = stablehlo.concatenate %48, %27, dim = 0 : (tensor<4x16x16xf64>, tensor<4x16x16xf64>) -> tensor<8x16x16xf64>
+// CHECK-NEXT:   %6 = stablehlo.slice %5 [0:16, 0:4, 0:16, 0:1] : (tensor<16x8x16x1xi64>) -> tensor<16x4x16x1xi64>
+// CHECK-NEXT:   %7 = stablehlo.slice %4 [0:4, 0:16] {enzymexla.non_negative = [#enzymexla.guaranteed<GUARANTEED>]} : (tensor<8x16xi64>) -> tensor<4x16xi64>
+// CHECK-NEXT:   %8 = stablehlo.compare LT, %7, %c_1 : (tensor<4x16xi64>, tensor<4x16xi64>) -> tensor<4x16xi1>
+// CHECK-NEXT:   %9 = stablehlo.negate %7 : tensor<4x16xi64>
+// CHECK-NEXT:   %10 = stablehlo.subtract %9, %c_3 : tensor<4x16xi64>
+// CHECK-NEXT:   %11 = stablehlo.select %8, %10, %7 : tensor<4x16xi1>, tensor<4x16xi64>
+// CHECK-NEXT:   %12 = stablehlo.divide %11, %c_4 : tensor<4x16xi64>
+// CHECK-NEXT:   %13 = stablehlo.subtract %12, %c_3 : tensor<4x16xi64>
+// CHECK-NEXT:   %14 = stablehlo.divide %11, %c_2 : tensor<4x16xi64>
+// CHECK-NEXT:   %15 = stablehlo.select %8, %13, %14 : tensor<4x16xi1>, tensor<4x16xi64>
+// CHECK-NEXT:   %16 = stablehlo.broadcast_in_dim %15, dims = [1, 2] : (tensor<4x16xi64>) -> tensor<16x4x16x1xi64>
+// CHECK-NEXT:   %17 = stablehlo.add %6, %16 : tensor<16x4x16x1xi64>
+// CHECK-NEXT:   %18 = stablehlo.remainder %7, %c_2 {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<4x16xi64>
+// CHECK-NEXT:   %19 = stablehlo.compare LT, %18, %c_1 : (tensor<4x16xi64>, tensor<4x16xi64>) -> tensor<4x16xi1>
+// CHECK-NEXT:   %20 = stablehlo.add %18, %c_2 : tensor<4x16xi64>
+// CHECK-NEXT:   %21 = stablehlo.select %19, %20, %18 : tensor<4x16xi1>, tensor<4x16xi64>
+// CHECK-NEXT:   %22 = stablehlo.broadcast_in_dim %21, dims = [1, 2] : (tensor<4x16xi64>) -> tensor<16x4x16x1xi64>
+// CHECK-NEXT:   %23 = stablehlo.concatenate %17, %22, dim = 3 : (tensor<16x4x16x1xi64>, tensor<16x4x16x1xi64>) -> tensor<16x4x16x2xi64>
+// CHECK-NEXT:   %24 = stablehlo.pad %23, %c_5, low = [0, 0, 0, 0], high = [0, 0, 0, 1], interior = [0, 0, 0, 0] : (tensor<16x4x16x2xi64>, tensor<i64>) -> tensor<16x4x16x3xi64>
+// CHECK-NEXT:   %25 = "stablehlo.gather"(%arg0, %24) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1, 2], start_index_map = [0, 1, 2], index_vector_dim = 3>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 1>}> : (tensor<20x50x50xf64>, tensor<16x4x16x3xi64>) -> tensor<16x4x16xf64>
+// CHECK-NEXT:   %26 = stablehlo.slice %5 [0:16, 4:8, 0:16, 0:1] : (tensor<16x8x16x1xi64>) -> tensor<16x4x16x1xi64>
+// CHECK-NEXT:   %27 = stablehlo.slice %4 [4:8, 0:16] : (tensor<8x16xi64>) -> tensor<4x16xi64>
+// CHECK-NEXT:   %28 = stablehlo.add %27, %c {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<4x16xi64>
+// CHECK-NEXT:   %29 = stablehlo.compare LT, %28, %c_1 : (tensor<4x16xi64>, tensor<4x16xi64>) -> tensor<4x16xi1>
+// CHECK-NEXT:   %30 = stablehlo.negate %28 : tensor<4x16xi64>
+// CHECK-NEXT:   %31 = stablehlo.subtract %30, %c_3 : tensor<4x16xi64>
+// CHECK-NEXT:   %32 = stablehlo.select %29, %31, %28 : tensor<4x16xi1>, tensor<4x16xi64>
+// CHECK-NEXT:   %33 = stablehlo.divide %32, %c_4 : tensor<4x16xi64>
+// CHECK-NEXT:   %34 = stablehlo.subtract %33, %c_3 : tensor<4x16xi64>
+// CHECK-NEXT:   %35 = stablehlo.divide %32, %c_2 : tensor<4x16xi64>
+// CHECK-NEXT:   %36 = stablehlo.select %29, %34, %35 : tensor<4x16xi1>, tensor<4x16xi64>
+// CHECK-NEXT:   %37 = stablehlo.broadcast_in_dim %36, dims = [1, 2] : (tensor<4x16xi64>) -> tensor<16x4x16x1xi64>
+// CHECK-NEXT:   %38 = stablehlo.add %26, %37 : tensor<16x4x16x1xi64>
+// CHECK-NEXT:   %39 = stablehlo.add %38, %c_0 : tensor<16x4x16x1xi64>
+// CHECK-NEXT:   %40 = stablehlo.multiply %36, %c_4 : tensor<4x16xi64>
+// CHECK-NEXT:   %41 = stablehlo.add %27, %40 : tensor<4x16xi64>
+// CHECK-NEXT:   %42 = stablehlo.add %41, %c : tensor<4x16xi64>
+// CHECK-NEXT:   %43 = stablehlo.broadcast_in_dim %42, dims = [1, 2] : (tensor<4x16xi64>) -> tensor<16x4x16x1xi64>
+// CHECK-NEXT:   %44 = stablehlo.concatenate %39, %43, dim = 3 : (tensor<16x4x16x1xi64>, tensor<16x4x16x1xi64>) -> tensor<16x4x16x2xi64>
+// CHECK-NEXT:   %45 = stablehlo.pad %44, %c_5, low = [0, 0, 0, 0], high = [0, 0, 0, 1], interior = [0, 0, 0, 0] : (tensor<16x4x16x2xi64>, tensor<i64>) -> tensor<16x4x16x3xi64>
+// CHECK-NEXT:   %46 = "stablehlo.gather"(%arg0, %45) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1, 2], start_index_map = [0, 1, 2], index_vector_dim = 3>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1, 1>}> : (tensor<20x50x50xf64>, tensor<16x4x16x3xi64>) -> tensor<16x4x16xf64>
+// CHECK-NEXT:   %47 = stablehlo.transpose %46, dims = [1, 0, 2] : (tensor<16x4x16xf64>) -> tensor<4x16x16xf64>
+// CHECK-NEXT:   %48 = stablehlo.transpose %25, dims = [1, 0, 2] : (tensor<16x4x16xf64>) -> tensor<4x16x16xf64>
+// CHECK-NEXT:   %49 = stablehlo.concatenate %48, %47, dim = 0 : (tensor<4x16x16xf64>, tensor<4x16x16xf64>) -> tensor<8x16x16xf64>
 // CHECK-NEXT:   %50 = stablehlo.reshape %49 : (tensor<8x16x16xf64>) -> tensor<8x256xf64>
 // CHECK-NEXT:   return %arg0, %50 : tensor<20x50x50xf64>, tensor<8x256xf64>
 // CHECK-NEXT: }

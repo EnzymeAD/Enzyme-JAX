@@ -40,11 +40,11 @@ func.func @two(%x: tensor<100xf64>, %idx: tensor<20x32x1xi64>) -> (tensor<20x4xf
 }
 
 // CHECK:  func.func @two(%arg0: tensor<100xf64>, %arg1: tensor<20x32x1xi64>) -> (tensor<20x4xf64>, tensor<20x2xf64>) {
-// CHECK-NEXT:    %0 = stablehlo.slice %arg1 [0:20, 0:4, 0:1] : (tensor<20x32x1xi64>) -> tensor<20x4x1xi64>
-// CHECK-NEXT:    %1 = "stablehlo.gather"(%arg0, %0) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<100xf64>, tensor<20x4x1xi64>) -> tensor<20x4xf64>
-// CHECK-NEXT:    %2 = stablehlo.slice %arg1 [0:20, 8:10, 0:1] : (tensor<20x32x1xi64>) -> tensor<20x2x1xi64>
-// CHECK-NEXT:    %3 = "stablehlo.gather"(%arg0, %2) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<100xf64>, tensor<20x2x1xi64>) -> tensor<20x2xf64>
-// CHECK-NEXT:    return %1, %3 : tensor<20x4xf64>, tensor<20x2xf64>
+// CHECK-NEXT:    %0 = stablehlo.slice %arg1 [0:20, 0:10, 0:1] : (tensor<20x32x1xi64>) -> tensor<20x10x1xi64>
+// CHECK-NEXT:    %1 = "stablehlo.gather"(%arg0, %0) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<100xf64>, tensor<20x10x1xi64>) -> tensor<20x10xf64>
+// CHECK-NEXT:    %2 = stablehlo.slice %1 [0:20, 0:4] : (tensor<20x10xf64>) -> tensor<20x4xf64>
+// CHECK-NEXT:    %3 = stablehlo.slice %1 [0:20, 8:10] : (tensor<20x10xf64>) -> tensor<20x2xf64>
+// CHECK-NEXT:    return %2, %3 : tensor<20x4xf64>, tensor<20x2xf64>
 // CHECK-NEXT:  }
 
 // -----
