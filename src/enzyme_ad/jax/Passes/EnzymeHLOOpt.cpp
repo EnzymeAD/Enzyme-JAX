@@ -13160,6 +13160,7 @@ struct SliceIf : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceIf> {
     SmallVector<Type> ifResultTypes = llvm::to_vector(ifop->getResultTypes());
     ifResultTypes[opIdx] = op.getType();
 
+    rewriter.setInsertionPoint(ifop);
     auto newIf = stablehlo::IfOp::create(rewriter, ifop.getLoc(), ifResultTypes,
                                          ifop.getPred());
 
