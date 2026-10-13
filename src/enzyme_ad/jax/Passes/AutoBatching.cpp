@@ -3302,7 +3302,10 @@ struct ParallelWhileBatcher {
       } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&op)) {
         // A write into a tensor of this iteration: every iteration's copy is
         // written (the batch interface makes a scatter with batching dims).
-        if (!broadcastable(dus.getOperand()))
+        // A copy the same every iteration is broadcast into the batched
+        // write's result, which is that big anyway: no budget.
+        if (!isBatched(dus.getOperand()) &&
+            invariantElements(dus.getOperand()) < 0)
           return failure();
       } else if (isa<stablehlo::DynamicSliceOp>(&op)) {
         // batched along the new leading dimension, or gathered when the
@@ -3318,7 +3321,10 @@ struct ParallelWhileBatcher {
         // the indices gain the leading dimension (and the operand when it
         // varies), existing batching dimensions shift
       } else if (auto sc = dyn_cast<stablehlo::ScatterOp>(&op)) {
-        if (sc.getInputs().size() != 1 || !broadcastable(sc.getInputs()[0]))
+        // Likewise a scatter into the iteration's own copy.
+        if (sc.getInputs().size() != 1 ||
+            (!isBatched(sc.getInputs()[0]) &&
+             invariantElements(sc.getInputs()[0]) < 0))
           return failure();
       } else if (isa<enzymexla::WrapOp, enzymexla::ExtendOp,
                      enzymexla::RotateOp>(&op)) {
