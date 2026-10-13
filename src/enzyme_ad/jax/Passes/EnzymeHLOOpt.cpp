@@ -11117,6 +11117,15 @@ struct MaxSimplify
       return success();
     }
 
+    // max(a, max(a, x)) is max(a, x).
+    for (int k = 0; k < 2; ++k) {
+      auto inner = op.getOperand(1 - k).getDefiningOp<stablehlo::MaxOp>();
+      if (inner && llvm::is_contained(inner->getOperands(), op.getOperand(k))) {
+        rewriter.replaceOp(op, inner);
+        return success();
+      }
+    }
+
     return failure();
   }
 };
@@ -11131,6 +11140,15 @@ struct MinSimplify
     if (op.getOperand(0) == op.getOperand(1)) {
       rewriter.replaceOp(op, op.getOperand(0));
       return success();
+    }
+
+    // min(a, min(a, x)) is min(a, x).
+    for (int k = 0; k < 2; ++k) {
+      auto inner = op.getOperand(1 - k).getDefiningOp<stablehlo::MinOp>();
+      if (inner && llvm::is_contained(inner->getOperands(), op.getOperand(k))) {
+        rewriter.replaceOp(op, inner);
+        return success();
+      }
     }
 
     return failure();
