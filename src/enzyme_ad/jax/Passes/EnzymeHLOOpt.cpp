@@ -13445,6 +13445,38 @@ struct TransposeLikeBroadcastElementwise final
   }
 };
 
+// Bounds the elementwise ops `transposesForFree` visits.
+static constexpr unsigned kMaxFreeTransposeOps = 64;
+
+// Whether the elementwise op `root` can be had transposed without moving
+// data: every operand of it and of the elementwise ops it is computed from
+// bottoms out in a broadcast_in_dim (whose transpose permutes its dimensions)
+// or a splat constant. Rebuilt on transposed operands, it is a computation
+// its consumers fuse, unlike a transposed copy of its result.
+static bool transposesForFree(Operation *root) {
+  SmallVector<Operation *> worklist = {root};
+  SmallPtrSet<Operation *, 16> seen = {root};
+  while (!worklist.empty()) {
+    Operation *op = worklist.pop_back_val();
+    for (Value operand : op->getOperands()) {
+      Operation *def = operand.getDefiningOp();
+      if (!def)
+        return false;
+      if (isa<stablehlo::BroadcastInDimOp>(def) ||
+          matchPattern(operand, m_Constant<SplatElementsAttr>(nullptr)))
+        continue;
+      if (!stablehlo::hasTraitElementwise(def))
+        return false;
+      if (seen.insert(def).second) {
+        if (seen.size() > kMaxFreeTransposeOps)
+          return false;
+        worklist.push_back(def);
+      }
+    }
+  }
+  return true;
+}
+
 struct TransposeElementwise final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeElementwise> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -13467,7 +13499,7 @@ struct TransposeElementwise final
       return failure();
 
     bool singleUser = llvm::hasSingleElement(elem->getUsers());
-    if (onlySingleUser && !singleUser)
+    if (onlySingleUser && !singleUser && !transposesForFree(elem))
       return failure();
 
     SmallVector<Value> ops;
