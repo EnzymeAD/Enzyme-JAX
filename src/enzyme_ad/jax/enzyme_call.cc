@@ -603,6 +603,7 @@ NB_MODULE(enzyme_call, m) {
            bool enable_licm_optimization_passes,
            int64_t loop_unswitch_threshold, bool enable_pad_optimization_passes,
            bool enable_self_to_convolution_like_passes,
+           bool enable_dot_formation_passes,
            std::vector<std::string> excluded_passes)
             -> std::pair<std::string, std::string> {
           EnzymeXLATransformPassesOptions options;
@@ -643,6 +644,7 @@ NB_MODULE(enzyme_call, m) {
               enable_pad_optimization_passes;
           options.enable_self_to_convolution_like_passes =
               enable_self_to_convolution_like_passes;
+          options.enable_dot_formation_passes = enable_dot_formation_passes;
 
           std::vector<const char *> excluded_cstrs;
           excluded_cstrs.reserve(excluded_passes.size());
