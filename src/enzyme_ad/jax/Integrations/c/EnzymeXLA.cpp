@@ -362,7 +362,8 @@ static std::string passWithBenefitAndArg(const char *name, int benefit,
 
 static void addBaseTransformPasses(std::vector<std::string> &list,
                                    int64_t maxConstThreshold,
-                                   int64_t whileUnrollThreshold) {
+                                   int64_t whileUnrollThreshold,
+                                   bool dotFormation) {
   list.push_back("compare_op_canon<16>");
   list.push_back("compare_bool_const<16>");
   list.push_back("compare_ext<16>");
@@ -637,7 +638,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("divide_negated_operands_simplify");
   list.push_back("multiply_negated_operands_simplify");
   list.push_back("factor_scalars_in_dot_general");
-  list.push_back("reduce_mul_to_dot_general");
+  if (dotFormation)
+    list.push_back("reduce_mul_to_dot_general");
   list.push_back("dot_general_broadcast_in_dim");
   list.push_back("dot_general_broadcast_in_dim_sort_dims");
   list.push_back("dus_dynamic_slice_simplify");
@@ -650,7 +652,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("reduce_delete_dims");
   list.push_back("dot_general_insert_dim_contraction_simplification");
   list.push_back("fuse_reshape_collapse_or_expand_dims_into_reduce");
-  list.push_back("split_reduce_add_mul_to_add_dot_general");
+  if (dotFormation)
+    list.push_back("split_reduce_add_mul_to_add_dot_general");
   list.push_back(passWithArg("recognize_from_constant", maxConstThreshold));
   list.push_back("extend_to_broadcast");
   list.push_back("reduce_max_min_mul_positive_scalar");
@@ -1040,7 +1043,8 @@ void enzymexlaGetTransformPassesList(
   bool aggressive = options->aggressive_propagation;
 
   // Base passes
-  addBaseTransformPasses(list, maxConst, whileUnroll);
+  addBaseTransformPasses(list, maxConst, whileUnroll,
+                         options->enable_dot_formation_passes);
 
   if (options->enable_self_to_convolution_like_passes) {
     addSelfToConvolutionLikePasses(list);
