@@ -18504,6 +18504,69 @@ struct IfRemoveUnused final
   }
 };
 
+struct CaseRemoveUnused final
+    : CheckedOpRewritePattern<stablehlo::CaseOp, CaseRemoveUnused> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::CaseOp op,
+                                    PatternRewriter &rewriter) const {
+
+    SmallVector<bool> resultUsed(op->getNumResults(), true);
+
+    bool anyUnused = false;
+    for (const auto &it : llvm::enumerate(op->getResults())) {
+      bool unused = it.value().use_empty();
+      resultUsed[it.index()] = !unused;
+      anyUnused |= unused;
+    }
+
+    if (!anyUnused)
+      return failure();
+
+    SmallVector<Type> newResultTypes;
+
+    unsigned removed = 0;
+    for (const auto &it : llvm::enumerate(op->getResults())) {
+      bool used = resultUsed[it.index()];
+      if (used) {
+        newResultTypes.push_back(it.value().getType());
+        continue;
+      }
+
+      auto i = it.index() - removed;
+      for (auto &branch : op.getBranches()) {
+        Operation *term = branch.front().getTerminator();
+        rewriter.modifyOpInPlace(term, [&] { term->eraseOperand(i); });
+      }
+      removed++;
+    }
+
+    auto newCase =
+        stablehlo::CaseOp::create(rewriter, op.getLoc(), newResultTypes,
+                                  op.getIndex(), op.getBranches().size());
+    for (auto [oldBranch, newBranch] :
+         llvm::zip_equal(op.getBranches(), newCase.getBranches())) {
+      newBranch.takeBody(oldBranch);
+    }
+
+    removed = 0;
+    for (const auto &it : llvm::enumerate(resultUsed)) {
+      bool used = it.value();
+      if (!used) {
+        removed++;
+        continue;
+      }
+      auto res = op.getResult(it.index());
+      auto newRes = newCase.getResult(it.index() - removed);
+      rewriter.replaceAllUsesWith(res, newRes);
+    }
+
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
 struct IfPredPropagation final
     : CheckedOpRewritePattern<stablehlo::IfOp, IfPredPropagation> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -40545,6 +40608,7 @@ struct EnzymeHLOOptPass
         GetDimensionSizeOpCanon,
         GetTupleElementOpCanon,
         IfRemoveUnused,
+        CaseRemoveUnused,
         IfInline,
         IfToSelect,
         IfPredPropagation,

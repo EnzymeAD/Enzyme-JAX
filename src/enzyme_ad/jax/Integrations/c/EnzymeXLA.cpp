@@ -522,6 +522,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("compare_select_simplify");
   list.push_back("while_simplify<1>(1)");
   list.push_back("if_remove_unused");
+  list.push_back("case_remove_unused");
   list.push_back("transpose_reshape_to_broadcast");
   list.push_back("reshape_transpose_to_broadcast");
   list.push_back("dus_dus");
