@@ -161,8 +161,8 @@ func.func @expanded_term(%input: tensor<100xf32>, %update: tensor<10x10xf32>) ->
 
 // CHECK:  func.func @expanded_term(%arg0: tensor<100xf32>, %arg1: tensor<10x10xf32>) -> tensor<100xf32> {
 // CHECK-NEXT:    %0 = stablehlo.slice %arg1 [0:4, 0:10] : (tensor<10x10xf32>) -> tensor<4x10xf32>
-// CHECK-NEXT:    %1 = stablehlo.reshape %arg0 : (tensor<100xf32>) -> tensor<10x10xf32>
-// CHECK-NEXT:    %2 = stablehlo.slice %1 [4:10, 0:10] : (tensor<10x10xf32>) -> tensor<6x10xf32>
+// CHECK-NEXT:    %1 = stablehlo.slice %arg0 [40:100] : (tensor<100xf32>) -> tensor<60xf32>
+// CHECK-NEXT:    %2 = stablehlo.reshape %1 : (tensor<60xf32>) -> tensor<6x10xf32>
 // CHECK-NEXT:    %3 = stablehlo.concatenate %0, %2, dim = 0 : (tensor<4x10xf32>, tensor<6x10xf32>) -> tensor<10x10xf32>
 // CHECK-NEXT:    %4 = stablehlo.reshape %3 : (tensor<10x10xf32>) -> tensor<100xf32>
 // CHECK-NEXT:    return %4 : tensor<100xf32>
