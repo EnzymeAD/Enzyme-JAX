@@ -1,4 +1,5 @@
 // RUN: enzymexlamlir-opt --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(enzyme-hlo-opt{max_constant_expansion=1})" %s | FileCheck %s
 
 // ------------------------------------------------------------------------
 // Case 1: float gather whose second affine iota is hidden under
@@ -50,8 +51,9 @@ module {
   // indices[i, j] = 16 + 4*i + 32*j
   //
   // This models the LBM flag load after the f32 buffer is bitcast to bytes.
-  // Currently the gather remains because detectIotaLikeTensor does not look
-  // through the reshape.
+  // Keep a run with constant expansion disabled: folding this small index
+  // tensor would hide a failure to recognize the reshaped scaled iota in the
+  // full-size benchmark.
   // ------------------------------------------------------------------------
   func.func @gather_reshaped_scaled_iota(
       %bytes: tensor<256xi8>) -> tensor<2x3xi8> {

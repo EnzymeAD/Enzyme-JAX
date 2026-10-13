@@ -20,14 +20,14 @@
 namespace polly {
 
 class MaximalStaticExpansionPass
-    : public llvm::PassInfoMixin<MaximalStaticExpansionPass> {
+    : public llvm::OptionalPassInfoMixin<MaximalStaticExpansionPass> {
 public:
   llvm::PreservedAnalyses run(Scop &, ScopAnalysisManager &,
                               ScopStandardAnalysisResults &, SPMUpdater &);
 };
 
 struct MaximalStaticExpansionPrinterPass
-    : llvm::PassInfoMixin<MaximalStaticExpansionPrinterPass> {
+    : llvm::RequiredPassInfoMixin<MaximalStaticExpansionPrinterPass> {
   MaximalStaticExpansionPrinterPass(raw_ostream &OS) : OS(OS) {}
 
   PreservedAnalyses run(Scop &S, ScopAnalysisManager &,

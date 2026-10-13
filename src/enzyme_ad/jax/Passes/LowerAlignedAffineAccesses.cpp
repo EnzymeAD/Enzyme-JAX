@@ -60,8 +60,11 @@ struct LowerAlignedAffineLoad : public OpRewritePattern<affine::AffineLoadOp> {
                              op.getMapOperands());
     auto newLoad =
         memref::LoadOp::create(rewriter, op.getLoc(), op.getMemRef(), indices);
-    // On the affine op the alignment was a discardable attribute; memref.load
-    // owns one, and only the owned one is what its lowering reads.
+    // affine.load owns an alignment of its own, and llvm-to-affine-access may
+    // instead have left it in the discardable dictionary; memref.load owns
+    // one, and only the owned one is what its lowering reads.
+    if (auto alignment = op.getAlignmentAttr())
+      newLoad.setAlignmentAttr(alignment);
     for (NamedAttribute attr : op->getDiscardableAttrs()) {
       if (attr.getName() == "alignment")
         newLoad.setAlignmentAttr(cast<IntegerAttr>(attr.getValue()));
@@ -86,6 +89,8 @@ struct LowerAlignedAffineStore
     auto newStore = memref::StoreOp::create(
         rewriter, op.getLoc(), op.getValueToStore(), op.getMemRef(), indices);
     // See LowerAlignedAffineLoad.
+    if (auto alignment = op.getAlignmentAttr())
+      newStore.setAlignmentAttr(alignment);
     for (NamedAttribute attr : op->getDiscardableAttrs()) {
       if (attr.getName() == "alignment")
         newStore.setAlignmentAttr(cast<IntegerAttr>(attr.getValue()));

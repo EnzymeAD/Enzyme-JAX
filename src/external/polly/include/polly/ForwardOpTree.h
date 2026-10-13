@@ -23,7 +23,8 @@ namespace polly {
 llvm::Pass *createForwardOpTreeWrapperPass();
 llvm::Pass *createForwardOpTreePrinterLegacyPass(llvm::raw_ostream &OS);
 
-struct ForwardOpTreePass final : llvm::PassInfoMixin<ForwardOpTreePass> {
+struct ForwardOpTreePass final
+    : llvm::OptionalPassInfoMixin<ForwardOpTreePass> {
   ForwardOpTreePass() {}
 
   llvm::PreservedAnalyses run(Scop &S, ScopAnalysisManager &SAM,
@@ -31,7 +32,7 @@ struct ForwardOpTreePass final : llvm::PassInfoMixin<ForwardOpTreePass> {
 };
 
 struct ForwardOpTreePrinterPass final
-    : llvm::PassInfoMixin<ForwardOpTreePrinterPass> {
+    : llvm::RequiredPassInfoMixin<ForwardOpTreePrinterPass> {
   ForwardOpTreePrinterPass(raw_ostream &OS) : OS(OS) {}
 
   PreservedAnalyses run(Scop &S, ScopAnalysisManager &,

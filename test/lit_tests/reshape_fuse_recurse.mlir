@@ -12,7 +12,7 @@ module {
     %7 = stablehlo.multiply %5, %6 : tensor<64x64x1x1xf32>
     %8 = stablehlo.reshape %4 : (tensor<64x1x1x64xf32>) -> tensor<64x64x1x1xf32>
     %9 = stablehlo.add %8, %7 : tensor<64x64x1x1xf32>
-    %10 = stablehlo.reshape %9 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<64x64x1x1xf32>) -> tensor<64x64xf32>
+    %10 = stablehlo.reshape %9 {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<64x64x1x1xf32>) -> tensor<64x64xf32>
     %11 = stablehlo.transpose %10, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
     return %11 : tensor<64x64xf32>
   }
@@ -26,7 +26,7 @@ module {
 // CHECK-NEXT:   %4 = stablehlo.transpose %arg5, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
 // CHECK-NEXT:   %5 = stablehlo.broadcast_in_dim %arg1, dims = [] : (tensor<f32>) -> tensor<64x64xf32>
 // CHECK-NEXT:   %6 = stablehlo.multiply %4, %5 : tensor<64x64xf32>
-// CHECK-NEXT:   %7 = stablehlo.add %3, %6 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<64x64xf32>
+// CHECK-NEXT:   %7 = stablehlo.add %3, %6 {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<64x64xf32>
 // CHECK-NEXT:   %8 = stablehlo.transpose %7, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
 // CHECK-NEXT:   return %8 : tensor<64x64xf32>
 // CHECK-NEXT: }
@@ -52,7 +52,7 @@ module {
     %15 = stablehlo.broadcast_in_dim %arg1, dims = [] : (tensor<f32>) -> tensor<64x64x1xf32>
     %16 = stablehlo.multiply %14, %15 : tensor<64x64x1xf32>
     %17 = stablehlo.add %13, %16 : tensor<64x64x1xf32>
-    %18 = stablehlo.reshape %17 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<64x64x1xf32>) -> tensor<64x64xf32>
+    %18 = stablehlo.reshape %17 {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<64x64x1xf32>) -> tensor<64x64xf32>
     %19 = stablehlo.transpose %18, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
     return %19 : tensor<64x64xf32>
   }
@@ -68,7 +68,7 @@ module {
 // CHECK-NEXT:   %6 = stablehlo.transpose %arg4, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
 // CHECK-NEXT:   %7 = stablehlo.broadcast_in_dim %arg1, dims = [] : (tensor<f32>) -> tensor<64x64xf32>
 // CHECK-NEXT:   %8 = stablehlo.multiply %6, %7 : tensor<64x64xf32>
-// CHECK-NEXT:   %9 = stablehlo.add %5, %8 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<64x64xf32>
+// CHECK-NEXT:   %9 = stablehlo.add %5, %8 {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<64x64xf32>
 // CHECK-NEXT:   %10 = stablehlo.transpose %9, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
 // CHECK-NEXT:   return %10 : tensor<64x64xf32>
 // CHECK-NEXT: }

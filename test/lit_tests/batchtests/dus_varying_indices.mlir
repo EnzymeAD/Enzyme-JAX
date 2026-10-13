@@ -7,7 +7,7 @@
 // would drop the update, so the lowering has to materialize the clamp.
 
 func.func @batched(%operand: tensor<3x2x5xf64>, %update: tensor<3x1x1xf64>, %i: tensor<3xi32>, %j: tensor<3xi32>) -> tensor<3x2x5xf64> {
-    %0 = enzyme.batch @dus(%operand, %update, %i, %j) {batch_shape = array<i64: 3>} : (tensor<3x2x5xf64>, tensor<3x1x1xf64>, tensor<3xi32>, tensor<3xi32>) -> tensor<3x2x5xf64>
+    %0 = enzyme.batch @dus(%operand, %update, %i, %j) <{batch_shape = array<i64: 3>}> : (tensor<3x2x5xf64>, tensor<3x1x1xf64>, tensor<3xi32>, tensor<3xi32>) -> tensor<3x2x5xf64>
     return %0 : tensor<3x2x5xf64>
 }
 

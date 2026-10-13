@@ -19,13 +19,10 @@ func.func @main(%x : tensor<2xf32>) -> tensor<2xf32> {
 
 // REVERSE:  func.func @main(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> tensor<2xf32> {
 // REVERSE-NEXT:    %0 = chlo.constant dense<1.000000e+00> : tensor<2xf32>
-// REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<2xf32>
-// REVERSE-NEXT:    %1 = arith.addf %arg1, %cst fastmath<fast> : tensor<2xf32>
-// REVERSE-NEXT:    %2 = stablehlo.multiply %arg0, %arg0 : tensor<2xf32>
-// REVERSE-NEXT:    %3 = stablehlo.subtract %0, %2 : tensor<2xf32>
-// REVERSE-NEXT:    %4 = stablehlo.sqrt %3 : tensor<2xf32>
-// REVERSE-NEXT:    %5 = stablehlo.divide %1, %4 : tensor<2xf32>
-// REVERSE-NEXT:    %6 = stablehlo.negate %5 : tensor<2xf32>
-// REVERSE-NEXT:    %7 = arith.addf %6, %cst fastmath<fast> : tensor<2xf32>
-// REVERSE-NEXT:    return %7 : tensor<2xf32>
+// REVERSE-NEXT:    %1 = stablehlo.multiply %arg0, %arg0 : tensor<2xf32>
+// REVERSE-NEXT:    %2 = stablehlo.subtract %0, %1 : tensor<2xf32>
+// REVERSE-NEXT:    %3 = stablehlo.sqrt %2 : tensor<2xf32>
+// REVERSE-NEXT:    %4 = stablehlo.divide %arg1, %3 : tensor<2xf32>
+// REVERSE-NEXT:    %5 = stablehlo.negate %4 : tensor<2xf32>
+// REVERSE-NEXT:    return %5 : tensor<2xf32>
 // REVERSE-NEXT:  }

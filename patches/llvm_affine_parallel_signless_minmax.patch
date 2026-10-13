@@ -1,0 +1,27 @@
+diff --git a/mlir/lib/Dialect/Affine/IR/AffineOps.cpp b/mlir/lib/Dialect/Affine/IR/AffineOps.cpp
+--- a/mlir/lib/Dialect/Affine/IR/AffineOps.cpp
++++ b/mlir/lib/Dialect/Affine/IR/AffineOps.cpp
+@@ -4281,19 +4281,19 @@ static bool isResultTypeMatchAtomicRMWKind(Type resultType,
+     return isa<FloatType>(resultType);
+   case arith::AtomicRMWKind::maxs: {
+     auto intType = dyn_cast<IntegerType>(resultType);
+-    return intType && intType.isSigned();
++    return intType && !intType.isUnsigned();
+   }
+   case arith::AtomicRMWKind::mins: {
+     auto intType = dyn_cast<IntegerType>(resultType);
+-    return intType && intType.isSigned();
++    return intType && !intType.isUnsigned();
+   }
+   case arith::AtomicRMWKind::maxu: {
+     auto intType = dyn_cast<IntegerType>(resultType);
+-    return intType && intType.isUnsigned();
++    return intType && !intType.isSigned();
+   }
+   case arith::AtomicRMWKind::minu: {
+     auto intType = dyn_cast<IntegerType>(resultType);
+-    return intType && intType.isUnsigned();
++    return intType && !intType.isSigned();
+   }
+   case arith::AtomicRMWKind::ori:
+   case arith::AtomicRMWKind::andi:

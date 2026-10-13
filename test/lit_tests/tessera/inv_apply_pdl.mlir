@@ -1,7 +1,7 @@
 // RUN: enzymexlamlir-opt %s -tessera-apply-pdl | FileCheck %s
 
 module {
-  tessera.define @eigen.inv(%arg0 : f32) -> f32 attributes {byRefTypes = [unit], pure = true} {
+  tessera.define @eigen.inv(%arg0 : f32) -> f32 attributes {argModes = [unit], pure = true} {
     tessera.return %arg0 : f32
   }
 
@@ -15,12 +15,12 @@ module {
     pdl.pattern : benefit(1) {
       %0 = operand
       %1 = attribute = @eigen.inv
-      %2 = type
-      %3 = operation "tessera.call"(%0 : !pdl.value)  {"callee" = %1} -> (%2 : !pdl.type)
+      %2 = types
+      %3 = operation "tessera.call"(%0 : !pdl.value)  {"callee" = %1} -> (%2 : !pdl.range<type>)
       %4 = result 0 of %3
       %5 = attribute = @eigen.inv
-      %6 = type
-      %7 = operation "tessera.call"(%4 : !pdl.value)  {"callee" = %5} -> (%6 : !pdl.type)
+      %6 = types
+      %7 = operation "tessera.call"(%4 : !pdl.value)  {"callee" = %5} -> (%6 : !pdl.range<type>)
       %8 = result 0 of %7
       rewrite %7 {
         replace %7 with(%0 : !pdl.value)
@@ -29,7 +29,7 @@ module {
   }
 }
 
-// CHECK: tessera.define @eigen.inv(%[[ARG0:.*]]: f32) -> f32 attributes {byRefTypes = [unit], pure = true} {
+// CHECK: tessera.define @eigen.inv(%[[ARG0:.*]]: f32) -> f32 attributes {argModes = [unit], pure = true} {
 // CHECK-NEXT: tessera.return %[[ARG0]] : f32
 // CHECK-NEXT: }
 // CHECK-NEXT: llvm.func @main(%[[X:.*]]: f32) -> f32 {

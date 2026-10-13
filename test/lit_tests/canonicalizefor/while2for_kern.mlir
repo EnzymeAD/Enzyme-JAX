@@ -23,19 +23,19 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
       %5 = arith.cmpi sgt, %arg1, %c0_i32 : i32
       scf.if %5 {
         %6 = scf.while (%arg3 = %c0_i32) : (i32) -> i32 {
-          %7 = arith.extui %arg3 {nonNeg} : i32 to i64
+          %7 = arith.extui %arg3 nneg : i32 to i64
           %8 = llvm.getelementptr inbounds|nuw %4[%7, 2] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.struct<"struct.Particle.1", (struct<"struct.Vec3.1", (f64, f64, f64)>, struct<"struct.Vec3.1", (f64, f64, f64)>, struct<"struct.Vec3.1", (f64, f64, f64)>)>
-          %9 = llvm.load %8 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-          %10 = arith.negf %9 {fastmathFlags = #llvm.fastmath<contract>} : f64
-          llvm.store %10, %8 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
+          %9 = llvm.load %8 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+          %10 = arith.negf %9 fastmath<contract> : f64
+          llvm.store %10, %8 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr
           %11 = llvm.getelementptr inbounds|nuw %8[8] : (!llvm.ptr) -> !llvm.ptr, i8
-          %12 = llvm.load %11 {alignment = 8 : i64, tbaa = [#tbaa_tag1]} : !llvm.ptr -> f64
-          %13 = arith.negf %12 {fastmathFlags = #llvm.fastmath<contract>} : f64
-          llvm.store %13, %11 {alignment = 8 : i64, tbaa = [#tbaa_tag1]} : f64, !llvm.ptr
+          %12 = llvm.load %11 <alignment = 8, tbaa = [#tbaa_tag1]> : !llvm.ptr -> f64
+          %13 = arith.negf %12 fastmath<contract> : f64
+          llvm.store %13, %11 <alignment = 8, tbaa = [#tbaa_tag1]> : f64, !llvm.ptr
           %14 = llvm.getelementptr inbounds|nuw %8[16] : (!llvm.ptr) -> !llvm.ptr, i8
-          %15 = llvm.load %14 {alignment = 8 : i64, tbaa = [#tbaa_tag2]} : !llvm.ptr -> f64
-          %16 = arith.negf %15 {fastmathFlags = #llvm.fastmath<contract>} : f64
-          llvm.store %16, %14 {alignment = 8 : i64, tbaa = [#tbaa_tag2]} : f64, !llvm.ptr
+          %15 = llvm.load %14 <alignment = 8, tbaa = [#tbaa_tag2]> : !llvm.ptr -> f64
+          %16 = arith.negf %15 fastmath<contract> : f64
+          llvm.store %16, %14 <alignment = 8, tbaa = [#tbaa_tag2]> : f64, !llvm.ptr
           %17 = arith.addi %arg3, %c1_i32 : i32
           %18 = arith.cmpi ne, %17, %arg1 : i32
           scf.condition(%18) %17 : i32
@@ -64,17 +64,17 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:        %6 = arith.addi %arg3, %c-1_i32 : i32
 // CHECK-NEXT:        %7 = arith.extui %6 nneg : i32 to i64
 // CHECK-NEXT:        %8 = llvm.getelementptr inbounds|nuw %4[%7, 2] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.struct<"struct.Particle.1", (struct<"struct.Vec3.1", (f64, f64, f64)>, struct<"struct.Vec3.1", (f64, f64, f64)>, struct<"struct.Vec3.1", (f64, f64, f64)>)>
-// CHECK-NEXT:        %9 = llvm.load %8 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
-// CHECK-NEXT:        %10 = arith.negf %9 {fastmathFlags = #llvm.fastmath<contract>} : f64
-// CHECK-NEXT:        llvm.store %10, %8 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr
+// CHECK-NEXT:        %9 = llvm.load %8 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr -> f64
+// CHECK-NEXT:        %10 = arith.negf %9 fastmath<contract> : f64
+// CHECK-NEXT:        llvm.store %10, %8 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr
 // CHECK-NEXT:        %11 = llvm.getelementptr inbounds|nuw %8[8] : (!llvm.ptr) -> !llvm.ptr, i8
-// CHECK-NEXT:        %12 = llvm.load %11 {alignment = 8 : i64, tbaa = [#tbaa_tag1]} : !llvm.ptr -> f64
-// CHECK-NEXT:        %13 = arith.negf %12 {fastmathFlags = #llvm.fastmath<contract>} : f64
-// CHECK-NEXT:        llvm.store %13, %11 {alignment = 8 : i64, tbaa = [#tbaa_tag1]} : f64, !llvm.ptr
+// CHECK-NEXT:        %12 = llvm.load %11 <alignment = 8, tbaa = [#tbaa_tag1]> : !llvm.ptr -> f64
+// CHECK-NEXT:        %13 = arith.negf %12 fastmath<contract> : f64
+// CHECK-NEXT:        llvm.store %13, %11 <alignment = 8, tbaa = [#tbaa_tag1]> : f64, !llvm.ptr
 // CHECK-NEXT:        %14 = llvm.getelementptr inbounds|nuw %8[16] : (!llvm.ptr) -> !llvm.ptr, i8
-// CHECK-NEXT:        %15 = llvm.load %14 {alignment = 8 : i64, tbaa = [#tbaa_tag2]} : !llvm.ptr -> f64
-// CHECK-NEXT:        %16 = arith.negf %15 {fastmathFlags = #llvm.fastmath<contract>} : f64
-// CHECK-NEXT:        llvm.store %16, %14 {alignment = 8 : i64, tbaa = [#tbaa_tag2]} : f64, !llvm.ptr
+// CHECK-NEXT:        %15 = llvm.load %14 <alignment = 8, tbaa = [#tbaa_tag2]> : !llvm.ptr -> f64
+// CHECK-NEXT:        %16 = arith.negf %15 fastmath<contract> : f64
+// CHECK-NEXT:        llvm.store %16, %14 <alignment = 8, tbaa = [#tbaa_tag2]> : f64, !llvm.ptr
 // CHECK-NEXT:      }
 // CHECK-NEXT:    }
 // CHECK-NEXT:    llvm.return

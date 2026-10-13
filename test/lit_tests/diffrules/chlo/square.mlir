@@ -54,18 +54,18 @@ func.func @main() {
 
   %d = stablehlo.constant dense<1.0> : tensor<5xf32>
 
-  %fwd:2 = enzyme.fwddiff @square_real(%x, %d) {
-    activity=[#enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
-  } : (tensor<5xf32>, tensor<5xf32>) -> (tensor<5xf32>, tensor<5xf32>)
+  %fwd:2 = enzyme.fwddiff @square_real(%x, %d) <{
+    activity=[#enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
+  }> : (tensor<5xf32>, tensor<5xf32>) -> (tensor<5xf32>, tensor<5xf32>)
 
   check.expect_almost_eq %fwd#0, %output : tensor<5xf32>
   check.expect_almost_eq %fwd#1, %expected : tensor<5xf32>
 
-  %rev:2 = enzyme.autodiff @square_real(%x, %d) {
-    activity=[#enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
-  } : (tensor<5xf32>, tensor<5xf32>) -> (tensor<5xf32>, tensor<5xf32>)
+  %rev:2 = enzyme.autodiff @square_real(%x, %d) <{
+    activity=[#enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
+  }> : (tensor<5xf32>, tensor<5xf32>) -> (tensor<5xf32>, tensor<5xf32>)
 
   check.expect_almost_eq %rev#0, %output : tensor<5xf32>
   check.expect_almost_eq %rev#1, %expected : tensor<5xf32>
@@ -77,18 +77,18 @@ func.func @main() {
   %d_c_re = stablehlo.constant dense<(1.0, 0.0)> : tensor<5xcomplex<f32>>
 
   // seed on real part
-  %fwd_c_re:2 = enzyme.fwddiff @square_complex(%x_c, %d_c_re) {
-    activity=[#enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
-  } : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
+  %fwd_c_re:2 = enzyme.fwddiff @square_complex(%x_c, %d_c_re) <{
+    activity=[#enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
+  }> : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
 
   check.expect_almost_eq %fwd_c_re#0, %output_c : tensor<5xcomplex<f32>>
   check.expect_almost_eq_const %fwd_c_re#1, dense<[(0.0, 0.0), (4.0, 0.0), (0.0, 6.0), (4.0, -6.0), (-4.0, 6.0)]> : tensor<5xcomplex<f32>>
 
-  %rev_c_re:2 = enzyme.autodiff @square_complex(%x_c, %d_c_re) {
-    activity=[#enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
-  } : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
+  %rev_c_re:2 = enzyme.autodiff @square_complex(%x_c, %d_c_re) <{
+    activity=[#enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
+  }> : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
 
   check.expect_almost_eq %rev_c_re#0, %output_c : tensor<5xcomplex<f32>>
   check.expect_almost_eq_const %rev_c_re#1, dense<[(0.0, 0.0), (4.0, 0.0), (0.0, -6.0), (4.0, 6.0), (-4.0, -6.0)]> : tensor<5xcomplex<f32>>
@@ -96,18 +96,18 @@ func.func @main() {
   // seed on imaginary part
   %d_c_im = stablehlo.constant dense<(0.0, 1.0)> : tensor<5xcomplex<f32>>
 
-  %fwd_c_im:2 = enzyme.fwddiff @square_complex(%x_c, %d_c_im) {
-    activity=[#enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
-  } : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
+  %fwd_c_im:2 = enzyme.fwddiff @square_complex(%x_c, %d_c_im) <{
+    activity=[#enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
+  }> : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
 
   check.expect_almost_eq %fwd_c_im#0, %output_c : tensor<5xcomplex<f32>>
   check.expect_almost_eq_const %fwd_c_im#1, dense<[(0.0, 0.0), (0.0, 4.0), (-6.0, 0.0), (6.0, 4.0), (-6.0, -4.0)]> : tensor<5xcomplex<f32>>
 
-  %rev_c_im:2 = enzyme.autodiff @square_complex(%x_c, %d_c_im) {
-    activity=[#enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
-  } : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
+  %rev_c_im:2 = enzyme.autodiff @square_complex(%x_c, %d_c_im) <{
+    activity=[#enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
+  }> : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
 
   check.expect_almost_eq %rev_c_im#0, %output_c : tensor<5xcomplex<f32>>
   check.expect_almost_eq_const %rev_c_im#1, dense<[(0.0, 0.0), (0.0, 4.0), (6.0, 0.0), (-6.0, 4.0), (6.0, -4.0)]> : tensor<5xcomplex<f32>>

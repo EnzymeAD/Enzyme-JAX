@@ -160,6 +160,7 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
           opName == "dynamic_slice_licm" || opName == "scatter_licm" ||
           opName == "gather_licm" || opName == "iota_licm" ||
           opName == "transpose_elementwise" ||
+          opName == "transpose_elementwise_transpose" ||
           opName == "transpose_like_broadcast_elementwise" ||
           opName == "reshape_elementwise" ||
           opName == "reshape_elementwise_only_fusible" ||
@@ -170,6 +171,7 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
           opName == "no_nan_zero_base_pow_simplify" ||
           opName == "no_nan_self_sub_simplify" ||
           opName == "no_nan_compare_simplify" ||
+          opName == "no_nan_compare_abs" ||
           opName == "self_subtract_to_convolution_like" ||
           opName == "self_add_to_convolution_like" ||
           opName == "self_mul_to_convolution_like")

@@ -17,23 +17,20 @@ module {
   }
 }
 
-// CHECK:  func.func private @atomic_add_raised(%[[buf:.+]]: tensor<8xf64>, %[[idx:.+]]: tensor<16xi32>, %[[val:.+]]: tensor<16xf64>) -> (tensor<8xf64>, tensor<16xi32>, tensor<16xf64>) {
-// CHECK-NEXT:    %[[iota:.+]] = stablehlo.iota dim = 0 : tensor<16xi64>
-// CHECK-NEXT:    %[[c0:.+]] = stablehlo.constant dense<0> : tensor<16xi64>
-// CHECK-NEXT:    %[[lanes:.+]] = stablehlo.add %[[iota]], %[[c0]] : tensor<16xi64>
-// CHECK-NEXT:    %[[c1:.+]] = stablehlo.constant dense<1> : tensor<16xi64>
-// CHECK-NEXT:    %{{.+}} = stablehlo.multiply %[[lanes]], %[[c1]] : tensor<16xi64>
-// CHECK-NEXT:    %[[idxr:.+]] = stablehlo.reshape %[[idx]] : (tensor<16xi32>) -> tensor<16xi32>
-// CHECK-NEXT:    %[[idx64:.+]] = stablehlo.convert %[[idxr]] : (tensor<16xi32>) -> tensor<16xi64>
-// CHECK-NEXT:    %[[valr:.+]] = stablehlo.reshape %[[val]] : (tensor<16xf64>) -> tensor<16xf64>
-// CHECK-NEXT:    %[[sidx:.+]] = stablehlo.reshape %[[idx64]] : (tensor<16xi64>) -> tensor<16x1xi64>
-// CHECK-NEXT:    %[[upd:.+]] = stablehlo.broadcast_in_dim %[[valr]], dims = [0] : (tensor<16xf64>) -> tensor<16xf64>
-// CHECK-NEXT:    %[[scat:.+]] = "stablehlo.scatter"(%[[buf]], %[[sidx]], %[[upd]]) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, unique_indices = false}> ({
-// CHECK-NEXT:    ^bb0(%[[a:.+]]: tensor<f64>, %[[b:.+]]: tensor<f64>):
-// CHECK-NEXT:      %[[sum:.+]] = stablehlo.add %[[a]], %[[b]] : tensor<f64>
-// CHECK-NEXT:      stablehlo.return %[[sum]] : tensor<f64>
+// CHECK:    func.func private @atomic_add_raised(%[[a1:.+]]: tensor<8xf64>, %[[a2:.+]]: tensor<16xi32>, %[[a3:.+]]: tensor<16xf64>) -> (tensor<8xf64>, tensor<16xi32>, tensor<16xf64>) {
+// CHECK-NEXT:    %[[a4:.+]] = stablehlo.iota dim = 0 : tensor<16xi64>
+// CHECK-NEXT:    %[[a5:.+]] = stablehlo.constant dense<0> : tensor<16xi64>
+// CHECK-NEXT:    %[[a6:.+]] = stablehlo.add %[[a4]], %[[a5]] : tensor<16xi64>
+// CHECK-NEXT:    %[[a7:.+]] = stablehlo.constant dense<1> : tensor<16xi64>
+// CHECK-NEXT:    %[[a8:.+]] = stablehlo.multiply %[[a6]], %[[a7]] : tensor<16xi64>
+// CHECK-NEXT:    %[[a9:.+]] = stablehlo.convert %[[a2]] : (tensor<16xi32>) -> tensor<16xi64>
+// CHECK-NEXT:    %[[a10:.+]] = stablehlo.reshape %[[a9]] : (tensor<16xi64>) -> tensor<16x1xi64>
+// CHECK-NEXT:    %[[a11:.+]] = "stablehlo.scatter"(%[[a1]], %[[a10]], %[[a3]]) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, unique_indices = false}> ({
+// CHECK-NEXT:    ^bb0(%[[a12:.+]]: tensor<f64>, %[[a13:.+]]: tensor<f64>):
+// CHECK-NEXT:      %[[a14:.+]] = stablehlo.add %[[a12]], %[[a13]] : tensor<f64>
+// CHECK-NEXT:      stablehlo.return %[[a14]] : tensor<f64>
 // CHECK-NEXT:    }) : (tensor<8xf64>, tensor<16x1xi64>, tensor<16xf64>) -> tensor<8xf64>
-// CHECK-NEXT:    return %[[scat]], %[[idx]], %[[val]] : tensor<8xf64>, tensor<16xi32>, tensor<16xf64>
+// CHECK-NEXT:    return %[[a11]], %[[a2]], %[[a3]] : tensor<8xf64>, tensor<16xi32>, tensor<16xf64>
 // CHECK-NEXT:  }
 
 // -----
@@ -52,21 +49,18 @@ module {
   }
 }
 
-// CHECK:  func.func private @atomic_add_int_raised(%[[buf:.+]]: tensor<8xi32>, %[[idx:.+]]: tensor<16xi32>, %[[val:.+]]: tensor<16xi32>) -> (tensor<8xi32>, tensor<16xi32>, tensor<16xi32>) {
-// CHECK-NEXT:    %[[iota:.+]] = stablehlo.iota dim = 0 : tensor<16xi64>
-// CHECK-NEXT:    %[[c0:.+]] = stablehlo.constant dense<0> : tensor<16xi64>
-// CHECK-NEXT:    %[[lanes:.+]] = stablehlo.add %[[iota]], %[[c0]] : tensor<16xi64>
-// CHECK-NEXT:    %[[c1:.+]] = stablehlo.constant dense<1> : tensor<16xi64>
-// CHECK-NEXT:    %{{.+}} = stablehlo.multiply %[[lanes]], %[[c1]] : tensor<16xi64>
-// CHECK-NEXT:    %[[idxr:.+]] = stablehlo.reshape %[[idx]] : (tensor<16xi32>) -> tensor<16xi32>
-// CHECK-NEXT:    %[[idx64:.+]] = stablehlo.convert %[[idxr]] : (tensor<16xi32>) -> tensor<16xi64>
-// CHECK-NEXT:    %[[valr:.+]] = stablehlo.reshape %[[val]] : (tensor<16xi32>) -> tensor<16xi32>
-// CHECK-NEXT:    %[[sidx:.+]] = stablehlo.reshape %[[idx64]] : (tensor<16xi64>) -> tensor<16x1xi64>
-// CHECK-NEXT:    %[[upd:.+]] = stablehlo.broadcast_in_dim %[[valr]], dims = [0] : (tensor<16xi32>) -> tensor<16xi32>
-// CHECK-NEXT:    %[[scat:.+]] = "stablehlo.scatter"(%[[buf]], %[[sidx]], %[[upd]]) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, unique_indices = false}> ({
-// CHECK-NEXT:    ^bb0(%[[a:.+]]: tensor<i32>, %[[b:.+]]: tensor<i32>):
-// CHECK-NEXT:      %[[sum:.+]] = stablehlo.add %[[a]], %[[b]] : tensor<i32>
-// CHECK-NEXT:      stablehlo.return %[[sum]] : tensor<i32>
+// CHECK:    func.func private @atomic_add_int_raised(%[[a1:.+]]: tensor<8xi32>, %[[a2:.+]]: tensor<16xi32>, %[[a3:.+]]: tensor<16xi32>) -> (tensor<8xi32>, tensor<16xi32>, tensor<16xi32>) {
+// CHECK-NEXT:    %[[a4:.+]] = stablehlo.iota dim = 0 : tensor<16xi64>
+// CHECK-NEXT:    %[[a5:.+]] = stablehlo.constant dense<0> : tensor<16xi64>
+// CHECK-NEXT:    %[[a6:.+]] = stablehlo.add %[[a4]], %[[a5]] : tensor<16xi64>
+// CHECK-NEXT:    %[[a7:.+]] = stablehlo.constant dense<1> : tensor<16xi64>
+// CHECK-NEXT:    %[[a8:.+]] = stablehlo.multiply %[[a6]], %[[a7]] : tensor<16xi64>
+// CHECK-NEXT:    %[[a9:.+]] = stablehlo.convert %[[a2]] : (tensor<16xi32>) -> tensor<16xi64>
+// CHECK-NEXT:    %[[a10:.+]] = stablehlo.reshape %[[a9]] : (tensor<16xi64>) -> tensor<16x1xi64>
+// CHECK-NEXT:    %[[a11:.+]] = "stablehlo.scatter"(%[[a1]], %[[a10]], %[[a3]]) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, unique_indices = false}> ({
+// CHECK-NEXT:    ^bb0(%[[a12:.+]]: tensor<i32>, %[[a13:.+]]: tensor<i32>):
+// CHECK-NEXT:      %[[a14:.+]] = stablehlo.add %[[a12]], %[[a13]] : tensor<i32>
+// CHECK-NEXT:      stablehlo.return %[[a14]] : tensor<i32>
 // CHECK-NEXT:    }) : (tensor<8xi32>, tensor<16x1xi64>, tensor<16xi32>) -> tensor<8xi32>
-// CHECK-NEXT:    return %[[scat]], %[[idx]], %[[val]] : tensor<8xi32>, tensor<16xi32>, tensor<16xi32>
+// CHECK-NEXT:    return %[[a11]], %[[a2]], %[[a3]] : tensor<8xi32>, tensor<16xi32>, tensor<16xi32>
 // CHECK-NEXT:  }

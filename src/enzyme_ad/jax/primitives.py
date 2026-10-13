@@ -135,6 +135,7 @@ def optimization_passes(
     enable_reduce_slice_fusion_passes: bool = True,
     enable_concat_to_batch_passes: bool = True,
     enable_loop_raising_passes: bool = True,
+    enable_dot_formation_passes: bool = True,
     aggressive_propagation: bool = True,
 ):
     # Map propagation direction strings to C enum values
@@ -172,6 +173,7 @@ def optimization_passes(
         loop_unswitch_threshold,  # loop_unswitch_threshold
         enable_pad_optimization_passes,  # enable_pad_optimization_passes
         enable_self_to_convolution_like_passes,  # enable_self_to_convolution_like_passes
+        enable_dot_formation_passes,  # enable_dot_formation_passes
         excluded_passes,  # excluded_passes
     )
 

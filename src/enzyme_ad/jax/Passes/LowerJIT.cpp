@@ -23,6 +23,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
@@ -79,22 +80,6 @@
 #include "mlir/Conversion/SCFToOpenMP/SCFToOpenMP.h"
 
 #include "mlir/Target/LLVMIR/Export.h"
-
-#if (defined(_WIN32) || defined(__CYGWIN__)) &&                                \
-    !defined(MLIR_CAPI_ENABLE_WINDOWS_DLL_DECLSPEC)
-// Visibility annotations disabled.
-#define MLIR_CAPI_EXPORTED
-#elif defined(_WIN32) || defined(__CYGWIN__)
-// Windows visibility declarations.
-#if MLIR_CAPI_BUILDING_LIBRARY
-#define MLIR_CAPI_EXPORTED __declspec(dllexport)
-#else
-#define MLIR_CAPI_EXPORTED __declspec(dllimport)
-#endif
-#else
-// Non-windows: use visibility attributes.
-#define MLIR_CAPI_EXPORTED __attribute__((visibility("default")))
-#endif
 
 #define DEBUG_TYPE "lower-jit"
 
@@ -247,8 +232,22 @@ llvm::orc::SymbolMap MappedSymbols;
 
 bool initJIT();
 
-extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
-                                                      void *symbol) {
+llvm::Expected<void *> mlir::enzyme::lookupSymbol(const char *name) {
+  if (!JIT)
+    return llvm::make_error<llvm::StringError>("JIT not initialized",
+                                               llvm::inconvertibleErrorCode());
+
+  auto mangled_name = JIT->mangleAndIntern(name);
+  if (!MappedSymbols.contains(mangled_name))
+    return llvm::make_error<llvm::StringError>("Symbol not found: " +
+                                                   std::string(name),
+                                               llvm::inconvertibleErrorCode());
+
+  auto addr = MappedSymbols[mangled_name];
+  return addr.toPtr<void *>();
+}
+
+extern "C" void EnzymeJaXMapSymbol(const char *name, void *symbol) {
   initJIT();
   MappedSymbols[JIT->mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(symbol), llvm::JITSymbolFlags());
@@ -1105,10 +1104,16 @@ struct LowerJITPass
           op.getOperandLayouts()
               ? cast<mlir::ArrayAttr>(*op.getOperandLayouts())
               : nullptr;
-      mlir::ArrayAttr result_layouts =
-          op.getResultLayouts() ? cast<mlir::ArrayAttr>(*op.getResultLayouts())
-                                : nullptr;
       mlir::ArrayAttr output_operand_aliases = op.getOutputOperandAliases();
+      mlir::ArrayAttr result_layouts = nullptr;
+      if (operand_layouts) {
+        result_layouts = getAliasedResultLayouts(op, operand_layouts,
+                                                 output_operand_aliases);
+        if (!result_layouts) {
+          signalPassFailure();
+          return;
+        }
+      }
 
       auto *symbolOp = symbolTable.lookupNearestSymbolFrom(op, op.getFnAttr());
       auto fn = cast<FunctionOpInterface>(symbolOp);

@@ -270,13 +270,6 @@ struct RemoveLoopCarriedDependenciesFromWhileLoadOperations
   mlir::LogicalResult
   matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
                       mlir::PatternRewriter &rewriter) const;
-
-private:
-  bool extractDynamicUpdateSliceUpdate(
-      mlir::Operation *op, mlir::BlockArgument blockArg,
-      llvm::SmallVectorImpl<mlir::Value> &startIndices,
-      llvm::SmallVectorImpl<int64_t> &sliceSizes,
-      mlir::enzyme::WhileLoopInfo &info) const;
 };
 
 struct WhileIsCopySimplify
@@ -321,6 +314,35 @@ private:
       mlir::enzyme::WhileLoopInfo &info) const;
 };
 
+// A while loop tagged enzymexla.parallel iterates a raised kernel's parallel
+// dimension whose extent was dynamic at raise time (peelDynamicParallelDims);
+// once the runtime specializes that extent the loop has a constant trip
+// count, its iterations are independent by construction, and the buffers it
+// carries are written only through scatters. Such a loop is the batched
+// computation of every iteration's indices and updates over an iota of the
+// trip count, followed by one scatter per scatter of the body: a few kernels
+// instead of a host-driven loop of trip-count iterations. A constant-trip
+// loop nested in the body (a raised kernel's loop over quadrature points or
+// degrees of freedom) keeps running, over the batched values: the parallel
+// loop and it interchange.
+struct ParallelWhileToBatchedScatter
+    : public mlir::enzyme::CheckedOpRewritePattern<
+          mlir::stablehlo::WhileOp, ParallelWhileToBatchedScatter> {
+  using Base =
+      mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::WhileOp,
+                                            ParallelWhileToBatchedScatter>;
+  using Base::Base;
+
+  // Invariant operands broadcast to the batch are materialized; refuse when
+  // that would be large (a table read through dynamic_slice is gathered, not
+  // broadcast).
+  static constexpr int64_t kMaxBroadcastElements = int64_t(1) << 24;
+
+  mlir::LogicalResult
+  matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
+                      mlir::PatternRewriter &rewriter) const;
+};
+
 namespace mlir {
 namespace enzyme {
 
@@ -331,6 +353,7 @@ struct AutoBatchingPassPipelineOptions {
   bool enableWhileElementwiseReductionToReduce;
   bool enableWhileIsCopySimplify;
   bool enableRemoveLoopCarriedDependenciesFromWhileLoadOperations;
+  bool enableParallelWhileToBatchedScatter;
 };
 
 void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,

@@ -20,9 +20,9 @@ func.func private @dynamic_slice2(%arg0: tensor<3x4xf64>) -> (tensor<2x2xf64>) {
 }
 
 func.func @main(%arg0: tensor<2x5x3x4xf64>) -> (tensor<2x5x2x2xf64>, tensor<2x5x2x2xf64>, tensor<2x5x2x2xf64>) {
-    %1 = enzyme.batch @slice(%arg0) {batch_shape = array<i64: 2, 5>} : (tensor<2x5x3x4xf64>) -> (tensor<2x5x2x2xf64>)
-    %2 = enzyme.batch @dynamic_slice(%arg0) {batch_shape = array<i64: 2, 5>} : (tensor<2x5x3x4xf64>) -> (tensor<2x5x2x2xf64>)
-    %3 = enzyme.batch @dynamic_slice2(%arg0) {batch_shape = array<i64: 2, 5>} : (tensor<2x5x3x4xf64>) -> (tensor<2x5x2x2xf64>)
+    %1 = enzyme.batch @slice(%arg0) <{batch_shape = array<i64: 2, 5>}> : (tensor<2x5x3x4xf64>) -> (tensor<2x5x2x2xf64>)
+    %2 = enzyme.batch @dynamic_slice(%arg0) <{batch_shape = array<i64: 2, 5>}> : (tensor<2x5x3x4xf64>) -> (tensor<2x5x2x2xf64>)
+    %3 = enzyme.batch @dynamic_slice2(%arg0) <{batch_shape = array<i64: 2, 5>}> : (tensor<2x5x3x4xf64>) -> (tensor<2x5x2x2xf64>)
     return %1, %2, %3 : tensor<2x5x2x2xf64>, tensor<2x5x2x2xf64>, tensor<2x5x2x2xf64>
 }
 

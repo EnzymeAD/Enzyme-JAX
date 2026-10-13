@@ -1,0 +1,83 @@
+Adds a minimal std::format implementation for standard libraries without one
+(the libc++ in the macOS SDK used by the Reactant_jll cross builds). See the
+header for details; z3.BUILD force-includes it into every z3 source file.
+
+--- /dev/null
++++ b/src/util/z3_std_format.h
+@@ -0,0 +1,76 @@
++// Minimal std::format stand-in for standard libraries that lack it.
++//
++// z3 5.x calls std::format, but the libc++ shipped with the macOS SDK used by
++// the Reactant_jll (BinaryBuilder) cross builds does not provide it. This header
++// is force-included (-include) into every z3 translation unit by z3.BUILD and
++// only kicks in when <version> does not advertise std::format.
++//
++// Only what z3 uses is implemented: "{}" replacement fields (no format specs or
++// argument indices) plus "{{" / "}}" escapes. Arguments are rendered with
++// operator<<.
++#pragma once
++
++#include <version>
++
++#if !defined(__cpp_lib_format)
++
++#include <sstream>
++#include <stdexcept>
++#include <string>
++#include <string_view>
++#include <utility>
++
++namespace std {
++namespace z3_format_shim {
++
++// Copies `fmt` into `out` up to the next replacement field, consuming the field.
++// Returns false if `fmt` was exhausted without finding one.
++inline bool emit_until_field(ostringstream &out, string_view &fmt) {
++  while (!fmt.empty()) {
++    char c = fmt.front();
++    fmt.remove_prefix(1);
++    if (c == '{') {
++      if (!fmt.empty() && fmt.front() == '{') {
++        fmt.remove_prefix(1);
++        out << '{';
++        continue;
++      }
++      size_t close = fmt.find('}');
++      if (close == string_view::npos)
++        throw runtime_error("std::format shim: unterminated replacement field");
++      fmt.remove_prefix(close + 1);
++      return true;
++    }
++    if (c == '}' && !fmt.empty() && fmt.front() == '}')
++      fmt.remove_prefix(1);
++    out << c;
++  }
++  return false;
++}
++
++inline void append(ostringstream &out, string_view fmt) {
++  if (emit_until_field(out, fmt))
++    throw runtime_error("std::format shim: too few arguments");
++}
++
++template <class T, class... Rest>
++void append(ostringstream &out, string_view fmt, T &&first, Rest &&...rest) {
++  if (!emit_until_field(out, fmt))
++    return;  // std::format permits unused arguments.
++  out << first;
++  append(out, fmt, std::forward<Rest>(rest)...);
++}
++
++}  // namespace z3_format_shim
++
++template <class... Args>
++string format(string_view fmt, Args &&...args) {
++  ostringstream out;
++  out << boolalpha;
++  z3_format_shim::append(out, fmt, std::forward<Args>(args)...);
++  return out.str();
++}
++
++}  // namespace std
++
++#endif  // !defined(__cpp_lib_format)

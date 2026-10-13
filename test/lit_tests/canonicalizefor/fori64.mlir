@@ -8,20 +8,20 @@ module {
     %c1_i64 = arith.constant 1 : i64
       %90:5 = scf.for %arg21 = %c1_i32 to %89 step %c1_i32 iter_args(%arg22 = %87, %arg23 = %c0_i32, %arg24 = %68, %arg25 = %0, %arg26 = %2) -> (i64, i32, i32, i64, !llvm.ptr)  : i32 {
         %95 = arith.sitofp %arg24 : i32 to f64
-        %96 = arith.mulf %95, %cst {fastmathFlags = #llvm.fastmath<fast>} : f64
-        %97 = arith.divf %96, %57 {fastmathFlags = #llvm.fastmath<fast>} : f64
-        %98 = llvm.load %69 {alignment = 1 : i64} : !llvm.ptr -> i64
+        %96 = arith.mulf %95, %cst fastmath<fast> : f64
+        %97 = arith.divf %96, %57 fastmath<fast> : f64
+        %98 = llvm.load %69 <alignment = 1> : !llvm.ptr -> i64
         %99 = llvm.inttoptr %98 : i64 to !llvm.ptr
         %100 = llvm.getelementptr inbounds %99[%arg22] : (!llvm.ptr, i64) -> !llvm.ptr, f64
-        llvm.store %97, %100 {alignment = 8 : i64} : f64, !llvm.ptr
-        %101 = llvm.load %70 {alignment = 1 : i64} : !llvm.ptr -> i64
+        llvm.store %97, %100 <alignment = 8> : f64, !llvm.ptr
+        %101 = llvm.load %70 <alignment = 1> : !llvm.ptr -> i64
         %102 = llvm.inttoptr %101 : i64 to !llvm.ptr
         %103 = llvm.getelementptr inbounds %102[%arg22] : (!llvm.ptr, i64) -> !llvm.ptr, f64
-        llvm.store %arg16, %103 {alignment = 8 : i64} : f64, !llvm.ptr
-        %104 = llvm.load %71 {alignment = 1 : i64} : !llvm.ptr -> i64
+        llvm.store %arg16, %103 <alignment = 8> : f64, !llvm.ptr
+        %104 = llvm.load %71 <alignment = 1> : !llvm.ptr -> i64
         %105 = llvm.inttoptr %104 : i64 to !llvm.ptr
         %106 = llvm.getelementptr inbounds %105[%arg22] : (!llvm.ptr, i64) -> !llvm.ptr, f64
-        llvm.store %arg11, %106 {alignment = 8 : i64} : f64, !llvm.ptr
+        llvm.store %arg11, %106 <alignment = 8> : f64, !llvm.ptr
         %107 = arith.addi %arg22, %c1_i64 : i64
         %108 = arith.addi %72, %arg23 : i32
         %109 = arith.addi %arg23, %c1_i32 : i32

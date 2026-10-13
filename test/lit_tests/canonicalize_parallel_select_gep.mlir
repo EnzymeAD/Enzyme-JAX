@@ -75,8 +75,9 @@ func.func private @different_elem(%p: !llvm.ptr, %c: i1, %d: i64) -> !llvm.ptr {
 
 // -----
 
-// End to end: the sunk select feeds a pointer2memref view, and the load
-// rebases onto the base buffer through the existing gep-view fold.
+// End to end: the sunk select feeds a pointer2memref view, the load rebases
+// onto the base buffer through the existing gep-view fold, and the byte
+// offset's cast and division sink through the select into element offsets.
 
 func.func private @through_view(%p: !llvm.ptr, %c: i1, %i: index) -> f64 {
   %a = llvm.getelementptr inbounds|nuw %p[288] : (!llvm.ptr) -> !llvm.ptr, i8
@@ -88,14 +89,11 @@ func.func private @through_view(%p: !llvm.ptr, %c: i1, %i: index) -> f64 {
 }
 
 // CHECK:  func.func private @through_view(%[[p:.+]]: !llvm.ptr, %[[c:.+]]: i1, %[[i:.+]]: index) -> f64 {
-// CHECK-NEXT:  %[[c8:.+]] = arith.constant 8 : index
-// CHECK-NEXT:  %[[cA:.+]] = arith.constant 288 : i64
-// CHECK-NEXT:  %[[cB:.+]] = arith.constant 576 : i64
-// CHECK-NEXT:  %[[bsel:.+]] = arith.select %[[c]], %[[cA]], %[[cB]] : i64
+// CHECK-NEXT:  %[[cB:.+]] = arith.constant 72 : index
+// CHECK-NEXT:  %[[cA:.+]] = arith.constant 36 : index
 // CHECK-NEXT:  %[[view:.+]] = "enzymexla.pointer2memref"(%[[p]]) : (!llvm.ptr) -> memref<?xf64>
-// CHECK-NEXT:  %[[cast:.+]] = arith.index_cast %[[bsel]] : i64 to index
-// CHECK-NEXT:  %[[div:.+]] = arith.divsi %[[cast]], %[[c8]] : index
-// CHECK-NEXT:  %[[add:.+]] = arith.addi %[[i]], %[[div]] : index
+// CHECK-NEXT:  %[[sel:.+]] = arith.select %[[c]], %[[cA]], %[[cB]] : index
+// CHECK-NEXT:  %[[add:.+]] = arith.addi %[[i]], %[[sel]] : index
 // CHECK-NEXT:  %[[x:.+]] = memref.load %[[view]][%[[add]]] : memref<?xf64>
 // CHECK-NEXT:  return %[[x]] : f64
 // CHECK-NEXT:  }

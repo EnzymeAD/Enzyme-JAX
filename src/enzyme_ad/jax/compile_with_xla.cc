@@ -122,8 +122,11 @@ absl::Status run_pass_pipeline(mlir::Operation *mod,
         return failure();
       });
   if (!mlir::succeeded(pm.run(cast<mlir::ModuleOp>(mod)))) {
+    engine.eraseHandler(id);
     return absl::InternalError(error_stream.str());
   }
+  engine.eraseHandler(id);
+  return absl::OkStatus();
 }
 
 absl::StatusOr<std::pair<std::string, std::string>>

@@ -263,9 +263,9 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       rewriter, kcall.getLoc(), kcall.getResultTypes(),
       SymRefAttrReplacingFunctionName(kcall.getFn(), callName),
       kcall.getInputs(), kcall.getBackendConfigAttr(),
-      kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(),
-      kcall.getArgAttrsAttr(), kcall.getResAttrsAttr(),
-      kcall.getOutputOperandAliasesAttr(), kcall.getXlaSideEffectFreeAttr());
+      kcall.getOperandLayoutsAttr(), kcall.getArgAttrsAttr(),
+      kcall.getResAttrsAttr(), kcall.getOutputOperandAliasesAttr(),
+      kcall.getXlaSideEffectFreeAttr());
   kcall.replaceAllUsesWith(replacement);
   kcall.erase();
   return true;
@@ -439,9 +439,9 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       rewriter, kcall.getLoc(), kcall.getResultTypes(),
       SymRefAttrReplacingFunctionName(kcall.getFn(), callName),
       kcall.getInputs(), kcall.getBackendConfigAttr(),
-      kcall.getOperandLayoutsAttr(), kcall.getResultLayoutsAttr(),
-      kcall.getArgAttrsAttr(), kcall.getResAttrsAttr(),
-      kcall.getOutputOperandAliasesAttr(), kcall.getXlaSideEffectFreeAttr());
+      kcall.getOperandLayoutsAttr(), kcall.getArgAttrsAttr(),
+      kcall.getResAttrsAttr(), kcall.getOutputOperandAliasesAttr(),
+      kcall.getXlaSideEffectFreeAttr());
   kcall.replaceAllUsesWith(replacement);
   kcall.erase();
   return true;

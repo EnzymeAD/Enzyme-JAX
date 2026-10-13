@@ -94,11 +94,12 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Comm/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 
 #include "src/enzyme_ad/jax/Dialect/Comm/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
-#include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
+
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/TritonExt/Dialect.h"
 
@@ -133,6 +134,13 @@
 #include "triton/Target/LLVMIR/Passes.h"
 #endif
 
+#ifndef ENZYME_JAX_ENABLE_Z3
+#define ENZYME_JAX_ENABLE_Z3 1
+#endif
+
+#if ENZYME_JAX_ENABLE_Z3
+#include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
+#endif
 #include "cuda_tile/Dialect/CudaTile/IR/Dialect.h"
 #include "cuda_tile/Dialect/CudaTile/Transforms/Passes.h"
 
@@ -167,6 +175,17 @@ struct UpdateWithoutCornersOpShardingInterface
     : public mlir::sdy::ShardingRuleOpInterface::ExternalModel<
           PermuteOperandOpInterface<enzymexla::UpdateWithoutCornersOp>,
           enzymexla::UpdateWithoutCornersOp> {
+  mlir::sdy::OpShardingRuleAttr getShardingRule(mlir::Operation *op) const {
+    return sdy::OpShardingRuleBuilder(op)
+        .addPointwise(sdy::getTensorShape(op->getResult(0)))
+        .build();
+  }
+};
+
+template <typename T>
+struct PointwiseShardingInterface
+    : public mlir::sdy::ShardingRuleOpInterface::ExternalModel<
+          PointwiseShardingInterface<T>, T> {
   mlir::sdy::OpShardingRuleAttr getShardingRule(mlir::Operation *op) const {
     return sdy::OpShardingRuleBuilder(op)
         .addPointwise(sdy::getTensorShape(op->getResult(0)))
@@ -211,6 +230,11 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
         enzymexla::RotateOp::attachInterface<
             PermuteOperandOpInterface<enzymexla::RotateOp>>(*ctx);
       });
+
+  registry.addExtension(+[](mlir::MLIRContext *ctx, chlo::ChloDialect *) {
+    chlo::ConjOp::attachInterface<PointwiseShardingInterface<chlo::ConjOp>>(
+        *ctx);
+  });
 }
 
 void registerDialects(mlir::DialectRegistry &registry) {
@@ -247,7 +271,6 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::comm::CommDialect>();
   registry.insert<mlir::enzyme::distributed::DistributedDialect>();
   registry.insert<mlir::enzyme::tessera::TesseraDialect>();
-  registry.insert<mlir::enzyme::perfify::PerfifyDialect>();
   registry.insert<mlir::enzymexla::triton_ext::TritonExtDialect>();
   registry.insert<mlir::sdy::SdyDialect>();
   registry.insert<mlir::ub::UBDialect>();
@@ -256,6 +279,9 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect>();
   registry.insert<mlir::triton::gpu::TritonGPUDialect>();
   registry.insert<mlir::cuda_tile::CudaTileDialect>();
+#endif
+#if ENZYME_JAX_ENABLE_Z3
+  registry.insert<mlir::enzyme::perfify::PerfifyDialect>();
 #endif
 }
 
@@ -346,6 +372,7 @@ void initializePasses() {
   registerenzymePasses();
   enzyme::registerenzymexlaPasses();
   mlir::enzyme::tessera::registertesseraPasses();
+  mlir::enzyme::perfify::registerperfifyPasses();
   mlir::comm::registercommPasses();
 
   // Register the standard passes we want.

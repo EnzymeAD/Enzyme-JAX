@@ -30,8 +30,8 @@ module {
 // CHECK-LABEL: llvm.func @dsq
 // CHECK:         %[[one:.+]] = arith.constant 1.000000e+00 : f64
 // CHECK:         enzyme.autodiff @sq(%arg0, %[[one]])
-// CHECK-SAME:      activity = [#enzyme<activity enzyme_active>]
-// CHECK-SAME:      ret_activity = [#enzyme<activity enzyme_activenoneed>]
+// CHECK-SAME:      activity = [#enzyme.activity<enzyme_active>]
+// CHECK-SAME:      ret_activity = [#enzyme.activity<enzyme_activenoneed>]
 
 // -----
 
@@ -68,5 +68,5 @@ module {
 
 // CHECK-LABEL: llvm.func @dkern
 // CHECK:         enzyme.fwddiff @kern(%arg0, %arg1, %arg2, %arg3)
-// CHECK-SAME:      activity = [#enzyme<activity enzyme_dup>, #enzyme<activity enzyme_dup>]
+// CHECK-SAME:      activity = [#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_dup>]
 // CHECK-SAME:      ret_activity = []

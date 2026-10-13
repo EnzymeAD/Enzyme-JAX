@@ -5,17 +5,17 @@ include "Dialect.td"
 
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
+include "Utils.td"
 include "Types.td"
 include "Attrs.td"
 
-def TensorI32
-    : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && "
-                 "::llvm::cast<::mlir::TensorType>($_self).getShape().size() "
-                 "== 0 && "
-                 "::llvm::cast<::mlir::TensorType>($_self).getElementType()."
-                 "isSignlessInteger(32)">,
-           "tensor<i32>", "::mlir::TensorType">,
-      BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(32))">;
+def MpiConstantOp : Comm_Op<"mpi.constant", [ConstantLike, Pure, AllTypesMatch<["value", "result"]>]> {
+  let summary = "Creates a value that represents a MPI constant";
+  let arguments = (ins TypedAttrInterface : $value);
+  let results = (outs AnyTypeOf<[MpiComm, MpiOp]> : $result);
+  let assemblyFormat = "attr-dict $value";
+  let hasFolder = 1;
+}
 
 def MpiCommRankOp : Comm_Op<"mpi.comm_rank", [Pure]> {
   let summary = "Equivalent to `MPI_Comm_rank`";
@@ -121,12 +121,12 @@ def MpiWaitallOp : Comm_Op<"mpi.waitall", []> {
   let assemblyFormat = "operands attr-dict `:` type(operands)";
 }
 
-def MpiAllreduceOp : Comm_Op<"mpi.allreduce", []> {
+def MpiAllreduceOp : Comm_Op<"mpi.allreduce", [AllTypesMatch<["sendbuf", "recvbuf"]>]> {
   let summary = "Equivalent to `MPI_Allreduce`";
 
   let arguments = (ins
     AnyTensor : $sendbuf,
-    MpiOpsAttr : $reduceOp,
+    MpiOpAttr : $reduceOp,
     MpiComm : $comm
   );
 
@@ -134,7 +134,7 @@ def MpiAllreduceOp : Comm_Op<"mpi.allreduce", []> {
   let assemblyFormat = "$sendbuf `,` $reduceOp `,` $comm attr-dict `:` functional-type(operands, results)";
 }
 
-def MpiBcastOp : Comm_Op<"mpi.bcast", []> {
+def MpiBcastOp : Comm_Op<"mpi.bcast", [AllTypesMatch<["inBuffer", "outBuffer"]>]> {
   let summary = "Equivalent to `MPI_Bcast`";
 
   let arguments = (ins

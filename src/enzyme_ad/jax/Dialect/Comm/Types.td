@@ -23,19 +23,11 @@ def MpiOp : Comm_Type<"MpiOp", "mpi.op"> {
 }
 
 // NCCL
-def NCCL_Comm : Comm_Type<"NCCL_Comm", "nccl.comm"> {
+def NcclComm : Comm_Type<"NcclComm", "nccl.comm"> {
   let summary = "NCCL communicator handler";
 }
 
-def NCCL_Result : Comm_Type<"NCCL_Result", "nccl.result"> {
-  let summary = "NCCL result handler";
-}
-
-def NCCL_Stream : Comm_Type<"NCCL_Stream", "nccl.stream"> {
-  let summary = "NCCL CUDA stream handler";
-}
-
-def NCCL_RedOp : Comm_Type<"NCCL_RedOp", "nccl.redop"> {
+def NcclRedOp : Comm_Type<"NcclRedOp", "nccl.redop"> {
   let summary = "NCCL reduction operation handler";
 }
 

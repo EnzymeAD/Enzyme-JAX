@@ -314,6 +314,14 @@ namespace llvm {
 /// Support VirtualInstructions in llvm::DenseMaps.
 template <> struct DenseMapInfo<polly::VirtualInstruction> {
 public:
+  // Newer LLVM versions no longer provide getEmptyKey/getTombstoneKey for
+  // pointer types, so construct the sentinels here (matching the values LLVM
+  // historically used) to remain compatible with both old and new LLVM.
+  template <typename T> static T *getSentinel(intptr_t Val) {
+    constexpr uintptr_t Log2MaxAlign = 12;
+    return reinterpret_cast<T *>(static_cast<uintptr_t>(Val) << Log2MaxAlign);
+  }
+
   static bool isEqual(polly::VirtualInstruction LHS,
                       polly::VirtualInstruction RHS) {
     return DenseMapInfo<polly::ScopStmt *>::isEqual(LHS.getStmt(),
@@ -324,15 +332,15 @@ public:
 
   static polly::VirtualInstruction getTombstoneKey() {
     polly::VirtualInstruction TombstoneKey;
-    TombstoneKey.Stmt = DenseMapInfo<polly::ScopStmt *>::getTombstoneKey();
-    TombstoneKey.Inst = DenseMapInfo<Instruction *>::getTombstoneKey();
+    TombstoneKey.Stmt = getSentinel<polly::ScopStmt>(-2);
+    TombstoneKey.Inst = getSentinel<Instruction>(-2);
     return TombstoneKey;
   }
 
   static polly::VirtualInstruction getEmptyKey() {
     polly::VirtualInstruction EmptyKey;
-    EmptyKey.Stmt = DenseMapInfo<polly::ScopStmt *>::getEmptyKey();
-    EmptyKey.Inst = DenseMapInfo<Instruction *>::getEmptyKey();
+    EmptyKey.Stmt = getSentinel<polly::ScopStmt>(-1);
+    EmptyKey.Inst = getSentinel<Instruction>(-1);
     return EmptyKey;
   }
 

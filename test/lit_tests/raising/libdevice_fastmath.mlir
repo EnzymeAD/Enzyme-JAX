@@ -6,10 +6,10 @@
 // op is lowered back.
 
 llvm.func @fastmath(%a: f64, %b: f64, %c: f64) -> f64 {
-  %0 = llvm.fmul %a, %b {fastmathFlags = #llvm.fastmath<fast>} : f64
-  %1 = llvm.fadd %0, %c {fastmathFlags = #llvm.fastmath<fast>} : f64
-  %2 = llvm.fsub %1, %a {fastmathFlags = #llvm.fastmath<nsz>} : f64
-  %3 = llvm.fdiv %2, %b {fastmathFlags = #llvm.fastmath<fast>} : f64
+  %0 = llvm.fmul %a, %b fastmath<fast> : f64
+  %1 = llvm.fadd %0, %c fastmath<fast> : f64
+  %2 = llvm.fsub %1, %a fastmath<nsz> : f64
+  %3 = llvm.fdiv %2, %b fastmath<fast> : f64
   llvm.return %3 : f64
 }
 
@@ -25,7 +25,7 @@ llvm.func @fastmath(%a: f64, %b: f64, %c: f64) -> f64 {
 // Comparisons carry them too.
 
 llvm.func @compare(%a: f64, %b: f64) -> i1 {
-  %0 = llvm.fcmp "ogt" %a, %b {fastmathFlags = #llvm.fastmath<fast>} : f64
+  %0 = llvm.fcmp "ogt" %a, %b fastmath<fast> : f64
   llvm.return %0 : i1
 }
 
@@ -50,7 +50,7 @@ llvm.func @no_flags(%a: f64, %b: f64) -> f64 {
 // -----
 
 llvm.func @explicit_none(%a: f64, %b: f64) -> i1 {
-  %0 = llvm.fcmp "ogt" %a, %b {fastmathFlags = #llvm.fastmath<none>} : f64
+  %0 = llvm.fcmp "ogt" %a, %b : f64
   llvm.return %0 : i1
 }
 

@@ -6,13 +6,13 @@
 #ifndef POLYMER_SUPPORT_OSLSCOPSTMTOPSET_H
 #define POLYMER_SUPPORT_OSLSCOPSTMTOPSET_H
 
+#include "mlir/Support/LLVM.h"
 #include "llvm/ADT/SetVector.h"
 
 using namespace llvm;
 
 namespace mlir {
 class Operation;
-struct LogicalResult;
 namespace affine {
 class FlatAffineValueConstraints;
 }

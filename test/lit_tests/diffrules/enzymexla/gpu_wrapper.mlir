@@ -21,10 +21,10 @@ func.func @dgpu_wrapper() {
   %dalloc = gpu.alloc() : memref<120x120xf32, 1>
   %ptr = "enzymexla.memref2pointer"(%alloc) : (memref<120x120xf32, 1>) -> !llvm.ptr
   %dptr = "enzymexla.memref2pointer"(%dalloc) : (memref<120x120xf32, 1>) -> !llvm.ptr
-  enzyme.autodiff @gpu_wrapper(%ptr, %dptr) {
-    activity = [#enzyme<activity enzyme_dup>],
+  enzyme.autodiff @gpu_wrapper(%ptr, %dptr) <{
+    activity = [#enzyme.activity<enzyme_dup>],
     ret_activity = []
-  } : (!llvm.ptr, !llvm.ptr) -> ()
+  }> : (!llvm.ptr, !llvm.ptr) -> ()
   return
 }
 
@@ -132,10 +132,10 @@ func.func @dgpu_wrapper_part_inactive() {
   %ptr = "enzymexla.memref2pointer"(%alloc) : (memref<120x120xf32, 1>) -> !llvm.ptr
   %dptr = "enzymexla.memref2pointer"(%dalloc) : (memref<120x120xf32, 1>) -> !llvm.ptr
   %i_ptr = "enzymexla.memref2pointer"(%inactive) : (memref<120x120xf32, 1>) -> !llvm.ptr
-  enzyme.autodiff @gpu_wrapper_partial_inactive(%ptr, %dptr, %i_ptr) {
-    activity = [#enzyme<activity enzyme_dup>, #enzyme<activity enzyme_const>],
+  enzyme.autodiff @gpu_wrapper_partial_inactive(%ptr, %dptr, %i_ptr) <{
+    activity = [#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_const>],
     ret_activity = []
-  } : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
+  }> : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
   return
 }
 

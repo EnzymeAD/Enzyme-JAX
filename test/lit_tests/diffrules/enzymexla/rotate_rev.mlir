@@ -19,15 +19,9 @@ module {
 }
 
 // CHECK-LABEL: func.func @rotate(%arg0: tensor<10x5xf32>, %arg1: tensor<10x5xf32>) -> tensor<10x5xf32> {
-// CHECK-DAG:     %cst = arith.constant dense<0.000000e+00> : tensor<10x5xf32>
-// CHECK:         %0 = arith.addf %arg1, %cst fastmath<fast> : tensor<10x5xf32>
-// CHECK:         %1 = "enzymexla.rotate"(%0) <{amount = 3 : i32, dimension = 1 : i32}> : (tensor<10x5xf32>) -> tensor<10x5xf32>
-// CHECK:         %2 = arith.addf %1, %cst fastmath<fast> : tensor<10x5xf32>
-// CHECK:         return %2 : tensor<10x5xf32>
+// CHECK:         %0 = "enzymexla.rotate"(%arg1) <{amount = 3 : i32, dimension = 1 : i32}> : (tensor<10x5xf32>) -> tensor<10x5xf32>
+// CHECK:         return %0 : tensor<10x5xf32>
 
 // CHECK-LARGE-LABEL: func.func @rotate_large_amount(%arg0: tensor<10x5xf32>, %arg1: tensor<10x5xf32>) -> tensor<10x5xf32> {
-// CHECK-LARGE-DAG:     %cst = arith.constant dense<0.000000e+00> : tensor<10x5xf32>
-// CHECK-LARGE:         %0 = arith.addf %arg1, %cst fastmath<fast> : tensor<10x5xf32>
-// CHECK-LARGE:         %1 = "enzymexla.rotate"(%0) <{amount = 3 : i32, dimension = 1 : i32}> : (tensor<10x5xf32>) -> tensor<10x5xf32>
-// CHECK-LARGE:         %2 = arith.addf %1, %cst fastmath<fast> : tensor<10x5xf32>
-// CHECK-LARGE:         return %2 : tensor<10x5xf32>
+// CHECK-LARGE:         %0 = "enzymexla.rotate"(%arg1) <{amount = 3 : i32, dimension = 1 : i32}> : (tensor<10x5xf32>) -> tensor<10x5xf32>
+// CHECK-LARGE:         return %0 : tensor<10x5xf32>

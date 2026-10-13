@@ -32,19 +32,19 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
     llvm.intr.lifetime.start %11 : !llvm.ptr
     llvm.cond_br %2, ^bb1, ^bb2
   ^bb1:  // pred: ^bb0
-    %14 = llvm.load %10 {alignment = 8 : i64, tbaa = [#tbaa_tag1]} : !llvm.ptr -> !llvm.ptr
+    %14 = llvm.load %10 <alignment = 8, tbaa = [#tbaa_tag1]> : !llvm.ptr -> !llvm.ptr
     llvm.br ^bb2
   ^bb2:  // 2 preds: ^bb0, ^bb1
     llvm.intr.lifetime.start %12 : !llvm.ptr
-    llvm.store %7, %12 {alignment = 4 : i64, tbaa = [#tbaa_tag]} : i32, !llvm.ptr
+    llvm.store %7, %12 <alignment = 4, tbaa = [#tbaa_tag]> : i32, !llvm.ptr
     %15 = llvm.call @cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags(%12, %3, %0, %5, %7) : (!llvm.ptr {llvm.nonnull, llvm.noundef}, !llvm.ptr {llvm.nonnull, llvm.noundef}, i32 {llvm.noundef}, i64 {llvm.noundef}, i32 {llvm.noundef}) -> (i32 {llvm.noundef})
     %s7 = llvm.alloca %0 x !llvm.struct<"struct.cudaFuncAttributes", (i64, i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, array<16 x i32>)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
     %s19 = llvm.call @cudaFuncGetAttributes(%s7, %3) {no_unwind} : (!llvm.ptr {llvm.nonnull, llvm.noundef}, !llvm.ptr {llvm.nonnull, llvm.noundef}) -> (i32 {llvm.noundef})
-    %16 = llvm.load %12 {alignment = 4 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> i32
+    %16 = llvm.load %12 <alignment = 4, tbaa = [#tbaa_tag]> : !llvm.ptr -> i32
     %17 = llvm.call @printf(%8, %16) vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, i32 {llvm.noundef}) -> i32
-    %18 = llvm.load %10 {alignment = 8 : i64, tbaa = [#tbaa_tag1]} : !llvm.ptr -> !llvm.ptr
+    %18 = llvm.load %10 <alignment = 8, tbaa = [#tbaa_tag1]> : !llvm.ptr -> !llvm.ptr
     %19 = llvm.call @cudaMemcpy(%11, %18, %1, %9) : (!llvm.ptr {llvm.nonnull, llvm.noundef}, !llvm.ptr {llvm.noundef}, i64 {llvm.noundef}, i32 {llvm.noundef}) -> i32
-    %20 = llvm.load %10 {alignment = 8 : i64, tbaa = [#tbaa_tag1]} : !llvm.ptr -> !llvm.ptr
+    %20 = llvm.load %10 <alignment = 8, tbaa = [#tbaa_tag1]> : !llvm.ptr -> !llvm.ptr
     %21 = llvm.call @cudaFree(%20) : (!llvm.ptr {llvm.noundef}) -> i32
     llvm.intr.lifetime.end %12 : !llvm.ptr
     llvm.intr.lifetime.end %11 : !llvm.ptr
@@ -61,13 +61,13 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
     %0 = nvvm.read.ptx.sreg.tid.x : i32
     %1 = llvm.zext nneg %0 : i32 to i64
     %2 = llvm.getelementptr inbounds|nuw %arg0[%1] : (!llvm.ptr, i64) -> !llvm.ptr, i32
-    llvm.store %0, %2 {alignment = 4 : i64, tbaa = [#tbaa_tag]} : i32, !llvm.ptr
+    llvm.store %0, %2 <alignment = 4, tbaa = [#tbaa_tag]> : i32, !llvm.ptr
     llvm.return
   }
   llvm.func local_unnamed_addr @__mlir_cuda_caller_phase3(...) attributes {sym_visibility = "private"}
 }
 
-// CHECK:  llvm.func local_unnamed_addr @main() -> (i32 {llvm.noundef}) attributes {dso_local, no_infs_fp_math = true, no_nans_fp_math = true, no_signed_zeros_fp_math = true, passthrough = ["mustprogress", "norecurse", ["approx-func-fp-math", "true"], ["min-legal-vector-width", "0"], ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>, tune_cpu = "generic", unsafe_fp_math = true, uwtable_kind = #llvm.uwtableKind<async>} {
+// CHECK:  llvm.func local_unnamed_addr @main() -> (i32 {llvm.noundef}) attributes {no_infs_fp_math = true, no_nans_fp_math = true, unsafe_fp_math = true, dso_local, no_signed_zeros_fp_math = true, passthrough = ["mustprogress", "norecurse", ["approx-func-fp-math", "true"], ["min-legal-vector-width", "0"], ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>, tune_cpu = "generic", uwtable_kind = #llvm.uwtableKind<async>} {
 // CHECK-NEXT:    %0 = llvm.mlir.constant(1 : i32) : i32
 // CHECK-NEXT:    %1 = llvm.mlir.constant(512 : i64) : i64
 // CHECK-NEXT:    %2 = llvm.mlir.constant(true) : i1
@@ -90,25 +90,25 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    llvm.intr.lifetime.start %11 : !llvm.ptr
 // CHECK-NEXT:    llvm.cond_br %2, ^bb1, ^bb2
 // CHECK-NEXT:  ^bb1:  // pred: ^bb0
-// CHECK-NEXT:    %16 = llvm.load %10 {alignment = 8 : i64, tbaa = [#tbaa_tag1]} : !llvm.ptr -> !llvm.ptr
+// CHECK-NEXT:    %16 = llvm.load %10 <alignment = 8, tbaa = [#tbaa_tag1]> : !llvm.ptr -> !llvm.ptr
 // CHECK-NEXT:    llvm.br ^bb2
 // CHECK-NEXT:  ^bb2:  // 2 preds: ^bb0, ^bb1
 // CHECK-NEXT:    llvm.intr.lifetime.start %12 : !llvm.ptr
-// CHECK-NEXT:    llvm.store %7, %12 {alignment = 4 : i64, tbaa = [#tbaa_tag]} : i32, !llvm.ptr
+// CHECK-NEXT:    llvm.store %7, %12 <alignment = 4, tbaa = [#tbaa_tag]> : i32, !llvm.ptr
 // CHECK-NEXT:    %17 = "enzymexla.gpu_occupancy"(%0, %5, %7) <{fn = @__mlir_gpu_module::@reactant$_Z18__device_stub__fooPi}> : (i32, i64, i32) -> i32
 // CHECK-NEXT:    llvm.store %17, %12 : i32, !llvm.ptr
 // CHECK-NEXT:    %18 = llvm.mlir.zero : i32
 // CHECK-NEXT:    %19 = llvm.alloca %0 x !llvm.struct<"struct.cudaFuncAttributes", (i64, i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, array<16 x i32>)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
 // CHECK-NEXT:    %20 = llvm.call @cudaFuncGetAttributes(%19, %3) {no_unwind} : (!llvm.ptr {llvm.nonnull, llvm.noundef}, !llvm.ptr {llvm.nonnull, llvm.noundef}) -> (i32 {llvm.noundef})
-// CHECK-NEXT:    %21 = llvm.load %12 {alignment = 4 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> i32
+// CHECK-NEXT:    %21 = llvm.load %12 <alignment = 4, tbaa = [#tbaa_tag]> : !llvm.ptr -> i32
 // CHECK-NEXT:    %22 = llvm.call @printf(%8, %21) vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, i32 {llvm.noundef}) -> i32
-// CHECK-NEXT:    %23 = llvm.load %10 {alignment = 8 : i64, tbaa = [#tbaa_tag1]} : !llvm.ptr -> !llvm.ptr
+// CHECK-NEXT:    %23 = llvm.load %10 <alignment = 8, tbaa = [#tbaa_tag1]> : !llvm.ptr -> !llvm.ptr
 // CHECK-NEXT:    %24 = "enzymexla.pointer2memref"(%11) : (!llvm.ptr) -> memref<?xi8>
 // CHECK-NEXT:    %25 = "enzymexla.pointer2memref"(%23) : (!llvm.ptr) -> memref<?xi8, 1>
 // CHECK-NEXT:    %26 = arith.index_cast %1 : i64 to index
 // CHECK-NEXT:    enzymexla.memcpy  %24, %25, %26 : memref<?xi8>, memref<?xi8, 1>
 // CHECK-NEXT:    %27 = llvm.mlir.zero : i32
-// CHECK-NEXT:    %28 = llvm.load %10 {alignment = 8 : i64, tbaa = [#tbaa_tag1]} : !llvm.ptr -> !llvm.ptr
+// CHECK-NEXT:    %28 = llvm.load %10 <alignment = 8, tbaa = [#tbaa_tag1]> : !llvm.ptr -> !llvm.ptr
 // CHECK-NEXT:    %29 = "enzymexla.pointer2memref"(%28) : (!llvm.ptr) -> memref<?xi8, 1>
 // CHECK-NEXT:    gpu.dealloc  %29 : memref<?xi8, 1>
 // CHECK-NEXT:    %30 = llvm.mlir.zero : i32

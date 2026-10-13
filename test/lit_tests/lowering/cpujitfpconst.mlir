@@ -18,13 +18,13 @@
 module {
   func.func private @scale(%arg0: !llvm.ptr<1>) {
     %cst = llvm.mlir.constant(5.000000e-01 : f64) : f64
-    %0 = llvm.load %arg0 {alignment = 8 : i64} : !llvm.ptr<1> -> f64
+    %0 = llvm.load %arg0 <alignment = 8> : !llvm.ptr<1> -> f64
     %1 = llvm.fmul %cst, %0 : f64
-    llvm.store %1, %arg0 {alignment = 8 : i64} : f64, !llvm.ptr<1>
+    llvm.store %1, %arg0 <alignment = 8> : f64, !llvm.ptr<1>
     return
   }
   func.func @main(%arg0: tensor<64xf64>) -> tensor<64xf64> {
-    %0 = enzymexla.jit_call @scale (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xf64>) -> tensor<64xf64>
+    %0 = enzymexla.jit_call @scale (%arg0) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<64xf64>) -> tensor<64xf64>
     return %0 : tensor<64xf64>
   }
 }

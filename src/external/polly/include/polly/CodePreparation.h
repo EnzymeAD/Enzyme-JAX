@@ -16,7 +16,8 @@
 #include "llvm/IR/PassManager.h"
 
 namespace polly {
-struct CodePreparationPass final : llvm::PassInfoMixin<CodePreparationPass> {
+struct CodePreparationPass final
+    : llvm::OptionalPassInfoMixin<CodePreparationPass> {
   llvm::PreservedAnalyses run(llvm::Function &F,
                               llvm::FunctionAnalysisManager &FAM);
 };

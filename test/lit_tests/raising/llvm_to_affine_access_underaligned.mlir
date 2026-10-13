@@ -18,8 +18,8 @@ module {
   llvm.func @swap16(%a: !llvm.ptr, %b: !llvm.ptr) {
     %pa = llvm.getelementptr inbounds|nuw %a[5488] : (!llvm.ptr) -> !llvm.ptr, i8
     %pb = llvm.getelementptr inbounds|nuw %b[5488] : (!llvm.ptr) -> !llvm.ptr, i8
-    %old = llvm.load %pa {alignment = 8 : i64} : !llvm.ptr -> i128
-    llvm.store %old, %pb {alignment = 8 : i64} : i128, !llvm.ptr
+    %old = llvm.load %pa <alignment = 8> : !llvm.ptr -> i128
+    llvm.store %old, %pb <alignment = 8> : i128, !llvm.ptr
     llvm.return
   }
 }
@@ -32,10 +32,10 @@ module {
 // lower-aligned-affine-accesses takes the attributed accesses down to memref
 // before lower-affine would have dropped the attribute.
 // MEMREF-LABEL: llvm.func @swap16
-// MEMREF:         memref.load %{{.*}} {alignment = 8 : i64, ordering = 0 : i64} : memref<?xi128>
-// MEMREF:         memref.store %{{.*}} {alignment = 8 : i64, ordering = 0 : i64} : memref<?xi128>
+// MEMREF:         memref.load %{{.*}} alignment(8) {ordering = 0 : i64} : memref<?xi128>
+// MEMREF:         memref.store %{{.*}} alignment(8) {ordering = 0 : i64} : memref<?xi128>
 
 // And the llvm access comes out at the alignment that went in.
 // LLVM-LABEL: llvm.func @swap16
-// LLVM:         llvm.load %{{.*}} {alignment = 8 : i64{{.*}}} : !llvm.ptr -> i128
-// LLVM:         llvm.store %{{.*}} {alignment = 8 : i64{{.*}}} : i128, !llvm.ptr
+// LLVM:         llvm.load %{{.*}} <alignment = 8{{.*}}> : !llvm.ptr -> i128
+// LLVM:         llvm.store %{{.*}} <alignment = 8{{.*}}> : i128, !llvm.ptr

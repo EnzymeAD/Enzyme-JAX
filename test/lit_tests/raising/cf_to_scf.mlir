@@ -317,8 +317,8 @@ func.func @infinite_loop(%arg: f32) -> f32 {
 // CHECK-NEXT:   %[[CALL:.*]] = func.call @bar(%[[ARG1]])
 // CHECK-NEXT:   %[[TRUNC:.*]] = arith.trunci %[[C1]]
 // CHECK-NEXT:   scf.condition(%[[TRUNC]]) %[[CALL]]
-// CHECK: %[[POISON:.*]] = ub.poison
-// CHECK: return %[[POISON]]
+// The loop never exits, so the follow-on block is unreachable.
+// CHECK: ub.unreachable
 
 // -----
 
@@ -456,19 +456,16 @@ func.func @some_successors_with_different_return(%flag: i32) -> i32 {
 // CHECK-NEXT:   scf.yield %[[C6]], %[[C1]]
 // CHECK:      default
 // CHECK-NEXT:   scf.yield %[[POISON]], %[[C0]]
-// CHECK:      cf.switch %[[INDEX_SWITCH]]#1
-// CHECK-NEXT: default: ^[[BB2:[[:alnum:]]+]]
-// CHECK-SAME: %[[INDEX_SWITCH]]#0
-// CHECK-NEXT: 0: ^[[BB1:[[:alnum:]]+]]
-// CHECK-NEXT: ]
-
-// CHECK: ^[[BB2]]{{.*}}:
-// CHECK: scf.while
-// CHECK-NOT: cf.{{(switch|(cond_)?br)}}
-// CHECK: return
-
-// CHECK: ^[[BB1]]:
-// CHECK-NEXT: "test.returnLike"
+// The remaining dispatch on the taken-flag is lifted as well, leaving no cf ops.
+// CHECK:      %[[CAST2:.*]] = arith.index_castui %[[INDEX_SWITCH]]#1
+// CHECK-NEXT: scf.index_switch %[[CAST2]]
+// CHECK:      case 0
+// CHECK-NEXT:   scf.yield
+// CHECK:      default
+// CHECK-NEXT:   scf.while
+// CHECK-SAME:     %[[ARG1:.*]] = %[[INDEX_SWITCH]]#0
+// CHECK-NOT:  cf.{{(switch|(cond_)?br)}}
+// CHECK:      "test.returnLike"
 
 // -----
 

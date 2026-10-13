@@ -4,32 +4,32 @@ module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg0: !transform.any_op) {
     %0 = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op
     transform.apply_patterns to %0 {
-      transform.apply_patterns.enzyme_hlo.add_simplify {benefit = 16 : i64}
-      transform.apply_patterns.enzyme_hlo.sub_simplify {benefit = 16 : i64}
-      transform.apply_patterns.enzyme_hlo.and_simplify {benefit = 16 : i64}
-      transform.apply_patterns.enzyme_hlo.max_simplify {benefit = 16 : i64}
-      transform.apply_patterns.enzyme_hlo.min_simplify {benefit = 16 : i64}
-      transform.apply_patterns.enzyme_hlo.or_simplify {benefit = 16 : i64}
-      transform.apply_patterns.enzyme_hlo.xor_simplify {benefit = 16 : i64}
-      transform.apply_patterns.enzyme_hlo.mul_simplify {benefit = 16 : i64}
-      transform.apply_patterns.enzyme_hlo.div_simplify {benefit = 16 : i64}
-      transform.apply_patterns.enzyme_hlo.rem_simplify {benefit = 16 : i64}
-      transform.apply_patterns.enzyme_hlo.pow_simplify {benefit = 16 : i64}
-      transform.apply_patterns.enzyme_hlo.shift_right_logical_simplify {benefit = 16 : i64}
-      transform.apply_patterns.enzyme_hlo.slice_simplify {benefit = 16 : i64}
-      transform.apply_patterns.enzyme_hlo.convert_simplify {benefit = 16 : i64}
-      transform.apply_patterns.enzyme_hlo.dynamic_slice_to_static {benefit = 16 : i64}
-      transform.apply_patterns.enzyme_hlo.dynamic_update_slice_elim {benefit = 16 : i64}
+      transform.apply_patterns.enzyme_hlo.add_simplify <benefit = 16>
+      transform.apply_patterns.enzyme_hlo.sub_simplify <benefit = 16>
+      transform.apply_patterns.enzyme_hlo.and_simplify <benefit = 16>
+      transform.apply_patterns.enzyme_hlo.max_simplify <benefit = 16>
+      transform.apply_patterns.enzyme_hlo.min_simplify <benefit = 16>
+      transform.apply_patterns.enzyme_hlo.or_simplify <benefit = 16>
+      transform.apply_patterns.enzyme_hlo.xor_simplify <benefit = 16>
+      transform.apply_patterns.enzyme_hlo.mul_simplify <benefit = 16>
+      transform.apply_patterns.enzyme_hlo.div_simplify <benefit = 16>
+      transform.apply_patterns.enzyme_hlo.rem_simplify <benefit = 16>
+      transform.apply_patterns.enzyme_hlo.pow_simplify <benefit = 16>
+      transform.apply_patterns.enzyme_hlo.shift_right_logical_simplify <benefit = 16>
+      transform.apply_patterns.enzyme_hlo.slice_simplify <benefit = 16>
+      transform.apply_patterns.enzyme_hlo.convert_simplify <benefit = 16>
+      transform.apply_patterns.enzyme_hlo.dynamic_slice_to_static <benefit = 16>
+      transform.apply_patterns.enzyme_hlo.dynamic_update_slice_elim <benefit = 16>
       transform.apply_patterns.enzyme_hlo.if_inline
       transform.apply_patterns.enzyme_hlo.if_to_select
-      transform.apply_patterns.enzyme_hlo.divide_sqrt_to_multiply_rsqrt {benefit = 16 : i64}
+      transform.apply_patterns.enzyme_hlo.divide_sqrt_to_multiply_rsqrt <benefit = 16>
       transform.apply_patterns.enzyme_hlo.replace_neg_add_with_subtract
       transform.apply_patterns.enzyme_hlo.replace_subtract_neg_with_add
       transform.apply_patterns.enzyme_hlo.binop_const_simplify
       transform.apply_patterns.enzyme_hlo.not_select_simplify
       transform.apply_patterns.enzyme_hlo.common_compare_expression_rewrite
       transform.apply_patterns.enzyme_hlo.compare_select_simplify
-      transform.apply_patterns.enzyme_hlo.while_simplify {parameter = true}
+      transform.apply_patterns.enzyme_hlo.while_simplify <parameter = true>
       transform.apply_patterns.enzyme_hlo.greedy_while_loop_batch_fission
     } : !transform.any_op
     transform.yield 

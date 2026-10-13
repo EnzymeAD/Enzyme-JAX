@@ -45,13 +45,9 @@ namespace {
 // Emitted inline instead of creating a math::IsNaNOp for RaiseIsNaN to pick up:
 // the pass is a single walk, so ops created by a pattern are never revisited.
 static Value emitIsNaN(OpBuilder &builder, Location loc, Value val) {
-  Value isFinite = stablehlo::IsFiniteOp::create(builder, loc, val);
-  Value isNotFinite = stablehlo::NotOp::create(builder, loc, isFinite);
-
-  Value isNotInf = stablehlo::NotOp::create(
-      builder, loc, chlo::IsInfOp::create(builder, loc, val));
-
-  return stablehlo::AndOp::create(builder, loc, isNotFinite, isNotInf);
+  return stablehlo::CompareOp::create(builder, loc, val, val,
+                                      stablehlo::ComparisonDirection::NE,
+                                      stablehlo::ComparisonType::FLOAT);
 }
 
 template <typename SrcOp, typename StableHLOOp, typename MHLOOp>
@@ -209,6 +205,25 @@ struct RaiseBitcast : public OpRewritePattern<arith::BitcastOp> {
   }
 };
 
+struct RaiseSinCos : public OpRewritePattern<math::SincosOp> {
+  using OpRewritePattern<math::SincosOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(math::SincosOp op,
+                                PatternRewriter &rewriter) const override {
+
+    Value x = op.getOperand();
+    if (!isa<RankedTensorType>(x.getType()))
+      return failure();
+
+    auto loc = op.getLoc();
+    auto sin = stablehlo::SineOp::create(rewriter, loc, op.getOperand());
+    auto cos = stablehlo::CosineOp::create(rewriter, loc, op.getOperand());
+    rewriter.replaceOp(op, {sin, cos});
+
+    return success();
+  }
+};
+
 // stablehlo has no fused multiply-add, so the separate mul+add is the required
 // lowering for strict fma and the permitted one for fmuladd alike.
 template <typename SrcOp> struct RaiseMulAdd : public OpRewritePattern<SrcOp> {
@@ -309,6 +324,80 @@ struct RaiseAtan : public OpRewritePattern<math::AtanOp> {
         stablehlo::ConstantOp::create(rewriter, atanOp.getLoc(), oneAttr);
     rewriter.replaceOpWithNewOp<stablehlo::Atan2Op>(atanOp, atanOp.getOperand(),
                                                     one);
+    return success();
+  }
+};
+
+// stablehlo has a natural logarithm and a natural exponential but no base-2 or
+// base-10 forms, so the math dialect's other bases are rescaled onto those.
+// The libdevice raising hands us math.log2/log10/exp2 for __nv_log2, __nv_log10
+// and __nv_exp2, so without these they reach XLA export unraised.
+struct RaiseLog10 : public OpRewritePattern<math::Log10Op> {
+  using OpRewritePattern<math::Log10Op>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(math::Log10Op log10Op,
+                                PatternRewriter &rewriter) const override {
+    // log10(x) -> log(x) * (1 / ln(10))
+    auto ty = dyn_cast<RankedTensorType>(log10Op.getResult().getType());
+    if (!ty || !isa<FloatType>(ty.getElementType()))
+      return failure();
+
+    auto loc = log10Op.getLoc();
+    // 1 / ln(10)
+    Attribute constAttr =
+        FloatAttr::get(ty.getElementType(), 0.43429448190325182765);
+    Value scale = stablehlo::ConstantOp::create(
+        rewriter, loc, ty, SplatElementsAttr::get(ty, constAttr));
+    Value log = stablehlo::LogOp::create(rewriter, loc, log10Op.getOperand());
+
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(log10Op, log, scale);
+    return success();
+  }
+};
+
+struct RaiseLog2 : public OpRewritePattern<math::Log2Op> {
+  using OpRewritePattern<math::Log2Op>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(math::Log2Op log2Op,
+                                PatternRewriter &rewriter) const override {
+    // log2(x) -> log(x) * (1 / ln(2))
+    auto ty = dyn_cast<RankedTensorType>(log2Op.getResult().getType());
+    if (!ty || !isa<FloatType>(ty.getElementType()))
+      return failure();
+
+    auto loc = log2Op.getLoc();
+    // 1 / ln(2)
+    Attribute constAttr =
+        FloatAttr::get(ty.getElementType(), 1.44269504088896340736);
+    Value scale = stablehlo::ConstantOp::create(
+        rewriter, loc, ty, SplatElementsAttr::get(ty, constAttr));
+    Value log = stablehlo::LogOp::create(rewriter, loc, log2Op.getOperand());
+
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(log2Op, log, scale);
+    return success();
+  }
+};
+
+struct RaiseExp2 : public OpRewritePattern<math::Exp2Op> {
+  using OpRewritePattern<math::Exp2Op>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(math::Exp2Op exp2Op,
+                                PatternRewriter &rewriter) const override {
+    // exp2(x) -> exp(x * ln(2))
+    auto ty = dyn_cast<RankedTensorType>(exp2Op.getResult().getType());
+    if (!ty || !isa<FloatType>(ty.getElementType()))
+      return failure();
+
+    auto loc = exp2Op.getLoc();
+    // ln(2)
+    Attribute constAttr =
+        FloatAttr::get(ty.getElementType(), 0.69314718055994530942);
+    Value scale = stablehlo::ConstantOp::create(
+        rewriter, loc, ty, SplatElementsAttr::get(ty, constAttr));
+    Value scaled =
+        stablehlo::MulOp::create(rewriter, loc, exp2Op.getOperand(), scale);
+
+    rewriter.replaceOpWithNewOp<stablehlo::ExpOp>(exp2Op, scaled);
     return success();
   }
 };
@@ -507,10 +596,7 @@ struct RaiseCmpI : public OpRewritePattern<arith::CmpIOp> {
     // Booleans (i1) and unsigned integers lower to PRED/unsigned HLO types,
     // which require an UNSIGNED comparison type regardless of the predicate.
     auto elemType = operandType.getElementType();
-    bool unsignedPredicate = predicate == arith::CmpIPredicate::ugt ||
-                             predicate == arith::CmpIPredicate::uge ||
-                             predicate == arith::CmpIPredicate::ult ||
-                             predicate == arith::CmpIPredicate::ule;
+    bool unsignedPredicate = isUnsignedPredicate(predicate);
     stablehlo::ComparisonType compType =
         (unsignedPredicate || elemType.isUnsignedInteger() ||
          elemType.isInteger(1))
@@ -603,6 +689,17 @@ struct RaiseCmpF : public OpRewritePattern<arith::CmpFOp> {
       case arith::CmpFPredicate::ONE:
         direction = stablehlo::ComparisonDirection::NE;
         break;
+      case arith::CmpFPredicate::UNO: {
+        Value isNaNLHS = emitIsNaN(rewriter, cmpOp.getLoc(), cmpOp.getLhs());
+        if (cmpOp.getLhs() == cmpOp.getRhs())
+          rewriter.replaceAllUsesWith(cmpOp.getResult(), isNaNLHS);
+        else {
+          Value isNaNRHS = emitIsNaN(rewriter, cmpOp.getLoc(), cmpOp.getRhs());
+          rewriter.replaceOpWithNewOp<stablehlo::OrOp>(cmpOp, isNaNLHS,
+                                                       isNaNRHS);
+        }
+        return success();
+      }
       default:
         return failure();
       }
@@ -696,11 +793,13 @@ struct ArithRaisingPass
         RaiseUnary<math::AbsFOp,        stablehlo::AbsOp,      mhlo::AbsOp>,
         RaiseUnary<math::AbsIOp,        stablehlo::AbsOp,      mhlo::AbsOp>,
         RaiseUnary<math::IsFiniteOp,    stablehlo::IsFiniteOp, mhlo::IsFiniteOp>,
+        RaiseUnary<math::IsInfOp,       chlo::IsInfOp,         chlo::IsInfOp>,
         RaiseUnary<math::CeilOp,        stablehlo::CeilOp,     mhlo::CeilOp>,
         RaiseUnary<math::FloorOp,       stablehlo::FloorOp,    mhlo::FloorOp>,
         RaiseUnary<math::RoundEvenOp,   stablehlo::RoundNearestEvenOp, mhlo::RoundNearestEvenOp>,
         RaiseUnary<math::RoundOp,       stablehlo::RoundOp,    mhlo::RoundOp>,
         RaiseUnary<math::ErfOp,         chlo::ErfOp,           chlo::ErfOp>,
+        RaiseUnary<math::ErfcOp,        chlo::ErfcOp,          chlo::ErfcOp>,
         RaiseUnary<arith::NegFOp,       stablehlo::NegOp,      mhlo::NegOp>,
         RaiseUnary<enzymexla::LGammaOp, chlo::LgammaOp,        chlo::LgammaOp>,
 
@@ -720,8 +819,9 @@ struct ArithRaisingPass
                RaiseToConvert<arith::ExtUIOp>, RaiseToConvert<arith::ExtSIOp>,
                RaiseToConvert<arith::TruncIOp>, RaiseMulAdd<math::FmaOp>,
                RaiseMulAdd<enzymexla::FMulAddOp>, RaiseCopySign, RaiseTruncOp,
-               RaiseAtan, RaiseMaxNumF, RaiseMinNumF, RaiseIsNaN, RaiseConstant,
-               RaiseFPToSI, RaiseSIToFP, RaiseUIToFP, RaiseSelect, RaiseCmpI>(
+               RaiseAtan, RaiseLog10, RaiseLog2, RaiseExp2, RaiseMaxNumF,
+               RaiseMinNumF, RaiseIsNaN, RaiseConstant, RaiseFPToSI,
+               RaiseSIToFP, RaiseUIToFP, RaiseSelect, RaiseCmpI, RaiseSinCos>(
               context);
 
     walkAndApplyPatterns(getOperation(), std::move(patterns));

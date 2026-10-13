@@ -26,11 +26,11 @@ func.func @ne_probe(%a: i32, %b: i32, %m: memref<?xi32>) {
 // The answer taken for a no, the select is hoisted on a later round and the
 // conditional does become affine over it.
 
-// CHECK:       #[[SET:.+]] = affine_set<()[s0] : (s0 == 0)>
+// CHECK:       #[[$SET:.+]] = affine_set<()[s0] : (s0 == 0)>
 // CHECK-LABEL: func.func @ne_probe
 // CHECK:         %[[S:.+]] = arith.select
 // CHECK:         %[[I:.+]] = arith.index_cast %[[S]] : i32 to index
 // CHECK:         affine.parallel (%[[IV:.+]]) = (0) to (16)
-// CHECK-NEXT:      affine.if #[[SET]]()[%[[I]]]
+// CHECK-NEXT:      affine.if #[[$SET]]()[%[[I]]]
 // CHECK:           } else {
 // CHECK-NEXT:        affine.store %arg0, %arg2[%[[IV]]]

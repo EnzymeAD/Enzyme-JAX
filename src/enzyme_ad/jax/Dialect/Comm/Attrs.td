@@ -2,11 +2,13 @@
 #define ENZYMEXLA_COMM_DIALECT_ATTRS_TD
 
 include "Dialect.td"
+include "Types.td"
 
 include "mlir/IR/EnumAttr.td"
+include "mlir/IR/BuiltinAttributeInterfaces.td"
 
 // MPI
-def MpiComms : I32EnumAttr<"MpiComms", "Named predefined MPI communicators", [
+def MpiCommEnum : I32EnumAttr<"MpiCommEnum", "Named predefined MPI communicators", [
       I32EnumAttrCase<"MPI_COMM_NULL", 256>,
       I32EnumAttrCase<"MPI_COMM_WORLD", 257>,
       I32EnumAttrCase<"MPI_COMM_SELF", 258>,
@@ -15,8 +17,15 @@ def MpiComms : I32EnumAttr<"MpiComms", "Named predefined MPI communicators", [
   let cppNamespace = "::mlir::comm";
 }
 
-def MpiCommsAttr : EnumAttr<Comm_Dialect, MpiComms, "mpi.comm"> {
+def MpiCommAttr : Comm_Attr<"MpiComm", "mpi.comm", [TypedAttrInterface]> {
+  let parameters = (ins EnumParameter<MpiCommEnum>:$value);
   let assemblyFormat = "`<` $value `>`";
+
+  let extraClassDeclaration = [{
+    ::mlir::Type getType() const {
+      return MpiCommType::get(getContext());
+    }
+  }];
 }
 
 def MpiDatatypes : I32EnumAttr<"MpiDatatypes", "Named predefined MPI datatypes", [
@@ -98,11 +107,7 @@ def MpiDatatypes : I32EnumAttr<"MpiDatatypes", "Named predefined MPI datatypes",
   let cppNamespace = "::mlir::comm";
 }
 
-def MpiDatatypesAttr : EnumAttr<Comm_Dialect, MpiDatatypes, "mpi.datatype"> {
-  let assemblyFormat = "`<` $value `>`";
-}
-
-def MpiOps : I32EnumAttr<"MpiOps", "Named predefined MPI (reduction) operations", [
+def MpiOpEnum : I32EnumAttr<"MpiOpEnum", "Named predefined MPI (reduction) operations", [
       I32EnumAttrCase<"MPI_OP_NULL", 32>,
       I32EnumAttrCase<"MPI_SUM", 33>,
       I32EnumAttrCase<"MPI_MIN", 34>,
@@ -123,24 +128,38 @@ def MpiOps : I32EnumAttr<"MpiOps", "Named predefined MPI (reduction) operations"
   let cppNamespace = "::mlir::comm";
 }
 
-def MpiOpsAttr : EnumAttr<Comm_Dialect, MpiOps, "mpi.op"> {
+def MpiOpAttr : Comm_Attr<"MpiOp", "mpi.op", [TypedAttrInterface]> {
+  let parameters = (ins EnumParameter<MpiOpEnum>:$value);
   let assemblyFormat = "`<` $value `>`";
+
+  let extraClassDeclaration = [{
+    ::mlir::Type getType() const {
+      return MpiOpType::get(getContext());
+    }
+  }];
 }
 
 // NCCL
-def NCCL_RedOps : I32EnumAttr<"NCCL_RedOps", "Named predefined NCCL reduction operators", [
-      I32EnumAttrCase<"NCCL_SUM", 0>,
-      I32EnumAttrCase<"NCCL_PROD", 1>,
-      I32EnumAttrCase<"NCCL_MIN", 2>,
-      I32EnumAttrCase<"NCCL_MAX", 3>,
-      I32EnumAttrCase<"NCCL_AVG", 4>,
+def NcclRedOpEnum : I32EnumAttr<"NcclRedOpEnum", "Named predefined NCCL reduction operators", [
+      I32EnumAttrCase<"ncclSum", 0>,
+      I32EnumAttrCase<"ncclProd", 1>,
+      I32EnumAttrCase<"ncclMin", 2>,
+      I32EnumAttrCase<"ncclMax", 3>,
+      I32EnumAttrCase<"ncclAvg", 4>,
     ]> {
   let genSpecializedAttr = 0;
   let cppNamespace = "::mlir::comm";
 }
 
-def NCCL_RedOpAttr : EnumAttr<Comm_Dialect, NCCL_RedOps, "nccl.red_op"> {
+def NcclRedOpAttr : Comm_Attr<"NcclRedOp", "nccl.red_op", [TypedAttrInterface]> {
+  let parameters = (ins EnumParameter<NcclRedOpEnum>:$value);
   let assemblyFormat = "`<` $value `>`";
+
+  let extraClassDeclaration = [{
+    ::mlir::Type getType() const {
+      return NcclCommType::get(getContext());
+    }
+  }];
 }
 
 #endif // ENZYMEXLA_COMM_DIALECT_ATTRS_TD

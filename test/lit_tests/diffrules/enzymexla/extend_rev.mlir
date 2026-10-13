@@ -13,15 +13,11 @@ module {
 
 // CHECK-LABEL: func.func @main(%arg0: tensor<10x5xf32>, %arg1: tensor<14x5xf32>) -> tensor<10x5xf32> {
 // CHECK-DAG:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-DAG:     %cst_0 = arith.constant dense<0.000000e+00> : tensor<14x5xf32>
-// CHECK-DAG:     %cst_1 = arith.constant dense<0.000000e+00> : tensor<10x5xf32>
-// CHECK:         %0 = arith.addf %arg1, %cst_0 fastmath<fast> : tensor<14x5xf32>
-// CHECK:         %1 = stablehlo.slice %0 [0:2, 0:5] : (tensor<14x5xf32>) -> tensor<2x5xf32>
-// CHECK:         %2 = stablehlo.pad %1, %cst, low = [0, 0], high = [8, 0], interior = [0, 0] : (tensor<2x5xf32>, tensor<f32>) -> tensor<10x5xf32>
-// CHECK:         %3 = stablehlo.slice %0 [12:14, 0:5] : (tensor<14x5xf32>) -> tensor<2x5xf32>
-// CHECK:         %4 = stablehlo.pad %3, %cst, low = [8, 0], high = [0, 0], interior = [0, 0] : (tensor<2x5xf32>, tensor<f32>) -> tensor<10x5xf32>
-// CHECK:         %5 = stablehlo.add %2, %4 : tensor<10x5xf32>
-// CHECK:         %6 = stablehlo.slice %0 [2:12, 0:5] : (tensor<14x5xf32>) -> tensor<10x5xf32>
-// CHECK:         %7 = stablehlo.add %5, %6 : tensor<10x5xf32>
-// CHECK:         %8 = arith.addf %7, %cst_1 fastmath<fast> : tensor<10x5xf32>
-// CHECK:         return %8 : tensor<10x5xf32>
+// CHECK:         %0 = stablehlo.slice %arg1 [0:2, 0:5] : (tensor<14x5xf32>) -> tensor<2x5xf32>
+// CHECK:         %1 = stablehlo.pad %0, %cst, low = [0, 0], high = [8, 0], interior = [0, 0] : (tensor<2x5xf32>, tensor<f32>) -> tensor<10x5xf32>
+// CHECK:         %2 = stablehlo.slice %arg1 [12:14, 0:5] : (tensor<14x5xf32>) -> tensor<2x5xf32>
+// CHECK:         %3 = stablehlo.pad %2, %cst, low = [8, 0], high = [0, 0], interior = [0, 0] : (tensor<2x5xf32>, tensor<f32>) -> tensor<10x5xf32>
+// CHECK:         %4 = stablehlo.add %1, %3 : tensor<10x5xf32>
+// CHECK:         %5 = stablehlo.slice %arg1 [2:12, 0:5] : (tensor<14x5xf32>) -> tensor<10x5xf32>
+// CHECK:         %6 = stablehlo.add %4, %5 : tensor<10x5xf32>
+// CHECK:         return %6 : tensor<10x5xf32>

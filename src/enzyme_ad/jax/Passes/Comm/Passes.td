@@ -11,4 +11,14 @@ def LowerCommToStablehloPass : Pass<"lower-comm-to-stablehlo"> {
   ];
 }
 
+def LowerCommToJITPass : Pass<"lower-comm-to-jit"> {
+  let summary = "Lower Comm ops to `enzymexla.jit_call`";
+  let dependentDialects = [
+    "comm::CommDialect",
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "LLVM::LLVMDialect",
+  ];
+}
+
 #endif // ENZYMEXLA_PASSES_COMM_PASSES_TD
