@@ -3292,6 +3292,10 @@ def ApplyReduceMulToDotGeneralPatterns : EnzymeHLOPatternOp<
     "reduce_mul_to_dot_general"> {
   let patterns = ["ReduceMulToDotGeneral"];
 }
+def ApplyAddTermsToReducePatterns : EnzymeHLOPatternOp<
+    "add_terms_to_reduce"> {
+  let patterns = ["AddTermsToReduce"];
+}
 def ApplySplitReduceAddMulToAddDotGeneralPatterns : EnzymeHLOPatternOp<
     "split_reduce_add_mul_to_add_dot_general"> {
   let patterns = ["SplitReduceAddMulToAddDotGeneral"];
