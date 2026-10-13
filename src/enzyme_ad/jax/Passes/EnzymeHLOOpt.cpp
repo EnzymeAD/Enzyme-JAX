@@ -17880,7 +17880,11 @@ struct GridIndexingAnalysis {
   // The index grid: the index tensor's dimensions but the index vector one.
   SmallVector<int64_t> gridShape;
   int64_t minTotalOffset;
+  // The operand, read as its flattening, factored by the mappings' scales;
+  // `cuts[k]` is the (start, size) the trailing dimension is cut to before
+  // the k-th mapping splits it (a size of -1 when it is not cut).
   SmallVector<int64_t> operandShape;
+  SmallVector<std::pair<int64_t, int64_t>> cuts;
   SmallVector<int64_t> sliceStarts;
   SmallVector<int64_t> sliceSizes;
   SmallVector<DimMapping> mappings;
@@ -18024,31 +18028,6 @@ analyzeGridIndexing(Value indices, Value operand, int64_t indexVectorDim,
     return a.absScale > b.absScale;
   });
 
-  int64_t N = operandTy.getNumElements();
-
-  // Factorize the 1D operand size N into a multi-dimensional shape where each
-  // stride corresponds to one of the grid dimension scales.
-  int64_t currentDivisor = N;
-  for (const auto &map : result.mappings) {
-    if (map.absScale == 0 || currentDivisor % map.absScale != 0)
-      return failure();
-    result.operandShape.push_back(currentDivisor / map.absScale);
-    currentDivisor = map.absScale;
-  }
-  if (currentDivisor > 1) {
-    result.operandShape.push_back(currentDivisor);
-  }
-
-  int64_t opRank = result.operandShape.size();
-
-  // Compute strides for the reshaped operand.
-  SmallVector<int64_t> opStrides(opRank);
-  int64_t st = 1;
-  for (int64_t k = opRank - 1; k >= 0; --k) {
-    opStrides[k] = st;
-    st *= result.operandShape[k];
-  }
-
   // Calculate the minimum total starting offset, adjusting for any negative
   // scales that effectively offset the slice starts in the grid.
   int64_t minTotalOffset = totalStart;
@@ -18063,24 +18042,54 @@ analyzeGridIndexing(Value indices, Value operand, int64_t indexVectorDim,
 
   result.minTotalOffset = minTotalOffset;
 
-  result.sliceSizes.resize(opRank, 1);
-  for (size_t m = 0; m < result.mappings.size(); ++m) {
-    int64_t gridDim = result.mappings[m].gridDim;
-    result.sliceSizes[m] = result.gridShape[gridDim];
+  // Factorize the flattened operand one mapping at a time: its trailing block
+  // (of `block` elements, the grid's run starting `offset` into it) splits
+  // into blocks of the mapping's scale. A block the scale does not divide is
+  // first cut to the whole blocks of the scale the grid reaches in it. The
+  // cut starts where the run does, rounded down to the operand's own rows
+  // when the block is made of them, else to the smallest scale, else not at
+  // all: the first of these the cut fits from.
+  int64_t block = operandTy.getNumElements();
+  int64_t offset = minTotalOffset;
+  for (auto [k, map] : llvm::enumerate(result.mappings)) {
+    int64_t reach = 1;
+    for (const auto &inner : ArrayRef(result.mappings).drop_front(k))
+      reach += inner.absScale * (result.gridShape[inner.gridDim] - 1);
+    std::pair<int64_t, int64_t> cut = {0, -1};
+    if (block % map.absScale != 0) {
+      int64_t row = operandTy.getShape().back();
+      int64_t start = 0, size = 0;
+      for (int64_t align : {block % row == 0 ? row : 1,
+                            result.mappings.back().absScale, int64_t(1)}) {
+        start = offset - offset % align;
+        size = llvm::alignTo(offset - start + reach, map.absScale);
+        if (start + size <= block)
+          break;
+      }
+      if (start + size > block)
+        return failure();
+      cut = {start, size};
+      block = size;
+      offset -= start;
+    }
+    result.cuts.push_back(cut);
+    result.operandShape.push_back(block / map.absScale);
+    result.sliceStarts.push_back(offset / map.absScale);
+    result.sliceSizes.push_back(result.gridShape[map.gridDim]);
+    offset %= map.absScale;
+    block = map.absScale;
   }
-
-  result.sliceStarts.resize(opRank, 0);
-  int64_t rem = minTotalOffset;
-  for (int64_t k = 0; k < opRank; ++k) {
-    result.sliceStarts[k] = rem / opStrides[k];
-    rem %= opStrides[k];
+  if (block > 1) {
+    result.operandShape.push_back(block);
+    result.sliceStarts.push_back(offset);
+    result.sliceSizes.push_back(1);
   }
 
   result.inBounds = true;
-  for (int64_t k = 0; k < opRank; ++k) {
-    if (result.sliceStarts[k] + result.sliceSizes[k] > result.operandShape[k])
+  for (auto [start, size, dim] : llvm::zip_equal(
+           result.sliceStarts, result.sliceSizes, result.operandShape))
+    if (start + size > dim)
       result.inBounds = false;
-  }
 
   for (size_t m = 0; m < result.mappings.size(); ++m) {
     if (result.mappings[m].scale < 0) {
@@ -18089,6 +18098,63 @@ analyzeGridIndexing(Value indices, Value operand, int64_t indexVectorDim,
   }
 
   return success();
+}
+
+// The operand of `analysis` factored as it describes: flattened, then split
+// by each mapping's scale in turn, the trailing dimension cut first where the
+// analysis cuts it (the splits so far made, by one reshape, only there). Each
+// value a cut is taken from goes to `cutFrom`, for `putGridViewBack`.
+static Value buildGridView(PatternRewriter &rewriter, Location loc,
+                           Value operand, const GridIndexingAnalysis &analysis,
+                           SmallVectorImpl<Value> *cutFrom = nullptr) {
+  SmallVector<int64_t> shape = {
+      cast<RankedTensorType>(operand.getType()).getNumElements()};
+  Value view = operand;
+  for (auto [map, cut] : llvm::zip_equal(analysis.mappings, analysis.cuts)) {
+    if (cut.second >= 0) {
+      view = stablehlo::ReshapeOpCreate(rewriter, loc, view, shape);
+      if (cutFrom)
+        cutFrom->push_back(view);
+      SmallVector<int64_t> starts(shape.size(), 0), strides(shape.size(), 1);
+      SmallVector<int64_t> limits = shape;
+      starts.back() = cut.first;
+      limits.back() = cut.first + cut.second;
+      view = stablehlo::SliceOpCreate(rewriter, loc, view, starts, limits,
+                                      strides);
+      shape.back() = cut.second;
+    }
+    shape.back() /= map.absScale;
+    shape.push_back(map.absScale);
+  }
+  return stablehlo::ReshapeOpCreate(rewriter, loc, view, analysis.operandShape);
+}
+
+// The operand `buildGridView` factored, with `view` in place of its view: each
+// cut written back into what it was cut from, and the splits undone.
+static Value putGridViewBack(PatternRewriter &rewriter, Location loc,
+                             Value view, RankedTensorType operandTy,
+                             const GridIndexingAnalysis &analysis,
+                             ArrayRef<Value> cutFrom) {
+  auto i32 = RankedTensorType::get({}, rewriter.getI32Type());
+  auto from = cutFrom.rbegin();
+  for (auto cut : llvm::reverse(analysis.cuts)) {
+    if (cut.second < 0)
+      continue;
+    Value into = *from++;
+    auto intoTy = cast<RankedTensorType>(into.getType());
+    SmallVector<int64_t> shape(intoTy.getShape());
+    shape.back() = cut.second;
+    view = stablehlo::ReshapeOpCreate(rewriter, loc, view, shape);
+    SmallVector<Value> starts;
+    for (int64_t d = 0; d < intoTy.getRank(); ++d)
+      starts.push_back(stablehlo::ConstantOp::create(
+          rewriter, loc,
+          cast<ElementsAttr>(
+              makeAttr(i32, d + 1 == intoTy.getRank() ? cut.first : 0))));
+    view = stablehlo::DynamicUpdateSliceOp::create(rewriter, loc, into, view,
+                                                   starts);
+  }
+  return stablehlo::ReshapeOpCreate(rewriter, loc, view, operandTy.getShape());
 }
 
 /// Converts gather ops to slice ops in case we have a single set of constant
@@ -18239,10 +18305,9 @@ struct GatherOpCanon final
     // General case: We have multiple grid dimensions mapped.
     if (!analysis.inBounds)
       return failure();
-    // Reshape the operand (read as its flattening) to the factored
-    // multi-dimensional shape.
-    Value reshapedOperand = stablehlo::ReshapeOpCreate(
-        rewriter, op.getLoc(), operand, analysis.operandShape);
+    // The operand (read as its flattening) in the factored shape.
+    Value reshapedOperand =
+        buildGridView(rewriter, op.getLoc(), operand, analysis);
 
     int64_t opRank = analysis.operandShape.size();
     SmallVector<int64_t> sliceLimits(opRank);
@@ -38835,8 +38900,9 @@ private:
       return failure();
     int64_t gridRank = gridTy.getRank();
 
-    Value reshapedOperand = stablehlo::ReshapeOpCreate(
-        rewriter, op.getLoc(), operand, analysis.operandShape);
+    SmallVector<Value> cutFrom;
+    Value reshapedOperand =
+        buildGridView(rewriter, op.getLoc(), operand, analysis, &cutFrom);
 
     auto updatesTy = cast<RankedTensorType>(update.getType());
     if (updatesTy.getRank() != gridRank) {
@@ -38880,8 +38946,8 @@ private:
     Value updatedOperand = stablehlo::DynamicUpdateSliceOp::create(
         rewriter, op.getLoc(), reshapedOperand, reshapedUpdate, sliceStartsVal);
 
-    Value result = stablehlo::ReshapeOpCreate(
-        rewriter, op.getLoc(), updatedOperand, operandTy.getShape());
+    Value result = putGridViewBack(rewriter, op.getLoc(), updatedOperand,
+                                   operandTy, analysis, cutFrom);
     rewriter.replaceOp(op, result);
     return success();
   }
