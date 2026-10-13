@@ -1273,13 +1273,94 @@ struct ReshapeRotate final
   }
 };
 
+// The padding of a reshape's operand moved past the reshape: low, high and
+// interior padding, and the unpadded operand's shape, in the reshape's dims.
+// The dims on each side fall into runs that hold the same elements; within a
+// run only the outermost non-unit dim may be padded, by whole rows of the
+// outermost non-unit dim of the reshaped run.
+static bool padThroughReshape(ArrayRef<int64_t> from, ArrayRef<int64_t> to,
+                              ArrayRef<int64_t> operand, ArrayRef<int64_t> low,
+                              ArrayRef<int64_t> high,
+                              ArrayRef<int64_t> interior,
+                              SmallVectorImpl<int64_t> &newLow,
+                              SmallVectorImpl<int64_t> &newHigh,
+                              SmallVectorImpl<int64_t> &newInterior,
+                              SmallVectorImpl<int64_t> &newOperand) {
+  if (llvm::is_contained(from, 0) || llvm::is_contained(to, 0))
+    return false;
+  size_t i = 0, j = 0;
+  while (i < from.size() || j < to.size()) {
+    size_t fromBegin = i, toBegin = j;
+    int64_t fromCount = i < from.size() ? from[i++] : 1;
+    int64_t toCount = j < to.size() ? to[j++] : 1;
+    while (fromCount != toCount) {
+      if (fromCount < toCount) {
+        if (i == from.size())
+          return false;
+        fromCount *= from[i++];
+      } else {
+        if (j == to.size())
+          return false;
+        toCount *= to[j++];
+      }
+    }
+
+    size_t padded = i;
+    for (size_t k = fromBegin; k < i; k++) {
+      if (padded == i && from[k] != 1) {
+        padded = k;
+        continue;
+      }
+      if (low[k] != 0 || high[k] != 0 || interior[k] != 0)
+        return false;
+    }
+    if (padded == i) {
+      for (size_t k = toBegin; k < j; k++) {
+        newLow.push_back(0);
+        newHigh.push_back(0);
+        newInterior.push_back(0);
+        newOperand.push_back(1);
+      }
+      continue;
+    }
+
+    size_t target = toBegin;
+    while (to[target] == 1)
+      target++;
+    int64_t fromInner = 1, toInner = 1;
+    for (size_t k = padded + 1; k < i; k++)
+      fromInner *= from[k];
+    for (size_t k = target + 1; k < j; k++)
+      toInner *= to[k];
+    if (interior[padded] != 0 && (fromInner != 1 || toInner != 1))
+      return false;
+    if ((low[padded] * fromInner) % toInner != 0 ||
+        (high[padded] * fromInner) % toInner != 0)
+      return false;
+
+    for (size_t k = toBegin; k < j; k++) {
+      if (k != target) {
+        newLow.push_back(0);
+        newHigh.push_back(0);
+        newInterior.push_back(0);
+        newOperand.push_back(to[k]);
+        continue;
+      }
+      newLow.push_back(low[padded] * fromInner / toInner);
+      newHigh.push_back(high[padded] * fromInner / toInner);
+      newInterior.push_back(interior[padded]);
+      newOperand.push_back(operand[padded] * fromInner / toInner);
+    }
+  }
+  return true;
+}
+
 struct ReshapePad final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapePad> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
-    // Check if the input to Reshape is a DynamicUpdateSlice
     auto pad = op.getOperand().getDefiningOp<stablehlo::PadOp>();
     if (!pad)
       return failure();
@@ -1287,35 +1368,12 @@ struct ReshapePad final
     if (!llvm::hasSingleElement(pad->getUsers()))
       return failure();
 
-    SmallVector<int64_t> interior(pad.getInteriorPadding().begin(),
-                                  pad.getInteriorPadding().end());
-
-    int64_t zero = 0;
-    if (!transformReshapeSlice<int64_t>(op, interior, /*toFill*/ 0,
-                                        /*checkRemoved*/ &zero))
-      return failure();
-
-    SmallVector<int64_t> low(pad.getEdgePaddingLow().begin(),
-                             pad.getEdgePaddingLow().end());
-
-    if (!transformReshapeSlice<int64_t>(op, low, /*toFill*/ 0,
-                                        /*checkRemoved*/ &zero))
-      return failure();
-
-    SmallVector<int64_t> high(pad.getEdgePaddingHigh().begin(),
-                              pad.getEdgePaddingHigh().end());
-
-    if (!transformReshapeSlice<int64_t>(op, high, /*toFill*/ 0,
-                                        /*checkRemoved*/ &zero))
-      return failure();
-
-    SmallVector<int64_t> operandShape(
-        pad.getOperand().getType().getShape().begin(),
-        pad.getOperand().getType().getShape().end());
-
-    int64_t one = 1;
-    if (!transformReshapeSlice<int64_t>(op, operandShape, /*toFill*/ 1,
-                                        /*checkRemoved*/ &one))
+    SmallVector<int64_t> low, high, interior, operandShape;
+    if (!padThroughReshape(pad.getType().getShape(), op.getType().getShape(),
+                           pad.getOperand().getType().getShape(),
+                           pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(),
+                           pad.getInteriorPadding(), low, high, interior,
+                           operandShape))
       return failure();
 
     auto newOperand = stablehlo::ReshapeOpCreate(
