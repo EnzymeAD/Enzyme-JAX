@@ -18150,12 +18150,6 @@ struct GatherOpCanon final
       return failure();
     }
 
-    // The analysis reads an operand of higher rank as its flattening.
-    if (operandTy.getRank() != 1) {
-      operand = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), operand,
-                                           {operandTy.getNumElements()});
-      operandTy = cast<RankedTensorType>(operand.getType());
-    }
     auto gridTy =
         RankedTensorType::get(analysis.gridShape, rewriter.getI64Type());
 
@@ -18181,7 +18175,16 @@ struct GatherOpCanon final
         stride = -stride;
       }
 
-      int64_t dim = operandTy.getDimSize(0);
+      // The analysis reads an operand of higher rank as its flattening; it is
+      // built only once nothing can fail.
+      int64_t dim = operandTy.getNumElements();
+      if (limit > dim && (needsReverse || start < 0))
+        return failure();
+      if (operandTy.getRank() != 1) {
+        operand =
+            stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), operand, {dim});
+        operandTy = cast<RankedTensorType>(operand.getType());
+      }
       Value result;
       if (limit <= dim) {
         result = stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand,
@@ -18191,8 +18194,6 @@ struct GatherOpCanon final
               stablehlo::ReverseOp::create(rewriter, op.getLoc(), result,
                                            rewriter.getDenseI64ArrayAttr({0}));
         }
-      } else if (needsReverse || start < 0) {
-        return failure();
       } else {
         // The gather clamps each index to dim - 1, so the part of the run
         // past the end reads the last element that many times.
@@ -18236,7 +18237,8 @@ struct GatherOpCanon final
     // General case: We have multiple grid dimensions mapped.
     if (!analysis.inBounds)
       return failure();
-    // Reshape the 1D operand to the factored multi-dimensional shape.
+    // Reshape the operand (read as its flattening) to the factored
+    // multi-dimensional shape.
     Value reshapedOperand = stablehlo::ReshapeOpCreate(
         rewriter, op.getLoc(), operand, analysis.operandShape);
 
