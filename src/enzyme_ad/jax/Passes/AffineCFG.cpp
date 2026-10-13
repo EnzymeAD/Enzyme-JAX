@@ -7240,6 +7240,84 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
   }
 };
 
+namespace {
+// The constraints of an integer set over its operands.
+struct SetConstraints : public FlatLinearValueConstraints {
+  SetConstraints(IntegerSet set, ValueRange operands, bool *error)
+      : FlatLinearValueConstraints(set, operands, error) {}
+};
+} // namespace
+
+static LogicalResult nestDomain(ArrayRef<Operation *> ops,
+                                FlatAffineValueConstraints &domain);
+
+// Whether a loop-invariant store in `forOp` and a load to the same buffer
+// access disjoint elements across every iteration of the enclosing affine ops.
+static bool loadsApart(affine::AffineStoreOp store, affine::AffineLoadOp load,
+                       affine::AffineForOp forOp) {
+  if (store.getMemRef() != load.getMemRef() ||
+      llvm::is_contained(store.getMapOperands(), forOp.getInductionVar()))
+    return false;
+  AffineValueMap storeAVM, loadAVM, diff;
+  MemRefAccess(store).getAccessMap(&storeAVM);
+  MemRefAccess(load).getAccessMap(&loadAVM);
+  AffineValueMap::difference(storeAVM, loadAVM, &diff);
+  AffineMap dm = diff.getAffineMap();
+  if (dm.getNumResults() == 0)
+    return false;
+  for (AffineExpr e : dm.getResults()) {
+    if (auto c = dyn_cast<AffineConstantExpr>(
+            simplifyAffineExpr(e, dm.getNumDims(), dm.getNumSymbols())))
+      if (c.getValue() != 0)
+        return true;
+  }
+  SmallVector<Operation *> enclosing;
+  getEnclosingAffineOps(*load, &enclosing);
+  FlatAffineValueConstraints domain;
+  if (failed(nestDomain(enclosing, domain)))
+    return false;
+  SmallVector<Value> dims;
+  domain.getValues(0, domain.getNumDimVars(), &dims);
+  SmallVector<Value> syms;
+  SmallVector<AffineExpr> dimRepl, symRepl;
+  MLIRContext *ctx = forOp.getContext();
+  for (unsigned k = 0, n = dm.getNumInputs(); k < n; ++k) {
+    Value v = diff.getOperand(k);
+    auto pos = llvm::find(dims, v);
+    AffineExpr r;
+    if (pos != dims.end()) {
+      r = getAffineDimExpr(pos - dims.begin(), ctx);
+    } else {
+      if (!domain.containsVar(v)) {
+        domain.appendSymbolVar(v);
+        if (std::optional<int64_t> c = getConstantIntValue(v))
+          domain.addBound(presburger::BoundType::EQ, v, *c);
+      }
+      auto symIt = llvm::find(syms, v);
+      if (symIt == syms.end()) {
+        syms.push_back(v);
+        symIt = std::prev(syms.end());
+      }
+      r = getAffineSymbolExpr(symIt - syms.begin(), ctx);
+    }
+    (k < dm.getNumDims() ? dimRepl : symRepl).push_back(r);
+  }
+  SmallVector<AffineExpr> eqExprs;
+  for (AffineExpr e : dm.getResults())
+    eqExprs.push_back(e.replaceDimsAndSymbols(dimRepl, symRepl));
+  SmallVector<Value> eqOperands(dims.begin(), dims.end());
+  eqOperands.append(syms.begin(), syms.end());
+  IntegerSet eqSet = IntegerSet::get(dims.size(), syms.size(), eqExprs,
+                                     SmallVector<bool>(eqExprs.size(), true));
+  bool error = false;
+  SetConstraints eqCst(eqSet, eqOperands, &error);
+  if (error)
+    return false;
+  domain.mergeAndAlignVarsWithOther(0, &eqCst);
+  domain.append(eqCst);
+  return domain.isEmpty();
+}
+
 struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
   using OpRewritePattern<affine::AffineForOp>::OpRewritePattern;
 
@@ -7277,8 +7355,10 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
           continue;
         if (!forOp->isAncestor(user))
           continue;
-        auto other = dyn_cast<affine::AffineStoreOp>(user);
-        if (!other || !storesApart(store, other))
+        auto otherStore = dyn_cast<affine::AffineStoreOp>(user);
+        auto otherLoad = dyn_cast<affine::AffineLoadOp>(user);
+        if (!(otherStore && storesApart(store, otherStore)) &&
+            !(otherLoad && loadsApart(store, otherLoad, forOp)))
           legal = false;
       }
       if (legal)
@@ -7765,14 +7845,6 @@ struct AffineForDeadCarry : public OpRewritePattern<AffineForOp> {
     return success();
   }
 };
-
-namespace {
-// The constraints of an integer set over its operands.
-struct SetConstraints : public FlatLinearValueConstraints {
-  SetConstraints(IntegerSet set, ValueRange operands, bool *error)
-      : FlatLinearValueConstraints(set, operands, error) {}
-};
-} // namespace
 
 // Whether every point of `a` (over `aOperands`) lies in `b` (over
 // `bOperands`): the points of a outside each constraint of b are none.
