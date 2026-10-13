@@ -182,6 +182,17 @@ struct UpdateWithoutCornersOpShardingInterface
   }
 };
 
+template <typename T>
+struct PointwiseShardingInterface
+    : public mlir::sdy::ShardingRuleOpInterface::ExternalModel<
+          PointwiseShardingInterface<T>, T> {
+  mlir::sdy::OpShardingRuleAttr getShardingRule(mlir::Operation *op) const {
+    return sdy::OpShardingRuleBuilder(op)
+        .addPointwise(sdy::getTensorShape(op->getResult(0)))
+        .build();
+  }
+};
+
 class MemRefInsider
     : public mlir::MemRefElementTypeInterface::FallbackModel<MemRefInsider> {};
 
@@ -219,6 +230,11 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
         enzymexla::RotateOp::attachInterface<
             PermuteOperandOpInterface<enzymexla::RotateOp>>(*ctx);
       });
+
+  registry.addExtension(+[](mlir::MLIRContext *ctx, chlo::ChloDialect *) {
+    chlo::ConjOp::attachInterface<PointwiseShardingInterface<chlo::ConjOp>>(
+        *ctx);
+  });
 }
 
 void registerDialects(mlir::DialectRegistry &registry) {
