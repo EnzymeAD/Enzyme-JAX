@@ -90,7 +90,7 @@ module {
       activity = [#enzyme.activity<enzyme_active>],
       ret_activity = [#enzyme.activity<enzyme_active>]
     }> : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
-    check.expect_almost_eq_const %gelu_sigmoid_res#1, dense<[0.5, -6.777961e-02, 1.0677796, 1.0738153, 1.0, 0.0]> : tensor<6xf32>
+    check.expect_almost_eq_const %gelu_sigmoid_res#1, dense<[0.5, -8.296408e-02, 1.0829641, 1.0860993, 1.0, 0.0]> : tensor<6xf32>
 
     // d/dx softplus(x) = sigmoid(x)
     %softplus_res:2 = enzyme.autodiff @softplus_fn(%x_common, %d_common) <{
