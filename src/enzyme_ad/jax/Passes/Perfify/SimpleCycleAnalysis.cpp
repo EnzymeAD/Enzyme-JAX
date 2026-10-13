@@ -25,7 +25,6 @@ namespace perfify {
 using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::enzyme::perfify;
-enum class HoareStates { Pre = 0, Post = 1 };
 const std::string cost_str = "cost";
 
 namespace {
@@ -37,7 +36,8 @@ struct SimpleCycleAnalysisPass
   mlir::Region *analysis_func = NULL;
   std::unordered_map<std::string, mlir::Region *> cost_map;
   llvm::DenseMap<mlir::Value, int64_t> args;
-  std::unordered_map<HoareStates, mlir::Region *> constant_costs;
+  std::unordered_map<mlir::enzyme::perfify::HoareStates, mlir::Region *>
+      constant_costs;
   llvm::DenseMap<mlir::StringAttr, mlir::Region *> funcMap;
 
   void runOnOperation() override {
@@ -60,9 +60,12 @@ struct SimpleCycleAnalysisPass
             &costOp.getBody(); // store the body of the region for eval
       }
     } else if (auto con_cost = dyn_cast<ConstantCostOp>(op)) {
-      HoareStates pre_post = static_cast<HoareStates>(
-          con_cost->getParentRegion()->getRegionNumber());
+      mlir::enzyme::perfify::HoareStates pre_post =
+          static_cast<mlir::enzyme::perfify::HoareStates>(
+              con_cost->getParentRegion()->getRegionNumber());
       constant_costs.insert({pre_post, &con_cost.getBody()});
+    } else if (auto interval_cost = dyn_cast<IntervalOp>(op)) {
+      llvm::outs() << "not doing anything with this for now\n";
     } else if (auto arg = dyn_cast<ArgOp>(op)) {
       NamedAttribute arg_attr = op->getAttrs()[0];
       if (auto intAttr =
@@ -119,7 +122,8 @@ struct SimpleCycleAnalysisPass
       CmpPredicate pred = cmpOp.getPredicateAttr().getValue();
       auto region_num = cmpOp->getParentRegion()->getRegionNumber();
       auto pre_post_cost =
-          constant_costs.find(static_cast<HoareStates>(region_num));
+          constant_costs.find(
+              static_cast<mlir::enzyme::perfify::HoareStates>(region_num));
       if (pre_post_cost == constant_costs.end()) {
         llvm::outs() << "no constant cost registered for conditions region "
                      << region_num << "\n";

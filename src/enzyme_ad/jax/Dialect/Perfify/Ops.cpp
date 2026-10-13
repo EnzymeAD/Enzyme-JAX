@@ -25,3 +25,9 @@ LogicalResult SymCostOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
            << def.getType() << " but result is " << getResult().getType();
   return success();
 }
+
+LogicalResult IntervalOp::verify() {
+  if (!getLb() && !getUb())
+    return emitOpError("requires at least one of 'lb' or 'ub'");
+  return success();
+}

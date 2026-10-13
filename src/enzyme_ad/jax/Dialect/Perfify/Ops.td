@@ -83,4 +83,16 @@ def YieldOp : PerfifyOp<"yield", [Terminator]> {
   let assemblyFormat = "attr-dict ($value^ `:` type($value))?";
 }
 
+def HypothesisOp : PerfifyOp<"hypothesis", []> {
+  let arguments = (ins CostType:$cost_hyp, PerfifyHoareStates:$pre_post);
+  let assemblyFormat = "$cost_hyp $pre_post attr-dict";
+}
+
+def IntervalOp : PerfifyOp<"interval", []> {
+  let arguments = (ins Optional<CostType>:$lb, Optional<CostType>:$ub);
+  let assemblyFormat = "`[`$lb `,`$ub`]` attr-dict";
+  let results = (outs IntervalType:$result);
+  let hasVerifier = 1;
+}
+
 #endif // ENZYME_AD_JAX_DIALECT_PERFIFY_OPS_TD
