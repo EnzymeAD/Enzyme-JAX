@@ -13093,7 +13093,50 @@ LogicalResult sliceReshapeHelper(stablehlo::SliceOp op,
       outdim++;
       continue;
     }
-    return failure();
+
+    // A dim split into several: the slice is a slice of the dim when it is
+    // one run of its elements, a single index on each outer dim, any range on
+    // one dim and all of each inner one.
+    int64_t size = reshapeOperandType.getShape()[indim];
+    size_t end = outdim + 1;
+    int64_t count = reshapeType.getShape()[outdim];
+    while (count < size && end < reshapeType.getShape().size())
+      count *= reshapeType.getShape()[end++];
+    if (count != size)
+      return failure();
+    size_t ranged = outdim;
+    while (ranged + 1 < end &&
+           op.getStartIndices()[ranged] + op.getStrides()[ranged] >=
+               op.getLimitIndices()[ranged])
+      ranged++;
+    int64_t inner = 1;
+    for (size_t k = ranged + 1; k < end; k++) {
+      if (op.getStartIndices()[k] != 0 ||
+          op.getLimitIndices()[k] != reshapeType.getShape()[k] ||
+          op.getStrides()[k] != 1)
+        return failure();
+      inner *= reshapeType.getShape()[k];
+    }
+    int64_t start = 0;
+    for (size_t k = outdim; k <= ranged; k++)
+      start = start * reshapeType.getShape()[k] + op.getStartIndices()[k];
+    start *= inner;
+    int64_t stride = op.getStrides()[ranged];
+    int64_t taken = (op.getLimitIndices()[ranged] -
+                     op.getStartIndices()[ranged] + stride - 1) /
+                    stride;
+    if (inner != 1 && taken != 1 && stride != 1)
+      return failure();
+    starts.push_back(start);
+    if (inner == 1) {
+      limits.push_back(start + (taken - 1) * stride + 1);
+      strides.push_back(stride);
+    } else {
+      limits.push_back(start + taken * inner);
+      strides.push_back(1);
+    }
+    indim++;
+    outdim = end;
   }
   while (indim < reshapeOperandType.getShape().size()) {
     if (reshapeOperandType.getShape()[indim] != 1)
