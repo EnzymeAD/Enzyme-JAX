@@ -7025,6 +7025,28 @@ static bool storesApart(affine::AffineStoreOp a, affine::AffineStoreOp b) {
   return apart;
 }
 
+// Whether every index of `map` over `operands` is provably within the static
+// bounds of `memref`.
+static bool isAccessInBounds(Value memref, AffineMap map, ValueRange operands) {
+  auto memrefType = dyn_cast<MemRefType>(memref.getType());
+  if (!memrefType || !memrefType.hasStaticShape())
+    return false;
+  if (map.getNumResults() != memrefType.getRank())
+    return false;
+  for (unsigned d = 0, e = map.getNumResults(); d < e; ++d) {
+    int64_t dimSize = memrefType.getDimSize(d);
+    if (auto range = enzyme::getConstantRange(map.getSubMap({d}), operands)) {
+      if (range->first >= 0 && range->second < dimSize)
+        continue;
+    }
+    AffineExpr expr = map.getResult(d);
+    if (!valueCmp(Cmp::GE, expr, map.getNumDims(), operands, 0) ||
+        !valueCmp(Cmp::LT, expr, map.getNumDims(), operands, dimSize))
+      return false;
+  }
+  return true;
+}
+
 struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
   using OpRewritePattern<affine::AffineForOp>::OpRewritePattern;
 
@@ -7171,7 +7193,8 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
     Value first = arith::ConstantIndexOp::create(rewriter, forOp.getLoc(), lb);
     for (auto &&[store, loads] : todo) {
       Value init;
-      if (guard) {
+      if (guard && !isAccessInBounds(store.getMemRef(), loads[0].second,
+                                     store.getMapOperands())) {
         auto ifOp = affine::AffineIfOp::create(
             rewriter, forOp.getLoc(), loads[0].first.getType(), guard->first,
             guard->second, /*withElseRegion=*/true);
@@ -7314,9 +7337,12 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
 
       // the value carried in is a load, or one guarded by the loop running
       Value init = forOp.getInits()[yldIdx];
+      bool guardedInit = false;
       if (auto guarded = init.getDefiningOp<affine::AffineIfOp>())
-        if (guarded.hasElse() && guarded.getNumResults() == 1)
+        if (guarded.hasElse() && guarded.getNumResults() == 1) {
           init = guarded.getThenBlock()->getTerminator()->getOperand(0);
+          guardedInit = true;
+        }
       if (!init.getDefiningOp<affine::AffineLoadOp>())
         continue;
 
@@ -7366,7 +7392,9 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
         store->moveAfter(forOp);
         store.getValueMutable().set(forOp->getResult(yldIdx));
       });
-      if (guard) {
+      if (guard && (guardedInit ||
+                    !isAccessInBounds(store.getMemRef(), store.getAffineMap(),
+                                      store.getMapOperands()))) {
         rewriter.setInsertionPointAfter(forOp);
         auto ifOp = affine::AffineIfOp::create(rewriter, store.getLoc(),
                                                guard->first, guard->second,
