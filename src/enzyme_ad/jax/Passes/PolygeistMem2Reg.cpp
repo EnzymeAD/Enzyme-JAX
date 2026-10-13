@@ -1216,6 +1216,8 @@ struct PolygeistMem2Reg
 
 } // end anonymous namespace
 
+Value castToType(Type elType, Value val, Operation *op);
+
 class ValueOrPlaceholder;
 
 static inline llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
@@ -1233,6 +1235,7 @@ public:
   std::vector<std::unique_ptr<ValueOrPlaceholder>> allocs;
   DenseMap<Value, ValueOrPlaceholder *> valueMap;
   DenseMap<Operation *, ValueOrPlaceholder *> opOperands;
+  DenseMap<Block *, ValueOrPlaceholder *> forBlocks;
 
   BlockMap valueAtStartOfBlock;
   BlockMap valueAtEndOfBlock;
@@ -1244,6 +1247,8 @@ public:
   ValueOrPlaceholder *get(Block *val);
   ValueOrPlaceholder *get(scf::IfOp val, ValueOrPlaceholder *ifVal);
   ValueOrPlaceholder *get(affine::AffineIfOp val, ValueOrPlaceholder *ifVal);
+  ValueOrPlaceholder *get(scf::ForOp val, ValueOrPlaceholder *forVal);
+  ValueOrPlaceholder *get(affine::AffineForOp val, ValueOrPlaceholder *forVal);
   ValueOrPlaceholder *get(scf::ExecuteRegionOp val);
 
   void replaceValue(Value orig, Value post);
@@ -1261,30 +1266,32 @@ public:
   Block *valueAtStart;
   scf::ExecuteRegionOp exOp;
   Operation *ifOp;
+  Operation *forOp;
   ValueOrPlaceholder(ValueOrPlaceholder &&) = delete;
   ValueOrPlaceholder(const ValueOrPlaceholder &) = delete;
   ValueOrPlaceholder(std::nullptr_t, ReplacementHandler &metaMap)
       : metaMap(metaMap), overwritten(true), val(nullptr),
-        valueAtStart(nullptr), exOp(nullptr), ifOp(nullptr) {}
+        valueAtStart(nullptr), exOp(nullptr), ifOp(nullptr), forOp(nullptr) {}
   ValueOrPlaceholder(Value val, ReplacementHandler &metaMap)
       : metaMap(metaMap), overwritten(false), val(val), valueAtStart(nullptr),
-        exOp(nullptr), ifOp(nullptr) {
+        exOp(nullptr), ifOp(nullptr), forOp(nullptr) {
     assert(val);
   }
   ValueOrPlaceholder(Block *valueAtStart, ReplacementHandler &metaMap)
       : metaMap(metaMap), overwritten(false), val(nullptr),
-        valueAtStart(valueAtStart), exOp(nullptr), ifOp(nullptr) {
+        valueAtStart(valueAtStart), exOp(nullptr), ifOp(nullptr),
+        forOp(nullptr) {
     assert(valueAtStart);
   }
   ValueOrPlaceholder(scf::ExecuteRegionOp exOp, ReplacementHandler &metaMap)
       : metaMap(metaMap), overwritten(false), val(nullptr),
-        valueAtStart(nullptr), exOp(exOp), ifOp(nullptr) {
+        valueAtStart(nullptr), exOp(exOp), ifOp(nullptr), forOp(nullptr) {
     assert(exOp);
   }
   ValueOrPlaceholder(scf::IfOp ifOp, ReplaceableUse ifLastVal,
                      ReplacementHandler &metaMap)
       : metaMap(metaMap), overwritten(false), val(nullptr),
-        valueAtStart(nullptr), exOp(nullptr), ifOp(ifOp) {
+        valueAtStart(nullptr), exOp(nullptr), ifOp(ifOp), forOp(nullptr) {
     assert(ifOp);
     if (ifLastVal)
       metaMap.opOperands[ifOp] = ifLastVal;
@@ -1292,10 +1299,28 @@ public:
   ValueOrPlaceholder(affine::AffineIfOp ifOp, ReplaceableUse ifLastVal,
                      ReplacementHandler &metaMap)
       : metaMap(metaMap), overwritten(false), val(nullptr),
-        valueAtStart(nullptr), exOp(nullptr), ifOp(ifOp) {
+        valueAtStart(nullptr), exOp(nullptr), ifOp(ifOp), forOp(nullptr) {
     assert(ifOp);
     if (ifLastVal)
       metaMap.opOperands[ifOp] = ifLastVal;
+  }
+  ValueOrPlaceholder(scf::ForOp forOp, ReplaceableUse forLastVal,
+                     ReplacementHandler &metaMap)
+      : metaMap(metaMap), overwritten(false), val(nullptr),
+        valueAtStart(nullptr), exOp(nullptr), ifOp(nullptr), forOp(forOp) {
+    assert(forOp);
+    if (forLastVal)
+      metaMap.opOperands[forOp] = forLastVal;
+    metaMap.forBlocks[forOp.getBody()] = this;
+  }
+  ValueOrPlaceholder(affine::AffineForOp forOp, ReplaceableUse forLastVal,
+                     ReplacementHandler &metaMap)
+      : metaMap(metaMap), overwritten(false), val(nullptr),
+        valueAtStart(nullptr), exOp(nullptr), ifOp(nullptr), forOp(forOp) {
+    assert(forOp);
+    if (forLastVal)
+      metaMap.opOperands[forOp] = forLastVal;
+    metaMap.forBlocks[forOp.getBody()] = this;
   }
   // Return true if this represents a full expression if all block argsare
   // defined at start Append the list of blocks requiring definition to block.
@@ -1371,6 +1396,22 @@ public:
       }
       return true;
     }
+    if (forOp) {
+      Block *body = &forOp->getRegion(0).front();
+      auto endFind = metaMap.valueAtEndOfBlock.find(body);
+      assert(endFind != metaMap.valueAtEndOfBlock.end());
+      assert(endFind->second);
+      if (!endFind->second->definedWithArg(block))
+        return false;
+
+      auto opFound = metaMap.opOperands.find(forOp);
+      assert(opFound != metaMap.opOperands.end());
+      if (!opFound->second->definedWithArg(block))
+        return false;
+
+      block.insert(body);
+      return true;
+    }
     llvm_unreachable("unhandled");
   }
   Value materialize(bool full = true) {
@@ -1402,7 +1443,81 @@ public:
       return materializeEx(full);
     if (ifOp)
       return materializeIf(full);
+    if (forOp)
+      return materializeFor(full);
     llvm_unreachable("");
+  }
+
+  Value materializeFor(bool full = true) {
+    if (auto sop = dyn_cast<scf::ForOp>(forOp))
+      return materializeFor<scf::ForOp>(sop, full);
+    return materializeFor<affine::AffineForOp>(cast<affine::AffineForOp>(forOp),
+                                               full);
+  }
+
+  template <typename ForType>
+  Value materializeFor(ForType forOp, bool full = true) {
+    if (!full)
+      return nullptr;
+
+    Block *body = forOp.getBody();
+    auto startFound = metaMap.valueAtStartOfBlock.find(body);
+    assert(startFound != metaMap.valueAtStartOfBlock.end());
+    Value maybeArg = startFound->second->materialize(false);
+    auto arg = cast<BlockArgument>(maybeArg);
+    assert(arg && arg.getOwner() == body);
+
+    auto opFound = metaMap.opOperands.find(forOp);
+    assert(opFound != metaMap.opOperands.end());
+    auto *forLastValue = opFound->second;
+    Value initVal = forLastValue->materialize(full);
+    assert(!forLastValue->overwritten && initVal);
+
+    auto endFind = metaMap.valueAtEndOfBlock.find(body);
+    assert(endFind != metaMap.valueAtEndOfBlock.end());
+    assert(endFind->second);
+    Value endVal = endFind->second->materialize(full);
+    assert(!endFind->second->overwritten && endVal);
+
+    initVal = forLastValue->materialize(full);
+    if (initVal.getType() != metaMap.elType)
+      initVal = castToType(metaMap.elType, initVal, forOp);
+    if (endVal.getType() != metaMap.elType)
+      endVal = castToType(metaMap.elType, endVal, body->getTerminator());
+
+    if (endVal == arg || endVal == initVal) {
+      metaMap.replaceValue(arg, initVal);
+      body->eraseArgument(arg.getArgNumber());
+      metaMap.opOperands.erase(forOp);
+      this->forOp = nullptr;
+      return this->val = initVal;
+    }
+
+    OpBuilder B(forOp.getContext());
+    B.setInsertionPoint(forOp);
+    SmallVector<mlir::Value, 4> inits(forOp.getInits());
+    inits.push_back(initVal);
+    auto nextFor = cloneWithoutResults(forOp, B, {}, inits);
+
+    Operation *yield = body->getTerminator();
+    SmallVector<mlir::Value, 4> yieldVals(yield->getOperands());
+    yieldVals.push_back(endVal);
+    nextFor.getRegion().takeBody(forOp.getRegion());
+    yield->setOperands(yieldVals);
+
+    SmallVector<mlir::Value, 3> resvals = nextFor.getResults();
+    this->val = resvals.back();
+    resvals.pop_back();
+
+    for (auto pair : llvm::zip(forOp.getResults(), resvals)) {
+      metaMap.replaceValue(std::get<0>(pair), std::get<1>(pair));
+    }
+    metaMap.replaceOpWithValue(forOp, this, this->val);
+
+    forOp.erase();
+    metaMap.opOperands.erase(forOp);
+    this->forOp = nullptr;
+    return this->val;
   }
 
   Value materializeEx(bool full = true) {
@@ -1646,6 +1761,8 @@ static inline llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
     return os << "ifOp:" << *PH.ifOp;
   if (PH.exOp)
     return os << "exOp:" << PH.exOp;
+  if (PH.forOp)
+    return os << "forOp:" << *PH.forOp;
   return os;
 }
 ValueOrPlaceholder *ReplacementHandler::get(std::nullptr_t val) {
@@ -1677,6 +1794,18 @@ ValueOrPlaceholder *ReplacementHandler::get(affine::AffineIfOp val,
                                             ValueOrPlaceholder *ifVal) {
   ValueOrPlaceholder *PH;
   allocs.emplace_back(PH = new ValueOrPlaceholder(val, ifVal, *this));
+  return PH;
+}
+ValueOrPlaceholder *ReplacementHandler::get(scf::ForOp val,
+                                            ValueOrPlaceholder *forVal) {
+  ValueOrPlaceholder *PH;
+  allocs.emplace_back(PH = new ValueOrPlaceholder(val, forVal, *this));
+  return PH;
+}
+ValueOrPlaceholder *ReplacementHandler::get(affine::AffineForOp val,
+                                            ValueOrPlaceholder *forVal) {
+  ValueOrPlaceholder *PH;
+  allocs.emplace_back(PH = new ValueOrPlaceholder(val, forVal, *this));
   return PH;
 }
 ValueOrPlaceholder *ReplacementHandler::get(scf::ExecuteRegionOp val) {
@@ -3015,6 +3144,14 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
                 lastVal = metaMap.get(ifOp, lastVal);
               }
               continue;
+            } else if (auto forOp = dyn_cast<mlir::scf::ForOp>(a)) {
+              handleBlock(*forOp.getBody(), metaMap.get(forOp.getBody()));
+              lastVal = metaMap.get(forOp, lastVal);
+              continue;
+            } else if (auto forOp = dyn_cast<mlir::affine::AffineForOp>(a)) {
+              handleBlock(*forOp.getBody(), metaMap.get(forOp.getBody()));
+              lastVal = metaMap.get(forOp, lastVal);
+              continue;
             }
             LLVM_DEBUG(llvm::dbgs() << "erased store due to: " << *a << "\n");
 
@@ -3153,6 +3290,27 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       continue;
     PotentialArgs[block] = Legality::Unknown;
 
+    if (metaMap.forBlocks.count(block)) {
+      Operation *forOp = block->getParentOp();
+      auto opFound = metaMap.opOperands.find(forOp);
+      assert(opFound != metaMap.opOperands.end());
+      auto endFind = valueAtEndOfBlock.find(block);
+      assert(endFind != valueAtEndOfBlock.end());
+
+      SmallPtrSet<Block *, 1> requirements;
+      if (opFound->second->definedWithArg(requirements) &&
+          endFind->second->definedWithArg(requirements)) {
+        for (auto *r : requirements) {
+          todo.push_back(r);
+          UserMap[r].insert(block);
+          RequirementMap[block].insert(r);
+        }
+      } else {
+        PotentialArgs[block] = Legality::Illegal;
+      }
+      continue;
+    }
+
     SetVector<Block *> prepred(block->getPredecessors().begin(),
                                block->getPredecessors().end());
     assert(prepred.size());
@@ -3273,6 +3431,20 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     loadOps.erase(pair.first.getDefiningOp());
   }
   replaceableValues.clear();
+
+  for (auto it = blocksWithAddedArgs.begin();
+       it != blocksWithAddedArgs.end();) {
+    Block *block = it->first;
+    auto forFound = metaMap.forBlocks.find(block);
+    if (forFound != metaMap.forBlocks.end()) {
+      Value v = forFound->second->materialize(true);
+      (void)v;
+      assert(v);
+      it = blocksWithAddedArgs.erase(it);
+    } else {
+      ++it;
+    }
+  }
 
   for (auto &pair : blocksWithAddedArgs) {
     Block *block = pair.first;
