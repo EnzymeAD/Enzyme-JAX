@@ -38524,6 +38524,134 @@ struct ScatterMaskedIndexSlice final
     return std::make_pair(box, volume == count);
   }
 
+  // Cuts the scatter to the box [lo, hi) of its grid: its indices `live` (its
+  // own, or what they mask when the box is exactly where they are live) and
+  // its updates. A box that only bounds the live positions keeps the
+  // indices, on the box.
+  static LogicalResult cutToBox(stablehlo::ScatterOp op,
+                                PatternRewriter &rewriter, Value live,
+                                ArrayRef<int64_t> lo, ArrayRef<int64_t> hi,
+                                bool exact, bool nowhere,
+                                ArrayRef<int64_t> grid) {
+    auto loc = op.getLoc();
+    auto idxTy = cast<RankedTensorType>(op.getScatterIndices().getType());
+    int64_t vectorDim = op.getScatterDimensionNumbers().getIndexVectorDim();
+    Value update = op.getUpdates()[0];
+    bool full = true, empty = nowhere;
+    for (size_t d = 0; d < grid.size(); ++d) {
+      full &= lo[d] == 0 && hi[d] == grid[d];
+      empty |= hi[d] <= lo[d];
+    }
+    if (empty) {
+      rewriter.replaceOp(op, op.getInputs()[0]);
+      return success();
+    }
+    // A box that only bounds the live positions, or the indices the scatter
+    // has, change nothing on the whole grid.
+    if (full && (!exact || live == op.getScatterIndices()))
+      return failure();
+    live = stablehlo::ReshapeOpCreate(rewriter, loc, live, idxTy.getShape());
+    if (!full) {
+      SmallVector<int64_t> idxLo, idxHi, idxStride(idxTy.getRank(), 1);
+      for (int64_t d = 0, g = 0; d < idxTy.getRank(); ++d) {
+        if (d == vectorDim) {
+          idxLo.push_back(0);
+          idxHi.push_back(idxTy.getDimSize(d));
+        } else {
+          idxLo.push_back(lo[g]);
+          idxHi.push_back(hi[g]);
+          ++g;
+        }
+      }
+      live = stablehlo::SliceOpCreate(rewriter, loc, live, idxLo, idxHi,
+                                      idxStride);
+      SmallVector<int64_t> updStride(grid.size(), 1);
+      update =
+          stablehlo::SliceOpCreate(rewriter, loc, update, lo, hi, updStride);
+    }
+    rewriter.modifyOpInPlace(op, [&] {
+      op.getScatterIndicesMutable().assign(live);
+      op.getUpdatesMutable()[0].assign(update);
+    });
+    return success();
+  }
+
+  // Bounds the elements of a constant index read for where it is live.
+  static constexpr int64_t kMaxConstantIndices = 1 << 16;
+
+  // Indices that are a constant, on the grid through a broadcast: the
+  // positions whose index vector is out of bounds write nothing, and are the
+  // masked ones (the select of a mask folded into the constant).
+  static LogicalResult cutConstantIndices(stablehlo::ScatterOp op,
+                                          PatternRewriter &rewriter,
+                                          ArrayRef<int64_t> grid) {
+    auto dims = op.getScatterDimensionNumbers();
+    auto inputTy = cast<RankedTensorType>(op.getInputs()[0].getType());
+    Value indices = op.getScatterIndices();
+    auto idxTy = cast<RankedTensorType>(indices.getType());
+    int64_t vectorDim = dims.getIndexVectorDim();
+    // The index dimension of each of the constant's.
+    SmallVector<int64_t> toIdx;
+    Value src = indices;
+    if (auto bcast = src.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      toIdx = llvm::to_vector(bcast.getBroadcastDimensions());
+      src = bcast.getOperand();
+    } else {
+      toIdx = llvm::to_vector(llvm::seq<int64_t>(0, idxTy.getRank()));
+    }
+    DenseIntElementsAttr cst;
+    if (!matchPattern(src, m_Constant(&cst)) || cst.isSplat() ||
+        cst.getNumElements() > kMaxConstantIndices)
+      return failure();
+    auto cstTy = cast<RankedTensorType>(cst.getType());
+    int64_t rank = cstTy.getRank();
+    auto toOperand = dims.getScatterDimsToOperandDims();
+    // The constant's dimension holding the components, if it holds them (a
+    // dimension of one broadcast across them holds every component).
+    int64_t compDim = -1;
+    for (int64_t d = 0; d < rank; ++d)
+      if (toIdx[d] == vectorDim && cstTy.getDimSize(d) != 1)
+        compDim = d;
+    SmallVector<int64_t> maskShape(cstTy.getShape());
+    if (compDim >= 0)
+      maskShape[compDim] = 1;
+    auto values = llvm::to_vector(cst.getValues<APInt>());
+    auto strides = computeStrides(cstTy.getShape());
+    auto maskStrides = computeStrides(maskShape);
+    int64_t maskSize =
+        cstTy.getNumElements() / (compDim >= 0 ? cstTy.getDimSize(compDim) : 1);
+    SmallVector<bool> live(maskSize, true);
+    SmallVector<int64_t> coord;
+    for (int64_t m = 0; m < maskSize; ++m) {
+      linearToMultiIndex(m, maskStrides, coord);
+      for (auto [j, operandDim] : llvm::enumerate(toOperand)) {
+        if (compDim >= 0)
+          coord[compDim] = j;
+        int64_t pos = 0;
+        for (int64_t d = 0; d < rank; ++d)
+          pos += coord[d] * strides[d];
+        int64_t v = values[pos].getSExtValue();
+        if (v < 0 || v >= inputTy.getDimSize(operandDim))
+          live[m] = false;
+      }
+    }
+    auto box = trueBox(DenseElementsAttr::get(
+        RankedTensorType::get(maskShape, rewriter.getI1Type()),
+        ArrayRef<bool>(live)));
+    SmallVector<int64_t> lo(grid.size(), 0), hi(grid.begin(), grid.end());
+    if (box) {
+      for (int64_t d = 0; d < rank; ++d) {
+        if (d == compDim || toIdx[d] == vectorDim || maskShape[d] == 1)
+          continue;
+        int64_t g = toIdx[d] < vectorDim ? toIdx[d] : toIdx[d] - 1;
+        lo[g] = box->first[d].first;
+        hi[g] = box->first[d].second;
+      }
+    }
+    return cutToBox(op, rewriter, indices, lo, hi, !box || box->second, !box,
+                    grid);
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
                                     PatternRewriter &rewriter) const {
     if (op.getInputs().size() != 1)
@@ -38531,13 +38659,14 @@ struct ScatterMaskedIndexSlice final
     auto &block = op.getUpdateComputation().front();
     if (!isSetindexBlock(&block))
       return failure();
-    // Each grid position writes one element, at an index whose every
-    // component is negative when masked off.
+    // Each grid position writes one element (each operand dimension inserted
+    // or batched), at an index whose every component is negative when masked
+    // off.
     auto inputTy = cast<RankedTensorType>(op.getInputs()[0].getType());
     auto dims = op.getScatterDimensionNumbers();
-    if ((int64_t)dims.getInsertedWindowDims().size() != inputTy.getRank() ||
-        !dims.getUpdateWindowDims().empty() ||
-        !dims.getInputBatchingDims().empty())
+    if ((int64_t)(dims.getInsertedWindowDims().size() +
+                  dims.getInputBatchingDims().size()) != inputTy.getRank() ||
+        !dims.getUpdateWindowDims().empty())
       return failure();
     Value indices = op.getScatterIndices();
     auto idxTy = cast<RankedTensorType>(indices.getType());
@@ -38557,7 +38686,7 @@ struct ScatterMaskedIndexSlice final
       idxSrc = rs.getOperand();
     auto sel = idxSrc.getDefiningOp<stablehlo::SelectOp>();
     if (!sel)
-      return failure();
+      return cutConstantIndices(op, rewriter, grid);
     SplatElementsAttr offSplat;
     if (!matchPattern(sel.getOnFalse(), m_Constant(&offSplat)) ||
         !offSplat.getSplatValue<APInt>().isNegative())
@@ -38724,44 +38853,8 @@ struct ScatterMaskedIndexSlice final
       hi[*gridDim] = std::min(hi[*gridDim], interval->second);
     }
 
-    auto loc = op.getLoc();
-    bool full = true, empty = nowhere;
-    for (size_t d = 0; d < grid.size(); ++d) {
-      full &= lo[d] == 0 && hi[d] == grid[d];
-      empty |= hi[d] <= lo[d];
-    }
-    if (empty) {
-      rewriter.replaceOp(op, op.getInputs()[0]);
-      return success();
-    }
-    // A box that only bounds the mask keeps the mask, on the box.
-    if (!exact && full)
-      return failure();
-    Value live = stablehlo::ReshapeOpCreate(
-        rewriter, loc, exact ? sel.getOnTrue() : indices, idxTy.getShape());
-    if (!full) {
-      SmallVector<int64_t> idxLo, idxHi, idxStride(idxTy.getRank(), 1);
-      for (int64_t d = 0, g = 0; d < idxTy.getRank(); ++d) {
-        if (d == vectorDim) {
-          idxLo.push_back(0);
-          idxHi.push_back(idxTy.getDimSize(d));
-        } else {
-          idxLo.push_back(lo[g]);
-          idxHi.push_back(hi[g]);
-          ++g;
-        }
-      }
-      live = stablehlo::SliceOpCreate(rewriter, loc, live, idxLo, idxHi,
-                                      idxStride);
-      SmallVector<int64_t> updStride(grid.size(), 1);
-      update =
-          stablehlo::SliceOpCreate(rewriter, loc, update, lo, hi, updStride);
-    }
-    rewriter.modifyOpInPlace(op, [&] {
-      op.getScatterIndicesMutable().assign(live);
-      op.getUpdatesMutable()[0].assign(update);
-    });
-    return success();
+    return cutToBox(op, rewriter, exact ? sel.getOnTrue() : indices, lo, hi,
+                    exact, nowhere, grid);
   }
 };
 
