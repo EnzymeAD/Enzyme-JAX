@@ -66,3 +66,31 @@ func.func @gather_cut_past_end(%x: tensor<16x3x123xf64>) -> tensor<16x5x5xf64> {
 // CHECK-NEXT: return %[[V3]] : tensor<16x5x5xf64>
 // CHECK-NEXT: }
 
+
+// A 3x4x4 block at i + 12 j + 3 k in row 2 of a scratch of 3x64: the row
+// (at 128) does not start on a multiple of 12, so the 4x12 the block spans
+// is cut out of it, from the row's start, before it is split.
+func.func @scatter_cut_unaligned(%x: tensor<16x3x64xf64>, %u: tensor<16x3x4x4xf64>) -> tensor<16x3x64xf64> {
+  %c = stablehlo.constant dense<[[[[2, 0], [2, 3], [2, 6], [2, 9]], [[2, 12], [2, 15], [2, 18], [2, 21]], [[2, 24], [2, 27], [2, 30], [2, 33]], [[2, 36], [2, 39], [2, 42], [2, 45]]], [[[2, 1], [2, 4], [2, 7], [2, 10]], [[2, 13], [2, 16], [2, 19], [2, 22]], [[2, 25], [2, 28], [2, 31], [2, 34]], [[2, 37], [2, 40], [2, 43], [2, 46]]], [[[2, 2], [2, 5], [2, 8], [2, 11]], [[2, 14], [2, 17], [2, 20], [2, 23]], [[2, 26], [2, 29], [2, 32], [2, 35]], [[2, 38], [2, 41], [2, 44], [2, 47]]]]> : tensor<3x4x4x2xi64>
+  %i = stablehlo.broadcast_in_dim %c, dims = [1, 2, 3, 4] : (tensor<3x4x4x2xi64>) -> tensor<16x3x4x4x2xi64>
+  %s = "stablehlo.scatter"(%x, %i, %u) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [1, 2], input_batching_dims = [0], scatter_indices_batching_dims = [0], scatter_dims_to_operand_dims = [1, 2], index_vector_dim = 4>, unique_indices = false}> ({
+  ^bb0(%a: tensor<f64>, %v: tensor<f64>):
+    stablehlo.return %v : tensor<f64>
+  }) : (tensor<16x3x64xf64>, tensor<16x3x4x4x2xi64>, tensor<16x3x4x4xf64>) -> tensor<16x3x64xf64>
+  return %s : tensor<16x3x64xf64>
+}
+
+// CHECK-LABEL: func.func @scatter_cut_unaligned(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<16x3x64xf64>, %[[V1:[^ ,:)]+]]: tensor<16x3x4x4xf64>) -> tensor<16x3x64xf64> {
+// CHECK-NEXT: %[[V2:[^ ,:)]+]] = stablehlo.constant dense<128> : tensor<i32>
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.constant dense<0> : tensor<i32>
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.reshape %[[V0]] : (tensor<16x3x64xf64>) -> tensor<16x192xf64>
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = stablehlo.slice %[[V4]] [0:16, 128:176] : (tensor<16x192xf64>) -> tensor<16x48xf64>
+// CHECK-NEXT: %[[V6:[^ ,:)]+]] = stablehlo.reshape %[[V5]] : (tensor<16x48xf64>) -> tensor<16x4x4x3xf64>
+// CHECK-NEXT: %[[V7:[^ ,:)]+]] = stablehlo.transpose %[[V1]], dims = [0, 2, 3, 1] : (tensor<16x3x4x4xf64>) -> tensor<16x4x4x3xf64>
+// CHECK-NEXT: %[[V8:[^ ,:)]+]] = stablehlo.dynamic_update_slice %[[V6]], %[[V7]], %[[V3]], %[[V3]], %[[V3]], %[[V3]] : (tensor<16x4x4x3xf64>, tensor<16x4x4x3xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<16x4x4x3xf64>
+// CHECK-NEXT: %[[V9:[^ ,:)]+]] = stablehlo.reshape %[[V8]] : (tensor<16x4x4x3xf64>) -> tensor<16x48xf64>
+// CHECK-NEXT: %[[V10:[^ ,:)]+]] = stablehlo.dynamic_update_slice %[[V4]], %[[V9]], %[[V3]], %[[V2]] : (tensor<16x192xf64>, tensor<16x48xf64>, tensor<i32>, tensor<i32>) -> tensor<16x192xf64>
+// CHECK-NEXT: %[[V11:[^ ,:)]+]] = stablehlo.reshape %[[V10]] : (tensor<16x192xf64>) -> tensor<16x3x64xf64>
+// CHECK-NEXT: return %[[V11]] : tensor<16x3x64xf64>
+// CHECK-NEXT: }

@@ -17894,6 +17894,15 @@ struct GridIndexingAnalysis {
   bool inBounds;
 };
 
+// Whether a run starting `offset` into a block of `block` elements, cut to
+// [start, start + size), splits into blocks of `scale` from the cut's start
+// that each hold the run of the smaller scales, reaching `below` past each of
+// its starts.
+static bool gridRunFits(int64_t start, int64_t size, int64_t block,
+                        int64_t offset, int64_t scale, int64_t below) {
+  return start + size <= block && (offset - start) % scale + below <= scale;
+}
+
 // A multi-dimensional index into an operand of any rank is a linear index
 // into the operand's row-major flattening: the sum of each component times
 // the stride of the operand dimension it indexes, and of each batching
@@ -18044,29 +18053,33 @@ analyzeGridIndexing(Value indices, Value operand, int64_t indexVectorDim,
 
   // Factorize the flattened operand one mapping at a time: its trailing block
   // (of `block` elements, the grid's run starting `offset` into it) splits
-  // into blocks of the mapping's scale. A block the scale does not divide is
-  // first cut to the whole blocks of the scale the grid reaches in it. The
-  // cut starts where the run does, rounded down to the operand's own rows
-  // when the block is made of them, else to the smallest scale, else not at
-  // all: the first of these the cut fits from.
+  // into blocks of the mapping's scale. A block the scale does not divide, or
+  // whose blocks the run of the smaller scales does not fit in from where it
+  // starts, is first cut to the whole blocks of the scale the grid reaches in
+  // it. The cut starts where the run does, rounded down to the operand's own
+  // rows when the block is made of them, else to the smallest scale, else not
+  // at all: the first of these the cut fits from.
   int64_t block = operandTy.getNumElements();
   int64_t offset = minTotalOffset;
   for (auto [k, map] : llvm::enumerate(result.mappings)) {
     int64_t reach = 1;
     for (const auto &inner : ArrayRef(result.mappings).drop_front(k))
       reach += inner.absScale * (result.gridShape[inner.gridDim] - 1);
+    // How far the run of the smaller scales reaches past each of its starts.
+    int64_t below = reach - map.absScale * (result.gridShape[map.gridDim] - 1);
     std::pair<int64_t, int64_t> cut = {0, -1};
-    if (block % map.absScale != 0) {
+    if (block % map.absScale != 0 ||
+        !gridRunFits(0, block, block, offset, map.absScale, below)) {
       int64_t row = operandTy.getShape().back();
       int64_t start = 0, size = 0;
       for (int64_t align : {block % row == 0 ? row : 1,
                             result.mappings.back().absScale, int64_t(1)}) {
         start = offset - offset % align;
         size = llvm::alignTo(offset - start + reach, map.absScale);
-        if (start + size <= block)
+        if (gridRunFits(start, size, block, offset, map.absScale, below))
           break;
       }
-      if (start + size > block)
+      if (!gridRunFits(start, size, block, offset, map.absScale, below))
         return failure();
       cut = {start, size};
       block = size;
