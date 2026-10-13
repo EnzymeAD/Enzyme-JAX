@@ -82,6 +82,16 @@ struct DotGeneralElementwiseToCuDNNFusion
     if (!dotGeneral->hasOneUse())
       return failure();
 
+    // cuDNN's matmul engine needs an actual contraction. A dot_general with no
+    // contracting dimensions is a batched outer product, and cuDNN has no
+    // candidate for it: the fusion is built, and the GPU compiler then fails
+    // the whole module with "No candidates could be compiled".
+    if (dotGeneral.getDotDimensionNumbers()
+            .getLhsContractingDimensions()
+            .empty())
+      return rewriter.notifyMatchFailure(
+          elemOp, "dot_general has no contracting dimensions");
+
     ModuleOp mod = elemOp->template getParentOfType<ModuleOp>();
     if (!mod)
       return rewriter.notifyMatchFailure(elemOp, "No module found");
