@@ -732,7 +732,7 @@ bool transformReshapeSlice(
     if (fromShape[i] == 1) {
       if (checkRemovedFn) {
         if (!checkRemovedFn(start[startidx])) {
-          if (i > 0 && j > 0 && fromShape[i - 1] == fromShape[j - 1] &&
+          if (i > 0 && j > 0 && fromShape[i - 1] == toShape[j - 1] &&
               fromShape[i - 1] == 1 && checkRemovedFn(start[startidx - 1])) {
             i--;
             j--;
@@ -852,6 +852,24 @@ bool transformReshapeSlice(stablehlo::ReshapeOp op, SmallVectorImpl<T> &start,
                                   start, toFill, checkRemovedFn);
 }
 
+// Start indices of the unit dimensions a reshape inserts are zero.
+// transformReshapeSlice leaves them as null placeholders, so that a pattern
+// whose later checks fail has not changed the IR. Replace them with one zero
+// constant once the rewrite is known to apply.
+void fillInsertedStartIndices(PatternRewriter &rewriter, Location loc,
+                              RankedTensorType itype,
+                              SmallVectorImpl<Value> &startIndices) {
+  Value zero;
+  for (auto &start : startIndices) {
+    if (start)
+      continue;
+    if (!zero)
+      zero = stablehlo::ConstantOp::create(
+          rewriter, loc, itype, cast<ElementsAttr>(makeAttr(itype, 0)));
+    start = zero;
+  }
+}
+
 stablehlo::Element conj(const stablehlo::Element &orig) {
   if (stablehlo::isSupportedComplexType(orig.getType())) {
     mlir::Complex<APFloat> val = orig.getComplexValue();
@@ -898,13 +916,8 @@ struct ReshapeDUS final
                      ? cast<RankedTensorType>(startIndices[0].getType())
                      : RankedTensorType::get({}, rewriter.getI64Type());
 
-    // A dimension the reshape adds takes a zero start index. That constant
-    // is made only once every check has passed: an index the transform
-    // fills is a null placeholder until then, which the removal check reads
-    // as the zero it stands for. A pattern that creates and then declines
-    // leaves the constant behind, and the driver revisits it without end.
     if (!transformReshapeSlice<mlir::Value>(
-            op, startIndices, /*toFill*/ []() -> mlir::Value { return {}; },
+            op, startIndices, /*toFill*/ mlir::Value(),
             [](mlir::Value v) -> bool {
               return !v || matchPattern(v, m_Zero());
             }))
@@ -919,16 +932,7 @@ struct ReshapeDUS final
                                         /*checkRemoved*/ &one))
       return failure();
 
-    Value zero;
-    for (Value &index : startIndices) {
-      if (index)
-        continue;
-      if (!zero)
-        zero = stablehlo::ConstantOp::create(
-            rewriter, dus.getLoc(), itype,
-            cast<ElementsAttr>(makeAttr(itype, 0)));
-      index = zero;
-    }
+    fillInsertedStartIndices(rewriter, dus.getLoc(), itype, startIndices);
     auto newOperand = stablehlo::ReshapeOpCreate(
         rewriter, op.getLoc(), dus.getOperand(),
         cast<RankedTensorType>(op.getType()).getShape());
@@ -1038,13 +1042,8 @@ struct ReshapeDynamicSlice final
                      ? cast<RankedTensorType>(startIndices[0].getType())
                      : RankedTensorType::get({}, rewriter.getI64Type());
 
-    // A dimension the reshape adds takes a zero start index. That constant
-    // is made only once every check has passed: an index the transform
-    // fills is a null placeholder until then, which the removal check reads
-    // as the zero it stands for. A pattern that creates and then declines
-    // leaves the constant behind, and the driver revisits it without end.
     if (!transformReshapeSlice<mlir::Value>(
-            op, startIndices, /*toFill*/ []() -> mlir::Value { return {}; },
+            op, startIndices, /*toFill*/ mlir::Value(),
             [](mlir::Value v) -> bool {
               return !v || matchPattern(v, m_Zero());
             }))
@@ -1065,16 +1064,7 @@ struct ReshapeDynamicSlice final
                                         /*checkRemoved*/ &one))
       return failure();
 
-    Value zero;
-    for (Value &index : startIndices) {
-      if (index)
-        continue;
-      if (!zero)
-        zero = stablehlo::ConstantOp::create(
-            rewriter, slice.getLoc(), itype,
-            cast<ElementsAttr>(makeAttr(itype, 0)));
-      index = zero;
-    }
+    fillInsertedStartIndices(rewriter, slice.getLoc(), itype, startIndices);
     auto newOperand = stablehlo::ReshapeOpCreate(
         rewriter, op.getLoc(), slice.getOperand(), operandShape);
 
