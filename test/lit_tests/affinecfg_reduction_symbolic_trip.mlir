@@ -164,3 +164,39 @@ func.func @two_accumulators(%x: memref<?xf64>, %G: memref<?xf64>, %n: index, %d:
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return
 // CHECK-NEXT: }
+
+// -----
+
+#map = affine_map<(d0) -> (d0 + 1)>
+func.func @accumulate_nonconst_lb(%x: memref<100xf64>, %w: memref<100xf64>) {
+  affine.for %i = 0 to 100 {
+    affine.for %j = #map(%i) to 100 {
+      %xv = affine.load %x[%j] : memref<100xf64>
+      %acc = affine.load %w[%i] : memref<100xf64>
+      %s = arith.addf %acc, %xv : f64
+      affine.store %s, %w[%i] : memref<100xf64>
+    }
+  }
+  return
+}
+
+// CHECK:  func.func @accumulate_nonconst_lb(%arg0: memref<100xf64>, %arg1: memref<100xf64>) {
+// CHECK-NEXT:   %cst = arith.constant 0.000000e+00 : f64
+// CHECK-NEXT:   affine.parallel (%arg2) = (0) to (100) {
+// CHECK-NEXT:     %0 = affine.if #set(%arg2) -> f64 {
+// CHECK-NEXT:       %3 = affine.load %arg1[%arg2] : memref<100xf64>
+// CHECK-NEXT:       affine.yield %3 : f64
+// CHECK-NEXT:     } else {
+// CHECK-NEXT:       affine.yield %cst : f64
+// CHECK-NEXT:     }
+// CHECK-NEXT:     %1 = affine.parallel (%arg3) = (%arg2 + 1) to (100) reduce ("addf") -> (f64) {
+// CHECK-NEXT:       %3 = affine.load %arg0[%arg3] : memref<100xf64>
+// CHECK-NEXT:       affine.yield %3 : f64
+// CHECK-NEXT:     }
+// CHECK-NEXT:     %2 = arith.addf %0, %1 : f64
+// CHECK-NEXT:     affine.if #set(%arg2) {
+// CHECK-NEXT:       affine.store %2, %arg1[%arg2] : memref<100xf64>
+// CHECK-NEXT:     }
+// CHECK-NEXT:   }
+// CHECK-NEXT:   return
+// CHECK-NEXT: }
