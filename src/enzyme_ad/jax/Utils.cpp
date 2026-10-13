@@ -1734,6 +1734,11 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
   if (!tensor) {
     return std::nullopt;
   }
+  auto tensorType = dyn_cast<RankedTensorType>(tensor.getType());
+  if (!tensorType ||
+      !isa<mlir::IntegerType, mlir::FloatType>(tensorType.getElementType())) {
+    return std::nullopt;
+  }
 
   struct ChainItem {
     mlir::Operation *op;

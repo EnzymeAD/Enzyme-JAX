@@ -2132,7 +2132,8 @@ bool liftReduceLikeOperation(
       opName = OperationName("stablehlo.add", op->getContext());
     } else if (isa<stablehlo::DivOp>(op)) {
       auto numerator = stablehlo::ConstantOp::create(
-          rewriter, op->getLoc(), rewriter.getOneAttr(reduceInput.getType()));
+          rewriter, op->getLoc(),
+          cast<ElementsAttr>(makeAttr(reduceInput.getType(), 1)));
       reduceInput = stablehlo::DivOp::create(rewriter, op->getLoc(), numerator,
                                              reduceInput);
       opName = OperationName("stablehlo.multiply", op->getContext());
