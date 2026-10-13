@@ -1294,6 +1294,11 @@ def IfRemoveUnused : EnzymeHLOPatternOp<
   let patterns = ["IfRemoveUnused"];
 }
 
+def CaseRemoveUnused : EnzymeHLOPatternOp<
+    "case_remove_unused"> {
+  let patterns = ["CaseRemoveUnused"];
+}
+
 def IfInline : EnzymeHLOPatternOp<
     "if_inline"> {
   let patterns = ["IfInline"];
