@@ -10967,8 +10967,19 @@ struct DotGeneralSimplify
     Value reduceSumInput;
     SmallVector<int64_t> reduceDims, broadcastDims, broadcastShape;
     SplatElementsAttr splatElementsAttr;
+    // An operand that is a splat constant or a broadcast scalar holds the same
+    // value everywhere: the contraction is a sum of the other operand.
+    Value splatOperand;
+    auto isSplat = [&](Value v) {
+      if (matchPattern(v, m_Constant(&splatElementsAttr)) ||
+          stablehlo::isScalarValue(v)) {
+        splatOperand = v;
+        return true;
+      }
+      return false;
+    };
 
-    if (matchPattern(op.getLhs(), m_Constant(&splatElementsAttr))) {
+    if (isSplat(op.getLhs())) {
       reduceDims = llvm::to_vector(rhsContractingDims);
       reduceSumInput = op.getRhs();
 
@@ -10995,7 +11006,7 @@ struct DotGeneralSimplify
           broadcastDims.push_back(dim);
         }
       }
-    } else if (matchPattern(op.getRhs(), m_Constant(&splatElementsAttr))) {
+    } else if (isSplat(op.getRhs())) {
       reduceDims = llvm::to_vector(lhsContractingDims);
       reduceSumInput = op.getLhs();
 
@@ -11024,9 +11035,11 @@ struct DotGeneralSimplify
       }
     }
 
-    if (splatElementsAttr) {
+    if (splatOperand) {
       auto inputType = cast<RankedTensorType>(reduceSumInput.getType());
       auto elemType = inputType.getElementType();
+      if (elemType != op.getType().getElementType())
+        return failure();
       auto rank0Type = RankedTensorType::get({}, elemType);
 
       auto zero = stablehlo::ConstantOp::create(
@@ -11053,11 +11066,18 @@ struct DotGeneralSimplify
           RankedTensorType::get(broadcastShape, elemType),
           reduceOp.getResult(0), broadcastDims);
 
-      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
-          op, bcastOp,
-          stablehlo::ConstantOp::create(
-              rewriter, op.getLoc(), bcastOp.getType(),
-              splatElementsAttr.resizeSplat(bcastOp.getType())));
+      Value scale;
+      if (splatElementsAttr) {
+        scale = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), bcastOp.getType(),
+            splatElementsAttr.resizeSplat(bcastOp.getType()));
+      } else {
+        scale = stablehlo::BroadcastInDimOp::create(
+            rewriter, op.getLoc(), bcastOp.getType(),
+            stablehlo::getScalarValue(splatOperand, rewriter),
+            ArrayRef<int64_t>{});
+      }
+      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, bcastOp, scale);
       return success();
     }
 
