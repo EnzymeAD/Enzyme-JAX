@@ -10967,8 +10967,19 @@ struct DotGeneralSimplify
     Value reduceSumInput;
     SmallVector<int64_t> reduceDims, broadcastDims, broadcastShape;
     SplatElementsAttr splatElementsAttr;
+    // An operand that is a splat constant or a broadcast scalar holds the same
+    // value everywhere: the contraction is a sum of the other operand.
+    Value splatOperand;
+    auto isSplat = [&](Value v) {
+      if (matchPattern(v, m_Constant(&splatElementsAttr)) ||
+          stablehlo::isScalarValue(v)) {
+        splatOperand = v;
+        return true;
+      }
+      return false;
+    };
 
-    if (matchPattern(op.getLhs(), m_Constant(&splatElementsAttr))) {
+    if (isSplat(op.getLhs())) {
       reduceDims = llvm::to_vector(rhsContractingDims);
       reduceSumInput = op.getRhs();
 
@@ -10995,7 +11006,7 @@ struct DotGeneralSimplify
           broadcastDims.push_back(dim);
         }
       }
-    } else if (matchPattern(op.getRhs(), m_Constant(&splatElementsAttr))) {
+    } else if (isSplat(op.getRhs())) {
       reduceDims = llvm::to_vector(lhsContractingDims);
       reduceSumInput = op.getLhs();
 
@@ -11024,9 +11035,11 @@ struct DotGeneralSimplify
       }
     }
 
-    if (splatElementsAttr) {
+    if (splatOperand) {
       auto inputType = cast<RankedTensorType>(reduceSumInput.getType());
       auto elemType = inputType.getElementType();
+      if (elemType != op.getType().getElementType())
+        return failure();
       auto rank0Type = RankedTensorType::get({}, elemType);
 
       auto zero = stablehlo::ConstantOp::create(
@@ -11053,11 +11066,18 @@ struct DotGeneralSimplify
           RankedTensorType::get(broadcastShape, elemType),
           reduceOp.getResult(0), broadcastDims);
 
-      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
-          op, bcastOp,
-          stablehlo::ConstantOp::create(
-              rewriter, op.getLoc(), bcastOp.getType(),
-              splatElementsAttr.resizeSplat(bcastOp.getType())));
+      Value scale;
+      if (splatElementsAttr) {
+        scale = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), bcastOp.getType(),
+            splatElementsAttr.resizeSplat(bcastOp.getType()));
+      } else {
+        scale = stablehlo::BroadcastInDimOp::create(
+            rewriter, op.getLoc(), bcastOp.getType(),
+            stablehlo::getScalarValue(splatOperand, rewriter),
+            ArrayRef<int64_t>{});
+      }
+      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, bcastOp, scale);
       return success();
     }
 
@@ -17716,6 +17736,41 @@ static bool extractComponentIotas(Value indices, int64_t indexVectorDim,
     return true;
   }
 
+  // Padded at the ends of the index vector dimension only: a component in the
+  // padding is the padding value, any other the operand's.
+  if (auto pad = indices.getDefiningOp<stablehlo::PadOp>(); pad && !whole) {
+    for (int64_t d = 0; d < rank; ++d) {
+      int64_t low = pad.getEdgePaddingLow()[d];
+      int64_t high = pad.getEdgePaddingHigh()[d];
+      if (pad.getInteriorPadding()[d] != 0 || low < 0 || high < 0 ||
+          (d != indexVectorDim && (low != 0 || high != 0)))
+        return false;
+    }
+    int64_t low = pad.getEdgePaddingLow()[indexVectorDim];
+    auto oty = cast<RankedTensorType>(pad.getOperand().getType());
+    if (comp < low || comp >= low + oty.getDimSize(indexVectorDim)) {
+      DenseElementsAttr value;
+      if (!matchPattern(pad.getPaddingValue(), m_Constant(&value)))
+        return false;
+      IotaLikeTensor term;
+      term.dimension = 0;
+      term.start = value.getSplatValue<TypedAttr>();
+      term.scale = IntegerAttr::get(ty.getElementType(), 0);
+      term.tensorType = ty;
+      result.push_back(term);
+      return true;
+    }
+    SmallVector<IotaLikeTensor> inner;
+    if (!extractComponentIotas(pad.getOperand(), indexVectorDim, comp - low,
+                               inner))
+      return false;
+    for (IotaLikeTensor iota : inner) {
+      iota.tensorType = ty;
+      result.push_back(iota);
+    }
+    return true;
+  }
+
   if (auto add = indices.getDefiningOp<stablehlo::AddOp>())
     return extractComponentIotas(add.getLhs(), indexVectorDim, comp, result) &&
            extractComponentIotas(add.getRhs(), indexVectorDim, comp, result);
@@ -17912,7 +17967,11 @@ struct GridIndexingAnalysis {
   // The index grid: the index tensor's dimensions but the index vector one.
   SmallVector<int64_t> gridShape;
   int64_t minTotalOffset;
+  // The operand, read as its flattening, factored by the mappings' scales;
+  // `cuts[k]` is the (start, size) the trailing dimension is cut to before
+  // the k-th mapping splits it (a size of -1 when it is not cut).
   SmallVector<int64_t> operandShape;
+  SmallVector<std::pair<int64_t, int64_t>> cuts;
   SmallVector<int64_t> sliceStarts;
   SmallVector<int64_t> sliceSizes;
   SmallVector<DimMapping> mappings;
@@ -17921,6 +17980,15 @@ struct GridIndexingAnalysis {
   // the ones past the end; a scatter drops them.
   bool inBounds;
 };
+
+// Whether a run starting `offset` into a block of `block` elements, cut to
+// [start, start + size), splits into blocks of `scale` from the cut's start
+// that each hold the run of the smaller scales, reaching `below` past each of
+// its starts.
+static bool gridRunFits(int64_t start, int64_t size, int64_t block,
+                        int64_t offset, int64_t scale, int64_t below) {
+  return start + size <= block && (offset - start) % scale + below <= scale;
+}
 
 // A multi-dimensional index into an operand of any rank is a linear index
 // into the operand's row-major flattening: the sum of each component times
@@ -18056,31 +18124,6 @@ analyzeGridIndexing(Value indices, Value operand, int64_t indexVectorDim,
     return a.absScale > b.absScale;
   });
 
-  int64_t N = operandTy.getNumElements();
-
-  // Factorize the 1D operand size N into a multi-dimensional shape where each
-  // stride corresponds to one of the grid dimension scales.
-  int64_t currentDivisor = N;
-  for (const auto &map : result.mappings) {
-    if (map.absScale == 0 || currentDivisor % map.absScale != 0)
-      return failure();
-    result.operandShape.push_back(currentDivisor / map.absScale);
-    currentDivisor = map.absScale;
-  }
-  if (currentDivisor > 1) {
-    result.operandShape.push_back(currentDivisor);
-  }
-
-  int64_t opRank = result.operandShape.size();
-
-  // Compute strides for the reshaped operand.
-  SmallVector<int64_t> opStrides(opRank);
-  int64_t st = 1;
-  for (int64_t k = opRank - 1; k >= 0; --k) {
-    opStrides[k] = st;
-    st *= result.operandShape[k];
-  }
-
   // Calculate the minimum total starting offset, adjusting for any negative
   // scales that effectively offset the slice starts in the grid.
   int64_t minTotalOffset = totalStart;
@@ -18095,24 +18138,58 @@ analyzeGridIndexing(Value indices, Value operand, int64_t indexVectorDim,
 
   result.minTotalOffset = minTotalOffset;
 
-  result.sliceSizes.resize(opRank, 1);
-  for (size_t m = 0; m < result.mappings.size(); ++m) {
-    int64_t gridDim = result.mappings[m].gridDim;
-    result.sliceSizes[m] = result.gridShape[gridDim];
+  // Factorize the flattened operand one mapping at a time: its trailing block
+  // (of `block` elements, the grid's run starting `offset` into it) splits
+  // into blocks of the mapping's scale. A block the scale does not divide, or
+  // whose blocks the run of the smaller scales does not fit in from where it
+  // starts, is first cut to the whole blocks of the scale the grid reaches in
+  // it. The cut starts where the run does, rounded down to the operand's own
+  // rows when the block is made of them, else to the smallest scale, else not
+  // at all: the first of these the cut fits from.
+  int64_t block = operandTy.getNumElements();
+  int64_t offset = minTotalOffset;
+  for (auto [k, map] : llvm::enumerate(result.mappings)) {
+    int64_t reach = 1;
+    for (const auto &inner : ArrayRef(result.mappings).drop_front(k))
+      reach += inner.absScale * (result.gridShape[inner.gridDim] - 1);
+    // How far the run of the smaller scales reaches past each of its starts.
+    int64_t below = reach - map.absScale * (result.gridShape[map.gridDim] - 1);
+    std::pair<int64_t, int64_t> cut = {0, -1};
+    if (block % map.absScale != 0 ||
+        !gridRunFits(0, block, block, offset, map.absScale, below)) {
+      int64_t row = operandTy.getShape().back();
+      int64_t start = 0, size = 0;
+      for (int64_t align : {block % row == 0 ? row : 1,
+                            result.mappings.back().absScale, int64_t(1)}) {
+        start = offset - offset % align;
+        size = llvm::alignTo(offset - start + reach, map.absScale);
+        if (gridRunFits(start, size, block, offset, map.absScale, below))
+          break;
+      }
+      if (!gridRunFits(start, size, block, offset, map.absScale, below))
+        return failure();
+      cut = {start, size};
+      block = size;
+      offset -= start;
+    }
+    result.cuts.push_back(cut);
+    result.operandShape.push_back(block / map.absScale);
+    result.sliceStarts.push_back(offset / map.absScale);
+    result.sliceSizes.push_back(result.gridShape[map.gridDim]);
+    offset %= map.absScale;
+    block = map.absScale;
   }
-
-  result.sliceStarts.resize(opRank, 0);
-  int64_t rem = minTotalOffset;
-  for (int64_t k = 0; k < opRank; ++k) {
-    result.sliceStarts[k] = rem / opStrides[k];
-    rem %= opStrides[k];
+  if (block > 1) {
+    result.operandShape.push_back(block);
+    result.sliceStarts.push_back(offset);
+    result.sliceSizes.push_back(1);
   }
 
   result.inBounds = true;
-  for (int64_t k = 0; k < opRank; ++k) {
-    if (result.sliceStarts[k] + result.sliceSizes[k] > result.operandShape[k])
+  for (auto [start, size, dim] : llvm::zip_equal(
+           result.sliceStarts, result.sliceSizes, result.operandShape))
+    if (start + size > dim)
       result.inBounds = false;
-  }
 
   for (size_t m = 0; m < result.mappings.size(); ++m) {
     if (result.mappings[m].scale < 0) {
@@ -18121,6 +18198,63 @@ analyzeGridIndexing(Value indices, Value operand, int64_t indexVectorDim,
   }
 
   return success();
+}
+
+// The operand of `analysis` factored as it describes: flattened, then split
+// by each mapping's scale in turn, the trailing dimension cut first where the
+// analysis cuts it (the splits so far made, by one reshape, only there). Each
+// value a cut is taken from goes to `cutFrom`, for `putGridViewBack`.
+static Value buildGridView(PatternRewriter &rewriter, Location loc,
+                           Value operand, const GridIndexingAnalysis &analysis,
+                           SmallVectorImpl<Value> *cutFrom = nullptr) {
+  SmallVector<int64_t> shape = {
+      cast<RankedTensorType>(operand.getType()).getNumElements()};
+  Value view = operand;
+  for (auto [map, cut] : llvm::zip_equal(analysis.mappings, analysis.cuts)) {
+    if (cut.second >= 0) {
+      view = stablehlo::ReshapeOpCreate(rewriter, loc, view, shape);
+      if (cutFrom)
+        cutFrom->push_back(view);
+      SmallVector<int64_t> starts(shape.size(), 0), strides(shape.size(), 1);
+      SmallVector<int64_t> limits = shape;
+      starts.back() = cut.first;
+      limits.back() = cut.first + cut.second;
+      view = stablehlo::SliceOpCreate(rewriter, loc, view, starts, limits,
+                                      strides);
+      shape.back() = cut.second;
+    }
+    shape.back() /= map.absScale;
+    shape.push_back(map.absScale);
+  }
+  return stablehlo::ReshapeOpCreate(rewriter, loc, view, analysis.operandShape);
+}
+
+// The operand `buildGridView` factored, with `view` in place of its view: each
+// cut written back into what it was cut from, and the splits undone.
+static Value putGridViewBack(PatternRewriter &rewriter, Location loc,
+                             Value view, RankedTensorType operandTy,
+                             const GridIndexingAnalysis &analysis,
+                             ArrayRef<Value> cutFrom) {
+  auto i32 = RankedTensorType::get({}, rewriter.getI32Type());
+  auto from = cutFrom.rbegin();
+  for (auto cut : llvm::reverse(analysis.cuts)) {
+    if (cut.second < 0)
+      continue;
+    Value into = *from++;
+    auto intoTy = cast<RankedTensorType>(into.getType());
+    SmallVector<int64_t> shape(intoTy.getShape());
+    shape.back() = cut.second;
+    view = stablehlo::ReshapeOpCreate(rewriter, loc, view, shape);
+    SmallVector<Value> starts;
+    for (int64_t d = 0; d < intoTy.getRank(); ++d)
+      starts.push_back(stablehlo::ConstantOp::create(
+          rewriter, loc,
+          cast<ElementsAttr>(
+              makeAttr(i32, d + 1 == intoTy.getRank() ? cut.first : 0))));
+    view = stablehlo::DynamicUpdateSliceOp::create(rewriter, loc, into, view,
+                                                   starts);
+  }
+  return stablehlo::ReshapeOpCreate(rewriter, loc, view, operandTy.getShape());
 }
 
 /// Converts gather ops to slice ops in case we have a single set of constant
@@ -18271,10 +18405,9 @@ struct GatherOpCanon final
     // General case: We have multiple grid dimensions mapped.
     if (!analysis.inBounds)
       return failure();
-    // Reshape the operand (read as its flattening) to the factored
-    // multi-dimensional shape.
-    Value reshapedOperand = stablehlo::ReshapeOpCreate(
-        rewriter, op.getLoc(), operand, analysis.operandShape);
+    // The operand (read as its flattening) in the factored shape.
+    Value reshapedOperand =
+        buildGridView(rewriter, op.getLoc(), operand, analysis);
 
     int64_t opRank = analysis.operandShape.size();
     SmallVector<int64_t> sliceLimits(opRank);
@@ -38423,6 +38556,134 @@ struct ScatterMaskedIndexSlice final
     return std::make_pair(box, volume == count);
   }
 
+  // Cuts the scatter to the box [lo, hi) of its grid: its indices `live` (its
+  // own, or what they mask when the box is exactly where they are live) and
+  // its updates. A box that only bounds the live positions keeps the
+  // indices, on the box.
+  static LogicalResult cutToBox(stablehlo::ScatterOp op,
+                                PatternRewriter &rewriter, Value live,
+                                ArrayRef<int64_t> lo, ArrayRef<int64_t> hi,
+                                bool exact, bool nowhere,
+                                ArrayRef<int64_t> grid) {
+    auto loc = op.getLoc();
+    auto idxTy = cast<RankedTensorType>(op.getScatterIndices().getType());
+    int64_t vectorDim = op.getScatterDimensionNumbers().getIndexVectorDim();
+    Value update = op.getUpdates()[0];
+    bool full = true, empty = nowhere;
+    for (size_t d = 0; d < grid.size(); ++d) {
+      full &= lo[d] == 0 && hi[d] == grid[d];
+      empty |= hi[d] <= lo[d];
+    }
+    if (empty) {
+      rewriter.replaceOp(op, op.getInputs()[0]);
+      return success();
+    }
+    // A box that only bounds the live positions, or the indices the scatter
+    // has, change nothing on the whole grid.
+    if (full && (!exact || live == op.getScatterIndices()))
+      return failure();
+    live = stablehlo::ReshapeOpCreate(rewriter, loc, live, idxTy.getShape());
+    if (!full) {
+      SmallVector<int64_t> idxLo, idxHi, idxStride(idxTy.getRank(), 1);
+      for (int64_t d = 0, g = 0; d < idxTy.getRank(); ++d) {
+        if (d == vectorDim) {
+          idxLo.push_back(0);
+          idxHi.push_back(idxTy.getDimSize(d));
+        } else {
+          idxLo.push_back(lo[g]);
+          idxHi.push_back(hi[g]);
+          ++g;
+        }
+      }
+      live = stablehlo::SliceOpCreate(rewriter, loc, live, idxLo, idxHi,
+                                      idxStride);
+      SmallVector<int64_t> updStride(grid.size(), 1);
+      update =
+          stablehlo::SliceOpCreate(rewriter, loc, update, lo, hi, updStride);
+    }
+    rewriter.modifyOpInPlace(op, [&] {
+      op.getScatterIndicesMutable().assign(live);
+      op.getUpdatesMutable()[0].assign(update);
+    });
+    return success();
+  }
+
+  // Bounds the elements of a constant index read for where it is live.
+  static constexpr int64_t kMaxConstantIndices = 1 << 16;
+
+  // Indices that are a constant, on the grid through a broadcast: the
+  // positions whose index vector is out of bounds write nothing, and are the
+  // masked ones (the select of a mask folded into the constant).
+  static LogicalResult cutConstantIndices(stablehlo::ScatterOp op,
+                                          PatternRewriter &rewriter,
+                                          ArrayRef<int64_t> grid) {
+    auto dims = op.getScatterDimensionNumbers();
+    auto inputTy = cast<RankedTensorType>(op.getInputs()[0].getType());
+    Value indices = op.getScatterIndices();
+    auto idxTy = cast<RankedTensorType>(indices.getType());
+    int64_t vectorDim = dims.getIndexVectorDim();
+    // The index dimension of each of the constant's.
+    SmallVector<int64_t> toIdx;
+    Value src = indices;
+    if (auto bcast = src.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      toIdx = llvm::to_vector(bcast.getBroadcastDimensions());
+      src = bcast.getOperand();
+    } else {
+      toIdx = llvm::to_vector(llvm::seq<int64_t>(0, idxTy.getRank()));
+    }
+    DenseIntElementsAttr cst;
+    if (!matchPattern(src, m_Constant(&cst)) || cst.isSplat() ||
+        cst.getNumElements() > kMaxConstantIndices)
+      return failure();
+    auto cstTy = cast<RankedTensorType>(cst.getType());
+    int64_t rank = cstTy.getRank();
+    auto toOperand = dims.getScatterDimsToOperandDims();
+    // The constant's dimension holding the components, if it holds them (a
+    // dimension of one broadcast across them holds every component).
+    int64_t compDim = -1;
+    for (int64_t d = 0; d < rank; ++d)
+      if (toIdx[d] == vectorDim && cstTy.getDimSize(d) != 1)
+        compDim = d;
+    SmallVector<int64_t> maskShape(cstTy.getShape());
+    if (compDim >= 0)
+      maskShape[compDim] = 1;
+    auto values = llvm::to_vector(cst.getValues<APInt>());
+    auto strides = computeStrides(cstTy.getShape());
+    auto maskStrides = computeStrides(maskShape);
+    int64_t maskSize =
+        cstTy.getNumElements() / (compDim >= 0 ? cstTy.getDimSize(compDim) : 1);
+    SmallVector<bool> live(maskSize, true);
+    SmallVector<int64_t> coord;
+    for (int64_t m = 0; m < maskSize; ++m) {
+      linearToMultiIndex(m, maskStrides, coord);
+      for (auto [j, operandDim] : llvm::enumerate(toOperand)) {
+        if (compDim >= 0)
+          coord[compDim] = j;
+        int64_t pos = 0;
+        for (int64_t d = 0; d < rank; ++d)
+          pos += coord[d] * strides[d];
+        int64_t v = values[pos].getSExtValue();
+        if (v < 0 || v >= inputTy.getDimSize(operandDim))
+          live[m] = false;
+      }
+    }
+    auto box = trueBox(DenseElementsAttr::get(
+        RankedTensorType::get(maskShape, rewriter.getI1Type()),
+        ArrayRef<bool>(live)));
+    SmallVector<int64_t> lo(grid.size(), 0), hi(grid.begin(), grid.end());
+    if (box) {
+      for (int64_t d = 0; d < rank; ++d) {
+        if (d == compDim || toIdx[d] == vectorDim || maskShape[d] == 1)
+          continue;
+        int64_t g = toIdx[d] < vectorDim ? toIdx[d] : toIdx[d] - 1;
+        lo[g] = box->first[d].first;
+        hi[g] = box->first[d].second;
+      }
+    }
+    return cutToBox(op, rewriter, indices, lo, hi, !box || box->second, !box,
+                    grid);
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
                                     PatternRewriter &rewriter) const {
     if (op.getInputs().size() != 1)
@@ -38430,13 +38691,14 @@ struct ScatterMaskedIndexSlice final
     auto &block = op.getUpdateComputation().front();
     if (!isSetindexBlock(&block))
       return failure();
-    // Each grid position writes one element, at an index whose every
-    // component is negative when masked off.
+    // Each grid position writes one element (each operand dimension inserted
+    // or batched), at an index whose every component is negative when masked
+    // off.
     auto inputTy = cast<RankedTensorType>(op.getInputs()[0].getType());
     auto dims = op.getScatterDimensionNumbers();
-    if ((int64_t)dims.getInsertedWindowDims().size() != inputTy.getRank() ||
-        !dims.getUpdateWindowDims().empty() ||
-        !dims.getInputBatchingDims().empty())
+    if ((int64_t)(dims.getInsertedWindowDims().size() +
+                  dims.getInputBatchingDims().size()) != inputTy.getRank() ||
+        !dims.getUpdateWindowDims().empty())
       return failure();
     Value indices = op.getScatterIndices();
     auto idxTy = cast<RankedTensorType>(indices.getType());
@@ -38456,7 +38718,7 @@ struct ScatterMaskedIndexSlice final
       idxSrc = rs.getOperand();
     auto sel = idxSrc.getDefiningOp<stablehlo::SelectOp>();
     if (!sel)
-      return failure();
+      return cutConstantIndices(op, rewriter, grid);
     SplatElementsAttr offSplat;
     if (!matchPattern(sel.getOnFalse(), m_Constant(&offSplat)) ||
         !offSplat.getSplatValue<APInt>().isNegative())
@@ -38623,44 +38885,8 @@ struct ScatterMaskedIndexSlice final
       hi[*gridDim] = std::min(hi[*gridDim], interval->second);
     }
 
-    auto loc = op.getLoc();
-    bool full = true, empty = nowhere;
-    for (size_t d = 0; d < grid.size(); ++d) {
-      full &= lo[d] == 0 && hi[d] == grid[d];
-      empty |= hi[d] <= lo[d];
-    }
-    if (empty) {
-      rewriter.replaceOp(op, op.getInputs()[0]);
-      return success();
-    }
-    // A box that only bounds the mask keeps the mask, on the box.
-    if (!exact && full)
-      return failure();
-    Value live = stablehlo::ReshapeOpCreate(
-        rewriter, loc, exact ? sel.getOnTrue() : indices, idxTy.getShape());
-    if (!full) {
-      SmallVector<int64_t> idxLo, idxHi, idxStride(idxTy.getRank(), 1);
-      for (int64_t d = 0, g = 0; d < idxTy.getRank(); ++d) {
-        if (d == vectorDim) {
-          idxLo.push_back(0);
-          idxHi.push_back(idxTy.getDimSize(d));
-        } else {
-          idxLo.push_back(lo[g]);
-          idxHi.push_back(hi[g]);
-          ++g;
-        }
-      }
-      live = stablehlo::SliceOpCreate(rewriter, loc, live, idxLo, idxHi,
-                                      idxStride);
-      SmallVector<int64_t> updStride(grid.size(), 1);
-      update =
-          stablehlo::SliceOpCreate(rewriter, loc, update, lo, hi, updStride);
-    }
-    rewriter.modifyOpInPlace(op, [&] {
-      op.getScatterIndicesMutable().assign(live);
-      op.getUpdatesMutable()[0].assign(update);
-    });
-    return success();
+    return cutToBox(op, rewriter, exact ? sel.getOnTrue() : indices, lo, hi,
+                    exact, nowhere, grid);
   }
 };
 
@@ -38867,8 +39093,9 @@ private:
       return failure();
     int64_t gridRank = gridTy.getRank();
 
-    Value reshapedOperand = stablehlo::ReshapeOpCreate(
-        rewriter, op.getLoc(), operand, analysis.operandShape);
+    SmallVector<Value> cutFrom;
+    Value reshapedOperand =
+        buildGridView(rewriter, op.getLoc(), operand, analysis, &cutFrom);
 
     auto updatesTy = cast<RankedTensorType>(update.getType());
     if (updatesTy.getRank() != gridRank) {
@@ -38912,8 +39139,8 @@ private:
     Value updatedOperand = stablehlo::DynamicUpdateSliceOp::create(
         rewriter, op.getLoc(), reshapedOperand, reshapedUpdate, sliceStartsVal);
 
-    Value result = stablehlo::ReshapeOpCreate(
-        rewriter, op.getLoc(), updatedOperand, operandTy.getShape());
+    Value result = putGridViewBack(rewriter, op.getLoc(), updatedOperand,
+                                   operandTy, analysis, cutFrom);
     rewriter.replaceOp(op, result);
     return success();
   }
