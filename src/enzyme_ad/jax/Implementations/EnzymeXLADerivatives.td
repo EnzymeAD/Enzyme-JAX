@@ -64,10 +64,6 @@ def CHLO_Digamma: Inst<"DigammaOp", "chlo">;
 def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
 def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::EQ">;
 
-def GeluApproximation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getGeluApproximationAttr();
-}]>;
-
 def SelectIfGeluNone : StaticSelect<"cast<enzymexla::GeluOp>(op).getGeluApproximation() == enzymexla::GeluApproximation::NONE">;
 def SelectIfGeluTanh : StaticSelect<"cast<enzymexla::GeluOp>(op).getGeluApproximation() == enzymexla::GeluApproximation::TANH">;
 
@@ -90,15 +86,13 @@ def : EnzymeXLADerivative<"ReluOp", (Op $input),
                         (DiffeRet),
                         (HLOConstantFP<"0"> $input)
                       )
-                    ],
-                    (Relu (Shadow $input))
+                    ]
                   >;
 
 def : EnzymeXLADerivative<"SoftplusOp", (Op $input),
                     [
                       (CheckedMul (DiffeRet), (Logistic $input))
-                    ],
-                    (Softplus (Shadow $input))
+                    ]
                   >;
 
 def : EnzymeXLADerivative<"LGammaOp", (Op $input),
@@ -212,23 +206,20 @@ def : EnzymeXLADerivative<"GeluOp", (Op $input),
                           )
                         )
                       )
-                    ],
-                    (Gelu (Shadow $input), (GeluApproximation))
+                    ]
                   >;
 
 def : EnzymeXLADerivative<"HypotOp", (Op $x, $y),
   [
     (CheckedMul (DiffeRet), (Div $x, (Hypot $x, $y))),
     (CheckedMul (DiffeRet), (Div $y, (Hypot $x, $y)))
-  ],
-  (Hypot (Shadow $x), (Shadow $y))
+  ]
 >;
 
 def : EnzymeXLADerivative<"SincOp", (Op $x),
   [
     (CheckedMul (DiffeRet), (Cosc $x))
-  ],
-  (Sinc (Shadow $x))
+  ]
 >;
 
 // Scalar op from the raised-LLVM path (FloatLike, not tensors), so its
@@ -258,8 +249,7 @@ def CoscDerivTerm : SubRoutine<(Op $diffret, $x),
 def : EnzymeXLADerivative<"CoscOp", (Op $x),
   [
     (CoscDerivTerm (DiffeRet), $x)
-  ],
-  (Cosc (Shadow $x))
+  ]
 >;
 
 // Helpers
