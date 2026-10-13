@@ -17704,6 +17704,41 @@ static bool extractComponentIotas(Value indices, int64_t indexVectorDim,
     return true;
   }
 
+  // Padded at the ends of the index vector dimension only: a component in the
+  // padding is the padding value, any other the operand's.
+  if (auto pad = indices.getDefiningOp<stablehlo::PadOp>(); pad && !whole) {
+    for (int64_t d = 0; d < rank; ++d) {
+      int64_t low = pad.getEdgePaddingLow()[d];
+      int64_t high = pad.getEdgePaddingHigh()[d];
+      if (pad.getInteriorPadding()[d] != 0 || low < 0 || high < 0 ||
+          (d != indexVectorDim && (low != 0 || high != 0)))
+        return false;
+    }
+    int64_t low = pad.getEdgePaddingLow()[indexVectorDim];
+    auto oty = cast<RankedTensorType>(pad.getOperand().getType());
+    if (comp < low || comp >= low + oty.getDimSize(indexVectorDim)) {
+      DenseElementsAttr value;
+      if (!matchPattern(pad.getPaddingValue(), m_Constant(&value)))
+        return false;
+      IotaLikeTensor term;
+      term.dimension = 0;
+      term.start = value.getSplatValue<TypedAttr>();
+      term.scale = IntegerAttr::get(ty.getElementType(), 0);
+      term.tensorType = ty;
+      result.push_back(term);
+      return true;
+    }
+    SmallVector<IotaLikeTensor> inner;
+    if (!extractComponentIotas(pad.getOperand(), indexVectorDim, comp - low,
+                               inner))
+      return false;
+    for (IotaLikeTensor iota : inner) {
+      iota.tensorType = ty;
+      result.push_back(iota);
+    }
+    return true;
+  }
+
   if (auto add = indices.getDefiningOp<stablehlo::AddOp>())
     return extractComponentIotas(add.getLhs(), indexVectorDim, comp, result) &&
            extractComponentIotas(add.getRhs(), indexVectorDim, comp, result);
