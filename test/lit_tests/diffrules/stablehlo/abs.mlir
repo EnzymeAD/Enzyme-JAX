@@ -48,7 +48,7 @@ func.func @abs_complex(%arg0 : tensor<2xcomplex<f32>>) -> tensor<2xf32> {
 // REVERSE-COMPLEX-NEXT:    %4 = stablehlo.imag %arg0 : (tensor<2xcomplex<f32>>) -> tensor<2xf32>
 // REVERSE-COMPLEX-NEXT:    %5 = stablehlo.divide %4, %1 : tensor<2xf32>
 // REVERSE-COMPLEX-NEXT:    %6 = stablehlo.multiply %arg1, %5 : tensor<2xf32>
-// REVERSE-COMPLEX-NEXT:    %7 = stablehlo.complex %3, %6 {enzymexla.complex_is_purely_real = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:    %7 = stablehlo.complex %3, %6 : tensor<2xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:    return %7 : tensor<2xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:  }
 
