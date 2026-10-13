@@ -8732,7 +8732,11 @@ struct ExponentialMinusOneAddFuse
       SplatElementsAttr attr;
       if (!matchPattern(val, m_Constant(&attr)))
         return false;
-      auto doubleVal = getDoubleFromAttr(attr.getSplatValue<mlir::TypedAttr>());
+      auto typedAttr =
+          dyn_cast<mlir::TypedAttr>(attr.getSplatValue<mlir::Attribute>());
+      if (!typedAttr)
+        return false;
+      auto doubleVal = getDoubleFromAttr(typedAttr);
       return doubleVal && *doubleVal == -1.0;
     };
 
@@ -8834,7 +8838,7 @@ struct NoNanSelfSubSimplify
       if (canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(),
                                op.getLhs().getType(), op, rewriter)) {
         rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-            op, rewriter.getZeroAttr(op.getType()));
+            op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 0)));
         return success();
       }
     }
@@ -10942,7 +10946,7 @@ struct DotGeneralSimplify
         (rhsAttr && (matchPattern(rhsAttr, m_AnyZeroFloat()) ||
                      matchPattern(rhsAttr, m_AnyZeroComplex())))) {
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, rewriter.getZeroAttr(op.getType()));
+          op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 0)));
       return success();
     }
 
@@ -20593,10 +20597,9 @@ struct WhilePadInductionReduction
 
       // Create an undef op of the same type as the operand
       auto tensorType = cast<TensorType>(candidate.operand.getType());
-      auto zeroAttr = DenseElementsAttr::get(
-          tensorType, rewriter.getZeroAttr(tensorType.getElementType()));
       auto undef = stablehlo::ConstantOp::create(
-          rewriter, candidate.operand.getLoc(), zeroAttr);
+          rewriter, candidate.operand.getLoc(),
+          cast<ElementsAttr>(makeAttr(tensorType, 0)));
       newOperands[candidate.idx] = undef;
     }
 
