@@ -4270,10 +4270,9 @@ LogicalResult slicePadHelper(
   if (anyPadSizesNegative(pad))
     return failure();
 
-  for (auto &&[nstart, nend, nstep, lpad, interior, inshape] :
-       llvm::zip(starts, limits, strides, pad.getEdgePaddingLow(),
-                 pad.getInteriorPadding(),
-                 pad.getOperand().getType().getShape())) {
+  for (auto &&[nstart, nend, nstep, lpad, interior, inshape] : llvm::zip(
+           starts, limits, strides, pad.getEdgePaddingLow(),
+           pad.getInteriorPadding(), pad.getOperand().getType().getShape())) {
     if (interior != 0)
       return failure();
 
