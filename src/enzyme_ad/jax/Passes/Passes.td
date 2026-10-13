@@ -681,6 +681,35 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
   ];
 }
 
+def FuseJITPass : Pass<"fuse-jit", "mlir::ModuleOp"> {
+  let summary = "Fuse JIT calls";
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "LLVM::LLVMDialect",
+    "stablehlo::StablehloDialect",
+  ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"top_down",
+        /*CLI argument=*/"top_down",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Use top down traversal">,
+    Option<
+        /*C++ variable name=*/"dag",
+        /*CLI argument=*/"dag",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Fuse JIT calls connected by data dependency">,
+    // Option<
+    //     /*C++ variable name=*/"adjacent",
+    //     /*CLI argument=*/"adjacent",
+    //     /*type=*/"bool",
+    //     /*default=*/"true",
+    //     /*description=*/"Fuse adjacent JIT calls">,
+    ];
+}
+
 def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
   let summary = "Lower enzymexla.lapack ops to stablehlo";
   let dependentDialects = [

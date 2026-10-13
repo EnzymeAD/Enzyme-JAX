@@ -101,8 +101,8 @@ func.func @gather_past(%x: tensor<8x8xf64>) -> tensor<2x4xf64> {
 // CHECK-NEXT: return %[[V2]] : tensor<2x4xf64>
 // CHECK-NEXT: }
 
-// Stays: the diagonal steps 9 elements, which do not divide the 64 of the
-// flattened operand.
+// The diagonal steps 9 elements of the flattened operand, which do not
+// divide its 64: a strided slice of it all the same.
 func.func @gather_diagonal(%x: tensor<8x8xf64>) -> tensor<3xf64> {
   %i = stablehlo.constant dense<[[0,0],[1,1],[2,2]]> : tensor<3x2xi64>
   %g = "stablehlo.gather"(%x, %i) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, slice_sizes = array<i64: 1, 1>}> : (tensor<8x8xf64>, tensor<3x2xi64>) -> tensor<3xf64>
@@ -111,7 +111,7 @@ func.func @gather_diagonal(%x: tensor<8x8xf64>) -> tensor<3xf64> {
 
 // CHECK-LABEL: func.func @gather_diagonal(
 // CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<8x8xf64>) -> tensor<3xf64> {
-// CHECK-NEXT: %[[V1:[^ ,:)]+]] = stablehlo.constant dense<{{\[\[}}0, 0], [1, 1], [2, 2]]> : tensor<3x2xi64>
-// CHECK-NEXT: %[[V2:[^ ,:)]+]] = "stablehlo.gather"(%[[V0]], %[[V1]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, slice_sizes = array<i64: 1, 1>}> : (tensor<8x8xf64>, tensor<3x2xi64>) -> tensor<3xf64>
+// CHECK-NEXT: %[[V1:[^ ,:)]+]] = stablehlo.reshape %[[V0]] : (tensor<8x8xf64>) -> tensor<64xf64>
+// CHECK-NEXT: %[[V2:[^ ,:)]+]] = stablehlo.slice %[[V1]] [0:27:9] : (tensor<64xf64>) -> tensor<3xf64>
 // CHECK-NEXT: return %[[V2]] : tensor<3xf64>
 // CHECK-NEXT: }
