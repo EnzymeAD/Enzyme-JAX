@@ -3334,167 +3334,154 @@ LogicalResult concatReshapeSliceSimplify(PatternRewriter &rewriter,
                                          SmallVectorImpl<Value> &newOperands) {
   bool changed = false;
 
-  auto getShapeWithoutDims = [](RankedTensorType type,
-                                int64_t dim) -> SmallVector<int64_t> {
-    SmallVector<int64_t> shape;
-    for (size_t i = 0; i < type.getRank(); ++i) {
-      if (i == dim)
-        continue;
-      shape.push_back(type.getDimSize(i));
-    }
-    return shape;
-  };
-
   for (size_t i = 0, e = operands.size(); i < e; ++i) {
     auto operand = operands[i];
-    stablehlo::SliceOp slice;
-    stablehlo::ReshapeOp reshape =
-        operand.getDefiningOp<stablehlo::ReshapeOp>();
+    if (i + 1 >= e) {
+      newOperands.push_back(operand);
+      continue;
+    }
 
-    bool insertions = false, deletions = false;
-    int64_t totalMergeSize;
-    SmallVector<int64_t> insertionDims, deletionDims;
+    auto reshape = operand.getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshape) {
+      newOperands.push_back(operand);
+      continue;
+    }
 
+    auto slice = reshape.getOperand().getDefiningOp<stablehlo::SliceOp>();
+    if (!slice) {
+      newOperands.push_back(operand);
+      continue;
+    }
+
+    auto otherReshape = operands[i + 1].getDefiningOp<stablehlo::ReshapeOp>();
+    if (!otherReshape) {
+      newOperands.push_back(operand);
+      continue;
+    }
+
+    auto otherSlice =
+        otherReshape.getOperand().getDefiningOp<stablehlo::SliceOp>();
+    if (!otherSlice) {
+      newOperands.push_back(operand);
+      continue;
+    }
+
+    auto sliceTy = dyn_cast<RankedTensorType>(slice.getType());
+    auto reshapeTy = dyn_cast<RankedTensorType>(reshape.getType());
+    if (!sliceTy || !reshapeTy || !sliceTy.hasStaticShape() ||
+        !reshapeTy.hasStaticShape() || sliceTy.getNumElements() == 0 ||
+        dim >= reshapeTy.getRank()) {
+      newOperands.push_back(operand);
+      continue;
+    }
+
+    int64_t sliceRank = sliceTy.getRank();
     int64_t sliceDim = -1;
-    if (reshape) {
-      slice = reshape.getOperand().getDefiningOp<stablehlo::SliceOp>();
-      if (!slice) {
+    for (int64_t d = 0; d < sliceRank; ++d) {
+      if (canMergeSlicesAlongAxis(d, slice, otherSlice)) {
+        sliceDim = d;
+        break;
+      }
+    }
+
+    if (sliceDim == -1) {
+      newOperands.push_back(operand);
+      continue;
+    }
+
+    int64_t pSlice = 1;
+    for (int64_t d = 0; d < sliceDim; ++d)
+      pSlice *= sliceTy.getDimSize(d);
+
+    int64_t pConcat = 1;
+    for (int64_t d = 0; d < dim; ++d)
+      pConcat *= reshapeTy.getDimSize(d);
+
+    bool needsTranspose = (pSlice != pConcat);
+    int64_t targetDim = -1;
+
+    if (needsTranspose) {
+      if (sliceTy.getDimSize(sliceDim) != 1) {
         newOperands.push_back(operand);
         continue;
-      } else {
-        auto sliceInTy = cast<ShapedType>(slice.getOperand().getType());
-        auto sliceTy = cast<ShapedType>(slice.getType());
-        for (size_t idx = 0; idx < slice.getStartIndices().size(); ++idx) {
-          if (sliceTy.getDimSize(idx) == 1 &&
-              !(slice.getStartIndices()[idx] == 0 &&
-                slice.getLimitIndices()[idx] == sliceInTy.getDimSize(idx) &&
-                slice.getStrides()[idx] == 1)) {
-            if (sliceDim != -1) {
-              sliceDim = -1; // TODO: support multiple dims here
-              break;
-            }
-            sliceDim = idx;
-          }
-        }
-
-        if (sliceDim == -1) {
-          newOperands.push_back(operand);
-          continue;
-        }
-
-        auto srcWithoutSliceDim = getShapeWithoutDims(
-            cast<RankedTensorType>(slice.getType()), sliceDim);
-        auto dstWithoutConcatDim =
-            getShapeWithoutDims(cast<RankedTensorType>(reshape.getType()), dim);
-
-        if (srcWithoutSliceDim != dstWithoutConcatDim) {
-          auto curInsertionDims =
-              findReshapeInsertionDims(srcWithoutSliceDim, dstWithoutConcatDim);
-          auto curDeletionDims =
-              findReshapeInsertionDims(dstWithoutConcatDim, srcWithoutSliceDim);
-
-          if (curInsertionDims.empty() && curDeletionDims.empty()) {
-            newOperands.push_back(operand);
-            continue;
-          } else if (!curInsertionDims.empty()) {
-            insertions = true;
-            insertionDims = std::move(curInsertionDims);
-          } else {
-            deletions = true;
-            deletionDims = std::move(curDeletionDims);
-          }
-        }
-
-        totalMergeSize =
-            cast<RankedTensorType>(reshape.getType()).getDimSize(dim);
       }
-    } else {
-      newOperands.push_back(operand);
-      continue;
+
+      SmallVector<int64_t> srcWithoutSliceDim;
+      srcWithoutSliceDim.reserve(sliceRank - 1);
+      for (int64_t d = 0; d < sliceRank; ++d) {
+        if (d != sliceDim)
+          srcWithoutSliceDim.push_back(sliceTy.getDimSize(d));
+      }
+
+      int64_t prefixProd = 1;
+      for (int64_t t = 0, te = srcWithoutSliceDim.size(); t <= te; ++t) {
+        if (prefixProd == pConcat) {
+          if (targetDim == -1 || t == dim)
+            targetDim = t;
+        }
+        if (t < te)
+          prefixProd *= srcWithoutSliceDim[t];
+      }
+
+      if (targetDim == -1) {
+        newOperands.push_back(operand);
+        continue;
+      }
     }
 
-    int64_t ndims = cast<RankedTensorType>(reshape.getType()).getRank();
-    int64_t ndimsCorrected = ndims;
-    if (insertions) {
-      ndimsCorrected -= insertionDims.size();
-    }
-    if (deletions) {
-      ndimsCorrected += deletionDims.size();
-    }
-
-    if (ndimsCorrected <= dim) {
-      newOperands.push_back(operand);
-      continue;
-    }
-
+    int64_t totalMergeSize = reshapeTy.getDimSize(dim);
     Value newOperand = operand;
-    bool needsPerm = false;
+    bool mergedAny = false;
+
     while (i + 1 < e) {
-      if (auto otherReshape =
-              operands[i + 1].getDefiningOp<stablehlo::ReshapeOp>()) {
-        if (auto otherSlice =
-                otherReshape.getOperand().getDefiningOp<stablehlo::SliceOp>()) {
-          // Check if reshapes are the same
-          if (!OperationEquivalence::isEquivalentTo(
-                  reshape, otherReshape,
-                  OperationEquivalence::ignoreValueEquivalence, nullptr,
-                  OperationEquivalence::IgnoreLocations, nullptr)) {
-            break;
-          }
+      auto nextReshape = operands[i + 1].getDefiningOp<stablehlo::ReshapeOp>();
+      if (!nextReshape)
+        break;
+      auto nextSlice =
+          nextReshape.getOperand().getDefiningOp<stablehlo::SliceOp>();
+      if (!nextSlice)
+        break;
 
-          // Check if slices can be merged
-          if (canMergeSlicesAlongAxis(sliceDim, slice, otherSlice)) {
-            totalMergeSize +=
-                cast<RankedTensorType>(otherReshape.getType()).getDimSize(dim);
+      if (needsTranspose && nextReshape.getType() != reshape.getType())
+        break;
 
-            slice = stablehlo::SliceOp::create(
-                rewriter, slice->getLoc(), slice.getOperand(),
-                slice.getStartIndices(), otherSlice.getLimitIndices(),
-                slice.getStrides());
-            newOperand = slice.getResult();
-            changed = true;
-            needsPerm = true;
-            i++;
-            continue;
-          }
-        }
-      }
+      if (!canMergeSlicesAlongAxis(sliceDim, slice, nextSlice))
+        break;
 
-      break;
+      totalMergeSize +=
+          cast<RankedTensorType>(nextReshape.getType()).getDimSize(dim);
+
+      slice = stablehlo::SliceOp::create(
+          rewriter, slice->getLoc(), slice.getOperand(),
+          slice.getStartIndices(), nextSlice.getLimitIndices(),
+          slice.getStrides());
+      newOperand = slice.getResult();
+      changed = true;
+      mergedAny = true;
+      i++;
     }
 
-    if (needsPerm) {
-      SmallVector<int64_t> mapping(ndimsCorrected);
-      std::iota(mapping.begin(), mapping.end(), 0);
-      mapping[sliceDim] = dim;
-      if (sliceDim > dim) {
-        for (int64_t i = dim; i < sliceDim; i++) { // shift right
-          mapping[i]++;
+    if (mergedAny) {
+      if (needsTranspose) {
+        SmallVector<int64_t> permutation;
+        permutation.reserve(sliceRank);
+        for (int64_t d = 0; d < sliceRank; ++d) {
+          if (d != sliceDim)
+            permutation.push_back(d);
         }
-      } else {
-        for (int64_t i = sliceDim + 1; i <= dim; i++) { // shift left
-          mapping[i]--;
-        }
+        permutation.insert(permutation.begin() + targetDim, sliceDim);
+
+        newOperand = stablehlo::TransposeOp::create(rewriter, reshape.getLoc(),
+                                                    newOperand, permutation);
       }
 
-      SmallVector<int64_t> permutation(mapping.size(), 0);
-      for (int64_t i = 0; i < mapping.size(); i++) {
-        permutation[mapping[i]] = i;
-      }
-
-      auto transposeOp = stablehlo::TransposeOp::create(
-          rewriter, reshape.getLoc(), newOperand, permutation);
-      if (!insertions && !deletions) {
-        newOperand = transposeOp.getResult();
-      } else {
-        auto reshapeOrigType = cast<RankedTensorType>(reshape.getType());
-        SmallVector<int64_t> newShape =
-            llvm::to_vector(reshapeOrigType.getShape());
-        newShape[dim] = totalMergeSize;
-        newOperand = stablehlo::ReshapeOp::create(
-            rewriter, reshape.getLoc(),
-            RankedTensorType::get(newShape, reshapeOrigType.getElementType()),
-            transposeOp.getResult());
+      SmallVector<int64_t> newShape = llvm::to_vector(reshapeTy.getShape());
+      newShape[dim] = totalMergeSize;
+      auto newType =
+          RankedTensorType::get(newShape, reshapeTy.getElementType());
+      if (newOperand.getType() != newType) {
+        newOperand = stablehlo::ReshapeOp::create(rewriter, reshape.getLoc(),
+                                                  newType, newOperand);
       }
     }
 
