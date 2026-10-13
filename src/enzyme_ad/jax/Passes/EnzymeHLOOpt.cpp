@@ -7487,11 +7487,17 @@ LogicalResult binaryConstProp(Operation *op, PatternRewriter &rewriter) {
   stablehlo::Tensor rhsTen;
   RankedTensorType ty = cast<RankedTensorType>(op->getResultTypes()[0]);
 
-  // only const prop if the constant has a single user to prevent create many
-  // constants
-  if ((!lhsAttr.isSplat() || !rhsAttr.isSplat()) &&
-      !llvm::hasSingleElement(op->getResult(0).getUsers()))
-    return failure();
+  // only const prop if it does not make more non-splat constants: with a
+  // non-splat operand, one non-splat operand must be used only here, so the
+  // folded constant replaces it
+  if (!lhsAttr.isSplat() || !rhsAttr.isSplat()) {
+    bool lhsDies =
+        !lhsAttr.isSplat() && llvm::all_equal(op->getOperand(0).getUsers());
+    bool rhsDies =
+        !rhsAttr.isSplat() && llvm::all_equal(op->getOperand(1).getUsers());
+    if (!lhsDies && !rhsDies)
+      return failure();
+  }
 
   if (lhsAttr.isSplat() && rhsAttr.isSplat()) {
     ty = RankedTensorType::get(
@@ -7543,10 +7549,11 @@ LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter) {
   stablehlo::Tensor inputTen;
   RankedTensorType ty = cast<RankedTensorType>(op->getResultTypes()[0]);
 
-  // only const prop if the constant has a single user to prevent create many
-  // constants
+  // only const prop if it does not make more non-splat constants: a
+  // non-splat operand must be used only here, so the folded constant
+  // replaces it
   if (!inputAttr.isSplat() &&
-      !llvm::hasSingleElement(op->getResult(0).getUsers()))
+      !llvm::hasSingleElement(op->getOperand(0).getUsers()))
     return failure();
 
   if (inputAttr.isSplat()) {
