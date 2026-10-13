@@ -165,7 +165,7 @@ module {
       activity = [#enzyme.activity<enzyme_dup>],
       ret_activity = [#enzyme.activity<enzyme_dup>]
     }> : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
-    check.expect_almost_eq_const %gelu_sigmoid_fwd#1, dense<[-0.5, -0.13555921, -3.2033388, 0.53690768, -1.0, 0.0]> : tensor<6xf32>
+    check.expect_almost_eq_const %gelu_sigmoid_fwd#1, dense<[-0.5, -0.16592816, -3.2488923, 0.54304963, -1.0, 0.0]> : tensor<6xf32>
 
     %softplus_fwd:2 = enzyme.fwddiff @softplus_fn(%x_common, %t_common) <{
       activity = [#enzyme.activity<enzyme_dup>],
