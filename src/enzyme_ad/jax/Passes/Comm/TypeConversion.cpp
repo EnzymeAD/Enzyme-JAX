@@ -12,8 +12,8 @@ Type convertMpiOp(MpiOpType type) {
 }
 
 Type convertMpiRequest(MpiRequestType type, unsigned requestWidth) {
-  return RankedTensorType::get({},
-                               IntegerType::get(type.getContext(), requestWidth));
+  return RankedTensorType::get(
+      {}, IntegerType::get(type.getContext(), requestWidth));
 }
 
 StablehloTypeConverter::StablehloTypeConverter(unsigned requestWidth) {
