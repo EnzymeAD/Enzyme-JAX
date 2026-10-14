@@ -32846,6 +32846,10 @@ struct ConcatenateAddToAddPad
   }
 };
 
+// concat(broadcast_in_dim(x_0), ..., broadcast_in_dim(x_n)) ->
+// broadcast_in_dim(concat(x_0, ..., x_n)) when the broadcasts place their
+// operands the same way and the concatenated dimension comes from an operand
+// dimension they do not expand.
 struct ConcatenateBroadcastInDim
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                                      ConcatenateBroadcastInDim> {
@@ -32859,30 +32863,40 @@ struct ConcatenateBroadcastInDim
     if (operands.size() == 1)
       return failure();
 
-    int input_dim = 0;
+    auto first = operands[0].getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!first)
+      return failure();
+    ArrayRef<int64_t> dims = first.getBroadcastDimensions();
+    // The operand dimension the concatenated dimension comes from.
+    auto found = llvm::find(dims, (int64_t)op.getDimension());
+    if (found == dims.end())
+      return failure();
+    int64_t inputDim = std::distance(dims.begin(), found);
+
     SmallVector<Value> operandOperands;
     for (auto operand : operands) {
-      if (auto broadcastInDimOp =
-              operand.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
-        auto bcastInDimDimensions = broadcastInDimOp.getBroadcastDimensions();
-        if (bcastInDimDimensions.size() != 1)
+      auto broadcastInDimOp =
+          operand.getDefiningOp<stablehlo::BroadcastInDimOp>();
+      if (!broadcastInDimOp ||
+          broadcastInDimOp.getBroadcastDimensions() != dims)
+        return failure();
+      ArrayRef<int64_t> shape =
+          broadcastInDimOp.getOperand().getType().getShape();
+      if (shape[inputDim] !=
+          broadcastInDimOp.getType().getShape()[op.getDimension()])
+        return failure();
+      // The operands must agree on every other dimension to be concatenated.
+      for (int64_t k = 0, e = shape.size(); k < e; k++)
+        if (k != inputDim &&
+            shape[k] != first.getOperand().getType().getShape()[k])
           return failure();
-        if (bcastInDimDimensions[input_dim] != op.getDimension())
-          return failure();
-        if (broadcastInDimOp.getOperand().getType().getShape()[input_dim] !=
-            broadcastInDimOp.getType().getShape()[op.getDimension()])
-          return failure();
-        operandOperands.push_back(broadcastInDimOp.getOperand());
-        continue;
-      }
-      return failure();
+      operandOperands.push_back(broadcastInDimOp.getOperand());
     }
 
     auto newConcatOp = stablehlo::ConcatenateOp::create(
-        rewriter, op.getLoc(), ValueRange(operandOperands), input_dim);
-    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
-        op, op.getType(), newConcatOp,
-        ArrayRef<int64_t>({static_cast<int64_t>(op.getDimension())}));
+        rewriter, op.getLoc(), ValueRange(operandOperands), inputDim);
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(op, op.getType(),
+                                                             newConcatOp, dims);
     return success();
   }
 };

@@ -27,10 +27,6 @@ module {
 }
 
 // CHECK:  func.func @main(%arg0: tensor<4x7x3xf32> {enzymexla.memory_effects = []}, %arg1: tensor<4x7x3xf32> {enzymexla.memory_effects = []}) -> tensor<8x7x3xf32> attributes {enzymexla.memory_effects = []} {
-// CHECK-NEXT:    %0 = stablehlo.broadcast_in_dim %arg0, dims = [1, 0, 3] : (tensor<4x7x3xf32>) -> tensor<7x4x1x3xf32>
-// CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %arg1, dims = [1, 0, 3] : (tensor<4x7x3xf32>) -> tensor<7x4x1x3xf32>
-// CHECK-NEXT:    %2 = stablehlo.concatenate %0, %1, dim = 1 : (tensor<7x4x1x3xf32>, tensor<7x4x1x3xf32>) -> tensor<7x8x1x3xf32>
-// CHECK-NEXT:    %3 = stablehlo.reshape %2 : (tensor<7x8x1x3xf32>) -> tensor<7x8x3xf32>
-// CHECK-NEXT:    %4 = stablehlo.transpose %3, dims = [1, 0, 2] : (tensor<7x8x3xf32>) -> tensor<8x7x3xf32>
-// CHECK-NEXT:    return %4 : tensor<8x7x3xf32>
+// CHECK-NEXT:    %0 = stablehlo.concatenate %arg0, %arg1, dim = 0 : (tensor<4x7x3xf32>, tensor<4x7x3xf32>) -> tensor<8x7x3xf32>
+// CHECK-NEXT:    return %0 : tensor<8x7x3xf32>
 // CHECK-NEXT:  }
