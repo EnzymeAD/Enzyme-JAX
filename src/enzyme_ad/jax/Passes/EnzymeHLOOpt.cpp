@@ -16166,6 +16166,117 @@ struct SelectPadToDUS final
   }
 };
 
+// Two nested selects sharing a branch merge their predicates:
+//   select(p, a, select(q, a, c)) -> select(or(p, q), a, c)
+//   select(p, select(q, c, a), a) -> select(and(p, q), c, a)
+struct SelectSelectCommonBranch final
+    : CheckedOpRewritePattern<stablehlo::SelectOp, SelectSelectCommonBranch> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // Whether the two values are the same, or one-level structurally
+  // identical operations on the same operands (clones that have not been
+  // CSE'd yet).
+  static bool sameValue(Value a, Value b) {
+    if (a == b)
+      return true;
+    Operation *x = a.getDefiningOp(), *y = b.getDefiningOp();
+    if (!x || !y || x->getNumResults() != 1 || y->getNumResults() != 1 ||
+        x->getNumRegions() != 0 || y->getNumRegions() != 0)
+      return false;
+    return OperationEquivalence::isEquivalentTo(
+        x, y, OperationEquivalence::exactValueMatch,
+        /*markEquivalent=*/nullptr, OperationEquivalence::IgnoreLocations);
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
+                                    PatternRewriter &rewriter) const {
+    Value p = op.getPred();
+    // The same predicate twice is SelectSelectSameCond's, with no new op.
+    if (auto inner = op.getOnFalse().getDefiningOp<stablehlo::SelectOp>()) {
+      if (inner.getPred() != p && inner.getPred().getType() == p.getType() &&
+          sameValue(op.getOnTrue(), inner.getOnTrue())) {
+        Value pred =
+            stablehlo::OrOp::create(rewriter, op.getLoc(), p, inner.getPred());
+        rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
+            op, pred, op.getOnTrue(), inner.getOnFalse());
+        return success();
+      }
+    }
+    if (auto inner = op.getOnTrue().getDefiningOp<stablehlo::SelectOp>()) {
+      if (inner.getPred() != p && inner.getPred().getType() == p.getType() &&
+          sameValue(op.getOnFalse(), inner.getOnFalse())) {
+        Value pred =
+            stablehlo::AndOp::create(rewriter, op.getLoc(), p, inner.getPred());
+        rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
+            op, pred, inner.getOnTrue(), op.getOnFalse());
+        return success();
+      }
+    }
+    return failure();
+  }
+};
+
+// Inside the branch of a select the predicate is known, so a select on the
+// same predicate feeding that branch through elementwise ops is decided:
+//   select(p, f(select(p, a, b)), c) -> select(p, f(a), c)
+//   select(p, c, f(select(p, a, b))) -> select(p, c, f(b))
+// The elementwise ops on the path are cloned when they have other users.
+struct SelectKnownPredicateOperand final
+    : CheckedOpRewritePattern<stablehlo::SelectOp,
+                              SelectKnownPredicateOperand> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // The value `v` takes where `p` is `branch`, or null when `v` does not
+  // depend on a select over `p` within `depth` elementwise ops.
+  static Value decide(Value v, Value p, bool branch, PatternRewriter &rewriter,
+                      unsigned depth) {
+    Operation *op = v.getDefiningOp();
+    if (!op || op->getNumResults() != 1)
+      return nullptr;
+    if (auto sel = dyn_cast<stablehlo::SelectOp>(op)) {
+      if (sel.getPred() == p) {
+        Value picked = branch ? sel.getOnTrue() : sel.getOnFalse();
+        if (Value deeper = decide(picked, p, branch, rewriter, depth))
+          return deeper;
+        return picked;
+      }
+    }
+    if (depth == 0 || !stablehlo::hasTraitElementwise(op) ||
+        op->getNumRegions() != 0)
+      return nullptr;
+    SmallVector<Value> operands(op->getOperands());
+    bool changed = false;
+    for (auto &operand : operands) {
+      if (Value decided = decide(operand, p, branch, rewriter, depth - 1)) {
+        operand = decided;
+        changed = true;
+      }
+    }
+    if (!changed)
+      return nullptr;
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(op);
+    Operation *clone = rewriter.clone(*op);
+    clone->setOperands(operands);
+    return clone->getResult(0);
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
+                                    PatternRewriter &rewriter) const {
+    Value p = op.getPred();
+    bool changed = false;
+    if (Value t = decide(op.getOnTrue(), p, /*branch=*/true, rewriter, 4)) {
+      rewriter.modifyOpInPlace(op, [&] { op.getOnTrueMutable().assign(t); });
+      changed = true;
+    }
+    if (Value f = decide(op.getOnFalse(), p, /*branch=*/false, rewriter, 4)) {
+      rewriter.modifyOpInPlace(op, [&] { op.getOnFalseMutable().assign(f); });
+      changed = true;
+    }
+    return success(changed);
+  }
+};
+
 struct SelectSelectSameCond final
     : CheckedOpRewritePattern<stablehlo::SelectOp, SelectSelectSameCond> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -41039,7 +41150,8 @@ struct EnzymeHLOOptPass
         CompareNegateConstSimplify, CompareSubtractConstSimplify,
         SelectSimplify, DynamicSliceReshapeDynamicSlice,
         DynamicSliceReshapeSlice, SliceReshapeDynamicSlice, SliceReshapeSlice,
-        ExponentialMinusOneFuse, ExponentialMinusOneAddFuse>(
+        ExponentialMinusOneFuse, ExponentialMinusOneAddFuse,
+        SelectSelectCommonBranch, SelectKnownPredicateOperand>(
         context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
