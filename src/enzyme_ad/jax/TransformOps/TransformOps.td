@@ -1929,6 +1929,18 @@ def ReduceMinMaxIotaLikePatterns : EnzymeHLOPatternOp<
   let patterns = ["ReduceMinMaxIotaLike"];
 }
 
+def SelectSelectCommonBranchPatterns : EnzymeHLOPatternOp<
+  "select_select_common_branch"
+> {
+  let patterns = ["SelectSelectCommonBranch"];
+}
+
+def SelectKnownPredicateOperandPatterns : EnzymeHLOPatternOp<
+  "select_known_predicate_operand"
+> {
+  let patterns = ["SelectKnownPredicateOperand"];
+}
+
 def CompareNegateConstSimplifyPatterns : EnzymeHLOPatternOp<
   "compare_negate_const_simplify"
 > {
