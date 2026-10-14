@@ -33333,6 +33333,11 @@ struct ConcatenateBroadcastInDim
     auto first = operands[0].getDefiningOp<stablehlo::BroadcastInDimOp>();
     if (!first)
       return failure();
+    // A broadcast that only permutes and inserts unit dimensions is moved the
+    // other way, onto the concatenated operands, by
+    // transpose_like_broadcast_concat; pulling it back out would undo that.
+    if (isTransposeReshapeLikeBroadcast(first))
+      return failure();
     ArrayRef<int64_t> dims = first.getBroadcastDimensions();
     // The operand dimension the concatenated dimension comes from.
     auto found = llvm::find(dims, (int64_t)op.getDimension());
