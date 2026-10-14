@@ -1929,6 +1929,30 @@ def ReduceMinMaxIotaLikePatterns : EnzymeHLOPatternOp<
   let patterns = ["ReduceMinMaxIotaLike"];
 }
 
+def CompareAffineIndexSimplifyPatterns : EnzymeHLOPatternOp<
+  "compare_affine_index_simplify"
+> {
+  let patterns = ["CompareAffineIndexSimplify"];
+}
+
+def LogicalComplementaryHalfSpacesPatterns : EnzymeHLOPatternOp<
+  "logical_complementary_half_spaces"
+> {
+  let patterns = ["LogicalComplementaryHalfSpaces<stablehlo::OrOp>", "LogicalComplementaryHalfSpaces<stablehlo::AndOp>"];
+}
+
+def SelectSelectCommonBranchPatterns : EnzymeHLOPatternOp<
+  "select_select_common_branch"
+> {
+  let patterns = ["SelectSelectCommonBranch"];
+}
+
+def SelectKnownPredicateOperandPatterns : EnzymeHLOPatternOp<
+  "select_known_predicate_operand"
+> {
+  let patterns = ["SelectKnownPredicateOperand"];
+}
+
 def CompareNegateConstSimplifyPatterns : EnzymeHLOPatternOp<
   "compare_negate_const_simplify"
 > {

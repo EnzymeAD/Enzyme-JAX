@@ -6206,6 +6206,327 @@ struct AffineToStableHLORaisingPass
     }
   }
 
+  // The least and greatest values an affine expression takes when its dims
+  // and symbols range over the given closed intervals.
+  static std::optional<std::pair<int64_t, int64_t>>
+  affineExprRange(AffineExpr e, ArrayRef<std::pair<int64_t, int64_t>> dimRanges,
+                  ArrayRef<std::pair<int64_t, int64_t>> symbolRanges) {
+    if (auto c = dyn_cast<AffineConstantExpr>(e))
+      return std::make_pair(c.getValue(), c.getValue());
+    if (auto d = dyn_cast<AffineDimExpr>(e))
+      return dimRanges[d.getPosition()];
+    if (auto s = dyn_cast<AffineSymbolExpr>(e))
+      return symbolRanges[s.getPosition()];
+    auto bin = cast<AffineBinaryOpExpr>(e);
+    auto l = affineExprRange(bin.getLHS(), dimRanges, symbolRanges);
+    if (!l)
+      return std::nullopt;
+    // Affine keeps the constant on the right.
+    auto rc = dyn_cast<AffineConstantExpr>(bin.getRHS());
+    switch (e.getKind()) {
+    case AffineExprKind::Add: {
+      auto r = affineExprRange(bin.getRHS(), dimRanges, symbolRanges);
+      if (!r)
+        return std::nullopt;
+      return std::make_pair(l->first + r->first, l->second + r->second);
+    }
+    case AffineExprKind::Mul: {
+      if (!rc)
+        return std::nullopt;
+      int64_t c = rc.getValue();
+      if (c >= 0)
+        return std::make_pair(l->first * c, l->second * c);
+      return std::make_pair(l->second * c, l->first * c);
+    }
+    case AffineExprKind::FloorDiv:
+      if (!rc || rc.getValue() <= 0)
+        return std::nullopt;
+      return std::make_pair(llvm::divideFloorSigned(l->first, rc.getValue()),
+                            llvm::divideFloorSigned(l->second, rc.getValue()));
+    case AffineExprKind::CeilDiv:
+      if (!rc || rc.getValue() <= 0)
+        return std::nullopt;
+      return std::make_pair(llvm::divideCeilSigned(l->first, rc.getValue()),
+                            llvm::divideCeilSigned(l->second, rc.getValue()));
+    case AffineExprKind::Mod:
+      if (!rc || rc.getValue() <= 0)
+        return std::nullopt;
+      if (l->first >= 0 && l->second < rc.getValue())
+        return l;
+      return std::make_pair(int64_t(0), rc.getValue() - 1);
+    default:
+      return std::nullopt;
+    }
+  }
+
+  // The closed interval of values `v` takes: a constant, or the induction
+  // variable of an enclosing affine loop with constant bounds.
+  static std::optional<std::pair<int64_t, int64_t>> operandRange(Value v) {
+    APInt cst;
+    if (matchPattern(v, m_ConstantInt(&cst)))
+      return std::make_pair(cst.getSExtValue(), cst.getSExtValue());
+    if (!affine::isAffineInductionVar(v))
+      return std::nullopt;
+    auto range = getIVRange(v);
+    if (!range || range->step <= 0)
+      return std::nullopt;
+    int64_t iters = range->getNumIters();
+    if (iters <= 0)
+      return std::nullopt;
+    return std::make_pair(range->lb, range->lb + (iters - 1) * range->step);
+  }
+
+  // A parallel axis whose bounds are affine in the induction variables of
+  // enclosing loops with constant bounds (a triangular loop `j = i .. N`)
+  // has no fixed extent to become a tensor axis, so it would be peeled into
+  // a masked serial loop. Over the box of the enclosing variables the bounds
+  // are nevertheless confined to a constant interval; the axis then batches
+  // over that interval, with the body behind an `lb <= iv < ub` guard that
+  // the masking machinery already understands. Every point of the domain
+  // runs exactly once as before; the masked-off points only cost work, which
+  // is why the rectangle is required to be no more than twice the longest
+  // row: a serial masked loop would run that many iterations anyway.
+  static void rectangularizeAffineBoundedAxes(Operation *root) {
+    SmallVector<affine::AffineParallelOp> worklist;
+    root->walk([&](affine::AffineParallelOp par) { worklist.push_back(par); });
+    for (auto par : worklist) {
+      if (!par.getReductions().empty())
+        continue;
+      unsigned n = par.getNumDims();
+      AffineMap lbMaps = par.getLowerBoundsMap(),
+                ubMaps = par.getUpperBoundsMap();
+      ValueRange lbOperands = par.getLowerBoundsOperands(),
+                 ubOperands = par.getUpperBoundsOperands();
+
+      auto operandRanges =
+          [&](AffineMap map, ValueRange operands,
+              SmallVectorImpl<std::pair<int64_t, int64_t>> &dims,
+              SmallVectorImpl<std::pair<int64_t, int64_t>> &syms) {
+            for (unsigned i = 0; i < map.getNumDims(); ++i) {
+              auto r = operandRange(operands[i]);
+              if (!r)
+                return false;
+              dims.push_back(*r);
+            }
+            for (unsigned i = 0; i < map.getNumSymbols(); ++i) {
+              auto r = operandRange(operands[map.getNumDims() + i]);
+              if (!r)
+                return false;
+              syms.push_back(*r);
+            }
+            return true;
+          };
+      SmallVector<std::pair<int64_t, int64_t>> lbDimRanges, lbSymRanges,
+          ubDimRanges, ubSymRanges;
+      bool lbKnown =
+          operandRanges(lbMaps, lbOperands, lbDimRanges, lbSymRanges);
+      bool ubKnown =
+          operandRanges(ubMaps, ubOperands, ubDimRanges, ubSymRanges);
+
+      struct RectDim {
+        unsigned dim;
+        int64_t lb, ub;
+      };
+      SmallVector<RectDim> rect;
+      for (unsigned i = 0; i < n; ++i) {
+        AffineMap lm = par.getLowerBoundMap(i), um = par.getUpperBoundMap(i);
+        auto clb = getConstant(lm), cub = getConstant(um);
+        if (clb && cub)
+          continue;
+        if (par.getSteps()[i] != 1)
+          continue;
+        // lb = max of the lower results, so it is at least the greatest of
+        // their minima; ub = min of the upper results, at most the least of
+        // their maxima.
+        std::optional<int64_t> lb, ub;
+        if (clb) {
+          lb = *clb;
+        } else if (lbKnown) {
+          for (AffineExpr e : lm.getResults()) {
+            auto r = affineExprRange(e, lbDimRanges, lbSymRanges);
+            if (!r) {
+              lb = std::nullopt;
+              break;
+            }
+            lb = std::max(lb.value_or(r->first), r->first);
+          }
+        }
+        if (cub) {
+          ub = *cub;
+        } else if (ubKnown) {
+          for (AffineExpr e : um.getResults()) {
+            auto r = affineExprRange(e, ubDimRanges, ubSymRanges);
+            if (!r) {
+              ub = std::nullopt;
+              break;
+            }
+            ub = std::min(ub.value_or(r->second), r->second);
+          }
+        }
+        if (!lb || !ub || *ub <= *lb)
+          continue;
+        int64_t extent = *ub - *lb;
+
+        // The longest row: the greatest value of ub - lb over the box, from
+        // the simplified difference when both bounds are single results so
+        // shared variables cancel (`i + 5 - i`), else the extent itself.
+        int64_t longestRow = extent;
+        if (lm.getNumResults() == 1 && um.getNumResults() == 1 && lbKnown &&
+            ubKnown) {
+          unsigned nd = lm.getNumDims() + um.getNumDims();
+          unsigned ns = lm.getNumSymbols() + um.getNumSymbols();
+          AffineExpr lbE = lm.getResult(0);
+          AffineExpr ubE =
+              um.getResult(0)
+                  .shiftDims(um.getNumDims(), lm.getNumDims())
+                  .shiftSymbols(um.getNumSymbols(), lm.getNumSymbols());
+          // Identical operands in both maps are one variable.
+          SmallVector<AffineExpr> dimRepl, symRepl;
+          SmallVector<std::pair<int64_t, int64_t>> dimR, symR;
+          SmallVector<Value> seenDims, seenSyms;
+          auto canon = [&](ValueRange ops, unsigned numDims) {
+            for (unsigned i = 0; i < ops.size(); ++i) {
+              bool isDim = i < numDims;
+              Value v = ops[i];
+              auto &seen = isDim ? seenDims : seenSyms;
+              auto &repl = isDim ? dimRepl : symRepl;
+              auto &ranges = isDim ? dimR : symR;
+              auto it = llvm::find(seen, v);
+              unsigned pos;
+              if (it == seen.end()) {
+                pos = seen.size();
+                seen.push_back(v);
+                ranges.push_back(*operandRange(v));
+              } else {
+                pos = it - seen.begin();
+              }
+              repl.push_back(isDim
+                                 ? getAffineDimExpr(pos, par.getContext())
+                                 : getAffineSymbolExpr(pos, par.getContext()));
+            }
+          };
+          canon(lbOperands, lm.getNumDims());
+          canon(ubOperands, um.getNumDims());
+          // dimRepl/symRepl are laid out as [lb dims, ub dims] and
+          // [lb syms, ub syms], matching the shifted expressions.
+          AffineExpr diff = simplifyAffineExpr(
+              (ubE - lbE).replaceDimsAndSymbols(dimRepl, symRepl), nd, ns);
+          if (auto r = affineExprRange(diff, dimR, symR))
+            longestRow = std::min(extent, std::max<int64_t>(r->second, 0));
+        }
+        if (longestRow <= 0 || extent > 2 * longestRow)
+          continue;
+        rect.push_back({i, *lb, *ub});
+      }
+      if (rect.empty())
+        continue;
+
+      OpBuilder b(par);
+      Location loc = par.getLoc();
+      SmallVector<AffineExpr> lbounds, ubounds;
+      SmallVector<int32_t> lboundGroup, uboundGroup;
+      SmallVector<int64_t> steps;
+      for (unsigned i = 0; i < n; ++i) {
+        auto rit =
+            llvm::find_if(rect, [&](const RectDim &r) { return r.dim == i; });
+        AffineMap lm = par.getLowerBoundMap(i), um = par.getUpperBoundMap(i);
+        if (rit != rect.end()) {
+          lbounds.push_back(getAffineConstantExpr(rit->lb, par.getContext()));
+          lboundGroup.push_back(1);
+          ubounds.push_back(getAffineConstantExpr(rit->ub, par.getContext()));
+          uboundGroup.push_back(1);
+        } else {
+          lbounds.append(lm.getResults().begin(), lm.getResults().end());
+          lboundGroup.push_back(lm.getNumResults());
+          ubounds.append(um.getResults().begin(), um.getResults().end());
+          uboundGroup.push_back(um.getNumResults());
+        }
+        steps.push_back(par.getSteps()[i]);
+      }
+      bool allConstant = llvm::all_of(lbounds,
+                                      [](AffineExpr e) {
+                                        return isa<AffineConstantExpr>(e);
+                                      }) &&
+                         llvm::all_of(ubounds, [](AffineExpr e) {
+                           return isa<AffineConstantExpr>(e);
+                         });
+      unsigned lbDims = lbMaps.getNumDims(), lbSyms = lbMaps.getNumSymbols(),
+               ubDims = ubMaps.getNumDims(), ubSyms = ubMaps.getNumSymbols();
+      SmallVector<Value> mapOperands(par.getOperands());
+      if (allConstant) {
+        lbDims = lbSyms = ubDims = ubSyms = 0;
+        mapOperands.clear();
+      }
+      auto newPar = affine::AffineParallelOp::create(
+          b, loc, TypeRange(), b.getArrayAttr({}),
+          AffineMapAttr::get(
+              AffineMap::get(lbDims, lbSyms, lbounds, par.getContext())),
+          b.getI32TensorAttr(lboundGroup),
+          AffineMapAttr::get(
+              AffineMap::get(ubDims, ubSyms, ubounds, par.getContext())),
+          b.getI32TensorAttr(uboundGroup), b.getI64ArrayAttr(steps),
+          mapOperands);
+      newPar->setDiscardableAttrs(par->getDiscardableAttrDictionary());
+      Block *blk = new Block();
+      SmallVector<Value> ivRepl;
+      for (unsigned i = 0; i < n; ++i)
+        ivRepl.push_back(blk->addArgument(b.getIndexType(), loc));
+      newPar.getRegion().push_back(blk);
+      b.setInsertionPointToEnd(blk);
+      auto yield = affine::AffineYieldOp::create(b, loc);
+
+      // Guard: iv >= every lower result and iv < every upper result of the
+      // original bounds. The set's dims are [rect ivs, lb dims, ub dims] and
+      // its symbols [lb syms, ub syms].
+      unsigned r = rect.size();
+      SmallVector<AffineExpr> constraints;
+      SmallVector<bool> eqs;
+      for (auto [k, rd] : llvm::enumerate(rect)) {
+        AffineExpr iv = getAffineDimExpr(k, par.getContext());
+        for (AffineExpr e : par.getLowerBoundMap(rd.dim).getResults()) {
+          constraints.push_back(iv - e.shiftDims(lbMaps.getNumDims(), r));
+          eqs.push_back(false);
+        }
+        for (AffineExpr e : par.getUpperBoundMap(rd.dim).getResults()) {
+          constraints.push_back(
+              e.shiftDims(ubMaps.getNumDims(), r + lbMaps.getNumDims())
+                  .shiftSymbols(ubMaps.getNumSymbols(),
+                                lbMaps.getNumSymbols()) -
+              iv - 1);
+          eqs.push_back(false);
+        }
+      }
+      SmallVector<Value> setOperands;
+      for (auto &rd : rect)
+        setOperands.push_back(ivRepl[rd.dim]);
+      setOperands.append(lbOperands.begin(),
+                         lbOperands.begin() + lbMaps.getNumDims());
+      setOperands.append(ubOperands.begin(),
+                         ubOperands.begin() + ubMaps.getNumDims());
+      setOperands.append(lbOperands.begin() + lbMaps.getNumDims(),
+                         lbOperands.end());
+      setOperands.append(ubOperands.begin() + ubMaps.getNumDims(),
+                         ubOperands.end());
+      IntegerSet iset = IntegerSet::get(
+          r + lbMaps.getNumDims() + ubMaps.getNumDims(),
+          lbMaps.getNumSymbols() + ubMaps.getNumSymbols(), constraints, eqs);
+      affine::canonicalizeSetAndOperands(&iset, &setOperands);
+      b.setInsertionPoint(yield);
+      auto ifOp =
+          affine::AffineIfOp::create(b, loc, TypeRange(), iset, setOperands,
+                                     /*withElseRegion=*/false);
+      Block *oldBody = par.getBody();
+      for (unsigned i = 0; i < n; ++i)
+        oldBody->getArgument(i).replaceAllUsesWith(ivRepl[i]);
+      Block *thenBlk = ifOp.getThenBlock();
+      thenBlk->getOperations().splice(
+          std::prev(thenBlk->getOperations().end()), oldBody->getOperations(),
+          oldBody->getOperations().begin(),
+          std::prev(oldBody->getOperations().end()));
+      par.erase();
+    }
+  }
+
   static void peelDynamicParallelDims(Operation *root) {
     SmallVector<affine::AffineParallelOp> worklist;
     root->walk([&](affine::AffineParallelOp par) { worklist.push_back(par); });
@@ -6818,6 +7139,7 @@ struct AffineToStableHLORaisingPass
       stripAccessMemorySpaceCasts(func);
       splitStructScratch(func);
       boundParallelAxes(func);
+      rectangularizeAffineBoundedAxes(func);
       peelDynamicParallelDims(func);
     }
 
@@ -6843,6 +7165,7 @@ struct AffineToStableHLORaisingPass
       splitStructScratch(g);
       hoistWrapperInvariantPointerCompares(g);
       boundParallelAxes(g);
+      rectangularizeAffineBoundedAxes(g);
       peelDynamicParallelDims(g);
     }
     size_t raised_count = 0;
