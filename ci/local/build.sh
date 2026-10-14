@@ -25,13 +25,13 @@ set -euo pipefail
 : "${JULIA:?JULIA must be set (path to the julia binary)}"
 [[ -d /user-environment ]] || { echo "ERROR: /user-environment not mounted — run inside srun --uenv / uenv run" >&2; exit 1; }
 
-# Seed include/ from the view, minus toolchain headers. See md: "LLVM headers".
+# Seed include/ from the view, minus toolchain headers and fmt. See md: "LLVM headers".
 mkdir -p "${BUILD_ROOT}/.rocm/include"
 for f in /user-environment/env/default/include/*; do
   [[ -e "$f" ]] || continue
   name="$(basename "$f")"
   case "${name}" in
-    llvm|llvm-c|mlir|mlir-c|clang|clang-c|lld|lldb|polly) continue ;;
+    llvm|llvm-c|mlir|mlir-c|clang|clang-c|lld|lldb|polly|fmt) continue ;;
   esac
   ln -sfn "$f" "${BUILD_ROOT}/.rocm/include/${name}"
 done
@@ -171,8 +171,8 @@ done
 for b in amdgcn/bitcode/ocml.bc lib/llvm/amdgcn/bitcode/ocml.bc          lib/llvm/lib/clang/22/include/stddef.h; do
   [[ -e "${BUILD_ROOT}/.rocm/${b}" ]] && echo "  ok   ${b}" || echo "  MISS ${b}"
 done
-for d in llvm mlir clang; do
-  [[ -e "${BUILD_ROOT}/.rocm/include/${d}" ]] &&     { echo "FATAL: overlay include/${d} shadows XLA's LLVM/MLIR" >&2; exit 1; }
+for d in llvm mlir clang fmt; do
+  [[ -e "${BUILD_ROOT}/.rocm/include/${d}" ]] &&     { echo "FATAL: overlay include/${d} shadows XLA's own ${d} headers" >&2; exit 1; }
 done
 # Curate reactant_libs/ for run_julia.sh. readlink -f: JULIA may be a symlink,
 # and the dirname chain must walk the real prefix. See md: "Curated runtime libs".

@@ -207,6 +207,13 @@ lldb polly`. A hard guard (`exit 1` if `include/{llvm,mlir,clang}` reappears)
 protects against regressions on a UENV bump. Only ROCm's own headers (`hip/`,
 `rocblas/`, `miopen/`, …) belong in the overlay.
 
+The same applies to `fmt/`. Since XLA `ed6af492` builds MORI (see "rocm_sysdeps"),
+MORI's spdlog uses XLA's own `@fmt` (`SPDLOG_FMT_EXTERNAL`). The UENV view's fmt
+12.1 shadows it, and the build fails in `roc_mori/.../bnxt/bnxt.cpp` with `no
+matching member function for call to 'format'`. So `fmt` is skipped and guarded
+too. The view also carries other non-ROCm headers (`boost/`, `c++/`, `rdma/`,
+`zlib.h`, …). They have not clashed so far; if one does, skip it the same way.
+
 ### rocm-smi header
 
 `rocm-smi-lib` is a separate spack package not exposed in the view. Newer XLA
