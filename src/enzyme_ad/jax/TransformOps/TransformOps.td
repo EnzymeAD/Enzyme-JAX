@@ -1123,6 +1123,10 @@ def ApplyCSEScatterPatterns : EnzymeHLOPatternOp<
     "cse_scatter"> {
   let patterns = ["CSE<stablehlo::ScatterOp>"];
 }
+def ApplyCSEReducePatterns : EnzymeHLOPatternOp<
+    "cse_reduce"> {
+  let patterns = ["CSE<stablehlo::ReduceOp>"];
+}
 def ApplyCSEComparePatterns : EnzymeHLOPatternOp<
     "cse_compare"> {
   let patterns = ["CSE<stablehlo::CompareOp>"];
