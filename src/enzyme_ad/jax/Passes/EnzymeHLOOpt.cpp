@@ -32405,6 +32405,18 @@ bool reshapeOfEquivalentReduces(stablehlo::ReshapeOp reshapeOp,
   return true;
 }
 
+// The attributes that define what `op` computes. Analysis results attached by
+// enzymexla (enzymexla.*, such as symmetric_matrix or non_negative) only
+// describe its values, so ops that differ in them still batch together, and
+// the batched op, whose values they no longer describe, does not carry them.
+static SmallVector<NamedAttribute> computeAttrs(Operation *op) {
+  SmallVector<NamedAttribute> attrs;
+  for (NamedAttribute attr : op->getAttrs())
+    if (!attr.getName().strref().starts_with("enzymexla."))
+      attrs.push_back(attr);
+  return attrs;
+}
+
 struct ConcatElementwise final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatElementwise> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -32426,10 +32438,10 @@ struct ConcatElementwise final
 
       if (hasTraitElementwise(vdefOp)) {
         if (concatOpOperands.size() != 0) {
-          if (!OperationEquivalence::isEquivalentTo(
-                  concatOpOperands[0], vdefOp,
-                  OperationEquivalence::ignoreValueEquivalence, nullptr,
-                  OperationEquivalence::IgnoreLocations, nullptr))
+          Operation *first = concatOpOperands[0];
+          if (first->getName() != vdefOp->getName() ||
+              first->getNumOperands() != vdefOp->getNumOperands() ||
+              computeAttrs(first) != computeAttrs(vdefOp))
             return failure();
         }
 
@@ -32458,7 +32470,7 @@ struct ConcatElementwise final
     auto newElementwiseOp = rewriter.create(
         concatOp.getLoc(), concatOpOperands[0]->getName().getIdentifier(),
         ValueRange(elementwiseOperands), TypeRange(concatOp.getType()),
-        concatOpOperands[0]->getAttrs(), {}, {});
+        computeAttrs(concatOpOperands[0]), {}, {});
 
     rewriter.replaceOp(concatOp, newElementwiseOp);
     return success();
@@ -38087,18 +38099,6 @@ static bool isStackableOp(Operation *op) {
     if (cast<RankedTensorType>(operand.getType()).getShape() != shape)
       return false;
   return true;
-}
-
-// The attributes that define what `op` computes. Analysis results attached by
-// enzymexla (enzymexla.*, such as symmetric_matrix or non_negative) only
-// describe its values, so terms that differ in them still stack, and the
-// stacked op, whose values they no longer describe, does not carry them.
-static SmallVector<NamedAttribute> computeAttrs(Operation *op) {
-  SmallVector<NamedAttribute> attrs;
-  for (NamedAttribute attr : op->getAttrs())
-    if (!attr.getName().strref().starts_with("enzymexla."))
-      attrs.push_back(attr);
-  return attrs;
 }
 
 // Whether `v` is computed by the same stackable op as `first`, and can be
