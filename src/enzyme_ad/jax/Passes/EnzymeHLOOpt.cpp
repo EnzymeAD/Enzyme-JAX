@@ -11869,6 +11869,69 @@ struct SliceReduce
   }
 };
 
+// concat(reduce(x_0), ..., reduce(x_n)) -> reduce(concat(x_0, ..., x_n)) along
+// a dimension the reduces keep: the same reduction (body, reduced dimensions
+// and init values) of one input each, each used only by the concatenate, so
+// nothing is computed twice. The concatenate then sits on the inputs, where it
+// can keep moving towards the values the pieces were computed from.
+struct ConcatReduce
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatReduce> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concat,
+                                    PatternRewriter &rewriter) const {
+    if (concat.getNumOperands() < 2)
+      return failure();
+    SmallVector<stablehlo::ReduceOp> reduces;
+    for (Value v : concat.getOperands()) {
+      auto reduce = v.getDefiningOp<stablehlo::ReduceOp>();
+      if (!reduce || reduce.getInputs().size() != 1 || !v.hasOneUse())
+        return failure();
+      if (!reduces.empty() &&
+          (reduce.getDimensions() != reduces[0].getDimensions() ||
+           reduce.getInitValues() != reduces[0].getInitValues() ||
+           !OperationEquivalence::isRegionEquivalentTo(
+               &reduce.getBody(), &reduces[0].getBody(),
+               OperationEquivalence::IgnoreLocations)))
+        return failure();
+      reduces.push_back(reduce);
+    }
+
+    // The input dimension the concatenated result dimension comes from.
+    ArrayRef<int64_t> reduced = reduces[0].getDimensions();
+    auto inputType =
+        cast<RankedTensorType>(reduces[0].getInputs()[0].getType());
+    int64_t dim = -1;
+    for (int64_t i = 0, kept = 0, e = inputType.getRank(); i < e; i++) {
+      if (llvm::is_contained(reduced, i))
+        continue;
+      if (kept++ == (int64_t)concat.getDimension()) {
+        dim = i;
+        break;
+      }
+    }
+    for (stablehlo::ReduceOp reduce : reduces) {
+      auto type = cast<RankedTensorType>(reduce.getInputs()[0].getType());
+      for (int64_t d : reduced)
+        if (type.getShape()[d] != inputType.getShape()[d])
+          return failure();
+    }
+
+    SmallVector<Value> inputs;
+    for (stablehlo::ReduceOp reduce : reduces)
+      inputs.push_back(reduce.getInputs()[0]);
+    auto newInput = stablehlo::ConcatenateOp::create(rewriter, concat.getLoc(),
+                                                     inputs, dim);
+    auto newReduce = stablehlo::ReduceOp::create(
+        rewriter, concat.getLoc(), TypeRange(concat.getType()),
+        ValueRange(newInput), reduces[0].getInitValues(), reduced);
+    rewriter.cloneRegionBefore(reduces[0].getBody(), newReduce.getBody(),
+                               newReduce.getBody().end());
+    rewriter.replaceOp(concat, newReduce.getResults());
+    return success();
+  }
+};
+
 struct TransposeReduce
     : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeReduce> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
