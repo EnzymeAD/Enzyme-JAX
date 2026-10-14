@@ -113,3 +113,29 @@ func.func @through_reshape_middle(%x: tensor<5x12xf64>) -> tensor<5x2x2xf64> {
 // CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.transpose %[[V3]], dims = [1, 0, 2] : (tensor<2x5x2xf64>) -> tensor<5x2x2xf64>
 // CHECK-NEXT: return %[[V4]] : tensor<5x2x2xf64>
 // CHECK-NEXT: }
+
+// Through a reshape and a broadcast that inserts the unit dimension, as BK2PARTIAL's
+// input windows with dot formation on: the chain applied to the stacked windows.
+func.func @through_views(%x: tensor<8x27x3xf64>) -> tensor<3x3x8x3x3xf64> {
+  %s0 = stablehlo.slice %x [0:8, 0:9, 0:3] : (tensor<8x27x3xf64>) -> tensor<8x9x3xf64>
+  %s1 = stablehlo.slice %x [0:8, 9:18, 0:3] : (tensor<8x27x3xf64>) -> tensor<8x9x3xf64>
+  %s2 = stablehlo.slice %x [0:8, 18:27, 0:3] : (tensor<8x27x3xf64>) -> tensor<8x9x3xf64>
+  %r0 = stablehlo.reshape %s0 : (tensor<8x9x3xf64>) -> tensor<8x3x3x3xf64>
+  %r1 = stablehlo.reshape %s1 : (tensor<8x9x3xf64>) -> tensor<8x3x3x3xf64>
+  %r2 = stablehlo.reshape %s2 : (tensor<8x9x3xf64>) -> tensor<8x3x3x3xf64>
+  %b0 = stablehlo.broadcast_in_dim %r0, dims = [2, 1, 3, 4] : (tensor<8x3x3x3xf64>) -> tensor<1x3x8x3x3xf64>
+  %b1 = stablehlo.broadcast_in_dim %r1, dims = [2, 1, 3, 4] : (tensor<8x3x3x3xf64>) -> tensor<1x3x8x3x3xf64>
+  %b2 = stablehlo.broadcast_in_dim %r2, dims = [2, 1, 3, 4] : (tensor<8x3x3x3xf64>) -> tensor<1x3x8x3x3xf64>
+  %c = stablehlo.concatenate %b0, %b1, %b2, dim = 0 : (tensor<1x3x8x3x3xf64>, tensor<1x3x8x3x3xf64>, tensor<1x3x8x3x3xf64>) -> tensor<3x3x8x3x3xf64>
+  return %c : tensor<3x3x8x3x3xf64>
+}
+
+// The operands view the slices differently: left alone.
+func.func @different_views(%x: tensor<8x27x3xf64>) -> tensor<2x8x9x3xf64> {
+  %s0 = stablehlo.slice %x [0:8, 0:9, 0:3] : (tensor<8x27x3xf64>) -> tensor<8x9x3xf64>
+  %s1 = stablehlo.slice %x [0:8, 9:18, 0:3] : (tensor<8x27x3xf64>) -> tensor<8x9x3xf64>
+  %b0 = stablehlo.broadcast_in_dim %s0, dims = [1, 2, 3] : (tensor<8x9x3xf64>) -> tensor<1x8x9x3xf64>
+  %r1 = stablehlo.reshape %s1 : (tensor<8x9x3xf64>) -> tensor<1x8x9x3xf64>
+  %c = stablehlo.concatenate %b0, %r1, dim = 0 : (tensor<1x8x9x3xf64>, tensor<1x8x9x3xf64>) -> tensor<2x8x9x3xf64>
+  return %c : tensor<2x8x9x3xf64>
+}
