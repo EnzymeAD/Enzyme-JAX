@@ -102,3 +102,25 @@ func.func @uneven(%a: tensor<5xf64>, %b: tensor<5xf64>) -> tensor<5x5xf64> {
 // CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.concatenate %[[V2]], %[[V3]], dim = 1 : (tensor<5x2xf64>, tensor<5x3xf64>) -> tensor<5x5xf64>
 // CHECK-NEXT: return %[[V4]] : tensor<5x5xf64>
 // CHECK-NEXT: }
+
+// The concatenated dimension comes from a unit operand dimension the
+// broadcasts expand (scalars of a basis spread over 5 rows each): the same as
+// an inserted one.
+func.func @expanded_unit(%s0: tensor<1x1xf64>, %s1: tensor<1x1xf64>, %s2: tensor<1x1xf64>) -> tensor<8x15x5xf64> {
+  %b0 = stablehlo.broadcast_in_dim %s0, dims = [2, 1] : (tensor<1x1xf64>) -> tensor<8x5x5xf64>
+  %b1 = stablehlo.broadcast_in_dim %s1, dims = [2, 1] : (tensor<1x1xf64>) -> tensor<8x5x5xf64>
+  %b2 = stablehlo.broadcast_in_dim %s2, dims = [2, 1] : (tensor<1x1xf64>) -> tensor<8x5x5xf64>
+  %c = stablehlo.concatenate %b0, %b1, %b2, dim = 1 : (tensor<8x5x5xf64>, tensor<8x5x5xf64>, tensor<8x5x5xf64>) -> tensor<8x15x5xf64>
+  return %c : tensor<8x15x5xf64>
+}
+
+// CHECK-LABEL: func.func @expanded_unit(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<1x1xf64>, %[[V1:[^ ,:)]+]]: tensor<1x1xf64>, %[[V2:[^ ,:)]+]]: tensor<1x1xf64>) -> tensor<8x15x5xf64> {
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.reshape %[[V0]] : (tensor<1x1xf64>) -> tensor<1x1x1xf64>
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.reshape %[[V1]] : (tensor<1x1xf64>) -> tensor<1x1x1xf64>
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = stablehlo.reshape %[[V2]] : (tensor<1x1xf64>) -> tensor<1x1x1xf64>
+// CHECK-NEXT: %[[V6:[^ ,:)]+]] = stablehlo.concatenate %[[V3]], %[[V4]], %[[V5]], dim = 0 : (tensor<1x1x1xf64>, tensor<1x1x1xf64>, tensor<1x1x1xf64>) -> tensor<3x1x1xf64>
+// CHECK-NEXT: %[[V7:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[V6]], dims = [1, 3, 2] : (tensor<3x1x1xf64>) -> tensor<8x3x5x5xf64>
+// CHECK-NEXT: %[[V8:[^ ,:)]+]] = stablehlo.reshape %[[V7]] : (tensor<8x3x5x5xf64>) -> tensor<8x15x5xf64>
+// CHECK-NEXT: return %[[V8]] : tensor<8x15x5xf64>
+// CHECK-NEXT: }
