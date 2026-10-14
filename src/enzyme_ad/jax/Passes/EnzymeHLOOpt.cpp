@@ -12782,6 +12782,11 @@ private:
     SmallVector<SmallVector<int64_t>> perms;
     SmallVector<SmallVector<Operation *>> views; // per piece, outermost first
     int64_t carrier = -1; // index of a piece carrying the dimension
+    // When a carrier's views merge the run with the concatenated dimension
+    // ((k, m) -> k * m), the size m of each group; else 0. Every piece's
+    // extent along the concatenated dimension must then be a multiple of m
+    // and the single pieces must be exactly m (one group).
+    int64_t groupSize = 0;
     bool varyingIsLhs = false;
     // In the carrier's dot: the position of the concatenated dimension in
     // the varying operand and in the result.
@@ -12821,14 +12826,65 @@ private:
   // The dimension of a value's producer-side result that the concatenated
   // dimension d of `piece` comes from, through the views (outermost first),
   // or -1 when a view inserts it. Fills `views`.
+  // A reshape that merges exactly two adjacent input dimensions into output
+  // dimension `c` and keeps every other dimension: the first of the two
+  // (the index of the merge), or -1.
+  static int64_t mergeInto(Operation *op, int64_t c) {
+    auto reshape = dyn_cast<stablehlo::ReshapeOp>(op);
+    if (!reshape)
+      return -1;
+    ArrayRef<int64_t> in = reshape.getOperand().getType().getShape();
+    ArrayRef<int64_t> out = reshape.getType().getShape();
+    if (in.size() != out.size() + 1)
+      return -1;
+    for (int64_t o = 0, k = 0; o < (int64_t)out.size(); o++, k++) {
+      if (o == c) {
+        if (k + 1 >= (int64_t)in.size() || in[k] * in[k + 1] != out[o])
+          return -1;
+        k++;
+        continue;
+      }
+      if (in[k] != out[o])
+        return -1;
+    }
+    return c;
+  }
+
+  // The input index of the two adjacent dimensions a reshape merges (and
+  // keeps every other dimension), or -1.
+  static int64_t mergePair(Operation *op) {
+    auto reshape = dyn_cast<stablehlo::ReshapeOp>(op);
+    if (!reshape)
+      return -1;
+    ArrayRef<int64_t> out = reshape.getType().getShape();
+    for (int64_t o = 0; o < (int64_t)out.size(); o++)
+      if (mergeInto(op, o) >= 0)
+        return o;
+    return -1;
+  }
+
+  // `groups`: when a view merges the tracked dimension with the one before
+  // it ((k, m) -> k * m, the piece's extent along the concatenated dimension
+  // being k groups of m), the run continues on k and `groups` is set to
+  // that merge's input position; the piece then counts as k pieces of m.
   static int64_t throughViews(Value piece, int64_t d,
-                              SmallVectorImpl<Operation *> &views,
-                              Value &inner) {
+                              SmallVectorImpl<Operation *> &views, Value &inner,
+                              int64_t *groupsAt = nullptr) {
     Value v = piece;
     int64_t c = d;
     while (Operation *op = v.getDefiningOp()) {
-      if (!isMixedView(op))
-        break;
+      if (!isMixedView(op)) {
+        int64_t at = c >= 0 && groupsAt ? mergeInto(op, c) : -1;
+        if (at < 0 || *groupsAt >= 0)
+          break;
+        if (!v.hasOneUse())
+          return -2;
+        views.push_back(op);
+        *groupsAt = views.size() - 1;
+        c = at; // the group index: the first of the merged dims
+        v = op->getOperand(0);
+        continue;
+      }
       if (!v.hasOneUse())
         return -2;
       views.push_back(op);
@@ -12853,7 +12909,8 @@ private:
     for (Value piece : pieces) {
       SmallVector<Operation *> views;
       Value inner;
-      int64_t c = throughViews(piece, concatDim, views, inner);
+      int64_t groupsAt = -1;
+      int64_t c = throughViews(piece, concatDim, views, inner, &groupsAt);
       if (c == -2)
         return false;
       auto dot = inner.getDefiningOp<stablehlo::DotGeneralOp>();
@@ -12863,10 +12920,62 @@ private:
       m.views.push_back(views);
       int64_t extent =
           cast<RankedTensorType>(piece.getType()).getDimSize(concatDim);
+      if (groupsAt >= 0) {
+        // k groups of m: the piece counts k along the run. The merged pair
+        // sits at the tracked position in the reshape's output.
+        auto reshape = cast<stablehlo::ReshapeOp>(views[groupsAt]);
+        int64_t co = concatDim;
+        for (int64_t level = 0; level < groupsAt; level++) {
+          Operation *vop = views[level];
+          if (auto transpose = dyn_cast<stablehlo::TransposeOp>(vop))
+            co = transpose.getPermutation()[co];
+          else {
+            SmallVector<int64_t> dims = viewDims(vop);
+            co = llvm::find(dims, co) - dims.begin();
+          }
+        }
+        int64_t at = mergeInto(reshape, co);
+        ArrayRef<int64_t> in = reshape.getOperand().getType().getShape();
+        int64_t k = in[at], groupSize = in[at + 1];
+        if (m.groupSize && m.groupSize != groupSize)
+          return false;
+        m.groupSize = groupSize;
+        extent = k;
+      }
       m.extents.push_back(extent);
       m.varyingDims.push_back(c); // result dim for now; resolved below
       if (c >= 0 && m.carrier < 0)
         m.carrier = m.dots.size() - 1;
+    }
+    // With grouped carriers (the run merged into the concatenated dimension
+    // by a reshape), a single piece is one group: a dot of one lower rank
+    // than the carrier's, its extent along the concatenated dimension the
+    // group size, counting one; its tracked dimension is the group, not
+    // the run, so it is marked as inserting the run.
+    if (m.groupSize) {
+      int64_t carrierRank = -1;
+      for (auto [k, dot] : llvm::enumerate(m.dots))
+        if (m.views[k].size() && llvm::any_of(m.views[k], [&](Operation *v) {
+              return isa<stablehlo::ReshapeOp>(v) && unitInsertDims(v).empty();
+            }))
+          carrierRank = dot.getType().getRank();
+      if (carrierRank < 0)
+        return false;
+      m.carrier = -1;
+      for (auto [k, dot] : llvm::enumerate(m.dots)) {
+        int64_t rank = dot.getType().getRank();
+        if (rank == carrierRank) {
+          if (m.carrier < 0)
+            m.carrier = k;
+        } else if (rank + 1 == carrierRank) {
+          if (m.extents[k] != m.groupSize)
+            return false;
+          m.extents[k] = 1;
+          m.varyingDims[k] = -1;
+        } else {
+          return false;
+        }
+      }
     }
     // A mixed run has at least one carrier and at least one unit piece.
     bool hasUnit = llvm::is_contained(m.varyingDims, -1);
@@ -12919,6 +13028,12 @@ private:
             x = inv[x];
           if (unitPos >= 0)
             unitPos = inv[unitPos];
+        } else if (int64_t at = mergePair(op); at >= 0) {
+          // The merged pair both land at `at`; later dims shift down.
+          for (int64_t &x : pos)
+            x = x > at ? x - 1 : x;
+          if (unitPos > at)
+            unitPos--;
         } else {
           SmallVector<int64_t> dims = viewDims(op);
           for (int64_t &x : pos)
@@ -12954,6 +13069,20 @@ private:
       layout(views, m.dots[k].getType().getRank(),
              m.varyingDims[k] < 0 ? m.resultDim : -1, layouts[k]);
     SmallVector<int64_t> &carrierLayout = layouts[m.carrier];
+    if (m.groupSize) {
+      // The run shares its output position with the group dimension it is
+      // merged with; a unit piece's inserted run lands where that
+      // dimension of its own does.
+      int64_t partner = -1;
+      for (auto [d, p] : llvm::enumerate(carrierLayout))
+        if ((int64_t)d != m.resultDim && p == carrierLayout[m.resultDim])
+          partner = d;
+      if (partner < 0)
+        return false;
+      for (auto [k, l] : llvm::enumerate(layouts))
+        if (m.varyingDims[k] < 0)
+          l[m.resultDim] = l[partner];
+    }
     for (auto [k, l] : llvm::enumerate(layouts)) {
       // Every result dimension must land somewhere the carrier's does: the
       // same set of positions (a permutation of the carrier's layout).
@@ -13683,8 +13812,27 @@ private:
       return stablehlo::TransposeOpCreate(rewriter, loc, v,
                                           transpose.getPermutation());
     if (auto reshape = dyn_cast<stablehlo::ReshapeOp>(op)) {
-      // A unit-inserting reshape: the same insertions on v's shape.
       SmallVector<int64_t> dims = unitInsertDims(op);
+      if (dims.empty()) {
+        // A reshape merging two adjacent dimensions: the same merge on v's
+        // shape (its merged pair may have grown).
+        ArrayRef<int64_t> in = reshape.getOperand().getType().getShape();
+        ArrayRef<int64_t> out = reshape.getType().getShape();
+        auto vType = cast<RankedTensorType>(v.getType());
+        SmallVector<int64_t> shape;
+        for (int64_t o = 0, k = 0; o < (int64_t)out.size(); o++, k++) {
+          if (k + 1 < (int64_t)in.size() && in[k] * in[k + 1] == out[o] &&
+              (k >= (int64_t)in.size() || in[k] != out[o] ||
+               (o + 1 < (int64_t)out.size() && in[k + 1] != out[o + 1]))) {
+            shape.push_back(vType.getDimSize(k) * vType.getDimSize(k + 1));
+            k++;
+          } else {
+            shape.push_back(vType.getDimSize(k));
+          }
+        }
+        return stablehlo::ReshapeOpCreate(rewriter, loc, v, shape);
+      }
+      // A unit-inserting reshape: the same insertions on v's shape.
       SmallVector<int64_t> shape(reshape.getType().getRank(), 1);
       auto vType = cast<RankedTensorType>(v.getType());
       for (auto [i, d] : llvm::enumerate(dims))
