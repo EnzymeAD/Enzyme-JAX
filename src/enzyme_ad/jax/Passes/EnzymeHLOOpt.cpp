@@ -12517,14 +12517,29 @@ struct ConcatReduce
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatReduce> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
+  // Each operand is a reduction, or a reshape of one. The reshapes must turn
+  // the concatenation into one along a single dimension of the reductions'
+  // results: one with as many elements before it as the concatenated
+  // dimension has, on which alone the results differ.
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concat,
                                     PatternRewriter &rewriter) const {
     if (concat.getNumOperands() < 2)
       return failure();
+    int64_t c = concat.getDimension();
+    int64_t before = 1;
+    for (int64_t d : concat.getType().getShape().take_front(c))
+      before *= d;
     SmallVector<stablehlo::ReduceOp> reduces;
     for (Value v : concat.getOperands()) {
+      if (!v.hasOneUse())
+        return failure();
+      if (auto reshape = v.getDefiningOp<stablehlo::ReshapeOp>()) {
+        v = reshape.getOperand();
+        if (!v.hasOneUse())
+          return failure();
+      }
       auto reduce = v.getDefiningOp<stablehlo::ReduceOp>();
-      if (!reduce || reduce.getInputs().size() != 1 || !v.hasOneUse())
+      if (!reduce || reduce.getInputs().size() != 1)
         return failure();
       if (!reduces.empty() &&
           (reduce.getDimensions() != reduces[0].getDimensions() ||
@@ -12536,6 +12551,35 @@ struct ConcatReduce
       reduces.push_back(reduce);
     }
 
+    // The dimension of the reductions' results that is concatenated.
+    auto resultType = cast<RankedTensorType>(reduces[0].getType(0));
+    int64_t a = -1;
+    for (int64_t i = 0, prefix = 1, e = resultType.getRank(); i < e;
+         prefix *= resultType.getShape()[i++]) {
+      if (prefix != before)
+        continue;
+      // Each operand's concatenated dimension holds whole rows along i (a
+      // reshape that only inserts the concatenated dimension is left to
+      // concat_insert_dim_reduce, which keeps it apart).
+      bool same = true;
+      for (auto [v, reduce] : llvm::zip(concat.getOperands(), reduces)) {
+        auto type = cast<RankedTensorType>(reduce.getType(0));
+        for (int64_t d = 0; d < e; d++)
+          if (d != i && type.getShape()[d] != resultType.getShape()[d])
+            same = false;
+        if (cast<RankedTensorType>(v.getType()).getShape()[c] %
+                type.getShape()[i] !=
+            0)
+          same = false;
+      }
+      if (same) {
+        a = i;
+        break;
+      }
+    }
+    if (a < 0)
+      return failure();
+
     // The input dimension the concatenated result dimension comes from.
     ArrayRef<int64_t> reduced = reduces[0].getDimensions();
     auto inputType =
@@ -12544,7 +12588,7 @@ struct ConcatReduce
     for (int64_t i = 0, kept = 0, e = inputType.getRank(); i < e; i++) {
       if (llvm::is_contained(reduced, i))
         continue;
-      if (kept++ == (int64_t)concat.getDimension()) {
+      if (kept++ == a) {
         dim = i;
         break;
       }
@@ -12557,16 +12601,25 @@ struct ConcatReduce
     }
 
     SmallVector<Value> inputs;
-    for (stablehlo::ReduceOp reduce : reduces)
+    SmallVector<int64_t> shape(resultType.getShape());
+    shape[a] = 0;
+    for (stablehlo::ReduceOp reduce : reduces) {
       inputs.push_back(reduce.getInputs()[0]);
+      shape[a] += cast<RankedTensorType>(reduce.getType(0)).getShape()[a];
+    }
     auto newInput = stablehlo::ConcatenateOp::create(rewriter, concat.getLoc(),
                                                      inputs, dim);
+    auto newType = RankedTensorType::get(shape, resultType.getElementType());
     auto newReduce = stablehlo::ReduceOp::create(
-        rewriter, concat.getLoc(), TypeRange(concat.getType()),
-        ValueRange(newInput), reduces[0].getInitValues(), reduced);
+        rewriter, concat.getLoc(), TypeRange(newType), ValueRange(newInput),
+        reduces[0].getInitValues(), reduced);
     rewriter.cloneRegionBefore(reduces[0].getBody(), newReduce.getBody(),
                                newReduce.getBody().end());
-    rewriter.replaceOp(concat, newReduce.getResults());
+    if (newType != concat.getType())
+      rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
+          concat, concat.getType(), newReduce.getResult(0));
+    else
+      rewriter.replaceOp(concat, newReduce.getResults());
     return success();
   }
 };
