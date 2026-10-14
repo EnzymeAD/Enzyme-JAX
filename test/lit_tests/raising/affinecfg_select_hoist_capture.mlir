@@ -79,15 +79,15 @@ module attributes {gpu.container_module} {
 // CHECK-NEXT:      }
 // CHECK-NEXT:      %[[IF2IDX:.+]] = arith.index_cast %[[IF2]]#2 : i32 to index
 // CHECK-NEXT:      affine.parallel (%[[TID:.+]]) = (0) to (256) {
-// CHECK-NEXT:        %[[SEL0:.+]] = affine.if #set()[%[[NIDX]]] -> i32 {
-// CHECK-NEXT:          affine.yield %[[IF]]#0 : i32
-// CHECK-NEXT:        } else {
-// CHECK-NEXT:          affine.yield %[[IF]]#2 : i32
-// CHECK-NEXT:        }
 // CHECK-NEXT:        %{{.+}}:2 = affine.if #set()[%[[IF2IDX]]] -> (i32, i32) {
+// CHECK-NEXT:          %[[SEL0:.+]] = affine.if #set()[%[[NIDX]]] -> i32 {
+// CHECK-NEXT:            affine.yield %[[IF]]#0 : i32
+// CHECK-NEXT:          } else {
+// CHECK-NEXT:            affine.yield %[[IF]]#2 : i32
+// CHECK-NEXT:          }
 // CHECK-NEXT:          %[[ASM:.+]] = llvm.inline_asm has_side_effects tail_call_kind = <tail> asm_dialect = att "shfl.sync.down.b32 $0, $1, $2, $3, $4;", "=r,r,r,r,r" %[[SEL0]], %[[C1_I32]], %[[C31_I32]], %[[CM1_I32]] : (i32, i32, i32, i32) -> i32
-// CHECK-NEXT:          %[[ADD:.+]] = arith.addi %[[SEL0]], %[[ASM]] : i32
 // CHECK-NEXT:          %[[INNER:.+]] = affine.if #set()[%[[SEL1IDX]]] -> i32 {
+// CHECK-NEXT:            %[[ADD:.+]] = arith.addi %[[SEL0]], %[[ASM]] : i32
 // CHECK-NEXT:            %[[LOAD:.+]] = llvm.load %[[PTR2]] : !llvm.ptr -> i32
 // CHECK-NEXT:            %[[ADD2:.+]] = arith.addi %[[LOAD]], %[[ADD]] : i32
 // CHECK-NEXT:            affine.yield %[[ADD2]] : i32

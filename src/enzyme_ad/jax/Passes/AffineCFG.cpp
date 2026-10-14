@@ -8056,12 +8056,14 @@ struct ExtremumInAffineLoop : public OpRewritePattern<LoopOp> {
 // without results or else of such ops, or a pure op.
 static bool noOpUnless(Operation *op, IntegerSet cond, ValueRange operands) {
   SmallVector<Value> runsOperands;
-  if (auto forOp = dyn_cast<AffineForOp>(op))
-    return setImplies(runsOnceSet(forOp, runsOperands), runsOperands, cond,
-                      operands);
-  if (auto par = dyn_cast<AffineParallelOp>(op))
-    return setImplies(runsOnceSet(par, runsOperands), runsOperands, cond,
-                      operands);
+  if (auto forOp = dyn_cast<AffineForOp>(op)) {
+    IntegerSet runs = runsOnceSet(forOp, runsOperands);
+    return setImplies(runs, runsOperands, cond, operands);
+  }
+  if (auto par = dyn_cast<AffineParallelOp>(op)) {
+    IntegerSet runs = runsOnceSet(par, runsOperands);
+    return setImplies(runs, runsOperands, cond, operands);
+  }
   if (auto ifOp = dyn_cast<AffineIfOp>(op))
     return !ifOp.hasElse() && ifOp.getNumResults() == 0 &&
            llvm::all_of(ifOp.getThenBlock()->without_terminator(),
@@ -8092,6 +8094,148 @@ struct HoistBranchOutOfRunsCheck : public OpRewritePattern<AffineIfOp> {
     rewriter.inlineBlockBefore(thenBlock, ifOp);
     rewriter.eraseOp(ifOp);
     return success();
+  }
+};
+
+// Whether any result of `root` is used within `targetRegion` as an affine
+// dim/symbol, loop bound, condition, or load/store index, where moving `root`
+// inside `targetRegion` could stop it being a top-level symbol of the enclosing
+// AffineScope.
+static bool usedAsAffineOrIndexOperand(Operation *root, Region &targetRegion) {
+  SmallVector<Value> worklist(root->getResults().begin(),
+                              root->getResults().end());
+  llvm::SmallPtrSet<Value, 8> visited(worklist.begin(), worklist.end());
+  while (!worklist.empty()) {
+    Value v = worklist.pop_back_val();
+    for (OpOperand &use : v.getUses()) {
+      Operation *user = use.getOwner();
+      if (!targetRegion.isAncestor(user->getParentRegion()))
+        continue;
+      if (isa<affine::AffineApplyOp, affine::AffineMinOp, affine::AffineMaxOp,
+              affine::AffineIfOp>(user))
+        return true;
+      if (auto ifOp = dyn_cast<scf::IfOp>(user))
+        if (use.get() == ifOp.getCondition())
+          return true;
+      if (auto gep = dyn_cast<LLVM::GEPOp>(user))
+        if (use.getOperandNumber() >= 1)
+          return true;
+      if (auto load = dyn_cast<affine::AffineLoadOp>(user))
+        if (use.getOperandNumber() >= load.getIndices().getBeginOperandIndex())
+          return true;
+      if (auto load = dyn_cast<memref::LoadOp>(user))
+        if (use.getOperandNumber() >= load.getIndices().getBeginOperandIndex())
+          return true;
+      if (auto store = dyn_cast<affine::AffineStoreOp>(user))
+        if (use.getOperandNumber() >= store.getIndices().getBeginOperandIndex())
+          return true;
+      if (auto store = dyn_cast<memref::StoreOp>(user))
+        if (use.getOperandNumber() >= store.getIndices().getBeginOperandIndex())
+          return true;
+      if (auto rmw = dyn_cast<memref::AtomicRMWOp>(user))
+        if (use.getOperandNumber() >= rmw.getIndices().getBeginOperandIndex())
+          return true;
+      if (auto rmw = dyn_cast<enzyme::AtomicRMWOp>(user))
+        if (use.getOperandNumber() >= rmw.getIndices().getBeginOperandIndex())
+          return true;
+      if (auto rmw = dyn_cast<enzyme::AffineAtomicRMWOp>(user))
+        if (use.getOperandNumber() >= rmw.getIndices().getBeginOperandIndex())
+          return true;
+      if (auto forOp = dyn_cast<affine::AffineForOp>(user)) {
+        unsigned initStart = forOp.getLowerBoundOperands().size() +
+                             forOp.getUpperBoundOperands().size();
+        if (use.getOperandNumber() < initStart)
+          return true;
+      }
+      if (auto forOp = dyn_cast<scf::ForOp>(user))
+        if (use.getOperandNumber() < forOp.getInitArgs().getBeginOperandIndex())
+          return true;
+      if (isa<affine::AffineParallelOp, scf::ParallelOp>(user))
+        return true;
+      if (user->getNumRegions() == 0 && isPure(user)) {
+        for (Value res : user->getResults())
+          if (res.getType().isIntOrIndex() && visited.insert(res).second)
+            worklist.push_back(res);
+      }
+    }
+  }
+  return false;
+}
+
+// Sinks read-only operations before an affine.if into its branch when all of
+// their uses are inside that branch and no operation in between may write to
+// memory they read.
+struct SinkReadOnlyIntoAffineIf : public OpRewritePattern<AffineIfOp> {
+  using OpRewritePattern<AffineIfOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(AffineIfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (!ifOp.hasElse() && ifOp.getNumResults() == 0) {
+      Block *thenBlock = ifOp.getThenBlock();
+      if (!thenBlock->without_terminator().empty()) {
+        IntegerSet cond = ifOp.getIntegerSet();
+        SmallVector<Value> operands(ifOp.getOperands());
+        if (llvm::all_of(thenBlock->without_terminator(), [&](Operation &op) {
+              return noOpUnless(&op, cond, operands);
+            }))
+          return failure();
+      }
+    }
+
+    bool changed = false;
+    for (Operation *op = ifOp->getPrevNode(), *prev = nullptr; op; op = prev) {
+      prev = op->getPrevNode();
+      if (op->getNumResults() == 0 || op->hasTrait<OpTrait::ConstantLike>() ||
+          !isReadOnly(op))
+        continue;
+
+      Block *targetBlock = nullptr;
+      if (llvm::all_of(op->getUsers(), [&](Operation *u) {
+            return ifOp.getThenRegion().isAncestor(u->getParentRegion()) &&
+                   u != ifOp.getThenBlock()->getTerminator();
+          })) {
+        targetBlock = ifOp.getThenBlock();
+      } else if (ifOp.hasElse() &&
+                 llvm::all_of(op->getUsers(), [&](Operation *u) {
+                   return ifOp.getElseRegion().isAncestor(
+                              u->getParentRegion()) &&
+                          u != ifOp.getElseBlock()->getTerminator();
+                 })) {
+        targetBlock = ifOp.getElseBlock();
+      }
+      if (!targetBlock)
+        continue;
+
+      if (usedAsAffineOrIndexOperand(op, *targetBlock->getParent()))
+        continue;
+
+      SmallVector<MemoryEffects::EffectInstance> effects;
+      collectEffects(op, effects, /*ignoreBarriers=*/false);
+      bool clobbered = false;
+      if (!effects.empty()) {
+        for (Operation *mid = op->getNextNode(); mid != ifOp;
+             mid = mid->getNextNode()) {
+          if (isReadOnly(mid))
+            continue;
+          for (const auto &eff : effects) {
+            if (!isa<MemoryEffects::Read>(eff.getEffect()))
+              continue;
+            if (!eff.getValue() ||
+                mayWriteTo(mid, eff.getValue(), /*ignoreBarrier=*/false)) {
+              clobbered = true;
+              break;
+            }
+          }
+          if (clobbered)
+            break;
+        }
+      }
+      if (clobbered)
+        continue;
+
+      rewriter.moveOpBefore(op, &targetBlock->front());
+      changed = true;
+    }
+    return success(changed);
   }
 };
 
@@ -8210,7 +8354,8 @@ void mlir::enzyme::populateAffineCFGPatterns(
   // ahead of the parallelization, which would otherwise take the loop first
   rpl.add<AffineForAtMostOnce>(context, 3);
   rpl.add<HoistForOutOfRunsCheck, HoistParallelOutOfRunsCheck>(context, 2);
-  rpl.add<SplitParallelInductions, MaskedAffineParallel>(context, 1);
+  rpl.add<SplitParallelInductions, MaskedAffineParallel,
+          SinkReadOnlyIntoAffineIf>(context, 1);
 }
 
 void AffineCFGPass::runOnOperation() {

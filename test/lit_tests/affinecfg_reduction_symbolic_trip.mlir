@@ -15,19 +15,13 @@ func.func @accumulate(%x: memref<?xf64>, %w: memref<25xf64>, %n: index, %k: inde
 }
 
 // CHECK:  func.func @accumulate(%arg0: memref<?xf64>, %arg1: memref<25xf64>, %arg2: index, %arg3: index) {
-// CHECK-NEXT:   %cst = arith.constant 0.000000e+00 : f64
-// CHECK-NEXT:   %0 = affine.if #set()[%arg2] -> f64 {
-// CHECK-NEXT:     %3 = affine.load %arg1[symbol(%arg3)] {alignment = 8 : i64} : memref<25xf64>
-// CHECK-NEXT:     affine.yield %3 : f64
-// CHECK-NEXT:   } else {
-// CHECK-NEXT:     affine.yield %cst : f64
-// CHECK-NEXT:   }
-// CHECK-NEXT:   %1 = affine.parallel (%arg4) = (0) to (symbol(%arg2)) reduce ("addf") -> (f64) {
-// CHECK-NEXT:     %3 = affine.load %arg0[%arg4 * 5 + symbol(%arg3)] : memref<?xf64>
-// CHECK-NEXT:     affine.yield %3 : f64
-// CHECK-NEXT:   }
-// CHECK-NEXT:   %2 = arith.addf %0, %1 : f64
 // CHECK-NEXT:   affine.if #set()[%arg2] {
+// CHECK-NEXT:     %0 = affine.load %arg1[symbol(%arg3)] {alignment = 8 : i64} : memref<25xf64>
+// CHECK-NEXT:     %1 = affine.parallel (%arg4) = (0) to (symbol(%arg2)) reduce ("addf") -> (f64) {
+// CHECK-NEXT:       %3 = affine.load %arg0[%arg4 * 5 + symbol(%arg3)] : memref<?xf64>
+// CHECK-NEXT:       affine.yield %3 : f64
+// CHECK-NEXT:     }
+// CHECK-NEXT:     %2 = arith.addf %0, %1 : f64
 // CHECK-NEXT:     affine.store %2, %arg1[symbol(%arg3)] {alignment = 8 : i64} : memref<25xf64>
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return
@@ -140,26 +134,21 @@ func.func @two_accumulators(%x: memref<?xf64>, %G: memref<?xf64>, %n: index, %d:
 // CHECK-NEXT:   affine.parallel (%arg4, %arg5) = (0, 0) to (symbol(%arg3), symbol(%arg3)) {
 // CHECK-NEXT:     affine.store %cst, %alloca[%arg4 + %arg5 * 5] : memref<50xf64>
 // CHECK-NEXT:     affine.store %cst, %alloca[%arg4 + %arg5 * 5 + 25] : memref<50xf64>
-// CHECK-NEXT:     %0:2 = affine.if #set()[%arg2] -> (f64, f64) {
-// CHECK-NEXT:       %4 = affine.load %alloca[%arg4 + %arg5 * 5] : memref<50xf64>
-// CHECK-NEXT:       %5 = affine.load %alloca[%arg4 + %arg5 * 5 + 25] : memref<50xf64>
-// CHECK-NEXT:       affine.yield %4, %5 : f64, f64
-// CHECK-NEXT:     } else {
-// CHECK-NEXT:       affine.yield %cst, %cst : f64, f64
-// CHECK-NEXT:     }
-// CHECK-NEXT:     %1:2 = affine.parallel (%arg6) = (0) to (symbol(%arg2)) reduce ("addf", "addf") -> (f64, f64) {
-// CHECK-NEXT:       %4 = affine.load %arg0[%arg6 + %arg4 * symbol(%arg2)] : memref<?xf64>
-// CHECK-NEXT:       %5 = affine.load %arg1[%arg6 * 2 + %arg5 * symbol(%arg2)] : memref<?xf64>
-// CHECK-NEXT:       %6 = affine.load %arg1[%arg6 * 2 + %arg5 * symbol(%arg2) + 1] : memref<?xf64>
-// CHECK-NEXT:       %7 = arith.mulf %4, %5 : f64
-// CHECK-NEXT:       %8 = arith.mulf %4, %6 : f64
-// CHECK-NEXT:       affine.yield %7, %8 : f64, f64
-// CHECK-NEXT:     }
-// CHECK-NEXT:     %2 = arith.addf %0#0, %1#0 : f64
-// CHECK-NEXT:     %3 = arith.addf %0#1, %1#1 : f64
 // CHECK-NEXT:     affine.if #set()[%arg2] {
-// CHECK-NEXT:       affine.store %3, %alloca[%arg4 + %arg5 * 5 + 25] : memref<50xf64>
-// CHECK-NEXT:       affine.store %2, %alloca[%arg4 + %arg5 * 5] : memref<50xf64>
+// CHECK-NEXT:       %0 = affine.load %alloca[%arg4 + %arg5 * 5] : memref<50xf64>
+// CHECK-NEXT:       %1 = affine.load %alloca[%arg4 + %arg5 * 5 + 25] : memref<50xf64>
+// CHECK-NEXT:       %2:2 = affine.parallel (%arg6) = (0) to (symbol(%arg2)) reduce ("addf", "addf") -> (f64, f64) {
+// CHECK-NEXT:         %5 = affine.load %arg0[%arg6 + %arg4 * symbol(%arg2)] : memref<?xf64>
+// CHECK-NEXT:         %6 = affine.load %arg1[%arg6 * 2 + %arg5 * symbol(%arg2)] : memref<?xf64>
+// CHECK-NEXT:         %7 = affine.load %arg1[%arg6 * 2 + %arg5 * symbol(%arg2) + 1] : memref<?xf64>
+// CHECK-NEXT:         %8 = arith.mulf %5, %6 : f64
+// CHECK-NEXT:         %9 = arith.mulf %5, %7 : f64
+// CHECK-NEXT:         affine.yield %8, %9 : f64, f64
+// CHECK-NEXT:       }
+// CHECK-NEXT:       %3 = arith.addf %0, %2#0 : f64
+// CHECK-NEXT:       %4 = arith.addf %1, %2#1 : f64
+// CHECK-NEXT:       affine.store %4, %alloca[%arg4 + %arg5 * 5 + 25] : memref<50xf64>
+// CHECK-NEXT:       affine.store %3, %alloca[%arg4 + %arg5 * 5] : memref<50xf64>
 // CHECK-NEXT:     }
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return
