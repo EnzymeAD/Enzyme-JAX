@@ -33849,10 +33849,11 @@ struct ConcatenateAddToAddPad
 // - along a dimension that comes from an operand dimension they do not expand,
 //   broadcast_in_dim(concat(x_0, ..., x_n));
 // - along a dimension every broadcast expands by the same size m (element
-//   k * m + j is x_k), the operands stacked along a new dimension, broadcast
-//   with the stack just outside the expanded one, and the two reshaped back
-//   into one: reshape(broadcast_in_dim(concat(reshape(x_k)))). A broadcast
-//   alone cannot index one dimension by k * m + j, so the reshape stays.
+//   k * m + j is x_k), whether no operand dimension maps to it or a unit one
+//   does, the operands stacked along a new dimension, broadcast with the stack
+//   just outside the expanded one, and the two reshaped back into one:
+//   reshape(broadcast_in_dim(concat(reshape(x_k)))). A broadcast alone cannot
+//   index one dimension by k * m + j, so the reshape stays.
 struct ConcatenateBroadcastInDim
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                                      ConcatenateBroadcastInDim> {
@@ -33880,6 +33881,9 @@ struct ConcatenateBroadcastInDim
     if (found == dims.end())
       return concatExpanded(op, first, rewriter);
     int64_t inputDim = std::distance(dims.begin(), found);
+    if (first.getOperand().getType().getDimSize(inputDim) == 1 &&
+        first.getType().getDimSize(op.getDimension()) != 1)
+      return concatExpanded(op, first, rewriter);
 
     SmallVector<Value> operandOperands;
     for (auto operand : operands) {
@@ -33946,8 +33950,9 @@ private:
     split.push_back(m);
     llvm::append_range(split, type.getShape().drop_front(dim + 1));
     SmallVector<int64_t> newDims = {dim};
+    // A unit operand dimension at dim maps to the expanded part.
     for (int64_t d : dims)
-      newDims.push_back(d > dim ? d + 1 : d);
+      newDims.push_back(d >= dim ? d + 1 : d);
     auto splitType = RankedTensorType::get(split, type.getElementType());
     auto bcast = stablehlo::BroadcastInDimOp::create(rewriter, op.getLoc(),
                                                      splitType, stack, newDims);
