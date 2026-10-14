@@ -87,6 +87,19 @@ const char *convertMlirTypeToMpiDatatypeName(Type type,
     return nullptr;
 }
 
+// MPI constants like `MPI_STATUS_IGNORE` are macros, not linkable symbols, and
+// their value may be null (e.g. in Open MPI), which the JIT linker rejects as
+// an unresolved symbol. So we embed their value instead of taking the address
+// of an external global.
+static Value createMpiPtrConstant(OpBuilder &builder, Location loc,
+                                  void *value) {
+  auto addr = LLVM::ConstantOp::create(
+      builder, loc, builder.getI64Type(),
+      builder.getI64IntegerAttr(reinterpret_cast<int64_t>(value)));
+  return LLVM::IntToPtrOp::create(
+      builder, loc, LLVM::LLVMPointerType::get(builder.getContext()), addr);
+}
+
 struct LowerCommMpiConstantOpToJIT
     : public OpConversionPattern<comm::MpiConstantOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -818,6 +831,10 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
     std::string function_name = "MPI_Recv";
     std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
 
+    auto status_ignore_val = lookupSymbol("MPI_STATUS_IGNORE");
+    if (auto err = status_ignore_val.takeError())
+      return op.emitOpError(toString(std::move(err)));
+
     if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
@@ -866,11 +883,8 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
       Value comm =
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
-      Value status_ptr =
-          LLVM::AddressOfOp::create(
-              rewriter, op.getLoc(), type_ptr,
-              FlatSymbolRefAttr::get(context, "MPI_STATUS_IGNORE"))
-              .getResult();
+      Value status_ptr = createMpiPtrConstant(rewriter, op.getLoc(),
+                                              status_ignore_val.get());
 
       // TODO error checking
       // currently, we ignore the int return code
@@ -894,14 +908,6 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
 
       LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
-    }
-
-    if (!moduleOp.lookupSymbol<LLVM::GlobalOp>("MPI_STATUS_IGNORE")) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(moduleOp.getBody());
-      LLVM::GlobalOp::create(rewriter, op.getLoc(), type_ptr, true,
-                             LLVM::Linkage::External, "MPI_STATUS_IGNORE",
-                             nullptr, 0, 0);
     }
 
     if (!op.getResult().getType().hasStaticShape()) {
@@ -1138,6 +1144,10 @@ struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
     std::string function_name = "MPI_Wait";
     std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
 
+    auto status_ignore_val = lookupSymbol("MPI_STATUS_IGNORE");
+    if (auto err = status_ignore_val.takeError())
+      return op.emitOpError(toString(std::move(err)));
+
     if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
@@ -1163,11 +1173,8 @@ struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
       // memoryEffectsAttr);
 
       Value arg_request_ptr = entryBlock->getArgument(0);
-      Value status_ptr =
-          LLVM::AddressOfOp::create(
-              rewriter, op.getLoc(), type_ptr,
-              FlatSymbolRefAttr::get(context, "MPI_STATUS_IGNORE"))
-              .getResult();
+      Value status_ptr = createMpiPtrConstant(rewriter, op.getLoc(),
+                                              status_ignore_val.get());
 
       // TODO error checking
       // currently, we ignore the int return code
@@ -1187,14 +1194,6 @@ struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
 
       LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
-    }
-
-    if (!moduleOp.lookupSymbol<LLVM::GlobalOp>("MPI_STATUS_IGNORE")) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(moduleOp.getBody());
-      LLVM::GlobalOp::create(rewriter, op.getLoc(), type_ptr, true,
-                             LLVM::Linkage::External, "MPI_STATUS_IGNORE",
-                             nullptr, 0, 0);
     }
 
     auto request = adaptor.getRequest();
@@ -1231,6 +1230,10 @@ struct LowerCommMpiWaitallOpToJIT
     std::string function_name = "MPI_Waitall";
     std::string wrapper_name = "enzymexla_jitwrap_" + function_name + "_" +
                                std::to_string(num_requests);
+
+    auto statuses_ignore_val = lookupSymbol("MPI_STATUSES_IGNORE");
+    if (auto err = statuses_ignore_val.takeError())
+      return op.emitOpError(toString(std::move(err)));
 
     if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
@@ -1279,11 +1282,8 @@ struct LowerCommMpiWaitallOpToJIT
                               gep_op.getResult());
       }
 
-      Value status_ptr =
-          LLVM::AddressOfOp::create(
-              rewriter, op.getLoc(), type_ptr,
-              FlatSymbolRefAttr::get(context, "MPI_STATUSES_IGNORE"))
-              .getResult();
+      Value status_ptr = createMpiPtrConstant(rewriter, op.getLoc(),
+                                              statuses_ignore_val.get());
 
       // TODO error checking
       // currently, we ignore the int return code
@@ -1303,14 +1303,6 @@ struct LowerCommMpiWaitallOpToJIT
 
       LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
-    }
-
-    if (!moduleOp.lookupSymbol<LLVM::GlobalOp>("MPI_STATUSES_IGNORE")) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(moduleOp.getBody());
-      LLVM::GlobalOp::create(rewriter, op.getLoc(), type_ptr, true,
-                             LLVM::Linkage::External, "MPI_STATUSES_IGNORE",
-                             nullptr, 0, 0);
     }
 
     rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
