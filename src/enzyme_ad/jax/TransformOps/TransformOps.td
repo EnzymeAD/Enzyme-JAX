@@ -437,6 +437,10 @@ def ApplySliceReshapeBlockAlignPatterns : EnzymeHLOPatternOp<
     "slice_reshape_block_align"> {
   let patterns = ["SliceReshapeBlockAlign"];
 }
+def ApplyConcatBlockedWindowsPatterns : EnzymeHLOPatternOp<
+    "concat_blocked_windows"> {
+  let patterns = ["ConcatBlockedWindows"];
+}
 def ApplyConcatSliceStackPatterns : EnzymeHLOPatternOp<
     "concat_slice_stack"> {
   let patterns = ["ConcatSliceStack"];
