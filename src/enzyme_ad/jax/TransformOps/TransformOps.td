@@ -2584,6 +2584,11 @@ def ExtendToBroadcast : EnzymeHLOPatternOp<
   let patterns = ["ExtendToBroadcast"];
 }
 
+def WrapToBroadcast : EnzymeHLOPatternOp<
+  "wrap_to_broadcast"> {
+  let patterns = ["WrapToBroadcast"];
+}
+
 def SliceExtend : EnzymeHLOPatternOp<
   "slice_extend"> {
   let patterns = ["SliceExtend"];
