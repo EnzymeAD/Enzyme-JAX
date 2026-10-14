@@ -5,7 +5,7 @@ module {
   func.func @main(%arg0: tensor<i64> {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}) -> tensor<i64> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
     %c = stablehlo.constant dense<0> : tensor<i64>
     %c_0 = stablehlo.constant dense<1> : tensor<i32>
-    %0 = enzymexla.mpi.allreduce(%arg0, %c, %c_0) {datatype = #enzymexla.datatype<MPI_INT64_T>, op = #enzymexla.op<MPI_SUM>} : (tensor<i64>, tensor<i64>, tensor<i32>) -> tensor<i64>
+    %0 = enzymexla.mpi.allreduce(%arg0, %c, %c_0) <{datatype = #enzymexla.datatype<MPI_INT64_T>, op = #enzymexla.op<MPI_SUM>}> : (tensor<i64>, tensor<i64>, tensor<i32>) -> tensor<i64>
     return %0 : tensor<i64>
   }
 }
@@ -26,7 +26,7 @@ module {
 // CPU-NEXT:    func.func @main(%arg0: tensor<i64> {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}) -> tensor<i64> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
 // CPU-NEXT:      %c = stablehlo.constant dense<0> : tensor<i64>
 // CPU-NEXT:      %c_0 = stablehlo.constant dense<1> : tensor<i32>
-// CPU-NEXT:      %0 = enzymexla.jit_call @enzymexla_wrapper_MPI_Allreduce_MPI_SUM_MPI_INT64_T (%arg0, %c, %c_0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>]} : (tensor<i64>, tensor<i64>, tensor<i32>) -> tensor<i64>
+// CPU-NEXT:      %0 = enzymexla.jit_call @enzymexla_wrapper_MPI_Allreduce_MPI_SUM_MPI_INT64_T (%arg0, %c, %c_0) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>]> : (tensor<i64>, tensor<i64>, tensor<i32>) -> tensor<i64>
 // CPU-NEXT:      return %0 : tensor<i64>
 // CPU-NEXT:    }
 // CPU-NEXT:  }
@@ -47,7 +47,7 @@ module {
 // CUDA-NEXT:    }
 // CUDA-NEXT:    func.func @main(%arg0: tensor<i64> {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}) -> tensor<i64> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
 // CUDA-NEXT:      %c = stablehlo.constant dense<0> : tensor<i64>
-// CUDA-NEXT:      %0 = enzymexla.jit_call @enzymexla_wrapper_ncclAllReduce_MPI_SUM_MPI_INT64_T (%arg0, %c) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>]} : (tensor<i64>, tensor<i64>) -> tensor<i64>
+// CUDA-NEXT:      %0 = enzymexla.jit_call @enzymexla_wrapper_ncclAllReduce_MPI_SUM_MPI_INT64_T (%arg0, %c) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>]> : (tensor<i64>, tensor<i64>) -> tensor<i64>
 // CUDA-NEXT:      return %0 : tensor<i64>
 // CUDA-NEXT:    }
 // CUDA-NEXT:  }

@@ -25,18 +25,18 @@ func.func @main() {
   %dinput = stablehlo.constant dense<[[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]]> : tensor<2x3xf32>
   %expected = stablehlo.constant dense<[[9.0, 8.0, 7.0], [12.0, 11.0, 10.0]]> : tensor<2x3xf32>
 
-  %fwd:2 = enzyme.fwddiff @reverse(%input, %dinput) {
+  %fwd:2 = enzyme.fwddiff @reverse(%input, %dinput) <{
     activity=[#enzyme.activity<enzyme_dup>],
     ret_activity=[#enzyme.activity<enzyme_dup>]
-  } : (tensor<2x3xf32>, tensor<2x3xf32>) -> (tensor<2x3xf32>, tensor<2x3xf32>)
+  }> : (tensor<2x3xf32>, tensor<2x3xf32>) -> (tensor<2x3xf32>, tensor<2x3xf32>)
 
   check.expect_almost_eq %fwd#0, %output : tensor<2x3xf32>
   check.expect_almost_eq %fwd#1, %expected : tensor<2x3xf32>
 
-  %rev:2 = enzyme.autodiff @reverse(%input, %dinput) {
+  %rev:2 = enzyme.autodiff @reverse(%input, %dinput) <{
     activity=[#enzyme.activity<enzyme_active>],
     ret_activity=[#enzyme.activity<enzyme_active>]
-  } : (tensor<2x3xf32>, tensor<2x3xf32>) -> (tensor<2x3xf32>, tensor<2x3xf32>)
+  }> : (tensor<2x3xf32>, tensor<2x3xf32>) -> (tensor<2x3xf32>, tensor<2x3xf32>)
 
   check.expect_almost_eq %rev#0, %output : tensor<2x3xf32>
   check.expect_almost_eq %rev#1, %expected : tensor<2x3xf32>

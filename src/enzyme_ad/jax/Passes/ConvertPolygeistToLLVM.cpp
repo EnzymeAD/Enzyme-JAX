@@ -15,6 +15,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/ConvertPolygeistToLLVM.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/MD5.h"
 
@@ -143,18 +144,6 @@ Type convertMemrefElementTypeForLLVMPointer(
       converted = LLVM::LLVMArrayType::get(converted, size);
   }
   return converted;
-}
-
-static Block *getAllocaBlock(Operation *op) {
-  Operation *currentOp = op;
-  while (Operation *parentOp = currentOp->getParentOp()) {
-    if (parentOp->mightHaveTrait<OpTrait::IsIsolatedFromAbove>() ||
-        parentOp->mightHaveTrait<OpTrait::AutomaticAllocationScope>()) {
-      return &currentOp->getParentRegion()->front();
-    }
-    currentOp = parentOp;
-  }
-  return nullptr;
 }
 
 // Runtime initialization must precede persistent temporary initialization;
@@ -2924,7 +2913,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
     return rewriter.notifyMatchFailure(
         launchOp, "Cannot convert with more than one async dependency.");
 
-  Block *allocaBlock = getAllocaBlock(launchOp);
+  Block *allocaBlock = enzyme::getAllocaBlock(launchOp);
 
   Location loc = launchOp.getLoc();
 
@@ -3273,7 +3262,7 @@ private:
       if (backend == "cuda") {
         Value ptr;
         {
-          Block *allocaBlock = getAllocaBlock(allocOp);
+          Block *allocaBlock = enzyme::getAllocaBlock(allocOp);
           assert(allocaBlock &&
                  "AllocOp must be inside a function or allocation scope");
           OpBuilder::InsertionGuard guard(rewriter);
@@ -3300,7 +3289,7 @@ private:
       } else if (backend == "rocm") {
         Value ptr;
         {
-          Block *allocaBlock = getAllocaBlock(allocOp);
+          Block *allocaBlock = enzyme::getAllocaBlock(allocOp);
           assert(allocaBlock &&
                  "AllocOp must be inside a function or allocation scope");
           OpBuilder::InsertionGuard guard(rewriter);
@@ -3364,7 +3353,7 @@ private:
 
         Value shapePtr;
         {
-          Block *allocaBlock = getAllocaBlock(allocOp);
+          Block *allocaBlock = enzyme::getAllocaBlock(allocOp);
           assert(allocaBlock &&
                  "AllocOp must be inside a function or allocation scope");
           OpBuilder::InsertionGuard guard(rewriter);
@@ -3506,7 +3495,7 @@ private:
 
     Value ptr;
     {
-      Block *allocaBlock = getAllocaBlock(op);
+      Block *allocaBlock = enzyme::getAllocaBlock(op);
       assert(allocaBlock &&
              "OccupancyOp must be inside a function or allocation scope");
       OpBuilder::InsertionGuard guard(rewriter);
@@ -3784,7 +3773,7 @@ private:
 
     Value argsPtr, constsPtr = nullptr;
     {
-      Block *allocaBlock = getAllocaBlock(wrap);
+      Block *allocaBlock = enzyme::getAllocaBlock(wrap);
       assert(allocaBlock &&
              "XLAWrapperOp must be inside a function or allocation scope");
       OpBuilder::InsertionGuard guard(rewriter);
@@ -4657,7 +4646,7 @@ void populateCStyleGPUFuncLoweringPatterns(RewritePatternSet &patterns,
     } else if (gpuTarget == "rocm") {
       mlir::populateGpuToROCDLConversionPatterns(typeConverter, patterns,
                                                  mlir::gpu::amd::Runtime::HIP,
-                                                 amdgpu::Chipset());
+                                                 ROCDL::TargetInfo());
     }
   }
 }

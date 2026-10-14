@@ -139,7 +139,17 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "func.func(canonicalize-loops),"
       "llvm.func(canonicalize-loops),"
       "canonicalize-scf-for,"
-      "" + canonicalize + ",affine-cfg," + canonicalize + ","
+      "" + canonicalize + ",";
+  // A loop of a few iterations known at compile time, such as one over the
+  // components of a vector, written out: a bound or a branch chosen by the
+  // iteration is then a constant or a symbol in each copy. Loops of zero or
+  // one iteration go whatever the maximum.
+  pass_pipeline += "unroll-small-loops{max_trip_count=" +
+                   std::to_string(options->unrollMaxTripCount) +
+                   " max_nested_ops=" +
+                   std::to_string(options->unrollMaxNestedOps) + "}," +
+                   canonicalize + ",";
+  pass_pipeline += "affine-cfg," + canonicalize + ","
       "split-branched-accesses," + canonicalize + ",polygeist-mem2reg,"
       "" + canonicalize + ","
       "func.func(canonicalize-loops),"
@@ -201,15 +211,28 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   if (StringRef(backend).starts_with("xla")) {
       // Differentiation and its cleanups disturb the affine structure the
       // raiser wants; rebuild it the way the shared prefix does.
+      // affine-cfg again once llvm-to-affine-access has turned the loops'
+      // llvm loads and stores into affine ones: only then can it prove a loop
+      // parallel (an llvm access is an opaque memory effect to it), and the
+      // raiser tags a parallel loop's while for batching.
       pass_pipeline += ",affine-cfg," + canonicalize +
-                       ",llvm-to-affine-access," + canonicalize + ",";
+                       ",llvm-to-affine-access," + canonicalize +
+                       ",affine-cfg," + canonicalize + ",";
+      // What a kernel reads only of the host's copy of its by-value
+      // arguments, the host reads before the launch (parallel-licm hoists it
+      // out of the lanes, then out of the launch): the raiser can capture a
+      // buffer whose pointer the host read, not one read inside the kernel.
+      pass_pipeline += "parallel-licm," + canonicalize + ",";
       pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true";
       if (options->specializeIndexStrides)
         pass_pipeline += " specialize_index_strides=true";
+      if (options->specializeIntScalars)
+        pass_pipeline += " specialize_int_scalars=true";
       pass_pipeline += "}," + canonicalize + ",arith-raise{stablehlo=true},"
       "cse,enzyme-hlo-opt," + canonicalize + ","
       "symbol-dce";
+      pass_pipeline += ",xla-megakernelize,symbol-dce";
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += ",print{filename="+outfile+".mlir}";
       }

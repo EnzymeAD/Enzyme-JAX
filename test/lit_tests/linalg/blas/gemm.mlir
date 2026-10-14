@@ -47,7 +47,7 @@ func.func @matmul_transpose_transpose(%A: tensor<4x2xf32>, %B: tensor<3x4xf32>) 
     %alpha = stablehlo.constant dense<1.0> : tensor<f32>
     %beta = stablehlo.constant dense<0.0> : tensor<f32>
     %C = stablehlo.constant dense<0.0> : tensor<2x3xf32>
-    %0 = enzymexla.blas.gemm %alpha, %A, %B, %beta, %C {transa = #enzymexla.transpose<transpose>, transb = #enzymexla.transpose<transpose>} : (tensor<f32>, tensor<4x2xf32>, tensor<3x4xf32>, tensor<f32>, tensor<2x3xf32>) -> tensor<2x3xf32>
+    %0 = enzymexla.blas.gemm %alpha, %A, %B, %beta, %C <{transa = #enzymexla.transpose<transpose>, transb = #enzymexla.transpose<transpose>}> : (tensor<f32>, tensor<4x2xf32>, tensor<3x4xf32>, tensor<f32>, tensor<2x3xf32>) -> tensor<2x3xf32>
     return %0 : tensor<2x3xf32>
 }
 
@@ -60,7 +60,7 @@ func.func @matmul_transpose_none(%A: tensor<4x2xf32>, %B: tensor<4x3xf32>) -> te
     %alpha = stablehlo.constant dense<1.0> : tensor<f32>
     %beta = stablehlo.constant dense<0.0> : tensor<f32>
     %C = stablehlo.constant dense<0.0> : tensor<2x3xf32>
-    %0 = enzymexla.blas.gemm %alpha, %A, %B, %beta, %C {transa = #enzymexla.transpose<transpose>, transb = #enzymexla.transpose<none>} : (tensor<f32>, tensor<4x2xf32>, tensor<4x3xf32>, tensor<f32>, tensor<2x3xf32>) -> tensor<2x3xf32>
+    %0 = enzymexla.blas.gemm %alpha, %A, %B, %beta, %C <{transa = #enzymexla.transpose<transpose>, transb = #enzymexla.transpose<none>}> : (tensor<f32>, tensor<4x2xf32>, tensor<4x3xf32>, tensor<f32>, tensor<2x3xf32>) -> tensor<2x3xf32>
     return %0 : tensor<2x3xf32>
 }
 
@@ -73,7 +73,7 @@ func.func @matmul_none_transpose(%A: tensor<2x4xf32>, %B: tensor<3x4xf32>) -> te
     %alpha = stablehlo.constant dense<1.0> : tensor<f32>
     %beta = stablehlo.constant dense<0.0> : tensor<f32>
     %C = stablehlo.constant dense<0.0> : tensor<2x3xf32>
-    %0 = enzymexla.blas.gemm %alpha, %A, %B, %beta, %C {transa = #enzymexla.transpose<none>, transb = #enzymexla.transpose<transpose>} : (tensor<f32>, tensor<2x4xf32>, tensor<3x4xf32>, tensor<f32>, tensor<2x3xf32>) -> tensor<2x3xf32>
+    %0 = enzymexla.blas.gemm %alpha, %A, %B, %beta, %C <{transa = #enzymexla.transpose<none>, transb = #enzymexla.transpose<transpose>}> : (tensor<f32>, tensor<2x4xf32>, tensor<3x4xf32>, tensor<f32>, tensor<2x3xf32>) -> tensor<2x3xf32>
     return %0 : tensor<2x3xf32>
 }
 
@@ -86,7 +86,7 @@ func.func @matmul_adjoint_adjoint(%A: tensor<4x2xcomplex<f32>>, %B: tensor<3x4xc
     %alpha = stablehlo.constant dense<(1.0, 0.0)> : tensor<complex<f32>>
     %beta = stablehlo.constant dense<(0.0, 0.0)> : tensor<complex<f32>>
     %C = stablehlo.constant dense<(0.0, 0.0)> : tensor<2x3xcomplex<f32>>
-    %0 = enzymexla.blas.gemm %alpha, %A, %B, %beta, %C {transa = #enzymexla.transpose<adjoint>, transb = #enzymexla.transpose<adjoint>} : (tensor<complex<f32>>, tensor<4x2xcomplex<f32>>, tensor<3x4xcomplex<f32>>, tensor<complex<f32>>, tensor<2x3xcomplex<f32>>) -> tensor<2x3xcomplex<f32>>
+    %0 = enzymexla.blas.gemm %alpha, %A, %B, %beta, %C <{transa = #enzymexla.transpose<adjoint>, transb = #enzymexla.transpose<adjoint>}> : (tensor<complex<f32>>, tensor<4x2xcomplex<f32>>, tensor<3x4xcomplex<f32>>, tensor<complex<f32>>, tensor<2x3xcomplex<f32>>) -> tensor<2x3xcomplex<f32>>
     return %0 : tensor<2x3xcomplex<f32>>
 }
 

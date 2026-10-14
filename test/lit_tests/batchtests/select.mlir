@@ -12,8 +12,8 @@ func.func @select_2(%arg0: tensor<3x8xi1>, %arg1: tensor<3x8xf64>, %arg2: tensor
 
 func.func @main(%arg0: tensor<2x5xi1>, %arg1: tensor<2x5x3x8xi1>, %arg2: tensor<2x5x3x8xf64>, %arg3: tensor<2x5x3x8xf64>) -> tensor<2x5x3x8xf64> {
     %c = stablehlo.constant dense<1.000000e+00> : tensor<2x5x3x8xf64>
-    %0 = enzyme.batch @select_1(%arg0, %arg2, %c) {batch_shape = array<i64: 2, 5>} : (tensor<2x5xi1>, tensor<2x5x3x8xf64>, tensor<2x5x3x8xf64>) -> (tensor<2x5x3x8xf64>)
-    %1 = enzyme.batch @select_2(%arg1, %arg2, %c) {batch_shape = array<i64: 2, 5>} : (tensor<2x5x3x8xi1>, tensor<2x5x3x8xf64>, tensor<2x5x3x8xf64>) -> (tensor<2x5x3x8xf64>)
+    %0 = enzyme.batch @select_1(%arg0, %arg2, %c) <{batch_shape = array<i64: 2, 5>}> : (tensor<2x5xi1>, tensor<2x5x3x8xf64>, tensor<2x5x3x8xf64>) -> (tensor<2x5x3x8xf64>)
+    %1 = enzyme.batch @select_2(%arg1, %arg2, %c) <{batch_shape = array<i64: 2, 5>}> : (tensor<2x5x3x8xi1>, tensor<2x5x3x8xf64>, tensor<2x5x3x8xf64>) -> (tensor<2x5x3x8xf64>)
     %2 = stablehlo.add %0, %1 : tensor<2x5x3x8xf64>
     return %2 : tensor<2x5x3x8xf64>
 }

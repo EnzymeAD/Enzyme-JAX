@@ -8,6 +8,10 @@ module {
     %2 = stablehlo.transpose %1, dims = [1, 0] : (tensor<4x3xf64>) -> tensor<3x4xf64>
     return %2 : tensor<3x4xf64>
   }
+  func.func @complex(%arg0: tensor<3x4xcomplex<f64>>) -> tensor<3x4xcomplex<f64>> {
+    %0 = stablehlo.subtract %arg0, %arg0 : tensor<3x4xcomplex<f64>>
+    return %0 : tensor<3x4xcomplex<f64>>
+  }
 }
 
 // NONAN:  func.func @main(%arg0: tensor<3x4xf64>) -> tensor<3x4xf64> {
@@ -18,4 +22,14 @@ module {
 // NAN:  func.func @main(%arg0: tensor<3x4xf64>) -> tensor<3x4xf64> {
 // NAN-NEXT:    %0 = stablehlo.subtract %arg0, %arg0 {enzymexla.no_nan = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<3x4xf64>
 // NAN-NEXT:    return %0 : tensor<3x4xf64>
+// NAN-NEXT:  }
+
+// NONAN:  func.func @complex(%arg0: tensor<3x4xcomplex<f64>>) -> tensor<3x4xcomplex<f64>> {
+// NONAN-NEXT:    %cst = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<3x4xcomplex<f64>>
+// NONAN-NEXT:    return %cst : tensor<3x4xcomplex<f64>>
+// NONAN-NEXT:  }
+
+// NAN:  func.func @complex(%arg0: tensor<3x4xcomplex<f64>>) -> tensor<3x4xcomplex<f64>> {
+// NAN-NEXT:    %0 = stablehlo.subtract %arg0, %arg0 {enzymexla.no_nan = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<3x4xcomplex<f64>>
+// NAN-NEXT:    return %0 : tensor<3x4xcomplex<f64>>
 // NAN-NEXT:  }

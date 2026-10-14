@@ -191,7 +191,7 @@ module @reactant_f attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas 
     %10 = stablehlo.broadcast_in_dim %9, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
     %11 = stablehlo.broadcast_in_dim %8, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
     %12 = stablehlo.broadcast_in_dim %11, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
-    %13:3 = enzyme.batch @"*_broadcast_scalar"(%10, %12) {batch_shape = array<i64: 2>} : (tensor<2xf64>, tensor<2xf64>) -> (tensor<2xf64>, tensor<2xf64>, tensor<2xf64>)
+    %13:3 = enzyme.batch @"*_broadcast_scalar"(%10, %12) <{batch_shape = array<i64: 2>}> : (tensor<2xf64>, tensor<2xf64>) -> (tensor<2xf64>, tensor<2xf64>, tensor<2xf64>)
     %14 = stablehlo.slice %0 [0:2, 1:2] : (tensor<2x3xf64>) -> tensor<2x1xf64>
     %15 = stablehlo.transpose %14, dims = [1, 0] : (tensor<2x1xf64>) -> tensor<1x2xf64>
     %16 = stablehlo.reshape %15 : (tensor<1x2xf64>) -> tensor<2xf64>
@@ -205,7 +205,7 @@ module @reactant_f attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas 
     %23 = stablehlo.broadcast_in_dim %22, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
     %24 = stablehlo.broadcast_in_dim %21, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
     %25 = stablehlo.broadcast_in_dim %24, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
-    %26:3 = enzyme.batch @"*_broadcast_scalar_1"(%23, %25) {batch_shape = array<i64: 2>} : (tensor<2xf64>, tensor<2xf64>) -> (tensor<2xf64>, tensor<2xf64>, tensor<2xf64>)
+    %26:3 = enzyme.batch @"*_broadcast_scalar_1"(%23, %25) <{batch_shape = array<i64: 2>}> : (tensor<2xf64>, tensor<2xf64>) -> (tensor<2xf64>, tensor<2xf64>, tensor<2xf64>)
     %27 = stablehlo.transpose %13#0, dims = [0] : (tensor<2xf64>) -> tensor<2xf64>
     %28 = stablehlo.reshape %27 : (tensor<2xf64>) -> tensor<1x2xf64>
     %29 = stablehlo.transpose %28, dims = [1, 0] : (tensor<1x2xf64>) -> tensor<2x1xf64>

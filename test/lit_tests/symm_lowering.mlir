@@ -6,7 +6,7 @@ module {
     func.func @main1(%arg0: tensor<64x64xf32>, %arg1: tensor<64x32xf32>, %arg2: tensor<64x32xf32>) -> tensor<64x32xf32> {
         %alpha = stablehlo.constant dense<2.0> : tensor<f32>
         %beta = stablehlo.constant dense<3.0> : tensor<f32>
-        %0 = enzymexla.blas.symm %arg0, %arg1, %arg2, %alpha, %beta {side = #enzymexla.side<left>, uplo = #enzymexla.uplo<U>} : (tensor<64x64xf32>, tensor<64x32xf32>, tensor<64x32xf32>, tensor<f32>, tensor<f32>) -> tensor<64x32xf32>
+        %0 = enzymexla.blas.symm %arg0, %arg1, %arg2, %alpha, %beta <{side = #enzymexla.side<left>, uplo = #enzymexla.uplo<U>}> : (tensor<64x64xf32>, tensor<64x32xf32>, tensor<64x32xf32>, tensor<f32>, tensor<f32>) -> tensor<64x32xf32>
         return %0 : tensor<64x32xf32>
     }
 }
@@ -16,7 +16,7 @@ module {
 // CPU-DAG:     %[[cUplo:.+]] = stablehlo.constant dense<76> : tensor<ui8>
 // CPU-DAG:     %[[c64:.+]] = stablehlo.constant dense<64> : tensor<i64>
 // CPU-DAG:     %[[c32:.+]] = stablehlo.constant dense<32> : tensor<i64>
-// CPU-NEXT:     %0 = enzymexla.jit_call @enzymexla_blas_ssymm_wrapper (%[[cSide]], %[[cUplo]], %[[c32]], %[[c64]], %arg3, %arg0, %[[c64]], %arg1, %[[c32]], %arg4, %arg2, %[[c32]]) {operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 10, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<ui8>, tensor<ui8>, tensor<i64>, tensor<i64>, tensor<f32>, tensor<64x64xf32>, tensor<i64>, tensor<64x32xf32>, tensor<i64>, tensor<f32>, tensor<64x32xf32>, tensor<i64>) -> tensor<64x32xf32>
+// CPU-NEXT:     %0 = enzymexla.jit_call @enzymexla_blas_ssymm_wrapper (%[[cSide]], %[[cUplo]], %[[c32]], %[[c64]], %arg3, %arg0, %[[c64]], %arg1, %[[c32]], %arg4, %arg2, %[[c32]]) <operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 10, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<ui8>, tensor<ui8>, tensor<i64>, tensor<i64>, tensor<f32>, tensor<64x64xf32>, tensor<i64>, tensor<64x32xf32>, tensor<i64>, tensor<f32>, tensor<64x32xf32>, tensor<i64>) -> tensor<64x32xf32>
 // CPU-NEXT:     return %0 : tensor<64x32xf32>
 // CPU-NEXT:   }
 // CPU-NEXT:   llvm.func private @enzymexla_blas_ssymm_wrapper(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: !llvm.ptr, %arg10: !llvm.ptr, %arg11: !llvm.ptr) {
@@ -59,7 +59,7 @@ module {
         %alpha = stablehlo.constant dense<2.0> : tensor<f32>
         %beta = stablehlo.constant dense<3.0> : tensor<f32>
         %c = arith.constant dense<0.0> : tensor<64x32xf32>
-        %0 = enzymexla.blas.symm %arg0, %arg1, %c, %alpha, %beta {side = #enzymexla.side<left>, uplo = #enzymexla.uplo<U>} : (tensor<64x64xf32>, tensor<64x32xf32>, tensor<64x32xf32>, tensor<f32>, tensor<f32>) -> tensor<64x32xf32>
+        %0 = enzymexla.blas.symm %arg0, %arg1, %c, %alpha, %beta <{side = #enzymexla.side<left>, uplo = #enzymexla.uplo<U>}> : (tensor<64x64xf32>, tensor<64x32xf32>, tensor<64x32xf32>, tensor<f32>, tensor<f32>) -> tensor<64x32xf32>
         return %0 : tensor<64x32xf32>
     }
 }
