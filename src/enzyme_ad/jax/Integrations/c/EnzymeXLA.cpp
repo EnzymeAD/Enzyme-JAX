@@ -662,6 +662,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
     list.push_back("split_reduce_add_mul_to_add_dot_general");
   list.push_back(passWithArg("recognize_from_constant", maxConstThreshold));
   list.push_back("extend_to_broadcast");
+  list.push_back("wrap_to_broadcast");
   list.push_back("reduce_max_min_mul_positive_scalar");
   list.push_back("add_complex_simplify");
   list.push_back("sub_complex_simplify");

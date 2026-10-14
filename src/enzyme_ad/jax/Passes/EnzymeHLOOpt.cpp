@@ -28574,6 +28574,26 @@ struct ExtendPad
   }
 };
 
+// x repeated k times along dim, as one tensor of shape `shape`: x with a unit
+// dimension inserted before dim, broadcast to k along it, and the two
+// dimensions merged.
+static Value repeatAlong(PatternRewriter &rewriter, Location loc, Value x,
+                         int64_t dim, int64_t k, ArrayRef<int64_t> shape) {
+  auto type = cast<RankedTensorType>(x.getType());
+  SmallVector<int64_t> unit(type.getShape().take_front(dim));
+  unit.push_back(1);
+  llvm::append_range(unit, type.getShape().drop_front(dim));
+  Value reshaped = stablehlo::ReshapeOpCreate(rewriter, loc, x, unit);
+  SmallVector<int64_t> repeated(unit);
+  repeated[dim] = k;
+  SmallVector<int64_t> dims;
+  for (int64_t i = 0, e = unit.size(); i < e; i++)
+    dims.push_back(i);
+  Value broadcast = stablehlo::BroadcastInDimOpCreate(rewriter, loc, reshaped,
+                                                      repeated, dims);
+  return stablehlo::ReshapeOpCreate(rewriter, loc, broadcast, shape);
+}
+
 struct ExtendToBroadcast
     : public CheckedOpRewritePattern<enzymexla::ExtendOp, ExtendToBroadcast> {
   using CheckedOpRewritePattern<enzymexla::ExtendOp,
@@ -28589,9 +28609,19 @@ struct ExtendToBroadcast
     // Get the dimension being extended
     int64_t dim = extend.getDimension();
 
-    // Check if the dimension is a singleton (size = 1)
-    if (inputType.getDimSize(dim) != 1)
-      return failure();
+    // extend(x, lhs, rhs) is concat(x[0 : lhs], x, x[n - rhs : n]): with lhs
+    // and rhs each 0 or n, x repeated lhs / n + 1 + rhs / n times.
+    int64_t n = inputType.getDimSize(dim);
+    int64_t lhs = extend.getLhs(), rhs = extend.getRhs();
+    if (n != 1) {
+      if ((lhs != 0 && lhs != n) || (rhs != 0 && rhs != n) || lhs + rhs == 0)
+        return failure();
+      rewriter.replaceOp(extend, repeatAlong(rewriter, extend.getLoc(),
+                                             extend.getOperand(), dim,
+                                             lhs / n + 1 + rhs / n,
+                                             extend.getType().getShape()));
+      return success();
+    }
 
     // Build the broadcast_dimensions attribute
     // This maps each dimension of the input to the corresponding dimension in
@@ -28606,6 +28636,33 @@ struct ExtendToBroadcast
         extend, extend.getType(), extend.getOperand(),
         rewriter.getDenseI64ArrayAttr(broadcastDims));
 
+    return success();
+  }
+};
+
+// wrap(x, lhs, rhs) along a dimension of size n is
+// concat(x[n - lhs : n], x, x[0 : rhs]), with lhs and rhs at most n. When each
+// is 0 or n, that is x repeated k = lhs / n + 1 + rhs / n times.
+struct WrapToBroadcast
+    : public CheckedOpRewritePattern<enzymexla::WrapOp, WrapToBroadcast> {
+  using CheckedOpRewritePattern<enzymexla::WrapOp,
+                                WrapToBroadcast>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::WrapOp wrap,
+                                    PatternRewriter &rewriter) const {
+    auto inputType = cast<RankedTensorType>(wrap.getOperand().getType());
+    int64_t dim = wrap.getDimension();
+    int64_t n = inputType.getDimSize(dim);
+    int64_t lhs = wrap.getLhs(), rhs = wrap.getRhs();
+    if (n == 0 || lhs % n != 0 || rhs % n != 0)
+      return failure();
+    int64_t k = lhs / n + 1 + rhs / n;
+    if (k == 1)
+      return failure();
+
+    rewriter.replaceOp(wrap,
+                       repeatAlong(rewriter, wrap.getLoc(), wrap.getOperand(),
+                                   dim, k, wrap.getType().getShape()));
     return success();
   }
 };
