@@ -136,6 +136,7 @@ def optimization_passes(
     enable_concat_to_batch_passes: bool = True,
     enable_loop_raising_passes: bool = True,
     enable_dot_formation_passes: bool = True,
+    max_reused_const_prop_size: int = 1024,
     aggressive_propagation: bool = True,
 ):
     # Map propagation direction strings to C enum values
@@ -174,6 +175,7 @@ def optimization_passes(
         enable_pad_optimization_passes,  # enable_pad_optimization_passes
         enable_self_to_convolution_like_passes,  # enable_self_to_convolution_like_passes
         enable_dot_formation_passes,  # enable_dot_formation_passes
+        max_reused_const_prop_size,  # max_reused_const_prop_size
         excluded_passes,  # excluded_passes
     )
 
