@@ -7025,6 +7025,32 @@ static bool storesApart(affine::AffineStoreOp a, affine::AffineStoreOp b) {
   return apart;
 }
 
+// The loops around `op` within its affine scope, as the dependence analysis
+// counts them (the parallelization's, vendored below).
+static unsigned getNestingDepth(Operation *op);
+
+// Whether `load`, within `forOp`, may read in some iteration what `store`
+// (in the body of `forOp`) wrote in the same or an earlier iteration: the
+// dependence that moving the store past the loop would break. Over the loops
+// outside `forOp` the two run as they did, so only the dependences `forOp`
+// carries, and those within one of its iterations, are asked; a load of
+// B[k][j] over k > i never reads the store of B[i][j].
+static bool loadMayReadStoreInLoop(affine::AffineForOp forOp,
+                                   affine::AffineStoreOp store,
+                                   affine::AffineReadOpInterface load) {
+  if (load.getMemRef() != store.getMemRef())
+    return false;
+  MemRefAccess src(store), dst(load);
+  // the loops around `forOp`, and `forOp`: those common to the two
+  unsigned common = ::getNestingDepth(forOp) + 1;
+  for (unsigned depth : {common, common + 1}) {
+    DependenceResult result = checkMemrefAccessDependence(src, dst, depth);
+    if (result.value != DependenceResult::NoDependence)
+      return true;
+  }
+  return false;
+}
+
 struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
   using OpRewritePattern<affine::AffineForOp>::OpRewritePattern;
 
@@ -7276,9 +7302,17 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
           continue;
         if (!forOp->isAncestor(user))
           continue;
-        auto other = dyn_cast<affine::AffineStoreOp>(user);
-        if (!other || !storesApart(store, other))
+        // Another store writes a different element in every iteration; a
+        // load never reads what the store wrote within the loop.
+        if (auto other = dyn_cast<affine::AffineStoreOp>(user)) {
+          if (!storesApart(store, other))
+            legal = false;
+        } else if (auto load = dyn_cast<affine::AffineReadOpInterface>(user)) {
+          if (loadMayReadStoreInLoop(forOp, store, load))
+            legal = false;
+        } else {
           legal = false;
+        }
       }
       if (legal)
         stores.push_back(store);
