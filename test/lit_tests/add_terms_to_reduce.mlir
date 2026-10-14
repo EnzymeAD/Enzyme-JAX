@@ -345,3 +345,32 @@ func.func @deep(%x: tensor<8x3xf64>) -> tensor<8x1xf64> {
 // CHECK-NEXT: %[[V14:[^ ,:)]+]] = stablehlo.reduce(%[[V13]] init: %[[V1]]) applies stablehlo.add across dimensions = [0] : (tensor<3x8x1xf64>, tensor<f64>) -> tensor<8x1xf64>
 // CHECK-NEXT: return %[[V14]] : tensor<8x1xf64>
 // CHECK-NEXT: }
+
+// One term carries an analysis attribute the others do not: they still roll
+// up, and the stacked op does not keep it.
+func.func @analysis_attr(%x: tensor<8x3xf64>, %y: tensor<8x3xf64>) -> tensor<8x1xf64> {
+  %x0 = stablehlo.slice %x [0:8, 0:1] : (tensor<8x3xf64>) -> tensor<8x1xf64>
+  %x1 = stablehlo.slice %x [0:8, 1:2] : (tensor<8x3xf64>) -> tensor<8x1xf64>
+  %x2 = stablehlo.slice %x [0:8, 2:3] : (tensor<8x3xf64>) -> tensor<8x1xf64>
+  %y0 = stablehlo.slice %y [0:8, 0:1] : (tensor<8x3xf64>) -> tensor<8x1xf64>
+  %y1 = stablehlo.slice %y [0:8, 1:2] : (tensor<8x3xf64>) -> tensor<8x1xf64>
+  %y2 = stablehlo.slice %y [0:8, 2:3] : (tensor<8x3xf64>) -> tensor<8x1xf64>
+  %m0 = stablehlo.multiply %x0, %y0 {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<8x1xf64>
+  %m1 = stablehlo.multiply %x1, %y1 : tensor<8x1xf64>
+  %m2 = stablehlo.multiply %x2, %y2 : tensor<8x1xf64>
+  %a = stablehlo.add %m0, %m1 : tensor<8x1xf64>
+  %r = stablehlo.add %a, %m2 : tensor<8x1xf64>
+  return %r : tensor<8x1xf64>
+}
+
+// CHECK-LABEL: func.func @analysis_attr(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<8x3xf64>, %[[V1:[^ ,:)]+]]: tensor<8x3xf64>) -> tensor<8x1xf64> {
+// CHECK-NEXT: %[[V2:[^ ,:)]+]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.reshape %[[V0]] : (tensor<8x3xf64>) -> tensor<8x3x1xf64>
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.transpose %[[V3]], dims = [1, 0, 2] : (tensor<8x3x1xf64>) -> tensor<3x8x1xf64>
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = stablehlo.reshape %[[V1]] : (tensor<8x3xf64>) -> tensor<8x3x1xf64>
+// CHECK-NEXT: %[[V6:[^ ,:)]+]] = stablehlo.transpose %[[V5]], dims = [1, 0, 2] : (tensor<8x3x1xf64>) -> tensor<3x8x1xf64>
+// CHECK-NEXT: %[[V7:[^ ,:)]+]] = stablehlo.multiply %[[V4]], %[[V6]] : tensor<3x8x1xf64>
+// CHECK-NEXT: %[[V8:[^ ,:)]+]] = stablehlo.reduce(%[[V7]] init: %[[V2]]) applies stablehlo.add across dimensions = [0] : (tensor<3x8x1xf64>, tensor<f64>) -> tensor<8x1xf64>
+// CHECK-NEXT: return %[[V8]] : tensor<8x1xf64>
+// CHECK-NEXT: }

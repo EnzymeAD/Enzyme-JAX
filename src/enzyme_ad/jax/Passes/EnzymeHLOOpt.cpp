@@ -35544,13 +35544,25 @@ static bool isStackableOp(Operation *op) {
   return true;
 }
 
+// The attributes that define what `op` computes. Analysis results attached by
+// enzymexla (enzymexla.*, such as symmetric_matrix or non_negative) only
+// describe its values, so terms that differ in them still stack, and the
+// stacked op, whose values they no longer describe, does not carry them.
+static SmallVector<NamedAttribute> computeAttrs(Operation *op) {
+  SmallVector<NamedAttribute> attrs;
+  for (NamedAttribute attr : op->getAttrs())
+    if (!attr.getName().strref().starts_with("enzymexla."))
+      attrs.push_back(attr);
+  return attrs;
+}
+
 // Whether `v` is computed by the same stackable op as `first`, and can be
 // replaced by its stacked version: it has no other user, or it is a view
 // (broadcast, reshape, transpose), which costs nothing to recreate stacked.
 static bool stacksWith(Value v, Operation *first) {
   Operation *op = v.getDefiningOp();
   if (!op || op->getName() != first->getName() ||
-      op->getAttrDictionary() != first->getAttrDictionary() ||
+      computeAttrs(op) != computeAttrs(first) ||
       op->getNumOperands() != first->getNumOperands())
     return false;
   if (!v.hasOneUse() && !isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
@@ -35734,7 +35746,7 @@ static Value buildStackedNode(PatternRewriter &rewriter, Location loc,
     return stablehlo::ConcatenateOpCreate(rewriter, loc, operands,
                                           concat.getDimension() + 1);
   OperationState state(loc, op->getName().getIdentifier(), operands,
-                       {stackedType}, op->getAttrs());
+                       {stackedType}, computeAttrs(op));
   return rewriter.create(state)->getResult(0);
 }
 
