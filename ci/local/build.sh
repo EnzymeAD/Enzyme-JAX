@@ -115,6 +115,15 @@ for name in libdrm.so libdrm_amdgpu.so libnuma.so; do
   ln -sfn "$(readlink -f "${src}")" "${BUILD_ROOT}/.rocm/lib/rocm_sysdeps/lib/${name}"
   echo "lib/rocm_sysdeps/lib/${name} -> $(readlink -f "${src}")"
 done
+# MORI also links the static libhsakmt.a, which the *.so* scan above skips. View
+# first, then spack, as above. See md: "rocm_sysdeps".
+hsakmt=""
+for c in /user-environment/env/default/lib/libhsakmt.a /user-environment/linux-zen3/hsa-rocr-dev-*/lib/libhsakmt.a; do
+  [[ -e "${c}" ]] && { hsakmt="${c}"; break; }
+done
+[[ -n "${hsakmt}" ]] || { echo "FATAL: libhsakmt.a not found in the UENV; XLA's @local_config_rocm//rocm:hsakmt needs it" >&2; exit 1; }
+ln -sfn "${hsakmt}" "${BUILD_ROOT}/.rocm/lib/libhsakmt.a"
+echo "lib/libhsakmt.a -> ${hsakmt}"
 # Overlay-local clang resource dir. See md: "clang wrapper + HIP_CLANG_PATH".
 REAL_CLANG_BIN="$(which clang 2>/dev/null || true)"
 if [[ -z "${REAL_CLANG_BIN}" || ! -x "${REAL_CLANG_BIN}" ]]; then

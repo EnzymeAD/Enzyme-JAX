@@ -325,9 +325,17 @@ loudly if one is missing. At runtime they come from `reactant_libs` (see "Curate
 runtime libs"; Julia bundles neither), the same copies the UENV's ROCm was built
 against.
 
-Drop this once Enzyme-JAX's XLA includes openxla/xla#50228. That change links
-classic ROCm before 7.10 against host `-ldrm -ldrm_amdgpu -lnuma` instead, so 7.2.3
-no longer reads `rocm_sysdeps`.
+MORI also links ROCm's static `libhsakmt.a` (`@local_config_rocm//rocm:hsakmt`,
+`rocm_dist/lib/libhsakmt.a`). The overlay's lib/ scan only takes `*.so*`, so the
+overlay links `libhsakmt.a` explicitly: from the view, else from the
+`hsa-rocr-dev` spack package. It fails loudly if neither has one. Without it, the
+build fails only at the final link of `libReactantExtra.so`, with `missing input
+file … libhsakmt.a`.
+
+Drop the `rocm_sysdeps` links once Enzyme-JAX's XLA includes openxla/xla#50228.
+That change links classic ROCm before 7.10 against host `-ldrm -ldrm_amdgpu -lnuma`
+instead, so 7.2.3 no longer reads `rocm_sysdeps`. `libhsakmt.a` stays needed for as
+long as XLA builds MORI.
 
 ### Bazel extraopts
 
