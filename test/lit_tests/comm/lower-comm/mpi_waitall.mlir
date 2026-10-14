@@ -1,5 +1,5 @@
 // RUN: enzymexlamlir-opt --lower-comm-to-stablehlo %s | FileCheck %s --check-prefix=SHLO
-// RUN: enzymexlamlir-opt --lower-comm-to-jit %s | FileCheck %s --check-prefix=JIT
+// RUN: enzymexlamlir-opt --map-symbol="symbols=MPI_STATUSES_IGNORE=0x0" --lower-comm-to-jit %s | FileCheck %s --check-prefix=JIT
 
 func.func @main(%req1 : !comm.mpi.request, %req2 : !comm.mpi.request) {
     comm.mpi.waitall %req1, %req2 : !comm.mpi.request, !comm.mpi.request
@@ -9,8 +9,6 @@ func.func @main(%req1 : !comm.mpi.request, %req2 : !comm.mpi.request) {
 // SHLO: func.func @main(%[[REQ1:.*]]: tensor<i64>, %[[REQ2:.*]]: tensor<i64>) {
 // SHLO-NEXT: stablehlo.custom_call @MpiWaitall(%[[REQ1]], %[[REQ2]]) {has_side_effect = true} : (tensor<i64>, tensor<i64>) -> ()
 
-// JIT-LABEL: llvm.mlir.global external constant @MPI_STATUSES_IGNORE
-// JIT-SAME:                                                         () {addr_space = 0 : i32} : !llvm.ptr
 // JIT-LABEL: llvm.func @MPI_Waitall
 // JIT-SAME:                        (i32, !llvm.ptr, !llvm.ptr) -> i32
 // JIT-LABEL: llvm.func @enzymexla_jitwrap_MPI_Waitall_2
@@ -23,8 +21,9 @@ func.func @main(%req1 : !comm.mpi.request, %req2 : !comm.mpi.request) {
 // JIT-NEXT:   %4 = llvm.load %arg1 : !llvm.ptr -> !llvm.ptr
 // JIT-NEXT:   %5 = llvm.getelementptr %1[1] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr 
 // JIT-NEXT:   llvm.store %4, %5 : !llvm.ptr, !llvm.ptr 
-// JIT-NEXT:   %6 = llvm.mlir.addressof @MPI_STATUSES_IGNORE : !llvm.ptr
-// JIT-NEXT:   %7 = llvm.call @MPI_Waitall(%0, %1, %6) : (i32, !llvm.ptr, !llvm.ptr) -> i32
+// JIT-NEXT:   %6 = llvm.mlir.constant(0 : i64) : i64
+// JIT-NEXT:   %7 = llvm.inttoptr %6 : i64 to !llvm.ptr
+// JIT-NEXT:   %8 = llvm.call @MPI_Waitall(%0, %1, %7) : (i32, !llvm.ptr, !llvm.ptr) -> i32
 // JIT-NEXT:   llvm.return
 // JIT-NEXT: }
 // JIT-LABEL: func.func @main
