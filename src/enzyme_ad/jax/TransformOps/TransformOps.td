@@ -433,6 +433,10 @@ def ApplyConcatSlicePatterns : EnzymeHLOPatternOp<
     "concat_slice"> {
   let patterns = ["ConcatSlice"];
 }
+def ApplySliceReshapeBlockAlignPatterns : EnzymeHLOPatternOp<
+    "slice_reshape_block_align"> {
+  let patterns = ["SliceReshapeBlockAlign"];
+}
 def ApplyConcatSliceStackPatterns : EnzymeHLOPatternOp<
     "concat_slice_stack"> {
   let patterns = ["ConcatSliceStack"];

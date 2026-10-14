@@ -5300,6 +5300,86 @@ struct ConcatSlice final
 // ending in a unit dimension at d: then the chain applies to the stacked
 // slices, the block index kept in front, and the block index goes in d's
 // place.
+// A slice of a reshape that selects whole blocks of a dimension, where the
+// same root is also reshaped with that dimension split into (blocks, size):
+// the slice is a slice of that blocked reshape, reshaped. Both reads of the
+// root are then slices of one value, so concat_slice_stack can stack a
+// window read through the merged reshape with windows read through the
+// blocked one (an earlier stacking of such windows).
+struct SliceReshapeBlockAlign final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshapeBlockAlign> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshape)
+      return failure();
+    if (llvm::any_of(op.getStrides(), [](int64_t s) { return s != 1; }))
+      return failure();
+    Value root = reshape.getOperand();
+    ArrayRef<int64_t> merged = reshape.getType().getShape();
+    // Another reshape of the root with one dimension of `merged` split in
+    // two (the same dimensions otherwise).
+    for (Operation *user : root.getUsers()) {
+      auto other = dyn_cast<stablehlo::ReshapeOp>(user);
+      if (!other || other == reshape)
+        continue;
+      ArrayRef<int64_t> blocked = other.getType().getShape();
+      if (blocked.size() != merged.size() + 1)
+        continue;
+      int64_t e = -1;
+      for (int64_t i = 0, j = 0; i < (int64_t)merged.size(); i++, j++) {
+        if (j < (int64_t)blocked.size() && merged[i] == blocked[j])
+          continue;
+        if (e != -1 || j + 1 >= (int64_t)blocked.size() ||
+            merged[i] != blocked[j] * blocked[j + 1]) {
+          e = -2;
+          break;
+        }
+        e = i;
+        j++;
+      }
+      if (e < 0)
+        continue;
+      int64_t size = blocked[e + 1];
+      int64_t start = op.getStartIndices()[e], limit = op.getLimitIndices()[e];
+      // Whole blocks, and not every block (that is the reshape itself).
+      if (start % size != 0 || limit % size != 0 ||
+          (start == 0 && limit == merged[e]))
+        continue;
+      SmallVector<int64_t> starts, limits, strides;
+      for (int64_t i = 0; i < (int64_t)merged.size(); i++) {
+        if (i == e) {
+          starts.push_back(start / size);
+          limits.push_back(limit / size);
+          starts.push_back(0);
+          limits.push_back(size);
+          strides.push_back(1);
+          strides.push_back(1);
+          continue;
+        }
+        starts.push_back(op.getStartIndices()[i]);
+        limits.push_back(op.getLimitIndices()[i]);
+        strides.push_back(1);
+      }
+      // The blocked reshape may come after the slice; it reads only the
+      // root, which the slice reads too, so it moves before the slice.
+      if (other->getBlock() != op->getBlock())
+        continue;
+      if (op->isBeforeInBlock(other))
+        rewriter.moveOpBefore(other, op);
+      Value slice = stablehlo::SliceOpCreate(rewriter, op.getLoc(), other,
+                                             starts, limits, strides);
+      Value result = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), slice,
+                                                op.getType().getShape());
+      rewriter.replaceOp(op, result);
+      return success();
+    }
+    return failure();
+  }
+};
+
 struct ConcatSliceStack final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatSliceStack> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;

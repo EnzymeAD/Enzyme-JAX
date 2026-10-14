@@ -491,6 +491,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("slice_concat<1>");
   list.push_back("concat_slice<1>");
   list.push_back("concat_slice_stack");
+  list.push_back("slice_reshape_block_align");
   list.push_back("select_op_used_within_if<1>");
   list.push_back("bin_broadcast_splat_add<1>");
   list.push_back("bin_broadcast_splat_subtract<1>");
