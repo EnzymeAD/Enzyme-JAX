@@ -3389,6 +3389,11 @@ def ApplyDotGeneralBroadcastInDimPatterns : EnzymeHLOPatternOp<
   let patterns = ["DotGeneralBroadcastInDim"];
 }
 
+def ApplyDotGeneralUnbatchBroadcastPatterns : EnzymeHLOPatternOp<
+    "dot_general_unbatch_broadcast"> {
+  let patterns = ["DotGeneralUnbatchBroadcast"];
+}
+
 def ApplyDotGeneralBroadcastInDimSortDimsPatterns : EnzymeHLOPatternOp<
     "dot_general_broadcast_in_dim_sort_dims"> {
   let patterns = ["DotGeneralBroadcastInDimSortDims"];

@@ -647,6 +647,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   if (dotFormation)
     list.push_back("reduce_mul_to_dot_general");
   list.push_back("dot_general_broadcast_in_dim");
+  list.push_back("dot_general_unbatch_broadcast");
   list.push_back("dot_general_broadcast_in_dim_sort_dims");
   list.push_back("dus_dynamic_slice_simplify");
   list.push_back("while_dus_dus_simplify");

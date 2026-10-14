@@ -36980,6 +36980,144 @@ struct SyrkSimplifyOutputUplo final
   }
 };
 
+// A batching dimension along which one operand is only a broadcast: that
+// operand does not vary along it, so it is a free dimension of the other
+// operand instead, and the broadcast operand is broadcast without it. The
+// result is transposed back into the batching dimension's place. Dimensions
+// both operands only broadcast are left to dot_general_broadcast_in_dim.
+struct DotGeneralUnbatchBroadcast final
+    : CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                              DotGeneralUnbatchBroadcast> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dims = op.getDotDimensionNumbers();
+    ArrayRef<int64_t> lhsBatch = dims.getLhsBatchingDimensions();
+    ArrayRef<int64_t> rhsBatch = dims.getRhsBatchingDimensions();
+    for (int64_t pair = 0, e = lhsBatch.size(); pair < e; pair++) {
+      if (isOnlyBroadcast(op.getLhs(), lhsBatch[pair]) &&
+          !isOnlyBroadcast(op.getRhs(), rhsBatch[pair]))
+        return unbatch(op, pair, /*fromLhs=*/true, rewriter);
+      if (isOnlyBroadcast(op.getRhs(), rhsBatch[pair]) &&
+          !isOnlyBroadcast(op.getLhs(), lhsBatch[pair]))
+        return unbatch(op, pair, /*fromLhs=*/false, rewriter);
+    }
+    return failure();
+  }
+
+private:
+  // `v` is a broadcast that expands dimension `dim`.
+  static bool isOnlyBroadcast(Value v, int64_t dim) {
+    auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>();
+    return bcast && !llvm::is_contained(bcast.getBroadcastDimensions(), dim);
+  }
+
+  // The dimensions of an operand that are neither batching nor contracting,
+  // in order.
+  static SmallVector<int64_t> freeDims(int64_t rank, ArrayRef<int64_t> batch,
+                                       ArrayRef<int64_t> contracting) {
+    SmallVector<int64_t> free;
+    for (int64_t d = 0; d < rank; d++)
+      if (!llvm::is_contained(batch, d) && !llvm::is_contained(contracting, d))
+        free.push_back(d);
+    return free;
+  }
+
+  LogicalResult unbatch(stablehlo::DotGeneralOp op, int64_t pair, bool fromLhs,
+                        PatternRewriter &rewriter) const {
+    auto dims = op.getDotDimensionNumbers();
+    Value bcastSide = fromLhs ? op.getLhs() : op.getRhs();
+    auto bcast = bcastSide.getDefiningOp<stablehlo::BroadcastInDimOp>();
+    int64_t dim = fromLhs ? dims.getLhsBatchingDimensions()[pair]
+                          : dims.getRhsBatchingDimensions()[pair];
+
+    // The broadcast without the dimension.
+    auto bcastType = cast<RankedTensorType>(bcastSide.getType());
+    SmallVector<int64_t> shape;
+    for (int64_t d = 0, r = bcastType.getRank(); d < r; d++)
+      if (d != dim)
+        shape.push_back(bcastType.getDimSize(d));
+    SmallVector<int64_t> bdims;
+    for (int64_t d : bcast.getBroadcastDimensions())
+      bdims.push_back(d > dim ? d - 1 : d);
+    Value narrowed = stablehlo::BroadcastInDimOpCreate(
+        rewriter, op.getLoc(), bcast.getOperand(), shape, bdims);
+
+    // Its dimension numbers shifted past the dropped dimension; the pair is
+    // no longer batched.
+    SmallVector<int64_t> lhsBatch, rhsBatch, lhsContract, rhsContract;
+    for (int64_t k = 0, e = dims.getLhsBatchingDimensions().size(); k < e;
+         k++) {
+      if (k == pair)
+        continue;
+      int64_t l = dims.getLhsBatchingDimensions()[k];
+      int64_t r = dims.getRhsBatchingDimensions()[k];
+      lhsBatch.push_back(fromLhs && l > dim ? l - 1 : l);
+      rhsBatch.push_back(!fromLhs && r > dim ? r - 1 : r);
+    }
+    for (int64_t l : dims.getLhsContractingDimensions())
+      lhsContract.push_back(fromLhs && l > dim ? l - 1 : l);
+    for (int64_t r : dims.getRhsContractingDimensions())
+      rhsContract.push_back(!fromLhs && r > dim ? r - 1 : r);
+    auto newDims = stablehlo::DotDimensionNumbersAttr::get(
+        op.getContext(), lhsBatch, rhsBatch, lhsContract, rhsContract);
+
+    Value lhs = fromLhs ? narrowed : op.getLhs();
+    Value rhs = fromLhs ? op.getRhs() : narrowed;
+    auto lhsType = cast<RankedTensorType>(lhs.getType());
+    auto rhsType = cast<RankedTensorType>(rhs.getType());
+    SmallVector<int64_t> lhsFree =
+        freeDims(lhsType.getRank(), lhsBatch, lhsContract);
+    SmallVector<int64_t> rhsFree =
+        freeDims(rhsType.getRank(), rhsBatch, rhsContract);
+
+    // The new result: remaining batch dimensions, lhs free, rhs free.
+    SmallVector<int64_t> newShape;
+    for (int64_t l : lhsBatch)
+      newShape.push_back(lhsType.getDimSize(l));
+    for (int64_t l : lhsFree)
+      newShape.push_back(lhsType.getDimSize(l));
+    for (int64_t r : rhsFree)
+      newShape.push_back(rhsType.getDimSize(r));
+    auto resultType = cast<RankedTensorType>(op.getType());
+    auto newType = RankedTensorType::get(newShape, resultType.getElementType());
+    auto dot = stablehlo::DotGeneralOp::create(
+        rewriter, op.getLoc(), newType, lhs, rhs, newDims,
+        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+
+    // Where each result dimension went: the batching pair became a free
+    // dimension of the other operand.
+    int64_t nb = lhsBatch.size();
+    int64_t otherDim = fromLhs ? dims.getRhsBatchingDimensions()[pair]
+                               : dims.getLhsBatchingDimensions()[pair];
+    SmallVector<int64_t> perm;
+    for (int64_t k = 0, e = dims.getLhsBatchingDimensions().size(); k < e;
+         k++) {
+      if (k == pair) {
+        if (fromLhs)
+          perm.push_back(nb + lhsFree.size() +
+                         (llvm::find(rhsFree, otherDim) - rhsFree.begin()));
+        else
+          perm.push_back(nb +
+                         (llvm::find(lhsFree, otherDim) - lhsFree.begin()));
+        continue;
+      }
+      perm.push_back(k < pair ? k : k - 1);
+    }
+    // The original free dimensions keep their order; the moved one is skipped.
+    for (int64_t k = 0, e = lhsFree.size(); k < e; k++)
+      if (fromLhs || lhsFree[k] != otherDim)
+        perm.push_back(nb + k);
+    for (int64_t k = 0, e = rhsFree.size(); k < e; k++)
+      if (!fromLhs || rhsFree[k] != otherDim)
+        perm.push_back(nb + lhsFree.size() + k);
+    rewriter.replaceOp(
+        op, stablehlo::TransposeOpCreate(rewriter, op.getLoc(), dot, perm));
+    return success();
+  }
+};
+
 // if a dimension was created by broadcasting for both lhs and rhs, then we move
 // the broadcasting after the dot_general
 struct DotGeneralBroadcastInDim
