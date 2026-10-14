@@ -1922,6 +1922,10 @@ def ApplyRemSimplifyPatterns : EnzymeHLOPatternOp<
     "rem_simplify"> {
   let patterns = ["RemSimplify"];
 }
+def ApplyConcatOperandBarrierPatterns : EnzymeHLOPatternOp<
+    "concat_operand_barrier"> {
+  let patterns = ["ConcatOperandBarrier"];
+}
 def ApplyConstPropThroughBarrierPatterns : EnzymeHLOPatternOp<
     "const_prop_through_barrier"> {
   let patterns = ["ConstPropThroughBarrier"];
