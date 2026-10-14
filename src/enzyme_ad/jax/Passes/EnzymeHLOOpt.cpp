@@ -14233,6 +14233,21 @@ struct SliceIf : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceIf> {
   }
 };
 
+// Whether [starts, limits) of concat lies within one of its operands.
+static bool sliceWithinOneOperand(stablehlo::ConcatenateOp concat,
+                                  ArrayRef<int64_t> starts,
+                                  ArrayRef<int64_t> limits) {
+  int64_t dim = concat.getDimension();
+  int64_t offset = 0;
+  for (Value v : concat.getOperands()) {
+    int64_t size = cast<RankedTensorType>(v.getType()).getDimSize(dim);
+    if (starts[dim] >= offset && limits[dim] <= offset + size)
+      return true;
+    offset += size;
+  }
+  return false;
+}
+
 struct SliceReshapeConcat
     : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshapeConcat> {
   using CheckedOpRewritePattern<stablehlo::SliceOp,
@@ -14242,9 +14257,6 @@ struct SliceReshapeConcat
                                     PatternRewriter &rewriter) const {
     auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
     if (!reshape)
-      return failure();
-
-    if (!llvm::hasSingleElement(reshape->getUsers()))
       return failure();
 
     auto concat =
@@ -14257,6 +14269,12 @@ struct SliceReshapeConcat
       return failure();
 
     auto dim = concat.getDimension();
+
+    // With other users of the reshape, only a slice within one operand (a view
+    // of it, nothing copied) moves.
+    if (!llvm::hasSingleElement(reshape->getUsers()) &&
+        !sliceWithinOneOperand(concat, starts, limits))
+      return failure();
 
     SmallVector<Value> postConcat;
     if (!sliceConcatHelper(concat, rewriter, starts, limits, strides,
