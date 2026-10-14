@@ -12,12 +12,14 @@ func.func @main() -> tensor<3x4xf32> {
 }
 
 // CHECK: func.func @main() -> tensor<3x4xf32> {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<4.000000e+00> : tensor<3x4xf32>
-// CHECK-NEXT:     %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<2x4xf32>
-// CHECK-NEXT:     %cst_1 = stablehlo.constant dense<9.000000e+00> : tensor<2x4xf32>
-// CHECK-NEXT:     %0 = stablehlo.add %cst_0, %cst_1 : tensor<2x4xf32>
-// CHECK-NEXT:     %1 = stablehlo.slice %0 [0:1, 0:4] : (tensor<2x4xf32>) -> tensor<1x4xf32>
-// CHECK-NEXT:     %2 = stablehlo.concatenate %0, %1, dim = 0 : (tensor<2x4xf32>, tensor<1x4xf32>) -> tensor<3x4xf32>
-// CHECK-NEXT:     %3 = stablehlo.add %2, %cst : tensor<3x4xf32>
-// CHECK-NEXT:     return %3 : tensor<3x4xf32>
+// CHECK-NEXT:     %cst = stablehlo.constant dense<9.000000e+00> : tensor<2x4xf32>
+// CHECK-NEXT:     %cst_0 = stablehlo.constant dense<4.000000e+00> : tensor<3x4xf32>
+// CHECK-NEXT:     %cst_1 = stablehlo.constant dense<1.000000e+00> : tensor<2x4xf32>
+// CHECK-NEXT:     %0 = stablehlo.optimization_barrier %cst_1 : tensor<2x4xf32>
+// CHECK-NEXT:     %1 = stablehlo.optimization_barrier %cst : tensor<2x4xf32>
+// CHECK-NEXT:     %2 = stablehlo.add %0, %1 : tensor<2x4xf32>
+// CHECK-NEXT:     %3 = stablehlo.slice %2 [0:1, 0:4] : (tensor<2x4xf32>) -> tensor<1x4xf32>
+// CHECK-NEXT:     %4 = stablehlo.concatenate %2, %3, dim = 0 : (tensor<2x4xf32>, tensor<1x4xf32>) -> tensor<3x4xf32>
+// CHECK-NEXT:     %5 = stablehlo.add %4, %cst_0 : tensor<3x4xf32>
+// CHECK-NEXT:     return %5 : tensor<3x4xf32>
 // CHECK-NEXT: }
