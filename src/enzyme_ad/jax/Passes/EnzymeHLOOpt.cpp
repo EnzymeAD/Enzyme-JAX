@@ -13841,6 +13841,109 @@ LogicalResult sliceReshapeHelper(stablehlo::DynamicSliceOp op,
   return success();
 }
 
+// The slice [starts, limits) of `out` dims (unit strides) as a slice of `in`
+// dims, where a reshape regroups `in` into `out` (same element count, neither
+// a pure split nor a pure merge, e.g. [12, 5] -> [2, 30]). Both are refined
+// to their common factors (each dim is a run of them, major first); the slice
+// must be a box of the factors (on each out dim: a single index on each outer
+// factor, any range on one, all of each inner one), and that box a slice of
+// each in dim in the same way.
+static LogicalResult sliceRegroup(ArrayRef<int64_t> in, ArrayRef<int64_t> out,
+                                  ArrayRef<int64_t> starts,
+                                  ArrayRef<int64_t> limits,
+                                  SmallVectorImpl<int64_t> &inStarts,
+                                  SmallVectorImpl<int64_t> &inLimits) {
+  // The prefix products of both sides, merged: the factor boundaries.
+  SmallVector<int64_t> bounds;
+  int64_t p = 1;
+  for (int64_t d : in)
+    bounds.push_back(p *= d);
+  p = 1;
+  for (int64_t d : out)
+    bounds.push_back(p *= d);
+  llvm::sort(bounds);
+  bounds.erase(llvm::unique(bounds), bounds.end());
+  if (!bounds.empty() && bounds.front() == 1)
+    bounds.erase(bounds.begin());
+  SmallVector<int64_t> factors;
+  int64_t prev = 1;
+  for (int64_t b : bounds) {
+    if (b % prev != 0)
+      return failure();
+    factors.push_back(b / prev);
+    prev = b;
+  }
+
+  // The factors [first, last) of each dim of a side.
+  SmallVector<int64_t> fs(factors.size()), fl(factors.size());
+  int64_t at = 0;
+  for (auto [d, size] : llvm::enumerate(out)) {
+    int64_t first = at;
+    for (int64_t q = 1; q < size; q *= factors[at++])
+      ;
+    int64_t s = starts[d], l = limits[d];
+    if (first == at) {
+      if (s != 0 || l != 1)
+        return failure();
+      continue;
+    }
+    // The ranged factor k: every inner one taken whole.
+    int64_t k = at - 1;
+    for (; k > first; k--) {
+      if (s / factors[k] == (l - 1) / factors[k])
+        break;
+      if (s % factors[k] != 0 || l % factors[k] != 0)
+        return failure();
+      fs[k] = 0;
+      fl[k] = factors[k];
+      s /= factors[k];
+      l /= factors[k];
+    }
+    if (k == first) {
+      fs[k] = s;
+      fl[k] = l;
+      continue;
+    }
+    fs[k] = s % factors[k];
+    fl[k] = (l - 1) % factors[k] + 1;
+    int64_t outer = s / factors[k];
+    for (int64_t j = k - 1; j >= first; j--) {
+      fs[j] = outer % factors[j];
+      fl[j] = fs[j] + 1;
+      outer /= factors[j];
+    }
+  }
+
+  at = 0;
+  for (int64_t size : in) {
+    int64_t first = at;
+    for (int64_t q = 1; q < size; q *= factors[at++])
+      ;
+    if (first == at) {
+      inStarts.push_back(0);
+      inLimits.push_back(1);
+      continue;
+    }
+    // A single index on each outer factor, any range on one, all of each
+    // inner one.
+    int64_t ranged = first;
+    while (ranged + 1 < at && fl[ranged] - fs[ranged] == 1)
+      ranged++;
+    int64_t inner = 1;
+    for (int64_t j = ranged + 1; j < at; j++) {
+      if (fs[j] != 0 || fl[j] != factors[j])
+        return failure();
+      inner *= factors[j];
+    }
+    int64_t start = 0;
+    for (int64_t j = first; j <= ranged; j++)
+      start = start * factors[j] + fs[j];
+    inStarts.push_back(start * inner);
+    inLimits.push_back((start + fl[ranged] - fs[ranged]) * inner);
+  }
+  return success();
+}
+
 LogicalResult sliceReshapeHelper(stablehlo::SliceOp op,
                                  SmallVectorImpl<int64_t> &starts,
                                  SmallVectorImpl<int64_t> &limits,
@@ -13895,8 +13998,39 @@ LogicalResult sliceReshapeHelper(stablehlo::SliceOp op,
     int64_t count = reshapeType.getShape()[outdim];
     while (count < size && end < reshapeType.getShape().size())
       count *= reshapeType.getShape()[end++];
-    if (count != size)
-      return failure();
+    if (count != size) {
+      // Not a split: the smallest run of dims on each side with the same
+      // element count, regrouped.
+      ArrayRef<int64_t> inShape = reshapeOperandType.getShape();
+      ArrayRef<int64_t> outShape = reshapeType.getShape();
+      size_t inEnd = indim + 1, outEnd = outdim + 1;
+      int64_t inCount = inShape[indim], outCount = outShape[outdim];
+      while (inCount != outCount) {
+        if (inCount < outCount && inEnd < inShape.size())
+          inCount *= inShape[inEnd++];
+        else if (outCount < inCount && outEnd < outShape.size())
+          outCount *= outShape[outEnd++];
+        else
+          return failure();
+      }
+      for (size_t k = outdim; k < outEnd; k++)
+        if (op.getStrides()[k] != 1)
+          return failure();
+      SmallVector<int64_t> inStarts, inLimits;
+      if (sliceRegroup(inShape.slice(indim, inEnd - indim),
+                       outShape.slice(outdim, outEnd - outdim),
+                       op.getStartIndices().slice(outdim, outEnd - outdim),
+                       op.getLimitIndices().slice(outdim, outEnd - outdim),
+                       inStarts, inLimits)
+              .failed())
+        return failure();
+      llvm::append_range(starts, inStarts);
+      llvm::append_range(limits, inLimits);
+      strides.append(inStarts.size(), 1);
+      indim = inEnd;
+      outdim = outEnd;
+      continue;
+    }
     size_t ranged = outdim;
     while (ranged + 1 < end &&
            op.getStartIndices()[ranged] + op.getStrides()[ranged] >=
