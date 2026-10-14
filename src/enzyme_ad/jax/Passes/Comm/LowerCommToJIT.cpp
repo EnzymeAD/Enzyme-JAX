@@ -883,8 +883,8 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
       Value comm =
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
-      Value status_ptr = createMpiPtrConstant(rewriter, op.getLoc(),
-                                              status_ignore_val.get());
+      Value status_ptr =
+          createMpiPtrConstant(rewriter, op.getLoc(), status_ignore_val.get());
 
       // TODO error checking
       // currently, we ignore the int return code
@@ -1173,8 +1173,8 @@ struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
       // memoryEffectsAttr);
 
       Value arg_request_ptr = entryBlock->getArgument(0);
-      Value status_ptr = createMpiPtrConstant(rewriter, op.getLoc(),
-                                              status_ignore_val.get());
+      Value status_ptr =
+          createMpiPtrConstant(rewriter, op.getLoc(), status_ignore_val.get());
 
       // TODO error checking
       // currently, we ignore the int return code
