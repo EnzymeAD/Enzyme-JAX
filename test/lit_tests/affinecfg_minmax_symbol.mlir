@@ -3,7 +3,8 @@
 // A rotated do-while loop counts to max(n, 1) + 1. The min/max of valid
 // symbols is itself a symbol: it is hoisted out of the affine scope like the
 // rest of the bound arithmetic, so the loop raises with the max as a symbol
-// operand rather than staying scf.for.
+// operand rather than staying scf.for (and, its iterations writing elements
+// of their own, merges into the parallel loop around it).
 
 func.func @dowhile(%e : i32, %n : i32, %A : memref<?xf64>) {
   %c1 = arith.constant 1 : index
@@ -37,8 +38,6 @@ func.func @dowhile(%e : i32, %n : i32, %A : memref<?xf64>) {
 // CHECK-DAG:       %[[ni:.*]] = arith.index_cast %[[n]] : i32 to index
 // CHECK:           "enzymexla.gpu_wrapper"
 // CHECK:             %[[mxi:.*]] = arith.index_cast %[[mx]] : i32 to index
-// CHECK:             affine.parallel (%[[b:.*]]) = (0) to (symbol(%[[ei]])) {
-// CHECK:               affine.for %[[i:.*]] = 0 to %[[mxi]] {
-// CHECK:                 affine.store %[[cst]], %[[A]][%[[i]] + %[[b]] * symbol(%[[ni]]) + 1] : memref<?xf64>
-// CHECK:               }
+// CHECK:             affine.parallel (%[[b:.*]], %[[i:.*]]) = (0, 0) to (symbol(%[[ei]]), symbol(%[[mxi]])) {
+// CHECK:               affine.store %[[cst]], %[[A]][%[[i]] + %[[b]] * symbol(%[[ni]]) + 1] : memref<?xf64>
 // CHECK:             }

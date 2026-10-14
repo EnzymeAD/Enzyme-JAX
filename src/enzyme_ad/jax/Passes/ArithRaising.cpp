@@ -793,6 +793,7 @@ struct ArithRaisingPass
         RaiseUnary<math::AbsFOp,        stablehlo::AbsOp,      mhlo::AbsOp>,
         RaiseUnary<math::AbsIOp,        stablehlo::AbsOp,      mhlo::AbsOp>,
         RaiseUnary<math::IsFiniteOp,    stablehlo::IsFiniteOp, mhlo::IsFiniteOp>,
+        RaiseUnary<math::IsInfOp,       chlo::IsInfOp,         chlo::IsInfOp>,
         RaiseUnary<math::CeilOp,        stablehlo::CeilOp,     mhlo::CeilOp>,
         RaiseUnary<math::FloorOp,       stablehlo::FloorOp,    mhlo::FloorOp>,
         RaiseUnary<math::RoundEvenOp,   stablehlo::RoundNearestEvenOp, mhlo::RoundNearestEvenOp>,

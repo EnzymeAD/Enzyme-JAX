@@ -1,7 +1,7 @@
 // RUN: enzymexlamlir-opt --enzyme-batch %s | FileCheck %s
 
 func.func @main() -> (tensor<2x5x3x8xf64>) {
-    %0 = enzyme.batch @iota() {batch_shape = array<i64: 2, 5>} : () -> (tensor<2x5x3x8xf64>)
+    %0 = enzyme.batch @iota() <{batch_shape = array<i64: 2, 5>}> : () -> (tensor<2x5x3x8xf64>)
     return %0 : tensor<2x5x3x8xf64>
 }
 

@@ -11,7 +11,7 @@ module {
   }
   func.func @main() -> tensor<i32> {
     %c = stablehlo.constant dense<-1> : tensor<i32>
-    %0 = enzymexla.jit_call @enzymexla_wrapper_mock_function (%c) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<i32>) -> tensor<i32>
+    %0 = enzymexla.jit_call @enzymexla_wrapper_mock_function (%c) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<i32>) -> tensor<i32>
     return %0 : tensor<i32>
   }
 }

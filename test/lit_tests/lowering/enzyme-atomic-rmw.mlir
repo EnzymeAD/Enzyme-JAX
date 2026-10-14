@@ -1,7 +1,7 @@
 // RUN: enzymexlamlir-opt %s --convert-polygeist-to-llvm=backend=cuda | FileCheck %s
 
 func.func @atomic_rmw(%idx: index, %x: f32, %mem: memref<?xf32>) {
-  enzyme.atomic_rmw addf %x, %mem[%idx] monotonic {alignment = 4 : i64} : (f32, memref<?xf32>) -> f32
+  enzyme.atomic_rmw addf %x, %mem[%idx] monotonic <{alignment = 4 : i64}> : (f32, memref<?xf32>) -> f32
   return
 }
 

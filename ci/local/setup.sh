@@ -12,7 +12,8 @@ set -euo pipefail
 mkdir -p "${BUILD_ROOT}"/{bin,logs,src,.julia,.bazelisk,.bazel,.bazel-disk,.rocm}
 
 # --- bazel/bazelisk shims: pin --output_user_root so a build never fills $HOME.
-# Verbatim from ci/cscs-mi300.yml. See cscs-mi300.md: "Bazel output root".
+# As in ci/cscs-mi300.yml, except that CI checks the root against SHM_ROOT (its
+# outputs live in /dev/shm). See cscs-mi300.md: "Bazel output root".
 if [[ ! -x "${LOCAL_BIN}/bazelisk-real" ]]; then
   curl -fsSL -o "${LOCAL_BIN}/bazelisk-real" \
     https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64

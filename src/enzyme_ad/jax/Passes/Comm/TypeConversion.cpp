@@ -11,15 +11,18 @@ Type convertMpiOp(MpiOpType type) {
   return RankedTensorType::get({}, IntegerType::get(type.getContext(), 64));
 }
 
-Type convertMpiRequest(MpiRequestType type) {
-  return RankedTensorType::get({}, IntegerType::get(type.getContext(), 64));
+Type convertMpiRequest(MpiRequestType type, unsigned requestWidth) {
+  return RankedTensorType::get(
+      {}, IntegerType::get(type.getContext(), requestWidth));
 }
 
-StablehloTypeConverter::StablehloTypeConverter() {
+StablehloTypeConverter::StablehloTypeConverter(unsigned requestWidth) {
   addConversion([](Type type) { return type; });
   addConversion(convertMpiComm);
   addConversion(convertMpiOp);
-  addConversion(convertMpiRequest);
+  addConversion([requestWidth](MpiRequestType type) {
+    return convertMpiRequest(type, requestWidth);
+  });
 }
 
 } // namespace mlir::comm

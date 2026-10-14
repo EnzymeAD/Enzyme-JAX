@@ -744,7 +744,8 @@ Value padWithUndefinedValueInDim(PatternRewriter &rewriter, Location loc,
 
   auto zero = stablehlo::ConstantOp::create(
       rewriter, loc,
-      rewriter.getZeroAttr(RankedTensorType::get({}, RT0.getElementType())));
+      cast<ElementsAttr>(
+          makeAttr(RankedTensorType::get({}, RT0.getElementType()), 0)));
 
   auto pad = stablehlo::PadOp::create(rewriter, loc, val, zero, padLow, padHigh,
                                       padInner);
@@ -1023,8 +1024,9 @@ struct PeriodicConcatSimplify
       needsSlice = true;
     }
     if (needsSlice) {
-      auto cst = stablehlo::ConstantOp::create(rewriter, concat.getLoc(),
-                                               rewriter.getZeroAttr(elemType));
+      auto cst = stablehlo::ConstantOp::create(
+          rewriter, concat.getLoc(),
+          cast<ElementsAttr>(makeAttr(RankedTensorType::get({}, elemType), 0)));
 
       superSliceOp =
           stablehlo::PadOp::create(rewriter, concat.getLoc(), superSliceOp, cst,
@@ -1216,8 +1218,10 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     if (needsSlice) {
       inputArg = stablehlo::PadOp::create(
           rewriter, wrap.getLoc(), inputArg,
-          stablehlo::ConstantOp::create(rewriter, wrap.getLoc(),
-                                        rewriter.getZeroAttr(elemType)),
+          stablehlo::ConstantOp::create(
+              rewriter, wrap.getLoc(),
+              cast<ElementsAttr>(
+                  makeAttr(RankedTensorType::get({}, elemType), 0))),
           lowPads, highPads, interior);
     }
     manualOpRetShape[wrapDimension] = paddedResultSize;
@@ -1365,8 +1369,9 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
                                    rightStarts, rightLimits, strides);
     sdy::setSharding(rightSliceOp, wrapSharding);
 
-    auto zero = stablehlo::ConstantOp::create(rewriter, wrap.getLoc(),
-                                              rewriter.getZeroAttr(elemType));
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, wrap.getLoc(),
+        cast<ElementsAttr>(makeAttr(RankedTensorType::get({}, elemType), 0)));
 
     SmallVector<int64_t> padLow(ndims, 0);
     SmallVector<int64_t> padHigh(ndims, 0);
@@ -1612,8 +1617,10 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
     if (needsSlice) {
       inputArg = stablehlo::PadOp::create(
           rewriter, extend.getLoc(), inputArg,
-          stablehlo::ConstantOp::create(rewriter, extend.getLoc(),
-                                        rewriter.getZeroAttr(elemType)),
+          stablehlo::ConstantOp::create(
+              rewriter, extend.getLoc(),
+              cast<ElementsAttr>(
+                  makeAttr(RankedTensorType::get({}, elemType), 0))),
           lowPads, highPads, interior);
     }
     manualOpRetShape[extendDimension] = paddedResultSize;
@@ -1761,8 +1768,9 @@ struct ExtendToPadCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
         rightLimits, strides);
     sdy::setSharding(rightSliceOp, extendSharding);
 
-    auto zero = stablehlo::ConstantOp::create(rewriter, extend.getLoc(),
-                                              rewriter.getZeroAttr(elemType));
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, extend.getLoc(),
+        cast<ElementsAttr>(makeAttr(RankedTensorType::get({}, elemType), 0)));
 
     SmallVector<int64_t> padLow(ndims, 0);
     SmallVector<int64_t> padHigh(ndims, 0);
@@ -2005,8 +2013,10 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
       inputArg = stablehlo::PadOp::create(
           rewriter, rotate.getLoc(), rotate.getOperand(),
-          stablehlo::ConstantOp::create(rewriter, rotate.getLoc(),
-                                        rewriter.getZeroAttr(elType)),
+          stablehlo::ConstantOp::create(
+              rewriter, rotate.getLoc(),
+              cast<ElementsAttr>(
+                  makeAttr(RankedTensorType::get({}, elType), 0))),
           padLow, padHigh, padInner);
     }
     if (amount > localShape[rotate.getDimension()]) {
@@ -2030,8 +2040,10 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
     if (needsSlice) {
       inputArg = stablehlo::PadOp::create(
           rewriter, rotate.getLoc(), rotate.getOperand(),
-          stablehlo::ConstantOp::create(rewriter, rotate.getLoc(),
-                                        rewriter.getZeroAttr(elType)),
+          stablehlo::ConstantOp::create(
+              rewriter, rotate.getLoc(),
+              cast<ElementsAttr>(
+                  makeAttr(RankedTensorType::get({}, elType), 0))),
           lowPads, highPads, interior);
     }
 
@@ -2692,8 +2704,9 @@ struct RotateToPadCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
                                           sl1_ends, strides);
     sdy::setSharding(sl1, rotateSharding);
 
-    auto zero = stablehlo::ConstantOp::create(rewriter, rotate.getLoc(),
-                                              rewriter.getZeroAttr(elType));
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, rotate.getLoc(),
+        cast<ElementsAttr>(makeAttr(RankedTensorType::get({}, elType), 0)));
 
     SmallVector<int64_t> padInner(ndims, 0);
     SmallVector<int64_t> padLow(ndims, 0);
@@ -2796,7 +2809,8 @@ struct MultiRotateSpmdOptimize
 
       auto zero = stablehlo::ConstantOp::create(
           rewriter, rotate.getLoc(),
-          rewriter.getZeroAttr(getElementTypeOrSelf(inputType)));
+          cast<ElementsAttr>(makeAttr(
+              RankedTensorType::get({}, getElementTypeOrSelf(inputType)), 0)));
       input = stablehlo::PadOp::create(
           rewriter, rotate.getLoc(),
           RankedTensorType::get(paddedShape, inputType.getElementType()), input,
@@ -3167,8 +3181,10 @@ struct ConcatTwoOperandsCommOptimize
       }
       auto paddedOperand = stablehlo::PadOp::create(
           rewriter, concat.getLoc(), allOperands[i],
-          stablehlo::ConstantOp::create(rewriter, concat.getLoc(),
-                                        rewriter.getZeroAttr(elemType)),
+          stablehlo::ConstantOp::create(
+              rewriter, concat.getLoc(),
+              cast<ElementsAttr>(
+                  makeAttr(RankedTensorType::get({}, elemType), 0))),
           padLow, padHigh, padInner);
       sdy::setSharding(paddedOperand, concatSharding);
       allOperands[i] = paddedOperand;
@@ -3445,9 +3461,13 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
     }
 
     auto zero = stablehlo::ConstantOp::create(
-        rewriter, dus.getLoc(), rewriter.getZeroAttr(elementType));
-    auto one = stablehlo::ConstantOp::create(rewriter, dus.getLoc(),
-                                             rewriter.getOneAttr(elementType));
+        rewriter, dus.getLoc(),
+        cast<ElementsAttr>(
+            makeAttr(RankedTensorType::get({}, elementType), 0)));
+    auto one = stablehlo::ConstantOp::create(
+        rewriter, dus.getLoc(),
+        cast<ElementsAttr>(
+            makeAttr(RankedTensorType::get({}, elementType), 1)));
 
     SmallVector<int64_t> padInner(ndims, 0);
 
@@ -3470,8 +3490,7 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
     Value maskedOperand = nullptr;
     if (!isZero(operand)) {
       auto updateType = cast<RankedTensorType>(update.getType());
-      auto zeroAttr =
-          DenseElementsAttr::get(updateType, rewriter.getZeroAttr(elementType));
+      auto zeroAttr = cast<DenseElementsAttr>(makeAttr(updateType, 0));
       auto zeroUpdateOp = stablehlo::ConstantOp::create(rewriter, dus.getLoc(),
                                                         updateType, zeroAttr);
       sdy::setSharding(zeroUpdateOp, sharding);
@@ -3500,7 +3519,7 @@ struct DUSToPadComm : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
     } else {
       auto cst = stablehlo::ConstantOp::create(
           rewriter, dus.getLoc(), dus.getType(),
-          cast<ElementsAttr>(rewriter.getZeroAttr(dus.getType())));
+          cast<ElementsAttr>(makeAttr(dus.getType(), 0)));
       sdy::setSharding(cst, sharding);
       resultV = cst;
     }
@@ -4006,8 +4025,9 @@ struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
         return failure();
     }
 
-    auto zero = stablehlo::ConstantOp::create(rewriter, concat.getLoc(),
-                                              rewriter.getZeroAttr(elemType));
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, concat.getLoc(),
+        cast<ElementsAttr>(makeAttr(RankedTensorType::get({}, elemType), 0)));
 
     int64_t leftPadding = 0;
     for (auto [i, operand] : llvm::enumerate(concat.getOperands())) {
@@ -4158,8 +4178,9 @@ struct ExtendDUSLike : public OpRewritePattern<enzymexla::ExtendOp> {
         return failure();
     }
 
-    auto zero = stablehlo::ConstantOp::create(rewriter, concat.getLoc(),
-                                              rewriter.getZeroAttr(elemType));
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, concat.getLoc(),
+        cast<ElementsAttr>(makeAttr(RankedTensorType::get({}, elemType), 0)));
 
     for (int i = 0; i < 2; i++) {
       auto operand = concat.getOperand();
@@ -4666,8 +4687,9 @@ struct ConcatToPadCommOptimize
         return failure();
     }
 
-    auto zero = stablehlo::ConstantOp::create(rewriter, concat.getLoc(),
-                                              rewriter.getZeroAttr(elemType));
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, concat.getLoc(),
+        cast<ElementsAttr>(makeAttr(RankedTensorType::get({}, elemType), 0)));
 
     int64_t leftPadding = 0;
     for (auto [i, operand] : llvm::enumerate(concat.getOperands())) {
@@ -4694,7 +4716,7 @@ struct ConcatToPadCommOptimize
     if (addOperands.size() == 0) {
       auto cst = stablehlo::ConstantOp::create(
           rewriter, concat.getLoc(), concat.getType(),
-          cast<ElementsAttr>(rewriter.getZeroAttr(concat.getType())));
+          cast<ElementsAttr>(makeAttr(concat.getType(), 0)));
       sdy::setSharding(cst, concatSharding);
       rewriter.replaceOp(concat, cst);
     }

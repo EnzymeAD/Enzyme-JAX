@@ -29,7 +29,7 @@ def TritonModuleOp : TritonExtOp<"module", [
   // clang-format off
   let assemblyFormat = [{
     $sym_name
-    attr-dict-with-keyword $bodyRegion
+    prop-dict attr-dict-with-keyword $bodyRegion
   }];
   // clang-format on
 }
@@ -67,7 +67,7 @@ def TritonCallOp : TritonExtOp<"call", [
     `clusters` `in` `(` $clusterx `,` $clustery `,` $clusterz `)`
     `blocks` `in` `(` $gridx `,` $gridy `,` $gridz `)`
     `(` $inputs `)`
-    attr-dict `:` functional-type($inputs, results)
+    prop-dict attr-dict `:` functional-type($inputs, results)
   }];
   // clang-format on
 

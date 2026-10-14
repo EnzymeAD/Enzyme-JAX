@@ -52,18 +52,6 @@
 
 namespace mlir {
 
-static Block *getAllocaBlock(Operation *op) {
-  Operation *currentOp = op;
-  while (Operation *parentOp = currentOp->getParentOp()) {
-    if (parentOp->mightHaveTrait<OpTrait::IsIsolatedFromAbove>() ||
-        parentOp->mightHaveTrait<OpTrait::AutomaticAllocationScope>()) {
-      return &currentOp->getParentRegion()->front();
-    }
-    currentOp = parentOp;
-  }
-  return nullptr;
-}
-
 namespace enzyme {
 #define GEN_PASS_DEF_AFFINETOSTABLEHLORAISING
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
@@ -1639,9 +1627,7 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
         auto elemTy = RankedTensorType::get({}, AT.getElementType());
         auto boolTy = RankedTensorType::get({}, builder.getI1Type());
         Value zeroInit = stablehlo::ConstantOp::create(
-            builder, loc, elemTy,
-            SplatElementsAttr::get(elemTy,
-                                   builder.getZeroAttr(AT.getElementType())));
+            builder, loc, elemTy, cast<ElementsAttr>(makeAttr(elemTy, 0)));
         Value falseInit = stablehlo::ConstantOp::create(
             builder, loc, boolTy,
             SplatElementsAttr::get(boolTy, builder.getBoolAttr(false)));
@@ -2584,6 +2570,10 @@ static LogicalResult raiseLoopToMaskedWhile(
   }
 
   auto whileOp = stablehlo::WhileOp::create(builder, wloc, inits);
+  // Lanes that run out of iterations are masked off, so the iterations of
+  // each lane are those of the loop: still independent when it is tagged.
+  if (loopOp->hasAttr("enzymexla.parallel"))
+    whileOp->setAttr("enzymexla.parallel", builder.getUnitAttr());
   whileOp->getRegion(0).push_back(cond);
   whileOp->getRegion(1).push_back(body);
 
@@ -2841,7 +2831,7 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
       Value init_values[1] = {stablehlo::ConstantOp::create(
           builder,
           rewriteLocation(innerOp.getLoc(), pc.options.strip_llvm_debuginfo),
-          builder.getZeroAttr(unrankedTensorType))};
+          cast<ElementsAttr>(makeAttr(unrankedTensorType, 0)))};
 
       auto shape =
           cast<RankedTensorType>(reduce_broadcasted.getType()).getShape();
@@ -3073,7 +3063,7 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
         inits[0] = stablehlo::ConstantOp::create(
             builder,
             rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
-            builder.getZeroAttr(unrankedTensorType));
+            cast<ElementsAttr>(makeAttr(unrankedTensorType, 0)));
         innerRedName = "stablehlo.add";
         break;
       case arith::AtomicRMWKind::mulf:
@@ -3081,8 +3071,45 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
         inits[0] = stablehlo::ConstantOp::create(
             builder,
             rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
-            builder.getOneAttr(unrankedTensorType));
+            cast<ElementsAttr>(makeAttr(unrankedTensorType, 1)));
         innerRedName = "stablehlo.multiply";
+        break;
+      case arith::AtomicRMWKind::maxs:
+        inits[0] = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            SplatElementsAttr::get(unrankedTensorType,
+                                   ArrayRef<Attribute>(IntegerAttr::get(
+                                       ET, APInt::getSignedMinValue(
+                                               ET.getIntOrFloatBitWidth())))));
+        innerRedName = "stablehlo.maximum";
+        break;
+      case arith::AtomicRMWKind::mins:
+        inits[0] = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            SplatElementsAttr::get(unrankedTensorType,
+                                   ArrayRef<Attribute>(IntegerAttr::get(
+                                       ET, APInt::getSignedMaxValue(
+                                               ET.getIntOrFloatBitWidth())))));
+        innerRedName = "stablehlo.minimum";
+        break;
+      case arith::AtomicRMWKind::maxu:
+        inits[0] = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            builder.getZeroAttr(unrankedTensorType));
+        innerRedName = "arith.maxui";
+        break;
+      case arith::AtomicRMWKind::minu:
+        inits[0] = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            SplatElementsAttr::get(
+                unrankedTensorType,
+                ArrayRef<Attribute>(IntegerAttr::get(
+                    ET, APInt::getAllOnes(ET.getIntOrFloatBitWidth())))));
+        innerRedName = "arith.minui";
         break;
       case arith::AtomicRMWKind::ori:
         inits[0] = stablehlo::ConstantOp::create(
@@ -3344,6 +3371,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   // Affine load inside a loop becomes a slice
   if (auto loadOp = dyn_cast<affine::AffineLoadOp>(op)) {
+    // A pointer read inside the kernel is no value a tensor holds.
+    if (isa<LLVM::LLVMPointerType>(loadOp.getType()))
+      return failure();
     affine::MemRefAccess access(loadOp);
 
     affine::AffineValueMap accessValueMap;
@@ -3448,13 +3478,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         }
       if (pad) {
         SmallVector<int64_t> zeros(outputShape.size(), 0);
+        auto zeroTy = RankedTensorType::get({}, inTy.getElementType());
         Value zero = stablehlo::ConstantOp::create(
             builder,
             rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-            RankedTensorType::get({}, inTy.getElementType()),
-            SplatElementsAttr::get(
-                RankedTensorType::get({}, inTy.getElementType()),
-                builder.getZeroAttr(inTy.getElementType())));
+            zeroTy, cast<ElementsAttr>(makeAttr(zeroTy, 0)));
         inputTen = stablehlo::PadOp::create(
             builder,
             rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
@@ -3599,7 +3627,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         auto padVal = stablehlo::ConstantOp::create(
             builder,
             rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-            tensorType, cast<ElementsAttr>(builder.getZeroAttr(tensorType)));
+            tensorType, cast<ElementsAttr>(makeAttr(tensorType, 0)));
 
         if (hasDynamicEdgePadding) {
           auto edgePaddingLow = stablehlo::ConcatenateOpCreate(
@@ -3683,12 +3711,25 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         builder,
         rewriteLocation(newVal.getLoc(), pc.options.strip_llvm_debuginfo),
         newVal, dynShape);
-    mapping.map(val, newVal);
-
     affine::AffineValueMap dynAffineValueMap(
         AffineMap::get(affineMap.getNumDims(), affineMap.getNumSymbols(),
                        dynExprs, newVal.getContext()),
         accessValueMap.getOperands());
+    // A load of the whole buffer is the buffer's tensor itself, and its
+    // map is recorded on that value: a second such load, over other
+    // variables, would overwrite it, and the two would read as one. The
+    // second load gets a value of its own: an identity reshape, created
+    // directly, as ReshapeOpCreate folds one away and would hand back the
+    // buffer's tensor.
+    auto recorded = maps.find(newVal);
+    if (recorded != maps.end() &&
+        (recorded->second.getAffineMap() != dynAffineValueMap.getAffineMap() ||
+         recorded->second.getOperands() != dynAffineValueMap.getOperands()))
+      newVal = stablehlo::ReshapeOp::create(
+          builder,
+          rewriteLocation(newVal.getLoc(), pc.options.strip_llvm_debuginfo),
+          newVal.getType(), newVal);
+    mapping.map(val, newVal);
     maps[newVal] = dynAffineValueMap;
 
     return success();
@@ -4099,8 +4140,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                 RankedTensorType::get(
                     cast<RankedTensorType>(updAligned.getType()).getShape(),
                     builder.getI1Type())) {
-          // The mask spans axes the update lacks: pick in the union space,
-          // keeping the axes the store indexes.
+          // The mask spans axes the update lacks, or orders them
+          // differently: pick in the union space, keeping the axes the
+          // store indexes. Those are the expanded grid axes, as for the
+          // broadcast dims above: a flat index like `qx + dy * 4` is one
+          // store dimension over two of them.
           auto loc =
               rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo);
           auto AT = cast<RankedTensorType>(updAligned.getType());
@@ -4114,15 +4158,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
             Value uiv = getIVForExpr(unionMap, E);
             int64_t storeDim = -1;
             if (uiv)
-              for (auto [k, SE] : llvm::enumerate(
-                       accessValueMap.getAffineMap().getResults())) {
-                if (SE.isSymbolicOrConstant())
-                  continue;
-                if (getIVForExpr(accessValueMap,
-                                 accessValueMap.getAffineMap().getResult(k)) ==
-                    uiv)
+              for (auto [k, targetIV] : llvm::enumerate(expandedUpdateIVs))
+                if (targetIV == uiv)
                   storeDim = (int64_t)k;
-              }
             if (uiv && storeDim != -1) {
               keptShape.push_back(AT.getShape()[i]);
               keptExprs.push_back(E);
@@ -4135,9 +4173,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
             auto elemTy = RankedTensorType::get({}, AT.getElementType());
             auto boolTy = RankedTensorType::get({}, builder.getI1Type());
             Value zeroInit = stablehlo::ConstantOp::create(
-                builder, loc, elemTy,
-                SplatElementsAttr::get(
-                    elemTy, builder.getZeroAttr(AT.getElementType())));
+                builder, loc, elemTy, cast<ElementsAttr>(makeAttr(elemTy, 0)));
             Value falseInit = stablehlo::ConstantOp::create(
                 builder, loc, boolTy,
                 SplatElementsAttr::get(boolTy, builder.getBoolAttr(false)));
@@ -4182,9 +4218,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           auto elemTy = RankedTensorType::get({}, UT.getElementType());
           auto boolTy = RankedTensorType::get({}, builder.getI1Type());
           Value zeroInit = stablehlo::ConstantOp::create(
-              builder, loc, elemTy,
-              SplatElementsAttr::get(elemTy,
-                                     builder.getZeroAttr(UT.getElementType())));
+              builder, loc, elemTy, cast<ElementsAttr>(makeAttr(elemTy, 0)));
           Value falseInit = stablehlo::ConstantOp::create(
               builder, loc, boolTy,
               SplatElementsAttr::get(boolTy, builder.getBoolAttr(false)));
@@ -4319,7 +4353,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       auto padVal = stablehlo::ConstantOp::create(
           builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-          tensorType, cast<ElementsAttr>(builder.getZeroAttr(tensorType)));
+          tensorType, cast<ElementsAttr>(makeAttr(tensorType, 0)));
 
       if (hasDynamicEdgePadding) {
         auto edgePaddingLow = stablehlo::ConcatenateOpCreate(
@@ -4550,7 +4584,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         auto padVal = stablehlo::ConstantOp::create(
             builder,
             rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-            tensorType, cast<ElementsAttr>(builder.getZeroAttr(tensorType)));
+            tensorType, cast<ElementsAttr>(makeAttr(tensorType, 0)));
 
         auto edgePaddingLow = stablehlo::ConcatenateOpCreate(
             builder,
@@ -5363,8 +5397,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto TT = RankedTensorType::get(shape, MT.getElementType());
     Value zero = stablehlo::ConstantOp::create(
         builder, rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-        TT,
-        SplatElementsAttr::get(TT, builder.getZeroAttr(MT.getElementType())));
+        TT, cast<ElementsAttr>(makeAttr(TT, 0)));
     mapping.map(alloca.getResult(), zero);
     maps[zero] = affine::AffineValueMap(AffineMap::get(op->getContext()), {});
     if (!laneIVs.empty()) {
@@ -5620,7 +5653,8 @@ struct AffineToStableHLORaisingPass
     for (auto c : casts) {
       if (!llvm::all_of(c->getUsers(), [](Operation *u) {
             return isa<affine::AffineLoadOp, affine::AffineStoreOp,
-                       memref::LoadOp, memref::StoreOp>(u);
+                       memref::LoadOp, memref::StoreOp, enzyme::AtomicRMWOp,
+                       enzyme::AffineAtomicRMWOp>(u);
           }))
         continue;
       for (Operation *u : llvm::make_early_inc_range(c->getUsers()))
@@ -6176,8 +6210,6 @@ struct AffineToStableHLORaisingPass
     SmallVector<affine::AffineParallelOp> worklist;
     root->walk([&](affine::AffineParallelOp par) { worklist.push_back(par); });
     for (auto par : worklist) {
-      if (!par.getReductions().empty())
-        continue;
       unsigned n = par.getNumDims();
       SmallVector<unsigned> dyn, stat;
       for (unsigned i = 0; i < n; ++i) {
@@ -6190,20 +6222,40 @@ struct AffineToStableHLORaisingPass
       if (dyn.empty())
         continue;
 
+      // A reduction the loop computes is carried through the peeled loops,
+      // from the kind's identity, each iteration combining its value in.
+      SmallVector<arith::AtomicRMWKind> kinds;
+      for (Attribute r : par.getReductions())
+        kinds.push_back(cast<arith::AtomicRMWKindAttr>(r).getValue());
+      TypeRange types = par.getResultTypes();
+
       OpBuilder b(par);
       Location loc = par.getLoc();
+      SmallVector<Value> acc;
+      for (auto [kind, ty] : llvm::zip_equal(kinds, types))
+        acc.push_back(arith::getIdentityValue(kind, ty, b, loc));
       SmallVector<Value> ivRepl(n);
+      SmallVector<affine::AffineForOp> fors;
       for (unsigned idx : dyn) {
         auto forOp = affine::AffineForOp::create(
             b, loc, par.getLowerBoundsOperands(), par.getLowerBoundMap(idx),
             par.getUpperBoundsOperands(), par.getUpperBoundMap(idx),
-            par.getSteps()[idx]);
+            par.getSteps()[idx], acc);
+        forOp->setDiscardableAttrs(par->getDiscardableAttrDictionary());
         forOp->setAttr("enzymexla.parallel", b.getUnitAttr());
+        // the yields are added below, carrying the reductions
+        if (!forOp.getBody()->empty())
+          forOp.getBody()->getTerminator()->erase();
         ivRepl[idx] = forOp.getInductionVar();
+        acc.assign(forOp.getRegionIterArgs().begin(),
+                   forOp.getRegionIterArgs().end());
+        fors.push_back(forOp);
         b.setInsertionPointToStart(forOp.getBody());
       }
 
-      Block *target;
+      Block *oldBody = par.getBody();
+      Operation *oldYield = oldBody->getTerminator();
+      SmallVector<Value> values;
       if (!stat.empty()) {
         SmallVector<AffineExpr> lbounds, ubounds;
         SmallVector<int32_t> lboundGroup, uboundGroup;
@@ -6218,7 +6270,7 @@ struct AffineToStableHLORaisingPass
           steps.push_back(par.getSteps()[idx]);
         }
         auto inner = affine::AffineParallelOp::create(
-            b, loc, TypeRange(), b.getArrayAttr({}),
+            b, loc, types, par.getReductions(),
             AffineMapAttr::get(
                 AffineMap::get(par.getLowerBoundsMap().getNumDims(),
                                par.getLowerBoundsMap().getNumSymbols(), lbounds,
@@ -6230,24 +6282,37 @@ struct AffineToStableHLORaisingPass
                                par.getContext())),
             b.getI32TensorAttr(uboundGroup), b.getI64ArrayAttr(steps),
             par.getOperands());
+        inner->setDiscardableAttrs(par->getDiscardableAttrDictionary());
         Block *blk = new Block();
         for (auto [j, idx] : llvm::enumerate(stat))
           ivRepl[idx] = blk->addArgument(b.getIndexType(), loc);
         inner.getRegion().push_back(blk);
-        b.setInsertionPointToEnd(blk);
-        affine::AffineYieldOp::create(b, loc);
-        target = blk;
+        for (unsigned i = 0; i < n; ++i)
+          oldBody->getArgument(i).replaceAllUsesWith(ivRepl[i]);
+        // the body, its yield included, is the inner loop's
+        blk->getOperations().splice(blk->end(), oldBody->getOperations());
+        values.assign(inner.getResults().begin(), inner.getResults().end());
       } else {
-        target = b.getInsertionBlock();
+        for (unsigned i = 0; i < n; ++i)
+          oldBody->getArgument(i).replaceAllUsesWith(ivRepl[i]);
+        Block *target = b.getInsertionBlock();
+        target->getOperations().splice(target->end(), oldBody->getOperations(),
+                                       oldBody->begin(),
+                                       std::prev(oldBody->end()));
+        values.assign(oldYield->getOperands().begin(),
+                      oldYield->getOperands().end());
+        oldYield->erase();
       }
-
-      Block *oldBody = par.getBody();
-      for (unsigned i = 0; i < n; ++i)
-        oldBody->getArgument(i).replaceAllUsesWith(ivRepl[i]);
-      target->getOperations().splice(std::prev(target->getOperations().end()),
-                                     oldBody->getOperations(),
-                                     oldBody->getOperations().begin(),
-                                     std::prev(oldBody->getOperations().end()));
+      b.setInsertionPointToEnd(fors.back().getBody());
+      SmallVector<Value> next;
+      for (auto [kind, a, v] : llvm::zip_equal(kinds, acc, values))
+        next.push_back(arith::getReductionOp(kind, b, loc, a, v));
+      affine::AffineYieldOp::create(b, loc, next);
+      for (size_t k = fors.size() - 1; k > 0; --k) {
+        b.setInsertionPointToEnd(fors[k - 1].getBody());
+        affine::AffineYieldOp::create(b, loc, fors[k].getResults());
+      }
+      par.replaceAllUsesWith(fors.front().getResults());
       par.erase();
     }
   }
@@ -6969,7 +7034,7 @@ struct AffineToStableHLORaisingPass
                     ValueRange())
                     ->getResult(0);
 
-            Block *allocaBlock = getAllocaBlock(g);
+            Block *allocaBlock = enzyme::getAllocaBlock(g);
             assert(allocaBlock &&
                    "GPUWrapperOp must be inside an allocation scope");
             Value res0;
@@ -7269,6 +7334,16 @@ struct AffineToStableHLORaisingPass
           }
         });
       }
+      // Every scalar integer argument (a length, a flag): the host passes it
+      // by value, and specialized it never reaches the device as a buffer
+      // of its own -- an allocation, a copy and a free each launch. A scalar
+      // that differs from call to call costs an executable per value.
+      if (specialize_int_scalars)
+        for (BlockArgument arg : newBlock->getArguments()) {
+          auto TT = dyn_cast<RankedTensorType>(arg.getType());
+          if (TT && TT.getRank() == 0 && TT.getElementType().isInteger())
+            wanted.insert(arg);
+        }
       if (!wanted.empty()) {
         for (auto [i, arg] : llvm::enumerate(operands)) {
           Value newArg = newBlock->getArgument(i);

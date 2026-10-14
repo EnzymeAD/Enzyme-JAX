@@ -33,19 +33,19 @@ func.func @main() {
   %dinput = stablehlo.constant dense<1.0> : tensor<4xf32>
 
   // fwd diff
-  %fwd_res:2 = enzyme.fwddiff @logistic(%input, %dinput) {
+  %fwd_res:2 = enzyme.fwddiff @logistic(%input, %dinput) <{
     activity=[#enzyme.activity<enzyme_dup>],
     ret_activity=[#enzyme.activity<enzyme_dup>]
-  } : (tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>)
+  }> : (tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>)
 
   check.expect_almost_eq %fwd_res#0, %output : tensor<4xf32>
   check.expect_almost_eq %fwd_res#1, %expected : tensor<4xf32>
 
   // rev diff
-  %rev_res:2 = enzyme.autodiff @logistic(%input, %dinput) {
+  %rev_res:2 = enzyme.autodiff @logistic(%input, %dinput) <{
     activity=[#enzyme.activity<enzyme_active>],
     ret_activity=[#enzyme.activity<enzyme_active>]
-  } : (tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>)
+  }> : (tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>)
 
   check.expect_almost_eq %rev_res#0, %output : tensor<4xf32>
   check.expect_almost_eq %rev_res#1, %expected : tensor<4xf32>

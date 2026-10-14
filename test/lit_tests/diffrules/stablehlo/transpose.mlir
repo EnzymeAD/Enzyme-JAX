@@ -25,10 +25,10 @@ func.func @main() {
   %expected_fwd = stablehlo.constant dense<[[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]]> : tensor<3x2xf32>
   %dinput_fwd = stablehlo.constant dense<[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]> : tensor<2x3xf32>
 
-  %fwd:2 = enzyme.fwddiff @transpose(%input, %dinput_fwd) {
+  %fwd:2 = enzyme.fwddiff @transpose(%input, %dinput_fwd) <{
     activity=[#enzyme.activity<enzyme_dup>],
     ret_activity=[#enzyme.activity<enzyme_dup>]
-  } : (tensor<2x3xf32>, tensor<2x3xf32>) -> (tensor<3x2xf32>, tensor<3x2xf32>)
+  }> : (tensor<2x3xf32>, tensor<2x3xf32>) -> (tensor<3x2xf32>, tensor<3x2xf32>)
 
   check.expect_almost_eq %fwd#0, %output : tensor<3x2xf32>
   check.expect_almost_eq %fwd#1, %expected_fwd : tensor<3x2xf32>
@@ -36,10 +36,10 @@ func.func @main() {
   %expected_rev = stablehlo.constant dense<[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]> : tensor<2x3xf32>
   %dinput_rev = stablehlo.constant dense<[[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]]> : tensor<3x2xf32>
 
-  %rev:2 = enzyme.autodiff @transpose(%input, %dinput_rev) {
+  %rev:2 = enzyme.autodiff @transpose(%input, %dinput_rev) <{
     activity=[#enzyme.activity<enzyme_active>],
     ret_activity=[#enzyme.activity<enzyme_active>]
-  } : (tensor<2x3xf32>, tensor<3x2xf32>) -> (tensor<3x2xf32>, tensor<2x3xf32>)
+  }> : (tensor<2x3xf32>, tensor<3x2xf32>) -> (tensor<3x2xf32>, tensor<2x3xf32>)
 
   check.expect_almost_eq %rev#0, %output : tensor<3x2xf32>
   check.expect_almost_eq %rev#1, %expected_rev : tensor<2x3xf32>

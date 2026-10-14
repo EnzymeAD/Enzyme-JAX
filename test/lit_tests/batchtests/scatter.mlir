@@ -20,7 +20,7 @@ module {
   }
 
   func.func @main(%arg0: tensor<4x8xf32>, %arg1: tensor<4x2x1xi32>, %arg2: tensor<4x2xf32>) -> tensor<4x8xf32> {
-    %0 = enzyme.batch @unbatched_scatter(%arg0, %arg1, %arg2) {batch_shape = array<i64: 4>} : (tensor<4x8xf32>, tensor<4x2x1xi32>, tensor<4x2xf32>) -> tensor<4x8xf32>
+    %0 = enzyme.batch @unbatched_scatter(%arg0, %arg1, %arg2) <{batch_shape = array<i64: 4>}> : (tensor<4x8xf32>, tensor<4x2x1xi32>, tensor<4x2xf32>) -> tensor<4x8xf32>
     return %0 : tensor<4x8xf32>
   }
 }

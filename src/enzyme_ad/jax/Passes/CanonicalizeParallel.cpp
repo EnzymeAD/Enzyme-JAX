@@ -50,6 +50,23 @@ namespace {
 // grid.y lands in the high half of an i64 and the launch takes the low half,
 // and the bits in between are what tie the grid to the size it was computed
 // from.
+// trunci(index_cast(x) : iN) : iM is index_cast(x) : iM for M < N: both are
+// the low M bits of x, whatever its width. The narrower cast is one op where
+// the index analyses read through casts but not through a truncation.
+struct TruncOfIndexCast : public OpRewritePattern<arith::TruncIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::TruncIOp trunc,
+                                PatternRewriter &rewriter) const override {
+    auto cast = trunc.getIn().getDefiningOp<arith::IndexCastOp>();
+    if (!cast || !cast.getIn().getType().isIndex())
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::IndexCastOp>(trunc, trunc.getType(),
+                                                    cast.getIn());
+    return success();
+  }
+};
+
 struct TruncOrConst : public OpRewritePattern<arith::TruncIOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -572,6 +589,9 @@ struct IfOfDifferentBaseGEPs : public OpRewritePattern<IfT> {
         cloned.setOperand(0, v);
         // Neither arm's guarantees hold on the other's path.
         cloned.setNoWrapFlags(g.getNoWrapFlags() & other[i].getNoWrapFlags());
+        // inrange is legal only on a constant GEP, which one with a chosen
+        // base is not (C++ vtable addresses carry it).
+        cloned.removeInrangeAttr();
         v = cloned.getResult();
       }
       results.push_back(v);
@@ -601,6 +621,7 @@ struct SelectOfDifferentBaseGEPs : public OpRewritePattern<arith::SelectOp> {
     auto cloned = cast<LLVM::GEPOp>(rewriter.clone(*t.getOperation()));
     cloned.setOperand(0, base);
     cloned.setNoWrapFlags(t.getNoWrapFlags() & f.getNoWrapFlags());
+    cloned.removeInrangeAttr();
     rewriter.replaceOp(sel, cloned.getResult());
     return success();
   }
@@ -1249,9 +1270,10 @@ struct CanonicalizeParallelPass
     for (RegisteredOperationName op : ctx->getRegisteredOperations())
       op.getCanonicalizationPatterns(owningPatterns, ctx);
     owningPatterns.add<
-        TruncOrConst, SelectOfSameBaseGEPs, SinkAddrSpaceCastThroughGEP,
-        Pointer2MemrefOfAddrSpaceCast, IfOfSameBaseGEPs<scf::IfOp>,
-        IfOfSameBaseGEPs<affine::AffineIfOp>, IfOfDifferentBaseGEPs<scf::IfOp>,
+        TruncOrConst, TruncOfIndexCast, SelectOfSameBaseGEPs,
+        SinkAddrSpaceCastThroughGEP, Pointer2MemrefOfAddrSpaceCast,
+        IfOfSameBaseGEPs<scf::IfOp>, IfOfSameBaseGEPs<affine::AffineIfOp>,
+        IfOfDifferentBaseGEPs<scf::IfOp>,
         IfOfDifferentBaseGEPs<affine::AffineIfOp>, SelectOfDifferentBaseGEPs,
         SinkThroughIfOfConstants<arith::IndexCastOp, scf::IfOp>,
         SinkThroughIfOfConstants<arith::IndexCastOp, affine::AffineIfOp>,
