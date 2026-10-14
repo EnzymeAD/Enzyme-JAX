@@ -35823,6 +35823,10 @@ static bool isStackableOp(Operation *op) {
   // further in.
   if (auto reduce = dyn_cast<stablehlo::ReduceOp>(op))
     return reduce.getInputs().size() == 1;
+  // A contraction: stacked, both operands carry the stack as a leading batching
+  // dimension, which leads the result too.
+  if (isa<stablehlo::DotGeneralOp>(op))
+    return true;
   if (op->getNumRegions() != 0)
     return false;
   if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
@@ -36027,6 +36031,26 @@ static Value buildStackedNode(PatternRewriter &rewriter, Location loc,
   }
 
   Operation *op = node.values[0].getDefiningOp();
+  if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(op)) {
+    Value lhs = buildStacked(rewriter, loc, nodes, node.operands[0], n, built);
+    Value rhs = buildStacked(rewriter, loc, nodes, node.operands[1], n, built);
+    auto dims = dot.getDotDimensionNumbers();
+    SmallVector<int64_t> lhsBatch = {0}, rhsBatch = {0}, lhsContract,
+                         rhsContract;
+    for (int64_t d : dims.getLhsBatchingDimensions())
+      lhsBatch.push_back(d + 1);
+    for (int64_t d : dims.getRhsBatchingDimensions())
+      rhsBatch.push_back(d + 1);
+    for (int64_t d : dims.getLhsContractingDimensions())
+      lhsContract.push_back(d + 1);
+    for (int64_t d : dims.getRhsContractingDimensions())
+      rhsContract.push_back(d + 1);
+    auto stackedDims = stablehlo::DotDimensionNumbersAttr::get(
+        dot.getContext(), lhsBatch, rhsBatch, lhsContract, rhsContract);
+    return stablehlo::DotGeneralOp::create(
+        rewriter, loc, stackedType, lhs, rhs, stackedDims,
+        dot.getPrecisionConfigAttr(), dot.getAlgorithmAttr());
+  }
   if (auto reduce = dyn_cast<stablehlo::ReduceOp>(op)) {
     Value input =
         buildStacked(rewriter, loc, nodes, node.operands[0], n, built);
@@ -36180,20 +36204,26 @@ struct AddTermsToReduce final
   }
 
 private:
-  // The terms are computed by an elementwise op. Terms that only rearrange
-  // values are rolled only when they are themselves a slice stack (a sum of
-  // slices is a reduce of a view of their tensor).
+  // The terms are computed by an elementwise op or a contraction. Terms that
+  // only rearrange values are rolled only when they are themselves a slice
+  // stack (a sum of slices is a reduce of a view of their tensor).
   static bool isComputedTerm(ArrayRef<StackedNode> nodes) {
     return nodes[0].kind == StackedNode::Op &&
-           stablehlo::hasTraitElementwise(nodes[0].values[0].getDefiningOp());
+           computes(nodes[0].values[0].getDefiningOp());
   }
 
-  // Both terms are computed by the same elementwise op.
+  // An op that computes values rather than rearranging them: elementwise, or
+  // a contraction.
+  static bool computes(Operation *op) {
+    return stablehlo::hasTraitElementwise(op) ||
+           isa<stablehlo::DotGeneralOp, stablehlo::ReduceOp>(op);
+  }
+
+  // Both terms are computed by the same elementwise op or contraction.
   static bool areComputedAlike(ArrayRef<Value> vals) {
     Operation *first = vals[0].getDefiningOp();
-    return first && stablehlo::hasTraitElementwise(first) &&
-           isStackableOp(first) && stacksWith(vals[0], first) &&
-           stacksWith(vals[1], first);
+    return first && computes(first) && isStackableOp(first) &&
+           stacksWith(vals[0], first) && stacksWith(vals[1], first);
   }
 
   // The first position where the terms take different slices of one tensor.
