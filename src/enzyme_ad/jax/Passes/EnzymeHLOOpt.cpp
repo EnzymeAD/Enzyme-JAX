@@ -11818,6 +11818,57 @@ struct TransposeDotReorder
   }
 };
 
+// slice(reduce(x)) -> reduce(slice(x)): the slice keeps a box of the kept
+// dimensions, which is the reduce of the same box of x taken over the whole
+// reduced dimensions. The reduce must have no other user, or it would still be
+// computed in full.
+struct SliceReduce
+    : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceReduce> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp slice,
+                                    PatternRewriter &rewriter) const {
+    auto reduce = slice.getOperand().getDefiningOp<stablehlo::ReduceOp>();
+    if (!reduce || reduce.getInputs().size() != 1)
+      return failure();
+    if (!llvm::hasSingleElement(reduce->getUsers()))
+      return rewriter.notifyMatchFailure(reduce, "reduce has other users");
+
+    Value input = reduce.getInputs()[0];
+    auto inputType = cast<RankedTensorType>(input.getType());
+    ArrayRef<int64_t> reduced = reduce.getDimensions();
+
+    // The slice of x: the whole of each reduced dimension, and the slice's
+    // window on each kept one, in order.
+    SmallVector<int64_t> starts, limits, strides;
+    int64_t kept = 0;
+    for (int64_t i = 0, e = inputType.getRank(); i < e; i++) {
+      if (llvm::is_contained(reduced, i)) {
+        starts.push_back(0);
+        limits.push_back(inputType.getShape()[i]);
+        strides.push_back(1);
+        continue;
+      }
+      starts.push_back(slice.getStartIndices()[kept]);
+      limits.push_back(slice.getLimitIndices()[kept]);
+      strides.push_back(slice.getStrides()[kept]);
+      kept++;
+    }
+
+    rewriter.setInsertionPoint(reduce);
+    Value newInput = stablehlo::SliceOpCreate(rewriter, slice.getLoc(), input,
+                                              starts, limits, strides);
+    auto newReduce = stablehlo::ReduceOp::create(
+        rewriter, reduce.getLoc(), TypeRange(slice.getType()),
+        ValueRange(newInput), reduce.getInitValues(), reduced);
+    rewriter.inlineRegionBefore(reduce.getRegion(), newReduce.getRegion(),
+                                newReduce.getRegion().begin());
+    rewriter.replaceOp(slice, newReduce.getResults());
+    rewriter.eraseOp(reduce);
+    return success();
+  }
+};
+
 struct TransposeReduce
     : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeReduce> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
