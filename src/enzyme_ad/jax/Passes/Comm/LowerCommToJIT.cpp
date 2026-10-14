@@ -97,7 +97,8 @@ static Value createMpiPtrConstant(OpBuilder &builder, Location loc,
       builder, loc, builder.getI64Type(),
       builder.getI64IntegerAttr(reinterpret_cast<int64_t>(value)));
   return LLVM::IntToPtrOp::create(
-      builder, loc, LLVM::LLVMPointerType::get(builder.getContext()), addr.getResult());
+      builder, loc, LLVM::LLVMPointerType::get(builder.getContext()),
+      addr.getResult());
 }
 
 struct LowerCommMpiConstantOpToJIT
