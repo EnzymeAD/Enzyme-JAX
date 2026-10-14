@@ -34867,6 +34867,9 @@ struct TransposeReshape final
     auto outputShape =
         llvm::to_vector(cast<RankedTensorType>(reshapeOp.getType()).getShape());
 
+    if (succeeded(matchMerging(op, reshapeOp, rewriter)))
+      return success();
+
     auto dimOrdering = dimOrderingToPreserve(inputShape, outputShape);
 
     if (!dimOrdering.valid)
@@ -34940,6 +34943,62 @@ struct TransposeReshape final
   }
 
 private:
+  // A reshape that merges runs of input dimensions into single output
+  // dimensions (and inserts or deletes unit dimensions): the transpose
+  // moves each output dimension whole, so it is the transpose of the input
+  // that moves each run as a block (kept unit dimensions along with their
+  // output dimension, deleted ones left in place), followed by the merge.
+  LogicalResult matchMerging(stablehlo::TransposeOp op,
+                             stablehlo::ReshapeOp reshapeOp,
+                             PatternRewriter &rewriter) const {
+    ArrayRef<int64_t> in = reshapeOp.getOperand().getType().getShape();
+    ArrayRef<int64_t> out = reshapeOp.getType().getShape();
+    // runs[o] = the input dimensions merged into output dimension o;
+    // deleted = unit input dimensions no output dimension takes.
+    SmallVector<SmallVector<int64_t>> runs(out.size());
+    SmallVector<int64_t> deleted;
+    bool merges = false;
+    int64_t i = 0;
+    for (int64_t o = 0; o < (int64_t)out.size(); o++) {
+      // An inserted unit output dimension: no input dimension, unless a
+      // unit input dimension is next (kept).
+      if (out[o] == 1) {
+        if (i < (int64_t)in.size() && in[i] == 1)
+          runs[o].push_back(i++);
+        continue;
+      }
+      int64_t prod = 1;
+      while (i < (int64_t)in.size() && prod < out[o]) {
+        // A unit input dimension before the run is deleted.
+        if (in[i] == 1 && prod == 1) {
+          deleted.push_back(i++);
+          continue;
+        }
+        prod *= in[i];
+        runs[o].push_back(i++);
+      }
+      if (prod != out[o])
+        return failure(); // a split, or not a reshape of whole dimensions
+      merges |= runs[o].size() > 1;
+    }
+    while (i < (int64_t)in.size() && in[i] == 1)
+      deleted.push_back(i++);
+    if (i != (int64_t)in.size() || !merges)
+      return failure();
+    // The input permutation: output dimensions in the transpose's order,
+    // each as its run; deleted unit dimensions stay where they were.
+    SmallVector<int64_t> perm;
+    for (int64_t o : op.getPermutation())
+      llvm::append_range(perm, runs[o]);
+    for (int64_t d : deleted)
+      perm.insert(perm.begin() + d, d);
+    auto transposed = stablehlo::TransposeOpCreate(
+        rewriter, op.getLoc(), reshapeOp.getOperand(), perm);
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
+                                                      transposed);
+    return success();
+  }
+
   bool isValidPermutation(const SmallVector<int64_t> permutation) const {
     const size_t n = permutation.size();
     SmallVector<bool> seen(n, false);
