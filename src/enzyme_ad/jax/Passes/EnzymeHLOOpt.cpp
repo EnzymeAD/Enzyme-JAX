@@ -12132,6 +12132,9 @@ struct ConcatDotGeneral
     int64_t dim = -1, unitLevel = -1, unitDim = -1;
     bool concatLhs = false, concatRhs = false;
     bool stackLhs = false, stackRhs = false;
+    // The merged run's shape when the pieces are reshapes of the views, or
+    // empty.
+    SmallVector<int64_t> reshaped;
   };
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concat,
@@ -12195,6 +12198,13 @@ private:
   }
 
   static bool analyze(ArrayRef<Value> pieces, int64_t concatDim, Plan &plan) {
+    SmallVector<Value> inner;
+    if (pieces[0].getDefiningOp<stablehlo::ReshapeOp>()) {
+      concatDim = regroup(pieces, concatDim, inner, plan.reshaped);
+      if (concatDim < 0)
+        return false;
+      pieces = inner;
+    }
     for (auto [k, piece] : llvm::enumerate(pieces)) {
       Value v = piece;
       SmallVector<Operation *> views;
@@ -12277,6 +12287,52 @@ private:
       plan.stackLhs = sameRhs;
     }
     return checkSides(plan);
+  }
+
+  // Pieces that are reshapes, each used only here, turning the concatenation
+  // along concatDim into one along a single dimension of what they reshape:
+  // one with as many elements before it as concatDim has, on which alone
+  // those differ and of which concatDim holds whole rows. Returns that
+  // dimension (or -1), the reshaped values, and the merged run's shape.
+  static int64_t regroup(ArrayRef<Value> pieces, int64_t concatDim,
+                         SmallVectorImpl<Value> &inner,
+                         SmallVectorImpl<int64_t> &shape) {
+    auto pieceType = cast<RankedTensorType>(pieces[0].getType());
+    int64_t before = 1;
+    for (int64_t d : pieceType.getShape().take_front(concatDim))
+      before *= d;
+    shape.assign(pieceType.getShape().begin(), pieceType.getShape().end());
+    shape[concatDim] = 0;
+    for (Value piece : pieces) {
+      auto reshape = piece.getDefiningOp<stablehlo::ReshapeOp>();
+      if (!reshape || !piece.hasOneUse())
+        return -1;
+      inner.push_back(reshape.getOperand());
+      shape[concatDim] +=
+          cast<RankedTensorType>(piece.getType()).getDimSize(concatDim);
+    }
+    auto type = cast<RankedTensorType>(inner[0].getType());
+    for (int64_t i = 0, prefix = 1, e = type.getRank(); i < e;
+         prefix *= type.getDimSize(i++)) {
+      if (prefix != before)
+        continue;
+      bool fits = true;
+      for (auto [piece, v] : llvm::zip(pieces, inner)) {
+        auto vType = cast<RankedTensorType>(v.getType());
+        if (vType.getRank() != e)
+          return -1;
+        for (int64_t d = 0; d < e; d++)
+          if (d != i && vType.getDimSize(d) != type.getDimSize(d))
+            fits = false;
+        if (cast<RankedTensorType>(piece.getType()).getDimSize(concatDim) %
+                vType.getDimSize(i) !=
+            0)
+          fits = false;
+      }
+      if (fits)
+        return i;
+    }
+    return -1;
   }
 
   // The same value, or the same pure computation of the same values.
@@ -12376,6 +12432,13 @@ private:
   }
 
   static Value build(Plan &plan, Location loc, PatternRewriter &rewriter) {
+    Value run = buildViews(plan, loc, rewriter);
+    if (plan.reshaped.empty())
+      return run;
+    return stablehlo::ReshapeOpCreate(rewriter, loc, run, plan.reshaped);
+  }
+
+  static Value buildViews(Plan &plan, Location loc, PatternRewriter &rewriter) {
     stablehlo::DotGeneralOp first = plan.dots[0];
     int64_t n = plan.dots.size();
     auto dims = first.getDotDimensionNumbers();
