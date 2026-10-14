@@ -9764,21 +9764,25 @@ static bool srcAppearsBeforeDstInAncestralBlock(const MemRefAccess &srcAccess,
 
 // ------------------------- Vendored end -------------------------
 
-enum class DepType { RAW, WAR, RAR, WAW };
-
-static DepType getDepType(MemRefAccess src, MemRefAccess dst) {
-  bool srcW = isa<AffineWriteOpInterface>(src.opInst);
-  bool dstW = isa<AffineWriteOpInterface>(dst.opInst);
-  if (srcW && dstW)
-    return DepType::WAW;
-  if (srcW && !dstW)
-    return DepType::RAW;
-  if (!srcW && dstW)
-    return DepType::WAR;
-  return DepType::RAR;
-}
-
-static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
+// Whether every iteration of `forOp` can run at once, in lock step: the body
+// executed statement by statement in program order, each statement by all
+// the iterations together, as the raising makes the loop a tensor axis.
+// Recursively: a loop nested in the body runs the same way, its statements
+// by all the iterations of both loops together (a nested affine.parallel is
+// an axis as well; a nested affine.for one too where it can be), or else,
+// an affine.for the raising iterates, each of its iterations by all the
+// outer iterations together. Both are allowed for, as which the nested loop
+// gets is decided later.
+//
+// A dependence the loop carries, from an access in an earlier iteration to
+// one in a later, is kept when the earlier executes first in lock step as
+// well: the source strictly before the destination in program order (two
+// iterations of one statement run at once, so a dependence between them is
+// a race), and, over the nested affine.for loops both are in, not in a later
+// iteration of them (within the nested loop's step the order is again
+// program order). A dependence of any kind reversed is a different result,
+// a read of a value not yet, or already, overwritten included.
+static bool isLoopMemoryRecursivelyLockStepExecutable(AffineForOp forOp) {
   // Any memref-typed iteration arguments are treated as serializing.
   if (llvm::any_of(forOp.getResultTypes(), llvm::IsaPred<BaseMemRefType>))
     return false;
@@ -9794,9 +9798,7 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
       // Filter out stores the same way as above.
       if (!isLocallyDefined(writeOp.getMemRef(), forOp))
         loadAndStoreOps.push_back(op);
-    } else if (!isa<AffineForOp, AffineYieldOp, AffineIfOp, scf::IfOp,
-                    scf::YieldOp>(op) &&
-               !isReadNone(op)) {
+    } else if (!isStructural(op) && !isReadNone(op)) {
       return WalkResult::interrupt();
     }
 
@@ -9823,77 +9825,66 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
                               << "src: " << *srcOp << "\n"
                               << "dst: " << *dstOp << "\n");
       MemRefAccess dstAccess(dstOp);
-      DependenceResult result(DependenceResult::NoDependence);
-      if (sameBuffer(srcAccess.memref, dstAccess.memref) &&
-          (isa<AffineWriteOpInterface>(srcOp) ||
-           isa<AffineWriteOpInterface>(dstOp))) {
-        presburger::IntegerRelation srcRel(
-            presburger::PresburgerSpace::getRelationSpace()),
-            dstRel(presburger::PresburgerSpace::getRelationSpace());
-        if (failed(terms.accessRelation(srcOp, srcRel)) ||
-            failed(terms.accessRelation(dstOp, dstRel)))
-          return false;
-        result = checkAccessDependence(srcRel, dstRel, depth);
-      }
+      if (!sameBuffer(srcAccess.memref, dstAccess.memref) ||
+          (!isa<AffineWriteOpInterface>(srcOp) &&
+           !isa<AffineWriteOpInterface>(dstOp)))
+        continue;
+      presburger::IntegerRelation srcRel(
+          presburger::PresburgerSpace::getRelationSpace()),
+          dstRel(presburger::PresburgerSpace::getRelationSpace());
+      if (failed(terms.accessRelation(srcOp, srcRel)) ||
+          failed(terms.accessRelation(dstOp, dstRel)))
+        return false;
+      SmallVector<DependenceComponent, 2> components;
+      DependenceResult result =
+          checkAccessDependence(srcRel, dstRel, depth,
+                                /*dependenceConstraints=*/nullptr, &components);
 
       if (result.value == DependenceResult::Failure) {
         LLVM_DEBUG(llvm::dbgs() << "Failed\n");
         return false;
       }
+      if (result.value == DependenceResult::NoDependence)
+        continue;
 
-      // I haven't thought through the logic in this case, conservatively fail
-      // for now.
-      bool eitherNestedInNestedFor =
-          dstOp->getParentOfType<affine::AffineForOp>() != forOp ||
-          srcOp->getParentOfType<affine::AffineForOp>() != forOp;
-      if (eitherNestedInNestedFor)
+      // In lock step the destination's statement runs no later than the
+      // source's: at once, for one statement, or first.
+      if (srcOp == dstOp ||
+          !srcAppearsBeforeDstInAncestralBlock(srcAccess, dstAccess)) {
+        LLVM_DEBUG(llvm::dbgs() << "Reversed in program order\n");
         return false;
-
-      if (srcOp == dstOp) {
-        // Since we will be executing different iterations of the same
-        // instruction at the same time in lock step fashion, any dependence
-        // here is illegal.
-        if (result.value == DependenceResult::HasDependence) {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "Would break dependence on same instruction\n");
-          return false;
-        }
       }
 
-      // We will execute dst -> src in lock step
-      if (!srcAppearsBeforeDstInAncestralBlock(srcAccess, dstAccess)) {
-        // If there is any dependence src -> dst it means we will break it
-        // under lock step execution.
-        if (result.value == DependenceResult::HasDependence) {
-          auto ty = getDepType(srcAccess, dstAccess);
-          // Breaking a WAR dependency is fine because our lock step reads
-          // will result in the correct value being read.
-          if (ty == DepType::WAR) {
-            LLVM_DEBUG(llvm::dbgs() << "WAR allowed\n");
-          } else if (ty == DepType::RAR) {
-            LLVM_DEBUG(llvm::dbgs() << "RAR allowed\n");
-          } else if (ty == DepType::WAW) {
-            LLVM_DEBUG(llvm::dbgs() << "WAW not allowed\n");
-            return false;
-          } else if (ty == DepType::RAW) {
-            LLVM_DEBUG(llvm::dbgs() << "RAW not allowed\n");
-            return false;
-          }
+      // Should a nested affine.for iterate instead, the source must not be
+      // in a later iteration of it than the destination: over the nested
+      // loops both are in, outermost first, the destination's iteration is
+      // never before the source's, up to the first it is always after. The
+      // components are those of the common loops, the loops around `forOp`
+      // and `forOp` first; an affine.parallel's are axes either way.
+      bool decided = false;
+      for (const DependenceComponent &component :
+           llvm::drop_begin(components, depth)) {
+        if (decided || !isa_and_nonnull<AffineForOp>(component.op))
+          continue;
+        if (!component.lb || *component.lb < 0) {
+          LLVM_DEBUG(llvm::dbgs() << "Reversed over a nested loop\n");
+          return false;
         }
+        decided = *component.lb > 0;
       }
     }
   }
   return true;
 }
 
-bool isLoopLockStepExecutable(
+bool isLoopRecursivelyLockStepExecutable(
     AffineForOp forOp, SmallVectorImpl<LoopReduction> *parallelReductions) {
   unsigned numIterArgs = forOp.getNumIterOperands();
 
   if (numIterArgs > 0 && !parallelReductions)
     return false;
 
-  return ::isLoopMemoryLockStepExecutable(forOp);
+  return ::isLoopMemoryRecursivelyLockStepExecutable(forOp);
 }
 
 struct AffineParallelizePattern : public OpRewritePattern<affine::AffineForOp> {

@@ -3238,13 +3238,13 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
   return success();
 }
 
-bool isLoopLockStepExecutable(
+bool isLoopRecursivelyLockStepExecutable(
     affine::AffineForOp forOp,
     SmallVectorImpl<affine::LoopReduction> *parallelReductions);
 static bool isLockStepExecutable(affine::AffineForOp forOp,
                                  ParallelContext &pc) {
   SmallVector<mlir::affine::LoopReduction> red;
-  if (isLoopLockStepExecutable(forOp, &red)) {
+  if (isLoopRecursivelyLockStepExecutable(forOp, &red)) {
 
     llvm::SmallSet<Operation *, 1> reductions;
     for (auto &&[i, arg] : llvm::enumerate(forOp.getRegionIterArgs())) {
