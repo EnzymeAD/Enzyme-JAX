@@ -14017,7 +14017,12 @@ struct ConcatReduce
     int64_t before = 1;
     for (int64_t d : concat.getType().getShape().take_front(c))
       before *= d;
+    // The reductions, each with the unit dimensions it reduces dropped
+    // (delete_dims_reduce folds a unit-deleting reshape into a reduction,
+    // so reductions of one family differ in them): the input shape without
+    // them and the reduced dimensions renumbered.
     SmallVector<stablehlo::ReduceOp> reduces;
+    SmallVector<SmallVector<int64_t>> shapes, dimss;
     for (Value v : concat.getOperands()) {
       if (!v.hasOneUse())
         return failure();
@@ -14025,23 +14030,54 @@ struct ConcatReduce
         v = reshape.getOperand();
         if (!v.hasOneUse())
           return failure();
+      } else if (auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        // A transpose-like broadcast (the form transpose_like_broadcast_concat
+        // leaves on an operand): only stacked along an inserted dimension.
+        if (!isTransposeReshapeLikeBroadcast(bcast))
+          return failure();
+        v = bcast.getOperand();
+        if (!v.hasOneUse())
+          return failure();
       }
       auto reduce = v.getDefiningOp<stablehlo::ReduceOp>();
       if (!reduce || reduce.getInputs().size() != 1)
         return failure();
+      auto type = cast<RankedTensorType>(reduce.getInputs()[0].getType());
+      SmallVector<int64_t> shape, dims;
+      bool unitReduced = false;
+      for (int64_t d = 0; d < type.getRank(); d++) {
+        bool reduced = llvm::is_contained(reduce.getDimensions(), d);
+        if (reduced && type.getDimSize(d) == 1) {
+          unitReduced = true;
+          continue;
+        }
+        if (reduced)
+          dims.push_back(shape.size());
+        shape.push_back(type.getDimSize(d));
+      }
+      // Reducing only unit dimensions still combines the init value in
+      // once: not a reshape.
+      if (unitReduced && dims.empty())
+        return failure();
       if (!reduces.empty() &&
-          (reduce.getDimensions() != reduces[0].getDimensions() ||
+          (dims != dimss[0] ||
            reduce.getInitValues() != reduces[0].getInitValues() ||
            !OperationEquivalence::isRegionEquivalentTo(
                &reduce.getBody(), &reduces[0].getBody(),
                OperationEquivalence::IgnoreLocations)))
         return failure();
       reduces.push_back(reduce);
+      shapes.push_back(shape);
+      dimss.push_back(dims);
     }
 
     // The dimension of the reductions' results that is concatenated.
     auto resultType = cast<RankedTensorType>(reduces[0].getType(0));
     int64_t a = -1;
+    if (llvm::any_of(concat.getOperands(), [](Value v) {
+          return v.getDefiningOp<stablehlo::BroadcastInDimOp>() != nullptr;
+        }))
+      return stackReduces(concat, reduces, shapes, dimss, rewriter);
     for (int64_t i = 0, prefix = 1, e = resultType.getRank(); i < e;
          prefix *= resultType.getShape()[i++]) {
       if (prefix != before)
@@ -14066,14 +14102,13 @@ struct ConcatReduce
       }
     }
     if (a < 0)
-      return failure();
+      return stackReduces(concat, reduces, shapes, dimss, rewriter);
 
     // The input dimension the concatenated result dimension comes from.
-    ArrayRef<int64_t> reduced = reduces[0].getDimensions();
-    auto inputType =
-        cast<RankedTensorType>(reduces[0].getInputs()[0].getType());
+    ArrayRef<int64_t> reduced = dimss[0];
+    ArrayRef<int64_t> inputShape = shapes[0];
     int64_t dim = -1;
-    for (int64_t i = 0, kept = 0, e = inputType.getRank(); i < e; i++) {
+    for (int64_t i = 0, kept = 0, e = inputShape.size(); i < e; i++) {
       if (llvm::is_contained(reduced, i))
         continue;
       if (kept++ == a) {
@@ -14081,18 +14116,21 @@ struct ConcatReduce
         break;
       }
     }
-    for (stablehlo::ReduceOp reduce : reduces) {
-      auto type = cast<RankedTensorType>(reduce.getInputs()[0].getType());
+    for (ArrayRef<int64_t> shape : shapes)
       for (int64_t d : reduced)
-        if (type.getShape()[d] != inputType.getShape()[d])
+        if (shape[d] != inputShape[d])
           return failure();
-    }
 
     SmallVector<Value> inputs;
     SmallVector<int64_t> shape(resultType.getShape());
     shape[a] = 0;
-    for (stablehlo::ReduceOp reduce : reduces) {
-      inputs.push_back(reduce.getInputs()[0]);
+    for (auto [reduce, inShape] : llvm::zip(reduces, shapes)) {
+      Value input = reduce.getInputs()[0];
+      if (cast<RankedTensorType>(input.getType()).getShape() !=
+          ArrayRef<int64_t>(inShape))
+        input = stablehlo::ReshapeOpCreate(rewriter, concat.getLoc(), input,
+                                           inShape);
+      inputs.push_back(input);
       shape[a] += cast<RankedTensorType>(reduce.getType(0)).getShape()[a];
     }
     auto newInput = stablehlo::ConcatenateOp::create(rewriter, concat.getLoc(),
@@ -14108,6 +14146,105 @@ struct ConcatReduce
           concat, concat.getType(), newReduce.getResult(0));
     else
       rewriter.replaceOp(concat, newReduce.getResults());
+    return success();
+  }
+
+  static SmallVector<int64_t> nonUnit(ArrayRef<int64_t> shape) {
+    SmallVector<int64_t> out;
+    for (int64_t d : shape)
+      if (d != 1)
+        out.push_back(d);
+    return out;
+  }
+
+  // Every operand of unit extent along the concatenated dimension, a view of
+  // its reduction (a reshape, or a transpose-like broadcast) that inserts it:
+  // the reductions stack along a new leading dimension, one reduction of the
+  // stacked inputs, with the view reapplied over it and the stacked
+  // dimension moved to the concatenated one.
+  LogicalResult stackReduces(stablehlo::ConcatenateOp concat,
+                             MutableArrayRef<stablehlo::ReduceOp> reduces,
+                             ArrayRef<SmallVector<int64_t>> shapes,
+                             ArrayRef<SmallVector<int64_t>> dimss,
+                             PatternRewriter &rewriter) const {
+    int64_t c = concat.getDimension();
+    auto resultType = cast<RankedTensorType>(reduces[0].getType(0));
+    auto pieceType = cast<RankedTensorType>(concat.getOperand(0).getType());
+    if (pieceType.getShape()[c] != 1)
+      return failure();
+    // The view: the same op (kind, attributes, types) on every operand, or
+    // none (the reduction's result itself). A reshape that only inserts
+    // dimensions is left to concat_insert_dim_reduce.
+    Operation *view = concat.getOperand(0).getDefiningOp();
+    if (isa<stablehlo::ReduceOp>(view))
+      view = nullptr;
+    if (auto reshape = dyn_cast_or_null<stablehlo::ReshapeOp>(view)) {
+      auto inType = reshape.getOperand().getType();
+      if (!findReshapeInsertionDims(inType, reshape.getType()).empty())
+        return failure();
+    }
+    for (auto [v, reduce] : llvm::zip(concat.getOperands(), reduces)) {
+      if (v.getType() != pieceType || reduce.getType(0) != resultType)
+        return failure();
+      Operation *op = v.getDefiningOp();
+      if (!view) {
+        if (op != reduce)
+          return failure();
+        continue;
+      }
+      if (op->getName() != view->getName() ||
+          op->getAttrDictionary() != view->getAttrDictionary())
+        return failure();
+    }
+    int64_t n = reduces.size();
+    SmallVector<Value> inputs;
+    for (auto [reduce, inShape] : llvm::zip(reduces, shapes)) {
+      SmallVector<int64_t> unitShape = {1};
+      llvm::append_range(unitShape, inShape);
+      inputs.push_back(stablehlo::ReshapeOpCreate(
+          rewriter, concat.getLoc(), reduce.getInputs()[0], unitShape));
+    }
+    auto stacked =
+        stablehlo::ConcatenateOp::create(rewriter, concat.getLoc(), inputs, 0);
+    SmallVector<int64_t> dims;
+    for (int64_t d : dimss[0])
+      dims.push_back(d + 1);
+    SmallVector<int64_t> shape = {n};
+    llvm::append_range(shape, resultType.getShape());
+    auto newReduce = stablehlo::ReduceOp::create(
+        rewriter, concat.getLoc(),
+        TypeRange(RankedTensorType::get(shape, resultType.getElementType())),
+        ValueRange(stacked), reduces[0].getInitValues(), dims);
+    rewriter.cloneRegionBefore(reduces[0].getBody(), newReduce.getBody(),
+                               newReduce.getBody().end());
+    // The view over the stacked result: the piece's shape behind the stacked
+    // dimension.
+    Value v = newReduce.getResult(0);
+    SmallVector<int64_t> stackedPiece = {n};
+    llvm::append_range(stackedPiece, pieceType.getShape());
+    if (isa_and_nonnull<stablehlo::ReshapeOp>(view)) {
+      v = stablehlo::ReshapeOpCreate(rewriter, concat.getLoc(), v,
+                                     stackedPiece);
+    } else if (auto bcast =
+                   dyn_cast_or_null<stablehlo::BroadcastInDimOp>(view)) {
+      SmallVector<int64_t> bdims = {0};
+      for (int64_t d : bcast.getBroadcastDimensions())
+        bdims.push_back(d + 1);
+      v = stablehlo::BroadcastInDimOpCreate(rewriter, concat.getLoc(), v,
+                                            stackedPiece, bdims);
+    }
+    // The stacked dimension to the concatenated one (a unit there).
+    if (c > 0) {
+      SmallVector<int64_t> perm;
+      for (int64_t d = 1; d <= c; d++)
+        perm.push_back(d);
+      perm.push_back(0);
+      for (int64_t d = c + 1; d <= pieceType.getRank(); d++)
+        perm.push_back(d);
+      v = stablehlo::TransposeOpCreate(rewriter, concat.getLoc(), v, perm);
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(concat, concat.getType(),
+                                                      v);
     return success();
   }
 };
