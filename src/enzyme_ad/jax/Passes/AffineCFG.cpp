@@ -7285,7 +7285,13 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
         stores.push_back(store);
     });
 
-    bool changed = false;
+    struct StoreToSink {
+      affine::AffineStoreOp store;
+      AffineMap storeMap2;
+      size_t yldIdx;
+    };
+    SmallVector<StoreToSink> toSink;
+    llvm::SmallPtrSet<Operation *, 4> handledStores;
     for (auto store : stores) {
       Value val = store.getValue();
       affine::AffineYieldOp yld = nullptr;
@@ -7353,8 +7359,63 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
       auto storeMap2 = map.replaceDimsAndSymbols(
           dimReps2, symReps, map.getNumDims(), map.getNumSymbols());
 
+      toSink.push_back({store, storeMap2, yldIdx});
+      handledStores.insert(store.getOperation());
+    }
+
+    if (toSink.empty())
+      return failure();
+
+    bool singleGuard = guard.has_value() && forOp.use_empty() &&
+                       llvm::all_of(forOp.getBody()->without_terminator(),
+                                    [&](Operation &op) {
+                                      return handledStores.contains(&op) ||
+                                             isReadOnly(&op);
+                                    });
+    if (singleGuard) {
+      rewriter.setInsertionPoint(forOp);
+      auto ifOp = affine::AffineIfOp::create(rewriter, forOp.getLoc(),
+                                             guard->first, guard->second,
+                                             /*withElseRegion=*/false);
+      Operation *term = ifOp.getThenBlock()->getTerminator();
+      rewriter.moveOpBefore(forOp, term);
+      for (OpOperand &initOpd : forOp.getInitsMutable()) {
+        auto guarded = initOpd.get().getDefiningOp<affine::AffineIfOp>();
+        if (guarded && guarded.hasElse() && guarded.getNumResults() == 1 &&
+            guarded.getResult(0).hasOneUse() &&
+            guarded.getIntegerSet() == guard->first &&
+            guarded.getOperands() == ValueRange(guard->second)) {
+          Block *gThen = guarded.getThenBlock();
+          Value yielded = gThen->getTerminator()->getOperand(0);
+          rewriter.eraseOp(gThen->getTerminator());
+          rewriter.inlineBlockBefore(gThen, forOp);
+          rewriter.modifyOpInPlace(forOp, [&]() { initOpd.set(yielded); });
+          rewriter.eraseOp(guarded);
+        }
+      }
+      for (auto &item : toSink) {
+        auto store = item.store;
+        rewriter.modifyOpInPlace(store, [&]() {
+          store.setMap(item.storeMap2);
+          for (auto &&[i, val] : llvm::enumerate(store.getIndices())) {
+            if (val == forOp.getInductionVar()) {
+              OpBuilder::InsertionGuard g(rewriter);
+              rewriter.setInsertionPoint(store);
+              store.getIndicesMutable()[i].assign(
+                  arith::ConstantIndexOp::create(rewriter, store.getLoc(), 0));
+            }
+          }
+          store->moveAfter(forOp);
+          store.getValueMutable().set(forOp->getResult(item.yldIdx));
+        });
+      }
+      return success();
+    }
+
+    for (auto &item : toSink) {
+      auto store = item.store;
       rewriter.modifyOpInPlace(store, [&]() {
-        store.setMap(storeMap2);
+        store.setMap(item.storeMap2);
 
         for (auto &&[i, val] : llvm::enumerate(store.getIndices())) {
           if (val == forOp.getInductionVar()) {
@@ -7364,7 +7425,7 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
         }
 
         store->moveAfter(forOp);
-        store.getValueMutable().set(forOp->getResult(yldIdx));
+        store.getValueMutable().set(forOp->getResult(item.yldIdx));
       });
       if (guard) {
         rewriter.setInsertionPointAfter(forOp);
@@ -7373,10 +7434,9 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
                                                /*withElseRegion=*/false);
         rewriter.moveOpBefore(store, ifOp.getThenBlock()->getTerminator());
       }
-      changed = true;
     }
 
-    return success(changed);
+    return success();
   }
 };
 
@@ -8056,12 +8116,14 @@ struct ExtremumInAffineLoop : public OpRewritePattern<LoopOp> {
 // without results or else of such ops, or a pure op.
 static bool noOpUnless(Operation *op, IntegerSet cond, ValueRange operands) {
   SmallVector<Value> runsOperands;
-  if (auto forOp = dyn_cast<AffineForOp>(op))
-    return setImplies(runsOnceSet(forOp, runsOperands), runsOperands, cond,
-                      operands);
-  if (auto par = dyn_cast<AffineParallelOp>(op))
-    return setImplies(runsOnceSet(par, runsOperands), runsOperands, cond,
-                      operands);
+  if (auto forOp = dyn_cast<AffineForOp>(op)) {
+    IntegerSet runs = runsOnceSet(forOp, runsOperands);
+    return setImplies(runs, runsOperands, cond, operands);
+  }
+  if (auto par = dyn_cast<AffineParallelOp>(op)) {
+    IntegerSet runs = runsOnceSet(par, runsOperands);
+    return setImplies(runs, runsOperands, cond, operands);
+  }
   if (auto ifOp = dyn_cast<AffineIfOp>(op))
     return !ifOp.hasElse() && ifOp.getNumResults() == 0 &&
            llvm::all_of(ifOp.getThenBlock()->without_terminator(),
