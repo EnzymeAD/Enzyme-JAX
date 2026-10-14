@@ -62,6 +62,12 @@ jobs:
           #- '--float-type=Float32 --target-float-type=BFloat16 --dimension=first'
           #- '--float-type=Float32 --target-float-type=BFloat16 --dimension=last'
           #- '--float-type=Float32 --target-float-type=BFloat16 --dimension=tuple'
+        exclude:
+          - os: 'linux-x86-a2-48-a100-4gpu'
+            grid: '--float-type=Float32'
+            reactant_commit: 'main'
+          - os: 'linux-x86-ct6e-180-4tpu'
+            grid: '--float-type=Float64'
 
     steps:
       - name: Check GPUs
