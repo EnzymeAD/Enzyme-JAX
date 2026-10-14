@@ -35778,6 +35778,10 @@ static bool isStackableOp(Operation *op) {
   // further in.
   if (auto reduce = dyn_cast<stablehlo::ReduceOp>(op))
     return reduce.getInputs().size() == 1;
+  // A contraction: stacked, both operands carry the stack as a leading batching
+  // dimension, which leads the result too.
+  if (isa<stablehlo::DotGeneralOp>(op))
+    return true;
   if (op->getNumRegions() != 0)
     return false;
   if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
@@ -35982,6 +35986,26 @@ static Value buildStackedNode(PatternRewriter &rewriter, Location loc,
   }
 
   Operation *op = node.values[0].getDefiningOp();
+  if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(op)) {
+    Value lhs = buildStacked(rewriter, loc, nodes, node.operands[0], n, built);
+    Value rhs = buildStacked(rewriter, loc, nodes, node.operands[1], n, built);
+    auto dims = dot.getDotDimensionNumbers();
+    SmallVector<int64_t> lhsBatch = {0}, rhsBatch = {0}, lhsContract,
+                         rhsContract;
+    for (int64_t d : dims.getLhsBatchingDimensions())
+      lhsBatch.push_back(d + 1);
+    for (int64_t d : dims.getRhsBatchingDimensions())
+      rhsBatch.push_back(d + 1);
+    for (int64_t d : dims.getLhsContractingDimensions())
+      lhsContract.push_back(d + 1);
+    for (int64_t d : dims.getRhsContractingDimensions())
+      rhsContract.push_back(d + 1);
+    auto stackedDims = stablehlo::DotDimensionNumbersAttr::get(
+        dot.getContext(), lhsBatch, rhsBatch, lhsContract, rhsContract);
+    return stablehlo::DotGeneralOp::create(
+        rewriter, loc, stackedType, lhs, rhs, stackedDims,
+        dot.getPrecisionConfigAttr(), dot.getAlgorithmAttr());
+  }
   if (auto reduce = dyn_cast<stablehlo::ReduceOp>(op)) {
     Value input =
         buildStacked(rewriter, loc, nodes, node.operands[0], n, built);
