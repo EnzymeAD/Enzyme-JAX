@@ -7902,14 +7902,13 @@ struct DynamicUpdateSliceConstProp final
   }
 };
 
-// The most result elements an op is folded to when its non-splat constant
-// inputs stay alive (they have other users), as small index and mask
-// computations often are: the expansion the exec list allows
-// concat_const_prop and dynamic_update_slice_const_prop.
-static constexpr int64_t kReusedInputFoldLimit = 1024;
-
+// With a non-splat constant operand, an op folds only if a non-splat operand
+// dies with it, so that folding adds no non-splat constant, or if its result
+// has at most maxReusedResultElements elements (small index and mask
+// computations).
 template <auto f>
-LogicalResult binaryConstProp(Operation *op, PatternRewriter &rewriter) {
+LogicalResult binaryConstProp(Operation *op, PatternRewriter &rewriter,
+                              int64_t maxReusedResultElements) {
   // return if not constant
   DenseElementsAttr lhsAttr;
   DenseElementsAttr rhsAttr;
@@ -7925,7 +7924,7 @@ LogicalResult binaryConstProp(Operation *op, PatternRewriter &rewriter) {
   // non-splat operand, one non-splat operand must be used only here, so the
   // folded constant replaces it, unless the result is small
   if ((!lhsAttr.isSplat() || !rhsAttr.isSplat()) &&
-      ty.getNumElements() > kReusedInputFoldLimit) {
+      ty.getNumElements() > maxReusedResultElements) {
     bool lhsDies =
         !lhsAttr.isSplat() && llvm::all_equal(op->getOperand(0).getUsers());
     bool rhsDies =
@@ -7966,16 +7965,24 @@ LogicalResult binaryConstProp(Operation *op, PatternRewriter &rewriter) {
 template <typename OpTy, auto constPropFn>
 struct BinaryConstProp final
     : CheckedOpRewritePattern<OpTy, BinaryConstProp<OpTy, constPropFn>> {
-  using CheckedOpRewritePattern<
-      OpTy, BinaryConstProp<OpTy, constPropFn>>::CheckedOpRewritePattern;
+  int64_t maxReusedResultElements;
+
+  BinaryConstProp(MLIRContext *context, PatternBenefit benefit = 1)
+      : BinaryConstProp(0, context, benefit) {}
+  BinaryConstProp(int64_t maxReusedResultElements, MLIRContext *context,
+                  PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern<OpTy, BinaryConstProp<OpTy, constPropFn>>(
+            context, benefit),
+        maxReusedResultElements(maxReusedResultElements) {}
 
   LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
-    return binaryConstProp<constPropFn>(op, rewriter);
+    return binaryConstProp<constPropFn>(op, rewriter, maxReusedResultElements);
   }
 };
 
 template <auto f>
-LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter) {
+LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter,
+                             int64_t maxReusedResultElements) {
   // return if not constant
   DenseElementsAttr inputAttr;
   if (!matchPattern(op->getOperand(0), m_Constant(&inputAttr)))
@@ -7989,7 +7996,7 @@ LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter) {
   // replaces it, unless the result is small
   if (!inputAttr.isSplat() &&
       !llvm::hasSingleElement(op->getOperand(0).getUsers()) &&
-      ty.getNumElements() > kReusedInputFoldLimit)
+      ty.getNumElements() > maxReusedResultElements)
     return failure();
 
   if (inputAttr.isSplat()) {
@@ -8020,11 +8027,18 @@ LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter) {
 template <typename OpTy, auto constPropFn>
 struct UnaryConstProp final
     : CheckedOpRewritePattern<OpTy, UnaryConstProp<OpTy, constPropFn>> {
-  using CheckedOpRewritePattern<
-      OpTy, UnaryConstProp<OpTy, constPropFn>>::CheckedOpRewritePattern;
+  int64_t maxReusedResultElements;
+
+  UnaryConstProp(MLIRContext *context, PatternBenefit benefit = 1)
+      : UnaryConstProp(0, context, benefit) {}
+  UnaryConstProp(int64_t maxReusedResultElements, MLIRContext *context,
+                 PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern<OpTy, UnaryConstProp<OpTy, constPropFn>>(
+            context, benefit),
+        maxReusedResultElements(maxReusedResultElements) {}
 
   LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
-    return unaryConstProp<constPropFn>(op, rewriter);
+    return unaryConstProp<constPropFn>(op, rewriter, maxReusedResultElements);
   }
 };
 
@@ -8036,9 +8050,9 @@ struct GeluConstProp final
                                     PatternRewriter &rewriter) const {
     switch (op.getGeluApproximation()) {
     case enzymexla::GeluApproximation::TANH:
-      return unaryConstProp<geluTanhOp>(op, rewriter);
+      return unaryConstProp<geluTanhOp>(op, rewriter, 0);
     case enzymexla::GeluApproximation::SIGMOID:
-      return unaryConstProp<geluSigmoidOp>(op, rewriter);
+      return unaryConstProp<geluSigmoidOp>(op, rewriter, 0);
     case enzymexla::GeluApproximation::NONE:
       return failure();
     }

@@ -245,6 +245,11 @@ typedef struct {
   // Contractions written as reduce(mul) become dot_general. On GPU, XLA can
   // run small contractions faster as fused reductions.
   bool enable_dot_formation_passes;
+  // Constant propagation folds an op whose non-splat constant operand has
+  // other users (so the folded constant is added beside it) only when the
+  // result has at most this many elements. 0 folds such an op only when a
+  // non-splat operand dies with it.
+  int64_t max_reused_const_prop_size;
 
   // Passes to exclude by base name (e.g. "loop_unswitch"). The pointed-to
   // strings must remain valid for the duration of the call.
