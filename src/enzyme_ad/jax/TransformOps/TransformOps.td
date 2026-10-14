@@ -1755,6 +1755,10 @@ def ApplySliceReshapeConcatPatterns : EnzymeHLOPatternOp<
     "slice_reshape_concat"> {
   let patterns = ["SliceReshapeConcat"];
 }
+def ApplySliceReshapeConcatWindowPatterns : EnzymeHLOPatternOp<
+    "slice_reshape_concat_window"> {
+  let patterns = ["SliceReshapeConcatWindow"];
+}
 def ApplySliceReshapeElementwisePatterns : EnzymeHLOPatternOp<
     "slice_reshape_elementwise"> {
   let patterns = ["SliceReshapeElementwise"];

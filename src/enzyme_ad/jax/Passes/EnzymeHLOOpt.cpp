@@ -14356,6 +14356,96 @@ struct SliceIf : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceIf> {
   }
 };
 
+// slice(reshape(concat(..., x, ...))) where the reshape splits the
+// concatenated dimension into rows (e.g. [N, 156] -> [N, 13, 12]) and the
+// slice reads only elements of x, though x need not start on a row (a
+// per-element scratch written at an offset and read back as a window): the
+// same window of x padded in front to its offset within a row and at the back
+// to whole rows, reshaped to those rows. The result is a view of x.
+struct SliceReshapeConcatWindow final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshapeConcatWindow> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshape)
+      return failure();
+    auto concat =
+        reshape.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concat)
+      return failure();
+    ArrayRef<int64_t> in = concat.getType().getShape();
+    ArrayRef<int64_t> out = reshape.getType().getShape();
+    int64_t c = concat.getDimension();
+    // The reshape splits dimension c into out[c, c + k) and keeps the rest.
+    int64_t k = (int64_t)out.size() - (int64_t)in.size() + 1;
+    if (k < 2)
+      return failure();
+    for (int64_t i = 0; i < c; i++)
+      if (in[i] != out[i])
+        return failure();
+    for (int64_t i = c + 1, e = in.size(); i < e; i++)
+      if (in[i] != out[i + k - 1])
+        return failure();
+    int64_t rowLength = 1;
+    for (int64_t i = c + 1; i < c + k; i++)
+      rowLength *= out[i];
+    if (out[c] * rowLength != in[c])
+      return failure();
+    for (int64_t i = c; i < c + k; i++)
+      if (op.getStrides()[i] != 1)
+        return failure();
+
+    // The first and last elements read along the split dimension.
+    int64_t first = 0, last = 0;
+    for (int64_t i = c; i < c + k; i++) {
+      first = first * out[i] + op.getStartIndices()[i];
+      last = last * out[i] + op.getLimitIndices()[i] - 1;
+    }
+    int64_t offset = 0;
+    for (Value x : concat.getOperands()) {
+      int64_t size = cast<RankedTensorType>(x.getType()).getDimSize(c);
+      if (first < offset || last >= offset + size) {
+        offset += size;
+        continue;
+      }
+      // x padded to whole rows, its first element at its column.
+      int64_t low = offset % rowLength;
+      int64_t high = (rowLength - (low + size) % rowLength) % rowLength;
+      int64_t rows = (low + size + high) / rowLength;
+      int64_t rank = in.size();
+      SmallVector<int64_t> padLow(rank, 0), padHigh(rank, 0),
+          padInterior(rank, 0);
+      padLow[c] = low;
+      padHigh[c] = high;
+      Value padded = x;
+      if (low != 0 || high != 0) {
+        auto elemType = concat.getType().getElementType();
+        auto zeroType = RankedTensorType::get({}, elemType);
+        Value zero = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), zeroType,
+            cast<ElementsAttr>(makeAttr(zeroType, 0)));
+        padded = stablehlo::PadOp::create(rewriter, op.getLoc(), x, zero,
+                                          padLow, padHigh, padInterior);
+      }
+      SmallVector<int64_t> shape(out);
+      shape[c] = rows;
+      Value view =
+          stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), padded, shape);
+      SmallVector<int64_t> starts(op.getStartIndices()),
+          limits(op.getLimitIndices());
+      int64_t firstRow = (offset - low) / rowLength;
+      starts[c] -= firstRow;
+      limits[c] -= firstRow;
+      rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, view, starts, limits,
+                                                      op.getStrides());
+      return success();
+    }
+    return failure();
+  }
+};
+
 struct SliceReshapeConcat
     : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshapeConcat> {
   using CheckedOpRewritePattern<stablehlo::SliceOp,
