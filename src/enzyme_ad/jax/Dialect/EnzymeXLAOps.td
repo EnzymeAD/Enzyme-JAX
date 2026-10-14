@@ -679,6 +679,10 @@ def SymmOp : EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]>
   let assemblyFormat = [{
     $A `,` $B `,` $C `,` $alpha `,` $beta prop-dict attr-dict `:` functional-type(operands, results)
   }];
+
+  let builders = [
+    OpBuilder<(ins "Value":$A, "Value":$B, "enzymexla::LapackSide":$side, "enzymexla::LapackUplo":$uplo)>
+  ];
 }
 
 def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> {
@@ -747,6 +751,16 @@ def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> 
   let assemblyFormat = [{
     $A `,` $B `,` $alpha prop-dict attr-dict `:` functional-type(operands, results)
   }];
+
+  let builders = [
+    OpBuilder<(ins
+      "Value":$A,
+      "Value":$B,
+      "enzymexla::LapackSide":$side,
+      "enzymexla::LapackUplo":$uplo,
+      CArg<"enzymexla::LapackTranspose", "enzymexla::LapackTranspose::none">:$transa,
+      CArg<"bool", "false">:$unit)>
+  ];
 }
 
 def TrsmOp : EnzymeXLA_Op<"blas.trsm", [Pure]> {
@@ -774,6 +788,16 @@ def TrsmOp : EnzymeXLA_Op<"blas.trsm", [Pure]> {
   let assemblyFormat = [{
     $alpha `,` $A `,` $B prop-dict attr-dict `:` functional-type(operands, results)
   }];
+
+  let builders = [
+    OpBuilder<(ins
+      "Value":$A,
+      "Value":$B,
+      "enzymexla::LapackSide":$side,
+      "enzymexla::LapackUplo":$uplo,
+      CArg<"enzymexla::LapackTranspose", "enzymexla::LapackTranspose::none">:$transa,
+      CArg<"bool", "false">:$unit_diagonal)>
+  ];
 }
 
 def TridiagonalSolveOp: EnzymeXLA_Op<"linalg.tridiagonal_solve", [Pure]> {
