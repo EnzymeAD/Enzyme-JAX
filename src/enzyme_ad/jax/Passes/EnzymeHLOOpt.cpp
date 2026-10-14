@@ -35266,6 +35266,387 @@ private:
   }
 };
 
+// The terms of the add tree rooted at `root`: operands of the adds that feed
+// only the tree.
+static void collectAddTerms(Value v, Operation *root,
+                            SmallVectorImpl<Value> &terms) {
+  auto add = v.getDefiningOp<stablehlo::AddOp>();
+  if (add && (add == root || v.hasOneUse())) {
+    collectAddTerms(add.getLhs(), root, terms);
+    collectAddTerms(add.getRhs(), root, terms);
+    return;
+  }
+  terms.push_back(v);
+}
+
+// One position of a family of terms built the same way: a value all terms
+// share, an op applied to the positions below it, or values that differ from
+// term to term.
+struct StackedNode {
+  enum Kind { Shared, Op, Leaf } kind;
+  SmallVector<Value> values;
+  SmallVector<unsigned> operands;
+};
+
+static bool isStackableOp(Operation *op) {
+  if (op->getNumResults() != 1 || op->getNumRegions() != 0)
+    return false;
+  if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
+          stablehlo::TransposeOp, stablehlo::ConcatenateOp>(op))
+    return true;
+  if (!stablehlo::hasTraitElementwise(op))
+    return false;
+  // select and clamp take scalar operands, which stacking would not
+  // broadcast.
+  auto shape = cast<RankedTensorType>(op->getResult(0).getType()).getShape();
+  for (Value operand : op->getOperands())
+    if (cast<RankedTensorType>(operand.getType()).getShape() != shape)
+      return false;
+  return true;
+}
+
+// Whether `v` is computed by the same stackable op as `first`, and can be
+// replaced by its stacked version: it has no other user, or it is a view
+// (broadcast, reshape, transpose), which costs nothing to recreate stacked.
+static bool stacksWith(Value v, Operation *first) {
+  Operation *op = v.getDefiningOp();
+  if (!op || op->getName() != first->getName() ||
+      op->getAttrDictionary() != first->getAttrDictionary() ||
+      op->getNumOperands() != first->getNumOperands())
+    return false;
+  if (!v.hasOneUse() && !isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
+                             stablehlo::TransposeOp>(op))
+    return false;
+  for (auto [a, b] : llvm::zip(op->getOperands(), first->getOperands()))
+    if (a.getType() != b.getType())
+      return false;
+  return true;
+}
+
+// Match `vals` (one value per term) position by position, down to values the
+// terms share or that are not computed alike. A position reached again (a
+// shared view) reuses its node.
+static unsigned matchStacked(ArrayRef<Value> vals,
+                             SmallVectorImpl<StackedNode> &nodes,
+                             DenseMap<Value, unsigned> &seen) {
+  if (auto found = seen.find(vals[0]); found != seen.end())
+    if (ArrayRef<Value>(nodes[found->second].values) == vals)
+      return found->second;
+  unsigned idx = nodes.size();
+  seen[vals[0]] = idx;
+  nodes.push_back({StackedNode::Leaf, SmallVector<Value>(vals), {}});
+  if (llvm::all_equal(vals)) {
+    nodes[idx].kind = StackedNode::Shared;
+    return idx;
+  }
+  Operation *first = vals[0].getDefiningOp();
+  if (!first || !isStackableOp(first) ||
+      !llvm::all_of(vals, [&](Value v) { return stacksWith(v, first); }))
+    return idx;
+  nodes[idx].kind = StackedNode::Op;
+  for (unsigned i = 0, e = first->getNumOperands(); i < e; i++) {
+    SmallVector<Value> operands;
+    for (Value v : vals)
+      operands.push_back(v.getDefiningOp()->getOperand(i));
+    unsigned sub = matchStacked(operands, nodes, seen);
+    nodes[idx].operands.push_back(sub);
+  }
+  return idx;
+}
+
+// Slices of one tensor whose starts are a constant step apart along one
+// dimension. Element j of slice k sits at start + k * delta + j * stride
+// there, so the slices are one strided slice of the tensor when they are
+// consecutive runs (k major) or interleave (j major).
+struct SliceStack {
+  stablehlo::SliceOp first;
+  int64_t dim;
+  int64_t step;
+  bool termMajor;
+};
+
+static std::optional<SliceStack> matchSliceStack(ArrayRef<Value> vals) {
+  auto type = cast<RankedTensorType>(vals[0].getType());
+  int64_t n = vals.size();
+  auto first = vals[0].getDefiningOp<stablehlo::SliceOp>();
+  auto second = vals[1].getDefiningOp<stablehlo::SliceOp>();
+  if (!first || !second || first.getOperand() != second.getOperand())
+    return std::nullopt;
+  int64_t dim = -1;
+  for (int64_t i = 0; i < type.getRank(); i++) {
+    if (first.getStartIndices()[i] == second.getStartIndices()[i])
+      continue;
+    if (dim != -1)
+      return std::nullopt;
+    dim = i;
+  }
+  if (dim == -1)
+    return std::nullopt;
+  int64_t delta = second.getStartIndices()[dim] - first.getStartIndices()[dim];
+  if (delta <= 0)
+    return std::nullopt;
+  for (auto [k, v] : llvm::enumerate(vals)) {
+    auto slice = v.getDefiningOp<stablehlo::SliceOp>();
+    if (!slice || slice.getOperand() != first.getOperand() ||
+        slice.getStrides() != first.getStrides())
+      return std::nullopt;
+    for (int64_t i = 0; i < type.getRank(); i++) {
+      int64_t expected =
+          first.getStartIndices()[i] + (i == dim ? (int64_t)k * delta : 0);
+      if (slice.getStartIndices()[i] != expected)
+        return std::nullopt;
+    }
+  }
+  int64_t size = type.getShape()[dim];
+  int64_t stride = first.getStrides()[dim];
+  if (size == 1)
+    return SliceStack{first, dim, delta, true};
+  if (delta == size * stride)
+    return SliceStack{first, dim, stride, true};
+  if (stride == n * delta)
+    return SliceStack{first, dim, delta, false};
+  return std::nullopt;
+}
+
+// A slice stack along a new leading dimension: one strided slice, reshaped
+// and transposed.
+static Value stackSlices(PatternRewriter &rewriter, Location loc,
+                         ArrayRef<Value> vals) {
+  auto type = cast<RankedTensorType>(vals[0].getType());
+  int64_t n = vals.size();
+  SliceStack stack = *matchSliceStack(vals);
+  int64_t dim = stack.dim;
+  int64_t size = type.getShape()[dim];
+  SmallVector<int64_t> starts(stack.first.getStartIndices());
+  SmallVector<int64_t> limits(stack.first.getLimitIndices());
+  SmallVector<int64_t> strides(stack.first.getStrides());
+  limits[dim] = starts[dim] + (n * size - 1) * stack.step + 1;
+  strides[dim] = stack.step;
+  Value all = stablehlo::SliceOpCreate(rewriter, loc, stack.first.getOperand(),
+                                       starts, limits, strides);
+  SmallVector<int64_t> split(type.getShape().take_front(dim));
+  split.push_back(stack.termMajor ? n : size);
+  split.push_back(stack.termMajor ? size : n);
+  llvm::append_range(split, type.getShape().drop_front(dim + 1));
+  Value reshaped = stablehlo::ReshapeOpCreate(rewriter, loc, all, split);
+  int64_t termDim = stack.termMajor ? dim : dim + 1;
+  SmallVector<int64_t> perm = {termDim};
+  for (int64_t i = 0, e = split.size(); i < e; i++)
+    if (i != termDim)
+      perm.push_back(i);
+  return stablehlo::TransposeOpCreate(rewriter, loc, reshaped, perm);
+}
+
+static Value buildStackedNode(PatternRewriter &rewriter, Location loc,
+                              ArrayRef<StackedNode> nodes, unsigned idx,
+                              int64_t n, SmallVectorImpl<Value> &built);
+
+// The node computed for every term at once, with the terms along a new
+// leading dimension; built once however many positions reach it.
+static Value buildStacked(PatternRewriter &rewriter, Location loc,
+                          ArrayRef<StackedNode> nodes, unsigned idx, int64_t n,
+                          SmallVectorImpl<Value> &built) {
+  if (built[idx])
+    return built[idx];
+  built[idx] = buildStackedNode(rewriter, loc, nodes, idx, n, built);
+  return built[idx];
+}
+
+static Value buildStackedNode(PatternRewriter &rewriter, Location loc,
+                              ArrayRef<StackedNode> nodes, unsigned idx,
+                              int64_t n, SmallVectorImpl<Value> &built) {
+  const StackedNode &node = nodes[idx];
+  auto type = cast<RankedTensorType>(node.values[0].getType());
+  SmallVector<int64_t> shape = {n};
+  llvm::append_range(shape, type.getShape());
+  auto stackedType = RankedTensorType::get(shape, type.getElementType());
+  if (node.kind == StackedNode::Leaf)
+    return stackSlices(rewriter, loc, node.values);
+  if (node.kind == StackedNode::Shared) {
+    SmallVector<int64_t> dims;
+    for (int64_t i = 0; i < type.getRank(); i++)
+      dims.push_back(i + 1);
+    return stablehlo::BroadcastInDimOpCreate(rewriter, loc, node.values[0],
+                                             shape, dims);
+  }
+
+  SmallVector<Value> operands;
+  for (unsigned sub : node.operands) {
+    Value operand = buildStacked(rewriter, loc, nodes, sub, n, built);
+    operands.push_back(operand);
+  }
+  Operation *op = node.values[0].getDefiningOp();
+  if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+    SmallVector<int64_t> dims = {0};
+    for (int64_t d : bcast.getBroadcastDimensions())
+      dims.push_back(d + 1);
+    return stablehlo::BroadcastInDimOpCreate(rewriter, loc, operands[0], shape,
+                                             dims);
+  }
+  if (isa<stablehlo::ReshapeOp>(op))
+    return stablehlo::ReshapeOpCreate(rewriter, loc, operands[0], shape);
+  if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
+    SmallVector<int64_t> perm = {0};
+    for (int64_t p : transpose.getPermutation())
+      perm.push_back(p + 1);
+    return stablehlo::TransposeOpCreate(rewriter, loc, operands[0], perm);
+  }
+  if (auto concat = dyn_cast<stablehlo::ConcatenateOp>(op))
+    return stablehlo::ConcatenateOpCreate(rewriter, loc, operands,
+                                          concat.getDimension() + 1);
+  OperationState state(loc, op->getName().getIdentifier(), operands,
+                       {stackedType}, op->getAttrs());
+  return rewriter.create(state)->getResult(0);
+}
+
+// A sum of terms built the same way, sum_k f(a_k, b_k, ...), is one reduction
+// over the terms stacked along a new dimension, reduce(f(A, B, ...), 0). This
+// rolls back up a contraction whose loop was unrolled into one term per
+// iteration (the stages of a sum-factorized element kernel), which XLA would
+// otherwise fuse into each consumer and recompute per element.
+struct AddTermsToReduce final
+    : CheckedOpRewritePattern<stablehlo::AddOp, AddTermsToReduce> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op->hasOneUse() && isa<stablehlo::AddOp>(*op->user_begin()))
+      return rewriter.notifyMatchFailure(op, "not the root of the add tree");
+    auto type = cast<RankedTensorType>(op.getType());
+    if (!type.hasStaticShape())
+      return failure();
+
+    SmallVector<Value> terms;
+    collectAddTerms(op.getResult(), op, terms);
+    if (terms.size() < kMinTerms)
+      return rewriter.notifyMatchFailure(op, "too few terms");
+
+    // Group the terms whose top op matches (or that are slices of one
+    // tensor), then keep the largest group.
+    SmallVector<Value> best;
+    SmallVector<bool> used(terms.size(), false);
+    for (size_t i = 0; i < terms.size(); i++) {
+      if (used[i])
+        continue;
+      SmallVector<Value> group = {terms[i]};
+      for (size_t j = i + 1; j < terms.size(); j++) {
+        if (used[j])
+          continue;
+        Value both[2] = {terms[i], terms[j]};
+        if (!areComputedAlike(both) && !areSiblingSlices(both))
+          continue;
+        used[j] = true;
+        group.push_back(terms[j]);
+      }
+      if (group.size() > best.size())
+        best = group;
+    }
+    if (best.size() < kMinTerms)
+      return rewriter.notifyMatchFailure(op, "no family of matching terms");
+
+    SmallVector<StackedNode> nodes;
+    DenseMap<Value, unsigned> seen;
+    matchStacked(best, nodes, seen);
+    // The sum does not depend on the order of its terms: order them by where
+    // the first sliced value takes its slice, so that the slices stack.
+    if (const StackedNode *sliced = firstSlicedLeaf(nodes)) {
+      SmallVector<unsigned> order(best.size());
+      std::iota(order.begin(), order.end(), 0);
+      llvm::stable_sort(order, [&](unsigned x, unsigned y) {
+        ArrayRef<int64_t> a = sliced->values[x]
+                                  .getDefiningOp<stablehlo::SliceOp>()
+                                  .getStartIndices();
+        ArrayRef<int64_t> b = sliced->values[y]
+                                  .getDefiningOp<stablehlo::SliceOp>()
+                                  .getStartIndices();
+        return std::lexicographical_compare(a.begin(), a.end(), b.begin(),
+                                            b.end());
+      });
+      SmallVector<Value> sorted;
+      for (unsigned t : order)
+        sorted.push_back(best[t]);
+      best = sorted;
+      nodes.clear();
+      seen.clear();
+      matchStacked(best, nodes, seen);
+    }
+    if (!isComputedTerm(nodes) &&
+        !(nodes[0].kind == StackedNode::Leaf && matchSliceStack(best)))
+      return rewriter.notifyMatchFailure(op, "terms are not computed alike");
+    // Values that differ between terms must be views of one tensor: stacking
+    // anything else is a copy, which costs more than the sum it replaces.
+    for (const StackedNode &node : nodes)
+      if (node.kind == StackedNode::Leaf && !matchSliceStack(node.values))
+        return rewriter.notifyMatchFailure(op, "a term value is not a view");
+
+    int64_t n = best.size();
+    SmallVector<Value> built(nodes.size());
+    Value stacked = buildStacked(rewriter, op.getLoc(), nodes, 0, n, built);
+    auto elemType = RankedTensorType::get({}, type.getElementType());
+    Value zero = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), elemType,
+        cast<ElementsAttr>(makeAttr(elemType, 0)));
+    auto reduce = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(), TypeRange(type), ValueRange(stacked),
+        ValueRange(zero), rewriter.getDenseI64ArrayAttr({0}));
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      Block *body =
+          rewriter.createBlock(&reduce.getBody(), {}, {elemType, elemType},
+                               {op.getLoc(), op.getLoc()});
+      Value sum = stablehlo::AddOp::create(
+          rewriter, op.getLoc(), body->getArgument(0), body->getArgument(1));
+      stablehlo::ReturnOp::create(rewriter, op.getLoc(), sum);
+    }
+
+    Value result = reduce.getResult(0);
+    for (Value term : terms) {
+      if (llvm::is_contained(best, term))
+        continue;
+      result = stablehlo::AddOp::create(rewriter, op.getLoc(), result, term);
+    }
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+
+private:
+  // The terms are computed by an elementwise op. Terms that only rearrange
+  // values are rolled only when they are themselves a slice stack (a sum of
+  // slices is a reduce of a view of their tensor).
+  static bool isComputedTerm(ArrayRef<StackedNode> nodes) {
+    return nodes[0].kind == StackedNode::Op &&
+           stablehlo::hasTraitElementwise(nodes[0].values[0].getDefiningOp());
+  }
+
+  // Both terms are computed by the same elementwise op.
+  static bool areComputedAlike(ArrayRef<Value> vals) {
+    Operation *first = vals[0].getDefiningOp();
+    return first && stablehlo::hasTraitElementwise(first) &&
+           isStackableOp(first) && stacksWith(vals[0], first) &&
+           stacksWith(vals[1], first);
+  }
+
+  // The first position where the terms take different slices of one tensor.
+  static const StackedNode *firstSlicedLeaf(ArrayRef<StackedNode> nodes) {
+    for (const StackedNode &node : nodes)
+      if (node.kind == StackedNode::Leaf &&
+          llvm::all_of(node.values, [](Value v) {
+            return v.getDefiningOp<stablehlo::SliceOp>();
+          }))
+        return &node;
+    return nullptr;
+  }
+
+  static bool areSiblingSlices(ArrayRef<Value> vals) {
+    auto a = vals[0].getDefiningOp<stablehlo::SliceOp>();
+    auto b = vals[1].getDefiningOp<stablehlo::SliceOp>();
+    return a && b && a.getOperand() == b.getOperand() &&
+           a.getStrides() == b.getStrides();
+  }
+
+  static constexpr size_t kMinTerms = 3;
+};
+
 static void ReduceToDotGeneral(Location loc, OpBuilder &builder,
                                RankedTensorType resTy, RankedTensorType inTy,
                                ArrayRef<int64_t> dims, Value lhs, Value rhs,
