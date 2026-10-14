@@ -927,6 +927,10 @@ static void addReshapePropagateUpPasses(std::vector<std::string> &list,
   list.push_back(passWithArg("reshape_slice", !aggressive));
   list.push_back(passWithArg("reshape_elementwise", !aggressive));
   list.push_back(passWithArg("reshape_dynamic_slice", !aggressive));
+  // A slice of a reshaped concatenate or pad that reads one of its operands
+  // (a scratch assembled and read back block by block) still forwards to it.
+  list.push_back("slice_reshape_concat<1>");
+  list.push_back("slice_reshape_pad<1>");
 }
 
 static void addReshapePropagateDownPasses(std::vector<std::string> &list,
