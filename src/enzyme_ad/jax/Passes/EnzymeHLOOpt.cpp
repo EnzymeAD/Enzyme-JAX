@@ -32897,10 +32897,15 @@ struct ConcatenateAddToAddPad
   }
 };
 
-// concat(broadcast_in_dim(x_0), ..., broadcast_in_dim(x_n)) ->
-// broadcast_in_dim(concat(x_0, ..., x_n)) when the broadcasts place their
-// operands the same way and the concatenated dimension comes from an operand
-// dimension they do not expand.
+// concat(broadcast_in_dim(x_0), ..., broadcast_in_dim(x_n)) with the
+// broadcasts placing their operands the same way:
+// - along a dimension that comes from an operand dimension they do not expand,
+//   broadcast_in_dim(concat(x_0, ..., x_n));
+// - along a dimension every broadcast expands by the same size m (element
+//   k * m + j is x_k), the operands stacked along a new dimension, broadcast
+//   with the stack just outside the expanded one, and the two reshaped back
+//   into one: reshape(broadcast_in_dim(concat(reshape(x_k)))). A broadcast
+//   alone cannot index one dimension by k * m + j, so the reshape stays.
 struct ConcatenateBroadcastInDim
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                                      ConcatenateBroadcastInDim> {
@@ -32921,7 +32926,7 @@ struct ConcatenateBroadcastInDim
     // The operand dimension the concatenated dimension comes from.
     auto found = llvm::find(dims, (int64_t)op.getDimension());
     if (found == dims.end())
-      return failure();
+      return concatExpanded(op, first, rewriter);
     int64_t inputDim = std::distance(dims.begin(), found);
 
     SmallVector<Value> operandOperands;
@@ -32948,6 +32953,53 @@ struct ConcatenateBroadcastInDim
         rewriter, op.getLoc(), ValueRange(operandOperands), inputDim);
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(op, op.getType(),
                                                              newConcatOp, dims);
+    return success();
+  }
+
+private:
+  // The concatenated dimension is one the broadcasts expand.
+  LogicalResult concatExpanded(stablehlo::ConcatenateOp op,
+                               stablehlo::BroadcastInDimOp first,
+                               PatternRewriter &rewriter) const {
+    int64_t dim = op.getDimension();
+    ArrayRef<int64_t> dims = first.getBroadcastDimensions();
+    auto operandType = first.getOperand().getType();
+    int64_t m = first.getType().getShape()[dim];
+    for (Value v : op.getOperands()) {
+      auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>();
+      if (!bcast || bcast.getBroadcastDimensions() != dims ||
+          bcast.getOperand().getType() != operandType ||
+          bcast.getType().getShape()[dim] != m)
+        return failure();
+    }
+
+    SmallVector<int64_t> unitShape = {1};
+    llvm::append_range(unitShape, operandType.getShape());
+    SmallVector<Value> stacked;
+    for (Value v : op.getOperands()) {
+      Value reshaped = stablehlo::ReshapeOpCreate(
+          rewriter, op.getLoc(),
+          v.getDefiningOp<stablehlo::BroadcastInDimOp>().getOperand(),
+          unitShape);
+      stacked.push_back(reshaped);
+    }
+    int64_t n = stacked.size();
+    auto stack =
+        stablehlo::ConcatenateOp::create(rewriter, op.getLoc(), stacked, 0);
+
+    // The result with the concatenated dimension split into (n, m).
+    auto type = cast<RankedTensorType>(op.getType());
+    SmallVector<int64_t> split(type.getShape().take_front(dim));
+    split.push_back(n);
+    split.push_back(m);
+    llvm::append_range(split, type.getShape().drop_front(dim + 1));
+    SmallVector<int64_t> newDims = {dim};
+    for (int64_t d : dims)
+      newDims.push_back(d > dim ? d + 1 : d);
+    auto splitType = RankedTensorType::get(split, type.getElementType());
+    auto bcast = stablehlo::BroadcastInDimOp::create(rewriter, op.getLoc(),
+                                                     splitType, stack, newDims);
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, type, bcast);
     return success();
   }
 };
