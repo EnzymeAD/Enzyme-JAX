@@ -257,3 +257,52 @@ func.func @inserted(%x0: tensor<8x3xf64>, %x1: tensor<8x3xf64>, %b: tensor<4x3xf
 // CHECK-NEXT: %[[C:[^ ,:)]+]] = stablehlo.concatenate %[[R0]], %[[R1]], dim = 0 : (tensor<1x8x4xf64>, tensor<1x8x4xf64>) -> tensor<2x8x4xf64>
 // CHECK-NEXT: return %[[C]] : tensor<2x8x4xf64>
 // CHECK-NEXT: }
+
+// Pieces of the same contraction whose shared operand is reached through
+// different views (a transposed layout, a unit-dimension reshape of a slice
+// against a slice of a reshape): one dot of the stacked varying operands
+// against the first piece's operand.
+func.func @views(%x0: tensor<8x4xf64>, %x1: tensor<8x4xf64>, %b: tensor<6x4xf64>) -> tensor<2x8x5xf64> {
+  %b0 = stablehlo.slice %b [0:5, 0:4] : (tensor<6x4xf64>) -> tensor<5x4xf64>
+  %d0 = stablehlo.dot_general %x0, %b0, contracting_dims = [1] x [1] : (tensor<8x4xf64>, tensor<5x4xf64>) -> tensor<8x5xf64>
+  %bt = stablehlo.transpose %b, dims = [1, 0] : (tensor<6x4xf64>) -> tensor<4x6xf64>
+  %b1 = stablehlo.slice %bt [0:4, 0:5] : (tensor<4x6xf64>) -> tensor<4x5xf64>
+  %d1 = stablehlo.dot_general %x1, %b1, contracting_dims = [1] x [0] : (tensor<8x4xf64>, tensor<4x5xf64>) -> tensor<8x5xf64>
+  %r0 = stablehlo.broadcast_in_dim %d0, dims = [1, 2] : (tensor<8x5xf64>) -> tensor<1x8x5xf64>
+  %r1 = stablehlo.broadcast_in_dim %d1, dims = [1, 2] : (tensor<8x5xf64>) -> tensor<1x8x5xf64>
+  %c = stablehlo.concatenate %r0, %r1, dim = 0 : (tensor<1x8x5xf64>, tensor<1x8x5xf64>) -> tensor<2x8x5xf64>
+  return %c : tensor<2x8x5xf64>
+}
+
+// CHECK-LABEL: func.func @views(
+// CHECK-SAME: %[[X0:[^ ,:)]+]]: tensor<8x4xf64>, %[[X1:[^ ,:)]+]]: tensor<8x4xf64>, %[[B:[^ ,:)]+]]: tensor<6x4xf64>) -> tensor<2x8x5xf64> {
+// CHECK-NEXT: %[[B0:[^ ,:)]+]] = stablehlo.slice %[[B]] [0:5, 0:4] : (tensor<6x4xf64>) -> tensor<5x4xf64>
+// CHECK-NEXT: %[[R0:[^ ,:)]+]] = stablehlo.reshape %[[X0]] : (tensor<8x4xf64>) -> tensor<1x8x4xf64>
+// CHECK-NEXT: %[[R1:[^ ,:)]+]] = stablehlo.reshape %[[X1]] : (tensor<8x4xf64>) -> tensor<1x8x4xf64>
+// CHECK-NEXT: %[[S:[^ ,:)]+]] = stablehlo.concatenate %[[R0]], %[[R1]], dim = 0 : (tensor<1x8x4xf64>, tensor<1x8x4xf64>) -> tensor<2x8x4xf64>
+// CHECK-NEXT: %[[D:[^ ,:)]+]] = stablehlo.dot_general %[[S]], %[[B0]], contracting_dims = [2] x [1] : (tensor<2x8x4xf64>, tensor<5x4xf64>) -> tensor<2x8x5xf64>
+// CHECK-NEXT: return %[[D]] : tensor<2x8x5xf64>
+// CHECK-NEXT: }
+
+// The operands in the other order, each result already in the same layout
+// (both free groups have the same extent).
+func.func @swapped(%x0: tensor<8x4xf64>, %x1: tensor<8x4xf64>, %b: tensor<8x4xf64>) -> tensor<2x8x8xf64> {
+  %d0 = stablehlo.dot_general %x0, %b, contracting_dims = [1] x [1] : (tensor<8x4xf64>, tensor<8x4xf64>) -> tensor<8x8xf64>
+  %d1 = stablehlo.dot_general %b, %x1, contracting_dims = [1] x [1] : (tensor<8x4xf64>, tensor<8x4xf64>) -> tensor<8x8xf64>
+  %r0 = stablehlo.broadcast_in_dim %d0, dims = [1, 2] : (tensor<8x8xf64>) -> tensor<1x8x8xf64>
+  %r1 = stablehlo.broadcast_in_dim %d1, dims = [1, 2] : (tensor<8x8xf64>) -> tensor<1x8x8xf64>
+  %c = stablehlo.concatenate %r0, %r1, dim = 0 : (tensor<1x8x8xf64>, tensor<1x8x8xf64>) -> tensor<2x8x8xf64>
+  return %c : tensor<2x8x8xf64>
+}
+
+// CHECK-LABEL: func.func @swapped(
+// CHECK-SAME: %[[X0:[^ ,:)]+]]: tensor<8x4xf64>, %[[X1:[^ ,:)]+]]: tensor<8x4xf64>, %[[B:[^ ,:)]+]]: tensor<8x4xf64>) -> tensor<2x8x8xf64> {
+// CHECK-NEXT: %[[L0:[^ ,:)]+]] = stablehlo.reshape %[[X0]] : (tensor<8x4xf64>) -> tensor<1x8x4xf64>
+// CHECK-NEXT: %[[L1:[^ ,:)]+]] = stablehlo.reshape %[[B]] : (tensor<8x4xf64>) -> tensor<1x8x4xf64>
+// CHECK-NEXT: %[[L:[^ ,:)]+]] = stablehlo.concatenate %[[L0]], %[[L1]], dim = 0 : (tensor<1x8x4xf64>, tensor<1x8x4xf64>) -> tensor<2x8x4xf64>
+// CHECK-NEXT: %[[R0:[^ ,:)]+]] = stablehlo.reshape %[[B]] : (tensor<8x4xf64>) -> tensor<1x8x4xf64>
+// CHECK-NEXT: %[[R1:[^ ,:)]+]] = stablehlo.reshape %[[X1]] : (tensor<8x4xf64>) -> tensor<1x8x4xf64>
+// CHECK-NEXT: %[[R:[^ ,:)]+]] = stablehlo.concatenate %[[R0]], %[[R1]], dim = 0 : (tensor<1x8x4xf64>, tensor<1x8x4xf64>) -> tensor<2x8x4xf64>
+// CHECK-NEXT: %[[D:[^ ,:)]+]] = stablehlo.dot_general %[[L]], %[[R]], batching_dims = [0] x [0], contracting_dims = [2] x [2] : (tensor<2x8x4xf64>, tensor<2x8x4xf64>) -> tensor<2x8x8xf64>
+// CHECK-NEXT: return %[[D]] : tensor<2x8x8xf64>
+// CHECK-NEXT: }

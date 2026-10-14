@@ -12145,10 +12145,24 @@ struct ConcatDotGeneral
                                      ConcatDotGeneral> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
+  // A piece's contraction, in the form of the run's first piece: the same
+  // operand order, dimension numbers and result layout. lhs/rhs are the
+  // operands to use: the first piece's own operand for a side the whole run
+  // reads alike, otherwise the piece's operand, transposed into the first's
+  // layout by lhsPerm/rhsPerm when the run merges.
+  struct Dot {
+    stablehlo::DotGeneralOp op;
+    Value lhs, rhs;
+    SmallVector<int64_t> lhsPerm, rhsPerm; // empty: as it is
+    // Whether each operand reads the same elements as the first piece's.
+    bool sameLhs = true, sameRhs = true;
+    RankedTensorType type;
+  };
+
   // How a run of pieces merges.
   struct Plan {
     SmallVector<Operation *> views; // outermost first
-    SmallVector<stablehlo::DotGeneralOp> dots;
+    SmallVector<Dot> dots;
     // The concatenated dimension in the dots' result, or -1 when it is a unit
     // dimension the view at `unitLevel` inserts at `unitDim`.
     int64_t dim = -1, unitLevel = -1, unitDim = -1;
@@ -12238,21 +12252,23 @@ private:
         views.push_back(op);
         v = op->getOperand(0);
       }
-      auto dot = v.getDefiningOp<stablehlo::DotGeneralOp>();
-      if (!dot || !v.hasOneUse())
+      auto op = v.getDefiningOp<stablehlo::DotGeneralOp>();
+      if (!op || !v.hasOneUse())
         return false;
+      Dot dot;
       if (k == 0) {
         plan.views = views;
+        dot.op = op;
+        dot.lhs = op.getLhs();
+        dot.rhs = op.getRhs();
+        dot.type = op.getType();
       } else {
         if (views.size() != plan.views.size())
           return false;
         for (auto [x, y] : llvm::zip(views, plan.views))
           if (!sameView(x, y))
             return false;
-        stablehlo::DotGeneralOp first = plan.dots[0];
-        if (dot.getDotDimensionNumbers() != first.getDotDimensionNumbers() ||
-            dot.getPrecisionConfigAttr() != first.getPrecisionConfigAttr() ||
-            dot.getAlgorithmAttr() != first.getAlgorithmAttr())
+        if (!normalize(op, plan.dots[0], dot))
           return false;
       }
       plan.dots.push_back(dot);
@@ -12277,9 +12293,22 @@ private:
     }
 
     bool sameLhs = true, sameRhs = true;
-    for (stablehlo::DotGeneralOp dot : plan.dots) {
-      sameLhs &= equivalent(dot.getLhs(), plan.dots[0].getLhs(), 4);
-      sameRhs &= equivalent(dot.getRhs(), plan.dots[0].getRhs(), 4);
+    for (const Dot &dot : plan.dots) {
+      sameLhs &= dot.sameLhs;
+      sameRhs &= dot.sameRhs;
+    }
+    // A side the whole run reads alike is the first piece's operand; a side
+    // it does not is stacked or concatenated from each piece's own operand,
+    // in the first's layout.
+    for (Dot &dot : plan.dots) {
+      if (sameLhs) {
+        dot.lhs = plan.dots[0].lhs;
+        dot.lhsPerm.clear();
+      }
+      if (sameRhs) {
+        dot.rhs = plan.dots[0].rhs;
+        dot.rhsPerm.clear();
+      }
     }
     if (sameLhs && sameRhs)
       return false;
@@ -12290,7 +12319,7 @@ private:
     }
 
     plan.dim = c;
-    stablehlo::DotGeneralOp first = plan.dots[0];
+    stablehlo::DotGeneralOp first = plan.dots[0].op;
     auto dims = first.getDotDimensionNumbers();
     int64_t nb = dims.getLhsBatchingDimensions().size();
     int64_t nlf = first.getLhs().getType().getRank() - nb -
@@ -12357,6 +12386,252 @@ private:
     return -1;
   }
 
+  // The elements an operand reads: the value it is a view of (through
+  // transposes, element-preserving broadcasts, unit-dimension reshapes and
+  // unit-stride slices), for each operand dimension the dimension of that
+  // value it indexes (-1 for a unit dimension), and the slice of that value
+  // as low/high bounds along its dimensions.
+  struct Source {
+    Value base;
+    SmallVector<int64_t> map;
+    SmallVector<int64_t> low, high;
+  };
+
+  static void source(Value v, Source &src) {
+    auto type = cast<RankedTensorType>(v.getType());
+    src.map = llvm::to_vector(llvm::seq<int64_t>(0, type.getRank()));
+    src.base = v;
+    src.low.assign(type.getRank(), 0);
+    src.high.assign(type.getShape().begin(), type.getShape().end());
+    while (Operation *op = src.base.getDefiningOp()) {
+      if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
+        ArrayRef<int64_t> perm = transpose.getPermutation();
+        for (int64_t &m : src.map)
+          if (m >= 0)
+            m = perm[m];
+        SmallVector<int64_t> low(perm.size()), high(perm.size());
+        for (auto [i, p] : llvm::enumerate(perm)) {
+          low[p] = src.low[i];
+          high[p] = src.high[i];
+        }
+        src.low = low;
+        src.high = high;
+        src.base = transpose.getOperand();
+        continue;
+      }
+      if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+        auto inType = bcast.getOperand().getType();
+        if (inType.getNumElements() != bcast.getType().getNumElements())
+          break;
+        ArrayRef<int64_t> dims = bcast.getBroadcastDimensions();
+        SmallVector<int64_t> low(inType.getRank()), high(inType.getRank());
+        for (int64_t &m : src.map) {
+          if (m < 0)
+            continue;
+          auto found = llvm::find(dims, m);
+          m = found == dims.end() ? -1 : found - dims.begin();
+        }
+        for (auto [i, d] : llvm::enumerate(dims)) {
+          low[i] = src.low[d];
+          high[i] = src.high[d];
+        }
+        src.low = low;
+        src.high = high;
+        src.base = bcast.getOperand();
+        continue;
+      }
+      if (auto reshape = dyn_cast<stablehlo::ReshapeOp>(op)) {
+        // Only reshapes that insert or delete unit dimensions.
+        auto inType = reshape.getOperand().getType();
+        auto outType = reshape.getType();
+        SmallVector<int64_t> inNon, outNon;
+        for (int64_t d = 0; d < inType.getRank(); d++)
+          if (inType.getDimSize(d) != 1)
+            inNon.push_back(d);
+        for (int64_t d = 0; d < outType.getRank(); d++)
+          if (outType.getDimSize(d) != 1)
+            outNon.push_back(d);
+        if (inNon.size() != outNon.size())
+          break;
+        bool same = true;
+        for (auto [a, b] : llvm::zip(inNon, outNon))
+          if (inType.getDimSize(a) != outType.getDimSize(b))
+            same = false;
+        if (!same)
+          break;
+        SmallVector<int64_t> low(inType.getRank(), 0),
+            high(inType.getShape().begin(), inType.getShape().end());
+        for (int64_t &m : src.map) {
+          if (m < 0)
+            continue;
+          auto found = llvm::find(outNon, m);
+          m = found == outNon.end() ? -1 : inNon[found - outNon.begin()];
+        }
+        for (auto [a, b] : llvm::zip(inNon, outNon)) {
+          low[a] = src.low[b];
+          high[a] = src.high[b];
+        }
+        src.low = low;
+        src.high = high;
+        src.base = reshape.getOperand();
+        continue;
+      }
+      if (auto slice = dyn_cast<stablehlo::SliceOp>(op)) {
+        if (llvm::any_of(slice.getStrides(), [](int64_t s) { return s != 1; }))
+          break;
+        for (int64_t d = 0, e = src.low.size(); d < e; d++) {
+          src.low[d] += slice.getStartIndices()[d];
+          src.high[d] += slice.getStartIndices()[d];
+        }
+        src.base = slice.getOperand();
+        continue;
+      }
+      break;
+    }
+  }
+
+  // Whether operand b reads the same elements as a, with b's dimension i
+  // being a's dimension perm[i]; unit dimensions must match too.
+  static bool sameElements(const Source &a, const Source &b,
+                           ArrayRef<int64_t> perm) {
+    if (!equivalent(a.base, b.base, 4) || a.low != b.low || a.high != b.high)
+      return false;
+    for (auto [i, p] : llvm::enumerate(perm))
+      if (b.map[i] != a.map[p])
+        return false;
+    return true;
+  }
+
+  // For each dimension of first's `side` operand, the dimension of op's
+  // operand it corresponds to: batching and contracting dimensions by
+  // position in the dimension numbers, free dimensions in order.
+  static bool operandPerm(stablehlo::DotGeneralOp first,
+                          stablehlo::DotGeneralOp op, bool swapped, int side,
+                          SmallVectorImpl<int64_t> &perm) {
+    auto fd = first.getDotDimensionNumbers(), od = op.getDotDimensionNumbers();
+    ArrayRef<int64_t> fBatch = side == 0 ? fd.getLhsBatchingDimensions()
+                                         : fd.getRhsBatchingDimensions();
+    ArrayRef<int64_t> fContract = side == 0 ? fd.getLhsContractingDimensions()
+                                            : fd.getRhsContractingDimensions();
+    int oside = swapped ? 1 - side : side;
+    ArrayRef<int64_t> oBatch = oside == 0 ? od.getLhsBatchingDimensions()
+                                          : od.getRhsBatchingDimensions();
+    ArrayRef<int64_t> oContract = oside == 0 ? od.getLhsContractingDimensions()
+                                             : od.getRhsContractingDimensions();
+    Value fOperand = side == 0 ? first.getLhs() : first.getRhs();
+    Value oOperand = oside == 0 ? op.getLhs() : op.getRhs();
+    int64_t fRank = cast<RankedTensorType>(fOperand.getType()).getRank();
+    int64_t oRank = cast<RankedTensorType>(oOperand.getType()).getRank();
+    if (fRank != oRank || fBatch.size() != oBatch.size() ||
+        fContract.size() != oContract.size())
+      return false;
+    perm.assign(fRank, -1);
+    for (auto [a, b] : llvm::zip(fBatch, oBatch))
+      perm[a] = b;
+    for (auto [a, b] : llvm::zip(fContract, oContract))
+      perm[a] = b;
+    SmallVector<int64_t> fFree = freeDims(fRank, fBatch, fContract);
+    SmallVector<int64_t> oFree = freeDims(oRank, oBatch, oContract);
+    if (fFree.size() != oFree.size())
+      return false;
+    for (auto [a, b] : llvm::zip(fFree, oFree))
+      perm[a] = b;
+    SmallVector<bool> used(fRank, false);
+    for (int64_t p : perm) {
+      if (p < 0 || used[p])
+        return false;
+      used[p] = true;
+    }
+    return true;
+  }
+
+  // The permutation of op's result dimensions into first's: batch
+  // dimensions stay, and the free dimensions of a swapped op's lhs and rhs
+  // trade places.
+  static bool resultPerm(stablehlo::DotGeneralOp first,
+                         stablehlo::DotGeneralOp op, bool swapped,
+                         SmallVectorImpl<int64_t> &perm) {
+    auto fd = first.getDotDimensionNumbers(), od = op.getDotDimensionNumbers();
+    int64_t nb = fd.getLhsBatchingDimensions().size();
+    if ((int64_t)od.getLhsBatchingDimensions().size() != nb)
+      return false;
+    auto free = [&](stablehlo::DotGeneralOp d, int side) {
+      auto dims = d.getDotDimensionNumbers();
+      Value operand = side == 0 ? d.getLhs() : d.getRhs();
+      return (int64_t)freeDims(
+                 cast<RankedTensorType>(operand.getType()).getRank(),
+                 side == 0 ? dims.getLhsBatchingDimensions()
+                           : dims.getRhsBatchingDimensions(),
+                 side == 0 ? dims.getLhsContractingDimensions()
+                           : dims.getRhsContractingDimensions())
+          .size();
+    };
+    int64_t fl = free(first, 0), fr = free(first, 1);
+    int64_t ol = free(op, 0), orr = free(op, 1);
+    if (swapped ? (fl != orr || fr != ol) : (fl != ol || fr != orr))
+      return false;
+    perm = llvm::to_vector(llvm::seq<int64_t>(0, nb + fl + fr));
+    if (swapped) {
+      for (int64_t i = 0; i < fl; i++)
+        perm[nb + i] = nb + orr + i;
+      for (int64_t i = 0; i < fr; i++)
+        perm[nb + fl + i] = nb + i;
+    }
+    return true;
+  }
+
+  // op as a Dot in first's form, if it is the same contraction up to the
+  // operand order and the operand layouts. The views above every piece are
+  // the same, so op's result must already be in first's layout: a swapped
+  // piece only when both free groups have the same extents.
+  static bool normalize(stablehlo::DotGeneralOp op, const Dot &first,
+                        Dot &dot) {
+    stablehlo::DotGeneralOp firstOp = first.op;
+    if (op.getPrecisionConfigAttr() != firstOp.getPrecisionConfigAttr() ||
+        op.getAlgorithmAttr() != firstOp.getAlgorithmAttr() ||
+        op.getType().getElementType() != first.type.getElementType() ||
+        op.getType().getRank() != first.type.getRank())
+      return false;
+    Source firstSrc[2];
+    source(firstOp.getLhs(), firstSrc[0]);
+    source(firstOp.getRhs(), firstSrc[1]);
+    for (bool swapped : {false, true}) {
+      SmallVector<int64_t> rperm, perm[2];
+      if (!resultPerm(firstOp, op, swapped, rperm) ||
+          !operandPerm(firstOp, op, swapped, 0, perm[0]) ||
+          !operandPerm(firstOp, op, swapped, 1, perm[1]))
+        continue;
+      ArrayRef<int64_t> shape = op.getType().getShape();
+      bool sameLayout = true;
+      for (auto [i, p] : llvm::enumerate(rperm))
+        if (shape[p] != shape[i])
+          sameLayout = false;
+      if (!sameLayout)
+        continue;
+      Value operands[2] = {swapped ? op.getRhs() : op.getLhs(),
+                           swapped ? op.getLhs() : op.getRhs()};
+      dot.op = op;
+      dot.type = op.getType();
+      for (int side = 0; side < 2; side++) {
+        Source src;
+        source(operands[side], src);
+        bool &same = side == 0 ? dot.sameLhs : dot.sameRhs;
+        same = sameElements(firstSrc[side], src, perm[side]);
+        (side == 0 ? dot.lhs : dot.rhs) = operands[side];
+        SmallVector<int64_t> &dotPerm = side == 0 ? dot.lhsPerm : dot.rhsPerm;
+        bool identity = true;
+        for (auto [i, p] : llvm::enumerate(perm[side]))
+          identity &= (int64_t)i == p;
+        if (identity)
+          dotPerm.clear();
+        else
+          dotPerm = perm[side];
+      }
+      return true;
+    }
+    return false;
+  }
+
   // The same value, or the same pure computation of the same values.
   static bool equivalent(Value a, Value b, int depth) {
     if (a == b)
@@ -12385,18 +12660,30 @@ private:
       bool stacked = side == 0 ? plan.stackLhs : plan.stackRhs;
       bool concatenated = side == 0 ? plan.concatLhs : plan.concatRhs;
       SmallVector<Value> values;
-      for (stablehlo::DotGeneralOp dot : plan.dots)
-        values.push_back(side == 0 ? dot.getLhs() : dot.getRhs());
-      auto type = cast<RankedTensorType>(values[0].getType());
-      for (auto [k, v] : llvm::enumerate(values)) {
-        auto vType = cast<RankedTensorType>(v.getType());
-        if (stacked && (vType != type ||
+      for (const Dot &dot : plan.dots)
+        values.push_back(side == 0 ? dot.lhs : dot.rhs);
+      // Each operand's shape in the first piece's layout.
+      auto shapeOf = [&](const Dot &dot) {
+        Value v = side == 0 ? dot.lhs : dot.rhs;
+        ArrayRef<int64_t> perm = side == 0 ? dot.lhsPerm : dot.rhsPerm;
+        auto type = cast<RankedTensorType>(v.getType());
+        SmallVector<int64_t> shape(type.getShape());
+        if (!perm.empty())
+          for (auto [i, p] : llvm::enumerate(perm))
+            shape[i] = type.getDimSize(p);
+        return shape;
+      };
+      SmallVector<int64_t> shape = shapeOf(plan.dots[0]);
+      for (auto [k, dot] : llvm::enumerate(plan.dots)) {
+        SmallVector<int64_t> vShape = shapeOf(dot);
+        Value v = values[k];
+        if (stacked && (vShape != shape ||
                         llvm::is_contained(ArrayRef(values).take_front(k), v)))
           return false;
         if (concatenated) {
           int64_t cd = concatDimOf(plan, side);
-          for (int64_t d = 0; d < type.getRank(); d++)
-            if (d != cd && vType.getDimSize(d) != type.getDimSize(d))
+          for (int64_t d = 0, e = shape.size(); d < e; d++)
+            if (d != cd && vShape[d] != shape[d])
               return false;
         }
       }
@@ -12406,7 +12693,7 @@ private:
 
   // The operand dimension of `side` (0 lhs, 1 rhs) concatenated by `plan`.
   static int64_t concatDimOf(Plan &plan, int side) {
-    stablehlo::DotGeneralOp first = plan.dots[0];
+    stablehlo::DotGeneralOp first = plan.dots[0].op;
     auto dims = first.getDotDimensionNumbers();
     int64_t nb = dims.getLhsBatchingDimensions().size();
     if (plan.dim < nb)
@@ -12461,7 +12748,7 @@ private:
   }
 
   static Value buildViews(Plan &plan, Location loc, PatternRewriter &rewriter) {
-    stablehlo::DotGeneralOp first = plan.dots[0];
+    stablehlo::DotGeneralOp first = plan.dots[0].op;
     int64_t n = plan.dots.size();
     auto dims = first.getDotDimensionNumbers();
     SmallVector<int64_t> lhsBatch(dims.getLhsBatchingDimensions()),
@@ -12474,9 +12761,15 @@ private:
             .size();
 
     SmallVector<Value> lhsParts, rhsParts;
-    for (stablehlo::DotGeneralOp dot : plan.dots) {
-      lhsParts.push_back(dot.getLhs());
-      rhsParts.push_back(dot.getRhs());
+    for (const Dot &dot : plan.dots) {
+      lhsParts.push_back(dot.lhsPerm.empty()
+                             ? dot.lhs
+                             : stablehlo::TransposeOpCreate(
+                                   rewriter, loc, dot.lhs, dot.lhsPerm));
+      rhsParts.push_back(dot.rhsPerm.empty()
+                             ? dot.rhs
+                             : stablehlo::TransposeOpCreate(
+                                   rewriter, loc, dot.rhs, dot.rhsPerm));
     }
     Value lhs = first.getLhs(), rhs = first.getRhs();
     auto pieceType = cast<RankedTensorType>(first.getType());
@@ -12516,8 +12809,10 @@ private:
         rhs = stablehlo::ConcatenateOp::create(rewriter, loc, rhsParts,
                                                concatDimOf(plan, 1));
       shape[plan.dim] = 0;
-      for (stablehlo::DotGeneralOp dot : plan.dots)
-        shape[plan.dim] += dot.getType().getDimSize(plan.dim);
+      for (const Dot &dot : plan.dots) {
+        stablehlo::DotGeneralOp piece = dot.op;
+        shape[plan.dim] += piece.getType().getDimSize(plan.dim);
+      }
     }
     auto newDims = stablehlo::DotDimensionNumbersAttr::get(
         first.getContext(), lhsBatch, rhsBatch, lhsContract, rhsContract);
