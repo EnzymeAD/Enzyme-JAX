@@ -4,7 +4,7 @@
 // trip count: the value is carried in and out of the loop, the load and
 // the store guarded by the loop running at all, and the loop is a parallel
 // reduction.
-func.func @accumulate(%x: memref<?xf64>, %w: memref<25xf64>, %n: index, %k: index) {
+func.func @accumulate(%x: memref<?xf64>, %w: memref<25xf64> {llvm.noalias}, %n: index, %k: index) {
   affine.for %dy = 0 to %n {
     %xv = affine.load %x[%k + %dy * 5] : memref<?xf64>
     %acc = affine.load %w[symbol(%k)] {alignment = 8 : i64} : memref<25xf64>
@@ -14,7 +14,7 @@ func.func @accumulate(%x: memref<?xf64>, %w: memref<25xf64>, %n: index, %k: inde
   return
 }
 
-// CHECK:  func.func @accumulate(%arg0: memref<?xf64>, %arg1: memref<25xf64>, %arg2: index, %arg3: index) {
+// CHECK:  func.func @accumulate(%arg0: memref<?xf64>, %arg1: memref<25xf64> {llvm.noalias}, %arg2: index, %arg3: index) {
 // CHECK-NEXT:   %cst = arith.constant 0.000000e+00 : f64
 // CHECK-NEXT:   %0 = affine.if #set()[%arg2] -> f64 {
 // CHECK-NEXT:     %3 = affine.load %arg1[symbol(%arg3)] {alignment = 8 : i64} : memref<25xf64>

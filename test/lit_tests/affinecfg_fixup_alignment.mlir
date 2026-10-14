@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt --affine-cfg %s | FileCheck %s
 
-func.func @aligned(%x: memref<?xf64>, %w: memref<25xf64>, %k: index) {
+func.func @aligned(%x: memref<?xf64>, %w: memref<25xf64> {llvm.noalias}, %k: index) {
   affine.for %dy = 0 to 4 {
     %xv = affine.load %x[%k + %dy * 5] : memref<?xf64>
     %acc = affine.load %w[%k] {alignment = 8 : i64} : memref<25xf64>
@@ -10,7 +10,7 @@ func.func @aligned(%x: memref<?xf64>, %w: memref<25xf64>, %k: index) {
   return
 }
 
-// CHECK:  func.func @aligned(%arg0: memref<?xf64>, %arg1: memref<25xf64>, %arg2: index) {
+// CHECK:  func.func @aligned(%arg0: memref<?xf64>, %arg1: memref<25xf64> {llvm.noalias}, %arg2: index) {
 // CHECK-NEXT:    %0 = affine.load %arg1[symbol(%arg2)] {alignment = 8 : i64} : memref<25xf64>
 // CHECK-NEXT:    %1 = affine.parallel (%arg3) = (0) to (4) reduce ("addf") -> (f64) {
 // CHECK-NEXT:      %3 = affine.load %arg0[%arg3 * 5 + symbol(%arg2)] : memref<?xf64>

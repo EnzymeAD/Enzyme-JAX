@@ -7003,11 +7003,15 @@ struct CompareVs1 : public OpRewritePattern<arith::CmpIOp> {
 static IntegerSet runsOnceSet(AffineForOp forOp,
                               SmallVectorImpl<Value> &operands);
 
+static bool sameBuffer(Value a, Value b);
+
 // Whether two stores to one buffer, over the same operands, write different
 // elements in every iteration: their indices differ by a nonzero constant,
 // as two accumulators a loop keeps in one scratch (w[i] and w[i + 25]).
 static bool storesApart(affine::AffineStoreOp a, affine::AffineStoreOp b) {
-  if (a.getMemRef() != b.getMemRef() ||
+  if (!enzyme::oputils::mayAlias(a.getMemRef(), b.getMemRef()))
+    return true;
+  if (!sameBuffer(a.getMemRef(), b.getMemRef()) ||
       !llvm::equal(a.getMapOperands(), b.getMapOperands()))
     return false;
   AffineMap am = a.getAffineMap(), bm = b.getAffineMap();
@@ -7251,11 +7255,13 @@ struct SetConstraints : public FlatLinearValueConstraints {
 static LogicalResult nestDomain(ArrayRef<Operation *> ops,
                                 FlatAffineValueConstraints &domain);
 
-// Whether a loop-invariant store in `forOp` and a load to the same buffer
-// access disjoint elements across every iteration of the enclosing affine ops.
+// Whether a loop-invariant store in `forOp` and a load access disjoint
+// elements across every iteration of the enclosing affine ops.
 static bool loadsApart(affine::AffineStoreOp store, affine::AffineLoadOp load,
                        affine::AffineForOp forOp) {
-  if (store.getMemRef() != load.getMemRef() ||
+  if (!enzyme::oputils::mayAlias(store.getMemRef(), load.getMemRef()))
+    return true;
+  if (!sameBuffer(store.getMemRef(), load.getMemRef()) ||
       llvm::is_contained(store.getMapOperands(), forOp.getInductionVar()))
     return false;
   AffineValueMap storeAVM, loadAVM, diff;
@@ -7350,17 +7356,23 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
       Value memref = store.getMemRef();
       if (!definedOutside(memref, forOp))
         legal = false;
-      for (auto *user : memref.getUsers()) {
-        if (user == store)
-          continue;
-        if (!forOp->isAncestor(user))
-          continue;
-        auto otherStore = dyn_cast<affine::AffineStoreOp>(user);
-        auto otherLoad = dyn_cast<affine::AffineLoadOp>(user);
-        if (!(otherStore && storesApart(store, otherStore)) &&
-            !(otherLoad && loadsApart(store, otherLoad, forOp)))
+      forOp.walk([&](Operation *user) {
+        if (user == store ||
+            user->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
+          return;
+        if (auto otherStore = dyn_cast<affine::AffineStoreOp>(user)) {
+          if (!storesApart(store, otherStore))
+            legal = false;
+          return;
+        }
+        if (auto otherLoad = dyn_cast<affine::AffineLoadOp>(user)) {
+          if (!loadsApart(store, otherLoad, forOp))
+            legal = false;
+          return;
+        }
+        if (mayReadFrom(user, memref) || mayWriteTo(user, memref))
           legal = false;
-      }
+      });
       if (legal)
         stores.push_back(store);
     });
