@@ -1,5 +1,6 @@
 // RUN: enzymexlamlir-opt --lower-comm-to-stablehlo %s | FileCheck %s --check-prefix=SHLO
 // RUN: enzymexlamlir-opt --map-symbol="symbols=MPI_Isend=0x1,MPI_DOUBLE=0x2" --lower-comm-to-jit %s | FileCheck %s --check-prefix=JIT
+// RUN: enzymexlamlir-opt --map-symbol="symbols=MPI_Isend=0x1,MPI_DOUBLE=0x2" --lower-comm-to-jit="mpi_request_width=32" %s | FileCheck %s --check-prefix=JIT32
 
 func.func @main(%buffer: tensor<4xf64>, %dst: tensor<i32>, %tag: tensor<i32>, %comm: !comm.mpi.comm) -> !comm.mpi.request {
     %0 = comm.mpi.isend %buffer, %dst, %tag, %comm : (tensor<4xf64>, tensor<i32>, tensor<i32>, !comm.mpi.comm) -> !comm.mpi.request
@@ -28,3 +29,11 @@ func.func @main(%buffer: tensor<4xf64>, %dst: tensor<i32>, %tag: tensor<i32>, %c
 // JIT-NEXT: %[[DATATYPE:.*]] = stablehlo.constant dense<2> : tensor<i64>
 // JIT-NEXT: %[[v0:.*]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Isend (%[[BUFFER]], %[[COUNT]], %[[DATATYPE]], %[[DST]], %[[TAG]], %[[COMM]], %[[REQUEST]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 6, operand_tuple_indices = []>]> : (tensor<4xf64>, tensor<i32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>, tensor<i64>) -> tensor<i64>
 // JIT-NEXT: return %[[v0]] : tensor<i64>
+
+// JIT32-LABEL: func.func @main
+// JIT32-SAME:                 (%[[BUFFER:.*]]: tensor<4xf64>, %[[DST:.*]]: tensor<i32>, %[[TAG:.*]]: tensor<i32>, %[[COMM:.*]]: tensor<i64>) -> tensor<i32> {
+// JIT32-NEXT: %[[COUNT:.*]] = stablehlo.constant dense<4> : tensor<i32>
+// JIT32-NEXT: %[[REQUEST:.*]] = stablehlo.constant dense<-1> : tensor<i32>
+// JIT32-NEXT: %[[DATATYPE:.*]] = stablehlo.constant dense<2> : tensor<i64>
+// JIT32-NEXT: %[[v0:.*]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Isend (%[[BUFFER]], %[[COUNT]], %[[DATATYPE]], %[[DST]], %[[TAG]], %[[COMM]], %[[REQUEST]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 6, operand_tuple_indices = []>]> : (tensor<4xf64>, tensor<i32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>, tensor<i32>) -> tensor<i32>
+// JIT32-NEXT: return %[[v0]] : tensor<i32>
