@@ -432,3 +432,14 @@ func.func @through_dot(%x: tensor<8x12xf64>, %a: tensor<3x4xf64>) -> tensor<3x8x
   %s = stablehlo.add %s0, %d2 : tensor<3x8xf64>
   return %s : tensor<3x8xf64>
 }
+
+// CHECK-LABEL: func.func @through_dot(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<8x12xf64>, %[[V1:[^ ,:)]+]]: tensor<3x4xf64>) -> tensor<3x8xf64> {
+// CHECK-NEXT: %[[V2:[^ ,:)]+]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[V1]], dims = [1, 2] : (tensor<3x4xf64>) -> tensor<3x3x4xf64>
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.reshape %[[V0]] : (tensor<8x12xf64>) -> tensor<8x3x4xf64>
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = stablehlo.transpose %[[V4]], dims = [1, 0, 2] : (tensor<8x3x4xf64>) -> tensor<3x8x4xf64>
+// CHECK-NEXT: %[[V6:[^ ,:)]+]] = stablehlo.dot_general %[[V3]], %[[V5]], batching_dims = [0] x [0], contracting_dims = [2] x [2] : (tensor<3x3x4xf64>, tensor<3x8x4xf64>) -> tensor<3x3x8xf64>
+// CHECK-NEXT: %[[V7:[^ ,:)]+]] = stablehlo.reduce(%[[V6]] init: %[[V2]]) applies stablehlo.add across dimensions = [0] : (tensor<3x3x8xf64>, tensor<f64>) -> tensor<3x8xf64>
+// CHECK-NEXT: return %[[V7]] : tensor<3x8xf64>
+// CHECK-NEXT: }

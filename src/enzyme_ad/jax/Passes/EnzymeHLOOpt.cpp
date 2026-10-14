@@ -36159,20 +36159,26 @@ struct AddTermsToReduce final
   }
 
 private:
-  // The terms are computed by an elementwise op. Terms that only rearrange
-  // values are rolled only when they are themselves a slice stack (a sum of
-  // slices is a reduce of a view of their tensor).
+  // The terms are computed by an elementwise op or a contraction. Terms that
+  // only rearrange values are rolled only when they are themselves a slice
+  // stack (a sum of slices is a reduce of a view of their tensor).
   static bool isComputedTerm(ArrayRef<StackedNode> nodes) {
     return nodes[0].kind == StackedNode::Op &&
-           stablehlo::hasTraitElementwise(nodes[0].values[0].getDefiningOp());
+           computes(nodes[0].values[0].getDefiningOp());
   }
 
-  // Both terms are computed by the same elementwise op.
+  // An op that computes values rather than rearranging them: elementwise, or
+  // a contraction.
+  static bool computes(Operation *op) {
+    return stablehlo::hasTraitElementwise(op) ||
+           isa<stablehlo::DotGeneralOp, stablehlo::ReduceOp>(op);
+  }
+
+  // Both terms are computed by the same elementwise op or contraction.
   static bool areComputedAlike(ArrayRef<Value> vals) {
     Operation *first = vals[0].getDefiningOp();
-    return first && stablehlo::hasTraitElementwise(first) &&
-           isStackableOp(first) && stacksWith(vals[0], first) &&
-           stacksWith(vals[1], first);
+    return first && computes(first) && isStackableOp(first) &&
+           stacksWith(vals[0], first) && stacksWith(vals[1], first);
   }
 
   // The first position where the terms take different slices of one tensor.
