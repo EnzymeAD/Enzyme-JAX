@@ -15725,6 +15725,154 @@ bool isCommutativeEquivalent(ValueRange lhs, ValueRange rhs) {
 // and of their results: both read the same two values (through transposes,
 // in either order) with the same dimensions contracted together and paired
 // as batch dimensions, so it is a transpose of the earlier one.
+// Two concatenates of views of the same values: each operand a reshape that
+// only inserts unit dimensions, a broadcast that only permutes and inserts
+// unit dimensions, or the value itself. The later one is a broadcast of the
+// earlier that permutes and inserts unit dimensions. transpose_concat and
+// transpose_like_broadcast_concat only move a view onto the operands of a
+// concatenate with no other user, so the earlier one is kept.
+struct ConcatViewCSE final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatViewCSE> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
+    SmallVector<View> views;
+    for (Value v : op.getOperands()) {
+      View view;
+      if (!analyze(v, view))
+        return failure();
+      views.push_back(view);
+    }
+    if (!uniform(views))
+      return failure();
+    Value base = views[0].base;
+    SmallVector<Value> candidates = {base};
+    for (Operation *user : base.getUsers())
+      if (isa<stablehlo::ReshapeOp, stablehlo::BroadcastInDimOp>(user))
+        candidates.push_back(user->getResult(0));
+    for (Value candidate : candidates)
+      for (Operation *user : candidate.getUsers()) {
+        auto other = dyn_cast<stablehlo::ConcatenateOp>(user);
+        if (!other || other == op || other->getBlock() != op->getBlock() ||
+            !other->isBeforeInBlock(op) ||
+            other.getNumOperands() != op.getNumOperands())
+          continue;
+        SmallVector<int64_t> dims;
+        if (!relate(other, op, views, dims))
+          continue;
+        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+            op, op.getType(), other.getResult(), dims);
+        return success();
+      }
+    return failure();
+  }
+
+private:
+  // v as a view of base: base dimension d is v's dimension map[d], and v's
+  // other dimensions have size 1.
+  struct View {
+    Value base;
+    SmallVector<int64_t> map;
+  };
+
+  static bool analyze(Value v, View &view) {
+    auto type = cast<RankedTensorType>(v.getType());
+    if (auto reshape = v.getDefiningOp<stablehlo::ReshapeOp>()) {
+      auto inType = reshape.getOperand().getType();
+      auto inserted = findReshapeInsertionDims(inType, type);
+      if (!inserted.empty()) {
+        view.base = reshape.getOperand();
+        for (int64_t d = 0, e = type.getRank(); d < e; d++)
+          if (!llvm::is_contained(inserted, d))
+            view.map.push_back(d);
+        return (int64_t)view.map.size() == inType.getRank();
+      }
+    }
+    if (auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      auto inType = bcast.getOperand().getType();
+      ArrayRef<int64_t> dims = bcast.getBroadcastDimensions();
+      bool preserving = inType.getNumElements() == type.getNumElements();
+      for (auto [d, o] : llvm::enumerate(dims))
+        if (inType.getDimSize(d) != type.getDimSize(o))
+          preserving = false;
+      if (preserving) {
+        view.base = bcast.getOperand();
+        view.map.assign(dims.begin(), dims.end());
+        return true;
+      }
+    }
+    view.base = v;
+    view.map = llvm::to_vector(llvm::seq<int64_t>(0, type.getRank()));
+    return true;
+  }
+
+  // Every operand is the same kind of view.
+  static bool uniform(ArrayRef<View> views) {
+    for (const View &view : views)
+      if (view.map != views[0].map)
+        return false;
+    return true;
+  }
+
+  // Whether op is a broadcast of other: other's dimension j is op's
+  // dimension dims[j].
+  static bool relate(stablehlo::ConcatenateOp other,
+                     stablehlo::ConcatenateOp op, ArrayRef<View> views,
+                     SmallVectorImpl<int64_t> &dims) {
+    SmallVector<View> otherViews;
+    for (auto [k, v] : llvm::enumerate(other.getOperands())) {
+      View view;
+      if (!analyze(v, view) || view.base != views[k].base)
+        return false;
+      otherViews.push_back(view);
+    }
+    if (!uniform(otherViews))
+      return false;
+    ArrayRef<int64_t> from = otherViews[0].map, to = views[0].map;
+    auto fromType = other.getType(), toType = op.getType();
+    if (fromType.getNumElements() != toType.getNumElements() ||
+        fromType.getRank() > toType.getRank())
+      return false;
+    int64_t a = other.getDimension(), b = op.getDimension();
+    // Both stack along an inserted dimension, or both concatenate along the
+    // same dimension of the values.
+    auto fromBase = llvm::find(from, a), toBase = llvm::find(to, b);
+    if ((fromBase == from.end()) != (toBase == to.end()))
+      return false;
+    if (fromBase != from.end() &&
+        fromBase - from.begin() != toBase - to.begin())
+      return false;
+    dims.assign(fromType.getRank(), -1);
+    SmallVector<bool> used(toType.getRank(), false);
+    for (auto [f, t] : llvm::zip(from, to)) {
+      dims[f] = t;
+      used[t] = true;
+    }
+    dims[a] = b;
+    used[b] = true;
+    // The remaining dimensions have size 1 on both sides.
+    int64_t next = 0;
+    for (int64_t j = 0, e = fromType.getRank(); j < e; j++) {
+      if (dims[j] >= 0)
+        continue;
+      while (next < toType.getRank() && used[next])
+        next++;
+      if (next == toType.getRank())
+        return false;
+      dims[j] = next;
+      used[next] = true;
+    }
+    for (int64_t j = 0, e = fromType.getRank(); j < e; j++)
+      if (fromType.getDimSize(j) != toType.getDimSize(dims[j]))
+        return false;
+    for (int64_t t = 0, e = toType.getRank(); t < e; t++)
+      if (!used[t] && toType.getDimSize(t) != 1)
+        return false;
+    return true;
+  }
+};
+
 struct CSEDotGeneralTransposed final
     : CheckedOpRewritePattern<stablehlo::DotGeneralOp,
                               CSEDotGeneralTransposed> {
@@ -43121,7 +43269,7 @@ struct EnzymeHLOOptPass
           CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
           CSE<enzymexla::ExtendOp>, CSEIota, CSE<stablehlo::CompareOp>,
           CSE<stablehlo::GatherOp>, CSE<stablehlo::ScatterOp>,
-          CSE<stablehlo::ReduceOp>, CSEDotGeneralTransposed,
+          CSE<stablehlo::ReduceOp>, CSEDotGeneralTransposed, ConcatViewCSE,
           CSE<stablehlo::SelectOp>, CSE<stablehlo::RealOp>, CSE<chlo::ConjOp>,
           CSE<stablehlo::ImagOp>, CSE<stablehlo::BatchNormTrainingOp>,
           CSE<stablehlo::BatchNormInferenceOp>, CSE<stablehlo::BatchNormGradOp>,
