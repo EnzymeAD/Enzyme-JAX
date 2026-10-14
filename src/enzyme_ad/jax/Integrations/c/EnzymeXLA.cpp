@@ -727,6 +727,7 @@ static void addScatterGatherPasses(std::vector<std::string> &list,
   list.push_back("cse_gather");
   list.push_back("cse_scatter");
   list.push_back("cse_reduce");
+  list.push_back("cse_dot_general_transposed");
 }
 
 static void addSliceToBatchPasses(std::vector<std::string> &list) {

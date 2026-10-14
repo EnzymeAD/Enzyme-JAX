@@ -1127,6 +1127,10 @@ def ApplyCSEReducePatterns : EnzymeHLOPatternOp<
     "cse_reduce"> {
   let patterns = ["CSE<stablehlo::ReduceOp>"];
 }
+def ApplyCSEDotGeneralTransposedPatterns : EnzymeHLOPatternOp<
+    "cse_dot_general_transposed"> {
+  let patterns = ["CSEDotGeneralTransposed"];
+}
 def ApplyCSEComparePatterns : EnzymeHLOPatternOp<
     "cse_compare"> {
   let patterns = ["CSE<stablehlo::CompareOp>"];

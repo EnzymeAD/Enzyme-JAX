@@ -15554,6 +15554,138 @@ bool isCommutativeEquivalent(ValueRange lhs, ValueRange rhs) {
   }
 }
 
+// A dot_general equal to an earlier one up to transposes of their operands
+// and of their results: both read the same two values (through transposes,
+// in either order) with the same dimensions contracted together and paired
+// as batch dimensions, so it is a transpose of the earlier one.
+struct CSEDotGeneralTransposed final
+    : CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                              CSEDotGeneralTransposed> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    Form form;
+    if (!analyze(op, form))
+      return failure();
+    Value key =
+        std::distance(form.base[0].user_begin(), form.base[0].user_end()) <=
+                std::distance(form.base[1].user_begin(),
+                              form.base[1].user_end())
+            ? form.base[0]
+            : form.base[1];
+    SmallVector<Value> worklist = {key};
+    for (int64_t i = 0; i < (int64_t)worklist.size(); i++) {
+      for (Operation *user : worklist[i].getUsers()) {
+        if (auto transpose = dyn_cast<stablehlo::TransposeOp>(user)) {
+          if (i == 0)
+            worklist.push_back(transpose.getResult());
+          continue;
+        }
+        auto other = dyn_cast<stablehlo::DotGeneralOp>(user);
+        // A dot_general only dead ops use (one transpose_dot_reorder just
+        // replaced by a copy reading its operands swapped) would be matched
+        // again forever.
+        if (!other || other == op ||
+            llvm::all_of(other->getUsers(), isOpTriviallyDead) ||
+            other->getBlock() != op->getBlock() || !other->isBeforeInBlock(op))
+          continue;
+        SmallVector<int64_t> perm;
+        if (!matches(op, form, other, perm))
+          continue;
+        if (llvm::equal(perm, llvm::seq<int64_t>(0, perm.size())))
+          rewriter.replaceOp(op, other.getResult());
+        else
+          rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
+              op, other.getResult(), perm);
+        return success();
+      }
+    }
+    return failure();
+  }
+
+private:
+  // The values a dot_general reads through transposes, for each result
+  // dimension the dimensions of those values it indexes (-1 for none), and
+  // the pairs of their dimensions contracted together.
+  struct Form {
+    Value base[2];
+    SmallVector<std::pair<int64_t, int64_t>> result;
+    SmallVector<std::pair<int64_t, int64_t>> contracted;
+  };
+
+  static Value throughTransposes(Value v, SmallVectorImpl<int64_t> &perm) {
+    perm = llvm::to_vector(
+        llvm::seq<int64_t>(0, cast<RankedTensorType>(v.getType()).getRank()));
+    while (auto transpose = v.getDefiningOp<stablehlo::TransposeOp>()) {
+      for (int64_t &d : perm)
+        d = transpose.getPermutation()[d];
+      v = transpose.getOperand();
+    }
+    return v;
+  }
+
+  static bool analyze(stablehlo::DotGeneralOp op, Form &form) {
+    SmallVector<int64_t> perm[2];
+    form.base[0] = throughTransposes(op.getLhs(), perm[0]);
+    form.base[1] = throughTransposes(op.getRhs(), perm[1]);
+    if (form.base[0] == form.base[1])
+      return false;
+    auto dims = op.getDotDimensionNumbers();
+    for (auto [l, r] : llvm::zip(dims.getLhsBatchingDimensions(),
+                                 dims.getRhsBatchingDimensions()))
+      form.result.push_back({perm[0][l], perm[1][r]});
+    for (int64_t d = 0; d < (int64_t)perm[0].size(); d++)
+      if (!llvm::is_contained(dims.getLhsBatchingDimensions(), d) &&
+          !llvm::is_contained(dims.getLhsContractingDimensions(), d))
+        form.result.push_back({perm[0][d], -1});
+    for (int64_t d = 0; d < (int64_t)perm[1].size(); d++)
+      if (!llvm::is_contained(dims.getRhsBatchingDimensions(), d) &&
+          !llvm::is_contained(dims.getRhsContractingDimensions(), d))
+        form.result.push_back({-1, perm[1][d]});
+    for (auto [l, r] : llvm::zip(dims.getLhsContractingDimensions(),
+                                 dims.getRhsContractingDimensions()))
+      form.contracted.push_back({perm[0][l], perm[1][r]});
+    llvm::sort(form.contracted);
+    return true;
+  }
+
+  // Whether other computes op's result up to a transpose: op's result
+  // dimension r is other's dimension perm[r].
+  static bool matches(stablehlo::DotGeneralOp op, const Form &form,
+                      stablehlo::DotGeneralOp other,
+                      SmallVectorImpl<int64_t> &perm) {
+    if (op.getType().getElementType() != other.getType().getElementType() ||
+        op.getPrecisionConfigAttr() != other.getPrecisionConfigAttr() ||
+        op.getAlgorithmAttr() != other.getAlgorithmAttr())
+      return false;
+    Form otherForm;
+    if (!analyze(other, otherForm))
+      return false;
+    if (otherForm.base[0] == form.base[1] &&
+        otherForm.base[1] == form.base[0]) {
+      std::swap(otherForm.base[0], otherForm.base[1]);
+      for (auto &p : otherForm.result)
+        std::swap(p.first, p.second);
+      for (auto &p : otherForm.contracted)
+        std::swap(p.first, p.second);
+      llvm::sort(otherForm.contracted);
+    }
+    if (otherForm.base[0] != form.base[0] ||
+        otherForm.base[1] != form.base[1] ||
+        otherForm.contracted != form.contracted ||
+        otherForm.result.size() != form.result.size())
+      return false;
+    for (auto p : form.result) {
+      auto it = llvm::find(otherForm.result, p);
+      if (it == otherForm.result.end())
+        return false;
+      perm.push_back(it - otherForm.result.begin());
+    }
+    return true;
+  }
+};
+
 template <typename T> struct CSE final : CheckedOpRewritePattern<T, CSE<T>> {
   using CheckedOpRewritePattern<T, CSE<T>>::CheckedOpRewritePattern;
 
@@ -42772,9 +42904,9 @@ struct EnzymeHLOOptPass
           CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
           CSE<enzymexla::ExtendOp>, CSEIota, CSE<stablehlo::CompareOp>,
           CSE<stablehlo::GatherOp>, CSE<stablehlo::ScatterOp>,
-          CSE<stablehlo::ReduceOp>, CSE<stablehlo::SelectOp>,
-          CSE<stablehlo::RealOp>, CSE<chlo::ConjOp>, CSE<stablehlo::ImagOp>,
-          CSE<stablehlo::BatchNormTrainingOp>,
+          CSE<stablehlo::ReduceOp>, CSEDotGeneralTransposed,
+          CSE<stablehlo::SelectOp>, CSE<stablehlo::RealOp>, CSE<chlo::ConjOp>,
+          CSE<stablehlo::ImagOp>, CSE<stablehlo::BatchNormTrainingOp>,
           CSE<stablehlo::BatchNormInferenceOp>, CSE<stablehlo::BatchNormGradOp>,
           CSE<stablehlo::ExpOp>, CSE<stablehlo::Expm1Op>, CSE<stablehlo::LogOp>,
           CSE<stablehlo::Log1pOp>, CSE<stablehlo::TanhOp>,
