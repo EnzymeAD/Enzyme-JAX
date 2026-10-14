@@ -726,6 +726,7 @@ static void addScatterGatherPasses(std::vector<std::string> &list,
   list.push_back(passWithArg("scatter_const_fold", maxConstThreshold));
   list.push_back("cse_gather");
   list.push_back("cse_scatter");
+  list.push_back("cse_reduce");
 }
 
 static void addSliceToBatchPasses(std::vector<std::string> &list) {
