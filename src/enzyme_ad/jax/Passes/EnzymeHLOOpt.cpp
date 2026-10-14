@@ -12182,17 +12182,26 @@ struct ConcatDotGeneral
     for (int64_t begin = 0; begin < n;) {
       int64_t end = n;
       Plan plan;
+      Mixed mixed;
+      bool isMixed = false;
       for (; end >= begin + 2; end--) {
         plan = Plan();
         if (analyze(ArrayRef<Value>(operands).slice(begin, end - begin),
                     concat.getDimension(), plan))
           break;
+        mixed = Mixed();
+        if (analyzeMixed(ArrayRef<Value>(operands).slice(begin, end - begin),
+                         concat.getDimension(), mixed)) {
+          isMixed = true;
+          break;
+        }
       }
       if (end < begin + 2) {
         merged.push_back(operands[begin++]);
         continue;
       }
-      Value run = build(plan, concat.getLoc(), rewriter);
+      Value run = isMixed ? buildMixed(mixed, concat.getLoc(), rewriter)
+                          : build(plan, concat.getLoc(), rewriter);
       merged.push_back(run);
       changed = true;
       begin = end;
@@ -12208,6 +12217,402 @@ struct ConcatDotGeneral
   }
 
 private:
+  // A run whose pieces carry the concatenated dimension differently: as a
+  // free dimension of one operand of the dot (an earlier merge of such a
+  // run), or as a unit dimension the piece's views insert (a single piece).
+  // Every piece is the same contraction against a shared operand; the pieces'
+  // own operands, each with the concatenated dimension (a unit one inserted
+  // for a single piece), concatenate along it and one dot replaces the run,
+  // followed by the views of the first piece that carries the dimension.
+  struct Mixed {
+    // The pieces' dots and, per piece, the extent along the concatenated
+    // dimension (1 for a single piece) and the dimension of the varying
+    // operand that is the concatenated one (-1: insert a unit one).
+    SmallVector<stablehlo::DotGeneralOp> dots;
+    SmallVector<int64_t> extents, varyingDims;
+    // Per piece, the permutation of its varying operand into the carrier's
+    // layout (without the concatenated dimension for a unit piece); empty
+    // when already so.
+    SmallVector<SmallVector<int64_t>> perms;
+    SmallVector<SmallVector<Operation *>> views; // per piece, outermost first
+    int64_t carrier = -1; // index of a piece carrying the dimension
+    bool varyingIsLhs = false;
+    // In the carrier's dot: the position of the concatenated dimension in
+    // the varying operand and in the result.
+    int64_t operandDim = -1, resultDim = -1;
+  };
+
+  // A reshape that only inserts unit dimensions, as the broadcast dims it
+  // is equivalent to (output position of each input dimension), or empty.
+  static SmallVector<int64_t> unitInsertDims(Operation *op) {
+    auto reshape = dyn_cast<stablehlo::ReshapeOp>(op);
+    SmallVector<int64_t> dims;
+    if (!reshape)
+      return dims;
+    auto inserted = findReshapeInsertionDims(reshape.getOperand().getType(),
+                                             reshape.getType());
+    if (inserted.empty())
+      return dims;
+    for (int64_t d = 0, e = reshape.getType().getRank(); d < e; d++)
+      if (!llvm::is_contained(inserted, d))
+        dims.push_back(d);
+    if ((int64_t)dims.size() != reshape.getOperand().getType().getRank())
+      dims.clear();
+    return dims;
+  }
+
+  // The broadcast dims of a mixed-path view (a transpose has none).
+  static SmallVector<int64_t> viewDims(Operation *op) {
+    if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op))
+      return SmallVector<int64_t>(bcast.getBroadcastDimensions());
+    return unitInsertDims(op);
+  }
+
+  static bool isMixedView(Operation *op) {
+    return isView(op) || !unitInsertDims(op).empty();
+  }
+
+  // The dimension of a value's producer-side result that the concatenated
+  // dimension d of `piece` comes from, through the views (outermost first),
+  // or -1 when a view inserts it. Fills `views`.
+  static int64_t throughViews(Value piece, int64_t d,
+                              SmallVectorImpl<Operation *> &views,
+                              Value &inner) {
+    Value v = piece;
+    int64_t c = d;
+    while (Operation *op = v.getDefiningOp()) {
+      if (!isMixedView(op))
+        break;
+      if (!v.hasOneUse())
+        return -2;
+      views.push_back(op);
+      if (c >= 0) {
+        if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
+          c = transpose.getPermutation()[c];
+        } else {
+          SmallVector<int64_t> dims = viewDims(op);
+          auto found = llvm::find(dims, c);
+          c = found == dims.end() ? -1 : found - dims.begin();
+        }
+      }
+      v = op->getOperand(0);
+    }
+    inner = v;
+    return c;
+  }
+
+  static bool analyzeMixed(ArrayRef<Value> pieces, int64_t concatDim,
+                           Mixed &m) {
+    // Each piece: its dot, and where the concatenated dimension lands.
+    for (Value piece : pieces) {
+      SmallVector<Operation *> views;
+      Value inner;
+      int64_t c = throughViews(piece, concatDim, views, inner);
+      if (c == -2)
+        return false;
+      auto dot = inner.getDefiningOp<stablehlo::DotGeneralOp>();
+      if (!dot || !inner.hasOneUse())
+        return false;
+      m.dots.push_back(dot);
+      m.views.push_back(views);
+      int64_t extent =
+          cast<RankedTensorType>(piece.getType()).getDimSize(concatDim);
+      m.extents.push_back(extent);
+      m.varyingDims.push_back(c); // result dim for now; resolved below
+      if (c >= 0 && m.carrier < 0)
+        m.carrier = m.dots.size() - 1;
+    }
+    // A mixed run has at least one carrier and at least one unit piece.
+    bool hasUnit = llvm::is_contained(m.varyingDims, -1);
+    if (m.carrier < 0 || !hasUnit)
+      return false;
+
+    stablehlo::DotGeneralOp cd = m.dots[m.carrier];
+    auto dims = cd.getDotDimensionNumbers();
+    int64_t nb = dims.getLhsBatchingDimensions().size();
+    SmallVector<int64_t> lhsFree = freeDims(cd.getLhs().getType().getRank(),
+                                            dims.getLhsBatchingDimensions(),
+                                            dims.getLhsContractingDimensions());
+    SmallVector<int64_t> rhsFree = freeDims(cd.getRhs().getType().getRank(),
+                                            dims.getRhsBatchingDimensions(),
+                                            dims.getRhsContractingDimensions());
+    int64_t r = m.varyingDims[m.carrier];
+    if (r < nb)
+      return false; // a batch dimension: not this pattern
+    if (r < nb + (int64_t)lhsFree.size()) {
+      m.varyingIsLhs = true;
+      m.operandDim = lhsFree[r - nb];
+    } else {
+      m.varyingIsLhs = false;
+      m.operandDim = rhsFree[r - nb - lhsFree.size()];
+    }
+    m.resultDim = r;
+
+    // The views of every piece must lay the dot's result out the same way:
+    // tracking each result dimension of the carrier through its views and
+    // each of a unit piece's (the inserted one counted at m.resultDim)
+    // through its own gives the same output position for the same dimension.
+    auto layout = [&](ArrayRef<Operation *> views, int64_t rank,
+                      int64_t insertAt, SmallVectorImpl<int64_t> &out) {
+      // out[d] = output position of result dim d (d in the carrier's
+      // numbering, with insertAt the inserted one for a unit piece).
+      // Start: identity over the piece's own result dims.
+      SmallVector<int64_t> pos; // pos[i] = current position of own dim i
+      for (int64_t i = 0; i < rank; i++)
+        pos.push_back(i);
+      int64_t unitPos = -1;
+      for (Operation *op : llvm::reverse(views)) {
+        if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
+          ArrayRef<int64_t> perm = transpose.getPermutation();
+          // output dim o = input dim perm[o]; so input dim i goes to o
+          // with perm[o] == i.
+          SmallVector<int64_t> inv(perm.size());
+          for (auto [o, pI] : llvm::enumerate(perm))
+            inv[pI] = o;
+          for (int64_t &x : pos)
+            x = inv[x];
+          if (unitPos >= 0)
+            unitPos = inv[unitPos];
+        } else {
+          SmallVector<int64_t> dims = viewDims(op);
+          for (int64_t &x : pos)
+            x = dims[x];
+          if (unitPos >= 0)
+            unitPos = dims[unitPos];
+          else {
+            // The inserted dimension: the output dim not in dims.
+            int64_t outRank =
+                cast<RankedTensorType>(op->getResult(0).getType()).getRank();
+            for (int64_t o = 0; o < outRank; o++)
+              if (!llvm::is_contained(dims, o)) {
+                unitPos = o;
+                break;
+              }
+          }
+        }
+      }
+      out.clear();
+      for (int64_t d = 0, i = 0; d < rank + (insertAt >= 0 ? 1 : 0); d++) {
+        if (d == insertAt)
+          out.push_back(unitPos);
+        else
+          out.push_back(pos[i++]);
+      }
+    };
+    // layouts[k][d]: output position of piece k's result dimension d (for a
+    // unit piece, numbered as the carrier's, the inserted one at
+    // m.resultDim). The pieces need not agree: free dimensions pair by
+    // output position below, and the carrier's views are reapplied.
+    SmallVector<SmallVector<int64_t>> layouts(m.dots.size());
+    for (auto [k, views] : llvm::enumerate(m.views))
+      layout(views, m.dots[k].getType().getRank(),
+             m.varyingDims[k] < 0 ? m.resultDim : -1, layouts[k]);
+    SmallVector<int64_t> &carrierLayout = layouts[m.carrier];
+    for (auto [k, l] : llvm::enumerate(layouts)) {
+      // Every result dimension must land somewhere the carrier's does: the
+      // same set of positions (a permutation of the carrier's layout).
+      SmallVector<int64_t> a(l), b(carrierLayout);
+      llvm::sort(a);
+      llvm::sort(b);
+      if (a != b)
+        return false;
+    }
+    // Every piece must be the carrier's contraction with the varying
+    // operand's concatenated dimension removed (unit pieces) or present
+    // (carriers), and the shared operand the same elements.
+    Value sharedCarrier = m.varyingIsLhs ? cd.getRhs() : cd.getLhs();
+    for (auto [k, dot] : llvm::enumerate(m.dots)) {
+      auto dn = dot.getDotDimensionNumbers();
+      bool unit = m.varyingDims[k] < 0;
+      Value shared = m.varyingIsLhs ? dot.getRhs() : dot.getLhs();
+      Value varying = m.varyingIsLhs ? dot.getLhs() : dot.getRhs();
+      if (!equivalent(shared, sharedCarrier, 4))
+        return false;
+      if (dot.getPrecisionConfigAttr() != cd.getPrecisionConfigAttr() ||
+          dot.getAlgorithmAttr() != cd.getAlgorithmAttr())
+        return false;
+      // Dimension numbers of the varying side, with the concatenated
+      // dimension removed for a carrier, must equal the unit piece's; the
+      // shared side's must be identical.
+      auto strip = [&](ArrayRef<int64_t> xs, int64_t at) {
+        SmallVector<int64_t> out;
+        for (int64_t x : xs)
+          out.push_back(x > at ? x - 1 : x);
+        return out;
+      };
+      ArrayRef<int64_t> cvB = m.varyingIsLhs ? dims.getLhsBatchingDimensions()
+                                             : dims.getRhsBatchingDimensions();
+      ArrayRef<int64_t> cvC = m.varyingIsLhs
+                                  ? dims.getLhsContractingDimensions()
+                                  : dims.getRhsContractingDimensions();
+      ArrayRef<int64_t> csB = m.varyingIsLhs ? dims.getRhsBatchingDimensions()
+                                             : dims.getLhsBatchingDimensions();
+      ArrayRef<int64_t> csC = m.varyingIsLhs
+                                  ? dims.getRhsContractingDimensions()
+                                  : dims.getLhsContractingDimensions();
+      ArrayRef<int64_t> pvB = m.varyingIsLhs ? dn.getLhsBatchingDimensions()
+                                             : dn.getRhsBatchingDimensions();
+      ArrayRef<int64_t> pvC = m.varyingIsLhs ? dn.getLhsContractingDimensions()
+                                             : dn.getRhsContractingDimensions();
+      ArrayRef<int64_t> psB = m.varyingIsLhs ? dn.getRhsBatchingDimensions()
+                                             : dn.getLhsBatchingDimensions();
+      ArrayRef<int64_t> psC = m.varyingIsLhs ? dn.getRhsContractingDimensions()
+                                             : dn.getLhsContractingDimensions();
+      if (psB != csB || psC != csC)
+        return false;
+      // The carrier's varying-operand dimension numbers, the concatenated
+      // dimension dropped for comparison with a unit piece.
+      SmallVector<int64_t> carrierVB(cvB), carrierVC(cvC);
+      if (unit) {
+        carrierVB = strip(cvB, m.operandDim);
+        carrierVC = strip(cvC, m.operandDim);
+        if (cast<RankedTensorType>(varying.getType()).getRank() + 1 !=
+            cast<RankedTensorType>(
+                (m.varyingIsLhs ? cd.getLhs() : cd.getRhs()).getType())
+                .getRank())
+          return false;
+        m.varyingDims[k] = -1;
+      } else {
+        if (m.varyingDims[k] != m.resultDim)
+          return false;
+        m.varyingDims[k] = m.operandDim;
+      }
+      // The permutation of the piece's varying operand into the carrier's
+      // layout (less the concatenated dimension for a unit piece): batch and
+      // contracting dimensions by position, free dimensions in order.
+      auto vt = cast<RankedTensorType>(varying.getType());
+      int64_t vr = vt.getRank();
+      if ((int64_t)pvB.size() != (int64_t)carrierVB.size() ||
+          (int64_t)pvC.size() != (int64_t)carrierVC.size())
+        return false;
+      SmallVector<int64_t> perm(vr, -1); // perm[carrier dim] = piece dim
+      for (auto [a, b] : llvm::zip(carrierVB, pvB))
+        perm[a] = b;
+      for (auto [a, b] : llvm::zip(carrierVC, pvC))
+        perm[a] = b;
+      SmallVector<int64_t> cFree = freeDims(vr, carrierVB, carrierVC);
+      SmallVector<int64_t> pFree = freeDims(vr, pvB, pvC);
+      if (cFree.size() != pFree.size())
+        return false;
+      // Free dimensions pair by the output position their result dimension
+      // lands at. The varying operand's i-th free dimension is the i-th of
+      // that side's free dimensions in the result: after the batch
+      // dimensions, then after the lhs free dimensions when it is the rhs.
+      int64_t nbAll = csB.size();
+      int64_t lhsFreeCount =
+          m.varyingIsLhs
+              ? (int64_t)cFree.size()
+              : (int64_t)freeDims(
+                    cast<RankedTensorType>(
+                        (m.varyingIsLhs ? cd.getRhs() : cd.getLhs()).getType())
+                        .getRank(),
+                    csB, csC)
+                    .size();
+      int64_t base = nbAll + (m.varyingIsLhs ? 0 : lhsFreeCount);
+      // Result dimension index of the carrier's i-th varying free dim, in
+      // the carrier's own result numbering (which includes resultDim).
+      auto carrierResultDim = [&](int64_t i) {
+        int64_t r = base + i;
+        // The carrier's dropped dimension sits among these free dims; the
+        // carrier's result numbering includes it, so free dims at or after
+        // its position shift by one for a unit piece's stripped numbering.
+        return r;
+      };
+      // Carrier free dims in the carrier's full numbering: indices of the
+      // carrier's varying free dims (the concatenated one included).
+      SmallVector<int64_t> cFreeFull =
+          freeDims(cast<RankedTensorType>(
+                       (m.varyingIsLhs ? cd.getLhs() : cd.getRhs()).getType())
+                       .getRank(),
+                   cvB, cvC);
+      // Map: carrier free dim (full numbering) -> output position.
+      SmallVector<std::pair<int64_t, int64_t>> carrierFreeOut;
+      for (auto [i, fd] : llvm::enumerate(cFreeFull))
+        carrierFreeOut.push_back({fd, layouts[m.carrier][base + (int64_t)i]});
+      // Map: piece free dim -> output position (piece numbering; for a unit
+      // piece layouts[k] is in carrier numbering with the inserted dim at
+      // m.resultDim, so skip that entry).
+      SmallVector<std::pair<int64_t, int64_t>> pieceFreeOut;
+      for (auto [i, fd] : llvm::enumerate(pFree)) {
+        int64_t r = base + (int64_t)i;
+        if (unit && r >= m.resultDim)
+          r++;
+        pieceFreeOut.push_back({fd, layouts[k][r]});
+      }
+      (void)carrierResultDim;
+      for (auto [cfd, cpos] : carrierFreeOut) {
+        if (unit && cfd == m.operandDim)
+          continue;
+        int64_t cStripped = unit && cfd > m.operandDim ? cfd - 1 : cfd;
+        bool found = false;
+        for (auto [pfd, ppos] : pieceFreeOut)
+          if (ppos == cpos) {
+            perm[cStripped] = pfd;
+            found = true;
+          }
+        if (!found)
+          return false;
+      }
+      SmallVector<bool> used(vr, false);
+      for (int64_t x : perm) {
+        if (x < 0 || used[x])
+          return false;
+        used[x] = true;
+      }
+      // Shapes must agree under the permutation.
+      auto ct = cast<RankedTensorType>(
+          (m.varyingIsLhs ? cd.getLhs() : cd.getRhs()).getType());
+      SmallVector<int64_t> cShape(ct.getShape());
+      if (unit)
+        cShape.erase(cShape.begin() + m.operandDim);
+      for (int64_t d = 0; d < vr; d++)
+        if (vt.getDimSize(perm[d]) != cShape[d])
+          return false;
+      bool identity = true;
+      for (int64_t d = 0; d < vr; d++)
+        identity &= perm[d] == d;
+      m.perms.push_back(identity ? SmallVector<int64_t>() : perm);
+    }
+    return true;
+  }
+
+  static Value buildMixed(Mixed &m, Location loc, PatternRewriter &rewriter) {
+    stablehlo::DotGeneralOp cd = m.dots[m.carrier];
+    // The varying operands, each with the concatenated dimension at
+    // m.operandDim (a unit one inserted for single pieces), concatenated.
+    SmallVector<Value> parts;
+    int64_t total = 0;
+    for (auto [k, dot] : llvm::enumerate(m.dots)) {
+      Value varying = m.varyingIsLhs ? dot.getLhs() : dot.getRhs();
+      if (!m.perms[k].empty())
+        varying =
+            stablehlo::TransposeOpCreate(rewriter, loc, varying, m.perms[k]);
+      if (m.varyingDims[k] < 0) {
+        auto vt = cast<RankedTensorType>(varying.getType());
+        SmallVector<int64_t> shape(vt.getShape());
+        shape.insert(shape.begin() + m.operandDim, 1);
+        varying = stablehlo::ReshapeOpCreate(rewriter, loc, varying, shape);
+      }
+      parts.push_back(varying);
+      total += m.extents[k];
+    }
+    Value stacked =
+        stablehlo::ConcatenateOp::create(rewriter, loc, parts, m.operandDim);
+    Value shared = m.varyingIsLhs ? cd.getRhs() : cd.getLhs();
+    SmallVector<int64_t> shape(cd.getType().getShape());
+    shape[m.resultDim] = total;
+    Value dot = stablehlo::DotGeneralOp::create(
+        rewriter, loc,
+        RankedTensorType::get(shape, cd.getType().getElementType()),
+        m.varyingIsLhs ? stacked : shared, m.varyingIsLhs ? shared : stacked,
+        cd.getDotDimensionNumbers(), cd.getPrecisionConfigAttr(),
+        cd.getAlgorithmAttr());
+    Value v = dot;
+    for (Operation *op : llvm::reverse(m.views[m.carrier]))
+      v = reapply(rewriter, loc, op, v);
+    return v;
+  }
+
   // A view that only permutes and inserts unit dimensions.
   static bool isView(Operation *op) {
     if (isa<stablehlo::TransposeOp>(op))
@@ -12731,6 +13136,15 @@ private:
     if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op))
       return stablehlo::TransposeOpCreate(rewriter, loc, v,
                                           transpose.getPermutation());
+    if (auto reshape = dyn_cast<stablehlo::ReshapeOp>(op)) {
+      // A unit-inserting reshape: the same insertions on v's shape.
+      SmallVector<int64_t> dims = unitInsertDims(op);
+      SmallVector<int64_t> shape(reshape.getType().getRank(), 1);
+      auto vType = cast<RankedTensorType>(v.getType());
+      for (auto [i, d] : llvm::enumerate(dims))
+        shape[d] = vType.getDimSize(i);
+      return stablehlo::ReshapeOpCreate(rewriter, loc, v, shape);
+    }
     auto bcast = cast<stablehlo::BroadcastInDimOp>(op);
     ArrayRef<int64_t> dims = bcast.getBroadcastDimensions();
     SmallVector<int64_t> shape(bcast.getType().getShape());
