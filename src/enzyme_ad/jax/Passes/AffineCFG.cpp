@@ -7026,19 +7026,8 @@ static bool storesApart(affine::AffineStoreOp a, affine::AffineStoreOp b) {
 }
 
 // The loops around `op` within its affine scope, as the dependence analysis
-// counts them: each affine.for one, each affine.parallel one per dimension.
-static unsigned numLoopsInAffineScope(Operation *op) {
-  unsigned depth = 0;
-  for (Operation *cur = op->getParentOp();
-       cur && !cur->hasTrait<OpTrait::AffineScope>();
-       cur = cur->getParentOp()) {
-    if (isa<AffineForOp>(cur))
-      depth++;
-    else if (auto par = dyn_cast<AffineParallelOp>(cur))
-      depth += par.getNumDims();
-  }
-  return depth;
-}
+// counts them (the parallelization's, vendored below).
+static unsigned getNestingDepth(Operation *op);
 
 // Whether `load`, within `forOp`, may read in some iteration what `store`
 // (in the body of `forOp`) wrote in the same or an earlier iteration: the
@@ -7053,7 +7042,7 @@ static bool loadMayReadStoreInLoop(affine::AffineForOp forOp,
     return false;
   MemRefAccess src(store), dst(load);
   // the loops around `forOp`, and `forOp`: those common to the two
-  unsigned common = numLoopsInAffineScope(forOp) + 1;
+  unsigned common = ::getNestingDepth(forOp) + 1;
   for (unsigned depth : {common, common + 1}) {
     DependenceResult result = checkMemrefAccessDependence(src, dst, depth);
     if (result.value != DependenceResult::NoDependence)
