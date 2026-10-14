@@ -14282,8 +14282,10 @@ struct SliceReshapeConcat
              .succeeded())
       return failure();
 
-    auto c2 = stablehlo::ConcatenateOp::create(rewriter, concat.getLoc(),
-                                               postConcat, dim);
+    Value c2 = postConcat[0];
+    if (postConcat.size() != 1)
+      c2 = stablehlo::ConcatenateOp::create(rewriter, concat.getLoc(),
+                                            postConcat, dim);
     rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), c2);
     return success();
   }

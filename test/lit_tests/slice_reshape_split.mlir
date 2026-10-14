@@ -12,9 +12,8 @@ func.func @rows_of_one_piece(%a: tensor<8x30xf64>, %b: tensor<8x6xf64>, %c: tens
 
 // CHECK-LABEL: func.func @rows_of_one_piece(
 // CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<8x30xf64>, %[[V1:[^ ,:)]+]]: tensor<8x6xf64>, %[[V2:[^ ,:)]+]]: tensor<8x24xf64>) -> tensor<8x6x5xf64> {
-// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.concatenate %[[V0]], dim = 1 : (tensor<8x30xf64>) -> tensor<8x30xf64>
-// CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.reshape %[[V3]] : (tensor<8x30xf64>) -> tensor<8x6x5xf64>
-// CHECK-NEXT: return %[[V4]] : tensor<8x6x5xf64>
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.reshape %[[V0]] : (tensor<8x30xf64>) -> tensor<8x6x5xf64>
+// CHECK-NEXT: return %[[V3]] : tensor<8x6x5xf64>
 // CHECK-NEXT: }
 
 // Rows 3 and 4 are elements 15 to 24, all inside the padded operand.
