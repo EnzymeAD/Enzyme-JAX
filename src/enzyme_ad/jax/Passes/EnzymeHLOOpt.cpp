@@ -5295,9 +5295,11 @@ struct ConcatSlice final
 // of the reshaped x, with the block index moved next to d and merged into it.
 // Slices adjacent along d itself are left to concat_slice.
 //
-// The operands may also all be the same reshape of such slices, one that puts
-// a unit dimension at d: then the block index goes in that dimension's place,
-// with the reshape applied to the rest.
+// The operands may also all be the same chain of reshapes, transposes and
+// broadcasts that only permute and insert unit dimensions over such slices,
+// ending in a unit dimension at d: then the chain applies to the stacked
+// slices, the block index kept in front, and the block index goes in d's
+// place.
 struct ConcatSliceStack final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatSliceStack> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -5309,26 +5311,35 @@ struct ConcatSliceStack final
       return failure();
     int64_t d = op.getDimension();
 
-    // The slices, seen through a reshape every operand applies.
-    RankedTensorType reshaped;
-    if (auto reshape =
-            op.getOperands()[0].getDefiningOp<stablehlo::ReshapeOp>())
-      reshaped = reshape.getType();
-    if (reshaped && reshaped.getDimSize(d) != 1)
-      return failure();
+    // The slices, seen through views every operand applies (outermost first).
+    SmallVector<Operation *> views;
     SmallVector<stablehlo::SliceOp> slices;
-    for (Value v : op.getOperands()) {
-      if (reshaped) {
-        auto reshape = v.getDefiningOp<stablehlo::ReshapeOp>();
-        if (!reshape || reshape.getType() != reshaped)
+    for (auto [k, operand] : llvm::enumerate(op.getOperands())) {
+      Value v = operand;
+      for (size_t level = 0;; level++) {
+        if (k != 0 && level == views.size())
+          break;
+        Operation *view = v.getDefiningOp();
+        if (!view || !isView(view))
+          break;
+        if (k == 0)
+          views.push_back(view);
+        else if (view->getName() != views[level]->getName() ||
+                 view->getAttrDictionary() !=
+                     views[level]->getAttrDictionary() ||
+                 view->getResultTypes() != views[level]->getResultTypes() ||
+                 view->getOperandTypes() != views[level]->getOperandTypes())
           return failure();
-        v = reshape.getOperand();
+        v = view->getOperand(0);
       }
       auto slice = v.getDefiningOp<stablehlo::SliceOp>();
       if (!slice)
         return failure();
       slices.push_back(slice);
     }
+    auto reshaped = cast<RankedTensorType>(op.getOperands()[0].getType());
+    if (!views.empty() && reshaped.getDimSize(d) != 1)
+      return failure();
     stablehlo::SliceOp first = slices[0], second = slices[1];
     Value x = first.getOperand();
     ArrayRef<int64_t> shape = cast<RankedTensorType>(x.getType()).getShape();
@@ -5343,7 +5354,7 @@ struct ConcatSliceStack final
         return failure();
       e = i;
     }
-    if (e == -1 || (!reshaped && e == d))
+    if (e == -1 || (views.empty() && e == d))
       return failure();
     int64_t step = second.getStartIndices()[e] - first.getStartIndices()[e];
     int64_t start = first.getStartIndices()[e];
@@ -5385,7 +5396,7 @@ struct ConcatSliceStack final
                                              starts, limits, strides);
     auto type = cast<RankedTensorType>(op.getType());
 
-    if (!reshaped) {
+    if (views.empty()) {
       // Move the block index (at e) to just before d, then merge it into d.
       SmallVector<int64_t> perm;
       for (int64_t i = 0; i < rank; i++) {
@@ -5408,7 +5419,32 @@ struct ConcatSliceStack final
         front.push_back(i);
     Value stacked =
         stablehlo::TransposeOpCreate(rewriter, op.getLoc(), windows, front);
-    // Each slice reshaped as the operands are, but for their unit dimension d.
+    // The views, innermost first, on every slice at once; an outermost reshape
+    // is part of the final one.
+    for (Operation *view : llvm::reverse(views)) {
+      if (view == views.front() && isa<stablehlo::ReshapeOp>(view))
+        break;
+      auto viewType = cast<RankedTensorType>(view->getResult(0).getType());
+      SmallVector<int64_t> batched = {n};
+      llvm::append_range(batched, viewType.getShape());
+      if (auto transpose = dyn_cast<stablehlo::TransposeOp>(view)) {
+        SmallVector<int64_t> perm = {0};
+        for (int64_t p : transpose.getPermutation())
+          perm.push_back(p + 1);
+        stacked =
+            stablehlo::TransposeOpCreate(rewriter, op.getLoc(), stacked, perm);
+      } else if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(view)) {
+        SmallVector<int64_t> dims = {0};
+        for (int64_t b : bcast.getBroadcastDimensions())
+          dims.push_back(b + 1);
+        stacked = stablehlo::BroadcastInDimOpCreate(rewriter, op.getLoc(),
+                                                    stacked, batched, dims);
+      } else {
+        stacked =
+            stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), stacked, batched);
+      }
+    }
+    // The stacked operands, but for their unit dimension d.
     SmallVector<int64_t> rest = {n};
     for (int64_t i = 0, r = reshaped.getRank(); i < r; i++)
       if (i != d)
@@ -5422,6 +5458,17 @@ struct ConcatSliceStack final
     rewriter.replaceOp(op, stablehlo::TransposeOpCreate(rewriter, op.getLoc(),
                                                         restacked, perm));
     return success();
+  }
+
+private:
+  // A reshape, a transpose, or a broadcast that only permutes and inserts unit
+  // dimensions.
+  static bool isView(Operation *op) {
+    if (isa<stablehlo::ReshapeOp, stablehlo::TransposeOp>(op))
+      return true;
+    auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op);
+    return bcast && bcast.getType().getNumElements() ==
+                        bcast.getOperand().getType().getNumElements();
   }
 };
 
