@@ -374,3 +374,47 @@ func.func @analysis_attr(%x: tensor<8x3xf64>, %y: tensor<8x3xf64>) -> tensor<8x1
 // CHECK-NEXT: %[[V8:[^ ,:)]+]] = stablehlo.reduce(%[[V7]] init: %[[V2]]) applies stablehlo.add across dimensions = [0] : (tensor<3x8x1xf64>, tensor<f64>) -> tensor<8x1xf64>
 // CHECK-NEXT: return %[[V8]] : tensor<8x1xf64>
 // CHECK-NEXT: }
+
+// Each term reduces its own window of %x: the windows stack, and the reduce
+// runs once over the stack (one dimension further in).
+func.func @through_reduce(%x: tensor<8x9xf64>, %w: tensor<3xf64>, %b: tensor<3xf64>) -> tensor<8xf64> {
+  %z = stablehlo.constant dense<0.0> : tensor<f64>
+  %bb = stablehlo.broadcast_in_dim %b, dims = [1] : (tensor<3xf64>) -> tensor<8x3xf64>
+  %x0 = stablehlo.slice %x [0:8, 0:3] : (tensor<8x9xf64>) -> tensor<8x3xf64>
+  %x1 = stablehlo.slice %x [0:8, 3:6] : (tensor<8x9xf64>) -> tensor<8x3xf64>
+  %x2 = stablehlo.slice %x [0:8, 6:9] : (tensor<8x9xf64>) -> tensor<8x3xf64>
+  %m0 = stablehlo.multiply %bb, %x0 : tensor<8x3xf64>
+  %m1 = stablehlo.multiply %bb, %x1 : tensor<8x3xf64>
+  %m2 = stablehlo.multiply %bb, %x2 : tensor<8x3xf64>
+  %r0 = stablehlo.reduce(%m0 init: %z) applies stablehlo.add across dimensions = [1] : (tensor<8x3xf64>, tensor<f64>) -> tensor<8xf64>
+  %r1 = stablehlo.reduce(%m1 init: %z) applies stablehlo.add across dimensions = [1] : (tensor<8x3xf64>, tensor<f64>) -> tensor<8xf64>
+  %r2 = stablehlo.reduce(%m2 init: %z) applies stablehlo.add across dimensions = [1] : (tensor<8x3xf64>, tensor<f64>) -> tensor<8xf64>
+  %w0 = stablehlo.slice %w [0:1] : (tensor<3xf64>) -> tensor<1xf64>
+  %w1 = stablehlo.slice %w [1:2] : (tensor<3xf64>) -> tensor<1xf64>
+  %w2 = stablehlo.slice %w [2:3] : (tensor<3xf64>) -> tensor<1xf64>
+  %v0 = stablehlo.broadcast_in_dim %w0, dims = [0] : (tensor<1xf64>) -> tensor<8xf64>
+  %v1 = stablehlo.broadcast_in_dim %w1, dims = [0] : (tensor<1xf64>) -> tensor<8xf64>
+  %v2 = stablehlo.broadcast_in_dim %w2, dims = [0] : (tensor<1xf64>) -> tensor<8xf64>
+  %t0 = stablehlo.multiply %v0, %r0 : tensor<8xf64>
+  %t1 = stablehlo.multiply %v1, %r1 : tensor<8xf64>
+  %t2 = stablehlo.multiply %v2, %r2 : tensor<8xf64>
+  %a = stablehlo.add %t0, %t1 : tensor<8xf64>
+  %s = stablehlo.add %a, %t2 : tensor<8xf64>
+  return %s : tensor<8xf64>
+}
+
+// CHECK-LABEL: func.func @through_reduce(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<8x9xf64>, %[[V1:[^ ,:)]+]]: tensor<3xf64>, %[[V2:[^ ,:)]+]]: tensor<3xf64>) -> tensor<8xf64> {
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[V2]], dims = [1] : (tensor<3xf64>) -> tensor<8x3xf64>
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = stablehlo.reshape %[[V1]] : (tensor<3xf64>) -> tensor<3x1xf64>
+// CHECK-NEXT: %[[V6:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[V5]], dims = [0, 1] : (tensor<3x1xf64>) -> tensor<3x8xf64>
+// CHECK-NEXT: %[[V7:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[V4]], dims = [1, 2] : (tensor<8x3xf64>) -> tensor<3x8x3xf64>
+// CHECK-NEXT: %[[V8:[^ ,:)]+]] = stablehlo.reshape %[[V0]] : (tensor<8x9xf64>) -> tensor<8x3x3xf64>
+// CHECK-NEXT: %[[V9:[^ ,:)]+]] = stablehlo.transpose %[[V8]], dims = [1, 0, 2] : (tensor<8x3x3xf64>) -> tensor<3x8x3xf64>
+// CHECK-NEXT: %[[V10:[^ ,:)]+]] = stablehlo.multiply %[[V7]], %[[V9]] : tensor<3x8x3xf64>
+// CHECK-NEXT: %[[V11:[^ ,:)]+]] = stablehlo.reduce(%[[V10]] init: %[[V3]]) applies stablehlo.add across dimensions = [2] : (tensor<3x8x3xf64>, tensor<f64>) -> tensor<3x8xf64>
+// CHECK-NEXT: %[[V12:[^ ,:)]+]] = stablehlo.multiply %[[V6]], %[[V11]] : tensor<3x8xf64>
+// CHECK-NEXT: %[[V13:[^ ,:)]+]] = stablehlo.reduce(%[[V12]] init: %[[V3]]) applies stablehlo.add across dimensions = [0] : (tensor<3x8xf64>, tensor<f64>) -> tensor<8xf64>
+// CHECK-NEXT: return %[[V13]] : tensor<8xf64>
+// CHECK-NEXT: }

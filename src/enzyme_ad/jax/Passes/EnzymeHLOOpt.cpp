@@ -35672,7 +35672,13 @@ struct StackedNode {
 };
 
 static bool isStackableOp(Operation *op) {
-  if (op->getNumResults() != 1 || op->getNumRegions() != 0)
+  if (op->getNumResults() != 1)
+    return false;
+  // A reduction of one input: stacked, it reduces the same dimensions one
+  // further in.
+  if (auto reduce = dyn_cast<stablehlo::ReduceOp>(op))
+    return reduce.getInputs().size() == 1;
+  if (op->getNumRegions() != 0)
     return false;
   if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
           stablehlo::TransposeOp, stablehlo::ConcatenateOp>(op))
@@ -35715,6 +35721,10 @@ static bool stacksWith(Value v, Operation *first) {
   for (auto [a, b] : llvm::zip(op->getOperands(), first->getOperands()))
     if (a.getType() != b.getType())
       return false;
+  if (auto reduce = dyn_cast<stablehlo::ReduceOp>(op))
+    return OperationEquivalence::isRegionEquivalentTo(
+        &reduce.getBody(), &cast<stablehlo::ReduceOp>(first).getBody(),
+        OperationEquivalence::IgnoreLocations);
   return true;
 }
 
@@ -35738,6 +35748,12 @@ static unsigned matchStacked(ArrayRef<Value> vals,
   if (!first || !isStackableOp(first) ||
       !llvm::all_of(vals, [&](Value v) { return stacksWith(v, first); }))
     return idx;
+  // A reduction's init value stays a scalar: the terms must share it.
+  if (isa<stablehlo::ReduceOp>(first)) {
+    for (Value v : vals)
+      if (v.getDefiningOp()->getOperand(1) != first->getOperand(1))
+        return idx;
+  }
   nodes[idx].kind = StackedNode::Op;
   for (unsigned i = 0, e = first->getNumOperands(); i < e; i++) {
     SmallVector<Value> operands;
@@ -35865,12 +35881,26 @@ static Value buildStackedNode(PatternRewriter &rewriter, Location loc,
                                              shape, dims);
   }
 
+  Operation *op = node.values[0].getDefiningOp();
+  if (auto reduce = dyn_cast<stablehlo::ReduceOp>(op)) {
+    Value input =
+        buildStacked(rewriter, loc, nodes, node.operands[0], n, built);
+    SmallVector<int64_t> dims;
+    for (int64_t d : reduce.getDimensions())
+      dims.push_back(d + 1);
+    auto stacked = stablehlo::ReduceOp::create(
+        rewriter, loc, TypeRange(stackedType), ValueRange(input),
+        reduce.getInitValues(), rewriter.getDenseI64ArrayAttr(dims));
+    rewriter.cloneRegionBefore(reduce.getBody(), stacked.getBody(),
+                               stacked.getBody().end());
+    return stacked.getResult(0);
+  }
+
   SmallVector<Value> operands;
   for (unsigned sub : node.operands) {
     Value operand = buildStacked(rewriter, loc, nodes, sub, n, built);
     operands.push_back(operand);
   }
-  Operation *op = node.values[0].getDefiningOp();
   if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
     SmallVector<int64_t> dims = {0};
     for (int64_t d : bcast.getBroadcastDimensions())
