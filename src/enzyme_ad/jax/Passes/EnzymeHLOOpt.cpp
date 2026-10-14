@@ -3221,6 +3221,28 @@ template <typename T> struct LICM : public CheckedOpRewritePattern<T, LICM<T>> {
     auto whileOp = op->template getParentOfType<stablehlo::WhileOp>();
     if (!whileOp)
       return failure();
+    // A broadcast that grows its operand is free inside the loop, where XLA
+    // fuses it into its elementwise users. Hoisted, it becomes a loop-carried
+    // buffer of the full size that every iteration reads back from memory.
+    // It is still hoisted when a non-elementwise user (a reduce, a dot, ...)
+    // would then be invariant too and could follow it out of the loop.
+    if constexpr (std::is_same_v<T, stablehlo::BroadcastInDimOp>) {
+      auto inTy = cast<RankedTensorType>(op.getOperand().getType());
+      auto outTy = cast<RankedTensorType>(op.getType());
+      bool expanding = !inTy.hasStaticShape() || !outTy.hasStaticShape() ||
+                       outTy.getNumElements() > inTy.getNumElements();
+      auto enablesHoisting = [&](Operation *user) {
+        if (user->hasTrait<OpTrait::Elementwise>() ||
+            user->hasTrait<OpTrait::IsTerminator>() ||
+            isa<stablehlo::WhileOp, stablehlo::IfOp, stablehlo::CaseOp>(user))
+          return false;
+        return llvm::all_of(user->getOperands(), [&](Value v) {
+          return v == op.getResult() || definedOutside(v, whileOp);
+        });
+      };
+      if (expanding && llvm::none_of(op->getUsers(), enablesHoisting))
+        return rewriter.notifyMatchFailure(op, "expanding broadcast");
+    }
     for (auto operand : op->getOperands()) {
       if (!definedOutside(operand, whileOp))
         return failure();
