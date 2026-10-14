@@ -5294,6 +5294,10 @@ struct ConcatSlice final
 // slice k is block k0 + k at the same offset, so the concatenate is one slice
 // of the reshaped x, with the block index moved next to d and merged into it.
 // Slices adjacent along d itself are left to concat_slice.
+//
+// The operands may also all be the same reshape of such slices, one that puts
+// a unit dimension at d: then the block index goes in that dimension's place,
+// with the reshape applied to the rest.
 struct ConcatSliceStack final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatSliceStack> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -5303,14 +5307,32 @@ struct ConcatSliceStack final
     int64_t n = op.getNumOperands();
     if (n < 2)
       return failure();
-    auto first = op.getOperands()[0].getDefiningOp<stablehlo::SliceOp>();
-    auto second = op.getOperands()[1].getDefiningOp<stablehlo::SliceOp>();
-    if (!first || !second || first.getOperand() != second.getOperand())
+    int64_t d = op.getDimension();
+
+    // The slices, seen through a reshape every operand applies.
+    RankedTensorType reshaped;
+    if (auto reshape =
+            op.getOperands()[0].getDefiningOp<stablehlo::ReshapeOp>())
+      reshaped = reshape.getType();
+    if (reshaped && reshaped.getDimSize(d) != 1)
       return failure();
+    SmallVector<stablehlo::SliceOp> slices;
+    for (Value v : op.getOperands()) {
+      if (reshaped) {
+        auto reshape = v.getDefiningOp<stablehlo::ReshapeOp>();
+        if (!reshape || reshape.getType() != reshaped)
+          return failure();
+        v = reshape.getOperand();
+      }
+      auto slice = v.getDefiningOp<stablehlo::SliceOp>();
+      if (!slice)
+        return failure();
+      slices.push_back(slice);
+    }
+    stablehlo::SliceOp first = slices[0], second = slices[1];
     Value x = first.getOperand();
     ArrayRef<int64_t> shape = cast<RankedTensorType>(x.getType()).getShape();
     int64_t rank = shape.size();
-    int64_t d = op.getDimension();
 
     // The dimension the windows move along, and the step.
     int64_t e = -1;
@@ -5321,16 +5343,15 @@ struct ConcatSliceStack final
         return failure();
       e = i;
     }
-    if (e == -1 || e == d)
+    if (e == -1 || (!reshaped && e == d))
       return failure();
     int64_t step = second.getStartIndices()[e] - first.getStartIndices()[e];
     int64_t start = first.getStartIndices()[e];
     int64_t size = first.getLimitIndices()[e] - start;
     if (step <= 0 || shape[e] % step != 0 || start % step + size > step)
       return failure();
-    for (auto [k, v] : llvm::enumerate(op.getOperands())) {
-      auto slice = v.getDefiningOp<stablehlo::SliceOp>();
-      if (!slice || slice.getOperand() != x)
+    for (auto [k, slice] : llvm::enumerate(slices)) {
+      if (slice.getOperand() != x)
         return failure();
       for (int64_t i = 0; i < rank; i++) {
         int64_t shift = i == e ? (int64_t)k * step : 0;
@@ -5358,24 +5379,48 @@ struct ConcatSliceStack final
       starts.push_back(first.getStartIndices()[i]);
       limits.push_back(first.getLimitIndices()[i]);
     }
-    Value reshaped =
+    Value blockedX =
         stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), x, blocked);
-    Value windows = stablehlo::SliceOpCreate(rewriter, op.getLoc(), reshaped,
+    Value windows = stablehlo::SliceOpCreate(rewriter, op.getLoc(), blockedX,
                                              starts, limits, strides);
+    auto type = cast<RankedTensorType>(op.getType());
 
-    // Move the block index (at e) to just before d, then merge it into d.
-    SmallVector<int64_t> perm;
-    for (int64_t i = 0; i < rank; i++) {
-      if (i == d)
-        perm.push_back(e);
-      perm.push_back(i < e ? i : i + 1);
+    if (!reshaped) {
+      // Move the block index (at e) to just before d, then merge it into d.
+      SmallVector<int64_t> perm;
+      for (int64_t i = 0; i < rank; i++) {
+        if (i == d)
+          perm.push_back(e);
+        perm.push_back(i < e ? i : i + 1);
+      }
+      Value moved =
+          stablehlo::TransposeOpCreate(rewriter, op.getLoc(), windows, perm);
+      rewriter.replaceOp(op,
+                         stablehlo::ReshapeOpCreate(rewriter, op.getLoc(),
+                                                    moved, type.getShape()));
+      return success();
     }
-    Value moved =
-        stablehlo::TransposeOpCreate(rewriter, op.getLoc(), windows, perm);
-    rewriter.replaceOp(op,
-                       stablehlo::ReshapeOpCreate(
-                           rewriter, op.getLoc(), moved,
-                           cast<RankedTensorType>(op.getType()).getShape()));
+
+    // The block index first, the slice shape after it: the stacked slices.
+    SmallVector<int64_t> front = {e};
+    for (int64_t i = 0; i <= rank; i++)
+      if (i != e)
+        front.push_back(i);
+    Value stacked =
+        stablehlo::TransposeOpCreate(rewriter, op.getLoc(), windows, front);
+    // Each slice reshaped as the operands are, but for their unit dimension d.
+    SmallVector<int64_t> rest = {n};
+    for (int64_t i = 0, r = reshaped.getRank(); i < r; i++)
+      if (i != d)
+        rest.push_back(reshaped.getDimSize(i));
+    Value restacked =
+        stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), stacked, rest);
+    // The block index into d's place.
+    SmallVector<int64_t> perm;
+    for (int64_t t = 0, r = reshaped.getRank(); t < r; t++)
+      perm.push_back(t == d ? 0 : (t < d ? t + 1 : t));
+    rewriter.replaceOp(op, stablehlo::TransposeOpCreate(rewriter, op.getLoc(),
+                                                        restacked, perm));
     return success();
   }
 };

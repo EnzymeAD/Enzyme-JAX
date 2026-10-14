@@ -71,3 +71,45 @@ func.func @uneven_blocks(%x: tensor<2x10xf64>) -> tensor<4x1xf64> {
 // CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.concatenate %[[V1]], %[[V2]], dim = 0 : (tensor<2x1xf64>, tensor<2x1xf64>) -> tensor<4x1xf64>
 // CHECK-NEXT: return %[[V3]] : tensor<4x1xf64>
 // CHECK-NEXT: }
+
+// The same reshape of three consecutive windows (each 9 rows, split into 3x3,
+// with a unit dimension in front), stacked along that unit dimension: x itself,
+// reshaped and transposed.
+func.func @through_reshape(%x: tensor<4x27x3xf64>) -> tensor<3x4x3x3x3xf64> {
+  %0 = stablehlo.slice %x [0:4, 0:9, 0:3] : (tensor<4x27x3xf64>) -> tensor<4x9x3xf64>
+  %1 = stablehlo.slice %x [0:4, 9:18, 0:3] : (tensor<4x27x3xf64>) -> tensor<4x9x3xf64>
+  %2 = stablehlo.slice %x [0:4, 18:27, 0:3] : (tensor<4x27x3xf64>) -> tensor<4x9x3xf64>
+  %r0 = stablehlo.reshape %0 : (tensor<4x9x3xf64>) -> tensor<1x4x3x3x3xf64>
+  %r1 = stablehlo.reshape %1 : (tensor<4x9x3xf64>) -> tensor<1x4x3x3x3xf64>
+  %r2 = stablehlo.reshape %2 : (tensor<4x9x3xf64>) -> tensor<1x4x3x3x3xf64>
+  %c = stablehlo.concatenate %r0, %r1, %r2, dim = 0 : (tensor<1x4x3x3x3xf64>, tensor<1x4x3x3x3xf64>, tensor<1x4x3x3x3xf64>) -> tensor<3x4x3x3x3xf64>
+  return %c : tensor<3x4x3x3x3xf64>
+}
+
+// CHECK-LABEL: func.func @through_reshape(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<4x27x3xf64>) -> tensor<3x4x3x3x3xf64> {
+// CHECK-NEXT: %[[V1:[^ ,:)]+]] = stablehlo.reshape %[[V0]] : (tensor<4x27x3xf64>) -> tensor<4x3x9x3xf64>
+// CHECK-NEXT: %[[V2:[^ ,:)]+]] = stablehlo.transpose %[[V1]], dims = [1, 0, 2, 3] : (tensor<4x3x9x3xf64>) -> tensor<3x4x9x3xf64>
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.reshape %[[V2]] : (tensor<3x4x9x3xf64>) -> tensor<3x4x3x3x3xf64>
+// CHECK-NEXT: return %[[V3]] : tensor<3x4x3x3x3xf64>
+// CHECK-NEXT: }
+
+// Two windows of a gapped row, each reshaped with a unit dimension in the
+// middle, stacked along it.
+func.func @through_reshape_middle(%x: tensor<5x12xf64>) -> tensor<5x2x2xf64> {
+  %0 = stablehlo.slice %x [0:5, 1:3] : (tensor<5x12xf64>) -> tensor<5x2xf64>
+  %1 = stablehlo.slice %x [0:5, 7:9] : (tensor<5x12xf64>) -> tensor<5x2xf64>
+  %r0 = stablehlo.reshape %0 : (tensor<5x2xf64>) -> tensor<5x1x2xf64>
+  %r1 = stablehlo.reshape %1 : (tensor<5x2xf64>) -> tensor<5x1x2xf64>
+  %c = stablehlo.concatenate %r0, %r1, dim = 1 : (tensor<5x1x2xf64>, tensor<5x1x2xf64>) -> tensor<5x2x2xf64>
+  return %c : tensor<5x2x2xf64>
+}
+
+// CHECK-LABEL: func.func @through_reshape_middle(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<5x12xf64>) -> tensor<5x2x2xf64> {
+// CHECK-NEXT: %[[V1:[^ ,:)]+]] = stablehlo.reshape %[[V0]] : (tensor<5x12xf64>) -> tensor<5x2x6xf64>
+// CHECK-NEXT: %[[V2:[^ ,:)]+]] = stablehlo.slice %[[V1]] [0:5, 0:2, 1:3] : (tensor<5x2x6xf64>) -> tensor<5x2x2xf64>
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.transpose %[[V2]], dims = [1, 0, 2] : (tensor<5x2x2xf64>) -> tensor<2x5x2xf64>
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.transpose %[[V3]], dims = [1, 0, 2] : (tensor<2x5x2xf64>) -> tensor<5x2x2xf64>
+// CHECK-NEXT: return %[[V4]] : tensor<5x2x2xf64>
+// CHECK-NEXT: }
