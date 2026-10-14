@@ -37401,6 +37401,67 @@ struct ReduceMulToDotGeneral
   }
 };
 
+// A batched dot_general that contracts nothing is an elementwise product of
+// two broadcasts. XLA lowers it as its own transposing kernel instead of
+// fusing it into its users, so rewrite it as the product:
+//   dot_general(x, y, batching = B, contracting = {})
+//     -> multiply(broadcast_in_dim(x), broadcast_in_dim(y))
+struct DotGeneralNoContractionToMul final
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     DotGeneralNoContractionToMul> {
+  using CheckedOpRewritePattern<
+      stablehlo::DotGeneralOp,
+      DotGeneralNoContractionToMul>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dims = op.getDotDimensionNumbers();
+    if (!dims.getLhsContractingDimensions().empty() ||
+        !dims.getRhsContractingDimensions().empty())
+      return rewriter.notifyMatchFailure(op, "contracts some dimension");
+    if (dims.getLhsBatchingDimensions().empty())
+      return rewriter.notifyMatchFailure(op, "plain outer product");
+    if (op.getAlgorithmAttr())
+      return rewriter.notifyMatchFailure(op, "has a dot algorithm");
+    if (auto precision = op.getPrecisionConfigAttr())
+      for (auto p : precision.getAsRange<stablehlo::PrecisionAttr>())
+        if (p.getValue() != stablehlo::Precision::DEFAULT)
+          return rewriter.notifyMatchFailure(op, "non-default precision");
+
+    auto lhsTy = cast<RankedTensorType>(op.getLhs().getType());
+    auto rhsTy = cast<RankedTensorType>(op.getRhs().getType());
+    auto outTy = cast<RankedTensorType>(op.getType());
+    if (lhsTy.getElementType() != outTy.getElementType() ||
+        rhsTy.getElementType() != outTy.getElementType())
+      return rewriter.notifyMatchFailure(op, "element types differ");
+
+    // Result dimensions are the batching dimensions, then the free dimensions
+    // of lhs, then those of rhs, each in operand order.
+    auto lhsBatch = dims.getLhsBatchingDimensions();
+    auto rhsBatch = dims.getRhsBatchingDimensions();
+    int64_t nBatch = lhsBatch.size();
+    SmallVector<int64_t> lhsMap(lhsTy.getRank()), rhsMap(rhsTy.getRank());
+    for (int64_t i = 0; i < nBatch; i++) {
+      lhsMap[lhsBatch[i]] = i;
+      rhsMap[rhsBatch[i]] = i;
+    }
+    int64_t next = nBatch;
+    for (int64_t d = 0; d < lhsTy.getRank(); d++)
+      if (!llvm::is_contained(lhsBatch, d))
+        lhsMap[d] = next++;
+    for (int64_t d = 0; d < rhsTy.getRank(); d++)
+      if (!llvm::is_contained(rhsBatch, d))
+        rhsMap[d] = next++;
+
+    auto lhs = stablehlo::BroadcastInDimOp::create(rewriter, op.getLoc(), outTy,
+                                                   op.getLhs(), lhsMap);
+    auto rhs = stablehlo::BroadcastInDimOp::create(rewriter, op.getLoc(), outTy,
+                                                   op.getRhs(), rhsMap);
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, lhs, rhs);
+    return success();
+  }
+};
+
 struct SplitReduceAddMulToAddDotGeneral final
     : public CheckedOpRewritePattern<stablehlo::ReduceOp,
                                      SplitReduceAddMulToAddDotGeneral> {
@@ -43654,6 +43715,7 @@ struct EnzymeHLOOptPass
         SubtractMultiplyConstToAddMulConst,
         ReduceMulToDotGeneral,
         SplitReduceAddMulToAddDotGeneral,
+        DotGeneralNoContractionToMul,
         DotGeneralDistributiveSimplify<stablehlo::AddOp>,
         DotGeneralDistributiveSimplify<stablehlo::SubtractOp>,
         TrivialReduceWindowToReduceOp,
