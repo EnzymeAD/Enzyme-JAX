@@ -14356,6 +14356,96 @@ struct SliceIf : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceIf> {
   }
 };
 
+// slice(reshape(concat(..., x, ...))) where the reshape splits the
+// concatenated dimension into rows (e.g. [N, 156] -> [N, 13, 12]) and the
+// slice reads only elements of x, though x need not start on a row (a
+// per-element scratch written at an offset and read back as a window): the
+// same window of x padded in front to its offset within a row and at the back
+// to whole rows, reshaped to those rows. The result is a view of x.
+struct SliceReshapeConcatWindow final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshapeConcatWindow> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshape)
+      return failure();
+    auto concat =
+        reshape.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concat)
+      return failure();
+    ArrayRef<int64_t> in = concat.getType().getShape();
+    ArrayRef<int64_t> out = reshape.getType().getShape();
+    int64_t c = concat.getDimension();
+    // The reshape splits dimension c into out[c, c + k) and keeps the rest.
+    int64_t k = (int64_t)out.size() - (int64_t)in.size() + 1;
+    if (k < 2)
+      return failure();
+    for (int64_t i = 0; i < c; i++)
+      if (in[i] != out[i])
+        return failure();
+    for (int64_t i = c + 1, e = in.size(); i < e; i++)
+      if (in[i] != out[i + k - 1])
+        return failure();
+    int64_t rowLength = 1;
+    for (int64_t i = c + 1; i < c + k; i++)
+      rowLength *= out[i];
+    if (out[c] * rowLength != in[c])
+      return failure();
+    for (int64_t i = c; i < c + k; i++)
+      if (op.getStrides()[i] != 1)
+        return failure();
+
+    // The first and last elements read along the split dimension.
+    int64_t first = 0, last = 0;
+    for (int64_t i = c; i < c + k; i++) {
+      first = first * out[i] + op.getStartIndices()[i];
+      last = last * out[i] + op.getLimitIndices()[i] - 1;
+    }
+    int64_t offset = 0;
+    for (Value x : concat.getOperands()) {
+      int64_t size = cast<RankedTensorType>(x.getType()).getDimSize(c);
+      if (first < offset || last >= offset + size) {
+        offset += size;
+        continue;
+      }
+      // x padded to whole rows, its first element at its column.
+      int64_t low = offset % rowLength;
+      int64_t high = (rowLength - (low + size) % rowLength) % rowLength;
+      int64_t rows = (low + size + high) / rowLength;
+      int64_t rank = in.size();
+      SmallVector<int64_t> padLow(rank, 0), padHigh(rank, 0),
+          padInterior(rank, 0);
+      padLow[c] = low;
+      padHigh[c] = high;
+      Value padded = x;
+      if (low != 0 || high != 0) {
+        auto elemType = concat.getType().getElementType();
+        auto zeroType = RankedTensorType::get({}, elemType);
+        Value zero = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), zeroType,
+            cast<ElementsAttr>(makeAttr(zeroType, 0)));
+        padded = stablehlo::PadOp::create(rewriter, op.getLoc(), x, zero,
+                                          padLow, padHigh, padInterior);
+      }
+      SmallVector<int64_t> shape(out);
+      shape[c] = rows;
+      Value view =
+          stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), padded, shape);
+      SmallVector<int64_t> starts(op.getStartIndices()),
+          limits(op.getLimitIndices());
+      int64_t firstRow = (offset - low) / rowLength;
+      starts[c] -= firstRow;
+      limits[c] -= firstRow;
+      rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, view, starts, limits,
+                                                      op.getStrides());
+      return success();
+    }
+    return failure();
+  }
+};
+
 struct SliceReshapeConcat
     : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceReshapeConcat> {
   using CheckedOpRewritePattern<stablehlo::SliceOp,
@@ -14796,7 +14886,7 @@ struct ReshapeOfConcatToConcatOfReshape final
 
     int64_t zero = 0;
     if (!transformReshapeSlice<int64_t>(reshapeOp, oneHot, /*toFill*/ 0, &zero))
-      return failure();
+      return regroupConcat(reshapeOp, concatOp, rewriter);
 
     int64_t newDim = -1;
     for (auto &&[i, val] : llvm::enumerate(oneHot)) {
@@ -14830,6 +14920,83 @@ struct ReshapeOfConcatToConcatOfReshape final
     auto newConcatOp = stablehlo::ConcatenateOp::create(
         rewriter, reshapeOp.getLoc(), concatOperands, newDim);
     rewriter.replaceOp(reshapeOp, newConcatOp);
+    return success();
+  }
+
+private:
+  // A reshape that regroups the concatenated dimension c with the ones after
+  // it (e.g. [3, 9, 3, 3] -> [3, 3, 27] with c = 1): take the smallest runs of
+  // dimensions around c with the same element count on both sides. When c is
+  // the run's outermost non-unit input dimension and the operands split into
+  // consecutive groups that are each a whole number of rows of the run's
+  // outermost output dimension d (usually each operand alone; a block written
+  // as a few pieces otherwise), each group is that many rows of d, reshaped
+  // alone.
+  LogicalResult regroupConcat(stablehlo::ReshapeOp reshapeOp,
+                              stablehlo::ConcatenateOp concatOp,
+                              PatternRewriter &rewriter) const {
+    ArrayRef<int64_t> in = concatOp.getType().getShape();
+    ArrayRef<int64_t> out = reshapeOp.getType().getShape();
+    int64_t c = concatOp.getDimension();
+    SmallVector<int64_t> inPrefix = {1}, outPrefix = {1};
+    for (int64_t s : in)
+      inPrefix.push_back(inPrefix.back() * s);
+    for (int64_t s : out)
+      outPrefix.push_back(outPrefix.back() * s);
+
+    // The output dim the run starts at: after any unit dims.
+    int64_t d = -1;
+    for (int64_t j = 0, e = out.size(); j < e; j++)
+      if (outPrefix[j] == inPrefix[c] && out[j] != 1) {
+        d = j;
+        break;
+      }
+    if (d == -1)
+      return failure();
+    // The run's end: the first boundary both sides share after c.
+    int64_t inEnd = -1, outEnd = -1;
+    for (int64_t i = c + 1, e = in.size(); i <= e && inEnd == -1; i++)
+      for (int64_t j = d + 1, f = out.size(); j <= f; j++)
+        if (inPrefix[i] == outPrefix[j]) {
+          inEnd = i;
+          outEnd = j;
+          break;
+        }
+    if (inEnd == -1)
+      return failure();
+    int64_t innerIn = inPrefix[inEnd] / inPrefix[c + 1];
+    int64_t innerOut = outPrefix[outEnd] / outPrefix[d + 1];
+
+    // The groups: the shortest runs of operands filling whole rows.
+    SmallVector<std::pair<int64_t, int64_t>> groups;
+    int64_t begin = 0, extent = 0;
+    for (auto [k, operand] : llvm::enumerate(concatOp.getOperands())) {
+      extent += cast<RankedTensorType>(operand.getType()).getDimSize(c);
+      if (extent * innerIn % innerOut == 0) {
+        groups.push_back({begin, k + 1});
+        begin = k + 1;
+        extent = 0;
+      }
+    }
+    if (extent != 0 || groups.size() < 2)
+      return failure();
+
+    SmallVector<Value> concatOperands;
+    for (auto [first, last] : groups) {
+      Value group = concatOp.getOperands()[first];
+      if (last - first > 1)
+        group = stablehlo::ConcatenateOp::create(
+            rewriter, reshapeOp.getLoc(),
+            concatOp.getOperands().slice(first, last - first), c);
+      SmallVector<int64_t> shape(out);
+      shape[d] = cast<RankedTensorType>(group.getType()).getDimSize(c) *
+                 innerIn / innerOut;
+      Value reshaped = stablehlo::ReshapeOpCreate(rewriter, reshapeOp.getLoc(),
+                                                  group, shape);
+      concatOperands.push_back(reshaped);
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(reshapeOp,
+                                                          concatOperands, d);
     return success();
   }
 };
@@ -15553,6 +15720,138 @@ bool isCommutativeEquivalent(ValueRange lhs, ValueRange rhs) {
     return lhsv == rhsv;
   }
 }
+
+// A dot_general equal to an earlier one up to transposes of their operands
+// and of their results: both read the same two values (through transposes,
+// in either order) with the same dimensions contracted together and paired
+// as batch dimensions, so it is a transpose of the earlier one.
+struct CSEDotGeneralTransposed final
+    : CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                              CSEDotGeneralTransposed> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    Form form;
+    if (!analyze(op, form))
+      return failure();
+    Value key =
+        std::distance(form.base[0].user_begin(), form.base[0].user_end()) <=
+                std::distance(form.base[1].user_begin(),
+                              form.base[1].user_end())
+            ? form.base[0]
+            : form.base[1];
+    SmallVector<Value> worklist = {key};
+    for (int64_t i = 0; i < (int64_t)worklist.size(); i++) {
+      for (Operation *user : worklist[i].getUsers()) {
+        if (auto transpose = dyn_cast<stablehlo::TransposeOp>(user)) {
+          if (i == 0)
+            worklist.push_back(transpose.getResult());
+          continue;
+        }
+        auto other = dyn_cast<stablehlo::DotGeneralOp>(user);
+        // A dot_general only dead ops use (one transpose_dot_reorder just
+        // replaced by a copy reading its operands swapped) would be matched
+        // again forever.
+        if (!other || other == op ||
+            llvm::all_of(other->getUsers(), isOpTriviallyDead) ||
+            other->getBlock() != op->getBlock() || !other->isBeforeInBlock(op))
+          continue;
+        SmallVector<int64_t> perm;
+        if (!matches(op, form, other, perm))
+          continue;
+        if (llvm::equal(perm, llvm::seq<int64_t>(0, perm.size())))
+          rewriter.replaceOp(op, other.getResult());
+        else
+          rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
+              op, other.getResult(), perm);
+        return success();
+      }
+    }
+    return failure();
+  }
+
+private:
+  // The values a dot_general reads through transposes, for each result
+  // dimension the dimensions of those values it indexes (-1 for none), and
+  // the pairs of their dimensions contracted together.
+  struct Form {
+    Value base[2];
+    SmallVector<std::pair<int64_t, int64_t>> result;
+    SmallVector<std::pair<int64_t, int64_t>> contracted;
+  };
+
+  static Value throughTransposes(Value v, SmallVectorImpl<int64_t> &perm) {
+    perm = llvm::to_vector(
+        llvm::seq<int64_t>(0, cast<RankedTensorType>(v.getType()).getRank()));
+    while (auto transpose = v.getDefiningOp<stablehlo::TransposeOp>()) {
+      for (int64_t &d : perm)
+        d = transpose.getPermutation()[d];
+      v = transpose.getOperand();
+    }
+    return v;
+  }
+
+  static bool analyze(stablehlo::DotGeneralOp op, Form &form) {
+    SmallVector<int64_t> perm[2];
+    form.base[0] = throughTransposes(op.getLhs(), perm[0]);
+    form.base[1] = throughTransposes(op.getRhs(), perm[1]);
+    if (form.base[0] == form.base[1])
+      return false;
+    auto dims = op.getDotDimensionNumbers();
+    for (auto [l, r] : llvm::zip(dims.getLhsBatchingDimensions(),
+                                 dims.getRhsBatchingDimensions()))
+      form.result.push_back({perm[0][l], perm[1][r]});
+    for (int64_t d = 0; d < (int64_t)perm[0].size(); d++)
+      if (!llvm::is_contained(dims.getLhsBatchingDimensions(), d) &&
+          !llvm::is_contained(dims.getLhsContractingDimensions(), d))
+        form.result.push_back({perm[0][d], -1});
+    for (int64_t d = 0; d < (int64_t)perm[1].size(); d++)
+      if (!llvm::is_contained(dims.getRhsBatchingDimensions(), d) &&
+          !llvm::is_contained(dims.getRhsContractingDimensions(), d))
+        form.result.push_back({-1, perm[1][d]});
+    for (auto [l, r] : llvm::zip(dims.getLhsContractingDimensions(),
+                                 dims.getRhsContractingDimensions()))
+      form.contracted.push_back({perm[0][l], perm[1][r]});
+    llvm::sort(form.contracted);
+    return true;
+  }
+
+  // Whether other computes op's result up to a transpose: op's result
+  // dimension r is other's dimension perm[r].
+  static bool matches(stablehlo::DotGeneralOp op, const Form &form,
+                      stablehlo::DotGeneralOp other,
+                      SmallVectorImpl<int64_t> &perm) {
+    if (op.getType().getElementType() != other.getType().getElementType() ||
+        op.getPrecisionConfigAttr() != other.getPrecisionConfigAttr() ||
+        op.getAlgorithmAttr() != other.getAlgorithmAttr())
+      return false;
+    Form otherForm;
+    if (!analyze(other, otherForm))
+      return false;
+    if (otherForm.base[0] == form.base[1] &&
+        otherForm.base[1] == form.base[0]) {
+      std::swap(otherForm.base[0], otherForm.base[1]);
+      for (auto &p : otherForm.result)
+        std::swap(p.first, p.second);
+      for (auto &p : otherForm.contracted)
+        std::swap(p.first, p.second);
+      llvm::sort(otherForm.contracted);
+    }
+    if (otherForm.base[0] != form.base[0] ||
+        otherForm.base[1] != form.base[1] ||
+        otherForm.contracted != form.contracted ||
+        otherForm.result.size() != form.result.size())
+      return false;
+    for (auto p : form.result) {
+      auto it = llvm::find(otherForm.result, p);
+      if (it == otherForm.result.end())
+        return false;
+      perm.push_back(it - otherForm.result.begin());
+    }
+    return true;
+  }
+};
 
 template <typename T> struct CSE final : CheckedOpRewritePattern<T, CSE<T>> {
   using CheckedOpRewritePattern<T, CSE<T>>::CheckedOpRewritePattern;
@@ -33772,10 +34071,11 @@ struct ConcatenateAddToAddPad
 // - along a dimension that comes from an operand dimension they do not expand,
 //   broadcast_in_dim(concat(x_0, ..., x_n));
 // - along a dimension every broadcast expands by the same size m (element
-//   k * m + j is x_k), the operands stacked along a new dimension, broadcast
-//   with the stack just outside the expanded one, and the two reshaped back
-//   into one: reshape(broadcast_in_dim(concat(reshape(x_k)))). A broadcast
-//   alone cannot index one dimension by k * m + j, so the reshape stays.
+//   k * m + j is x_k), whether no operand dimension maps to it or a unit one
+//   does, the operands stacked along a new dimension, broadcast with the stack
+//   just outside the expanded one, and the two reshaped back into one:
+//   reshape(broadcast_in_dim(concat(reshape(x_k)))). A broadcast alone cannot
+//   index one dimension by k * m + j, so the reshape stays.
 struct ConcatenateBroadcastInDim
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                                      ConcatenateBroadcastInDim> {
@@ -33803,6 +34103,9 @@ struct ConcatenateBroadcastInDim
     if (found == dims.end())
       return concatExpanded(op, first, rewriter);
     int64_t inputDim = std::distance(dims.begin(), found);
+    if (first.getOperand().getType().getDimSize(inputDim) == 1 &&
+        first.getType().getDimSize(op.getDimension()) != 1)
+      return concatExpanded(op, first, rewriter);
 
     SmallVector<Value> operandOperands;
     for (auto operand : operands) {
@@ -33869,8 +34172,9 @@ private:
     split.push_back(m);
     llvm::append_range(split, type.getShape().drop_front(dim + 1));
     SmallVector<int64_t> newDims = {dim};
+    // A unit operand dimension at dim maps to the expanded part.
     for (int64_t d : dims)
-      newDims.push_back(d > dim ? d + 1 : d);
+      newDims.push_back(d >= dim ? d + 1 : d);
     auto splitType = RankedTensorType::get(split, type.getElementType());
     auto bcast = stablehlo::BroadcastInDimOp::create(rewriter, op.getLoc(),
                                                      splitType, stack, newDims);
@@ -42772,6 +43076,7 @@ struct EnzymeHLOOptPass
           CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
           CSE<enzymexla::ExtendOp>, CSEIota, CSE<stablehlo::CompareOp>,
           CSE<stablehlo::GatherOp>, CSE<stablehlo::ScatterOp>,
+          CSE<stablehlo::ReduceOp>, CSEDotGeneralTransposed,
           CSE<stablehlo::SelectOp>, CSE<stablehlo::RealOp>, CSE<chlo::ConjOp>,
           CSE<stablehlo::ImagOp>, CSE<stablehlo::BatchNormTrainingOp>,
           CSE<stablehlo::BatchNormInferenceOp>, CSE<stablehlo::BatchNormGradOp>,

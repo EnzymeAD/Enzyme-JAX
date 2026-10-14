@@ -1123,6 +1123,14 @@ def ApplyCSEScatterPatterns : EnzymeHLOPatternOp<
     "cse_scatter"> {
   let patterns = ["CSE<stablehlo::ScatterOp>"];
 }
+def ApplyCSEReducePatterns : EnzymeHLOPatternOp<
+    "cse_reduce"> {
+  let patterns = ["CSE<stablehlo::ReduceOp>"];
+}
+def ApplyCSEDotGeneralTransposedPatterns : EnzymeHLOPatternOp<
+    "cse_dot_general_transposed"> {
+  let patterns = ["CSEDotGeneralTransposed"];
+}
 def ApplyCSEComparePatterns : EnzymeHLOPatternOp<
     "cse_compare"> {
   let patterns = ["CSE<stablehlo::CompareOp>"];
@@ -1754,6 +1762,10 @@ def ApplyCSEConcatenatePatterns : EnzymeHLOPatternOp<
 def ApplySliceReshapeConcatPatterns : EnzymeHLOPatternOp<
     "slice_reshape_concat"> {
   let patterns = ["SliceReshapeConcat"];
+}
+def ApplySliceReshapeConcatWindowPatterns : EnzymeHLOPatternOp<
+    "slice_reshape_concat_window"> {
+  let patterns = ["SliceReshapeConcatWindow"];
 }
 def ApplySliceReshapeElementwisePatterns : EnzymeHLOPatternOp<
     "slice_reshape_elementwise"> {

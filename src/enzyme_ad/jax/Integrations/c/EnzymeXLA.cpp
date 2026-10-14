@@ -726,6 +726,8 @@ static void addScatterGatherPasses(std::vector<std::string> &list,
   list.push_back(passWithArg("scatter_const_fold", maxConstThreshold));
   list.push_back("cse_gather");
   list.push_back("cse_scatter");
+  list.push_back("cse_reduce");
+  list.push_back("cse_dot_general_transposed");
 }
 
 static void addSliceToBatchPasses(std::vector<std::string> &list) {
@@ -927,6 +929,9 @@ static void addReshapePropagateUpPasses(std::vector<std::string> &list,
   list.push_back(passWithArg("reshape_slice", !aggressive));
   list.push_back(passWithArg("reshape_elementwise", !aggressive));
   list.push_back(passWithArg("reshape_dynamic_slice", !aggressive));
+  // A window of a reshaped concatenate inside one operand that does not start
+  // on a row: forwarded to that operand, which no reshape move can do.
+  list.push_back("slice_reshape_concat_window");
 }
 
 static void addReshapePropagateDownPasses(std::vector<std::string> &list,
