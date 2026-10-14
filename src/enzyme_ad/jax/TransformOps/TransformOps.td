@@ -596,6 +596,10 @@ def ApplyConcatReshapeSlicePatterns : EnzymeHLOPatternOp<
     "concat_reshape_slice"> {
   let patterns = ["ConcatReshapeSlice"];
 }
+def ApplyConcatReshapeBroadcastPatterns : EnzymeHLOPatternOp<
+    "concat_reshape_broadcast"> {
+  let patterns = ["ConcatReshapeBroadcast"];
+}
 
 def ApplyConcatBroadcastSlicePatterns : EnzymeHLOPatternOp<
     "concat_broadcast_slice"> {
