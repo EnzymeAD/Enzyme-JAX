@@ -519,6 +519,10 @@ def ApplyTransposeGatherPatterns : EnzymeHLOPatternOp<
     "transpose_gather"> {
   let patterns = ["TransposeGather"];
 }
+def ApplyReshapeGatherPatterns : EnzymeHLOPatternOp<
+    "reshape_gather"> {
+  let patterns = ["ReshapeGather"];
+}
 def ApplyTransposeScatterPatterns : EnzymeHLOPatternOp<
     "transpose_scatter"> {
   let patterns = ["TransposeScatter"];
