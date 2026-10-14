@@ -7902,6 +7902,12 @@ struct DynamicUpdateSliceConstProp final
   }
 };
 
+// The most result elements an op is folded to when its non-splat constant
+// inputs stay alive (they have other users), as small index and mask
+// computations often are: the expansion the exec list allows
+// concat_const_prop and dynamic_update_slice_const_prop.
+static constexpr int64_t kReusedInputFoldLimit = 1024;
+
 template <auto f>
 LogicalResult binaryConstProp(Operation *op, PatternRewriter &rewriter) {
   // return if not constant
@@ -7917,8 +7923,9 @@ LogicalResult binaryConstProp(Operation *op, PatternRewriter &rewriter) {
 
   // only const prop if it does not make more non-splat constants: with a
   // non-splat operand, one non-splat operand must be used only here, so the
-  // folded constant replaces it
-  if (!lhsAttr.isSplat() || !rhsAttr.isSplat()) {
+  // folded constant replaces it, unless the result is small
+  if ((!lhsAttr.isSplat() || !rhsAttr.isSplat()) &&
+      ty.getNumElements() > kReusedInputFoldLimit) {
     bool lhsDies =
         !lhsAttr.isSplat() && llvm::all_equal(op->getOperand(0).getUsers());
     bool rhsDies =
@@ -7979,9 +7986,10 @@ LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter) {
 
   // only const prop if it does not make more non-splat constants: a
   // non-splat operand must be used only here, so the folded constant
-  // replaces it
+  // replaces it, unless the result is small
   if (!inputAttr.isSplat() &&
-      !llvm::hasSingleElement(op->getOperand(0).getUsers()))
+      !llvm::hasSingleElement(op->getOperand(0).getUsers()) &&
+      ty.getNumElements() > kReusedInputFoldLimit)
     return failure();
 
   if (inputAttr.isSplat()) {
