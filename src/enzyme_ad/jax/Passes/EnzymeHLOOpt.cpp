@@ -5306,6 +5306,15 @@ struct ConcatSliceStack final
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
                                     PatternRewriter &rewriter) const {
+    if (succeeded(matchSame(op, rewriter)))
+      return success();
+    return matchWindows(op, rewriter);
+  }
+
+  // Every operand a single window of the same value, read through the same
+  // views.
+  LogicalResult matchSame(stablehlo::ConcatenateOp op,
+                          PatternRewriter &rewriter) const {
     int64_t n = op.getNumOperands();
     if (n < 2)
       return failure();
@@ -5469,6 +5478,435 @@ private:
     auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op);
     return bcast && bcast.getType().getNumElements() ==
                         bcast.getOperand().getType().getNumElements();
+  }
+  struct Piece {
+    SmallVector<Operation *> views; // outermost first, down to the slice
+    stablehlo::SliceOp slice;
+    Value base; // the value sliced, through a transpose
+    // base is a reshape of root: the root. A merged piece (its slice selects
+    // whole blocks of a merged dimension of root) is described as the
+    // equivalent slice of the blocked reshape, so every piece's base is the
+    // blocked value.
+    Value root;
+    bool merged = false;
+    // The slice's bounds in base's dimensions (the original slice's through
+    // the perm, or the virtual blocked slice of a reread merged piece).
+    SmallVector<int64_t> starts, limits;
+    bool unitInserted = false; // the views insert the concatenated dim
+    int64_t unitAt = -1;       // where (the concatenated dimension)
+    SmallVector<int64_t>
+        perm;       // slice operand dim -> base dim (identity if none)
+    int64_t e = -1; // the base dimension of the window run
+    int64_t first = 0, count = 0;
+    // The output position of each base dimension (-1: unit / not read), and
+    // of the concatenated dimension when the views insert it.
+    SmallVector<int64_t> layout;
+  };
+
+  // Windows of one value stacked at different times: some operands runs of
+  // k windows, others single windows, read through different views or a
+  // transposed operand. Each resolves to (value, dimension, first block,
+  // count); consecutive runs laid out the same are one slice of the value
+  // with the widest operand's views.
+  LogicalResult matchWindows(stablehlo::ConcatenateOp op,
+                             PatternRewriter &rewriter) const {
+    int64_t n = op.getNumOperands();
+    if (n < 2)
+      return failure();
+    int64_t d = op.getDimension();
+    SmallVector<Piece, 2> pieces;
+    for (Value operand : op.getOperands()) {
+      Piece pc;
+      if (!analyze(operand, d, pc))
+        return failure();
+      pieces.push_back(pc);
+    }
+    // One blocked value for all: pieces that read it directly, and pieces
+    // that read the merged reshape of the same root selecting whole blocks
+    // (reread as slices of the blocked value when the run merges).
+    Value base;
+    // The blocked value: among bases of the common root, the one of the
+    // highest rank (the others are merged reshapes of it, reread below).
+    for (Piece &pc : pieces) {
+      bool sameRoot = true;
+      for (Piece &o : pieces)
+        if (o.root != pc.root)
+          sameRoot = false;
+      if (!sameRoot)
+        return failure();
+      if (!base || cast<RankedTensorType>(pc.base.getType()).getRank() >
+                       cast<RankedTensorType>(base.getType()).getRank())
+        base = pc.base;
+    }
+    if (!base)
+      return failure();
+    auto blockedReshape = base.getDefiningOp<stablehlo::ReshapeOp>();
+    for (Piece &pc : pieces) {
+      if (pc.base == base)
+        continue;
+      if (!blockedReshape || pc.root != blockedReshape.getOperand() ||
+          !rereadBlocked(pc, blockedReshape))
+        return failure();
+      pc.base = base;
+    }
+    // The run dimension is the operand's concatenated dimension itself: the
+    // same extent (a piece whose views split or merge it is not a window
+    // run along it).
+    for (auto [k, pc] : llvm::enumerate(pieces))
+      if (pc.count !=
+          cast<RankedTensorType>(op.getOperand(k).getType()).getDimSize(d))
+        return failure();
+    // One run dimension e for all, consecutive windows, at least one piece
+    // of extent > 1 (otherwise concat_slice_stack) and one of extent 1.
+    int64_t e = pieces[0].e;
+    bool wide = false, single = false;
+    int64_t next = pieces[0].first;
+    for (Piece &pc : pieces) {
+      if (pc.e != e || pc.first != next)
+        return failure();
+      next += pc.count;
+      wide |= pc.count > 1;
+      single |= pc.count == 1;
+    }
+    if (!wide || !single)
+      return failure();
+    int64_t total = next - pieces[0].first;
+    // The same layout, and the same other slice bounds.
+    int64_t carrier = -1;
+    for (auto [k, pc] : llvm::enumerate(pieces))
+      if (pc.count > 1) {
+        carrier = k;
+        break;
+      }
+    Piece &c = pieces[carrier];
+    // Pieces whose slices read the same value are consecutive slices of it,
+    // concat_slice's case; this pattern is for windows read through
+    // different values (the base directly, and a transpose of it), which
+    // only the base-dimension bookkeeping above relates.
+    bool sameOperand = true;
+    for (Piece &pc : pieces)
+      sameOperand &= pc.slice.getOperand() == c.slice.getOperand();
+    if (sameOperand)
+      return failure();
+    // The same layout, and the same slice bounds on the base's other
+    // dimensions (each piece's slice reads the base through its own perm).
+    for (Piece &pc : pieces) {
+      if (pc.layout != c.layout)
+        return failure();
+      for (int64_t bd = 0, r = pc.starts.size(); bd < r; bd++) {
+        if (bd == e)
+          continue;
+        if (pc.starts[bd] != c.starts[bd] || pc.limits[bd] != c.limits[bd])
+          return failure();
+      }
+    }
+    // The run: the carrier's slice widened along e.
+    stablehlo::SliceOp cs = c.slice;
+    int64_t se = llvm::find(c.perm, e) - c.perm.begin(); // slice dim of e
+    SmallVector<int64_t> starts(cs.getStartIndices()),
+        limits(cs.getLimitIndices()), strides(cs.getStrides());
+    starts[se] = pieces[0].first;
+    limits[se] = pieces[0].first + total;
+    Value run = stablehlo::SliceOpCreate(rewriter, op.getLoc(), cs.getOperand(),
+                                         starts, limits, strides);
+    // The carrier's views, each reapplied with e's extent grown to total.
+    Value v = run;
+    for (Operation *view : llvm::reverse(c.views)) {
+      v = reapplyWindowView(rewriter, op.getLoc(), view, v);
+      if (!v)
+        return failure();
+    }
+    rewriter.replaceOp(op, v);
+    return success();
+  }
+
+  static bool isWindowView(Operation *op) {
+    if (isa<stablehlo::TransposeOp>(op))
+      return true;
+    if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op))
+      return bcast.getType().getNumElements() ==
+             bcast.getOperand().getType().getNumElements();
+    // A reshape whose dimensions map one to one onto the output's, each
+    // input dimension kept whole (possibly split into several, or a unit one
+    // inserted or deleted); a reshape that merges dimensions is not a view.
+    if (auto reshape = dyn_cast<stablehlo::ReshapeOp>(op))
+      return !reshapeMap(reshape).empty();
+    return false;
+  }
+
+  // For a reshape that only splits input dimensions and inserts or deletes
+  // unit ones: the output dimension each input dimension starts at (-1 for
+  // a deleted unit one). Empty when the reshape merges dimensions.
+  static SmallVector<int64_t> reshapeMap(stablehlo::ReshapeOp reshape) {
+    ArrayRef<int64_t> in = reshape.getOperand().getType().getShape();
+    ArrayRef<int64_t> out = reshape.getType().getShape();
+    SmallVector<int64_t> m;
+    int64_t o = 0;
+    for (int64_t i = 0; i < (int64_t)in.size(); i++) {
+      // Skip inserted unit output dims.
+      if (in[i] == 1) {
+        // A unit input dim: if the next output dim is a unit, consume it;
+        // otherwise it was deleted.
+        if (o < (int64_t)out.size() && out[o] == 1) {
+          m.push_back(o++);
+        } else {
+          m.push_back(-1);
+        }
+        continue;
+      }
+      // Consume inserted unit output dims before this one.
+      while (o < (int64_t)out.size() && out[o] == 1 && in[i] != 1)
+        o++;
+      if (o >= (int64_t)out.size())
+        return {};
+      int64_t start = o, prod = out[o++];
+      while (prod < in[i] && o < (int64_t)out.size())
+        prod *= out[o++];
+      if (prod != in[i])
+        return {};
+      m.push_back(start);
+    }
+    return m;
+  }
+
+  // Output positions of a view's input dimensions.
+  static SmallVector<int64_t> viewMap(Operation *op) {
+    SmallVector<int64_t> m;
+    if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
+      ArrayRef<int64_t> perm = transpose.getPermutation();
+      m.assign(perm.size(), -1);
+      for (auto [o, i] : llvm::enumerate(perm))
+        m[i] = o;
+      return m;
+    }
+    if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op))
+      return SmallVector<int64_t>(bcast.getBroadcastDimensions());
+    return reshapeMap(cast<stablehlo::ReshapeOp>(op));
+  }
+
+  static bool analyze(Value operand, int64_t d, Piece &pc) {
+    Value v = operand;
+    while (Operation *op = v.getDefiningOp()) {
+      if (!isWindowView(op))
+        break;
+      if (!v.hasOneUse())
+        return false;
+      pc.views.push_back(op);
+      v = op->getOperand(0);
+    }
+    pc.slice = v.getDefiningOp<stablehlo::SliceOp>();
+    if (!pc.slice || !v.hasOneUse())
+      return false;
+    if (llvm::any_of(pc.slice.getStrides(), [](int64_t s) { return s != 1; }))
+      return false;
+    Value x = pc.slice.getOperand();
+    int64_t rank = cast<RankedTensorType>(x.getType()).getRank();
+    pc.perm = llvm::to_vector(llvm::seq<int64_t>(0, rank));
+    if (auto transpose = x.getDefiningOp<stablehlo::TransposeOp>()) {
+      pc.perm.assign(transpose.getPermutation().begin(),
+                     transpose.getPermutation().end());
+      pc.base = transpose.getOperand();
+    } else {
+      pc.base = x;
+    }
+    if (auto reshape = pc.base.getDefiningOp<stablehlo::ReshapeOp>())
+      pc.root = reshape.getOperand();
+    else
+      pc.root = pc.base;
+    // Output position of each slice-result dimension through the views.
+    SmallVector<int64_t> pos = llvm::to_vector(llvm::seq<int64_t>(0, rank));
+    int64_t unitPos = -1; // where an inserted dimension lands, if any
+    for (Operation *view : llvm::reverse(pc.views)) {
+      SmallVector<int64_t> m = viewMap(view);
+      for (int64_t &x : pos)
+        if (x >= 0)
+          x = m[x];
+      if (unitPos >= 0)
+        unitPos = m[unitPos];
+      if (unitPos < 0 && !isa<stablehlo::TransposeOp>(view)) {
+        // An inserted unit output dimension: one of extent 1 no input
+        // dimension starts at (a split input dimension covers the output
+        // dimensions from its start up to the next start).
+        auto outType = cast<RankedTensorType>(view->getResult(0).getType());
+        SmallVector<int64_t> starts(m.begin(), m.end());
+        llvm::sort(starts);
+        for (int64_t o = 0; o < outType.getRank(); o++) {
+          if (outType.getDimSize(o) != 1 || llvm::is_contained(m, o))
+            continue;
+          // Covered by a split dimension before it?
+          bool covered = false;
+          for (auto [i, st] : llvm::enumerate(m)) {
+            if (st < 0 || st >= o)
+              continue;
+            int64_t nextStart = outType.getRank();
+            for (int64_t s2 : starts)
+              if (s2 > st) {
+                nextStart = s2;
+                break;
+              }
+            if (o < nextStart)
+              covered = true;
+          }
+          if (!covered) {
+            unitPos = o;
+            break;
+          }
+        }
+      }
+    }
+    // The run dimension: the slice dimension that lands at d (a k-window
+    // piece) or, for a unit piece, the slice dimension of extent 1 whose
+    // base dim no other piece... we take the one whose output position is
+    // d when present, else the inserted unit landed at d and e is the
+    // slice dimension of extent 1 that the views deleted (position -1).
+    int64_t se = -1;
+    for (int64_t i = 0; i < rank; i++)
+      if (pos[i] == d)
+        se = i;
+    if (se < 0) {
+      if (unitPos != d)
+        return false;
+      for (int64_t i = 0; i < rank; i++)
+        if (pos[i] < 0 &&
+            pc.slice.getLimitIndices()[i] - pc.slice.getStartIndices()[i] == 1)
+          se = i;
+      if (se < 0) {
+        // No unit slice dimension carries it: the piece reads a merged
+        // reshape of the root, where the run dimension is the merged one,
+        // decided against the blocked value by rereadBlocked (pc.e = -1).
+        pc.unitInserted = true;
+        pc.unitAt = d;
+        pc.e = -1;
+        pc.layout.assign(rank, -1);
+        pc.starts.assign(rank, 0);
+        pc.limits.assign(rank, 0);
+        for (int64_t i = 0; i < rank; i++) {
+          pc.layout[pc.perm[i]] = pos[i];
+          pc.starts[pc.perm[i]] = pc.slice.getStartIndices()[i];
+          pc.limits[pc.perm[i]] = pc.slice.getLimitIndices()[i];
+        }
+        return true;
+      }
+      pos[se] = d;
+    }
+    pc.e = pc.perm[se];
+    pc.first = pc.slice.getStartIndices()[se];
+    pc.count = pc.slice.getLimitIndices()[se] - pc.first;
+    // Layout and bounds keyed by base dimension.
+    pc.layout.assign(rank, -1);
+    pc.starts.assign(rank, 0);
+    pc.limits.assign(rank, 0);
+    for (int64_t i = 0; i < rank; i++) {
+      pc.layout[pc.perm[i]] = pos[i];
+      pc.starts[pc.perm[i]] = pc.slice.getStartIndices()[i];
+      pc.limits[pc.perm[i]] = pc.slice.getLimitIndices()[i];
+    }
+    return true;
+  }
+
+  // A piece reading reshape(root) with one dimension merged relative to
+  // `blocked` (another reshape of root), its slice selecting whole blocks
+  // of it through at most a transpose and reading the other dimensions
+  // whole: described as the equivalent run of blocks of `blocked`, keyed
+  // by blocked's dimensions.
+  static bool rereadBlocked(Piece &pc, stablehlo::ReshapeOp blocked) {
+    auto mergedReshape = pc.base.getDefiningOp<stablehlo::ReshapeOp>();
+    if (!mergedReshape)
+      return false;
+    ArrayRef<int64_t> merged = mergedReshape.getType().getShape();
+    ArrayRef<int64_t> blk = blocked.getType().getShape();
+    if (blk.size() != merged.size() + 1)
+      return false;
+    int64_t e = -1;
+    for (int64_t i = 0, j = 0; i < (int64_t)merged.size(); i++, j++) {
+      if (j < (int64_t)blk.size() && merged[i] == blk[j])
+        continue;
+      if (e != -1 || j + 1 >= (int64_t)blk.size() ||
+          merged[i] != blk[j] * blk[j + 1])
+        return false;
+      e = i;
+      j++;
+    }
+    if (e < 0 || (pc.e != e && !(pc.e == -1 && pc.unitInserted)))
+      return false;
+    pc.e = e;
+    int64_t size = blk[e + 1];
+    int64_t se = llvm::find(pc.perm, e) - pc.perm.begin();
+    stablehlo::SliceOp sl = pc.slice;
+    int64_t start = sl.getStartIndices()[se], limit = sl.getLimitIndices()[se];
+    if (start % size != 0 || limit % size != 0)
+      return false;
+    for (int64_t i = 0; i < (int64_t)pc.perm.size(); i++) {
+      if (i == se)
+        continue;
+      if (sl.getStartIndices()[i] != 0 ||
+          sl.getLimitIndices()[i] != merged[pc.perm[i]])
+        return false;
+    }
+    pc.first = start / size;
+    pc.count = (limit - start) / size;
+    pc.merged = true;
+    // Layout keyed by blocked's dims: merged dim e splits into e (blocks,
+    // the run) and e + 1 (size); the size dim reads whole and lands where
+    // the merged dim did; dims after shift by one. The perm becomes the
+    // identity on blocked (the piece is reread as a plain slice of it).
+    SmallVector<int64_t> layout(blk.size(), -1);
+    for (int64_t bd = 0; bd < (int64_t)merged.size(); bd++) {
+      int64_t pos = pc.layout[bd];
+      if (bd < e)
+        layout[bd] = pos;
+      else if (bd == e) {
+        // The run (blocks) is the concatenated dimension the views inserted;
+        // the size dimension keeps the merged dimension's position.
+        layout[e] = pc.unitInserted ? pc.unitAt : pos;
+        layout[e + 1] = pos;
+      } else
+        layout[bd + 1] = pos;
+    }
+    pc.layout = layout;
+    SmallVector<int64_t> starts(blk.size(), 0), limits(blk.begin(), blk.end());
+    starts[e] = pc.first;
+    limits[e] = pc.first + pc.count;
+    pc.starts = starts;
+    pc.limits = limits;
+    pc.perm = llvm::to_vector(llvm::seq<int64_t>(0, (int64_t)blk.size()));
+    return true;
+  }
+
+  static Value reapplyWindowView(PatternRewriter &rewriter, Location loc,
+                                 Operation *op, Value v) {
+    auto vType = cast<RankedTensorType>(v.getType());
+    if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op))
+      return stablehlo::TransposeOpCreate(rewriter, loc, v,
+                                          transpose.getPermutation());
+    if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+      ArrayRef<int64_t> dims = bcast.getBroadcastDimensions();
+      SmallVector<int64_t> shape(bcast.getType().getShape());
+      for (auto [i, dd] : llvm::enumerate(dims))
+        shape[dd] = vType.getDimSize(i);
+      return stablehlo::BroadcastInDimOpCreate(rewriter, loc, v, shape, dims);
+    }
+    // The reshape on v: each input dimension that is not split keeps v's
+    // extent at its output position; a split one keeps the reshape's own
+    // split (its extent in v must be the original's).
+    auto reshape = cast<stablehlo::ReshapeOp>(op);
+    SmallVector<int64_t> m = viewMap(op);
+    ArrayRef<int64_t> in = reshape.getOperand().getType().getShape();
+    SmallVector<int64_t> shape(reshape.getType().getShape());
+    for (auto [i, o] : llvm::enumerate(m)) {
+      if (o < 0 || vType.getDimSize(i) == in[i])
+        continue;
+      // A dimension whose extent changed must be whole in the output (its
+      // start is the only output dimension before the next start).
+      int64_t nextStart = shape.size();
+      for (int64_t o2 : m)
+        if (o2 > o && o2 < nextStart)
+          nextStart = o2;
+      if (nextStart - o != 1)
+        return nullptr;
+      shape[o] = vType.getDimSize(i);
+    }
+    return stablehlo::ReshapeOpCreate(rewriter, loc, v, shape);
   }
 };
 
