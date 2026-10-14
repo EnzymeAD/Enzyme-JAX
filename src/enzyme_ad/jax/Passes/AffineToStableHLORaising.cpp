@@ -6206,6 +6206,208 @@ struct AffineToStableHLORaisingPass
     }
   }
 
+  // A parallel axis whose bounds are affine in the induction variables of
+  // enclosing loops with constant bounds (a triangular loop `j = i .. N`)
+  // has no fixed extent to become a tensor axis, so it would be peeled into
+  // a masked serial loop. Over the box of the enclosing variables the bounds
+  // are nevertheless confined to a constant interval; the axis then batches
+  // over that interval, with the body behind an `lb <= iv < ub` guard that
+  // the masking machinery already understands. Every point of the domain
+  // runs exactly once as before; the masked-off points only cost work, which
+  // is why the rectangle is required to be no more than twice the longest
+  // row: a serial masked loop would run that many iterations anyway.
+  static void rectangularizeAffineBoundedAxes(Operation *root) {
+    SmallVector<affine::AffineParallelOp> worklist;
+    root->walk([&](affine::AffineParallelOp par) { worklist.push_back(par); });
+    for (auto par : worklist) {
+      if (!par.getReductions().empty())
+        continue;
+      unsigned n = par.getNumDims();
+      AffineMap lbMaps = par.getLowerBoundsMap(),
+                ubMaps = par.getUpperBoundsMap();
+      ValueRange lbOperands = par.getLowerBoundsOperands(),
+                 ubOperands = par.getUpperBoundsOperands();
+
+      // The least and greatest values `expr` over `operands` takes, with
+      // the operands bounded by the loops they are induction variables of.
+      auto rangeOf = [&](AffineExpr expr, unsigned numDims, unsigned numSymbols,
+                         ValueRange operands)
+          -> std::optional<std::pair<int64_t, int64_t>> {
+        AffineMap map = AffineMap::get(numDims, numSymbols, expr);
+        SmallVector<Value> ops(operands);
+        affine::canonicalizeMapAndOperands(&map, &ops);
+        return getConstantRange(map, ops);
+      };
+
+      struct RectDim {
+        unsigned dim;
+        int64_t lb, ub;
+      };
+      SmallVector<RectDim> rect;
+      for (unsigned i = 0; i < n; ++i) {
+        AffineMap lm = par.getLowerBoundMap(i), um = par.getUpperBoundMap(i);
+        if (getConstant(lm) && getConstant(um))
+          continue;
+        if (par.getSteps()[i] != 1)
+          continue;
+        // lb = max of the lower results, so it is at least the greatest of
+        // their minima; ub = min of the upper results, at most the least of
+        // their maxima.
+        std::optional<int64_t> lb, ub;
+        for (AffineExpr e : lm.getResults()) {
+          auto r = rangeOf(e, lm.getNumDims(), lm.getNumSymbols(), lbOperands);
+          if (!r) {
+            lb = std::nullopt;
+            break;
+          }
+          lb = std::max(lb.value_or(r->first), r->first);
+        }
+        for (AffineExpr e : um.getResults()) {
+          auto r = rangeOf(e, um.getNumDims(), um.getNumSymbols(), ubOperands);
+          if (!r) {
+            ub = std::nullopt;
+            break;
+          }
+          ub = std::min(ub.value_or(r->second), r->second);
+        }
+        if (!lb || !ub || *ub <= *lb)
+          continue;
+        int64_t extent = *ub - *lb;
+
+        // The longest row: the greatest value of ub - lb over the box, from
+        // the difference over the combined operands (canonicalization merges
+        // an operand both bounds use, so `i + 5 - i` is 5), when both bounds
+        // are single results; else the extent itself.
+        int64_t longestRow = extent;
+        if (lm.getNumResults() == 1 && um.getNumResults() == 1) {
+          unsigned nd = lm.getNumDims() + um.getNumDims();
+          unsigned ns = lm.getNumSymbols() + um.getNumSymbols();
+          AffineExpr diff =
+              um.getResult(0)
+                  .shiftDims(um.getNumDims(), lm.getNumDims())
+                  .shiftSymbols(um.getNumSymbols(), lm.getNumSymbols()) -
+              lm.getResult(0);
+          SmallVector<Value> ops;
+          ops.append(lbOperands.begin(), lbOperands.begin() + lm.getNumDims());
+          ops.append(ubOperands.begin(), ubOperands.begin() + um.getNumDims());
+          ops.append(lbOperands.begin() + lm.getNumDims(), lbOperands.end());
+          ops.append(ubOperands.begin() + um.getNumDims(), ubOperands.end());
+          if (auto r = rangeOf(diff, nd, ns, ops))
+            longestRow = std::min(extent, std::max<int64_t>(r->second, 0));
+        }
+        if (longestRow <= 0 || extent > 2 * longestRow)
+          continue;
+        rect.push_back({i, *lb, *ub});
+      }
+      if (rect.empty())
+        continue;
+
+      OpBuilder b(par);
+      Location loc = par.getLoc();
+      SmallVector<AffineExpr> lbounds, ubounds;
+      SmallVector<int32_t> lboundGroup, uboundGroup;
+      SmallVector<int64_t> steps;
+      for (unsigned i = 0; i < n; ++i) {
+        auto rit =
+            llvm::find_if(rect, [&](const RectDim &r) { return r.dim == i; });
+        AffineMap lm = par.getLowerBoundMap(i), um = par.getUpperBoundMap(i);
+        if (rit != rect.end()) {
+          lbounds.push_back(getAffineConstantExpr(rit->lb, par.getContext()));
+          lboundGroup.push_back(1);
+          ubounds.push_back(getAffineConstantExpr(rit->ub, par.getContext()));
+          uboundGroup.push_back(1);
+        } else {
+          lbounds.append(lm.getResults().begin(), lm.getResults().end());
+          lboundGroup.push_back(lm.getNumResults());
+          ubounds.append(um.getResults().begin(), um.getResults().end());
+          uboundGroup.push_back(um.getNumResults());
+        }
+        steps.push_back(par.getSteps()[i]);
+      }
+      bool allConstant = llvm::all_of(lbounds,
+                                      [](AffineExpr e) {
+                                        return isa<AffineConstantExpr>(e);
+                                      }) &&
+                         llvm::all_of(ubounds, [](AffineExpr e) {
+                           return isa<AffineConstantExpr>(e);
+                         });
+      unsigned lbDims = lbMaps.getNumDims(), lbSyms = lbMaps.getNumSymbols(),
+               ubDims = ubMaps.getNumDims(), ubSyms = ubMaps.getNumSymbols();
+      SmallVector<Value> mapOperands(par.getOperands());
+      if (allConstant) {
+        lbDims = lbSyms = ubDims = ubSyms = 0;
+        mapOperands.clear();
+      }
+      auto newPar = affine::AffineParallelOp::create(
+          b, loc, TypeRange(), b.getArrayAttr({}),
+          AffineMapAttr::get(
+              AffineMap::get(lbDims, lbSyms, lbounds, par.getContext())),
+          b.getI32TensorAttr(lboundGroup),
+          AffineMapAttr::get(
+              AffineMap::get(ubDims, ubSyms, ubounds, par.getContext())),
+          b.getI32TensorAttr(uboundGroup), b.getI64ArrayAttr(steps),
+          mapOperands);
+      newPar->setDiscardableAttrs(par->getDiscardableAttrDictionary());
+      Block *blk = new Block();
+      SmallVector<Value> ivRepl;
+      for (unsigned i = 0; i < n; ++i)
+        ivRepl.push_back(blk->addArgument(b.getIndexType(), loc));
+      newPar.getRegion().push_back(blk);
+      b.setInsertionPointToEnd(blk);
+      auto yield = affine::AffineYieldOp::create(b, loc);
+
+      // Guard: iv >= every lower result and iv < every upper result of the
+      // original bounds. The set's dims are [rect ivs, lb dims, ub dims] and
+      // its symbols [lb syms, ub syms].
+      unsigned r = rect.size();
+      SmallVector<AffineExpr> constraints;
+      SmallVector<bool> eqs;
+      for (auto [k, rd] : llvm::enumerate(rect)) {
+        AffineExpr iv = getAffineDimExpr(k, par.getContext());
+        for (AffineExpr e : par.getLowerBoundMap(rd.dim).getResults()) {
+          constraints.push_back(iv - e.shiftDims(lbMaps.getNumDims(), r));
+          eqs.push_back(false);
+        }
+        for (AffineExpr e : par.getUpperBoundMap(rd.dim).getResults()) {
+          constraints.push_back(
+              e.shiftDims(ubMaps.getNumDims(), r + lbMaps.getNumDims())
+                  .shiftSymbols(ubMaps.getNumSymbols(),
+                                lbMaps.getNumSymbols()) -
+              iv - 1);
+          eqs.push_back(false);
+        }
+      }
+      SmallVector<Value> setOperands;
+      for (auto &rd : rect)
+        setOperands.push_back(ivRepl[rd.dim]);
+      setOperands.append(lbOperands.begin(),
+                         lbOperands.begin() + lbMaps.getNumDims());
+      setOperands.append(ubOperands.begin(),
+                         ubOperands.begin() + ubMaps.getNumDims());
+      setOperands.append(lbOperands.begin() + lbMaps.getNumDims(),
+                         lbOperands.end());
+      setOperands.append(ubOperands.begin() + ubMaps.getNumDims(),
+                         ubOperands.end());
+      IntegerSet iset = IntegerSet::get(
+          r + lbMaps.getNumDims() + ubMaps.getNumDims(),
+          lbMaps.getNumSymbols() + ubMaps.getNumSymbols(), constraints, eqs);
+      affine::canonicalizeSetAndOperands(&iset, &setOperands);
+      b.setInsertionPoint(yield);
+      auto ifOp =
+          affine::AffineIfOp::create(b, loc, TypeRange(), iset, setOperands,
+                                     /*withElseRegion=*/false);
+      Block *oldBody = par.getBody();
+      for (unsigned i = 0; i < n; ++i)
+        oldBody->getArgument(i).replaceAllUsesWith(ivRepl[i]);
+      Block *thenBlk = ifOp.getThenBlock();
+      thenBlk->getOperations().splice(
+          std::prev(thenBlk->getOperations().end()), oldBody->getOperations(),
+          oldBody->getOperations().begin(),
+          std::prev(oldBody->getOperations().end()));
+      par.erase();
+    }
+  }
+
   static void peelDynamicParallelDims(Operation *root) {
     SmallVector<affine::AffineParallelOp> worklist;
     root->walk([&](affine::AffineParallelOp par) { worklist.push_back(par); });
@@ -6818,6 +7020,7 @@ struct AffineToStableHLORaisingPass
       stripAccessMemorySpaceCasts(func);
       splitStructScratch(func);
       boundParallelAxes(func);
+      rectangularizeAffineBoundedAxes(func);
       peelDynamicParallelDims(func);
     }
 
@@ -6843,6 +7046,7 @@ struct AffineToStableHLORaisingPass
       splitStructScratch(g);
       hoistWrapperInvariantPointerCompares(g);
       boundParallelAxes(g);
+      rectangularizeAffineBoundedAxes(g);
       peelDynamicParallelDims(g);
     }
     size_t raised_count = 0;
