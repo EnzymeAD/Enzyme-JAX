@@ -63,3 +63,67 @@ func.func @rhs_differs(%p0: tensor<8x3x4xf64>, %p1: tensor<8x3x4xf64>, %b0: tens
 // CHECK-NEXT: %[[V6:[^ ,:)]+]] = stablehlo.concatenate %[[V4]], %[[V5]], dim = 1 : (tensor<8x3x5xf64>, tensor<8x3x5xf64>) -> tensor<8x6x5xf64>
 // CHECK-NEXT: return %[[V6]] : tensor<8x6x5xf64>
 // CHECK-NEXT: }
+
+// Each dot's result is transposed the same way before the concatenate: one
+// dot of the concatenated pieces, transposed once.
+func.func @through_transpose(%a: tensor<3x4xf64>, %x0: tensor<8x4x4xf64>, %x1: tensor<8x4x4xf64>) -> tensor<16x3x4xf64> {
+  %d0 = stablehlo.dot_general %a, %x0, contracting_dims = [1] x [2] : (tensor<3x4xf64>, tensor<8x4x4xf64>) -> tensor<3x8x4xf64>
+  %d1 = stablehlo.dot_general %a, %x1, contracting_dims = [1] x [2] : (tensor<3x4xf64>, tensor<8x4x4xf64>) -> tensor<3x8x4xf64>
+  %t0 = stablehlo.transpose %d0, dims = [1, 0, 2] : (tensor<3x8x4xf64>) -> tensor<8x3x4xf64>
+  %t1 = stablehlo.transpose %d1, dims = [1, 0, 2] : (tensor<3x8x4xf64>) -> tensor<8x3x4xf64>
+  %c = stablehlo.concatenate %t0, %t1, dim = 0 : (tensor<8x3x4xf64>, tensor<8x3x4xf64>) -> tensor<16x3x4xf64>
+  return %c : tensor<16x3x4xf64>
+}
+
+// CHECK-LABEL: func.func @through_transpose(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<3x4xf64>, %[[V1:[^ ,:)]+]]: tensor<8x4x4xf64>, %[[V2:[^ ,:)]+]]: tensor<8x4x4xf64>) -> tensor<16x3x4xf64> {
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.concatenate %[[V1]], %[[V2]], dim = 0 : (tensor<8x4x4xf64>, tensor<8x4x4xf64>) -> tensor<16x4x4xf64>
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.dot_general %[[V0]], %[[V3]], contracting_dims = [1] x [2] : (tensor<3x4xf64>, tensor<16x4x4xf64>) -> tensor<3x16x4xf64>
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = stablehlo.transpose %[[V4]], dims = [1, 0, 2] : (tensor<3x16x4xf64>) -> tensor<16x3x4xf64>
+// CHECK-NEXT: return %[[V5]] : tensor<16x3x4xf64>
+// CHECK-NEXT: }
+
+// The same %b against three pieces, concatenated along %b's rows: the pieces
+// stacked, one dot, and the stack merged into the rows (stack-major).
+func.func @stack_shared(%b: tensor<3x4xf64>, %x0: tensor<8x4xf64>, %x1: tensor<8x4xf64>, %x2: tensor<8x4xf64>) -> tensor<9x8xf64> {
+  %d0 = stablehlo.dot_general %b, %x0, contracting_dims = [1] x [1] : (tensor<3x4xf64>, tensor<8x4xf64>) -> tensor<3x8xf64>
+  %d1 = stablehlo.dot_general %b, %x1, contracting_dims = [1] x [1] : (tensor<3x4xf64>, tensor<8x4xf64>) -> tensor<3x8xf64>
+  %d2 = stablehlo.dot_general %b, %x2, contracting_dims = [1] x [1] : (tensor<3x4xf64>, tensor<8x4xf64>) -> tensor<3x8xf64>
+  %c = stablehlo.concatenate %d0, %d1, %d2, dim = 0 : (tensor<3x8xf64>, tensor<3x8xf64>, tensor<3x8xf64>) -> tensor<9x8xf64>
+  return %c : tensor<9x8xf64>
+}
+
+// CHECK-LABEL: func.func @stack_shared(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<3x4xf64>, %[[V1:[^ ,:)]+]]: tensor<8x4xf64>, %[[V2:[^ ,:)]+]]: tensor<8x4xf64>, %[[V3:[^ ,:)]+]]: tensor<8x4xf64>) -> tensor<9x8xf64> {
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.reshape %[[V1]] : (tensor<8x4xf64>) -> tensor<1x8x4xf64>
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = stablehlo.reshape %[[V2]] : (tensor<8x4xf64>) -> tensor<1x8x4xf64>
+// CHECK-NEXT: %[[V6:[^ ,:)]+]] = stablehlo.reshape %[[V3]] : (tensor<8x4xf64>) -> tensor<1x8x4xf64>
+// CHECK-NEXT: %[[V7:[^ ,:)]+]] = stablehlo.concatenate %[[V4]], %[[V5]], %[[V6]], dim = 0 : (tensor<1x8x4xf64>, tensor<1x8x4xf64>, tensor<1x8x4xf64>) -> tensor<3x8x4xf64>
+// CHECK-NEXT: %[[V8:[^ ,:)]+]] = stablehlo.dot_general %[[V0]], %[[V7]], contracting_dims = [1] x [2] : (tensor<3x4xf64>, tensor<3x8x4xf64>) -> tensor<3x3x8xf64>
+// CHECK-NEXT: %[[V9:[^ ,:)]+]] = stablehlo.transpose %[[V8]], dims = [1, 0, 2] : (tensor<3x3x8xf64>) -> tensor<3x3x8xf64>
+// CHECK-NEXT: %[[V10:[^ ,:)]+]] = stablehlo.reshape %[[V9]] : (tensor<3x3x8xf64>) -> tensor<9x8xf64>
+// CHECK-NEXT: return %[[V10]] : tensor<9x8xf64>
+// CHECK-NEXT: }
+
+// The same through a transpose, as BK2PARTIAL's output: pieces transposed to
+// [e, i, k], concatenated along i.
+func.func @stack_through_transpose(%b: tensor<3x4xf64>, %x0: tensor<8x4x4xf64>, %x1: tensor<8x4x4xf64>) -> tensor<8x6x4xf64> {
+  %d0 = stablehlo.dot_general %b, %x0, contracting_dims = [1] x [2] : (tensor<3x4xf64>, tensor<8x4x4xf64>) -> tensor<3x8x4xf64>
+  %d1 = stablehlo.dot_general %b, %x1, contracting_dims = [1] x [2] : (tensor<3x4xf64>, tensor<8x4x4xf64>) -> tensor<3x8x4xf64>
+  %t0 = stablehlo.transpose %d0, dims = [1, 0, 2] : (tensor<3x8x4xf64>) -> tensor<8x3x4xf64>
+  %t1 = stablehlo.transpose %d1, dims = [1, 0, 2] : (tensor<3x8x4xf64>) -> tensor<8x3x4xf64>
+  %c = stablehlo.concatenate %t0, %t1, dim = 1 : (tensor<8x3x4xf64>, tensor<8x3x4xf64>) -> tensor<8x6x4xf64>
+  return %c : tensor<8x6x4xf64>
+}
+
+// CHECK-LABEL: func.func @stack_through_transpose(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<3x4xf64>, %[[V1:[^ ,:)]+]]: tensor<8x4x4xf64>, %[[V2:[^ ,:)]+]]: tensor<8x4x4xf64>) -> tensor<8x6x4xf64> {
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.reshape %[[V1]] : (tensor<8x4x4xf64>) -> tensor<1x8x4x4xf64>
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.reshape %[[V2]] : (tensor<8x4x4xf64>) -> tensor<1x8x4x4xf64>
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = stablehlo.concatenate %[[V3]], %[[V4]], dim = 0 : (tensor<1x8x4x4xf64>, tensor<1x8x4x4xf64>) -> tensor<2x8x4x4xf64>
+// CHECK-NEXT: %[[V6:[^ ,:)]+]] = stablehlo.dot_general %[[V0]], %[[V5]], contracting_dims = [1] x [3] : (tensor<3x4xf64>, tensor<2x8x4x4xf64>) -> tensor<3x2x8x4xf64>
+// CHECK-NEXT: %[[V7:[^ ,:)]+]] = stablehlo.transpose %[[V6]], dims = [1, 0, 2, 3] : (tensor<3x2x8x4xf64>) -> tensor<2x3x8x4xf64>
+// CHECK-NEXT: %[[V8:[^ ,:)]+]] = stablehlo.reshape %[[V7]] : (tensor<2x3x8x4xf64>) -> tensor<6x8x4xf64>
+// CHECK-NEXT: %[[V9:[^ ,:)]+]] = stablehlo.transpose %[[V8]], dims = [1, 0, 2] : (tensor<6x8x4xf64>) -> tensor<8x6x4xf64>
+// CHECK-NEXT: return %[[V9]] : tensor<8x6x4xf64>
+// CHECK-NEXT: }
