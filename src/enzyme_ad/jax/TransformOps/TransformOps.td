@@ -2060,6 +2060,10 @@ def TransposeReducePatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeReduce"];
 }
 
+def SliceReducePatterns : EnzymeHLOPatternOp<"slice_reduce"> {
+  let patterns = ["SliceReduce"];
+}
+
 def BroadcastInDimIsReshapePatterns : EnzymeHLOPatternOp<
   "broadcastindim_is_reshape"
 > {
