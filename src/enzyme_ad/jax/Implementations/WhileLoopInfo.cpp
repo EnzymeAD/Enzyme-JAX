@@ -385,8 +385,14 @@ void WhileLoopInfo::propagateAffineIndexInfo(
           return WalkResult::advance();
         }
 
+        auto indexIt =
+            affineIndexInfo.find(sliceOp.getStartIndices()[sliceDim]);
+        if (indexIt == affineIndexInfo.end()) {
+          return WalkResult::advance();
+        }
+
         anyNewPropagated = true;
-        auto indexInfo = affineIndexInfo[sliceOp.getStartIndices()[sliceDim]];
+        auto indexInfo = indexIt->second;
         auto offset = indexInfo.offset.getSExtValue();
         auto iotaStart = startAttr.getValue().getSExtValue();
         auto iotaScale = scaleAttr.getValue().getSExtValue();
