@@ -1121,6 +1121,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         llvm::DenseMap<Value, affine::AffineValueMap> &maps,
                         ParallelContext pc);
 
+// Defined with the pass: widens an affine.for whose bounds vary with the
+// lanes `laneIVs` to the constant hull of the lanes behind a guard, when that
+// costs no more iterations than iterating per lane would.
+static bool widenLaneBoundedFor(affine::AffineForOp forOp,
+                                const SmallVectorImpl<Value> &laneIVs);
+
 // The buffers a loop must carry are the arguments of the block being raised
 // from: the kernel function's entry, or the gpu_wrapper region's block when
 // raising a wrapper in place.
@@ -5348,6 +5354,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
             .succeeded()) {
       return success();
     }
+    // Bounds that vary per lane: when the constant hull of the lanes costs
+    // no more iterations than the masked while would, iterate it behind a
+    // guard instead, keeping the induction variable a plain iota, through
+    // the constant-bound paths above.
+    if (widenLaneBoundedFor(forOp, pc.ivs))
+      return tryRaisingOpToStableHLO(op, mapping, builder, maps, pc);
     if (tryRaisingAffineForOpToMaskedWhile(forOp, mapping, builder, maps, pc)
             .succeeded()) {
       return success();
@@ -6097,9 +6109,9 @@ struct AffineToStableHLORaisingPass
 
   // Which operands may give the axis a range.
   struct AxisBoundOptions {
-    // Induction variables of enclosing affine.for loops (parallel axes
-    // always may).
-    bool forIVs = true;
+    // When set, only these induction variables (the lanes of the context
+    // the axis is raised in); else any with a constant range.
+    const SmallVectorImpl<Value> *onlyIVs = nullptr;
     // Extent values bounded through `derivedExtentBound`, with `anchor` the
     // loop the guards dominating it hold at.
     bool extents = false;
@@ -6116,7 +6128,7 @@ struct AffineToStableHLORaisingPass
       if (it != bounds.operands.end())
         return it - bounds.operands.begin();
       if (affine::isAffineInductionVar(v)) {
-        if (!opts.forIVs && !affine::getAffineParallelInductionVarOwner(v))
+        if (opts.onlyIVs && !llvm::is_contained(*opts.onlyIVs, v))
           return -1;
         auto range = getIVRange(v);
         if (!range || range->getNumIters() <= 0)
@@ -6314,58 +6326,61 @@ struct AffineToStableHLORaisingPass
     }
   }
 
-  // Gives every loop whose bounds are not constant, but whose constant hull
-  // `constantAxisHull` finds worth iterating, that hull as its bounds, with
-  // the body behind a guard keeping each lane to its own bounds. A parallel
-  // axis so bounded stays an axis instead of peeling to a serial loop (a
-  // lane-masked one when its bounds read other axes), whatever its bounds
-  // read: even under a serial loop, an axis beats a serial loop. An
-  // affine.for so bounded takes the constant-bound paths, which only pays
-  // off when lockstep raising may turn it into an axis; otherwise only
-  // bounds read from parallel axes (which the masked while would iterate to
-  // the longest lane anyway) are widened, and never bounded extents, which
-  // a serial loop iterates exactly. Enclosing loops go first, as bounding
-  // one makes its induction variable's range constant for the loops inside.
-  static void boundLoopAxes(Operation *root, bool lockstepFors) {
-    SmallVector<Operation *> worklist;
-    root->walk<WalkOrder::PreOrder>([&](Operation *op) {
-      if (isa<affine::AffineParallelOp, affine::AffineForOp>(op))
-        worklist.push_back(op);
-    });
-    for (Operation *op : worklist) {
-      if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
-        if (forOp.hasConstantBounds() || forOp.getStepAsInt() != 1)
-          continue;
-        AxisBoundOptions opts;
-        opts.forIVs = lockstepFors;
-        auto hull = constantAxisHull(
-            forOp.getLowerBoundMap(), forOp.getLowerBoundOperands(),
-            forOp.getUpperBoundMap(), forOp.getUpperBoundOperands(), opts);
-        if (!hull)
-          continue;
-        AffineMap lbMap = forOp.getLowerBoundMap(),
-                  ubMap = forOp.getUpperBoundMap();
-        SmallVector<AffineExpr> constraints;
-        appendHullGuard(lbMap, ubMap, 0, 1, constraints);
-        SmallVector<bool> eqs(constraints.size(), false);
-        auto set = IntegerSet::get(
-            1 + lbMap.getNumDims() + ubMap.getNumDims(),
-            lbMap.getNumSymbols() + ubMap.getNumSymbols(), constraints, eqs);
-        SmallVector<Value> operands{forOp.getInductionVar()};
-        auto lbOps = forOp.getLowerBoundOperands(),
-             ubOps = forOp.getUpperBoundOperands();
-        operands.append(lbOps.begin(), lbOps.begin() + lbMap.getNumDims());
-        operands.append(ubOps.begin(), ubOps.begin() + ubMap.getNumDims());
-        operands.append(lbOps.begin() + lbMap.getNumDims(), lbOps.end());
-        operands.append(ubOps.begin() + ubMap.getNumDims(), ubOps.end());
-        affine::canonicalizeSetAndOperands(&set, &operands);
-        guardBody(forOp.getBody(), set, operands, forOp.getRegionIterArgs());
-        forOp.setConstantLowerBound(hull->first);
-        forOp.setConstantUpperBound(hull->second);
-        continue;
-      }
+  // Widens an affine.for whose bounds vary per lane to the constant hull of
+  // the lanes, behind a guard, when `constantAxisHull` finds the trade
+  // worthwhile. Called where the loop would otherwise raise as a masked
+  // while (its bounds read the lanes in `laneIVs`, so iterate to the longest
+  // lane anyway): widened, it has constant bounds and takes those paths
+  // instead, its induction variable a plain iota. Bounds that read a serial
+  // loop's induction variable do not reach here per lane; when they do
+  // along with a lane, the hull would run every serial iteration to the
+  // longest, so only the lanes count.
+  static bool widenLaneBoundedForImpl(affine::AffineForOp forOp,
+                                      const SmallVectorImpl<Value> &laneIVs) {
+    if (forOp.hasConstantBounds() || forOp.getStepAsInt() != 1)
+      return false;
+    AxisBoundOptions opts;
+    opts.onlyIVs = &laneIVs;
+    auto hull = constantAxisHull(
+        forOp.getLowerBoundMap(), forOp.getLowerBoundOperands(),
+        forOp.getUpperBoundMap(), forOp.getUpperBoundOperands(), opts);
+    if (!hull)
+      return false;
+    AffineMap lbMap = forOp.getLowerBoundMap(),
+              ubMap = forOp.getUpperBoundMap();
+    SmallVector<AffineExpr> constraints;
+    appendHullGuard(lbMap, ubMap, 0, 1, constraints);
+    SmallVector<bool> eqs(constraints.size(), false);
+    auto set = IntegerSet::get(1 + lbMap.getNumDims() + ubMap.getNumDims(),
+                               lbMap.getNumSymbols() + ubMap.getNumSymbols(),
+                               constraints, eqs);
+    SmallVector<Value> operands{forOp.getInductionVar()};
+    auto lbOps = forOp.getLowerBoundOperands(),
+         ubOps = forOp.getUpperBoundOperands();
+    operands.append(lbOps.begin(), lbOps.begin() + lbMap.getNumDims());
+    operands.append(ubOps.begin(), ubOps.begin() + ubMap.getNumDims());
+    operands.append(lbOps.begin() + lbMap.getNumDims(), lbOps.end());
+    operands.append(ubOps.begin() + ubMap.getNumDims(), ubOps.end());
+    affine::canonicalizeSetAndOperands(&set, &operands);
+    guardBody(forOp.getBody(), set, operands, forOp.getRegionIterArgs());
+    forOp.setConstantLowerBound(hull->first);
+    forOp.setConstantUpperBound(hull->second);
+    return true;
+  }
 
-      auto par = cast<affine::AffineParallelOp>(op);
+  // Gives every parallel axis whose bounds are not constant, but whose
+  // constant hull `constantAxisHull` finds worth iterating, that hull as its
+  // bounds, with the body behind a guard keeping each lane to its own
+  // bounds: the axis stays an axis instead of peeling to a serial loop (a
+  // lane-masked one when its bounds read other axes), whatever its bounds
+  // read -- even under a serial loop, an axis beats a serial loop. Enclosing
+  // loops go first, as bounding one makes its induction variable's range
+  // constant for the axes inside.
+  static void boundParallelAxes(Operation *root) {
+    SmallVector<affine::AffineParallelOp> worklist;
+    root->walk<WalkOrder::PreOrder>(
+        [&](affine::AffineParallelOp par) { worklist.push_back(par); });
+    for (auto par : worklist) {
       if (!par.getReductions().empty())
         continue;
       unsigned n = par.getNumDims();
@@ -7095,7 +7110,7 @@ struct AffineToStableHLORaisingPass
     for (auto func : funcs) {
       stripAccessMemorySpaceCasts(func);
       splitStructScratch(func);
-      boundLoopAxes(func, enable_lockstep_for);
+      boundParallelAxes(func);
       peelDynamicParallelDims(func);
     }
 
@@ -7120,7 +7135,7 @@ struct AffineToStableHLORaisingPass
       stripAccessMemorySpaceCasts(g);
       splitStructScratch(g);
       hoistWrapperInvariantPointerCompares(g);
-      boundLoopAxes(g, enable_lockstep_for);
+      boundParallelAxes(g);
       peelDynamicParallelDims(g);
     }
     size_t raised_count = 0;
@@ -7712,3 +7727,8 @@ struct AffineToStableHLORaisingPass
   }
 };
 } // namespace
+
+static bool widenLaneBoundedFor(affine::AffineForOp forOp,
+                                const SmallVectorImpl<Value> &laneIVs) {
+  return AffineToStableHLORaisingPass::widenLaneBoundedForImpl(forOp, laneIVs);
+}
