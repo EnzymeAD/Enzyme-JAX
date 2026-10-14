@@ -2936,27 +2936,19 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
         SmallVector<int64_t> limitIndices;
         SmallVector<int64_t> strides;
 
+        // The carried value after the last iteration: a lane axis holds one
+        // entry per iteration, position p for the p-th (iv = lb + p * step),
+        // so the last iteration sits at the end of the axis, wherever the
+        // bounds start; the other axes are kept whole.
+        auto valShape = cast<RankedTensorType>(val.getType()).getShape();
         SmallVector<AffineExpr> exprs;
-        for (auto &&[i, expr0] :
+        for (auto &&[i, expr] :
              llvm::enumerate(outputMap.getAffineMap().getResults())) {
-          auto expr = expr0;
-          if (i == idx_to_reduce) {
-            auto range = computeExprRange(outputMap, expr);
-            expr = builder.getAffineConstantExpr(range->ub - 1);
-          } else {
+          if (i != idx_to_reduce)
             exprs.push_back(expr);
-          }
           strides.push_back(1);
-          if (auto constOp = dyn_cast<AffineConstantExpr>(expr)) {
-            startIndices.push_back(constOp.getValue());
-            limitIndices.push_back(constOp.getValue() + 1);
-            continue;
-          }
-          auto range = computeExprRange(outputMap, expr);
-          startIndices.push_back(range->step < 0 ? range->ub - range->step
-                                                 : range->lb);
-          limitIndices.push_back(range->step < 0 ? range->lb - range->step
-                                                 : range->ub);
+          startIndices.push_back(i == idx_to_reduce ? valShape[i] - 1 : 0);
+          limitIndices.push_back(valShape[i]);
         }
         SmallVector<Value> vals;
         for (auto v : outputMap.getOperands()) {
