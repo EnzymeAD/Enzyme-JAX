@@ -5245,6 +5245,98 @@ struct ConcatSlice final
   }
 };
 
+// concat_d(slice_0(x), ..., slice_{n-1}(x)) where the slices are the same
+// window of x moved by a constant step along a dimension e other than d, and
+// the step divides x's extent along e: with e reshaped into (blocks, step),
+// slice k is block k0 + k at the same offset, so the concatenate is one slice
+// of the reshaped x, with the block index moved next to d and merged into it.
+// Slices adjacent along d itself are left to concat_slice.
+struct ConcatSliceStack final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatSliceStack> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
+    int64_t n = op.getNumOperands();
+    if (n < 2)
+      return failure();
+    auto first = op.getOperands()[0].getDefiningOp<stablehlo::SliceOp>();
+    auto second = op.getOperands()[1].getDefiningOp<stablehlo::SliceOp>();
+    if (!first || !second || first.getOperand() != second.getOperand())
+      return failure();
+    Value x = first.getOperand();
+    ArrayRef<int64_t> shape = cast<RankedTensorType>(x.getType()).getShape();
+    int64_t rank = shape.size();
+    int64_t d = op.getDimension();
+
+    // The dimension the windows move along, and the step.
+    int64_t e = -1;
+    for (int64_t i = 0; i < rank; i++) {
+      if (first.getStartIndices()[i] == second.getStartIndices()[i])
+        continue;
+      if (e != -1)
+        return failure();
+      e = i;
+    }
+    if (e == -1 || e == d)
+      return failure();
+    int64_t step = second.getStartIndices()[e] - first.getStartIndices()[e];
+    int64_t start = first.getStartIndices()[e];
+    int64_t size = first.getLimitIndices()[e] - start;
+    if (step <= 0 || shape[e] % step != 0 || start % step + size > step)
+      return failure();
+    for (auto [k, v] : llvm::enumerate(op.getOperands())) {
+      auto slice = v.getDefiningOp<stablehlo::SliceOp>();
+      if (!slice || slice.getOperand() != x)
+        return failure();
+      for (int64_t i = 0; i < rank; i++) {
+        int64_t shift = i == e ? (int64_t)k * step : 0;
+        if (slice.getStrides()[i] != 1 ||
+            slice.getStartIndices()[i] != first.getStartIndices()[i] + shift ||
+            slice.getLimitIndices()[i] != first.getLimitIndices()[i] + shift)
+          return failure();
+      }
+    }
+
+    // x with e split into (blocks, step), and the window of every block.
+    SmallVector<int64_t> blocked(shape.take_front(e));
+    blocked.push_back(shape[e] / step);
+    blocked.push_back(step);
+    llvm::append_range(blocked, shape.drop_front(e + 1));
+    SmallVector<int64_t> starts, limits, strides(rank + 1, 1);
+    for (int64_t i = 0; i < rank; i++) {
+      if (i == e) {
+        starts.push_back(start / step);
+        limits.push_back(start / step + n);
+        starts.push_back(start % step);
+        limits.push_back(start % step + size);
+        continue;
+      }
+      starts.push_back(first.getStartIndices()[i]);
+      limits.push_back(first.getLimitIndices()[i]);
+    }
+    Value reshaped =
+        stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), x, blocked);
+    Value windows = stablehlo::SliceOpCreate(rewriter, op.getLoc(), reshaped,
+                                             starts, limits, strides);
+
+    // Move the block index (at e) to just before d, then merge it into d.
+    SmallVector<int64_t> perm;
+    for (int64_t i = 0; i < rank; i++) {
+      if (i == d)
+        perm.push_back(e);
+      perm.push_back(i < e ? i : i + 1);
+    }
+    Value moved =
+        stablehlo::TransposeOpCreate(rewriter, op.getLoc(), windows, perm);
+    rewriter.replaceOp(op,
+                       stablehlo::ReshapeOpCreate(
+                           rewriter, op.getLoc(), moved,
+                           cast<RankedTensorType>(op.getType()).getShape()));
+    return success();
+  }
+};
+
 bool canMergePadsAlongAxis(int dimension, stablehlo::PadOp pad,
                            stablehlo::PadOp otherPad) {
   if (otherPad.getPaddingValue() != pad.getPaddingValue())
