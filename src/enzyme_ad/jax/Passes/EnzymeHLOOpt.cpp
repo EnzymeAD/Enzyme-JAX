@@ -12049,6 +12049,94 @@ struct SliceReduce
   }
 };
 
+// concat(dot_general(a_0, b_0), ..., dot_general(a_n, b_n)) with the same
+// dimension numbers, each dot used only by the concatenate, along a result
+// dimension that is
+// - a free dimension of the lhs, with every b_k the same value: one dot of the
+//   lhs operands concatenated along that dimension and the shared b;
+// - a free dimension of the rhs, with every a_k the same: symmetrically;
+// - a batching dimension, with neither side shared: one dot of both sides
+//   concatenated along their batching dimensions.
+struct ConcatDotGeneral
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     ConcatDotGeneral> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concat,
+                                    PatternRewriter &rewriter) const {
+    if (concat.getNumOperands() < 2)
+      return failure();
+    SmallVector<stablehlo::DotGeneralOp> dots;
+    for (Value v : concat.getOperands()) {
+      auto dot = v.getDefiningOp<stablehlo::DotGeneralOp>();
+      if (!dot || !v.hasOneUse())
+        return failure();
+      if (!dots.empty() &&
+          (dot.getDotDimensionNumbers() != dots[0].getDotDimensionNumbers() ||
+           dot.getPrecisionConfigAttr() != dots[0].getPrecisionConfigAttr() ||
+           dot.getAlgorithmAttr() != dots[0].getAlgorithmAttr()))
+        return failure();
+      dots.push_back(dot);
+    }
+    bool sameLhs = true, sameRhs = true;
+    for (stablehlo::DotGeneralOp dot : dots) {
+      sameLhs &= dot.getLhs() == dots[0].getLhs();
+      sameRhs &= dot.getRhs() == dots[0].getRhs();
+    }
+
+    auto dims = dots[0].getDotDimensionNumbers();
+    ArrayRef<int64_t> lhsBatch = dims.getLhsBatchingDimensions();
+    ArrayRef<int64_t> rhsBatch = dims.getRhsBatchingDimensions();
+    SmallVector<int64_t> lhsFree, rhsFree;
+    for (int64_t d = 0, r = dots[0].getLhs().getType().getRank(); d < r; d++)
+      if (!llvm::is_contained(lhsBatch, d) &&
+          !llvm::is_contained(dims.getLhsContractingDimensions(), d))
+        lhsFree.push_back(d);
+    for (int64_t d = 0, r = dots[0].getRhs().getType().getRank(); d < r; d++)
+      if (!llvm::is_contained(rhsBatch, d) &&
+          !llvm::is_contained(dims.getRhsContractingDimensions(), d))
+        rhsFree.push_back(d);
+
+    int64_t d = concat.getDimension();
+    int64_t nb = lhsBatch.size(), nlf = lhsFree.size();
+    int64_t lhsDim = -1, rhsDim = -1;
+    if (d < nb) {
+      if (sameLhs || sameRhs)
+        return failure();
+      lhsDim = lhsBatch[d];
+      rhsDim = rhsBatch[d];
+    } else if (d < nb + nlf) {
+      if (!sameRhs)
+        return failure();
+      lhsDim = lhsFree[d - nb];
+    } else {
+      if (!sameLhs)
+        return failure();
+      rhsDim = rhsFree[d - nb - nlf];
+    }
+
+    Value lhs = dots[0].getLhs(), rhs = dots[0].getRhs();
+    if (lhsDim != -1) {
+      SmallVector<Value> parts;
+      for (stablehlo::DotGeneralOp dot : dots)
+        parts.push_back(dot.getLhs());
+      lhs = stablehlo::ConcatenateOp::create(rewriter, concat.getLoc(), parts,
+                                             lhsDim);
+    }
+    if (rhsDim != -1) {
+      SmallVector<Value> parts;
+      for (stablehlo::DotGeneralOp dot : dots)
+        parts.push_back(dot.getRhs());
+      rhs = stablehlo::ConcatenateOp::create(rewriter, concat.getLoc(), parts,
+                                             rhsDim);
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
+        concat, concat.getType(), lhs, rhs, dims,
+        dots[0].getPrecisionConfigAttr(), dots[0].getAlgorithmAttr());
+    return success();
+  }
+};
+
 // concat(reduce(x_0), ..., reduce(x_n)) -> reduce(concat(x_0, ..., x_n)) along
 // a dimension the reduces keep: the same reduction (body, reduced dimensions
 // and init values) of one input each, each used only by the concatenate, so

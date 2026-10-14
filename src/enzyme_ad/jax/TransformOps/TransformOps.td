@@ -2088,6 +2088,10 @@ def ConcatReducePatterns : EnzymeHLOPatternOp<"concat_reduce"> {
   let patterns = ["ConcatReduce"];
 }
 
+def ConcatDotGeneralPatterns : EnzymeHLOPatternOp<"concat_dot_general"> {
+  let patterns = ["ConcatDotGeneral"];
+}
+
 def BroadcastInDimIsReshapePatterns : EnzymeHLOPatternOp<
   "broadcastindim_is_reshape"
 > {
