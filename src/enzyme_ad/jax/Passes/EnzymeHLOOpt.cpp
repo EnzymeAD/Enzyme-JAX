@@ -12057,6 +12057,14 @@ struct SliceReduce
 // - a free dimension of the rhs, with every a_k the same: symmetrically;
 // - a batching dimension, with neither side shared: one dot of both sides
 //   concatenated along their batching dimensions.
+// - a free dimension of the shared side, with the other side varying (each
+//   piece is the shared operand against its own data): the varying operands
+//   stacked along a new dimension, one dot, and the stack index moved next to
+//   the concatenated dimension and merged into it, stack-major.
+// The operands may also all be the same transpose of such dots (a dot's result
+// order is fixed, so a transpose often follows it): the concatenated dimension
+// is then the one the transpose takes it from, and the transpose applies to the
+// one dot.
 struct ConcatDotGeneral
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                                      ConcatDotGeneral> {
@@ -12066,8 +12074,19 @@ struct ConcatDotGeneral
                                     PatternRewriter &rewriter) const {
     if (concat.getNumOperands() < 2)
       return failure();
+    // The dots, seen through a transpose every operand applies.
+    ArrayRef<int64_t> perm;
+    if (auto transpose =
+            concat.getOperands()[0].getDefiningOp<stablehlo::TransposeOp>())
+      perm = transpose.getPermutation();
     SmallVector<stablehlo::DotGeneralOp> dots;
     for (Value v : concat.getOperands()) {
+      if (!perm.empty()) {
+        auto transpose = v.getDefiningOp<stablehlo::TransposeOp>();
+        if (!transpose || !v.hasOneUse() || transpose.getPermutation() != perm)
+          return failure();
+        v = transpose.getOperand();
+      }
       auto dot = v.getDefiningOp<stablehlo::DotGeneralOp>();
       if (!dot || !v.hasOneUse())
         return failure();
@@ -12097,7 +12116,8 @@ struct ConcatDotGeneral
           !llvm::is_contained(dims.getRhsContractingDimensions(), d))
         rhsFree.push_back(d);
 
-    int64_t d = concat.getDimension();
+    int64_t d = perm.empty() ? (int64_t)concat.getDimension()
+                             : perm[concat.getDimension()];
     int64_t nb = lhsBatch.size(), nlf = lhsFree.size();
     int64_t lhsDim = -1, rhsDim = -1;
     if (d < nb) {
@@ -12107,11 +12127,15 @@ struct ConcatDotGeneral
       rhsDim = rhsBatch[d];
     } else if (d < nb + nlf) {
       if (!sameRhs)
-        return failure();
+        return sameLhs ? stackAlong(concat, dots, perm, d, /*stackLhs=*/false,
+                                    rewriter)
+                       : failure();
       lhsDim = lhsFree[d - nb];
     } else {
       if (!sameLhs)
-        return failure();
+        return sameRhs ? stackAlong(concat, dots, perm, d, /*stackLhs=*/true,
+                                    rewriter)
+                       : failure();
       rhsDim = rhsFree[d - nb - nlf];
     }
 
@@ -12130,9 +12154,99 @@ struct ConcatDotGeneral
       rhs = stablehlo::ConcatenateOp::create(rewriter, concat.getLoc(), parts,
                                              rhsDim);
     }
-    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
-        concat, concat.getType(), lhs, rhs, dims,
+    // The dots' result type, concatenated along d.
+    auto dotType = cast<RankedTensorType>(dots[0].getType());
+    SmallVector<int64_t> shape(dotType.getShape());
+    shape[d] = 0;
+    for (stablehlo::DotGeneralOp dot : dots)
+      shape[d] += dot.getType().getShape()[d];
+    auto dot = stablehlo::DotGeneralOp::create(
+        rewriter, concat.getLoc(),
+        RankedTensorType::get(shape, dotType.getElementType()), lhs, rhs, dims,
         dots[0].getPrecisionConfigAttr(), dots[0].getAlgorithmAttr());
+    if (perm.empty()) {
+      rewriter.replaceOp(concat, dot.getResult());
+      return success();
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(concat, dot.getResult(),
+                                                        perm);
+    return success();
+  }
+
+private:
+  // The concatenated result dimension d belongs to the shared side's free
+  // dimensions while the other side varies: stack the varying operands along a
+  // new leading dimension, which becomes the first free dimension of their side
+  // in the one dot, then move it to just before d and merge it into d.
+  LogicalResult stackAlong(stablehlo::ConcatenateOp concat,
+                           SmallVectorImpl<stablehlo::DotGeneralOp> &dots,
+                           ArrayRef<int64_t> perm, int64_t d, bool stackLhs,
+                           PatternRewriter &rewriter) const {
+    auto first = stackLhs ? dots[0].getLhs() : dots[0].getRhs();
+    auto pieceType = cast<RankedTensorType>(first.getType());
+    for (stablehlo::DotGeneralOp dot : dots)
+      if ((stackLhs ? dot.getLhs() : dot.getRhs()).getType() != pieceType)
+        return failure();
+
+    SmallVector<int64_t> unit = {1};
+    llvm::append_range(unit, pieceType.getShape());
+    SmallVector<Value> parts;
+    for (stablehlo::DotGeneralOp dot : dots) {
+      Value piece = stablehlo::ReshapeOpCreate(
+          rewriter, concat.getLoc(), stackLhs ? dot.getLhs() : dot.getRhs(),
+          unit);
+      parts.push_back(piece);
+    }
+    auto stacked =
+        stablehlo::ConcatenateOp::create(rewriter, concat.getLoc(), parts, 0);
+
+    auto dims = dots[0].getDotDimensionNumbers();
+    SmallVector<int64_t> lhsBatch(dims.getLhsBatchingDimensions()),
+        rhsBatch(dims.getRhsBatchingDimensions()),
+        lhsContract(dims.getLhsContractingDimensions()),
+        rhsContract(dims.getRhsContractingDimensions());
+    for (int64_t &x : stackLhs ? lhsBatch : rhsBatch)
+      x++;
+    for (int64_t &x : stackLhs ? lhsContract : rhsContract)
+      x++;
+    auto newDims = stablehlo::DotDimensionNumbersAttr::get(
+        concat.getContext(), lhsBatch, rhsBatch, lhsContract, rhsContract);
+
+    // The one dot's result: the dots' result with the stack inserted as the
+    // first free dimension of its side.
+    auto dotType = cast<RankedTensorType>(dots[0].getType());
+    int64_t nb = lhsBatch.size();
+    int64_t nlf = dots[0].getLhs().getType().getRank() - nb -
+                  dims.getLhsContractingDimensions().size();
+    int64_t at = stackLhs ? nb : nb + nlf;
+    SmallVector<int64_t> shape(dotType.getShape());
+    shape.insert(shape.begin() + at, (int64_t)dots.size());
+    auto dot = stablehlo::DotGeneralOp::create(
+        rewriter, concat.getLoc(),
+        RankedTensorType::get(shape, dotType.getElementType()),
+        stackLhs ? (Value)stacked : dots[0].getLhs(),
+        stackLhs ? dots[0].getRhs() : (Value)stacked, newDims,
+        dots[0].getPrecisionConfigAttr(), dots[0].getAlgorithmAttr());
+
+    // Move the stack (at `at`) to just before d (d counts the dims without it),
+    // then merge the two.
+    int64_t rank = dotType.getRank();
+    SmallVector<int64_t> order;
+    for (int64_t i = 0; i < rank; i++) {
+      if (i == d)
+        order.push_back(at);
+      order.push_back(i < at ? i : i + 1);
+    }
+    Value moved =
+        stablehlo::TransposeOpCreate(rewriter, concat.getLoc(), dot, order);
+    SmallVector<int64_t> merged(dotType.getShape());
+    merged[d] *= dots.size();
+    Value result =
+        stablehlo::ReshapeOpCreate(rewriter, concat.getLoc(), moved, merged);
+    if (!perm.empty())
+      result =
+          stablehlo::TransposeOpCreate(rewriter, concat.getLoc(), result, perm);
+    rewriter.replaceOp(concat, result);
     return success();
   }
 };
