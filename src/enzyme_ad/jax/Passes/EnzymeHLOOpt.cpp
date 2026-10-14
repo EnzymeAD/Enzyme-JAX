@@ -35980,70 +35980,140 @@ struct ConcatenateBroadcastInDim
     // transpose_like_broadcast_concat; pulling it back out would undo that.
     if (isTransposeReshapeLikeBroadcast(first))
       return failure();
-    ArrayRef<int64_t> dims = first.getBroadcastDimensions();
+    // The broadcasts need not agree on their operands' layouts: operands of
+    // one family broadcast the same values along the same output
+    // dimensions through different operand orders, or with a unit
+    // dimension the broadcast expands (reductions over differently placed
+    // dimensions). Each is brought to the first's layout, its expanded
+    // unit dimensions dropped and its dimensions reordered, when that is a
+    // view of it.
+    SmallVector<int64_t> kept, dims;
+    layout(first, kept, dims);
+    SmallVector<SmallVector<int64_t>> keptAll, permAll;
+    for (Value operand : operands) {
+      auto bcast = operand.getDefiningOp<stablehlo::BroadcastInDimOp>();
+      if (!bcast)
+        return failure();
+      SmallVector<int64_t> k, d;
+      layout(bcast, k, d);
+      // The same output dimensions, each read by one operand dimension:
+      // perm[i] = the operand dimension landing where the first's i-th does.
+      if (d.size() != dims.size())
+        return failure();
+      SmallVector<int64_t> perm;
+      for (int64_t target : dims) {
+        auto found = llvm::find(d, target);
+        if (found == d.end())
+          return failure();
+        perm.push_back(k[found - d.begin()]);
+      }
+      keptAll.push_back(k);
+      permAll.push_back(perm);
+    }
+    // Each operand's shape once laid out as the first's; every check runs
+    // on these before any view is created.
+    SmallVector<SmallVector<int64_t>> shapes;
+    for (auto [operand, perm] : llvm::zip(operands, permAll)) {
+      auto bcast = operand.getDefiningOp<stablehlo::BroadcastInDimOp>();
+      auto vType = bcast.getOperand().getType();
+      SmallVector<int64_t> shape;
+      for (int64_t pd : perm)
+        shape.push_back(vType.getDimSize(pd));
+      shapes.push_back(shape);
+    }
     // The operand dimension the concatenated dimension comes from.
     auto found = llvm::find(dims, (int64_t)op.getDimension());
-    if (found == dims.end())
-      return concatExpanded(op, first, rewriter);
-    int64_t inputDim = std::distance(dims.begin(), found);
-    if (first.getOperand().getType().getDimSize(inputDim) == 1 &&
+    bool expanded = found == dims.end();
+    int64_t inputDim = expanded ? -1 : std::distance(dims.begin(), found);
+    if (!expanded && shapes[0][inputDim] == 1 &&
         first.getType().getDimSize(op.getDimension()) != 1)
-      return concatExpanded(op, first, rewriter);
-
-    SmallVector<Value> operandOperands;
-    for (auto operand : operands) {
-      auto broadcastInDimOp =
-          operand.getDefiningOp<stablehlo::BroadcastInDimOp>();
-      if (!broadcastInDimOp ||
-          broadcastInDimOp.getBroadcastDimensions() != dims)
-        return failure();
-      ArrayRef<int64_t> shape =
-          broadcastInDimOp.getOperand().getType().getShape();
-      if (shape[inputDim] !=
-          broadcastInDimOp.getType().getShape()[op.getDimension()])
+      expanded = true;
+    int64_t m = cast<RankedTensorType>(operands[0].getType())
+                    .getShape()[op.getDimension()];
+    for (auto [operand, shape] : llvm::zip(operands, shapes)) {
+      int64_t extent = cast<RankedTensorType>(operand.getType())
+                           .getShape()[op.getDimension()];
+      if (expanded ? (shape != shapes[0] || extent != m)
+                   : shape[inputDim] != extent)
         return failure();
       // The operands must agree on every other dimension to be concatenated.
       for (int64_t k = 0, e = shape.size(); k < e; k++)
-        if (k != inputDim &&
-            shape[k] != first.getOperand().getType().getShape()[k])
+        if (k != inputDim && shape[k] != shapes[0][k])
           return failure();
-      operandOperands.push_back(broadcastInDimOp.getOperand());
     }
 
+    // Views only: the rest reordered by a transpose (its expanded unit
+    // dimensions dropped by a reshape first), or reshaped where it is only
+    // those dimensions that differ (to the stacked shape directly when the
+    // concatenated dimension is expanded). Operands laid out alike stay.
+    SmallVector<Value> normalized;
+    for (auto [operand, k, perm, shape] :
+         llvm::zip(operands, keptAll, permAll, shapes)) {
+      auto bcast = operand.getDefiningOp<stablehlo::BroadcastInDimOp>();
+      Value v = bcast.getOperand();
+      auto vType = cast<RankedTensorType>(v.getType());
+      bool identity = true;
+      for (auto [i, pd] : llvm::enumerate(perm))
+        identity &= pd == k[i];
+      if (!identity) {
+        if ((int64_t)k.size() != vType.getRank()) {
+          SmallVector<int64_t> dropped;
+          for (int64_t kd : k)
+            dropped.push_back(vType.getDimSize(kd));
+          v = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), v, dropped);
+          // The kept dimensions, renumbered in the reshaped operand.
+          for (int64_t &pd : perm)
+            pd = llvm::find(k, pd) - k.begin();
+        }
+        v = stablehlo::TransposeOpCreate(rewriter, op.getLoc(), v, perm);
+      } else if (!expanded && vType.getShape() != ArrayRef<int64_t>(shape)) {
+        v = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), v, shape);
+      }
+      normalized.push_back(v);
+    }
+    if (expanded) {
+      concatExpanded(op, normalized, shapes[0], dims, rewriter);
+      return success();
+    }
     auto newConcatOp = stablehlo::ConcatenateOp::create(
-        rewriter, op.getLoc(), ValueRange(operandOperands), inputDim);
+        rewriter, op.getLoc(), ValueRange(normalized), inputDim);
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(op, op.getType(),
                                                              newConcatOp, dims);
     return success();
   }
 
 private:
-  // The concatenated dimension is one the broadcasts expand.
-  LogicalResult concatExpanded(stablehlo::ConcatenateOp op,
-                               stablehlo::BroadcastInDimOp first,
-                               PatternRewriter &rewriter) const {
-    int64_t dim = op.getDimension();
-    ArrayRef<int64_t> dims = first.getBroadcastDimensions();
-    auto operandType = first.getOperand().getType();
-    int64_t m = first.getType().getShape()[dim];
-    for (Value v : op.getOperands()) {
-      auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>();
-      if (!bcast || bcast.getBroadcastDimensions() != dims ||
-          bcast.getOperand().getType() != operandType ||
-          bcast.getType().getShape()[dim] != m)
-        return failure();
+  // The operand dimensions a broadcast reads, other than unit ones it
+  // expands, and the output dimension each lands at.
+  static void layout(stablehlo::BroadcastInDimOp bcast,
+                     SmallVectorImpl<int64_t> &kept,
+                     SmallVectorImpl<int64_t> &dims) {
+    auto type = bcast.getOperand().getType();
+    for (auto [i, d] : llvm::enumerate(bcast.getBroadcastDimensions())) {
+      if (type.getDimSize(i) == 1 && bcast.getType().getDimSize(d) != 1)
+        continue;
+      kept.push_back(i);
+      dims.push_back(d);
     }
+  }
+
+  // The concatenated dimension is one the broadcasts expand: the operands
+  // (laid out alike, each contributing m along it) stack along a new
+  // dimension, broadcast to the result with the concatenated dimension
+  // split into (n, m).
+  void concatExpanded(stablehlo::ConcatenateOp op, ArrayRef<Value> normalized,
+                      ArrayRef<int64_t> operandShape, ArrayRef<int64_t> dims,
+                      PatternRewriter &rewriter) const {
+    int64_t dim = op.getDimension();
+    int64_t m =
+        cast<RankedTensorType>(op.getOperand(0).getType()).getShape()[dim];
 
     SmallVector<int64_t> unitShape = {1};
-    llvm::append_range(unitShape, operandType.getShape());
+    llvm::append_range(unitShape, operandShape);
     SmallVector<Value> stacked;
-    for (Value v : op.getOperands()) {
-      Value reshaped = stablehlo::ReshapeOpCreate(
-          rewriter, op.getLoc(),
-          v.getDefiningOp<stablehlo::BroadcastInDimOp>().getOperand(),
-          unitShape);
-      stacked.push_back(reshaped);
-    }
+    for (Value v : normalized)
+      stacked.push_back(
+          stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), v, unitShape));
     int64_t n = stacked.size();
     auto stack =
         stablehlo::ConcatenateOp::create(rewriter, op.getLoc(), stacked, 0);
@@ -36055,14 +36125,12 @@ private:
     split.push_back(m);
     llvm::append_range(split, type.getShape().drop_front(dim + 1));
     SmallVector<int64_t> newDims = {dim};
-    // A unit operand dimension at dim maps to the expanded part.
     for (int64_t d : dims)
       newDims.push_back(d >= dim ? d + 1 : d);
     auto splitType = RankedTensorType::get(split, type.getElementType());
     auto bcast = stablehlo::BroadcastInDimOp::create(rewriter, op.getLoc(),
                                                      splitType, stack, newDims);
     rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, type, bcast);
-    return success();
   }
 };
 

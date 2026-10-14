@@ -105,7 +105,7 @@ func.func @uneven(%a: tensor<5xf64>, %b: tensor<5xf64>) -> tensor<5x5xf64> {
 
 // The concatenated dimension comes from a unit operand dimension the
 // broadcasts expand (scalars of a basis spread over 5 rows each): the same as
-// an inserted one.
+// an inserted one, and the expanded unit dimensions are dropped.
 func.func @expanded_unit(%s0: tensor<1x1xf64>, %s1: tensor<1x1xf64>, %s2: tensor<1x1xf64>) -> tensor<8x15x5xf64> {
   %b0 = stablehlo.broadcast_in_dim %s0, dims = [2, 1] : (tensor<1x1xf64>) -> tensor<8x5x5xf64>
   %b1 = stablehlo.broadcast_in_dim %s1, dims = [2, 1] : (tensor<1x1xf64>) -> tensor<8x5x5xf64>
@@ -116,11 +116,33 @@ func.func @expanded_unit(%s0: tensor<1x1xf64>, %s1: tensor<1x1xf64>, %s2: tensor
 
 // CHECK-LABEL: func.func @expanded_unit(
 // CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<1x1xf64>, %[[V1:[^ ,:)]+]]: tensor<1x1xf64>, %[[V2:[^ ,:)]+]]: tensor<1x1xf64>) -> tensor<8x15x5xf64> {
-// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.reshape %[[V0]] : (tensor<1x1xf64>) -> tensor<1x1x1xf64>
-// CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.reshape %[[V1]] : (tensor<1x1xf64>) -> tensor<1x1x1xf64>
-// CHECK-NEXT: %[[V5:[^ ,:)]+]] = stablehlo.reshape %[[V2]] : (tensor<1x1xf64>) -> tensor<1x1x1xf64>
-// CHECK-NEXT: %[[V6:[^ ,:)]+]] = stablehlo.concatenate %[[V3]], %[[V4]], %[[V5]], dim = 0 : (tensor<1x1x1xf64>, tensor<1x1x1xf64>, tensor<1x1x1xf64>) -> tensor<3x1x1xf64>
-// CHECK-NEXT: %[[V7:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[V6]], dims = [1, 3, 2] : (tensor<3x1x1xf64>) -> tensor<8x3x5x5xf64>
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.reshape %[[V0]] : (tensor<1x1xf64>) -> tensor<1xf64>
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.reshape %[[V1]] : (tensor<1x1xf64>) -> tensor<1xf64>
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = stablehlo.reshape %[[V2]] : (tensor<1x1xf64>) -> tensor<1xf64>
+// CHECK-NEXT: %[[V6:[^ ,:)]+]] = stablehlo.concatenate %[[V3]], %[[V4]], %[[V5]], dim = 0 : (tensor<1xf64>, tensor<1xf64>, tensor<1xf64>) -> tensor<3xf64>
+// CHECK-NEXT: %[[V7:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[V6]], dims = [1] : (tensor<3xf64>) -> tensor<8x3x5x5xf64>
 // CHECK-NEXT: %[[V8:[^ ,:)]+]] = stablehlo.reshape %[[V7]] : (tensor<8x3x5x5xf64>) -> tensor<8x15x5xf64>
 // CHECK-NEXT: return %[[V8]] : tensor<8x15x5xf64>
+// CHECK-NEXT: }
+
+// The broadcasts of one family read the same values through different
+// operand layouts (a reduction over a differently placed dimension in each:
+// transposed, or with a unit dimension the broadcast expands): each is
+// brought to the first's layout by a view and they concatenate there.
+func.func @layouts(%a: tensor<8x3x4xf64>, %b: tensor<8x4x3xf64>, %c: tensor<8x4x3x1xf64>) -> tensor<8x4x9x3xf64> {
+  %0 = stablehlo.broadcast_in_dim %a, dims = [0, 2, 1] : (tensor<8x3x4xf64>) -> tensor<8x4x3x3xf64>
+  %1 = stablehlo.broadcast_in_dim %b, dims = [0, 1, 2] : (tensor<8x4x3xf64>) -> tensor<8x4x3x3xf64>
+  %2 = stablehlo.broadcast_in_dim %c, dims = [0, 1, 2, 3] : (tensor<8x4x3x1xf64>) -> tensor<8x4x3x3xf64>
+  %3 = stablehlo.concatenate %0, %1, %2, dim = 2 : (tensor<8x4x3x3xf64>, tensor<8x4x3x3xf64>, tensor<8x4x3x3xf64>) -> tensor<8x4x9x3xf64>
+  return %3 : tensor<8x4x9x3xf64>
+}
+
+// CHECK-LABEL: func.func @layouts(
+// CHECK-SAME: %[[A:[^ ,:)]+]]: tensor<8x3x4xf64>, %[[B:[^ ,:)]+]]: tensor<8x4x3xf64>, %[[C:[^ ,:)]+]]: tensor<8x4x3x1xf64>) -> tensor<8x4x9x3xf64> {
+// CHECK-NEXT: %[[BT:[^ ,:)]+]] = stablehlo.transpose %[[B]], dims = [0, 2, 1] : (tensor<8x4x3xf64>) -> tensor<8x3x4xf64>
+// CHECK-NEXT: %[[CR:[^ ,:)]+]] = stablehlo.reshape %[[C]] : (tensor<8x4x3x1xf64>) -> tensor<8x4x3xf64>
+// CHECK-NEXT: %[[CT:[^ ,:)]+]] = stablehlo.transpose %[[CR]], dims = [0, 2, 1] : (tensor<8x4x3xf64>) -> tensor<8x3x4xf64>
+// CHECK-NEXT: %[[CC:[^ ,:)]+]] = stablehlo.concatenate %[[A]], %[[BT]], %[[CT]], dim = 1 : (tensor<8x3x4xf64>, tensor<8x3x4xf64>, tensor<8x3x4xf64>) -> tensor<8x9x4xf64>
+// CHECK-NEXT: %[[R:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[CC]], dims = [0, 2, 1] : (tensor<8x9x4xf64>) -> tensor<8x4x9x3xf64>
+// CHECK-NEXT: return %[[R]] : tensor<8x4x9x3xf64>
 // CHECK-NEXT: }
