@@ -947,6 +947,173 @@ struct ReshapeDUS final
   }
 };
 
+// Maps the run [start, start + size) of the row-major linearization of `shape`
+// to a box of `shape`, if the run is one.
+static bool linearRunToBox(int64_t start, int64_t size, ArrayRef<int64_t> shape,
+                           SmallVectorImpl<int64_t> &starts,
+                           SmallVectorImpl<int64_t> &sizes) {
+  starts.assign(shape.size(), 0);
+  sizes.assign(shape.size(), 1);
+  int64_t i = shape.size() - 1;
+  // Inner dimensions the run covers entirely.
+  for (; i >= 0 && size % shape[i] == 0 && start % shape[i] == 0; i--) {
+    sizes[i] = shape[i];
+    size /= shape[i];
+    start /= shape[i];
+  }
+  if (i < 0)
+    return size == 1;
+  starts[i] = start % shape[i];
+  sizes[i] = size;
+  if (starts[i] + size > shape[i])
+    return false;
+  start /= shape[i];
+  for (i--; i >= 0; i--) {
+    starts[i] = start % shape[i];
+    start /= shape[i];
+  }
+  return true;
+}
+
+// Maps a box of `shape` to a run of its row-major linearization, if the box is
+// contiguous: every dimension inside the outermost one it does not cover
+// entirely is covered entirely, and every dimension outside it has size one.
+static bool boxToLinearRun(ArrayRef<int64_t> starts, ArrayRef<int64_t> sizes,
+                           ArrayRef<int64_t> shape, int64_t &start,
+                           int64_t &size) {
+  start = 0;
+  size = 1;
+  bool partial = false;
+  for (int64_t i = shape.size() - 1; i >= 0; i--) {
+    if (partial && sizes[i] != 1)
+      return false;
+    if (sizes[i] != shape[i])
+      partial = true;
+    size *= sizes[i];
+  }
+  for (size_t i = 0; i < shape.size(); i++)
+    start = start * shape[i] + starts[i];
+  return true;
+}
+
+// %r = reshape %x
+// %d = dynamic_update_slice %r, %u, %idx
+//
+// ->
+//
+// %d' = dynamic_update_slice %x, reshape(%u), %idx'
+// %d = reshape %d'
+//
+// when the reshape merges or splits dimensions and the update is a box of %x.
+// Reshapes that only insert or remove unit dimensions are left to reshape_dus,
+// which rewrites the other way.
+struct DUSReshape final
+    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSReshape> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto reshape = op.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshape)
+      return failure();
+    if (!llvm::hasSingleElement(reshape->getUsers()))
+      return failure();
+
+    ArrayRef<int64_t> inShape = reshape.getOperand().getType().getShape();
+    ArrayRef<int64_t> outShape = op.getType().getShape();
+    ArrayRef<int64_t> updShape = op.getUpdate().getType().getShape();
+    if (llvm::is_contained(inShape, 0) || llvm::is_contained(updShape, 0))
+      return failure();
+
+    // Groups of input and output dimensions with equal element counts.
+    struct Group {
+      size_t inBegin, inEnd, outBegin, outEnd;
+    };
+    SmallVector<Group> groups;
+    size_t i = 0, j = 0;
+    while (i < inShape.size() && j < outShape.size()) {
+      Group g{i, i, j, j};
+      int64_t pi = inShape[i++], pj = outShape[j++];
+      while (pi != pj) {
+        if (pi < pj) {
+          if (i == inShape.size())
+            return failure();
+          pi *= inShape[i++];
+        } else {
+          if (j == outShape.size())
+            return failure();
+          pj *= outShape[j++];
+        }
+      }
+      g.inEnd = i;
+      g.outEnd = j;
+      groups.push_back(g);
+    }
+    if (groups.empty())
+      return failure();
+    for (; i < inShape.size(); i++)
+      groups.back().inEnd = i + 1;
+    for (; j < outShape.size(); j++)
+      groups.back().outEnd = j + 1;
+
+    auto nonUnit = [](ArrayRef<int64_t> dims) {
+      return llvm::count_if(dims, [](int64_t d) { return d != 1; });
+    };
+    bool mergesOrSplits = false;
+    for (auto &g : groups)
+      if (nonUnit(inShape.slice(g.inBegin, g.inEnd - g.inBegin)) > 1 ||
+          nonUnit(outShape.slice(g.outBegin, g.outEnd - g.outBegin)) > 1)
+        mergesOrSplits = true;
+    if (!mergesOrSplits)
+      return failure();
+
+    auto itype = cast<RankedTensorType>(op.getStartIndices()[0].getType());
+    SmallVector<Value> newStarts;
+    SmallVector<int64_t> newUpdShape;
+    for (auto &g : groups) {
+      if (g.inEnd - g.inBegin == 1 && g.outEnd - g.outBegin == 1) {
+        newStarts.push_back(op.getStartIndices()[g.outBegin]);
+        newUpdShape.push_back(updShape[g.outBegin]);
+        continue;
+      }
+      SmallVector<int64_t> outStarts, outSizes;
+      for (size_t d = g.outBegin; d < g.outEnd; d++) {
+        APInt idx;
+        if (!matchPattern(op.getStartIndices()[d], m_ConstantInt(&idx)))
+          return failure();
+        // Start indices are clamped so that the update fits.
+        outStarts.push_back(std::clamp<int64_t>(idx.getSExtValue(), 0,
+                                                outShape[d] - updShape[d]));
+        outSizes.push_back(updShape[d]);
+      }
+      int64_t start, size;
+      if (!boxToLinearRun(outStarts, outSizes,
+                          outShape.slice(g.outBegin, g.outEnd - g.outBegin),
+                          start, size))
+        return failure();
+      SmallVector<int64_t> inStarts, inSizes;
+      if (!linearRunToBox(start, size,
+                          inShape.slice(g.inBegin, g.inEnd - g.inBegin),
+                          inStarts, inSizes))
+        return failure();
+      for (auto [s, sz] : llvm::zip(inStarts, inSizes)) {
+        auto c = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), itype,
+            cast<ElementsAttr>(makeAttr(itype, s)));
+        newStarts.push_back(c);
+        newUpdShape.push_back(sz);
+      }
+    }
+
+    auto newUpdate = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(),
+                                                op.getUpdate(), newUpdShape);
+    auto newDus = stablehlo::DynamicUpdateSliceOp::create(
+        rewriter, op.getLoc(), reshape.getOperand(), newUpdate, newStarts);
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), newDus);
+    return success();
+  }
+};
+
 struct ReshapeSlice final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeSlice> {
   bool onlySingleUser;
