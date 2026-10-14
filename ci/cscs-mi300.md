@@ -302,6 +302,26 @@ wins (`[[ -e ]] ||`), so the view's copy always takes precedence over a spack on
 them. `amdgcn/`, `bin/`, and `lib/llvm/` must stay real directories; see *amdgcn
 must stay a real dir* and *clang wrapper + HIP_CLANG_PATH*.
 
+### rocm_sysdeps
+
+Since XLA `ed6af492` (JAX bump #3368), XLA builds the MORI collectives whenever
+ROCm is configured; no flag turns them off. MORI's static `libhsakmt.a` links
+`@local_config_rocm//rocm:{drm,drm_amdgpu,numa}`, which import
+`rocm_dist/lib/rocm_sysdeps/lib/{libdrm,libdrm_amdgpu,libnuma}.so`. That directory
+only exists in TheRock-based ROCm (7.10+). The UENV's classic ROCm 7.2.3 has no
+such directory, and Bazel fails with `SolibSymlink … missing input file`.
+
+The UENV does ship the libraries, in its `libdrm` and `numactl` spack packages, and
+the lib/ scan above already links them into the overlay's `lib/`. So the overlay
+creates `lib/rocm_sysdeps/lib/` with symlinks to those same copies, and fails
+loudly if one is missing. At runtime they come from `reactant_libs` (see "Curated
+runtime libs"; Julia bundles neither), the same copies the UENV's ROCm was built
+against.
+
+Drop this once Enzyme-JAX's XLA includes openxla/xla#50228. That change links
+classic ROCm before 7.10 against host `-ldrm -ldrm_amdgpu -lnuma` instead, so 7.2.3
+no longer reads `rocm_sysdeps`.
+
 ### Bazel extraopts
 
 `build_local.jl --extraopt=...` is how overlay/toolchain settings reach

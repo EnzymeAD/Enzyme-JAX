@@ -106,6 +106,15 @@ for pkg in /user-environment/linux-zen3/*/; do
     done
   done
 done
+# TheRock-style lib/rocm_sysdeps/lib for XLA's MORI link deps, filled from the
+# UENV's libdrm/numactl packages. See md: "rocm_sysdeps".
+mkdir -p "${BUILD_ROOT}/.rocm/lib/rocm_sysdeps/lib"
+for name in libdrm.so libdrm_amdgpu.so libnuma.so; do
+  src="${BUILD_ROOT}/.rocm/lib/${name}"
+  [[ -e "${src}" ]] || { echo "FATAL: ${name} not found in the UENV; XLA's @local_config_rocm//rocm:{drm,drm_amdgpu,numa} need it" >&2; exit 1; }
+  ln -sfn "$(readlink -f "${src}")" "${BUILD_ROOT}/.rocm/lib/rocm_sysdeps/lib/${name}"
+  echo "lib/rocm_sysdeps/lib/${name} -> $(readlink -f "${src}")"
+done
 # Overlay-local clang resource dir. See md: "clang wrapper + HIP_CLANG_PATH".
 REAL_CLANG_BIN="$(which clang 2>/dev/null || true)"
 if [[ -z "${REAL_CLANG_BIN}" || ! -x "${REAL_CLANG_BIN}" ]]; then
