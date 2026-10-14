@@ -916,6 +916,7 @@ static void addReshapePropagateUpPasses(std::vector<std::string> &list,
   // list.push_back("pad_dot_general<1>(1)");
   list.push_back("reshape_pad");
   list.push_back("reshape_wrap");
+  list.push_back("reshape_gather");
   list.push_back("reshape_rotate");
   list.push_back("reshape_extend");
   list.push_back("delete_dims_broadcast");

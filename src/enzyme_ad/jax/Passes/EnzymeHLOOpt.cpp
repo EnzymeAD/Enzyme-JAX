@@ -3345,6 +3345,49 @@ static bool isTransposeReshapeLikeBroadcast(stablehlo::BroadcastInDimOp op) {
   return false;
 }
 
+// reshape(gather(x, idx)) where every slice is one element (no offset
+// dimensions) and nothing is batched: the gather reads x at each position of
+// the index grid, so its reshape is the gather at the reshaped grid, with the
+// index vector last. The gather must have no other user, or it would be read
+// twice.
+struct ReshapeGather final
+    : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeGather> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
+                                    PatternRewriter &rewriter) const {
+    auto gather = op.getOperand().getDefiningOp<stablehlo::GatherOp>();
+    if (!gather || !gather->hasOneUse())
+      return failure();
+    auto dims = gather.getDimensionNumbers();
+    if (!dims.getOffsetDims().empty() ||
+        !dims.getOperandBatchingDims().empty() ||
+        !dims.getStartIndicesBatchingDims().empty())
+      return failure();
+    auto indicesType =
+        cast<RankedTensorType>(gather.getStartIndices().getType());
+    int64_t rank = indicesType.getRank();
+    int64_t vectorDim = dims.getIndexVectorDim();
+    if (vectorDim < rank - 1)
+      return failure();
+    int64_t vectorSize =
+        vectorDim < rank ? indicesType.getDimSize(vectorDim) : 1;
+
+    SmallVector<int64_t> shape(op.getType().getShape());
+    shape.push_back(vectorSize);
+    Value indices = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(),
+                                               gather.getStartIndices(), shape);
+    auto newDims = stablehlo::GatherDimensionNumbersAttr::get(
+        op.getContext(), /*offsetDims=*/{}, dims.getCollapsedSliceDims(),
+        /*operandBatchingDims=*/{}, /*startIndicesBatchingDims=*/{},
+        dims.getStartIndexMap(), shape.size() - 1);
+    rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
+        op, op.getType(), gather.getOperand(), indices, newDims,
+        gather.getSliceSizes(), gather.getIndicesAreSorted());
+    return success();
+  }
+};
+
 // A transpose of a gather that keeps its offset dimensions in place is the
 // gather over its start indices transposed the same way: the batch dimensions
 // of a gather's result follow its start indices'.
