@@ -24,24 +24,28 @@ module @"reactant_loop!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_rep
   }
 }
 
-// CHECK:  func.func @main(%arg0: tensor<24x38x62xf32>, %arg1: tensor<i64>) -> tensor<24x38x62xf32> {
-// CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:    %c_0 = stablehlo.constant dense<1> : tensor<i64>
-// CHECK-NEXT:    %0 = stablehlo.slice %arg0 [0:24, 14:38, 0:62] : (tensor<24x38x62xf32>) -> tensor<24x24x62xf32>
-// CHECK-NEXT:    %1:2 = stablehlo.while(%iterArg = %c, %iterArg_1 = %0) : tensor<i64>, tensor<24x24x62xf32>
-// CHECK-NEXT:     cond {
-// CHECK-NEXT:      %4 = stablehlo.compare  LT, %iterArg, %arg1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:      stablehlo.return %4 : tensor<i1>
-// CHECK-NEXT:    } do {
-// CHECK-NEXT:      %4 = stablehlo.slice %arg0 [7:17, 7:14, 7:55] : (tensor<24x38x62xf32>) -> tensor<10x7x48xf32>
-// CHECK-NEXT:      %5 = stablehlo.slice %iterArg_1 [7:17, 0:17, 7:55] : (tensor<24x24x62xf32>) -> tensor<10x17x48xf32>
-// CHECK-NEXT:      %6 = stablehlo.concatenate %4, %5, dim = 1 : (tensor<10x7x48xf32>, tensor<10x17x48xf32>) -> tensor<10x24x48xf32>
-// CHECK-NEXT:      "test.use"(%6) : (tensor<10x24x48xf32>) -> ()
-// CHECK-NEXT:      %7 = "test.update"() : () -> tensor<24x24x62xf32>
-// CHECK-NEXT:      %8 = stablehlo.add %iterArg, %c_0 : tensor<i64>
-// CHECK-NEXT:      stablehlo.return %8, %7 : tensor<i64>, tensor<24x24x62xf32>
-// CHECK-NEXT:    }
-// CHECK-NEXT:    %2 = stablehlo.slice %arg0 [0:24, 0:14, 0:62] : (tensor<24x38x62xf32>) -> tensor<24x14x62xf32>
-// CHECK-NEXT:    %3 = stablehlo.concatenate %2, %1#1, dim = 1 : (tensor<24x14x62xf32>, tensor<24x24x62xf32>) -> tensor<24x38x62xf32>
-// CHECK-NEXT:    return %3 : tensor<24x38x62xf32>
-// CHECK-NEXT:  }
+// Only the updated trailing 24 columns remain loop-carried. The leading 14
+// columns are recovered from the input, including for the slice inside the
+// body. Condition carrying happens after this buffer-shape optimization.
+// CHECK-LABEL: func.func @main(%arg0: tensor<24x38x62xf32>, %arg1: tensor<i64>) -> tensor<24x38x62xf32> {
+// CHECK-NEXT: %[[ZERO:.*]] = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT: %[[ONE:.*]] = stablehlo.constant dense<1> : tensor<i64>
+// CHECK-NEXT: %[[INITIAL:.*]] = stablehlo.slice %arg0 [0:24, 14:38, 0:62] : (tensor<24x38x62xf32>) -> tensor<24x24x62xf32>
+// CHECK-NEXT: %[[FIRST_TEST:.*]] = stablehlo.compare LT, %[[ZERO]], %arg1
+// CHECK-NEXT: %[[WHILE:.*]]:3 = stablehlo.while(%[[I:.*]] = %[[ZERO]], %[[DATA:.*]] = %[[INITIAL]], %[[PRED:.*]] = %[[FIRST_TEST]]) : tensor<i64>, tensor<24x24x62xf32>, tensor<i1>
+// CHECK-NEXT: cond {
+// CHECK-NEXT: stablehlo.return %[[PRED]] : tensor<i1>
+// CHECK-NEXT: } do {
+// CHECK-NEXT: %[[LEFT:.*]] = stablehlo.slice %arg0 [7:17, 7:14, 7:55] : (tensor<24x38x62xf32>) -> tensor<10x7x48xf32>
+// CHECK-NEXT: %[[RIGHT:.*]] = stablehlo.slice %[[DATA]] [7:17, 0:17, 7:55] : (tensor<24x24x62xf32>) -> tensor<10x17x48xf32>
+// CHECK-NEXT: %[[SLICE:.*]] = stablehlo.concatenate %[[LEFT]], %[[RIGHT]], dim = 1 : (tensor<10x7x48xf32>, tensor<10x17x48xf32>) -> tensor<10x24x48xf32>
+// CHECK-NEXT: "test.use"(%[[SLICE]]) : (tensor<10x24x48xf32>) -> ()
+// CHECK-NEXT: %[[UPDATE:.*]] = "test.update"() : () -> tensor<24x24x62xf32>
+// CHECK-NEXT: %[[NEXT_I:.*]] = stablehlo.add %[[I]], %[[ONE]] : tensor<i64>
+// CHECK-NEXT: %[[NEXT_TEST:.*]] = stablehlo.compare LT, %[[NEXT_I]], %arg1
+// CHECK-NEXT: stablehlo.return %[[NEXT_I]], %[[UPDATE]], %[[NEXT_TEST]] : tensor<i64>, tensor<24x24x62xf32>, tensor<i1>
+// CHECK-NEXT: }
+// CHECK-NEXT: %[[PREFIX:.*]] = stablehlo.slice %arg0 [0:24, 0:14, 0:62] : (tensor<24x38x62xf32>) -> tensor<24x14x62xf32>
+// CHECK-NEXT: %[[RESULT:.*]] = stablehlo.concatenate %[[PREFIX]], %[[WHILE]]#1, dim = 1 : (tensor<24x14x62xf32>, tensor<24x24x62xf32>) -> tensor<24x38x62xf32>
+// CHECK-NEXT: return %[[RESULT]] : tensor<24x38x62xf32>
+// CHECK-NEXT: }
