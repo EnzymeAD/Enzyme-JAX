@@ -2065,6 +2065,11 @@ def ApplyReshapeDUSPatterns : EnzymeHLOPatternOp<
   let patterns = ["ReshapeDUS"];
 }
 
+def ApplyDUSReshapePatterns : EnzymeHLOPatternOp<
+    "dus_reshape"> {
+  let patterns = ["DUSReshape"];
+}
+
 def ApplyReshapeSlicePatterns : EnzymeHLOParameterizedPatternOp<
     "reshape_slice"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
