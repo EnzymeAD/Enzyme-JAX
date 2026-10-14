@@ -9,6 +9,7 @@
 #include "src/enzyme_ad/jax/Passes/LinalgUtils.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DynamicAPInt.h"
 #include "llvm/ADT/SetVector.h"
@@ -2454,7 +2455,7 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
 template <typename OpTy>
 LogicalResult lowerSVDAlgorithmGPU(OpTy op, PatternRewriter &rewriter,
                                    DictionaryAttr &options,
-                                   bool skipUVAllocation,
+                                   bool skipUVAllocation, bool returnsV,
                                    std::string targetName) {
   auto input = op.getOperand();
   auto type_input = cast<RankedTensorType>(input.getType());
@@ -2493,7 +2494,8 @@ LogicalResult lowerSVDAlgorithmGPU(OpTy op, PatternRewriter &rewriter,
     outTypes = {type_input, type_s, empty_type_u, empty_type_vt, type_info};
     ranks_results = {rank_input, rank_s, 0, 0, rank_info};
   } else {
-    outTypes = {type_input, type_s, type_u, type_v, type_info};
+    outTypes = {type_input, type_s, type_u, returnsV ? type_v : type_vt,
+                type_info};
     ranks_results = {rank_input, rank_s, rank_u, rank_vt, rank_info};
   }
   SmallVector<bool> isColMajorArrOutputs = {true, true, true, true, true};
@@ -2533,15 +2535,20 @@ LogicalResult lowerSVDAlgorithmGPU(OpTy op, PatternRewriter &rewriter,
                                       cast<ElementsAttr>(makeAttr(type_vt, 0)));
   } else {
     Ures = gpusolverCallOp.getResult(2);
+    Vtres = gpusolverCallOp.getResult(3);
 
-    // cuda_customcall returns `U` and `V`. We need to transpose `V` to match
-    // the return convention of `enzymexla.linalg.svd`.
-    SmallVector<int64_t> permutation(rank_input);
-    std::iota(permutation.begin(), permutation.end() - 2, 0);
-    permutation[rank_input - 1] = rank_input - 2;
-    permutation[rank_input - 2] = rank_input - 1;
-    Vtres = stablehlo::TransposeOp::create(
-        rewriter, op.getLoc(), gpusolverCallOp.getResult(3), permutation);
+    if (returnsV) {
+      // gesvdj returns `U` and `V`. We need the adjoint of `V` to match the
+      // return convention of `enzymexla.linalg.svd`.
+      SmallVector<int64_t> permutation(rank_input);
+      std::iota(permutation.begin(), permutation.end() - 2, 0);
+      permutation[rank_input - 1] = rank_input - 2;
+      permutation[rank_input - 2] = rank_input - 1;
+      Vtres = stablehlo::TransposeOp::create(rewriter, op.getLoc(), Vtres,
+                                             permutation);
+      if (isa<ComplexType>(type_vt.getElementType()))
+        Vtres = chlo::ConjOp::create(rewriter, op.getLoc(), Vtres);
+    }
   }
   rewriter.replaceAllUsesWith(op.getResult(0), Ures);
   rewriter.replaceAllUsesWith(op.getResult(2), Vtres);
@@ -2589,8 +2596,10 @@ struct GesvdOpLowering : public OpRewritePattern<enzymexla::GesvdOp> {
     auto solverDispatch =
         backend == "cuda" ? "cusolver_gesvd_ffi" : "hipsolver_gesvd_ffi";
 
+    // gesvd returns `U` and `V^H` directly
     return lowerSVDAlgorithmGPU(op, rewriter, backend_config,
-                                !op.getComputeUv(), solverDispatch);
+                                !op.getComputeUv(), /*returnsV=*/false,
+                                solverDispatch);
   }
 };
 
@@ -2652,7 +2661,7 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
     return lowerSVDAlgorithmGPU(
         op, rewriter, backend_config,
         false, // https://github.com/jax-ml/jax/blob/43d14afad3e6bc321309054c512c5ffe1d1bca86/jaxlib/gpu/solver_kernels_ffi.cc#L1117
-        solverDispatch);
+        /*returnsV=*/true, solverDispatch);
   }
 
   LogicalResult matchAndRewriteTPU(enzymexla::GesvjOp op,
