@@ -57,3 +57,25 @@ func.func @order(%a: tensor<8x3x4xf64>, %b: tensor<8x3x4xf64>) -> (tensor<2x8x3x
 // CHECK-NEXT:    %5 = stablehlo.concatenate %3, %4, dim = 0 : (tensor<1x8x4x3xf64>, tensor<1x8x4x3xf64>) -> tensor<2x8x4x3xf64>
 // CHECK-NEXT:    return %2, %5 : tensor<2x8x3x4xf64>, tensor<2x8x4x3xf64>
 // CHECK-NEXT:  }
+
+// The same values stacked twice: along a new leading dimension through
+// reshapes that also delete a unit dimension, and along that unit
+// dimension itself (the same as an inserted one).
+func.func @unit_stacks(%a: tensor<8x4x3x1xf64>, %b: tensor<8x4x3x1xf64>, %c: tensor<8x4x3x1xf64>) -> (tensor<3x8x4x3xf64>, tensor<8x4x3x3xf64>) {
+  %0 = stablehlo.reshape %a : (tensor<8x4x3x1xf64>) -> tensor<1x8x4x3xf64>
+  %1 = stablehlo.reshape %b : (tensor<8x4x3x1xf64>) -> tensor<1x8x4x3xf64>
+  %2 = stablehlo.reshape %c : (tensor<8x4x3x1xf64>) -> tensor<1x8x4x3xf64>
+  %3 = stablehlo.concatenate %0, %1, %2, dim = 0 : (tensor<1x8x4x3xf64>, tensor<1x8x4x3xf64>, tensor<1x8x4x3xf64>) -> tensor<3x8x4x3xf64>
+  %4 = stablehlo.concatenate %a, %b, %c, dim = 3 : (tensor<8x4x3x1xf64>, tensor<8x4x3x1xf64>, tensor<8x4x3x1xf64>) -> tensor<8x4x3x3xf64>
+  return %3, %4 : tensor<3x8x4x3xf64>, tensor<8x4x3x3xf64>
+}
+
+// CHECK-LABEL: func.func @unit_stacks(
+// CHECK-SAME: %[[A:[^ ,:)]+]]: tensor<8x4x3x1xf64>, %[[B:[^ ,:)]+]]: tensor<8x4x3x1xf64>, %[[C:[^ ,:)]+]]: tensor<8x4x3x1xf64>) -> (tensor<3x8x4x3xf64>, tensor<8x4x3x3xf64>) {
+// CHECK-NEXT: %[[RA:[^ ,:)]+]] = stablehlo.reshape %[[A]] : (tensor<8x4x3x1xf64>) -> tensor<1x8x4x3xf64>
+// CHECK-NEXT: %[[RB:[^ ,:)]+]] = stablehlo.reshape %[[B]] : (tensor<8x4x3x1xf64>) -> tensor<1x8x4x3xf64>
+// CHECK-NEXT: %[[RC:[^ ,:)]+]] = stablehlo.reshape %[[C]] : (tensor<8x4x3x1xf64>) -> tensor<1x8x4x3xf64>
+// CHECK-NEXT: %[[S:[^ ,:)]+]] = stablehlo.concatenate %[[RA]], %[[RB]], %[[RC]], dim = 0 : (tensor<1x8x4x3xf64>, tensor<1x8x4x3xf64>, tensor<1x8x4x3xf64>) -> tensor<3x8x4x3xf64>
+// CHECK-NEXT: %[[T:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[S]], dims = [3, 0, 1, 2] : (tensor<3x8x4x3xf64>) -> tensor<8x4x3x3xf64>
+// CHECK-NEXT: return %[[S]], %[[T]] : tensor<3x8x4x3xf64>, tensor<8x4x3x3xf64>
+// CHECK-NEXT: }

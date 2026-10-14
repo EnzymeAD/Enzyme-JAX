@@ -17447,8 +17447,9 @@ struct ConcatViewCSE final
   }
 
 private:
-  // v as a view of base: base dimension d is v's dimension map[d], and v's
-  // other dimensions have size 1.
+  // v as a view of base: base dimension d is v's dimension map[d] (-1 for
+  // a unit dimension of base the view deletes), and v's other dimensions
+  // have size 1.
   struct View {
     Value base;
     SmallVector<int64_t> map;
@@ -17457,14 +17458,28 @@ private:
   static bool analyze(Value v, View &view) {
     auto type = cast<RankedTensorType>(v.getType());
     if (auto reshape = v.getDefiningOp<stablehlo::ReshapeOp>()) {
+      // A reshape that only inserts and deletes unit dimensions: the
+      // non-unit dimensions pair up in order, each unit dimension of the
+      // input kept when the output has one next (else deleted).
       auto inType = reshape.getOperand().getType();
-      auto inserted = findReshapeInsertionDims(inType, type);
-      if (!inserted.empty()) {
+      SmallVector<int64_t> map;
+      int64_t o = 0;
+      for (int64_t d = 0, e = inType.getRank(); d < e; d++) {
+        if (inType.getDimSize(d) == 1) {
+          map.push_back(o < type.getRank() && type.getDimSize(o) == 1 ? o++
+                                                                      : -1);
+          continue;
+        }
+        while (o < type.getRank() && type.getDimSize(o) == 1)
+          o++;
+        if (o == type.getRank() || type.getDimSize(o) != inType.getDimSize(d))
+          break;
+        map.push_back(o++);
+      }
+      if ((int64_t)map.size() == inType.getRank()) {
         view.base = reshape.getOperand();
-        for (int64_t d = 0, e = type.getRank(); d < e; d++)
-          if (!llvm::is_contained(inserted, d))
-            view.map.push_back(d);
-        return (int64_t)view.map.size() == inType.getRank();
+        view.map = map;
+        return true;
       }
     }
     if (auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
@@ -17513,9 +17528,16 @@ private:
         fromType.getRank() > toType.getRank())
       return false;
     int64_t a = other.getDimension(), b = op.getDimension();
-    // Both stack along an inserted dimension, or both concatenate along the
-    // same dimension of the values.
+    // Both stack along an inserted dimension (a unit dimension of the
+    // values counts as one), or both concatenate along the same dimension
+    // of the values.
+    auto baseType = cast<RankedTensorType>(views[0].base.getType());
     auto fromBase = llvm::find(from, a), toBase = llvm::find(to, b);
+    if (fromBase != from.end() &&
+        baseType.getDimSize(fromBase - from.begin()) == 1)
+      fromBase = from.end();
+    if (toBase != to.end() && baseType.getDimSize(toBase - to.begin()) == 1)
+      toBase = to.end();
     if ((fromBase == from.end()) != (toBase == to.end()))
       return false;
     if (fromBase != from.end() &&
@@ -17524,6 +17546,8 @@ private:
     dims.assign(fromType.getRank(), -1);
     SmallVector<bool> used(toType.getRank(), false);
     for (auto [f, t] : llvm::zip(from, to)) {
+      if (f < 0 || t < 0 || f == a || t == b)
+        continue;
       dims[f] = t;
       used[t] = true;
     }
