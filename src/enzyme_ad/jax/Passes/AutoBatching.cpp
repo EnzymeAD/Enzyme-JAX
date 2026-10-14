@@ -2621,11 +2621,57 @@ RemoveLoopCarriedDependenciesFromWhileLoadOperations::matchAndRewriteImpl(
   bool anyOpRewritten = false;
   CarriedStoreCache carriedStores;
 
+  // Whether every read of a carried buffer in the body is a self-lane load,
+  // so that rewriting them leaves the loop no read of the carry at all and
+  // the buffer a map over the lanes (which the batching rewrites then lift).
+  // A buffer another read still carries (a recurrence, `buf[iv]` written
+  // from `buf[iv - 1]`) gains nothing from the rewrite: the loop stays, and
+  // the loop operand it would now read stays live across it, so the buffer
+  // is copied on every entry instead of updated in place.
+  DenseMap<unsigned, bool> onlySelfLaneReads;
+  auto readsOnlySelfLanes = [&](unsigned argNum) {
+    auto it = onlySelfLaneReads.find(argNum);
+    if (it != onlySelfLaneReads.end())
+      return it->second;
+    BlockArgument arg = whileBody.getArgument(argNum);
+    // The in-place update chain writing the buffer back.
+    DenseSet<Operation *> chain;
+    Value written = whileBody.getTerminator()->getOperand(argNum);
+    while (auto dus =
+               written.getDefiningOp<stablehlo::DynamicUpdateSliceOp>()) {
+      chain.insert(dus);
+      written = dus.getOperand();
+    }
+    bool ok = written == arg;
+    SmallVector<Value> worklist{arg};
+    while (ok && !worklist.empty()) {
+      Value cur = worklist.pop_back_val();
+      for (Operation *user : cur.getUsers()) {
+        if (auto transpose = dyn_cast<stablehlo::TransposeOp>(user)) {
+          worklist.push_back(transpose.getResult());
+          continue;
+        }
+        if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(user);
+            ds && ds.getOperand() == cur &&
+            isSelfLaneCarriedLoad(ds, whileOp, info, nullptr, nullptr,
+                                  &carriedStores))
+          continue;
+        if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(user);
+            dus && dus.getOperand() == cur && chain.contains(dus))
+          continue;
+        ok = false;
+        break;
+      }
+    }
+    return onlySelfLaneReads[argNum] = ok;
+  };
+
   whileBody.walk([&](stablehlo::DynamicSliceOp dsOp) {
     SmallVector<int64_t> permutation;
     unsigned argNum;
     if (!isSelfLaneCarriedLoad(dsOp, whileOp, info, &permutation, &argNum,
-                               &carriedStores)) {
+                               &carriedStores) ||
+        !readsOnlySelfLanes(argNum)) {
       return WalkResult::advance();
     }
 
