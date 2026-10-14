@@ -10031,6 +10031,137 @@ struct ClampIotaConstSimplify
   }
 };
 
+// reduce(max/min) over an iota-like tensor `start + scale * i` along
+// dimension `d` with the init value `init`.
+//
+// If `d` is among the reduced dimensions, every output element sees the whole
+// progression, so the result is the splat max/min(init, start, start + scale *
+// (n - 1)). Otherwise, the reduction only spans dimensions along which the
+// input is constant, so the result is the same progression over the result
+// shape, combined with init.
+//
+// This works symbolically from the (start, scale, dimension) description of
+// the input rather than materializing it, so it applies to arbitrarily large
+// tensors.
+struct ReduceMinMaxIotaLike
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                     ReduceMinMaxIotaLike> {
+  using CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                ReduceMinMaxIotaLike>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return rewriter.notifyMatchFailure(op, "only single-operand reduce");
+
+    auto kind = stablehlo::CheckCommonReduceOp(op).kind;
+    if (kind != stablehlo::ReduceOpKind::Max &&
+        kind != stablehlo::ReduceOpKind::Min)
+      return rewriter.notifyMatchFailure(op, "only max/min reductions");
+    bool isMax = kind == stablehlo::ReduceOpKind::Max;
+
+    Value input = op.getInputs()[0];
+    auto inputType = cast<RankedTensorType>(input.getType());
+    auto resultType = cast<RankedTensorType>(op.getResult(0).getType());
+    if (!inputType.hasStaticShape() || !resultType.hasStaticShape())
+      return rewriter.notifyMatchFailure(op, "requires static shapes");
+
+    auto dims = op.getDimensions();
+    for (int64_t d : dims)
+      if (inputType.getDimSize(d) == 0)
+        return rewriter.notifyMatchFailure(op, "empty reduction");
+
+    auto iotaLike = enzyme::detectIotaLikeTensor(input);
+    if (!iotaLike)
+      return rewriter.notifyMatchFailure(op, "input is not iota-like");
+
+    double lo, hi;
+    if (!getIotaLikeBounds(*iotaLike, lo, hi) || !std::isfinite(lo) ||
+        !std::isfinite(hi))
+      return rewriter.notifyMatchFailure(op, "unknown iota bounds");
+
+    Type elemType = inputType.getElementType();
+    MLIRContext *ctx = op.getContext();
+    Location loc = op.getLoc();
+    Value init = op.getInitValues()[0];
+
+    std::optional<double> initVal;
+    SplatElementsAttr initAttr;
+    if (matchPattern(init, m_Constant(&initAttr))) {
+      initVal = enzyme::getDoubleFromAttr(initAttr.getSplatValue<TypedAttr>());
+      // A NaN init propagates through max/min; leave that to the runtime.
+      if (initVal && std::isnan(*initVal))
+        initVal = std::nullopt;
+    }
+
+    auto splatConstant = [&](double v) -> Value {
+      TypedAttr attr = enzyme::createAttrFromDouble(ctx, elemType, v);
+      return stablehlo::ConstantOp::create(
+          rewriter, loc, SplatElementsAttr::get(resultType, attr));
+    };
+    auto broadcastInit = [&]() -> Value {
+      if (init.getType() == resultType)
+        return init;
+      return stablehlo::BroadcastInDimOp::create(rewriter, loc, resultType,
+                                                 init, ArrayRef<int64_t>{});
+    };
+    auto combine = [&](Value a, Value b) -> Value {
+      if (isMax)
+        return stablehlo::MaxOp::create(rewriter, loc, a, b);
+      return stablehlo::MinOp::create(rewriter, loc, a, b);
+    };
+
+    if (llvm::is_contained(dims, iotaLike->dimension)) {
+      double bound = isMax ? hi : lo;
+      if (initVal) {
+        double v =
+            isMax ? std::max(*initVal, bound) : std::min(*initVal, bound);
+        rewriter.replaceOp(op, splatConstant(v));
+        return success();
+      }
+      Value boundCst = splatConstant(bound);
+      Value bcastInit = broadcastInit();
+      rewriter.replaceOp(op, combine(bcastInit, boundCst));
+      return success();
+    }
+
+    // The iota dimension survives the reduction; find its index in the result.
+    int64_t newDim = iotaLike->dimension;
+    for (int64_t d : dims)
+      if (d < iotaLike->dimension)
+        newDim--;
+
+    // init dominates the whole progression: the result is a splat of init.
+    if (initVal && (isMax ? *initVal >= hi : *initVal <= lo)) {
+      rewriter.replaceOp(op, splatConstant(*initVal));
+      return success();
+    }
+
+    auto startVal = enzyme::getDoubleFromAttr(iotaLike->start);
+    auto scaleVal = enzyme::getDoubleFromAttr(iotaLike->scale);
+    if (!startVal || !scaleVal)
+      return rewriter.notifyMatchFailure(op, "unknown iota start/scale");
+
+    Value result = stablehlo::IotaOp::create(rewriter, loc, resultType, newDim);
+    if (*scaleVal != 1.0)
+      result = stablehlo::MulOp::create(rewriter, loc, result,
+                                        splatConstant(*scaleVal));
+    if (*startVal != 0.0)
+      result = stablehlo::AddOp::create(rewriter, loc, result,
+                                        splatConstant(*startVal));
+
+    // init never dominates: the progression is the result.
+    bool initIrrelevant = initVal && (isMax ? *initVal <= lo : *initVal >= hi);
+    if (!initIrrelevant) {
+      Value bcastInit = broadcastInit();
+      result = combine(result, bcastInit);
+    }
+
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
 struct CompareIotaConstSimplify
     : public CheckedOpRewritePattern<stablehlo::CompareOp,
                                      CompareIotaConstSimplify> {
@@ -40737,11 +40868,12 @@ struct EnzymeHLOOptPass
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
         ConvertIotaSimplify, MinMaxIotaConstSimplify<stablehlo::MaxOp>,
         MinMaxIotaConstSimplify<stablehlo::MinOp>, ClampIotaConstSimplify,
-        CompareMul, CompareConvert, AddSelects, CompareNegateConstSimplify,
-        CompareSubtractConstSimplify, SelectSimplify,
-        DynamicSliceReshapeDynamicSlice, DynamicSliceReshapeSlice,
-        SliceReshapeDynamicSlice, SliceReshapeSlice, ExponentialMinusOneFuse,
-        ExponentialMinusOneAddFuse>(context, PatternBenefit(65000));
+        ReduceMinMaxIotaLike, CompareMul, CompareConvert, AddSelects,
+        CompareNegateConstSimplify, CompareSubtractConstSimplify,
+        SelectSimplify, DynamicSliceReshapeDynamicSlice,
+        DynamicSliceReshapeSlice, SliceReshapeDynamicSlice, SliceReshapeSlice,
+        ExponentialMinusOneFuse, ExponentialMinusOneAddFuse>(
+        context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold,

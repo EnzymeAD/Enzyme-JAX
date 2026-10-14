@@ -1923,6 +1923,12 @@ def ClampIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["ClampIotaConstSimplify"];
 }
 
+def ReduceMinMaxIotaLikePatterns : EnzymeHLOPatternOp<
+  "reduce_min_max_iota_like"
+> {
+  let patterns = ["ReduceMinMaxIotaLike"];
+}
+
 def CompareNegateConstSimplifyPatterns : EnzymeHLOPatternOp<
   "compare_negate_const_simplify"
 > {

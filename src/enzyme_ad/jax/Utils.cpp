@@ -1744,6 +1744,9 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
     mlir::Operation *op;
     TypedAttr offset; // only populated for AddOp/SubtractOp (nullptr otherwise)
     TypedAttr scale;  // only populated for MulOp (nullptr otherwise)
+    // For SubtractOp: true when the constant is the lhs (`c - x`), which
+    // negates the progression in addition to offsetting it.
+    bool constantLhs = false;
   };
 
   // Build a chain of operations from startOp to the base case
@@ -1797,13 +1800,22 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
               return nullptr;
             })
             .Case<stablehlo::SubtractOp>([&](auto subOp) -> Operation * {
-              SplatElementsAttr rhsAttr;
+              SplatElementsAttr rhsAttr, lhsAttr;
               if (matchPattern(subOp.getRhs(), m_Constant(&rhsAttr))) {
                 chain.push_back(
                     {currentOp, rhsAttr.getSplatValue<TypedAttr>(), nullptr});
                 return subOp.getLhs().getDefiningOp();
+              } else if (matchPattern(subOp.getLhs(), m_Constant(&lhsAttr))) {
+                chain.push_back({currentOp, lhsAttr.getSplatValue<TypedAttr>(),
+                                 nullptr,
+                                 /*constantLhs=*/true});
+                return subOp.getRhs().getDefiningOp();
               }
               return nullptr;
+            })
+            .Case<stablehlo::NegOp>([&](auto negOp) -> Operation * {
+              chain.push_back({currentOp, nullptr, nullptr});
+              return negOp.getOperand().getDefiningOp();
             })
             .Case<stablehlo::MulOp>([&](auto mulOp) -> Operation * {
               SplatElementsAttr rhsAttr, lhsAttr;
@@ -1950,12 +1962,30 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
             })
             .Case<stablehlo::SubtractOp>([&](auto) {
               auto startVal = getDoubleFromAttr(result.start);
+              auto scaleVal = getDoubleFromAttr(result.scale);
               auto offsetVal = getDoubleFromAttr(item.offset);
-              if (!startVal || !offsetVal)
+              if (!startVal || !scaleVal || !offsetVal)
                 return false;
               auto elemType = result.start.getType();
-              result.start =
-                  createAttrFromDouble(ctx, elemType, *startVal - *offsetVal);
+              if (item.constantLhs) {
+                // c - (start + scale * i) = (c - start) + (-scale) * i
+                result.start =
+                    createAttrFromDouble(ctx, elemType, *offsetVal - *startVal);
+                result.scale = createAttrFromDouble(ctx, elemType, -*scaleVal);
+              } else {
+                result.start =
+                    createAttrFromDouble(ctx, elemType, *startVal - *offsetVal);
+              }
+              return true;
+            })
+            .Case<stablehlo::NegOp>([&](auto) {
+              auto startVal = getDoubleFromAttr(result.start);
+              auto scaleVal = getDoubleFromAttr(result.scale);
+              if (!startVal || !scaleVal)
+                return false;
+              auto elemType = result.start.getType();
+              result.start = createAttrFromDouble(ctx, elemType, -*startVal);
+              result.scale = createAttrFromDouble(ctx, elemType, -*scaleVal);
               return true;
             })
             .Case<stablehlo::MulOp>([&](auto) {
