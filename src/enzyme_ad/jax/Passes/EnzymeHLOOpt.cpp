@@ -30598,6 +30598,51 @@ struct ConcatReshapeSlice
   }
 };
 
+// A concatenated reshape that only inserts unit dimensions into a broadcast
+// becomes that broadcast to the reshape's type, so the operands can be
+// merged as broadcasts. A broadcast used only by the reshape is folded by
+// reshape_insertions_broadcast_in_dim_simplify instead; one with other
+// users stays for them, and the copy costs nothing.
+struct ConcatReshapeBroadcast
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     ConcatReshapeBroadcast> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
+    SmallVector<Value> newOperands(op.getOperands());
+    bool changed = false;
+    for (Value &v : newOperands) {
+      auto reshape = v.getDefiningOp<stablehlo::ReshapeOp>();
+      if (!reshape)
+        continue;
+      auto bcast =
+          reshape.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
+      if (!bcast || isOnlyUsedInOperation(bcast, reshape))
+        continue;
+      auto insertionDims = findReshapeInsertionDims(
+          reshape.getOperand().getType(), reshape.getType());
+      if (insertionDims.empty())
+        continue;
+      SmallVector<int64_t> kept;
+      for (int64_t i = 0, e = reshape.getType().getRank(); i < e; i++)
+        if (!llvm::is_contained(insertionDims, i))
+          kept.push_back(i);
+      SmallVector<int64_t> newDims;
+      for (int64_t d : bcast.getBroadcastDimensions())
+        newDims.push_back(kept[d]);
+      v = stablehlo::BroadcastInDimOp::create(rewriter, reshape.getLoc(),
+                                              reshape.getType(),
+                                              bcast.getOperand(), newDims);
+      changed = true;
+    }
+    if (!changed)
+      return failure();
+    rewriter.modifyOpInPlace(op, [&]() { op->setOperands(newOperands); });
+    return success();
+  }
+};
+
 bool reshapeOfEquivalentReduces(stablehlo::ReshapeOp reshapeOp,
                                 SmallVector<stablehlo::ReduceOp> &allOperands,
                                 SmallVector<Value> &reduceOpOperands) {
@@ -42985,6 +43030,7 @@ struct EnzymeHLOOptPass
         DivideDivideSimplify,
         ConcatReshapeSlice,
         ConcatBroadcastSlice,
+        ConcatReshapeBroadcast,
         ConcatReshapeReduce,
         ConcatElementwise,
         ConcatReshapeElementwise,

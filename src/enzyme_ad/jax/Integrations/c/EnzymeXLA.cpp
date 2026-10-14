@@ -587,6 +587,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("divide_divide_simplify");
   list.push_back("concat_reshape_slice");
   list.push_back("concat_broadcast_slice");
+  list.push_back("concat_reshape_broadcast");
   list.push_back("full_reduce_reshape_or_transpose");
   list.push_back("concat_reshape_reduce");
   list.push_back("concat_reduce");
