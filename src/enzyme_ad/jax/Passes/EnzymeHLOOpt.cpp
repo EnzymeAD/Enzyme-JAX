@@ -14796,7 +14796,7 @@ struct ReshapeOfConcatToConcatOfReshape final
 
     int64_t zero = 0;
     if (!transformReshapeSlice<int64_t>(reshapeOp, oneHot, /*toFill*/ 0, &zero))
-      return failure();
+      return regroupConcat(reshapeOp, concatOp, rewriter);
 
     int64_t newDim = -1;
     for (auto &&[i, val] : llvm::enumerate(oneHot)) {
@@ -14830,6 +14830,83 @@ struct ReshapeOfConcatToConcatOfReshape final
     auto newConcatOp = stablehlo::ConcatenateOp::create(
         rewriter, reshapeOp.getLoc(), concatOperands, newDim);
     rewriter.replaceOp(reshapeOp, newConcatOp);
+    return success();
+  }
+
+private:
+  // A reshape that regroups the concatenated dimension c with the ones after
+  // it (e.g. [3, 9, 3, 3] -> [3, 3, 27] with c = 1): take the smallest runs of
+  // dimensions around c with the same element count on both sides. When c is
+  // the run's outermost non-unit input dimension and the operands split into
+  // consecutive groups that are each a whole number of rows of the run's
+  // outermost output dimension d (usually each operand alone; a block written
+  // as a few pieces otherwise), each group is that many rows of d, reshaped
+  // alone.
+  LogicalResult regroupConcat(stablehlo::ReshapeOp reshapeOp,
+                              stablehlo::ConcatenateOp concatOp,
+                              PatternRewriter &rewriter) const {
+    ArrayRef<int64_t> in = concatOp.getType().getShape();
+    ArrayRef<int64_t> out = reshapeOp.getType().getShape();
+    int64_t c = concatOp.getDimension();
+    SmallVector<int64_t> inPrefix = {1}, outPrefix = {1};
+    for (int64_t s : in)
+      inPrefix.push_back(inPrefix.back() * s);
+    for (int64_t s : out)
+      outPrefix.push_back(outPrefix.back() * s);
+
+    // The output dim the run starts at: after any unit dims.
+    int64_t d = -1;
+    for (int64_t j = 0, e = out.size(); j < e; j++)
+      if (outPrefix[j] == inPrefix[c] && out[j] != 1) {
+        d = j;
+        break;
+      }
+    if (d == -1)
+      return failure();
+    // The run's end: the first boundary both sides share after c.
+    int64_t inEnd = -1, outEnd = -1;
+    for (int64_t i = c + 1, e = in.size(); i <= e && inEnd == -1; i++)
+      for (int64_t j = d + 1, f = out.size(); j <= f; j++)
+        if (inPrefix[i] == outPrefix[j]) {
+          inEnd = i;
+          outEnd = j;
+          break;
+        }
+    if (inEnd == -1)
+      return failure();
+    int64_t innerIn = inPrefix[inEnd] / inPrefix[c + 1];
+    int64_t innerOut = outPrefix[outEnd] / outPrefix[d + 1];
+
+    // The groups: the shortest runs of operands filling whole rows.
+    SmallVector<std::pair<int64_t, int64_t>> groups;
+    int64_t begin = 0, extent = 0;
+    for (auto [k, operand] : llvm::enumerate(concatOp.getOperands())) {
+      extent += cast<RankedTensorType>(operand.getType()).getDimSize(c);
+      if (extent * innerIn % innerOut == 0) {
+        groups.push_back({begin, k + 1});
+        begin = k + 1;
+        extent = 0;
+      }
+    }
+    if (extent != 0 || groups.size() < 2)
+      return failure();
+
+    SmallVector<Value> concatOperands;
+    for (auto [first, last] : groups) {
+      Value group = concatOp.getOperands()[first];
+      if (last - first > 1)
+        group = stablehlo::ConcatenateOp::create(
+            rewriter, reshapeOp.getLoc(),
+            concatOp.getOperands().slice(first, last - first), c);
+      SmallVector<int64_t> shape(out);
+      shape[d] = cast<RankedTensorType>(group.getType()).getDimSize(c) *
+                 innerIn / innerOut;
+      Value reshaped = stablehlo::ReshapeOpCreate(rewriter, reshapeOp.getLoc(),
+                                                  group, shape);
+      concatOperands.push_back(reshaped);
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(reshapeOp,
+                                                          concatOperands, d);
     return success();
   }
 };
