@@ -208,3 +208,53 @@ func.func @same_operand(%x: tensor<3x8xf64>) -> tensor<3x8xf64> {
 // CHECK-NEXT: %[[C:[^ ,:)]+]] = stablehlo.concatenate %[[R0]], %[[S2]], dim = 0 : (tensor<1x8xf64>, tensor<2x8xf64>) -> tensor<3x8xf64>
 // CHECK-NEXT: return %[[C]] : tensor<3x8xf64>
 // CHECK-NEXT: }
+
+// The single window read through a transposing broadcast above its slice
+// (a unit dimension inserted at the concatenated one), the run through a
+// transpose under the blocked reshape: both resolve to the same blocked
+// value [8, 3, 3, 3, 3] of the buffer, read [1, 0, 2, 4, 3].
+func.func @chains(%a: tensor<648xf64>) -> tensor<3x8x3x3x3xf64> {
+  %0 = stablehlo.reshape %a : (tensor<648xf64>) -> tensor<8x9x3x3xf64>
+  %1 = stablehlo.transpose %0, dims = [0, 1, 3, 2] : (tensor<8x9x3x3xf64>) -> tensor<8x9x3x3xf64>
+  %2 = stablehlo.reshape %1 : (tensor<8x9x3x3xf64>) -> tensor<8x3x3x3x3xf64>
+  %3 = stablehlo.transpose %2, dims = [1, 0, 2, 3, 4] : (tensor<8x3x3x3x3xf64>) -> tensor<3x8x3x3x3xf64>
+  %4 = stablehlo.slice %3 [1:3, 0:8, 0:3, 0:3, 0:3] : (tensor<3x8x3x3x3xf64>) -> tensor<2x8x3x3x3xf64>
+  %5 = stablehlo.broadcast_in_dim %0, dims = [1, 2, 4, 3] : (tensor<8x9x3x3xf64>) -> tensor<1x8x9x3x3xf64>
+  %6 = stablehlo.slice %5 [0:1, 0:8, 0:3, 0:3, 0:3] : (tensor<1x8x9x3x3xf64>) -> tensor<1x8x3x3x3xf64>
+  %7 = stablehlo.concatenate %6, %4, dim = 0 : (tensor<1x8x3x3x3xf64>, tensor<2x8x3x3x3xf64>) -> tensor<3x8x3x3x3xf64>
+  return %7 : tensor<3x8x3x3x3xf64>
+}
+
+// CHECK-LABEL: func.func @chains(
+// CHECK-SAME: %[[A:[^ ,:)]+]]: tensor<648xf64>) -> tensor<3x8x3x3x3xf64> {
+// CHECK-NEXT: %[[B:[^ ,:)]+]] = stablehlo.reshape %[[A]] : (tensor<648xf64>) -> tensor<8x9x3x3xf64>
+// CHECK-NEXT: %[[T:[^ ,:)]+]] = stablehlo.transpose %[[B]], dims = [0, 1, 3, 2] : (tensor<8x9x3x3xf64>) -> tensor<8x9x3x3xf64>
+// CHECK-NEXT: %[[R:[^ ,:)]+]] = stablehlo.reshape %[[T]] : (tensor<8x9x3x3xf64>) -> tensor<8x3x3x3x3xf64>
+// CHECK-NEXT: %[[U:[^ ,:)]+]] = stablehlo.transpose %[[R]], dims = [1, 0, 2, 3, 4] : (tensor<8x3x3x3x3xf64>) -> tensor<3x8x3x3x3xf64>
+// CHECK-NEXT: return %[[U]] : tensor<3x8x3x3x3xf64>
+// CHECK-NEXT: }
+
+// The single window a sub-range inside block 0 of the merged dimension
+// (elements 3:6 of 81, a block being 27), the run the same sub-range of
+// blocks 1 and 2: one slice of the blocked value.
+func.func @sub_block(%a: tensor<5832xf64>) -> tensor<3x8x3x3x3xf64> {
+  %0 = stablehlo.reshape %a : (tensor<5832xf64>) -> tensor<8x81x3x3xf64>
+  %1 = stablehlo.transpose %0, dims = [0, 1, 3, 2] : (tensor<8x81x3x3xf64>) -> tensor<8x81x3x3xf64>
+  %2 = stablehlo.reshape %1 : (tensor<8x81x3x3xf64>) -> tensor<8x3x27x3x3xf64>
+  %3 = stablehlo.transpose %2, dims = [1, 0, 2, 3, 4] : (tensor<8x3x27x3x3xf64>) -> tensor<3x8x27x3x3xf64>
+  %4 = stablehlo.slice %3 [1:3, 0:8, 3:6, 0:3, 0:3] : (tensor<3x8x27x3x3xf64>) -> tensor<2x8x3x3x3xf64>
+  %5 = stablehlo.broadcast_in_dim %0, dims = [1, 2, 4, 3] : (tensor<8x81x3x3xf64>) -> tensor<1x8x81x3x3xf64>
+  %6 = stablehlo.slice %5 [0:1, 0:8, 3:6, 0:3, 0:3] : (tensor<1x8x81x3x3xf64>) -> tensor<1x8x3x3x3xf64>
+  %7 = stablehlo.concatenate %6, %4, dim = 0 : (tensor<1x8x3x3x3xf64>, tensor<2x8x3x3x3xf64>) -> tensor<3x8x3x3x3xf64>
+  return %7 : tensor<3x8x3x3x3xf64>
+}
+
+// CHECK-LABEL: func.func @sub_block(
+// CHECK-SAME: %[[A:[^ ,:)]+]]: tensor<5832xf64>) -> tensor<3x8x3x3x3xf64> {
+// CHECK-NEXT: %[[B:[^ ,:)]+]] = stablehlo.reshape %[[A]] : (tensor<5832xf64>) -> tensor<8x81x3x3xf64>
+// CHECK-NEXT: %[[T:[^ ,:)]+]] = stablehlo.transpose %[[B]], dims = [0, 1, 3, 2] : (tensor<8x81x3x3xf64>) -> tensor<8x81x3x3xf64>
+// CHECK-NEXT: %[[R:[^ ,:)]+]] = stablehlo.reshape %[[T]] : (tensor<8x81x3x3xf64>) -> tensor<8x3x27x3x3xf64>
+// CHECK-NEXT: %[[U:[^ ,:)]+]] = stablehlo.transpose %[[R]], dims = [1, 0, 2, 3, 4] : (tensor<8x3x27x3x3xf64>) -> tensor<3x8x27x3x3xf64>
+// CHECK-NEXT: %[[S:[^ ,:)]+]] = stablehlo.slice %[[U]] [0:3, 0:8, 3:6, 0:3, 0:3] : (tensor<3x8x27x3x3xf64>) -> tensor<3x8x3x3x3xf64>
+// CHECK-NEXT: return %[[S]] : tensor<3x8x3x3x3xf64>
+// CHECK-NEXT: }

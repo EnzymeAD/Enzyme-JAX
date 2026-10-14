@@ -5482,11 +5482,13 @@ private:
   struct Piece {
     SmallVector<Operation *> views; // outermost first, down to the slice
     stablehlo::SliceOp slice;
-    Value base; // the value sliced, through a transpose
-    // base is a reshape of root: the root. A merged piece (its slice selects
+    // The base: the value sliced, through transpose-like views, as a
+    // reshape of root (the value under every reshape; a transpose under
+    // the reshape folded into perm). A merged piece (its slice selects
     // whole blocks of a merged dimension of root) is described as the
     // equivalent slice of the blocked reshape, so every piece's base is the
     // blocked value.
+    SmallVector<int64_t> baseShape;
     Value root;
     bool merged = false;
     // The slice's bounds in base's dimensions (the original slice's through
@@ -5494,8 +5496,9 @@ private:
     SmallVector<int64_t> starts, limits;
     bool unitInserted = false; // the views insert the concatenated dim
     int64_t unitAt = -1;       // where (the concatenated dimension)
-    SmallVector<int64_t>
-        perm;       // slice operand dim -> base dim (identity if none)
+    // slice operand dim -> base dim (-1: a unit dimension a view below the
+    // slice inserted, read whole)
+    SmallVector<int64_t> perm;
     int64_t e = -1; // the base dimension of the window run
     int64_t first = 0, count = 0;
     // The output position of each base dimension (-1: unit / not read), and
@@ -5524,30 +5527,20 @@ private:
     // One blocked value for all: pieces that read it directly, and pieces
     // that read the merged reshape of the same root selecting whole blocks
     // (reread as slices of the blocked value when the run merges).
-    Value base;
     // The blocked value: among bases of the common root, the one of the
     // highest rank (the others are merged reshapes of it, reread below).
+    ArrayRef<int64_t> blocked;
     for (Piece &pc : pieces) {
-      bool sameRoot = true;
-      for (Piece &o : pieces)
-        if (o.root != pc.root)
-          sameRoot = false;
-      if (!sameRoot)
+      if (pc.root != pieces[0].root)
         return failure();
-      if (!base || cast<RankedTensorType>(pc.base.getType()).getRank() >
-                       cast<RankedTensorType>(base.getType()).getRank())
-        base = pc.base;
+      if (pc.baseShape.size() > blocked.size())
+        blocked = pc.baseShape;
     }
-    if (!base)
-      return failure();
-    auto blockedReshape = base.getDefiningOp<stablehlo::ReshapeOp>();
     for (Piece &pc : pieces) {
-      if (pc.base == base)
+      if (pc.baseShape == blocked)
         continue;
-      if (!blockedReshape || pc.root != blockedReshape.getOperand() ||
-          !rereadBlocked(pc, blockedReshape))
+      if (!rereadBlocked(pc, blocked))
         return failure();
-      pc.base = base;
     }
     // The run dimension is the operand's concatenated dimension itself: the
     // same extent (a piece whose views split or merge it is not a window
@@ -5579,6 +5572,10 @@ private:
         break;
       }
     Piece &c = pieces[carrier];
+    // The run is the carrier's own slice widened: it must read the blocked
+    // value itself.
+    if (c.merged)
+      return failure();
     // Pieces whose slices read the same value are consecutive slices of it,
     // concat_slice's case; this pattern is for windows read through
     // different values (the base directly, and a transpose of it), which
@@ -5699,20 +5696,55 @@ private:
       return false;
     if (llvm::any_of(pc.slice.getStrides(), [](int64_t s) { return s != 1; }))
       return false;
+    // The value sliced, through transpose-like views (transposes,
+    // element-preserving broadcasts, reshapes that only insert or delete
+    // unit dimensions): the base.
     Value x = pc.slice.getOperand();
     int64_t rank = cast<RankedTensorType>(x.getType()).getRank();
     pc.perm = llvm::to_vector(llvm::seq<int64_t>(0, rank));
-    if (auto transpose = x.getDefiningOp<stablehlo::TransposeOp>()) {
-      pc.perm.assign(transpose.getPermutation().begin(),
-                     transpose.getPermutation().end());
-      pc.base = transpose.getOperand();
-    } else {
-      pc.base = x;
+    while (Operation *op = x.getDefiningOp()) {
+      SmallVector<int64_t> inv; // output dim -> input dim (-1: inserted)
+      if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
+        inv.assign(transpose.getPermutation().begin(),
+                   transpose.getPermutation().end());
+      } else if (isWindowView(op) && !isa<stablehlo::ReshapeOp>(op) ||
+                 isUnitReshape(op)) {
+        SmallVector<int64_t> m = viewMap(op);
+        inv.assign(cast<RankedTensorType>(op->getResult(0).getType()).getRank(),
+                   -1);
+        for (auto [in, o] : llvm::enumerate(m))
+          if (o >= 0)
+            inv[o] = in;
+      } else {
+        break;
+      }
+      for (int64_t &pd : pc.perm)
+        if (pd >= 0)
+          pd = inv[pd];
+      x = op->getOperand(0);
     }
-    if (auto reshape = pc.base.getDefiningOp<stablehlo::ReshapeOp>())
+    auto baseType = cast<RankedTensorType>(x.getType());
+    pc.baseShape.assign(baseType.getShape().begin(), baseType.getShape().end());
+    pc.root = x;
+    if (auto reshape = x.getDefiningOp<stablehlo::ReshapeOp>()) {
       pc.root = reshape.getOperand();
-    else
-      pc.root = pc.base;
+      // A transpose under the reshape: the reshape's groups of output
+      // dimensions permuted whole, so the base is a reshape of the
+      // transpose's operand.
+      if (auto transpose = pc.root.getDefiningOp<stablehlo::TransposeOp>()) {
+        SmallVector<int64_t> shape, basePerm;
+        if (foldTransposeUnderReshape(reshape, transpose, shape, basePerm)) {
+          pc.root = transpose.getOperand();
+          pc.baseShape = shape;
+          for (int64_t &pd : pc.perm)
+            if (pd >= 0)
+              pd = basePerm[pd];
+        }
+      }
+    }
+    while (auto reshape = pc.root.getDefiningOp<stablehlo::ReshapeOp>())
+      pc.root = reshape.getOperand();
+    int64_t br = pc.baseShape.size();
     // Output position of each slice-result dimension through the views.
     SmallVector<int64_t> pos = llvm::to_vector(llvm::seq<int64_t>(0, rank));
     int64_t unitPos = -1; // where an inserted dimension lands, if any
@@ -5759,15 +5791,25 @@ private:
     // base dim no other piece... we take the one whose output position is
     // d when present, else the inserted unit landed at d and e is the
     // slice dimension of extent 1 that the views deleted (position -1).
+    // A unit dimension a view below the slice inserted is read whole; the
+    // one landing at d is the concatenated dimension.
+    for (int64_t i = 0; i < rank; i++) {
+      if (pc.perm[i] >= 0)
+        continue;
+      if (pc.slice.getLimitIndices()[i] - pc.slice.getStartIndices()[i] != 1)
+        return false;
+      if (pos[i] == d)
+        unitPos = d;
+    }
     int64_t se = -1;
     for (int64_t i = 0; i < rank; i++)
-      if (pos[i] == d)
+      if (pos[i] == d && pc.perm[i] >= 0)
         se = i;
     if (se < 0) {
       if (unitPos != d)
         return false;
       for (int64_t i = 0; i < rank; i++)
-        if (pos[i] < 0 &&
+        if (pos[i] < 0 && pc.perm[i] >= 0 &&
             pc.slice.getLimitIndices()[i] - pc.slice.getStartIndices()[i] == 1)
           se = i;
       if (se < 0) {
@@ -5777,29 +5819,93 @@ private:
         pc.unitInserted = true;
         pc.unitAt = d;
         pc.e = -1;
-        pc.layout.assign(rank, -1);
-        pc.starts.assign(rank, 0);
-        pc.limits.assign(rank, 0);
-        for (int64_t i = 0; i < rank; i++) {
-          pc.layout[pc.perm[i]] = pos[i];
-          pc.starts[pc.perm[i]] = pc.slice.getStartIndices()[i];
-          pc.limits[pc.perm[i]] = pc.slice.getLimitIndices()[i];
-        }
-        return true;
-      }
-      pos[se] = d;
+      } else
+        pos[se] = d;
     }
-    pc.e = pc.perm[se];
-    pc.first = pc.slice.getStartIndices()[se];
-    pc.count = pc.slice.getLimitIndices()[se] - pc.first;
-    // Layout and bounds keyed by base dimension.
-    pc.layout.assign(rank, -1);
-    pc.starts.assign(rank, 0);
-    pc.limits.assign(rank, 0);
+    if (se >= 0) {
+      pc.e = pc.perm[se];
+      pc.first = pc.slice.getStartIndices()[se];
+      pc.count = pc.slice.getLimitIndices()[se] - pc.first;
+    }
+    // Layout and bounds keyed by base dimension (a base dimension no slice
+    // dimension reads is a deleted unit one).
+    pc.layout.assign(br, -1);
+    pc.starts.assign(br, 0);
+    pc.limits = pc.baseShape;
     for (int64_t i = 0; i < rank; i++) {
+      if (pc.perm[i] < 0)
+        continue;
       pc.layout[pc.perm[i]] = pos[i];
       pc.starts[pc.perm[i]] = pc.slice.getStartIndices()[i];
       pc.limits[pc.perm[i]] = pc.slice.getLimitIndices()[i];
+    }
+    return true;
+  }
+
+  // A reshape that only inserts or deletes unit dimensions.
+  static bool isUnitReshape(Operation *op) {
+    auto reshape = dyn_cast<stablehlo::ReshapeOp>(op);
+    if (!reshape)
+      return false;
+    SmallVector<int64_t> m = reshapeMap(reshape);
+    if (m.empty())
+      return false;
+    ArrayRef<int64_t> in = reshape.getOperand().getType().getShape();
+    ArrayRef<int64_t> out = reshape.getType().getShape();
+    for (auto [i, o] : llvm::enumerate(m))
+      if (o >= 0 && in[i] != out[o])
+        return false;
+    return true;
+  }
+
+  // reshape(transpose(z)), the reshape only splitting dimensions (or
+  // deleting unit ones): the same as transpose'(reshape'(z)), the groups of
+  // output dimensions permuted whole. Fills the shape of reshape'(z) and
+  // basePerm[reshape output dim] = its dimension there. False when the
+  // reshape merges or inserts unit dimensions.
+  static bool foldTransposeUnderReshape(stablehlo::ReshapeOp reshape,
+                                        stablehlo::TransposeOp transpose,
+                                        SmallVectorImpl<int64_t> &shape,
+                                        SmallVectorImpl<int64_t> &basePerm) {
+    SmallVector<int64_t> m = reshapeMap(reshape);
+    if (m.empty())
+      return false;
+    ArrayRef<int64_t> out = reshape.getType().getShape();
+    int64_t outRank = out.size();
+    SmallVector<int64_t> starts;
+    for (int64_t st : m)
+      if (st >= 0)
+        starts.push_back(st);
+    llvm::sort(starts);
+    // Each input dimension's group of output dimensions [start, next).
+    SmallVector<std::pair<int64_t, int64_t>> groups(m.size(), {0, 0});
+    int64_t covered = 0;
+    for (auto [p, st] : llvm::enumerate(m)) {
+      if (st < 0)
+        continue;
+      int64_t next = outRank;
+      for (int64_t s2 : starts)
+        if (s2 > st) {
+          next = s2;
+          break;
+        }
+      groups[p] = {st, next};
+      covered += next - st;
+    }
+    if (covered != outRank)
+      return false;
+    ArrayRef<int64_t> perm = transpose.getPermutation(); // dim p = z's perm[p]
+    SmallVector<int64_t> inv(perm.size());
+    for (auto [p, q] : llvm::enumerate(perm))
+      inv[q] = p;
+    basePerm.assign(outRank, -1);
+    shape.clear();
+    for (int64_t q = 0; q < (int64_t)perm.size(); q++) {
+      auto [st, next] = groups[inv[q]];
+      for (int64_t o = st; o < next; o++) {
+        basePerm[o] = shape.size();
+        shape.push_back(out[o]);
+      }
     }
     return true;
   }
@@ -5809,12 +5915,8 @@ private:
   // of it through at most a transpose and reading the other dimensions
   // whole: described as the equivalent run of blocks of `blocked`, keyed
   // by blocked's dimensions.
-  static bool rereadBlocked(Piece &pc, stablehlo::ReshapeOp blocked) {
-    auto mergedReshape = pc.base.getDefiningOp<stablehlo::ReshapeOp>();
-    if (!mergedReshape)
-      return false;
-    ArrayRef<int64_t> merged = mergedReshape.getType().getShape();
-    ArrayRef<int64_t> blk = blocked.getType().getShape();
+  static bool rereadBlocked(Piece &pc, ArrayRef<int64_t> blk) {
+    ArrayRef<int64_t> merged = pc.baseShape;
     if (blk.size() != merged.size() + 1)
       return false;
     int64_t e = -1;
@@ -5831,20 +5933,23 @@ private:
       return false;
     pc.e = e;
     int64_t size = blk[e + 1];
-    int64_t se = llvm::find(pc.perm, e) - pc.perm.begin();
-    stablehlo::SliceOp sl = pc.slice;
-    int64_t start = sl.getStartIndices()[se], limit = sl.getLimitIndices()[se];
-    if (start % size != 0 || limit % size != 0)
-      return false;
-    for (int64_t i = 0; i < (int64_t)pc.perm.size(); i++) {
-      if (i == se)
-        continue;
-      if (sl.getStartIndices()[i] != 0 ||
-          sl.getLimitIndices()[i] != merged[pc.perm[i]])
+    int64_t start = pc.starts[e], limit = pc.limits[e];
+    // Whole blocks, or a sub-range of one block (the block's inner range).
+    int64_t innerStart = 0, innerLimit = size;
+    if (start % size == 0 && limit % size == 0) {
+      pc.first = start / size;
+      pc.count = (limit - start) / size;
+    } else {
+      pc.first = start / size;
+      if ((limit - 1) / size != pc.first)
         return false;
+      pc.count = 1;
+      innerStart = start - pc.first * size;
+      innerLimit = limit - pc.first * size;
     }
-    pc.first = start / size;
-    pc.count = (limit - start) / size;
+    for (int64_t bd = 0; bd < (int64_t)merged.size(); bd++)
+      if (bd != e && (pc.starts[bd] != 0 || pc.limits[bd] != merged[bd]))
+        return false;
     pc.merged = true;
     // Layout keyed by blocked's dims: merged dim e splits into e (blocks,
     // the run) and e + 1 (size); the size dim reads whole and lands where
@@ -5867,9 +5972,12 @@ private:
     SmallVector<int64_t> starts(blk.size(), 0), limits(blk.begin(), blk.end());
     starts[e] = pc.first;
     limits[e] = pc.first + pc.count;
+    starts[e + 1] = innerStart;
+    limits[e + 1] = innerLimit;
     pc.starts = starts;
     pc.limits = limits;
-    pc.perm = llvm::to_vector(llvm::seq<int64_t>(0, (int64_t)blk.size()));
+    pc.baseShape.assign(blk.begin(), blk.end());
+    pc.perm.clear(); // not a slice of the blocked value itself
     return true;
   }
 
