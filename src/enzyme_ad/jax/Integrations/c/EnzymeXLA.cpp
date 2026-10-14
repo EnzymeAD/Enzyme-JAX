@@ -577,6 +577,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("convert_iota_simplify");
   list.push_back("min_max_iota_const_simplify");
   list.push_back("clamp_iota_const_simplify");
+  list.push_back("reduce_min_max_iota_like");
   list.push_back("reshuffle_ands_compares");
   list.push_back("square_abs_simplify");
   list.push_back("divide_divide_simplify");
