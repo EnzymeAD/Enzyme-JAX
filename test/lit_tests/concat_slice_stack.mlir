@@ -130,6 +130,16 @@ func.func @through_views(%x: tensor<8x27x3xf64>) -> tensor<3x3x8x3x3xf64> {
   return %c : tensor<3x3x8x3x3xf64>
 }
 
+// CHECK-LABEL: func.func @through_views(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<8x27x3xf64>) -> tensor<3x3x8x3x3xf64> {
+// CHECK-NEXT: %[[V1:[^ ,:)]+]] = stablehlo.reshape %[[V0]] : (tensor<8x27x3xf64>) -> tensor<8x3x9x3xf64>
+// CHECK-NEXT: %[[V2:[^ ,:)]+]] = stablehlo.transpose %[[V1]], dims = [1, 0, 2, 3] : (tensor<8x3x9x3xf64>) -> tensor<3x8x9x3xf64>
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.reshape %[[V2]] : (tensor<3x8x9x3xf64>) -> tensor<3x8x3x3x3xf64>
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[V3]], dims = [0, 3, 2, 4, 5] : (tensor<3x8x3x3x3xf64>) -> tensor<3x1x3x8x3x3xf64>
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = stablehlo.reshape %[[V4]] : (tensor<3x1x3x8x3x3xf64>) -> tensor<3x3x8x3x3xf64>
+// CHECK-NEXT: return %[[V5]] : tensor<3x3x8x3x3xf64>
+// CHECK-NEXT: }
+
 // The operands view the slices differently: left alone.
 func.func @different_views(%x: tensor<8x27x3xf64>) -> tensor<2x8x9x3xf64> {
   %s0 = stablehlo.slice %x [0:8, 0:9, 0:3] : (tensor<8x27x3xf64>) -> tensor<8x9x3xf64>
@@ -139,3 +149,13 @@ func.func @different_views(%x: tensor<8x27x3xf64>) -> tensor<2x8x9x3xf64> {
   %c = stablehlo.concatenate %b0, %r1, dim = 0 : (tensor<1x8x9x3xf64>, tensor<1x8x9x3xf64>) -> tensor<2x8x9x3xf64>
   return %c : tensor<2x8x9x3xf64>
 }
+
+// CHECK-LABEL: func.func @different_views(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<8x27x3xf64>) -> tensor<2x8x9x3xf64> {
+// CHECK-NEXT: %[[V1:[^ ,:)]+]] = stablehlo.slice %[[V0]] [0:8, 0:9, 0:3] : (tensor<8x27x3xf64>) -> tensor<8x9x3xf64>
+// CHECK-NEXT: %[[V2:[^ ,:)]+]] = stablehlo.slice %[[V0]] [0:8, 9:18, 0:3] : (tensor<8x27x3xf64>) -> tensor<8x9x3xf64>
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[V1]], dims = [1, 2, 3] : (tensor<8x9x3xf64>) -> tensor<1x8x9x3xf64>
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.reshape %[[V2]] : (tensor<8x9x3xf64>) -> tensor<1x8x9x3xf64>
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = stablehlo.concatenate %[[V3]], %[[V4]], dim = 0 : (tensor<1x8x9x3xf64>, tensor<1x8x9x3xf64>) -> tensor<2x8x9x3xf64>
+// CHECK-NEXT: return %[[V5]] : tensor<2x8x9x3xf64>
+// CHECK-NEXT: }

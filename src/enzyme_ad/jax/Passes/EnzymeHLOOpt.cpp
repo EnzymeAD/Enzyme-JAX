@@ -5419,8 +5419,11 @@ struct ConcatSliceStack final
         front.push_back(i);
     Value stacked =
         stablehlo::TransposeOpCreate(rewriter, op.getLoc(), windows, front);
-    // The views, innermost first, on every slice at once.
+    // The views, innermost first, on every slice at once; an outermost reshape
+    // is part of the final one.
     for (Operation *view : llvm::reverse(views)) {
+      if (view == views.front() && isa<stablehlo::ReshapeOp>(view))
+        break;
       auto viewType = cast<RankedTensorType>(view->getResult(0).getType());
       SmallVector<int64_t> batched = {n};
       llvm::append_range(batched, viewType.getShape());
