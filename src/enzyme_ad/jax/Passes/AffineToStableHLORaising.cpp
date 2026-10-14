@@ -6045,6 +6045,419 @@ struct AffineToStableHLORaisingPass
     return b;
   }
 
+  // The range of an affine expression over ranges of its dims and symbols,
+  // by interval arithmetic: exact for the linear expressions loop bounds are
+  // made of, a superset otherwise.
+  static std::optional<std::pair<int64_t, int64_t>>
+  affineExprRange(AffineExpr e, ArrayRef<std::pair<int64_t, int64_t>> dimRanges,
+                  ArrayRef<std::pair<int64_t, int64_t>> symRanges) {
+    if (auto c = dyn_cast<AffineConstantExpr>(e))
+      return std::make_pair(c.getValue(), c.getValue());
+    if (auto d = dyn_cast<AffineDimExpr>(e))
+      return dimRanges[d.getPosition()];
+    if (auto s = dyn_cast<AffineSymbolExpr>(e))
+      return symRanges[s.getPosition()];
+    auto bin = cast<AffineBinaryOpExpr>(e);
+    auto l = affineExprRange(bin.getLHS(), dimRanges, symRanges);
+    if (!l)
+      return std::nullopt;
+    auto rc = dyn_cast<AffineConstantExpr>(bin.getRHS());
+    switch (e.getKind()) {
+    case AffineExprKind::Add: {
+      auto r = affineExprRange(bin.getRHS(), dimRanges, symRanges);
+      if (!r)
+        return std::nullopt;
+      return std::make_pair(l->first + r->first, l->second + r->second);
+    }
+    case AffineExprKind::Mul: {
+      // Affine keeps the constant factor on the right.
+      if (!rc)
+        return std::nullopt;
+      int64_t k = rc.getValue();
+      if (k >= 0)
+        return std::make_pair(l->first * k, l->second * k);
+      return std::make_pair(l->second * k, l->first * k);
+    }
+    case AffineExprKind::FloorDiv:
+      if (!rc || rc.getValue() <= 0)
+        return std::nullopt;
+      return std::make_pair(llvm::divideFloorSigned(l->first, rc.getValue()),
+                            llvm::divideFloorSigned(l->second, rc.getValue()));
+    case AffineExprKind::CeilDiv:
+      if (!rc || rc.getValue() <= 0)
+        return std::nullopt;
+      return std::make_pair(llvm::divideCeilSigned(l->first, rc.getValue()),
+                            llvm::divideCeilSigned(l->second, rc.getValue()));
+    case AffineExprKind::Mod: {
+      if (!rc || rc.getValue() <= 0)
+        return std::nullopt;
+      int64_t k = rc.getValue();
+      // Within one period the residue grows with the value.
+      if (llvm::divideFloorSigned(l->first, k) ==
+          llvm::divideFloorSigned(l->second, k))
+        return std::make_pair(llvm::mod(l->first, k), llvm::mod(l->second, k));
+      return std::make_pair(int64_t(0), k - 1);
+    }
+    default:
+      return std::nullopt;
+    }
+  }
+
+  // An affine expression's value at a point, when it folds to one.
+  static std::optional<int64_t>
+  affineExprAt(AffineExpr e, ArrayRef<int64_t> dims, ArrayRef<int64_t> syms) {
+    SmallVector<AffineExpr> dimExprs, symExprs;
+    for (int64_t v : dims)
+      dimExprs.push_back(getAffineConstantExpr(v, e.getContext()));
+    for (int64_t v : syms)
+      symExprs.push_back(getAffineConstantExpr(v, e.getContext()));
+    AffineExpr folded =
+        simplifyAffineExpr(e.replaceDimsAndSymbols(dimExprs, symExprs), 0, 0);
+    if (auto c = dyn_cast<AffineConstantExpr>(folded))
+      return c.getValue();
+    return std::nullopt;
+  }
+
+  // The bounds of an axis whose lower bound is the max of `lbMap`'s results
+  // and upper bound the min of `ubMap`'s, read as functions of the enclosing
+  // induction variables they depend on.
+  struct LaneBounds {
+    // The distinct induction variables the bounds read, each with the first
+    // and last value it takes.
+    SmallVector<Value> ivs;
+    SmallVector<std::pair<int64_t, int64_t>> ivRanges;
+    // For each bound map, which iv (an index into `ivs`, or -1) each of its
+    // dims and symbols is.
+    SmallVector<int64_t> lbDims, lbSyms, ubDims, ubSyms;
+  };
+
+  static std::optional<LaneBounds>
+  readLaneBounds(AffineMap lbMap, ValueRange lbOperands, AffineMap ubMap,
+                 ValueRange ubOperands, bool allowForIVs) {
+    LaneBounds lanes;
+    auto ivOf = [&](Value v) -> int64_t {
+      auto it = llvm::find(lanes.ivs, v);
+      if (it != lanes.ivs.end())
+        return it - lanes.ivs.begin();
+      if (!affine::isAffineInductionVar(v))
+        return -1;
+      if (!allowForIVs && !affine::getAffineParallelInductionVarOwner(v))
+        return -1;
+      auto range = getIVRange(v);
+      if (!range || range->getNumIters() <= 0)
+        return -1;
+      lanes.ivs.push_back(v);
+      int64_t first = range->lb,
+              last = range->lb + (range->getNumIters() - 1) * range->step;
+      lanes.ivRanges.push_back({std::min(first, last), std::max(first, last)});
+      return lanes.ivs.size() - 1;
+    };
+    auto read = [&](AffineMap map, ValueRange operands,
+                    SmallVectorImpl<int64_t> &dims,
+                    SmallVectorImpl<int64_t> &syms) {
+      for (unsigned i = 0; i < map.getNumDims(); ++i)
+        dims.push_back(ivOf(operands[i]));
+      for (unsigned i = 0; i < map.getNumSymbols(); ++i)
+        syms.push_back(ivOf(operands[map.getNumDims() + i]));
+      // Every operand a bound reads must be a ranged induction variable.
+      for (AffineExpr e : map.getResults()) {
+        for (unsigned i = 0; i < map.getNumDims(); ++i)
+          if (dims[i] < 0 && e.isFunctionOfDim(i))
+            return false;
+        for (unsigned i = 0; i < map.getNumSymbols(); ++i)
+          if (syms[i] < 0 && e.isFunctionOfSymbol(i))
+            return false;
+      }
+      return true;
+    };
+    if (!read(lbMap, lbOperands, lanes.lbDims, lanes.lbSyms) ||
+        !read(ubMap, ubOperands, lanes.ubDims, lanes.ubSyms))
+      return std::nullopt;
+    return lanes;
+  }
+
+  // A loop whose bounds vary with the induction variables of enclosing
+  // loops (`for j = i to N` under a parallel `i`) raises per lane, which
+  // skews every use of its induction variable by the lane's lower bound:
+  // `j = i + k` turns the stores and loads of a triangular loop nest into
+  // diagonal accesses no slice or dynamic_update_slice can express. When the
+  // constant hull of the lanes' ranges is no longer than the longest lane,
+  // iterating the hull behind a `lb <= j < ub` guard costs no more
+  // iterations, and the guard is a mask the raising already understands
+  // over an iota the index rewrites see through. This is that hull, when the
+  // trade is worth making.
+  static std::optional<std::pair<int64_t, int64_t>>
+  laneBoundedAxisHull(AffineMap lbMap, ValueRange lbOperands, AffineMap ubMap,
+                      ValueRange ubOperands, bool allowForIVs) {
+    if (lbMap.isSingleConstant() && ubMap.isSingleConstant())
+      return std::nullopt;
+    auto lanes =
+        readLaneBounds(lbMap, lbOperands, ubMap, ubOperands, allowForIVs);
+    if (!lanes || lanes->ivs.empty())
+      return std::nullopt;
+    // Corner enumeration below is exponential in the variables.
+    if (lanes->ivs.size() > 8)
+      return std::nullopt;
+
+    auto rangesOf = [&](ArrayRef<int64_t> ivIdx) {
+      SmallVector<std::pair<int64_t, int64_t>> ranges;
+      for (int64_t idx : ivIdx)
+        ranges.push_back(idx < 0 ? std::make_pair(int64_t(0), int64_t(0))
+                                 : lanes->ivRanges[idx]);
+      return ranges;
+    };
+    auto lbDimRanges = rangesOf(lanes->lbDims),
+         lbSymRanges = rangesOf(lanes->lbSyms),
+         ubDimRanges = rangesOf(lanes->ubDims),
+         ubSymRanges = rangesOf(lanes->ubSyms);
+
+    // The hull: below every lane's lower bound (a max of results is at least
+    // each result's minimum) and above every lane's upper bound.
+    std::optional<int64_t> hullLo, hullHi;
+    for (AffineExpr e : lbMap.getResults()) {
+      auto r = affineExprRange(e, lbDimRanges, lbSymRanges);
+      if (!r)
+        return std::nullopt;
+      hullLo = hullLo ? std::max(*hullLo, r->first) : r->first;
+    }
+    for (AffineExpr e : ubMap.getResults()) {
+      auto r = affineExprRange(e, ubDimRanges, ubSymRanges);
+      if (!r)
+        return std::nullopt;
+      hullHi = hullHi ? std::min(*hullHi, r->second) : r->second;
+    }
+    if (!hullLo || !hullHi || *hullHi <= *hullLo)
+      return std::nullopt;
+
+    // The longest lane, bounded below by the lanes at the corners of the
+    // enclosing iteration box (exactly the longest for the linear bounds of
+    // a triangular nest).
+    int64_t longest = 0;
+    size_t n = lanes->ivs.size();
+    for (uint64_t corner = 0; corner < (uint64_t(1) << n); ++corner) {
+      auto valuesOf = [&](ArrayRef<int64_t> ivIdx) {
+        SmallVector<int64_t> values;
+        for (int64_t idx : ivIdx) {
+          if (idx < 0) {
+            values.push_back(0);
+            continue;
+          }
+          auto [first, last] = lanes->ivRanges[idx];
+          values.push_back((corner >> idx) & 1 ? last : first);
+        }
+        return values;
+      };
+      auto lbDims = valuesOf(lanes->lbDims), lbSyms = valuesOf(lanes->lbSyms),
+           ubDims = valuesOf(lanes->ubDims), ubSyms = valuesOf(lanes->ubSyms);
+      std::optional<int64_t> lb, ub;
+      for (AffineExpr e : lbMap.getResults()) {
+        auto v = affineExprAt(e, lbDims, lbSyms);
+        if (!v)
+          return std::nullopt;
+        lb = lb ? std::max(*lb, *v) : *v;
+      }
+      for (AffineExpr e : ubMap.getResults()) {
+        auto v = affineExprAt(e, ubDims, ubSyms);
+        if (!v)
+          return std::nullopt;
+        ub = ub ? std::min(*ub, *v) : *v;
+      }
+      longest = std::max(longest, *ub - *lb);
+    }
+    if (*hullHi - *hullLo > longest)
+      return std::nullopt;
+    return std::make_pair(*hullLo, *hullHi);
+  }
+
+  // The guard that keeps a widened axis to its lane's own bounds: for the
+  // axis' induction variable `iv`, `iv >= lb` for every non-constant lower
+  // bound result and `iv < ub` for every non-constant upper bound result,
+  // appended to `constraints` over a set whose dims are
+  // [`ivs`..., lb dims, ub dims] and symbols [lb symbols, ub symbols].
+  static void appendHullGuard(AffineMap lbMap, AffineMap ubMap, unsigned ivPos,
+                              unsigned numIVs,
+                              SmallVectorImpl<AffineExpr> &constraints) {
+    MLIRContext *ctx = lbMap.getContext();
+    AffineExpr iv = getAffineDimExpr(ivPos, ctx);
+    for (AffineExpr e : lbMap.getResults()) {
+      if (isa<AffineConstantExpr>(e))
+        continue;
+      e = e.shiftDims(lbMap.getNumDims(), numIVs);
+      constraints.push_back(iv - e);
+    }
+    for (AffineExpr e : ubMap.getResults()) {
+      if (isa<AffineConstantExpr>(e))
+        continue;
+      e = e.shiftDims(ubMap.getNumDims(), numIVs + lbMap.getNumDims())
+              .shiftSymbols(ubMap.getNumSymbols(), lbMap.getNumSymbols());
+      constraints.push_back(e - iv - 1);
+    }
+  }
+
+  // Wraps the operations of `body` in an `affine.if` on `set(operands)`,
+  // carrying the terminator's operands through: the then branch yields what
+  // the body yielded, the else branch `carried`.
+  static void guardBody(Block *body, IntegerSet set, ValueRange operands,
+                        ValueRange carried) {
+    Operation *term = body->getTerminator();
+    OpBuilder b(term);
+    Location loc = term->getLoc();
+    SmallVector<Value> yielded(term->getOperands());
+    auto ifOp = affine::AffineIfOp::create(b, loc, term->getOperandTypes(), set,
+                                           operands,
+                                           /*withElseRegion=*/!yielded.empty());
+    Block *thenBlk = ifOp.getThenBlock();
+    // The builder only terminates the branches of a resultless if.
+    auto thenEnd = yielded.empty() ? std::prev(thenBlk->end()) : thenBlk->end();
+    thenBlk->getOperations().splice(thenEnd, body->getOperations(),
+                                    body->begin(), ifOp->getIterator());
+    if (!yielded.empty()) {
+      b.setInsertionPointToEnd(thenBlk);
+      affine::AffineYieldOp::create(b, loc, yielded);
+      b.setInsertionPointToEnd(ifOp.getElseBlock());
+      affine::AffineYieldOp::create(b, loc, carried);
+      term->setOperands(ifOp.getResults());
+    }
+  }
+
+  // Widens every loop whose bounds vary with enclosing induction variables
+  // to the constant hull of its lanes, behind a guard, where
+  // `laneBoundedAxisHull` finds the trade worthwhile. A parallel axis so
+  // widened stays an axis (instead of peeling to a lane-masked serial loop),
+  // whatever loop its bounds read: even under a serial one, an axis beats a
+  // serial loop. An affine.for widened takes the constant-bound paths, which
+  // only pays off when lockstep raising may turn it into an axis; otherwise
+  // only bounds read from parallel axes (which the masked while would
+  // iterate to the longest lane anyway) are widened. Enclosing loops go
+  // first, as widening one makes its induction variable's range constant
+  // for the loops inside it.
+  static void widenLaneBoundedLoops(Operation *root, bool lockstepFors) {
+    SmallVector<Operation *> worklist;
+    root->walk<WalkOrder::PreOrder>([&](Operation *op) {
+      if (isa<affine::AffineParallelOp, affine::AffineForOp>(op))
+        worklist.push_back(op);
+    });
+    for (Operation *op : worklist) {
+      if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
+        if (forOp.hasConstantBounds() || forOp.getStepAsInt() != 1)
+          continue;
+        auto hull = laneBoundedAxisHull(
+            forOp.getLowerBoundMap(), forOp.getLowerBoundOperands(),
+            forOp.getUpperBoundMap(), forOp.getUpperBoundOperands(),
+            /*allowForIVs=*/lockstepFors);
+        if (!hull)
+          continue;
+        AffineMap lbMap = forOp.getLowerBoundMap(),
+                  ubMap = forOp.getUpperBoundMap();
+        SmallVector<AffineExpr> constraints;
+        appendHullGuard(lbMap, ubMap, 0, 1, constraints);
+        SmallVector<bool> eqs(constraints.size(), false);
+        auto set = IntegerSet::get(
+            1 + lbMap.getNumDims() + ubMap.getNumDims(),
+            lbMap.getNumSymbols() + ubMap.getNumSymbols(), constraints, eqs);
+        SmallVector<Value> operands{forOp.getInductionVar()};
+        auto lbOps = forOp.getLowerBoundOperands(),
+             ubOps = forOp.getUpperBoundOperands();
+        operands.append(lbOps.begin(), lbOps.begin() + lbMap.getNumDims());
+        operands.append(ubOps.begin(), ubOps.begin() + ubMap.getNumDims());
+        operands.append(lbOps.begin() + lbMap.getNumDims(), lbOps.end());
+        operands.append(ubOps.begin() + ubMap.getNumDims(), ubOps.end());
+        affine::canonicalizeSetAndOperands(&set, &operands);
+        guardBody(forOp.getBody(), set, operands, forOp.getRegionIterArgs());
+        forOp.setConstantLowerBound(hull->first);
+        forOp.setConstantUpperBound(hull->second);
+        continue;
+      }
+
+      auto par = cast<affine::AffineParallelOp>(op);
+      if (!par.getReductions().empty())
+        continue;
+      unsigned n = par.getNumDims();
+      SmallVector<std::pair<unsigned, std::pair<int64_t, int64_t>>> widened;
+      for (unsigned i = 0; i < n; ++i) {
+        if (par.getSteps()[i] != 1)
+          continue;
+        auto hull = laneBoundedAxisHull(
+            par.getLowerBoundMap(i), par.getLowerBoundsOperands(),
+            par.getUpperBoundMap(i), par.getUpperBoundsOperands(),
+            /*allowForIVs=*/true);
+        if (hull)
+          widened.push_back({i, *hull});
+      }
+      if (widened.empty())
+        continue;
+
+      AffineMap lbsMap = par.getLowerBoundsMap(),
+                ubsMap = par.getUpperBoundsMap();
+      SmallVector<AffineExpr> constraints;
+      SmallVector<Value> operands;
+      for (auto &[dim, hull] : widened)
+        operands.push_back(par.getIVs()[dim]);
+      for (auto [k, w] : llvm::enumerate(widened))
+        appendHullGuard(par.getLowerBoundMap(w.first),
+                        par.getUpperBoundMap(w.first), k, widened.size(),
+                        constraints);
+      SmallVector<bool> eqs(constraints.size(), false);
+      auto set = IntegerSet::get(
+          widened.size() + lbsMap.getNumDims() + ubsMap.getNumDims(),
+          lbsMap.getNumSymbols() + ubsMap.getNumSymbols(), constraints, eqs);
+      auto lbOps = par.getLowerBoundsOperands(),
+           ubOps = par.getUpperBoundsOperands();
+      operands.append(lbOps.begin(), lbOps.begin() + lbsMap.getNumDims());
+      operands.append(ubOps.begin(), ubOps.begin() + ubsMap.getNumDims());
+      operands.append(lbOps.begin() + lbsMap.getNumDims(), lbOps.end());
+      operands.append(ubOps.begin() + ubsMap.getNumDims(), ubOps.end());
+      affine::canonicalizeSetAndOperands(&set, &operands);
+      guardBody(par.getBody(), set, operands, {});
+
+      // The widened axes' bounds become constant; the rest keep theirs.
+      SmallVector<AffineExpr> lbounds, ubounds;
+      SmallVector<int32_t> lboundGroup, uboundGroup;
+      for (unsigned i = 0; i < n; ++i) {
+        auto w =
+            llvm::find_if(widened, [&](const auto &w) { return w.first == i; });
+        auto lm = par.getLowerBoundMap(i), um = par.getUpperBoundMap(i);
+        if (w != widened.end()) {
+          lbounds.push_back(
+              getAffineConstantExpr(w->second.first, par.getContext()));
+          ubounds.push_back(
+              getAffineConstantExpr(w->second.second, par.getContext()));
+          lboundGroup.push_back(1);
+          uboundGroup.push_back(1);
+          continue;
+        }
+        lbounds.append(lm.getResults().begin(), lm.getResults().end());
+        lboundGroup.push_back(lm.getNumResults());
+        ubounds.append(um.getResults().begin(), um.getResults().end());
+        uboundGroup.push_back(um.getNumResults());
+      }
+      // When every bound came out constant, drop the stale operands:
+      // downstream batching expects clean constant maps.
+      bool allConstant = llvm::all_of(lbounds,
+                                      [](AffineExpr e) {
+                                        return isa<AffineConstantExpr>(e);
+                                      }) &&
+                         llvm::all_of(ubounds, [](AffineExpr e) {
+                           return isa<AffineConstantExpr>(e);
+                         });
+      OpBuilder b(par);
+      SmallVector<Value> lbOperands(lbOps), ubOperands(ubOps);
+      unsigned lbDims = lbsMap.getNumDims(), lbSyms = lbsMap.getNumSymbols(),
+               ubDims = ubsMap.getNumDims(), ubSyms = ubsMap.getNumSymbols();
+      if (allConstant) {
+        lbDims = lbSyms = ubDims = ubSyms = 0;
+        lbOperands.clear();
+        ubOperands.clear();
+      }
+      par.setLowerBounds(lbOperands, AffineMap::get(lbDims, lbSyms, lbounds,
+                                                    par.getContext()));
+      par.setLowerBoundsGroupsAttr(b.getI32TensorAttr(lboundGroup));
+      par.setUpperBounds(ubOperands, AffineMap::get(ubDims, ubSyms, ubounds,
+                                                    par.getContext()));
+      par.setUpperBoundsGroupsAttr(b.getI32TensorAttr(uboundGroup));
+    }
+  }
+
   // A parallel axis whose extent is dynamic but provably bounded (a block
   // size clamped by a min against a constant, capped by a guard, indexing a
   // static scratch buffer, an affine expression of such values, or limited
@@ -6818,6 +7231,7 @@ struct AffineToStableHLORaisingPass
       stripAccessMemorySpaceCasts(func);
       splitStructScratch(func);
       boundParallelAxes(func);
+      widenLaneBoundedLoops(func, enable_lockstep_for);
       peelDynamicParallelDims(func);
     }
 
@@ -6843,6 +7257,7 @@ struct AffineToStableHLORaisingPass
       splitStructScratch(g);
       hoistWrapperInvariantPointerCompares(g);
       boundParallelAxes(g);
+      widenLaneBoundedLoops(g, enable_lockstep_for);
       peelDynamicParallelDims(g);
     }
     size_t raised_count = 0;
