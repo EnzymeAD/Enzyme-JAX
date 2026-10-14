@@ -1131,6 +1131,10 @@ def ApplyCSEReducePatterns : EnzymeHLOPatternOp<
     "cse_reduce"> {
   let patterns = ["CSE<stablehlo::ReduceOp>"];
 }
+def ApplyConcatViewCSEPatterns : EnzymeHLOPatternOp<
+    "concat_view_cse"> {
+  let patterns = ["ConcatViewCSE"];
+}
 def ApplyCSEDotGeneralTransposedPatterns : EnzymeHLOPatternOp<
     "cse_dot_general_transposed"> {
   let patterns = ["CSEDotGeneralTransposed"];
