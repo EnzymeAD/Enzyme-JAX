@@ -338,6 +338,10 @@ struct ParallelWhileToBatchedScatter
   // broadcast).
   static constexpr int64_t kMaxBroadcastElements = int64_t(1) << 24;
 
+  // Whether a loop the raiser did not tag may be admitted by proving its
+  // iterations address disjoint elements of the buffers they write.
+  bool prove_independent_iterations = true;
+
   mlir::LogicalResult
   matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
                       mlir::PatternRewriter &rewriter) const;
