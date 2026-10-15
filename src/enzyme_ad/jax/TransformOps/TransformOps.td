@@ -764,6 +764,19 @@ def ApplyTransposeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+// An elementwise op reading a transposed view of memory computes in the
+// view's layout, with the transpose on its result. Comes with the pushes of a
+// transpose onto an elementwise op's or select's operands that keep it on
+// such an op's result (transpose_elementwise(1),
+// transpose_elementwise_transpose(1) and transpose_select would move it
+// back; a list takes this in their place).
+def ApplyTransposedViewElementwisePatterns : EnzymeHLOPatternOp<
+    "transposed_view_elementwise"> {
+  let patterns = ["TransposedViewElementwise", "BroadcastingTransposedViewElementwise",
+                  "TransposeElementwiseKeepViews", "TransposeElementwiseTransposeKeepViews",
+                  "TransposeSelectKeepViews"];
+}
+
 def ApplyTransposeLikeBroadcastElementwisePatterns : EnzymeHLOParameterizedPatternOp<
     "transpose_like_broadcast_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
