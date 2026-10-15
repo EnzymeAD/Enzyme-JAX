@@ -16767,6 +16767,123 @@ struct TransposeIota final
   }
 };
 
+// A reduce over dimensions that are not the trailing ones, of an input that
+// can be had in any layout (a product of broadcasts, absorbsTranspose):
+// reduce the trailing dimensions of the input transposed instead. XLA's
+// reductions over the minor dimensions are row reductions, which need no
+// relayout of their inputs; over the leading dimension of a batched
+// contraction (`reduce(bcast(x) * bcast(B), [0])`, the raising's form) it
+// transposes the operands it reads. The transpose this makes is taken by the
+// transpose-propagating patterns into the broadcasts. The result keeps its
+// dimensions in order, so nothing downstream changes.
+struct ReduceMinorDims final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceMinorDims> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // The longest row this makes. Measured on MFEM's sum-factorized
+  // contractions on an RTX 5090: rows of 3 and 4 (order 2) run 20% faster
+  // as row reductions, rows of 5 and 6 (order 4) run the same or slower.
+  static constexpr int64_t kMaxRowExtent = 4;
+  // Operands up to this many elements are read from cache whatever their
+  // layout (a basis matrix).
+  static constexpr int64_t kSmallOperand = 4096;
+
+  // Whether every value read from memory in the input's tree (through
+  // broadcasts of elementwise ops) is a buffer with its minor dimension on a
+  // reduced one: a row reduction then reads it along its rows, while one
+  // that runs along a kept dimension would be read strided (the reduction's
+  // inner loop is the reduced dimension), where the leading-dimension
+  // reduction read it along the kept minor dimension.
+  static bool memoryReadAlongReduced(Value input, ArrayRef<int64_t> reduced) {
+    SmallVector<Value> worklist{input};
+    SmallPtrSet<Operation *, 16> seen;
+    while (!worklist.empty()) {
+      Value v = worklist.pop_back_val();
+      Operation *def = v.getDefiningOp();
+      if (!def)
+        return false;
+      if (!seen.insert(def).second)
+        continue;
+      if (seen.size() > 64)
+        return false;
+      if (matchPattern(v, m_Constant()) || isa<stablehlo::IotaOp>(def))
+        continue;
+      if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(def)) {
+        Value operand = bcast.getOperand();
+        auto operandTy = cast<RankedTensorType>(operand.getType());
+        // A small operand (a basis matrix) is read from cache either way.
+        if (operandTy.getRank() == 0 || matchPattern(operand, m_Constant()) ||
+            operandTy.getNumElements() <= kSmallOperand)
+          continue;
+        if (absorbsTranspose(operand, {})) {
+          worklist.push_back(operand);
+          continue;
+        }
+        int64_t minor = bcast.getBroadcastDimensions()[operandTy.getRank() - 1];
+        if (!llvm::is_contained(reduced, minor))
+          return false;
+        continue;
+      }
+      if (stablehlo::hasTraitElementwise(def) ||
+          isa<stablehlo::SelectOp>(def) ||
+          isa<stablehlo::ReshapeOp, stablehlo::SliceOp>(def)) {
+        if (isa<stablehlo::ReshapeOp, stablehlo::SliceOp>(def) &&
+            !absorbsTranspose(v, {}))
+          return false;
+        for (Value o : def->getOperands())
+          worklist.push_back(o);
+        continue;
+      }
+      return false;
+    }
+    return true;
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1)
+      return failure();
+    auto inputTy = dyn_cast<RankedTensorType>(op.getInputs()[0].getType());
+    if (!inputTy || !inputTy.hasStaticShape())
+      return failure();
+    int64_t rank = inputTy.getRank();
+    SmallVector<int64_t> dims = llvm::to_vector(op.getDimensions());
+    llvm::sort(dims);
+    if (dims.empty() ||
+        dims.back() == rank - 1 && dims.front() == rank - (int64_t)dims.size())
+      return rewriter.notifyMatchFailure(op, "reduces the trailing dimensions");
+    SmallVector<int64_t> perm;
+    for (int64_t d = 0; d < rank; ++d)
+      if (!llvm::is_contained(dims, d))
+        perm.push_back(d);
+    for (int64_t d : dims)
+      perm.push_back(d);
+    if (!absorbsTranspose(op.getInputs()[0], perm))
+      return rewriter.notifyMatchFailure(op,
+                                         "the input is not free to transpose");
+    if (!memoryReadAlongReduced(op.getInputs()[0], dims))
+      return rewriter.notifyMatchFailure(
+          op, "a value read from memory runs along a kept dimension");
+    int64_t extent = 1;
+    for (int64_t d : dims)
+      extent *= inputTy.getDimSize(d);
+    if (extent > kMaxRowExtent)
+      return rewriter.notifyMatchFailure(op, "a long row");
+    auto transposed = stablehlo::TransposeOp::create(rewriter, op.getLoc(),
+                                                     op.getInputs()[0], perm);
+    SmallVector<int64_t> trailing;
+    for (size_t i = 0; i < dims.size(); ++i)
+      trailing.push_back(rank - dims.size() + i);
+    auto newReduce = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(), op.getResultTypes(),
+        ValueRange{transposed.getResult()}, op.getInitValues(), trailing);
+    rewriter.inlineRegionBefore(op.getRegion(), newReduce.getRegion(),
+                                newReduce.getRegion().begin());
+    rewriter.replaceOp(op, newReduce.getResults());
+    return success();
+  }
+};
+
 struct TransposeReduceWindow final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeReduceWindow> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;

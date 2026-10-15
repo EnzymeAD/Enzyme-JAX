@@ -765,6 +765,11 @@ def ApplyTransposedViewElementwisePatterns : EnzymeHLOPatternOp<
                   "TransposeSelectKeepViews"];
 }
 
+def ApplyReduceMinorDimsPatterns : EnzymeHLOPatternOp<
+    "reduce_minor_dims"> {
+  let patterns = ["ReduceMinorDims"];
+}
+
 def ApplyTransposeLikeBroadcastElementwisePatterns : EnzymeHLOParameterizedPatternOp<
     "transpose_like_broadcast_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
