@@ -3452,6 +3452,11 @@ def ApplyWhileIdempotentDUSPatterns : EnzymeHLOPatternOp<
   let patterns = ["WhileIdempotentDUS"];
 }
 
+def ApplyWhileTripCountFromGuardPatterns : EnzymeHLOPatternOp<
+    "while_trip_count_from_guard"> {
+  let patterns = ["WhileTripCountFromGuard"];
+}
+
 def ApplyWhileDUSDSSimplifyPatterns : EnzymeHLOPatternOp<
     "while_dus_ds_simplify"> {
   let patterns = ["WhileDUSDSSimplify"];

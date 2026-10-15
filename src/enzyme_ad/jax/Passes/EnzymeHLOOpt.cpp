@@ -27780,6 +27780,316 @@ struct WhileIdempotentDUS
   }
 };
 
+// A counted loop whose body leaves every carried value as it was once a guard
+// `iv < B` (B loop-invariant) turns false -- each is yielded as itself, as
+// `select(guard, new, old)`, or as a chain of dynamic_update_slices whose
+// update is `select(guard, new, <the slot being written>)` -- does nothing
+// from iteration B on: the guard is monotone in the induction variable. Such
+// loops come from widening a triangular inner loop to a constant hull behind
+// its own bound, or from a kernel written as `for (j < N) if (j < i) ...`.
+// Iterate to min(limit, B) instead, where the guard always holds and folds
+// away, taking the select (and its read of the stored slot, which kept the
+// buffer from updating in place) with it.
+struct WhileTripCountFromGuard
+    : public CheckedOpRewritePattern<stablehlo::WhileOp,
+                                     WhileTripCountFromGuard> {
+  using CheckedOpRewritePattern<
+      stablehlo::WhileOp, WhileTripCountFromGuard>::CheckedOpRewritePattern;
+
+  // A value linear in the induction variable: `coef * iv + constant +
+  // sum(mult * term)`, every term loop-invariant.
+  struct Linear {
+    int64_t coef = 0;
+    int64_t constant = 0;
+    SmallVector<std::pair<Value, int64_t>> terms;
+  };
+
+  static bool linearInIV(Value v, Value iv, WhileLoopInfo &info, int64_t mult,
+                         Linear &out, unsigned depth = 0) {
+    if (depth > 16)
+      return false;
+    auto ty = dyn_cast<RankedTensorType>(v.getType());
+    if (!ty || ty.getRank() != 0 || !ty.getElementType().isInteger())
+      return false;
+    if (v == iv) {
+      out.coef += mult;
+      return true;
+    }
+    DenseIntElementsAttr cst;
+    if (matchPattern(v, m_Constant(&cst))) {
+      out.constant += mult * cst.getSplatValue<APInt>().getSExtValue();
+      return true;
+    }
+    if (info.isConstantAcrossIterations(v)) {
+      out.terms.push_back({v, mult});
+      return true;
+    }
+    Operation *def = v.getDefiningOp();
+    if (auto add = dyn_cast_or_null<stablehlo::AddOp>(def))
+      return linearInIV(add.getLhs(), iv, info, mult, out, depth + 1) &&
+             linearInIV(add.getRhs(), iv, info, mult, out, depth + 1);
+    if (auto sub = dyn_cast_or_null<stablehlo::SubtractOp>(def))
+      return linearInIV(sub.getLhs(), iv, info, mult, out, depth + 1) &&
+             linearInIV(sub.getRhs(), iv, info, -mult, out, depth + 1);
+    if (auto neg = dyn_cast_or_null<stablehlo::NegOp>(def))
+      return linearInIV(neg.getOperand(), iv, info, -mult, out, depth + 1);
+    if (auto mul = dyn_cast_or_null<stablehlo::MulOp>(def)) {
+      for (int k = 0; k < 2; ++k)
+        if (matchPattern(mul->getOperand(1 - k), m_Constant(&cst)))
+          return linearInIV(mul->getOperand(k), iv, info,
+                            mult * cst.getSplatValue<APInt>().getSExtValue(),
+                            out, depth + 1);
+    }
+    return false;
+  }
+
+  // The scalar predicate a guard wraps, through broadcasts, reshapes and
+  // negations; `negated` flips for each negation.
+  static Value guardScalar(Value p, bool &negated) {
+    while (true) {
+      if (auto b = p.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        p = b.getOperand();
+        continue;
+      }
+      if (auto r = p.getDefiningOp<stablehlo::ReshapeOp>()) {
+        p = r.getOperand();
+        continue;
+      }
+      if (auto n = p.getDefiningOp<stablehlo::NotOp>()) {
+        negated = !negated;
+        p = n.getOperand();
+        continue;
+      }
+      return p;
+    }
+  }
+
+  struct Guard {
+    Value scalar;
+    bool negated = false;
+  };
+
+  // Records the guard `pred` (holding when `swapped` is false, failing when
+  // true) as the loop's one guard, or fails when another was already seen.
+  static bool recordGuard(Value pred, bool swapped, std::optional<Guard> &g) {
+    bool negated = swapped;
+    Value scalar = guardScalar(pred, negated);
+    if (!g) {
+      g = Guard{scalar, negated};
+      return true;
+    }
+    return g->scalar == scalar && g->negated == negated;
+  }
+
+  // Whether `yielded` is `arg` when the guard fails: `arg` itself, a select
+  // of it, or dynamic_update_slices writing back what the slot held.
+  static bool isGuardedNoop(Value yielded, Value arg,
+                            std::optional<Guard> &guard) {
+    Value cur = yielded;
+    while (cur != arg) {
+      if (auto sel = cur.getDefiningOp<stablehlo::SelectOp>()) {
+        if (sel.getOnFalse() == arg)
+          return recordGuard(sel.getPred(), false, guard);
+        if (sel.getOnTrue() == arg)
+          return recordGuard(sel.getPred(), true, guard);
+        return false;
+      }
+      auto dus = cur.getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+      if (!dus)
+        return false;
+      auto sel = dus.getUpdate().getDefiningOp<stablehlo::SelectOp>();
+      if (!sel)
+        return false;
+      auto readsSlot = [&](Value v) {
+        auto ds = v.getDefiningOp<stablehlo::DynamicSliceOp>();
+        return ds && ds.getOperand() == dus.getOperand() &&
+               ds.getType() == dus.getUpdate().getType() &&
+               llvm::equal(ds.getStartIndices(), dus.getStartIndices());
+      };
+      if (readsSlot(sel.getOnFalse())) {
+        if (!recordGuard(sel.getPred(), false, guard))
+          return false;
+      } else if (readsSlot(sel.getOnTrue())) {
+        if (!recordGuard(sel.getPred(), true, guard))
+          return false;
+      } else {
+        return false;
+      }
+      cur = dus.getOperand();
+    }
+    return true;
+  }
+
+  // A loop-invariant value of the body, as a value defined before the loop.
+  static Value materializeInvariant(Value v, stablehlo::WhileOp whileOp,
+                                    WhileLoopInfo &info,
+                                    PatternRewriter &rewriter) {
+    Value outer;
+    SmallVector<Operation *> canBeHoisted;
+    if (!info.isConstantAcrossIterations(v, outer, canBeHoisted, true))
+      return nullptr;
+    if (outer)
+      return outer;
+    DenseMap<Value, SmallVector<Operation *>> hoistMap;
+    hoistMap[v] = canBeHoisted;
+    DenseMap<Value, Value> hoisted;
+    hoistChainOfOps(hoistMap, rewriter, whileOp, info, hoisted);
+    return hoisted.lookup(v);
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
+    WhileLoopInfo info(whileOp);
+    if (info.computeInfo().failed() || !info.isValid())
+      return failure();
+    auto step = info.getConstantStep();
+    if (!step || *step <= 0)
+      return failure();
+    Value iv = info.getInductionVariable();
+    if (!iv)
+      return failure();
+    auto ivTy = dyn_cast<RankedTensorType>(iv.getType());
+    if (!ivTy || ivTy.getRank() != 0 || !ivTy.getElementType().isInteger())
+      return failure();
+    size_t ivIdx = info.getArgNumber();
+    Value limit = info.getLimit();
+    if (!limit.getParentRegion()->isAncestor(whileOp->getParentRegion()) ||
+        limit.getType() != ivTy)
+      return failure();
+    // Fewer iterations change where the induction variable ends.
+    if (!whileOp.getResult(ivIdx).use_empty())
+      return failure();
+
+    Block &body = whileOp.getBody().front();
+    for (Operation &op : body.without_terminator())
+      if (!isMemoryEffectFree(&op))
+        return failure();
+
+    std::optional<Guard> guard;
+    auto term = body.getTerminator();
+    for (auto [k, yielded] : llvm::enumerate(term->getOperands())) {
+      if (k == ivIdx)
+        continue;
+      if (!isGuardedNoop(yielded, body.getArgument(k), guard))
+        return failure();
+    }
+    if (!guard)
+      return failure();
+
+    // The guard as `iv < B`.
+    auto cmp = guard->scalar.getDefiningOp<stablehlo::CompareOp>();
+    if (!cmp || !whileOp.getBody().isAncestor(cmp->getParentRegion()))
+      return failure();
+    if (auto ct = cmp.getCompareType();
+        ct && *ct == stablehlo::ComparisonType::UNSIGNED)
+      return failure();
+    Linear d;
+    if (!linearInIV(cmp.getLhs(), iv, info, 1, d) ||
+        !linearInIV(cmp.getRhs(), iv, info, -1, d))
+      return failure();
+    for (auto &[t, mult] : d.terms)
+      if (t.getType() != ivTy)
+        return failure();
+    auto dir = cmp.getComparisonDirection();
+    if (guard->negated) {
+      switch (dir) {
+      case stablehlo::ComparisonDirection::LT:
+        dir = stablehlo::ComparisonDirection::GE;
+        break;
+      case stablehlo::ComparisonDirection::LE:
+        dir = stablehlo::ComparisonDirection::GT;
+        break;
+      case stablehlo::ComparisonDirection::GT:
+        dir = stablehlo::ComparisonDirection::LE;
+        break;
+      case stablehlo::ComparisonDirection::GE:
+        dir = stablehlo::ComparisonDirection::LT;
+        break;
+      default:
+        return failure();
+      }
+    }
+    // The guard holds iff `coef * iv + R <dir> 0`, with R the rest; it is
+    // `iv < B` for B = -R (coef 1: `iv + R < 0`), -R + 1 (`iv + R <= 0`),
+    // R (coef -1: `R - iv > 0`), or R + 1 (`R - iv >= 0`).
+    int64_t sign, extra;
+    if (d.coef == 1 && dir == stablehlo::ComparisonDirection::LT) {
+      sign = -1;
+      extra = 0;
+    } else if (d.coef == 1 && dir == stablehlo::ComparisonDirection::LE) {
+      sign = -1;
+      extra = 1;
+    } else if (d.coef == -1 && dir == stablehlo::ComparisonDirection::GT) {
+      sign = 1;
+      extra = 0;
+    } else if (d.coef == -1 && dir == stablehlo::ComparisonDirection::GE) {
+      sign = 1;
+      extra = 1;
+    } else {
+      return failure();
+    }
+
+    // Every term must come out of the loop before anything is built.
+    SmallVector<Value> outerTerms;
+    rewriter.setInsertionPoint(whileOp);
+    for (auto &[t, mult] : d.terms) {
+      Value outer = materializeInvariant(t, whileOp, info, rewriter);
+      if (!outer)
+        return failure();
+      outerTerms.push_back(outer);
+    }
+
+    auto loc = whileOp.getLoc();
+    auto scalarConst = [&](int64_t v) {
+      return stablehlo::ConstantOp::create(
+          rewriter, loc, ivTy, cast<ElementsAttr>(makeAttr(ivTy, v)));
+    };
+    Value bound;
+    for (auto [pair, outer] : llvm::zip_equal(d.terms, outerTerms)) {
+      int64_t mult = sign * pair.second;
+      if (!bound) {
+        if (mult == 1)
+          bound = outer;
+        else if (mult == -1)
+          bound = stablehlo::NegOp::create(rewriter, loc, outer);
+        else
+          bound =
+              stablehlo::MulOp::create(rewriter, loc, outer, scalarConst(mult));
+        continue;
+      }
+      if (mult == 1)
+        bound = stablehlo::AddOp::create(rewriter, loc, bound, outer);
+      else if (mult == -1)
+        bound = stablehlo::SubtractOp::create(rewriter, loc, bound, outer);
+      else
+        bound = stablehlo::AddOp::create(
+            rewriter, loc, bound,
+            stablehlo::MulOp::create(rewriter, loc, outer, scalarConst(mult)));
+    }
+    if (int64_t c = sign * d.constant + extra; !bound)
+      bound = scalarConst(c);
+    else if (c != 0)
+      bound = stablehlo::AddOp::create(rewriter, loc, bound, scalarConst(c));
+    Value newLimit = stablehlo::MinOp::create(rewriter, loc, limit, bound);
+
+    auto condCmp = cast<stablehlo::CompareOp>(whileOp.getCond()
+                                                  .front()
+                                                  .getTerminator()
+                                                  ->getOperand(0)
+                                                  .getDefiningOp());
+    rewriter.modifyOpInPlace(condCmp, [&] { condCmp.setOperand(1, newLimit); });
+
+    // Within the shortened loop the guard always holds.
+    rewriter.setInsertionPoint(cmp);
+    Value holds = stablehlo::ConstantOp::create(
+        rewriter, loc, cast<ShapedType>(guard->scalar.getType()),
+        cast<ElementsAttr>(
+            makeAttr(guard->scalar.getType(), guard->negated ? 0 : 1)));
+    rewriter.replaceAllUsesWith(guard->scalar, holds);
+    return success();
+  }
+};
+
 struct DynamicGatherOpIsNotDynamic
     : public CheckedOpRewritePattern<stablehlo::DynamicGatherOp,
                                      DynamicGatherOpIsNotDynamic> {
@@ -45306,6 +45616,7 @@ struct EnzymeHLOOptPass
         WhileOpInductionReplacement,
         WhilePadInductionReduction,
         WhileIdempotentDUS,
+        WhileTripCountFromGuard,
         ConcatBroadcastToPad,
         SliceBroadcast2,
         BroadcastInDimOpCanon,
