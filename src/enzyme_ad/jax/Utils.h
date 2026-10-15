@@ -1642,16 +1642,6 @@ Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
                            ArrayRef<Value> sliceStarts,
                            ArrayRef<int64_t> sliceSizes);
 
-// Whether transpose(v, perm) costs no data movement: v's producer permutes
-// its dimensions for free (a broadcast_in_dim, iota, constant or
-// dot_general), or passes the permutation on to operands that do (an
-// elementwise op, select, slice, pad, concatenate, reverse, dynamic slice or
-// update, reduce or reduce_window, or a transpose the permutation cancels or
-// composes with), as the transpose-propagating patterns move it. A value
-// read from memory (a block argument, a loop result, a scatter) does not: a
-// transpose of it is a copy. An empty perm stands for any permutation.
-bool absorbsTranspose(Value v, ArrayRef<int64_t> perm);
-
 // checks if operation 1 can be fused with operation 2. ordering is important
 bool isFusible(stablehlo::BroadcastInDimOp transpose, Operation *op);
 bool isFusible(stablehlo::TransposeOp transpose, Operation *op);

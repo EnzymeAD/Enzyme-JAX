@@ -1003,7 +1003,6 @@ static void addTransposePropagateUpPasses(std::vector<std::string> &list,
     list.push_back("transpose_elementwise(1)");
     list.push_back("transpose_like_broadcast_elementwise(1)");
   }
-  list.push_back("transposed_view_elementwise");
 }
 
 static void addTransposePropagateDownPasses(std::vector<std::string> &list) {
