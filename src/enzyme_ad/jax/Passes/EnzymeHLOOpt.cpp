@@ -19936,6 +19936,21 @@ struct BroadcastInDimOpCanon final
           dims[i] = newidx;
         }
       }
+      // Unit operand dimensions the broadcast expands are interchangeable:
+      // in operand order they take the positions they occupy in ascending
+      // order, so that broadcasts of the same scalars read alike.
+      SmallVector<int64_t> expanding, positions;
+      for (size_t i = 0; i < dims.size(); i++)
+        if (operandTy.getShape()[i] == 1 && type.getShape()[dims[i]] != 1) {
+          expanding.push_back(i);
+          positions.push_back(dims[i]);
+        }
+      llvm::sort(positions);
+      for (auto [i, pos] : llvm::zip(expanding, positions))
+        if (dims[i] != pos) {
+          changed = true;
+          dims[i] = pos;
+        }
       if (changed) {
         rewriter.modifyOpInPlace(op,
                                  [&]() { op.setBroadcastDimensions(dims); });
