@@ -29719,6 +29719,15 @@ struct PadConcatToConcatPad
       }
     }
 
+    // Along the concatenation dimension only the low padding of the first
+    // operand and the high padding of the last operand are on the outside of
+    // the concatenation and can be hoisted out. The padding between operands
+    // (the high padding of operand i and the low padding of operand i+1) must
+    // stay on the operands, otherwise it would be dropped from the result.
+    commonLowPadding[concatDim] = padOps.front().getEdgePaddingLow()[concatDim];
+    commonHighPadding[concatDim] =
+        padOps.back().getEdgePaddingHigh()[concatDim];
+
     bool commonPad = false;
 
     for (int64_t dim = 0; dim < rank; ++dim) {
@@ -29735,7 +29744,7 @@ struct PadConcatToConcatPad
     // Collect original operands with adjusted padding
     SmallVector<Value> adjOperands;
 
-    for (auto padOp : padOps) {
+    for (auto [idx, padOp] : llvm::enumerate(padOps)) {
 
       SmallVector<int64_t> diffLowPadding(rank);
       SmallVector<int64_t> diffHighPadding(rank);
@@ -29747,9 +29756,17 @@ struct PadConcatToConcatPad
             padOp.getEdgePaddingHigh()[dim] - commonHighPadding[dim];
       }
 
+      // Along the concatenation dimension, only the first operand's low
+      // padding and the last operand's high padding were hoisted.
+      diffLowPadding[concatDim] =
+          idx == 0 ? 0 : padOp.getEdgePaddingLow()[concatDim];
+      diffHighPadding[concatDim] =
+          idx + 1 == padOps.size() ? 0 : padOp.getEdgePaddingHigh()[concatDim];
+
       bool needsExtraPad = false;
       for (int64_t dim = 0; dim < rank; ++dim) {
-        if (diffLowPadding[dim] > 0 || diffHighPadding[dim] > 0) {
+        if (diffLowPadding[dim] != 0 || diffHighPadding[dim] != 0 ||
+            padOp.getInteriorPadding()[dim] != 0) {
           needsExtraPad = true;
           break;
         }
