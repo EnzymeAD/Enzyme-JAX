@@ -772,9 +772,13 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
     auto tag = adaptor.getTag();
     auto comm = adaptor.getComm();
 
+    // `MPI_Request` width is implementation-defined, so let the type converter
+    // pick it
+    auto type_tensor_request = cast<RankedTensorType>(
+        getTypeConverter()->convertType(op.getRequest().getType()));
     auto request_placeholder = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), type_tensor_i64,
-        cast<ElementsAttr>(makeAttr(type_tensor_i64, -1)));
+        op.getLoc(), type_tensor_request,
+        cast<ElementsAttr>(makeAttr(type_tensor_request, -1)));
 
     // TODO can we pass `datatype` as attribute?
     auto datatype_name = convertMlirTypeToMpiDatatypeName(
@@ -798,7 +802,7 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
 
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
-        op, type_tensor_i64,
+        op, type_tensor_request,
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer, count, datatype, dest, tag, comm,
                    request_placeholder},
@@ -1080,9 +1084,13 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
     auto tag = adaptor.getTag();
     auto comm = adaptor.getComm();
 
+    // `MPI_Request` width is implementation-defined, so let the type converter
+    // pick it
+    auto type_tensor_request = cast<RankedTensorType>(
+        getTypeConverter()->convertType(op.getRequest().getType()));
     auto request_placeholder = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), type_tensor_i64,
-        cast<ElementsAttr>(makeAttr(type_tensor_i64, -1)));
+        op.getLoc(), type_tensor_request,
+        cast<ElementsAttr>(makeAttr(type_tensor_request, -1)));
 
     // TODO can we pass `datatype` as attribute?
     auto datatype_name =
@@ -1114,7 +1122,7 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
 
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
-        op, TypeRange{type_buffer, type_tensor_i64},
+        op, TypeRange{type_buffer, type_tensor_request},
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer_placeholder, count, datatype, src, tag, comm,
                    request_placeholder},
@@ -1227,6 +1235,13 @@ struct LowerCommMpiWaitallOpToJIT
     auto type_void = LLVM::LLVMVoidType::get(context);
     auto type_i32 = IntegerType::get(context, 32);
 
+    // the C ABI expects a contiguous `MPI_Request[]`, so array elements must
+    // have the width of `MPI_Request` in the target MPI implementation
+    auto type_request =
+        cast<RankedTensorType>(
+            getTypeConverter()->convertType(op.getRequests().front().getType()))
+            .getElementType();
+
     auto num_requests = op.getNumOperands();
     std::string function_name = "MPI_Waitall";
     std::string wrapper_name = "enzymexla_jitwrap_" + function_name + "_" +
@@ -1268,15 +1283,15 @@ struct LowerCommMpiWaitallOpToJIT
                         .getResult();
 
       Value array_of_requests =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr,
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_request,
                                  count)
               .getResult();
 
       for (int i = 0; i < num_requests; ++i) {
-        auto request = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+        auto request = LLVM::LoadOp::create(rewriter, op.getLoc(), type_request,
                                             entryBlock->getArgument(i));
         auto gep_op =
-            LLVM::GEPOp::create(rewriter, op.getLoc(), type_ptr, type_ptr,
+            LLVM::GEPOp::create(rewriter, op.getLoc(), type_ptr, type_request,
                                 array_of_requests, ValueRange{});
         gep_op.setRawConstantIndices({i});
         LLVM::StoreOp::create(rewriter, op.getLoc(), request,
@@ -1621,7 +1636,13 @@ struct LowerCommToJITPass
     target.addLegalDialect<mlir::LLVM::LLVMDialect>();
     target.addIllegalDialect<comm::CommDialect>();
 
-    comm::StablehloTypeConverter converter;
+    if (mpi_request_width != 32 && mpi_request_width != 64) {
+      getOperation()->emitError("unsupported mpi_request_width: ")
+          << mpi_request_width << " (expected 32 or 64)";
+      return signalPassFailure();
+    }
+
+    comm::StablehloTypeConverter converter(mpi_request_width);
 
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
       return converter.isSignatureLegal(op.getFunctionType());

@@ -472,6 +472,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("dynamic_slice_to_static<16>");
   list.push_back("dynamic_update_slice_elim<16>");
   list.push_back("concat_to_broadcast<16>");
+  list.push_back("concat_periodic");
   list.push_back("reduce_to_reshape<16>");
   list.push_back("broadcast_to_reshape<16>");
   list.push_back("slice_internal");
@@ -648,9 +649,11 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("factor_scalars_in_dot_general");
   if (dotFormation)
     list.push_back("reduce_mul_to_dot_general");
+  list.push_back("add_terms_to_reduce");
   list.push_back("dot_general_broadcast_in_dim");
   list.push_back("dot_general_unbatch_broadcast");
   list.push_back("dot_general_broadcast_in_dim_sort_dims");
+  list.push_back("dot_general_no_contraction_to_mul");
   list.push_back("dus_dynamic_slice_simplify");
   list.push_back("while_dus_dus_simplify");
   list.push_back("while_dus_ds_simplify");
@@ -728,7 +731,9 @@ static void addScatterGatherPasses(std::vector<std::string> &list,
   list.push_back("cse_gather");
   list.push_back("cse_scatter");
   list.push_back("cse_reduce");
+  list.push_back("cse_reduce_transposed");
   list.push_back("cse_dot_general_transposed");
+  list.push_back("concat_view_cse");
 }
 
 static void addSliceToBatchPasses(std::vector<std::string> &list) {
@@ -852,56 +857,60 @@ static void addPadPasses(std::vector<std::string> &list,
 }
 
 static void addConstPropPasses(std::vector<std::string> &list,
-                               int64_t maxConstThreshold) {
+                               int64_t maxConstThreshold,
+                               int64_t maxReusedConstPropSize) {
   // Unary constant propagation
   list.push_back("chlo_inf_const_prop<16>");
   list.push_back("tgamma_const_prop<16>");
   list.push_back("lgamma_const_prop<16>");
   list.push_back("gamma_const_prop<16>");
   list.push_back("binomial_progress_const_prop<16>");
-  list.push_back("abs_const_prop<16>");
-  list.push_back("log_const_prop<1>");
-  list.push_back("log_plus_one_const_prop<1>");
-  list.push_back("is_finite_const_prop");
-  list.push_back("not_const_prop");
+  list.push_back(
+      passWithBenefitAndArg("abs_const_prop", 16, maxReusedConstPropSize));
+  list.push_back(
+      passWithBenefitAndArg("log_const_prop", 1, maxReusedConstPropSize));
+  list.push_back(passWithBenefitAndArg("log_plus_one_const_prop", 1,
+                                       maxReusedConstPropSize));
+  list.push_back(passWithArg("is_finite_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("not_const_prop", maxReusedConstPropSize));
   list.push_back("reduce_or_and");
-  list.push_back("neg_const_prop");
-  list.push_back("sqrt_const_prop");
-  list.push_back("rsqrt_const_prop");
-  list.push_back("cos_const_prop");
-  list.push_back("sin_const_prop");
-  list.push_back("exp_const_prop");
-  list.push_back("expm1_const_prop");
-  list.push_back("tanh_const_prop");
-  list.push_back("logistic_const_prop");
-  list.push_back("conj_const_prop");
-  list.push_back("ceil_const_prop");
-  list.push_back("cbrt_const_prop");
-  list.push_back("real_const_prop");
-  list.push_back("imag_const_prop");
-  list.push_back("round_const_prop");
+  list.push_back(passWithArg("neg_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("sqrt_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("rsqrt_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("cos_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("sin_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("exp_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("expm1_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("tanh_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("logistic_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("conj_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("ceil_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("cbrt_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("real_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("imag_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("round_const_prop", maxReusedConstPropSize));
   list.push_back("round_nearest_even_const_prop");
-  list.push_back("sign_const_prop");
-  list.push_back("floor_const_prop");
-  list.push_back("tan_const_prop");
-  list.push_back("relu_const_prop");
+  list.push_back(passWithArg("sign_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("floor_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("tan_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("relu_const_prop", maxReusedConstPropSize));
   list.push_back("gelu_const_prop");
-  list.push_back("softplus_const_prop");
+  list.push_back(passWithArg("softplus_const_prop", maxReusedConstPropSize));
 
   // Binary constant propagation
-  list.push_back("add_const_prop");
-  list.push_back("and_const_prop");
-  list.push_back("atan2_const_prop");
-  list.push_back("complex_const_prop");
-  list.push_back("div_const_prop");
-  list.push_back("max_const_prop");
-  list.push_back("min_const_prop");
-  list.push_back("mul_const_prop");
-  list.push_back("or_const_prop");
-  list.push_back("pow_const_prop");
-  list.push_back("rem_const_prop");
-  list.push_back("sub_const_prop");
-  list.push_back("xor_const_prop");
+  list.push_back(passWithArg("add_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("and_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("atan2_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("complex_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("div_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("max_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("min_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("mul_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("or_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("pow_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("rem_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("sub_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("xor_const_prop", maxReusedConstPropSize));
 
   // Other constant propagations
   list.push_back(
@@ -1121,7 +1130,7 @@ void enzymexlaGetTransformPassesList(
   }
 
   // Constant propagation
-  addConstPropPasses(list, maxConst);
+  addConstPropPasses(list, maxConst, options->max_reused_const_prop_size);
 
   // Optional runtime flags
   if (options->dus_slice_simplify) {
