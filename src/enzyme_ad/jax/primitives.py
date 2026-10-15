@@ -138,6 +138,7 @@ def optimization_passes(
     enable_dot_formation_passes: bool = True,
     max_reused_const_prop_size: int = 1024,
     aggressive_propagation: bool = True,
+    hlo_opts: bool = True,
 ):
     # Map propagation direction strings to C enum values
     propagate_map = {"none": 0, "up": 1, "down": 2}
@@ -179,15 +180,17 @@ def optimization_passes(
         excluded_passes,  # excluded_passes
     )
 
-    transform_passes = ",".join(
-        [
-            "enzyme-hlo-generate-td{patterns=" + main_passes_str + "}",
-            "transform-interpreter",
-            "enzyme-hlo-remove-transform",
-        ]
-    )
+    func_passes = ",".join(["canonicalize", "cse", "canonicalize"])
 
-    func_passes = ",".join(["canonicalize", "cse", "canonicalize", transform_passes])
+    if hlo_opts:
+        transform_passes = ",".join(
+            [
+                "enzyme-hlo-generate-td{patterns=" + main_passes_str + "}",
+                "transform-interpreter",
+                "enzyme-hlo-remove-transform",
+            ]
+        )
+        func_passes = func_passes + "," + transform_passes
 
     if inline:
         func_passes = (
@@ -195,11 +198,12 @@ def optimization_passes(
         )
     return func_passes
 
+enzyme_pass = 'enzyme{postpasses="arith-raise{stablehlo=true},enzyme-batch-to-stablehlo,canonicalize,cse,canonicalize,remove-unnecessary-enzyme-ops,enzyme-simplify-math,canonicalize,cse,canonicalize,arith-raise{stablehlo=true}"}'
 
 def full_optimization_pass_pipeline(**kwargs):
     opt_passes = optimization_passes(**kwargs)
 
-    enzyme_pass = 'enzyme{postpasses="arith-raise{stablehlo=true},enzyme-batch-to-stablehlo,canonicalize,cse,canonicalize,remove-unnecessary-enzyme-ops,enzyme-simplify-math,canonicalize,cse,canonicalize"}'
+    # enzyme_pass = 'enzyme{postpasses="arith-raise{stablehlo=true},enzyme-batch-to-stablehlo,canonicalize,cse,canonicalize,remove-unnecessary-enzyme-ops,enzyme-simplify-math,canonicalize,cse,canonicalize"}'
 
     propagate_down_passes = ""
     if (
