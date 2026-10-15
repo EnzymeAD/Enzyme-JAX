@@ -148,18 +148,18 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
       state.addAttribute("benefit", builder.getI64IntegerAttr(benefit));
     if (parameter != -1) {
       if (opName == "no_nan_add_sub_simplify" || opName == "while_simplify" ||
-          opName == "sum_to_conv" || opName == "while_licm" ||
-          opName == "slice_licm" || opName == "dot_general_licm" ||
-          opName == "reverse_licm" || opName == "reduce_licm" ||
-          opName == "reduce_window_licm" || opName == "dus_licm" ||
-          opName == "wrap_licm" || opName == "extend_licm" ||
-          opName == "rotate_licm" || opName == "pad_licm" ||
-          opName == "elementwise_licm" || opName == "concatenate_licm" ||
-          opName == "broadcastindim_licm" || opName == "reshape_licm" ||
-          opName == "transpose_licm" || opName == "convolution_licm" ||
-          opName == "dynamic_slice_licm" || opName == "scatter_licm" ||
-          opName == "gather_licm" || opName == "iota_licm" ||
-          opName == "transpose_elementwise" ||
+          opName == "sum_to_conv" || opName == "scatter_op_canon" ||
+          opName == "while_licm" || opName == "slice_licm" ||
+          opName == "dot_general_licm" || opName == "reverse_licm" ||
+          opName == "reduce_licm" || opName == "reduce_window_licm" ||
+          opName == "dus_licm" || opName == "wrap_licm" ||
+          opName == "extend_licm" || opName == "rotate_licm" ||
+          opName == "pad_licm" || opName == "elementwise_licm" ||
+          opName == "concatenate_licm" || opName == "broadcastindim_licm" ||
+          opName == "reshape_licm" || opName == "transpose_licm" ||
+          opName == "convolution_licm" || opName == "dynamic_slice_licm" ||
+          opName == "scatter_licm" || opName == "gather_licm" ||
+          opName == "iota_licm" || opName == "transpose_elementwise" ||
           opName == "transpose_elementwise_transpose" ||
           opName == "transpose_like_broadcast_elementwise" ||
           opName == "reshape_elementwise" ||

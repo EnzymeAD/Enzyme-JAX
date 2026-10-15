@@ -43959,15 +43959,113 @@ struct ScatterMaskedIndexSimplify final
   }
 };
 
+// The values that hold the same storage as `v` as it is written: the results
+// of scatters and update slices into it, reshapes and bitcasts of it, and its
+// copies through while loops.
+static void collectStoreChain(Value v, llvm::SetVector<Value> &chain) {
+  if (!chain.insert(v))
+    return;
+  for (OpOperand &use : v.getUses()) {
+    Operation *user = use.getOwner();
+    if ((isa<stablehlo::ScatterOp, stablehlo::DynamicUpdateSliceOp>(user) &&
+         use.getOperandNumber() == 0 && user->getNumResults() == 1) ||
+        isa<stablehlo::ReshapeOp, stablehlo::BitcastConvertOp>(user)) {
+      collectStoreChain(user->getResult(0), chain);
+      continue;
+    }
+    auto whileOp = dyn_cast<stablehlo::WhileOp>(user);
+    if (!whileOp && isa<stablehlo::ReturnOp>(user))
+      whileOp = dyn_cast<stablehlo::WhileOp>(user->getParentOp());
+    if (whileOp && (user == whileOp.getOperation() ||
+                    user->getParentRegion() == &whileOp.getBody())) {
+      unsigned i = use.getOperandNumber();
+      collectStoreChain(whileOp.getResult(i), chain);
+      collectStoreChain(whileOp.getBody().getArgument(i), chain);
+    }
+  }
+}
+
+// Whether every use of `v` (through any ops) ends in what is written into the
+// store chain: a read made only to compute what is written back.
+static bool feedsOnlyChainWrites(Value v, const llvm::SetVector<Value> &chain,
+                                 llvm::SmallPtrSetImpl<Operation *> &seen) {
+  for (OpOperand &use : v.getUses()) {
+    Operation *user = use.getOwner();
+    if (isa<stablehlo::ScatterOp, stablehlo::DynamicUpdateSliceOp>(user) &&
+        use.getOperandNumber() != 0) {
+      if (chain.contains(user->getOperand(0)))
+        continue;
+      return false;
+    }
+    if (user->getNumResults() == 0 || user->getNumRegions() != 0 ||
+        isa<stablehlo::ScatterOp, stablehlo::DynamicUpdateSliceOp>(user))
+      return false;
+    if (!seen.insert(user).second)
+      continue;
+    for (Value result : user->getResults())
+      if (!feedsOnlyChainWrites(result, chain, seen))
+        return false;
+  }
+  return true;
+}
+
+// Whether `v` is only stored: its store chain ends in the function's results,
+// and nothing reads its elements back except to compute what is written into
+// it (an accumulation, y[i] = y[i] + v).
+static bool isOnlyStored(Value v) {
+  llvm::SetVector<Value> chain;
+  collectStoreChain(v, chain);
+  for (Value c : chain) {
+    for (OpOperand &use : c.getUses()) {
+      Operation *user = use.getOwner();
+      if (isa<func::ReturnOp>(user))
+        continue;
+      if (auto whileOp = dyn_cast<stablehlo::WhileOp>(user)) {
+        if (!whileOp.getCond().getArgument(use.getOperandNumber()).use_empty())
+          return false;
+        continue;
+      }
+      if (isa<stablehlo::ReturnOp>(user) &&
+          isa<stablehlo::WhileOp>(user->getParentOp()))
+        continue;
+      if (user->getNumResults() == 1 && chain.contains(user->getResult(0)))
+        continue;
+      llvm::SmallPtrSet<Operation *, 16> seen;
+      if (user->getNumResults() != 1 || user->getNumRegions() != 0 ||
+          !feedsOnlyChainWrites(user->getResult(0), chain, seen))
+        return false;
+    }
+  }
+  return true;
+}
+
 struct ScatterOpCanon final
     : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterOpCanon> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+  // Leave a scatter whose result is only stored (see isOnlyStored) to the
+  // scatter instead of rewriting it into an update slice.
+  bool keepStored;
+  ScatterOpCanon(bool keepStored, MLIRContext *context,
+                 PatternBenefit benefit = 1,
+                 ArrayRef<StringRef> generatedNames = {})
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
+        keepStored(keepStored) {}
+  ScatterOpCanon(MLIRContext *context, PatternBenefit benefit = 1,
+                 ArrayRef<StringRef> generatedNames = {})
+      : ScatterOpCanon(false, context, benefit, generatedNames) {}
 
   LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
                                     PatternRewriter &rewriter) {
     if (trySimplifyTrivialScatter(op, rewriter).succeeded()) {
       return success();
     }
+
+    // An update slice helps where its result is read back: a slice of it
+    // forwards the update. A buffer that is only stored, such as a kernel's
+    // output, is better left to the scatter. As update slices joined into a
+    // concatenate, its pieces are recomputed by XLA for every element of the
+    // fusion that writes them.
+    if (keepStored && isOnlyStored(op.getResult(0)))
+      return rewriter.notifyMatchFailure(op, "result is only stored");
 
     if (tryRewriteScatterWithIotaIndexing(op, rewriter).succeeded()) {
       return success();
@@ -45151,6 +45249,12 @@ void mlir::transform::addDUSLICM(RewritePatternSet &patterns, bool single_user,
                                  MLIRContext &context, PatternBenefit benefit) {
   patterns.insert<LICM<stablehlo::DynamicUpdateSliceOp>>(single_user, &context,
                                                          benefit);
+}
+
+void mlir::transform::addScatterOpCanon(RewritePatternSet &patterns,
+                                        bool keepStored, MLIRContext &context,
+                                        PatternBenefit benefit) {
+  patterns.insert<ScatterOpCanon>(keepStored, &context, benefit);
 }
 
 void mlir::transform::addSumToConv(RewritePatternSet &patterns,
