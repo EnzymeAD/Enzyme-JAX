@@ -16,4 +16,5 @@ func.func @null_ptr_operand(%out: memref<?xf64>, %n: i64) {
   return
 }
 
-// CHECK: failed to raise operand: %{{.+}} = llvm.mlir.zero : !llvm.ptr
+// CHECK: error: failed to raise operand of type '!llvm.ptr'
+// CHECK: note: used within this gpu_wrapper
