@@ -8077,6 +8077,54 @@ repeatedAlong(Value v, int64_t dim) {
   return std::make_pair(source, dims);
 }
 
+// A concatenate whose operands repeat with a period: concat(a, b, a, b, a,
+// b) is the period concatenated once, broadcast along a new dimension just
+// before the concatenated one (the repeats, the major part), and the two
+// merged by a reshape. The concatenate shrinks by the number of repeats
+// (the basis rows a kernel selects per direction, [B; G] three times).
+struct ConcatPeriodic final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatPeriodic> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
+    int64_t n = op.getNumOperands();
+    if (n < 2 || !op.getType().hasStaticShape())
+      return failure();
+    auto operands = op.getOperands();
+    // The smallest period that is a proper divisor of the operand count;
+    // a period of one is concat_to_broadcast's.
+    int64_t period = -1;
+    for (int64_t p = 2; p * 2 <= n; p++) {
+      if (n % p != 0)
+        continue;
+      bool periodic = true;
+      for (int64_t i = p; i < n && periodic; i++)
+        periodic = operands[i] == operands[i % p];
+      if (periodic) {
+        period = p;
+        break;
+      }
+    }
+    if (period < 0)
+      return failure();
+    int64_t dim = op.getDimension(), repeats = n / period;
+    SmallVector<Value> once(operands.begin(), operands.begin() + period);
+    auto onceOp =
+        stablehlo::ConcatenateOp::create(rewriter, op.getLoc(), once, dim);
+    auto onceType = cast<RankedTensorType>(onceOp.getType());
+    SmallVector<int64_t> shape(onceType.getShape());
+    shape.insert(shape.begin() + dim, repeats);
+    SmallVector<int64_t> dims;
+    for (int64_t d = 0; d < onceType.getRank(); d++)
+      dims.push_back(d < dim ? d : d + 1);
+    Value bcast = stablehlo::BroadcastInDimOpCreate(rewriter, op.getLoc(),
+                                                    onceOp, shape, dims);
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), bcast);
+    return success();
+  }
+};
+
 struct ConcatToBroadcast final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatToBroadcast> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -45291,12 +45339,12 @@ struct EnzymeHLOOptPass
         DynamicSliceElementwise, SlicePad, SliceReshapePad, ReshapeSliceReshape,
         DotReshapeDot, ChloInfConstProp, CHLOLGammaConstProp, GammaConstProp,
         TGammaConstProp, LGammaConstProp, BinomialProgressConstProp, ConcatFuse,
-        ConcatToBroadcast, ConcatSlicesToReverse, PadPad, PadReshapePad,
-        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
-        ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
-        ConcatWrap, ConcatRotate, WidenWrap, WidenExtend, ConcatConcatAxisSwap,
-        SliceConcat, SliceIf, SliceReshapeConcat,
-        BinBroadcastSplat<stablehlo::AddOp>,
+        ConcatToBroadcast, ConcatPeriodic, ConcatSlicesToReverse, PadPad,
+        PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
+        ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
+        ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap, ConcatRotate,
+        WidenWrap, WidenExtend, ConcatConcatAxisSwap, SliceConcat, SliceIf,
+        SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
         BinBroadcastSplat<stablehlo::MulOp>, RotatePad, RotateRotate, ConjReal,
