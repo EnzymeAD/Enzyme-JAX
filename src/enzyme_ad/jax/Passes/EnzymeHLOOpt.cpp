@@ -36358,16 +36358,33 @@ struct ConcatenateBroadcastInDim
       expanded = true;
     int64_t m = cast<RankedTensorType>(operands[0].getType())
                     .getShape()[op.getDimension()];
+    // Operands expanding the concatenated dimension to different extents
+    // (a selection of basis rows: 5 of B, then 20 of G): their
+    // concatenation is the broadcast of the same concatenation without the
+    // dimensions every operand expands, which is as much smaller.
+    bool hoist = false;
     for (auto [operand, shape] : llvm::zip(operands, shapes)) {
       int64_t extent = cast<RankedTensorType>(operand.getType())
                            .getShape()[op.getDimension()];
-      if (expanded ? (shape != shapes[0] || extent != m)
-                   : shape[inputDim] != extent)
+      if (expanded && shape == shapes[0] && extent != m)
+        hoist = true;
+      else if (expanded ? (shape != shapes[0] || extent != m)
+                        : shape[inputDim] != extent)
         return failure();
       // The operands must agree on every other dimension to be concatenated.
       for (int64_t k = 0, e = shape.size(); k < e; k++)
         if (k != inputDim && shape[k] != shapes[0][k])
           return failure();
+    }
+
+    if (hoist) {
+      bool any = false;
+      for (int64_t d = 0, e = op.getType().getRank(); d < e; d++)
+        if (d != (int64_t)op.getDimension() && !llvm::is_contained(dims, d) &&
+            op.getType().getDimSize(d) != 1)
+          any = true;
+      if (!any)
+        return failure();
     }
 
     // Views only: the rest reordered by a transpose (its expanded unit
@@ -36399,6 +36416,8 @@ struct ConcatenateBroadcastInDim
       }
       normalized.push_back(v);
     }
+    if (hoist)
+      return hoistExpanded(op, normalized, dims, rewriter);
     if (expanded) {
       concatExpanded(op, normalized, shapes[0], dims, rewriter);
       return success();
@@ -36424,6 +36443,43 @@ private:
       kept.push_back(i);
       dims.push_back(d);
     }
+  }
+
+  // The concatenation of broadcasts expanding the concatenated dimension
+  // to different extents: each operand broadcast without the dimensions
+  // every one of them expands (other than the concatenated one),
+  // concatenated, then broadcast to the result.
+  LogicalResult hoistExpanded(stablehlo::ConcatenateOp op,
+                              ArrayRef<Value> normalized,
+                              ArrayRef<int64_t> dims,
+                              PatternRewriter &rewriter) const {
+    int64_t c = op.getDimension();
+    auto type = cast<RankedTensorType>(op.getType());
+    // The dimensions kept in the inner concatenation: the operands' and the
+    // concatenated one.
+    SmallVector<int64_t> inner;
+    for (int64_t d = 0; d < type.getRank(); d++)
+      if (d == c || llvm::is_contained(dims, d))
+        inner.push_back(d);
+    SmallVector<int64_t> innerDims;
+    for (int64_t d : dims)
+      innerDims.push_back(llvm::find(inner, d) - inner.begin());
+    int64_t innerC = llvm::find(inner, c) - inner.begin();
+    SmallVector<Value> pieces;
+    for (auto [operand, v] : llvm::zip(op.getOperands(), normalized)) {
+      SmallVector<int64_t> shape;
+      for (int64_t d : inner)
+        shape.push_back(
+            d == c ? cast<RankedTensorType>(operand.getType()).getDimSize(c)
+                   : type.getDimSize(d));
+      pieces.push_back(stablehlo::BroadcastInDimOpCreate(rewriter, op.getLoc(),
+                                                         v, shape, innerDims));
+    }
+    auto concat =
+        stablehlo::ConcatenateOp::create(rewriter, op.getLoc(), pieces, innerC);
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(op, type, concat,
+                                                             inner);
+    return success();
   }
 
   // The concatenated dimension is one the broadcasts expand: the operands
