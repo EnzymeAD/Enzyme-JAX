@@ -9414,6 +9414,34 @@ struct ScatterToDynamicUpdateSlice final
   }
 };
 
+// Whether pushing transpose(_, perm) into the operands of the elementwise op
+// would put a copy on an operand that cannot absorb it (a view of memory)
+// while another operand absorbs it for free, and no operand's existing
+// copy (a transpose of a view that the push cancels) goes away: the op then
+// computes in the view's layout instead (transposed_view_elementwise), and
+// the transpose stays on its result.
+static bool readsViewOthersAbsorb(Operation *elem, ArrayRef<int64_t> perm) {
+  bool view = false, absorbs = false;
+  for (Value operand : elem->getOperands()) {
+    auto type = dyn_cast<RankedTensorType>(operand.getType());
+    if (!type || type.getRank() == 0)
+      continue;
+    if (!absorbsTranspose(operand, perm)) {
+      view = true;
+      continue;
+    }
+    absorbs = true;
+    if (auto transpose = operand.getDefiningOp<stablehlo::TransposeOp>()) {
+      bool cancels = true;
+      for (auto [i, d] : llvm::enumerate(perm))
+        cancels &= transpose.getPermutation()[d] == (int64_t)i;
+      if (cancels && !absorbsTranspose(transpose.getOperand(), {}))
+        return false;
+    }
+  }
+  return view && absorbs;
+}
+
 template <template <typename> class Trait>
 struct ElementwiseAllTransposeOperandsSimplifyBase
     : public CheckedOpTraitRewritePattern<
@@ -9539,6 +9567,9 @@ struct TransposeElementwiseTransposeSimplify
          !isa<stablehlo::SelectOp>(elem)) ||
         elem->getNumResults() != 1 || elem->getNumRegions() != 0)
       return failure();
+    if (readsViewOthersAbsorb(elem, op.getPermutation()))
+      return rewriter.notifyMatchFailure(
+          op, "the op computes in the layout of the view it reads");
 
     auto invPerm = rewriter.getDenseI64ArrayAttr(
         getInversePermutation(op.getPermutation()));
@@ -16436,6 +16467,130 @@ static bool transposesForFree(Operation *root) {
   return true;
 }
 
+// An elementwise op reading a transposed view of memory (the transpose, or
+// a slice of the transpose, of a value whose producer cannot permute it for
+// free, such as an argument) computes in the view's layout when every other
+// operand can be had in any layout: the transpose moves to the result, where
+// a broadcast or the next such op absorbs it, and the other operands take
+// its inverse, which their producers absorb. The transpose-propagating
+// patterns move transposes toward the producers that absorb them; a view is
+// where that stops, and a transpose left there is a copy of it.
+template <template <typename> class Trait>
+struct TransposedViewElementwiseBase final
+    : CheckedOpTraitRewritePattern<Trait,
+                                   TransposedViewElementwiseBase<Trait>> {
+  using CheckedOpTraitRewritePattern<
+      Trait,
+      TransposedViewElementwiseBase<Trait>>::CheckedOpTraitRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(Operation *op,
+                                    PatternRewriter &rewriter) const {
+    if (op->getNumResults() != 1 || op->getNumRegions() != 0 ||
+        op->getNumOperands() < 2)
+      return failure();
+    auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+    if (!resultType || !resultType.hasStaticShape())
+      return failure();
+    int64_t rank = resultType.getRank();
+
+    stablehlo::TransposeOp view;
+    for (Value operand : op->getOperands()) {
+      if (auto t = transposedView(operand)) {
+        view = t;
+        break;
+      }
+    }
+    if (!view)
+      return rewriter.notifyMatchFailure(op, "no transposed view operand");
+    ArrayRef<int64_t> perm = view.getPermutation();
+    SmallVector<int64_t> inverse = getInversePermutation(perm);
+
+    // The other operands take the inverse permutation for free; one of them
+    // is not a transposed read itself, so that the transposes of two views
+    // are not swapped back and forth with transpose_elementwise.
+    bool other = false;
+    for (Value operand : op->getOperands()) {
+      auto type = dyn_cast<RankedTensorType>(operand.getType());
+      if (!type)
+        return failure();
+      if (type.getRank() == 0)
+        continue;
+      if (type.getRank() != rank)
+        return failure();
+      if (readsThrough(operand, perm))
+        continue;
+      if (!absorbsTranspose(operand, inverse))
+        return rewriter.notifyMatchFailure(
+            op, "an operand does not absorb the view's layout");
+      other = true;
+    }
+    if (!other)
+      return rewriter.notifyMatchFailure(op, "every operand is a transpose");
+
+    SmallVector<Value> operands;
+    for (Value operand : op->getOperands()) {
+      auto type = cast<RankedTensorType>(operand.getType());
+      if (type.getRank() == 0) {
+        operands.push_back(operand);
+        continue;
+      }
+      if (auto t = operand.getDefiningOp<stablehlo::TransposeOp>();
+          t && t.getPermutation() == perm) {
+        operands.push_back(t.getOperand());
+        continue;
+      }
+      if (auto slice = operand.getDefiningOp<stablehlo::SliceOp>()) {
+        auto t = slice.getOperand().getDefiningOp<stablehlo::TransposeOp>();
+        if (t && t.getPermutation() == perm) {
+          operands.push_back(sliceTransposeHelper(
+              t, rewriter, slice.getStartIndices(), slice.getLimitIndices(),
+              slice.getStrides()));
+          continue;
+        }
+      }
+      operands.push_back(stablehlo::TransposeOp::create(rewriter, op->getLoc(),
+                                                        operand, inverse));
+    }
+    SmallVector<int64_t> shape;
+    for (int64_t d : inverse)
+      shape.push_back(resultType.getDimSize(d));
+    Operation *computed = Operation::create(
+        op->getLoc(), op->getName(),
+        {RankedTensorType::get(shape, resultType.getElementType())}, operands,
+        op->getAttrs(), mlir::PropertyRef(), op->getSuccessors(), 0);
+    rewriter.insert(computed);
+    rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
+        op, computed->getResult(0), perm);
+    return success();
+  }
+
+private:
+  // The transpose a transposed view of memory is read through: the operand
+  // is transpose(v) or slice(transpose(v)), with v not absorbing it.
+  static stablehlo::TransposeOp transposedView(Value operand) {
+    auto t = operand.getDefiningOp<stablehlo::TransposeOp>();
+    if (auto slice = operand.getDefiningOp<stablehlo::SliceOp>())
+      t = slice.getOperand().getDefiningOp<stablehlo::TransposeOp>();
+    if (!t || absorbsTranspose(t.getOperand(), t.getPermutation()))
+      return nullptr;
+    return t;
+  }
+
+  // Whether the operand is read through a transpose with this permutation
+  // (a transpose, or a slice of one), which the rewrite takes off.
+  static bool readsThrough(Value operand, ArrayRef<int64_t> perm) {
+    auto t = operand.getDefiningOp<stablehlo::TransposeOp>();
+    if (auto slice = operand.getDefiningOp<stablehlo::SliceOp>())
+      t = slice.getOperand().getDefiningOp<stablehlo::TransposeOp>();
+    return t && t.getPermutation() == perm;
+  }
+};
+
+using TransposedViewElementwise =
+    TransposedViewElementwiseBase<OpTrait::Elementwise>;
+using BroadcastingTransposedViewElementwise =
+    TransposedViewElementwiseBase<mlir::hlo::OpTrait::BroadcastingElementwise>;
+
 struct TransposeElementwise final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeElementwise> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -16460,6 +16615,9 @@ struct TransposeElementwise final
     bool singleUser = llvm::hasSingleElement(elem->getUsers());
     if (onlySingleUser && !singleUser && !transposesForFree(elem))
       return failure();
+    if (readsViewOthersAbsorb(elem, op.getPermutation()))
+      return rewriter.notifyMatchFailure(
+          op, "the op computes in the layout of the view it reads");
 
     SmallVector<Value> ops;
     for (auto v : elem->getOperands()) {

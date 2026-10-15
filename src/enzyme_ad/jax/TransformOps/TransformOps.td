@@ -752,6 +752,11 @@ def ApplyTransposeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyTransposedViewElementwisePatterns : EnzymeHLOPatternOp<
+    "transposed_view_elementwise"> {
+  let patterns = ["TransposedViewElementwise", "BroadcastingTransposedViewElementwise"];
+}
+
 def ApplyTransposeLikeBroadcastElementwisePatterns : EnzymeHLOParameterizedPatternOp<
     "transpose_like_broadcast_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);

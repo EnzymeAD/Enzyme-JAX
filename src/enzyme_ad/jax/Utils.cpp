@@ -4010,6 +4010,72 @@ Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
                               transpose.getOperand(), starts, sizes);
 }
 
+// Bounds the ops `absorbsTranspose` visits.
+static constexpr unsigned kMaxAbsorbTransposeOps = 64;
+
+bool absorbsTranspose(Value v, ArrayRef<int64_t> perm) {
+  // (value, the permutation it is asked for; empty for any)
+  SmallVector<std::pair<Value, SmallVector<int64_t>>> worklist = {
+      {v, llvm::to_vector(perm)}};
+  SmallPtrSet<Operation *, 16> seen;
+  while (!worklist.empty()) {
+    auto [cur, curPerm] = worklist.pop_back_val();
+    if (!isa<RankedTensorType>(cur.getType()))
+      continue;
+    if (cast<RankedTensorType>(cur.getType()).getRank() == 0)
+      continue;
+    Operation *op = cur.getDefiningOp();
+    if (!op)
+      return false;
+    if (!seen.insert(op).second)
+      continue;
+    if (seen.size() > kMaxAbsorbTransposeOps)
+      return false;
+    if (isa<stablehlo::BroadcastInDimOp, stablehlo::IotaOp,
+            stablehlo::DotGeneralOp>(op) ||
+        matchPattern(cur, m_Constant()))
+      continue;
+    if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
+      // transpose(transpose(x, q), p) = transpose(x, q[p]).
+      SmallVector<int64_t> composed;
+      if (!curPerm.empty()) {
+        for (int64_t d : curPerm)
+          composed.push_back(transpose.getPermutation()[d]);
+        if (composed == llvm::to_vector(llvm::seq<int64_t>(0, composed.size())))
+          continue;
+      }
+      worklist.push_back({transpose.getOperand(), composed});
+      continue;
+    }
+    // The permutation applies to these ops' operands as it is.
+    if (hasTraitElementwise(op) ||
+        isa<stablehlo::SelectOp, stablehlo::SliceOp, stablehlo::PadOp,
+            stablehlo::ConcatenateOp, stablehlo::ReverseOp,
+            stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp,
+            stablehlo::ReduceWindowOp, enzymexla::WrapOp, enzymexla::ExtendOp,
+            enzymexla::RotateOp>(op)) {
+      if (op->getNumRegions() && !isa<stablehlo::ReduceWindowOp>(op))
+        return false;
+      for (Value operand : op->getOperands())
+        worklist.push_back({operand, curPerm});
+      continue;
+    }
+    // Through a reduce, reshape or gather the operand's permutation is
+    // another one.
+    if (auto reduce = dyn_cast<stablehlo::ReduceOp>(op)) {
+      for (Value input : reduce.getInputs())
+        worklist.push_back({input, {}});
+      continue;
+    }
+    if (isa<stablehlo::ReshapeOp, stablehlo::GatherOp>(op)) {
+      worklist.push_back({op->getOperand(0), {}});
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
 bool isFusible(stablehlo::TransposeOp transpose, Operation *op) {
   if (isa<stablehlo::TransposeOp, stablehlo::BroadcastInDimOp,
           stablehlo::DotGeneralOp>(op)) {
