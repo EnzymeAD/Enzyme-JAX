@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --raise-affine-to-stablehlo --canonicalize --arith-raise --enzyme-hlo-opt=max_constant_expansion=0 | FileCheck %s
+// RUN: enzymexlamlir-opt %s --raise-affine-to-stablehlo --canonicalize --lower-enzymexla-math --enzyme-hlo-opt=max_constant_expansion=0 | FileCheck %s
 
 // enzymexla.math.fmuladd rides the same route as math.fma: tensorized by the
 // affine raising, then split into multiply+add by arith-raise -- stablehlo has
