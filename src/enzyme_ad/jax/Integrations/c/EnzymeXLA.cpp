@@ -729,6 +729,7 @@ static void addScatterGatherPasses(std::vector<std::string> &list,
   list.push_back("cse_gather");
   list.push_back("cse_scatter");
   list.push_back("cse_reduce");
+  list.push_back("cse_reduce_transposed");
   list.push_back("cse_dot_general_transposed");
   list.push_back("concat_view_cse");
 }
