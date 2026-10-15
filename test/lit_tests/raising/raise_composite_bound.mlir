@@ -42,73 +42,72 @@ func.func @composite(%out: memref<32xf64, 1>, %in: memref<32xf64, 1>, %dbuf: mem
 // CHECK-NEXT:      affine.store %0, %alloca[] : memref<i32>
 // CHECK-NEXT:      %c4 = arith.constant 4 : index
 // CHECK-NEXT:      enzymexla.memcpy  %memref, %alloca, %c4 : memref<i32, 1>, memref<i32>
-// CHECK-NEXT:      enzymexla.xla_wrapper @rxla$raised_0 (%memref, %arg1, %arg0) : (memref<i32, 1>, memref<32xf64, 1>, memref<32xf64, 1>) -> ()
+// CHECK-NEXT:      enzymexla.xla_wrapper @rxla$raised_0 (%arg1, %arg0, %memref) : (memref<32xf64, 1>, memref<32xf64, 1>, memref<i32, 1>) -> ()
 // CHECK-NEXT:      %c0 = arith.constant 0 : index
 // CHECK-NEXT:      gpu.dealloc  %memref : memref<i32, 1>
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return
 // CHECK-NEXT:  }
-// CHECK-NEXT:  func.func private @rxla$raised_0(%arg0: tensor<i32>, %arg1: tensor<32xf64>, %arg2: tensor<32xf64>) -> (tensor<i32>, tensor<32xf64>, tensor<32xf64>) {
+// CHECK-NEXT:  func.func private @rxla$raised_0(%arg0: tensor<32xf64>, %arg1: tensor<32xf64>, %arg2: tensor<i32>) -> (tensor<32xf64>, tensor<32xf64>, tensor<i32>) {
 // CHECK-NEXT:    %c = stablehlo.constant dense<1> : tensor<i64>
-// CHECK-NEXT:    %0 = stablehlo.convert %arg0 : (tensor<i32>) -> tensor<i64>
+// CHECK-NEXT:    %0 = stablehlo.convert %arg2 : (tensor<i32>) -> tensor<i64>
 // CHECK-NEXT:    %1 = stablehlo.iota dim = 0 : tensor<1xi64>
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %2 = stablehlo.add %1, %c_0 : tensor<1xi64>
 // CHECK-NEXT:    %c_1 = stablehlo.constant dense<1> : tensor<1xi64>
 // CHECK-NEXT:    %3 = stablehlo.multiply %2, %c_1 : tensor<1xi64>
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<1x32xf64>
-// CHECK-NEXT:    %c_2 = stablehlo.constant dense<3> : tensor<i64>
-// CHECK-NEXT:    %4 = stablehlo.multiply %0, %c_2 : tensor<i64>
-// CHECK-NEXT:    %5 = stablehlo.iota dim = 0 : tensor<24xi64>
-// CHECK-NEXT:    %c_3 = stablehlo.constant dense<0> : tensor<24xi64>
-// CHECK-NEXT:    %6 = stablehlo.add %5, %c_3 : tensor<24xi64>
-// CHECK-NEXT:    %c_4 = stablehlo.constant dense<1> : tensor<24xi64>
-// CHECK-NEXT:    %7 = stablehlo.multiply %6, %c_4 : tensor<24xi64>
-// CHECK-NEXT:    %c_5 = stablehlo.constant dense<-1> : tensor<i64>
-// CHECK-NEXT:    %8 = stablehlo.broadcast_in_dim %c_5, dims = [] : (tensor<i64>) -> tensor<24xi64>
-// CHECK-NEXT:    %9 = stablehlo.multiply %7, %8 : tensor<24xi64>
-// CHECK-NEXT:    %c_6 = stablehlo.constant dense<3> : tensor<i64>
-// CHECK-NEXT:    %10 = stablehlo.multiply %0, %c_6 : tensor<i64>
-// CHECK-NEXT:    %11 = stablehlo.broadcast_in_dim %10, dims = [] : (tensor<i64>) -> tensor<24xi64>
-// CHECK-NEXT:    %12 = stablehlo.add %9, %11 : tensor<24xi64>
-// CHECK-NEXT:    %c_7 = stablehlo.constant dense<-1> : tensor<i64>
-// CHECK-NEXT:    %13 = stablehlo.broadcast_in_dim %c_7, dims = [] : (tensor<i64>) -> tensor<24xi64>
-// CHECK-NEXT:    %14 = stablehlo.add %12, %13 : tensor<24xi64>
-// CHECK-NEXT:    %c_8 = stablehlo.constant dense<0> : tensor<24xi64>
-// CHECK-NEXT:    %15 = stablehlo.compare GE, %14, %c_8 : (tensor<24xi64>, tensor<24xi64>) -> tensor<24xi1>
-// CHECK-NEXT:    %16 = stablehlo.slice %arg1 [0:24] : (tensor<32xf64>) -> tensor<24xf64>
+// CHECK-NEXT:    %4 = stablehlo.iota dim = 0 : tensor<24xi64>
+// CHECK-NEXT:    %c_2 = stablehlo.constant dense<0> : tensor<24xi64>
+// CHECK-NEXT:    %5 = stablehlo.add %4, %c_2 : tensor<24xi64>
+// CHECK-NEXT:    %c_3 = stablehlo.constant dense<1> : tensor<24xi64>
+// CHECK-NEXT:    %6 = stablehlo.multiply %5, %c_3 : tensor<24xi64>
+// CHECK-NEXT:    %c_4 = stablehlo.constant dense<-1> : tensor<i64>
+// CHECK-NEXT:    %7 = stablehlo.broadcast_in_dim %c_4, dims = [] : (tensor<i64>) -> tensor<24xi64>
+// CHECK-NEXT:    %8 = stablehlo.multiply %6, %7 : tensor<24xi64>
+// CHECK-NEXT:    %c_5 = stablehlo.constant dense<3> : tensor<i64>
+// CHECK-NEXT:    %9 = stablehlo.multiply %0, %c_5 : tensor<i64>
+// CHECK-NEXT:    %10 = stablehlo.broadcast_in_dim %9, dims = [] : (tensor<i64>) -> tensor<24xi64>
+// CHECK-NEXT:    %11 = stablehlo.add %8, %10 : tensor<24xi64>
+// CHECK-NEXT:    %c_6 = stablehlo.constant dense<-1> : tensor<i64>
+// CHECK-NEXT:    %12 = stablehlo.broadcast_in_dim %c_6, dims = [] : (tensor<i64>) -> tensor<24xi64>
+// CHECK-NEXT:    %13 = stablehlo.add %11, %12 : tensor<24xi64>
+// CHECK-NEXT:    %c_7 = stablehlo.constant dense<0> : tensor<24xi64>
+// CHECK-NEXT:    %14 = stablehlo.compare GE, %13, %c_7 : (tensor<24xi64>, tensor<24xi64>) -> tensor<24xi1>
+// CHECK-NEXT:    %15 = stablehlo.slice %arg0 [0:24] : (tensor<32xf64>) -> tensor<24xf64>
+// CHECK-NEXT:    %c_8 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_9 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_10 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_11 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_12 = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:    %c_13 = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:    %c_14 = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:    %c_13 = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:    %c_14 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_15 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_16 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_17 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_18 = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:    %c_19 = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:    %c_20 = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:    %17 = stablehlo.broadcast_in_dim %16, dims = [1] : (tensor<24xf64>) -> tensor<1x24xf64>
-// CHECK-NEXT:    %18 = stablehlo.slice %cst [0:1, 0:24] : (tensor<1x32xf64>) -> tensor<1x24xf64>
-// CHECK-NEXT:    %19 = stablehlo.broadcast_in_dim %15, dims = [0] : (tensor<24xi1>) -> tensor<24x1xi1>
+// CHECK-NEXT:    %c_19 = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:    %16 = stablehlo.broadcast_in_dim %15, dims = [1] : (tensor<24xf64>) -> tensor<1x24xf64>
+// CHECK-NEXT:    %17 = stablehlo.slice %cst [0:1, 0:24] : (tensor<1x32xf64>) -> tensor<1x24xf64>
+// CHECK-NEXT:    %18 = stablehlo.broadcast_in_dim %14, dims = [0] : (tensor<24xi1>) -> tensor<24x1xi1>
+// CHECK-NEXT:    %19 = stablehlo.broadcast_in_dim %16, dims = [1, 0] : (tensor<1x24xf64>) -> tensor<24x1xf64>
 // CHECK-NEXT:    %20 = stablehlo.broadcast_in_dim %17, dims = [1, 0] : (tensor<1x24xf64>) -> tensor<24x1xf64>
-// CHECK-NEXT:    %21 = stablehlo.broadcast_in_dim %18, dims = [1, 0] : (tensor<1x24xf64>) -> tensor<24x1xf64>
-// CHECK-NEXT:    %22 = stablehlo.select %19, %20, %21 : tensor<24x1xi1>, tensor<24x1xf64>
-// CHECK-NEXT:    %23 = stablehlo.broadcast_in_dim %22, dims = [1, 0] : (tensor<24x1xf64>) -> tensor<1x24xf64>
-// CHECK-NEXT:    %24 = stablehlo.dynamic_update_slice %cst, %23, %c_14, %c_20 : (tensor<1x32xf64>, tensor<1x24xf64>, tensor<i64>, tensor<i64>) -> tensor<1x32xf64>
-// CHECK-NEXT:    %25 = stablehlo.slice %24 [0:1, 0:1] : (tensor<1x32xf64>) -> tensor<1x1xf64>
-// CHECK-NEXT:    %26 = stablehlo.reshape %25 : (tensor<1x1xf64>) -> tensor<1xf64>
+// CHECK-NEXT:    %21 = stablehlo.select %18, %19, %20 : tensor<24x1xi1>, tensor<24x1xf64>
+// CHECK-NEXT:    %22 = stablehlo.broadcast_in_dim %21, dims = [1, 0] : (tensor<24x1xf64>) -> tensor<1x24xf64>
+// CHECK-NEXT:    %23 = stablehlo.dynamic_update_slice %cst, %22, %c_13, %c_19 : (tensor<1x32xf64>, tensor<1x24xf64>, tensor<i64>, tensor<i64>) -> tensor<1x32xf64>
+// CHECK-NEXT:    %24 = stablehlo.slice %23 [0:1, 0:1] : (tensor<1x32xf64>) -> tensor<1x1xf64>
+// CHECK-NEXT:    %25 = stablehlo.reshape %24 : (tensor<1x1xf64>) -> tensor<1xf64>
+// CHECK-NEXT:    %c_20 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_21 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_22 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_23 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_24 = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:    %c_25 = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:    %c_26 = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:    %27 = stablehlo.reshape %26 : (tensor<1xf64>) -> tensor<f64>
-// CHECK-NEXT:    %28 = stablehlo.broadcast_in_dim %27, dims = [] : (tensor<f64>) -> tensor<24xf64>
-// CHECK-NEXT:    %29 = stablehlo.slice %arg2 [0:24] : (tensor<32xf64>) -> tensor<24xf64>
-// CHECK-NEXT:    %30 = stablehlo.select %15, %28, %29 : tensor<24xi1>, tensor<24xf64>
-// CHECK-NEXT:    %31 = stablehlo.dynamic_update_slice %arg2, %30, %c_26 : (tensor<32xf64>, tensor<24xf64>, tensor<i64>) -> tensor<32xf64>
-// CHECK-NEXT:    return %arg0, %arg1, %31 : tensor<i32>, tensor<32xf64>, tensor<32xf64>
+// CHECK-NEXT:    %c_25 = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:    %26 = stablehlo.reshape %25 : (tensor<1xf64>) -> tensor<f64>
+// CHECK-NEXT:    %27 = stablehlo.broadcast_in_dim %26, dims = [] : (tensor<f64>) -> tensor<24xf64>
+// CHECK-NEXT:    %28 = stablehlo.slice %arg1 [0:24] : (tensor<32xf64>) -> tensor<24xf64>
+// CHECK-NEXT:    %29 = stablehlo.select %14, %27, %28 : tensor<24xi1>, tensor<24xf64>
+// CHECK-NEXT:    %30 = stablehlo.dynamic_update_slice %arg1, %29, %c_25 : (tensor<32xf64>, tensor<24xf64>, tensor<i64>) -> tensor<32xf64>
+// CHECK-NEXT:    return %arg0, %30, %arg2 : tensor<32xf64>, tensor<32xf64>, tensor<i32>
 // CHECK-NEXT:  }
+// CHECK-NEXT:}

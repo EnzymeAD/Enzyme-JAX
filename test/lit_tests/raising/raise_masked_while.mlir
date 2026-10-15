@@ -2,11 +2,12 @@
 
 // A remainder loop whose bounds vary per lane iterates a scalar counter to
 // the maximum lane trip count, masking finished lanes: stores mask, and iter
-// args keep their value once a lane finishes.
+// args keep their value once a lane finishes. (A unit-step loop would instead
+// widen to the constant hull of its lanes; see raise_triangular_hull.mlir.)
 func.func @lanefor(%out: memref<8xf64, 1>, %in: memref<?xf64, 1>) {
   %z = arith.constant 0.0 : f64
   affine.parallel (%t) = (0) to (8) {
-    %s = affine.for %j = affine_map<(d0) -> (d0)>(%t) to 8 iter_args(%acc = %z) -> (f64) {
+    %s = affine.for %j = affine_map<(d0) -> (d0)>(%t) to 8 step 2 iter_args(%acc = %z) -> (f64) {
       %v = affine.load %in[%j] : memref<?xf64, 1>
       %a = arith.addf %acc, %v : f64
       affine.yield %a : f64
