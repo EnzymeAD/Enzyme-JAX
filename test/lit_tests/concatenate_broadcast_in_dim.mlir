@@ -146,3 +146,25 @@ func.func @layouts(%a: tensor<8x3x4xf64>, %b: tensor<8x4x3xf64>, %c: tensor<8x4x
 // CHECK-NEXT: %[[R:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[CC]], dims = [0, 2, 1] : (tensor<8x9x4xf64>) -> tensor<8x4x9x3xf64>
 // CHECK-NEXT: return %[[R]] : tensor<8x4x9x3xf64>
 // CHECK-NEXT: }
+
+// Operands differing only in unit dimensions that mark output dimensions
+// (one carries the expanded dimension and a trailing unit one as size-1
+// dimensions, the others not): the same layout.
+func.func @unit_dims(%a: tensor<1x8x4x4x1xf64>, %b: tensor<8x4x4xf64>, %c: tensor<8x4x4xf64>) -> tensor<9x8x4x4x1xf64> {
+  %0 = stablehlo.broadcast_in_dim %a, dims = [0, 1, 2, 3, 4] : (tensor<1x8x4x4x1xf64>) -> tensor<3x8x4x4x1xf64>
+  %1 = stablehlo.broadcast_in_dim %b, dims = [1, 2, 3] : (tensor<8x4x4xf64>) -> tensor<3x8x4x4x1xf64>
+  %2 = stablehlo.broadcast_in_dim %c, dims = [1, 2, 3] : (tensor<8x4x4xf64>) -> tensor<3x8x4x4x1xf64>
+  %3 = stablehlo.concatenate %0, %1, %2, dim = 0 : (tensor<3x8x4x4x1xf64>, tensor<3x8x4x4x1xf64>, tensor<3x8x4x4x1xf64>) -> tensor<9x8x4x4x1xf64>
+  return %3 : tensor<9x8x4x4x1xf64>
+}
+
+// CHECK-LABEL: func.func @unit_dims(
+// CHECK-SAME: %[[A:[^ ,:)]+]]: tensor<1x8x4x4x1xf64>, %[[B:[^ ,:)]+]]: tensor<8x4x4xf64>, %[[C:[^ ,:)]+]]: tensor<8x4x4xf64>) -> tensor<9x8x4x4x1xf64> {
+// CHECK-NEXT: %[[UA:[^ ,:)]+]] = stablehlo.reshape %[[A]] : (tensor<1x8x4x4x1xf64>) -> tensor<1x8x4x4xf64>
+// CHECK-NEXT: %[[UB:[^ ,:)]+]] = stablehlo.reshape %[[B]] : (tensor<8x4x4xf64>) -> tensor<1x8x4x4xf64>
+// CHECK-NEXT: %[[UC:[^ ,:)]+]] = stablehlo.reshape %[[C]] : (tensor<8x4x4xf64>) -> tensor<1x8x4x4xf64>
+// CHECK-NEXT: %[[S:[^ ,:)]+]] = stablehlo.concatenate %[[UA]], %[[UB]], %[[UC]], dim = 0 : (tensor<1x8x4x4xf64>, tensor<1x8x4x4xf64>, tensor<1x8x4x4xf64>) -> tensor<3x8x4x4xf64>
+// CHECK-NEXT: %[[BC:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[S]], dims = [0, 2, 3, 4] : (tensor<3x8x4x4xf64>) -> tensor<3x3x8x4x4x1xf64>
+// CHECK-NEXT: %[[R:[^ ,:)]+]] = stablehlo.reshape %[[BC]] : (tensor<3x3x8x4x4x1xf64>) -> tensor<9x8x4x4x1xf64>
+// CHECK-NEXT: return %[[R]] : tensor<9x8x4x4x1xf64>
+// CHECK-NEXT: }
