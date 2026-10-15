@@ -1642,32 +1642,6 @@ Value sliceTransposeHelper(stablehlo::TransposeOp transpose,
                            ArrayRef<Value> sliceStarts,
                            ArrayRef<int64_t> sliceSizes);
 
-// Whether transpose(v, perm) costs no data movement: v's producer permutes
-// its dimensions for free (a broadcast_in_dim, iota, constant or
-// dot_general), or passes the permutation on to operands that do (an
-// elementwise op, select, slice, pad, concatenate, reverse, dynamic slice or
-// update, reduce or reduce_window, or a transpose the permutation cancels or
-// composes with), as the transpose-propagating patterns move it. A value
-// read from memory (a block argument, a loop result, a scatter) does not,
-// nor does a computed value with other users (rebuilt transposed, it would
-// be computed twice) unless they all take the same transpose: a transpose
-// of it is a copy. An empty perm stands for any permutation.
-bool absorbsTranspose(Value v, ArrayRef<int64_t> perm);
-
-// Whether transpose(v, perm) is taken by v's consumers without a copy: a
-// broadcast_in_dim or dot_general permutes its dimensions, a transpose
-// cancels it (or composes with it into one its own consumers take), and an
-// elementwise op whose other operands absorb the inverse permutation
-// computes in the transposed layout and passes the transpose on to its own
-// consumers (transposed_view_elementwise). Anything else (a reduce, a
-// reshape, a return) reads the transposed copy.
-bool sinksTranspose(Value v, ArrayRef<int64_t> perm);
-
-// Whether v is read from memory as it is laid out there: a block argument,
-// or the result of a gather, scatter, while or custom call (a buffer of
-// their own), through slices and reshapes. A transpose of it is a copy.
-bool isMemoryView(Value v);
-
 // checks if operation 1 can be fused with operation 2. ordering is important
 bool isFusible(stablehlo::BroadcastInDimOp transpose, Operation *op);
 bool isFusible(stablehlo::TransposeOp transpose, Operation *op);
