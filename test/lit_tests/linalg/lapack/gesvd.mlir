@@ -17,24 +17,29 @@ module {
 // CPU-NEXT:   return %0#0, %0#1, %0#2, %0#3 : tensor<64x64xf32>, tensor<64xf32>, tensor<64x64xf32>, tensor<i64>
 // CPU-NEXT: }
 // CPU-NEXT: llvm.func private @enzymexla_wrapper_lapack_sgesvd_(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: !llvm.ptr) {
-// CPU-NEXT:   %0 = llvm.mlir.constant(83 : i8) : i8
-// CPU-NEXT:   %1 = llvm.mlir.constant(1 : i64) : i64
-// CPU-NEXT:   %2 = llvm.mlir.constant(-1 : i64) : i64
-// CPU-NEXT:   %3 = llvm.alloca %1 x i64 : (i64) -> !llvm.ptr
-// CPU-NEXT:   llvm.store %2, %3 : i64, !llvm.ptr
-// CPU-NEXT:   %4 = llvm.alloca %1 x f32 : (i64) -> !llvm.ptr
-// CPU-NEXT:   %5 = llvm.alloca %1 x i8 : (i64) -> !llvm.ptr
-// CPU-NEXT:   %6 = llvm.alloca %1 x i8 : (i64) -> !llvm.ptr
-// CPU-NEXT:   llvm.store %0, %5 : i8, !llvm.ptr
-// CPU-NEXT:   llvm.store %0, %6 : i8, !llvm.ptr
-// CPU-NEXT:   llvm.call @enzymexla_lapack_sgesvd_(%5, %6, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %4, %3, %arg9, %1, %1) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i64) -> ()
-// CPU-NEXT:   %7 = llvm.load %4 : !llvm.ptr -> f32
-// CPU-NEXT:   %8 = llvm.fptosi %7 : f32 to i64
-// CPU-NEXT:   %9 = llvm.alloca %8 x f32 : (i64) -> !llvm.ptr
-// CPU-NEXT:   llvm.store %8, %3 : i64, !llvm.ptr
-// CPU-NEXT:   llvm.call @enzymexla_lapack_sgesvd_(%5, %6, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %9, %3, %arg9, %1, %1) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i64) -> ()
+// CPU-NEXT:   %0 = llvm.mlir.constant(4 : i64) : i64
+// CPU-NEXT:   %1 = llvm.mlir.constant(83 : i8) : i8
+// CPU-NEXT:   %2 = llvm.mlir.constant(1 : i64) : i64
+// CPU-NEXT:   %3 = llvm.mlir.constant(-1 : i64) : i64
+// CPU-NEXT:   %4 = llvm.alloca %2 x i64 : (i64) -> !llvm.ptr
+// CPU-NEXT:   llvm.store %3, %4 : i64, !llvm.ptr
+// CPU-NEXT:   %5 = llvm.alloca %2 x f32 : (i64) -> !llvm.ptr
+// CPU-NEXT:   %6 = llvm.alloca %2 x i8 : (i64) -> !llvm.ptr
+// CPU-NEXT:   %7 = llvm.alloca %2 x i8 : (i64) -> !llvm.ptr
+// CPU-NEXT:   llvm.store %1, %6 : i8, !llvm.ptr
+// CPU-NEXT:   llvm.store %1, %7 : i8, !llvm.ptr
+// CPU-NEXT:   llvm.call @enzymexla_lapack_sgesvd_(%6, %7, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %5, %4, %arg9, %2, %2) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i64) -> ()
+// CPU-NEXT:   %8 = llvm.load %5 : !llvm.ptr -> f32
+// CPU-NEXT:   %9 = llvm.fptosi %8 : f32 to i64
+// CPU-NEXT:   %10 = llvm.mul %9, %0 : i64
+// CPU-NEXT:   %11 = llvm.call @malloc(%10) : (i64) -> !llvm.ptr
+// CPU-NEXT:   llvm.store %9, %4 : i64, !llvm.ptr
+// CPU-NEXT:   llvm.call @enzymexla_lapack_sgesvd_(%6, %7, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %11, %4, %arg9, %2, %2) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i64) -> ()
+// CPU-NEXT:   llvm.call @free(%11) : (!llvm.ptr) -> ()
 // CPU-NEXT:   llvm.return
 // CPU-NEXT: }
+// CPU-NEXT: llvm.func @free(!llvm.ptr)
+// CPU-NEXT: llvm.func @malloc(i64) -> !llvm.ptr
 // CPU-NEXT: llvm.func @enzymexla_lapack_sgesvd_(!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i64)
 // CPU-NEXT: func.func @main(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>, tensor<64x64xf32>, tensor<i64>) {
 // CPU-NEXT:   %0:4 = call @shlo_enzymexla_wrapper_lapack_sgesvd__wrapper_[[WRAPPED_ID]](%arg0) : (tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>, tensor<64x64xf32>, tensor<i64>)
