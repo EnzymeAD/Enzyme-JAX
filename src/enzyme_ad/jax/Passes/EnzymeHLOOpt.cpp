@@ -17703,6 +17703,194 @@ private:
   }
 };
 
+// A reduce equal to an earlier one up to a transpose of its input: both
+// reduce the same elementwise computation of the same values, each read
+// through broadcasts and transposes, with the input dimensions permuted
+// (the reduced ones among themselves), so it is a transpose of the earlier
+// one. Two families of a kernel reading one stage's values through
+// different layouts otherwise each reduce it.
+struct CSEReduceTransposed final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp, CSEReduceTransposed> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return failure();
+    Form form;
+    if (!analyze(op.getInputs()[0], form) || form.leaves.empty())
+      return failure();
+    // Candidates: reduces reached from the first leaf's value through as
+    // many ops as this one's input is from it (the forms of one computation
+    // have the same height).
+    SmallVector<Value> frontier = {form.leaves[0].base};
+    for (int64_t depth = 0; depth <= form.height + 1; depth++) {
+      SmallVector<Value> next;
+      for (Value v : frontier)
+        for (Operation *user : v.getUsers()) {
+          auto other = dyn_cast<stablehlo::ReduceOp>(user);
+          if (other && other != op && other->getBlock() == op->getBlock() &&
+              other->isBeforeInBlock(op) && other.getInputs().size() == 1 &&
+              other.getInputs()[0] == v) {
+            SmallVector<int64_t> perm;
+            if (matches(op, form, other, perm)) {
+              if (llvm::equal(perm, llvm::seq<int64_t>(0, perm.size())))
+                rewriter.replaceOp(op, other.getResults());
+              else
+                rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
+                    op, other.getResult(0), perm);
+              return success();
+            }
+            continue;
+          }
+          if (user->getNumResults() == 1 &&
+              (isa<stablehlo::TransposeOp, stablehlo::BroadcastInDimOp>(user) ||
+               stablehlo::hasTraitElementwise(user)))
+            next.push_back(user->getResult(0));
+        }
+      frontier = next;
+    }
+    return failure();
+  }
+
+private:
+  // A value the input reads, and the input dimension each of its non-unit
+  // dimensions is read along.
+  struct Leaf {
+    Value base;
+    SmallVector<int64_t> map;
+  };
+  // The input's computation: its ops in walk order (the structure) and its
+  // leaves in walk order.
+  struct Form {
+    SmallVector<OperationName> ops;
+    SmallVector<Leaf> leaves;
+    int64_t height = 0;
+  };
+
+  // Walks v, whose dimension d is input dimension perm[d].
+  static bool analyze(Value v, Form &form) {
+    SmallVector<int64_t> perm = llvm::to_vector(
+        llvm::seq<int64_t>(0, cast<RankedTensorType>(v.getType()).getRank()));
+    return walk(v, perm, form, 0);
+  }
+
+  static bool walk(Value v, ArrayRef<int64_t> perm, Form &form, int64_t depth) {
+    form.height = std::max(form.height, depth);
+    Operation *op = v.getDefiningOp();
+    if (auto transpose = dyn_cast_or_null<stablehlo::TransposeOp>(op)) {
+      SmallVector<int64_t> inner(transpose.getPermutation().size());
+      for (auto [o, i] : llvm::enumerate(transpose.getPermutation()))
+        inner[i] = perm[o];
+      form.ops.push_back(op->getName());
+      return walk(transpose.getOperand(), inner, form, depth + 1);
+    }
+    if (auto bcast = dyn_cast_or_null<stablehlo::BroadcastInDimOp>(op)) {
+      Leaf leaf;
+      leaf.base = bcast.getOperand();
+      auto type = bcast.getOperand().getType();
+      for (auto [i, d] : llvm::enumerate(bcast.getBroadcastDimensions()))
+        leaf.map.push_back(type.getDimSize(i) == 1 ? -1 : perm[d]);
+      form.ops.push_back(op->getName());
+      form.leaves.push_back(leaf);
+      return true;
+    }
+    if (op && op->getNumResults() == 1 && op->getNumRegions() == 0 &&
+        stablehlo::hasTraitElementwise(op) && isPure(op) &&
+        op->getNumOperands() > 0) {
+      form.ops.push_back(op->getName());
+      for (Value operand : op->getOperands())
+        if (!walk(operand, perm, form, depth + 1))
+          return false;
+      return true;
+    }
+    Leaf leaf;
+    leaf.base = v;
+    auto type = cast<RankedTensorType>(v.getType());
+    for (int64_t d = 0; d < type.getRank(); d++)
+      leaf.map.push_back(type.getDimSize(d) == 1 ? -1 : perm[d]);
+    form.leaves.push_back(leaf);
+    return true;
+  }
+
+  // Whether other computes op's result up to a transpose: op's result
+  // dimension r is other's dimension perm[r].
+  static bool matches(stablehlo::ReduceOp op, const Form &form,
+                      stablehlo::ReduceOp other,
+                      SmallVectorImpl<int64_t> &perm) {
+    if (other.getInitValues()[0] != op.getInitValues()[0] ||
+        cast<RankedTensorType>(other.getType(0)).getElementType() !=
+            cast<RankedTensorType>(op.getType(0)).getElementType() ||
+        !OperationEquivalence::isRegionEquivalentTo(
+            &other.getBody(), &op.getBody(),
+            OperationEquivalence::IgnoreLocations))
+      return false;
+    auto inType = cast<RankedTensorType>(op.getInputs()[0].getType());
+    auto otherInType = cast<RankedTensorType>(other.getInputs()[0].getType());
+    int64_t rank = inType.getRank();
+    if (otherInType.getRank() != rank || !inType.hasStaticShape() ||
+        !otherInType.hasStaticShape())
+      return false;
+    Form otherForm;
+    if (!analyze(other.getInputs()[0], otherForm) ||
+        otherForm.ops != form.ops ||
+        otherForm.leaves.size() != form.leaves.size())
+      return false;
+    // p[d]: other's input dimension that op's input dimension d is.
+    SmallVector<int64_t> p(rank, -1);
+    for (auto [a, b] : llvm::zip(form.leaves, otherForm.leaves)) {
+      if (a.base != b.base || a.map.size() != b.map.size())
+        return false;
+      for (auto [x, y] : llvm::zip(a.map, b.map)) {
+        if ((x < 0) != (y < 0))
+          return false;
+        if (x < 0)
+          continue;
+        if (p[x] >= 0 ? p[x] != y : false)
+          return false;
+        p[x] = y;
+      }
+    }
+    // Dimensions no leaf reads along (broadcast only) pair up in order.
+    SmallVector<bool> taken(rank, false);
+    for (int64_t d : p)
+      if (d >= 0)
+        taken[d] = true;
+    for (int64_t d = 0, e = 0; d < rank; d++) {
+      if (p[d] >= 0)
+        continue;
+      while (e < rank && taken[e])
+        e++;
+      if (e == rank)
+        return false;
+      p[d] = e;
+      taken[e] = true;
+    }
+    for (int64_t d = 0; d < rank; d++)
+      if (otherInType.getDimSize(p[d]) != inType.getDimSize(d))
+        return false;
+    // The reduced dimensions map onto other's; the kept ones in order give
+    // the transpose.
+    ArrayRef<int64_t> reduced = op.getDimensions(),
+                      otherReduced = other.getDimensions();
+    if (reduced.size() != otherReduced.size())
+      return false;
+    for (int64_t d : reduced)
+      if (!llvm::is_contained(otherReduced, p[d]))
+        return false;
+    SmallVector<int64_t> otherKept;
+    for (int64_t d = 0; d < rank; d++)
+      if (!llvm::is_contained(otherReduced, d))
+        otherKept.push_back(d);
+    for (int64_t d = 0; d < rank; d++) {
+      if (llvm::is_contained(reduced, d))
+        continue;
+      perm.push_back(llvm::find(otherKept, p[d]) - otherKept.begin());
+    }
+    return true;
+  }
+};
+
 template <typename T> struct CSE final : CheckedOpRewritePattern<T, CSE<T>> {
   using CheckedOpRewritePattern<T, CSE<T>>::CheckedOpRewritePattern;
 
@@ -45159,9 +45347,10 @@ struct EnzymeHLOOptPass
           CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
           CSE<enzymexla::ExtendOp>, CSEIota, CSE<stablehlo::CompareOp>,
           CSE<stablehlo::GatherOp>, CSE<stablehlo::ScatterOp>,
-          CSE<stablehlo::ReduceOp>, CSEDotGeneralTransposed, ConcatViewCSE,
-          CSE<stablehlo::SelectOp>, CSE<stablehlo::RealOp>, CSE<chlo::ConjOp>,
-          CSE<stablehlo::ImagOp>, CSE<stablehlo::BatchNormTrainingOp>,
+          CSE<stablehlo::ReduceOp>, CSEReduceTransposed,
+          CSEDotGeneralTransposed, ConcatViewCSE, CSE<stablehlo::SelectOp>,
+          CSE<stablehlo::RealOp>, CSE<chlo::ConjOp>, CSE<stablehlo::ImagOp>,
+          CSE<stablehlo::BatchNormTrainingOp>,
           CSE<stablehlo::BatchNormInferenceOp>, CSE<stablehlo::BatchNormGradOp>,
           CSE<stablehlo::ExpOp>, CSE<stablehlo::Expm1Op>, CSE<stablehlo::LogOp>,
           CSE<stablehlo::Log1pOp>, CSE<stablehlo::TanhOp>,
