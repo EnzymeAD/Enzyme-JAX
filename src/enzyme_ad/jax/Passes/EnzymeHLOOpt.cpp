@@ -36489,7 +36489,8 @@ struct ConcatenateBroadcastInDim
     // Views only: the rest reordered by a transpose (its expanded unit
     // dimensions dropped by a reshape first), or reshaped where it is only
     // those dimensions that differ (to the stacked shape directly when the
-    // concatenated dimension is expanded). Operands laid out alike stay.
+    // concatenated dimension is expanded, except when hoisted: the inner
+    // broadcasts read the kept dimensions). Operands laid out alike stay.
     SmallVector<Value> normalized;
     for (auto [operand, k, perm, shape] :
          llvm::zip(operands, keptAll, permAll, shapes)) {
@@ -36510,7 +36511,8 @@ struct ConcatenateBroadcastInDim
             pd = llvm::find(k, pd) - k.begin();
         }
         v = stablehlo::TransposeOpCreate(rewriter, op.getLoc(), v, perm);
-      } else if (!expanded && vType.getShape() != ArrayRef<int64_t>(shape)) {
+      } else if ((hoist || !expanded) &&
+                 vType.getShape() != ArrayRef<int64_t>(shape)) {
         v = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), v, shape);
       }
       normalized.push_back(v);
