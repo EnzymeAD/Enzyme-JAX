@@ -17886,7 +17886,7 @@ struct CSEReduceTransposed final
     // have the same height).
     SmallVector<Value> frontier = {form.leaves[0].base};
     for (int64_t depth = 0; depth <= form.height + 1; depth++) {
-      SmallVector<Value> next;
+      SetVector<Value> next;
       for (Value v : frontier)
         for (Operation *user : v.getUsers()) {
           auto other = dyn_cast<stablehlo::ReduceOp>(user);
@@ -17907,9 +17907,9 @@ struct CSEReduceTransposed final
           if (user->getNumResults() == 1 &&
               (isa<stablehlo::TransposeOp, stablehlo::BroadcastInDimOp>(user) ||
                stablehlo::hasTraitElementwise(user)))
-            next.push_back(user->getResult(0));
+            next.insert(user->getResult(0));
         }
-      frontier = next;
+      frontier = next.takeVector();
     }
     return failure();
   }
@@ -17922,12 +17922,21 @@ private:
     SmallVector<int64_t> map;
   };
   // The input's computation: its ops in walk order (the structure) and its
-  // leaves in walk order.
+  // leaves in walk order. The computation is a DAG, so the walk visits a
+  // value once per permutation it is read under: each step of the walk is
+  // an op (kOp, the next of ops), a leaf (kLeaf, the next of leaves) or a
+  // value walked before under the same permutation (kRef + the step that
+  // walked it).
   struct Form {
     SmallVector<OperationName> ops;
     SmallVector<Leaf> leaves;
+    SmallVector<int64_t> steps;
     int64_t height = 0;
+    // The permutation and step of each walk of a value.
+    DenseMap<Value, SmallVector<std::pair<SmallVector<int64_t>, int64_t>, 1>>
+        walked;
   };
+  static constexpr int64_t kOp = 0, kLeaf = 1, kRef = 2;
 
   // Walks v, whose dimension d is input dimension perm[d].
   static bool analyze(Value v, Form &form) {
@@ -17938,11 +17947,18 @@ private:
 
   static bool walk(Value v, ArrayRef<int64_t> perm, Form &form, int64_t depth) {
     form.height = std::max(form.height, depth);
+    for (auto &[walkedPerm, step] : form.walked[v])
+      if (ArrayRef<int64_t>(walkedPerm) == perm) {
+        form.steps.push_back(kRef + step);
+        return true;
+      }
+    form.walked[v].push_back({llvm::to_vector(perm), form.steps.size()});
     Operation *op = v.getDefiningOp();
     if (auto transpose = dyn_cast_or_null<stablehlo::TransposeOp>(op)) {
       SmallVector<int64_t> inner(transpose.getPermutation().size());
       for (auto [o, i] : llvm::enumerate(transpose.getPermutation()))
         inner[i] = perm[o];
+      form.steps.push_back(kOp);
       form.ops.push_back(op->getName());
       return walk(transpose.getOperand(), inner, form, depth + 1);
     }
@@ -17952,6 +17968,7 @@ private:
       auto type = bcast.getOperand().getType();
       for (auto [i, d] : llvm::enumerate(bcast.getBroadcastDimensions()))
         leaf.map.push_back(type.getDimSize(i) == 1 ? -1 : perm[d]);
+      form.steps.push_back(kOp);
       form.ops.push_back(op->getName());
       form.leaves.push_back(leaf);
       return true;
@@ -17959,6 +17976,7 @@ private:
     if (op && op->getNumResults() == 1 && op->getNumRegions() == 0 &&
         stablehlo::hasTraitElementwise(op) && isPure(op) &&
         op->getNumOperands() > 0) {
+      form.steps.push_back(kOp);
       form.ops.push_back(op->getName());
       for (Value operand : op->getOperands())
         if (!walk(operand, perm, form, depth + 1))
@@ -17970,6 +17988,7 @@ private:
     auto type = cast<RankedTensorType>(v.getType());
     for (int64_t d = 0; d < type.getRank(); d++)
       leaf.map.push_back(type.getDimSize(d) == 1 ? -1 : perm[d]);
+    form.steps.push_back(kLeaf);
     form.leaves.push_back(leaf);
     return true;
   }
@@ -17994,7 +18013,7 @@ private:
       return false;
     Form otherForm;
     if (!analyze(other.getInputs()[0], otherForm) ||
-        otherForm.ops != form.ops ||
+        otherForm.steps != form.steps || otherForm.ops != form.ops ||
         otherForm.leaves.size() != form.leaves.size())
       return false;
     // p[d]: other's input dimension that op's input dimension d is.
