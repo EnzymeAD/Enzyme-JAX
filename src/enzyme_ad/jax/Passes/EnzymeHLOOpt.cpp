@@ -12703,6 +12703,9 @@ struct ConcatDotGeneral
     // Whether each operand reads the same elements as the first piece's.
     bool sameLhs = true, sameRhs = true;
     RankedTensorType type;
+    // resultPerm[j]: the piece's own result dimension that is dimension j
+    // of the result in the first's form (identity for the first).
+    SmallVector<int64_t> resultPerm;
   };
 
   // How a run of pieces merges.
@@ -13297,6 +13300,30 @@ private:
                         bcast.getOperand().getType().getNumElements();
   }
 
+  // Where each dimension j of a dot's result in the first's form (the
+  // piece's own dimension resultPerm[j]) lands through the piece's views
+  // (outermost first).
+  static SmallVector<int64_t> layout(ArrayRef<Operation *> views,
+                                     ArrayRef<int64_t> resultPerm) {
+    SmallVector<int64_t> pos(resultPerm);
+    for (Operation *op : llvm::reverse(views)) {
+      if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
+        ArrayRef<int64_t> perm = transpose.getPermutation();
+        SmallVector<int64_t> inv(perm.size());
+        for (auto [o, in] : llvm::enumerate(perm))
+          inv[in] = o;
+        for (int64_t &x : pos)
+          x = inv[x];
+      } else {
+        ArrayRef<int64_t> dims =
+            cast<stablehlo::BroadcastInDimOp>(op).getBroadcastDimensions();
+        for (int64_t &x : pos)
+          x = dims[x];
+      }
+    }
+    return pos;
+  }
+
   static bool sameView(Operation *a, Operation *b) {
     return a->getName() == b->getName() &&
            a->getAttrDictionary() == b->getAttrDictionary() &&
@@ -13342,14 +13369,26 @@ private:
         dot.lhs = op.getLhs();
         dot.rhs = op.getRhs();
         dot.type = op.getType();
+        dot.resultPerm =
+            llvm::to_vector(llvm::seq<int64_t>(0, op.getType().getRank()));
       } else {
-        if (views.size() != plan.views.size())
-          return false;
-        for (auto [x, y] : llvm::zip(views, plan.views))
-          if (!sameView(x, y))
-            return false;
         if (!normalize(op, plan.dots[0], dot))
           return false;
+        // The piece's views must lay the result out as the first's do: land
+        // every dimension of the result in the first's form at the same
+        // position (a piece spelled with its operands swapped has views
+        // undoing that). The first's views then serve the merged
+        // contraction, which is built in the first's form.
+        if (layout(views, dot.resultPerm) !=
+            layout(plan.views, plan.dots[0].resultPerm))
+          return false;
+        ArrayRef<int64_t> shape =
+            cast<RankedTensorType>(piece.getType()).getShape();
+        ArrayRef<int64_t> firstShape =
+            cast<RankedTensorType>(pieces[0].getType()).getShape();
+        for (int64_t d = 0, e = shape.size(); d < e; d++)
+          if (d != concatDim && shape[d] != firstShape[d])
+            return false;
       }
       plan.dots.push_back(dot);
     }
@@ -13652,8 +13691,10 @@ private:
       return false;
     perm = llvm::to_vector(llvm::seq<int64_t>(0, nb + fl + fr));
     if (swapped) {
+      // first's lhs free dimensions are op's rhs free ones, after op's lhs
+      // free ones; first's rhs free dimensions are op's lhs free ones.
       for (int64_t i = 0; i < fl; i++)
-        perm[nb + i] = nb + orr + i;
+        perm[nb + i] = nb + ol + i;
       for (int64_t i = 0; i < fr; i++)
         perm[nb + fl + i] = nb + i;
     }
@@ -13661,9 +13702,9 @@ private:
   }
 
   // op as a Dot in first's form, if it is the same contraction up to the
-  // operand order and the operand layouts. The views above every piece are
-  // the same, so op's result must already be in first's layout: a swapped
-  // piece only when both free groups have the same extents.
+  // operand order and the operand layouts. Its result is in first's layout
+  // up to resultPerm, which the piece's views must undo (checked by the
+  // caller).
   static bool normalize(stablehlo::DotGeneralOp op, const Dot &first,
                         Dot &dot) {
     stablehlo::DotGeneralOp firstOp = first.op;
@@ -13681,17 +13722,11 @@ private:
           !operandPerm(firstOp, op, swapped, 0, perm[0]) ||
           !operandPerm(firstOp, op, swapped, 1, perm[1]))
         continue;
-      ArrayRef<int64_t> shape = op.getType().getShape();
-      bool sameLayout = true;
-      for (auto [i, p] : llvm::enumerate(rperm))
-        if (shape[p] != shape[i])
-          sameLayout = false;
-      if (!sameLayout)
-        continue;
       Value operands[2] = {swapped ? op.getRhs() : op.getLhs(),
                            swapped ? op.getLhs() : op.getRhs()};
       dot.op = op;
       dot.type = op.getType();
+      dot.resultPerm = rperm;
       for (int side = 0; side < 2; side++) {
         Source src;
         source(operands[side], src);
