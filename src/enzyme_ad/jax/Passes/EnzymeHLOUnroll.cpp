@@ -204,6 +204,10 @@ LogicalResult unrollWhileOp(mlir::stablehlo::WhileOp op, RewriterBase &rewriter,
 LogicalResult
 WhileUnroll::matchAndRewriteImpl(mlir::stablehlo::WhileOp op,
                                  PatternRewriter &rewriter) const {
+  // A loop over the chunks of a batched parallel loop is there to keep one
+  // chunk's values at a time; unrolled, they would all be kept at once.
+  if (op->hasAttr("enzymexla.chunks"))
+    return rewriter.notifyMatchFailure(op, "a loop over batch chunks");
   return unrollWhileOp(op, rewriter, maxNumIterations, maxOperationThreshold,
                        nullptr, maxBoundedIterations, boundedGuardIf);
 }

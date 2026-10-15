@@ -332,11 +332,21 @@ struct ParallelWhileToBatchedScatter
       mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::WhileOp,
                                             ParallelWhileToBatchedScatter>;
   using Base::Base;
+  // At least `minChunks` chunks: the iterations are batched a chunk at a
+  // time, in a loop over the chunks, when batching them all at once would
+  // not fit the device (the caller knows; nothing here can tell how much of
+  // a batch XLA keeps).
+  ParallelWhileToBatchedScatter(mlir::MLIRContext *ctx, int64_t minChunks,
+                                mlir::PatternBenefit benefit = 1)
+      : Base(ctx, benefit), minChunks(minChunks) {}
 
   // Invariant operands broadcast to the batch are materialized; refuse when
   // that would be large (a table read through dynamic_slice is gathered, not
   // broadcast).
   static constexpr int64_t kMaxBroadcastElements = int64_t(1) << 24;
+  // The most chunks a loop is split into to fit that budget.
+  static constexpr int64_t kMaxChunks = 4096;
+  int64_t minChunks = 1;
 
   mlir::LogicalResult
   matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
