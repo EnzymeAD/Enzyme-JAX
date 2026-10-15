@@ -1833,6 +1833,10 @@ def ConcatToBroadcastPatterns : EnzymeHLOPatternOp<
     "concat_to_broadcast"> {
   let patterns = ["ConcatToBroadcast"];
 }
+def ApplyConcatPeriodicPatterns : EnzymeHLOPatternOp<
+    "concat_periodic"> {
+  let patterns = ["ConcatPeriodic"];
+}
 def ConcatSlicesToReversePatterns : EnzymeHLOPatternOp<
     "concat_slices_to_reverse"> {
   let patterns = ["ConcatSlicesToReverse"];
