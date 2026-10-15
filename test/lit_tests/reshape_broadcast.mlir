@@ -19,3 +19,18 @@ module @reactant_kernel_... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:    %0 = stablehlo.dot_general %arg1, %arg0, contracting_dims = [1] x [0] : (tensor<512x512xf32>, tensor<512x1024x256xf32>) -> tensor<512x1024x256xf32>
 // CHECK-NEXT:    return %0 : tensor<512x1024x256xf32>
 // CHECK-NEXT:  }
+
+// The broadcast has another user: a view, so the reshape of it still
+// becomes a broadcast of the operand.
+func.func @other_user(%x: tensor<8x432x4xf32>) -> (tensor<1x8x4x432xf32>, tensor<8x4x432x1xf32>) {
+  %0 = stablehlo.broadcast_in_dim %x, dims = [0, 2, 1] : (tensor<8x432x4xf32>) -> tensor<8x4x432x1xf32>
+  %1 = stablehlo.reshape %0 : (tensor<8x4x432x1xf32>) -> tensor<1x8x4x432xf32>
+  return %1, %0 : tensor<1x8x4x432xf32>, tensor<8x4x432x1xf32>
+}
+
+// CHECK-LABEL: func.func @other_user(
+// CHECK-SAME: %[[X:[^ ,:)]+]]: tensor<8x432x4xf32>) -> (tensor<1x8x4x432xf32>, tensor<8x4x432x1xf32>) {
+// CHECK-NEXT: %[[B:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[X]], dims = [0, 2, 1] : (tensor<8x432x4xf32>) -> tensor<8x4x432x1xf32>
+// CHECK-NEXT: %[[R:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[X]], dims = [1, 3, 2] : (tensor<8x432x4xf32>) -> tensor<1x8x4x432xf32>
+// CHECK-NEXT: return %[[R]], %[[B]] : tensor<1x8x4x432xf32>, tensor<8x4x432x1xf32>
+// CHECK-NEXT: }

@@ -8946,9 +8946,11 @@ struct ReshapeBroadcast final
   LogicalResult matchAndRewriteImpl(stablehlo::ReshapeOp op,
                                     PatternRewriter &rewriter) const {
     auto bcast = op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
-    if (!bcast || !llvm::hasSingleElement(bcast->getUsers())) {
+    if (!bcast)
       return failure();
-    }
+    // The broadcast may have other users: it is a view, so one of its
+    // operand for this reshape alone duplicates nothing, and the reshape
+    // (a copy when it moves dimensions) goes away.
 
     auto deletionDims =
         findReshapeInsertionDims(op.getType(), op.getOperand().getType());
