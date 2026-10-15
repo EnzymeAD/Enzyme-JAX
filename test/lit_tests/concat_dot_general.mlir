@@ -404,3 +404,25 @@ func.func @swapped_spelling(%b: tensor<3x4xf64>, %x0: tensor<8x4x4xf64>, %x1: te
 // CHECK-NEXT: %[[P:[^ ,:)]+]] = stablehlo.transpose %[[R]], dims = [1, 0, 2] : (tensor<9x8x4xf64>) -> tensor<8x9x4xf64>
 // CHECK-NEXT: return %[[P]] : tensor<8x9x4xf64>
 // CHECK-NEXT: }
+
+// A swapped piece of a different extent along the concatenated dimension
+// (the run of 65 rows beside two single rows, as the vector mass apply has
+// them): the merged result's extent is summed through each piece's own
+// result dimension.
+func.func @swapped_extent(%b: tensor<5x6xf64>, %x0: tensor<8x5x6xf64>, %x1: tensor<8x5x6xf64>, %xr: tensor<8x65x6xf64>) -> tensor<8x75x5xf64> {
+  %d0 = stablehlo.dot_general %b, %x0, contracting_dims = [1] x [2] : (tensor<5x6xf64>, tensor<8x5x6xf64>) -> tensor<5x8x5xf64>
+  %t0 = stablehlo.transpose %d0, dims = [1, 2, 0] : (tensor<5x8x5xf64>) -> tensor<8x5x5xf64>
+  %d1 = stablehlo.dot_general %b, %x1, contracting_dims = [1] x [2] : (tensor<5x6xf64>, tensor<8x5x6xf64>) -> tensor<5x8x5xf64>
+  %t1 = stablehlo.transpose %d1, dims = [1, 2, 0] : (tensor<5x8x5xf64>) -> tensor<8x5x5xf64>
+  %dr = stablehlo.dot_general %xr, %b, contracting_dims = [2] x [1] : (tensor<8x65x6xf64>, tensor<5x6xf64>) -> tensor<8x65x5xf64>
+  %c = stablehlo.concatenate %t0, %t1, %dr, dim = 1 : (tensor<8x5x5xf64>, tensor<8x5x5xf64>, tensor<8x65x5xf64>) -> tensor<8x75x5xf64>
+  return %c : tensor<8x75x5xf64>
+}
+
+// CHECK-LABEL: func.func @swapped_extent(
+// CHECK-SAME: %[[B:[^ ,:)]+]]: tensor<5x6xf64>, %[[X0:[^ ,:)]+]]: tensor<8x5x6xf64>, %[[X1:[^ ,:)]+]]: tensor<8x5x6xf64>, %[[XR:[^ ,:)]+]]: tensor<8x65x6xf64>) -> tensor<8x75x5xf64> {
+// CHECK-NEXT: %[[C:[^ ,:)]+]] = stablehlo.concatenate %[[X0]], %[[X1]], %[[XR]], dim = 1 : (tensor<8x5x6xf64>, tensor<8x5x6xf64>, tensor<8x65x6xf64>) -> tensor<8x75x6xf64>
+// CHECK-NEXT: %[[D:[^ ,:)]+]] = stablehlo.dot_general %[[B]], %[[C]], contracting_dims = [1] x [2] : (tensor<5x6xf64>, tensor<8x75x6xf64>) -> tensor<5x8x75xf64>
+// CHECK-NEXT: %[[T:[^ ,:)]+]] = stablehlo.transpose %[[D]], dims = [1, 2, 0] : (tensor<5x8x75xf64>) -> tensor<8x75x5xf64>
+// CHECK-NEXT: return %[[T]] : tensor<8x75x5xf64>
+// CHECK-NEXT: }
