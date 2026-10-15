@@ -192,3 +192,25 @@ func.func @stacked_broadcast(%a: tensor<3x8x4x4xf64>, %b: tensor<3x8x4x4xf64>, %
 // CHECK-NEXT: %[[O:[^ ,:)]+]] = stablehlo.reshape %[[V]] : (tensor<3x1x8x4x4xf64>) -> tensor<3x8x4x4xf64>
 // CHECK-NEXT: return %[[O]] : tensor<3x8x4x4xf64>
 // CHECK-NEXT: }
+
+// A reduction keeping a unit dimension the other does not have (its
+// result reshaped to match): the inputs differ in rank, so no concatenate
+// of them exists; left alone (delete_dims_reduce folds that reshape).
+func.func @kept_unit(%x: tensor<8x4x4x3xf64>, %y: tensor<8x4x4x3x1xf64>) -> tensor<8x4x6xf64> {
+  %z = stablehlo.constant dense<0.0> : tensor<f64>
+  %0 = stablehlo.reduce(%x init: %z) applies stablehlo.add across dimensions = [1] : (tensor<8x4x4x3xf64>, tensor<f64>) -> tensor<8x4x3xf64>
+  %1 = stablehlo.reduce(%y init: %z) applies stablehlo.add across dimensions = [1] : (tensor<8x4x4x3x1xf64>, tensor<f64>) -> tensor<8x4x3x1xf64>
+  %r = stablehlo.reshape %1 : (tensor<8x4x3x1xf64>) -> tensor<8x4x3xf64>
+  %c = stablehlo.concatenate %0, %r, dim = 2 : (tensor<8x4x3xf64>, tensor<8x4x3xf64>) -> tensor<8x4x6xf64>
+  return %c : tensor<8x4x6xf64>
+}
+
+// CHECK-LABEL: func.func @kept_unit(
+// CHECK-SAME: %[[X:[^ ,:)]+]]: tensor<8x4x4x3xf64>, %[[Y:[^ ,:)]+]]: tensor<8x4x4x3x1xf64>) -> tensor<8x4x6xf64> {
+// CHECK-NEXT: %[[Z:[^ ,:)]+]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT: %[[RX:[^ ,:)]+]] = stablehlo.reduce(%[[X]] init: %[[Z]]) applies stablehlo.add across dimensions = [1] : (tensor<8x4x4x3xf64>, tensor<f64>) -> tensor<8x4x3xf64>
+// CHECK-NEXT: %[[RY:[^ ,:)]+]] = stablehlo.reduce(%[[Y]] init: %[[Z]]) applies stablehlo.add across dimensions = [1] : (tensor<8x4x4x3x1xf64>, tensor<f64>) -> tensor<8x4x3x1xf64>
+// CHECK-NEXT: %[[R:[^ ,:)]+]] = stablehlo.reshape %[[RY]] : (tensor<8x4x3x1xf64>) -> tensor<8x4x3xf64>
+// CHECK-NEXT: %[[C:[^ ,:)]+]] = stablehlo.concatenate %[[RX]], %[[R]], dim = 2 : (tensor<8x4x3xf64>, tensor<8x4x3xf64>) -> tensor<8x4x6xf64>
+// CHECK-NEXT: return %[[C]] : tensor<8x4x6xf64>
+// CHECK-NEXT: }
