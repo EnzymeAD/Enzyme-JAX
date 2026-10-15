@@ -214,3 +214,24 @@ func.func @kept_unit(%x: tensor<8x4x4x3xf64>, %y: tensor<8x4x4x3x1xf64>) -> tens
 // CHECK-NEXT: %[[C:[^ ,:)]+]] = stablehlo.concatenate %[[RX]], %[[R]], dim = 2 : (tensor<8x4x3xf64>, tensor<8x4x3xf64>) -> tensor<8x4x6xf64>
 // CHECK-NEXT: return %[[C]] : tensor<8x4x6xf64>
 // CHECK-NEXT: }
+
+// A piece reducing its stacked dimension placed elsewhere (dimension 1 of
+// [8, 5, 5, 5] beside dimension 0 of [5, 8, 5, 5]): the same reduction of
+// its input transposed into the first's form.
+func.func @permuted_input(%a: tensor<5x8x5x5xf64>, %b: tensor<8x5x5x5xf64>, %c: tensor<5x8x5x5xf64>) -> tensor<8x5x15xf64> {
+  %z = stablehlo.constant dense<0.0> : tensor<f64>
+  %ra = stablehlo.reduce(%a init: %z) applies stablehlo.add across dimensions = [0] : (tensor<5x8x5x5xf64>, tensor<f64>) -> tensor<8x5x5xf64>
+  %rb = stablehlo.reduce(%b init: %z) applies stablehlo.add across dimensions = [1] : (tensor<8x5x5x5xf64>, tensor<f64>) -> tensor<8x5x5xf64>
+  %rc = stablehlo.reduce(%c init: %z) applies stablehlo.add across dimensions = [0] : (tensor<5x8x5x5xf64>, tensor<f64>) -> tensor<8x5x5xf64>
+  %r = stablehlo.concatenate %ra, %rb, %rc, dim = 2 : (tensor<8x5x5xf64>, tensor<8x5x5xf64>, tensor<8x5x5xf64>) -> tensor<8x5x15xf64>
+  return %r : tensor<8x5x15xf64>
+}
+
+// CHECK-LABEL: func.func @permuted_input(
+// CHECK-SAME: %[[A:[^ ,:)]+]]: tensor<5x8x5x5xf64>, %[[B:[^ ,:)]+]]: tensor<8x5x5x5xf64>, %[[C:[^ ,:)]+]]: tensor<5x8x5x5xf64>) -> tensor<8x5x15xf64> {
+// CHECK-NEXT: %[[Z:[^ ,:)]+]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT: %[[BT:[^ ,:)]+]] = stablehlo.transpose %[[B]], dims = [1, 0, 2, 3] : (tensor<8x5x5x5xf64>) -> tensor<5x8x5x5xf64>
+// CHECK-NEXT: %[[CC:[^ ,:)]+]] = stablehlo.concatenate %[[A]], %[[BT]], %[[C]], dim = 3 : (tensor<5x8x5x5xf64>, tensor<5x8x5x5xf64>, tensor<5x8x5x5xf64>) -> tensor<5x8x5x15xf64>
+// CHECK-NEXT: %[[R:[^ ,:)]+]] = stablehlo.reduce(%[[CC]] init: %[[Z]]) applies stablehlo.add across dimensions = [0] : (tensor<5x8x5x15xf64>, tensor<f64>) -> tensor<8x5x15xf64>
+// CHECK-NEXT: return %[[R]] : tensor<8x5x15xf64>
+// CHECK-NEXT: }
