@@ -168,3 +168,25 @@ func.func @unit_dims(%a: tensor<1x8x4x4x1xf64>, %b: tensor<8x4x4xf64>, %c: tenso
 // CHECK-NEXT: %[[R:[^ ,:)]+]] = stablehlo.reshape %[[BC]] : (tensor<3x3x8x4x4x1xf64>) -> tensor<9x8x4x4x1xf64>
 // CHECK-NEXT: return %[[R]] : tensor<9x8x4x4x1xf64>
 // CHECK-NEXT: }
+
+// Broadcasts expanding the concatenated dimension to different extents (a
+// selection of basis rows: 5 of B, then 20 of G, twice): the concatenation
+// is the broadcast of the same concatenation without the dimension every
+// operand expands (the elements), as much smaller.
+func.func @hoist_expanded(%b: tensor<5x5xf64>, %g: tensor<5x5xf64>) -> tensor<5x8x50x5xf64> {
+  %0 = stablehlo.broadcast_in_dim %b, dims = [3, 0] : (tensor<5x5xf64>) -> tensor<5x8x5x5xf64>
+  %1 = stablehlo.broadcast_in_dim %g, dims = [3, 0] : (tensor<5x5xf64>) -> tensor<5x8x20x5xf64>
+  %2 = stablehlo.concatenate %0, %1, %0, %1, dim = 2 : (tensor<5x8x5x5xf64>, tensor<5x8x20x5xf64>, tensor<5x8x5x5xf64>, tensor<5x8x20x5xf64>) -> tensor<5x8x50x5xf64>
+  return %2 : tensor<5x8x50x5xf64>
+}
+
+// CHECK-LABEL: func.func @hoist_expanded(
+// CHECK-SAME: %[[B:[^ ,:)]+]]: tensor<5x5xf64>, %[[G:[^ ,:)]+]]: tensor<5x5xf64>) -> tensor<5x8x50x5xf64> {
+// CHECK-NEXT: %[[B0:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[B]], dims = [2, 0] : (tensor<5x5xf64>) -> tensor<5x5x5xf64>
+// CHECK-NEXT: %[[G0:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[G]], dims = [2, 0] : (tensor<5x5xf64>) -> tensor<5x20x5xf64>
+// CHECK-NEXT: %[[B1:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[B]], dims = [2, 0] : (tensor<5x5xf64>) -> tensor<5x5x5xf64>
+// CHECK-NEXT: %[[G1:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[G]], dims = [2, 0] : (tensor<5x5xf64>) -> tensor<5x20x5xf64>
+// CHECK-NEXT: %[[C:[^ ,:)]+]] = stablehlo.concatenate %[[B0]], %[[G0]], %[[B1]], %[[G1]], dim = 1 : (tensor<5x5x5xf64>, tensor<5x20x5xf64>, tensor<5x5x5xf64>, tensor<5x20x5xf64>) -> tensor<5x50x5xf64>
+// CHECK-NEXT: %[[R:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[C]], dims = [0, 2, 3] : (tensor<5x50x5xf64>) -> tensor<5x8x50x5xf64>
+// CHECK-NEXT: return %[[R]] : tensor<5x8x50x5xf64>
+// CHECK-NEXT: }
