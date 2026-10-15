@@ -36166,14 +36166,15 @@ struct ConcatenateBroadcastInDim
   }
 
 private:
-  // The operand dimensions a broadcast reads, other than unit ones it
-  // expands, and the output dimension each lands at.
+  // The operand dimensions a broadcast reads, other than unit ones (which
+  // it expands, or which only mark an output dimension the operand could
+  // as well not have), and the output dimension each lands at.
   static void layout(stablehlo::BroadcastInDimOp bcast,
                      SmallVectorImpl<int64_t> &kept,
                      SmallVectorImpl<int64_t> &dims) {
     auto type = bcast.getOperand().getType();
     for (auto [i, d] : llvm::enumerate(bcast.getBroadcastDimensions())) {
-      if (type.getDimSize(i) == 1 && bcast.getType().getDimSize(d) != 1)
+      if (type.getDimSize(i) == 1)
         continue;
       kept.push_back(i);
       dims.push_back(d);
