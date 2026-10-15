@@ -14060,6 +14060,12 @@ struct ConcatReduce
     // them and the reduced dimensions renumbered.
     SmallVector<stablehlo::ReduceOp> reduces;
     SmallVector<SmallVector<int64_t>> shapes, dimss;
+    // Per piece, the permutation of its (unit-dropped) input into the
+    // first's form (empty: already so): the reduced dimensions to where
+    // the first's are, the kept dimensions in order to where the first's
+    // kept ones are. A piece reducing a stacked dimension placed elsewhere
+    // is the same reduction of a transposed input.
+    SmallVector<SmallVector<int64_t>> perms;
     for (Value v : concat.getOperands()) {
       if (!v.hasOneUse())
         return failure();
@@ -14097,15 +14103,41 @@ struct ConcatReduce
       if (unitReduced && dims.empty())
         return failure();
       if (!reduces.empty() &&
-          (dims != dimss[0] ||
-           reduce.getInitValues() != reduces[0].getInitValues() ||
+          (reduce.getInitValues() != reduces[0].getInitValues() ||
            !OperationEquivalence::isRegionEquivalentTo(
                &reduce.getBody(), &reduces[0].getBody(),
                OperationEquivalence::IgnoreLocations)))
         return failure();
+      SmallVector<int64_t> perm;
+      if (!reduces.empty() && dims != dimss[0]) {
+        ArrayRef<int64_t> shape0 = shapes[0], dims0 = dimss[0];
+        if (shape.size() != shape0.size() || dims.size() != dims0.size())
+          return failure();
+        SmallVector<int64_t> kept, kept0;
+        for (int64_t d = 0, e = shape.size(); d < e; d++) {
+          if (!llvm::is_contained(dims, d))
+            kept.push_back(d);
+          if (!llvm::is_contained(dims0, d))
+            kept0.push_back(d);
+        }
+        perm.assign(shape.size(), -1);
+        for (auto [p, q] : llvm::zip(dims0, dims))
+          perm[p] = q;
+        for (auto [p, q] : llvm::zip(kept0, kept))
+          perm[p] = q;
+        SmallVector<int64_t> permuted;
+        for (int64_t q : perm)
+          permuted.push_back(shape[q]);
+        for (int64_t p : dims0)
+          if (permuted[p] != shape0[p])
+            return failure();
+        shape = permuted;
+        dims.assign(dims0.begin(), dims0.end());
+      }
       reduces.push_back(reduce);
       shapes.push_back(shape);
       dimss.push_back(dims);
+      perms.push_back(perm);
     }
 
     // The dimension of the reductions' results that is concatenated.
@@ -14114,7 +14146,7 @@ struct ConcatReduce
     if (llvm::any_of(concat.getOperands(), [](Value v) {
           return v.getDefiningOp<stablehlo::BroadcastInDimOp>() != nullptr;
         }))
-      return stackReduces(concat, reduces, shapes, dimss, rewriter);
+      return stackReduces(concat, reduces, shapes, dimss, perms, rewriter);
     for (int64_t i = 0, prefix = 1, e = resultType.getRank(); i < e;
          prefix *= resultType.getShape()[i++]) {
       if (prefix != before)
@@ -14139,7 +14171,7 @@ struct ConcatReduce
       }
     }
     if (a < 0)
-      return stackReduces(concat, reduces, shapes, dimss, rewriter);
+      return stackReduces(concat, reduces, shapes, dimss, perms, rewriter);
 
     // The input dimension the concatenated result dimension comes from.
     ArrayRef<int64_t> reduced = dimss[0];
@@ -14166,12 +14198,24 @@ struct ConcatReduce
     SmallVector<Value> inputs;
     SmallVector<int64_t> shape(resultType.getShape());
     shape[a] = 0;
-    for (auto [reduce, inShape] : llvm::zip(reduces, shapes)) {
+    for (auto [reduce, inShape, perm] : llvm::zip(reduces, shapes, perms)) {
       Value input = reduce.getInputs()[0];
-      if (cast<RankedTensorType>(input.getType()).getShape() !=
-          ArrayRef<int64_t>(inShape))
+      if (!perm.empty()) {
+        // The unit-dropped input, then permuted into the first's form.
+        SmallVector<int64_t> dropped;
+        for (int64_t q = 0, e = perm.size(); q < e; q++)
+          dropped.push_back(inShape[llvm::find(perm, q) - perm.begin()]);
+        if (cast<RankedTensorType>(input.getType()).getShape() !=
+            ArrayRef<int64_t>(dropped))
+          input = stablehlo::ReshapeOpCreate(rewriter, concat.getLoc(), input,
+                                             dropped);
+        input = stablehlo::TransposeOpCreate(rewriter, concat.getLoc(), input,
+                                             perm);
+      } else if (cast<RankedTensorType>(input.getType()).getShape() !=
+                 ArrayRef<int64_t>(inShape)) {
         input = stablehlo::ReshapeOpCreate(rewriter, concat.getLoc(), input,
                                            inShape);
+      }
       inputs.push_back(input);
       shape[a] += cast<RankedTensorType>(reduce.getType(0)).getShape()[a];
     }
@@ -14208,7 +14252,13 @@ struct ConcatReduce
                              MutableArrayRef<stablehlo::ReduceOp> reduces,
                              ArrayRef<SmallVector<int64_t>> shapes,
                              ArrayRef<SmallVector<int64_t>> dimss,
+                             ArrayRef<SmallVector<int64_t>> perms,
                              PatternRewriter &rewriter) const {
+    // Stacked inputs are read whole: a piece permuted into the first's
+    // form is not handled here.
+    for (ArrayRef<int64_t> perm : perms)
+      if (!perm.empty())
+        return failure();
     int64_t c = concat.getDimension();
     auto resultType = cast<RankedTensorType>(reduces[0].getType(0));
     auto pieceType = cast<RankedTensorType>(concat.getOperand(0).getType());
