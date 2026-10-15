@@ -59,7 +59,7 @@ func.func @gather_only(%out: memref<?xf64, 1>, %nd: i32, %in: memref<?xf64, 1>) 
 // CHECK-NEXT:     %c4 = arith.constant 4 : index
 // CHECK-NEXT:     affine.store %arg1, %alloca[] : memref<i32>
 // CHECK-NEXT:     %c4_1 = arith.constant 4 : index
-// CHECK-NEXT:     enzymexla.xla_wrapper @rxla$raised_0 (%arg3, %arg0, %arg2, %arg1) {num_specialized = 2 : i64} : (memref<?xf64, 1>, memref<?xf64, 1>, i32, i32) -> ()
+// CHECK-NEXT:     enzymexla.xla_wrapper @rxla$raised_0 (%arg3, %arg0, %arg2, %arg1) <num_specialized = 2> : (memref<?xf64, 1>, memref<?xf64, 1>, i32, i32) -> ()
 // CHECK-NEXT:     %c0 = arith.constant 0 : index
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return
@@ -72,7 +72,7 @@ func.func @gather_only(%out: memref<?xf64, 1>, %nd: i32, %in: memref<?xf64, 1>) 
 // CHECK-NEXT:   %0 = arith.index_cast %arg1 : i32 to index
 // CHECK-NEXT:   affine.store %arg1, %alloca[] : memref<i32>
 // CHECK-NEXT:   %c4 = arith.constant 4 : index
-// CHECK-NEXT:   enzymexla.xla_wrapper @rxla$raised_1 (%arg2, %arg0, %arg1) {num_specialized = 1 : i64} : (memref<?xf64, 1>, memref<?xf64, 1>, i32) -> ()
+// CHECK-NEXT:   enzymexla.xla_wrapper @rxla$raised_1 (%arg2, %arg0, %arg1) <num_specialized = 1> : (memref<?xf64, 1>, memref<?xf64, 1>, i32) -> ()
 // CHECK-NEXT:   %c0 = arith.constant 0 : index
 // CHECK-NEXT:   return
 // CHECK-NEXT: }
@@ -92,7 +92,7 @@ func.func @gather_only(%out: memref<?xf64, 1>, %nd: i32, %in: memref<?xf64, 1>) 
 // BOUNDS-NEXT:     enzymexla.memcpy  %memref, %alloca_0, %c4 : memref<i32, 1>, memref<i32>
 // BOUNDS-NEXT:     affine.store %arg1, %alloca[] : memref<i32>
 // BOUNDS-NEXT:     %c4_1 = arith.constant 4 : index
-// BOUNDS-NEXT:     enzymexla.xla_wrapper @rxla$raised_0 (%arg3, %memref, %arg0, %arg1) {num_specialized = 1 : i64} : (memref<?xf64, 1>, memref<i32, 1>, memref<?xf64, 1>, i32) -> ()
+// BOUNDS-NEXT:     enzymexla.xla_wrapper @rxla$raised_0 (%arg3, %memref, %arg0, %arg1) <num_specialized = 1> : (memref<?xf64, 1>, memref<i32, 1>, memref<?xf64, 1>, i32) -> ()
 // BOUNDS-NEXT:     %c0 = arith.constant 0 : index
 // BOUNDS-NEXT:     gpu.dealloc  %memref : memref<i32, 1>
 // BOUNDS-NEXT:   }
@@ -127,7 +127,7 @@ func.func @gather_only(%out: memref<?xf64, 1>, %nd: i32, %in: memref<?xf64, 1>) 
 // GATHER-NEXT:     %c4 = arith.constant 4 : index
 // GATHER-NEXT:     affine.store %arg1, %alloca[] : memref<i32>
 // GATHER-NEXT:     %c4_1 = arith.constant 4 : index
-// GATHER-NEXT:     enzymexla.xla_wrapper @rxla$raised_0 (%arg3, %arg0, %arg2, %arg1) {num_specialized = 2 : i64} : (memref<?xf64, 1>, memref<?xf64, 1>, i32, i32) -> ()
+// GATHER-NEXT:     enzymexla.xla_wrapper @rxla$raised_0 (%arg3, %arg0, %arg2, %arg1) <num_specialized = 2> : (memref<?xf64, 1>, memref<?xf64, 1>, i32, i32) -> ()
 // GATHER-NEXT:     %c0 = arith.constant 0 : index
 // GATHER-NEXT:   }
 // GATHER-NEXT:   return
@@ -140,7 +140,7 @@ func.func @gather_only(%out: memref<?xf64, 1>, %nd: i32, %in: memref<?xf64, 1>) 
 // GATHER-NEXT:   %0 = arith.index_cast %arg1 : i32 to index
 // GATHER-NEXT:   affine.store %arg1, %alloca[] : memref<i32>
 // GATHER-NEXT:   %c4 = arith.constant 4 : index
-// GATHER-NEXT:   enzymexla.xla_wrapper @rxla$raised_1 (%arg2, %arg0, %arg1) {num_specialized = 1 : i64} : (memref<?xf64, 1>, memref<?xf64, 1>, i32) -> ()
+// GATHER-NEXT:   enzymexla.xla_wrapper @rxla$raised_1 (%arg2, %arg0, %arg1) <num_specialized = 1> : (memref<?xf64, 1>, memref<?xf64, 1>, i32) -> ()
 // GATHER-NEXT:   %c0 = arith.constant 0 : index
 // GATHER-NEXT:   return
 // GATHER-NEXT: }

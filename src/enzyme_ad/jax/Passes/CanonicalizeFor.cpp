@@ -2770,6 +2770,49 @@ struct RemoveWhileSelect : public OpRewritePattern<WhileOp> {
   }
 };
 
+// Whether `v`, a value an iteration of `loop` carries into before-region
+// argument `i`, can only be that argument's initial value or the argument
+// itself: either one, a select between two such values, or an after-region
+// argument whose condition operand is one.
+static bool isInitOrSelf(Value v, WhileOp loop, unsigned i) {
+  if (v == loop.getInits()[i])
+    return true;
+  if (auto arg = dyn_cast<BlockArgument>(v)) {
+    if (arg.getOwner() == loop.getBeforeBody())
+      return arg.getArgNumber() == i;
+    if (arg.getOwner() == loop.getAfterBody())
+      return isInitOrSelf(loop.getConditionOp().getArgs()[arg.getArgNumber()],
+                          loop, i);
+    return false;
+  }
+  auto sel = v.getDefiningOp<arith::SelectOp>();
+  return sel && isInitOrSelf(sel.getTrueValue(), loop, i) &&
+         isInitOrSelf(sel.getFalseValue(), loop, i);
+}
+
+/// A loop-carried value that every iteration either keeps or resets to its
+/// initial value never changes: it is the initial value throughout. Clang
+/// leaves one such behind when it hoists a loop guard that re-reads a bound,
+/// e.g. MFEM's `for (qz < Q1D)` around MFEM_FOREACH_THREAD_DIRECT, and the
+/// loop it controls is then not recognized as counted.
+struct WhileInitOrSelfArg : public OpRewritePattern<WhileOp> {
+  using OpRewritePattern<WhileOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(WhileOp loop,
+                                PatternRewriter &rewriter) const override {
+    bool changed = false;
+    for (auto [i, arg] : llvm::enumerate(loop.getBeforeArguments())) {
+      Value init = loop.getInits()[i];
+      if (arg.use_empty() || arg.getType() != init.getType() ||
+          !isInitOrSelf(loop.getYieldOp().getOperand(i), loop, i))
+        continue;
+      rewriter.replaceAllUsesWith(arg, init);
+      changed = true;
+    }
+    return success(changed);
+  }
+};
+
 struct MoveWhileDown3 : public OpRewritePattern<WhileOp> {
   using OpRewritePattern<WhileOp>::OpRewritePattern;
 
@@ -4040,10 +4083,10 @@ void CanonicalizeFor::runOnOperation() {
   populateSelectExtractPatterns(rpl);
   rpl.add<IfYieldMovementPattern, truncProp, ForOpInductionReplacement,
           RemoveUnusedForResults, RemoveUnusedArgs, MoveWhileToFor,
-          RemoveWhileSelect, SelectTruncToTruncSelect, MaxSimplify,
-          ForBoundUnSwitch, SelectI1Simplify, RemoveInductionVarRelated,
-          ForOpFinalValueOfDeadIterArg, RotateWhileAnd, MoveWhileDown,
-          MoveWhileDown2,
+          RemoveWhileSelect, WhileInitOrSelfArg, SelectTruncToTruncSelect,
+          MaxSimplify, ForBoundUnSwitch, SelectI1Simplify,
+          RemoveInductionVarRelated, ForOpFinalValueOfDeadIterArg,
+          RotateWhileAnd, MoveWhileDown, MoveWhileDown2,
 
           ReplaceRedundantArgs,
 

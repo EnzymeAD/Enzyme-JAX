@@ -32,7 +32,7 @@ module {
     %c_3 = stablehlo.constant dense<1> : tensor<i64>
     %c_4 = stablehlo.constant dense<1> : tensor<i64>
     %c_5 = stablehlo.constant dense<0> : tensor<i64>
-    %0 = enzymexla.kernel_call @"##call__Z8tuplef2_5TupleI5Int6413CuTracedArrayIS0_Li0ELi1E2__EE#258" blocks in(%c, %c_0, %c_1) threads in(%c_2, %c_3, %c_4) shmem = %c_5 (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<i64>) -> tensor<i64>
+    %0 = enzymexla.kernel_call @"##call__Z8tuplef2_5TupleI5Int6413CuTracedArrayIS0_Li0ELi1E2__EE#258" blocks in(%c, %c_0, %c_1) threads in(%c_2, %c_3, %c_4) shmem = %c_5 (%arg0) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<i64>) -> tensor<i64>
     return %0 : tensor<i64>
   }
 }
@@ -40,7 +40,7 @@ module {
 // CHECK:  func.func @main(%arg0: tensor<i64>) -> tensor<i64> {
 // CHECK-NEXT:    %c = stablehlo.constant dense<1> : tensor<i64>
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:    %0 = enzymexla.kernel_call @"##call__Z8tuplef2_5TupleI5Int6413CuTracedArrayIS0_Li0ELi1E2__EE#258" blocks in(%c, %c, %c) threads in(%c, %c, %c) shmem = %c_0 (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<i64>) -> tensor<i64>
+// CHECK-NEXT:    %0 = enzymexla.kernel_call @"##call__Z8tuplef2_5TupleI5Int6413CuTracedArrayIS0_Li0ELi1E2__EE#258" blocks in(%c, %c, %c) threads in(%c, %c, %c) shmem = %c_0 (%arg0) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]> : (tensor<i64>) -> tensor<i64>
 // CHECK-NEXT:    return %0 : tensor<i64>
 // CHECK-NEXT:  }
 // CHECK:  llvm.func ptx_kernelcc @"##call__Z8tuplef2_5TupleI5Int6413CuTracedArrayIS0_Li0ELi1E2__EE#258"(%arg0: !llvm.ptr<1>

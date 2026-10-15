@@ -10,3 +10,14 @@ func.func @transpose(%928 : tensor<1x4x1x20x160xbf16>) -> tensor<1x1x48x160xbf16
 // CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<1x1x48x160xbf16>
 // CHECK-NEXT:    return %[[i0]] : tensor<1x1x48x160xbf16>
 // CHECK-NEXT:  }
+
+func.func @complex(%arg0 : tensor<2x3xcomplex<f64>>) -> tensor<4x3xcomplex<f64>> {
+  %cst = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<4x2xcomplex<f64>>
+  %0 = stablehlo.dot_general %cst, %arg0, contracting_dims = [1] x [0] : (tensor<4x2xcomplex<f64>>, tensor<2x3xcomplex<f64>>) -> tensor<4x3xcomplex<f64>>
+  return %0 : tensor<4x3xcomplex<f64>>
+}
+
+// CHECK:  func.func @complex(%arg0: tensor<2x3xcomplex<f64>>) -> tensor<4x3xcomplex<f64>> {
+// CHECK-NEXT:    %[[i0:.+]] = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<4x3xcomplex<f64>>
+// CHECK-NEXT:    return %[[i0]] : tensor<4x3xcomplex<f64>>
+// CHECK-NEXT:  }

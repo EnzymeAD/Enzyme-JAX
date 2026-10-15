@@ -43,6 +43,55 @@ static Operation::operand_range getPassedOperands(CallOpInterface op) {
   return op.getArgOperands();
 }
 
+static LLVM::LLVMFuncOp getOrDeclareFunc(ModuleOp module, StringRef name,
+                                         LLVM::LLVMFunctionType type) {
+  if (auto fn = module.lookupSymbol<LLVM::LLVMFuncOp>(name))
+    return fn;
+  OpBuilder builder(module.getBodyRegion());
+  return LLVM::LLVMFuncOp::create(builder, module.getLoc(), name, type);
+}
+
+// A launch of a kernel the translation unit has no device code for fails
+// when it runs, natively. The device compilation can leave out a kernel the
+// host launches: MFEM sizes its fallback kernels with limits that differ
+// between the host and device passes. There is then nothing to raise, and the
+// launch placeholder left in place is undefined at link time, failing every
+// program that links the object whether or not it ever reaches the launch.
+// Fail the launch itself instead, naming the kernel.
+static void replaceWithLaunchFailure(CallOpInterface launch,
+                                     LLVM::LLVMFuncOp kernel) {
+  auto module = launch->getParentOfType<ModuleOp>();
+  auto ctx = module.getContext();
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+  auto puts = getOrDeclareFunc(
+      module, "puts",
+      LLVM::LLVMFunctionType::get(IntegerType::get(ctx, 32), {ptrTy}));
+  auto abort = getOrDeclareFunc(
+      module, "abort",
+      LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(ctx), {}));
+
+  std::string globalName =
+      ("__reactant_no_device_code." + kernel.getName()).str();
+  auto message = module.lookupSymbol<LLVM::GlobalOp>(globalName);
+  if (!message) {
+    std::string text =
+        ("launch of " + kernel.getName() + ", which has no device code").str();
+    OpBuilder builder(module.getBodyRegion());
+    auto type =
+        LLVM::LLVMArrayType::get(IntegerType::get(ctx, 8), text.size() + 1);
+    message =
+        LLVM::GlobalOp::create(builder, launch.getLoc(), type,
+                               /*isConstant=*/true, LLVM::Linkage::Internal,
+                               globalName, builder.getStringAttr(text + '\0'));
+  }
+
+  OpBuilder builder(launch);
+  auto address = LLVM::AddressOfOp::create(builder, launch.getLoc(), message);
+  LLVM::CallOp::create(builder, launch.getLoc(), puts, ValueRange{address});
+  LLVM::CallOp::create(builder, launch.getLoc(), abort, ValueRange{});
+  launch->erase();
+}
+
 struct GPULaunchRecognitionPass
     : public enzyme::impl::GPULaunchRecognitionBase<GPULaunchRecognitionPass> {
   using GPULaunchRecognitionBase::GPULaunchRecognitionBase;
@@ -558,8 +607,11 @@ enum __device_builtin__ cudaMemcpyKind
       }
 
       auto cur = launch.first;
-      if (cur.isExternal())
+      if (cur.isExternal()) {
+        for (auto call : launch.second)
+          replaceWithLaunchFailure(call, cur);
         continue;
+      }
       gpu::GPUFuncOp gpufunc = nullptr;
       bool local_use_launch_func = use_launch_func || captured;
       if (local_use_launch_func) {

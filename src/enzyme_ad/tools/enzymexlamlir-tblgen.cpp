@@ -45,6 +45,12 @@ llvm::StringRef getPopulateFunctionNameSuffix(const llvm::Record *rec) {
                                         : rec->getName();
 }
 
+// Whether the pattern op takes an optional parameter that is passed to the
+// constructor of each of its patterns.
+static bool hasParameter(const llvm::Record *rec) {
+  return rec->getValue("hasParameter") && rec->getValueAsBit("hasParameter");
+}
+
 static bool emitPopulatePatterns(llvm::raw_ostream &os,
                                  const llvm::RecordKeeper &records,
                                  llvm::StringRef patternOpStr) {
@@ -58,8 +64,10 @@ static bool emitPopulatePatterns(llvm::raw_ostream &os,
        << "::populatePatterns(::mlir::RewritePatternSet &patterns) {\n";
     os << "  " << ns << "::populate" << getPopulateFunctionNameSuffix(rec)
        << "(patterns, *getContext(), "
-       << "getBenefit() ? PatternBenefit(*getBenefit()) : PatternBenefit(1));"
-       << "\n";
+       << "getBenefit() ? PatternBenefit(*getBenefit()) : PatternBenefit(1)";
+    if (hasParameter(rec))
+      os << ", getParameter().value_or(0)";
+    os << ");\n";
     os << "}\n\n";
   }
   return false;
@@ -76,7 +84,10 @@ static bool emitPopulatePatternsFuncDecls(llvm::raw_ostream &os,
     os << "namespace " << ns << " {\n";
     os << "void populate" << getPopulateFunctionNameSuffix(rec)
        << "(::mlir::RewritePatternSet &patterns, ::mlir::MLIRContext "
-          "&context, ::mlir::PatternBenefit benefit);\n";
+          "&context, ::mlir::PatternBenefit benefit";
+    if (hasParameter(rec))
+      os << ", int64_t parameter";
+    os << ");\n";
     os << "} // namespace " << ns << "\n\n";
   }
   return false;
@@ -94,10 +105,18 @@ static bool emitPopulatePatternsFuncDefs(llvm::raw_ostream &os,
     os << "::populate" << getPopulateFunctionNameSuffix(rec)
        << "(::mlir::RewritePatternSet &patterns,\n"
        << "    ::mlir::MLIRContext &context,\n"
-       << "    ::mlir::PatternBenefit benefit) {\n";
+       << "    ::mlir::PatternBenefit benefit";
+    bool parameterized = hasParameter(rec);
+    if (parameterized)
+      os << ",\n    int64_t parameter";
+    os << ") {\n";
 
     for (llvm::StringRef pattern : rec->getValueAsListOfStrings("patterns")) {
-      os << "  patterns.add<" << pattern << ">(&context);\n";
+      if (parameterized)
+        os << "  patterns.add<" << pattern
+           << ">(parameter, &context, benefit);\n";
+      else
+        os << "  patterns.add<" << pattern << ">(&context);\n";
     }
     os << "}\n\n";
   }

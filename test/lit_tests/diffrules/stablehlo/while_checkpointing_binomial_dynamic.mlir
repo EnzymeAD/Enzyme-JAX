@@ -38,11 +38,11 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
       %10 = stablehlo.broadcast_in_dim %iterArg_4, dims = [] : (tensor<f32>) -> tensor<3xf32>
       %11 = stablehlo.broadcast_in_dim %iterArg_3, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
       %12 = stablehlo.broadcast_in_dim %11, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
-      %13:3 = enzyme.batch @"*_broadcast_scalar"(%10, %12) {batch_shape = array<i64: 3>} : (tensor<3xf32>, tensor<3xf32>) -> (tensor<3xf32>, tensor<3xf32>, tensor<3xf32>)
+      %13:3 = enzyme.batch @"*_broadcast_scalar"(%10, %12) <{batch_shape = array<i64: 3>}> : (tensor<3xf32>, tensor<3xf32>) -> (tensor<3xf32>, tensor<3xf32>, tensor<3xf32>)
       %14 = stablehlo.broadcast_in_dim %13#0, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
-      %15:2 = enzyme.batch @cos_broadcast_scalar(%14) {batch_shape = array<i64: 3>} : (tensor<3xf32>) -> (tensor<3xf32>, tensor<3xf32>)
+      %15:2 = enzyme.batch @cos_broadcast_scalar(%14) <{batch_shape = array<i64: 3>}> : (tensor<3xf32>) -> (tensor<3xf32>, tensor<3xf32>)
       %16 = stablehlo.broadcast_in_dim %15#0, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
-      %17:3 = enzyme.batch @"*_broadcast_scalar_1"(%9, %16) {batch_shape = array<i64: 3>} : (tensor<3xi64>, tensor<3xf32>) -> (tensor<3xf32>, tensor<3xi64>, tensor<3xf32>)
+      %17:3 = enzyme.batch @"*_broadcast_scalar_1"(%9, %16) <{batch_shape = array<i64: 3>}> : (tensor<3xi64>, tensor<3xf32>) -> (tensor<3xf32>, tensor<3xi64>, tensor<3xf32>)
       stablehlo.return %8, %iterArg_1, %iterArg_2, %17#0, %iterArg_4, %iterArg_5 : tensor<i64>, tensor<i64>, tensor<i64>, tensor<3xf32>, tensor<f32>, tensor<i64>
     }
     %5 = stablehlo.transpose %4#3, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
@@ -63,7 +63,7 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
     %2 = stablehlo.add %cst_2, %1 : tensor<3xf32>
     %3 = stablehlo.transpose %0, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
     %4 = stablehlo.transpose %2, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
-    %5:5 = enzyme.autodiff @"Const{typeof(myf)}(Main.myf)_autodiff"(%3, %arg1, %arg2, %arg3, %4) {activity = [#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_const>], ret_activity = [#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_const>]} : (tensor<3xf32>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<3xf32>) -> (tensor<3xf32>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<3xf32>)
+    %5:5 = enzyme.autodiff @"Const{typeof(myf)}(Main.myf)_autodiff"(%3, %arg1, %arg2, %arg3, %4) <{activity = [#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_const>], ret_activity = [#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_const>]}> : (tensor<3xf32>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<3xf32>) -> (tensor<3xf32>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<3xf32>)
     %6 = stablehlo.transpose %5#0, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
     %7 = stablehlo.transpose %5#4, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
     %8 = stablehlo.transpose %6, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>

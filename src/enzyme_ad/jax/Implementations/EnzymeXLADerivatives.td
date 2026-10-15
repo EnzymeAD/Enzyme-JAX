@@ -64,10 +64,6 @@ def CHLO_Digamma: Inst<"DigammaOp", "chlo">;
 def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
 def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::EQ">;
 
-def GeluApproximation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getGeluApproximationAttr();
-}]>;
-
 def SelectIfGeluNone : StaticSelect<"cast<enzymexla::GeluOp>(op).getGeluApproximation() == enzymexla::GeluApproximation::NONE">;
 def SelectIfGeluTanh : StaticSelect<"cast<enzymexla::GeluOp>(op).getGeluApproximation() == enzymexla::GeluApproximation::TANH">;
 
@@ -90,15 +86,13 @@ def : EnzymeXLADerivative<"ReluOp", (Op $input),
                         (DiffeRet),
                         (HLOConstantFP<"0"> $input)
                       )
-                    ],
-                    (Relu (Shadow $input))
+                    ]
                   >;
 
 def : EnzymeXLADerivative<"SoftplusOp", (Op $input),
                     [
                       (CheckedMul (DiffeRet), (Logistic $input))
-                    ],
-                    (Softplus (Shadow $input))
+                    ]
                   >;
 
 def : EnzymeXLADerivative<"LGammaOp", (Op $input),
@@ -120,8 +114,9 @@ def : EnzymeXLADerivative<"TGammaOp", (Op $input),
 //            d/dx = 0.5 * (1 + tanh(u))
 //                   + 0.5 * x * (1 - tanh(u)^2) * sqrt(2/pi) * (1 + 0.134145 * x^2),
 //                   where u = sqrt(2/pi) * (x + 0.044715 * x^3)
-//   SIGMOID: gelu(x) = x * sigmoid(1.702 * x)
-//            d/dx = sigmoid(1.702*x) + 1.702*x*sigmoid(1.702*x)*(1 - sigmoid(1.702*x))
+//   SIGMOID: gelu(x) = x * sigmoid(v), where v = sqrt(8/pi) * x * (1 + 0.044715 * x^2)
+//            d/dx = sigmoid(v)
+//                   + x * sigmoid(v) * (1 - sigmoid(v)) * sqrt(8/pi) * (1 + 0.134145 * x^2)
 def : EnzymeXLADerivative<"GeluOp", (Op $input),
                     [
                       (CheckedMul
@@ -197,14 +192,56 @@ def : EnzymeXLADerivative<"GeluOp", (Op $input),
                               )
                             ),
                             (Add
-                              (Logistic (Mul (HLOConstantFP<"1.702"> $input), $input)),
-                              (Mul
-                                (Mul (HLOConstantFP<"1.702"> $input), $input),
+                              (Logistic
                                 (Mul
-                                  (Logistic (Mul (HLOConstantFP<"1.702"> $input), $input)),
-                                  (Sub
+                                  (HLOConstantFP<"1.5957691216057308"> $input),
+                                  (Mul
+                                    $input,
+                                    (Add
+                                      (HLOConstantFP<"1"> $input),
+                                      (Mul (HLOConstantFP<"0.044715"> $input), (Mul $input, $input))
+                                    )
+                                  )
+                                )
+                              ),
+                              (Mul
+                                (Mul
+                                  $input,
+                                  (Mul
+                                    (Logistic
+                                      (Mul
+                                        (HLOConstantFP<"1.5957691216057308"> $input),
+                                        (Mul
+                                          $input,
+                                          (Add
+                                            (HLOConstantFP<"1"> $input),
+                                            (Mul (HLOConstantFP<"0.044715"> $input), (Mul $input, $input))
+                                          )
+                                        )
+                                      )
+                                    ),
+                                    (Sub
+                                      (HLOConstantFP<"1"> $input),
+                                      (Logistic
+                                        (Mul
+                                          (HLOConstantFP<"1.5957691216057308"> $input),
+                                          (Mul
+                                            $input,
+                                            (Add
+                                              (HLOConstantFP<"1"> $input),
+                                              (Mul (HLOConstantFP<"0.044715"> $input), (Mul $input, $input))
+                                            )
+                                          )
+                                        )
+                                      )
+                                    )
+                                  )
+                                ),
+                                (Mul
+                                  (HLOConstantFP<"1.5957691216057308"> $input),
+                                  (Add
                                     (HLOConstantFP<"1"> $input),
-                                    (Logistic (Mul (HLOConstantFP<"1.702"> $input), $input))
+                                    (Mul (HLOConstantFP<"0.134145"> $input), (Mul $input, $input))
                                   )
                                 )
                               )
@@ -212,23 +249,20 @@ def : EnzymeXLADerivative<"GeluOp", (Op $input),
                           )
                         )
                       )
-                    ],
-                    (Gelu (Shadow $input), (GeluApproximation))
+                    ]
                   >;
 
 def : EnzymeXLADerivative<"HypotOp", (Op $x, $y),
   [
     (CheckedMul (DiffeRet), (Div $x, (Hypot $x, $y))),
     (CheckedMul (DiffeRet), (Div $y, (Hypot $x, $y)))
-  ],
-  (Hypot (Shadow $x), (Shadow $y))
+  ]
 >;
 
 def : EnzymeXLADerivative<"SincOp", (Op $x),
   [
     (CheckedMul (DiffeRet), (Cosc $x))
-  ],
-  (Sinc (Shadow $x))
+  ]
 >;
 
 // Scalar op from the raised-LLVM path (FloatLike, not tensors), so its
@@ -258,8 +292,7 @@ def CoscDerivTerm : SubRoutine<(Op $diffret, $x),
 def : EnzymeXLADerivative<"CoscOp", (Op $x),
   [
     (CoscDerivTerm (DiffeRet), $x)
-  ],
-  (Cosc (Shadow $x))
+  ]
 >;
 
 // Helpers

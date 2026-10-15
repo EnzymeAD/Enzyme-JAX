@@ -54,6 +54,16 @@ struct MLIRRoundTripOptions {
   // Specialize a kernel over the scalars its access indices read (the
   // strides), not only its loop bounds; the raising pass option of that name.
   bool specializeIndexStrides;
+  // Fully unroll every loop whose trip count is a compile time constant of
+  // at most this many iterations, before the first affine-cfg. Loops of zero
+  // or one iteration are removed whatever this is.
+  int unrollMaxTripCount;
+  // ... while the iterations times the operations nested in the loop's body
+  // (inner loops already unrolled) are at most this many; negative: no limit.
+  int unrollMaxNestedOps;
+  // Specialize a kernel over every scalar integer argument it only reads;
+  // the raising pass option of that name.
+  bool specializeIntScalars;
 };
 
 extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,

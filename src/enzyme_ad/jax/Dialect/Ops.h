@@ -10,6 +10,7 @@
 #ifndef ENZYMEXLAOPS_H
 #define ENZYMEXLAOPS_H
 
+#include "Enzyme/MLIR/Interfaces/OffsetViewInterface.h"
 #include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/Dialect/Quant/IR/QuantTypes.h"

@@ -42,7 +42,7 @@ func.func @scale(%out: memref<?xf64, 1>, %ne: i32, %chunk: i32, %in: memref<?xf6
 // CHECK-NEXT:     %c4 = arith.constant 4 : index
 // CHECK-NEXT:     affine.store %arg2, %alloca[] : memref<i32>
 // CHECK-NEXT:     %c4_1 = arith.constant 4 : index
-// CHECK-NEXT:     enzymexla.xla_wrapper @rxla$raised_0 (%arg3, %arg0, %arg1, %arg2) {num_specialized = 2 : i64} : (memref<?xf64, 1>, memref<?xf64, 1>, i32, i32) -> ()
+// CHECK-NEXT:     enzymexla.xla_wrapper @rxla$raised_0 (%arg3, %arg0, %arg1, %arg2) <num_specialized = 2> : (memref<?xf64, 1>, memref<?xf64, 1>, i32, i32) -> ()
 // CHECK-NEXT:     %c0 = arith.constant 0 : index
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return

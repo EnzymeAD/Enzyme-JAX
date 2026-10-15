@@ -37,8 +37,7 @@ struct ExtractOpLowering : public OpRewritePattern<enzyme::ExtractOp> {
                                 PatternRewriter &rewriter) const override {
 
     auto inTy = op.getInput().getType();
-    auto outTy = op.getOutput().getType();
-    auto outRankTy = dyn_cast<RankedTensorType>(outTy);
+    auto outRankTy = cast<RankedTensorType>(op.getOutput().getType());
     // stablehlo always has tensor type
     auto inRankTy = dyn_cast<RankedTensorType>(inTy);
     auto ndims = inRankTy.getRank(); // is atleast 1
@@ -59,10 +58,12 @@ struct ExtractOpLowering : public OpRewritePattern<enzyme::ExtractOp> {
     SmallVector<int64_t> strides(ndims, 1);
 
     Value slicedOut =
-        stablehlo::SliceOp::create(rewriter, op->getLoc(), op.getInput(),
-                                   start_indices, limit_indices, strides);
+        stablehlo::SliceOpCreate(rewriter, op->getLoc(), op.getInput(),
+                                 start_indices, limit_indices, strides);
     // reshape slicedOut to our final Op
-    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, outTy, slicedOut);
+    rewriter.replaceOp(op, stablehlo::ReshapeOpCreate(rewriter, op->getLoc(),
+                                                      slicedOut,
+                                                      outRankTy.getShape()));
     return success();
   }
 };
@@ -85,9 +86,8 @@ struct ConcatOpLowering : public OpRewritePattern<enzyme::ConcatOp> {
       auto inShape = inRankTy.getShape();
       SmallVector<int64_t> newInShape = {1};
       newInShape.append(inShape.begin(), inShape.end());
-      auto newInTy = inRankTy.clone(newInShape);
       Value newInput =
-          stablehlo::ReshapeOp::create(rewriter, op->getLoc(), newInTy, in);
+          stablehlo::ReshapeOpCreate(rewriter, op->getLoc(), in, newInShape);
       expandedInputs.push_back(newInput);
     }
 

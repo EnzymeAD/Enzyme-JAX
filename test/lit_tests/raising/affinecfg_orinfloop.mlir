@@ -461,4 +461,4 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
   }
 }
 
-// CHECK: affine.parallel (%arg3, %arg4) = (0, 0) to (symbol(%133), symbol(%134))
+// CHECK: affine.parallel (%arg3, %arg4) = (0, 0) to (symbol(%132), symbol(%133))

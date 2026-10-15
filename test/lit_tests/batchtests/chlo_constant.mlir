@@ -7,7 +7,7 @@ module {
     return %y : tensor<3xf64>
   }
   func.func @df(%x : tensor<10x3xf64>) -> tensor<10x3xf64> {
-    %r = enzyme.batch @f(%x) { batch_shape = array<i64: 10> } : (tensor<10x3xf64>) -> (tensor<10x3xf64>)
+    %r = enzyme.batch @f(%x) <{ batch_shape = array<i64: 10> }> : (tensor<10x3xf64>) -> (tensor<10x3xf64>)
     return %r : tensor<10x3xf64>
   }
 }

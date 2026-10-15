@@ -60,6 +60,10 @@
 namespace mlir {
 namespace enzyme {
 
+/// Get the entry block of the nearest enclosing allocation scope or isolated
+/// operation. Return nullptr if there is no such operation.
+Block *getAllocaBlock(Operation *op);
+
 llvm::Expected<void *> lookupSymbol(const char *name);
 extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
                                                       void *symbol);
@@ -242,18 +246,20 @@ cloneWithoutResults(mlir::affine::AffineIfOp op, mlir::OpBuilder &rewriter,
 }
 
 static inline mlir::scf::ForOp
-cloneWithoutResults(mlir::scf::ForOp op, mlir::PatternRewriter &rewriter,
-                    mlir::IRMapping mapping = {}) {
+cloneWithoutResults(mlir::scf::ForOp op, mlir::OpBuilder &rewriter,
+                    mlir::IRMapping mapping = {}, mlir::ValueRange inits = {}) {
   using namespace mlir;
-  return scf::ForOp::create(rewriter, op.getLoc(),
-                            mapping.lookupOrDefault(op.getLowerBound()),
-                            mapping.lookupOrDefault(op.getUpperBound()),
-                            mapping.lookupOrDefault(op.getStep()));
+  auto newFor = scf::ForOp::create(
+      rewriter, op.getLoc(), mapping.lookupOrDefault(op.getLowerBound()),
+      mapping.lookupOrDefault(op.getUpperBound()),
+      mapping.lookupOrDefault(op.getStep()), inits);
+  for (auto attr : op->getDiscardableAttrs())
+    newFor->setAttr(attr.getName(), attr.getValue());
+  return newFor;
 }
 static inline mlir::affine::AffineForOp
-cloneWithoutResults(mlir::affine::AffineForOp op,
-                    mlir::PatternRewriter &rewriter,
-                    mlir::IRMapping mapping = {}) {
+cloneWithoutResults(mlir::affine::AffineForOp op, mlir::OpBuilder &rewriter,
+                    mlir::IRMapping mapping = {}, mlir::ValueRange inits = {}) {
   using namespace mlir;
   SmallVector<Value> lower;
   for (auto o : op.getLowerBoundOperands())
@@ -263,7 +269,7 @@ cloneWithoutResults(mlir::affine::AffineForOp op,
     upper.push_back(mapping.lookupOrDefault(o));
   auto newFor = affine::AffineForOp::create(
       rewriter, op.getLoc(), lower, op.getLowerBoundMap(), upper,
-      op.getUpperBoundMap(), op.getStepAsInt());
+      op.getUpperBoundMap(), op.getStepAsInt(), inits);
   for (auto attr : op->getDiscardableAttrs())
     newFor->setAttr(attr.getName(), attr.getValue());
   return newFor;
@@ -1358,6 +1364,18 @@ inline mlir::TypedAttr createAttrFromDouble(mlir::MLIRContext *ctx,
     return mlir::FloatAttr::get(floatType, value);
   return nullptr;
 }
+
+// The least and greatest values `v` takes, when they are constants: a
+// constant, the induction variable of an affine or scf loop or parallel with
+// constant bounds, or sums, differences and constant multiples of those,
+// through index casts and extensions. The values in between need not all be
+// taken (a loop with a step skips some).
+std::optional<std::pair<int64_t, int64_t>> getConstantRange(mlir::Value v);
+
+// The least and greatest values the single result of `map` takes over
+// `operands`, when it is linear in operands getConstantRange bounds.
+std::optional<std::pair<int64_t, int64_t>>
+getConstantRange(mlir::AffineMap map, mlir::ValueRange operands);
 
 // TODO: we can do a full analysis and return if the access is on a specific set
 // of diagonals. Checks that all accesses for this Op and its users thereoff are

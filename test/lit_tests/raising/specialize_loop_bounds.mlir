@@ -40,7 +40,7 @@ func.func @scale(%out: memref<?xf64, 1>, %nem: memref<i32, 1>, %in: memref<?xf64
 // CHECK-NEXT:   scf.if %2 {
 // CHECK-NEXT:     affine.store %0, %alloca[] : memref<i32>
 // CHECK-NEXT:     %c4 = arith.constant 4 : index
-// CHECK-NEXT:     enzymexla.xla_wrapper @rxla$raised_0 (%arg2, %arg0, %0) {num_specialized = 1 : i64} : (memref<?xf64, 1>, memref<?xf64, 1>, i32) -> ()
+// CHECK-NEXT:     enzymexla.xla_wrapper @rxla$raised_0 (%arg2, %arg0, %0) <num_specialized = 1> : (memref<?xf64, 1>, memref<?xf64, 1>, i32) -> ()
 // CHECK-NEXT:     %c0 = arith.constant 0 : index
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return

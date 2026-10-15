@@ -6,7 +6,7 @@
 module {
   func.func @use(%n: i64) {
     %memref = gpu.alloc () : memref<16xf64, 1>
-    enzymexla.xla_wrapper @raised (%memref, %n) {num_specialized = 1 : i64} : (memref<16xf64, 1>, i64) -> ()
+    enzymexla.xla_wrapper @raised (%memref, %n) <{num_specialized = 1 : i64}> : (memref<16xf64, 1>, i64) -> ()
     return
   }
   func.func private @raised(%arg0: memref<16xf64, 1>, %n: tensor<i64>) {
