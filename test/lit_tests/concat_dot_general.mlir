@@ -376,3 +376,31 @@ func.func @grouped(%b: tensor<3x3xf64>, %x0: tensor<8x3x3x3xf64>, %x12: tensor<2
 // CHECK-NEXT: %[[P:[^ ,:)]+]] = stablehlo.transpose %[[R]], dims = [1, 0, 2, 3] : (tensor<9x8x3x3xf64>) -> tensor<8x9x3x3xf64>
 // CHECK-NEXT: return %[[P]] : tensor<8x9x3x3xf64>
 // CHECK-NEXT: }
+
+// A piece spelled with its operands swapped, its transpose undoing that:
+// every dimension of its result in the first's form lands where the
+// first's does, so it joins the run (the shared operand's free dimension
+// is the concatenated one; the varying operands stack).
+func.func @swapped_spelling(%b: tensor<3x4xf64>, %x0: tensor<8x4x4xf64>, %x1: tensor<8x4x4xf64>, %x2: tensor<8x4x4xf64>) -> tensor<8x9x4xf64> {
+  %d0 = stablehlo.dot_general %b, %x0, contracting_dims = [1] x [1] : (tensor<3x4xf64>, tensor<8x4x4xf64>) -> tensor<3x8x4xf64>
+  %t0 = stablehlo.transpose %d0, dims = [1, 0, 2] : (tensor<3x8x4xf64>) -> tensor<8x3x4xf64>
+  %d1 = stablehlo.dot_general %x1, %b, contracting_dims = [1] x [1] : (tensor<8x4x4xf64>, tensor<3x4xf64>) -> tensor<8x4x3xf64>
+  %t1 = stablehlo.transpose %d1, dims = [0, 2, 1] : (tensor<8x4x3xf64>) -> tensor<8x3x4xf64>
+  %d2 = stablehlo.dot_general %b, %x2, contracting_dims = [1] x [1] : (tensor<3x4xf64>, tensor<8x4x4xf64>) -> tensor<3x8x4xf64>
+  %t2 = stablehlo.transpose %d2, dims = [1, 0, 2] : (tensor<3x8x4xf64>) -> tensor<8x3x4xf64>
+  %c = stablehlo.concatenate %t0, %t1, %t2, dim = 1 : (tensor<8x3x4xf64>, tensor<8x3x4xf64>, tensor<8x3x4xf64>) -> tensor<8x9x4xf64>
+  return %c : tensor<8x9x4xf64>
+}
+
+// CHECK-LABEL: func.func @swapped_spelling(
+// CHECK-SAME: %[[B:[^ ,:)]+]]: tensor<3x4xf64>, %[[X0:[^ ,:)]+]]: tensor<8x4x4xf64>, %[[X1:[^ ,:)]+]]: tensor<8x4x4xf64>, %[[X2:[^ ,:)]+]]: tensor<8x4x4xf64>) -> tensor<8x9x4xf64> {
+// CHECK-NEXT: %[[U0:[^ ,:)]+]] = stablehlo.reshape %[[X0]] : (tensor<8x4x4xf64>) -> tensor<1x8x4x4xf64>
+// CHECK-NEXT: %[[U1:[^ ,:)]+]] = stablehlo.reshape %[[X1]] : (tensor<8x4x4xf64>) -> tensor<1x8x4x4xf64>
+// CHECK-NEXT: %[[U2:[^ ,:)]+]] = stablehlo.reshape %[[X2]] : (tensor<8x4x4xf64>) -> tensor<1x8x4x4xf64>
+// CHECK-NEXT: %[[S:[^ ,:)]+]] = stablehlo.concatenate %[[U0]], %[[U1]], %[[U2]], dim = 0 : (tensor<1x8x4x4xf64>, tensor<1x8x4x4xf64>, tensor<1x8x4x4xf64>) -> tensor<3x8x4x4xf64>
+// CHECK-NEXT: %[[D:[^ ,:)]+]] = stablehlo.dot_general %[[B]], %[[S]], contracting_dims = [1] x [2] : (tensor<3x4xf64>, tensor<3x8x4x4xf64>) -> tensor<3x3x8x4xf64>
+// CHECK-NEXT: %[[T:[^ ,:)]+]] = stablehlo.transpose %[[D]], dims = [1, 0, 2, 3] : (tensor<3x3x8x4xf64>) -> tensor<3x3x8x4xf64>
+// CHECK-NEXT: %[[R:[^ ,:)]+]] = stablehlo.reshape %[[T]] : (tensor<3x3x8x4xf64>) -> tensor<9x8x4xf64>
+// CHECK-NEXT: %[[P:[^ ,:)]+]] = stablehlo.transpose %[[R]], dims = [1, 0, 2] : (tensor<9x8x4xf64>) -> tensor<8x9x4xf64>
+// CHECK-NEXT: return %[[P]] : tensor<8x9x4xf64>
+// CHECK-NEXT: }
