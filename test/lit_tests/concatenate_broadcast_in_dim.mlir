@@ -190,3 +190,24 @@ func.func @hoist_expanded(%b: tensor<5x5xf64>, %g: tensor<5x5xf64>) -> tensor<5x
 // CHECK-NEXT: %[[R:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[C]], dims = [0, 2, 3] : (tensor<5x50x5xf64>) -> tensor<5x8x50x5xf64>
 // CHECK-NEXT: return %[[R]] : tensor<5x8x50x5xf64>
 // CHECK-NEXT: }
+
+// Hoisted with an operand laid out in order but carrying a unit dimension the
+// broadcast expands: it is reshaped to the kept dimensions before it is
+// broadcast to the inner concatenation.
+func.func @hoist_expanded_unit(%b: tensor<3x1xf64>, %g: tensor<3x1xf64>) -> tensor<4x27x3xf64> {
+  %0 = stablehlo.broadcast_in_dim %b, dims = [2, 0] : (tensor<3x1xf64>) -> tensor<4x5x3xf64>
+  %1 = stablehlo.broadcast_in_dim %g, dims = [2, 0] : (tensor<3x1xf64>) -> tensor<4x22x3xf64>
+  %2 = stablehlo.concatenate %0, %1, dim = 1 : (tensor<4x5x3xf64>, tensor<4x22x3xf64>) -> tensor<4x27x3xf64>
+  return %2 : tensor<4x27x3xf64>
+}
+
+// CHECK-LABEL: func.func @hoist_expanded_unit(
+// CHECK-SAME: %[[B:[^ ,:)]+]]: tensor<3x1xf64>, %[[G:[^ ,:)]+]]: tensor<3x1xf64>) -> tensor<4x27x3xf64> {
+// CHECK-NEXT: %[[BR:[^ ,:)]+]] = stablehlo.reshape %[[B]] : (tensor<3x1xf64>) -> tensor<3xf64>
+// CHECK-NEXT: %[[GR:[^ ,:)]+]] = stablehlo.reshape %[[G]] : (tensor<3x1xf64>) -> tensor<3xf64>
+// CHECK-NEXT: %[[B0:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[BR]], dims = [1] : (tensor<3xf64>) -> tensor<5x3xf64>
+// CHECK-NEXT: %[[G0:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[GR]], dims = [1] : (tensor<3xf64>) -> tensor<22x3xf64>
+// CHECK-NEXT: %[[C:[^ ,:)]+]] = stablehlo.concatenate %[[B0]], %[[G0]], dim = 0 : (tensor<5x3xf64>, tensor<22x3xf64>) -> tensor<27x3xf64>
+// CHECK-NEXT: %[[R:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[C]], dims = [1, 2] : (tensor<27x3xf64>) -> tensor<4x27x3xf64>
+// CHECK-NEXT: return %[[R]] : tensor<4x27x3xf64>
+// CHECK-NEXT: }
