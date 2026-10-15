@@ -18,7 +18,13 @@ static LogicalResult failIfDynamicShape(Operation *op,
           op, "unsupported dynamic shape for output.");
   }
 
+  // operands mostly repeat a few types (a concatenate of hundreds of
+  // pieces): a type just checked needs no second look
+  Type checked;
   for (auto type : op->getOperandTypes()) {
+    if (type == checked)
+      continue;
+    checked = type;
     auto rType = dyn_cast<RankedTensorType>(type);
     if (!rType || !rType.hasStaticShape())
       return rewriter.notifyMatchFailure(
