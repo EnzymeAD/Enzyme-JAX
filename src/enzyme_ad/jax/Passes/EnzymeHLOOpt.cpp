@@ -14116,10 +14116,15 @@ struct ConcatReduce
         break;
       }
     }
-    for (ArrayRef<int64_t> shape : shapes)
-      for (int64_t d : reduced)
-        if (shape[d] != inputShape[d])
+    // The inputs (unit reduced dimensions dropped) must agree on every
+    // dimension but the concatenated one.
+    for (ArrayRef<int64_t> shape : shapes) {
+      if (shape.size() != inputShape.size())
+        return failure();
+      for (int64_t d = 0, e = shape.size(); d < e; d++)
+        if (d != dim && shape[d] != inputShape[d])
           return failure();
+    }
 
     SmallVector<Value> inputs;
     SmallVector<int64_t> shape(resultType.getShape());
