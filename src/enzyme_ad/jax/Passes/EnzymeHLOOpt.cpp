@@ -16699,6 +16699,14 @@ struct ReshapeOfConcatToConcatOfReshape final
         reshapeOp.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
     if (!concatOp)
       return failure();
+    // A reshape that only inserts and deletes unit dimensions of a
+    // concatenate other ops read too stays: it is a view of the
+    // concatenate, and the concatenate of reshaped operands would be a
+    // second copy, one concat_view_cse turns back into the view.
+    if (!concatOp->hasOneUse() &&
+        nonUnitDims(concatOp.getType().getShape()) ==
+            nonUnitDims(reshapeOp.getType().getShape()))
+      return failure();
 
     SmallVector<int64_t> oneHot(concatOp.getType().getShape().size(), 0);
     oneHot[concatOp.getDimension()] = 1;
@@ -16743,6 +16751,14 @@ struct ReshapeOfConcatToConcatOfReshape final
   }
 
 private:
+  static SmallVector<int64_t> nonUnitDims(ArrayRef<int64_t> shape) {
+    SmallVector<int64_t> dims;
+    for (int64_t s : shape)
+      if (s != 1)
+        dims.push_back(s);
+    return dims;
+  }
+
   // A reshape that regroups the concatenated dimension c with the ones after
   // it (e.g. [3, 9, 3, 3] -> [3, 3, 27] with c = 1): take the smallest runs of
   // dimensions around c with the same element count on both sides. When c is
@@ -17573,7 +17589,11 @@ struct ConcatViewCSE final
     for (Value candidate : candidates)
       for (Operation *user : candidate.getUsers()) {
         auto other = dyn_cast<stablehlo::ConcatenateOp>(user);
-        if (!other || other == op || other->getBlock() != op->getBlock() ||
+        // A concatenate nothing reads is not built: the driver has not
+        // erased it yet (reshape_concat moved a reshape through it and
+        // left the original; building on it would bring the reshape back).
+        if (!other || other == op || other->use_empty() ||
+            other->getBlock() != op->getBlock() ||
             !other->isBeforeInBlock(op) ||
             other.getNumOperands() != op.getNumOperands())
           continue;
