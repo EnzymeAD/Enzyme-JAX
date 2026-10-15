@@ -38893,7 +38893,9 @@ static bool isStackableOp(Operation *op) {
 
 // Whether `v` is computed by the same stackable op as `first`, and can be
 // replaced by its stacked version: it has no other user, or it is a view
-// (broadcast, reshape, transpose), which costs nothing to recreate stacked.
+// (broadcast, reshape, transpose) or an elementwise op, which costs nothing
+// to recreate stacked (its consumers fuse it; a reduction or contraction
+// read elsewhere too would be computed twice).
 // Two broadcasts of operands of one type to one type that agree on where
 // every non-unit operand dimension lands compute the same value: a unit
 // operand dimension contributes nothing, wherever it is mapped.
@@ -38921,8 +38923,10 @@ static bool stacksWith(Value v, Operation *first) {
   // unit operand dimensions (a spelling), compared by what it computes.
   if (computeAttrs(op) != computeAttrs(first) && !sameBroadcast(op, first))
     return false;
-  if (!v.hasOneUse() && !isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
-                             stablehlo::TransposeOp>(op))
+  if (!v.hasOneUse() &&
+      !isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
+           stablehlo::TransposeOp>(op) &&
+      !stablehlo::hasTraitElementwise(op))
     return false;
   for (auto [a, b] : llvm::zip(op->getOperands(), first->getOperands()))
     if (a.getType() != b.getType())
