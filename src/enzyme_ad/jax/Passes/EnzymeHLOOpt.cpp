@@ -13953,11 +13953,12 @@ private:
       if (plan.concatRhs)
         rhs = stablehlo::ConcatenateOp::create(rewriter, loc, rhsParts,
                                                concatDimOf(plan, 1));
+      // Each piece's extent along the concatenated dimension, which is its
+      // own dimension resultPerm[plan.dim] (a swapped piece's free groups
+      // trade places).
       shape[plan.dim] = 0;
-      for (const Dot &dot : plan.dots) {
-        stablehlo::DotGeneralOp piece = dot.op;
-        shape[plan.dim] += piece.getType().getDimSize(plan.dim);
-      }
+      for (const Dot &dot : plan.dots)
+        shape[plan.dim] += dot.type.getDimSize(dot.resultPerm[plan.dim]);
     }
     auto newDims = stablehlo::DotDimensionNumbersAttr::get(
         first.getContext(), lhsBatch, rhsBatch, lhsContract, rhsContract);
