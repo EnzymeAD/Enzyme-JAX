@@ -38879,11 +38879,32 @@ static bool isStackableOp(Operation *op) {
 // Whether `v` is computed by the same stackable op as `first`, and can be
 // replaced by its stacked version: it has no other user, or it is a view
 // (broadcast, reshape, transpose), which costs nothing to recreate stacked.
+// Two broadcasts of operands of one type to one type that agree on where
+// every non-unit operand dimension lands compute the same value: a unit
+// operand dimension contributes nothing, wherever it is mapped.
+static bool sameBroadcast(Operation *a, Operation *b) {
+  auto x = dyn_cast<stablehlo::BroadcastInDimOp>(a),
+       y = dyn_cast<stablehlo::BroadcastInDimOp>(b);
+  if (!x || !y || x.getType() != y.getType() ||
+      x.getOperand().getType() != y.getOperand().getType())
+    return false;
+  auto type = x.getOperand().getType();
+  for (auto [i, dx, dy] :
+       llvm::zip(llvm::seq<int64_t>(0, type.getRank()),
+                 x.getBroadcastDimensions(), y.getBroadcastDimensions()))
+    if (type.getDimSize(i) != 1 && dx != dy)
+      return false;
+  return true;
+}
+
 static bool stacksWith(Value v, Operation *first) {
   Operation *op = v.getDefiningOp();
   if (!op || op->getName() != first->getName() ||
-      computeAttrs(op) != computeAttrs(first) ||
       op->getNumOperands() != first->getNumOperands())
+    return false;
+  // Attributes define the computation, except a broadcast's mapping of its
+  // unit operand dimensions (a spelling), compared by what it computes.
+  if (computeAttrs(op) != computeAttrs(first) && !sameBroadcast(op, first))
     return false;
   if (!v.hasOneUse() && !isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
                              stablehlo::TransposeOp>(op))
