@@ -1343,8 +1343,11 @@ static LogicalResult emitAffineIfAsDUS(
     affine::AffineValueMap thenMap = maps.lookup(raisedThenVal),
                            elseMap = maps.lookup(raisedElseVal);
 
-    auto map = alignMemoryAccess(raisedThenVal, thenMap, raisedElseVal, elseMap,
-                                 builder, pc);
+    auto aligned = alignMemoryAccess(raisedThenVal, thenMap, raisedElseVal,
+                                     elseMap, builder, pc);
+    if (failed(aligned))
+      return failure();
+    affine::AffineValueMap map = *aligned;
 
     auto valType = cast<RankedTensorType>(raisedThenVal.getType());
     auto indexType = RankedTensorType::get({}, builder.getI64Type());
