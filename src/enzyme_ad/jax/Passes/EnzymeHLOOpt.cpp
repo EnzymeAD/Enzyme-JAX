@@ -9414,26 +9414,20 @@ struct ScatterToDynamicUpdateSlice final
   }
 };
 
-// Whether pushing transpose(_, perm) from the result of the elementwise op
-// onto its operands adds a copy. An operand that does not absorb the
-// permutation (a view of memory) gets a transposed copy; a transposed operand
-// the permutation cancels loses its transpose, itself a copy when its own
-// operand does not absorb it. The push is free when every operand absorbs;
-// it moves the one copy up, toward a producer that may absorb it, when a
-// single operand is a view and none absorbs; and it is worth it when it
-// cancels more copies than it makes. Otherwise the transpose stays on the
-// result: with an absorbing operand the op computes in the view's layout
-// (transposed_view_elementwise) and its consumer takes the transpose; with
-// several views, a transposed copy of each would replace one of the result.
-static bool transposePushAddsCopies(Operation *elem, ArrayRef<int64_t> perm) {
-  unsigned views = 0, cancelled = 0;
-  bool absorbs = false;
+// Whether pushing transpose(_, perm) into the operands of the elementwise op
+// would put a copy on an operand that cannot absorb it (a view of memory)
+// while another operand absorbs it for free, and no operand's existing
+// copy (a transpose of a view that the push cancels) goes away: the op then
+// computes in the view's layout instead (transposed_view_elementwise), and
+// the transpose stays on its result.
+static bool readsViewOthersAbsorb(Operation *elem, ArrayRef<int64_t> perm) {
+  bool view = false, absorbs = false;
   for (Value operand : elem->getOperands()) {
     auto type = dyn_cast<RankedTensorType>(operand.getType());
     if (!type || type.getRank() == 0)
       continue;
     if (!absorbsTranspose(operand, perm)) {
-      ++views;
+      view = true;
       continue;
     }
     absorbs = true;
@@ -9441,16 +9435,11 @@ static bool transposePushAddsCopies(Operation *elem, ArrayRef<int64_t> perm) {
       bool cancels = true;
       for (auto [i, d] : llvm::enumerate(perm))
         cancels &= transpose.getPermutation()[d] == (int64_t)i;
-      if (cancels &&
-          !absorbsTranspose(transpose.getOperand(), transpose.getPermutation()))
-        ++cancelled;
+      if (cancels && !absorbsTranspose(transpose.getOperand(), {}))
+        return false;
     }
   }
-  if (views == 0)
-    return false;
-  if (cancelled > 0)
-    return views > cancelled;
-  return absorbs || views > 1;
+  return view && absorbs;
 }
 
 template <template <typename> class Trait>
@@ -9578,7 +9567,7 @@ struct TransposeElementwiseTransposeSimplify
          !isa<stablehlo::SelectOp>(elem)) ||
         elem->getNumResults() != 1 || elem->getNumRegions() != 0)
       return failure();
-    if (transposePushAddsCopies(elem, op.getPermutation()))
+    if (readsViewOthersAbsorb(elem, op.getPermutation()))
       return rewriter.notifyMatchFailure(
           op, "the op computes in the layout of the view it reads");
 
@@ -16626,7 +16615,7 @@ struct TransposeElementwise final
     bool singleUser = llvm::hasSingleElement(elem->getUsers());
     if (onlySingleUser && !singleUser && !transposesForFree(elem))
       return failure();
-    if (transposePushAddsCopies(elem, op.getPermutation()))
+    if (readsViewOthersAbsorb(elem, op.getPermutation()))
       return rewriter.notifyMatchFailure(
           op, "the op computes in the layout of the view it reads");
 
@@ -30708,10 +30697,6 @@ struct TransposeSelect
 
     if (!selectOp->hasOneUse())
       return failure();
-    if (transposePushAddsCopies(selectOp, transposeOp.getPermutation()))
-      return rewriter.notifyMatchFailure(
-          transposeOp,
-          "the select computes in the layout of the view it reads");
 
     Value pred = selectOp.getPred();
     bool scalar_pred =
