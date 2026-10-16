@@ -17,7 +17,7 @@ def TestPolymerPass : Pass<"test-polymer"> {
   ];
 }
 
-def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops", 
+def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops",
                                           "mlir::FunctionOpInterface"> {
   let summary = "Canonicalize loops";
   let dependentDialects = ["affine::AffineDialect"];
@@ -61,12 +61,12 @@ def PropagateConstantBoundsPass
   let summary = "Propagate constant bounds";
   let description = [{
     Propagate constant bounds information:
-    1. thread index 
-    2. Block dimension 
+    1. thread index
+    2. Block dimension
     3. Block index.
     Additionally, set all the following attributes for all kernel pointers:
     1. align 128
-    2. no alias 
+    2. no alias
     3. dereferenceable = tensor.size() * sizeof(element_type)
   }];
   let dependentDialects = [
@@ -615,7 +615,7 @@ def LowerKernelPass : Pass<"lower-kernel"> {
   let summary = "Lower kernel to custom call";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
-    "gpu::GPUDialect", 
+    "gpu::GPUDialect",
     "func::FuncDialect",
     "affine::AffineDialect",
     "scf::SCFDialect",
@@ -630,6 +630,60 @@ def LowerKernelPass : Pass<"lower-kernel"> {
         /*type=*/"std::string",
         /*default=*/"\"cuda\"",
         /*description=*/"HW backend">,
+  ];
+}
+
+def PrepareAffineGPUWrapperPass
+    : Pass<"prepare-affine-gpu-wrapper", "mlir::ModuleOp"> {
+  let summary = "Realign a gpu_wrapper's affine.parallel with its launch bounds";
+  let description = [{
+    Affine optimizations drop unit dimensions and split induction variables
+    of the affine.parallel inside an enzymexla.gpu_wrapper, so its dimensions
+    no longer correspond to the wrapper's grid and block bounds. This pass
+    groups the loop dimensions by the launch bound their extents multiply to
+    and rebuilds a 6-d affine.parallel whose upper bounds are the wrapper's
+    bound values, delinearizing each new induction variable into its group.
+    It also drops the reductions of an affine.parallel in a gpu_wrapper whose
+    results are unused, since a launch cannot carry them.
+
+    Run it immediately before lower-affine and convert-parallel-to-gpu1:
+    canonicalization folds the symbolic bounds back into constants.
+  }];
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "arith::ArithDialect",
+  ];
+}
+
+def KernelCallToGPUWrapperPass
+    : Pass<"kernel-call-to-gpu-wrapper", "mlir::ModuleOp"> {
+  let summary = "Expose kernel calls as differentiable GPU wrapper loops";
+  let description = [{
+    kernel call to gpu wrapper op.
+  }];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "LLVM::LLVMDialect",
+  ];
+}
+
+def GPUWrapperToKernelCallPass : Pass<"gpu-wrapper-to-kernel-call", "mlir::ModuleOp"> {
+  let summary = "Lower jit_regions launching GPU kernels to kernel calls";
+  let description = [{
+    Replaces each jit_region, once its gpu_wrapper regions have been lowered
+    to gpu.launch_func ops, by the kernel_call ops of the kernels it launches.
+    The contents of each buffer of the region are tracked as a tensor, which
+    each launch passing the buffer updates.
+  }];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "LLVM::LLVMDialect",
+    "NVVM::NVVMDialect",
+    "tensor::TensorDialect",
   ];
 }
 
@@ -662,7 +716,7 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
   let summary = "Lower MPI Ops to LLVM";
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect",
-    "gpu::GPUDialect", 
+    "gpu::GPUDialect",
     "LLVM::LLVMDialect",
   ];
   let options = [
@@ -845,17 +899,17 @@ def RaiseTritonCustomCallPass : Pass<"raise-triton-custom-call"> {
 def LowerJITPass : Pass<"lower-jit"> {
   let summary = "Lower jit call to custom call";
   let dependentDialects = [
-    "stablehlo::StablehloDialect", 
-    "gpu::GPUDialect", 
+    "stablehlo::StablehloDialect",
+    "gpu::GPUDialect",
     "func::FuncDialect",
-    "math::MathDialect", 
-    "memref::MemRefDialect", 
+    "math::MathDialect",
+    "memref::MemRefDialect",
     "scf::SCFDialect",
-    "vector::VectorDialect", 
-    "nvgpu::NVGPUDialect", 
+    "vector::VectorDialect",
+    "nvgpu::NVGPUDialect",
     "NVVM::NVVMDialect",
-    "LLVM::LLVMDialect", 
-    "arith::ArithDialect", 
+    "LLVM::LLVMDialect",
+    "arith::ArithDialect",
     "tensor::TensorDialect"
   ];
 
@@ -1100,7 +1154,7 @@ def GPULaunchRecognition : Pass<"gpu-launch-recognition"> {
   let summary = "Recognize and convert GPU kernel launches to GPU dialect operations";
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect",
-    "arith::ArithDialect", 
+    "arith::ArithDialect",
     "gpu::GPUDialect",
     "mlir::NVVM::NVVMDialect",
     "mlir::ROCDL::ROCDLDialect",
@@ -1131,7 +1185,13 @@ def ConvertParallelToGPU1 : Pass<"convert-parallel-to-gpu1"> {
   let summary = "Convert parallel loops to gpu";
   let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect", "scf::SCFDialect"];
   let options = [
-  Option<"arch", "arch", "std::string", /*default=*/"\"sm_60\"", "Target GPU architecture">
+  Option<"arch", "arch", "std::string", /*default=*/"\"sm_60\"", "Target GPU architecture">,
+  Option<
+     /*C++ variable name=*/"emitSingleAlternative",
+     /*CLI argument=*/"emit_single_alternative",
+     /*type=*/"bool",
+     /*default=*/"false",
+     /*description=*/"Emit a single alternative matching the original gpu_wrapper/parallel op bounds instead of duplicating the kernel through many block-size alternatives">
   ];
 }
 
