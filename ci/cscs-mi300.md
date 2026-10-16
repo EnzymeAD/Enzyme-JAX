@@ -207,6 +207,13 @@ lldb polly`. A hard guard (`exit 1` if `include/{llvm,mlir,clang}` reappears)
 protects against regressions on a UENV bump. Only ROCm's own headers (`hip/`,
 `rocblas/`, `miopen/`, …) belong in the overlay.
 
+The same applies to `fmt/`. Since XLA `ed6af492` builds MORI (see "rocm_sysdeps"),
+MORI's spdlog uses XLA's own `@fmt` (`SPDLOG_FMT_EXTERNAL`). The UENV view's fmt
+12.1 shadows it, and the build fails in `roc_mori/.../bnxt/bnxt.cpp` with `no
+matching member function for call to 'format'`. So `fmt` is skipped and guarded
+too. The view also carries other non-ROCm headers (`boost/`, `c++/`, `rdma/`,
+`zlib.h`, …). They have not clashed so far; if one does, skip it the same way.
+
 ### rocm-smi header
 
 `rocm-smi-lib` is a separate spack package not exposed in the view. Newer XLA
@@ -301,6 +308,34 @@ wins (`[[ -e ]] ||`), so the view's copy always takes precedence over a spack on
 `lib64/` and `share/` *are* whole-directory symlinks — nothing needs to write into
 them. `amdgcn/`, `bin/`, and `lib/llvm/` must stay real directories; see *amdgcn
 must stay a real dir* and *clang wrapper + HIP_CLANG_PATH*.
+
+### rocm_sysdeps
+
+Since XLA `ed6af492` (JAX bump #3368), XLA builds the MORI collectives whenever
+ROCm is configured; no flag turns them off. MORI's static `libhsakmt.a` links
+`@local_config_rocm//rocm:{drm,drm_amdgpu,numa}`, which import
+`rocm_dist/lib/rocm_sysdeps/lib/{libdrm,libdrm_amdgpu,libnuma}.so`. That directory
+only exists in TheRock-based ROCm (7.10+). The UENV's classic ROCm 7.2.3 has no
+such directory, and Bazel fails with `SolibSymlink … missing input file`.
+
+The UENV does ship the libraries, in its `libdrm` and `numactl` spack packages, and
+the lib/ scan above already links them into the overlay's `lib/`. So the overlay
+creates `lib/rocm_sysdeps/lib/` with symlinks to those same copies, and fails
+loudly if one is missing. At runtime they come from `reactant_libs` (see "Curated
+runtime libs"; Julia bundles neither), the same copies the UENV's ROCm was built
+against.
+
+MORI also links ROCm's static `libhsakmt.a` (`@local_config_rocm//rocm:hsakmt`,
+`rocm_dist/lib/libhsakmt.a`). The overlay's lib/ scan only takes `*.so*`, so the
+overlay links `libhsakmt.a` explicitly: from the view, else from the
+`hsa-rocr-dev` spack package. It fails loudly if neither has one. Without it, the
+build fails only at the final link of `libReactantExtra.so`, with `missing input
+file … libhsakmt.a`.
+
+Drop the `rocm_sysdeps` links once Enzyme-JAX's XLA includes openxla/xla#50228.
+That change links classic ROCm before 7.10 against host `-ldrm -ldrm_amdgpu -lnuma`
+instead, so 7.2.3 no longer reads `rocm_sysdeps`. `libhsakmt.a` stays needed for as
+long as XLA builds MORI.
 
 ### Bazel extraopts
 
