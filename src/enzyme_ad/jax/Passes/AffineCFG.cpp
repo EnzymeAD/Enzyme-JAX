@@ -7025,10 +7025,6 @@ static bool storesApart(affine::AffineStoreOp a, affine::AffineStoreOp b) {
   return apart;
 }
 
-// The loops around `op` within its affine scope, as the dependence analysis
-// counts them (the parallelization's, vendored below).
-static unsigned getNestingDepth(Operation *op);
-
 // Whether `load`, within `forOp`, may read in some iteration what `store`
 // (in the body of `forOp`) wrote in the same or an earlier iteration: the
 // dependence that moving the store past the loop would break. Over the loops
@@ -7042,7 +7038,7 @@ static bool loadMayReadStoreInLoop(affine::AffineForOp forOp,
     return false;
   MemRefAccess src(store), dst(load);
   // the loops around `forOp`, and `forOp`: those common to the two
-  unsigned common = ::getNestingDepth(forOp) + 1;
+  unsigned common = getNestingDepthInAffineScope(forOp) + 1;
   for (unsigned depth : {common, common + 1}) {
     DependenceResult result = checkMemrefAccessDependence(src, dst, depth);
     if (result.value != DependenceResult::NoDependence)
@@ -8692,25 +8688,6 @@ static bool isLocallyDefined(Value v, Operation *enclosingOp) {
   return viewOp && isLocallyDefined(viewOp.getViewSource(), enclosingOp);
 }
 
-/// Returns the nesting depth of this statement, i.e., the number of loops
-/// surrounding this statement within its affine scope: the loops the
-/// dependence analysis puts in an access's domain (getEnclosingAffineOps stops
-/// at the scope), not those around it, as around a kernel launched in a loop
-/// of the host.
-static unsigned getNestingDepth(Operation *op) {
-  Operation *currOp = op;
-  unsigned depth = 0;
-  while ((currOp = currOp->getParentOp())) {
-    if (currOp->hasTrait<OpTrait::AffineScope>())
-      break;
-    if (isa<AffineForOp>(currOp))
-      depth++;
-    if (auto parOp = dyn_cast<AffineParallelOp>(currOp))
-      depth += parOp.getNumDims();
-  }
-  return depth;
-}
-
 // Registers as a symbol of `domain` each of `operands` defined outside
 // `outer` that the domain would otherwise reject: a value that is not a valid
 // symbol where it is defined (one computed in a conditional of the function,
@@ -9471,7 +9448,7 @@ static bool isLoopMemoryParallel(AffineForOp forOp,
         return false;
 
   // Dep check depth would be number of enclosing loops + 1.
-  unsigned depth = ::getNestingDepth(forOp) + 1;
+  unsigned depth = getNestingDepthInAffineScope(forOp) + 1;
 
   // Check dependences between all pairs of ops in 'loadAndStoreOps', on
   // access relations whose loop-invariant terms are abstracted. A loop that
@@ -9831,7 +9808,7 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
     return false;
 
   // Dep check depth would be number of enclosing loops + 1.
-  unsigned depth = ::getNestingDepth(forOp) + 1;
+  unsigned depth = getNestingDepthInAffineScope(forOp) + 1;
 
   // Check dependences between all pairs of ops in 'loadAndStoreOps', on the
   // access relations isLoopMemoryParallel builds (loop-invariant terms
