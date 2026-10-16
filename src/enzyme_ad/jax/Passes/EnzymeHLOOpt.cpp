@@ -7536,6 +7536,10 @@ struct ReshapeIota final
     if (op.getType().getRank() == 0)
       return failure();
 
+    // iota is zero
+    if (iota.getType().getDimSize(iota.getIotaDimension()) == 1)
+      return failure();
+
     size_t curiotaidx = 0;
     size_t iotadim = 0;
     for (auto en : llvm::enumerate(op.getType().getShape())) {
@@ -7544,6 +7548,7 @@ struct ReshapeIota final
 
       if (curiotaidx == iota.getType().getShape().size())
         return failure();
+
       auto ival = iota.getType().getShape()[curiotaidx];
       while (ival == 1 && curiotaidx < iota.getType().getShape().size()) {
         if (curiotaidx == iota.getIotaDimension()) {
