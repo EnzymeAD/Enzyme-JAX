@@ -1501,6 +1501,17 @@ stablehlo::ConstantOp createConstantOpFromScalar(PatternRewriter &rewriter,
           mlir::enzyme::makeAttr(op->getResult(0).getType(), value)));
 }
 
+// Creates a rank-0 `stablehlo.constant`
+template <typename T>
+stablehlo::ConstantOp createScalarConstantOp(PatternRewriter &rewriter,
+                                             Location loc, Type elementType,
+                                             T value) {
+  auto type = RankedTensorType::get({}, elementType);
+  return stablehlo::ConstantOp::create(
+      rewriter, loc, type,
+      cast<ElementsAttr>(mlir::enzyme::makeAttr(type, value)));
+}
+
 stablehlo::ComparisonDirection
 reversedComparisonDirection(stablehlo::ComparisonDirection direction);
 
