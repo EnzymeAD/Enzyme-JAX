@@ -16780,10 +16780,15 @@ struct ReduceMinorDims final
     : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceMinorDims> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  // The longest row this makes. Measured on MFEM's sum-factorized
-  // contractions on an RTX 5090: rows of 3 and 4 (order 2) run 20% faster
-  // as row reductions, rows of 5 and 6 (order 4) run the same or slower.
+  // The longest row this makes, and the warp size its length must divide:
+  // XLA emits a row reduction over fewer than a warp of elements with its
+  // reduction emitter (several rows per warp) only when the length divides
+  // the warp size, and elementally otherwise, each thread reading its row
+  // strided. Measured on MFEM's sum-factorized contractions on an RTX 5090:
+  // rows of 4 (order 3) run 20% faster as row reductions, rows of 3
+  // (order 2) 10% slower, rows of 5 and 6 (order 4) the same or slower.
   static constexpr int64_t kMaxRowExtent = 4;
+  static constexpr int64_t kWarpSize = 32;
   // Operands up to this many elements are read from cache whatever their
   // layout (a basis matrix).
   static constexpr int64_t kSmallOperand = 4096;
@@ -16867,8 +16872,8 @@ struct ReduceMinorDims final
     int64_t extent = 1;
     for (int64_t d : dims)
       extent *= inputTy.getDimSize(d);
-    if (extent > kMaxRowExtent)
-      return rewriter.notifyMatchFailure(op, "a long row");
+    if (extent > kMaxRowExtent || kWarpSize % extent != 0)
+      return rewriter.notifyMatchFailure(op, "a row the warp does not take");
     auto transposed = stablehlo::TransposeOp::create(rewriter, op.getLoc(),
                                                      op.getInputs()[0], perm);
     SmallVector<int64_t> trailing;
@@ -18443,6 +18448,111 @@ template <typename T> struct CSE final : CheckedOpRewritePattern<T, CSE<T>> {
       }
     }
     return failure();
+  }
+};
+
+// XLA's GPU fusion nests a producer into each consumer that reads it, and
+// recomputes it for every element of the reader: a value read with
+// expansion (through a broadcast of it, or of a slice of it, as each stage
+// of a sum-factorized contraction reads the one before) is computed once per
+// element of the expansion, and each nested stage multiplies the work. Its
+// cost model prices the recomputation at f32 rates; on a GPU whose f64 rate
+// is a small fraction of that (a GeForce RTX runs f64 at 1/64), MFEM's
+// order-2 contractions (reductions over 3, nested three deep by the fusion)
+// ran 2.5x slower than materialized. An optimization_barrier on the value
+// makes XLA materialize it: the reader's kernel reads it from memory, once
+// per element it needs, instead of recomputing it.
+struct RereadBarrier final : RewritePattern {
+  RereadBarrier(MLIRContext *context,
+                PatternBenefit benefit = PatternBenefit(1))
+      : RewritePattern(MatchAnyOpTypeTag(), benefit, context) {}
+
+  // Values smaller than this are read from cache, whatever is done with them.
+  static constexpr int64_t kMinElements = 4096;
+  // The computation materialized must be worth a round trip through memory:
+  // this many elementwise ops (a product summed, the usual stage).
+  static constexpr unsigned kMinOps = 2;
+  // Bounds the walks.
+  static constexpr unsigned kMaxOps = 64;
+
+  // The expanding broadcasts the value is read through, directly or through
+  // reshapes and slices of it.
+  static void expandingReads(Value v, SmallVectorImpl<Value> &reads) {
+    SmallVector<Value> worklist{v};
+    unsigned visited = 0;
+    while (!worklist.empty()) {
+      Value cur = worklist.pop_back_val();
+      for (Operation *user : cur.getUsers()) {
+        if (++visited > kMaxOps)
+          return;
+        if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(user)) {
+          if (cast<RankedTensorType>(bcast.getType()).getNumElements() >
+              cast<RankedTensorType>(cur.getType()).getNumElements())
+            reads.push_back(bcast.getResult());
+          continue;
+        }
+        if (isa<stablehlo::ReshapeOp, stablehlo::SliceOp,
+                stablehlo::TransposeOp>(user))
+          worklist.push_back(user->getResult(0));
+      }
+    }
+  }
+
+  // The elementwise ops computing the value, through the ops that only
+  // relayout their operand, up to kMaxOps.
+  static unsigned computedOps(Value v) {
+    SmallVector<Value> worklist{v};
+    SmallPtrSet<Operation *, 16> seen;
+    unsigned ops = 0;
+    while (!worklist.empty()) {
+      Operation *op = worklist.pop_back_val().getDefiningOp();
+      if (!op || !seen.insert(op).second)
+        continue;
+      if (ops >= kMaxOps)
+        return ops;
+      if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
+              stablehlo::SliceOp, stablehlo::TransposeOp>(op)) {
+        worklist.push_back(op->getOperand(0));
+        continue;
+      }
+      if (!hasTraitElementwise(op) && !isa<stablehlo::SelectOp>(op))
+        continue;
+      ++ops;
+      for (Value operand : op->getOperands())
+        worklist.push_back(operand);
+    }
+    return ops;
+  }
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    if (op->getNumResults() != 1 || op->getNumOperands() == 0)
+      return failure();
+    Value result = op->getResult(0);
+    auto type = dyn_cast<RankedTensorType>(result.getType());
+    if (!type || !type.hasStaticShape() ||
+        type.getNumElements() < kMinElements ||
+        !isa<FloatType>(type.getElementType()))
+      return failure();
+    unsigned ops = 0;
+    if (isa<stablehlo::ReduceOp>(op))
+      ops = kMinOps;
+    else if (hasTraitElementwise(op) || isa<stablehlo::SelectOp>(op))
+      ops = computedOps(result);
+    if (ops < kMinOps)
+      return rewriter.notifyMatchFailure(op, "not a computed value");
+    if (result.hasOneUse() &&
+        isa<stablehlo::OptimizationBarrierOp>(*result.user_begin()))
+      return failure();
+    SmallVector<Value> reads;
+    expandingReads(result, reads);
+    if (reads.empty())
+      return rewriter.notifyMatchFailure(op, "not read with expansion");
+    rewriter.setInsertionPointAfter(op);
+    auto barrier = stablehlo::OptimizationBarrierOp::create(
+        rewriter, op->getLoc(), ValueRange{result});
+    rewriter.replaceAllUsesExcept(result, barrier->getResult(0), barrier);
+    return success();
   }
 };
 
