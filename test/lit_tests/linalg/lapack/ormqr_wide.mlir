@@ -142,7 +142,7 @@ module {
 module {
   func.func @main(%arg0: tensor<32x64xcomplex<f32>>, %arg1: tensor<32xcomplex<f32>>, %arg2: tensor<32x64xcomplex<f32>>) -> tensor<32x64xcomplex<f32>> {
     %0 = "stablehlo.slice"(%arg0) {start_indices = array<i64: 0, 0>, limit_indices = array<i64: 32, 32>, strides = array<i64: 1, 1>} : (tensor<32x64xcomplex<f32>>) -> tensor<32x32xcomplex<f32>>
-    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_cunmqr (
+    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_cunmqr_ (
     %1 = enzymexla.lapack.ormqr %0, %arg1, %arg2 <{side = #enzymexla.side<left>}> : (tensor<32x32xcomplex<f32>>, tensor<32xcomplex<f32>>, tensor<32x64xcomplex<f32>>) -> tensor<32x64xcomplex<f32>>
     return %1: tensor<32x64xcomplex<f32>>
   }
@@ -151,7 +151,7 @@ module {
 module {
   func.func @main(%arg0: tensor<32x64xcomplex<f64>>, %arg1: tensor<32xcomplex<f64>>, %arg2: tensor<32x64xcomplex<f64>>) -> tensor<32x64xcomplex<f64>> {
     %0 = "stablehlo.slice"(%arg0) {start_indices = array<i64: 0, 0>, limit_indices = array<i64: 32, 32>, strides = array<i64: 1, 1>} : (tensor<32x64xcomplex<f64>>) -> tensor<32x32xcomplex<f64>>
-    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_zunmqr (
+    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_zunmqr_ (
     %1 = enzymexla.lapack.ormqr %0, %arg1, %arg2 <{side = #enzymexla.side<left>}> : (tensor<32x32xcomplex<f64>>, tensor<32xcomplex<f64>>, tensor<32x64xcomplex<f64>>) -> tensor<32x64xcomplex<f64>>
     return %1: tensor<32x64xcomplex<f64>>
   }
