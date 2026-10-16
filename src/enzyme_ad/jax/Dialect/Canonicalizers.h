@@ -52,13 +52,25 @@ public:
   OpTy create(PatternRewriter &rewriter, OpTy launchOp, ArrayRef<Type> resTys,
               ArrayAttr outputAliases) const;
 
-  LogicalResult matchAndRewrite(OpTy launchOp,
-                                PatternRewriter &rewriter) const override {
+  // Whether each operand of `launchOp` is never written by it.
+  BitVector getReadOnlyOperands(OpTy launchOp) const {
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(
         ((Operation *)launchOp)->getParentOfType<ModuleOp>());
     auto fn = cast<FunctionOpInterface>(
         symbolTable.lookupNearestSymbolFrom(launchOp, launchOp.getFnAttr()));
+    BitVector readonly(launchOp.getInputs().size(), false);
+    for (unsigned i = 0, e = readonly.size(); i < e; ++i)
+      readonly[i] =
+          fn.front().getArgument(i).use_empty() ||
+          fn.getArgAttr(i, LLVM::LLVMDialect::getReadonlyAttrName()) ||
+          fn.getArgAttr(i, LLVM::LLVMDialect::getReadnoneAttrName());
+    return readonly;
+  }
+
+  LogicalResult matchAndRewrite(OpTy launchOp,
+                                PatternRewriter &rewriter) const override {
+    BitVector readonly = getReadOnlyOperands(launchOp);
 
     auto operand_aliases = launchOp.getOutputOperandAliases();
     assert(operand_aliases.size() == launchOp.getNumResults());
@@ -66,17 +78,7 @@ public:
     size_t outputs = launchOp.getNumResults();
     for (auto alias_attr : operand_aliases) {
       auto alias = cast<stablehlo::OutputOperandAliasAttr>(alias_attr);
-      auto operandIndex = alias.getOperandIndex();
-
-      auto operand = fn.front().getArgument(operandIndex);
-      bool readonly =
-          operand.use_empty() ||
-          fn.getArgAttr(operandIndex,
-                        LLVM::LLVMDialect::getReadonlyAttrName()) ||
-          fn.getArgAttr(operandIndex, LLVM::LLVMDialect::getReadnoneAttrName());
-
-      if (readonly) {
-
+      if (readonly[alias.getOperandIndex()]) {
         changed = true;
         outputs--;
       }
@@ -91,18 +93,10 @@ public:
       auto alias = cast<stablehlo::OutputOperandAliasAttr>(en.value());
       auto operandIndex = alias.getOperandIndex();
 
-      auto operand = fn.front().getArgument(operandIndex);
       assert(launchOp.getInputs()[operandIndex].getType() ==
              launchOp.getResultTypes()[idx]);
-      bool readonly =
-          operand.use_empty() ||
-          fn.getArgAttr(operandIndex,
-                        LLVM::LLVMDialect::getReadonlyAttrName()) ||
-          fn.getArgAttr(operandIndex, LLVM::LLVMDialect::getReadnoneAttrName());
-
-      if (readonly) {
+      if (readonly[operandIndex])
         continue;
-      }
       resTys.push_back(launchOp.getResultTypes()[idx]);
       if (outputs == 1) {
         outputAliases.push_back(stablehlo::OutputOperandAliasAttr::get(
@@ -123,15 +117,7 @@ public:
     for (auto alias_attr : operand_aliases) {
       auto alias = cast<stablehlo::OutputOperandAliasAttr>(alias_attr);
       auto operandIndex = alias.getOperandIndex();
-
-      auto operand = fn.front().getArgument(operandIndex);
-      bool readonly =
-          operand.use_empty() ||
-          fn.getArgAttr(operandIndex,
-                        LLVM::LLVMDialect::getReadonlyAttrName()) ||
-          fn.getArgAttr(operandIndex, LLVM::LLVMDialect::getReadnoneAttrName());
-
-      if (readonly) {
+      if (readonly[operandIndex]) {
         replacements.push_back(launchOp.getInputs()[operandIndex]);
         continue;
       } else {
