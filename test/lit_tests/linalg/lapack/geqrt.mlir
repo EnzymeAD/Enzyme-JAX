@@ -7,18 +7,18 @@ module {
   }
 }
 
-// CPU:  llvm.func @enzymexla_wrapper_lapacke_sgeqrt(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr) {
+// CPU:  llvm.func @enzymexla_wrapper_lapacke_sgeqrt_(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr) {
 // CPU-NEXT:    %0 = llvm.load %arg0 : !llvm.ptr -> i64
 // CPU-NEXT:    %1 = llvm.load %arg1 : !llvm.ptr -> i64
 // CPU-NEXT:    %2 = llvm.load %arg2 : !llvm.ptr -> i64
 // CPU-NEXT:    %3 = llvm.load %arg3 : !llvm.ptr -> i64
 // CPU-NEXT:    %4 = llvm.load %arg5 : !llvm.ptr -> i64
 // CPU-NEXT:    %5 = llvm.load %arg7 : !llvm.ptr -> i64
-// CPU-NEXT:    %6 = llvm.call @enzymexla_lapacke_sgeqrt(%0, %1, %2, %3, %arg4, %4, %arg6, %5) : (i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
+// CPU-NEXT:    %6 = llvm.call @enzymexla_lapacke_sgeqrt_(%0, %1, %2, %3, %arg4, %4, %arg6, %5) : (i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
 // CPU-NEXT:    llvm.store %6, %arg8 : i64, !llvm.ptr
 // CPU-NEXT:    llvm.return
 // CPU-NEXT:  }
-// CPU-NEXT:  llvm.func @enzymexla_lapacke_sgeqrt(i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
+// CPU-NEXT:  llvm.func @enzymexla_lapacke_sgeqrt_(i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
 // CPU-NEXT:  func.func @main(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64x64xf32>, tensor<i64>) {
 // CPU-DAG:    %[[C:[a-z0-9_]+]] = stablehlo.constant dense<-1> : tensor<i64>
 // CPU-DAG:    %[[CST:[a-z0-9_]+]] = stablehlo.constant dense<0.000000e+00> : tensor<64x64xf32>

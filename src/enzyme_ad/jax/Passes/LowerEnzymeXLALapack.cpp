@@ -77,7 +77,7 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
     auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
 
-    std::string fn = "geqrf";
+    std::string fn = "geqrf_";
     if (auto prefix = lapackPrecisionPrefix(inputElementType)) {
       fn = *prefix + fn;
     } else {
@@ -350,7 +350,7 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
     auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
     auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
 
-    std::string fn = "geqrt";
+    std::string fn = "geqrt_";
     if (auto prefix = lapackPrecisionPrefix(inputElementType)) {
       fn = *prefix + fn;
     } else {
@@ -551,7 +551,7 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
     auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
 
-    std::string fn = "gqr";
+    std::string fn = "gqr_";
     if (auto prefix = lapackPrecisionPrefix(inputElementType)) {
       if (prefix == "s" || prefix == "d")
         fn = *prefix + "or" + fn;
@@ -860,7 +860,7 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
     auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
     auto type_llvm_char = rewriter.getIntegerType(8);
 
-    std::string fn = "mqr";
+    std::string fn = "mqr_";
     if (auto prefix = lapackPrecisionPrefix(A_eltype)) {
       if (prefix == "s" || prefix == "d")
         fn = *prefix + "or" + fn;
@@ -1117,7 +1117,7 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
     auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
     auto type_llvm_char = rewriter.getIntegerType(8);
 
-    std::string fn = "gemqrt";
+    std::string fn = "gemqrt_";
     if (auto prefix = lapackPrecisionPrefix(C_eltype)) {
       fn = *prefix + fn;
     } else {
@@ -2733,7 +2733,7 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
     auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
     auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
 
-    std::string fn = "potrf";
+    std::string fn = "potrf_";
     if (auto prefix = lapackPrecisionPrefix(inputElementType)) {
       fn = *prefix + fn;
     } else {

@@ -7,7 +7,7 @@ module {
   }
 }
 
-// CPU:  llvm.func @enzymexla_wrapper_lapacke_sgemqrt(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: !llvm.ptr, %arg10: !llvm.ptr, %arg11: !llvm.ptr, %arg12: !llvm.ptr) {
+// CPU:  llvm.func @enzymexla_wrapper_lapacke_sgemqrt_(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: !llvm.ptr, %arg10: !llvm.ptr, %arg11: !llvm.ptr, %arg12: !llvm.ptr) {
 // CPU-NEXT:    %0 = llvm.load %arg0 : !llvm.ptr -> i64
 // CPU-NEXT:    %1 = llvm.load %arg1 : !llvm.ptr -> i8
 // CPU-NEXT:    %2 = llvm.load %arg2 : !llvm.ptr -> i8
@@ -18,10 +18,10 @@ module {
 // CPU-NEXT:    %7 = llvm.load %arg8 : !llvm.ptr -> i64
 // CPU-NEXT:    %8 = llvm.load %arg10 : !llvm.ptr -> i64
 // CPU-NEXT:    %9 = llvm.load %arg12 : !llvm.ptr -> i64
-// CPU-NEXT:    %10 = llvm.call @enzymexla_lapacke_sgemqrt(%0, %1, %2, %3, %4, %5, %6, %arg7, %7, %arg9, %8, %arg11, %9) : (i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
+// CPU-NEXT:    %10 = llvm.call @enzymexla_lapacke_sgemqrt_(%0, %1, %2, %3, %4, %5, %6, %arg7, %7, %arg9, %8, %arg11, %9) : (i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
 // CPU-NEXT:    llvm.return
 // CPU-NEXT:  }
-// CPU-NEXT:  llvm.func @enzymexla_lapacke_sgemqrt(i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
+// CPU-NEXT:  llvm.func @enzymexla_lapacke_sgemqrt_(i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
 // CPU-NEXT:  func.func @main(%arg0: tensor<64x32xf32>, %arg1: tensor<32x32xf32>, %arg2: tensor<64x48xf32>) -> tensor<64x48xf32> {
 // CPU-DAG:    %[[I64_102:[a-z0-9_]+]] = stablehlo.constant dense<102> : tensor<i64>
 // CPU-DAG:    %[[I8_76:[a-z0-9_]+]] = stablehlo.constant dense<76> : tensor<i8>
@@ -40,7 +40,7 @@ module {
   }
 }
 
-// CPU:  llvm.func @enzymexla_wrapper_lapacke_sgemqrt(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: !llvm.ptr, %arg10: !llvm.ptr, %arg11: !llvm.ptr, %arg12: !llvm.ptr) {
+// CPU:  llvm.func @enzymexla_wrapper_lapacke_sgemqrt_(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: !llvm.ptr, %arg10: !llvm.ptr, %arg11: !llvm.ptr, %arg12: !llvm.ptr) {
 // CPU-NEXT:    %0 = llvm.load %arg0 : !llvm.ptr -> i64
 // CPU-NEXT:    %1 = llvm.load %arg1 : !llvm.ptr -> i8
 // CPU-NEXT:    %2 = llvm.load %arg2 : !llvm.ptr -> i8
@@ -51,10 +51,10 @@ module {
 // CPU-NEXT:    %7 = llvm.load %arg8 : !llvm.ptr -> i64
 // CPU-NEXT:    %8 = llvm.load %arg10 : !llvm.ptr -> i64
 // CPU-NEXT:    %9 = llvm.load %arg12 : !llvm.ptr -> i64
-// CPU-NEXT:    %10 = llvm.call @enzymexla_lapacke_sgemqrt(%0, %1, %2, %3, %4, %5, %6, %arg7, %7, %arg9, %8, %arg11, %9) : (i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
+// CPU-NEXT:    %10 = llvm.call @enzymexla_lapacke_sgemqrt_(%0, %1, %2, %3, %4, %5, %6, %arg7, %7, %arg9, %8, %arg11, %9) : (i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
 // CPU-NEXT:    llvm.return
 // CPU-NEXT:  }
-// CPU-NEXT:  llvm.func @enzymexla_lapacke_sgemqrt(i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
+// CPU-NEXT:  llvm.func @enzymexla_lapacke_sgemqrt_(i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
 // CPU-NEXT:  func.func @main(%arg0: tensor<64x32xf32>, %arg1: tensor<32x32xf32>, %arg2: tensor<64x48xf32>) -> tensor<64x48xf32> {
 // CPU-DAG:    %[[I64_102:[a-z0-9_]+]] = stablehlo.constant dense<102> : tensor<i64>
 // CPU-DAG:    %[[I8_76:[a-z0-9_]+]] = stablehlo.constant dense<76> : tensor<i8>
@@ -73,7 +73,7 @@ module {
   }
 }
 
-// CPU:  llvm.func @enzymexla_wrapper_lapacke_sgemqrt(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: !llvm.ptr, %arg10: !llvm.ptr, %arg11: !llvm.ptr, %arg12: !llvm.ptr) {
+// CPU:  llvm.func @enzymexla_wrapper_lapacke_sgemqrt_(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: !llvm.ptr, %arg10: !llvm.ptr, %arg11: !llvm.ptr, %arg12: !llvm.ptr) {
 // CPU-NEXT:    %0 = llvm.load %arg0 : !llvm.ptr -> i64
 // CPU-NEXT:    %1 = llvm.load %arg1 : !llvm.ptr -> i8
 // CPU-NEXT:    %2 = llvm.load %arg2 : !llvm.ptr -> i8
@@ -84,10 +84,10 @@ module {
 // CPU-NEXT:    %7 = llvm.load %arg8 : !llvm.ptr -> i64
 // CPU-NEXT:    %8 = llvm.load %arg10 : !llvm.ptr -> i64
 // CPU-NEXT:    %9 = llvm.load %arg12 : !llvm.ptr -> i64
-// CPU-NEXT:    %10 = llvm.call @enzymexla_lapacke_sgemqrt(%0, %1, %2, %3, %4, %5, %6, %arg7, %7, %arg9, %8, %arg11, %9) : (i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
+// CPU-NEXT:    %10 = llvm.call @enzymexla_lapacke_sgemqrt_(%0, %1, %2, %3, %4, %5, %6, %arg7, %7, %arg9, %8, %arg11, %9) : (i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
 // CPU-NEXT:    llvm.return
 // CPU-NEXT:  }
-// CPU-NEXT:  llvm.func @enzymexla_lapacke_sgemqrt(i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
+// CPU-NEXT:  llvm.func @enzymexla_lapacke_sgemqrt_(i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
 // CPU-NEXT:  func.func @main(%arg0: tensor<64x32xf32>, %arg1: tensor<32x32xf32>, %arg2: tensor<48x64xf32>) -> tensor<48x64xf32> {
 // CPU-DAG:    %[[I64_102:[a-z0-9_]+]] = stablehlo.constant dense<102> : tensor<i64>
 // CPU-DAG:    %[[I8_82:[a-z0-9_]+]] = stablehlo.constant dense<82> : tensor<i8>
@@ -106,7 +106,7 @@ module {
   }
 }
 
-// CPU:  llvm.func @enzymexla_wrapper_lapacke_sgemqrt(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: !llvm.ptr, %arg10: !llvm.ptr, %arg11: !llvm.ptr, %arg12: !llvm.ptr) {
+// CPU:  llvm.func @enzymexla_wrapper_lapacke_sgemqrt_(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: !llvm.ptr, %arg10: !llvm.ptr, %arg11: !llvm.ptr, %arg12: !llvm.ptr) {
 // CPU-NEXT:    %0 = llvm.load %arg0 : !llvm.ptr -> i64
 // CPU-NEXT:    %1 = llvm.load %arg1 : !llvm.ptr -> i8
 // CPU-NEXT:    %2 = llvm.load %arg2 : !llvm.ptr -> i8
@@ -117,10 +117,10 @@ module {
 // CPU-NEXT:    %7 = llvm.load %arg8 : !llvm.ptr -> i64
 // CPU-NEXT:    %8 = llvm.load %arg10 : !llvm.ptr -> i64
 // CPU-NEXT:    %9 = llvm.load %arg12 : !llvm.ptr -> i64
-// CPU-NEXT:    %10 = llvm.call @enzymexla_lapacke_sgemqrt(%0, %1, %2, %3, %4, %5, %6, %arg7, %7, %arg9, %8, %arg11, %9) : (i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
+// CPU-NEXT:    %10 = llvm.call @enzymexla_lapacke_sgemqrt_(%0, %1, %2, %3, %4, %5, %6, %arg7, %7, %arg9, %8, %arg11, %9) : (i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
 // CPU-NEXT:    llvm.return
 // CPU-NEXT:  }
-// CPU-NEXT:  llvm.func @enzymexla_lapacke_sgemqrt(i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
+// CPU-NEXT:  llvm.func @enzymexla_lapacke_sgemqrt_(i64, i8, i8, i64, i64, i64, i64, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr, i64) -> i64
 // CPU-NEXT:  func.func @main(%arg0: tensor<64x32xf32>, %arg1: tensor<32x32xf32>, %arg2: tensor<48x64xf32>) -> tensor<48x64xf32> {
 // CPU-DAG:    %[[I64_102:[a-z0-9_]+]] = stablehlo.constant dense<102> : tensor<i64>
 // CPU-DAG:    %[[I8_82:[a-z0-9_]+]] = stablehlo.constant dense<82> : tensor<i8>
