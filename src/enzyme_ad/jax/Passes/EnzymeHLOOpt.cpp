@@ -28226,8 +28226,22 @@ static std::optional<RankedTensorType> isZeroExtent(Type t) {
   return std::nullopt;
 }
 
-// Replace instances of zero extent tensors with empty tensors of the same
-// type.
+/// Create a zero-extent `stablehlo.constant` of type `type`.
+static Value createZeroExtentConstant(PatternRewriter &rewriter, Location loc,
+                                      RankedTensorType type) {
+  return stablehlo::ConstantOp::create(
+      rewriter, loc, type, DenseElementsAttr::get(type, ArrayRef<Attribute>{}));
+}
+
+// Replace instances of zero extent tensors with zero-extent constants of the
+// same type.
+//
+// Note that we deliberately materialize a `stablehlo.constant dense<>` rather
+// than a `tensor.empty`: the latter is not a stablehlo op and cannot be
+// exported to XLA, so if the zero-extent value is not consumed by a stablehlo
+// op that is subsequently simplified away (e.g. it is directly returned from
+// the function after being threaded through a `stablehlo.while`), compilation
+// would fail.
 struct ZeroExtentTensorCanon final : RewritePattern {
   ZeroExtentTensorCanon(MLIRContext *context,
                         PatternBenefit benefit = PatternBenefit(1))
@@ -28245,32 +28259,35 @@ struct ZeroExtentTensorCanon final : RewritePattern {
     if (!isa_and_present<stablehlo::StablehloDialect>(op->getDialect()))
       return rewriter.notifyMatchFailure(op, "not stablehlo");
 
-    // If the result is a zero-extent tensor, replace the whole op with an empty
-    // tensor.
+    // Constants are already in canonical form (and are what we rewrite to), so
+    // skip them to avoid rewriting them into themselves forever.
+    if (isa<stablehlo::ConstantOp>(op))
+      return rewriter.notifyMatchFailure(op, "already a constant");
+
+    // If the result is a zero-extent tensor, replace the whole op with a
+    // zero-extent constant.
     bool didUpdate = false;
     for (auto result : op->getResults()) {
       auto resultType = isZeroExtent(result.getType());
       if (!resultType || result.use_empty())
         continue;
       rewriter.replaceAllUsesWith(
-          result, tensor::EmptyOp::create(rewriter, loc, resultType->getShape(),
-                                          resultType->getElementType()));
+          result, createZeroExtentConstant(rewriter, loc, *resultType));
       didUpdate = true;
     }
 
     // If one of the operands is a zero-extent tensor, replace the operand with
-    // an empty tensor.
+    // a zero-extent constant (this also canonicalizes any `tensor.empty`
+    // operands into exportable constants).
     for (OpOperand &operand : op->getOpOperands()) {
       auto operandType = isZeroExtent(operand.get().getType());
-      if (!operandType || operand.get().getDefiningOp<tensor::EmptyOp>())
+      if (!operandType || operand.get().getDefiningOp<stablehlo::ConstantOp>())
         continue;
       Operation *owner = operand.getOwner();
       int operandNum = operand.getOperandNumber();
-      auto emptyTensorOp =
-          tensor::EmptyOp::create(rewriter, loc, operandType->getShape(),
-                                  operandType->getElementType());
+      auto constantOp = createZeroExtentConstant(rewriter, loc, *operandType);
       rewriter.modifyOpInPlace(
-          owner, [&]() { owner->setOperand(operandNum, emptyTensorOp); });
+          owner, [&]() { owner->setOperand(operandNum, constantOp); });
       didUpdate = true;
     }
     return success(didUpdate);
