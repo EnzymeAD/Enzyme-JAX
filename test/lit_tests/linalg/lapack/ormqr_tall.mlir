@@ -27,7 +27,7 @@ module {
 // CPU-DAG:    %[[I64_64:[a-z0-9_]+]] = stablehlo.constant dense<64> : tensor<i64>
 // CPU-DAG:    %[[I64_48:[a-z0-9_]+]] = stablehlo.constant dense<48> : tensor<i64>
 // CPU-DAG:    %[[I64_32:[a-z0-9_]+]] = stablehlo.constant dense<32> : tensor<i64>
-// CPU:        %0 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sormqr (%[[I64_102]], %[[I8_76]], %[[I8_78]], %[[I64_64]], %[[I64_48]], %[[I64_32]], %arg0, %[[I64_64]], %arg1, %arg2, %[[I64_64]]) <operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 9, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<i64>, tensor<i8>, tensor<i8>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<64x32xf32>, tensor<i64>, tensor<32xf32>, tensor<64x48xf32>, tensor<i64>) -> tensor<64x48xf32>
+// CPU:        %0 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sormqr_ (%[[I64_102]], %[[I8_76]], %[[I8_78]], %[[I64_64]], %[[I64_48]], %[[I64_32]], %arg0, %[[I64_64]], %arg1, %arg2, %[[I64_64]]) <operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 9, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<i64>, tensor<i8>, tensor<i8>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<64x32xf32>, tensor<i64>, tensor<32xf32>, tensor<64x48xf32>, tensor<i64>) -> tensor<64x48xf32>
 // CPU-NEXT:    return %0 : tensor<64x48xf32>
 // CPU-NEXT:  }
 
@@ -58,7 +58,7 @@ module {
 // CPU-DAG:    %[[I64_64:[a-z0-9_]+]] = stablehlo.constant dense<64> : tensor<i64>
 // CPU-DAG:    %[[I64_48:[a-z0-9_]+]] = stablehlo.constant dense<48> : tensor<i64>
 // CPU-DAG:    %[[I64_32:[a-z0-9_]+]] = stablehlo.constant dense<32> : tensor<i64>
-// CPU:        %0 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sormqr (%[[I64_102]], %[[I8_76]], %[[I8_84]], %[[I64_64]], %[[I64_48]], %[[I64_32]], %arg0, %[[I64_64]], %arg1, %arg2, %[[I64_64]]) <operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 9, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<i64>, tensor<i8>, tensor<i8>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<64x32xf32>, tensor<i64>, tensor<32xf32>, tensor<64x48xf32>, tensor<i64>) -> tensor<64x48xf32>
+// CPU:        %0 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sormqr_ (%[[I64_102]], %[[I8_76]], %[[I8_84]], %[[I64_64]], %[[I64_48]], %[[I64_32]], %arg0, %[[I64_64]], %arg1, %arg2, %[[I64_64]]) <operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 9, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<i64>, tensor<i8>, tensor<i8>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<64x32xf32>, tensor<i64>, tensor<32xf32>, tensor<64x48xf32>, tensor<i64>) -> tensor<64x48xf32>
 // CPU-NEXT:    return %0 : tensor<64x48xf32>
 // CPU-NEXT:  }
 
@@ -89,13 +89,13 @@ module {
 // CPU-DAG:    %[[I64_48:[a-z0-9_]+]] = stablehlo.constant dense<48> : tensor<i64>
 // CPU-DAG:    %[[I64_64:[a-z0-9_]+]] = stablehlo.constant dense<64> : tensor<i64>
 // CPU-DAG:    %[[I64_32:[a-z0-9_]+]] = stablehlo.constant dense<32> : tensor<i64>
-// CPU:        %0 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sormqr (%[[I64_102]], %[[I8_82]], %[[I8_78]], %[[I64_48]], %[[I64_64]], %[[I64_32]], %arg0, %[[I64_64]], %arg1, %arg2, %[[I64_48]]) <operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 9, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<i64>, tensor<i8>, tensor<i8>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<64x32xf32>, tensor<i64>, tensor<32xf32>, tensor<48x64xf32>, tensor<i64>) -> tensor<48x64xf32>
+// CPU:        %0 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sormqr_ (%[[I64_102]], %[[I8_82]], %[[I8_78]], %[[I64_48]], %[[I64_64]], %[[I64_32]], %arg0, %[[I64_64]], %arg1, %arg2, %[[I64_48]]) <operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 9, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<i64>, tensor<i8>, tensor<i8>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<64x32xf32>, tensor<i64>, tensor<32xf32>, tensor<48x64xf32>, tensor<i64>) -> tensor<48x64xf32>
 // CPU-NEXT:    return %0 : tensor<48x64xf32>
 // CPU-NEXT:  }
 
 module {
   func.func @main(%arg0: tensor<64x32xf64>, %arg1: tensor<32xf64>, %arg2: tensor<64x48xf64>) -> tensor<64x48xf64> {
-    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_dormqr (
+    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_dormqr_ (
     %0 = enzymexla.lapack.ormqr %arg0, %arg1, %arg2 <{side = #enzymexla.side<left>}> : (tensor<64x32xf64>, tensor<32xf64>, tensor<64x48xf64>) -> tensor<64x48xf64>
     return %0: tensor<64x48xf64>
   }

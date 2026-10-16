@@ -25,14 +25,14 @@ module {
 // CPU-DAG:    %[[I64_102:[a-z0-9_]+]] = stablehlo.constant dense<102> : tensor<i64>
 // CPU-DAG:    %[[I64_32:[a-z0-9_]+]] = stablehlo.constant dense<32> : tensor<i64>
 // CPU-DAG:    %[[I64_64:[a-z0-9_]+]] = stablehlo.constant dense<64> : tensor<i64>
-// CPU:        %0:3 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sgeqrt (%[[I64_102]], %[[I64_32]], %[[I64_64]], %[[I64_32]], %arg0, %[[I64_32]], %[[CST]], %[[I64_32]], %[[C]]) <operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 4, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 6, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 8, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<32x64xf32>, tensor<i64>, tensor<32x32xf32>, tensor<i64>, tensor<i64>) -> (tensor<32x64xf32>, tensor<32x32xf32>, tensor<i64>)
+// CPU:        %0:3 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sgeqrt_ (%[[I64_102]], %[[I64_32]], %[[I64_64]], %[[I64_32]], %arg0, %[[I64_32]], %[[CST]], %[[I64_32]], %[[C]]) <operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 4, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 6, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 8, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<32x64xf32>, tensor<i64>, tensor<32x32xf32>, tensor<i64>, tensor<i64>) -> (tensor<32x64xf32>, tensor<32x32xf32>, tensor<i64>)
 // CPU-NEXT:    return %0#0, %0#1, %0#2 : tensor<32x64xf32>, tensor<32x32xf32>, tensor<i64>
 // CPU-NEXT:  }
 
 module {
   // CPU: func.func @main(%arg0: tensor<32x64xf64>) -> (tensor<32x64xf64>, tensor<32x32xf64>, tensor<i64>) {
   func.func @main(%arg0: tensor<32x64xf64>) -> (tensor<32x64xf64>, tensor<32x32xf64>, tensor<i64>) {
-    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_dgeqrt (
+    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_dgeqrt_ (
     %0:3 = enzymexla.lapack.geqrt %arg0 : (tensor<32x64xf64>) -> (tensor<32x64xf64>, tensor<32x32xf64>, tensor<i64>)
     return %0#0, %0#1, %0#2 : tensor<32x64xf64>, tensor<32x32xf64>, tensor<i64>
   }
@@ -41,7 +41,7 @@ module {
 module {
   // CPU: func.func @main(%arg0: tensor<32x64xcomplex<f32>>) -> (tensor<32x64xcomplex<f32>>, tensor<32x32xcomplex<f32>>, tensor<i64>) {
   func.func @main(%arg0: tensor<32x64xcomplex<f32>>) -> (tensor<32x64xcomplex<f32>>, tensor<32x32xcomplex<f32>>, tensor<i64>) {
-    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_cgeqrt (
+    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_cgeqrt_ (
     %0:3 = enzymexla.lapack.geqrt %arg0 : (tensor<32x64xcomplex<f32>>) -> (tensor<32x64xcomplex<f32>>, tensor<32x32xcomplex<f32>>, tensor<i64>)
     return %0#0, %0#1, %0#2 : tensor<32x64xcomplex<f32>>, tensor<32x32xcomplex<f32>>, tensor<i64>
   }
@@ -50,7 +50,7 @@ module {
 module {
   // CPU: func.func @main(%arg0: tensor<32x64xcomplex<f64>>) -> (tensor<32x64xcomplex<f64>>, tensor<32x32xcomplex<f64>>, tensor<i64>) {
   func.func @main(%arg0: tensor<32x64xcomplex<f64>>) -> (tensor<32x64xcomplex<f64>>, tensor<32x32xcomplex<f64>>, tensor<i64>) {
-    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_zgeqrt (
+    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_zgeqrt_ (
     %0:3 = enzymexla.lapack.geqrt %arg0 : (tensor<32x64xcomplex<f64>>) -> (tensor<32x64xcomplex<f64>>, tensor<32x32xcomplex<f64>>, tensor<i64>)
     return %0#0, %0#1, %0#2 : tensor<32x64xcomplex<f64>>, tensor<32x32xcomplex<f64>>, tensor<i64>
   }

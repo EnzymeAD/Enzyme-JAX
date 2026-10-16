@@ -24,7 +24,7 @@ module {
 // CPU-DAG:    %[[M:[a-z0-9_]+]] = stablehlo.constant dense<64> : tensor<i64>
 // CPU-DAG:    %[[INFO:[a-z0-9_]+]] = stablehlo.constant dense<-1> : tensor<i64>
 // CPU-DAG:    %[[TAU:[a-z0-9_]+]] = stablehlo.constant dense<0.000000e+00> : tensor<64xf32>
-// CPU:        %0:3 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sgeqrf (%[[LAYOUT]], %[[M]], %[[M]], %arg0, %[[M]], %[[TAU]], %[[INFO]]) <operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<0> : tensor<1xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 3, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 5, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 6, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<i64>, tensor<i64>, tensor<i64>, tensor<64x64xf32>, tensor<i64>, tensor<64xf32>, tensor<i64>) -> (tensor<64x64xf32>, tensor<64xf32>, tensor<i64>)
+// CPU:        %0:3 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sgeqrf_ (%[[LAYOUT]], %[[M]], %[[M]], %arg0, %[[M]], %[[TAU]], %[[INFO]]) <operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<0> : tensor<1xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 3, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 5, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 6, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<i64>, tensor<i64>, tensor<i64>, tensor<64x64xf32>, tensor<i64>, tensor<64xf32>, tensor<i64>) -> (tensor<64x64xf32>, tensor<64xf32>, tensor<i64>)
 // CPU-NEXT:    return %0#0, %0#1, %0#2 : tensor<64x64xf32>, tensor<64xf32>, tensor<i64>
 // CPU-NEXT:  }
 
@@ -43,7 +43,7 @@ module {
 module {
   // CPU: func.func @main(%arg0: tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xf64>, tensor<i64>) {
   func.func @main(%arg0: tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xf64>, tensor<i64>) {
-    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_dgeqrf (
+    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_dgeqrf_ (
     %0:3 = enzymexla.lapack.geqrf %arg0 : (tensor<64x64xf64>) -> (tensor<64x64xf64>, tensor<64xf64>, tensor<i64>)
     return %0#0, %0#1, %0#2 : tensor<64x64xf64>, tensor<64xf64>, tensor<i64>
   }
@@ -52,7 +52,7 @@ module {
 module {
   // CPU: func.func @main(%arg0: tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xcomplex<f32>>, tensor<i64>) {
   func.func @main(%arg0: tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xcomplex<f32>>, tensor<i64>) {
-    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_cgeqrf (
+    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_cgeqrf_ (
     %0:3 = enzymexla.lapack.geqrf %arg0 : (tensor<64x64xcomplex<f32>>) -> (tensor<64x64xcomplex<f32>>, tensor<64xcomplex<f32>>, tensor<i64>)
     return %0#0, %0#1, %0#2 : tensor<64x64xcomplex<f32>>, tensor<64xcomplex<f32>>, tensor<i64>
   }
@@ -61,7 +61,7 @@ module {
 module {
   // CPU: func.func @main(%arg0: tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xcomplex<f64>>, tensor<i64>) {
   func.func @main(%arg0: tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xcomplex<f64>>, tensor<i64>) {
-    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_zgeqrf (
+    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_zgeqrf_ (
     %0:3 = enzymexla.lapack.geqrf %arg0 : (tensor<64x64xcomplex<f64>>) -> (tensor<64x64xcomplex<f64>>, tensor<64xcomplex<f64>>, tensor<i64>)
     return %0#0, %0#1, %0#2 : tensor<64x64xcomplex<f64>>, tensor<64xcomplex<f64>>, tensor<i64>
   }
@@ -73,9 +73,9 @@ module {
   // CPU-NOT: llvm.func @enzymexla_wrapper_lapacke_dgeqrf
   // CPU: func.func @main(%arg0: tensor<64x32xf64>, %arg1: tensor<32x64xf64>) -> (tensor<64x32xf64>, tensor<32x64xf64>) {
   func.func @main(%arg0: tensor<64x32xf64>, %arg1: tensor<32x64xf64>) -> (tensor<64x32xf64>, tensor<32x64xf64>) {
-    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_dgeqrf (
+    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_dgeqrf_ (
     %0:3 = enzymexla.lapack.geqrf %arg0 : (tensor<64x32xf64>) -> (tensor<64x32xf64>, tensor<32xf64>, tensor<i64>)
-    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_dgeqrf (
+    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_dgeqrf_ (
     %1:3 = enzymexla.lapack.geqrf %arg1 : (tensor<32x64xf64>) -> (tensor<32x64xf64>, tensor<32xf64>, tensor<i64>)
     return %0#0, %1#0 : tensor<64x32xf64>, tensor<32x64xf64>
   }

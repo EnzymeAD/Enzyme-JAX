@@ -22,7 +22,7 @@ module {
 // CPU-NEXT:  func.func @main(%arg0: tensor<64x64xf32>, %arg1: tensor<64xf32>) -> tensor<64x64xf32> {
 // CPU-DAG:    %[[I64_102:[a-z0-9_]+]] = stablehlo.constant dense<102> : tensor<i64>
 // CPU-DAG:    %[[I64_64:[a-z0-9_]+]] = stablehlo.constant dense<64> : tensor<i64>
-// CPU:        %0 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sorgqr (%[[I64_102]], %[[I64_64]], %[[I64_64]], %[[I64_64]], %arg0, %[[I64_64]], %arg1) <operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<0> : tensor<1xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 4, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<64x64xf32>, tensor<i64>, tensor<64xf32>) -> tensor<64x64xf32>
+// CPU:        %0 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sorgqr_ (%[[I64_102]], %[[I64_64]], %[[I64_64]], %[[I64_64]], %arg0, %[[I64_64]], %arg1) <operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<0> : tensor<1xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 4, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<64x64xf32>, tensor<i64>, tensor<64xf32>) -> tensor<64x64xf32>
 // CPU-NEXT:    return %0 : tensor<64x64xf32>
 // CPU-NEXT:  }
 
@@ -38,7 +38,7 @@ module {
 
 module {
   func.func @main(%arg0: tensor<64x64xf64>, %arg1: tensor<64xf64>) -> tensor<64x64xf64> {
-    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_dorgqr (
+    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_dorgqr_ (
     %0 = enzymexla.lapack.orgqr %arg0, %arg1 : (tensor<64x64xf64>, tensor<64xf64>) -> tensor<64x64xf64>
     return %0 : tensor<64x64xf64>
   }
