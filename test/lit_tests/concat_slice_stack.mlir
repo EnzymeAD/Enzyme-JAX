@@ -258,3 +258,16 @@ func.func @sub_block(%a: tensor<5832xf64>) -> tensor<3x8x3x3x3xf64> {
 // CHECK-NEXT: %[[S:[^ ,:)]+]] = stablehlo.slice %[[U]] [0:3, 0:8, 3:6, 0:3, 0:3] : (tensor<3x8x27x3x3xf64>) -> tensor<3x8x3x3x3xf64>
 // CHECK-NEXT: return %[[S]] : tensor<3x8x3x3x3xf64>
 // CHECK-NEXT: }
+
+// The first operand a reshape of a slice, the second a slice with no view:
+// the slices have different ranks, so nothing to stack.
+func.func @fewer_views(%x: tensor<4x1x8xf32>, %y: tensor<4x8xf32>) -> tensor<2x8xf32> {
+  %0 = stablehlo.slice %x [0:1, 0:1, 0:8] : (tensor<4x1x8xf32>) -> tensor<1x1x8xf32>
+  %1 = stablehlo.reshape %0 : (tensor<1x1x8xf32>) -> tensor<1x8xf32>
+  %2 = stablehlo.slice %y [0:1, 0:8] : (tensor<4x8xf32>) -> tensor<1x8xf32>
+  %3 = stablehlo.concatenate %1, %2, dim = 0 : (tensor<1x8xf32>, tensor<1x8xf32>) -> tensor<2x8xf32>
+  return %3 : tensor<2x8xf32>
+}
+
+// CHECK-LABEL: func.func @fewer_views(
+// CHECK: stablehlo.concatenate
