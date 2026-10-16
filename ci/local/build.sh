@@ -25,13 +25,13 @@ set -euo pipefail
 : "${JULIA:?JULIA must be set (path to the julia binary)}"
 [[ -d /user-environment ]] || { echo "ERROR: /user-environment not mounted — run inside srun --uenv / uenv run" >&2; exit 1; }
 
-# Seed include/ from the view, minus toolchain headers. See md: "LLVM headers".
+# Seed include/ from the view, minus toolchain headers and fmt. See md: "LLVM headers".
 mkdir -p "${BUILD_ROOT}/.rocm/include"
 for f in /user-environment/env/default/include/*; do
   [[ -e "$f" ]] || continue
   name="$(basename "$f")"
   case "${name}" in
-    llvm|llvm-c|mlir|mlir-c|clang|clang-c|lld|lldb|polly) continue ;;
+    llvm|llvm-c|mlir|mlir-c|clang|clang-c|lld|lldb|polly|fmt) continue ;;
   esac
   ln -sfn "$f" "${BUILD_ROOT}/.rocm/include/${name}"
 done
@@ -106,6 +106,24 @@ for pkg in /user-environment/linux-zen3/*/; do
     done
   done
 done
+# TheRock-style lib/rocm_sysdeps/lib for XLA's MORI link deps, filled from the
+# UENV's libdrm/numactl packages. See md: "rocm_sysdeps".
+mkdir -p "${BUILD_ROOT}/.rocm/lib/rocm_sysdeps/lib"
+for name in libdrm.so libdrm_amdgpu.so libnuma.so; do
+  src="${BUILD_ROOT}/.rocm/lib/${name}"
+  [[ -e "${src}" ]] || { echo "FATAL: ${name} not found in the UENV; XLA's @local_config_rocm//rocm:{drm,drm_amdgpu,numa} need it" >&2; exit 1; }
+  ln -sfn "$(readlink -f "${src}")" "${BUILD_ROOT}/.rocm/lib/rocm_sysdeps/lib/${name}"
+  echo "lib/rocm_sysdeps/lib/${name} -> $(readlink -f "${src}")"
+done
+# MORI also links the static libhsakmt.a, which the *.so* scan above skips. View
+# first, then spack, as above. See md: "rocm_sysdeps".
+hsakmt=""
+for c in /user-environment/env/default/lib/libhsakmt.a /user-environment/linux-zen3/hsa-rocr-dev-*/lib/libhsakmt.a; do
+  [[ -e "${c}" ]] && { hsakmt="${c}"; break; }
+done
+[[ -n "${hsakmt}" ]] || { echo "FATAL: libhsakmt.a not found in the UENV; XLA's @local_config_rocm//rocm:hsakmt needs it" >&2; exit 1; }
+ln -sfn "${hsakmt}" "${BUILD_ROOT}/.rocm/lib/libhsakmt.a"
+echo "lib/libhsakmt.a -> ${hsakmt}"
 # Overlay-local clang resource dir. See md: "clang wrapper + HIP_CLANG_PATH".
 REAL_CLANG_BIN="$(which clang 2>/dev/null || true)"
 if [[ -z "${REAL_CLANG_BIN}" || ! -x "${REAL_CLANG_BIN}" ]]; then
@@ -162,8 +180,8 @@ done
 for b in amdgcn/bitcode/ocml.bc lib/llvm/amdgcn/bitcode/ocml.bc          lib/llvm/lib/clang/22/include/stddef.h; do
   [[ -e "${BUILD_ROOT}/.rocm/${b}" ]] && echo "  ok   ${b}" || echo "  MISS ${b}"
 done
-for d in llvm mlir clang; do
-  [[ -e "${BUILD_ROOT}/.rocm/include/${d}" ]] &&     { echo "FATAL: overlay include/${d} shadows XLA's LLVM/MLIR" >&2; exit 1; }
+for d in llvm mlir clang fmt; do
+  [[ -e "${BUILD_ROOT}/.rocm/include/${d}" ]] &&     { echo "FATAL: overlay include/${d} shadows XLA's own ${d} headers" >&2; exit 1; }
 done
 # Curate reactant_libs/ for run_julia.sh. readlink -f: JULIA may be a symlink,
 # and the dirname chain must walk the real prefix. See md: "Curated runtime libs".
