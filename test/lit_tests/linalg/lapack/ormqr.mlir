@@ -126,7 +126,7 @@ module {
 
 module {
   func.func @main(%arg0: tensor<64x64xcomplex<f32>>, %arg1: tensor<64xcomplex<f32>>, %arg2: tensor<64x64xcomplex<f32>>) -> tensor<64x64xcomplex<f32>> {
-    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_cunmqr_ (
+    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_cunmqr (
     %0 = enzymexla.lapack.ormqr %arg0, %arg1, %arg2 <{side = #enzymexla.side<left>}> : (tensor<64x64xcomplex<f32>>, tensor<64xcomplex<f32>>, tensor<64x64xcomplex<f32>>) -> tensor<64x64xcomplex<f32>>
     return %0: tensor<64x64xcomplex<f32>>
   }
@@ -134,7 +134,7 @@ module {
 
 module {
   func.func @main(%arg0: tensor<64x64xcomplex<f64>>, %arg1: tensor<64xcomplex<f64>>, %arg2: tensor<64x64xcomplex<f64>>) -> tensor<64x64xcomplex<f64>> {
-    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_zunmqr_ (
+    // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_zunmqr (
     %0 = enzymexla.lapack.ormqr %arg0, %arg1, %arg2 <{side = #enzymexla.side<left>}> : (tensor<64x64xcomplex<f64>>, tensor<64xcomplex<f64>>, tensor<64x64xcomplex<f64>>) -> tensor<64x64xcomplex<f64>>
     return %0: tensor<64x64xcomplex<f64>>
   }
