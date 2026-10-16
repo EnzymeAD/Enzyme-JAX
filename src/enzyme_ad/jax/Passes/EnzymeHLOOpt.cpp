@@ -43436,11 +43436,105 @@ struct RecognizeMultiPad final
   }
 };
 
+// A sum of iota-like terms (each along its own dimension of the tensor) and
+// splat constants, as the coefficient of each dimension's iota and an offset:
+// the lane-grid guards the raising emits for a loop that spans several grid
+// dimensions (`e = block * perBlock + lane < NE`).
+struct GridAffine {
+  SmallVector<int64_t> coefficients;
+  int64_t offset = 0;
+};
+static std::optional<GridAffine> detectGridAffine(Value value) {
+  auto type = dyn_cast<RankedTensorType>(value.getType());
+  if (!type || !type.getElementType().isInteger())
+    return std::nullopt;
+  GridAffine affine;
+  affine.coefficients.assign(type.getRank(), 0);
+  // (term, sign)
+  SmallVector<std::pair<Value, int64_t>> terms{{value, 1}};
+  while (!terms.empty()) {
+    auto [term, sign] = terms.pop_back_val();
+    SplatElementsAttr splat;
+    if (matchPattern(term, m_Constant(&splat))) {
+      affine.offset += sign * splat.getSplatValue<APInt>().getSExtValue();
+      continue;
+    }
+    if (auto iota = detectIotaLikeTensor(term)) {
+      if (iota->dimension >= type.getRank() ||
+          affine.coefficients[iota->dimension] != 0)
+        return std::nullopt;
+      int64_t scale =
+          iota->scale ? cast<IntegerAttr>(iota->scale).getValue().getSExtValue()
+                      : 1;
+      affine.coefficients[iota->dimension] = sign * scale;
+      affine.offset +=
+          sign * cast<IntegerAttr>(iota->start).getValue().getSExtValue();
+      continue;
+    }
+    if (auto add = term.getDefiningOp<stablehlo::AddOp>()) {
+      terms.push_back({add.getLhs(), sign});
+      terms.push_back({add.getRhs(), sign});
+      continue;
+    }
+    if (auto sub = term.getDefiningOp<stablehlo::SubtractOp>()) {
+      terms.push_back({sub.getLhs(), sign});
+      terms.push_back({sub.getRhs(), -sign});
+      continue;
+    }
+    if (auto bcast = term.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      // Read the operand's sum through the broadcast's dimension map.
+      auto inner = detectGridAffine(bcast.getOperand());
+      if (!inner)
+        return std::nullopt;
+      for (auto [i, d] : llvm::enumerate(bcast.getBroadcastDimensions())) {
+        if (inner->coefficients[i] == 0)
+          continue;
+        if (affine.coefficients[d] != 0)
+          return std::nullopt;
+        affine.coefficients[d] = sign * inner->coefficients[i];
+      }
+      affine.offset += sign * inner->offset;
+      continue;
+    }
+    return std::nullopt;
+  }
+  return affine;
+}
+
 // A masked scatter whose mask is decided by comparisons of iotas against
 // constants is live on a box of its lane grid: the lanes outside the box are
 // exactly the ones the negative index drops. Slice the live indices and the
 // updates to the box and scatter those, with no mask left for the index
 // rewrites to see through.
+// The values of a boolean constant on the box [shift, shift + extent).
+static DenseElementsAttr sliceMask(DenseElementsAttr mask,
+                                   ArrayRef<int64_t> shift,
+                                   ArrayRef<int64_t> extent) {
+  auto type = cast<RankedTensorType>(mask.getType());
+  auto values = llvm::to_vector(mask.getValues<bool>());
+  auto strides = computeStrides(type.getShape());
+  int64_t count = 1;
+  for (int64_t e : extent)
+    count *= e;
+  SmallVector<bool> out;
+  out.reserve(count);
+  SmallVector<int64_t> coord(extent.size(), 0);
+  for (int64_t m = 0; m < count; ++m) {
+    int64_t pos = 0;
+    for (size_t d = 0; d < coord.size(); ++d)
+      pos += (coord[d] + shift[d]) * strides[d];
+    out.push_back(values[pos]);
+    for (int64_t d = (int64_t)coord.size() - 1; d >= 0; --d) {
+      if (++coord[d] < extent[d])
+        break;
+      coord[d] = 0;
+    }
+  }
+  return DenseElementsAttr::get(
+      RankedTensorType::get(extent, type.getElementType()),
+      ArrayRef<bool>(out));
+}
+
 struct ScatterMaskedIndexSlice final
     : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterMaskedIndexSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -43721,15 +43815,39 @@ struct ScatterMaskedIndexSlice final
     // A term false everywhere: no lane is live (the grid may have no
     // dimension to carry that in the box).
     bool nowhere = false;
+    // A guard over several grid dimensions (`block * perBlock + lane < NE`)
+    // holds on a prefix of the blocks and fails somewhere in the rest: the
+    // box is cut to the prefix, and the rest keeps the mask (splitAffineTerm).
+    int64_t tailDim = -1, tailStart = 0;
     SmallVector<int64_t> identity(predTy.getRank());
     std::iota(identity.begin(), identity.end(), 0);
-    SmallVector<std::pair<Value, SmallVector<int64_t>>> terms{
-        {sel.getPred(), identity}};
+    // (term, its dimension -> the mask's (-1: none), the offset of the
+    // mask's position 0 along each of its dimensions: a slice of the term
+    // is read at mask position k as the term's k + shift)
+    struct Term {
+      Value value;
+      SmallVector<int64_t> dimMap;
+      SmallVector<int64_t> shift;
+    };
+    SmallVector<Term> terms{
+        {sel.getPred(), identity, SmallVector<int64_t>(predTy.getRank(), 0)}};
     while (!terms.empty()) {
-      auto [term, dimMap] = terms.pop_back_val();
+      auto [term, dimMap, shift] = terms.pop_back_val();
       if (auto andOp = term.getDefiningOp<stablehlo::AndOp>()) {
-        terms.push_back({andOp.getLhs(), dimMap});
-        terms.push_back({andOp.getRhs(), dimMap});
+        terms.push_back({andOp.getLhs(), dimMap, shift});
+        terms.push_back({andOp.getRhs(), dimMap, shift});
+        continue;
+      }
+      if (auto slice = term.getDefiningOp<stablehlo::SliceOp>()) {
+        if (llvm::any_of(slice.getStrides(),
+                         [](int64_t s) { return s != 1; })) {
+          exact = false;
+          continue;
+        }
+        SmallVector<int64_t> inner(shift);
+        for (auto [d, start] : llvm::enumerate(slice.getStartIndices()))
+          inner[d] += start;
+        terms.push_back({slice.getOperand(), dimMap, inner});
         continue;
       }
       if (auto bcast = term.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
@@ -43737,12 +43855,13 @@ struct ScatterMaskedIndexSlice final
         // whole grid dimension: no position along it (-1).
         auto fromTy = cast<RankedTensorType>(bcast.getOperand().getType());
         auto toTy = cast<RankedTensorType>(bcast.getType());
-        SmallVector<int64_t> inner;
-        for (auto [i, d] : llvm::enumerate(bcast.getBroadcastDimensions()))
-          inner.push_back(fromTy.getDimSize(i) == 1 && toTy.getDimSize(d) != 1
-                              ? -1
-                              : dimMap[d]);
-        terms.push_back({bcast.getOperand(), inner});
+        SmallVector<int64_t> inner, innerShift;
+        for (auto [i, d] : llvm::enumerate(bcast.getBroadcastDimensions())) {
+          bool expanded = fromTy.getDimSize(i) == 1 && toTy.getDimSize(d) != 1;
+          inner.push_back(expanded ? -1 : dimMap[d]);
+          innerShift.push_back(expanded ? 0 : shift[d]);
+        }
+        terms.push_back({bcast.getOperand(), inner, innerShift});
         continue;
       }
       if (auto rs = term.getDefiningOp<stablehlo::ReshapeOp>()) {
@@ -43750,24 +43869,28 @@ struct ScatterMaskedIndexSlice final
         // others in order.
         auto fromTy = cast<RankedTensorType>(rs.getOperand().getType());
         auto toTy = cast<RankedTensorType>(rs.getType());
-        SmallVector<int64_t> inner;
+        SmallVector<int64_t> inner, innerShift;
         int64_t t = 0;
         bool kept = true;
         for (int64_t d = 0; d < fromTy.getRank() && kept; ++d) {
           if (fromTy.getDimSize(d) == 1) {
             inner.push_back(-1);
+            innerShift.push_back(0);
             continue;
           }
           while (t < toTy.getRank() && toTy.getDimSize(t) == 1)
             ++t;
           kept =
               t < toTy.getRank() && toTy.getDimSize(t) == fromTy.getDimSize(d);
-          inner.push_back(kept ? dimMap[t++] : -1);
+          inner.push_back(kept ? dimMap[t] : -1);
+          innerShift.push_back(kept ? shift[t] : 0);
+          if (kept)
+            ++t;
         }
         for (; t < toTy.getRank(); ++t)
           kept &= toTy.getDimSize(t) == 1;
         if (kept)
-          terms.push_back({rs.getOperand(), inner});
+          terms.push_back({rs.getOperand(), inner, innerShift});
         else
           exact = false;
         continue;
@@ -43778,6 +43901,27 @@ struct ScatterMaskedIndexSlice final
         if (mask.isSplat()) {
           nowhere |= !mask.getSplatValue<bool>();
           continue;
+        }
+        if (llvm::any_of(shift, [](int64_t s) { return s != 0; })) {
+          // Read through a slice: the constant's values on the mask's grid.
+          SmallVector<int64_t> extent;
+          bool onGrid = true;
+          for (int64_t d = 0; d < maskTy.getRank(); ++d) {
+            std::optional<int64_t> g =
+                dimMap[d] < 0 ? std::nullopt : gridDimOf(dimMap[d]);
+            extent.push_back(g ? grid[*g] : 1);
+            onGrid &= shift[d] + extent.back() <= maskTy.getDimSize(d);
+          }
+          if (!onGrid) {
+            exact = false;
+            continue;
+          }
+          mask = sliceMask(mask, shift, extent);
+          maskTy = cast<RankedTensorType>(mask.getType());
+          if (mask.isSplat()) {
+            nowhere |= !mask.getSplatValue<bool>();
+            continue;
+          }
         }
         // The grid dimension of each of the constant's: a dimension of one
         // has none to bound.
@@ -43820,6 +43964,9 @@ struct ScatterMaskedIndexSlice final
         iotaOnLeft = false;
         iota = detectIotaLikeTensor(cmp.getRhs());
         if (!iota || !matchPattern(cmp.getLhs(), m_Constant(&cst))) {
+          if (splitAffineTerm(cmp, dimMap, shift, gridDimOf, grid, lo, hi,
+                              tailDim, tailStart))
+            continue;
           exact = false;
           continue;
         }
@@ -43828,6 +43975,7 @@ struct ScatterMaskedIndexSlice final
       int64_t scale =
           iota->scale ? cast<IntegerAttr>(iota->scale).getValue().getSExtValue()
                       : 1;
+      start += scale * shift[iota->dimension];
       int64_t constant = cst.getSplatValue<APInt>().getSExtValue();
       if (dimMap[iota->dimension] < 0) {
         // One value for the whole grid: the compare at the iota's only
@@ -43853,8 +44001,207 @@ struct ScatterMaskedIndexSlice final
       hi[*gridDim] = std::min(hi[*gridDim], interval->second);
     }
 
-    return cutToBox(op, rewriter, exact ? sel.getOnTrue() : indices, lo, hi,
-                    exact, nowhere, grid);
+    if (tailDim < 0 || nowhere)
+      return cutToBox(op, rewriter, exact ? sel.getOnTrue() : indices, lo, hi,
+                      exact, nowhere, grid);
+    // The prefix of full blocks, with no mask when the other terms are
+    // exact, then the tail blocks with the mask they need; the tail is
+    // this pattern's again, with the guard folded over the one block it
+    // spans.
+    for (size_t d = 0; d < grid.size(); ++d)
+      if (hi[d] <= lo[d])
+        return cutToBox(op, rewriter, indices, lo, hi, false, true, grid);
+    auto loc = op.getLoc();
+    auto sliceIndices = [&](Value idx, ArrayRef<int64_t> l,
+                            ArrayRef<int64_t> h) {
+      SmallVector<int64_t> idxLo, idxHi, idxStride(idxTy.getRank(), 1);
+      for (int64_t d = 0, g = 0; d < idxTy.getRank(); ++d) {
+        if (d == vectorDim) {
+          idxLo.push_back(0);
+          idxHi.push_back(idxTy.getDimSize(d));
+        } else {
+          idxLo.push_back(l[g]);
+          idxHi.push_back(h[g]);
+          ++g;
+        }
+      }
+      return stablehlo::SliceOpCreate(rewriter, loc, idx, idxLo, idxHi,
+                                      idxStride);
+    };
+    SmallVector<int64_t> stride(grid.size(), 1);
+    SmallVector<int64_t> tailLo(lo), tailHi(hi);
+    tailLo[tailDim] = tailStart;
+    tailHi[tailDim] = grid[tailDim];
+    hi[tailDim] = tailStart;
+    Value live = stablehlo::ReshapeOpCreate(
+        rewriter, loc, exact ? sel.getOnTrue() : indices, idxTy.getShape());
+    Value masked =
+        stablehlo::ReshapeOpCreate(rewriter, loc, indices, idxTy.getShape());
+
+    // The tail dimension of the indices, and the operand dimension it
+    // batches with, if it is a batching one: then each part scatters into
+    // its own blocks of the operand, and the parts are concatenated.
+    int64_t tailIdxDim = tailDim < vectorDim ? tailDim : tailDim + 1;
+    int64_t operandDim = -1;
+    for (auto [i, b] : llvm::enumerate(dims.getScatterIndicesBatchingDims()))
+      if (b == tailIdxDim)
+        operandDim = dims.getInputBatchingDims()[i];
+    Value input = op.getInputs()[0];
+
+    auto sliceInput = [&](int64_t l, int64_t h) -> Value {
+      if (operandDim < 0)
+        return input;
+      SmallVector<int64_t> inLo(inputTy.getRank(), 0), inHi(inputTy.getShape()),
+          inStride(inputTy.getRank(), 1);
+      inLo[operandDim] = l;
+      inHi[operandDim] = h;
+      return stablehlo::SliceOpCreate(rewriter, loc, input, inLo, inHi,
+                                      inStride);
+    };
+    Value prefixIn = sliceInput(0, tailStart);
+    Value prefixUpd =
+        stablehlo::SliceOpCreate(rewriter, loc, update, lo, hi, stride);
+    Value prefixIdx = sliceIndices(live, lo, hi);
+    auto prefix = stablehlo::ScatterOp::create(
+        rewriter, loc, TypeRange{prefixIn.getType()}, ValueRange{prefixIn},
+        prefixIdx, ValueRange{prefixUpd}, dims, op.getIndicesAreSorted(),
+        op.getUniqueIndices());
+    IRMapping mapping;
+    op.getUpdateComputation().cloneInto(&prefix.getUpdateComputation(),
+                                        mapping);
+    Value tailIdx = sliceIndices(masked, tailLo, tailHi);
+    Value tailUpd =
+        stablehlo::SliceOpCreate(rewriter, loc, update, tailLo, tailHi, stride);
+    if (operandDim < 0) {
+      rewriter.modifyOpInPlace(op, [&] {
+        op.getInputsMutable().assign(prefix.getResults());
+        op.getScatterIndicesMutable().assign(tailIdx);
+        op.getUpdatesMutable()[0].assign(tailUpd);
+      });
+      return success();
+    }
+    Value tailIn = sliceInput(tailStart, inputTy.getDimSize(operandDim));
+    auto tail = stablehlo::ScatterOp::create(
+        rewriter, loc, TypeRange{tailIn.getType()}, ValueRange{tailIn}, tailIdx,
+        ValueRange{tailUpd}, dims, op.getIndicesAreSorted(),
+        op.getUniqueIndices());
+    IRMapping tailMapping;
+    op.getUpdateComputation().cloneInto(&tail.getUpdateComputation(),
+                                        tailMapping);
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+        op, ValueRange{prefix.getResult(0), tail.getResult(0)}, operandDim);
+    return success();
+  }
+
+  // A compare of a sum of iota-likes over several grid dimensions against a
+  // constant (`block * perBlock + lane < NE`, with the lanes of a block the
+  // inner dimensions): the leading blocks on which it holds at every lane
+  // bound the box along the outermost dimension, and the rest of that
+  // dimension is left masked. Returns whether the term was one.
+  template <typename GridDimOf>
+  static bool splitAffineTerm(stablehlo::CompareOp cmp,
+                              ArrayRef<int64_t> dimMap, ArrayRef<int64_t> shift,
+                              GridDimOf gridDimOf, ArrayRef<int64_t> grid,
+                              MutableArrayRef<int64_t> lo,
+                              MutableArrayRef<int64_t> hi, int64_t &tailDim,
+                              int64_t &tailStart) {
+    bool affineOnLeft = true;
+    auto affine = detectGridAffine(cmp.getLhs());
+    SplatElementsAttr cst;
+    if (!affine || !matchPattern(cmp.getRhs(), m_Constant(&cst))) {
+      affineOnLeft = false;
+      affine = detectGridAffine(cmp.getRhs());
+      if (!affine || !matchPattern(cmp.getLhs(), m_Constant(&cst)))
+        return false;
+    }
+    int64_t constant = cst.getSplatValue<APInt>().getSExtValue();
+    // `affine <pred> constant` as `sum >= 0` or `sum > 0`.
+    auto direction = cmp.getComparisonDirection();
+    if (!affineOnLeft) {
+      switch (direction) {
+      case stablehlo::ComparisonDirection::LT:
+        direction = stablehlo::ComparisonDirection::GT;
+        break;
+      case stablehlo::ComparisonDirection::LE:
+        direction = stablehlo::ComparisonDirection::GE;
+        break;
+      case stablehlo::ComparisonDirection::GT:
+        direction = stablehlo::ComparisonDirection::LT;
+        break;
+      case stablehlo::ComparisonDirection::GE:
+        direction = stablehlo::ComparisonDirection::LE;
+        break;
+      default:
+        return false;
+      }
+    }
+    int64_t sign = 1;
+    bool strict = false;
+    switch (direction) {
+    case stablehlo::ComparisonDirection::GE:
+      break;
+    case stablehlo::ComparisonDirection::GT:
+      strict = true;
+      break;
+    case stablehlo::ComparisonDirection::LE:
+      sign = -1;
+      break;
+    case stablehlo::ComparisonDirection::LT:
+      sign = -1;
+      strict = true;
+      break;
+    default:
+      return false;
+    }
+    // sign * (affine - constant) >= (strict ? 1 : 0) at every position of
+    // the other dimensions of the grid.
+    int64_t offset = sign * (affine->offset - constant) - (strict ? 1 : 0);
+    SmallVector<int64_t> coefficient(grid.size(), 0);
+    int64_t outer = -1, involved = 0;
+    for (auto [d, c] : llvm::enumerate(affine->coefficients)) {
+      if (c == 0)
+        continue;
+      offset += sign * c * shift[d];
+      if (d >= dimMap.size() || dimMap[d] < 0)
+        return false;
+      auto g = gridDimOf(dimMap[d]);
+      if (!g || coefficient[*g] != 0)
+        return false;
+      coefficient[*g] = sign * c;
+      ++involved;
+      if (outer < 0 || *g < outer)
+        outer = *g;
+    }
+    if (involved < 2)
+      return false;
+    // The least the sum takes over the other dimensions, within the box
+    // they are cut to so far.
+    int64_t least = offset;
+    for (size_t g = 0; g < grid.size(); ++g) {
+      if ((int64_t)g == outer || coefficient[g] == 0)
+        continue;
+      if (hi[g] <= lo[g])
+        return false;
+      least += coefficient[g] * (coefficient[g] > 0 ? lo[g] : hi[g] - 1);
+    }
+    // The blocks on which it holds for every lane: a prefix, when the
+    // outermost coefficient is negative (the `e < NE` guard).
+    auto holds = [&](int64_t k) { return least + coefficient[outer] * k >= 0; };
+    if (coefficient[outer] < 0) {
+      int64_t k = lo[outer];
+      while (k < hi[outer] && holds(k))
+        ++k;
+      if (k >= hi[outer])
+        return true; // holds on the whole box
+      if (k == lo[outer] || tailDim >= 0)
+        return false;
+      tailDim = outer;
+      tailStart = k;
+      return true;
+    }
+    // A positive outermost coefficient holds on a suffix of the blocks
+    // instead; not a shape the raising emits.
+    return false;
   }
 };
 
