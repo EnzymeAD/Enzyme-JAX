@@ -16780,15 +16780,10 @@ struct ReduceMinorDims final
     : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceMinorDims> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  // The longest row this makes, and the warp size its length must divide:
-  // XLA emits a row reduction over fewer than a warp of elements with its
-  // reduction emitter (several rows per warp) only when the length divides
-  // the warp size, and elementally otherwise, each thread reading its row
-  // strided. Measured on MFEM's sum-factorized contractions on an RTX 5090:
-  // rows of 4 (order 3) run 20% faster as row reductions, rows of 3
-  // (order 2) 10% slower, rows of 5 and 6 (order 4) the same or slower.
+  // The longest row this makes. Measured on MFEM's sum-factorized
+  // contractions on an RTX 5090: rows of 3 and 4 (order 2) run 20% faster
+  // as row reductions, rows of 5 and 6 (order 4) run the same or slower.
   static constexpr int64_t kMaxRowExtent = 4;
-  static constexpr int64_t kWarpSize = 32;
   // Operands up to this many elements are read from cache whatever their
   // layout (a basis matrix).
   static constexpr int64_t kSmallOperand = 4096;
@@ -16872,8 +16867,8 @@ struct ReduceMinorDims final
     int64_t extent = 1;
     for (int64_t d : dims)
       extent *= inputTy.getDimSize(d);
-    if (extent > kMaxRowExtent || kWarpSize % extent != 0)
-      return rewriter.notifyMatchFailure(op, "a row the warp does not take");
+    if (extent > kMaxRowExtent)
+      return rewriter.notifyMatchFailure(op, "a long row");
     auto transposed = stablehlo::TransposeOp::create(rewriter, op.getLoc(),
                                                      op.getInputs()[0], perm);
     SmallVector<int64_t> trailing;
