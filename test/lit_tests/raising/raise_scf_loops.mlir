@@ -184,39 +184,41 @@ func.func @lanefor(%out: memref<8xf64, 1>, %in: memref<?xf64, 1>) {
 // CHECK-NEXT:    %[[a6:.+]] = stablehlo.add %[[a4]], %[[a5]] : tensor<8xi64>
 // CHECK-NEXT:    %[[a7:.+]] = stablehlo.constant dense<1> : tensor<8xi64>
 // CHECK-NEXT:    %[[a8:.+]] = stablehlo.multiply %[[a6]], %[[a7]] : tensor<8xi64>
-// CHECK-NEXT:    %[[a9:.+]] = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:    %[[a9:.+]] = stablehlo.constant dense<8> : tensor<i64>
 // CHECK-NEXT:    %[[a10:.+]] = stablehlo.constant dense<8> : tensor<i64>
-// CHECK-NEXT:    %[[a11:.+]] = stablehlo.constant dense<1> : tensor<i64>
-// CHECK-NEXT:    %[[a12:.+]] = stablehlo.broadcast_in_dim %[[a3]], dims = [] : (tensor<f64>) -> tensor<8xf64>
-// CHECK-NEXT:    %[[a17:.+]]:4 = stablehlo.while(%[[a13:.+]] = %[[a9]], %[[a14:.+]] = %[[a12]], %[[a15:.+]] = %[[a1]], %[[a16:.+]] = %[[a2]]) : tensor<i64>, tensor<8xf64>, tensor<8xf64>, tensor<?xf64>
+// CHECK-NEXT:    %[[a11:.+]] = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:    %[[a12:.+]] = stablehlo.constant dense<8> : tensor<i64>
+// CHECK-NEXT:    %[[a13:.+]] = stablehlo.constant dense<1> : tensor<i64>
+// CHECK-NEXT:    %[[a14:.+]] = stablehlo.broadcast_in_dim %[[a3]], dims = [] : (tensor<f64>) -> tensor<8xf64>
+// CHECK-NEXT:    %[[a19:.+]]:4 = stablehlo.while(%[[a15:.+]] = %[[a11]], %[[a16:.+]] = %[[a14]], %[[a17:.+]] = %[[a1]], %[[a18:.+]] = %[[a2]]) : tensor<i64>, tensor<8xf64>, tensor<8xf64>, tensor<?xf64>
 // CHECK-NEXT:    cond {
-// CHECK-NEXT:      %[[a18:.+]] = stablehlo.compare LT, %[[a13]], %[[a10]] : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:      stablehlo.return %[[a18]] : tensor<i1>
+// CHECK-NEXT:      %[[a20:.+]] = stablehlo.compare LT, %[[a15]], %[[a12]] : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:      stablehlo.return %[[a20]] : tensor<i1>
 // CHECK-NEXT:    } do {
-// CHECK-NEXT:      %[[a19:.+]] = stablehlo.constant dense<-1> : tensor<i64>
-// CHECK-NEXT:      %[[a20:.+]] = stablehlo.broadcast_in_dim %[[a19]], dims = [] : (tensor<i64>) -> tensor<8xi64>
-// CHECK-NEXT:      %[[a21:.+]] = stablehlo.multiply %[[a8]], %[[a20]] : tensor<8xi64>
-// CHECK-NEXT:      %[[a22:.+]] = stablehlo.broadcast_in_dim %[[a13]], dims = [] : (tensor<i64>) -> tensor<8xi64>
-// CHECK-NEXT:      %[[a23:.+]] = stablehlo.add %[[a22]], %[[a21]] : tensor<8xi64>
-// CHECK-NEXT:      %[[a24:.+]] = stablehlo.constant dense<0> : tensor<8xi64>
-// CHECK-NEXT:      %[[a25:.+]] = stablehlo.compare GE, %[[a23]], %[[a24]] : (tensor<8xi64>, tensor<8xi64>) -> tensor<8xi1>
-// CHECK-NEXT:      %[[a26:.+]] = stablehlo.dynamic_slice %[[a16]], %[[a13]], sizes = [1] : (tensor<?xf64>, tensor<i64>) -> tensor<1xf64>
-// CHECK-NEXT:      %[[a27:.+]] = stablehlo.reshape %[[a26]] : (tensor<1xf64>) -> tensor<f64>
-// CHECK-NEXT:      %[[a28:.+]] = stablehlo.broadcast_in_dim %[[a27]], dims = [] : (tensor<f64>) -> tensor<8xf64>
-// CHECK-NEXT:      %[[a29:.+]] = arith.addf %[[a14]], %[[a28]] : tensor<8xf64>
-// CHECK-NEXT:      %[[a30:.+]] = stablehlo.not %[[a25]] : tensor<8xi1>
-// CHECK-NEXT:      %[[a31:.+]] = stablehlo.select %[[a25]], %[[a29]], %[[a14]] : tensor<8xi1>, tensor<8xf64>
-// CHECK-NEXT:      %[[a32:.+]] = stablehlo.add %[[a13]], %[[a11]] : tensor<i64>
-// CHECK-NEXT:      stablehlo.return %[[a32]], %[[a31]], %[[a15]], %[[a16]] : tensor<i64>, tensor<8xf64>, tensor<8xf64>, tensor<?xf64>
+// CHECK-NEXT:      %[[a21:.+]] = stablehlo.constant dense<-1> : tensor<i64>
+// CHECK-NEXT:      %[[a22:.+]] = stablehlo.broadcast_in_dim %[[a21]], dims = [] : (tensor<i64>) -> tensor<8xi64>
+// CHECK-NEXT:      %[[a23:.+]] = stablehlo.multiply %[[a8]], %[[a22]] : tensor<8xi64>
+// CHECK-NEXT:      %[[a24:.+]] = stablehlo.broadcast_in_dim %[[a15]], dims = [] : (tensor<i64>) -> tensor<8xi64>
+// CHECK-NEXT:      %[[a25:.+]] = stablehlo.add %[[a24]], %[[a23]] : tensor<8xi64>
+// CHECK-NEXT:      %[[a26:.+]] = stablehlo.constant dense<0> : tensor<8xi64>
+// CHECK-NEXT:      %[[a27:.+]] = stablehlo.compare GE, %[[a25]], %[[a26]] : (tensor<8xi64>, tensor<8xi64>) -> tensor<8xi1>
+// CHECK-NEXT:      %[[a28:.+]] = stablehlo.dynamic_slice %[[a18]], %[[a15]], sizes = [1] : (tensor<?xf64>, tensor<i64>) -> tensor<1xf64>
+// CHECK-NEXT:      %[[a29:.+]] = stablehlo.reshape %[[a28]] : (tensor<1xf64>) -> tensor<f64>
+// CHECK-NEXT:      %[[a30:.+]] = stablehlo.broadcast_in_dim %[[a29]], dims = [] : (tensor<f64>) -> tensor<8xf64>
+// CHECK-NEXT:      %[[a31:.+]] = arith.addf %[[a16]], %[[a30]] : tensor<8xf64>
+// CHECK-NEXT:      %[[a32:.+]] = stablehlo.not %[[a27]] : tensor<8xi1>
+// CHECK-NEXT:      %[[a33:.+]] = stablehlo.select %[[a27]], %[[a31]], %[[a16]] : tensor<8xi1>, tensor<8xf64>
+// CHECK-NEXT:      %[[a34:.+]] = stablehlo.add %[[a15]], %[[a13]] : tensor<i64>
+// CHECK-NEXT:      stablehlo.return %[[a34]], %[[a33]], %[[a17]], %[[a18]] : tensor<i64>, tensor<8xf64>, tensor<8xf64>, tensor<?xf64>
 // CHECK-NEXT:    }
-// CHECK-NEXT:    %[[a33:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:    %[[a34:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %[[a35:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %[[a36:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %[[a37:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
-// CHECK-NEXT:    %[[a38:.+]] = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:    %[[a39:.+]] = stablehlo.dynamic_update_slice %[[a17]]#2, %[[a17]]#1, %[[a38]] : (tensor<8xf64>, tensor<8xf64>, tensor<i64>) -> tensor<8xf64>
-// CHECK-NEXT:    return %[[a39]], %[[a17]]#3 : tensor<8xf64>, tensor<?xf64>
+// CHECK-NEXT:    %[[a38:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a39:.+]] = stablehlo.constant dense<0> : tensor<1xi64>
+// CHECK-NEXT:    %[[a40:.+]] = stablehlo.constant dense<0> : tensor<i64>
+// CHECK-NEXT:    %[[a41:.+]] = stablehlo.dynamic_update_slice %[[a19]]#2, %[[a19]]#1, %[[a40]] : (tensor<8xf64>, tensor<8xf64>, tensor<i64>) -> tensor<8xf64>
+// CHECK-NEXT:    return %[[a41]], %[[a19]]#3 : tensor<8xf64>, tensor<?xf64>
 // CHECK-NEXT:  }
 
 // -----
