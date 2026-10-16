@@ -2,6 +2,7 @@
 #include "Enzyme/MLIR/Passes/EnzymeBatchPass.h"
 #include "mhlo/IR/hlo_ops.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Dialect/LLVMIR/FunctionCallUtils.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
@@ -31,6 +32,32 @@ namespace enzyme {
 
 using namespace mlir;
 using namespace mlir::enzyme;
+
+// LAPACK takes 'N'/'T' for real element types and 'N'/'C' for complex ones.
+// For real types the adjoint is the transpose, while a plain transpose of a
+// complex matrix has no LAPACK equivalent.
+static std::optional<char> getLapackTransChar(enzymexla::LapackTranspose trans,
+                                              Type elementType) {
+  bool isComplex = isa<ComplexType>(elementType);
+  switch (trans) {
+  case enzymexla::LapackTranspose::none:
+    return 'N';
+  case enzymexla::LapackTranspose::transpose:
+    if (isComplex)
+      return std::nullopt;
+    return 'T';
+  case enzymexla::LapackTranspose::adjoint:
+    return isComplex ? 'C' : 'T';
+  }
+  llvm_unreachable("unknown LapackTranspose");
+}
+
+// LAPACK reports an illegal argument through `info` at run time, but all the
+// shapes are static, so we reject those at lowering time instead
+static LogicalResult lapackArgError(Operation *op, const Twine &msg) {
+  op->emitOpError() << msg;
+  return failure();
+}
 
 struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
   std::string backend;
@@ -201,7 +228,12 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     // replace enzymexla.lapack.geqrf with the jit_call
     rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), jit_call_op.getResult(1));
-    rewriter.replaceAllUsesWith(op.getResult(2), jit_call_op.getResult(2));
+    // `info` comes back as a LAPACK int, which can differ from the op's type
+    rewriter.replaceAllUsesWith(
+        op.getResult(2),
+        stablehlo::ConvertOp::create(rewriter, op.getLoc(),
+                                     op.getResult(2).getType(),
+                                     jit_call_op.getResult(2)));
     rewriter.eraseOp(op);
 
     return success();
@@ -431,7 +463,7 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
         // default block size is min(m, n)
         nb_value = std::min(inputShape[0], inputShape[1]);
       }
-      auto nb_attr = rewriter.getI64IntegerAttr(nb_value);
+      auto nb_attr = rewriter.getIntegerAttr(type_lapack_int, nb_value);
       auto nb_op = LLVM::ConstantOp::create(rewriter, op.getLoc(),
                                             type_llvm_lapack_int, nb_attr);
       // can reuse nb = ldt
@@ -497,7 +529,12 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
     // replace enzymexla.lapack.geqrf with the jit_call
     rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), jit_call_op.getResult(1));
-    rewriter.replaceAllUsesWith(op.getResult(2), jit_call_op.getResult(2));
+    // `info` comes back as a LAPACK int, which can differ from the op's type
+    rewriter.replaceAllUsesWith(
+        op.getResult(2),
+        stablehlo::ConvertOp::create(rewriter, op.getLoc(),
+                                     op.getResult(2).getType(),
+                                     jit_call_op.getResult(2)));
     rewriter.eraseOp(op);
 
     return success();
@@ -548,6 +585,15 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
           op, "`enzymexla.lapack.orgqr` with batch dimensions on CPU is not "
               "yet supported");
     }
+
+    // ?orgqr/?ungqr require m >= n >= k
+    auto numReflectors = cast<RankedTensorType>(tau.getType()).getShape().back();
+    if (inputShape[0] < inputShape[1])
+      return lapackArgError(op, "`enzymexla.lapack.orgqr` requires at least as "
+                                "many rows as columns");
+    if (inputShape[1] < numReflectors)
+      return lapackArgError(op, "`enzymexla.lapack.orgqr` requires at most as "
+                                "many reflectors as columns");
 
     auto type_lapack_int = rewriter.getIntegerType(blasIntWidth);
     auto type_llvm_lapack_int = typeConverter.convertType(type_lapack_int);
@@ -624,7 +670,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
       auto n = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
           rewriter.getIntegerAttr(type_lapack_int, nC));
-      auto k_value = nC;
+      // one elementary reflector per entry of `tau`
+      auto k_value = numReflectors;
       auto k = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
           rewriter.getIntegerAttr(type_lapack_int, k_value));
@@ -797,29 +844,19 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
     auto output_shape = output_type.getShape();
 
     auto side_value = op.getSide() == enzymexla::LapackSide::left ? 'L' : 'R';
-    char trans_value = 'N';
-    switch (op.getTranspose()) {
-    case enzymexla::LapackTranspose::none:
-      trans_value = 'N';
-      break;
-    case enzymexla::LapackTranspose::transpose:
-      trans_value = 'T';
-      break;
-    case enzymexla::LapackTranspose::adjoint:
-      trans_value = 'C';
-      break;
+    auto maybe_trans = getLapackTransChar(op.getTranspose(), A_eltype);
+    if (!maybe_trans) {
+      op->emitOpError() << "LAPACK has no plain transpose for complex `ormqr`";
+      return rewriter.notifyMatchFailure(op, "complex transpose unsupported");
     }
+    char trans_value = *maybe_trans;
 
-    (void)output_shape;
-    (void)C_shape;
-    assert(output_shape == C_shape && "`enzymexla.lapack.ormqr` requires `C` "
-                                      "and `output` to have the same shape");
-    (void)A_eltype;
-    (void)C_eltype;
-    (void)tau_eltype;
-    assert(A_eltype == C_eltype && A_eltype == tau_eltype &&
-           "`enzymexla.lapack.ormqr` requires the same element type for all "
-           "operands");
+    if (output_shape != C_shape)
+      return lapackArgError(op, "`enzymexla.lapack.ormqr` requires `C` and "
+                                "`output` to have the same shape");
+    if (A_eltype != C_eltype || A_eltype != tau_eltype)
+      return lapackArgError(op, "`enzymexla.lapack.ormqr` requires the same "
+                                "element type for all operands");
 
     auto mA = A_shape[0];
     auto mC = C_shape[0];
@@ -832,25 +869,30 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
               "yet supported");
     }
 
-    (void)A_shape;
-    assert(A_shape[0] >= A_shape[1] &&
-           "`lapack.ormqr` with wide QR not yet supported. use "
-           "`stablehlo.dynamic_update_slice` first");
-    (void)k_value;
-    assert(A_shape[1] == k_value &&
-           "second dimension of A and dimension of tau must match");
+    if (A_shape[0] < A_shape[1])
+      return lapackArgError(op, "`lapack.ormqr` with wide QR not yet "
+                                "supported. use "
+                                "`stablehlo.dynamic_update_slice` first");
+    if (A_shape[1] != k_value)
+      return lapackArgError(
+          op, "second dimension of A and dimension of tau must match");
 
-    (void)mA;
-    (void)mC;
-    (void)nC;
     if (side_value == 'L') {
-      assert(mC == mA && "for a left-sided multiplication, the first dimension "
-                         "of C, must equal the first dimension of A");
-      assert(mC >= k_value && "invalid number of reflectors: k should be <= m");
+      if (mC != mA)
+        return lapackArgError(op, "for a left-sided multiplication, the first "
+                                  "dimension of C, must equal the first "
+                                  "dimension of A");
+      if (mC < k_value)
+        return lapackArgError(op,
+                              "invalid number of reflectors: k should be <= m");
     } else { // side_value == 'R'
-      assert(nC == mA && "for a right-sided multiplication, the second "
-                         "dimension of C, must equal the first dimension of A");
-      assert(nC >= k_value && "invalid number of reflectors: k should be <= n");
+      if (nC != mA)
+        return lapackArgError(op, "for a right-sided multiplication, the "
+                                  "second dimension of C, must equal the "
+                                  "first dimension of A");
+      if (nC < k_value)
+        return lapackArgError(op,
+                              "invalid number of reflectors: k should be <= n");
     }
 
     auto lda_value = A_shape[0];
@@ -1058,34 +1100,32 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
     auto output_shape = output_type.getShape();
 
     auto side_value = op.getSide() == enzymexla::LapackSide::left ? 'L' : 'R';
-    char trans_value = 'N';
-    switch (op.getTranspose()) {
-    case enzymexla::LapackTranspose::none:
-      trans_value = 'N';
-      break;
-    case enzymexla::LapackTranspose::transpose:
-      trans_value = 'T';
-      break;
-    case enzymexla::LapackTranspose::adjoint:
-      trans_value = 'C';
-      break;
+    auto maybe_trans = getLapackTransChar(op.getTranspose(), V_eltype);
+    if (!maybe_trans) {
+      op->emitOpError() << "LAPACK has no plain transpose for complex `gemqrt`";
+      return rewriter.notifyMatchFailure(op, "complex transpose unsupported");
     }
+    char trans_value = *maybe_trans;
 
-    assert(V_rank == 2 &&
-           "`enzymexla.lapack.gemqrt` requires `V` to be a matrix");
-    assert(T_rank == 2 &&
-           "`enzymexla.lapack.gemqrt` requires `T` to be a matrix");
-    assert(C_rank == 2 &&
-           "`enzymexla.lapack.gemqrt` requires `C` to be a matrix");
-    (void)output_shape;
-    assert(output_shape == C_shape && "`enzymexla.lapack.gemqrt` requires `C` "
-                                      "and `output` to have the same shape");
+    if (V_rank != 2)
+      return lapackArgError(op,
+                            "`enzymexla.lapack.gemqrt` requires `V` to be a "
+                            "matrix");
+    if (T_rank != 2)
+      return lapackArgError(op,
+                            "`enzymexla.lapack.gemqrt` requires `T` to be a "
+                            "matrix");
+    if (C_rank != 2)
+      return lapackArgError(op,
+                            "`enzymexla.lapack.gemqrt` requires `C` to be a "
+                            "matrix");
+    if (output_shape != C_shape)
+      return lapackArgError(op, "`enzymexla.lapack.gemqrt` requires `C` and "
+                                "`output` to have the same shape");
 
-    (void)V_eltype;
-    (void)T_eltype;
-    assert(V_eltype == C_eltype && V_eltype == T_eltype &&
-           "`enzymexla.lapack.gemqrt` requires the same element type for all "
-           "operands");
+    if (V_eltype != C_eltype || V_eltype != T_eltype)
+      return lapackArgError(op, "`enzymexla.lapack.gemqrt` requires the same "
+                                "element type for all operands");
 
     if (V_rank - 2 > 0 || T_rank - 2 > 0 || C_rank - 2 > 0) {
       return rewriter.notifyMatchFailure(
@@ -1095,28 +1135,37 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
 
     auto nb_value = T_shape[0];
     auto k_value = T_shape[1];
-    assert(k_value >= nb_value &&
-           "Block size must be less than or equal to min(m, n)");
-    assert(nb_value >= 1 && "Block size must be greater than or equal to 1");
-    assert(V_shape[1] == k_value && "invalid number of reflectors (k) on T");
+    if (k_value < nb_value)
+      return lapackArgError(
+          op, "Block size must be less than or equal to min(m, n)");
+    if (nb_value < 1)
+      return lapackArgError(op,
+                            "Block size must be greater than or equal to 1");
+    if (V_shape[1] != k_value)
+      return lapackArgError(op, "invalid number of reflectors (k) on T");
 
     auto ldv_value = V_shape[0];
     auto ldt_value = T_shape[0];
     auto ldc_value = C_shape[0];
 
-    assert(ldt_value >= nb_value && "ldt must be >= nb");
+    if (ldt_value < nb_value)
+      return lapackArgError(op, "ldt must be >= nb");
     if (side_value == 'L') {
-      assert(ldv_value == C_shape[0] &&
-             "on left-sided muliplication, the first dimension "
-             "of V must equal the first dimension of C");
-      assert(C_shape[0] >= k_value &&
-             "invalid number of reflectors: k should be <= m");
+      if (ldv_value != C_shape[0])
+        return lapackArgError(op, "on left-sided muliplication, the first "
+                                  "dimension of V must equal the first "
+                                  "dimension of C");
+      if (C_shape[0] < k_value)
+        return lapackArgError(op,
+                              "invalid number of reflectors: k should be <= m");
     } else { // side_value == 'R'
-      assert(ldv_value == C_shape[1] &&
-             "on right-sided multiplication, the first dimension"
-             "of V must equal the second dimension of C");
-      assert(C_shape[1] >= k_value &&
-             "invalid number of reflectors: k should be <= n");
+      if (ldv_value != C_shape[1])
+        return lapackArgError(op, "on right-sided multiplication, the first "
+                                  "dimension of V must equal the second "
+                                  "dimension of C");
+      if (C_shape[1] < k_value)
+        return lapackArgError(op,
+                              "invalid number of reflectors: k should be <= n");
     }
 
     auto type_lapack_int = rewriter.getIntegerType(blasIntWidth);
@@ -1587,13 +1636,19 @@ private:
             rewriter, op.getLoc(), blasPivotType,
             cast<ElementsAttr>(makeAttr(blasPivotType, 1))));
 
-    auto permutation = stablehlo::IotaOp::create(
-        rewriter, op.getLoc(), blasPivotType,
-        rewriter.getI64IntegerAttr(blasPivotType.getRank() - 1));
+    // the permutation has one entry per row, which for tall matrices is more
+    // than the number of pivots
+    auto permutationType = cast<RankedTensorType>(op.getResult(2).getType());
+    auto blasPermutationType = RankedTensorType::get(
+        permutationType.getShape(), rewriter.getIntegerType(blasIntWidth));
 
-    auto pivotToPermReturnTypes = {iterType, blasPivotType};
+    auto permutation = stablehlo::IotaOp::create(
+        rewriter, op.getLoc(), blasPermutationType,
+        rewriter.getI64IntegerAttr(blasPermutationType.getRank() - 1));
+
+    auto pivotToPermReturnTypes = {iterType, blasPermutationType};
     auto pivotToPermWhileOp = stablehlo::WhileOp::create(
-        rewriter, op.getLoc(), TypeRange{iterType, blasPivotType},
+        rewriter, op.getLoc(), TypeRange{iterType, blasPermutationType},
         ValueRange{iter, permutation});
 
     {
@@ -1700,7 +1755,7 @@ private:
                                     permutationX.getType().getElementType()),
               permutationX)),
           scatterDims);
-      // LAPACK guarantees every pivot lands in [1, n].
+      // LAPACK guarantees every pivot lands in [1, m].
       permutationUpdate2->setAttr("enzymexla.inbounds", rewriter.getUnitAttr());
 
       {
@@ -1723,8 +1778,8 @@ private:
     auto finalPermutation = stablehlo::AddOp::create(
         rewriter, op.getLoc(), pivotToPermWhileOp.getResult(1),
         stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), blasPivotType,
-            cast<ElementsAttr>(makeAttr(blasPivotType, 1))));
+            rewriter, op.getLoc(), blasPermutationType,
+            cast<ElementsAttr>(makeAttr(blasPermutationType, 1))));
 
     rewriter.replaceAllUsesWith(op.getResult(0), factorizedResult);
     rewriter.replaceAllUsesWith(
@@ -1732,7 +1787,7 @@ private:
                                                       pivotType, pivotResult));
     rewriter.replaceAllUsesWith(
         op.getResult(2),
-        stablehlo::ConvertOp::create(rewriter, op.getLoc(), pivotType,
+        stablehlo::ConvertOp::create(rewriter, op.getLoc(), permutationType,
                                      finalPermutation));
     rewriter.replaceAllUsesWith(
         op.getResult(3), stablehlo::ConvertOp::create(rewriter, op.getLoc(),
@@ -1807,8 +1862,14 @@ private:
       auto pivotFn = backend == "cuda" ? "cu_lu_pivots_to_permutation"
                                        : "hip_lu_pivots_to_permutation";
 
+      // the permutation has one entry per row, which for tall matrices is
+      // more than the number of pivots
+      auto permutationType = cast<RankedTensorType>(op.getResult(2).getType());
+      auto permutationCuSolverType = RankedTensorType::get(
+          permutationType.getShape(), rewriter.getI32Type());
+
       auto permutation = stablehlo::CustomCallOp::create(
-          rewriter, op.getLoc(), TypeRange{pivotCuSolverType},
+          rewriter, op.getLoc(), TypeRange{permutationCuSolverType},
           ValueRange{pivots0Indexed.getResult()},
           rewriter.getStringAttr(pivotFn),
           /*has_side_effect*/ nullptr,
@@ -1826,9 +1887,15 @@ private:
                         inputRank),
           /*output_operand_aliases*/ nullptr,
           /*result_tilings*/ nullptr);
+      auto permutationOnes = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), permutationCuSolverType,
+          cast<ElementsAttr>(makeAttr(permutationCuSolverType, 1)));
       auto permutation1Indexed = stablehlo::AddOp::create(
-          rewriter, op.getLoc(), permutation.getResult(0), pivotOnes);
-      rewriter.replaceAllUsesWith(op.getResult(2), permutation1Indexed);
+          rewriter, op.getLoc(), permutation.getResult(0), permutationOnes);
+      rewriter.replaceAllUsesWith(
+          op.getResult(2),
+          stablehlo::ConvertOp::create(rewriter, op.getLoc(), permutationType,
+                                       permutation1Indexed));
     }
 
     rewriter.replaceAllUsesWith(op.getResult(0),
@@ -1892,11 +1959,12 @@ private:
     auto pivots1Indexed =
         stablehlo::AddOp::create(rewriter, op.getLoc(), pivotOne, pivots);
 
+    auto permutationOutType = cast<RankedTensorType>(op.getResult(2).getType());
     auto permutationOne = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), permutationType,
-        cast<ElementsAttr>(makeAttr(permutationType, 1)));
+        rewriter, op.getLoc(), permutationOutType,
+        cast<ElementsAttr>(makeAttr(permutationOutType, 1)));
     auto permutation = stablehlo::ConvertOp::create(
-        rewriter, op.getLoc(), permutationType, customCall.getResult(2));
+        rewriter, op.getLoc(), permutationOutType, customCall.getResult(2));
     auto permutation1Indexed = stablehlo::AddOp::create(
         rewriter, op.getLoc(), permutationOne, permutation);
 
@@ -2091,6 +2159,11 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
   if (isfull) {
     wrapper_fn += "_full";
   }
+  // the job char is baked into the wrapper, so ops that do and don't compute
+  // U and Vt can't share one
+  if (!op.getComputeUv()) {
+    wrapper_fn += "_nouv";
+  }
 
   // declare LAPACK function declarations if not present
   auto moduleOp = op->template getParentOfType<ModuleOp>();
@@ -2117,6 +2190,15 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
 
   if (!moduleOp.template lookupSymbol<LLVM::LLVMFuncOp>(wrapper_fn)) {
     OpBuilder::InsertionGuard guard(rewriter);
+
+    // the workspaces grow with the matrix size (quadratically for `?gesdd`),
+    // so they go on the heap rather than the stack
+    auto type_i64 = rewriter.getI64Type();
+    auto mallocFn = LLVM::lookupOrCreateMallocFn(rewriter, moduleOp, type_i64);
+    auto freeFn = LLVM::lookupOrCreateFreeFn(rewriter, moduleOp);
+    if (failed(mallocFn) || failed(freeFn))
+      return rewriter.notifyMatchFailure(op, "failed to declare malloc/free");
+
     rewriter.setInsertionPointToStart(moduleOp.getBody());
 
     auto func_type = LLVM::LLVMFunctionType::get(type_llvm_void,
@@ -2148,6 +2230,24 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
                                  rewriter.getIntegerAttr(type_lapack_int, -1));
 
     SmallVector<Value> args;
+
+    SmallVector<Value> heapBuffers;
+    auto heapAlloc = [&](Type elementType, Value count) -> Value {
+      Value count64 = count;
+      if (count.getType() != type_i64)
+        count64 = LLVM::SExtOp::create(rewriter, op.getLoc(), type_i64, count);
+      auto elementBytes = LLVM::ConstantOp::create(
+          rewriter, op.getLoc(), type_i64,
+          rewriter.getIntegerAttr(type_i64,
+                                  elementType.getIntOrFloatBitWidth() / 8));
+      auto bytes =
+          LLVM::MulOp::create(rewriter, op.getLoc(), count64, elementBytes);
+      Value buffer = LLVM::CallOp::create(rewriter, op.getLoc(),
+                                          mallocFn.value(), ValueRange{bytes})
+                         ->getResult(0);
+      heapBuffers.push_back(buffer);
+      return buffer;
+    };
 
     auto lworkptr = LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
                                            type_lapack_int, const1);
@@ -2212,9 +2312,7 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
         auto const5minMN =
             LLVM::MulOp::create(rewriter, op.getLoc(), const5, minMN);
 
-        auto rworkptr =
-            LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
-                                   type_input_element_real, const5minMN);
+        auto rworkptr = heapAlloc(type_input_element_real, const5minMN);
 
         args.insert(args.begin() + 13, rworkptr);
       }
@@ -2239,8 +2337,7 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
               rewriter.getIntegerAttr(type_llvm_lapack_int, 8)),
           minMN);
 
-      auto iworkptr = LLVM::AllocaOp::create(
-          rewriter, op.getLoc(), type_llvm_ptr, type_lapack_int, const8minMN);
+      auto iworkptr = heapAlloc(type_lapack_int, const8minMN);
 
       LLVM::StoreOp::create(rewriter, op.getLoc(), job, jobptr);
 
@@ -2299,9 +2396,7 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
               arith::MulIOp::create(rewriter, op.getLoc(), minMN, maxTerm);
         }
 
-        auto rworkptr =
-            LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
-                                   type_input_element_real, rworkSize);
+        auto rworkptr = heapAlloc(type_input_element_real, rworkSize);
 
         // ?gesdd takes rwork between lwork and iwork
         args.insert(args.begin() + 12, rworkptr);
@@ -2320,9 +2415,7 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
     if (isComplex)
       workSpaceReals = LLVM::MulOp::create(rewriter, op.getLoc(), workSpaceSize,
                                            realsPerElement);
-    auto workspace =
-        LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
-                               type_input_element_real, workSpaceReals);
+    auto workspace = heapAlloc(type_input_element_real, workSpaceReals);
 
     LLVM::StoreOp::create(rewriter, op.getLoc(), workSpaceSize, lworkptr);
 
@@ -2334,6 +2427,10 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
 
     LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{},
                          SymbolRefAttr::get(ctx, bind_fn), ValueRange(args));
+
+    for (auto buffer : heapBuffers)
+      LLVM::CallOp::create(rewriter, op.getLoc(), freeFn.value(),
+                           ValueRange{buffer});
 
     LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
   }
@@ -2688,14 +2785,16 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
     rewriter.replaceAllUsesWith(op.getResult(0), customCall.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), customCall.getResult(1));
 
-    // @SVD returns `U` and `V`. We need to transpose `V` to match the
+    // @SVD returns `U` and `V`. We need the adjoint of `V` to match the
     // return convention of `enzymexla.linalg.svd`.
     SmallVector<int64_t> permutation(rank_input);
     std::iota(permutation.begin(), permutation.end() - 2, 0);
     permutation[rank_input - 1] = rank_input - 2;
     permutation[rank_input - 2] = rank_input - 1;
-    auto Vt = stablehlo::TransposeOp::create(
+    Value Vt = stablehlo::TransposeOp::create(
         rewriter, op.getLoc(), customCall.getResult(2), permutation);
+    if (isa<ComplexType>(type_input.getElementType()))
+      Vt = chlo::ConjOp::create(rewriter, op.getLoc(), Vt);
     rewriter.replaceAllUsesWith(op.getResult(2), Vt);
 
     // Netlib's LAPACK returns `info`, but TPU kernel doesn't
@@ -2855,7 +2954,12 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
 
     // replace enzymexla.lapack.potrf with the jit_call
     rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
-    rewriter.replaceAllUsesWith(op.getResult(1), jit_call_op.getResult(1));
+    // `info` comes back as a LAPACK int, which can differ from the op's type
+    rewriter.replaceAllUsesWith(
+        op.getResult(1),
+        stablehlo::ConvertOp::create(rewriter, op.getLoc(),
+                                     op.getResult(1).getType(),
+                                     jit_call_op.getResult(1)));
     rewriter.eraseOp(op);
 
     return success();

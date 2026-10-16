@@ -16,24 +16,35 @@ module {
   }
 }
 
+// The workspaces are sized by LAPACK and can be large, so they live on the heap
+
 // CPU: llvm.func private @enzymexla_wrapper_lapack_zgesdd_(
+// CPU-DAG:   %[[EIGHT:.*]] = llvm.mlir.constant(8 : i64) : i64
 // CPU-DAG:   %[[TWO:.*]] = llvm.mlir.constant(2 : i64) : i64
 // CPU:   %[[LWORK:.*]] = llvm.alloca %{{.*}} x i64 : (i64) -> !llvm.ptr
 // CPU:   %[[QUERY:.*]] = llvm.alloca %[[TWO]] x f64 : (i64) -> !llvm.ptr
-// CPU:   %[[IWORK:.*]] = llvm.alloca %{{.*}} x i64 : (i64) -> !llvm.ptr
-// CPU:   %[[RWORK:.*]] = llvm.alloca %{{.*}} x f64 : (i64) -> !llvm.ptr
+// CPU:   %[[IWORK:.*]] = llvm.call @malloc(%{{.*}}) : (i64) -> !llvm.ptr
+// CPU:   %[[RBYTES:.*]] = llvm.mul %{{.*}}, %[[EIGHT]] : i64
+// CPU-NEXT:   %[[RWORK:.*]] = llvm.call @malloc(%[[RBYTES]]) : (i64) -> !llvm.ptr
 // CPU-NEXT:   llvm.call @enzymexla_lapack_zgesdd_(%{{.*}}, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %[[QUERY]], %[[LWORK]], %[[RWORK]], %[[IWORK]], %arg9, %{{.*}})
 // CPU-NEXT:   %[[SIZEF:.*]] = llvm.load %[[QUERY]] : !llvm.ptr -> f64
 // CPU-NEXT:   %[[SIZE:.*]] = llvm.fptosi %[[SIZEF]] : f64 to i64
 // CPU-NEXT:   %[[REALS:.*]] = llvm.mul %[[SIZE]], %[[TWO]] : i64
-// CPU-NEXT:   %[[WORK:.*]] = llvm.alloca %[[REALS]] x f64 : (i64) -> !llvm.ptr
+// CPU-NEXT:   %[[WBYTES:.*]] = llvm.mul %[[REALS]], %[[EIGHT]] : i64
+// CPU-NEXT:   %[[WORK:.*]] = llvm.call @malloc(%[[WBYTES]]) : (i64) -> !llvm.ptr
 // CPU-NEXT:   llvm.store %[[SIZE]], %[[LWORK]] : i64, !llvm.ptr
 // CPU-NEXT:   llvm.call @enzymexla_lapack_zgesdd_(%{{.*}}, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %[[WORK]], %[[LWORK]], %[[RWORK]], %[[IWORK]], %arg9, %{{.*}})
+// CPU-NEXT:   llvm.call @free(%[[IWORK]]) : (!llvm.ptr) -> ()
+// CPU-NEXT:   llvm.call @free(%[[RWORK]]) : (!llvm.ptr) -> ()
+// CPU-NEXT:   llvm.call @free(%[[WORK]]) : (!llvm.ptr) -> ()
+// CPU-NEXT:   llvm.return
 
-// CPU: llvm.func private @enzymexla_wrapper_lapack_zgesdd_(
+// CPU: llvm.func private @enzymexla_wrapper_lapack_zgesdd__nouv(
 // CPU-DAG:   %[[SEVEN:.*]] = llvm.mlir.constant(7 : i64) : i64
+// CPU-DAG:   %[[EIGHT:.*]] = llvm.mlir.constant(8 : i64) : i64
 // CPU:   %[[LWORK:.*]] = llvm.alloca %{{.*}} x i64 : (i64) -> !llvm.ptr
-// CPU:   %[[IWORK:.*]] = llvm.alloca %{{.*}} x i64 : (i64) -> !llvm.ptr
+// CPU:   %[[IWORK:.*]] = llvm.call @malloc(%{{.*}}) : (i64) -> !llvm.ptr
 // CPU:   %[[RSIZE:.*]] = arith.muli %{{.*}}, %[[SEVEN]] : i64
-// CPU-NEXT:   %[[RWORK:.*]] = llvm.alloca %[[RSIZE]] x f64 : (i64) -> !llvm.ptr
+// CPU-NEXT:   %[[RBYTES:.*]] = llvm.mul %[[RSIZE]], %[[EIGHT]] : i64
+// CPU-NEXT:   %[[RWORK:.*]] = llvm.call @malloc(%[[RBYTES]]) : (i64) -> !llvm.ptr
 // CPU-NEXT:   llvm.call @enzymexla_lapack_zgesdd_(%{{.*}}, %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %{{.*}}, %[[LWORK]], %[[RWORK]], %[[IWORK]], %arg9, %{{.*}})
