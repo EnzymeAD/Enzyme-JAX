@@ -5329,8 +5329,12 @@ struct ConcatSliceStack final
         if (k != 0 && level == views.size())
           break;
         Operation *view = v.getDefiningOp();
-        if (!view || !isView(view))
+        if (!view || !isView(view)) {
+          // Every operand applies all the first's views.
+          if (k != 0)
+            return failure();
           break;
+        }
         if (k == 0)
           views.push_back(view);
         else if (view->getName() != views[level]->getName() ||
