@@ -39542,21 +39542,110 @@ private:
   static constexpr size_t kMinTerms = 3;
 };
 
+// `v` is a broadcast_in_dim that expands dimension `dim`.
+static bool broadcastExpands(Value v, int64_t dim) {
+  auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>();
+  return bcast && !llvm::is_contained(bcast.getBroadcastDimensions(), dim);
+}
+
+// `bcast` without its dimension `dim` (which it expands).
+static Value broadcastWithout(OpBuilder &builder, Location loc,
+                              stablehlo::BroadcastInDimOp bcast, int64_t dim) {
+  SmallVector<int64_t> shape;
+  for (int64_t d = 0, r = bcast.getType().getRank(); d < r; d++)
+    if (d != dim)
+      shape.push_back(bcast.getType().getDimSize(d));
+  SmallVector<int64_t> bdims;
+  for (int64_t d : bcast.getBroadcastDimensions())
+    bdims.push_back(d > dim ? d - 1 : d);
+  return stablehlo::BroadcastInDimOpCreate(builder, loc, bcast.getOperand(),
+                                           shape, bdims);
+}
+
+// reduce(add, lhs * rhs) over `dims` as a dot_general. A kept dimension
+// along which one operand is only a broadcast does not vary that operand,
+// so it is a free dimension of the other operand rather than a batching
+// dimension (the broadcast loses it); the result is transposed back into
+// the reduce's dimension order. Emitting that form directly, instead of
+// leaving it to dot_general_unbatch_broadcast, keeps the dot in its final
+// shape from the start, so patterns that compare dots (concat_dot_general)
+// never see the transient batched form.
 static void ReduceToDotGeneral(Location loc, OpBuilder &builder,
                                RankedTensorType resTy, RankedTensorType inTy,
                                ArrayRef<int64_t> dims, Value lhs, Value rhs,
                                Value &result) {
-  SmallVector<int64_t> batchDims;
-  for (int i = 0; i < inTy.getRank(); i++) {
-    if (!llvm::is_contained(dims, i)) {
+  // Kept dimensions, by role: batched, free of lhs (rhs only broadcasts),
+  // free of rhs (lhs only broadcasts).
+  SmallVector<int64_t> batchDims, lhsFree, rhsFree;
+  for (int64_t i = 0; i < inTy.getRank(); i++) {
+    if (llvm::is_contained(dims, i))
+      continue;
+    bool lhsB = broadcastExpands(lhs, i), rhsB = broadcastExpands(rhs, i);
+    if (rhsB && !lhsB)
+      lhsFree.push_back(i);
+    else if (lhsB && !rhsB)
+      rhsFree.push_back(i);
+    else
       batchDims.push_back(i);
-    }
+  }
+  if (lhsFree.empty() && rhsFree.empty()) {
+    auto dotDims = stablehlo::DotDimensionNumbersAttr::get(
+        builder.getContext(), batchDims, batchDims, dims, dims);
+    result = stablehlo::DotGeneralOp::create(builder, loc, resTy, lhs, rhs,
+                                             dotDims, nullptr, nullptr);
+    return;
   }
 
+  // Narrow each broadcast operand past the dimensions it loses, renumbering
+  // the dimension numbers of that side as they go (drop in descending order
+  // so earlier indices stay valid).
+  auto narrow = [&](Value v, ArrayRef<int64_t> lose,
+                    SmallVectorImpl<int64_t> &batch,
+                    SmallVectorImpl<int64_t> &contract) {
+    SmallVector<int64_t> drop(lose.begin(), lose.end());
+    llvm::sort(drop, std::greater<int64_t>());
+    for (int64_t d : drop) {
+      v = broadcastWithout(builder, loc,
+                           v.getDefiningOp<stablehlo::BroadcastInDimOp>(), d);
+      for (int64_t &x : batch)
+        if (x > d)
+          x--;
+      for (int64_t &x : contract)
+        if (x > d)
+          x--;
+    }
+    return v;
+  };
+  SmallVector<int64_t> lhsBatch(batchDims), rhsBatch(batchDims),
+      lhsContract(dims.begin(), dims.end()),
+      rhsContract(dims.begin(), dims.end());
+  // lhs loses rhsFree (dims only lhs broadcasts); rhs loses lhsFree.
+  Value newLhs = narrow(lhs, rhsFree, lhsBatch, lhsContract);
+  Value newRhs = narrow(rhs, lhsFree, rhsBatch, rhsContract);
+
+  // The dot's result: batch dims, then lhs free dims (in lhs order), then
+  // rhs free dims. The reduce's result lists the kept dims in input order.
+  SmallVector<int64_t> dotOrder(batchDims);
+  llvm::append_range(dotOrder, lhsFree);
+  llvm::append_range(dotOrder, rhsFree);
+  SmallVector<int64_t> dotShape;
+  for (int64_t d : dotOrder)
+    dotShape.push_back(inTy.getDimSize(d));
   auto dotDims = stablehlo::DotDimensionNumbersAttr::get(
-      builder.getContext(), batchDims, batchDims, dims, dims);
-  result = stablehlo::DotGeneralOp::create(builder, loc, resTy, lhs, rhs,
-                                           dotDims, nullptr, nullptr);
+      builder.getContext(), lhsBatch, rhsBatch, lhsContract, rhsContract);
+  Value dot = stablehlo::DotGeneralOp::create(
+      builder, loc, RankedTensorType::get(dotShape, resTy.getElementType()),
+      newLhs, newRhs, dotDims, nullptr, nullptr);
+
+  // Kept dims in input order, as positions in the dot's result.
+  SmallVector<int64_t> kept;
+  for (int64_t i = 0; i < inTy.getRank(); i++)
+    if (!llvm::is_contained(dims, i))
+      kept.push_back(i);
+  SmallVector<int64_t> perm;
+  for (int64_t k : kept)
+    perm.push_back(llvm::find(dotOrder, k) - dotOrder.begin());
+  result = stablehlo::TransposeOpCreate(builder, loc, dot, perm);
 }
 
 struct ReduceMulToDotGeneral
