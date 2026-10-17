@@ -7531,6 +7531,19 @@ struct ReshapeIota final
     if (!iota)
       return failure();
 
+    // An iota along a unit dimension is all zeros, and so is any reshape of
+    // it. The dimension walk below cannot express that: it maps the iota
+    // dimension to an output dimension of the same extent, and a unit
+    // dimension the reshape drops is never visited, leaving the result's
+    // iota dimension at its default of 0 and counting up along a dimension
+    // that was constant. (reshape(iota dim=1 : 3x1) -> 3 used to become
+    // iota dim=0 : 3, i.e. [0, 1, 2] instead of [0, 0, 0].)
+    if (iota.getType().getShape()[iota.getIotaDimension()] == 1) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+      return success();
+    }
+
     // A scalar (rank-0) IotaOp is invalid in stableHLO. Bail out and let
     // other passes (e.g. constant folding) handle this case.
     if (op.getType().getRank() == 0)
