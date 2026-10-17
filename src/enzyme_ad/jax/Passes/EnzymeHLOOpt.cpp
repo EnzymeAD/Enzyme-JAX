@@ -4836,6 +4836,26 @@ struct ConvertConcat final
     if (!concat)
       return failure();
 
+    // A concatenate whose operands are all reshapes inserting the
+    // concatenated dimension is a stack. `concat_insert_dim_elementwise`
+    // batches an elementwise op across such a stack, turning
+    // concat(reshape(convert(x_i))) into convert(concat(reshape(x_i))); pushing
+    // the convert back into the operands here, after which the reshape
+    // reordering patterns sink it below the reshapes again, recreates the
+    // batching pattern's input and the three rewrites loop forever. Splitting
+    // one convert into one per operand gains nothing on a stack, so leave it.
+    if (concat.getNumOperands() > 1 &&
+        llvm::all_of(concat.getOperands(), [&](Value v) {
+          auto reshape = v.getDefiningOp<stablehlo::ReshapeOp>();
+          if (!reshape)
+            return false;
+          auto inserted = findReshapeInsertionDims(
+              reshape.getOperand().getType(), reshape.getType());
+          return llvm::is_contained(inserted, (int64_t)concat.getDimension());
+        }))
+      return rewriter.notifyMatchFailure(
+          op, "convert of a stack of reshapes is left to batching");
+
     SmallVector<Value> newvals;
     for (auto v : concat.getOperands()) {
       newvals.push_back(stablehlo::ConvertOp::create(
