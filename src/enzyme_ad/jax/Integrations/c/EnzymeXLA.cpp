@@ -541,6 +541,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("while_deadresult");
   list.push_back("while_duplicate_carried");
   list.push_back("while_idempotent_dus");
+  list.push_back("while_trip_count_from_guard");
   list.push_back("while_dus");
   list.push_back("while_updatewithoutcorners");
   list.push_back("while_op_induction_replacement");
