@@ -287,6 +287,17 @@ bool isFactMarkerCall(Operation *op) {
   return func && func->hasAttr(kFactMarkerAttr);
 }
 
+/// Whether `op` stores to `address`, as opposed to storing it.
+bool isStoreInto(Operation *op, Value address) {
+  if (auto store = dyn_cast<LLVM::StoreOp>(op))
+    return store.getAddr() == address;
+  if (auto store = dyn_cast<affine::AffineStoreOp>(op))
+    return store.getMemref() == address;
+  if (auto store = dyn_cast<memref::StoreOp>(op))
+    return store.getMemref() == address;
+  return false;
+}
+
 /// The slot `handle` was loaded from, or nothing if it was not loaded from a
 /// stack slot, or the slot or a handle loaded from it is used in some way this
 /// cannot follow.
@@ -333,15 +344,7 @@ std::optional<HandleSlot> slotOf(Value handle) {
         slot.factSites.insert(user);
         continue;
       }
-      // The slot as the address stored to, not as the value stored.
-      bool isStoreInto =
-          (isa<LLVM::StoreOp>(user) &&
-           cast<LLVM::StoreOp>(user).getAddr() == view) ||
-          (isa<affine::AffineStoreOp>(user) &&
-           cast<affine::AffineStoreOp>(user).getMemref() == view) ||
-          (isa<memref::StoreOp>(user) &&
-           cast<memref::StoreOp>(user).getMemref() == view);
-      if (isStoreInto ||
+      if (isStoreInto(user, view) ||
           isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp, CallOp, LLVM::CallOp>(
               user)) {
         slot.writers.insert(user);
@@ -355,6 +358,54 @@ std::optional<HandleSlot> slotOf(Value handle) {
   if (!llvm::all_of(slot.loads, onlyPassedToCalls))
     return std::nullopt;
   return slot;
+}
+
+/// For `handle` the address of an object variable, `BilinearForm a(...)`, the
+/// object as the slot, with its address and views of it as the handles.
+/// Writing into the object, or giving a call an address inside it, changes
+/// it. Nothing if the address escapes.
+std::optional<HandleSlot> objectOf(Value handle) {
+  auto alloca = lookThroughForwarding(handle).getDefiningOp<LLVM::AllocaOp>();
+  if (!alloca || isa<LLVM::LLVMPointerType>(alloca.getElemType()))
+    return std::nullopt;
+
+  HandleSlot object;
+  // Each address, and whether it is of the whole object.
+  SmallVector<std::pair<Value, bool>> worklist{{alloca.getResult(), true}};
+  while (!worklist.empty()) {
+    auto [address, whole] = worklist.pop_back_val();
+    if (whole) {
+      object.views.insert(address);
+      object.loads.insert(address);
+    }
+    for (OpOperand &use : address.getUses()) {
+      Operation *user = use.getOwner();
+      if (isPointerView(user)) {
+        worklist.push_back({user->getResult(0), whole});
+        continue;
+      }
+      if (isa<LLVM::GEPOp>(user) && use.getOperandNumber() == 0) {
+        worklist.push_back({user->getResult(0), false});
+        continue;
+      }
+      if (isa<LLVM::LoadOp, affine::AffineLoadOp, memref::LoadOp>(user))
+        continue;
+      if (whole && isFactMarkerCall(user)) {
+        object.factSites.insert(user);
+        continue;
+      }
+      if (whole && isa<CallOp, LLVM::CallOp>(user))
+        continue;
+      if (isStoreInto(user, address) ||
+          isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp, CallOp, LLVM::CallOp>(
+              user)) {
+        object.writers.insert(user);
+        continue;
+      }
+      return std::nullopt;
+    }
+  }
+  return object;
 }
 
 /// The attributes of the parameter a call passes argument `index` to, or null.
@@ -468,12 +519,13 @@ SmallVector<StringAttr> handleFactsAt(CallOp use, unsigned index) {
   // What is recorded on an argument is read as true of the value passed
   // there, wherever else it goes (PropertyFacts::derive, hasRecordedProperty).
   // A fact of the object holds only here, so it is recorded only on a handle
-  // loaded for this call alone.
-  if (lookThroughForwarding(handle) != handle ||
-      !llvm::all_of(handle.getUsers(),
-                    [&](Operation *user) { return user == use; }))
-    return {};
-  std::optional<HandleSlot> slot = slotOf(handle);
+  // loaded for this call alone, or, for an object variable, on a copy of its
+  // address that annotate gives the call.
+  std::optional<HandleSlot> slot = objectOf(handle);
+  if (!slot && lookThroughForwarding(handle) == handle &&
+      llvm::all_of(handle.getUsers(),
+                   [&](Operation *user) { return user == use; }))
+    slot = slotOf(handle);
   if (!slot)
     return {};
 
@@ -652,9 +704,20 @@ void PropertyFacts::annotate(CallOp call) {
     for (StringAttr name : of(call.getArgOperands()[i]))
       if (!llvm::is_contained(facts, name))
         facts.push_back(name);
-    for (StringAttr name : handleFactsAt(call, i))
+    SmallVector<StringAttr> handleFacts = handleFactsAt(call, i);
+    for (StringAttr name : handleFacts)
       if (!llvm::is_contained(facts, name))
         facts.push_back(name);
+    // On a copy of its own, so that a fact of an object variable is not read
+    // as true at the variable's other calls.
+    Value arg = call.getArgOperands()[i];
+    if (!handleFacts.empty() &&
+        llvm::any_of(arg.getUsers(),
+                     [&](Operation *user) { return user != call; })) {
+      OpBuilder builder(call);
+      call.getArgOperandsMutable()[i].set(
+          LLVM::FreezeOp::create(builder, call.getLoc(), arg));
+    }
 
     NamedAttrList attrs(dict ? dict : DictionaryAttr::get(ctx));
     if (!facts.empty()) {
