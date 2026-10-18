@@ -235,10 +235,26 @@ struct HandleSlot {
   }
 };
 
+/// Whether the object `pointer` points into is only read through it: loaded
+/// from, at an offset or not. What a load gives is the object's contents, not
+/// the pointer.
+bool onlyReadThrough(Value pointer) {
+  return llvm::all_of(pointer.getUses(), [](OpOperand &use) {
+    Operation *user = use.getOwner();
+    if (isPointerView(user) ||
+        (isa<LLVM::GEPOp>(user) && use.getOperandNumber() == 0))
+      return onlyReadThrough(user->getResult(0));
+    return isa<LLVM::LoadOp>(user) ||
+           (isa<affine::AffineLoadOp, memref::LoadOp>(user) &&
+            use.getOperandNumber() == 0);
+  });
+}
+
 /// Whether a loaded handle goes nowhere but into calls and guards (that read
-/// it) and pointer comparisons. A handle copied anywhere else -- stored into
+/// it), pointer comparisons, and loads of the object through it, as a virtual
+/// call `a->f()` loads the vtable. A handle copied anywhere else -- stored into
 /// another variable, say -- could reach a call this does not see as taking
-/// it.
+/// it; one stored through could change the object without a call.
 bool onlyPassedToCalls(Value handle) {
   return llvm::all_of(handle.getUses(), [](OpOperand &use) {
     Operation *user = use.getOwner();
@@ -248,6 +264,12 @@ bool onlyPassedToCalls(Value handle) {
     // first operand.
     if (auto call = dyn_cast<LLVM::CallOp>(user))
       return call.getCalleeAttr() || use.getOperandNumber() != 0;
+    // Read through. A load's one operand is its address.
+    if (isa<LLVM::LoadOp>(user))
+      return true;
+    if (isa<enzymexla::Pointer2MemrefOp, LLVM::GEPOp>(user) &&
+        use.getOperandNumber() == 0)
+      return onlyReadThrough(user->getResult(0));
     return isa<CallOp, GuardOp, LLVM::ICmpOp>(user);
   });
 }

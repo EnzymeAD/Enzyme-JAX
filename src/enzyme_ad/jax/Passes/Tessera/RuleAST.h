@@ -38,12 +38,19 @@ enum class TokenType {
   Integer,
   Float,
   String,
+  Global,
   LParen,
   RParen,
   Dot,
   Comma,
   Semicolon,
   Arrow,
+  // Arithmetic operators.
+  Plus,
+  Minus,
+  Star,
+  Slash,
+  Percent,
   // Condition operators.
   Bang,
   AndAnd,
@@ -98,7 +105,34 @@ struct StrLit {
   std::string value;
 };
 
+/// The address of a global variable, `@_ZN4mfem8IntRulesE`, named by its
+/// symbol. Only allowed on the right-hand side of a rule, where it passes a
+/// library's own global object, as MFEM's rules live in the global
+/// `mfem::IntRules`. The clang plugin writes it for a C++ name the rule uses,
+/// so a rule says `mfem::IntRules` and never spells a mangled name.
+struct GlobalRef {
+  std::string symbol;
+};
+
 struct Expr;
+
+/// An arithmetic operator. Integer division and remainder are signed, as C's
+/// are on the ints a library takes.
+enum class ArithOp { Add, Sub, Mul, Div, Rem };
+
+/// Spelling of an arithmetic operator, for diagnostics and rendering.
+llvm::StringRef getArithOpSpelling(ArithOp op);
+
+/// `lhs op rhs`, computing a value from others, as `2 * p + 1` computes a
+/// quadrature order from a polynomial order. Allowed on the right-hand side of
+/// a rule and in the operands of a comparison; there is nothing for it to
+/// match on the left, or to test in a predicate. The operands are shared, not
+/// owned, so that an Expr stays copyable: the tree is never changed once
+/// parsed.
+struct Arith {
+  ArithOp op;
+  std::shared_ptr<const Expr> lhs, rhs;
+};
 
 /// A call to a library op, `blas.gemm(...)`, or, with no dialect, to one of
 /// the functions the right-hand side can compute an argument with, `log2(n)`.
@@ -110,15 +144,25 @@ struct Call {
 };
 
 struct Expr {
-  std::variant<Var, IntLit, FloatLit, StrLit, Call> data;
+  std::variant<Var, IntLit, FloatLit, StrLit, GlobalRef, Call, Arith> data;
 
   Expr() = default; // default constructor
   Expr(Var v) : data(v) {}
   Expr(IntLit n) : data(n) {}
   Expr(FloatLit n) : data(n) {}
   Expr(StrLit s) : data(std::move(s)) {}
+  Expr(GlobalRef g) : data(std::move(g)) {}
   Expr(Call c) : data(std::move(c)) {} // move because Call has a vector
+  Expr(Arith a) : data(std::move(a)) {}
 };
+
+/// Whether `expr` contains arithmetic anywhere, for the places it is not
+/// allowed.
+bool containsArith(const Expr &expr);
+
+/// Whether `expr` is made of literals and arithmetic only, so that its type
+/// is whatever the context gives it.
+bool isLiteralOnly(const Expr &expr);
 
 //===----------------------------------------------------------------------===//
 // Conditions
@@ -199,7 +243,7 @@ struct Parser {
   Token current;
   Location loc;
   bool failed = false;
-  /// String literals and built-in functions are only allowed on the
+  /// String literals, globals and built-in functions are only allowed on the
   /// right-hand side of a rule.
   bool allowStrings = false;
 
@@ -223,7 +267,17 @@ struct Parser {
   Token peekAhead();
 
   std::optional<Call> parseCall(std::string dialect_name);
+  /// expr ::= term { ('+' | '-') term }
   std::optional<Expr> parseExpr();
+  /// term ::= primary { ('*' | '/' | '%') primary }
+  std::optional<Expr> parseTerm();
+  /// primary ::= call | var | int | float | string | builtin | '(' expr ')'
+  std::optional<Expr> parsePrimary();
+  /// With `current` a '(' in a condition: whether it opens an arithmetic
+  /// expression, `(p + 1) * 2 == q`, rather than a parenthesized condition.
+  /// It does exactly when an arithmetic or comparison operator follows the
+  /// matching ')', which can never follow a condition.
+  bool parenOpensExpr();
   std::optional<Cond> parseCond();
   std::optional<Cond> parseConj();
   std::optional<Cond> parseUnary();
