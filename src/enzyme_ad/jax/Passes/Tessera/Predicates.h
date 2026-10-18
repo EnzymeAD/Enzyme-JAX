@@ -168,6 +168,12 @@ const TesseraPredicate *lookupPredicate(llvm::StringRef name);
 /// The names of every known predicate, for diagnostics.
 llvm::SmallVector<llvm::StringRef> getKnownPredicateNames();
 
+/// Build `lhs op rhs` in the LLVM dialect, for arithmetic on the right-hand
+/// side of a rule and in a guard's condition. Both operands have one type, an
+/// integer or a float type, which the callers check first.
+Value buildArith(OpBuilder &builder, Location loc, ArithOp op, Value lhs,
+                 Value rhs);
+
 } // namespace tessera
 } // namespace enzyme
 } // namespace mlir
