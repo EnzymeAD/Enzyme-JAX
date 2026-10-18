@@ -2987,25 +2987,20 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
     } else if (auto pforOp = dyn_cast<affine::AffineParallelOp>(
                    parallelOp.getOperation())) {
 
-      SmallVector<int64_t> dims_to_reduce;
-      for (auto &&[i, expr] :
-           llvm::enumerate(outputMap.getAffineMap().getResults())) {
-        auto dim = cast<AffineDimExpr>(expr);
-        auto operand =
-            dyn_cast<BlockArgument>(outputMap.getOperands()[dim.getPosition()]);
-        if (!operand)
-          continue;
-        if (operand.getOwner()->getParentOp() == pforOp)
-          dims_to_reduce.push_back(operand.getArgNumber());
-      }
-
+      // The reduction folds the yielded value over every iteration of the
+      // parallel loop, so the value must carry one lane per IV of the loop
+      // before it is reduced. A yield that is invariant along some IV (e.g.
+      // `s += 1` summed N times, whose lane tensor has no axis for the IV)
+      // is broadcast along it first; reducing only the axes the value
+      // already had would count that iteration space once instead of N
+      // times.
       SmallVector<Value> dsts;
       SmallVector<affine::AffineValueMap> submaps;
-      for (auto idx : dims_to_reduce) {
-        auto dst = mapping.lookup(pforOp.getIVs()[idx]);
-        dsts.push_back(dst);
-        if (!maps.count(dst))
+      for (auto iv : pforOp.getIVs()) {
+        auto dst = mapping.lookupOrNull(iv);
+        if (!dst || !maps.count(dst))
           return failure();
+        dsts.push_back(dst);
         submaps.push_back(maps.lookup(dst));
       }
       auto aligned = alignMemoryAccess(val, outputMap, dsts.data(), submaps,
@@ -3014,21 +3009,22 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
         return failure();
       affine::AffineValueMap outputMap2 = *aligned;
 
+      // `val` was broadcast in place by alignMemoryAccess; its axes are now
+      // described by outputMap2, so the reduction axes (those indexed by an
+      // IV of this loop) and the kept axes are read from that map.
+      auto valShape = cast<RankedTensorType>(val.getType()).getShape();
       SmallVector<int64_t> idxs_to_reduce;
       SmallVector<int64_t> redshape;
       SmallVector<AffineExpr> newExprs;
       for (auto &&[i, expr] :
-           llvm::enumerate(outputMap.getAffineMap().getResults())) {
-        auto dim = cast<AffineDimExpr>(expr);
-        auto operand =
-            dyn_cast<BlockArgument>(outputMap.getOperands()[dim.getPosition()]);
-        if (!operand)
-          continue;
-        if (operand.getOwner()->getParentOp() == pforOp)
+           llvm::enumerate(outputMap2.getAffineMap().getResults())) {
+        Value iv = expr.isSymbolicOrConstant() ? Value()
+                                               : getIVForExpr(outputMap2, expr);
+        auto operand = dyn_cast_or_null<BlockArgument>(iv);
+        if (operand && operand.getOwner()->getParentOp() == pforOp) {
           idxs_to_reduce.push_back(i);
-        else {
-          redshape.push_back(
-              cast<RankedTensorType>(val.getType()).getShape()[i]);
+        } else {
+          redshape.push_back(valShape[i]);
           newExprs.push_back(expr);
         }
       }
@@ -3201,7 +3197,7 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
       }
 
       SmallVector<Value> vals;
-      for (auto v : outputMap.getOperands()) {
+      for (auto v : outputMap2.getOperands()) {
         auto operand = dyn_cast<BlockArgument>(v);
         if (operand && operand.getOwner()->getParentOp() == pforOp) {
           v = arith::ConstantIndexOp::create(
@@ -3212,8 +3208,8 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
         vals.push_back(v);
       }
       affine::AffineValueMap avm(
-          AffineMap::get(outputMap.getAffineMap().getNumDims(),
-                         outputMap.getAffineMap().getNumSymbols(), newExprs,
+          AffineMap::get(outputMap2.getAffineMap().getNumDims(),
+                         outputMap2.getAffineMap().getNumSymbols(), newExprs,
                          res.getContext()),
           vals);
 
