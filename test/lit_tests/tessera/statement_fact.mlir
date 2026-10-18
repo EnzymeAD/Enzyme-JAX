@@ -188,6 +188,71 @@ module {
     llvm.return %e2 : i32
   }
 
+  // A C++ object a fact is stated of is also used for virtual calls, which
+  // read the vtable through it: `a->Assemble()` after `a->AddIntegrator(i)`.
+  // Reading the object through the variable does not copy the handle, so the
+  // fact still reaches the call; the virtual call, unannotated, comes after.
+  // FACT-LABEL: llvm.func @read_through
+  // FACT: tessera.call @petsc.ksp_set_operators(%{{.*}}, %[[A:[0-9]+]], %[[A]]) <arg_attrs = [{}, {tessera.property = ["SPD"]}, {tessera.property = ["SPD"]}]>
+  llvm.func @read_through(%ksp: !llvm.ptr) -> i32 {
+    %c1 = llvm.mlir.constant(1 : i32) : i32
+    %slot = llvm.alloca %c1 x !llvm.ptr : (i32) -> !llvm.ptr
+    %e0 = llvm.call @mat_create(%slot) : (!llvm.ptr) -> i32
+    llvm.call @__tessera_fact_0(%slot) : (!llvm.ptr) -> ()
+    %a0 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    %e1 = tessera.call @petsc.ksp_set_operators(%ksp, %a0, %a0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+    // The vtable, loaded directly and as a memref, then a field at an offset.
+    %a1 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    %vtable = llvm.load %a1 : !llvm.ptr -> !llvm.ptr
+    %fn = llvm.load %vtable : !llvm.ptr -> !llvm.ptr
+    %e2 = llvm.call %fn(%a1) : !llvm.ptr, (!llvm.ptr) -> i32
+    %a2 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    %view = "enzymexla.pointer2memref"(%a2) : (!llvm.ptr) -> memref<?x!llvm.ptr>
+    %vtable2 = affine.load %view[0] : memref<?x!llvm.ptr>
+    %field = llvm.getelementptr %a2[8] : (!llvm.ptr) -> !llvm.ptr, i8
+    %n = llvm.load %field : !llvm.ptr -> i32
+    llvm.return %e1 : i32
+  }
+
+  // A virtual call between the fact and the call is unannotated, so it may
+  // change the object, and the fact ends there.
+  // FACT-LABEL: llvm.func @virtual_call_before
+  // FACT: tessera.call @petsc.ksp_set_operators
+  // FACT-NOT: tessera.property
+  // FACT: llvm.return
+  llvm.func @virtual_call_before(%ksp: !llvm.ptr) -> i32 {
+    %c1 = llvm.mlir.constant(1 : i32) : i32
+    %slot = llvm.alloca %c1 x !llvm.ptr : (i32) -> !llvm.ptr
+    %e0 = llvm.call @mat_create(%slot) : (!llvm.ptr) -> i32
+    llvm.call @__tessera_fact_0(%slot) : (!llvm.ptr) -> ()
+    %a0 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    %vtable = llvm.load %a0 : !llvm.ptr -> !llvm.ptr
+    %fn = llvm.load %vtable : !llvm.ptr -> !llvm.ptr
+    %e1 = llvm.call %fn(%a0) : !llvm.ptr, (!llvm.ptr) -> i32
+    %a1 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    %e2 = tessera.call @petsc.ksp_set_operators(%ksp, %a1, %a1) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+    llvm.return %e2 : i32
+  }
+
+  // A store through the variable changes the object without a call, so no
+  // fact of it is used.
+  // FACT-LABEL: llvm.func @stored_through
+  // FACT: tessera.call @petsc.ksp_set_operators
+  // FACT-NOT: tessera.property
+  // FACT: llvm.return
+  llvm.func @stored_through(%ksp: !llvm.ptr, %v: i32) -> i32 {
+    %c1 = llvm.mlir.constant(1 : i32) : i32
+    %slot = llvm.alloca %c1 x !llvm.ptr : (i32) -> !llvm.ptr
+    %e0 = llvm.call @mat_create(%slot) : (!llvm.ptr) -> i32
+    llvm.call @__tessera_fact_0(%slot) : (!llvm.ptr) -> ()
+    %a0 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    %field = llvm.getelementptr %a0[8] : (!llvm.ptr) -> !llvm.ptr, i8
+    llvm.store %v, %field : i32, !llvm.ptr
+    %a1 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    %e2 = tessera.call @petsc.ksp_set_operators(%ksp, %a1, %a1) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+    llvm.return %e2 : i32
+  }
+
   // An assumed fact, too, holds only until something may change the object.
   // FACT-LABEL: llvm.func @assumed_changed_after
   // FACT: tessera.call @petsc.ksp_set_operators

@@ -110,6 +110,14 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
             llvm_unreachable("the parser only allows a string on the "
                              "right-hand side");
           },
+          [&](const GlobalRef &) -> std::pair<mlir::Value, mlir::Value> {
+            llvm_unreachable("the parser only allows a global on the "
+                             "right-hand side");
+          },
+          [&](const Arith &) -> std::pair<mlir::Value, mlir::Value> {
+            llvm_unreachable("the parser does not allow arithmetic in what a "
+                             "rule matches");
+          },
           [&](const Call &c) -> std::pair<mlir::Value, mlir::Value> {
             SmallVector<mlir::Value> argValues;
             for (int i = 0; i < c.args.size(); i++) {
@@ -157,6 +165,11 @@ findUnboundVar(const Expr &expr, const llvm::StringMap<mlir::Value> &bound) {
     for (const Expr &arg : call->args)
       if (auto name = findUnboundVar(arg, bound))
         return name;
+  if (auto *arith = std::get_if<Arith>(&expr.data)) {
+    if (auto name = findUnboundVar(*arith->lhs, bound))
+      return name;
+    return findUnboundVar(*arith->rhs, bound);
+  }
   return std::nullopt;
 }
 

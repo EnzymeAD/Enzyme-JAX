@@ -179,6 +179,10 @@ static void collectCallees(const Expr &expr, llvm::StringSet<> &callees) {
     for (const Expr &arg : call->args)
       collectCallees(arg, callees);
   }
+  if (auto *arith = std::get_if<Arith>(&expr.data)) {
+    collectCallees(*arith->lhs, callees);
+    collectCallees(*arith->rhs, callees);
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -229,9 +233,12 @@ static bool matchLhs(const Expr &expr, Operation *op,
               return value.bitwiseIsEqual(expected);
             },
             [&](const StrLit &) { return false; },
+            [&](const GlobalRef &) { return false; },
             [&](const Call &) {
               return matchLhs(arg, operand.getDefiningOp(), bound);
             },
+            // The parser does not allow arithmetic in what a rule matches.
+            [&](const Arith &) { return false; },
         },
         arg.data);
     if (!matched)
@@ -393,6 +400,13 @@ static bool callOperandAccepts(DefineOp define, unsigned index, Type actual) {
   return pointee && isa<LLVM::LLVMPointerType>(formal) && actual == pointee;
 }
 
+/// The global a rule names, or null if the module has none by that name.
+static LLVM::GlobalOp lookupGlobal(const GlobalRef &global, Operation *anchor) {
+  auto module = anchor->getParentOfType<ModuleOp>();
+  return module ? module.lookupSymbol<LLVM::GlobalOp>(global.symbol)
+                : LLVM::GlobalOp();
+}
+
 static bool literalFits(const Expr &literal, Type type) {
   auto *n = std::get_if<IntLit>(&literal.data);
   auto intType = dyn_cast<IntegerType>(type);
@@ -434,6 +448,13 @@ static Type checkRhsValue(const Expr &expr, Operation *anchor,
           [&](const StrLit &) -> Type {
             return LLVM::LLVMPointerType::get(anchor->getContext());
           },
+          [&](const GlobalRef &g) -> Type {
+            if (!lookupGlobal(g, anchor)) {
+              why = "global '@" + g.symbol + "' is not in this module";
+              return Type();
+            }
+            return LLVM::LLVMPointerType::get(anchor->getContext());
+          },
           [&](const Call &c) -> Type {
             // log2 gives a count of the same width as its argument.
             if (c.isBuiltin()) {
@@ -457,6 +478,56 @@ static Type checkRhsValue(const Expr &expr, Operation *anchor,
             }
             // A nested call denotes its first result.
             return results.front();
+          },
+          [&](const Arith &a) -> Type {
+            // A literal operand takes the type of the other operand, so that
+            // `2 * p + 1` computes in p's type; with literals on both sides
+            // it takes the type the context expects. buildExprIR follows the
+            // same order, so what is checked here is what gets built.
+            Type lhsType, rhsType;
+            if (isLiteralOnly(*a.lhs) && !isLiteralOnly(*a.rhs)) {
+              rhsType = checkRhsValue(*a.rhs, anchor, bound, expected, why);
+              if (!rhsType)
+                return Type();
+              lhsType = checkRhsValue(*a.lhs, anchor, bound, rhsType, why);
+            } else {
+              lhsType = checkRhsValue(*a.lhs, anchor, bound, expected, why);
+              if (!lhsType)
+                return Type();
+              rhsType = checkRhsValue(*a.rhs, anchor, bound,
+                                      isLiteralOnly(*a.lhs) ? expected
+                                                            : lhsType,
+                                      why);
+            }
+            if (!lhsType || !rhsType)
+              return Type();
+            std::string op(getArithOpSpelling(a.op));
+            if (lhsType != rhsType) {
+              llvm::raw_string_ostream os(why);
+              os << "operands of '" << op << "' have different types ("
+                 << lhsType << " and " << rhsType << ")";
+              return Type();
+            }
+            if (!isa<IntegerType, FloatType>(lhsType)) {
+              llvm::raw_string_ostream os(why);
+              os << "'" << op << "' is given values of type " << lhsType
+                 << ", but arithmetic is on integers and floats";
+              return Type();
+            }
+            for (const Expr *operand : {a.lhs.get(), a.rhs.get()})
+              if (!literalFits(*operand, lhsType)) {
+                llvm::raw_string_ostream os(why);
+                os << "literal " << renderExpr(*operand) << " does not fit in "
+                   << lhsType;
+                return Type();
+              }
+            auto *divisor = std::get_if<IntLit>(&a.rhs->data);
+            if ((a.op == ArithOp::Div || a.op == ArithOp::Rem) && divisor &&
+                divisor->value == 0) {
+              why = "'" + renderExpr(expr) + "' divides by zero";
+              return Type();
+            }
+            return lhsType;
           },
       },
       expr.data);
@@ -599,6 +670,10 @@ static Value buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
           [&](const StrLit &s) -> Value {
             return buildStringLiteral(s.value, builder, loc, symbolAnchor);
           },
+          [&](const GlobalRef &g) -> Value {
+            return LLVM::AddressOfOp::create(builder, loc,
+                                             lookupGlobal(g, symbolAnchor));
+          },
           [&](const Call &c) -> Value {
             // log2 of a power of two is its count of trailing zeros. A
             // constant is folded here, so a rule applied to a literal leaves
@@ -629,6 +704,24 @@ static Value buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
             if (builtOp)
               *builtOp = call;
             return call.getNumResults() ? call.getResult(0) : Value();
+          },
+          [&](const Arith &a) -> Value {
+            // Operand types are settled in the order checkRhsValue settles
+            // them.
+            Value lhs, rhs;
+            if (isLiteralOnly(*a.lhs) && !isLiteralOnly(*a.rhs)) {
+              rhs = buildExprIR(*a.rhs, builder, loc, boundVars, symbolAnchor,
+                                expected);
+              lhs = buildExprIR(*a.lhs, builder, loc, boundVars, symbolAnchor,
+                                rhs.getType());
+            } else {
+              lhs = buildExprIR(*a.lhs, builder, loc, boundVars, symbolAnchor,
+                                expected);
+              rhs = buildExprIR(*a.rhs, builder, loc, boundVars, symbolAnchor,
+                                isLiteralOnly(*a.lhs) ? expected
+                                                      : lhs.getType());
+            }
+            return buildArith(builder, loc, a.op, lhs, rhs);
           },
       },
       expr.data);
