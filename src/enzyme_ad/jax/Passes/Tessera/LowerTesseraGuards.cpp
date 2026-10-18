@@ -132,6 +132,12 @@ Type typeHintFor(const Expr &expr, GuardOp guard) {
       if (results.size() == 1)
         return results.front();
     }
+  // Arithmetic computes in its operands' type, which either one can give.
+  if (auto *arith = std::get_if<Arith>(&expr.data)) {
+    if (Type type = typeHintFor(*arith->lhs, guard))
+      return type;
+    return typeHintFor(*arith->rhs, guard);
+  }
   return Type();
 }
 
@@ -179,8 +185,47 @@ Value resolveOperand(const Expr &expr, OpBuilder &builder, Location loc,
             llvm_unreachable("the parser only allows a string on the "
                              "right-hand side of a rule");
           },
+          [&](const GlobalRef &) -> Value {
+            llvm_unreachable("the parser only allows a global on the "
+                             "right-hand side of a rule");
+          },
           [&](const Call &c) -> Value {
             return emitCall(c, builder, loc, guard);
+          },
+          [&](const Arith &a) -> Value {
+            // A literal operand takes the type the other operand gives, or,
+            // with literals on both sides, the hint from the context.
+            Type type = typeHintFor(expr, guard);
+            if (!type)
+              type = hint;
+            Value lhs = resolveOperand(*a.lhs, builder, loc, guard, type);
+            Value rhs = resolveOperand(*a.rhs, builder, loc, guard, type);
+            if (!lhs || !rhs)
+              return Value();
+            std::string op(getArithOpSpelling(a.op));
+            if (lhs.getType() != rhs.getType()) {
+              emitCheckWarning(guard)
+                  << "operands of '" << op << "' in a condition have "
+                  << "different types (" << lhs.getType() << " and "
+                  << rhs.getType() << ")";
+              return Value();
+            }
+            if (!isa<IntegerType, FloatType>(lhs.getType())) {
+              emitCheckWarning(guard)
+                  << "'" << op << "' in a condition is given values of type "
+                  << lhs.getType() << ", but arithmetic is on integers and "
+                  << "floats";
+              return Value();
+            }
+            auto *divisor = std::get_if<IntLit>(&a.rhs->data);
+            if ((a.op == ArithOp::Div || a.op == ArithOp::Rem) && divisor &&
+                divisor->value == 0) {
+              emitCheckWarning(guard)
+                  << "'" << renderExpr(expr) << "' in a condition divides by "
+                  << "zero";
+              return Value();
+            }
+            return buildArith(builder, loc, a.op, lhs, rhs);
           },
       },
       expr.data);
@@ -239,6 +284,8 @@ Value emitCall(const Call &call, OpBuilder &builder, Location loc,
 }
 
 bool containsCall(const Expr &expr) {
+  if (auto *arith = std::get_if<Arith>(&expr.data))
+    return containsCall(*arith->lhs) || containsCall(*arith->rhs);
   return std::holds_alternative<Call>(expr.data);
 }
 
@@ -271,9 +318,13 @@ Value emitCompare(const Compare &cmp, OpBuilder &builder, Location loc,
   if (!hint)
     hint = typeHintFor(cmp.rhs, guard);
 
+  // Stop at the first side that fails, which has said why; the other side
+  // would only add a second warning about the same condition.
   Value lhs = resolveOperand(cmp.lhs, builder, loc, guard, hint);
+  if (!lhs)
+    return Value();
   Value rhs = resolveOperand(cmp.rhs, builder, loc, guard, hint);
-  if (!lhs || !rhs)
+  if (!rhs)
     return Value();
 
   if (lhs.getType() != rhs.getType()) {

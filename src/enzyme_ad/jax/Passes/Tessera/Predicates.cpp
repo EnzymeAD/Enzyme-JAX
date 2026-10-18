@@ -212,6 +212,34 @@ constantIntOperand(const Expr &expr, const llvm::StringMap<Value> &boundVars) {
     if (matchPattern(it->second, m_ConstantInt(&value)))
       return value;
   }
+  // Arithmetic on constants is constant. It is folded at the wider of its
+  // operands' widths, which for a literal is 64 bits: a value that overflows
+  // the width it is computed in at run time is not a value a rule's condition
+  // can be about.
+  if (auto *arith = std::get_if<Arith>(&expr.data)) {
+    auto lhs = constantIntOperand(*arith->lhs, boundVars);
+    auto rhs = constantIntOperand(*arith->rhs, boundVars);
+    if (!lhs || !rhs)
+      return std::nullopt;
+    unsigned width = std::max(lhs->getBitWidth(), rhs->getBitWidth());
+    llvm::APInt a = lhs->sext(width), b = rhs->sext(width);
+    switch (arith->op) {
+    case ArithOp::Add:
+      return a + b;
+    case ArithOp::Sub:
+      return a - b;
+    case ArithOp::Mul:
+      return a * b;
+    case ArithOp::Div:
+      if (b.isZero())
+        return std::nullopt;
+      return a.sdiv(b);
+    case ArithOp::Rem:
+      if (b.isZero())
+        return std::nullopt;
+      return a.srem(b);
+    }
+  }
   return std::nullopt;
 }
 
@@ -227,6 +255,38 @@ constantFloatOperand(const Expr &expr,
     llvm::APFloat value(0.0);
     if (matchPattern(it->second, m_ConstantFloat(&value)))
       return value;
+  }
+  if (auto *arith = std::get_if<Arith>(&expr.data)) {
+    auto lhs = constantFloatOperand(*arith->lhs, boundVars);
+    auto rhs = constantFloatOperand(*arith->rhs, boundVars);
+    if (!lhs || !rhs)
+      return std::nullopt;
+    // In double, as the comparison that uses the result is.
+    bool lost = false;
+    llvm::APFloat a = *lhs, b = *rhs;
+    a.convert(llvm::APFloat::IEEEdouble(), llvm::APFloat::rmNearestTiesToEven,
+              &lost);
+    b.convert(llvm::APFloat::IEEEdouble(), llvm::APFloat::rmNearestTiesToEven,
+              &lost);
+    const auto rounding = llvm::APFloat::rmNearestTiesToEven;
+    switch (arith->op) {
+    case ArithOp::Add:
+      a.add(b, rounding);
+      break;
+    case ArithOp::Sub:
+      a.subtract(b, rounding);
+      break;
+    case ArithOp::Mul:
+      a.multiply(b, rounding);
+      break;
+    case ArithOp::Div:
+      a.divide(b, rounding);
+      break;
+    case ArithOp::Rem:
+      a.mod(b);
+      break;
+    }
+    return a;
   }
   return std::nullopt;
 }
@@ -862,6 +922,37 @@ llvm::SmallVector<llvm::StringRef> getKnownPredicateNames() {
   for (const TesseraPredicate &predicate : kPredicates)
     names.push_back(predicate.name);
   return names;
+}
+
+Value buildArith(OpBuilder &builder, Location loc, ArithOp op, Value lhs,
+                 Value rhs) {
+  if (isa<FloatType>(lhs.getType())) {
+    switch (op) {
+    case ArithOp::Add:
+      return LLVM::FAddOp::create(builder, loc, lhs, rhs);
+    case ArithOp::Sub:
+      return LLVM::FSubOp::create(builder, loc, lhs, rhs);
+    case ArithOp::Mul:
+      return LLVM::FMulOp::create(builder, loc, lhs, rhs);
+    case ArithOp::Div:
+      return LLVM::FDivOp::create(builder, loc, lhs, rhs);
+    case ArithOp::Rem:
+      return LLVM::FRemOp::create(builder, loc, lhs, rhs);
+    }
+  }
+  switch (op) {
+  case ArithOp::Add:
+    return LLVM::AddOp::create(builder, loc, lhs, rhs);
+  case ArithOp::Sub:
+    return LLVM::SubOp::create(builder, loc, lhs, rhs);
+  case ArithOp::Mul:
+    return LLVM::MulOp::create(builder, loc, lhs, rhs);
+  case ArithOp::Div:
+    return LLVM::SDivOp::create(builder, loc, lhs, rhs);
+  case ArithOp::Rem:
+    return LLVM::SRemOp::create(builder, loc, lhs, rhs);
+  }
+  llvm_unreachable("unknown arithmetic operator");
 }
 
 } // namespace tessera
