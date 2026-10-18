@@ -69,7 +69,7 @@ module {
   // CHECK-LABEL: llvm.func @not_an_integer
   // CHECK: tessera.call @lib.scale
   llvm.func @not_an_integer(%x: f64, %y: f64) -> f64 {
-    // expected-warning @+1 {{log2 takes an integer, but is given a value of type 'f64'}}
+    // expected-warning @+1 {{log2 takes an integer, but is given a value of type f64}}
     %0 = tessera.call @lib.scale(%x, %y) : (f64, f64) -> f64
     llvm.return %0 : f64
   }
