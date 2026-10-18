@@ -253,6 +253,41 @@ module {
     llvm.return %e2 : i32
   }
 
+  // A fact on an object variable, `BilinearForm a(...)`, is of the object
+  // itself, and its address is the handle every call is given. The call the
+  // fact reaches gets its own copy of the address, so the fact is not read as
+  // true at the other calls.
+  // FACT-LABEL: llvm.func @object_variable
+  // FACT: llvm.freeze
+  // FACT: tessera.call @petsc.ksp_set_operators({{.*}}) <arg_attrs = [{}, {tessera.property = ["SPD"]}, {tessera.property = ["SPD"]}]>
+  // FACT-NEXT: tessera.call @petsc.ksp_set_operators
+  // FACT-NOT: tessera.property
+  // FACT: llvm.return
+  llvm.func @object_variable(%ksp: !llvm.ptr) -> i32 {
+    %c1 = llvm.mlir.constant(1 : i32) : i32
+    %a = llvm.alloca %c1 x !llvm.struct<(ptr, i32)> : (i32) -> !llvm.ptr
+    %e0 = llvm.call @mat_create(%a) : (!llvm.ptr) -> i32
+    llvm.call @__tessera_fact_0(%a) : (!llvm.ptr) -> ()
+    %e1 = tessera.call @petsc.ksp_set_operators(%ksp, %a, %a) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+    %e2 = tessera.call @petsc.ksp_set_operators(%ksp, %a, %a) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+    llvm.return %e2 : i32
+  }
+
+  // A store into the object changes it.
+  // FACT-LABEL: llvm.func @object_written
+  // FACT: tessera.call @petsc.ksp_set_operators
+  // FACT-NOT: tessera.property
+  // FACT: llvm.return
+  llvm.func @object_written(%ksp: !llvm.ptr, %v: i32) -> i32 {
+    %c1 = llvm.mlir.constant(1 : i32) : i32
+    %a = llvm.alloca %c1 x !llvm.struct<(ptr, i32)> : (i32) -> !llvm.ptr
+    llvm.call @__tessera_fact_0(%a) : (!llvm.ptr) -> ()
+    %field = llvm.getelementptr %a[8] : (!llvm.ptr) -> !llvm.ptr, i8
+    llvm.store %v, %field : i32, !llvm.ptr
+    %e1 = tessera.call @petsc.ksp_set_operators(%ksp, %a, %a) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+    llvm.return %e1 : i32
+  }
+
   // An assumed fact, too, holds only until something may change the object.
   // FACT-LABEL: llvm.func @assumed_changed_after
   // FACT: tessera.call @petsc.ksp_set_operators
