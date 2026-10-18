@@ -11,16 +11,30 @@
 //   pred  ::= ident '(' [ expr { ',' expr } ] ')'
 //           | expr relop expr
 //   relop ::= '==' | '!=' | '<' | '<=' | '>' | '>='
-//   expr  ::= call | var | int | float | string
+//   expr  ::= term { ('+' | '-') term }
+//   term  ::= primary { ('*' | '/' | '%') primary }
+//   primary ::= call | var | int | float | string | global | builtin
+//             | '(' expr ')'
 //   call  ::= ident '.' ident '(' [ expr { ',' expr } ] ')'
 //   var   ::= ident
 //   string ::= "'" { any character but "'" } "'"
+//   global ::= '@' symbol
 //
 // A rule with no condition is unconditional and rewrites exactly as before.
 // The right-hand side runs in order and its last expression replaces the
 // matched call; the calls before it are made for their effects. A string is
 // only allowed there, and is written with single quotes so that a rule can sit
 // inside a C string, as `#pragma optimize "..."` puts it, without escaping.
+// A global, the address of a global variable named by its symbol, is only
+// allowed there too.
+//
+// Arithmetic computes a value from others, as `2 * p + 1` computes a
+// quadrature order from a polynomial order. It is allowed on the right-hand
+// side and in the operands of a comparison, with C's precedence and
+// left-to-right grouping; there is nothing for it to match on the left, or to
+// test in a predicate. In a condition, a '(' opens an arithmetic expression
+// rather than a condition when an arithmetic or comparison operator follows
+// its ')': `(p + 1) * 2 == q`.
 //
 //===----------------------------------------------------------------------===//
 
@@ -181,6 +195,19 @@ Token Lexer::nextToken() {
     return Token{TokenType::Semicolon, ""};
   }
 
+  // A global's symbol, as the LLVM dialect names it: a mangled C++ name, or a
+  // C one. A bare '@' comes back as an error token.
+  if (peek() == '@') {
+    advance();
+    std::string s;
+    while (isAlphaNum(peek()) || peek() == '_' || peek() == '$' ||
+           peek() == '.')
+      s += advance();
+    if (s.empty())
+      return Token{TokenType::Error, "@"};
+    return Token{TokenType::Global, s};
+  }
+
   // A string has no escapes: nothing a rule passes needs a quote in it. One
   // that is never closed comes back as an error token holding just the quote.
   if (peek() == '\'') {
@@ -202,6 +229,29 @@ Token Lexer::nextToken() {
     advance();
     advance();
     return Token{TokenType::Arrow, ""};
+  }
+
+  // Arithmetic operators. A '-' followed by a digit was lexed above as the
+  // sign of a number; the parser reads such a number after an operand as a
+  // subtraction, so `p -1` means what it does in C.
+  switch (peek()) {
+  case '+':
+    advance();
+    return Token{TokenType::Plus, ""};
+  case '-':
+    advance();
+    return Token{TokenType::Minus, ""};
+  case '*':
+    advance();
+    return Token{TokenType::Star, ""};
+  case '/':
+    advance();
+    return Token{TokenType::Slash, ""};
+  case '%':
+    advance();
+    return Token{TokenType::Percent, ""};
+  default:
+    break;
   }
 
   // Condition operators. Each two-character form must be tested before the
@@ -328,7 +378,110 @@ std::optional<Call> Parser::parseCall(std::string dialect_name) {
   return Call{dialect_name, op_name, std::move(args)};
 }
 
+namespace {
+
+/// A number lexed with its sign, as the lexer lexes `-1`.
+bool isSignedNumber(const Token &token) {
+  return (token.type == TokenType::Integer || token.type == TokenType::Float) &&
+         !token.value.empty() && token.value[0] == '-';
+}
+
+Expr makeArith(ArithOp op, Expr lhs, Expr rhs) {
+  return Expr(Arith{op, std::make_shared<const Expr>(std::move(lhs)),
+                    std::make_shared<const Expr>(std::move(rhs))});
+}
+
+} // namespace
+
 std::optional<Expr> Parser::parseExpr() {
+  auto lhs = parseTerm();
+  if (!lhs)
+    return std::nullopt;
+  while (true) {
+    ArithOp op;
+    if (current.type == TokenType::Plus) {
+      op = ArithOp::Add;
+      advance();
+    } else if (current.type == TokenType::Minus) {
+      op = ArithOp::Sub;
+      advance();
+    } else if (isSignedNumber(current)) {
+      // `p -1`: the sign is the operator, and the number is what follows it.
+      op = ArithOp::Sub;
+      current.value.erase(0, 1);
+    } else {
+      return lhs;
+    }
+    auto rhs = parseTerm();
+    if (!rhs)
+      return std::nullopt;
+    lhs = makeArith(op, std::move(*lhs), std::move(*rhs));
+  }
+}
+
+std::optional<Expr> Parser::parseTerm() {
+  auto lhs = parsePrimary();
+  if (!lhs)
+    return std::nullopt;
+  while (true) {
+    ArithOp op;
+    if (current.type == TokenType::Star)
+      op = ArithOp::Mul;
+    else if (current.type == TokenType::Slash)
+      op = ArithOp::Div;
+    else if (current.type == TokenType::Percent)
+      op = ArithOp::Rem;
+    else
+      return lhs;
+    advance();
+    auto rhs = parsePrimary();
+    if (!rhs)
+      return std::nullopt;
+    lhs = makeArith(op, std::move(*lhs), std::move(*rhs));
+  }
+}
+
+bool Parser::parenOpensExpr() {
+  // The lexer is a plain {input, pos} pair, so a copy scans ahead without
+  // consuming anything or reporting a token the parser may never reach.
+  Lexer scan = lexer;
+  int depth = 1;
+  while (depth > 0) {
+    Token token = scan.nextToken();
+    if (token.type == TokenType::End || token.type == TokenType::Error)
+      return false;
+    if (token.type == TokenType::LParen)
+      ++depth;
+    else if (token.type == TokenType::RParen)
+      --depth;
+  }
+  Token next = scan.nextToken();
+  switch (next.type) {
+  case TokenType::Plus:
+  case TokenType::Minus:
+  case TokenType::Star:
+  case TokenType::Slash:
+  case TokenType::Percent:
+    return true;
+  default:
+    return isSignedNumber(next) || tokenToCmpOp(next.type).has_value();
+  }
+}
+
+std::optional<Expr> Parser::parsePrimary() {
+  if (current.type == TokenType::LParen) {
+    advance();
+    auto inner = parseExpr();
+    if (!inner)
+      return std::nullopt;
+    if (current.type != TokenType::RParen) {
+      error() << "expected ')' in optimization rule expression, got '"
+              << current.value << "'";
+      return std::nullopt;
+    }
+    advance();
+    return inner;
+  }
   if (current.type == TokenType::Ident) {
     std::string s = current.value;
     advance();
@@ -401,6 +554,19 @@ std::optional<Expr> Parser::parseExpr() {
     advance();
     return Expr(StrLit{std::move(s)});
   }
+  if (current.type == TokenType::Global) {
+    // A global can be passed to a call the rewrite builds; a match or a
+    // condition has nothing to bind it to.
+    if (!allowStrings) {
+      error() << "a global, '@" << current.value
+              << "', can only be used on the right-hand side of an "
+                 "optimization rule";
+      return std::nullopt;
+    }
+    std::string s = current.value;
+    advance();
+    return Expr(GlobalRef{std::move(s)});
+  }
   error() << "invalid optimization rule expression";
   return std::nullopt;
 }
@@ -442,7 +608,7 @@ std::optional<Cond> Parser::parseUnary() {
     return Cond(NotCond{box(std::move(*operand))});
   }
 
-  if (current.type == TokenType::LParen) {
+  if (current.type == TokenType::LParen && !parenOpensExpr()) {
     advance();
     auto inner = parseCond();
     if (!inner)
@@ -471,6 +637,11 @@ std::optional<Cond> Parser::parseUnary() {
       auto expr = parseExpr();
       if (!expr)
         return std::nullopt;
+      if (containsArith(*expr)) {
+        error() << "arithmetic cannot be used in an argument of predicate '"
+                << name << "'";
+        return std::nullopt;
+      }
       args.push_back(std::move(*expr));
       if (current.type == TokenType::Comma) {
         advance();
@@ -521,6 +692,11 @@ std::optional<Rule> Parser::parseRule() {
   auto lhs = parseExpr();
   if (!lhs)
     return std::nullopt;
+  if (containsArith(*lhs)) {
+    error() << "arithmetic can only be used on the right-hand side or in a "
+               "condition of an optimization rule, not in what it matches";
+    return std::nullopt;
+  }
   if (current.type != TokenType::Arrow) {
     error() << "expected '->' in optimization rule, got '" << current.value
             << "'";
@@ -612,11 +788,68 @@ std::string renderCondAt(const Cond &cond, unsigned parentPrec) {
 
 } // namespace
 
+namespace {
+
+/// Binding strength of an arithmetic operator: '*', '/' and '%' over '+' and
+/// '-', as in C.
+unsigned precedenceOf(ArithOp op) {
+  return op == ArithOp::Add || op == ArithOp::Sub ? 1 : 2;
+}
+
+/// Render an operand of `parent`, in parentheses where it would otherwise
+/// regroup: when it binds more loosely, or as a right operand that binds
+/// equally, since the operators group left to right (`a - (b - c)`).
+std::string renderArithOperand(const Expr &operand, ArithOp parent,
+                               bool isRight) {
+  std::string text = renderExpr(operand);
+  auto *arith = std::get_if<Arith>(&operand.data);
+  if (!arith)
+    return text;
+  unsigned own = precedenceOf(arith->op), outer = precedenceOf(parent);
+  return own < outer || (isRight && own == outer) ? "(" + text + ")" : text;
+}
+
+} // namespace
+
+llvm::StringRef getArithOpSpelling(ArithOp op) {
+  switch (op) {
+  case ArithOp::Add:
+    return "+";
+  case ArithOp::Sub:
+    return "-";
+  case ArithOp::Mul:
+    return "*";
+  case ArithOp::Div:
+    return "/";
+  case ArithOp::Rem:
+    return "%";
+  }
+  return "<invalid>";
+}
+
+bool containsArith(const Expr &expr) {
+  if (std::holds_alternative<Arith>(expr.data))
+    return true;
+  if (auto *call = std::get_if<Call>(&expr.data))
+    return llvm::any_of(call->args, containsArith);
+  return false;
+}
+
+bool isLiteralOnly(const Expr &expr) {
+  if (std::holds_alternative<IntLit>(expr.data) ||
+      std::holds_alternative<FloatLit>(expr.data))
+    return true;
+  if (auto *arith = std::get_if<Arith>(&expr.data))
+    return isLiteralOnly(*arith->lhs) && isLiteralOnly(*arith->rhs);
+  return false;
+}
+
 std::string renderExpr(const Expr &expr) {
   return std::visit(overloaded{
                         [](const Var &v) { return v.name; },
                         [](const IntLit &n) { return std::to_string(n.value); },
                         [](const StrLit &s) { return "'" + s.value + "'"; },
+                        [](const GlobalRef &g) { return "@" + g.symbol; },
                         [](const FloatLit &n) {
                           // %.17g is the shortest format guaranteed to
                           // round-trip a double, which matters because this
@@ -646,6 +879,11 @@ std::string renderExpr(const Expr &expr) {
                             out += renderExpr(c.args[i]);
                           }
                           return out + ")";
+                        },
+                        [](const Arith &a) {
+                          return renderArithOperand(*a.lhs, a.op, false) +
+                                 " " + std::string(getArithOpSpelling(a.op)) +
+                                 " " + renderArithOperand(*a.rhs, a.op, true);
                         },
                     },
                     expr.data);
