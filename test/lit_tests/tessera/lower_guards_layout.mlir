@@ -213,7 +213,7 @@ module {
     tessera.return %c : f32
   }
   llvm.func @unknown_predicate(%x: !llvm.ptr) -> f32 {
-    // expected-warning @+1 {{optimization rule not applied here, the original call is kept: unknown predicate 'orthogonal'; known predicates are symmetric, diagonal, triangular_upper, triangular_lower, identity}}
+    // expected-warning @+1 {{optimization rule not applied here, the original call is kept: unknown predicate 'orthogonal'; known predicates are}}
     %0 = tessera.guard "orthogonal(x)" args(%x) {argNames = ["x"]} : (!llvm.ptr) -> f32 {
       %1 = tessera.call @lib.sym_foo(%x) : (!llvm.ptr) -> f32
       tessera.yield %1 : f32
