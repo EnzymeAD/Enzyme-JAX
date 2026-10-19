@@ -266,8 +266,9 @@ struct PrepareAffineGPUWrapperPass
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns.add<DropUnusedParallelReductions,
-                 AlignAffineParallelToWrapperBounds>(&getContext());
+    patterns
+        .add<DropUnusedParallelReductions, AlignAffineParallelToWrapperBounds>(
+            &getContext());
     // Not the greedy driver: folding affine.parallel would turn the symbolic
     // launch-bound upper bounds back into constants, and
     // convert-parallel-to-gpu1 matches the bounds by value.

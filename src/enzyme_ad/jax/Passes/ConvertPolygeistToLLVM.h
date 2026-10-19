@@ -36,8 +36,8 @@ mlir::Type convertMemrefElementTypeForLLVMPointer(
 // atomics/memspace casts) directly to LLVM pointer arithmetic, assuming
 // memrefs have already been converted to bare llvm.ptr via
 // convertMemrefElementTypeForLLVMPointer (no descriptor struct).
-void populateCStyleMemRefLoweringPatterns(mlir::RewritePatternSet &patterns,
-                                          mlir::LLVMTypeConverter &typeConverter,
-                                          llvm::StringRef backend);
+void populateCStyleMemRefLoweringPatterns(
+    mlir::RewritePatternSet &patterns, mlir::LLVMTypeConverter &typeConverter,
+    llvm::StringRef backend);
 
 #endif // ENZYMEXLA_PASSES_CONVERTPOLYGEISTTOLLVM_H

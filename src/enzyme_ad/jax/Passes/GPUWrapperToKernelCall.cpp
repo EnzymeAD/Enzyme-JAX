@@ -232,10 +232,9 @@ struct GPUWrapperToKernelCallPass
     Value blockx = toTensorI64(launch.getBlockSizeX());
     Value blocky = toTensorI64(launch.getBlockSizeY());
     Value blockz = toTensorI64(launch.getBlockSizeZ());
-    Value shmem =
-        launch.getDynamicSharedMemorySize()
-            ? toTensorI64(launch.getDynamicSharedMemorySize())
-            : details::makeI64Constant(launch.getLoc(), builder, 0);
+    Value shmem = launch.getDynamicSharedMemorySize()
+                      ? toTensorI64(launch.getDynamicSharedMemorySize())
+                      : details::makeI64Constant(launch.getLoc(), builder, 0);
     if (!gridx || !gridy || !gridz || !blockx || !blocky || !blockz || !shmem)
       return launch.emitError("launch dimensions must be constants");
 
@@ -270,8 +269,9 @@ struct GPUWrapperToKernelCallPass
         SymbolRefAttr::get(fn.getSymNameAttr()), gridx, gridy, gridz, blockx,
         blocky, blockz, shmem, clusterx, clustery, clusterz, operands,
         /*backend_config=*/builder.getStringAttr(""),
-        /*operand_layouts=*/nullptr, /*arg_attrs=*/nullptr, /*res_attrs=*/nullptr,
-        ArrayAttr::get(ctx, aliases), /*xla_side_effect_free=*/nullptr);
+        /*operand_layouts=*/nullptr, /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr, ArrayAttr::get(ctx, aliases),
+        /*xla_side_effect_free=*/nullptr);
   }
 
   // Replaces a jit_region by the kernel_calls of the kernels it launches,

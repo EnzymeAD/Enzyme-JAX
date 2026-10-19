@@ -11,9 +11,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "src/enzyme_ad/jax/Passes/ConvertPolygeistToLLVM.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
-#include "src/enzyme_ad/jax/Passes/ConvertPolygeistToLLVM.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/StringSet.h"
@@ -135,8 +135,7 @@ Type convertMemrefElementTypeForLLVMPointer(
   if (llvm::any_of(type.getShape().drop_front(), ShapedType::isDynamic))
     return Type();
 
-  if (!type.getLayout().isIdentity() &&
-      !isContiguousLayoutIgnoringOffset(type))
+  if (!type.getLayout().isIdentity() && !isContiguousLayoutIgnoringOffset(type))
     return Type();
 
   if (type.getRank() > 0) {

@@ -136,10 +136,10 @@ struct KernelCallToGPUWrapperPass
       auto T = dyn_cast<RankedTensorType>(operand.getType());
       if (!T)
         return call.emitError("kernel operands must be ranked tensors");
-      bufferTypes.push_back(MemRefType::get(
-          T.getShape(), T.getElementType(),
-          /* layout= */ MemRefLayoutAttrInterface{},
-          builder.getI64IntegerAttr(1)));
+      bufferTypes.push_back(
+          MemRefType::get(T.getShape(), T.getElementType(),
+                          /* layout= */ MemRefLayoutAttrInterface{},
+                          builder.getI64IntegerAttr(1)));
     }
 
     // The region has the results, aliases and attributes of the call: each
@@ -157,9 +157,9 @@ struct KernelCallToGPUWrapperPass
       region.setXlaSideEffectFree(true);
     {
       OpBuilder::InsertionGuard guard(builder);
-      builder.createBlock(&region.getBody(), {}, bufferTypes,
-                          SmallVector<Location>(bufferTypes.size(),
-                                                call.getLoc()));
+      builder.createBlock(
+          &region.getBody(), {}, bufferTypes,
+          SmallVector<Location>(bufferTypes.size(), call.getLoc()));
       enzymexla::JITRegionYieldOp::create(builder, call.getLoc());
     }
     ValueRange buffers = region.getBodyBlock()->getArguments();
