@@ -89,7 +89,7 @@ llvm::cl::opt<bool> printMismatchInputs(
     llvm::cl::cat(fuzzerCategory));
 } // namespace
 
-static llvm::raw_ostream &diag() {
+static llvm::raw_ostream &diagStream() {
   return verbosity == Verbosity::Quiet ? llvm::nulls() : llvm::errs();
 }
 
@@ -272,7 +272,7 @@ PoolConstraints parseRestrictInput(ArrayRef<std::string> tokens) {
       p.nonZero = true;
       break;
     case Assume::Unknown:
-      llvm::WithColor::error(diag())
+      llvm::WithColor::error(diagStream())
           << "--restrict-input: unknown  '" << token << "'\n";
       exit(2);
     }
@@ -483,7 +483,7 @@ std::optional<AnyVector> CreateCursedPool(mlir::Type elementType) {
   }
 
   else {
-    llvm::WithColor::warning(diag())
+    llvm::WithColor::warning(diagStream())
         << "Unsupported element type or bitwidth. Skipping.\n";
 
     return std::nullopt;
@@ -619,19 +619,19 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
   for (BlockArgument arg : unoptFunc.getArguments()) {
     auto tensorType = llvm::dyn_cast<RankedTensorType>(arg.getType());
     if (!tensorType) {
-      llvm::WithColor::warning(diag())
+      llvm::WithColor::warning(diagStream())
           << funcName << ": non-ranked-tensor argument, skipping function\n";
       return Verdict::Skipped;
     }
     if (!tensorType.hasStaticShape()) {
-      llvm::WithColor::warning(diag())
+      llvm::WithColor::warning(diagStream())
           << funcName << ": dynamic shape, skipping function\n";
       return Verdict::Skipped;
     }
 
     int64_t numElements = tensorType.getNumElements();
     if (numElements > maxElements) {
-      llvm::WithColor::warning(diag())
+      llvm::WithColor::warning(diagStream())
           << "Skipping function: argument has " << numElements
           << " elements (exceeds --max-elements limit of " << maxElements
           << ").\n";
@@ -644,7 +644,7 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
         generateCursedTensor(arg.getType(), gen, UnoptConstraints);
 
     if (!attrOpt) {
-      llvm::WithColor::warning(diag())
+      llvm::WithColor::warning(diagStream())
           << "Skipping non-ranked tensor argument.\n";
       return Verdict::Skipped;
     }
@@ -658,7 +658,7 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
   tempUnoptMod->push_back(clonedUnopt);
 
   if (mlir::failed(legalizationPM.run(*tempUnoptMod))) {
-    llvm::WithColor::warning(diag())
+    llvm::WithColor::warning(diagStream())
         << "Legalization failed on unoptimized IR. Skipping.\n";
     return Verdict::Skipped;
   }
@@ -669,7 +669,7 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
 
   if (hasUninterpretableOp(*tempUnoptMod) ||
       hasUninterpretableOp(*tempOptMod)) {
-    llvm::WithColor::warning(diag())
+    llvm::WithColor::warning(diagStream())
         << funcName << ": contains ops the interpreter cannot run, skipping\n";
     return Verdict::Skipped;
   }
@@ -677,19 +677,20 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
   auto unoptResults =
       stablehlo::evalModule(tempUnoptMod.get(), evalArgs, config);
   if (mlir::failed(unoptResults)) {
-    llvm::WithColor::warning(diag()) << "Unoptimized evaluation failed.\n";
+    llvm::WithColor::warning(diagStream())
+        << "Unoptimized evaluation failed.\n";
     return Verdict::Skipped;
   }
 
   if (mlir::failed(legalizationPM.run(*tempOptMod))) {
-    llvm::WithColor::warning(diag())
+    llvm::WithColor::warning(diagStream())
         << "Legalization failed on optimized IR. Skipping.\n";
     return Verdict::Skipped;
   }
 
   auto optResults = stablehlo::evalModule(tempOptMod.get(), evalArgs, config);
   if (mlir::failed(optResults)) {
-    llvm::WithColor::warning(diag()) << "Optimized evaluation failed.\n";
+    llvm::WithColor::warning(diagStream()) << "Optimized evaluation failed.\n";
     return Verdict::Skipped;
   }
 
@@ -697,7 +698,7 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
   auto &unoptVals = *unoptResults;
   auto &optVals = *optResults;
   if (unoptVals.size() != optVals.size()) {
-    llvm::WithColor::warning(diag())
+    llvm::WithColor::warning(diagStream())
         << "mismatch different number of return values!\n";
     return Verdict::Skipped;
   }
@@ -715,7 +716,7 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
       for (auto [u, o] : llvm::zip_equal(unoptAttr.getValues<llvm::APFloat>(),
                                          optAttr.getValues<llvm::APFloat>())) {
         if (!isClose(u, o, maxUlpsOpt)) {
-          llvm::WithColor::error(diag())
+          llvm::WithColor::error(diagStream())
               << "float mismatch in " << funcName << " expected " << u
               << " but got " << o << "\n";
           mismatch = true;
@@ -740,7 +741,7 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
 
         if ((!isClose(uReal, oReal, maxUlpsOpt)) ||
             !isClose(uImag, oImag, maxUlpsOpt)) {
-          llvm::WithColor::error(diag())
+          llvm::WithColor::error(diagStream())
               << "complex mismatch in " << funcName << " expected " << uPrint
               << " but got " << oPrint << "\n";
           mismatch = true;
@@ -750,7 +751,7 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
     } else {
       // If it's an integer/bool type and failed strict equality, it's a
       // definitive bug.
-      llvm::WithColor::error(diag())
+      llvm::WithColor::error(diagStream())
           << "mismatch in " << funcName << " expected " << unoptVals[i]
           << " but got " << optVals[i] << "!\n";
       mismatch = true;
@@ -758,9 +759,9 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
   }
   if (mismatch && printMismatchInputs)
     for (auto [i, arg] : llvm::enumerate(evalArgs))
-      diag() << funcName << " arg " << i << ": " << arg << "\n";
+      diagStream() << funcName << " arg " << i << ": " << arg << "\n";
   if (!mismatch && (verbosity == Verbosity::Verbose)) {
-    llvm::WithColor::remark(diag())
+    llvm::WithColor::remark(diagStream())
         << "passed outputs in " << funcName << " match exactly.\n";
   }
   if (mismatch)
@@ -782,7 +783,7 @@ Counts fuzzWithPipeline(Operation *module, const RunLineConfig &config,
   FailureOr<OpPassManager> parsed =
       mlir::parsePassPipeline(config.passPipeline);
   if (mlir::failed(parsed)) {
-    llvm::WithColor::error(diag())
+    llvm::WithColor::error(diagStream())
         << "Failed to parse the pass pipeline: " << config.passPipeline << "\n";
     counts.toolError = true;
     return counts;
@@ -797,7 +798,7 @@ Counts fuzzWithPipeline(Operation *module, const RunLineConfig &config,
 
   OwningOpRef<Operation *> optimizedModule(module->clone());
   if (mlir::failed(pm.run(optimizedModule.get()))) {
-    llvm::WithColor::error(diag())
+    llvm::WithColor::error(diagStream())
         << "Pass pipeline failed to run on module!\n";
     counts.toolError = true;
     return counts;
@@ -808,7 +809,7 @@ Counts fuzzWithPipeline(Operation *module, const RunLineConfig &config,
   optimizedModule->walk([&](func::FuncOp f) { optFuncs.push_back(f); });
 
   if (unoptFuncs.size() != optFuncs.size()) {
-    llvm::WithColor::warning(diag())
+    llvm::WithColor::warning(diagStream())
         << "function count changed (" << unoptFuncs.size() << " -> "
         << optFuncs.size() << "), cannot pair functions; skipping file\n";
     return counts;
@@ -840,16 +841,16 @@ int main(int argc, char **argv) {
   if (seed == 0) {
     std::random_device rd;
     seed = rd();
-    llvm::WithColor::remark(diag())
+    llvm::WithColor::remark(diagStream())
         << "Running with random seed: " << seed << "\n";
   } else {
-    llvm::WithColor::remark(diag())
+    llvm::WithColor::remark(diagStream())
         << "Running with manual seed: " << seed << "\n";
   }
 
   auto runLines = findRunLines(inputFilename);
   if (!runLines) {
-    llvm::WithColor::warning(diag()) << "No RUN line found in file!\n";
+    llvm::WithColor::warning(diagStream()) << "No RUN line found in file!\n";
     return 2;
   }
 
@@ -879,7 +880,7 @@ int main(int argc, char **argv) {
   std::string errorMessage;
   auto buffer = mlir::openInputFile(inputFilename, &errorMessage);
   if (!buffer) {
-    llvm::WithColor::error(diag()) << errorMessage << "\n";
+    llvm::WithColor::error(diagStream()) << errorMessage << "\n";
     return 2;
   }
 
@@ -906,7 +907,7 @@ int main(int argc, char **argv) {
   });
 
   if (!hasRunLine) {
-    llvm::WithColor::warning(diag()) << "No RUN line found in file!\n";
+    llvm::WithColor::warning(diagStream()) << "No RUN line found in file!\n";
     return 2;
   }
 
@@ -920,8 +921,9 @@ int main(int argc, char **argv) {
 
     for (auto [runIdx, config] : llvm::enumerate(runLineConfigs)) {
       if (runLineConfigs.size() > 1)
-        llvm::WithColor::remark(diag()) << "run line " << runIdx + 1 << " of "
-                                        << runLineConfigs.size() << "\n";
+        llvm::WithColor::remark(diagStream())
+            << "run line " << runIdx + 1 << " of " << runLineConfigs.size()
+            << "\n";
 
       Counts counts = fuzzWithPipeline(module.get(), config, context, gen,
                                        legalizationPM, BaseConstraints);
