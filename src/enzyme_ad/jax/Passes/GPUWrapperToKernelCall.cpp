@@ -10,6 +10,7 @@
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Conversion/MathToNVVM/MathToNVVM.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -171,6 +172,11 @@ struct GPUWrapperToKernelCallPass
     arith::populateArithToLLVMConversionPatterns(converter, patterns);
     cf::populateControlFlowToLLVMConversionPatterns(converter, patterns);
     populateSCFToControlFlowConversionPatterns(patterns);
+    // Prefer the libdevice calls (e.g. arith.remf -> __nv_fmodf) over the
+    // generic arith-to-LLVM lowering, which would produce ops (llvm.frem) that
+    // the NVVM lowering rejects.
+    populateLibDeviceConversionPatterns(converter, patterns,
+                                        PatternBenefit(10));
 
     ConversionConfig conversionConfig;
 
