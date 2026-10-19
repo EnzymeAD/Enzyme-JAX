@@ -6103,10 +6103,12 @@ struct ConcatMultiPad final
           Value padops[] = {pad.getOperand(), otherPadOp.getOperand()};
           auto subConcat = stablehlo::ConcatenateOp::create(
               rewriter, op.getLoc(), padops, op.getDimension());
+          SmallVector<int64_t> high(pad.getEdgePaddingHigh());
+          high[op.getDimension()] =
+              otherPadOp.getEdgePaddingHigh()[op.getDimension()];
           pad = stablehlo::PadOp::create(
               rewriter, pad->getLoc(), subConcat, pad.getPaddingValue(),
-              pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(),
-              pad.getInteriorPadding());
+              pad.getEdgePaddingLow(), high, pad.getInteriorPadding());
           i++;
         } else
           break;
@@ -18333,8 +18335,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
