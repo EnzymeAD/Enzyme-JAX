@@ -677,6 +677,12 @@ def GPUWrapperToKernelCallPass : Pass<"gpu-wrapper-to-kernel-call", "mlir::Modul
     The contents of each buffer of the region are tracked as a tensor, which
     each launch passing the buffer updates.
   }];
+  let options = [
+    Option<"indexBitWidth", "index-bitwidth", "unsigned",
+           /*default=*/"0",
+           "Bitwidth of the index type used when lowering the kernels to LLVM, "
+           "0 to derive it from the data layout">,
+  ];
   let dependentDialects = [
     "arith::ArithDialect",
     "enzymexla::EnzymeXLADialect",

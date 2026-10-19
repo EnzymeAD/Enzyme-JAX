@@ -10,6 +10,7 @@
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -17,6 +18,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
@@ -124,6 +126,8 @@ struct GPUWrapperToKernelCallPass
     const auto &dataLayoutAnalysis = getAnalysis<DataLayoutAnalysis>();
     LowerToLLVMOptions options(&getContext(),
                                dataLayoutAnalysis.getAtOrAbove(getOperation()));
+    if (indexBitWidth)
+      options.overrideIndexBitwidth(indexBitWidth);
 
     LLVMTypeConverter converter(fn.getContext(), options, &dataLayoutAnalysis);
 
@@ -166,12 +170,14 @@ struct GPUWrapperToKernelCallPass
 
     arith::populateArithToLLVMConversionPatterns(converter, patterns);
     cf::populateControlFlowToLLVMConversionPatterns(converter, patterns);
+    populateSCFToControlFlowConversionPatterns(patterns);
 
     ConversionConfig conversionConfig;
 
     ConversionTarget target(getContext());
 
-    target.addIllegalDialect<gpu::GPUDialect, memref::MemRefDialect>();
+    target.addIllegalDialect<gpu::GPUDialect, memref::MemRefDialect,
+                             scf::SCFDialect>();
     target.addIllegalOp<enzyme::AtomicRMWOp, enzyme::AffineAtomicRMWOp>();
     target.addLegalDialect<NVVM::NVVMDialect, LLVM::LLVMDialect>();
     target.addLegalOp<UnrealizedConversionCastOp>();
