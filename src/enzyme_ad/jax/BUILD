@@ -1808,8 +1808,7 @@ cc_library(
         "@xla//xla/mlir_hlo",
         "@xla//xla/mosaic:tpu_dialect",
         "@zlib",
-    ] + if_z3,
-    ] + select({
+    ] + if_z3 + select({
         "@local_config_cuda//:is_cuda_enabled": [
             "@local_config_cuda//cuda:cuda_headers",
             "@xla//xla/tsl/cuda:cudart",
