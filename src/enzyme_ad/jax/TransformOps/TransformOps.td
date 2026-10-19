@@ -1141,6 +1141,10 @@ def ApplyCSEReducePatterns : EnzymeHLOPatternOp<
     "cse_reduce"> {
   let patterns = ["CSE<stablehlo::ReduceOp>"];
 }
+def ApplyCSEReduceTransposedPatterns : EnzymeHLOPatternOp<
+    "cse_reduce_transposed"> {
+  let patterns = ["CSEReduceTransposed"];
+}
 def ApplyConcatViewCSEPatterns : EnzymeHLOPatternOp<
     "concat_view_cse"> {
   let patterns = ["ConcatViewCSE"];
@@ -1828,6 +1832,10 @@ def ApplySliceDynamicSlicePatterns : EnzymeHLOPatternOp<
 def ConcatToBroadcastPatterns : EnzymeHLOPatternOp<
     "concat_to_broadcast"> {
   let patterns = ["ConcatToBroadcast"];
+}
+def ApplyConcatPeriodicPatterns : EnzymeHLOPatternOp<
+    "concat_periodic"> {
+  let patterns = ["ConcatPeriodic"];
 }
 def ConcatSlicesToReversePatterns : EnzymeHLOPatternOp<
     "concat_slices_to_reverse"> {
@@ -3362,6 +3370,10 @@ def ApplyReduceMulToDotGeneralPatterns : EnzymeHLOPatternOp<
 def ApplyAddTermsToReducePatterns : EnzymeHLOPatternOp<
     "add_terms_to_reduce"> {
   let patterns = ["AddTermsToReduce"];
+}
+def ApplyDotGeneralNoContractionToMulPatterns : EnzymeHLOPatternOp<
+    "dot_general_no_contraction_to_mul"> {
+  let patterns = ["DotGeneralNoContractionToMul"];
 }
 def ApplySplitReduceAddMulToAddDotGeneralPatterns : EnzymeHLOPatternOp<
     "split_reduce_add_mul_to_add_dot_general"> {

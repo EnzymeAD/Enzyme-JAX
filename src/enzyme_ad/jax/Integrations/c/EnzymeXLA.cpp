@@ -472,6 +472,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("dynamic_slice_to_static<16>");
   list.push_back("dynamic_update_slice_elim<16>");
   list.push_back("concat_to_broadcast<16>");
+  list.push_back("concat_periodic");
   list.push_back("reduce_to_reshape<16>");
   list.push_back("broadcast_to_reshape<16>");
   list.push_back("slice_internal");
@@ -648,9 +649,11 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("factor_scalars_in_dot_general");
   if (dotFormation)
     list.push_back("reduce_mul_to_dot_general");
+  list.push_back("add_terms_to_reduce");
   list.push_back("dot_general_broadcast_in_dim");
   list.push_back("dot_general_unbatch_broadcast");
   list.push_back("dot_general_broadcast_in_dim_sort_dims");
+  list.push_back("dot_general_no_contraction_to_mul");
   list.push_back("dus_dynamic_slice_simplify");
   list.push_back("while_dus_dus_simplify");
   list.push_back("while_dus_ds_simplify");
@@ -728,6 +731,7 @@ static void addScatterGatherPasses(std::vector<std::string> &list,
   list.push_back("cse_gather");
   list.push_back("cse_scatter");
   list.push_back("cse_reduce");
+  list.push_back("cse_reduce_transposed");
   list.push_back("cse_dot_general_transposed");
   list.push_back("concat_view_cse");
 }

@@ -123,6 +123,36 @@ struct RaiseToConvert : public OpRewritePattern<SrcOp> {
   }
 };
 
+struct RaiseExtUI : public OpRewritePattern<arith::ExtUIOp> {
+  using OpRewritePattern<arith::ExtUIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::ExtUIOp op,
+                                PatternRewriter &rewriter) const override {
+    auto resultType = dyn_cast<RankedTensorType>(op.getType());
+    if (!resultType)
+      return failure();
+
+    auto inputType = cast<RankedTensorType>(op.getIn().getType());
+    auto elementType = cast<IntegerType>(inputType.getElementType());
+    if (elementType.getWidth() == 1) {
+      // StableHLO treats i1 as a boolean and converts true to 1.
+      rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, resultType,
+                                                        op.getIn());
+      return success();
+    }
+
+    auto unsignedElementType = IntegerType::get(
+        rewriter.getContext(), elementType.getWidth(), IntegerType::Unsigned);
+    auto unsignedType = RankedTensorType::get(
+        inputType.getShape(), unsignedElementType, inputType.getEncoding());
+    Value unsignedInput = stablehlo::BitcastConvertOp::create(
+        rewriter, op.getLoc(), unsignedType, op.getIn());
+    rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, resultType,
+                                                      unsignedInput);
+    return success();
+  }
+};
+
 struct RaiseBitcast : public OpRewritePattern<arith::BitcastOp> {
   using OpRewritePattern<arith::BitcastOp>::OpRewritePattern;
 
@@ -815,8 +845,7 @@ struct ArithRaisingPass
       patterns
           .add<RaiseBitcast, RaiseToConvert<arith::ConvertFOp>,
                RaiseToConvert<arith::TruncFOp>, RaiseToConvert<arith::ExtFOp>,
-               // TODO: either SI or UI is wrong
-               RaiseToConvert<arith::ExtUIOp>, RaiseToConvert<arith::ExtSIOp>,
+               RaiseExtUI, RaiseToConvert<arith::ExtSIOp>,
                RaiseToConvert<arith::TruncIOp>, RaiseMulAdd<math::FmaOp>,
                RaiseMulAdd<enzymexla::FMulAddOp>, RaiseCopySign, RaiseTruncOp,
                RaiseAtan, RaiseLog10, RaiseLog2, RaiseExp2, RaiseMaxNumF,

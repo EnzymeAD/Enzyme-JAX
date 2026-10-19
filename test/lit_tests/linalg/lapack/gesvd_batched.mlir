@@ -76,6 +76,5 @@ func.func @main(%arg0: tensor<4x3x64x64xf32>) -> (tensor<4x3x64x64xf32>, tensor<
 // CUDA: func.func @main(%arg0: tensor<4x3x64x64xf32>) -> (tensor<4x3x64x64xf32>, tensor<4x3x64xf32>, tensor<4x3x64x64xf32>, tensor<4x3xi64>) {
 // CUDA-NEXT:   %0:5 = stablehlo.custom_call @cusolver_gesvd_ffi(%arg0) {api_version = 4 : i32, backend_config = {compute_uv = true, full_matrices = false, transposed = false}, operand_layouts = [dense<[2, 3, 1, 0]> : tensor<4xindex>], result_layouts = [dense<[2, 3, 1, 0]> : tensor<4xindex>, dense<[2, 1, 0]> : tensor<3xindex>, dense<[2, 3, 1, 0]> : tensor<4xindex>, dense<[2, 3, 1, 0]> : tensor<4xindex>, dense<[1, 0]> : tensor<2xindex>]} : (tensor<4x3x64x64xf32>) -> (tensor<4x3x64x64xf32>, tensor<4x3x64xf32>, tensor<4x3x64x64xf32>, tensor<4x3x64x64xf32>, tensor<4x3xi32>)
 // CUDA-NEXT:   %1 = stablehlo.convert %0#4 : (tensor<4x3xi32>) -> tensor<4x3xi64>
-// CUDA-NEXT:   %2 = stablehlo.transpose %0#3, dims = [0, 1, 3, 2] : (tensor<4x3x64x64xf32>) -> tensor<4x3x64x64xf32>
-// CUDA-NEXT:   return %0#2, %0#1, %2, %1 : tensor<4x3x64x64xf32>, tensor<4x3x64xf32>, tensor<4x3x64x64xf32>, tensor<4x3xi64>
+// CUDA-NEXT:   return %0#2, %0#1, %0#3, %1 : tensor<4x3x64x64xf32>, tensor<4x3x64xf32>, tensor<4x3x64x64xf32>, tensor<4x3xi64>
 // CUDA-NEXT: }
