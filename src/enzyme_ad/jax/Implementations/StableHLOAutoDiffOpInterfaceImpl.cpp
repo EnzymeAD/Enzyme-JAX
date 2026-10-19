@@ -24,8 +24,6 @@
 #include "llvm/ADT/PointerUnion.h"
 
 #include "mlir/IR/DialectRegistry.h"
-#include "mlir/Interfaces/MemorySlotInterfaces.h"
-#include "mlir/Interfaces/Utils/MemorySlotUtils.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/RegionUtils.h"
 
