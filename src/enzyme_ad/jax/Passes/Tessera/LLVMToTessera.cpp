@@ -184,7 +184,6 @@ public:
     // The interface reports a void llvm.func as having no results.
     auto fnType = FunctionType::get(ctx, funcOp.getArgumentTypes(),
                                     funcOp.getResultTypes());
-    StringRef originalOpName = funcOp->getName().getStringRef();
 
     // Replace current function name with tessera name defined in
     // tessera_op / pure_tessera_op attribute
@@ -193,33 +192,37 @@ public:
       return failure();
 
     // Create the tessera.define op with the new name, function type, per-arg
-    // lifting modes, and purity (side effect free) attribute. External
-    // declarations must be marked private: FunctionOpInterface's verifier
-    // rejects a body-less symbol with public visibility, unlike
-    // llvm.func where a public extern declaration is normal.
+    // lifting modes, and purity (side effect free) attribute.
     auto tesseraDefineOp = tessera::DefineOp::create(
         rewriter, funcOp.getLoc(), tesseraName.str(), fnType,
-        ArrayAttr::get(ctx, argModes), isPure,
-        funcOp.isExternal() ? rewriter.getStringAttr("private") : StringAttr());
+        ArrayAttr::get(ctx, argModes), isPure);
 
     // Copy over all attributes other than the function name and type
-    // and tessera_op / pure_tessera_op attribute. The define op's own
-    // visibility was decided above; an external func.func is already private.
+    // and tessera_op / pure_tessera_op attribute. FunctionOpInterface does not
+    // expose the name of the attribute holding the function type, so recognize
+    // it by its value.
+    auto isFunctionTypeAttr = [&](Attribute attr) {
+      auto typeAttr = dyn_cast<TypeAttr>(attr);
+      return typeAttr && typeAttr.getValue() == funcOp.getFunctionType();
+    };
     for (const auto &namedAttr : funcOp->getAttrs()) {
       if (namedAttr.getName() != SymbolTable::getSymbolAttrName() &&
-          namedAttr.getName() != "function_type" &&
+          !isFunctionTypeAttr(namedAttr.getValue()) &&
           namedAttr.getName() != "tessera_op" &&
-          namedAttr.getName() != "pure_tessera_op" &&
-          !(funcOp.isExternal() && namedAttr.getName() == "sym_visibility"))
+          namedAttr.getName() != "pure_tessera_op")
         tesseraDefineOp->setAttr(namedAttr.getName(), namedAttr.getValue());
     }
 
-    // Store the original function name and op so we can convert back to it
-    // later.
+    // External declarations must be private: FunctionOpInterface's verifier
+    // rejects a body-less symbol with public visibility, unlike llvm.func
+    // where a public extern declaration is normal.
+    if (funcOp.isExternal())
+      SymbolTable::setSymbolVisibility(tesseraDefineOp,
+                                       SymbolTable::Visibility::Private);
+
+    // Store the original function name so we can convert back to it later
     tesseraDefineOp->setAttr("tessera.original_name",
                              rewriter.getStringAttr(funcName));
-    tesseraDefineOp->setAttr("tessera.original_op",
-                             rewriter.getStringAttr(originalOpName));
 
     // Clone body of function
     if (!funcOp.isExternal()) {

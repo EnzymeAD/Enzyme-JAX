@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s -tessera-to-llvm -split-input-file | FileCheck %s
+// RUN: enzymexlamlir-opt %s -tessera-to-func -split-input-file | FileCheck %s
 
 // Calls precede the define on purpose: tessera.call must still be converted
 // after the tessera.define it calls has been.
@@ -7,7 +7,7 @@ func.func @main(%arg0: tensor<4xf32>) -> tensor<4xf32> {
   return %0 : tensor<4xf32>
 }
 
-tessera.define @tessera.inv(%arg0: tensor<4xf32>) -> tensor<4xf32> attributes {argModes = [unit], pure = true, tessera.original_name = "inv", tessera.original_op = "func.func"} {
+tessera.define @tessera.inv(%arg0: tensor<4xf32>) -> tensor<4xf32> attributes {argModes = [unit], pure = true, tessera.original_name = "inv"} {
   tessera.return %arg0 : tensor<4xf32>
 }
 
@@ -21,7 +21,7 @@ tessera.define @tessera.inv(%arg0: tensor<4xf32>) -> tensor<4xf32> attributes {a
 
 // -----
 
-tessera.define private @tessera.ext(f32) -> f32 attributes {argModes = [unit], pure = true, tessera.original_name = "ext", tessera.original_op = "func.func"}
+tessera.define private @tessera.ext(f32) -> f32 attributes {argModes = [unit], pure = true, tessera.original_name = "ext"}
 
 // CHECK: func.func private @ext(f32) -> f32
 

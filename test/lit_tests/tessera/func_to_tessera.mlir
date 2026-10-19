@@ -11,7 +11,6 @@ func.func @main(%arg0: tensor<4xf32>) -> tensor<4xf32> {
 
 // CHECK: tessera.define @tessera.inv(%[[ARG:.*]]: tensor<4xf32>) -> tensor<4xf32>
 // CHECK-SAME: tessera.original_name = "inv"
-// CHECK-SAME: tessera.original_op = "func.func"
 // CHECK-SAME: argModes = [unit]
 // CHECK-SAME: pure = true
 // CHECK-NEXT: tessera.return %[[ARG]] : tensor<4xf32>

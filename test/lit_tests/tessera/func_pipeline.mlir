@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s -parse-optimization-rules -llvm-to-tessera -tessera-apply-pdl -tessera-to-llvm | FileCheck %s
+// RUN: enzymexlamlir-opt %s -parse-optimization-rules -llvm-to-tessera -tessera-apply-pdl -tessera-to-func | FileCheck %s
 
 // Tessera on func.func and tensors, as emitted by Reactant.jl. The literal in
 // the pow rule matches a splat tensor constant.

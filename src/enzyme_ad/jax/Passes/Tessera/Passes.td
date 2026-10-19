@@ -41,14 +41,24 @@ def LLVMToTesseraPass : Pass<"llvm-to-tessera", "ModuleOp"> {
 }
 
 def TesseraToLLVMPass : Pass<"tessera-to-llvm", "ModuleOp"> {
-  let summary = "Convert operations in the Tessera Dialect back to the LLVM or Func Dialect";
+  let summary = "Convert operations in the Tessera Dialect to operations in the LLVM Dialect";
   let description = [{
-    This pass converts tessera.define, tessera.call, and tessera.return back
-    into the ops of the dialect the function was lifted from: llvm.func,
-    llvm.call, and llvm.return, or func.func, func.call, and func.return.
+    This pass converts a TesseraOp back into a LLVMOp.
   }];
   let dependentDialects = [
     "LLVM::LLVMDialect",
+    "enzyme::tessera::TesseraDialect"
+  ];
+}
+
+def TesseraToFuncPass : Pass<"tessera-to-func", "ModuleOp"> {
+  let summary = "Convert operations in the Tessera Dialect to operations in the Func Dialect";
+  let description = [{
+    This pass converts tessera.define, tessera.call, and tessera.return into
+    func.func, func.call, and func.return. Unlike tessera-to-llvm, it does not
+    support arguments that were lifted out of memory.
+  }];
+  let dependentDialects = [
     "func::FuncDialect",
     "enzyme::tessera::TesseraDialect"
   ];
