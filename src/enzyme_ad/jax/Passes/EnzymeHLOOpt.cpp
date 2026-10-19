@@ -4836,6 +4836,26 @@ struct ConvertConcat final
     if (!concat)
       return failure();
 
+    // A concatenate whose operands are all reshapes inserting the
+    // concatenated dimension is a stack. `concat_insert_dim_elementwise`
+    // batches an elementwise op across such a stack, turning
+    // concat(reshape(convert(x_i))) into convert(concat(reshape(x_i))); pushing
+    // the convert back into the operands here, after which the reshape
+    // reordering patterns sink it below the reshapes again, recreates the
+    // batching pattern's input and the three rewrites loop forever. Splitting
+    // one convert into one per operand gains nothing on a stack, so leave it.
+    if (concat.getNumOperands() > 1 &&
+        llvm::all_of(concat.getOperands(), [&](Value v) {
+          auto reshape = v.getDefiningOp<stablehlo::ReshapeOp>();
+          if (!reshape)
+            return false;
+          auto inserted = findReshapeInsertionDims(
+              reshape.getOperand().getType(), reshape.getType());
+          return llvm::is_contained(inserted, (int64_t)concat.getDimension());
+        }))
+      return rewriter.notifyMatchFailure(
+          op, "convert of a stack of reshapes is left to batching");
+
     SmallVector<Value> newvals;
     for (auto v : concat.getOperands()) {
       newvals.push_back(stablehlo::ConvertOp::create(
@@ -6083,10 +6103,12 @@ struct ConcatMultiPad final
           Value padops[] = {pad.getOperand(), otherPadOp.getOperand()};
           auto subConcat = stablehlo::ConcatenateOp::create(
               rewriter, op.getLoc(), padops, op.getDimension());
+          SmallVector<int64_t> high(pad.getEdgePaddingHigh());
+          high[op.getDimension()] =
+              otherPadOp.getEdgePaddingHigh()[op.getDimension()];
           pad = stablehlo::PadOp::create(
               rewriter, pad->getLoc(), subConcat, pad.getPaddingValue(),
-              pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(),
-              pad.getInteriorPadding());
+              pad.getEdgePaddingLow(), high, pad.getInteriorPadding());
           i++;
         } else
           break;
@@ -7536,6 +7558,10 @@ struct ReshapeIota final
     if (op.getType().getRank() == 0)
       return failure();
 
+    // iota is zero
+    if (iota.getType().getDimSize(iota.getIotaDimension()) == 1)
+      return failure();
+
     size_t curiotaidx = 0;
     size_t iotadim = 0;
     for (auto en : llvm::enumerate(op.getType().getShape())) {
@@ -7544,6 +7570,7 @@ struct ReshapeIota final
 
       if (curiotaidx == iota.getType().getShape().size())
         return failure();
+
       auto ival = iota.getType().getShape()[curiotaidx];
       while (ival == 1 && curiotaidx < iota.getType().getShape().size()) {
         if (curiotaidx == iota.getIotaDimension()) {
