@@ -579,28 +579,13 @@ struct JITRegionOpInterfaceReverse
         });
     SmallVector<Attribute> layouts = getInputLayouts(newRegion);
 
-    // The shadow buffers are the last arguments of the body, in the order of
-    // the shadow inputs. forceAugmentedReturns instead gives the body of the
-    // cloned region a shadow argument right after each active buffer, which
-    // are moved there; a region replayed by loop checkpointing is a plain
-    // clone of the original one and has none.
     Block *newBB = newRegion.getBodyBlock();
-    SmallVector<BlockArgument> interleaved;
-    if (newBB->getNumArguments() != region.getBodyBlock()->getNumArguments())
-      for (auto [i, arg] : llvm::enumerate(activeBuffers))
-        interleaved.push_back(newBB->getArgument(arg.getArgNumber() + i + 1));
     for (auto [i, arg] : llvm::enumerate(activeBuffers)) {
-      BlockArgument shadow = newBB->addArgument(
-          gutils->getShadowType(arg.getType()), arg.getLoc());
-      if (!interleaved.empty())
-        interleaved[i].replaceAllUsesWith(shadow);
-      gutils->invertedPointers.map(arg, shadow);
+      BlockArgument shadow = newBB->getArgument(arg.getArgNumber() + i + 1);
       layouts.push_back(getInputLayout(newRegion, arg.getArgNumber()));
-      inputs.push_back(cast<AutoDiffTypeInterface>(getTensorType(arg))
+      inputs.push_back(cast<AutoDiffTypeInterface>(getTensorType(shadow))
                            .createNullValue(builder, arg.getLoc()));
     }
-    for (BlockArgument old : llvm::reverse(interleaved))
-      newBB->eraseArgument(old.getArgNumber());
 
     IRRewriter rewriter(builder);
     auto augmented = rebuildJITRegion(rewriter, newRegion, inputs, layouts);
