@@ -12,7 +12,14 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Dialect/TritonExt/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
+
+#ifndef ENZYME_JAX_ENABLE_TRITON
+#define ENZYME_JAX_ENABLE_TRITON 1
+#endif
+
+#if ENZYME_JAX_ENABLE_TRITON
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#endif
 
 #include <queue>
 
@@ -177,7 +184,11 @@ struct MarkFunctionMemoryEffectsPass
   bool isPointerType(Value v) { return isPointerType(v.getType()); }
 
   bool isPointerType(Type t) {
-    return isa<LLVM::LLVMPointerType, MemRefType, triton::PointerType>(t);
+#if ENZYME_JAX_ENABLE_TRITON
+    if (isa<triton::PointerType>(t))
+      return true;
+#endif
+    return isa<LLVM::LLVMPointerType, MemRefType>(t);
   }
 
   void analyzeMemoryEffects(

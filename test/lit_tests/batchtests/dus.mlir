@@ -1,7 +1,7 @@
 // RUN: enzymexlamlir-opt %s --enzyme-batch | FileCheck %s
 
 func.func @main(%arg0: tensor<4x16xf64>, %arg1: tensor<4x5xf64>) -> tensor<4x16xf64> {
-    %0 = enzyme.batch @dus(%arg0, %arg1) {batch_shape = array<i64: 4>} : (tensor<4x16xf64>, tensor<4x5xf64>) -> tensor<4x16xf64>
+    %0 = enzyme.batch @dus(%arg0, %arg1) <{batch_shape = array<i64: 4>}> : (tensor<4x16xf64>, tensor<4x5xf64>) -> tensor<4x16xf64>
     return %0 : tensor<4x16xf64>
 }
 

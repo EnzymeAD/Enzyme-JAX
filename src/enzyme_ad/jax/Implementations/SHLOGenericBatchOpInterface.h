@@ -213,12 +213,13 @@ inline LogicalResult genericCreateBatch(Operation *src, OpBuilder &builder,
 
     for (int d = 0; d < ndims; ++d) {
       // auto idx = (i / batchStrides[d]) % batchSizes[d];
-      auto idx = RemOp::create(
-          bodyBuilder, src->getLoc(),
-          DivOp::create(bodyBuilder, src->getLoc(), whileBody->getArgument(0),
-                        details::makeI64Constant(src->getLoc(), bodyBuilder,
-                                                 batchStrides[d])),
-          details::makeI64Constant(src->getLoc(), bodyBuilder, batchSizes[d]));
+      Value stride =
+          details::makeI64Constant(src->getLoc(), bodyBuilder, batchStrides[d]);
+      Value quotient = DivOp::create(bodyBuilder, src->getLoc(),
+                                     whileBody->getArgument(0), stride);
+      Value size =
+          details::makeI64Constant(src->getLoc(), bodyBuilder, batchSizes[d]);
+      auto idx = RemOp::create(bodyBuilder, src->getLoc(), quotient, size);
 
       startIndices.push_back(idx);
     }

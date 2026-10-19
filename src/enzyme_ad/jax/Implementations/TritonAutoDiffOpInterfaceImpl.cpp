@@ -11,6 +11,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#ifndef ENZYME_JAX_ENABLE_TRITON
+#define ENZYME_JAX_ENABLE_TRITON 1
+#endif
+
+#if ENZYME_JAX_ENABLE_TRITON
+
 #include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
 #include "Enzyme/MLIR/Interfaces/AutoDiffOpInterface.h"
 #include "Enzyme/MLIR/Interfaces/GradientUtils.h"
@@ -74,6 +80,9 @@ public:
   void transformResultTypes(Operation *self,
                             SmallVectorImpl<Type> &returnTypes) const {}
 
+  // A tt.func has no comdat or linkage group to leave behind.
+  void detachFromPrimalDefinition(Operation *self) const {}
+
   Operation *createCall(Operation *self, OpBuilder &builder, Location loc,
                         ValueRange args) const {
     return triton::CallOp::create(builder, loc, cast<triton::FuncOp>(self),
@@ -97,3 +106,15 @@ void mlir::enzyme::registerTritonDialectAutoDiffInterface(
     triton::PointerType::attachInterface<TritonPointerTypeInterface>(*context);
   });
 }
+
+#else
+
+#include "mlir/IR/DialectRegistry.h"
+
+namespace mlir {
+namespace enzyme {
+void registerTritonDialectAutoDiffInterface(DialectRegistry &registry) {}
+} // namespace enzyme
+} // namespace mlir
+
+#endif

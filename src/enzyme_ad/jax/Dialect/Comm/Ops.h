@@ -12,4 +12,7 @@
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Comm/MPIOps.h.inc"
 
+#define GET_OP_CLASSES
+#include "src/enzyme_ad/jax/Dialect/Comm/NCCLOps.h.inc"
+
 #endif // ENZYMEXLA_COMM_OPS_H

@@ -28,7 +28,7 @@ func.func private @"##call__Z40gpu_compute_hydrostatic_free_surface_Gu_16Compile
     %12 = arith.cmpi uge, %10, %c2_i64 : i64
     %13 = arith.andi %12, %11 : i1
     %14 = arith.select %13, %cst, %cst_0 : f32
-    llvm.store %14, %0 {alignment = 4 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : f32, !llvm.ptr<1>
+    llvm.store %14, %0 <alignment = 4, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]> : f32, !llvm.ptr<1>
   }
   return
 }
@@ -49,7 +49,7 @@ func.func private @"##call__Z40gpu_compute_hydrostatic_free_surface_Gu_16Compile
 // CHECK-NEXT:         affine.yield %true : i1
 // CHECK-NEXT:       }
 // CHECK-NEXT:       %2 = arith.select %1, %cst, %cst_0 : f32
-// CHECK-NEXT:       llvm.store %2, %0 {alignment = 4 : i64, tbaa = [#tbaa_tag]} : f32, !llvm.ptr<1>
+// CHECK-NEXT:       llvm.store %2, %0 <alignment = 4, tbaa = [#tbaa_tag]> : f32, !llvm.ptr<1>
 // CHECK-NEXT:     }
 // CHECK-NEXT:     return
 // CHECK-NEXT:   }

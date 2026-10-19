@@ -44,6 +44,7 @@ common --cxxopt=-Wno-range-loop-construct --host_cxxopt=-Wno-range-loop-construc
 # common --cxxopt=-Wno-stringop-overread --host_cxxopt=-Wno-stringop-overread
 
 common --cxxopt=-std=c++17 --host_cxxopt=-std=c++17
+common:macos --cxxopt=-faligned-allocation --host_cxxopt=-faligned-allocation
 
 common --color=yes
 
@@ -64,3 +65,10 @@ common --define=allow_oversize_protos=true
 build --@rules_python//python/config_settings:precompile=force_disabled
 
 build -c opt
+
+# ynnpack's arm64 FP8 kernels are compiled with -march=...+fp8+fp8dot4 and
+# written against the ARM FP8 ACLE (mfloat8 types, __arm_fpm_init), which
+# needs clang 20+ / GCC 15+; CI's clang 18 has neither. The kernels are
+# runtime-dispatched extras only selected on FP8-capable cores.
+common --define=ynn_enable_arm64_neonfp8=false
+common --define=ynn_enable_arm64_neonfp8dot4=false

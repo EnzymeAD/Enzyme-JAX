@@ -6,9 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Ops.h"
+#include "Enzyme/MLIR/Dialect/Ops.h"
 #include "Dialect.h"
 #include "Interfaces/AutoDiffTypeInterface.h"
+#include "Interfaces/Utils.h"
+#include "Ops.h"
 #include "src/enzyme_ad/jax/Dialect/Canonicalizers.h"
 #include "src/enzyme_ad/jax/Dialect/Utils.h"
 #include "src/enzyme_ad/jax/Utils.h"
@@ -192,6 +194,16 @@ void JITCallOp::getEffects(
   addMemoryEffectsFromAttr(effects, effectsAttr);
 }
 
+LogicalResult KernelCallOp::verify() {
+  return verifyResultsAliasOperands(getOperation(), getOutputOperandAliases(),
+                                    getInputs().size());
+}
+
+LogicalResult JITCallOp::verify() {
+  return verifyResultsAliasOperands(getOperation(), getOutputOperandAliases(),
+                                    getInputs().size());
+}
+
 template <>
 enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
     PatternRewriter &rewriter, enzymexla::KernelCallOp launchOp,
@@ -203,8 +215,7 @@ enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
       launchOp.getShmem(), launchOp.getClusterx(), launchOp.getClustery(),
       launchOp.getClusterz(), launchOp.getInputs(),
       launchOp.getBackendConfigAttr(), launchOp.getOperandLayoutsAttr(),
-      /*resultLayouts*/ nullptr, launchOp.getArgAttrsAttr(),
-      launchOp.getResAttrsAttr(), outputAliases,
+      launchOp.getArgAttrsAttr(), launchOp.getResAttrsAttr(), outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
 }
 
@@ -215,8 +226,7 @@ enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
   return enzymexla::JITCallOp::create(
       rewriter, launchOp.getLoc(), resTys, launchOp.getFn(),
       launchOp.getInputs(), launchOp.getBackendConfigAttr(),
-      launchOp.getOperandLayoutsAttr(),
-      /*resultLayouts*/ nullptr, launchOp.getArgAttrsAttr(),
+      launchOp.getOperandLayoutsAttr(), launchOp.getArgAttrsAttr(),
       launchOp.getResAttrsAttr(), outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
 }
@@ -246,7 +256,7 @@ void JITCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
   results.insert<ReadOnlyArg<JITCallOp>, ReadNoneArg<JITCallOp>>(context);
 }
 
-/// Simplify pointer2memref(memref2pointer(x)) to cast(x)
+/// Simplify pointer2memref(memref2pointer(x)) to a view of x
 class Memref2Pointer2MemrefCast final
     : public OpRewritePattern<Pointer2MemrefOp> {
 public:
@@ -259,19 +269,30 @@ public:
       return failure();
     auto smt = cast<MemRefType>(src.getSource().getType());
     auto omt = cast<MemRefType>(op.getType());
-    if (smt.getShape().size() != omt.getShape().size())
-      return failure();
-    for (unsigned i = 1; i < smt.getShape().size(); i++) {
-      if (smt.getShape()[i] != omt.getShape()[i])
-        return failure();
-    }
     if (smt.getElementType() != omt.getElementType())
       return failure();
-    if (smt.getMemorySpace() != omt.getMemorySpace())
+    // A strided source is not the flat view the pointer handed out, and a
+    // rank change is what delinearization rebuilds into typed accesses.
+    if (!smt.getLayout().isIdentity() || !omt.getLayout().isIdentity() ||
+        smt.getRank() != omt.getRank())
       return failure();
 
-    rewriter.replaceOpWithNewOp<memref::CastOp>(op, op.getType(),
-                                                src.getSource());
+    // The memory space changes on the source's own shape, so the shape cast
+    // lands last, closest to the accesses, where it folds into them.
+    auto inDstSpace =
+        MemRefType::get(smt.getShape(), smt.getElementType(),
+                        MemRefLayoutAttrInterface{}, omt.getMemorySpace());
+    if (inDstSpace != omt &&
+        !memref::CastOp::areCastCompatible(inDstSpace, omt))
+      return failure();
+    Value v = src.getSource();
+    if (smt.getMemorySpace() != omt.getMemorySpace())
+      v = memref::MemorySpaceCastOp::create(rewriter, op.getLoc(), inDstSpace,
+                                            v)
+              .getResult();
+    if (inDstSpace != omt)
+      v = memref::CastOp::create(rewriter, op.getLoc(), omt, v).getResult();
+    rewriter.replaceOp(op, v);
     return success();
   }
 };
@@ -428,14 +449,13 @@ public:
     Value c0 = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 0);
     Value c1 = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 1);
     SmallVector<Value> idxs;
+    Value lenIdx = arith::IndexCastOp::create(
+        rewriter, op.getLoc(), rewriter.getIndexType(), op.getLen());
+    Value widthCst =
+        arith::ConstantIndexOp::create(rewriter, op.getLoc(), width);
     auto forOp = scf::ForOp::create(
         rewriter, op.getLoc(), c0,
-        arith::DivUIOp::create(
-            rewriter, op.getLoc(),
-            arith::IndexCastOp::create(rewriter, op.getLoc(),
-                                       rewriter.getIndexType(), op.getLen()),
-            arith::ConstantIndexOp::create(rewriter, op.getLoc(), width)),
-        c1);
+        arith::DivUIOp::create(rewriter, op.getLoc(), lenIdx, widthCst), c1);
 
     rewriter.setInsertionPointToStart(&forOp.getRegion().getBlocks().front());
     idxs.push_back(forOp.getInductionVar());
@@ -532,14 +552,13 @@ public:
     Value val = cast<mlir::enzyme::AutoDiffTypeInterface>(elTy).createNullValue(
         rewriter, op.getLoc());
 
+    Value lenIdx = arith::IndexCastOp::create(
+        rewriter, op.getLoc(), rewriter.getIndexType(), op.getLen());
+    Value widthCst =
+        arith::ConstantIndexOp::create(rewriter, op.getLoc(), width);
     auto forOp = scf::ForOp::create(
         rewriter, op.getLoc(), c0,
-        arith::DivUIOp::create(
-            rewriter, op.getLoc(),
-            arith::IndexCastOp::create(rewriter, op.getLoc(),
-                                       rewriter.getIndexType(), op.getLen()),
-            arith::ConstantIndexOp::create(rewriter, op.getLoc(), width)),
-        c1);
+        arith::DivUIOp::create(rewriter, op.getLoc(), lenIdx, widthCst), c1);
 
     rewriter.setInsertionPointToStart(&forOp.getRegion().getBlocks().front());
     idxs.push_back(forOp.getInductionVar());
@@ -645,8 +664,12 @@ public:
 
   LogicalResult matchAndRewrite(T op,
                                 PatternRewriter &rewriter) const override {
+    // The accessed memref is the one this op names, whether or not the op
+    // itself spells out a type accessor for it.
+    auto accessedType = cast<MemRefType>(getMemref(op).getType());
+
     // FIXME: Only handle memref.load with single index for now
-    if (op.getMemRefType().getRank() != 1)
+    if (accessedType.getRank() != 1)
       return failure();
 
     // Match pointer2memref -> load pattern
@@ -656,10 +679,12 @@ public:
       return failure();
 
     // Get the element type and size of the final memref
-    Type elementType = op.getMemRefType().getElementType();
-    unsigned elementSize = elementType.isIntOrFloat()
-                               ? elementType.getIntOrFloatBitWidth() / 8
-                               : 0;
+    Type elementType = accessedType.getElementType();
+    if (!elementType.isIntOrFloat() &&
+        !isa<DataLayoutTypeInterface>(elementType))
+      return failure();
+    DataLayout dl = DataLayout::closest(op);
+    unsigned elementSize = dl.getTypeSize(elementType);
     if (elementSize == 0)
       return failure();
 
@@ -863,6 +888,90 @@ void LoadStorePointer2MemrefGEP<affine::AffineStoreOp>::createNewOp(
                                                idxs);
 }
 
+template <>
+Value LoadStorePointer2MemrefGEP<enzyme::AtomicRMWOp>::getMemref(
+    enzyme::AtomicRMWOp op) const {
+  return op.getMemref();
+}
+
+template <>
+SmallVector<Value> LoadStorePointer2MemrefGEP<enzyme::AtomicRMWOp>::newIndex(
+    enzyme::AtomicRMWOp op, Value finalIndex, PatternRewriter &rewriter) const {
+  auto operands = llvm::to_vector(op.getIndices());
+  operands[0] =
+      arith::AddIOp::create(rewriter, op.getLoc(), operands[0], finalIndex);
+  return operands;
+}
+
+template <>
+void LoadStorePointer2MemrefGEP<enzyme::AtomicRMWOp>::createNewOp(
+    enzyme::AtomicRMWOp op, Value baseMemref, SmallVector<Value> idxs,
+    PatternRewriter &rewriter) const {
+  rewriter.replaceOpWithNewOp<enzyme::AtomicRMWOp>(
+      op, op.getResult().getType(), op.getKindAttr(), op.getOrderingAttr(),
+      op.getValue(), baseMemref, idxs, op.getAlignmentAttr(),
+      op.getFastmathAttr());
+}
+
+template <>
+Value LoadStorePointer2MemrefGEP<memref::AtomicRMWOp>::getMemref(
+    memref::AtomicRMWOp op) const {
+  return op.getMemref();
+}
+
+template <>
+SmallVector<Value> LoadStorePointer2MemrefGEP<memref::AtomicRMWOp>::newIndex(
+    memref::AtomicRMWOp op, Value finalIndex, PatternRewriter &rewriter) const {
+  auto operands = llvm::to_vector(op.getIndices());
+  operands[0] =
+      arith::AddIOp::create(rewriter, op.getLoc(), operands[0], finalIndex);
+  return operands;
+}
+
+template <>
+void LoadStorePointer2MemrefGEP<memref::AtomicRMWOp>::createNewOp(
+    memref::AtomicRMWOp op, Value baseMemref, SmallVector<Value> idxs,
+    PatternRewriter &rewriter) const {
+  rewriter.replaceOpWithNewOp<memref::AtomicRMWOp>(
+      op, op.getKind(), op.getValue(), baseMemref, idxs);
+}
+
+template <>
+Value LoadStorePointer2MemrefGEP<enzyme::AffineAtomicRMWOp>::getMemref(
+    enzyme::AffineAtomicRMWOp op) const {
+  return op.getMemref();
+}
+
+template <>
+SmallVector<Value>
+LoadStorePointer2MemrefGEP<enzyme::AffineAtomicRMWOp>::newIndex(
+    enzyme::AffineAtomicRMWOp op, Value finalIndex,
+    PatternRewriter &rewriter) const {
+  auto apply = affine::AffineApplyOp::create(rewriter, op.getLoc(), op.getMap(),
+                                             op.getIndices());
+
+  SmallVector<Value> operands;
+  for (auto res : apply->getResults())
+    operands.push_back(res);
+  operands[0] =
+      arith::AddIOp::create(rewriter, op.getLoc(), operands[0], finalIndex);
+  return operands;
+}
+
+template <>
+void LoadStorePointer2MemrefGEP<enzyme::AffineAtomicRMWOp>::createNewOp(
+    enzyme::AffineAtomicRMWOp op, Value baseMemref, SmallVector<Value> idxs,
+    PatternRewriter &rewriter) const {
+  // As the affine load and store do, this leaves the non-affine form: the
+  // index it is given is a value, not a map. What the op says beyond the
+  // address -- its kind, its ordering, its alignment -- comes with it.
+  rewriter.replaceOpWithNewOp<enzyme::AtomicRMWOp>(
+      op, op.getResult().getType(), op.getKindAttr(),
+      enzyme::OrderingAttr::get(op.getContext(), op.getOrdering()),
+      op.getValue(), baseMemref, idxs, op.getAlignmentAttr(),
+      op.getFastmathAttr());
+}
+
 /// Simplify load (pointer2memref(x)) to llvm.load x
 template <typename Op>
 class MetaPointer2Memref final : public OpRewritePattern<Op> {
@@ -994,13 +1103,157 @@ void MetaPointer2Memref<affine::AffineStoreOp>::rewriteInternal(
   rewriter.replaceOpWithNewOp<LLVM::StoreOp>(op, op.getValue(), ptr);
 }
 
+// An if whose arms all yield the same pointer/memref conversion does the
+// conversion once on the if result instead: the conversion depends only on
+// the yielded value, so hoisting it needs nothing to dominate anything new.
+// Chains of such ifs (nested ternaries picking a slice) collapse to one
+// conversion over a pointer-yielding if.
+template <typename IfT>
+struct HoistIfYieldConversion : public OpRewritePattern<IfT> {
+  using OpRewritePattern<IfT>::OpRewritePattern;
+
+  static Operation *yieldOf(Region &r) { return r.front().getTerminator(); }
+
+  LogicalResult matchAndRewrite(IfT ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (ifOp->getNumResults() == 0 || ifOp.getElseRegion().empty())
+      return failure();
+    Operation *thenY = yieldOf(ifOp.getThenRegion());
+    Operation *elseY = yieldOf(ifOp.getElseRegion());
+
+    SmallVector<Type> newTypes;
+    SmallVector<Operation *> conv(ifOp->getNumResults(), nullptr);
+    bool any = false;
+    for (auto [i, res] : llvm::enumerate(ifOp->getResults())) {
+      Operation *t = thenY->getOperand(i).getDefiningOp();
+      Operation *f = elseY->getOperand(i).getDefiningOp();
+      if (t && f && t->getName() == f->getName() &&
+          isa<Pointer2MemrefOp, Memref2PointerOp>(t) &&
+          t->getOperand(0).getType() == f->getOperand(0).getType()) {
+        conv[i] = t;
+        newTypes.push_back(t->getOperand(0).getType());
+        any = true;
+        continue;
+      }
+      newTypes.push_back(res.getType());
+    }
+    if (!any)
+      return failure();
+
+    auto newIf = create(rewriter, ifOp, newTypes);
+    for (unsigned r = 0; r < 2; ++r) {
+      Region &from = r ? ifOp.getElseRegion() : ifOp.getThenRegion();
+      Region &to = r ? newIf.getElseRegion() : newIf.getThenRegion();
+      rewriter.inlineRegionBefore(from, to, to.begin());
+      rewriter.eraseBlock(&to.back());
+      Operation *y = yieldOf(to);
+      SmallVector<Value> ops(y->getOperands());
+      for (auto [i, c] : llvm::enumerate(conv))
+        if (c)
+          ops[i] = ops[i].getDefiningOp()->getOperand(0);
+      rewriter.modifyOpInPlace(y, [&] { y->setOperands(ops); });
+    }
+
+    rewriter.setInsertionPointAfter(newIf);
+    SmallVector<Value> results;
+    for (auto [i, c] : llvm::enumerate(conv)) {
+      Value v = newIf->getResult(i);
+      if (c) {
+        Operation *cloned = rewriter.clone(*c);
+        cloned->setOperand(0, v);
+        v = cloned->getResult(0);
+      }
+      results.push_back(v);
+    }
+    rewriter.replaceOp(ifOp, results);
+    return success();
+  }
+
+  static scf::IfOp create(PatternRewriter &rewriter, scf::IfOp ifOp,
+                          TypeRange types) {
+    return scf::IfOp::create(rewriter, ifOp.getLoc(), types,
+                             ifOp.getCondition(), /*withElseRegion=*/true);
+  }
+  static affine::AffineIfOp create(PatternRewriter &rewriter,
+                                   affine::AffineIfOp ifOp, TypeRange types) {
+    return affine::AffineIfOp::create(rewriter, ifOp.getLoc(), types,
+                                      ifOp.getIntegerSet(), ifOp.getOperands(),
+                                      /*withElseRegion=*/true);
+  }
+};
+
+// The select twin of the above: an if whose arms only yield existing values
+// becomes a select before this pattern can see it, so hoist there too.
+struct HoistSelectConversion : public OpRewritePattern<arith::SelectOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::SelectOp sel,
+                                PatternRewriter &rewriter) const override {
+    Operation *t = sel.getTrueValue().getDefiningOp();
+    Operation *f = sel.getFalseValue().getDefiningOp();
+    if (!t || !f || t->getName() != f->getName() ||
+        !isa<Pointer2MemrefOp, Memref2PointerOp>(t) ||
+        t->getOperand(0).getType() != f->getOperand(0).getType())
+      return failure();
+    Value inner =
+        arith::SelectOp::create(rewriter, sel.getLoc(), sel.getCondition(),
+                                t->getOperand(0), f->getOperand(0));
+    Operation *conv = rewriter.clone(*t);
+    conv->setOperand(0, inner);
+    rewriter.replaceOp(sel, conv->getResult(0));
+    return success();
+  }
+};
+
+// An access through a view of the null pointer can only execute as undefined
+// behavior (an optional buffer a kernel receives as null sits behind a runtime
+// flag), so it is dynamically dead: an access with a result (a load) reads as
+// a zero of its type, one without (a store) drops. Offsets off the null have
+// already folded into the index.
+template <typename T>
+class NullPointer2MemrefAccess final : public OpRewritePattern<T> {
+public:
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T op,
+                                PatternRewriter &rewriter) const override {
+    auto view =
+        op.getMemref().template getDefiningOp<enzymexla::Pointer2MemrefOp>();
+    if (!view || !view.getSource().template getDefiningOp<LLVM::ZeroOp>())
+      return failure();
+    if (op->getNumResults() == 0) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+    Type t = op->getResult(0).getType();
+    if (t.isIntOrFloat())
+      rewriter.replaceOpWithNewOp<arith::ConstantOp>(op, t,
+                                                     rewriter.getZeroAttr(t));
+    else if (LLVM::isCompatibleType(t))
+      rewriter.replaceOpWithNewOp<LLVM::ZeroOp>(op, t);
+    else
+      return failure();
+    return success();
+  }
+};
+
 void Pointer2MemrefOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                    MLIRContext *context) {
-  results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
-                 LoadStorePointer2MemrefGEP<memref::LoadOp>,
-                 LoadStorePointer2MemrefGEP<affine::AffineLoadOp>,
-                 LoadStorePointer2MemrefGEP<memref::StoreOp>,
-                 LoadStorePointer2MemrefGEP<affine::AffineStoreOp>>(context);
+  results
+      .insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
+              LoadStorePointer2MemrefGEP<memref::LoadOp>,
+              LoadStorePointer2MemrefGEP<affine::AffineLoadOp>,
+              LoadStorePointer2MemrefGEP<memref::StoreOp>,
+              LoadStorePointer2MemrefGEP<affine::AffineStoreOp>,
+              LoadStorePointer2MemrefGEP<enzyme::AtomicRMWOp>,
+              LoadStorePointer2MemrefGEP<memref::AtomicRMWOp>,
+              LoadStorePointer2MemrefGEP<enzyme::AffineAtomicRMWOp>,
+              HoistIfYieldConversion<scf::IfOp>,
+              HoistIfYieldConversion<affine::AffineIfOp>, HoistSelectConversion,
+              NullPointer2MemrefAccess<memref::LoadOp>,
+              NullPointer2MemrefAccess<affine::AffineLoadOp>,
+              NullPointer2MemrefAccess<memref::StoreOp>,
+              NullPointer2MemrefAccess<affine::AffineStoreOp>>(context);
   /*
   results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
                  MetaPointer2Memref<memref::LoadOp>,
@@ -1008,6 +1261,14 @@ void Pointer2MemrefOp::getCanonicalizationPatterns(RewritePatternSet &results,
                  MetaPointer2Memref<affine::AffineLoadOp>,
                  MetaPointer2Memref<affine::AffineStoreOp>>(context);
                  */
+}
+
+LogicalResult Pointer2MemrefOp::verify() {
+  SmallVector<int64_t> strides;
+  int64_t offset;
+  if (failed(getType().getStridesAndOffset(strides, offset)) || offset != 0)
+    return emitOpError("requires a result layout with zero offset");
+  return success();
 }
 
 OpFoldResult Pointer2MemrefOp::fold(FoldAdaptor adaptor) {
@@ -1066,6 +1327,21 @@ WrapOp::inferReturnTypes(MLIRContext * /*context*/,
     resShape[adaptor.getDimension()] += adaptor.getLhs() + adaptor.getRhs();
   inferredReturnTypes.push_back(
       RankedTensorType::get(resShape, RT.getElementType()));
+  return success();
+}
+
+// The wrap takes its `lhs` elements from the end of the operand and its
+// `rhs` from the start: neither can reach past the operand.
+LogicalResult enzymexla::WrapOp::verify() {
+  auto ty = cast<RankedTensorType>(getOperand().getType());
+  int64_t extent = ty.getDimSize(getDimension());
+  if (ShapedType::isDynamic(extent))
+    return success();
+  if (getLhs() > extent || getRhs() > extent)
+    return emitOpError("amounts ")
+           << getLhs() << " and " << getRhs()
+           << " must not exceed the operand's extent " << extent
+           << " along dimension " << getDimension();
   return success();
 }
 
@@ -1535,6 +1811,87 @@ using namespace mlir::enzyme;
 llvm::cl::opt<bool> BarrierOpt("barrier-opt", llvm::cl::init(true),
                                llvm::cl::desc("Optimize barriers"));
 
+// Whether every thread runs `ifOp`'s body, i.e. the condition selects no subset
+// of them. `threadIVs` are the indices the barrier synchronises over, which
+// name the parallel whose iterations are the threads.
+static bool selectsAllThreads(Operation *ifOp, ValueRange threadIVs) {
+  // Synchronising over no index at all: there is no dimension for the
+  // condition to vary along, so no subset for it to select.
+  if (threadIVs.empty())
+    return true;
+  Operation *par =
+      cast<BlockArgument>(threadIVs.front()).getOwner()->getParentOp();
+
+  SmallVector<Value> worklist;
+  if (auto scfIf = dyn_cast<scf::IfOp>(ifOp))
+    worklist.push_back(scfIf.getCondition());
+  else if (auto affIf = dyn_cast<affine::AffineIfOp>(ifOp))
+    worklist.append(affIf.getOperands().begin(), affIf.getOperands().end());
+  else
+    return false;
+
+  DenseSet<Value> seen;
+  while (!worklist.empty()) {
+    Value v = worklist.pop_back_val();
+    if (!seen.insert(v).second)
+      continue;
+    if (llvm::is_contained(threadIVs, v))
+      return false;
+
+    Operation *owner = isa<BlockArgument>(v)
+                           ? cast<BlockArgument>(v).getOwner()->getParentOp()
+                           : v.getDefiningOp();
+    // Anything from outside the thread parallel holds the same value in every
+    // thread, whatever computed it.
+    if (!owner || !par->isAncestor(owner))
+      continue;
+    // Inside it, a block argument is something like a serial loop's index,
+    // whose value can differ per thread however its bounds were written.
+    if (isa<BlockArgument>(v))
+      return false;
+    Operation *def = v.getDefiningOp();
+    if (def->getNumRegions() != 0)
+      return false;
+    worklist.append(def->getOperands().begin(), def->getOperands().end());
+  }
+  return true;
+}
+
+static bool anyBarrierWithin(Operation *op, BarrierOp except) {
+  bool found = false;
+  op->walk([&](BarrierOp other) {
+    if (other != except)
+      found = true;
+  });
+  return found;
+}
+
+static bool containsBarrier(Operation *op) {
+  bool found = false;
+  op->walk([&](BarrierOp) { found = true; });
+  return found;
+}
+
+// Whether a thread can reach a barrier past `op`. Not just the operations
+// beside it: what encloses `op` may end before the thread does, and a region
+// that runs more than once puts its own earlier operations after this one too.
+static bool anyBarrierAfter(Operation *op) {
+  for (Operation *it = op->getNextNode(); it != nullptr; it = it->getNextNode())
+    if (containsBarrier(it))
+      return true;
+
+  Operation *parent = op->getParentOp();
+  if (!parent)
+    return false;
+  // The thread parallel is where one thread's execution ends.
+  if (isa<scf::ParallelOp, affine::AffineParallelOp>(parent))
+    return false;
+  if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(parent) &&
+      containsBarrier(parent))
+    return true;
+  return anyBarrierAfter(parent);
+}
+
 class BarrierHoist final : public OpRewritePattern<BarrierOp> {
 public:
   using OpRewritePattern<BarrierOp>::OpRewritePattern;
@@ -1544,6 +1901,19 @@ public:
     if (!BarrierOpt)
       return failure();
     if (isa<scf::IfOp, affine::AffineIfOp>(barrier->getParentOp())) {
+      // Moving a barrier across a conditional changes who runs it: inside only
+      // the threads taking the branch do, outside every thread does. That is a
+      // rewrite only where the branch is taken uniformly across the block, and
+      // a condition any thread index reaches is not. CUDA's `if (k >= N)
+      // return;` reads a thread index, and lifting one of the body's barriers
+      // out of it leaves the threads that skipped the body waiting at a barrier
+      // their block-mates never arrive at.
+      Operation *ifOp = barrier->getParentOp();
+      // Lifting a barrier out of a branch only some threads take makes every
+      // thread run it. That is a rewrite where the branch selects no subset of
+      // the threads, or -- moving it past the branch -- where nothing beyond
+      // holds a barrier for the threads that skipped to run instead.
+      bool allThreads = selectsAllThreads(ifOp, barrier.getOperands());
 
       bool below = true;
       for (Operation *it = barrier->getNextNode(); it != nullptr;
@@ -1553,7 +1923,11 @@ public:
           break;
         }
       }
-      if (below) {
+      // A barrier left behind in the branch is the other half of the same
+      // split: the threads that skipped it wait out here, the ones that took
+      // it wait in there.
+      if (below && (allThreads || (!anyBarrierAfter(ifOp) &&
+                                   !anyBarrierWithin(ifOp, barrier)))) {
         rewriter.setInsertionPoint(barrier->getParentOp()->getNextNode());
         BarrierOp::create(rewriter, barrier.getLoc(), barrier.getOperands());
         rewriter.eraseOp(barrier);
@@ -1567,7 +1941,7 @@ public:
           break;
         }
       }
-      if (above) {
+      if (above && allThreads) {
         rewriter.setInsertionPoint(barrier->getParentOp());
         BarrierOp::create(rewriter, barrier.getLoc(), barrier.getOperands());
         rewriter.eraseOp(barrier);
@@ -1643,6 +2017,22 @@ void GPUWrapperOp::build(OpBuilder &builder, OperationState &result) {
   Region *bodyRegion = result.addRegion();
   builder.createBlock(bodyRegion);
   GPUWrapperOp::ensureTerminator(*bodyRegion, builder, result.location);
+}
+
+void GPUWrapperOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  // If the predecessor is the GPUWrapperOp, branch into the body.
+  if (point.isParent()) {
+    regions.push_back(RegionSuccessor(&getRegion()));
+    return;
+  }
+
+  // Otherwise, the region branches back to the parent operation.
+  regions.push_back(RegionSuccessor(getOperation()));
+}
+
+ValueRange GPUWrapperOp::getSuccessorInputs(RegionSuccessor successor) {
+  return ValueRange();
 }
 
 LogicalResult fixupGetFunc(LLVM::CallOp op, OpBuilder &rewriter,
@@ -1752,6 +2142,33 @@ void GPUErrorOp::build(OpBuilder &builder, OperationState &result) {
   GPUErrorOp::ensureTerminator(*bodyRegion, builder, result.location);
 }
 
+LogicalResult TempAllocOp::verify() {
+  if (!isPrivate())
+    return emitOpError("requires private visibility");
+  auto type = getType();
+  if (!type.hasStaticShape())
+    return emitOpError("requires a static shape");
+  if (!type.getLayout().isIdentity())
+    return emitOpError("requires an identity layout");
+  auto space = dyn_cast_or_null<IntegerAttr>(type.getMemorySpace());
+  if (!space || space.getInt() != 1)
+    return emitOpError("requires device memory space 1");
+  return success();
+}
+
+LogicalResult
+GetGlobalTempOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  auto allocation =
+      symbolTable.lookupNearestSymbolFrom<TempAllocOp>(*this, getNameAttr());
+  if (!allocation)
+    return emitOpError("'")
+           << getName() << "' does not reference a temp_alloc declaration";
+  if (allocation.getType() != getResult().getType())
+    return emitOpError("result type does not match the temp_alloc type ")
+           << allocation.getType();
+  return success();
+}
+
 LogicalResult
 XLAWrapperOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO: Verify that the result type is same as the type of the referenced
@@ -1782,6 +2199,288 @@ void XLAWrapperOp::getEffects(
         &effects) {
   effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());
   effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Write>());
+}
+
+static bool hasXLAWrapperSignature(XLAWrapperOp wrapper,
+                                   FunctionOpInterface function) {
+  int64_t numSpecialized = wrapper.getNumSpecialized();
+  if (numSpecialized < 0 ||
+      numSpecialized > static_cast<int64_t>(wrapper.getInputs().size()))
+    return false;
+  unsigned numBuffers = wrapper.getInputs().size() - numSpecialized;
+  return function.getNumArguments() == wrapper.getInputs().size() &&
+         function.getNumResults() == numBuffers &&
+         function.getArgumentTypes().take_front(numBuffers) ==
+             function.getResultTypes() &&
+         (!wrapper.getArgAttrsAttr() ||
+          wrapper.getArgAttrsAttr().size() == wrapper.getInputs().size()) &&
+         (!wrapper.getResAttrsAttr() ||
+          wrapper.getResAttrsAttr().size() == numBuffers);
+}
+
+static ArrayAttr removeWrapperAttrs(ArrayAttr attributes,
+                                    const llvm::BitVector &removed) {
+  SmallVector<Attribute> remaining;
+  for (auto [index, attribute] : llvm::enumerate(attributes))
+    if (!removed.test(index))
+      remaining.push_back(attribute);
+  return ArrayAttr::get(attributes.getContext(), remaining);
+}
+
+static void removeWrapperInputs(XLAWrapperOp wrapper,
+                                const llvm::BitVector &arguments,
+                                const llvm::BitVector &results) {
+  if (auto attributes = wrapper.getArgAttrsAttr())
+    wrapper.setArgAttrsAttr(removeWrapperAttrs(attributes, arguments));
+  if (auto attributes = wrapper.getResAttrsAttr())
+    wrapper.setResAttrsAttr(removeWrapperAttrs(attributes, results));
+  unsigned numSpecialized =
+      wrapper.getNumSpecialized() - (arguments.count() - results.count());
+  wrapper->eraseOperands(arguments);
+  wrapper.setNumSpecialized(numSpecialized);
+}
+
+/// Remove a buffer slot if the function only returns its input unchanged.
+/// Remove a specialized scalar input if the function does not use it.
+/// Change a private function in place if every use supports the rewrite.
+/// Otherwise, use one clone for compatible wrappers and keep other calls.
+class RemoveUnusedXLAWrapperInputs final
+    : public OpRewritePattern<XLAWrapperOp> {
+public:
+  using OpRewritePattern<XLAWrapperOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(XLAWrapperOp op,
+                                PatternRewriter &rewriter) const override {
+    auto function = dyn_cast_or_null<FunctionOpInterface>(
+        SymbolTable::lookupNearestSymbolFrom(op, op.getFnAttr()));
+    if (!function || !function.getFunctionBody().hasOneBlock() ||
+        !hasXLAWrapperSignature(op, function))
+      return failure();
+
+    // Keep relative symbol references in the cloned body in the same scope.
+    Operation *scope = SymbolTable::getNearestSymbolTable(op);
+    if (function->getParentOp() != scope)
+      return failure();
+
+    Block &body = function.getFunctionBody().front();
+    Operation *returnOp = body.getTerminator();
+    unsigned numBuffers = function.getNumResults();
+    if (!returnOp->hasTrait<OpTrait::ReturnLike>() ||
+        returnOp->getNumOperands() != numBuffers)
+      return failure();
+
+    llvm::BitVector unusedArguments(function.getNumArguments());
+    llvm::BitVector unusedResults(numBuffers);
+    for (BlockArgument argument : body.getArguments()) {
+      unsigned index = argument.getArgNumber();
+      if (index < numBuffers) {
+        if (argument.hasOneUse() && returnOp->getOperand(index) == argument) {
+          unusedArguments.set(index);
+          unusedResults.set(index);
+        }
+      } else if (argument.use_empty()) {
+        unusedArguments.set(index);
+      }
+    }
+    if (unusedArguments.none())
+      return failure();
+
+    Type withoutArguments = function.getTypeWithoutArgs(unusedArguments);
+    Type type =
+        function.getTypeWithoutArgsAndResults(unusedArguments, unusedResults);
+    if (!withoutArguments || !type)
+      return failure();
+
+    llvm::SmallSetVector<Operation *, 4> callers;
+    callers.insert(op);
+    auto uses = SymbolTable::getSymbolUses(function.getOperation(), scope);
+    bool modifyInPlace =
+        uses.has_value() && SymbolTable::getSymbolVisibility(function) ==
+                                SymbolTable::Visibility::Private;
+    if (uses) {
+      for (const auto &use : *uses) {
+        auto wrapper = dyn_cast<XLAWrapperOp>(use.getUser());
+        if (wrapper && wrapper.getFnAttr() == op.getFnAttr() &&
+            hasXLAWrapperSignature(wrapper, function) &&
+            SymbolTable::getNearestSymbolTable(wrapper) == scope)
+          callers.insert(wrapper);
+        else
+          modifyInPlace = false;
+      }
+    }
+
+    FunctionOpInterface specialized = function;
+    std::string name = function.getName().str();
+    if (!modifyInPlace) {
+      SymbolTable symbols(scope);
+      std::string stem = (function.getName() + "_without_unused").str();
+      name = stem;
+      for (unsigned suffix = 0; symbols.lookup(name); ++suffix)
+        name = stem + "_" + std::to_string(suffix);
+
+      Operation *clone = function->clone();
+      specialized = cast<FunctionOpInterface>(clone);
+      SymbolTable::setSymbolName(clone, name);
+      SymbolTable::setSymbolVisibility(clone, SymbolTable::Visibility::Private);
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointAfter(function);
+      rewriter.insert(clone);
+    }
+
+    rewriter.startOpModification(specialized);
+    Operation *specializedReturn =
+        specialized.getFunctionBody().front().getTerminator();
+    rewriter.startOpModification(specializedReturn);
+    specializedReturn->eraseOperands(unusedResults);
+    function_interface_impl::eraseFunctionArguments(
+        specialized, unusedArguments, withoutArguments);
+    function_interface_impl::eraseFunctionResults(specialized, unusedResults,
+                                                  type);
+    rewriter.finalizeOpModification(specializedReturn);
+    rewriter.finalizeOpModification(specialized);
+
+    for (Operation *caller : callers) {
+      auto wrapper = cast<XLAWrapperOp>(caller);
+      rewriter.startOpModification(wrapper);
+      removeWrapperInputs(wrapper, unusedArguments, unusedResults);
+      wrapper.setFnAttr(FlatSymbolRefAttr::get(op.getContext(), name));
+      rewriter.finalizeOpModification(wrapper);
+    }
+    return success();
+  }
+};
+
+/// Merge equal buffer inputs only when their returned values and attributes
+/// also agree. Merge equal specialized scalar inputs if their attributes agree.
+/// Clone the function because other calls can pass distinct inputs.
+class DeduplicateXLAWrapperInputs final
+    : public OpRewritePattern<XLAWrapperOp> {
+  static Value canonicalResult(Value result, Block &body,
+                               ArrayRef<unsigned> representatives) {
+    if (auto argument = dyn_cast<BlockArgument>(result);
+        argument && argument.getOwner() == &body)
+      return body.getArgument(representatives[argument.getArgNumber()]);
+    return result;
+  }
+
+  static bool sameAttributes(ArrayAttr attributes, unsigned first,
+                             unsigned second) {
+    return !attributes || attributes[first] == attributes[second];
+  }
+
+public:
+  using OpRewritePattern<XLAWrapperOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(XLAWrapperOp op,
+                                PatternRewriter &rewriter) const override {
+    auto function = dyn_cast_or_null<FunctionOpInterface>(
+        SymbolTable::lookupNearestSymbolFrom(op, op.getFnAttr()));
+    if (!function || !function.getFunctionBody().hasOneBlock() ||
+        !hasXLAWrapperSignature(op, function))
+      return failure();
+
+    Operation *scope = SymbolTable::getNearestSymbolTable(op);
+    if (function->getParentOp() != scope)
+      return failure();
+
+    Block &body = function.getFunctionBody().front();
+    Operation *returnOp = body.getTerminator();
+    unsigned numBuffers = function.getNumResults();
+    if (!returnOp->hasTrait<OpTrait::ReturnLike>() ||
+        returnOp->getNumOperands() != numBuffers)
+      return failure();
+
+    DenseMap<Value, unsigned> identities;
+    SmallVector<unsigned> representatives;
+    llvm::BitVector duplicateArguments(function.getNumArguments());
+    llvm::BitVector duplicateResults(numBuffers);
+    for (auto [index, input] : llvm::enumerate(op.getInputs())) {
+      bool isBuffer = index < numBuffers;
+      // Match scalars by SSA value. Keep buffer addresses separate.
+      if (index == numBuffers)
+        identities.clear();
+      Value identity =
+          isBuffer
+              ? enzyme::oputils::getBaseObject(input, /*offsetAllowed=*/false)
+              : input;
+      auto [entry, inserted] = identities.try_emplace(identity, index);
+      unsigned representative = entry->second;
+      representatives.push_back(index);
+      if (inserted)
+        continue;
+      if (input.getType() != op.getInputs()[representative].getType() ||
+          function.getArgumentTypes()[index] !=
+              function.getArgumentTypes()[representative] ||
+          !sameAttributes(op.getArgAttrsAttr(), index, representative) ||
+          !sameAttributes(function.getAllArgAttrs(), index, representative)) {
+        if (isBuffer)
+          return failure();
+        continue;
+      }
+      if (isBuffer &&
+          (!sameAttributes(op.getResAttrsAttr(), index, representative) ||
+           !sameAttributes(function.getAllResultAttrs(), index,
+                           representative)))
+        return failure();
+      representatives.back() = representative;
+      duplicateArguments.set(index);
+      if (isBuffer)
+        duplicateResults.set(index);
+    }
+    if (duplicateArguments.none())
+      return failure();
+
+    for (auto [index, representative] :
+         llvm::enumerate(ArrayRef(representatives).take_front(numBuffers)))
+      if (canonicalResult(returnOp->getOperand(index), body, representatives) !=
+          canonicalResult(returnOp->getOperand(representative), body,
+                          representatives))
+        return failure();
+
+    Type withoutArguments = function.getTypeWithoutArgs(duplicateArguments);
+    Type type = function.getTypeWithoutArgsAndResults(duplicateArguments,
+                                                      duplicateResults);
+    if (!withoutArguments || !type)
+      return failure();
+
+    SymbolTable symbols(scope);
+    std::string stem = (function.getName() + "_without_duplicates").str();
+    std::string name = stem;
+    for (unsigned suffix = 0; symbols.lookup(name); ++suffix)
+      name = stem + "_" + std::to_string(suffix);
+
+    Operation *clone = function->clone();
+    auto specialized = cast<FunctionOpInterface>(clone);
+    Block &specializedBody = specialized.getFunctionBody().front();
+    for (auto [index, representative] : llvm::enumerate(representatives))
+      if (duplicateArguments.test(index))
+        specializedBody.getArgument(index).replaceAllUsesWith(
+            specializedBody.getArgument(representative));
+    specializedBody.getTerminator()->eraseOperands(duplicateResults);
+    function_interface_impl::eraseFunctionArguments(
+        specialized, duplicateArguments, withoutArguments);
+    function_interface_impl::eraseFunctionResults(specialized, duplicateResults,
+                                                  type);
+    SymbolTable::setSymbolName(clone, name);
+    SymbolTable::setSymbolVisibility(clone, SymbolTable::Visibility::Private);
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointAfter(function);
+      rewriter.insert(clone);
+    }
+
+    rewriter.startOpModification(op);
+    removeWrapperInputs(op, duplicateArguments, duplicateResults);
+    op.setFnAttr(FlatSymbolRefAttr::get(op.getContext(), name));
+    rewriter.finalizeOpModification(op);
+    return success();
+  }
+};
+
+void XLAWrapperOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                               MLIRContext *context) {
+  results.insert<RemoveUnusedXLAWrapperInputs, DeduplicateXLAWrapperInputs>(
+      context);
 }
 
 //===----------------------------------------------------------------------===//
@@ -2557,11 +3256,72 @@ struct AlwaysAllocaScopeHoister : public OpRewritePattern<T> {
   }
 };
 
+// An allocation whose automatic allocation scope is an scf.for or an
+// affine.for: hoisted, with the pure values it reads, out of the loop, to
+// before the outermost op under the next scope out. Rooted at the
+// allocation so that each is looked at when it changes, not every time
+// anything in a loop around it does.
+template <typename AllocT>
+struct HoistAllocaOutOfLoops : public OpRewritePattern<AllocT> {
+  using OpRewritePattern<AllocT>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(AllocT alloc,
+                                PatternRewriter &rewriter) const override {
+    Operation *op = alloc;
+    if (!isGuaranteedAutomaticAllocation(op))
+      return failure();
+    Operation *scope = op->getParentOp();
+    while (scope && !scope->hasTrait<OpTrait::AutomaticAllocationScope>())
+      scope = scope->getParentOp();
+    if (!scope || !isa<scf::ForOp, affine::AffineForOp>(scope))
+      return failure();
+    Operation *top = scope;
+    while (top->getParentOp() &&
+           !top->getParentOp()->hasTrait<OpTrait::AutomaticAllocationScope>())
+      top = top->getParentOp();
+    if (!top->getParentOp())
+      return failure();
+    Region *containingRegion = nullptr;
+    for (Region &r : top->getRegions())
+      if (r.isAncestor(op->getParentRegion()))
+        containingRegion = &r;
+
+    SetVector<Operation *> toHoist;
+    std::function<bool(Value)> fix = [&](Value v) -> /*legal*/ bool {
+      if (!containingRegion->isAncestor(v.getParentRegion()))
+        return true;
+      Operation *def = v.getDefiningOp();
+      if (!def)
+        return false;
+      if (toHoist.count(def))
+        return true;
+      if (!isReadNone(def))
+        return false;
+      for (Value o : def->getOperands())
+        if (!fix(o))
+          return false;
+      toHoist.insert(def);
+      return true;
+    };
+    if (!llvm::all_of(op->getOperands(), fix))
+      return failure();
+    toHoist.insert(op);
+
+    rewriter.setInsertionPoint(top);
+    IRMapping map;
+    for (Operation *h : toHoist) {
+      Operation *cloned = rewriter.clone(*h, map);
+      rewriter.replaceOp(h, cloned->getResults());
+    }
+    return success();
+  }
+};
+
 void TypeAlignOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                               MLIRContext *context) {
   results.insert<AlwaysAllocaScopeHoister<memref::AllocaScopeOp>,
-                 AlwaysAllocaScopeHoister<scf::ForOp>,
-                 AlwaysAllocaScopeHoister<affine::AffineForOp>>(context);
+                 HoistAllocaOutOfLoops<memref::AllocaOp>,
+                 HoistAllocaOutOfLoops<LLVM::AllocaOp>>(context);
 }
 
 /// Simplify select subindex(x), subindex(y) to subindex(select x, y)

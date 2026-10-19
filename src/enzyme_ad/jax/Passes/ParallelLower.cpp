@@ -23,6 +23,7 @@
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -60,11 +61,50 @@ namespace enzyme {
 
 #define DEBUG_TYPE "parallel-lower-opt"
 
+// A call wrapped in an execute_region yields the call's results, but when
+// the inlined callee never returns -- an assert or error path ending in a
+// trap -- the yield is left with nothing to forward. Control cannot reach
+// such a yield; say its operands as poison so the op stays consistent.
+// Inlining a callee with no returning path leaves the call's results with
+// nothing to replace them; the yield built to forward them would be erased
+// out from under. Control cannot reach those uses; say them as poison.
+static void poisonRemainingUses(mlir::CallOpInterface caller) {
+  if (caller->use_empty())
+    return;
+  mlir::OpBuilder b(caller);
+  llvm::SmallVector<mlir::Value> vals;
+  for (mlir::Value r : caller->getResults())
+    vals.push_back(
+        mlir::ub::PoisonOp::create(b, caller->getLoc(), r.getType()));
+  caller->replaceAllUsesWith(vals);
+}
+
+static void repairNonReturningYields(mlir::scf::ExecuteRegionOp exOp) {
+  for (mlir::Block &blk : exOp.getRegion()) {
+    auto yield = llvm::dyn_cast<mlir::scf::YieldOp>(blk.getTerminator());
+    if (!yield || yield.getNumOperands() == exOp.getNumResults())
+      continue;
+    mlir::OpBuilder yb(yield);
+    llvm::SmallVector<mlir::Value> vals;
+    for (mlir::Type t : exOp.getResultTypes())
+      vals.push_back(mlir::ub::PoisonOp::create(yb, yield.getLoc(), t));
+    yield->setOperands(vals);
+  }
+}
+
 using namespace mlir;
 using namespace mlir::arith;
 using namespace mlir::func;
 using namespace mlir::enzymexla;
 using namespace mlir::enzyme;
+
+// gpu.launch_func takes i32 or i64 dimensions; gpu.launch, and the wrapper
+// built from it, take index.
+static Value castToIndex(OpBuilder &builder, Location loc, Value v) {
+  if (!v || v.getType().isIndex())
+    return v;
+  return IndexCastOp::create(builder, loc, builder.getIndexType(), v);
+}
 
 namespace {
 // The store to load forwarding relies on three conditions:
@@ -337,14 +377,19 @@ void ParallelLower::runOnOperation() {
   std::function<void(enzyme::AutoDiffOp)> autodiffInliner;
   std::function<void(LLVM::CallOp)> LLVMcallInliner;
   SmallPtrSet<Operation *, 1> replacedCallables;
+  // Inlines `callableOp` at `caller`, whatever the callee `caller` names.
+  std::function<void(CallOp, CallableOpInterface)> inlineCallTo;
   std::function<void(CallOp)> callInliner = [&](CallOp caller) {
-    // Build the inliner interface.
-    AlwaysInlinerInterface interface(&getContext());
-
     CallableOpInterface callableOp = dyn_cast_or_null<CallableOpInterface>(
         caller.resolveCallableInTable(&symbolTable));
     if (!callableOp)
       return;
+    inlineCallTo(caller, callableOp);
+  };
+  inlineCallTo = [&](CallOp caller, CallableOpInterface callableOp) {
+    // Build the inliner interface.
+    AlwaysInlinerInterface interface(&getContext());
+
     Region *targetRegion = callableOp.getCallableRegion();
     if (!targetRegion)
       return;
@@ -385,9 +430,11 @@ void ParallelLower::runOnOperation() {
     if (inlineCall(interface, cloneCallback, caller, callableOp, targetRegion,
                    /*shouldCloneInlinedRegion=*/true)
             .succeeded()) {
+      poisonRemainingUses(caller);
       caller.erase();
       replacedCallables.insert(callableOp);
     }
+    repairNonReturningYields(exOp);
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     memref::AllocaScopeReturnOp::create(b, allocScope.getLoc(),
                                         exOp.getResults());
@@ -447,10 +494,12 @@ void ParallelLower::runOnOperation() {
       if (inlineCall(interface, cloneCallback, caller, callableOp, targetRegion,
                      /*shouldCloneInlinedRegion=*/true)
               .succeeded()) {
+        poisonRemainingUses(caller);
         caller.erase();
         replacedCallables.insert(callableOp);
       }
     }
+    repairNonReturningYields(exOp);
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     memref::AllocaScopeReturnOp::create(b, allocScope.getLoc(),
                                         exOp.getResults());
@@ -488,6 +537,7 @@ void ParallelLower::runOnOperation() {
     ret.erase();
     b.setInsertionPointToEnd(&exOp.getRegion().back());
     scf::YieldOp::create(b, callerLoc, retVals);
+    repairNonReturningYields(exOp);
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     memref::AllocaScopeReturnOp::create(b, allocScope.getLoc(),
                                         exOp.getResults());
@@ -661,21 +711,35 @@ void ParallelLower::runOnOperation() {
       return;
 
     OpBuilder builder(launchOp);
+    Location loc = launchOp.getLoc();
+    Value gridX = castToIndex(builder, loc, launchOp.getGridSizeX());
+    Value gridY = castToIndex(builder, loc, launchOp.getGridSizeY());
+    Value gridZ = castToIndex(builder, loc, launchOp.getGridSizeZ());
+    Value blockX = castToIndex(builder, loc, launchOp.getBlockSizeX());
+    Value blockY = castToIndex(builder, loc, launchOp.getBlockSizeY());
+    Value blockZ = castToIndex(builder, loc, launchOp.getBlockSizeZ());
+    Value clusterX = castToIndex(builder, loc, launchOp.getClusterSizeX());
+    Value clusterY = castToIndex(builder, loc, launchOp.getClusterSizeY());
+    Value clusterZ = castToIndex(builder, loc, launchOp.getClusterSizeZ());
     auto op = mlir::gpu::LaunchOp::create(
-        builder, launchOp.getLoc(), launchOp.getGridSizeX(),
-        launchOp.getGridSizeY(), launchOp.getGridSizeZ(),
-        launchOp.getBlockSizeX(), launchOp.getBlockSizeY(),
-        launchOp.getBlockSizeZ(), launchOp.getDynamicSharedMemorySize(),
+        builder, loc, gridX, gridY, gridZ, blockX, blockY, blockZ,
+        launchOp.getDynamicSharedMemorySize(),
         launchOp.getNumResults() ? launchOp.getResultTypes()[0] : nullptr,
         launchOp.getAsyncDependencies(),
+        /*asyncObject=*/nullptr,
         /*workgroup*/ TypeRange(),
-        /*private*/ TypeRange(), launchOp.getClusterSizeX(),
-        launchOp.getClusterSizeY(), launchOp.getClusterSizeZ());
+        /*private*/ TypeRange(), clusterX, clusterY, clusterZ);
 
+    // The kernel lives in the GPU module, which a func.call cannot name:
+    // the call only carries its operands into the inlining, which is given
+    // the kernel itself.
     builder.setInsertionPointToStart(&op.getRegion().front());
-    func::CallOp::create(builder, launchOp.getLoc(), launchOp.getKernel(),
-                         TypeRange(), launchOp.getKernelOperands());
+    auto call =
+        func::CallOp::create(builder, launchOp.getLoc(),
+                             FlatSymbolRefAttr::get(launchOp.getKernelName()),
+                             TypeRange(), launchOp.getKernelOperands());
     gpu::TerminatorOp::create(builder, launchOp.getLoc());
+    inlineCallTo(call, cast<CallableOpInterface>(fn.getOperation()));
     for (auto &&[lhs, rhs] :
          llvm::zip_equal(launchOp->getResults(), op->getResults())) {
       lhs.replaceAllUsesWith(rhs);
@@ -748,7 +812,14 @@ void ParallelLower::runOnOperation() {
         if (auto passthrough = lfn.getTargetFeatures()) {
           pw->setAttr("target_features", *passthrough);
         }
+        if (auto targetCpu = lfn.getTargetCpuAttr()) {
+          pw->setAttr("target_cpu", targetCpu);
+        }
       }
+      for (auto atname : {"passthrough", "target_features", "target_cpu"})
+        if (!pw->hasAttr(atname))
+          if (auto attr = launchOp->getAttr(atname))
+            pw->setAttr(atname, attr);
       builder.setInsertionPointToStart(pw.getBody());
     }
 
@@ -849,6 +920,8 @@ void ParallelLower::runOnOperation() {
               MemRefType::get(alop.getType().getShape(),
                               alop.getType().getElementType(),
                               alop.getType().getLayout(), Attribute()));
+          if (auto align = alop.getAlignment())
+            newAlloca.setAlignment(*align);
           builder.replaceOpWithNewOp<memref::CastOp>(alop, alop.getType(),
                                                      newAlloca);
         }
@@ -862,6 +935,8 @@ void ParallelLower::runOnOperation() {
             builder, alop.getLoc(),
             LLVM::LLVMPointerType::get(alop.getContext(), 0),
             alop.getArraySize());
+        if (auto align = alop.getAlignment())
+          newAlloca.setAlignment(*align);
         builder.replaceOpWithNewOp<LLVM::AddrSpaceCastOp>(alop, PT, newAlloca);
       }
     });
@@ -883,6 +958,8 @@ void ParallelLower::runOnOperation() {
           }
           auto newAlloca = memref::AllocaOp::create(
               builder, alop.getLoc(), MemRefType::get(size, elType));
+          if (auto align = glob.getAlignment())
+            newAlloca.setAlignment(*align);
           sharedmems[glob.getName()] = newAlloca;
         }
         builder.replaceOpWithNewOp<enzymexla::Memref2PointerOp>(
@@ -1097,6 +1174,7 @@ void FixGPUFunc::runOnOperation() {
     if (inlineCall(interface, cloneCallback, caller, callableOp, targetRegion,
                    /*shouldCloneInlinedRegion=*/true)
             .succeeded()) {
+      poisonRemainingUses(caller);
       caller.erase();
     }
   };
@@ -1293,6 +1371,8 @@ void ConvertCudaRTtoCPU::runOnOperation() {
   {
     mlir::RewritePatternSet rpl(getOperation()->getContext());
     GreedyRewriteConfig config;
+    config.setRegionSimplificationLevel(
+        GreedySimplifyRegionLevel::Normal);
     config.enableFolding();
     (void)applyPatternsGreedily(getOperation(), std::move(rpl), config);
   }
@@ -1313,6 +1393,49 @@ void StripGPUInfo::runOnOperation() {
       }
     });
   });
+
+  // Extracting device code into gpu modules can leave renamed host-side
+  // residue behind: internal-linkage clones of device functions, held only
+  // by equally dead device vtable globals. LLVM internal linkage is not
+  // MLIR private visibility, so symbol-dce keeps them, and the host backend
+  // then fatals on their sm_* subtargets. Erase the residue: any host-level
+  // function whose target cpu names a device, together with the internal
+  // globals whose initializers are the only things holding its address.
+  auto m = dyn_cast<ModuleOp>(getOperation());
+  if (!m)
+    return;
+  SmallVector<LLVM::LLVMFuncOp> residue;
+  for (auto fn : m.getBody()->getOps<LLVM::LLVMFuncOp>()) {
+    auto cpu = fn->getAttrOfType<StringAttr>("target_cpu");
+    if (cpu && (cpu.getValue().starts_with("sm_") ||
+                cpu.getValue().starts_with("gfx")))
+      residue.push_back(fn);
+  }
+  if (residue.empty())
+    return;
+  DenseSet<Operation *> residueSyms;
+  for (auto fn : residue)
+    residueSyms.insert(fn);
+  SmallVector<LLVM::GlobalOp> deadGlobals;
+  for (auto glob : m.getBody()->getOps<LLVM::GlobalOp>()) {
+    if (glob.getLinkage() != LLVM::Linkage::Internal &&
+        glob.getLinkage() != LLVM::Linkage::Private)
+      continue;
+    bool holdsResidue = false;
+    glob.walk([&](LLVM::AddressOfOp addr) {
+      if (auto *sym = SymbolTable::lookupNearestSymbolFrom(
+              addr, addr.getGlobalNameAttr()))
+        if (residueSyms.count(sym))
+          holdsResidue = true;
+    });
+    if (holdsResidue && SymbolTable::symbolKnownUseEmpty(glob, m))
+      deadGlobals.push_back(glob);
+  }
+  for (auto glob : deadGlobals)
+    glob.erase();
+  for (auto fn : residue)
+    if (SymbolTable::symbolKnownUseEmpty(fn, m))
+      fn.erase();
 }
 
 // Returns a list of all symbols provided by cudart (obtained from

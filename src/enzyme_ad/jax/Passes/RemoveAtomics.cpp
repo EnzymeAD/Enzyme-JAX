@@ -15,6 +15,9 @@
 #endif
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "polly/Support/GICHelper.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -170,11 +173,13 @@ bool isParallel(__isl_keep isl_union_map *Schedule,
   return IsParallel;
 }
 
-// Gather write-write dependencies of two statements.
+// Gather read-after-write, write-after-write and write-after-read dependencies
+// of two statements.
 // TODO check for leaks
 isl::union_map getDeps(ScopStmt &stmtA, MemoryAccess *accessA, ScopStmt &stmtB,
                        MemoryAccess *accessB) {
   isl_space *Space = stmtA.getParent()->getParamSpace().release();
+  isl_union_map *Read = isl_union_map_empty(isl_space_copy(Space));
   isl_union_map *MayWrite = isl_union_map_empty(isl_space_copy(Space));
   isl_union_map *MustWrite = isl_union_map_empty(isl_space_copy(Space));
   isl_union_map *Kill = isl_union_map_empty(isl_space_copy(Space));
@@ -187,7 +192,9 @@ isl::union_map getDeps(ScopStmt &stmtA, MemoryAccess *accessA, ScopStmt &stmtB,
     isl_map *accdom = MA->getAccessRelation().release();
 
     accdom = isl_map_intersect_domain(accdom, domcp);
-    if (MA->isMayWrite())
+    if (MA->isRead())
+      Read = isl_union_map_add_map(Read, accdom);
+    else if (MA->isMayWrite())
       MayWrite = isl_union_map_add_map(MayWrite, accdom);
     else if (MA->isMustWrite())
       MustWrite = isl_union_map_add_map(MustWrite, accdom);
@@ -197,33 +204,73 @@ isl::union_map getDeps(ScopStmt &stmtA, MemoryAccess *accessA, ScopStmt &stmtB,
       llvm_unreachable("unknown access type");
   }
 
+  Read = isl_union_map_coalesce(Read);
   MustWrite = isl_union_map_coalesce(MustWrite);
   MayWrite = isl_union_map_coalesce(MayWrite);
   isl_union_map *Write = isl_union_map_union(isl_union_map_copy(MustWrite),
                                              isl_union_map_copy(MayWrite));
-
-  isl_union_access_info *AI;
+  Write = isl_union_map_coalesce(Write);
 
   isl_schedule *Schedule = stmtA.getParent()->getScheduleTree().release();
 
+  auto buildFlow = [&](isl_union_map *Sink, isl_union_map *MaySource,
+                       isl_union_map *MustSource, isl_union_map *Kill) {
+    isl_union_access_info *AI =
+        isl_union_access_info_from_sink(isl_union_map_copy(Sink));
+    if (MaySource)
+      AI = isl_union_access_info_set_may_source(AI,
+                                                isl_union_map_copy(MaySource));
+    if (MustSource)
+      AI = isl_union_access_info_set_must_source(
+          AI, isl_union_map_copy(MustSource));
+    if (Kill)
+      AI = isl_union_access_info_set_kill(AI, isl_union_map_copy(Kill));
+    AI = isl_union_access_info_set_schedule(AI, isl_schedule_copy(Schedule));
+    isl_union_flow *Flow = isl_union_access_info_compute_flow(AI);
+    LLVM_DEBUG(if (!Flow) llvm::dbgs()
+                   << "last error: "
+                   << isl_ctx_last_error(isl_schedule_get_ctx(Schedule)) << " "
+                   << isl_ctx_last_error_msg(isl_schedule_get_ctx(Schedule))
+                   << '\n';);
+    return Flow;
+  };
+
   LDBG_ISL_DUMP(MayWrite);
   LDBG_ISL_DUMP(MustWrite);
+  LDBG_ISL_DUMP(Read);
   LDBG_ISL_DUMP(Kill);
-  AI = isl_union_access_info_from_sink(isl_union_map_copy(Write));
-  AI = isl_union_access_info_set_may_source(AI, isl_union_map_copy(MayWrite));
-  AI = isl_union_access_info_set_must_source(AI, isl_union_map_copy(MustWrite));
-  AI = isl_union_access_info_set_schedule(AI, isl_schedule_copy(Schedule));
-  auto Flow = isl_union_access_info_compute_flow(AI);
-  LLVM_DEBUG(if (!Flow) llvm::dbgs()
-                 << "last error: "
-                 << isl_ctx_last_error(isl_schedule_get_ctx(Schedule)) << " "
-                 << isl_ctx_last_error_msg(isl_schedule_get_ctx(Schedule))
-                 << '\n';);
+
+  isl_union_flow *Flow = buildFlow(Read, MayWrite, MustWrite, nullptr);
+  isl_union_map *raw = isl_union_flow_get_may_dependence(Flow);
+  isl_union_flow_free(Flow);
+
+  Flow = buildFlow(Write, MayWrite, MustWrite, nullptr);
   isl_union_map *waw = isl_union_flow_get_may_dependence(Flow);
+  isl_union_flow_free(Flow);
+
+  Flow = buildFlow(Write, Read, nullptr, MustWrite);
+  isl_union_map *war = isl_union_flow_get_may_dependence(Flow);
+  isl_union_flow_free(Flow);
+
+  LDBG() << "RAW\n";
+  LLVM_DEBUG(isl_union_map_dump(raw));
   LDBG() << "WAW\n";
   LLVM_DEBUG(isl_union_map_dump(waw));
+  LDBG() << "WAR\n";
+  LLVM_DEBUG(isl_union_map_dump(war));
 
-  return isl::manage(waw);
+  isl_union_map *deps = isl_union_map_union(raw, waw);
+  deps = isl_union_map_union(deps, war);
+  deps = isl_union_map_coalesce(deps);
+
+  isl_union_map_free(Read);
+  isl_union_map_free(MayWrite);
+  isl_union_map_free(MustWrite);
+  isl_union_map_free(Kill);
+  isl_union_map_free(Write);
+  isl_schedule_free(Schedule);
+
+  return isl::manage(deps);
 }
 
 // Determine whether the accesses with dependency `deps` are racy. This is done
@@ -280,7 +327,21 @@ bool isAccessRacy(ScopStmt &stmtA, MemoryAccess *accessA, ScopStmt &stmtB,
   LLVM_DEBUG(polly::dumpIslObj(stmtA.getSchedule()));
   LLVM_DEBUG(polly::dumpIslObj(stmtB.getSchedule()));
 
-  isl::union_map waw = getDeps(stmtA, accessA, stmtB, accessB);
+  // Two accesses can only be dependent, and hence racy, if they can reach the
+  // same element. Ruling that out costs a set intersection, where getDeps below
+  // solves three dataflow problems over the whole schedule tree -- and it is
+  // asked for every pair of atomics in the scop.
+  isl::set rangeA =
+      accessA->getAccessRelation().intersect_domain(stmtA.getDomain()).range();
+  isl::set rangeB =
+      accessB->getAccessRelation().intersect_domain(stmtB.getDomain()).range();
+  if (rangeA.get_space().is_equal(rangeB.get_space()) &&
+      rangeA.intersect(rangeB).is_empty()) {
+    LDBG() << "Accesses touch disjoint elements";
+    return false;
+  }
+
+  isl::union_map deps = getDeps(stmtA, accessA, stmtB, accessB);
 
   isl::schedule schedule = stmtA.getParent()->getScheduleTree();
   LDBG_ISL_DUMP(schedule);
@@ -292,57 +353,149 @@ bool isAccessRacy(ScopStmt &stmtA, MemoryAccess *accessA, ScopStmt &stmtB,
     LDBG_ISL_DUMP(intersectedSchedule);
   });
 
-  return isAccessRacy(schedule.get_root().child(0), waw);
+  return isAccessRacy(schedule.get_root().child(0), deps);
+}
+
+ScopStmt *getStatementContaining(IslScop &scop, Operation *op) {
+  for (ScopStmt &stmt : scop)
+    if (stmt.getOperation() == op || stmt.getOperation()->isAncestor(op))
+      return &stmt;
+  return nullptr;
+}
+
+MemoryAccess *getAtomicArrayWrite(enzyme::AffineAtomicRMWOp rmw,
+                                  ScopStmt &stmt) {
+  MemoryAccess *write = nullptr;
+  for (MemoryAccess *ma : stmt) {
+    if (ma->Kind != MemoryAccess::MT_Array || !ma->isWrite())
+      continue;
+    if (ma->AI->val != rmw.getMemref())
+      continue;
+    if (write)
+      return nullptr;
+    write = ma;
+  }
+  return write;
+}
+
+TypedValue<MemRefType> getMemrefAtomicMemref(Operation *op) {
+  if (auto rmw = dyn_cast<memref::AtomicRMWOp>(op))
+    return rmw.getMemref();
+  if (auto rmw = dyn_cast<memref::GenericAtomicRMWOp>(op))
+    return rmw.getMemref();
+  if (auto rmw = dyn_cast<enzyme::AtomicRMWOp>(op))
+    return rmw.getMemref();
+  return nullptr;
+}
+
+Value stripMemrefCasts(Value value) {
+  while (auto cast = value.getDefiningOp<memref::CastOp>())
+    value = cast.getSource();
+  return value;
+}
+
+bool areDistinctNoAliasFunctionArgs(Value lhs, Value rhs) {
+  lhs = stripMemrefCasts(lhs);
+  rhs = stripMemrefCasts(rhs);
+  if (lhs == rhs)
+    return false;
+
+  auto lhsArg = dyn_cast<BlockArgument>(lhs);
+  auto rhsArg = dyn_cast<BlockArgument>(rhs);
+  if (!lhsArg || !rhsArg || lhsArg.getOwner() != rhsArg.getOwner())
+    return false;
+
+  auto function =
+      dyn_cast<FunctionOpInterface>(lhsArg.getOwner()->getParentOp());
+  if (!function)
+    return false;
+
+  StringRef noAliasAttr = LLVM::LLVMDialect::getNoAliasAttrName();
+  return function.getArgAttr(lhsArg.getArgNumber(), noAliasAttr) &&
+         function.getArgAttr(rhsArg.getArgNumber(), noAliasAttr);
+}
+
+bool mayAliasForAtomicRemoval(Value lhs, Value rhs) {
+  if (areDistinctNoAliasFunctionArgs(lhs, rhs))
+    return false;
+  return mayAlias(lhs, rhs);
 }
 
 // Determines whether it is safe to "remove", i.e. convert an atomic rmw to
 // non-atomic read-modify-store.
 //
-// This is safe when there is no racy store w.r.t. to the rmw.
-bool isSafeToRemoveAtomicImpl(enzyme::AffineAtomicRMWOp rmw, IslScop &scop) {
+// This is safe when there is no other racy atomic rmw w.r.t. this rmw. Regular
+// load/store races are ignored because those races already exist in the input.
+bool isSafeToRemoveAtomicImpl(enzyme::AffineAtomicRMWOp rmw, IslScop &scop,
+                              ArrayRef<enzyme::AffineAtomicRMWOp> rmws,
+                              ArrayRef<Operation *> memrefAtomics) {
   LDBG() << "Handling rmw: " << rmw;
-  ScopStmt &rmwStmt = scop.getStatement(rmw);
-  MemoryAccess *theArrayWrite = nullptr;
-  for (MemoryAccess *ma : rmwStmt)
-    if (ma->Kind == MemoryAccess::MT_Array && ma->isMustWrite())
-      theArrayWrite = ma;
+  ScopStmt *rmwStmt = getStatementContaining(scop, rmw);
+  if (!rmwStmt) {
+    LDBG() << "Failed to find statement for rmw";
+    return false;
+  }
+  MemoryAccess *theArrayWrite = getAtomicArrayWrite(rmw, *rmwStmt);
+  if (!theArrayWrite) {
+    LDBG() << "Failed to identify atomic write for rmw";
+    return false;
+  }
   assert(theArrayWrite);
   LDBG() << "Found array write";
   LLVM_DEBUG(polly::dumpIslObj(theArrayWrite->getAccessRelation()));
 
   TypedValue<MemRefType> theArray = rmw.getMemref();
   assert(theArray == theArrayWrite->AI->val);
-  for (ScopStmt &stmt : scop) {
-    for (MemoryAccess *ma : stmt) {
-      if (ma->Kind == MemoryAccess::MT_Value)
-        continue;
-      if (!ma->isWrite())
-        continue;
 
-      mlir::Value thisArray = ma->AI->val;
-      if (!mayAlias(thisArray, theArray))
-        continue;
+  for (Operation *memrefAtomic : memrefAtomics) {
+    TypedValue<MemRefType> otherArray = getMemrefAtomicMemref(memrefAtomic);
+    assert(otherArray);
+    if (!mayAliasForAtomicRemoval(otherArray, theArray))
+      continue;
 
-      if (thisArray != theArray) {
-        if (isAnyInstanceRacy(rmwStmt, stmt)) {
-          LDBG() << "Found racy write to an aliasing array: "
-                 << *stmt.getOperation();
-          return false;
-        }
-      } else {
-        if (isAccessRacy(rmwStmt, theArrayWrite, stmt, ma)) {
-          LDBG() << "Found racy write to the same array: "
-                 << *stmt.getOperation();
-          return false;
-        }
+    LDBG() << "Found atomic operation to an aliasing memref: " << *memrefAtomic;
+    return false;
+  }
+
+  for (auto otherRmw : rmws) {
+    if (otherRmw == rmw)
+      continue;
+
+    TypedValue<MemRefType> otherArray = otherRmw.getMemref();
+    if (!mayAliasForAtomicRemoval(otherArray, theArray))
+      continue;
+
+    ScopStmt *otherStmt = getStatementContaining(scop, otherRmw);
+    if (!otherStmt) {
+      LDBG() << "Failed to find statement for other rmw";
+      return false;
+    }
+
+    MemoryAccess *otherArrayWrite = getAtomicArrayWrite(otherRmw, *otherStmt);
+    if (!otherArrayWrite) {
+      LDBG() << "Failed to identify atomic write for other rmw";
+      return false;
+    }
+
+    if (otherArray != theArray) {
+      if (isAnyInstanceRacy(*rmwStmt, *otherStmt)) {
+        LDBG() << "Found racy atomic to an aliasing array: " << otherRmw;
+        return false;
+      }
+    } else {
+      if (isAccessRacy(*rmwStmt, theArrayWrite, *otherStmt, otherArrayWrite)) {
+        LDBG() << "Found racy atomic to the same array: " << otherRmw;
+        return false;
       }
     }
   }
   return true;
 }
 
-bool isSafeToRemoveAtomic(enzyme::AffineAtomicRMWOp rmw, IslScop &scop) {
-  if (isSafeToRemoveAtomicImpl(rmw, scop)) {
+bool isSafeToRemoveAtomic(enzyme::AffineAtomicRMWOp rmw, IslScop &scop,
+                          ArrayRef<enzyme::AffineAtomicRMWOp> rmws,
+                          ArrayRef<Operation *> memrefAtomics) {
+  if (isSafeToRemoveAtomicImpl(rmw, scop, rmws, memrefAtomics)) {
     LDBG("remove-atomics-decision") << "Legal to remove atomic from " << rmw;
     return true;
   } else {
@@ -357,7 +510,6 @@ void convertRmw(enzyme::AffineAtomicRMWOp rmw) {
                                            rmw.getMap(), rmw.getIndices());
 
   mlir::Value modify;
-  // TODO fast math flags?
   switch (rmw.getKind()) {
   case mlir::arith::AtomicRMWKind::addf:
     modify = arith::AddFOp::create(b, rmw.getLoc(), read, rmw.getValue());
@@ -409,9 +561,19 @@ void convertRmw(enzyme::AffineAtomicRMWOp rmw) {
     break;
   }
 
+  // The arithmetic we just wrote out is the arithmetic the atomic stood for,
+  // so it is entitled to the same fast-math flags. `assign` writes the operand
+  // through untouched, and that operand is someone else's op to flag.
+  if (modify != rmw.getValue())
+    if (auto iface =
+            dyn_cast<arith::ArithFastMathInterface>(modify.getDefiningOp()))
+      modify.getDefiningOp()->setAttr(
+          iface.getFastMathAttrName(),
+          arith::FastMathFlagsAttr::get(rmw.getContext(), rmw.getFastmath()));
+
   affine::AffineStoreOp::create(b, rmw.getLoc(), modify, rmw.getMemref(),
                                 rmw.getMap(), rmw.getIndices());
-  rmw.getResult().replaceAllUsesWith(modify);
+  rmw.getResult().replaceAllUsesWith(read);
   rmw.erase();
 }
 
@@ -423,13 +585,18 @@ void handleGPUWrapper(enzymexla::GPUWrapperOp wrapperOp) {
 
   llvm::SmallVector<enzyme::AffineAtomicRMWOp> rmws;
   wrapperOp->walk([&](enzyme::AffineAtomicRMWOp rmw) { rmws.push_back(rmw); });
+  SmallVector<Operation *> memrefAtomics;
+  wrapperOp->walk([&](Operation *op) {
+    if (getMemrefAtomicMemref(op))
+      memrefAtomics.push_back(op);
+  });
   if (rmws.empty()) {
     LDBG() << "No RMWs";
     return;
   }
 
-  std::unique_ptr<polymer::IslScop> scop =
-      polymer::createIslFromFuncOp(wrapperOp);
+  std::unique_ptr<polymer::IslScop> scop = polymer::createIslFromFuncOp(
+      wrapperOp, /*allowScfIfConditionalWritesAsMay=*/true);
   if (!scop) {
     LDBG() << "Failed to build scop";
     return;
@@ -445,7 +612,7 @@ void handleGPUWrapper(enzymexla::GPUWrapperOp wrapperOp) {
 
   SmallVector<enzyme::AffineAtomicRMWOp> toConvert;
   for (auto rmw : rmws)
-    if (isSafeToRemoveAtomic(rmw, *scop))
+    if (isSafeToRemoveAtomic(rmw, *scop, rmws, memrefAtomics))
       toConvert.push_back(rmw);
 
   for (auto rmw : toConvert)

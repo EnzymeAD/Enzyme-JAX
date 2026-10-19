@@ -17,6 +17,11 @@
 // Include the dialect
 #include "src/enzyme_ad/jax/Dialect/Tessera/TesseraDialect.h.inc"
 
+// Attribute declarations
+#include "src/enzyme_ad/jax/Dialect/Tessera/TesseraEnums.h.inc"
+#define GET_ATTRDEF_CLASSES
+#include "src/enzyme_ad/jax/Dialect/Tessera/TesseraAttrs.h.inc"
+
 // Include ops
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Tessera/TesseraOps.h.inc"

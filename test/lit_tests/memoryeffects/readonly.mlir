@@ -1,3 +1,4 @@
+// REQUIRES: triton
 // RUN: enzymexlamlir-opt --mark-func-memory-effects %s | FileCheck %s
 
 module {

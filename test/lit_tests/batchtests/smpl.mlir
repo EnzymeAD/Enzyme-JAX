@@ -6,7 +6,7 @@ func.func private @relu_broadcast_scalar(%arg0: tensor<f64>) -> (tensor<f64>) {
     return %1 : tensor<f64>
   }
   func.func @main(%arg0: tensor<2x2xf64>) -> (tensor<2x2xf64>) {
-    %1 = enzyme.batch @relu_broadcast_scalar(%arg0) {batch_shape = array<i64: 2, 2>} : (tensor<2x2xf64>) -> (tensor<2x2xf64>)
+    %1 = enzyme.batch @relu_broadcast_scalar(%arg0) <{batch_shape = array<i64: 2, 2>}> : (tensor<2x2xf64>) -> (tensor<2x2xf64>)
     return %1 : tensor<2x2xf64>
   }
 

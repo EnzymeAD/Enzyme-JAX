@@ -6,7 +6,7 @@ module {
     %c = stablehlo.constant dense<1> : tensor<i32>
     %c_0 = stablehlo.constant dense<42> : tensor<i32>
     %c_1 = stablehlo.constant dense<5> : tensor<i32>
-    %1 = enzymexla.mpi.isend(%0, %c_1, %c, %c_0) {datatype = #enzymexla.datatype<MPI_INT>} : (tensor<5xf64>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<i32>
+    %1 = enzymexla.mpi.isend(%0, %c_1, %c, %c_0) <{datatype = #enzymexla.datatype<MPI_INT>}> : (tensor<5xf64>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<i32>
     // enzymexla.mpi.wait(%1) : tensor<i32>
     %2 = stablehlo.transpose %0, dims = [0] : (tensor<5xf64>) -> tensor<5xf64>
     return %2 : tensor<5xf64>
@@ -32,7 +32,7 @@ module {
 // CPU-NEXT:      %c_1 = stablehlo.constant dense<42> : tensor<i32>
 // CPU-NEXT:      %c_2 = stablehlo.constant dense<1> : tensor<i32>
 // CPU-NEXT:      %0 = stablehlo.transpose %arg0, dims = [0] : (tensor<5xf64>) -> tensor<5xf64>
-// CPU-NEXT:      %1 = enzymexla.jit_call @enzymexla_wrapper_MPI_Isend_MPI_INT (%0, %c_0, %c_2, %c_1, %c) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 4, operand_tuple_indices = []>]} : (tensor<5xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<i32>
+// CPU-NEXT:      %1 = enzymexla.jit_call @enzymexla_wrapper_MPI_Isend_MPI_INT (%0, %c_0, %c_2, %c_1, %c) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 4, operand_tuple_indices = []>]> : (tensor<5xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<i32>
 // CPU-NEXT:      %2 = stablehlo.transpose %0, dims = [0] : (tensor<5xf64>) -> tensor<5xf64>
 // CPU-NEXT:      return %2 : tensor<5xf64>
 // CPU-NEXT:    }

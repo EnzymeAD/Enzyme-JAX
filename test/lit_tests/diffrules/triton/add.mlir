@@ -1,3 +1,4 @@
+// REQUIRES: triton
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= argTys=enzyme_dup,enzyme_dup,enzyme_dup,enzyme_const retTys=enzyme_dup,enzyme_dup,enzyme_dup mode=ForwardMode" --canonicalize | FileCheck %s
 
 module {
@@ -31,7 +32,7 @@ module {
   func.func @main(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>, %arg3: tensor<i32>) -> (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>) {
     %c_0 = stablehlo.constant dense<1> : tensor<i64>
     %c_1 = stablehlo.constant dense<16> : tensor<i64>
-    %0:3 = enzymexla_tt_ext.call @add_kernel_tt::@add_kernel_inner::@add_kernel clusters in (%c_0, %c_0, %c_0) blocks in(%c_1, %c_0, %c_0) (%arg0, %arg1, %arg3) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>]} : (tensor<1024xf32>, tensor<1024xf32>, tensor<i32>) -> (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>)
+    %0:3 = enzymexla_tt_ext.call @add_kernel_tt::@add_kernel_inner::@add_kernel clusters in (%c_0, %c_0, %c_0) blocks in(%c_1, %c_0, %c_0) (%arg0, %arg1, %arg3, %arg2) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 3, operand_tuple_indices = []>]}> : (tensor<1024xf32>, tensor<1024xf32>, tensor<i32>, tensor<1024xf32>) -> (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>)
     return %0#0, %0#1, %0#2 : tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>
   }
 }
@@ -57,7 +58,7 @@ module {
 // CHECK-NEXT:        %[[v16:.+]] = tt.addptr %[[v14]], %[[v4]] : tensor<1024x!tt.ptr<f32>>, tensor<1024xi32>
 // CHECK-NEXT:        %[[v17:.+]] = tt.load %[[v15]], %[[v6]] : tensor<1024x!tt.ptr<f32>>
 // CHECK-NEXT:        %[[v18:.+]] = tt.load %[[v16]], %[[v6]] : tensor<1024x!tt.ptr<f32>>
-// CHECK-NEXT:        %[[v19:.+]] = arith.addf %[[v11]], %[[v17]] : tensor<1024xf32>
+// CHECK-NEXT:        %[[v19:.+]] = arith.addf %[[v11]], %[[v17]] fastmath<fast> : tensor<1024xf32>
 // CHECK-NEXT:        %[[v20:.+]] = arith.addf %[[v12]], %[[v18]] : tensor<1024xf32>
 // CHECK-NEXT:        %[[v21:.+]] = tt.splat %arg6 : !tt.ptr<f32> -> tensor<1024x!tt.ptr<f32>>
 // CHECK-NEXT:        %[[v22:.+]] = tt.splat %arg5 : !tt.ptr<f32> -> tensor<1024x!tt.ptr<f32>>
@@ -71,6 +72,6 @@ module {
 // CHECK:  func.func @main(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>, %arg3: tensor<1024xf32>, %arg4: tensor<1024xf32>, %arg5: tensor<1024xf32>, %arg6: tensor<i32>) -> (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>) {
 // CHECK-NEXT:    %c = stablehlo.constant dense<1> : tensor<i64>
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<16> : tensor<i64>
-// CHECK-NEXT:    %0:6 = enzymexla_tt_ext.call @add_kernel_tt::@add_kernel_inner::@fwddiffeadd_kernel clusters in(%c, %c, %c) blocks in(%c_0, %c, %c) (%arg0, %arg1, %arg2, %arg3, %arg6) {arg_attrs = [], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 2, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [3], operand_index = 3, operand_tuple_indices = []>], res_attrs = []} : (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<i32>) -> (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>)
+// CHECK-NEXT:    %0:6 = enzymexla_tt_ext.call @add_kernel_tt::@add_kernel_inner::@fwddiffeadd_kernel clusters in(%c, %c, %c) blocks in(%c_0, %c, %c) (%arg0, %arg1, %arg2, %arg3, %arg6, %arg4, %arg5) <arg_attrs = [], res_attrs = [], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 2, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [3], operand_index = 3, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [4], operand_index = 5, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [5], operand_index = 6, operand_tuple_indices = []>]> : (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<i32>, tensor<1024xf32>, tensor<1024xf32>) -> (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>)
 // CHECK-NEXT:    return %0#0, %0#1, %0#2, %0#3, %0#4, %0#5 : tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>
 // CHECK-NEXT:  }

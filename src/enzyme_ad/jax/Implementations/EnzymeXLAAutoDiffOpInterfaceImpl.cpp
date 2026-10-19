@@ -196,7 +196,14 @@ struct GPUWrapperOpEnzymeOpsRemover
     for (auto &info : caches) {
       rewriter.moveOpBefore(info.pushOp, wrapOp);
       auto revWrapper = info.popOp->getParentOfType<enzymexla::GPUWrapperOp>();
-      assert(revWrapper && "failed to find reverse gpu_wrapper");
+      // The pop has to be in the reverse kernel for the cache to be moved out
+      // of this one. Without it there is nothing to move the pop before, and
+      // the cache stays in a shape nothing further down can lower.
+      if (!revWrapper)
+        return info.popOp->emitError()
+               << "cache pushed in this gpu_wrapper is popped outside of any "
+                  "gpu_wrapper (in "
+               << info.popOp->getParentOp()->getName() << ")";
       rewriter.moveOpBefore(info.popOp, revWrapper);
 
       SmallVector<Value> frontier{info.popOp.getResult()};
@@ -242,8 +249,8 @@ struct ViewCastOpInterfaceReverse
     return {};
   }
 
-  void createShadowValues(Operation *op, OpBuilder &builder,
-                          MGradientUtilsReverse *gutils) const {
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
     auto castOp = cast<OpTy>(op);
     auto newCastOp = cast<OpTy>(gutils->getNewFromOriginal(op));
     Value source = castOp.getSource();
@@ -253,6 +260,7 @@ struct ViewCastOpInterfaceReverse
       shadowCast.getSourceMutable().assign(sourceShadow);
       gutils->setInvertedPointer(castOp.getResult(), shadowCast->getResult(0));
     }
+    return success();
   }
 };
 
@@ -317,11 +325,45 @@ struct GPUWrapperOpInterfaceReverse
     return caches;
   }
 
-  void createShadowValues(Operation *op, OpBuilder &builder,
-                          MGradientUtilsReverse *gutils) const {}
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
+    return success();
+  }
 };
 
 } // namespace
+
+// Batched, the ops that act along one dimension of their operand act along
+// the same dimension past the batch dimensions.
+template <typename OpTy>
+struct DimensionedOpBatchInterface
+    : public BatchOpInterface::ExternalModel<DimensionedOpBatchInterface<OpTy>,
+                                             OpTy> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<OpTy>(src);
+    auto n = OpTy::create(builder, op.getLoc(), mapper.lookup(op.getOperand()),
+                          op.getLhs(), op.getRhs(),
+                          op.getDimension() + batchSizes.size());
+    mapper.map(src->getResult(0), n.getResult());
+    return success();
+  }
+};
+
+struct RotateOpBatchInterface
+    : public BatchOpInterface::ExternalModel<RotateOpBatchInterface, RotateOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<RotateOp>(src);
+    auto n =
+        RotateOp::create(builder, op.getLoc(), mapper.lookup(op.getOperand()),
+                         op.getAmount(), op.getDimension() + batchSizes.size());
+    mapper.map(src->getResult(0), n.getResult());
+    return success();
+  }
+};
 
 void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
     DialectRegistry &registry) {
@@ -338,6 +380,9 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
     // Register batching interfaces
     JITCallOp::attachInterface<SHLOGenericBatchOpInterface<JITCallOp>>(
         *context);
+    WrapOp::attachInterface<DimensionedOpBatchInterface<WrapOp>>(*context);
+    ExtendOp::attachInterface<DimensionedOpBatchInterface<ExtendOp>>(*context);
+    RotateOp::attachInterface<RotateOpBatchInterface>(*context);
 
     context->loadDialect<stablehlo::StablehloDialect>();
   });

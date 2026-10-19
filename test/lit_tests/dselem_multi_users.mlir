@@ -25,7 +25,7 @@ module @"reactant_\E2\88\87potential" attributes {mhlo.num_partitions = 1 : i64,
     %1 = stablehlo.transpose %cst_0, dims = [1, 0] : (tensor<3x5xf32>) -> tensor<5x3xf32>
     %2 = stablehlo.transpose %cst, dims = [1, 0] : (tensor<3x5xf32>) -> tensor<5x3xf32>
     %3 = stablehlo.transpose %cst_8, dims = [1, 0] : (tensor<3x5xf32>) -> tensor<5x3xf32>
-    %4:5 = stablehlo.while(%iterArg = %c_5, %iterArg_10 = %cst_2, %iterArg_11 = %arg0, %iterArg_12 = %arg1, %iterArg_13 = %arg2) : tensor<i64>, tensor<3x5xf32>, tensor<5x5xf32>, tensor<5xf32>, tensor<3x5xf32> attributes {enzyme.disable_mincut, enzymexla.symmetric_matrix = [#enzymexla<guaranteed UNKNOWN>, #enzymexla<guaranteed UNKNOWN>, #enzymexla<guaranteed UNKNOWN>, #enzymexla<guaranteed UNKNOWN>, #enzymexla<guaranteed UNKNOWN>, #enzymexla<guaranteed UNKNOWN>, #enzymexla<guaranteed UNKNOWN>, #enzymexla<guaranteed NOTGUARANTEED>, #enzymexla<guaranteed UNKNOWN>, #enzymexla<guaranteed UNKNOWN>]}
+    %4:5 = stablehlo.while(%iterArg = %c_5, %iterArg_10 = %cst_2, %iterArg_11 = %arg0, %iterArg_12 = %arg1, %iterArg_13 = %arg2) : tensor<i64>, tensor<3x5xf32>, tensor<5x5xf32>, tensor<5xf32>, tensor<3x5xf32> attributes {enzyme.disable_mincut, enzymexla.symmetric_matrix = [#enzymexla.guaranteed<UNKNOWN>, #enzymexla.guaranteed<UNKNOWN>, #enzymexla.guaranteed<UNKNOWN>, #enzymexla.guaranteed<UNKNOWN>, #enzymexla.guaranteed<UNKNOWN>, #enzymexla.guaranteed<UNKNOWN>, #enzymexla.guaranteed<UNKNOWN>, #enzymexla.guaranteed<NOTGUARANTEED>, #enzymexla.guaranteed<UNKNOWN>, #enzymexla.guaranteed<UNKNOWN>]}
     cond {
       %5 = stablehlo.compare  LT, %iterArg, %c : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %5 : tensor<i1>

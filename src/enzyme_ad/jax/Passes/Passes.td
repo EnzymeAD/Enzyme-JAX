@@ -24,7 +24,10 @@ def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops",
   let options = [
     Option<"speculate_if", "speculate_if", "bool",
            /*default=*/"false",
-	   "Whether to speculate if statement bodies">
+	   "Whether to speculate if statement bodies">,
+    Option<"speculate_partial_if", "speculate_partial_if", "bool",
+           /*default=*/"false",
+	   "Whether to partially speculate if statement bodies">
   ];
 }
 
@@ -76,7 +79,6 @@ def MarkFunctionMemoryEffectsPass : Pass<"mark-func-memory-effects", "ModuleOp">
   let summary = "Attach enzymexla.memory_effects attribute summarizing memory access";
   let dependentDialects = [
     "mlir::LLVM::LLVMDialect",
-    "triton::TritonDialect",
     "memref::MemRefDialect",
   ];
   let options = [
@@ -261,8 +263,48 @@ def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {
         /*CLI argument=*/"max-operation-threshold",
         /*type=*/"int",
         /*default=*/"-1",
-        /*description=*/"Only unroll if total operations is less than this value. If -1, no limit.">
+        /*description=*/"Only unroll if total operations is less than this value. If -1, no limit.">,
+    Option<
+        /*C++ variable name=*/"maxBoundedIterations",
+        /*CLI argument=*/"max-bounded-iterations",
+        /*type=*/"int",
+        /*default=*/"-1",
+        /*description=*/"A loop whose limit is only bounded unrolls to at most this many trips. If -1, as max-num-iterations.">,
+    Option<
+        /*C++ variable name=*/"boundedGuardIf",
+        /*CLI argument=*/"bounded-guard-if",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Put the copies past a bounded loop's certain trips under a stablehlo.if rather than run them and select their results.">
   ];
+}
+
+def CanonicalizeElementwiseShapesPass
+    : Pass<"canonicalize-elementwise-shapes"> {
+  let summary = "Give each maximal elementwise chain a single tensor shape";
+  let description = [{
+    `stablehlo.reshape` preserves the linearized element order, so two shapes
+    with the same number of elements denote the same buffer and a reshape
+    between them is a bitcast. Reshape propagation is free to move such a
+    reshape across an elementwise op, and doing so is neutral in isolation.
+
+    It stops being neutral once a value in the chain is consumed at more than
+    one of those shapes, which is common after differentiation: the primal
+    reads an intermediate at the propagated shape while the reverse pass reads
+    it at the pre-propagation shape. The chain then straddles two
+    bitcast-equivalent shapes. XLA groups elementwise producers into a fusion
+    by shape, so a chain whose shape changes part way through can no longer be
+    fused into the op consuming it, and that consumer -- typically a transpose
+    -- is emitted as a standalone kernel instead of absorbing the chain.
+
+    This pass repairs that. For each maximal chain of elementwise ops connected
+    through bitcast reshapes, it picks the shape minimizing the number of
+    reshapes materialized at the chain boundary and rewrites the whole chain
+    into it, leaving reshapes only where a value genuinely escapes to a
+    consumer wanting a different shape. It never increases the boundary reshape
+    count, and does not duplicate arithmetic.
+  }];
+  let dependentDialects = ["stablehlo::StablehloDialect"];
 }
 
 def EnzymeRefineArgumentsPass : Pass<"enzyme-refine-arguments", "ModuleOp"> {
@@ -305,6 +347,76 @@ def PrintPass : Pass<"print"> {
 
 def SortMemory : Pass<"sort-memory"> {
   let summary = "Sort memory accesses";
+}
+
+def LowerAlignedAffineAccessesPass
+    : Pass<"lower-aligned-affine-accesses"> {
+  let summary = "Lower affine accesses that carry an alignment attribute to "
+                "memref accesses that keep it";
+  let description = [{
+    llvm-to-affine-access records the alignment of the access it raised as an
+    attribute on the affine.load/affine.store it made. Upstream lower-affine
+    rebuilds those as memref accesses without carrying attributes over, so the
+    recorded alignment is lost and the final llvm access is emitted at the
+    element type's ABI alignment -- which may promise more than the pointer
+    holds (a 16-byte member swap clang emits as `load i128, align 8`).
+
+    Run before lower-affine, this lowers exactly the accesses that carry an
+    alignment attribute, keeping their attributes; lower-affine handles the
+    affine.apply this leaves behind, and everything else, as before.
+  }];
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "memref::MemRefDialect",
+  ];
+}
+
+def HoistAllocasPass : Pass<"hoist-allocas"> {
+  let summary = "Move stack allocations to the start of the region that frees "
+                "them";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+    "memref::MemRefDialect",
+  ];
+}
+
+def InvokeToCallPass : Pass<"invoke-to-call"> {
+  let summary = "Call, rather than invoke, the callees that cannot unwind";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+  ];
+}
+
+def StripDeadPersonalityPass : Pass<"strip-dead-personality"> {
+  let summary = "Drop the personality of functions that have no landing pad, "
+                "so the inliner accepts them";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+  ];
+}
+
+def DiscardUnreferencedLinkoncePass
+    : Pass<"discard-unreferenced-linkonce"> {
+  let summary = "Erase linkonce function definitions nothing references";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+  ];
+}
+
+def RestorePreserveNVVMPass : Pass<"restore-preserve-nvvm"> {
+  let summary = "Undo PreserveNVVM(Begin)'s linkage and inlining fixups once "
+                "the raising has consumed the calls they protected";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+  ];
+}
+
+def SortBlockMemoryPass : Pass<"sort-block-memory"> {
+  let summary = "Hoist non-overlapping loads to the start of their block and "
+                "sink stores to the end";
+  let dependentDialects = [
+    "affine::AffineDialect",
+  ];
 }
 
 def PrintLocationPass : Pass<"print-location"> {
@@ -376,11 +488,34 @@ def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
   ];
 }
 
+def SplitBranchedAccessesPass : Pass<"split-branched-accesses"> {
+  let summary = "Do an access whose index a branch chose in each arm instead";
+  let description = [{
+    An access at an index chosen between constants by a branch names no slot
+    the store forwarding can see. Doing it in each arm, at the constant that
+    arm chose, gives a constant index there, and the arithmetic in between
+    rides along and folds.
+  }];
+  let dependentDialects = ["affine::AffineDialect", "arith::ArithDialect",
+                           "memref::MemRefDialect", "scf::SCFDialect",
+  ];
+}
+
+def CanonicalizeParallelPass : Pass<"canonicalize-parallel"> {
+  let summary = "Canonicalize top-level ops in parallel, confining region simplification to each";
+  let options = [Option<
+      "parallel", "parallel", "bool", "false",
+      "Rewrite top-level ops on the context's thread pool; without it "
+      "they are processed serially, still confining region "
+      "simplification to each op">];
+}
+
 def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
   let summary = "Raise libdevice function calls to arith/math operations";
   let dependentDialects = [
     "arith::ArithDialect",
     "enzyme::EnzymeDialect",
+    "enzymexla::EnzymeXLADialect",
     "math::MathDialect",
     "gpu::GPUDialect",
   ];
@@ -428,6 +563,7 @@ def ConvertPolygeistToLLVM
                 .Block argument types are updated to use LLVM IR types.
   }];
   let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
     "func::FuncDialect",
     "LLVM::LLVMDialect",
     "memref::MemRefDialect",
@@ -526,6 +662,7 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
   let summary = "Lower MPI Ops to LLVM";
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect",
+    "gpu::GPUDialect", 
     "LLVM::LLVMDialect",
   ];
   let options = [
@@ -535,13 +672,49 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
         /*type=*/"std::string",
         /*default=*/"\"cpu\"",
         /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"ncclCommPtr",
+        /*CLI argument=*/"ncclCommPtr",
+        /*type=*/"size_t",
+        /*default=*/"0",
+        /*description=*/"Pointer to nccl communicator instance">,
   ];
+}
+
+def FuseJITPass : Pass<"fuse-jit", "mlir::ModuleOp"> {
+  let summary = "Fuse JIT calls";
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "LLVM::LLVMDialect",
+    "stablehlo::StablehloDialect",
+  ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"top_down",
+        /*CLI argument=*/"top_down",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Use top down traversal">,
+    Option<
+        /*C++ variable name=*/"dag",
+        /*CLI argument=*/"dag",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Fuse JIT calls connected by data dependency">,
+    // Option<
+    //     /*C++ variable name=*/"adjacent",
+    //     /*CLI argument=*/"adjacent",
+    //     /*type=*/"bool",
+    //     /*default=*/"true",
+    //     /*description=*/"Fuse adjacent JIT calls">,
+    ];
 }
 
 def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
   let summary = "Lower enzymexla.lapack ops to stablehlo";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
+    "chlo::ChloDialect",
     "enzymexla::EnzymeXLADialect",
     "LLVM::LLVMDialect",
   ];
@@ -646,6 +819,7 @@ def LowerEnzymeXLAMathPass : Pass<"lower-enzymexla-math"> {
     "stablehlo::StablehloDialect",
     "chlo::ChloDialect",
     "enzymexla::EnzymeXLADialect",
+    "enzyme::EnzymeDialect",
   ];
 }
 
@@ -655,6 +829,7 @@ def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
     "stablehlo::StablehloDialect",
     "chlo::ChloDialect",
     "enzymexla::EnzymeXLADialect",
+    "enzyme::EnzymeDialect",
   ];
 }
 
@@ -790,6 +965,31 @@ def LowerJITPass : Pass<"lower-jit"> {
   ];
 }
 
+def MapSymbolPass : Pass<"map-symbol"> {
+  let summary = "Register a symbol to address mapping";
+  let description = [{
+    Register a symbol to address mapping, mainly used for JIT.
+
+    This pass is not thought to be used on a regular pipeline. It exists because
+    some transformation passes fail to run when run through `enzymexlamlir-opt`. 
+    As they rely on taking symbols from the symbol table, it fails because such
+    symbols are registered on runtime initialization by a frontend (e.g.
+    Reactant).
+
+    This pass is a workaround to register the symbols with mock values as if you
+    were calling `EnzymeJaxMapSymbol`. This pass should only be used for
+    testing.
+  }];
+  let dependentDialects = [];
+  let options = [
+    ListOption<
+      /*C++ variable name=*/"symbols",
+      /*CLI argument=*/"symbols",
+      /*type=*/"std::string",
+      /*description=*/"List of symbols to register with mock values">
+  ];
+}
+
 //===----------------------------------------------------------------------===//
 // LLVMToControlFlow
 //===----------------------------------------------------------------------===//
@@ -840,13 +1040,11 @@ def EnzymeLiftControlFlowToSCFPass : Pass<"enzyme-lift-cf-to-scf"> {
 
 def LLVMToAffineAccessPass : Pass<"llvm-to-affine-access"> {
   let summary = "";
-  let dependentDialects = [
-    "LLVM::LLVMDialect",
-    "memref::MemRefDialect",
-    "affine::AffineDialect",
-    "vector::VectorDialect",
-    "enzymexla::EnzymeXLADialect",
-    "vector::VectorDialect",
+  let dependentDialects = ["LLVM::LLVMDialect", "enzyme::EnzymeDialect",
+                           "memref::MemRefDialect", "affine::AffineDialect",
+                           "vector::VectorDialect",
+                           "enzymexla::EnzymeXLADialect",
+                           "vector::VectorDialect",
   ];
 }
 
@@ -880,6 +1078,14 @@ def AffineCFG : Pass<"affine-cfg"> {
     "affine::AffineDialect",
     "enzyme::EnzymeDialect",
   ];
+  let options = [
+    Option<
+      /*C++ variable name=*/"enable_split_on_affine_if_constants",
+      /*CLI argument=*/"enable_split_on_affine_if_constants",
+      /*type=*/"bool",
+      /*default=*/"false",
+      /*description=*/"Enable the SplitOnAffineIfConstants pattern">,
+    ];
 }
 
 def CuDNNHLOOpt : Pass<"enzymexla-cudnn-hlo-opt"> {
@@ -1179,6 +1385,95 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            /*default=*/"true",
            /*description=*/
            "Whether to prefer raising to while instead of unrolling">,
+       Option<
+           /*C++ variable name=*/"unroll_budget",
+           /*CLI argument=*/"unroll_budget",
+           /*type=*/"int64_t",
+           /*default=*/"65536",
+           /*description=*/
+           "Raise a constant-bound loop as a while instead of unrolling when "
+           "its nested unrolled op count exceeds this. -1 for no budget">,
+       Option<
+           /*C++ variable name=*/"specialize_loop_bounds",
+           /*CLI argument=*/"specialize_loop_bounds",
+           /*type=*/"bool",
+           /*default=*/"true",
+           /*description=*/
+           "Mark the scalar arguments a raised while loop's exit test reads "
+           "as scalars the runtime specializes the executable over (trailing "
+           "xla_wrapper inputs, num_specialized)">,
+       Option<
+           /*C++ variable name=*/"specialize_index_strides",
+           /*CLI argument=*/"specialize_index_strides",
+           /*type=*/"bool",
+           /*default=*/"false",
+           /*description=*/
+           "Specialize the kernel over a scalar argument an access index reads, "
+           "such as a stride, so the index folds to a constant">,
+       Option<
+           /*C++ variable name=*/"specialize_int_scalars",
+           /*CLI argument=*/"specialize_int_scalars",
+           /*type=*/"bool",
+           /*default=*/"false",
+           /*description=*/
+           "Specialize the kernel over every scalar integer argument it only "
+           "reads (lengths, flags), so none reaches the device as a buffer">,
+  ];
+}
+
+def XLAMegakernelizePass : Pass<"xla-megakernelize", "ModuleOp"> {
+  let summary = "Fuse XLA wrappers and move host loops into XLA";
+  let description = [{
+    Combine compatible sequential enzymexla.xla_wrapper calls into one call.
+    Operations between the calls must have no memory effects. Use one tensor
+    state for each shared buffer. Pass the updated state from the first
+    computation to the second computation. Keep separate state for other
+    buffers. Allow duplicate buffer inputs when each view returns its input
+    unchanged. For contiguous views of equal total size, use bitcasts and
+    reshapes to read the shared state with a different shape or element type.
+    Get dynamic buffer sizes from the runtime. Do not combine writes through
+    duplicate inputs or views with different total sizes.
+    Also apply the registered XLA wrapper canonicalization patterns.
+
+    All inputs to the combined call must be available before the first call.
+    Put specialized scalar inputs after the buffer inputs, in call order.
+    Add the specialized input counts. Do not return results for these scalars.
+    Do not combine calls with argument or result metadata.
+
+    Replace an scf.for or affine.for with one XLA wrapper call. Put a
+    stablehlo.while in the new function to execute the loop. The host loop
+    must have one body block, no results, and an unused induction variable.
+    Its body must contain exactly one wrapper call. Other body operations
+    must have no regions and must be pure. These operations must be safe to
+    execute even when the loop has zero iterations. Move them before the
+    new wrapper call. The called StableHLO function must have one body block.
+
+    Pass the induction variable and updated tensors to the next iteration.
+    Read the upper bound, step, and specialized scalars from the new function's
+    entry block. Do not pass them as loop state. Put constant bounds and steps
+    directly in the new function.
+
+    Use module-owned device storage for each dynamic bound or step. Later
+    lowering passes allocate this storage at module initialization and free
+    it at module finalization. Copy the current value to this storage before
+    each call. Calls to the same loop must not overlap because they share
+    this storage.
+
+    Keep function references in the same symbol scope. Preserve the wrapper
+    and function attributes. Add empty argument and result attributes for
+    new bound buffers. Keep specialized inputs and their attributes at the end
+    of the input list. Do not add results for specialized inputs.
+
+    Compile the new function as one XLA program. The XLA backend determines
+    the number of GPU kernels.
+  }];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
+    "stablehlo::StablehloDialect",
   ];
 }
 
@@ -1207,6 +1502,41 @@ def ConvertCudaRTtoHipRT : Pass<"convert-cudart-to-hiprt", "mlir::ModuleOp"> {
   let summary = "Convert CUDA runtime calls to HIP runtime calls";
   let dependentDialects = [
     "mlir::ROCDL::ROCDLDialect",
+  ];
+}
+
+def UnrollSmallLoops : Pass<"unroll-small-loops"> {
+  let summary = "Fully unroll scf.for and affine.for loops of few iterations";
+  let description = [{
+    Fully unrolls every scf.for and affine.for whose trip count is a compile
+    time constant of at most max_trip_count, while the operations it leaves
+    (its trip count times the operations nested in its body, inner loops
+    already unrolled) number at most max_nested_ops. A loop of no iteration
+    (replaced by its initial values) or of a single one (by its body) is
+    always removed, whatever the limits. No loop is partially unrolled.
+  }];
+  let dependentDialects = [
+    "scf::SCFDialect",
+    "affine::AffineDialect",
+    "arith::ArithDialect",
+  ];
+  let options = [
+    Option<
+      /*C++ variable name=*/"max_trip_count",
+      /*CLI argument=*/"max_trip_count",
+      /*type=*/"int64_t",
+      /*default=*/"0",
+      /*description=*/"Unroll a loop of at most this many iterations; loops "
+                      "of zero or one iteration are always removed">,
+    Option<
+      /*C++ variable name=*/"max_nested_ops",
+      /*CLI argument=*/"max_nested_ops",
+      /*type=*/"int64_t",
+      /*default=*/"-1",
+      /*description=*/"Unroll a loop of two or more iterations only while its "
+                      "iterations times the operations nested in its body, "
+                      "inner loops already unrolled, is at most this "
+                      "(negative: no limit)">,
   ];
 }
 
@@ -1283,6 +1613,12 @@ def AutoBatchingPass : Pass<"auto-batching"> {
       /*type=*/"bool",
       /*default=*/"true",
       /*description=*/"remove loop carried deps from load operations">,
+    Option<
+      /*C++ variable name=*/"parallel_while_to_batched_scatter_passes",
+      /*CLI argument=*/"parallel_while_to_batched_scatter_passes",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"A parallel while of a raised kernel with a constant trip count becomes a batched scatter">,
     Option<
         /*C++ variable name=*/"max_iterations",
         /*CLI argument=*/"max_iterations",
@@ -1408,6 +1744,35 @@ def RemoveAtomicsPass : Pass<"remove-atomics"> {
     "affine::AffineDialect",
     "enzymexla::EnzymeXLADialect",
   ];
+}
+
+def GpuModuleToBinarySink : Pass<"enzymexla-gpu-module-to-binary", ""> {
+  let summary = "Serialize GPU modules to binaries, sinking cheap address "
+                "arithmetic after the LLVM optimization pipeline";
+  let description = [{
+    Drop-in for the upstream `gpu-module-to-binary` pass that additionally
+    rematerializes cheap integer/address computations next to their uses on
+    the optimized LLVM IR, immediately before ISA generation. Running after
+    the target's optimization pipeline means EarlyCSE/GVN can no longer
+    re-hoist the clones, shortening live ranges that otherwise inflate
+    register pressure in large kernels.
+  }];
+  let options =
+      [Option<"toolkitPath", "toolkit", "std::string", [{""}], "Toolkit path.">,
+       ListOption<"linkFiles", "l", "std::string", "Extra files to link to.">,
+       Option<"cmdOptions", "opts", "std::string", [{""}],
+              "Command line options to pass to the tools.">,
+       Option<"compilationTarget", "format", "std::string", [{"fatbin"}],
+              "The target representation of the compilation process.">,
+       Option<"elfSection", "section", "std::string", [{""}],
+              "ELF section where binary is to be located.">,
+       Option<"sinkMode", "sink", "int", "2",
+              "0: no sinking; 1: sink only within the defining loop; "
+              "2: also sink into deeper loops">,
+       Option<"dumpIR", "dump", "bool", "false",
+              "Print each serialized module's LLVM IR as handed to "
+              "instruction selection, after any sinking">];
+  let dependentDialects = ["gpu::GPUDialect", "LLVM::LLVMDialect", ];
 }
 
 #endif

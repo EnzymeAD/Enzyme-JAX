@@ -10,8 +10,8 @@ module {
   }
 
   func.func @main(%arg101 : tensor<1x187x194xf64>, %52 : tensor<1x187x194xf64>) -> tensor<1x187x194xf64> {
-    %170 = enzymexla.jit_call @"##call__Z27gpu_store_field_tendencies_16CompilerMetadataI10StaticSizeI13_180__85__20_E12DynamicCheckvv7NDRangeILi3ES0_I11_12__6__20_ES0_I11_16__16__1_EvvEE5FieldI4Face6Centervvvv11OffsetArrayI7Float64Li3E13CuTracedArrayISC_Li3ELi1E13_194__187__1_EESC_vvvESG_#1671$par239" (%arg101, %52) {output_operand_aliases = [
-#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<1x187x194xf64>, tensor<1x187x194xf64>) -> tensor<1x187x194xf64>
+    %170 = enzymexla.jit_call @"##call__Z27gpu_store_field_tendencies_16CompilerMetadataI10StaticSizeI13_180__85__20_E12DynamicCheckvv7NDRangeILi3ES0_I11_12__6__20_ES0_I11_16__16__1_EvvEE5FieldI4Face6Centervvvv11OffsetArrayI7Float64Li3E13CuTracedArrayISC_Li3ELi1E13_194__187__1_EESC_vvvESG_#1671$par239" (%arg101, %52) <{output_operand_aliases = [
+#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<1x187x194xf64>, tensor<1x187x194xf64>) -> tensor<1x187x194xf64>
     return %170 : tensor<1x187x194xf64>
   }
 }

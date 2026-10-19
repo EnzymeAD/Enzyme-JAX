@@ -1,11 +1,13 @@
 #ifndef ENZYME_AD_JAX_DIALECT_PERFIFY_DIALECT_TD
 #define ENZYME_AD_JAX_DIALECT_PERFIFY_DIALECT_TD
 
+include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/DialectBase.td"
 include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/Traits.td"
 include "mlir/IR/OpBase.td"
 
+include "mlir/IR/EnumAttr.td"
 //===----------------------------------------------------------------------===//
 // Perfify dialect definition.
 //===----------------------------------------------------------------------===//
@@ -18,6 +20,8 @@ def PerfifyDialect : Dialect {
         Leverages SAT solvers to automatically prove this, or interactive theorem provers to allow for complete proofs. 
     }];
     let cppNamespace = "::mlir::enzyme::perfify";
+    let useDefaultAttributePrinterParser = 1;
+    let useDefaultTypePrinterParser = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -27,6 +31,26 @@ def PerfifyDialect : Dialect {
 class PerfifyOp<string mnemonic, list<Trait> traits = []>
     : Op<PerfifyDialect, mnemonic, traits>;
 
-class PerfifyType<string name> : TypeDef<PerfifyDialect, name>; // may need to be modified
+class PerfifyAttr<string attrName, string attrMnemonic>
+    : AttrDef<PerfifyDialect, attrName, []> {
+  let mnemonic = attrMnemonic;
+}
+
+def PerfifyCostAttr : PerfifyAttr<"Cost", "cost"> {
+    let cppClassName = "CostAttr";
+    let assemblyFormat = "$value";
+    let parameters = (ins APIntParameter<"">:$value);
+}
+def PerfifyCmpPredicateAttr : I64EnumAttr
+    <"CmpPredicate", "", [
+      I64EnumAttrCase<"eq", 0, "eq">,
+      I64EnumAttrCase<"ne", 1, "ne">,
+      I64EnumAttrCase<"lt", 2, "lt">,
+      I64EnumAttrCase<"le", 3, "le">,
+      I64EnumAttrCase<"gt", 4, "gt">,
+      I64EnumAttrCase<"ge", 5, "ge">,
+    ]> {
+  let cppNamespace = "::mlir::enzyme::perfify";
+}
 
 #endif // ENZYME_AD_JAX_DIALECT_PERFIFY_DIALECT_TD

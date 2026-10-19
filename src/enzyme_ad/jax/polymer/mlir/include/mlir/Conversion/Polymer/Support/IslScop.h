@@ -429,7 +429,8 @@ public:
   IslScopBuilder() {}
 
   /// Build a scop from a common FuncOp.
-  std::unique_ptr<IslScop> build(mlir::Operation *f);
+  std::unique_ptr<IslScop> build(mlir::Operation *f,
+                                 bool allowScfIfConditionalWritesAsMay = false);
 
 private:
   /// Find all statements that calls a scop.stmt.

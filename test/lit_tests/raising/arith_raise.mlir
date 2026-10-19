@@ -2,7 +2,7 @@
 
 module {
   // CHECK: @func_fcmp
-  // CHECK-NEXT: arith.cmpf ogt, %arg0, %arg1 {fastmathFlags = #llvm.fastmath<none>} : f64
+  // CHECK-NEXT: arith.cmpf ogt, %arg0, %arg1 : f64
   func.func @func_fcmp(%arg0: f64, %arg1: f64) -> i1 {
       %res = llvm.fcmp "ogt" %arg0, %arg1 : f64
       func.return %res : i1

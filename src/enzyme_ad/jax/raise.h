@@ -30,7 +30,44 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 
+struct MLIRRoundTripOptions {
+  bool dataflow;
+  bool markReadonly;
+  bool preADLowerAffine;
+  bool splitMultiResults;
+  bool removeAtomics;
+  bool sortBlockMemory;
+  bool hoistLoopAllocations;
+  bool lowerInvoke;
+  // Verify the module after every pass rather than once after the pipeline.
+  // The per-pass verification re-walks the whole module's symbol table and
+  // dominance ~65 times; on large TUs that is a third of the pipeline.
+  bool verifyEach;
+  // Let canonicalize-parallel use the context's thread pool. Off by default:
+  // every clang process would otherwise spin up a hardware-concurrency pool,
+  // oversubscribing the machine under a parallel build.
+  bool parallelCanonicalize;
+  // Mode for the GPU serializer's late sink: 0 disables it, 1 sinks only
+  // within the defining loop, 2 also rematerializes into deeper loops.
+  int lateSink;
+  bool exportMLIROnly;
+  // Specialize a kernel over the scalars its access indices read (the
+  // strides), not only its loop bounds; the raising pass option of that name.
+  bool specializeIndexStrides;
+  // Fully unroll every loop whose trip count is a compile time constant of
+  // at most this many iterations, before the first affine-cfg. Loops of zero
+  // or one iteration are removed whatever this is.
+  int unrollMaxTripCount;
+  // ... while the iterations times the operations nested in the loop's body
+  // (inner loops already unrolled) are at most this many; negative: no limit.
+  int unrollMaxNestedOps;
+  // Specialize a kernel over every scalar integer argument it only reads;
+  // the raising pass option of that name.
+  bool specializeIntScalars;
+};
+
 extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
                                               std::string outfile,
                                               std::string backend,
-                                              std::string library);
+                                              std::string library,
+                                              MLIRRoundTripOptions *options);
