@@ -1626,8 +1626,7 @@ cc_library(
         "@xla//xla/mlir/utils:type_util",
         "@xla//xla/mlir_hlo",
         "@zlib",
-    ] + if_z3,
-    ] + select({
+    ] + if_z3 + select({
         "@local_config_cuda//:is_cuda_enabled": [
             "@local_config_cuda//cuda:cuda_headers",
             "@xla//xla/tsl/cuda:cudart",
