@@ -224,7 +224,8 @@ struct GPUWrapperToKernelCallPass
   // corresponding operand after the launch.
   FailureOr<enzymexla::KernelCallOp>
   createKernelCall(OpBuilder &builder, gpu::LaunchFuncOp launch,
-                   ValueRange operands, SymbolTableCollection &symbolTables) {
+                   ValueRange operands, ArrayAttr operandLayouts,
+                   SymbolTableCollection &symbolTables) {
     auto toTensorI64 = [&](Value v) -> Value {
       llvm::APInt val;
       if (!matchPattern(v, m_ConstantInt(&val)))
@@ -275,7 +276,7 @@ struct GPUWrapperToKernelCallPass
         SymbolRefAttr::get(fn.getSymNameAttr()), gridx, gridy, gridz, blockx,
         blocky, blockz, shmem, clusterx, clustery, clusterz, operands,
         /*backend_config=*/builder.getStringAttr(""),
-        /*operand_layouts=*/nullptr, /*arg_attrs=*/nullptr,
+        operandLayouts, /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr, ArrayAttr::get(ctx, aliases),
         /*xla_side_effect_free=*/nullptr);
   }
@@ -325,9 +326,23 @@ struct GPUWrapperToKernelCallPass
         for (BlockArgument buffer : buffers)
           operands.push_back(contents[buffer]);
 
+        // The layouts of the region's operands, picked for the buffers this
+        // kernel is passed, if the region has any.
+        ArrayAttr operandLayouts;
+        if (Attribute layouts = region.getOperandLayoutsAttr()) {
+          auto regionLayouts = dyn_cast<ArrayAttr>(layouts);
+          if (!regionLayouts || regionLayouts.size() != body->getNumArguments())
+            return region.emitError(
+                "expected one operand layout per buffer of the jit_region");
+          SmallVector<Attribute> kernelLayouts;
+          for (BlockArgument buffer : buffers)
+            kernelLayouts.push_back(regionLayouts[buffer.getArgNumber()]);
+          operandLayouts = builder.getArrayAttr(kernelLayouts);
+        }
+
         builder.setInsertionPoint(region);
-        FailureOr<enzymexla::KernelCallOp> call =
-            createKernelCall(builder, launch, operands, symbolTables);
+        FailureOr<enzymexla::KernelCallOp> call = createKernelCall(
+            builder, launch, operands, operandLayouts, symbolTables);
         if (failed(call))
           return failure();
         for (auto [buffer, result] :
