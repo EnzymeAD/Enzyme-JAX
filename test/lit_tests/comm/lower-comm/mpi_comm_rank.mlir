@@ -1,5 +1,6 @@
 // RUN: enzymexlamlir-opt --lower-comm-to-stablehlo %s | FileCheck %s --check-prefix=SHLO
 // RUN: enzymexlamlir-opt --lower-comm-to-jit %s | FileCheck %s --check-prefix=JIT
+// RUN: enzymexlamlir-opt --legalize-mpi-to-nccl %s | FileCheck %s --check-prefix=NCCL
 
 func.func @main(%comm : !comm.mpi.comm) -> tensor<i32> {
     %0 = comm.mpi.comm_rank %comm : tensor<i32>
@@ -9,6 +10,10 @@ func.func @main(%comm : !comm.mpi.comm) -> tensor<i32> {
 // SHLO: func.func @main(%[[COMM:.*]]: tensor<i64>) -> tensor<i32> {
 // SHLO-NEXT: %[[v0:.*]] = stablehlo.custom_call @MpiCommRank(%[[COMM]]) : (tensor<i64>) -> tensor<i32>
 // SHLO-NEXT: return %[[v0]] : tensor<i32>
+
+// NCCL-LABEL: func.func @main(%[[COMM:.*]]: !comm.nccl.comm) -> tensor<i32> {
+// NCCL-NEXT: %[[RANK:.*]] = comm.nccl.comm_user_rank %[[COMM]] : tensor<i32>
+// NCCL-NEXT: return %[[RANK]] : tensor<i32>
 
 // JIT-LABEL: llvm.func @MPI_Comm_rank
 // JIT-SAME:                          (!llvm.ptr, !llvm.ptr) -> i32

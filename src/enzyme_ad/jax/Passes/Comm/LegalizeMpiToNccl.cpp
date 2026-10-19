@@ -35,6 +35,32 @@ struct LegalizeMpiConstantOpToNccl
   }
 };
 
+struct LegalizeMpiCommRankOpToNccl
+    : public OpConversionPattern<comm::MpiCommRankOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiCommRankOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<comm::NcclCommUserRankOp>(
+        op, op.getType(), adaptor.getComm());
+    return success();
+  }
+};
+
+struct LegalizeMpiCommSizeOpToNccl
+    : public OpConversionPattern<comm::MpiCommSizeOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiCommSizeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<comm::NcclCommCountOp>(
+        op, op.getType(), adaptor.getComm());
+    return success();
+  }
+};
+
 struct LegalizeMpiCommSplitOpToNccl
     : public OpConversionPattern<comm::MpiCommSplitOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -324,9 +350,6 @@ struct LegalizeMpiToNcclPass
 
     target.addIllegalDialect<comm::CommDialect>();
 
-    // These always run on the host, so a NCCL lowering is not needed
-    target.addLegalOp<comm::MpiCommRankOp, comm::MpiCommSizeOp>();
-
     target.addLegalOp<
         comm::NcclGetCommOp, comm::NcclGroupStartOp, comm::NcclGroupEndOp,
         comm::NcclBarrierOp, comm::NcclCommSplitOp, comm::NcclCommFinalizeOp,
@@ -357,7 +380,8 @@ struct LegalizeMpiToNcclPass
     mlir::populateCallOpTypeConversionPattern(patterns, converter);
     mlir::populateReturnOpTypeConversionPattern(patterns, converter);
 
-    patterns.add<LegalizeMpiConstantOpToNccl, LegalizeMpiCommSplitOpToNccl,
+    patterns.add<LegalizeMpiConstantOpToNccl, LegalizeMpiCommRankOpToNccl,
+                 LegalizeMpiCommSizeOpToNccl, LegalizeMpiCommSplitOpToNccl,
                  LegalizeMpiBarrierOpToNccl, LegalizeMpiSendOpToNccl,
                  LegalizeMpiRecvOpToNccl, LegalizeMpiAllreduceOpToNccl,
                  LegalizeMpiBcastOpToNccl>(converter, context);
