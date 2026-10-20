@@ -1165,12 +1165,14 @@ struct LowerJITPass
       }
 
       Operation *replacement;
-      if (backend == "cuda")
+      if (backend == "cuda") {
+        std::string target = hasReturn ? "enzymexla_compile_gpu_with_error"
+                                       : "enzymexla_compile_gpu";
+        if (op.getCmdBufferCompatibleAttr())
+          target += "_cmd_buffer_compatible";
         replacement = stablehlo::CustomCallOp::create(
             rewriter, op.getLoc(), op.getResultTypes(), op.getInputs(),
-            hasReturn
-                ? rewriter.getStringAttr("enzymexla_compile_gpu_with_error")
-                : rewriter.getStringAttr("enzymexla_compile_gpu"),
+            rewriter.getStringAttr(target),
             /* has_side_effect*/ hasSideEffectAttr,
             /*backend_config*/ dattr,
             /* api_version*/
@@ -1179,7 +1181,7 @@ struct LowerJITPass
                 mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
             /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
             output_operand_aliases, /*result_tilings*/ nullptr);
-      else if (backend == "cpu")
+      } else if (backend == "cpu")
         replacement = stablehlo::CustomCallOp::create(
             rewriter, op.getLoc(), op.getResultTypes(), op.getInputs(),
             hasReturn

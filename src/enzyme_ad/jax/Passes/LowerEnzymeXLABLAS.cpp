@@ -358,7 +358,8 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-          /*xla_side_effect_free=*/rewriter.getUnitAttr());
+          /*xla_side_effect_free=*/rewriter.getUnitAttr(),
+          /*cmd_buffer_compatible=*/nullptr);
 
       func::ReturnOp::create(rewriter, op.getLoc(),
                              ValueRange{jitCall.getResult(0)});
@@ -756,7 +757,8 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-          /*xla_side_effect_free=*/rewriter.getUnitAttr());
+          /*xla_side_effect_free=*/rewriter.getUnitAttr(),
+          /*cmd_buffer_compatible=*/nullptr);
 
       func::ReturnOp::create(rewriter, op.getLoc(),
                              ValueRange{jitCall.getResult(0)});

@@ -88,7 +88,8 @@ def KernelCallOp : EnzymeXLA_Op<"kernel_call", [
     OptionalAttr<DictArrayAttr>:$res_attrs,
     DefaultValuedOptionalAttr<
         ArrayAttr, "{}">:$output_operand_aliases,
-    OptionalAttr<UnitAttr>:$xla_side_effect_free
+    OptionalAttr<UnitAttr>:$xla_side_effect_free,
+    OptionalAttr<UnitAttr>:$cmd_buffer_compatible
   );
 
   let results = (outs Variadic<AnyType>);
@@ -194,7 +195,8 @@ def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpI
     OptionalAttr<DictArrayAttr>:$res_attrs,
     DefaultValuedOptionalAttr<
         ArrayAttr, "{}">:$output_operand_aliases,
-    OptionalAttr<UnitAttr>:$xla_side_effect_free
+    OptionalAttr<UnitAttr>:$xla_side_effect_free,
+    OptionalAttr<UnitAttr>:$cmd_buffer_compatible
   );
 
   let results = (outs Variadic<AnyType>);

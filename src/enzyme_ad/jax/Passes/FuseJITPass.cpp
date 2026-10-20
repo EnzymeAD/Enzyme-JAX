@@ -478,6 +478,19 @@ getFusedSideEffectFreeAttr(ArrayRef<enzymexla::JITCallOp> fusionCalls) {
   return UnitAttr();
 }
 
+// Command buffer compatibility is preserved only when every original call
+// declares it.
+UnitAttr
+getFusedCmdBufferCompatibleAttr(ArrayRef<enzymexla::JITCallOp> fusionCalls) {
+  if (llvm::all_of(fusionCalls, [](enzymexla::JITCallOp call) {
+        return static_cast<bool>(call.getCmdBufferCompatibleAttr());
+      })) {
+    enzymexla::JITCallOp firstCall = fusionCalls.front();
+    return UnitAttr::get(firstCall.getContext());
+  }
+  return UnitAttr();
+}
+
 LogicalResult rewriteFusion(enzymexla::JITCallOp firstCall,
                             PatternRewriter &rewriter,
                             JITFusionInfo &fusionInfo) {
@@ -563,7 +576,8 @@ LogicalResult rewriteFusion(enzymexla::JITCallOp firstCall,
       /*arg_attrs=*/nullptr,
       /*res_attrs=*/nullptr,
       /*output_operand_aliases=*/rewriter.getArrayAttr(fusedOutputAliases),
-      getFusedSideEffectFreeAttr(fusionCalls));
+      getFusedSideEffectFreeAttr(fusionCalls),
+      getFusedCmdBufferCompatibleAttr(fusionCalls));
 
   // Replace external users before removing the original SSA producers.
   for (auto [idx, result] : llvm::enumerate(fusedReturns))

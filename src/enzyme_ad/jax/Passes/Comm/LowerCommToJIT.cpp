@@ -231,7 +231,8 @@ struct LowerCommMpiCommRankOpToJIT
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/aliases,
-        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+        /*xla_side_effect_free=*/rewriter.getUnitAttr(),
+        /*cmd_buffer_compatible=*/nullptr);
 
     return success();
   }
@@ -329,7 +330,8 @@ struct LowerCommMpiCommSizeOpToJIT
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/aliases,
-        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+        /*xla_side_effect_free=*/rewriter.getUnitAttr(),
+        /*cmd_buffer_compatible=*/nullptr);
 
     return success();
   }
@@ -437,7 +439,8 @@ struct LowerCommMpiCommSplitOpToJIT
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/aliases,
-        /*xla_side_effect_free=*/nullptr);
+        /*xla_side_effect_free=*/nullptr,
+        /*cmd_buffer_compatible=*/nullptr);
 
     return success();
   }
@@ -519,7 +522,8 @@ struct LowerCommMpiBarrierOpToJIT
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/nullptr,
-        /*xla_side_effect_free=*/nullptr);
+        /*xla_side_effect_free=*/nullptr,
+        /*cmd_buffer_compatible=*/nullptr);
 
     return success();
   }
@@ -654,7 +658,8 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/nullptr,
-        /*xla_side_effect_free=*/nullptr);
+        /*xla_side_effect_free=*/nullptr,
+        /*cmd_buffer_compatible=*/nullptr);
 
     return success();
   }
@@ -811,7 +816,8 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/aliases,
-        /*xla_side_effect_free=*/nullptr);
+        /*xla_side_effect_free=*/nullptr,
+        /*cmd_buffer_compatible=*/nullptr);
 
     return success();
   }
@@ -964,7 +970,8 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/aliases,
-        /*xla_side_effect_free=*/nullptr);
+        /*xla_side_effect_free=*/nullptr,
+        /*cmd_buffer_compatible=*/nullptr);
 
     return success();
   }
@@ -1131,7 +1138,8 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/aliases,
-        /*xla_side_effect_free=*/nullptr);
+        /*xla_side_effect_free=*/nullptr,
+        /*cmd_buffer_compatible=*/nullptr);
 
     return success();
   }
@@ -1215,7 +1223,8 @@ struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/nullptr,
-        /*xla_side_effect_free=*/nullptr);
+        /*xla_side_effect_free=*/nullptr,
+        /*cmd_buffer_compatible=*/nullptr);
 
     return success();
   }
@@ -1329,7 +1338,8 @@ struct LowerCommMpiWaitallOpToJIT
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/nullptr,
-        /*xla_side_effect_free=*/nullptr);
+        /*xla_side_effect_free=*/nullptr,
+        /*cmd_buffer_compatible=*/nullptr);
 
     return success();
   }
@@ -1481,7 +1491,8 @@ struct LowerCommMpiAllreduceOpToJIT
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/aliases,
-        /*xla_side_effect_free=*/nullptr);
+        /*xla_side_effect_free=*/nullptr,
+        /*cmd_buffer_compatible=*/nullptr);
 
     return success();
   }
@@ -1617,7 +1628,8 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/aliases,
-        /*xla_side_effect_free=*/nullptr);
+        /*xla_side_effect_free=*/nullptr,
+        /*cmd_buffer_compatible=*/nullptr);
 
     return success();
   }

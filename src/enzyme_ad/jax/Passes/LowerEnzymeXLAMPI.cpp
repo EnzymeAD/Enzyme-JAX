@@ -187,7 +187,8 @@ struct MPICommRankOpLowering
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr({aliasAttr}),
-          /*xla_side_effect_free=*/nullptr);
+          /*xla_side_effect_free=*/nullptr,
+          /*cmd_buffer_compatible=*/nullptr);
 
       rewriter.replaceOp(op, jitCall.getResult(0));
 
@@ -322,7 +323,8 @@ struct MPICommSizeOpLowering
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-          /*xla_side_effect_free=*/nullptr);
+          /*xla_side_effect_free=*/nullptr,
+          /*cmd_buffer_compatible=*/nullptr);
 
       rewriter.replaceOp(op, jitCall);
 
@@ -432,7 +434,8 @@ struct MPIBarrierOpLowering : public OpRewritePattern<enzymexla::MPIBarrierOp> {
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/nullptr,
-          /*xla_side_effect_free=*/nullptr);
+          /*xla_side_effect_free=*/nullptr,
+          /*cmd_buffer_compatible=*/nullptr);
 
       rewriter.eraseOp(op);
 
@@ -596,7 +599,8 @@ struct MPISendOpLowering : public OpRewritePattern<enzymexla::MPISendOp> {
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/nullptr,
-          /*xla_side_effect_free=*/nullptr);
+          /*xla_side_effect_free=*/nullptr,
+          /*cmd_buffer_compatible=*/nullptr);
 
       rewriter.eraseOp(op);
 
@@ -787,7 +791,8 @@ struct MPIRecvOpLowering : public OpRewritePattern<enzymexla::MPIRecvOp> {
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-          /*xla_side_effect_free=*/nullptr);
+          /*xla_side_effect_free=*/nullptr,
+          /*cmd_buffer_compatible=*/nullptr);
 
       rewriter.replaceOp(op, jitCall);
 
@@ -972,7 +977,8 @@ struct MPIIsendOpLowering : public OpRewritePattern<enzymexla::MPIIsendOp> {
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-          /*xla_side_effect_free=*/nullptr);
+          /*xla_side_effect_free=*/nullptr,
+          /*cmd_buffer_compatible=*/nullptr);
 
       rewriter.replaceOp(op, jitCall);
 
@@ -1165,7 +1171,8 @@ struct MPIIrecvOpLowering : public OpRewritePattern<enzymexla::MPIIrecvOp> {
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-          /*xla_side_effect_free=*/nullptr);
+          /*xla_side_effect_free=*/nullptr,
+          /*cmd_buffer_compatible=*/nullptr);
 
       rewriter.replaceOp(op, jitCall);
 
@@ -1274,7 +1281,8 @@ struct MPIWaitOpLowering : public OpRewritePattern<enzymexla::MPIWaitOp> {
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/nullptr,
-          /*xla_side_effect_free=*/nullptr);
+          /*xla_side_effect_free=*/nullptr,
+          /*cmd_buffer_compatible=*/nullptr);
 
       rewriter.eraseOp(op);
 
@@ -1388,7 +1396,8 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/nullptr,
-          /*xla_side_effect_free=*/nullptr);
+          /*xla_side_effect_free=*/nullptr,
+          /*cmd_buffer_compatible=*/nullptr);
 
       rewriter.eraseOp(op);
 
@@ -1577,7 +1586,8 @@ struct MPIAllreduceOpLowering
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-          /*xla_side_effect_free=*/nullptr);
+          /*xla_side_effect_free=*/nullptr,
+          /*cmd_buffer_compatible=*/nullptr);
 
       rewriter.replaceOp(op, jitCall);
 
@@ -1708,7 +1718,8 @@ struct MPIAllreduceOpLowering
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-          /*xla_side_effect_free=*/nullptr);
+          /*xla_side_effect_free=*/nullptr,
+          /*cmd_buffer_compatible=*/nullptr);
 
       rewriter.replaceOp(op, jitCall);
 
@@ -1874,7 +1885,8 @@ struct MPIBcastOpLowering : public OpRewritePattern<enzymexla::MPIBcastOp> {
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-          /*xla_side_effect_free=*/nullptr);
+          /*xla_side_effect_free=*/nullptr,
+          /*cmd_buffer_compatible=*/nullptr);
 
       rewriter.replaceOp(op, jitCall);
 

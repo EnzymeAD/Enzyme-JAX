@@ -432,7 +432,8 @@ struct DumpOpConversion : public OpConversionPattern<enzyme::DumpOp> {
           /*operand_layouts=*/nullptr, /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-          /*xla_side_effect_free=*/nullptr);
+          /*xla_side_effect_free=*/nullptr,
+          /*cmd_buffer_compatible=*/nullptr);
 
       rewriter.replaceOp(op, jitCall.getResults());
 

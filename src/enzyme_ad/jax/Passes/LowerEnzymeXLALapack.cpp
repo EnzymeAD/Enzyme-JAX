@@ -196,7 +196,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+        /*xla_side_effect_free=*/rewriter.getUnitAttr(),
+        /*cmd_buffer_compatible=*/nullptr);
 
     // replace enzymexla.lapack.geqrf with the jit_call
     rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
@@ -492,7 +493,8 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+        /*xla_side_effect_free=*/rewriter.getUnitAttr(),
+        /*cmd_buffer_compatible=*/nullptr);
 
     // replace enzymexla.lapack.geqrf with the jit_call
     rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
@@ -664,7 +666,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+        /*xla_side_effect_free=*/rewriter.getUnitAttr(),
+        /*cmd_buffer_compatible=*/nullptr);
 
     // replace enzymexla.lapack.geqrf with the jit_call
     rewriter.replaceAllUsesWith(op.getResult(), jit_call_op.getResult(0));
@@ -996,7 +999,8 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+        /*xla_side_effect_free=*/rewriter.getUnitAttr(),
+        /*cmd_buffer_compatible=*/nullptr);
 
     // replace enzymexla.lapack.geqrf with the jit_call
     rewriter.replaceAllUsesWith(op.getResult(), jit_call_op.getResult(0));
@@ -1268,7 +1272,8 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+        /*xla_side_effect_free=*/rewriter.getUnitAttr(),
+        /*cmd_buffer_compatible=*/nullptr);
 
     // replace enzymexla.lapack.geqrf with the jit_call
     rewriter.replaceAllUsesWith(op.getResult(), jit_call_op.getResult(0));
@@ -1392,7 +1397,8 @@ private:
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/outputOperandAliases,
-        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+        /*xla_side_effect_free=*/rewriter.getUnitAttr(),
+        /*cmd_buffer_compatible=*/nullptr);
 
     func::ReturnOp::create(rewriter, op.getLoc(),
                            ValueRange{jitCall.getResult(0),
@@ -2006,7 +2012,8 @@ func::FuncOp createSVDAlgorithmWrapperFuncOpCPULapack(
       /*arg_attrs=*/nullptr,
       /*res_attrs=*/nullptr,
       /*output_operand_aliases=*/outputOperandAliases,
-      /*xla_side_effect_free=*/rewriter.getUnitAttr());
+      /*xla_side_effect_free=*/rewriter.getUnitAttr(),
+      /*cmd_buffer_compatible=*/nullptr);
 
   Value Ures, VTres;
   if (op.getComputeUv()) {
@@ -2851,7 +2858,8 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+        /*xla_side_effect_free=*/rewriter.getUnitAttr(),
+        /*cmd_buffer_compatible=*/nullptr);
 
     // replace enzymexla.lapack.potrf with the jit_call
     rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
