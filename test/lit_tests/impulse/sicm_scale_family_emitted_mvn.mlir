@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt %s --pass-pipeline='builtin.module(inline-infer-regions,canonicalize,cse,lower-impulse-to-stablehlo{math-twins-only=true},arith-raise{stablehlo=true},canonicalize,cse,sicm)' | FileCheck %s
 
-// the density region, exactly as it does on a traced StableHLO MVN body.
+// Fully emitted MVN density: cholesky(R) still leaves the density region.
 
 module {
   func.func private @halfnormal_sampler(%rng : tensor<2xui64>, %std : tensor<f64>) -> (tensor<2xui64>, tensor<f64>) {
@@ -27,15 +27,26 @@ module {
   }
 
   // CHECK-LABEL: func.func @test
-  // invariant factor cholesky(%arg1) sits above the impulse.infer_region.
   // CHECK: %[[CHOL:.+]] = stablehlo.cholesky %arg1 : tensor<3x3xf64>
-  // CHECK: impulse.infer_region @model
-  // Inside the joint logpdf, the scale is decomposed: sqrt(tau^2) (proven
-  // nonnegative) multiplies the hoisted cholesky(R).
+  // CHECK-NEXT: %[[DCOL:.+]] = impulse.reshape %{{.+}} : (tensor<3xf64>) -> tensor<3x1xf64>
+  // CHECK-NEXT: %[[W:.+]] = "stablehlo.triangular_solve"(%[[CHOL]], %[[DCOL]]) <{left_side = true, lower = false, transpose_a = #stablehlo<transpose TRANSPOSE>, unit_diagonal = false}> : (tensor<3x3xf64>, tensor<3x1xf64>) -> tensor<3x1xf64>
+  // CHECK-NEXT: %[[MASKED:.+]] = stablehlo.multiply %[[CHOL]], %{{.+}} : tensor<3x3xf64>
+  // CHECK-NEXT: %[[DIAG:.+]] = stablehlo.dot_general %[[MASKED]], %{{.+}}, contracting_dims = [0] x [0] : (tensor<3x3xf64>, tensor<3xf64>) -> tensor<3xf64>
+  // CHECK-NEXT: %[[LOGDIAG:.+]] = stablehlo.log %[[DIAG]] : tensor<3xf64>
+  // CHECK-NEXT: impulse.infer_region @model
   // CHECK: %[[TAUSQ:.+]] = stablehlo.multiply %[[TAUARG:.+]], %[[TAUARG]] {enzymexla.non_negative = {{.*}}} : tensor<f64>
-  // CHECK-NEXT: %[[SQRT:.+]] = stablehlo.sqrt %[[TAUSQ]] : tensor<f64>
-  // CHECK-NEXT: %[[SQRTB:.+]] = stablehlo.broadcast_in_dim %[[SQRT]], dims = [] : (tensor<f64>) -> tensor<3x3xf64>
-  // CHECK-NEXT: %[[U:.+]] = stablehlo.multiply %[[SQRTB]], %[[CHOL]] : tensor<3x3xf64>
+  // CHECK-NEXT: %[[SQRT:.+]] = stablehlo.sqrt %[[TAUSQ]] {enzymexla.non_negative = {{.*}}} : tensor<f64>
+  // CHECK-NEXT: %[[INV:.+]] = stablehlo.divide %{{.+}}, %[[SQRT]] : tensor<f64>
+  // CHECK-NEXT: %[[INVB:.+]] = stablehlo.broadcast_in_dim %[[INV]], dims = [] : (tensor<f64>) -> tensor<3x1xf64>
+  // CHECK-NEXT: %[[WS:.+]] = stablehlo.multiply %[[INVB]], %[[W]] : tensor<3x1xf64>
+  // CHECK-NEXT: %[[WV:.+]] = impulse.reshape %[[WS]] : (tensor<3x1xf64>) -> tensor<3xf64>
+  // CHECK-NEXT: %[[WSQ:.+]] = stablehlo.multiply %[[WV]], %[[WV]] : tensor<3xf64>
+  // CHECK-NOT: tensor<3x3xf64>
+  // CHECK: %[[LOGS:.+]] = stablehlo.log %[[SQRT]] : tensor<f64>
+  // CHECK-NEXT: %[[LOGSB:.+]] = stablehlo.broadcast_in_dim %[[LOGS]], dims = [] : (tensor<f64>) -> tensor<3xf64>
+  // CHECK-NEXT: %{{.+}} = stablehlo.add %[[LOGSB]], %[[LOGDIAG]] : tensor<3xf64>
+  // CHECK-NOT: tensor<3x3xf64>
+  // CHECK: impulse.yield
   func.func @test(%rng : tensor<2xui64>, %R_data : tensor<3x3xf64>, %trace : tensor<1x4xf64>) -> (tensor<1x4xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>) {
     %step_size = stablehlo.constant dense<0.1> : tensor<f64>
     %result:4 = impulse.infer @model(%rng, %R_data) given %trace init_step_size = %step_size {

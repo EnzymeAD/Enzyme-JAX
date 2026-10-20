@@ -1,15 +1,7 @@
 // RUN: enzymexlamlir-opt %s --pass-pipeline='builtin.module(inline-infer-regions,canonicalize,cse,lower-impulse-to-stablehlo{math-twins-only=true},arith-raise{stablehlo=true},canonicalize,cse,sicm)' | FileCheck %s
 // RUN: enzymexlamlir-opt %s --pass-pipeline='builtin.module(inline-infer-regions,canonicalize,cse,lower-impulse-to-stablehlo{math-twins-only=true},arith-raise{stablehlo=true},canonicalize,cse,sicm,expand-impulse)' | FileCheck %s --check-prefix=LOOP
 
-// consumes its upper factor U = chol(K) only through the solve chain
-// U^{-1} U^{-T} (y - mu) of the quadratic form and through
-// sum(log(diag(U .* I))) of the log-determinant, so both pass the consumer
-// check and no cholesky is left in the joint logpdf. The chain is read only
-// by the quadratic form sum((y - mu) .* K^{-1} (y - mu)), which is replaced by
-// |diag(1/sqrt(d)) Q^T (y - mu)|^2 (no product with Q); the masked diagonal
-// U .* I is read only through its reduction to the diagonal vector with
-// ones, which is replaced by sqrt(d) (no 3x3 matrix). The emitted MVN site is
-// written in the pretty callee-less form `impulse.sample(...)`.
+// Emitted MVN density: U is used only by the whitening solve and the log det.
 
 module {
   func.func private @halfnormal_sampler(%rng : tensor<2xui64>, %std : tensor<f64>) -> (tensor<2xui64>, tensor<f64>) {
@@ -61,10 +53,11 @@ module {
   // CHECK-NEXT: %[[SQD:.+]] = stablehlo.sqrt %[[D]] : tensor<3xf64>
   // CHECK-NEXT: %[[ISQD:.+]] = stablehlo.divide %[[ONES:.+]], %[[SQD]] : tensor<3xf64>
   // CHECK-NEXT: %[[SQDD:.+]] = stablehlo.sqrt %[[D]] : tensor<3xf64>
-  // Quadratic form: (y - mu)^T K^{-1} (y - mu) = |diag(1/sqrt(d)) Q^T (y - mu)|^2.
   // CHECK-NEXT: %[[ISQDB:.+]] = stablehlo.broadcast_in_dim %[[ISQD]], dims = [0] : (tensor<3xf64>) -> tensor<3x1xf64>
-  // CHECK-NEXT: %[[U:.+]] = stablehlo.multiply %[[ISQDB]], %[[QTB]] : tensor<3x1xf64>
-  // CHECK-NEXT: %[[MAHA:.+]] = stablehlo.dot_general %[[U]], %[[U]], contracting_dims = [0, 1] x [0, 1] : (tensor<3x1xf64>, tensor<3x1xf64>) -> tensor<f64>
+  // CHECK-NEXT: %[[W:.+]] = stablehlo.multiply %[[ISQDB]], %[[QTB]] : tensor<3x1xf64>
+  // CHECK-NEXT: %[[WV:.+]] = impulse.reshape %[[W]] : (tensor<3x1xf64>) -> tensor<3xf64>
+  // CHECK-NEXT: %[[WSQ:.+]] = stablehlo.multiply %[[WV]], %[[WV]] : tensor<3xf64>
+  // CHECK-NEXT: %[[MAHA:.+]] = stablehlo.dot_general %[[WSQ]], %[[ONES]], contracting_dims = [0] x [0] : (tensor<3xf64>, tensor<3xf64>) -> tensor<f64>
   // CHECK-NEXT: %{{.+}} = stablehlo.multiply %[[MAHA]], %{{.+}} : tensor<f64>
   // CHECK-NEXT: %[[LOGD:.+]] = stablehlo.log %[[SQDD]] : tensor<3xf64>
   // CHECK-NEXT: %{{.+}} = stablehlo.dot_general %[[LOGD]], %[[ONES]], contracting_dims = [0] x [0] : (tensor<3xf64>, tensor<3xf64>) -> tensor<f64>

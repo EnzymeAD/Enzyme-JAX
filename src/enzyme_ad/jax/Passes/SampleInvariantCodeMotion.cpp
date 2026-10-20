@@ -2580,13 +2580,13 @@ private:
   bool visit(OpOperand &use, Form form) {
     Operation *user = use.getOwner();
     unsigned idx = use.getOperandNumber();
-    if (auto reshape = dyn_cast<stablehlo::ReshapeOp>(user)) {
-      auto axis =
-          reshapeAxis(cast<RankedTensorType>(reshape.getOperand().getType()),
-                      cast<RankedTensorType>(reshape.getType()), form.axis);
+    if (isa<stablehlo::ReshapeOp, impulse::ReshapeOp>(user)) {
+      auto axis = reshapeAxis(
+          cast<RankedTensorType>(user->getOperand(0).getType()),
+          cast<RankedTensorType>(user->getResult(0).getType()), form.axis);
       if (!axis)
         return false;
-      assign(reshape.getResult(), {form.product, *axis, form.group});
+      assign(user->getResult(0), {form.product, *axis, form.group});
       return true;
     }
     if (auto transpose = dyn_cast<stablehlo::TransposeOp>(user)) {
