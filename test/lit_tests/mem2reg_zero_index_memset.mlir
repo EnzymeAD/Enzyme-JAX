@@ -94,7 +94,8 @@ llvm.func @store_then_memset_all() -> f64 {
 // -----
 
 // A fill that stops short of the slot says nothing about the rest of it, so
-// what a store put there is still what is read back.
+// what a store put there is still what is read back: the element of the
+// stored array.
 
 llvm.func @memset_part_keeps_rest(%v: !llvm.array<5 x f64>) -> f64 {
   %c1 = llvm.mlir.constant(1 : i32) : i32
@@ -110,8 +111,9 @@ llvm.func @memset_part_keeps_rest(%v: !llvm.array<5 x f64>) -> f64 {
 }
 
 // CHECK-LABEL: llvm.func @memset_part_keeps_rest
-// CHECK:         "llvm.intr.memset"
-// CHECK:         memref.load
+// CHECK-SAME:    %[[V:[a-z0-9]+]]: !llvm.array<5 x f64>
+// CHECK:         %[[E:.+]] = llvm.extractvalue %[[V]][3] : !llvm.array<5 x f64>
+// CHECK:         llvm.return %[[E]] : f64
 
 // -----
 

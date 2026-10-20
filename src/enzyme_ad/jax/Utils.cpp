@@ -12,6 +12,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include <functional>
 
+#include "mlir/Analysis/FlatLinearValueConstraints.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
@@ -52,6 +53,18 @@ using namespace mlir::arith;
 
 namespace mlir {
 namespace enzyme {
+
+Block *getAllocaBlock(Operation *op) {
+  Operation *currentOp = op;
+  while (Operation *parentOp = currentOp->getParentOp()) {
+    if (parentOp->mightHaveTrait<OpTrait::IsIsolatedFromAbove>() ||
+        parentOp->mightHaveTrait<OpTrait::AutomaticAllocationScope>()) {
+      return &currentOp->getParentRegion()->front();
+    }
+    currentOp = parentOp;
+  }
+  return nullptr;
+}
 
 void commonLowerUpdateWithoutCorners(enzymexla::UpdateWithoutCornersOp extend,
                                      PatternRewriter &rewriter) {
@@ -350,120 +363,6 @@ bool getEffectsAfter(Operation *op,
   return !conservative;
 }
 
-bool isCaptured(Value v, Operation *potentialUser = nullptr,
-                bool *seenuse = nullptr) {
-  SmallVector<Value> todo = {v};
-  while (todo.size()) {
-    Value v = todo.pop_back_val();
-    for (auto u : v.getUsers()) {
-      if (seenuse && u == potentialUser)
-        *seenuse = true;
-      if (isa<memref::LoadOp, LLVM::LoadOp, affine::AffineLoadOp>(u))
-        continue;
-      // if (isa<polygeist::CacheLoad>(u)) continue
-      if (auto s = dyn_cast<memref::StoreOp>(u)) {
-        if (s.getValue() == v)
-          return true;
-        continue;
-      }
-      if (auto s = dyn_cast<affine::AffineStoreOp>(u)) {
-        if (s.getValue() == v)
-          return true;
-        continue;
-      }
-      if (auto s = dyn_cast<LLVM::StoreOp>(u)) {
-        if (s.getValue() == v)
-          return true;
-        continue;
-      }
-      if (auto sub = dyn_cast<LLVM::GEPOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto sub = dyn_cast<LLVM::BitcastOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto sub = dyn_cast<LLVM::AddrSpaceCastOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto sub = dyn_cast<func::ReturnOp>(u)) {
-        continue;
-      }
-      if (auto sub = dyn_cast<LLVM::MemsetOp>(u)) {
-        continue;
-      }
-      if (auto sub = dyn_cast<LLVM::MemcpyOp>(u)) {
-        continue;
-      }
-      if (auto sub = dyn_cast<LLVM::MemmoveOp>(u)) {
-        continue;
-      }
-      if (auto sub = dyn_cast<memref::CastOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto sub = dyn_cast<memref::DeallocOp>(u)) {
-        continue;
-      }
-      // if (auto sub = dyn_cast<polygeist::SubIndexOp>(u)) {
-      //   todo.push_back(sub);
-      // }
-      if (auto sub = dyn_cast<enzymexla::Memref2PointerOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto sub = dyn_cast<enzymexla::Pointer2MemrefOp>(u)) {
-        todo.push_back(sub);
-      }
-      if (auto cop = dyn_cast<LLVM::CallOp>(u)) {
-        if (auto callee = cop.getCallee()) {
-          if (getNonCapturingFunctions().count(callee->str()))
-            continue;
-        }
-      }
-      if (auto cop = dyn_cast<func::CallOp>(u)) {
-        if (getNonCapturingFunctions().count(cop.getCallee().str()))
-          continue;
-      }
-      return true;
-    }
-  }
-
-  return false;
-}
-
-Value getBase(Value v) {
-  while (true) {
-    // if (auto s = v.getDefiningOp<SubIndexOp>()) {
-    //   v = s.getSource();
-    //   continue;
-    // }
-    if (auto s = v.getDefiningOp<enzymexla::Memref2PointerOp>()) {
-      v = s.getSource();
-      continue;
-    }
-    if (auto s = v.getDefiningOp<enzymexla::Pointer2MemrefOp>()) {
-      v = s.getSource();
-      continue;
-    }
-    if (auto s = v.getDefiningOp<LLVM::GEPOp>()) {
-      v = s.getBase();
-      continue;
-    }
-    if (auto s = v.getDefiningOp<LLVM::BitcastOp>()) {
-      v = s.getArg();
-      continue;
-    }
-    if (auto s = v.getDefiningOp<LLVM::AddrSpaceCastOp>()) {
-      v = s.getArg();
-      continue;
-    }
-    if (auto s = v.getDefiningOp<memref::CastOp>()) {
-      v = s.getSource();
-      continue;
-    }
-    break;
-  }
-  return v;
-}
-
 bool isStackAlloca(Value v) {
   return v.getDefiningOp<memref::AllocaOp>() ||
          v.getDefiningOp<memref::AllocOp>() ||
@@ -505,9 +404,10 @@ bool mayWriteTo(Operation *op, Value val, bool ignoreBarrier) {
   // Calls which do not use a derived pointer of a known alloca, which is not
   // captured can not write to said memory.
   if (auto callOp = dyn_cast<CallOpInterface>(op)) {
-    auto base = getBase(val);
+    auto base = enzyme::oputils::getBaseObject(val);
     bool seenuse = false;
-    if (isStackAlloca(base) && !isCaptured(base, op, &seenuse) && !seenuse) {
+    if (isStackAlloca(base) &&
+        !enzyme::oputils::isCaptured(base, op, &seenuse) && !seenuse) {
       return false;
     }
   }
@@ -1407,9 +1307,10 @@ bool mayReadFrom(Operation *op, Value val) {
     return false;
   }
   if (auto callOp = dyn_cast<CallOpInterface>(op)) {
-    auto base = getBase(val);
+    auto base = enzyme::oputils::getBaseObject(val);
     bool seenuse = false;
-    if (isStackAlloca(base) && !isCaptured(base, op, &seenuse) && !seenuse) {
+    if (isStackAlloca(base) &&
+        !enzyme::oputils::isCaptured(base, op, &seenuse) && !seenuse) {
       return false;
     }
   }
@@ -1833,11 +1734,19 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
   if (!tensor) {
     return std::nullopt;
   }
+  auto tensorType = dyn_cast<RankedTensorType>(tensor.getType());
+  if (!tensorType ||
+      !isa<mlir::IntegerType, mlir::FloatType>(tensorType.getElementType())) {
+    return std::nullopt;
+  }
 
   struct ChainItem {
     mlir::Operation *op;
     TypedAttr offset; // only populated for AddOp/SubtractOp (nullptr otherwise)
     TypedAttr scale;  // only populated for MulOp (nullptr otherwise)
+    // For SubtractOp: true when the constant is the lhs (`c - x`), which
+    // negates the progression in addition to offsetting it.
+    bool constantLhs = false;
   };
 
   // Build a chain of operations from startOp to the base case
@@ -1891,13 +1800,22 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
               return nullptr;
             })
             .Case<stablehlo::SubtractOp>([&](auto subOp) -> Operation * {
-              SplatElementsAttr rhsAttr;
+              SplatElementsAttr rhsAttr, lhsAttr;
               if (matchPattern(subOp.getRhs(), m_Constant(&rhsAttr))) {
                 chain.push_back(
                     {currentOp, rhsAttr.getSplatValue<TypedAttr>(), nullptr});
                 return subOp.getLhs().getDefiningOp();
+              } else if (matchPattern(subOp.getLhs(), m_Constant(&lhsAttr))) {
+                chain.push_back({currentOp, lhsAttr.getSplatValue<TypedAttr>(),
+                                 nullptr,
+                                 /*constantLhs=*/true});
+                return subOp.getRhs().getDefiningOp();
               }
               return nullptr;
+            })
+            .Case<stablehlo::NegOp>([&](auto negOp) -> Operation * {
+              chain.push_back({currentOp, nullptr, nullptr});
+              return negOp.getOperand().getDefiningOp();
             })
             .Case<stablehlo::MulOp>([&](auto mulOp) -> Operation * {
               SplatElementsAttr rhsAttr, lhsAttr;
@@ -2044,12 +1962,30 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
             })
             .Case<stablehlo::SubtractOp>([&](auto) {
               auto startVal = getDoubleFromAttr(result.start);
+              auto scaleVal = getDoubleFromAttr(result.scale);
               auto offsetVal = getDoubleFromAttr(item.offset);
-              if (!startVal || !offsetVal)
+              if (!startVal || !scaleVal || !offsetVal)
                 return false;
               auto elemType = result.start.getType();
-              result.start =
-                  createAttrFromDouble(ctx, elemType, *startVal - *offsetVal);
+              if (item.constantLhs) {
+                // c - (start + scale * i) = (c - start) + (-scale) * i
+                result.start =
+                    createAttrFromDouble(ctx, elemType, *offsetVal - *startVal);
+                result.scale = createAttrFromDouble(ctx, elemType, -*scaleVal);
+              } else {
+                result.start =
+                    createAttrFromDouble(ctx, elemType, *startVal - *offsetVal);
+              }
+              return true;
+            })
+            .Case<stablehlo::NegOp>([&](auto) {
+              auto startVal = getDoubleFromAttr(result.start);
+              auto scaleVal = getDoubleFromAttr(result.scale);
+              if (!startVal || !scaleVal)
+                return false;
+              auto elemType = result.start.getType();
+              result.start = createAttrFromDouble(ctx, elemType, -*startVal);
+              result.scale = createAttrFromDouble(ctx, elemType, -*scaleVal);
               return true;
             })
             .Case<stablehlo::MulOp>([&](auto) {
@@ -2336,6 +2272,106 @@ bool allAccessesAreOnMainDiagonal(stablehlo::ReshapeOp op,
 bool allAccessesAreOnMainDiagonal(stablehlo::GatherOp op,
                                   llvm::SetVector<Operation *> &opsToReplace) {
   return false; // TODO: implement this where we are doing gather with iota
+}
+
+std::optional<std::pair<int64_t, int64_t>> getConstantRange(Value v) {
+  if (auto c = getConstantIntValue(v))
+    return std::make_pair(*c, *c);
+  if (auto arg = dyn_cast<BlockArgument>(v)) {
+    Operation *owner = arg.getOwner()->getParentOp();
+    std::optional<int64_t> lb, ub, step;
+    if (auto forOp = dyn_cast_or_null<scf::ForOp>(owner);
+        forOp && forOp.getInductionVar() == v) {
+      lb = getConstantIntValue(forOp.getLowerBound());
+      ub = getConstantIntValue(forOp.getUpperBound());
+      step = getConstantIntValue(forOp.getStep());
+    } else if (auto par = dyn_cast_or_null<scf::ParallelOp>(owner);
+               par && arg.getArgNumber() < par.getNumLoops()) {
+      unsigned i = arg.getArgNumber();
+      lb = getConstantIntValue(par.getLowerBound()[i]);
+      ub = getConstantIntValue(par.getUpperBound()[i]);
+      step = getConstantIntValue(par.getStep()[i]);
+    }
+    if (lb && ub && step) {
+      if (*step <= 0 || *ub <= *lb)
+        return std::nullopt;
+      return std::make_pair(*lb, *lb + (*ub - 1 - *lb) / *step * *step);
+    }
+  }
+  if (auto cast = v.getDefiningOp<arith::IndexCastOp>())
+    return getConstantRange(cast.getIn());
+  if (auto cast = v.getDefiningOp<arith::IndexCastUIOp>())
+    return getConstantRange(cast.getIn());
+  if (auto ext = v.getDefiningOp<arith::ExtSIOp>())
+    return getConstantRange(ext.getIn());
+  if (auto ext = v.getDefiningOp<arith::ExtUIOp>()) {
+    auto range = getConstantRange(ext.getIn());
+    if (range && range->first >= 0)
+      return range;
+    return std::nullopt;
+  }
+  if (auto add = v.getDefiningOp<arith::AddIOp>()) {
+    auto l = getConstantRange(add.getLhs()), r = getConstantRange(add.getRhs());
+    if (!l || !r)
+      return std::nullopt;
+    return std::make_pair(l->first + r->first, l->second + r->second);
+  }
+  if (auto sub = v.getDefiningOp<arith::SubIOp>()) {
+    auto l = getConstantRange(sub.getLhs()), r = getConstantRange(sub.getRhs());
+    if (!l || !r)
+      return std::nullopt;
+    return std::make_pair(l->first - r->second, l->second - r->first);
+  }
+  if (auto mul = v.getDefiningOp<arith::MulIOp>()) {
+    auto l = getConstantRange(mul.getLhs()), r = getConstantRange(mul.getRhs());
+    if (!l || !r || (l->first != l->second && r->first != r->second))
+      return std::nullopt;
+    if (r->first != r->second)
+      std::swap(l, r);
+    int64_t c = r->first;
+    return std::make_pair(std::min(l->first * c, l->second * c),
+                          std::max(l->first * c, l->second * c));
+  }
+  if (auto forOp = affine::getForInductionVarOwner(v)) {
+    if (!forOp.hasConstantBounds() ||
+        forOp.getConstantUpperBound() <= forOp.getConstantLowerBound())
+      return std::nullopt;
+    return std::make_pair(forOp.getConstantLowerBound(),
+                          forOp.getConstantUpperBound() - 1);
+  }
+  if (auto par = affine::getAffineParallelInductionVarOwner(v)) {
+    unsigned i = cast<BlockArgument>(v).getArgNumber();
+    AffineMap lb = par.getLowerBoundMap(i), ub = par.getUpperBoundMap(i);
+    if (!lb.isSingleConstant() || !ub.isSingleConstant() ||
+        ub.getSingleConstantResult() <= lb.getSingleConstantResult())
+      return std::nullopt;
+    return std::make_pair(lb.getSingleConstantResult(),
+                          ub.getSingleConstantResult() - 1);
+  }
+  return std::nullopt;
+}
+
+std::optional<std::pair<int64_t, int64_t>>
+getConstantRange(AffineMap map, ValueRange operands) {
+  if (map.getNumResults() != 1)
+    return std::nullopt;
+  SmallVector<int64_t> flat;
+  if (failed(getFlattenedAffineExpr(map.getResult(0), map.getNumDims(),
+                                    map.getNumSymbols(), &flat)) ||
+      flat.size() != operands.size() + 1)
+    return std::nullopt;
+  int64_t lo = flat.back(), hi = flat.back();
+  for (auto [coef, operand] :
+       llvm::zip_equal(ArrayRef(flat).drop_back(), operands)) {
+    if (coef == 0)
+      continue;
+    auto range = getConstantRange(operand);
+    if (!range)
+      return std::nullopt;
+    lo += std::min(coef * range->first, coef * range->second);
+    hi += std::max(coef * range->first, coef * range->second);
+  }
+  return std::make_pair(lo, hi);
 }
 
 } // namespace enzyme
@@ -3333,167 +3369,154 @@ LogicalResult concatReshapeSliceSimplify(PatternRewriter &rewriter,
                                          SmallVectorImpl<Value> &newOperands) {
   bool changed = false;
 
-  auto getShapeWithoutDims = [](RankedTensorType type,
-                                int64_t dim) -> SmallVector<int64_t> {
-    SmallVector<int64_t> shape;
-    for (size_t i = 0; i < type.getRank(); ++i) {
-      if (i == dim)
-        continue;
-      shape.push_back(type.getDimSize(i));
-    }
-    return shape;
-  };
-
   for (size_t i = 0, e = operands.size(); i < e; ++i) {
     auto operand = operands[i];
-    stablehlo::SliceOp slice;
-    stablehlo::ReshapeOp reshape =
-        operand.getDefiningOp<stablehlo::ReshapeOp>();
+    if (i + 1 >= e) {
+      newOperands.push_back(operand);
+      continue;
+    }
 
-    bool insertions = false, deletions = false;
-    int64_t totalMergeSize;
-    SmallVector<int64_t> insertionDims, deletionDims;
+    auto reshape = operand.getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshape) {
+      newOperands.push_back(operand);
+      continue;
+    }
 
+    auto slice = reshape.getOperand().getDefiningOp<stablehlo::SliceOp>();
+    if (!slice) {
+      newOperands.push_back(operand);
+      continue;
+    }
+
+    auto otherReshape = operands[i + 1].getDefiningOp<stablehlo::ReshapeOp>();
+    if (!otherReshape) {
+      newOperands.push_back(operand);
+      continue;
+    }
+
+    auto otherSlice =
+        otherReshape.getOperand().getDefiningOp<stablehlo::SliceOp>();
+    if (!otherSlice) {
+      newOperands.push_back(operand);
+      continue;
+    }
+
+    auto sliceTy = dyn_cast<RankedTensorType>(slice.getType());
+    auto reshapeTy = dyn_cast<RankedTensorType>(reshape.getType());
+    if (!sliceTy || !reshapeTy || !sliceTy.hasStaticShape() ||
+        !reshapeTy.hasStaticShape() || sliceTy.getNumElements() == 0 ||
+        dim >= reshapeTy.getRank()) {
+      newOperands.push_back(operand);
+      continue;
+    }
+
+    int64_t sliceRank = sliceTy.getRank();
     int64_t sliceDim = -1;
-    if (reshape) {
-      slice = reshape.getOperand().getDefiningOp<stablehlo::SliceOp>();
-      if (!slice) {
+    for (int64_t d = 0; d < sliceRank; ++d) {
+      if (canMergeSlicesAlongAxis(d, slice, otherSlice)) {
+        sliceDim = d;
+        break;
+      }
+    }
+
+    if (sliceDim == -1) {
+      newOperands.push_back(operand);
+      continue;
+    }
+
+    int64_t pSlice = 1;
+    for (int64_t d = 0; d < sliceDim; ++d)
+      pSlice *= sliceTy.getDimSize(d);
+
+    int64_t pConcat = 1;
+    for (int64_t d = 0; d < dim; ++d)
+      pConcat *= reshapeTy.getDimSize(d);
+
+    bool needsTranspose = (pSlice != pConcat);
+    int64_t targetDim = -1;
+
+    if (needsTranspose) {
+      if (sliceTy.getDimSize(sliceDim) != 1) {
         newOperands.push_back(operand);
         continue;
-      } else {
-        auto sliceInTy = cast<ShapedType>(slice.getOperand().getType());
-        auto sliceTy = cast<ShapedType>(slice.getType());
-        for (size_t idx = 0; idx < slice.getStartIndices().size(); ++idx) {
-          if (sliceTy.getDimSize(idx) == 1 &&
-              !(slice.getStartIndices()[idx] == 0 &&
-                slice.getLimitIndices()[idx] == sliceInTy.getDimSize(idx) &&
-                slice.getStrides()[idx] == 1)) {
-            if (sliceDim != -1) {
-              sliceDim = -1; // TODO: support multiple dims here
-              break;
-            }
-            sliceDim = idx;
-          }
-        }
-
-        if (sliceDim == -1) {
-          newOperands.push_back(operand);
-          continue;
-        }
-
-        auto srcWithoutSliceDim = getShapeWithoutDims(
-            cast<RankedTensorType>(slice.getType()), sliceDim);
-        auto dstWithoutConcatDim =
-            getShapeWithoutDims(cast<RankedTensorType>(reshape.getType()), dim);
-
-        if (srcWithoutSliceDim != dstWithoutConcatDim) {
-          auto curInsertionDims =
-              findReshapeInsertionDims(srcWithoutSliceDim, dstWithoutConcatDim);
-          auto curDeletionDims =
-              findReshapeInsertionDims(dstWithoutConcatDim, srcWithoutSliceDim);
-
-          if (curInsertionDims.empty() && curDeletionDims.empty()) {
-            newOperands.push_back(operand);
-            continue;
-          } else if (!curInsertionDims.empty()) {
-            insertions = true;
-            insertionDims = std::move(curInsertionDims);
-          } else {
-            deletions = true;
-            deletionDims = std::move(curDeletionDims);
-          }
-        }
-
-        totalMergeSize =
-            cast<RankedTensorType>(reshape.getType()).getDimSize(dim);
       }
-    } else {
-      newOperands.push_back(operand);
-      continue;
+
+      SmallVector<int64_t> srcWithoutSliceDim;
+      srcWithoutSliceDim.reserve(sliceRank - 1);
+      for (int64_t d = 0; d < sliceRank; ++d) {
+        if (d != sliceDim)
+          srcWithoutSliceDim.push_back(sliceTy.getDimSize(d));
+      }
+
+      int64_t prefixProd = 1;
+      for (int64_t t = 0, te = srcWithoutSliceDim.size(); t <= te; ++t) {
+        if (prefixProd == pConcat) {
+          if (targetDim == -1 || t == dim)
+            targetDim = t;
+        }
+        if (t < te)
+          prefixProd *= srcWithoutSliceDim[t];
+      }
+
+      if (targetDim == -1) {
+        newOperands.push_back(operand);
+        continue;
+      }
     }
 
-    int64_t ndims = cast<RankedTensorType>(reshape.getType()).getRank();
-    int64_t ndimsCorrected = ndims;
-    if (insertions) {
-      ndimsCorrected -= insertionDims.size();
-    }
-    if (deletions) {
-      ndimsCorrected += deletionDims.size();
-    }
-
-    if (ndimsCorrected <= dim) {
-      newOperands.push_back(operand);
-      continue;
-    }
-
+    int64_t totalMergeSize = reshapeTy.getDimSize(dim);
     Value newOperand = operand;
-    bool needsPerm = false;
+    bool mergedAny = false;
+
     while (i + 1 < e) {
-      if (auto otherReshape =
-              operands[i + 1].getDefiningOp<stablehlo::ReshapeOp>()) {
-        if (auto otherSlice =
-                otherReshape.getOperand().getDefiningOp<stablehlo::SliceOp>()) {
-          // Check if reshapes are the same
-          if (!OperationEquivalence::isEquivalentTo(
-                  reshape, otherReshape,
-                  OperationEquivalence::ignoreValueEquivalence, nullptr,
-                  OperationEquivalence::IgnoreLocations, nullptr)) {
-            break;
-          }
+      auto nextReshape = operands[i + 1].getDefiningOp<stablehlo::ReshapeOp>();
+      if (!nextReshape)
+        break;
+      auto nextSlice =
+          nextReshape.getOperand().getDefiningOp<stablehlo::SliceOp>();
+      if (!nextSlice)
+        break;
 
-          // Check if slices can be merged
-          if (canMergeSlicesAlongAxis(sliceDim, slice, otherSlice)) {
-            totalMergeSize +=
-                cast<RankedTensorType>(otherReshape.getType()).getDimSize(dim);
+      if (needsTranspose && nextReshape.getType() != reshape.getType())
+        break;
 
-            slice = stablehlo::SliceOp::create(
-                rewriter, slice->getLoc(), slice.getOperand(),
-                slice.getStartIndices(), otherSlice.getLimitIndices(),
-                slice.getStrides());
-            newOperand = slice.getResult();
-            changed = true;
-            needsPerm = true;
-            i++;
-            continue;
-          }
-        }
-      }
+      if (!canMergeSlicesAlongAxis(sliceDim, slice, nextSlice))
+        break;
 
-      break;
+      totalMergeSize +=
+          cast<RankedTensorType>(nextReshape.getType()).getDimSize(dim);
+
+      slice = stablehlo::SliceOp::create(
+          rewriter, slice->getLoc(), slice.getOperand(),
+          slice.getStartIndices(), nextSlice.getLimitIndices(),
+          slice.getStrides());
+      newOperand = slice.getResult();
+      changed = true;
+      mergedAny = true;
+      i++;
     }
 
-    if (needsPerm) {
-      SmallVector<int64_t> mapping(ndimsCorrected);
-      std::iota(mapping.begin(), mapping.end(), 0);
-      mapping[sliceDim] = dim;
-      if (sliceDim > dim) {
-        for (int64_t i = dim; i < sliceDim; i++) { // shift right
-          mapping[i]++;
+    if (mergedAny) {
+      if (needsTranspose) {
+        SmallVector<int64_t> permutation;
+        permutation.reserve(sliceRank);
+        for (int64_t d = 0; d < sliceRank; ++d) {
+          if (d != sliceDim)
+            permutation.push_back(d);
         }
-      } else {
-        for (int64_t i = sliceDim + 1; i <= dim; i++) { // shift left
-          mapping[i]--;
-        }
+        permutation.insert(permutation.begin() + targetDim, sliceDim);
+
+        newOperand = stablehlo::TransposeOp::create(rewriter, reshape.getLoc(),
+                                                    newOperand, permutation);
       }
 
-      SmallVector<int64_t> permutation(mapping.size(), 0);
-      for (int64_t i = 0; i < mapping.size(); i++) {
-        permutation[mapping[i]] = i;
-      }
-
-      auto transposeOp = stablehlo::TransposeOp::create(
-          rewriter, reshape.getLoc(), newOperand, permutation);
-      if (!insertions && !deletions) {
-        newOperand = transposeOp.getResult();
-      } else {
-        auto reshapeOrigType = cast<RankedTensorType>(reshape.getType());
-        SmallVector<int64_t> newShape =
-            llvm::to_vector(reshapeOrigType.getShape());
-        newShape[dim] = totalMergeSize;
-        newOperand = stablehlo::ReshapeOp::create(
-            rewriter, reshape.getLoc(),
-            RankedTensorType::get(newShape, reshapeOrigType.getElementType()),
-            transposeOp.getResult());
+      SmallVector<int64_t> newShape = llvm::to_vector(reshapeTy.getShape());
+      newShape[dim] = totalMergeSize;
+      auto newType =
+          RankedTensorType::get(newShape, reshapeTy.getElementType());
+      if (newOperand.getType() != newType) {
+        newOperand = stablehlo::ReshapeOp::create(rewriter, reshape.getLoc(),
+                                                  newType, newOperand);
       }
     }
 
@@ -3619,6 +3642,11 @@ Value ReshapeOpCreate(OpBuilder &builder, Location loc, Value input,
   if (inputTy.getShape() == shape) {
     return input;
   }
+
+  for (auto reshape = input.getDefiningOp<stablehlo::ReshapeOp>(); reshape;
+       reshape = reshape.getOperand().getDefiningOp<stablehlo::ReshapeOp>())
+    if (reshape.getOperand().getType().getShape() == shape)
+      return reshape.getOperand();
 
   RankedTensorType resultTy =
       RankedTensorType::get(shape, inputTy.getElementType());

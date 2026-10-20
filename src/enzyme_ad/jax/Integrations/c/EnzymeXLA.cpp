@@ -362,7 +362,8 @@ static std::string passWithBenefitAndArg(const char *name, int benefit,
 
 static void addBaseTransformPasses(std::vector<std::string> &list,
                                    int64_t maxConstThreshold,
-                                   int64_t whileUnrollThreshold) {
+                                   int64_t whileUnrollThreshold,
+                                   bool dotFormation) {
   list.push_back("compare_op_canon<16>");
   list.push_back("compare_bool_const<16>");
   list.push_back("compare_ext<16>");
@@ -471,6 +472,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("dynamic_slice_to_static<16>");
   list.push_back("dynamic_update_slice_elim<16>");
   list.push_back("concat_to_broadcast<16>");
+  list.push_back("concat_periodic");
   list.push_back("reduce_to_reshape<16>");
   list.push_back("broadcast_to_reshape<16>");
   list.push_back("slice_internal");
@@ -489,6 +491,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("reduce_concat<1>");
   list.push_back("slice_concat<1>");
   list.push_back("concat_slice<1>");
+  list.push_back("concat_slice_stack");
   list.push_back("select_op_used_within_if<1>");
   list.push_back("bin_broadcast_splat_add<1>");
   list.push_back("bin_broadcast_splat_subtract<1>");
@@ -522,17 +525,19 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("compare_select_simplify");
   list.push_back("while_simplify<1>(1)");
   list.push_back("if_remove_unused");
+  list.push_back("case_remove_unused");
   list.push_back("transpose_reshape_to_broadcast");
   list.push_back("reshape_transpose_to_broadcast");
   list.push_back("dus_dus");
   list.push_back("dus_dus_concat");
   list.push_back("abs_positive_simplify");
-  list.push_back("transpose_elementwise_transpose");
+  list.push_back("transpose_elementwise_transpose(1)");
   list.push_back("select_comp_iota_const_simplify");
   list.push_back("sign_abs_simplify<1>");
   list.push_back("broadcastindim_is_reshape");
   list.push_back("reduce_window_wrap<1>");
   list.push_back("slice_reduce_window<1>");
+  list.push_back("slice_reduce");
   list.push_back("while_deadresult");
   list.push_back("while_duplicate_carried");
   list.push_back("while_idempotent_dus");
@@ -546,7 +551,10 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("sink_dus");
   list.push_back("hoist_slice");
   list.push_back("while_induction_reduction");
+  list.push_back("while_slice_elementwise_carry");
   list.push_back("slice_broadcast");
+  list.push_back("slice_iota");
+  list.push_back("slice_gather");
   list.push_back("associative_common_mul_op_reordering");
   list.push_back("slice_select_to_select_slice");
   list.push_back("slice_if");
@@ -554,6 +562,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("slice_extend");
   list.push_back("slice_of_updatewithoutcorners");
   list.push_back("concat_wrap");
+  list.push_back("concat_rotate");
   list.push_back("cse_updatewithoutcorners<16>");
   list.push_back("cse_extend<16>");
   list.push_back("cse_wrap<16>");
@@ -571,13 +580,19 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("convert_iota_simplify");
   list.push_back("min_max_iota_const_simplify");
   list.push_back("clamp_iota_const_simplify");
+  list.push_back("reduce_min_max_iota_like");
+  list.push_back("select_select_common_branch");
+  list.push_back("select_known_predicate_operand");
   list.push_back("reshuffle_ands_compares");
   list.push_back("square_abs_simplify");
   list.push_back("divide_divide_simplify");
   list.push_back("concat_reshape_slice");
   list.push_back("concat_broadcast_slice");
+  list.push_back("concat_reshape_broadcast");
   list.push_back("full_reduce_reshape_or_transpose");
   list.push_back("concat_reshape_reduce");
+  list.push_back("concat_reduce");
+  list.push_back("concat_dot_general");
   list.push_back("concat_elementwise");
   list.push_back("reduce_reduce");
   list.push_back("reduce_halving_reduce_window");
@@ -632,9 +647,13 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("divide_negated_operands_simplify");
   list.push_back("multiply_negated_operands_simplify");
   list.push_back("factor_scalars_in_dot_general");
-  list.push_back("reduce_mul_to_dot_general");
+  if (dotFormation)
+    list.push_back("reduce_mul_to_dot_general");
+  list.push_back("add_terms_to_reduce");
   list.push_back("dot_general_broadcast_in_dim");
+  list.push_back("dot_general_unbatch_broadcast");
   list.push_back("dot_general_broadcast_in_dim_sort_dims");
+  list.push_back("dot_general_no_contraction_to_mul");
   list.push_back("dus_dynamic_slice_simplify");
   list.push_back("while_dus_dus_simplify");
   list.push_back("while_dus_ds_simplify");
@@ -645,9 +664,11 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("reduce_delete_dims");
   list.push_back("dot_general_insert_dim_contraction_simplification");
   list.push_back("fuse_reshape_collapse_or_expand_dims_into_reduce");
-  list.push_back("split_reduce_add_mul_to_add_dot_general");
+  if (dotFormation)
+    list.push_back("split_reduce_add_mul_to_add_dot_general");
   list.push_back(passWithArg("recognize_from_constant", maxConstThreshold));
   list.push_back("extend_to_broadcast");
+  list.push_back("wrap_to_broadcast");
   list.push_back("reduce_max_min_mul_positive_scalar");
   list.push_back("add_complex_simplify");
   list.push_back("sub_complex_simplify");
@@ -688,6 +709,9 @@ static void addScatterGatherPasses(std::vector<std::string> &list,
   list.push_back("scatter_div_simplify");
   list.push_back("unary_elementwise_scatter_simplify");
   list.push_back("scatter_indices_are_unique");
+  list.push_back("scatter_out_of_bounds_noop");
+  list.push_back("gather_of_masked_scatter");
+  list.push_back("gather_of_broadcast_batching_dims");
   list.push_back("scatter_masked_index_slice");
   list.push_back("scatter_masked_index_simplify");
   list.push_back("split_complex_scatter");
@@ -706,6 +730,10 @@ static void addScatterGatherPasses(std::vector<std::string> &list,
   list.push_back(passWithArg("scatter_const_fold", maxConstThreshold));
   list.push_back("cse_gather");
   list.push_back("cse_scatter");
+  list.push_back("cse_reduce");
+  list.push_back("cse_reduce_transposed");
+  list.push_back("cse_dot_general_transposed");
+  list.push_back("concat_view_cse");
 }
 
 static void addSliceToBatchPasses(std::vector<std::string> &list) {
@@ -817,6 +845,7 @@ static void addPadPasses(std::vector<std::string> &list,
   list.push_back("while_pad_induction_reduction");
   list.push_back("pad_concat_to_concat_pad");
   list.push_back("rotate_pad");
+  list.push_back("rotate_rotate");
   list.push_back("concat_multipad");
   list.push_back("speculate_if_pad_to_select");
   list.push_back("dus_to_dynamic_pad");
@@ -828,56 +857,60 @@ static void addPadPasses(std::vector<std::string> &list,
 }
 
 static void addConstPropPasses(std::vector<std::string> &list,
-                               int64_t maxConstThreshold) {
+                               int64_t maxConstThreshold,
+                               int64_t maxReusedConstPropSize) {
   // Unary constant propagation
   list.push_back("chlo_inf_const_prop<16>");
   list.push_back("tgamma_const_prop<16>");
   list.push_back("lgamma_const_prop<16>");
   list.push_back("gamma_const_prop<16>");
   list.push_back("binomial_progress_const_prop<16>");
-  list.push_back("abs_const_prop<16>");
-  list.push_back("log_const_prop<1>");
-  list.push_back("log_plus_one_const_prop<1>");
-  list.push_back("is_finite_const_prop");
-  list.push_back("not_const_prop");
+  list.push_back(
+      passWithBenefitAndArg("abs_const_prop", 16, maxReusedConstPropSize));
+  list.push_back(
+      passWithBenefitAndArg("log_const_prop", 1, maxReusedConstPropSize));
+  list.push_back(passWithBenefitAndArg("log_plus_one_const_prop", 1,
+                                       maxReusedConstPropSize));
+  list.push_back(passWithArg("is_finite_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("not_const_prop", maxReusedConstPropSize));
   list.push_back("reduce_or_and");
-  list.push_back("neg_const_prop");
-  list.push_back("sqrt_const_prop");
-  list.push_back("rsqrt_const_prop");
-  list.push_back("cos_const_prop");
-  list.push_back("sin_const_prop");
-  list.push_back("exp_const_prop");
-  list.push_back("expm1_const_prop");
-  list.push_back("tanh_const_prop");
-  list.push_back("logistic_const_prop");
-  list.push_back("conj_const_prop");
-  list.push_back("ceil_const_prop");
-  list.push_back("cbrt_const_prop");
-  list.push_back("real_const_prop");
-  list.push_back("imag_const_prop");
-  list.push_back("round_const_prop");
+  list.push_back(passWithArg("neg_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("sqrt_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("rsqrt_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("cos_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("sin_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("exp_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("expm1_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("tanh_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("logistic_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("conj_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("ceil_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("cbrt_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("real_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("imag_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("round_const_prop", maxReusedConstPropSize));
   list.push_back("round_nearest_even_const_prop");
-  list.push_back("sign_const_prop");
-  list.push_back("floor_const_prop");
-  list.push_back("tan_const_prop");
-  list.push_back("relu_const_prop");
+  list.push_back(passWithArg("sign_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("floor_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("tan_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("relu_const_prop", maxReusedConstPropSize));
   list.push_back("gelu_const_prop");
-  list.push_back("softplus_const_prop");
+  list.push_back(passWithArg("softplus_const_prop", maxReusedConstPropSize));
 
   // Binary constant propagation
-  list.push_back("add_const_prop");
-  list.push_back("and_const_prop");
-  list.push_back("atan2_const_prop");
-  list.push_back("complex_const_prop");
-  list.push_back("div_const_prop");
-  list.push_back("max_const_prop");
-  list.push_back("min_const_prop");
-  list.push_back("mul_const_prop");
-  list.push_back("or_const_prop");
-  list.push_back("pow_const_prop");
-  list.push_back("rem_const_prop");
-  list.push_back("sub_const_prop");
-  list.push_back("xor_const_prop");
+  list.push_back(passWithArg("add_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("and_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("atan2_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("complex_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("div_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("max_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("min_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("mul_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("or_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("pow_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("rem_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("sub_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("xor_const_prop", maxReusedConstPropSize));
 
   // Other constant propagations
   list.push_back(
@@ -891,12 +924,14 @@ static void addReshapePropagateUpPasses(std::vector<std::string> &list,
                                         bool aggressive) {
   list.push_back("reshape_concat");
   list.push_back("reshape_dus");
+  list.push_back("dus_reshape");
   list.push_back("dot_reshape_pad<1>");
   list.push_back("pad_dot_general<1>(0)");
   // FIXME: see https://github.com/EnzymeAD/Enzyme-JAX/issues/1445
   // list.push_back("pad_dot_general<1>(1)");
   list.push_back("reshape_pad");
   list.push_back("reshape_wrap");
+  list.push_back("reshape_gather");
   list.push_back("reshape_rotate");
   list.push_back("reshape_extend");
   list.push_back("delete_dims_broadcast");
@@ -904,6 +939,9 @@ static void addReshapePropagateUpPasses(std::vector<std::string> &list,
   list.push_back(passWithArg("reshape_slice", !aggressive));
   list.push_back(passWithArg("reshape_elementwise", !aggressive));
   list.push_back(passWithArg("reshape_dynamic_slice", !aggressive));
+  // A window of a reshaped concatenate inside one operand that does not start
+  // on a row: forwarded to that operand, which no reshape move can do.
+  list.push_back("slice_reshape_concat_window");
 }
 
 static void addReshapePropagateDownPasses(std::vector<std::string> &list,
@@ -934,6 +972,7 @@ static void addTransposePropagateUpPasses(std::vector<std::string> &list,
   list.push_back("transpose_slice");
   list.push_back("transpose_like_broadcast_slice");
   list.push_back("transpose_concat");
+  list.push_back("transpose_like_broadcast_concat");
   list.push_back("transpose_iota");
   list.push_back("transpose_reduce");
   list.push_back("transpose_reduce_window");
@@ -944,6 +983,8 @@ static void addTransposePropagateUpPasses(std::vector<std::string> &list,
   list.push_back("transpose_extend");
   list.push_back("transpose_rotate");
   list.push_back("transpose_dynamic_slice");
+  list.push_back("transpose_gather");
+  list.push_back("transpose_scatter");
   list.push_back("transpose_like_broadcast_dynamic_slice");
   list.push_back("transpose_reverse");
   list.push_back("transpose_batch_norm_training");
@@ -1028,7 +1069,8 @@ void enzymexlaGetTransformPassesList(
   bool aggressive = options->aggressive_propagation;
 
   // Base passes
-  addBaseTransformPasses(list, maxConst, whileUnroll);
+  addBaseTransformPasses(list, maxConst, whileUnroll,
+                         options->enable_dot_formation_passes);
 
   if (options->enable_self_to_convolution_like_passes) {
     addSelfToConvolutionLikePasses(list);
@@ -1088,7 +1130,7 @@ void enzymexlaGetTransformPassesList(
   }
 
   // Constant propagation
-  addConstPropPasses(list, maxConst);
+  addConstPropPasses(list, maxConst, options->max_reused_const_prop_size);
 
   // Optional runtime flags
   if (options->dus_slice_simplify) {

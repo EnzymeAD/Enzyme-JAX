@@ -1740,11 +1740,18 @@ public:
     SmallVector<int64_t> starts;
     SmallVector<int64_t> edge_padding_high;
     SmallVector<int64_t> interior_padding;
-    for (auto &&[start, limit, stride, dim] :
-         llvm::zip(op.getStartIndices(), op.getLimitIndices(), op.getStrides(),
-                   inTy.getShape())) {
+    for (auto &&[start, stride, dim, outDim] :
+         llvm::zip(op.getStartIndices(), op.getStrides(), inTy.getShape(),
+                   op.getType().getShape())) {
       starts.push_back(start);
-      edge_padding_high.push_back(dim - limit);
+      // The limit index of a strided slice need not be tight (e.g. x[1:1119:2]
+      // and x[1:1118:2] of a 1120-element tensor both yield 559 elements), so
+      // the high padding must be derived from the number of result elements
+      // rather than from `dim - limit`. The padded result has
+      // `outDim + start + high + (outDim - 1) * (stride - 1)` elements for
+      // `outDim > 0`, which must equal `dim`.
+      int64_t end = outDim == 0 ? start : start + (outDim - 1) * stride + 1;
+      edge_padding_high.push_back(dim - end);
       interior_padding.push_back(stride - 1);
     }
 
@@ -2073,11 +2080,13 @@ public:
             builder, op.getLoc(), inTy, cachedResult,
             builder.getDenseI64ArrayAttr(toBroadcast));
 
-        // valueDiffe = inDiffe * cachedResult / cachedValue
-        Value outDiffe = stablehlo::MulOp::create(
-            builder, op.getLoc(), binDiffe,
-            stablehlo::DivOp::create(builder, op.getLoc(), resultBroadcasted,
-                                     cachedValue));
+        // valueDiffe = inDiffe * conj(cachedResult / cachedValue)
+        Value div = stablehlo::DivOp::create(builder, op.getLoc(),
+                                             resultBroadcasted, cachedValue);
+        div = cast<AutoDiffTypeInterface>(div.getType())
+                  .createConjOp(builder, op.getLoc(), div);
+        Value outDiffe =
+            stablehlo::MulOp::create(builder, op.getLoc(), binDiffe, div);
 
         gutils->addToDiffe(value, outDiffe, builder);
       }
@@ -2087,6 +2096,8 @@ public:
             builder.getDenseI64ArrayAttr({}));
         Value divResInit = stablehlo::DivOp::create(
             builder, op.getLoc(), cachedResult, broadcastedInit);
+        divResInit = cast<AutoDiffTypeInterface>(divResInit.getType())
+                         .createConjOp(builder, op.getLoc(), divResInit);
         Value broadcastedInitDiffe =
             stablehlo::MulOp::create(builder, op.getLoc(), divResInit, inDiffe);
 

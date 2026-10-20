@@ -1,7 +1,7 @@
-JAX_COMMIT = "fbf6588d55c5662ccf98558015d5b2c4c4a7bf6f"
+JAX_COMMIT = "6aaf234b1ee98800fcb80b9014a052a66dadbd8a"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "3cd66b79ce224b8dc35cfac0e37038ed186b2013"
+ENZYME_COMMIT = "25d27195c099f3ab5a9e3d2bb99bd29ddb2aa1fe"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
@@ -70,10 +70,10 @@ echo "     InterpreterFallback* fallback) {" >> third_party/stablehlo/temporary.
 echo "+#if (defined(_WIN32) || defined(__CYGWIN__))" >> third_party/stablehlo/temporary.patch
 echo "+  llvm::report_fatal_error(\\"Op not supported on windows due to std::future\\");" >> third_party/stablehlo/temporary.patch
 echo "+#else" >> third_party/stablehlo/temporary.patch
-echo "   llvm::DefaultThreadPool threadPool;" >> third_party/stablehlo/temporary.patch
-echo "   llvm::ThreadPoolTaskGroup taskGroup(threadPool);" >> third_party/stablehlo/temporary.patch
+echo "   uint32_t numReplicas = programs.size();" >> third_party/stablehlo/temporary.patch
+echo "   uint32_t numPartitions = programs[0].size();" >> third_party/stablehlo/temporary.patch
 echo " " >> third_party/stablehlo/temporary.patch
-echo "@@ -211,6 +214,7 @@ SmallVector<InterpreterValue> evalRunParallelOp(" >> third_party/stablehlo/temporary.patch
+echo "@@ -223,6 +226,7 @@ SmallVector<InterpreterValue> evalRunParallelOp(" >> third_party/stablehlo/temporary.patch
 echo "   for (auto& output : taskOutputs) results.append(output);" >> third_party/stablehlo/temporary.patch
 echo "   // TODO(#1725): Figure out how to test the outfeed queue." >> third_party/stablehlo/temporary.patch
 echo "   return results;" >> third_party/stablehlo/temporary.patch
@@ -105,7 +105,7 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     # place copies and spills above the exec restore of an if/else join,
     # miscompiling kernels (llvm/llvm-project#222368). Drop once XLA's LLVM
     # includes it.
-    sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_amdgpu_bb_prolog.patch\\\", \\\"\\/\\/:patches\\/llvm_mlir_import_inrange_width.patch\\\", \\\"\\/\\/:patches\\/llvm_orc_unw_revert.patch\\\",/g" third_party/llvm/workspace.bzl
+    sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_amdgpu_bb_prolog.patch\\\", \\\"\\/\\/:patches\\/llvm_affine_parallel_signless_minmax.patch\\\",/g" third_party/llvm/workspace.bzl
     """,
     """
     sed -i.bak0 "s/tf_http_archive/http_archive/g" third_party/llvm/workspace.bzl

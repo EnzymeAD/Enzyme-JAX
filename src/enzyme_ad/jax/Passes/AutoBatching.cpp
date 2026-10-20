@@ -782,6 +782,14 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
     return rewriter.notifyMatchFailure(sliceOp, "slice operand not found");
   }
 
+  // Each result of the target op (a variadic reduce has several) is stacked
+  // into a result of the batch op, so all of them must be ranked tensors.
+  for (Type resultType : targetOp->getResultTypes()) {
+    if (!isa<RankedTensorType>(resultType))
+      return rewriter.notifyMatchFailure(sliceOp,
+                                         "target op has a non-tensor result");
+  }
+
   if (llvm::any_of(allHaveIntermediateReshapes, [=](bool b) {
         return b != allHaveIntermediateReshapes[0];
       })) {
@@ -954,38 +962,45 @@ SliceToBatchBase::matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
   if (!func)
     return failure();
 
-  SmallVector<int64_t> outputShape;
-  outputShape.push_back(relatedSlices.size());
-  auto relatedOpsType =
-      cast<RankedTensorType>(relatedOps[0]->getResult(0).getType());
-  auto funcRetShape = relatedOpsType.getShape();
-  outputShape.append(funcRetShape.begin(), funcRetShape.end());
+  // One batch result per result of the ops, with the batch as the leading
+  // dimension.
+  SmallVector<Type> batchResultTypes;
+  for (Type resultType : relatedOps[0]->getResultTypes()) {
+    auto tensorType = cast<RankedTensorType>(resultType);
+    SmallVector<int64_t> outputShape;
+    outputShape.push_back(relatedSlices.size());
+    llvm::append_range(outputShape, tensorType.getShape());
+    batchResultTypes.push_back(
+        RankedTensorType::get(outputShape, tensorType.getElementType()));
+  }
 
   auto batchOp = enzyme::BatchOp::create(
-      rewriter, sliceOp.getLoc(),
-      RankedTensorType::get(outputShape, relatedOpsType.getElementType()),
+      rewriter, sliceOp.getLoc(), batchResultTypes,
       mlir::FlatSymbolRefAttr::get(sliceOp.getContext(), func.getName()),
       ValueRange(batchOpOperands),
       rewriter.getDenseI64ArrayAttr(
           {static_cast<int64_t>(relatedSlices.size())}));
 
-  SmallVector<int64_t> startIndices(outputShape.size(), 0);
-  SmallVector<int64_t> endIndices;
-  endIndices.append(outputShape.begin(), outputShape.end());
-  SmallVector<int64_t> strides(outputShape.size(), 1);
   for (auto [idx, sliceInfoAndOp] :
        llvm::enumerate(llvm::zip_equal(relatedSlices, relatedOps))) {
     auto &[sliceInfo, otherOp] = sliceInfoAndOp;
-    startIndices[0] = idx;
-    endIndices[0] = idx + 1;
-
-    auto slicedOp = stablehlo::SliceOp::create(
-        rewriter, sliceOp.getLoc(), batchOp->getResult(0),
-        rewriter.getDenseI64ArrayAttr(startIndices),
-        rewriter.getDenseI64ArrayAttr(endIndices),
-        rewriter.getDenseI64ArrayAttr(strides));
-    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
-        otherOp, otherOp->getResult(0).getType(), slicedOp);
+    SmallVector<Value> replacements;
+    for (auto [result, batched] :
+         llvm::zip_equal(otherOp->getResults(), batchOp->getResults())) {
+      auto batchedShape = cast<RankedTensorType>(batched.getType()).getShape();
+      SmallVector<int64_t> startIndices(batchedShape.size(), 0);
+      SmallVector<int64_t> endIndices(batchedShape.begin(), batchedShape.end());
+      SmallVector<int64_t> strides(batchedShape.size(), 1);
+      startIndices[0] = idx;
+      endIndices[0] = idx + 1;
+      auto sliced =
+          stablehlo::SliceOpCreate(rewriter, sliceOp.getLoc(), batched,
+                                   startIndices, endIndices, strides);
+      replacements.push_back(stablehlo::ReshapeOpCreate(
+          rewriter, sliceOp.getLoc(), sliced,
+          cast<RankedTensorType>(result.getType()).getShape()));
+    }
+    rewriter.replaceOp(otherOp, replacements);
   }
 
   enzyme::batchutils::batchOperationInline(
@@ -2117,7 +2132,8 @@ bool liftReduceLikeOperation(
       opName = OperationName("stablehlo.add", op->getContext());
     } else if (isa<stablehlo::DivOp>(op)) {
       auto numerator = stablehlo::ConstantOp::create(
-          rewriter, op->getLoc(), rewriter.getOneAttr(reduceInput.getType()));
+          rewriter, op->getLoc(),
+          cast<ElementsAttr>(makeAttr(reduceInput.getType(), 1)));
       reduceInput = stablehlo::DivOp::create(rewriter, op->getLoc(), numerator,
                                              reduceInput);
       opName = OperationName("stablehlo.multiply", op->getContext());
@@ -3028,9 +3044,10 @@ namespace {
 // Batches the body of an enzymexla.parallel while over its iterations: a value
 // that varies with the iteration gains a leading dimension of the trip count,
 // a write into a carried buffer becomes one scatter of every iteration's
-// write, and a constant-trip loop nested in the body keeps running, over the
-// batched values (the iterations of the parallel loop are independent, so it
-// and the parallel loop interchange).
+// write, and a loop nested in the body whose trip count is the same for
+// every iteration keeps running, over the batched values (the iterations of
+// the parallel loop are independent, so it and the parallel loop
+// interchange).
 struct ParallelWhileBatcher {
   PatternRewriter &rewriter;
   Location loc;
@@ -3136,22 +3153,29 @@ struct ParallelWhileBatcher {
     // Every use of a state of the buffer is the link that makes the next
     // state, a read of some of its elements, or the yield of the last one.
     for (Value v : chain)
-      for (OpOperand &use : v.getUses()) {
-        Operation *user = use.getOwner();
-        bool read = isa<stablehlo::GatherOp, stablehlo::DynamicSliceOp>(user) &&
-                    use.getOperandNumber() == 0;
-        if (!chainLinks.count(&use) && !read && &use != &yield)
+      for (OpOperand &use : v.getUses())
+        if (!chainLinks.count(&use) && !isRead(use) && &use != &yield)
           return failure();
-      }
     return success();
+  }
+
+  // Whether `use` reads elements of the buffer: a gather or dynamic_slice of
+  // it, or a reshape of it that only such reads use.
+  static bool isRead(OpOperand &use) {
+    Operation *user = use.getOwner();
+    if (isa<stablehlo::GatherOp, stablehlo::DynamicSliceOp>(user))
+      return use.getOperandNumber() == 0;
+    if (isa<stablehlo::ReshapeOp>(user))
+      return llvm::all_of(user->getResult(0).getUses(), isRead);
+    return false;
   }
 
   // A loop nested in the body runs the same number of times in every
   // iteration of the parallel loop, over values that may vary with it.
   LogicalResult analyzeWhile(stablehlo::WhileOp w) {
     enzyme::WhileLoopInfo wi(w);
-    if (failed(wi.computeInfo()) || !wi.isValid() || !wi.isConstant() ||
-        !isMemoryEffectFree(w))
+    if (failed(wi.computeInfo()) || !wi.isValid() || !wi.isConstantStart() ||
+        !wi.isConstantStep() || !isMemoryEffectFree(w))
       return failure();
     Value wiv = wi.getInductionVariable();
     if (!wiv)
@@ -3278,7 +3302,10 @@ struct ParallelWhileBatcher {
       } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&op)) {
         // A write into a tensor of this iteration: every iteration's copy is
         // written (the batch interface makes a scatter with batching dims).
-        if (!broadcastable(dus.getOperand()))
+        // A copy the same every iteration is broadcast into the batched
+        // write's result, which is that big anyway: no budget.
+        if (!isBatched(dus.getOperand()) &&
+            invariantElements(dus.getOperand()) < 0)
           return failure();
       } else if (isa<stablehlo::DynamicSliceOp>(&op)) {
         // batched along the new leading dimension, or gathered when the
@@ -3294,7 +3321,10 @@ struct ParallelWhileBatcher {
         // the indices gain the leading dimension (and the operand when it
         // varies), existing batching dimensions shift
       } else if (auto sc = dyn_cast<stablehlo::ScatterOp>(&op)) {
-        if (sc.getInputs().size() != 1 || !broadcastable(sc.getInputs()[0]))
+        // Likewise a scatter into the iteration's own copy.
+        if (sc.getInputs().size() != 1 ||
+            (!isBatched(sc.getInputs()[0]) &&
+             invariantElements(sc.getInputs()[0]) < 0))
           return failure();
       } else if (isa<enzymexla::WrapOp, enzymexla::ExtendOp,
                      enzymexla::RotateOp>(&op)) {
@@ -3531,6 +3561,57 @@ struct ParallelWhileBatcher {
 };
 } // namespace
 
+// The combiner of a reduction the loop carries in `arg`: the one use of the
+// argument is an add, a product, a min, a max or a bitwise and, or or xor of
+// it and a value each iteration computes, whose result the loop yields as the
+// argument's next value and uses nowhere else. The tagged iterations are
+// independent but for such reductions, so the value each one combines in can
+// be computed for all at once, and combined in a reduce.
+static Operation *reductionCombiner(BlockArgument arg,
+                                    stablehlo::ReturnOp ret) {
+  if (!arg.hasOneUse())
+    return nullptr;
+  Operation *combiner = *arg.getUsers().begin();
+  if (!stablehlo::canFuseIntoReduce(combiner) ||
+      combiner->getBlock() != arg.getOwner() ||
+      combiner->getOperand(0) == combiner->getOperand(1) ||
+      ret.getOperand(arg.getArgNumber()) != combiner->getResult(0) ||
+      llvm::any_of(combiner->getUsers(),
+                   [&](Operation *u) { return u != ret.getOperation(); }))
+    return nullptr;
+  return combiner;
+}
+
+// The reduction of `values` over the iterations (dimension 0) by
+// `combiner`'s operation, combined with `init`.
+static Value emitReduction(PatternRewriter &rewriter, Location loc,
+                           Operation *combiner, Value values, Value init) {
+  auto ty = cast<RankedTensorType>(init.getType());
+  Type elem = ty.getElementType();
+  Value identity = stablehlo::getIdentityValue(rewriter, loc, elem, combiner);
+  auto reduce = stablehlo::ReduceOp::create(
+      rewriter, loc, TypeRange{ty}, ValueRange{values}, ValueRange{identity},
+      rewriter.getDenseI64ArrayAttr({0}));
+  auto scalar = RankedTensorType::get({}, elem);
+  Block *block = rewriter.createBlock(&reduce.getBody());
+  block->addArgument(scalar, loc);
+  block->addArgument(scalar, loc);
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(block);
+    OperationState state(loc, combiner->getName());
+    state.addOperands(block->getArguments());
+    state.addTypes(scalar);
+    Operation *op = rewriter.create(state);
+    stablehlo::ReturnOp::create(rewriter, loc, op->getResult(0));
+  }
+  rewriter.setInsertionPointAfter(reduce);
+  OperationState state(loc, combiner->getName());
+  state.addOperands({init, reduce.getResult(0)});
+  state.addTypes(ty);
+  return rewriter.create(state)->getResult(0);
+}
+
 LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
   if (!whileOp->hasAttr("enzymexla.parallel"))
@@ -3552,15 +3633,22 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
                                &whileOp.getBody());
   batcher.batched.insert(iv);
   // Every carried value other than the induction variable is either
-  // unchanged or a buffer written through a chain of writes.
+  // unchanged, a reduction, or a buffer written through a chain of writes.
   SmallVector<bool> unchanged(body.getNumArguments(), false);
+  llvm::MapVector<unsigned, Operation *> reductions;
+  for (auto arg : body.getArguments())
+    if (arg.getArgNumber() != ivNum)
+      if (Operation *combiner = reductionCombiner(arg, ret))
+        reductions[arg.getArgNumber()] = combiner;
   for (auto arg : body.getArguments()) {
     unsigned k = arg.getArgNumber();
-    if (k == ivNum)
+    if (k == ivNum || reductions.count(k))
       continue;
-    if (ret.getOperand(k) == arg)
+    if (ret.getOperand(k) == arg) {
       unchanged[k] = true;
-    else if (failed(batcher.analyzeChain(arg, ret, k)))
+      continue;
+    }
+    if (failed(batcher.analyzeChain(arg, ret, k)))
       return failure();
   }
   if (failed(batcher.analyzeBlock(body)))
@@ -3589,7 +3677,31 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
   for (auto arg : body.getArguments())
     if (unchanged[arg.getArgNumber()] || batcher.chainRoot.count(arg))
       batcher.map.map(arg, whileOp->getOperand(arg.getArgNumber()));
+  // A reduction starts every iteration from the identity, so each combines
+  // in only its own value; the reduce below combines them all.
+  for (auto &[k, combiner] : reductions) {
+    auto ty = cast<RankedTensorType>(body.getArgument(k).getType());
+    Value identity = stablehlo::getIdentityValue(rewriter, loc,
+                                                 ty.getElementType(), combiner);
+    if (identity.getType() != ty)
+      identity = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, ty, identity, ArrayRef<int64_t>{});
+    batcher.map.map(body.getArgument(k), identity);
+  }
   batcher.emitBlock(body);
+  DenseMap<unsigned, Value> reduced;
+  for (auto &[k, combiner] : reductions) {
+    Value v = combiner->getResult(0);
+    Value values = batcher.map.lookup(v);
+    // a value no iteration changes is combined in by every one of them
+    if (!batcher.isBatched(v))
+      values = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, batcher.batchedType(values.getType()), values,
+          llvm::to_vector(llvm::seq<int64_t>(
+              1, cast<RankedTensorType>(values.getType()).getRank() + 1)));
+    reduced[k] =
+        emitReduction(rewriter, loc, combiner, values, whileOp->getOperand(k));
+  }
 
   SmallVector<Value> results;
   for (auto arg : body.getArguments()) {
@@ -3598,6 +3710,8 @@ LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
       results.push_back(stablehlo::ConstantOp::create(
           rewriter, loc,
           cast<ElementsAttr>(makeAttr(ivTy, start + numIters * step))));
+    } else if (reduced.count(k)) {
+      results.push_back(reduced[k]);
     } else {
       results.push_back(batcher.map.lookup(ret.getOperand(k)));
     }

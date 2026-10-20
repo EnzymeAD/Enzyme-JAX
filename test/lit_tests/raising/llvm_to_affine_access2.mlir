@@ -65,7 +65,7 @@ func.func @test_load_store_conversion(%arg0: !llvm.ptr<1>, %idx: i64) {
 // CHECK-SAME:                                        %[[VAL_0:[^:]*]]: !llvm.ptr<1>,
 // CHECK-SAME:                                        %[[VAL_1:[^:]*]]: i64,
 // CHECK-SAME:                                        %[[VAL_2:[^:]*]]: i64) {
-// CHECK:           %[[VAL_3:.*]] = llvm.mlir.constant(1 : i64) : i64
+// CHECK:           %[[VAL_3:.*]] = arith.constant 1 : i64
 // CHECK:           %[[VAL_5:.*]] = arith.index_cast %[[VAL_2]] : i64 to index
 // CHECK:           %[[VAL_6:.*]] = arith.index_cast %[[VAL_1]] : i64 to index
 // CHECK:           %[[VAL_4:.*]] = "enzymexla.pointer2memref"(%[[VAL_0]]) : (!llvm.ptr<1>) -> memref<?xi64, 1>

@@ -1406,6 +1406,40 @@ public:
     return success();
   }
 };
+
+template <typename RoundOp>
+class RoundToIntRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  RoundToIntRaising(MLIRContext *context, ArrayRef<StringRef> names)
+      : OpRewritePattern<LLVM::CallOp>(context),
+        names(names.begin(), names.end()) {}
+
+  LogicalResult matchAndRewrite(mlir::LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    StringRef name = callee.getLeafReference();
+    if (!llvm::is_contained(names, name))
+      return failure();
+    if (op->getNumOperands() != 1 || op->getNumResults() != 1)
+      return failure();
+
+    Value x = op->getOperand(0);
+
+    Location loc = op.getLoc();
+
+    Value rounded = RoundOp::create(rewriter, loc, x);
+    rewriter.replaceOpWithNewOp<arith::FPToSIOp>(op, op->getResultTypes()[0],
+                                                 rounded);
+    return success();
+  }
+
+private:
+  SmallVector<std::string> names;
+};
 } // namespace
 
 void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
@@ -1429,6 +1463,12 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
       context, "__nv_clzll");
   patterns.add<CallToOpIntAdaptRaising<math::CtPopOp>>(context, "__nv_popc");
   patterns.add<CallToOpIntAdaptRaising<math::CtPopOp>>(context, "__nv_popcll");
+  patterns.add<RoundToIntRaising<math::RoundEvenOp>>(
+      context,
+      ArrayRef<StringRef>{"__nv_llrint", "__nv_llrintf", "llrint", "llrintf"});
+  patterns.add<RoundToIntRaising<math::RoundOp>>(
+      context, ArrayRef<StringRef>{"__nv_llround", "__nv_llroundf", "llround",
+                                   "llroundf"});
 
   populateOpPatterns<arith::RemFOp>(converter, patterns, "__nv_fmodf",
                                     "__nv_fmod", "fmodf", "fmod");
@@ -1489,8 +1529,9 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
                                     "__nv_fdivide", "__nv_fast_fdividef");
   populateOpPatterns<math::RoundOp>(converter, patterns, "__nv_roundf",
                                     "__nv_round", "roundf", "round");
-  populateOpPatterns<math::RoundEvenOp>(converter, patterns, "__nv_rintf",
-                                        "__nv_rint", "rintf", "rint");
+  populateOpPatterns<math::RoundEvenOp>(
+      converter, patterns, "__nv_rintf", "__nv_rint", "rintf", "rint",
+      "__nv_nearbyintf", "__nv_nearbyint", "nearbyintf", "nearbyint");
   populateOpPatterns<math::RsqrtOp>(converter, patterns, "__nv_rsqrtf",
                                     "__nv_rsqrt");
   populateOpPatterns<math::SinOp>(converter, patterns, "__nv_sinf", "__nv_sin",

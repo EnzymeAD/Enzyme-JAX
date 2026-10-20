@@ -105,7 +105,10 @@ module {
 // CHECK-NEXT:     }
 // CHECK-NEXT:     perfify.conditions @foo true pre {
 // CHECK-NEXT:       %0 = perfify.arg 0
-// CHECK-NEXT:       %1 = perfify.constant_cost 0 : !perfify.cost
+// CHECK-NEXT:       %1 = perfify.constant_cost {
+// CHECK-NEXT:         %c0_i64 = arith.constant 0 : i64
+// CHECK-NEXT:         perfify.yield
+// CHECK-NEXT:       } : !perfify.cost
 // CHECK-NEXT:       %2 = perfify.cmp eq, %1, %0
 // CHECK-NEXT:       perfify.assume %2 {satres = true}
 // CHECK-NEXT:       } post {

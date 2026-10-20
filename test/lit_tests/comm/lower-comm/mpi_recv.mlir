@@ -9,8 +9,6 @@ func.func @main(%src: tensor<i32>, %tag: tensor<i32>, %comm: !comm.mpi.comm) -> 
 // SHLO: func.func @main(%[[DST:.*]]: tensor<i32>, %[[TAG:.*]]: tensor<i32>, %[[COMM:.*]]: tensor<i64>) -> tensor<4xf64> {
 // SHLO-NEXT: stablehlo.custom_call @MpiRecv(%[[DST]], %[[TAG]], %[[COMM]]) {has_side_effect = true} : (tensor<i32>, tensor<i32>, tensor<i64>) -> tensor<4xf64>
 
-// JIT-LABEL: llvm.mlir.global external constant @MPI_STATUS_IGNORE
-// JIT-SAME:                                                       () {addr_space = 0 : i32} : !llvm.ptr
 // JIT-LABEL: llvm.func @MPI_Recv
 // JIT-SAME:                     (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
 // JIT-LABEL: llvm.func @enzymexla_jitwrap_MPI_Recv
@@ -20,8 +18,9 @@ func.func @main(%src: tensor<i32>, %tag: tensor<i32>, %comm: !comm.mpi.comm) -> 
 // JIT-NEXT:   %2 = llvm.load %arg3 : !llvm.ptr -> i32
 // JIT-NEXT:   %3 = llvm.load %arg4 : !llvm.ptr -> i32
 // JIT-NEXT:   %4 = llvm.load %arg5 : !llvm.ptr -> !llvm.ptr
-// JIT-NEXT:   %5 = llvm.mlir.addressof @MPI_STATUS_IGNORE : !llvm.ptr
-// JIT-NEXT:   %6 = llvm.call @MPI_Recv(%arg0, %0, %1, %2, %3, %4, %5) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
+// JIT-NEXT:   %5 = llvm.mlir.constant(2 : i64) : i64
+// JIT-NEXT:   %6 = llvm.inttoptr %5 : i64 to !llvm.ptr
+// JIT-NEXT:   %7 = llvm.call @MPI_Recv(%arg0, %0, %1, %2, %3, %4, %6) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
 // JIT-NEXT:   llvm.return
 // JIT-NEXT: }
 // JIT-LABEL: func.func @main

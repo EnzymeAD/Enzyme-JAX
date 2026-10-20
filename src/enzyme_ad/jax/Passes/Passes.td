@@ -681,10 +681,40 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
   ];
 }
 
+def FuseJITPass : Pass<"fuse-jit", "mlir::ModuleOp"> {
+  let summary = "Fuse JIT calls";
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "LLVM::LLVMDialect",
+    "stablehlo::StablehloDialect",
+  ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"top_down",
+        /*CLI argument=*/"top_down",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Use top down traversal">,
+    Option<
+        /*C++ variable name=*/"dag",
+        /*CLI argument=*/"dag",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Fuse JIT calls connected by data dependency">,
+    // Option<
+    //     /*C++ variable name=*/"adjacent",
+    //     /*CLI argument=*/"adjacent",
+    //     /*type=*/"bool",
+    //     /*default=*/"true",
+    //     /*description=*/"Fuse adjacent JIT calls">,
+    ];
+}
+
 def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
   let summary = "Lower enzymexla.lapack ops to stablehlo";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
+    "chlo::ChloDialect",
     "enzymexla::EnzymeXLADialect",
     "LLVM::LLVMDialect",
   ];
@@ -1380,6 +1410,70 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            /*description=*/
            "Specialize the kernel over a scalar argument an access index reads, "
            "such as a stride, so the index folds to a constant">,
+       Option<
+           /*C++ variable name=*/"specialize_int_scalars",
+           /*CLI argument=*/"specialize_int_scalars",
+           /*type=*/"bool",
+           /*default=*/"false",
+           /*description=*/
+           "Specialize the kernel over every scalar integer argument it only "
+           "reads (lengths, flags), so none reaches the device as a buffer">,
+  ];
+}
+
+def XLAMegakernelizePass : Pass<"xla-megakernelize", "ModuleOp"> {
+  let summary = "Fuse XLA wrappers and move host loops into XLA";
+  let description = [{
+    Combine compatible sequential enzymexla.xla_wrapper calls into one call.
+    Operations between the calls must have no memory effects. Use one tensor
+    state for each shared buffer. Pass the updated state from the first
+    computation to the second computation. Keep separate state for other
+    buffers. Allow duplicate buffer inputs when each view returns its input
+    unchanged. For contiguous views of equal total size, use bitcasts and
+    reshapes to read the shared state with a different shape or element type.
+    Get dynamic buffer sizes from the runtime. Do not combine writes through
+    duplicate inputs or views with different total sizes.
+    Also apply the registered XLA wrapper canonicalization patterns.
+
+    All inputs to the combined call must be available before the first call.
+    Put specialized scalar inputs after the buffer inputs, in call order.
+    Add the specialized input counts. Do not return results for these scalars.
+    Do not combine calls with argument or result metadata.
+
+    Replace an scf.for or affine.for with one XLA wrapper call. Put a
+    stablehlo.while in the new function to execute the loop. The host loop
+    must have one body block, no results, and an unused induction variable.
+    Its body must contain exactly one wrapper call. Other body operations
+    must have no regions and must be pure. These operations must be safe to
+    execute even when the loop has zero iterations. Move them before the
+    new wrapper call. The called StableHLO function must have one body block.
+
+    Pass the induction variable and updated tensors to the next iteration.
+    Read the upper bound, step, and specialized scalars from the new function's
+    entry block. Do not pass them as loop state. Put constant bounds and steps
+    directly in the new function.
+
+    Use module-owned device storage for each dynamic bound or step. Later
+    lowering passes allocate this storage at module initialization and free
+    it at module finalization. Copy the current value to this storage before
+    each call. Calls to the same loop must not overlap because they share
+    this storage.
+
+    Keep function references in the same symbol scope. Preserve the wrapper
+    and function attributes. Add empty argument and result attributes for
+    new bound buffers. Keep specialized inputs and their attributes at the end
+    of the input list. Do not add results for specialized inputs.
+
+    Compile the new function as one XLA program. The XLA backend determines
+    the number of GPU kernels.
+  }];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
+    "stablehlo::StablehloDialect",
   ];
 }
 
@@ -1408,6 +1502,41 @@ def ConvertCudaRTtoHipRT : Pass<"convert-cudart-to-hiprt", "mlir::ModuleOp"> {
   let summary = "Convert CUDA runtime calls to HIP runtime calls";
   let dependentDialects = [
     "mlir::ROCDL::ROCDLDialect",
+  ];
+}
+
+def UnrollSmallLoops : Pass<"unroll-small-loops"> {
+  let summary = "Fully unroll scf.for and affine.for loops of few iterations";
+  let description = [{
+    Fully unrolls every scf.for and affine.for whose trip count is a compile
+    time constant of at most max_trip_count, while the operations it leaves
+    (its trip count times the operations nested in its body, inner loops
+    already unrolled) number at most max_nested_ops. A loop of no iteration
+    (replaced by its initial values) or of a single one (by its body) is
+    always removed, whatever the limits. No loop is partially unrolled.
+  }];
+  let dependentDialects = [
+    "scf::SCFDialect",
+    "affine::AffineDialect",
+    "arith::ArithDialect",
+  ];
+  let options = [
+    Option<
+      /*C++ variable name=*/"max_trip_count",
+      /*CLI argument=*/"max_trip_count",
+      /*type=*/"int64_t",
+      /*default=*/"0",
+      /*description=*/"Unroll a loop of at most this many iterations; loops "
+                      "of zero or one iteration are always removed">,
+    Option<
+      /*C++ variable name=*/"max_nested_ops",
+      /*CLI argument=*/"max_nested_ops",
+      /*type=*/"int64_t",
+      /*default=*/"-1",
+      /*description=*/"Unroll a loop of two or more iterations only while its "
+                      "iterations times the operations nested in its body, "
+                      "inner loops already unrolled, is at most this "
+                      "(negative: no limit)">,
   ];
 }
 
