@@ -3,8 +3,9 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=widen outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" --arith-raise --canonicalize --cse --enzyme-hlo-opt | FileCheck %s --check-prefix=FORWARD-WIDEN
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=widen outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --cse --enzyme-hlo-opt | FileCheck %s --check-prefix=REVERSE-WIDEN
 
-// x -> 2 * float(trunc(x)): a convert to an integer type is piecewise constant,
-// so the derivative is zero. It used to be treated as linear, giving 2.
+// x -> 2 * float(trunc(x)): a convert to or from an integer type is piecewise
+// constant, so activity analysis marks it inactive and the derivative is zero.
+// It used to be treated as linear, giving 2.
 func.func @trunc_roundtrip(%x: tensor<2xf64>) -> tensor<2xf64> {
   %c2 = stablehlo.constant dense<2.0> : tensor<2xf64>
   %i = stablehlo.convert %x : (tensor<2xf64>) -> tensor<2xi64>

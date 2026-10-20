@@ -1287,26 +1287,11 @@ def : HLODerivative<"RsqrtOp", (Op $x),
                     ]
                   >;
 
-// A convert between floating-point (or complex) types is linear. A convert
-// to or from an integer type (a truncation, or the use of a truncated value)
-// is piecewise constant: its derivative is zero, and the integer side has no
-// shadow of its own. Treating it as linear made `float(unsafe_trunc(Int, x))`
-// differentiate as the identity.
-def SelectIfFloatConvert : StaticSelect<[{
-  auto isFloatLike = [](mlir::Type ty) {
-    if (auto tt = dyn_cast<mlir::TensorType>(ty))
-      ty = tt.getElementType();
-    return isa<mlir::FloatType, mlir::ComplexType>(ty);
-  };
-  isFloatLike(op->getOperand(0).getType()) &&
-      isFloatLike(op->getResult(0).getType());
-}]>;
-
 def : HLODerivative<"ConvertOp", (Op $x),
                     [
-                        (SelectIfFloatConvert (Convert (TypeOf $x), (DiffeRet)), (HLOConstantFP<"0"> $x))
+                        (Convert (TypeOf $x), (DiffeRet))
                     ],
-                    (SelectIfFloatConvert (Convert (ResultTypes), (Shadow $x)), (HLOConstantFP<"0">))
+                    (Convert (ResultTypes), (Shadow $x))
                   >;
 
 def : HLODerivative<"SelectOp", (Op $cond, $lhs, $rhs),
