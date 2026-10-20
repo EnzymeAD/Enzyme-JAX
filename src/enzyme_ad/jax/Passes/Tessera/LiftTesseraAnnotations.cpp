@@ -283,16 +283,17 @@ FailureOr<DictionaryAttr> parsePreserve(const FunctionShape &shape,
     why = "expected '<property>:<argument>,...'";
     return failure();
   }
-  if (!shape.hasPreservedOutput()) {
+  Builder b(shape.func.getContext());
+  SmallVector<Attribute> inputs;
+  SmallVector<StringRef> parts;
+  list.split(parts, ',');
+  // With no output, the one object named keeps the property through the call.
+  if (!shape.hasPreservedOutput() && parts.size() != 1) {
     why = "the function neither returns a value nor writes exactly one "
           "argument its tessera_op marks val=out or val=inout, so there is no "
           "output for the property to be preserved in";
     return failure();
   }
-  Builder b(shape.func.getContext());
-  SmallVector<Attribute> inputs;
-  SmallVector<StringRef> parts;
-  list.split(parts, ',');
   for (StringRef part : parts) {
     unsigned position;
     if (part.trim().getAsInteger(10, position) ||

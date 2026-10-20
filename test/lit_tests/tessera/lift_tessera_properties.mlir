@@ -240,3 +240,35 @@ module {
   // expected-warning @below {{ignoring tessera readonly annotation 'arg1': argument 1 is not a pointer, so there is no object to leave alone}}
   llvm.func @mat_shift(!llvm.ptr, f64) -> i32
 }
+
+// -----
+
+// With no output, a preserves names the one object that keeps the property
+// through the call, as a setter that leaves it alone does.
+
+module {
+  llvm.mlir.global private unnamed_addr constant @".str.keep_this"("tessera_preserves=affine_coefficients:0\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.file"("file.cpp\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>> {
+    %zero = llvm.mlir.zero : !llvm.ptr
+    %line = llvm.mlir.constant(1 : i32) : i32
+    %file = llvm.mlir.addressof @".str.file" : !llvm.ptr
+    %keep_this = llvm.mlir.addressof @".str.keep_this" : !llvm.ptr
+    %f = llvm.mlir.addressof @set_level : !llvm.ptr
+    %undef = llvm.mlir.undef : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e0a = llvm.insertvalue %f, %undef[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e0b = llvm.insertvalue %keep_this, %e0a[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e0c = llvm.insertvalue %file, %e0b[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e0d = llvm.insertvalue %line, %e0c[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e0 = llvm.insertvalue %zero, %e0d[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %t = llvm.mlir.undef : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %t0 = llvm.insertvalue %e0, %t[0] : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    llvm.return %t0 : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
+  }
+
+  // CHECK: llvm.func @set_level(
+  // CHECK-SAME: tessera.preserves = [{inputs = [0], property = "affine_coefficients"}]
+  llvm.func @set_level(%this: !llvm.ptr, %level: i32) attributes {no_inline} {
+    llvm.return
+  }
+}
