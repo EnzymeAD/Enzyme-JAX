@@ -7272,16 +7272,24 @@ struct WhileDeadResults final
     replaceTerminator(rewriter, op.getBody(), removedResults);
 
     for (auto &cop : llvm::reverse(opUsers)) {
-      bool hasDead = llvm::any_of(*cop.second, [&](size_t i) {
-        return removedResults.test(i);
-      });
+      bool hasDead = false;
+      for (auto i : *cop.second) {
+        if (removedResults.test(i)) {
+          hasDead = true;
+          break;
+        }
+      }
       if (hasDead)
         rewriter.eraseOp(cop.first);
     }
     for (auto &cop : llvm::reverse(opUsersBody)) {
-      bool hasDead = llvm::any_of(*cop.second, [&](size_t i) {
-        return removedResults.test(i);
-      });
+      bool hasDead = false;
+      for (auto i : *cop.second) {
+        if (removedResults.test(i)) {
+          hasDead = true;
+          break;
+        }
+      }
       if (hasDead)
         rewriter.eraseOp(cop.first);
     }
@@ -7313,13 +7321,15 @@ struct WhileDeadResults final
       ++upd;
     }
 
-    for (int64_t i : llvm::reverse(deadResults))
-      op.getCond().eraseArgument(i);
+    for (int64_t i = removedResults.size() - 1; i >= 0; --i)
+      if (removedResults.test(i))
+        op.getCond().eraseArgument(i);
     rewriter.inlineRegionBefore(op.getCond(), updated.getCond(),
                                 updated.getCond().begin());
 
-    for (int64_t i : llvm::reverse(deadResults)) {
-      op.getBody().eraseArgument(i);
+    for (int64_t i = removedResults.size() - 1; i >= 0; --i) {
+      if (removedResults.test(i))
+        op.getBody().eraseArgument(i);
     }
     rewriter.inlineRegionBefore(op.getBody(), updated.getBody(),
                                 updated.getBody().begin());
