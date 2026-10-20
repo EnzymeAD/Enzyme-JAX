@@ -25,6 +25,12 @@ using namespace mlir::enzyme;
 using namespace mlir::impulse;
 
 namespace mlir {
+namespace impulse {
+bool vectorizeBranchFamilies(InferRegionOp regionOp);
+} // namespace impulse
+} // namespace mlir
+
+namespace mlir {
 namespace enzyme {
 #define GEN_PASS_DEF_SICMPASS
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
@@ -4613,6 +4619,7 @@ struct SICMPass : public enzyme::impl::SICMPassBase<SICMPass> {
         runSICMOnRegion(regionOp, AnalysisTarget::Sampler);
 
       constructLogpdfRegion(regionOp);
+      vectorizeBranchFamilies(regionOp);
 
       if (!regionOp.getLogpdf().empty())
         runSICMOnRegion(regionOp, AnalysisTarget::Logpdf);
