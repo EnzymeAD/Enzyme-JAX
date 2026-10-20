@@ -63,6 +63,8 @@ module {
   llvm.func @mat_permute(!llvm.ptr, !llvm.ptr) -> i32
   llvm.func @mat_destroy(!llvm.ptr) -> i32
   llvm.func @mat_scale(!llvm.ptr, f64) -> i32
+  llvm.func @mat_set_option(!llvm.ptr, i32) attributes {tessera.preserves = [{inputs = [0], property = "SPD"}]}
+  llvm.func @mat_set_other(!llvm.ptr, i32) attributes {tessera.preserves = [{inputs = [0], property = "symmetric"}]}
 
   // The marker is lifted as FillCOO's guarantee is, and marked. It is given
   // the variable's address: the fact is of whatever handle A holds there.
@@ -251,6 +253,144 @@ module {
     %a1 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
     %e2 = tessera.call @petsc.ksp_set_operators(%ksp, %a1, %a1) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
     llvm.return %e2 : i32
+  }
+
+  // A handle copied after the call, as `bfs.Append(form)` copies it, cannot
+  // reach anything between the fact and the call.
+  // FACT-LABEL: llvm.func @copied_after
+  // FACT: tessera.call @petsc.ksp_set_operators(%{{.*}}, %[[A:[0-9]+]], %[[A]]) <arg_attrs = [{}, {tessera.property = ["SPD"]}, {tessera.property = ["SPD"]}]>
+  llvm.func @copied_after(%ksp: !llvm.ptr, %list: !llvm.ptr) -> i32 {
+    %c1 = llvm.mlir.constant(1 : i32) : i32
+    %slot = llvm.alloca %c1 x !llvm.ptr : (i32) -> !llvm.ptr
+    %e0 = llvm.call @mat_create(%slot) : (!llvm.ptr) -> i32
+    llvm.call @__tessera_fact_0(%slot) : (!llvm.ptr) -> ()
+    %a0 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    %e1 = tessera.call @petsc.ksp_set_operators(%ksp, %a0, %a0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+    %a1 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    llvm.store %a1, %list : !llvm.ptr, !llvm.ptr
+    llvm.return %e1 : i32
+  }
+
+  // Copied before it, the handle may reach mat_scale through %list.
+  // FACT-LABEL: llvm.func @copied_before
+  // FACT: tessera.call @petsc.ksp_set_operators
+  // FACT-NOT: tessera.property
+  // FACT: llvm.return
+  llvm.func @copied_before(%ksp: !llvm.ptr, %list: !llvm.ptr, %s: f64) -> i32 {
+    %c1 = llvm.mlir.constant(1 : i32) : i32
+    %slot = llvm.alloca %c1 x !llvm.ptr : (i32) -> !llvm.ptr
+    %e0 = llvm.call @mat_create(%slot) : (!llvm.ptr) -> i32
+    %a1 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    llvm.store %a1, %list : !llvm.ptr, !llvm.ptr
+    llvm.call @__tessera_fact_0(%slot) : (!llvm.ptr) -> ()
+    %other = llvm.load %list : !llvm.ptr -> !llvm.ptr
+    %e1 = llvm.call @mat_scale(%other, %s) : (!llvm.ptr, f64) -> i32
+    %a0 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    %e2 = tessera.call @petsc.ksp_set_operators(%ksp, %a0, %a0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+    llvm.return %e2 : i32
+  }
+
+  // In a loop, a copy made after the call on one iteration is there before it
+  // on the next.
+  // FACT-LABEL: llvm.func @copied_after_in_loop
+  // FACT: tessera.call @petsc.ksp_set_operators
+  // FACT-NOT: tessera.property
+  // FACT: llvm.return
+  llvm.func @copied_after_in_loop(%ksp: !llvm.ptr, %list: !llvm.ptr, %s: f64) {
+    %c1 = llvm.mlir.constant(1 : i32) : i32
+    %lb = arith.constant 0 : index
+    %ub = arith.constant 4 : index
+    %step = arith.constant 1 : index
+    %slot = llvm.alloca %c1 x !llvm.ptr : (i32) -> !llvm.ptr
+    %e0 = llvm.call @mat_create(%slot) : (!llvm.ptr) -> i32
+    scf.for %i = %lb to %ub step %step {
+      llvm.call @__tessera_fact_0(%slot) : (!llvm.ptr) -> ()
+      %other = llvm.load %list : !llvm.ptr -> !llvm.ptr
+      %e1 = llvm.call @mat_scale(%other, %s) : (!llvm.ptr, f64) -> i32
+      %a0 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+      %e2 = tessera.call @petsc.ksp_set_operators(%ksp, %a0, %a0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+      %a1 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+      llvm.store %a1, %list : !llvm.ptr, !llvm.ptr
+    }
+    llvm.return
+  }
+
+  // The same with the call inside an scf.if and the copy in a later block,
+  // as clang leaves a switch whose default does not return: the later block
+  // runs after the entry block, which nothing branches back to.
+  // FACT-LABEL: llvm.func @copied_in_later_block
+  // FACT: tessera.call @petsc.ksp_set_operators(%{{.*}}, %[[A:[0-9]+]], %[[A]]) <arg_attrs = [{}, {tessera.property = ["SPD"]}, {tessera.property = ["SPD"]}]>
+  llvm.func @copied_in_later_block(%ksp: !llvm.ptr, %list: !llvm.ptr, %c: i1) -> i32 {
+    %c1 = llvm.mlir.constant(1 : i32) : i32
+    %slot = llvm.alloca %c1 x !llvm.ptr : (i32) -> !llvm.ptr
+    %e0 = llvm.call @mat_create(%slot) : (!llvm.ptr) -> i32
+    llvm.call @__tessera_fact_0(%slot) : (!llvm.ptr) -> ()
+    scf.if %c {
+      %a0 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+      %e1 = tessera.call @petsc.ksp_set_operators(%ksp, %a0, %a0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+    }
+    llvm.br ^bb1
+  ^bb1:
+    %a1 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    llvm.store %a1, %list : !llvm.ptr, !llvm.ptr
+    llvm.return %e0 : i32
+  }
+
+  // A block other than the entry may loop back to itself: a copy made after
+  // the call on one pass is there before it on the next.
+  // FACT-LABEL: llvm.func @copied_after_in_block_loop
+  // FACT: tessera.call @petsc.ksp_set_operators
+  // FACT-NOT: tessera.property
+  // FACT: llvm.return
+  llvm.func @copied_after_in_block_loop(%ksp: !llvm.ptr, %list: !llvm.ptr, %s: f64, %c: i1) {
+    %c1 = llvm.mlir.constant(1 : i32) : i32
+    %slot = llvm.alloca %c1 x !llvm.ptr : (i32) -> !llvm.ptr
+    %e0 = llvm.call @mat_create(%slot) : (!llvm.ptr) -> i32
+    llvm.br ^bb1
+  ^bb1:
+    llvm.call @__tessera_fact_0(%slot) : (!llvm.ptr) -> ()
+    %other = llvm.load %list : !llvm.ptr -> !llvm.ptr
+    %e1 = llvm.call @mat_scale(%other, %s) : (!llvm.ptr, f64) -> i32
+    %a0 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    %e2 = tessera.call @petsc.ksp_set_operators(%ksp, %a0, %a0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+    %a1 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    llvm.store %a1, %list : !llvm.ptr, !llvm.ptr
+    llvm.cond_br %c, ^bb1, ^bb2
+  ^bb2:
+    llvm.return
+  }
+
+  // A call that changes the matrix but preserves SPD of it, as
+  // tessera_preserves("SPD", "A") declares, lets the fact through.
+  // FACT-LABEL: llvm.func @kept_through_setter
+  // FACT: tessera.call @petsc.ksp_set_operators(%{{.*}}, %[[A:[0-9]+]], %[[A]]) <arg_attrs = [{}, {tessera.property = ["SPD"]}, {tessera.property = ["SPD"]}]>
+  llvm.func @kept_through_setter(%ksp: !llvm.ptr) -> i32 {
+    %c1 = llvm.mlir.constant(1 : i32) : i32
+    %slot = llvm.alloca %c1 x !llvm.ptr : (i32) -> !llvm.ptr
+    %e0 = llvm.call @mat_create(%slot) : (!llvm.ptr) -> i32
+    llvm.call @__tessera_fact_0(%slot) : (!llvm.ptr) -> ()
+    %a1 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    llvm.call @mat_set_option(%a1, %c1) : (!llvm.ptr, i32) -> ()
+    %a0 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    %e1 = tessera.call @petsc.ksp_set_operators(%ksp, %a0, %a0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+    llvm.return %e1 : i32
+  }
+
+  // One that preserves some other property does not.
+  // FACT-LABEL: llvm.func @lost_through_setter
+  // FACT: tessera.call @petsc.ksp_set_operators
+  // FACT-NOT: tessera.property
+  // FACT: llvm.return
+  llvm.func @lost_through_setter(%ksp: !llvm.ptr) -> i32 {
+    %c1 = llvm.mlir.constant(1 : i32) : i32
+    %slot = llvm.alloca %c1 x !llvm.ptr : (i32) -> !llvm.ptr
+    %e0 = llvm.call @mat_create(%slot) : (!llvm.ptr) -> i32
+    llvm.call @__tessera_fact_0(%slot) : (!llvm.ptr) -> ()
+    %a1 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    llvm.call @mat_set_other(%a1, %c1) : (!llvm.ptr, i32) -> ()
+    %a0 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    %e1 = tessera.call @petsc.ksp_set_operators(%ksp, %a0, %a0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+    llvm.return %e1 : i32
   }
 
   // A fact on an object variable, `BilinearForm a(...)`, is of the object
