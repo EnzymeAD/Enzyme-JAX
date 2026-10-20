@@ -2992,13 +2992,28 @@ struct SicmAffineStep {
   Value scalar;
 };
 
-/// ones column), negated when it enters the mean with a minus sign.
+/// coef * col (null col: the ones column), or a design block
+/// dot_general(col, coef) contributing all its columns.
 struct AffineMeanTerm {
   Value coef;
   Value col;
   bool negate;
   bool dependent;
+  bool block = false;
+  int64_t contractDim = 1;
 };
+
+static int64_t affineTermWidth(const AffineMeanTerm &t) {
+  if (!t.block)
+    return 1;
+  return cast<RankedTensorType>(t.col.getType()).getDimSize(t.contractDim);
+}
+
+static bool sameAffineColumn(const AffineMeanTerm &a, const AffineMeanTerm &b) {
+  return a.col == b.col && a.block == b.block &&
+         (!a.block || a.contractDim == b.contractDim);
+}
+
 struct AffineMeanOffset {
   Value v;
   bool negate;
@@ -3281,7 +3296,36 @@ static Value getScalarCoefLeaf(Value v) {
   return s;
 }
 
-/// the ones column (bare scalar), plus sample-invariant summands without such a
+static std::optional<AffineMeanTerm>
+getDesignBlockTerm(Value v, bool negate, int64_t N,
+                   SampleDependenceAnalysis &analysis) {
+  auto dot = v.getDefiningOp<stablehlo::DotGeneralOp>();
+  if (!dot)
+    return std::nullopt;
+  auto dn = dot.getDotDimensionNumbersAttr();
+  if (!dn.getLhsBatchingDimensions().empty() ||
+      !dn.getRhsBatchingDimensions().empty() ||
+      dn.getLhsContractingDimensions().size() != 1 ||
+      dn.getRhsContractingDimensions().size() != 1)
+    return std::nullopt;
+  Type elem = cast<RankedTensorType>(v.getType()).getElementType();
+  for (auto [X, b, cd] : {std::tuple{dot.getLhs(), dot.getRhs(),
+                                     dn.getLhsContractingDimensions()[0]},
+                          std::tuple{dot.getRhs(), dot.getLhs(),
+                                     dn.getRhsContractingDimensions()[0]}}) {
+    auto xt = dyn_cast<RankedTensorType>(X.getType());
+    auto bt = dyn_cast<RankedTensorType>(b.getType());
+    if (!xt || !bt || xt.getRank() != 2 || bt.getRank() != 1 ||
+        !xt.hasStaticShape() || xt.getDimSize(1 - cd) != N ||
+        xt.getElementType() != elem || bt.getElementType() != elem)
+      continue;
+    if (analysis.isSampleDependent(X) || !analysis.isSampleDependent(b))
+      continue;
+    return AffineMeanTerm{b, X, negate, /*dependent=*/true, /*block=*/true, cd};
+  }
+  return std::nullopt;
+}
+
 static bool collectAffineMeanTerms(Value v, bool negate, int64_t N,
                                    SampleDependenceAnalysis &analysis,
                                    SmallVectorImpl<AffineMeanTerm> &terms,
@@ -3295,6 +3339,10 @@ static bool collectAffineMeanTerms(Value v, bool negate, int64_t N,
     return false;
   if (Value s = getScalarCoefLeaf(v)) {
     terms.push_back({s, Value(), negate, analysis.isSampleDependent(s)});
+    return true;
+  }
+  if (auto blockTerm = getDesignBlockTerm(v, negate, N, analysis)) {
+    terms.push_back(*blockTerm);
     return true;
   }
   auto recurse = [&](Value w, bool neg) {
@@ -3398,13 +3446,15 @@ matchGaussianResidual(Value R, SampleDependenceAnalysis &analysis) {
                       [](const AffineMeanTerm &t) { return t.dependent; }))
       continue;
     rm.y = maybeY;
-    // One column per distinct design column (terms sharing a column, e.g.
-    // several bare scalars on the ones column, are merged).
-    SmallVector<Value> distinctCols;
+    SmallVector<const AffineMeanTerm *> distinct;
     for (const AffineMeanTerm &t : rm.terms)
-      if (!llvm::is_contained(distinctCols, t.col))
-        distinctCols.push_back(t.col);
-    rm.D = distinctCols.size();
+      if (llvm::none_of(distinct, [&](const AffineMeanTerm *d) {
+            return sameAffineColumn(*d, t);
+          }))
+        distinct.push_back(&t);
+    rm.D = 0;
+    for (const AffineMeanTerm *t : distinct)
+      rm.D += affineTermWidth(*t);
     rm.xContractDim = 1;
     rm.affineMean = true;
     return rm;
@@ -3468,7 +3518,6 @@ matchGaussianSufficientStatsDot(stablehlo::DotGeneralOp sumOp,
       minWork);
 }
 
-/// (invariant, hoistable) column; terms sharing a column are merged.
 static void materializeAffineMean(OpBuilder &b, Location loc,
                                   GaussianStatsMatch &m) {
   if (!m.affineMean)
@@ -3479,21 +3528,26 @@ static void materializeAffineMean(OpBuilder &b, Location loc,
   SmallVector<Value> cols, coefs;
   Value onesCol;
   // A lone term negates its invariant, hoisted column rather than beta.
-  SmallVector<Value> groupCols;
   SmallVector<SmallVector<const AffineMeanTerm *>> groups;
   for (const AffineMeanTerm &t : m.terms) {
-    auto it = llvm::find(groupCols, t.col);
-    if (it == groupCols.end()) {
-      groupCols.push_back(t.col);
+    auto it = llvm::find_if(
+        groups, [&](const auto &g) { return sameAffineColumn(*g.front(), t); });
+    if (it == groups.end())
       groups.push_back({&t});
-    } else {
-      groups[it - groupCols.begin()].push_back(&t);
-    }
+    else
+      it->push_back(&t);
   }
   for (auto &g : groups) {
     const AffineMeanTerm &t0 = *g.front();
     Value col;
-    if (t0.col) {
+    if (t0.block) {
+      col = t0.col;
+      if (t0.contractDim == 0) {
+        auto ndTy = RankedTensorType::get({m.N, affineTermWidth(t0)}, elem);
+        col = stablehlo::TransposeOp::create(b, loc, ndTy, col,
+                                             b.getDenseI64ArrayAttr({1, 0}));
+      }
+    } else if (t0.col) {
       col = stablehlo::ReshapeOp::create(b, loc, colTy, t0.col);
     } else {
       if (!onesCol)
@@ -3502,19 +3556,20 @@ static void materializeAffineMean(OpBuilder &b, Location loc,
             DenseElementsAttr::get(colTy, b.getFloatAttr(elem, 1.0)));
       col = onesCol;
     }
-    auto asOne = [&](Value c) {
-      return c.getType() == oneTy
-                 ? c
-                 : stablehlo::ReshapeOp::create(b, loc, oneTy, c).getResult();
+    auto asOne = [&](const AffineMeanTerm &t) {
+      return t.block || t.coef.getType() == oneTy
+                 ? t.coef
+                 : stablehlo::ReshapeOp::create(b, loc, oneTy, t.coef)
+                       .getResult();
     };
     Value c;
     if (g.size() == 1) {
       if (t0.negate)
         col = stablehlo::NegOp::create(b, loc, col);
-      c = asOne(t0.coef);
+      c = asOne(t0);
     } else {
       for (const AffineMeanTerm *t : g) {
-        Value ti = asOne(t->coef);
+        Value ti = asOne(*t);
         if (!c)
           c = t->negate ? stablehlo::NegOp::create(b, loc, ti).getResult() : ti;
         else
