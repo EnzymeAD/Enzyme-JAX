@@ -201,7 +201,11 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     // replace enzymexla.lapack.geqrf with the jit_call
     rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), jit_call_op.getResult(1));
-    rewriter.replaceAllUsesWith(op.getResult(2), jit_call_op.getResult(2));
+    // `info` comes back as a LAPACK int, which can differ from the op's type
+    auto infoResult = stablehlo::ConvertOp::create(rewriter, op.getLoc(),
+                                                   op.getResult(2).getType(),
+                                                   jit_call_op.getResult(2));
+    rewriter.replaceAllUsesWith(op.getResult(2), infoResult);
     rewriter.eraseOp(op);
 
     return success();
@@ -431,7 +435,7 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
         // default block size is min(m, n)
         nb_value = std::min(inputShape[0], inputShape[1]);
       }
-      auto nb_attr = rewriter.getI64IntegerAttr(nb_value);
+      auto nb_attr = rewriter.getIntegerAttr(type_lapack_int, nb_value);
       auto nb_op = LLVM::ConstantOp::create(rewriter, op.getLoc(),
                                             type_llvm_lapack_int, nb_attr);
       // can reuse nb = ldt
@@ -497,7 +501,11 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
     // replace enzymexla.lapack.geqrf with the jit_call
     rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), jit_call_op.getResult(1));
-    rewriter.replaceAllUsesWith(op.getResult(2), jit_call_op.getResult(2));
+    // `info` comes back as a LAPACK int, which can differ from the op's type
+    auto infoResult = stablehlo::ConvertOp::create(rewriter, op.getLoc(),
+                                                   op.getResult(2).getType(),
+                                                   jit_call_op.getResult(2));
+    rewriter.replaceAllUsesWith(op.getResult(2), infoResult);
     rewriter.eraseOp(op);
 
     return success();
@@ -2855,7 +2863,11 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
 
     // replace enzymexla.lapack.potrf with the jit_call
     rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
-    rewriter.replaceAllUsesWith(op.getResult(1), jit_call_op.getResult(1));
+    // `info` comes back as a LAPACK int, which can differ from the op's type
+    auto infoResult = stablehlo::ConvertOp::create(rewriter, op.getLoc(),
+                                                   op.getResult(1).getType(),
+                                                   jit_call_op.getResult(1));
+    rewriter.replaceAllUsesWith(op.getResult(1), infoResult);
     rewriter.eraseOp(op);
 
     return success();
