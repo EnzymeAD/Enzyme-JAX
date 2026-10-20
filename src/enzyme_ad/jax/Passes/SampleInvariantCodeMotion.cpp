@@ -1732,6 +1732,9 @@ enum class EigenLiftGuardMode { Auto, ForceLift, ForceFallback };
 static constexpr llvm::StringLiteral kEigenLiftGuardAttr =
     "sicm.eigenlift_guard";
 
+/// Read by sicm-guard-versioning; kept after this pass.
+static constexpr llvm::StringLiteral kRuntimeGuardAttr = "sicm.runtime_guard";
+
 static bool isIdentityMatrix(Value value) {
   auto constOp = value.getDefiningOp<stablehlo::ConstantOp>();
   if (!constOp)
@@ -3071,7 +3074,22 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
   emitGuardCheck(PatternRewriter &rewriter, Location loc,
                  const ScaledInvariantPlusDiag &match, bool forceFallback) {
     auto predType = RankedTensorType::get({}, rewriter.getI1Type());
-    Value ok, factor, probe;
+    // x != x is false at run time but not foldable. It is applied before the
+    // factor is selected, as a real failing check would be.
+    auto failIfForced = [&](Value check, Value probe) -> Value {
+      if (!forceFallback)
+        return check;
+      auto probeType = cast<RankedTensorType>(probe.getType());
+      SmallVector<int64_t> zeros(probeType.getRank(), 0),
+          onesIdx(probeType.getRank(), 1);
+      Value x = stablehlo::SliceOp::create(rewriter, loc, probe, zeros, onesIdx,
+                                           onesIdx);
+      x = reshapeToScalar(rewriter, loc, x);
+      Value nan = stablehlo::CompareOp::create(
+          rewriter, loc, x, x, stablehlo::ComparisonDirection::NE);
+      return stablehlo::AndOp::create(rewriter, loc, predType, check, nan);
+    };
+    Value ok, factor;
     if (match.secondInvariant) {
       auto type = cast<RankedTensorType>(match.secondInvariant.getType());
       auto infoType = RankedTensorType::get({}, rewriter.getI64Type());
@@ -3083,6 +3101,7 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
           rewriter, loc, cast<ElementsAttr>(rewriter.getZeroAttr(infoType)));
       ok = stablehlo::CompareOp::create(rewriter, loc, potrf.getResult(1), zero,
                                         stablehlo::ComparisonDirection::EQ);
+      ok = failIfForced(ok, match.secondInvariant);
       // The identity, spelled with iotas (no n x n constant).
       auto idxType =
           RankedTensorType::get(type.getShape(), rewriter.getI64Type());
@@ -3100,7 +3119,6 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
           stablehlo::SelectOp::create(rewriter, loc, onDiag, oneM, zeroM);
       factor = stablehlo::SelectOp::create(rewriter, loc, ok,
                                            potrf.getResult(0), eye);
-      probe = match.secondInvariant;
     } else {
       Value v = match.diagVector;
       auto type = cast<RankedTensorType>(v.getType());
@@ -3129,24 +3147,13 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
       ok =
           stablehlo::CompareOp::create(rewriter, loc, reduce.getResult(0), zero,
                                        stablehlo::ComparisonDirection::GT);
+      ok = failIfForced(ok, v);
       Value ones = stablehlo::ConstantOp::create(
           rewriter, loc, type,
           DenseElementsAttr::get(
               type, rewriter.getFloatAttr(type.getElementType(), 1.0)));
       Value safe = stablehlo::SelectOp::create(rewriter, loc, ok, v, ones);
       factor = stablehlo::SqrtOp::create(rewriter, loc, safe);
-      probe = v;
-    }
-    if (forceFallback) {
-      auto probeType = cast<RankedTensorType>(probe.getType());
-      SmallVector<int64_t> zeros(probeType.getRank(), 0),
-          onesIdx(probeType.getRank(), 1);
-      Value x = stablehlo::SliceOp::create(rewriter, loc, probe, zeros, onesIdx,
-                                           onesIdx);
-      x = reshapeToScalar(rewriter, loc, x);
-      Value nan = stablehlo::CompareOp::create(
-          rewriter, loc, x, x, stablehlo::ComparisonDirection::NE);
-      ok = stablehlo::AndOp::create(rewriter, loc, predType, ok, nan);
     }
     return {ok, factor};
   }
@@ -3176,6 +3183,7 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
         resultTypes.push_back(op->getResult(0).getType());
       ifOp = stablehlo::IfOp::create(rewriter, loc, resultTypes, ok);
       ifOp->setAttr(kEigenLiftGuardAttr, rewriter.getUnitAttr());
+      ifOp->setAttr(kRuntimeGuardAttr, rewriter.getUnitAttr());
       armBlock = rewriter.createBlock(&ifOp.getTrueBranch());
       rewriter.createBlock(&ifOp.getFalseBranch());
       rewriter.setInsertionPointToEnd(armBlock);

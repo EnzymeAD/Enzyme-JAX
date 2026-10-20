@@ -871,6 +871,25 @@ def SICMPass : Pass<"sicm"> {
   ];
 }
 
+def SICMGuardVersioningPass : Pass<"sicm-guard-versioning"> {
+  let summary = "Evaluate a hoisted SICM runtime guard once by versioning "
+                "the code that depends on it";
+  let description = [{
+    A guarded SICM rewrite (CholeskyEigenLift with a B that is not provably
+    positive definite) leaves stablehlo.if ops marked sicm.runtime_guard at
+    its factor sites, inside the sampling region, on a check SICM hoisted
+    above it. For each such predicate, the ops of its block that depend on it
+    (the lifted setup and the ops containing the conditionals) are moved into
+    one stablehlo.if on the predicate, cloned per arm, with the marked
+    conditionals and the selects on the predicate folded to that arm. The
+    passing version is the unguarded lift; the failing version is the
+    original program, without the lifted setup. Run after sicm, before
+    expand-impulse, so no conditional on the check reaches the sampling loop
+    or autodiff.
+  }];
+  let dependentDialects = ["stablehlo::StablehloDialect"];
+}
+
 def LowerImpulseTraceOpsPass : Pass<"lower-impulse-trace-ops"> {
   let summary = "Lower Impulse trace manipulation ops to JIT calls";
   let description = [{

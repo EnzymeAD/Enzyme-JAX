@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt %s --split-input-file --inline-infer-regions --sicm | FileCheck %s
 
-// lifted per-iteration values are computed only in the true arm.
+// K = s*C + t*D, D a model input: guarded by potrf(D) info == 0.
 module {
   func.func private @halfnormal_sampler(%rng : tensor<2xui64>, %std : tensor<f64>)
       -> (tensor<2xui64>, tensor<f64>) {
@@ -106,7 +106,7 @@ module {
 // CHECK-NEXT: %[[L:.+]] = stablehlo.cholesky %[[K]], lower = true : tensor<3x3xf64>
 // CHECK-NEXT: %[[DL:.+]] = stablehlo.dot_general %[[L]], %{{.+}}, batching_dims = [1] x [1], contracting_dims = [0] x [0]
 // CHECK-NEXT: stablehlo.return %[[DL]] : tensor<3xf64>
-// CHECK-NEXT: }) : (tensor<i1>) -> tensor<3xf64>
+// CHECK-NEXT: }) {sicm.runtime_guard} : (tensor<i1>) -> tensor<3xf64>
 // CHECK: %[[LOG:.+]] = stablehlo.log %[[R]] : tensor<3xf64>
 // CHECK-NOT: sicm.eigenlift_guard
 
