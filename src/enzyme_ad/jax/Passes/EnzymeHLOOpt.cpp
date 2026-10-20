@@ -7166,31 +7166,37 @@ struct WhileDeadResults final
       }
     }
 
+    // A live position keeps alive every dead-candidate position its yielded
+    // value depends on. Walking the defining ops backwards visits each body op
+    // once, instead of rescanning a per-value set of positions for every live
+    // position.
+    Block &bodyBlock = op.getBody().front();
+    DenseSet<Operation *> visitedOps;
+    SmallVector<Value> valueTodo;
     while (todo.size()) {
       auto cur = todo.pop_back_val();
       if (!removedResults[cur])
         continue;
       removedResults.reset(cur);
-      auto v = op.getBody().front().getTerminator()->getOperands()[cur];
-      auto found = usersBody.find(v);
-      if (found != usersBody.end()) {
-        if (isTotalPure) {
-          for (auto arg : *found->second) {
-            if (!seen.test(arg)) {
-              todo.push_back(arg);
-              seen.set(arg);
-            }
+      valueTodo.push_back(bodyBlock.getTerminator()->getOperand(cur));
+      while (!valueTodo.empty()) {
+        Value v = valueTodo.pop_back_val();
+        if (auto ba = dyn_cast<BlockArgument>(v)) {
+          if (ba.getOwner() != &bodyBlock)
+            continue;
+          size_t arg = ba.getArgNumber();
+          if (emptyNonPure2.contains(arg) && !seen.test(arg)) {
+            todo.push_back(arg);
+            seen.set(arg);
           }
-        } else {
-          for (auto arg : *found->second) {
-            if (emptyNonPure2.contains(arg)) {
-              if (!seen.test(arg)) {
-                todo.push_back(arg);
-                seen.set(arg);
-              }
-            }
-          }
+          continue;
         }
+        Operation *def = v.getDefiningOp();
+        if (def->getBlock() != &bodyBlock || !visitedOps.insert(def).second)
+          continue;
+        def->walk([&](Operation *nested) {
+          valueTodo.append(nested->operand_begin(), nested->operand_end());
+        });
       }
     }
     /*
