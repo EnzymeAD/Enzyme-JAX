@@ -28,6 +28,6 @@ func.func @lower(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<i64>) {
 // CPU-NEXT:    %[[N:.+]] = stablehlo.constant dense<64> : tensor<i64>
 // CPU-NEXT:    %[[INFO:.+]] = stablehlo.constant dense<-1> : tensor<i64>
 // CPU-NEXT:    %[[R:.+]]:2 = enzymexla.jit_call @enzymexla_wrapper_lapack_spotrf_ (%[[UPLO]], %[[N]], %[[A]], %[[N]], %[[INFO]]) {operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>],
-// CPU-SAME:      result_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>]
+// CPU-SAME:      output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 2, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 4, operand_tuple_indices = []>]
 // CPU-NEXT:    return %[[R]]#0, %[[R]]#1 : tensor<64x64xf32>, tensor<i64>
 // CPU-NEXT:  }

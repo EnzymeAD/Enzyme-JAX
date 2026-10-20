@@ -43,7 +43,6 @@ func.func @right16(%alpha: tensor<f64>, %a: tensor<8x8xf64>, %b: tensor<16x8xf64
 // CHECK-NEXT:    %[[RES:.+]] = enzymexla.jit_call @enzymexla_wrapper_blas_dtrsm_ (%[[L]], %[[L]], %[[N]], %[[N]], %[[EIGHT]], %[[ONE]], %[[ALPHA]], %[[A]], %[[EIGHT]], %[[B]], %[[EIGHT]])
 // CHECK-SAME:      operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>]
 // CHECK-SAME:      output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 9, operand_tuple_indices = []>]
-// CHECK-SAME:      result_layouts = [dense<[1, 0]> : tensor<2xindex>]
 // CHECK-NEXT:    return %[[RES]] : tensor<8x1xf64>
 
 // CHECK-LABEL: func.func @right(
@@ -54,7 +53,8 @@ func.func @right16(%alpha: tensor<f64>, %a: tensor<8x8xf64>, %b: tensor<16x8xf64
 // CHECK-NEXT:    %[[EIGHT:.+]] = stablehlo.constant dense<8> : tensor<i64>
 // CHECK-NEXT:    %[[THREE:.+]] = stablehlo.constant dense<3> : tensor<i64>
 // CHECK-NEXT:    %[[RES:.+]] = enzymexla.jit_call @enzymexla_wrapper_blas_dtrsm_ (%[[SIDE]], %[[UPLO]], %[[NT]], %[[NT]], %[[EIGHT]], %[[THREE]], %[[ALPHA]], %[[A]], %[[EIGHT]], %[[B]], %[[EIGHT]])
-// CHECK-SAME:      result_layouts = [dense<[1, 0]> : tensor<2xindex>]
+// CHECK-SAME:      operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>]
+// CHECK-SAME:      output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 9, operand_tuple_indices = []>]
 // CHECK-NEXT:    return %[[RES]] : tensor<3x8xf64>
 
 // CHECK-LABEL: func.func @left2(
@@ -67,7 +67,7 @@ func.func @right16(%alpha: tensor<f64>, %a: tensor<8x8xf64>, %b: tensor<16x8xf64
 // CHECK-NEXT:    %[[TWO:.+]] = stablehlo.constant dense<2> : tensor<i64>
 // CHECK-NEXT:    %[[RES:.+]] = enzymexla.jit_call @enzymexla_wrapper_blas_dtrsm_ (%[[SIDE]], %[[UPLO]], %[[TRANS]], %[[DIAG]], %[[EIGHT]], %[[TWO]], %[[ALPHA]], %[[A]], %[[EIGHT]], %[[B]], %[[EIGHT]])
 // CHECK-SAME:      operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>]
-// CHECK-SAME:      result_layouts = [dense<[0, 1]> : tensor<2xindex>]
+// CHECK-SAME:      output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 9, operand_tuple_indices = []>]
 // CHECK-NEXT:    return %[[RES]] : tensor<8x2xf64>
 
 // CHECK-LABEL: func.func @left16(
@@ -79,7 +79,7 @@ func.func @right16(%alpha: tensor<f64>, %a: tensor<8x8xf64>, %b: tensor<16x8xf64
 // CHECK-NEXT:    %[[EIGHT:.+]] = stablehlo.constant dense<8> : tensor<i64>
 // CHECK-NEXT:    %[[RES:.+]] = enzymexla.jit_call @enzymexla_wrapper_blas_dtrsm_ (%[[SIDE]], %[[UPLO]], %[[NT]], %[[NT]], %[[SIXTEEN]], %[[EIGHT]], %[[ALPHA]], %[[A]], %[[EIGHT]], %[[B]], %[[SIXTEEN]])
 // CHECK-SAME:      operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>]
-// CHECK-SAME:      result_layouts = [dense<[1, 0]> : tensor<2xindex>]
+// CHECK-SAME:      output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 9, operand_tuple_indices = []>]
 // CHECK-NEXT:    return %[[RES]] : tensor<8x16xf64>
 
 // CHECK-LABEL: func.func @right16(
@@ -91,5 +91,5 @@ func.func @right16(%alpha: tensor<f64>, %a: tensor<8x8xf64>, %b: tensor<16x8xf64
 // CHECK-NEXT:    %[[EIGHT:.+]] = stablehlo.constant dense<8> : tensor<i64>
 // CHECK-NEXT:    %[[RES:.+]] = enzymexla.jit_call @enzymexla_wrapper_blas_dtrsm_ (%[[SIDE]], %[[UPLO]], %[[NT]], %[[NT]], %[[SIXTEEN]], %[[EIGHT]], %[[ALPHA]], %[[A]], %[[EIGHT]], %[[B]], %[[SIXTEEN]])
 // CHECK-SAME:      operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>]
-// CHECK-SAME:      result_layouts = [dense<[0, 1]> : tensor<2xindex>]
+// CHECK-SAME:      output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 9, operand_tuple_indices = []>]
 // CHECK-NEXT:    return %[[RES]] : tensor<16x8xf64>

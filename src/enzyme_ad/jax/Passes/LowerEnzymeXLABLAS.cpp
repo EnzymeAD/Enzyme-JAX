@@ -1063,12 +1063,8 @@ struct TrsmOpLowering : public OpRewritePattern<enzymexla::TrsmOp> {
     SmallVector<bool> isColMajorArr(11, false);
     isColMajorArr[9] = relayoutB;
     SmallVector<int64_t> operandRanks = {0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0};
-    SmallVector<int64_t> outputRanks = {2};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
-    SmallVector<bool> isColMajorResult = {relayoutB};
-    auto resultLayouts =
-        getSHLOLayout(rewriter, outputRanks, isColMajorResult, 2);
 
     SmallVector<Attribute> aliases{
         // `B` is overwritten with the solution
@@ -1082,7 +1078,6 @@ struct TrsmOpLowering : public OpRewritePattern<enzymexla::TrsmOp> {
                    ldb},
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
-        /*result_layouts=*/resultLayouts,
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),

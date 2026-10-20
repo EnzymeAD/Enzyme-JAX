@@ -3065,10 +3065,8 @@ struct SyevdOpLowering : public OpRewritePattern<enzymexla::SyevdOp> {
 
     SmallVector<bool> isColMajorArr = {true, true, true};
     SmallVector<int64_t> operandRanks = {2, 1, 0};
-    SmallVector<int64_t> outputRanks = {2, 1, 0};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
-    auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
     SmallVector<Attribute> aliases{
         stablehlo::OutputOperandAliasAttr::get(ctx, {0}, 0, {}),
@@ -3082,7 +3080,6 @@ struct SyevdOpLowering : public OpRewritePattern<enzymexla::SyevdOp> {
         ValueRange{input, eigvals_init.getResult(), info.getResult()},
         rewriter.getStringAttr(""),
         /*operand_layouts=*/operandLayouts,
-        /*result_layouts=*/resultLayouts,
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
