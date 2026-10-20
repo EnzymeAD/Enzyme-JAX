@@ -27,6 +27,7 @@ using namespace mlir::impulse;
 namespace mlir {
 namespace impulse {
 bool vectorizeBranchFamilies(InferRegionOp regionOp);
+bool vectorizeSiteFamilies(InferRegionOp regionOp);
 } // namespace impulse
 } // namespace mlir
 
@@ -4629,6 +4630,7 @@ struct SICMPass : public enzyme::impl::SICMPassBase<SICMPass> {
 
       if (!regionOp.getLogpdf().empty())
         runSICMOnRegion(regionOp, AnalysisTarget::Logpdf);
+      vectorizeSiteFamilies(regionOp);
     }
     getOperation()->walk(
         [](stablehlo::IfOp op) { op->removeAttr(kEigenLiftGuardAttr); });
