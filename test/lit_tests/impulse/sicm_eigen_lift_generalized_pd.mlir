@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --split-input-file --inline-infer-regions --sicm | FileCheck %s
+// RUN: enzymexlamlir-opt %s --split-input-file --inline-infer-regions --sicm="guard-versioning=false" | FileCheck %s
 
 // K = t*D + s*C, D a constant positive diagonal: fires with B = D.
 module {

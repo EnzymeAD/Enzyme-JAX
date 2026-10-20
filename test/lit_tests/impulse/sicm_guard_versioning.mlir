@@ -1,5 +1,8 @@
 // RUN: enzymexlamlir-opt %s --split-input-file --inline-infer-regions --sicm --sicm-guard-versioning | FileCheck %s
 // RUN: enzymexlamlir-opt %s --split-input-file --inline-infer-regions --sicm="eigenlift-guard=force-fallback" --sicm-guard-versioning | FileCheck %s --check-prefix=FALLBACK
+// The same output from sicm's guard-versioning option (on by default):
+// RUN: enzymexlamlir-opt %s --split-input-file --inline-infer-regions --sicm | FileCheck %s
+// RUN: enzymexlamlir-opt %s --split-input-file --inline-infer-regions --sicm="eigenlift-guard=force-fallback" | FileCheck %s --check-prefix=FALLBACK
 
 // K = s*C + t*D: one potrf of D outside the versions, reused when passing.
 module {

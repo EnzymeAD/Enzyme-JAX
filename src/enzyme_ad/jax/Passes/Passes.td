@@ -868,6 +868,12 @@ def SICMPass : Pass<"sicm"> {
            "Profitability guard of the Gaussian sufficient-statistics "
            "rewrite: it fires only when the removed per-evaluation residual "
            "work N * D is at least this (in addition to N >= 2 D).">,
+    Option<"guardVersioning", "guard-versioning", "bool", "true",
+           "At the end of the pass, version the code that depends on a "
+           "hoisted runtime guard (the transform of sicm-guard-versioning): "
+           "the check is evaluated once, before the loops, and selects one "
+           "of two versions. false leaves the marked conditionals for a "
+           "separate sicm-guard-versioning pass.">,
   ];
 }
 

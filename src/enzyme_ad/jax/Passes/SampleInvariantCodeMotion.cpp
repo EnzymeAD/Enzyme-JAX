@@ -32,6 +32,12 @@ bool vectorizeBranchFamilies(InferRegionOp regionOp);
 
 namespace mlir {
 namespace enzyme {
+void versionSICMRuntimeGuards(Operation *root);
+} // namespace enzyme
+} // namespace mlir
+
+namespace mlir {
+namespace enzyme {
 #define GEN_PASS_DEF_SICMPASS
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
@@ -4626,6 +4632,8 @@ struct SICMPass : public enzyme::impl::SICMPassBase<SICMPass> {
     }
     getOperation()->walk(
         [](stablehlo::IfOp op) { op->removeAttr(kEigenLiftGuardAttr); });
+    if (guardVersioning)
+      versionSICMRuntimeGuards(getOperation());
   }
 };
 

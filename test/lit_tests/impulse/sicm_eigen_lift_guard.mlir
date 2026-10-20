@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --split-input-file --inline-infer-regions --sicm | FileCheck %s
+// RUN: enzymexlamlir-opt %s --split-input-file --inline-infer-regions --sicm="guard-versioning=false" | FileCheck %s
 
 // K = s*C + t*D, D a model input: guarded by potrf(D) info == 0.
 module {

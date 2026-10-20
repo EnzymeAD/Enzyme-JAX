@@ -12,6 +12,7 @@
 
 namespace mlir {
 namespace enzyme {
+void versionSICMRuntimeGuards(Operation *root);
 #define GEN_PASS_DEF_SICMGUARDVERSIONINGPASS
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
@@ -60,8 +61,8 @@ struct SICMGuardVersioningPass
           SICMGuardVersioningPass> {
   using SICMGuardVersioningPassBase::SICMGuardVersioningPassBase;
 
-  bool version(IRRewriter &rewriter, Value pred,
-               ArrayRef<stablehlo::IfOp> guards) {
+  static bool version(IRRewriter &rewriter, Value pred,
+                      ArrayRef<stablehlo::IfOp> guards) {
     Block *block = pred.getParentBlock();
     SetVector<Operation *> containers;
     for (stablehlo::IfOp guard : guards) {
@@ -150,13 +151,15 @@ struct SICMGuardVersioningPass
     return true;
   }
 
-  void runOnOperation() override {
-    IRRewriter rewriter(&getContext());
+  void runOnOperation() override { versionGuards(getOperation()); }
+
+  static void versionGuards(Operation *root) {
+    IRRewriter rewriter(root->getContext());
     // One predicate per round: versioning clones other predicates' guards.
     while (true) {
       Value pred;
       SmallVector<stablehlo::IfOp> guards;
-      getOperation()->walk([&](stablehlo::IfOp op) {
+      root->walk([&](stablehlo::IfOp op) {
         if (!op->hasAttr(kRuntimeGuardAttr))
           return;
         if (!pred)
@@ -174,3 +177,7 @@ struct SICMGuardVersioningPass
 };
 
 } // namespace
+
+void mlir::enzyme::versionSICMRuntimeGuards(Operation *root) {
+  SICMGuardVersioningPass::versionGuards(root);
+}

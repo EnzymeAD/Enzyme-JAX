@@ -1,5 +1,5 @@
-// RUN: enzymexlamlir-opt %s --inline-infer-regions --sicm="eigenlift-guard=force-lift" | FileCheck %s --check-prefix=LIFT
-// RUN: enzymexlamlir-opt %s --inline-infer-regions --sicm="eigenlift-guard=force-fallback" | FileCheck %s --check-prefix=FALLBACK
+// RUN: enzymexlamlir-opt %s --inline-infer-regions --sicm="eigenlift-guard=force-lift guard-versioning=false" | FileCheck %s --check-prefix=LIFT
+// RUN: enzymexlamlir-opt %s --inline-infer-regions --sicm="eigenlift-guard=force-fallback guard-versioning=false" | FileCheck %s --check-prefix=FALLBACK
 
 // force-fallback ands the check with x != x, so the original cholesky runs.
 
