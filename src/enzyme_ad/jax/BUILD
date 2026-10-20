@@ -1629,6 +1629,7 @@ cc_library(
     ] + if_z3 + select({
         "@local_config_cuda//:is_cuda_enabled": [
             "@local_config_cuda//cuda:cuda_headers",
+            "@local_config_nccl//:nccl_headers",
             "@xla//xla/tsl/cuda:cudart",
         ],
         "//conditions:default": [],
