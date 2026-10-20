@@ -17909,38 +17909,58 @@ struct CSEReduceTransposed final
                                     PatternRewriter &rewriter) const {
     if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
       return failure();
-    Form form;
-    if (!analyze(op.getInputs()[0], form) || form.leaves.empty())
+    // Candidates: the earlier reduces of the block with the same init value
+    // (a match has it), reducing as many dimensions of an input of the same
+    // shape up to a permutation computed by the same op. The input's
+    // computation reads values read all over the function (a stencil's
+    // fields, a splat constant); a search from them through their users
+    // visits most of the function for every reduce.
+    Value init = op.getInitValues()[0], input = op.getInputs()[0];
+    auto inType = cast<RankedTensorType>(input.getType());
+    if (!inType.hasStaticShape())
       return failure();
-    // Candidates: reduces reached from the first leaf's value through as
-    // many ops as this one's input is from it (the forms of one computation
-    // have the same height).
-    SmallVector<Value> frontier = {form.leaves[0].base};
-    for (int64_t depth = 0; depth <= form.height + 1; depth++) {
-      SetVector<Value> next;
-      for (Value v : frontier)
-        for (Operation *user : v.getUsers()) {
-          auto other = dyn_cast<stablehlo::ReduceOp>(user);
-          if (other && other != op && other->getBlock() == op->getBlock() &&
-              other->isBeforeInBlock(op) && other.getInputs().size() == 1 &&
-              other.getInputs()[0] == v) {
-            SmallVector<int64_t> perm;
-            if (matches(op, form, other, perm)) {
-              if (llvm::equal(perm, llvm::seq<int64_t>(0, perm.size())))
-                rewriter.replaceOp(op, other.getResults());
-              else
-                rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
-                    op, other.getResult(0), perm);
-              return success();
-            }
-            continue;
-          }
-          if (user->getNumResults() == 1 &&
-              (isa<stablehlo::TransposeOp, stablehlo::BroadcastInDimOp>(user) ||
-               stablehlo::hasTraitElementwise(user)))
-            next.insert(user->getResult(0));
-        }
-      frontier = next.takeVector();
+    SmallVector<int64_t> inShape = llvm::to_vector(inType.getShape());
+    llvm::sort(inShape);
+    Operation *inputOp = input.getDefiningOp();
+    SmallVector<stablehlo::ReduceOp> candidates;
+    for (Operation *user : init.getUsers()) {
+      auto other = dyn_cast<stablehlo::ReduceOp>(user);
+      if (!other || other == op || other->getBlock() != op->getBlock() ||
+          other.getInputs().size() != 1 || other.getInitValues().size() != 1 ||
+          other.getInitValues()[0] != init ||
+          other.getDimensions().size() != op.getDimensions().size())
+        continue;
+      Value otherInput = other.getInputs()[0];
+      Operation *otherInputOp = otherInput.getDefiningOp();
+      auto otherInType = cast<RankedTensorType>(otherInput.getType());
+      if (otherInType.getRank() != inType.getRank() ||
+          !otherInType.hasStaticShape() ||
+          (otherInputOp == nullptr) != (inputOp == nullptr) ||
+          (inputOp && otherInputOp->getName() != inputOp->getName()))
+        continue;
+      SmallVector<int64_t> otherShape = llvm::to_vector(otherInType.getShape());
+      llvm::sort(otherShape);
+      if (otherShape != inShape)
+        continue;
+      candidates.push_back(other);
+    }
+    if (candidates.empty())
+      return failure();
+    Form form;
+    if (!analyze(input, form) || form.leaves.empty())
+      return failure();
+    for (stablehlo::ReduceOp other : candidates) {
+      if (!other->isBeforeInBlock(op))
+        continue;
+      SmallVector<int64_t> perm;
+      if (!matches(op, form, other, perm))
+        continue;
+      if (llvm::equal(perm, llvm::seq<int64_t>(0, perm.size())))
+        rewriter.replaceOp(op, other.getResults());
+      else
+        rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
+            op, other.getResult(0), perm);
+      return success();
     }
     return failure();
   }
@@ -17962,7 +17982,6 @@ private:
     SmallVector<OperationName> ops;
     SmallVector<Leaf> leaves;
     SmallVector<int64_t> steps;
-    int64_t height = 0;
     // The permutation and step of each walk of a value.
     DenseMap<Value, SmallVector<std::pair<SmallVector<int64_t>, int64_t>, 1>>
         walked;
@@ -17973,11 +17992,10 @@ private:
   static bool analyze(Value v, Form &form) {
     SmallVector<int64_t> perm = llvm::to_vector(
         llvm::seq<int64_t>(0, cast<RankedTensorType>(v.getType()).getRank()));
-    return walk(v, perm, form, 0);
+    return walk(v, perm, form);
   }
 
-  static bool walk(Value v, ArrayRef<int64_t> perm, Form &form, int64_t depth) {
-    form.height = std::max(form.height, depth);
+  static bool walk(Value v, ArrayRef<int64_t> perm, Form &form) {
     for (auto &[walkedPerm, step] : form.walked[v])
       if (ArrayRef<int64_t>(walkedPerm) == perm) {
         form.steps.push_back(kRef + step);
@@ -17991,7 +18009,7 @@ private:
         inner[i] = perm[o];
       form.steps.push_back(kOp);
       form.ops.push_back(op->getName());
-      return walk(transpose.getOperand(), inner, form, depth + 1);
+      return walk(transpose.getOperand(), inner, form);
     }
     if (auto bcast = dyn_cast_or_null<stablehlo::BroadcastInDimOp>(op)) {
       Leaf leaf;
@@ -18010,7 +18028,7 @@ private:
       form.steps.push_back(kOp);
       form.ops.push_back(op->getName());
       for (Value operand : op->getOperands())
-        if (!walk(operand, perm, form, depth + 1))
+        if (!walk(operand, perm, form))
           return false;
       return true;
     }
