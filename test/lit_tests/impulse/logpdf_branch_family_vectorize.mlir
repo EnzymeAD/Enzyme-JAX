@@ -28,49 +28,49 @@ module {
     return %r : tensor<f64>
   }
   func.func @model(%rng : tensor<2xui64>, %m : tensor<f64>, %logit : tensor<f64>, %xs : tensor<3xf64>) -> (tensor<2xui64>, tensor<1xf64>) {
-    %a:2 = impulse.sample @draw(%rng, %m) {logpdf = @lp_a, symbol = #impulse.symbol<1>, name = "a"} : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %a:2 = impulse.sample @draw(%rng, %m) <{logpdf = @lp_a, symbol = #impulse.symbol<1>, name = "a"}> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %ab = stablehlo.broadcast_in_dim %a#1, dims = [] : (tensor<f64>) -> tensor<3xf64>
     %mu = stablehlo.multiply %ab, %xs : tensor<3xf64>
     %m1 = stablehlo.constant dense<0.0> : tensor<1xf64>
     %half = stablehlo.constant dense<5.000000e-01> : tensor<f64>
-    %z0:2 = impulse.sample(%a#0, %logit) {dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<10>, name = "z0"} : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %z0:2 = impulse.sample(%a#0, %logit) <{dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<10>, name = "z0"}> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %p0 = stablehlo.compare GT, %z0#1, %half, FLOAT : (tensor<f64>, tensor<f64>) -> tensor<i1>
     %if0:2 = impulse.if (%p0) ({
-      %yo0:2 = impulse.sample @draw1(%z0#0, %m1) {logpdf = @lp_out, symbol = #impulse.symbol<20>, name = "yo0"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yo0:2 = impulse.sample @draw1(%z0#0, %m1) <{logpdf = @lp_out, symbol = #impulse.symbol<20>, name = "yo0"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yo0#0, %yo0#1 : tensor<2xui64>, tensor<1xf64>
     }, {
       %s0 = stablehlo.slice %mu [0:1] : (tensor<3xf64>) -> tensor<1xf64>
-      %yi0:2 = impulse.sample @draw1(%z0#0, %s0) {logpdf = @lp_in, symbol = #impulse.symbol<30>, name = "yi0"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yi0:2 = impulse.sample @draw1(%z0#0, %s0) <{logpdf = @lp_in, symbol = #impulse.symbol<30>, name = "yi0"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yi0#0, %yi0#1 : tensor<2xui64>, tensor<1xf64>
     }) : (tensor<i1>) -> (tensor<2xui64>, tensor<1xf64>)
-    %z1:2 = impulse.sample(%if0#0, %logit) {dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<11>, name = "z1"} : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %z1:2 = impulse.sample(%if0#0, %logit) <{dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<11>, name = "z1"}> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %p1 = stablehlo.compare GT, %z1#1, %half, FLOAT : (tensor<f64>, tensor<f64>) -> tensor<i1>
     %if1:2 = impulse.if (%p1) ({
-      %yo1:2 = impulse.sample @draw1(%z1#0, %m1) {logpdf = @lp_out, symbol = #impulse.symbol<21>, name = "yo1"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yo1:2 = impulse.sample @draw1(%z1#0, %m1) <{logpdf = @lp_out, symbol = #impulse.symbol<21>, name = "yo1"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yo1#0, %yo1#1 : tensor<2xui64>, tensor<1xf64>
     }, {
       %s1 = stablehlo.slice %mu [1:2] : (tensor<3xf64>) -> tensor<1xf64>
-      %yi1:2 = impulse.sample @draw1(%z1#0, %s1) {logpdf = @lp_in, symbol = #impulse.symbol<31>, name = "yi1"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yi1:2 = impulse.sample @draw1(%z1#0, %s1) <{logpdf = @lp_in, symbol = #impulse.symbol<31>, name = "yi1"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yi1#0, %yi1#1 : tensor<2xui64>, tensor<1xf64>
     }) : (tensor<i1>) -> (tensor<2xui64>, tensor<1xf64>)
-    %z2:2 = impulse.sample(%if1#0, %logit) {dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<12>, name = "z2"} : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %z2:2 = impulse.sample(%if1#0, %logit) <{dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<12>, name = "z2"}> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %p2 = stablehlo.compare GT, %z2#1, %half, FLOAT : (tensor<f64>, tensor<f64>) -> tensor<i1>
     %if2:2 = impulse.if (%p2) ({
-      %yo2:2 = impulse.sample @draw1(%z2#0, %m1) {logpdf = @lp_out, symbol = #impulse.symbol<22>, name = "yo2"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yo2:2 = impulse.sample @draw1(%z2#0, %m1) <{logpdf = @lp_out, symbol = #impulse.symbol<22>, name = "yo2"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yo2#0, %yo2#1 : tensor<2xui64>, tensor<1xf64>
     }, {
       %s2 = stablehlo.slice %mu [2:3] : (tensor<3xf64>) -> tensor<1xf64>
-      %yi2:2 = impulse.sample @draw1(%z2#0, %s2) {logpdf = @lp_in, symbol = #impulse.symbol<32>, name = "yi2"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yi2:2 = impulse.sample @draw1(%z2#0, %s2) <{logpdf = @lp_in, symbol = #impulse.symbol<32>, name = "yi2"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yi2#0, %yi2#1 : tensor<2xui64>, tensor<1xf64>
     }) : (tensor<i1>) -> (tensor<2xui64>, tensor<1xf64>)
     return %if2#0, %if0#1 : tensor<2xui64>, tensor<1xf64>
   }
   func.func @main(%rng : tensor<2xui64>, %m : tensor<f64>, %logit : tensor<f64>, %xs : tensor<3xf64>, %trace : tensor<1x10xf64>) -> (tensor<1x1xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>) {
     %step = stablehlo.constant dense<0.1> : tensor<f64>
-    %res:4 = impulse.infer @model(%rng, %m, %logit, %xs) given %trace init_step_size = %step {
+    %res:4 = impulse.infer @model(%rng, %m, %logit, %xs) given %trace init_step_size = %step <{
       selection = [[#impulse.symbol<1>]], all_addresses = [[#impulse.symbol<1>], [#impulse.symbol<10>], [#impulse.symbol<20>], [#impulse.symbol<30>], [#impulse.symbol<11>], [#impulse.symbol<21>], [#impulse.symbol<31>], [#impulse.symbol<12>], [#impulse.symbol<22>], [#impulse.symbol<32>]],
       hmc_config = #impulse.hmc_config<trajectory_length = 1.0>, num_samples = 1 : i64, thinning = 1 : i64, num_warmup = 0 : i64
-    } : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<3xf64>, tensor<1x10xf64>, tensor<f64>) -> (tensor<1x1xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>)
+    }> : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<3xf64>, tensor<1x10xf64>, tensor<f64>) -> (tensor<1x1xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>)
     return %res#0, %res#1, %res#2, %res#3 : tensor<1x1xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>
   }
 }
@@ -163,39 +163,39 @@ module {
     return %r : tensor<f64>
   }
   func.func @model(%rng : tensor<2xui64>, %m : tensor<f64>, %logit : tensor<f64>, %xs : tensor<2xf64>) -> (tensor<2xui64>, tensor<1xf64>) {
-    %a:2 = impulse.sample @draw(%rng, %m) {logpdf = @lp_a, symbol = #impulse.symbol<1>, name = "a"} : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %a:2 = impulse.sample @draw(%rng, %m) <{logpdf = @lp_a, symbol = #impulse.symbol<1>, name = "a"}> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %ab = stablehlo.broadcast_in_dim %a#1, dims = [] : (tensor<f64>) -> tensor<2xf64>
     %mu = stablehlo.multiply %ab, %xs : tensor<2xf64>
     %m1 = stablehlo.constant dense<0.0> : tensor<1xf64>
     %half = stablehlo.constant dense<5.000000e-01> : tensor<f64>
-    %z0:2 = impulse.sample(%a#0, %logit) {dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<10>, name = "z0"} : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %z0:2 = impulse.sample(%a#0, %logit) <{dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<10>, name = "z0"}> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %p0 = stablehlo.compare GT, %z0#1, %half, FLOAT : (tensor<f64>, tensor<f64>) -> tensor<i1>
     %if0:2 = impulse.if (%p0) ({
-      %yo0:2 = impulse.sample @draw1(%z0#0, %m1) {logpdf = @lp_out, symbol = #impulse.symbol<20>, name = "yo0"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yo0:2 = impulse.sample @draw1(%z0#0, %m1) <{logpdf = @lp_out, symbol = #impulse.symbol<20>, name = "yo0"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yo0#0, %yo0#1 : tensor<2xui64>, tensor<1xf64>
     }, {
       %s0 = stablehlo.slice %mu [0:1] : (tensor<2xf64>) -> tensor<1xf64>
-      %yi0:2 = impulse.sample @draw1(%z0#0, %s0) {logpdf = @lp_in, symbol = #impulse.symbol<30>, name = "yi0"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yi0:2 = impulse.sample @draw1(%z0#0, %s0) <{logpdf = @lp_in, symbol = #impulse.symbol<30>, name = "yi0"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yi0#0, %yi0#1 : tensor<2xui64>, tensor<1xf64>
     }) : (tensor<i1>) -> (tensor<2xui64>, tensor<1xf64>)
-    %z1:2 = impulse.sample(%if0#0, %logit) {dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<11>, name = "z1"} : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %z1:2 = impulse.sample(%if0#0, %logit) <{dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<11>, name = "z1"}> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %p1 = stablehlo.compare GT, %z1#1, %half, FLOAT : (tensor<f64>, tensor<f64>) -> tensor<i1>
     %if1:2 = impulse.if (%p1) ({
-      %yo1:2 = impulse.sample @draw1(%z1#0, %m1) {logpdf = @lp_out, symbol = #impulse.symbol<21>, name = "yo1"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yo1:2 = impulse.sample @draw1(%z1#0, %m1) <{logpdf = @lp_out, symbol = #impulse.symbol<21>, name = "yo1"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yo1#0, %yo1#1 : tensor<2xui64>, tensor<1xf64>
     }, {
       %s1 = stablehlo.slice %mu [1:2] : (tensor<2xf64>) -> tensor<1xf64>
-      %yi1:2 = impulse.sample @draw1(%z1#0, %s1) {logpdf = @lp_in3, symbol = #impulse.symbol<31>, name = "yi1"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yi1:2 = impulse.sample @draw1(%z1#0, %s1) <{logpdf = @lp_in3, symbol = #impulse.symbol<31>, name = "yi1"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yi1#0, %yi1#1 : tensor<2xui64>, tensor<1xf64>
     }) : (tensor<i1>) -> (tensor<2xui64>, tensor<1xf64>)
     return %if1#0, %if0#1 : tensor<2xui64>, tensor<1xf64>
   }
   func.func @main(%rng : tensor<2xui64>, %m : tensor<f64>, %logit : tensor<f64>, %xs : tensor<2xf64>, %trace : tensor<1x7xf64>) -> (tensor<1x1xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>) {
     %step = stablehlo.constant dense<0.1> : tensor<f64>
-    %res:4 = impulse.infer @model(%rng, %m, %logit, %xs) given %trace init_step_size = %step {
+    %res:4 = impulse.infer @model(%rng, %m, %logit, %xs) given %trace init_step_size = %step <{
       selection = [[#impulse.symbol<1>]], all_addresses = [[#impulse.symbol<1>], [#impulse.symbol<10>], [#impulse.symbol<20>], [#impulse.symbol<30>], [#impulse.symbol<11>], [#impulse.symbol<21>], [#impulse.symbol<31>]],
       hmc_config = #impulse.hmc_config<trajectory_length = 1.0>, num_samples = 1 : i64, thinning = 1 : i64, num_warmup = 0 : i64
-    } : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<2xf64>, tensor<1x7xf64>, tensor<f64>) -> (tensor<1x1xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>)
+    }> : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<2xf64>, tensor<1x7xf64>, tensor<f64>) -> (tensor<1x1xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>)
     return %res#0, %res#1, %res#2, %res#3 : tensor<1x1xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>
   }
 }
@@ -239,39 +239,39 @@ module {
     return %r : tensor<f64>
   }
   func.func @model(%rng : tensor<2xui64>, %m : tensor<f64>, %logit : tensor<f64>, %xs : tensor<2xf64>) -> (tensor<2xui64>, tensor<1xf64>) {
-    %a:2 = impulse.sample @draw(%rng, %m) {logpdf = @lp_a, symbol = #impulse.symbol<1>, name = "a"} : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %a:2 = impulse.sample @draw(%rng, %m) <{logpdf = @lp_a, symbol = #impulse.symbol<1>, name = "a"}> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %ab = stablehlo.broadcast_in_dim %a#1, dims = [] : (tensor<f64>) -> tensor<2xf64>
     %mu = stablehlo.multiply %ab, %xs : tensor<2xf64>
     %m1 = stablehlo.constant dense<0.0> : tensor<1xf64>
     %half = stablehlo.constant dense<5.000000e-01> : tensor<f64>
-    %z0:2 = impulse.sample(%a#0, %logit) {dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<10>, name = "z0"} : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %z0:2 = impulse.sample(%a#0, %logit) <{dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<10>, name = "z0"}> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %p0 = stablehlo.compare GT, %z0#1, %half, FLOAT : (tensor<f64>, tensor<f64>) -> tensor<i1>
     %if0:2 = impulse.if (%p0) ({
-      %yo0:2 = impulse.sample @draw1(%z0#0, %m1) {logpdf = @lp_out, symbol = #impulse.symbol<20>, name = "yo0"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yo0:2 = impulse.sample @draw1(%z0#0, %m1) <{logpdf = @lp_out, symbol = #impulse.symbol<20>, name = "yo0"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yo0#0, %yo0#1 : tensor<2xui64>, tensor<1xf64>
     }, {
       %s0 = stablehlo.slice %mu [0:1] : (tensor<2xf64>) -> tensor<1xf64>
-      %yi0:2 = impulse.sample @draw1(%z0#0, %s0) {logpdf = @lp_inlog, symbol = #impulse.symbol<30>, name = "yi0"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yi0:2 = impulse.sample @draw1(%z0#0, %s0) <{logpdf = @lp_inlog, symbol = #impulse.symbol<30>, name = "yi0"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yi0#0, %yi0#1 : tensor<2xui64>, tensor<1xf64>
     }) : (tensor<i1>) -> (tensor<2xui64>, tensor<1xf64>)
-    %z1:2 = impulse.sample(%if0#0, %logit) {dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<11>, name = "z1"} : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %z1:2 = impulse.sample(%if0#0, %logit) <{dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<11>, name = "z1"}> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %p1 = stablehlo.compare GT, %z1#1, %half, FLOAT : (tensor<f64>, tensor<f64>) -> tensor<i1>
     %if1:2 = impulse.if (%p1) ({
-      %yo1:2 = impulse.sample @draw1(%z1#0, %m1) {logpdf = @lp_out, symbol = #impulse.symbol<21>, name = "yo1"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yo1:2 = impulse.sample @draw1(%z1#0, %m1) <{logpdf = @lp_out, symbol = #impulse.symbol<21>, name = "yo1"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yo1#0, %yo1#1 : tensor<2xui64>, tensor<1xf64>
     }, {
       %s1 = stablehlo.slice %mu [1:2] : (tensor<2xf64>) -> tensor<1xf64>
-      %yi1:2 = impulse.sample @draw1(%z1#0, %s1) {logpdf = @lp_inlog, symbol = #impulse.symbol<31>, name = "yi1"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yi1:2 = impulse.sample @draw1(%z1#0, %s1) <{logpdf = @lp_inlog, symbol = #impulse.symbol<31>, name = "yi1"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yi1#0, %yi1#1 : tensor<2xui64>, tensor<1xf64>
     }) : (tensor<i1>) -> (tensor<2xui64>, tensor<1xf64>)
     return %if1#0, %if0#1 : tensor<2xui64>, tensor<1xf64>
   }
   func.func @main(%rng : tensor<2xui64>, %m : tensor<f64>, %logit : tensor<f64>, %xs : tensor<2xf64>, %trace : tensor<1x7xf64>) -> (tensor<1x1xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>) {
     %step = stablehlo.constant dense<0.1> : tensor<f64>
-    %res:4 = impulse.infer @model(%rng, %m, %logit, %xs) given %trace init_step_size = %step {
+    %res:4 = impulse.infer @model(%rng, %m, %logit, %xs) given %trace init_step_size = %step <{
       selection = [[#impulse.symbol<1>]], all_addresses = [[#impulse.symbol<1>], [#impulse.symbol<10>], [#impulse.symbol<20>], [#impulse.symbol<30>], [#impulse.symbol<11>], [#impulse.symbol<21>], [#impulse.symbol<31>]],
       hmc_config = #impulse.hmc_config<trajectory_length = 1.0>, num_samples = 1 : i64, thinning = 1 : i64, num_warmup = 0 : i64
-    } : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<2xf64>, tensor<1x7xf64>, tensor<f64>) -> (tensor<1x1xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>)
+    }> : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<2xf64>, tensor<1x7xf64>, tensor<f64>) -> (tensor<1x1xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>)
     return %res#0, %res#1, %res#2, %res#3 : tensor<1x1xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>
   }
 }
@@ -317,37 +317,37 @@ module {
     return %r : tensor<f64>
   }
   func.func @model(%rng : tensor<2xui64>, %m : tensor<f64>, %logit : tensor<f64>, %xs : tensor<2xf64>) -> (tensor<2xui64>, tensor<1xf64>) {
-    %a:2 = impulse.sample @draw(%rng, %m) {logpdf = @lp_a, symbol = #impulse.symbol<1>, name = "a"} : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %a:2 = impulse.sample @draw(%rng, %m) <{logpdf = @lp_a, symbol = #impulse.symbol<1>, name = "a"}> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %ab = stablehlo.broadcast_in_dim %a#1, dims = [] : (tensor<f64>) -> tensor<2xf64>
     %mu = stablehlo.multiply %ab, %xs : tensor<2xf64>
     %m1 = stablehlo.constant dense<0.0> : tensor<1xf64>
     %half = stablehlo.constant dense<5.000000e-01> : tensor<f64>
-    %z0:2 = impulse.sample(%a#0, %logit) {dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<10>, name = "z0"} : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %z0:2 = impulse.sample(%a#0, %logit) <{dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<10>, name = "z0"}> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %p0 = stablehlo.compare GT, %z0#1, %half, FLOAT : (tensor<f64>, tensor<f64>) -> tensor<i1>
     %if0:2 = impulse.if (%p0) ({
-      %yo0:2 = impulse.sample @draw1(%z0#0, %m1) {logpdf = @lp_out, symbol = #impulse.symbol<20>, name = "yo0"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yo0:2 = impulse.sample @draw1(%z0#0, %m1) <{logpdf = @lp_out, symbol = #impulse.symbol<20>, name = "yo0"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yo0#0, %yo0#1 : tensor<2xui64>, tensor<1xf64>
     }, {
       %s0 = stablehlo.slice %mu [0:1] : (tensor<2xf64>) -> tensor<1xf64>
-      %yi0:2 = impulse.sample @draw1(%z0#0, %s0) {logpdf = @lp_in, symbol = #impulse.symbol<30>, name = "yi0"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yi0:2 = impulse.sample @draw1(%z0#0, %s0) <{logpdf = @lp_in, symbol = #impulse.symbol<30>, name = "yi0"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yi0#0, %yi0#1 : tensor<2xui64>, tensor<1xf64>
     }) : (tensor<i1>) -> (tensor<2xui64>, tensor<1xf64>)
-    %z1:2 = impulse.sample(%if0#0, %logit) {dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<11>, name = "z1"} : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %z1:2 = impulse.sample(%if0#0, %logit) <{dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<11>, name = "z1"}> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %p1 = stablehlo.compare GT, %z1#1, %half, FLOAT : (tensor<f64>, tensor<f64>) -> tensor<i1>
     %if1:2 = impulse.if (%p1) ({
-      %yo1:2 = impulse.sample @draw1(%z1#0, %m1) {logpdf = @lp_out, symbol = #impulse.symbol<21>, name = "yo1"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yo1:2 = impulse.sample @draw1(%z1#0, %m1) <{logpdf = @lp_out, symbol = #impulse.symbol<21>, name = "yo1"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yo1#0, %yo1#1 : tensor<2xui64>, tensor<1xf64>
     }, {
       %s1 = stablehlo.slice %mu [1:2] : (tensor<2xf64>) -> tensor<1xf64>
-      %yi1:2 = impulse.sample @draw1(%z1#0, %s1) {logpdf = @lp_in, symbol = #impulse.symbol<31>, name = "yi1"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %yi1:2 = impulse.sample @draw1(%z1#0, %s1) <{logpdf = @lp_in, symbol = #impulse.symbol<31>, name = "yi1"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %yi1#0, %yi1#1 : tensor<2xui64>, tensor<1xf64>
     }) : (tensor<i1>) -> (tensor<2xui64>, tensor<1xf64>)
     return %if1#0, %if0#1 : tensor<2xui64>, tensor<1xf64>
   }
   func.func @main(%rng : tensor<2xui64>, %m : tensor<f64>, %logit : tensor<f64>, %xs : tensor<2xf64>, %trace : tensor<1x7xf64>, %obs : tensor<1x4xf64>, %w : tensor<f64>) -> tensor<1x7xf64> {
     %res:5 = impulse.infer @model(%rng, %m, %logit, %xs) given %trace constrained_by %obs state = [%w]
-        { gibbs_config = #impulse.gibbs_config, selection = [[#impulse.symbol<10>]], all_addresses = [[#impulse.symbol<1>], [#impulse.symbol<10>], [#impulse.symbol<20>], [#impulse.symbol<30>], [#impulse.symbol<11>], [#impulse.symbol<21>], [#impulse.symbol<31>]],
-          constrained_addresses = [[#impulse.symbol<20>], [#impulse.symbol<30>], [#impulse.symbol<21>], [#impulse.symbol<31>]], state_schema = ["weight"], num_samples = 1 : i64 }
+        <{ gibbs_config = #impulse.gibbs_config, selection = [[#impulse.symbol<10>]], all_addresses = [[#impulse.symbol<1>], [#impulse.symbol<10>], [#impulse.symbol<20>], [#impulse.symbol<30>], [#impulse.symbol<11>], [#impulse.symbol<21>], [#impulse.symbol<31>]],
+          constrained_addresses = [[#impulse.symbol<20>], [#impulse.symbol<30>], [#impulse.symbol<21>], [#impulse.symbol<31>]], state_schema = ["weight"], num_samples = 1 : i64 }>
         : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<2xf64>, tensor<f64>, tensor<1x7xf64>, tensor<1x4xf64>) -> (tensor<1x7xf64>, tensor<i1>, tensor<f64>, tensor<2xui64>, tensor<f64>)
     return %res#0 : tensor<1x7xf64>
   }
@@ -398,53 +398,53 @@ module {
     return %r : tensor<f64>
   }
   func.func @model(%rng : tensor<2xui64>, %m : tensor<f64>, %logit : tensor<f64>, %xs : tensor<2xf64>) -> (tensor<2xui64>, tensor<1xf64>) {
-    %a:2 = impulse.sample @draw(%rng, %m) {logpdf = @lp_a, symbol = #impulse.symbol<1>, name = "a"} : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %a:2 = impulse.sample @draw(%rng, %m) <{logpdf = @lp_a, symbol = #impulse.symbol<1>, name = "a"}> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %ab = stablehlo.broadcast_in_dim %a#1, dims = [] : (tensor<f64>) -> tensor<2xf64>
     %mu = stablehlo.multiply %ab, %xs : tensor<2xf64>
     %m1 = stablehlo.constant dense<0.0> : tensor<1xf64>
     %half = stablehlo.constant dense<5.000000e-01> : tensor<f64>
-    %z0:2 = impulse.sample(%a#0, %logit) {dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<10>, name = "z0"} : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %z0:2 = impulse.sample(%a#0, %logit) <{dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<10>, name = "z0"}> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %p0 = stablehlo.compare GT, %z0#1, %half, FLOAT : (tensor<f64>, tensor<f64>) -> tensor<i1>
     %A0:2 = impulse.if (%p0) ({
-      %Ao0:2 = impulse.sample @draw1(%z0#0, %m1) {logpdf = @lp_out, symbol = #impulse.symbol<30>, name = "Ao0"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %Ao0:2 = impulse.sample @draw1(%z0#0, %m1) <{logpdf = @lp_out, symbol = #impulse.symbol<30>, name = "Ao0"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %Ao0#0, %Ao0#1 : tensor<2xui64>, tensor<1xf64>
     }, {
       %s0 = stablehlo.slice %mu [0:1] : (tensor<2xf64>) -> tensor<1xf64>
-      %Ai0:2 = impulse.sample @draw1(%z0#0, %s0) {logpdf = @lp_in, symbol = #impulse.symbol<40>, name = "Ai0"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %Ai0:2 = impulse.sample @draw1(%z0#0, %s0) <{logpdf = @lp_in, symbol = #impulse.symbol<40>, name = "Ai0"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %Ai0#0, %Ai0#1 : tensor<2xui64>, tensor<1xf64>
     }) : (tensor<i1>) -> (tensor<2xui64>, tensor<1xf64>)
-    %z1:2 = impulse.sample(%A0#0, %logit) {dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<11>, name = "z1"} : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %z1:2 = impulse.sample(%A0#0, %logit) <{dist = #impulse.dist<BERNOULLI>, symbol = #impulse.symbol<11>, name = "z1"}> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %p1 = stablehlo.compare GT, %z1#1, %half, FLOAT : (tensor<f64>, tensor<f64>) -> tensor<i1>
     %A1:2 = impulse.if (%p1) ({
-      %Ao1:2 = impulse.sample @draw1(%z1#0, %m1) {logpdf = @lp_out, symbol = #impulse.symbol<31>, name = "Ao1"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %Ao1:2 = impulse.sample @draw1(%z1#0, %m1) <{logpdf = @lp_out, symbol = #impulse.symbol<31>, name = "Ao1"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %Ao1#0, %Ao1#1 : tensor<2xui64>, tensor<1xf64>
     }, {
       %s1 = stablehlo.slice %mu [1:2] : (tensor<2xf64>) -> tensor<1xf64>
-      %Ai1:2 = impulse.sample @draw1(%z1#0, %s1) {logpdf = @lp_in, symbol = #impulse.symbol<41>, name = "Ai1"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %Ai1:2 = impulse.sample @draw1(%z1#0, %s1) <{logpdf = @lp_in, symbol = #impulse.symbol<41>, name = "Ai1"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %Ai1#0, %Ai1#1 : tensor<2xui64>, tensor<1xf64>
     }) : (tensor<i1>) -> (tensor<2xui64>, tensor<1xf64>)
     %B0:2 = impulse.if (%p0) ({
-      %Bo0:2 = impulse.sample @draw1(%A1#0, %m1) {logpdf = @lp_out, symbol = #impulse.symbol<70>, name = "Bo0"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %Bo0:2 = impulse.sample @draw1(%A1#0, %m1) <{logpdf = @lp_out, symbol = #impulse.symbol<70>, name = "Bo0"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %Bo0#0, %Bo0#1 : tensor<2xui64>, tensor<1xf64>
     }, {
-      %Bi0:2 = impulse.sample @draw1(%A1#0, %A0#1) {logpdf = @lp_in2, symbol = #impulse.symbol<80>, name = "Bi0"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %Bi0:2 = impulse.sample @draw1(%A1#0, %A0#1) <{logpdf = @lp_in2, symbol = #impulse.symbol<80>, name = "Bi0"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %Bi0#0, %Bi0#1 : tensor<2xui64>, tensor<1xf64>
     }) : (tensor<i1>) -> (tensor<2xui64>, tensor<1xf64>)
     %B1:2 = impulse.if (%p1) ({
-      %Bo1:2 = impulse.sample @draw1(%B0#0, %m1) {logpdf = @lp_out, symbol = #impulse.symbol<71>, name = "Bo1"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %Bo1:2 = impulse.sample @draw1(%B0#0, %m1) <{logpdf = @lp_out, symbol = #impulse.symbol<71>, name = "Bo1"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %Bo1#0, %Bo1#1 : tensor<2xui64>, tensor<1xf64>
     }, {
-      %Bi1:2 = impulse.sample @draw1(%B0#0, %A1#1) {logpdf = @lp_in2, symbol = #impulse.symbol<81>, name = "Bi1"} : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
+      %Bi1:2 = impulse.sample @draw1(%B0#0, %A1#1) <{logpdf = @lp_in2, symbol = #impulse.symbol<81>, name = "Bi1"}> : (tensor<2xui64>, tensor<1xf64>) -> (tensor<2xui64>, tensor<1xf64>)
       impulse.yield %Bi1#0, %Bi1#1 : tensor<2xui64>, tensor<1xf64>
     }) : (tensor<i1>) -> (tensor<2xui64>, tensor<1xf64>)
     return %B1#0, %B0#1 : tensor<2xui64>, tensor<1xf64>
   }
   func.func @main(%rng : tensor<2xui64>, %m : tensor<f64>, %logit : tensor<f64>, %xs : tensor<2xf64>, %trace : tensor<1x11xf64>) -> (tensor<1x1xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>) {
     %step = stablehlo.constant dense<0.1> : tensor<f64>
-    %res:4 = impulse.infer @model(%rng, %m, %logit, %xs) given %trace init_step_size = %step {
+    %res:4 = impulse.infer @model(%rng, %m, %logit, %xs) given %trace init_step_size = %step <{
       selection = [[#impulse.symbol<1>]], all_addresses = [[#impulse.symbol<1>], [#impulse.symbol<10>], [#impulse.symbol<30>], [#impulse.symbol<40>], [#impulse.symbol<11>], [#impulse.symbol<31>], [#impulse.symbol<41>], [#impulse.symbol<70>], [#impulse.symbol<80>], [#impulse.symbol<71>], [#impulse.symbol<81>]],
       hmc_config = #impulse.hmc_config<trajectory_length = 1.0>, num_samples = 1 : i64, thinning = 1 : i64, num_warmup = 0 : i64
-    } : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<2xf64>, tensor<1x11xf64>, tensor<f64>) -> (tensor<1x1xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>)
+    }> : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<2xf64>, tensor<1x11xf64>, tensor<f64>) -> (tensor<1x1xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>)
     return %res#0, %res#1, %res#2, %res#3 : tensor<1x1xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>
   }
 }

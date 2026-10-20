@@ -42,20 +42,20 @@ module {
   func.func @model(%rng : tensor<2xui64>, %C : tensor<3x3xf64>, %X : tensor<3x3xf64>)
       -> (tensor<2xui64>, tensor<3xf64>) {
     %std = stablehlo.constant dense<1.0> : tensor<f64>
-    %s:2 = impulse.sample @halfnormal_sampler(%rng, %std) {
+    %s:2 = impulse.sample @halfnormal_sampler(%rng, %std) <{
       logpdf = @halfnormal_logpdf,
       symbol = #impulse.symbol<1>,
       support = #impulse.support<POSITIVE>
-    } : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
-    %t:2 = impulse.sample @halfnormal_sampler(%s#0, %std) {
+    }> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %t:2 = impulse.sample @halfnormal_sampler(%s#0, %std) <{
       logpdf = @halfnormal_logpdf,
       symbol = #impulse.symbol<2>,
       support = #impulse.support<POSITIVE>
-    } : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
-    %y:2 = impulse.sample @y_sampler(%t#0, %s#1, %t#1, %C, %X) {
+    }> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %y:2 = impulse.sample @y_sampler(%t#0, %s#1, %t#1, %C, %X) <{
       logpdf = @y_logpdf,
       symbol = #impulse.symbol<3>
-    } : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<3x3xf64>, tensor<3x3xf64>) -> (tensor<2xui64>, tensor<3xf64>)
+    }> : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<3x3xf64>, tensor<3x3xf64>) -> (tensor<2xui64>, tensor<3xf64>)
     return %y#0, %y#1 : tensor<2xui64>, tensor<3xf64>
   }
 
@@ -64,14 +64,14 @@ module {
       -> (tensor<1x2xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>) {
     %step_size = stablehlo.constant dense<0.1> : tensor<f64>
     %result:4 = impulse.infer @model(%rng, %C, %X) given %trace
-        init_step_size = %step_size {
+        init_step_size = %step_size <{
       selection = [[#impulse.symbol<1>], [#impulse.symbol<2>]],
       all_addresses = [[#impulse.symbol<1>], [#impulse.symbol<2>], [#impulse.symbol<3>]],
       hmc_config = #impulse.hmc_config<trajectory_length = 1.0>,
       num_samples = 1 : i64,
       thinning = 1 : i64,
       num_warmup = 0 : i64
-    } : (tensor<2xui64>, tensor<3x3xf64>, tensor<3x3xf64>, tensor<1x5xf64>, tensor<f64>)
+    }> : (tensor<2xui64>, tensor<3x3xf64>, tensor<3x3xf64>, tensor<1x5xf64>, tensor<f64>)
         -> (tensor<1x2xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>)
     return %result#0, %result#1, %result#2, %result#3 : tensor<1x2xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>
   }
@@ -79,7 +79,7 @@ module {
 
 // CHECK-LABEL: func.func @main
 // CHECK-SAME: (%{{[^:]+}}: tensor<2xui64>, %[[C:[^:]+]]: tensor<3x3xf64>, %[[D:[^:]+]]: tensor<3x3xf64>, %{{[^:]+}}: tensor<1x5xf64>)
-// CHECK: %[[LB:.+]], %[[INFO:.+]] = enzymexla.lapack.potrf %[[D]] {uplo = #enzymexla.uplo<L>}
+// CHECK: %[[LB:.+]], %[[INFO:.+]] = enzymexla.lapack.potrf %[[D]] <uplo = L>
 // CHECK-NEXT: %[[OK:.+]] = stablehlo.compare EQ, %[[INFO]], %{{.+}} : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK: %[[F:.+]] = stablehlo.select %[[OK]], %[[LB]], %{{.+}} : tensor<i1>, tensor<3x3xf64>
 // CHECK-NEXT: %[[Y:.+]] = "stablehlo.triangular_solve"(%[[F]], %[[C]])
@@ -154,20 +154,20 @@ module {
   func.func @model(%rng : tensor<2xui64>, %C : tensor<3x3xf64>, %X : tensor<3x3xf64>)
       -> (tensor<2xui64>, tensor<3xf64>) {
     %std = stablehlo.constant dense<1.0> : tensor<f64>
-    %s:2 = impulse.sample @halfnormal_sampler(%rng, %std) {
+    %s:2 = impulse.sample @halfnormal_sampler(%rng, %std) <{
       logpdf = @halfnormal_logpdf,
       symbol = #impulse.symbol<1>,
       support = #impulse.support<POSITIVE>
-    } : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
-    %t:2 = impulse.sample @halfnormal_sampler(%s#0, %std) {
+    }> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %t:2 = impulse.sample @halfnormal_sampler(%s#0, %std) <{
       logpdf = @halfnormal_logpdf,
       symbol = #impulse.symbol<2>,
       support = #impulse.support<POSITIVE>
-    } : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
-    %y:2 = impulse.sample @y_sampler(%t#0, %s#1, %t#1, %C, %X) {
+    }> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %y:2 = impulse.sample @y_sampler(%t#0, %s#1, %t#1, %C, %X) <{
       logpdf = @y_logpdf,
       symbol = #impulse.symbol<3>
-    } : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<3x3xf64>, tensor<3x3xf64>) -> (tensor<2xui64>, tensor<3xf64>)
+    }> : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<3x3xf64>, tensor<3x3xf64>) -> (tensor<2xui64>, tensor<3xf64>)
     return %y#0, %y#1 : tensor<2xui64>, tensor<3xf64>
   }
 
@@ -176,14 +176,14 @@ module {
       -> (tensor<1x2xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>) {
     %step_size = stablehlo.constant dense<0.1> : tensor<f64>
     %result:4 = impulse.infer @model(%rng, %C, %X) given %trace
-        init_step_size = %step_size {
+        init_step_size = %step_size <{
       selection = [[#impulse.symbol<1>], [#impulse.symbol<2>]],
       all_addresses = [[#impulse.symbol<1>], [#impulse.symbol<2>], [#impulse.symbol<3>]],
       hmc_config = #impulse.hmc_config<trajectory_length = 1.0>,
       num_samples = 1 : i64,
       thinning = 1 : i64,
       num_warmup = 0 : i64
-    } : (tensor<2xui64>, tensor<3x3xf64>, tensor<3x3xf64>, tensor<1x5xf64>, tensor<f64>)
+    }> : (tensor<2xui64>, tensor<3x3xf64>, tensor<3x3xf64>, tensor<1x5xf64>, tensor<f64>)
         -> (tensor<1x2xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>)
     return %result#0, %result#1, %result#2, %result#3 : tensor<1x2xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>
   }
@@ -191,7 +191,7 @@ module {
 
 // CHECK-LABEL: func.func @main
 // CHECK-SAME: (%{{[^:]+}}: tensor<2xui64>, %[[C:[^:]+]]: tensor<3x3xf64>, %[[D:[^:]+]]: tensor<3x3xf64>, %{{[^:]+}}: tensor<1x5xf64>)
-// CHECK: %[[LB:.+]], %[[INFO:.+]] = enzymexla.lapack.potrf %[[C]] {uplo = #enzymexla.uplo<L>}
+// CHECK: %[[LB:.+]], %[[INFO:.+]] = enzymexla.lapack.potrf %[[C]] <uplo = L>
 // CHECK-NEXT: %[[OK:.+]] = stablehlo.compare EQ, %[[INFO]], %{{.+}} : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK: %[[F:.+]] = stablehlo.select %[[OK]], %[[LB]], %{{.+}} : tensor<i1>, tensor<3x3xf64>
 // CHECK-NEXT: %[[Y:.+]] = "stablehlo.triangular_solve"(%[[F]], %[[D]])
@@ -252,20 +252,20 @@ module {
   func.func @model(%rng : tensor<2xui64>, %C : tensor<3x3xf64>, %X : tensor<3xf64>)
       -> (tensor<2xui64>, tensor<3xf64>) {
     %std = stablehlo.constant dense<1.0> : tensor<f64>
-    %s:2 = impulse.sample @halfnormal_sampler(%rng, %std) {
+    %s:2 = impulse.sample @halfnormal_sampler(%rng, %std) <{
       logpdf = @halfnormal_logpdf,
       symbol = #impulse.symbol<1>,
       support = #impulse.support<POSITIVE>
-    } : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
-    %t:2 = impulse.sample @halfnormal_sampler(%s#0, %std) {
+    }> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %t:2 = impulse.sample @halfnormal_sampler(%s#0, %std) <{
       logpdf = @halfnormal_logpdf,
       symbol = #impulse.symbol<2>,
       support = #impulse.support<POSITIVE>
-    } : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
-    %y:2 = impulse.sample @y_sampler(%t#0, %s#1, %t#1, %C, %X) {
+    }> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %y:2 = impulse.sample @y_sampler(%t#0, %s#1, %t#1, %C, %X) <{
       logpdf = @y_logpdf,
       symbol = #impulse.symbol<3>
-    } : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<3x3xf64>, tensor<3xf64>) -> (tensor<2xui64>, tensor<3xf64>)
+    }> : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<3x3xf64>, tensor<3xf64>) -> (tensor<2xui64>, tensor<3xf64>)
     return %y#0, %y#1 : tensor<2xui64>, tensor<3xf64>
   }
 
@@ -274,14 +274,14 @@ module {
       -> (tensor<1x2xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>) {
     %step_size = stablehlo.constant dense<0.1> : tensor<f64>
     %result:4 = impulse.infer @model(%rng, %C, %X) given %trace
-        init_step_size = %step_size {
+        init_step_size = %step_size <{
       selection = [[#impulse.symbol<1>], [#impulse.symbol<2>]],
       all_addresses = [[#impulse.symbol<1>], [#impulse.symbol<2>], [#impulse.symbol<3>]],
       hmc_config = #impulse.hmc_config<trajectory_length = 1.0>,
       num_samples = 1 : i64,
       thinning = 1 : i64,
       num_warmup = 0 : i64
-    } : (tensor<2xui64>, tensor<3x3xf64>, tensor<3xf64>, tensor<1x5xf64>, tensor<f64>)
+    }> : (tensor<2xui64>, tensor<3x3xf64>, tensor<3xf64>, tensor<1x5xf64>, tensor<f64>)
         -> (tensor<1x2xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>)
     return %result#0, %result#1, %result#2, %result#3 : tensor<1x2xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>
   }
@@ -359,20 +359,20 @@ module {
   func.func @model(%rng : tensor<2xui64>, %C : tensor<3x3xf64>, %X : tensor<3xf64>)
       -> (tensor<2xui64>, tensor<3xf64>) {
     %std = stablehlo.constant dense<1.0> : tensor<f64>
-    %s:2 = impulse.sample @halfnormal_sampler(%rng, %std) {
+    %s:2 = impulse.sample @halfnormal_sampler(%rng, %std) <{
       logpdf = @halfnormal_logpdf,
       symbol = #impulse.symbol<1>,
       support = #impulse.support<POSITIVE>
-    } : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
-    %t:2 = impulse.sample @halfnormal_sampler(%s#0, %std) {
+    }> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %t:2 = impulse.sample @halfnormal_sampler(%s#0, %std) <{
       logpdf = @halfnormal_logpdf,
       symbol = #impulse.symbol<2>,
       support = #impulse.support<POSITIVE>
-    } : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
-    %y:2 = impulse.sample @y_sampler(%t#0, %s#1, %t#1, %C, %X) {
+    }> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %y:2 = impulse.sample @y_sampler(%t#0, %s#1, %t#1, %C, %X) <{
       logpdf = @y_logpdf,
       symbol = #impulse.symbol<3>
-    } : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<3x3xf64>, tensor<3xf64>) -> (tensor<2xui64>, tensor<3xf64>)
+    }> : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<3x3xf64>, tensor<3xf64>) -> (tensor<2xui64>, tensor<3xf64>)
     return %y#0, %y#1 : tensor<2xui64>, tensor<3xf64>
   }
 
@@ -381,14 +381,14 @@ module {
       -> (tensor<1x2xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>) {
     %step_size = stablehlo.constant dense<0.1> : tensor<f64>
     %result:4 = impulse.infer @model(%rng, %C, %X) given %trace
-        init_step_size = %step_size {
+        init_step_size = %step_size <{
       selection = [[#impulse.symbol<1>], [#impulse.symbol<2>]],
       all_addresses = [[#impulse.symbol<1>], [#impulse.symbol<2>], [#impulse.symbol<3>]],
       hmc_config = #impulse.hmc_config<trajectory_length = 1.0>,
       num_samples = 1 : i64,
       thinning = 1 : i64,
       num_warmup = 0 : i64
-    } : (tensor<2xui64>, tensor<3x3xf64>, tensor<3xf64>, tensor<1x5xf64>, tensor<f64>)
+    }> : (tensor<2xui64>, tensor<3x3xf64>, tensor<3xf64>, tensor<1x5xf64>, tensor<f64>)
         -> (tensor<1x2xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>)
     return %result#0, %result#1, %result#2, %result#3 : tensor<1x2xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>
   }

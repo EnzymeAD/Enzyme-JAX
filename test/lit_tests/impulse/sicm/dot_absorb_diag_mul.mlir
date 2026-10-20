@@ -26,7 +26,7 @@ module {
       ^bb0(%px: tensor<4xf64>, %s: tensor<4xf64>):
         %lp = stablehlo.negate %px : tensor<4xf64>
         impulse.yield %lp : tensor<4xf64>
-      } {address = [#impulse.symbol<1>], fn = @normal_sampler, logpdf_fn = @normal_logpdf, support = #impulse.support<REAL>} : (tensor<2xui64>, tensor<4xf64>) -> (tensor<2xui64>, tensor<4xf64>)
+      } <{address = [#impulse.symbol<1>], fn = @normal_sampler, logpdf_fn = @normal_logpdf, support = #impulse.support<REAL>}> : (tensor<2xui64>, tensor<4xf64>) -> (tensor<2xui64>, tensor<4xf64>)
       // CHECK: %[[CB:.+]] = stablehlo.broadcast_in_dim %[[C]], dims = [1] : (tensor<4xf64>) -> tensor<3x4xf64>
       // CHECK-NEXT: %[[NLHS:.+]] = stablehlo.multiply %[[A]], %[[CB]] : tensor<3x4xf64>
       // CHECK-NEXT: %[[DOT:.+]] = stablehlo.dot_general %[[NLHS]], %[[X]]#1, contracting_dims = [1] x [0] : (tensor<3x4xf64>, tensor<4xf64>) -> tensor<3xf64>
@@ -36,7 +36,7 @@ module {
       // CHECK: impulse.yield %[[X]]#0, %[[DOT]] : tensor<2xui64>, tensor<3xf64>
       impulse.yield %x#0, %y : tensor<2xui64>, tensor<3xf64>
     } logpdf {
-    } {all_addresses = [[#impulse.symbol<1>]], hmc_config = #impulse.hmc_config<trajectory_length = 1.0>, selection = [[#impulse.symbol<1>]]} : (tensor<2xui64>, tensor<3x4xf64>, tensor<4xf64>, tensor<1x1xf64>, tensor<f64>) -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>, tensor<1x1xf64>, tensor<1x1xf64>, tensor<f64>, tensor<f64>, tensor<1x1xf64>)
+    } <{all_addresses = [[#impulse.symbol<1>]], hmc_config = #impulse.hmc_config<trajectory_length = 1.0>, selection = [[#impulse.symbol<1>]]}> : (tensor<2xui64>, tensor<3x4xf64>, tensor<4xf64>, tensor<1x1xf64>, tensor<f64>) -> (tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>, tensor<1x1xf64>, tensor<1x1xf64>, tensor<f64>, tensor<f64>, tensor<1x1xf64>)
     return %res#0, %res#1, %res#2 : tensor<1x1xf64>, tensor<1xi1>, tensor<2xui64>
   }
 }

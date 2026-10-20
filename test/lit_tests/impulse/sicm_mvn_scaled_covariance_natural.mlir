@@ -22,12 +22,12 @@ module {
   }
   func.func @model(%rng : tensor<2xui64>, %R_data : tensor<3x3xf64>) -> (tensor<2xui64>, tensor<3xf64>) {
     %std = stablehlo.constant dense<1.0> : tensor<f64>
-    %sigsq:2 = impulse.sample @halfnormal_sampler(%rng, %std) {
+    %sigsq:2 = impulse.sample @halfnormal_sampler(%rng, %std) <{
       logpdf = @halfnormal_logpdf, symbol = #impulse.symbol<1>, support = #impulse.support<POSITIVE>
-    } : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
-    %m:2 = impulse.sample @normal_sampler(%sigsq#0, %std) {
+    }> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %m:2 = impulse.sample @normal_sampler(%sigsq#0, %std) <{
       logpdf = @normal_logpdf, symbol = #impulse.symbol<2>, support = #impulse.support<REAL>
-    } : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    }> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     %sigsq_mat = stablehlo.broadcast_in_dim %sigsq#1, dims = [] : (tensor<f64>) -> tensor<3x3xf64>
     %K = stablehlo.multiply %R_data, %sigsq_mat : tensor<3x3xf64>
     %mu = stablehlo.broadcast_in_dim %m#1, dims = [] : (tensor<f64>) -> tensor<3xf64>
@@ -86,12 +86,12 @@ module {
   // GRAD: return
   func.func @test(%rng : tensor<2xui64>, %R_data : tensor<3x3xf64>, %trace : tensor<1x5xf64>) -> (tensor<1x2xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>) {
     %step_size = stablehlo.constant dense<0.1> : tensor<f64>
-    %result:4 = impulse.infer @model(%rng, %R_data) given %trace init_step_size = %step_size {
+    %result:4 = impulse.infer @model(%rng, %R_data) given %trace init_step_size = %step_size <{
       selection = [[#impulse.symbol<1>], [#impulse.symbol<2>]],
       all_addresses = [[#impulse.symbol<1>], [#impulse.symbol<2>], [#impulse.symbol<3>]],
       hmc_config = #impulse.hmc_config<trajectory_length = 1.0>,
       num_samples = 1 : i64, thinning = 1 : i64, num_warmup = 0 : i64
-    } : (tensor<2xui64>, tensor<3x3xf64>, tensor<1x5xf64>, tensor<f64>) -> (tensor<1x2xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>)
+    }> : (tensor<2xui64>, tensor<3x3xf64>, tensor<1x5xf64>, tensor<f64>) -> (tensor<1x2xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>)
     return %result#0, %result#1, %result#2, %result#3 : tensor<1x2xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>
   }
 }

@@ -46,33 +46,33 @@ module {
     %x = stablehlo.constant dense<[1.0, 2.0, 3.0, 4.0, 5.0]> : tensor<5xf64>
     %dy = stablehlo.constant dense<[1.0, 10.0, 100.0, 1000.0, 10000.0]> : tensor<5xf64>
 
-    %r0:2 = enzyme.autodiff @cumsum(%x, %dy) {
+    %r0:2 = enzyme.autodiff @cumsum(%x, %dy) <{
       activity = [#enzyme.activity<enzyme_active>],
       ret_activity = [#enzyme.activity<enzyme_active>]
-    } : (tensor<5xf64>, tensor<5xf64>) -> (tensor<5xf64>, tensor<5xf64>)
+    }> : (tensor<5xf64>, tensor<5xf64>) -> (tensor<5xf64>, tensor<5xf64>)
     check.expect_eq_const %r0#0, dense<[1.0, 3.0, 6.0, 10.0, 15.0]> : tensor<5xf64>
     check.expect_eq_const %r0#1, dense<[11111.0, 11110.0, 11100.0, 11000.0, 10000.0]> : tensor<5xf64>
 
-    %r1:2 = enzyme.autodiff @revcumsum(%x, %dy) {
+    %r1:2 = enzyme.autodiff @revcumsum(%x, %dy) <{
       activity = [#enzyme.activity<enzyme_active>],
       ret_activity = [#enzyme.activity<enzyme_active>]
-    } : (tensor<5xf64>, tensor<5xf64>) -> (tensor<5xf64>, tensor<5xf64>)
+    }> : (tensor<5xf64>, tensor<5xf64>) -> (tensor<5xf64>, tensor<5xf64>)
     check.expect_eq_const %r1#0, dense<[15.0, 14.0, 12.0, 9.0, 5.0]> : tensor<5xf64>
     check.expect_eq_const %r1#1, dense<[1.0, 11.0, 111.0, 1111.0, 11111.0]> : tensor<5xf64>
 
-    %r3:2 = enzyme.autodiff @window3(%x, %dy) {
+    %r3:2 = enzyme.autodiff @window3(%x, %dy) <{
       activity = [#enzyme.activity<enzyme_active>],
       ret_activity = [#enzyme.activity<enzyme_active>]
-    } : (tensor<5xf64>, tensor<5xf64>) -> (tensor<5xf64>, tensor<5xf64>)
+    }> : (tensor<5xf64>, tensor<5xf64>) -> (tensor<5xf64>, tensor<5xf64>)
     check.expect_eq_const %r3#0, dense<[1.0, 3.0, 6.0, 9.0, 12.0]> : tensor<5xf64>
     check.expect_eq_const %r3#1, dense<[111.0, 1110.0, 11100.0, 11000.0, 10000.0]> : tensor<5xf64>
 
     %m = stablehlo.constant dense<[[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]> : tensor<2x4xf32>
     %dm = stablehlo.constant dense<[[1.0, 10.0, 100.0, 1000.0], [2.0, 20.0, 200.0, 2000.0]]> : tensor<2x4xf32>
-    %r2:2 = enzyme.autodiff @cumsum2d(%m, %dm) {
+    %r2:2 = enzyme.autodiff @cumsum2d(%m, %dm) <{
       activity = [#enzyme.activity<enzyme_active>],
       ret_activity = [#enzyme.activity<enzyme_active>]
-    } : (tensor<2x4xf32>, tensor<2x4xf32>) -> (tensor<2x4xf32>, tensor<2x4xf32>)
+    }> : (tensor<2x4xf32>, tensor<2x4xf32>) -> (tensor<2x4xf32>, tensor<2x4xf32>)
     check.expect_eq_const %r2#0, dense<[[1.0, 3.0, 6.0, 10.0], [5.0, 11.0, 18.0, 26.0]]> : tensor<2x4xf32>
     check.expect_eq_const %r2#1, dense<[[1111.0, 1110.0, 1100.0, 1000.0], [2222.0, 2220.0, 2200.0, 2000.0]]> : tensor<2x4xf32>
 

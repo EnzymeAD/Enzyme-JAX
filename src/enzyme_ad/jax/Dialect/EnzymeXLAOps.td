@@ -1138,7 +1138,7 @@ def SyevdOp : EnzymeXLA_Op<"lapack.syevd", [Pure]> {
   );
 
   let assemblyFormat = [{
-    $input attr-dict `:` functional-type(operands, results)
+    $input prop-dict attr-dict `:` functional-type(operands, results)
   }];
 }
 

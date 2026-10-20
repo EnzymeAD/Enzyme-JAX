@@ -9,7 +9,7 @@ func.func @upper(%a: tensor<8x8xf64>) -> tensor<8x8xf64> {
 // CHECK-LABEL: func.func @upper
 // CHECK-SAME:      (%[[A:.+]]: tensor<8x8xf64>) -> tensor<8x8xf64>
 // CHECK-NEXT:    %[[ZERO:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<8x8xf64>
-// CHECK-NEXT:    %[[OUT:.+]], %[[INFO:.+]] = enzymexla.lapack.potrf %[[A]] {uplo = #enzymexla.uplo<U>} : (tensor<8x8xf64>) -> (tensor<8x8xf64>, tensor<i64>)
+// CHECK-NEXT:    %[[OUT:.+]], %[[INFO:.+]] = enzymexla.lapack.potrf %[[A]] <uplo = U> : (tensor<8x8xf64>) -> (tensor<8x8xf64>, tensor<i64>)
 // CHECK-NEXT:    %[[ROWS:.+]] = stablehlo.iota dim = 0 : tensor<8x8xi64>
 // CHECK-NEXT:    %[[COLS:.+]] = stablehlo.iota dim = 1 : tensor<8x8xi64>
 // CHECK-NEXT:    %[[KEEP:.+]] = stablehlo.compare LE, %[[ROWS]], %[[COLS]] : (tensor<8x8xi64>, tensor<8x8xi64>) -> tensor<8x8xi1>
@@ -21,7 +21,7 @@ func.func @lower(%a: tensor<8x8xf64>) -> tensor<8x8xf64> {
   return %0 : tensor<8x8xf64>
 }
 // CHECK-LABEL: func.func @lower
-// CHECK:         enzymexla.lapack.potrf %{{.+}} {uplo = #enzymexla.uplo<L>}
+// CHECK:         enzymexla.lapack.potrf %{{.+}} <uplo = L>
 // CHECK:         stablehlo.compare GE,
 
 func.func @batched(%a: tensor<4x8x8xf64>) -> tensor<4x8x8xf64> {
@@ -39,5 +39,5 @@ func.func @solve(%a: tensor<8x8xf64>, %b: tensor<8x1xf64>) -> tensor<8x1xf64> {
 // CHECK-LABEL: func.func @solve
 // CHECK-SAME:      (%[[SA:.+]]: tensor<8x8xf64>, %[[SB:.+]]: tensor<8x1xf64>) -> tensor<8x1xf64>
 // CHECK-NEXT:    %[[ONE:.+]] = stablehlo.constant dense<1.000000e+00> : tensor<f64>
-// CHECK-NEXT:    %[[X:.+]] = enzymexla.blas.trsm %[[ONE]], %[[SA]], %[[SB]] {side = #enzymexla.side<left>, transa = #enzymexla.transpose<transpose>, uplo = #enzymexla.uplo<U>} : (tensor<f64>, tensor<8x8xf64>, tensor<8x1xf64>) -> tensor<8x1xf64>
+// CHECK-NEXT:    %[[X:.+]] = enzymexla.blas.trsm %[[ONE]], %[[SA]], %[[SB]] <side = left, uplo = U, transa = transpose> : (tensor<f64>, tensor<8x8xf64>, tensor<8x1xf64>) -> tensor<8x1xf64>
 // CHECK-NEXT:    return %[[X]] : tensor<8x1xf64>

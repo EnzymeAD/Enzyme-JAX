@@ -1,7 +1,7 @@
 // RUN: enzymexlamlir-opt --lower-enzymexla-lapack={backend=cpu,blas_int_width=64} --enzyme-hlo-opt %s | FileCheck %s --check-prefix=CPU
 
 func.func @main(%arg0: tensor<4x4xf64>) -> (tensor<4x4xf64>, tensor<4xf64>, tensor<i64>) {
-  %0:3 = enzymexla.lapack.syevd %arg0 {uplo = #enzymexla.uplo<L>} : (tensor<4x4xf64>) -> (tensor<4x4xf64>, tensor<4xf64>, tensor<i64>)
+  %0:3 = enzymexla.lapack.syevd %arg0 <{uplo = #enzymexla.uplo<L>}> : (tensor<4x4xf64>) -> (tensor<4x4xf64>, tensor<4xf64>, tensor<i64>)
   return %0#0, %0#1, %0#2 : tensor<4x4xf64>, tensor<4xf64>, tensor<i64>
 }
 

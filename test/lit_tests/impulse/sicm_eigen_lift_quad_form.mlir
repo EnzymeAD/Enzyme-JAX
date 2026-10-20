@@ -102,18 +102,18 @@ module {
       -> (tensor<2xui64>, tensor<3xf64>) {
     %std = stablehlo.constant dense<1.0> : tensor<f64>
     %std2 = stablehlo.constant dense<1.0> : tensor<2xf64>
-    %s:2 = impulse.sample @halfnormal_sampler(%rng, %std) {
+    %s:2 = impulse.sample @halfnormal_sampler(%rng, %std) <{
       logpdf = @halfnormal_logpdf, symbol = #impulse.symbol<1>, support = #impulse.support<POSITIVE>
-    } : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
-    %t:2 = impulse.sample @halfnormal_sampler(%s#0, %std) {
+    }> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %t:2 = impulse.sample @halfnormal_sampler(%s#0, %std) <{
       logpdf = @halfnormal_logpdf, symbol = #impulse.symbol<2>, support = #impulse.support<POSITIVE>
-    } : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
-    %beta:2 = impulse.sample @beta_sampler(%t#0, %std2) {
+    }> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %beta:2 = impulse.sample @beta_sampler(%t#0, %std2) <{
       logpdf = @beta_logpdf, symbol = #impulse.symbol<3>, support = #impulse.support<REAL>
-    } : (tensor<2xui64>, tensor<2xf64>) -> (tensor<2xui64>, tensor<2xf64>)
-    %y:2 = impulse.sample @y_sampler(%beta#0, %s#1, %t#1, %beta#1, %C, %X) {
+    }> : (tensor<2xui64>, tensor<2xf64>) -> (tensor<2xui64>, tensor<2xf64>)
+    %y:2 = impulse.sample @y_sampler(%beta#0, %s#1, %t#1, %beta#1, %C, %X) <{
       logpdf = @y_logpdf, symbol = #impulse.symbol<4>
-    } : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<2xf64>, tensor<3x3xf64>, tensor<3x2xf64>) -> (tensor<2xui64>, tensor<3xf64>)
+    }> : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<2xf64>, tensor<3x3xf64>, tensor<3x2xf64>) -> (tensor<2xui64>, tensor<3xf64>)
     return %y#0, %y#1 : tensor<2xui64>, tensor<3xf64>
   }
 
@@ -121,18 +121,18 @@ module {
       -> (tensor<2xui64>, tensor<3xf64>) {
     %std = stablehlo.constant dense<1.0> : tensor<f64>
     %std3 = stablehlo.constant dense<1.0> : tensor<3xf64>
-    %s:2 = impulse.sample @halfnormal_sampler(%rng, %std) {
+    %s:2 = impulse.sample @halfnormal_sampler(%rng, %std) <{
       logpdf = @halfnormal_logpdf, symbol = #impulse.symbol<1>, support = #impulse.support<POSITIVE>
-    } : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
-    %t:2 = impulse.sample @halfnormal_sampler(%s#0, %std) {
+    }> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %t:2 = impulse.sample @halfnormal_sampler(%s#0, %std) <{
       logpdf = @halfnormal_logpdf, symbol = #impulse.symbol<2>, support = #impulse.support<POSITIVE>
-    } : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
-    %beta:2 = impulse.sample @beta3_sampler(%t#0, %std3) {
+    }> : (tensor<2xui64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %beta:2 = impulse.sample @beta3_sampler(%t#0, %std3) <{
       logpdf = @beta3_logpdf, symbol = #impulse.symbol<3>, support = #impulse.support<REAL>
-    } : (tensor<2xui64>, tensor<3xf64>) -> (tensor<2xui64>, tensor<3xf64>)
-    %y:2 = impulse.sample @y3_sampler(%beta#0, %s#1, %t#1, %beta#1, %C) {
+    }> : (tensor<2xui64>, tensor<3xf64>) -> (tensor<2xui64>, tensor<3xf64>)
+    %y:2 = impulse.sample @y3_sampler(%beta#0, %s#1, %t#1, %beta#1, %C) <{
       logpdf = @y3_logpdf, symbol = #impulse.symbol<4>
-    } : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<3xf64>, tensor<3x3xf64>) -> (tensor<2xui64>, tensor<3xf64>)
+    }> : (tensor<2xui64>, tensor<f64>, tensor<f64>, tensor<3xf64>, tensor<3x3xf64>) -> (tensor<2xui64>, tensor<3xf64>)
     return %y#0, %y#1 : tensor<2xui64>, tensor<3xf64>
   }
 
@@ -140,7 +140,7 @@ module {
   // CHECK-SAME: (%{{[^:]+}}: tensor<2xui64>, %[[C:[^:]+]]: tensor<3x3xf64>, %[[X:[^:]+]]: tensor<3x2xf64>, %{{[^:]+}}: tensor<1x7xf64>)
   // CHECK: %[[YROW:.+]] = impulse.slice
   // CHECK-NEXT: %[[Y:.+]] = impulse.reshape %[[YROW]] : (tensor<1x3xf64>) -> tensor<3xf64>
-  // CHECK-NEXT: %[[Q:[^,]+]], %[[LAMBDA:[^,]+]], %{{[^ ]+}} = enzymexla.lapack.syevd %[[C]] {uplo = #enzymexla.uplo<L>} : (tensor<3x3xf64>) -> (tensor<3x3xf64>, tensor<3xf64>, tensor<i64>)
+  // CHECK-NEXT: %[[Q:[^,]+]], %[[LAMBDA:[^,]+]], %{{[^ ]+}} = enzymexla.lapack.syevd %[[C]] <uplo = L> : (tensor<3x3xf64>) -> (tensor<3x3xf64>, tensor<3xf64>, tensor<i64>)
   // CHECK-NEXT: %[[QT:.+]] = stablehlo.transpose %[[Q]], dims = [1, 0] : (tensor<3x3xf64>) -> tensor<3x3xf64>
   // CHECK-NEXT: %[[QTY:.+]] = stablehlo.dot_general %[[QT]], %[[Y]], contracting_dims = [1] x [0] : (tensor<3x3xf64>, tensor<3xf64>) -> tensor<3xf64>
   // CHECK-NEXT: %[[QTYCOL:.+]] = stablehlo.reshape %[[QTY]] : (tensor<3xf64>) -> tensor<3x1xf64>
@@ -167,12 +167,12 @@ module {
       -> (tensor<1x4xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>) {
     %step_size = stablehlo.constant dense<0.1> : tensor<f64>
     %result:4 = impulse.infer @model(%rng, %C, %X) given %trace
-        init_step_size = %step_size {
+        init_step_size = %step_size <{
       selection = [[#impulse.symbol<1>], [#impulse.symbol<2>], [#impulse.symbol<3>]],
       all_addresses = [[#impulse.symbol<1>], [#impulse.symbol<2>], [#impulse.symbol<3>], [#impulse.symbol<4>]],
       hmc_config = #impulse.hmc_config<trajectory_length = 1.0>,
       num_samples = 1 : i64, thinning = 1 : i64, num_warmup = 0 : i64
-    } : (tensor<2xui64>, tensor<3x3xf64>, tensor<3x2xf64>, tensor<1x7xf64>, tensor<f64>)
+    }> : (tensor<2xui64>, tensor<3x3xf64>, tensor<3x2xf64>, tensor<1x7xf64>, tensor<f64>)
         -> (tensor<1x4xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>)
     return %result#0, %result#1, %result#2, %result#3 : tensor<1x4xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>
   }
@@ -211,12 +211,12 @@ module {
       -> (tensor<1x5xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>) {
     %step_size = stablehlo.constant dense<0.1> : tensor<f64>
     %result:4 = impulse.infer @model_reused(%rng, %C) given %trace
-        init_step_size = %step_size {
+        init_step_size = %step_size <{
       selection = [[#impulse.symbol<1>], [#impulse.symbol<2>], [#impulse.symbol<3>]],
       all_addresses = [[#impulse.symbol<1>], [#impulse.symbol<2>], [#impulse.symbol<3>], [#impulse.symbol<4>]],
       hmc_config = #impulse.hmc_config<trajectory_length = 1.0>,
       num_samples = 1 : i64, thinning = 1 : i64, num_warmup = 0 : i64
-    } : (tensor<2xui64>, tensor<3x3xf64>, tensor<1x8xf64>, tensor<f64>)
+    }> : (tensor<2xui64>, tensor<3x3xf64>, tensor<1x8xf64>, tensor<f64>)
         -> (tensor<1x5xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>)
     return %result#0, %result#1, %result#2, %result#3 : tensor<1x5xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>
   }

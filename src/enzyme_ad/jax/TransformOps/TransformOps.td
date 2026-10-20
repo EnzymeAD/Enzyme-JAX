@@ -1449,7 +1449,7 @@ def ApplyDotGeneralLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyCholeskyLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "cholesky_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>
@@ -1464,7 +1464,7 @@ def ApplyCholeskyLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def ApplyQRLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "qr_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "prop-dict attr-dict";
   // TODO: this should be made better searchable.
   let extraClassDeclaration = [{
     ::llvm::SmallVector<::mlir::DictionaryAttr>

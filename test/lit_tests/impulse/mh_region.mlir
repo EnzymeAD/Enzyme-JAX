@@ -19,9 +19,9 @@ module {
   func.func @model(%rng : tensor<2xui64>, %R_data : tensor<3x3xf64>)
       -> (tensor<2xui64>, tensor<3xf64>) {
     %L = stablehlo.cholesky %R_data, lower = true : tensor<3x3xf64>
-    %y:2 = impulse.sample @mvn_draw(%rng, %L) {
+    %y:2 = impulse.sample @mvn_draw(%rng, %L) <{
       logpdf = @mvn_logpdf, symbol = #impulse.symbol<1>
-    } : (tensor<2xui64>, tensor<3x3xf64>) -> (tensor<2xui64>, tensor<3xf64>)
+    }> : (tensor<2xui64>, tensor<3x3xf64>) -> (tensor<2xui64>, tensor<3xf64>)
     return %y#0, %y#1 : tensor<2xui64>, tensor<3xf64>
   }
 
@@ -44,7 +44,7 @@ module {
   // CHECK-NEXT: %[[LPR:.+]] = stablehlo.reshape %[[PROPV]] : (tensor<3xf64>) -> tensor<3x1xf64>
   // CHECK-NEXT: %[[LPS:.+]] = stablehlo.slice %[[LPR]] [0:1, 0:1] : (tensor<3x1xf64>) -> tensor<1x1xf64>
   // CHECK-NEXT: %[[NEWWT:.+]] = stablehlo.reshape %[[LPS]] : (tensor<1x1xf64>) -> tensor<f64>
-  // CHECK-NEXT: %[[OSL:.+]] = impulse.slice %[[TRA]] {limit_indices = array<i64: 1, 3>, start_indices = array<i64: 0, 0>, strides = array<i64: 1, 1>} : (tensor<1x3xf64>) -> tensor<1x3xf64>
+  // CHECK-NEXT: %[[OSL:.+]] = impulse.slice %[[TRA]] <start_indices = [0, 0], limit_indices = [1, 3], strides = [1, 1]> : (tensor<1x3xf64>) -> tensor<1x3xf64>
   // CHECK-NEXT: %[[OV:.+]] = impulse.reshape %[[OSL]] : (tensor<1x3xf64>) -> tensor<3xf64>
   // CHECK-NEXT: %[[OR:.+]] = stablehlo.reshape %[[OV]] : (tensor<3xf64>) -> tensor<3x1xf64>
   // CHECK-NEXT: %[[OS:.+]] = stablehlo.slice %[[OR]] [0:1, 0:1] : (tensor<3x1xf64>) -> tensor<1x1xf64>
@@ -52,11 +52,11 @@ module {
   // CHECK-NEXT: %[[CORR:.+]] = arith.subf %[[NEWWT]], %[[OLDWT]] : tensor<f64>
   // CHECK-NEXT: %[[WDIFF:.+]] = arith.subf %[[NEWWT]], %[[WTA]] : tensor<f64>
   // CHECK-NEXT: %[[ALPHA:.+]] = arith.subf %[[WDIFF]], %[[CORR]] : tensor<f64>
-  // CHECK-NEXT: %[[NEWRNG:.+]], %[[U:.+]] = impulse.random %[[RNGA]], %[[ZERO]], %[[ONE]] {rng_distribution = #impulse.rng_distribution<UNIFORM>} : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+  // CHECK-NEXT: %[[NEWRNG:.+]], %[[U:.+]] = impulse.random %[[RNGA]], %[[ZERO]], %[[ONE]] <rng_distribution = UNIFORM> : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
   // CHECK-NEXT: %[[LOGU:.+]] = math.log %[[U]] : tensor<f64>
   // CHECK-NEXT: %[[ACC:.+]] = arith.cmpf olt, %[[LOGU]], %[[ALPHA]] : tensor<f64>
-  // CHECK-NEXT: %[[NEWW:.+]] = impulse.slice %[[NEWTR]] {limit_indices = array<i64: 1, 3>, start_indices = array<i64: 0, 0>, strides = array<i64: 1, 1>} : (tensor<1x3xf64>) -> tensor<1x3xf64>
-  // CHECK-NEXT: %[[OLDW:.+]] = impulse.slice %[[TRA]] {limit_indices = array<i64: 1, 3>, start_indices = array<i64: 0, 0>, strides = array<i64: 1, 1>} : (tensor<1x3xf64>) -> tensor<1x3xf64>
+  // CHECK-NEXT: %[[NEWW:.+]] = impulse.slice %[[NEWTR]] <start_indices = [0, 0], limit_indices = [1, 3], strides = [1, 1]> : (tensor<1x3xf64>) -> tensor<1x3xf64>
+  // CHECK-NEXT: %[[OLDW:.+]] = impulse.slice %[[TRA]] <start_indices = [0, 0], limit_indices = [1, 3], strides = [1, 1]> : (tensor<1x3xf64>) -> tensor<1x3xf64>
   // CHECK-NEXT: %[[SELW:.+]] = impulse.select %[[ACC]], %[[NEWW]], %[[OLDW]] : (tensor<i1>, tensor<1x3xf64>, tensor<1x3xf64>) -> tensor<1x3xf64>
   // CHECK-NEXT: %[[SELTR:.+]] = impulse.dynamic_update_slice %[[TRA]], %[[SELW]], %[[C0]], %[[C0]] : (tensor<1x3xf64>, tensor<1x3xf64>, tensor<i64>, tensor<i64>) -> tensor<1x3xf64>
   // CHECK-NEXT: %[[SELWT:.+]] = arith.select %[[ACC]], %[[NEWWT]], %[[WTA]] : tensor<i1>, tensor<f64>
@@ -64,13 +64,13 @@ module {
   // CHECK: return %[[LOOP]]#0, %[[LOOP]]#3, %[[LOOP]]#2, %[[LOOP]]#1 : tensor<1x3xf64>, tensor<i1>, tensor<2xui64>, tensor<f64>
   func.func @mh(%rng : tensor<2xui64>, %R_data : tensor<3x3xf64>, %trace : tensor<1x3xf64>, %weight : tensor<f64>)
       -> (tensor<1x3xf64>, tensor<i1>, tensor<2xui64>, tensor<f64>) {
-    %res:5 = impulse.infer @model(%rng, %R_data) given %trace state = [%weight] {
+    %res:5 = impulse.infer @model(%rng, %R_data) given %trace state = [%weight] <{
       mh_config = #impulse.mh_config,
       selection = [[#impulse.symbol<1>]],
       all_addresses = [[#impulse.symbol<1>]],
       state_schema = ["weight"],
       num_samples = 4 : i64
-    } : (tensor<2xui64>, tensor<3x3xf64>, tensor<f64>, tensor<1x3xf64>)
+    }> : (tensor<2xui64>, tensor<3x3xf64>, tensor<f64>, tensor<1x3xf64>)
         -> (tensor<1x3xf64>, tensor<i1>, tensor<f64>, tensor<2xui64>, tensor<f64>)
     return %res#0, %res#1, %res#3, %res#4 : tensor<1x3xf64>, tensor<i1>, tensor<2xui64>, tensor<f64>
   }

@@ -4,31 +4,31 @@
 
 // dtrsm('L', 'L', 'N', 'N', m = 8, n = 1, lda = 8, ldb = 8)
 func.func @main(%alpha: tensor<f64>, %a: tensor<8x8xf64>, %b: tensor<8x1xf64>) -> tensor<8x1xf64> {
-  %0 = enzymexla.blas.trsm %alpha, %a, %b {side = #enzymexla.side<left>, uplo = #enzymexla.uplo<U>, transa = #enzymexla.transpose<transpose>} : (tensor<f64>, tensor<8x8xf64>, tensor<8x1xf64>) -> tensor<8x1xf64>
+  %0 = enzymexla.blas.trsm %alpha, %a, %b <{side = #enzymexla.side<left>, uplo = #enzymexla.uplo<U>, transa = #enzymexla.transpose<transpose>}> : (tensor<f64>, tensor<8x8xf64>, tensor<8x1xf64>) -> tensor<8x1xf64>
   return %0 : tensor<8x1xf64>
 }
 
 // dtrsm('L', 'U', 'N', 'N', m = 8, n = 3, lda = 8, ldb = 8)
 func.func @right(%alpha: tensor<f64>, %a: tensor<8x8xf64>, %b: tensor<3x8xf64>) -> tensor<3x8xf64> {
-  %0 = enzymexla.blas.trsm %alpha, %a, %b {side = #enzymexla.side<right>, uplo = #enzymexla.uplo<L>, transa = #enzymexla.transpose<none>} : (tensor<f64>, tensor<8x8xf64>, tensor<3x8xf64>) -> tensor<3x8xf64>
+  %0 = enzymexla.blas.trsm %alpha, %a, %b <{side = #enzymexla.side<right>, uplo = #enzymexla.uplo<L>, transa = #enzymexla.transpose<none>}> : (tensor<f64>, tensor<8x8xf64>, tensor<3x8xf64>) -> tensor<3x8xf64>
   return %0 : tensor<3x8xf64>
 }
 
 // dtrsm('L', 'U', 'T', 'N', m = 8, n = 2, lda = 8, ldb = 8)
 func.func @left2(%alpha: tensor<f64>, %a: tensor<8x8xf64>, %b: tensor<8x2xf64>) -> tensor<8x2xf64> {
-  %0 = enzymexla.blas.trsm %alpha, %a, %b {side = #enzymexla.side<left>, uplo = #enzymexla.uplo<L>, transa = #enzymexla.transpose<none>} : (tensor<f64>, tensor<8x8xf64>, tensor<8x2xf64>) -> tensor<8x2xf64>
+  %0 = enzymexla.blas.trsm %alpha, %a, %b <{side = #enzymexla.side<left>, uplo = #enzymexla.uplo<L>, transa = #enzymexla.transpose<none>}> : (tensor<f64>, tensor<8x8xf64>, tensor<8x2xf64>) -> tensor<8x2xf64>
   return %0 : tensor<8x2xf64>
 }
 
 // dtrsm('R', 'L', 'N', 'N', m = 16, n = 8, lda = 8, ldb = 16)
 func.func @left16(%alpha: tensor<f64>, %a: tensor<8x8xf64>, %b: tensor<8x16xf64>) -> tensor<8x16xf64> {
-  %0 = enzymexla.blas.trsm %alpha, %a, %b {side = #enzymexla.side<left>, uplo = #enzymexla.uplo<U>, transa = #enzymexla.transpose<none>} : (tensor<f64>, tensor<8x8xf64>, tensor<8x16xf64>) -> tensor<8x16xf64>
+  %0 = enzymexla.blas.trsm %alpha, %a, %b <{side = #enzymexla.side<left>, uplo = #enzymexla.uplo<U>, transa = #enzymexla.transpose<none>}> : (tensor<f64>, tensor<8x8xf64>, tensor<8x16xf64>) -> tensor<8x16xf64>
   return %0 : tensor<8x16xf64>
 }
 
 // dtrsm('R', 'L', 'N', 'N', m = 16, n = 8, lda = 8, ldb = 16)
 func.func @right16(%alpha: tensor<f64>, %a: tensor<8x8xf64>, %b: tensor<16x8xf64>) -> tensor<16x8xf64> {
-  %0 = enzymexla.blas.trsm %alpha, %a, %b {side = #enzymexla.side<right>, uplo = #enzymexla.uplo<U>, transa = #enzymexla.transpose<transpose>} : (tensor<f64>, tensor<8x8xf64>, tensor<16x8xf64>) -> tensor<16x8xf64>
+  %0 = enzymexla.blas.trsm %alpha, %a, %b <{side = #enzymexla.side<right>, uplo = #enzymexla.uplo<U>, transa = #enzymexla.transpose<transpose>}> : (tensor<f64>, tensor<8x8xf64>, tensor<16x8xf64>) -> tensor<16x8xf64>
   return %0 : tensor<16x8xf64>
 }
 
