@@ -298,10 +298,30 @@ bool isStoreInto(Operation *op, Value address) {
   return false;
 }
 
-/// The slot `handle` was loaded from, or nothing if it was not loaded from a
-/// stack slot, or the slot or a handle loaded from it is used in some way this
-/// cannot follow.
-std::optional<HandleSlot> slotOf(Value handle) {
+/// Whether `op` runs at most once each time its function does: it is in no
+/// loop, and in the entry block of every region around it, which nothing
+/// branches back to.
+bool runsOnce(Operation *op) {
+  while (true) {
+    Region *region = op->getParentRegion();
+    if (!op->getBlock()->isEntryBlock())
+      return false;
+    Operation *parent = region->getParentOp();
+    if (isa<FunctionOpInterface>(parent))
+      return true;
+    if (isa<LoopLikeOpInterface>(parent))
+      return false;
+    if (auto branch = dyn_cast<RegionBranchOpInterface>(parent))
+      if (branch.isRepetitiveRegion(region->getRegionNumber()))
+        return false;
+    op = parent;
+  }
+}
+
+/// The slot `handle`, given to `use`, was loaded from, or nothing if it was
+/// not loaded from a stack slot, or the slot or a handle loaded from it is
+/// used in some way this cannot follow.
+std::optional<HandleSlot> slotOf(Value handle, Operation *use) {
   Operation *load = lookThroughForwarding(handle).getDefiningOp();
   Value address;
   if (auto llvmLoad = dyn_cast_or_null<LLVM::LoadOp>(load))
@@ -355,7 +375,25 @@ std::optional<HandleSlot> slotOf(Value handle) {
     }
   }
 
-  if (!llvm::all_of(slot.loads, onlyPassedToCalls))
+  // A handle loaded after `use` may be copied anywhere, as `bfs.Append(form)`
+  // copies it, if `use` runs once: the copy cannot reach a call before it.
+  // Every other block of a region runs after its entry block, where `once`
+  // puts `use` and what holds it.
+  bool once = runsOnce(use);
+  auto loadedAfter = [&](Value load) {
+    if (!once)
+      return false;
+    for (Operation *at = use; at; at = at->getParentOp()) {
+      Operation *op =
+          at->getParentRegion()->findAncestorOpInRegion(*load.getDefiningOp());
+      if (op)
+        return op->getBlock() != at->getBlock() || at->isBeforeInBlock(op);
+    }
+    return false;
+  };
+  if (!llvm::all_of(slot.loads, [&](Value load) {
+        return loadedAfter(load) || onlyPassedToCalls(load);
+      }))
     return std::nullopt;
   return slot;
 }
@@ -487,6 +525,33 @@ HandleEffect effectOn(Operation *op, const HandleSlot &slot,
                      : HandleEffect::None;
 }
 
+/// The properties a call keeps of the object in `slot` though it may change
+/// it: those its callee, returning nothing, preserves from that object alone,
+/// as `tessera_preserves("P", "this")` on a setter declares.
+SmallVector<StringAttr> keptBy(Operation *op, const HandleSlot &slot) {
+  SmallVector<StringAttr> kept;
+  auto call = dyn_cast<LLVM::CallOp>(op);
+  auto func = call && call.getCalleeAttr()
+                  ? SymbolTable::lookupNearestSymbolFrom<LLVM::LLVMFuncOp>(
+                        op, call.getCalleeAttr())
+                  : nullptr;
+  auto preserves =
+      func ? func->getAttrOfType<ArrayAttr>(kPreservesAttr) : nullptr;
+  if (!preserves || call.getNumResults() != 0)
+    return kept;
+  for (auto rule : preserves.getAsRange<DictionaryAttr>()) {
+    auto inputs = rule.getAs<ArrayAttr>("inputs");
+    auto position = inputs && inputs.size() == 1
+                        ? dyn_cast<IntegerAttr>(inputs[0])
+                        : nullptr;
+    if (position && position.getInt() >= 0 &&
+        position.getInt() < (int64_t)call.getArgOperands().size() &&
+        slot.isHandle(call.getArgOperands()[position.getInt()]))
+      kept.push_back(rule.getAs<StringAttr>("property"));
+  }
+  return kept;
+}
+
 /// Whether anything in `op`, its regions included, might change the object
 /// in `slot`. Here an establishing call counts as a change: it may or may not
 /// run, or run before something else that changes the object.
@@ -525,11 +590,18 @@ SmallVector<StringAttr> handleFactsAt(CallOp use, unsigned index) {
   if (!slot && lookThroughForwarding(handle) == handle &&
       llvm::all_of(handle.getUsers(),
                    [&](Operation *user) { return user == use; }))
-    slot = slotOf(handle);
+    slot = slotOf(handle, use);
   if (!slot)
     return {};
 
   Operation *point = use;
+  // What calls passed on the way keep, if any changed the object.
+  std::optional<SmallVector<StringAttr>> kept;
+  auto keep = [&](SmallVector<StringAttr> &facts) {
+    if (kept)
+      llvm::erase_if(
+          facts, [&](StringAttr p) { return !llvm::is_contained(*kept, p); });
+  };
   while (true) {
     for (Operation *op = point->getPrevNode(); op; op = op->getPrevNode()) {
       if (op->getNumRegions() != 0) {
@@ -542,9 +614,16 @@ SmallVector<StringAttr> handleFactsAt(CallOp use, unsigned index) {
       case HandleEffect::None:
         continue;
       case HandleEffect::Establishes:
+        keep(established);
         return established;
-      case HandleEffect::Changes:
-        return {};
+      case HandleEffect::Changes: {
+        SmallVector<StringAttr> keptHere = keptBy(op, *slot);
+        keep(keptHere);
+        if (keptHere.empty())
+          return {};
+        kept = std::move(keptHere);
+        continue;
+      }
       }
     }
 
