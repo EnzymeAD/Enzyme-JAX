@@ -7249,7 +7249,7 @@ struct WhileDeadResults final
     if (!removedResults.any())
       return failure();
 
-    op.getBody()->getTerminator()->eraseOperands(removedResults);
+    op.getBody().front().getTerminator()->eraseOperands(removedResults);
 
     for (auto &cop : llvm::reverse(opUsers)) {
       bool hasDead = false;
