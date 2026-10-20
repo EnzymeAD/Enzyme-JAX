@@ -85,35 +85,30 @@ module {
 // REVERSE-NOT:   stablehlo.pad
 // REVERSE:       %[[FWD:[a-z0-9_]+]] = "stablehlo.reduce_window"(%[[X]], %{{[a-z0-9_]+}}) <{base_dilations = array<i64: 1>, padding = dense<{{\[\[}}4, 0]]> : tensor<1x2xi64>, window_dilations = array<i64: 1>, window_dimensions = array<i64: 5>, window_strides = array<i64: 1>}> ({
 // REVERSE-NOT:   stablehlo.pad
-// REVERSE:       %[[G:[a-z0-9_]+]] = stablehlo.add %[[DY]], %{{[a-z0-9_]+}} : tensor<5xf64>
-// REVERSE-NEXT:  %[[ADJ:[a-z0-9_]+]] = "stablehlo.reduce_window"(%[[G]], %{{[a-z0-9_]+}}) <{base_dilations = array<i64: 1>, padding = dense<{{\[\[}}0, 4]]> : tensor<1x2xi64>, window_dilations = array<i64: 1>, window_dimensions = array<i64: 5>, window_strides = array<i64: 1>}> ({
+// REVERSE:       %[[ADJ:[a-z0-9_]+]] = "stablehlo.reduce_window"(%[[DY]], %{{[a-z0-9_]+}}) <{base_dilations = array<i64: 1>, padding = dense<{{\[\[}}0, 4]]> : tensor<1x2xi64>, window_dilations = array<i64: 1>, window_dimensions = array<i64: 5>, window_strides = array<i64: 1>}> ({
 // REVERSE-NEXT:  ^bb0(%[[A:[a-z0-9_]+]]: tensor<f64>, %[[B:[a-z0-9_]+]]: tensor<f64>):
 // REVERSE-NEXT:    %[[S:[a-z0-9_]+]] = stablehlo.add %[[A]], %[[B]] : tensor<f64>
 // REVERSE-NEXT:    stablehlo.return %[[S]] : tensor<f64>
 // REVERSE-NEXT:  }) : (tensor<5xf64>, tensor<f64>) -> tensor<5xf64>
-// REVERSE-NEXT:  %[[R:[a-z0-9_]+]] = stablehlo.add %[[ADJ]], %{{[a-z0-9_]+}} : tensor<5xf64>
-// REVERSE-NEXT:  return %[[FWD]], %[[R]] : tensor<5xf64>, tensor<5xf64>
+// REVERSE-NEXT:  return %[[FWD]], %[[ADJ]] : tensor<5xf64>, tensor<5xf64>
 
 // REVERSE-LABEL: func.func private @differevcumsum(
 // REVERSE-SAME:      %[[X:[a-z0-9_]+]]: tensor<5xf64>, %[[DY:[a-z0-9_]+]]: tensor<5xf64>) -> (tensor<5xf64>, tensor<5xf64>) {
 // REVERSE-NOT:   stablehlo.pad
 // REVERSE:       %[[FWD:[a-z0-9_]+]] = "stablehlo.reduce_window"(%[[X]], %{{[a-z0-9_]+}}) <{padding = dense<{{\[\[}}0, 4]]> : tensor<1x2xi64>, window_dimensions = array<i64: 5>}> ({
 // REVERSE-NOT:   stablehlo.pad
-// REVERSE:       %[[G:[a-z0-9_]+]] = stablehlo.add %[[DY]], %{{[a-z0-9_]+}} : tensor<5xf64>
-// REVERSE-NEXT:  %[[ADJ:[a-z0-9_]+]] = "stablehlo.reduce_window"(%[[G]], %{{[a-z0-9_]+}}) <{padding = dense<{{\[\[}}4, 0]]> : tensor<1x2xi64>, window_dimensions = array<i64: 5>}> ({
+// REVERSE:       %[[ADJ:[a-z0-9_]+]] = "stablehlo.reduce_window"(%[[DY]], %{{[a-z0-9_]+}}) <{padding = dense<{{\[\[}}4, 0]]> : tensor<1x2xi64>, window_dimensions = array<i64: 5>}> ({
 // REVERSE-NEXT:  ^bb0(%[[A:[a-z0-9_]+]]: tensor<f64>, %[[B:[a-z0-9_]+]]: tensor<f64>):
 // REVERSE-NEXT:    %[[S:[a-z0-9_]+]] = stablehlo.add %[[A]], %[[B]] : tensor<f64>
 // REVERSE-NEXT:    stablehlo.return %[[S]] : tensor<f64>
 // REVERSE-NEXT:  }) : (tensor<5xf64>, tensor<f64>) -> tensor<5xf64>
-// REVERSE-NEXT:  %[[R:[a-z0-9_]+]] = stablehlo.add %[[ADJ]], %{{[a-z0-9_]+}} : tensor<5xf64>
-// REVERSE-NEXT:  return %[[FWD]], %[[R]] : tensor<5xf64>, tensor<5xf64>
+// REVERSE-NEXT:  return %[[FWD]], %[[ADJ]] : tensor<5xf64>, tensor<5xf64>
 
 // A window shorter than the dimension keeps the general adjoint.
 
 // REVERSE-LABEL: func.func private @diffewindow3(
 // REVERSE-SAME:      %[[X:[a-z0-9_]+]]: tensor<5xf64>, %[[DY:[a-z0-9_]+]]: tensor<5xf64>) -> (tensor<5xf64>, tensor<5xf64>) {
-// REVERSE:       %[[G:[a-z0-9_]+]] = stablehlo.add %[[DY]], %{{[a-z0-9_]+}} : tensor<5xf64>
-// REVERSE-NEXT:  %[[P:[a-z0-9_]+]] = stablehlo.pad %[[G]], %[[Z:[a-z0-9_]+]], low = [0], high = [2], interior = [0] : (tensor<5xf64>, tensor<f64>) -> tensor<7xf64>
+// REVERSE:       %[[P:[a-z0-9_]+]] = stablehlo.pad %[[DY]], %[[Z:[a-z0-9_]+]], low = [0], high = [2], interior = [0] : (tensor<5xf64>, tensor<f64>) -> tensor<7xf64>
 // REVERSE-NEXT:  %[[ADJ:[a-z0-9_]+]] = "stablehlo.reduce_window"(%[[P]], %[[Z]]) <{base_dilations = array<i64: 1>, padding = dense<0> : tensor<1x2xi64>, window_dimensions = array<i64: 3>}> ({
 // REVERSE-NEXT:  ^bb0(%[[A:[a-z0-9_]+]]: tensor<f64>, %[[B:[a-z0-9_]+]]: tensor<f64>):
 // REVERSE-NEXT:    %[[S:[a-z0-9_]+]] = stablehlo.add %[[A]], %[[B]] : tensor<f64>
@@ -123,8 +118,7 @@ module {
 // REVERSE-LABEL: func.func private @diffecumsum2d(
 // REVERSE-SAME:      %[[X:[a-z0-9_]+]]: tensor<2x4xf32>, %[[DY:[a-z0-9_]+]]: tensor<2x4xf32>) -> (tensor<2x4xf32>, tensor<2x4xf32>) {
 // REVERSE-NOT:   stablehlo.pad
-// REVERSE:       %[[G:[a-z0-9_]+]] = stablehlo.add %[[DY]], %{{[a-z0-9_]+}} : tensor<2x4xf32>
-// REVERSE-NEXT:  %[[ADJ:[a-z0-9_]+]] = "stablehlo.reduce_window"(%[[G]], %{{[a-z0-9_]+}}) <{padding = dense<{{\[\[}}0, 0], [0, 3]]> : tensor<2x2xi64>, window_dimensions = array<i64: 1, 4>, window_strides = array<i64: 1, 1>}> ({
+// REVERSE:       %[[ADJ:[a-z0-9_]+]] = "stablehlo.reduce_window"(%[[DY]], %{{[a-z0-9_]+}}) <{padding = dense<{{\[\[}}0, 0], [0, 3]]> : tensor<2x2xi64>, window_dimensions = array<i64: 1, 4>, window_strides = array<i64: 1, 1>}> ({
 // REVERSE-NEXT:  ^bb0(%[[A:[a-z0-9_]+]]: tensor<f32>, %[[B:[a-z0-9_]+]]: tensor<f32>):
 // REVERSE-NEXT:    %[[S:[a-z0-9_]+]] = stablehlo.add %[[A]], %[[B]] : tensor<f32>
 // REVERSE-NEXT:    stablehlo.return %[[S]] : tensor<f32>
