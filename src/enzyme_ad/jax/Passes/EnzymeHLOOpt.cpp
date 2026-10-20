@@ -7315,16 +7315,11 @@ struct WhileDeadResults final
       ++upd;
     }
 
-    for (int64_t i = removedResults.size() - 1; i >= 0; --i)
-      if (removedResults.test(i))
-        op.getCond().eraseArgument(i);
+    op.getCond().front().eraseArguments(removedResults);
     rewriter.inlineRegionBefore(op.getCond(), updated.getCond(),
                                 updated.getCond().begin());
 
-    for (int64_t i = removedResults.size() - 1; i >= 0; --i) {
-      if (removedResults.test(i))
-        op.getBody().eraseArgument(i);
-    }
+    op.getBody().front().eraseArguments(removedResults);
     rewriter.inlineRegionBefore(op.getBody(), updated.getBody(),
                                 updated.getBody().begin());
 
