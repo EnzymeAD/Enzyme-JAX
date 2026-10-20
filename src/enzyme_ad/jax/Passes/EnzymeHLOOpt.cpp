@@ -6949,11 +6949,11 @@ struct WhileDeadResults final
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   void replaceTerminator(PatternRewriter &rewriter, Region &region,
-                         ArrayRef<int64_t> deadResults) const {
+                         const llvm::BitVector &deadResults) const {
     Operation *terminator = region.front().getTerminator();
     SmallVector<Value> terminatorOperands;
     for (auto &&[i, operand] : llvm::enumerate(terminator->getOperands())) {
-      if (!llvm::is_contained(deadResults, i))
+      if (!deadResults.test(i))
         terminatorOperands.push_back(operand);
     }
     OpBuilder::InsertionGuard guard(rewriter);
@@ -7269,27 +7269,19 @@ struct WhileDeadResults final
       deadResults.push_back(cur);
     }
 
-    replaceTerminator(rewriter, op.getBody(), deadResults);
+    replaceTerminator(rewriter, op.getBody(), removedResults);
 
     for (auto &cop : llvm::reverse(opUsers)) {
-      bool hasDead = false;
-      for (int64_t i : deadResults) {
-        if (cop.second->count(i)) {
-          hasDead = true;
-          break;
-        }
-      }
+      bool hasDead = llvm::any_of(*cop.second, [&](size_t i) {
+        return removedResults.test(i);
+      });
       if (hasDead)
         rewriter.eraseOp(cop.first);
     }
     for (auto &cop : llvm::reverse(opUsersBody)) {
-      bool hasDead = false;
-      for (int64_t i : deadResults) {
-        if (cop.second->count(i)) {
-          hasDead = true;
-          break;
-        }
-      }
+      bool hasDead = llvm::any_of(*cop.second, [&](size_t i) {
+        return removedResults.test(i);
+      });
       if (hasDead)
         rewriter.eraseOp(cop.first);
     }
@@ -7299,7 +7291,7 @@ struct WhileDeadResults final
     SmallVector<Location> condBlockArgLocs, bodyBlockArgsLocs;
     for (auto &&[i, operand, resultType] :
          llvm::enumerate(op->getOperands(), op.getResultTypes())) {
-      if (llvm::is_contained(deadResults, i))
+      if (removedResults.test(i))
         continue;
 
       operands.push_back(operand);
@@ -7313,7 +7305,7 @@ struct WhileDeadResults final
     SmallVector<Value> resultReplacements;
     for (int64_t old = 0, upd = 0, end = op->getNumResults(); old < end;
          ++old) {
-      if (llvm::is_contained(deadResults, old)) {
+      if (removedResults.test(old)) {
         resultReplacements.push_back(nullptr);
         continue;
       }
