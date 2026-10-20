@@ -14,7 +14,7 @@ func.func @triangular_solve_real_left_lower(%A : tensor<2x2xf32>, %b : tensor<2x
 // FORWARD-REAL-LEFT-LOWER: func.func @triangular_solve_real_left_lower(%arg0: tensor<2x2xf32>, %arg1: tensor<2x2xf32>, %arg2: tensor<2x2xf32>, %arg3: tensor<2x2xf32>) -> (tensor<2x2xf32>, tensor<2x2xf32>) {
 // FORWARD-REAL-LEFT-LOWER:   %cst = stablehlo.constant dense<1.000000e+00> : tensor<f32>
 // FORWARD-REAL-LEFT-LOWER:   %0 = "stablehlo.triangular_solve"(%arg0, %arg2) <{left_side = true, lower = true, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
-// FORWARD-REAL-LEFT-LOWER:   %1 = enzymexla.blas.trmm %arg1, %0, %cst {side = #enzymexla.side<left>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<L>} : (tensor<2x2xf32>, tensor<2x2xf32>, tensor<f32>) -> tensor<2x2xf32>
+// FORWARD-REAL-LEFT-LOWER:   %1 = enzymexla.blas.trmm %arg1, %0, %cst <side = left, uplo = L, transpose = none> : (tensor<2x2xf32>, tensor<2x2xf32>, tensor<f32>) -> tensor<2x2xf32>
 // FORWARD-REAL-LEFT-LOWER:   %2 = stablehlo.subtract %arg3, %1 : tensor<2x2xf32>
 // FORWARD-REAL-LEFT-LOWER:   %3 = "stablehlo.triangular_solve"(%arg0, %2) <{left_side = true, lower = true, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
 // FORWARD-REAL-LEFT-LOWER:   return %0, %3 : tensor<2x2xf32>, tensor<2x2xf32>
@@ -28,7 +28,7 @@ func.func @triangular_solve_real_left_upper(%A : tensor<2x2xf32>, %b : tensor<2x
 // FORWARD-REAL-LEFT-UPPER: func.func @triangular_solve_real_left_upper(%arg0: tensor<2x2xf32>, %arg1: tensor<2x2xf32>, %arg2: tensor<2x2xf32>, %arg3: tensor<2x2xf32>) -> (tensor<2x2xf32>, tensor<2x2xf32>) {
 // FORWARD-REAL-LEFT-UPPER:   %cst = stablehlo.constant dense<1.000000e+00> : tensor<f32>
 // FORWARD-REAL-LEFT-UPPER:   %0 = "stablehlo.triangular_solve"(%arg0, %arg2) <{left_side = true, lower = false, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
-// FORWARD-REAL-LEFT-UPPER:   %1 = enzymexla.blas.trmm %arg1, %0, %cst {side = #enzymexla.side<left>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<U>} : (tensor<2x2xf32>, tensor<2x2xf32>, tensor<f32>) -> tensor<2x2xf32>
+// FORWARD-REAL-LEFT-UPPER:   %1 = enzymexla.blas.trmm %arg1, %0, %cst <side = left, uplo = U, transpose = none> : (tensor<2x2xf32>, tensor<2x2xf32>, tensor<f32>) -> tensor<2x2xf32>
 // FORWARD-REAL-LEFT-UPPER:   %2 = stablehlo.subtract %arg3, %1 : tensor<2x2xf32>
 // FORWARD-REAL-LEFT-UPPER:   %3 = "stablehlo.triangular_solve"(%arg0, %2) <{left_side = true, lower = false, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
 // FORWARD-REAL-LEFT-UPPER:   return %0, %3 : tensor<2x2xf32>, tensor<2x2xf32>
@@ -42,7 +42,7 @@ func.func @triangular_solve_real_right_lower(%A : tensor<2x2xf32>, %b : tensor<2
 // FORWARD-REAL-RIGHT-LOWER: func.func @triangular_solve_real_right_lower(%arg0: tensor<2x2xf32>, %arg1: tensor<2x2xf32>, %arg2: tensor<2x2xf32>, %arg3: tensor<2x2xf32>) -> (tensor<2x2xf32>, tensor<2x2xf32>) {
 // FORWARD-REAL-RIGHT-LOWER:   %cst = stablehlo.constant dense<1.000000e+00> : tensor<f32>
 // FORWARD-REAL-RIGHT-LOWER:   %0 = "stablehlo.triangular_solve"(%arg0, %arg2) <{left_side = false, lower = true, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
-// FORWARD-REAL-RIGHT-LOWER:   %1 = enzymexla.blas.trmm %arg1, %0, %cst {side = #enzymexla.side<right>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<L>} : (tensor<2x2xf32>, tensor<2x2xf32>, tensor<f32>) -> tensor<2x2xf32>
+// FORWARD-REAL-RIGHT-LOWER:   %1 = enzymexla.blas.trmm %arg1, %0, %cst <side = right, uplo = L, transpose = none> : (tensor<2x2xf32>, tensor<2x2xf32>, tensor<f32>) -> tensor<2x2xf32>
 // FORWARD-REAL-RIGHT-LOWER:   %2 = stablehlo.subtract %arg3, %1 : tensor<2x2xf32>
 // FORWARD-REAL-RIGHT-LOWER:   %3 = "stablehlo.triangular_solve"(%arg0, %2) <{left_side = false, lower = true, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
 // FORWARD-REAL-RIGHT-LOWER:   return %0, %3 : tensor<2x2xf32>, tensor<2x2xf32>
@@ -56,7 +56,7 @@ func.func @triangular_solve_real_right_upper(%A : tensor<2x2xf32>, %b : tensor<2
 // FORWARD-REAL-RIGHT-UPPER: func.func @triangular_solve_real_right_upper(%arg0: tensor<2x2xf32>, %arg1: tensor<2x2xf32>, %arg2: tensor<2x2xf32>, %arg3: tensor<2x2xf32>) -> (tensor<2x2xf32>, tensor<2x2xf32>) {
 // FORWARD-REAL-RIGHT-UPPER:   %cst = stablehlo.constant dense<1.000000e+00> : tensor<f32>
 // FORWARD-REAL-RIGHT-UPPER:   %0 = "stablehlo.triangular_solve"(%arg0, %arg2) <{left_side = false, lower = false, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
-// FORWARD-REAL-RIGHT-UPPER:   %1 = enzymexla.blas.trmm %arg1, %0, %cst {side = #enzymexla.side<right>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<U>} : (tensor<2x2xf32>, tensor<2x2xf32>, tensor<f32>) -> tensor<2x2xf32>
+// FORWARD-REAL-RIGHT-UPPER:   %1 = enzymexla.blas.trmm %arg1, %0, %cst <side = right, uplo = U, transpose = none> : (tensor<2x2xf32>, tensor<2x2xf32>, tensor<f32>) -> tensor<2x2xf32>
 // FORWARD-REAL-RIGHT-UPPER:   %2 = stablehlo.subtract %arg3, %1 : tensor<2x2xf32>
 // FORWARD-REAL-RIGHT-UPPER:   %3 = "stablehlo.triangular_solve"(%arg0, %2) <{left_side = false, lower = false, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
 // FORWARD-REAL-RIGHT-UPPER:   return %0, %3 : tensor<2x2xf32>, tensor<2x2xf32>
