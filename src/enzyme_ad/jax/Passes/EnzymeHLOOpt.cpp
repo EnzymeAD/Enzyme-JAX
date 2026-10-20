@@ -3805,6 +3805,40 @@ struct SliceBroadcast final
   }
 };
 
+// dynamic_slice(broadcast_in_dim(x)) -> broadcast_in_dim(x) when the slice
+// takes every non-unit dimension of x whole; the others are broadcast.
+struct DynamicSliceBroadcast final
+    : CheckedOpRewritePattern<stablehlo::DynamicSliceOp,
+                              DynamicSliceBroadcast> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto type = dyn_cast<RankedTensorType>(op.getType());
+    if (!type || !type.hasStaticShape())
+      return failure();
+    auto bcast = op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!bcast)
+      return failure();
+    auto inType = dyn_cast<RankedTensorType>(bcast.getOperand().getType());
+    auto outType = dyn_cast<RankedTensorType>(bcast.getType());
+    if (!inType || !outType || !inType.hasStaticShape() ||
+        !outType.hasStaticShape())
+      return failure();
+    auto sizes = op.getSliceSizes();
+    for (auto [j, outDim] : llvm::enumerate(bcast.getBroadcastDimensions())) {
+      int64_t inSize = inType.getShape()[j];
+      if (inSize == 1)
+        continue;
+      if (inSize != outType.getShape()[outDim] || sizes[outDim] != inSize)
+        return failure();
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, type, bcast.getOperand(), bcast.getBroadcastDimensions());
+    return success();
+  }
+};
+
 // (dyn)slice(transpose x) -> transpose((dyn)slice x)
 template <typename OpTy>
 struct SliceTransposeBase final
@@ -46302,8 +46336,8 @@ struct EnzymeHLOOptPass
     if (passses & 1)
       patterns.add<SliceTransposeBase<stablehlo::SliceOp>,
                    SliceTransposeBase<stablehlo::DynamicSliceOp>,
-                   SliceReshapeTranspose, SliceBroadcast, SliceGather,
-                   SliceReduceWindow>(context);
+                   SliceReshapeTranspose, SliceBroadcast, DynamicSliceBroadcast,
+                   SliceGather, SliceReduceWindow>(context);
 
     if (passses & 2)
       patterns.add<ReducePad, BroadcastPad>(context);

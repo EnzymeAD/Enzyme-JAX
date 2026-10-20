@@ -517,6 +517,10 @@ def ApplySliceBroadcastPatterns : EnzymeHLOPatternOp<
     "slice_broadcast"> {
   let patterns = ["SliceBroadcast"];
 }
+def ApplyDynamicSliceBroadcastPatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_broadcast"> {
+  let patterns = ["DynamicSliceBroadcast"];
+}
 def SliceIota : EnzymeHLOPatternOp<
     "slice_iota"> {
   let patterns = ["SliceIota"];
