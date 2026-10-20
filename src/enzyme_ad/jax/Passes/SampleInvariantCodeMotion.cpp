@@ -5,8 +5,14 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
+#include "mlir/Dialect/PDL/IR/PDL.h"
+#include "mlir/Dialect/PDLInterp/IR/PDLInterp.h"
+#include "mlir/Dialect/Transform/IR/TransformDialect.h"
+#include "mlir/Dialect/Transform/IR/TransformOps.h"
+#include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Parser/Parser.h"
 #include "mlir/Transforms/FoldUtils.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
@@ -127,6 +133,22 @@ static SharedSampleDependenceAnalysis analyzeEnclosingRegion(Operation *op) {
     region = region->getParentOp()->getParentRegion();
   if (!region)
     return nullptr;
+  AnalysisTarget target = region == &regionOp.getLogpdf()
+                              ? AnalysisTarget::Logpdf
+                              : AnalysisTarget::Sampler;
+  if (activeSampleDependenceCache)
+    return activeSampleDependenceCache->get(regionOp, target);
+  return std::make_shared<SampleDependenceAnalysis>(regionOp, target);
+}
+
+/// IR being rewritten.
+static SharedSampleDependenceAnalysis analyzeRegionHolding(Value value) {
+  Region *region = value.getParentRegion();
+  while (region && !isa<InferRegionOp>(region->getParentOp()))
+    region = region->getParentOp()->getParentRegion();
+  if (!region)
+    return nullptr;
+  auto regionOp = cast<InferRegionOp>(region->getParentOp());
   AnalysisTarget target = region == &regionOp.getLogpdf()
                               ? AnalysisTarget::Logpdf
                               : AnalysisTarget::Sampler;
@@ -4532,41 +4554,81 @@ struct GaussianSufficientStatsGramReduceHLO
 struct SICMPass : public enzyme::impl::SICMPassBase<SICMPass> {
   using SICMPassBase::SICMPassBase;
 
+  std::shared_ptr<OwningOpRef<ModuleOp>> scheduleModule;
+  transform::NamedSequenceOp scheduleEntry;
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    SICMPassBase::getDependentDialects(registry);
+    if (!schedule.empty())
+      registry.insert<transform::TransformDialect, pdl::PDLDialect,
+                      pdl_interp::PDLInterpDialect>();
+  }
+
+  LogicalResult initialize(MLIRContext *context) override {
+    if (schedule.empty())
+      return success();
+    OwningOpRef<ModuleOp> script =
+        parseSourceFile<ModuleOp>(schedule.getValue(), ParserConfig(context));
+    if (!script)
+      return failure();
+    (*script)->walk([&](transform::NamedSequenceOp sequence) {
+      if (sequence.getSymName() != scheduleEntryPoint.getValue())
+        return WalkResult::advance();
+      scheduleEntry = sequence;
+      return WalkResult::interrupt();
+    });
+    if (!scheduleEntry)
+      return emitError((*script)->getLoc())
+             << "sicm: the schedule has no transform.named_sequence @"
+             << scheduleEntryPoint.getValue();
+    scheduleModule = std::make_shared<OwningOpRef<ModuleOp>>(std::move(script));
+    return success();
+  }
+
+  void populateRules(RewritePatternSet &patterns) {
+    if (!scheduleEntry) {
+      mlir::transform::populateSicmPatterns(
+          patterns, *getOperation()->getContext(), PatternBenefit(1));
+      return;
+    }
+    scheduleEntry.walk([&](transform::ApplyPatternsOp applyOp) {
+      if (applyOp.getPatterns().empty())
+        return;
+      for (Operation &descriptor : applyOp.getPatterns().front())
+        cast<transform::PatternDescriptorOpInterface>(descriptor)
+            .populatePatterns(patterns);
+    });
+  }
+
+  static bool erasePatterns(RewritePatternSet &patterns, StringRef name) {
+    auto &native = patterns.getNativePatterns();
+    auto erased =
+        llvm::remove_if(native, [&](const std::unique_ptr<RewritePattern> &p) {
+          return p->getDebugName().contains(name);
+        });
+    bool any = erased != native.end();
+    native.erase(erased, native.end());
+    return any;
+  }
+
   bool runSICMOnRegion(InferRegionOp regionOp, AnalysisTarget target) {
     bool everChanged = false;
     for (int64_t iter = 0; iter < maxIterations; ++iter) {
       bool anyChanged = false;
 
       RewritePatternSet patterns(getOperation()->getContext());
-      mlir::transform::populateSicmPatterns(
-          patterns, *getOperation()->getContext(), PatternBenefit(1));
-      // default profitability threshold; re-add them with the pass option.
-      if (sufficientStatsMinWork != kGaussianStatsDefaultMinWork) {
-        auto &native = patterns.getNativePatterns();
-        native.erase(
-            llvm::remove_if(native,
-                            [](const std::unique_ptr<RewritePattern> &p) {
-                              return p->getDebugName().contains(
-                                  "GaussianSufficientStats");
-                            }),
-            native.end());
+      populateRules(patterns);
+      if (sufficientStatsMinWork != kGaussianStatsDefaultMinWork &&
+          erasePatterns(patterns, "GaussianSufficientStats"))
         patterns
             .add<GaussianSufficientStatsHLO, GaussianSufficientStatsReduceHLO>(
                 getOperation()->getContext(), PatternBenefit(1),
                 sufficientStatsMinWork);
-      }
-      if (eigenliftGuard != "auto") {
+      if (eigenliftGuard != "auto" &&
+          erasePatterns(patterns, "CholeskyEigenLift")) {
         EigenLiftGuardMode mode = eigenliftGuard == "force-lift"
                                       ? EigenLiftGuardMode::ForceLift
                                       : EigenLiftGuardMode::ForceFallback;
-        auto &native = patterns.getNativePatterns();
-        native.erase(
-            llvm::remove_if(native,
-                            [](const std::unique_ptr<RewritePattern> &p) {
-                              return p->getDebugName().contains(
-                                  "CholeskyEigenLift");
-                            }),
-            native.end());
         patterns.add<CholeskyEigenLiftHLO>(getOperation()->getContext(),
                                            PatternBenefit(1), mode);
       }
@@ -4643,3 +4705,27 @@ struct SICMPass : public enzyme::impl::SICMPassBase<SICMPass> {
 
 // The tblgen'd populate* functions need the pattern classes above.
 #include "src/enzyme_ad/jax/TransformOps/ImpulseTransformPatterns.cpp.inc"
+
+namespace mlir {
+namespace transform {
+void populateSicmPDLPatterns(RewritePatternSet &patterns,
+                             OwningOpRef<ModuleOp> pdlModule) {
+  PDLPatternModule rules(std::move(pdlModule));
+  rules.registerConstraintFunction(
+      "SampleDependent", [](PatternRewriter &, Value value) {
+        SharedSampleDependenceAnalysis analysis = analyzeRegionHolding(value);
+        return success(analysis && analysis->isSampleDependent(value));
+      });
+  rules.registerConstraintFunction(
+      "SampleInvariant", [](PatternRewriter &, Value value) {
+        SharedSampleDependenceAnalysis analysis = analyzeRegionHolding(value);
+        return success(!analysis || !analysis->isSampleDependent(value));
+      });
+  rules.registerConstraintFunction(
+      "Nonnegative", [](PatternRewriter &rewriter, Value value) {
+        return success(isNonnegative(value, rewriter));
+      });
+  patterns.add(std::move(rules));
+}
+} // namespace transform
+} // namespace mlir

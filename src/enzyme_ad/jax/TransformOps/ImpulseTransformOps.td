@@ -8,6 +8,7 @@
 
 include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.td"
 include "mlir/Dialect/Transform/IR/TransformDialect.td"
+include "mlir/IR/SymbolInterfaces.td"
 
 class ImpulsePatternOp<string mnemonic, list<Trait> traits = []>
     : Op<Transform_Dialect,
@@ -128,4 +129,43 @@ def SicmPatterns : ImpulsePatternOp<"sicm"> {
     "GaussianSufficientStatsHLO",
     "GaussianSufficientStatsReduceHLO",
   ];
+}
+
+def ApplySicmPDLPatternsOp : Op<Transform_Dialect,
+    "apply_patterns.impulse.sicm_pdl",
+    [DeclareOpInterfaceMethods<PatternDescriptorOpInterface>, NoTerminator,
+     SingleBlock, SymbolTable]> {
+  let summary = "SICM rewrite rules written as PDL patterns";
+  let description = [{
+    Populates the `pdl.pattern` ops of its body as SICM rewrite rules. The
+    premises of a rule query the analyses of the built-in rules through
+    native PDL constraints, each evaluated on the IR of the current SICM
+    fixpoint iteration:
+      - `SampleDependent(v)`: `v` depends on a sample of the infer_region
+        region (sampler or logpdf) that holds it;
+      - `SampleInvariant(v)`: `v` does not depend on such a sample (a value
+        outside every infer_region is sample-invariant);
+      - `Nonnegative(v)`: `v` is provably elementwise nonnegative (the sign
+        evidence of the built-in rules: squares, abs, exp, nonnegative-support
+        draws, ...).
+    Listed in the `transform.apply_patterns` of the script given to the
+    `sicm` pass (option `schedule`), the rules join the built-in rules named
+    beside them in the same rewrite + hoist fixpoint.
+
+    ```mlir
+    transform.apply_patterns to %funcs {
+      transform.apply_patterns.impulse.sicm_triangular_solve_scale
+      transform.apply_patterns.impulse.sicm_pdl {
+        pdl.pattern @MyRule : benefit(1) {
+          ...
+          pdl.apply_native_constraint "SampleInvariant"(%a : !pdl.value)
+          pdl.rewrite %root { ... }
+        }
+      }
+    } : !transform.any_op
+    ```
+  }];
+  let regions = (region SizedRegion<1>:$patterns);
+  let assemblyFormat = "$patterns attr-dict";
+  let hasVerifier = 1;
 }

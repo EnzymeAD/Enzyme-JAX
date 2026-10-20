@@ -7,12 +7,21 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/IR/SymbolTable.h"
 
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/TransformOps/ImpulseTransformOps.h.inc"
 #include "src/enzyme_ad/jax/TransformOps/ImpulseTransformPatterns.h.inc"
+
+namespace mlir {
+namespace transform {
+void populateSicmPDLPatterns(RewritePatternSet &patterns,
+                             OwningOpRef<ModuleOp> pdlModule);
+} // namespace transform
+} // namespace mlir
 
 namespace mlir {
 namespace enzyme {

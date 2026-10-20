@@ -1,0 +1,87 @@
+// Source of user_rule_pdl.mlir's PDL: mlir-pdll user_rule_pdl.pdll -x mlir
+// PDL has no commutative operands or optional attributes: four patterns.
+Constraint SampleDependent(value: Value);
+Constraint SampleInvariant(value: Value);
+Constraint Nonnegative(value: Value);
+
+Constraint Premises(s: Value, A: Value) {
+  SampleDependent(s);
+  SampleInvariant(A);
+  Nonnegative(s);
+}
+
+Pattern UserCholeskyScale with benefit(3) {
+  let scalarType: Type;
+  let matrixType: Type;
+  let s: Value<scalarType>;
+  let A: Value;
+  let scalarDims = attr<"array<i64>">;
+  let scale = op<stablehlo.broadcast_in_dim>(s) {broadcast_dimensions = scalarDims} -> (matrixType);
+  let scaled = op<stablehlo.multiply>(scale.0, A) -> (matrixType);
+  let root = op<stablehlo.cholesky>(scaled.0) {lower = lower: Attr} -> (matrixType);
+  Premises(s, A);
+  rewrite root with {
+    let sqrtScale = op<stablehlo.sqrt>(s) -> (scalarType);
+    let factor = op<stablehlo.cholesky>(A) {lower = lower} -> (matrixType);
+    let sqrtMatrix = op<stablehlo.broadcast_in_dim>(sqrtScale.0) {broadcast_dimensions = scalarDims} -> (matrixType);
+    let result = op<stablehlo.multiply>(sqrtMatrix.0, factor.0) -> (matrixType);
+    replace root with result;
+  };
+}
+
+Pattern UserCholeskyScaleCommuted with benefit(3) {
+  let scalarType: Type;
+  let matrixType: Type;
+  let s: Value<scalarType>;
+  let A: Value;
+  let scalarDims = attr<"array<i64>">;
+  let scale = op<stablehlo.broadcast_in_dim>(s) {broadcast_dimensions = scalarDims} -> (matrixType);
+  let scaled = op<stablehlo.multiply>(A, scale.0) -> (matrixType);
+  let root = op<stablehlo.cholesky>(scaled.0) {lower = lower: Attr} -> (matrixType);
+  Premises(s, A);
+  rewrite root with {
+    let sqrtScale = op<stablehlo.sqrt>(s) -> (scalarType);
+    let factor = op<stablehlo.cholesky>(A) {lower = lower} -> (matrixType);
+    let sqrtMatrix = op<stablehlo.broadcast_in_dim>(sqrtScale.0) {broadcast_dimensions = scalarDims} -> (matrixType);
+    let result = op<stablehlo.multiply>(sqrtMatrix.0, factor.0) -> (matrixType);
+    replace root with result;
+  };
+}
+
+Pattern UserCholeskyScaleDefaultLower with benefit(2) {
+  let scalarType: Type;
+  let matrixType: Type;
+  let s: Value<scalarType>;
+  let A: Value;
+  let scalarDims = attr<"array<i64>">;
+  let scale = op<stablehlo.broadcast_in_dim>(s) {broadcast_dimensions = scalarDims} -> (matrixType);
+  let scaled = op<stablehlo.multiply>(scale.0, A) -> (matrixType);
+  let root = op<stablehlo.cholesky>(scaled.0) -> (matrixType);
+  Premises(s, A);
+  rewrite root with {
+    let sqrtScale = op<stablehlo.sqrt>(s) -> (scalarType);
+    let factor = op<stablehlo.cholesky>(A) -> (matrixType);
+    let sqrtMatrix = op<stablehlo.broadcast_in_dim>(sqrtScale.0) {broadcast_dimensions = scalarDims} -> (matrixType);
+    let result = op<stablehlo.multiply>(sqrtMatrix.0, factor.0) -> (matrixType);
+    replace root with result;
+  };
+}
+
+Pattern UserCholeskyScaleCommutedDefaultLower with benefit(2) {
+  let scalarType: Type;
+  let matrixType: Type;
+  let s: Value<scalarType>;
+  let A: Value;
+  let scalarDims = attr<"array<i64>">;
+  let scale = op<stablehlo.broadcast_in_dim>(s) {broadcast_dimensions = scalarDims} -> (matrixType);
+  let scaled = op<stablehlo.multiply>(A, scale.0) -> (matrixType);
+  let root = op<stablehlo.cholesky>(scaled.0) -> (matrixType);
+  Premises(s, A);
+  rewrite root with {
+    let sqrtScale = op<stablehlo.sqrt>(s) -> (scalarType);
+    let factor = op<stablehlo.cholesky>(A) -> (matrixType);
+    let sqrtMatrix = op<stablehlo.broadcast_in_dim>(sqrtScale.0) {broadcast_dimensions = scalarDims} -> (matrixType);
+    let result = op<stablehlo.multiply>(sqrtMatrix.0, factor.0) -> (matrixType);
+    replace root with result;
+  };
+}

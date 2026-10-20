@@ -842,6 +842,13 @@ def SICMPass : Pass<"sicm"> {
     Between the sampler-region and logpdf-region targets, constructs the
     logpdf region from the (already optimized) sampler, so the logpdf
     is born optimized.
+
+    The rules of step 1 are the built-in aggregate
+    (`transform.apply_patterns.impulse.sicm`) unless the `schedule` option
+    names a transform script: then they are the patterns of the descriptors
+    listed in the `transform.apply_patterns` ops of its entry-point sequence,
+    i.e. built-in rules by their `apply_patterns.impulse.sicm_*` descriptors
+    and user rules as PDL patterns in `apply_patterns.impulse.sicm_pdl`.
   }];
   let dependentDialects = [
     "stablehlo::StablehloDialect",
@@ -874,6 +881,16 @@ def SICMPass : Pass<"sicm"> {
            "the check is evaluated once, before the loops, and selects one "
            "of two versions. false leaves the marked conditionals for a "
            "separate sicm-guard-versioning pass.">,
+    Option<"schedule", "schedule", "std::string", "\"\"",
+           "Transform script (file path) that schedules the rewrite rules: "
+           "every rewrite step applies the patterns of the descriptors in "
+           "the transform.apply_patterns ops of its schedule-entry-point "
+           "sequence (built-in rules by apply_patterns.impulse.sicm_*, user "
+           "PDL rules by apply_patterns.impulse.sicm_pdl). Empty: the "
+           "built-in aggregate apply_patterns.impulse.sicm.">,
+    Option<"scheduleEntryPoint", "schedule-entry-point", "std::string",
+           "\"__transform_main\"",
+           "Named sequence of the schedule script that lists the rules.">,
   ];
 }
 

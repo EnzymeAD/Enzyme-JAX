@@ -409,6 +409,8 @@ cc_library(
         ":ImpulseTransformPatternsIncGen",
         ":XLADerivatives",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:PDLDialect",
+        "@llvm-project//mlir:PDLInterpDialect",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:TransformDialect",
         "@llvm-project//mlir:TransformDialectInterfaces",
