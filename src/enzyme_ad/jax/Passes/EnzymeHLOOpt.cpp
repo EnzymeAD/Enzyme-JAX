@@ -6902,8 +6902,29 @@ struct WhileDuplicateCarried final
     if (!ret)
       return failure();
     bool changed = false;
+    // The first position seen for each (initial value, yielded value), so that
+    // only the positions that can pair with j are visited instead of every
+    // earlier one. Later positions with the same pair are duplicates of it.
+    using Key = std::pair<Value, Value>;
+    DenseMap<Key, unsigned> firstByInitAndYield;
     for (unsigned j = 0, e = op.getNumOperands(); j < e; ++j) {
-      for (unsigned i = 0; i < j; ++i) {
+      SmallVector<unsigned, 2> candidates;
+      auto addCandidate = [&](Value init, Value yield) {
+        auto it = firstByInitAndYield.find({init, yield});
+        if (it != firstByInitAndYield.end())
+          candidates.push_back(it->second);
+      };
+      Value init = op->getOperand(j), yield = ret.getOperand(j);
+      addCandidate(init, yield);
+      Operation *initDef = init.getDefiningOp();
+      Operation *yieldDef = yield.getDefiningOp();
+      if (initDef && yieldDef && initDef->getNumOperands() == 1 &&
+          yieldDef->getNumOperands() == 1)
+        addCandidate(initDef->getOperand(0), yieldDef->getOperand(0));
+      if (candidates.size() == 2 && candidates[0] > candidates[1])
+        std::swap(candidates[0], candidates[1]);
+      firstByInitAndYield.try_emplace({init, yield}, j);
+      for (unsigned i : candidates) {
         // the function f, or null when the positions hold the same value
         Operation *f = nullptr;
         if (op->getOperand(i) != op->getOperand(j) ||
