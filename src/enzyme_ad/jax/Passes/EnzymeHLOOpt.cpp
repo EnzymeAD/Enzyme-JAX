@@ -6948,20 +6948,6 @@ struct WhileDeadResults final
     : CheckedOpRewritePattern<stablehlo::WhileOp, WhileDeadResults> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  void replaceTerminator(PatternRewriter &rewriter, Region &region,
-                         const llvm::BitVector &deadResults) const {
-    Operation *terminator = region.front().getTerminator();
-    SmallVector<Value> terminatorOperands;
-    for (auto &&[i, operand] : llvm::enumerate(terminator->getOperands())) {
-      if (!deadResults.test(i))
-        terminatorOperands.push_back(operand);
-    }
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPoint(terminator);
-    rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(
-        terminator, TypeRange(), terminatorOperands, terminator->getAttrs());
-  }
-
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
                                     PatternRewriter &rewriter) const {
     bool isTotalPure = isPure(op);
@@ -7263,7 +7249,7 @@ struct WhileDeadResults final
     if (!removedResults.any())
       return failure();
 
-    replaceTerminator(rewriter, op.getBody(), removedResults);
+    op.getBody()->getTerminator()->eraseOperands(removedResults);
 
     for (auto &cop : llvm::reverse(opUsers)) {
       bool hasDead = false;
