@@ -7,6 +7,7 @@
 
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Transforms/FoldUtils.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
@@ -32,23 +33,93 @@ namespace enzyme {
 
 namespace {
 
-/// Build the sample-dependence analysis for the infer_region region (sampler
-/// or logpdf) enclosing `op`; nullopt when `op` is outside an infer_region.
-/// dialect.
-static std::optional<SampleDependenceAnalysis>
-analyzeEnclosingRegion(Operation *op) {
+using SharedSampleDependenceAnalysis =
+    std::shared_ptr<SampleDependenceAnalysis>;
+
+/// infer_region, so it is built once per (infer_region, target) and reused
+/// until the IR changes; SampleDependenceCacheInvalidator, attached to the
+/// greedy rewrite as its listener, drops every entry on any modification.
+/// Entries are shared: a pattern keeps the analysis it obtained alive for its
+/// whole matchAndRewrite even when its own rewrite invalidates the cache,
+/// which is exactly the lifetime of the per-attempt analysis this replaces.
+class SampleDependenceCache {
+public:
+  SharedSampleDependenceAnalysis get(InferRegionOp regionOp,
+                                     AnalysisTarget target) {
+    auto key =
+        std::make_pair(regionOp.getOperation(), static_cast<unsigned>(target));
+    auto it = entries.find(key);
+    if (it != entries.end())
+      return it->second;
+    auto analysis =
+        std::make_shared<SampleDependenceAnalysis>(regionOp, target);
+    entries.try_emplace(key, analysis);
+    return analysis;
+  }
+  void clear() { entries.clear(); }
+
+private:
+  DenseMap<std::pair<Operation *, unsigned>, SharedSampleDependenceAnalysis>
+      entries;
+};
+
+static thread_local SampleDependenceCache *activeSampleDependenceCache =
+    nullptr;
+
+/// Drops every cached analysis on any IR modification notified by the greedy
+/// driver (pattern rewrites, folding, dead-code removal).
+struct SampleDependenceCacheInvalidator : public RewriterBase::Listener {
+  explicit SampleDependenceCacheInvalidator(SampleDependenceCache &cache)
+      : cache(cache) {}
+  void notifyOperationInserted(Operation *, OpBuilder::InsertPoint) override {
+    cache.clear();
+  }
+  void notifyBlockInserted(Block *, Region *, Region::iterator) override {
+    cache.clear();
+  }
+  void notifyBlockErased(Block *) override { cache.clear(); }
+  void notifyOperationModified(Operation *) override { cache.clear(); }
+  void notifyOperationReplaced(Operation *, Operation *) override {
+    cache.clear();
+  }
+  void notifyOperationReplaced(Operation *, ValueRange) override {
+    cache.clear();
+  }
+  void notifyOperationErased(Operation *) override { cache.clear(); }
+
+private:
+  SampleDependenceCache &cache;
+};
+
+class ScopedSampleDependenceCache {
+public:
+  explicit ScopedSampleDependenceCache(SampleDependenceCache &cache)
+      : previous(activeSampleDependenceCache) {
+    activeSampleDependenceCache = &cache;
+  }
+  ~ScopedSampleDependenceCache() { activeSampleDependenceCache = previous; }
+
+private:
+  SampleDependenceCache *previous;
+};
+
+/// Acquired on demand so that patterns stay constructible from
+/// (MLIRContext, PatternBenefit) alone, for the transform dialect.
+static SharedSampleDependenceAnalysis analyzeEnclosingRegion(Operation *op) {
   auto regionOp = op->getParentOfType<InferRegionOp>();
   if (!regionOp)
-    return std::nullopt;
+    return nullptr;
   Region *region = op->getParentRegion();
   while (region && region->getParentOp() != regionOp)
     region = region->getParentOp()->getParentRegion();
   if (!region)
-    return std::nullopt;
+    return nullptr;
   AnalysisTarget target = region == &regionOp.getLogpdf()
                               ? AnalysisTarget::Logpdf
                               : AnalysisTarget::Sampler;
-  return SampleDependenceAnalysis(regionOp, target);
+  if (activeSampleDependenceCache)
+    return activeSampleDependenceCache->get(regionOp, target);
+  return std::make_shared<SampleDependenceAnalysis>(regionOp, target);
 }
 
 static bool isEffectivelyScalar(Value value) {
@@ -4492,11 +4563,29 @@ struct SICMPass : public enzyme::impl::SICMPassBase<SICMPass> {
                      GaussianSufficientStatsGramReduceHLO>(
             getOperation()->getContext(), PatternBenefit(2),
             sufficientStatsMinWork);
+      // sample-dependence analysis per (region, target) until the IR changes.
+      SampleDependenceCache analysisCache;
+      SampleDependenceCacheInvalidator invalidator(analysisCache);
+      ScopedSampleDependenceCache scopedCache(analysisCache);
       GreedyRewriteConfig config;
+      config.setListener(&invalidator);
+      SmallVector<Operation *> regionOps;
+      for (Region &region : regionOp->getRegions())
+        region.walk([&](Operation *op) { regionOps.push_back(op); });
       bool patternChanged = false;
-      (void)applyPatternsGreedily(getOperation(), std::move(patterns), config,
-                                  &patternChanged);
+      if (!regionOps.empty())
+        (void)applyOpPatternsGreedily(regionOps, std::move(patterns), config,
+                                      &patternChanged);
       anyChanged |= patternChanged;
+      // CSE and hoist constants, as a module-wide greedy rewrite would.
+      {
+        OperationFolder folder(getOperation()->getContext());
+        getOperation()->walk([&](Operation *op) {
+          Attribute value;
+          if (matchPattern(op, m_Constant(&value)))
+            folder.insertKnownConstant(op, value);
+        });
+      }
 
       anyChanged |= hoistSampleInvariantOps(regionOp, target);
 
