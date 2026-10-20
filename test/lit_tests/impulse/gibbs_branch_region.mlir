@@ -114,7 +114,7 @@ module {
 // GIBBS-NEXT: %[[S1:.+]] = arith.addf %[[S1A]], %[[IF1]]#3 : tensor<f64>
 // GIBBS-NEXT: %[[DIFF:.+]] = arith.subf %[[S1]], %[[S0]] : tensor<f64>
 // GIBBS-NEXT: %[[PR:.+]] = impulse.logistic %[[DIFF]] : (tensor<f64>) -> tensor<f64>
-// GIBBS-NEXT: %[[RNG1:.+]], %[[U:.+]] = impulse.random %[[RNG]], %[[ZERO]], %[[ONE]] {rng_distribution = #impulse<rng_distribution UNIFORM>}
+// GIBBS-NEXT: %[[RNG1:.+]], %[[U:.+]] = impulse.random %[[RNG]], %[[ZERO]], %[[ONE]] {rng_distribution = #impulse.rng_distribution<UNIFORM>}
 // GIBBS-NEXT: %[[TAKE1:.+]] = arith.cmpf olt, %[[U]], %[[PR]] : tensor<f64>
 // GIBBS-NEXT: %[[ZCURS:.+]] = impulse.reshape %[[ZCUR]] : (tensor<f64>) -> tensor<f64>
 // GIBBS-NEXT: %[[CUR1:.+]] = arith.cmpf ogt, %[[ZCURS]], %{{.+}} : tensor<f64>

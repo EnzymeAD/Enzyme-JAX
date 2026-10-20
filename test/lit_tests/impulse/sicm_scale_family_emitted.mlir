@@ -38,7 +38,7 @@ module {
   // CHECK-NEXT: %[[LOGCHOL:.+]] = stablehlo.log %[[CHOL]] : tensor<3x3xf64>
   // CHECK: impulse.infer_region @model
   // CHECK: impulse.sample_region
-  // CHECK: impulse.random %{{.+}} {rng_distribution = #impulse<rng_distribution NORMAL>}
+  // CHECK: impulse.random %{{.+}} {rng_distribution = #impulse.rng_distribution<NORMAL>}
   // CHECK: dist = #impulse.dist<STD_NORMAL, [#impulse.xform<AFFINE>]>
   // CHECK-SAME: support = #impulse.support<REAL>
   // CHECK: %[[SCALE:.+]] = stablehlo.sqrt %{{.+}} {enzymexla.non_negative = {{.*}}} : tensor<f64>
