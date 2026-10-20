@@ -426,7 +426,8 @@ struct DotGeneralScaleFactorizationHLO
   }
 };
 
-///   dependence: L and b sample-invariant, s sample-dependent;
+/// Not with unit_diagonal: the solve would see s * strict(L) + I. Holds for
+/// any b; s != 0 follows from the original solve being defined.
 struct TriangularSolveScaleFactorizationHLO
     : public OpRewritePattern<stablehlo::TriangularSolveOp> {
   TriangularSolveScaleFactorizationHLO(MLIRContext *context,
@@ -438,12 +439,7 @@ struct TriangularSolveScaleFactorizationHLO
                      SampleDependenceAnalysis &analysis) {
     if (solveOp.getUnitDiagonal())
       return failure();
-    auto scaled = matchScaledInvariant(solveOp.getA(), analysis);
-    if (failed(scaled))
-      return failure();
-    if (analysis.isSampleDependent(solveOp.getB()))
-      return failure();
-    return scaled;
+    return matchScaledInvariant(solveOp.getA(), analysis);
   }
 
   static Value applyRewrite(PatternRewriter &rewriter,
@@ -491,21 +487,28 @@ static bool isScaleCommutingDataMovement(Operation *op) {
              stablehlo::SliceOp, stablehlo::BroadcastInDimOp>(op);
 }
 
-/// element-selecting ops (reshape, transpose, slice, broadcast_in_dim), each of
-/// which commutes with the scalar scaling. The chain covers the strided-slice
-/// spelling of a diagonal, log(slice(reshape(transpose?(s * L)), [0:n*n:n+1]))
-/// (`LinearAlgebra.diag` of a scaled factor), as well as any other
-/// rearrangement; the dot-with-identity spelling dot_general(s * L, I) is
-/// first rewritten to s * dot_general(L, I) by DotGeneralScaleFactorization.
-///   dependence: A sample-invariant, s sample-dependent;
+/// The operand X with op(.., s * X, ..) = s * op(.., X, ..), or -1.
+static int scaleCommutingOperand(Operation *op,
+                                 SampleDependenceAnalysis &analysis) {
+  if (isScaleCommutingDataMovement(op))
+    return 0;
+  if (!isa<stablehlo::MulOp, stablehlo::DotGeneralOp>(op))
+    return -1;
+  bool lhsDependent = analysis.isSampleDependent(op->getOperand(0));
+  bool rhsDependent = analysis.isSampleDependent(op->getOperand(1));
+  if (lhsDependent == rhsDependent)
+    return -1;
+  return lhsDependent ? 0 : 1;
+}
+
 struct LogMultiplyDistributionHLO : public OpRewritePattern<stablehlo::LogOp> {
   LogMultiplyDistributionHLO(MLIRContext *context, PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit) {}
 
   struct Match {
     ScaledInvariant scaled;
-    // The element-selecting chain f, outermost (the log operand) first.
-    SmallVector<Operation *> chain;
+    // Outermost link first, with the operand the chain value flows through.
+    SmallVector<std::pair<Operation *, unsigned>> chain;
   };
 
   static FailureOr<Match> checkPreconditions(stablehlo::LogOp logOp,
@@ -516,10 +519,11 @@ struct LogMultiplyDistributionHLO : public OpRewritePattern<stablehlo::LogOp> {
     FailureOr<ScaledInvariant> scaled;
     while (failed(scaled = matchScaledInvariant(value, analysis))) {
       Operation *def = value.getDefiningOp();
-      if (!def || !isScaleCommutingDataMovement(def))
+      int idx = def ? scaleCommutingOperand(def, analysis) : -1;
+      if (idx < 0)
         return failure();
-      match.chain.push_back(def);
-      value = def->getOperand(0);
+      match.chain.push_back({def, static_cast<unsigned>(idx)});
+      value = def->getOperand(idx);
     }
     if (!isNonnegative(scaled->scale, rewriter))
       return failure();
@@ -533,9 +537,9 @@ struct LogMultiplyDistributionHLO : public OpRewritePattern<stablehlo::LogOp> {
     auto resultType = cast<RankedTensorType>(logOp.getType());
     const ScaledInvariant &match = m.scaled;
     Value invariant = match.invariant;
-    for (Operation *op : llvm::reverse(m.chain)) {
+    for (auto [op, idx] : llvm::reverse(m.chain)) {
       IRMapping mapping;
-      mapping.map(op->getOperand(0), invariant);
+      mapping.map(op->getOperand(idx), invariant);
       invariant = rewriter.clone(*op, mapping)->getResult(0);
     }
     auto logInvariant =
