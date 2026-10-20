@@ -1192,6 +1192,21 @@ def ApplyNoNanCompareAbs : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyNoNanAbsOfExpSimplify : EnzymeHLOParameterizedPatternOp<
+    "no_nan_abs_of_exp_simplify"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "prop-dict attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
 def CompareMul : EnzymeHLOPatternOp<
     "compare_mul"> {
   let patterns = ["CompareMul"];
@@ -1285,6 +1300,16 @@ def RealOpCanonPatterns : EnzymeHLOPatternOp<
 def ImagOpCanonPatterns : EnzymeHLOPatternOp<
     "imag_op_canon"> {
   let patterns = ["ImagOpCanon"];
+}
+
+def RealOfExpSimplifyPatterns : EnzymeHLOPatternOp<
+    "real_of_exp_simplify"> {
+  let patterns = ["RealOfExpSimplify"];
+}
+
+def ImagOfExpSimplifyPatterns : EnzymeHLOPatternOp<
+    "imag_of_exp_simplify"> {
+  let patterns = ["ImagOfExpSimplify"];
 }
 
 def ConjComplexNegatePatterns : EnzymeHLOPatternOp<

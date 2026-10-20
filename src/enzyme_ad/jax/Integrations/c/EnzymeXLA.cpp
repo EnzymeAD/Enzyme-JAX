@@ -381,6 +381,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("get_tuple_element_op_canon<16>");
   list.push_back("real_op_canon<16>");
   list.push_back("imag_op_canon<16>");
+  list.push_back("real_of_exp_simplify<16>");
+  list.push_back("imag_of_exp_simplify<16>");
   list.push_back("conj_complex_negate<16>");
   list.push_back("negate_imag_conj<16>");
   list.push_back("get_dimension_size_op_canon<16>");
@@ -1023,6 +1025,7 @@ static void addNoNanPasses(std::vector<std::string> &list, bool noNan) {
   list.push_back(passWithArg("no_nan_mul_simplify", noNan));
   list.push_back(passWithArg("no_nan_div_simplify", noNan));
   list.push_back(passWithArg("no_nan_compare_abs", noNan));
+  list.push_back(passWithArg("no_nan_abs_of_exp_simplify", noNan));
 }
 
 static void addAllFinitePasses(std::vector<std::string> &list) {

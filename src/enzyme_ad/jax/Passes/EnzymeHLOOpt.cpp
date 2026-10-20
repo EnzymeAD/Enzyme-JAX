@@ -21141,6 +21141,30 @@ struct ImagOpCanon final
   }
 };
 
+// exp(re) * trig, computed the way XLA lowers a complex exp. When exp(re)
+// overflows, exp(re / 2) * trig * exp(re / 2) can still be finite, e.g. for
+// re = 709.9 in f64 or re = 89 in f32 with trig = cos(1).
+static Value mulExpOverflowSafe(PatternRewriter &rewriter, Location loc,
+                                Value re, Value trig) {
+  auto type = re.getType();
+  auto expRe = stablehlo::ExpOp::create(rewriter, loc, re);
+  auto half = stablehlo::ConstantOp::create(
+      rewriter, loc, type, cast<ElementsAttr>(makeAttr(type, 0.5)));
+  auto expHalfRe = stablehlo::ExpOp::create(
+      rewriter, loc, stablehlo::MulOp::create(rewriter, loc, re, half));
+  auto inf = stablehlo::ConstantOp::create(
+      rewriter, loc, type,
+      cast<ElementsAttr>(
+          makeAttr(type, std::numeric_limits<double>::infinity())));
+  auto expIsInf = stablehlo::CompareOp::create(
+      rewriter, loc, expRe, inf, stablehlo::ComparisonDirection::EQ);
+  auto normal = stablehlo::MulOp::create(rewriter, loc, expRe, trig);
+  auto overflow = stablehlo::MulOp::create(
+      rewriter, loc, stablehlo::MulOp::create(rewriter, loc, expHalfRe, trig),
+      expHalfRe);
+  return stablehlo::SelectOp::create(rewriter, loc, expIsInf, overflow, normal);
+}
+
 // real(exp(x)) -> exp(real(x)) * cos(imag(x))
 struct RealOfExpSimplify final
     : CheckedOpRewritePattern<stablehlo::RealOp, RealOfExpSimplify> {
@@ -21163,14 +21187,15 @@ struct RealOfExpSimplify final
     auto loc = op.getLoc();
     auto re = stablehlo::RealOp::create(rewriter, loc, exp.getOperand());
     auto im = stablehlo::ImagOp::create(rewriter, loc, exp.getOperand());
-    auto expRe = stablehlo::ExpOp::create(rewriter, loc, re);
     auto cosIm = stablehlo::CosineOp::create(rewriter, loc, im);
-    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, expRe, cosIm);
+    rewriter.replaceOp(op, mulExpOverflowSafe(rewriter, loc, re, cosIm));
     return success();
   }
 };
 
-// imag(exp(x)) -> exp(real(x)) * sin(imag(x))
+// imag(exp(x)) -> imag(x) == 0 ? 0 : exp(real(x)) * sin(imag(x))
+// The select mirrors XLA's complex exp lowering, since without it a real x
+// whose exp overflows gives inf * 0 = NaN instead of 0.
 struct ImagOfExpSimplify final
     : CheckedOpRewritePattern<stablehlo::ImagOp, ImagOfExpSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -21192,17 +21217,25 @@ struct ImagOfExpSimplify final
     auto loc = op.getLoc();
     auto re = stablehlo::RealOp::create(rewriter, loc, exp.getOperand());
     auto im = stablehlo::ImagOp::create(rewriter, loc, exp.getOperand());
-    auto expRe = stablehlo::ExpOp::create(rewriter, loc, re);
     auto sinIm = stablehlo::SineOp::create(rewriter, loc, im);
-    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, expRe, sinIm);
+    auto mul = mulExpOverflowSafe(rewriter, loc, re, sinIm);
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, loc, rewriter.getZeroAttr(op.getType()));
+    auto imIsZero = stablehlo::CompareOp::create(
+        rewriter, loc, im, zero, stablehlo::ComparisonDirection::EQ);
+    rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(op, imIsZero, zero, mul);
     return success();
   }
 };
 
 // abs(exp(x)) -> exp(real(x))
-struct AbsOfExpSimplify final
-    : CheckedOpRewritePattern<stablehlo::AbsOp, AbsOfExpSimplify> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+// Only valid without NaNs. For x = -2 + inf*i, exp(x) is NaN + NaN*i so the
+// original is NaN, while exp(real(x)) is exp(-2).
+struct NoNanAbsOfExpSimplify final
+    : public NoNanCheckedOpRewritePattern<stablehlo::AbsOp,
+                                          NoNanAbsOfExpSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::AbsOp, NoNanAbsOfExpSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::AbsOp op,
                                     PatternRewriter &rewriter) const {
@@ -21216,6 +21249,10 @@ struct AbsOfExpSimplify final
     // Only rewrite when the exp feeds nothing but this op, otherwise the
     // original exp stays live and we just add redundant work.
     if (!llvm::hasSingleElement(exp->getUsers()))
+      return failure();
+
+    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op,
+                              rewriter))
       return failure();
 
     auto re =
@@ -45434,6 +45471,14 @@ void mlir::transform::addNoNanCompareAbs(RewritePatternSet &patterns,
   patterns.insert<NoNanCompareAbs>(allowOnFloatingPointMath, &context, benefit);
 }
 
+void mlir::transform::addNoNanAbsOfExpSimplify(RewritePatternSet &patterns,
+                                               bool allowOnFloatingPointMath,
+                                               MLIRContext &context,
+                                               PatternBenefit benefit) {
+  patterns.insert<NoNanAbsOfExpSimplify>(allowOnFloatingPointMath, &context,
+                                         benefit);
+}
+
 void mlir::transform::addNoNanSelfSubSimplify(RewritePatternSet &patterns,
                                               bool allowOnFloatingPointMath,
                                               MLIRContext &context,
@@ -45890,10 +45935,10 @@ struct EnzymeHLOOptPass
       patterns.add<AllFiniteIsFinite, AllFiniteIsInf, AllFiniteIsPosInf,
                    AllFiniteIsNegInf>(context);
 
-    patterns
-        .add<NoNanCompareSimplify, NoNanSelfSubSimplify, NoNanAddSubSimplify,
-             NoNanMulSimplify, NoNanDivSimplify, NoNanCompareAbs>(
-            (no_nan || all_finite), context);
+    patterns.add<NoNanCompareSimplify, NoNanSelfSubSimplify,
+                 NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify,
+                 NoNanCompareAbs, NoNanAbsOfExpSimplify>((no_nan || all_finite),
+                                                         context);
 
     patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify>(
         context);
@@ -45951,7 +45996,6 @@ struct EnzymeHLOOptPass
         ImagOpCanon,
         RealOfExpSimplify,
         ImagOfExpSimplify,
-        AbsOfExpSimplify,
         MergeConsecutiveReshapes,
         NoopReduceOpCanon,
         ReduceConstProp,
