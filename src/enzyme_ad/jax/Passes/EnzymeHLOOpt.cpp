@@ -7263,12 +7263,6 @@ struct WhileDeadResults final
     if (!removedResults.any())
       return failure();
 
-    SmallVector<int64_t> deadResults;
-    for (auto cur = removedResults.find_first(); cur != -1;
-         cur = removedResults.find_next(cur)) {
-      deadResults.push_back(cur);
-    }
-
     replaceTerminator(rewriter, op.getBody(), removedResults);
 
     for (auto &cop : llvm::reverse(opUsers)) {
