@@ -858,6 +858,11 @@ def SICMPass : Pass<"sicm"> {
            "sufficient-statistics rewrite instead of the default QR form. "
            "Portability fallback (dot_general only, no LAPACK); "
            "accuracy-changing (Section 3.5 of GRAM_RULE_DESIGN.md), f64 only.">,
+    Option<"eigenliftGuard", "eigenlift-guard", "std::string", "\"auto\"",
+           "CholeskyEigenLift with a B that is not provably positive "
+           "definite: auto (runtime-guarded lift), force-lift (debug: the "
+           "unguarded lift) or force-fallback (debug: the guard with a check "
+           "that fails at run time).">,
     Option<"sufficientStatsMinWork", "sufficient-stats-min-work", "int64_t",
            "64",
            "Profitability guard of the Gaussian sufficient-statistics "

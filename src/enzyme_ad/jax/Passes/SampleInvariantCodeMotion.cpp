@@ -1725,6 +1725,13 @@ struct DivideScaleFactorizationHLO : public OpRewritePattern<stablehlo::DivOp> {
   }
 };
 
+/// For an unproven B: guard at run time, lift unguarded, or always fall back.
+enum class EigenLiftGuardMode { Auto, ForceLift, ForceFallback };
+
+/// Keeps the fallback cholesky from being lifted again; removed by the pass.
+static constexpr llvm::StringLiteral kEigenLiftGuardAttr =
+    "sicm.eigenlift_guard";
+
 static bool isIdentityMatrix(Value value) {
   auto constOp = value.getDefiningOp<stablehlo::ConstantOp>();
   if (!constOp)
@@ -1773,28 +1780,196 @@ struct ScaledInvariantPlusDiag {
   Value secondInvariant;
   FloatAttr foldedDiagConst;
   SmallVector<Value, 1> outerScales;
+  Value diagVector;
+  bool guard = false;
 };
+
+enum class PDProof { Proven, Disproven, Unproven };
+
+/// B is whitened through chol(B), so it must be symmetric positive definite.
+static bool isProvablyPositiveDefinite(Value matrix) {
+  if (isIdentityMatrix(matrix))
+    return true;
+  auto constOp = matrix.getDefiningOp<stablehlo::ConstantOp>();
+  if (!constOp)
+    return false;
+  auto attr = dyn_cast<DenseFPElementsAttr>(constOp.getValue());
+  if (!attr)
+    return false;
+  auto type = cast<RankedTensorType>(attr.getType());
+  if (type.getRank() != 2 || type.getShape()[0] != type.getShape()[1])
+    return false;
+  int64_t n = type.getShape()[0];
+  for (auto [idx, val] : llvm::enumerate(attr.getValues<APFloat>())) {
+    int64_t row = idx / n, col = idx % n;
+    if (row == col ? (val.isNegative() || val.isZero() || val.isNaN() ||
+                      val.isInfinity())
+                   : !val.isZero())
+      return false;
+  }
+  return true;
+}
+
+static PDProof classifyDenseB(Value matrix) {
+  if (isProvablyPositiveDefinite(matrix))
+    return PDProof::Proven;
+  DenseFPElementsAttr attr;
+  if (!matchPattern(matrix, m_Constant(&attr)))
+    return PDProof::Unproven;
+  auto type = cast<RankedTensorType>(attr.getType());
+  if (type.getRank() != 2 || type.getShape()[0] != type.getShape()[1])
+    return PDProof::Disproven;
+  int64_t n = type.getShape()[0];
+  for (auto [idx, val] : llvm::enumerate(attr.getValues<APFloat>()))
+    if (idx / n == idx % n && (val.isNegative() || val.isZero() || val.isNaN()))
+      return PDProof::Disproven;
+  return PDProof::Unproven;
+}
+
+static PDProof classifyDiagB(Value v) {
+  DenseFPElementsAttr attr;
+  if (!matchPattern(v, m_Constant(&attr)))
+    return PDProof::Unproven;
+  for (APFloat val : attr.getValues<APFloat>())
+    if (val.isNegative() || val.isZero() || val.isNaN() || val.isInfinity())
+      return PDProof::Disproven;
+  return PDProof::Proven;
+}
+
+static Value getSplatScalarSource(Value w) {
+  if (auto bcast = w.getDefiningOp<stablehlo::BroadcastInDimOp>())
+    return isEffectivelyScalar(bcast.getOperand()) ? bcast.getOperand()
+                                                   : Value();
+  if (auto gather = w.getDefiningOp<stablehlo::GatherOp>())
+    return getSplatScalarSource(gather.getOperand());
+  if (auto slice = w.getDefiningOp<stablehlo::SliceOp>())
+    return getSplatScalarSource(slice.getOperand());
+  if (auto reshape = w.getDefiningOp<stablehlo::ReshapeOp>())
+    return getSplatScalarSource(reshape.getOperand());
+  return Value();
+}
+
+static bool isDiagonalAddScatter(stablehlo::ScatterOp scatter) {
+  if (scatter.getInputs().size() != 1 || scatter.getUpdates().size() != 1)
+    return false;
+  auto type = dyn_cast<RankedTensorType>(scatter.getInputs()[0].getType());
+  auto updType = dyn_cast<RankedTensorType>(scatter.getUpdates()[0].getType());
+  if (!type || !updType || type.getRank() != 2 || !type.hasStaticShape() ||
+      type.getShape()[0] != type.getShape()[1] || updType.getRank() != 1 ||
+      updType.getShape()[0] != type.getShape()[0])
+    return false;
+  int64_t n = type.getShape()[0];
+  auto dims = scatter.getScatterDimensionNumbers();
+  if (!dims.getUpdateWindowDims().empty() ||
+      dims.getInsertedWindowDims() != ArrayRef<int64_t>{0, 1} ||
+      dims.getScatterDimsToOperandDims() != ArrayRef<int64_t>{0, 1} ||
+      dims.getIndexVectorDim() != 1 || !dims.getInputBatchingDims().empty())
+    return false;
+  Value idx = scatter.getScatterIndices();
+  auto idxType = dyn_cast<RankedTensorType>(idx.getType());
+  if (!idxType || idxType.getRank() != 2 || idxType.getShape()[0] != n ||
+      idxType.getShape()[1] != 2)
+    return false;
+  if (auto iota = idx.getDefiningOp<stablehlo::IotaOp>()) {
+    if (iota.getIotaDimension() != 0)
+      return false;
+  } else {
+    DenseIntElementsAttr attr;
+    if (!matchPattern(idx, m_Constant(&attr)))
+      return false;
+    for (auto [k, val] : llvm::enumerate(attr.getValues<APInt>()))
+      if (val.getSExtValue() != static_cast<int64_t>(k / 2))
+        return false;
+  }
+  Block &body = scatter.getUpdateComputation().front();
+  if (body.getNumArguments() != 2 ||
+      !llvm::hasSingleElement(body.without_terminator()))
+    return false;
+  auto add = dyn_cast<stablehlo::AddOp>(&body.front());
+  auto ret = dyn_cast<stablehlo::ReturnOp>(body.getTerminator());
+  return add && ret && ret.getNumOperands() == 1 &&
+         ret.getOperand(0) == add.getResult() &&
+         ((add.getLhs() == body.getArgument(0) &&
+           add.getRhs() == body.getArgument(1)) ||
+          (add.getLhs() == body.getArgument(1) &&
+           add.getRhs() == body.getArgument(0)));
+}
+
+static ScaledInvariantPlusDiag
+matchDiagonalScatterSum(Value value, SampleDependenceAnalysis &analysis) {
+  auto scatter = value.getDefiningOp<stablehlo::ScatterOp>();
+  if (!scatter || !isDiagonalAddScatter(scatter))
+    return {};
+  Value base = scatter.getInputs()[0];
+  Value u = scatter.getUpdates()[0];
+  auto elemType = cast<RankedTensorType>(u.getType()).getElementType();
+
+  ScaledInvariantPlusDiag m;
+  if (!analysis.isSampleDependent(u)) {
+    m.diagVector = u;
+    m.foldedDiagConst = FloatAttr::get(elemType, 1.0);
+  } else {
+    auto mul = u.getDefiningOp<stablehlo::MulOp>();
+    if (!mul)
+      return {};
+    for (auto [w, v] : {std::pair{mul.getLhs(), mul.getRhs()},
+                        std::pair{mul.getRhs(), mul.getLhs()}}) {
+      Value t = getSplatScalarSource(w);
+      if (t && !analysis.isSampleDependent(v)) {
+        m.diagScalar = t;
+        m.diagVector = v;
+        break;
+      }
+    }
+    if (!m.diagVector)
+      return {};
+  }
+  PDProof proof = classifyDiagB(m.diagVector);
+  if (proof == PDProof::Disproven)
+    return {};
+  m.guard = proof == PDProof::Unproven;
+
+  if (!analysis.isSampleDependent(base)) {
+    m.invariant = base;
+    return m;
+  }
+  auto [sScalar, sMatrix] = decomposeScaledMatrix(base);
+  if (!sScalar || analysis.isSampleDependent(sMatrix))
+    return {};
+  m.invariant = sMatrix;
+  m.scaleScalar = sScalar;
+  return m;
+}
 
 static ScaledInvariantPlusDiag
 matchScaledInvariantPlusDiagSum(Value value,
                                 SampleDependenceAnalysis &analysis) {
+  if (ScaledInvariantPlusDiag m = matchDiagonalScatterSum(value, analysis);
+      m.invariant)
+    return m;
+
   auto addOp = value.getDefiningOp<stablehlo::AddOp>();
   if (!addOp)
     return {};
 
+  ScaledInvariantPlusDiag guarded;
   for (auto [lhs, rhs] : {std::pair{addOp.getLhs(), addOp.getRhs()},
                           std::pair{addOp.getRhs(), addOp.getLhs()}}) {
     Value diagScalar = nullptr;
     FloatAttr foldedDiagConst = nullptr;
     Value secondInvariant = nullptr;
+    bool unproven = false;
     auto [dScalar, dMatrix] = decomposeScaledMatrix(rhs);
     if (dScalar) {
       if (isIdentityMatrix(dMatrix)) {
         diagScalar = dScalar;
       } else if (!analysis.isSampleDependent(dMatrix)) {
-        // Generalized case: rhs = t*B where B is invariant
-        diagScalar = dScalar;
-        secondInvariant = dMatrix;
+        PDProof proof = classifyDenseB(dMatrix);
+        if (proof != PDProof::Disproven) {
+          diagScalar = dScalar;
+          secondInvariant = dMatrix;
+          unproven = proof == PDProof::Unproven;
+        }
       }
     }
     if (!diagScalar) {
@@ -1833,14 +2008,24 @@ matchScaledInvariantPlusDiagSum(Value value,
     if (!diagScalar && !foldedDiagConst)
       continue;
 
-    if (!analysis.isSampleDependent(lhs))
-      return {lhs, nullptr, diagScalar, secondInvariant, foldedDiagConst};
-
-    auto [sScalar, sMatrix] = decomposeScaledMatrix(lhs);
-    if (sScalar && !analysis.isSampleDependent(sMatrix))
-      return {sMatrix, sScalar, diagScalar, secondInvariant, foldedDiagConst};
+    ScaledInvariantPlusDiag m;
+    if (!analysis.isSampleDependent(lhs)) {
+      m = {lhs, nullptr, diagScalar, secondInvariant, foldedDiagConst};
+    } else {
+      auto [sScalar, sMatrix] = decomposeScaledMatrix(lhs);
+      if (sScalar && !analysis.isSampleDependent(sMatrix))
+        m = {sMatrix, sScalar, diagScalar, secondInvariant, foldedDiagConst};
+    }
+    if (!m.invariant)
+      continue;
+    if (!unproven)
+      return m;
+    if (!guarded.invariant) {
+      m.guard = true;
+      guarded = m;
+    }
   }
-  return {};
+  return guarded;
 }
 
 static ScaledInvariantPlusDiag
@@ -1917,7 +2102,7 @@ struct DotGeneralShiftFactorizationHLO
         continue;
       ScaledInvariantPlusDiag shift =
           matchScaledInvariantPlusDiagShift(shifted, analysis);
-      if (!shift.invariant || shift.secondInvariant)
+      if (!shift.invariant || shift.secondInvariant || shift.diagVector)
         continue;
       return Match{shift, onLhs};
     }
@@ -2596,10 +2781,14 @@ static SmallVector<RhsTerm> splitRhs(Value b,
   return terms;
 }
 
-///     definiteness of the original cholesky operand.
+/// With A = Q diag(lambda) Q^T hoisted, K = Q diag(d) Q^T for d = s*lambda + t;
+/// d > 0 follows from the original cholesky operand being positive definite.
 struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
-  CholeskyEigenLiftHLO(MLIRContext *context, PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit) {}
+  CholeskyEigenLiftHLO(MLIRContext *context, PatternBenefit benefit = 1,
+                       EigenLiftGuardMode guardMode = EigenLiftGuardMode::Auto)
+      : OpRewritePattern(context, benefit), guardMode(guardMode) {}
+
+  EigenLiftGuardMode guardMode;
 
   struct FullSolveInfo {
     stablehlo::TriangularSolveOp outerSolve;
@@ -2626,6 +2815,9 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
                      SampleDependenceAnalysis &analysis) {
     if (!analysis.isSampleDependent(cholOp.getA()))
       return failure();
+    for (Operation *p = cholOp->getParentOp(); p; p = p->getParentOp())
+      if (p->hasAttr(kEigenLiftGuardAttr))
+        return failure();
 
     Match match;
     match.decomposed =
@@ -2708,15 +2900,303 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
     return match;
   }
 
+  /// The if yields `replaced`, `moved` forms its false arm, and `sunk` ops use
+  /// a replaced result before `insertBefore` and move after the if.
+  struct GuardPlan {
+    SmallVector<Operation *> replaced;
+    SmallVector<Operation *> moved;
+    Operation *insertBefore = nullptr;
+    SmallVector<Operation *> sunk;
+  };
+
+  static Operation *ancestorIn(Block *block, Operation *op) {
+    while (op && op->getBlock() != block)
+      op = op->getParentOp();
+    return op;
+  }
+
+  static FailureOr<GuardPlan> planGuard(stablehlo::CholeskyOp cholOp, Match &m,
+                                        SampleDependenceAnalysis &analysis) {
+    Block *block = cholOp->getBlock();
+    GuardPlan plan;
+    SetVector<Operation *> replaced, seeds;
+    for (FullSolveInfo &fs : m.fullSolves) {
+      if (!fs.quadSinks.empty())
+        replaced.insert(fs.quadSinks.begin(), fs.quadSinks.end());
+      else
+        replaced.insert(fs.outerSolve);
+      seeds.insert(fs.outerSolve);
+      seeds.insert(fs.innerSolve);
+      seeds.insert(fs.quadBetween.begin(), fs.quadBetween.end());
+    }
+    for (SingleSolveInfo &ss : m.singleSolves)
+      replaced.insert(ss.solve.getOperation());
+    for (Operation *diagOp : m.diagExtractions) {
+      if (cast<RankedTensorType>(diagOp->getResult(0).getType()).getRank() ==
+          1) {
+        replaced.insert(diagOp);
+      } else {
+        for (Operation *user : diagOp->getResult(0).getUsers())
+          replaced.insert(user);
+        seeds.insert(diagOp);
+      }
+    }
+    seeds.insert(cholOp);
+    for (Operation *op : replaced)
+      if (op->getBlock() != block || op->getNumResults() != 1)
+        return failure();
+
+    const ScaledInvariantPlusDiag &d = m.decomposed;
+    SetVector<Value> trueCaps;
+    for (Value v : {d.invariant, d.scaleScalar, d.diagScalar, d.secondInvariant,
+                    d.diagVector})
+      if (v)
+        trueCaps.insert(v);
+    trueCaps.insert(d.outerScales.begin(), d.outerScales.end());
+    auto addTerms = [&](Value b, ArrayRef<RhsTerm> terms) {
+      trueCaps.insert(b);
+      for (const RhsTerm &term : terms) {
+        trueCaps.insert(term.value);
+        if (term.product) {
+          auto dot = term.value.getDefiningOp<stablehlo::DotGeneralOp>();
+          trueCaps.insert(dot.getLhs());
+          trueCaps.insert(dot.getRhs());
+        }
+      }
+    };
+    for (FullSolveInfo &fs : m.fullSolves) {
+      addTerms(fs.rhs, fs.rhsTerms);
+      for (Operation *sink : fs.quadSinks)
+        if (auto reduce = dyn_cast<stablehlo::ReduceOp>(sink))
+          trueCaps.insert(reduce.getInitValues()[0]);
+    }
+    for (SingleSolveInfo &ss : m.singleSolves)
+      addTerms(ss.solve.getB(), ss.rhsTerms);
+
+    SetVector<Operation *> moved(replaced.begin(), replaced.end());
+    auto usedOnlyByMoved = [&](Operation *op) {
+      for (Value r : op->getResults()) {
+        if (trueCaps.contains(r))
+          return false;
+        for (Operation *user : r.getUsers())
+          if (!moved.contains(ancestorIn(block, user)))
+            return false;
+      }
+      return true;
+    };
+    bool grew = true;
+    while (grew) {
+      grew = false;
+      SmallVector<Operation *> cands;
+      for (Operation *op : moved) {
+        SetVector<Value> used(op->getOperands().begin(),
+                              op->getOperands().end());
+        getUsedValuesDefinedAbove(op->getRegions(), used);
+        for (Value v : used)
+          if (Operation *def = v.getDefiningOp())
+            if (def->getBlock() == block && !moved.contains(def))
+              cands.push_back(def);
+      }
+      for (Operation *def : cands) {
+        if (moved.contains(def) || !usedOnlyByMoved(def))
+          continue;
+        if (!seeds.contains(def) &&
+            (!isMemoryEffectFree(def) || !analysis.isSampleDependent(def)))
+          continue;
+        moved.insert(def);
+        grew = true;
+      }
+    }
+
+    SetVector<Value> caps(trueCaps.begin(), trueCaps.end());
+    for (Operation *op : moved) {
+      SetVector<Value> used(op->getOperands().begin(), op->getOperands().end());
+      getUsedValuesDefinedAbove(op->getRegions(), used);
+      for (Value v : used)
+        if (!moved.contains(ancestorIn(block, v.getDefiningOp())))
+          caps.insert(v);
+    }
+
+    SetVector<Operation *> forward;
+    for (Operation &op : *block) {
+      if (moved.contains(&op) || op.hasTrait<OpTrait::IsTerminator>())
+        continue;
+      SetVector<Value> used(op.getOperands().begin(), op.getOperands().end());
+      getUsedValuesDefinedAbove(op.getRegions(), used);
+      for (Value v : used) {
+        Operation *def = ancestorIn(block, v.getDefiningOp());
+        if (def && (replaced.contains(def) || forward.contains(def))) {
+          forward.insert(&op);
+          break;
+        }
+      }
+    }
+
+    Operation *lastDef = nullptr;
+    for (Value v : caps) {
+      Operation *def = ancestorIn(block, v.getDefiningOp());
+      if (!def)
+        continue;
+      if (forward.contains(def) || moved.contains(def))
+        return failure();
+      if (!lastDef || lastDef->isBeforeInBlock(def))
+        lastDef = def;
+    }
+    Operation *pos = lastDef ? lastDef->getNextNode() : &block->front();
+    while (moved.contains(pos))
+      pos = pos->getNextNode();
+    plan.insertBefore = pos;
+    for (Operation *op : forward) {
+      if (!op->isBeforeInBlock(pos))
+        break;
+      if (!isMemoryEffectFree(op))
+        return failure();
+      plan.sunk.push_back(op);
+    }
+
+    plan.replaced.assign(replaced.begin(), replaced.end());
+    llvm::sort(plan.replaced, [](Operation *a, Operation *b) {
+      return a->isBeforeInBlock(b);
+    });
+    plan.moved.assign(moved.begin(), moved.end());
+    llvm::sort(plan.moved, [](Operation *a, Operation *b) {
+      return a->isBeforeInBlock(b);
+    });
+    return plan;
+  }
+
+  /// On failure chol(B) becomes I (sqrt(v) becomes 1), so the hoisted setup
+  /// never factors a non-finite matrix.
+  static std::pair<Value, Value>
+  emitGuardCheck(PatternRewriter &rewriter, Location loc,
+                 const ScaledInvariantPlusDiag &match, bool forceFallback) {
+    auto predType = RankedTensorType::get({}, rewriter.getI1Type());
+    Value ok, factor, probe;
+    if (match.secondInvariant) {
+      auto type = cast<RankedTensorType>(match.secondInvariant.getType());
+      auto infoType = RankedTensorType::get({}, rewriter.getI64Type());
+      auto potrf = enzymexla::PotrfOp::create(
+          rewriter, loc, TypeRange{type, infoType}, match.secondInvariant,
+          enzymexla::LapackUploAttr::get(rewriter.getContext(),
+                                         enzymexla::LapackUplo::L));
+      Value zero = stablehlo::ConstantOp::create(
+          rewriter, loc, cast<ElementsAttr>(rewriter.getZeroAttr(infoType)));
+      ok = stablehlo::CompareOp::create(rewriter, loc, potrf.getResult(1), zero,
+                                        stablehlo::ComparisonDirection::EQ);
+      // The identity, spelled with iotas (no n x n constant).
+      auto idxType =
+          RankedTensorType::get(type.getShape(), rewriter.getI64Type());
+      Value rows = stablehlo::IotaOp::create(rewriter, loc, idxType, 0);
+      Value cols = stablehlo::IotaOp::create(rewriter, loc, idxType, 1);
+      Value onDiag = stablehlo::CompareOp::create(
+          rewriter, loc, rows, cols, stablehlo::ComparisonDirection::EQ);
+      Value oneM = stablehlo::ConstantOp::create(
+          rewriter, loc, type,
+          DenseElementsAttr::get(
+              type, rewriter.getFloatAttr(type.getElementType(), 1.0)));
+      Value zeroM = stablehlo::ConstantOp::create(
+          rewriter, loc, cast<ElementsAttr>(rewriter.getZeroAttr(type)));
+      Value eye =
+          stablehlo::SelectOp::create(rewriter, loc, onDiag, oneM, zeroM);
+      factor = stablehlo::SelectOp::create(rewriter, loc, ok,
+                                           potrf.getResult(0), eye);
+      probe = match.secondInvariant;
+    } else {
+      Value v = match.diagVector;
+      auto type = cast<RankedTensorType>(v.getType());
+      auto scalarType = RankedTensorType::get({}, type.getElementType());
+      Value inf = stablehlo::ConstantOp::create(
+          rewriter, loc, scalarType,
+          DenseElementsAttr::get(
+              scalarType,
+              rewriter.getFloatAttr(
+                  type.getElementType(),
+                  APFloat::getInf(cast<FloatType>(type.getElementType())
+                                      .getFloatSemantics()))));
+      auto reduce = stablehlo::ReduceOp::create(
+          rewriter, loc, TypeRange{scalarType}, ValueRange{v}, ValueRange{inf},
+          rewriter.getDenseI64ArrayAttr({0}));
+      {
+        OpBuilder::InsertionGuard g(rewriter);
+        Block *body = rewriter.createBlock(
+            &reduce.getBody(), {}, {scalarType, scalarType}, {loc, loc});
+        Value mn = stablehlo::MinOp::create(rewriter, loc, body->getArgument(0),
+                                            body->getArgument(1));
+        stablehlo::ReturnOp::create(rewriter, loc, mn);
+      }
+      Value zero = stablehlo::ConstantOp::create(
+          rewriter, loc, cast<ElementsAttr>(rewriter.getZeroAttr(scalarType)));
+      ok =
+          stablehlo::CompareOp::create(rewriter, loc, reduce.getResult(0), zero,
+                                       stablehlo::ComparisonDirection::GT);
+      Value ones = stablehlo::ConstantOp::create(
+          rewriter, loc, type,
+          DenseElementsAttr::get(
+              type, rewriter.getFloatAttr(type.getElementType(), 1.0)));
+      Value safe = stablehlo::SelectOp::create(rewriter, loc, ok, v, ones);
+      factor = stablehlo::SqrtOp::create(rewriter, loc, safe);
+      probe = v;
+    }
+    if (forceFallback) {
+      auto probeType = cast<RankedTensorType>(probe.getType());
+      SmallVector<int64_t> zeros(probeType.getRank(), 0),
+          onesIdx(probeType.getRank(), 1);
+      Value x = stablehlo::SliceOp::create(rewriter, loc, probe, zeros, onesIdx,
+                                           onesIdx);
+      x = reshapeToScalar(rewriter, loc, x);
+      Value nan = stablehlo::CompareOp::create(
+          rewriter, loc, x, x, stablehlo::ComparisonDirection::NE);
+      ok = stablehlo::AndOp::create(rewriter, loc, predType, ok, nan);
+    }
+    return {ok, factor};
+  }
+
   static void applyRewrite(PatternRewriter &rewriter,
-                           stablehlo::CholeskyOp cholOp, Match &m) {
+                           stablehlo::CholeskyOp cholOp, Match &m,
+                           SampleDependenceAnalysis &analysis,
+                           const GuardPlan *plan = nullptr,
+                           bool forceFallback = false) {
     Location loc = cholOp.getLoc();
     ScaledInvariantPlusDiag match = m.decomposed;
     auto &fullSolves = m.fullSolves;
     auto &singleSolves = m.singleSolves;
     auto &diagExtractions = m.diagExtractions;
 
+    // Guarded: the setup goes before the if, every per-iteration value into
+    // the true arm, so a failing check never reaches the lifted values.
+    stablehlo::IfOp ifOp;
+    Block *armBlock = nullptr;
+    Value guardFactor;
+    if (plan) {
+      rewriter.setInsertionPoint(plan->insertBefore);
+      auto [ok, factor] = emitGuardCheck(rewriter, loc, match, forceFallback);
+      guardFactor = factor;
+      SmallVector<Type> resultTypes;
+      for (Operation *op : plan->replaced)
+        resultTypes.push_back(op->getResult(0).getType());
+      ifOp = stablehlo::IfOp::create(rewriter, loc, resultTypes, ok);
+      ifOp->setAttr(kEigenLiftGuardAttr, rewriter.getUnitAttr());
+      armBlock = rewriter.createBlock(&ifOp.getTrueBranch());
+      rewriter.createBlock(&ifOp.getFalseBranch());
+      rewriter.setInsertionPointToEnd(armBlock);
+    }
+    auto insertAt = [&](Operation *op) {
+      if (armBlock)
+        rewriter.setInsertionPointToEnd(armBlock);
+      else
+        rewriter.setInsertionPoint(op);
+    };
+    DenseMap<Operation *, Value> lifted;
+    auto replace = [&](Operation *op, Value value) {
+      if (armBlock)
+        lifted[op] = value;
+      else
+        rewriter.replaceOp(op, value);
+    };
+
     materializeShiftScalars(rewriter, loc, match);
+    if (armBlock)
+      rewriter.setInsertionPoint(ifOp);
 
     auto inputType = cast<RankedTensorType>(match.invariant.getType());
     int64_t N = inputType.getShape()[0];
@@ -2724,14 +3204,16 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
     auto eigvalsType = RankedTensorType::get({N}, elemType);
     auto infoType = RankedTensorType::get({}, rewriter.getIntegerType(64));
 
-    // then eigendecompose C_w instead of A directly.
-    Value LB;
+    // Eigendecompose L_B^{-1} A L_B^{-T}, or A ./ (r r^T) for B = diag(r^2).
+    Value LB, sqrtDiagB;
     Value eigenTarget = match.invariant;
     if (match.secondInvariant) {
-      LB = stablehlo::CholeskyOp::create(rewriter, loc, inputType,
-                                         match.secondInvariant,
-                                         rewriter.getBoolAttr(true))
-               .getResult();
+      LB = guardFactor
+               ? guardFactor
+               : stablehlo::CholeskyOp::create(rewriter, loc, inputType,
+                                               match.secondInvariant,
+                                               rewriter.getBoolAttr(true))
+                     .getResult();
 
       Value Y = stablehlo::TriangularSolveOp::create(
                     rewriter, loc, inputType, LB, match.invariant,
@@ -2744,6 +3226,24 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
                         /*left_side=*/false, /*lower=*/true,
                         /*unit_diagonal=*/false, stablehlo::Transpose::ADJOINT)
                         .getResult();
+    } else if (match.diagVector) {
+      sqrtDiagB = guardFactor ? guardFactor
+                              : stablehlo::SqrtOp::create(rewriter, loc,
+                                                          match.diagVector)
+                                    .getResult();
+      if (sqrtDiagB.getType() != eigvalsType)
+        sqrtDiagB =
+            stablehlo::ReshapeOp::create(rewriter, loc, eigvalsType, sqrtDiagB);
+      Value rowScale = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, inputType, sqrtDiagB,
+          rewriter.getDenseI64ArrayAttr({0}));
+      Value colScale = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, inputType, sqrtDiagB,
+          rewriter.getDenseI64ArrayAttr({1}));
+      Value outer = stablehlo::MulOp::create(rewriter, loc, inputType, rowScale,
+                                             colScale);
+      eigenTarget = stablehlo::DivOp::create(rewriter, loc, inputType,
+                                             match.invariant, outer);
     }
 
     auto syevd = enzymexla::SyevdOp::create(
@@ -2752,6 +3252,8 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
                                        enzymexla::LapackUplo::L));
     Value Q = syevd.getEigenvectors();
     Value lambda = syevd.getEigenvalues();
+    if (armBlock)
+      rewriter.setInsertionPointToEnd(armBlock);
 
     Value shifted;
     if (match.scaleScalar) {
@@ -2783,6 +3285,12 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
         /*lhsBatchingDims=*/{}, /*rhsBatchingDims=*/{},
         /*lhsContractingDims=*/{1}, /*rhsContractingDims=*/{0});
 
+    auto divRows = [&](Value x) -> Value {
+      auto xType = cast<RankedTensorType>(x.getType());
+      Value r = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, xType, sqrtDiagB, rewriter.getDenseI64ArrayAttr({0}));
+      return stablehlo::DivOp::create(rewriter, loc, xType, x, r);
+    };
     auto projectWhole = [&](Value x) -> Value {
       auto xType = cast<RankedTensorType>(x.getType());
       Value y = x;
@@ -2798,6 +3306,8 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
                 .getResult();
         if (solveType != xType)
           y = stablehlo::ReshapeOp::create(rewriter, loc, xType, y);
+      } else if (sqrtDiagB) {
+        y = divRows(y);
       }
       return stablehlo::DotGeneralOp::create(
           rewriter, loc, xType, QT, y, dotDims,
@@ -2862,7 +3372,7 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
         invShifted =
             stablehlo::DivOp::create(rewriter, loc, eigvalsType, ones, shifted);
       for (auto &fs : fullSolves) {
-        rewriter.setInsertionPoint(fs.outerSolve);
+        insertAt(fs.outerSolve);
         auto resultType = cast<RankedTensorType>(fs.outerSolve.getType());
 
         if (!fs.quadSinks.empty()) {
@@ -2877,7 +3387,7 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
               rewriter, loc, RankedTensorType::get({}, elemType), u, u,
               quadDims, /*precision_config=*/nullptr, /*algorithm=*/nullptr);
           for (Operation *sink : fs.quadSinks) {
-            rewriter.setInsertionPoint(sink);
+            insertAt(sink);
             auto sinkType =
                 cast<RankedTensorType>(sink->getResult(0).getType());
             Value value = broadcastScalarToShape(rewriter, loc, quad, sinkType);
@@ -2887,8 +3397,10 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
               if (!matchPattern(init, m_AnyZeroFloat()))
                 value = stablehlo::AddOp::create(rewriter, loc, value, init);
             }
-            rewriter.replaceOp(sink, value);
+            replace(sink, value);
           }
+          if (armBlock)
+            continue;
           for (Operation *op : fs.quadBetween)
             if (op->use_empty())
               rewriter.eraseOp(op);
@@ -2910,10 +3422,12 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
                        /*left_side=*/true, /*lower=*/true,
                        /*unit_diagonal=*/false, stablehlo::Transpose::ADJOINT)
                        .getResult();
+        } else if (sqrtDiagB) {
+          result = divRows(result);
         }
 
-        rewriter.replaceOp(fs.outerSolve, result);
-        if (fs.innerSolve->use_empty())
+        replace(fs.outerSolve, result);
+        if (!armBlock && fs.innerSolve->use_empty())
           rewriter.eraseOp(fs.innerSolve);
       }
     }
@@ -2921,18 +3435,18 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
     if (!singleSolves.empty()) {
       // The cholesky dominates every user; the last insertion point may be
       // erased.
-      rewriter.setInsertionPoint(cholOp);
+      insertAt(cholOp);
       getInvSqrtShifted();
       for (auto &ss : singleSolves) {
-        rewriter.setInsertionPoint(ss.solve);
+        insertAt(ss.solve);
         Value result =
             scaleRows(invSqrtShifted, project(ss.solve.getB(), ss.rhsTerms));
-        rewriter.replaceOp(ss.solve, result);
+        replace(ss.solve, result);
       }
     }
 
     if (!diagExtractions.empty()) {
-      rewriter.setInsertionPoint(cholOp);
+      insertAt(cholOp);
       Value sqrtShiftedForDiag =
           stablehlo::SqrtOp::create(rewriter, loc, eigvalsType, shifted);
 
@@ -2953,22 +3467,73 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
             /*precision_config=*/nullptr, /*algorithm=*/nullptr);
         diagVec = stablehlo::MulOp::create(rewriter, loc, eigvalsType, diagLB,
                                            sqrtShiftedForDiag);
+      } else if (sqrtDiagB) {
+        diagVec = stablehlo::MulOp::create(rewriter, loc, eigvalsType,
+                                           sqrtDiagB, sqrtShiftedForDiag);
       }
 
       for (auto *diagOp : diagExtractions) {
         Value diag = diagOp->getResult(0);
         if (cast<RankedTensorType>(diag.getType()).getRank() == 1) {
-          rewriter.replaceOp(diagOp, diagVec);
+          replace(diagOp, diagVec);
           continue;
         }
         for (Operation *reduction : llvm::make_early_inc_range(diag.getUsers()))
-          rewriter.replaceOp(reduction, diagVec);
-        rewriter.eraseOp(diagOp);
+          replace(reduction, diagVec);
+        if (!armBlock)
+          rewriter.eraseOp(diagOp);
       }
     }
 
-    if (cholOp->use_empty())
-      rewriter.eraseOp(cholOp);
+    if (!armBlock) {
+      if (cholOp->use_empty())
+        rewriter.eraseOp(cholOp);
+      return;
+    }
+
+    rewriter.setInsertionPointToEnd(armBlock);
+    SmallVector<Value> liftedValues;
+    for (Operation *op : plan->replaced)
+      liftedValues.push_back(lifted.lookup(op));
+    stablehlo::ReturnOp::create(rewriter, loc, liftedValues);
+
+    DenseSet<Operation *> outOfArm;
+    for (Operation &op :
+         llvm::make_early_inc_range(armBlock->without_terminator())) {
+      if (op.getNumRegions() != 0 || !isMemoryEffectFree(&op))
+        continue;
+      bool invariant = llvm::all_of(op.getOperands(), [&](Value v) {
+        Operation *def = v.getDefiningOp();
+        if (def && def->getBlock() == armBlock)
+          return outOfArm.contains(def);
+        return !analysis.isSampleDependent(v);
+      });
+      if (!invariant)
+        continue;
+      rewriter.moveOpBefore(&op, ifOp);
+      outOfArm.insert(&op);
+    }
+
+    Block *fallback = &ifOp.getFalseBranch().front();
+    for (Operation *op : plan->moved)
+      rewriter.moveOpBefore(op, fallback, fallback->end());
+    rewriter.setInsertionPointToEnd(fallback);
+    SmallVector<Value> originalValues;
+    for (Operation *op : plan->replaced)
+      originalValues.push_back(op->getResult(0));
+    auto fallbackReturn =
+        stablehlo::ReturnOp::create(rewriter, loc, originalValues);
+
+    for (auto [original, result] : llvm::zip(originalValues, ifOp.getResults()))
+      rewriter.replaceUsesWithIf(original, result, [&](OpOperand &use) {
+        return use.getOwner() != fallbackReturn.getOperation() &&
+               !ifOp->isAncestor(use.getOwner());
+      });
+    Operation *after = ifOp;
+    for (Operation *op : plan->sunk) {
+      rewriter.moveOpAfter(op, after);
+      after = op;
+    }
   }
 
   LogicalResult matchAndRewrite(stablehlo::CholeskyOp cholOp,
@@ -2979,13 +3544,29 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
     auto match = checkPreconditions(cholOp, *analysis);
     if (failed(match))
       return failure();
-    applyRewrite(rewriter, cholOp, *match);
-    LLVM_DEBUG(llvm::dbgs() << "SICM: CholeskyEigenLift fired\n");
+    if (match->decomposed.guard && guardMode == EigenLiftGuardMode::ForceLift)
+      match->decomposed.guard = false;
+    if (!match->decomposed.guard) {
+      applyRewrite(rewriter, cholOp, *match, *analysis);
+      LLVM_DEBUG(llvm::dbgs() << "SICM: CholeskyEigenLift fired\n");
+      return success();
+    }
+    auto plan = planGuard(cholOp, *match, *analysis);
+    if (failed(plan)) {
+      LLVM_DEBUG(llvm::dbgs() << "SICM: CholeskyEigenLift needs a guard that "
+                                 "cannot be placed; not applied\n");
+      return failure();
+    }
+    applyRewrite(rewriter, cholOp, *match, *analysis, &*plan,
+                 guardMode == EigenLiftGuardMode::ForceFallback);
+    LLVM_DEBUG(llvm::dbgs() << "SICM: CholeskyEigenLift fired (guarded)\n");
     return success();
   }
 };
 
-// sample-invariant terms move to the y side. A non-constant scalar that is
+// ||y - X beta||^2 = ||c - R beta||^2 + rem, with R, c and +-sqrt(rem) read
+// from the triangular factor of one Householder QR of [X y].
+
 enum class SicmAffineKind { Mul, Div, Add, SubRhs, SubLhs };
 struct SicmAffineStep {
   SicmAffineKind kind;
@@ -3878,6 +4459,21 @@ struct SICMPass : public enzyme::impl::SICMPassBase<SICMPass> {
                 getOperation()->getContext(), PatternBenefit(1),
                 sufficientStatsMinWork);
       }
+      if (eigenliftGuard != "auto") {
+        EigenLiftGuardMode mode = eigenliftGuard == "force-lift"
+                                      ? EigenLiftGuardMode::ForceLift
+                                      : EigenLiftGuardMode::ForceFallback;
+        auto &native = patterns.getNativePatterns();
+        native.erase(
+            llvm::remove_if(native,
+                            [](const std::unique_ptr<RewritePattern> &p) {
+                              return p->getDebugName().contains(
+                                  "CholeskyEigenLift");
+                            }),
+            native.end());
+        patterns.add<CholeskyEigenLiftHLO>(getOperation()->getContext(),
+                                           PatternBenefit(1), mode);
+      }
       // Benefit 2 so the Gram form pre-empts the QR form on the same match.
       if (gramFormSufficientStats)
         patterns.add<GaussianSufficientStatsGramHLO,
@@ -3900,6 +4496,12 @@ struct SICMPass : public enzyme::impl::SICMPassBase<SICMPass> {
   }
 
   void runOnOperation() override {
+    if (eigenliftGuard != "auto" && eigenliftGuard != "force-lift" &&
+        eigenliftGuard != "force-fallback") {
+      getOperation()->emitError("sicm: eigenlift-guard must be auto, "
+                                "force-lift or force-fallback");
+      return signalPassFailure();
+    }
     SmallVector<InferRegionOp> regions;
     getOperation()->walk([&](InferRegionOp op) { regions.push_back(op); });
 
@@ -3914,6 +4516,8 @@ struct SICMPass : public enzyme::impl::SICMPassBase<SICMPass> {
       if (!regionOp.getLogpdf().empty())
         runSICMOnRegion(regionOp, AnalysisTarget::Logpdf);
     }
+    getOperation()->walk(
+        [](stablehlo::IfOp op) { op->removeAttr(kEigenLiftGuardAttr); });
   }
 };
 
