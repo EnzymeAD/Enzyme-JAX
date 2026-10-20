@@ -3,6 +3,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
@@ -16,16 +17,12 @@ namespace perfify {
 } // namespace enzyme
 } // namespace mlir
 
-
 using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::enzyme::perfify;
 
 namespace {
 
-// Matches the annotation strings emitted by the Reactant perfify_op
-// attribute handler ("perfify_op=..."), or the "perfify_cond=..." spelling,
-// and strips any trailing NUL bytes from the payload.
 static bool matchPerfifyAnnotation(StringRef str, StringRef &payload) {
   for (StringRef prefix : {"perfify_op=", "perfify_cond="}) {
     if (str.starts_with(prefix)) {
@@ -38,62 +35,119 @@ static bool matchPerfifyAnnotation(StringRef str, StringRef &payload) {
   return false;
 }
 
+struct CostTerm {
+  int64_t coeff = 1;
+  SmallVector<std::string> syms;
+};
+using CostExpr = SmallVector<CostTerm>;
+
+// Parses a cost expression. Terms are separated by '+', factors within a term
+// by '*', and a factor is an integer, a symbol, or an integer immediately
+// followed by a symbol ("3X" == "3*X").
+static std::optional<CostExpr> parseCostExpr(StringRef str) {
+  CostExpr expr;
+  SmallVector<StringRef> terms, factors;
+  str.split(terms, '+');
+  for (StringRef termStr : terms) {
+    CostTerm &term = expr.emplace_back();
+    factors.clear();
+    termStr.split(factors, '*');
+    for (StringRef factor : factors) {
+      factor = factor.trim();
+      if (factor.empty())
+        return std::nullopt;
+      StringRef digits = factor.take_while(llvm::isDigit);
+      StringRef sym = factor.drop_front(digits.size());
+      if (!digits.empty()) {
+        int64_t value;
+        if (digits.getAsInteger(10, value))
+          return std::nullopt;
+        term.coeff *= value;
+      }
+      if (!sym.empty()) {
+        if (!llvm::all_of(sym,
+                          [](char c) { return llvm::isAlnum(c) || c == '_'; }))
+          return std::nullopt;
+        term.syms.push_back(sym.str());
+      }
+    }
+  }
+  return expr;
+}
+
 // A cost hypothesis on a function, optionally conditioned on one of its
-// arguments:
+// arguments. The bound is either a cost expression or an interval of them:
 //   "le 9"                  -> { true } f { fn_cost <= 9 }
 //   "arg0 eq 0 -> le 9"     -> { arg0 == 0 } f { fn_cost <= 9 }
+//   "eq [0, 8]"             -> { true } f { fn_cost in [0, 8] }
+//   "eq [X, 3X]"            -> { true } f { fn_cost in [X, 3X] }
+// Either side of an interval may be left empty to leave it unbounded.
 struct CostHypothesis {
   CmpPredicate pred;
-  int64_t bound;
+  bool isInterval = false;
+  std::optional<CostExpr> lb, ub; // scalar goes in lb for bound generation
   std::optional<uint64_t> argIndex;
   CmpPredicate argPred;
   int64_t argValue;
+
+  SetVector<StringRef> symbols() const {
+    SetVector<StringRef> syms;
+    for (const std::optional<CostExpr> *expr : {&lb, &ub})
+      if (*expr)
+        for (const CostTerm &term : **expr)
+          syms.insert(term.syms.begin(), term.syms.end());
+    return syms;
+  }
 };
 
 // Parses a hypothesis of the form "<predicate> <bound>", optionally preceded
-// by an argument precondition "arg<N> <predicate> <value> ->".
-static bool parseCostHypothesis(StringRef payload, CostHypothesis &hyp) {
-  payload = payload.trim();
-  StringRef post = payload;
-  StringRef pre;
-  size_t arrow = payload.find("->");
-  if (arrow != StringRef::npos) {
-    pre = payload.take_front(arrow).trim();
-    post = payload.drop_front(arrow + 2).trim();
+// by an argument precondition "arg<N> <predicate> <value> ->", where <bound>
+// is a cost expression or "[<lb>, <ub>]".
+static std::optional<CostHypothesis> parseCostHypothesis(StringRef payload) {
+  CostHypothesis hyp;
+  StringRef pre, post = payload;
+  if (payload.contains("->"))
+    std::tie(pre, post) = payload.split("->");
+
+  auto [predStr, boundStr] = post.trim().split(' ');
+  auto pred = symbolizeCmpPredicate(predStr);
+  if (!pred)
+    return std::nullopt;
+  hyp.pred = *pred;
+  boundStr = boundStr.trim();
+  hyp.isInterval = boundStr.consume_front("[");
+  if (hyp.isInterval) {
+    if (!boundStr.consume_back("]") || boundStr.count(',') != 1)
+      return std::nullopt;
+    auto [lbStr, ubStr] = boundStr.split(',');
+    // an empty side is left unbounded
+    auto parseSide = [](StringRef str, std::optional<CostExpr> &side) {
+      str = str.trim();
+      return str.empty() || (side = parseCostExpr(str));
+    };
+    if (!parseSide(lbStr, hyp.lb) || !parseSide(ubStr, hyp.ub) ||
+        (!hyp.lb && !hyp.ub))
+      return std::nullopt;
+  } else if (!(hyp.lb = parseCostExpr(boundStr))) {
+    return std::nullopt;
   }
 
-  SmallVector<StringRef, 3> postTokens;
-  post.split(postTokens, ' ', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
-  if (postTokens.size() != 2)
-    return false;
-  auto predOpt = symbolizeCmpPredicate(postTokens[0]);
-  if (!predOpt)
-    return false;
-  if (postTokens[1].getAsInteger(10, hyp.bound))
-    return false;
-  hyp.pred = *predOpt;
-
-  hyp.argIndex.reset();
+  pre = pre.trim();
   if (!pre.empty()) {
-    SmallVector<StringRef, 3> preTokens;
-    pre.split(preTokens, ' ', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
-    if (preTokens.size() != 3)
-      return false;
-    StringRef argTok = preTokens[0];
-    if (!argTok.consume_front("arg"))
-      return false;
+    SmallVector<StringRef, 3> tokens;
+    pre.split(tokens, ' ', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
     uint64_t argIndex;
-    if (argTok.getAsInteger(10, argIndex))
-      return false;
-    auto argPredOpt = symbolizeCmpPredicate(preTokens[1]);
-    if (!argPredOpt)
-      return false;
-    if (preTokens[2].getAsInteger(10, hyp.argValue))
-      return false;
+    if (tokens.size() != 3 || !tokens[0].consume_front("arg") ||
+        tokens[0].getAsInteger(10, argIndex) ||
+        tokens[2].getAsInteger(10, hyp.argValue))
+      return std::nullopt;
+    auto argPred = symbolizeCmpPredicate(tokens[1]);
+    if (!argPred)
+      return std::nullopt;
     hyp.argIndex = argIndex;
-    hyp.argPred = *argPredOpt;
+    hyp.argPred = *argPred;
   }
-  return true;
+  return hyp;
 }
 
 struct LiftPerfifyAnnotationsPass
@@ -101,83 +155,106 @@ struct LiftPerfifyAnnotationsPass
           LiftPerfifyAnnotationsPass> {
   using LiftPerfifyAnnotationsPassBase::LiftPerfifyAnnotationsPassBase;
 
-  // Builds `perfify.constant_cost { arith.constant value; perfify.yield }`.
-  Value buildConstantCost(OpBuilder &builder, Location loc, int64_t value) {
-    OpBuilder::InsertionGuard guard(builder);
-    auto constCost = ConstantCostOp::create(builder, loc,
-                                            CostType::get(builder.getContext()));
-    Block *body = builder.createBlock(&constCost.getBody());
-    builder.setInsertionPointToStart(body);
-    arith::ConstantOp::create(builder, loc, builder.getI64IntegerAttr(value));
-    YieldOp::create(builder, loc, Value());
+  // Builds a perfify.constant_cost whose body computes `expr` out of
+  // arith.constant, perfify.sym_cost, arith.muli and arith.addi.
+  Value buildConstantCost(ImplicitLocOpBuilder &b, const CostExpr &expr) {
+    OpBuilder::InsertionGuard guard(b);
+    auto constCost = ConstantCostOp::create(b, CostType::get(b.getContext()));
+    b.createBlock(&constCost.getBody());
+    Value sum;
+    for (const CostTerm &term : expr) {
+      Value product;
+      if (term.coeff != 1 || term.syms.empty())
+        product = arith::ConstantOp::create(b, b.getI64IntegerAttr(term.coeff));
+      for (const std::string &sym : term.syms) {
+        Value symCost = SymCostOp::create(
+            b, b.getI64Type(), FlatSymbolRefAttr::get(b.getContext(), sym));
+        product =
+            product ? arith::MulIOp::create(b, product, symCost) : symCost;
+      }
+      sum = sum ? arith::AddIOp::create(b, sum, product) : product;
+    }
+    YieldOp::create(b, sum);
     return constCost.getResult();
+  }
+
+  // Declares `perfify.define_symbol @name : i64` at the top of the module for
+  // each symbol `hyp` uses that isn't declared yet. Fails if a name is taken
+  // by some other symbol.
+  LogicalResult declareSymbols(ModuleOp module, ImplicitLocOpBuilder &b,
+                               const CostHypothesis &hyp) {
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPointToStart(module.getBody());
+    for (StringRef name : hyp.symbols()) {
+      Operation *existing = module.lookupSymbol(name);
+      if (existing && !isa<DefSymbolOp>(existing))
+        return emitError(b.getLoc(), "perfify cost symbol '")
+               << name << "' conflicts with an existing symbol";
+      if (!existing)
+        DefSymbolOp::create(b, b.getStringAttr(name),
+                            TypeAttr::get(b.getI64Type()), StringAttr());
+    }
+    return success();
+  }
+
+  // Fills `region` with `perfify.assume (perfify.cmp pred, lhs, rhs)`, where
+  // `operands` builds lhs and rhs inside the region.
+  void buildAssume(ImplicitLocOpBuilder &b, Region &region, CmpPredicate pred,
+                   function_ref<std::pair<Value, Value>()> operands) {
+    OpBuilder::InsertionGuard guard(b);
+    b.createBlock(&region);
+    auto [lhs, rhs] = operands();
+    auto cmp = CompareOp::create(b, b.getI1Type(), pred, lhs, rhs);
+    AssumeOp::create(b, cmp.getResult(), BoolAttr());
   }
 
   // Lowers `hyp` for @funcName into a perfify.conditions Hoare triple,
   // appended to the module's perfify.assumptions op (created if absent).
   // Since perfify.conditions is a terminator, each hypothesis gets its own
   // block when the previous one is already terminated.
-  void buildConditions(ModuleOp module, OpBuilder &builder, Location loc,
+  void buildConditions(ModuleOp module, ImplicitLocOpBuilder &b,
                        StringRef funcName, const CostHypothesis &hyp) {
-    MLIRContext *ctx = builder.getContext();
+    MLIRContext *ctx = b.getContext();
+    OpBuilder::InsertionGuard guard(b);
     AssumptionsOp assumptions = nullptr;
     for (auto op : module.getOps<AssumptionsOp>())
       assumptions = op;
-
     if (!assumptions) {
-      OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPointToEnd(module.getBody());
-      assumptions = AssumptionsOp::create(builder, loc);
+      b.setInsertionPointToEnd(module.getBody());
+      assumptions = AssumptionsOp::create(b);
     }
 
     Region &body = assumptions.getBody();
-    Block *block;
-    if (!body.empty() && !body.back().getTerminator()) {
-      block = &body.back();
-    } else {
-      block = builder.createBlock(&body, body.end());
-    }
+    if (body.empty() || body.back().getTerminator())
+      b.createBlock(&body, body.end());
+    else
+      b.setInsertionPointToEnd(&body.back());
+    auto conditions = ConditionsOp::create(b, funcName, /*verify_huh=*/true);
 
-    OpBuilder::InsertionGuard guard(builder);
-    builder.setInsertionPointToEnd(block);
-    auto conditions =
-        ConditionsOp::create(builder, loc, funcName, /*verify_huh=*/true);
+    // The precondition the hypothesis is tested under: an assumption on the
+    // annotated function's argument if one was given, trivially true
+    // otherwise.
+    CmpPredicate prePred = hyp.argIndex ? hyp.argPred : CmpPredicate::eq;
+    buildAssume(b, conditions.getPrecondition(), prePred,
+                [&]() -> std::pair<Value, Value> {
+                  if (!hyp.argIndex) {
+                    Value zero = buildConstantCost(b, {CostTerm{0, {}}});
+                    return {zero, zero};
+                  }
+                  return {ArgOp::create(b, CostType::get(ctx), *hyp.argIndex),
+                          buildConstantCost(b, {CostTerm{hyp.argValue, {}}})};
+                });
 
-    {
-      OpBuilder::InsertionGuard regionGuard(builder);
-      Block *preBlock = builder.createBlock(&conditions.getPrecondition());
-      builder.setInsertionPointToStart(preBlock);
-      // The precondition the hypothesis is tested under: an assumption on
-      // the annotated function's argument if one was given, trivially true
-      // otherwise.
-      Value preLhs, preRhs;
-      CmpPredicate prePred;
-      if (hyp.argIndex) {
-        preLhs = ArgOp::create(builder, loc, CostType::get(ctx), *hyp.argIndex)
-                     .getResult();
-        preRhs = buildConstantCost(builder, loc, hyp.argValue);
-        prePred = hyp.argPred;
-      } else {
-        preLhs = buildConstantCost(builder, loc, 0);
-        preRhs = preLhs;
-        prePred = CmpPredicate::eq;
-      }
-      auto preCmp = CompareOp::create(builder, loc, builder.getI1Type(),
-                                      prePred, preLhs, preRhs);
-      AssumeOp::create(builder, loc, preCmp.getResult(), BoolAttr());
-    }
-
-    {
-      OpBuilder::InsertionGuard regionGuard(builder);
-      Block *postBlock = builder.createBlock(&conditions.getPostcondition());
-      builder.setInsertionPointToStart(postBlock);
-      Value fnCost =
-          FnCostOp::create(builder, loc, CostType::get(ctx)).getResult();
-      Value boundCost = buildConstantCost(builder, loc, hyp.bound);
-      auto postCmp = CompareOp::create(builder, loc, builder.getI1Type(),
-                                       hyp.pred, fnCost, boundCost);
-      AssumeOp::create(builder, loc, postCmp.getResult(), BoolAttr());
-    }
+    buildAssume(b, conditions.getPostcondition(), hyp.pred,
+                [&]() -> std::pair<Value, Value> {
+                  Value fnCost = FnCostOp::create(b, CostType::get(ctx));
+                  if (!hyp.isInterval)
+                    return {fnCost, buildConstantCost(b, *hyp.lb)};
+                  Value lb = hyp.lb ? buildConstantCost(b, *hyp.lb) : Value();
+                  Value ub = hyp.ub ? buildConstantCost(b, *hyp.ub) : Value();
+                  return {fnCost, IntervalOp::create(b, IntervalType::get(ctx),
+                                                     lb, ub)};
+                });
   }
 
   void runOnOperation() override {
@@ -263,8 +340,6 @@ struct LiftPerfifyAnnotationsPass
       }
     }
 
-    OpBuilder builder(module.getContext());
-
     // Apply annotations as attributes to functions and lower cost
     // hypotheses to perfify IR.
     for (auto [funcName, annotStr] : functionToAnnotation) {
@@ -279,14 +354,19 @@ struct LiftPerfifyAnnotationsPass
       func->setAttr("perfify_cond",
                     StringAttr::get(func->getContext(), payload));
 
-      CostHypothesis hyp;
-      if (!parseCostHypothesis(payload, hyp)) {
+      std::optional<CostHypothesis> hyp = parseCostHypothesis(payload);
+      if (!hyp) {
         func.emitWarning("ignoring malformed perfify cost hypothesis '")
             << payload
-            << R"(' (expected "[arg<N> <predicate> <value> ->] <predicate> <bound>", e.g. "arg0 eq 0 -> le 9"))";
+            << R"(' (expected "[arg<N> <predicate> <value> ->] <predicate> <bound>", )"
+            << R"(where <bound> is a cost expression or "[<lb>, <ub>]", )"
+            << R"(e.g. "arg0 eq 0 -> le 9" or "eq [X, 3X]"))";
         continue;
       }
-      buildConditions(module, builder, func.getLoc(), funcName, hyp);
+      ImplicitLocOpBuilder b(func.getLoc(), module.getContext());
+      if (failed(declareSymbols(module, b, *hyp)))
+        return signalPassFailure();
+      buildConditions(module, b, funcName, *hyp);
     }
   }
 };

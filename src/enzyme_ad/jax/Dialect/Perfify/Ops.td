@@ -91,7 +91,7 @@ def YieldOp : PerfifyOp<"yield", [Terminator]> {
 
 def HypothesisOp : PerfifyOp<"hypothesis", []> {
   let arguments = (ins CostType:$cost_hyp, PerfifyHoareStates:$pre_post);
-  let assemblyFor mat = "$cost_hyp $pre_post attr-dict";
+  let assemblyFormat = "$cost_hyp $pre_post attr-dict";
 }
 
 def IntervalOp : PerfifyOp<"interval", [AttrSizedOperandSegments]> {
