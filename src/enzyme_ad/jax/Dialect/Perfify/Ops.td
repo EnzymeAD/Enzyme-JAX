@@ -22,7 +22,7 @@ def SymCostOp : PerfifyOp<"sym_cost", [
   let assemblyFormat = "$sym attr-dict `:` type($result)";
 }
 
-def CostOp : PerfifyOp<"cost", []> {
+def CostOp : PerfifyOp<"cost", [IsolatedFromAbove]> {
   let arguments = (ins StrAttr:$target_op);
   let regions = (region AnyRegion:$body);
   let assemblyFormat = "$target_op $body attr-dict";
@@ -36,14 +36,18 @@ def FnCostOp : PerfifyOp<"fn_cost", []> { // this should be where we calculate t
 def CompareOp : PerfifyOp<"cmp", []> {
   let arguments = (ins
     PerfifyCmpPredicateAttr:$predicate,
-    CostType:$exp_cost,
-    CostType:$func_cost
+    AnyTypeOf<[CostType, IntervalType]>:$exp_cost,
+    AnyTypeOf<[CostType, IntervalType]>:$func_cost
   );
-  let assemblyFormat = "$predicate `,` $exp_cost `,` $func_cost attr-dict";
+  let assemblyFormat = [{
+    $predicate `,` $exp_cost `,` $func_cost ``
+    custom<CmpOperandTypes>(type($exp_cost), type($func_cost)) attr-dict
+  }];
   let results = (outs I1:$result);
+  let hasVerifier = 1;
 }
 
-def ConstantCostOp : PerfifyOp<"constant_cost", []> {
+def ConstantCostOp : PerfifyOp<"constant_cost", [IsolatedFromAbove]> {
   let regions = (region AnyRegion:$body);
   let assemblyFormat = "$body attr-dict `:` type($result)";
   let results = (outs CostType:$result);
@@ -73,7 +77,7 @@ def ConditionsOp : PerfifyOp<"conditions", [HasParent<"AssumptionsOp">, Terminat
   }];
 }
 
-def AssumptionsOp : PerfifyOp<"assumptions", [Terminator]> {
+def AssumptionsOp : PerfifyOp<"assumptions", []> {
   let regions = (region AnyRegion:$body);
   let assemblyFormat = [{$body attr-dict}];
 }
@@ -88,7 +92,7 @@ def HypothesisOp : PerfifyOp<"hypothesis", []> {
   let assemblyFormat = "$cost_hyp $pre_post attr-dict";
 }
 
-def IntervalOp : PerfifyOp<"interval", []> {
+def IntervalOp : PerfifyOp<"interval", [AttrSizedOperandSegments]> {
   let arguments = (ins Optional<CostType>:$lb, Optional<CostType>:$ub);
   let assemblyFormat = "`[`$lb `,`$ub`]` attr-dict";
   let results = (outs IntervalType:$result);
