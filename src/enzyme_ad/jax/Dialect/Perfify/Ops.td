@@ -49,7 +49,7 @@ def CompareOp : PerfifyOp<"cmp", []> {
   let hasVerifier = 1;
 }
 
-def ConstantCostOp : PerfifyOp<"constant_cost", [IsolatedFromAbove]> {
+def EstimatedCostOp : PerfifyOp<"estimated_cost", [IsolatedFromAbove]> {
   let regions = (region AnyRegion:$body);
   let assemblyFormat = "$body attr-dict `:` type($result)";
   let results = (outs CostType:$result);
@@ -90,8 +90,10 @@ def YieldOp : PerfifyOp<"yield", [Terminator]> {
 }
 
 def HypothesisOp : PerfifyOp<"hypothesis", []> {
-  let arguments = (ins CostType:$cost_hyp, PerfifyHoareStates:$pre_post);
-  let assemblyFormat = "$cost_hyp $pre_post attr-dict";
+  let arguments = (ins I1:$cmp, PerfifyHoareStates:$pre_post);
+  let results = (outs I1:$result);
+  let assemblyFormat = "$cmp $pre_post attr-dict";
+  let hasVerifier = 1;
 }
 
 def IntervalOp : PerfifyOp<"interval", [AttrSizedOperandSegments]> {

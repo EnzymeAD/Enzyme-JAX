@@ -155,12 +155,12 @@ struct LiftPerfifyAnnotationsPass
           LiftPerfifyAnnotationsPass> {
   using LiftPerfifyAnnotationsPassBase::LiftPerfifyAnnotationsPassBase;
 
-  // Builds a perfify.constant_cost whose body computes `expr` out of
+  // Builds a perfify.estimated_cost whose body computes `expr` out of
   // arith.constant, perfify.sym_cost, arith.muli and arith.addi.
-  Value buildConstantCost(ImplicitLocOpBuilder &b, const CostExpr &expr) {
+  Value buildEstimatedCost(ImplicitLocOpBuilder &b, const CostExpr &expr) {
     OpBuilder::InsertionGuard guard(b);
-    auto constCost = ConstantCostOp::create(b, CostType::get(b.getContext()));
-    b.createBlock(&constCost.getBody());
+    auto estCost = EstimatedCostOp::create(b, CostType::get(b.getContext()));
+    b.createBlock(&estCost.getBody());
     Value sum;
     for (const CostTerm &term : expr) {
       Value product;
@@ -175,7 +175,7 @@ struct LiftPerfifyAnnotationsPass
       sum = sum ? arith::AddIOp::create(b, sum, product) : product;
     }
     YieldOp::create(b, sum);
-    return constCost.getResult();
+    return estCost.getResult();
   }
 
   // Declares `perfify.define_symbol @name : i64` at the top of the module for
@@ -197,15 +197,18 @@ struct LiftPerfifyAnnotationsPass
     return success();
   }
 
-  // Fills `region` with `perfify.assume (perfify.cmp pred, lhs, rhs)`, where
-  // `operands` builds lhs and rhs inside the region.
-  void buildAssume(ImplicitLocOpBuilder &b, Region &region, CmpPredicate pred,
+  // Fills `region` with
+  // `perfify.assume (perfify.hypothesis (perfify.cmp pred, lhs, rhs) prePost)`,
+  // where `operands` builds lhs and rhs inside the region.
+  void buildAssume(ImplicitLocOpBuilder &b, Region &region, HoareStates prePost,
+                   CmpPredicate pred,
                    function_ref<std::pair<Value, Value>()> operands) {
     OpBuilder::InsertionGuard guard(b);
     b.createBlock(&region);
     auto [lhs, rhs] = operands();
     auto cmp = CompareOp::create(b, b.getI1Type(), pred, lhs, rhs);
-    AssumeOp::create(b, cmp.getResult(), BoolAttr());
+    auto hyp = HypothesisOp::create(b, b.getI1Type(), cmp.getResult(), prePost);
+    AssumeOp::create(b, hyp.getResult(), BoolAttr());
   }
 
   // Lowers `hyp` for @funcName into a perfify.conditions Hoare triple,
@@ -235,23 +238,23 @@ struct LiftPerfifyAnnotationsPass
     // annotated function's argument if one was given, trivially true
     // otherwise.
     CmpPredicate prePred = hyp.argIndex ? hyp.argPred : CmpPredicate::eq;
-    buildAssume(b, conditions.getPrecondition(), prePred,
+    buildAssume(b, conditions.getPrecondition(), HoareStates::Pre, prePred,
                 [&]() -> std::pair<Value, Value> {
                   if (!hyp.argIndex) {
-                    Value zero = buildConstantCost(b, {CostTerm{0, {}}});
+                    Value zero = buildEstimatedCost(b, {CostTerm{0, {}}});
                     return {zero, zero};
                   }
                   return {ArgOp::create(b, CostType::get(ctx), *hyp.argIndex),
-                          buildConstantCost(b, {CostTerm{hyp.argValue, {}}})};
+                          buildEstimatedCost(b, {CostTerm{hyp.argValue, {}}})};
                 });
 
-    buildAssume(b, conditions.getPostcondition(), hyp.pred,
+    buildAssume(b, conditions.getPostcondition(), HoareStates::Post, hyp.pred,
                 [&]() -> std::pair<Value, Value> {
                   Value fnCost = FnCostOp::create(b, CostType::get(ctx));
                   if (!hyp.isInterval)
-                    return {fnCost, buildConstantCost(b, *hyp.lb)};
-                  Value lb = hyp.lb ? buildConstantCost(b, *hyp.lb) : Value();
-                  Value ub = hyp.ub ? buildConstantCost(b, *hyp.ub) : Value();
+                    return {fnCost, buildEstimatedCost(b, *hyp.lb)};
+                  Value lb = hyp.lb ? buildEstimatedCost(b, *hyp.lb) : Value();
+                  Value ub = hyp.ub ? buildEstimatedCost(b, *hyp.ub) : Value();
                   return {fnCost, IntervalOp::create(b, IntervalType::get(ctx),
                                                      lb, ub)};
                 });

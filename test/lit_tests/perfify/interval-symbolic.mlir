@@ -27,19 +27,20 @@ module {
     }
     perfify.conditions @in_1x_3x true pre {
       %b0 = perfify.arg 0
-      %c0 = perfify.constant_cost {
+      %c0 = perfify.estimated_cost {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
       } : !perfify.cost
       %cmp = perfify.cmp eq, %c0, %b0
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
     } post {
       %cost = perfify.fn_cost : !perfify.cost
-      %lb = perfify.constant_cost {
+      %lb = perfify.estimated_cost {
         %x = perfify.sym_cost @X : i64
         perfify.yield %x : i64
       } : !perfify.cost
-      %ub = perfify.constant_cost {
+      %ub = perfify.estimated_cost {
         %x = perfify.sym_cost @X : i64
         %k = arith.constant 3 : i64
         %kx = arith.muli %k, %x : i64
@@ -47,7 +48,8 @@ module {
       } : !perfify.cost
       %iv = perfify.interval [%lb, %ub]
       %cmp = perfify.cmp eq, %cost, %iv : !perfify.cost, !perfify.interval
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
     }
   }
 }
@@ -79,21 +81,22 @@ module {
     }
     perfify.conditions @in_3x_3x true pre {
       %b0 = perfify.arg 0
-      %c0 = perfify.constant_cost {
+      %c0 = perfify.estimated_cost {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
       } : !perfify.cost
       %cmp = perfify.cmp eq, %c0, %b0
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
     } post {
       %cost = perfify.fn_cost : !perfify.cost
-      %lb = perfify.constant_cost {
+      %lb = perfify.estimated_cost {
         %x = perfify.sym_cost @X : i64
         %k = arith.constant 3 : i64
         %kx = arith.muli %k, %x : i64
         perfify.yield %kx : i64
       } : !perfify.cost
-      %ub = perfify.constant_cost {
+      %ub = perfify.estimated_cost {
         %x = perfify.sym_cost @X : i64
         %k = arith.constant 3 : i64
         %kx = arith.muli %k, %x : i64
@@ -101,7 +104,8 @@ module {
       } : !perfify.cost
       %iv = perfify.interval [%lb, %ub]
       %cmp = perfify.cmp eq, %cost, %iv : !perfify.cost, !perfify.interval
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
     }
   }
 }
@@ -133,19 +137,20 @@ module {
     }
     perfify.conditions @in_0_3xp1 true pre {
       %b0 = perfify.arg 0
-      %c0 = perfify.constant_cost {
+      %c0 = perfify.estimated_cost {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
       } : !perfify.cost
       %cmp = perfify.cmp eq, %c0, %b0
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
     } post {
       %cost = perfify.fn_cost : !perfify.cost
-      %lb = perfify.constant_cost {
+      %lb = perfify.estimated_cost {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
       } : !perfify.cost
-      %ub = perfify.constant_cost {
+      %ub = perfify.estimated_cost {
         %x = perfify.sym_cost @X : i64
         %k = arith.constant 3 : i64
         %kx = arith.muli %k, %x : i64
@@ -155,7 +160,8 @@ module {
       } : !perfify.cost
       %iv = perfify.interval [%lb, %ub]
       %cmp = perfify.cmp eq, %cost, %iv : !perfify.cost, !perfify.interval
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
     }
   }
 }
@@ -187,15 +193,16 @@ module {
     }
     perfify.conditions @in_inf_3x true pre {
       %b0 = perfify.arg 0
-      %c0 = perfify.constant_cost {
+      %c0 = perfify.estimated_cost {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
       } : !perfify.cost
       %cmp = perfify.cmp eq, %c0, %b0
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
     } post {
       %cost = perfify.fn_cost : !perfify.cost
-      %ub = perfify.constant_cost {
+      %ub = perfify.estimated_cost {
         %x = perfify.sym_cost @X : i64
         %k = arith.constant 3 : i64
         %kx = arith.muli %k, %x : i64
@@ -203,7 +210,8 @@ module {
       } : !perfify.cost
       %iv = perfify.interval [, %ub]
       %cmp = perfify.cmp eq, %cost, %iv : !perfify.cost, !perfify.interval
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
     }
   }
 }
@@ -235,19 +243,20 @@ module {
     }
     perfify.conditions @in_1x_2x true pre {
       %b0 = perfify.arg 0
-      %c0 = perfify.constant_cost {
+      %c0 = perfify.estimated_cost {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
       } : !perfify.cost
       %cmp = perfify.cmp eq, %c0, %b0
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
     } post {
       %cost = perfify.fn_cost : !perfify.cost
-      %lb = perfify.constant_cost {
+      %lb = perfify.estimated_cost {
         %x = perfify.sym_cost @X : i64
         perfify.yield %x : i64
       } : !perfify.cost
-      %ub = perfify.constant_cost {
+      %ub = perfify.estimated_cost {
         %x = perfify.sym_cost @X : i64
         %k = arith.constant 2 : i64
         %kx = arith.muli %k, %x : i64
@@ -255,7 +264,8 @@ module {
       } : !perfify.cost
       %iv = perfify.interval [%lb, %ub]
       %cmp = perfify.cmp eq, %cost, %iv : !perfify.cost, !perfify.interval
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
     }
   }
 }
@@ -287,15 +297,16 @@ module {
     }
     perfify.conditions @in_3xp1_4x true pre {
       %b0 = perfify.arg 0
-      %c0 = perfify.constant_cost {
+      %c0 = perfify.estimated_cost {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
       } : !perfify.cost
       %cmp = perfify.cmp eq, %c0, %b0
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
     } post {
       %cost = perfify.fn_cost : !perfify.cost
-      %lb = perfify.constant_cost {
+      %lb = perfify.estimated_cost {
         %x = perfify.sym_cost @X : i64
         %k = arith.constant 3 : i64
         %kx = arith.muli %k, %x : i64
@@ -303,7 +314,7 @@ module {
         %s = arith.addi %kx, %c : i64
         perfify.yield %s : i64
       } : !perfify.cost
-      %ub = perfify.constant_cost {
+      %ub = perfify.estimated_cost {
         %x = perfify.sym_cost @X : i64
         %k = arith.constant 4 : i64
         %kx = arith.muli %k, %x : i64
@@ -311,7 +322,8 @@ module {
       } : !perfify.cost
       %iv = perfify.interval [%lb, %ub]
       %cmp = perfify.cmp eq, %cost, %iv : !perfify.cost, !perfify.interval
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
     }
   }
 }
@@ -343,25 +355,27 @@ module {
     }
     perfify.conditions @in_0_8 true pre {
       %b0 = perfify.arg 0
-      %c0 = perfify.constant_cost {
+      %c0 = perfify.estimated_cost {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
       } : !perfify.cost
       %cmp = perfify.cmp eq, %c0, %b0
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
     } post {
       %cost = perfify.fn_cost : !perfify.cost
-      %lb = perfify.constant_cost {
+      %lb = perfify.estimated_cost {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
       } : !perfify.cost
-      %ub = perfify.constant_cost {
+      %ub = perfify.estimated_cost {
         %c = arith.constant 8 : i64
         perfify.yield %c : i64
       } : !perfify.cost
       %iv = perfify.interval [%lb, %ub]
       %cmp = perfify.cmp eq, %cost, %iv : !perfify.cost, !perfify.interval
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
     }
   }
 }
@@ -393,21 +407,22 @@ module {
     }
     perfify.conditions @lt_3x_4x true pre {
       %b0 = perfify.arg 0
-      %c0 = perfify.constant_cost {
+      %c0 = perfify.estimated_cost {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
       } : !perfify.cost
       %cmp = perfify.cmp eq, %c0, %b0
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
     } post {
       %cost = perfify.fn_cost : !perfify.cost
-      %lb = perfify.constant_cost {
+      %lb = perfify.estimated_cost {
         %x = perfify.sym_cost @X : i64
         %k = arith.constant 3 : i64
         %kx = arith.muli %k, %x : i64
         perfify.yield %kx : i64
       } : !perfify.cost
-      %ub = perfify.constant_cost {
+      %ub = perfify.estimated_cost {
         %x = perfify.sym_cost @X : i64
         %k = arith.constant 4 : i64
         %kx = arith.muli %k, %x : i64
@@ -415,7 +430,8 @@ module {
       } : !perfify.cost
       %iv = perfify.interval [%lb, %ub]
       %cmp = perfify.cmp lt, %cost, %iv : !perfify.cost, !perfify.interval
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
     }
   }
 }
@@ -447,22 +463,24 @@ module {
     }
     perfify.conditions @le_3x_scalar true pre {
       %b0 = perfify.arg 0
-      %c0 = perfify.constant_cost {
+      %c0 = perfify.estimated_cost {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
       } : !perfify.cost
       %cmp = perfify.cmp eq, %c0, %b0
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
     } post {
       %cost = perfify.fn_cost : !perfify.cost
-      %bound = perfify.constant_cost {
+      %bound = perfify.estimated_cost {
         %x = perfify.sym_cost @X : i64
         %k = arith.constant 3 : i64
         %kx = arith.muli %k, %x : i64
         perfify.yield %kx : i64
       } : !perfify.cost
       %cmp = perfify.cmp le, %cost, %bound
-      perfify.assume %cmp
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
     }
   }
 }

@@ -39,17 +39,19 @@ module {
 // CHECK: perfify.assumptions {
 // CHECK-NEXT: perfify.conditions @square_mul true pre {
 // CHECK-NEXT: %[[ARG0:.*]] = perfify.arg 0
-// CHECK-NEXT: %[[ZERO:.*]] = perfify.constant_cost {
+// CHECK-NEXT: %[[ZERO:.*]] = perfify.estimated_cost {
 // CHECK-NEXT: %[[C0:.*]] = arith.constant 0 : i64
 // CHECK-NEXT: perfify.yield
 // CHECK-NEXT: } : !perfify.cost
 // CHECK-NEXT: %[[PRE:.*]] = perfify.cmp eq, %[[ARG0]], %[[ZERO]]
-// CHECK-NEXT: perfify.assume %[[PRE]]
+// CHECK-NEXT: %[[PREH:.*]] = perfify.hypothesis %[[PRE]] pre
+// CHECK-NEXT: perfify.assume %[[PREH]]
 // CHECK-NEXT: } post {
 // CHECK-NEXT: %[[FNCOST:.*]] = perfify.fn_cost : !perfify.cost
-// CHECK-NEXT: %[[BOUND:.*]] = perfify.constant_cost {
+// CHECK-NEXT: %[[BOUND:.*]] = perfify.estimated_cost {
 // CHECK-NEXT: %[[C9:.*]] = arith.constant 9 : i64
 // CHECK-NEXT: perfify.yield
 // CHECK-NEXT: } : !perfify.cost
 // CHECK-NEXT: %[[POST:.*]] = perfify.cmp le, %[[FNCOST]], %[[BOUND]]
-// CHECK-NEXT: perfify.assume %[[POST]]
+// CHECK-NEXT: %[[POSTH:.*]] = perfify.hypothesis %[[POST]] post
+// CHECK-NEXT: perfify.assume %[[POSTH]]
