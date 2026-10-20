@@ -849,6 +849,12 @@ def SICMPass : Pass<"sicm"> {
     listed in the `transform.apply_patterns` ops of its entry-point sequence,
     i.e. built-in rules by their `apply_patterns.impulse.sicm_*` descriptors
     and user rules as PDL patterns in `apply_patterns.impulse.sicm_pdl`.
+
+    Each round starts from a fresh sample-dependence analysis; within the
+    rewrite step it is updated incrementally on every IR change (a new value
+    gets the join of the values it uses, and a value that becomes
+    sample-dependent makes its users so), never lowered, and step 2
+    recomputes it.
   }];
   let dependentDialects = [
     "stablehlo::StablehloDialect",
@@ -891,6 +897,14 @@ def SICMPass : Pass<"sicm"> {
     Option<"scheduleEntryPoint", "schedule-entry-point", "std::string",
            "\"__transform_main\"",
            "Named sequence of the schedule script that lists the rules.">,
+    Option<"verifyIncrementalAnalysis", "verify-incremental-analysis", "bool",
+           "false",
+           "Debug: after every IR change of a rewrite step, compare the "
+           "incrementally updated sample-dependence analyses with a fresh "
+           "analysis of the IR, and fail if one misses a sample-dependent "
+           "value. Prints a summary per round to stderr: the checks, stale "
+           "sample-dependent values (precision loss), and the replacements "
+           "and rule applications that change the label of a value.">,
   ];
 }
 

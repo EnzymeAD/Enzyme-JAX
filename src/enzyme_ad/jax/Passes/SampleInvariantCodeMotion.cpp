@@ -22,6 +22,9 @@
 
 #include "llvm/Support/Debug.h"
 
+#include <map>
+#include <optional>
+
 #include "src/enzyme_ad/jax/TransformOps/ImpulseTransformPatterns.h.inc"
 
 #define DEBUG_TYPE "sicm"
@@ -55,59 +58,367 @@ namespace {
 using SharedSampleDependenceAnalysis =
     std::shared_ptr<SampleDependenceAnalysis>;
 
-/// infer_region, so it is built once per (infer_region, target) and reused
-/// until the IR changes; SampleDependenceCacheInvalidator, attached to the
-/// greedy rewrite as its listener, drops every entry on any modification.
-/// Entries are shared: a pattern keeps the analysis it obtained alive for its
-/// whole matchAndRewrite even when its own rewrite invalidates the cache,
-/// which is exactly the lifetime of the per-attempt analysis this replaces.
+/// One analysis per (infer_region, target), kept current by
+/// SampleDependenceCacheUpdater for the rest of the round.
 class SampleDependenceCache {
 public:
   SharedSampleDependenceAnalysis get(InferRegionOp regionOp,
                                      AnalysisTarget target) {
-    auto key =
-        std::make_pair(regionOp.getOperation(), static_cast<unsigned>(target));
-    auto it = entries.find(key);
-    if (it != entries.end())
-      return it->second;
+    for (auto &[key, analysis] : entries)
+      if (key.first == regionOp.getOperation() && key.second == target)
+        return analysis;
     auto analysis =
         std::make_shared<SampleDependenceAnalysis>(regionOp, target);
-    entries.try_emplace(key, analysis);
+    entries.push_back({{regionOp.getOperation(), target}, analysis});
     return analysis;
   }
-  void clear() { entries.clear(); }
+
+  template <typename Fn> void forEach(Fn fn) {
+    for (auto &entry : entries)
+      fn(*entry.second);
+  }
+
+  unsigned drop(Operation *regionOp, bool onlyIfSourcesChanged) {
+    unsigned before = entries.size();
+    llvm::erase_if(entries, [&](auto &entry) {
+      return entry.first.first == regionOp &&
+             (!onlyIfSourcesChanged || entry.second->sourcesChanged());
+    });
+    return before - entries.size();
+  }
 
 private:
-  DenseMap<std::pair<Operation *, unsigned>, SharedSampleDependenceAnalysis>
+  SmallVector<std::pair<std::pair<Operation *, AnalysisTarget>,
+                        SharedSampleDependenceAnalysis>>
       entries;
 };
 
 static thread_local SampleDependenceCache *activeSampleDependenceCache =
     nullptr;
 
-/// Drops every cached analysis on any IR modification notified by the greedy
-/// driver (pattern rewrites, folding, dead-code removal).
-struct SampleDependenceCacheInvalidator : public RewriterBase::Listener {
-  explicit SampleDependenceCacheInvalidator(SampleDependenceCache &cache)
-      : cache(cache) {}
-  void notifyOperationInserted(Operation *, OpBuilder::InsertPoint) override {
-    cache.clear();
+/// Sound iff every value a fresh analysis marks sample-dependent is also
+/// marked by the incremental one; extra marks only lose precision.
+class IncrementalAnalysisVerifier {
+public:
+  IncrementalAnalysisVerifier(SampleDependenceCache &cache,
+                              InferRegionOp regionOp)
+      : cache(cache), regionOp(regionOp) {
+    if (!regionOp.getSampler().empty())
+      shadows.push_back(std::make_shared<SampleDependenceAnalysis>(
+          regionOp, AnalysisTarget::Sampler));
+    if (!regionOp.getLogpdf().empty())
+      shadows.push_back(std::make_shared<SampleDependenceAnalysis>(
+          regionOp, AnalysisTarget::Logpdf));
+    for (auto &shadow : shadows)
+      fresh[keyOf(*shadow)] = shadow;
   }
-  void notifyBlockInserted(Block *, Region *, Region::iterator) override {
-    cache.clear();
+
+  template <typename Fn> void forEachTracked(Fn fn) {
+    cache.forEach(fn);
+    for (auto &shadow : shadows)
+      fn(*shadow);
   }
-  void notifyBlockErased(Block *) override { cache.clear(); }
-  void notifyOperationModified(Operation *) override { cache.clear(); }
-  void notifyOperationReplaced(Operation *, Operation *) override {
-    cache.clear();
+  template <typename Fn> void forEachShadow(Fn fn) {
+    for (auto &shadow : shadows)
+      fn(*shadow);
   }
-  void notifyOperationReplaced(Operation *, ValueRange) override {
-    cache.clear();
+
+  void check(StringRef kind, Operation *op, ValueRange excluded = {}) {
+    ++numChecks;
+    fresh.clear();
+    forEachTracked([&](SampleDependenceAnalysis &incremental) {
+      SampleDependenceAnalysis &exact = getFresh(incremental);
+      for (Value value : exact.getSampleDependentValues()) {
+        if (incremental.isSampleDependent(value) ||
+            llvm::is_contained(excluded, value))
+          continue;
+        ++numViolations;
+        if (numViolations <= 20) {
+          llvm::errs() << "sicm-verify-incremental: UNSOUND after " << kind
+                       << " of '" << op->getName() << "'";
+          if (currentPattern)
+            llvm::errs() << " (rule " << patternName(*currentPattern) << ")";
+          llvm::errs() << ": sample-dependent value not in the incremental "
+                          "analysis: ";
+          printValue(value);
+          llvm::errs() << "\n";
+        }
+      }
+      uint64_t stale = 0;
+      for (Value value : incremental.getSampleDependentValues())
+        if (!exact.isSampleDependent(value))
+          ++stale;
+      maxStale = std::max(maxStale, stale);
+    });
+    // Erasures are notified before the erase, so the fresh analyses go stale.
+    if (!excluded.empty() || kind.ends_with("erasure"))
+      fresh.clear();
   }
-  void notifyOperationErased(Operation *) override { cache.clear(); }
+
+  void classifyReplacement(Operation *op, ValueRange replacement) {
+    auto it = llvm::find_if(
+        shadows, [&](auto &shadow) { return shadow->isInTargetRegion(op); });
+    if (it == shadows.end())
+      return;
+    SampleDependenceAnalysis exact((*it)->getRegionOp(), (*it)->getTarget());
+    for (auto [result, newValue] : llvm::zip(op->getResults(), replacement)) {
+      if (!newValue)
+        continue;
+      bool before = exact.isSampleDependent(result);
+      bool after = exact.isSampleDependent(newValue);
+      if (before == after) {
+        ++numSameLabel;
+        continue;
+      }
+      ++(after ? numAddsDependence : numRemovesDependence);
+      llvm::errs() << "sicm-verify-incremental: replacement "
+                   << (after ? "adds" : "removes") << " a dependence: '"
+                   << op->getName() << "' by "
+                   << (currentPattern ? patternName(*currentPattern)
+                                      : std::string("folding"))
+                   << "\n";
+    }
+  }
+
+  void patternBegin(const Pattern &pattern) {
+    currentPattern = &pattern;
+    windowStart.clear();
+    for (auto &shadow : shadows)
+      windowStart.push_back(getFresh(*shadow).getSampleDependentValues());
+    created.clear();
+    erased.clear();
+  }
+
+  void patternEnd(const Pattern &pattern, LogicalResult status) {
+    currentPattern = nullptr;
+    if (failed(status))
+      return;
+    ++numApplications;
+    for (auto [shadow, before] : llvm::zip(shadows, windowStart)) {
+      SampleDependenceAnalysis &exact = getFresh(*shadow);
+      SmallVector<std::pair<Value, bool>> changed;
+      for (Value value : before)
+        if (!erased.contains(value) && !exact.isSampleDependent(value))
+          changed.push_back({value, false});
+      for (Value value : exact.getSampleDependentValues())
+        if (!created.contains(value) && !before.contains(value))
+          changed.push_back({value, true});
+      if (changed.empty())
+        continue;
+      ++numLabelChangingApplications;
+      llvm::errs() << "sicm-verify-incremental: rule " << patternName(pattern)
+                   << " changes the label of " << changed.size()
+                   << " surviving value(s)\n";
+      for (auto [value, nowDependent] : changed) {
+        llvm::errs() << "sicm-verify-incremental:   "
+                     << (nowDependent ? "now dependent: " : "now invariant: ");
+        printValue(value);
+        llvm::errs() << "\n";
+      }
+    }
+  }
+
+  static void printValue(Value value) {
+    if (Operation *def = value.getDefiningOp()) {
+      llvm::errs() << "result " << cast<OpResult>(value).getResultNumber()
+                   << " of ";
+      def->print(llvm::errs(), OpPrintingFlags().skipRegions());
+      return;
+    }
+    auto arg = cast<BlockArgument>(value);
+    llvm::errs() << "block argument " << arg.getArgNumber() << " in '"
+                 << arg.getOwner()->getParentOp()->getName() << "'";
+  }
+
+  void noteCreated(Operation *op) {
+    op->walk([&](Operation *nested) {
+      for (Value result : nested->getResults())
+        created.insert(result);
+      for (Region &region : nested->getRegions())
+        for (Block &block : region)
+          for (Value arg : block.getArguments())
+            created.insert(arg);
+    });
+  }
+  void noteCreated(Block *block) {
+    for (Value arg : block->getArguments())
+      created.insert(arg);
+  }
+  void noteErased(Operation *op) {
+    for (Value result : op->getResults())
+      erased.insert(result);
+  }
+  void noteErased(Block *block) {
+    for (Value arg : block->getArguments())
+      erased.insert(arg);
+  }
+  void noteDroppedEntries(unsigned n) { numDroppedEntries += n; }
+
+  bool report(StringRef targetName, int64_t round) {
+    uint64_t staleAtEnd = 0, values = 0;
+    SampleDependenceAnalysis::UpdateStats work;
+    fresh.clear();
+    forEachShadow([&](SampleDependenceAnalysis &incremental) {
+      SampleDependenceAnalysis &exact = getFresh(incremental);
+      for (Value value : incremental.getSampleDependentValues())
+        if (!exact.isSampleDependent(value))
+          ++staleAtEnd;
+      incremental.getTargetRegion().walk([&](Operation *op) {
+        values += op->getNumResults();
+        for (Region &region : op->getRegions())
+          for (Block &block : region)
+            values += block.getNumArguments();
+      });
+      for (Block &block : incremental.getTargetRegion())
+        values += block.getNumArguments();
+      const auto &s = incremental.getUpdateStats();
+      work.raised += s.raised;
+      work.useVisits += s.useVisits;
+      work.ancestorSteps += s.ancestorSteps;
+      work.opsVisited += s.opsVisited;
+    });
+    llvm::errs() << "sicm-verify-incremental: " << targetName << " round "
+                 << round << ": " << numChecks << " checks, " << numViolations
+                 << " unsound, stale " << staleAtEnd << " at end (max "
+                 << maxStale << "); replacements " << numSameLabel
+                 << " same label, " << numAddsDependence << " add, "
+                 << numRemovesDependence << " remove; " << numApplications
+                 << " rule applications, " << numLabelChangingApplications
+                 << " change a label; " << numDroppedEntries
+                 << " rebuilt; work " << work.raised << " raised, "
+                 << work.useVisits << " use visits, " << work.ancestorSteps
+                 << " ancestor steps, " << work.opsVisited << " transfers over "
+                 << values << " values\n";
+    return numViolations != 0;
+  }
+
+private:
+  using Key = std::pair<Operation *, AnalysisTarget>;
+  static Key keyOf(SampleDependenceAnalysis &analysis) {
+    return {analysis.getRegionOp().getOperation(), analysis.getTarget()};
+  }
+  SampleDependenceAnalysis &getFresh(SampleDependenceAnalysis &incremental) {
+    auto &entry = fresh[keyOf(incremental)];
+    if (!entry)
+      entry = std::make_shared<SampleDependenceAnalysis>(
+          incremental.getRegionOp(), incremental.getTarget());
+    return *entry;
+  }
+  static std::string patternName(const Pattern &pattern) {
+    if (!pattern.getDebugName().empty())
+      return pattern.getDebugName().str();
+    if (std::optional<OperationName> root = pattern.getRootKind())
+      return ("<pattern rooted at " + root->getStringRef() + ">").str();
+    return "<pattern>";
+  }
+
+  SampleDependenceCache &cache;
+  InferRegionOp regionOp;
+  SmallVector<SharedSampleDependenceAnalysis> shadows;
+  std::map<Key, SharedSampleDependenceAnalysis> fresh;
+
+  const Pattern *currentPattern = nullptr;
+  SmallVector<DenseSet<Value>> windowStart;
+  DenseSet<Value> created, erased;
+
+  uint64_t numChecks = 0, numViolations = 0, maxStale = 0;
+  uint64_t numSameLabel = 0, numAddsDependence = 0, numRemovesDependence = 0;
+  uint64_t numApplications = 0, numLabelChangingApplications = 0;
+  uint64_t numDroppedEntries = 0;
+};
+
+struct SampleDependenceCacheUpdater : public RewriterBase::Listener {
+  SampleDependenceCacheUpdater(SampleDependenceCache &cache,
+                               IncrementalAnalysisVerifier *verifier)
+      : cache(cache), verifier(verifier) {}
+
+  template <typename Fn> void forEachAnalysis(Fn fn) {
+    if (verifier)
+      verifier->forEachTracked(fn);
+    else
+      cache.forEach(fn);
+  }
+
+  void notifyOperationInserted(Operation *op,
+                               OpBuilder::InsertPoint previous) override {
+    forEachAnalysis([&](SampleDependenceAnalysis &analysis) {
+      analysis.notifyOperationInserted(op);
+    });
+    if (verifier) {
+      if (!previous.isSet())
+        verifier->noteCreated(op);
+      verifier->check("insertion", op);
+    }
+  }
+  void notifyBlockInserted(Block *block, Region *previous,
+                           Region::iterator) override {
+    forEachAnalysis([&](SampleDependenceAnalysis &analysis) {
+      analysis.notifyBlockInserted(block);
+    });
+    if (verifier) {
+      if (!previous)
+        verifier->noteCreated(block);
+      if (Operation *parent = block->getParentOp())
+        verifier->check("block insertion", parent);
+    }
+  }
+  void notifyBlockErased(Block *block) override {
+    forEachAnalysis([&](SampleDependenceAnalysis &analysis) {
+      analysis.notifyBlockErased(block);
+    });
+    if (verifier) {
+      verifier->noteErased(block);
+      if (Operation *parent = block->getParentOp())
+        verifier->check("block erasure", parent, block->getArguments());
+    }
+  }
+  void notifyOperationModified(Operation *op) override {
+    if (isa<InferRegionOp>(op)) {
+      unsigned dropped = cache.drop(op, /*onlyIfSourcesChanged=*/true);
+      if (verifier)
+        verifier->noteDroppedEntries(dropped);
+    }
+    forEachAnalysis([&](SampleDependenceAnalysis &analysis) {
+      analysis.notifyOperationModified(op);
+    });
+    if (verifier)
+      verifier->check("modification", op);
+  }
+  void notifyOperationReplaced(Operation *op, ValueRange replacement) override {
+    if (verifier)
+      verifier->classifyReplacement(op, replacement);
+    forEachAnalysis([&](SampleDependenceAnalysis &analysis) {
+      analysis.notifyOperationReplaced(op, replacement);
+    });
+    if (verifier)
+      verifier->check("replacement", op);
+  }
+  void notifyOperationErased(Operation *op) override {
+    if (isa<InferRegionOp>(op)) {
+      unsigned dropped = cache.drop(op, /*onlyIfSourcesChanged=*/false);
+      if (verifier)
+        verifier->noteDroppedEntries(dropped);
+    }
+    forEachAnalysis([&](SampleDependenceAnalysis &analysis) {
+      analysis.notifyOperationErased(op);
+    });
+    if (verifier) {
+      verifier->noteErased(op);
+      verifier->check("erasure", op, op->getResults());
+    }
+  }
+  void notifyPatternBegin(const Pattern &pattern, Operation *) override {
+    if (verifier)
+      verifier->patternBegin(pattern);
+  }
+  void notifyPatternEnd(const Pattern &pattern, LogicalResult status) override {
+    if (verifier)
+      verifier->patternEnd(pattern, status);
+  }
 
 private:
   SampleDependenceCache &cache;
+  IncrementalAnalysisVerifier *verifier;
 };
 
 class ScopedSampleDependenceCache {
@@ -141,7 +452,6 @@ static SharedSampleDependenceAnalysis analyzeEnclosingRegion(Operation *op) {
   return std::make_shared<SampleDependenceAnalysis>(regionOp, target);
 }
 
-/// IR being rewritten.
 static SharedSampleDependenceAnalysis analyzeRegionHolding(Value value) {
   Region *region = value.getParentRegion();
   while (region && !isa<InferRegionOp>(region->getParentOp()))
@@ -4638,12 +4948,15 @@ struct SICMPass : public enzyme::impl::SICMPassBase<SICMPass> {
                      GaussianSufficientStatsGramReduceHLO>(
             getOperation()->getContext(), PatternBenefit(2),
             sufficientStatsMinWork);
-      // sample-dependence analysis per (region, target) until the IR changes.
       SampleDependenceCache analysisCache;
-      SampleDependenceCacheInvalidator invalidator(analysisCache);
+      std::optional<IncrementalAnalysisVerifier> verifier;
+      if (verifyIncrementalAnalysis)
+        verifier.emplace(analysisCache, regionOp);
+      SampleDependenceCacheUpdater updater(analysisCache,
+                                           verifier ? &*verifier : nullptr);
       ScopedSampleDependenceCache scopedCache(analysisCache);
       GreedyRewriteConfig config;
-      config.setListener(&invalidator);
+      config.setListener(&updater);
       SmallVector<Operation *> regionOps;
       for (Region &region : regionOp->getRegions())
         region.walk([&](Operation *op) { regionOps.push_back(op); });
@@ -4652,6 +4965,13 @@ struct SICMPass : public enzyme::impl::SICMPassBase<SICMPass> {
         (void)applyOpPatternsGreedily(regionOps, std::move(patterns), config,
                                       &patternChanged);
       anyChanged |= patternChanged;
+      if (verifier &&
+          verifier->report(
+              target == AnalysisTarget::Logpdf ? "logpdf" : "sampler", iter)) {
+        regionOp->emitError("sicm: the incremental sample-dependence "
+                            "analysis missed a sample-dependent value");
+        signalPassFailure();
+      }
       // CSE and hoist constants, as a module-wide greedy rewrite would.
       {
         OperationFolder folder(getOperation()->getContext());
