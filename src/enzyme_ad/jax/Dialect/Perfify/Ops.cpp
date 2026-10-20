@@ -8,7 +8,9 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 
 namespace mlir::enzyme::perfify {
-// Handle optional type suffix (either "perfify.cmp <comparator>, %a, %b" or "perfify.cmp <comparator>, %a, %b : !perfify.cost, !perfify.interval" is valid)
+// Handle optional type suffix (either "perfify.cmp <comparator>, %a, %b" or
+// "perfify.cmp <comparator>, %a, %b : !perfify.cost, !perfify.interval" is
+// valid)
 static ParseResult parseCmpOperandTypes(OpAsmParser &parser, Type &lhsType,
                                         Type &rhsType) {
   if (succeeded(parser.parseOptionalColon()))

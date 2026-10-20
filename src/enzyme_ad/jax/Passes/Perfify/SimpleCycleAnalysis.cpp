@@ -1,9 +1,9 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
@@ -67,12 +67,15 @@ struct SimpleCycleAnalysisPass
               con_cost->getParentRegion()->getRegionNumber());
       constant_costs.insert({pre_post, &con_cost.getBody()});
     } else if (auto interval_cost = dyn_cast<IntervalOp>(op)) {
-      std::optional<mlir::Region *> lb = nullptr, ub = nullptr; // if nullptr, cannot be evaluated.
+      std::optional<mlir::Region *>
+          lb = nullptr,
+          ub = nullptr; // if nullptr, cannot be evaluated.
       if (mlir::Value bound = interval_cost.getLb()) {
         if (auto con_cost = bound.getDefiningOp<ConstantCostOp>()) {
           lb = &con_cost.getBody();
         } else {
-          llvm::outs() << "interval lower bound must be a perfify.constant_cost\n";
+          llvm::outs()
+              << "interval lower bound must be a perfify.constant_cost\n";
           lb = std::nullopt;
         }
       }
@@ -80,7 +83,8 @@ struct SimpleCycleAnalysisPass
         if (auto con_cost = bound.getDefiningOp<ConstantCostOp>()) {
           ub = &con_cost.getBody();
         } else {
-          llvm::outs() << "interval upper bound must be a perfify.constant_cost\n";
+          llvm::outs()
+              << "interval upper bound must be a perfify.constant_cost\n";
           ub = std::nullopt;
         }
       }
@@ -170,55 +174,55 @@ struct SimpleCycleAnalysisPass
           if (ub)
             in_interval = in_interval && (cost <= *ub);
           switch (pred) {
-            case CmpPredicate::eq:
-              holds = in_interval;
-              break;
-            case CmpPredicate::ne:
-              holds = !in_interval;
-              break;
-            case CmpPredicate::lt:
-              holds = lb ? z3::expr(cost < *lb) : ctx.bool_val(false);
-              break;
-            case CmpPredicate::le:
-              holds = lb ? z3::expr(cost <= *lb) : ctx.bool_val(false);
-              break;
-            case CmpPredicate::gt:
-              holds = ub ? z3::expr(cost > *ub) : ctx.bool_val(false);
-              break;
-            case CmpPredicate::ge:
-              holds = ub ? z3::expr(cost >= *ub) : ctx.bool_val(false);
-              break;
+          case CmpPredicate::eq:
+            holds = in_interval;
+            break;
+          case CmpPredicate::ne:
+            holds = !in_interval;
+            break;
+          case CmpPredicate::lt:
+            holds = lb ? z3::expr(cost < *lb) : ctx.bool_val(false);
+            break;
+          case CmpPredicate::le:
+            holds = lb ? z3::expr(cost <= *lb) : ctx.bool_val(false);
+            break;
+          case CmpPredicate::gt:
+            holds = ub ? z3::expr(cost > *ub) : ctx.bool_val(false);
+            break;
+          case CmpPredicate::ge:
+            holds = ub ? z3::expr(cost >= *ub) : ctx.bool_val(false);
+            break;
           }
         }
       } else {
-        auto pre_post_cost =
-            constant_costs.find(
-                static_cast<mlir::enzyme::perfify::HoareStates>(region_num));
+        auto pre_post_cost = constant_costs.find(
+            static_cast<mlir::enzyme::perfify::HoareStates>(region_num));
         if (pre_post_cost == constant_costs.end()) {
           llvm::outs() << "no constant cost registered for conditions region "
                        << region_num << "\n";
         } else {
-          z3::expr expected_cost = evaluateCostRegion(pre_post_cost->second, solver);
+          z3::expr expected_cost =
+              evaluateCostRegion(pre_post_cost->second, solver);
           switch (pred) {
-            case CmpPredicate::eq:
-              holds = cost == expected_cost;
-              break;
-            case CmpPredicate::ne:
-              holds = cost != expected_cost;
-              break;
-            case CmpPredicate::lt:
-              holds = cost < expected_cost;
-              break;
-            case CmpPredicate::le:
-              holds = cost <= expected_cost;
-              break;
-            case CmpPredicate::gt:
-              holds = cost > expected_cost;
-              break;
-            case CmpPredicate::ge:
-              holds = cost >= expected_cost;
-              break;
-            }
+          case CmpPredicate::eq:
+            holds = cost == expected_cost;
+            break;
+          case CmpPredicate::ne:
+            holds = cost != expected_cost;
+            break;
+          case CmpPredicate::lt:
+            holds = cost < expected_cost;
+            break;
+          case CmpPredicate::le:
+            holds = cost <= expected_cost;
+            break;
+          case CmpPredicate::gt:
+            holds = cost > expected_cost;
+            break;
+          case CmpPredicate::ge:
+            holds = cost >= expected_cost;
+            break;
+          }
         }
       }
       if (holds) { // check that we don't have an empty hypothesis

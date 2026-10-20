@@ -9,28 +9,30 @@ include "mlir/IR/SymbolInterfaces.td"
 include "Dialect.td"
 include "Types.td"
 
-def DefSymbolOp : PerfifyOp<"define_symbol", [Symbol, SymbolName, SymbolVisibility]> {
+def DefSymbolOp
+    : PerfifyOp<"define_symbol", [Symbol, SymbolName, SymbolVisibility]> {
   let arguments = (ins SymbolNameAttr:$sym_name, TypeAttr:$type,
                    OptionalAttr<StrAttr>:$sym_visibility);
   let assemblyFormat = "($sym_visibility^)? $sym_name `:` $type attr-dict";
 }
 
-def SymCostOp : PerfifyOp<"sym_cost", [
-    DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
-  let arguments = (ins FlatSymbolRefAttr:$sym);
-  let results  = (outs AnyType:$result);
+def SymCostOp : PerfifyOp<"sym_cost",
+                          [DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+  let arguments = (ins FlatSymbolRefAttr : $sym);
+  let results = (outs AnyType : $result);
   let assemblyFormat = "$sym attr-dict `:` type($result)";
 }
 
 def CostOp : PerfifyOp<"cost", [IsolatedFromAbove]> {
-  let arguments = (ins StrAttr:$target_op);
-  let regions = (region AnyRegion:$body);
+  let arguments = (ins StrAttr : $target_op);
+  let regions = (region AnyRegion : $body);
   let assemblyFormat = "$target_op $body attr-dict";
 }
 
-def FnCostOp : PerfifyOp<"fn_cost", []> { // this should be where we calculate the cost in the pass
-  let results = (outs CostType:$out_cost);
-  let assemblyFormat = "attr-dict `:` type($out_cost)"; 
+def FnCostOp : PerfifyOp<"fn_cost", []> { // this should be where we calculate
+                                          // the cost in the pass
+  let results = (outs CostType : $out_cost);
+  let assemblyFormat = "attr-dict `:` type($out_cost)";
 }
 
 def CompareOp : PerfifyOp<"cmp", []> {
@@ -89,13 +91,13 @@ def YieldOp : PerfifyOp<"yield", [Terminator]> {
 
 def HypothesisOp : PerfifyOp<"hypothesis", []> {
   let arguments = (ins CostType:$cost_hyp, PerfifyHoareStates:$pre_post);
-  let assemblyFormat = "$cost_hyp $pre_post attr-dict";
+  let assemblyFor mat = "$cost_hyp $pre_post attr-dict";
 }
 
 def IntervalOp : PerfifyOp<"interval", [AttrSizedOperandSegments]> {
-  let arguments = (ins Optional<CostType>:$lb, Optional<CostType>:$ub);
+  let arguments = (ins Optional<CostType> : $lb, Optional<CostType> : $ub);
   let assemblyFormat = "`[`$lb `,`$ub`]` attr-dict";
-  let results = (outs IntervalType:$result);
+  let results = (outs IntervalType : $result);
   let hasVerifier = 1;
 }
 
