@@ -7,6 +7,10 @@ Type convertMpiComm(MpiCommType type) {
   return RankedTensorType::get({}, IntegerType::get(type.getContext(), 64));
 }
 
+Type convertNcclComm(NcclCommType type) {
+  return RankedTensorType::get({}, IntegerType::get(type.getContext(), 64));
+}
+
 Type convertMpiOp(MpiOpType type) {
   return RankedTensorType::get({}, IntegerType::get(type.getContext(), 64));
 }
@@ -19,6 +23,7 @@ Type convertMpiRequest(MpiRequestType type, unsigned requestWidth) {
 StablehloTypeConverter::StablehloTypeConverter(unsigned requestWidth) {
   addConversion([](Type type) { return type; });
   addConversion(convertMpiComm);
+  addConversion(convertNcclComm);
   addConversion(convertMpiOp);
   addConversion([requestWidth](MpiRequestType type) {
     return convertMpiRequest(type, requestWidth);
