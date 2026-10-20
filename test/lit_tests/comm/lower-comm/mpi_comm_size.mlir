@@ -11,7 +11,8 @@ func.func @main(%comm : !comm.mpi.comm) -> tensor<i32> {
 // SHLO-NEXT: %[[v0:.*]] = stablehlo.custom_call @MpiCommSize(%[[COMM]]) : (tensor<i64>) -> tensor<i32>
 // SHLO-NEXT: return %[[v0]] : tensor<i32>
 
-// NCCL-LABEL: func.func @main(%[[COMM:.*]]: !comm.nccl.comm) -> tensor<i32> {
+// NCCL-LABEL: func.func @main
+// NCCL-SAME: (%[[COMM:.*]]: !comm.nccl.comm) -> tensor<i32> {
 // NCCL-NEXT: %[[SIZE:.*]] = comm.nccl.comm_count %[[COMM]] : tensor<i32>
 // NCCL-NEXT: return %[[SIZE]] : tensor<i32>
 
