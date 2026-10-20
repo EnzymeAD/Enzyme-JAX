@@ -120,7 +120,7 @@ static Value createMpiPtrConstant(OpBuilder &builder, Location loc,
 // }
 
 #ifdef ENZYMEJAX_CUDA
-llvm::Expected<ncclDatatype_t>
+llvm::Expected<ncclDataType_t>
 convertMlirTypeToNcclDatatype(Type type, bool allow_cast = false) {
   if (type.isInteger(8))  /*ffi::DataType::S8:*/
     return ncclInt8;      // aka ncclChar
@@ -144,8 +144,8 @@ convertMlirTypeToNcclDatatype(Type type, bool allow_cast = false) {
     return ncclBfloat16;
   if (type.isF8E5M2()) /*ffi::DataType::F8E5M2:*/
     return ncclFloat8e5m2;
-  if (type.isF8E4M3()) /*ffi::DataType::F8E4M3:*/
-    return ncclFloat8e4m3;
+  // if (isa<Float8E4M3Type>(type)) /*ffi::DataType::F8E4M3:*/
+  //   return ncclFloat8e4m3;
 
   std::string type_name;
   llvm::raw_string_ostream ostream(type_name);
@@ -171,8 +171,8 @@ convertCommNcclRedOpEnumToNcclRedOp(comm::NcclRedOpEnum op) {
   default:
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
-        "MPI operation has no equivalent in NCCL: %s",
-        comm::stringifyMpiOpEnum(op).c_str());
+        "NCCL reduction operation is unsupported: %s",
+        comm::stringifyNcclRedOpEnum(op).str().c_str());
   }
 }
 #endif
@@ -1736,10 +1736,14 @@ struct LowerCommNcclCommUserRankOpToJIT
       //   }
 
       Value arg_comm_ptr = entryBlock->getArgument(0);
-      Value arg_size_ptr = entryBlock->getArgument(1);
+      Value arg_rank_ptr = entryBlock->getArgument(1);
 
+      Value one = LLVM::ConstantOp::create(
+                      rewriter, op.getLoc(), type_i32,
+                      rewriter.getI32IntegerAttr(1))
+                      .getResult();
       Value host_comm_ptr =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr)
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr, one)
               .getResult();
 
       // TODO move to cudaMemcpyAsync by wrapping NCCL call in
@@ -1766,7 +1770,7 @@ struct LowerCommNcclCommUserRankOpToJIT
 
       // TODO error checking: currently, we ignore the int return code
       Value host_rank_ptr =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32, one)
               .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
@@ -1814,7 +1818,6 @@ struct LowerCommNcclCommUserRankOpToJIT
         ValueRange{comm, rank_placeholder},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
-        /*result_layouts=*/nullptr,
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/aliases,
@@ -1872,8 +1875,12 @@ struct LowerCommNcclCommCountOpToJIT
       Value arg_comm_ptr = entryBlock->getArgument(0);
       Value arg_size_ptr = entryBlock->getArgument(1);
 
+      Value one = LLVM::ConstantOp::create(
+                      rewriter, op.getLoc(), type_i32,
+                      rewriter.getI32IntegerAttr(1))
+                      .getResult();
       Value host_comm_ptr =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr)
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr, one)
               .getResult();
 
       // TODO move to cudaMemcpyAsync by wrapping NCCL call in
@@ -1900,7 +1907,7 @@ struct LowerCommNcclCommCountOpToJIT
 
       // TODO error checking: currently, we ignore the int return code
       Value host_size_ptr =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32, one)
               .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
@@ -1948,7 +1955,6 @@ struct LowerCommNcclCommCountOpToJIT
         ValueRange{comm, size_placeholder},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
-        /*result_layouts=*/nullptr,
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/aliases,
@@ -2032,18 +2038,22 @@ struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
                                .getResult();
 
       // copy scalars from device to host memory
+      Value one = LLVM::ConstantOp::create(
+                      rewriter, op.getLoc(), type_i32,
+                      rewriter.getI32IntegerAttr(1))
+                      .getResult();
       Value host_count_ptr =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32, one)
               .getResult();
       Value host_datatype_ptr =
           LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr,
-                                 type_nccl_datatype)
+                                 type_nccl_datatype, one)
               .getResult();
       Value host_peer_ptr =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32, one)
               .getResult();
       Value host_comm_ptr =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr)
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr, one)
               .getResult();
 
       Value memcpy_count;
@@ -2149,7 +2159,7 @@ struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
         op.getLoc(), RankedTensorType::get({}, type_nccl_datatype),
         DenseIntElementsAttr::get(
             RankedTensorType::get({}, type_nccl_datatype),
-            ArrayRef<ncclDataType_t>{datatype_val.get()}));
+            ArrayRef<int32_t>{static_cast<int32_t>(datatype_val.get())}));
 
     auto peer = adaptor.getPeer();
     auto comm = adaptor.getComm();
@@ -2159,7 +2169,6 @@ struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
         ValueRange{sendbuff, count, datatype, peer, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
-        /*result_layouts=*/nullptr,
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/nullptr,
@@ -2243,18 +2252,22 @@ struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
                                .getResult();
 
       // copy scalars from device to host memory
+      Value one = LLVM::ConstantOp::create(
+                      rewriter, op.getLoc(), type_i32,
+                      rewriter.getI32IntegerAttr(1))
+                      .getResult();
       Value host_count_ptr =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32, one)
               .getResult();
       Value host_datatype_ptr =
           LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr,
-                                 type_nccl_datatype)
+                                 type_nccl_datatype, one)
               .getResult();
       Value host_peer_ptr =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32, one)
               .getResult();
       Value host_comm_ptr =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr)
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr, one)
               .getResult();
 
       Value memcpy_count;
@@ -2345,7 +2358,7 @@ struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
     auto type_buffer = op.getRecvbuff().getType();
     auto recvbuff = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_buffer,
-        DenseElementsAttr::get(type_buffer, op.getRecvbuff().getValue()));
+        cast<DenseElementsAttr>(rewriter.getZeroAttr(type_buffer)));
 
     auto len = std::reduce(op.getRecvbuff().getType().getShape().begin(),
                            op.getRecvbuff().getType().getShape().end(), 1,
@@ -2364,7 +2377,7 @@ struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
         op.getLoc(), RankedTensorType::get({}, type_nccl_datatype),
         DenseIntElementsAttr::get(
             RankedTensorType::get({}, type_nccl_datatype),
-            ArrayRef<ncclDataType_t>{datatype_val.get()}));
+            ArrayRef<int32_t>{static_cast<int32_t>(datatype_val.get())}));
 
     auto peer = adaptor.getPeer();
     auto comm = adaptor.getComm();
@@ -2381,7 +2394,6 @@ struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
         ValueRange{recvbuff, count, datatype, peer, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
-        /*result_layouts=*/nullptr,
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/aliases,
@@ -2467,18 +2479,23 @@ struct LowerCommNcclAllReduceOpToJIT
                                .getResult();
 
       // copy scalars from device to host memory
+      Value one = LLVM::ConstantOp::create(
+                      rewriter, op.getLoc(), type_i32,
+                      rewriter.getI32IntegerAttr(1))
+                      .getResult();
       Value host_count_ptr =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32, one)
               .getResult();
       Value host_datatype_ptr =
           LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr,
-                                 type_nccl_datatype)
+                                 type_nccl_datatype, one)
               .getResult();
-      Value host_redop_ptr = LLVM::AllocaOp::create(rewriter, op.getLoc(),
-                                                    type_ptr, type_nccl_redop)
-                                 .getResult();
+      Value host_redop_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr,
+                                 type_nccl_redop, one)
+              .getResult();
       Value host_comm_ptr =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr)
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr, one)
               .getResult();
 
       Value memcpy_count;
@@ -2573,16 +2590,16 @@ struct LowerCommNcclAllReduceOpToJIT
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
-    auto buffer = adaptor.getSendbuff();
-    auto len = std::reduce(op.getRecvbuff().getType().getShape().begin(),
-                           op.getRecvbuff().getType().getShape().end(), 1,
+    auto buffer = adaptor.getSendbuf();
+    auto len = std::reduce(op.getRecvbuf().getType().getShape().begin(),
+                           op.getRecvbuf().getType().getShape().end(), 1,
                            std::multiplies<int64_t>());
     auto count = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i32,
         DenseIntElementsAttr::get(type_tensor_i32, len));
 
     auto datatype_val = convertMlirTypeToNcclDatatype(
-        op.getRecvbuff().getType().getElementType());
+        op.getRecvbuf().getType().getElementType());
     if (!datatype_val) {
       auto err = datatype_val.takeError();
       return rewriter.notifyMatchFailure(op, llvm::toString(std::move(err)));
@@ -2591,9 +2608,10 @@ struct LowerCommNcclAllReduceOpToJIT
         op.getLoc(), RankedTensorType::get({}, type_nccl_datatype),
         DenseIntElementsAttr::get(
             RankedTensorType::get({}, type_nccl_datatype),
-            ArrayRef<ncclDataType_t>{datatype_val.get()}));
+            ArrayRef<int32_t>{static_cast<int32_t>(datatype_val.get())}));
 
-    auto redop_val = convertCommNcclRedOpEnumToNcclRedOp(op.getOp());
+    auto redop_val =
+        convertCommNcclRedOpEnumToNcclRedOp(op.getReduceOp().getValue());
     if (!redop_val) {
       auto err = redop_val.takeError();
       return rewriter.notifyMatchFailure(op, llvm::toString(std::move(err)));
@@ -2601,7 +2619,7 @@ struct LowerCommNcclAllReduceOpToJIT
     auto redop = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), RankedTensorType::get({}, type_nccl_redop),
         DenseIntElementsAttr::get(RankedTensorType::get({}, type_nccl_redop),
-                                  redop_val.get()));
+                                  static_cast<int32_t>(redop_val.get())));
 
     auto comm = adaptor.getComm();
 
@@ -2618,7 +2636,6 @@ struct LowerCommNcclAllReduceOpToJIT
         ValueRange{buffer, count, datatype, redop, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
-        /*result_layouts=*/nullptr,
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/aliases,
@@ -2703,18 +2720,22 @@ struct LowerCommNcclBroadcastOpToJIT
                                .getResult();
 
       // copy scalars from device to host memory
+      Value one = LLVM::ConstantOp::create(
+                      rewriter, op.getLoc(), type_i32,
+                      rewriter.getI32IntegerAttr(1))
+                      .getResult();
       Value host_count_ptr =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32, one)
               .getResult();
       Value host_datatype_ptr =
           LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr,
-                                 type_nccl_datatype)
+                                 type_nccl_datatype, one)
               .getResult();
       Value host_root_ptr =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32, one)
               .getResult();
       Value host_comm_ptr =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr)
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr, one)
               .getResult();
 
       Value memcpy_count;
@@ -2822,7 +2843,7 @@ struct LowerCommNcclBroadcastOpToJIT
         op.getLoc(), RankedTensorType::get({}, type_nccl_datatype),
         DenseIntElementsAttr::get(
             RankedTensorType::get({}, type_nccl_datatype),
-            ArrayRef<ncclDataType_t>{datatype_val.get()}));
+            ArrayRef<int32_t>{static_cast<int32_t>(datatype_val.get())}));
 
     auto root = adaptor.getRoot();
     auto comm = adaptor.getComm();
@@ -2840,7 +2861,6 @@ struct LowerCommNcclBroadcastOpToJIT
         ValueRange{buffer, count, datatype, root, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
-        /*result_layouts=*/nullptr,
         /*arg_attrs=*/nullptr,
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/aliases,
