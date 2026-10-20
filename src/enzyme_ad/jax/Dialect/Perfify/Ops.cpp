@@ -57,3 +57,14 @@ LogicalResult CompareOp::verify() {
     return emitOpError("cannot compare two intervals");
   return success();
 }
+
+LogicalResult HypothesisOp::verify() {
+  if (!getCmp().getDefiningOp<CompareOp>())
+    return emitOpError("operand must be defined by perfify.cmp");
+  if (isa_and_nonnull<ConditionsOp>((*this)->getParentOp()) &&
+      (*this)->getParentRegion()->getRegionNumber() !=
+          static_cast<unsigned>(getPrePost()))
+    return emitOpError("'") << stringifyHoareStates(getPrePost())
+                            << "' hypothesis is in the wrong conditions region";
+  return success();
+}
