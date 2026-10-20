@@ -9,4 +9,5 @@ class PerfifyType<string name, string type_mnemonic, list<Trait> traits = []>
 }
 
 def CostType : PerfifyType<"Cost", "cost">;
+def IntervalType : PerfifyType<"Interval", "interval">;
 #endif // ENZYME_PERFIFY_DIALECT_TYPES_H
