@@ -42,8 +42,8 @@ struct LegalizeMpiCommRankOpToNccl
   LogicalResult
   matchAndRewrite(comm::MpiCommRankOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<comm::NcclCommUserRankOp>(
-        op, op.getType(), adaptor.getComm());
+    rewriter.replaceOpWithNewOp<comm::NcclCommUserRankOp>(op, op.getType(),
+                                                          adaptor.getComm());
     return success();
   }
 };
@@ -55,8 +55,8 @@ struct LegalizeMpiCommSizeOpToNccl
   LogicalResult
   matchAndRewrite(comm::MpiCommSizeOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<comm::NcclCommCountOp>(
-        op, op.getType(), adaptor.getComm());
+    rewriter.replaceOpWithNewOp<comm::NcclCommCountOp>(op, op.getType(),
+                                                       adaptor.getComm());
     return success();
   }
 };
@@ -145,8 +145,8 @@ struct FoldMpiWaitOp : public OpRewritePattern<comm::MpiWaitOp> {
       rewriter.eraseOp(op);
       rewriter.setInsertionPoint(isend);
       rewriter.create<comm::MpiSendOp>(isend.getLoc(), isend.getBuffer(),
-                                      isend.getDest(), isend.getTag(),
-                                      isend.getComm());
+                                       isend.getDest(), isend.getTag(),
+                                       isend.getComm());
       rewriter.eraseOp(isend);
       return success();
     }
@@ -234,8 +234,8 @@ struct FoldMpiWaitallOp : public OpRewritePattern<comm::MpiWaitallOp> {
       if (auto isend = dyn_cast<comm::MpiIsendOp>(producer)) {
         rewriter.setInsertionPoint(isend);
         auto send = rewriter.create<comm::MpiSendOp>(
-            isend.getLoc(), isend.getBuffer(), isend.getDest(),
-            isend.getTag(), isend.getComm());
+            isend.getLoc(), isend.getBuffer(), isend.getDest(), isend.getTag(),
+            isend.getComm());
         rewriter.eraseOp(isend);
         lastReplacement = send;
         continue;
