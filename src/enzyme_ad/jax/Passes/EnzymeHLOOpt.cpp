@@ -6948,20 +6948,6 @@ struct WhileDeadResults final
     : CheckedOpRewritePattern<stablehlo::WhileOp, WhileDeadResults> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  void replaceTerminator(PatternRewriter &rewriter, Region &region,
-                         ArrayRef<int64_t> deadResults) const {
-    Operation *terminator = region.front().getTerminator();
-    SmallVector<Value> terminatorOperands;
-    for (auto &&[i, operand] : llvm::enumerate(terminator->getOperands())) {
-      if (!llvm::is_contained(deadResults, i))
-        terminatorOperands.push_back(operand);
-    }
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPoint(terminator);
-    rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(
-        terminator, TypeRange(), terminatorOperands, terminator->getAttrs());
-  }
-
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
                                     PatternRewriter &rewriter) const {
     bool isTotalPure = isPure(op);
@@ -7263,18 +7249,12 @@ struct WhileDeadResults final
     if (!removedResults.any())
       return failure();
 
-    SmallVector<int64_t> deadResults;
-    for (auto cur = removedResults.find_first(); cur != -1;
-         cur = removedResults.find_next(cur)) {
-      deadResults.push_back(cur);
-    }
-
-    replaceTerminator(rewriter, op.getBody(), deadResults);
+    op.getBody().front().getTerminator()->eraseOperands(removedResults);
 
     for (auto &cop : llvm::reverse(opUsers)) {
       bool hasDead = false;
-      for (int64_t i : deadResults) {
-        if (cop.second->count(i)) {
+      for (auto i : *cop.second) {
+        if (removedResults.test(i)) {
           hasDead = true;
           break;
         }
@@ -7284,8 +7264,8 @@ struct WhileDeadResults final
     }
     for (auto &cop : llvm::reverse(opUsersBody)) {
       bool hasDead = false;
-      for (int64_t i : deadResults) {
-        if (cop.second->count(i)) {
+      for (auto i : *cop.second) {
+        if (removedResults.test(i)) {
           hasDead = true;
           break;
         }
@@ -7299,7 +7279,7 @@ struct WhileDeadResults final
     SmallVector<Location> condBlockArgLocs, bodyBlockArgsLocs;
     for (auto &&[i, operand, resultType] :
          llvm::enumerate(op->getOperands(), op.getResultTypes())) {
-      if (llvm::is_contained(deadResults, i))
+      if (removedResults.test(i))
         continue;
 
       operands.push_back(operand);
@@ -7313,7 +7293,7 @@ struct WhileDeadResults final
     SmallVector<Value> resultReplacements;
     for (int64_t old = 0, upd = 0, end = op->getNumResults(); old < end;
          ++old) {
-      if (llvm::is_contained(deadResults, old)) {
+      if (removedResults.test(old)) {
         resultReplacements.push_back(nullptr);
         continue;
       }
@@ -7321,14 +7301,11 @@ struct WhileDeadResults final
       ++upd;
     }
 
-    for (int64_t i : llvm::reverse(deadResults))
-      op.getCond().eraseArgument(i);
+    op.getCond().front().eraseArguments(removedResults);
     rewriter.inlineRegionBefore(op.getCond(), updated.getCond(),
                                 updated.getCond().begin());
 
-    for (int64_t i : llvm::reverse(deadResults)) {
-      op.getBody().eraseArgument(i);
-    }
+    op.getBody().front().eraseArguments(removedResults);
     rewriter.inlineRegionBefore(op.getBody(), updated.getBody(),
                                 updated.getBody().begin());
 
