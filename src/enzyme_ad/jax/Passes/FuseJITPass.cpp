@@ -35,6 +35,7 @@ struct JITFusionInfo {
   SmallVector<enzymexla::JITCallOp> fusionCalls;
   SmallVector<LLVM::LLVMFuncOp> fusionFuncs;
   SmallVector<Value> fusedArgs;
+  SmallVector<Attribute> operandLayouts;
   SmallVector<SmallVector<unsigned>> callOperandSlots;
   SmallVector<Value> fusedReturns;
   DenseMap<Value, unsigned> resultSlotMap;
@@ -65,10 +66,9 @@ std::string buildFusedName(ArrayRef<enzymexla::JITCallOp> fusionCalls) {
 
 FailureOr<LLVM::LLVMFuncOp> lookupFusionFunction(ModuleOp module,
                                                  enzymexla::JITCallOp call) {
-  // TODO: Remap layouts and argument/result attrs to fused slots. Backend
-  // config is opaque, so it needs an explicit composition rule before fusion.
-  if (!call.getBackendConfig().empty() || call.getOperandLayoutsAttr() ||
-      call.getArgAttrsAttr() || call.getResAttrsAttr())
+  // Backend config is opaque, and argument/result attrs need slot remapping.
+  if (!call.getBackendConfig().empty() || call.getArgAttrsAttr() ||
+      call.getResAttrsAttr())
     return failure();
 
   // Fusion currently supports single-block, pointer-only, void wrappers.
@@ -135,6 +135,7 @@ FailureOr<int64_t> findAliasedOperandIndex(enzymexla::JITCallOp call,
 // Only this call's additions are staged; a rejected extension changes no state.
 struct JITFusionExtension {
   SmallVector<Value> newArgs;
+  SmallVector<Attribute> operandLayouts;
   DenseMap<Value, unsigned> readOnlyArgs;
   SmallVector<unsigned> operandSlots;
   SmallVector<unsigned> resultSlots;
@@ -147,6 +148,18 @@ LogicalResult validateFusionExtension(
     const DenseMap<Value, unsigned> &readOnlyArgs,
     const llvm::SmallPtrSetImpl<Operation *> &movedConstants,
     JITFusionExtension &extension) {
+  auto layouts = dyn_cast_or_null<ArrayAttr>(call.getOperandLayoutsAttr());
+  if (call.getOperandLayoutsAttr() &&
+      (!layouts || layouts.size() != call.getNumOperands()))
+    return failure();
+  // Keep unspecified layouts distinct from explicitly laid-out calls.
+  if (!info.fusionCalls.empty()) {
+    enzymexla::JITCallOp firstCall = info.fusionCalls.front();
+    if (static_cast<bool>(layouts) !=
+        static_cast<bool>(firstCall.getOperandLayoutsAttr()))
+      return failure();
+  }
+
   SmallVector<unsigned> aliasedOperands;
   for (unsigned resultIdx = 0; resultIdx < call.getNumResults(); ++resultIdx) {
     FailureOr<int64_t> aliasedOperand =
@@ -199,8 +212,23 @@ LogicalResult validateFusionExtension(
     unsigned slot = info.fusedArgs.size() + extension.newArgs.size();
     extension.operandSlots.push_back(slot);
     extension.newArgs.push_back(operand);
+    if (layouts)
+      extension.operandLayouts.push_back(layouts[operandIdx]);
     if (readOnly)
       extension.readOnlyArgs[operand] = slot;
+  }
+
+  // Each fused pointer slot has one layout. This also checks reused read-only
+  // operands and producer/result slots reached by an internal dependency.
+  if (layouts) {
+    for (auto [operandIdx, slot] : llvm::enumerate(extension.operandSlots)) {
+      Attribute slotLayout =
+          slot < info.fusedArgs.size()
+              ? info.operandLayouts[slot]
+              : extension.operandLayouts[slot - info.fusedArgs.size()];
+      if (layouts[operandIdx] != slotLayout)
+        return failure();
+    }
   }
 
   for (unsigned operandIdx : aliasedOperands)
@@ -404,6 +432,7 @@ JITFusionInfo collectDependencyFusionInfo(enzymexla::JITCallOp seedCall) {
     info.fusionFuncs.push_back(func.value());
     info.callOperandSlots.push_back(std::move(extension.operandSlots));
     llvm::append_range(info.fusedArgs, extension.newArgs);
+    llvm::append_range(info.operandLayouts, extension.operandLayouts);
     readOnlyArgs.insert(extension.readOnlyArgs.begin(),
                         extension.readOnlyArgs.end());
     for (Operation *constant : extension.constantsToMove)
@@ -559,7 +588,9 @@ LogicalResult rewriteFusion(enzymexla::JITCallOp firstCall,
       firstCall.getLoc(), fusedResultTypes,
       mlir::FlatSymbolRefAttr::get(rewriter.getContext(), fusedName), fusedArgs,
       StringAttr::get(rewriter.getContext(), ""),
-      /*operand_layouts=*/nullptr,
+      /*operand_layouts=*/firstCall.getOperandLayoutsAttr()
+          ? rewriter.getArrayAttr(fusionInfo.operandLayouts)
+          : nullptr,
       /*arg_attrs=*/nullptr,
       /*res_attrs=*/nullptr,
       /*output_operand_aliases=*/rewriter.getArrayAttr(fusedOutputAliases),
