@@ -1025,7 +1025,7 @@ static void addNoNanPasses(std::vector<std::string> &list, bool noNan) {
   list.push_back(passWithArg("no_nan_mul_simplify", noNan));
   list.push_back(passWithArg("no_nan_div_simplify", noNan));
   list.push_back(passWithArg("no_nan_compare_abs", noNan));
-  list.push_back(passWithArg("no_nan_abs_of_exp_simplify", noNan));
+  list.push_back(passWithArg("abs_of_exp_simplify", noNan));
 }
 
 static void addAllFinitePasses(std::vector<std::string> &list) {

@@ -21228,14 +21228,15 @@ struct ImagOfExpSimplify final
   }
 };
 
-// abs(exp(x)) -> exp(real(x))
-// Only valid without NaNs. For x = -2 + inf*i, exp(x) is NaN + NaN*i so the
-// original is NaN, while exp(real(x)) is exp(-2).
-struct NoNanAbsOfExpSimplify final
-    : public NoNanCheckedOpRewritePattern<stablehlo::AbsOp,
-                                          NoNanAbsOfExpSimplify> {
+// abs(exp(x)) -> is_finite(imag(x)) ? exp(real(x)) : NaN
+// For x = -2 + inf*i, exp(x) is NaN + NaN*i so the original is NaN, while
+// exp(real(x)) alone is exp(-2). Only the imaginary part needs the check, since
+// a NaN real part already makes exp(real(x)) NaN. The select is dropped when
+// NaNs are ruled out.
+struct AbsOfExpSimplify final
+    : public NoNanCheckedOpRewritePattern<stablehlo::AbsOp, AbsOfExpSimplify> {
   using NoNanCheckedOpRewritePattern<
-      stablehlo::AbsOp, NoNanAbsOfExpSimplify>::NoNanCheckedOpRewritePattern;
+      stablehlo::AbsOp, AbsOfExpSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::AbsOp op,
                                     PatternRewriter &rewriter) const {
@@ -21251,13 +21252,23 @@ struct NoNanAbsOfExpSimplify final
     if (!llvm::hasSingleElement(exp->getUsers()))
       return failure();
 
-    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op,
-                              rewriter))
-      return failure();
+    auto loc = op.getLoc();
+    auto re = stablehlo::RealOp::create(rewriter, loc, exp.getOperand());
+    if (canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op,
+                             rewriter)) {
+      rewriter.replaceOpWithNewOp<stablehlo::ExpOp>(op, re);
+      return success();
+    }
 
-    auto re =
-        stablehlo::RealOp::create(rewriter, op.getLoc(), exp.getOperand());
-    rewriter.replaceOpWithNewOp<stablehlo::ExpOp>(op, re);
+    auto im = stablehlo::ImagOp::create(rewriter, loc, exp.getOperand());
+    auto imIsFinite = stablehlo::IsFiniteOp::create(rewriter, loc, im);
+    auto expRe = stablehlo::ExpOp::create(rewriter, loc, re);
+    auto nan = stablehlo::ConstantOp::create(
+        rewriter, loc, op.getType(),
+        cast<ElementsAttr>(
+            makeAttr(op.getType(), std::numeric_limits<double>::quiet_NaN())));
+    rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(op, imIsFinite, expRe,
+                                                     nan);
     return success();
   }
 };
@@ -45471,12 +45482,12 @@ void mlir::transform::addNoNanCompareAbs(RewritePatternSet &patterns,
   patterns.insert<NoNanCompareAbs>(allowOnFloatingPointMath, &context, benefit);
 }
 
-void mlir::transform::addNoNanAbsOfExpSimplify(RewritePatternSet &patterns,
-                                               bool allowOnFloatingPointMath,
-                                               MLIRContext &context,
-                                               PatternBenefit benefit) {
-  patterns.insert<NoNanAbsOfExpSimplify>(allowOnFloatingPointMath, &context,
-                                         benefit);
+void mlir::transform::addAbsOfExpSimplify(RewritePatternSet &patterns,
+                                          bool allowOnFloatingPointMath,
+                                          MLIRContext &context,
+                                          PatternBenefit benefit) {
+  patterns.insert<AbsOfExpSimplify>(allowOnFloatingPointMath, &context,
+                                    benefit);
 }
 
 void mlir::transform::addNoNanSelfSubSimplify(RewritePatternSet &patterns,
@@ -45937,8 +45948,8 @@ struct EnzymeHLOOptPass
 
     patterns.add<NoNanCompareSimplify, NoNanSelfSubSimplify,
                  NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify,
-                 NoNanCompareAbs, NoNanAbsOfExpSimplify>((no_nan || all_finite),
-                                                         context);
+                 NoNanCompareAbs, AbsOfExpSimplify>((no_nan || all_finite),
+                                                    context);
 
     patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify>(
         context);
