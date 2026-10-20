@@ -2688,14 +2688,16 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
     rewriter.replaceAllUsesWith(op.getResult(0), customCall.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), customCall.getResult(1));
 
-    // @SVD returns `U` and `V`. We need to transpose `V` to match the
+    // @SVD returns `U` and `V`. We need the adjoint of `V` to match the
     // return convention of `enzymexla.linalg.svd`.
     SmallVector<int64_t> permutation(rank_input);
     std::iota(permutation.begin(), permutation.end() - 2, 0);
     permutation[rank_input - 1] = rank_input - 2;
     permutation[rank_input - 2] = rank_input - 1;
-    auto Vt = stablehlo::TransposeOp::create(
+    Value Vt = stablehlo::TransposeOp::create(
         rewriter, op.getLoc(), customCall.getResult(2), permutation);
+    if (isa<ComplexType>(type_input.getElementType()))
+      Vt = chlo::ConjOp::create(rewriter, op.getLoc(), Vt);
     rewriter.replaceAllUsesWith(op.getResult(2), Vt);
 
     // Netlib's LAPACK returns `info`, but TPU kernel doesn't
