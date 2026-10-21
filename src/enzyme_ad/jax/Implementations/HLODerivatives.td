@@ -1521,6 +1521,7 @@ def TriangularSolveShadowDotDims : GlobalExpr</*needsprimal*/0, /*needsshadow*/0
   );
 }]>;
 
+// Contracts the non-`A` dimension of `bar(b)` and `x` (columns if `left_side`, rows otherwise)
 def TriangularSolveDiffOuterDotDims : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto rank = cast<RankedTensorType>(op.getResult().getType()).getRank();
 
@@ -1529,7 +1530,7 @@ def TriangularSolveDiffOuterDotDims : GlobalExpr</*needsprimal*/0, /*needsshadow
     batch_dims.push_back(i);
   }
 
-  SmallVector<int64_t> contract_dims;
+  SmallVector<int64_t> contract_dims = {op.getLeftSide() ? rank - 1 : rank - 2};
 
   DotDimensionNumbersAttr::get(
     op.getContext(),
@@ -1558,6 +1559,55 @@ def TriangularSolveLike : SubRoutine<(Op $A, $b),
     (TriangularSolveGetLower),
     (TriangularSolveGetUnitDiagonal),
     (TriangularSolveGetTransposeA)
+  )>;
+
+// TODO `ADJOINT` is only handled correctly for real element types
+def TriangularSolveGetAdjointTransposeA : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto transA = op.getTransposeA();
+  transA == decltype(transA)::NO_TRANSPOSE ? decltype(transA)::TRANSPOSE : decltype(transA)::NO_TRANSPOSE;
+}]>;
+
+// bar(b) = op(A)^-T bar(x) if `left_side`, bar(x) op(A)^-T otherwise
+def TriangularSolveAdjointLike : SubRoutine<(Op $A, $diffret),
+  (TriangularSolve
+    $A,
+    $diffret,
+    (TriangularSolveGetLeftSide),
+    (TriangularSolveGetLower),
+    (TriangularSolveGetUnitDiagonal),
+    (TriangularSolveGetAdjointTransposeA)
+  )>;
+
+def TriangularSolveDotPrec : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{ArrayAttr();}]>;
+
+// `bar(b)` goes first in the contraction for (left, NO_TRANSPOSE) and (right, TRANSPOSE)
+def SelectIfTriangularSolveDiffFirst : StaticSelect<
+  "cast<TriangularSolveOp>(op).getLeftSide() == (cast<TriangularSolveOp>(op).getTransposeA() == Transpose::NO_TRANSPOSE)">;
+
+// Only the referenced triangle of `A` gets a gradient (without diagonal if `unit_diagonal`)
+def TriangularSolveTriangleMask : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto typeA = cast<RankedTensorType>(op.getA().getType());
+  auto rank = typeA.getRank();
+  auto iotaType = RankedTensorType::get(typeA.getShape(), builder.getI64Type());
+  auto rows = IotaOp::create(builder, op.getLoc(), iotaType, rank - 2);
+  auto cols = IotaOp::create(builder, op.getLoc(), iotaType, rank - 1);
+  ComparisonDirection dir;
+  if (op.getLower())
+    dir = op.getUnitDiagonal() ? ComparisonDirection::GT : ComparisonDirection::GE;
+  else
+    dir = op.getUnitDiagonal() ? ComparisonDirection::LT : ComparisonDirection::LE;
+  CompareOp::create(builder, op.getLoc(), rows, cols, dir);
+}]>;
+
+def TriangularSolveZeroLikeA : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto typeA = cast<RankedTensorType>(op.getA().getType());
+  ConstantOp::create(builder, op.getLoc(), typeA, cast<ElementsAttr>(makeAttr(typeA, 0)));
+}]>;
+
+def TriangularSolveDiffOuter : SubRoutine<(Op $A, $diffb, $x),
+  (SelectIfTriangularSolveDiffFirst
+    (DotGeneral (TypeOf $A), $diffb, $x, (TriangularSolveDiffOuterDotDims), (TriangularSolveDotPrec), (DotAlgorithmAttr)),
+    (DotGeneral (TypeOf $A), $x, $diffb, (TriangularSolveDiffOuterDotDims), (TriangularSolveDotPrec), (DotAlgorithmAttr))
   )>;
 
 def TrmmLikeTriangularSolveGetAlpha : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
@@ -1614,12 +1664,11 @@ def TrmmLikeTriangularSolve : SubRoutine<(Op $A, $b),
 
 def : HLODerivative<"TriangularSolveOp", (Op $A, $b),
   [
-    // (TriangularSolveLike
-    //   $A,
-    //   (DotGeneral // bar(x) * adjoint(x)
-    //   )),
-    (Neg $A),
-    (TrmmLikeTriangularSolve $A, (DiffeRet)) // TODO check whether we need to do sth on $A when `transpose_a = TRANSPOSE` or `ADJOINT`
+    (Select
+      (TriangularSolveTriangleMask),
+      (Neg (TriangularSolveDiffOuter $A, (TriangularSolveAdjointLike $A, (DiffeRet)), (TriangularSolveLike $A, $b))),
+      (TriangularSolveZeroLikeA)),
+    (TriangularSolveAdjointLike $A, (DiffeRet))
   ],
   (TriangularSolveLike
     $A,
