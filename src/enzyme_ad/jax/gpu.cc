@@ -41,6 +41,12 @@ struct CuKernelWrapper {
 
   void *library = nullptr;
   void *cuKernel = nullptr;
+
+  ~CuKernelWrapper() {
+    printf("freeing library\n");
+    if (library)
+      cuLibraryUnload(library);
+  }
 };
 xla::ffi::TypeId CuKernelWrapper::id = {};
 
