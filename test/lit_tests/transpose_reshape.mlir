@@ -96,14 +96,31 @@ func.func @fail1(%arg0: tensor<1x2x20x3xf32>) -> tensor<2x1x4x3x5xf32> {
 // CHECK-NEXT:     return %1 : tensor<2x1x4x3x5xf32>
 // CHECK-NEXT: }
 
-func.func @fail2(%arg0: tensor<1x2x20x3xf32>) -> tensor<1x60x2xf32> {
+// A reshape that merges dimensions: the transpose moves the merged
+// dimension whole, so the input's run of dimensions moves as a block.
+func.func @merged(%arg0: tensor<1x2x20x3xf32>) -> tensor<1x60x2xf32> {
     %0 = stablehlo.reshape %arg0 : (tensor<1x2x20x3xf32>) -> tensor<1x2x60xf32>
     %1 = stablehlo.transpose %0, dims = [0, 2, 1] : (tensor<1x2x60xf32>) -> tensor<1x60x2xf32>
     return %1 : tensor<1x60x2xf32>
 }
 
-// CHECK: func.func @fail2(%arg0: tensor<1x2x20x3xf32>) -> tensor<1x60x2xf32> {
-// CHECK-NEXT:     %0 = stablehlo.reshape %arg0 : (tensor<1x2x20x3xf32>) -> tensor<1x2x60xf32>
-// CHECK-NEXT:     %1 = stablehlo.transpose %0, dims = [0, 2, 1] : (tensor<1x2x60xf32>) -> tensor<1x60x2xf32>
+// CHECK: func.func @merged(%arg0: tensor<1x2x20x3xf32>) -> tensor<1x60x2xf32> {
+// CHECK-NEXT:     %0 = stablehlo.transpose %arg0, dims = [0, 2, 3, 1] : (tensor<1x2x20x3xf32>) -> tensor<1x20x3x2xf32>
+// CHECK-NEXT:     %1 = stablehlo.reshape %0 : (tensor<1x20x3x2xf32>) -> tensor<1x60x2xf32>
 // CHECK-NEXT:     return %1 : tensor<1x60x2xf32>
+// CHECK-NEXT: }
+
+// A merge under a transpose that also drops a unit dimension and keeps
+// another: the kept one moves with its output dimension, the dropped one
+// stays in place.
+func.func @merged_units(%x: tensor<1x3x3x8x4xf64>) -> tensor<8x4x9x1xf64> {
+  %0 = stablehlo.reshape %x : (tensor<1x3x3x8x4xf64>) -> tensor<1x9x8x4xf64>
+  %1 = stablehlo.transpose %0, dims = [2, 3, 1, 0] : (tensor<1x9x8x4xf64>) -> tensor<8x4x9x1xf64>
+  return %1 : tensor<8x4x9x1xf64>
+}
+
+// CHECK: func.func @merged_units(%arg0: tensor<1x3x3x8x4xf64>) -> tensor<8x4x9x1xf64> {
+// CHECK-NEXT:     %0 = stablehlo.transpose %arg0, dims = [3, 4, 1, 2, 0] : (tensor<1x3x3x8x4xf64>) -> tensor<8x4x3x3x1xf64>
+// CHECK-NEXT:     %1 = stablehlo.reshape %0 : (tensor<8x4x3x3x1xf64>) -> tensor<8x4x9x1xf64>
+// CHECK-NEXT:     return %1 : tensor<8x4x9x1xf64>
 // CHECK-NEXT: }

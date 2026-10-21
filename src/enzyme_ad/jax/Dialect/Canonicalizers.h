@@ -323,6 +323,20 @@ public:
       rewriter.modifyOpInPlace(call, [&]() {
         call->eraseOperands(nonLiveCallOperands);
         updateOperandSegmentSizes(call, numLiveOperands, rewriter);
+        auto filterLive = [&](ArrayAttr attrs) -> ArrayAttr {
+          if (!attrs || attrs.size() != deadArgs.size())
+            return attrs;
+          SmallVector<Attribute> live;
+          for (auto [i, a] : llvm::enumerate(attrs))
+            if (!deadArgs[i])
+              live.push_back(a);
+          return ArrayAttr::get(call->getContext(), live);
+        };
+        if (auto layouts =
+                dyn_cast_or_null<ArrayAttr>(call.getOperandLayoutsAttr()))
+          call.setOperandLayoutsAttr(filterLive(layouts));
+        if (auto argAttrs = call.getArgAttrsAttr())
+          call.setArgAttrsAttr(filterLive(argAttrs));
         call.setOutputOperandAliasesAttr(
             ArrayAttr::get(call->getContext(), outputAliases));
       });

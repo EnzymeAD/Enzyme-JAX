@@ -88,3 +88,45 @@ func.func @test4(%arg0: tensor<3x5x4xf64>) -> tensor<2x3x5xf64> {
     // CHECK-DAG: return [[RESULT:%.*]] : tensor<2x3x5xf64>
     return %6 : tensor<2x3x5xf64>
 }
+
+// CHECK-LABEL: func.func @test_collapse_slice_dim(%arg0: tensor<3x100x100x1xf32>) -> tensor<3x100x100x1xf32> {
+func.func @test_collapse_slice_dim(%arg0: tensor<3x100x100x1xf32>) -> tensor<3x100x100x1xf32> {
+    %0 = stablehlo.slice %arg0 [0:1, 0:100, 0:100, 0:1] : (tensor<3x100x100x1xf32>) -> tensor<1x100x100x1xf32>
+    %1 = stablehlo.reshape %0 : (tensor<1x100x100x1xf32>) -> tensor<100x100x1xf32>
+    %2 = stablehlo.slice %arg0 [1:2, 0:100, 0:100, 0:1] : (tensor<3x100x100x1xf32>) -> tensor<1x100x100x1xf32>
+    %3 = stablehlo.reshape %2 : (tensor<1x100x100x1xf32>) -> tensor<100x100x1xf32>
+    %4 = stablehlo.slice %arg0 [2:3, 0:100, 0:100, 0:1] : (tensor<3x100x100x1xf32>) -> tensor<1x100x100x1xf32>
+    %5 = stablehlo.reshape %4 : (tensor<1x100x100x1xf32>) -> tensor<100x100x1xf32>
+    %6 = stablehlo.concatenate %1, %3, %5, dim = 0 : (tensor<100x100x1xf32>, tensor<100x100x1xf32>, tensor<100x100x1xf32>) -> tensor<300x100x1xf32>
+    %7 = stablehlo.reshape %6 : (tensor<300x100x1xf32>) -> tensor<3x100x100x1xf32>
+    // CHECK-NEXT: return %arg0 : tensor<3x100x100x1xf32>
+    return %7 : tensor<3x100x100x1xf32>
+}
+
+// CHECK-LABEL: func.func @test_collapse_partial_slice(%arg0: tensor<4x10x5xf32>) -> tensor<20x5xf32> {
+func.func @test_collapse_partial_slice(%arg0: tensor<4x10x5xf32>) -> tensor<20x5xf32> {
+    %0 = stablehlo.slice %arg0 [1:2, 0:10, 0:5] : (tensor<4x10x5xf32>) -> tensor<1x10x5xf32>
+    %1 = stablehlo.reshape %0 : (tensor<1x10x5xf32>) -> tensor<10x5xf32>
+    %2 = stablehlo.slice %arg0 [2:3, 0:10, 0:5] : (tensor<4x10x5xf32>) -> tensor<1x10x5xf32>
+    %3 = stablehlo.reshape %2 : (tensor<1x10x5xf32>) -> tensor<10x5xf32>
+    %4 = stablehlo.concatenate %1, %3, dim = 0 : (tensor<10x5xf32>, tensor<10x5xf32>) -> tensor<20x5xf32>
+    // CHECK-NEXT: %0 = stablehlo.slice %arg0 [1:3, 0:10, 0:5] : (tensor<4x10x5xf32>) -> tensor<2x10x5xf32>
+    // CHECK-NEXT: %1 = stablehlo.reshape %0 : (tensor<2x10x5xf32>) -> tensor<20x5xf32>
+    // CHECK-NEXT: return %1 : tensor<20x5xf32>
+    return %4 : tensor<20x5xf32>
+}
+
+// CHECK-LABEL: func.func @test_transpose_and_collapse(%arg0: tensor<10x3x5xf32>) -> tensor<30x5xf32> {
+func.func @test_transpose_and_collapse(%arg0: tensor<10x3x5xf32>) -> tensor<30x5xf32> {
+    %0 = stablehlo.slice %arg0 [0:10, 0:1, 0:5] : (tensor<10x3x5xf32>) -> tensor<10x1x5xf32>
+    %1 = stablehlo.reshape %0 : (tensor<10x1x5xf32>) -> tensor<10x5xf32>
+    %2 = stablehlo.slice %arg0 [0:10, 1:2, 0:5] : (tensor<10x3x5xf32>) -> tensor<10x1x5xf32>
+    %3 = stablehlo.reshape %2 : (tensor<10x1x5xf32>) -> tensor<10x5xf32>
+    %4 = stablehlo.slice %arg0 [0:10, 2:3, 0:5] : (tensor<10x3x5xf32>) -> tensor<10x1x5xf32>
+    %5 = stablehlo.reshape %4 : (tensor<10x1x5xf32>) -> tensor<10x5xf32>
+    %6 = stablehlo.concatenate %1, %3, %5, dim = 0 : (tensor<10x5xf32>, tensor<10x5xf32>, tensor<10x5xf32>) -> tensor<30x5xf32>
+    // CHECK-NEXT: %0 = stablehlo.transpose %arg0, dims = [1, 0, 2] : (tensor<10x3x5xf32>) -> tensor<3x10x5xf32>
+    // CHECK-NEXT: %1 = stablehlo.reshape %0 : (tensor<3x10x5xf32>) -> tensor<30x5xf32>
+    // CHECK-NEXT: return %1 : tensor<30x5xf32>
+    return %6 : tensor<30x5xf32>
+}

@@ -172,3 +172,43 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr = dense<64> : vector<4
 // CHECK:           }
 // CHECK:           return
 // CHECK:         }
+
+// -----
+
+// A temporary stored whole, written a member at a time, and copied out: the
+// copy reads its runs, which go where the copy put them, and the temporary
+// goes.
+module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr = dense<64> : vector<4xi64>, i64 = dense<64> : vector<2xi64>, i32 = dense<32> : vector<2xi64>, i8 = dense<8> : vector<2xi64>, f64 = dense<64> : vector<2xi64>>} {
+  func.func @copy_out(%init: !llvm.struct<(array<8 x i8>, f64, array<3 x f64>)>, %x: f64, %dst: !llvm.ptr) {
+    %one = arith.constant 1 : i64
+    %c24 = arith.constant 24 : i64
+    %t = llvm.alloca %one x !llvm.struct<(array<8 x i8>, f64, array<3 x f64>)> : (i64) -> !llvm.ptr
+    %w = "enzymexla.pointer2memref"(%t) : (!llvm.ptr) -> memref<?x!llvm.struct<(array<8 x i8>, f64, array<3 x f64>)>>
+    affine.store %init, %w[0] : memref<?x!llvm.struct<(array<8 x i8>, f64, array<3 x f64>)>>
+    %d = "enzymexla.pointer2memref"(%t) : (!llvm.ptr) -> memref<?xf64>
+    affine.store %x, %d[2] : memref<?xf64>
+    affine.store %x, %d[3] : memref<?xf64>
+    affine.store %x, %d[4] : memref<?xf64>
+    %r = llvm.getelementptr %t[16] : (!llvm.ptr) -> !llvm.ptr, i8
+    "llvm.intr.memcpy"(%dst, %r, %c24) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @copy_out(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: !llvm.struct<(array<8 x i8>, f64, array<3 x f64>)>, %[[V1:[^ ,:)]+]]: f64, %[[V2:[^ ,:)]+]]: !llvm.ptr) {
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = arith.constant 1 : i64
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = arith.constant 24 : i64
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = llvm.extractvalue %[[V0]][2, 0] : !llvm.struct<(array<8 x i8>, f64, array<3 x f64>)>
+// CHECK-NEXT: %[[V6:[^ ,:)]+]] = llvm.extractvalue %[[V0]][2, 1] : !llvm.struct<(array<8 x i8>, f64, array<3 x f64>)>
+// CHECK-NEXT: %[[V7:[^ ,:)]+]] = llvm.extractvalue %[[V0]][2, 2] : !llvm.struct<(array<8 x i8>, f64, array<3 x f64>)>
+// CHECK-NEXT: %[[V8:[^ ,:)]+]] = "enzymexla.pointer2memref"(%[[V2]]) : (!llvm.ptr) -> memref<?xf64>
+// CHECK-NEXT: affine.store %[[V1]], %[[V8]][0] : memref<?xf64>
+// CHECK-NEXT: %[[V9:[^ ,:)]+]] = llvm.getelementptr %[[V2]][8] : (!llvm.ptr) -> !llvm.ptr, i8
+// CHECK-NEXT: %[[V10:[^ ,:)]+]] = "enzymexla.pointer2memref"(%[[V9]]) : (!llvm.ptr) -> memref<?xf64>
+// CHECK-NEXT: affine.store %[[V1]], %[[V10]][0] : memref<?xf64>
+// CHECK-NEXT: %[[V11:[^ ,:)]+]] = llvm.getelementptr %[[V2]][16] : (!llvm.ptr) -> !llvm.ptr, i8
+// CHECK-NEXT: %[[V12:[^ ,:)]+]] = "enzymexla.pointer2memref"(%[[V11]]) : (!llvm.ptr) -> memref<?xf64>
+// CHECK-NEXT: affine.store %[[V1]], %[[V12]][0] : memref<?xf64>
+// CHECK-NEXT: return
+// CHECK-NEXT: }

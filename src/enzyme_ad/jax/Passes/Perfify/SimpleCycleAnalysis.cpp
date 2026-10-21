@@ -3,6 +3,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
@@ -24,7 +25,6 @@ namespace perfify {
 using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::enzyme::perfify;
-enum class HoareStates { Pre = 0, Post = 1 };
 const std::string cost_str = "cost";
 
 namespace {
@@ -36,7 +36,10 @@ struct SimpleCycleAnalysisPass
   mlir::Region *analysis_func = NULL;
   std::unordered_map<std::string, mlir::Region *> cost_map;
   llvm::DenseMap<mlir::Value, int64_t> args;
-  std::unordered_map<HoareStates, mlir::Region *> constant_costs;
+  std::unordered_map<mlir::enzyme::perfify::HoareStates, mlir::Region *>
+      constant_costs;
+  llvm::DenseMap<mlir::Value, std::pair<mlir::Region *, mlir::Region *>>
+      interval_costs;
   llvm::DenseMap<mlir::StringAttr, mlir::Region *> funcMap;
 
   void runOnOperation() override {
@@ -59,9 +62,35 @@ struct SimpleCycleAnalysisPass
             &costOp.getBody(); // store the body of the region for eval
       }
     } else if (auto con_cost = dyn_cast<ConstantCostOp>(op)) {
-      HoareStates pre_post = static_cast<HoareStates>(
-          con_cost->getParentRegion()->getRegionNumber());
+      mlir::enzyme::perfify::HoareStates pre_post =
+          static_cast<mlir::enzyme::perfify::HoareStates>(
+              con_cost->getParentRegion()->getRegionNumber());
       constant_costs.insert({pre_post, &con_cost.getBody()});
+    } else if (auto interval_cost = dyn_cast<IntervalOp>(op)) {
+      std::optional<mlir::Region *>
+          lb = nullptr,
+          ub = nullptr; // if nullptr, cannot be evaluated.
+      if (mlir::Value bound = interval_cost.getLb()) {
+        if (auto con_cost = bound.getDefiningOp<ConstantCostOp>()) {
+          lb = &con_cost.getBody();
+        } else {
+          llvm::outs()
+              << "interval lower bound must be a perfify.constant_cost\n";
+          lb = std::nullopt;
+        }
+      }
+      if (mlir::Value bound = interval_cost.getUb()) {
+        if (auto con_cost = bound.getDefiningOp<ConstantCostOp>()) {
+          ub = &con_cost.getBody();
+        } else {
+          llvm::outs()
+              << "interval upper bound must be a perfify.constant_cost\n";
+          ub = std::nullopt;
+        }
+      }
+      if (lb && ub) {
+        interval_costs.insert({interval_cost.getResult(), {*lb, *ub}});
+      }
     } else if (auto arg = dyn_cast<ArgOp>(op)) {
       NamedAttribute arg_attr = op->getAttrs()[0];
       if (auto intAttr =
@@ -87,8 +116,8 @@ struct SimpleCycleAnalysisPass
                      << op->getAttrs()[1].getName().getValue() << "\n";
       }
 
-    } else if (auto func = dyn_cast<mlir::func::FuncOp>(op)) {
-      funcMap[func.getNameAttr()] = &func.getBody();
+    } else if (auto func = dyn_cast<FunctionOpInterface>(op)) {
+      funcMap[func.getNameAttr()] = &func.getFunctionBody();
     } else if (auto funcCost = dyn_cast<FnCostOp>(op)) {
       llvm::SmallVector<mlir::Operation *> allOps;
       if (analysis_func != NULL) {
@@ -117,50 +146,87 @@ struct SimpleCycleAnalysisPass
     } else if (auto cmpOp = dyn_cast<CompareOp>(op)) {
       CmpPredicate pred = cmpOp.getPredicateAttr().getValue();
       auto region_num = cmpOp->getParentRegion()->getRegionNumber();
-      auto pre_post_cost =
-          constant_costs.find(static_cast<HoareStates>(region_num));
-      if (pre_post_cost == constant_costs.end()) {
-        llvm::outs() << "no constant cost registered for conditions region "
-                     << region_num << "\n";
-      } else {
-        z3::expr expected_cost =
-            evaluateCostRegion(pre_post_cost->second, solver);
-        z3::expr p = solver.ctx().bool_val(true);
-        z3::expr q = solver.ctx().bool_val(
-            false); // should return false if nothing else?
-        if (region_num == 0) {
-          if (pred == CmpPredicate::eq) {
-            p = z3::expr(cost_var[0] == expected_cost); // precondition
-          } else if (pred == CmpPredicate::ne) {
-            p = z3::expr(cost_var[0] != expected_cost);
-          } else if (pred == CmpPredicate::lt) {
-            p = z3::expr(cost_var[0] < expected_cost);
-          } else if (pred == CmpPredicate::le) {
-            p = z3::expr(cost_var[0] <= expected_cost);
-          } else if (pred == CmpPredicate::gt) {
-            p = z3::expr(cost_var[0] > expected_cost);
-          } else if (pred == CmpPredicate::ge) {
-            p = z3::expr(cost_var[0] >= expected_cost);
-          }
-          solver.add(p);
+      z3::context &ctx = solver.ctx();
+      z3::expr cost = region_num == 0 ? cost_var[0] : cost_var.back();
+      mlir::Value interval;
+
+      for (mlir::Value operand : cmpOp->getOperands()) {
+        if (isa<IntervalType>(operand.getType()))
+          interval = operand;
+      }
+      std::optional<z3::expr> holds;
+      if (interval) {
+        auto bounds = interval_costs.find(interval);
+        if (bounds == interval_costs.end()) {
+          llvm::outs() << "no interval cost registered for conditions region "
+                       << region_num << "\n";
         } else {
-          if (pred == CmpPredicate::eq) {
-            q = z3::expr(cost_var[cost_var.size() - 1] !=
-                         expected_cost); // postcondition
-          } else if (pred == CmpPredicate::ne) {
-            q = z3::expr(cost_var[cost_var.size() - 1] == expected_cost);
-          } else if (pred == CmpPredicate::lt) {
-            q = z3::expr(cost_var[cost_var.size() - 1] >= expected_cost);
-          } else if (pred == CmpPredicate::le) {
-            q = z3::expr(cost_var[cost_var.size() - 1] > expected_cost);
-          } else if (pred == CmpPredicate::gt) {
-            q = z3::expr(cost_var[cost_var.size() - 1] <= expected_cost);
-          } else if (pred == CmpPredicate::ge) {
-            q = z3::expr(cost_var[cost_var.size() - 1] < expected_cost);
+          auto lbRegion = bounds->second.first;
+          auto ubRegion = bounds->second.second;
+          std::optional<z3::expr> lb, ub;
+          if (lbRegion)
+            lb = evaluateCostRegion(lbRegion, solver);
+          if (ubRegion)
+            ub = evaluateCostRegion(ubRegion, solver);
+          z3::expr in_interval = ctx.bool_val(true);
+          if (lb)
+            in_interval = in_interval && (*lb <= cost);
+          if (ub)
+            in_interval = in_interval && (cost <= *ub);
+          switch (pred) {
+          case CmpPredicate::eq:
+            holds = in_interval;
+            break;
+          case CmpPredicate::ne:
+            holds = !in_interval;
+            break;
+          case CmpPredicate::lt:
+            holds = lb ? z3::expr(cost < *lb) : ctx.bool_val(false);
+            break;
+          case CmpPredicate::le:
+            holds = lb ? z3::expr(cost <= *lb) : ctx.bool_val(false);
+            break;
+          case CmpPredicate::gt:
+            holds = ub ? z3::expr(cost > *ub) : ctx.bool_val(false);
+            break;
+          case CmpPredicate::ge:
+            holds = ub ? z3::expr(cost >= *ub) : ctx.bool_val(false);
+            break;
           }
-          solver.add(q); // if satisfiable -> assignment exists s.t. perf
-                         // counter doesn't equal expected value?
         }
+      } else {
+        auto pre_post_cost = constant_costs.find(
+            static_cast<mlir::enzyme::perfify::HoareStates>(region_num));
+        if (pre_post_cost == constant_costs.end()) {
+          llvm::outs() << "no constant cost registered for conditions region "
+                       << region_num << "\n";
+        } else {
+          z3::expr expected_cost =
+              evaluateCostRegion(pre_post_cost->second, solver);
+          switch (pred) {
+          case CmpPredicate::eq:
+            holds = cost == expected_cost;
+            break;
+          case CmpPredicate::ne:
+            holds = cost != expected_cost;
+            break;
+          case CmpPredicate::lt:
+            holds = cost < expected_cost;
+            break;
+          case CmpPredicate::le:
+            holds = cost <= expected_cost;
+            break;
+          case CmpPredicate::gt:
+            holds = cost > expected_cost;
+            break;
+          case CmpPredicate::ge:
+            holds = cost >= expected_cost;
+            break;
+          }
+        }
+      }
+      if (holds) { // check that we don't have an empty hypothesis
+        solver.add(region_num == 0 ? *holds : !*holds);
       }
     } else if (auto assumeOp = dyn_cast<AssumeOp>(op)) {
 // todo: trigger traceup from the provided register argument, evaluate or
@@ -206,6 +272,7 @@ struct SimpleCycleAnalysisPass
         } else if (auto symOp = dyn_cast<SymCostOp>(regionOp)) {
           std::string symName = ("sym_" + symOp.getSymAttr().getValue()).str();
           expr = ctx.int_const(symName.c_str());
+          solver.add(*expr >= 0); // symbolic costs are never negative
         } else if (isa<arith::AddIOp, arith::MulIOp>(regionOp)) {
           auto lhs = valueExprs.find(regionOp.getOperand(0));
           auto rhs = valueExprs.find(regionOp.getOperand(1));

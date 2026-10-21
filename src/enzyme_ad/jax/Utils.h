@@ -246,18 +246,20 @@ cloneWithoutResults(mlir::affine::AffineIfOp op, mlir::OpBuilder &rewriter,
 }
 
 static inline mlir::scf::ForOp
-cloneWithoutResults(mlir::scf::ForOp op, mlir::PatternRewriter &rewriter,
-                    mlir::IRMapping mapping = {}) {
+cloneWithoutResults(mlir::scf::ForOp op, mlir::OpBuilder &rewriter,
+                    mlir::IRMapping mapping = {}, mlir::ValueRange inits = {}) {
   using namespace mlir;
-  return scf::ForOp::create(rewriter, op.getLoc(),
-                            mapping.lookupOrDefault(op.getLowerBound()),
-                            mapping.lookupOrDefault(op.getUpperBound()),
-                            mapping.lookupOrDefault(op.getStep()));
+  auto newFor = scf::ForOp::create(
+      rewriter, op.getLoc(), mapping.lookupOrDefault(op.getLowerBound()),
+      mapping.lookupOrDefault(op.getUpperBound()),
+      mapping.lookupOrDefault(op.getStep()), inits);
+  for (auto attr : op->getDiscardableAttrs())
+    newFor->setAttr(attr.getName(), attr.getValue());
+  return newFor;
 }
 static inline mlir::affine::AffineForOp
-cloneWithoutResults(mlir::affine::AffineForOp op,
-                    mlir::PatternRewriter &rewriter,
-                    mlir::IRMapping mapping = {}) {
+cloneWithoutResults(mlir::affine::AffineForOp op, mlir::OpBuilder &rewriter,
+                    mlir::IRMapping mapping = {}, mlir::ValueRange inits = {}) {
   using namespace mlir;
   SmallVector<Value> lower;
   for (auto o : op.getLowerBoundOperands())
@@ -267,7 +269,7 @@ cloneWithoutResults(mlir::affine::AffineForOp op,
     upper.push_back(mapping.lookupOrDefault(o));
   auto newFor = affine::AffineForOp::create(
       rewriter, op.getLoc(), lower, op.getLowerBoundMap(), upper,
-      op.getUpperBoundMap(), op.getStepAsInt());
+      op.getUpperBoundMap(), op.getStepAsInt(), inits);
   for (auto attr : op->getDiscardableAttrs())
     newFor->setAttr(attr.getName(), attr.getValue());
   return newFor;

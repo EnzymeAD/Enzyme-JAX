@@ -1,9 +1,10 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(parallel-lower{wrapParallelOps=true})" --verify-each=0 | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(parallel-lower{wrapParallelOps=true})" | FileCheck %s
 
 // gpu.launch_func takes i32 or i64 dimensions (launch recognition passes the
 // sign-extended dim3 fields of a kernel whose address escapes, as MFEM's dfem
 // kernels do); the gpu.launch and enzymexla.gpu_wrapper it is lowered to take
-// index.
+// index. The kernel, in the GPU module where no func.call can name it, is
+// inlined into the launch, and goes once nothing else uses it.
 
 module attributes {gpu.container_module} {
   gpu.module @__mlir_gpu_module {
@@ -22,9 +23,30 @@ module attributes {gpu.container_module} {
   }
 }
 
-// CHECK:      %[[C256:.+]] = "arith.constant"() <{value = 256 : index}> : () -> index
-// CHECK-NEXT: %[[C1:.+]] = "arith.constant"() <{value = 1 : index}> : () -> index
-// CHECK-NEXT: %[[C0:.+]] = "arith.constant"() <{value = 0 : index}> : () -> index
-// CHECK-NEXT: %[[EXT:.+]] = "llvm.sext"(%arg1) : (i32) -> i64
-// CHECK-NEXT: %[[GRID:.+]] = "arith.index_cast"(%[[EXT]]) : (i64) -> index
-// CHECK-NEXT: %{{.+}} = "enzymexla.gpu_wrapper"(%[[GRID]], %[[C1]], %[[C1]], %[[C256]], %[[C1]], %[[C1]]) ({
+// CHECK:       gpu.module @__mlir_gpu_module {
+// CHECK-NEXT:  }
+// CHECK-LABEL: func.func @host(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: !llvm.ptr, %[[V1:[^ ,:)]+]]: i32) {
+// CHECK-NEXT: %[[V2:[^ ,:)]+]] = arith.constant 256 : index
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = llvm.mlir.constant(1.000000e+00 : f64) : f64
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = arith.constant 1 : index
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = arith.constant 0 : index
+// CHECK-NEXT: %[[V6:[^ ,:)]+]] = llvm.sext %[[V1]] : i32 to i64
+// CHECK-NEXT: %[[V7:[^ ,:)]+]] = arith.index_cast %[[V6]] : i64 to index
+// CHECK-NEXT: %[[V8:[^ ,:)]+]] = "enzymexla.gpu_wrapper"(%[[V7]], %[[V4]], %[[V4]], %[[V2]], %[[V4]], %[[V4]]) ({
+// CHECK-NEXT: scf.parallel (%[[V9:[^ ,:)]+]], %[[V10:[^ ,:)]+]], %[[V11:[^ ,:)]+]]) = (%[[V5]], %[[V5]], %[[V5]]) to (%[[V7]], %[[V4]], %[[V4]]) step (%[[V4]], %[[V4]], %[[V4]]) {
+// CHECK-NEXT: scf.parallel (%[[V12:[^ ,:)]+]], %[[V13:[^ ,:)]+]], %[[V14:[^ ,:)]+]]) = (%[[V5]], %[[V5]], %[[V5]]) to (%[[V2]], %[[V4]], %[[V4]]) step (%[[V4]], %[[V4]], %[[V4]]) {
+// CHECK-NEXT: memref.alloca_scope  {
+// CHECK-NEXT: scf.execute_region {
+// CHECK-NEXT: llvm.store %[[V3]], %[[V0]] : f64, !llvm.ptr
+// CHECK-NEXT: scf.yield
+// CHECK-NEXT: }
+// CHECK-NEXT: }
+// CHECK-NEXT: scf.reduce
+// CHECK-NEXT: }
+// CHECK-NEXT: scf.reduce
+// CHECK-NEXT: }
+// CHECK-NEXT: "enzymexla.polygeist_yield"() : () -> ()
+// CHECK-NEXT: }) : (index, index, index, index, index, index) -> index
+// CHECK-NEXT: return
+// CHECK-NEXT: }

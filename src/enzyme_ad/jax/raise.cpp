@@ -218,6 +218,11 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       pass_pipeline += ",affine-cfg," + canonicalize +
                        ",llvm-to-affine-access," + canonicalize +
                        ",affine-cfg," + canonicalize + ",";
+      // What a kernel reads only of the host's copy of its by-value
+      // arguments, the host reads before the launch (parallel-licm hoists it
+      // out of the lanes, then out of the launch): the raiser can capture a
+      // buffer whose pointer the host read, not one read inside the kernel.
+      pass_pipeline += "parallel-licm," + canonicalize + ",";
       pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true";
       if (options->specializeIndexStrides)

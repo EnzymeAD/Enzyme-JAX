@@ -2132,7 +2132,8 @@ bool liftReduceLikeOperation(
       opName = OperationName("stablehlo.add", op->getContext());
     } else if (isa<stablehlo::DivOp>(op)) {
       auto numerator = stablehlo::ConstantOp::create(
-          rewriter, op->getLoc(), rewriter.getOneAttr(reduceInput.getType()));
+          rewriter, op->getLoc(),
+          cast<ElementsAttr>(makeAttr(reduceInput.getType(), 1)));
       reduceInput = stablehlo::DivOp::create(rewriter, op->getLoc(), numerator,
                                              reduceInput);
       opName = OperationName("stablehlo.multiply", op->getContext());
@@ -3152,14 +3153,21 @@ struct ParallelWhileBatcher {
     // Every use of a state of the buffer is the link that makes the next
     // state, a read of some of its elements, or the yield of the last one.
     for (Value v : chain)
-      for (OpOperand &use : v.getUses()) {
-        Operation *user = use.getOwner();
-        bool read = isa<stablehlo::GatherOp, stablehlo::DynamicSliceOp>(user) &&
-                    use.getOperandNumber() == 0;
-        if (!chainLinks.count(&use) && !read && &use != &yield)
+      for (OpOperand &use : v.getUses())
+        if (!chainLinks.count(&use) && !isRead(use) && &use != &yield)
           return failure();
-      }
     return success();
+  }
+
+  // Whether `use` reads elements of the buffer: a gather or dynamic_slice of
+  // it, or a reshape of it that only such reads use.
+  static bool isRead(OpOperand &use) {
+    Operation *user = use.getOwner();
+    if (isa<stablehlo::GatherOp, stablehlo::DynamicSliceOp>(user))
+      return use.getOperandNumber() == 0;
+    if (isa<stablehlo::ReshapeOp>(user))
+      return llvm::all_of(user->getResult(0).getUses(), isRead);
+    return false;
   }
 
   // A loop nested in the body runs the same number of times in every
@@ -3294,7 +3302,10 @@ struct ParallelWhileBatcher {
       } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&op)) {
         // A write into a tensor of this iteration: every iteration's copy is
         // written (the batch interface makes a scatter with batching dims).
-        if (!broadcastable(dus.getOperand()))
+        // A copy the same every iteration is broadcast into the batched
+        // write's result, which is that big anyway: no budget.
+        if (!isBatched(dus.getOperand()) &&
+            invariantElements(dus.getOperand()) < 0)
           return failure();
       } else if (isa<stablehlo::DynamicSliceOp>(&op)) {
         // batched along the new leading dimension, or gathered when the
@@ -3310,7 +3321,10 @@ struct ParallelWhileBatcher {
         // the indices gain the leading dimension (and the operand when it
         // varies), existing batching dimensions shift
       } else if (auto sc = dyn_cast<stablehlo::ScatterOp>(&op)) {
-        if (sc.getInputs().size() != 1 || !broadcastable(sc.getInputs()[0]))
+        // Likewise a scatter into the iteration's own copy.
+        if (sc.getInputs().size() != 1 ||
+            (!isBatched(sc.getInputs()[0]) &&
+             invariantElements(sc.getInputs()[0]) < 0))
           return failure();
       } else if (isa<enzymexla::WrapOp, enzymexla::ExtendOp,
                      enzymexla::RotateOp>(&op)) {

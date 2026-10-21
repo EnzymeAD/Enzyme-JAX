@@ -41,6 +41,7 @@
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
+#include "src/enzyme_ad/jax/Passes/SelectPatterns.h"
 #include "src/enzyme_ad/jax/TransformOps/RaisingTransformOps.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
@@ -62,6 +63,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <type_traits>
 
 #define DEBUG_TYPE "llvm-to-affine-access"
 
@@ -702,6 +704,48 @@ struct ConvertLLVMAllocaToMemrefAlloca
                                 PatternRewriter &rewriter) const override {
     auto dataLayout = dl.getAtOrAbove(alloc);
     return convertLLVMAllocaToMemrefAlloca(alloc, rewriter, dataLayout);
+  }
+};
+
+// A scalar llvm.mlir.constant or llvm.mlir.zero is an arith constant. The
+// ones in the input were raised long before this pass; these are the ones the
+// pass itself folds into being -- an extractvalue of a constant aggregate once
+// a store of the aggregate is split per leaf, say -- which the LLVM dialect
+// materializes as its own constants and nothing downstream converts.
+template <typename OpTy>
+struct ScalarLLVMConstantToArith final : public OpRewritePattern<OpTy> {
+  using OpRewritePattern<OpTy>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpTy op,
+                                PatternRewriter &rewriter) const override {
+    Type type = op.getType();
+    if (!isa<IntegerType, FloatType>(type))
+      return failure();
+    TypedAttr value;
+    if constexpr (std::is_same_v<OpTy, LLVM::ConstantOp>)
+      value = dyn_cast<TypedAttr>(op.getValue());
+    else
+      value = rewriter.getZeroAttr(type);
+    if (!value || value.getType() != type)
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::ConstantOp>(op, type, value);
+    return success();
+  }
+};
+
+// The scalar `llvm.select`s an aggregate select is split into below (an
+// `ifelse` on a complex number is a select of [2 x f32]); raising only knows
+// `arith.select`.
+struct ScalarLLVMSelectToArith final : public OpRewritePattern<LLVM::SelectOp> {
+  using OpRewritePattern<LLVM::SelectOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::SelectOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!isa<IntegerType, FloatType, IndexType>(op.getType()))
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::SelectOp>(
+        op, op.getCondition(), op.getTrueValue(), op.getFalseValue());
+    return success();
   }
 };
 
@@ -2735,6 +2779,13 @@ convertLLVMToAffineAccess(Operation *op,
                     ExpandAggregateViewOfScalarMemref>(context,
                                                        dataLayoutAnalysis);
     patterns.insert<MemsetZeroToAffineFill>(context);
+    patterns.insert<ScalarLLVMConstantToArith<LLVM::ConstantOp>,
+                    ScalarLLVMConstantToArith<LLVM::ZeroOp>>(context);
+    // Splitting a store of an aggregate per leaf leaves extractvalues of the
+    // aggregate; when that is a select of aggregates, select the leaves instead
+    // so the extracts fold through the insertvalue chain and the constants.
+    mlir::enzyme::populateSelectExtractPatterns(patterns);
+    patterns.insert<ScalarLLVMSelectToArith>(context);
     patterns.insert<IndexCastAddSub, MemrefLoadAffineApply, SelectCSE,
                     SelectAddrCast>(context);
     patterns.insert<SimplifyAllocConst<memref::AllocOp>,

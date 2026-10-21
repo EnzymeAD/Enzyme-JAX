@@ -87,6 +87,20 @@ const char *convertMlirTypeToMpiDatatypeName(Type type,
     return nullptr;
 }
 
+// MPI constants like `MPI_STATUS_IGNORE` are macros, not linkable symbols, and
+// their value may be null (e.g. in Open MPI), which the JIT linker rejects as
+// an unresolved symbol. So we embed their value instead of taking the address
+// of an external global.
+static Value createMpiPtrConstant(OpBuilder &builder, Location loc,
+                                  void *value) {
+  auto addr = LLVM::ConstantOp::create(
+      builder, loc, builder.getI64Type(),
+      builder.getI64IntegerAttr(reinterpret_cast<int64_t>(value)));
+  return LLVM::IntToPtrOp::create(
+      builder, loc, LLVM::LLVMPointerType::get(builder.getContext()),
+      addr.getResult());
+}
+
 struct LowerCommMpiConstantOpToJIT
     : public OpConversionPattern<comm::MpiConstantOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -758,9 +772,13 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
     auto tag = adaptor.getTag();
     auto comm = adaptor.getComm();
 
+    // `MPI_Request` width is implementation-defined, so let the type converter
+    // pick it
+    auto type_tensor_request = cast<RankedTensorType>(
+        getTypeConverter()->convertType(op.getRequest().getType()));
     auto request_placeholder = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), type_tensor_i64,
-        cast<ElementsAttr>(makeAttr(type_tensor_i64, -1)));
+        op.getLoc(), type_tensor_request,
+        cast<ElementsAttr>(makeAttr(type_tensor_request, -1)));
 
     // TODO can we pass `datatype` as attribute?
     auto datatype_name = convertMlirTypeToMpiDatatypeName(
@@ -784,7 +802,7 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
 
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
-        op, type_tensor_i64,
+        op, type_tensor_request,
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer, count, datatype, dest, tag, comm,
                    request_placeholder},
@@ -817,6 +835,10 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
 
     std::string function_name = "MPI_Recv";
     std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    auto status_ignore_val = lookupSymbol("MPI_STATUS_IGNORE");
+    if (auto err = status_ignore_val.takeError())
+      return op.emitOpError(toString(std::move(err)));
 
     if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
@@ -867,10 +889,7 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
       Value status_ptr =
-          LLVM::AddressOfOp::create(
-              rewriter, op.getLoc(), type_ptr,
-              FlatSymbolRefAttr::get(context, "MPI_STATUS_IGNORE"))
-              .getResult();
+          createMpiPtrConstant(rewriter, op.getLoc(), status_ignore_val.get());
 
       // TODO error checking
       // currently, we ignore the int return code
@@ -894,14 +913,6 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
 
       LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
-    }
-
-    if (!moduleOp.lookupSymbol<LLVM::GlobalOp>("MPI_STATUS_IGNORE")) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(moduleOp.getBody());
-      LLVM::GlobalOp::create(rewriter, op.getLoc(), type_ptr, true,
-                             LLVM::Linkage::External, "MPI_STATUS_IGNORE",
-                             nullptr, 0, 0);
     }
 
     if (!op.getResult().getType().hasStaticShape()) {
@@ -1073,9 +1084,13 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
     auto tag = adaptor.getTag();
     auto comm = adaptor.getComm();
 
+    // `MPI_Request` width is implementation-defined, so let the type converter
+    // pick it
+    auto type_tensor_request = cast<RankedTensorType>(
+        getTypeConverter()->convertType(op.getRequest().getType()));
     auto request_placeholder = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), type_tensor_i64,
-        cast<ElementsAttr>(makeAttr(type_tensor_i64, -1)));
+        op.getLoc(), type_tensor_request,
+        cast<ElementsAttr>(makeAttr(type_tensor_request, -1)));
 
     // TODO can we pass `datatype` as attribute?
     auto datatype_name =
@@ -1107,7 +1122,7 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
 
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
-        op, TypeRange{type_buffer, type_tensor_i64},
+        op, TypeRange{type_buffer, type_tensor_request},
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer_placeholder, count, datatype, src, tag, comm,
                    request_placeholder},
@@ -1138,6 +1153,10 @@ struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
     std::string function_name = "MPI_Wait";
     std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
 
+    auto status_ignore_val = lookupSymbol("MPI_STATUS_IGNORE");
+    if (auto err = status_ignore_val.takeError())
+      return op.emitOpError(toString(std::move(err)));
+
     if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
@@ -1164,10 +1183,7 @@ struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
 
       Value arg_request_ptr = entryBlock->getArgument(0);
       Value status_ptr =
-          LLVM::AddressOfOp::create(
-              rewriter, op.getLoc(), type_ptr,
-              FlatSymbolRefAttr::get(context, "MPI_STATUS_IGNORE"))
-              .getResult();
+          createMpiPtrConstant(rewriter, op.getLoc(), status_ignore_val.get());
 
       // TODO error checking
       // currently, we ignore the int return code
@@ -1187,14 +1203,6 @@ struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
 
       LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
-    }
-
-    if (!moduleOp.lookupSymbol<LLVM::GlobalOp>("MPI_STATUS_IGNORE")) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(moduleOp.getBody());
-      LLVM::GlobalOp::create(rewriter, op.getLoc(), type_ptr, true,
-                             LLVM::Linkage::External, "MPI_STATUS_IGNORE",
-                             nullptr, 0, 0);
     }
 
     auto request = adaptor.getRequest();
@@ -1227,10 +1235,21 @@ struct LowerCommMpiWaitallOpToJIT
     auto type_void = LLVM::LLVMVoidType::get(context);
     auto type_i32 = IntegerType::get(context, 32);
 
+    // the C ABI expects a contiguous `MPI_Request[]`, so array elements must
+    // have the width of `MPI_Request` in the target MPI implementation
+    auto type_request =
+        cast<RankedTensorType>(
+            getTypeConverter()->convertType(op.getRequests().front().getType()))
+            .getElementType();
+
     auto num_requests = op.getNumOperands();
     std::string function_name = "MPI_Waitall";
     std::string wrapper_name = "enzymexla_jitwrap_" + function_name + "_" +
                                std::to_string(num_requests);
+
+    auto statuses_ignore_val = lookupSymbol("MPI_STATUSES_IGNORE");
+    if (auto err = statuses_ignore_val.takeError())
+      return op.emitOpError(toString(std::move(err)));
 
     if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
@@ -1264,26 +1283,23 @@ struct LowerCommMpiWaitallOpToJIT
                         .getResult();
 
       Value array_of_requests =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr,
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_request,
                                  count)
               .getResult();
 
       for (int i = 0; i < num_requests; ++i) {
-        auto request = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+        auto request = LLVM::LoadOp::create(rewriter, op.getLoc(), type_request,
                                             entryBlock->getArgument(i));
         auto gep_op =
-            LLVM::GEPOp::create(rewriter, op.getLoc(), type_ptr, type_ptr,
+            LLVM::GEPOp::create(rewriter, op.getLoc(), type_ptr, type_request,
                                 array_of_requests, ValueRange{});
         gep_op.setRawConstantIndices({i});
         LLVM::StoreOp::create(rewriter, op.getLoc(), request,
                               gep_op.getResult());
       }
 
-      Value status_ptr =
-          LLVM::AddressOfOp::create(
-              rewriter, op.getLoc(), type_ptr,
-              FlatSymbolRefAttr::get(context, "MPI_STATUSES_IGNORE"))
-              .getResult();
+      Value status_ptr = createMpiPtrConstant(rewriter, op.getLoc(),
+                                              statuses_ignore_val.get());
 
       // TODO error checking
       // currently, we ignore the int return code
@@ -1303,14 +1319,6 @@ struct LowerCommMpiWaitallOpToJIT
 
       LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
-    }
-
-    if (!moduleOp.lookupSymbol<LLVM::GlobalOp>("MPI_STATUSES_IGNORE")) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(moduleOp.getBody());
-      LLVM::GlobalOp::create(rewriter, op.getLoc(), type_ptr, true,
-                             LLVM::Linkage::External, "MPI_STATUSES_IGNORE",
-                             nullptr, 0, 0);
     }
 
     rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
@@ -1628,7 +1636,13 @@ struct LowerCommToJITPass
     target.addLegalDialect<mlir::LLVM::LLVMDialect>();
     target.addIllegalDialect<comm::CommDialect>();
 
-    comm::StablehloTypeConverter converter;
+    if (mpi_request_width != 32 && mpi_request_width != 64) {
+      getOperation()->emitError("unsupported mpi_request_width: ")
+          << mpi_request_width << " (expected 32 or 64)";
+      return signalPassFailure();
+    }
+
+    comm::StablehloTypeConverter converter(mpi_request_width);
 
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
       return converter.isSignatureLegal(op.getFunctionType());

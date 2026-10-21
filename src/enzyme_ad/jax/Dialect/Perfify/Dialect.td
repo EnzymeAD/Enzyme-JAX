@@ -53,4 +53,12 @@ def PerfifyCmpPredicateAttr : I64EnumAttr
   let cppNamespace = "::mlir::enzyme::perfify";
 }
 
+def PerfifyHoareStates : I64EnumAttr
+    <"HoareStates", "", [
+      I64EnumAttrCase<"Pre", 0, "pre">,
+      I64EnumAttrCase<"Post", 1, "post">,
+    ]> {
+  let cppNamespace = "::mlir::enzyme::perfify";
+}
+
 #endif // ENZYME_AD_JAX_DIALECT_PERFIFY_DIALECT_TD
