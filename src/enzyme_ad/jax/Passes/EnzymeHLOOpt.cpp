@@ -7349,6 +7349,27 @@ struct NegativePadToSlice final
   }
 };
 
+// Whether root, through adds and multiplies, is read by slices alone, and
+// whether they leave some of dimension dim unread.
+static bool readBySlicesLeavingSomeUnread(Operation *root, int64_t dim) {
+  auto type = cast<RankedTensorType>(root->getResult(0).getType());
+  llvm::BitVector read(type.getShape()[dim]);
+  SmallVector<Operation *> ops(root->getUsers());
+  while (!ops.empty()) {
+    auto cur = ops.pop_back_val();
+    if (auto reader = dyn_cast<stablehlo::SliceOp>(cur)) {
+      read.set(reader.getStartIndices()[dim], reader.getLimitIndices()[dim]);
+      continue;
+    }
+    if (isa<stablehlo::AddOp, stablehlo::MulOp>(cur)) {
+      llvm::append_range(ops, cur->getResult(0).getUsers());
+      continue;
+    }
+    return false;
+  }
+  return !read.all();
+}
+
 /*
 %1192 = stablehlo.pad %1189, %cst_0, low = [0], high = [1], interior = [0] :
   (tensor<1xf32>, tensor<f32>) -> tensor<2xf32>
@@ -7376,37 +7397,16 @@ struct BinopPadToConcat final
         Attribute padValAttr;
         matchPattern(lhs.getPaddingValue(), m_Constant(&padValAttr));
         bool padIsZero =
-            padValAttr && matchPattern(padValAttr, m_AnyZeroFloat());
-        bool padIsOne = padValAttr && matchPattern(padValAttr, m_OneFloat());
+            padValAttr && (matchPattern(padValAttr, m_AnyZeroFloat()) ||
+                           matchPattern(padValAttr, m_Zero()));
+        bool padIsOne = padValAttr && (matchPattern(padValAttr, m_OneFloat()) ||
+                                       matchPattern(padValAttr, m_One()));
 
         bool match = false;
         if (isa<stablehlo::AddOp>(op)) {
           match = padIsZero;
         } else if (isa<stablehlo::MulOp>(op)) {
           match = padIsOne || padIsZero;
-        }
-        // With any other padding value the split pays only when some of the
-        // pieces go unread: the result, through adds and multiplies, must be
-        // read by slices alone, and they must leave some of the padded
-        // dimension unread (slices that read all of it just take the pieces
-        // of a batched op apart, and the batching puts them back together).
-        SmallVector<stablehlo::SliceOp> readers;
-        if (!match) {
-          SmallVector<Operation *> ops = {op};
-          while (!ops.empty()) {
-            auto cur = ops.pop_back_val();
-            if (auto reader = dyn_cast<stablehlo::SliceOp>(cur)) {
-              readers.push_back(reader);
-              continue;
-            }
-            if (isa<stablehlo::AddOp, stablehlo::MulOp>(cur)) {
-              for (auto u : cur->getResult(0).getUsers()) {
-                ops.push_back(u);
-              }
-              continue;
-            }
-            return failure();
-          }
         }
 
         bool legal = true;
@@ -7437,14 +7437,14 @@ struct BinopPadToConcat final
             lhs.getOperand().getType().getShape()[idxs[0]] * 2 <=
                 type.getShape()[idxs[0]]) {
           auto idx = idxs[0];
-          if (!match) {
-            llvm::BitVector read(type.getShape()[idx]);
-            for (auto reader : readers)
-              read.set(reader.getStartIndices()[idx],
-                       reader.getLimitIndices()[idx]);
-            if (read.all())
-              return failure();
-          }
+          // With any other padding value the split pays only when some of
+          // the pieces go unread: the result, through adds and multiplies,
+          // must be read by slices alone, and they must leave some of the
+          // padded dimension unread (slices that read all of it just take
+          // the pieces of a batched op apart, and the batching puts them back
+          // together).
+          if (!match && !readBySlicesLeavingSomeUnread(op, idx))
+            return failure();
 
           SmallVector<int64_t> strides(type.getShape().size(), 1);
           SmallVector<int64_t> starts(type.getShape().size(), 0);
@@ -7928,6 +7928,12 @@ struct ConcatPushBinop final
     for (auto c : converts)
       if (c != typeconvert)
         return failure();
+
+    // Slices that leave some of the concatenation unread are better served
+    // by the pieces they read (and BinopPadToConcat split them for those
+    // slices: pushing the binop back out would undo it, over and over).
+    if (readBySlicesLeavingSomeUnread(op, op.getDimension()))
+      return failure();
 
     auto lhs2 = stablehlo::ConcatenateOp::create(rewriter, op.getLoc(), lhs,
                                                  op.getDimension());
