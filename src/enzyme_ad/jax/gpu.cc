@@ -57,7 +57,10 @@ instantiate(std::string_view bspan) {
   void *library;
   kwrapper->cuKernel = cinfo->init(&kwrapper->library);
 
-  printf("loaded library = %p, kernel = %p\n", kwrapper->library, kwrapper->cuKernel);
+  if (!kwrapper->cuKernel ||
+    !kwrapper->library) {
+      return xla::ffi::Error::Internal("enzymexla_compile_gpu: could not load module");
+    }
 
   return kwrapper;
 }
@@ -73,8 +76,6 @@ xla::ffi::Error execute(std::string_view bspan, CUStream stream,
     cinfo = (CallInfo<false> *)bspan.data();
   }
 
-  printf("calling kernel = %p, kernel = %p\n", kwrapper->library, kwrapper->cuKernel);
-
   size_t numargs = args.size();
   void *devptrs[numargs];
   void *ptrs[numargs];
@@ -89,6 +90,7 @@ xla::ffi::Error execute(std::string_view bspan, CUStream stream,
 
   const void **const_ptrs = const_cast<const void **>(ptrs);
   auto cufunc = kwrapper->cuKernel;
+  assert(cufunc);
 
   if constexpr (withError) {
     char *err = cinfo->run(const_ptrs, stream, cufunc);
