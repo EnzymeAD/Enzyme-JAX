@@ -1,5 +1,3 @@
-#include <stdio.h>
-
 #include "xla/ffi/api/c_api_internal.h"
 #include "xla/ffi/api/ffi.h"
 #include "xla/ffi/execution_state.h"
@@ -41,12 +39,6 @@ struct CuKernelWrapper {
 
   void *library = nullptr;
   void *cuKernel = nullptr;
-
-  ~CuKernelWrapper() {
-    printf("freeing library\n");
-    if (library)
-      cuLibraryUnload(library);
-  }
 };
 xla::ffi::TypeId CuKernelWrapper::id = {};
 
