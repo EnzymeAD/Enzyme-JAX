@@ -4,8 +4,12 @@
 // Tests for non-negative compared to negative constant (SIGNED integers)
 // ============================================================================
 
+// abs on a signed integer is only provably non-negative when the operand is
+// known not to be the smallest representable value (abs(INT_MIN) == INT_MIN),
+// so the integer tests below bound %arg0 away from it via enzymexla.bounds.
+
 // abs(x) is always >= 0, so abs(x) < -5 is always false
-func.func @nonneg_lt_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+func.func @nonneg_lt_neg_signed(%arg0: tensor<4xi64> {enzymexla.bounds = [-100, 100]}) -> tensor<4xi1> {
     %c = stablehlo.constant dense<-5> : tensor<4xi64>
     %0 = stablehlo.abs %arg0 : tensor<4xi64>
     %cmp = stablehlo.compare LT, %0, %c, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
@@ -16,7 +20,7 @@ func.func @nonneg_lt_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
 // CHECK-NEXT: return %c
 
 // abs(x) is always >= 0, so abs(x) <= -5 is always false
-func.func @nonneg_le_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+func.func @nonneg_le_neg_signed(%arg0: tensor<4xi64> {enzymexla.bounds = [-100, 100]}) -> tensor<4xi1> {
     %c = stablehlo.constant dense<-5> : tensor<4xi64>
     %0 = stablehlo.abs %arg0 : tensor<4xi64>
     %cmp = stablehlo.compare LE, %0, %c, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
@@ -27,7 +31,7 @@ func.func @nonneg_le_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
 // CHECK-NEXT: return %c
 
 // abs(x) is always >= 0, so abs(x) == -5 is always false
-func.func @nonneg_eq_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+func.func @nonneg_eq_neg_signed(%arg0: tensor<4xi64> {enzymexla.bounds = [-100, 100]}) -> tensor<4xi1> {
     %c = stablehlo.constant dense<-5> : tensor<4xi64>
     %0 = stablehlo.abs %arg0 : tensor<4xi64>
     %cmp = stablehlo.compare EQ, %0, %c, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
@@ -38,7 +42,7 @@ func.func @nonneg_eq_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
 // CHECK-NEXT: return %c
 
 // abs(x) is always >= 0, so abs(x) > -5 is always true
-func.func @nonneg_gt_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+func.func @nonneg_gt_neg_signed(%arg0: tensor<4xi64> {enzymexla.bounds = [-100, 100]}) -> tensor<4xi1> {
     %c = stablehlo.constant dense<-5> : tensor<4xi64>
     %0 = stablehlo.abs %arg0 : tensor<4xi64>
     %cmp = stablehlo.compare GT, %0, %c, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
@@ -49,7 +53,7 @@ func.func @nonneg_gt_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
 // CHECK-NEXT: return %c
 
 // abs(x) is always >= 0, so abs(x) >= -5 is always true
-func.func @nonneg_ge_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+func.func @nonneg_ge_neg_signed(%arg0: tensor<4xi64> {enzymexla.bounds = [-100, 100]}) -> tensor<4xi1> {
     %c = stablehlo.constant dense<-5> : tensor<4xi64>
     %0 = stablehlo.abs %arg0 : tensor<4xi64>
     %cmp = stablehlo.compare GE, %0, %c, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
@@ -60,7 +64,7 @@ func.func @nonneg_ge_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
 // CHECK-NEXT: return %c
 
 // abs(x) is always >= 0, so abs(x) != -5 is always true
-func.func @nonneg_ne_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+func.func @nonneg_ne_neg_signed(%arg0: tensor<4xi64> {enzymexla.bounds = [-100, 100]}) -> tensor<4xi1> {
     %c = stablehlo.constant dense<-5> : tensor<4xi64>
     %0 = stablehlo.abs %arg0 : tensor<4xi64>
     %cmp = stablehlo.compare NE, %0, %c, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
@@ -75,7 +79,7 @@ func.func @nonneg_ne_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
 // ============================================================================
 
 // abs(x) is always >= 0, so abs(x) < 0 is always false
-func.func @nonneg_lt_zero_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+func.func @nonneg_lt_zero_signed(%arg0: tensor<4xi64> {enzymexla.bounds = [-100, 100]}) -> tensor<4xi1> {
     %c = stablehlo.constant dense<0> : tensor<4xi64>
     %0 = stablehlo.abs %arg0 : tensor<4xi64>
     %cmp = stablehlo.compare LT, %0, %c, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
@@ -86,7 +90,7 @@ func.func @nonneg_lt_zero_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
 // CHECK-NEXT: return %c
 
 // abs(x) is always >= 0, so abs(x) >= 0 is always true
-func.func @nonneg_ge_zero_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+func.func @nonneg_ge_zero_signed(%arg0: tensor<4xi64> {enzymexla.bounds = [-100, 100]}) -> tensor<4xi1> {
     %c = stablehlo.constant dense<0> : tensor<4xi64>
     %0 = stablehlo.abs %arg0 : tensor<4xi64>
     %cmp = stablehlo.compare GE, %0, %c, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
@@ -127,7 +131,7 @@ func.func @square_gt_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
 // ============================================================================
 
 // -5 < abs(x) is equivalent to abs(x) > -5, which is always true
-func.func @neg_lt_nonneg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+func.func @neg_lt_nonneg_signed(%arg0: tensor<4xi64> {enzymexla.bounds = [-100, 100]}) -> tensor<4xi1> {
     %c = stablehlo.constant dense<-5> : tensor<4xi64>
     %0 = stablehlo.abs %arg0 : tensor<4xi64>
     %cmp = stablehlo.compare LT, %c, %0, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
@@ -138,7 +142,7 @@ func.func @neg_lt_nonneg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
 // CHECK-NEXT: return %c
 
 // -5 >= abs(x) is equivalent to abs(x) <= -5, which is always false
-func.func @neg_ge_nonneg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+func.func @neg_ge_nonneg_signed(%arg0: tensor<4xi64> {enzymexla.bounds = [-100, 100]}) -> tensor<4xi1> {
     %c = stablehlo.constant dense<-5> : tensor<4xi64>
     %0 = stablehlo.abs %arg0 : tensor<4xi64>
     %cmp = stablehlo.compare GE, %c, %0, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
@@ -149,7 +153,7 @@ func.func @neg_ge_nonneg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
 // CHECK-NEXT: return %c
 
 // 0 > abs(x) is equivalent to abs(x) < 0, which is always false
-func.func @zero_gt_nonneg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+func.func @zero_gt_nonneg_signed(%arg0: tensor<4xi64> {enzymexla.bounds = [-100, 100]}) -> tensor<4xi1> {
     %c = stablehlo.constant dense<0> : tensor<4xi64>
     %0 = stablehlo.abs %arg0 : tensor<4xi64>
     %cmp = stablehlo.compare GT, %c, %0, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
@@ -160,7 +164,7 @@ func.func @zero_gt_nonneg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
 // CHECK-NEXT: return %c
 
 // 0 <= abs(x) is equivalent to abs(x) >= 0, which is always true
-func.func @zero_le_nonneg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+func.func @zero_le_nonneg_signed(%arg0: tensor<4xi64> {enzymexla.bounds = [-100, 100]}) -> tensor<4xi1> {
     %c = stablehlo.constant dense<0> : tensor<4xi64>
     %0 = stablehlo.abs %arg0 : tensor<4xi64>
     %cmp = stablehlo.compare LE, %c, %0, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
@@ -212,7 +216,7 @@ func.func @square_ge_zero_float(%arg0: tensor<4xf64>) -> tensor<4xi1> {
 // ============================================================================
 
 // Non-negative compared to positive constant - cannot simplify
-func.func @nonneg_lt_pos_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+func.func @nonneg_lt_pos_signed(%arg0: tensor<4xi64> {enzymexla.bounds = [-100, 100]}) -> tensor<4xi1> {
     %c = stablehlo.constant dense<5> : tensor<4xi64>
     %0 = stablehlo.abs %arg0 : tensor<4xi64>
     %cmp = stablehlo.compare LT, %0, %c, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
@@ -222,7 +226,7 @@ func.func @nonneg_lt_pos_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
 // CHECK: stablehlo.compare LT
 
 // Non-splat constant - cannot simplify
-func.func @nonneg_lt_nonsplat_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+func.func @nonneg_lt_nonsplat_signed(%arg0: tensor<4xi64> {enzymexla.bounds = [-100, 100]}) -> tensor<4xi1> {
     %c = stablehlo.constant dense<[-5, -3, -1, 0]> : tensor<4xi64>
     %0 = stablehlo.abs %arg0 : tensor<4xi64>
     %cmp = stablehlo.compare LT, %0, %c, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
@@ -239,3 +243,14 @@ func.func @not_nonneg_lt_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
 }
 // CHECK-LABEL: func.func @not_nonneg_lt_neg_signed
 // CHECK: stablehlo.compare
+
+// abs on an unbounded signed integer may return INT_MIN, which is negative,
+// so nothing can be proven about the comparison
+func.func @unbounded_abs_lt_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+    %c = stablehlo.constant dense<-5> : tensor<4xi64>
+    %0 = stablehlo.abs %arg0 : tensor<4xi64>
+    %cmp = stablehlo.compare LT, %0, %c, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
+    return %cmp : tensor<4xi1>
+}
+// CHECK-LABEL: func.func @unbounded_abs_lt_neg_signed
+// CHECK: stablehlo.compare LT
