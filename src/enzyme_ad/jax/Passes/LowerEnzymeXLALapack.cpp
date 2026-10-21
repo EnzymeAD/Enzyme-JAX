@@ -549,16 +549,6 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
               "yet supported");
     }
 
-    // ?orgqr/?ungqr require m >= n >= k
-    auto numReflectors =
-        cast<RankedTensorType>(tau.getType()).getShape().back();
-    if (inputShape[0] < inputShape[1])
-      return op->emitOpError("`enzymexla.lapack.orgqr` requires at least as "
-                             "many rows as columns");
-    if (inputShape[1] < numReflectors)
-      return op->emitOpError("`enzymexla.lapack.orgqr` requires at most as "
-                             "many reflectors as columns");
-
     auto type_lapack_int = rewriter.getIntegerType(blasIntWidth);
     auto type_llvm_lapack_int = typeConverter.convertType(type_lapack_int);
     auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
@@ -635,7 +625,7 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
           rewriter, op.getLoc(), type_llvm_lapack_int,
           rewriter.getIntegerAttr(type_lapack_int, nC));
       // one elementary reflector per entry of `tau`
-      auto k_value = numReflectors;
+      auto k_value = cast<RankedTensorType>(tau.getType()).getShape().back();
       auto k = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
           rewriter.getIntegerAttr(type_lapack_int, k_value));
