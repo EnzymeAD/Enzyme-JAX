@@ -75,13 +75,6 @@ static std::optional<CostExpr> parseCostExpr(StringRef str) {
   return expr;
 }
 
-// A cost hypothesis on a function, optionally conditioned on one of its
-// arguments. The bound is either a cost expression or an interval of them:
-//   "le 9"                  -> { true } f { fn_cost <= 9 }
-//   "arg0 eq 0 -> le 9"     -> { arg0 == 0 } f { fn_cost <= 9 }
-//   "eq [0, 8]"             -> { true } f { fn_cost in [0, 8] }
-//   "eq [X, 3X]"            -> { true } f { fn_cost in [X, 3X] }
-// Either side of an interval may be left empty to leave it unbounded.
 struct CostHypothesis {
   CmpPredicate pred;
   bool isInterval = false;
@@ -100,9 +93,6 @@ struct CostHypothesis {
   }
 };
 
-// Parses a hypothesis of the form "<predicate> <bound>", optionally preceded
-// by an argument precondition "arg<N> <predicate> <value> ->", where <bound>
-// is a cost expression or "[<lb>, <ub>]".
 static std::optional<CostHypothesis> parseCostHypothesis(StringRef payload) {
   CostHypothesis hyp;
   StringRef pre, post = payload;
@@ -155,11 +145,12 @@ struct LiftPerfifyAnnotationsPass
           LiftPerfifyAnnotationsPass> {
   using LiftPerfifyAnnotationsPassBase::LiftPerfifyAnnotationsPassBase;
 
-  // Builds a perfify.estimated_cost whose body computes `expr` out of
+  // Builds a perfify.estimated_cost @name whose body computes `expr` out of
   // arith.constant, perfify.sym_cost, arith.muli and arith.addi.
-  Value buildEstimatedCost(ImplicitLocOpBuilder &b, const CostExpr &expr) {
+  FlatSymbolRefAttr buildEstimatedCost(ImplicitLocOpBuilder &b, StringRef name,
+                                       const CostExpr &expr) {
     OpBuilder::InsertionGuard guard(b);
-    auto estCost = EstimatedCostOp::create(b, CostType::get(b.getContext()));
+    auto estCost = EstimatedCostOp::create(b, b.getStringAttr(name));
     b.createBlock(&estCost.getBody());
     Value sum;
     for (const CostTerm &term : expr) {
@@ -175,7 +166,7 @@ struct LiftPerfifyAnnotationsPass
       sum = sum ? arith::AddIOp::create(b, sum, product) : product;
     }
     YieldOp::create(b, sum);
-    return estCost.getResult();
+    return FlatSymbolRefAttr::get(estCost.getNameAttr());
   }
 
   // Declares `perfify.define_symbol @name : i64` at the top of the module for
@@ -198,15 +189,17 @@ struct LiftPerfifyAnnotationsPass
   }
 
   // Fills `region` with
-  // `perfify.assume (perfify.hypothesis (perfify.cmp pred, lhs, rhs) prePost)`,
-  // where `operands` builds lhs and rhs inside the region.
-  void buildAssume(ImplicitLocOpBuilder &b, Region &region, HoareStates prePost,
-                   CmpPredicate pred,
-                   function_ref<std::pair<Value, Value>()> operands) {
+  // `perfify.assume (perfify.hypothesis (perfify.cmp pred, cost, @bound)
+  // prePost)`, where `operands` builds cost and @bound inside the region.
+  void
+  buildAssume(ImplicitLocOpBuilder &b, Region &region, HoareStates prePost,
+              CmpPredicate pred,
+              function_ref<std::pair<Value, FlatSymbolRefAttr>()> operands) {
     OpBuilder::InsertionGuard guard(b);
     b.createBlock(&region);
-    auto [lhs, rhs] = operands();
-    auto cmp = CompareOp::create(b, b.getI1Type(), pred, lhs, rhs);
+    auto [cost, bound] = operands();
+    auto cmp =
+        CompareOp::create(b, b.getI1Type(), pred, cost, bound.getValue());
     auto hyp = HypothesisOp::create(b, b.getI1Type(), cmp.getResult(), prePost);
     AssumeOp::create(b, hyp.getResult(), BoolAttr());
   }
@@ -235,29 +228,33 @@ struct LiftPerfifyAnnotationsPass
     auto conditions = ConditionsOp::create(b, funcName, /*verify_huh=*/true);
 
     // The precondition the hypothesis is tested under: an assumption on the
-    // annotated function's argument if one was given, trivially true
-    // otherwise.
+    // starting cost, which is zero if none was given.
     CmpPredicate prePred = hyp.argIndex ? hyp.argPred : CmpPredicate::eq;
-    buildAssume(b, conditions.getPrecondition(), HoareStates::Pre, prePred,
-                [&]() -> std::pair<Value, Value> {
-                  if (!hyp.argIndex) {
-                    Value zero = buildEstimatedCost(b, {CostTerm{0, {}}});
-                    return {zero, zero};
-                  }
-                  return {ArgOp::create(b, CostType::get(ctx), *hyp.argIndex),
-                          buildEstimatedCost(b, {CostTerm{hyp.argValue, {}}})};
-                });
+    int64_t startCost = hyp.argIndex ? hyp.argValue : 0;
+    buildAssume(
+        b, conditions.getPrecondition(), HoareStates::Pre, prePred,
+        [&]() -> std::pair<Value, FlatSymbolRefAttr> {
+          return {
+              ArgOp::create(b, CostType::get(ctx), hyp.argIndex.value_or(0)),
+              buildEstimatedCost(b, "pre_cost", {CostTerm{startCost, {}}})};
+        });
 
-    buildAssume(b, conditions.getPostcondition(), HoareStates::Post, hyp.pred,
-                [&]() -> std::pair<Value, Value> {
-                  Value fnCost = FnCostOp::create(b, CostType::get(ctx));
-                  if (!hyp.isInterval)
-                    return {fnCost, buildEstimatedCost(b, *hyp.lb)};
-                  Value lb = hyp.lb ? buildEstimatedCost(b, *hyp.lb) : Value();
-                  Value ub = hyp.ub ? buildEstimatedCost(b, *hyp.ub) : Value();
-                  return {fnCost, IntervalOp::create(b, IntervalType::get(ctx),
-                                                     lb, ub)};
-                });
+    buildAssume(
+        b, conditions.getPostcondition(), HoareStates::Post, hyp.pred,
+        [&]() -> std::pair<Value, FlatSymbolRefAttr> {
+          Value fnCost = FnCostOp::create(b, CostType::get(ctx));
+          if (!hyp.isInterval)
+            return {fnCost, buildEstimatedCost(b, "post_cost", *hyp.lb)};
+          FlatSymbolRefAttr lb =
+              hyp.lb ? buildEstimatedCost(b, "post_cost_min", *hyp.lb)
+                     : FlatSymbolRefAttr();
+          FlatSymbolRefAttr ub =
+              hyp.ub ? buildEstimatedCost(b, "post_cost_max", *hyp.ub)
+                     : FlatSymbolRefAttr();
+          auto interval =
+              IntervalOp::create(b, b.getStringAttr("post_range"), lb, ub);
+          return {fnCost, FlatSymbolRefAttr::get(interval.getNameAttr())};
+        });
   }
 
   void runOnOperation() override {

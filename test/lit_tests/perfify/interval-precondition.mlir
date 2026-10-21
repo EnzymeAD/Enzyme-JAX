@@ -23,30 +23,30 @@ module {
     }
     perfify.conditions @pre_0_2_post_6_8 true pre {
       %b0 = perfify.arg 0
-      %lb = perfify.estimated_cost {
+      perfify.estimated_cost @pre_cost_min {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
-      } : !perfify.cost
-      %ub = perfify.estimated_cost {
+      }
+      perfify.estimated_cost @pre_cost_max {
         %c = arith.constant 2 : i64
         perfify.yield %c : i64
-      } : !perfify.cost
-      %iv = perfify.interval [%lb, %ub]
-      %cmp = perfify.cmp eq, %b0, %iv : !perfify.cost, !perfify.interval
+      }
+      perfify.interval @pre_range [min_cost: @pre_cost_min, max_cost: @pre_cost_max]
+      %cmp = perfify.cmp eq, %b0, @pre_range
       %h = perfify.hypothesis %cmp pre
       perfify.assume %h
     } post {
       %cost = perfify.fn_cost : !perfify.cost
-      %lb = perfify.estimated_cost {
+      perfify.estimated_cost @post_cost_min {
         %c = arith.constant 6 : i64
         perfify.yield %c : i64
-      } : !perfify.cost
-      %ub = perfify.estimated_cost {
+      }
+      perfify.estimated_cost @post_cost_max {
         %c = arith.constant 8 : i64
         perfify.yield %c : i64
-      } : !perfify.cost
-      %iv = perfify.interval [%lb, %ub]
-      %cmp = perfify.cmp eq, %cost, %iv : !perfify.cost, !perfify.interval
+      }
+      perfify.interval @post_range [min_cost: @post_cost_min, max_cost: @post_cost_max]
+      %cmp = perfify.cmp eq, %cost, @post_range
       %h = perfify.hypothesis %cmp post
       perfify.assume %h
     }
@@ -79,30 +79,30 @@ module {
     }
     perfify.conditions @pre_0_2_post_6_7 true pre {
       %b0 = perfify.arg 0
-      %lb = perfify.estimated_cost {
+      perfify.estimated_cost @pre_cost_min {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
-      } : !perfify.cost
-      %ub = perfify.estimated_cost {
+      }
+      perfify.estimated_cost @pre_cost_max {
         %c = arith.constant 2 : i64
         perfify.yield %c : i64
-      } : !perfify.cost
-      %iv = perfify.interval [%lb, %ub]
-      %cmp = perfify.cmp eq, %b0, %iv : !perfify.cost, !perfify.interval
+      }
+      perfify.interval @pre_range [min_cost: @pre_cost_min, max_cost: @pre_cost_max]
+      %cmp = perfify.cmp eq, %b0, @pre_range
       %h = perfify.hypothesis %cmp pre
       perfify.assume %h
     } post {
       %cost = perfify.fn_cost : !perfify.cost
-      %lb = perfify.estimated_cost {
+      perfify.estimated_cost @post_cost_min {
         %c = arith.constant 6 : i64
         perfify.yield %c : i64
-      } : !perfify.cost
-      %ub = perfify.estimated_cost {
+      }
+      perfify.estimated_cost @post_cost_max {
         %c = arith.constant 7 : i64
         perfify.yield %c : i64
-      } : !perfify.cost
-      %iv = perfify.interval [%lb, %ub]
-      %cmp = perfify.cmp eq, %cost, %iv : !perfify.cost, !perfify.interval
+      }
+      perfify.interval @post_range [min_cost: @post_cost_min, max_cost: @post_cost_max]
+      %cmp = perfify.cmp eq, %cost, @post_range
       %h = perfify.hypothesis %cmp post
       perfify.assume %h
     }
@@ -135,30 +135,30 @@ module {
     }
     perfify.conditions @pre_5_3_empty true pre {
       %b0 = perfify.arg 0
-      %lb = perfify.estimated_cost {
+      perfify.estimated_cost @pre_cost_min {
         %c = arith.constant 5 : i64
         perfify.yield %c : i64
-      } : !perfify.cost
-      %ub = perfify.estimated_cost {
+      }
+      perfify.estimated_cost @pre_cost_max {
         %c = arith.constant 3 : i64
         perfify.yield %c : i64
-      } : !perfify.cost
-      %iv = perfify.interval [%lb, %ub]
-      %cmp = perfify.cmp eq, %b0, %iv : !perfify.cost, !perfify.interval
+      }
+      perfify.interval @pre_range [min_cost: @pre_cost_min, max_cost: @pre_cost_max]
+      %cmp = perfify.cmp eq, %b0, @pre_range
       %h = perfify.hypothesis %cmp pre
       perfify.assume %h
     } post {
       %cost = perfify.fn_cost : !perfify.cost
-      %lb = perfify.estimated_cost {
+      perfify.estimated_cost @post_cost_min {
         %c = arith.constant 6 : i64
         perfify.yield %c : i64
-      } : !perfify.cost
-      %ub = perfify.estimated_cost {
+      }
+      perfify.estimated_cost @post_cost_max {
         %c = arith.constant 8 : i64
         perfify.yield %c : i64
-      } : !perfify.cost
-      %iv = perfify.interval [%lb, %ub]
-      %cmp = perfify.cmp eq, %cost, %iv : !perfify.cost, !perfify.interval
+      }
+      perfify.interval @post_range [min_cost: @post_cost_min, max_cost: @post_cost_max]
+      %cmp = perfify.cmp eq, %cost, @post_range
       %h = perfify.hypothesis %cmp post
       perfify.assume %h
     }

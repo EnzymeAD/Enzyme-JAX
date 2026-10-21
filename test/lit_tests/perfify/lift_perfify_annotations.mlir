@@ -5,7 +5,7 @@
 // __attribute__((perfify_op("arg0 eq 0 -> le 9"))) annotation on square_mul
 // becomes a "perfify_op=arg0 eq 0 -> le 9" entry in
 // @llvm.global.annotations. The pass lifts it into a perfify.conditions
-// Hoare triple ({ arg0 == 0 } square_mul { fn_cost <= 9 }) inside the
+// Hoare triple ({ start_cost == 0 } square_mul { fn_cost <= 9 }) inside the
 // module's perfify.assumptions op.
 
 module {
@@ -39,19 +39,19 @@ module {
 // CHECK: perfify.assumptions {
 // CHECK-NEXT: perfify.conditions @square_mul true pre {
 // CHECK-NEXT: %[[ARG0:.*]] = perfify.arg 0
-// CHECK-NEXT: %[[ZERO:.*]] = perfify.estimated_cost {
+// CHECK-NEXT: perfify.estimated_cost @pre_cost {
 // CHECK-NEXT: %[[C0:.*]] = arith.constant 0 : i64
 // CHECK-NEXT: perfify.yield
-// CHECK-NEXT: } : !perfify.cost
-// CHECK-NEXT: %[[PRE:.*]] = perfify.cmp eq, %[[ARG0]], %[[ZERO]]
+// CHECK-NEXT: }
+// CHECK-NEXT: %[[PRE:.*]] = perfify.cmp eq, %[[ARG0]], @pre_cost
 // CHECK-NEXT: %[[PREH:.*]] = perfify.hypothesis %[[PRE]] pre
 // CHECK-NEXT: perfify.assume %[[PREH]]
 // CHECK-NEXT: } post {
 // CHECK-NEXT: %[[FNCOST:.*]] = perfify.fn_cost : !perfify.cost
-// CHECK-NEXT: %[[BOUND:.*]] = perfify.estimated_cost {
+// CHECK-NEXT: perfify.estimated_cost @post_cost {
 // CHECK-NEXT: %[[C9:.*]] = arith.constant 9 : i64
 // CHECK-NEXT: perfify.yield
-// CHECK-NEXT: } : !perfify.cost
-// CHECK-NEXT: %[[POST:.*]] = perfify.cmp le, %[[FNCOST]], %[[BOUND]]
+// CHECK-NEXT: }
+// CHECK-NEXT: %[[POST:.*]] = perfify.cmp le, %[[FNCOST]], @post_cost
 // CHECK-NEXT: %[[POSTH:.*]] = perfify.hypothesis %[[POST]] post
 // CHECK-NEXT: perfify.assume %[[POSTH]]

@@ -152,26 +152,17 @@ struct SimpleCycleAnalysisPass
   }
 
   bool captureHypothesisArgs(CompareOp cmpOp, HoareStates pre_post) {
-    for (mlir::Value operand : cmpOp->getOperands()) {
-      if (auto con_cost = operand.getDefiningOp<EstimatedCostOp>()) {
-        hypotheses[pre_post] = {&con_cost.getBody(), &con_cost.getBody()};
-        return true;
-      }
-      if (auto interval = operand.getDefiningOp<IntervalOp>()) {
-        auto lb = interval.getLb()
-                      ? interval.getLb().getDefiningOp<EstimatedCostOp>()
-                      : nullptr;
-        auto ub = interval.getUb()
-                      ? interval.getUb().getDefiningOp<EstimatedCostOp>()
-                      : nullptr;
-        if ((interval.getLb() && !lb) || (interval.getUb() && !ub)) {
-          llvm::outs() << "interval bounds must be perfify.estimated_cost\n";
-          return false;
-        }
-        hypotheses[pre_post] = {lb ? &lb.getBody() : nullptr,
-                                ub ? &ub.getBody() : nullptr};
-        return true;
-      }
+    Operation *bound = cmpOp.getBoundOp();
+    if (auto con_cost = dyn_cast_or_null<EstimatedCostOp>(bound)) {
+      hypotheses[pre_post] = {&con_cost.getBody(), &con_cost.getBody()};
+      return true;
+    }
+    if (auto interval = dyn_cast_or_null<IntervalOp>(bound)) {
+      auto lb = interval.getMinCostOp();
+      auto ub = interval.getMaxCostOp();
+      hypotheses[pre_post] = {lb ? &lb.getBody() : nullptr,
+                              ub ? &ub.getBody() : nullptr};
+      return true;
     }
     llvm::outs() << "no bound found for " << stringifyHoareStates(pre_post)
                  << " hypothesis\n";
@@ -182,14 +173,14 @@ struct SimpleCycleAnalysisPass
                            z3::solver &solver,
                            std::vector<z3::expr> &cost_var) {
     z3::context &ctx = solver.ctx();
-    const HypothesisArgs &args = hypotheses.at(pre_post);
+    const HypothesisArgs &bounds = hypotheses.at(pre_post);
     z3::expr cost =
         pre_post == HoareStates::Pre ? cost_var.front() : cost_var.back();
     std::optional<z3::expr> lb, ub;
-    if (args.lb)
-      lb = evaluateCostRegion(args.lb, solver);
-    if (args.ub)
-      ub = evaluateCostRegion(args.ub, solver);
+    if (bounds.lb)
+      lb = evaluateCostRegion(bounds.lb, solver);
+    if (bounds.ub)
+      ub = evaluateCostRegion(bounds.ub, solver);
     z3::expr in_interval = ctx.bool_val(true);
     if (lb)
       in_interval = in_interval && (*lb <= cost);
