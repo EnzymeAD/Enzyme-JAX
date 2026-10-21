@@ -12780,14 +12780,41 @@ struct ConcatDotGeneral
     SmallVector<int64_t> reshaped;
   };
 
+  // Whether an operand can be a piece at all: a dot_general used once, under
+  // views (reshapes, transposes, broadcasts) each used once. The runs are
+  // searched only among such operands; a concatenate of anything else (most
+  // of them) is rejected in one pass instead of one analysis per operand
+  // range.
+  static bool endsInDot(Value v) {
+    while (Operation *op = v.getDefiningOp()) {
+      if (isa<stablehlo::DotGeneralOp>(op))
+        return v.hasOneUse();
+      if (!isa<stablehlo::ReshapeOp, stablehlo::TransposeOp,
+               stablehlo::BroadcastInDimOp>(op) ||
+          !v.hasOneUse())
+        return false;
+      v = op->getOperand(0);
+    }
+    return false;
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concat,
                                     PatternRewriter &rewriter) const {
     SmallVector<Value> operands(concat.getOperands());
     int64_t n = operands.size();
+    SmallVector<bool> pieces(n);
+    for (int64_t k = 0; k < n; k++)
+      pieces[k] = endsInDot(operands[k]);
     SmallVector<Value> merged;
     bool changed = false;
     for (int64_t begin = 0; begin < n;) {
-      int64_t end = n;
+      if (!pieces[begin]) {
+        merged.push_back(operands[begin++]);
+        continue;
+      }
+      int64_t end = begin + 1;
+      while (end < n && pieces[end])
+        end++;
       Plan plan;
       Mixed mixed;
       bool isMixed = false;
