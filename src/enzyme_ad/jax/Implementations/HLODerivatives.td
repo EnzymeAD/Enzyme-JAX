@@ -1478,3 +1478,162 @@ def : HLODerivative<"FftOp",
       Fft (Shadow $x), (FftType), (FftLength)
     )
 >;
+
+// TriangularSolveOp and CholeskyOp
+
+def OpLower : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getLower()">;
+def OpLowerAttr : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "builder.getBoolAttr(op.getLower())">;
+def LinalgTrue : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "true">;
+def LinalgFalse : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "false">;
+def LinalgNoTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "Transpose::NO_TRANSPOSE">;
+def LinalgTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "Transpose::TRANSPOSE">;
+def LinalgAdjointTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  isa<ComplexType>(cast<RankedTensorType>(op->getOperand(0).getType()).getElementType())
+      ? Transpose::ADJOINT : Transpose::TRANSPOSE;
+}]>;
+def LinalgTypeA : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op->getOperand(0).getType()">;
+def LinalgIfComplex : StaticSelect<
+  "isa<ComplexType>(cast<RankedTensorType>(op->getOperand(0).getType()).getElementType())">;
+
+def LinalgIotaType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  RankedTensorType::get(cast<RankedTensorType>(op->getOperand(0).getType()).getShape(),
+                        builder.getI32Type());
+}]>;
+def LinalgRowDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0,
+  "(uint64_t)(cast<RankedTensorType>(op->getOperand(0).getType()).getRank() - 2)">;
+def LinalgColDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0,
+  "(uint64_t)(cast<RankedTensorType>(op->getOperand(0).getType()).getRank() - 1)">;
+
+def LinalgSwapLastTwo : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  int64_t rank = cast<RankedTensorType>(op->getOperand(0).getType()).getRank();
+  SmallVector<int64_t> perm(rank);
+  std::iota(perm.begin(), perm.end(), 0);
+  std::swap(perm[rank - 1], perm[rank - 2]);
+  getI64Attr(builder, perm);
+}]>;
+def LinalgMatrixTranspose : SubRoutine<(Op $v), (Transpose $v, (LinalgSwapLastTwo))>;
+def LinalgAdjoint : SubRoutine<(Op $v),
+  (LinalgIfComplex (Conj (LinalgMatrixTranspose $v)), (LinalgMatrixTranspose $v))>;
+
+// contracts dimension rank - lhs of the left operand with rank - rhs of the right one
+class LinalgDotDims<string lhs, string rhs> : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, !strconcat([{
+  int64_t rank = cast<RankedTensorType>(op->getOperand(0).getType()).getRank();
+  SmallVector<int64_t> batch(rank - 2);
+  std::iota(batch.begin(), batch.end(), 0);
+  DotDimensionNumbersAttr::get(op->getContext(), batch, batch, {rank - }], lhs, [{}, {rank - }], rhs, [{});
+}])>;
+def LinalgHighestPrecision : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto highest = PrecisionAttr::get(op->getContext(), Precision::HIGHEST);
+  builder.getArrayAttr({highest, highest});
+}]>;
+def LinalgNoDotAlgorithm : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "DotAlgorithmAttr()">;
+class LinalgMatmul<string lhs, string rhs, GlobalExpr resultType> : SubRoutine<(Op $p, $q),
+  (DotGeneral (resultType), $p, $q, (LinalgDotDims<lhs, rhs>), (LinalgHighestPrecision), (LinalgNoDotAlgorithm))>;
+
+def TsLeftSide : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getLeftSide()">;
+def TsUnitDiagonal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getUnitDiagonal()">;
+def TsTransposeA : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getTransposeA()">;
+// solves with the transpose of op(a), a complex ADJOINT uses conj(a) instead
+def TsTransposedTransposeA : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getTransposeA() == Transpose::NO_TRANSPOSE ? Transpose::TRANSPOSE : Transpose::NO_TRANSPOSE;
+}]>;
+def TsTypeB : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op->getOperand(1).getType()">;
+def TsIfLeft : StaticSelect<"cast<TriangularSolveOp>(op).getLeftSide()">;
+def TsIfNoTranspose : StaticSelect<
+  "cast<TriangularSolveOp>(op).getTransposeA() == Transpose::NO_TRANSPOSE">;
+def TsIfComplexAdjoint : StaticSelect<[{
+  cast<TriangularSolveOp>(op).getTransposeA() == Transpose::ADJOINT &&
+      isa<ComplexType>(cast<RankedTensorType>(op->getOperand(0).getType()).getElementType());
+}]>;
+def TsReadDirection : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getLower() ? (op.getUnitDiagonal() ? ComparisonDirection::GT : ComparisonDirection::GE)
+                : (op.getUnitDiagonal() ? ComparisonDirection::LT : ComparisonDirection::LE);
+}]>;
+def TsKeepRead : SubRoutine<(Op $v),
+  (Select (Compare (Iota (LinalgIotaType), (LinalgRowDim)), (Iota (LinalgIotaType), (LinalgColDim)), (TsReadDirection)), $v, (HLOConstantFP<"0"> $v))>;
+
+def TsSolve : SubRoutine<(Op $a, $rhs),
+  (TriangularSolve (TsTypeB), $a, $rhs, (TsLeftSide), (OpLower), (TsUnitDiagonal), (TsTransposeA))>;
+def TsTransposedSolve : SubRoutine<(Op $a, $g),
+  (TsIfComplexAdjoint
+    (TriangularSolve (TsTypeB), (Conj $a), $g, (TsLeftSide), (OpLower), (TsUnitDiagonal), (LinalgNoTranspose)),
+    (TriangularSolve (TsTypeB), $a, $g, (TsLeftSide), (OpLower), (TsUnitDiagonal), (TsTransposedTransposeA)))>;
+
+def TsAbar : SubRoutine<(Op $bbar, $x),
+  (TsKeepRead (Neg
+    (TsIfLeft
+      (TsIfNoTranspose
+        (LinalgMatmul<"1", "1", LinalgTypeA> $bbar, $x),
+        (TsIfComplexAdjoint
+          (Conj (LinalgMatmul<"1", "1", LinalgTypeA> $x, $bbar)),
+          (LinalgMatmul<"1", "1", LinalgTypeA> $x, $bbar))),
+      (TsIfNoTranspose
+        (LinalgMatmul<"2", "2", LinalgTypeA> $x, $bbar),
+        (TsIfComplexAdjoint
+          (Conj (LinalgMatmul<"2", "2", LinalgTypeA> $bbar, $x)),
+          (LinalgMatmul<"2", "2", LinalgTypeA> $bbar, $x))))))>;
+
+def TsDotTangent : SubRoutine<(Op $dT, $x),
+  (TsIfLeft
+    (TsIfNoTranspose
+      (LinalgMatmul<"1", "2", TsTypeB> $dT, $x),
+      (LinalgMatmul<"2", "2", TsTypeB> $dT, $x)),
+    (TsIfNoTranspose
+      (LinalgMatmul<"1", "2", TsTypeB> $x, $dT),
+      (LinalgMatmul<"1", "1", TsTypeB> $x, $dT)))>;
+
+def : HLODerivative<"TriangularSolveOp", (Op $a, $b),
+  [
+    (TsAbar (TsTransposedSolve $a, (DiffeRet)), (TsSolve $a, $b)),
+    (TsTransposedSolve $a, (DiffeRet))
+  ],
+  (TsSolve $a,
+    (Sub
+      (SelectIfActive $b, (Shadow $b), (HLOConstantFP<"0"> $b)),
+      (SelectIfActive $a,
+        (TsDotTangent
+          (TsIfComplexAdjoint (Conj (TsKeepRead (Shadow $a))), (TsKeepRead (Shadow $a))),
+          (TsSolve $a, $b)),
+        (HLOConstantFP<"0"> $b))))
+>;
+
+def CholIfLower : StaticSelect<"cast<CholeskyOp>(op).getLower()">;
+def CholReadDirection : GlobalExpr</*needsprimal*/0, /*needsshadow*/0,
+  "op.getLower() ? ComparisonDirection::GE : ComparisonDirection::LE">;
+def CholStrictDirection : GlobalExpr</*needsprimal*/0, /*needsshadow*/0,
+  "op.getLower() ? ComparisonDirection::GT : ComparisonDirection::LT">;
+def CholKeepRead : SubRoutine<(Op $v),
+  (Select (Compare (Iota (LinalgIotaType), (LinalgRowDim)), (Iota (LinalgIotaType), (LinalgColDim)), (CholReadDirection)), $v, (HLOConstantFP<"0"> $v))>;
+// the strict triangle of v plus half of its diagonal
+def CholPhi : SubRoutine<(Op $v),
+  (Select (Compare (Iota (LinalgIotaType), (LinalgRowDim)), (Iota (LinalgIotaType), (LinalgColDim)), (CholStrictDirection)), $v,
+    (Select (Compare (Iota (LinalgIotaType), (LinalgRowDim)), (Iota (LinalgIotaType), (LinalgColDim)), (EQ)),
+      (Mul $v, (HLOConstantFP<"0.5"> $v)), (HLOConstantFP<"0"> $v)))>;
+def CholFactor : SubRoutine<(Op $a), (CholKeepRead (Cholesky (LinalgTypeA), $a, (OpLowerAttr)))>;
+class CholSolve<GlobalExpr left, GlobalExpr transpose> : SubRoutine<(Op $c, $rhs),
+  (TriangularSolve (LinalgTypeA), $c, $rhs, (left), (OpLower), (LinalgFalse), (transpose))>;
+def CholTangentCore : SubRoutine<(Op $c, $dS),
+  (CholIfLower
+    (CholSolve<LinalgFalse, LinalgAdjointTranspose> $c, (CholSolve<LinalgTrue, LinalgNoTranspose> $c, $dS)),
+    (CholSolve<LinalgFalse, LinalgNoTranspose> $c, (CholSolve<LinalgTrue, LinalgAdjointTranspose> $c, $dS)))>;
+def CholTangent : SubRoutine<(Op $c, $dS),
+  (CholIfLower
+    (LinalgMatmul<"1", "2", LinalgTypeA> $c, (CholPhi (CholTangentCore $c, $dS))),
+    (LinalgMatmul<"1", "2", LinalgTypeA> (CholPhi (CholTangentCore $c, $dS)), $c))>;
+def CholConjIfComplex : SubRoutine<(Op $v), (LinalgIfComplex (Conj $v), $v)>;
+def CholSbar : SubRoutine<(Op $c, $g),
+  (CholIfLower
+    (CholSolve<LinalgFalse, LinalgNoTranspose> (CholConjIfComplex $c),
+      (CholSolve<LinalgTrue, LinalgTranspose> $c,
+        (CholPhi (LinalgMatmul<"2", "2", LinalgTypeA> $c, $g)))),
+    (CholSolve<LinalgFalse, LinalgTranspose> $c,
+      (CholSolve<LinalgTrue, LinalgNoTranspose> (CholConjIfComplex $c),
+        (CholPhi (LinalgMatmul<"1", "1", LinalgTypeA> $g, $c)))))>;
+def CholHermitianPart : SubRoutine<(Op $v), (Add $v, (LinalgAdjoint $v))>;
+
+def : HLODerivative<"CholeskyOp", (Op $a),
+  [
+    (CholPhi (CholHermitianPart (CholSbar (CholFactor $a), (DiffeRet))))
+  ],
+  (CholTangent (CholFactor $a), (CholHermitianPart (CholPhi (Shadow $a))))
+>;
