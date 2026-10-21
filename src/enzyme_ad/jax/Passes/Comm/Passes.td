@@ -23,8 +23,6 @@ def LowerCommToJITPass : Pass<"lower-comm-to-jit"> {
     Option<"mpi_request_width", "mpi_request_width", "unsigned", /*default=*/"64",
            "Bit width of `MPI_Request` in the target MPI implementation "
            "(e.g. 32 for MPICH, 64 for Open MPI on 64-bit platforms)">,
-    Option<"ncclCommPtr", "ncclCommPtr", "size_t", /*default=*/"0",
-           "Pointer to the initialized default NCCL communicator">,
   ];
 }
 
