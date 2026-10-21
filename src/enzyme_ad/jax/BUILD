@@ -1117,6 +1117,9 @@ cc_library(
         "@shardy//shardy/dialect/sdy/ir:dialect",
         "@stablehlo//:base",
         "@stablehlo//:chlo_ops",
+        "@stablehlo//:reference_ops",
+        "@stablehlo//:reference_scope",
+        "@stablehlo//:reference_types",
         "@stablehlo//:stablehlo_ops",
     ],
 )

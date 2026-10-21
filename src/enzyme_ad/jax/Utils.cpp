@@ -38,6 +38,7 @@
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/reference/Ops.h"
 
 #include <cassert>
 #include <cmath>
@@ -1675,59 +1676,186 @@ detectIotaLikeTensor(DenseElementsAttr denseAttr) {
   return std::nullopt;
 }
 
-std::optional<DenseElementsAttr>
-tryEvaluateSmallTreeToConstant(mlir::Value val, int64_t maxElements = 1024) {
-  auto type = dyn_cast<RankedTensorType>(val.getType());
-  if (!type || !type.hasStaticShape() || type.getNumElements() > maxElements)
+namespace {
+// A value `evaluateIntegerConstant` computed: its elements, or, when `splat`,
+// its one element, of rank 0, that every element of it equals.
+struct EvaluatedConstant {
+  stablehlo::Tensor tensor;
+  bool splat;
+};
+} // namespace
+
+// Whether `evaluateIntegerConstant` computes `op` element by element.
+static bool isEvaluatedElementwise(Operation *op) {
+  return isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp,
+             stablehlo::DivOp, stablehlo::RemOp, stablehlo::AndOp,
+             stablehlo::OrOp, stablehlo::XorOp, stablehlo::ShiftLeftOp,
+             stablehlo::ShiftRightLogicalOp, stablehlo::ShiftRightArithmeticOp,
+             stablehlo::MaxOp, stablehlo::MinOp, stablehlo::NegOp,
+             stablehlo::CompareOp, stablehlo::SelectOp, stablehlo::ConvertOp>(
+      op);
+}
+
+// Whether `evaluateIntegerConstant` computes `op` by moving the elements of
+// its one operand.
+static bool isEvaluatedMovement(Operation *op) {
+  return isa<stablehlo::ReshapeOp, stablehlo::BroadcastInDimOp,
+             stablehlo::TransposeOp, stablehlo::SliceOp>(op);
+}
+
+// `op` applied to the operands `args` by the reference ops, giving a value of
+// type `ty`.
+static stablehlo::Tensor evaluateConstantOp(Operation *op,
+                                            ArrayRef<stablehlo::Tensor> args,
+                                            ShapedType ty) {
+  if (isa<stablehlo::AddOp>(op))
+    return stablehlo::addOp(args[0], args[1], ty);
+  if (isa<stablehlo::SubtractOp>(op))
+    return stablehlo::subtractOp(args[0], args[1], ty);
+  if (isa<stablehlo::MulOp>(op))
+    return stablehlo::multiplyOp(args[0], args[1], ty);
+  if (isa<stablehlo::DivOp>(op))
+    return stablehlo::divideOp(args[0], args[1], ty);
+  if (isa<stablehlo::RemOp>(op))
+    return stablehlo::remOp(args[0], args[1], ty);
+  if (isa<stablehlo::AndOp>(op))
+    return stablehlo::andOp(args[0], args[1], ty);
+  if (isa<stablehlo::OrOp>(op))
+    return stablehlo::orOp(args[0], args[1], ty);
+  if (isa<stablehlo::XorOp>(op))
+    return stablehlo::xorOp(args[0], args[1], ty);
+  if (isa<stablehlo::ShiftLeftOp>(op))
+    return stablehlo::shiftLeftOp(args[0], args[1], ty);
+  if (isa<stablehlo::ShiftRightLogicalOp>(op))
+    return stablehlo::shiftRightLogicalOp(args[0], args[1], ty);
+  if (isa<stablehlo::ShiftRightArithmeticOp>(op))
+    return stablehlo::shiftRightArithmeticOp(args[0], args[1], ty);
+  if (isa<stablehlo::MaxOp>(op))
+    return stablehlo::maxOp(args[0], args[1], ty);
+  if (isa<stablehlo::MinOp>(op))
+    return stablehlo::minOp(args[0], args[1], ty);
+  if (isa<stablehlo::NegOp>(op))
+    return stablehlo::negOp(args[0], ty);
+  if (auto cmp = dyn_cast<stablehlo::CompareOp>(op))
+    return stablehlo::compareOp(args[0], args[1], cmp.getComparisonDirection(),
+                                cmp.getCompareType(), ty);
+  if (isa<stablehlo::SelectOp>(op))
+    return stablehlo::selectOp(args[0], args[1], args[2], ty);
+  if (isa<stablehlo::ConvertOp>(op))
+    return stablehlo::convertOp(args[0], ty);
+  if (isa<stablehlo::ReshapeOp>(op))
+    return stablehlo::reshapeOp(args[0], ty);
+  if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op))
+    return stablehlo::broadcastInDimOp(
+        args[0], stablehlo::Axes(bcast.getBroadcastDimensions()), ty);
+  if (auto tr = dyn_cast<stablehlo::TransposeOp>(op))
+    return stablehlo::transposeOp(args[0], stablehlo::Axes(tr.getPermutation()),
+                                  ty);
+  if (auto slice = dyn_cast<stablehlo::SliceOp>(op))
+    return stablehlo::sliceOp(args[0],
+                              stablehlo::Sizes(slice.getStartIndices()),
+                              stablehlo::Sizes(slice.getStrides()), ty);
+  auto cat = cast<stablehlo::ConcatenateOp>(op);
+  return stablehlo::concatenateOp(args, cat.getDimension(), ty);
+}
+
+static std::optional<EvaluatedConstant>
+evaluateIntegerConstantImpl(Value v, int64_t maxElements, bool iotas,
+                            DenseMap<Value, EvaluatedConstant> &memo,
+                            unsigned depth) {
+  auto ty = dyn_cast<RankedTensorType>(v.getType());
+  if (!ty || !ty.hasStaticShape() || !isa<IntegerType>(ty.getElementType()) ||
+      depth > 32)
+    return std::nullopt;
+  if (auto found = memo.find(v); found != memo.end())
+    return found->second;
+  Operation *op = v.getDefiningOp();
+  if (!op || op->getNumResults() != 1)
     return std::nullopt;
 
-  if (auto constOp = val.getDefiningOp<stablehlo::ConstantOp>()) {
-    return dyn_cast_or_null<DenseElementsAttr>(constOp.getValue());
-  }
-
-  if (auto iotaOp = val.getDefiningOp<stablehlo::IotaOp>()) {
-    int64_t iotaDim = iotaOp.getIotaDimension();
-    auto elemTy = type.getElementType();
-    auto strides = computeStrides(type.getShape());
-    int64_t numElements = type.getNumElements();
-
-    if (isa<IntegerType>(elemTy)) {
-      SmallVector<APInt> values;
-      values.reserve(numElements);
-      for (int64_t i = 0; i < numElements; ++i) {
-        SmallVector<int64_t> multiIndex;
-        linearToMultiIndex(i, strides, multiIndex);
-        values.push_back(
-            APInt(elemTy.getIntOrFloatBitWidth(), multiIndex[iotaDim], true));
-      }
-      return DenseElementsAttr::get(type, values);
-    }
-    // Only integer for now
-    return std::nullopt;
-  }
-
-  Operation *op = val.getDefiningOp();
-  if (!op)
-    return std::nullopt;
-
-  if (isa<stablehlo::ReshapeOp, stablehlo::AddOp, stablehlo::MulOp>(op)) {
-    SmallVector<Attribute> operands;
-    for (auto operand : op->getOperands()) {
-      auto evalOp = tryEvaluateSmallTreeToConstant(operand, maxElements);
-      if (!evalOp)
+  auto fits = [&](RankedTensorType t) {
+    return t.getNumElements() <= maxElements;
+  };
+  auto scalarTy = RankedTensorType::get({}, ty.getElementType());
+  auto scalar = [&](const stablehlo::Tensor &t) {
+    return t.get(stablehlo::Index(t.getRank(), 0)).getIntegerValue();
+  };
+  std::optional<EvaluatedConstant> value;
+  DenseElementsAttr attr;
+  if (matchPattern(v, m_Constant(&attr))) {
+    if (attr.isSplat())
+      value = {stablehlo::constantOp(attr.resizeSplat(scalarTy)), true};
+    else if (fits(ty))
+      value = {stablehlo::constantOp(attr), false};
+  } else if (auto iota = dyn_cast<stablehlo::IotaOp>(op)) {
+    if (iotas && fits(ty))
+      value = {stablehlo::iotaOp(iota.getIotaDimension(), ty), false};
+  } else if (isEvaluatedElementwise(op) || isEvaluatedMovement(op) ||
+             isa<stablehlo::ConcatenateOp>(op)) {
+    SmallVector<EvaluatedConstant> args;
+    bool splat = true;
+    for (Value operand : op->getOperands()) {
+      auto arg = evaluateIntegerConstantImpl(operand, maxElements, iotas, memo,
+                                             depth + 1);
+      if (!arg)
         return std::nullopt;
-      operands.push_back(*evalOp);
+      splat &= arg->splat;
+      args.push_back(*arg);
     }
-
-    SmallVector<OpFoldResult> foldResults;
-    if (succeeded(op->fold(operands, foldResults)) && foldResults.size() == 1) {
-      if (auto attr = llvm::dyn_cast_if_present<Attribute>(foldResults[0])) {
-        return dyn_cast<DenseElementsAttr>(attr);
+    // the reference ops trap on a division by zero
+    if (isa<stablehlo::DivOp, stablehlo::RemOp>(op)) {
+      const stablehlo::Tensor &rhs = args[1].tensor;
+      for (auto it = rhs.index_begin(); it != rhs.index_end(); ++it)
+        if (rhs.get(*it).getIntegerValue().isZero())
+          return std::nullopt;
+    }
+    if (splat) {
+      // one element, whatever the shape: moving it gives itself, a
+      // concatenation of one value is it, the rest act on it alone
+      if (isEvaluatedMovement(op)) {
+        value = {args[0].tensor, true};
+      } else if (isa<stablehlo::ConcatenateOp>(op)) {
+        if (llvm::all_of(args, [&](const EvaluatedConstant &arg) {
+              return scalar(arg.tensor) == scalar(args[0].tensor);
+            }))
+          value = {args[0].tensor, true};
+      } else {
+        SmallVector<stablehlo::Tensor> in;
+        for (const EvaluatedConstant &arg : args)
+          in.push_back(arg.tensor);
+        value = {evaluateConstantOp(op, in, scalarTy), true};
       }
     }
+    if (!value && fits(ty)) {
+      SmallVector<stablehlo::Tensor> in;
+      for (auto [arg, operand] : llvm::zip_equal(args, op->getOperands())) {
+        auto operandTy = cast<RankedTensorType>(operand.getType());
+        if (arg.splat && !fits(operandTy))
+          return std::nullopt;
+        in.push_back(arg.splat
+                         ? stablehlo::constantOp(
+                               stablehlo::makeDenseElementsAttr(arg.tensor)
+                                   .resizeSplat(operandTy))
+                         : arg.tensor);
+      }
+      value = {evaluateConstantOp(op, in, ty), false};
+    }
   }
+  if (value)
+    memo.try_emplace(v, *value);
+  return value;
+}
 
-  return std::nullopt;
+std::optional<DenseElementsAttr>
+evaluateIntegerConstant(Value v, int64_t maxElements, bool iotas) {
+  DenseMap<Value, EvaluatedConstant> memo;
+  auto value = evaluateIntegerConstantImpl(v, maxElements, iotas, memo, 0);
+  if (!value)
+    return std::nullopt;
+  DenseElementsAttr attr = stablehlo::makeDenseElementsAttr(value->tensor);
+  if (value->splat)
+    attr = attr.resizeSplat(cast<ShapedType>(v.getType()));
+  return attr;
 }
 
 std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
