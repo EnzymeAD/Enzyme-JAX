@@ -1553,11 +1553,11 @@ LogicalResult enzymexla::SyrkOp::verify() {
 }
 
 LogicalResult OrgqrOp::verify() {
-  auto shape = cast<RankedTensorType>(getA().getType()).getShape();
+  auto shape = cast<RankedTensorType>(getInput().getType()).getShape();
   auto ndims = shape.size();
 
-  auto m = getA().getShape()[ndims - 2];
-  auto n = getA().getShape()[ndims - 1];
+  auto m = shape[ndims - 2];
+  auto n = shape[ndims - 1];
   auto k = cast<RankedTensorType>(getTau().getType())
                .getShape()
                .back(); // num of reflectors
