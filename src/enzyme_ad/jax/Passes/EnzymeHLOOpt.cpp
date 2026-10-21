@@ -6902,8 +6902,29 @@ struct WhileDuplicateCarried final
     if (!ret)
       return failure();
     bool changed = false;
+    // The first position seen for each (initial value, yielded value), so that
+    // only the positions that can pair with j are visited instead of every
+    // earlier one. Later positions with the same pair are duplicates of it.
+    using Key = std::pair<Value, Value>;
+    DenseMap<Key, unsigned> firstByInitAndYield;
     for (unsigned j = 0, e = op.getNumOperands(); j < e; ++j) {
-      for (unsigned i = 0; i < j; ++i) {
+      SmallVector<unsigned, 2> candidates;
+      auto addCandidate = [&](Value init, Value yield) {
+        auto it = firstByInitAndYield.find({init, yield});
+        if (it != firstByInitAndYield.end())
+          candidates.push_back(it->second);
+      };
+      Value init = op->getOperand(j), yield = ret.getOperand(j);
+      addCandidate(init, yield);
+      Operation *initDef = init.getDefiningOp();
+      Operation *yieldDef = yield.getDefiningOp();
+      if (initDef && yieldDef && initDef->getNumOperands() == 1 &&
+          yieldDef->getNumOperands() == 1)
+        addCandidate(initDef->getOperand(0), yieldDef->getOperand(0));
+      if (candidates.size() == 2 && candidates[0] > candidates[1])
+        std::swap(candidates[0], candidates[1]);
+      firstByInitAndYield.try_emplace({init, yield}, j);
+      for (unsigned i : candidates) {
         // the function f, or null when the positions hold the same value
         Operation *f = nullptr;
         if (op->getOperand(i) != op->getOperand(j) ||
@@ -7349,6 +7370,27 @@ struct NegativePadToSlice final
   }
 };
 
+// Whether root, through adds and multiplies, is read by slices alone, and
+// whether they leave some of dimension dim unread.
+static bool readBySlicesLeavingSomeUnread(Operation *root, int64_t dim) {
+  auto type = cast<RankedTensorType>(root->getResult(0).getType());
+  llvm::BitVector read(type.getShape()[dim]);
+  SmallVector<Operation *> ops(root->getUsers());
+  while (!ops.empty()) {
+    auto cur = ops.pop_back_val();
+    if (auto reader = dyn_cast<stablehlo::SliceOp>(cur)) {
+      read.set(reader.getStartIndices()[dim], reader.getLimitIndices()[dim]);
+      continue;
+    }
+    if (isa<stablehlo::AddOp, stablehlo::MulOp>(cur)) {
+      llvm::append_range(ops, cur->getResult(0).getUsers());
+      continue;
+    }
+    return false;
+  }
+  return !read.all();
+}
+
 /*
 %1192 = stablehlo.pad %1189, %cst_0, low = [0], high = [1], interior = [0] :
   (tensor<1xf32>, tensor<f32>) -> tensor<2xf32>
@@ -7376,37 +7418,16 @@ struct BinopPadToConcat final
         Attribute padValAttr;
         matchPattern(lhs.getPaddingValue(), m_Constant(&padValAttr));
         bool padIsZero =
-            padValAttr && matchPattern(padValAttr, m_AnyZeroFloat());
-        bool padIsOne = padValAttr && matchPattern(padValAttr, m_OneFloat());
+            padValAttr && (matchPattern(padValAttr, m_AnyZeroFloat()) ||
+                           matchPattern(padValAttr, m_Zero()));
+        bool padIsOne = padValAttr && (matchPattern(padValAttr, m_OneFloat()) ||
+                                       matchPattern(padValAttr, m_One()));
 
         bool match = false;
         if (isa<stablehlo::AddOp>(op)) {
           match = padIsZero;
         } else if (isa<stablehlo::MulOp>(op)) {
           match = padIsOne || padIsZero;
-        }
-        // With any other padding value the split pays only when some of the
-        // pieces go unread: the result, through adds and multiplies, must be
-        // read by slices alone, and they must leave some of the padded
-        // dimension unread (slices that read all of it just take the pieces
-        // of a batched op apart, and the batching puts them back together).
-        SmallVector<stablehlo::SliceOp> readers;
-        if (!match) {
-          SmallVector<Operation *> ops = {op};
-          while (!ops.empty()) {
-            auto cur = ops.pop_back_val();
-            if (auto reader = dyn_cast<stablehlo::SliceOp>(cur)) {
-              readers.push_back(reader);
-              continue;
-            }
-            if (isa<stablehlo::AddOp, stablehlo::MulOp>(cur)) {
-              for (auto u : cur->getResult(0).getUsers()) {
-                ops.push_back(u);
-              }
-              continue;
-            }
-            return failure();
-          }
         }
 
         bool legal = true;
@@ -7437,14 +7458,14 @@ struct BinopPadToConcat final
             lhs.getOperand().getType().getShape()[idxs[0]] * 2 <=
                 type.getShape()[idxs[0]]) {
           auto idx = idxs[0];
-          if (!match) {
-            llvm::BitVector read(type.getShape()[idx]);
-            for (auto reader : readers)
-              read.set(reader.getStartIndices()[idx],
-                       reader.getLimitIndices()[idx]);
-            if (read.all())
-              return failure();
-          }
+          // With any other padding value the split pays only when some of
+          // the pieces go unread: the result, through adds and multiplies,
+          // must be read by slices alone, and they must leave some of the
+          // padded dimension unread (slices that read all of it just take
+          // the pieces of a batched op apart, and the batching puts them back
+          // together).
+          if (!match && !readBySlicesLeavingSomeUnread(op, idx))
+            return failure();
 
           SmallVector<int64_t> strides(type.getShape().size(), 1);
           SmallVector<int64_t> starts(type.getShape().size(), 0);
@@ -7928,6 +7949,12 @@ struct ConcatPushBinop final
     for (auto c : converts)
       if (c != typeconvert)
         return failure();
+
+    // Slices that leave some of the concatenation unread are better served
+    // by the pieces they read (and BinopPadToConcat split them for those
+    // slices: pushing the binop back out would undo it, over and over).
+    if (readBySlicesLeavingSomeUnread(op, op.getDimension()))
+      return failure();
 
     auto lhs2 = stablehlo::ConcatenateOp::create(rewriter, op.getLoc(), lhs,
                                                  op.getDimension());
@@ -12780,14 +12807,41 @@ struct ConcatDotGeneral
     SmallVector<int64_t> reshaped;
   };
 
+  // Whether an operand can be a piece at all: a dot_general used once, under
+  // views (reshapes, transposes, broadcasts) each used once. The runs are
+  // searched only among such operands; a concatenate of anything else (most
+  // of them) is rejected in one pass instead of one analysis per operand
+  // range.
+  static bool endsInDot(Value v) {
+    while (Operation *op = v.getDefiningOp()) {
+      if (isa<stablehlo::DotGeneralOp>(op))
+        return v.hasOneUse();
+      if (!isa<stablehlo::ReshapeOp, stablehlo::TransposeOp,
+               stablehlo::BroadcastInDimOp>(op) ||
+          !v.hasOneUse())
+        return false;
+      v = op->getOperand(0);
+    }
+    return false;
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concat,
                                     PatternRewriter &rewriter) const {
     SmallVector<Value> operands(concat.getOperands());
     int64_t n = operands.size();
+    SmallVector<bool> pieces(n);
+    for (int64_t k = 0; k < n; k++)
+      pieces[k] = endsInDot(operands[k]);
     SmallVector<Value> merged;
     bool changed = false;
     for (int64_t begin = 0; begin < n;) {
-      int64_t end = n;
+      if (!pieces[begin]) {
+        merged.push_back(operands[begin++]);
+        continue;
+      }
+      int64_t end = begin + 1;
+      while (end < n && pieces[end])
+        end++;
       Plan plan;
       Mixed mixed;
       bool isMixed = false;
