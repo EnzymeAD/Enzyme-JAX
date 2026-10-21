@@ -1710,27 +1710,26 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
 #ifdef ENZYMEJAX_CUDA
 struct LowerCommNcclGetCommOpToJIT
     : public OpConversionPattern<comm::NcclGetCommOp> {
-  LowerCommNcclGetCommOpToJIT(TypeConverter &converter,
-                              MLIRContext *context, size_t ncclCommPtr)
-      : OpConversionPattern(converter, context), ncclCommPtr(ncclCommPtr) {}
+  using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(comm::NcclGetCommOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (!ncclCommPtr)
-      return op.emitOpError("requires a nonzero ncclCommPtr pass option");
+    auto comm = lookupSymbol("Reactant_NCCL_COMM_WORLD");
+    if (!comm)
+      return op.emitOpError("requires a registered NCCL communicator: " +
+                            toString(comm.takeError()));
+    if (!comm.get())
+      return op.emitOpError("registered NCCL communicator is null");
 
     auto resultType = cast<RankedTensorType>(
         getTypeConverter()->convertType(op.getComm().getType()));
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, resultType,
         DenseIntElementsAttr::get(resultType,
-                                  static_cast<int64_t>(ncclCommPtr)));
+                                  reinterpret_cast<int64_t>(comm.get())));
     return success();
   }
-
-private:
-  size_t ncclCommPtr;
 };
 
 struct LowerCommNcclCommUserRankOpToJIT
@@ -3006,7 +3005,7 @@ struct LowerCommToJITPass
                  LowerCommMpiBcastOpToJIT>(converter, context);
 
 #ifdef ENZYMEJAX_CUDA
-    patterns.add<LowerCommNcclGetCommOpToJIT>(converter, context, ncclCommPtr);
+    patterns.add<LowerCommNcclGetCommOpToJIT>(converter, context);
     patterns
         .add<LowerCommNcclCommUserRankOpToJIT, LowerCommNcclCommCountOpToJIT,
              LowerCommNcclSendOpToJIT, LowerCommNcclRecvOpToJIT,
