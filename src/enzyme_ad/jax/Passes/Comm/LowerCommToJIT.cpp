@@ -1771,7 +1771,7 @@ struct LowerCommNcclCommUserRankOpToJIT
           LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr, one)
               .getResult();
 
-      // TODO move to cudaMemcpyAsync by wrapping NCCL call in
+      // TODO move to cuMemcpyAsync by wrapping NCCL call in
       // cudaLaunchHostFunc
       Value count = LLVM::ConstantOp::create(
                         rewriter, op.getLoc(), type_i32,
@@ -1908,7 +1908,7 @@ struct LowerCommNcclCommCountOpToJIT
           LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr, one)
               .getResult();
 
-      // TODO move to cudaMemcpyAsync by wrapping NCCL call in
+      // TODO move to cuMemcpyAsync by wrapping NCCL call in
       // cudaLaunchHostFunc
       Value count = LLVM::ConstantOp::create(
                         rewriter, op.getLoc(), type_i32,
@@ -2092,7 +2092,7 @@ struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
                          rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
                          .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
                            ValueRange{
                                host_count_ptr,
                                arg_count_ptr,
@@ -2101,7 +2101,7 @@ struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
                                stream,
                            });
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
                            ValueRange{
                                host_peer_ptr,
                                arg_peer_ptr,
@@ -2115,7 +2115,7 @@ struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
                          rewriter.getI32IntegerAttr(sizeof(ncclDataType_t) * 8))
                          .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_nccl_datatype},
-                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
                            ValueRange{
                                host_datatype_ptr,
                                arg_datatype_ptr,
@@ -2129,7 +2129,7 @@ struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
                                    rewriter.getI32IntegerAttr(sizeof(void *)))
               .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
                            ValueRange{
                                host_comm_ptr,
                                arg_comm_ptr,
@@ -2306,7 +2306,7 @@ struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
                          rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
                          .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
                            ValueRange{
                                host_count_ptr,
                                arg_count_ptr,
@@ -2315,7 +2315,7 @@ struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
                                stream,
                            });
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
                            ValueRange{
                                host_peer_ptr,
                                arg_peer_ptr,
@@ -2329,7 +2329,7 @@ struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
                          rewriter.getI32IntegerAttr(sizeof(ncclDataType_t) * 8))
                          .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_nccl_datatype},
-                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
                            ValueRange{
                                host_datatype_ptr,
                                arg_datatype_ptr,
@@ -2343,7 +2343,7 @@ struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
                                    rewriter.getI32IntegerAttr(sizeof(void *)))
               .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
                            ValueRange{
                                host_comm_ptr,
                                arg_comm_ptr,
@@ -2451,13 +2451,13 @@ struct LowerCommNcclAllReduceOpToJIT
     std::string function_name = "ncclAllReduce";
     std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>("cudaMemcpyAsync")) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>("cuMemcpyAsync")) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
       auto funcType = LLVM::LLVMFunctionType::get(
           type_i32, {type_ptr, type_ptr, type_size_t, type_i32, type_ptr},
           false);
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), "cudaMemcpyAsync",
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), "cuMemcpyAsync",
                                funcType, LLVM::Linkage::External);
     }
 
@@ -2567,7 +2567,7 @@ struct LowerCommNcclAllReduceOpToJIT
               rewriter.getIntegerAttr(type_size_t, sizeof(size_t)))
               .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
                            ValueRange{
                                host_count_ptr,
                                arg_count_ptr,
@@ -2582,7 +2582,7 @@ struct LowerCommNcclAllReduceOpToJIT
                                                  sizeof(ncclRedOp_t)))
                          .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
                            ValueRange{
                                host_redop_ptr,
                                arg_redop_ptr,
@@ -2597,7 +2597,7 @@ struct LowerCommNcclAllReduceOpToJIT
                                                  sizeof(ncclDataType_t)))
                          .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
                            ValueRange{
                                host_datatype_ptr,
                                arg_datatype_ptr,
@@ -2612,7 +2612,7 @@ struct LowerCommNcclAllReduceOpToJIT
               rewriter.getIntegerAttr(type_size_t, sizeof(void *)))
               .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
                            ValueRange{
                                host_comm_ptr,
                                arg_comm_ptr,
@@ -2818,7 +2818,7 @@ struct LowerCommNcclBroadcastOpToJIT
                          rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
                          .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
                            ValueRange{
                                host_count_ptr,
                                arg_count_ptr,
@@ -2827,7 +2827,7 @@ struct LowerCommNcclBroadcastOpToJIT
                                stream,
                            });
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
                            ValueRange{
                                host_root_ptr,
                                arg_root_ptr,
@@ -2841,7 +2841,7 @@ struct LowerCommNcclBroadcastOpToJIT
                          rewriter.getI32IntegerAttr(sizeof(ncclDataType_t) * 8))
                          .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_nccl_datatype},
-                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
                            ValueRange{
                                host_datatype_ptr,
                                arg_datatype_ptr,
@@ -2855,7 +2855,7 @@ struct LowerCommNcclBroadcastOpToJIT
                                    rewriter.getI32IntegerAttr(sizeof(void *)))
               .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
                            ValueRange{
                                host_comm_ptr,
                                arg_comm_ptr,
