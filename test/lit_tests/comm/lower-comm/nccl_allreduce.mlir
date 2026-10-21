@@ -3,7 +3,7 @@
 // RUN: not enzymexlamlir-opt --map-symbol="symbols=Reactant_NCCL_COMM_WORLD=0x0" --lower-comm-to-jit %s 2>&1 | FileCheck %s --check-prefix=NULL-COMM
 
 func.func @main(%buf: tensor<5xi32>) -> tensor<5xi32> {
-  %comm = comm.nccl.get_comm : !comm.nccl.comm
+  %comm = comm.nccl.get_comm_world : !comm.nccl.comm
   %result = comm.nccl.allreduce %buf, #comm.nccl.red_op<ncclSum>, %comm : (tensor<5xi32>, !comm.nccl.comm) -> tensor<5xi32>
   return %result : tensor<5xi32>
 }
@@ -37,7 +37,7 @@ func.func @main(%buf: tensor<5xi32>) -> tensor<5xi32> {
 // JIT: %[[COMM:.*]] = stablehlo.constant dense<4660> : tensor<i64>
 // JIT: stablehlo.constant dense<5> : tensor<i64>
 // JIT: enzymexla.jit_call @enzymexla_jitwrap_ncclAllReduce ({{.*}}%[[COMM]])
-// JIT-NOT: comm.nccl.get_comm
+// JIT-NOT: comm.nccl.get_comm_world
 
-// NO-COMM: 'comm.nccl.get_comm' op requires a registered NCCL communicator: Symbol not found: Reactant_NCCL_COMM_WORLD
-// NULL-COMM: 'comm.nccl.get_comm' op registered NCCL communicator is null
+// NO-COMM: 'comm.nccl.get_comm_world' op requires a registered NCCL communicator: Symbol not found: Reactant_NCCL_COMM_WORLD
+// NULL-COMM: 'comm.nccl.get_comm_world' op registered NCCL communicator is null

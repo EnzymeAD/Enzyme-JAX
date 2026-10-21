@@ -1708,12 +1708,12 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
 };
 
 #ifdef ENZYMEJAX_CUDA
-struct LowerCommNcclGetCommOpToJIT
-    : public OpConversionPattern<comm::NcclGetCommOp> {
+struct LowerCommNcclGetCommWorldOpToJIT
+    : public OpConversionPattern<comm::NcclGetCommWorldOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(comm::NcclGetCommOp op, OpAdaptor adaptor,
+  matchAndRewrite(comm::NcclGetCommWorldOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto comm = lookupSymbol("Reactant_NCCL_COMM_WORLD");
     if (!comm)
@@ -3005,7 +3005,7 @@ struct LowerCommToJITPass
                  LowerCommMpiBcastOpToJIT>(converter, context);
 
 #ifdef ENZYMEJAX_CUDA
-    patterns.add<LowerCommNcclGetCommOpToJIT>(converter, context);
+    patterns.add<LowerCommNcclGetCommWorldOpToJIT>(converter, context);
     patterns
         .add<LowerCommNcclCommUserRankOpToJIT, LowerCommNcclCommCountOpToJIT,
              LowerCommNcclSendOpToJIT, LowerCommNcclRecvOpToJIT,
