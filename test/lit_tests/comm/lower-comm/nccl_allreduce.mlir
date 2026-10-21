@@ -21,7 +21,7 @@ func.func @main(%buf: tensor<5xi32>) -> tensor<5xi32> {
 // JIT: llvm.call @cudaMemcpyAsync(%[[HOST_DATATYPE]], {{.*}}, %[[DATATYPE_BYTES]], {{.*}}, %[[STREAM]])
 // JIT: %[[COMM_BYTES:.*]] = llvm.mlir.constant(8 : i64) : i64
 // JIT: llvm.call @cudaMemcpyAsync(%[[HOST_COMM]], {{.*}}, %[[COMM_BYTES]], {{.*}}, %[[STREAM]])
-// JIT: llvm.call @cudaStreamSynchronize(%[[STREAM]])
+// JIT: llvm.call @cuStreamSynchronize(%[[STREAM]])
 // JIT: %[[COUNT:.*]] = llvm.load %[[HOST_COUNT]] : !llvm.ptr -> i64
 // JIT: %[[DATATYPE:.*]] = llvm.load %[[HOST_DATATYPE]] : !llvm.ptr -> i32
 // JIT: %[[REDOP:.*]] = llvm.load %[[HOST_REDOP]] : !llvm.ptr -> i32
@@ -29,7 +29,7 @@ func.func @main(%buf: tensor<5xi32>) -> tensor<5xi32> {
 // JIT: llvm.call @ncclAllReduce({{.*}}, %[[COUNT]], %[[DATATYPE]], %[[REDOP]], %[[WRAP_COMM]], %[[STREAM]])
 // JIT: llvm.return
 // JIT-DAG: llvm.func @cudaMemcpyAsync(!llvm.ptr, !llvm.ptr, i64, i32, !llvm.ptr) -> i32
-// JIT-DAG: llvm.func @cudaStreamSynchronize(!llvm.ptr) -> i32
+// JIT-DAG: llvm.func @cuStreamSynchronize(!llvm.ptr) -> i32
 // JIT-DAG: llvm.func @ncclAllReduce(!llvm.ptr, !llvm.ptr, i64, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
 // JIT-LABEL: func.func @main
 // JIT-SAME: (%[[BUF:.*]]: tensor<5xi32>) -> tensor<5xi32> {

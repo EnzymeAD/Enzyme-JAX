@@ -2479,12 +2479,12 @@ struct LowerCommNcclAllReduceOpToJIT
                                funcType, LLVM::Linkage::External);
     }
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>("cudaStreamSynchronize")) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>("cuStreamSynchronize")) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
       auto funcType =
           LLVM::LLVMFunctionType::get(type_i32, {type_ptr}, false);
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), "cudaStreamSynchronize",
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), "cuStreamSynchronize",
                                funcType, LLVM::Linkage::External);
     }
 
@@ -2639,8 +2639,10 @@ struct LowerCommNcclAllReduceOpToJIT
                                stream,
                            });
 
+      // CUDA runtime and driver APIs use the same stream handle. The host
+      // scalars must be ready before they are passed by value to NCCL.
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaStreamSynchronize"),
+                           SymbolRefAttr::get(context, "cuStreamSynchronize"),
                            ValueRange{stream});
 
       Value count =
