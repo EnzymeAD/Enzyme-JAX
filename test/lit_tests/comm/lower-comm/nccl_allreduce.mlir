@@ -3,7 +3,7 @@
 
 func.func @main(%buf: tensor<5xi32>) -> tensor<5xi32> {
   %comm = comm.nccl.get_comm : !comm.nccl.comm
-  %result = comm.nccl.all_reduce %buf, #comm.nccl.red_op<ncclSum>, %comm : (tensor<5xi32>, !comm.nccl.comm) -> tensor<5xi32>
+  %result = comm.nccl.allreduce %buf, #comm.nccl.red_op<ncclSum>, %comm : (tensor<5xi32>, !comm.nccl.comm) -> tensor<5xi32>
   return %result : tensor<5xi32>
 }
 
