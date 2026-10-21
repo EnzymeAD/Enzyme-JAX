@@ -242,33 +242,6 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
   return LLVM::AddressOfOp::create(rewriter, loc, ptrty, data.getSymNameAttr());
 }
 
-// The result (cudaSuccess) of a cudart call the host code keeps on an xla or
-// cpu target. cudaDeviceSynchronize first waits for the runtime's executions
-// on an xla target, where a kernel is only enqueued: a benchmark that times a
-// kernel between two synchronizations would otherwise measure the enqueue.
-static Value cudartResult(mlir::ModuleOp m, StringRef backend,
-                          Operation *call) {
-  IRRewriter rewriter(call);
-  auto callee = isa<LLVM::InvokeOp>(call)
-                    ? cast<LLVM::InvokeOp>(call).getCallee()
-                    : cast<LLVM::CallOp>(call).getCallee();
-  if (*callee == "cudaDeviceSynchronize" && backend.starts_with("xla")) {
-    Value xdata = insertXLAInitDeinit(m, backend, rewriter);
-    Type tys[] = {LLVM::LLVMPointerType::get(m->getContext())};
-    auto syncFn =
-        LLVM::lookupOrCreateFn(rewriter, m, "reactantXLASync", tys,
-                               LLVM::LLVMVoidType::get(m->getContext()));
-    if (failed(syncFn)) {
-      llvm::errs() << " reactantXLASync already exists with different types\n";
-    } else {
-      Value args[] = {xdata};
-      LLVM::CallOp::create(rewriter, call->getLoc(), syncFn.value(), args);
-    }
-  }
-  return LLVM::ZeroOp::create(rewriter, call->getLoc(),
-                              call->getResult(0).getType());
-}
-
 // Materialize module-owned allocations before dialect conversion so the
 // ordinary gpu.alloc/dealloc patterns select the XLA runtime ABI. This is
 // independent of the pass or frontend that created the declarations.
@@ -5198,9 +5171,13 @@ struct ConvertPolygeistToLLVMPass
         if (auto callee = call.getCallee()) {
           for (auto e : toErase) {
             if (callee == e) {
-              if (call.getNumResults())
-                call->replaceAllUsesWith(
-                    ValueRange{cudartResult(m, gpuTarget, call)});
+
+              OpBuilder builder(call);
+              if (call.getNumResults()) {
+                auto replace = LLVM::ZeroOp::create(builder, call.getLoc(),
+                                                    call.getType(0));
+                call->replaceAllUsesWith(replace);
+              }
               call->erase();
             }
           }
@@ -5213,10 +5190,12 @@ struct ConvertPolygeistToLLVMPass
         if (auto callee = inv.getCallee()) {
           for (auto e : toErase) {
             if (*callee == e) {
-              if (inv->getNumResults())
-                inv->replaceAllUsesWith(
-                    ArrayRef<Value>{cudartResult(m, gpuTarget, inv)});
               OpBuilder builder(inv);
+              if (inv->getNumResults()) {
+                auto replace = LLVM::ZeroOp::create(
+                    builder, inv.getLoc(), inv->getResult(0).getType());
+                inv->replaceAllUsesWith(ArrayRef<Value>{replace.getResult()});
+              }
               LLVM::BrOp::create(builder, inv.getLoc(),
                                  inv.getNormalDestOperands(),
                                  inv.getNormalDest());
