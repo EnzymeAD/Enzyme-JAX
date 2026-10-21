@@ -76,13 +76,15 @@ xla::ffi::Error execute(std::string_view bspan, CUStream stream,
   printf("calling kernel = %p, kernel = %p\n", kwrapper->library, kwrapper->cuKernel);
 
   size_t numargs = args.size();
+  void *devptrs[numargs];
   void *ptrs[numargs];
   for (size_t i = 0; i < numargs; i++) {
     auto buf = args.get<xla::ffi::AnyBuffer>(i);
     if (!buf.has_value())
       return xla::ffi::Error::Internal(absl::StrFormat(
           "enzymexla_compile_gpu: could not get %d argument buffer", i));
-    ptrs[i] = buf->untyped_data();
+    devptrs[i] = buf->untyped_data();
+    ptrs[i]  = &devptrs[i];
   }
 
   const void **const_ptrs = const_cast<const void **>(ptrs);
