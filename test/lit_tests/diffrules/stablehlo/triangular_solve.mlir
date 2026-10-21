@@ -3,7 +3,10 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=triangular_solve_real_right_lower outfn= retTys=enzyme_dup argTys=enzyme_dup,enzyme_dup mode=ForwardMode" --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=FORWARD-REAL-RIGHT-LOWER
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=triangular_solve_real_right_upper outfn= retTys=enzyme_dup argTys=enzyme_dup,enzyme_dup mode=ForwardMode" --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=FORWARD-REAL-RIGHT-UPPER
 
-// TODO-RUN enzymexlamlir-opt %s --enzyme-wrap="infn=triangular_solve_real_left_lower outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=REVERSE
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=triangular_solve_real_left_lower outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=REVERSE-REAL-LEFT-LOWER
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=triangular_solve_real_left_upper outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=REVERSE-REAL-LEFT-UPPER
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=triangular_solve_real_right_lower outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=REVERSE-REAL-RIGHT-LOWER
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=triangular_solve_real_right_upper outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=REVERSE-REAL-RIGHT-UPPER
 // TODO-RUN enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --arith-raise | stablehlo-translate - --interpret
 
 func.func @triangular_solve_real_left_lower(%A : tensor<2x2xf32>, %b : tensor<2x2xf32>) -> tensor<2x2xf32> {
@@ -20,6 +23,17 @@ func.func @triangular_solve_real_left_lower(%A : tensor<2x2xf32>, %b : tensor<2x
 // FORWARD-REAL-LEFT-LOWER:   return %0, %3 : tensor<2x2xf32>, tensor<2x2xf32>
 // FORWARD-REAL-LEFT-LOWER: }
 
+// REVERSE-REAL-LEFT-LOWER: func.func @triangular_solve_real_left_lower(%arg0: tensor<2x2xf32>, %arg1: tensor<2x2xf32>, %arg2: tensor<2x2xf32>) -> (tensor<2x2xf32>, tensor<2x2xf32>) {
+// REVERSE-REAL-LEFT-LOWER:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<2x2xf32>
+// REVERSE-REAL-LEFT-LOWER:   %c = stablehlo.constant dense<{{\[\[}}true, false], [true, true]]> : tensor<2x2xi1>
+// REVERSE-REAL-LEFT-LOWER:   %0 = "stablehlo.triangular_solve"(%arg0, %arg2) <{left_side = true, lower = true, transpose_a = #stablehlo<transpose TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
+// REVERSE-REAL-LEFT-LOWER:   %1 = "stablehlo.triangular_solve"(%arg0, %arg1) <{left_side = true, lower = true, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
+// REVERSE-REAL-LEFT-LOWER:   %2 = stablehlo.dot_general %0, %1, contracting_dims = [1] x [1] : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
+// REVERSE-REAL-LEFT-LOWER:   %3 = stablehlo.negate %2 : tensor<2x2xf32>
+// REVERSE-REAL-LEFT-LOWER:   %4 = stablehlo.select %c, %3, %cst : tensor<2x2xi1>, tensor<2x2xf32>
+// REVERSE-REAL-LEFT-LOWER:   return %4, %0 : tensor<2x2xf32>, tensor<2x2xf32>
+// REVERSE-REAL-LEFT-LOWER: }
+
 func.func @triangular_solve_real_left_upper(%A : tensor<2x2xf32>, %b : tensor<2x2xf32>) -> tensor<2x2xf32> {
   %y = "stablehlo.triangular_solve"(%A, %b) {left_side = true, lower = false, unit_diagonal = false, transpose_a = #stablehlo<transpose NO_TRANSPOSE>} : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
   func.return %y : tensor<2x2xf32>
@@ -33,6 +47,17 @@ func.func @triangular_solve_real_left_upper(%A : tensor<2x2xf32>, %b : tensor<2x
 // FORWARD-REAL-LEFT-UPPER:   %3 = "stablehlo.triangular_solve"(%arg0, %2) <{left_side = true, lower = false, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
 // FORWARD-REAL-LEFT-UPPER:   return %0, %3 : tensor<2x2xf32>, tensor<2x2xf32>
 // FORWARD-REAL-LEFT-UPPER: }
+
+// REVERSE-REAL-LEFT-UPPER: func.func @triangular_solve_real_left_upper(%arg0: tensor<2x2xf32>, %arg1: tensor<2x2xf32>, %arg2: tensor<2x2xf32>) -> (tensor<2x2xf32>, tensor<2x2xf32>) {
+// REVERSE-REAL-LEFT-UPPER:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<2x2xf32>
+// REVERSE-REAL-LEFT-UPPER:   %c = stablehlo.constant dense<{{\[\[}}true, true], [false, true]]> : tensor<2x2xi1>
+// REVERSE-REAL-LEFT-UPPER:   %0 = "stablehlo.triangular_solve"(%arg0, %arg2) <{left_side = true, lower = false, transpose_a = #stablehlo<transpose TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
+// REVERSE-REAL-LEFT-UPPER:   %1 = "stablehlo.triangular_solve"(%arg0, %arg1) <{left_side = true, lower = false, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
+// REVERSE-REAL-LEFT-UPPER:   %2 = stablehlo.dot_general %0, %1, contracting_dims = [1] x [1] : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
+// REVERSE-REAL-LEFT-UPPER:   %3 = stablehlo.negate %2 : tensor<2x2xf32>
+// REVERSE-REAL-LEFT-UPPER:   %4 = stablehlo.select %c, %3, %cst : tensor<2x2xi1>, tensor<2x2xf32>
+// REVERSE-REAL-LEFT-UPPER:   return %4, %0 : tensor<2x2xf32>, tensor<2x2xf32>
+// REVERSE-REAL-LEFT-UPPER: }
 
 func.func @triangular_solve_real_right_lower(%A : tensor<2x2xf32>, %b : tensor<2x2xf32>) -> tensor<2x2xf32> {
   %y = "stablehlo.triangular_solve"(%A, %b) {left_side = false, lower = true, unit_diagonal = false, transpose_a = #stablehlo<transpose NO_TRANSPOSE>} : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
@@ -48,6 +73,17 @@ func.func @triangular_solve_real_right_lower(%A : tensor<2x2xf32>, %b : tensor<2
 // FORWARD-REAL-RIGHT-LOWER:   return %0, %3 : tensor<2x2xf32>, tensor<2x2xf32>
 // FORWARD-REAL-RIGHT-LOWER: }
 
+// REVERSE-REAL-RIGHT-LOWER: func.func @triangular_solve_real_right_lower(%arg0: tensor<2x2xf32>, %arg1: tensor<2x2xf32>, %arg2: tensor<2x2xf32>) -> (tensor<2x2xf32>, tensor<2x2xf32>) {
+// REVERSE-REAL-RIGHT-LOWER:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<2x2xf32>
+// REVERSE-REAL-RIGHT-LOWER:   %c = stablehlo.constant dense<{{\[\[}}true, false], [true, true]]> : tensor<2x2xi1>
+// REVERSE-REAL-RIGHT-LOWER:   %0 = "stablehlo.triangular_solve"(%arg0, %arg2) <{left_side = false, lower = true, transpose_a = #stablehlo<transpose TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
+// REVERSE-REAL-RIGHT-LOWER:   %1 = "stablehlo.triangular_solve"(%arg0, %arg1) <{left_side = false, lower = true, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
+// REVERSE-REAL-RIGHT-LOWER:   %2 = stablehlo.dot_general %1, %0, contracting_dims = [0] x [0] : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
+// REVERSE-REAL-RIGHT-LOWER:   %3 = stablehlo.negate %2 : tensor<2x2xf32>
+// REVERSE-REAL-RIGHT-LOWER:   %4 = stablehlo.select %c, %3, %cst : tensor<2x2xi1>, tensor<2x2xf32>
+// REVERSE-REAL-RIGHT-LOWER:   return %4, %0 : tensor<2x2xf32>, tensor<2x2xf32>
+// REVERSE-REAL-RIGHT-LOWER: }
+
 func.func @triangular_solve_real_right_upper(%A : tensor<2x2xf32>, %b : tensor<2x2xf32>) -> tensor<2x2xf32> {
   %y = "stablehlo.triangular_solve"(%A, %b) {left_side = false, lower = false, unit_diagonal = false, transpose_a = #stablehlo<transpose NO_TRANSPOSE>} : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
   func.return %y : tensor<2x2xf32>
@@ -61,6 +97,17 @@ func.func @triangular_solve_real_right_upper(%A : tensor<2x2xf32>, %b : tensor<2
 // FORWARD-REAL-RIGHT-UPPER:   %3 = "stablehlo.triangular_solve"(%arg0, %2) <{left_side = false, lower = false, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
 // FORWARD-REAL-RIGHT-UPPER:   return %0, %3 : tensor<2x2xf32>, tensor<2x2xf32>
 // FORWARD-REAL-RIGHT-UPPER: }
+
+// REVERSE-REAL-RIGHT-UPPER: func.func @triangular_solve_real_right_upper(%arg0: tensor<2x2xf32>, %arg1: tensor<2x2xf32>, %arg2: tensor<2x2xf32>) -> (tensor<2x2xf32>, tensor<2x2xf32>) {
+// REVERSE-REAL-RIGHT-UPPER:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<2x2xf32>
+// REVERSE-REAL-RIGHT-UPPER:   %c = stablehlo.constant dense<{{\[\[}}true, true], [false, true]]> : tensor<2x2xi1>
+// REVERSE-REAL-RIGHT-UPPER:   %0 = "stablehlo.triangular_solve"(%arg0, %arg2) <{left_side = false, lower = false, transpose_a = #stablehlo<transpose TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
+// REVERSE-REAL-RIGHT-UPPER:   %1 = "stablehlo.triangular_solve"(%arg0, %arg1) <{left_side = false, lower = false, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
+// REVERSE-REAL-RIGHT-UPPER:   %2 = stablehlo.dot_general %1, %0, contracting_dims = [0] x [0] : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
+// REVERSE-REAL-RIGHT-UPPER:   %3 = stablehlo.negate %2 : tensor<2x2xf32>
+// REVERSE-REAL-RIGHT-UPPER:   %4 = stablehlo.select %c, %3, %cst : tensor<2x2xi1>, tensor<2x2xf32>
+// REVERSE-REAL-RIGHT-UPPER:   return %4, %0 : tensor<2x2xf32>, tensor<2x2xf32>
+// REVERSE-REAL-RIGHT-UPPER: }
 
 func.func @num_test_real_left_lower() {
   %A = stablehlo.constant dense<[[1.0, 0.0], [2.0, 3.0]]> : tensor<2x2xf32>
