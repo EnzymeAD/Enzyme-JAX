@@ -83,7 +83,7 @@ def NcclCommUserRankOp : Comm_Op<"nccl.comm_user_rank", [Pure]> {
   let assemblyFormat = "$comm attr-dict `:` type(results)";
 }
 
-def NcclAllReduceOp : Comm_Op<"nccl.all_reduce", []> {
+def NcclAllReduceOp : Comm_Op<"nccl.allreduce", []> {
   let summary = "Equivalent to `ncclAllReduce`";
 
   let arguments = (ins
