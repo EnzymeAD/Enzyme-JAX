@@ -1,3 +1,5 @@
+#include <stdio.h>
+
 #include "xla/ffi/api/c_api_internal.h"
 #include "xla/ffi/api/ffi.h"
 #include "xla/ffi/execution_state.h"
@@ -26,19 +28,19 @@ template <bool withError> struct CallInfo;
 
 template <> struct CallInfo<false> {
   void (*run)(const void **, void *, void *);
-  void *(*init)(void *);
+  void *(*init)(void **);
 };
 
 template <> struct CallInfo<true> {
   char *(*run)(const void **, void *, void *);
-  void *(*init)();
+  void *(*init)(void **);
 };
 
 struct CuKernelWrapper {
   static xla::ffi::TypeId id;
 
-  void *library;
-  void *cuKernel;
+  void *library = nullptr;
+  void *cuKernel = nullptr;
 };
 xla::ffi::TypeId CuKernelWrapper::id = {};
 
@@ -55,6 +57,8 @@ instantiate(std::string_view bspan) {
   void *library;
   kwrapper->cuKernel = cinfo->init(&kwrapper->library);
 
+  printf("loaded library = %p, kernel = %p\n", kwrapper->library, kwrapper->cuKernel);
+
   return kwrapper;
 }
 
@@ -68,6 +72,8 @@ xla::ffi::Error execute(std::string_view bspan, CUStream stream,
   } else {
     cinfo = (CallInfo<false> *)bspan.data();
   }
+
+  printf("calling kernel = %p, kernel = %p\n", kwrapper->library, kwrapper->cuKernel);
 
   size_t numargs = args.size();
   void *ptrs[numargs];
