@@ -35,6 +35,7 @@ struct SimpleCycleAnalysisPass
   using SimpleCycleAnalysisPassBase::SimpleCycleAnalysisPassBase;
   mlir::Region *analysis_func = NULL;
   std::unordered_map<std::string, mlir::Region *> cost_map;
+  std::unordered_map<std::string, z3::expr> sorry_map;
   llvm::DenseMap<mlir::Value, int64_t> args;
   struct HypothesisArgs {
     mlir::Region *lb = nullptr, *ub = nullptr;
@@ -51,6 +52,8 @@ struct SimpleCycleAnalysisPass
     cost_var.push_back(solver.ctx().int_const("cost0"));
 
     visitOperation(op, &state, solver, cost_var);
+    // z3::exprs must be released before their context is destroyed
+    sorry_map.clear();
   }
 
   void visitOperation(Operation *op, AsmState *state, z3::solver &solver,
@@ -103,23 +106,27 @@ struct SimpleCycleAnalysisPass
             [&allOps](mlir::Operation *op) { allOps.push_back(op); });
       }
       for (Operation *region_op : allOps) {
-        auto cost_map_res =
-            cost_map.find(region_op->getName().getStringRef().str());
+        std::string op_name = region_op->getName().getStringRef().str();
+        std::optional<z3::expr> op_cost;
+        auto cost_map_res = cost_map.find(op_name);
+        auto sorry_map_res = sorry_map.find(op_name);
         if (cost_map_res != cost_map.end()) {
-          std::string cost_v = cost_str + std::to_string(cost_var.size());
-          cost_var.push_back(
-              solver.ctx().int_const(cost_v.c_str())); // create a new cost var
-          z3::expr post_cost = cost_var[cost_var.size() - 1];
-          z3::expr pre_cost = cost_var[cost_var.size() - 2];
-          z3::expr op_cost = evaluateCostRegion(cost_map_res->second, solver);
-          z3::expr cost_expr =
-              (post_cost == pre_cost + op_cost); // increment per op cost
-
-          solver.add(cost_expr); // add to solver
+          op_cost = evaluateCostRegion(cost_map_res->second, solver);
+        } else if (sorry_map_res != sorry_map.end()) {
+          op_cost = sorry_map_res->second; // symbolic cost for sorried op
         } else {
-          llvm::outs() << "unknown cost for operation "
-                       << region_op->getName().getStringRef().str() << "\n";
+          llvm::outs() << "unknown cost for operation " << op_name << "\n";
+          continue;
         }
+        std::string cost_v = cost_str + std::to_string(cost_var.size());
+        cost_var.push_back(
+            solver.ctx().int_const(cost_v.c_str())); // create a new cost var
+        z3::expr post_cost = cost_var[cost_var.size() - 1];
+        z3::expr pre_cost = cost_var[cost_var.size() - 2];
+        z3::expr cost_expr =
+            (post_cost == pre_cost + *op_cost); // increment per op cost
+
+        solver.add(cost_expr); // add to solver
       }
     } else if (auto hyp = dyn_cast<HypothesisOp>(op)) {
       HoareStates pre_post = hyp.getPrePost();
@@ -134,6 +141,12 @@ struct SimpleCycleAnalysisPass
       bool met = false;
       if (auto hyp = assumeOp.getCondition().getDefiningOp<HypothesisOp>()) {
         auto check_res = solver.check();
+        if (hyp.getPrePost() == HoareStates::Post && check_res == z3::sat &&
+            !sorry_map.empty()) {
+          // means that there was a counterexample, and now we want to compute
+          // the set of values for the sorried op make this formula satisfiable
+          llvm::outs() << "Condition can be proven if sorried op is resolved\n";
+        }
         met = hyp.getPrePost() == HoareStates::Pre ? check_res == z3::sat
                                                    : check_res == z3::unsat;
 #ifdef Z3_DEBUG_PERFIFY
@@ -146,6 +159,11 @@ struct SimpleCycleAnalysisPass
             << "perfify.assume condition must be a perfify.hypothesis\n";
       }
       assumeOp.setSatresAttr(BoolAttr::get(&getContext(), met));
+    } else if (auto sorryOp = dyn_cast<SorryOp>(op)) {
+      std::string target_op = sorryOp.getTargetOp().str();
+      z3::expr a = solver.ctx().int_const(("sorry_" + target_op).c_str());
+      solver.add(a >= 0); // symbolic costs are never negative
+      sorry_map.insert({target_op, a});
     }
     for (Region &region : op->getRegions())
       visitRegion(region, state, solver, cost_var);

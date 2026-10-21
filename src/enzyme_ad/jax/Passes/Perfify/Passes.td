@@ -18,5 +18,15 @@ def LiftPerfifyAnnotationsPass : Pass<"lift-perfify-annotations", "ModuleOp"> {
   ];
 }
 
+def PerfifyToLeanPass : Pass<"perfify-to-lean", "ModuleOp"> {
+  let summary = "Lift functions with unknown cost definitions into Lean for interactive proofs.";
+  
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+    "arith::ArithDialect",
+    "enzyme::perfify::PerfifyDialect"
+  ];
+}
+
 
 #endif // ENZYME_AD_JAX_PERFIFY_PASSES

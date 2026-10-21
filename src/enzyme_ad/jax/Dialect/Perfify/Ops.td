@@ -29,6 +29,11 @@ def CostOp : PerfifyOp<"cost", [IsolatedFromAbove]> {
   let assemblyFormat = "$target_op $body attr-dict";
 }
 
+def SorryOp : PerfifyOp<"sorry", [IsolatedFromAbove]> {
+  let arguments = (ins StrAttr : $target_op);
+  let assemblyFormat = "$target_op attr-dict";
+}
+
 def FnCostOp : PerfifyOp<"fn_cost", []> { // this should be where we calculate
                                           // the cost in the pass
   let results = (outs CostType : $out_cost);
