@@ -2334,9 +2334,7 @@ struct ConvertActivity
     return !isFloatLike(cvt.getOperand().getType()) ||
            !isFloatLike(cvt.getResult().getType());
   }
-  bool isArgInactive(Operation *op, size_t idx) const {
-    return isInactive(op);
-  }
+  bool isArgInactive(Operation *op, size_t idx) const { return isInactive(op); }
 };
 
 struct ADDataFlowWhileOp
