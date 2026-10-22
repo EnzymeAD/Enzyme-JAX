@@ -1690,6 +1690,75 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
 };
 
 #ifdef ENZYMEJAX_CUDA
+static LogicalResult lowerNcclGroupOpToJIT(
+    Operation *op, llvm::StringRef functionName,
+    ConversionPatternRewriter &rewriter) {
+  auto *context = op->getContext();
+  auto moduleOp = op->getParentOfType<ModuleOp>();
+  auto typeVoid = LLVM::LLVMVoidType::get(context);
+  auto typeNcclResult = IntegerType::get(context, sizeof(ncclResult_t) * 8);
+  std::string wrapperName = "enzymexla_jitwrap_" + functionName.str();
+
+  if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperName)) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+    auto wrapperType = LLVM::LLVMFunctionType::get(typeVoid, {}, false);
+    auto wrapper = LLVM::LLVMFuncOp::create(rewriter, op->getLoc(), wrapperName,
+                                            wrapperType);
+    Block *entryBlock = wrapper.addEntryBlock(rewriter);
+    rewriter.setInsertionPointToStart(entryBlock);
+
+    LLVM::CallOp::create(rewriter, op->getLoc(), TypeRange{typeNcclResult},
+                         SymbolRefAttr::get(context, functionName),
+                         ValueRange{});
+    LLVM::ReturnOp::create(rewriter, op->getLoc(), ValueRange{});
+  }
+
+  if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(functionName)) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+    auto functionType =
+        LLVM::LLVMFunctionType::get(typeNcclResult, {}, false);
+    LLVM::LLVMFuncOp::create(rewriter, op->getLoc(), functionName, functionType,
+                             LLVM::Linkage::External);
+  }
+
+  rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+      op, TypeRange{}, FlatSymbolRefAttr::get(context, wrapperName),
+      ValueRange{},
+      /*backend_config=*/rewriter.getStringAttr(""),
+      /*operand_layouts=*/nullptr,
+      /*arg_attrs=*/nullptr,
+      /*res_attrs=*/nullptr,
+      /*output_operand_aliases=*/nullptr,
+      /*xla_side_effect_free=*/nullptr);
+  return success();
+}
+
+struct LowerCommNcclGroupStartOpToJIT
+    : public OpConversionPattern<comm::NcclGroupStartOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclGroupStartOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerNcclGroupOpToJIT(op, "ncclGroupStart", rewriter);
+  }
+};
+
+struct LowerCommNcclGroupEndOpToJIT
+    : public OpConversionPattern<comm::NcclGroupEndOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclGroupEndOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerNcclGroupOpToJIT(op, "ncclGroupEnd", rewriter);
+  }
+};
+
 struct LowerCommNcclGetCommWorldOpToJIT
     : public OpConversionPattern<comm::NcclGetCommWorldOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -3043,7 +3112,8 @@ struct LowerCommToJITPass
 #ifdef ENZYMEJAX_CUDA
     patterns.add<LowerCommNcclGetCommWorldOpToJIT>(converter, context);
     patterns
-        .add<LowerCommNcclCommUserRankOpToJIT, LowerCommNcclCommCountOpToJIT,
+        .add<LowerCommNcclGroupStartOpToJIT, LowerCommNcclGroupEndOpToJIT,
+             LowerCommNcclCommUserRankOpToJIT, LowerCommNcclCommCountOpToJIT,
              LowerCommNcclSendOpToJIT, LowerCommNcclRecvOpToJIT,
              LowerCommNcclAllReduceOpToJIT, LowerCommNcclBroadcastOpToJIT>(
             converter, context);
