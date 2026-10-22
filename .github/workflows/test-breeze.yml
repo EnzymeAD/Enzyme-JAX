@@ -76,7 +76,7 @@ jobs:
           # Remove all spaces
           ARTIFACT_INDEX=${ARTIFACT_INDEX// /}
           echo "ARTIFACT_INDEX=${ARTIFACT_INDEX}" >> "${GITHUB_ENV}"
-      - uses: bazel-contrib/setup-bazel@0.19.0
+      - uses: bazel-contrib/setup-bazel@0.19.1
         name: Set up Bazel
         with:
           # Avoid downloading Bazel every time.
@@ -159,6 +159,18 @@ jobs:
           # Make sure this directory exists, for good measure
           ls -lhrt "${BREEZE_DIR}"
           echo "BREEZE_DIR=${BREEZE_DIR}" >> ${GITHUB_ENV}
+      - name: Remove Breeze Reactant compatibility pin
+        shell: julia --color=yes {0}
+        run: |
+          using TOML
+          for project_file in ("Project.toml", "benchmarking/Project.toml")
+              project = TOML.parsefile(project_file)
+              delete!(project["compat"], "Reactant")
+              open(project_file, "w") do io
+                  TOML.print(io, project)
+              end
+          end
+        working-directory: ${{ env.BREEZE_DIR }}
       - name: Instantiate Breeze benchmarking environment
         timeout-minutes: 40
         shell: julia --color=yes --project {0}

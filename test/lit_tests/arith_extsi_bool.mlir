@@ -16,6 +16,11 @@
 // CHECK: stablehlo.convert
 // CHECK-NOT: stablehlo.negate
 
+// CHECK-LABEL: @extui_wide
+// CHECK: %[[UNSIGNED:.+]] = stablehlo.bitcast_convert %arg0 : (tensor<4xi8>) -> tensor<4xui8>
+// CHECK: %[[EXTENDED:.+]] = stablehlo.convert %[[UNSIGNED]] : (tensor<4xui8>) -> tensor<4xi32>
+// CHECK: return %[[EXTENDED]]
+
 module {
   func.func @extsi_bool(%arg0: tensor<4xi1>) -> tensor<4xi32> {
     %0 = arith.extsi %arg0 : tensor<4xi1> to tensor<4xi32>
@@ -27,6 +32,10 @@ module {
   }
   func.func @extui_bool(%arg0: tensor<4xi1>) -> tensor<4xi32> {
     %0 = arith.extui %arg0 : tensor<4xi1> to tensor<4xi32>
+    return %0 : tensor<4xi32>
+  }
+  func.func @extui_wide(%arg0: tensor<4xi8>) -> tensor<4xi32> {
+    %0 = arith.extui %arg0 : tensor<4xi8> to tensor<4xi32>
     return %0 : tensor<4xi32>
   }
 }

@@ -25,12 +25,28 @@ struct OpConfig {
   DictionaryAttr attrs;
 };
 
-void generatePatternGroup(OpBuilder &builder, Location loc, Value root,
-                          ArrayRef<OpConfig> configurations,
-                          llvm::APInt selectionBitmask) {
-  OpBuilder::InsertionGuard guard(builder);
+// The limits are forwarded to each generated transform.apply_patterns op. The
+// default (-1) leaves the driver's own limits in place.
+transform::ApplyPatternsOp createApplyPatterns(OpBuilder &builder, Location loc,
+                                               Value root,
+                                               uint64_t maxIterations,
+                                               uint64_t maxNumRewrites) {
   auto apply = transform::ApplyPatternsOp::create(
       builder, loc, root, [](OpBuilder &builder, Location loc) {});
+  if (maxIterations != static_cast<uint64_t>(-1))
+    apply.setMaxIterations(maxIterations);
+  if (maxNumRewrites != static_cast<uint64_t>(-1))
+    apply.setMaxNumRewrites(maxNumRewrites);
+  return apply;
+}
+
+void generatePatternGroup(OpBuilder &builder, Location loc, Value root,
+                          ArrayRef<OpConfig> configurations,
+                          llvm::APInt selectionBitmask, uint64_t maxIterations,
+                          uint64_t maxNumRewrites) {
+  OpBuilder::InsertionGuard guard(builder);
+  auto apply =
+      createApplyPatterns(builder, loc, root, maxIterations, maxNumRewrites);
   builder.setInsertionPointToStart(apply.getBody());
   for (auto &&[i, opConfig] : llvm::enumerate(configurations)) {
     if (selectionBitmask.extractBits(/*numBits=*/1, /*bitPosition=*/i).isZero())
@@ -54,7 +70,9 @@ Value generateTransformMain(OpBuilder &builder, Location loc) {
   return match;
 }
 
-LogicalResult generateTransform(OpBuilder &builder, llvm::APInt version) {
+LogicalResult generateTransform(OpBuilder &builder, llvm::APInt version,
+                                uint64_t maxIterations,
+                                uint64_t maxNumRewrites) {
   auto loc = builder.getUnknownLoc();
   Value match = generateTransformMain(builder, loc);
 
@@ -81,17 +99,19 @@ LogicalResult generateTransform(OpBuilder &builder, llvm::APInt version) {
       llvm::APInt::getOneBitSet(version.getBitWidth(), opConfigurations.size());
   do {
     llvm::APInt configuration = version.srem(configPow);
-    generatePatternGroup(builder, loc, match, opConfigurations, configuration);
+    generatePatternGroup(builder, loc, match, opConfigurations, configuration,
+                         maxIterations, maxNumRewrites);
     version = version.sdiv(configPow);
   } while (!version.isZero());
   return success();
 }
 
 LogicalResult parseTransform(OpBuilder &builder, Location loc,
-                             StringRef patterns) {
+                             StringRef patterns, uint64_t maxIterations,
+                             uint64_t maxNumRewrites) {
   Value root = generateTransformMain(builder, loc);
-  auto apply = transform::ApplyPatternsOp::create(
-      builder, loc, root, [](OpBuilder &builder, Location loc) {});
+  auto apply =
+      createApplyPatterns(builder, loc, root, maxIterations, maxNumRewrites);
   builder.setInsertionPointToStart(apply.getBody());
 
   SmallVector<StringRef> singlePatterns;
@@ -171,7 +191,7 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
           opName == "no_nan_zero_base_pow_simplify" ||
           opName == "no_nan_self_sub_simplify" ||
           opName == "no_nan_compare_simplify" ||
-          opName == "no_nan_compare_abs" ||
+          opName == "no_nan_compare_abs" || opName == "abs_of_exp_simplify" ||
           opName == "self_subtract_to_convolution_like" ||
           opName == "self_add_to_convolution_like" ||
           opName == "self_mul_to_convolution_like")
@@ -228,10 +248,12 @@ public:
       llvm::APInt version(
           llvm::APInt::getSufficientBitsNeeded(flags.getValue(), radix) + 1,
           flags.getValue(), radix);
-      if (failed(generateTransform(builder, version)))
+      if (failed(generateTransform(builder, version, maxIterations,
+                                   maxNumRewrites)))
         return signalPassFailure();
     } else {
-      if (failed(parseTransform(builder, op->getLoc(), patterns)))
+      if (failed(parseTransform(builder, op->getLoc(), patterns, maxIterations,
+                                maxNumRewrites)))
         return signalPassFailure();
     }
   }
@@ -240,6 +262,15 @@ public:
   Option<int> radix{*this, "radix", llvm::cl::init(10)};
   Option<std::string> patterns{*this, "patterns", llvm::cl::init("")};
   Option<bool> createModule{*this, "create-module", llvm::cl::init(false)};
+  Option<uint64_t> maxNumRewrites{
+      *this, "max-num-rewrites", llvm::cl::init(static_cast<uint64_t>(-1)),
+      llvm::cl::desc("Maximum number of rewrites the generated apply_patterns "
+                     "ops may apply (default -1: inherit from the driver)")};
+  Option<uint64_t> maxIterations{
+      *this, "max-iterations", llvm::cl::init(static_cast<uint64_t>(-1)),
+      llvm::cl::desc("Maximum number of iterations the generated "
+                     "apply_patterns ops may run (default -1: inherit from "
+                     "the driver)")};
 };
 
 class RemoveTransform : public PassWrapper<RemoveTransform, OperationPass<>> {
