@@ -1,9 +1,36 @@
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=triangular_solve_complex_right_upper outfn= retTys=enzyme_dup argTys=enzyme_dup,enzyme_dup mode=ForwardMode" --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=FORWARD
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=triangular_solve_complex_right_upper outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_active mode=ReverseModeCombined" --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --drop-unsupported-attributes --cse --verify-each=0 | FileCheck %s --check-prefix=REVERSE
 // RUN: enzymexlamlir-opt %s --enzyme --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --chlo-legalize-to-stablehlo --verify-each=0 | stablehlo-translate - --interpret
 
 func.func @triangular_solve_complex_right_upper(%A : tensor<2x2xcomplex<f32>>, %b : tensor<2x2xcomplex<f32>>) -> tensor<2x2xcomplex<f32>> {
   %y = "stablehlo.triangular_solve"(%A, %b) {left_side = false, lower = false, unit_diagonal = false, transpose_a = #stablehlo<transpose NO_TRANSPOSE>} : (tensor<2x2xcomplex<f32>>, tensor<2x2xcomplex<f32>>) -> tensor<2x2xcomplex<f32>>
   func.return %y : tensor<2x2xcomplex<f32>>
 }
+
+// FORWARD: func.func @triangular_solve_complex_right_upper(%arg0: tensor<2x2xcomplex<f32>>, %arg1: tensor<2x2xcomplex<f32>>, %arg2: tensor<2x2xcomplex<f32>>, %arg3: tensor<2x2xcomplex<f32>>) -> (tensor<2x2xcomplex<f32>>, tensor<2x2xcomplex<f32>>) {
+// FORWARD:   %c = stablehlo.constant dense<{{\[\[}}true, true], [false, true]]> : tensor<2x2xi1>
+// FORWARD:   %cst = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<2x2xcomplex<f32>>
+// FORWARD:   %0 = "stablehlo.triangular_solve"(%arg0, %arg2) <{left_side = false, lower = false, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xcomplex<f32>>, tensor<2x2xcomplex<f32>>) -> tensor<2x2xcomplex<f32>>
+// FORWARD:   %1 = stablehlo.select %c, %arg1, %cst : tensor<2x2xi1>, tensor<2x2xcomplex<f32>>
+// FORWARD:   %2 = stablehlo.dot_general %0, %1, contracting_dims = [1] x [0] : (tensor<2x2xcomplex<f32>>, tensor<2x2xcomplex<f32>>) -> tensor<2x2xcomplex<f32>>
+// FORWARD:   %3 = stablehlo.subtract %arg3, %2 : tensor<2x2xcomplex<f32>>
+// FORWARD:   %4 = "stablehlo.triangular_solve"(%arg0, %3) <{left_side = false, lower = false, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xcomplex<f32>>, tensor<2x2xcomplex<f32>>) -> tensor<2x2xcomplex<f32>>
+// FORWARD:   return %0, %4 : tensor<2x2xcomplex<f32>>, tensor<2x2xcomplex<f32>>
+// FORWARD: }
+
+// REVERSE: func.func @triangular_solve_complex_right_upper(%arg0: tensor<2x2xcomplex<f32>>, %arg1: tensor<2x2xcomplex<f32>>, %arg2: tensor<2x2xcomplex<f32>>) -> (tensor<2x2xcomplex<f32>>, tensor<2x2xcomplex<f32>>) {
+// REVERSE:   %c = stablehlo.constant dense<{{\[\[}}true, true], [false, true]]> : tensor<2x2xi1>
+// REVERSE:   %cst = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<2x2xcomplex<f32>>
+// REVERSE:   %0 = chlo.conj %arg2 : tensor<2x2xcomplex<f32>> -> tensor<2x2xcomplex<f32>>
+// REVERSE:   %1 = "stablehlo.triangular_solve"(%arg0, %0) <{left_side = false, lower = false, transpose_a = #stablehlo<transpose TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xcomplex<f32>>, tensor<2x2xcomplex<f32>>) -> tensor<2x2xcomplex<f32>>
+// REVERSE:   %2 = "stablehlo.triangular_solve"(%arg0, %arg1) <{left_side = false, lower = false, transpose_a = #stablehlo<transpose NO_TRANSPOSE>, unit_diagonal = false}> : (tensor<2x2xcomplex<f32>>, tensor<2x2xcomplex<f32>>) -> tensor<2x2xcomplex<f32>>
+// REVERSE:   %3 = stablehlo.dot_general %2, %1, contracting_dims = [0] x [0] : (tensor<2x2xcomplex<f32>>, tensor<2x2xcomplex<f32>>) -> tensor<2x2xcomplex<f32>>
+// REVERSE:   %4 = stablehlo.negate %3 : tensor<2x2xcomplex<f32>>
+// REVERSE:   %5 = stablehlo.select %c, %4, %cst : tensor<2x2xi1>, tensor<2x2xcomplex<f32>>
+// REVERSE:   %6 = chlo.conj %5 : tensor<2x2xcomplex<f32>> -> tensor<2x2xcomplex<f32>>
+// REVERSE:   %7 = chlo.conj %1 : tensor<2x2xcomplex<f32>> -> tensor<2x2xcomplex<f32>>
+// REVERSE:   return %6, %7 : tensor<2x2xcomplex<f32>>, tensor<2x2xcomplex<f32>>
+// REVERSE: }
 
 func.func @main() {
   %A = stablehlo.constant dense<[[(1.0, 1.0), (2.0, -1.0)], [(0.0, 0.0), (3.0, 2.0)]]> : tensor<2x2xcomplex<f32>>
