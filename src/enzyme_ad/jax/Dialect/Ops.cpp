@@ -1569,6 +1569,8 @@ LogicalResult OrgqrOp::verify() {
   if (n < k)
     return emitOpError("`enzymexla.lapack.orgqr` requires at most as "
                        "many reflectors as columns");
+
+  return success();
 }
 
 namespace {
