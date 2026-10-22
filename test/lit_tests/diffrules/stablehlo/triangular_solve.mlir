@@ -118,7 +118,7 @@ func.func @triangular_solve_real_right_upper(%A : tensor<2x2xf32>, %b : tensor<2
 // REVERSE-REAL-RIGHT-UPPER:   return %4, %0 : tensor<2x2xf32>, tensor<2x2xf32>
 // REVERSE-REAL-RIGHT-UPPER: }
 
-func.func @num_test_real_left_lower() {
+func.func @main() {
   %A = stablehlo.constant dense<[[1.0, 0.0], [2.0, 3.0]]> : tensor<2x2xf32>
   %b = stablehlo.constant dense<[[4.0, 5.0], [6.0, 7.0]]> : tensor<2x2xf32>
   %output = stablehlo.constant dense<[[4.0, 5.0], [-0.666667, -1.0]]> : tensor<2x2xf32>
