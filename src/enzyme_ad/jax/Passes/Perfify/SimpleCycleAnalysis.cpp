@@ -33,14 +33,14 @@ struct SimpleCycleAnalysisPass
     : public enzyme::perfify::impl::SimpleCycleAnalysisPassBase<
           SimpleCycleAnalysisPass> {
   using SimpleCycleAnalysisPassBase::SimpleCycleAnalysisPassBase;
-  mlir::Region *analysis_func = NULL;
-  std::unordered_map<std::string, mlir::Region *> cost_map;
+  mlir::Region *analysisFunc = nullptr;
+  std::unordered_map<std::string, mlir::Region *> costMap;
   llvm::DenseMap<mlir::Value, int64_t> args;
   struct HypothesisArgs {
     mlir::Region *lb = nullptr, *ub = nullptr;
   };
   std::unordered_map<HoareStates, HypothesisArgs> hypotheses;
-  llvm::DenseMap<mlir::StringAttr, mlir::Region *> funcMap;
+  llvm::DenseMap<mlir::StringAttr, mlir::Region *> funcRegionMap;
 
   void runOnOperation() override {
     Operation *op = getOperation();
@@ -57,29 +57,29 @@ struct SimpleCycleAnalysisPass
                       std::vector<z3::expr> &cost_var) {
     if (auto costOp = dyn_cast<CostOp>(op)) {
       std::string target_op = costOp.getTargetOp().str();
-      if (cost_map.find(target_op) == cost_map.end()) {
-        cost_map[target_op] =
+      if (costMap.find(target_op) == costMap.end()) {
+        costMap[target_op] =
             &costOp.getBody(); // store the body of the region for eval
       }
     } else if (auto arg = dyn_cast<ArgOp>(op)) {
-      NamedAttribute arg_attr = op->getAttrs()[0];
+      NamedAttribute argAttr = op->getAttrs()[0];
       if (auto intAttr =
-              mlir::dyn_cast<mlir::IntegerAttr>(arg_attr.getValue())) {
+              mlir::dyn_cast<mlir::IntegerAttr>(argAttr.getValue())) {
         args[op->getResult(0)] = intAttr.getInt();
       }
     } else if (auto cond = dyn_cast<ConditionsOp>(op)) {
-      analysis_func = NULL;
-      Attribute cond_attr = op->getAttrs()[0].getValue();
-      auto cond_ref = mlir::cast<mlir::FlatSymbolRefAttr>(cond_attr);
+      analysisFunc = nullptr;
+      Attribute condAttr = op->getAttrs()[0].getValue();
+      auto condRef = mlir::cast<mlir::FlatSymbolRefAttr>(condAttr);
 
       bool verify_huh =
           mlir::cast<mlir::BoolAttr>(op->getAttrs()[1].getValue()).getValue();
       if (verify_huh) {
-        auto res = funcMap.find(cond_ref.getAttr());
-        if (res != funcMap.end()) {
-          analysis_func = res->second;
+        auto res = funcRegionMap.find(condRef.getAttr());
+        if (res != funcRegionMap.end()) {
+          analysisFunc = res->second;
         } else {
-          llvm::outs() << "Could not find " << cond_ref.getAttr()
+          llvm::outs() << "Could not find " << condRef.getAttr()
                        << " in the function map\n";
         }
       } else {
@@ -95,23 +95,23 @@ struct SimpleCycleAnalysisPass
       solver.pop();
       return;
     } else if (auto func = dyn_cast<FunctionOpInterface>(op)) {
-      funcMap[func.getNameAttr()] = &func.getFunctionBody();
+      funcRegionMap[func.getNameAttr()] = &func.getFunctionBody();
     } else if (auto funcCost = dyn_cast<FnCostOp>(op)) {
       llvm::SmallVector<mlir::Operation *> allOps;
-      if (analysis_func != NULL) {
-        analysis_func->walk(
+      if (analysisFunc != nullptr) {
+        analysisFunc->walk(
             [&allOps](mlir::Operation *op) { allOps.push_back(op); });
       }
       for (Operation *region_op : allOps) {
-        auto cost_map_res =
-            cost_map.find(region_op->getName().getStringRef().str());
-        if (cost_map_res != cost_map.end()) {
+        auto costMapRes =
+            costMap.find(region_op->getName().getStringRef().str());
+        if (costMapRes != costMap.end()) {
           std::string cost_v = cost_str + std::to_string(cost_var.size());
           cost_var.push_back(
               solver.ctx().int_const(cost_v.c_str())); // create a new cost var
           z3::expr post_cost = cost_var[cost_var.size() - 1];
           z3::expr pre_cost = cost_var[cost_var.size() - 2];
-          z3::expr op_cost = evaluateCostRegion(cost_map_res->second, solver);
+          z3::expr op_cost = evaluateCostRegion(costMapRes->second, solver);
           z3::expr cost_expr =
               (post_cost == pre_cost + op_cost); // increment per op cost
 
@@ -153,8 +153,8 @@ struct SimpleCycleAnalysisPass
 
   bool captureHypothesisArgs(CompareOp cmpOp, HoareStates pre_post) {
     Operation *bound = cmpOp.getBoundOp();
-    if (auto con_cost = dyn_cast_or_null<EstimatedCostOp>(bound)) {
-      hypotheses[pre_post] = {&con_cost.getBody(), &con_cost.getBody()};
+    if (auto estCost = dyn_cast_or_null<EstimatedCostOp>(bound)) {
+      hypotheses[pre_post] = {&estCost.getBody(), &estCost.getBody()};
       return true;
     }
     if (auto interval = dyn_cast_or_null<IntervalOp>(bound)) {
