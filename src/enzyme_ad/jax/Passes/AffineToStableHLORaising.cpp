@@ -2205,9 +2205,21 @@ static LogicalResult tryRaisingSCFWhileOpToStableHLO(
     if (!enzymexla::FixedPointOp::isMarked(whileOp))
       return failure();
     active0 = cond0;
+    // Under a lane-wise if, the lanes it leaves out never enter the loop.
+    // The active lanes only shrink from there, so they stay within the mask
+    // and the body needs no other.
+    if (pc.mask) {
+      Value outer = pc.mask;
+      auto merged = alignMemoryAccess(outer, maps.lookup(pc.mask), active0,
+                                      maps.lookup(cond0), builder, pc);
+      if (failed(merged))
+        return failure();
+      active0 = stablehlo::AndOp::create(builder, wloc, outer, active0);
+      maps[active0] = *merged;
+    }
     SmallVector<affine::AffineValueMap> argSrcMaps =
         llvm::map_to_vector(args, [&](Value v) { return maps.lookup(v); });
-    auto aligned = alignMemoryAccess(active0, maps.lookup(cond0), args.data(),
+    auto aligned = alignMemoryAccess(active0, maps.lookup(active0), args.data(),
                                      argSrcMaps, builder, pc);
     if (failed(aligned))
       return failure();
@@ -2273,15 +2285,6 @@ static LogicalResult tryRaisingSCFWhileOpToStableHLO(
     active = body->getArgument(1);
     maps[active] = laneMap;
     bodyPc.mask = active;
-    if (pc.mask) {
-      Value outer = pc.mask, inner = active;
-      auto merged = alignMemoryAccess(outer, maps.lookup(pc.mask), inner,
-                                      laneMap, builder, pc);
-      if (failed(merged))
-        return failure();
-      bodyPc.mask = stablehlo::AndOp::create(builder, wloc, outer, inner);
-      maps[bodyPc.mask] = *merged;
-    }
   }
 
   auto newWhile = stablehlo::WhileOp::create(builder, wloc, carriedInit);

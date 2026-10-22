@@ -1692,7 +1692,8 @@ def FixedPointOp : EnzymeXLA_Op<"fixed_point", [
     A carried value yielded unchanged is a parameter threaded through the loop,
     not state. The body must be a contraction at the fixed point for the adjoint
     iteration to converge (stationary iterations and Newton are; Krylov methods
-    are not).
+    are not), and differentiable there: a secant step, which divides by the
+    change in the residual, is 0/0 at the fixed point and gives a NaN adjoint.
 
     `mask`, when present, is the position of a carried `tensor<...xi1>` saying
     which lanes still step, in a loop raised from a kernel whose threads each

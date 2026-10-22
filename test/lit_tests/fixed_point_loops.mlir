@@ -56,3 +56,29 @@ func.func @opted_out(%u0: tensor<3xf64>) -> tensor<3xf64> {
 
 // LOWER-LABEL: func.func @opted_out
 // LOWER:       stablehlo.while{{.*}} attributes {enzyme.fixed_point = false}
+
+// -----
+
+// A loop raised from a kernel with a lane mask (position 1, a tensor<...xi1>):
+// the mask becomes the op's `mask` and comes back on the while.
+func.func @masked(%x0: tensor<4xf64>, %a: tensor<4xf64>) -> tensor<4xf64> {
+  %t = stablehlo.constant dense<true> : tensor<i1>
+  %all = stablehlo.constant dense<true> : tensor<4xi1>
+  %r:3 = stablehlo.while(%go = %t, %active = %all, %x = %x0) : tensor<i1>, tensor<4xi1>, tensor<4xf64> attributes {enzyme.fixed_point, enzyme.fixed_point_mask = 1 : i64}
+   cond {
+    stablehlo.return %go : tensor<i1>
+  } do {
+    %s = stablehlo.sine %x : tensor<4xf64>
+    %xn = stablehlo.add %s, %a : tensor<4xf64>
+    %sel = stablehlo.select %active, %xn, %x : tensor<4xi1>, tensor<4xf64>
+    %f = stablehlo.constant dense<false> : tensor<i1>
+    stablehlo.return %f, %active, %sel : tensor<i1>, tensor<4xi1>, tensor<4xf64>
+  }
+  return %r#2 : tensor<4xf64>
+}
+
+// RAISE-LABEL: func.func @masked
+// RAISE:       enzymexla.fixed_point({{.*}}) : tensor<i1>, tensor<4xi1>, tensor<4xf64> attributes {mask = 1 : i64}
+
+// LOWER-LABEL: func.func @masked
+// LOWER:       stablehlo.while{{.*}} attributes {enzyme.fixed_point, enzyme.fixed_point_mask = 1 : i64}
