@@ -1,4 +1,5 @@
 // RUN: enzymexlamlir-opt --legalize-mpi-to-nccl %s | FileCheck %s
+// RUN: enzymexlamlir-opt --legalize-mpi-to-nccl --lower-comm-to-jit %s | FileCheck %s --check-prefix=JIT
 
 func.func @main(%send_buffer: tensor<4xf64>, %dst: tensor<i32>,
                 %src: tensor<i32>, %tag: tensor<i32>,
@@ -20,3 +21,9 @@ func.func @main(%send_buffer: tensor<4xf64>, %dst: tensor<i32>,
 // CHECK-NEXT: comm.nccl.group_end
 // CHECK-NEXT: return %[[RECV_BUFFER]] : tensor<4xf64>
 // CHECK-NEXT: }
+
+// JIT-LABEL: func.func @main
+// JIT: enzymexla.jit_call @enzymexla_jitwrap_ncclGroupStart () : () -> ()
+// JIT: enzymexla.jit_call @enzymexla_jitwrap_ncclSend
+// JIT: enzymexla.jit_call @enzymexla_jitwrap_ncclRecv
+// JIT: enzymexla.jit_call @enzymexla_jitwrap_ncclGroupEnd () : () -> ()
