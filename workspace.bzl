@@ -151,6 +151,12 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/_XOPEN_VERSION >= 700\\/_XOPEN_VERSION >= 700 and defined(__GLIBC__)\\/' include\\/flatbuffers\\/base.h\\\"], strip_prefix/g" third_party/flatbuffers/workspace.bzl
     """,
     """
+    # cc_to_llvm_ir spells its flags for clang-cl on Windows, but we build
+    # Windows with mingw clang, which takes the /clang: ones for files.  Give it
+    # the GNU-style flags it takes everywhere else.
+    perl -0777 -pi -e 's|\\s*"//xla/tsl:windows": \\[[^\\]]*\\] \\+ _to_clang_cl_flags\\(clang_flags \\+ list_copts\\),||' xla/codegen/intrinsic/cpp/cc_to_llvm_ir.bzl
+    """,
+    """
     # The second command disables llvm's use of __builtin_cpu_supports on apple
     # platforms (e.g. clang's SSE4.2 identifier lexer fast path).  The darwin
     # compiler-rt shipped by the cross toolchain does not provide __cpu_model,
