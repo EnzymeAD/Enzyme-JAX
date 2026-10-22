@@ -1,4 +1,4 @@
-//===- LowerJIT.cpp - Print the MLIR module                     ------------ //
+//===- LowerJIT.cpp - Lower jit_call to stablehlo.custom_call -------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -516,23 +516,23 @@ void rewriteKernelCallABI(
     putfunc.setVisibility(SymbolTable::Visibility::Private);
   }
 
-  LLVM::GlobalOp loadModuleStr = nullptr;
+  LLVM::GlobalOp loadLibraryStr = nullptr;
   if (debug) {
-    std::string value = "load Module result = %d\n";
+    std::string value = "cuLibraryLoadData result = %d\n";
     auto type = LLVM::LLVMArrayType::get(
         mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-    loadModuleStr = LLVM::GlobalOp::create(
+    loadLibraryStr = LLVM::GlobalOp::create(
         builder, loc, type, /*isConstant=*/true, LLVM::Linkage::Internal,
-        "strmod", builder.getStringAttr(value + '\0'));
+        "strlib", builder.getStringAttr(value + '\0'));
   }
   LLVM::GlobalOp loadKernelStr = nullptr;
   if (debug) {
-    std::string value = "load Func result = %d\n";
+    std::string value = "cuLibraryGetKernel result = %d\n";
     auto type = LLVM::LLVMArrayType::get(
         mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
     loadKernelStr = LLVM::GlobalOp::create(
         builder, loc, type, /*isConstant=*/true, LLVM::Linkage::Internal,
-        "strfunc", builder.getStringAttr(value + '\0'));
+        "strkernel", builder.getStringAttr(value + '\0'));
   }
   LLVM::GlobalOp launchKernelStr = nullptr;
   if (debug) {
@@ -613,7 +613,7 @@ void rewriteKernelCallABI(
 
     if (debug) {
       Value printargs1[] = {
-          LLVM::AddressOfOp::create(builder, loc, loadModuleStr)->getResult(0),
+          LLVM::AddressOfOp::create(builder, loc, loadLibraryStr)->getResult(0),
           LLVM::IntToPtrOp::create(builder, loc, ptrty, loadDataRes)
               ->getResult(0)};
       LLVM::CallOp::create(builder, loc, printfunc, printargs1);
