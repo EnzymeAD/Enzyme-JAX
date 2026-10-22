@@ -53,3 +53,19 @@ module {
 // CHECK:        stablehlo.dot_general
 // CHECK-NEXT:   stablehlo.multiply
 
+
+// The mirror image: every non-batch dimension is contracted, so neither side has
+// a free dimension and the result is pure batch. That is a batched inner product
+// (M = N = 1) and cuDNN has no candidate for it either.
+module {
+    func.func @inner_product(%arg0: tensor<12x1x128x2048xbf16>, %arg1: tensor<1x2048x12x128xbf16>, %arg2: tensor<12x2048xbf16>) -> (tensor<12x2048xbf16>) {
+        %1 = stablehlo.dot_general %arg0, %arg1, batching_dims = [0, 3] x [2, 1], contracting_dims = [2, 1] x [3, 0] : (tensor<12x1x128x2048xbf16>, tensor<1x2048x12x128xbf16>) -> tensor<12x2048xbf16>
+        %2 = stablehlo.multiply %1, %arg2 : tensor<12x2048xbf16>
+        return %2 : tensor<12x2048xbf16>
+    }
+}
+
+// CHECK:      func.func @inner_product
+// CHECK-NOT:    stablehlo.custom_call @__cudnn$fusion
+// CHECK:        stablehlo.dot_general
+// CHECK-NEXT:   stablehlo.multiply
