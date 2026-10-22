@@ -7370,9 +7370,10 @@ struct NegativePadToSlice final
   }
 };
 
-// Whether root, through adds and multiplies, is read by slices alone, and
-// whether they leave some of dimension dim unread.
-static bool readBySlicesLeavingSomeUnread(Operation *root, int64_t dim) {
+// The lanes of dimension dim of root that slices read, when root is read,
+// through adds and multiplies, by slices alone; nullopt otherwise.
+static std::optional<llvm::BitVector> lanesReadBySlices(Operation *root,
+                                                        int64_t dim) {
   auto type = cast<RankedTensorType>(root->getResult(0).getType());
   llvm::BitVector read(type.getShape()[dim]);
   SmallVector<Operation *> ops(root->getUsers());
@@ -7386,9 +7387,16 @@ static bool readBySlicesLeavingSomeUnread(Operation *root, int64_t dim) {
       llvm::append_range(ops, cur->getResult(0).getUsers());
       continue;
     }
-    return false;
+    return std::nullopt;
   }
-  return !read.all();
+  return read;
+}
+
+// Whether root, through adds and multiplies, is read by slices alone, and
+// whether they leave some of dimension dim unread.
+static bool readBySlicesLeavingSomeUnread(Operation *root, int64_t dim) {
+  auto read = lanesReadBySlices(root, dim);
+  return read && !read->all();
 }
 
 /*
@@ -7458,13 +7466,28 @@ struct BinopPadToConcat final
             lhs.getOperand().getType().getShape()[idxs[0]] * 2 <=
                 type.getShape()[idxs[0]]) {
           auto idx = idxs[0];
+          int64_t size = type.getShape()[idx];
+          int64_t midStart = lhs.getEdgePaddingLow()[idx];
+          int64_t midLimit = size - lhs.getEdgePaddingHigh()[idx];
           // With any other padding value the split pays only when some of
           // the pieces go unread: the result, through adds and multiplies,
-          // must be read by slices alone, and they must leave some of the
-          // padded dimension unread (slices that read all of it just take
-          // the pieces of a batched op apart, and the batching puts them back
-          // together).
-          if (!match && !readBySlicesLeavingSomeUnread(op, idx))
+          // must be read by slices alone, and they must leave one of the
+          // pieces wholly unread (slices that read all of it just take the
+          // pieces of a batched op apart, and the batching puts them back
+          // together). The unread piece is left a broadcast of the padding
+          // value rather than the op over it.
+          llvm::BitVector read(size, true);
+          if (!match) {
+            auto lanes = lanesReadBySlices(op, idx);
+            if (!lanes)
+              return failure();
+            read = std::move(*lanes);
+          }
+          auto unread = [&](int64_t start, int64_t limit) {
+            return start < limit && read.find_first_in(start, limit) == -1;
+          };
+          if (!match && !unread(0, midStart) && !unread(midStart, midLimit) &&
+              !unread(midLimit, size))
             return failure();
 
           SmallVector<int64_t> strides(type.getShape().size(), 1);
@@ -7472,64 +7495,46 @@ struct BinopPadToConcat final
           SmallVector<int64_t> limits(type.getShape().begin(),
                                       type.getShape().end());
 
-          SmallVector<Value, 1> vals;
-
-          if (lhs.getEdgePaddingLow()[idx] != 0) {
-            starts[idx] = 0;
-            limits[idx] = lhs.getEdgePaddingLow()[idx];
-            Value prevSlice = stablehlo::SliceOp::create(
-                rewriter, op.getLoc(), rhs, starts, limits, strides);
-
-            if (isa<stablehlo::AddOp>(op) && padIsZero) {
-              // If adding we're adding 0, no need to do extra work
-            } else if (isa<stablehlo::MulOp>(op) && padIsZero) {
+          SmallVector<Value, 3> vals;
+          // The piece [start, limit) of the padded dimension, the op over
+          // operand there (or over the padding value, without one).
+          auto piece = [&](int64_t start, int64_t limit, Value operand) {
+            if (start == limit)
+              return;
+            starts[idx] = start;
+            limits[idx] = limit;
+            SmallVector<int64_t> shape(type.getShape());
+            shape[idx] = limit - start;
+            auto pieceTy = RankedTensorType::get(shape, type.getElementType());
+            auto padding = [&]() -> Value {
+              return stablehlo::BroadcastInDimOp::create(
+                  rewriter, op.getLoc(), pieceTy, lhs.getPaddingValue(),
+                  ArrayRef<int64_t>());
+            };
+            if (unread(start, limit)) {
+              // Read by none, it may hold anything.
+              vals.push_back(padding());
+              return;
+            }
+            if (!operand && isa<stablehlo::MulOp>(op) && padIsZero) {
               // If multiplying by 0, broadcast the zero
-              prevSlice = stablehlo::BroadcastInDimOp::create(
-                  rewriter, op.getLoc(), prevSlice.getType(),
-                  lhs.getPaddingValue(), ArrayRef<int64_t>());
-            } else if (isa<stablehlo::MulOp>(op) && padIsOne) {
-              // If multiplying by 1, no need to do extra work
-            } else
-              prevSlice =
-                  T::create(rewriter, op.getLoc(), prevSlice,
-                            stablehlo::BroadcastInDimOp::create(
-                                rewriter, op.getLoc(), prevSlice.getType(),
-                                lhs.getPaddingValue(), ArrayRef<int64_t>()));
-            vals.push_back(prevSlice);
-          }
-
-          starts[idx] = lhs.getEdgePaddingLow()[idx];
-          limits[idx] = type.getShape()[idx] - lhs.getEdgePaddingHigh()[idx];
-
-          auto midSlice = stablehlo::SliceOp::create(rewriter, op.getLoc(), rhs,
+              vals.push_back(padding());
+              return;
+            }
+            Value slice = stablehlo::SliceOp::create(rewriter, op.getLoc(), rhs,
                                                      starts, limits, strides);
-          auto mid =
-              T::create(rewriter, op.getLoc(), midSlice, lhs.getOperand());
-          vals.push_back(mid);
-
-          if (lhs.getEdgePaddingHigh()[idx] != 0) {
-            starts[idx] = type.getShape()[idx] - lhs.getEdgePaddingHigh()[idx];
-            limits[idx] = type.getShape()[idx];
-            Value postSlice = stablehlo::SliceOp::create(
-                rewriter, op.getLoc(), rhs, starts, limits, strides);
-
-            if (isa<stablehlo::AddOp>(op) && padIsZero) {
-              // If adding we're adding 0, no need to do extra work
-            } else if (isa<stablehlo::MulOp>(op) && padIsZero) {
-              // If multiplying by 0, broadcast the zero
-              postSlice = stablehlo::BroadcastInDimOp::create(
-                  rewriter, op.getLoc(), postSlice.getType(),
-                  lhs.getPaddingValue(), ArrayRef<int64_t>());
-            } else if (isa<stablehlo::MulOp>(op) && padIsOne) {
-              // If multiplying by 1, no need to do extra work
-            } else
-              postSlice =
-                  T::create(rewriter, op.getLoc(), postSlice,
-                            stablehlo::BroadcastInDimOp::create(
-                                rewriter, op.getLoc(), postSlice.getType(),
-                                lhs.getPaddingValue(), ArrayRef<int64_t>()));
-            vals.push_back(postSlice);
-          }
+            if (!operand &&
+                (isa<stablehlo::AddOp>(op) ? padIsZero : padIsOne)) {
+              // If adding 0 or multiplying by 1, no need to do extra work
+              vals.push_back(slice);
+              return;
+            }
+            vals.push_back(T::create(rewriter, op.getLoc(), slice,
+                                     operand ? operand : padding()));
+          };
+          piece(0, midStart, nullptr);
+          piece(midStart, midLimit, lhs.getOperand());
+          piece(midLimit, size, nullptr);
 
           rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, vals, idx);
           return success();
