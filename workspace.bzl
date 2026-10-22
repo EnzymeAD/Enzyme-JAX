@@ -105,7 +105,7 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     # place copies and spills above the exec restore of an if/else join,
     # miscompiling kernels (llvm/llvm-project#222368). Drop once XLA's LLVM
     # includes it.
-    sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_amdgpu_bb_prolog.patch\\\", \\\"\\/\\/:patches\\/llvm_affine_parallel_signless_minmax.patch\\\",/g" third_party/llvm/workspace.bzl
+    sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"@enzyme_ad\\/\\/:patches\\/llvm_amdgpu_bb_prolog.patch\\\", \\\"@enzyme_ad\\/\\/:patches\\/llvm_affine_parallel_signless_minmax.patch\\\",/g" third_party/llvm/workspace.bzl
     """,
     """
     sed -i.bak0 "s/tf_http_archive/http_archive/g" third_party/llvm/workspace.bzl
@@ -200,7 +200,7 @@ sed -i.bak0 "/D_FORTIFY_SOURCE/d" third_party/gpus/crosstool/cc_toolchain_config
 sed -i.bak0 "1s|^|load(\\\"@bazel_tools//tools/build_defs/repo:http.bzl\\\", \\\"http_archive\\\")\\n|" workspace3.bzl
 """,
     """
-sed -i.bak0 '$!N; s|tf_http_archive(\\n\\([ ]*\\)name = "rules_ml_toolchain",|http_archive(\\n\\1name = "rules_ml_toolchain", patch_cmds = [\\\"sed -i.bak0 '/D_FORTIFY_SOURCE/d' cc/features/BUILD gpu/cuda/legacy/crosstool/cc_toolchain_config.bzl.tpl\\\"], patches = [\\\"\\/\\/:patches\\/ml_toolchain_static_cuda.patch\\\"], patch_args = [\\\"-p1\\\"],|; P; D;' workspace3.bzl
+sed -i.bak0 '$!N; s|tf_http_archive(\\n\\([ ]*\\)name = "rules_ml_toolchain",|http_archive(\\n\\1name = "rules_ml_toolchain", patch_cmds = [\\\"sed -i.bak0 '/D_FORTIFY_SOURCE/d' cc/features/BUILD gpu/cuda/legacy/crosstool/cc_toolchain_config.bzl.tpl\\\"], patches = [\\\"@enzyme_ad\\/\\/:patches\\/ml_toolchain_static_cuda.patch\\\"], patch_args = [\\\"-p1\\\"],|; P; D;' workspace3.bzl
 """,
     """
 sed -i.bak0 "s/i64/LL/g" xla/tsl/platform/windows/env_time.cc
