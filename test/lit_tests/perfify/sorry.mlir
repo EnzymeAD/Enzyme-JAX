@@ -25,20 +25,20 @@ module {
     perfify.sorry "arith.addi"
     perfify.conditions @sorry_ge true pre {
       %b0 = perfify.arg 0
-      %c0 = perfify.estimated_cost {
+      perfify.estimated_cost @pre_cost {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
-      } : !perfify.cost
-      %cmp = perfify.cmp eq, %c0, %b0
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
       %h = perfify.hypothesis %cmp pre
       perfify.assume %h
     } post {
       %cost = perfify.fn_cost : !perfify.cost
-      %c9 = perfify.estimated_cost {
+      perfify.estimated_cost @post_cost {
         %c = arith.constant 9 : i64
         perfify.yield %c : i64
-      } : !perfify.cost
-      %cmp = perfify.cmp ge, %cost, %c9
+      }
+      %cmp = perfify.cmp ge, %cost, @post_cost
       %h = perfify.hypothesis %cmp post
       perfify.assume %h
     }
@@ -78,20 +78,20 @@ module {
     perfify.sorry "arith.addi"
     perfify.conditions @sorry_le true pre {
       %b0 = perfify.arg 0
-      %c0 = perfify.estimated_cost {
+      perfify.estimated_cost @pre_cost {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
-      } : !perfify.cost
-      %cmp = perfify.cmp eq, %c0, %b0
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
       %h = perfify.hypothesis %cmp pre
       perfify.assume %h
     } post {
       %cost = perfify.fn_cost : !perfify.cost
-      %c9 = perfify.estimated_cost {
+      perfify.estimated_cost @post_cost {
         %c = arith.constant 9 : i64
         perfify.yield %c : i64
-      } : !perfify.cost
-      %cmp = perfify.cmp le, %cost, %c9
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
       %h = perfify.hypothesis %cmp post
       perfify.assume %h
     }
