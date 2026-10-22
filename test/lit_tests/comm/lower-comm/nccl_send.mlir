@@ -7,6 +7,7 @@ func.func @main(%buf: tensor<5xi32>, %peer: tensor<i32>) {
 }
 
 // CHECK-LABEL: llvm.func @enzymexla_jitwrap_ncclSend
+// CHECK-SAME: enzymexla.device_abi = "cuda"
 // CHECK: %[[STREAM:.*]] = "enzymexla.get_stream"() : () -> !llvm.ptr
 // CHECK: %[[HOST_COUNT:.*]] = llvm.alloca {{.*}} x i64
 // CHECK: %[[HOST_DATATYPE:.*]] = llvm.alloca {{.*}} x i32

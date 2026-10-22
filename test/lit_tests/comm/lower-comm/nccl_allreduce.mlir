@@ -9,6 +9,7 @@ func.func @main(%buf: tensor<5xi32>) -> tensor<5xi32> {
 }
 
 // JIT-LABEL: llvm.func @enzymexla_jitwrap_ncclAllReduce
+// JIT-SAME: enzymexla.device_abi = "cuda"
 // JIT: %[[STREAM:.*]] = "enzymexla.get_stream"() : () -> !llvm.ptr
 // JIT: %[[HOST_COUNT:.*]] = llvm.alloca
 // JIT: %[[HOST_DATATYPE:.*]] = llvm.alloca
