@@ -1999,6 +1999,8 @@ evaluateIntegerConstantImpl(Value v, int64_t maxElements, bool iotas,
     }
     if (!splat && fits(ty)) {
       SmallVector<ConstantValues> expanded;
+      // `in` points into `expanded`, so it must not grow past its reservation
+      expanded.reserve(args.size());
       SmallVector<const ConstantValues *> in;
       for (auto [arg, operand] : llvm::zip_equal(args, op->getOperands())) {
         auto operandTy = cast<RankedTensorType>(operand.getType());
