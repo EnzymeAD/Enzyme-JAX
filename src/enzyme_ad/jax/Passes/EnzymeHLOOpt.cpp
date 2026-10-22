@@ -21113,6 +21113,138 @@ struct ImagOpCanon final
   }
 };
 
+// exp(re) * trig, computed the way XLA lowers a complex exp. When exp(re)
+// overflows, exp(re / 2) * trig * exp(re / 2) can still be finite, e.g. for
+// re = 709.9 in f64 or re = 89 in f32 with trig = cos(1).
+static Value mulExpOverflowSafe(PatternRewriter &rewriter, Location loc,
+                                Value re, Value trig) {
+  auto type = re.getType();
+  auto expRe = stablehlo::ExpOp::create(rewriter, loc, re);
+  auto half = stablehlo::ConstantOp::create(
+      rewriter, loc, type, cast<ElementsAttr>(makeAttr(type, 0.5)));
+  auto expHalfRe = stablehlo::ExpOp::create(
+      rewriter, loc, stablehlo::MulOp::create(rewriter, loc, re, half));
+  auto inf = stablehlo::ConstantOp::create(
+      rewriter, loc, type,
+      cast<ElementsAttr>(
+          makeAttr(type, std::numeric_limits<double>::infinity())));
+  auto expIsInf = stablehlo::CompareOp::create(
+      rewriter, loc, expRe, inf, stablehlo::ComparisonDirection::EQ);
+  auto normal = stablehlo::MulOp::create(rewriter, loc, expRe, trig);
+  auto overflow = stablehlo::MulOp::create(
+      rewriter, loc, stablehlo::MulOp::create(rewriter, loc, expHalfRe, trig),
+      expHalfRe);
+  return stablehlo::SelectOp::create(rewriter, loc, expIsInf, overflow, normal);
+}
+
+// real(exp(x)) -> exp(real(x)) * cos(imag(x))
+struct RealOfExpSimplify final
+    : CheckedOpRewritePattern<stablehlo::RealOp, RealOfExpSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::RealOp op,
+                                    PatternRewriter &rewriter) const {
+    if (!isa<ComplexType>(op.getOperand().getType().getElementType()))
+      return failure();
+
+    auto exp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
+    if (!exp)
+      return failure();
+
+    // Only rewrite when the exp feeds nothing but this op, otherwise the
+    // original exp stays live and we just add redundant work.
+    if (!llvm::hasSingleElement(exp->getUsers()))
+      return failure();
+
+    auto loc = op.getLoc();
+    auto re = stablehlo::RealOp::create(rewriter, loc, exp.getOperand());
+    auto im = stablehlo::ImagOp::create(rewriter, loc, exp.getOperand());
+    auto cosIm = stablehlo::CosineOp::create(rewriter, loc, im);
+    rewriter.replaceOp(op, mulExpOverflowSafe(rewriter, loc, re, cosIm));
+    return success();
+  }
+};
+
+// imag(exp(x)) -> imag(x) == 0 ? 0 : exp(real(x)) * sin(imag(x))
+// The select mirrors XLA's complex exp lowering, since without it a real x
+// whose exp overflows gives inf * 0 = NaN instead of 0.
+struct ImagOfExpSimplify final
+    : CheckedOpRewritePattern<stablehlo::ImagOp, ImagOfExpSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ImagOp op,
+                                    PatternRewriter &rewriter) const {
+    if (!isa<ComplexType>(op.getOperand().getType().getElementType()))
+      return failure();
+
+    auto exp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
+    if (!exp)
+      return failure();
+
+    // Only rewrite when the exp feeds nothing but this op, otherwise the
+    // original exp stays live and we just add redundant work.
+    if (!llvm::hasSingleElement(exp->getUsers()))
+      return failure();
+
+    auto loc = op.getLoc();
+    auto re = stablehlo::RealOp::create(rewriter, loc, exp.getOperand());
+    auto im = stablehlo::ImagOp::create(rewriter, loc, exp.getOperand());
+    auto sinIm = stablehlo::SineOp::create(rewriter, loc, im);
+    auto mul = mulExpOverflowSafe(rewriter, loc, re, sinIm);
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, loc, rewriter.getZeroAttr(op.getType()));
+    auto imIsZero = stablehlo::CompareOp::create(
+        rewriter, loc, im, zero, stablehlo::ComparisonDirection::EQ);
+    rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(op, imIsZero, zero, mul);
+    return success();
+  }
+};
+
+// abs(exp(x)) -> is_finite(imag(x)) ? exp(real(x)) : NaN
+// For x = -2 + inf*i, exp(x) is NaN + NaN*i so the original is NaN, while
+// exp(real(x)) alone is exp(-2). Only the imaginary part needs the check, since
+// a NaN real part already makes exp(real(x)) NaN. The select is dropped when
+// NaNs are ruled out.
+struct AbsOfExpSimplify final
+    : public NoNanCheckedOpRewritePattern<stablehlo::AbsOp, AbsOfExpSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::AbsOp, AbsOfExpSimplify>::NoNanCheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::AbsOp op,
+                                    PatternRewriter &rewriter) const {
+    if (!isa<ComplexType>(op.getOperand().getType().getElementType()))
+      return failure();
+
+    auto exp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
+    if (!exp)
+      return failure();
+
+    // Only rewrite when the exp feeds nothing but this op, otherwise the
+    // original exp stays live and we just add redundant work.
+    if (!llvm::hasSingleElement(exp->getUsers()))
+      return failure();
+
+    auto loc = op.getLoc();
+    auto re = stablehlo::RealOp::create(rewriter, loc, exp.getOperand());
+    if (canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op,
+                             rewriter)) {
+      rewriter.replaceOpWithNewOp<stablehlo::ExpOp>(op, re);
+      return success();
+    }
+
+    auto im = stablehlo::ImagOp::create(rewriter, loc, exp.getOperand());
+    auto imIsFinite = stablehlo::IsFiniteOp::create(rewriter, loc, im);
+    auto expRe = stablehlo::ExpOp::create(rewriter, loc, re);
+    auto nan = stablehlo::ConstantOp::create(
+        rewriter, loc, op.getType(),
+        cast<ElementsAttr>(
+            makeAttr(op.getType(), std::numeric_limits<double>::quiet_NaN())));
+    rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(op, imIsFinite, expRe,
+                                                     nan);
+    return success();
+  }
+};
+
 // (conj (complex a, (neg b))) -> (complex a b)
 struct ConjComplexNegate final
     : CheckedOpRewritePattern<chlo::ConjOp, ConjComplexNegate> {
@@ -45234,6 +45366,14 @@ void mlir::transform::addNoNanCompareAbs(RewritePatternSet &patterns,
   patterns.insert<NoNanCompareAbs>(allowOnFloatingPointMath, &context, benefit);
 }
 
+void mlir::transform::addAbsOfExpSimplify(RewritePatternSet &patterns,
+                                          bool allowOnFloatingPointMath,
+                                          MLIRContext &context,
+                                          PatternBenefit benefit) {
+  patterns.insert<AbsOfExpSimplify>(allowOnFloatingPointMath, &context,
+                                    benefit);
+}
+
 void mlir::transform::addNoNanSelfSubSimplify(RewritePatternSet &patterns,
                                               bool allowOnFloatingPointMath,
                                               MLIRContext &context,
@@ -45690,10 +45830,10 @@ struct EnzymeHLOOptPass
       patterns.add<AllFiniteIsFinite, AllFiniteIsInf, AllFiniteIsPosInf,
                    AllFiniteIsNegInf>(context);
 
-    patterns
-        .add<NoNanCompareSimplify, NoNanSelfSubSimplify, NoNanAddSubSimplify,
-             NoNanMulSimplify, NoNanDivSimplify, NoNanCompareAbs>(
-            (no_nan || all_finite), context);
+    patterns.add<NoNanCompareSimplify, NoNanSelfSubSimplify,
+                 NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify,
+                 NoNanCompareAbs, AbsOfExpSimplify>((no_nan || all_finite),
+                                                    context);
 
     patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify>(
         context);
@@ -45749,6 +45889,8 @@ struct EnzymeHLOOptPass
         IfToSelect,
         IfPredPropagation,
         ImagOpCanon,
+        RealOfExpSimplify,
+        ImagOfExpSimplify,
         MergeConsecutiveReshapes,
         NoopReduceOpCanon,
         ReduceConstProp,
