@@ -3603,3 +3603,141 @@ LogicalResult enzymexla::MultiPadOp::verify() {
 
   return success();
 }
+
+//===----------------------------------------------------------------------===//
+// FixedPointOp
+//===----------------------------------------------------------------------===//
+
+double enzymexla::FixedPointOp::getReductionOrDefault() {
+  if (auto a = getReductionAttr())
+    return a.getValueAsDouble();
+  return kDefaultReduction;
+}
+
+int64_t enzymexla::FixedPointOp::getMaxItersOrDefault() {
+  if (auto a = getMaxItersAttr())
+    return a.getInt();
+  return kDefaultMaxIters;
+}
+
+bool enzymexla::FixedPointOp::isMarked(Operation *loop) {
+  Attribute a = loop->getAttr(kMarkerAttrName);
+  if (auto b = dyn_cast_or_null<BoolAttr>(a))
+    return b.getValue();
+  return a != nullptr;
+}
+
+// Printed like stablehlo.while: the carried values are named by the body's
+// block arguments, and the regions print without their entry arguments.
+//
+//   %r:2 = enzymexla.fixed_point(%i = %c0, %u = %u0) : tensor<i64>, ...
+//     attributes {reduction = 1.0e-24 : f64}
+//    cond { ... enzymexla.yield %go : tensor<i1> }
+//    body { ... enzymexla.yield %in, %un : tensor<i64>, ... }
+void enzymexla::FixedPointOp::print(OpAsmPrinter &p) {
+  p << '(';
+  llvm::interleaveComma(llvm::zip(getBody().getArguments(), getOperands()), p,
+                        [&](auto zip) {
+                          p.printOperand(std::get<0>(zip));
+                          p << " = ";
+                          p.printOperand(std::get<1>(zip));
+                        });
+  p << ")";
+  if (getNumOperands()) {
+    p << " : ";
+    llvm::interleaveComma(getOperandTypes(), p);
+  }
+  p.printOptionalAttrDictWithKeyword((*this)->getAttrs());
+  p.printNewline();
+  p << "cond ";
+  p.printRegion(getCond(), /*printEntryBlockArgs=*/false);
+  p << " body ";
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
+}
+
+ParseResult enzymexla::FixedPointOp::parse(OpAsmParser &parser,
+                                           OperationState &result) {
+  llvm::SMLoc loc = parser.getCurrentLocation();
+  SmallVector<OpAsmParser::UnresolvedOperand> operands, iterArgs;
+  if (parser.parseLParen())
+    return failure();
+  do {
+    if (succeeded(parser.parseOptionalRParen()))
+      break;
+    OpAsmParser::UnresolvedOperand operand, iterArg;
+    if (parser.parseOperand(iterArg) || parser.parseEqual() ||
+        parser.parseOperand(operand))
+      return failure();
+    iterArgs.push_back(iterArg);
+    operands.push_back(operand);
+    if (succeeded(parser.parseOptionalRParen()))
+      break;
+    if (failed(parser.parseComma()))
+      return failure();
+  } while (true);
+  if (!operands.empty()) {
+    if (parser.parseColon() || parser.parseTypeList(result.types))
+      return failure();
+  }
+  if (iterArgs.size() != result.types.size())
+    return parser.emitError(loc, "expected one type per carried value");
+  SmallVector<OpAsmParser::Argument> args;
+  for (auto [name, type] : llvm::zip(iterArgs, result.types)) {
+    OpAsmParser::Argument arg;
+    arg.ssaName = name;
+    arg.type = type;
+    args.push_back(arg);
+  }
+  if (parser.resolveOperands(operands, result.types, loc, result.operands) ||
+      parser.parseOptionalAttrDictWithKeyword(result.attributes) ||
+      parser.parseKeyword("cond") ||
+      parser.parseRegion(*result.addRegion(), args) ||
+      parser.parseKeyword("body") ||
+      parser.parseRegion(*result.addRegion(), args))
+    return failure();
+  return success();
+}
+
+LogicalResult enzymexla::FixedPointOp::verify() {
+  auto types = getOperandTypes();
+  for (Region *region : {&getCond(), &getBody()}) {
+    Block &block = region->front();
+    if (block.getNumArguments() != getNumOperands())
+      return emitOpError("expects both regions to take one argument per "
+                         "carried value");
+    for (auto [arg, type] : llvm::zip(block.getArguments(), types))
+      if (arg.getType() != type)
+        return emitOpError("region argument type ")
+               << arg.getType() << " does not match carried value type "
+               << type;
+  }
+
+  auto condYield =
+      dyn_cast<enzymexla::YieldOp>(getCond().front().getTerminator());
+  if (!condYield || condYield.getNumOperands() != 1)
+    return emitOpError("cond region must yield exactly one predicate");
+  Type predTy = condYield.getOperand(0).getType();
+  auto predTensorTy = dyn_cast<RankedTensorType>(predTy);
+  if (!predTensorTy || predTensorTy.getRank() != 0 ||
+      !predTensorTy.getElementType().isInteger(1))
+    return emitOpError("cond region must yield a tensor<i1>, got ") << predTy;
+
+  auto bodyYield =
+      dyn_cast<enzymexla::YieldOp>(getBody().front().getTerminator());
+  if (!bodyYield || bodyYield.getNumOperands() != getNumOperands())
+    return emitOpError("body region must yield one value per carried value");
+  for (auto [val, type] : llvm::zip(bodyYield.getOperands(), types))
+    if (val.getType() != type)
+      return emitOpError("body yields ")
+             << val.getType() << " for a carried value of type " << type;
+
+  if (auto mask = getMaskAttr()) {
+    int64_t i = mask.getInt();
+    if (i < 0 || i >= (int64_t)getNumOperands())
+      return emitOpError("mask ") << i << " is not a carried value";
+    auto maskTy = dyn_cast<RankedTensorType>(types[i]);
+    if (!maskTy || !maskTy.getElementType().isInteger(1))
+      return emitOpError("mask must be a tensor of i1, got ") << types[i];
+  }
+  return success();
+}

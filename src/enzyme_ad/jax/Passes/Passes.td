@@ -1775,4 +1775,72 @@ def GpuModuleToBinarySink : Pass<"enzymexla-gpu-module-to-binary", ""> {
   let dependentDialects = ["gpu::GPUDialect", "LLVM::LLVMDialect", ];
 }
 
+def RaiseFixedPointLoopsPass : Pass<"raise-fixed-point-loops"> {
+  let summary = "Turn stablehlo.while loops marked enzyme.fixed_point into enzymexla.fixed_point";
+  let description = [{
+    A `stablehlo.while` carrying the `enzyme.fixed_point` attribute (set by
+    Reactant's `@trace fixed_point=...`, or by `recognize-fixed-point-loops` on
+    a kernel loop that the StableHLO raising then turned into a
+    `stablehlo.while`) becomes an `enzymexla.fixed_point`, which Enzyme
+    differentiates at its converged state. The `enzyme.fixed_point_reduction`
+    and `enzyme.fixed_point_max_iters` attributes become the op's own.
+  }];
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "stablehlo::StablehloDialect",
+  ];
+}
+
+def LowerFixedPointLoopsPass : Pass<"lower-fixed-point-loops"> {
+  let summary = "Lower enzymexla.fixed_point back to a stablehlo.while";
+  let description = [{
+    The fixed-point settings are kept on the `stablehlo.while` as
+    `enzyme.fixed_point*` attributes, so the round trip is lossless.
+  }];
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+  ];
+}
+
+def RecognizeFixedPointLoopsPass : Pass<"recognize-fixed-point-loops"> {
+  let summary = "Mark convergence loops as fixed points without any annotation";
+  let description = [{
+    Sets `enzyme.fixed_point` on every `stablehlo.while` and `scf.while` whose
+    exit condition is a convergence test and whose body is a plausible
+    contraction, so that it is differentiated at its converged state without
+    the source having to say so. A loop qualifies when
+
+    - a conjunct of its condition compares a float quantity against a
+      loop-invariant tolerance, and that quantity is a change or residual of
+      the loop's state: it is derived (through abs, square, sqrt, max,
+      reductions, conversions, scaling) from a subtraction that involves
+      carried values, or from a carried increment that the state is updated
+      with;
+    - no carried float value is an accumulator, i.e. updated as `s + v` where
+      `v` does not depend on `s` (this is what keeps time integrators and
+      Krylov iterations out);
+    - no float computation depends on an iteration counter (an
+      iteration-dependent step is not a fixed-point map).
+
+    A loop that already carries `enzyme.fixed_point` (true or false) is left
+    alone. Loops are matched in the lifted LLVM-dialect form a kernel has
+    before `canonicalize-scf-for`, in `arith`, and in StableHLO.
+
+    A kernel can also mark a loop itself, by calling
+    `__enzyme_fixed_point([double reduction[, int64_t max_iters]])` in its body
+    (Reactant's `fixed_point_implicit`). The innermost `scf.while` around the
+    call is marked, with the settings given, and the call is removed. With
+    `heuristic=false` only these calls are looked at.
+  }];
+  let options = [
+    Option<"heuristic", "heuristic", "bool", /*default=*/"true",
+           "Also mark loops recognized as convergence loops">,
+  ];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "scf::SCFDialect",
+    "stablehlo::StablehloDialect",
+  ];
+}
+
 #endif
