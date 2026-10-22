@@ -99,8 +99,9 @@ struct MemRefStoreInfo {
 };
 } // namespace
 
-static void getMemRefStoreInfo(Block *block,
-                               llvm::MapVector<Value, MemRefStoreInfo> &storeInfo) {
+static void
+getMemRefStoreInfo(Block *block,
+                   llvm::MapVector<Value, MemRefStoreInfo> &storeInfo) {
   unsigned ord = 0;
   for (Operation &op : block->getOperations())
     if (isa<memref::StoreOp, mlir::affine::AffineStoreOp>(op)) {
