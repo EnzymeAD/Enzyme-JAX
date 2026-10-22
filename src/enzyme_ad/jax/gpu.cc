@@ -1,8 +1,6 @@
-#include "xla/ffi/api/c_api_internal.h"
+#include "absl/strings/str_format.h"
 #include "xla/ffi/api/ffi.h"
-#include "xla/ffi/execution_state.h"
 #include "xla/ffi/ffi_api.h"
-#include "xla/stream_executor/stream.h"
 
 #if (defined(_WIN32) || defined(__CYGWIN__)) &&                                \
     !defined(MLIR_CAPI_ENABLE_WINDOWS_DLL_DECLSPEC)
@@ -52,13 +50,14 @@ instantiate(std::string_view bspan) {
 
   auto kwrapper = std::make_unique<CuKernelWrapper>();
 
-  void *library;
-  kwrapper->cuKernel = cinfo->init(&kwrapper->library);
+  if (cinfo->init) {
+    kwrapper->cuKernel = cinfo->init(&kwrapper->library);
 
-  if (!kwrapper->cuKernel ||
-    !kwrapper->library) {
-      return xla::ffi::Error::Internal("enzymexla_compile_gpu: could not load module");
+    if (!kwrapper->cuKernel || !kwrapper->library) {
+      return xla::ffi::Error::Internal(
+          "enzymexla_compile_gpu: could not load module");
     }
+  }
 
   return kwrapper;
 }
@@ -83,12 +82,11 @@ xla::ffi::Error execute(std::string_view bspan, CUStream stream,
       return xla::ffi::Error::Internal(absl::StrFormat(
           "enzymexla_compile_gpu: could not get %d argument buffer", i));
     devptrs[i] = buf->untyped_data();
-    ptrs[i]  = &devptrs[i];
+    ptrs[i] = &devptrs[i];
   }
 
   const void **const_ptrs = const_cast<const void **>(ptrs);
   auto cufunc = kwrapper->cuKernel;
-  assert(cufunc);
 
   if constexpr (withError) {
     char *err = cinfo->run(const_ptrs, stream, cufunc);

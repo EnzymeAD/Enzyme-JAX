@@ -223,7 +223,7 @@ gpu::ObjectAttr getSelectedObject(gpu::BinaryOp op) {
 
 struct CallInfo {
   void (*run)(void *, void *, void **);
-  void *(*init)();
+  void *(*init)(void **);
 };
 
 llvm::StringMap<CallInfo> jitkernels;
@@ -423,7 +423,8 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
 
   auto ptr = (void *)Entry->getValue();
 
-  return CallInfo{(void (*)(void *, void *, void **))ptr, (void *(*)())nvptr};
+  return CallInfo{(void (*)(void *, void *, void **))ptr,
+                  (void *(*)(void **))nvptr};
 }
 
 static void replaceGetStreamOpsWithCudaABIStreamArg(mlir::ModuleOp &submod) {
@@ -445,27 +446,6 @@ static void replaceGetStreamOpsWithCudaABIStreamArg(mlir::ModuleOp &submod) {
     }
     op.erase();
   }
-}
-
-static void insertEmptyGPUInit(mlir::ModuleOp &submod, mlir::Location loc) {
-  OpBuilder builder(submod);
-  builder.setInsertionPointToStart(&submod.getBodyRegion().front());
-
-  auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
-  auto initTy = LLVM::LLVMFunctionType::get(ptrty, {ptrty}, false);
-  auto initfn = LLVM::LLVMFuncOp::create(builder, loc, "nv_func_init", initTy,
-                                         LLVM::Linkage::External);
-
-  Block *blk = initfn.addEntryBlock(builder);
-  builder.setInsertionPointToEnd(blk);
-  auto nullptrval = LLVM::ZeroOp::create(builder, loc, ptrty);
-  LLVM::StoreOp::create(builder, loc, nullptrval, blk->getArgument(0));
-  auto i64 = builder.getIntegerType(64);
-  auto one =
-      LLVM::ConstantOp::create(builder, loc, i64, builder.getI64IntegerAttr(1));
-  auto sentinel =
-      LLVM::IntToPtrOp::create(builder, loc, ptrty, one.getResult());
-  LLVM::ReturnOp::create(builder, loc, ValueRange(sentinel));
 }
 
 void rewriteKernelCallABI(
@@ -617,15 +597,16 @@ void rewriteKernelCallABI(
     auto addr_modbin = LLVM::AddressOfOp::create(builder, loc, binary);
 
     auto nullptrval = LLVM::ZeroOp::create(builder, loc, ptrty);
+    LLVM::StoreOp::create(builder, loc, nullptrval, modptr);
     auto zeroi32 = LLVM::ZeroOp::create(builder, loc, i32);
     SmallVector<mlir::Value> loadargs = {/*library*/ libptr,
-                                        /*code*/ addr_modbin->getResult(0),
-                                        /*jitOptions*/ nullptrval,
-                                        /*jitOptionsValues*/ nullptrval,
-                                        /*numJitOptions*/ zeroi32,
-                                        /*libraryOptions*/ nullptrval,
-                                        /*libraryOptionValues*/ nullptrval,
-                                        /*numLibraryOptions*/ zeroi32};
+                                         /*code*/ addr_modbin->getResult(0),
+                                         /*jitOptions*/ nullptrval,
+                                         /*jitOptionsValues*/ nullptrval,
+                                         /*numJitOptions*/ zeroi32,
+                                         /*libraryOptions*/ nullptrval,
+                                         /*libraryOptionValues*/ nullptrval,
+                                         /*numLibraryOptions*/ zeroi32};
 
     mlir::Value loadDataRes =
         LLVM::CallOp::create(builder, loc, libload, loadargs)->getResult(0);
@@ -650,8 +631,8 @@ void rewriteKernelCallABI(
     auto addr_kernstr = LLVM::AddressOfOp::create(builder, loc, ptrty, "str");
     auto libval = LLVM::LoadOp::create(builder, loc, ptrty, libptr);
 
-    SmallVector<mlir::Value> libkernelargs = {
-        modptr->getResult(0), libval, addr_kernstr->getResult(0)};
+    SmallVector<mlir::Value> libkernelargs = {modptr->getResult(0), libval,
+                                              addr_kernstr->getResult(0)};
     mlir::Value loadKernelRes =
         LLVM::CallOp::create(builder, loc, libkernel, libkernelargs)
             ->getResult(0);
@@ -766,16 +747,17 @@ void rewriteKernelCallABI(
   });
 }
 
-CallInfo
-CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
-            FunctionOpInterface op, bool jit, enzymexla::JITCallOp jcall,
-            bool openmp, size_t cuResultHandlerPtr,
-            size_t cuStreamSynchronizePtr, int indexBitWidth,
-            const std::string &cubinTriple, const std::string &cubinChip,
-            const std::string &cubinFeatures, const std::string &cubinFormat,
-            int cuOptLevel, const std::string &toolkitPath,
-            const llvm::SmallVectorImpl<std::string> &linkFiles, bool debug,
-            bool returnPtr, bool dump_final_module, bool requiresCudaABI) {
+CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
+                     FunctionOpInterface op, bool jit,
+                     enzymexla::JITCallOp jcall, bool openmp,
+                     size_t cuResultHandlerPtr, size_t cuStreamSynchronizePtr,
+                     int indexBitWidth, const std::string &cubinTriple,
+                     const std::string &cubinChip,
+                     const std::string &cubinFeatures,
+                     const std::string &cubinFormat, int cuOptLevel,
+                     const std::string &toolkitPath,
+                     const llvm::SmallVectorImpl<std::string> &linkFiles,
+                     bool debug, bool returnPtr, bool dump_final_module) {
 
   OpBuilder builder(op);
 
@@ -857,8 +839,19 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
 
   builder.setInsertionPointToEnd(&submod.getBodyRegion().front());
 
+  // gpu.module is a sibling symbol of the function (referenced through
+  // gpu.launch_func), so it is detected via the copied modules. get_stream may
+  // appear in the function itself or in any of the copied callees.
+  auto hasGetStream = [](Operation *root) {
+    return root
+        ->walk([](enzymexla::GetStreamOp) { return WalkResult::interrupt(); })
+        .wasInterrupted();
+  };
+  bool requiresCudaABI =
+      numGPUModule != 0 || hasGetStream(op) || hasGetStream(submod);
+
   SmallVector<mlir::Type, 1> intys = {ptrty};
-  if (numGPUModule != 0 || requiresCudaABI) {
+  if (requiresCudaABI) {
     intys.push_back(ptrty);
     intys.push_back(ptrty);
   }
@@ -980,7 +973,6 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
       }
       if (requiresCudaABI) {
         replaceGetStreamOpsWithCudaABIStreamArg(submod);
-        insertEmptyGPUInit(submod, loc);
       }
     } else {
       submod->walk([](gpu::GPUModuleOp gmod) {
@@ -1034,8 +1026,7 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
                            cubinFormat, cuOptLevel, toolkitPath, linkFiles);
     }
 
-    auto ptr = CompileHostModule(ss.str(), submod,
-                                 numGPUModule != 0 || requiresCudaABI,
+    auto ptr = CompileHostModule(ss.str(), submod, numGPUModule != 0,
                                  dump_final_module);
     jitkernels[ss.str()] = ptr;
     submod.erase();
@@ -1143,14 +1134,11 @@ struct LowerJITPass
         hasReturn = !fnty.getResults().empty();
       }
 
-      auto deviceABI = fn->getAttrOfType<StringAttr>("enzymexla.device_abi");
-
       CallInfo cdata = CompileCall(
           symbolTable, op.getLoc(), fn, jit, op, openmp, cuResultHandlerPtr,
           cuStreamSynchronizePtr, indexBitWidth, cubinTriple, cubinChip,
           cubinFeatures, cubinFormat, cuOptLevel, toolkitPath, linkFilesArray,
-          debug, hasReturn, dump_final_module,
-          deviceABI && deviceABI.getValue() == "cuda");
+          debug, hasReturn, dump_final_module);
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
       if (jit) {
