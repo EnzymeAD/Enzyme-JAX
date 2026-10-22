@@ -150,7 +150,7 @@ func.func @main() {
   }> : (tensor<2x2xf32>, tensor<2x2xf32>, tensor<2x2xf32>) -> (tensor<2x2xf32>, tensor<2x2xf32>, tensor<2x2xf32>)
 
   check.expect_almost_eq %rev_11#0, %output : tensor<2x2xf32>
-  check.expect_almost_eq_const %rev_11#1, dense<[[-4.0, 0.666667], [0.0, 0.0]]> : tensor<2x2xf32>
+  check.expect_almost_eq_const %rev_11#1, dense<[[-4.0, 0.0], [0.0, 0.0]]> : tensor<2x2xf32>
   check.expect_almost_eq_const %rev_11#2, dense<[[1.0, 0.0], [0.0, 0.0]]> : tensor<2x2xf32>
 
   // fwd, ij = 12
@@ -161,7 +161,7 @@ func.func @main() {
   }> : (tensor<2x2xf32>, tensor<2x2xf32>, tensor<2x2xf32>, tensor<2x2xf32>) -> (tensor<2x2xf32>, tensor<2x2xf32>)
 
   check.expect_almost_eq %fwd_a12#0, %output : tensor<2x2xf32>
-  check.expect_almost_eq_const %fwd_a12#1, dense<[[0.666667, 1.0], [-0.444444, -0.666667]]> : tensor<2x2xf32>
+  check.expect_almost_eq_const %fwd_a12#1, dense<[[0.0, 0.0], [0.0, 0.0]]> : tensor<2x2xf32>
 
   %fwd_b12:2 = enzyme.fwddiff @triangular_solve_real_left_lower(%A, %dzero, %b, %seed_12) <{
     activity=[#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_dup>],
@@ -178,11 +178,11 @@ func.func @main() {
   }> : (tensor<2x2xf32>, tensor<2x2xf32>, tensor<2x2xf32>) -> (tensor<2x2xf32>, tensor<2x2xf32>, tensor<2x2xf32>)
 
   check.expect_almost_eq %rev_12#0, %output : tensor<2x2xf32>
-  check.expect_almost_eq_const %rev_12#1, dense<[[-5.0, 1.0], [0.0, 0.0]]> : tensor<2x2xf32>
+  check.expect_almost_eq_const %rev_12#1, dense<[[-5.0, 0.0], [0.0, 0.0]]> : tensor<2x2xf32>
   check.expect_almost_eq_const %rev_12#2, dense<[[0.0, 1.0], [0.0, 0.0]]> : tensor<2x2xf32>
 
   // fwd, ij = 21
-  %seed_21 = stablehlo.constant dense<[[1.0, 0.0], [0.0, 0.0]]> : tensor<2x2xf32>
+  %seed_21 = stablehlo.constant dense<[[0.0, 0.0], [1.0, 0.0]]> : tensor<2x2xf32>
   %fwd_a21:2 = enzyme.fwddiff @triangular_solve_real_left_lower(%A, %seed_21, %b, %dzero) <{
     activity=[#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_dup>],
     ret_activity=[#enzyme.activity<enzyme_dup>]
@@ -206,11 +206,11 @@ func.func @main() {
   }> : (tensor<2x2xf32>, tensor<2x2xf32>, tensor<2x2xf32>) -> (tensor<2x2xf32>, tensor<2x2xf32>, tensor<2x2xf32>)
 
   check.expect_almost_eq %rev_21#0, %output : tensor<2x2xf32>
-  check.expect_almost_eq_const %rev_21#1, dense<[[2.66667, -0.444444], [-1.33333, 0.222222]]> : tensor<2x2xf32>
+  check.expect_almost_eq_const %rev_21#1, dense<[[2.66667, 0.0], [-1.33333, 0.222222]]> : tensor<2x2xf32>
   check.expect_almost_eq_const %rev_21#2, dense<[[-0.666667, 0.0], [0.333333, 0.0]]> : tensor<2x2xf32>
 
   // fwd, ij = 22
-  %seed_22 = stablehlo.constant dense<[[1.0, 0.0], [0.0, 0.0]]> : tensor<2x2xf32>
+  %seed_22 = stablehlo.constant dense<[[0.0, 0.0], [0.0, 1.0]]> : tensor<2x2xf32>
   %fwd_a22:2 = enzyme.fwddiff @triangular_solve_real_left_lower(%A, %seed_22, %b, %dzero) <{
     activity=[#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_dup>],
     ret_activity=[#enzyme.activity<enzyme_dup>]
@@ -234,7 +234,7 @@ func.func @main() {
   }> : (tensor<2x2xf32>, tensor<2x2xf32>, tensor<2x2xf32>) -> (tensor<2x2xf32>, tensor<2x2xf32>, tensor<2x2xf32>)
 
   check.expect_almost_eq %rev_22#0, %output : tensor<2x2xf32>
-  check.expect_almost_eq_const %rev_22#1, dense<[[3.33333, -0.666667], [-1.66667, 0.333333]]> : tensor<2x2xf32>
+  check.expect_almost_eq_const %rev_22#1, dense<[[3.33333, 0.0], [-1.66667, 0.333333]]> : tensor<2x2xf32>
   check.expect_almost_eq_const %rev_22#2, dense<[[0.0, -0.666667], [0.0, 0.333333]]> : tensor<2x2xf32>
 
   return
