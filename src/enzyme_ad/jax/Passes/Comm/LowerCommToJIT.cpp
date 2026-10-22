@@ -1821,8 +1821,8 @@ struct LowerCommNcclCommUserRankOpToJIT
       //        rewriter.getStringAttr("allocate"),
       //        rewriter.getStringAttr("free")});
       //   wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
-      //   wrapperFunc->setAttr("enzymexla.device_abi",
-      //                        rewriter.getStringAttr("cuda"));
+      wrapperFunc->setAttr("enzymexla.device_abi",
+                           rewriter.getStringAttr("cuda"));
       // Add argument-level memory effects attribute to all arguments
       //   for (unsigned i = 0; i < 2; ++i) {
       //     wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
@@ -1958,8 +1958,8 @@ struct LowerCommNcclCommCountOpToJIT
       //        rewriter.getStringAttr("allocate"),
       //        rewriter.getStringAttr("free")});
       //   wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
-      //   wrapperFunc->setAttr("enzymexla.device_abi",
-      //                        rewriter.getStringAttr("cuda"));
+      wrapperFunc->setAttr("enzymexla.device_abi",
+                           rewriter.getStringAttr("cuda"));
       // Add argument-level memory effects attribute to all arguments
       //   for (unsigned i = 0; i < 2; ++i) {
       //     wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
