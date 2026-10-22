@@ -135,6 +135,22 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/#ifdef _MSC_VER\\/#ifdef _WIN32\\/g' slinky\\/base\\/util.h\\\"], strip_prefix/g" third_party/slinky/workspace.bzl
     """,
     """
+    sed -i.bak0 "s/^load(/load(\\\"@bazel_tools\\/\\/tools\\/build_defs\\/repo:http.bzl\\\", \\\"http_archive\\\")\\nload(/g" third_party/flatbuffers/workspace.bzl
+    """,
+    """
+    sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/flatbuffers/workspace.bzl
+    """,
+    """
+    sed -i.bak0 "s/\\/\\/third_party/@xla\\/\\/third_party/g" third_party/flatbuffers/workspace.bzl
+    """,
+    """
+    # flatbuffers takes the strtoll_l family to be there whenever
+    # _XOPEN_VERSION >= 700, but musl (the host toolchain of our
+    # BinaryBuilder builds) advertises that without providing them.  Only
+    # take them on glibc.
+    sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/_XOPEN_VERSION >= 700\\/_XOPEN_VERSION >= 700 and defined(__GLIBC__)\\/' include\\/flatbuffers\\/base.h\\\"], strip_prefix/g" third_party/flatbuffers/workspace.bzl
+    """,
+    """
     # The second command disables llvm's use of __builtin_cpu_supports on apple
     # platforms (e.g. clang's SSE4.2 identifier lexer fast path).  The darwin
     # compiler-rt shipped by the cross toolchain does not provide __cpu_model,
