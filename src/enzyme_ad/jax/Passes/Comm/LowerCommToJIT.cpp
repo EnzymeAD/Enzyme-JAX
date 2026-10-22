@@ -1724,6 +1724,7 @@ static LogicalResult lowerNcclGroupOpToJIT(
     auto wrapperType = LLVM::LLVMFunctionType::get(typeVoid, {}, false);
     auto wrapper = LLVM::LLVMFuncOp::create(rewriter, op->getLoc(), wrapperName,
                                             wrapperType);
+    wrapper->setAttr("enzymexla.device_abi", rewriter.getStringAttr("cuda"));
     Block *entryBlock = wrapper.addEntryBlock(rewriter);
     rewriter.setInsertionPointToStart(entryBlock);
 
