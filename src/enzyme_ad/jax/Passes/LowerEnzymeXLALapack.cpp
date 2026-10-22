@@ -1587,13 +1587,19 @@ private:
             rewriter, op.getLoc(), blasPivotType,
             cast<ElementsAttr>(makeAttr(blasPivotType, 1))));
 
-    auto permutation = stablehlo::IotaOp::create(
-        rewriter, op.getLoc(), blasPivotType,
-        rewriter.getI64IntegerAttr(blasPivotType.getRank() - 1));
+    // the permutation has one entry per row, which for tall matrices is more
+    // than the number of pivots
+    auto permutationType = cast<RankedTensorType>(op.getResult(2).getType());
+    auto blasPermutationType = RankedTensorType::get(
+        permutationType.getShape(), rewriter.getIntegerType(blasIntWidth));
 
-    auto pivotToPermReturnTypes = {iterType, blasPivotType};
+    auto permutation = stablehlo::IotaOp::create(
+        rewriter, op.getLoc(), blasPermutationType,
+        rewriter.getI64IntegerAttr(blasPermutationType.getRank() - 1));
+
+    auto pivotToPermReturnTypes = {iterType, blasPermutationType};
     auto pivotToPermWhileOp = stablehlo::WhileOp::create(
-        rewriter, op.getLoc(), TypeRange{iterType, blasPivotType},
+        rewriter, op.getLoc(), TypeRange{iterType, blasPermutationType},
         ValueRange{iter, permutation});
 
     {
@@ -1700,7 +1706,7 @@ private:
                                     permutationX.getType().getElementType()),
               permutationX)),
           scatterDims);
-      // LAPACK guarantees every pivot lands in [1, n].
+      // LAPACK guarantees every pivot lands in [1, m].
       permutationUpdate2->setAttr("enzymexla.inbounds", rewriter.getUnitAttr());
 
       {
@@ -1723,8 +1729,8 @@ private:
     auto finalPermutation = stablehlo::AddOp::create(
         rewriter, op.getLoc(), pivotToPermWhileOp.getResult(1),
         stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), blasPivotType,
-            cast<ElementsAttr>(makeAttr(blasPivotType, 1))));
+            rewriter, op.getLoc(), blasPermutationType,
+            cast<ElementsAttr>(makeAttr(blasPermutationType, 1))));
 
     rewriter.replaceAllUsesWith(op.getResult(0), factorizedResult);
     rewriter.replaceAllUsesWith(
@@ -1732,7 +1738,7 @@ private:
                                                       pivotType, pivotResult));
     rewriter.replaceAllUsesWith(
         op.getResult(2),
-        stablehlo::ConvertOp::create(rewriter, op.getLoc(), pivotType,
+        stablehlo::ConvertOp::create(rewriter, op.getLoc(), permutationType,
                                      finalPermutation));
     rewriter.replaceAllUsesWith(
         op.getResult(3), stablehlo::ConvertOp::create(rewriter, op.getLoc(),
@@ -1807,8 +1813,14 @@ private:
       auto pivotFn = backend == "cuda" ? "cu_lu_pivots_to_permutation"
                                        : "hip_lu_pivots_to_permutation";
 
+      // the permutation has one entry per row, which for tall matrices is
+      // more than the number of pivots
+      auto permutationType = cast<RankedTensorType>(op.getResult(2).getType());
+      auto permutationCuSolverType = RankedTensorType::get(
+          permutationType.getShape(), rewriter.getI32Type());
+
       auto permutation = stablehlo::CustomCallOp::create(
-          rewriter, op.getLoc(), TypeRange{pivotCuSolverType},
+          rewriter, op.getLoc(), TypeRange{permutationCuSolverType},
           ValueRange{pivots0Indexed.getResult()},
           rewriter.getStringAttr(pivotFn),
           /*has_side_effect*/ nullptr,
@@ -1826,9 +1838,15 @@ private:
                         inputRank),
           /*output_operand_aliases*/ nullptr,
           /*result_tilings*/ nullptr);
+      auto permutationOnes = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), permutationCuSolverType,
+          cast<ElementsAttr>(makeAttr(permutationCuSolverType, 1)));
       auto permutation1Indexed = stablehlo::AddOp::create(
-          rewriter, op.getLoc(), permutation.getResult(0), pivotOnes);
-      rewriter.replaceAllUsesWith(op.getResult(2), permutation1Indexed);
+          rewriter, op.getLoc(), permutation.getResult(0), permutationOnes);
+      rewriter.replaceAllUsesWith(
+          op.getResult(2),
+          stablehlo::ConvertOp::create(rewriter, op.getLoc(), permutationType,
+                                       permutation1Indexed));
     }
 
     rewriter.replaceAllUsesWith(op.getResult(0),
@@ -1892,11 +1910,12 @@ private:
     auto pivots1Indexed =
         stablehlo::AddOp::create(rewriter, op.getLoc(), pivotOne, pivots);
 
+    auto permutationOutType = cast<RankedTensorType>(op.getResult(2).getType());
     auto permutationOne = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), permutationType,
-        cast<ElementsAttr>(makeAttr(permutationType, 1)));
+        rewriter, op.getLoc(), permutationOutType,
+        cast<ElementsAttr>(makeAttr(permutationOutType, 1)));
     auto permutation = stablehlo::ConvertOp::create(
-        rewriter, op.getLoc(), permutationType, customCall.getResult(2));
+        rewriter, op.getLoc(), permutationOutType, customCall.getResult(2));
     auto permutation1Indexed = stablehlo::AddOp::create(
         rewriter, op.getLoc(), permutationOne, permutation);
 
