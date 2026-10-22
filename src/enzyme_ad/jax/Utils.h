@@ -1313,8 +1313,9 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor);
 // The values of the integer computation `v` when it is built of constants
 // (and iotas, when `iotas`) alone, through elementwise integer arithmetic,
 // comparisons, selects and conversions, and reshapes, broadcasts, transposes,
-// slices and concatenations, as the reference interpreter computes them; none
-// when it is not, or when its semantics are not plain (a divide by zero).
+// slices and concatenations, as the reference interpreter would compute them;
+// none when it is not, or when its semantics are not plain (a divide by zero,
+// a shift past the width, arithmetic on booleans).
 // Each value on the way is computed on at most `maxElements` elements, except
 // that a value the operands of which are all splats is computed on one
 // element, whatever its size.
