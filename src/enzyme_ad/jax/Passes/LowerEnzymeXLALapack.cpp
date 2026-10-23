@@ -201,7 +201,11 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     // replace enzymexla.lapack.geqrf with the jit_call
     rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), jit_call_op.getResult(1));
-    rewriter.replaceAllUsesWith(op.getResult(2), jit_call_op.getResult(2));
+    // `info` comes back as a LAPACK int, which can differ from the op's type
+    auto infoResult = stablehlo::ConvertOp::create(rewriter, op.getLoc(),
+                                                   op.getResult(2).getType(),
+                                                   jit_call_op.getResult(2));
+    rewriter.replaceAllUsesWith(op.getResult(2), infoResult);
     rewriter.eraseOp(op);
 
     return success();
@@ -431,7 +435,7 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
         // default block size is min(m, n)
         nb_value = std::min(inputShape[0], inputShape[1]);
       }
-      auto nb_attr = rewriter.getI64IntegerAttr(nb_value);
+      auto nb_attr = rewriter.getIntegerAttr(type_lapack_int, nb_value);
       auto nb_op = LLVM::ConstantOp::create(rewriter, op.getLoc(),
                                             type_llvm_lapack_int, nb_attr);
       // can reuse nb = ldt
@@ -497,7 +501,11 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
     // replace enzymexla.lapack.geqrf with the jit_call
     rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), jit_call_op.getResult(1));
-    rewriter.replaceAllUsesWith(op.getResult(2), jit_call_op.getResult(2));
+    // `info` comes back as a LAPACK int, which can differ from the op's type
+    auto infoResult = stablehlo::ConvertOp::create(rewriter, op.getLoc(),
+                                                   op.getResult(2).getType(),
+                                                   jit_call_op.getResult(2));
+    rewriter.replaceAllUsesWith(op.getResult(2), infoResult);
     rewriter.eraseOp(op);
 
     return success();
@@ -1587,13 +1595,19 @@ private:
             rewriter, op.getLoc(), blasPivotType,
             cast<ElementsAttr>(makeAttr(blasPivotType, 1))));
 
-    auto permutation = stablehlo::IotaOp::create(
-        rewriter, op.getLoc(), blasPivotType,
-        rewriter.getI64IntegerAttr(blasPivotType.getRank() - 1));
+    // the permutation has one entry per row, which for tall matrices is more
+    // than the number of pivots
+    auto permutationType = cast<RankedTensorType>(op.getResult(2).getType());
+    auto blasPermutationType = RankedTensorType::get(
+        permutationType.getShape(), rewriter.getIntegerType(blasIntWidth));
 
-    auto pivotToPermReturnTypes = {iterType, blasPivotType};
+    auto permutation = stablehlo::IotaOp::create(
+        rewriter, op.getLoc(), blasPermutationType,
+        rewriter.getI64IntegerAttr(blasPermutationType.getRank() - 1));
+
+    auto pivotToPermReturnTypes = {iterType, blasPermutationType};
     auto pivotToPermWhileOp = stablehlo::WhileOp::create(
-        rewriter, op.getLoc(), TypeRange{iterType, blasPivotType},
+        rewriter, op.getLoc(), TypeRange{iterType, blasPermutationType},
         ValueRange{iter, permutation});
 
     {
@@ -1700,7 +1714,7 @@ private:
                                     permutationX.getType().getElementType()),
               permutationX)),
           scatterDims);
-      // LAPACK guarantees every pivot lands in [1, n].
+      // LAPACK guarantees every pivot lands in [1, m].
       permutationUpdate2->setAttr("enzymexla.inbounds", rewriter.getUnitAttr());
 
       {
@@ -1723,8 +1737,8 @@ private:
     auto finalPermutation = stablehlo::AddOp::create(
         rewriter, op.getLoc(), pivotToPermWhileOp.getResult(1),
         stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), blasPivotType,
-            cast<ElementsAttr>(makeAttr(blasPivotType, 1))));
+            rewriter, op.getLoc(), blasPermutationType,
+            cast<ElementsAttr>(makeAttr(blasPermutationType, 1))));
 
     rewriter.replaceAllUsesWith(op.getResult(0), factorizedResult);
     rewriter.replaceAllUsesWith(
@@ -1732,7 +1746,7 @@ private:
                                                       pivotType, pivotResult));
     rewriter.replaceAllUsesWith(
         op.getResult(2),
-        stablehlo::ConvertOp::create(rewriter, op.getLoc(), pivotType,
+        stablehlo::ConvertOp::create(rewriter, op.getLoc(), permutationType,
                                      finalPermutation));
     rewriter.replaceAllUsesWith(
         op.getResult(3), stablehlo::ConvertOp::create(rewriter, op.getLoc(),
@@ -1807,8 +1821,14 @@ private:
       auto pivotFn = backend == "cuda" ? "cu_lu_pivots_to_permutation"
                                        : "hip_lu_pivots_to_permutation";
 
+      // the permutation has one entry per row, which for tall matrices is
+      // more than the number of pivots
+      auto permutationType = cast<RankedTensorType>(op.getResult(2).getType());
+      auto permutationCuSolverType = RankedTensorType::get(
+          permutationType.getShape(), rewriter.getI32Type());
+
       auto permutation = stablehlo::CustomCallOp::create(
-          rewriter, op.getLoc(), TypeRange{pivotCuSolverType},
+          rewriter, op.getLoc(), TypeRange{permutationCuSolverType},
           ValueRange{pivots0Indexed.getResult()},
           rewriter.getStringAttr(pivotFn),
           /*has_side_effect*/ nullptr,
@@ -1826,9 +1846,15 @@ private:
                         inputRank),
           /*output_operand_aliases*/ nullptr,
           /*result_tilings*/ nullptr);
+      auto permutationOnes = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), permutationCuSolverType,
+          cast<ElementsAttr>(makeAttr(permutationCuSolverType, 1)));
       auto permutation1Indexed = stablehlo::AddOp::create(
-          rewriter, op.getLoc(), permutation.getResult(0), pivotOnes);
-      rewriter.replaceAllUsesWith(op.getResult(2), permutation1Indexed);
+          rewriter, op.getLoc(), permutation.getResult(0), permutationOnes);
+      rewriter.replaceAllUsesWith(
+          op.getResult(2),
+          stablehlo::ConvertOp::create(rewriter, op.getLoc(), permutationType,
+                                       permutation1Indexed));
     }
 
     rewriter.replaceAllUsesWith(op.getResult(0),
@@ -1892,11 +1918,12 @@ private:
     auto pivots1Indexed =
         stablehlo::AddOp::create(rewriter, op.getLoc(), pivotOne, pivots);
 
+    auto permutationOutType = cast<RankedTensorType>(op.getResult(2).getType());
     auto permutationOne = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), permutationType,
-        cast<ElementsAttr>(makeAttr(permutationType, 1)));
+        rewriter, op.getLoc(), permutationOutType,
+        cast<ElementsAttr>(makeAttr(permutationOutType, 1)));
     auto permutation = stablehlo::ConvertOp::create(
-        rewriter, op.getLoc(), permutationType, customCall.getResult(2));
+        rewriter, op.getLoc(), permutationOutType, customCall.getResult(2));
     auto permutation1Indexed = stablehlo::AddOp::create(
         rewriter, op.getLoc(), permutationOne, permutation);
 
@@ -2688,14 +2715,16 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
     rewriter.replaceAllUsesWith(op.getResult(0), customCall.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), customCall.getResult(1));
 
-    // @SVD returns `U` and `V`. We need to transpose `V` to match the
+    // @SVD returns `U` and `V`. We need the adjoint of `V` to match the
     // return convention of `enzymexla.linalg.svd`.
     SmallVector<int64_t> permutation(rank_input);
     std::iota(permutation.begin(), permutation.end() - 2, 0);
     permutation[rank_input - 1] = rank_input - 2;
     permutation[rank_input - 2] = rank_input - 1;
-    auto Vt = stablehlo::TransposeOp::create(
+    Value Vt = stablehlo::TransposeOp::create(
         rewriter, op.getLoc(), customCall.getResult(2), permutation);
+    if (isa<ComplexType>(type_input.getElementType()))
+      Vt = chlo::ConjOp::create(rewriter, op.getLoc(), Vt);
     rewriter.replaceAllUsesWith(op.getResult(2), Vt);
 
     // Netlib's LAPACK returns `info`, but TPU kernel doesn't
@@ -2855,7 +2884,11 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
 
     // replace enzymexla.lapack.potrf with the jit_call
     rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
-    rewriter.replaceAllUsesWith(op.getResult(1), jit_call_op.getResult(1));
+    // `info` comes back as a LAPACK int, which can differ from the op's type
+    auto infoResult = stablehlo::ConvertOp::create(rewriter, op.getLoc(),
+                                                   op.getResult(1).getType(),
+                                                   jit_call_op.getResult(1));
+    rewriter.replaceAllUsesWith(op.getResult(1), infoResult);
     rewriter.eraseOp(op);
 
     return success();

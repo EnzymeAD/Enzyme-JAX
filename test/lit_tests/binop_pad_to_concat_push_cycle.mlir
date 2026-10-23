@@ -22,9 +22,11 @@ func.func @int_zero(%x: tensor<1x1xi64>, %y: tensor<8x1xi64>) -> tensor<1x1xi64>
 
 // -----
 
-// Split for the slice that reads one row of it, the multiply is not pushed
-// back out of the concatenation (which would rebuild the pad, to be split
-// again, without end).
+// Split for the slice that reads one row of it: the rows read by none are the
+// padding value, which concat_to_pad takes back into a pad over the one
+// multiply that is read (the multiply is not pushed back out of the
+// concatenation either, which would rebuild the pad, to be split again,
+// without end).
 func.func @int_two(%x: tensor<1x1xi64>, %y: tensor<8x1xi64>) -> tensor<1x1xi64> {
   %c = stablehlo.constant dense<2> : tensor<i64>
   %p = stablehlo.pad %x, %c, low = [0, 0], high = [7, 0], interior = [0, 0] : (tensor<1x1xi64>, tensor<i64>) -> tensor<8x1xi64>
@@ -34,12 +36,11 @@ func.func @int_two(%x: tensor<1x1xi64>, %y: tensor<8x1xi64>) -> tensor<1x1xi64> 
 }
 
 // CHECK:  func.func @int_two(%arg0: tensor<1x1xi64>, %arg1: tensor<8x1xi64>) -> tensor<1x1xi64> {
-// CHECK-NEXT:    %c = stablehlo.constant dense<2> : tensor<7x1xi64>
+// CHECK-NEXT:    %c = stablehlo.constant dense<2> : tensor<i64>
 // CHECK-NEXT:    %0 = stablehlo.slice %arg1 [0:1, 0:1] : (tensor<8x1xi64>) -> tensor<1x1xi64>
 // CHECK-NEXT:    %1 = stablehlo.multiply %0, %arg0 : tensor<1x1xi64>
-// CHECK-NEXT:    %2 = stablehlo.slice %arg1 [1:8, 0:1] : (tensor<8x1xi64>) -> tensor<7x1xi64>
-// CHECK-NEXT:    %3 = stablehlo.multiply %2, %c : tensor<7x1xi64>
-// CHECK-NEXT:    %4 = stablehlo.concatenate %1, %3, dim = 0 : (tensor<1x1xi64>, tensor<7x1xi64>) -> tensor<8x1xi64>
-// CHECK-NEXT:    %5 = stablehlo.slice %4 [0:1, 0:1] : (tensor<8x1xi64>) -> tensor<1x1xi64>
-// CHECK-NEXT:    return %5 : tensor<1x1xi64>
+// CHECK-NEXT:    %2 = stablehlo.concatenate %1, dim = 0 : (tensor<1x1xi64>) -> tensor<1x1xi64>
+// CHECK-NEXT:    %3 = stablehlo.pad %2, %c, low = [0, 0], high = [7, 0], interior = [0, 0] : (tensor<1x1xi64>, tensor<i64>) -> tensor<8x1xi64>
+// CHECK-NEXT:    %4 = stablehlo.slice %3 [0:1, 0:1] : (tensor<8x1xi64>) -> tensor<1x1xi64>
+// CHECK-NEXT:    return %4 : tensor<1x1xi64>
 // CHECK-NEXT:  }
