@@ -114,10 +114,8 @@ ScopStmt::ScopStmt(Operation *op, IslScop *parent, StringRef name,
 }
 
 ScopStmt::~ScopStmt() {
-  for (auto *MA : memoryAccesses) {
-    islDomain = isl_set_free(islDomain);
+  for (auto *MA : memoryAccesses)
     delete MA;
-  }
 }
 ScopStmt::ScopStmt(ScopStmt &&) = default;
 ScopStmt &ScopStmt::operator=(ScopStmt &&) = default;
