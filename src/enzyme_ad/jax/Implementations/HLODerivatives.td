@@ -179,6 +179,7 @@ def : HLOMemoryIdentityOp<"DynamicUpdateSliceOp", [], [0, 1], (Op $operand, $upd
 // ReadOnlyIdentity ops
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (DiffeRet))]>;
+def : HLOReadOnlyIdentityOp<"ReverseOp", [0], (Op $x), [(Reverse (DiffeRet), (Dimensions))]>;
 def : HLOReadOnlyIdentityOp<"SliceOp">;
 def : HLOReadOnlyIdentityOp<"TransposeOp", [0], (Op $x), [(Transpose (TypeOf $x), (DiffeRet), (InversePermutation))]>;
 
@@ -1285,16 +1286,6 @@ def : HLODerivative<"RemOp", (Op $x, $y),
                     (CheckedMul (DiffeRet), (Neg (Mul (Sign (Div $x, $y):$div),(Floor (Abs $div)))))
                   ]
                   >;
-
-def : HLODerivative<"ReverseOp", (Op $x), [(Reverse (DiffeRet), (Dimensions))], (Reverse (Shadow $x), (Dimensions))>;
-
-
-
-
-
-
-
-
 
 def : HLODerivative<"RsqrtOp", (Op $x),
                     [
