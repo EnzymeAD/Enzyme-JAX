@@ -35743,6 +35743,86 @@ private:
 // This applies if reshape expands certain dimensions and transpose doesn't move
 // those dimensions around. See lit_tests/transpose_reshape.mlir for examples of
 // where this is applicable
+// transpose(reshape(transpose(x))) where the reshape only splits dimensions
+// (each dimension of the inner transpose's result becomes a run of
+// dimensions of the same product; a unit one may disappear) is one transpose
+// of x reshaped the same way: the split is of x's own dimension, and the
+// two permutations compose. The transpose-propagating patterns leave this
+// chain on a value read from memory, where the view it reads would be
+// recognised as a single transpose (transposed_view_elementwise). Left to
+// transpose_reshape when the composed transpose keeps every run as a block,
+// which it moves back the other way.
+struct TransposeReshapeTranspose final
+    : public CheckedOpRewritePattern<stablehlo::TransposeOp,
+                                     TransposeReshapeTranspose> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp outer,
+                                    PatternRewriter &rewriter) const {
+    auto reshape = outer.getOperand().getDefiningOp<stablehlo::ReshapeOp>();
+    if (!reshape || !reshape->hasOneUse())
+      return failure();
+    auto inner = reshape.getOperand().getDefiningOp<stablehlo::TransposeOp>();
+    if (!inner || !inner->hasOneUse())
+      return failure();
+    ArrayRef<int64_t> mid = inner.getType().getShape();
+    ArrayRef<int64_t> split = reshape.getType().getShape();
+    // runs[j]: the reshape's output dimensions that dimension j of the inner
+    // transpose's result splits into (empty for a dropped unit dimension).
+    SmallVector<SmallVector<int64_t>> runs(mid.size());
+    for (int64_t j = 0, o = 0, e = mid.size(); j < e; j++) {
+      int64_t left = mid[j];
+      if (left == 1 && (o == (int64_t)split.size() || split[o] != 1)) {
+        continue;
+      }
+      while (left > 1 || (left == 1 && runs[j].empty())) {
+        if (o == (int64_t)split.size() || left % split[o] != 0)
+          return rewriter.notifyMatchFailure(outer, "not a split");
+        left /= split[o];
+        runs[j].push_back(o++);
+      }
+      if (j + 1 == e && o != (int64_t)split.size())
+        return rewriter.notifyMatchFailure(outer, "not a split");
+    }
+    ArrayRef<int64_t> p1 = inner.getPermutation();
+    // The split of x: x's dimension p1[j] becomes runs[j], in x's order.
+    SmallVector<int64_t> xsplit;
+    SmallVector<int64_t> runStart(mid.size());
+    SmallVector<int64_t> jOf(mid.size()); // jOf[d]: j with p1[j] == d
+    for (auto [j, d] : llvm::enumerate(p1))
+      jOf[d] = j;
+    for (int64_t d = 0, e = mid.size(); d < e; d++) {
+      runStart[jOf[d]] = xsplit.size();
+      for (int64_t o : runs[jOf[d]])
+        xsplit.push_back(split[o]);
+    }
+    // Composed: result dimension k is split dimension p2[k], which is the
+    // m-th of run j, at runStart[j] + m in the split of x.
+    SmallVector<int64_t> posInX(split.size());
+    for (int64_t j = 0, e = mid.size(); j < e; j++)
+      for (auto [m, o] : llvm::enumerate(runs[j]))
+        posInX[o] = runStart[j] + m;
+    SmallVector<int64_t> perm;
+    for (int64_t k : outer.getPermutation())
+      perm.push_back(posInX[k]);
+    // Every run still a block, in order: transpose_reshape's form.
+    bool blocks = true;
+    for (int64_t j = 0, e = mid.size(); j < e && blocks; j++) {
+      if (runs[j].size() < 2)
+        continue;
+      auto at = llvm::find(perm, runStart[j]);
+      for (size_t m = 1; m < runs[j].size() && blocks; m++)
+        blocks &= at + m != perm.end() && *(at + m) == runStart[j] + (int64_t)m;
+    }
+    if (blocks)
+      return rewriter.notifyMatchFailure(outer, "runs stay blocks");
+    Value reshaped = stablehlo::ReshapeOpCreate(rewriter, outer.getLoc(),
+                                                inner.getOperand(), xsplit);
+    rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(outer, reshaped, perm);
+    return success();
+  }
+};
+
 struct TransposeReshape final
     : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeReshape> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;

@@ -3089,6 +3089,11 @@ def ApplyTransposeReshapePatterns : EnzymeHLOPatternOp<"transpose_reshape"> {
   let patterns = ["TransposeReshape"];
 }
 
+def ApplyTransposeReshapeTransposePatterns : EnzymeHLOPatternOp<
+    "transpose_reshape_transpose"> {
+  let patterns = ["TransposeReshapeTranspose"];
+}
+
 def ApplyDotGeneralReshapePatterns : EnzymeHLOPatternOp<"dot_general_reshape"> {
   let patterns = ["DotGeneralReshape"];
 }
