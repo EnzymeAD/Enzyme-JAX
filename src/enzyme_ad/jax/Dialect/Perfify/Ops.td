@@ -65,7 +65,7 @@ def AssumeOp : PerfifyOp<"assume", [HasParent<"ConditionsOp">, Terminator]> {
   let assemblyFormat = "$condition (` ``{` `satres` `=` $satres^ `}`)? attr-dict";
 }
 
-def ConditionsOp : PerfifyOp<"conditions", [HasParent<"AssumptionsOp">, Terminator]> {
+def ConditionsOp : PerfifyOp<"conditions", [HasParent<"AssumptionsOp">]> {
   let arguments = (ins FlatSymbolRefAttr:$func_handle,
                   BoolAttr:$verify_huh);
   let regions = (region AnyRegion:$precondition, AnyRegion:$postcondition);
@@ -78,7 +78,7 @@ def ConditionsOp : PerfifyOp<"conditions", [HasParent<"AssumptionsOp">, Terminat
   }];
 }
 
-def AssumptionsOp : PerfifyOp<"assumptions", []> {
+def AssumptionsOp : PerfifyOp<"assumptions", [NoTerminator]> {
   let regions = (region AnyRegion:$body);
   let assemblyFormat = [{$body attr-dict}];
 }

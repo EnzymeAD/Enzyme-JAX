@@ -41,7 +41,9 @@ struct SimpleCycleAnalysisPass
   };
   std::unordered_map<HoareStates, HypothesisArgs> hypotheses;
   llvm::DenseMap<mlir::StringAttr, mlir::Region *> funcRegionMap;
-
+  using ProvenBound = std::optional<std::pair<CmpPredicate, HypothesisArgs>>;
+  llvm::DenseMap<ConditionsOp, std::pair<ProvenBound, ProvenBound>>
+      funcBoundsMap;
   void runOnOperation() override {
     Operation *op = getOperation();
     mlir::AsmState state(op);
@@ -103,22 +105,47 @@ struct SimpleCycleAnalysisPass
             [&allOps](mlir::Operation *op) { allOps.push_back(op); });
       }
       for (Operation *region_op : allOps) {
-        auto costMapRes =
-            costMap.find(region_op->getName().getStringRef().str());
-        if (costMapRes != costMap.end()) {
+        if (auto callOp = dyn_cast<func::CallOp>(region_op)) {
+          Attribute targetFunc = region_op->getAttrs()[0].getValue();
+          // use the callee's proven post bound as the cost of the call
+          ProvenBound calleeBound;
+          for (auto cond : op->getParentOfType<AssumptionsOp>()
+                               .getBody()
+                               .getOps<ConditionsOp>()) {
+            auto it = funcBoundsMap.find(cond);
+            if (cond.getFuncHandleAttr() == targetFunc &&
+                it != funcBoundsMap.end())
+              calleeBound = it->second.second;
+          }
+          if (!calleeBound) {
+            llvm::outs() << "no proven cost bound for " << targetFunc << "\n";
+            continue;
+          }
           std::string cost_v = cost_str + std::to_string(cost_var.size());
-          cost_var.push_back(
-              solver.ctx().int_const(cost_v.c_str())); // create a new cost var
-          z3::expr post_cost = cost_var[cost_var.size() - 1];
-          z3::expr pre_cost = cost_var[cost_var.size() - 2];
-          z3::expr op_cost = evaluateCostRegion(costMapRes->second, solver);
-          z3::expr cost_expr =
-              (post_cost == pre_cost + op_cost); // increment per op cost
-
-          solver.add(cost_expr); // add to solver
+          z3::expr call_cost = solver.ctx().int_const((cost_v + "_call").c_str());
+          cost_var.push_back(solver.ctx().int_const(cost_v.c_str()));
+          solver.add(cost_var.back() ==
+                     cost_var[cost_var.size() - 2] + call_cost);
+          solver.add(buildHypothesis(calleeBound->first, calleeBound->second,
+                                     call_cost, solver));
         } else {
-          llvm::outs() << "unknown cost for operation "
-                       << region_op->getName().getStringRef().str() << "\n";
+          auto costMapRes =
+              costMap.find(region_op->getName().getStringRef().str());
+          if (costMapRes != costMap.end()) {
+            std::string cost_v = cost_str + std::to_string(cost_var.size());
+            cost_var.push_back(
+                solver.ctx().int_const(cost_v.c_str())); // create a new cost var
+            z3::expr post_cost = cost_var[cost_var.size() - 1];
+            z3::expr pre_cost = cost_var[cost_var.size() - 2];
+            z3::expr op_cost = evaluateCostRegion(costMapRes->second, solver);
+            z3::expr cost_expr =
+                (post_cost == pre_cost + op_cost); // increment per op cost
+
+            solver.add(cost_expr); // add to solver
+          } else {
+            llvm::outs() << "unknown cost for operation "
+                        << region_op->getName().getStringRef().str() << "\n";
+          }
         }
       }
     } else if (auto hyp = dyn_cast<HypothesisOp>(op)) {
@@ -126,7 +153,10 @@ struct SimpleCycleAnalysisPass
       auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
       if (captureHypothesisArgs(cmpOp, pre_post)) {
         z3::expr holds =
-            buildHypothesis(cmpOp.getPredicate(), pre_post, solver, cost_var);
+            buildHypothesis(cmpOp.getPredicate(), hypotheses.at(pre_post),
+                            pre_post == HoareStates::Pre ? cost_var.front()
+                                                         : cost_var.back(),
+                            solver);
         solver.add(pre_post == HoareStates::Pre ? holds : !holds);
       }
     } else if (auto assumeOp = dyn_cast<AssumeOp>(op)) {
@@ -136,6 +166,18 @@ struct SimpleCycleAnalysisPass
         auto check_res = solver.check();
         met = hyp.getPrePost() == HoareStates::Pre ? check_res == z3::sat
                                                    : check_res == z3::unsat;
+        if (met) {
+          auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
+          auto args = hypotheses.find(hyp.getPrePost());
+          if (args != hypotheses.end()) {
+            // read lb/ub with the predicate, as in buildHypothesis
+            auto &bounds =
+                funcBoundsMap[assumeOp->getParentOfType<ConditionsOp>()];
+            (hyp.getPrePost() == HoareStates::Pre ? bounds.first
+                                                  : bounds.second) =
+                std::make_pair(cmpOp.getPredicate(), args->second);
+          }
+        }
 #ifdef Z3_DEBUG_PERFIFY
         std::cout << solver << std::endl;
         llvm::outs() << (met ? "Met perf check!" : "Did not meet perf check")
@@ -169,13 +211,9 @@ struct SimpleCycleAnalysisPass
     return false;
   }
 
-  z3::expr buildHypothesis(CmpPredicate pred, HoareStates pre_post,
-                           z3::solver &solver,
-                           std::vector<z3::expr> &cost_var) {
+  z3::expr buildHypothesis(CmpPredicate pred, const HypothesisArgs &bounds,
+                           z3::expr cost, z3::solver &solver) {
     z3::context &ctx = solver.ctx();
-    const HypothesisArgs &bounds = hypotheses.at(pre_post);
-    z3::expr cost =
-        pre_post == HoareStates::Pre ? cost_var.front() : cost_var.back();
     std::optional<z3::expr> lb, ub;
     if (bounds.lb)
       lb = evaluateCostRegion(bounds.lb, solver);
