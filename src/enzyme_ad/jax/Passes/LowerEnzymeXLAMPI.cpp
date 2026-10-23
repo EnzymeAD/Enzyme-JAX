@@ -1624,8 +1624,6 @@ struct MPIAllreduceOpLowering
              rewriter.getStringAttr("allocate"),
              rewriter.getStringAttr("free")});
         wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
-        wrapperFunc->setAttr("enzymexla.device_abi",
-                             rewriter.getStringAttr("cuda"));
 
         Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
         rewriter.setInsertionPointToStart(entryBlock);
@@ -1659,17 +1657,12 @@ struct MPIAllreduceOpLowering
         Value stream =
             enzymexla::GetStreamOp::create(rewriter, op.getLoc(), llvmPtrType);
 
-        Value sendDataPtr =
-            rewriter.create<LLVM::LoadOp>(op.getLoc(), llvmPtrType, sendbufPtr);
-        Value recvDataPtr =
-            rewriter.create<LLVM::LoadOp>(op.getLoc(), llvmPtrType, recvbufPtr);
-
         // Call ncclAllReduce
         // TODO error handling
         rewriter.create<LLVM::CallOp>(
             op.getLoc(), TypeRange{i32Type},
             SymbolRefAttr::get(context, ncclFunctionName),
-            ValueRange{sendDataPtr, recvDataPtr, count, dtype, redOp, ncclComm,
+            ValueRange{sendbufPtr, recvbufPtr, count, dtype, redOp, ncclComm,
                        stream});
 
         rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
