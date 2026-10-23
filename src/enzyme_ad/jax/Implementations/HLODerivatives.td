@@ -1478,3 +1478,148 @@ def : HLODerivative<"FftOp",
       Fft (Shadow $x), (FftType), (FftLength)
     )
 >;
+
+def TriangularSolveShadowDotDims : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto type_A = cast<RankedTensorType>(op.getA().getType());
+  auto type_b = cast<RankedTensorType>(op.getB().getType());
+  int64_t rank_A = type_A.getRank();
+  int64_t rank_b = type_b.getRank();
+
+  SmallVector<int64_t> batch_dims_A;
+  for (int i = 0; i < rank_A - 2; ++i) {
+    batch_dims_A.push_back(i);
+  }
+
+  SmallVector<int64_t> batch_dims_b;
+  for (int i = 0; i < rank_b - 2; ++i) {
+    batch_dims_b.push_back(i);
+  }
+
+  // op(A) b if `left_side`, b op(A) otherwise
+  bool left = op.getLeftSide();
+  bool transposed = op.getTransposeA() != decltype(op.getTransposeA())::NO_TRANSPOSE;
+  SmallVector<int64_t> contract_dims_A = {transposed == left ? rank_A - 2 : rank_A - 1};
+  SmallVector<int64_t> contract_dims_b = {left ? rank_b - 2 : rank_b - 1};
+
+  left ? DotDimensionNumbersAttr::get(op.getContext(), batch_dims_A, batch_dims_b, contract_dims_A, contract_dims_b)
+       : DotDimensionNumbersAttr::get(op.getContext(), batch_dims_b, batch_dims_A, contract_dims_b, contract_dims_A);
+}]>;
+
+// Contracts the non-`A` dimension of `bar(b)` and `x` (columns if `left_side`, rows otherwise)
+def TriangularSolveDiffOuterDotDims : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto rank = cast<RankedTensorType>(op.getResult().getType()).getRank();
+
+  SmallVector<int64_t> batch_dims;
+  for (int i = 0; i < rank - 2; ++i) {
+    batch_dims.push_back(i);
+  }
+
+  SmallVector<int64_t> contract_dims = {op.getLeftSide() ? rank - 1 : rank - 2};
+
+  DotDimensionNumbersAttr::get(
+    op.getContext(),
+    batch_dims,
+    batch_dims,
+    contract_dims,
+    contract_dims
+  );
+}]>;
+
+def SelectIfLeftSide : StaticSelect<"cast<TriangularSolveOp>(op).getLeftSide() == true;">;
+
+def TriangularSolveGetResultType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getResult().getType();
+}]>;
+def TriangularSolveGetLeftSide : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{op.getLeftSide();}]>;
+def TriangularSolveGetLower : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{op.getLower();}]>;
+def TriangularSolveGetUnitDiagonal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{op.getUnitDiagonal();}]>;
+def TriangularSolveGetTransposeA : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{op.getTransposeA();}]>;
+
+def TriangularSolveLike : SubRoutine<(Op $A, $b),
+  (TriangularSolve
+    $A,
+    $b,
+    (TriangularSolveGetLeftSide),
+    (TriangularSolveGetLower),
+    (TriangularSolveGetUnitDiagonal),
+    (TriangularSolveGetTransposeA)
+  )>;
+
+// TODO `ADJOINT` is only handled correctly for real element types
+def TriangularSolveGetAdjointTransposeA : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto transA = op.getTransposeA();
+  transA == decltype(transA)::NO_TRANSPOSE ? decltype(transA)::TRANSPOSE : decltype(transA)::NO_TRANSPOSE;
+}]>;
+
+// bar(b) = op(A)^-T bar(x) if `left_side`, bar(x) op(A)^-T otherwise
+def TriangularSolveAdjointLike : SubRoutine<(Op $A, $diffret),
+  (TriangularSolve
+    $A,
+    $diffret,
+    (TriangularSolveGetLeftSide),
+    (TriangularSolveGetLower),
+    (TriangularSolveGetUnitDiagonal),
+    (TriangularSolveGetAdjointTransposeA)
+  )>;
+
+def TriangularSolveDotPrec : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{ArrayAttr();}]>;
+
+// `bar(b)` goes first in the contraction for (left, NO_TRANSPOSE) and (right, TRANSPOSE)
+def SelectIfTriangularSolveDiffFirst : StaticSelect<
+  "cast<TriangularSolveOp>(op).getLeftSide() == (cast<TriangularSolveOp>(op).getTransposeA() == Transpose::NO_TRANSPOSE)">;
+
+// Only the referenced triangle of `A` gets a gradient (without diagonal if `unit_diagonal`)
+def TriangularSolveTriangleMask : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto typeA = cast<RankedTensorType>(op.getA().getType());
+  auto rank = typeA.getRank();
+  auto iotaType = RankedTensorType::get(typeA.getShape(), builder.getI64Type());
+  auto rows = IotaOp::create(builder, op.getLoc(), iotaType, rank - 2);
+  auto cols = IotaOp::create(builder, op.getLoc(), iotaType, rank - 1);
+  ComparisonDirection dir;
+  if (op.getLower())
+    dir = op.getUnitDiagonal() ? ComparisonDirection::GT : ComparisonDirection::GE;
+  else
+    dir = op.getUnitDiagonal() ? ComparisonDirection::LT : ComparisonDirection::LE;
+  CompareOp::create(builder, op.getLoc(), rows, cols, dir);
+}]>;
+
+def TriangularSolveZeroLikeA : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto typeA = cast<RankedTensorType>(op.getA().getType());
+  ConstantOp::create(builder, op.getLoc(), typeA, cast<ElementsAttr>(makeAttr(typeA, 0)));
+}]>;
+
+def TriangularSolveDiffOuter : SubRoutine<(Op $A, $diffb, $x),
+  (SelectIfTriangularSolveDiffFirst
+    (DotGeneral (TypeOf $A), $diffb, $x, (TriangularSolveDiffOuterDotDims), (TriangularSolveDotPrec), (DotAlgorithmAttr)),
+    (DotGeneral (TypeOf $A), $x, $diffb, (TriangularSolveDiffOuterDotDims), (TriangularSolveDotPrec), (DotAlgorithmAttr))
+  )>;
+
+// op(tri(A)) b if `left_side`, b op(tri(A)) otherwise
+// TODO `ADJOINT` is only handled correctly for real element types
+def TriangularSolveMaskedProduct : SubRoutine<(Op $A, $b),
+  (SelectIfLeftSide
+    (DotGeneral (TypeOf $b),
+      (Select (TriangularSolveTriangleMask), $A, (TriangularSolveZeroLikeA)),
+      $b,
+      (TriangularSolveShadowDotDims), (TriangularSolveDotPrec), (DotAlgorithmAttr)),
+    (DotGeneral (TypeOf $b),
+      $b,
+      (Select (TriangularSolveTriangleMask), $A, (TriangularSolveZeroLikeA)),
+      (TriangularSolveShadowDotDims), (TriangularSolveDotPrec), (DotAlgorithmAttr))
+  )>;
+
+def : HLODerivative<"TriangularSolveOp", (Op $A, $b),
+  [
+    (Select
+      (TriangularSolveTriangleMask),
+      (Neg (TriangularSolveDiffOuter $A, (TriangularSolveAdjointLike $A, (DiffeRet)), (TriangularSolveLike $A, $b))),
+      (TriangularSolveZeroLikeA)),
+    (TriangularSolveAdjointLike $A, (DiffeRet))
+  ],
+  (TriangularSolveLike
+    $A,
+    (Sub
+      (Shadow $b),
+      (TriangularSolveMaskedProduct (Shadow $A), (TriangularSolveLike $A, $b)))
+  )
+>;

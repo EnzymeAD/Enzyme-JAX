@@ -1552,6 +1552,27 @@ LogicalResult enzymexla::SyrkOp::verify() {
   return success();
 }
 
+LogicalResult OrgqrOp::verify() {
+  auto shape = cast<RankedTensorType>(getInput().getType()).getShape();
+  auto ndims = shape.size();
+
+  auto m = shape[ndims - 2];
+  auto n = shape[ndims - 1];
+  auto k = cast<RankedTensorType>(getTau().getType())
+               .getShape()
+               .back(); // num of reflectors
+
+  // orgqr/ungqr require m >= n >= k
+  if (m < n)
+    return emitOpError("`enzymexla.lapack.orgqr` requires at least as "
+                       "many rows as columns");
+  if (n < k)
+    return emitOpError("`enzymexla.lapack.orgqr` requires at most as "
+                       "many reflectors as columns");
+
+  return success();
+}
+
 namespace {
 
 /// Erases a common case of copy ops where a destination value is used only by
