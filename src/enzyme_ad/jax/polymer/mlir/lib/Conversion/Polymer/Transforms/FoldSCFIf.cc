@@ -99,8 +99,9 @@ struct MemRefStoreInfo {
 };
 } // namespace
 
-static void getMemRefStoreInfo(Block *block,
-                               MapVector<Value, MemRefStoreInfo> &storeInfo) {
+static void
+getMemRefStoreInfo(Block *block,
+                   llvm::MapVector<Value, MemRefStoreInfo> &storeInfo) {
   unsigned ord = 0;
   for (Operation &op : block->getOperations())
     if (isa<memref::StoreOp, mlir::affine::AffineStoreOp>(op)) {
@@ -125,7 +126,7 @@ static LogicalResult liftStoreOps(scf::IfOp ifOp, func::FuncOp f,
   if (!hasMatchingStores({ifOp.thenBlock(), ifOp.elseBlock()}))
     return failure();
 
-  MapVector<Value, MemRefStoreInfo> storeInfo;
+  llvm::MapVector<Value, MemRefStoreInfo> storeInfo;
   getMemRefStoreInfo(ifOp.thenBlock(), storeInfo);
 
   SmallVector<Type> storeTypes(storeInfo.size());
