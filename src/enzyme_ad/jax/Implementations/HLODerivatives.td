@@ -156,6 +156,29 @@ def : HLOInactiveOp<"SignOp">;
 def : HLOInactiveOp<"TorchIndexSelectOp">;
 def : HLOInactiveOp<"XorOp">;
 
+// MemoryIdentity ops
+def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
+
+def : HLOMemoryIdentityOp<"DynamicSliceOp", [], [0], (Op $operand, (Variadic<"getStartIndices">):$start_indices), [
+  (DynamicUpdateSlice (TypeOf $operand), (HLOConstantFP<"0"> $operand), (DiffeRet), $start_indices),
+  (AssertingInactiveArg)
+]>;
+
+def DUSUpdateShape : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  getI64Attr(builder, cast<TensorType>(op.getUpdate().getType()).getShape());
+}]>;
+
+def : HLOMemoryIdentityOp<"DynamicUpdateSliceOp", [], [0, 1], (Op $operand, $update, (Variadic<"getStartIndices">):$start_indices), [
+  (DynamicUpdateSlice (TypeOf $operand), (DiffeRet), (HLOConstantFP<"0"> $update), $start_indices),
+  (DynamicSlice (TypeOf $update), (DiffeRet), $start_indices, (DUSUpdateShape)),
+  (AssertingInactiveArg)
+]>;
+
+// ReadOnlyIdentity ops
+def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
+def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (DiffeRet))]>;
+def : HLOReadOnlyIdentityOp<"SliceOp">;
+
 // Others
 def CheckedMul : SubRoutine<(Op $diffret, $x),
                   (
@@ -1010,8 +1033,6 @@ def : HLODerivative<"Atan2Op", (Op $y, $x),
                     (CheckedDiv (Sub (Mul $x, (Shadow $y)), (Mul $y, (Shadow $x))), (Add (Mul $x, $x), (Mul $y, $y)))
                   >;
 
-def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
-
 // Gather Adjoint
 def ResultDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getDimensionNumbers();
@@ -1121,39 +1142,6 @@ def : HLODerivative<"ComplexOp", (Op $re, $im), [
   (Real (DiffeRet)),
   (Neg (Imag (DiffeRet))),
 ], (Complex (Shadow $re), (Shadow $im))>;
-
-def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
-
-def : HLOMemoryIdentityOp<"DynamicSliceOp", [], [0], (Op $operand, (Variadic<"getStartIndices">):$start_indices), [
-                      (DynamicUpdateSlice
-                        (TypeOf $operand),
-                        (HLOConstantFP<"0"> $operand),
-                        (DiffeRet),
-                        $start_indices
-                      ),
-                      (AssertingInactiveArg)
-                    ]>;
-
-def UpdateSliceShape : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  getI64Attr(builder, cast<TensorType>(op.getUpdate().getType()).getShape());
-}]>;
-
-def : HLOMemoryIdentityOp<"DynamicUpdateSliceOp", [], [0, 1], (Op $operand, $update, (Variadic<"getStartIndices">):$start_indices), 
-[
-                      (DynamicUpdateSlice
-                        (TypeOf $operand),
-                        (DiffeRet),
-                        (HLOConstantFP<"0"> $update),
-                        $start_indices
-                      ),
-                      (DynamicSlice
-                        (TypeOf $update),
-                        (DiffeRet),
-                        $start_indices,
-                        (UpdateSliceShape)
-                      ),
-                      (AssertingInactiveArg)
-                    ]>;
 
 def : HLODerivative<"CosineOp", (Op $x), [(CheckedMul (DiffeRet), (Neg (Sin $x)))], (Neg (Mul (Sin $x), (Shadow $x)))>;
 
@@ -1295,8 +1283,6 @@ def : HLODerivative<"RemOp", (Op $x, $y),
                   ]
                   >;
 
-def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (DiffeRet))]>;
-
 def : HLODerivative<"ReverseOp", (Op $x), [(Reverse (DiffeRet), (Dimensions))], (Reverse (Shadow $x), (Dimensions))>;
 
 
@@ -1333,8 +1319,6 @@ def : HLODerivative<"SelectOp", (Op $cond, $lhs, $rhs),
 
 
 def : HLODerivative<"SineOp", (Op $x), [(CheckedMul (DiffeRet), (Cos $x))]>;
-
-def : HLOReadOnlyIdentityOp<"SliceOp">;
 
 def : HLODerivative<"SubtractOp", (Op $x, $y),
                     [
