@@ -610,6 +610,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("min_max_iota_const_simplify");
   list.push_back("clamp_iota_const_simplify");
   list.push_back("reduce_min_max_iota_like");
+  list.push_back("compare_affine_index_simplify");
+  list.push_back("logical_complementary_half_spaces");
   list.push_back("select_select_common_branch");
   list.push_back("select_known_predicate_operand");
   list.push_back("reshuffle_ands_compares");
