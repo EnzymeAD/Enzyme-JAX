@@ -176,6 +176,11 @@ def : HLOMemoryIdentityOp<"DynamicUpdateSliceOp", [], [0, 1], (Op $operand, $upd
   (AssertingInactiveArg)
 ]>;
 
+def : HLOMemoryIdentityOp<"PadOp", [], [-1], (Op $op, $padval), [
+  (Slice (TypeOf $op), (DiffeRet), (PadToSliceStart), (PadToSliceLimit), (PadToSliceStride)),
+  (AssertingInactiveArg)
+]>;
+
 def : HLOMemoryIdentityOp<"SliceOp", [], [0], (Op $x), [
   (DynamicUpdateSlice (TypeOf $x), (HLOConstantFP<"0"> $x), (DiffeRet)),
 ]>;
@@ -1240,11 +1245,6 @@ def : HLODerivative<"MulOp", (Op $x, $y),
                   >;
 
 def : HLODerivative<"NegOp", (Op $x), [(Neg (DiffeRet))]>;
-
-def : HLOMemoryIdentityOp<"PadOp", [], [-1], (Op $op, $padval), [
-  (Slice (TypeOf $op), (DiffeRet), (PadToSliceStart), (PadToSliceLimit), (PadToSliceStride)),
-  (AssertingInactiveArg)
-]>;
 
 def : HLODerivative<"PowOp", (Op $x, $y),
                   [
