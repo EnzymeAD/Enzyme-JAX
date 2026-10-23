@@ -1323,6 +1323,12 @@ def : HLODerivative<"SqrtOp", (Op $x),
                     ]
                   >;
 
+def : HLODerivative<"TanOp", (Op $x),
+                    [
+                      (CheckedDiv (DiffeRet), (Mul (Cos $x), (Cos $x)))
+                    ]
+                  >;
+
 def : HLODerivative<"TanhOp", (Op $x),
                     [
                       (CheckedMul (DiffeRet), (Sub (HLOConstantFP<"1">), (Mul (Tanh $x), (Tanh $x))))
