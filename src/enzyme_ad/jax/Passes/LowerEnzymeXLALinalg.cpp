@@ -18,6 +18,8 @@
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
 #include <cstdint>
+#include <limits>
+#include <numeric>
 
 #define DEBUG_TYPE "lower-enzymexla-linalg"
 
@@ -124,6 +126,48 @@ struct SVDFactorizationOpLowering
   }
 };
 
+struct TridiagonalSolveOpLowering
+    : public OpRewritePattern<enzymexla::TridiagonalSolveOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::TridiagonalSolveOp op,
+                                PatternRewriter &rewriter) const override {
+    auto bType = cast<RankedTensorType>(op.getB().getType());
+    auto bRank = bType.getRank();
+    auto batchShape = bType.getShape().drop_back(2);
+
+    auto infoType = RankedTensorType::get(batchShape, rewriter.getI32Type());
+    auto gtsvOp = enzymexla::GtsvOp::create(
+        rewriter, op.getLoc(), TypeRange{bType, infoType}, op.getDl(),
+        op.getD(), op.getDu(), op.getB());
+
+    // https://github.com/jax-ml/jax/blob/9b99988ae92f408251459b9a4e8249b7ac58b42d/jax/_src/lax/linalg.py#L2977-L2994
+    // systems that failed to solve are replaced by NaNs
+    auto ok = stablehlo::CompareOp::create(
+        rewriter, op.getLoc(), gtsvOp.getInfo(),
+        stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), infoType,
+            cast<ElementsAttr>(makeAttr(infoType, 0))),
+        stablehlo::ComparisonDirection::EQ);
+
+    SmallVector<int64_t> broadcastDims(bRank - 2);
+    std::iota(broadcastDims.begin(), broadcastDims.end(), 0);
+    auto okBroadcast = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(),
+        RankedTensorType::get(bType.getShape(), rewriter.getI1Type()), ok,
+        rewriter.getDenseI64ArrayAttr(broadcastDims));
+
+    auto nan = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), bType,
+        cast<ElementsAttr>(
+            makeAttr(bType, std::numeric_limits<double>::quiet_NaN())));
+
+    rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(op, okBroadcast,
+                                                     gtsvOp.getX(), nan);
+    return success();
+  }
+};
+
 struct LowerEnzymeXLALinalgPass
     : public enzyme::impl::LowerEnzymeXLALinalgPassBase<
           LowerEnzymeXLALinalgPass> {
@@ -133,7 +177,8 @@ struct LowerEnzymeXLALinalgPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<LUFactorizationOpLowering, QRFactorizationOpLowering>(context);
+    patterns.add<LUFactorizationOpLowering, QRFactorizationOpLowering,
+                 TridiagonalSolveOpLowering>(context);
     patterns.add<SVDFactorizationOpLowering>(backend, context);
 
     GreedyRewriteConfig config;
@@ -146,7 +191,8 @@ struct LowerEnzymeXLALinalgPass
     // Verify that all illegal ops have been lowered
     auto walkResult = getOperation()->walk([&](Operation *op) {
       if (isa<enzymexla::LUFactorizationOp, enzymexla::QRFactorizationOp,
-              enzymexla::SVDFactorizationOp>(op)) {
+              enzymexla::SVDFactorizationOp, enzymexla::TridiagonalSolveOp>(
+              op)) {
         op->emitError("Failed to lower enzymexla linalg operation");
         return WalkResult::interrupt();
       }

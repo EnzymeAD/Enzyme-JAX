@@ -717,6 +717,7 @@ def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
     "chlo::ChloDialect",
     "enzymexla::EnzymeXLADialect",
     "LLVM::LLVMDialect",
+    "enzyme::EnzymeDialect",
   ];
 
   let options = [
