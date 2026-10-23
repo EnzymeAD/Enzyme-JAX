@@ -91,11 +91,40 @@ func.func @forlane(%out: memref<16xf64, 1>, %in: memref<16xf64, 1>) {
 
 // CHECK-LABEL: func.func private @forlane_raised(
 // CHECK-NOT: stablehlo.reduce{{.*}}applies stablehlo.maximum
-// CHECK: %[[C16:.+]] = stablehlo.constant dense<16> : tensor<i64>
 // CHECK: stablehlo.while
-// CHECK: stablehlo.compare LT, %{{.+}}, %[[C16]] : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT: cond {
+// CHECK-NEXT: stablehlo.compare LT, %{{.+}}, %{{.+}} : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK: } do {
 // CHECK-NOT: stablehlo.gather
 // CHECK: %[[ACTIVE:.+]] = stablehlo.compare GE, %{{.+}}, %{{.+}} : (tensor<16xi64>, tensor<16xi64>) -> tensor<16xi1>
 // CHECK: stablehlo.dynamic_slice %{{.+}}, %{{.+}}, sizes = [1] : (tensor<16xf64>, tensor<i64>) -> tensor<1xf64>
 // CHECK: stablehlo.select %[[ACTIVE]], %{{.+}}, %{{.+}} : tensor<16xi1>, tensor<16xf64>
+
+// -----
+
+// A serial triangular nest (a recurrence down the rows keeps both loops
+// serial) is not widened: the inner while runs its own `i` iterations with
+// no guard. Widened, it would run the whole hull every outer iteration,
+// twice the work, and the guard's else-read would keep the buffer from
+// updating in place (issue #3598).
+func.func @serial(%y: memref<64x64xf64, 1>) {
+  affine.for %i = 1 to 64 {
+    affine.for %j = 0 to affine_map<(d0) -> (d0)>(%i) {
+      %a = affine.load %y[%j, %i] : memref<64x64xf64, 1>
+      %b = affine.load %y[%j, %i - 1] : memref<64x64xf64, 1>
+      %s = arith.addf %a, %b : f64
+      affine.store %s, %y[%j + 1, %i] : memref<64x64xf64, 1>
+    }
+  }
+  return
+}
+
+// CHECK-LABEL: func.func private @serial_raised(
+// CHECK: stablehlo.while(%[[I:.+]] = %{{.+}}, %{{.+}} = %arg0)
+// CHECK: } do {
+// CHECK: stablehlo.while(%[[J:.+]] = %{{.+}}, %{{.+}} = %{{.+}})
+// CHECK-NEXT: cond {
+// CHECK-NEXT: stablehlo.compare LT, %[[J]], %[[I]] : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK: } do {
+// CHECK-NOT: stablehlo.select
+// CHECK: stablehlo.dynamic_update_slice
