@@ -1332,9 +1332,21 @@ def GatherOpCanonPatterns : EnzymeHLOPatternOp<
   let patterns = ["GatherOpCanon"];
 }
 
-def ScatterOpCanonPatterns : EnzymeHLOPatternOp<
+def ScatterOpCanonPatterns : EnzymeHLOParameterizedPatternOp<
     "scatter_op_canon"> {
-  let patterns = ["ScatterOpCanon"];
+  // parameter: leave scatters whose result is only stored (a kernel's output)
+  // instead of rewriting them into update slices.
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit,
+                       DefaultValuedAttr<BoolAttr, "false">:$parameter);
+  let assemblyFormat = "prop-dict attr-dict";
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(false)))};
+    }
+  }];
 }
 
 def ReshapeOpCanonPatterns : EnzymeHLOPatternOp<
