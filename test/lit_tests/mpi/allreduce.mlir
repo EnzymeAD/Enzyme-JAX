@@ -34,15 +34,13 @@ module {
 
 // CUDA:  module {
 // CUDA-NEXT:    llvm.func @ncclAllReduce(!llvm.ptr, !llvm.ptr, i64, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
-// CUDA-NEXT:    llvm.func @enzymexla_wrapper_ncclAllReduce_MPI_SUM_MPI_INT64_T(%arg0: !llvm.ptr {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}, %arg1: !llvm.ptr {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}) attributes {{.*}}enzymexla.device_abi = "cuda"{{.*}} {
+// CUDA-NEXT:    llvm.func @enzymexla_wrapper_ncclAllReduce_MPI_SUM_MPI_INT64_T(%arg0: !llvm.ptr {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}, %arg1: !llvm.ptr {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}) attributes {{.*}} {
 // CUDA-NEXT:      %0 = llvm.mlir.constant(0 : i32) : i32
 // CUDA-NEXT:      %1 = llvm.mlir.constant(1 : i64) : i64
 // CUDA-NEXT:      %2 = llvm.mlir.constant(4 : i32) : i32
 // CUDA-NEXT:      %3 = llvm.inttoptr %1 : i64 to !llvm.ptr
 // CUDA-NEXT:      %4 = "enzymexla.get_stream"() : () -> !llvm.ptr
-// CUDA-NEXT:      %5 = llvm.load %arg0 : !llvm.ptr -> !llvm.ptr
-// CUDA-NEXT:      %6 = llvm.load %arg1 : !llvm.ptr -> !llvm.ptr
-// CUDA-NEXT:      %7 = llvm.call @ncclAllReduce(%5, %6, %1, %2, %0, %3, %4) : (!llvm.ptr, !llvm.ptr, i64, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
+// CUDA-NEXT:      %5 = llvm.call @ncclAllReduce(%arg0, %arg1, %1, %2, %0, %3, %4) : (!llvm.ptr, !llvm.ptr, i64, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
 // CUDA-NEXT:      llvm.return
 // CUDA-NEXT:    }
 // CUDA-NEXT:    func.func @main(%arg0: tensor<i64> {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}) -> tensor<i64> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {

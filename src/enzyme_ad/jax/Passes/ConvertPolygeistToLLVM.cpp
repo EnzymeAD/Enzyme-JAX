@@ -5062,6 +5062,42 @@ struct ConvertPolygeistToLLVMPass
     configureOpenMPToLLVMConversionLegality(target, converter);
     target.addIllegalOp<scf::ForOp, scf::IfOp, scf::ParallelOp, scf::WhileOp,
                         scf::ExecuteRegionOp, func::FuncOp>();
+    if (preserveXLAFuncs) {
+      // Functions belonging to the XLA host program (holding StableHLO or
+      // taking/returning tensors) are kept as-is, body included. Functions
+      // referenced by an xla_wrapper are still consumed by its lowering.
+      SymbolTableCollection symbolTables;
+      DenseSet<Operation *> wrapped;
+      m->walk([&](enzymexla::XLAWrapperOp wrap) {
+        if (auto fn = symbolTables.lookupNearestSymbolFrom(wrap, wrap.getFn()))
+          wrapped.insert(fn);
+      });
+      auto isTensor = [](Type t) { return isa<TensorType>(t); };
+      DenseSet<Operation *> xlaFuncs;
+      for (auto func : m.getOps<func::FuncOp>()) {
+        if (wrapped.contains(func))
+          continue;
+        bool anyStablehlo =
+            func->walk([](Operation *op) -> WalkResult {
+                  if (op->getDialect() &&
+                      op->getDialect()->getNamespace() == "stablehlo")
+                    return WalkResult::interrupt();
+                  return WalkResult::advance();
+                })
+                .wasInterrupted();
+        if (anyStablehlo || llvm::any_of(func.getArgumentTypes(), isTensor) ||
+            llvm::any_of(func.getResultTypes(), isTensor))
+          xlaFuncs.insert(func);
+      }
+      target.addDynamicallyLegalOp<func::FuncOp>(
+          [xlaFuncs](func::FuncOp func) -> std::optional<bool> {
+            return xlaFuncs.contains(func);
+          });
+      target.markOpRecursivelyLegal<func::FuncOp>(
+          [xlaFuncs](func::FuncOp func) -> std::optional<bool> {
+            return xlaFuncs.contains(func);
+          });
+    }
     target.addDynamicallyLegalDialect<LLVM::LLVMDialect>(areAllTypesConverted);
     target.addDynamicallyLegalOp<LLVM::GlobalOp>(
         [&](LLVM::GlobalOp op) -> std::optional<bool> {
@@ -5233,6 +5269,11 @@ struct ConvertPolygeistToLLVMPass
     }
 
     if (m->walk([](UnrealizedConversionCastOp op) {
+           // The stream is only known once lower-jit builds the entry point,
+           // which replaces these casts with its stream argument.
+           if (op->getNumOperands() == 1 &&
+               op->getOperand(0).getDefiningOp<enzymexla::GetStreamOp>())
+             return WalkResult::advance();
            InFlightDiagnostic diag =
                op->emitError() << "Unhandled unrealized conversion cast " << op;
            if (auto fn = op->getParentOfType<FunctionOpInterface>())
