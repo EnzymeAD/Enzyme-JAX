@@ -632,7 +632,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
       auto n = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
           rewriter.getIntegerAttr(type_lapack_int, nC));
-      auto k_value = nC;
+      // one elementary reflector per entry of `tau`
+      auto k_value = cast<RankedTensorType>(tau.getType()).getShape().back();
       auto k = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
           rewriter.getIntegerAttr(type_lapack_int, k_value));

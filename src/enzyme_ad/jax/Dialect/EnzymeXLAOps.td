@@ -952,6 +952,8 @@ def OrgqrOp : EnzymeXLA_Op<"lapack.orgqr", [Pure]> {
   let assemblyFormat = [{
     $input `,` $tau attr-dict `:` functional-type(operands, results)
   }];
+
+  let hasVerifier = 1;
 }
 
 def OrmqrOp : EnzymeXLA_Op<"lapack.ormqr", [Pure]> {
