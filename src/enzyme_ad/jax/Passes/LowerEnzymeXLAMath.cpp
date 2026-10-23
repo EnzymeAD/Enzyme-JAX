@@ -3,6 +3,7 @@
 
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Ops.h"
+#include "Enzyme/MLIR/Implementations/LoopCheckpointing.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
@@ -71,6 +72,10 @@ struct LowerBinomialProgressOpToStableHLO
     : public OpRewritePattern<enzyme::BinomialProgressOp> {
   using OpRewritePattern<enzyme::BinomialProgressOp>::OpRewritePattern;
 
+  // Largest lookup table, in elements, emitted when the operands are bounded;
+  // past this the loop below is used instead.
+  static constexpr int64_t kMaxTableSize = 1 << 8;
+
   LogicalResult matchAndRewrite(enzyme::BinomialProgressOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
@@ -80,6 +85,34 @@ struct LowerBinomialProgressOpToStableHLO
     // Scalar operands are Enzyme's to lower, onto scf/arith.
     if (!isa<TensorType>(op.getType()))
       return failure();
+
+    auto maxNumSteps = op.getMaxNumSteps();
+    auto maxBudget = op.getMaxBudget();
+
+    if (maxNumSteps && maxBudget && *maxNumSteps >= 0 && *maxBudget >= 0) {
+      auto ET = dyn_cast<IntegerType>(
+          cast<TensorType>(op.getType()).getElementType());
+      int64_t rows = *maxNumSteps + 1, cols = *maxBudget + 1;
+      if (ET && rows * cols <= kMaxTableSize) {
+        unsigned width = ET.getWidth();
+        SmallVector<APInt> table;
+        table.reserve(rows * cols);
+        for (int64_t i = 0; i < rows; ++i)
+          for (int64_t j = 0; j < cols; ++j)
+            table.push_back(APInt(width, mlir::enzyme::binomialProgress(i, j),
+                                  /*isSigned=*/true, /*implicitTrunc=*/true));
+
+        auto TT = RankedTensorType::get({rows, cols}, ET);
+        Value cst = stablehlo::ConstantOp::create(
+            rewriter, loc, DenseIntElementsAttr::get(TT, table));
+
+        Value ds = stablehlo::DynamicSliceOp::create(
+            rewriter, loc, cst, ValueRange{n, s},
+            /*sliceSizes=*/rewriter.getDenseI64ArrayAttr({1, 1}));
+        rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), ds);
+        return success();
+      }
+    }
 
     auto constOfType = [&](int64_t v) -> Value {
       return stablehlo::ConstantOp::create(
