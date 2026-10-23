@@ -92,7 +92,8 @@ static Value makeZero(OpBuilder &builder, Location loc, Type T) {
              : cast<AutoDiffTypeInterface>(T).createNullValue(builder, loc);
 }
 
-static inline Operation *createAddRegion(Operation *op) {
+template <typename OpTy>
+static inline Operation *createBinaryRegion(Operation *op) {
   mlir::OpBuilder builder(op->getContext());
   mlir::Block *block = new Block();
   op->getRegion(0).push_back(block);
@@ -100,12 +101,16 @@ static inline Operation *createAddRegion(Operation *op) {
   auto tensorType = RankedTensorType::get({}, elemType);
   block->addArguments({tensorType, tensorType}, {op->getLoc(), op->getLoc()});
   builder.setInsertionPointToEnd(block);
-  mlir::stablehlo::ReturnOp::create(
-      builder, op->getLoc(),
-      mlir::stablehlo::AddOp::create(
-          builder, op->getLoc(), block->getArgument(0), block->getArgument(1))
-          ->getResult(0));
+  mlir::stablehlo::ReturnOp::create(builder, op->getLoc(),
+                                    OpTy::create(builder, op->getLoc(),
+                                                 block->getArgument(0),
+                                                 block->getArgument(1))
+                                        ->getResult(0));
   return op;
+}
+
+static inline Operation *createAddRegion(Operation *op) {
+  return createBinaryRegion<mlir::stablehlo::AddOp>(op);
 }
 
 Operation *cloneWithNewResultTypes(Operation *op, OpBuilder &builder,
@@ -2029,37 +2034,84 @@ public:
     }
 
     if (isa<MaxOp>(innerOp) || isa<MinOp>(innerOp)) {
-      // TODO: technically we should invert the order here to pick the last
-      // value (or divide by count) if multiple are the same as the result
       Value oprev = gutils->popCache(caches[0], builder);
-      Value oinit = gutils->popCache(caches[1], builder);
-      Value ores = gutils->popCache(caches[2], builder);
+      Value ores = gutils->popCache(caches[1], builder);
 
-      if (!gutils->isConstantValue(op.getInputs()[0])) {
-        auto attr = builder.getDenseI64ArrayAttr(toBroadcast);
-        auto bc = BroadcastInDimOp::create(builder, op.getLoc(),
-                                           oprev.getType(), ores, attr);
+      bool inputActive = !gutils->isConstantValue(op.getInputs()[0]);
+      bool initActive = !gutils->isConstantValue(op.getInitValues()[0]);
+      if (!inputActive && !initActive)
+        return success();
 
-        auto cmp = CompareOp::create(builder, op.getLoc(), bc, oprev,
-                                     ComparisonDirection::EQ);
+      auto loc = op.getLoc();
+      auto attr = builder.getDenseI64ArrayAttr(toBroadcast);
+      auto i64Ty = builder.getI64Type();
+      auto idxTy = RankedTensorType::get(inTy.getShape(), i64Ty);
+      auto resIdxTy = RankedTensorType::get(
+          cast<RankedTensorType>(ores.getType()).getShape(), i64Ty);
 
-        auto bc2 = BroadcastInDimOp::create(builder, op.getLoc(),
-                                            oprev.getType(), inDiffe, attr);
+      auto splatIdx = [&](RankedTensorType ty, int64_t v) -> Value {
+        return ConstantOp::create(builder, loc, DenseElementsAttr::get(ty, v));
+      };
 
-        auto res =
-            stablehlo::SelectOp::create(builder, op.getLoc(), cmp, bc2, zero);
+      // Linearized position of each element within its reduction window.
+      SmallVector<int64_t> dims(op.getDimensions());
+      llvm::sort(dims);
+      Value linIdx = splatIdx(idxTy, 0);
+      int64_t stride = 1;
+      for (int64_t d : llvm::reverse(dims)) {
+        Value iota = IotaOp::create(builder, loc, idxTy, d);
+        if (stride != 1)
+          iota = MulOp::create(builder, loc, iota, splatIdx(idxTy, stride));
+        linIdx = AddOp::create(builder, loc, linIdx, iota);
+        stride *= inTy.getDimSize(d);
+      }
+
+      auto bc =
+          BroadcastInDimOp::create(builder, loc, oprev.getType(), ores, attr);
+      auto isExtremum =
+          CompareOp::create(builder, loc, bc, oprev, ComparisonDirection::EQ);
+
+      // Largest linear index among the elements equal to the result, or -1 if
+      // none matched (i.e. the result came from the init value).
+      Value maskedIdx = SelectOp::create(builder, loc, isExtremum, linIdx,
+                                         splatIdx(idxTy, -1));
+      auto lastRed = ReduceOp::create(
+          builder, loc, TypeRange{resIdxTy}, ValueRange{maskedIdx},
+          ValueRange{makeI64Constant(loc, builder, -1)}, op.getDimensions());
+      createBinaryRegion<MaxOp>(lastRed);
+      Value lastIdx = lastRed->getResult(0);
+
+      if (inputActive) {
+        auto lastBc =
+            BroadcastInDimOp::create(builder, loc, idxTy, lastIdx, attr);
+        auto isLast = CompareOp::create(builder, loc, linIdx, lastBc,
+                                        ComparisonDirection::EQ);
+        auto bc2 = BroadcastInDimOp::create(builder, loc, oprev.getType(),
+                                            inDiffe, attr);
+        auto res = SelectOp::create(builder, loc, isLast, bc2, zero);
         gutils->addToDiffe(op.getInputs()[0], res, builder);
       }
-      if (!gutils->isConstantValue(op.getInitValues()[0])) {
+
+      if (initActive) {
         auto zeroI = cast<AutoDiffTypeInterface>(inDiffe.getType())
-                         .createNullValue(builder, op.getLoc());
+                         .createNullValue(builder, loc);
+        auto fromInit =
+            CompareOp::create(builder, loc, lastIdx, splatIdx(resIdxTy, -1),
+                              ComparisonDirection::EQ);
+        Value res = SelectOp::create(builder, loc, fromInit, inDiffe, zeroI);
 
-        auto cmp = CompareOp::create(builder, op.getLoc(), ores, oinit,
-                                     ComparisonDirection::EQ);
-
-        auto res = stablehlo::SelectOp::create(builder, op.getLoc(), cmp,
-                                               inDiffe, zeroI);
-        gutils->addToDiffe(op.getInitValues()[0], res, builder);
+        // The scalar init seeds every result element, so sum its adjoints.
+        Value init = op.getInitValues()[0];
+        auto initShadowTy = gutils->getShadowType(init.getType());
+        SmallVector<int64_t> allDims = llvm::to_vector(llvm::seq<int64_t>(
+            0, cast<RankedTensorType>(res.getType()).getRank()));
+        auto initDiffeSum = ReduceOp::create(
+            builder, loc, TypeRange{initShadowTy}, ValueRange{res},
+            ValueRange{cast<AutoDiffTypeInterface>(initShadowTy)
+                           .createNullValue(builder, loc)},
+            allDims);
+        createAddRegion(initDiffeSum);
+        gutils->addToDiffe(init, initDiffeSum->getResult(0), builder);
       }
       return success();
     }
@@ -2069,8 +2121,8 @@ public:
       Value init = op->getOperand(1);
 
       Value cachedValue = gutils->popCache(caches[0], builder);
-      Value cachedInit = gutils->popCache(caches[1], builder);
-      Value cachedResult = gutils->popCache(caches[2], builder);
+      Value cachedResult = gutils->popCache(caches[1], builder);
+      Value cachedInit = gutils->popCache(caches[2], builder);
 
       if (!gutils->isConstantValue(value)) {
         auto binDiffe = stablehlo::BroadcastInDimOp::create(
@@ -2136,22 +2188,27 @@ public:
 
     Operation &innerOp = op.getBody().front().front();
     if (isa<MulOp, MaxOp, MinOp>(innerOp)) {
+      // [value, result, [init]]
       SmallVector<Value> caches;
 
-      auto result = op.getResult(0);
       auto value = orig->getOperand(0);
-      auto init = orig->getOperand(1);
+      auto result = op.getResult(0);
 
       Operation *newOp = gutils->getNewFromOriginal(orig);
       OpBuilder cacheBuilder(newOp);
 
       caches.push_back(gutils->initAndPushCache(
           gutils->getNewFromOriginal(value), cacheBuilder));
-      caches.push_back(gutils->initAndPushCache(
-          gutils->getNewFromOriginal(init), cacheBuilder));
       cacheBuilder.setInsertionPointAfter(newOp);
       caches.push_back(gutils->initAndPushCache(
           gutils->getNewFromOriginal(result), cacheBuilder));
+
+      if (isa<MulOp>(innerOp)) {
+        auto init = orig->getOperand(1);
+        cacheBuilder.setInsertionPoint(newOp);
+        caches.push_back(gutils->initAndPushCache(
+            gutils->getNewFromOriginal(init), cacheBuilder));
+      }
 
       return caches;
     }
