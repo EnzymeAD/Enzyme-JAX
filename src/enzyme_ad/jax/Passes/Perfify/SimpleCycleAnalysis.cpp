@@ -122,7 +122,8 @@ struct SimpleCycleAnalysisPass
             continue;
           }
           std::string cost_v = cost_str + std::to_string(cost_var.size());
-          z3::expr call_cost = solver.ctx().int_const((cost_v + "_call").c_str());
+          z3::expr call_cost =
+              solver.ctx().int_const((cost_v + "_call").c_str());
           cost_var.push_back(solver.ctx().int_const(cost_v.c_str()));
           solver.add(cost_var.back() ==
                      cost_var[cost_var.size() - 2] + call_cost);
@@ -133,8 +134,8 @@ struct SimpleCycleAnalysisPass
               costMap.find(region_op->getName().getStringRef().str());
           if (costMapRes != costMap.end()) {
             std::string cost_v = cost_str + std::to_string(cost_var.size());
-            cost_var.push_back(
-                solver.ctx().int_const(cost_v.c_str())); // create a new cost var
+            cost_var.push_back(solver.ctx().int_const(
+                cost_v.c_str())); // create a new cost var
             z3::expr post_cost = cost_var[cost_var.size() - 1];
             z3::expr pre_cost = cost_var[cost_var.size() - 2];
             z3::expr op_cost = evaluateCostRegion(costMapRes->second, solver);
@@ -144,7 +145,7 @@ struct SimpleCycleAnalysisPass
             solver.add(cost_expr); // add to solver
           } else {
             llvm::outs() << "unknown cost for operation "
-                        << region_op->getName().getStringRef().str() << "\n";
+                         << region_op->getName().getStringRef().str() << "\n";
           }
         }
       }
@@ -152,11 +153,10 @@ struct SimpleCycleAnalysisPass
       HoareStates pre_post = hyp.getPrePost();
       auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
       if (captureHypothesisArgs(cmpOp, pre_post)) {
-        z3::expr holds =
-            buildHypothesis(cmpOp.getPredicate(), hypotheses.at(pre_post),
-                            pre_post == HoareStates::Pre ? cost_var.front()
-                                                         : cost_var.back(),
-                            solver);
+        z3::expr holds = buildHypothesis(
+            cmpOp.getPredicate(), hypotheses.at(pre_post),
+            pre_post == HoareStates::Pre ? cost_var.front() : cost_var.back(),
+            solver);
         solver.add(pre_post == HoareStates::Pre ? holds : !holds);
       }
     } else if (auto assumeOp = dyn_cast<AssumeOp>(op)) {
