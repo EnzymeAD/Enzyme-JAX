@@ -1199,13 +1199,9 @@ def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
                         (HLOConstantFP<"0">)))
                   >;
 
-
-
 def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
 def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
-
-
 
 def : HLODerivative<"ImagOp", (Op $x),
                   [
@@ -1213,10 +1209,6 @@ def : HLODerivative<"ImagOp", (Op $x),
                       (Complex (HLOConstantFP<"0">), (Neg (DiffeRet))),
                       (HLOConstantFP<"0">))
                   ], (Imag (Shadow $x))>;
-
-
-
-
 
 def : HLODerivative<"LogOp", (Op $x), [(CheckedDiv (DiffeRet), $x)]>;
 
@@ -1253,8 +1245,6 @@ def : HLOMemoryIdentityOp<"PadOp", [], [-1], (Op $op, $padval), [
   (Slice (TypeOf $op), (DiffeRet), (PadToSliceStart), (PadToSliceLimit), (PadToSliceStride)),
   (AssertingInactiveArg)
 ]>;
-
-
 
 def : HLODerivative<"PowOp", (Op $x, $y),
                   [
@@ -1312,8 +1302,6 @@ def : HLODerivative<"SelectOp", (Op $cond, $lhs, $rhs),
                       ],
                       (Select $cond, (SelectIfActive $lhs, (Shadow $lhs), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (Shadow $rhs), (HLOConstantFP<"0">)))
                   >;
-
-
 
 def : HLODerivative<"SineOp", (Op $x), [(CheckedMul (DiffeRet), (Cos $x))]>;
 
