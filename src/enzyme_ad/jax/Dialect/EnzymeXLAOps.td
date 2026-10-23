@@ -207,6 +207,90 @@ def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpI
   let hasCanonicalizer = 1;
 }
 
+def JITRegionOp : EnzymeXLA_Op<"jit_region", [
+  RecursiveMemoryEffects,
+  DeclareOpInterfaceMethods<InferTypeOpInterface>,
+  SingleBlockImplicitTerminator<"enzymexla::JITRegionYieldOp">
+]> {
+  let summary = "Region bridging immutable tensors to mutable memrefs";
+  let description = [{
+    Runs its single block on mutable buffers holding the values of its tensor
+    inputs. The block has one memref argument per input, with the input's
+    shape and element type; on entry it holds the input's contents. The block
+    may read and write these buffers freely: the input tensors are values and
+    are never modified.
+
+    Each result holds the contents of one of the buffers when the block exits,
+    and has the type of the corresponding input. As for `jit_call`, every
+    result maps to an input through an entry of `output_operand_aliases`: the
+    result `output_tuple_indices[0]` (or the only result, with empty
+    `output_tuple_indices`) is read from the buffer of the input
+    `operand_index`. The buffer of an input is read by at most one result.
+
+    `operand_attrs` and `result_attrs`, if present, hold one dictionary of
+    attributes per input and per result respectively.
+
+    Example:
+
+    ```mlir
+    %r:2 = "enzymexla.jit_region"(%a, %b) <{
+      operand_attrs = [{}, {enzymexla.reverse_operand_index = 0 : i64} ],
+      output_operand_aliases = [
+        #stablehlo.output_operand_alias<output_tuple_indices = [0],
+                                        operand_index = 0,
+                                        operand_tuple_indices = []>,
+        #stablehlo.output_operand_alias<output_tuple_indices = [1],
+                                        operand_index = 1,
+                                        operand_tuple_indices = []>
+      ]
+    }> ({
+    ^bb0(%ma: memref<4xf32, 1>, %mb: memref<4xf32, 1>):
+      ...
+      "enzymexla.jit_region_yield"() : () -> ()
+    }) : (tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>)
+    ```
+  }];
+
+  let arguments = (ins
+    Variadic<HLO_Tensor>:$inputs,
+    OptionalAttr<AnyAttr>:$operand_layouts,
+    OptionalAttr<DictArrayAttr>:$operand_attrs,
+    OptionalAttr<DictArrayAttr>:$result_attrs,
+    DefaultValuedOptionalAttr<
+        ArrayAttr, "{}">:$output_operand_aliases,
+    OptionalAttr<UnitAttr>:$xla_side_effect_free
+  );
+  let results = (outs Variadic<HLO_Tensor>);
+  let regions = (region SizedRegion<1>:$body);
+
+  let extraClassDeclaration = [{
+    Block *getBodyBlock() { return &getBody().front(); }
+
+    // The index of the input whose buffer the result `resultIndex` is read
+    // from.
+    unsigned getAliasedInputIndex(unsigned resultIndex);
+
+    // The result read from the buffer of the input `inputIndex`, if any.
+    OpResult getAliasingResult(unsigned inputIndex);
+
+    // The output_operand_aliases of a jit_region whose result `i` is read
+    // from the buffer of the input `inputIndices[i]`.
+    static ArrayAttr buildOutputOperandAliases(MLIRContext *context,
+                                               ArrayRef<int64_t> inputIndices);
+  }];
+
+  let hasVerifier = 1;
+  let hasRegionVerifier = 1;
+  let hasCanonicalizer = 1;
+}
+
+def JITRegionYieldOp : EnzymeXLA_Op<"jit_region_yield", [
+  Pure, ReturnLike, Terminator, HasParent<"JITRegionOp">
+]> {
+  let summary = "Terminator of a jit_region";
+  let assemblyFormat = "attr-dict";
+}
+
 def GetStreamOp : EnzymeXLA_Op<"get_stream", [Pure]> {
   let summary = "Get current execution stream within a jit_call operation";
   let description = [{
