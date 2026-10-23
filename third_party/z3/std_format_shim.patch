@@ -2,6 +2,24 @@ Adds a minimal std::format implementation for standard libraries without one
 (the libc++ in the macOS SDK used by the Reactant_jll cross builds). See the
 header for details; z3.BUILD force-includes it into every z3 source file.
 
+Also adds a <format> header for standard libraries without one at all
+(libstdc++ before GCC 13, as in the Ubuntu 22.04 image the wheels are built
+in), which defers to the real header when there is one.
+
+diff --git a/src/util/format_fallback/format b/src/util/format_fallback/format
+new file mode 100644
+--- /dev/null
++++ b/src/util/format_fallback/format
+@@ -0,0 +1,7 @@
++// <format> for standard libraries that lack the header altogether (libstdc++
++// before GCC 13). Defers to the real one when there is one; otherwise
++// z3_std_format.h, force-included into every z3 source, provides std::format.
++#pragma once
++#if __has_include_next(<format>)
++#include_next <format>
++#endif
+diff --git a/src/util/z3_std_format.h b/src/util/z3_std_format.h
+new file mode 100644
 --- /dev/null
 +++ b/src/util/z3_std_format.h
 @@ -0,0 +1,76 @@

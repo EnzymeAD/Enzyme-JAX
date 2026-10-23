@@ -178,6 +178,14 @@ genrule(
 # libz3
 ################################################################################
 
+# <format> for standard libraries without the header (added by
+# std_format_shim.patch); it defers to the real one when there is one.
+cc_library(
+    name = "format_fallback",
+    hdrs = ["src/util/format_fallback/format"],
+    strip_include_prefix = "src/util/format_fallback",
+)
+
 cc_library(
     name = "z3",
     srcs = glob(
@@ -238,6 +246,7 @@ cc_library(
         "//conditions:default": ["-pthread"],
     }),
     visibility = ["//visibility:public"],
+    deps = [":format_fallback"],
 )
 
 alias(
