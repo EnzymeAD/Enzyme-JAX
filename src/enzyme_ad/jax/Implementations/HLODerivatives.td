@@ -130,6 +130,7 @@ def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT
 def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
 
 // Inactive ops
+def : HLOInactiveOp<"AfterAllOp">;
 def : HLOInactiveOp<"AndOp">;
 def : HLOInactiveOp<"CeilOp">;
 def : HLOInactiveOp<"ClzOp">;
@@ -179,6 +180,7 @@ def : HLOMemoryIdentityOp<"DynamicUpdateSliceOp", [], [0, 1], (Op $operand, $upd
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (DiffeRet))]>;
 def : HLOReadOnlyIdentityOp<"SliceOp">;
+def : HLOReadOnlyIdentityOp<"TransposeOp", [0], (Op $x), [(Transpose (TypeOf $x), (DiffeRet), (InversePermutation))]>;
 
 // Others
 def CheckedMul : SubRoutine<(Op $diffret, $x),
@@ -1339,15 +1341,6 @@ def : HLODerivative<"TanhOp", (Op $x),
                     [
                       (CheckedMul (DiffeRet), (Sub (HLOConstantFP<"1">), (Mul (Tanh $x), (Tanh $x))))
                     ]
-                  >;
-
-
-
-def : HLODerivative<"TransposeOp", (Op $x),
-                    [
-                        (Transpose (TypeOf $x), (DiffeRet), (InversePermutation)),
-                    ],
-                    (SelectIfActive $x, (Transpose (Shadow $x), (Permutation)), (HLOConstantFP<"0">))
                   >;
 
 // FFT rules
