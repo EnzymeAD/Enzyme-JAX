@@ -1,8 +1,6 @@
-#include "xla/ffi/api/c_api_internal.h"
+#include "absl/strings/str_format.h"
 #include "xla/ffi/api/ffi.h"
-#include "xla/ffi/execution_state.h"
 #include "xla/ffi/ffi_api.h"
-#include "xla/stream_executor/stream.h"
 
 #if (defined(_WIN32) || defined(__CYGWIN__)) &&                                \
     !defined(MLIR_CAPI_ENABLE_WINDOWS_DLL_DECLSPEC)
@@ -20,153 +18,119 @@
 #define MLIR_CAPI_EXPORTED __attribute__((visibility("default")))
 #endif
 
+typedef void *CUStream;
+
 template <bool withError> struct CallInfo;
 
 template <> struct CallInfo<false> {
   void (*run)(const void **, void *, void *);
-  void *(*init)();
+  void *(*init)(void **);
 };
 
 template <> struct CallInfo<true> {
   char *(*run)(const void **, void *, void *);
-  void *(*init)();
+  void *(*init)(void **);
 };
 
-XLA_FFI_Error *instantiate(XLA_FFI_CallFrame *call_frame) { return nullptr; }
+struct CuKernelWrapper {
+  static xla::ffi::TypeId id;
 
-XLA_FFI_Error *prepare(XLA_FFI_CallFrame *call_frame) { return nullptr; }
-
-struct CuFuncWrapper {
-  void *func;
-  void operator delete(void *ptr) noexcept {}
+  void *library = nullptr;
+  void *cuKernel = nullptr;
 };
+xla::ffi::TypeId CuKernelWrapper::id = {};
 
-template <bool withError>
-XLA_FFI_Error *initialize(XLA_FFI_CallFrame *call_frame) {
-  assert(call_frame->attrs.size == 1);
-  assert(call_frame->attrs.types[0] == XLA_FFI_AttrType_STRING);
+XLA_FFI_REGISTER_TYPE(xla::ffi::GetXlaFfiApi(), "enzymexla.CuKernelWrapper",
+                      &CuKernelWrapper::id,
+                      xla::ffi::MakeTypeInfo<CuKernelWrapper>());
 
-  auto *bspan =
-      reinterpret_cast<XLA_FFI_ByteSpan *>(call_frame->attrs.attrs[0]);
+xla::ffi::ErrorOr<std::unique_ptr<CuKernelWrapper>>
+instantiate(std::string_view bspan) {
+  CallInfo<false> *cinfo = (CallInfo<false> *)bspan.data();
 
-  CallInfo<withError> *cinfo;
-  if constexpr (withError) {
-    cinfo = (CallInfo<true> *)bspan->ptr;
-  } else {
-    cinfo = (CallInfo<false> *)bspan->ptr;
+  auto kwrapper = std::make_unique<CuKernelWrapper>();
+
+  if (cinfo->init) {
+    kwrapper->cuKernel = cinfo->init(&kwrapper->library);
+
+    if (!kwrapper->cuKernel || !kwrapper->library) {
+      return xla::ffi::Error::Internal(
+          "enzymexla_compile_gpu: could not load module");
+    }
   }
 
-  auto internal_api = call_frame->api->internal_api;
-  auto ctx = call_frame->ctx;
-
-  stream_executor::Stream *streamp;
-  internal_api->XLA_FFI_INTERNAL_Stream_Get(ctx, (void **)&streamp);
-  void *stream = streamp->platform_specific_handle().stream;
-
-  (void)stream;
-  /*
-  CUcontext pctx;
-  auto err = cuStreamGetCtx ((CUstream)stream, &pctx);
-
-  CUcontext cctx;
-  err = cuCtxGetCurrent ( &cctx );
-
-  err = cuCtxPushCurrent (pctx);
-  */
-
-  void *cufunc = cinfo->init();
-
-  /*
-  CUcontext tctx;
-  err = cuCtxPopCurrent(&tctx);
-  */
-
-  auto *execution_state = reinterpret_cast<xla::ffi::ExecutionState *>(
-      internal_api->XLA_FFI_INTERNAL_ExecutionState_Get(
-          ctx, XLA_FFI_ExecutionStage_INITIALIZE));
-  auto type_id = xla::ffi::TypeRegistry::GetTypeId<CuFuncWrapper>();
-  auto type_info = xla::ffi::TypeRegistry::GetTypeInfo(type_id);
-  (void)type_info.ok();
-  (void)execution_state->Set(type_id, type_info.value(), cufunc);
-
-  return nullptr;
+  return kwrapper;
 }
 
 template <bool withError>
-XLA_FFI_Error *execute(XLA_FFI_CallFrame *call_frame) {
-  // If passed a call frame with the metadata extension, just return the
-  // metadata.
-  if (call_frame->extension_start != nullptr &&
-      call_frame->extension_start->type == XLA_FFI_Extension_Metadata) {
-    auto extension = reinterpret_cast<XLA_FFI_Metadata_Extension *>(
-        call_frame->extension_start);
-    extension->metadata->api_version = XLA_FFI_Api_Version{
-        XLA_FFI_Api_Version_STRUCT_SIZE,
-        /*extension_start=*/nullptr,
-        XLA_FFI_API_MAJOR,
-        XLA_FFI_API_MINOR,
-    };
-    return nullptr;
-  }
-
-  auto *bspan =
-      reinterpret_cast<XLA_FFI_ByteSpan *>(call_frame->attrs.attrs[0]);
-
+xla::ffi::Error execute(std::string_view bspan, CUStream stream,
+                        CuKernelWrapper *kwrapper, xla::ffi::RemainingArgs args,
+                        xla::ffi::RemainingRets rets) {
   CallInfo<withError> *cinfo;
   if constexpr (withError) {
-    cinfo = (CallInfo<true> *)bspan->ptr;
+    cinfo = (CallInfo<true> *)bspan.data();
   } else {
-    cinfo = (CallInfo<false> *)bspan->ptr;
+    cinfo = (CallInfo<false> *)bspan.data();
   }
 
-  auto internal_api = call_frame->api->internal_api;
-  auto ctx = call_frame->ctx;
-  stream_executor::Stream *streamp;
-  internal_api->XLA_FFI_INTERNAL_Stream_Get(ctx, (void **)&streamp);
-  void *stream = streamp->platform_specific_handle().stream;
-
-  size_t numargs = call_frame->args.size;
+  size_t numargs = args.size();
+  void *devptrs[numargs];
   void *ptrs[numargs];
   for (size_t i = 0; i < numargs; i++) {
-    ptrs[i] =
-        &reinterpret_cast<XLA_FFI_Buffer *>(call_frame->args.args[i])->data;
+    auto buf = args.get<xla::ffi::AnyBuffer>(i);
+    if (!buf.has_value())
+      return xla::ffi::Error::Internal(absl::StrFormat(
+          "enzymexla_compile_gpu: could not get %d argument buffer", i));
+    devptrs[i] = buf->untyped_data();
+    ptrs[i] = &devptrs[i];
   }
 
-  auto *execution_state = reinterpret_cast<xla::ffi::ExecutionState *>(
-      internal_api->XLA_FFI_INTERNAL_ExecutionState_Get(
-          ctx, XLA_FFI_ExecutionStage_INITIALIZE));
-  auto cufunc = (void *)execution_state->Get<CuFuncWrapper>().value();
-
   const void **const_ptrs = const_cast<const void **>(ptrs);
+  auto cufunc = kwrapper->cuKernel;
 
   if constexpr (withError) {
     char *err = cinfo->run(const_ptrs, stream, cufunc);
     if (err) {
-      XLA_FFI_Error_Create_Args error_args = {
-          XLA_FFI_Error_Create_Args_STRUCT_SIZE,
-          /*extension_start=*/nullptr,
-          /*message=*/err,
-          /*errc=*/XLA_FFI_Error_Code_INTERNAL};
-      auto ffi_api = call_frame->api;
-      return ffi_api->XLA_FFI_Error_Create(&error_args);
+      auto errmsg = absl::StrFormat("error running gpu thunk: %s", err);
+      return xla::ffi::Error::Internal(errmsg);
     }
   } else {
     cinfo->run(const_ptrs, stream, cufunc);
   }
 
-  return nullptr;
+  return xla::ffi::Error::Success();
 }
 
+XLA_FFI_DEFINE_HANDLER(
+    kInstantiate, instantiate,
+    xla::ffi::Ffi::BindInstantiate().Attr<std::string_view>("attr"));
+
+XLA_FFI_DEFINE_HANDLER(kExecute, execute<false>,
+                       xla::ffi::Ffi::BindExecute()
+                           .Attr<std::string_view>("attr")
+                           .Ctx<xla::ffi::PlatformStream<CUStream>>()
+                           .Ctx<xla::ffi::State<CuKernelWrapper>>()
+                           .RemainingArgs()
+                           .RemainingRets());
+XLA_FFI_DEFINE_HANDLER(kExecuteWithError, execute<true>,
+                       xla::ffi::Ffi::BindExecute()
+                           .Attr<std::string_view>("attr")
+                           .Ctx<xla::ffi::PlatformStream<CUStream>>()
+                           .Ctx<xla::ffi::State<CuKernelWrapper>>()
+                           .RemainingArgs()
+                           .RemainingRets());
+
 extern "C" MLIR_CAPI_EXPORTED void RegisterEnzymeXLAGPUHandler() {
-  XLA_FFI_Handler_Bundle bundle = {instantiate, prepare, initialize<false>,
-                                   execute<false>};
+  XLA_FFI_Handler_Bundle bundle = {kInstantiate, /*prepare*/ nullptr,
+                                   /*initialize*/ nullptr, kExecute};
 
   xla::ffi::Ffi::RegisterStaticHandler(xla::ffi::GetXlaFfiApi(),
                                        "enzymexla_compile_gpu", "CUDA", bundle,
                                        /*XLA_FFI_Handler_Traits traits = */ 0);
 
-  XLA_FFI_Handler_Bundle bundle_with_error = {instantiate, prepare,
-                                              initialize<true>, execute<true>};
+  XLA_FFI_Handler_Bundle bundle_with_error = {kInstantiate, /*prepare*/ nullptr,
+                                              /*initialize*/ nullptr,
+                                              kExecuteWithError};
 
   xla::ffi::Ffi::RegisterStaticHandler(
       xla::ffi::GetXlaFfiApi(), "enzymexla_compile_gpu_with_error", "CUDA",

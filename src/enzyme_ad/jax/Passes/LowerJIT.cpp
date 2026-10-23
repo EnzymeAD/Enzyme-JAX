@@ -1,4 +1,4 @@
-//===- PrintPass.cpp - Print the MLIR module                     ------------ //
+//===- LowerJIT.cpp - Lower jit_call to stablehlo.custom_call -------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,7 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements a pass to print the MLIR module
+// This file implements a pass to lower jit_call to stablehlo.custom_call.
+//
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -222,7 +223,7 @@ gpu::ObjectAttr getSelectedObject(gpu::BinaryOp op) {
 
 struct CallInfo {
   void (*run)(void *, void *, void **);
-  void *(*init)();
+  void *(*init)(void **);
 };
 
 llvm::StringMap<CallInfo> jitkernels;
@@ -422,7 +423,8 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
 
   auto ptr = (void *)Entry->getValue();
 
-  return CallInfo{(void (*)(void *, void *, void **))ptr, (void *(*)())nvptr};
+  return CallInfo{(void (*)(void *, void *, void **))ptr,
+                  (void *(*)(void **))nvptr};
 }
 
 static void replaceGetStreamOpsWithCudaABIStreamArg(mlir::ModuleOp &submod) {
@@ -446,26 +448,6 @@ static void replaceGetStreamOpsWithCudaABIStreamArg(mlir::ModuleOp &submod) {
   }
 }
 
-static void insertEmptyGPUInit(mlir::ModuleOp &submod, mlir::Location loc) {
-  OpBuilder builder(submod);
-  builder.setInsertionPointToStart(&submod.getBodyRegion().front());
-
-  auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
-  auto initTy = LLVM::LLVMFunctionType::get(ptrty, {}, false);
-  auto initfn = LLVM::LLVMFuncOp::create(builder, loc, "nv_func_init", initTy,
-                                         LLVM::Linkage::External);
-
-  auto blk = new Block();
-  initfn.getRegion().push_back(blk);
-  builder.setInsertionPointToEnd(blk);
-  auto i64 = builder.getIntegerType(64);
-  auto one =
-      LLVM::ConstantOp::create(builder, loc, i64, builder.getI64IntegerAttr(1));
-  auto sentinel =
-      LLVM::IntToPtrOp::create(builder, loc, ptrty, one.getResult());
-  LLVM::ReturnOp::create(builder, loc, ValueRange(sentinel));
-}
-
 void rewriteKernelCallABI(
     mlir::ModuleOp &submod, mlir::Location loc, const std::string &legalName,
     bool debug, enzymexla::JITCallOp jitCallOp, const std::string &modstr,
@@ -483,10 +465,14 @@ void rewriteKernelCallABI(
   auto idx = i64;
   auto voidty = LLVM::LLVMVoidType::get(submod.getContext());
 
-  mlir::Type cumodtys[] = {ptrty, ptrty};
-  auto modload_ty = LLVM::LLVMFunctionType::get(i32, cumodtys);
-  LLVM::LLVMFuncOp modload =
-      LLVM::LLVMFuncOp::create(builder, loc, "cuModuleLoadData", modload_ty);
+  auto libload_ty = LLVM::LLVMFunctionType::get(
+      i32, {ptrty, ptrty, ptrty, ptrty, i32, ptrty, ptrty, i32});
+  LLVM::LLVMFuncOp libload =
+      LLVM::LLVMFuncOp::create(builder, loc, "cuLibraryLoadData", libload_ty);
+
+  auto libkernel_ty = LLVM::LLVMFunctionType::get(i32, {ptrty, ptrty, ptrty});
+  LLVM::LLVMFuncOp libkernel = LLVM::LLVMFuncOp::create(
+      builder, loc, "cuLibraryGetKernel", libkernel_ty);
 
   mlir::Type cutys[] = {ptrty, idx, idx,   idx,   idx,  idx,
                         idx,   i32, ptrty, ptrty, ptrty};
@@ -497,11 +483,6 @@ void rewriteKernelCallABI(
   LLVM::LLVMFuncOp launch =
       LLVM::LLVMFuncOp::create(builder, loc, "cuLaunchKernel", launch_ty);
   auto cusync_ty = LLVM::LLVMFunctionType::get(i32, {ptrty});
-
-  mlir::Type cufunctys[] = {ptrty, ptrty, ptrty};
-  auto funcload_ty = LLVM::LLVMFunctionType::get(i32, cufunctys);
-  LLVM::LLVMFuncOp funcload = LLVM::LLVMFuncOp::create(
-      builder, loc, "cuModuleGetFunction", funcload_ty);
 
   LLVM::GlobalOp kernStr;
   {
@@ -516,7 +497,8 @@ void rewriteKernelCallABI(
 
   LLVM::LLVMFuncOp initfn = LLVM::LLVMFuncOp::create(
       builder, loc, "nv_func_init",
-      LLVM::LLVMFunctionType::get(ptrty, {}, false), LLVM::Linkage::External);
+      LLVM::LLVMFunctionType::get(ptrty, {ptrty}, false),
+      LLVM::Linkage::External);
 
   LLVM::LLVMFuncOp printfunc = nullptr;
   LLVM::LLVMFuncOp putfunc = nullptr;
@@ -534,23 +516,23 @@ void rewriteKernelCallABI(
     putfunc.setVisibility(SymbolTable::Visibility::Private);
   }
 
-  LLVM::GlobalOp loadModuleStr = nullptr;
+  LLVM::GlobalOp loadLibraryStr = nullptr;
   if (debug) {
-    std::string value = "load Module result = %d\n";
+    std::string value = "cuLibraryLoadData result = %d\n";
     auto type = LLVM::LLVMArrayType::get(
         mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-    loadModuleStr = LLVM::GlobalOp::create(
+    loadLibraryStr = LLVM::GlobalOp::create(
         builder, loc, type, /*isConstant=*/true, LLVM::Linkage::Internal,
-        "strmod", builder.getStringAttr(value + '\0'));
+        "strlib", builder.getStringAttr(value + '\0'));
   }
-  LLVM::GlobalOp loadFuncStr = nullptr;
+  LLVM::GlobalOp loadKernelStr = nullptr;
   if (debug) {
-    std::string value = "load Func result = %d\n";
+    std::string value = "cuLibraryGetKernel result = %d\n";
     auto type = LLVM::LLVMArrayType::get(
         mlir::IntegerType::get(builder.getContext(), 8), value.size() + 1);
-    loadFuncStr = LLVM::GlobalOp::create(
+    loadKernelStr = LLVM::GlobalOp::create(
         builder, loc, type, /*isConstant=*/true, LLVM::Linkage::Internal,
-        "strfunc", builder.getStringAttr(value + '\0'));
+        "strkernel", builder.getStringAttr(value + '\0'));
   }
   LLVM::GlobalOp launchKernelStr = nullptr;
   if (debug) {
@@ -604,26 +586,35 @@ void rewriteKernelCallABI(
   }
 
   {
-    auto blk = new Block();
-    initfn.getRegion().push_back(blk);
+    Block *blk = initfn.addEntryBlock(builder);
     builder.setInsertionPointToEnd(blk);
 
     auto one = LLVM::ConstantOp::create(builder, loc, i64,
                                         builder.getI64IntegerAttr(1));
     auto modptr = LLVM::AllocaOp::create(builder, loc, ptrty, ptrty, one);
-    auto funcptr = LLVM::AllocaOp::create(builder, loc, ptrty, ptrty, one);
+    auto libptr = blk->getArgument(0);
 
     auto addr_modbin = LLVM::AddressOfOp::create(builder, loc, binary);
-    SmallVector<mlir::Value> modargs = {modptr->getResult(0),
-                                        addr_modbin->getResult(0)};
 
-    mlir::Value loadModRes =
-        LLVM::CallOp::create(builder, loc, modload, modargs)->getResult(0);
+    auto nullptrval = LLVM::ZeroOp::create(builder, loc, ptrty);
+    LLVM::StoreOp::create(builder, loc, nullptrval, modptr);
+    auto zeroi32 = LLVM::ZeroOp::create(builder, loc, i32);
+    SmallVector<mlir::Value> loadargs = {/*library*/ libptr,
+                                         /*code*/ addr_modbin->getResult(0),
+                                         /*jitOptions*/ nullptrval,
+                                         /*jitOptionsValues*/ nullptrval,
+                                         /*numJitOptions*/ zeroi32,
+                                         /*libraryOptions*/ nullptrval,
+                                         /*libraryOptionValues*/ nullptrval,
+                                         /*numLibraryOptions*/ zeroi32};
+
+    mlir::Value loadDataRes =
+        LLVM::CallOp::create(builder, loc, libload, loadargs)->getResult(0);
 
     if (debug) {
       Value printargs1[] = {
-          LLVM::AddressOfOp::create(builder, loc, loadModuleStr)->getResult(0),
-          LLVM::IntToPtrOp::create(builder, loc, ptrty, loadModRes)
+          LLVM::AddressOfOp::create(builder, loc, loadLibraryStr)->getResult(0),
+          LLVM::IntToPtrOp::create(builder, loc, ptrty, loadDataRes)
               ->getResult(0)};
       LLVM::CallOp::create(builder, loc, printfunc, printargs1);
     }
@@ -633,39 +624,39 @@ void rewriteKernelCallABI(
       auto addr_glob = LLVM::IntToPtrOp::create(builder, loc, ptrty,
                                                 addr_glob_int.getResult())
                            ->getResult(0);
-      mlir::Value args[2] = {addr_glob, loadModRes};
+      mlir::Value args[2] = {addr_glob, loadDataRes};
+      LLVM::CallOp::create(builder, loc, curesult_handler_ty, args);
+    }
+
+    auto addr_kernstr = LLVM::AddressOfOp::create(builder, loc, ptrty, "str");
+    auto libval = LLVM::LoadOp::create(builder, loc, ptrty, libptr);
+
+    SmallVector<mlir::Value> libkernelargs = {modptr->getResult(0), libval,
+                                              addr_kernstr->getResult(0)};
+    mlir::Value loadKernelRes =
+        LLVM::CallOp::create(builder, loc, libkernel, libkernelargs)
+            ->getResult(0);
+
+    if (debug) {
+      Value printargs1[] = {
+          LLVM::AddressOfOp::create(builder, loc, loadKernelStr)->getResult(0),
+          LLVM::IntToPtrOp::create(builder, loc, ptrty, loadKernelRes)
+              ->getResult(0)};
+      LLVM::CallOp::create(builder, loc, printfunc, printargs1);
+    }
+    if (cuResultHandlerPtr) {
+      auto addr_glob_int = LLVM::ConstantOp::create(
+          builder, loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
+      auto addr_glob = LLVM::IntToPtrOp::create(builder, loc, ptrty,
+                                                addr_glob_int.getResult())
+                           ->getResult(0);
+      mlir::Value args[2] = {addr_glob, loadKernelRes};
       LLVM::CallOp::create(builder, loc, curesult_handler_ty, args);
     }
 
     auto mod = LLVM::LoadOp::create(builder, loc, ptrty, modptr);
 
-    auto addr_kernstr = LLVM::AddressOfOp::create(builder, loc, ptrty, "str");
-
-    SmallVector<mlir::Value> funcargs = {
-        funcptr->getResult(0), mod->getResult(0), addr_kernstr->getResult(0)};
-    mlir::Value loadFuncRes =
-        LLVM::CallOp::create(builder, loc, funcload, funcargs)->getResult(0);
-
-    if (debug) {
-      Value printargs1[] = {
-          LLVM::AddressOfOp::create(builder, loc, loadFuncStr)->getResult(0),
-          LLVM::IntToPtrOp::create(builder, loc, ptrty, loadFuncRes)
-              ->getResult(0)};
-      LLVM::CallOp::create(builder, loc, printfunc, printargs1);
-    }
-    if (cuResultHandlerPtr) {
-      auto addr_glob_int = LLVM::ConstantOp::create(
-          builder, loc, i64, builder.getI64IntegerAttr(cuResultHandlerPtr));
-      auto addr_glob = LLVM::IntToPtrOp::create(builder, loc, ptrty,
-                                                addr_glob_int.getResult())
-                           ->getResult(0);
-      mlir::Value args[2] = {addr_glob, loadFuncRes};
-      LLVM::CallOp::create(builder, loc, curesult_handler_ty, args);
-    }
-
-    auto func = LLVM::LoadOp::create(builder, loc, ptrty, funcptr);
-
-    LLVM::ReturnOp::create(builder, loc, ValueRange(func));
+    LLVM::ReturnOp::create(builder, loc, ValueRange(mod));
   }
 
   replaceGetStreamOpsWithCudaABIStreamArg(submod);
@@ -756,16 +747,17 @@ void rewriteKernelCallABI(
   });
 }
 
-CallInfo
-CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
-            FunctionOpInterface op, bool jit, enzymexla::JITCallOp jcall,
-            bool openmp, size_t cuResultHandlerPtr,
-            size_t cuStreamSynchronizePtr, int indexBitWidth,
-            const std::string &cubinTriple, const std::string &cubinChip,
-            const std::string &cubinFeatures, const std::string &cubinFormat,
-            int cuOptLevel, const std::string &toolkitPath,
-            const llvm::SmallVectorImpl<std::string> &linkFiles, bool debug,
-            bool returnPtr, bool dump_final_module, bool requiresCudaABI) {
+CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
+                     FunctionOpInterface op, bool jit,
+                     enzymexla::JITCallOp jcall, bool openmp,
+                     size_t cuResultHandlerPtr, size_t cuStreamSynchronizePtr,
+                     int indexBitWidth, const std::string &cubinTriple,
+                     const std::string &cubinChip,
+                     const std::string &cubinFeatures,
+                     const std::string &cubinFormat, int cuOptLevel,
+                     const std::string &toolkitPath,
+                     const llvm::SmallVectorImpl<std::string> &linkFiles,
+                     bool debug, bool returnPtr, bool dump_final_module) {
 
   OpBuilder builder(op);
 
@@ -847,8 +839,19 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
 
   builder.setInsertionPointToEnd(&submod.getBodyRegion().front());
 
+  // gpu.module is a sibling symbol of the function (referenced through
+  // gpu.launch_func), so it is detected via the copied modules. get_stream may
+  // appear in the function itself or in any of the copied callees.
+  auto hasGetStream = [](Operation *root) {
+    return root
+        ->walk([](enzymexla::GetStreamOp) { return WalkResult::interrupt(); })
+        .wasInterrupted();
+  };
+  bool requiresCudaABI =
+      numGPUModule != 0 || hasGetStream(op) || hasGetStream(submod);
+
   SmallVector<mlir::Type, 1> intys = {ptrty};
-  if (numGPUModule != 0 || requiresCudaABI) {
+  if (requiresCudaABI) {
     intys.push_back(ptrty);
     intys.push_back(ptrty);
   }
@@ -970,7 +973,6 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
       }
       if (requiresCudaABI) {
         replaceGetStreamOpsWithCudaABIStreamArg(submod);
-        insertEmptyGPUInit(submod, loc);
       }
     } else {
       submod->walk([](gpu::GPUModuleOp gmod) {
@@ -1024,8 +1026,7 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
                            cubinFormat, cuOptLevel, toolkitPath, linkFiles);
     }
 
-    auto ptr = CompileHostModule(ss.str(), submod,
-                                 numGPUModule != 0 || requiresCudaABI,
+    auto ptr = CompileHostModule(ss.str(), submod, numGPUModule != 0,
                                  dump_final_module);
     jitkernels[ss.str()] = ptr;
     submod.erase();
@@ -1133,14 +1134,11 @@ struct LowerJITPass
         hasReturn = !fnty.getResults().empty();
       }
 
-      auto deviceABI = fn->getAttrOfType<StringAttr>("enzymexla.device_abi");
-
       CallInfo cdata = CompileCall(
           symbolTable, op.getLoc(), fn, jit, op, openmp, cuResultHandlerPtr,
           cuStreamSynchronizePtr, indexBitWidth, cubinTriple, cubinChip,
           cubinFeatures, cubinFormat, cuOptLevel, toolkitPath, linkFilesArray,
-          debug, hasReturn, dump_final_module,
-          deviceABI && deviceABI.getValue() == "cuda");
+          debug, hasReturn, dump_final_module);
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
       if (jit) {
