@@ -1152,6 +1152,16 @@ broadcastYieldToCarried(Value &yielded, Value carried, OpBuilder &builder,
   return true;
 }
 
+// An scf.while raised to a stablehlo.while is still the same loop to Enzyme:
+// the directives put on it (the fixed-point marker in particular, which
+// apply-fixed-point-directives sets on the scf.while) are carried over so the
+// passes downstream see them.
+static void copyEnzymeLoopAttrs(Operation *from, Operation *to) {
+  for (NamedAttribute attr : from->getDiscardableAttrs())
+    if (attr.getName().strref().starts_with("enzyme."))
+      to->setAttr(attr.getName(), attr.getValue());
+}
+
 static LogicalResult tryRaisingForOpToStableHLOWhile(
     affine::AffineForOp forOp, IRMapping &parentMapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc,
@@ -2115,6 +2125,35 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
 // stablehlo.while then carries (cond, args, buffers) and its body runs the
 // do region followed by the before region again. Only a uniform (rank-0)
 // condition is supported.
+// `any` of a lane-wise predicate: the rank-0 tensor<i1> that is true where
+// any lane's predicate is.
+static Value anyOverLanes(OpBuilder &builder, Location loc, Value pred) {
+  auto predTy = cast<RankedTensorType>(pred.getType());
+  if (predTy.getRank() == 0)
+    return pred;
+  auto boolTy = RankedTensorType::get({}, builder.getI1Type());
+  Value initFalse = stablehlo::ConstantOp::create(
+      builder, loc, boolTy,
+      SplatElementsAttr::get(boolTy, builder.getBoolAttr(false)));
+  SmallVector<int64_t> dims(predTy.getRank());
+  std::iota(dims.begin(), dims.end(), 0);
+  auto reduce = stablehlo::ReduceOp::create(
+      builder, loc, ValueRange{pred}, ValueRange{initFalse},
+      builder.getDenseI64ArrayAttr(dims));
+  Block *body = new Block();
+  reduce.getBody().push_back(body);
+  body->addArgument(boolTy, loc);
+  body->addArgument(boolTy, loc);
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(body);
+    Value ored = stablehlo::OrOp::create(builder, loc, body->getArgument(0),
+                                         body->getArgument(1));
+    stablehlo::ReturnOp::create(builder, loc, ored);
+  }
+  return reduce.getResult(0);
+}
+
 static LogicalResult tryRaisingSCFWhileOpToStableHLO(
     scf::WhileOp whileOp, IRMapping &parentMapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
@@ -2141,15 +2180,65 @@ static LogicalResult tryRaisingSCFWhileOpToStableHLO(
   if (!cond0)
     return failure();
   auto condTy = dyn_cast<RankedTensorType>(cond0.getType());
-  if (!condTy || condTy.getRank() != 0)
+  if (!condTy)
     return failure();
-
-  SmallVector<Value> carriedInit{cond0};
-  SmallVector<affine::AffineValueMap> argMaps;
+  // A predicate that differs between lanes has no while to raise to, unless
+  // the loop is marked as a fixed point. Then the loop keeps going while any
+  // lane says so, and each lane steps only while its own predicate holds, as
+  // its thread would: the loop also carries the lanes still active, every
+  // carried value is spread over the lanes, and a lane that has stopped keeps
+  // its values. One more step on a converged lane is not harmless in general
+  // (a secant step there is 0/0). The fixed-point reverse rule differentiates
+  // the step with every lane active, which it finds through the mask
+  // attribute.
+  bool lanewiseCond = condTy.getRank() != 0;
+  SmallVector<Value> args;
   for (Value a : condOp.getArgs()) {
     Value m = mapping.lookupOrNull(a);
     if (!m || !maps.count(m))
       return failure();
+    args.push_back(m);
+  }
+  Value active0;
+  affine::AffineValueMap laneMap;
+  if (lanewiseCond) {
+    if (!enzymexla::FixedPointOp::isMarked(whileOp))
+      return failure();
+    active0 = cond0;
+    // Under a lane-wise if, the lanes it leaves out never enter the loop.
+    // The active lanes only shrink from there, so they stay within the mask
+    // and the body needs no other.
+    if (pc.mask) {
+      Value outer = pc.mask;
+      auto merged = alignMemoryAccess(outer, maps.lookup(pc.mask), active0,
+                                      maps.lookup(cond0), builder, pc);
+      if (failed(merged))
+        return failure();
+      active0 = stablehlo::AndOp::create(builder, wloc, outer, active0);
+      maps[active0] = *merged;
+    }
+    SmallVector<affine::AffineValueMap> argSrcMaps =
+        llvm::map_to_vector(args, [&](Value v) { return maps.lookup(v); });
+    auto aligned = alignMemoryAccess(active0, maps.lookup(active0), args.data(),
+                                     argSrcMaps, builder, pc);
+    if (failed(aligned))
+      return failure();
+    laneMap = *aligned;
+    maps[active0] = laneMap;
+    for (Value v : args)
+      maps[v] = laneMap;
+    cond0 = anyOverLanes(builder, wloc, active0);
+    condTy = cast<RankedTensorType>(cond0.getType());
+  }
+  // The carried values: [ cond | active lanes, when lane-wise | args |
+  // buffers ].
+  unsigned argBase = lanewiseCond ? 2 : 1;
+
+  SmallVector<Value> carriedInit{cond0};
+  if (lanewiseCond)
+    carriedInit.push_back(active0);
+  SmallVector<affine::AffineValueMap> argMaps;
+  for (Value m : args) {
     carriedInit.push_back(m);
     argMaps.push_back(maps.lookup(m));
   }
@@ -2182,16 +2271,29 @@ static LogicalResult tryRaisingSCFWhileOpToStableHLO(
 
   unsigned nargs = condOp.getArgs().size();
   for (auto [i, arg] : llvm::enumerate(after->getArguments())) {
-    Value bodyArg = body->getArgument(1 + i);
+    Value bodyArg = body->getArgument(argBase + i);
     mapping.map(arg, bodyArg);
     maps[bodyArg] = argMaps[i];
   }
   for (auto [i, memref] : llvm::enumerate(buffers))
-    mapping.map(memref, body->getArgument(1 + nargs + i));
+    mapping.map(memref, body->getArgument(argBase + nargs + i));
+
+  // A lane that has stopped neither steps nor stores.
+  Value active;
+  ParallelContext bodyPc = pc;
+  if (lanewiseCond) {
+    active = body->getArgument(1);
+    maps[active] = laneMap;
+    bodyPc.mask = active;
+  }
 
   auto newWhile = stablehlo::WhileOp::create(builder, wloc, carriedInit);
   newWhile->getRegion(0).push_back(cond);
   newWhile->getRegion(1).push_back(body);
+  copyEnzymeLoopAttrs(whileOp, newWhile);
+  if (lanewiseCond)
+    newWhile->setAttr(enzymexla::FixedPointOp::kMarkerMaskAttrName,
+                      builder.getI64IntegerAttr(1));
 
   {
     OpBuilder::InsertionGuard guard(builder);
@@ -2202,7 +2304,7 @@ static LogicalResult tryRaisingSCFWhileOpToStableHLO(
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(body);
     for (auto &op : after->without_terminator())
-      if (tryRaisingOpToStableHLO(&op, mapping, builder, maps, pc).failed())
+      if (tryRaisingOpToStableHLO(&op, mapping, builder, maps, bodyPc).failed())
         return failure();
     // The do region yields the next before-region arguments.
     for (auto [arg, y] :
@@ -2213,15 +2315,40 @@ static LogicalResult tryRaisingSCFWhileOpToStableHLO(
       mapping.map(arg, m);
     }
     for (auto &op : before->without_terminator())
-      if (tryRaisingOpToStableHLO(&op, mapping, builder, maps, pc).failed())
+      if (tryRaisingOpToStableHLO(&op, mapping, builder, maps, bodyPc).failed())
         return failure();
     Value nextCond = mapping.lookupOrNull(condOp.getCondition());
-    if (!nextCond || nextCond.getType() != cond0.getType())
+    if (!nextCond)
+      return failure();
+    Value nextActive;
+    if (lanewiseCond) {
+      // A lane stays active while its predicate holds.
+      Value act = active;
+      auto aligned = alignMemoryAccess(act, laneMap, nextCond,
+                                       maps.lookup(nextCond), builder, pc);
+      if (failed(aligned) || act.getType() != active.getType())
+        return failure();
+      nextActive = stablehlo::AndOp::create(builder, wloc, act, nextCond);
+      maps[nextActive] = laneMap;
+      nextCond = anyOverLanes(builder, wloc, nextActive);
+    }
+    if (nextCond.getType() != cond0.getType())
       return failure();
     SmallVector<Value> carried{nextCond};
+    if (lanewiseCond)
+      carried.push_back(nextActive);
     for (auto [i, a] : llvm::enumerate(condOp.getArgs())) {
       Value m = mapping.lookupOrNull(a);
-      if (!m || m.getType() != carriedInit[1 + i].getType())
+      if (!m)
+        return failure();
+      Value old = body->getArgument(argBase + i);
+      if (lanewiseCond && m != old) {
+        if (!broadcastYieldToCarried(m, old, builder, maps, pc))
+          return failure();
+        m = stablehlo::SelectOp::create(builder, wloc, active, m, old);
+        maps[m] = laneMap;
+      }
+      if (m.getType() != carriedInit[argBase + i].getType())
         return failure();
       carried.push_back(m);
     }
@@ -2231,12 +2358,12 @@ static LogicalResult tryRaisingSCFWhileOpToStableHLO(
   }
 
   for (auto [i, res] : llvm::enumerate(whileOp.getResults())) {
-    Value whileRes = newWhile.getResult(1 + i);
+    Value whileRes = newWhile.getResult(argBase + i);
     mapping.map(res, whileRes);
     maps[whileRes] = argMaps[i];
   }
   for (auto [i, memref] : llvm::enumerate(buffers))
-    mapping.map(memref, newWhile.getResult(1 + nargs + i));
+    mapping.map(memref, newWhile.getResult(argBase + nargs + i));
 
   parentMapping = mapping;
   return success();

@@ -20,6 +20,7 @@ include "mlir/Interfaces/ViewLikeInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/OpBase.td"
+include "mlir/IR/OpAsmInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/IR/AttrTypeBase.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
@@ -1663,6 +1664,96 @@ def MPIBcastOp : EnzymeXLA_Op<"mpi.bcast", []> {
   );
 
   let assemblyFormat = "`(` operands `)` prop-dict attr-dict `:` functional-type(operands, results)";
+}
+
+//===----------------------------------------------------------------------===//
+// Fixed-point loops
+//===----------------------------------------------------------------------===//
+
+def FixedPointOp : EnzymeXLA_Op<"fixed_point", [
+    RecursiveMemoryEffects, RecursivelySpeculatable,
+    SingleBlockImplicitTerminator<"enzymexla::YieldOp">,
+    AllTypesMatch<["inits", "results"]>,
+    OpAsmOpInterface]> {
+  let summary = "A loop iterated to a fixed point, differentiated at its converged state";
+  let description = [{
+    `enzymexla.fixed_point` is a `stablehlo.while` whose result is declared to
+    be a fixed point of its body: `z <- phi(z, x)` iterated while the `cond`
+    region says so. The operands are the initial carried values, both regions
+    take the carried values as arguments, `cond` yields a `tensor<i1>` and
+    `body` yields the next carried values.
+
+    The declaration is what matters to Enzyme. Reverse mode does not tape the
+    iterations: it keeps the converged state and iterates the adjoint of one
+    step there until it converges (Christianson 1994; Tapenade's `FP-LOOP`;
+    LLVM Enzyme's `__enzyme_fixed_point`, EnzymeAD/Enzyme#3398). The initial
+    guess gets no adjoint. The
+    adjoint iteration stops once the squared norm of its increment has fallen
+    below `reduction` times its value after the first pass (default 1e-12),
+    or after `max_iters` passes (default 1000; 0 for no limit).
+
+    A carried value yielded unchanged is a parameter threaded through the loop,
+    not state. The body must be a contraction at the fixed point for the adjoint
+    iteration to converge (stationary iterations and Newton are; Krylov methods
+    are not), and differentiable there: a secant step, which divides by the
+    change in the residual, is 0/0 at the fixed point and gives a NaN adjoint.
+
+    `mask`, when present, is the position of a carried `tensor<...xi1>` saying
+    which lanes still step, in a loop raised from a kernel whose threads each
+    stop on their own: the body only updates those lanes. The reverse rule
+    differentiates the step with every lane active, since at the fixed point
+    none is.
+
+    A `stablehlo.while` carrying the `enzyme.fixed_point` attribute is
+    converted to this op by `raise-fixed-point-loops`, and the op is lowered
+    back by `lower-fixed-point-loops`. The op exists so that the loop keeps its
+    one-step shape between the two: the StableHLO optimizations do not see it.
+  }];
+  let arguments = (ins Variadic<AnyType>:$inits,
+                       OptionalAttr<F64Attr>:$reduction,
+                       OptionalAttr<I64Attr>:$max_iters,
+                       OptionalAttr<I64Attr>:$mask);
+  let results = (outs Variadic<AnyType>:$results);
+  let regions = (region SizedRegion<1>:$cond, SizedRegion<1>:$body);
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    static constexpr double kDefaultReduction = 1e-12;
+    static constexpr int64_t kDefaultMaxIters = 1000;
+    double getReductionOrDefault();
+    int64_t getMaxItersOrDefault();
+
+    // The discardable attributes that mark a loop to become this op: set on a
+    // kernel's scf.while by apply-fixed-point-directives, or on a
+    // stablehlo.while by Reactant's `@trace fixed_point=...`.
+    static constexpr ::llvm::StringLiteral kMarkerAttrName =
+        "enzyme.fixed_point";
+    static constexpr ::llvm::StringLiteral kMarkerReductionAttrName =
+        "enzyme.fixed_point_reduction";
+    static constexpr ::llvm::StringLiteral kMarkerMaxItersAttrName =
+        "enzyme.fixed_point_max_iters";
+    // Set by the StableHLO raising on a loop raised with a lane mask.
+    static constexpr ::llvm::StringLiteral kMarkerMaskAttrName =
+        "enzyme.fixed_point_mask";
+    // Whether `loop` is marked: `enzyme.fixed_point` is present and not
+    // `false` (an explicit opt-out).
+    static bool isMarked(::mlir::Operation *loop);
+
+    // As stablehlo.while: both regions' entry arguments are named `iterArg`,
+    // so the side-by-side regions share names and the custom syntax can print
+    // them once (on the op) and parse them back for both regions.
+    void getAsmBlockArgumentNames(Region &region, OpAsmSetValueNameFn setNameFn) {
+      for (BlockArgument arg : region.getArguments())
+        setNameFn(arg, "iterArg");
+    }
+  }];
+}
+
+def YieldOp : EnzymeXLA_Op<"yield", [Pure, Terminator, HasParent<"FixedPointOp">]> {
+  let summary = "Terminator of the regions of enzymexla.fixed_point";
+  let arguments = (ins Variadic<AnyType>:$operands);
+  let builders = [OpBuilder<(ins), [{ /* an empty yield */ }]>];
+  let assemblyFormat = "attr-dict ($operands^ `:` type($operands))?";
 }
 
 #endif // ENZYMEXLA_OPS

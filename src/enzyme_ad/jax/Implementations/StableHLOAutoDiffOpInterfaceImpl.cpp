@@ -3381,9 +3381,14 @@ public:
       caches.push_back(info);
     }
 
+    // The trip count is only needed to turn caches into tapes. Gradient cells
+    // become loop-carried values regardless of how the loop terminates, which
+    // is what a loop with a data-dependent condition -- the adjoint iteration
+    // of a fixed-point loop, for one -- relies on.
     WhileLoopInfo info(whileOp);
+    bool hasLoopInfo = info.computeInfo().succeeded() && info.isValid();
 
-    if (info.computeInfo().failed() || !info.isValid()) {
+    if (!caches.empty() && !hasLoopInfo) {
       return rewriter.notifyMatchFailure(
           op, "WhileOp does not have known iteration count for cache removal");
     }
@@ -3480,7 +3485,8 @@ public:
 
     Value inductionVariable; // [0,..., N - 1] counter from within the loop
 
-    if (matchPattern(info.getStart(), m_Zero()) && info.isStepOne()) {
+    if (hasLoopInfo && matchPattern(info.getStart(), m_Zero()) &&
+        info.isStepOne()) {
       inductionVariable = body->getArgument(0);
     }
 

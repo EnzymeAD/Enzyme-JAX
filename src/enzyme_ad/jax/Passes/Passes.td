@@ -1775,4 +1775,46 @@ def GpuModuleToBinarySink : Pass<"enzymexla-gpu-module-to-binary", ""> {
   let dependentDialects = ["gpu::GPUDialect", "LLVM::LLVMDialect", ];
 }
 
+def RaiseFixedPointLoopsPass : Pass<"raise-fixed-point-loops"> {
+  let summary = "Turn stablehlo.while loops marked enzyme.fixed_point into enzymexla.fixed_point";
+  let description = [{
+    A `stablehlo.while` carrying the `enzyme.fixed_point` attribute (set by
+    Reactant's `@trace fixed_point=...`, or by `apply-fixed-point-directives`
+    on a kernel loop that the StableHLO raising then turned into a
+    `stablehlo.while`) becomes an `enzymexla.fixed_point`, which Enzyme
+    differentiates at its converged state. The `enzyme.fixed_point_reduction`
+    and `enzyme.fixed_point_max_iters` attributes become the op's own.
+  }];
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "stablehlo::StablehloDialect",
+  ];
+}
+
+def LowerFixedPointLoopsPass : Pass<"lower-fixed-point-loops"> {
+  let summary = "Lower enzymexla.fixed_point back to a stablehlo.while";
+  let description = [{
+    The fixed-point settings are kept on the `stablehlo.while` as
+    `enzyme.fixed_point*` attributes, so the round trip is lossless.
+  }];
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+  ];
+}
+
+def ApplyFixedPointDirectivesPass : Pass<"apply-fixed-point-directives"> {
+  let summary = "Mark the kernel loops that call __enzyme_set_fixed_point as fixed points";
+  let description = [{
+    A kernel marks a loop as a fixed point by calling
+    `__enzyme_set_fixed_point(double reduction, int64_t max_iters,
+    void *control, ...)` in its body, as for LLVM Enzyme (Reactant's
+    `fixed_point_implicit` emits it). The innermost `scf.while` around the call
+    gets `enzyme.fixed_point`, with the settings given as non-negative
+    constants (a negative one selects the default), and the call is removed.
+    The loop's carried values are its state, so the state arguments are not
+    read, and a control function is not supported. Runs after the kernel's
+    control flow is lifted to SCF, before `canonicalize-scf-for`.
+  }];
+}
+
 #endif
