@@ -354,21 +354,21 @@ MlirType enzymexlaCommNcclCommTypeGet(MlirContext ctx) {
 MlirAttribute enzymexlaCommNcclRedOpAttrGet(MlirContext ctx,
                                             EnzymeXlaCommNcclRedOp op) {
   switch (op) {
-  case ENZYMEXLA_COMM_NCCL_RED_OP_NULL:
-    return wrap(mlir::comm::NcclRedOpAttr::get(
-        unwrap(ctx), mlir::comm::NcclRedOpEnum::NCCL_RED_OP_NULL));
   case ENZYMEXLA_COMM_NCCL_RED_OP_SUM:
     return wrap(mlir::comm::NcclRedOpAttr::get(
-        unwrap(ctx), mlir::comm::NcclRedOpEnum::NCCL_RED_OP_SUM));
+        unwrap(ctx), mlir::comm::NcclRedOpEnum::ncclSum));
   case ENZYMEXLA_COMM_NCCL_RED_OP_PROD:
     return wrap(mlir::comm::NcclRedOpAttr::get(
-        unwrap(ctx), mlir::comm::NcclRedOpEnum::NCCL_RED_OP_PROD));
+        unwrap(ctx), mlir::comm::NcclRedOpEnum::ncclProd));
   case ENZYMEXLA_COMM_NCCL_RED_OP_MIN:
     return wrap(mlir::comm::NcclRedOpAttr::get(
-        unwrap(ctx), mlir::comm::NcclRedOpEnum::NCCL_RED_OP_MIN));
+        unwrap(ctx), mlir::comm::NcclRedOpEnum::ncclMin));
   case ENZYMEXLA_COMM_NCCL_RED_OP_MAX:
     return wrap(mlir::comm::NcclRedOpAttr::get(
-        unwrap(ctx), mlir::comm::NcclRedOpEnum::NCCL_RED_OP_MAX));
+        unwrap(ctx), mlir::comm::NcclRedOpEnum::ncclMax));
+  case ENZYMEXLA_COMM_NCCL_RED_OP_AVG:
+    return wrap(mlir::comm::NcclRedOpAttr::get(
+        unwrap(ctx), mlir::comm::NcclRedOpEnum::ncclAvg));
   default:
     llvm_unreachable("Invalid NCCL reduction operation");
   }
