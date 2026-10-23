@@ -239,6 +239,12 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
         /*default=*/"false",
         /*description=*/"Enable auto batching passes">,
     Option<
+        /*C++ variable name=*/"parallel_while_to_batched_scatter_passes",
+        /*CLI argument=*/"parallel_while_to_batched_scatter_passes",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"With the auto batching passes, a parallel while with a constant trip count becomes a batched scatter">,
+    Option<
         /*C++ variable name=*/"structured_tensors_detection",
         /*CLI argument=*/"structured_tensors_detection",
         /*type=*/"bool",
