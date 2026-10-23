@@ -1206,6 +1206,8 @@ def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
 
 def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
+def : HLODerivative<"Exp2Op", (Op $x), [(CheckedMul (DiffeRet), (Mul (Exp2 $x), (Log (HLOConstantFP<"2"> $x))))]>;
+
 def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
 def : HLODerivative<"ImagOp", (Op $x),
@@ -1216,6 +1218,8 @@ def : HLODerivative<"ImagOp", (Op $x),
                   ], (Imag (Shadow $x))>;
 
 def : HLODerivative<"LogOp", (Op $x), [(CheckedDiv (DiffeRet), $x)]>;
+
+def : HLODerivative<"Log2Op", (Op $x), [(CheckedDiv (DiffeRet), (Mul $x, (Log (HLOConstantFP<"2"> $x))))]>;
 
 def : HLODerivative<"Log1pOp", (Op $x), [(CheckedDiv (DiffeRet), (Add $x, (HLOConstantFP<"1"> $x)))]>;
 
