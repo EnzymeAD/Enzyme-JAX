@@ -377,8 +377,9 @@ struct RotateOpBatchInterface
 //
 // Reverse mode is implicit differentiation at the converged state
 // (Christianson 1994; Tapenade's `$AD FP-LOOP`; LLVM Enzyme's
-// `__enzyme_fixed_point`). The iterations are not taped: only the state the
-// loop ended in, z*, is kept, and the adjoint of one step is iterated there,
+// `__enzyme_fixed_point`, EnzymeAD/Enzyme#3398). The iterations are not taped:
+// only the state the loop ended in, z*, is kept, and the adjoint of one step is
+// iterated there,
 //
 //   d_0 = zbar,   d_{k+1} = phi_z(z*, x)^T d_k,   xbar += phi_x(z*, x)^T d_k,
 //

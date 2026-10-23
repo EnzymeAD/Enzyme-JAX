@@ -1737,7 +1737,7 @@ struct WhileToForHelper {
 };
 
 // A loop marked as a fixed point (enzyme.fixed_point, set by
-// recognize-fixed-point-loops) must keep its shape: its body has to stay one
+// apply-fixed-point-directives) must keep its shape: its body has to stay one
 // step of the iteration and its exit has to stay the convergence test. Turning
 // it into a counted scf.for with the body under an scf.if on a carried flag
 // would run no-op iterations after convergence, and the fixed-point reverse

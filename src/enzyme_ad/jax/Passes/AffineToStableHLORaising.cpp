@@ -1154,7 +1154,7 @@ broadcastYieldToCarried(Value &yielded, Value carried, OpBuilder &builder,
 
 // An scf.while raised to a stablehlo.while is still the same loop to Enzyme:
 // the directives put on it (the fixed-point marker in particular, which
-// recognize-fixed-point-loops sets on the scf.while) are carried over so the
+// apply-fixed-point-directives sets on the scf.while) are carried over so the
 // passes downstream see them.
 static void copyEnzymeLoopAttrs(Operation *from, Operation *to) {
   for (NamedAttribute attr : from->getDiscardableAttrs())

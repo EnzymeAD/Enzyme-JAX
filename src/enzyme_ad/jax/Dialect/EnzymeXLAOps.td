@@ -1684,7 +1684,8 @@ def FixedPointOp : EnzymeXLA_Op<"fixed_point", [
     The declaration is what matters to Enzyme. Reverse mode does not tape the
     iterations: it keeps the converged state and iterates the adjoint of one
     step there until it converges (Christianson 1994; Tapenade's `FP-LOOP`;
-    LLVM Enzyme's `__enzyme_fixed_point`). The initial guess gets no adjoint. The
+    LLVM Enzyme's `__enzyme_fixed_point`, EnzymeAD/Enzyme#3398). The initial
+    guess gets no adjoint. The
     adjoint iteration stops once the squared norm of its increment has fallen
     below `reduction` times its value after the first pass (default 1e-12),
     or after `max_iters` passes (default 1000; 0 for no limit).
@@ -1721,7 +1722,7 @@ def FixedPointOp : EnzymeXLA_Op<"fixed_point", [
     int64_t getMaxItersOrDefault();
 
     // The discardable attributes that mark a loop to become this op: set on a
-    // kernel's scf.while by recognize-fixed-point-loops, or on a
+    // kernel's scf.while by apply-fixed-point-directives, or on a
     // stablehlo.while by Reactant's `@trace fixed_point=...`.
     static constexpr ::llvm::StringLiteral kMarkerAttrName =
         "enzyme.fixed_point";
