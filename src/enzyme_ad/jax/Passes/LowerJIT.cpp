@@ -625,8 +625,8 @@ struct LowerJITPass
     SmallVector<gpu::BinaryOp> binaries;
     root->walk([&](gpu::BinaryOp binary) { binaries.push_back(binary); });
     for (auto binary : binaries) {
-      auto storage = dyn_cast_or_null<LLVM::GlobalOp>(
-          SymbolTable::lookupNearestSymbolFrom(
+      auto storage =
+          dyn_cast_or_null<LLVM::GlobalOp>(SymbolTable::lookupNearestSymbolFrom(
               binary->getParentOp(),
               StringAttr::get(&getContext(),
                               binary.getName() + "_gpubin_cst")));
