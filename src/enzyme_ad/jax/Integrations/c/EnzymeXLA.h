@@ -178,6 +178,19 @@ typedef enum {
 MLIR_CAPI_EXPORTED MlirAttribute
 enzymexlaCommMpiOpAttrGet(MlirContext ctx, EnzymeXlaCommMpiOp op);
 
+MLIR_CAPI_EXPORTED MlirType enzymexlaCommNcclCommTypeGet(MlirContext ctx);
+
+typedef enum {
+  ENZYMEXLA_COMM_NCCL_REDUCE_OP_NULL = 0,
+  ENZYMEXLA_COMM_NCCL_REDUCE_OP_SUM = 1,
+  ENZYMEXLA_COMM_NCCL_REDUCE_OP_PROD = 2,
+  ENZYMEXLA_COMM_NCCL_REDUCE_OP_MAX = 3,
+  ENZYMEXLA_COMM_NCCL_REDUCE_OP_MIN = 4,
+} EnzymeXlaCommNcclRedOp;
+
+MLIR_CAPI_EXPORTED MlirAttribute
+enzymexlaCommNcclRedOpAttrGet(MlirContext ctx, EnzymeXlaCommNcclRedOp op);
+
 //===----------------------------------------------------------------------===//
 // Other Ops / Attributes
 //===----------------------------------------------------------------------===//
