@@ -30,7 +30,7 @@ def Constant : HLOInst<"ConstantOp">;
 def Convert : HLOInst<"ConvertOp">;
 def Convolution : HLOInst<"ConvolutionOp">;
 def Cos : HLOInst<"CosineOp">;
-def CountLeadingZeros : HLOInst<"ClzOp">;
+def Clz : HLOInst<"ClzOp">;
 def CustomCall : HLOInst<"CustomCallOp">;
 def Div : HLOInst<"DivOp">;
 def DotGeneral : HLOInst<"DotGeneralOp", "->getResult(0)">;
@@ -70,7 +70,7 @@ def Or : HLOInst<"OrOp">;
 def Outfeed : HLOInst<"OutfeedOp">;
 def Pad : HLOInst<"PadOp">;
 def PartitionId : HLOInst<"PartitionIdOp">;
-def PopulationCount : HLOInst<"PopcntOp">;
+def Popcnt : HLOInst<"PopcntOp">;
 def Pow : HLOInst<"PowOp">;
 def Real : HLOInst<"RealOp">;
 def Recv : HLOInst<"RecvOp">;
@@ -127,6 +127,34 @@ def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::EQ
 def GE : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GE">;
 def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT">;
 def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
+
+// Inactive ops
+def : HLOInactiveOp<"AndOp">;
+def : HLOInactiveOp<"CeilOp">;
+def : HLOInactiveOp<"ClzOp">;
+def : HLOInactiveOp<"CompareOp">;
+def : HLOInactiveOp<"CreateTokenOp">;
+def : HLOInactiveOp<"DynamicIotaOp">;
+def : HLOInactiveOp<"FloorOp">;
+def : HLOInactiveOp<"GetDimensionSizeOp">;
+def : HLOInactiveOp<"IotaOp">;
+def : HLOInactiveOp<"IsFiniteOp">;
+def : HLOInactiveOp<"NotOp">;
+def : HLOInactiveOp<"OrOp">;
+def : HLOInactiveOp<"PartitionIdOp">;
+def : HLOInactiveOp<"PopcntOp">;
+def : HLOInactiveOp<"ReplicaIdOp">;
+def : HLOInactiveOp<"RoundOp">;
+def : HLOInactiveOp<"RoundNearestEvenOp">;
+def : HLOInactiveOp<"RngOp">;
+def : HLOInactiveOp<"RngBitGeneratorOp">;
+def : HLOInactiveOp<"SetDimensionSizeOp">;
+def : HLOInactiveOp<"ShiftLeftOp">;
+def : HLOInactiveOp<"ShiftRightArithmeticOp">;
+def : HLOInactiveOp<"ShiftRightLogicalOp">;
+def : HLOInactiveOp<"SignOp">;
+def : HLOInactiveOp<"TorchIndexSelectOp">;
+def : HLOInactiveOp<"XorOp">;
 
 // Others
 def CheckedMul : SubRoutine<(Op $diffret, $x),
@@ -1050,8 +1078,6 @@ def : HLODerivative<"GatherOp", (Op $operand, $start_indices),
                     )
                   >;
 
-def : HLOInactiveOp<"CeilOp">;
-
 def : HLODerivative<"ClampOp", (Op $min, $operand, $max), [
   (Select
     (And
@@ -1090,8 +1116,6 @@ def : HLODerivative<"ClampOp", (Op $min, $operand, $max), [
 def : HLODerivative<"CbrtOp", (Op $x), [
   (CheckedDiv (DiffeRet), (Mul (HLOConstantFP<"3">), (Mul (Cbrt $x), (Cbrt $x)))),
 ]>;
-
-def : HLOInactiveOp<"CompareOp">;
 
 def : HLODerivative<"ComplexOp", (Op $re, $im), [
   (Real (DiffeRet)),
@@ -1132,8 +1156,6 @@ def : HLOMemoryIdentityOp<"DynamicUpdateSliceOp", [], [0, 1], (Op $operand, $upd
                     ]>;
 
 def : HLODerivative<"CosineOp", (Op $x), [(CheckedMul (DiffeRet), (Neg (Sin $x)))], (Neg (Mul (Sin $x), (Shadow $x)))>;
-
-def : HLOInactiveOp<"CreateTokenOp">;
 
 def : HLODerivative<"DivOp", (Op $x, $y),
                     [
@@ -1182,13 +1204,13 @@ def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
                         (HLOConstantFP<"0">)))
                   >;
 
-def : HLOInactiveOp<"DynamicIotaOp">;
+
 
 def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
 def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
-def : HLOInactiveOp<"FloorOp">;
+
 
 def : HLODerivative<"ImagOp", (Op $x),
                   [
@@ -1197,9 +1219,9 @@ def : HLODerivative<"ImagOp", (Op $x),
                       (HLOConstantFP<"0">))
                   ], (Imag (Shadow $x))>;
 
-def : HLOInactiveOp<"IotaOp">;
 
-def : HLOInactiveOp<"IsFiniteOp">;
+
+
 
 def : HLODerivative<"LogOp", (Op $x), [(CheckedDiv (DiffeRet), $x)]>;
 
@@ -1237,7 +1259,7 @@ def : HLOMemoryIdentityOp<"PadOp", [], [-1], (Op $op, $padval), [
   (AssertingInactiveArg)
 ]>;
 
-def : HLOInactiveOp<"PartitionIdOp">;
+
 
 def : HLODerivative<"PowOp", (Op $x, $y),
                   [
@@ -1277,13 +1299,13 @@ def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (D
 
 def : HLODerivative<"ReverseOp", (Op $x), [(Reverse (DiffeRet), (Dimensions))], (Reverse (Shadow $x), (Dimensions))>;
 
-def : HLOInactiveOp<"RoundOp">;
 
-def : HLOInactiveOp<"RoundNearestEvenOp">;
 
-def : HLOInactiveOp<"RngOp">;
 
-def : HLOInactiveOp<"RngBitGeneratorOp">;
+
+
+
+
 
 def : HLODerivative<"RsqrtOp", (Op $x),
                     [
@@ -1308,7 +1330,7 @@ def : HLODerivative<"SelectOp", (Op $cond, $lhs, $rhs),
                       (Select $cond, (SelectIfActive $lhs, (Shadow $lhs), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (Shadow $rhs), (HLOConstantFP<"0">)))
                   >;
 
-def : HLOInactiveOp<"SignOp">;
+
 
 def : HLODerivative<"SineOp", (Op $x), [(CheckedMul (DiffeRet), (Cos $x))]>;
 
@@ -1334,7 +1356,7 @@ def : HLODerivative<"TanhOp", (Op $x),
                     ]
                   >;
 
-def : HLOInactiveOp<"TorchIndexSelectOp">;
+
 
 def : HLODerivative<"TransposeOp", (Op $x),
                     [
