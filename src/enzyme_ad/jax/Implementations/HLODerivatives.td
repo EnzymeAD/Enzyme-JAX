@@ -111,15 +111,6 @@ def UniformQuantize : HLOInst<"UniformQuantizeOp">;
 def While : HLOInst<"WhileOp">;
 def Xor : HLOInst<"XorOp">;
 
-// Deprecated operations from StableHLO - "Not in HLO" category
-def Broadcast : HLOInst<"BroadcastOp">;
-def CreateToken : HLOInst<"CreateTokenOp">;
-def CrossReplicaSum : HLOInst<"CrossReplicaSumOp">;
-def Dot : HLOInst<"DotOp">;
-def Einsum : HLOInst<"EinsumOp">;
-def TorchIndexSelect : HLOInst<"TorchIndexSelectOp">;
-def UnaryEinsum : HLOInst<"UnaryEinsumOp">;
-
 // Required ops for the rules not in HLO
 def Conj : Inst<"ConjOp", "chlo", "", "">;
 
@@ -155,7 +146,6 @@ def : HLOInactiveOp<"ShiftLeftOp">;
 def : HLOInactiveOp<"ShiftRightArithmeticOp">;
 def : HLOInactiveOp<"ShiftRightLogicalOp">;
 def : HLOInactiveOp<"SignOp">;
-def : HLOInactiveOp<"TorchIndexSelectOp">;
 def : HLOInactiveOp<"XorOp">;
 
 // MemoryIdentity ops
@@ -1003,30 +993,6 @@ def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
                       )
                     )
                   >;
-
-def EinsumConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getEinsumConfig();
-}]>;
-
-def GradUnaryEinsumConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  StringRef config = op.getEinsumConfig();
-  auto [input, output] = config.split(StringRef("->"));
-  builder.getStringAttr(output + "->" + input);
-}]>;
-
-def GradEinsumConfigLhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  StringRef config = op.getEinsumConfig();
-  auto [input, output] = config.split(StringRef("->"));
-  auto [lhs, rhs] = input.split(',');
-  builder.getStringAttr(output + "," + rhs + "->" + lhs);
-}]>;
-
-def GradEinsumConfigRhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  StringRef config = op.getEinsumConfig();
-  auto [input, output] = config.split(StringRef("->"));
-  auto [lhs, rhs] = input.split(',');
-  builder.getStringAttr(output + "," + lhs + "->" + rhs);
-}]>;
 
 // Derivative rules
 def : HLODerivative<"AddOp", (Op $x, $y),
