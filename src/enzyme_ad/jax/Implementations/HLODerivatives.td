@@ -111,8 +111,6 @@ def UniformQuantize : HLOInst<"UniformQuantizeOp">;
 def While : HLOInst<"WhileOp">;
 def Xor : HLOInst<"XorOp">;
 
-def Conj : Inst<"ConjOp", "chlo", "", "">;
-
 // Deprecated operations from StableHLO - "Not in HLO" category
 def Broadcast : HLOInst<"BroadcastOp">;
 def CreateToken : HLOInst<"CreateTokenOp">;
@@ -121,6 +119,9 @@ def Dot : HLOInst<"DotOp">;
 def Einsum : HLOInst<"EinsumOp">;
 def TorchIndexSelect : HLOInst<"TorchIndexSelectOp">;
 def UnaryEinsum : HLOInst<"UnaryEinsumOp">;
+
+// Required ops for the rules not in HLO
+def Conj : Inst<"ConjOp", "chlo", "", "">;
 
 /// Helpers - Max/Min
 def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::EQ">;
