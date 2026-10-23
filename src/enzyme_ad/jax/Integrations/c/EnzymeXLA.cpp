@@ -347,6 +347,33 @@ MlirAttribute enzymexlaCommMpiOpAttrGet(MlirContext ctx,
   }
 }
 
+MlirType enzymexlaCommNcclCommTypeGet(MlirContext ctx) {
+  return wrap(mlir::comm::NcclCommType::get(unwrap(ctx)));
+}
+
+MlirAttribute enzymexlaCommNcclRedOpAttrGet(MlirContext ctx,
+                                            EnzymeXlaCommNcclRedOp op) {
+  switch (op) {
+  case ENZYMEXLA_COMM_NCCL_RED_OP_SUM:
+    return wrap(mlir::comm::NcclRedOpAttr::get(
+        unwrap(ctx), mlir::comm::NcclRedOpEnum::ncclSum));
+  case ENZYMEXLA_COMM_NCCL_RED_OP_PROD:
+    return wrap(mlir::comm::NcclRedOpAttr::get(
+        unwrap(ctx), mlir::comm::NcclRedOpEnum::ncclProd));
+  case ENZYMEXLA_COMM_NCCL_RED_OP_MIN:
+    return wrap(mlir::comm::NcclRedOpAttr::get(
+        unwrap(ctx), mlir::comm::NcclRedOpEnum::ncclMin));
+  case ENZYMEXLA_COMM_NCCL_RED_OP_MAX:
+    return wrap(mlir::comm::NcclRedOpAttr::get(
+        unwrap(ctx), mlir::comm::NcclRedOpEnum::ncclMax));
+  case ENZYMEXLA_COMM_NCCL_RED_OP_AVG:
+    return wrap(mlir::comm::NcclRedOpAttr::get(
+        unwrap(ctx), mlir::comm::NcclRedOpEnum::ncclAvg));
+  default:
+    llvm_unreachable("Invalid NCCL reduction operation");
+  }
+}
+
 namespace {
 
 // Helper: format a pass with a parenthesized int64 argument.
