@@ -6,6 +6,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 
 #define DEBUG_TYPE "llvm-to-memref-access"
@@ -66,17 +67,48 @@ struct LLVMToMemrefAccessPass
         return;
       funcToKernelMap[callee].insert(callOp);
     });
-    if (funcToKernelMap.empty())
+    SetVector<FunctionOpInterface> candidateFunctions;
+    for (auto &entry : funcToKernelMap)
+      candidateFunctions.insert(entry.first);
+    // The existing path discovers callees through enzymexla custom-call ops.
+    // Imported LLVM kernels are standalone functions with no such callers, so
+    // an explicit argument contract must also make a function a candidate.
+    moduleOp->walk([&](FunctionOpInterface function) {
+      for (unsigned index = 0; index < function.getNumArguments(); ++index) {
+        if (function.getArgAttr(index, "enzymexla.memref_type")) {
+          candidateFunctions.insert(function);
+          break;
+        }
+      }
+    });
+    if (candidateFunctions.empty())
       return;
 
     // Recover memref types for callees
-    for (auto [callee, callers] : funcToKernelMap) {
+    for (auto callee : candidateFunctions) {
+      auto callers = funcToKernelMap.lookup(callee);
       SmallVector<Type> newTypes;
       SmallVector<unsigned> indices;
       for (auto [index, calleeArgTy, calleeArg] :
            llvm::enumerate(callee.getArgumentTypes(), callee.getArguments())) {
-        assert(!callers.empty());
         if (auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(calleeArgTy)) {
+          if (auto typeAttr = dyn_cast_or_null<TypeAttr>(
+                  callee.getArgAttr(index, "enzymexla.memref_type"))) {
+            auto memrefType = dyn_cast<MemRefType>(typeAttr.getValue());
+            if (!memrefType) {
+              callee.emitError() << "enzymexla.memref_type"
+                                 << " must contain a memref type";
+              signalPassFailure();
+              return;
+            }
+            newTypes.push_back(memrefType);
+            indices.push_back(index);
+            continue;
+          }
+          if (callers.empty()) {
+            newTypes.push_back(calleeArgTy);
+            continue;
+          }
           bool sameElementTypeAcrossCallers = true;
           bool sameShapeAcrossCallers = true;
           ArrayRef<int64_t> shape;
@@ -146,6 +178,8 @@ struct LLVMToMemrefAccessPass
           } else {
             newTypes.push_back(calleeArgTy);
           }
+        } else {
+          newTypes.push_back(calleeArgTy);
         }
       }
 
@@ -159,7 +193,7 @@ struct LLVMToMemrefAccessPass
               dyn_cast<LLVM::LLVMFunctionType>(callee.getFunctionType())) {
         if (fty.getReturnType() == LLVM::LLVMVoidType::get(ctx) &&
             !fty.isVarArg()) {
-          newFuncTy = FunctionType::get(ctx, newTypes, fty.getReturnType());
+          newFuncTy = FunctionType::get(ctx, newTypes, {});
         }
       } else if (auto fty = dyn_cast<FunctionType>(callee.getFunctionType())) {
         if (fty.getResults().empty()) {
@@ -194,9 +228,15 @@ struct LLVMToMemrefAccessPass
         // the old one
         newFunc->setAttr("function_type", TypeAttr::get(newFuncTy));
 
-        // Iterate over each argument and copy its attributes
+        // Copy argument attributes, except for the type contract consumed by
+        // this rewrite.
         for (unsigned i = 0; i < callee.getNumArguments(); ++i) {
-          newFunc.setArgAttrs(i, callee.getArgAttrs(i));
+          SmallVector<NamedAttribute> attributes;
+          for (auto attribute : callee.getArgAttrs(i)) {
+            if (attribute.getName() != "enzymexla.memref_type")
+              attributes.push_back(attribute);
+          }
+          newFunc.setArgAttrs(i, DictionaryAttr::get(ctx, attributes));
         }
         callee->erase();
       }
