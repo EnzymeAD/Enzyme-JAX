@@ -2995,7 +2995,10 @@ struct SliceOfDynamicUpdate final
         }
       }
 
-      if (no_overlap) {
+      Operation *definingOp = dyn.getOperand().getDefiningOp();
+      if (no_overlap &&
+          (!definingOp ||
+           !llvm::isa<stablehlo::DynamicUpdateSliceOp>(definingOp))) {
         replace(dyn.getOperand(), sliceStart, sliceLimit);
         return success();
       }
@@ -18395,8 +18398,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {

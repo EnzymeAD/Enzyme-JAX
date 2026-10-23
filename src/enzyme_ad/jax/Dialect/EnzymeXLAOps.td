@@ -326,7 +326,7 @@ def GPUWrapperOp : EnzymeXLA_Op<"gpu_wrapper", [
   let summary = "Indicates the region contained must be executed on the GPU";
   let description = [{
     The optional arguments to this operation are suggestions about what block
-    dimensions this gpu kernel should have - usually taken f rom kernel
+    dimensions this gpu kernel should have - usually taken from kernel
       launch params
 }];
 let results = (outs Index : $result);

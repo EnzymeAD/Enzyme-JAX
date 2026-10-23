@@ -5518,8 +5518,11 @@ static bool tryRaisingToStableHLO(func::FuncOp func,
   for (auto &it : body->without_terminator()) {
     anyFailed =
         tryRaisingOpToStableHLO(&it, mapping, builder, maps, emptyPc).failed();
-    if (anyFailed)
+    if (anyFailed) {
+      llvm::errs() << "failed to raise operation: " << *&it << "\n"
+                   << " within " << it << "\n";
       break;
+    }
   }
 
   if (anyFailed) {

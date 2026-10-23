@@ -13,10 +13,14 @@
 
 #include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
 #include "Enzyme/MLIR/Interfaces/AutoDiffOpInterface.h"
+#include "Enzyme/MLIR/Interfaces/AutoDiffTypeInterface.h"
 #include "Enzyme/MLIR/Interfaces/GradientUtils.h"
 #include "Enzyme/MLIR/Interfaces/GradientUtilsReverse.h"
+#include "Enzyme/MLIR/Passes/RemovalUtils.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "src/enzyme_ad/jax/Implementations/SHLOGenericBatchOpInterface.h"
@@ -290,6 +294,13 @@ struct GPUWrapperOpInterfaceReverse
         if (revBB.empty()) {
           YieldOp::create(bodyBuilder, repFor->getLoc(), ValueRange());
         }
+
+        // The gradients of the values of the kernel do not outlive it, which
+        // matters when it is nested in a region they cannot escape, like a
+        // jit_region.
+        bodyBuilder.setInsertionPointToStart(&revBB);
+        localizeGradients(bodyBuilder, gutils, &oBB);
+
         bodyBuilder.setInsertionPoint(revBB.getTerminator());
 
         auto first = oBB.rbegin();
