@@ -27,10 +27,12 @@ def ParseOptimizationRulesPass : Pass<"parse-optimization-rules", "ModuleOp"> {
 }
 
 def LLVMToTesseraPass : Pass<"llvm-to-tessera", "ModuleOp"> {
-  let summary = "Convert operations in the LLVM Dialect to operations in the Tessera Dialect";
+  let summary = "Convert annotated functions, their calls, and their returns to operations in the Tessera Dialect";
   let description = [{
-    This pass checks if an operation is marked with a custom
-    annotation and if so, creates a TesseraOp from the LLVMFuncOp.
+    This pass checks if a function (any FunctionOpInterface op, e.g. llvm.func
+    or func.func) is marked with a tessera_op or pure_tessera_op annotation and
+    if so, creates a tessera.define from it. Calls to it (any CallOpInterface op
+    with a symbol callee) become tessera.call and its returns tessera.return.
   }];
   let dependentDialects = [
     "LLVM::LLVMDialect",
@@ -45,6 +47,19 @@ def TesseraToLLVMPass : Pass<"tessera-to-llvm", "ModuleOp"> {
   }];
   let dependentDialects = [
     "LLVM::LLVMDialect",
+    "enzyme::tessera::TesseraDialect"
+  ];
+}
+
+def TesseraToFuncPass : Pass<"tessera-to-func", "ModuleOp"> {
+  let summary = "Convert operations in the Tessera Dialect to operations in the Func Dialect";
+  let description = [{
+    This pass converts tessera.define, tessera.call, and tessera.return into
+    func.func, func.call, and func.return. Unlike tessera-to-llvm, it does not
+    support arguments that were lifted out of memory.
+  }];
+  let dependentDialects = [
+    "func::FuncDialect",
     "enzyme::tessera::TesseraDialect"
   ];
 }
