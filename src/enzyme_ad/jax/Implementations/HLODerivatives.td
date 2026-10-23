@@ -176,11 +176,14 @@ def : HLOMemoryIdentityOp<"DynamicUpdateSliceOp", [], [0, 1], (Op $operand, $upd
   (AssertingInactiveArg)
 ]>;
 
+def : HLOMemoryIdentityOp<"SliceOp", [], [0], (Op $x), [
+  (DynamicUpdateSlice (TypeOf $x), (HLOConstantFP<"0"> $x), (DiffeRet)),
+]>;
+
 // ReadOnlyIdentity ops
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (DiffeRet))]>;
 def : HLOReadOnlyIdentityOp<"ReverseOp", [0], (Op $x), [(Reverse (DiffeRet), (Dimensions))]>;
-def : HLOReadOnlyIdentityOp<"SliceOp">;
 def : HLOReadOnlyIdentityOp<"TransposeOp", [0], (Op $x), [(Transpose (TypeOf $x), (DiffeRet), (InversePermutation))]>;
 
 // Others
