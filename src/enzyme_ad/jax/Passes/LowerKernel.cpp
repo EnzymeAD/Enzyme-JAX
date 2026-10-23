@@ -447,6 +447,22 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   return true;
 };
 
+// Whether `op` is a symbol nothing outside of this module can refer to.
+static bool isLocalSymbol(Operation *op) {
+  if (auto sym = dyn_cast<SymbolOpInterface>(op);
+      sym && sym.canDiscardOnUseEmpty())
+    return true;
+  auto isLocal = [](LLVM::Linkage linkage) {
+    return linkage == LLVM::Linkage::Internal ||
+           linkage == LLVM::Linkage::Private;
+  };
+  if (auto fn = dyn_cast<LLVM::LLVMFuncOp>(op))
+    return !fn.isExternal() && isLocal(fn.getLinkage());
+  if (auto global = dyn_cast<LLVM::GlobalOp>(op))
+    return isLocal(global.getLinkage());
+  return false;
+}
+
 namespace {
 
 struct LowerKernelPass
@@ -457,6 +473,7 @@ struct LowerKernelPass
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(getOperation());
 
+    SetVector<Operation *> lowered;
     getOperation()->walk([&](KernelCallOp op) {
       size_t data[11];
 
@@ -491,18 +508,41 @@ struct LowerKernelPass
 
       // Compiled kernel goes here once ready
       if (backend == "cuda") {
-        CompileGPUKernel(symbolTable, op.getLoc(), fn, data[1], data[2],
-                         data[3], data[4], data[5], data[6], data[7], data[8],
-                         data[9], data[10], op);
+        if (CompileGPUKernel(symbolTable, op.getLoc(), fn, data[1], data[2],
+                             data[3], data[4], data[5], data[6], data[7],
+                             data[8], data[9], data[10], op))
+          lowered.insert(fn);
       } else if (backend == "cpu") {
-        CompileCPUKernel(symbolTable, op.getLoc(), fn, data[1], data[2],
-                         data[3], data[4], data[5], data[6], data[7], data[8],
-                         data[9], data[10], op);
+        if (CompileCPUKernel(symbolTable, op.getLoc(), fn, data[1], data[2],
+                             data[3], data[4], data[5], data[6], data[7],
+                             data[8], data[9], data[10], op))
+          lowered.insert(fn);
       } else {
         op->emitError() << "Cannot lower kernel to unknown backend \""
                         << backend << "\"";
       }
     });
+
+    // The lowered kernels were cloned into GPU modules or host functions:
+    // erase the originals once unused, along with what only they referenced.
+    Operation *root = getOperation();
+    SmallVector<Operation *> worklist(lowered.begin(), lowered.end());
+    DenseSet<Operation *> erased;
+    while (!worklist.empty()) {
+      Operation *op = worklist.pop_back_val();
+      if (erased.contains(op) || !isLocalSymbol(op) ||
+          !SymbolTable::symbolKnownUseEmpty(op, root))
+        continue;
+      Operation *table = op->getParentOp();
+      if (auto uses = SymbolTable::getSymbolUses(op))
+        for (auto use : *uses)
+          if (auto *ref =
+                  symbolTable.lookupNearestSymbolFrom(op, use.getSymbolRef()))
+            if (ref != op && ref->getParentOp() == table)
+              worklist.push_back(ref);
+      erased.insert(op);
+      symbolTable.getSymbolTable(table).erase(op);
+    }
   }
 
 private:
