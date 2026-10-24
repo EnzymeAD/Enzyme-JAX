@@ -37,4 +37,4 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 }
 
 // CHECK-LABEL: @main
-// CHECK: gpu.module @main_kernel [#rocdl.target<O = 3, features = "+wavefront64">] attributes {dlti.dl_spec = #dlti.dl_spec<index = 32 : i64>}
+// CHECK: gpu.module @main_kernel [#rocdl.target<O = 3, features = "+wavefrontsize64">] attributes {dlti.dl_spec = #dlti.dl_spec<index = 32 : i64>}

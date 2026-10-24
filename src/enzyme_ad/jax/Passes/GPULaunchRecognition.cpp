@@ -153,8 +153,16 @@ struct GPULaunchRecognitionPass
 
     Attribute target;
     if (backend == "rocm") {
-      auto chip = "gfx1030";
-      auto features = "+wavefrontsize64";
+      // Build for the chip the kernel was compiled for. As below, a host or
+      // NVIDIA target-cpu can leak in here; never let a non-AMDGPU chip, or
+      // the features that came with it, through.
+      std::string chip = "gfx1030";
+      std::string features = "+wavefrontsize64";
+      if (StringRef(sm).starts_with("gfx")) {
+        chip = sm;
+        if (!feat.empty())
+          features = feat;
+      }
 
       target = moduleBuilder.getAttr<ROCDL::ROCDLTargetAttr>(
           /*optLevel=*/3, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
