@@ -5198,6 +5198,332 @@ struct ReorderAssociativeOp : public OpRewritePattern<opTy> {
   }
 };
 
+// A dynamic_update_slice whose window along a sharded dimension does not lie
+// on shard boundaries moves data between devices, and so does every slice its
+// update was narrowed to: `select(1 <= j < n-2, f(x), y)` optimized into
+// `dus(y, f(slice(x, 1:n-2)), 1)` computes two rows less of `f` at the price
+// of a halo exchange per slice of an intermediate, and a second one for the
+// DUS. On a sharded dimension the select is cheaper, so this rewrites the DUS
+// back: the update is recomputed at the operand's full extent, widening every
+// slice it was built from (the rows outside the window are never read), and
+// the window becomes an iota mask:
+//
+//   dus(y, f(slice(x, [a:b))), off)
+//     -> select(off <= iota < off + s, f(slice(x, [a-off : b+(n-off-s))), y)
+//
+// A window on shard boundaries, an unsharded dimension, or an update whose
+// computation cannot be widened (a reduction, a reshape, a narrower
+// argument) is left alone.
+struct DUSToSelectComm
+    : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  static bool getConstantIndex(Value idx, int64_t &out) {
+    DenseIntElementsAttr cst;
+    if (auto sdyCst = idx.getDefiningOp<sdy::ConstantOp>()) {
+      out = (*cast<DenseIntElementsAttr>(sdyCst.getValue()).begin())
+                .getSExtValue();
+      return true;
+    }
+    if (matchPattern(idx, m_Constant(&cst))) {
+      out = (*cst.begin()).getSExtValue();
+      return true;
+    }
+    return false;
+  }
+
+  // Builds values whose dimension `dim` is `lo + size + hi` long and whose
+  // entries [lo, lo + size) along it equal the original; the other entries
+  // are unspecified. Every op it creates is recorded so that a failed
+  // attempt can be undone.
+  struct Widener {
+    PatternRewriter &rewriter;
+    SmallVector<Operation *> created;
+    DenseMap<std::tuple<Value, int64_t, int64_t, int64_t>, Value> cache;
+    int64_t budget = 1 << 16;
+
+    Widener(PatternRewriter &rewriter) : rewriter(rewriter) {}
+
+    void rollback() {
+      for (Operation *op : llvm::reverse(created))
+        rewriter.eraseOp(op);
+      created.clear();
+    }
+
+    Value track(Value v) {
+      created.push_back(v.getDefiningOp());
+      return v;
+    }
+
+    static RankedTensorType widenedType(RankedTensorType ty, int64_t dim,
+                                        int64_t lo, int64_t hi) {
+      SmallVector<int64_t> shape(ty.getShape());
+      shape[dim] += lo + hi;
+      return RankedTensorType::get(shape, ty.getElementType());
+    }
+
+    static void copySharding(Value from, Value to) {
+      if (auto sharding = sdy::getSharding(from))
+        sdy::setSharding(to, sharding);
+    }
+
+    Value splat(Location loc, RankedTensorType ty, int64_t val, Value like) {
+      Value res = track(stablehlo::ConstantOp::create(
+          rewriter, loc, cast<ElementsAttr>(makeAttr(ty, val))));
+      copySharding(like, res);
+      return res;
+    }
+
+    // Widens the window of a slice of `x` (which may itself need widening
+    // when the window would leave it).
+    Value widenSlice(Operation *op, Value x, int64_t dim,
+                     SmallVector<int64_t> starts, SmallVector<int64_t> limits,
+                     ArrayRef<int64_t> strides, int64_t lo, int64_t hi) {
+      if (strides[dim] != 1)
+        return nullptr;
+      auto xTy = cast<RankedTensorType>(x.getType());
+      int64_t a = starts[dim], b = limits[dim], m = xTy.getDimSize(dim);
+      int64_t needLo = std::max<int64_t>(0, lo - a);
+      int64_t needHi = std::max<int64_t>(0, hi - (m - b));
+      Value xw = widen(x, dim, needLo, needHi);
+      if (!xw)
+        return nullptr;
+      starts[dim] = a - lo + needLo;
+      limits[dim] = b + hi + needLo;
+      Value res = track(stablehlo::SliceOp::create(rewriter, op->getLoc(), xw,
+                                                   starts, limits, strides));
+      copySharding(op->getResult(0), res);
+      return res;
+    }
+
+    Value widen(Value v, int64_t dim, int64_t lo, int64_t hi) {
+      if (lo == 0 && hi == 0)
+        return v;
+      auto key = std::make_tuple(v, dim, lo, hi);
+      if (auto it = cache.find(key); it != cache.end())
+        return it->second;
+      auto ty = dyn_cast<RankedTensorType>(v.getType());
+      if (!ty || !ty.hasStaticShape())
+        return nullptr;
+      Operation *op = v.getDefiningOp();
+      if (!op || --budget < 0)
+        return nullptr;
+      auto loc = op->getLoc();
+      auto newTy = widenedType(ty, dim, lo, hi);
+
+      Value res;
+      if (isa<stablehlo::ConstantOp, sdy::ConstantOp>(op)) {
+        auto attr = cast<ElementsAttr>(op->getAttr("value"));
+        if (auto splat = dyn_cast<SplatElementsAttr>(attr)) {
+          auto newAttr =
+              SplatElementsAttr::get(newTy, splat.getSplatValue<Attribute>());
+          if (isa<sdy::ConstantOp>(op))
+            res = track(sdy::ConstantOp::create(rewriter, loc, newAttr));
+          else
+            res = track(stablehlo::ConstantOp::create(rewriter, loc, newAttr));
+        } else {
+          // Pad with zeros into the rows that are never read; the pad of a
+          // constant folds.
+          SmallVector<int64_t> low(ty.getRank(), 0), high(ty.getRank(), 0),
+              interior(ty.getRank(), 0);
+          low[dim] = lo;
+          high[dim] = hi;
+          auto zero = track(stablehlo::ConstantOp::create(
+              rewriter, loc,
+              cast<ElementsAttr>(makeAttr(
+                  RankedTensorType::get({}, ty.getElementType()), 0))));
+          res = track(stablehlo::PadOp::create(rewriter, loc, v, zero, low,
+                                               high, interior));
+        }
+        copySharding(v, res);
+      } else if (auto slice = dyn_cast<stablehlo::SliceOp>(op)) {
+        res = widenSlice(op, slice.getOperand(), dim,
+                         llvm::to_vector(slice.getStartIndices()),
+                         llvm::to_vector(slice.getLimitIndices()),
+                         slice.getStrides(), lo, hi);
+      } else if (auto ms = dyn_cast<enzymexla::MultiSliceOp>(op)) {
+        // Result i is the slice shifted by i along the multislice dimension.
+        int64_t shift = cast<OpResult>(v).getResultNumber();
+        SmallVector<int64_t> starts(ms.getStartIndices()),
+            limits(ms.getLimitIndices());
+        starts[ms.getDimension()] += shift;
+        limits[ms.getDimension()] += shift;
+        res = widenSlice(op, ms.getOperand(), dim, starts, limits,
+                         ms.getStrides(), lo, hi);
+      } else if (auto pad = dyn_cast<stablehlo::PadOp>(op)) {
+        if (pad.getInteriorPadding()[dim] != 0)
+          return nullptr;
+        SmallVector<int64_t> low(pad.getEdgePaddingLow()),
+            high(pad.getEdgePaddingHigh());
+        low[dim] += lo;
+        high[dim] += hi;
+        res = track(stablehlo::PadOp::create(rewriter, loc, pad.getOperand(),
+                                             pad.getPaddingValue(), low, high,
+                                             pad.getInteriorPadding()));
+        copySharding(v, res);
+      } else if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+        Value x = bcast.getOperand();
+        auto xTy = cast<RankedTensorType>(x.getType());
+        int64_t srcDim = -1;
+        for (auto [i, d] : llvm::enumerate(bcast.getBroadcastDimensions()))
+          if (d == dim)
+            srcDim = i;
+        if (srcDim >= 0 && xTy.getDimSize(srcDim) != 1) {
+          x = widen(x, srcDim, lo, hi);
+          if (!x)
+            return nullptr;
+        }
+        res = track(stablehlo::BroadcastInDimOp::create(
+            rewriter, loc, newTy, x, bcast.getBroadcastDimensions()));
+        copySharding(v, res);
+      } else if (auto iota = dyn_cast<stablehlo::IotaOp>(op)) {
+        res = track(stablehlo::IotaOp::create(rewriter, loc, newTy,
+                                              iota.getIotaDimension()));
+        copySharding(v, res);
+        if ((int64_t)iota.getIotaDimension() == dim && lo != 0) {
+          res = track(stablehlo::SubtractOp::create(rewriter, loc, res,
+                                                    splat(loc, newTy, lo, v)));
+          copySharding(v, res);
+        }
+      } else if (auto concat = dyn_cast<stablehlo::ConcatenateOp>(op)) {
+        SmallVector<Value> operands;
+        int64_t last = concat.getNumOperands() - 1;
+        for (auto [i, operand] : llvm::enumerate(concat.getOperands())) {
+          bool along = (int64_t)concat.getDimension() == dim;
+          Value w = widen(operand, dim, (!along || i == 0) ? lo : 0,
+                          (!along || (int64_t)i == last) ? hi : 0);
+          if (!w)
+            return nullptr;
+          operands.push_back(w);
+        }
+        res = track(stablehlo::ConcatenateOp::create(rewriter, loc, operands,
+                                                     concat.getDimension()));
+        copySharding(v, res);
+      } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(op)) {
+        // The widened DUS is misaligned too; the pattern then turns it into
+        // a select of its own.
+        int64_t off;
+        if (!getConstantIndex(dus.getStartIndices()[dim], off))
+          return nullptr;
+        Value base = widen(dus.getOperand(), dim, lo, hi);
+        if (!base)
+          return nullptr;
+        SmallVector<Value> starts(dus.getStartIndices());
+        if (lo != 0) {
+          auto idxTy = cast<RankedTensorType>(starts[dim].getType());
+          starts[dim] = track(stablehlo::ConstantOp::create(
+              rewriter, loc, cast<ElementsAttr>(makeAttr(idxTy, off + lo))));
+        }
+        res = track(stablehlo::DynamicUpdateSliceOp::create(
+            rewriter, loc, base, dus.getUpdate(), starts));
+        copySharding(v, res);
+      } else if (op->getNumResults() == 1 && op->getNumRegions() == 0 &&
+                 (op->hasTrait<OpTrait::Elementwise>() ||
+                  isa<stablehlo::SelectOp, stablehlo::ClampOp>(op))) {
+        SmallVector<Value> operands;
+        for (Value operand : op->getOperands()) {
+          auto oTy = dyn_cast<RankedTensorType>(operand.getType());
+          if (!oTy)
+            return nullptr;
+          if (oTy.getRank() == 0) {
+            operands.push_back(operand);
+            continue;
+          }
+          if (oTy.getShape() != ty.getShape())
+            return nullptr;
+          Value w = widen(operand, dim, lo, hi);
+          if (!w)
+            return nullptr;
+          operands.push_back(w);
+        }
+        OperationState state(loc, op->getName());
+        state.addOperands(operands);
+        state.addTypes(newTy);
+        state.addAttributes(op->getAttrs());
+        res = track(rewriter.create(state)->getResult(0));
+      } else {
+        return nullptr;
+      }
+      cache[key] = res;
+      return res;
+    }
+  };
+
+  LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dus,
+                                PatternRewriter &rewriter) const override {
+    auto sharding = mlir::sdy::getSharding(dus);
+    if (!sharding)
+      return failure();
+    auto ty = dus.getType();
+    auto updTy = dus.getUpdate().getType();
+    if (!ty.hasStaticShape() || !updTy.hasStaticShape())
+      return failure();
+
+    // The one dimension the update is narrower in.
+    int64_t dim = -1;
+    for (int64_t d = 0; d < ty.getRank(); d++) {
+      if (updTy.getDimSize(d) == ty.getDimSize(d))
+        continue;
+      if (dim != -1)
+        return failure();
+      dim = d;
+    }
+    if (dim == -1)
+      return failure();
+
+    int64_t off;
+    if (!getConstantIndex(dus.getStartIndices()[dim], off))
+      return failure();
+    const int64_t n = ty.getDimSize(dim), s = updTy.getDimSize(dim);
+    off = std::clamp<int64_t>(off, 0, n - s);
+
+    int64_t ndevices = getNumDevicesAlongDimension(sharding, dim, dus);
+    if (ndevices <= 1)
+      return failure();
+    int64_t shardSize = (n + ndevices - 1) / ndevices;
+    bool aligned =
+        off % shardSize == 0 && (off + s == n || (off + s) % shardSize == 0);
+    if (aligned)
+      return failure();
+
+    Widener widener(rewriter);
+    Value wide = widener.widen(dus.getUpdate(), dim, off, n - off - s);
+    if (!wide) {
+      widener.rollback();
+      return failure();
+    }
+
+    auto loc = dus.getLoc();
+    auto i32Ty = RankedTensorType::get(ty.getShape(), rewriter.getI32Type());
+    auto withSharding = [&](Value v) {
+      sdy::setSharding(v, sharding);
+      return v;
+    };
+    Value iota =
+        withSharding(stablehlo::IotaOp::create(rewriter, loc, i32Ty, dim));
+    auto bound = [&](int64_t val) {
+      return withSharding(stablehlo::ConstantOp::create(
+          rewriter, loc, cast<ElementsAttr>(makeAttr(i32Ty, val))));
+    };
+    Value mask;
+    if (off > 0)
+      mask = withSharding(stablehlo::CompareOp::create(
+          rewriter, loc, iota, bound(off), stablehlo::ComparisonDirection::GE));
+    if (off + s < n) {
+      Value below = withSharding(
+          stablehlo::CompareOp::create(rewriter, loc, iota, bound(off + s),
+                                       stablehlo::ComparisonDirection::LT));
+      mask = mask ? withSharding(
+                        stablehlo::AndOp::create(rewriter, loc, mask, below))
+                  : below;
+    }
+    Value sel = withSharding(stablehlo::SelectOp::create(
+        rewriter, loc, mask, wide, dus.getOperand()));
+    rewriter.replaceOp(dus, sel);
+    return success();
+  }
+};
+
 struct OptimizeCommunicationPass
     : public enzyme::impl::OptimizeCommunicationBase<
           OptimizeCommunicationPass> {
@@ -5317,6 +5643,10 @@ struct OptimizeCommunicationPass
 
     if (dus_to_pad_comm > 0)
       patterns.add<DUSToPadComm>(context, PatternBenefit(dus_to_pad_comm));
+
+    if (dus_to_select_comm > 0)
+      patterns.add<DUSToSelectComm>(context,
+                                    PatternBenefit(dus_to_select_comm));
 
     if (reorder_associative > 0) {
       patterns.add<ReorderAssociativeOp<stablehlo::AddOp>,

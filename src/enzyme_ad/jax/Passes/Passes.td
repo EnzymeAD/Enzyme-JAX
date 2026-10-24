@@ -1258,6 +1258,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"1",
        /*description=*/"Perform a DUS with Padding to optimize the communication">,
        Option<
+       /*C++ variable name=*/"dus_to_select_comm",
+       /*CLI argument=*/"dus_to_select_comm",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Rewrite a DUS whose window along a sharded dimension is not on shard boundaries as a select of the update computed at the operand's full extent">,
+       Option<
        /*C++ variable name=*/"concat_two_operands_comm",
        /*CLI argument=*/"concat_two_operands_comm",
        /*type=*/"int",
