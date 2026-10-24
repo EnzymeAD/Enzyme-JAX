@@ -1,4 +1,5 @@
 // RUN: enzymexlamlir-opt --legalize-mpi-to-nccl %s | FileCheck %s
+// RUN: enzymexlamlir-opt --legalize-mpi-to-nccl --lower-comm-to-jit %s | FileCheck %s --check-prefix=JIT
 
 func.func @main(%send_buffer: tensor<4xf64>, %dst: tensor<i32>,
                 %src: tensor<i32>, %tag: tensor<i32>,
@@ -14,9 +15,16 @@ func.func @main(%send_buffer: tensor<4xf64>, %dst: tensor<i32>,
 
 // CHECK-LABEL: func.func @main
 // CHECK-SAME: (%[[SEND_BUFFER:.*]]: tensor<4xf64>, %[[DST:.*]]: tensor<i32>, %[[SRC:.*]]: tensor<i32>, %[[TAG:.*]]: tensor<i32>, %[[COMM:.*]]: !comm.nccl.comm) -> tensor<4xf64> {
-// CHECK-NEXT: comm.nccl.group_start
+// CHECK-NEXT: %[[RECV_BUFFER:.*]] = comm.nccl.group -> tensor<4xf64> {
 // CHECK-NEXT: comm.nccl.send %[[SEND_BUFFER]], %[[DST]], %[[COMM]] : tensor<4xf64>, tensor<i32>, !comm.nccl.comm
-// CHECK-NEXT: %[[RECV_BUFFER:.*]] = comm.nccl.recv %[[SRC]], %[[COMM]] : (tensor<i32>, !comm.nccl.comm) -> tensor<4xf64>
-// CHECK-NEXT: comm.nccl.group_end
+// CHECK-NEXT: %[[RECV:.*]] = comm.nccl.recv %[[SRC]], %[[COMM]] : (tensor<i32>, !comm.nccl.comm) -> tensor<4xf64>
+// CHECK-NEXT: comm.nccl.yield %[[RECV]] : tensor<4xf64>
+// CHECK-NEXT: }
 // CHECK-NEXT: return %[[RECV_BUFFER]] : tensor<4xf64>
 // CHECK-NEXT: }
+
+// JIT-LABEL: func.func @main
+// JIT-NOT: enzymexla.jit_call
+// JIT: %[[RESULT:.*]] = enzymexla.jit_call @enzymexla_jitwrap_ncclGroup_Send_Recv
+// JIT-NOT: enzymexla.jit_call
+// JIT: return %[[RESULT]] : tensor<4xf64>

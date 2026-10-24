@@ -9,20 +9,54 @@ include "Utils.td"
 include "Types.td"
 include "Attrs.td"
 
-def NcclGetCommOp : Comm_Op<"nccl.get_comm", [Pure]> {
-  let summary = "Produces a NCCL communicator";
+def NcclGetCommWorldOp : Comm_Op<"nccl.get_comm_world", [Pure]> {
+  let summary = "Produces the NCCL communicator for MPI_COMM_WORLD";
   let results = (outs NcclComm : $comm);
   let assemblyFormat = "attr-dict `:` type(results)";
 }
 
-def NcclGroupStartOp : Comm_Op<"nccl.group_start", []> {
-  let summary = "Equivalent to `ncclGroupStart`";
-  let assemblyFormat = "attr-dict";
+def NcclGroupOp : Comm_Op<"nccl.group", [
+    RecursiveMemoryEffects,
+    SingleBlockImplicitTerminator<"NcclYieldOp">]> {
+  let summary = "NCCL operations issued between `ncclGroupStart` and "
+                "`ncclGroupEnd`";
+  let description = [{
+    Groups the NCCL operations in its body so they are launched together, as if
+    issued between `ncclGroupStart` and `ncclGroupEnd`. The operations in the
+    body are unordered with respect to each other. The group as a whole is
+    atomic: results of its body are only available after the group completes,
+    and are returned through `comm.nccl.yield`.
+
+    Currently, only `comm.nccl.send` and `comm.nccl.recv` can be lowered in the
+    body.
+
+    Example:
+
+    ```mlir
+    %recvbuf = comm.nccl.group -> tensor<4xf32> {
+      comm.nccl.send %sendbuf, %peer, %comm : tensor<4xf32>, tensor<i32>, !comm.nccl.comm
+      %0 = comm.nccl.recv %peer, %comm : (tensor<i32>, !comm.nccl.comm) -> tensor<4xf32>
+      comm.nccl.yield %0 : tensor<4xf32>
+    }
+    ```
+  }];
+
+  let results = (outs Variadic<AnyTensor> : $results);
+  let regions = (region SizedRegion<1> : $region);
+
+  let assemblyFormat = "(`->` type($results)^)? $region attr-dict";
+  let hasVerifier = 1;
 }
 
-def NcclGroupEndOp : Comm_Op<"nccl.group_end", []> {
-  let summary = "Equivalent to `ncclGroupEnd`";
-  let assemblyFormat = "attr-dict";
+def NcclYieldOp : Comm_Op<"nccl.yield", [
+    Pure, Terminator, HasParent<"NcclGroupOp">]> {
+  let summary = "Returns values from the body of a `comm.nccl.group`";
+
+  let arguments = (ins Variadic<AnyTensor> : $values);
+
+  let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
+
+  let assemblyFormat = "attr-dict ($values^ `:` type($values))?";
 }
 
 def NcclBarrierOp : Comm_Op<"nccl.barrier", []> {
@@ -83,7 +117,7 @@ def NcclCommUserRankOp : Comm_Op<"nccl.comm_user_rank", [Pure]> {
   let assemblyFormat = "$comm attr-dict `:` type(results)";
 }
 
-def NcclAllReduceOp : Comm_Op<"nccl.all_reduce", []> {
+def NcclAllReduceOp : Comm_Op<"nccl.allreduce", []> {
   let summary = "Equivalent to `ncclAllReduce`";
 
   let arguments = (ins
