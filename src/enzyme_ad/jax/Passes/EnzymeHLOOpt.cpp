@@ -19248,6 +19248,11 @@ struct SelectCompIotaConstSimplify final
         return failure();
     }
 
+    // A unit iota dimension broadcast along outputDim is constant there.
+    if (cast<RankedTensorType>(iota.getType()).getDimSize(iotaDim) !=
+        selectOp.getType().getDimSize(outputDim))
+      return failure();
+
     return rewriteAsSlices(selectOp, outputDim, K, direction, rewriter);
   }
 
@@ -19261,43 +19266,47 @@ struct SelectCompIotaConstSimplify final
     Value falseTensor = selectOp.getOnFalse();
     auto outputShape = selectOp.getType().getShape();
     const int64_t endValue = outputShape[outputDim];
-
-    if (K < 0 || K > endValue)
+    if (endValue == 0)
       return failure();
+
+    // The indices [lo, hi) along outputDim where the comparison holds (for
+    // NE, where it fails). A K outside the dimension, including K ==
+    // endValue for EQ and NE, makes the predicate uniform rather than a
+    // slice past the end.
+    K = std::clamp<int64_t>(K, -1, endValue);
+    int64_t lo = 0, hi = endValue;
+    switch (direction) {
+    case stablehlo::ComparisonDirection::LT:
+      hi = K;
+      break;
+    case stablehlo::ComparisonDirection::LE:
+      hi = K + 1;
+      break;
+    case stablehlo::ComparisonDirection::GT:
+      lo = K + 1;
+      break;
+    case stablehlo::ComparisonDirection::GE:
+      lo = K;
+      break;
+    case stablehlo::ComparisonDirection::EQ:
+    case stablehlo::ComparisonDirection::NE:
+      lo = K;
+      hi = K + 1;
+      break;
+    }
+    lo = std::clamp<int64_t>(lo, 0, endValue);
+    hi = std::clamp<int64_t>(hi, lo, endValue);
+
+    Value inside = trueTensor, outside = falseTensor;
+    if (direction == stablehlo::ComparisonDirection::NE)
+      std::swap(inside, outside);
 
     struct slice_data {
       Value tensor;
       int64_t count;
     };
-    SmallVector<slice_data, 3> slices;
-    switch (direction) {
-    case stablehlo::ComparisonDirection::LT:
-      slices.push_back({trueTensor, K});
-      slices.push_back({falseTensor, endValue - K});
-      break;
-    case stablehlo::ComparisonDirection::LE:
-      slices.push_back({trueTensor, K + 1});
-      slices.push_back({falseTensor, endValue - K - 1});
-      break;
-    case stablehlo::ComparisonDirection::GT:
-      slices.push_back({falseTensor, K + 1});
-      slices.push_back({trueTensor, endValue - K - 1});
-      break;
-    case stablehlo::ComparisonDirection::GE:
-      slices.push_back({falseTensor, K});
-      slices.push_back({trueTensor, endValue - K});
-      break;
-    case stablehlo::ComparisonDirection::EQ:
-      slices.push_back({falseTensor, K});
-      slices.push_back({trueTensor, 1});
-      slices.push_back({falseTensor, endValue - K - 1});
-      break;
-    case stablehlo::ComparisonDirection::NE:
-      slices.push_back({trueTensor, K});
-      slices.push_back({falseTensor, 1});
-      slices.push_back({trueTensor, endValue - K - 1});
-      break;
-    }
+    SmallVector<slice_data, 3> slices = {
+        {outside, lo}, {inside, hi - lo}, {outside, endValue - hi}};
 
     auto validCount = std::count_if(slices.begin(), slices.end(),
                                     [](slice_data d) { return d.count > 0; });
