@@ -99,31 +99,13 @@ public:
                   llvm::ArrayRef<llvm::SmallVector<int64_t>> out_shapes,
                   llvm::ArrayRef<std::string> out_names,
                   llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
-                  llvm::ArrayRef<std::string> in_names, PyObject *pyargv,
-                  Language lang, bool xla_runtime,
-                  const std::string &pass_pipeline) {
+                  llvm::ArrayRef<std::string> in_names,
+                  const std::vector<std::string> &argv, Language lang,
+                  bool xla_runtime, const std::string &pass_pipeline) {
     auto mode = ABI::Tape;
-    std::vector<std::string> pyargv_strs;
-    if (pyargv && PySequence_Check(pyargv)) {
-      auto sz = PySequence_Size(pyargv);
-      for (Py_ssize_t i = 0; i < sz; ++i) {
-        PyObject *item = PySequence_GetItem(pyargv, i);
-#if PY_VERSION_HEX < 0x03000000
-        auto argv = PyString_AsString(item);
-#else
-        auto argv = PyUnicode_AsUTF8(item);
-#endif
-        Py_DECREF(item);
-        if (argv)
-          pyargv_strs.emplace_back(argv);
-#if PY_VERSION_HEX < 0x03000000
-        free(argv);
-#endif
-      }
-    }
     auto mod_or_err =
         createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names,
-                      pyargv_strs, mode, lang, xla_runtime, pass_pipeline);
+                      argv, mode, lang, xla_runtime, pass_pipeline);
     if (!mod_or_err.ok()) {
       throw ::nanobind::value_error(mod_or_err.status().ToString().c_str());
     }
@@ -165,35 +147,18 @@ public:
          llvm::ArrayRef<llvm::SmallVector<int64_t>> out_shapes,
          llvm::ArrayRef<std::string> out_names,
          llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
-         llvm::ArrayRef<std::string> in_names, PyObject *pyargv, ABI mode,
-         Language lang, bool xla_runtime, const std::string &pass_pipeline,
+         llvm::ArrayRef<std::string> in_names,
+         const std::vector<std::string> &argv, ABI mode, Language lang,
+         bool xla_runtime, const std::string &pass_pipeline,
          const std::string &platform) {
     if (platform != "cpu")
       return std::make_tuple(UNKNOWN_PLATFORM, 0);
     llvm::sys::SmartScopedWriter<true> lock(kernel_mutex);
     size_t identifier = last_identifier++;
 
-    std::vector<std::string> pyargv_strs;
-    if (pyargv && PySequence_Check(pyargv)) {
-      auto sz = PySequence_Size(pyargv);
-      for (Py_ssize_t i = 0; i < sz; ++i) {
-        PyObject *item = PySequence_GetItem(pyargv, i);
-#if PY_VERSION_HEX < 0x03000000
-        auto argv = PyString_AsString(item);
-#else
-        auto argv = PyUnicode_AsUTF8(item);
-#endif
-        Py_DECREF(item);
-        if (argv)
-          pyargv_strs.emplace_back(argv);
-#if PY_VERSION_HEX < 0x03000000
-        free(argv);
-#endif
-      }
-    }
     auto mod_or_err =
         createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names,
-                      pyargv_strs, mode, lang, xla_runtime, pass_pipeline);
+                      argv, mode, lang, xla_runtime, pass_pipeline);
     if (!mod_or_err.ok()) {
       throw nanobind::value_error(mod_or_err.status().ToString().c_str());
     }
@@ -357,9 +322,9 @@ NB_MODULE(enzyme_call, m) {
   m.def("create_enzyme_kernel",
         [](const std::string &source, const std::string &fn,
            const nanobind::list &py_out_shapes,
-           const nanobind::list &py_in_shapes, nanobind::object pyargv,
-           ABI mode, Language lang, bool xla_runtime,
-           const std::string &pass_pipeline,
+           const nanobind::list &py_in_shapes,
+           const std::vector<std::string> &argv, ABI mode, Language lang,
+           bool xla_runtime, const std::string &pass_pipeline,
            const std::string &platform) -> std::tuple<size_t, size_t> {
           llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
           out_shapes.reserve(nanobind::len(py_out_shapes));
@@ -395,7 +360,7 @@ NB_MODULE(enzyme_call, m) {
             }
           }
           return CpuKernel::create(fn, source, out_shapes, out_types, in_shapes,
-                                   in_types, pyargv.ptr(), mode, (Language)lang,
+                                   in_types, argv, mode, (Language)lang,
                                    xla_runtime, pass_pipeline, platform);
         });
 
@@ -409,8 +374,9 @@ NB_MODULE(enzyme_call, m) {
   m.def("compile_to_llvm",
         [](const std::string outfile, const std::string &source,
            const std::string &fn, const nanobind::list &py_out_shapes,
-           const nanobind::list &py_in_shapes, nanobind::object pyargv,
-           Language lang, bool xla_runtime, const std::string &pass_pipeline) {
+           const nanobind::list &py_in_shapes,
+           const std::vector<std::string> &argv, Language lang,
+           bool xla_runtime, const std::string &pass_pipeline) {
           llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
           out_shapes.reserve(nanobind::len(py_out_shapes));
           llvm::SmallVector<llvm::SmallVector<int64_t>> in_shapes;
@@ -448,29 +414,9 @@ NB_MODULE(enzyme_call, m) {
           std::error_code EC;
           llvm::raw_fd_ostream ostream(outfile, EC);
 
-          std::vector<std::string> pyargv_strs;
-          auto pyargv_ptr = pyargv.ptr();
-          if (pyargv_ptr && PySequence_Check(pyargv_ptr)) {
-            auto sz = PySequence_Size(pyargv_ptr);
-            for (Py_ssize_t i = 0; i < sz; ++i) {
-              PyObject *item = PySequence_GetItem(pyargv_ptr, i);
-#if PY_VERSION_HEX < 0x03000000
-              auto argv = PyString_AsString(item);
-#else
-              auto argv = PyUnicode_AsUTF8(item);
-#endif
-              Py_DECREF(item);
-              if (argv)
-                pyargv_strs.emplace_back(argv);
-#if PY_VERSION_HEX < 0x03000000
-              free(argv);
-#endif
-            }
-          }
-
           auto mod_or_err = createLLVMMod(
-              fn, source, out_shapes, out_types, in_shapes, in_types,
-              pyargv_strs, ABI::Primal, lang, xla_runtime, pass_pipeline);
+              fn, source, out_shapes, out_types, in_shapes, in_types, argv,
+              ABI::Primal, lang, xla_runtime, pass_pipeline);
           if (!mod_or_err.ok()) {
             throw nanobind::value_error(mod_or_err.status().ToString().c_str());
           }
@@ -483,8 +429,9 @@ NB_MODULE(enzyme_call, m) {
   m.def("tape_and_tmp_size",
         [](const std::string &source, const std::string &fn,
            const nanobind::list &py_out_shapes,
-           const nanobind::list &py_in_shapes, nanobind::object pyargv,
-           Language lang, bool xla_runtime,
+           const nanobind::list &py_in_shapes,
+           const std::vector<std::string> &argv, Language lang,
+           bool xla_runtime,
            const std::string &pass_pipeline) -> std::pair<size_t, size_t> {
           llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
           out_shapes.reserve(nanobind::len(py_out_shapes));
@@ -520,8 +467,8 @@ NB_MODULE(enzyme_call, m) {
             }
           }
           return CpuKernel::tapeAndTempSize(
-              fn, source, out_shapes, out_types, in_shapes, in_types,
-              pyargv.ptr(), (Language)lang, xla_runtime, pass_pipeline);
+              fn, source, out_shapes, out_types, in_shapes, in_types, argv,
+              (Language)lang, xla_runtime, pass_pipeline);
         });
 
   m.def("get_callback", []() {
@@ -536,29 +483,9 @@ NB_MODULE(enzyme_call, m) {
             throw nanobind::value_error(status.ToString().c_str());
           }
         });
-  m.def("run_pass_pipeline", [](nanobind::object pyoldsyms,
+  m.def("run_pass_pipeline", [](const std::vector<std::string> &oldsyms,
                                 const std::string &mlir,
                                 const std::string &pass_pipeline) {
-    auto pyargv = pyoldsyms.ptr();
-    std::vector<std::string> oldsyms;
-    assert(PySequence_Check(pyargv));
-    auto sz = PySequence_Size(pyargv);
-    for (Py_ssize_t i = 0; i < sz; ++i) {
-      PyObject *item = PySequence_GetItem(pyargv, i);
-#if PY_VERSION_HEX < 0x03000000
-      auto argv = PyString_AsString(item);
-#else
-      auto argv = PyUnicode_AsUTF8(item);
-#endif
-      Py_DECREF(item);
-      assert(argv);
-      oldsyms.emplace_back(argv);
-#if PY_VERSION_HEX < 0x03000000
-      free(argv);
-#else
-      // should not free py3+
-#endif
-    }
     auto result_or_err = run_pass_pipeline(oldsyms, mlir, pass_pipeline);
     if (!result_or_err.ok()) {
       throw nanobind::value_error(result_or_err.status().ToString().c_str());
