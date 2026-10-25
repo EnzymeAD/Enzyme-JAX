@@ -5920,8 +5920,10 @@ struct PadSinkSlicesComm : public OpRewritePattern<stablehlo::PadOp> {
     auto sharding = mlir::sdy::getSharding(pad);
     if (!sharding)
       return failure();
-    if (llvm::any_of(pad.getInteriorPadding(), [](int64_t p) { return p != 0; }) ||
-        llvm::any_of(pad.getEdgePaddingLow(), [](int64_t p) { return p < 0; }) ||
+    if (llvm::any_of(pad.getInteriorPadding(),
+                     [](int64_t p) { return p != 0; }) ||
+        llvm::any_of(pad.getEdgePaddingLow(),
+                     [](int64_t p) { return p < 0; }) ||
         llvm::any_of(pad.getEdgePaddingHigh(), [](int64_t p) { return p < 0; }))
       return failure();
     SplatElementsAttr splat;
@@ -5953,7 +5955,8 @@ struct PadSinkSlicesComm : public OpRewritePattern<stablehlo::PadOp> {
     auto wideTy = cast<RankedTensorType>(wide.getType());
     auto loc = pad.getLoc();
     Value mask;
-    auto i32Ty = RankedTensorType::get(wideTy.getShape(), rewriter.getI32Type());
+    auto i32Ty =
+        RankedTensorType::get(wideTy.getShape(), rewriter.getI32Type());
     for (int64_t d : dims) {
       Value iota = stablehlo::IotaOp::create(rewriter, loc, i32Ty, d);
       Widener::copySharding(wide, iota);
