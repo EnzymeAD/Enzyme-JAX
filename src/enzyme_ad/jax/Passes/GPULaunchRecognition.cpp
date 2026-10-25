@@ -154,8 +154,7 @@ struct GPULaunchRecognitionPass
 
     Attribute target;
     if (backend == "rocm") {
-      auto [chip, features] =
-          enzyme::getROCDLChipAndFeatures(sm, feat, "gfx1030");
+      auto [chip, features] = enzyme::getROCDLChipAndFeatures(sm, feat);
 
       target = moduleBuilder.getAttr<ROCDL::ROCDLTargetAttr>(
           /*optLevel=*/3, /*triple=*/"amdgcn-amd-amdhsa", chip, features,

@@ -67,10 +67,9 @@ Block *getAllocaBlock(Operation *op) {
 }
 
 std::pair<std::string, std::string>
-getROCDLChipAndFeatures(StringRef targetCpu, StringRef features,
-                        StringRef defaultChip) {
+getROCDLChipAndFeatures(StringRef targetCpu, StringRef features) {
   if (!targetCpu.starts_with("gfx"))
-    return {defaultChip.str(), "+wavefrontsize64"};
+    return {"gfx900", "+wavefrontsize64"};
   if (features.empty())
     return {targetCpu.str(), "+wavefrontsize64"};
   return {targetCpu.str(), features.str()};
