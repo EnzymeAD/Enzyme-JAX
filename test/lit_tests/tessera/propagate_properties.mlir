@@ -9,7 +9,7 @@
 // whose inputs all have it.
 !mat = !llvm.struct<"Mat3", (array<9 x f64>)>
 module {
-  tessera.define private @lib.mass(!llvm.ptr {llvm.sret = !mat, tessera.property = ["SPD"]}, i64) attributes {argModes = [unit], pure = true}
+  tessera.define private @lib.mass(!llvm.ptr {llvm.sret = !mat, tessera.guarantees = ["SPD"]}, i64) attributes {argModes = [unit], pure = true}
   tessera.define private @lib.stiffness(!llvm.ptr {llvm.sret = !mat}, i64) attributes {argModes = [unit], pure = true}
   tessera.define private @lib.add(!llvm.ptr, !llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<out>, type = !mat}], pure = true, tessera.preserves = [{inputs = [0, 1], property = "SPD"}]}
   tessera.define private @lib.use(!llvm.ptr) -> f64 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}], pure = true}
@@ -51,7 +51,7 @@ module {
 
   // CHECK-LABEL: llvm.func @assumed
   // CHECK: tessera.call @lib.use(%{{.*}}) <arg_attrs = [{tessera.property = ["SPD"]}]>
-  llvm.func @assumed(%M: !llvm.ptr {tessera.property = ["SPD"]}) -> f64 {
+  llvm.func @assumed(%M: !llvm.ptr {tessera.assumes = ["SPD"]}) -> f64 {
     %m = llvm.load %M : !llvm.ptr -> !mat
     %r = tessera.call @lib.use(%m) : (!mat) -> f64
     llvm.return %r : f64
@@ -60,8 +60,31 @@ module {
   // A handle is passed as it is, so the fact is of the handle.
   // CHECK-LABEL: llvm.func @assumed_handle
   // CHECK: tessera.call @petsc.solve(%arg0) <arg_attrs = [{tessera.property = ["SPD"]}]>
-  llvm.func @assumed_handle(%A: !llvm.ptr {tessera.property = ["SPD"]}) -> i32 {
+  llvm.func @assumed_handle(%A: !llvm.ptr {tessera.assumes = ["SPD"]}) -> i32 {
     %r = tessera.call @petsc.solve(%A) : (!llvm.ptr) -> i32
     llvm.return %r : i32
+  }
+}
+
+// -----
+
+// A guarantee on a val=inout argument is of the value the function leaves
+// there, which comes back as the call's leading result. The value passed in
+// gains nothing.
+!mat = !llvm.struct<"Mat3", (array<9 x f64>)>
+module {
+  tessera.define private @lib.make_spd(!llvm.ptr {tessera.guarantees = ["SPD"]}) attributes {argModes = [{dir = #tessera.dir<inout>, type = !mat}], pure = true}
+  tessera.define private @lib.use(!llvm.ptr) -> f64 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}], pure = true}
+
+  // CHECK-LABEL: llvm.func @guaranteed_inout
+  llvm.func @guaranteed_inout(%m: !mat) -> f64 {
+    // CHECK: %[[S:.*]] = tessera.call @lib.make_spd(%arg0) :
+    // CHECK: tessera.call @lib.use(%arg0) :
+    // CHECK: tessera.call @lib.use(%[[S]]) <arg_attrs = [{tessera.property = ["SPD"]}]>
+    %s = tessera.call @lib.make_spd(%m) : (!mat) -> !mat
+    %before = tessera.call @lib.use(%m) : (!mat) -> f64
+    %after = tessera.call @lib.use(%s) : (!mat) -> f64
+    %r = llvm.fadd %before, %after : f64
+    llvm.return %r : f64
   }
 }
