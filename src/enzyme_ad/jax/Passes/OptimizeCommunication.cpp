@@ -5216,6 +5216,64 @@ struct ReorderAssociativeOp : public OpRewritePattern<opTy> {
 // A window on shard boundaries, an unsharded dimension, or an update whose
 // computation cannot be widened (a reduction, a reshape, a narrower
 // argument) is left alone.
+// Readers for the backend_config of an _SPMDInternalOp_MultiSlice custom
+// call: "dimension=1,amount=2,start_indices=[0, 1, 0],limit_indices=[...],
+// strides=[1, 1, 1],bufferize=0".
+static std::optional<int64_t> parseMultiSliceConfigInt(StringRef cfg,
+                                                       StringRef key) {
+  SmallVector<StringRef> items;
+  cfg.split(items, ',');
+  for (StringRef item : items) {
+    item = item.trim();
+    if (item.consume_front(key) && item.consume_front("=")) {
+      int64_t v;
+      if (item.getAsInteger(10, v))
+        return std::nullopt;
+      return v;
+    }
+  }
+  return std::nullopt;
+}
+
+static std::optional<SmallVector<int64_t>>
+parseMultiSliceConfigList(StringRef cfg, StringRef key) {
+  size_t pos = cfg.find((key + "=[").str());
+  if (pos == StringRef::npos)
+    return std::nullopt;
+  StringRef rest = cfg.drop_front(pos + key.size() + 2);
+  size_t end = rest.find(']');
+  if (end == StringRef::npos)
+    return std::nullopt;
+  SmallVector<StringRef> items;
+  rest.take_front(end).split(items, ',', -1, /*KeepEmpty=*/false);
+  SmallVector<int64_t> out;
+  for (StringRef item : items) {
+    int64_t v;
+    if (item.trim().getAsInteger(10, v))
+      return std::nullopt;
+    out.push_back(v);
+  }
+  return out;
+}
+
+// Does reading rows [a, a + s) of a tensor of extent `m`, split evenly over
+// `d` devices along that dimension, into a result of extent `s` split the
+// same way, move data between devices? It does not when every device's part
+// of the result lies within its own part of the source.
+static bool shiftedReadMovesData(int64_t m, int64_t a, int64_t s, int64_t d) {
+  if (d <= 1)
+    return false;
+  int64_t cm = (m + d - 1) / d, cs = (s + d - 1) / d;
+  for (int64_t k = 0; k < d; k++) {
+    int64_t r0 = k * cs, r1 = std::min(s, (k + 1) * cs);
+    if (r0 >= r1)
+      continue;
+    if (a + r0 < k * cm || a + r1 > std::min(m, (k + 1) * cm))
+      return true;
+  }
+  return false;
+}
+
 static bool getConstantDUSIndex(Value idx, int64_t &out) {
   DenseIntElementsAttr cst;
   if (auto sdyCst = idx.getDefiningOp<sdy::ConstantOp>()) {
@@ -5312,6 +5370,29 @@ struct DUSSinkSlicesComm
     SmallVector<Operation *> created;
     DenseSet<Operation *> createdSet;
     DenseMap<std::tuple<Value, int64_t, int64_t, int64_t>, Value> cache;
+    // The DUS window along the dimension being widened: the target's extent,
+    // the window's start and size. Rows of the widened values outside the
+    // window are never read, so only the window decides whether a fallback
+    // may move data: it may when the original program had to move data to
+    // bring the source's rows into the window's layout.
+    int64_t winExtent = 0, winOff = 0, winSize = 0;
+
+    // Does placing source rows shifted by `shift` (target row i reads source
+    // row i + shift) into the window move data between the `d` devices?
+    bool windowReadMovesData(int64_t m, int64_t shift, int64_t d) const {
+      if (d <= 1)
+        return false;
+      int64_t cm = (m + d - 1) / d, ct = (winExtent + d - 1) / d;
+      for (int64_t k = 0; k < d; k++) {
+        int64_t t0 = std::max(winOff, k * ct);
+        int64_t t1 = std::min(winOff + winSize, (k + 1) * ct);
+        if (t0 >= t1)
+          continue;
+        if (t0 + shift < k * cm || t1 + shift > std::min(m, (k + 1) * cm))
+          return true;
+      }
+      return false;
+    }
 
     Widener(PatternRewriter &rewriter, Operation *anchor)
         : rewriter(rewriter), anchor(anchor) {}
@@ -5393,6 +5474,11 @@ struct DUSSinkSlicesComm
       auto xTy = cast<RankedTensorType>(x.getType());
       int64_t a = starts[dim], b = limits[dim], m = xTy.getDimSize(dim);
       int64_t na = a - lo, nb = b + hi;
+      int64_t devices = 1;
+      if (auto xs = sdy::getSharding(x))
+        devices = getNumDevicesAlongDimension(xs, dim, op);
+      // Target row i of the widened value reads source row i + na.
+      const bool originMoves = windowReadMovesData(m, na, devices);
       Value xw = x;
       if (na < 0 || nb > m) {
         xw = widen(x, dim, -na, nb - m);
@@ -5405,7 +5491,11 @@ struct DUSSinkSlicesComm
           // entries that would come from outside `x` are never read, so a
           // rotation of `x` serves, and is the cheapest exchange of a halo.
           // Rotations of one value by several amounts are later grouped.
+          // Never trade a read that moved no data for one that does.
           int64_t amount = ((na % m) + m) % m;
+          if (amount != 0 && !originMoves) {
+            return nullptr;
+          }
           xw = enzymexla::RotateOp::create(rewriter, op->getLoc(), x,
                                            static_cast<int32_t>(amount),
                                            static_cast<int32_t>(dim));
@@ -5414,7 +5504,28 @@ struct DUSSinkSlicesComm
           na = 0;
           nb = m;
         } else {
-          // Otherwise pad: the padded entries are never read either.
+          // Otherwise pad: the padded entries are never read either. Again
+          // only if that does not move data where the original did not.
+          {
+            int64_t padLo = std::max<int64_t>(0, -na),
+                    padHi = std::max<int64_t>(0, nb - m);
+            int64_t padded = m + padLo + padHi;
+            // The padded tensor's own layout against the source's, then the
+            // window read out of it.
+            bool moves =
+                shiftedReadMovesData(padded, na + padLo, nb - na, devices);
+            int64_t cp = (padded + devices - 1) / devices,
+                    cm = (m + devices - 1) / devices;
+            for (int64_t k = 0; k < devices && !moves; k++) {
+              int64_t r0 = std::max<int64_t>(0, k * cp - padLo);
+              int64_t r1 = std::min(m, (k + 1) * cp - padLo);
+              if (r0 < r1 && (r0 < k * cm || r1 > std::min(m, (k + 1) * cm)))
+                moves = true;
+            }
+            if (moves && !originMoves) {
+              return nullptr;
+            }
+          }
           Value zero = finish(stablehlo::ConstantOp::create(
               rewriter, op->getLoc(),
               cast<ElementsAttr>(makeAttr(
@@ -5525,6 +5636,30 @@ struct DUSSinkSlicesComm
         limits[ms.getDimension()] += shift;
         res = widenSlice(op, ms.getOperand(), dim, starts, limits,
                          ms.getStrides(), lo, hi);
+      } else if (auto cc = dyn_cast<stablehlo::CustomCallOp>(op);
+                 cc && cc.getCallTargetName() == "_SPMDInternalOp_MultiSlice" &&
+                 cc.getNumOperands() == 1) {
+        // The lowered form of a multislice; result i is again the slice
+        // shifted by i along the multislice dimension.
+        auto cfg = cc->getAttrOfType<StringAttr>("backend_config");
+        if (!cfg)
+          return nullptr;
+        auto msDim = parseMultiSliceConfigInt(cfg.getValue(), "dimension");
+        auto starts =
+            parseMultiSliceConfigList(cfg.getValue(), "start_indices");
+        auto limits =
+            parseMultiSliceConfigList(cfg.getValue(), "limit_indices");
+        auto strides = parseMultiSliceConfigList(cfg.getValue(), "strides");
+        if (!msDim || !starts || !limits || !strides || *msDim < 0 ||
+            *msDim >= ty.getRank() || (int64_t)starts->size() != ty.getRank() ||
+            (int64_t)limits->size() != ty.getRank() ||
+            (int64_t)strides->size() != ty.getRank())
+          return nullptr;
+        int64_t shift = cast<OpResult>(v).getResultNumber();
+        (*starts)[*msDim] += shift;
+        (*limits)[*msDim] += shift;
+        res = widenSlice(op, cc.getOperand(0), dim, *starts, *limits, *strides,
+                         lo, hi);
       } else if (auto pad = dyn_cast<stablehlo::PadOp>(op)) {
         if (pad.getInteriorPadding()[dim] != 0)
           return nullptr;
@@ -5632,7 +5767,10 @@ struct DUSSinkSlicesComm
       } else {
         return nullptr;
       }
-      cache[key] = res;
+      // A failed attempt is not cached: a caller may still succeed by other
+      // means (the rotate or pad of a source that could not be widened).
+      if (res)
+        cache[key] = res;
       return res;
     }
 
@@ -5652,7 +5790,7 @@ struct DUSSinkSlicesComm
         auto [v, dim, lo, hi] = key;
         Operation *op = v.getDefiningOp();
         // A shifted version does not contain the narrow one.
-        if (wide == v || lo < 0 || hi < 0 || !op ||
+        if (!wide || wide == v || lo < 0 || hi < 0 || !op ||
             isa<stablehlo::ConstantOp, sdy::ConstantOp>(op))
           continue;
         if (llvm::none_of(v.getUsers(), std::not_fn(inChain)))
@@ -5713,6 +5851,9 @@ struct DUSSinkSlicesComm
     Widener widener(rewriter, dus);
     Value wide = dus.getUpdate();
     for (int64_t d : dims) {
+      widener.winExtent = ty.getDimSize(d);
+      widener.winOff = starts[d];
+      widener.winSize = updTy.getDimSize(d);
       wide = widener.widen(wide, d, starts[d],
                            ty.getDimSize(d) - starts[d] - updTy.getDimSize(d));
       if (!wide) {
