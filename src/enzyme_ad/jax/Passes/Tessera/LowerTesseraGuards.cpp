@@ -1,13 +1,9 @@
 //===----------------------------------------------------------------------===//
 //
-// This file implements the pass that turns a tessera.guard into a real branch.
-//
-// A tessera.guard records a condition that could not be proven at compile
-// time, together with the specialized rewrite and the original computation.
-// This pass synthesizes the code that tests the condition and replaces the
-// guard with an ordinary conditional branch between the two, so nothing
-// tessera-specific survives. Where the guard sits in a region that must stay
-// one block, such as a loop body, the branch is an scf.if instead.
+// Turns each tessera.guard (a condition not proven at compile time, with the
+// rewrite and the original code) into a runtime check and a branch between
+// the two. In a single-block region, such as a loop body, the branch is an
+// scf.if.
 //
 //===----------------------------------------------------------------------===//
 
@@ -43,9 +39,7 @@ template <class... Ts> struct overloaded : Ts... {
 
 template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 
-/// Map a rule-level comparison onto an LLVM integer predicate. Integer
-/// comparisons are signed: the rule language has signed literals and no way to
-/// say otherwise.
+// Integer comparisons are signed, like the rule language's literals.
 LLVM::ICmpPredicate toICmpPredicate(CmpOp op) {
   switch (op) {
   case CmpOp::Eq:
@@ -64,8 +58,7 @@ LLVM::ICmpPredicate toICmpPredicate(CmpOp op) {
   llvm_unreachable("unhandled comparison operator");
 }
 
-/// The float predicates follow C: everything is an ordered comparison except
-/// '!=', which is true when the operands are unordered.
+// As in C: ordered comparisons, except '!=', which is true for NaN.
 LLVM::FCmpPredicate toFCmpPredicate(CmpOp op) {
   switch (op) {
   case CmpOp::Eq:
@@ -88,16 +81,14 @@ std::string calleeName(const Call &call) {
   return call.dialect + "." + call.opname;
 }
 
-/// The tessera.define of the op a condition calls, or null if the module has
-/// none: the function is not annotated tessera_op.
+// The tessera.define a condition calls, or null if there is none.
 DefineOp lookupDefine(const Call &call, GuardOp guard) {
   return SymbolTable::lookupNearestSymbolFrom<DefineOp>(
       guard, StringAttr::get(guard.getContext(), calleeName(call)));
 }
 
-/// The type a tessera.call to `define` expects at operand `index`: the pointee
-/// for an argument the call site loads, otherwise the parameter itself. As in
-/// tessera-apply-pdl, which builds the calls on a rule's right-hand side.
+// The type a tessera.call to `define` expects at operand `index`: the pointee
+// of a lifted argument, else the parameter type. Same as tessera-apply-pdl.
 Type callOperandValueType(DefineOp define, unsigned index) {
   if (Type pointee = define.getCallOperandPointeeType(index))
     return pointee;
@@ -105,9 +96,8 @@ Type callOperandValueType(DefineOp define, unsigned index) {
   return raw ? define.getFunctionType().getInput(*raw) : Type();
 }
 
-/// Whether a tessera.call to `define` can take a value of type `actual` at
-/// operand `index`: the parameter's own type, or the pointee of one the call
-/// site loads. As in tessera-apply-pdl.
+// Whether a tessera.call to `define` takes type `actual` at operand `index`.
+// Same as tessera-apply-pdl.
 bool callOperandAccepts(DefineOp define, unsigned index, Type actual) {
   std::optional<unsigned> raw = define.getArgIndexForCallOperand(index);
   if (!raw)
@@ -119,9 +109,8 @@ bool callOperandAccepts(DefineOp define, unsigned index, Type actual) {
   return pointee && isa<LLVM::LLVMPointerType>(formal) && actual == pointee;
 }
 
-/// The type of what `expr` denotes, where that is known without building it:
-/// the value the guard carries for a variable, or what a call returns. Used to
-/// give a literal on the other side of a comparison the right type.
+// The type of `expr`, if known without building it, to give a literal on the
+// other side of a comparison.
 Type typeHintFor(const Expr &expr, GuardOp guard) {
   if (auto *var = std::get_if<Var>(&expr.data))
     if (Value value = guard.getArgForName(var->name))
@@ -132,7 +121,7 @@ Type typeHintFor(const Expr &expr, GuardOp guard) {
       if (results.size() == 1)
         return results.front();
     }
-  // Arithmetic computes in its operands' type, which either one can give.
+  // Arithmetic has its operands' type.
   if (auto *arith = std::get_if<Arith>(&expr.data)) {
     if (Type type = typeHintFor(*arith->lhs, guard))
       return type;
@@ -144,9 +133,7 @@ Type typeHintFor(const Expr &expr, GuardOp guard) {
 Value emitCall(const Call &call, OpBuilder &builder, Location loc,
                GuardOp guard);
 
-/// Materialize one side of a comparison, or an argument of a call in the
-/// condition. `hint` is the type the other side settled on, or the type the
-/// callee takes, which is what a literal is built at.
+// Build a comparison operand or call argument. A literal gets type `hint`.
 Value resolveOperand(const Expr &expr, OpBuilder &builder, Location loc,
                      GuardOp guard, Type hint) {
   return std::visit(
@@ -193,8 +180,7 @@ Value resolveOperand(const Expr &expr, OpBuilder &builder, Location loc,
             return emitCall(c, builder, loc, guard);
           },
           [&](const Arith &a) -> Value {
-            // A literal operand takes the type the other operand gives, or,
-            // with literals on both sides, the hint from the context.
+            // From the other operand, or `hint` if both are literals.
             Type type = typeHintFor(expr, guard);
             if (!type)
               type = hint;
@@ -231,13 +217,9 @@ Value resolveOperand(const Expr &expr, OpBuilder &builder, Location loc,
       expr.data);
 }
 
-/// Call a tessera op the condition names, e.g. `mpfr.cmp_d(y, 0.5)`, and
-/// return its result. It becomes a tessera.call ahead of the branch, which
-/// tessera-to-llvm lowers along with every other.
-///
-/// The callee has to be a query: one result, which the condition compares,
-/// and no argument it writes, since the call runs whichever way the guard then
-/// goes. It is given values the rule matched, literals, and other calls.
+// A tessera.call for a call in the condition, e.g. `mpfr.cmp_d(y, 0.5)`. It
+// runs before the branch either way, so the callee must return one value and
+// write none of its arguments.
 Value emitCall(const Call &call, OpBuilder &builder, Location loc,
                GuardOp guard) {
   std::string name = calleeName(call);
@@ -312,14 +294,12 @@ bool containsCall(const Cond &cond) {
 
 Value emitCompare(const Compare &cmp, OpBuilder &builder, Location loc,
                   GuardOp guard) {
-  // Resolve whichever side names a value first, so a literal on the other side
-  // is built at a matching type rather than a guessed one.
+  // A literal takes the type of the other side.
   Type hint = typeHintFor(cmp.lhs, guard);
   if (!hint)
     hint = typeHintFor(cmp.rhs, guard);
 
-  // Stop at the first side that fails, which has said why; the other side
-  // would only add a second warning about the same condition.
+  // Stop at the first failure, which has already warned.
   Value lhs = resolveOperand(cmp.lhs, builder, loc, guard, hint);
   if (!lhs)
     return Value();
@@ -349,9 +329,8 @@ Value emitCompare(const Compare &cmp, OpBuilder &builder, Location loc,
 Value emitCond(const Cond &cond, OpBuilder &builder, Location loc,
                GuardOp guard, int64_t maxUnrolledElems, bool structured);
 
-/// Resolve a named predicate and let it synthesize its own check. Its operands
-/// are looked up on the guard: a predicate tests values the rule matched, not
-/// expressions computed here.
+// The runtime check for a named predicate. Its arguments must be values the
+// rule matched, which the guard carries.
 Value emitPredicate(const Pred &pred, OpBuilder &builder, Location loc,
                     GuardOp guard, int64_t maxUnrolledElems) {
   const TesseraPredicate *predicate = lookupPredicate(pred.name);
@@ -392,19 +371,11 @@ Value emitPredicate(const Pred &pred, OpBuilder &builder, Location loc,
   return predicate->emitCheck(args, ctx);
 }
 
-/// `lhs && rhs` (`isAnd`) or `lhs || rhs`, evaluating rhs only when lhs does
-/// not already decide the result, as C does. A call on the right is then only
-/// made when what comes before it holds, which is how a rule makes a call safe:
-/// `mpfr.nan_p(y) == 0 && mpfr.cmp_d(y, 0.5) == 0` never gives mpfr_cmp_d a
-/// NaN, on which it would raise MPFR's erange flag.
-///
-/// This needs blocks: lhs branches to one evaluating rhs or straight to a join
-/// block, whose argument is the result. Both are inserted after the current
-/// block, and the builder is left at the end of the join.
-///
-/// When `structured`, the check has to stay one block, and an scf.if on lhs
-/// yields the result instead, evaluating rhs in the branch where lhs does not
-/// decide it. The builder is left after the scf.if.
+// `lhs && rhs` (`isAnd`) or `lhs || rhs`, short-circuiting as in C, so a call
+// on the right can rely on the left. For example, in
+//   mpfr.nan_p(y) == 0 && mpfr.cmp_d(y, 0.5) == 0
+// mpfr_cmp_d never gets a NaN. Branches to new blocks, leaving the builder in
+// the join block, or, when `structured`, uses an scf.if.
 Value emitShortCircuit(const Cond &lhsCond, const Cond &rhsCond, bool isAnd,
                        OpBuilder &builder, Location loc, GuardOp guard,
                        int64_t maxUnrolledElems, bool structured) {
@@ -443,7 +414,7 @@ Value emitShortCircuit(const Cond &lhsCond, const Cond &rhsCond, bool isAnd,
   auto *rhsBlock = new Block();
   blocks.insert(join->getIterator(), rhsBlock);
 
-  // What the result is when lhs decides it: false for &&, true for ||.
+  // The result when lhs decides it: false for &&, true for ||.
   Value decided = LLVM::ConstantOp::create(
       builder, loc, i1, builder.getIntegerAttr(i1, isAnd ? 0 : 1));
   if (isAnd)
@@ -464,12 +435,9 @@ Value emitShortCircuit(const Cond &lhsCond, const Cond &rhsCond, bool isAnd,
   return join->getArgument(0);
 }
 
-/// Synthesize an i1 testing `cond`.
-///
-/// A connective whose right side makes a call short-circuits (see
-/// emitShortCircuit). Any other is bitwise on i1: a predicate or comparison
-/// reads only memory the guarded call would read anyway, so evaluating both
-/// sides is safe, and keeps the check straight-line code.
+// An i1 testing `cond`. && and || short-circuit only when the right side makes
+// a call; otherwise both sides are safe to evaluate, so they're combined
+// bitwise to keep the check straight-line.
 Value emitCond(const Cond &cond, OpBuilder &builder, Location loc,
                GuardOp guard, int64_t maxUnrolledElems, bool structured) {
   return std::visit(
@@ -518,10 +486,8 @@ Value emitCond(const Cond &cond, OpBuilder &builder, Location loc,
       cond.data);
 }
 
-/// Replace `guard` with its else region, the computation the rule would have
-/// replaced. That is always correct, so it is what a guard whose condition
-/// cannot be checked becomes: the rule is not applied here, and nothing else
-/// changes.
+// Replace `guard` with its else region, the original code. Used when the
+// condition can't be checked.
 void keepOriginal(GuardOp guard) {
   Block &elseBlock = guard.getElseRegion().front();
   auto yield = cast<YieldOp>(elseBlock.getTerminator());
@@ -532,9 +498,8 @@ void keepOriginal(GuardOp guard) {
   guard.erase();
 }
 
-/// Replace `guard` with an scf.if on `check`, which `start` computes. This is
-/// the form for a guard in a region that must stay one block: the check goes
-/// in ahead of the guard and the guard's two regions become the scf.if's.
+// Replace `guard` with an scf.if on `check`, placing `start`, which computes
+// it, ahead of the guard.
 void replaceWithIf(GuardOp guard, Block *start, Value check) {
   Location loc = guard.getLoc();
   guard->getBlock()->getOperations().splice(guard->getIterator(),
@@ -559,16 +524,14 @@ void replaceWithIf(GuardOp guard, Block *start, Value check) {
 void lowerGuard(GuardOp guard, int64_t maxUnrolledElems) {
   Location loc = guard.getLoc();
 
-  // The parser reports why, if it does not parse.
+  // The parser warns if it doesn't parse.
   auto cond = parseConditionText(guard.getCond(), loc);
   if (!cond) {
     keepOriginal(guard);
     return;
   }
 
-  // A branch splits the guard's block, which the body of an scf.for, scf.if or
-  // affine.for must not be: those regions are one block each. A guard there
-  // becomes an scf.if, and its check stays one block too.
+  // Regions like scf.for bodies must stay one block, so no branching there.
   bool structured = guard->getParentOp()->hasTrait<OpTrait::SingleBlock>();
 
   Block *entry = guard->getBlock();
@@ -576,17 +539,12 @@ void lowerGuard(GuardOp guard, int64_t maxUnrolledElems) {
   Block *thenBlock = &guard.getThenRegion().front();
   Block *elseBlock = &guard.getElseRegion().front();
 
-  // Synthesize the check first, while the guard is still intact. A predicate
-  // reads the call kept in the else region to find out how its operand is laid
-  // out, so this has to happen before that region is moved away.
-  //
-  // It is built in a scratch region and moved into place once complete: a
-  // check that short-circuits needs blocks of its own (unless structured), and
-  // one that gives up part way must leave nothing behind.
+  // Build the check first, since predicates read the else region's call to
+  // find operand layouts. Build it in a scratch region so a check that fails
+  // part way leaves nothing behind.
   Region scratch;
   Block *start = new Block();
   scratch.push_back(start);
-  // The scratch region belongs to no op, so it has no context to offer.
   OpBuilder builder(guard.getContext());
   builder.setInsertionPointToEnd(start);
   Value check =
@@ -603,8 +561,7 @@ void lowerGuard(GuardOp guard, int64_t maxUnrolledElems) {
   // The block the check ends in, which branches on it.
   Block *decide = builder.getInsertionBlock();
 
-  // Split so that everything after the guard becomes the continuation. The
-  // guard itself leads the continuation block for now and is erased last.
+  // Everything from the guard on becomes the continuation block.
   Block *tail = entry->splitBlock(guard);
 
   // The check starts in the entry block; any blocks it needs follow it.
@@ -614,14 +571,12 @@ void lowerGuard(GuardOp guard, int64_t maxUnrolledElems) {
   start->erase();
   region->getBlocks().splice(tail->getIterator(), scratch.getBlocks());
 
-  // In the LLVM dialect the phi nodes are block arguments, so the guard's
-  // results become arguments of the continuation.
+  // The guard's results become block arguments (phis) of the continuation.
   SmallVector<Location> argLocs(guard.getNumResults(), loc);
   tail->addArguments(guard.getResultTypes(), argLocs);
   for (auto [result, arg] : llvm::zip(guard.getResults(), tail->getArguments()))
     result.replaceAllUsesWith(arg);
 
-  // Each branch ends by feeding the continuation the values it yielded.
   for (Block *block : {thenBlock, elseBlock}) {
     auto yield = cast<YieldOp>(block->getTerminator());
     OpBuilder builder(yield);
@@ -629,8 +584,6 @@ void lowerGuard(GuardOp guard, int64_t maxUnrolledElems) {
     yield.erase();
   }
 
-  // Move both bodies out of the guard's regions and into the surrounding one,
-  // between the entry block and the continuation.
   region->getBlocks().splice(tail->getIterator(),
                              guard.getThenRegion().getBlocks());
   region->getBlocks().splice(tail->getIterator(),
@@ -649,8 +602,7 @@ struct LowerTesseraGuardsPass
   using LowerTesseraGuardsPassBase::LowerTesseraGuardsPassBase;
 
   void runOnOperation() override {
-    // Collect first: lowering a guard rewires the blocks around it, which a
-    // walk in progress must not be looking at.
+    // Collect first, since lowering rewires blocks under the walk.
     SmallVector<GuardOp> guards;
     getOperation()->walk([&](GuardOp guard) { guards.push_back(guard); });
 

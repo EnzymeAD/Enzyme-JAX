@@ -1,8 +1,7 @@
 //===----------------------------------------------------------------------===//
 //
-// This file implements a custom lexer and parser to parse the tessera
-// optimization rewrite rules defined by the user and then creates a PDL
-// pattern from each rule.
+// Turns each tessera rewrite rule into a PDL pattern. The lexer and parser
+// are in RuleParser.cpp.
 //
 //===----------------------------------------------------------------------===//
 
@@ -52,9 +51,8 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
               boundVars[v.name] = pdl::OperandOp::create(
                   builder, loc, builder.getType<pdl::ValueType>(),
                   /*type=*/mlir::Value());
-              // Track first-appearance order too: the rewrite function is
-              // handed these values positionally, paired with a list of the
-              // names the rule knows them by.
+              // Also record first-appearance order: the rewrite gets these
+              // values by position, alongside a list of their names.
               orderedVars.push_back(v.name);
             }
             return {boundVars[v.name], mlir::Value()};
@@ -129,10 +127,8 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
                 builder, loc,
                 FlatSymbolRefAttr::get(builder.getContext(),
                                        c.dialect + "." + c.opname));
-            // Use an unbound pdl.types range (rather than a single pdl.type) so
-            // the match doesn't constrain the result count of the tessera.call
-            // op since it may vary (1 for a plain call, 1 + N for a callee with
-            // N output-param arguments).
+            // A pdl.types range rather than one pdl.type, so any result count
+            // matches (1, or 1 + N for a callee with N output arguments).
             auto resultTypesOp = pdl::TypesOp::create(
                 builder, loc,
                 pdl::RangeType::get(builder.getType<pdl::TypeType>()),
@@ -152,10 +148,9 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
       expr.data);
 }
 
-/// The first variable `expr` uses that the left-hand side does not bind, if
-/// any. The right-hand side is built by a native rewrite that is not allowed
-/// to fail, so an unbound name has to be caught here, where it can be reported
-/// against the rule.
+// The first variable in `expr` that the left-hand side doesn't bind, if any.
+// Checked here because the native rewrite that builds the right-hand side
+// can't fail.
 std::optional<std::string>
 findUnboundVar(const Expr &expr, const llvm::StringMap<mlir::Value> &bound) {
   if (auto *var = std::get_if<Var>(&expr.data))
@@ -189,9 +184,8 @@ struct ParseOptimizationRulesPass
     ModuleOp patternsModule =
         mlir::ModuleOp::create(builder, location, "patterns");
 
-    // Find optimization ops and parse rewrite rules. A rule that cannot be
-    // used is reported as a warning and left out; the others still apply, and
-    // the program compiles as it would have without it.
+    // Parse each rule. One that can't be used is skipped with a warning; the
+    // others still apply.
     for (auto optimizations_op : module.getOps<tessera::OptimizationsOp>()) {
       for (auto optimization_op :
            optimizations_op.getBody().getOps<tessera::OptimizationOp>()) {
@@ -206,15 +200,13 @@ struct ParseOptimizationRulesPass
         builder.setInsertionPointToStart(patternsModule.getBody());
         auto pattern = pdl::PatternOp::create(builder, loc, /*benefit=*/1,
                                               /*sym_name=*/std::nullopt);
-        // PatternOp::build emplaces the body block itself, so take that one
-        // rather than adding a second.
+        // PatternOp::build already adds the body block; use it.
         Block *patternBlock = &pattern.getBodyRegion().front();
         builder.setInsertionPointToStart(patternBlock);
         llvm::StringMap<mlir::Value> boundVars;
         SmallVector<std::string> orderedVars;
 
-        // Emit PDL for the left hand side of the rewrite rule (the pattern to
-        // match)
+        // Emit PDL for the left-hand side (the pattern to match).
         auto root =
             emitMatchPDL(rule->lhs, builder, loc, boundVars, orderedVars);
         if (!root.second) {
@@ -236,21 +228,12 @@ struct ParseOptimizationRulesPass
           continue;
         }
 
-        // The right-hand side is not spelled out in PDL. It is built by a
-        // native rewrite instead, for every rule, because the things it needs
-        // to know are only knowable once the match exists:
-        //
-        //   - the result types of each call it builds, which come from the
-        //     callee's tessera.define. Those do not exist yet when this pass
-        //     runs, and PDL refuses to build a nested op whose types it cannot
-        //     infer;
-        //   - for a conditional rule, whether the condition can be proven,
-        //     which decides between rewriting outright and building a guard;
-        //   - for a chain rule, which matched producers can move along with
-        //     the call they feed.
-        //
-        // So the whole rule travels as text, along with the matched values and
-        // the names the rule calls them by, and tessera-apply-pdl re-parses it.
+        // The right-hand side isn't written in PDL. tessera-apply-pdl builds it
+        // with a native rewrite, because it needs things only known after a
+        // match: result types from the callees' tessera.defines (which don't
+        // exist yet here), whether a condition is proven (rewrite or guard),
+        // and which producers a chain rule can move. So the rule is passed as
+        // text, with the matched values and their names.
         auto ruleAttr = pdl::AttributeOp::create(
             builder, loc, builder.getStringAttr(optimization_op.getRule()));
         SmallVector<Attribute> nameAttrs;
@@ -259,11 +242,9 @@ struct ParseOptimizationRulesPass
         auto namesAttr = pdl::AttributeOp::create(
             builder, loc, builder.getArrayAttr(nameAttrs));
 
-        // A guard keeps a clone of the matched call in its else region, so
-        // without this a conditional pattern would match that clone and nest
-        // guards without end. A right-hand side that repeats the matched call,
-        // as `f(x) -> g(x); f(x)` does, would likewise match its own output.
-        // It goes first because it is the cheap one.
+        // A guard keeps a copy of the matched call, and `f(x) -> g(x); f(x)`
+        // re-creates it, so either would let the pattern match its own output
+        // forever. This cheap check, done first, prevents that.
         std::string lhsText = renderExpr(rule->lhs);
         if (rule->cond || llvm::any_of(rule->rhs, [&](const Expr &expr) {
               return renderExpr(expr) == lhsText;
@@ -272,16 +253,14 @@ struct ParseOptimizationRulesPass
               builder, loc, TypeRange{}, "tesseraRuleNotApplied",
               ValueRange{root.second, ruleAttr});
 
-        // Decides, from the matched IR, whether the rewrite can be built at
-        // all and is safe to apply here. Declining in the match rather than
-        // the rewrite is what keeps the greedy driver from looping on a call
-        // the rule will never change.
+        // Whether the rewrite can be built and is safe here. Declining in the
+        // match, not the rewrite, keeps the greedy driver from retrying the
+        // same call forever.
         pdl::ApplyNativeConstraintOp::create(builder, loc, TypeRange{},
                                              "tesseraRuleApplicable",
                                              ValueRange{root.second, ruleAttr});
 
-        // PDL passes the matched root to the rewrite function itself, ahead
-        // of these, so it must not be listed here as well.
+        // PDL passes the matched root to the rewrite first, so don't list it.
         SmallVector<mlir::Value> externalArgs{ruleAttr, namesAttr};
         for (const std::string &name : orderedVars)
           externalArgs.push_back(boundVars[name]);
