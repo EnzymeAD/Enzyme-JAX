@@ -5699,6 +5699,38 @@ struct DUSSinkSlicesComm
           copySharding(v, res);
           res = finish(res);
         }
+      } else if (auto reshape = dyn_cast<stablehlo::ReshapeOp>(op)) {
+        // A reshape that only inserts or removes unit dimensions: the
+        // widened dimension maps to the operand's dimension of the same
+        // size, in order among the non-unit dimensions.
+        auto inTy = cast<RankedTensorType>(reshape.getOperand().getType());
+        int64_t srcDim = -1;
+        {
+          int64_t j = 0;
+          bool ok = true;
+          for (int64_t i = 0; i < ty.getRank() && ok; i++) {
+            if (ty.getDimSize(i) == 1)
+              continue;
+            while (j < inTy.getRank() && inTy.getDimSize(j) == 1)
+              j++;
+            if (j >= inTy.getRank() || inTy.getDimSize(j) != ty.getDimSize(i))
+              ok = false;
+            else if (i == dim)
+              srcDim = j;
+            j++;
+          }
+          for (; j < inTy.getRank() && ok; j++)
+            if (inTy.getDimSize(j) != 1)
+              ok = false;
+          if (!ok || srcDim < 0)
+            return nullptr;
+        }
+        Value x = widen(reshape.getOperand(), srcDim, lo, hi);
+        if (!x)
+          return nullptr;
+        res = stablehlo::ReshapeOp::create(rewriter, loc, newTy, x);
+        copySharding(v, res);
+        res = finish(res);
       } else if (auto concat = dyn_cast<stablehlo::ConcatenateOp>(op)) {
         bool along = (int64_t)concat.getDimension() == dim;
         if (along && (lo < 0 || hi < 0))
