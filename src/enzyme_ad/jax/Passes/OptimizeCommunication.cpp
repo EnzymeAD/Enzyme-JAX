@@ -5396,10 +5396,40 @@ struct DUSSinkSlicesComm
       Value xw = x;
       if (na < 0 || nb > m) {
         xw = widen(x, dim, -na, nb - m);
-        if (!xw)
-          return nullptr;
-        nb -= na;
-        na = 0;
+        if (xw) {
+          nb -= na;
+          na = 0;
+        } else if (nb - na == m) {
+          // `x` cannot be recomputed on the wider window (an argument, or an
+          // op the widener does not know), but the window has its size: the
+          // entries that would come from outside `x` are never read, so a
+          // rotation of `x` serves, and is the cheapest exchange of a halo.
+          // Rotations of one value by several amounts are later grouped.
+          int64_t amount = ((na % m) + m) % m;
+          xw = enzymexla::RotateOp::create(rewriter, op->getLoc(), x,
+                                           static_cast<int32_t>(amount),
+                                           static_cast<int32_t>(dim));
+          copySharding(x, xw);
+          xw = finish(xw);
+          na = 0;
+          nb = m;
+        } else {
+          // Otherwise pad: the padded entries are never read either.
+          Value zero = finish(stablehlo::ConstantOp::create(
+              rewriter, op->getLoc(),
+              cast<ElementsAttr>(makeAttr(
+                  RankedTensorType::get({}, xTy.getElementType()), 0))));
+          SmallVector<int64_t> low(xTy.getRank(), 0), high(xTy.getRank(), 0),
+              interior(xTy.getRank(), 0);
+          low[dim] = std::max<int64_t>(0, -na);
+          high[dim] = std::max<int64_t>(0, nb - m);
+          xw = stablehlo::PadOp::create(rewriter, op->getLoc(), x, zero, low,
+                                        high, interior);
+          copySharding(x, xw);
+          xw = finish(xw);
+          na += low[dim];
+          nb += low[dim];
+        }
       }
       starts[dim] = na;
       limits[dim] = nb;

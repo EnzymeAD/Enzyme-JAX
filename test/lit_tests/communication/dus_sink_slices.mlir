@@ -221,6 +221,30 @@ func.func @mixed_dims(%a: tensor<8x16xf32> {sdy.sharding = #sdy.sharding<@mesh, 
 
 // -----
 
+// A stencil on an argument of the DUS's own extent: widening its shifted
+// reads back to that extent would step outside the argument. The rows that
+// would come from outside are never read, so each read becomes a rotation,
+// the cheapest halo exchange, and the DUS gets the slice at its window.
+sdy.mesh @mesh = <["x"=2]>
+func.func @rotate_argument(%a: tensor<16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}]>}, %b: tensor<16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}]>}) -> tensor<16xf32> {
+  %c1 = stablehlo.constant dense<1> : tensor<i32>
+  %l = stablehlo.slice %a [0:13] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>) -> tensor<13xf32>
+  %r = stablehlo.slice %a [2:15] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>) -> tensor<13xf32>
+  %u = stablehlo.add %l, %r {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : tensor<13xf32>
+  %d = stablehlo.dynamic_update_slice %b, %u, %c1 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>, tensor<13xf32>, tensor<i32>) -> tensor<16xf32>
+  return %d : tensor<16xf32>
+}
+
+// CHECK-LABEL: func.func @rotate_argument
+// CHECK-DAG: %[[L:.+]] = "enzymexla.rotate"(%arg0) <{amount = 15 : i32, dimension = 0 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>) -> tensor<16xf32>
+// CHECK-DAG: %[[R:.+]] = "enzymexla.rotate"(%arg0) <{amount = 1 : i32, dimension = 0 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>) -> tensor<16xf32>
+// CHECK: %[[U:.+]] = stablehlo.add %[[L]], %[[R]] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : tensor<16xf32>
+// CHECK-NEXT: %[[W:.+]] = stablehlo.slice %[[U]] [1:14] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>) -> tensor<13xf32>
+// CHECK-NEXT: %[[D:.+]] = stablehlo.dynamic_update_slice %arg1, %[[W]]
+// CHECK-NEXT: return %[[D]]
+
+// -----
+
 // An update computed from an argument that only exists at the window's
 // extent cannot be widened; the DUS stays.
 sdy.mesh @mesh = <["x"=2]>
