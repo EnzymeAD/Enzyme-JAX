@@ -5249,22 +5249,9 @@ static bool getDUSWindow(stablehlo::DynamicUpdateSliceOp dus,
   return true;
 }
 
-// Is some dimension the update is narrower in sharded over several devices?
-// Only then does the window position matter for communication.
-static bool dusNarrowsShardedDim(stablehlo::DynamicUpdateSliceOp dus,
-                                 sdy::TensorShardingAttr sharding) {
-  auto ty = dus.getType();
-  auto updTy = dus.getUpdate().getType();
-  for (int64_t d = 0; d < ty.getRank(); d++)
-    if (updTy.getDimSize(d) != ty.getDimSize(d) &&
-        getNumDevicesAlongDimension(sharding, d, dus) > 1)
-      return true;
-  return false;
-}
-
 // Is `update` a slice of a tensor of the DUS's own type taken at the DUS's
 // window? Such an update is already as cheap as it gets: no part of it moves
-// between shards, and DUSOfSliceToSelectComm turns the pair into a select.
+// between shards, and the partitioner turns the pair into a local select.
 static bool isSliceAtDUSWindow(stablehlo::DynamicUpdateSliceOp dus,
                                ArrayRef<int64_t> starts) {
   auto slice = dus.getUpdate().getDefiningOp<stablehlo::SliceOp>();
@@ -5275,71 +5262,6 @@ static bool isSliceAtDUSWindow(stablehlo::DynamicUpdateSliceOp dus,
   return llvm::equal(slice.getStartIndices(), starts);
 }
 
-// `dus(x, slice(y, window), window)` where `y` has the type of `x` is a
-// select between `y` and `x` under a mask on the window. The DUS form would
-// make the partitioner move the update between shards whenever the window
-// does not follow the shard boundaries; the select is local.
-struct DUSOfSliceToSelectComm
-    : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dus,
-                                PatternRewriter &rewriter) const override {
-    if (dus->getParentOfType<sdy::ManualComputationOp>())
-      return failure();
-    auto sharding = mlir::sdy::getSharding(dus);
-    if (!sharding)
-      return failure();
-    SmallVector<int64_t> starts;
-    if (!getDUSWindow(dus, starts) || !isSliceAtDUSWindow(dus, starts))
-      return failure();
-    if (!dusNarrowsShardedDim(dus, sharding))
-      return failure();
-
-    auto ty = dus.getType();
-    auto updTy = dus.getUpdate().getType();
-    auto loc = dus.getLoc();
-    auto i32Ty = RankedTensorType::get(ty.getShape(), rewriter.getI32Type());
-    auto withSharding = [&](Value v) {
-      sdy::setSharding(v, sharding);
-      return v;
-    };
-    auto bound = [&](int64_t val) {
-      return withSharding(stablehlo::ConstantOp::create(
-          rewriter, loc, cast<ElementsAttr>(makeAttr(i32Ty, val))));
-    };
-    auto conj = [&](Value acc, Value v) {
-      return acc ? withSharding(stablehlo::AndOp::create(rewriter, loc, acc, v))
-                 : v;
-    };
-
-    Value mask;
-    for (int64_t d = 0; d < ty.getRank(); d++) {
-      int64_t n = ty.getDimSize(d), s = updTy.getDimSize(d), off = starts[d];
-      if (s == n)
-        continue;
-      Value iota =
-          withSharding(stablehlo::IotaOp::create(rewriter, loc, i32Ty, d));
-      if (off > 0)
-        mask = conj(mask, withSharding(stablehlo::CompareOp::create(
-                              rewriter, loc, iota, bound(off),
-                              stablehlo::ComparisonDirection::GE)));
-      if (off + s < n)
-        mask = conj(mask, withSharding(stablehlo::CompareOp::create(
-                              rewriter, loc, iota, bound(off + s),
-                              stablehlo::ComparisonDirection::LT)));
-    }
-    if (!mask)
-      return failure();
-
-    Value wide =
-        cast<stablehlo::SliceOp>(dus.getUpdate().getDefiningOp()).getOperand();
-    rewriter.replaceOp(dus, withSharding(stablehlo::SelectOp::create(
-                                rewriter, loc, mask, wide, dus.getOperand())));
-    return success();
-  }
-};
-
 // Moves the slices feeding the update of a DUS down to the DUS itself.
 //
 // After `select_comp_iota_to_dus` and friends, an update written into the
@@ -5348,8 +5270,9 @@ struct DUSOfSliceToSelectComm
 // w)`. Every such slice shifts data between shards when the window is not
 // on the shard boundaries, and so does the DUS. `f` is elementwise-like, so
 // the same values are obtained by computing it at the full extent and
-// slicing the result once: `dus(x, slice(f(a, b), w), w)`, which
-// DUSOfSliceToSelectComm then turns into a local select. The rows outside
+// slicing the result once: `dus(x, slice(f(a, b), w), w)`, a DUS of a slice
+// at its own window, which XLA's partitioner handles without moving data
+// (it becomes a local select). The rows outside
 // the window are computed and discarded; the pattern only applies when that
 // extra work is a bounded fraction of the window (max_extra_percent).
 //
@@ -5891,9 +5814,6 @@ struct OptimizeCommunicationPass
     if (dus_to_pad_comm > 0)
       patterns.add<DUSToPadComm>(context, PatternBenefit(dus_to_pad_comm));
 
-    if (dus_of_slice_to_select_comm > 0)
-      patterns.add<DUSOfSliceToSelectComm>(
-          context, PatternBenefit(dus_of_slice_to_select_comm));
     if (dus_sink_slices_comm > 0)
       patterns.add<DUSSinkSlicesComm>(context,
                                       dus_sink_slices_max_extra_percent,

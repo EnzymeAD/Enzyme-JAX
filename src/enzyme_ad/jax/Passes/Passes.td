@@ -1258,12 +1258,6 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"1",
        /*description=*/"Perform a DUS with Padding to optimize the communication">,
        Option<
-       /*C++ variable name=*/"dus_of_slice_to_select_comm",
-       /*CLI argument=*/"dus_of_slice_to_select_comm",
-       /*type=*/"int",
-       /*default=*/"0",
-       /*description=*/"Rewrite a DUS on a sharded dimension whose update is a slice at the DUS's own window as a select">,
-       Option<
        /*C++ variable name=*/"dus_sink_slices_comm",
        /*CLI argument=*/"dus_sink_slices_comm",
        /*type=*/"int",
