@@ -36,7 +36,7 @@ module {
   // CHECK-LABEL: llvm.func @bad_marker(
   // CHECK-NOT: tessera_op
   // expected-warning @+1 {{argument 'x:val=sideways' has invalid marker 'val=sideways', expected :val=in, :val=out, or :val=inout}}
-  llvm.func @bad_marker(%a: !llvm.ptr) -> f64 attributes {tessera_op = "lib.f(x:val=sideways):globals=0"} {
+  llvm.func @bad_marker(%a: !llvm.ptr) -> f64 attributes {tessera_op = "lib.f(x:val=sideways)"} {
     %0 = llvm.load %a : !llvm.ptr -> f64
     llvm.return %0 : f64
   }
@@ -49,19 +49,19 @@ module {
   // CHECK-LABEL: llvm.func @marked_value(
   // CHECK-NOT: tessera_op
   // expected-warning @+1 {{argument 'x:val=in' is marked, but is not passed through a pointer}}
-  llvm.func @marked_value(%a: f64) -> f64 attributes {tessera_op = "lib.f(x:val=in):globals=0"} {
+  llvm.func @marked_value(%a: f64) -> f64 attributes {tessera_op = "lib.f(x:val=in)"} {
     llvm.return %a : f64
   }
 }
 
 // -----
 
-// A marked argument needs the global the plugin emits for its type.
+// A marked argument needs the type tessera.arg_types gives its position.
 module {
   // CHECK-LABEL: llvm.func @missing_type(
   // CHECK-NOT: tessera_op
-  // expected-warning @+1 {{no lifting entry found for arg at index 7}}
-  llvm.func @missing_type(%a: !llvm.ptr) -> f64 attributes {tessera_op = "lib.f(x:val=in):globals=7"} {
+  // expected-warning @+1 {{argument 'x:val=in' is marked, but no type is known for the value behind it}}
+  llvm.func @missing_type(%a: !llvm.ptr) -> f64 attributes {tessera_op = "lib.f(x:val=in)"} {
     %0 = llvm.load %a : !llvm.ptr -> f64
     llvm.return %0 : f64
   }

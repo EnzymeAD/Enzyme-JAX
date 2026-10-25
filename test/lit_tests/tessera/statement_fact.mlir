@@ -15,8 +15,8 @@
 // has dropped the annotation table by then, which named the marker too.)
 
 module {
-  llvm.mlir.global private unnamed_addr constant @".str.spd_arg0"("tessera_guarantees=SPD:arg0\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
-  llvm.mlir.global private unnamed_addr constant @".str.assumes_arg0"("tessera_assumes=SPD:arg0\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.spd_arg0"("tessera_guarantees=SPD(0)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.assumes_arg0"("tessera_assumes=SPD(0)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.fact"("tessera_fact\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.file"("ex2.c\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<4 x struct<(ptr, ptr, ptr, i32, ptr)>> {
@@ -161,10 +161,10 @@ module {
   //
   // gets a marker of its own, annotated with the assumption on its parameter
   // rather than a guarantee. It is lifted as any assumption is, to a
-  // tessera.property on the parameter; since the marker does nothing, that
+  // tessera.assumes on the parameter; since the marker does nothing, that
   // holds after the call too, of whatever handle A holds there. The marker is
   // removed the same way.
-  // FACT: llvm.func weak @__tessera_fact_1(%{{.*}}: !llvm.ptr {tessera.property = ["SPD"]}) attributes {{{.*}}tessera.fact_marker{{.*}}}
+  // FACT: llvm.func weak @__tessera_fact_1(%{{.*}}: !llvm.ptr {tessera.assumes = ["SPD"]}) attributes {{{.*}}tessera.fact_marker{{.*}}}
   // LOWER-NOT: __tessera_fact_1
   llvm.func weak @__tessera_fact_1(%a: !llvm.ptr) attributes {no_inline} {
     llvm.return

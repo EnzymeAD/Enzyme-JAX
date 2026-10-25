@@ -1,7 +1,7 @@
 //===----------------------------------------------------------------------===//
 //
-// This file implements patterns to convert operations in the LLVM dialect to
-// operations in the Tessera dialect.
+// Converts marked llvm.funcs to tessera.defines, and calls to them to
+// tessera.calls.
 //
 //===----------------------------------------------------------------------===//
 
@@ -19,7 +19,6 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 
 namespace mlir {
@@ -41,21 +40,15 @@ using namespace mlir::enzyme::tessera;
 
 namespace {
 
-// Marks the placeholder a taken address refers to while the function it names
-// is a tessera.define, holding that function's original symbol. See
-// redirectAddressUses; tessera-to-llvm undoes it.
+// On the stub that stands in for a lifted function's address, naming the
+// original function. See redirectAddressUses.
 constexpr llvm::StringLiteral kAddressStubAttr = "tessera.address_stub_for";
 
-// llvm.mlir.addressof may only name an LLVM symbol, so a function whose address
-// is taken cannot simply become a tessera.define: the module stops verifying.
-// That is not rare -- `&DenseMatrix::Invert` does it, and so does anything
-// that puts the function in llvm.used or llvm.compiler.used.
-//
-// Point those uses at an external llvm.func declared in the function's place
-// instead, for as long as the function is in the tessera dialect. Calls
-// through such a pointer are indirect, so no rule could have matched them
-// anyway, and once tessera-to-llvm turns the define back into a function of
-// the original name, it points the uses back at it and drops the stub.
+// llvm.mlir.addressof can only name an LLVM symbol, so taking the address of
+// a function (`&DenseMatrix::Invert`, or putting it in llvm.used) stops the
+// module verifying once it becomes a tessera.define. Point those uses at a
+// stub llvm.func declaration instead; tessera-to-llvm points them back. Calls
+// through the pointer are indirect, so no rule could match them anyway.
 void redirectAddressUses(LLVM::LLVMFuncOp funcOp, PatternRewriter &rewriter,
                          ModuleOp module) {
   auto uses = SymbolTable::getSymbolUses(funcOp.getSymNameAttr(), module);
@@ -67,8 +60,7 @@ void redirectAddressUses(LLVM::LLVMFuncOp funcOp, PatternRewriter &rewriter,
     auto addressOf = dyn_cast<LLVM::AddressOfOp>(use.getUser());
     if (!addressOf)
       continue;
-    // The annotation table is how the function got its tessera name in the
-    // first place, and this pass erases it once conversion is done.
+    // This pass erases the annotation table at the end.
     auto global = addressOf->getParentOfType<LLVM::GlobalOp>();
     if (global && global.getSymName() == "llvm.global.annotations")
       continue;
@@ -83,9 +75,7 @@ void redirectAddressUses(LLVM::LLVMFuncOp funcOp, PatternRewriter &rewriter,
   rewriter.setInsertionPoint(funcOp);
   auto stub = LLVM::LLVMFuncOp::create(rewriter, funcOp.getLoc(), stubName,
                                        funcOp.getFunctionType());
-  // A plain string rather than a symbol reference: the renaming that follows
-  // rewrites every reference to the function, and this one must keep naming
-  // the original.
+  // A string, not a symbol reference, so the renaming below leaves it alone.
   stub->setAttr(kAddressStubAttr, funcOp.getSymNameAttr());
 
   auto stubRef = FlatSymbolRefAttr::get(ctx, stubName);
@@ -94,7 +84,7 @@ void redirectAddressUses(LLVM::LLVMFuncOp funcOp, PatternRewriter &rewriter,
                              [&] { addressOf.setGlobalNameAttr(stubRef); });
 }
 
-/// The tessera_op or pure_tessera_op marking on `funcOp`, if it has one.
+// The tessera_op or pure_tessera_op marking on `funcOp`, if it has one.
 StringAttr getMarking(LLVM::LLVMFuncOp funcOp, bool &isPure) {
   isPure = false;
   if (auto attr = funcOp->getAttrOfType<StringAttr>("tessera_op"))
@@ -106,24 +96,16 @@ StringAttr getMarking(LLVM::LLVMFuncOp funcOp, bool &isPure) {
   return {};
 }
 
-/// The tessera op name a marking gives its function: everything before '('.
+// The tessera op name a marking gives its function: everything before '('.
 StringRef getTesseraName(StringRef marking) {
   return marking.take_while([](char c) { return c != '('; });
 }
 
-/// Work out the argModes of the tessera.define that `funcOp` becomes, from its
-/// marking. Fails, with the reason in `why`, if the marking is malformed or
-/// does not fit the function, since lifting it anyway would produce a
-/// tessera.define that does not verify.
-///
-/// The marking has the form "name(arg1:val=in, arg2, ...):globals=index1,...".
-/// index1,... corresponds positionally, in left-to-right order, to the marked
-/// args, one global counter index per marked arg, and is used to look up each
-/// arg's type in argTypesByGlobalIndices.
-FailureOr<ArrayAttr> buildArgModes(
-    LLVM::LLVMFuncOp funcOp, StringRef raw,
-    const llvm::DenseMap<unsigned, mlir::Type> &argTypesByGlobalIndices,
-    std::string &why) {
+// The argModes for the tessera.define `funcOp` becomes, from a marking like
+// "name(arg1:val=in, arg2, ...)". Lifted types come from tessera.arg_types.
+// Fails, with the reason in `why`, if the marking doesn't fit the function.
+FailureOr<ArrayAttr> buildArgModes(LLVM::LLVMFuncOp funcOp, StringRef raw,
+                                   std::string &why) {
   MLIRContext *ctx = funcOp->getContext();
   if (getTesseraName(raw).trim().empty()) {
     why = "it does not name a tessera op";
@@ -138,8 +120,7 @@ FailureOr<ArrayAttr> buildArgModes(
   if (!argList.trim().empty())
     argList.split(argParts, ',');
 
-  // One entry per argument, not counting an sret pointer, which is the
-  // return value rather than an argument of the op.
+  // One entry per argument, not counting an sret pointer.
   unsigned sretOffset =
       funcOp.getNumArguments() > 0 &&
               funcOp.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName())
@@ -152,30 +133,18 @@ FailureOr<ArrayAttr> buildArgModes(
     return failure();
   }
 
-  // Parse indices after ":globals=" (order corresponds to the order marked
-  // args appear in argList)
-  SmallVector<StringRef> indexList;
-  StringRef indicesStr = raw.substr(raw.find(')') + 1);
-  if (!indicesStr.empty() && indicesStr.consume_front(":globals=")) {
-    indicesStr.split(indexList, ',');
-  }
-
-  // Identify which args carry a lifting marker and look up their pointee
-  // types. Marked args consume the :globals= index list in left-to-right arg
-  // order, one index each.
+  auto argTypes = funcOp->getAttrOfType<ArrayAttr>(kArgTypesAttr);
   SmallVector<Attribute> argModes;
-  unsigned numIndicesFound = 0;
   for (unsigned i = 0, e = argParts.size(); i != e; ++i) {
     StringRef arg = argParts[i].trim();
     StringRef marker = arg.split(':').second.trim();
     if (marker.empty()) {
-      // Unmarked: not lifted. Push a unit attribute so that argModes has
-      // the same size as the number of args.
+      // Unmarked: not lifted. A unit attribute keeps one entry per arg.
       argModes.push_back(UnitAttr::get(ctx));
       continue;
     }
 
-    // Expect the form "arg:val=<dir>", disregarding additional spaces.
+    // Expect "arg:val=<dir>", ignoring spaces.
     StringRef dir = marker;
     bool wellFormed = dir.consume_front("val");
     if (wellFormed) {
@@ -205,58 +174,38 @@ FailureOr<ArrayAttr> buildArgModes(
       return failure();
     }
 
-    // Find the pointee type of the marked argument by looking for the global
-    // variable named "__tessera_arg_type_<idx>", where <idx> is the next
-    // number after "globals=".
-    if (numIndicesFound >= indexList.size()) {
-      why = "not enough global indices for marked args";
-      return failure();
-    }
-    StringRef indexStr = indexList[numIndicesFound++];
-    unsigned idx;
-    if (indexStr.trim().getAsInteger(10, idx)) {
-      why = "invalid type index for arg: " + indexStr.str();
-      return failure();
-    }
-    auto it = argTypesByGlobalIndices.find(idx);
-    if (it == argTypesByGlobalIndices.end()) {
-      why = "no lifting entry found for arg at index " + std::to_string(idx);
+    // The frontend records the pointee type of every pointer to a complete
+    // type.
+    auto type = argTypes && i < argTypes.size()
+                    ? dyn_cast<TypeAttr>(argTypes[i])
+                    : TypeAttr();
+    if (!type) {
+      why = "argument '" + arg.str() +
+            "' is marked, but no type is known for the value behind it";
       return failure();
     }
     argModes.push_back(DictionaryAttr::get(
-        ctx, {NamedAttribute(StringAttr::get(ctx, "type"),
-                             TypeAttr::get(it->second)),
+        ctx, {NamedAttribute(StringAttr::get(ctx, "type"), type),
               NamedAttribute(StringAttr::get(ctx, "dir"),
                              ArgDirectionAttr::get(ctx, *argDirection))}));
-  }
-
-  // The format guarantees one global index per marked arg.
-  // A mismatch means the annotation string is malformed or the Clang
-  // plugin's emission order has drifted from this parser's assumption.
-  if (numIndicesFound != indexList.size()) {
-    why = "mismatch between marked arg count and global index count";
-    return failure();
   }
   return ArrayAttr::get(ctx, argModes);
 }
 
-/// Leave `funcOp` as an ordinary function, saying why its marking is not used.
+// Leave `funcOp` as an ordinary function, saying why its marking is not used.
 void dropMarking(LLVM::LLVMFuncOp funcOp, StringAttr marking,
                  const Twine &why) {
   funcOp.emitWarning() << "ignoring tessera op marking '" << marking.getValue()
                        << "': " << why;
   funcOp->removeAttr("tessera_op");
   funcOp->removeAttr("pure_tessera_op");
+  funcOp->removeAttr(kArgTypesAttr);
 }
 
 // Rewrite 'llvm.func' -> 'tessera.define'
 class FuncOpRewrite final : public OpRewritePattern<LLVM::LLVMFuncOp> {
 public:
-  FuncOpRewrite(
-      MLIRContext *ctx,
-      const llvm::DenseMap<unsigned, mlir::Type> &argTypesByGlobalIndices)
-      : OpRewritePattern<LLVM::LLVMFuncOp>(ctx),
-        argTypesByGlobalIndices(argTypesByGlobalIndices) {}
+  using OpRewritePattern<LLVM::LLVMFuncOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(LLVM::LLVMFuncOp funcOp,
                                 PatternRewriter &rewriter) const override {
@@ -264,17 +213,15 @@ public:
     auto module = funcOp->getParentOfType<ModuleOp>();
     auto *ctx = funcOp->getContext();
 
-    // Only rewrite if op has tessera_op or pure_tessera_op attribute
     bool isPure = false;
     StringAttr tesseraOpAttr = getMarking(funcOp, isPure);
     if (!tesseraOpAttr)
       return failure();
 
-    // The pass has already dropped every marking this cannot build from, and
-    // said why.
+    // Bad markings were already dropped, with a warning, before rewriting.
     std::string why;
-    FailureOr<ArrayAttr> argModes = buildArgModes(
-        funcOp, tesseraOpAttr.getValue(), argTypesByGlobalIndices, why);
+    FailureOr<ArrayAttr> argModes =
+        buildArgModes(funcOp, tesseraOpAttr.getValue(), why);
     if (failed(argModes))
       return failure();
     StringRef tesseraName = getTesseraName(tesseraOpAttr.getValue());
@@ -288,41 +235,34 @@ public:
         ctx, params,
         isa<LLVM::LLVMVoidType>(retType) ? TypeRange{} : TypeRange{retType});
 
-    // Taken addresses are set aside first, so that only calls (and the
-    // annotation table) follow the function to its tessera name.
+    // Redirect taken addresses first, so only calls follow the rename.
     redirectAddressUses(funcOp, rewriter, module);
 
-    // Replace current function name with tessera name defined in
-    // tessera_op / pure_tessera_op attribute
     if (failed(SymbolTable::replaceAllSymbolUses(
             funcOp.getSymNameAttr(), StringAttr::get(ctx, tesseraName),
             module)))
       return failure();
 
-    // Create the tessera.define op with the new name, function type, per-arg
-    // lifting modes, and purity (side effect free) attribute. External
-    // declarations must be marked private: FunctionOpInterface's verifier
-    // rejects a body-less symbol with public visibility, unlike
-    // llvm.func where a public extern declaration is normal.
+    // A declaration must be private: FunctionOpInterface rejects a public
+    // symbol with no body.
     auto tesseraDefineOp = tessera::DefineOp::create(
         rewriter, funcOp.getLoc(), tesseraName.str(), fnType, *argModes, isPure,
         funcOp.isExternal() ? rewriter.getStringAttr("private") : StringAttr());
 
-    // Copy over all attributes other than the function name and type
-    // and tessera_op / pure_tessera_op attribute.
+    // Copy the other attributes, minus the name, type and marking.
     for (const auto &namedAttr : funcOp->getAttrs()) {
       if (namedAttr.getName() != SymbolTable::getSymbolAttrName() &&
           namedAttr.getName() != funcOp.getFunctionTypeAttrName() &&
           namedAttr.getName() != "tessera_op" &&
-          namedAttr.getName() != "pure_tessera_op")
+          namedAttr.getName() != "pure_tessera_op" &&
+          namedAttr.getName() != kArgTypesAttr)
         tesseraDefineOp->setAttr(namedAttr.getName(), namedAttr.getValue());
     }
 
-    // Store the original function name so we can convert back to it later
+    // For tessera-to-llvm to restore.
     tesseraDefineOp->setAttr("tessera.original_name",
                              rewriter.getStringAttr(funcName));
 
-    // Clone body of function
     if (!funcOp.isExternal()) {
       rewriter.inlineRegionBefore(funcOp.getBody(), tesseraDefineOp.getBody(),
                                   tesseraDefineOp.end());
@@ -331,9 +271,6 @@ public:
     rewriter.eraseOp(funcOp);
     return success();
   }
-
-private:
-  const llvm::DenseMap<unsigned, mlir::Type> &argTypesByGlobalIndices;
 };
 
 // Rewrite 'llvm.call' -> 'tessera.call'
@@ -350,7 +287,6 @@ public:
     if (!calleeAttr)
       return failure();
 
-    // Only rewrite if callee is a tessera.define op
     auto callee = SymbolTable::lookupSymbolIn(module, calleeAttr);
     auto defineOp = dyn_cast_or_null<tessera::DefineOp>(callee);
     if (!defineOp)
@@ -363,9 +299,7 @@ public:
     SmallVector<Attribute> newArgAttrs;
     SmallVector<NamedAttribute> newAttrs;
 
-    // If the first operand has an sret attribute, use its pointed-to type as
-    // the SSA return type, since tessera.call returns values directly rather
-    // than writing through a pointer.
+    // tessera.call returns an sret value directly, as its pointee type.
     if (!operands.empty() && argAttrs) {
       if (auto sretAttr = defineOp.getSretAttr()) {
         sretPtr = callOp.getOperand(0);
@@ -373,11 +307,8 @@ public:
       }
     }
 
-    // Build newAttrs from the original call's attributes. If arg_attrs is
-    // present, filter out the entry for the sret arg (always index 0) or
-    // for any write-only ("out") arguments, since those operands are
-    // excluded from tessera.call's operand list below and arg_attrs must
-    // stay aligned with operand position.
+    // Drop the arg_attrs of the sret and "out" arguments, whose operands are
+    // dropped below, so arg_attrs stays aligned with the operands.
     if (argAttrs) {
       for (unsigned i = 0, e = argAttrs.size(); i != e; ++i) {
         bool skip = sretPtr
@@ -396,11 +327,8 @@ public:
       newAttrs.append(callOp->getAttrs().begin(), callOp->getAttrs().end());
     }
 
-    // Build operands without first element if sretPtr is present.
-    // If a pointer operand has a LLVM byVal attribute or was lifted by the
-    // user, load the value from the pointer and store that as the new
-    // operand. Don't include write-only ("out") arguments in the new operand
-    // list.
+    // Operands, minus the sret pointer and "out" arguments, with byval and
+    // lifted pointers replaced by the value loaded from them.
     SmallVector<Value> newOperands;
     SmallVector<Value> resultArgPtrs;
     SmallVector<Type> resultArgTypes;
@@ -414,24 +342,18 @@ public:
         continue;
       }
 
-      // Every written arg contributes a trailing tessera.call result, so
-      // remember its pointer and pointee type for use after the call is
-      // built. Arguments that were marked "out" are dropped from the
-      // operand list while arguments marked "inout" keep their operand
-      // slots carrying their incoming values.
+      // Each written argument becomes a result of the call. An "inout" one
+      // also stays an operand, carrying its incoming value.
       if (defineOp.argIsWritten(i)) {
         Type resultArgType = defineOp.getArgLiftedType(i);
         resultArgPtrs.push_back(operand);
         resultArgTypes.push_back(resultArgType);
         if (!defineOp.argIsRead(i))
-          continue; // write-only: drop operand slot entirely
+          continue;
       }
 
-      // If the callee takes this argument through a pointer, load the pointee
-      // so the tessera.call carries a value; otherwise pass the pointer
-      // through. newOperands.size() is the call-operand index this entry
-      // lands at once pushed below, which is the index
-      // getCallOperandPointeeType expects -- not the pre-strip loop index i.
+      // Load lifted pointers. getCallOperandPointeeType takes the index in
+      // the new operand list, not `i`.
       if (Type pointeeType =
               defineOp.getCallOperandPointeeType(newOperands.size())) {
         auto loadedVal = LLVM::LoadOp::create(rewriter, callOp.getLoc(),
@@ -442,13 +364,9 @@ public:
       }
     }
 
-    // Create tessera.call op with results conveyed as direct SSA values rather
-    // than written through pointers -- either the sret-derived value, or the
-    // natural return (if any) plus one trailing value per result/output
-    // argument.
+    // Results are stored back through their pointers after the call, so
+    // existing loads from them still see the right value.
     if (sretPtr) {
-      // Set the result type of the new tessera.call op to be the sret pointee
-      // type and store the result back through the sret pointer.
       auto newCall =
           tessera::CallOp::create(rewriter, callOp.getLoc(),
                                   TypeRange{sretType}, newOperands, newAttrs);
@@ -456,27 +374,18 @@ public:
                             sretPtr);
       rewriter.eraseOp(callOp);
     } else {
-      // Add result argument types to the front of the result type list of
-      // the new tessera.call op -- one leading result per pure-output
-      // argument, in argument order -- followed by the natural (original)
-      // result types. Result-arg-derived results come first so that a PDL
-      // rule referencing result 0 always sees the semantically meaningful
-      // output-param value rather than the natural/ternary return.
+      // Written arguments come first, then the original results, so a rule's
+      // result 0 is the output argument rather than, say, a status code.
       SmallVector<Type> newResultTypes(resultArgTypes.begin(),
                                        resultArgTypes.end());
       newResultTypes.append(callOp.getResultTypes().begin(),
                             callOp.getResultTypes().end());
       auto newCall = tessera::CallOp::create(
           rewriter, callOp.getLoc(), newResultTypes, newOperands, newAttrs);
-      // Store each leading result back through its original pointer so any
-      // pre-existing downstream load from that pointer still sees the right
-      // value.
       for (auto [idx, ptr] : llvm::enumerate(resultArgPtrs)) {
         LLVM::StoreOp::create(rewriter, callOp.getLoc(), newCall.getResult(idx),
                               ptr);
       }
-      // If the original call had any (natural) results, replace them with
-      // the new call's trailing results.
       unsigned originalNumResults = callOp.getNumResults();
       rewriter.replaceOp(callOp,
                          newCall.getResults().take_back(originalNumResults));
@@ -492,8 +401,6 @@ public:
 
   LogicalResult matchAndRewrite(LLVM::ReturnOp returnOp,
                                 PatternRewriter &rewriter) const override {
-
-    // Only rewrite if parent op is a tessera.define op
     if (!isa<tessera::DefineOp>(returnOp->getParentOp()))
       return failure();
 
@@ -516,39 +423,8 @@ struct LLVMToTesseraPass
     RewritePatternSet patterns(ctx);
     auto module = cast<ModuleOp>(getOperation());
 
-    // Build a lookup of argument index -> resolved type by scanning the
-    // module once for globals named "__tessera_arg_type_<index>".
-    // Each tessera.define op's own index list (from its "globals=" attribute)
-    // is later resolved against this map, avoiding a full module rescan per op.
-    llvm::DenseMap<unsigned, mlir::Type> argTypesByGlobalIndices;
-    llvm::DenseSet<unsigned> ambiguousIndices;
-    StringRef prefix = "__tessera_arg_type_";
-    for (auto global : module.getOps<mlir::LLVM::GlobalOp>()) {
-      StringRef name = global.getSymName();
-      size_t pos = name.find(prefix);
-      if (pos == StringRef::npos)
-        continue;
-      StringRef idxStr = name.drop_front(pos + prefix.size());
-      unsigned idx;
-      if (idxStr.getAsInteger(10, idx))
-        continue; // not a well-formed index suffix, skip
-
-      auto [it, inserted] =
-          argTypesByGlobalIndices.try_emplace(idx, global.getType());
-      if (!inserted && ambiguousIndices.insert(idx).second)
-        global.emitWarning()
-            << "found multiple globals for tessera argument type index " << idx
-            << "; functions that use it are not lifted";
-    }
-    // Neither type can be trusted, so the functions using the index are
-    // dropped below like any other marking that cannot be built.
-    for (unsigned idx : ambiguousIndices)
-      argTypesByGlobalIndices.erase(idx);
-
-    // Check every marking before rewriting anything. One that cannot become a
-    // valid tessera.define is reported once, here, and its function is left
-    // as an ordinary one: a mistake in a marking should cost only the rewrites
-    // it would have allowed, never the compile.
+    // Check markings before rewriting. A bad one warns once and its function
+    // stays an ordinary function, so a mistake never fails the compile.
     llvm::MapVector<StringRef, SmallVector<LLVM::LLVMFuncOp>> byTesseraName;
     for (auto funcOp : module.getOps<LLVM::LLVMFuncOp>()) {
       bool isPure;
@@ -556,16 +432,14 @@ struct LLVMToTesseraPass
       if (!marking)
         continue;
       std::string why;
-      if (failed(buildArgModes(funcOp, marking.getValue(),
-                               argTypesByGlobalIndices, why))) {
+      if (failed(buildArgModes(funcOp, marking.getValue(), why))) {
         dropMarking(funcOp, marking, why);
         continue;
       }
       byTesseraName[getTesseraName(marking.getValue())].push_back(funcOp);
     }
-    // Two functions cannot both take one tessera name, and neither can one
-    // take the name of an existing symbol. Which one a rule meant cannot be
-    // known, so none of them is lifted.
+    // If two functions want the same tessera name, or it's already taken,
+    // which one a rule meant is unknown, so none is lifted.
     for (auto &[tesseraName, funcs] : byTesseraName) {
       Operation *existing = module.lookupSymbol(tesseraName);
       bool clashes = funcs.size() > 1 ||
@@ -580,13 +454,11 @@ struct LLVMToTesseraPass
       }
     }
 
-    // Functions first, so that every callee is a tessera.define by the time
-    // calls are converted: CallOpRewrite only matches a call to one. In one
-    // sweep, a call reached before its callee -- any call to an op that is only
-    // declared, since clang emits declarations last -- would be picked up only
-    // because the driver sweeps again after a change, and renaming the callee
-    // does not tell it that the call has become convertible.
-    patterns.add<FuncOpRewrite>(ctx, argTypesByGlobalIndices);
+    // Functions first, so every callee is a tessera.define before calls are
+    // converted. In one sweep, a call reached before its callee (clang emits
+    // declarations last) could be missed, since renaming the callee doesn't
+    // revisit the call.
+    patterns.add<FuncOpRewrite>(ctx);
     RewritePatternSet callPatterns(ctx);
     callPatterns.add<CallOpRewrite, ReturnOpRewrite>(ctx);
 
@@ -602,7 +474,6 @@ struct LLVMToTesseraPass
       return signalPassFailure();
     }
 
-    // Clean up llvm.global.annotations after conversion if it still exists
     if (auto annotations = module.lookupSymbol("llvm.global.annotations")) {
       annotations->erase();
     }

@@ -59,7 +59,7 @@ module {
 // elided outright, so what comes out the far end is a single direct call with
 // no branch at all.
 module {
-  tessera.define @lib.build_cov() -> (!llvm.ptr {tessera.property = ["symmetric"]}) attributes {argModes = [], pure = true, tessera.original_name = "build_cov"} {
+  tessera.define @lib.build_cov() -> (!llvm.ptr {tessera.guarantees = ["symmetric"]}) attributes {argModes = [], pure = true, tessera.original_name = "build_cov"} {
     %c = llvm.mlir.zero : !llvm.ptr
     tessera.return %c : !llvm.ptr
   }
