@@ -1,5 +1,5 @@
 diff --git a/xla/service/spmd/spmd_partitioner.cc b/xla/service/spmd/spmd_partitioner.cc
-index 00988ed..1dc698d 100644
+index 00988ed..20ea18b 100644
 --- a/xla/service/spmd/spmd_partitioner.cc
 +++ b/xla/service/spmd/spmd_partitioner.cc
 @@ -40,7 +40,11 @@ limitations under the License.
@@ -14,7 +14,7 @@ index 00988ed..1dc698d 100644
  #include "absl/strings/str_format.h"
  #include "absl/strings/string_view.h"
  #include "absl/types/span.h"
-@@ -5079,6 +5083,247 @@ absl::StatusOr<HloInstruction*> SpmdPartitioningVisitor::ProcessUpdatePiece(
+@@ -5079,6 +5083,257 @@ absl::StatusOr<HloInstruction*> SpmdPartitioningVisitor::ProcessUpdatePiece(
    return result;
  }
  
@@ -201,17 +201,27 @@ index 00988ed..1dc698d 100644
 +  }
 +  HloInstruction* expanded = nullptr;
 +  if (!chain.contains(update)) {
++    const Shape leaf_shard_shape = ShapeUtil::ChangeElementType(
++        MakePartitionedShape(hlo->shape(), hlo->sharding()),
++        update->shape().element_type());
 +    if (update->opcode() == HloOpcode::kConstant &&
 +        update->literal().IsAllFirst()) {
 +      // A splat constant is the same everywhere: broadcast its value.
 +      HloInstruction* scalar = b_.AddInstruction(HloInstruction::CreateConstant(
 +          LiteralUtil::GetFirstScalarLiteral(update->literal())));
-+      Shape shard_shape = ShapeUtil::ChangeElementType(
-+          MakePartitionedShape(hlo->shape(), hlo->sharding()),
-+          update->shape().element_type());
 +      expanded = b_.AddInstruction(
-+          HloInstruction::CreateBroadcast(shard_shape, scalar, {}));
++          HloInstruction::CreateBroadcast(leaf_shard_shape, scalar, {}));
 +      expanded->set_sharding(hlo->sharding());
++    } else if (update->opcode() == HloOpcode::kBroadcast &&
++               update->operand(0)->shape().dimensions().empty()) {
++      // A scalar broadcast, of whatever element type the chain uses here.
++      expanded = b_.AddInstruction(HloInstruction::CreateBroadcast(
++          leaf_shard_shape, GetPartitionedHlo(update->operand(0)).hlo(), {}));
++      expanded->set_sharding(hlo->sharding());
++    } else if (update->shape().element_type() !=
++               hlo->shape().element_type()) {
++      // The single-piece paths below build at the target's element type.
++      return nullptr;
 +    } else {
 +      // A leaf: a slice or multislice result (possibly reversed or copied)
 +      // or a scalar broadcast, handled as a single-piece update would be.
@@ -262,7 +272,7 @@ index 00988ed..1dc698d 100644
  absl::StatusOr<HloInstruction*>
  SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
      HloInstruction* hlo, const HloInstruction* input_tensor,
-@@ -5089,6 +5334,44 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
+@@ -5089,6 +5344,44 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
      return b_.AddInstruction(std::move(to_add));
    };
  
@@ -307,7 +317,7 @@ index 00988ed..1dc698d 100644
    const HloInstruction* actual_update = piece_update_tensor;
    std::optional<ShapeUtil::ShapeEqualityDescriptor> reshape_desc;
    while (actual_update->user_count() == 1) {
-@@ -5178,10 +5461,9 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
+@@ -5178,10 +5471,9 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
        leaf = leaf->operand(0);
      }
  
@@ -320,7 +330,7 @@ index 00988ed..1dc698d 100644
        const xla::HloDynamicUpdateSliceInstruction* dus =
            DynCast<HloDynamicUpdateSliceInstruction>(hlo);
  
-@@ -5230,39 +5512,39 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
+@@ -5230,39 +5522,39 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
          }
        }
  
@@ -369,7 +379,7 @@ index 00988ed..1dc698d 100644
  
          auto* padding_dim = padding_config2.add_dimensions();
          padding_dim->set_interior_padding(0);
-@@ -5273,7 +5555,7 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
+@@ -5273,7 +5565,7 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
            int64_t dus_limit = hlo->shape().dimensions(dus_dim);
  
            int64_t length_of_operand_to_pad =
@@ -378,7 +388,7 @@ index 00988ed..1dc698d 100644
            if (slice_start > dus_start) {
              needs_slice = true;
              new_slice_starts[i] = slice_start - dus_start;
-@@ -5304,13 +5586,13 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
+@@ -5304,13 +5596,13 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
            padding_dim->set_edge_padding_low(0);
            padding_dim->set_edge_padding_high(0);
            if (new_slice_limits[i] - new_slice_starts[i] <
@@ -394,7 +404,7 @@ index 00988ed..1dc698d 100644
          // None of the reverse dimensions are sharded so we can reverse them
          // locally on each partition.
          if (!reverse_dims.empty()) {
-@@ -5360,8 +5642,8 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
+@@ -5360,8 +5652,8 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
                int64_t pre_dim = post_to_pre[i];
                if (pre_dim != -1 && ShardCountAtDim(hlo_sharding, i) > 1) {
                  int64_t dus_start = piece_dus_starts[i];
@@ -405,7 +415,7 @@ index 00988ed..1dc698d 100644
                  if (dus_start != slice_start) {
                    is_communication_free = false;
                    break;
-@@ -5391,11 +5673,11 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
+@@ -5391,11 +5683,11 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
              ABSL_ASSIGN_OR_RETURN(
                  Shape new_shape,
                  ShapeInference::InferSliceShape(
@@ -420,7 +430,7 @@ index 00988ed..1dc698d 100644
              std::pair<HloInstruction*, PartitionedHlo> final_operand{
                  nullptr, replacement};
              if (operand_sharding.NumTiles() > result_sharding.NumTiles()) {
-@@ -5421,7 +5703,7 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
+@@ -5421,7 +5713,7 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
  
            if (needs_pad) {
              Shape base_padded_shape = replacement.base_shape();
@@ -429,7 +439,7 @@ index 00988ed..1dc698d 100644
                base_padded_shape.set_dimensions(
                    i, padding_config2.dimensions(i).edge_padding_low() +
                           base_padded_shape.dimensions(i) +
-@@ -5471,19 +5753,19 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
+@@ -5471,19 +5763,19 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
                                                         .GetIntegralAsS64({})
                                                         .value()
                                                   : piece_dus_starts[i];
@@ -454,7 +464,7 @@ index 00988ed..1dc698d 100644
                                         hlo->sharding())
                        .dimensions(i);
                int64_t input_shard_size =
-@@ -5580,12 +5862,12 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
+@@ -5580,12 +5872,12 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
                ABSL_ASSIGN_OR_RETURN(
                    Shape new_shape,
                    ShapeInference::InferSliceShape(
