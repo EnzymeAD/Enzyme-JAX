@@ -64,6 +64,13 @@ namespace enzyme {
 /// operation. Return nullptr if there is no such operation.
 Block *getAllocaBlock(Operation *op);
 
+/// The chip and features to build an AMDGPU kernel for. Use the kernel's
+/// target-cpu and features if the target-cpu is an AMDGPU chip (gfx*), and
+/// defaultChip with +wavefrontsize64 otherwise.
+std::pair<std::string, std::string>
+getROCDLChipAndFeatures(StringRef targetCpu, StringRef features,
+                        StringRef defaultChip);
+
 llvm::Expected<void *> lookupSymbol(const char *name);
 extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
                                                       void *symbol);

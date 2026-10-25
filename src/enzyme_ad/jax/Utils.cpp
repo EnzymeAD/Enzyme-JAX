@@ -66,6 +66,16 @@ Block *getAllocaBlock(Operation *op) {
   return nullptr;
 }
 
+std::pair<std::string, std::string>
+getROCDLChipAndFeatures(StringRef targetCpu, StringRef features,
+                        StringRef defaultChip) {
+  if (!targetCpu.starts_with("gfx"))
+    return {defaultChip.str(), "+wavefrontsize64"};
+  if (features.empty())
+    return {targetCpu.str(), "+wavefrontsize64"};
+  return {targetCpu.str(), features.str()};
+}
+
 void commonLowerUpdateWithoutCorners(enzymexla::UpdateWithoutCornersOp extend,
                                      PatternRewriter &rewriter) {
 

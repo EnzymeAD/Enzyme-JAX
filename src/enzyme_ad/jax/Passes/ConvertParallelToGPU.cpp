@@ -2951,15 +2951,7 @@ gdgo->erase();
             hasFastMath = attr.getValue();
 
           if (backend == "rocm") {
-            // Build for the chip the kernel was compiled for; a host
-            // target-cpu, and its features, must not reach the device.
-            std::string chip = "gfx900";
-            std::string features = "+wavefrontsize64";
-            if (StringRef(sm).starts_with("gfx")) {
-              chip = sm;
-              if (!feat.empty())
-                features = feat;
-            }
+            auto [chip, features] = getROCDLChipAndFeatures(sm, feat, "gfx900");
             target = ROCDL::ROCDLTargetAttr::get(
                 gmod.getContext(),
                 /*optLevel=*/3, /*triple=*/"amdgcn-amd-amdhsa", chip, features,

@@ -11,6 +11,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringSet.h"
 
@@ -153,16 +154,8 @@ struct GPULaunchRecognitionPass
 
     Attribute target;
     if (backend == "rocm") {
-      // Build for the chip the kernel was compiled for. As below, a host or
-      // NVIDIA target-cpu can leak in here; never let a non-AMDGPU chip, or
-      // the features that came with it, through.
-      std::string chip = "gfx1030";
-      std::string features = "+wavefrontsize64";
-      if (StringRef(sm).starts_with("gfx")) {
-        chip = sm;
-        if (!feat.empty())
-          features = feat;
-      }
+      auto [chip, features] =
+          enzyme::getROCDLChipAndFeatures(sm, feat, "gfx1030");
 
       target = moduleBuilder.getAttr<ROCDL::ROCDLTargetAttr>(
           /*optLevel=*/3, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
