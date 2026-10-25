@@ -1,4 +1,5 @@
 #include "mhlo/IR/hlo_ops.h"
+#include "mlir/IR/OperationSupport.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #ifdef __clang__
 #pragma clang diagnostic push
@@ -24,6 +25,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "src/enzyme_ad/jax/Utils.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
@@ -5198,6 +5200,513 @@ struct ReorderAssociativeOp : public OpRewritePattern<opTy> {
   }
 };
 
+// A dynamic_update_slice whose window along a sharded dimension does not lie
+// on shard boundaries moves data between devices, and so does every slice its
+// update was narrowed to: `select(1 <= j < n-2, f(x), y)` optimized into
+// `dus(y, f(slice(x, 1:n-2)), 1)` computes two rows less of `f` at the price
+// of a halo exchange per slice of an intermediate, and a second one for the
+// DUS. On a sharded dimension the select is cheaper, so this rewrites the DUS
+// back: the update is recomputed at the operand's full extent, widening every
+// slice it was built from (the rows outside the window are never read), and
+// the window becomes an iota mask:
+//
+//   dus(y, f(slice(x, [a:b))), off)
+//     -> select(off <= iota < off + s, f(slice(x, [a-off : b+(n-off-s))), y)
+//
+// A window on shard boundaries, an unsharded dimension, or an update whose
+// computation cannot be widened (a reduction, a reshape, a narrower
+// argument) is left alone.
+static bool getConstantDUSIndex(Value idx, int64_t &out) {
+  DenseIntElementsAttr cst;
+  if (auto sdyCst = idx.getDefiningOp<sdy::ConstantOp>()) {
+    out =
+        (*cast<DenseIntElementsAttr>(sdyCst.getValue()).begin()).getSExtValue();
+    return true;
+  }
+  if (matchPattern(idx, m_Constant(&cst))) {
+    out = (*cst.begin()).getSExtValue();
+    return true;
+  }
+  return false;
+}
+
+// The window a DUS with constant start indices writes: `starts[d]` clamped
+// into range, as stablehlo defines it. Fails on a non-constant index.
+static bool getDUSWindow(stablehlo::DynamicUpdateSliceOp dus,
+                         SmallVectorImpl<int64_t> &starts) {
+  auto ty = dus.getType();
+  auto updTy = dus.getUpdate().getType();
+  if (!ty.hasStaticShape() || !updTy.hasStaticShape())
+    return false;
+  starts.clear();
+  for (int64_t d = 0; d < ty.getRank(); d++) {
+    int64_t off;
+    if (!getConstantDUSIndex(dus.getStartIndices()[d], off))
+      return false;
+    starts.push_back(
+        std::clamp<int64_t>(off, 0, ty.getDimSize(d) - updTy.getDimSize(d)));
+  }
+  return true;
+}
+
+// Is `update` a slice taken at the DUS's window of a tensor that has the
+// DUS's full extent along every dimension in `dims`? Along those dimensions
+// such an update is already as cheap as it gets: no part of it moves between
+// shards, and the partitioner turns the pair into a local select.
+static bool isSliceAtDUSWindow(stablehlo::DynamicUpdateSliceOp dus,
+                               ArrayRef<int64_t> starts,
+                               ArrayRef<int64_t> dims) {
+  auto slice = dus.getUpdate().getDefiningOp<stablehlo::SliceOp>();
+  if (!slice)
+    return false;
+  if (!llvm::all_of(slice.getStrides(), [](int64_t s) { return s == 1; }))
+    return false;
+  auto srcTy = cast<RankedTensorType>(slice.getOperand().getType());
+  for (int64_t d : dims)
+    if (srcTy.getDimSize(d) != dus.getType().getDimSize(d) ||
+        slice.getStartIndices()[d] != starts[d])
+      return false;
+  return true;
+}
+
+// Moves the slices feeding the update of a DUS down to the DUS itself.
+//
+// After `select_comp_iota_to_dus` and friends, an update written into the
+// interior of a sharded dimension is typically computed from slices of
+// full-size tensors taken at the window: `dus(x, f(slice(a, w), slice(b, w)),
+// w)`. Every such slice shifts data between shards when the window is not
+// on the shard boundaries, and so does the DUS. `f` is elementwise-like, so
+// the same values are obtained by computing it at the full extent and
+// slicing the result once: `dus(x, slice(f(a, b), w), w)`, a DUS of a slice
+// at its own window, which XLA's partitioner handles without moving data
+// (it becomes a local select). The rows outside
+// the window are computed and discarded; the pattern only applies when that
+// extra work is a bounded fraction of the window (max_extra_percent).
+//
+// The ops of `f` are rebuilt at the full extent, reusing an existing
+// equivalent op when there is one. Other users of the narrow intermediates
+// are redirected to slices of the wide ones, so each value is computed once.
+// The main pipeline moves slices the other way to save work; this pattern
+// runs only in the communication optimizer, after sharding propagation, and
+// does not fire on an update that is already a slice at the window, so the
+// two do not cycle.
+struct DUSSinkSlicesComm
+    : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
+  int maxExtraPercent;
+  DUSSinkSlicesComm(MLIRContext *context, int maxExtraPercent,
+                    PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), maxExtraPercent(maxExtraPercent) {}
+
+  // Builds values whose dimension `dim` is `lo + size + hi` long and whose
+  // entry i along it equals entry i - lo of the original wherever both
+  // exist; the other entries are unspecified. `lo` and `hi` are usually
+  // non-negative (the value is widened), but either may be negative when a
+  // slice has to leave its operand on one side only: the operand is then
+  // recomputed on exactly the window needed, shifted, rather than widened
+  // on both sides and sliced again. Every op it creates is recorded so that
+  // a failed attempt can be undone.
+  struct Widener {
+    PatternRewriter &rewriter;
+    // The DUS being rewritten.
+    Operation *anchor;
+    SmallVector<Operation *> created;
+    DenseSet<Operation *> createdSet;
+    DenseMap<std::tuple<Value, int64_t, int64_t, int64_t>, Value> cache;
+
+    Widener(PatternRewriter &rewriter, Operation *anchor)
+        : rewriter(rewriter), anchor(anchor) {}
+
+    void rollback() {
+      for (Operation *op : llvm::reverse(created))
+        rewriter.eraseOp(op);
+      created.clear();
+      createdSet.clear();
+    }
+
+    Value track(Value v) {
+      created.push_back(v.getDefiningOp());
+      createdSet.insert(v.getDefiningOp());
+      return v;
+    }
+
+    // An op equivalent to `cand` that already exists ahead of it, if any.
+    // Looked for among the users of the first non-constant operand.
+    Operation *findExisting(Operation *cand) {
+      for (Value operand : cand->getOperands()) {
+        if (matchPattern(operand, m_Constant()) ||
+            operand.getDefiningOp<sdy::ConstantOp>())
+          continue;
+        int seen = 0;
+        for (Operation *user : operand.getUsers()) {
+          if (++seen > 256)
+            break;
+          if (user == cand || createdSet.contains(user))
+            continue;
+          if (user->getBlock() != cand->getBlock() ||
+              !user->isBeforeInBlock(cand))
+            continue;
+          if (OperationEquivalence::isEquivalentTo(
+                  user, cand, OperationEquivalence::IgnoreLocations))
+            return user;
+        }
+        break;
+      }
+      return nullptr;
+    }
+
+    // Records a freshly created op, or swaps it for an existing equivalent.
+    Value finish(Value v) {
+      Operation *op = v.getDefiningOp();
+      if (Operation *existing = findExisting(op)) {
+        rewriter.eraseOp(op);
+        return existing->getResult(0);
+      }
+      return track(v);
+    }
+
+    static RankedTensorType widenedType(RankedTensorType ty, int64_t dim,
+                                        int64_t lo, int64_t hi) {
+      SmallVector<int64_t> shape(ty.getShape());
+      shape[dim] += lo + hi;
+      return RankedTensorType::get(shape, ty.getElementType());
+    }
+
+    static void copySharding(Value from, Value to) {
+      if (auto sharding = sdy::getSharding(from))
+        sdy::setSharding(to, sharding);
+    }
+
+    Value splat(Location loc, RankedTensorType ty, int64_t val, Value like) {
+      Value res = stablehlo::ConstantOp::create(
+          rewriter, loc, cast<ElementsAttr>(makeAttr(ty, val)));
+      copySharding(like, res);
+      return finish(res);
+    }
+
+    // Moves the window of a slice of `x`. When the new window leaves `x`,
+    // `x` is recomputed on exactly that window.
+    Value widenSlice(Operation *op, Value x, int64_t dim,
+                     SmallVector<int64_t> starts, SmallVector<int64_t> limits,
+                     ArrayRef<int64_t> strides, int64_t lo, int64_t hi) {
+      if (strides[dim] != 1)
+        return nullptr;
+      auto xTy = cast<RankedTensorType>(x.getType());
+      int64_t a = starts[dim], b = limits[dim], m = xTy.getDimSize(dim);
+      int64_t na = a - lo, nb = b + hi;
+      Value xw = x;
+      if (na < 0 || nb > m) {
+        xw = widen(x, dim, -na, nb - m);
+        if (!xw)
+          return nullptr;
+        nb -= na;
+        na = 0;
+      }
+      starts[dim] = na;
+      limits[dim] = nb;
+      auto xwTy = cast<RankedTensorType>(xw.getType());
+      bool whole = llvm::all_of(strides, [](int64_t s) { return s == 1; });
+      for (int64_t d = 0; d < xwTy.getRank() && whole; d++)
+        whole = starts[d] == 0 && limits[d] == xwTy.getDimSize(d);
+      if (whole)
+        return xw;
+      Value res = stablehlo::SliceOp::create(rewriter, op->getLoc(), xw, starts,
+                                             limits, strides);
+      copySharding(op->getResult(0), res);
+      return finish(res);
+    }
+
+    Value widen(Value v, int64_t dim, int64_t lo, int64_t hi) {
+      if (lo == 0 && hi == 0)
+        return v;
+      auto key = std::make_tuple(v, dim, lo, hi);
+      if (auto it = cache.find(key); it != cache.end())
+        return it->second;
+      auto ty = dyn_cast<RankedTensorType>(v.getType());
+      if (!ty || !ty.hasStaticShape())
+        return nullptr;
+      if (ty.getDimSize(dim) + lo + hi <= 0)
+        return nullptr;
+      Operation *op = v.getDefiningOp();
+      if (!op)
+        return nullptr;
+      auto loc = op->getLoc();
+      auto newTy = widenedType(ty, dim, lo, hi);
+      // The wide value goes right after the narrow one, so that it is
+      // available wherever the narrow one was.
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointAfter(op);
+
+      Value res;
+      if (isa<stablehlo::ConstantOp, sdy::ConstantOp>(op)) {
+        auto attr = cast<ElementsAttr>(op->getAttr("value"));
+        if (auto splat = dyn_cast<SplatElementsAttr>(attr)) {
+          auto newAttr =
+              SplatElementsAttr::get(newTy, splat.getSplatValue<Attribute>());
+          if (isa<sdy::ConstantOp>(op))
+            res = sdy::ConstantOp::create(rewriter, loc, newAttr);
+          else
+            res = stablehlo::ConstantOp::create(rewriter, loc, newAttr);
+          copySharding(v, res);
+          res = finish(res);
+        } else {
+          // Drop the rows that leave the window, and pad zeros into the rows
+          // that are never read; both fold on a constant.
+          int64_t size = ty.getDimSize(dim);
+          if (-lo >= size || -hi >= size)
+            return nullptr;
+          Value cur = v;
+          if (lo < 0 || hi < 0) {
+            SmallVector<int64_t> starts(ty.getRank(), 0), limits(ty.getShape()),
+                strides(ty.getRank(), 1);
+            starts[dim] = std::max<int64_t>(0, -lo);
+            limits[dim] = size - std::max<int64_t>(0, -hi);
+            cur = stablehlo::SliceOp::create(rewriter, loc, cur, starts, limits,
+                                             strides);
+            copySharding(v, cur);
+            cur = finish(cur);
+          }
+          if (lo > 0 || hi > 0) {
+            SmallVector<int64_t> low(ty.getRank(), 0), high(ty.getRank(), 0),
+                interior(ty.getRank(), 0);
+            low[dim] = std::max<int64_t>(0, lo);
+            high[dim] = std::max<int64_t>(0, hi);
+            auto zero = track(stablehlo::ConstantOp::create(
+                rewriter, loc,
+                cast<ElementsAttr>(makeAttr(
+                    RankedTensorType::get({}, ty.getElementType()), 0))));
+            cur = stablehlo::PadOp::create(rewriter, loc, cur, zero, low, high,
+                                           interior);
+            copySharding(v, cur);
+            cur = finish(cur);
+          }
+          res = cur;
+        }
+      } else if (auto slice = dyn_cast<stablehlo::SliceOp>(op)) {
+        res = widenSlice(op, slice.getOperand(), dim,
+                         llvm::to_vector(slice.getStartIndices()),
+                         llvm::to_vector(slice.getLimitIndices()),
+                         slice.getStrides(), lo, hi);
+      } else if (auto ms = dyn_cast<enzymexla::MultiSliceOp>(op)) {
+        // Result i is the slice shifted by i along the multislice dimension.
+        int64_t shift = cast<OpResult>(v).getResultNumber();
+        SmallVector<int64_t> starts(ms.getStartIndices()),
+            limits(ms.getLimitIndices());
+        starts[ms.getDimension()] += shift;
+        limits[ms.getDimension()] += shift;
+        res = widenSlice(op, ms.getOperand(), dim, starts, limits,
+                         ms.getStrides(), lo, hi);
+      } else if (auto pad = dyn_cast<stablehlo::PadOp>(op)) {
+        if (pad.getInteriorPadding()[dim] != 0)
+          return nullptr;
+        SmallVector<int64_t> low(pad.getEdgePaddingLow()),
+            high(pad.getEdgePaddingHigh());
+        low[dim] += lo;
+        high[dim] += hi;
+        res = stablehlo::PadOp::create(rewriter, loc, pad.getOperand(),
+                                       pad.getPaddingValue(), low, high,
+                                       pad.getInteriorPadding());
+        copySharding(v, res);
+        res = finish(res);
+      } else if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+        Value x = bcast.getOperand();
+        auto xTy = cast<RankedTensorType>(x.getType());
+        int64_t srcDim = -1;
+        for (auto [i, d] : llvm::enumerate(bcast.getBroadcastDimensions()))
+          if (d == dim)
+            srcDim = i;
+        if (srcDim >= 0 && xTy.getDimSize(srcDim) != 1) {
+          x = widen(x, srcDim, lo, hi);
+          if (!x)
+            return nullptr;
+        }
+        res = stablehlo::BroadcastInDimOp::create(
+            rewriter, loc, newTy, x, bcast.getBroadcastDimensions());
+        copySharding(v, res);
+        res = finish(res);
+      } else if (auto iota = dyn_cast<stablehlo::IotaOp>(op)) {
+        res = stablehlo::IotaOp::create(rewriter, loc, newTy,
+                                        iota.getIotaDimension());
+        copySharding(v, res);
+        res = finish(res);
+        if ((int64_t)iota.getIotaDimension() == dim && lo != 0) {
+          res = stablehlo::SubtractOp::create(rewriter, loc, res,
+                                              splat(loc, newTy, lo, v));
+          copySharding(v, res);
+          res = finish(res);
+        }
+      } else if (auto concat = dyn_cast<stablehlo::ConcatenateOp>(op)) {
+        bool along = (int64_t)concat.getDimension() == dim;
+        if (along && (lo < 0 || hi < 0))
+          return nullptr;
+        SmallVector<Value> operands;
+        int64_t last = concat.getNumOperands() - 1;
+        for (auto [i, operand] : llvm::enumerate(concat.getOperands())) {
+          Value w = widen(operand, dim, (!along || i == 0) ? lo : 0,
+                          (!along || (int64_t)i == last) ? hi : 0);
+          if (!w)
+            return nullptr;
+          operands.push_back(w);
+        }
+        res = stablehlo::ConcatenateOp::create(rewriter, loc, operands,
+                                               concat.getDimension());
+        copySharding(v, res);
+        res = finish(res);
+      } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(op)) {
+        // The widened DUS writes the same update at a shifted window; it is
+        // then a candidate for this pattern itself.
+        int64_t off;
+        if (!getConstantDUSIndex(dus.getStartIndices()[dim], off))
+          return nullptr;
+        off = std::clamp<int64_t>(
+            off, 0,
+            ty.getDimSize(dim) - dus.getUpdate().getType().getDimSize(dim));
+        if (off + lo < 0 ||
+            off + lo + dus.getUpdate().getType().getDimSize(dim) >
+                newTy.getDimSize(dim))
+          return nullptr;
+        Value base = widen(dus.getOperand(), dim, lo, hi);
+        if (!base)
+          return nullptr;
+        SmallVector<Value> starts(dus.getStartIndices());
+        auto idxTy = cast<RankedTensorType>(starts[dim].getType());
+        starts[dim] = track(stablehlo::ConstantOp::create(
+            rewriter, loc, cast<ElementsAttr>(makeAttr(idxTy, off + lo))));
+        res = stablehlo::DynamicUpdateSliceOp::create(rewriter, loc, base,
+                                                      dus.getUpdate(), starts);
+        copySharding(v, res);
+        res = finish(res);
+      } else if (op->getNumResults() == 1 && op->getNumRegions() == 0 &&
+                 (op->hasTrait<OpTrait::Elementwise>() ||
+                  isa<stablehlo::SelectOp, stablehlo::ClampOp>(op))) {
+        SmallVector<Value> operands;
+        for (Value operand : op->getOperands()) {
+          auto oTy = dyn_cast<RankedTensorType>(operand.getType());
+          if (!oTy)
+            return nullptr;
+          if (oTy.getRank() == 0) {
+            operands.push_back(operand);
+            continue;
+          }
+          if (oTy.getShape() != ty.getShape())
+            return nullptr;
+          Value w = widen(operand, dim, lo, hi);
+          if (!w)
+            return nullptr;
+          operands.push_back(w);
+        }
+        OperationState state(loc, op->getName());
+        state.addOperands(operands);
+        state.addTypes(newTy);
+        state.addAttributes(op->getAttrs());
+        res = finish(rewriter.create(state)->getResult(0));
+      } else {
+        return nullptr;
+      }
+      cache[key] = res;
+      return res;
+    }
+
+    // Redirects the users of a narrow intermediate outside the widened chain
+    // to a slice of its wide version, so that the narrow chain dies and
+    // nothing is computed twice. Called once widening has succeeded.
+    void sinkOtherUses() {
+      DenseSet<Operation *> narrowOps;
+      for (auto &[key, wide] : cache)
+        if (Operation *op = std::get<0>(key).getDefiningOp())
+          narrowOps.insert(op);
+      auto inChain = [&](Operation *user) {
+        return user == anchor || createdSet.contains(user) ||
+               narrowOps.contains(user);
+      };
+      for (auto &[key, wide] : cache) {
+        auto [v, dim, lo, hi] = key;
+        Operation *op = v.getDefiningOp();
+        // A shifted version does not contain the narrow one.
+        if (wide == v || lo < 0 || hi < 0 || !op ||
+            isa<stablehlo::ConstantOp, sdy::ConstantOp>(op))
+          continue;
+        if (llvm::none_of(v.getUsers(), std::not_fn(inChain)))
+          continue;
+        auto ty = cast<RankedTensorType>(v.getType());
+        SmallVector<int64_t> starts(ty.getRank(), 0), limits(ty.getShape()),
+            strides(ty.getRank(), 1);
+        starts[dim] = lo;
+        limits[dim] += lo;
+        OpBuilder::InsertionGuard guard(rewriter);
+        if (Operation *wideOp = wide.getDefiningOp())
+          rewriter.setInsertionPointAfter(wideOp);
+        else
+          rewriter.setInsertionPointToStart(
+              cast<BlockArgument>(wide).getOwner());
+        Value narrow = stablehlo::SliceOp::create(rewriter, op->getLoc(), wide,
+                                                  starts, limits, strides);
+        copySharding(v, narrow);
+        track(narrow);
+        rewriter.replaceUsesWithIf(v, narrow, [&](OpOperand &use) {
+          return !inChain(use.getOwner());
+        });
+      }
+    }
+  };
+
+  LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dus,
+                                PatternRewriter &rewriter) const override {
+    if (dus->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+    auto sharding = mlir::sdy::getSharding(dus);
+    if (!sharding)
+      return failure();
+    auto ty = dus.getType();
+    auto updTy = dus.getUpdate().getType();
+    SmallVector<int64_t> starts;
+    if (!getDUSWindow(dus, starts))
+      return failure();
+
+    // The dimensions the update is narrower in and that are sharded over
+    // several devices: only there does the window's position cost
+    // communication. Narrow unsharded dimensions stay narrow.
+    SmallVector<int64_t> dims;
+    int64_t wideSize = 1, narrowSize = 1;
+    for (int64_t d = 0; d < ty.getRank(); d++) {
+      if (updTy.getDimSize(d) == ty.getDimSize(d) ||
+          getNumDevicesAlongDimension(sharding, d, dus) <= 1)
+        continue;
+      dims.push_back(d);
+      wideSize *= ty.getDimSize(d);
+      narrowSize *= updTy.getDimSize(d);
+    }
+    if (dims.empty() || isSliceAtDUSWindow(dus, starts, dims))
+      return failure();
+    if ((wideSize - narrowSize) * 100 > (int64_t)maxExtraPercent * narrowSize)
+      return failure();
+
+    Widener widener(rewriter, dus);
+    Value wide = dus.getUpdate();
+    for (int64_t d : dims) {
+      wide = widener.widen(wide, d, starts[d],
+                           ty.getDimSize(d) - starts[d] - updTy.getDimSize(d));
+      if (!wide) {
+        widener.rollback();
+        return failure();
+      }
+    }
+    widener.sinkOtherUses();
+
+    SmallVector<int64_t> sliceStarts(ty.getRank(), 0), limits(updTy.getShape()),
+        strides(ty.getRank(), 1);
+    for (int64_t d : dims) {
+      sliceStarts[d] = starts[d];
+      limits[d] += starts[d];
+    }
+    Value update = stablehlo::SliceOp::create(rewriter, dus.getLoc(), wide,
+                                              sliceStarts, limits, strides);
+    Widener::copySharding(dus.getUpdate(), update);
+    rewriter.modifyOpInPlace(dus,
+                             [&] { dus.getUpdateMutable().assign(update); });
+    return success();
+  }
+};
+
 struct OptimizeCommunicationPass
     : public enzyme::impl::OptimizeCommunicationBase<
           OptimizeCommunicationPass> {
@@ -5317,6 +5826,11 @@ struct OptimizeCommunicationPass
 
     if (dus_to_pad_comm > 0)
       patterns.add<DUSToPadComm>(context, PatternBenefit(dus_to_pad_comm));
+
+    if (dus_sink_slices_comm > 0)
+      patterns.add<DUSSinkSlicesComm>(context,
+                                      dus_sink_slices_max_extra_percent,
+                                      PatternBenefit(dus_sink_slices_comm));
 
     if (reorder_associative > 0) {
       patterns.add<ReorderAssociativeOp<stablehlo::AddOp>,
