@@ -18,7 +18,7 @@ def repo(extra_patches = [], override_commit = ""):
         strip_prefix = "xla-{commit}".format(commit = commit),
         urls = ["https://github.com/openxla/xla/archive/{commit}.tar.gz".format(commit = commit)],
         patch_cmds = XLA_PATCHES + extra_patches,
-        patches = ["//:patches/xla.patch", "//:patches/xla_win.patch", "//:patches/xla_trainium.patch", "//:patches/xla_dus_dynamic_index.patch", "//:patches/xla_dus_elementwise_update.patch", "//:patches/xla_collective_permute_cse_windows.patch", "//:patches/xla_slice_unsharded_first.patch"],
+        patches = ["//:patches/xla.patch", "//:patches/xla_win.patch", "//:patches/xla_trainium.patch", "//:patches/xla_dus_dynamic_index.patch", "//:patches/xla_dus_elementwise_update.patch", "//:patches/xla_collective_permute_cse_windows.patch", "//:patches/xla_slice_unsharded_first.patch", "//:patches/xla_dus_piece_reshard.patch"],
         patch_args = ["-p1"],
     )
 
