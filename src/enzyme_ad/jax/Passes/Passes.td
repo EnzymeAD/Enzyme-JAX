@@ -1258,11 +1258,23 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"1",
        /*description=*/"Perform a DUS with Padding to optimize the communication">,
        Option<
-       /*C++ variable name=*/"dus_to_select_comm",
-       /*CLI argument=*/"dus_to_select_comm",
+       /*C++ variable name=*/"dus_of_slice_to_select_comm",
+       /*CLI argument=*/"dus_of_slice_to_select_comm",
        /*type=*/"int",
        /*default=*/"0",
-       /*description=*/"Rewrite a DUS whose window along a sharded dimension is not on shard boundaries as a select of the update computed at the operand's full extent">,
+       /*description=*/"Rewrite a DUS on a sharded dimension whose update is a slice at the DUS's own window as a select">,
+       Option<
+       /*C++ variable name=*/"dus_sink_slices_comm",
+       /*CLI argument=*/"dus_sink_slices_comm",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Move the slices feeding the update of a DUS on a sharded dimension down to the DUS, recomputing the update at the full extent">,
+       Option<
+       /*C++ variable name=*/"dus_sink_slices_max_extra_percent",
+       /*CLI argument=*/"dus_sink_slices_max_extra_percent",
+       /*type=*/"int",
+       /*default=*/"100",
+       /*description=*/"Largest amount of discarded work dus_sink_slices_comm may add, as a percentage of the update's size along the dimension">,
        Option<
        /*C++ variable name=*/"concat_two_operands_comm",
        /*CLI argument=*/"concat_two_operands_comm",
