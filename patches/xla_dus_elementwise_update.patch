@@ -1,0 +1,254 @@
+diff --git a/xla/service/spmd/spmd_partitioner.cc b/xla/service/spmd/spmd_partitioner.cc
+index 00988ed..14491f7 100644
+--- a/xla/service/spmd/spmd_partitioner.cc
++++ b/xla/service/spmd/spmd_partitioner.cc
+@@ -5079,6 +5079,109 @@ absl::StatusOr<HloInstruction*> SpmdPartitioningVisitor::ProcessUpdatePiece(
+   return result;
+ }
+ 
++bool SpmdPartitioningVisitor::IsSliceExpansionCommunicationFree(
++    const HloInstruction* hlo, const HloInstruction* slice,
++    const std::vector<int64_t>& piece_dus_starts) const {
++  if (slice->opcode() != HloOpcode::kSlice) {
++    return false;
++  }
++  const HloInstruction* source = slice->operand(0);
++  if (!source->has_sharding() || source->sharding() != hlo->sharding()) {
++    return false;
++  }
++  for (int64_t i = 0; i < hlo->shape().dimensions().size(); ++i) {
++    if (slice->slice_strides(i) != 1) {
++      return false;
++    }
++    if (ShardCountAtDim(hlo->sharding(), i) <= 1) {
++      continue;
++    }
++    const int64_t dus_start = piece_dus_starts[i];
++    const int64_t slice_start = slice->slice_starts(i);
++    const int64_t slice_size = slice->shape().dimensions(i);
++    if (slice_start == dus_start &&
++        source->shape().dimensions(i) == hlo->shape().dimensions(i)) {
++      continue;
++    }
++    // The window may also sit within one shard of both tensors.
++    const int64_t source_shard =
++        MakePartitionedShape(source->shape(), hlo->sharding()).dimensions(i);
++    const int64_t target_shard =
++        MakePartitionedShape(hlo->shape(), hlo->sharding()).dimensions(i);
++    if (source_shard <= 0 || target_shard <= 0) {
++      return false;
++    }
++    const int64_t s0 = slice_start / source_shard;
++    const int64_t s1 = (slice_start + slice_size - 1) / source_shard;
++    const int64_t t0 = dus_start / target_shard;
++    const int64_t t1 = (dus_start + slice_size - 1) / target_shard;
++    if (!(s0 == s1 && t0 == t1 && s0 == t0)) {
++      return false;
++    }
++  }
++  return true;
++}
++
++absl::StatusOr<HloInstruction*>
++SpmdPartitioningVisitor::ExpandElementwiseUpdate(
++    HloInstruction* hlo, const HloInstruction* input_tensor,
++    const HloInstruction* update, const std::vector<int64_t>& piece_dus_starts,
++    HloInstruction* current_input, HloInstruction* zeroElemOp,
++    bool* any_comm_free, int depth) {
++  if (depth > 64) {
++    return nullptr;
++  }
++  if (update->opcode() == HloOpcode::kCopy && update->user_count() == 1) {
++    return ExpandElementwiseUpdate(hlo, input_tensor, update->operand(0),
++                                   piece_dus_starts, current_input, zeroElemOp,
++                                   any_comm_free, depth + 1);
++  }
++  const bool elementwise = update->IsElementwise() &&
++                           update->operand_count() > 0 &&
++                           update->opcode() != HloOpcode::kCopy &&
++                           update->opcode() != HloOpcode::kRng &&
++                           update->opcode() != HloOpcode::kRngBitGenerator &&
++                           !update->HasSideEffect();
++  if (!elementwise) {
++    // A leaf: a slice (possibly reversed or copied) or a scalar broadcast,
++    // handled as a single-piece update would be.
++    if (IsSliceExpansionCommunicationFree(hlo, update, piece_dus_starts)) {
++      *any_comm_free = true;
++    }
++    return ProcessUpdatePieceExtractOperand(hlo, input_tensor, update,
++                                            piece_dus_starts, current_input,
++                                            zeroElemOp);
++  }
++  if (update->user_count() != 1) {
++    // The narrow chain would stay alive for its other user; nothing is saved
++    // by computing it twice.
++    return nullptr;
++  }
++  std::vector<HloInstruction*> new_operands;
++  new_operands.reserve(update->operand_count());
++  for (const HloInstruction* operand : update->operands()) {
++    if (!ShapeUtil::SameDimensions(operand->shape(), update->shape())) {
++      return nullptr;
++    }
++    ABSL_ASSIGN_OR_RETURN(
++        HloInstruction * expanded,
++        ExpandElementwiseUpdate(hlo, input_tensor, operand, piece_dus_starts,
++                                current_input, zeroElemOp, any_comm_free,
++                                depth + 1));
++    if (expanded == nullptr) {
++      return nullptr;
++    }
++    new_operands.push_back(expanded);
++  }
++  Shape shard_shape = ShapeUtil::ChangeElementType(
++      MakePartitionedShape(hlo->shape(), hlo->sharding()),
++      update->shape().element_type());
++  HloInstruction* expanded =
++      b_.AddInstruction(update->CloneWithNewOperands(shard_shape, new_operands));
++  expanded->set_sharding(hlo->sharding());
++  return expanded;
++}
++
+ absl::StatusOr<HloInstruction*>
+ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
+     HloInstruction* hlo, const HloInstruction* input_tensor,
+@@ -5089,6 +5192,24 @@ SpmdPartitioningVisitor::ProcessUpdatePieceExtractOperand(
+     return b_.AddInstruction(std::move(to_add));
+   };
+ 
++  // An update computed by elementwise ops from slices: build it from the
++  // slices' operands at the shard shape instead of padding the narrow result,
++  // when that lets at least one slice skip its communication.
++  if (piece_update_tensor->IsElementwise() &&
++      piece_update_tensor->operand_count() > 0 &&
++      piece_update_tensor->opcode() != HloOpcode::kCopy &&
++      piece_update_tensor->user_count() == 1) {
++    bool any_comm_free = false;
++    ABSL_ASSIGN_OR_RETURN(
++        HloInstruction * expanded,
++        ExpandElementwiseUpdate(hlo, input_tensor, piece_update_tensor,
++                                piece_dus_starts, current_input, zeroElemOp,
++                                &any_comm_free, /*depth=*/0));
++    if (expanded != nullptr && any_comm_free) {
++      return expanded;
++    }
++  }
++
+   const HloInstruction* actual_update = piece_update_tensor;
+   std::optional<ShapeUtil::ShapeEqualityDescriptor> reshape_desc;
+   while (actual_update->user_count() == 1) {
+diff --git a/xla/service/spmd/spmd_partitioner.h b/xla/service/spmd/spmd_partitioner.h
+index dd963c1..3de2b23 100644
+--- a/xla/service/spmd/spmd_partitioner.h
++++ b/xla/service/spmd/spmd_partitioner.h
+@@ -990,6 +990,27 @@ class SpmdPartitioningVisitor : public DfsHloVisitorWithDefault {
+       std::vector<int64_t> piece_dus_starts, HloInstruction* current_input,
+       HloInstruction* zeroElemOp);
+ 
++  // For an update that is a chain of single-use elementwise ops over slices
++  // (and scalar broadcasts), builds the chain at the shard shape of the
++  // target directly from the slices' operands, as
++  // ProcessUpdatePieceExtractOperand does for a single slice: a slice at the
++  // update's own window then costs no communication at all, and the rows
++  // outside the window are computed and masked away. Returns nullptr when a
++  // leaf cannot be expanded; `any_comm_free` reports whether some slice was
++  // expanded without communication.
++  absl::StatusOr<HloInstruction*> ExpandElementwiseUpdate(
++      HloInstruction* hlo, const HloInstruction* input_tensor,
++      const HloInstruction* update, const std::vector<int64_t>& piece_dus_starts,
++      HloInstruction* current_input, HloInstruction* zeroElemOp,
++      bool* any_comm_free, int depth);
++
++  // Whether expanding `slice` to the target of `hlo` at `piece_dus_starts`
++  // moves no data between shards (it is aligned with the window on every
++  // partitioned dimension).
++  bool IsSliceExpansionCommunicationFree(
++      const HloInstruction* hlo, const HloInstruction* slice,
++      const std::vector<int64_t>& piece_dus_starts) const;
++
+   // Handler for operations with no conflicts.
+   // go/keep-sorted start
+   absl::Status HandleDotWithoutConflicts(HloInstruction* hlo);
+diff --git a/xla/service/spmd/spmd_partitioner_test.cc b/xla/service/spmd/spmd_partitioner_test.cc
+index 631a088..a510cfe 100644
+--- a/xla/service/spmd/spmd_partitioner_test.cc
++++ b/xla/service/spmd/spmd_partitioner_test.cc
+@@ -9656,6 +9656,78 @@ TEST_P(SpmdPartitioningTest, DusOfSliceWithEnzymeOpt) {
+                           op::Shape("f32[20,768,1528]")));
+ }
+ 
++TEST_P(SpmdPartitioningTest, DusOfElementwiseOfSlicesWithEnzymeOpt) {
++  // The update is a stencil's interior: elementwise ops over slices taken at
++  // the DUS's own window of the y dimension, which is split over two shards
++  // (60 rows each; the window [1, 118) is 59 + 58 rows). The slices'
++  // operands are used directly and no data moves between shards.
++  absl::string_view hlo_string = R"hlo(
++  HloModule module
++
++  ENTRY entry {
++    %a = f32[8,120,248] parameter(0), sharding={devices=[1,2,4]<=[8]}
++    %b = f32[8,120,248] parameter(1), sharding={devices=[1,2,4]<=[8]}
++    %in = f32[8,120,248] parameter(2), sharding={devices=[1,2,4]<=[8]}
++    %sa = f32[8,117,248] slice(%a), slice={[0:8], [1:118], [0:248]}, sharding={devices=[1,2,4]<=[8]}
++    %sb = f32[8,117,248] slice(%b), slice={[0:8], [1:118], [0:248]}, sharding={devices=[1,2,4]<=[8]}
++    %m = f32[8,117,248] multiply(%sa, %sb), sharding={devices=[1,2,4]<=[8]}
++    %u = f32[8,117,248] negate(%m), sharding={devices=[1,2,4]<=[8]}
++    c0 = s32[] constant(0)
++    c1 = s32[] constant(1)
++    ROOT dus = f32[8,120,248] dynamic-update-slice(%in, %u, c0, c1, c0), sharding={devices=[1,2,4]<=[8]}
++  }
++)hlo";
++
++  ASSERT_OK_AND_ASSIGN(auto module,
++                       PartitionComputation(hlo_string, /*num_devices=*/8,
++                                            SpmdPartitionerOptions(),
++                                            /*enable_enzyme_opt=*/true));
++
++  const auto root = module->entry_computation()->root_instruction();
++  auto a = AllOf(op::Parameter(0), op::Shape("f32[8,60,62]"));
++  auto b = AllOf(op::Parameter(1), op::Shape("f32[8,60,62]"));
++  auto in = AllOf(op::Parameter(2), op::Shape("f32[8,60,62]"));
++  EXPECT_THAT(root, AllOf(op::Select(_, in, op::Negate(op::Multiply(a, b))),
++                          op::Shape("f32[8,60,62]")));
++  EXPECT_EQ(NumOfInstructions(module->entry_computation(),
++                              HloOpcode::kCollectivePermute),
++            0);
++}
++
++TEST_P(SpmdPartitioningTest, DusOfElementwiseOfShiftedSlicesWithEnzymeOpt) {
++  // A three-point stencil: the centre slice is at the window, the two
++  // neighbours are shifted by one row. The centre costs nothing; each
++  // neighbour needs the one row held by the other shard, as the slices
++  // themselves would have.
++  absl::string_view hlo_string = R"hlo(
++  HloModule module
++
++  ENTRY entry {
++    %a = f32[8,120,248] parameter(0), sharding={devices=[1,2,4]<=[8]}
++    %in = f32[8,120,248] parameter(1), sharding={devices=[1,2,4]<=[8]}
++    %l = f32[8,117,248] slice(%a), slice={[0:8], [0:117], [0:248]}, sharding={devices=[1,2,4]<=[8]}
++    %c = f32[8,117,248] slice(%a), slice={[0:8], [1:118], [0:248]}, sharding={devices=[1,2,4]<=[8]}
++    %r = f32[8,117,248] slice(%a), slice={[0:8], [2:119], [0:248]}, sharding={devices=[1,2,4]<=[8]}
++    %s = f32[8,117,248] add(%l, %r), sharding={devices=[1,2,4]<=[8]}
++    %u = f32[8,117,248] subtract(%s, %c), sharding={devices=[1,2,4]<=[8]}
++    c0 = s32[] constant(0)
++    c1 = s32[] constant(1)
++    ROOT dus = f32[8,120,248] dynamic-update-slice(%in, %u, c0, c1, c0), sharding={devices=[1,2,4]<=[8]}
++  }
++)hlo";
++
++  ASSERT_OK_AND_ASSIGN(auto module,
++                       PartitionComputation(hlo_string, /*num_devices=*/8,
++                                            SpmdPartitionerOptions(),
++                                            /*enable_enzyme_opt=*/true));
++
++  const auto root = module->entry_computation()->root_instruction();
++  auto a = AllOf(op::Parameter(0), op::Shape("f32[8,60,62]"));
++  auto in = AllOf(op::Parameter(1), op::Shape("f32[8,60,62]"));
++  EXPECT_THAT(root, AllOf(op::Select(_, in, op::Subtract(op::Add(_, _), a)),
++                          op::Shape("f32[8,60,62]")));
++}
++
+ TEST_P(SpmdPartitioningTest, DusOfSliceWithoutEnzymeOpt) {
+   absl::string_view hlo_string = R"hlo(
+   HloModule module
