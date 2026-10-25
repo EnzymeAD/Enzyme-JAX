@@ -279,3 +279,65 @@ func.func @narrow_argument(%a: tensor<16xf32> {sdy.sharding = #sdy.sharding<@mes
 // CHECK-LABEL: func.func @narrow_argument
 // CHECK: %[[N:.+]] = stablehlo.negate %arg1 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : tensor<13xf32>
 // CHECK-NEXT: stablehlo.dynamic_update_slice %arg0, %[[N]]
+
+// -----
+
+// The interior stencil written into zeros. `select_pad_to_dus` made the
+// masked select a DUS of a constant, which became a pad of the narrowed
+// update; the pad anchors the sink too. The update is recomputed at the
+// full extent (the reads of the arguments past their edges are rotations)
+// and the pad becomes a select of the wide value against the padding value
+// inside the window.
+sdy.mesh @mesh = <["x"=2]>
+func.func @pad_interior(%a: tensor<16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}]>}, %b: tensor<16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}]>}) -> tensor<16xf32> {
+  %zero = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+  %l = stablehlo.slice %a [0:13] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>) -> tensor<13xf32>
+  %r = stablehlo.slice %b [2:15] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>) -> tensor<13xf32>
+  %s = stablehlo.add %l, %r {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : tensor<13xf32>
+  %p = stablehlo.pad %s, %zero, low = [1], high = [2], interior = [0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<13xf32>, tensor<f32>) -> tensor<16xf32>
+  return %p : tensor<16xf32>
+}
+
+// CHECK-LABEL: func.func @pad_interior
+// CHECK-DAG: %[[ZERO:.+]] = stablehlo.constant {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} dense<0.000000e+00> : tensor<16xf32>
+// CHECK-DAG: %[[HI:.+]] = stablehlo.constant {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} dense<14> : tensor<16xi32>
+// CHECK-DAG: %[[LO:.+]] = stablehlo.constant {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} dense<1> : tensor<16xi32>
+// CHECK-DAG: %[[L:.+]] = "enzymexla.rotate"(%arg0) <{amount = 15 : i32, dimension = 0 : i32}>
+// CHECK-DAG: %[[R:.+]] = "enzymexla.rotate"(%arg1) <{amount = 1 : i32, dimension = 0 : i32}>
+// CHECK: %[[S:.+]] = stablehlo.add %[[L]], %[[R]] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : tensor<16xf32>
+// CHECK: %[[IOTA:.+]] = stablehlo.iota dim = 0 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : tensor<16xi32>
+// CHECK: %[[GE:.+]] = stablehlo.compare GE, %[[IOTA]], %[[LO]]
+// CHECK: %[[LT:.+]] = stablehlo.compare LT, %[[IOTA]], %[[HI]]
+// CHECK: %[[IN:.+]] = stablehlo.and %[[GE]], %[[LT]]
+// CHECK: %[[P:.+]] = stablehlo.select %[[IN]], %[[S]], %[[ZERO]]
+// CHECK-NEXT: return %[[P]]
+
+// -----
+
+// Padding along an unsharded dimension as well: only the sharded one is
+// widened; the pad along the other stays, after the select.
+sdy.mesh @mesh = <["x"=2]>
+func.func @pad_two_dims(%a: tensor<16x8xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {}]>}, %b: tensor<16x8xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {}]>}) -> tensor<16x8xf32> {
+  %zero = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+  %l = stablehlo.slice %a [0:13, 0:6] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {}]>]>} : (tensor<16x8xf32>) -> tensor<13x6xf32>
+  %r = stablehlo.slice %b [2:15, 1:7] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {}]>]>} : (tensor<16x8xf32>) -> tensor<13x6xf32>
+  %s = stablehlo.add %l, %r {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {}]>]>} : tensor<13x6xf32>
+  %p = stablehlo.pad %s, %zero, low = [1, 1], high = [2, 1], interior = [0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {}]>]>} : (tensor<13x6xf32>, tensor<f32>) -> tensor<16x8xf32>
+  return %p : tensor<16x8xf32>
+}
+
+// CHECK-LABEL: func.func @pad_two_dims
+// CHECK-DAG: %[[ZEROS:.+]] = stablehlo.constant {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {}]>]>} dense<0.000000e+00> : tensor<16x6xf32>
+// CHECK-DAG: %[[ZERO:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-DAG: %[[L:.+]] = "enzymexla.rotate"(%arg0) <{amount = 15 : i32, dimension = 0 : i32}>
+// CHECK-DAG: %[[LS:.+]] = stablehlo.slice %[[L]] [0:16, 0:6]
+// CHECK-DAG: %[[R:.+]] = "enzymexla.rotate"(%arg1) <{amount = 1 : i32, dimension = 0 : i32}>
+// CHECK-DAG: %[[RS:.+]] = stablehlo.slice %[[R]] [0:16, 1:7]
+// CHECK: %[[S:.+]] = stablehlo.add %[[LS]], %[[RS]] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {}]>]>} : tensor<16x6xf32>
+// CHECK: %[[IOTA:.+]] = stablehlo.iota dim = 0 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {}]>]>} : tensor<16x6xi32>
+// CHECK: stablehlo.compare GE, %[[IOTA]]
+// CHECK: stablehlo.compare LT, %[[IOTA]]
+// CHECK: %[[IN:.+]] = stablehlo.and
+// CHECK: %[[SEL:.+]] = stablehlo.select %[[IN]], %[[S]], %[[ZEROS]]
+// CHECK: %[[P:.+]] = stablehlo.pad %[[SEL]], %[[ZERO]], low = [0, 1], high = [0, 1], interior = [0, 0]
+// CHECK-NEXT: return %[[P]]
