@@ -341,3 +341,32 @@ func.func @pad_two_dims(%a: tensor<16x8xf32> {sdy.sharding = #sdy.sharding<@mesh
 // CHECK: %[[SEL:.+]] = stablehlo.select %[[IN]], %[[S]], %[[ZEROS]]
 // CHECK: %[[P:.+]] = stablehlo.pad %[[SEL]], %[[ZERO]], low = [0, 1], high = [0, 1], interior = [0, 0]
 // CHECK-NEXT: return %[[P]]
+
+// -----
+
+// The narrowed read goes through a reshape that drops a unit dimension (a
+// one-level slab of a 3-D field as a 2-D value): the widening maps the
+// dimension through the reshape and the slice of the field widens for free.
+sdy.mesh @mesh = <["x"=2]>
+func.func @pad_through_reshape(%a: tensor<4x16x8xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {"x"}, {}]>}, %b: tensor<16x8xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {}]>}) -> tensor<16x8xf32> {
+  %zero = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+  %l3 = stablehlo.slice %a [1:2, 1:16, 0:8] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"x"}, {}]>]>} : (tensor<4x16x8xf32>) -> tensor<1x15x8xf32>
+  %l = stablehlo.reshape %l3 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {}]>]>} : (tensor<1x15x8xf32>) -> tensor<15x8xf32>
+  %r = stablehlo.slice %b [0:15, 0:8] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {}]>]>} : (tensor<16x8xf32>) -> tensor<15x8xf32>
+  %s = stablehlo.multiply %l, %r {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {}]>]>} : tensor<15x8xf32>
+  %p = stablehlo.pad %s, %zero, low = [0, 0], high = [1, 0], interior = [0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {}]>]>} : (tensor<15x8xf32>, tensor<f32>) -> tensor<16x8xf32>
+  return %p : tensor<16x8xf32>
+}
+
+// CHECK-LABEL: func.func @pad_through_reshape
+// CHECK-DAG: %[[ZEROS:.+]] = stablehlo.constant {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {}]>]>} dense<0.000000e+00> : tensor<16x8xf32>
+// CHECK-DAG: %[[ROT:.+]] = "enzymexla.rotate"(%arg0) <{amount = 1 : i32, dimension = 1 : i32}>
+// CHECK-DAG: %[[L3:.+]] = stablehlo.slice %[[ROT]] [1:2, 0:16, 0:8]
+// CHECK-DAG: %[[L:.+]] = stablehlo.reshape %[[L3]] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {}]>]>} : (tensor<1x16x8xf32>) -> tensor<16x8xf32>
+// CHECK: %[[S:.+]] = stablehlo.multiply %[[L]], %arg1 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {}]>]>} : tensor<16x8xf32>
+// CHECK: %[[IOTA:.+]] = stablehlo.iota dim = 0
+// CHECK: stablehlo.compare GE, %[[IOTA]]
+// CHECK: stablehlo.compare LT, %[[IOTA]]
+// CHECK: %[[IN:.+]] = stablehlo.and
+// CHECK: %[[P:.+]] = stablehlo.select %[[IN]], %[[S]], %[[ZEROS]]
+// CHECK-NEXT: return %[[P]]
