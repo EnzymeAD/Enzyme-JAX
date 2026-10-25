@@ -1,6 +1,6 @@
 //===----------------------------------------------------------------------===//
 //
-// Lexer and recursive-descent parser for tessera optimization rewrite rules.
+// Lexer, recursive-descent parser, and renderer for tessera rewrite rules.
 //
 // Grammar:
 //
@@ -20,27 +20,18 @@
 //   string ::= "'" { any character but "'" } "'"
 //   global ::= '@' symbol
 //
-// A rule with no condition is unconditional and rewrites exactly as before.
-// The right-hand side runs in order and its last expression replaces the
-// matched call; the calls before it are made for their effects. A string is
-// only allowed there, and is written with single quotes so that a rule can sit
-// inside a C string, as `#pragma optimize "..."` puts it, without escaping.
-// A global, the address of a global variable named by its symbol, is only
-// allowed there too.
-//
-// Arithmetic computes a value from others, as `2 * p + 1` computes a
-// quadrature order from a polynomial order. It is allowed on the right-hand
-// side and in the operands of a comparison, with C's precedence and
-// left-to-right grouping; there is nothing for it to match on the left, or to
-// test in a predicate. In a condition, a '(' opens an arithmetic expression
-// rather than a condition when an arithmetic or comparison operator follows
-// its ')': `(p + 1) * 2 == q`.
+// Strings, globals and log2 are only allowed on the right-hand side. Strings
+// use single quotes so a rule can sit inside a C string without escaping.
+// Arithmetic (C precedence) is allowed on the right-hand side and in
+// comparisons. In a condition, '(' starts arithmetic rather than a nested
+// condition when an arithmetic or comparison operator follows its ')'.
 //
 //===----------------------------------------------------------------------===//
 
 #include "mlir/IR/Diagnostics.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/RuleAST.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 #include <limits>
@@ -65,10 +56,7 @@ bool isDigit(char c) { return c >= '0' && c <= '9'; }
 
 bool isAlphaNum(char c) { return isAlpha(c) || isDigit(c); }
 
-bool isWhitespace(char c) { return c == ' ' || c == '\n' || c == '\t'; }
-
-/// The relational operators, in the order the grammar lists them. Returns
-/// nullopt for any token that does not open a comparison.
+// The comparison a token is, if any.
 std::optional<CmpOp> tokenToCmpOp(TokenType type) {
   switch (type) {
   case TokenType::EqEq:
@@ -117,25 +105,33 @@ llvm::StringRef getCmpOpSpelling(CmpOp op) {
 //===----------------------------------------------------------------------===//
 
 Token Lexer::nextToken() {
-  // Whitespace is skipped before the end-of-input test, not after: checking
-  // for '\0' first would mislex any rule with trailing whitespace.
-  while (isWhitespace(peek()))
+  // Skip whitespace before testing for the end, or trailing spaces mislex.
+  while (peek() == ' ' || peek() == '\n' || peek() == '\t')
     advance();
 
   if (peek() == '\0')
     return Token{TokenType::End, ""};
 
-  if (isAlpha(peek()) || peek() == '_') {
+  // A qualified C++ name like `mfem::Geometry::CUBE` is one identifier (see
+  // substituteRuleNames).
+  auto qualifies = [&] {
+    return peek() == ':' && peekNext() == ':' && pos + 2 < input.size() &&
+           (isAlpha(input[pos + 2]) || input[pos + 2] == '_');
+  };
+  if (isAlpha(peek()) || peek() == '_' || qualifies()) {
     std::string s;
-    while (isAlphaNum(peek()) || peek() == '_') {
-      s += advance();
-    }
+    do {
+      if (qualifies()) {
+        s += advance();
+        s += advance();
+      }
+      while (isAlphaNum(peek()) || peek() == '_')
+        s += advance();
+    } while (qualifies());
     return Token{TokenType::Ident, s};
   }
 
-  // Two lookahead rules decide whether a leading character starts a number.
-  // A '-' does only when a digit follows, otherwise it is the head of the
-  // "->" arrow handled below. A '.' does only when a digit follows.
+  // '-' or '.' starts a number only when a digit follows.
   if (isDigit(peek()) ||
       ((peek() == '-' || peek() == '.') && isDigit(peekNext()))) {
     std::string num;
@@ -153,8 +149,7 @@ Token Lexer::nextToken() {
         num += advance();
       }
     }
-    // An exponent, as in 1e-12 or 2.5E3. Only taken when digits follow, so an
-    // identifier that happens to start with 'e' is never swallowed.
+    // An exponent, as in 1e-12, only when digits follow.
     if ((peek() == 'e' || peek() == 'E') &&
         (isDigit(peekNext()) ||
          ((peekNext() == '-' || peekNext() == '+') && pos + 2 < input.size() &&
@@ -195,8 +190,7 @@ Token Lexer::nextToken() {
     return Token{TokenType::Semicolon, ""};
   }
 
-  // A global's symbol, as the LLVM dialect names it: a mangled C++ name, or a
-  // C one. A bare '@' comes back as an error token.
+  // A global's symbol, `@name`. A bare '@' is an error token.
   if (peek() == '@') {
     advance();
     std::string s;
@@ -208,8 +202,7 @@ Token Lexer::nextToken() {
     return Token{TokenType::Global, s};
   }
 
-  // A string has no escapes: nothing a rule passes needs a quote in it. One
-  // that is never closed comes back as an error token holding just the quote.
+  // No escapes. An unclosed string is an error token holding the quote.
   if (peek() == '\'') {
     size_t start = pos;
     advance();
@@ -231,9 +224,7 @@ Token Lexer::nextToken() {
     return Token{TokenType::Arrow, ""};
   }
 
-  // Arithmetic operators. A '-' followed by a digit was lexed above as the
-  // sign of a number; the parser reads such a number after an operand as a
-  // subtraction, so `p -1` means what it does in C.
+  // A '-' before a digit was lexed as a sign above; parseExpr handles `p -1`.
   switch (peek()) {
   case '+':
     advance();
@@ -254,8 +245,7 @@ Token Lexer::nextToken() {
     break;
   }
 
-  // Condition operators. Each two-character form must be tested before the
-  // one-character form that prefixes it, so that '!' does not swallow '!='.
+  // Two-character forms first, so '!' doesn't swallow '!='.
   if (peek() == '!') {
     advance();
     if (peek() == '=') {
@@ -283,8 +273,7 @@ Token Lexer::nextToken() {
     return Token{TokenType::Greater, ""};
   }
 
-  // '=', '&' and '|' are only ever valid doubled, so a lone one is an error
-  // reported against that character rather than silently accepted.
+  // '=', '&' and '|' are only valid doubled.
   if (peek() == '=' && peekNext() == '=') {
     advance();
     advance();
@@ -311,14 +300,10 @@ Token Lexer::nextToken() {
 //===----------------------------------------------------------------------===//
 
 InFlightDiagnostic Parser::error() {
-  // Only the first error in a rule is real. After it the token stream is out
-  // of sync, so every later complaint is fallout -- an inert diagnostic keeps
-  // those from reaching the user, and keeps -verify-diagnostics tests from
-  // having to spell out a cascade.
+  // Later errors are fallout from the first, so they're dropped.
   if (failed)
     return InFlightDiagnostic();
   failed = true;
-  // A rule that does not parse is left out, not a reason to fail the compile.
   InFlightDiagnostic diagnostic = emitWarning(loc);
   diagnostic << "optimization rule ignored: ";
   return diagnostic;
@@ -336,9 +321,8 @@ void Parser::advance() {
 }
 
 Token Parser::peekAhead() {
-  // The lexer is a plain {input, pos} pair, so a copy is a cheap save point.
-  // This deliberately does not go through advance(): looking ahead must not
-  // report an error for a token the parser may never consume.
+  // Lex from a copy, not through advance(), so lookahead never reports an
+  // error.
   Lexer saved = lexer;
   Token token = lexer.nextToken();
   lexer = saved;
@@ -380,7 +364,7 @@ std::optional<Call> Parser::parseCall(std::string dialect_name) {
 
 namespace {
 
-/// A number lexed with its sign, as the lexer lexes `-1`.
+// A number lexed with its sign, as the lexer lexes `-1`.
 bool isSignedNumber(const Token &token) {
   return (token.type == TokenType::Integer || token.type == TokenType::Float) &&
          !token.value.empty() && token.value[0] == '-';
@@ -442,8 +426,7 @@ std::optional<Expr> Parser::parseTerm() {
 }
 
 bool Parser::parenOpensExpr() {
-  // The lexer is a plain {input, pos} pair, so a copy scans ahead without
-  // consuming anything or reporting a token the parser may never reach.
+  // Scan ahead on a copy of the lexer, as in peekAhead.
   Lexer scan = lexer;
   int depth = 1;
   while (depth > 0) {
@@ -491,11 +474,8 @@ std::optional<Expr> Parser::parsePrimary() {
         return std::nullopt;
       return Expr(std::move(*call));
     }
-    // An unqualified call is a built-in function, which computes an argument
-    // for a call the rewrite builds. The one there is, log2, gives the
-    // exponent of a power of two, for a library function that takes a shift
-    // count where the matched call took the divisor. It is exact only on a
-    // power of two, which the rule's condition has to guarantee.
+    // An unqualified call is a built-in. The only one is log2, e.g. to turn
+    // a divisor into a shift count; the condition must ensure a power of two.
     if (current.type == TokenType::LParen) {
       if (!allowStrings) {
         error() << "'" << s
@@ -543,8 +523,6 @@ std::optional<Expr> Parser::parsePrimary() {
     return Expr(FloatLit{n});
   }
   if (current.type == TokenType::String) {
-    // A string can be passed to a call the rewrite builds, but there is
-    // nothing to compare it with in a match or a condition.
     if (!allowStrings) {
       error() << "a string can only be used on the right-hand side of an "
                  "optimization rule";
@@ -555,8 +533,6 @@ std::optional<Expr> Parser::parsePrimary() {
     return Expr(StrLit{std::move(s)});
   }
   if (current.type == TokenType::Global) {
-    // A global can be passed to a call the rewrite builds; a match or a
-    // condition has nothing to bind it to.
     if (!allowStrings) {
       error() << "a global, '@" << current.value
               << "', can only be used on the right-hand side of an "
@@ -622,11 +598,8 @@ std::optional<Cond> Parser::parseUnary() {
     return inner;
   }
 
-  // A predicate call and the left operand of a comparison both start with an
-  // identifier, so one token of lookahead decides between them: only a
-  // predicate is followed directly by '('. A qualified call such as
-  // `eigen.inv(x)` has a '.' next and falls through to the comparison path,
-  // where parseExpr handles it.
+  // An identifier followed by '(' is a predicate; anything else (including
+  // `eigen.inv(x)`) starts a comparison.
   if (current.type == TokenType::Ident &&
       peekAhead().type == TokenType::LParen) {
     std::string name = current.value;
@@ -671,8 +644,7 @@ std::optional<Cond> Parser::parseUnary() {
 }
 
 std::optional<Rule> Parser::parseRule() {
-  // 'if' is only a keyword as the very first token of a rule, so it needs no
-  // contextual handling and stays usable as a variable name everywhere else.
+  // 'if' is a keyword only as the first token.
   std::optional<Cond> cond;
   if (current.type == TokenType::Ident && current.value == "if") {
     advance();
@@ -712,8 +684,7 @@ std::optional<Rule> Parser::parseRule() {
     rhs.push_back(std::move(*expr));
     if (current.type != TokenType::Semicolon)
       break;
-    // Only the last expression has a value that is used, so anything before
-    // it must be a call, made for what it does.
+    // Only the last expression's value is used, so earlier ones must be calls.
     auto *call = std::get_if<Call>(&rhs.back().data);
     if (!call || call->isBuiltin()) {
       error() << "'" << renderExpr(rhs.back())
@@ -732,8 +703,7 @@ std::optional<Rule> Parser::parseRule() {
 
 namespace {
 
-/// Binding strength, used to decide where the renderer has to add parentheses.
-/// Higher binds tighter.
+// Binding strength, for parenthesizing. Higher binds tighter.
 enum : unsigned { PrecOr = 1, PrecAnd = 2, PrecNot = 3, PrecAtom = 4 };
 
 unsigned precedenceOf(const Cond &cond) {
@@ -746,8 +716,7 @@ unsigned precedenceOf(const Cond &cond) {
   return PrecAtom;
 }
 
-/// Render `cond`, wrapping it in parentheses when it binds more loosely than
-/// the context it is being placed into.
+// Render `cond`, in parentheses if it binds more loosely than its context.
 std::string renderCondAt(const Cond &cond, unsigned parentPrec);
 
 std::string renderNested(const Cond &cond, unsigned parentPrec) {
@@ -790,15 +759,13 @@ std::string renderCondAt(const Cond &cond, unsigned parentPrec) {
 
 namespace {
 
-/// Binding strength of an arithmetic operator: '*', '/' and '%' over '+' and
-/// '-', as in C.
+// '*', '/' and '%' bind tighter than '+' and '-'.
 unsigned precedenceOf(ArithOp op) {
   return op == ArithOp::Add || op == ArithOp::Sub ? 1 : 2;
 }
 
-/// Render an operand of `parent`, in parentheses where it would otherwise
-/// regroup: when it binds more loosely, or as a right operand that binds
-/// equally, since the operators group left to right (`a - (b - c)`).
+// Render an operand of `parent`, in parentheses if it binds more loosely, or
+// equally on the right (`a - (b - c)`).
 std::string renderArithOperand(const Expr &operand, ArithOp parent,
                                bool isRight) {
   std::string text = renderExpr(operand);
@@ -851,14 +818,11 @@ std::string renderExpr(const Expr &expr) {
                         [](const StrLit &s) { return "'" + s.value + "'"; },
                         [](const GlobalRef &g) { return "@" + g.symbol; },
                         [](const FloatLit &n) {
-                          // %.17g is the shortest format guaranteed to
-                          // round-trip a double, which matters because this
-                          // text is parsed back.
+                          // %.17g round-trips a double exactly.
                           llvm::SmallString<32> buffer;
                           llvm::raw_svector_ostream os(buffer);
                           os << llvm::format("%.17g", n.value);
-                          // But it drops the point from an integral value,
-                          // and "0" would parse back as an integer literal.
+                          // Keep a '.', so it doesn't parse back as an int.
                           std::string out(buffer);
                           if (out.find_first_of(".eEn") == std::string::npos)
                             out += ".0";
@@ -903,17 +867,82 @@ std::optional<Cond> parseConditionText(llvm::StringRef text, Location loc) {
   return cond;
 }
 
+namespace {
+
+void collectVars(const Expr &expr, llvm::StringSet<> &vars) {
+  if (auto *var = std::get_if<Var>(&expr.data))
+    vars.insert(var->name);
+  if (auto *call = std::get_if<Call>(&expr.data))
+    for (const Expr &arg : call->args)
+      collectVars(arg, vars);
+  if (auto *arith = std::get_if<Arith>(&expr.data)) {
+    collectVars(*arith->lhs, vars);
+    collectVars(*arith->rhs, vars);
+  }
+}
+
+} // namespace
+
+std::string substituteRuleNames(llvm::StringRef text,
+                                const llvm::StringMap<std::string> &values,
+                                Location loc) {
+  if (values.empty())
+    return text.str();
+
+  // A rule that doesn't parse is left for parse-optimization-rules to report.
+  std::optional<Rule> rule;
+  {
+    ScopedDiagnosticHandler quiet(loc.getContext(),
+                                  [](Diagnostic &) { return success(); });
+    Parser parser(text.str(), loc);
+    rule = parser.parseRule();
+  }
+  if (!rule)
+    return text.str();
+  llvm::StringSet<> bound;
+  collectVars(rule->lhs, bound);
+
+  // Edit the text in place, not re-render it, to keep the rule's spelling.
+  struct Spanned {
+    Token token;
+    size_t end;
+  };
+  SmallVector<Spanned> tokens;
+  Lexer lexer{text.str()};
+  for (Token token = lexer.nextToken(); token.type != TokenType::End;
+       token = lexer.nextToken()) {
+    if (token.type == TokenType::Error)
+      return text.str();
+    tokens.push_back({token, lexer.pos});
+  }
+
+  std::string out;
+  size_t copied = 0;
+  for (size_t i = 0, e = tokens.size(); i != e; ++i) {
+    const Token &token = tokens[i].token;
+    if (token.type != TokenType::Ident || bound.contains(token.value))
+      continue;
+    // Names in `petsc.ksp_set_type(...)` or `SPD(A)` aren't variables.
+    bool partOfCall = (i > 0 && tokens[i - 1].token.type == TokenType::Dot) ||
+                      (i + 1 < e && (tokens[i + 1].token.type == TokenType::Dot ||
+                                     tokens[i + 1].token.type == TokenType::LParen));
+    auto value = values.find(token.value);
+    if (partOfCall || value == values.end())
+      continue;
+    size_t begin = tokens[i].end - token.value.size();
+    out += text.slice(copied, begin);
+    out += value->second;
+    copied = tokens[i].end;
+  }
+  out += text.drop_front(copied);
+  return out;
+}
+
 IntegerAttr getIntegerAttrForLiteral(OpBuilder &builder, int64_t value) {
   if (value >= std::numeric_limits<int32_t>::min() &&
       value <= std::numeric_limits<int32_t>::max())
     return builder.getI32IntegerAttr(static_cast<int32_t>(value));
   return builder.getI64IntegerAttr(value);
-}
-
-FloatAttr getFloatAttrForLiteral(OpBuilder &builder, double value) {
-  if (static_cast<double>(static_cast<float>(value)) == value)
-    return builder.getF32FloatAttr(static_cast<float>(value));
-  return builder.getF64FloatAttr(value);
 }
 
 } // namespace tessera

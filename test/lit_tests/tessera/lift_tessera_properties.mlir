@@ -1,23 +1,24 @@
 // RUN: enzymexlamlir-opt %s -lift-tessera-annotations -split-input-file -verify-diagnostics | FileCheck %s
 
 // The plugin's [[tessera::guarantees]], [[tessera::assumes]] and
-// [[tessera::preserves]] reach the module as annotation strings, with
-// parameters already turned into argument positions that leave out any sret.
+// [[tessera::preserves]] reach the module as annotation strings, as they were
+// written. A parameter is named by its position, which leaves out any sret, or
+// by a name tessera_params gives it (see lift_tessera_param_names.mlir).
 //
-// What is always true goes on the definition, as a `tessera.property` on the
-// output guaranteed or the parameter assumed. A preserves is only true given
+// What is always true goes on the definition, as a `tessera.guarantees` on the
+// output guaranteed or a `tessera.assumes` on the parameter assumed. A preserves is only true given
 // its inputs, so it stays a rule on the function, with its inputs renumbered
 // to the function's own parameters. clang can list an annotation once per
 // redeclaration, so a repeat is dropped.
 
 module {
-  llvm.mlir.global private unnamed_addr constant @".str.spd_ret"("tessera_guarantees=SPD:return\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
-  llvm.mlir.global private unnamed_addr constant @".str.sym_arg1"("tessera_guarantees=symmetric:arg1\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.spd_ret"("tessera_guarantees=SPD\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.sym_arg1"("tessera_guarantees=symmetric(1)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.op_assemble"("tessera_op=lib.assemble(n, out:val=out)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.op_add"("tessera_op=lib.add(a:val=in, b:val=in, out:val=out)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
-  llvm.mlir.global private unnamed_addr constant @".str.keep_01"("tessera_preserves=SPD:0,1\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
-  llvm.mlir.global private unnamed_addr constant @".str.keep_0"("tessera_preserves=SPD:0\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
-  llvm.mlir.global private unnamed_addr constant @".str.assume_0"("tessera_assumes=SPD:arg0\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.keep_01"("tessera_preserves=SPD,0,1\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.keep_0"("tessera_preserves=SPD,0\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.assume_0"("tessera_assumes=SPD(0)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.file"("file.cpp\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<9 x struct<(ptr, ptr, ptr, i32, ptr)>> {
     %zero = llvm.mlir.zero : !llvm.ptr
@@ -96,13 +97,13 @@ module {
 
   // A matrix returned by value comes back through an sret parameter, so that
   // is where the guarantee on the return value goes.
-  // CHECK: llvm.func @mass(%arg0: !llvm.ptr {llvm.sret = !llvm.struct<"Mat3", (array<9 x f64>)>, tessera.property = ["SPD"]}, %arg1: i64)
+  // CHECK: llvm.func @mass(%arg0: !llvm.ptr {llvm.sret = !llvm.struct<"Mat3", (array<9 x f64>)>, tessera.guarantees = ["SPD"]}, %arg1: i64)
   llvm.func @mass(%ret: !llvm.ptr {llvm.sret = !llvm.struct<"Mat3", (array<9 x f64>)>}, %n: i64) attributes {no_inline} {
     llvm.return
   }
 
   // A written argument and a returned value each get their own.
-  // CHECK: llvm.func @assemble(%arg0: i64, %arg1: !llvm.ptr {tessera.property = ["symmetric"]}) -> (i64 {tessera.property = ["SPD"]})
+  // CHECK: llvm.func @assemble(%arg0: i64, %arg1: !llvm.ptr {tessera.guarantees = ["symmetric"]}) -> (i64 {tessera.guarantees = ["SPD"]})
   llvm.func @assemble(%n: i64, %out: !llvm.ptr) -> i64 attributes {no_inline} {
     llvm.return %n : i64
   }
@@ -121,7 +122,7 @@ module {
   }
 
   // An assumption is about the parameter on entry.
-  // CHECK: llvm.func @solve(%arg0: !llvm.ptr {tessera.property = ["SPD"]}, %arg1: !llvm.ptr)
+  // CHECK: llvm.func @solve(%arg0: !llvm.ptr {tessera.assumes = ["SPD"]}, %arg1: !llvm.ptr)
   llvm.func @solve(%A: !llvm.ptr, %b: !llvm.ptr) -> f64 attributes {no_inline} {
     %c = llvm.mlir.constant(0.0 : f64) : f64
     llvm.return %c : f64
@@ -131,7 +132,7 @@ module {
 // -----
 
 module {
-  llvm.mlir.global private unnamed_addr constant @".str.sym_arg0"("tessera_guarantees=symmetric:arg0\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.sym_arg0"("tessera_guarantees=symmetric(0)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.op_reads"("tessera_op=lib.reads(A:val=in)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.file"("file.cpp\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>> {
@@ -158,14 +159,14 @@ module {
     llvm.return %t1 : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
   }
 
-  // A property on a parameter of a definition is read as holding on entry
-  // unless the function is known to write it, so a guarantee on a matrix the
-  // tessera_op only reads would be misread as an assumption. It is left out
-  // with a warning, and the compile goes on without it.
+  // A guarantee on an argument is of the value behind it on exit, so it needs
+  // a value the function writes. One on a matrix the tessera_op only reads
+  // is left out with a warning, and the compile goes on without it.
   // CHECK-LABEL: llvm.func @reads_only
-  // CHECK-NOT: tessera.property
+  // CHECK-NOT: tessera.guarantees
+  // CHECK-NOT: tessera.assumes
   // CHECK-NOT: tessera.establishes
-  // expected-warning @below {{ignoring tessera guarantees annotation 'symmetric:arg0': argument 0 is val=in, so the function only reads the value behind it}}
+  // expected-warning @below {{file.cpp:1: ignoring tessera guarantees 'symmetric(0)': argument 0 is val=in, so the function only reads the value behind it}}
   llvm.func @reads_only(%A: !llvm.ptr) attributes {no_inline} {
     llvm.return
   }
@@ -176,14 +177,14 @@ module {
 // A pointer a function takes as it is, with no tessera_op lifting the value
 // behind it, is a handle to an object the function may change in place, like
 // a PETSc Mat. A guarantee on it is about that object from the call on, so it
-// becomes `tessera.establishes`, never a `tessera.property` that would be read
+// becomes `tessera.establishes`, never a `tessera.guarantees` that would be read
 // as true of the pointer. A readonly says a function leaves the object alone,
 // and works on a declaration too.
 module {
-  llvm.mlir.global private unnamed_addr constant @".str.spd_arg0"("tessera_guarantees=SPD:arg0\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
-  llvm.mlir.global private unnamed_addr constant @".str.spd_arg1"("tessera_guarantees=SPD:arg1\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
-  llvm.mlir.global private unnamed_addr constant @".str.ro_arg0"("tessera_readonly=arg0\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
-  llvm.mlir.global private unnamed_addr constant @".str.ro_arg1"("tessera_readonly=arg1\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.spd_arg0"("tessera_guarantees=SPD(0)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.spd_arg1"("tessera_guarantees=SPD(1)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.ro_arg0"("tessera_readonly=0\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.ro_arg1"("tessera_readonly=1\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.file"("file.c\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<4 x struct<(ptr, ptr, ptr, i32, ptr)>> {
     %zero = llvm.mlir.zero : !llvm.ptr
@@ -236,8 +237,8 @@ module {
 
   // Neither can say anything about a value passed by value.
   // CHECK: llvm.func @mat_shift(!llvm.ptr, f64) -> i32
-  // expected-warning @below {{ignoring tessera guarantees annotation 'SPD:arg1': argument 1 is not a pointer, so the function cannot give it a property}}
-  // expected-warning @below {{ignoring tessera readonly annotation 'arg1': argument 1 is not a pointer, so there is no object to leave alone}}
+  // expected-warning @below {{file.c:1: ignoring tessera guarantees 'SPD(1)': argument 1 is not a pointer, so the function cannot give it a property}}
+  // expected-warning @below {{file.c:1: ignoring tessera readonly '1': argument 1 is not a pointer, so there is no object to leave alone}}
   llvm.func @mat_shift(!llvm.ptr, f64) -> i32
 }
 
@@ -247,7 +248,7 @@ module {
 // through the call, as a setter that leaves it alone does.
 
 module {
-  llvm.mlir.global private unnamed_addr constant @".str.keep_this"("tessera_preserves=affine_coefficients:0\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.keep_this"("tessera_preserves=affine_coefficients,0\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.file"("file.cpp\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>> {
     %zero = llvm.mlir.zero : !llvm.ptr
@@ -269,6 +270,55 @@ module {
   // CHECK: llvm.func @set_level(
   // CHECK-SAME: tessera.preserves = [{inputs = [0], property = "affine_coefficients"}]
   llvm.func @set_level(%this: !llvm.ptr, %level: i32) attributes {no_inline} {
+    llvm.return
+  }
+}
+
+// -----
+
+// The function changes the value behind a val=inout argument: a guarantee is
+// of the value it leaves there, but nothing can be assumed of the one it came
+// in with.
+module {
+  llvm.mlir.global private unnamed_addr constant @".str.spd_arg0"("tessera_guarantees=SPD(0)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.sym_arg0"("tessera_assumes=symmetric(0)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.op_update"("tessera_op=lib.update(m:val=inout)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.file"("file.cpp\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<3 x struct<(ptr, ptr, ptr, i32, ptr)>> {
+    %zero = llvm.mlir.zero : !llvm.ptr
+    %line = llvm.mlir.constant(1 : i32) : i32
+    %file = llvm.mlir.addressof @".str.file" : !llvm.ptr
+    %spd_arg0 = llvm.mlir.addressof @".str.spd_arg0" : !llvm.ptr
+    %sym_arg0 = llvm.mlir.addressof @".str.sym_arg0" : !llvm.ptr
+    %op_update = llvm.mlir.addressof @".str.op_update" : !llvm.ptr
+    %f_update = llvm.mlir.addressof @update : !llvm.ptr
+    %undef = llvm.mlir.undef : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e0a = llvm.insertvalue %f_update, %undef[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e0b = llvm.insertvalue %spd_arg0, %e0a[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e0c = llvm.insertvalue %file, %e0b[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e0d = llvm.insertvalue %line, %e0c[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e0 = llvm.insertvalue %zero, %e0d[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e1a = llvm.insertvalue %f_update, %undef[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e1b = llvm.insertvalue %sym_arg0, %e1a[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e1c = llvm.insertvalue %file, %e1b[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e1d = llvm.insertvalue %line, %e1c[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e1 = llvm.insertvalue %zero, %e1d[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e2a = llvm.insertvalue %f_update, %undef[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e2b = llvm.insertvalue %op_update, %e2a[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e2c = llvm.insertvalue %file, %e2b[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e2d = llvm.insertvalue %line, %e2c[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %e2 = llvm.insertvalue %zero, %e2d[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %t = llvm.mlir.undef : !llvm.array<3 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %t0 = llvm.insertvalue %e0, %t[0] : !llvm.array<3 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %t1 = llvm.insertvalue %e1, %t0[1] : !llvm.array<3 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %t2 = llvm.insertvalue %e2, %t1[2] : !llvm.array<3 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    llvm.return %t2 : !llvm.array<3 x struct<(ptr, ptr, ptr, i32, ptr)>>
+  }
+
+  // CHECK: llvm.func @update(%arg0: !llvm.ptr {tessera.guarantees = ["SPD"]})
+  // CHECK-NOT: tessera.assumes
+  // expected-warning @below {{file.cpp:1: ignoring tessera assumes 'symmetric(0)': argument 0 is val=inout, so the function changes the value an assumption would be of}}
+  llvm.func @update(%m: !llvm.ptr) attributes {no_inline} {
     llvm.return
   }
 }

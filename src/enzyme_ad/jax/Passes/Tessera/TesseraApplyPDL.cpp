@@ -1,7 +1,7 @@
 //===----------------------------------------------------------------------===//
 //
-// This file implements a pass to apply the PDL patterns created from the
-// tessera optimization rewrite rules to the IR.
+// Applies the PDL patterns built from the rewrite rules, replacing each match
+// outright or with a tessera.guard when part of its condition is unproven.
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,7 +18,7 @@
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Predicates.h"
-#include "src/enzyme_ad/jax/Passes/Tessera/Properties.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/PropertyPropagation.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/RuleAST.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
@@ -53,15 +53,11 @@ template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 static LogicalResult isConstantEqualTo(PatternRewriter &rewriter,
                                        PDLResultList &results,
                                        ArrayRef<PDLValue> args) {
-  // args[0]: the matched Operation* that should be producing a constant
-  // args[1]: the expected value, passed as a PDL attribute (IntegerAttr)
+  // args: the matched op, and the expected IntegerAttr. The pattern doesn't
+  // pin the op name, so this matches llvm.mlir.constant and arith.constant.
   Operation *constOp = args[0].cast<Operation *>();
   auto expectedAttr = args[1].cast<Attribute>();
 
-  // The pattern side deliberately does not pin the op name, so this is where
-  // "is it a constant?" is actually decided. Match through the constant
-  // interface rather than a concrete op class: the same rule has to fire both
-  // on llvm.mlir.constant and on arith.constant.
   if (constOp->getNumResults() != 1)
     return failure();
 
@@ -73,8 +69,7 @@ static LogicalResult isConstantEqualTo(PatternRewriter &rewriter,
   if (!expectedIntAttr)
     return failure();
 
-  // Compare numeric value only, ignoring bit-width, so this stays robust
-  // if the constant's width ever differs from what the annotation assumed.
+  // Compare values, ignoring bit width.
   if (actual.getSExtValue() != expectedIntAttr.getValue().getSExtValue())
     return failure();
 
@@ -84,15 +79,10 @@ static LogicalResult isConstantEqualTo(PatternRewriter &rewriter,
 static LogicalResult isFloatConstantEqualTo(PatternRewriter &rewriter,
                                             PDLResultList &results,
                                             ArrayRef<PDLValue> args) {
-  // args[0]: the matched Operation* that should be producing a constant
-  // args[1]: the expected value, passed as a PDL attribute (FloatAttr, always
-  //          emitted as f64 by the rule parser)
+  // args: the matched op, and the expected f64 FloatAttr. As above.
   Operation *constOp = args[0].cast<Operation *>();
   auto expectedAttr = args[1].cast<Attribute>();
 
-  // As in the integer case, the op name is not pinned on the pattern side, so
-  // this is where "is it a float constant?" is decided — via the constant
-  // interface, so the same rule fires on llvm.mlir.constant and arith.constant.
   if (constOp->getNumResults() != 1)
     return failure();
 
@@ -104,39 +94,28 @@ static LogicalResult isFloatConstantEqualTo(PatternRewriter &rewriter,
   if (!expectedFloatAttr)
     return failure();
 
-  // Round the expected value of the float into the semantics the matched
-  // constant actually uses, then compare exactly.
+  // Round to the constant's float type, then compare exactly.
   llvm::APFloat expected = expectedFloatAttr.getValue();
   bool losesInfo = false;
   expected.convert(actual.getSemantics(), llvm::APFloat::rmNearestTiesToEven,
                    &losesInfo);
 
-  // bitwiseIsEqual rather than ==: it keeps +0.0 distinct from -0.0 and lets a
-  // NaN literal match a NaN constant, where == would do the opposite on both.
+  // Bitwise, so -0.0 != +0.0 and NaN matches NaN.
   if (!actual.bitwiseIsEqual(expected))
     return failure();
 
   return success();
 }
 
-// Names the rules that have already been applied to an operation. The original
-// call a guard keeps in its else region is a clone of the matched op, so
-// without this the very same pattern would match it again and wrap it in
-// another guard, forever. Recording the rule rather than marking the op
-// off-limits outright keeps a *different* conditional rule free to specialize
-// that same call, and keeps rules applying inside a guard's regions.
+// The rules already applied to an op, so the call a guard keeps in its else
+// region isn't matched by the same rule again, forever. Other rules can still
+// match it.
 static constexpr llvm::StringLiteral kAppliedRulesAttr =
     "tessera.applied_rules";
 
-// Marks a function whose body no rule may rewrite. Set by
-// lift-tessera-annotations from
-// `__attribute__((annotate("tessera_no_rewrite")))`.
+// On a function no rule may rewrite inside, from the tessera_no_rewrite
+// annotation.
 static constexpr llvm::StringLiteral kNoRewriteAttr = "tessera.no_rewrite";
-
-static bool hasRuleBeenApplied(Operation *op, StringAttr rule) {
-  auto applied = op->getAttrOfType<ArrayAttr>(kAppliedRulesAttr);
-  return applied && llvm::is_contained(applied.getValue(), Attribute(rule));
-}
 
 static void markRuleApplied(Operation *op, StringAttr rule) {
   SmallVector<Attribute> applied;
@@ -153,7 +132,9 @@ static LogicalResult tesseraRuleNotApplied(PatternRewriter &rewriter,
   auto rule = dyn_cast<StringAttr>(args[1].cast<Attribute>());
   if (!rule)
     return failure();
-  return success(!hasRuleBeenApplied(op, rule));
+  auto applied = op->getAttrOfType<ArrayAttr>(kAppliedRulesAttr);
+  return success(!applied ||
+                 !llvm::is_contained(applied.getValue(), Attribute(rule)));
 }
 
 static std::string calleeName(const Call &call) {
@@ -165,7 +146,7 @@ static DefineOp lookupDefine(Operation *anchor, llvm::StringRef name) {
       anchor, StringAttr::get(anchor->getContext(), name));
 }
 
-/// How a matched op is named in a diagnostic: by callee for a call.
+// How a matched op is named in a diagnostic: by callee for a call.
 static std::string describeOp(Operation *op) {
   if (auto call = dyn_cast<CallOp>(op))
     return call.getCallee().str();
@@ -189,19 +170,12 @@ static void collectCallees(const Expr &expr, llvm::StringSet<> &callees) {
 // What the match bound
 //===----------------------------------------------------------------------===//
 
-// PDL matches a tessera.call's operands positionally against the arguments the
-// rule wrote, so argument i of a Call node in the left-hand side is operand i
-// of the op it matched. That is what lets the matched structure be recovered
-// from the root and the AST alone.
+// Argument i of a left-hand-side call is operand i of the op it matched, so
+// the match can be recovered from the root and the AST.
 
-/// Whether `op` really is what the left-hand side describes, binding every
-/// variable to the value it matched.
-///
-/// The pattern checks all of this too, but PDL is free to evaluate a native
-/// constraint before the pattern's own checks -- the callee, a literal, a
-/// repeated variable -- so tesseraRuleApplicable can be handed an op the
-/// pattern is about to reject. It must not report on one of those, and a
-/// warning given once per rule must not be spent on one either.
+// Whether `op` matches the left-hand side, binding each variable. The pattern
+// checks this too, but PDL may run tesseraRuleApplicable before its own
+// checks, and that mustn't warn about an op the pattern will reject.
 static bool matchLhs(const Expr &expr, Operation *op,
                      llvm::StringMap<Value> &bound) {
   auto *call = std::get_if<Call>(&expr.data);
@@ -237,7 +211,6 @@ static bool matchLhs(const Expr &expr, Operation *op,
             [&](const Call &) {
               return matchLhs(arg, operand.getDefiningOp(), bound);
             },
-            // The parser does not allow arithmetic in what a rule matches.
             [&](const Arith &) { return false; },
         },
         arg.data);
@@ -247,7 +220,7 @@ static bool matchLhs(const Expr &expr, Operation *op,
   return true;
 }
 
-/// The calls the left-hand side matched beneath its root, deepest first.
+// The calls the left-hand side matched beneath its root, deepest first.
 static void collectProducers(const Expr &expr, Operation *op,
                              llvm::SetVector<Operation *> &producers) {
   auto *call = std::get_if<Call>(&expr.data);
@@ -267,30 +240,19 @@ static void collectProducers(const Expr &expr, Operation *op,
 // Moving a matched chain
 //===----------------------------------------------------------------------===//
 
-// A rule whose left-hand side nests calls, `f(g(x)) -> f'(g'(x))`, matches the
-// producer g as well as the root f. Replacing only the root would leave g
-// behind, still running unconditionally -- and if g has side effects, say it
-// accumulates into an output buffer as every FEM element kernel does, it then
-// runs on top of g' and the result is wrong. So the producers move with the
-// root: they are erased once the root is replaced, and a guard's else region
-// recomputes them alongside its copy of the root.
-//
-// Moving a producer down to the root is only sound when nothing observes the
-// difference, which is what the plan below decides.
+// In `f(g(x)) -> f'(g'(x))`, the producer g must go too, or a side-effecting
+// g (like an FEM kernel accumulating into a buffer) would still run alongside
+// g'. So producers move with the root: they're erased after it's replaced,
+// and a guard's else region recomputes them.
 
 struct ChainPlan {
-  /// Producers that move with the root, in block order.
+  // Producers that move with the root, in block order.
   SmallVector<Operation *> moved;
 };
 
-/// Decide which matched producers move with `root`. Returns an explanation if
-/// the rule cannot be applied here without changing what the program does.
-///
-/// A producer moves when the chain is its only user and it sits in the root's
-/// block. One that cannot move may simply stay where it is if it is pure: the
-/// rewritten code refers to it, and it computes the same thing either way. A
-/// producer with side effects that cannot move blocks the rewrite, since the
-/// new code would run in addition to it.
+// Decide which producers move with `root`: those only the chain uses, in the
+// root's block. A pure one that can't move just stays; a side-effecting one
+// blocks the rewrite. Returns why, if it's blocked.
 static std::optional<std::string> planChain(Operation *root, const Rule &rule,
                                             ChainPlan &plan) {
   llvm::SetVector<Operation *> producers;
@@ -299,8 +261,7 @@ static std::optional<std::string> planChain(Operation *root, const Rule &rule,
   llvm::SmallPtrSet<Operation *, 8> moving;
   moving.insert(root);
 
-  // Users before producers, so a producer is only judged once everything in
-  // the chain that uses it has been.
+  // Users before producers.
   for (Operation *producer : llvm::reverse(producers)) {
     bool onlyChainUses = llvm::all_of(
         producer->getUsers(), [&](Operation *u) { return moving.contains(u); });
@@ -326,9 +287,7 @@ static std::optional<std::string> planChain(Operation *root, const Rule &rule,
   llvm::sort(plan.moved,
              [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
 
-  // A producer with side effects is being moved down to the root, so nothing
-  // between the two may have side effects of its own: it could observe or
-  // change what the producer does.
+  // A side-effecting producer can't move past other side effects.
   for (Operation *producer : plan.moved) {
     if (isMemoryEffectFree(producer))
       continue;
@@ -347,23 +306,12 @@ static std::optional<std::string> planChain(Operation *root, const Rule &rule,
   return std::nullopt;
 }
 
-/// Erase the producers that moved with a root that has just been replaced.
-/// Latest first, since each may be the last user of an earlier one.
-static void eraseMovedProducers(PatternRewriter &rewriter,
-                                const ChainPlan &plan) {
-  for (Operation *producer : llvm::reverse(plan.moved))
-    if (producer->use_empty())
-      rewriter.eraseOp(producer);
-}
-
 //===----------------------------------------------------------------------===//
 // Checking and building the right-hand side
 //===----------------------------------------------------------------------===//
 
-/// The type a literal is built at. A literal passed to a callee takes the type
-/// of the parameter it is passed to, and one replacing the matched call takes
-/// that call's result type; only without either is the width picked from the
-/// literal's own magnitude.
+// A literal's type: `expected` (the parameter or result type) if it fits the
+// kind, else picked from the value.
 static Type literalType(const Expr &literal, Type expected, OpBuilder &b) {
   if (auto *n = std::get_if<IntLit>(&literal.data)) {
     if (isa_and_nonnull<IntegerType>(expected))
@@ -373,11 +321,14 @@ static Type literalType(const Expr &literal, Type expected, OpBuilder &b) {
   auto *n = std::get_if<FloatLit>(&literal.data);
   if (isa_and_nonnull<FloatType>(expected))
     return expected;
-  return getFloatAttrForLiteral(b, n->value).getType();
+  // f32 if the value survives the round trip (0.5 does), else f64 (pi doesn't).
+  if (static_cast<double>(static_cast<float>(n->value)) == n->value)
+    return b.getF32Type();
+  return b.getF64Type();
 }
 
-/// The type a tessera.call to `define` expects at operand `index`: the pointee
-/// for an argument the call site loads, otherwise the parameter itself.
+// The type a tessera.call to `define` expects at operand `index`: the pointee
+// of a lifted argument, else the parameter type.
 static Type callOperandValueType(DefineOp define, unsigned index) {
   if (Type pointee = define.getCallOperandPointeeType(index))
     return pointee;
@@ -385,10 +336,9 @@ static Type callOperandValueType(DefineOp define, unsigned index) {
   return raw ? define.getFunctionType().getInput(*raw) : Type();
 }
 
-/// Whether a tessera.call to `define` can take a value of type `actual` at
-/// operand `index`. This follows CallOp::verifySymbolUses, a little more
-/// strictly: an argument the call site loads must be given either the pointer
-/// itself or exactly the pointee type, where the verifier accepts anything.
+// Whether a tessera.call to `define` takes type `actual` at operand `index`:
+// the parameter type, or a lifted argument's exact pointee type. (Stricter
+// than CallOp::verifySymbolUses.)
 static bool callOperandAccepts(DefineOp define, unsigned index, Type actual) {
   std::optional<unsigned> raw = define.getArgIndexForCallOperand(index);
   if (!raw)
@@ -400,7 +350,7 @@ static bool callOperandAccepts(DefineOp define, unsigned index, Type actual) {
   return pointee && isa<LLVM::LLVMPointerType>(formal) && actual == pointee;
 }
 
-/// The global a rule names, or null if the module has none by that name.
+// The global a rule names, or null.
 static LLVM::GlobalOp lookupGlobal(const GlobalRef &global, Operation *anchor) {
   auto module = anchor->getParentOfType<ModuleOp>();
   return module ? module.lookupSymbol<LLVM::GlobalOp>(global.symbol)
@@ -417,10 +367,8 @@ static bool literalFits(const Expr &literal, Type type) {
          (n->value >= 0 && llvm::isUIntN(width, n->value));
 }
 
-/// Work out, without building anything, what the right-hand side would
-/// produce. Sets `why` and returns failure if it could not be built validly --
-/// a callee with no tessera.define, or an argument of the wrong type -- which
-/// would otherwise only surface as a verifier error on the whole module.
+// The types the right-hand side would produce, without building it. Fails,
+// setting `why`, if it wouldn't verify (a missing callee, a wrong type).
 static LogicalResult checkRhsCall(const Call &call, Operation *anchor,
                                   const llvm::StringMap<Value> &bound,
                                   SmallVectorImpl<Type> &resultTypes,
@@ -480,10 +428,9 @@ static Type checkRhsValue(const Expr &expr, Operation *anchor,
             return results.front();
           },
           [&](const Arith &a) -> Type {
-            // A literal operand takes the type of the other operand, so that
-            // `2 * p + 1` computes in p's type; with literals on both sides
-            // it takes the type the context expects. buildExprIR follows the
-            // same order, so what is checked here is what gets built.
+            // A literal takes the other operand's type (`2 * p` is in p's
+            // type), or `expected` if both are literals. buildExprIR uses the
+            // same order.
             Type lhsType, rhsType;
             if (isLiteralOnly(*a.lhs) && !isLiteralOnly(*a.rhs)) {
               rhsType = checkRhsValue(*a.rhs, anchor, bound, expected, why);
@@ -576,12 +523,11 @@ static LogicalResult checkRhsCall(const Call &call, Operation *anchor,
   return success();
 }
 
-/// Check that the right-hand side can replace `root` as a whole.
+// Check that the right-hand side can replace `root` as a whole.
 static LogicalResult checkRhs(const Rule &rule, Operation *root,
                               const llvm::StringMap<Value> &bound,
                               std::string &why) {
-  // The calls made for their effect need only be buildable: their results are
-  // discarded. The parser has ensured each of them is a call.
+  // Calls made for their effect only need to be buildable.
   for (const Expr &expr : llvm::drop_end(rule.rhs)) {
     SmallVector<Type> results;
     if (failed(
@@ -626,9 +572,8 @@ static LogicalResult checkRhs(const Rule &rule, Operation *root,
   return success();
 }
 
-/// The address of a NUL-terminated constant holding `text`, as C passes a
-/// string literal. Every rewrite that passes the same string shares one
-/// private global, named for its contents.
+// The address of a NUL-terminated constant holding `text`, shared by every
+// rewrite that passes the same string.
 static Value buildStringLiteral(llvm::StringRef text, OpBuilder &builder,
                                 Location loc, Operation *anchor) {
   auto module = anchor->getParentOfType<ModuleOp>();
@@ -647,9 +592,8 @@ static Value buildStringLiteral(llvm::StringRef text, OpBuilder &builder,
   return LLVM::AddressOfOp::create(builder, loc, global);
 }
 
-// Build the IR for the right-hand side of a rule. The matched values exist by
-// the time a rule is applied, so the replacement is constructed directly, and
-// checkRhs has already established that it will verify.
+// Build the IR for a right-hand-side expression, which checkRhs has already
+// shown will verify.
 static Value buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
                          const llvm::StringMap<Value> &boundVars,
                          Operation *symbolAnchor, Type expected,
@@ -675,9 +619,8 @@ static Value buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
                                              lookupGlobal(g, symbolAnchor));
           },
           [&](const Call &c) -> Value {
-            // log2 of a power of two is its count of trailing zeros. A
-            // constant is folded here, so a rule applied to a literal leaves
-            // nothing to compute at run time.
+            // log2 of a power of two is its trailing zero count. Constants
+            // are folded.
             if (c.isBuiltin()) {
               Value n = buildExprIR(c.args.front(), builder, loc, boundVars,
                                     symbolAnchor, expected);
@@ -696,9 +639,7 @@ static Value buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
                   buildExprIR(arg, builder, loc, boundVars, symbolAnchor,
                               callOperandValueType(define, index)));
 
-            // Result types come from the callee's declaration, including the
-            // leading results its written arguments contribute, which is also
-            // what makes a nested call on the right-hand side work.
+            // Including the leading results for written arguments.
             auto call = CallOp::create(builder, loc, calleeName(c),
                                        define.getCallResultTypes(), argValues);
             if (builtOp)
@@ -706,8 +647,7 @@ static Value buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
             return call.getNumResults() ? call.getResult(0) : Value();
           },
           [&](const Arith &a) -> Value {
-            // Operand types are settled in the order checkRhsValue settles
-            // them.
+            // Same order as checkRhsValue.
             Value lhs, rhs;
             if (isLiteralOnly(*a.lhs) && !isLiteralOnly(*a.rhs)) {
               rhs = buildExprIR(*a.rhs, builder, loc, boundVars, symbolAnchor,
@@ -727,11 +667,9 @@ static Value buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
       expr.data);
 }
 
-/// Build the right-hand side and return what replaces the root with it.
-///
-/// A call that repeats the matched one is marked as having had the rule
-/// applied: `f(x) -> g(x); f(x)` would otherwise match the new f and add a
-/// call to g ahead of it, and again, without end.
+// Build the right-hand side and return the root's replacement. A call that
+// repeats the match, as in `f(x) -> g(x); f(x)`, is marked so the rule doesn't
+// match it again forever.
 static SmallVector<Value> buildReplacement(const Rule &rule,
                                            StringAttr ruleAttr,
                                            OpBuilder &builder, Location loc,
@@ -746,7 +684,6 @@ static SmallVector<Value> buildReplacement(const Rule &rule,
     return std::make_pair(value, op);
   };
 
-  // The calls made for their effect come first, in the order written.
   for (const Expr &expr : llvm::drop_end(rule.rhs))
     build(expr, Type());
 
@@ -765,18 +702,15 @@ static SmallVector<Value> buildReplacement(const Rule &rule,
 //===----------------------------------------------------------------------===//
 
 struct ApplyState {
-  /// Each rule parsed once; the text is what the patterns carry.
+  // Each rule parsed once; the text is what the patterns carry.
   llvm::DenseMap<Attribute, std::unique_ptr<Rule>> rules;
 
-  /// Every tessera op named on the right-hand side of some rule. No rule is
-  /// applied inside the body of one of these: a replacement's fallback path
-  /// commonly calls the very op it replaces, and rewriting that call would
-  /// turn it into a call to the replacement itself, recursing forever on
-  /// exactly the inputs the fallback exists for.
+  // Ops called on some rule's right-hand side. No rule applies inside their
+  // bodies: a replacement's fallback often calls the op it replaces, and
+  // rewriting that would make it recurse forever.
   llvm::StringSet<> rhsCallees;
 
-  /// Warnings already given, so a rule the greedy driver tries at many sites,
-  /// or at one site many times, is reported once.
+  // Warnings already given, so each is reported once.
   llvm::DenseSet<Attribute> warnedRules;
   llvm::DenseSet<std::pair<Attribute, Operation *>> warnedSites;
 
@@ -792,12 +726,6 @@ struct ApplyState {
     return slot.get();
   }
 
-  void addRule(StringAttr text, Location loc) {
-    if (const Rule *rule = getRule(text, loc))
-      for (const Expr &expr : rule->rhs)
-        collectCallees(expr, rhsCallees);
-  }
-
   bool isExcluded(Operation *op) {
     for (Operation *parent = op->getParentOp(); parent;
          parent = parent->getParentOp()) {
@@ -811,17 +739,9 @@ struct ApplyState {
   }
 };
 
-/// Match-time gate for every generated pattern. Declines, without touching
-/// the IR, when:
-///
-///   - the match sits in code no rule may rewrite (see ApplyState);
-///   - the right-hand side cannot be built into valid IR here, which is
-///     reported, since the rule then silently never fires;
-///   - the condition is settled false here, which is reported as a remark,
-///     since it is the ordinary outcome for a call whose operand is not known
-///     to have a property the rule needs;
-///   - the matched chain cannot move with its root (see planChain), which is
-///     reported as a warning.
+// Match-time check for every pattern. Declines, without touching the IR, if
+// the match is in excluded code, the right-hand side wouldn't verify (warns),
+// the condition is false here (remarks), or the chain can't move (warns).
 static LogicalResult tesseraRuleApplicable(ApplyState &state, Operation *root,
                                            StringAttr ruleAttr) {
   const Rule *rule = state.getRule(ruleAttr, root->getLoc());
@@ -843,8 +763,7 @@ static LogicalResult tesseraRuleApplicable(ApplyState &state, Operation *root,
     return failure();
   }
 
-  // Deciding this here rather than in the rewrite is what lets a rule decline
-  // without touching the IR, so the driver cannot loop on it.
+  // Declining here, not in the rewrite, keeps the driver from looping.
   if (rule->cond) {
     ResidualCondition residual = residualizeCondition(*rule->cond, bound);
     if (residual.settled == false) {
@@ -868,30 +787,19 @@ static LogicalResult tesseraRuleApplicable(ApplyState &state, Operation *root,
   return success();
 }
 
-/// Record what is known of their arguments on the calls a rewrite has just
-/// built, so a rule can go on to match them. The calls kept from before have
-/// their facts already, and the else region of a guard copies them with the
-/// calls it clones.
+// Record facts on the calls a rewrite just built, so later rules can use them.
+// Cloned calls keep theirs.
 template <typename Range> static void recordFactsOnNewCalls(Range &&ops) {
-  PropertyFacts facts;
+  PropertyAnalysis facts;
   for (Operation &op : ops)
-    op.walk([&](CallOp call) { facts.annotate(call); });
+    op.walk([&](CallOp call) { facts.recordFactsOnCall(call); });
 }
 
-// Rewrite function for every generated pattern. PDL passes the matched root
-// first, then the external arguments the pattern listed: the rule text, the
-// names the rule uses, and the matched values those names refer to.
-//
-// An unconditional rule, or one whose condition is proven, replaces the root
-// outright. Otherwise what remains of the condition is not evaluated here: it
-// is recorded on a tessera.guard, holding the specialized rewrite and the
-// original computation in its two regions, and -tessera-lower-guards later
-// synthesizes the check and turns the guard into a branch.
-//
-// This never reports failure, though the signature PDL requires allows it: the
-// greedy driver has no way to recover from a failed native rewrite and aborts
-// the process instead. Everything that could make it fail was ruled out by
-// tesseraRuleApplicable when the pattern matched.
+// Rewrite for every pattern. args: the root, the rule text, the variable
+// names, then their matched values. With no unproven condition left, replaces
+// the root; otherwise builds a tessera.guard with the rewrite and the original
+// code, for tessera-lower-guards. Never fails (the driver would abort), since
+// tesseraRuleApplicable already ruled failures out.
 static LogicalResult tesseraRewrite(ApplyState &state,
                                     PatternRewriter &rewriter,
                                     ArrayRef<PDLValue> args) {
@@ -917,22 +825,17 @@ static LogicalResult tesseraRewrite(ApplyState &state,
 
   rewriter.setInsertionPoint(root);
 
+  // Replace the root, then erase the moved producers, latest first.
   auto replaceRoot = [&](ValueRange replacement) {
     rewriter.replaceOp(root, replacement);
-    eraseMovedProducers(rewriter, plan);
+    for (Operation *producer : llvm::reverse(plan.moved))
+      if (producer->use_empty())
+        rewriter.eraseOp(producer);
   };
 
-  // Whatever the IR settles about the condition is folded away first. When
-  // that settles it as true, there is nothing to test at run time: apply the
-  // rewrite outright. This is a saving over the guarded form, never a
-  // precondition for it -- a predicate with a runtime check that cannot be
-  // proven still works, it just costs a check. A condition settled as false
-  // never gets here: tesseraRuleApplicable declined it.
-  //
-  // Otherwise the guard tests only what is left. That is what keeps a
-  // property with no runtime check, such as `SPD`, from ever reaching
-  // -tessera-lower-guards: it is either shown here and folded to true, or
-  // counted as whichever value makes the condition false.
+  // Fold what the IR settles. If nothing is left, apply the rewrite outright;
+  // otherwise the guard tests only the rest, which never includes a property
+  // without a runtime check like `SPD`.
   std::optional<Cond> residual;
   if (rule->cond) {
     ResidualCondition folded = residualizeCondition(*rule->cond, boundVars);
@@ -955,7 +858,7 @@ static LogicalResult tesseraRewrite(ApplyState &state,
                                rewriter.getStringAttr(renderCond(*residual)),
                                namesAttr, values);
 
-  // Specialized path: the rule's right-hand side.
+  // Then: the rule's right-hand side.
   {
     Block *block = rewriter.createBlock(&guard.getThenRegion());
     rewriter.setInsertionPointToStart(block);
@@ -965,8 +868,7 @@ static LogicalResult tesseraRewrite(ApplyState &state,
     recordFactsOnNewCalls(*block);
   }
 
-  // Original path: the matched call, unchanged, preceded by the producers that
-  // move with it, so they run on this path only.
+  // Else: the original call and its moved producers.
   {
     Block *block = rewriter.createBlock(&guard.getElseRegion());
     rewriter.setInsertionPointToStart(block);
@@ -1001,8 +903,7 @@ struct TesseraApplyPDLPass
       return;
     }
 
-    // Collect every generated rule up front: which ops no rule may rewrite
-    // inside depends on all of them, not only the one being matched.
+    // Collect every rule's right-hand-side callees first (see rhsCallees).
     ApplyState state;
     patternModule.walk([&](pdl::ApplyNativeConstraintOp constraint) {
       if (constraint.getName() != "tesseraRuleApplicable" ||
@@ -1011,16 +912,16 @@ struct TesseraApplyPDLPass
       if (auto attrOp =
               constraint.getArgs()[1].getDefiningOp<pdl::AttributeOp>())
         if (auto text = dyn_cast_or_null<StringAttr>(attrOp.getValueAttr()))
-          state.addRule(text, constraint.getLoc());
+          if (const Rule *rule = state.getRule(text, constraint.getLoc()))
+            for (const Expr &expr : rule->rhs)
+              collectCallees(expr, state.rhsCallees);
     });
 
     RewritePatternSet patternList(module->getContext());
 
-    // Process the pattern module.
     patternModule.getOperation()->remove();
     PDLPatternModule pdlPattern(patternModule);
 
-    // Register native constraints referenced by generated PDL patterns.
     pdlPattern.registerConstraintFunction("isConstantEqualTo",
                                           isConstantEqualTo);
     pdlPattern.registerConstraintFunction("isFloatConstantEqualTo",
@@ -1038,7 +939,6 @@ struct TesseraApplyPDLPass
                                        rule);
         });
 
-    // Every generated rule builds its right-hand side through this.
     pdlPattern.registerRewriteFunction(
         "tesseraRewrite",
         [&state](PatternRewriter &rewriter, PDLResultList &results,
@@ -1048,7 +948,6 @@ struct TesseraApplyPDLPass
 
     patternList.add(std::move(pdlPattern));
 
-    // Invoke the pattern driver with the provided patterns.
     if (failed(applyPatternsGreedily(
             module, std::move(patternList),
             GreedyRewriteConfig().setRegionSimplificationLevel(

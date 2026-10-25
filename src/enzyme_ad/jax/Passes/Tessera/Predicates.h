@@ -1,11 +1,7 @@
 //===----------------------------------------------------------------------===//
 //
-// The predicates a tessera optimization rule can test, and the machinery for
-// synthesizing the code that tests them.
-//
-// Nothing here asks the user for a checking function. Given a matrix operand
-// and its layout, the compiler emits the comparisons itself; the whole point
-// is that a domain scientist writes the rule and nothing else.
+// The predicates a rule can test, how to prove them at compile time, and how
+// to generate their runtime checks. The user writes no checking code.
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,79 +23,48 @@ namespace tessera {
 // Layout
 //===----------------------------------------------------------------------===//
 
-/// How a matrix operand is laid out, which is what makes `elem(i, j)`
-/// expressible. Only fixed-size dense matrices are described; strided views and
-/// dynamic extents are not.
+// The layout of a fixed-size dense matrix operand.
 struct MatrixLayout {
   Type elemType;
   int64_t rows = 0;
   int64_t cols = 0;
   bool rowMajor = true;
 
-  /// True when `rowMajor` was assumed rather than declared. Reading
-  /// column-major storage as row-major is exactly a transpose, so this only
-  /// matters to a predicate that is not transpose-invariant; those refuse to
-  /// emit a check unless the order was declared.
+  // `rowMajor` was assumed, not declared. Only matters to predicates that
+  // aren't transpose-invariant, which then refuse to emit a check.
   bool orderInferred = false;
 
   bool isValid() const { return elemType && rows > 0 && cols > 0; }
-  bool isSquare() const { return rows == cols; }
   int64_t numElements() const { return rows * cols; }
-
-  /// Position of element (r, c) in the flat storage.
-  int64_t linearIndex(int64_t r, int64_t c) const {
-    return rowMajor ? r * cols + c : c * rows + r;
-  }
 };
 
-/// Work out the layout of a value the guard carries.
-///
-/// The value itself says nothing: a by-reference matrix operand is an
-/// `!llvm.ptr`. The declaration of the callee does say, so the lookup goes
-/// through the calls the guard kept in its else region -- the matched root and,
-/// for a chain rule, the producers sunk in with it -- to whichever takes the
-/// value:
-///
-///   1. a `tessera.layout` dictionary on the callee's argument, or
-///   2. the pointee type the callee takes that operand through (its lifted
-///      `argModes` type, or a byval type), walked down to its element array.
-///      That gives the element type and count exactly, but neither the
-///      rows/cols split nor the storage order, so both are assumed (square,
-///      row-major) and `orderInferred` is set. It emits a remark either way.
-///
-/// Returns an invalid layout when neither applies.
+// The layout of a value the guard carries, from the callee in its else region
+// that takes it: a `tessera.layout` on that argument, or else the argument's
+// lifted or byval pointee type, assumed square and row-major (setting
+// `orderInferred`). Invalid if neither applies.
 MatrixLayout resolveMatrixLayout(Value value, GuardOp guard);
 
 //===----------------------------------------------------------------------===//
 // Predicates
 //===----------------------------------------------------------------------===//
 
-/// Everything a predicate needs to emit its check.
+// Everything a predicate needs to emit its check.
 struct CheckContext {
   OpBuilder &builder;
   Location loc;
   GuardOp guard;
-  /// Above this many elements the comparisons are not unrolled, and the
-  /// predicate declines rather than emitting an unreasonable amount of code.
+  // A predicate declines on matrices with more elements than this.
   int64_t maxUnrolledElems;
 };
 
-/// Report why the check for `guard`'s condition cannot be built. The guard
-/// then keeps the original computation, which is always correct, so this is a
-/// warning: a rule that cannot be checked is not applied, and nothing else
-/// changes.
+// Warn that `guard`'s check can't be built. The guard keeps the original code.
 InFlightDiagnostic emitCheckWarning(GuardOp guard);
 
-/// What the IR alone says about a condition.
-///
-/// This is an internal three-way answer, not a third outcome: only `True`
-/// changes what happens, by letting the check be skipped. `False` and
-/// `Unknown` both still produce a guard -- a provably false condition simply
-/// folds to a constant test that the LLVM optimizer drops. The extra state
-/// exists so that negation can be reasoned through.
+// What the IR alone says about a condition. Only `True` changes anything (the
+// check is skipped); `False` exists so negation can be reasoned through.
 enum class Proof { True, False, Unknown };
 
-/// Flip a proof, for `!cond`. Unknown stays unknown.
+// Flip a proof, for `!cond`. Unknown stays unknown.
 inline Proof invertProof(Proof proof) {
   switch (proof) {
   case Proof::True:
@@ -116,61 +81,47 @@ struct TesseraPredicate {
   llvm::StringRef name;
   unsigned arity;
 
-  /// Decide the property from the IR alone, without emitting anything.
-  /// Returning Unknown is the ordinary case and just means the check is
-  /// emitted; returning True must be certain, since it removes the check.
+  // Decide the property from the IR alone. True must be certain, since it
+  // removes the check.
   Proof (*prove)(llvm::StringRef name, ArrayRef<Value> args);
 
-  /// Emit an i1 that is true when the property holds, or a null Value if it
-  /// cannot be emitted (with a diagnostic already reported).
-  ///
-  /// A check must be SOUND: a true result always means the property holds. It
-  /// need not be complete -- `positive_definite` deliberately answers false for
-  /// matrices that do qualify, because the exact test costs as much as the
-  /// operation being optimized.
+  // Emit an i1 that is true when the property holds, or null (after warning).
+  // True must mean the property holds, but false may be wrong:
+  // `positive_definite` uses a cheaper, conservative test.
   Value (*emitCheck)(ArrayRef<Value> args, CheckContext &ctx);
 };
 
-/// What is left of a condition once everything the IR settles is folded away.
+// What is left of a condition after folding what the IR settles.
 struct ResidualCondition {
-  /// Set when the IR settles the whole condition: true, the rewrite applies
-  /// outright; false, it does not apply at all.
+  // Set when the IR settles the whole condition.
   std::optional<bool> settled;
 
-  /// Otherwise, what remains to test at run time. Every predicate left in it
-  /// has a runtime check.
+  // Otherwise, what to test at run time. Every predicate in it has a check.
   std::optional<Cond> cond;
 
-  /// The first declared property that could not be shown, as the rule writes
-  /// it (`SPD(A)`), for saying why a rule did not apply.
+  // The first declared property that couldn't be shown, like `SPD(A)`, for
+  // saying why a rule didn't apply.
   std::string unshown;
 };
 
-/// Decide as much of a condition as the IR allows, given the values its
-/// variables are bound to.
-///
-/// A predicate with a runtime check that cannot be proven stays in the residual
-/// condition, to be tested by the guard. A predicate with no runtime check --
-/// any name not in the registry, like `SPD` -- is a property that holds only by
-/// declaration (see provePropertyOfValue). When it cannot be shown it counts as
-/// whichever of true or false makes the whole condition false, so an unshown
-/// property never selects the rewrite, under a negation or not.
+// Decide as much of a condition as the IR allows. An unproven predicate with
+// a runtime check stays in the residual. One without (any name not in the
+// registry, like `SPD`) holds only by declaration; if it can't be shown, it
+// counts as whatever makes the condition false, even under a negation.
 ResidualCondition residualizeCondition(const Cond &cond,
                                        const llvm::StringMap<Value> &boundVars);
 
-/// Whether the IR shows that `value` has the named property: see
-/// Predicates.cpp. Answers True or Unknown, never False.
+// Whether the IR shows `value` has the property. True or Unknown, never False.
 Proof provePropertyOfValue(Value value, llvm::StringRef property);
 
-/// Look a predicate up by the name a rule used, or null if there is none.
+// The predicate a rule names, or null.
 const TesseraPredicate *lookupPredicate(llvm::StringRef name);
 
-/// The names of every known predicate, for diagnostics.
+// The names of every known predicate, for diagnostics.
 llvm::SmallVector<llvm::StringRef> getKnownPredicateNames();
 
-/// Build `lhs op rhs` in the LLVM dialect, for arithmetic on the right-hand
-/// side of a rule and in a guard's condition. Both operands have one type, an
-/// integer or a float type, which the callers check first.
+// `lhs op rhs` in the LLVM dialect. Callers check that both operands have the
+// same integer or float type.
 Value buildArith(OpBuilder &builder, Location loc, ArithOp op, Value lhs,
                  Value rhs);
 

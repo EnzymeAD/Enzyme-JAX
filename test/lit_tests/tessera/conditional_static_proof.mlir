@@ -13,7 +13,7 @@
 // declaration, it holds at every call site.
 !mat = !llvm.struct<"Mat3", (array<9 x f64>)>
 module {
-  tessera.define private @lib.build_cov(!llvm.ptr {llvm.sret = !mat, tessera.property = ["symmetric"]}, i64) attributes {argModes = [unit], pure = true}
+  tessera.define private @lib.build_cov(!llvm.ptr {llvm.sret = !mat, tessera.guarantees = ["symmetric"]}, i64) attributes {argModes = [unit], pure = true}
   tessera.define private @lib.foo(!llvm.ptr) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}], pure = true}
   tessera.define private @lib.symmetric_foo(!llvm.ptr) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}], pure = true}
 
@@ -127,7 +127,7 @@ module {
 // Conjunction: both sides provable, so the whole condition is.
 !mat = !llvm.struct<"Mat3", (array<9 x f64>)>
 module {
-  tessera.define private @lib.build_cov(!llvm.ptr {llvm.sret = !mat, tessera.property = ["symmetric"]}, i64) attributes {argModes = [unit], pure = true}
+  tessera.define private @lib.build_cov(!llvm.ptr {llvm.sret = !mat, tessera.guarantees = ["symmetric"]}, i64) attributes {argModes = [unit], pure = true}
   tessera.define private @lib.qux(!llvm.ptr, i64) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, unit], pure = true}
   tessera.define private @lib.special_qux(!llvm.ptr, i64) -> f32 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, unit], pure = true}
 

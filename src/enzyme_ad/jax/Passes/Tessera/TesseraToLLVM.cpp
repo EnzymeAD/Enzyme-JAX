@@ -1,7 +1,7 @@
 //===----------------------------------------------------------------------===//
 //
-// This file implements patterns to convert operations in the Tessera dialect to
-// operations in the LLVM dialect.
+// Converts tessera.defines and tessera.calls back to llvm.funcs and
+// llvm.calls.
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,7 +21,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
-#include "src/enzyme_ad/jax/Passes/Tessera/Properties.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/PropertyPropagation.h"
 
 namespace mlir {
 namespace enzyme {
@@ -42,13 +42,12 @@ using namespace mlir::enzyme::tessera;
 
 namespace {
 
-/// For each tessera.call, the address to pass for each operand that can be
-/// passed as the pointer it was loaded through, or null (see findAddresses).
+// For each tessera.call, the original address to pass for each operand, or
+// null. See findAddresses.
 using CallAddresses = DenseMap<Operation *, SmallVector<Value>>;
 
-/// Whether `op`, and everything nested in it, leaves memory as it is, except
-/// perhaps through calls that write none of their arguments: the checks a
-/// guard makes before its branch, such as mpfi_is_empty.
+// Whether `op` and its nested ops write no memory. Calls that write none of
+// their arguments, like a guard's mpfi_is_empty check, count as not writing.
 bool writesNothing(Operation *op) {
   WalkResult result = op->walk([](Operation *nested) {
     if (auto call = dyn_cast<tessera::CallOp>(nested)) {
@@ -70,15 +69,11 @@ bool writesNothing(Operation *op) {
   return !result.wasInterrupted();
 }
 
-/// The address `value` was loaded from, if memory there still holds it when
-/// `call` runs, so the call can be given that address instead of a copy: the
-/// value is a load, and nothing that runs between the two may write memory.
-///
-/// Between them are the ops after the load in its block, any blocks control
-/// can pass through on the way to the call (a guard at function level branches
-/// between blocks), and, where the call is nested in an scf.if (a guard in a
-/// loop body becomes one), the ops ahead of it at each level. A loop between
-/// them would run the call again after whatever follows it, so none may be.
+// The address `value` was loaded from, if nothing between the load and `call`
+// writes memory, so the call can be given that address instead of a copy.
+// "Between" covers the rest of the load's block, the blocks on the way to the
+// call (a guard branches between blocks), and the ops ahead of the call in
+// each enclosing scf.if (a guard in a loop body). No loop may be in between.
 Value addressAt(Value value, Operation *call) {
   auto load = value.getDefiningOp<LLVM::LoadOp>();
   if (!load || load.getVolatile_())
@@ -126,13 +121,11 @@ Value addressAt(Value value, Operation *call) {
   return load.getAddr();
 }
 
-/// Decide, before any call is converted, which operands each tessera.call can
-/// be passed by their original address. That is what the call this came from
-/// passed, so the callee sees the same pointers: MPFR and MPFI test whether
-/// operands alias by comparing them, and two copies of values that point to
-/// the same limbs look like different operands while sharing those limbs.
-/// Decided up front because a guard's checks, which may run in between, are
-/// recognized as writing nothing while they are still tessera.calls.
+// Which operands of each tessera.call can be passed by their original address,
+// so the callee sees the same pointers as before. MPFR and MPFI compare
+// pointers to detect aliasing, and copies sharing the same limbs would fool
+// them. Done before converting, while a guard's checks are still tessera.calls
+// that writesNothing recognizes.
 CallAddresses findAddresses(ModuleOp module) {
   CallAddresses addresses;
   module.walk([&](tessera::CallOp call) {
@@ -173,12 +166,10 @@ public:
     auto *ctx = defineOp->getContext();
     auto fnType = defineOp.getFunctionType();
 
-    // Convert argument types
     SmallVector<Type> argTypes;
     for (auto type : fnType.getInputs())
       argTypes.push_back(typeConverter.convertType(type));
 
-    // Handle return type - void if no results
     Type returnType = fnType.getNumResults() == 0
                           ? LLVM::LLVMVoidType::get(ctx)
                           : typeConverter.convertType(fnType.getResult(0));
@@ -186,17 +177,14 @@ public:
     if (!llvmFuncType)
       return failure();
 
-    // Replace tessera name with original function name
     if (failed(SymbolTable::replaceAllSymbolUses(
             defineOp.getSymNameAttr(), StringAttr::get(ctx, funcName), module)))
       return failure();
 
-    // Create the `llvm.func` op
     auto funcOp = LLVM::LLVMFuncOp::create(rewriter, defineOp.getLoc(),
                                            funcName, llvmFuncType);
 
-    // Copy over attributes other than the function name and type, arg modes,
-    // pure, and other attributes used only for tessera conversion
+    // Copy the attributes that aren't tessera-only.
     for (const auto &namedAttr : defineOp->getAttrs()) {
       if (namedAttr.getName() != SymbolTable::getSymbolAttrName() &&
           namedAttr.getName() != defineOp.getFunctionTypeAttrName() &&
@@ -206,7 +194,6 @@ public:
         funcOp->setAttr(namedAttr.getName(), namedAttr.getValue());
     }
 
-    // Clone body of function
     if (!defineOp.isExternal()) {
       rewriter.inlineRegionBefore(defineOp.getBody(), funcOp.getBody(),
                                   funcOp.end());
@@ -241,17 +228,10 @@ public:
     if (!defineOp)
       return failure();
 
-    // Any operand the callee takes through a pointer was loaded from
-    // memory when converting LLVM to tessera, so put it back. Where memory
-    // at the address it was loaded from still holds it, pass that address, as
-    // the original call did (see findAddresses). Otherwise allocate fresh
-    // stack storage, store the operand's value into it, and substitute that
-    // pointer in its place. All other operands pass through unchanged.
-    //
-    // A value passed at several positions gets one allocation passed at each
-    // of them, as in mpfi_mul(r, r, y): two copies would share whatever the
-    // value points to without sharing the storage, and the callee could no
-    // longer see that the operands alias.
+    // Pass each lifted operand by pointer again: its original address if
+    // still valid (see findAddresses), else a fresh alloca holding it. A value
+    // passed twice, as in mpfi_mul(r, r, y), gets one alloca, so the callee
+    // still sees the operands alias.
     auto known = addresses.find(callOp);
     Value one;
     SmallVector<Value> reconstructedOperands;
@@ -291,12 +271,10 @@ public:
     auto buildNewAttrs = [&](ArrayRef<NamedAttribute> baseAttrs,
                              int32_t numOperands,
                              std::optional<ArrayAttr> argAttrsOverride) {
-      // A tail call promises that the callee does not access the caller's
-      // allocas. The call this came from may have kept that promise, but one
-      // given the stack storage allocated here (`one` is set exactly when
-      // there is some) breaks it, and LLVM takes it at its word: it assumes
-      // the callee leaves that storage alone and folds a result read back from
-      // it to the value stored before the call, losing what the callee wrote.
+      // A tail call promises the callee doesn't touch the caller's allocas.
+      // Passing the allocas made here (`one` is set exactly when there are
+      // some) breaks that, and LLVM would then fold away what the callee
+      // writes to them, so drop the tail marker.
       bool passesAllocas = static_cast<bool>(one);
       StringAttr tailCallKind =
           LLVM::CallOp::getTailCallKindAttrName(OperationName(
@@ -325,9 +303,7 @@ public:
       return newAttrs;
     };
 
-    // Check if callee's first argument has sret attribute. If so, allocate new
-    // pointer to contain result of tessera.call and insert as first argument in
-    // llvm.call.
+    // An sret callee gets an alloca for the result as its first argument.
     if (defineOp.getNumArguments() > 0 && defineOp.getSretAttr()) {
       if (callOp.getNumResults() == 0)
         return callOp.emitOpError(
@@ -342,21 +318,17 @@ public:
                                        rewriter.getI32Type(),
                                        rewriter.getI32IntegerAttr(1));
 
-      // Allocate stack storage for the sret return value
       auto sretType = callOp.getResult(0).getType();
       Value sretPtr = LLVM::AllocaOp::create(
           rewriter, callOp.getLoc(),
           LLVM::LLVMPointerType::get(callOp->getContext()), sretType, one,
           sret_alignment);
 
-      // Build new operands with sretPtr as first arg, followed by the
-      // reconstructed operands
       SmallVector<Value> newOperands;
       newOperands.push_back(sretPtr);
       newOperands.append(reconstructedOperands.begin(),
                          reconstructedOperands.end());
 
-      // Reconstruct arg attributes with sret attr first
       SmallVector<Attribute> newArgAttrs;
       newArgAttrs.push_back(sretArgAttrs);
       if (auto argAttrs = callOp.getArgAttrsAttr()) {
@@ -370,16 +342,13 @@ public:
       LLVM::CallOp::create(rewriter, callOp.getLoc(), TypeRange{}, newOperands,
                            newAttrs);
 
-      // Load result from sret pointer and replace uses
       auto loadedResult =
           LLVM::LoadOp::create(rewriter, callOp.getLoc(), sretType, sretPtr);
       rewriter.replaceOp(callOp, loadedResult.getResult());
 
     } else if (defineOp.getNumWrittenArgs() > 0) {
-      // Allocate stack storage for each written argument, and splice those
-      // pointers into the operand list in the right positions, so that the
-      // LLVM::CallOp can be issued with the callee's real function type
-      // and the write-only arguments passed by pointer.
+      // Give each "out" argument an alloca, in its position, and read every
+      // written argument back after the call.
       SmallVector<Value> newOperands;
       SmallVector<Attribute> newArgAttrs;
       SmallVector<Value> resultArgPtrs;
@@ -388,7 +357,6 @@ public:
       unsigned tesseraCallIdx = 0;
 
       for (unsigned i = 0, e = defineOp.getNumArguments(); i != e; ++i) {
-        // Check if argument is write-only
         if (defineOp.argIsWritten(i) && !defineOp.argIsRead(i)) {
           Type resultArgType = defineOp.getArgLiftedType(i);
           if (!resultArgType)
@@ -396,7 +364,6 @@ public:
                 "tessera.call to function with write-only argument must "
                 "have a result type for that argument");
 
-          // Get alignment from callee's arg attrs
           int64_t alignment = 0;
           auto resultArgAttrs = defineOp.getArgAttrDict(i);
           if (resultArgAttrs) {
@@ -409,7 +376,6 @@ public:
                                            rewriter.getI32Type(),
                                            rewriter.getI32IntegerAttr(1));
 
-          // Allocate stack storage for the result/output argument
           auto resultArgPtrOp = LLVM::AllocaOp::create(
               rewriter, callOp.getLoc(),
               LLVM::LLVMPointerType::get(callOp->getContext()), resultArgType,
@@ -421,19 +387,14 @@ public:
           resultArgTypes.push_back(resultArgType);
           newArgAttrs.push_back(
               resultArgAttrs ? resultArgAttrs : rewriter.getDictionaryAttr({}));
-
-          // Argument is not written, or is "inout"
         } else {
           if (tesseraCallIdx >= reconstructedOperands.size())
             return callOp.emitOpError(
                 "tessera.call has fewer operands than expected by callee");
           Value operand = reconstructedOperands[tesseraCallIdx];
           newOperands.push_back(operand);
-          // If arg is inout, it was already reconstructed into an alloca.
-          // We want to read that same alloca back after the call so the
-          // callee's writes through the pointer become the arg's trailing
-          // tessera.call result. Pushed in argument order, matching the
-          // leading-result order LLVMToTessera built and the verifier checks.
+          // An "inout" argument is read back from the pointer it was passed
+          // through.
           if (defineOp.argIsWritten(i)) {
             resultArgPtrs.push_back(operand);
             resultArgTypes.push_back(defineOp.getArgLiftedType(i));
@@ -454,11 +415,7 @@ public:
       auto newCall = LLVM::CallOp::create(rewriter, callOp.getLoc(), returnType,
                                           newOperands, newAttrs);
 
-      // Load each result arg's value back from its alloca, then replace
-      // callOp's results: one loaded value per result argument (the
-      // leading results on the tessera.call), in argument order, followed
-      // by the natural result (if any), matching the new LLVM call's
-      // direct result.
+      // Written arguments first, in order, then the original result.
       SmallVector<Value> replacementValues;
       for (auto [ptr, type] : llvm::zip(resultArgPtrs, resultArgTypes)) {
         auto loaded =
@@ -468,8 +425,6 @@ public:
       if (fnType.getNumResults() > 0)
         replacementValues.push_back(newCall.getResult());
       rewriter.replaceOp(callOp, replacementValues);
-
-      // Callee has no result args
     } else {
       auto newAttrs = buildNewAttrs(callOp->getAttrs(),
                                     reconstructedOperands.size(), std::nullopt);
@@ -512,12 +467,8 @@ struct TesseraToLLVMPass
     GreedyRewriteConfig config;
     config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
 
-    // Calls first, while their callees are still tessera.define: CallOpRewrite
-    // reads the define, and converting a define renames the symbol every call
-    // to it names. In one sweep the result would depend on the order the
-    // driver visits ops in, and a define that comes after its callers -- as
-    // any op that is only declared in the file does -- would convert first
-    // and strand them.
+    // Calls first, while their callees are still tessera.defines, which
+    // CallOpRewrite reads. Converting a define first would strand its calls.
     CallAddresses addresses = findAddresses(getOperation());
     RewritePatternSet callPatterns(ctx);
     callPatterns.add<CallOpRewrite>(addresses, ctx);
@@ -534,10 +485,8 @@ struct TesseraToLLVMPass
       return signalPassFailure();
     }
 
-    // llvm-to-tessera pointed every taken address of a tessera op at a stub,
-    // since llvm.mlir.addressof cannot name a tessera.define. The op is an
-    // llvm.func of its original name again now, so point them back and drop
-    // the stubs.
+    // Point taken addresses back from llvm-to-tessera's stubs to the original
+    // functions, and drop the stubs.
     ModuleOp module = getOperation();
     SmallVector<LLVM::LLVMFuncOp> stubs;
     for (auto func : module.getOps<LLVM::LLVMFuncOp>())
@@ -554,9 +503,8 @@ struct TesseraToLLVMPass
       stub.erase();
     }
 
-    // A fact stated on a statement arrived as a call to a marker that does
-    // nothing (see Properties.h). Everything that reads facts has run, so the
-    // calls go, and the markers with them.
+    // Facts are no longer needed, so erase the statement-fact marker calls
+    // (see PropertyPropagation.h) and the markers.
     SmallVector<LLVM::LLVMFuncOp> markers;
     for (auto func : module.getOps<LLVM::LLVMFuncOp>())
       if (func->hasAttr(kFactMarkerAttr))
