@@ -5249,17 +5249,24 @@ static bool getDUSWindow(stablehlo::DynamicUpdateSliceOp dus,
   return true;
 }
 
-// Is `update` a slice of a tensor of the DUS's own type taken at the DUS's
-// window? Such an update is already as cheap as it gets: no part of it moves
-// between shards, and the partitioner turns the pair into a local select.
+// Is `update` a slice taken at the DUS's window of a tensor that has the
+// DUS's full extent along every dimension in `dims`? Along those dimensions
+// such an update is already as cheap as it gets: no part of it moves between
+// shards, and the partitioner turns the pair into a local select.
 static bool isSliceAtDUSWindow(stablehlo::DynamicUpdateSliceOp dus,
-                               ArrayRef<int64_t> starts) {
+                               ArrayRef<int64_t> starts,
+                               ArrayRef<int64_t> dims) {
   auto slice = dus.getUpdate().getDefiningOp<stablehlo::SliceOp>();
-  if (!slice || slice.getOperand().getType() != dus.getType())
+  if (!slice)
     return false;
   if (!llvm::all_of(slice.getStrides(), [](int64_t s) { return s == 1; }))
     return false;
-  return llvm::equal(slice.getStartIndices(), starts);
+  auto srcTy = cast<RankedTensorType>(slice.getOperand().getType());
+  for (int64_t d : dims)
+    if (srcTy.getDimSize(d) != dus.getType().getDimSize(d) ||
+        slice.getStartIndices()[d] != starts[d])
+      return false;
+  return true;
 }
 
 // Moves the slices feeding the update of a DUS down to the DUS itself.
@@ -5305,7 +5312,6 @@ struct DUSSinkSlicesComm
     SmallVector<Operation *> created;
     DenseSet<Operation *> createdSet;
     DenseMap<std::tuple<Value, int64_t, int64_t, int64_t>, Value> cache;
-    int64_t budget = 1 << 16;
 
     Widener(PatternRewriter &rewriter, Operation *anchor)
         : rewriter(rewriter), anchor(anchor) {}
@@ -5421,7 +5427,7 @@ struct DUSSinkSlicesComm
       if (ty.getDimSize(dim) + lo + hi <= 0)
         return nullptr;
       Operation *op = v.getDefiningOp();
-      if (!op || --budget < 0)
+      if (!op)
         return nullptr;
       auto loc = op->getLoc();
       auto newTy = widenedType(ty, dim, lo, hi);
@@ -5656,37 +5662,44 @@ struct DUSSinkSlicesComm
     if (!getDUSWindow(dus, starts))
       return failure();
 
-    // The one dimension the update is narrower in; it must be sharded.
-    int64_t dim = -1;
+    // The dimensions the update is narrower in and that are sharded over
+    // several devices: only there does the window's position cost
+    // communication. Narrow unsharded dimensions stay narrow.
+    SmallVector<int64_t> dims;
+    int64_t wideSize = 1, narrowSize = 1;
     for (int64_t d = 0; d < ty.getRank(); d++) {
-      if (updTy.getDimSize(d) == ty.getDimSize(d))
+      if (updTy.getDimSize(d) == ty.getDimSize(d) ||
+          getNumDevicesAlongDimension(sharding, d, dus) <= 1)
         continue;
-      if (dim != -1)
-        return failure();
-      dim = d;
+      dims.push_back(d);
+      wideSize *= ty.getDimSize(d);
+      narrowSize *= updTy.getDimSize(d);
     }
-    if (dim == -1 || getNumDevicesAlongDimension(sharding, dim, dus) <= 1)
+    if (dims.empty() || isSliceAtDUSWindow(dus, starts, dims))
       return failure();
-    if (isSliceAtDUSWindow(dus, starts))
-      return failure();
-
-    const int64_t n = ty.getDimSize(dim), s = updTy.getDimSize(dim),
-                  off = starts[dim];
-    if ((n - s) * 100 > (int64_t)maxExtraPercent * s)
+    if ((wideSize - narrowSize) * 100 > (int64_t)maxExtraPercent * narrowSize)
       return failure();
 
     Widener widener(rewriter, dus);
-    Value wide = widener.widen(dus.getUpdate(), dim, off, n - off - s);
-    if (!wide) {
-      widener.rollback();
-      return failure();
+    Value wide = dus.getUpdate();
+    for (int64_t d : dims) {
+      wide = widener.widen(wide, d, starts[d],
+                           ty.getDimSize(d) - starts[d] - updTy.getDimSize(d));
+      if (!wide) {
+        widener.rollback();
+        return failure();
+      }
     }
     widener.sinkOtherUses();
 
-    SmallVector<int64_t> limits(updTy.getShape()), strides(ty.getRank(), 1);
-    limits[dim] += off;
+    SmallVector<int64_t> sliceStarts(ty.getRank(), 0), limits(updTy.getShape()),
+        strides(ty.getRank(), 1);
+    for (int64_t d : dims) {
+      sliceStarts[d] = starts[d];
+      limits[d] += starts[d];
+    }
     Value update = stablehlo::SliceOp::create(rewriter, dus.getLoc(), wide,
-                                              starts, limits, strides);
+                                              sliceStarts, limits, strides);
     Widener::copySharding(dus.getUpdate(), update);
     rewriter.modifyOpInPlace(dus,
                              [&] { dus.getUpdateMutable().assign(update); });

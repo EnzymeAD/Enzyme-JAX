@@ -180,6 +180,47 @@ func.func @nested(%a: tensor<20xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}
 
 // -----
 
+// Two sharded dimensions narrowed: both are widened; the DUS gets the slice
+// at its window in both.
+sdy.mesh @mesh = <["x"=2, "y"=2]>
+func.func @two_dims(%a: tensor<16x16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {"y"}]>}, %b: tensor<16x16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {"y"}]>}) -> tensor<16x16xf32> {
+  %c1 = stablehlo.constant dense<1> : tensor<i32>
+  %c2 = stablehlo.constant dense<2> : tensor<i32>
+  %l = stablehlo.slice %b [1:14, 2:15] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>]>} : (tensor<16x16xf32>) -> tensor<13x13xf32>
+  %u = stablehlo.negate %l {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>]>} : tensor<13x13xf32>
+  %d = stablehlo.dynamic_update_slice %a, %u, %c1, %c2 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>]>} : (tensor<16x16xf32>, tensor<13x13xf32>, tensor<i32>, tensor<i32>) -> tensor<16x16xf32>
+  return %d : tensor<16x16xf32>
+}
+
+// CHECK-LABEL: func.func @two_dims
+// CHECK: %[[N:.+]] = stablehlo.negate %arg1 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>]>} : tensor<16x16xf32>
+// CHECK-NEXT: %[[W:.+]] = stablehlo.slice %[[N]] [1:14, 2:15] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>]>} : (tensor<16x16xf32>) -> tensor<13x13xf32>
+// CHECK-NEXT: %[[D:.+]] = stablehlo.dynamic_update_slice %arg0, %[[W]], %{{.+}}, %{{.+}} {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>]>} : (tensor<16x16xf32>, tensor<13x13xf32>, tensor<i32>, tensor<i32>) -> tensor<16x16xf32>
+// CHECK-NEXT: return %[[D]]
+
+// -----
+
+// A sharded and an unsharded dimension narrowed: only the sharded one is
+// widened; the slice along the unsharded one is local and stays.
+sdy.mesh @mesh = <["x"=2]>
+func.func @mixed_dims(%a: tensor<8x16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {"x"}]>}, %b: tensor<8x16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {"x"}]>}) -> tensor<8x16xf32> {
+  %c1 = stablehlo.constant dense<1> : tensor<i32>
+  %c2 = stablehlo.constant dense<2> : tensor<i32>
+  %l = stablehlo.slice %b [1:7, 2:15] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"x"}]>]>} : (tensor<8x16xf32>) -> tensor<6x13xf32>
+  %u = stablehlo.negate %l {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"x"}]>]>} : tensor<6x13xf32>
+  %d = stablehlo.dynamic_update_slice %a, %u, %c1, %c2 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"x"}]>]>} : (tensor<8x16xf32>, tensor<6x13xf32>, tensor<i32>, tensor<i32>) -> tensor<8x16xf32>
+  return %d : tensor<8x16xf32>
+}
+
+// CHECK-LABEL: func.func @mixed_dims
+// CHECK: %[[L:.+]] = stablehlo.slice %arg1 [1:7, 0:16] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"x"}]>]>} : (tensor<8x16xf32>) -> tensor<6x16xf32>
+// CHECK-NEXT: %[[N:.+]] = stablehlo.negate %[[L]] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"x"}]>]>} : tensor<6x16xf32>
+// CHECK-NEXT: %[[W:.+]] = stablehlo.slice %[[N]] [0:6, 2:15] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"x"}]>]>} : (tensor<6x16xf32>) -> tensor<6x13xf32>
+// CHECK-NEXT: %[[D:.+]] = stablehlo.dynamic_update_slice %arg0, %[[W]], %{{.+}}, %{{.+}} {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"x"}]>]>} : (tensor<8x16xf32>, tensor<6x13xf32>, tensor<i32>, tensor<i32>) -> tensor<8x16xf32>
+// CHECK-NEXT: return %[[D]]
+
+// -----
+
 // An update computed from an argument that only exists at the window's
 // extent cannot be widened; the DUS stays.
 sdy.mesh @mesh = <["x"=2]>
