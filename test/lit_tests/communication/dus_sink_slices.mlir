@@ -370,3 +370,30 @@ func.func @pad_through_reshape(%a: tensor<4x16x8xf32> {sdy.sharding = #sdy.shard
 // CHECK: %[[IN:.+]] = stablehlo.and
 // CHECK: %[[P:.+]] = stablehlo.select %[[IN]], %[[S]], %[[ZEROS]]
 // CHECK-NEXT: return %[[P]]
+
+// -----
+
+// The narrowed update reads the results of a lowered multirotate along the
+// other sharded dimension: the call is re-created on the widened operand
+// (once for all its results) instead of padding each result.
+sdy.mesh @mesh = <["x"=2, "y"=2]>
+func.func @pad_through_rotate(%a: tensor<16x8xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {"y"}]>}) -> tensor<16x8xf32> {
+  %zero = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+  %n = stablehlo.slice %a [1:16, 0:8] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>]>} : (tensor<16x8xf32>) -> tensor<15x8xf32>
+  %r:2 = stablehlo.custom_call @_SPMDInternalOp_MultiRotate(%n) {backend_config = "dimension=1,left_amount=1,right_amount=0,bufferize=0", sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>, <@mesh, [{"x"}, {"y"}]>]>} : (tensor<15x8xf32>) -> (tensor<15x8xf32>, tensor<15x8xf32>)
+  %s = stablehlo.add %r#0, %r#1 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>]>} : tensor<15x8xf32>
+  %p = stablehlo.pad %s, %zero, low = [1, 0], high = [0, 0], interior = [0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>]>} : (tensor<15x8xf32>, tensor<f32>) -> tensor<16x8xf32>
+  return %p : tensor<16x8xf32>
+}
+
+// CHECK-LABEL: func.func @pad_through_rotate
+// CHECK-DAG: %[[ZEROS:.+]] = stablehlo.constant {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>]>} dense<0.000000e+00> : tensor<16x8xf32>
+// CHECK: %[[R:.+]]:2 = stablehlo.custom_call @_SPMDInternalOp_MultiRotate(%arg0) {backend_config = "dimension=1,left_amount=1,right_amount=0,bufferize=0", sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>, <@mesh, [{"x"}, {"y"}]>]>} : (tensor<16x8xf32>) -> (tensor<16x8xf32>, tensor<16x8xf32>)
+// CHECK-NOT: _SPMDInternalOp_MultiRotate
+// CHECK: %[[S:.+]] = stablehlo.add %[[R]]#0, %[[R]]#1 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>]>} : tensor<16x8xf32>
+// CHECK: %[[IOTA:.+]] = stablehlo.iota dim = 0
+// CHECK: stablehlo.compare GE, %[[IOTA]]
+// CHECK: stablehlo.compare LT, %[[IOTA]]
+// CHECK: %[[IN:.+]] = stablehlo.and
+// CHECK: %[[P:.+]] = stablehlo.select %[[IN]], %[[S]], %[[ZEROS]]
+// CHECK-NEXT: return %[[P]]

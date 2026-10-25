@@ -5370,6 +5370,10 @@ struct DUSSinkSlicesComm
     SmallVector<Operation *> created;
     DenseSet<Operation *> createdSet;
     DenseMap<std::tuple<Value, int64_t, int64_t, int64_t>, Value> cache;
+    // The other results of a widened multi-result call: reused by later
+    // widenings, but their narrow versions keep their other users (the
+    // narrow call stays for them, so a redirect would only add a shift).
+    DenseMap<std::tuple<Value, int64_t, int64_t, int64_t>, Value> aliases;
     // The DUS window along the dimension being widened: the target's extent,
     // the window's start and size. Rows of the widened values outside the
     // window are never read, so only the window decides whether a fallback
@@ -5562,6 +5566,8 @@ struct DUSSinkSlicesComm
       auto key = std::make_tuple(v, dim, lo, hi);
       if (auto it = cache.find(key); it != cache.end())
         return it->second;
+      if (auto it = aliases.find(key); it != aliases.end())
+        return it->second;
       auto ty = dyn_cast<RankedTensorType>(v.getType());
       if (!ty || !ty.hasStaticShape())
         return nullptr;
@@ -5637,29 +5643,90 @@ struct DUSSinkSlicesComm
         res = widenSlice(op, ms.getOperand(), dim, starts, limits,
                          ms.getStrides(), lo, hi);
       } else if (auto cc = dyn_cast<stablehlo::CustomCallOp>(op);
-                 cc && cc.getCallTargetName() == "_SPMDInternalOp_MultiSlice" &&
-                 cc.getNumOperands() == 1) {
-        // The lowered form of a multislice; result i is again the slice
-        // shifted by i along the multislice dimension.
+                 cc && cc.getNumOperands() == 1 &&
+                 (cc.getCallTargetName() == "_SPMDInternalOp_MultiSlice" ||
+                  cc.getCallTargetName() == "_SPMDInternalOp_MultiRotate" ||
+                  cc.getCallTargetName() == "_SPMDInternalOp_Wrap")) {
+        // The lowered forms of a multislice, multirotate or wrap.
         auto cfg = cc->getAttrOfType<StringAttr>("backend_config");
         if (!cfg)
           return nullptr;
-        auto msDim = parseMultiSliceConfigInt(cfg.getValue(), "dimension");
-        auto starts =
-            parseMultiSliceConfigList(cfg.getValue(), "start_indices");
-        auto limits =
-            parseMultiSliceConfigList(cfg.getValue(), "limit_indices");
-        auto strides = parseMultiSliceConfigList(cfg.getValue(), "strides");
-        if (!msDim || !starts || !limits || !strides || *msDim < 0 ||
-            *msDim >= ty.getRank() || (int64_t)starts->size() != ty.getRank() ||
-            (int64_t)limits->size() != ty.getRank() ||
-            (int64_t)strides->size() != ty.getRank())
+        auto ccDim = parseMultiSliceConfigInt(cfg.getValue(), "dimension");
+        if (!ccDim)
           return nullptr;
-        int64_t shift = cast<OpResult>(v).getResultNumber();
-        (*starts)[*msDim] += shift;
-        (*limits)[*msDim] += shift;
-        res = widenSlice(op, cc.getOperand(0), dim, *starts, *limits, *strides,
-                         lo, hi);
+        bool isMultiSlice =
+            cc.getCallTargetName() == "_SPMDInternalOp_MultiSlice";
+        int64_t idx = cast<OpResult>(v).getResultNumber();
+        if (isMultiSlice && *ccDim == dim) {
+          // Result i is the slice shifted by i along the multislice dimension.
+          auto starts =
+              parseMultiSliceConfigList(cfg.getValue(), "start_indices");
+          auto limits =
+              parseMultiSliceConfigList(cfg.getValue(), "limit_indices");
+          auto strides = parseMultiSliceConfigList(cfg.getValue(), "strides");
+          if (!starts || !limits || !strides || *ccDim < 0 ||
+              *ccDim >= ty.getRank() ||
+              (int64_t)starts->size() != ty.getRank() ||
+              (int64_t)limits->size() != ty.getRank() ||
+              (int64_t)strides->size() != ty.getRank())
+            return nullptr;
+          (*starts)[*ccDim] += idx;
+          (*limits)[*ccDim] += idx;
+          res = widenSlice(op, cc.getOperand(0), dim, *starts, *limits,
+                           *strides, lo, hi);
+        } else if (*ccDim == dim) {
+          // A rotation or wrap along the widened dimension itself.
+          return nullptr;
+        } else {
+          // Along another dimension: the same call on the widened operand.
+          // Every result widens with it; a multislice's window grows along
+          // the widened dimension by what was added.
+          Value x = widen(cc.getOperand(0), dim, lo, hi);
+          if (!x)
+            return nullptr;
+          std::string newCfg = cfg.getValue().str();
+          if (isMultiSlice) {
+            auto limits =
+                parseMultiSliceConfigList(cfg.getValue(), "limit_indices");
+            if (!limits || dim >= (int64_t)limits->size())
+              return nullptr;
+            (*limits)[dim] += lo + hi;
+            size_t pos = newCfg.find("limit_indices=[");
+            size_t end = newCfg.find(']', pos);
+            if (pos == std::string::npos || end == std::string::npos)
+              return nullptr;
+            std::string list;
+            for (auto [i, l] : llvm::enumerate(*limits))
+              list += (i ? ", " : "") + std::to_string(l);
+            newCfg.replace(pos + strlen("limit_indices=["),
+                           end - pos - strlen("limit_indices=["), list);
+          }
+          SmallVector<Type> resTys;
+          for (Value r : cc.getResults())
+            resTys.push_back(
+                widenedType(cast<RankedTensorType>(r.getType()), dim, lo, hi));
+          OperationState state(loc, cc->getName());
+          state.addOperands(x);
+          state.addTypes(resTys);
+          for (NamedAttribute attr : cc->getAttrs())
+            if (attr.getName() == "backend_config")
+              state.addAttribute(attr.getName(),
+                                 rewriter.getStringAttr(newCfg));
+            else
+              state.addAttribute(attr.getName(), attr.getValue());
+          Operation *ncc = rewriter.create(state);
+          if (Operation *existing = findExisting(ncc)) {
+            rewriter.eraseOp(ncc);
+            ncc = existing;
+          } else {
+            track(ncc->getResult(0));
+          }
+          // The other results are widened by the same call.
+          for (auto [j, r] : llvm::enumerate(cc.getResults()))
+            if ((int64_t)j != idx)
+              aliases[std::make_tuple(r, dim, lo, hi)] = ncc->getResult(j);
+          res = ncc->getResult(idx);
+        }
       } else if (auto pad = dyn_cast<stablehlo::PadOp>(op)) {
         if (pad.getInteriorPadding()[dim] != 0)
           return nullptr;
