@@ -245,6 +245,27 @@ func.func @rotate_argument(%a: tensor<16xf32> {sdy.sharding = #sdy.sharding<@mes
 
 // -----
 
+// The stencil's reads come as one lowered multislice (the form the regular
+// invocations see): each result is a slice shifted by its index, and is
+// widened like one.
+sdy.mesh @mesh = <["x"=2]>
+func.func @multislice_custom_call(%a: tensor<16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}]>}, %b: tensor<16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}]>}) -> tensor<16xf32> {
+  %c1 = stablehlo.constant dense<1> : tensor<i32>
+  %ms:2 = stablehlo.custom_call @_SPMDInternalOp_MultiSlice(%a) {backend_config = "dimension=0,amount=1,start_indices=[1],limit_indices=[14],strides=[1],bufferize=0", sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>, <@mesh, [{"x"}]>]>} : (tensor<16xf32>) -> (tensor<13xf32>, tensor<13xf32>)
+  %u = stablehlo.add %ms#0, %ms#1 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : tensor<13xf32>
+  %d = stablehlo.dynamic_update_slice %b, %u, %c1 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>, tensor<13xf32>, tensor<i32>) -> tensor<16xf32>
+  return %d : tensor<16xf32>
+}
+
+// CHECK-LABEL: func.func @multislice_custom_call
+// CHECK: %[[R:.+]] = "enzymexla.rotate"(%arg0) <{amount = 1 : i32, dimension = 0 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>) -> tensor<16xf32>
+// CHECK-NEXT: %[[U:.+]] = stablehlo.add %arg0, %[[R]] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : tensor<16xf32>
+// CHECK-NEXT: %[[W:.+]] = stablehlo.slice %[[U]] [1:14] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>) -> tensor<13xf32>
+// CHECK-NEXT: %[[D:.+]] = stablehlo.dynamic_update_slice %arg1, %[[W]]
+// CHECK-NEXT: return %[[D]]
+
+// -----
+
 // An update computed from an argument that only exists at the window's
 // extent cannot be widened; the DUS stays.
 sdy.mesh @mesh = <["x"=2]>
