@@ -25,9 +25,8 @@ llvm.func @func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes {tessera_op 
 
 // -----
 
-llvm.mlir.global internal constant @_ZL20__tessera_arg_type_0() : !llvm.struct<(f32)>
 
-llvm.func @pure_func(%arg0: i32, %arg1: !llvm.ptr) -> i32 attributes {pure_tessera_op = "tessera_pure_func(x, y:val=in):globals=0"} {
+llvm.func @pure_func(%arg0: i32, %arg1: !llvm.ptr) -> i32 attributes {pure_tessera_op = "tessera_pure_func(x, y:val=in)", tessera.arg_types = [unit, !llvm.struct<(f32)>]} {
   llvm.return %arg0 : i32
 }
 
@@ -80,9 +79,8 @@ llvm.func @func_with_indirect_call(%arg0: !llvm.ptr) {
 
 // -----
 
-llvm.mlir.global internal constant @_ZL20__tessera_arg_type_1() : !llvm.struct<(f32, f32)>
 
-llvm.func @sret_func(%arg0: !llvm.ptr {llvm.sret = !llvm.struct<(f32, f32)>, llvm.align = 8 : i64, llvm.nonnull}, %arg1: !llvm.ptr {llvm.noundef, llvm.readonly}) attributes {pure_tessera_op = "tessera_sret_func(x:val=in):globals=1"} {
+llvm.func @sret_func(%arg0: !llvm.ptr {llvm.sret = !llvm.struct<(f32, f32)>, llvm.align = 8 : i64, llvm.nonnull}, %arg1: !llvm.ptr {llvm.noundef, llvm.readonly}) attributes {pure_tessera_op = "tessera_sret_func(x:val=in)", tessera.arg_types = [!llvm.struct<(f32, f32)>]} {
   %0 = llvm.load %arg1 <alignment = 8> : !llvm.ptr -> f32
   llvm.store %0, %arg0 <alignment = 8> : f32, !llvm.ptr
   llvm.return
@@ -117,9 +115,8 @@ llvm.func @caller() {
 
 // -----
 
-llvm.mlir.global internal constant @_ZL20__tessera_arg_type_2() : i32
 
-llvm.func @func_with_result_arg(%arg0: !llvm.ptr, %arg1: i32) -> i32 attributes {tessera_op = "tessera_func_with_result_arg(x:val=out, y):globals=2"} {
+llvm.func @func_with_result_arg(%arg0: !llvm.ptr, %arg1: i32) -> i32 attributes {tessera_op = "tessera_func_with_result_arg(x:val=out, y)", tessera.arg_types = [i32, unit]} {
   llvm.store %arg1, %arg0 : i32, !llvm.ptr
   llvm.return %arg1 : i32
 }
@@ -156,9 +153,8 @@ llvm.func @result_arg_func_caller() {
 // the call site -- as well as contributing a trailing result. Dropping that
 // operand would hand the callee uninitialized stack storage.
 
-llvm.mlir.global internal constant @_ZL20__tessera_arg_type_3() : i32
 
-llvm.func @func_with_inout_arg(%arg0: !llvm.ptr, %arg1: i32) -> i32 attributes {tessera_op = "tessera_func_with_inout_arg(x:val=inout, y):globals=3"} {
+llvm.func @func_with_inout_arg(%arg0: !llvm.ptr, %arg1: i32) -> i32 attributes {tessera_op = "tessera_func_with_inout_arg(x:val=inout, y)", tessera.arg_types = [i32, unit]} {
   %0 = llvm.load %arg0 : !llvm.ptr -> i32
   %1 = llvm.add %0, %arg1 : i32
   llvm.store %1, %arg0 : i32, !llvm.ptr

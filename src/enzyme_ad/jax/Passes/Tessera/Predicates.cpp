@@ -9,7 +9,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/SymbolTable.h"
-#include "src/enzyme_ad/jax/Passes/Tessera/Properties.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/PropertyPropagation.h"
 #include "llvm/ADT/ArrayRef.h"
 #include <variant>
 
@@ -29,23 +29,17 @@ template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 // Layout resolution
 //===----------------------------------------------------------------------===//
 
-/// A call in a guard's else region that takes the value being resolved, and
-/// the operand position it takes it at.
+// A call in a guard's else region that takes the value, and at which operand.
 struct OriginalUse {
   CallOp call;
   unsigned index;
 };
 
-/// The else region of a guard holds a clone of what was matched: the root call
-/// and, for a chain rule, the nested producers sunk in ahead of it. Those calls
-/// are the only thing tying a value the guard carries back to the argument
-/// position it occupies, which is where the layout is declared. A variable in
-/// the condition may be taken by any call in the chain, not just the root, so
-/// all of them are searched.
+// The calls in the guard's else region (the matched root and any producers
+// sunk with it) that take `value`. Their callees' arguments are where the
+// layout is declared.
 SmallVector<OriginalUse> findOriginalUses(Value value, GuardOp guard) {
   SmallVector<OriginalUse> uses;
-  // The region is still intact when a predicate runs, because the check is
-  // synthesized before the guard is taken apart -- but do not rely on it.
   if (guard.getElseRegion().empty())
     return uses;
   for (auto call : guard.getElseRegion().front().getOps<CallOp>())
@@ -68,9 +62,8 @@ MatrixLayout parseLayoutAttr(DictionaryAttr dict) {
   return layout;
 }
 
-/// Walk a nested aggregate down to the array that actually holds the elements.
-/// An Eigen fixed-size matrix arrives as a chain of single-member structs
-/// wrapping one array, so peeling single-member structs gets there.
+// The array inside a chain of single-member structs, which is how an Eigen
+// fixed-size matrix arrives.
 LLVM::LLVMArrayType findElementArray(Type type) {
   while (auto structType = dyn_cast_or_null<LLVM::LLVMStructType>(type)) {
     ArrayRef<Type> body = structType.getBody();
@@ -79,13 +72,6 @@ LLVM::LLVMArrayType findElementArray(Type type) {
     type = body[0];
   }
   return dyn_cast_or_null<LLVM::LLVMArrayType>(type);
-}
-
-int64_t integerSquareRoot(int64_t n) {
-  int64_t root = 0;
-  while (root * root < n)
-    ++root;
-  return root * root == n ? root : 0;
 }
 
 } // namespace
@@ -109,9 +95,7 @@ MatrixLayout resolveMatrixLayout(Value value, GuardOp guard) {
         guard, call.getCalleeAttr().getAttr());
   };
 
-  // An explicit declaration wins, wherever in the chain it is made: it is the
-  // only one that can describe a matrix whose shape is not recoverable from its
-  // type.
+  // A declared tessera.layout on any of the calls wins.
   for (auto [call, index] : uses) {
     DefineOp define = lookupDefine(call);
     if (!define)
@@ -123,20 +107,15 @@ MatrixLayout resolveMatrixLayout(Value value, GuardOp guard) {
     MatrixLayout layout = parseLayoutAttr(dict);
     if (layout.isValid())
       return layout;
-    // A malformed declaration is left out, as though it were not there.
     define.emitWarning() << "tessera.layout on argument " << index
                          << " is incomplete: it needs elem, rows and cols; it "
                             "is ignored";
   }
 
-  // Otherwise infer from the by-reference type. The element type and count are
-  // exact; the rows/cols split and the storage order are not in the type at
-  // all, so both are assumed.
-  //
-  // getCallOperandPointeeType is indexed by call operand, like `index`. The
-  // argModes accessors are not: they count write-only arguments, which a call
-  // has no operand for, so with one of those ahead of the matrix they would
-  // read some other argument's type.
+  // Otherwise infer from the pointee type, which gives the element type and
+  // count but not the shape or order, so assume square and row-major.
+  // getCallOperandPointeeType is indexed by call operand, like `index`; the
+  // argModes accessors also count "out" arguments, so they'd be off.
   for (auto [call, index] : uses) {
     DefineOp define = lookupDefine(call);
     if (!define)
@@ -146,8 +125,12 @@ MatrixLayout resolveMatrixLayout(Value value, GuardOp guard) {
     if (!array)
       continue;
 
-    int64_t side = integerSquareRoot(array.getNumElements());
-    if (side == 0)
+    // The count must be a nonzero perfect square.
+    int64_t count = array.getNumElements();
+    int64_t side = 0;
+    while (side * side < count)
+      ++side;
+    if (side == 0 || side * side != count)
       continue;
 
     MatrixLayout layout;
@@ -156,8 +139,7 @@ MatrixLayout resolveMatrixLayout(Value value, GuardOp guard) {
     layout.rowMajor = true;
     layout.orderInferred = true;
 
-    // This is a guess, and a wrong guess miscompiles quietly rather than
-    // failing, so say so.
+    // A wrong guess miscompiles silently, so say so.
     guard.emitRemark() << "assuming argument " << index << " of '"
                        << call.getCallee() << "' is a " << side << "x" << side
                        << " row-major matrix of " << layout.elemType
@@ -176,15 +158,9 @@ MatrixLayout resolveMatrixLayout(Value value, GuardOp guard) {
 // Static proof
 //===----------------------------------------------------------------------===//
 
-/// Is `value` known to have the named property?
-///
-/// Only what is recorded counts: a fact tessera-propagate-properties wrote on
-/// a call argument the value is passed as, or one written there by hand. The
-/// declarations those facts come from are described in Properties.h. A fact
-/// implies others, so one of SPD answers a question about symmetry.
-///
-/// This answers True or Unknown and never False: nothing can declare that a
-/// value *lacks* a property.
+// True if a fact recorded on a call argument the value is passed as (see
+// PropertyPropagation.h) gives or implies the property. Never False, since
+// nothing declares that a value lacks a property.
 Proof mlir::enzyme::tessera::provePropertyOfValue(Value value,
                                                   llvm::StringRef property) {
   return hasRecordedProperty(value, property) ? Proof::True : Proof::Unknown;
@@ -192,14 +168,11 @@ Proof mlir::enzyme::tessera::provePropertyOfValue(Value value,
 
 namespace {
 
-/// The matrix predicates each test one matrix, so they all prove the same way.
 Proof proveMatrixProperty(llvm::StringRef name, ArrayRef<Value> args) {
   return provePropertyOfValue(args[0], name);
 }
 
-/// Constant value of a comparison operand, if it has one. A literal in the rule
-/// is constant by construction; a variable is only constant when the value it
-/// matched is.
+// The constant value of a comparison operand, if it has one.
 std::optional<llvm::APInt>
 constantIntOperand(const Expr &expr, const llvm::StringMap<Value> &boundVars) {
   if (auto *lit = std::get_if<IntLit>(&expr.data))
@@ -212,10 +185,7 @@ constantIntOperand(const Expr &expr, const llvm::StringMap<Value> &boundVars) {
     if (matchPattern(it->second, m_ConstantInt(&value)))
       return value;
   }
-  // Arithmetic on constants is constant. It is folded at the wider of its
-  // operands' widths, which for a literal is 64 bits: a value that overflows
-  // the width it is computed in at run time is not a value a rule's condition
-  // can be about.
+  // Folded at the wider operand width (64 bits for a literal).
   if (auto *arith = std::get_if<Arith>(&expr.data)) {
     auto lhs = constantIntOperand(*arith->lhs, boundVars);
     auto rhs = constantIntOperand(*arith->rhs, boundVars);
@@ -293,14 +263,12 @@ constantFloatOperand(const Expr &expr,
 
 Proof fromBool(bool value) { return value ? Proof::True : Proof::False; }
 
-/// Fold a comparison whose operands are both known at compile time. This is
-/// what makes `if n > 64, ...` free when n is a constant.
+// Fold a comparison of two constants, so `if n > 64` costs nothing when n is
+// constant.
 Proof proveCompare(const Compare &cmp,
                    const llvm::StringMap<Value> &boundVars) {
   if (auto lhs = constantIntOperand(cmp.lhs, boundVars))
     if (auto rhs = constantIntOperand(cmp.rhs, boundVars)) {
-      // Widen to a common width before comparing; the literal is 64-bit while
-      // the matched constant can be any width.
       unsigned width = std::max(lhs->getBitWidth(), rhs->getBitWidth());
       llvm::APInt a = lhs->sext(width);
       llvm::APInt b = rhs->sext(width);
@@ -322,8 +290,7 @@ Proof proveCompare(const Compare &cmp,
 
   if (auto lhs = constantFloatOperand(cmp.lhs, boundVars))
     if (auto rhs = constantFloatOperand(cmp.rhs, boundVars)) {
-      // Compare in double, which both sides convert to exactly for every
-      // format the rule language can produce.
+      // In double, which every format here converts to exactly.
       bool lost = false;
       llvm::APFloat a = *lhs, b = *rhs;
       a.convert(llvm::APFloat::IEEEdouble(), llvm::APFloat::rmNearestTiesToEven,
@@ -332,8 +299,7 @@ Proof proveCompare(const Compare &cmp,
                 &lost);
       llvm::APFloat::cmpResult order = a.compare(b);
       if (order == llvm::APFloat::cmpUnordered)
-        // A NaN makes every ordered comparison false and '!=' true, matching
-        // what the emitted fcmp would do.
+        // NaN: only '!=' is true, as with the emitted fcmp.
         return cmp.op == CmpOp::Ne ? Proof::True : Proof::False;
       switch (cmp.op) {
       case CmpOp::Eq:
@@ -358,24 +324,15 @@ Proof proveCompare(const Compare &cmp,
 // Element access
 //===----------------------------------------------------------------------===//
 
-/// Load element (r, c) of `matrix`.
-///
-/// Which form is used follows from what the callee itself will read, so that
-/// the check and the call can never disagree:
-///
-///   - a pointer operand is read by the callee through that pointer, so the
-///     check reads the same memory;
-///   - an integer or aggregate operand carries the matrix by value, so the
-///     check takes the elements apart rather than going back to whatever memory
-///     it came from, which may since have been written to.
-///
-/// On failure this reports why and returns a null Value, so the first element
-/// a predicate cannot read is also the only error it produces.
+// Element (r, c) of `matrix`, read the way the callee reads it: through a
+// pointer operand, or extracted from a by-value aggregate or integer. Warns
+// and returns null on failure.
 Value emitElement(Value matrix, const MatrixLayout &layout, int64_t r,
                   int64_t c, CheckContext &ctx) {
   OpBuilder &b = ctx.builder;
   Location loc = ctx.loc;
-  int64_t index = layout.linearIndex(r, c);
+  int64_t index =
+      layout.rowMajor ? r * layout.cols + c : c * layout.rows + r;
   Type matrixType = matrix.getType();
 
   auto unreadable = [&]() {
@@ -395,9 +352,7 @@ Value emitElement(Value matrix, const MatrixLayout &layout, int64_t r,
     return LLVM::LoadOp::create(b, loc, layout.elemType, address);
   }
 
-  // Aggregate form. A lifted argument arrives as the value loaded from its
-  // pointer, which for a fixed-size matrix is the same single-member-struct
-  // chain around one array that layout inference walks.
+  // A lifted argument: single-member structs around one array.
   if (isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(matrixType)) {
     SmallVector<int64_t> position;
     Type type = matrixType;
@@ -415,8 +370,7 @@ Value emitElement(Value matrix, const MatrixLayout &layout, int64_t r,
     return LLVM::ExtractValueOp::create(b, loc, matrix, position);
   }
 
-  // Packed-integer form. Element 0 occupies the low bits, which is how a
-  // little-endian target lays an array out when it is loaded as one integer.
+  // Packed into an integer, element 0 in the low bits (little-endian).
   auto intType = dyn_cast<IntegerType>(matrixType);
   if (!intType)
     return unreadable();
@@ -449,8 +403,7 @@ Value emitEqual(Value lhs, Value rhs, CheckContext &ctx) {
                               lhs, rhs);
 }
 
-/// Conjoin the terms. An empty list is vacuously true -- a 1x1 matrix really
-/// is symmetric.
+// The AND of the terms; true if there are none.
 Value emitConjunction(ArrayRef<Value> terms, CheckContext &ctx) {
   if (terms.empty())
     return LLVM::ConstantOp::create(ctx.builder, ctx.loc,
@@ -462,16 +415,9 @@ Value emitConjunction(ArrayRef<Value> terms, CheckContext &ctx) {
   return result;
 }
 
-/// Shared entry checks for the matrix predicates.
-///
-/// `orderMatters` says the property is not preserved by transposition, so an
-/// assumed storage order could make the check answer true for a matrix that
-/// does not have the property. Only the triangular pair is in that position:
-/// reading column-major storage as row-major turns an upper triangle into a
-/// lower one. Everything else here is transpose-invariant -- symmetry,
-/// diagonality and identity obviously so, and diagonal dominance because
-/// column dominance implies nonsingularity just as row dominance does -- so an
-/// inferred order cannot make those unsound.
+// Resolve the layout and check it suits the predicate. `orderMatters` is set
+// for properties that change under transposition (only the triangular ones),
+// so an assumed storage order isn't enough for them.
 bool prepareMatrix(llvm::StringRef name, Value matrix, CheckContext &ctx,
                    bool requireSquare, bool orderMatters,
                    MatrixLayout &layout) {
@@ -491,15 +437,14 @@ bool prepareMatrix(llvm::StringRef name, Value matrix, CheckContext &ctx,
            "corresponding tessera.define argument";
     return false;
   }
-  if (requireSquare && !layout.isSquare()) {
+  if (requireSquare && layout.rows != layout.cols) {
     emitCheckWarning(ctx.guard)
         << "'" << name << "' needs a square matrix, but the " << "operand is "
         << layout.rows << "x" << layout.cols;
     return false;
   }
   if (layout.numElements() > ctx.maxUnrolledElems) {
-    // The comparisons are emitted straight-line, so a large matrix would turn
-    // into an unreasonable amount of code. A loop form would lift this.
+    // Checks are unrolled, so a big matrix would mean too much code.
     emitCheckWarning(ctx.guard)
         << "'" << name << "' needs " << layout.numElements()
         << " elements checked, above the max-unrolled-elems limit of "
@@ -525,12 +470,6 @@ Value emitAbsolute(Value value, CheckContext &ctx) {
                                 value);
 }
 
-Value emitAdd(Value lhs, Value rhs, CheckContext &ctx) {
-  if (isa<FloatType>(lhs.getType()))
-    return LLVM::FAddOp::create(ctx.builder, ctx.loc, lhs, rhs);
-  return LLVM::AddOp::create(ctx.builder, ctx.loc, lhs, rhs);
-}
-
 Value emitGreater(Value lhs, Value rhs, CheckContext &ctx) {
   if (isa<FloatType>(lhs.getType()))
     return LLVM::FCmpOp::create(ctx.builder, ctx.loc, LLVM::FCmpPredicate::ogt,
@@ -539,11 +478,10 @@ Value emitGreater(Value lhs, Value rhs, CheckContext &ctx) {
                               lhs, rhs);
 }
 
-// The pieces below take an already-resolved layout so that a predicate built
-// out of several of them resolves it once. Resolving twice would also repeat
-// the remark that layout inference emits.
+// The helpers below take a resolved layout, so a predicate built from several
+// resolves it (and remarks) once.
 
-/// A[i][j] == A[j][i] for every i < j.
+// A[i][j] == A[j][i] for every i < j.
 Value symmetryOf(Value matrix, const MatrixLayout &layout, CheckContext &ctx) {
   SmallVector<Value> terms;
   for (int64_t r = 0; r < layout.rows; ++r)
@@ -557,11 +495,9 @@ Value symmetryOf(Value matrix, const MatrixLayout &layout, CheckContext &ctx) {
   return emitConjunction(terms, ctx);
 }
 
-/// |A[i][i]| > sum over j != i of |A[i][j]|, for every row.
-///
-/// Strict diagonal dominance is the cheap sufficient condition the two
-/// conservative predicates are built from: it costs O(n^2), where an exact
-/// test of either property costs a factorization.
+// |A[i][i]| > sum over j != i of |A[i][j]|, for every row. An O(n^2)
+// sufficient condition for the two conservative predicates, whose exact tests
+// need a factorization.
 Value diagonalDominanceOf(Value matrix, const MatrixLayout &layout,
                           CheckContext &ctx) {
   SmallVector<Value> terms;
@@ -578,14 +514,18 @@ Value diagonalDominanceOf(Value matrix, const MatrixLayout &layout,
       Value element = emitElement(matrix, layout, r, c, ctx);
       if (!element)
         return Value();
-      total = emitAdd(total, emitAbsolute(element, ctx), ctx);
+      Value absolute = emitAbsolute(element, ctx);
+      if (isa<FloatType>(total.getType()))
+        total = LLVM::FAddOp::create(ctx.builder, ctx.loc, total, absolute);
+      else
+        total = LLVM::AddOp::create(ctx.builder, ctx.loc, total, absolute);
     }
     terms.push_back(emitGreater(diagonal, total, ctx));
   }
   return emitConjunction(terms, ctx);
 }
 
-/// Every diagonal entry is strictly positive.
+// Every diagonal entry is strictly positive.
 Value positiveDiagonalOf(Value matrix, const MatrixLayout &layout,
                          CheckContext &ctx) {
   Value zero = emitScalarConstant(layout.elemType, 0, ctx);
@@ -599,7 +539,7 @@ Value positiveDiagonalOf(Value matrix, const MatrixLayout &layout,
   return emitConjunction(terms, ctx);
 }
 
-/// A[i][j] == A[j][i] for every i < j. Exact.
+// A[i][j] == A[j][i] for every i < j. Exact.
 Value emitSymmetric(ArrayRef<Value> args, CheckContext &ctx) {
   MatrixLayout layout;
   if (!prepareMatrix("symmetric", args[0], ctx, /*requireSquare=*/true,
@@ -608,15 +548,10 @@ Value emitSymmetric(ArrayRef<Value> args, CheckContext &ctx) {
   return symmetryOf(args[0], layout, ctx);
 }
 
-/// Strictly diagonally dominant, which implies nonsingular by the
-/// Levy-Desplanques theorem.
-///
-/// CONSERVATIVE. The exact test is an LU factorization with pivoting, which
-/// costs as much as the operation being optimized, so it is not worth emitting
-/// no matter who writes it. This answers true only for matrices it is certain
-/// about; an invertible matrix that is not diagonally dominant simply tests
-/// false and takes the general path, costing only the check. A true answer is
-/// never wrong, which is the property that matters.
+// Strictly diagonally dominant, which implies invertible (Levy-Desplanques).
+// Conservative: the exact test, an LU factorization, costs as much as the
+// operation being optimized. Other invertible matrices just take the original
+// path.
 Value emitInvertible(ArrayRef<Value> args, CheckContext &ctx) {
   MatrixLayout layout;
   if (!prepareMatrix("invertible", args[0], ctx, /*requireSquare=*/true,
@@ -625,11 +560,9 @@ Value emitInvertible(ArrayRef<Value> args, CheckContext &ctx) {
   return diagonalDominanceOf(args[0], layout, ctx);
 }
 
-/// Symmetric, with a positive diagonal, and strictly diagonally dominant --
-/// which together imply positive definiteness.
-///
-/// CONSERVATIVE, for the same reason as `invertible`: the exact test is a
-/// Cholesky factorization. Sound but incomplete.
+// Symmetric, positive diagonal and strictly diagonally dominant, which
+// together imply positive definite. Conservative, like `invertible`: the exact
+// test is a Cholesky factorization.
 Value emitPositiveDefinite(ArrayRef<Value> args, CheckContext &ctx) {
   MatrixLayout layout;
   if (!prepareMatrix("positive_definite", args[0], ctx, /*requireSquare=*/true,
@@ -644,8 +577,7 @@ Value emitPositiveDefinite(ArrayRef<Value> args, CheckContext &ctx) {
   return emitConjunction({symmetric, positive, dominant}, ctx);
 }
 
-/// Every off-diagonal entry is zero. Exact, and meaningful for a non-square
-/// matrix too.
+// Every off-diagonal entry is zero. Exact; works for non-square matrices.
 Value emitDiagonal(ArrayRef<Value> args, CheckContext &ctx) {
   MatrixLayout layout;
   if (!prepareMatrix("diagonal", args[0], ctx, /*requireSquare=*/false,
@@ -666,7 +598,7 @@ Value emitDiagonal(ArrayRef<Value> args, CheckContext &ctx) {
   return emitConjunction(terms, ctx);
 }
 
-/// Everything strictly below the diagonal is zero. Exact.
+// Everything strictly below the diagonal is zero. Exact.
 Value emitTriangularUpper(ArrayRef<Value> args, CheckContext &ctx) {
   MatrixLayout layout;
   if (!prepareMatrix("triangular_upper", args[0], ctx, /*requireSquare=*/true,
@@ -685,7 +617,7 @@ Value emitTriangularUpper(ArrayRef<Value> args, CheckContext &ctx) {
   return emitConjunction(terms, ctx);
 }
 
-/// Everything strictly above the diagonal is zero. Exact.
+// Everything strictly above the diagonal is zero. Exact.
 Value emitTriangularLower(ArrayRef<Value> args, CheckContext &ctx) {
   MatrixLayout layout;
   if (!prepareMatrix("triangular_lower", args[0], ctx, /*requireSquare=*/true,
@@ -704,7 +636,7 @@ Value emitTriangularLower(ArrayRef<Value> args, CheckContext &ctx) {
   return emitConjunction(terms, ctx);
 }
 
-/// Ones on the diagonal, zeros everywhere else. Exact.
+// Ones on the diagonal, zeros everywhere else. Exact.
 Value emitIdentity(ArrayRef<Value> args, CheckContext &ctx) {
   MatrixLayout layout;
   if (!prepareMatrix("identity", args[0], ctx, /*requireSquare=*/true,
@@ -728,8 +660,7 @@ Value emitIdentity(ArrayRef<Value> args, CheckContext &ctx) {
 // Integer predicates
 //===----------------------------------------------------------------------===//
 
-/// A constant settles `power_of_two` at compile time, so a call that passes a
-/// literal, like `div_ui(x, 2)`, is rewritten with no check at all.
+// A constant settles it, so `div_ui(x, 2)` needs no runtime check.
 Proof provePowerOfTwo(llvm::StringRef, ArrayRef<Value> args) {
   llvm::APInt value;
   if (matchPattern(args[0], m_ConstantInt(&value)))
@@ -737,11 +668,11 @@ Proof provePowerOfTwo(llvm::StringRef, ArrayRef<Value> args) {
   return Proof::Unknown;
 }
 
-/// Exactly one bit set: `n != 0 && (n & (n - 1)) == 0`. Exact.
-///
-/// The bits are read as unsigned, as for an `unsigned long` count, so the
-/// most negative value of a signed type passes; a rule on a signed operand
-/// says `n > 0` as well if that matters.
+// Exactly one bit set: `n != 0 && (n & (n - 1)) == 0`. Exact.
+//
+// The bits are read as unsigned, as for an `unsigned long` count, so the
+// most negative value of a signed type passes; a rule on a signed operand
+// says `n > 0` as well if that matters.
 Value emitPowerOfTwo(ArrayRef<Value> args, CheckContext &ctx) {
   Value n = args[0];
   auto type = dyn_cast<IntegerType>(n.getType());
@@ -760,16 +691,13 @@ Value emitPowerOfTwo(ArrayRef<Value> args, CheckContext &ctx) {
   return emitConjunction({nonzero, emitEqual(shared, zero, ctx)}, ctx);
 }
 
-/// Whether the value is a compile-time constant: what __builtin_constant_p is
-/// to a C macro. Only the compiler can know that, so it is always settled at
-/// compile time, and a rule that requires it is applied to a literal or not
-/// at all, never checked at run time.
+// Whether the value is a compile-time constant, like __builtin_constant_p.
+// Always settled at compile time.
 Proof proveConstant(llvm::StringRef, ArrayRef<Value> args) {
   return fromBool(matchPattern(args[0], m_Constant()));
 }
 
-/// Never reached, since proveConstant always settles; false keeps the
-/// original call if it were.
+// Never reached, since proveConstant always settles.
 Value emitConstant(ArrayRef<Value>, CheckContext &ctx) {
   return LLVM::ConstantOp::create(ctx.builder, ctx.loc,
                                   ctx.builder.getI1Type(),
@@ -796,9 +724,8 @@ namespace tessera {
 
 namespace {
 
-/// Whether a predicate holds of what its variables are bound to, from the IR
-/// alone. A predicate with a runtime check proves the way it says; any other
-/// name is a declared property of one value, and proves only by declaration.
+// Whether the IR shows a predicate holds. A name not in kPredicates is a
+// declared property of one value.
 Proof provePredicate(const Pred &p, const llvm::StringMap<Value> &boundVars) {
   SmallVector<Value> args;
   for (const Expr &arg : p.args) {
@@ -832,18 +759,14 @@ ResidualCondition remaining(Cond cond) {
   return result;
 }
 
-/// `positive` is false beneath an odd number of negations. It decides what a
-/// property that cannot be shown stands for: whichever value makes the
-/// condition as a whole false, so that not knowing never takes the rewrite.
+// `positive` is false under an odd number of negations. An unshown property
+// takes whichever value makes the whole condition false.
 ResidualCondition residualize(const Cond &cond,
                               const llvm::StringMap<Value> &boundVars,
                               bool positive, std::string &unshown) {
   return std::visit(
       overloaded{
           [&](const Pred &p) -> ResidualCondition {
-            // Only a predicate with a compile-time answer, like
-            // power_of_two(6), is ever proven false; a declared property is
-            // either shown or not known.
             Proof proof = provePredicate(p, boundVars);
             if (proof != Proof::Unknown)
               return settledAs(proof == Proof::True);
