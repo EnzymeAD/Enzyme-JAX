@@ -224,35 +224,54 @@ struct FoldMpiWaitallOp : public OpRewritePattern<comm::MpiWaitallOp> {
                 "communication operations");
     }
 
-    Location loc = op.getLoc();
-    rewriter.setInsertionPoint(orderedProducers.front());
-    rewriter.create<comm::NcclGroupStartOp>(loc);
-    rewriter.eraseOp(op);
+    // We move the all irecv's down to the loc of the waitall,
+    // so received buffers must not be used before it.
+    SmallVector<Type> resultTypes;
+    for (Operation *producer : orderedProducers) {
+      auto irecv = dyn_cast<comm::MpiIrecvOp>(producer);
+      if (!irecv)
+        continue;
+      for (Operation *user : irecv.getBuffer().getUsers()) {
+        Operation *ancestor = block->findAncestorOpInBlock(*user);
+        if (!ancestor || ancestor->isBeforeInBlock(op))
+          return rewriter.notifyMatchFailure(
+              op, "expected received buffers to be used only after "
+                  "mpi.waitall");
+      }
+      resultTypes.push_back(irecv.getBuffer().getType());
+    }
 
-    Operation *lastReplacement = nullptr;
+    Location loc = op.getLoc();
+    rewriter.setInsertionPoint(op);
+    auto group = rewriter.create<comm::NcclGroupOp>(loc, resultTypes);
+    Block *body = rewriter.createBlock(&group.getRegion());
+    rewriter.setInsertionPointToStart(body);
+
+    SmallVector<Value> yieldedValues;
+    SmallVector<Value> receivedBuffers;
     for (Operation *producer : orderedProducers) {
       if (auto isend = dyn_cast<comm::MpiIsendOp>(producer)) {
-        rewriter.setInsertionPoint(isend);
-        auto send = rewriter.create<comm::MpiSendOp>(
-            isend.getLoc(), isend.getBuffer(), isend.getDest(), isend.getTag(),
-            isend.getComm());
-        rewriter.eraseOp(isend);
-        lastReplacement = send;
+        rewriter.create<comm::MpiSendOp>(isend.getLoc(), isend.getBuffer(),
+                                         isend.getDest(), isend.getTag(),
+                                         isend.getComm());
         continue;
       }
 
       auto irecv = cast<comm::MpiIrecvOp>(producer);
-      rewriter.setInsertionPoint(irecv);
       auto recv = rewriter.create<comm::MpiRecvOp>(
           irecv.getLoc(), irecv.getBuffer().getType(), irecv.getSource(),
           irecv.getTag(), irecv.getComm());
-      rewriter.replaceAllUsesWith(irecv.getBuffer(), recv.getResult());
-      rewriter.eraseOp(irecv);
-      lastReplacement = recv;
+      yieldedValues.push_back(recv.getResult());
+      receivedBuffers.push_back(irecv.getBuffer());
     }
+    rewriter.create<comm::NcclYieldOp>(loc, yieldedValues);
 
-    rewriter.setInsertionPointAfter(lastReplacement);
-    rewriter.create<comm::NcclGroupEndOp>(loc);
+    rewriter.eraseOp(op);
+    for (auto [buffer, result] :
+         llvm::zip_equal(receivedBuffers, group.getResults()))
+      rewriter.replaceAllUsesWith(buffer, result);
+    for (Operation *producer : llvm::reverse(orderedProducers))
+      rewriter.eraseOp(producer);
     return success();
   }
 };
@@ -315,8 +334,8 @@ struct LegalizeMpiToNcclPass
 
     // Normalize nonblocking MPI ops:
     // A matching mpi.wait folds its associated mpi.isend/mpi.irecv into an
-    // mpi.send/recv; a matching mpi.waitall does the same and creates NCCL
-    // group boundaries. This leaves independent mpi.send/recv's for the
+    // mpi.send/recv; a matching mpi.waitall does the same inside an
+    // nccl.group placed at the mpi.waitall. This leaves mpi.send/recv's for the
     // conversion to nccl.send/recv below.
     RewritePatternSet waitPatterns(context);
     waitPatterns.add<FoldMpiWaitOp, FoldMpiWaitallOp>(context);
@@ -353,7 +372,7 @@ struct LegalizeMpiToNcclPass
     target.addIllegalDialect<comm::CommDialect>();
 
     target.addLegalOp<
-        comm::NcclGetCommWorldOp, comm::NcclGroupStartOp, comm::NcclGroupEndOp,
+        comm::NcclGetCommWorldOp, comm::NcclGroupOp, comm::NcclYieldOp,
         comm::NcclBarrierOp, comm::NcclCommSplitOp, comm::NcclCommFinalizeOp,
         comm::NcclCommDestroyOp, comm::NcclCommAbortOp, comm::NcclCommCountOp,
         comm::NcclCommCuDeviceOp, comm::NcclCommUserRankOp,
