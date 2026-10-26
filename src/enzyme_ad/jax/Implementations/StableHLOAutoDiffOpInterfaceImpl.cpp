@@ -108,6 +108,102 @@ static inline Operation *createAddRegion(Operation *op) {
   return op;
 }
 
+// Row-major position of each element within its reduction window.
+static Value createWindowIndex(OpBuilder &builder, Location loc,
+                               RankedTensorType idxTy,
+                               ArrayRef<int64_t> reducedDims) {
+  SmallVector<int64_t> dims(reducedDims);
+  llvm::sort(dims);
+  Value linIdx = nullptr;
+  int64_t stride = 1;
+  for (int64_t d : llvm::reverse(dims)) {
+    Value iota = IotaOp::create(builder, loc, idxTy, d);
+    if (stride != 1)
+      iota = MulOp::create(
+          builder, loc, iota,
+          ConstantOp::create(builder, loc,
+                             cast<ElementsAttr>(makeAttr(idxTy, stride))));
+    linIdx = linIdx ? AddOp::create(builder, loc, linIdx, iota) : iota;
+    stride *= idxTy.getDimSize(d);
+  }
+  return linIdx ? linIdx
+                : ConstantOp::create(builder, loc,
+                                     cast<ElementsAttr>(makeAttr(idxTy, 0)));
+}
+
+// Computes, alongside a reduce maximum/minimum of `input`, the window index
+// (see createWindowIndex) of the element its result is taken from: the last
+// one on ties, a NaN over any number, and -1 when the init value wins.
+static Value createWinnerIndex(OpBuilder &builder, Location loc, bool isMax,
+                               Value input, Value init,
+                               ArrayRef<int64_t> reducedDims) {
+  auto inTy = cast<RankedTensorType>(input.getType());
+  int64_t windowSize = 1;
+  SmallVector<int64_t> resShape;
+  for (auto [i, size] : llvm::enumerate(inTy.getShape())) {
+    if (llvm::is_contained(reducedDims, (int64_t)i))
+      windowSize *= size;
+    else
+      resShape.push_back(size);
+  }
+  Type idxElTy = windowSize <= std::numeric_limits<int32_t>::max()
+                     ? builder.getI32Type()
+                     : builder.getI64Type();
+
+  auto idxTy = RankedTensorType::get(inTy.getShape(), idxElTy);
+  auto valScalarTy = RankedTensorType::get({}, inTy.getElementType());
+  auto idxScalarTy = RankedTensorType::get({}, idxElTy);
+
+  Value linIdx = createWindowIndex(builder, loc, idxTy, reducedDims);
+  auto red = ReduceOp::create(
+      builder, loc,
+      TypeRange{RankedTensorType::get(resShape, inTy.getElementType()),
+                RankedTensorType::get(resShape, idxElTy)},
+      ValueRange{input, linIdx},
+      ValueRange{init, ConstantOp::create(
+                           builder, loc,
+                           cast<ElementsAttr>(makeAttr(idxScalarTy, -1)))},
+      reducedDims);
+
+  Block *block = new Block();
+  red.getBody().push_back(block);
+  block->addArguments({valScalarTy, idxScalarTy, valScalarTy, idxScalarTy},
+                      {loc, loc, loc, loc});
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToEnd(block);
+  Value a = block->getArgument(0), ia = block->getArgument(1);
+  Value b = block->getArgument(2), ib = block->getArgument(3);
+  auto cmp = [&](Value x, Value y, ComparisonDirection dir) -> Value {
+    return CompareOp::create(builder, loc, x, y, dir);
+  };
+  auto bAnd = [&](Value x, Value y) -> Value {
+    return stablehlo::AndOp::create(builder, loc, x, y);
+  };
+  auto bOr = [&](Value x, Value y) -> Value {
+    return stablehlo::OrOp::create(builder, loc, x, y);
+  };
+
+  // Order by value with NaN above everything, then by window index, so the
+  // reducer stays associative and commutative.
+  Value aNan = cmp(a, a, ComparisonDirection::NE);
+  Value bNan = cmp(b, b, ComparisonDirection::NE);
+  Value strictlyBetter =
+      cmp(a, b, isMax ? ComparisonDirection::GT : ComparisonDirection::LT);
+  Value bNotNan = stablehlo::NotOp::create(builder, loc, bNan);
+  Value onlyANan = bAnd(aNan, bNotNan);
+  Value aBetter = bOr(strictlyBetter, onlyANan);
+  Value eq = cmp(a, b, ComparisonDirection::EQ);
+  Value bothNan = bAnd(aNan, bNan);
+  Value same = bOr(eq, bothNan);
+  Value aLater = cmp(ia, ib, ComparisonDirection::GT);
+  Value tieA = bAnd(same, aLater);
+  Value pickA = bOr(aBetter, tieA);
+  Value val = SelectOp::create(builder, loc, pickA, a, b);
+  Value idx = SelectOp::create(builder, loc, pickA, ia, ib);
+  ReturnOp::create(builder, loc, ValueRange{val, idx});
+  return red.getResult(1);
+}
+
 Operation *cloneWithNewResultTypes(Operation *op, OpBuilder &builder,
                                    IRMapping &mapper,
                                    TypeRange newResultTypes) {
@@ -2029,37 +2125,55 @@ public:
     }
 
     if (isa<MaxOp>(innerOp) || isa<MinOp>(innerOp)) {
-      // TODO: technically we should invert the order here to pick the last
-      // value (or divide by count) if multiple are the same as the result
-      Value oprev = gutils->popCache(caches[0], builder);
-      Value oinit = gutils->popCache(caches[1], builder);
-      Value ores = gutils->popCache(caches[2], builder);
+      bool inputActive = !gutils->isConstantValue(op.getInputs()[0]);
+      bool initActive = !gutils->isConstantValue(op.getInitValues()[0]);
+      if (!inputActive && !initActive)
+        return success();
 
-      if (!gutils->isConstantValue(op.getInputs()[0])) {
+      // Position of the winner within its reduction window, or -1 if the
+      // result came from the init value.
+      Value winner = gutils->popCache(caches[0], builder);
+      auto winnerTy = cast<RankedTensorType>(winner.getType());
+      auto loc = op.getLoc();
+
+      if (inputActive) {
         auto attr = builder.getDenseI64ArrayAttr(toBroadcast);
-        auto bc = BroadcastInDimOp::create(builder, op.getLoc(),
-                                           oprev.getType(), ores, attr);
-
-        auto cmp = CompareOp::create(builder, op.getLoc(), bc, oprev,
-                                     ComparisonDirection::EQ);
-
-        auto bc2 = BroadcastInDimOp::create(builder, op.getLoc(),
-                                            oprev.getType(), inDiffe, attr);
-
-        auto res =
-            stablehlo::SelectOp::create(builder, op.getLoc(), cmp, bc2, zero);
+        auto idxTy =
+            RankedTensorType::get(inTy.getShape(), winnerTy.getElementType());
+        Value linIdx =
+            createWindowIndex(builder, loc, idxTy, op.getDimensions());
+        auto winnerBc =
+            BroadcastInDimOp::create(builder, loc, idxTy, winner, attr);
+        auto isWinner = CompareOp::create(builder, loc, linIdx, winnerBc,
+                                          ComparisonDirection::EQ);
+        auto bc2 = BroadcastInDimOp::create(
+            builder, loc, gutils->getShadowType(inTy), inDiffe, attr);
+        auto res = SelectOp::create(builder, loc, isWinner, bc2, zero);
         gutils->addToDiffe(op.getInputs()[0], res, builder);
       }
-      if (!gutils->isConstantValue(op.getInitValues()[0])) {
+
+      if (initActive) {
         auto zeroI = cast<AutoDiffTypeInterface>(inDiffe.getType())
-                         .createNullValue(builder, op.getLoc());
+                         .createNullValue(builder, loc);
+        auto fromInit = CompareOp::create(
+            builder, loc, winner,
+            ConstantOp::create(builder, loc,
+                               cast<ElementsAttr>(makeAttr(winnerTy, -1))),
+            ComparisonDirection::EQ);
+        Value res = SelectOp::create(builder, loc, fromInit, inDiffe, zeroI);
 
-        auto cmp = CompareOp::create(builder, op.getLoc(), ores, oinit,
-                                     ComparisonDirection::EQ);
-
-        auto res = stablehlo::SelectOp::create(builder, op.getLoc(), cmp,
-                                               inDiffe, zeroI);
-        gutils->addToDiffe(op.getInitValues()[0], res, builder);
+        // The scalar init seeds every result element, so sum its adjoints.
+        Value init = op.getInitValues()[0];
+        auto initShadowTy = gutils->getShadowType(init.getType());
+        SmallVector<int64_t> allDims = llvm::to_vector(llvm::seq<int64_t>(
+            0, cast<RankedTensorType>(res.getType()).getRank()));
+        auto initDiffeSum = ReduceOp::create(
+            builder, loc, TypeRange{initShadowTy}, ValueRange{res},
+            ValueRange{cast<AutoDiffTypeInterface>(initShadowTy)
+                           .createNullValue(builder, loc)},
+            allDims);
+        createAddRegion(initDiffeSum);
+        gutils->addToDiffe(init, initDiffeSum->getResult(0), builder);
       }
       return success();
     }
@@ -2069,8 +2183,8 @@ public:
       Value init = op->getOperand(1);
 
       Value cachedValue = gutils->popCache(caches[0], builder);
-      Value cachedInit = gutils->popCache(caches[1], builder);
-      Value cachedResult = gutils->popCache(caches[2], builder);
+      Value cachedResult = gutils->popCache(caches[1], builder);
+      Value cachedInit = gutils->popCache(caches[2], builder);
 
       if (!gutils->isConstantValue(value)) {
         auto binDiffe = stablehlo::BroadcastInDimOp::create(
@@ -2135,11 +2249,28 @@ public:
     }
 
     Operation &innerOp = op.getBody().front().front();
-    if (isa<MulOp, MaxOp, MinOp>(innerOp)) {
+    if (isa<MaxOp, MinOp>(innerOp)) {
+      if (gutils->isConstantValue(op.getInputs()[0]) &&
+          gutils->isConstantValue(op.getInitValues()[0]))
+        return {};
+
+      Operation *newOp = gutils->getNewFromOriginal(orig);
+      OpBuilder cacheBuilder(newOp);
+      cacheBuilder.setInsertionPointAfter(newOp);
+      Value winner =
+          createWinnerIndex(cacheBuilder, op.getLoc(), isa<MaxOp>(innerOp),
+                            gutils->getNewFromOriginal(op.getInputs()[0]),
+                            gutils->getNewFromOriginal(op.getInitValues()[0]),
+                            op.getDimensions());
+      return {gutils->initAndPushCache(winner, cacheBuilder)};
+    }
+
+    if (isa<MulOp>(innerOp)) {
+      // [value, result, init]
       SmallVector<Value> caches;
 
-      auto result = op.getResult(0);
       auto value = orig->getOperand(0);
+      auto result = op.getResult(0);
       auto init = orig->getOperand(1);
 
       Operation *newOp = gutils->getNewFromOriginal(orig);
@@ -2147,11 +2278,12 @@ public:
 
       caches.push_back(gutils->initAndPushCache(
           gutils->getNewFromOriginal(value), cacheBuilder));
-      caches.push_back(gutils->initAndPushCache(
-          gutils->getNewFromOriginal(init), cacheBuilder));
       cacheBuilder.setInsertionPointAfter(newOp);
       caches.push_back(gutils->initAndPushCache(
           gutils->getNewFromOriginal(result), cacheBuilder));
+      cacheBuilder.setInsertionPoint(newOp);
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(init), cacheBuilder));
 
       return caches;
     }
