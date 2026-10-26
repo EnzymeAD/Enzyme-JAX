@@ -1121,6 +1121,12 @@ def MergeGPUModulesPass : Pass<"merge-gpu-modules", "mlir::ModuleOp"> {
   let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "gpu::GPUDialect"];
 }
 
+def DeduplicateGPUModulesPass
+    : Pass<"deduplicate-gpu-modules", "mlir::ModuleOp"> {
+  let summary = "Deduplicate structurally equivalent gpu.module operations";
+  let dependentDialects = ["gpu::GPUDialect"];
+}
+
 def ConvertParallelToGPU1 : Pass<"convert-parallel-to-gpu1"> {
   let summary = "Convert parallel loops to gpu";
   let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect", "scf::SCFDialect"];
