@@ -187,14 +187,20 @@ static Value createWinnerIndex(OpBuilder &builder, Location loc, bool isMax,
   // reducer stays associative and commutative.
   Value aNan = cmp(a, a, ComparisonDirection::NE);
   Value bNan = cmp(b, b, ComparisonDirection::NE);
-  Value aBetter =
-      bOr(cmp(a, b, isMax ? ComparisonDirection::GT : ComparisonDirection::LT),
-          bAnd(aNan, stablehlo::NotOp::create(builder, loc, bNan)));
-  Value same = bOr(cmp(a, b, ComparisonDirection::EQ), bAnd(aNan, bNan));
-  Value pickA = bOr(aBetter, bAnd(same, cmp(ia, ib, ComparisonDirection::GT)));
-  ReturnOp::create(builder, loc,
-                   ValueRange{SelectOp::create(builder, loc, pickA, a, b),
-                              SelectOp::create(builder, loc, pickA, ia, ib)});
+  Value strictlyBetter =
+      cmp(a, b, isMax ? ComparisonDirection::GT : ComparisonDirection::LT);
+  Value bNotNan = stablehlo::NotOp::create(builder, loc, bNan);
+  Value onlyANan = bAnd(aNan, bNotNan);
+  Value aBetter = bOr(strictlyBetter, onlyANan);
+  Value eq = cmp(a, b, ComparisonDirection::EQ);
+  Value bothNan = bAnd(aNan, bNan);
+  Value same = bOr(eq, bothNan);
+  Value aLater = cmp(ia, ib, ComparisonDirection::GT);
+  Value tieA = bAnd(same, aLater);
+  Value pickA = bOr(aBetter, tieA);
+  Value val = SelectOp::create(builder, loc, pickA, a, b);
+  Value idx = SelectOp::create(builder, loc, pickA, ia, ib);
+  ReturnOp::create(builder, loc, ValueRange{val, idx});
   return red.getResult(1);
 }
 
