@@ -14,6 +14,7 @@
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
@@ -217,11 +218,15 @@ bool isPointerCast(Operation *op) {
              enzymexla::Pointer2MemrefOp>(op);
 }
 
-// The variable through which calls reach a handle's object. Either:
+// The variable through which calls reach a handle's object. One of:
 //  - a pointer variable holding the handle, `Mat A`. C code reloads A for
 //    each use, so each call gets a different SSA value, all naming the same
-//    object until something stores a new handle into A; or
-//  - an object variable, `BilinearForm a`, whose address is the handle.
+//    object until something stores a new handle into A;
+//  - an object variable, `BilinearForm a`, whose address is the handle; or
+//  - a pointer parameter the function assumes something of, `IntVec &ids`,
+//    which is the handle. Its object is as assumed on entry. Unlike a
+//    variable's, it was there before the call, so other pointers -- another
+//    parameter, a global -- may reach it too.
 struct HandleVariable {
   // The variable's address and casts of it.
   DenseSet<Value> addresses;
@@ -234,6 +239,8 @@ struct HandleVariable {
   // Calls to fact markers given the variable's address. They state facts
   // about the handle and change nothing.
   DenseSet<Operation *> markerCalls;
+  // The parameter, if the handle is one.
+  BlockArgument parameter;
 
   bool isHandleValue(Value value) const {
     return handleValues.contains(stripCasts(value));
@@ -305,44 +312,13 @@ bool runsAtMostOnce(Operation *op) {
   }
 }
 
-// The variable through which `handle`, passed to `use`, reaches its object.
-// Nothing if there isn't one, or if it's used in a way this can't track.
-std::optional<HandleVariable> findHandleVariable(Value handle,
-                                                 Operation *use) {
-  // A handle in a pointer variable, `Mat A`, is loaded from it; an object
-  // variable, `BilinearForm a(...)`, is its own handle.
-  Value address = stripCasts(handle);
-  Operation *load = address.getDefiningOp();
-  bool isPointerVariable =
-      load && isa<LLVM::LoadOp, affine::AffineLoadOp, memref::LoadOp>(load);
-  if (isPointerVariable) {
-    // Loaded for `use` alone, so that a fact recorded on it is of this call
-    // only (see objectFactsAt).
-    if (address != handle ||
-        llvm::any_of(handle.getUsers(),
-                     [&](Operation *user) { return user != use; }))
-      return std::nullopt;
-    // A load's address is its first operand.
-    address = load->getOperand(0);
-    while (Operation *def = address.getDefiningOp()) {
-      if (!isPointerCast(def))
-        break;
-      address = def->getOperand(0);
-    }
-  }
-
-  auto alloca = address.getDefiningOp<LLVM::AllocaOp>();
-  if (!alloca ||
-      isa<LLVM::LLVMPointerType>(alloca.getElemType()) != isPointerVariable)
-    return std::nullopt;
-  // One pointer, so that every load reads the same one.
-  if (isPointerVariable && !matchPattern(alloca.getArraySize(), m_One()))
-    return std::nullopt;
-
-  HandleVariable variable;
+// Fill in `variable` from the uses of `root`, the variable's address. False if
+// it's used in a way this can't track.
+bool collectVariableUses(Value root, bool isPointerVariable,
+                         HandleVariable &variable) {
   // Each address, and whether it is of the whole variable rather than of a
   // field inside an object.
-  SmallVector<std::pair<Value, bool>> worklist{{alloca.getResult(), true}};
+  SmallVector<std::pair<Value, bool>> worklist{{root, true}};
   while (!worklist.empty()) {
     auto [current, whole] = worklist.pop_back_val();
     if (whole) {
@@ -390,9 +366,65 @@ std::optional<HandleVariable> findHandleVariable(Value handle,
         continue;
       }
       // Its address escapes, or is offset into: anything could write it.
-      return std::nullopt;
+      return false;
     }
   }
+  return true;
+}
+
+// The handle variable for a pointer parameter the function assumes something
+// of, or nothing if `arg` isn't one or is used in a way this can't track.
+std::optional<HandleVariable> findParameterVariable(BlockArgument arg) {
+  if (!isa<LLVM::LLVMPointerType>(arg.getType()) ||
+      !assumptionsOnParameter(arg))
+    return std::nullopt;
+  HandleVariable variable;
+  variable.parameter = arg;
+  if (!collectVariableUses(arg, /*isPointerVariable=*/false, variable))
+    return std::nullopt;
+  return variable;
+}
+
+// The variable through which `handle`, passed to `use`, reaches its object.
+// Nothing if there isn't one, or if it's used in a way this can't track.
+std::optional<HandleVariable> findHandleVariable(Value handle,
+                                                 Operation *use) {
+  // A handle in a pointer variable, `Mat A`, is loaded from it; an object
+  // variable, `BilinearForm a(...)`, is its own handle, and so is a pointer
+  // parameter, `IntVec &ids`.
+  Value address = stripCasts(handle);
+  if (auto arg = dyn_cast<BlockArgument>(address))
+    return findParameterVariable(arg);
+  Operation *load = address.getDefiningOp();
+  bool isPointerVariable =
+      load && isa<LLVM::LoadOp, affine::AffineLoadOp, memref::LoadOp>(load);
+  if (isPointerVariable) {
+    // Loaded for `use` alone, so that a fact recorded on it is of this call
+    // only (see objectFactsAt).
+    if (address != handle ||
+        llvm::any_of(handle.getUsers(),
+                     [&](Operation *user) { return user != use; }))
+      return std::nullopt;
+    // A load's address is its first operand.
+    address = load->getOperand(0);
+    while (Operation *def = address.getDefiningOp()) {
+      if (!isPointerCast(def))
+        break;
+      address = def->getOperand(0);
+    }
+  }
+
+  auto alloca = address.getDefiningOp<LLVM::AllocaOp>();
+  if (!alloca ||
+      isa<LLVM::LLVMPointerType>(alloca.getElemType()) != isPointerVariable)
+    return std::nullopt;
+  // One pointer, so that every load reads the same one.
+  if (isPointerVariable && !matchPattern(alloca.getArraySize(), m_One()))
+    return std::nullopt;
+
+  HandleVariable variable;
+  if (!collectVariableUses(alloca.getResult(), isPointerVariable, variable))
+    return std::nullopt;
   if (!isPointerVariable)
     return variable;
 
@@ -437,6 +469,57 @@ DictionaryAttr calleeParamAttrs(Operation *op, unsigned index) {
   return nullptr;
 }
 
+// Whether `address` points into one of the function's own stack variables,
+// which nothing from before the call can reach.
+bool isLocalMemory(Value address) {
+  while (Operation *def = address.getDefiningOp()) {
+    if (isa<LLVM::AllocaOp, memref::AllocaOp>(def))
+      return true;
+    if (!isPointerCast(def) && !isa<LLVM::GEPOp>(def))
+      return false;
+    address = def->getOperand(0);
+  }
+  return false;
+}
+
+// Whether `op` itself (not ops nested in it) might write memory other than
+// the function's own stack variables.
+bool mayWriteNonLocal(Operation *op) {
+  if (op->getNumRegions() != 0 ||
+      isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(op))
+    return false;
+  if (auto call = dyn_cast<LLVM::CallOp>(op)) {
+    LLVM::LLVMFuncOp callee = calleeOf(call);
+    if (callee && callee->hasAttr(kFactMarkerAttr))
+      return false;
+    LLVM::MemoryEffectsAttr memory = call.getMemoryEffectsAttr();
+    if (!memory && callee)
+      memory = callee.getMemoryEffectsAttr();
+    if (!memory)
+      return true;
+    auto writes = [](LLVM::ModRefInfo info) {
+      return info == LLVM::ModRefInfo::Mod || info == LLVM::ModRefInfo::ModRef;
+    };
+    // Through its arguments, it can write only what they point to.
+    return writes(memory.getOther()) ||
+           (writes(memory.getArgMem()) &&
+            llvm::any_of(call.getArgOperands(), [](Value arg) {
+              return isa<LLVM::LLVMPointerType>(arg.getType()) &&
+                     !isLocalMemory(arg);
+            }));
+  }
+  auto effects = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!effects)
+    return true;
+  SmallVector<MemoryEffects::EffectInstance> instances;
+  effects.getEffects(instances);
+  return llvm::any_of(instances, [](MemoryEffects::EffectInstance &instance) {
+    return isa<MemoryEffects::Write, MemoryEffects::Free>(
+               instance.getEffect()) &&
+           (!instance.getValue() || !isLocalMemory(instance.getValue()));
+  });
+}
+
 // What an operation does to the object a handle names.
 enum class HandleEffect { None, Establishes, Changes };
 
@@ -467,15 +550,18 @@ HandleEffect effectOnHandle(Operation *op, const HandleVariable &variable,
     args = call.getArgOperands();
   else
     // Only calls can be given a handle (see isOnlyPassedToCalls); a guard
-    // only reads it, and a comparison only compares it.
-    return HandleEffect::None;
+    // only reads it, and a comparison only compares it. But a parameter's
+    // object may also be reached through another pointer, and written.
+    return variable.parameter && mayWriteNonLocal(op) ? HandleEffect::Changes
+                                                      : HandleEffect::None;
 
   // A call that establishes a property does so on exit, whatever else it
   // does to the object on the way.
-  bool establishes = false, changes = false;
+  bool establishes = false, changes = false, given = false;
   for (auto [index, arg] : llvm::enumerate(args)) {
     if (!variable.isHandleValue(arg))
       continue;
+    given = true;
     DictionaryAttr attrs = calleeParamAttrs(op, index);
     if (Attribute properties = attrs ? attrs.get(kEstablishesAttr) : nullptr) {
       appendPropertyNames(established, properties);
@@ -484,6 +570,10 @@ HandleEffect effectOnHandle(Operation *op, const HandleVariable &variable,
       changes = true;
     }
   }
+  // A call not given a parameter's object may still reach it another way.
+  // One given it readonly doesn't change it by any way.
+  if (!given && variable.parameter)
+    changes = mayWriteNonLocal(op);
   return establishes ? HandleEffect::Establishes
          : changes   ? HandleEffect::Changes
                      : HandleEffect::None;
@@ -528,25 +618,16 @@ bool mayChangeHandle(Operation *op, const HandleVariable &variable) {
       .wasInterrupted();
 }
 
-// The properties established for the object that argument `index` of `use`
-// names, and not changed since.
+// The properties established for the variable's object before `point`, and
+// not changed since.
 //
-// Walks back from `use` through earlier ops, then out through enclosing ops.
+// Walks back from `point` through earlier ops, then out through enclosing ops.
 // Gives up at an op with regions (such as `scf.if`) or a loop that might
-// change the object, at a region with several blocks, and at the function's
-// start.
-SmallVector<StringAttr> objectFactsAt(CallOp use, unsigned index) {
-  Value handle = use.getArgOperands()[index];
-  if (!isa<LLVM::LLVMPointerType>(handle.getType()))
-    return {};
-  // A fact recorded on an argument is read as true at every use of that
-  // value, but an object fact holds only here. So it's recorded only on a
-  // handle loaded for this call alone, or on a copy recordFactsOnCall makes.
-  std::optional<HandleVariable> variable = findHandleVariable(handle, use);
-  if (!variable)
-    return {};
-
-  Operation *point = use;
+// change the object, and at a region with several blocks. At the function's
+// start, a parameter's object has what the function assumes of it; any other
+// has nothing.
+SmallVector<StringAttr> objectFactsBefore(Operation *point,
+                                          const HandleVariable &variable) {
   // If a call on the way changed the object, the properties it kept.
   std::optional<SmallVector<StringAttr>> kept;
   auto keep = [&](SmallVector<StringAttr> &facts) {
@@ -557,19 +638,19 @@ SmallVector<StringAttr> objectFactsAt(CallOp use, unsigned index) {
   while (true) {
     for (Operation *op = point->getPrevNode(); op; op = op->getPrevNode()) {
       if (op->getNumRegions() != 0) {
-        if (mayChangeHandle(op, *variable))
+        if (mayChangeHandle(op, variable))
           return {};
         continue;
       }
       SmallVector<StringAttr> established;
-      switch (effectOnHandle(op, *variable, established)) {
+      switch (effectOnHandle(op, variable, established)) {
       case HandleEffect::None:
         continue;
       case HandleEffect::Establishes:
         keep(established);
         return established;
       case HandleEffect::Changes: {
-        SmallVector<StringAttr> keptHere = propertiesKeptBy(op, *variable);
+        SmallVector<StringAttr> keptHere = propertiesKeptBy(op, variable);
         keep(keptHere);
         if (keptHere.empty())
           return {};
@@ -581,8 +662,17 @@ SmallVector<StringAttr> objectFactsAt(CallOp use, unsigned index) {
 
     Region *region = point->getParentRegion();
     Operation *parent = region->getParentOp();
-    if (!region->hasOneBlock() || !parent || isa<FunctionOpInterface>(parent))
+    if (!region->hasOneBlock() || !parent)
       return {};
+    if (isa<FunctionOpInterface>(parent)) {
+      if (!variable.parameter ||
+          variable.parameter.getOwner() != &region->front())
+        return {};
+      SmallVector<StringAttr> assumed;
+      appendPropertyNames(assumed, assumptionsOnParameter(variable.parameter));
+      keep(assumed);
+      return assumed;
+    }
     bool repeats;
     if (isa<GuardOp>(parent))
       repeats = false;
@@ -592,10 +682,25 @@ SmallVector<StringAttr> objectFactsAt(CallOp use, unsigned index) {
       repeats = true;
     else
       return {};
-    if (repeats && mayChangeHandle(parent, *variable))
+    if (repeats && mayChangeHandle(parent, variable))
       return {};
     point = parent;
   }
+}
+
+// The properties established for the object that argument `index` of `use`
+// names, and not changed since.
+SmallVector<StringAttr> objectFactsAt(CallOp use, unsigned index) {
+  Value handle = use.getArgOperands()[index];
+  if (!isa<LLVM::LLVMPointerType>(handle.getType()))
+    return {};
+  // A fact recorded on an argument is read as true at every use of that
+  // value, but an object fact holds only here. So it's recorded only on a
+  // handle loaded for this call alone, or on a copy recordFactsOnCall makes.
+  std::optional<HandleVariable> variable = findHandleVariable(handle, use);
+  if (!variable)
+    return {};
+  return objectFactsBefore(use, *variable);
 }
 
 // Whether having `have` implies `want`, directly or through a chain (SPD
@@ -641,8 +746,11 @@ SmallVector<StringAttr> PropertyAnalysis::computeValueFacts(Value value,
       appendRecordedFacts(
           facts, attrDictAt(call.getArgAttrsAttr(), use.getOperandNumber()));
 
+  // What a pointer parameter is assumed to point to holds on entry, until the
+  // function changes it; objectFactsAt follows it from there.
   if (auto arg = dyn_cast<BlockArgument>(value)) {
-    appendPropertyNames(facts, assumptionsOnParameter(arg));
+    if (!isa<LLVM::LLVMPointerType>(arg.getType()))
+      appendPropertyNames(facts, assumptionsOnParameter(arg));
     return facts;
   }
 
@@ -653,14 +761,18 @@ SmallVector<StringAttr> PropertyAnalysis::computeValueFacts(Value value,
   if (depth >= kMaxDerivationDepth)
     return facts;
 
-  // A value loaded from a parameter gets the parameter's assumptions, if the
-  // parameter is only ever loaded from (so nothing changed what it points to).
+  // A value loaded from a parameter gets the parameter's assumptions, if
+  // nothing could have changed what it points to since the function started.
+  // A loaded pointer gets nothing: its object could change after the load.
   if (auto load = dyn_cast<LLVM::LoadOp>(op)) {
     Value address = stripCasts(load.getAddr());
     if (auto arg = dyn_cast<BlockArgument>(address))
-      if (llvm::all_of(arg.getUsers(),
-                       [](Operation *user) { return isa<LLVM::LoadOp>(user); }))
-        appendPropertyNames(facts, assumptionsOnParameter(arg));
+      if (!isa<LLVM::LLVMPointerType>(value.getType()))
+        if (std::optional<HandleVariable> variable =
+                findParameterVariable(arg))
+          for (StringAttr name : objectFactsBefore(load, *variable))
+            if (!llvm::is_contained(facts, name))
+              facts.push_back(name);
     return facts;
   }
 
