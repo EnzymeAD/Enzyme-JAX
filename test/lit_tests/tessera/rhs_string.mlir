@@ -14,11 +14,11 @@ module {
     tessera.optimization "lib.solve(k) -> lib.set_type(k, 'cg'); lib.solve(k)"
   }
 
-  // CHECK: llvm.mlir.global private constant @[[S:__tessera_str_[0-9A-F]+]]("cg\00")
+  // CHECK: llvm.mlir.global private constant @[[$S:__tessera_str_[0-9A-F]+]]("cg\00")
   // CHECK-NOT: llvm.mlir.global
 
   // CHECK-LABEL: llvm.func @two_sites
-  // CHECK-NEXT: %[[A:.*]] = llvm.mlir.addressof @[[S]] : !llvm.ptr
+  // CHECK-NEXT: %[[A:.*]] = llvm.mlir.addressof @[[$S]] : !llvm.ptr
   // CHECK-NEXT: tessera.call @lib.set_type(%arg0, %[[A]]) : (!llvm.ptr, !llvm.ptr) -> i32
   // CHECK-NEXT: tessera.call @lib.solve(%arg0)
   // CHECK-NEXT: tessera.call @lib.set_type(%arg1, %[[A]]) : (!llvm.ptr, !llvm.ptr) -> i32

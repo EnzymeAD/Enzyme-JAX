@@ -41,6 +41,13 @@
 // calls that don't take the handle or take it readonly. This trusts that only
 // calls given the handle can change its object, as is true of PETSc.
 //
+// An assumption on a pointer parameter is likewise about the object on entry,
+// not about the pointer: the walk can also end at the function's start, where
+// the parameter's object has what is assumed of it. Other pointers, such as
+// another parameter or a global, may reach that object too, so for it any call
+// or store that might write memory other than the function's own stack
+// variables counts as a change.
+//
 // FACTS ON STATEMENTS. A user can also state a fact after a statement:
 //
 //   PetscCall(MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY));
