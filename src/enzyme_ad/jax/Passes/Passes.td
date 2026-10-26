@@ -879,12 +879,6 @@ def LowerJITPass : Pass<"lower-jit"> {
         /*default=*/"true",
         /*description=*/"Whether to jit the host code">,
     Option<
-        /*C++ variable name=*/"backend",
-        /*CLI argument=*/"backend",
-        /*type=*/"std::string",
-        /*default=*/"\"cuda\"",
-        /*description=*/"HW backend">,
-    Option<
         /*C++ variable name=*/"openmp",
         /*CLI argument=*/"openmp",
         /*type=*/"bool",

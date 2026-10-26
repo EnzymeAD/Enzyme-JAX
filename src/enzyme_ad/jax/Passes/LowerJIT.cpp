@@ -355,7 +355,7 @@ static LogicalResult replaceGetStreamOpsWithStreamArg(mlir::ModuleOp submod) {
 
 CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
                      FunctionOpInterface op, bool jit, bool openmp,
-                     bool returnPtr, bool dump_final_module) {
+                     bool returnPtr, bool dump_final_module, bool &usesStream) {
 
   OpBuilder builder(op);
 
@@ -448,14 +448,14 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
                                 builder.getArrayAttr(priorities),
                                 builder.getArrayAttr(data));
 
-  // Calls which need the stream they are executed on take it as a second
-  // argument of the entry point.
+  // Calls which need the stream they are executed on run on the device, and
+  // take it as a second argument of the entry point.
   auto hasGetStream = [](Operation *root) {
     return root
         ->walk([](enzymexla::GetStreamOp) { return WalkResult::interrupt(); })
         .wasInterrupted();
   };
-  bool usesStream = hasGetStream(op) || hasGetStream(submod);
+  usesStream = hasGetStream(op) || hasGetStream(submod);
 
   builder.setInsertionPointToEnd(&submod.getBodyRegion().front());
 
@@ -571,13 +571,6 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
   for (auto op : toErase) {
     op->erase();
   }
-  submod->walk([](enzymexla::FMulAddOp op) {
-    OpBuilder builder(op);
-    auto newOp = LLVM::FMulAddOp::create(builder, op->getLoc(), op.getA(),
-                                         op.getB(), op.getC());
-    op.getResult().replaceAllUsesWith(newOp.getResult());
-    op->erase();
-  });
 
   PassManager pm(submod.getContext());
   pm.addPass(createLowerAffinePass());
@@ -689,8 +682,9 @@ struct LowerJITPass
         hasReturn = !fnty.getResults().empty();
       }
 
+      bool usesStream = false;
       CallInfo cdata = CompileCall(symbolTable, op.getLoc(), fn, jit, openmp,
-                                   hasReturn, dump_final_module);
+                                   hasReturn, dump_final_module, usesStream);
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
       if (jit) {
@@ -715,7 +709,7 @@ struct LowerJITPass
       }
 
       Operation *replacement;
-      if (backend == "cuda")
+      if (usesStream)
         replacement = stablehlo::CustomCallOp::create(
             rewriter, op.getLoc(), op.getResultTypes(), op.getInputs(),
             hasReturn
@@ -729,7 +723,7 @@ struct LowerJITPass
                 mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
             /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
             output_operand_aliases, /*result_tilings*/ nullptr);
-      else if (backend == "cpu")
+      else
         replacement = stablehlo::CustomCallOp::create(
             rewriter, op.getLoc(), op.getResultTypes(), op.getInputs(),
             hasReturn
