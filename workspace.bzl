@@ -41,7 +41,28 @@ XLA_PATCHES = [
     sed -i.bak0 "s/return TryDlopenCUDALibraries()/LOG(INFO) << \\"GPU libraries are statically linked, skip dlopen check.\\";\\nreturn absl::OkStatus();/g" xla/tsl/platform/default/dlopen_checker.cc
 """,
     """
-    sed -i.bak0 "s/namespace/THIS_SHOULD_NEVER_BE_COMPILED/g" xla/tsl/cuda/{cublas,cublasLt,cufft,cusolver,cusparse,cudnn,cudart}_stub.cc
+    sed -i.bak0 "s/namespace/THIS_SHOULD_NEVER_BE_COMPILED/g" xla/tsl/cuda/{cublas,cublasLt,cufft,cusolver,cusparse,cudnn}_stub.cc
+""",
+    """
+    # Route the CUDA runtime through XLA's dlopen stub instead of the static
+    # libcudart, whose entry points are hidden. The stub exports them, so kernels
+    # jitted by lower-jit register and launch through the same runtime as XLA. The
+    # static CUDA libraries still need culibos, which the static runtime brought in.
+    sed -i.bak0 's|actual = if_cuda_libs("@cuda_cudart//:cudart", ":cudart_stub")|actual = ":cudart_stub_with_culibos"|' xla/tsl/cuda/BUILD.bazel
+    cat >> xla/tsl/cuda/BUILD.bazel <<'EOF'
+
+cc_library(
+    name = "cudart_stub_with_culibos",
+    srcs = if_cuda_is_configured(if_cuda_newer_than(
+        "13_0",
+        if_false = ["@cuda_cudart//:lib/libculibos.a"],
+        if_true = ["@cuda_culibos//:lib/libculibos.a"],
+    )),
+    visibility = ["//visibility:public"],
+    deps = [":cudart_stub"],
+)
+EOF
+    sed -i.bak0 's|"@local_config_cuda//cuda:cuda_runtime"|"//xla/tsl/cuda:cudart"|' xla/stream_executor/cuda/BUILD xla/backends/profiler/gpu/BUILD
 """,
     """
 	sed -i.bak0 "/amdgpu_backend/d" xla/backends/gpu/codegen/triton/BUILD
