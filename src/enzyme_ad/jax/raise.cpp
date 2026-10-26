@@ -266,7 +266,10 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       } else {
 	      pass_pipeline += ",parallel-serialization,";
       }
-      pass_pipeline += "" + canonicalize + ",hoist-allocas,convert-polygeist-to-llvm{backend=";
+      pass_pipeline += "" + canonicalize + ",hoist-allocas,";
+      if (backend != "cpu")
+        pass_pipeline += "deduplicate-gpu-modules,";
+      pass_pipeline += "convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
       pass_pipeline += "},strip-"
       "gpu-info,enzymexla-gpu-"
