@@ -24,7 +24,6 @@
 
 #include "mlir/Conversion/LLVMCommon/VectorPattern.h"
 
-#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 namespace mlir {
@@ -710,6 +709,109 @@ public:
       return success();
     }
 
+    return failure();
+  }
+};
+
+// sinpi(x) = sin(pi x) and cospi(x) = cos(pi x), from an exact argument
+// reduction rather than as sin(pi * x): pi * x is not exact, so sin(pi * x)
+// misses the exact zeros at integers (sin(pi * 1.0) is 1.2e-16) and loses
+// relative accuracy near them, and for large x the product's rounding error
+// exceeds the period. Both functions have period 2, and
+//   r = x - 2 round(x / 2)
+// is exact and lies in [-1, 1]. Then sin(pi r) is evaluated on [-1/2, 1/2]
+// through sin(pi r) = sin(pi (copysign(1, r) - r)) for |r| > 1/2 (exact by
+// Sterbenz's lemma), and cos(pi r) as sin(pi (1/2 - |r|)), exact wherever
+// cospi is near zero. sinpi of an integer is a zero with the sign of x, as
+// libdevice and Julia return; cospi of a half-integer is +0. NaN and
+// infinities give NaN through r.
+static Value floatConstant(OpBuilder &b, Location loc, Type type, double v) {
+  return arith::ConstantOp::create(b, loc, type, b.getFloatAttr(type, v));
+}
+
+static Value reduceHalfPeriod(OpBuilder &b, Location loc, Value x) {
+  Type type = x.getType();
+  Value halfX =
+      arith::MulFOp::create(b, loc, x, floatConstant(b, loc, type, 0.5));
+  Value n = math::RoundOp::create(b, loc, halfX);
+  Value twoN =
+      arith::MulFOp::create(b, loc, n, floatConstant(b, loc, type, 2.0));
+  return arith::SubFOp::create(b, loc, x, twoN);
+}
+
+static Value sinOfPiTimes(OpBuilder &b, Location loc, Value t) {
+  Value piT = arith::MulFOp::create(
+      b, loc, t, floatConstant(b, loc, t.getType(), 3.14159265358979323846));
+  return math::SinOp::create(b, loc, piT);
+}
+
+static Value emitSinPi(OpBuilder &b, Location loc, Value x) {
+  Type type = x.getType();
+  Value r = reduceHalfPeriod(b, loc, x);
+  Value absR = math::AbsFOp::create(b, loc, r);
+  Value beyondHalf =
+      arith::CmpFOp::create(b, loc, arith::CmpFPredicate::OGT, absR,
+                            floatConstant(b, loc, type, 0.5));
+  Value signR =
+      math::CopySignOp::create(b, loc, floatConstant(b, loc, type, 1.0), r);
+  Value reflected = arith::SubFOp::create(b, loc, signR, r);
+  Value t = arith::SelectOp::create(b, loc, beyondHalf, reflected, r);
+  Value zero = floatConstant(b, loc, type, 0.0);
+  Value atInteger =
+      arith::CmpFOp::create(b, loc, arith::CmpFPredicate::OEQ, t, zero);
+  Value signedZero = math::CopySignOp::create(b, loc, zero, x);
+  Value sinPiT = sinOfPiTimes(b, loc, t);
+  return arith::SelectOp::create(b, loc, atInteger, signedZero, sinPiT);
+}
+
+static Value emitCosPi(OpBuilder &b, Location loc, Value x) {
+  Type type = x.getType();
+  Value absR = math::AbsFOp::create(b, loc, reduceHalfPeriod(b, loc, x));
+  Value u =
+      arith::SubFOp::create(b, loc, floatConstant(b, loc, type, 0.5), absR);
+  return sinOfPiTimes(b, loc, u);
+}
+
+class SinCosPiRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  SinCosPiRaising(MLIRContext *context)
+      : OpRewritePattern<LLVM::CallOp>(context) {}
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee || op->getNumOperands() < 1 ||
+        !isa<FloatType>(op->getOperand(0).getType()))
+      return failure();
+
+    StringRef name = callee.getLeafReference();
+    Location loc = op.getLoc();
+    Value x = op->getOperand(0);
+
+    if (name == "__nv_sinpi" || name == "__nv_sinpif") {
+      if (op->getNumOperands() != 1 || op->getNumResults() != 1)
+        return failure();
+      rewriter.replaceOp(op, emitSinPi(rewriter, loc, x));
+      return success();
+    }
+    if (name == "__nv_cospi" || name == "__nv_cospif") {
+      if (op->getNumOperands() != 1 || op->getNumResults() != 1)
+        return failure();
+      rewriter.replaceOp(op, emitCosPi(rewriter, loc, x));
+      return success();
+    }
+    // sincospi(x, &s, &c) stores both, as NVSinCosRaising does for sincos.
+    if (name == "__nv_sincospi" || name == "__nv_sincospif") {
+      if (op->getNumOperands() != 3 || op->getNumResults() != 0)
+        return failure();
+      Value sinPi = emitSinPi(rewriter, loc, x);
+      Value cosPi = emitCosPi(rewriter, loc, x);
+      LLVM::StoreOp::create(rewriter, loc, sinPi, op->getOperand(1));
+      LLVM::StoreOp::create(rewriter, loc, cosPi, op->getOperand(2));
+      rewriter.eraseOp(op);
+      return success();
+    }
     return failure();
   }
 };
@@ -1453,6 +1555,7 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
   patterns.add<IsFPClassRaising>(context);
   patterns.add<RcpRaising>(context);
   patterns.add<Exp10Raising>(context);
+  patterns.add<SinCosPiRaising>(context);
   patterns.add<NVVMRcpRaising>(context);
   patterns.add<BF16HalfToFloatRaising>(context);
   patterns.add<HalfMathRaising>(context);
