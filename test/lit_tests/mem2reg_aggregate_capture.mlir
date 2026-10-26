@@ -51,3 +51,69 @@ module {
 // CHECK-NOT:       llvm.extractvalue
 // CHECK:           llvm.call @use(%[[a]], %[[b]])
 // CHECK:           return
+
+// -----
+
+// Promoting %dst materializes an extractvalue on the aggregate loaded from
+// %src; promoting %src in the same pass iteration must order that extractvalue
+// after the overwriting store in ^bb1 rather than forwarding %v1 from entry.
+
+module {
+  llvm.func @use_ptr(!llvm.ptr)
+  func.func @chained_aggregate_forward(%v1 : !llvm.ptr, %v2 : !llvm.ptr, %v3 : !llvm.ptr) {
+    %c1 = arith.constant 1 : i32
+    %dst = llvm.alloca %c1 x !llvm.struct<"cap", (ptr, ptr)> : (i32) -> !llvm.ptr
+    %src = llvm.alloca %c1 x !llvm.struct<"cap", (ptr, ptr)> : (i32) -> !llvm.ptr
+    %src0 = llvm.getelementptr %src[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"cap", (ptr, ptr)>
+    llvm.store %v1, %src0 : !llvm.ptr, !llvm.ptr
+    %src1 = llvm.getelementptr %src[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"cap", (ptr, ptr)>
+    llvm.store %v2, %src1 : !llvm.ptr, !llvm.ptr
+    cf.br ^bb1
+  ^bb1:
+    llvm.store %v3, %src0 : !llvm.ptr, !llvm.ptr
+    %agg = llvm.load %src : !llvm.ptr -> !llvm.struct<"cap", (ptr, ptr)>
+    llvm.store %agg, %dst : !llvm.struct<"cap", (ptr, ptr)>, !llvm.ptr
+    %dst0 = llvm.getelementptr %dst[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"cap", (ptr, ptr)>
+    %res = llvm.load %dst0 : !llvm.ptr -> !llvm.ptr
+    llvm.call @use_ptr(%res) : (!llvm.ptr) -> ()
+    return
+  }
+}
+
+// CHECK-LABEL:   func.func @chained_aggregate_forward(
+// CHECK-SAME:      %{{.+}}: !llvm.ptr, %{{.+}}: !llvm.ptr, %[[V3:.+]]: !llvm.ptr) {
+// CHECK-NOT:       llvm.extractvalue
+// CHECK:           llvm.call @use_ptr(%[[V3]])
+// CHECK:           return
+
+// -----
+
+module {
+  memref.global "private" @dst : memref<1x!llvm.struct<"cap", (ptr, ptr)>>
+  memref.global "private" @src : memref<1x!llvm.struct<"cap", (ptr, ptr)>>
+  llvm.func @use(!llvm.ptr, !llvm.ptr)
+  func.func @captured_global_aggregate_forward(%v1 : !llvm.ptr, %v2 : !llvm.ptr) {
+    %dst_mem = memref.get_global @dst : memref<1x!llvm.struct<"cap", (ptr, ptr)>>
+    %src_mem = memref.get_global @src : memref<1x!llvm.struct<"cap", (ptr, ptr)>>
+    %dst = "enzymexla.memref2pointer"(%dst_mem) : (memref<1x!llvm.struct<"cap", (ptr, ptr)>>) -> !llvm.ptr
+    %src = "enzymexla.memref2pointer"(%src_mem) : (memref<1x!llvm.struct<"cap", (ptr, ptr)>>) -> !llvm.ptr
+    %src1 = llvm.getelementptr %src[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"cap", (ptr, ptr)>
+    llvm.store %v2, %src1 : !llvm.ptr, !llvm.ptr
+    %src0 = llvm.getelementptr %src[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"cap", (ptr, ptr)>
+    llvm.store %v1, %src0 : !llvm.ptr, !llvm.ptr
+    %agg = llvm.load %src : !llvm.ptr -> !llvm.struct<"cap", (ptr, ptr)>
+    llvm.store %agg, %dst : !llvm.struct<"cap", (ptr, ptr)>, !llvm.ptr
+    %dst0 = llvm.getelementptr %dst[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"cap", (ptr, ptr)>
+    %res1 = llvm.load %dst0 : !llvm.ptr -> !llvm.ptr
+    %res2 = llvm.load %src0 : !llvm.ptr -> !llvm.ptr
+    llvm.call @use(%res1, %res2) : (!llvm.ptr, !llvm.ptr) -> ()
+    return
+  }
+}
+
+// CHECK-LABEL:   func.func @captured_global_aggregate_forward(
+// CHECK-SAME:      %[[V1:.+]]: !llvm.ptr, %{{.+}}: !llvm.ptr) {
+// CHECK-NOT:       llvm.extractvalue
+// CHECK:           %[[LOAD:.+]] = llvm.load %{{.+}} : !llvm.ptr -> !llvm.ptr
+// CHECK:           llvm.call @use(%[[V1]], %[[LOAD]])
+// CHECK:           return

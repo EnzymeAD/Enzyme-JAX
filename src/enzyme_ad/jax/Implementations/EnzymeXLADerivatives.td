@@ -21,8 +21,12 @@ def : EnzymeXLAControlFlowOp<"GPUWrapperOp", [{
                                MGradientUtils *gutils, Operation *original,
                                ValueRange remappedOperands,
                                TypeRange rettys) const {
-    return enzymexla::GPUWrapperOp::create(builder, original->getLoc(),
-                                        remappedOperands);
+    auto rep = enzymexla::GPUWrapperOp::create(builder, original->getLoc(),
+                                               remappedOperands);
+    for (auto atname : {"passthrough", "target_features", "target_cpu"})
+      if (auto attr = original->getAttr(atname))
+        rep->setAttr(atname, attr);
+    return rep;
   }
 }]>;
 

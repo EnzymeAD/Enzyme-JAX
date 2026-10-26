@@ -729,6 +729,12 @@ void ParallelLower::runOnOperation() {
         /*asyncObject=*/nullptr,
         /*workgroup*/ TypeRange(),
         /*private*/ TypeRange(), clusterX, clusterY, clusterZ);
+    for (auto atname : {"passthrough", "target_features", "target_cpu"}) {
+      if (auto attr = launchOp->getAttr(atname))
+        op->setAttr(atname, attr);
+      else if (auto attr = fn->getAttr(atname))
+        op->setAttr(atname, attr);
+    }
 
     // The kernel lives in the GPU module, which a func.call cannot name:
     // the call only carries its operands into the inlining, which is given
@@ -1089,8 +1095,8 @@ void ParallelLower::runOnOperation() {
       bool changed = false;
       for (auto callable : remaining) {
         auto sym = cast<SymbolOpInterface>(callable);
-        assert(sym.canDiscardOnUseEmpty());
-        assert(sym.isPrivate());
+        assert(isa<gpu::GPUFuncOp>(callable) || sym.canDiscardOnUseEmpty());
+        assert(isa<gpu::GPUFuncOp>(callable) || sym.isPrivate());
         if (symbolUserMap.useEmpty(sym)) {
           sym->erase();
           changed = true;
@@ -1106,8 +1112,8 @@ void ParallelLower::runOnOperation() {
       SymbolUserMap symbolUserMap(symbolTable, getOperation());
       for (auto callable : remaining) {
         auto sym = cast<SymbolOpInterface>(callable);
-        assert(sym.canDiscardOnUseEmpty());
-        assert(sym.isPrivate());
+        assert(isa<gpu::GPUFuncOp>(callable) || sym.canDiscardOnUseEmpty());
+        assert(isa<gpu::GPUFuncOp>(callable) || sym.isPrivate());
         if (symbolUserMap.useEmpty(sym)) {
           sym->erase();
         } else {
