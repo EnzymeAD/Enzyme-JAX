@@ -15,14 +15,28 @@ def NcclGetCommWorldOp : Comm_Op<"nccl.get_comm_world", [Pure]> {
   let assemblyFormat = "attr-dict `:` type(results)";
 }
 
-def NcclGroupStartOp : Comm_Op<"nccl.group_start", []> {
-  let summary = "Equivalent to `ncclGroupStart`";
-  let assemblyFormat = "attr-dict";
+def NcclGroupOp : Comm_Op<"nccl.group", [
+    RecursiveMemoryEffects,
+    SingleBlockImplicitTerminator<"NcclYieldOp">]> {
+  let summary = "NCCL operations issued between `ncclGroupStart` and "
+                "`ncclGroupEnd`";
+
+  let results = (outs Variadic<AnyTensor> : $results);
+  let regions = (region SizedRegion<1> : $region);
+
+  let assemblyFormat = "(`->` type($results)^)? $region attr-dict";
+  let hasVerifier = 1;
 }
 
-def NcclGroupEndOp : Comm_Op<"nccl.group_end", []> {
-  let summary = "Equivalent to `ncclGroupEnd`";
-  let assemblyFormat = "attr-dict";
+def NcclYieldOp : Comm_Op<"nccl.yield", [
+    Pure, Terminator, HasParent<"NcclGroupOp">]> {
+  let summary = "Returns values from the body of a `comm.nccl.group`";
+
+  let arguments = (ins Variadic<AnyTensor> : $values);
+
+  let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
+
+  let assemblyFormat = "attr-dict ($values^ `:` type($values))?";
 }
 
 def NcclBarrierOp : Comm_Op<"nccl.barrier", []> {
