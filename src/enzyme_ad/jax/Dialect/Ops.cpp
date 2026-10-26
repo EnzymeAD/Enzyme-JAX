@@ -1573,6 +1573,27 @@ LogicalResult OrgqrOp::verify() {
   return success();
 }
 
+LogicalResult TridiagonalSolveOp::verify() {
+  auto dlType = cast<RankedTensorType>(getDl().getType());
+  auto bType = cast<RankedTensorType>(getB().getType());
+
+  if (getD().getType() != dlType || getDu().getType() != dlType)
+    return emitOpError("requires all diagonals to have the same type");
+
+  if (bType.getRank() < 2 || dlType.getShape() != bType.getShape().drop_back())
+    return emitOpError("requires the leading ndim-1 dimensions of `B` to "
+                       "equal the dimensions of the diagonals");
+
+  if (getX().getType() != bType)
+    return emitOpError("requires the result to have the same type as `B`");
+
+  if (cast<RankedTensorType>(getInfo().getType()).getShape() !=
+      bType.getShape().drop_back(2))
+    return emitOpError("requires `info` to have the batch dimensions of `B`");
+
+  return success();
+}
+
 namespace {
 
 /// Erases a common case of copy ops where a destination value is used only by

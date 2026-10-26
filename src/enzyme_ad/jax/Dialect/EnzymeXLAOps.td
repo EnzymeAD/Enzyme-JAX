@@ -785,8 +785,11 @@ def TridiagonalSolveOp: EnzymeXLA_Op<"linalg.tridiagonal_solve", [Pure]> {
   d: A batch of vectors with shape [..., m]. The middle diagonal of A:
     d[i]  := A[i, i] for i in [0,m).
   du: A batch of vectors with shape [..., m]. The upper diagonal of A:
-    du[i] := A[i, i+1] for i in [0,m). Note that dl[m-1] = 0.
-  b: Right hand side matrix.
+    du[i] := A[i, i+1] for i in [0,m). Note that du[m-1] = 0.
+  b: Right hand side matrix with shape [..., m, nrhs].
+
+  Returns the solution X with the same shape as b, and info with shape [...],
+  which is non-zero for the systems that could not be solved.
   }];
 
   let arguments = (ins
@@ -797,12 +800,15 @@ def TridiagonalSolveOp: EnzymeXLA_Op<"linalg.tridiagonal_solve", [Pure]> {
   );
 
   let results = (outs
-    HLO_Tensor:$X
+    HLO_Tensor:$X,
+    HLO_Tensor:$info
   );
 
   let assemblyFormat = [{
     $dl `,` $d `,` $du `,` $B attr-dict `:` functional-type(operands, results)
   }];
+
+  let hasVerifier = 1;
 }
 
 def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
@@ -1104,6 +1110,36 @@ def GesvjOp : EnzymeXLA_Op<"lapack.gesvj", [Pure]> {
 
   let assemblyFormat = [{
     $input prop-dict attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def GtsvOp : EnzymeXLA_Op<"lapack.gtsv", [Pure]> {
+  let summary = "Solves a general tridiagonal linear system.";
+
+  let description = [{
+    This operation is modeled after LAPACK's *GTSV routines. Unlike LAPACK,
+    all three diagonals have the same length m as the system: dl[0] and
+    du[m-1] are ignored.
+
+    `dl`, `d` and `du` have shape [..., m] and `B` has shape [..., m, nrhs].
+    `info` has shape [...] and is non-zero for the systems that could not be
+    solved.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$dl,
+    HLO_Tensor:$d,
+    HLO_Tensor:$du,
+    HLO_Tensor:$B
+  );
+
+  let results = (outs
+    HLO_Tensor:$X,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $dl `,` $d `,` $du `,` $B attr-dict `:` functional-type(operands, results)
   }];
 }
 
