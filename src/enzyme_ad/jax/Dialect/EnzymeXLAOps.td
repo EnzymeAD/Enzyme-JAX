@@ -788,7 +788,8 @@ def TridiagonalSolveOp: EnzymeXLA_Op<"linalg.tridiagonal_solve", [Pure]> {
     du[i] := A[i, i+1] for i in [0,m). Note that du[m-1] = 0.
   b: Right hand side matrix with shape [..., m, nrhs].
 
-  Systems for which the solve fails (e.g. a singular matrix) produce NaNs.
+  Returns the solution X with the same shape as b, and info with shape [...],
+  which is non-zero for the systems that could not be solved.
   }];
 
   let arguments = (ins
@@ -799,7 +800,8 @@ def TridiagonalSolveOp: EnzymeXLA_Op<"linalg.tridiagonal_solve", [Pure]> {
   );
 
   let results = (outs
-    HLO_Tensor:$X
+    HLO_Tensor:$X,
+    HLO_Tensor:$info
   );
 
   let assemblyFormat = [{

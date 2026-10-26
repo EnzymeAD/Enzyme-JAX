@@ -1587,6 +1587,10 @@ LogicalResult TridiagonalSolveOp::verify() {
   if (getX().getType() != bType)
     return emitOpError("requires the result to have the same type as `B`");
 
+  if (cast<RankedTensorType>(getInfo().getType()).getShape() !=
+      bType.getShape().drop_back(2))
+    return emitOpError("requires `info` to have the batch dimensions of `B`");
+
   return success();
 }
 
