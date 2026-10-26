@@ -347,6 +347,33 @@ MlirAttribute enzymexlaCommMpiOpAttrGet(MlirContext ctx,
   }
 }
 
+MlirType enzymexlaCommNcclCommTypeGet(MlirContext ctx) {
+  return wrap(mlir::comm::NcclCommType::get(unwrap(ctx)));
+}
+
+MlirAttribute enzymexlaCommNcclRedOpAttrGet(MlirContext ctx,
+                                            EnzymeXlaCommNcclRedOp op) {
+  switch (op) {
+  case ENZYMEXLA_COMM_NCCL_RED_OP_SUM:
+    return wrap(mlir::comm::NcclRedOpAttr::get(
+        unwrap(ctx), mlir::comm::NcclRedOpEnum::ncclSum));
+  case ENZYMEXLA_COMM_NCCL_RED_OP_PROD:
+    return wrap(mlir::comm::NcclRedOpAttr::get(
+        unwrap(ctx), mlir::comm::NcclRedOpEnum::ncclProd));
+  case ENZYMEXLA_COMM_NCCL_RED_OP_MIN:
+    return wrap(mlir::comm::NcclRedOpAttr::get(
+        unwrap(ctx), mlir::comm::NcclRedOpEnum::ncclMin));
+  case ENZYMEXLA_COMM_NCCL_RED_OP_MAX:
+    return wrap(mlir::comm::NcclRedOpAttr::get(
+        unwrap(ctx), mlir::comm::NcclRedOpEnum::ncclMax));
+  case ENZYMEXLA_COMM_NCCL_RED_OP_AVG:
+    return wrap(mlir::comm::NcclRedOpAttr::get(
+        unwrap(ctx), mlir::comm::NcclRedOpEnum::ncclAvg));
+  default:
+    llvm_unreachable("Invalid NCCL reduction operation");
+  }
+}
+
 namespace {
 
 // Helper: format a pass with a parenthesized int64 argument.
@@ -381,6 +408,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("get_tuple_element_op_canon<16>");
   list.push_back("real_op_canon<16>");
   list.push_back("imag_op_canon<16>");
+  list.push_back("real_of_exp_simplify<16>");
+  list.push_back("imag_of_exp_simplify<16>");
   list.push_back("conj_complex_negate<16>");
   list.push_back("negate_imag_conj<16>");
   list.push_back("get_dimension_size_op_canon<16>");
@@ -1023,6 +1052,7 @@ static void addNoNanPasses(std::vector<std::string> &list, bool noNan) {
   list.push_back(passWithArg("no_nan_mul_simplify", noNan));
   list.push_back(passWithArg("no_nan_div_simplify", noNan));
   list.push_back(passWithArg("no_nan_compare_abs", noNan));
+  list.push_back(passWithArg("abs_of_exp_simplify", noNan));
 }
 
 static void addAllFinitePasses(std::vector<std::string> &list) {
