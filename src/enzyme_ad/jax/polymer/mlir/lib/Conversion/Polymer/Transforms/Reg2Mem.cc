@@ -705,7 +705,7 @@ static void getLowerOrUpperBound(
     llvm::SmallVectorImpl<mlir::Value> &operands, OpBuilder &b) {
   OpBuilder::InsertionGuard guard(b);
   SmallVector<mlir::AffineExpr, 4> exprs;
-  MapVector<mlir::Value, unsigned int> symToPos;
+  llvm::MapVector<mlir::Value, unsigned int> symToPos;
 
   for (unsigned int i = 0; i < domain.getNumInequalities(); i++) {
     auto mapped = llvm::map_range(domain.getInequality(i),
