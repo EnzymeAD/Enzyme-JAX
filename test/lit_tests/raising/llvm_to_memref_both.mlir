@@ -24,11 +24,11 @@ module {
       %i_i64 = arith.index_cast %i : index to i64
       %index1 = arith.addi %val1_i64, %i_i64 : i64
       %gep0 = llvm.getelementptr inbounds %ptr0[%index1] : (!llvm.ptr<1>,i64) -> !llvm.ptr<1>, f64
-      %val2 = llvm.load %gep0 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+      %val2 = llvm.load %gep0 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
       %c8 = arith.constant 8 : i64
       %mul = arith.muli %i_i64, %c8 : i64
       %gep1 = llvm.getelementptr %ptr1[%mul] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-      %val3 = llvm.load %gep1 {alignment = 8 : i64} : !llvm.ptr<1> -> f64
+      %val3 = llvm.load %gep1 <alignment = 8> : !llvm.ptr<1> -> f64
       %c99 = arith.constant 99 : index
       %is_last = arith.cmpi eq, %i, %c99 : index
       scf.if %is_last {
@@ -56,7 +56,7 @@ module {
 // CHECK-NEXT :   %7 = arith.addi %5, %6 : i64
 // CHECK-NEXT :   %8 = arith.index_cast %7 : i64 to index
 // CHECK-NEXT :   %9 = "enzymexla.pointer2memref"(%0) : (!llvm.ptr<1>) -> memref<1000xf64, 1>
-// CHECK-NEXT :   %10 = memref.load %9[%8] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<1000xf64, 1>
+// CHECK-NEXT :   %10 = memref.load %9[%8] alignment(8) {ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<1000xf64, 1>
 // CHECK-NEXT :   %11 = "enzymexla.pointer2memref"(%1) : (!llvm.ptr<1>) -> memref<?xf64, 1>
 // CHECK-NEXT :   %12 = affine.load %11[%arg2 * 8] {alignment = 8 : i64, ordering = 0 : i64} : memref<?xf64, 1>
 // CHECK-NEXT :   %13 = arith.cmpi eq, %arg2, %c99 : index

@@ -55,8 +55,10 @@ struct AlwaysInlinerInterface : public mlir::InlinerInterface {
   /// Handle the given inlined terminator by replacing it with a new operation
   /// as necessary.
   void handleTerminator(mlir::Operation *op, mlir::Block *newDest) const final {
-    // Only "std.return" needs to be handled here.
-    if (!isa<mlir::func::ReturnOp, mlir::LLVM::ReturnOp>(op))
+    // Only returns need to be handled here; a GPU kernel inlined into its
+    // launch ends in gpu.return.
+    if (!isa<mlir::func::ReturnOp, mlir::LLVM::ReturnOp, mlir::gpu::ReturnOp>(
+            op))
       return;
 
     // Replace the return with a branch to the dest.
@@ -70,8 +72,12 @@ struct AlwaysInlinerInterface : public mlir::InlinerInterface {
   /// as necessary.
   void handleTerminator(mlir::Operation *op,
                         mlir::ValueRange valuesToRepl) const final {
-    // Replace the values directly with the return operands.
-    assert(op->getNumOperands() == valuesToRepl.size());
+    // Replace the values directly with the return operands. A callee that
+    // cannot return ends in a terminator carrying no operands; its call
+    // results are left for the caller-side repair (parallel-lower rebuilds
+    // the yields of an execute_region whose call could not return).
+    assert(op->getNumOperands() == valuesToRepl.size() ||
+           op->getNumOperands() == 0);
     for (const auto &it : llvm::enumerate(op->getOperands()))
       valuesToRepl[it.index()].replaceAllUsesWith(it.value());
   }

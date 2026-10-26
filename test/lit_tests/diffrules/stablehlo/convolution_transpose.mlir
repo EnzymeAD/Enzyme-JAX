@@ -14,7 +14,7 @@ module {
   func.func @enzyme_withgradient(%arg0: tensor<3x2x3x3xf32>, %arg1: tensor<2xf32>, %arg2: tensor<1x3x5x5xf32>) -> (tensor<f32>, tensor<1x3x5x5xf32>, tensor<3x2x3x3xf32>, tensor<2xf32>, tensor<1x3x5x5xf32>) {
     %cst = stablehlo.constant dense<1.000000e+00> : tensor<f32>
     %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<1x3x5x5xf32>
-    %0:5 = enzyme.autodiff @"Const{var\22#35#39\22{typeof(loss)}}(var\22#35#39\22{typeof(loss)}(Main.loss, Core.Box(ConvTranspose((3, 3), 3 => 2, stride=2))))_autodiff"(%arg0, %arg1, %arg2, %cst, %cst_0) {activity = [#enzyme<activity enzyme_const>, #enzyme<activity enzyme_const>, #enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_active>, #enzyme<activity enzyme_const>, #enzyme<activity enzyme_const>, #enzyme<activity enzyme_active>]} : (tensor<3x2x3x3xf32>, tensor<2xf32>, tensor<1x3x5x5xf32>, tensor<f32>, tensor<1x3x5x5xf32>) -> (tensor<f32>, tensor<3x2x3x3xf32>, tensor<2xf32>, tensor<1x3x5x5xf32>, tensor<1x3x5x5xf32>)
+    %0:5 = enzyme.autodiff @"Const{var\22#35#39\22{typeof(loss)}}(var\22#35#39\22{typeof(loss)}(Main.loss, Core.Box(ConvTranspose((3, 3), 3 => 2, stride=2))))_autodiff"(%arg0, %arg1, %arg2, %cst, %cst_0) <{activity = [#enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_const>, #enzyme.activity<enzyme_active>]}> : (tensor<3x2x3x3xf32>, tensor<2xf32>, tensor<1x3x5x5xf32>, tensor<f32>, tensor<1x3x5x5xf32>) -> (tensor<f32>, tensor<3x2x3x3xf32>, tensor<2xf32>, tensor<1x3x5x5xf32>, tensor<1x3x5x5xf32>)
     return %0#0, %0#4, %0#1, %0#2, %0#3 : tensor<f32>, tensor<1x3x5x5xf32>, tensor<3x2x3x3xf32>, tensor<2xf32>, tensor<1x3x5x5xf32>
   }
 }
@@ -31,6 +31,6 @@ module {
 // CHECK-NEXT:    %[[v6:.+]] = stablehlo.broadcast_in_dim %[[v5]], dims = [] : (tensor<f32>) -> tensor<11x11x2x1xf32>
 // CHECK-NEXT:    %[[rev:.+]] = stablehlo.reverse %arg0, dims = [3, 2] : tensor<3x2x3x3xf32>
 // CHECK-NEXT:    %[[v7:.+]] = stablehlo.convolution(%[[v6]], %[[rev]]) dim_numbers = [0, 1, f, b]x[o, i, 1, 0]->[b, f, 1, 0], window = {stride = [2, 2], pad = {{\[\[}}0, 0], [0, 0]], rhs_dilate = [1, 1]} {batch_group_count = 1 : i64, feature_group_count = 1 : i64} : (tensor<11x11x2x1xf32>, tensor<3x2x3x3xf32>) -> tensor<1x3x5x5xf32>
-// CHECK-NEXT:    %[[v8:.+]] = arith.addf %arg4, %[[v7]] : tensor<1x3x5x5xf32>
+// CHECK-NEXT:    %[[v8:.+]] = arith.addf %arg4, %[[v7]] fastmath<fast> : tensor<1x3x5x5xf32>
 // CHECK-NEXT:    return %[[v4]], %arg0, %arg1, %arg2, %[[v8]] : tensor<f32>, tensor<3x2x3x3xf32>, tensor<2xf32>, tensor<1x3x5x5xf32>, tensor<1x3x5x5xf32>
 // CHECK-NEXT:  }

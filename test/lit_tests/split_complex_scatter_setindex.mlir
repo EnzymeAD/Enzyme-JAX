@@ -9,7 +9,7 @@ module {
     %0 = stablehlo.reshape %arg3 : (tensor<4096xi64>) -> tensor<4096x1xi64>
     %1 = stablehlo.convert %arg6 : (tensor<64x64xf64>) -> tensor<64x64xcomplex<f64>>
     %2 = stablehlo.reshape %1 : (tensor<64x64xcomplex<f64>>) -> tensor<4096xcomplex<f64>>
-    %3 = stablehlo.multiply %2, %arg4 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<4096xcomplex<f64>>
+    %3 = stablehlo.multiply %2, %arg4 {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<4096xcomplex<f64>>
     %4 = stablehlo.subtract %0, %c : tensor<4096x1xi64>
     %5 = stablehlo.divide %4, %c_0 : tensor<4096x1xi64>
     %6 = stablehlo.concatenate %4, %5, dim = 1 : (tensor<4096x1xi64>, tensor<4096x1xi64>) -> tensor<4096x2xi64>
@@ -17,7 +17,7 @@ module {
     %8 = "stablehlo.scatter"(%cst, %7, %3) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>}> ({
     ^bb0(%arg7: tensor<complex<f64>>, %arg8: tensor<complex<f64>>):
       stablehlo.return %arg8 : tensor<complex<f64>>
-    }) {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<128x128xcomplex<f64>>, tensor<4096x2xi64>, tensor<4096xcomplex<f64>>) -> tensor<128x128xcomplex<f64>>
+    }) {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<128x128xcomplex<f64>>, tensor<4096x2xi64>, tensor<4096xcomplex<f64>>) -> tensor<128x128xcomplex<f64>>
     %9 = stablehlo.transpose %8, dims = [1, 0] : (tensor<128x128xcomplex<f64>>) -> tensor<128x128xcomplex<f64>>
     %10 = stablehlo.fft %9, type =  FFT, length = [128, 128] : (tensor<128x128xcomplex<f64>>) -> tensor<128x128xcomplex<f64>>
     %11 = stablehlo.reshape %10 : (tensor<128x128xcomplex<f64>>) -> tensor<16384x1xcomplex<f64>>

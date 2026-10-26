@@ -30,10 +30,8 @@ module {
 // CHECK-DAG:     %[[C_1:.*]] = stablehlo.constant dense<1> : tensor<i64>
 // CHECK-DAG:     %[[V4:.*]] = stablehlo.add %[[V0]], %[[C_1]] : tensor<i64>
 // CHECK-DAG:     %[[V5:.*]] = stablehlo.reshape %[[V4]] : (tensor<i64>) -> tensor<1xi64>
-// CHECK-DAG:     %[[V6:.*]] = stablehlo.reshape %[[V5]] : (tensor<1xi64>) -> tensor<1x1xi64>
-// CHECK-DAG:     %[[V7:.*]] = "stablehlo.gather"(%[[ARG0]], %[[V6]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<?xf64>, tensor<1x1xi64>) -> tensor<1xf64>
-// CHECK-DAG:     %[[V8:.*]] = stablehlo.reshape %[[V7]] : (tensor<1xf64>) -> tensor<f64>
-// CHECK-DAG:     %[[V9:.*]] = stablehlo.broadcast_in_dim %[[V8]], dims = [] : (tensor<f64>) -> tensor<10xf64>
+// CHECK-DAG:     %[[V6:.*]] = "stablehlo.gather"(%[[ARG0]], %[[V5]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0]>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<?xf64>, tensor<1xi64>) -> tensor<f64>
+// CHECK-DAG:     %[[V9:.*]] = stablehlo.broadcast_in_dim %[[V6]], dims = [] : (tensor<f64>) -> tensor<10xf64>
 // CHECK-DAG:     %[[V10:.*]] = stablehlo.broadcast_in_dim %[[CST]], dims = [] : (tensor<f64>) -> tensor<10xf64>
 // CHECK-DAG:     %[[CST_2:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // CHECK-DAG:     %[[V11:.*]] = "stablehlo.reduce_window"(%[[V9]], %[[CST_2]]) <{base_dilations = array<i64: 1>, padding = dense<{{\[\[}}9, 0{{\]\]}}> : tensor<1x2xi64>, window_dilations = array<i64: 1>, window_dimensions = array<i64: 10>, window_strides = array<i64: 1>}> ({

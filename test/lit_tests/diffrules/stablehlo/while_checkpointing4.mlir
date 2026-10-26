@@ -14,7 +14,7 @@ module {
 
     %4 = stablehlo.dynamic_update_slice %arg26, %arg58, %c_204 : (tensor<1xf64>, tensor<1xf64>, tensor<i32>) -> tensor<1xf64>
 
-    %23315:2 = stablehlo.while(%iterArg = %c_216, %iterArg_537 = %arg18) : tensor<i64>, tensor<1xf64> attributes {enzyme.disable_mincut, enzymexla.enable_checkpointing = true}
+    %23315:2 = stablehlo.while(%iterArg = %c_216, %iterArg_537 = %arg18) : tensor<i64>, tensor<1xf64> attributes {enzyme.disable_mincut, enzyme.enable_checkpointing = true}
      cond {
       %69678 = stablehlo.compare  LT, %iterArg, %c_214 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %69678 : tensor<i1>
@@ -35,7 +35,7 @@ module {
     %cst_2 = stablehlo.constant dense<3999.9999999999995> : tensor<f64>
     %cst_3 = stablehlo.constant dense<6.371000e+06> : tensor<f64>
     %cst_4 = stablehlo.constant dense<0.000000e+00> : tensor<f64>
-    %0:6 = enzyme.autodiff @f(%arg18, %arg26, %arg33, %arg58, %res1, %res2) {activity = [#enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>]} : (tensor<1xf64>,  tensor<1xf64>, tensor<1xf64>, tensor<1xf64>, tensor<1xf64>, tensor<1xf64>) -> (tensor<1xf64>, tensor<1xf64>, tensor<1xf64>, tensor<1xf64>, tensor<1xf64>, tensor<1xf64>)
+    %0:6 = enzyme.autodiff @f(%arg18, %arg26, %arg33, %arg58, %res1, %res2) <{activity = [#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_active>, #enzyme.activity<enzyme_active>]}> : (tensor<1xf64>,  tensor<1xf64>, tensor<1xf64>, tensor<1xf64>, tensor<1xf64>, tensor<1xf64>) -> (tensor<1xf64>, tensor<1xf64>, tensor<1xf64>, tensor<1xf64>, tensor<1xf64>, tensor<1xf64>)
     return %0#0, %0#1 : tensor<1xf64>, tensor<1xf64>
   }
 }

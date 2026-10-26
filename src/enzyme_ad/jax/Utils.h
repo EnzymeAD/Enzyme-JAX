@@ -6,10 +6,12 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Types.h"
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Error.h"
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/IR/Value.h>
 
@@ -39,8 +41,39 @@
 
 #include <deque>
 
+#if (defined(_WIN32) || defined(__CYGWIN__)) &&                                \
+    !defined(MLIR_CAPI_ENABLE_WINDOWS_DLL_DECLSPEC)
+// Visibility annotations disabled.
+#define MLIR_CAPI_EXPORTED
+#elif defined(_WIN32) || defined(__CYGWIN__)
+// Windows visibility declarations.
+#if MLIR_CAPI_BUILDING_LIBRARY
+#define MLIR_CAPI_EXPORTED __declspec(dllexport)
+#else
+#define MLIR_CAPI_EXPORTED __declspec(dllimport)
+#endif
+#else
+// Non-windows: use visibility attributes.
+#define MLIR_CAPI_EXPORTED __attribute__((visibility("default")))
+#endif
+
 namespace mlir {
 namespace enzyme {
+
+/// Get the entry block of the nearest enclosing allocation scope or isolated
+/// operation. Return nullptr if there is no such operation.
+Block *getAllocaBlock(Operation *op);
+
+llvm::Expected<void *> lookupSymbol(const char *name);
+extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
+                                                      void *symbol);
+
+// The scalar an LLVM aggregate is made of, and the path to each of its leaves
+// in memory order, when every leaf is that one scalar and the layout holds no
+// padding; nullopt otherwise.
+std::optional<Type>
+homogeneousLeaves(Type type, const DataLayout &dataLayout,
+                  SmallVectorImpl<SmallVector<int64_t>> &paths);
 
 void commonLowerUpdateWithoutCorners(enzymexla::UpdateWithoutCornersOp extend,
                                      PatternRewriter &rewriter);
@@ -213,18 +246,20 @@ cloneWithoutResults(mlir::affine::AffineIfOp op, mlir::OpBuilder &rewriter,
 }
 
 static inline mlir::scf::ForOp
-cloneWithoutResults(mlir::scf::ForOp op, mlir::PatternRewriter &rewriter,
-                    mlir::IRMapping mapping = {}) {
+cloneWithoutResults(mlir::scf::ForOp op, mlir::OpBuilder &rewriter,
+                    mlir::IRMapping mapping = {}, mlir::ValueRange inits = {}) {
   using namespace mlir;
-  return scf::ForOp::create(rewriter, op.getLoc(),
-                            mapping.lookupOrDefault(op.getLowerBound()),
-                            mapping.lookupOrDefault(op.getUpperBound()),
-                            mapping.lookupOrDefault(op.getStep()));
+  auto newFor = scf::ForOp::create(
+      rewriter, op.getLoc(), mapping.lookupOrDefault(op.getLowerBound()),
+      mapping.lookupOrDefault(op.getUpperBound()),
+      mapping.lookupOrDefault(op.getStep()), inits);
+  for (auto attr : op->getDiscardableAttrs())
+    newFor->setAttr(attr.getName(), attr.getValue());
+  return newFor;
 }
 static inline mlir::affine::AffineForOp
-cloneWithoutResults(mlir::affine::AffineForOp op,
-                    mlir::PatternRewriter &rewriter,
-                    mlir::IRMapping mapping = {}) {
+cloneWithoutResults(mlir::affine::AffineForOp op, mlir::OpBuilder &rewriter,
+                    mlir::IRMapping mapping = {}, mlir::ValueRange inits = {}) {
   using namespace mlir;
   SmallVector<Value> lower;
   for (auto o : op.getLowerBoundOperands())
@@ -234,7 +269,7 @@ cloneWithoutResults(mlir::affine::AffineForOp op,
     upper.push_back(mapping.lookupOrDefault(o));
   auto newFor = affine::AffineForOp::create(
       rewriter, op.getLoc(), lower, op.getLowerBoundMap(), upper,
-      op.getUpperBoundMap(), op.getStepAsInt());
+      op.getUpperBoundMap(), op.getStepAsInt(), inits);
   for (auto attr : op->getDiscardableAttrs())
     newFor->setAttr(attr.getName(), attr.getValue());
   return newFor;
@@ -331,6 +366,7 @@ bool getEffectsAfter(
 
 bool mayReadFrom(mlir::Operation *, mlir::Value);
 bool mayWriteTo(mlir::Operation *, mlir::Value, bool ignoreBarrier = false);
+bool isStackAlloca(mlir::Value v);
 
 template <typename AttrTy, typename T>
 SmallVector<Attribute> getUpdatedAttrList(Value val, StringRef attrName,
@@ -416,6 +452,54 @@ T getAttributeFromIR(Value val, StringRef attrName, T unknownValue) {
   return enumAttr.getValue();
 }
 
+/// Marks a `stablehlo.while` that belongs to the scaffold checkpointed
+/// reverse-mode AD builds around one checkpoint segment -- the forward
+/// recompute, the reverse sweep, or the outer walk over segments.
+///
+/// Such a loop exists *in order to* bound peak memory: checkpointing pays
+/// recompute so that only one segment's intermediates are live at a time. Any
+/// rewrite that materializes its iteration space -- batching, fission,
+/// unrolling -- undoes exactly that trade and rebuilds the full tape the loop
+/// was created to avoid. Passes that would do so must skip loops carrying this
+/// attribute; see `isCheckpointSegmentLoop`.
+constexpr llvm::StringLiteral kCheckpointSegmentAttrName =
+    "enzymexla.checkpoint_segment";
+
+inline void markCheckpointSegmentLoop(mlir::Operation *op) {
+  op->setAttr(kCheckpointSegmentAttrName,
+              mlir::UnitAttr::get(op->getContext()));
+}
+
+/// True if `op` is a checkpoint-segment loop whose iteration space must not be
+/// materialized. See `markCheckpointSegmentLoop` for the rationale.
+inline bool isCheckpointSegmentLoop(mlir::Operation *op) {
+  return op->hasAttr(kCheckpointSegmentAttrName);
+}
+
+/// True if `op` is a checkpoint-segment loop, or encloses one.
+///
+/// The mark is not guaranteed to survive on every loop of the scaffold. A
+/// rewrite that has to widen a loop -- to carry the checkpoint snapshots out,
+/// say -- cannot mutate results in place, so it builds a fresh op, and a fresh
+/// op does not inherit discardable attributes. An outer scaffold loop can
+/// therefore lose the mark while the segment loop nested inside it keeps it.
+///
+/// Materializing the outer loop rebuilds the same tape as materializing the
+/// inner one, so enclosing a marked loop counts the same as carrying the mark.
+/// This is deliberately conservative: it also covers a user loop that happens
+/// to wrap a checkpointed region, where fission would undo the checkpointing
+/// just as thoroughly.
+inline bool isOrContainsCheckpointSegmentLoop(mlir::Operation *op) {
+  if (isCheckpointSegmentLoop(op))
+    return true;
+  return op
+      ->walk([](mlir::Operation *nested) {
+        return isCheckpointSegmentLoop(nested) ? mlir::WalkResult::interrupt()
+                                               : mlir::WalkResult::advance();
+      })
+      .wasInterrupted();
+}
+
 /// Get bounds attribute from IR. Bounds are stored as ArrayAttr with two
 /// IntegerAttr elements [min, max] under the attribute name "enzymexla.bounds".
 /// Returns nullopt if the attribute is not found or malformed.
@@ -476,6 +560,94 @@ getBoundsFromIR(Value val, unsigned bitWidth) {
   auto minVal = minAttr.getValue().sextOrTrunc(bitWidth);
   auto maxVal = maxAttr.getValue().sextOrTrunc(bitWidth);
   return std::make_pair(minVal, maxVal);
+}
+
+inline std::pair<APInt, APInt> getProvableIntegerRange(Value v, int depth = 0) {
+  auto ty = cast<RankedTensorType>(v.getType());
+  auto ety = cast<IntegerType>(ty.getElementType());
+  unsigned width = ety.getWidth();
+  bool isUns = ety.isUnsignedInteger();
+  auto typeRange = [&]() -> std::pair<APInt, APInt> {
+    if (isUns)
+      return {APInt::getZero(128), APInt::getMaxValue(width).zext(128)};
+    return {APInt::getSignedMinValue(width).sext(128),
+            APInt::getSignedMaxValue(width).sext(128)};
+  };
+  if (auto irBounds = getBoundsFromIR(v, 128))
+    return *irBounds;
+  SplatElementsAttr splat;
+  if (matchPattern(v, m_Constant(&splat))) {
+    APInt c = splat.getSplatValue<APInt>();
+    APInt e = isUns ? c.zext(128) : c.sext(128);
+    return {e, e};
+  }
+  Operation *def = v.getDefiningOp();
+  if (!def || depth > 8)
+    return typeRange();
+  if (isa<stablehlo::ReshapeOp, stablehlo::BroadcastInDimOp, stablehlo::SliceOp,
+          stablehlo::DynamicSliceOp, stablehlo::ReverseOp,
+          stablehlo::TransposeOp>(def))
+    // Element subsets and rearrangements keep the operand's range.
+    return getProvableIntegerRange(def->getOperand(0), depth + 1);
+  if (auto cvt = dyn_cast<stablehlo::ConvertOp>(def)) {
+    auto inEty = dyn_cast<IntegerType>(
+        cast<RankedTensorType>(cvt.getOperand().getType()).getElementType());
+    // Only a widening integer conversion preserves the operand's range.
+    if (inEty && inEty.getWidth() <= width)
+      return getProvableIntegerRange(cvt.getOperand(), depth + 1);
+    return typeRange();
+  }
+  if (auto clamp = dyn_cast<stablehlo::ClampOp>(def)) {
+    auto lo = getProvableIntegerRange(clamp.getMin(), depth + 1);
+    auto hi = getProvableIntegerRange(clamp.getMax(), depth + 1);
+    return {lo.first, hi.second};
+  }
+  if (auto mx = dyn_cast<stablehlo::MaxOp>(def)) {
+    auto a = getProvableIntegerRange(mx.getLhs(), depth + 1);
+    auto b = getProvableIntegerRange(mx.getRhs(), depth + 1);
+    return {llvm::APIntOps::smax(a.first, b.first),
+            llvm::APIntOps::smax(a.second, b.second)};
+  }
+  if (auto mn = dyn_cast<stablehlo::MinOp>(def)) {
+    auto a = getProvableIntegerRange(mn.getLhs(), depth + 1);
+    auto b = getProvableIntegerRange(mn.getRhs(), depth + 1);
+    return {llvm::APIntOps::smin(a.first, b.first),
+            llvm::APIntOps::smin(a.second, b.second)};
+  }
+  if (auto sel = dyn_cast<stablehlo::SelectOp>(def)) {
+    auto a = getProvableIntegerRange(sel.getOnTrue(), depth + 1);
+    auto b = getProvableIntegerRange(sel.getOnFalse(), depth + 1);
+    return {llvm::APIntOps::smin(a.first, b.first),
+            llvm::APIntOps::smax(a.second, b.second)};
+  }
+  if (auto add = dyn_cast<stablehlo::AddOp>(def)) {
+    auto a = getProvableIntegerRange(add.getLhs(), depth + 1);
+    auto b = getProvableIntegerRange(add.getRhs(), depth + 1);
+    return {a.first + b.first, a.second + b.second};
+  }
+  if (auto sub = dyn_cast<stablehlo::SubtractOp>(def)) {
+    auto a = getProvableIntegerRange(sub.getLhs(), depth + 1);
+    auto b = getProvableIntegerRange(sub.getRhs(), depth + 1);
+    return {a.first - b.second, a.second - b.first};
+  }
+  if (auto neg = dyn_cast<stablehlo::NegOp>(def)) {
+    auto a = getProvableIntegerRange(neg.getOperand(), depth + 1);
+    return {-a.second, -a.first};
+  }
+  if (auto mul = dyn_cast<stablehlo::MulOp>(def)) {
+    for (int i = 0; i < 2; ++i) {
+      SplatElementsAttr cs;
+      if (matchPattern(def->getOperand(i), m_Constant(&cs))) {
+        APInt c = cs.getSplatValue<APInt>().sext(128);
+        auto a = getProvableIntegerRange(def->getOperand(1 - i), depth + 1);
+        if (c.isNonNegative())
+          return {a.first * c, a.second * c};
+        return {a.second * c, a.first * c};
+      }
+    }
+    return typeRange();
+  }
+  return typeRange();
 }
 
 bool checkNotEqual(llvm::APInt a, llvm::APInt b);
@@ -1016,6 +1188,36 @@ static arith::CmpIPredicate swapPredicate(arith::CmpIPredicate pred) {
   llvm_unreachable("unknown cmpi predicate kind");
 }
 
+/// Whether the predicate compares its operands as unsigned integers.
+static bool isUnsignedPredicate(arith::CmpIPredicate pred) {
+  switch (pred) {
+  case arith::CmpIPredicate::ult:
+  case arith::CmpIPredicate::ule:
+  case arith::CmpIPredicate::ugt:
+  case arith::CmpIPredicate::uge:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/// The signed predicate comparing the same way as `pred`; the same as `pred`
+/// on values both known non-negative.
+static arith::CmpIPredicate signedPredicate(arith::CmpIPredicate pred) {
+  switch (pred) {
+  case arith::CmpIPredicate::ult:
+    return arith::CmpIPredicate::slt;
+  case arith::CmpIPredicate::ule:
+    return arith::CmpIPredicate::sle;
+  case arith::CmpIPredicate::ugt:
+    return arith::CmpIPredicate::sgt;
+  case arith::CmpIPredicate::uge:
+    return arith::CmpIPredicate::sge;
+  default:
+    return pred;
+  }
+}
+
 SmallVector<int64_t> findReshapeInsertionDims(RankedTensorType inputType,
                                               RankedTensorType outputType);
 SmallVector<int64_t> findReshapeInsertionDims(ArrayRef<int64_t> inputShape,
@@ -1108,6 +1310,19 @@ struct IotaLikeTensor {
 std::optional<IotaLikeTensor> detectIotaLikeTensor(DenseElementsAttr attr);
 std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor);
 
+// The values of the integer computation `v` when it is built of constants
+// (and iotas, when `iotas`) alone, through elementwise integer arithmetic,
+// comparisons, selects and conversions, and reshapes, broadcasts, transposes,
+// slices and concatenations, as the reference interpreter would compute them;
+// none when it is not, or when its semantics are not plain (a divide by zero,
+// a shift past the width, arithmetic on booleans).
+// Each value on the way is computed on at most `maxElements` elements, except
+// that a value the operands of which are all splats is computed on one
+// element, whatever its size.
+std::optional<mlir::DenseElementsAttr>
+evaluateIntegerConstant(mlir::Value v, int64_t maxElements = 4096,
+                        bool iotas = true);
+
 // Represents a constant tensor that can be expressed as
 //   pad(innerTensor, paddingValue, lowPadding, highPadding,
 //   interiorPadding=[0,...])
@@ -1162,6 +1377,18 @@ inline mlir::TypedAttr createAttrFromDouble(mlir::MLIRContext *ctx,
     return mlir::FloatAttr::get(floatType, value);
   return nullptr;
 }
+
+// The least and greatest values `v` takes, when they are constants: a
+// constant, the induction variable of an affine or scf loop or parallel with
+// constant bounds, or sums, differences and constant multiples of those,
+// through index casts and extensions. The values in between need not all be
+// taken (a loop with a step skips some).
+std::optional<std::pair<int64_t, int64_t>> getConstantRange(mlir::Value v);
+
+// The least and greatest values the single result of `map` takes over
+// `operands`, when it is linear in operands getConstantRange bounds.
+std::optional<std::pair<int64_t, int64_t>>
+getConstantRange(mlir::AffineMap map, mlir::ValueRange operands);
 
 // TODO: we can do a full analysis and return if the access is on a specific set
 // of diagonals. Checks that all accesses for this Op and its users thereoff are
@@ -1322,6 +1549,22 @@ Value getScalarValue(Operation *op, OpBuilder &builder);
 bool isScalarValue(Value val);
 bool isScalarValue(Operation *op);
 
+// The batched form of a dynamic_slice / dynamic_update_slice whose start
+// indices vary across the batch, as a gather / scatter: `mapper` gives the
+// batched start indices and update. With `operandIsBatched` the operand is
+// batched too and every batch element reads / writes its own copy; without,
+// the operand is shared, so every batch element reads / writes that one
+// tensor.
+LogicalResult batchDynamicSliceAsGather(DynamicSliceOp op, OpBuilder &builder,
+                                        IRMapping &mapper,
+                                        ArrayRef<int64_t> batchSizes,
+                                        bool operandIsBatched = true);
+LogicalResult batchDynamicUpdateSliceAsScatter(DynamicUpdateSliceOp op,
+                                               OpBuilder &builder,
+                                               IRMapping &mapper,
+                                               ArrayRef<int64_t> batchSizes,
+                                               bool operandIsBatched = true);
+
 Value copyTriangularPart(OpBuilder &builder, Value input,
                          enzymexla::LapackUplo uplo);
 
@@ -1432,6 +1675,12 @@ Value ConcatenateOpCreate(
 Value ReshapeOpCreate(
     OpBuilder &builder, Location loc, Value input, ArrayRef<int64_t> shape,
     std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt);
+
+// A broadcast_in_dim to the input's own shape along the identity mapping is
+// the input.
+Value BroadcastInDimOpCreate(OpBuilder &builder, Location loc, Value input,
+                             ArrayRef<int64_t> shape,
+                             ArrayRef<int64_t> broadcastDimensions);
 
 Value TransposeOpCreate(
     OpBuilder &builder, Location loc, Value input,
@@ -1649,6 +1898,39 @@ void ExtractBlockIntoFunction(Block *block, ModuleOp modOp, func::FuncOp &func,
                               OpBuilder &builder);
 
 } // namespace stablehlo
+
+/// Result layouts of a custom call whose results all alias an operand: each
+/// result takes the layout of the operand it aliases. Returns null (and emits
+/// an error on `op`) if some result aliases no operand.
+static ArrayAttr getAliasedResultLayouts(Operation *op,
+                                         ArrayAttr operandLayouts,
+                                         ArrayAttr outputOperandAliases) {
+  SmallVector<Attribute> layouts;
+  for (unsigned idx = 0, e = op->getNumResults(); idx < e; ++idx) {
+    Attribute layout = nullptr;
+    if (outputOperandAliases) {
+      for (auto attr : outputOperandAliases) {
+        auto alias = cast<stablehlo::OutputOperandAliasAttr>(attr);
+        auto outIdxs = alias.getOutputTupleIndices();
+        bool matches = e == 1 ? outIdxs.empty()
+                              : (outIdxs.size() == 1 && outIdxs[0] == idx);
+        if (matches && alias.getOperandTupleIndices().empty() &&
+            alias.getOperandIndex() < (int64_t)operandLayouts.size()) {
+          layout = operandLayouts[alias.getOperandIndex()];
+          break;
+        }
+      }
+    }
+    if (!layout) {
+      op->emitError() << "each result should match to an operand, could "
+                         "not find operand for result #"
+                      << idx;
+      return nullptr;
+    }
+    layouts.push_back(layout);
+  }
+  return ArrayAttr::get(op->getContext(), layouts);
+}
 
 static InFlightDiagnostic &operator<<(InFlightDiagnostic &diag, AffineMap map) {
   std::string str;

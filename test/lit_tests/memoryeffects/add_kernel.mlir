@@ -1,3 +1,4 @@
+// REQUIRES: triton
 // RUN: enzymexlamlir-opt --mark-func-memory-effects %s | FileCheck %s
 
 module {
@@ -7,7 +8,7 @@ module {
         %1 = llvm.mlir.constant(0 : i32) : i32
         %2 = llvm.mlir.constant(32 : i32) : i32
         %3 = llvm.mlir.constant(31 : i32) : i32
-        %4 = llvm.mlir.constant(0 : index) : i32
+        %4 = llvm.mlir.constant(0 : i32) : i32
         %5 = llvm.mlir.constant(1024 : i32) : i32
         %6 = llvm.mlir.constant(64 : i32) : i32
         %7 = llvm.call_intrinsic "llvm.nvvm.read.ptx.sreg.ctaid.x"() : () -> i32

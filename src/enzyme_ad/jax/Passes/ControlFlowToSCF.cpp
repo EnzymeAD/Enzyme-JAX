@@ -17,6 +17,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Pass/Pass.h"
@@ -126,6 +127,18 @@ struct EnzymeLiftControlFlowToSCF
 
       auto visitor = [&](Operation *innerOp) -> WalkResult {
         for (Region &reg : innerOp->getRegions()) {
+          // An unwind edge has no reading in scf. A region that throws or
+          // catches stays in cf form -- correct, just never raised -- rather
+          // than stopping the module or, worse, losing the edge.
+          bool hasEH = reg.walk([](Operation *op) {
+                            return isa<LLVM::InvokeOp, LLVM::LandingpadOp,
+                                       LLVM::ResumeOp>(op)
+                                       ? WalkResult::interrupt()
+                                       : WalkResult::advance();
+                          })
+                           .wasInterrupted();
+          if (hasEH)
+            continue;
           FailureOr<bool> changedFunc =
               transformCFGToSCF(reg, transformation, domInfo);
           if (failed(changedFunc))

@@ -3,13 +3,15 @@
 import os
 config.llvm_tools_dir = "@LLVM_TOOLS_BINARY_DIR@"
 
-if len("@ENZYME_BINARY_DIR@") == 0:
+if len("@ENZYME_BINARY_DIR@") == 0 and not os.path.isabs(config.llvm_tools_dir):
   config.llvm_tools_dir = os.getcwd() + "/" + config.llvm_tools_dir
 
 config.enzymexla_tools_dir = "@ENZYMEXLA_BINARY_DIR@"
 
 if len(config.enzymexla_tools_dir) == 0:
   config.enzymexla_tools_dir = os.getcwd()
+
+config.enable_triton = "@ENABLE_TRITON@" == "1"
 
 cfgfile = os.path.dirname(os.path.abspath(__file__)) + "/lit.cfg.py"
 lit_config.load_config(config, cfgfile)

@@ -1,0 +1,147 @@
+diff --git a/xla/service/spmd/spmd_partitioner.cc b/xla/service/spmd/spmd_partitioner.cc
+--- a/xla/service/spmd/spmd_partitioner.cc
++++ b/xla/service/spmd/spmd_partitioner.cc
+@@ -3082,9 +3082,65 @@
+         nullptr, PartitionedHlo(nullptr, shape, poperand.state()));
+   }
+ 
+-  auto reshard_operand =
+-      ReshardDataForSlicing(slice_strides, slice_starts, slice_limits,
+-                            poperand.Reshard(sharding), sharding, b);
++  // The halo exchange that moving the window along a sharded dimension
++  // needs is of the whole operand, and the slice of the other dimensions
++  // only comes after it. Along the dimensions that are not sharded, every
++  // device holds the whole extent, so that slice costs nothing: take it
++  // first, and exchange the halo of the slab instead. Only done with
++  // xla_enable_enzyme_comms_opt.
++  PartitionedHlo operand = poperand.Reshard(sharding);
++  std::vector<int64_t> starts(slice_starts.begin(), slice_starts.end());
++  std::vector<int64_t> limits(slice_limits.begin(), slice_limits.end());
++  const HloModule* module = operand.state().module;
++  const bool enzyme_comms_opt =
++      module != nullptr &&
++      module->config().debug_options().xla_enable_enzyme_comms_opt();
++  bool sharded_window = false;
++  if (enzyme_comms_opt && sharding.IsTiled() && operand.hlo() != nullptr) {
++    const Shape& base = operand.base_shape();
++    for (int64_t d = 0; d < base.dimensions().size(); ++d) {
++      if (sharding.NumTiles({d}) != 1 &&
++          (starts[d] != 0 || limits[d] != base.dimensions(d) ||
++           slice_strides[d] != 1)) {
++        sharded_window = true;
++      }
++    }
++  }
++  if (sharded_window) {
++    const Shape& base = operand.base_shape();
++    const Shape& local = operand.hlo()->shape();
++    Shape narrowed_base = base;
++    Shape narrowed_local = local;
++    std::vector<int64_t> local_starts(base.dimensions().size(), 0);
++    std::vector<int64_t> local_limits(local.dimensions().begin(),
++                                      local.dimensions().end());
++    std::vector<int64_t> local_strides(base.dimensions().size(), 1);
++    bool narrow = false;
++    for (int64_t d = 0; d < base.dimensions().size(); ++d) {
++      if (sharding.NumTiles({d}) != 1 || slice_strides[d] != 1 ||
++          local.dimensions(d) != base.dimensions(d) ||
++          (starts[d] == 0 && limits[d] == base.dimensions(d))) {
++        continue;
++      }
++      local_starts[d] = starts[d];
++      local_limits[d] = limits[d];
++      narrowed_base.set_dimensions(d, limits[d] - starts[d]);
++      narrowed_local.set_dimensions(d, limits[d] - starts[d]);
++      limits[d] -= starts[d];
++      starts[d] = 0;
++      narrow = true;
++    }
++    if (narrow) {
++      HloInstruction* slab = b->AddInstruction(HloInstruction::CreateSlice(
++          narrowed_local, operand.hlo(), local_starts, local_limits,
++          local_strides));
++      slab->set_sharding(sharding);
++      operand = PartitionedHlo(slab, narrowed_base, operand.state());
++    }
++  }
++
++  auto reshard_operand = ReshardDataForSlicing(slice_strides, starts, limits,
++                                               operand, sharding, b);
+   if (!reshard_operand.has_value()) {
+     return std::pair<HloInstruction*, PartitionedHlo>(
+         nullptr, PartitionedHlo(nullptr, shape, poperand.state()));
+diff --git a/xla/service/spmd/spmd_partitioner_test.cc b/xla/service/spmd/spmd_partitioner_test.cc
+--- a/xla/service/spmd/spmd_partitioner_test.cc
++++ b/xla/service/spmd/spmd_partitioner_test.cc
+@@ -9650,8 +9650,9 @@
+   auto sharded_input = AllOf(op::Parameter(0), op::Shape("f32[20,768,1536]"));
+   auto sharded_dus_in = AllOf(op::Parameter(1), op::Shape("f32[20,768,1528]"));
+   EXPECT_THAT(root, AllOf(op::Select(op::Pad(_, _), sharded_dus_in,
+-                                     op::Pad(op::Slice(op::DynamicSlice(
+-                                                 sharded_input, _, _, _)),
++                                     op::Pad(op::DynamicSlice(
++                                                 op::Slice(sharded_input), _,
++                                                 _, _),
+                                              _)),
+                           op::Shape("f32[20,768,1528]")));
+ }
+@@ -9855,13 +9856,56 @@
+   EXPECT_THAT(
+       root,
+       AllOf(op::Select(op::Pad(_, _), sharded_dus_in,
+-                       op::Pad(op::Slice(
+-
+-                                   op::DynamicSlice(sharded_input, _, _, _)),
++                       op::Pad(op::DynamicSlice(op::Slice(sharded_input), _,
++                                                _, _),
+                                _)),
+             op::Shape("f32[20,768,1528]")));
+ }
+ 
++constexpr absl::string_view kSliceUnshardedFirstHlo = R"(
++HloModule module
++
++ENTRY entry {
++  %p = f32[20,16,8] parameter(0), sharding={devices=[1,2,1]<=[2]}
++  ROOT %s = f32[4,14,8] slice(%p), slice={[8:12], [2:16], [0:8]},
++    sharding={devices=[1,2,1]<=[2]}
++})";
++
++// Returns the number of collective-permutes in the entry computation, checking
++// that each one has the given extent along dimension 0.
++int CountCollectivePermutesWithDim0(const HloModule& module, int64_t dim0) {
++  int permutes = 0;
++  for (const HloInstruction* instr :
++       module.entry_computation()->instructions()) {
++    if (instr->opcode() != HloOpcode::kCollectivePermute) {
++      continue;
++    }
++    ++permutes;
++    EXPECT_EQ(instr->shape().dimensions(0), dim0) << instr->ToString();
++  }
++  return permutes;
++}
++
++TEST_P(SpmdPartitioningTest, SliceTakesUnshardedDimensionsFirstWithEnzymeOpt) {
++  // Four levels of a twenty-level field, read shifted along the sharded
++  // dimension: the halo exchanged is of the four levels, not of the field.
++  TF_ASSERT_OK_AND_ASSIGN(auto module,
++                          PartitionComputation(kSliceUnshardedFirstHlo,
++                                               /*num_devices=*/2,
++                                               SpmdPartitionerOptions(),
++                                               /*enable_enzyme_opt=*/true));
++  EXPECT_GT(CountCollectivePermutesWithDim0(*module, 4), 0);
++}
++
++TEST_P(SpmdPartitioningTest, SliceExchangesWholeOperandWithoutEnzymeOpt) {
++  // Without xla_enable_enzyme_comms_opt the partitioner is unchanged: the
++  // halo exchange is of the whole operand.
++  TF_ASSERT_OK_AND_ASSIGN(auto module,
++                          PartitionComputation(kSliceUnshardedFirstHlo,
++                                               /*num_devices=*/2));
++  EXPECT_GT(CountCollectivePermutesWithDim0(*module, 20), 0);
++}
++
+ TEST_P(SpmdPartitioningTest, UnpartitionedGather) {
+   absl::string_view hlo_string = R"(
+ HloModule module

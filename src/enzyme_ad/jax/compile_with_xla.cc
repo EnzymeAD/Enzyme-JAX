@@ -29,8 +29,6 @@
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/client/client_library.h"
-#include "xla/client/executable_build_options.h"
-#include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
@@ -124,8 +122,34 @@ absl::Status run_pass_pipeline(mlir::Operation *mod,
         return failure();
       });
   if (!mlir::succeeded(pm.run(cast<mlir::ModuleOp>(mod)))) {
+    engine.eraseHandler(id);
     return absl::InternalError(error_stream.str());
   }
+  engine.eraseHandler(id);
+  return absl::OkStatus();
+}
+
+// Whether the module holds a dense i1 attribute the printer would write as
+// hex: one with more elements than the hex limit that is not a splat.
+//
+// A dense attribute of more than the limit's elements prints as the hex of
+// its storage, and jaxlib's MLIR, which parses what we print, may store i1
+// elements differently from ours (packed by the bit before
+// llvm/llvm-project#180397, one per byte since), in which case it rejects
+// the hex as the wrong size for the type. Such a module is printed element by
+// element instead.
+static bool hasLargeBoolElementsAttr(mlir::Operation *mod, int64_t hexLimit) {
+  bool found = false;
+  mod->walk([&](mlir::Operation *op) {
+    for (mlir::NamedAttribute named : op->getAttrs())
+      named.getValue().walk([&](mlir::DenseIntElementsAttr attr) {
+        if (attr.getElementType().isInteger(1) && !attr.isSplat() &&
+            attr.getNumElements() > hexLimit)
+          found = true;
+      });
+    return found ? mlir::WalkResult::interrupt() : mlir::WalkResult::advance();
+  });
+  return found;
 }
 
 absl::StatusOr<std::pair<std::string, std::string>>
@@ -199,8 +223,12 @@ run_pass_pipeline(const std::vector<std::string> &oldsym_vec,
 
   std::string output;
   llvm::raw_string_ostream ss(output);
-  parsed_module->getOperation()->print(
-      ss, mlir::OpPrintingFlags().enableDebugInfo());
+  mlir::OpPrintingFlags flags;
+  flags.enableDebugInfo();
+  if (hasLargeBoolElementsAttr(*parsed_module,
+                               flags.getLargeElementsAttrHexLimit()))
+    flags.printLargeElementsAttrWithHex(-1);
+  parsed_module->getOperation()->print(ss, flags);
 
   return std::make_pair(entryfn.str(), ss.str());
 }

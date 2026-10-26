@@ -19,7 +19,8 @@ include "Dialect.td"
 
 def DefineOp : TesseraOp<"define", [
   AffineScope, AutomaticAllocationScope,
-  FunctionOpInterface, IsolatedFromAbove, OpAsmOpInterface
+  SymbolName, SymbolVisibility, FunctionOpInterface, IsolatedFromAbove,
+  OpAsmOpInterface
 ]> {
   let summary = "define operation";
   let description = [{
@@ -29,8 +30,7 @@ def DefineOp : TesseraOp<"define", [
 
   let arguments = (ins SymbolNameAttr:$sym_name,
                        TypeAttrOf<FunctionType>:$function_type,
-	                     DenseBoolArrayAttr:$byRefArgs,
-	                     DenseI64ArrayAttr:$argSizes,
+                       ArrayAttr:$argModes,
                        BoolAttr:$pure,
                        OptionalAttr<StrAttr>:$sym_visibility,
                        OptionalAttr<DictArrayAttr>:$arg_attrs,
@@ -40,8 +40,7 @@ def DefineOp : TesseraOp<"define", [
 
   let builders = [OpBuilder<(ins
     "StringRef":$name, "FunctionType":$type,
-    "DenseBoolArrayAttr":$byRefArgs,
-    "DenseI64ArrayAttr":$argSizes,
+    "ArrayAttr":$argModes,
     "bool":$pure,
     CArg<"StringAttr", "{}">:$sym_visibility,
     CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs,
@@ -64,6 +63,60 @@ def DefineOp : TesseraOp<"define", [
     /// compatible.
     void cloneInto(DefineOp dest, IRMapping &mapper);
 
+    ::mlir::Attribute getSretAttr();
+
+    // A "lifted" argument is one the call site dereferences, so that
+    // tessera.call carries the pointee as an SSA value instead of the pointer.
+    // That is what makes an argument nameable in a PDL rewrite rule: PDL
+    // matches SSA def-use edges and cannot see dependencies carried through
+    // memory, so an argument only participates in rewriting once lifted.
+    //
+    // Each entry is either UnitAttr (not lifted -- a plain scalar, or a
+    // pointer deliberately passed through opaquely) or a DictionaryAttr:
+    //   type : TypeAttr -- the pointee type, stored exactly once
+    //   dir  : ArgDirectionAttr -- enum representing "in", "out", or "inout"
+    //
+    // The direction records what the callee does to the pointee, which
+    // determines the shape of the call:
+    //   in    -- callee reads it. Takes an operand slot carrying the value
+    //            loaded at the call site; contributes no result.
+    //   out   -- callee only writes it. Takes no operand slot (supplying one
+    //            would load uninitialized memory and pass undef); contributes
+    //            a trailing result.
+    //   inout -- callee reads and writes. Takes an operand slot carrying the
+    //            incoming value AND contributes a trailing result (e.g. MPFR's
+    //            rop).
+    ::mlir::ArrayRef<Attribute> getArgModeEntries();
+
+    // The pointee type of a lifted argument, or null if it is not lifted.
+    ::mlir::Type getArgLiftedType(unsigned argIdx);
+
+    // True if this argument is lifted into the value domain at all.
+    bool isLiftedArg(unsigned argIdx);
+
+    // True if the callee reads the pointee (dir is "in" or "inout"). Such an
+    // argument consumes a tessera.call operand slot carrying the loaded value.
+    bool argIsRead(unsigned argIdx);
+
+    // True if the callee writes the pointee (dir is "out" or "inout"). Such an
+    // argument contributes a trailing tessera.call result.
+    bool argIsWritten(unsigned argIdx);
+
+    // Number of arguments the callee writes, i.e. how many trailing results
+    // tessera.call adds beyond the callee's natural (function_type) results.
+    unsigned getNumWrittenArgs();
+
+    // The pointee type the callee takes this operand through: an LLVM byVal
+    // attribute if present, otherwise the arg's lifted type, or null if the
+    // callee takes the operand directly. Indexed by tessera.call operand position.
+    // Operands with a pointee type were loaded from memory when entering
+    // tessera.call and must be reconstructed into memory when leaving it.
+    ::mlir::Type getCallOperandPointeeType(unsigned callOperandIdx);
+
+    // Number of operands tessera.call should have for this callee: every
+    // sret-excluded argument, minus the pure-output ("out") ones.
+    unsigned getNumCallOperands();
+
     //===------------------------------------------------------------------===//
     // FunctionOpInterface Methods
     //===------------------------------------------------------------------===//
@@ -79,6 +132,11 @@ def DefineOp : TesseraOp<"define", [
     /// Returns the result types of this function.
     ArrayRef<Type> getResultTypes() { return getFunctionType().getResults(); }
 
+    /// Returns the argument attribute at the given index, accounting for the
+    /// sret argument offset if present.
+    ::mlir::Attribute getArgAttr(unsigned index, mlir::StringAttr name);
+    ::mlir::Attribute getArgAttr(unsigned index, llvm::StringRef name);
+
     //===------------------------------------------------------------------===//
     // SymbolOpInterface Methods
     //===------------------------------------------------------------------===//
@@ -87,6 +145,7 @@ def DefineOp : TesseraOp<"define", [
 
   }];
   let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -112,7 +171,7 @@ def CallOp : TesseraOp<"call",
   let results = (outs Variadic<AnyType>);
 
   let assemblyFormat = [{
-    $callee `(` $operands `)` attr-dict `:` functional-type($operands, results)
+    $callee `(` $operands `)` prop-dict attr-dict `:` functional-type($operands, results)
   }];
   
   let builders = [

@@ -3092,9 +3092,10 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     for (int i = 2; i >= 0; --i) {
       auto [mul_hi, mul_lo] = multiFloatMul(
           p_table_hi, p_table_lo, t_table_sq_hi, t_table_sq_lo, rewriter, loc);
+      Value c_hi = getConst(kNarrowCoefs[i][0]);
+      Value c_lo = getConst(kNarrowCoefs[i][1]);
       auto [add_hi, add_lo] =
-          multiFloatAdd(mul_hi, mul_lo, getConst(kNarrowCoefs[i][0]),
-                        getConst(kNarrowCoefs[i][1]), rewriter, loc);
+          multiFloatAdd(mul_hi, mul_lo, c_hi, c_lo, rewriter, loc);
       p_table_hi = add_hi;
       p_table_lo = add_lo;
     }
@@ -3107,9 +3108,10 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
       auto [mul_hi, mul_lo] =
           multiFloatMul(p_direct_hi, p_direct_lo, t_direct_sq_hi,
                         t_direct_sq_lo, rewriter, loc);
+      Value c_hi = getConst(kWideCoefs[i][0]);
+      Value c_lo = getConst(kWideCoefs[i][1]);
       auto [add_hi, add_lo] =
-          multiFloatAdd(mul_hi, mul_lo, getConst(kWideCoefs[i][0]),
-                        getConst(kWideCoefs[i][1]), rewriter, loc);
+          multiFloatAdd(mul_hi, mul_lo, c_hi, c_lo, rewriter, loc);
       p_direct_hi = add_hi;
       p_direct_lo = add_lo;
     }

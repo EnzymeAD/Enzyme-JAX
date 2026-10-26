@@ -13,10 +13,12 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/SelectPatterns.h"
 
+#include "Enzyme/EnzymeCallMarkers.h"
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Ops.h"
 
@@ -55,6 +57,14 @@ public:
     if (isa<LLVM::LLVMArrayType, mlir::VectorType>(llvmNDVectorTy)) {
       return failure();
     }
+    // What comes out counts elements as much as what goes in, and an op free to
+    // change one without the other -- a bitcast of an integer to a vector of
+    // floats -- cannot be said with one that holds its shape.
+    if (llvm::any_of(op->getResultTypes(), [](Type type) {
+          return isa<LLVM::LLVMArrayType, mlir::VectorType>(type);
+        })) {
+      return failure();
+    }
 
     Operation *newOp = rewriter.create(
         op->getLoc(), rewriter.getStringAttr(TargetOp::getOperationName()),
@@ -83,21 +93,17 @@ template <typename SourceOp, typename TargetOp>
 class AttrConvertOverflowFromLLVM {
 public:
   AttrConvertOverflowFromLLVM(SourceOp srcOp) {
-    // Copy the source attributes.
+    // Copy the source attributes, minus the flags we are translating. The
+    // accessor rather than the attribute dictionary, since the flags are an
+    // inherent attribute and so live in the op's properties.
     convertedAttr = NamedAttrList{srcOp->getAttrs()};
-    // Get the name of the arith overflow attribute.
-    StringRef arithAttrName = SourceOp::getIntegerOverflowAttrName();
-    // Remove the source overflow attribute.
-    if (auto arithAttr = dyn_cast_if_present<LLVM::IntegerOverflowFlagsAttr>(
-            convertedAttr.erase(arithAttrName))) {
-      if (arithAttr.getValue() != LLVM::IntegerOverflowFlags::none) {
-        StringRef targetAttrName = TargetOp::getOverflowFlagsAttrName();
-        convertedAttr.set(targetAttrName, arith::IntegerOverflowFlagsAttr::get(
-                                              srcOp->getContext(),
-                                              convertArithOverflowFlagsFromLLVM(
-                                                  arithAttr.getValue())));
-      }
-    }
+    convertedAttr.erase(SourceOp::getOverflowFlagsAttrName());
+    LLVM::IntegerOverflowFlags llvmFlags = srcOp.getOverflowFlags();
+    if (llvmFlags != LLVM::IntegerOverflowFlags::none)
+      convertedAttr.set(TargetOp::getIntegerOverflowAttrName(),
+                        arith::IntegerOverflowFlagsAttr::get(
+                            srcOp->getContext(),
+                            convertArithOverflowFlagsFromLLVM(llvmFlags)));
   }
 
   ArrayRef<NamedAttribute> getAttrs() const { return convertedAttr.getAttrs(); }
@@ -186,58 +192,156 @@ private:
   StringAttr funcName;
 };
 
+// The name of the enzyme_* marker global `v` reads, where it reads one. The
+// markers reach here as a load of the address of a global, sometimes through a
+// cast into another address space.
+std::optional<StringRef> getEnzymeMarker(Value v) {
+  auto loadOp = dyn_cast_if_present<LLVM::LoadOp>(v.getDefiningOp());
+  if (!loadOp)
+    return std::nullopt;
+
+  Value address = loadOp.getAddr();
+  if (auto castOp =
+          dyn_cast_if_present<LLVM::AddrSpaceCastOp>(address.getDefiningOp()))
+    address = castOp.getArg();
+
+  auto addressOf =
+      dyn_cast_if_present<LLVM::AddressOfOp>(address.getDefiningOp());
+  if (!addressOf)
+    return std::nullopt;
+
+  StringRef name = addressOf.getGlobalName();
+  if (!name.starts_with("enzyme_"))
+    return std::nullopt;
+  return name;
+}
+
+// The activity the shared grammar names, said the way the MLIR ops say it.
+enzyme::Activity toMLIRActivity(DIFFE_TYPE activity) {
+  switch (activity) {
+  case DIFFE_TYPE::CONSTANT:
+    return enzyme::Activity::enzyme_const;
+  case DIFFE_TYPE::DUP_ARG:
+    return enzyme::Activity::enzyme_dup;
+  case DIFFE_TYPE::DUP_NONEED:
+    return enzyme::Activity::enzyme_dupnoneed;
+  case DIFFE_TYPE::OUT_DIFF:
+    return enzyme::Activity::enzyme_active;
+  }
+  llvm_unreachable("unknown marker activity");
+}
+
+// Markers that say something about the call rather than about one argument.
+struct EnzymeCallFlags {
+  bool runtimeActivity = false;
+  bool strongZero = false;
+};
+
 // Given an LLVM dialect __enzyme_* call with optional enzyme_const/dup/active
 // configurations, recover:
 //    1) the actual arguments to go into the enzyme.*diff op
 //    2) the activities (annotated or inferred) for the arguments and return
 //       value(s)
+//    3) the markers that configure the call as a whole
 void parseEnzymeCall(FunctionOpInterface funcToDiff, ValueRange eoperands,
                      SmallVectorImpl<Value> &arguments,
                      SmallVectorImpl<enzyme::Activity> &argActivities,
-                     SmallVectorImpl<enzyme::Activity> &retActivities) {
-  // The first eoperand is a pointer to funcToDiff, so we skip over it.
-  for (unsigned argIdx = 1; argIdx < eoperands.size(); ++argIdx) {
-    Value autodiffArg = eoperands[argIdx];
-    if (auto loadOp =
-            dyn_cast_if_present<LLVM::LoadOp>(autodiffArg.getDefiningOp())) {
-      Value address = loadOp.getAddr();
-      if (auto castOp = dyn_cast_if_present<LLVM::AddrSpaceCastOp>(
-              address.getDefiningOp()))
-        address = castOp.getArg();
+                     SmallVectorImpl<enzyme::Activity> &retActivities,
+                     EnzymeCallFlags &flags) {
+  auto markerAt = [&](unsigned i) { return getEnzymeMarker(eoperands[i]); };
 
-      if (auto addressOf =
-              dyn_cast_if_present<LLVM::AddressOfOp>(address.getDefiningOp())) {
-        if (addressOf.getGlobalName() == "enzyme_const") {
-          argActivities.push_back(enzyme::Activity::enzyme_const);
-          arguments.push_back(eoperands[argIdx + 1]);
-          argIdx += 1;
-        } else if (addressOf.getGlobalName() == "enzyme_dup") {
-          argActivities.push_back(enzyme::Activity::enzyme_dup);
-          arguments.push_back(eoperands[argIdx + 1]);
-          arguments.push_back(eoperands[argIdx + 2]);
-          argIdx += 2;
-        } else if (addressOf.getGlobalName() == "enzyme_dupnoneed") {
-          argActivities.push_back(enzyme::Activity::enzyme_dupnoneed);
-          arguments.push_back(eoperands[argIdx + 1]);
-          arguments.push_back(eoperands[argIdx + 2]);
-          argIdx += 2;
-        }
+  // Where the shadows are has to be settled before walking, since it decides
+  // how every argument is read. The first eoperand is a pointer to funcToDiff,
+  // so the arguments start after it.
+  enzyme_markers::InterleaveSplit split =
+      enzyme_markers::findEnzymeInterleave(1, eoperands.size(), markerAt);
+  unsigned shadowIdx = split.shadowStart;
+
+  // An activity marker holds until the next one, so one marker can cover a
+  // whole group of arguments. That only applies where the shadows were
+  // interleaved: written one by one, an unmarked argument is read off its type
+  // as it always was.
+  enzyme::Activity sticky = enzyme::Activity::enzyme_dup;
+
+  auto takeArgument = [&](unsigned argIdx, enzyme::Activity activity,
+                          unsigned &cursor) {
+    argActivities.push_back(activity);
+    arguments.push_back(eoperands[argIdx]);
+    if (activity != enzyme::Activity::enzyme_dup &&
+        activity != enzyme::Activity::enzyme_dupnoneed)
+      return;
+    if (split.interleaved)
+      arguments.push_back(eoperands[shadowIdx++]);
+    else
+      arguments.push_back(eoperands[++cursor]);
+  };
+
+  for (unsigned argIdx = 1; argIdx < split.primalEnd; ++argIdx) {
+    Value autodiffArg = eoperands[argIdx];
+
+    if (auto name = markerAt(argIdx)) {
+      auto marker = enzyme_markers::lookupEnzymeMarker(*name);
+      if (!marker) {
+        // Reading an unknown marker as an argument is how a derivative goes
+        // quietly wrong, so say so instead.
+        funcToDiff.emitError()
+            << "unknown enzyme marker '" << *name << "' in a call to it";
+        return;
       }
-    } else {
-      // Use default activities based on the types
-      arguments.push_back(autodiffArg);
-      argActivities.push_back(
-          llvm::TypeSwitch<Type, enzyme::Activity>(autodiffArg.getType())
-              .Case<FloatType, ComplexType>(
-                  [](auto type) { return enzyme::Activity::enzyme_active; })
-              .Case<LLVM::LLVMPointerType, MemRefType>([&](auto type) {
-                // Skip the shadow
-                arguments.push_back(eoperands[argIdx + 1]);
-                argIdx += 1;
-                return enzyme::Activity::enzyme_dup;
-              })
-              .Default(
-                  [](Type type) { return enzyme::Activity::enzyme_const; }));
+
+      // Whatever the marker takes for itself is not an argument.
+      argIdx += marker->extraOperands;
+
+      switch (marker->role) {
+      case enzyme_markers::MarkerRole::Activity: {
+        enzyme::Activity activity = toMLIRActivity(*marker->activity);
+        sticky = activity;
+        if (argIdx + 1 >= split.primalEnd)
+          break;
+        ++argIdx;
+        takeArgument(argIdx, activity, argIdx);
+        break;
+      }
+      case enzyme_markers::MarkerRole::CallFlag:
+        if (*name == "enzyme_runtime_activity")
+          flags.runtimeActivity = true;
+        else if (*name == "enzyme_strong_zero")
+          flags.strongZero = true;
+        break;
+      case enzyme_markers::MarkerRole::Interleave:
+      case enzyme_markers::MarkerRole::Modifier:
+        break;
+      }
+      continue;
+    }
+
+    if (split.interleaved) {
+      takeArgument(argIdx, sticky, argIdx);
+      continue;
+    }
+
+    // Use default activities based on the types
+    arguments.push_back(autodiffArg);
+    argActivities.push_back(
+        llvm::TypeSwitch<Type, enzyme::Activity>(autodiffArg.getType())
+            .Case<FloatType, ComplexType>(
+                [](auto type) { return enzyme::Activity::enzyme_active; })
+            .Case<LLVM::LLVMPointerType, MemRefType>([&](auto type) {
+              // Skip the shadow
+              arguments.push_back(eoperands[argIdx + 1]);
+              argIdx += 1;
+              return enzyme::Activity::enzyme_dup;
+            })
+            .Default([](Type type) { return enzyme::Activity::enzyme_const; }));
+  }
+
+  // Past the shadows there may be more whole-call markers.
+  for (unsigned i = shadowIdx; split.interleaved && i < eoperands.size(); ++i) {
+    if (auto name = markerAt(i)) {
+      if (*name == "enzyme_runtime_activity")
+        flags.runtimeActivity = true;
+      else if (*name == "enzyme_strong_zero")
+        flags.strongZero = true;
     }
   }
 
@@ -260,6 +364,60 @@ ArrayAttr getActivityArrayAttr(MLIRContext *ctx,
   return ArrayAttr::get(ctx, attrs);
 }
 
+// The enzyme entry points are compiler markers, not functions that unwind:
+// raised, they become an op with no unwind edge to keep. An invoke of one
+// becomes the call and the branch it meant, and the block's other exception
+// handling stays as it was.
+class EnzymeInvokeToCall : public OpRewritePattern<LLVM::InvokeOp> {
+public:
+  using OpRewritePattern<LLVM::InvokeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::InvokeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto callee = dyn_cast<SymbolRefAttr>(op.getCallableForCallee());
+    if (!callee)
+      return failure();
+    if (!callee.getLeafReference().strref().contains("__enzyme_"))
+      return failure();
+    auto call =
+        LLVM::CallOp::create(rewriter, op.getLoc(), op.getResultTypes(),
+                             callee.getLeafReference(), op.getCalleeOperands());
+    LLVM::BrOp::create(rewriter, op.getLoc(), op.getNormalDestOperands(),
+                       op.getNormalDest());
+    rewriter.replaceOp(op, call->getResults());
+    return success();
+  }
+};
+
+// The operands an llvm.call passes to its callee.
+//
+// CallOpInterface::getArgOperands() names only the parameters the callee
+// declares, and a variadic argument corresponds to none of them. The
+// __enzyme_* entry points are declared `(...)`, so every operand of a call to
+// one is variadic and getArgOperands() names nothing at all.
+static Operation::operand_range getPassedOperands(LLVM::CallOp op) {
+  return op.getCalleeOperands().drop_front(op.getCallee() ? 0 : 1);
+}
+
+// The function `op` names, or null where the operand is not the address of one
+// this can see.
+FunctionOpInterface getEnzymeCallTarget(LLVM::CallOp op, StringRef intrinsic,
+                                        FlatSymbolRefAttr &symbol) {
+  Operation::operand_range operands = getPassedOperands(op);
+  if (operands.empty())
+    return nullptr;
+  auto targetAddr =
+      dyn_cast_if_present<LLVM::AddressOfOp>(operands.front().getDefiningOp());
+  if (!targetAddr) {
+    op.emitError() << "first operand of " << intrinsic
+                   << " was not an llvm.mlir.addressof op";
+    return nullptr;
+  }
+  symbol = targetAddr.getGlobalNameAttr();
+  auto mod = op->getParentOfType<ModuleOp>();
+  return dyn_cast_or_null<FunctionOpInterface>(mod.lookupSymbol(symbol));
+}
+
 class EnzymeAutodiffOpRaising : public OpRewritePattern<LLVM::CallOp> {
 public:
   using OpRewritePattern<LLVM::CallOp>::OpRewritePattern;
@@ -272,33 +430,115 @@ public:
       return failure();
     if (!callee.getLeafReference().strref().contains("__enzyme_autodiff"))
       return failure();
-    Operation::operand_range operands = op.getArgOperands();
-    auto targetAddr = dyn_cast_if_present<LLVM::AddressOfOp>(
-        operands.front().getDefiningOp());
-    if (!targetAddr) {
-      op.emitError() << "first operand of __enzyme_autodiff was not an "
-                        "llvm.mlir.addressof op";
-      return failure();
-    }
-
-    FlatSymbolRefAttr funcToDiffSymbol = targetAddr.getGlobalNameAttr();
-    auto mod = op->getParentOfType<ModuleOp>();
+    Operation::operand_range operands = getPassedOperands(op);
+    FlatSymbolRefAttr funcToDiffSymbol;
     auto funcToDiff =
-        cast<FunctionOpInterface>(mod.lookupSymbol(funcToDiffSymbol));
+        getEnzymeCallTarget(op, "__enzyme_autodiff", funcToDiffSymbol);
+    if (!funcToDiff)
+      return failure();
 
     // Infer the argument activities
     SmallVector<Value> arguments;
     SmallVector<enzyme::Activity> argActivities, retActivities;
+    EnzymeCallFlags flags;
     argActivities.reserve(funcToDiff.getNumArguments());
     retActivities.reserve(funcToDiff.getNumResults());
     parseEnzymeCall(funcToDiff, operands, arguments, argActivities,
-                    retActivities);
+                    retActivities, flags);
+
+    // The call returns the gradients and nothing else: __enzyme_autodiff
+    // never hands back the primal value. An enzyme_active return would claim
+    // a primal among the op's results that the call's result types do not
+    // carry -- everything downstream that walks outputs by activity would
+    // read past the end. The seeded-but-not-returned spelling is
+    // enzyme_activenoneed.
+    for (enzyme::Activity &activity : retActivities)
+      if (activity == enzyme::Activity::enzyme_active)
+        activity = enzyme::Activity::enzyme_activenoneed;
+
+    // An active return is differentiated from a seed, and enzyme.autodiff
+    // takes one operand for each. __enzyme_autodiff does not name them: the C
+    // interface seeds every active return with one, which is what makes its
+    // result the gradient rather than a directional derivative. Say the one.
+    for (auto [retType, activity] :
+         llvm::zip_equal(funcToDiff.getResultTypes(), retActivities)) {
+      if (activity != enzyme::Activity::enzyme_active &&
+          activity != enzyme::Activity::enzyme_activenoneed)
+        continue;
+      auto floatType = dyn_cast<FloatType>(retType);
+      if (!floatType) {
+        op.emitError() << "cannot seed an active return of type " << retType
+                       << " in __enzyme_autodiff";
+        return failure();
+      }
+      Value seed =
+          LLVM::ConstantOp::create(rewriter, op.getLoc(), floatType,
+                                   rewriter.getFloatAttr(floatType, 1.0));
+      arguments.push_back(seed);
+    }
+
     MLIRContext *ctx = rewriter.getContext();
+    bool atomicAdd = false;
+    if (auto llFunc = dyn_cast<LLVM::LLVMFuncOp>(funcToDiff.getOperation())) {
+      auto targetFeatures = llFunc.getTargetCpu();
+      if (targetFeatures && targetFeatures->starts_with("sm_"))
+        atomicAdd = true;
+    }
     rewriter.replaceOpWithNewOp<enzyme::AutoDiffOp>(
         op, op.getResultTypes(), funcToDiffSymbol.getValue(), arguments,
         getActivityArrayAttr(ctx, argActivities),
         getActivityArrayAttr(ctx, retActivities),
-        /*width=*/1, /*strong_zero=*/false);
+        /*width=*/1, flags.strongZero, atomicAdd);
+    return success();
+  }
+};
+
+// Forward mode differs from the reverse above in what it says and in what it
+// needs said: the shadows come in with the arguments and nothing seeds a
+// return, so there is only the op to build.
+class EnzymeFwddiffOpRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  using OpRewritePattern<LLVM::CallOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+    if (!callee.getLeafReference().strref().contains("__enzyme_fwddiff"))
+      return failure();
+    Operation::operand_range operands = getPassedOperands(op);
+    FlatSymbolRefAttr funcToDiffSymbol;
+    auto funcToDiff =
+        getEnzymeCallTarget(op, "__enzyme_fwddiff", funcToDiffSymbol);
+    if (!funcToDiff)
+      return failure();
+
+    SmallVector<Value> arguments;
+    SmallVector<enzyme::Activity> argActivities, retActivities;
+    EnzymeCallFlags flags;
+    argActivities.reserve(funcToDiff.getNumArguments());
+    retActivities.reserve(funcToDiff.getNumResults());
+    parseEnzymeCall(funcToDiff, operands, arguments, argActivities,
+                    retActivities, flags);
+
+    // A return with no shadow to put anywhere is not differentiated.
+    for (auto &activity : retActivities)
+      if (activity == enzyme::Activity::enzyme_active)
+        activity = enzyme::Activity::enzyme_dup;
+
+    if (flags.runtimeActivity)
+      op.emitWarning() << "enzyme_runtime_activity is not modelled by the MLIR "
+                          "pipeline; the activities given are taken as they "
+                          "stand";
+
+    MLIRContext *ctx = rewriter.getContext();
+    rewriter.replaceOpWithNewOp<enzyme::ForwardDiffOp>(
+        op, op.getResultTypes(), funcToDiffSymbol.getValue(), arguments,
+        getActivityArrayAttr(ctx, argActivities),
+        getActivityArrayAttr(ctx, retActivities),
+        /*width=*/1, flags.strongZero);
     return success();
   }
 };
@@ -387,8 +627,7 @@ public:
         callee.getLeafReference() == "__nv_isinff") {
       rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
           op, op->getResultTypes(),
-          math::IsFiniteOp::create(rewriter, op.getLoc(),
-                                   op->getOperands()[0]));
+          math::IsInfOp::create(rewriter, op.getLoc(), op->getOperands()[0]));
       return success();
     }
 
@@ -440,41 +679,39 @@ public:
   }
 };
 
-class SinPiRaising : public OpRewritePattern<LLVM::CallOp> {
+// The math dialect has exp and exp2 but no exp10, so base-10 exponentials need
+// an expansion rather than a direct call-to-op mapping. Rewrite them the way
+// libdevice implements them internally: exp10(x) = exp2(x * log2(10)).
+class Exp10Raising : public OpRewritePattern<LLVM::CallOp> {
 public:
-  SinPiRaising(MLIRContext *context, StringRef funcNameStr)
-      : OpRewritePattern<LLVM::CallOp>(context),
-        funcName(StringAttr::get(context, funcNameStr)) {}
+  Exp10Raising(MLIRContext *context)
+      : OpRewritePattern<LLVM::CallOp>(context) {}
 
   LogicalResult matchAndRewrite(LLVM::CallOp op,
                                 PatternRewriter &rewriter) const override {
     CallInterfaceCallable callable = op.getCallableForCallee();
     auto callee = dyn_cast<SymbolRefAttr>(callable);
-    if (!callee || callee.getLeafReference() != funcName)
+    if (!callee)
       return failure();
 
-    auto floatType = dyn_cast<FloatType>(op.getResultTypes()[0]);
-    if (!floatType || op.getNumOperands() != 1)
-      return failure();
+    if (callee.getLeafReference() == "__nv_exp10" ||
+        callee.getLeafReference() == "__nv_exp10f" ||
+        callee.getLeafReference() == "__nv_fast_exp10f" ||
+        callee.getLeafReference() == "exp10" ||
+        callee.getLeafReference() == "exp10f") {
+      Location loc = op.getLoc();
+      Type type = op.getResultTypes()[0];
+      Value log2of10 = arith::ConstantOp::create(
+          rewriter, loc, type,
+          rewriter.getFloatAttr(type, 3.32192809488736234787));
+      Value scaled =
+          arith::MulFOp::create(rewriter, loc, op->getOperands()[0], log2of10);
+      rewriter.replaceOpWithNewOp<math::Exp2Op>(op, scaled);
+      return success();
+    }
 
-    auto loc = op.getLoc();
-    if (!floatType.isF32() && !floatType.isF64())
-      return failure();
-    // Use explicit constants for LLVM18 compatibility (`APFloat::getPi` is
-    // unavailable), while preserving f32/f64-appropriate precision
-    // (closest f32 pi literal vs full f64 precision literal).
-    llvm::APFloat piFloat(floatType.getFloatSemantics(),
-                          floatType.isF32() ? "3.1415927410125732421875"
-                                            : "3.14159265358979323846264338327950288");
-    auto piAttr = rewriter.getFloatAttr(floatType, piFloat);
-    Value pi = rewriter.create<arith::ConstantOp>(loc, floatType, piAttr);
-    Value piTimesX = rewriter.create<arith::MulFOp>(loc, op.getOperand(0), pi);
-    rewriter.replaceOpWithNewOp<math::SinOp>(op, op.getResultTypes(), piTimesX);
-    return success();
+    return failure();
   }
-
-private:
-  StringAttr funcName;
 };
 } // namespace
 
@@ -500,7 +737,7 @@ template <typename SourceOp, typename TargetOp,
           template <typename, typename> typename AttrConvert =
               AttrConvertPassThrough>
 using InvVectorConvertFromLLVMPattern =
-    VectorConvertFromLLVMPattern<TargetOp, SourceOp, AttrConvertPassThrough>;
+    VectorConvertFromLLVMPattern<TargetOp, SourceOp, AttrConvert>;
 
 template <typename SourceOp, typename TargetOp>
 using ConvertFMFMathFromLLVMPattern =
@@ -508,6 +745,17 @@ using ConvertFMFMathFromLLVMPattern =
 
 using AbsFOpLowering =
     ConvertFMFMathFromLLVMPattern<math::AbsFOp, LLVM::FAbsOp>;
+
+// llvm.intr.abs carries an is_int_min_poison flag arith has no place for;
+// drop it and raise to math.absi.
+struct AbsIOpRaising : public OpRewritePattern<LLVM::AbsOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(LLVM::AbsOp op,
+                                PatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<math::AbsIOp>(op, op.getIn());
+    return success();
+  }
+};
 using CeilOpLowering =
     ConvertFMFMathFromLLVMPattern<math::CeilOp, LLVM::FCeilOp>;
 using CopySignOpLowering =
@@ -574,6 +822,11 @@ using MaximumFOpLowering =
 using MaxNumFOpLowering =
     InvVectorConvertFromLLVMPattern<arith::MaxNumFOp, LLVM::MaxNumOp,
                                     AttrConvertFastMathFromLLVM>;
+// Like __nv_fmax/__nv_fmin, maximumnum/minimumnum treat a NaN operand as
+// missing data, which is arith.maxnumf/minnumf.
+using MaximumNumFOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::MaxNumFOp, LLVM::MaximumNumOp,
+                                    AttrConvertFastMathFromLLVM>;
 using MaxSIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::MaxSIOp, LLVM::SMaxOp>;
 using MaxUIOpLowering =
@@ -583,6 +836,9 @@ using MinimumFOpLowering =
                                     AttrConvertFastMathFromLLVM>;
 using MinNumFOpLowering =
     InvVectorConvertFromLLVMPattern<arith::MinNumFOp, LLVM::MinNumOp,
+                                    AttrConvertFastMathFromLLVM>;
+using MinimumNumFOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::MinNumFOp, LLVM::MinimumNumOp,
                                     AttrConvertFastMathFromLLVM>;
 using MinSIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::MinSIOp, LLVM::SMinOp>;
@@ -653,20 +909,50 @@ public:
       }
     }
 
-    // Determine attributes for the target op
-    AttrConvertPassThrough<LLVM::ICmpOp, arith::CmpIOp> attrConvert(op);
-
     auto operands = op->getOperands();
     auto llvmNDVectorTy = operands[0].getType();
     if (isa<LLVM::LLVMArrayType, mlir::VectorType>(llvmNDVectorTy)) {
       return failure();
     }
 
-    Operation *newOp = rewriter.create(
-        op->getLoc(), rewriter.getStringAttr(arith::CmpIOp::getOperationName()),
-        operands, op->getResultTypes(), attrConvert.getAttrs());
+    // arith.cmpi keeps its predicate in a property rather than the attribute
+    // dictionary, so it has to be built with one rather than handed a dict.
+    arith::CmpIPredicate pred;
+    switch (op.getPredicate()) {
+    case LLVM::ICmpPredicate::eq:
+      pred = arith::CmpIPredicate::eq;
+      break;
+    case LLVM::ICmpPredicate::ne:
+      pred = arith::CmpIPredicate::ne;
+      break;
+    case LLVM::ICmpPredicate::slt:
+      pred = arith::CmpIPredicate::slt;
+      break;
+    case LLVM::ICmpPredicate::sle:
+      pred = arith::CmpIPredicate::sle;
+      break;
+    case LLVM::ICmpPredicate::sgt:
+      pred = arith::CmpIPredicate::sgt;
+      break;
+    case LLVM::ICmpPredicate::sge:
+      pred = arith::CmpIPredicate::sge;
+      break;
+    case LLVM::ICmpPredicate::ult:
+      pred = arith::CmpIPredicate::ult;
+      break;
+    case LLVM::ICmpPredicate::ule:
+      pred = arith::CmpIPredicate::ule;
+      break;
+    case LLVM::ICmpPredicate::ugt:
+      pred = arith::CmpIPredicate::ugt;
+      break;
+    case LLVM::ICmpPredicate::uge:
+      pred = arith::CmpIPredicate::uge;
+      break;
+    }
 
-    rewriter.replaceOp(op, newOp->getResult(0));
+    rewriter.replaceOpWithNewOp<arith::CmpIOp>(op, pred, op.getLhs(),
+                                               op.getRhs());
     return success();
   }
 };
@@ -1073,12 +1359,88 @@ public:
     Value b = op->getOperand(1);
     Value c = op->getOperand(2);
 
-    rewriter.replaceOpWithNewOp<math::FmaOp>(op, op->getResultTypes()[0], a, b,
-                                             c);
+    // Not math.fma: fmuladd only permits fusing, while math.fma requires the
+    // single rounding, which a target without FMA units honors with a libm
+    // call. The strict form still comes from llvm.intr.fma / libm fma().
+    rewriter.replaceOpWithNewOp<enzymexla::FMulAddOp>(
+        op, op->getResultTypes()[0], a, b, c);
     return success();
   }
 };
 
+class NVSinCosRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  NVSinCosRaising(MLIRContext *context)
+      : OpRewritePattern<LLVM::CallOp>(context) {}
+
+  LogicalResult matchAndRewrite(mlir::LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    StringRef name = callee.getLeafReference();
+    static constexpr StringLiteral names[] = {"__nv_sincos", "__nv_sincosf",
+                                              "__nv_fast_sincosf", "sincos",
+                                              "sincosf"};
+    if (!llvm::is_contained(names, name))
+      return failure();
+    if (op->getNumOperands() != 3 || op->getNumResults() != 0)
+      return failure();
+
+    Value x = op->getOperand(0);
+    Value sinPtr = op->getOperand(1);
+    Value cosPtr = op->getOperand(2);
+
+    Location loc = op.getLoc();
+
+    auto fmf = arith::FastMathFlagsAttr::get(op.getContext(),
+                                             name == "__nv_fast_sincosf"
+                                                 ? arith::FastMathFlags::afn
+                                                 : arith::FastMathFlags::none);
+
+    auto sincos = math::SincosOp::create(rewriter, loc, x, fmf);
+    LLVM::StoreOp::create(rewriter, loc, sincos.getSin(), sinPtr);
+    LLVM::StoreOp::create(rewriter, loc, sincos.getCos(), cosPtr);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+template <typename RoundOp>
+class RoundToIntRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  RoundToIntRaising(MLIRContext *context, ArrayRef<StringRef> names)
+      : OpRewritePattern<LLVM::CallOp>(context),
+        names(names.begin(), names.end()) {}
+
+  LogicalResult matchAndRewrite(mlir::LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    StringRef name = callee.getLeafReference();
+    if (!llvm::is_contained(names, name))
+      return failure();
+    if (op->getNumOperands() != 1 || op->getNumResults() != 1)
+      return failure();
+
+    Value x = op->getOperand(0);
+
+    Location loc = op.getLoc();
+
+    Value rounded = RoundOp::create(rewriter, loc, x);
+    rewriter.replaceOpWithNewOp<arith::FPToSIOp>(op, op->getResultTypes()[0],
+                                                 rounded);
+    return success();
+  }
+
+private:
+  SmallVector<std::string> names;
+};
 } // namespace
 
 void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
@@ -1090,85 +1452,99 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
 
   patterns.add<IsFPClassRaising>(context);
   patterns.add<RcpRaising>(context);
-  patterns.add<SinPiRaising>(context, "__nv_sinpif");
-  patterns.add<SinPiRaising>(context, "__nv_sinpi");
+  patterns.add<Exp10Raising>(context);
   patterns.add<NVVMRcpRaising>(context);
   patterns.add<BF16HalfToFloatRaising>(context);
   patterns.add<HalfMathRaising>(context);
   patterns.add<InlineAsmHalfRaising>(context);
+  patterns.add<NVSinCosRaising>(context);
   patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(context,
                                                                    "__nv_clz");
   patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(
       context, "__nv_clzll");
   patterns.add<CallToOpIntAdaptRaising<math::CtPopOp>>(context, "__nv_popc");
   patterns.add<CallToOpIntAdaptRaising<math::CtPopOp>>(context, "__nv_popcll");
+  patterns.add<RoundToIntRaising<math::RoundEvenOp>>(
+      context,
+      ArrayRef<StringRef>{"__nv_llrint", "__nv_llrintf", "llrint", "llrintf"});
+  patterns.add<RoundToIntRaising<math::RoundOp>>(
+      context, ArrayRef<StringRef>{"__nv_llround", "__nv_llroundf", "llround",
+                                   "llroundf"});
 
   populateOpPatterns<arith::RemFOp>(converter, patterns, "__nv_fmodf",
-                                    "__nv_fmod");
+                                    "__nv_fmod", "fmodf", "fmod");
   populateOpPatterns<math::AbsFOp>(converter, patterns, "__nv_fabsf",
-                                   "__nv_fabs");
+                                   "__nv_fabs", "fabsf", "fabs");
   populateOpPatterns<math::AcosOp>(converter, patterns, "__nv_acosf",
-                                   "__nv_acos");
+                                   "__nv_acos", "acosf", "acos");
   populateOpPatterns<math::AcoshOp>(converter, patterns, "__nv_acoshf",
-                                    "__nv_acosh");
+                                    "__nv_acosh", "acoshf", "acosh");
   populateOpPatterns<math::AsinOp>(converter, patterns, "__nv_asinf",
-                                   "__nv_asin");
+                                   "__nv_asin", "asinf", "asin");
   populateOpPatterns<math::AsinhOp>(converter, patterns, "__nv_asinhf",
-                                    "__nv_asinh");
+                                    "__nv_asinh", "asinhf", "asinh");
   populateOpPatterns<math::AtanOp>(converter, patterns, "__nv_atanf",
-                                   "__nv_atan");
+                                   "__nv_atan", "atanf", "atan");
   populateOpPatterns<math::Atan2Op>(converter, patterns, "__nv_atan2f",
-                                    "__nv_atan2");
+                                    "__nv_atan2", "atan2f", "atan2");
   populateOpPatterns<math::AtanhOp>(converter, patterns, "__nv_atanhf",
-                                    "__nv_atanh");
+                                    "__nv_atanh", "atanhf", "atanh");
   populateOpPatterns<math::CbrtOp>(converter, patterns, "__nv_cbrtf",
-                                   "__nv_cbrt");
+                                   "__nv_cbrt", "cbrtf", "cbrt");
   populateOpPatterns<math::CeilOp>(converter, patterns, "__nv_ceilf",
-                                   "__nv_ceil");
+                                   "__nv_ceil", "ceilf", "ceil");
   populateOpPatterns<math::CopySignOp>(converter, patterns, "__nv_copysignf",
-                                       "__nv_copysign");
+                                       "__nv_copysign", "copysignf",
+                                       "copysign");
   populateOpPatterns<math::CosOp>(converter, patterns, "__nv_cosf", "__nv_cos",
-                                  "__nv_fast_cosf");
+                                  "__nv_fast_cosf", "cosf", "cos");
   populateOpPatterns<math::CoshOp>(converter, patterns, "__nv_coshf",
-                                   "__nv_cosh");
-  populateOpPatterns<math::ErfOp>(converter, patterns, "__nv_erff", "__nv_erf");
+                                   "__nv_cosh", "coshf", "cosh");
+  populateOpPatterns<math::ErfOp>(converter, patterns, "__nv_erff", "__nv_erf",
+                                  "erff", "erf");
+  populateOpPatterns<math::ErfcOp>(converter, patterns, "__nv_erfcf",
+                                   "__nv_erfc", "erfcf", "erfc");
   populateOpPatterns<math::ExpOp>(converter, patterns, "__nv_expf", "__nv_exp",
-                                  "__nv_fast_expf");
+                                  "__nv_fast_expf", "expf", "exp");
   populateOpPatterns<math::Exp2Op>(converter, patterns, "__nv_exp2f",
-                                   "__nv_exp2");
+                                   "__nv_exp2", "exp2f", "exp2");
   populateOpPatterns<math::ExpM1Op>(converter, patterns, "__nv_expm1f",
-                                    "__nv_expm1");
+                                    "__nv_expm1", "expm1f", "expm1");
   populateOpPatterns<math::FloorOp>(converter, patterns, "__nv_floorf",
-                                    "__nv_floor");
-  populateOpPatterns<math::FmaOp>(converter, patterns, "__nv_fmaf", "__nv_fma");
+                                    "__nv_floor", "floorf", "floor");
+  populateOpPatterns<math::FmaOp>(converter, patterns, "__nv_fmaf", "__nv_fma",
+                                  "fmaf", "fma");
   populateOpPatterns<math::LogOp>(converter, patterns, "__nv_logf", "__nv_log",
-                                  "__nv_fast_logf");
+                                  "__nv_fast_logf", "logf", "log");
   populateOpPatterns<math::Log10Op>(converter, patterns, "__nv_log10f",
-                                    "__nv_log10", "__nv_fast_log10f");
+                                    "__nv_log10", "__nv_fast_log10f", "log10f",
+                                    "log10");
   populateOpPatterns<math::Log1pOp>(converter, patterns, "__nv_log1pf",
-                                    "__nv_log1p");
+                                    "__nv_log1p", "log1pf", "log1p");
   populateOpPatterns<math::Log2Op>(converter, patterns, "__nv_log2f",
-                                   "__nv_log2", "__nv_fast_log2f");
+                                   "__nv_log2", "__nv_fast_log2f", "log2f",
+                                   "log2");
   populateOpPatterns<math::PowFOp>(converter, patterns, "__nv_powf", "__nv_pow",
-                                   "__nv_fast_powf");
+                                   "__nv_fast_powf", "powf", "pow");
   populateOpPatterns<arith::DivFOp>(converter, patterns, "__nv_fdividef",
                                     "__nv_fdivide", "__nv_fast_fdividef");
   populateOpPatterns<math::RoundOp>(converter, patterns, "__nv_roundf",
-                                    "__nv_round");
-  populateOpPatterns<math::RoundEvenOp>(converter, patterns, "__nv_rintf",
-                                        "__nv_rint");
+                                    "__nv_round", "roundf", "round");
+  populateOpPatterns<math::RoundEvenOp>(
+      converter, patterns, "__nv_rintf", "__nv_rint", "rintf", "rint",
+      "__nv_nearbyintf", "__nv_nearbyint", "nearbyintf", "nearbyint");
   populateOpPatterns<math::RsqrtOp>(converter, patterns, "__nv_rsqrtf",
                                     "__nv_rsqrt");
   populateOpPatterns<math::SinOp>(converter, patterns, "__nv_sinf", "__nv_sin",
-                                  "__nv_fast_sinf");
+                                  "__nv_fast_sinf", "sinf", "sin");
   populateOpPatterns<math::SinhOp>(converter, patterns, "__nv_sinhf",
-                                   "__nv_sinh");
+                                   "__nv_sinh", "sinhf", "sinh");
   populateOpPatterns<math::SqrtOp>(converter, patterns, "__nv_sqrtf",
-                                   "__nv_sqrt");
+                                   "__nv_sqrt", "sqrtf", "sqrt");
   populateOpPatterns<math::TanOp>(converter, patterns, "__nv_tanf", "__nv_tan",
-                                  "__nv_fast_tanf");
+                                  "__nv_fast_tanf", "tanf", "tan");
   populateOpPatterns<math::TanhOp>(converter, patterns, "__nv_tanhf",
-                                   "__nv_tanh");
+                                   "__nv_tanh", "tanhf", "tanh");
   populateOpPatterns<math::FPowIOp>(converter, patterns, "__nv_powif",
                                     "__nv_powi");
   populateOpPatterns<math::AbsIOp>(converter, patterns, "__nv_abs",
@@ -1191,6 +1567,7 @@ void populateLLVMToMathPatterns(MLIRContext *context,
   // From
   // https://github.com/llvm/llvm-project/blob/7d8b4eb0ead277f41ff69525ed807f9f6e227f37/mlir/lib/Conversion/MathToLLVM/MathToLLVM.cpp#L306
   // patterns.add<FTruncOpLowering>(converter);
+  patterns.add<AbsIOpRaising>(patterns.getContext());
   patterns.add<AbsFOpLowering,
                // AbsIOpLowering,
                CeilOpLowering, CopySignOpLowering, CosOpLowering,
@@ -1251,9 +1628,10 @@ void populateLLVMToMathPatterns(MLIRContext *context,
            ExtUIOpLowering, FPToSIOpLowering, FPToUIOpLowering,
            // IndexCastOpSILowering,
            // IndexCastOpUILowering,
-           MaximumFOpLowering, MaxNumFOpLowering, MaxSIOpLowering,
-           MaxUIOpLowering, MinimumFOpLowering, MinNumFOpLowering,
-           MinSIOpLowering, MinUIOpLowering, MulFOpLowering, MulIOpLowering,
+           MaximumFOpLowering, MaximumNumFOpLowering, MaxNumFOpLowering,
+           MaxSIOpLowering, MaxUIOpLowering, MinimumFOpLowering,
+           MinimumNumFOpLowering, MinNumFOpLowering, MinSIOpLowering,
+           MinUIOpLowering, MulFOpLowering, MulIOpLowering,
            // MulSIExtendedOpLowering,
            // MulUIExtendedOpLowering,
            NegFOpLowering, OrIOpLowering, RemFOpLowering, RemSIOpLowering,
@@ -1276,7 +1654,8 @@ struct LibDeviceFuncsRaisingPass
     populateLibDeviceFuncsToOpsPatterns(getOperation()->getContext(), patterns);
     if (remove_freeze)
       patterns.add<RemoveFreeze>(getOperation()->getContext());
-    patterns.add<EnzymeAutodiffOpRaising>(getOperation()->getContext());
+    patterns.add<EnzymeInvokeToCall, EnzymeAutodiffOpRaising,
+                 EnzymeFwddiffOpRaising>(getOperation()->getContext());
     GreedyRewriteConfig config;
     // We disable region simplification to avoid inadvertently merging
     // llvm.cond_br now that there is an index type.

@@ -17,4 +17,12 @@ module {
       %res = arith.cmpi sgt, %arg0, %arg1 : tensor<20x20xi64>
       func.return %res : tensor<20x20xi1>
   }
+
+  // CHECK-LABEL: @func_icmp_sgt_i1
+  // CHECK-NOT: stablehlo.convert
+  // CHECK: stablehlo.compare GT, %arg0, %arg1, UNSIGNED : (tensor<20x20xi1>, tensor<20x20xi1>) -> tensor<20x20xi1>
+  func.func @func_icmp_sgt_i1(%arg0: tensor<20x20xi1>, %arg1: tensor<20x20xi1>) -> tensor<20x20xi1> {
+      %res = arith.cmpi sgt, %arg0, %arg1 : tensor<20x20xi1>
+      func.return %res : tensor<20x20xi1>
+  }
 }

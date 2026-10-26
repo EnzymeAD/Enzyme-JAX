@@ -32,7 +32,9 @@ module {
 // CHECK-DAG:           %[[cst1:.*]] = arith.constant 1.000000e+00 : f32
 // CHECK-DAG:           %[[c0:.*]] = arith.constant 0 : i32
 // CHECK-DAG:           %[[c1:.*]] = arith.constant 1 : i32
-// CHECK:           %[[FOR:.*]]:6 = scf.for %[[arg:.+]] = %[[c0]] to %[[ub]] step %[[c1]] iter_args(%[[VAL_1:.*]] = %[[c0]], %[[VAL_2:.*]] = %[[cst0]], %[[VAL_3:.*]] = %[[true]], %[[VAL_11:.*]] = %[[c0]], %[[VAL_12:.*]] = %[[cst0]], %[[VAL_13:.*]] = %[[true]])
+// CHECK:           %[[MAX:.*]] = arith.maxsi %[[ub]], %[[c0]] : i32
+// CHECK:           %[[BOUND:.*]] = arith.addi %[[MAX]], %[[c1]] : i32
+// CHECK:           %[[FOR:.*]]:6 = scf.for %[[arg:.+]] = %[[c0]] to %[[BOUND]] step %[[c1]] iter_args(%[[VAL_1:.*]] = %[[c0]], %[[VAL_2:.*]] = %[[cst0]], %[[VAL_3:.*]] = %[[true]], %[[VAL_11:.*]] = %[[c0]], %[[VAL_12:.*]] = %[[cst0]], %[[VAL_13:.*]] = %[[true]])
 // CHECK:             %[[IF1:.*]]:3 = scf.if %[[VAL_13]] -> (i32, f32, i1) {
 // CHECK:               scf.yield %[[VAL_1]], %[[VAL_2]], %[[VAL_3]] : i32, f32, i1
 // CHECK:             } else {
@@ -89,7 +91,9 @@ module {
 // CHECK-DAG:           %[[cst1:.*]] = arith.constant 1.000000e+00 : f32
 // CHECK-DAG:           %[[c0:.*]] = arith.constant 0 : i32
 // CHECK-DAG:           %[[c1:.*]] = arith.constant 1 : i32
-// CHECK:           %[[FOR:.*]]:6 = scf.for %[[arg:.+]] = %[[c0]] to %[[VAL_0]] step %[[c1]] iter_args(%[[VAL_1:.*]] = %[[c0]], %[[VAL_2:.*]] = %[[cst0]], %[[VAL_3:.*]] = %[[true]], %[[VAL_11:.*]] = %[[c0]], %[[VAL_12:.*]] = %[[cst0]], %[[VAL_13:.*]] = %[[true]])
+// CHECK:           %[[MAX:.*]] = arith.maxsi %[[VAL_0]], %[[c0]] : i32
+// CHECK:           %[[BOUND:.*]] = arith.addi %[[MAX]], %[[c1]] : i32
+// CHECK:           %[[FOR:.*]]:6 = scf.for %[[arg:.+]] = %[[c0]] to %[[BOUND]] step %[[c1]] iter_args(%[[VAL_1:.*]] = %[[c0]], %[[VAL_2:.*]] = %[[cst0]], %[[VAL_3:.*]] = %[[true]], %[[VAL_11:.*]] = %[[c0]], %[[VAL_12:.*]] = %[[cst0]], %[[VAL_13:.*]] = %[[true]])
 // CHECK:             %[[IF1:.*]]:3 = scf.if %[[VAL_13]] -> (i32, f32, i1) {
 // CHECK:               scf.yield %[[VAL_1]], %[[VAL_2]], %[[VAL_3]] : i32, f32, i1
 // CHECK:             } else {
@@ -148,7 +152,9 @@ module {
 // CHECK-DAG:           %[[undef_i8:.*]] = ub.poison : i8
 // CHECK-DAG:           %[[undef_i32:.+]] = ub.poison : i32
 // CHECK-DAG:           %[[undef_i1:.+]] = ub.poison : i1
-// CHECK:           %[[FOR:.*]]:6 = scf.for %[[arg:.*]] = %[[c0_i32]] to %[[ub]] step %[[c1_i32]] iter_args(%[[VAL_13:.*]] = %[[c0_i32]], %[[VAL_14:.*]] = %[[VAL_0]], %[[VAL_16:.*]] = %[[true]], %[[VAL_15:.*]] = %[[VAL_0]], %[[VAL_5:.*]] = %[[c0_i32]], %[[VAL_6:.*]] = %[[true]]) -> (i32, i8, i1, i8, i32, i1)  : i32 {
+// CHECK:           %[[MAX:.*]] = arith.maxsi %[[ub]], %[[c0_i32]] : i32
+// CHECK:           %[[BOUND:.*]] = arith.addi %[[MAX]], %[[c1_i32]] : i32
+// CHECK:           %[[FOR:.*]]:6 = scf.for %[[arg:.*]] = %[[c0_i32]] to %[[BOUND]] step %[[c1_i32]] iter_args(%[[VAL_13:.*]] = %[[c0_i32]], %[[VAL_14:.*]] = %[[VAL_0]], %[[VAL_16:.*]] = %[[true]], %[[VAL_15:.*]] = %[[VAL_0]], %[[VAL_5:.*]] = %[[c0_i32]], %[[VAL_6:.*]] = %[[true]]) -> (i32, i8, i1, i8, i32, i1)  : i32 {
 // CHECK:             %[[IF1:.*]]:3 = scf.if %[[VAL_6]] -> (i8, i32, i1) {
 // CHECK:               scf.yield %[[VAL_14]], %[[VAL_13]], %[[VAL_16]] : i8, i32, i1
 // CHECK:             } else {

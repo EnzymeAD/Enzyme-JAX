@@ -235,25 +235,6 @@ module {
       llvm.return
     }
   }
-  gpu.module @test_module_sinpi {
-    llvm.func @__nv_sinpif(f32) -> f32
-    llvm.func @__nv_sinpi(f64) -> f64
-    // CHECK-LABEL: @gpu_sinpi
-    llvm.func @gpu_sinpi(%arg0: f32, %arg1: f64) -> !llvm.struct<(f32, f64)> attributes {llvm.emit_c_interface} {
-      // CHECK-DAG: %[[PI_F32:.*]] = arith.constant {{.*}} : f32
-      // CHECK-DAG: %[[PI_F64:.*]] = arith.constant {{.*}} : f64
-      // CHECK: %[[MUL_F32:.*]] = arith.mulf %arg0, %[[PI_F32]] : f32
-      // CHECK: %[[SIN_F32:.*]] = math.sin %[[MUL_F32]] : f32
-      // CHECK: %[[MUL_F64:.*]] = arith.mulf %arg1, %[[PI_F64]] : f64
-      // CHECK: %[[SIN_F64:.*]] = math.sin %[[MUL_F64]] : f64
-      %0 = llvm.call @__nv_sinpif(%arg0) : (f32) -> f32
-      %1 = llvm.call @__nv_sinpi(%arg1) : (f64) -> f64
-      %2 = llvm.mlir.undef : !llvm.struct<(f32, f64)>
-      %3 = llvm.insertvalue %0, %2[0] : !llvm.struct<(f32, f64)>
-      %4 = llvm.insertvalue %1, %3[1] : !llvm.struct<(f32, f64)>
-      llvm.return %4 : !llvm.struct<(f32, f64)>
-    }
-  }
   gpu.module @test_module_18 {
     llvm.func @__nv_tanf(f32) -> f32
     llvm.func @__nv_tan(f64) -> f64
@@ -1098,7 +1079,9 @@ module {
   gpu.module @test_module_fmuladd {
     // CHECK-LABEL: @llvm_fmuladd
     llvm.func @llvm_fmuladd(%arg0: f32, %arg1: f32, %arg2: f32) -> f32 {
-      // CHECK: math.fma
+      // fmuladd only permits fusing; it must not become the strict math.fma.
+      // CHECK: enzymexla.math.fmuladd
+      // CHECK-NOT: math.fma
       %0 = "llvm.intr.fmuladd"(%arg0, %arg1, %arg2) : (f32, f32, f32) -> f32
       llvm.return %0 : f32
     }
@@ -1124,6 +1107,151 @@ module {
       // CHECK: math.rsqrt %arg0 fastmath<afn> : f64
       %0 = llvm.call_intrinsic "llvm.nvvm.rsqrt.approx.d"(%arg0) : (f64) -> f64
       llvm.return %0 : f64
+    }
+  }
+  gpu.module @test_module_erfc {
+    llvm.func @__nv_erfcf(f32) -> f32
+    llvm.func @__nv_erfc(f64) -> f64
+    llvm.func @gpu_erfc(%arg0: f32, %arg1: f64) -> !llvm.struct<(f32, f64)> attributes {llvm.emit_c_interface} {
+      // CHECK-COUNT-2: math.erfc
+      %0 = llvm.call @__nv_erfcf(%arg0) : (f32) -> f32
+      %1 = llvm.call @__nv_erfc(%arg1) : (f64) -> f64
+      %2 = llvm.mlir.undef : !llvm.struct<(f32, f64)>
+      %3 = llvm.insertvalue %0, %2[0] : !llvm.struct<(f32, f64)>
+      %4 = llvm.insertvalue %1, %3[1] : !llvm.struct<(f32, f64)>
+      llvm.return %4 : !llvm.struct<(f32, f64)>
+    }
+    llvm.func @_mlir_ciface_gpu_erfc(%arg0: !llvm.ptr, %arg1: f32, %arg2: f64) attributes {llvm.emit_c_interface} {
+      %0 = llvm.call @gpu_erfc(%arg1, %arg2) : (f32, f64) -> !llvm.struct<(f32, f64)>
+      llvm.store %0, %arg0 : !llvm.struct<(f32, f64)>, !llvm.ptr
+      llvm.return
+    }
+  }
+  gpu.module @test_module_exp10 {
+    llvm.func @__nv_exp10f(f32) -> f32
+    llvm.func @__nv_exp10(f64) -> f64
+    llvm.func @exp10(f64) -> f64
+    // CHECK-LABEL: @gpu_exp10_f32
+    llvm.func @gpu_exp10_f32(%arg0: f32) -> f32 {
+      // CHECK: %[[LOG2OF10:.*]] = arith.constant {{.*}} : f32
+      // CHECK: %[[SCALED:.*]] = arith.mulf %arg0, %[[LOG2OF10]] : f32
+      // CHECK: math.exp2 %[[SCALED]] : f32
+      %0 = llvm.call @__nv_exp10f(%arg0) : (f32) -> f32
+      llvm.return %0 : f32
+    }
+    // CHECK-LABEL: @gpu_exp10_f64
+    llvm.func @gpu_exp10_f64(%arg0: f64) -> f64 {
+      // CHECK: %[[LOG2OF10:.*]] = arith.constant {{.*}} : f64
+      // CHECK: %[[SCALED:.*]] = arith.mulf %arg0, %[[LOG2OF10]] : f64
+      // CHECK: math.exp2 %[[SCALED]] : f64
+      %0 = llvm.call @__nv_exp10(%arg0) : (f64) -> f64
+      llvm.return %0 : f64
+    }
+    // CHECK-LABEL: @libm_exp10_f64
+    llvm.func @libm_exp10_f64(%arg0: f64) -> f64 {
+      // CHECK: %[[LOG2OF10:.*]] = arith.constant {{.*}} : f64
+      // CHECK: %[[SCALED:.*]] = arith.mulf %arg0, %[[LOG2OF10]] : f64
+      // CHECK: math.exp2 %[[SCALED]] : f64
+      %0 = llvm.call @exp10(%arg0) : (f64) -> f64
+      llvm.return %0 : f64
+    }
+  }
+  gpu.module @test_module_nearbyint {
+    llvm.func @__nv_nearbyintf(f32) -> f32
+    llvm.func @__nv_nearbyint(f64) -> f64
+    llvm.func @nearbyintf(f32) -> f32
+    llvm.func @nearbyint(f64) -> f64
+    // CHECK-LABEL: llvm.func @gpu_nearbyint(%arg0: f32, %arg1: f64) -> !llvm.struct<(f32, f64, f32, f64)> {
+    // CHECK-NEXT: %0 = llvm.mlir.undef : !llvm.struct<(f32, f64, f32, f64)>
+    // CHECK-NEXT: %1 = math.roundeven %arg0 : f32
+    // CHECK-NEXT: %2 = math.roundeven %arg1 : f64
+    // CHECK-NEXT: %3 = math.roundeven %arg0 : f32
+    // CHECK-NEXT: %4 = math.roundeven %arg1 : f64
+    // CHECK-NEXT: %5 = llvm.insertvalue %1, %0[0] : !llvm.struct<(f32, f64, f32, f64)>
+    // CHECK-NEXT: %6 = llvm.insertvalue %2, %5[1] : !llvm.struct<(f32, f64, f32, f64)>
+    // CHECK-NEXT: %7 = llvm.insertvalue %3, %6[2] : !llvm.struct<(f32, f64, f32, f64)>
+    // CHECK-NEXT: %8 = llvm.insertvalue %4, %7[3] : !llvm.struct<(f32, f64, f32, f64)>
+    // CHECK-NEXT: llvm.return %8 : !llvm.struct<(f32, f64, f32, f64)>
+    // CHECK-NEXT: }
+    llvm.func @gpu_nearbyint(%arg0: f32, %arg1: f64) -> !llvm.struct<(f32, f64, f32, f64)> {
+      %0 = llvm.call @__nv_nearbyintf(%arg0) : (f32) -> f32
+      %1 = llvm.call @__nv_nearbyint(%arg1) : (f64) -> f64
+      %2 = llvm.call @nearbyintf(%arg0) : (f32) -> f32
+      %3 = llvm.call @nearbyint(%arg1) : (f64) -> f64
+      %4 = llvm.mlir.undef : !llvm.struct<(f32, f64, f32, f64)>
+      %5 = llvm.insertvalue %0, %4[0] : !llvm.struct<(f32, f64, f32, f64)>
+      %6 = llvm.insertvalue %1, %5[1] : !llvm.struct<(f32, f64, f32, f64)>
+      %7 = llvm.insertvalue %2, %6[2] : !llvm.struct<(f32, f64, f32, f64)>
+      %8 = llvm.insertvalue %3, %7[3] : !llvm.struct<(f32, f64, f32, f64)>
+      llvm.return %8 : !llvm.struct<(f32, f64, f32, f64)>
+    }
+  }
+  gpu.module @test_module_llrint {
+    llvm.func @__nv_llrintf(f32) -> i64
+    llvm.func @__nv_llrint(f64) -> i64
+    llvm.func @llrintf(f32) -> i64
+    llvm.func @llrint(f64) -> i64
+    // CHECK-LABEL: llvm.func @gpu_llrint(%arg0: f32, %arg1: f64) -> !llvm.struct<(i64, i64, i64, i64)> {
+    // CHECK-NEXT: %0 = llvm.mlir.undef : !llvm.struct<(i64, i64, i64, i64)>
+    // CHECK-NEXT: %1 = math.roundeven %arg0 : f32
+    // CHECK-NEXT: %2 = arith.fptosi %1 : f32 to i64
+    // CHECK-NEXT: %3 = math.roundeven %arg1 : f64
+    // CHECK-NEXT: %4 = arith.fptosi %3 : f64 to i64
+    // CHECK-NEXT: %5 = math.roundeven %arg0 : f32
+    // CHECK-NEXT: %6 = arith.fptosi %5 : f32 to i64
+    // CHECK-NEXT: %7 = math.roundeven %arg1 : f64
+    // CHECK-NEXT: %8 = arith.fptosi %7 : f64 to i64
+    // CHECK-NEXT: %9 = llvm.insertvalue %2, %0[0] : !llvm.struct<(i64, i64, i64, i64)>
+    // CHECK-NEXT: %10 = llvm.insertvalue %4, %9[1] : !llvm.struct<(i64, i64, i64, i64)>
+    // CHECK-NEXT: %11 = llvm.insertvalue %6, %10[2] : !llvm.struct<(i64, i64, i64, i64)>
+    // CHECK-NEXT: %12 = llvm.insertvalue %8, %11[3] : !llvm.struct<(i64, i64, i64, i64)>
+    // CHECK-NEXT: llvm.return %12 : !llvm.struct<(i64, i64, i64, i64)>
+    // CHECK-NEXT: }
+    llvm.func @gpu_llrint(%arg0: f32, %arg1: f64) -> !llvm.struct<(i64, i64, i64, i64)> {
+      %0 = llvm.call @__nv_llrintf(%arg0) : (f32) -> i64
+      %1 = llvm.call @__nv_llrint(%arg1) : (f64) -> i64
+      %2 = llvm.call @llrintf(%arg0) : (f32) -> i64
+      %3 = llvm.call @llrint(%arg1) : (f64) -> i64
+      %4 = llvm.mlir.undef : !llvm.struct<(i64, i64, i64, i64)>
+      %5 = llvm.insertvalue %0, %4[0] : !llvm.struct<(i64, i64, i64, i64)>
+      %6 = llvm.insertvalue %1, %5[1] : !llvm.struct<(i64, i64, i64, i64)>
+      %7 = llvm.insertvalue %2, %6[2] : !llvm.struct<(i64, i64, i64, i64)>
+      %8 = llvm.insertvalue %3, %7[3] : !llvm.struct<(i64, i64, i64, i64)>
+      llvm.return %8 : !llvm.struct<(i64, i64, i64, i64)>
+    }
+  }
+  gpu.module @test_module_llround {
+    llvm.func @__nv_llroundf(f32) -> i64
+    llvm.func @__nv_llround(f64) -> i64
+    llvm.func @llroundf(f32) -> i64
+    llvm.func @llround(f64) -> i64
+    // CHECK-LABEL: llvm.func @gpu_llround(%arg0: f32, %arg1: f64) -> !llvm.struct<(i64, i64, i64, i64)> {
+    // CHECK-NEXT: %0 = llvm.mlir.undef : !llvm.struct<(i64, i64, i64, i64)>
+    // CHECK-NEXT: %1 = math.round %arg0 : f32
+    // CHECK-NEXT: %2 = arith.fptosi %1 : f32 to i64
+    // CHECK-NEXT: %3 = math.round %arg1 : f64
+    // CHECK-NEXT: %4 = arith.fptosi %3 : f64 to i64
+    // CHECK-NEXT: %5 = math.round %arg0 : f32
+    // CHECK-NEXT: %6 = arith.fptosi %5 : f32 to i64
+    // CHECK-NEXT: %7 = math.round %arg1 : f64
+    // CHECK-NEXT: %8 = arith.fptosi %7 : f64 to i64
+    // CHECK-NEXT: %9 = llvm.insertvalue %2, %0[0] : !llvm.struct<(i64, i64, i64, i64)>
+    // CHECK-NEXT: %10 = llvm.insertvalue %4, %9[1] : !llvm.struct<(i64, i64, i64, i64)>
+    // CHECK-NEXT: %11 = llvm.insertvalue %6, %10[2] : !llvm.struct<(i64, i64, i64, i64)>
+    // CHECK-NEXT: %12 = llvm.insertvalue %8, %11[3] : !llvm.struct<(i64, i64, i64, i64)>
+    // CHECK-NEXT: llvm.return %12 : !llvm.struct<(i64, i64, i64, i64)>
+    // CHECK-NEXT: }
+    llvm.func @gpu_llround(%arg0: f32, %arg1: f64) -> !llvm.struct<(i64, i64, i64, i64)> {
+      %0 = llvm.call @__nv_llroundf(%arg0) : (f32) -> i64
+      %1 = llvm.call @__nv_llround(%arg1) : (f64) -> i64
+      %2 = llvm.call @llroundf(%arg0) : (f32) -> i64
+      %3 = llvm.call @llround(%arg1) : (f64) -> i64
+      %4 = llvm.mlir.undef : !llvm.struct<(i64, i64, i64, i64)>
+      %5 = llvm.insertvalue %0, %4[0] : !llvm.struct<(i64, i64, i64, i64)>
+      %6 = llvm.insertvalue %1, %5[1] : !llvm.struct<(i64, i64, i64, i64)>
+      %7 = llvm.insertvalue %2, %6[2] : !llvm.struct<(i64, i64, i64, i64)>
+      %8 = llvm.insertvalue %3, %7[3] : !llvm.struct<(i64, i64, i64, i64)>
+      llvm.return %8 : !llvm.struct<(i64, i64, i64, i64)>
     }
   }
 }

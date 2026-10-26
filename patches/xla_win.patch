@@ -20,3 +20,50 @@ index 07ee875851..34dda4f28d 100644
              # See curl.h for discussion of write size and Windows
              "/DCURL_MAX_WRITE_SIZE=16384",
          ],
+diff --git a/third_party/mkl_dnn/onednn_xbyak_mingw.patch b/third_party/mkl_dnn/onednn_xbyak_mingw.patch
+new file mode 100644
+index 0000000..e0061e8
+--- /dev/null
++++ b/third_party/mkl_dnn/onednn_xbyak_mingw.patch
+@@ -0,0 +1,29 @@
++diff --git a/third_party/xbyak/xbyak_util.h b/third_party/xbyak/xbyak_util.h
++index 6c03199..404e647 100644
++--- a/third_party/xbyak/xbyak_util.h
+++++ b/third_party/xbyak/xbyak_util.h
++@@ -1362,7 +1362,11 @@ typedef std::vector<uint32_t> U32Vec;
++ 	#define XBYAK_WINSDK_HAS_RELATIONSHIP_GROUP_AFFINITY 0
++ #endif
++ 
++-#if (defined(NTDDI_VERSION) && NTDDI_VERSION >= 0x0A000000) || (defined(_WIN32_WINNT) && _WIN32_WINNT >= 0x0A00)
+++// mingw-w64 headers only gained PROCESSOR_RELATIONSHIP::EfficiencyClass in v12,
+++// regardless of the NTDDI_VERSION/_WIN32_WINNT the build targets.
+++#if defined(__MINGW64_VERSION_MAJOR) && __MINGW64_VERSION_MAJOR < 12
+++	#define XBYAK_WINSDK_HAS_EFFICIENCY_CLASS 0
+++#elif (defined(NTDDI_VERSION) && NTDDI_VERSION >= 0x0A000000) || (defined(_WIN32_WINNT) && _WIN32_WINNT >= 0x0A00)
++ 	#define XBYAK_WINSDK_HAS_EFFICIENCY_CLASS 1
++ #else
++ 	#define XBYAK_WINSDK_HAS_EFFICIENCY_CLASS 0
++@@ -1372,7 +1376,10 @@ typedef std::vector<uint32_t> U32Vec;
++ // NOTE: _WIN32_WINNT has no sub-version granularity for Win10, so only
++ // NTDDI_VERSION can distinguish 20H1 (0x0A00000C) from earlier Win10 builds.
++ // If NTDDI_VERSION is not set, this macro will be 0 (safe/conservative fallback).
++-#if defined(NTDDI_VERSION) && NTDDI_VERSION >= 0x0A00000C
+++// mingw-w64 headers only gained CACHE_RELATIONSHIP::GroupMasks in v13.
+++#if defined(__MINGW64_VERSION_MAJOR) && __MINGW64_VERSION_MAJOR < 13
+++	#define XBYAK_WINSDK_HAS_CACHE_RELATIONSHIP_GROUPMASKS 0
+++#elif defined(NTDDI_VERSION) && NTDDI_VERSION >= 0x0A00000C
++ 	#define XBYAK_WINSDK_HAS_CACHE_RELATIONSHIP_GROUPMASKS 1
++ #else
++ 	#define XBYAK_WINSDK_HAS_CACHE_RELATIONSHIP_GROUPMASKS 0
+diff --git a/third_party/mkl_dnn/workspace.bzl b/third_party/mkl_dnn/workspace.bzl
+index 679d4a4..65b133f 100644
+--- a/third_party/mkl_dnn/workspace.bzl
++++ b/third_party/mkl_dnn/workspace.bzl
+@@ -35,6 +35,7 @@ def repo():
+         patch_file = [
+             "//third_party/mkl_dnn:setting_tsan_race_v3_12_3.patch",
+             "//third_party/mkl_dnn:rename_gtest.patch",
++            "//third_party/mkl_dnn:onednn_xbyak_mingw.patch",
+         ],
+         sha256 = "12d8551668515c64adae2b26e5ebeeefa48b1ad1035717fe8718fd702c5e066b",
+         strip_prefix = "oneDNN-3.12.3",

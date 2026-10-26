@@ -12,6 +12,8 @@
 // dead memref store's and perform more complex forwarding when support for
 // SSA scalars live out of 'affine.for'/'affine.if' statements is available.
 //===----------------------------------------------------------------------===//
+#include "Enzyme/MLIR/Interfaces/AutoDiffOpInterface.h"
+#include "mlir/Analysis/FlatLinearValueConstraints.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -21,12 +23,17 @@
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/Passes.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include <algorithm>
@@ -48,7 +55,9 @@ namespace enzyme {
 } // namespace enzyme
 } // namespace mlir
 
-enum class Match { Exact, Maybe, None };
+// Whether two accesses name the same place, one lies wholly within the other,
+// they may share bytes, or they share none.
+enum class Match { Exact, Contains, Maybe, None };
 
 bool operator<(Value lhs, Value rhs) {
   if (auto lhsBA = dyn_cast<BlockArgument>(lhs)) {
@@ -80,15 +89,64 @@ public:
   AffineExpr aff;
   SmallVector<Value> dim;
   SmallVector<Value> sym;
-  Offset(mlir::Value v) {
-    if (auto op = v.getDefiningOp<ConstantIntOp>()) {
-      idx = op.value();
+  Offset(size_t constant) {
+    idx = constant;
+    type = Type::Index;
+  }
+  // An index counts from the start of what it is an offset into, so anything
+  // below that is the expression it is instead, which takes a context to name.
+  Offset(int64_t constant, MLIRContext *ctx) {
+    if (constant >= 0) {
+      idx = constant;
       type = Type::Index;
       return;
     }
-    if (auto op = v.getDefiningOp<ConstantIndexOp>()) {
-      idx = op.value();
-      type = Type::Index;
+    aff = getAffineConstantExpr(constant, ctx);
+    type = Type::Affine;
+  }
+  Offset(AffineExpr expr, SmallVector<Value> dims, SmallVector<Value> syms) {
+    if (auto cst = dyn_cast<AffineConstantExpr>(expr)) {
+      if (cst.getValue() >= 0) {
+        idx = cst.getValue();
+        type = Type::Index;
+      } else {
+        aff = expr;
+        type = Type::Affine;
+      }
+      return;
+    }
+    if (auto d = dyn_cast<AffineDimExpr>(expr)) {
+      val = dims[d.getPosition()];
+      type = Type::Value;
+      return;
+    }
+    if (auto sy = dyn_cast<AffineSymbolExpr>(expr)) {
+      val = syms[sy.getPosition()];
+      type = Type::Value;
+      return;
+    }
+    type = Type::Affine;
+    aff = expr;
+    dim = std::move(dims);
+    sym = std::move(syms);
+  }
+  Offset(mlir::Value v) {
+    std::optional<int64_t> constant;
+    if (auto op = v.getDefiningOp<ConstantIntOp>())
+      constant = op.value();
+    else if (auto op = v.getDefiningOp<ConstantIndexOp>())
+      constant = op.value();
+
+    if (constant) {
+      // An index counts from the start of what it is an offset into, so
+      // anything below that is the expression it is instead.
+      if (*constant >= 0) {
+        idx = *constant;
+        type = Type::Index;
+      } else {
+        aff = getAffineConstantExpr(*constant, v.getContext());
+        type = Type::Affine;
+      }
       return;
     }
     val = v;
@@ -96,9 +154,16 @@ public:
   }
   Offset(AffineExpr op, unsigned numDims, unsigned numSymbols,
          mlir::OperandRange vals) {
+    // An index counts from the start of what it is an offset into, so anything
+    // below that is the expression it is instead, of nothing.
     if (auto opc = dyn_cast<AffineConstantExpr>(op)) {
-      idx = opc.getValue();
-      type = Type::Index;
+      if (opc.getValue() >= 0) {
+        idx = opc.getValue();
+        type = Type::Index;
+      } else {
+        aff = op;
+        type = Type::Affine;
+      }
       return;
     }
     if (auto opd = dyn_cast<AffineDimExpr>(op)) {
@@ -116,26 +181,13 @@ public:
     for (unsigned i = 0; i < numDims; i++)
       dim.push_back(vals[i]);
 
-    for (unsigned i = numDims; i < numSymbols; i++)
+    for (unsigned i = numDims; i < numDims + numSymbols; i++)
       sym.push_back(vals[i]);
 
     type = Type::Affine;
   }
-  Match matches(const Offset o) const {
-    if (type != o.type)
-      return Match::Maybe;
-    switch (type) {
-    case Type::Affine:
-      return (aff == o.aff && dim == o.dim && sym == o.sym) ? Match::Exact
-                                                            : Match::Maybe;
-    case Type::Value:
-      return (val == o.val) ? Match::Exact : Match::Maybe;
-    case Type::Index:
-      return (idx == o.idx) ? Match::Exact : Match::None;
-    default:
-      llvm_unreachable("Unknown offset type");
-    }
-  }
+  bool isZero() const { return type == Type::Index && idx == 0; }
+
   bool operator<(const Offset o) const {
     if (type != o.type) {
       return type < o.type;
@@ -166,6 +218,941 @@ public:
     }
   }
 };
+
+// The extent of a value, when the layout can say what it is.
+static std::optional<uint64_t> typeSize(mlir::Type ty, const DataLayout &dl) {
+  // Asking for the size of anything the layout cannot measure is fatal rather
+  // than an error to handle, so this asks only about what it can: what
+  // getDefaultTypeSizeInBits answers for, plus whatever brings its own answer.
+  if (!ty ||
+      !(ty.isIntOrFloat() ||
+        isa<IndexType, VectorType, ComplexType, DataLayoutTypeInterface>(ty)))
+    return std::nullopt;
+  return dl.getTypeSize(ty);
+}
+
+// What a single index of an access counts in: bytes of the type a
+// getelementptr steps through, or a dimension of a memref.
+class OffsetType {
+public:
+  enum class Kind { Bytes, Dim } kind = Kind::Bytes;
+  // Bytes: the size an index of this component multiplies.
+  uint64_t stride = 0;
+  // Dim: how many elements the dimension holds.
+  int64_t dimSize = ShapedType::kDynamic;
+
+  static OffsetType bytes(uint64_t stride) {
+    OffsetType res;
+    res.kind = Kind::Bytes;
+    res.stride = stride;
+    return res;
+  }
+  static OffsetType dim(int64_t dimSize) {
+    OffsetType res;
+    res.kind = Kind::Dim;
+    res.dimSize = dimSize;
+    return res;
+  }
+
+  bool operator<(const OffsetType &o) const {
+    if (kind != o.kind)
+      return kind < o.kind;
+    switch (kind) {
+    case Kind::Bytes:
+      return stride < o.stride;
+    case Kind::Dim:
+      return dimSize < o.dimSize;
+    }
+    llvm_unreachable("Unknown offset unit");
+  }
+  bool operator==(const OffsetType &o) const {
+    return !(*this < o) && !(o < *this);
+  }
+};
+
+// Where an access lands within an allocation: one Offset per index, each with
+// the unit it counts in, and the type of the value the access reads or writes.
+// `unknown` is an offset which could be anywhere, the same as an Offset holding
+// a value except that no value has to exist to name it -- which is what adding
+// two offsets counted in units that cannot be mixed produces.
+class OffsetTree {
+  bool unknownOffset = false;
+  std::vector<Offset> offsets;
+  std::vector<OffsetType> units;
+  mlir::Type base;
+
+  void normalize() {
+    if (unknownOffset) {
+      offsets.clear();
+      units.clear();
+      return;
+    }
+
+    // Counting in dimensions of a memref and in bytes of a pointer are two
+    // ways of saying where something is, and one path takes one of them.
+    assert((!hasDim() || !hasByte()) &&
+           "an offset counts in dimensions or in bytes, not both");
+
+    // Naming the start of an allocation is naming no offset into it at all,
+    // whatever the rank of the access that got there. Holding one form of it is
+    // what lets an access at [0, 0] of a view meet the index-free access an
+    // llvm.load performs.
+    if (isZero()) {
+      offsets.clear();
+      units.clear();
+      return;
+    }
+    // A constant lands at one byte however many indices reached it, which is
+    // what lets paths of different shapes that reach it meet.
+    if (auto bytes = constantBytes()) {
+      offsets.assign(1, Offset((size_t)*bytes));
+      units.assign(1, OffsetType::bytes(1));
+      return;
+    }
+
+    // The indices run most significant first, which is what lets the product of
+    // what the ones after an index cover be what that index steps over. A
+    // constant displacement -- a field of a struct -- is no stride at all and
+    // sits wherever the walk into the type put it.
+#ifndef NDEBUG
+    std::optional<uint64_t> last;
+    for (auto &&[off, unit] : llvm::zip(offsets, units)) {
+      if (unit.kind != OffsetType::Kind::Bytes ||
+          off.type == Offset::Type::Index)
+        continue;
+      assert((!last || *last >= unit.stride) &&
+             "byte offsets are held most significant first");
+      last = unit.stride;
+    }
+#endif
+  }
+
+public:
+  OffsetTree(mlir::Type base = {}, std::vector<Offset> offsets = {},
+             std::vector<OffsetType> units = {})
+      : offsets(std::move(offsets)), units(std::move(units)), base(base) {
+    assert(this->offsets.size() == this->units.size());
+    normalize();
+  }
+
+  // An offset which could be anywhere: it may be any other, and is none.
+  static OffsetTree unknown() {
+    OffsetTree res;
+    res.unknownOffset = true;
+    return res;
+  }
+
+  bool isUnknown() const { return unknownOffset; }
+  mlir::Type getBase() const { return base; }
+
+  bool hasDim() const {
+    return llvm::any_of(units, [](const OffsetType &unit) {
+      return unit.kind == OffsetType::Kind::Dim;
+    });
+  }
+  // An offset that goes nowhere counts in no units, so it sits happily beside
+  // one counted in dimensions: both name a place, and neither disagrees with
+  // the other about how to get there.
+  bool hasDimOrZero() const { return hasDim() || isZero(); }
+
+  // A byte offset of no bytes is the placeholder for not moving at all, which
+  // is not a way of counting anything.
+  bool hasByte() const {
+    return llvm::any_of(units, [](const OffsetType &unit) {
+      return unit.kind == OffsetType::Kind::Bytes && unit.stride != 0;
+    });
+  }
+
+  void print(llvm::raw_ostream &o) const;
+
+  // Whether this names the start of what it is an offset into.
+  bool isZero() const {
+    if (unknownOffset)
+      return false;
+    return llvm::all_of(offsets,
+                        [](const Offset &off) { return off.isZero(); });
+  }
+
+  // A single constant offset in bytes, when that is all this is.
+  std::optional<uint64_t> constantBytes() const {
+    if (unknownOffset)
+      return std::nullopt;
+    uint64_t total = 0;
+    for (auto [off, unit] : llvm::zip(offsets, units)) {
+      if (off.type != Offset::Type::Index ||
+          unit.kind != OffsetType::Kind::Bytes)
+        return std::nullopt;
+      total += off.idx * unit.stride;
+    }
+    return total;
+  }
+
+  // The expression an offset is, over shared lists of the values everything is
+  // built from: whatever it needs that is already named is reused, and what is
+  // not is added, so several offsets can be put into one numbering.
+  static AffineExpr asAffine(const Offset &off, SmallVector<Value> &dims,
+                             SmallVector<Value> &syms, MLIRContext *ctx) {
+    auto exprFor = [&](Value val, bool asSymbol) -> AffineExpr {
+      auto dim = llvm::find(dims, val);
+      if (dim != dims.end())
+        return getAffineDimExpr(std::distance(dims.begin(), dim), ctx);
+      auto sym = llvm::find(syms, val);
+      if (sym != syms.end())
+        return getAffineSymbolExpr(std::distance(syms.begin(), sym), ctx);
+      if (asSymbol) {
+        syms.push_back(val);
+        return getAffineSymbolExpr(syms.size() - 1, ctx);
+      }
+      dims.push_back(val);
+      return getAffineDimExpr(dims.size() - 1, ctx);
+    };
+
+    switch (off.type) {
+    case Offset::Type::Index:
+      return getAffineConstantExpr(off.idx, ctx);
+    case Offset::Type::Value:
+      // Nothing is known about a value an index just is, which is what a
+      // symbol is for; a dimension is something an affine map may index by.
+      return exprFor(off.val, /*asSymbol=*/true);
+    case Offset::Type::Affine: {
+      SmallVector<AffineExpr> dimMap, symMap;
+      for (Value val : off.dim)
+        dimMap.push_back(exprFor(val, /*asSymbol=*/false));
+      for (Value val : off.sym)
+        symMap.push_back(exprFor(val, /*asSymbol=*/true));
+      return off.aff.replaceDimsAndSymbols(dimMap, symMap);
+    }
+    }
+    llvm_unreachable("Unknown offset type");
+  }
+
+  // Two offsets of the same thing, counted the same way, add up: as
+  // expressions of everything either of them is built from.
+  static Offset addOffsets(const Offset &lhs, const Offset &rhs) {
+    if (lhs.isZero())
+      return rhs;
+    if (rhs.isZero())
+      return lhs;
+    if (lhs.type == Offset::Type::Index && rhs.type == Offset::Type::Index)
+      return Offset(lhs.idx + rhs.idx);
+
+    MLIRContext *ctx = nullptr;
+    for (const Offset *off : {&lhs, &rhs}) {
+      if (off->type == Offset::Type::Value)
+        ctx = off->val.getContext();
+      else if (off->type == Offset::Type::Affine)
+        ctx = off->aff.getContext();
+    }
+
+    SmallVector<Value> dims, syms;
+    AffineExpr expr = asAffine(lhs, dims, syms, ctx);
+    expr = expr + asAffine(rhs, dims, syms, ctx);
+    return Offset(simplifyAffineExpr(expr, dims.size(), syms.size()), dims,
+                  syms);
+  }
+
+  // How far from the start of what it is an offset into this lands, in bytes,
+  // when every index says where it goes.
+  std::optional<uint64_t> constantOffset(const DataLayout &dl) const {
+    if (unknownOffset)
+      return std::nullopt;
+    auto element = typeSize(base, dl);
+    uint64_t total = 0;
+    for (auto &&[i, off] : llvm::enumerate(offsets)) {
+      if (off.type != Offset::Type::Index)
+        return std::nullopt;
+      int64_t step = stepOf(i);
+      if (step == ShapedType::kDynamic)
+        return std::nullopt;
+      // A dimension steps by that many of what the access reads.
+      uint64_t bytes = step;
+      if (units[i].kind == OffsetType::Kind::Dim) {
+        if (!element)
+          return std::nullopt;
+        bytes = step * *element;
+      }
+      total += off.idx * bytes;
+    }
+    return total;
+  }
+
+  // Where `o` starts within what this names, when everything it names lies
+  // inside and both say where they land.
+  std::optional<uint64_t> containsAt(const OffsetTree &o,
+                                     const DataLayout &dl) const {
+    auto mine = constantOffset(dl), theirs = o.constantOffset(dl);
+    auto mySize = typeSize(base, dl), oSize = typeSize(o.base, dl);
+    if (!mine || !theirs || !mySize || !oSize)
+      return std::nullopt;
+    if (*theirs < *mine || *theirs + *oSize > *mine + *mySize)
+      return std::nullopt;
+    return *theirs - *mine;
+  }
+
+  // Composing this path with a further one. The further one names the value
+  // that is read or written, so the result is of its type.
+  OffsetTree add(const OffsetTree &o, const DataLayout &dl) const {
+    if (unknownOffset || o.unknownOffset)
+      return unknown();
+
+    // This path does not move, so it lands wherever the access does.
+    if (isZero())
+      return o;
+
+    // Dimensions count what the access reads, so two paths through them only
+    // compose when what they count is the same size.
+    if ((hasDim() || o.hasDim()) && base != o.base) {
+      auto lhsSize = typeSize(base, dl), rhsSize = typeSize(o.base, dl);
+      if (!lhsSize || !rhsSize || *lhsSize != *rhsSize)
+        return unknown();
+    }
+
+    // The access is at the start of what this path reached, so it lands here,
+    // reading what the access reads.
+    if (o.isZero())
+      return OffsetTree(o.base, offsets, units);
+
+    // Moving the same way twice is moving once by the two together.
+    if (units == o.units) {
+      std::vector<Offset> sum;
+      for (auto &&[lhs, rhs] : llvm::zip(offsets, o.offsets))
+        sum.push_back(addOffsets(lhs, rhs));
+      return OffsetTree(o.base, std::move(sum), units);
+    }
+
+    // Two constant amounts, however many indices reached either, are one.
+    auto lhsBytes = constantBytes(), rhsBytes = o.constantBytes();
+    if (lhsBytes && rhsBytes)
+      return OffsetTree(o.base, {Offset((size_t)(*lhsBytes + *rhsBytes))},
+                        {OffsetType::bytes(1)});
+
+    // Otherwise a constant amount of bytes joins a path that steps by a size it
+    // is a multiple of: it is that many of those steps, taken innermost, which
+    // is where the smallest of them is.
+    auto join = [](const OffsetTree &path, uint64_t bytes,
+                   mlir::Type base) -> OffsetTree {
+      if (path.units.empty() ||
+          path.units.back().kind != OffsetType::Kind::Bytes)
+        return unknown();
+      uint64_t stride = path.units.back().stride;
+      if (!stride || bytes % stride)
+        return unknown();
+      std::vector<Offset> offsets = path.offsets;
+      offsets.back() =
+          addOffsets(path.offsets.back(), Offset((size_t)(bytes / stride)));
+      return OffsetTree(base, std::move(offsets), path.units);
+    };
+    if (rhsBytes)
+      return join(*this, *rhsBytes, o.base);
+    if (lhsBytes)
+      return join(o, *lhsBytes, o.base);
+    return unknown();
+  }
+
+  // The number of elements (if dim) or bytes moved
+  // by changing the i-th index by 1
+  int64_t stepOf(int64_t i) const {
+    assert(i < units.size());
+    if (units[i].kind == OffsetType::Kind::Bytes) {
+      return units[i].stride;
+    } else {
+      int64_t cur = 1;
+      for (int64_t j = i + 1; j < (int64_t)units.size(); j++) {
+        if (units[j].dimSize == ShapedType::kDynamic) {
+          return ShapedType::kDynamic;
+        }
+        cur *= units[j].dimSize;
+      }
+      return cur;
+    }
+  }
+
+  // The maximum value allowed as an arg for the i-th index
+  int64_t maxValue(int64_t i) const {
+    if (units[i].kind == OffsetType::Kind::Bytes) {
+      if (i == 0)
+        return ShapedType::kDynamic;
+      auto prevStep = stepOf(i - 1);
+      auto curStep = stepOf(i);
+      if (prevStep == ShapedType::kDynamic || curStep == ShapedType::kDynamic ||
+          curStep == 0)
+        return ShapedType::kDynamic;
+      assert(prevStep % curStep == 0);
+      assert(prevStep != curStep);
+      return prevStep / curStep;
+    } else {
+      return units[i].dimSize;
+    }
+  }
+
+  // The first index guaranteed not to be touched by this access, if any
+  int64_t reachBound() const {
+    if (units.empty())
+      return 0;
+
+    int64_t step = stepOf(0), extent = maxValue(0);
+    assert(step != 0);
+    if (step == ShapedType::kDynamic || extent == ShapedType::kDynamic)
+      return ShapedType::kDynamic;
+    return step * extent;
+  }
+
+  // Whether a constant index at `at` puts this past everything `o` can name.
+  bool beyond(size_t at, std::optional<uint64_t> mySize, const OffsetTree &o,
+              std::optional<uint64_t> oSize, bool sameExtent) const {
+    int64_t step = stepOf(at), bound = o.reachBound();
+    assert(step != 0);
+    if (step == ShapedType::kDynamic || bound == ShapedType::kDynamic)
+      return false;
+
+    // Reading different amounts, the two only line up once both are counted in
+    // bytes rather than in the elements each reads.
+    if (!sameExtent) {
+      if (!mySize || !oSize)
+        return false;
+      if (hasDim())
+        step *= (int64_t)*mySize;
+      if (o.hasDim())
+        bound *= (int64_t)*oSize;
+    }
+
+    // A dimension counts the elements the other reads, so its bound already
+    // spans what is read at the last of them. A byte offset is only where the
+    // other starts, and what it reads there comes after that.
+    if (!o.hasDim()) {
+      if (!oSize)
+        return false;
+      // Unless it goes nowhere, in which case it counts in no units at all and
+      // what it reaches has to be said in whatever this one counts in: a single
+      // element when that is dimensions of what it reads, its own extent
+      // otherwise -- which is what the step has been put into above when the
+      // two read different amounts.
+      bound += o.units.empty() && hasDim() && sameExtent ? 1 : (int64_t)*oSize;
+    }
+
+    uint64_t idx = offsets[at].idx;
+    if (idx > (uint64_t)(INT64_MAX / step))
+      return false;
+    return (int64_t)idx * step >= bound;
+  }
+
+  // Whether this index or one outside it is known to move, which is what puts
+  // an access past everything the indices within it can reach. The outer ones
+  // are the ones before it.
+  int64_t smallestStrideUpTo(size_t at) const {
+    assert(at < offsets.size());
+
+    if (!hasDim()) {
+      int64_t best = INT64_MAX;
+      for (size_t i = 0; i < at; i++) {
+        if (offsets[i].isZero())
+          continue;
+        assert(units[i].kind == OffsetType::Kind::Bytes);
+        if (units[i].stride < best) {
+          best = units[i].stride;
+        }
+      }
+      return best;
+    } else {
+      if (at == 0)
+        return INT64_MAX;
+      size_t cur = 1;
+      for (size_t i = at; i < offsets.size(); i++) {
+        if (units[i].dimSize == ShapedType::kDynamic) {
+          continue;
+        }
+        cur *= units[i].dimSize;
+      }
+      return (int64_t)cur;
+    }
+  }
+
+  // One index against another, given what a step of each covers, how far all of
+  // each index reaches, how much each access reads, and whether either is known
+  // to have moved at this index or an outer one. What the shapes leave open is
+  // kDynamic, which compares to nothing.
+  static Match compareIndex(const Offset &lhs, int64_t lhsStep,
+                            std::optional<uint64_t> lhsSize,
+                            int64_t lhsSmallestStride, const Offset &rhs,
+                            int64_t rhsStep, std::optional<uint64_t> rhsSize,
+                            int64_t rhsSmallestStride, bool isDim,
+                            bool sameExtent) {
+
+    // The lhs step is smaller than the rhs step, and it can be proven that the
+    // lhs stride cannot possibly equal a single rhs stride.
+    if (lhsStep != ShapedType::kDynamic && rhsStep != ShapedType::kDynamic &&
+        lhsStep < rhsStep && rhsStep % lhsStep == 0) {
+      if (lhs.type == Offset::Type::Index && lhs.idx != 0 &&
+          (int64_t)lhs.idx < rhsStep / lhsStep) {
+        return Match::None;
+      }
+    }
+
+    // Same the other way
+    if (rhsStep != ShapedType::kDynamic && lhsStep != ShapedType::kDynamic &&
+        rhsStep < lhsStep && lhsStep % rhsStep == 0) {
+      if (rhs.type == Offset::Type::Index && rhs.idx != 0 &&
+          (int64_t)rhs.idx < lhsStep / rhsStep) {
+        return Match::None;
+      }
+    }
+
+    if (lhsStep != ShapedType::kDynamic && lhsStep == rhsStep &&
+        (sameExtent || !isDim)) {
+      int64_t difference = INT64_MAX;
+      // Which access starts first, so the direct overlap can be judged by the
+      // earlier one's width alone rather than conservatively by both.
+      bool lhsFirst = false;
+      if (lhs.type != rhs.type)
+        return Match::Maybe;
+      switch (lhs.type) {
+      case Offset::Type::Affine:
+        if (lhs.dim == rhs.dim && lhs.sym == rhs.sym) {
+          if (lhs.aff == rhs.aff) {
+            return Match::Exact;
+          }
+          if (auto cst = dyn_cast<AffineConstantExpr>(rhs.aff - lhs.aff)) {
+            difference = std::abs(cst.getValue());
+            lhsFirst = cst.getValue() > 0;
+          }
+        }
+        break;
+      case Offset::Type::Value:
+        if (lhs.val == rhs.val)
+          return Match::Exact;
+        break;
+      case Offset::Type::Index:
+        if (lhs.idx == rhs.idx) {
+          return Match::Exact;
+        }
+        lhsFirst = lhs.idx < rhs.idx;
+        difference = lhsFirst ? rhs.idx - lhs.idx : lhs.idx - rhs.idx;
+        break;
+      }
+
+      if (difference == INT64_MAX)
+        return Match::Maybe;
+
+      // Two accesses conflict if they overlap in any period: across a stride,
+      // into the next period's copy, or directly at the same one. The stride
+      // comparison rules out the former; whether it holds is saved rather than
+      // returned so the direct overlap can be required alongside it.
+      const int64_t origDifference = difference;
+      bool wouldOverflowFromStride = true;
+      if (isDim) {
+        if (difference < lhsSmallestStride && difference < rhsSmallestStride) {
+          wouldOverflowFromStride = false;
+        }
+      } else {
+        if (sameExtent || (lhsSize && rhsSize)) {
+          if (!sameExtent) {
+            difference +=
+                *lhsSize > *rhsSize ? *lhsSize - *rhsSize : *rhsSize - *lhsSize;
+          }
+          if (difference < lhsSmallestStride &&
+              difference < rhsSmallestStride) {
+            wouldOverflowFromStride = false;
+          }
+        }
+      }
+
+      if (!wouldOverflowFromStride) {
+        // No spill across a stride, but the direct overlap at the same period
+        // is still open.
+        bool wouldOverflowNoStride;
+        if (isDim) {
+          // A dimensional difference is already counted in elements, so the
+          // two land on the same one -- and directly overlap -- only when it
+          // is zero.
+          wouldOverflowNoStride = origDifference == 0;
+        } else {
+          // A byte gap has to clear the earlier range's width for it to end
+          // before the later begins; without the widths there is nothing more
+          // to ask and the stride verdict stands.
+          wouldOverflowNoStride =
+              lhsSize && rhsSize &&
+              origDifference < (int64_t)(lhsFirst ? *lhsSize : *rhsSize);
+        }
+        if (!wouldOverflowNoStride)
+          return Match::None;
+      }
+    }
+
+    return Match::Maybe;
+  }
+
+  Match matches(const OffsetTree &o, const DataLayout &dl,
+                uint64_t *containedAt = nullptr) const {
+    if (unknownOffset || o.unknownOffset)
+      return Match::Maybe;
+
+    // A different type at the same place may still be the same value, since
+    // castToType converts between spellings of one extent. One type covers the
+    // same bytes as itself whether or not the layout can say how many; two of
+    // them do only if it can say so, and two extents of different length
+    // starting together share no more than a part.
+    std::optional<uint64_t> size = typeSize(base, dl);
+    std::optional<uint64_t> osize =
+        base == o.base ? size : typeSize(o.base, dl);
+    bool sameExtent = base == o.base || (size && osize && *size == *osize);
+    if (!sameExtent && (!size || !osize))
+      return Match::Maybe;
+
+    // Two accesses that each land at a known byte and reach a known distance
+    // either share bytes or they do not, whatever units either counted its way
+    // there in: a byte written through one spelling of the allocation says
+    // nothing about a field that lies elsewhere, however differently that
+    // field is read. The stride comparison below cannot relate two paths
+    // counted in different sizes, so it would call such a pair Maybe.
+    if (size && osize) {
+      auto mine = constantOffset(dl), theirs = o.constantOffset(dl);
+      if (mine && theirs) {
+        uint64_t myEnd = *mine + *size, oEnd = *theirs + *osize;
+        if (*theirs >= myEnd || *mine >= oEnd)
+          return Match::None;
+        if (*mine == *theirs && *size == *osize)
+          return Match::Exact;
+        if (*theirs >= *mine && oEnd <= myEnd && containedAt) {
+          *containedAt = *theirs - *mine;
+          return Match::Contains;
+        }
+        return Match::Maybe;
+      }
+    }
+
+    // Lying wholly within is a question of where each lands and how far it
+    // reaches, which needs nothing of how either counts its way there. It is
+    // a real relationship whether or not the caller wants the offset: hand
+    // that back only when asked, and otherwise report the overlap as Maybe
+    // rather than leaving it to the stride comparison below, which does not
+    // reason about one extent lying inside another.
+    if (!sameExtent)
+      if (auto at = containsAt(o, dl)) {
+        if (containedAt) {
+          *containedAt = *at;
+          return Match::Contains;
+        }
+        return Match::Maybe;
+      }
+
+    // Two offsets that both go nowhere name the same place, so what is left is
+    // how far each reaches from it: the same extent is the same access, and a
+    // smaller one lies inside the larger.
+    if (isZero() && o.isZero()) {
+      if (sameExtent)
+        return Match::Exact;
+      if (containedAt && size && osize && *osize <= *size) {
+        *containedAt = 0;
+        return Match::Contains;
+      }
+      return Match::Maybe;
+    }
+
+    bool isDim = true;
+
+    if (hasDimOrZero() && o.hasDimOrZero()) {
+      isDim = true;
+    } else if (!hasDim() && !o.hasDim()) {
+      isDim = false;
+    } else {
+      return Match::Maybe;
+    }
+
+    // The indices run most significant first, so the walk runs the other way:
+    // what an index steps over is everything the ones after it cover, which is
+    // what the running product holds by the time it is reached.
+    ssize_t i = offsets.size() - 1, j = o.offsets.size() - 1;
+
+    bool exact = sameExtent;
+
+    while (i >= 0 && j >= 0) {
+      // An index that does not move lines up with anything, though whatever it
+      // would have stepped over still lies inside the ones outside it.
+      if (offsets[i].isZero()) {
+        i--;
+        continue;
+      }
+      if (o.offsets[j].isZero()) {
+        j--;
+        continue;
+      }
+
+      auto lhsStep = stepOf(i);
+      auto rhsStep = o.stepOf(j);
+
+      auto lhsStride = smallestStrideUpTo(i);
+      auto rhsStride = o.smallestStrideUpTo(j);
+      auto res =
+          compareIndex(offsets[i], lhsStep, size, lhsStride, o.offsets[j],
+                       rhsStep, osize, rhsStride, isDim, sameExtent);
+      if (res == Match::None)
+        return Match::None;
+
+      if (res == Match::Exact) {
+        i--;
+        j--;
+        continue;
+      }
+
+      exact = false;
+
+      if (sameExtent && lhsStep != rhsStep && lhsStep != ShapedType::kDynamic &&
+          rhsStep != ShapedType::kDynamic) {
+        if (lhsStep < rhsStep) {
+          i--;
+        } else {
+          j--;
+        }
+        continue;
+      }
+
+      i--;
+      j--;
+    }
+
+    // Whatever is left over of one path moves on from where the other stopped,
+    // which is wherever the indices it did have put it.
+    for (; i >= 0; i--) {
+      if (offsets[i].isZero()) {
+        continue;
+      }
+      exact = false;
+      if (offsets[i].type == Offset::Type::Index &&
+          beyond(i, size, o, osize, sameExtent)) {
+        return Match::None;
+      }
+    }
+    for (; j >= 0; j--) {
+      if (o.offsets[j].isZero()) {
+        continue;
+      }
+      exact = false;
+      if (o.offsets[j].type == Offset::Type::Index &&
+          o.beyond(j, osize, *this, size, sameExtent)) {
+        return Match::None;
+      }
+    }
+
+    if (exact) {
+      return Match::Exact;
+    }
+
+    return Match::Maybe;
+  }
+
+  bool operator<(const OffsetTree &o) const {
+    if (unknownOffset != o.unknownOffset)
+      return unknownOffset < o.unknownOffset;
+    if (offsets.size() != o.offsets.size())
+      return offsets.size() < o.offsets.size();
+    for (auto &&[i, off] : llvm::enumerate(offsets)) {
+      if (off < o.offsets[i])
+        return true;
+      if (o.offsets[i] < off)
+        return false;
+      if (units[i] < o.units[i])
+        return true;
+      if (o.units[i] < units[i])
+        return false;
+    }
+    return false;
+  }
+};
+
+static OffsetTree accessOffsets(Type accessed) { return OffsetTree(accessed); }
+
+// The pointer a memcpy/memmove reads from; a memset reads from nothing.
+static Value transferSource(Operation *op) {
+  if (auto cpy = dyn_cast<LLVM::MemcpyOp>(op))
+    return cpy.getSrc();
+  if (auto mv = dyn_cast<LLVM::MemmoveOp>(op))
+    return mv.getSrc();
+  return nullptr;
+}
+
+static Value transferDest(Operation *op) {
+  if (auto cpy = dyn_cast<LLVM::MemcpyOp>(op))
+    return cpy.getDst();
+  if (auto mv = dyn_cast<LLVM::MemmoveOp>(op))
+    return mv.getDst();
+  if (auto ms = dyn_cast<LLVM::MemsetOp>(op))
+    return ms.getDst();
+  return nullptr;
+}
+
+// How many bytes a transfer moves, when that is a known constant.
+static std::optional<uint64_t> transferLength(Operation *op) {
+  Value len;
+  if (auto cpy = dyn_cast<LLVM::MemcpyOp>(op))
+    len = cpy.getLen();
+  else if (auto mv = dyn_cast<LLVM::MemmoveOp>(op))
+    len = mv.getLen();
+  else if (auto ms = dyn_cast<LLVM::MemsetOp>(op))
+    len = ms.getLen();
+  else
+    return std::nullopt;
+
+  APInt val;
+  if (!matchPattern(len, m_ConstantInt(&val)))
+    return std::nullopt;
+  return val.getZExtValue();
+}
+
+// What a transfer states about the alignment of the end it is asked about,
+// which is all an access put in its place may assume; absent, it promises
+// nothing beyond a byte. The destination is its first argument, the source its
+// second.
+static unsigned transferAlignment(Operation *op, unsigned arg) {
+  auto argAttrs = op->getAttrOfType<ArrayAttr>("arg_attrs");
+  if (!argAttrs || argAttrs.size() <= arg)
+    return 1;
+  auto dict = dyn_cast<DictionaryAttr>(argAttrs[arg]);
+  if (!dict)
+    return 1;
+  if (auto align =
+          dict.getAs<IntegerAttr>(LLVM::LLVMDialect::getAlignAttrName()))
+    return align.getInt();
+  return 1;
+}
+
+// What a transfer touches is a number of bytes rather than a value of some
+// type, which is the same thing as an access of an integer that wide. Anything
+// larger than a slot could hold is not worth naming.
+static OffsetTree transferAccess(uint64_t bytes, MLIRContext *ctx) {
+  if (!bytes || bytes > 4096)
+    return OffsetTree::unknown();
+  return OffsetTree(IntegerType::get(ctx, bytes * 8));
+}
+
+static OffsetTree accessOffsets(Type accessed, Value memory,
+                                mlir::OperandRange indices,
+                                const DataLayout &dl) {
+  std::vector<Offset> offsets;
+  std::vector<OffsetType> units;
+  auto MT = cast<MemRefType>(memory.getType());
+  assert(MT.getElementType() == accessed);
+  for (auto &&[i, idx] : llvm::enumerate(indices)) {
+    offsets.emplace_back(idx);
+    units.push_back(OffsetType::dim(MT.getShape()[i]));
+  }
+  return OffsetTree(accessed, std::move(offsets), std::move(units));
+}
+
+static OffsetTree accessOffsets(Type accessed, Value memory, AffineMap map,
+                                mlir::OperandRange operands,
+                                const DataLayout &dl) {
+  std::vector<Offset> offsets;
+  std::vector<OffsetType> units;
+  auto MT = cast<MemRefType>(memory.getType());
+  assert(MT.getElementType() == accessed);
+  for (auto &&[i, expr] : llvm::enumerate(map.getResults())) {
+    offsets.emplace_back(expr, map.getNumDims(), map.getNumSymbols(), operands);
+    units.push_back(OffsetType::dim(MT.getShape()[i]));
+  }
+  return OffsetTree(accessed, std::move(offsets), std::move(units));
+}
+
+// A getelementptr walks into its element type: the first index steps over the
+// whole of it, and each one after that into what the previous one selected.
+// What it lands on is only known when every index into an aggregate is.
+static OffsetTree gepOffsets(LLVM::GEPOp gep, const DataLayout &dl) {
+  std::vector<Offset> offsets;
+  std::vector<OffsetType> units;
+  Type cur = gep.getElemType();
+  assert(cur && "a getelementptr walks into a type");
+
+  auto step = [&](std::optional<int64_t> constant, Value dynamic,
+                  uint64_t stride) {
+    if (constant) {
+      offsets.emplace_back(*constant, gep.getContext());
+    } else {
+      offsets.emplace_back(dynamic);
+    }
+    units.push_back(OffsetType::bytes(stride));
+  };
+
+  for (auto &&[i, arg] : llvm::enumerate(gep.getIndices())) {
+    Value dynamic = dyn_cast<Value>(arg);
+    std::optional<int64_t> constant;
+    if (auto attr = dyn_cast<IntegerAttr>(arg))
+      constant = attr.getInt();
+    else if (APInt val; matchPattern(dynamic, m_ConstantInt(&val)))
+      constant = val.getSExtValue();
+
+    if (i == 0) {
+      step(constant, dynamic, dl.getTypeSize(cur));
+      continue;
+    }
+
+    if (auto ST = dyn_cast<LLVM::LLVMStructType>(cur)) {
+      // Only a constant can select a field, and it lands at a fixed byte.
+      if (!constant || *constant < 0 ||
+          (size_t)*constant >= ST.getBody().size())
+        return OffsetTree::unknown();
+      uint64_t byte = 0;
+      for (auto member : ST.getBody().take_front(*constant)) {
+        if (!ST.isPacked())
+          byte = llvm::alignTo(byte, dl.getTypeABIAlignment(member));
+        byte += dl.getTypeSize(member);
+      }
+      if (!ST.isPacked())
+        byte = llvm::alignTo(byte,
+                             dl.getTypeABIAlignment(ST.getBody()[*constant]));
+      offsets.emplace_back((size_t)byte);
+      units.push_back(OffsetType::bytes(1));
+      cur = ST.getBody()[*constant];
+      assert(cur && "a field of a struct is of some type");
+      continue;
+    }
+
+    Type element;
+    if (auto AT = dyn_cast<LLVM::LLVMArrayType>(cur))
+      element = AT.getElementType();
+    else if (auto VT = dyn_cast<VectorType>(cur))
+      element = VT.getElementType();
+    else
+      return OffsetTree::unknown();
+
+    assert(element && "an aggregate is made of something");
+    step(constant, dynamic, dl.getTypeSize(element));
+    cur = element;
+  }
+
+  // Where the walk ended is what an access through this reads.
+  assert(cur && "a getelementptr lands on a type");
+  return OffsetTree(cur, std::move(offsets), std::move(units));
+}
+
+llvm::raw_ostream &operator<<(llvm::raw_ostream &o, const OffsetType unit) {
+  switch (unit.kind) {
+  case OffsetType::Kind::Bytes:
+    return o << unit.stride << "B";
+  case OffsetType::Kind::Dim:
+    return o << "dim<" << unit.dimSize << ">";
+  }
+  llvm_unreachable("Unknown offset unit");
+}
+
+llvm::raw_ostream &operator<<(llvm::raw_ostream &o, const Offset off);
+
+void OffsetTree::print(llvm::raw_ostream &o) const {
+  if (unknownOffset) {
+    o << "unknown";
+    return;
+  }
+  o << "[";
+  for (auto &&[i, off] : llvm::enumerate(offsets)) {
+    if (i)
+      o << ", ";
+    o << off << " x " << units[i];
+  }
+  o << "] of " << base;
+}
+
+llvm::raw_ostream &operator<<(llvm::raw_ostream &o, const OffsetTree &tree) {
+  tree.print(o);
+  return o;
+}
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &o, const Offset off) {
   switch (off.type) {
@@ -221,47 +1208,15 @@ struct PolygeistMem2Reg
 
   // return if changed
   bool forwardStoreToLoad(
-      mlir::Value AI, std::vector<Offset> idx,
+      mlir::Value AI, OffsetTree idx,
       SmallVectorImpl<Operation *> &loadOpsToErase,
-      DenseMap<Operation *, SmallVector<Operation *>> &capturedAliasing);
+      DenseMap<Operation *, SmallVector<Operation *>> &capturedAliasing,
+      SymbolTableCollection &symbolTables);
 };
 
 } // end anonymous namespace
 
-Match matchesIndices(mlir::OperandRange ops, const std::vector<Offset> &idx) {
-  if (ops.size() != idx.size())
-    return Match::None;
-  for (size_t i = 0; i < idx.size(); i++) {
-    switch (idx[i].matches(Offset(ops[i]))) {
-    case Match::None:
-      return Match::None;
-    case Match::Maybe:
-      return Match::Maybe;
-    case Match::Exact:
-      break;
-    }
-  }
-  return Match::Exact;
-}
-
-Match matchesIndices(AffineMap map, mlir::OperandRange ops,
-                     const std::vector<Offset> &idx) {
-  auto idxs = map.getResults();
-  if (idxs.size() != idx.size())
-    return Match::None;
-  for (size_t i = 0; i < idx.size(); i++) {
-    switch (idx[i].matches(
-        Offset(idxs[i], map.getNumDims(), map.getNumSymbols(), ops))) {
-    case Match::None:
-      return Match::None;
-    case Match::Maybe:
-      return Match::Maybe;
-    case Match::Exact:
-      break;
-    }
-  }
-  return Match::Exact;
-}
+Value castToType(Type elType, Value val, Operation *op);
 
 class ValueOrPlaceholder;
 
@@ -280,6 +1235,7 @@ public:
   std::vector<std::unique_ptr<ValueOrPlaceholder>> allocs;
   DenseMap<Value, ValueOrPlaceholder *> valueMap;
   DenseMap<Operation *, ValueOrPlaceholder *> opOperands;
+  DenseMap<Block *, ValueOrPlaceholder *> forBlocks;
 
   BlockMap valueAtStartOfBlock;
   BlockMap valueAtEndOfBlock;
@@ -291,6 +1247,8 @@ public:
   ValueOrPlaceholder *get(Block *val);
   ValueOrPlaceholder *get(scf::IfOp val, ValueOrPlaceholder *ifVal);
   ValueOrPlaceholder *get(affine::AffineIfOp val, ValueOrPlaceholder *ifVal);
+  ValueOrPlaceholder *get(scf::ForOp val, ValueOrPlaceholder *forVal);
+  ValueOrPlaceholder *get(affine::AffineForOp val, ValueOrPlaceholder *forVal);
   ValueOrPlaceholder *get(scf::ExecuteRegionOp val);
 
   void replaceValue(Value orig, Value post);
@@ -308,30 +1266,32 @@ public:
   Block *valueAtStart;
   scf::ExecuteRegionOp exOp;
   Operation *ifOp;
+  Operation *forOp;
   ValueOrPlaceholder(ValueOrPlaceholder &&) = delete;
   ValueOrPlaceholder(const ValueOrPlaceholder &) = delete;
   ValueOrPlaceholder(std::nullptr_t, ReplacementHandler &metaMap)
       : metaMap(metaMap), overwritten(true), val(nullptr),
-        valueAtStart(nullptr), exOp(nullptr), ifOp(nullptr) {}
+        valueAtStart(nullptr), exOp(nullptr), ifOp(nullptr), forOp(nullptr) {}
   ValueOrPlaceholder(Value val, ReplacementHandler &metaMap)
       : metaMap(metaMap), overwritten(false), val(val), valueAtStart(nullptr),
-        exOp(nullptr), ifOp(nullptr) {
+        exOp(nullptr), ifOp(nullptr), forOp(nullptr) {
     assert(val);
   }
   ValueOrPlaceholder(Block *valueAtStart, ReplacementHandler &metaMap)
       : metaMap(metaMap), overwritten(false), val(nullptr),
-        valueAtStart(valueAtStart), exOp(nullptr), ifOp(nullptr) {
+        valueAtStart(valueAtStart), exOp(nullptr), ifOp(nullptr),
+        forOp(nullptr) {
     assert(valueAtStart);
   }
   ValueOrPlaceholder(scf::ExecuteRegionOp exOp, ReplacementHandler &metaMap)
       : metaMap(metaMap), overwritten(false), val(nullptr),
-        valueAtStart(nullptr), exOp(exOp), ifOp(nullptr) {
+        valueAtStart(nullptr), exOp(exOp), ifOp(nullptr), forOp(nullptr) {
     assert(exOp);
   }
   ValueOrPlaceholder(scf::IfOp ifOp, ReplaceableUse ifLastVal,
                      ReplacementHandler &metaMap)
       : metaMap(metaMap), overwritten(false), val(nullptr),
-        valueAtStart(nullptr), exOp(nullptr), ifOp(ifOp) {
+        valueAtStart(nullptr), exOp(nullptr), ifOp(ifOp), forOp(nullptr) {
     assert(ifOp);
     if (ifLastVal)
       metaMap.opOperands[ifOp] = ifLastVal;
@@ -339,10 +1299,28 @@ public:
   ValueOrPlaceholder(affine::AffineIfOp ifOp, ReplaceableUse ifLastVal,
                      ReplacementHandler &metaMap)
       : metaMap(metaMap), overwritten(false), val(nullptr),
-        valueAtStart(nullptr), exOp(nullptr), ifOp(ifOp) {
+        valueAtStart(nullptr), exOp(nullptr), ifOp(ifOp), forOp(nullptr) {
     assert(ifOp);
     if (ifLastVal)
       metaMap.opOperands[ifOp] = ifLastVal;
+  }
+  ValueOrPlaceholder(scf::ForOp forOp, ReplaceableUse forLastVal,
+                     ReplacementHandler &metaMap)
+      : metaMap(metaMap), overwritten(false), val(nullptr),
+        valueAtStart(nullptr), exOp(nullptr), ifOp(nullptr), forOp(forOp) {
+    assert(forOp);
+    if (forLastVal)
+      metaMap.opOperands[forOp] = forLastVal;
+    metaMap.forBlocks[forOp.getBody()] = this;
+  }
+  ValueOrPlaceholder(affine::AffineForOp forOp, ReplaceableUse forLastVal,
+                     ReplacementHandler &metaMap)
+      : metaMap(metaMap), overwritten(false), val(nullptr),
+        valueAtStart(nullptr), exOp(nullptr), ifOp(nullptr), forOp(forOp) {
+    assert(forOp);
+    if (forLastVal)
+      metaMap.opOperands[forOp] = forLastVal;
+    metaMap.forBlocks[forOp.getBody()] = this;
   }
   // Return true if this represents a full expression if all block argsare
   // defined at start Append the list of blocks requiring definition to block.
@@ -418,6 +1396,22 @@ public:
       }
       return true;
     }
+    if (forOp) {
+      Block *body = &forOp->getRegion(0).front();
+      auto endFind = metaMap.valueAtEndOfBlock.find(body);
+      assert(endFind != metaMap.valueAtEndOfBlock.end());
+      assert(endFind->second);
+      if (!endFind->second->definedWithArg(block))
+        return false;
+
+      auto opFound = metaMap.opOperands.find(forOp);
+      assert(opFound != metaMap.opOperands.end());
+      if (!opFound->second->definedWithArg(block))
+        return false;
+
+      block.insert(body);
+      return true;
+    }
     llvm_unreachable("unhandled");
   }
   Value materialize(bool full = true) {
@@ -449,7 +1443,81 @@ public:
       return materializeEx(full);
     if (ifOp)
       return materializeIf(full);
+    if (forOp)
+      return materializeFor(full);
     llvm_unreachable("");
+  }
+
+  Value materializeFor(bool full = true) {
+    if (auto sop = dyn_cast<scf::ForOp>(forOp))
+      return materializeFor<scf::ForOp>(sop, full);
+    return materializeFor<affine::AffineForOp>(cast<affine::AffineForOp>(forOp),
+                                               full);
+  }
+
+  template <typename ForType>
+  Value materializeFor(ForType forOp, bool full = true) {
+    if (!full)
+      return nullptr;
+
+    Block *body = forOp.getBody();
+    auto startFound = metaMap.valueAtStartOfBlock.find(body);
+    assert(startFound != metaMap.valueAtStartOfBlock.end());
+    Value maybeArg = startFound->second->materialize(false);
+    auto arg = cast<BlockArgument>(maybeArg);
+    assert(arg && arg.getOwner() == body);
+
+    auto opFound = metaMap.opOperands.find(forOp);
+    assert(opFound != metaMap.opOperands.end());
+    auto *forLastValue = opFound->second;
+    Value initVal = forLastValue->materialize(full);
+    assert(!forLastValue->overwritten && initVal);
+
+    auto endFind = metaMap.valueAtEndOfBlock.find(body);
+    assert(endFind != metaMap.valueAtEndOfBlock.end());
+    assert(endFind->second);
+    Value endVal = endFind->second->materialize(full);
+    assert(!endFind->second->overwritten && endVal);
+
+    initVal = forLastValue->materialize(full);
+    if (initVal.getType() != metaMap.elType)
+      initVal = castToType(metaMap.elType, initVal, forOp);
+    if (endVal.getType() != metaMap.elType)
+      endVal = castToType(metaMap.elType, endVal, body->getTerminator());
+
+    if (endVal == arg || endVal == initVal) {
+      metaMap.replaceValue(arg, initVal);
+      body->eraseArgument(arg.getArgNumber());
+      metaMap.opOperands.erase(forOp);
+      this->forOp = nullptr;
+      return this->val = initVal;
+    }
+
+    OpBuilder B(forOp.getContext());
+    B.setInsertionPoint(forOp);
+    SmallVector<mlir::Value, 4> inits(forOp.getInits());
+    inits.push_back(initVal);
+    auto nextFor = cloneWithoutResults(forOp, B, {}, inits);
+
+    Operation *yield = body->getTerminator();
+    SmallVector<mlir::Value, 4> yieldVals(yield->getOperands());
+    yieldVals.push_back(endVal);
+    nextFor.getRegion().takeBody(forOp.getRegion());
+    yield->setOperands(yieldVals);
+
+    SmallVector<mlir::Value, 3> resvals = nextFor.getResults();
+    this->val = resvals.back();
+    resvals.pop_back();
+
+    for (auto pair : llvm::zip(forOp.getResults(), resvals)) {
+      metaMap.replaceValue(std::get<0>(pair), std::get<1>(pair));
+    }
+    metaMap.replaceOpWithValue(forOp, this, this->val);
+
+    forOp.erase();
+    metaMap.opOperands.erase(forOp);
+    this->forOp = nullptr;
+    return this->val;
   }
 
   Value materializeEx(bool full = true) {
@@ -693,6 +1761,8 @@ static inline llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
     return os << "ifOp:" << *PH.ifOp;
   if (PH.exOp)
     return os << "exOp:" << PH.exOp;
+  if (PH.forOp)
+    return os << "forOp:" << *PH.forOp;
   return os;
 }
 ValueOrPlaceholder *ReplacementHandler::get(std::nullptr_t val) {
@@ -724,6 +1794,18 @@ ValueOrPlaceholder *ReplacementHandler::get(affine::AffineIfOp val,
                                             ValueOrPlaceholder *ifVal) {
   ValueOrPlaceholder *PH;
   allocs.emplace_back(PH = new ValueOrPlaceholder(val, ifVal, *this));
+  return PH;
+}
+ValueOrPlaceholder *ReplacementHandler::get(scf::ForOp val,
+                                            ValueOrPlaceholder *forVal) {
+  ValueOrPlaceholder *PH;
+  allocs.emplace_back(PH = new ValueOrPlaceholder(val, forVal, *this));
+  return PH;
+}
+ValueOrPlaceholder *ReplacementHandler::get(affine::AffineForOp val,
+                                            ValueOrPlaceholder *forVal) {
+  ValueOrPlaceholder *PH;
+  allocs.emplace_back(PH = new ValueOrPlaceholder(val, forVal, *this));
   return PH;
 }
 ValueOrPlaceholder *ReplacementHandler::get(scf::ExecuteRegionOp val) {
@@ -877,71 +1959,30 @@ void removeRedundantBlockArgs(
     for (auto *pred : prepred) {
       mlir::Value pval = nullptr;
 
-      if (auto op = dyn_cast<cf::BranchOp>(pred->getTerminator())) {
-        pval = op.getOperands()[blockArg.getArgNumber()];
-        if (pval.getType() != elType) {
-          pval.getDefiningOp()->getParentRegion()->getParentOp()->dump();
-          llvm::errs() << pval << " - " << AI << "\n";
-        }
-        assert(pval.getType() == elType);
-        if (pval == blockArg)
-          pval = nullptr;
-      } else if (auto op = dyn_cast<cf::CondBranchOp>(pred->getTerminator())) {
-        if (op.getTrueDest() == block) {
-          if (blockArg.getArgNumber() >= op.getTrueOperands().size()) {
-            block->dump();
-            llvm::errs() << op << " ba: " << blockArg.getArgNumber() << "\n";
-          }
-          assert(blockArg.getArgNumber() < op.getTrueOperands().size());
-          pval = op.getTrueOperands()[blockArg.getArgNumber()];
-          assert(pval.getType() == elType);
-          if (pval == blockArg)
-            pval = nullptr;
-        }
-        if (op.getFalseDest() == block) {
-          assert(blockArg.getArgNumber() < op.getFalseOperands().size());
-          auto pval2 = op.getFalseOperands()[blockArg.getArgNumber()];
-          assert(pval2.getType() == elType);
-          if (pval2 != blockArg) {
-            if (pval == nullptr) {
-              pval = pval2;
-            } else if (pval != pval2) {
-              legal = false;
-              break;
-            }
-          }
-          if (pval == blockArg)
-            pval = nullptr;
-        }
-      } else if (auto op = dyn_cast<cf::SwitchOp>(pred->getTerminator())) {
-        mlir::OpBuilder subbuilder(op.getOperation());
-        if (op.getDefaultDestination() == block) {
-          pval = op.getDefaultOperands()[blockArg.getArgNumber()];
-          if (pval == blockArg)
-            pval = nullptr;
-        }
-        for (auto pair : llvm::enumerate(op.getCaseDestinations())) {
-          if (pair.value() == block) {
-            auto pval2 =
-                op.getCaseOperands(pair.index())[blockArg.getArgNumber()];
-            if (pval2 != blockArg) {
-              if (pval == nullptr)
-                pval = pval2;
-              else if (pval != pval2) {
-                legal = false;
-                break;
-              }
-            }
-          }
-        }
-        if (legal == false)
-          break;
-      } else {
+      auto branch = dyn_cast<BranchOpInterface>(pred->getTerminator());
+      if (!branch) {
         llvm::errs() << *pred->getParent()->getParentOp() << "\n";
         pred->dump();
         block->dump();
         llvm_unreachable("unknown branch");
       }
+      for (unsigned i = 0, e = branch->getNumSuccessors(); i < e; ++i) {
+        if (branch->getSuccessor(i) != block)
+          continue;
+        Value pval2 = branch.getSuccessorOperands(i)[blockArg.getArgNumber()];
+        assert(pval2 && "added arg cannot be a produced operand");
+        assert(pval2.getType() == elType);
+        if (pval2 != blockArg) {
+          if (pval == nullptr) {
+            pval = pval2;
+          } else if (pval != pval2) {
+            legal = false;
+            break;
+          }
+        }
+      }
+      if (!legal)
+        break;
 
       assert(pval != blockArg);
       if (val == nullptr) {
@@ -961,38 +2002,25 @@ void removeRedundantBlockArgs(
     bool used = false;
     for (auto *U : blockArg.getUsers()) {
 
-      if (auto op = dyn_cast<cf::BranchOp>(U)) {
-        size_t i = 0;
-        for (auto V : op.getOperands()) {
-          if (V == blockArg &&
-              !(i == blockArg.getArgNumber() && op.getDest() == block)) {
-            used = true;
-            break;
+      if (auto branch = dyn_cast<BranchOpInterface>(U)) {
+        for (unsigned i = 0, e = branch->getNumSuccessors(); i < e && !used;
+             ++i) {
+          auto ops = branch.getSuccessorOperands(i);
+          unsigned produced = ops.getProducedOperandCount();
+          for (auto &&[j, V] : llvm::enumerate(ops.getForwardedOperands())) {
+            if (V == blockArg && !(produced + j == blockArg.getArgNumber() &&
+                                   branch->getSuccessor(i) == block)) {
+              used = true;
+              break;
+            }
           }
         }
         if (used)
           break;
-      } else if (auto op = dyn_cast<cf::CondBranchOp>(U)) {
-        size_t i = 0;
-        for (auto V : op.getTrueOperands()) {
-          if (V == blockArg &&
-              !(i == blockArg.getArgNumber() && op.getTrueDest() == block)) {
-            used = true;
-            break;
-          }
-        }
-        if (used)
-          break;
-        i = 0;
-        for (auto V : op.getFalseOperands()) {
-          if (V == blockArg &&
-              !(i == blockArg.getArgNumber() && op.getFalseDest() == block)) {
-            used = true;
-            break;
-          }
-        }
-      } else
+      } else {
         used = true;
+        break;
+      }
     }
     if (!used) {
       legal = true;
@@ -1020,59 +2048,10 @@ void removeRedundantBlockArgs(
       SetVector<Block *> prepred(block->getPredecessors().begin(),
                                  block->getPredecessors().end());
       for (auto *pred : prepred) {
-        if (auto op = dyn_cast<cf::BranchOp>(pred->getTerminator())) {
-          mlir::OpBuilder subbuilder(op.getOperation());
-          std::vector<Value> args(op.getOperands().begin(),
-                                  op.getOperands().end());
-          args.erase(args.begin() + blockArg.getArgNumber());
-          assert(args.size() == op.getOperands().size() - 1);
-          cf::BranchOp::create(subbuilder, op.getLoc(), op.getDest(), args);
-          op.erase();
-        } else if (auto op =
-                       dyn_cast<cf::CondBranchOp>(pred->getTerminator())) {
-
-          mlir::OpBuilder subbuilder(op.getOperation());
-          std::vector<Value> trueargs(op.getTrueOperands().begin(),
-                                      op.getTrueOperands().end());
-          std::vector<Value> falseargs(op.getFalseOperands().begin(),
-                                       op.getFalseOperands().end());
-          if (op.getTrueDest() == block) {
-            trueargs.erase(trueargs.begin() + blockArg.getArgNumber());
-          }
-          if (op.getFalseDest() == block) {
-            falseargs.erase(falseargs.begin() + blockArg.getArgNumber());
-          }
-          assert(trueargs.size() < op.getTrueOperands().size() ||
-                 falseargs.size() < op.getFalseOperands().size());
-          cf::CondBranchOp::create(subbuilder, op.getLoc(), op.getCondition(),
-                                   op.getTrueDest(), trueargs,
-                                   op.getFalseDest(), falseargs);
-          op.erase();
-        } else if (auto op = dyn_cast<cf::SwitchOp>(pred->getTerminator())) {
-          mlir::OpBuilder builder(op.getOperation());
-          SmallVector<Value> defaultOps(op.getDefaultOperands().begin(),
-                                        op.getDefaultOperands().end());
-          if (op.getDefaultDestination() == block)
-            defaultOps.erase(defaultOps.begin() + blockArg.getArgNumber());
-
-          SmallVector<SmallVector<Value>> cases;
-          SmallVector<ValueRange> vrange;
-          for (auto pair : llvm::enumerate(op.getCaseDestinations())) {
-            cases.emplace_back(op.getCaseOperands(pair.index()));
-            if (pair.value() == block) {
-              cases.back().erase(cases.back().begin() +
-                                 blockArg.getArgNumber());
-            }
-          }
-          for (auto &c : cases) {
-            vrange.push_back(c);
-          }
-          cf::SwitchOp::create(builder, op.getLoc(), op.getFlag(),
-                               op.getDefaultDestination(), defaultOps,
-                               op.getCaseValuesAttr(), op.getCaseDestinations(),
-                               vrange);
-          op.erase();
-        }
+        auto branch = cast<BranchOpInterface>(pred->getTerminator());
+        for (unsigned i = 0, e = branch->getNumSuccessors(); i < e; ++i)
+          if (branch->getSuccessor(i) == block)
+            branch.getSuccessorOperands(i).erase(blockArg.getArgNumber());
       }
       block->eraseArgument(blockArg.getArgNumber());
       blocksWithAddedArgs.erase(block);
@@ -1080,23 +2059,24 @@ void removeRedundantBlockArgs(
   }
 }
 
-// Extract values from struct or array and insert them into a vector
-Value buildVector(OpBuilder &b, Value val, unsigned numElements,
-                  Type elemType) {
-  SmallVector<Value> extracted;
-  for (unsigned i = 0; i < numElements; i++) {
-    extracted.push_back(LLVM::ExtractValueOp::create(b, val.getLoc(), val, i));
-  }
+// Recursively extract leaves
+static void collectLeaves(OpBuilder &b, Value val,
+                          SmallVectorImpl<Value> &leaves) {
+  Type t = val.getType();
 
-  auto vecType = VectorType::get(numElements, elemType);
-  Value vec = LLVM::PoisonOp::create(b, val.getLoc(), vecType);
-  for (unsigned i = 0; i < extracted.size(); i++) {
-    Value idx = LLVM::ConstantOp::create(b, val.getLoc(), b.getI32Type(),
-                                         b.getI32IntegerAttr(i));
-    vec =
-        LLVM::InsertElementOp::create(b, val.getLoc(), vec, extracted[i], idx);
+  if (auto ST = dyn_cast<LLVM::LLVMStructType>(t)) {
+    for (unsigned i = 0; i < ST.getBody().size(); i++) {
+      Value extracted = LLVM::ExtractValueOp::create(b, val.getLoc(), val, i);
+      collectLeaves(b, extracted, leaves);
+    }
+  } else if (auto AT = dyn_cast<LLVM::LLVMArrayType>(t)) {
+    for (unsigned i = 0; i < AT.getNumElements(); i++) {
+      Value extracted = LLVM::ExtractValueOp::create(b, val.getLoc(), val, i);
+      collectLeaves(b, extracted, leaves);
+    }
+  } else {
+    leaves.push_back(val);
   }
-  return vec;
 }
 
 Value castToType(Type elType, Value val, Operation *op) {
@@ -1114,6 +2094,45 @@ Value castToType(Type elType, Value val, Operation *op) {
               isa<FloatType>(val.getType())) &&
              (isa<IntegerType>(elType) || isa<FloatType>(elType))) {
     return arith::BitcastOp::create(b, val.getLoc(), elType, val);
+  } else if (isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(val.getType())) {
+    // If the aggregate has only one element, extract and recurse
+    if (auto ST = dyn_cast<LLVM::LLVMStructType>(val.getType())) {
+      if (ST.getBody().size() == 1) {
+        Value extracted = LLVM::ExtractValueOp::create(b, val.getLoc(), val, 0);
+        return castToType(elType, extracted, op);
+      }
+    } else if (auto AT = dyn_cast<LLVM::LLVMArrayType>(val.getType())) {
+      if (AT.getNumElements() == 1) {
+        Value extracted = LLVM::ExtractValueOp::create(b, val.getLoc(), val, 0);
+        return castToType(elType, extracted, op);
+      }
+    }
+    SmallVector<Value> leaves;
+    collectLeaves(b, val, leaves);
+
+    // Only cast if leaves are of the same type
+    if (!leaves.empty()) {
+      Type leafType = leaves[0].getType();
+      if (llvm::all_of(leaves,
+                       [&](Value v) { return v.getType() == leafType; })) {
+        // Create a vector of the leaves
+        auto vecType = VectorType::get(leaves.size(), leafType);
+        Value vec = LLVM::PoisonOp::create(b, val.getLoc(), vecType);
+        for (auto [i, leaf] : llvm::enumerate(leaves)) {
+          Value idx = LLVM::ConstantOp::create(b, val.getLoc(), b.getI32Type(),
+                                               b.getI32IntegerAttr(i));
+          vec = LLVM::InsertElementOp::create(b, val.getLoc(), vec, leaf, idx);
+        }
+        return castToType(elType, vec, op);
+      }
+    }
+
+  } else if (auto VT = dyn_cast<VectorType>(val.getType())) {
+    DataLayout dl(op->getParentOfType<ModuleOp>());
+    if (dl.getTypeSize(val.getType()) == dl.getTypeSize(elType)) {
+      if (isa<IntegerType>(elType) || isa<FloatType>(elType))
+        return LLVM::BitcastOp::create(b, val.getLoc(), elType, val);
+    }
   } else if (auto ST = dyn_cast<LLVM::LLVMStructType>(elType)) {
     if (ST.getBody().size() == 1) {
       auto ud = LLVM::UndefOp::create(b, val.getLoc(), elType);
@@ -1122,30 +2141,13 @@ Value castToType(Type elType, Value val, Operation *op) {
       return LLVM::InsertValueOp::create(b, val.getLoc(), ud, c0,
                                          b.getDenseI64ArrayAttr({0}));
     }
-  } else if (auto ST = dyn_cast<LLVM::LLVMStructType>(val.getType())) {
-    if (ST.getBody().size() == 1) {
-      auto extractedVal = LLVM::ExtractValueOp::create(b, val.getLoc(), val, 0);
-      return castToType(elType, extractedVal, op);
-    } else {
-      Type elemType = ST.getBody()[0];
-      if (llvm::all_of(ST.getBody(), [&](Type t) {
-            return t == elemType && isa<VectorElementTypeInterface>(t);
-          })) {
-        Value vec = buildVector(b, val, ST.getBody().size(), elemType);
-        return castToType(elType, vec, op);
-      }
-    }
-  } else if (auto AT = dyn_cast<LLVM::LLVMArrayType>(val.getType())) {
-    Type elemType = AT.getElementType();
-    if (isa<VectorElementTypeInterface>(elemType)) {
-      Value vec = buildVector(b, val, AT.getNumElements(), elemType);
-      return castToType(elType, vec, op);
-    }
-  } else if (auto VT = dyn_cast<VectorType>(val.getType())) {
-    if (isa<IntegerType>(elType)) {
-      DataLayout dl(op->getParentOfType<ModuleOp>());
-      if (dl.getTypeSize(val.getType()) == dl.getTypeSize(elType))
-        return LLVM::BitcastOp::create(b, val.getLoc(), elType, val);
+  } else if (auto AT = dyn_cast<LLVM::LLVMArrayType>(elType)) {
+    if (AT.getNumElements() == 1) {
+      auto ud = LLVM::UndefOp::create(b, val.getLoc(), elType);
+      auto c0 = castToType(AT.getElementType(), val, op);
+      b.setInsertionPoint(op);
+      return LLVM::InsertValueOp::create(b, val.getLoc(), ud, c0,
+                                         b.getDenseI64ArrayAttr({0}));
     }
   }
   llvm::errs() << " mismatched load type, needed: " << elType << " found "
@@ -1153,27 +2155,355 @@ Value castToType(Type elType, Value val, Operation *op) {
   llvm_unreachable("mismatched type");
 }
 
+// Whether every position the value is passed at carries the given attribute
+// on the callee. One position without it is enough for the call to do
+// whatever the attribute rules out.
+static bool callArgsAllHaveAttr(CallOpInterface callOp, Value val,
+                                SymbolTableCollection &symbolTables,
+                                StringRef attr) {
+  auto calleeAttr = dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee());
+  if (!calleeAttr)
+    return false;
+  auto callee = symbolTables.lookupSymbolIn(callOp->getParentOfType<ModuleOp>(),
+                                            calleeAttr);
+  auto fn = dyn_cast_or_null<FunctionOpInterface>(callee);
+  if (!fn)
+    return false;
+
+  auto operands = callOp.getArgOperands();
+  bool seen = false;
+  for (int i = 0; i < operands.size(); i++) {
+    if (operands[i] == val) {
+      seen = true;
+      if (i >= fn.getNumArguments() || !fn.getArgAttr(i, attr))
+        return false;
+    }
+  }
+  return seen;
+}
+
+// Check if call captures alloca instance by checking for llvm.nocapture
+// attribute
+bool isCallNonCapturing(CallOpInterface callOp, Value val,
+                        SymbolTableCollection &symbolTables) {
+  return callArgsAllHaveAttr(callOp, val, symbolTables,
+                             LLVM::LLVMDialect::getNoCaptureAttrName());
+}
+
+// Whether a memory-effects attribute rules out writes that could reach a
+// pointer argument's bytes. Later LLVM spells whole-function
+// readonly/readnone this way. argMem covers accesses through the argument
+// pointers themselves; the same bytes can also be written through an access
+// classified as other -- a captured pointer, a global alias -- so both must
+// be write-free. Inaccessible memory cannot alias an argument, so it alone
+// may be written.
+static bool noWrite(LLVM::ModRefInfo mr) {
+  return mr == LLVM::ModRefInfo::NoModRef || mr == LLVM::ModRefInfo::Ref;
+}
+static bool argMemOnlyRead(LLVM::MemoryEffectsAttr me) {
+  return me && noWrite(me.getArgMem()) && noWrite(me.getOther());
+}
+
+// nocapture only says the callee does not hold on to the pointer; an out
+// parameter is nocapture and written through. Only readonly (or readnone)
+// says the call leaves the slot's contents alone -- carried per argument,
+// as a memory-effects attribute on the call or the callee, or as the older
+// readonly/readnone function attribute spelled through passthrough.
+bool isCallArgOnlyRead(CallOpInterface callOp, Value val,
+                       SymbolTableCollection &symbolTables) {
+  if (auto call = dyn_cast<LLVM::CallOp>(callOp.getOperation()))
+    if (argMemOnlyRead(call.getMemoryEffectsAttr()))
+      return true;
+  if (auto calleeAttr =
+          dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee())) {
+    if (auto fn =
+            dyn_cast_or_null<LLVM::LLVMFuncOp>(symbolTables.lookupSymbolIn(
+                callOp->getParentOfType<ModuleOp>(), calleeAttr))) {
+      if (argMemOnlyRead(fn.getMemoryEffectsAttr()))
+        return true;
+      if (auto pass = fn->getAttrOfType<ArrayAttr>("passthrough"))
+        for (Attribute a : pass)
+          if (auto s = dyn_cast<StringAttr>(a))
+            if (s.getValue() == "readonly" || s.getValue() == "readnone")
+              return true;
+    }
+  }
+  return callArgsAllHaveAttr(callOp, val, symbolTables,
+                             LLVM::LLVMDialect::getReadonlyAttrName()) ||
+         callArgsAllHaveAttr(callOp, val, symbolTables,
+                             LLVM::LLVMDialect::getReadnoneAttrName());
+}
+
 // fopen, fclose
 std::set<std::string> NoWriteFunctions = {"exit", "__errno_location"};
 // This is a straightforward implementation not optimized for speed. Optimize
 // if needed.
+// The way into `from` that reaches what lies at `at` bytes into it and is of
+// the size of `want`, as the indices an extractvalue takes. Aggregates are
+// walked into; anything else is only reachable when it is the whole of it.
+// The byte at which the field named by `pos` sits inside `from`, and its type.
+// The mirror of extractPath, which goes the other way: from a byte offset to
+// the indices that reach it.
+static std::optional<std::pair<uint64_t, Type>>
+aggregateFieldOffset(Type from, ArrayRef<int64_t> pos, const DataLayout &dl) {
+  uint64_t at = 0;
+  Type cur = from;
+  for (int64_t want : pos) {
+    if (want < 0)
+      return std::nullopt;
+    if (auto ST = dyn_cast<LLVM::LLVMStructType>(cur)) {
+      if ((size_t)want >= ST.getBody().size())
+        return std::nullopt;
+      uint64_t byte = 0;
+      for (auto &&[i, member] : llvm::enumerate(ST.getBody())) {
+        auto size = typeSize(member, dl);
+        if (!size)
+          return std::nullopt;
+        if (!ST.isPacked())
+          byte = llvm::alignTo(byte, dl.getTypeABIAlignment(member));
+        if ((int64_t)i == want)
+          break;
+        byte += *size;
+      }
+      at += byte;
+      cur = ST.getBody()[want];
+      continue;
+    }
+    if (auto AT = dyn_cast<LLVM::LLVMArrayType>(cur)) {
+      if ((uint64_t)want >= AT.getNumElements())
+        return std::nullopt;
+      auto size = typeSize(AT.getElementType(), dl);
+      if (!size)
+        return std::nullopt;
+      at += (uint64_t)want * *size;
+      cur = AT.getElementType();
+      continue;
+    }
+    return std::nullopt;
+  }
+  return std::make_pair(at, cur);
+}
+
+// The way into a value of type `from` to the `want` at byte `at` of it: the
+// indices of extractvalue through aggregates, and, when `bytesAt` is given and
+// the way ends inside an integer wider than what is read (a copy the compiler
+// made of several members at once, as an i320), the byte of that integer the
+// read starts at, which the bits of are shifted down from (a little-endian
+// layout only).
+static bool extractPath(Type from, uint64_t at, Type want, const DataLayout &dl,
+                        SmallVectorImpl<int64_t> &path,
+                        std::optional<uint64_t> *bytesAt = nullptr) {
+  auto wantSize = typeSize(want, dl), fromSize = typeSize(from, dl);
+  if (!wantSize || !fromSize || at + *wantSize > *fromSize)
+    return false;
+  if (at == 0 && *wantSize == *fromSize)
+    return true;
+
+  if (bytesAt && isa<IntegerType>(from) &&
+      (want.isIntOrFloat() || isa<LLVM::LLVMPointerType>(want)) &&
+      !isa<IndexType>(want) && dl.getEndianness() == Attribute()) {
+    *bytesAt = at;
+    return true;
+  }
+
+  if (auto ST = dyn_cast<LLVM::LLVMStructType>(from)) {
+    uint64_t byte = 0;
+    for (auto &&[i, member] : llvm::enumerate(ST.getBody())) {
+      auto size = typeSize(member, dl);
+      if (!size)
+        return false;
+      if (!ST.isPacked())
+        byte = llvm::alignTo(byte, dl.getTypeABIAlignment(member));
+      if (at >= byte && at + *wantSize <= byte + *size) {
+        path.push_back(i);
+        return extractPath(member, at - byte, want, dl, path, bytesAt);
+      }
+      byte += *size;
+    }
+    return false;
+  }
+
+  if (auto AT = dyn_cast<LLVM::LLVMArrayType>(from)) {
+    auto size = typeSize(AT.getElementType(), dl);
+    if (!size || !*size)
+      return false;
+    uint64_t index = at / *size;
+    if (index >= AT.getNumElements() || at % *size + *wantSize > *size)
+      return false;
+    path.push_back(index);
+    return extractPath(AT.getElementType(), at % *size, want, dl, path,
+                       bytesAt);
+  }
+
+  return false;
+}
+
+// The scalar types an aggregate is made of, in order.
+static void leafTypes(Type type, SmallVectorImpl<Type> &leaves) {
+  if (auto ST = dyn_cast<LLVM::LLVMStructType>(type)) {
+    for (Type member : ST.getBody())
+      leafTypes(member, leaves);
+  } else if (auto AT = dyn_cast<LLVM::LLVMArrayType>(type)) {
+    for (uint64_t i = 0; i < AT.getNumElements(); ++i)
+      leafTypes(AT.getElementType(), leaves);
+  } else {
+    leaves.push_back(type);
+  }
+}
+
+// Whether castToType can make a `to` out of a `from`, case for case.
+static bool castsTo(Type from, Type to, const DataLayout &dl) {
+  if (from == to)
+    return true;
+  bool fromScalar = isa<IntegerType, FloatType>(from);
+  bool toScalar = isa<IntegerType, FloatType>(to);
+  if ((isa<IntegerType>(from) && isa<LLVM::LLVMPointerType>(to)) ||
+      (isa<LLVM::LLVMPointerType>(from) && isa<IntegerType>(to)))
+    return true;
+  if (fromScalar && toScalar)
+    return from.getIntOrFloatBitWidth() == to.getIntOrFloatBitWidth();
+  if (isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(from)) {
+    if (auto ST = dyn_cast<LLVM::LLVMStructType>(from);
+        ST && ST.getBody().size() == 1)
+      return castsTo(ST.getBody()[0], to, dl);
+    if (auto AT = dyn_cast<LLVM::LLVMArrayType>(from);
+        AT && AT.getNumElements() == 1)
+      return castsTo(AT.getElementType(), to, dl);
+    SmallVector<Type> leaves;
+    leafTypes(from, leaves);
+    if (leaves.empty() || !llvm::all_equal(leaves) ||
+        !VectorType::isValidElementType(leaves[0]))
+      return false;
+    return castsTo(VectorType::get(leaves.size(), leaves[0]), to, dl);
+  }
+  if (isa<VectorType>(from)) {
+    auto fromSize = typeSize(from, dl), toSize = typeSize(to, dl);
+    return toScalar && fromSize && toSize && *fromSize == *toSize;
+  }
+  if (auto ST = dyn_cast<LLVM::LLVMStructType>(to);
+      ST && ST.getBody().size() == 1)
+    return castsTo(from, ST.getBody()[0], dl);
+  if (auto AT = dyn_cast<LLVM::LLVMArrayType>(to);
+      AT && AT.getNumElements() == 1)
+    return castsTo(from, AT.getElementType(), dl);
+  return false;
+}
+
+// Whether takePiece can give the `want` at byte `at` of a `whole`.
+static bool hasPiece(Type whole, uint64_t at, Type want, const DataLayout &dl) {
+  SmallVector<int64_t> path;
+  std::optional<uint64_t> bytesAt;
+  if (!extractPath(whole, at, want, dl, path, &bytesAt))
+    return false;
+  if (bytesAt)
+    return true;
+  Type piece = whole;
+  for (int64_t i : path) {
+    if (auto ST = dyn_cast<LLVM::LLVMStructType>(piece))
+      piece = ST.getBody()[i];
+    else
+      piece = cast<LLVM::LLVMArrayType>(piece).getElementType();
+  }
+  return castsTo(piece, want, dl);
+}
+
+// The `want` at byte `at` of `whole`, by the way extractPath finds into it.
+static Value takePiece(OpBuilder &builder, Location loc, Value whole,
+                       uint64_t at, Type want, const DataLayout &dl,
+                       Operation *op, SmallVectorImpl<Operation *> &created) {
+  SmallVector<int64_t> path;
+  std::optional<uint64_t> bytesAt;
+  bool found = extractPath(whole.getType(), at, want, dl, path, &bytesAt);
+  (void)found;
+  assert(found && "a piece that was named cannot be reached");
+  Value piece = whole;
+  if (!path.empty())
+    piece = LLVM::ExtractValueOp::create(builder, loc, whole, path);
+  if (bytesAt) {
+    // The piece is some of the bits of an integer: shifted down to the
+    // bottom and cut to its width.
+    auto wide = cast<IntegerType>(piece.getType());
+    auto bits = *typeSize(want, dl) * 8;
+    if (*bytesAt) {
+      Value shift = arith::ConstantOp::create(
+          builder, loc, builder.getIntegerAttr(wide, *bytesAt * 8));
+      piece = arith::ShRUIOp::create(builder, loc, piece, shift);
+    }
+    if (bits < wide.getWidth())
+      piece = arith::TruncIOp::create(builder, loc,
+                                      builder.getIntegerType(bits), piece);
+  }
+  Value result = castToType(want, piece, op);
+  // What it made, from the value back to the whole, with the operands it made
+  // along the way.
+  SmallVector<Operation *> made;
+  for (Value v = result; v != whole;) {
+    Operation *def = v.getDefiningOp();
+    if (!def || !isMemoryEffectFree(def))
+      break;
+    made.push_back(def);
+    if (def->getNumOperands() == 0)
+      break;
+    for (Value operand : def->getOperands().drop_front())
+      if (Operation *c = operand.getDefiningOp<arith::ConstantOp>())
+        made.push_back(c);
+    v = def->getOperand(0);
+  }
+  created.append(made.begin(), made.end());
+  return result;
+}
+
 bool PolygeistMem2Reg::forwardStoreToLoad(
-    mlir::Value AI, std::vector<Offset> idx,
+    mlir::Value AI, OffsetTree idx,
     SmallVectorImpl<Operation *> &loadOpsToErase,
-    DenseMap<Operation *, SmallVector<Operation *>> &capturedAliasing) {
+    DenseMap<Operation *, SmallVector<Operation *>> &capturedAliasing,
+    SymbolTableCollection &symbolTables) {
   bool changed = false;
   std::set<mlir::Operation *> loadOps;
-  mlir::Type subType = nullptr;
+  // Transfers that read exactly one slot, which act as a load of it.
+  std::set<mlir::Operation *> transferLoads;
+  // Loads of a piece of the slot, and how far into it that piece lies.
+  DenseMap<mlir::Operation *, uint64_t> containedLoads;
   mlir::Location loc = AI.getLoc();
   std::set<mlir::Operation *> allStoreOps;
+  // Copies reaching over the whole slot and more, and where in what they copy
+  // the slot lies.
+  DenseMap<mlir::Operation *, uint64_t> copiedAt;
+  // Stores of a value reaching over the whole slot and more, and where in the
+  // value the slot lies.
+  DenseMap<mlir::Operation *, uint64_t> storedAt;
+  // Reads standing for what a transfer moved. One is worth the load it costs
+  // only where something went on to ask for it: left behind unasked for, it is
+  // a read of the other side of the transfer, which promoting that side sees,
+  // sweeps, and counts as progress -- and promoting this side writes again the
+  // round after, so neither side ever settles. There are several ways out of
+  // this function and the reads have to go on all of them.
+  SmallVector<Operation *> transferReads;
+  // What was made to take a piece out of a stored or read value, which no
+  // one may end up asking for either; it would keep a transfer's read alive.
+  SmallVector<Operation *> pieceOps;
+  auto dropUnaskedReads = llvm::scope_exit([&transferReads, &pieceOps]() {
+    for (auto *op : pieceOps)
+      if (op->use_empty())
+        op->erase();
+    for (auto *read : llvm::reverse(transferReads))
+      if (read->getResult(0).use_empty())
+        read->erase();
+  });
 
-  Type elType = nullptr;
-  if (auto MT = dyn_cast<MemRefType>(AI.getType()))
-    elType = MT.getElementType();
+  if (idx.isUnknown())
+    return changed;
 
-  std::deque<std::pair<mlir::Value, /*indexed*/ bool>> list = {{AI, false}};
+  DataLayout dl = DataLayout::closest(AI.getDefiningOp());
+  Type elType = idx.getBase();
+
+  std::deque<std::pair<mlir::Value, OffsetTree>> list = {{AI, OffsetTree()}};
 
   SmallPtrSet<Operation *, 4> AliasingStoreOperations;
+
+  SmallVector<std::pair<uint64_t, uint64_t>> writtenRanges;
+
+  bool writeUnknown = false;
 
   LLVM_DEBUG(llvm::dbgs()
              << "Begin forwarding store of " << AI << " to load\n"
@@ -1191,174 +2521,284 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       auto PT = dyn_cast<LLVM::LLVMPointerType>(val.getType());
       SharedMemAddr = PT.getAddressSpace() == 5;
     }
-    auto modified = pair.second;
+    auto tree = pair.second;
     list.pop_front();
     for (auto *user : val.getUsers()) {
       if (auto co = dyn_cast<mlir::memref::CastOp>(user)) {
-        list.emplace_back((Value)co, modified);
+        list.emplace_back((Value)co, tree);
         continue;
       }
       if (auto co = dyn_cast<Memref2PointerOp>(user)) {
-        list.emplace_back((Value)co, modified);
+        list.emplace_back((Value)co, tree);
         continue;
       }
       if (auto co = dyn_cast<Pointer2MemrefOp>(user)) {
-        list.emplace_back((Value)co, modified);
+        list.emplace_back((Value)co, tree);
         continue;
       }
-      /*if (auto co = dyn_cast<SubIndexOp>(user)) {
-        list.emplace_back((Value)co, true);
-        continue;
-      }
-      */
       // If at the same index, the "hole" property applies
       // and we can go through.
       if (isa<BarrierOp>(user)) {
         continue;
       }
       if (auto co = dyn_cast<mlir::LLVM::GEPOp>(user)) {
-        list.emplace_back((Value)co, true);
+        list.emplace_back((Value)co, tree.add(gepOffsets(co, dl), dl));
         continue;
       }
       if (auto co = dyn_cast<mlir::LLVM::BitcastOp>(user)) {
-        list.emplace_back((Value)co, modified);
+        list.emplace_back((Value)co, tree);
         continue;
       }
       if (auto co = dyn_cast<mlir::LLVM::AddrSpaceCastOp>(user)) {
-        list.emplace_back((Value)co, modified);
+        list.emplace_back((Value)co, tree);
         continue;
       }
       if (isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(user)) {
         continue;
       }
-      if (auto loadOp = dyn_cast<mlir::memref::LoadOp>(user)) {
-        if (!modified &&
-            matchesIndices(loadOp.getIndices(), idx) == Match::Exact) {
-          subType = loadOp.getType();
-          if (subType == elType || elType == nullptr) {
-            elType = subType;
-            loadOps.insert(loadOp);
-            LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << loadOp << "\n");
-          }
+      // A load naming the slot reads it; one that may only overlap it reads
+      // something this knows nothing about, which is no reason to stop.
+      // The bytes of the slot each store lands on, and whether a write may
+      // land where it cannot be told.
+      auto noteWritten = [&](std::optional<uint64_t> at,
+                             std::optional<uint64_t> size) {
+        if (at && size)
+          writtenRanges.emplace_back(*at, *at + *size);
+        else
+          writeUnknown = true;
+      };
+      auto matchLoad = [&](Operation *loadOp, OffsetTree accessed) {
+        uint64_t at = 0;
+        Type read = loadOp->getResult(0).getType();
+        switch (idx.matches(tree.add(accessed, dl), dl, &at)) {
+        case Match::Exact:
+          // Whichever spelling of the slot is read first is the one the value
+          // forwarded out of it takes.
+          if (elType && read != elType)
+            return;
+          elType = read;
+          break;
+        case Match::Contains: {
+          // Reading a piece of the slot is reading a piece of its value, as
+          // long as there is a way into it that reaches that piece.
+          Type held = elType ? elType : idx.getBase();
+          SmallVector<int64_t> path;
+          std::optional<uint64_t> bytesAt;
+          if (!held || !extractPath(held, at, read, dl, path, &bytesAt))
+            return;
+          containedLoads[loadOp] = at;
+          break;
         }
+        default: {
+          // A read this slot has no whole value for still answers the
+          // fields taken out of it: each extract lands at a byte of its own,
+          // and where that byte is inside the slot it is a read of a piece of
+          // the slot like any other. This is how a by-value capture is read --
+          // built one field at a time and loaded whole, so the read spans
+          // every slot and matches none.
+          //
+          // A read that was itself forwarded, on the round some other slot
+          // matched it, already stands for its fields; answering them here
+          // as well would answer them twice.
+          if (llvm::is_contained(loadOpsToErase, loadOp))
+            return;
+          auto slotAt = tree.add(accessed, dl).containsAt(idx, dl);
+          if (!slotAt)
+            return;
+          Type held = elType ? elType : idx.getBase();
+          if (!held)
+            return;
+          for (Operation *user : loadOp->getResult(0).getUsers()) {
+            auto ev = dyn_cast<LLVM::ExtractValueOp>(user);
+            if (!ev)
+              continue;
+            auto field = aggregateFieldOffset(read, ev.getPosition(), dl);
+            if (!field || field->first < *slotAt)
+              continue;
+            uint64_t at = field->first - *slotAt;
+            SmallVector<int64_t> path;
+            std::optional<uint64_t> bytesAt;
+            if (!extractPath(held, at, field->second, dl, path, &bytesAt))
+              continue;
+            containedLoads[ev] = at;
+            loadOps.insert(ev);
+            LLVM_DEBUG(llvm::dbgs() << "Matching Extract: " << *ev << " of "
+                                    << *loadOp << "\n");
+          }
+          return;
+        }
+        }
+        loadOps.insert(loadOp);
+        LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << *loadOp << "\n");
+      };
+      auto matchStore = [&](Operation *storeOp, OffsetTree accessed) {
+        OffsetTree stored = tree.add(accessed, dl);
+        Match match = idx.matches(stored, dl);
+        if (match != Match::None)
+          noteWritten(idx.containsAt(stored, dl),
+                      typeSize(stored.getBase(), dl));
+        switch (match) {
+        case Match::Exact:
+          LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *storeOp << "\n");
+          allStoreOps.insert(storeOp);
+          break;
+        case Match::Contains:
+        case Match::Maybe: {
+          // A store reaching over the whole slot leaves in it the piece of
+          // the stored value at the slot's place, when there is a way to it.
+          Type want = elType ? elType : idx.getBase();
+          Type held = cast<enzyme::StoreLikeInterface>(storeOp)
+                          .getStoredValue()
+                          .getType();
+          if (auto at = stored.containsAt(idx, dl);
+              at && want && hasPiece(held, *at, want, dl)) {
+            LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *storeOp << "\n");
+            allStoreOps.insert(storeOp);
+            storedAt[storeOp] = *at;
+            break;
+          }
+          LLVM_DEBUG(llvm::dbgs()
+                     << "Mabye Aliasing Store: " << *storeOp << "\n");
+          AliasingStoreOperations.insert(storeOp);
+          break;
+        }
+        case Match::None:
+          break;
+        }
+      };
+
+      if (auto loadOp = dyn_cast<mlir::memref::LoadOp>(user)) {
+        matchLoad(loadOp, accessOffsets(loadOp.getType(), loadOp.getMemRef(),
+                                        loadOp.getIndices(), dl));
         continue;
       }
       if (auto loadOp = dyn_cast<mlir::LLVM::LoadOp>(user)) {
-        if (!modified) {
-          subType = loadOp.getType();
-          if (subType == elType || elType == nullptr) {
-            elType = subType;
-            loadOps.insert(loadOp);
-            LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << loadOp << "\n");
-          }
-        }
+        matchLoad(loadOp, accessOffsets(loadOp.getType()));
         continue;
       }
       if (auto loadOp = dyn_cast<affine::AffineLoadOp>(user)) {
-        if (!modified &&
-            matchesIndices(loadOp.getAffineMapAttr().getValue(),
-                           loadOp.getMapOperands(), idx) == Match::Exact) {
-          subType = loadOp.getType();
-          if (subType == elType || elType == nullptr) {
-            elType = subType;
-            loadOps.insert(loadOp);
-            LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << loadOp << "\n");
-          }
-        }
+        matchLoad(loadOp, accessOffsets(loadOp.getType(), loadOp.getMemRef(),
+                                        loadOp.getAffineMapAttr().getValue(),
+                                        loadOp.getMapOperands(), dl));
         continue;
       }
       if (auto storeOp = dyn_cast<mlir::memref::StoreOp>(user)) {
         if (storeOp.getValue() == val)
           captured = true;
-        else if (!modified) {
-          switch (matchesIndices(storeOp.getIndices(), idx)) {
-          case Match::Exact:
-            LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << storeOp << "\n");
-            allStoreOps.insert(storeOp);
-            break;
-          case Match::Maybe:
-            LLVM_DEBUG(llvm::dbgs()
-                       << "Mabye Aliasing Store: " << storeOp << "\n");
-            AliasingStoreOperations.insert(storeOp);
-            break;
-          case Match::None:
-            break;
-          }
-        } else
-          AliasingStoreOperations.insert(storeOp);
+        else
+          matchStore(storeOp, accessOffsets(storeOp.getValue().getType(),
+                                            storeOp.getMemRef(),
+                                            storeOp.getIndices(), dl));
         continue;
       }
       if (auto storeOp = dyn_cast<LLVM::StoreOp>(user)) {
 
         if (storeOp.getValue() == val) {
           captured = true;
-        } else if (!modified) {
-          LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << storeOp << "\n");
-          allStoreOps.insert(storeOp);
         } else
-          AliasingStoreOperations.insert(storeOp);
+          matchStore(storeOp, accessOffsets(storeOp.getValue().getType()));
         continue;
       }
 
       if (auto storeOp = dyn_cast<affine::AffineStoreOp>(user)) {
         if (storeOp.getValue() == val) {
           captured = true;
-        } else if (!modified) {
-          switch (matchesIndices(storeOp.getAffineMapAttr().getValue(),
-                                 storeOp.getMapOperands(), idx)) {
+        } else
+          matchStore(storeOp,
+                     accessOffsets(storeOp.getValue().getType(),
+                                   storeOp.getMemRef(),
+                                   storeOp.getAffineMapAttr().getValue(),
+                                   storeOp.getMapOperands(), dl));
+        continue;
+      }
+      if (auto callOp = dyn_cast<CallOpInterface>(user)) {
+        auto callee = dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee());
+        if (!callee || callee.getLeafReference() != "free") {
+          if (!isCallNonCapturing(callOp, val, symbolTables)) {
+            LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
+            AliasingStoreOperations.insert(callOp.getOperation());
+            writeUnknown = true;
+            if (!callee || !getNonCapturingFunctions().count(
+                               callee.getLeafReference().str()))
+              captured = true;
+          } else if (!isCallArgOnlyRead(callOp, val, symbolTables)) {
+            // The callee cannot hold on to the pointer, but nothing says it
+            // does not write through it before returning -- an out parameter
+            // is exactly this. The slot's value is unknown after the call.
+            LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
+            AliasingStoreOperations.insert(callOp.getOperation());
+            writeUnknown = true;
+          }
+        }
+        continue;
+      }
+      if (isa<LLVM::MemsetOp, LLVM::MemmoveOp, LLVM::MemcpyOp>(user)) {
+        auto bytes = transferLength(user);
+        // Without a length there is no telling what it touches, so anything it
+        // writes may be this slot.
+        OffsetTree touched =
+            bytes ? tree.add(transferAccess(*bytes, user->getContext()), dl)
+                  : OffsetTree::unknown();
+
+        if (transferDest(user) == val) {
+          Match match = idx.matches(touched, dl);
+          if (match != Match::None)
+            noteWritten(idx.containsAt(touched, dl), bytes);
+          switch (match) {
           case Match::Exact:
-            LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << storeOp << "\n");
-            allStoreOps.insert(storeOp);
-            break;
+            // Writing exactly this slot writes a value that is known when what
+            // it was written from is: the bytes of a fill, when they are zero,
+            // or whatever the copy read.
+            if (auto ms = dyn_cast<LLVM::MemsetOp>(user)) {
+              APInt byte;
+              if (matchPattern(ms.getVal(), m_ConstantInt(&byte)) &&
+                  byte.isZero()) {
+                LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *user << "\n");
+                allStoreOps.insert(user);
+                break;
+              }
+            } else {
+              LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *user << "\n");
+              allStoreOps.insert(user);
+              break;
+            }
+            LLVM_FALLTHROUGH;
+          case Match::Contains:
           case Match::Maybe:
-            LLVM_DEBUG(llvm::dbgs()
-                       << "Mabye Aliasing Store: " << storeOp << "\n");
-            AliasingStoreOperations.insert(storeOp);
+            // A fill reaching over the whole slot writes all of it whatever
+            // else it reaches besides, and zero bytes are a zero of whatever
+            // the slot holds however far they run past it.
+            if (auto ms = dyn_cast<LLVM::MemsetOp>(user)) {
+              APInt byte;
+              if (touched.containsAt(idx, dl) &&
+                  matchPattern(ms.getVal(), m_ConstantInt(&byte)) &&
+                  byte.isZero()) {
+                LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *user << "\n");
+                allStoreOps.insert(user);
+                break;
+              }
+            } else if (auto at = touched.containsAt(idx, dl); at && elType) {
+              // A copy reaching over the whole slot leaves in it the bytes of
+              // its source at the slot's place in the copy.
+              LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *user << "\n");
+              allStoreOps.insert(user);
+              copiedAt[user] = *at;
+              break;
+            }
+            LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << *user << "\n");
+            AliasingStoreOperations.insert(user);
             break;
           case Match::None:
             break;
           }
-        } else
-          AliasingStoreOperations.insert(storeOp);
-        continue;
-      }
-      if (auto callOp = dyn_cast<func::CallOp>(user)) {
-        if (callOp.getCallee() != "free") {
-          LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
-          AliasingStoreOperations.insert(callOp);
-          if (!getNonCapturingFunctions().count(callOp.getCallee().str()))
-            captured = true;
         }
-        continue;
-      }
-      if (auto callOp = dyn_cast<mlir::LLVM::CallOp>(user)) {
-        if (!callOp.getCallee() || *callOp.getCallee() != "free") {
-          LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
-          AliasingStoreOperations.insert(callOp);
-          if (!callOp.getCallee() ||
-              !getNonCapturingFunctions().count(callOp.getCallee()->str()))
-            captured = true;
-        }
-        continue;
-      }
-      if (auto op = dyn_cast<mlir::LLVM::MemsetOp>(user)) {
-        if (op.getDst() == val) {
-          LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << op << "\n");
-          AliasingStoreOperations.insert(op);
-        }
-        continue;
-      }
-      if (auto op = dyn_cast<mlir::LLVM::MemmoveOp>(user)) {
-        if (op.getDst() == val) {
-          LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << op << "\n");
-          AliasingStoreOperations.insert(op);
-        }
-        continue;
-      }
-      if (auto op = dyn_cast<mlir::LLVM::MemcpyOp>(user)) {
-        if (op.getDst() == val) {
-          LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << op << "\n");
-          AliasingStoreOperations.insert(op);
+
+        // Reading exactly this slot is reading the value in it, whatever the
+        // copy then does with it.
+        if (transferSource(user) == val &&
+            idx.matches(touched, dl) == Match::Exact) {
+          LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << *user << "\n");
+          transferLoads.insert(user);
         }
         continue;
       }
@@ -1371,11 +2811,13 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       captured = true;
     }
   }
-  if (SharedMemAddr)
+  if (SharedMemAddr) {
+    writeUnknown = true;
     AI.getDefiningOp()->getParentOp()->walk([&](mlir::NVVM::BarrierOp op) {
       LLVM_DEBUG(llvm::dbgs() << "Unknown, potential store: " << *op << "\n");
       AliasingStoreOperations.insert(op);
     });
+  }
 
   if (captured) {
     if (capturedAliasing.count(AI.getDefiningOp()) == 0) {
@@ -1419,7 +2861,73 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     }
   }
 
-  if (loadOps.size() == 0) {
+  // Bytes of an allocation nothing writes -- no store lands on them and no
+  // write may land where it cannot be told -- hold uninitialized memory, so a
+  // read of them is undef, as LLVM's mem2reg answers a load no store reaches.
+  // A load of the slot is such a read, and so is a field extracted from a
+  // load of it, field by field; the load goes with its last extract.
+  if (!captured && !writeUnknown &&
+      isa<memref::AllocaOp, memref::AllocOp, LLVM::AllocaOp>(
+          AI.getDefiningOp())) {
+    auto written = [&](uint64_t lo, uint64_t hi) {
+      return llvm::any_of(writtenRanges, [&](auto &range) {
+        return range.first < hi && lo < range.second;
+      });
+    };
+    auto undef = [&](Operation *read) {
+      OpBuilder builder(read);
+      Value value = LLVM::UndefOp::create(builder, read->getLoc(),
+                                          read->getResult(0).getType());
+      read->getResult(0).replaceAllUsesWith(value);
+      loadOpsToErase.push_back(read);
+      changed = true;
+    };
+    for (Operation *load :
+         SmallVector<Operation *>(loadOps.begin(), loadOps.end())) {
+      auto contained = containedLoads.find(load);
+      uint64_t at = contained == containedLoads.end() ? 0 : contained->second;
+      auto size = typeSize(load->getResult(0).getType(), dl);
+      if (!size)
+        continue;
+      if (!written(at, at + *size)) {
+        undef(load);
+        loadOps.erase(load);
+        continue;
+      }
+      if (contained != containedLoads.end())
+        continue;
+      for (Operation *user :
+           SmallVector<Operation *>(load->getResult(0).getUsers())) {
+        auto extract = dyn_cast<LLVM::ExtractValueOp>(user);
+        if (!extract || llvm::is_contained(loadOpsToErase, extract))
+          continue;
+        auto field = aggregateFieldOffset(elType, extract.getPosition(), dl);
+        if (!field)
+          continue;
+        auto fieldSize = typeSize(field->second, dl);
+        if (fieldSize && !written(field->first, field->first + *fieldSize))
+          undef(extract);
+      }
+    }
+  }
+
+  // A store over the slot was matched by the type the slot was then known to
+  // hold; what it holds in the end may be read as another, out of which the
+  // stored value has no piece to give: such a store only overwrites the slot.
+  for (auto it = storedAt.begin(); it != storedAt.end();) {
+    Type want = elType ? elType : idx.getBase();
+    Type held =
+        cast<enzyme::StoreLikeInterface>(it->first).getStoredValue().getType();
+    if (want && hasPiece(held, it->second, want, dl)) {
+      ++it;
+      continue;
+    }
+    allStoreOps.erase(it->first);
+    AliasingStoreOperations.insert(it->first);
+    storedAt.erase(it++);
+  }
+
+  if (loadOps.size() == 0 && transferLoads.size() == 0) {
     return changed;
   }
 
@@ -1434,6 +2942,9 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   {
     SmallVector<Region *> todo;
     for (auto *load : loadOps) {
+      todo.push_back(load->getParentRegion());
+    }
+    for (auto *load : transferLoads) {
       todo.push_back(load->getParentRegion());
     }
     while (todo.size()) {
@@ -1483,6 +2994,33 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     }
   }
 
+  // The ops the walk below has anything to do with, block by block in order:
+  // the slot's loads and stores, the transfers through it, and every op whose
+  // regions hold one of those. Any other op neither reads nor writes the slot,
+  // and stepping over it -- every op of every block, for each slot of each
+  // allocation -- was most of what forwarding cost on a large body.
+  DenseMap<Block *, SmallVector<Operation *>> relevantOps;
+  {
+    SmallPtrSet<Operation *, 16> marked;
+    auto mark = [&](Operation *op) {
+      for (; op && op->getBlock() && marked.insert(op).second;
+           op = op->getParentOp())
+        relevantOps[op->getBlock()].push_back(op);
+    };
+    for (Operation *op : loadOps)
+      mark(op);
+    for (Operation *op : transferLoads)
+      mark(op);
+    for (Operation *op : allStoreOps)
+      mark(op);
+    for (Operation *op : StoringOperations)
+      mark(op);
+    for (auto &entry : relevantOps)
+      llvm::sort(entry.second, [](Operation *a, Operation *b) {
+        return a->isBeforeInBlock(b);
+      });
+  }
+
   ReplacementHandler metaMap(elType);
 
   // Last value stored in an individual block and the operation which stored it
@@ -1498,18 +3036,33 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
 
   auto *emptyValue = metaMap.get(nullptr);
 
+  // What a load takes out of the value in the slot: the whole of it, or the
+  // piece of it the load names.
+  auto valueFor = [&](Value orig, Value slotValue) -> Value {
+    auto contained = containedLoads.find(orig.getDefiningOp());
+    if (contained == containedLoads.end())
+      return castToType(elType, slotValue, orig.getDefiningOp());
+    OpBuilder builder(orig.getDefiningOp());
+    Value whole = slotValue.getType() == elType
+                      ? slotValue
+                      : castToType(elType, slotValue, orig.getDefiningOp());
+    return takePiece(builder, orig.getLoc(), whole, contained->second,
+                     orig.getType(), dl, orig.getDefiningOp(), pieceOps);
+  };
+
   auto replaceValue =
       [&](Value orig, ValueOrPlaceholder *replacement) -> ValueOrPlaceholder * {
     assert(replacement);
     replacement->materialize(/*full*/ false);
-    assert(orig.getType() == elType);
+    assert(orig.getType() == elType ||
+           containedLoads.count(orig.getDefiningOp()));
     if (replacement->overwritten) {
       loadOps.erase(orig.getDefiningOp());
       return metaMap.get(orig);
     } else if (replacement->val) {
       changed = true;
       assert(orig != replacement->val);
-      auto castVal = castToType(elType, replacement->val, orig.getDefiningOp());
+      auto castVal = valueFor(orig, replacement->val);
       LLVM_DEBUG(llvm::dbgs()
                  << " replaced " << orig << " with " << castVal << "\n");
       metaMap.replaceValue(orig, castVal);
@@ -1528,6 +3081,25 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     }
   };
 
+  // A transfer reading the whole of a slot consumes the value in it, so once
+  // that value is known the copy is a store of it into the destination. Padding
+  // bytes become undef rather than being copied, the same trade LLVM's SROA
+  // makes when it forwards through a copy.
+  auto replaceTransfer = [&](Operation *op, ValueOrPlaceholder *incoming) {
+    incoming->materialize(/*full*/ false);
+    // Whatever reaches the slot covers exactly the bytes the copy moves, since
+    // that is what naming the same slot means.
+    if (incoming->overwritten || !incoming->val)
+      return;
+    OpBuilder builder(op);
+    LLVM::StoreOp::create(builder, op->getLoc(), incoming->val,
+                          transferDest(op), transferAlignment(op, 0));
+    LLVM_DEBUG(llvm::dbgs() << " replaced " << *op << " with a store of "
+                            << incoming->val << "\n");
+    loadOpsToErase.push_back(op);
+    changed = true;
+  };
+
   // Start by setting valueAtEndOfBlock to the last store directly in that block
   // Note that this may miss a store within a region of an operation in that
   // block
@@ -1537,9 +3109,9 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       [&](Block &block, ValueOrPlaceholder *lastVal) {
         valueAtStartOfBlock.emplace(&block, lastVal);
         SmallVector<Operation *, 10> ops;
-        for (auto &a : block) {
-          ops.push_back(&a);
-        }
+        auto relevant = relevantOps.find(&block);
+        if (relevant != relevantOps.end())
+          ops.assign(relevant->second.begin(), relevant->second.end());
         LLVM_DEBUG(llvm::dbgs()
                        << "\nstarting block: lastVal=" << *lastVal << "\n";
                    block.print(llvm::dbgs()); llvm::dbgs() << "\n";);
@@ -1572,6 +3144,14 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
                 lastVal = metaMap.get(ifOp, lastVal);
               }
               continue;
+            } else if (auto forOp = dyn_cast<mlir::scf::ForOp>(a)) {
+              handleBlock(*forOp.getBody(), metaMap.get(forOp.getBody()));
+              lastVal = metaMap.get(forOp, lastVal);
+              continue;
+            } else if (auto forOp = dyn_cast<mlir::affine::AffineForOp>(a)) {
+              handleBlock(*forOp.getBody(), metaMap.get(forOp.getBody()));
+              lastVal = metaMap.get(forOp, lastVal);
+              continue;
             }
             LLVM_DEBUG(llvm::dbgs() << "erased store due to: " << *a << "\n");
 
@@ -1582,18 +3162,56 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
             lastVal = emptyValue;
           } else if (loadOps.count(a)) {
             Value loadOp = a->getResult(0);
-            lastVal = replaceValue(loadOp, lastVal);
-          } else if (auto storeOp = dyn_cast<memref::StoreOp>(a)) {
-            if (allStoreOps.count(storeOp)) {
-              lastVal = metaMap.get(storeOp.getValueToStore());
+            auto *read = replaceValue(loadOp, lastVal);
+            // What a load of the whole slot read is what is in it from here
+            // on; what a load of a piece read says nothing of the rest.
+            if (!containedLoads.count(a))
+              lastVal = read;
+          } else if (transferLoads.count(a)) {
+            replaceTransfer(a, lastVal);
+          } else if (isa<LLVM::MemcpyOp, LLVM::MemmoveOp, LLVM::MemsetOp>(a)) {
+            // A transfer writing the slot leaves what it wrote there: a copy
+            // leaves what it read, which a load of that says, and a fill of
+            // zero bytes leaves a zero of whatever the slot holds. Anything
+            // else it wrote is something this cannot name, and stands as an
+            // overwrite.
+            if (allStoreOps.count(a)) {
+              OpBuilder builder(a);
+              // Of what the slot holds, since that is what everything threaded
+              // through it is of; of as many bytes as were moved when nothing
+              // has said yet what those bytes are.
+              Type moved = elType ? elType
+                                  : IntegerType::get(a->getContext(),
+                                                     *transferLength(a) * 8);
+              Value written;
+              if (!LLVM::isCompatibleType(moved)) {
+                // Nothing to name it with.
+              } else if (Value src = transferSource(a)) {
+                unsigned align = transferAlignment(a, 1);
+                if (uint64_t at = copiedAt.lookup(a)) {
+                  src = LLVM::GEPOp::create(
+                      builder, a->getLoc(), src.getType(), builder.getI8Type(),
+                      src, ArrayRef<LLVM::GEPArg>{(int64_t)at});
+                  align = llvm::MinAlign(align, at);
+                }
+                written = LLVM::LoadOp::create(builder, a->getLoc(), moved, src,
+                                               align);
+                transferReads.push_back(written.getDefiningOp());
+              } else {
+                written = LLVM::ZeroOp::create(builder, a->getLoc(), moved);
+              }
+              lastVal = written ? metaMap.get(written) : emptyValue;
             }
-          } else if (auto storeOp = dyn_cast<LLVM::StoreOp>(a)) {
+          } else if (auto storeOp = dyn_cast<enzyme::StoreLikeInterface>(a)) {
             if (allStoreOps.count(storeOp)) {
-              lastVal = metaMap.get(storeOp.getValue());
-            }
-          } else if (auto storeOp = dyn_cast<affine::AffineStoreOp>(a)) {
-            if (allStoreOps.count(storeOp)) {
-              lastVal = metaMap.get(storeOp.getValueToStore());
+              Value stored = storeOp.getStoredValue();
+              if (auto at = storedAt.find(a); at != storedAt.end()) {
+                OpBuilder builder(a);
+                stored =
+                    takePiece(builder, a->getLoc(), stored, at->second,
+                              elType ? elType : idx.getBase(), dl, a, pieceOps);
+              }
+              lastVal = metaMap.get(stored);
             }
           } else {
             // since not storing operation the value at the start of every block
@@ -1672,6 +3290,27 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       continue;
     PotentialArgs[block] = Legality::Unknown;
 
+    if (metaMap.forBlocks.count(block)) {
+      Operation *forOp = block->getParentOp();
+      auto opFound = metaMap.opOperands.find(forOp);
+      assert(opFound != metaMap.opOperands.end());
+      auto endFind = valueAtEndOfBlock.find(block);
+      assert(endFind != valueAtEndOfBlock.end());
+
+      SmallPtrSet<Block *, 1> requirements;
+      if (opFound->second->definedWithArg(requirements) &&
+          endFind->second->definedWithArg(requirements)) {
+        for (auto *r : requirements) {
+          todo.push_back(r);
+          UserMap[r].insert(block);
+          RequirementMap[block].insert(r);
+        }
+      } else {
+        PotentialArgs[block] = Legality::Illegal;
+      }
+      continue;
+    }
+
     SetVector<Block *> prepred(block->getPredecessors().begin(),
                                block->getPredecessors().end());
     assert(prepred.size());
@@ -1681,9 +3320,8 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       auto endFind = valueAtEndOfBlock.find(Pred);
       assert(endFind != valueAtEndOfBlock.end());
 
-      // Only handle known termination blocks
-      if (!isa<cf::BranchOp, cf::CondBranchOp, cf::SwitchOp>(
-              Pred->getTerminator())) {
+      // Only handle terminators whose successor operands can be extended
+      if (!isa<BranchOpInterface>(Pred->getTerminator())) {
         PotentialArgs[block] = Legality::Illegal;
         break;
       }
@@ -1767,7 +3405,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     (void)startFound;
     assert(startFound != valueAtStartOfBlock.end());
     assert(startFound->second->valueAtStart == block);
-    auto arg = block->addArgument(subType, loc);
+    auto arg = block->addArgument(elType, loc);
     auto *argVal = metaMap.get(arg);
     valueAtStartOfBlock[block] = argVal;
     blocksWithAddedArgs[block] = arg;
@@ -1782,6 +3420,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     changed = true;
     assert(pair.first != val);
     assert(val.getType() == elType);
+    val = valueFor(pair.first, val);
     assert(pair.first.getType() == val.getType() && "mismatched load type");
     LLVM_DEBUG(llvm::dbgs()
                << " replaced " << pair.first << " with " << val << "\n");
@@ -1792,6 +3431,20 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     loadOps.erase(pair.first.getDefiningOp());
   }
   replaceableValues.clear();
+
+  for (auto it = blocksWithAddedArgs.begin();
+       it != blocksWithAddedArgs.end();) {
+    Block *block = it->first;
+    auto forFound = metaMap.forBlocks.find(block);
+    if (forFound != metaMap.forBlocks.end()) {
+      Value v = forFound->second->materialize(true);
+      (void)v;
+      assert(v);
+      it = blocksWithAddedArgs.erase(it);
+    } else {
+      ++it;
+    }
+  }
 
   for (auto &pair : blocksWithAddedArgs) {
     Block *block = pair.first;
@@ -1811,8 +3464,14 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       assert(valueAtEndOfBlock.find(pred)->second);
       mlir::Value pval =
           valueAtEndOfBlock.find(pred)->second->materialize(true);
+      // What reaches the end of a predecessor is of the slot's extent but need
+      // not be spelled as the slot is, and what a block argument takes must be.
+      if (pval && pval.getType() != elType)
+        pval = castToType(elType, pval, pred->getTerminator());
       if (!pval || pval.getType() != elType) {
-        AI.getDefiningOp()->getParentOfType<func::FuncOp>().dump();
+        if (auto fn =
+                AI.getDefiningOp()->getParentOfType<FunctionOpInterface>())
+          fn.dump();
         pred->dump();
         llvm::errs() << "pval: " << *valueAtEndOfBlock.find(pred)->second
                      << " AI: " << AI << "\n";
@@ -1824,58 +3483,10 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       assert(pred->getTerminator());
 
       assert(blockArg.getOwner() == block);
-      if (auto op = dyn_cast<cf::BranchOp>(pred->getTerminator())) {
-        mlir::OpBuilder subbuilder(op.getOperation());
-        std::vector<Value> args(op.getOperands().begin(),
-                                op.getOperands().end());
-        args.push_back(pval);
-        cf::BranchOp::create(subbuilder, op.getLoc(), op.getDest(), args);
-        op.erase();
-      } else if (auto op = dyn_cast<cf::CondBranchOp>(pred->getTerminator())) {
-
-        mlir::OpBuilder subbuilder(op.getOperation());
-        std::vector<Value> trueargs(op.getTrueOperands().begin(),
-                                    op.getTrueOperands().end());
-        std::vector<Value> falseargs(op.getFalseOperands().begin(),
-                                     op.getFalseOperands().end());
-        if (op.getTrueDest() == block) {
-          trueargs.push_back(pval);
-        }
-        if (op.getFalseDest() == block) {
-          falseargs.push_back(pval);
-        }
-        cf::CondBranchOp::create(subbuilder, op.getLoc(), op.getCondition(),
-                                 op.getTrueDest(), trueargs, op.getFalseDest(),
-                                 falseargs);
-        op.erase();
-      } else if (auto op = dyn_cast<cf::SwitchOp>(pred->getTerminator())) {
-        mlir::OpBuilder builder(op.getOperation());
-        SmallVector<Value> defaultOps(op.getDefaultOperands().begin(),
-                                      op.getDefaultOperands().end());
-
-        if (op.getDefaultDestination() == block)
-          defaultOps.push_back(pval);
-
-        SmallVector<SmallVector<Value>> cases;
-        for (auto pair : llvm::enumerate(op.getCaseDestinations())) {
-          cases.emplace_back(op.getCaseOperands(pair.index()).begin(),
-                             op.getCaseOperands(pair.index()).end());
-          if (pair.value() == block) {
-            cases.back().push_back(pval);
-          }
-        }
-        SmallVector<ValueRange> vrange;
-        for (auto &c : cases) {
-          vrange.push_back(c);
-        }
-        cf::SwitchOp::create(builder, op.getLoc(), op.getFlag(),
-                             op.getDefaultDestination(), defaultOps,
-                             op.getCaseValuesAttr(), op.getCaseDestinations(),
-                             vrange);
-        op.erase();
-      } else {
-        llvm_unreachable("unknown pred branch");
-      }
+      auto branch = cast<BranchOpInterface>(pred->getTerminator());
+      for (unsigned i = 0, e = branch->getNumSuccessors(); i < e; ++i)
+        if (branch->getSuccessor(i) == block)
+          branch.getSuccessorOperands(i).append(pval);
     }
   }
 
@@ -1891,7 +3502,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   return changed;
 }
 
-bool isPromotable(mlir::Value AI) {
+bool isPromotable(mlir::Value AI, SymbolTableCollection &symbolTables) {
   std::deque<mlir::Value> list = {AI};
 
   while (list.size()) {
@@ -1906,28 +3517,38 @@ bool isPromotable(mlir::Value AI) {
         continue;
       } else if (auto LO = dyn_cast<LLVM::LoadOp>(U)) {
         continue;
-      } else if (auto SO = dyn_cast<LLVM::StoreOp>(U)) {
-        continue;
       } else if (auto LO = dyn_cast<affine::AffineLoadOp>(U)) {
         continue;
-      } else if (auto SO = dyn_cast<memref::StoreOp>(U)) {
-        continue;
-      } else if (auto SO = dyn_cast<affine::AffineStoreOp>(U)) {
+      } else if (auto SO = dyn_cast<enzyme::StoreLikeInterface>(U)) {
+        // Only a store *into* val keeps it promotable; storing val itself puts
+        // the pointer into memory, from where anything may reach it.
+        if (SO.getStoredValue() != val)
+          continue;
+        LLVM_DEBUG(llvm::dbgs()
+                   << "non promotable " << AI << " due to " << *U << "\n");
+        return false;
+      } else if (isa<LLVM::MemcpyOp, LLVM::MemmoveOp, LLVM::MemsetOp>(U)) {
+        // The forwarding treats these as an opaque write of the destination and
+        // a read of the source, neither of which lets the pointer escape.
         continue;
       } else if (isa<memref::DeallocOp>(U)) {
         continue;
-      } else if (auto callOp = dyn_cast<func::CallOp>(U)) {
-        if (getNonCapturingFunctions().count(callOp.getCallee().str()))
-          continue;
-      } else if (auto callOp = dyn_cast<LLVM::CallOp>(U)) {
-        if (auto callee = callOp.getCallee())
-          if (getNonCapturingFunctions().count(callee->str()))
-            continue;
+      } else if (auto callOp = dyn_cast<CallOpInterface>(U)) {
+        if (auto sym = dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee())) {
+          if (StringAttr callee = sym.getLeafReference())
+            if (isCallNonCapturing(callOp, val, symbolTables) ||
+                getNonCapturingFunctions().count(callee.str()))
+              continue;
+        }
       } else if (auto CO = dyn_cast<memref::CastOp>(U)) {
         list.push_back(CO);
       } else if (auto CO = dyn_cast<Memref2PointerOp>(U)) {
         list.push_back(CO);
       } else if (auto CO = dyn_cast<Pointer2MemrefOp>(U)) {
+        list.push_back(CO);
+      } else if (auto CO = dyn_cast<LLVM::GEPOp>(U)) {
+        // Accesses through an offset of the allocation are what the forwarding
+        // marks as indexed: they never match a slot and only block it.
         list.push_back(CO);
       } else {
         LLVM_DEBUG(llvm::dbgs()
@@ -1939,65 +3560,974 @@ bool isPromotable(mlir::Value AI) {
   return true;
 }
 
-std::vector<std::vector<Offset>> getLastStored(mlir::Value AI) {
-  std::map<std::vector<Offset>, unsigned> lastStored;
+std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
+  // Where an access lands and how much of it it reads: two spellings of one
+  // extent are one slot, but the whole of something and the first field of it
+  // start in the same place and are not.
+  auto slotOf = [&](const OffsetTree &tree) {
+    return std::make_pair(typeSize(tree.getBase(), dl).value_or(0), tree);
+  };
+  std::map<std::pair<uint64_t, OffsetTree>, unsigned> lastStored;
+  // Whether anything writes the allocation at all.
+  bool anyWrite = false;
 
-  std::deque<mlir::Value> list = {AI};
+  // A load of a whole aggregate that is taken apart with extractvalue reads
+  // each field it extracts, and those are slots too: a store or copy of the
+  // field alone can say what is in one when nothing says what is in the whole.
+  auto noteFields = [&](Operation *load, const OffsetTree &read) {
+    Type type = load->getResult(0).getType();
+    if (!isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(type))
+      return;
+    for (Operation *user : load->getResult(0).getUsers()) {
+      auto extract = dyn_cast<LLVM::ExtractValueOp>(user);
+      if (!extract)
+        continue;
+      auto field = aggregateFieldOffset(type, extract.getPosition(), dl);
+      if (!field)
+        continue;
+      OffsetTree at(field->second,
+                    {Offset((int64_t)field->first, AI.getContext())},
+                    {OffsetType::bytes(1)});
+      lastStored[slotOf(read.add(at, dl))]++;
+    }
+  };
+
+  std::deque<std::pair<mlir::Value, OffsetTree>> list = {{AI, OffsetTree()}};
 
   while (list.size()) {
-    auto val = list.front();
+    auto [val, tree] = list.front();
     list.pop_front();
     for (auto *U : val.getUsers()) {
       if (auto SO = dyn_cast<memref::StoreOp>(U)) {
-        std::vector<Offset> vec;
-        for (auto idx : SO.getIndices()) {
-          vec.emplace_back(idx);
-        }
-        lastStored[vec]++;
-      } else if (auto SO = dyn_cast<affine::AffineLoadOp>(U)) {
-        std::vector<Offset> vec;
-        auto map = SO.getAffineMapAttr().getValue();
-        for (auto idx : map.getResults()) {
-          vec.emplace_back(idx, map.getNumDims(), map.getNumSymbols(),
-                           SO.getMapOperands());
-        }
-        lastStored[vec]++;
-      } else if (isa<LLVM::LoadOp>(U)) {
-        std::vector<Offset> vec;
-        lastStored[vec]++;
-      } else if (isa<LLVM::StoreOp>(U)) {
-        std::vector<Offset> vec;
-        lastStored[vec]++;
-      } else if (auto SO = dyn_cast<memref::LoadOp>(U)) {
-        std::vector<Offset> vec;
-        for (auto idx : SO.getIndices()) {
-          vec.emplace_back(idx);
-        }
-        lastStored[vec]++;
+        anyWrite = true;
+        lastStored[slotOf(
+            tree.add(accessOffsets(SO.getValue().getType(), SO.getMemRef(),
+                                   SO.getIndices(), dl),
+                     dl))]++;
+      } else if (auto LO = dyn_cast<memref::LoadOp>(U)) {
+        OffsetTree read = tree.add(
+            accessOffsets(LO.getType(), LO.getMemRef(), LO.getIndices(), dl),
+            dl);
+        lastStored[slotOf(read)]++;
+        noteFields(LO, read);
       } else if (auto SO = dyn_cast<affine::AffineStoreOp>(U)) {
-        std::vector<Offset> vec;
-        auto map = SO.getAffineMapAttr().getValue();
-        for (auto idx : map.getResults()) {
-          vec.emplace_back(idx, map.getNumDims(), map.getNumSymbols(),
-                           SO.getMapOperands());
-        }
-        lastStored[vec]++;
-      } else if (auto CO = dyn_cast<memref::CastOp>(U)) {
-        list.push_back(CO);
+        anyWrite = true;
+        lastStored[slotOf(
+            tree.add(accessOffsets(SO.getValue().getType(), SO.getMemRef(),
+                                   SO.getAffineMapAttr().getValue(),
+                                   SO.getMapOperands(), dl),
+                     dl))]++;
+      } else if (auto LO = dyn_cast<affine::AffineLoadOp>(U)) {
+        OffsetTree read =
+            tree.add(accessOffsets(LO.getType(), LO.getMemRef(),
+                                   LO.getAffineMapAttr().getValue(),
+                                   LO.getMapOperands(), dl),
+                     dl);
+        lastStored[slotOf(read)]++;
+        noteFields(LO, read);
+      } else if (auto SO = dyn_cast<LLVM::StoreOp>(U)) {
+        anyWrite = true;
+        lastStored[slotOf(
+            tree.add(accessOffsets(SO.getValue().getType()), dl))]++;
+      } else if (auto LO = dyn_cast<LLVM::LoadOp>(U)) {
+        OffsetTree read = tree.add(accessOffsets(LO.getType()), dl);
+        lastStored[slotOf(read)]++;
+        noteFields(LO, read);
+      } else if (isa<LLVM::MemcpyOp, LLVM::MemmoveOp, LLVM::MemsetOp>(U)) {
+        if (transferDest(U) == val)
+          anyWrite = true;
+        // What a transfer reads or fills is a slot like any other, and the
+        // forwarding can only be asked about slots it is told of.
+        if (auto bytes = transferLength(U))
+          lastStored[slotOf(
+              tree.add(transferAccess(*bytes, U->getContext()), dl))]++;
+      } else if (auto GO = dyn_cast<LLVM::GEPOp>(U)) {
+        list.emplace_back(GO, tree.add(gepOffsets(GO, dl), dl));
+      } else if (isa<memref::CastOp, Memref2PointerOp, Pointer2MemrefOp,
+                     LLVM::BitcastOp, LLVM::AddrSpaceCastOp>(U)) {
+        list.emplace_back(U->getResult(0), tree);
+      } else {
+        anyWrite = true;
       }
     }
   }
 
-  std::vector<std::vector<Offset>> todo;
+  // A slot is worth trying when more than one access names it -- and an access
+  // of a piece of a slot is an access of that slot too, since the piece can be
+  // taken out of what is in it. It counts the other way round as well, since
+  // an access reaching over the whole of a slot may be all that is ever said
+  // about what is in it. When nothing writes the allocation, one access is
+  // enough: whatever it reads is uninitialized.
+  std::vector<OffsetTree> todo;
   for (auto &pair : lastStored) {
-    if (pair.second > 1)
-      todo.push_back(pair.first);
+    unsigned count = pair.second;
+    for (auto &other : lastStored)
+      if (&other != &pair &&
+          (pair.first.second.containsAt(other.first.second, dl) ||
+           other.first.second.containsAt(pair.first.second, dl)))
+        count += other.second;
+    if (count > 1 || !anyWrite)
+      todo.push_back(pair.first.second);
   }
   return todo;
 }
 
+// The allocation a buffer is, looked at through the casts that only respell
+// it.
+static Value bufferRoot(Value v) {
+  while (Operation *op = v.getDefiningOp()) {
+    if (!isa<memref::CastOp, memref::MemorySpaceCastOp, Memref2PointerOp,
+             Pointer2MemrefOp, LLVM::BitcastOp, LLVM::AddrSpaceCastOp>(op))
+      break;
+    v = op->getOperand(0);
+  }
+  return v;
+}
+
+static bool isAllocation(Value v) {
+  return v.getDefiningOp<memref::AllocaOp>() ||
+         v.getDefiningOp<memref::AllocOp>() ||
+         v.getDefiningOp<LLVM::AllocaOp>() ||
+         v.getDefiningOp<memref::GetGlobalOp>();
+}
+
+// A branch choosing between buffers: an arith.select, or an scf.if or
+// affine.if with an else, yielding a memref or pointer.
+struct BufferBranch {
+  Operation *op;
+  unsigned resultNo;
+  // Whether an arm is an allocation. Otherwise the branch chooses between
+  // buffers the function was handed, and only its accesses inside a GPU
+  // wrapper are split: those become a kernel, and the kernel's raising has
+  // no tensor that stands for one of two buffers.
+  bool anyAllocation = true;
+
+  Value result() const { return op->getResult(resultNo); }
+  Value armValue(unsigned arm) const {
+    if (auto sel = dyn_cast<arith::SelectOp>(op))
+      return arm == 0 ? sel.getTrueValue() : sel.getFalseValue();
+    return op->getRegion(arm).front().getTerminator()->getOperand(resultNo);
+  }
+  // The ops of an arm the chosen buffer is computed from, in program order,
+  // which a copy of the arm has to carry along.
+  bool armSlice(unsigned arm, SmallVectorImpl<Operation *> &slice) const {
+    if (isa<arith::SelectOp>(op))
+      return true;
+    Block &body = op->getRegion(arm).front();
+    SmallPtrSet<Operation *, 4> needed;
+    SmallVector<Value> work = {armValue(arm)};
+    while (!work.empty()) {
+      Operation *def = work.pop_back_val().getDefiningOp();
+      if (!def || def->getBlock() != &body || !needed.insert(def).second)
+        continue;
+      if (!isMemoryEffectFree(def) || def->getNumRegions())
+        return false;
+      work.append(def->operand_begin(), def->operand_end());
+    }
+    for (Operation &o : body.without_terminator())
+      if (needed.count(&o))
+        slice.push_back(&o);
+    return true;
+  }
+};
+
+static std::optional<BufferBranch> bufferBranch(Value v) {
+  auto res = dyn_cast<OpResult>(v);
+  if (!res || !isa<MemRefType, LLVM::LLVMPointerType>(v.getType()))
+    return std::nullopt;
+  Operation *op = res.getOwner();
+  if (auto sel = dyn_cast<arith::SelectOp>(op)) {
+    if (!sel.getCondition().getType().isInteger(1))
+      return std::nullopt;
+  } else if (auto sif = dyn_cast<scf::IfOp>(op)) {
+    if (sif.getElseRegion().empty())
+      return std::nullopt;
+  } else if (auto aif = dyn_cast<affine::AffineIfOp>(op)) {
+    if (!aif.hasElse())
+      return std::nullopt;
+  } else
+    return std::nullopt;
+  return BufferBranch{op, res.getResultNumber()};
+}
+
+// Whether `user` takes the buffer as the thing it accesses or respells, and
+// which operand that is.
+static std::optional<unsigned> bufferOperand(Operation *user, Value buf) {
+  if (auto store = dyn_cast<enzyme::StoreLikeInterface>(user)) {
+    if (store.getStoredPointer() != buf)
+      return std::nullopt;
+    // The pointer written through, which is not the value written even when
+    // the two are spelled the same.
+    bool skippedValue = false;
+    for (OpOperand &operand : user->getOpOperands()) {
+      if (!skippedValue && operand.get() == store.getStoredValue()) {
+        skippedValue = true;
+        continue;
+      }
+      if (operand.get() == buf)
+        return operand.getOperandNumber();
+    }
+    return std::nullopt;
+  }
+  if (!isa<memref::LoadOp, affine::AffineLoadOp, LLVM::LoadOp, memref::CastOp,
+           memref::MemorySpaceCastOp, Memref2PointerOp, Pointer2MemrefOp,
+           LLVM::BitcastOp, LLVM::AddrSpaceCastOp, LLVM::GEPOp>(user) ||
+      user->getOperand(0) != buf)
+    return std::nullopt;
+  return 0;
+}
+
+// A load or store through a branch between allocations names neither of them,
+// and keeps both from being promoted. Doing the access in each arm instead, on
+// the buffer that arm chose, gives every allocation accesses of its own: the
+// branch is asked again where the access stands, with the arm's own
+// computation of the buffer carried along. A cast or offset of the branch's
+// result is pushed into the arms the same way, so an access reached through
+// one still ends at an allocation. Anything else done with the result stays as
+// it was.
+static bool splitBufferBranchAccesses(Operation *f) {
+  SmallVector<BufferBranch> work;
+  f->walk([&](Operation *op) {
+    for (Value res : op->getResults())
+      if (auto br = bufferBranch(res)) {
+        br->anyAllocation = isAllocation(bufferRoot(br->armValue(0))) ||
+                            isAllocation(bufferRoot(br->armValue(1)));
+        if (br->anyAllocation || op->getParentOfType<GPUWrapperOp>())
+          work.push_back(*br);
+      }
+  });
+
+  bool changed = false;
+  while (!work.empty()) {
+    BufferBranch br = work.pop_back_val();
+    SmallVector<Operation *> slices[2];
+    if (!br.armSlice(0, slices[0]) || !br.armSlice(1, slices[1]))
+      continue;
+
+    for (OpOperand &use : llvm::make_early_inc_range(br.result().getUses())) {
+      Operation *user = use.getOwner();
+      auto operand = bufferOperand(user, br.result());
+      if (!operand)
+        continue;
+      if (!br.anyAllocation && !user->getParentOfType<GPUWrapperOp>())
+        continue;
+
+      OpBuilder b(user);
+      Operation *newBr;
+      if (auto aif = dyn_cast<affine::AffineIfOp>(br.op))
+        newBr = affine::AffineIfOp::create(
+            b, user->getLoc(), user->getResultTypes(), aif.getIntegerSet(),
+            aif.getOperands(), /*withElseRegion=*/true);
+      else
+        // A select and an scf.if both lead with their condition.
+        newBr = scf::IfOp::create(b, user->getLoc(), user->getResultTypes(),
+                                  br.op->getOperand(0),
+                                  /*withElseRegion=*/true);
+      for (unsigned arm = 0; arm < 2; ++arm) {
+        Block *dst = &newBr->getRegion(arm).front();
+        // A branch built without results comes with its yields already.
+        if (!dst->empty() && dst->back().hasTrait<OpTrait::IsTerminator>())
+          dst->back().erase();
+        OpBuilder ab = OpBuilder::atBlockEnd(dst);
+        IRMapping m;
+        for (Operation *o : slices[arm])
+          ab.clone(*o, m);
+        Operation *access = ab.clone(*user, m);
+        access->setOperand(*operand, m.lookupOrDefault(br.armValue(arm)));
+        if (isa<affine::AffineIfOp>(newBr))
+          affine::AffineYieldOp::create(ab, user->getLoc(),
+                                        access->getResults());
+        else
+          scf::YieldOp::create(ab, user->getLoc(), access->getResults());
+      }
+      user->replaceAllUsesWith(newBr->getResults());
+      user->erase();
+      changed = true;
+      // A respelling of the branch's result is a branch between buffers again,
+      // whose own accesses want splitting.
+      if (newBr->getNumResults())
+        if (auto inner = bufferBranch(newBr->getResult(0))) {
+          inner->anyAllocation = br.anyAllocation;
+          work.push_back(*inner);
+        }
+    }
+
+    // A branch nothing is left to ask goes, so long as it did nothing but
+    // choose: the yields of a spent arm would still hold the allocation.
+    bool onlyChose = llvm::all_of(br.op->getRegions(), [](Region &arm) {
+      return llvm::all_of(arm.front().without_terminator(),
+                          [](Operation &o) { return isMemoryEffectFree(&o); });
+    });
+    if (onlyChose && llvm::all_of(br.op->getResults(),
+                                  [](Value r) { return r.use_empty(); }))
+      br.op->erase();
+  }
+  return changed;
+}
+
+// A select between two constants, so that each arm names a place of its own.
+// A choice between constants: a constant, a select on an i1 between such
+// choices, or a result of an if with an else region whose arms yield such
+// choices.
+static bool isChoiceOfConstants(Value value) {
+  SmallVector<Value> worklist{value};
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    Attribute cst;
+    if (matchPattern(current, m_Constant(&cst)))
+      continue;
+    if (auto sel = current.getDefiningOp<arith::SelectOp>()) {
+      if (!sel.getCondition().getType().isInteger(1))
+        return false;
+      worklist.push_back(sel.getTrueValue());
+      worklist.push_back(sel.getFalseValue());
+      continue;
+    }
+    auto result = dyn_cast<OpResult>(current);
+    if (!result || !isa<scf::IfOp, affine::AffineIfOp>(result.getOwner()) ||
+        result.getOwner()->getRegion(1).empty())
+      return false;
+    for (Region &arm : result.getOwner()->getRegions())
+      worklist.push_back(
+          arm.front().getTerminator()->getOperand(result.getResultNumber()));
+  }
+  return true;
+}
+
+// The branch making the same choice as `choice`, with `types` as results.
+static Operation *createBranchLike(OpBuilder &b, Location loc, Value choice,
+                                   TypeRange types) {
+  if (auto sel = choice.getDefiningOp<arith::SelectOp>())
+    return scf::IfOp::create(b, loc, types, sel.getCondition(),
+                             /*withElseRegion=*/true);
+  Operation *owner = cast<OpResult>(choice).getOwner();
+  if (auto ifOp = dyn_cast<scf::IfOp>(owner))
+    return scf::IfOp::create(b, loc, types, ifOp.getCondition(),
+                             /*withElseRegion=*/true);
+  auto ifOp = cast<affine::AffineIfOp>(owner);
+  return affine::AffineIfOp::create(b, loc, types, ifOp.getIntegerSet(),
+                                    ifOp.getOperands(),
+                                    /*withElseRegion=*/true);
+}
+
+// What `choice` chooses in arm `arm` of the branch it is.
+static Value armOf(Value choice, unsigned arm) {
+  if (auto sel = choice.getDefiningOp<arith::SelectOp>())
+    return arm == 0 ? sel.getTrueValue() : sel.getFalseValue();
+  auto result = cast<OpResult>(choice);
+  return result.getOwner()->getRegion(arm).front().getTerminator()->getOperand(
+      result.getResultNumber());
+}
+
+// Yields `values` from the arm `block` of `branch`, after what the arm holds.
+static void yieldFrom(OpBuilder &b, Location loc, Operation *branch,
+                      Block *block, ValueRange values) {
+  if (!block->empty() && block->back().hasTrait<OpTrait::IsTerminator>()) {
+    assert(values.empty());
+    return;
+  }
+  b.setInsertionPointToEnd(block);
+  if (isa<affine::AffineIfOp>(branch))
+    affine::AffineYieldOp::create(b, loc, values);
+  else
+    scf::YieldOp::create(b, loc, values);
+}
+
+// An access indexed by a choice between constants lands in one of the slots
+// the forwarding could match, yet names none. When every user of the
+// allocation is an access at a constant index or at such a choice, each
+// choice-indexed access becomes the branches of the choice around an access
+// at each constant, and the forwarding then sees only constant indices.
+// Several choice-indexed operands are split one at a time, on successive
+// rounds.
+static bool splitSelectIndexedAccesses(Value AI) {
+  auto constantIndices = [](ValueRange indices) {
+    return llvm::all_of(indices, [](Value idx) {
+      Attribute cst;
+      return matchPattern(idx, m_Constant(&cst));
+    });
+  };
+
+  SmallVector<Operation *> toSplit;
+  std::deque<Value> list = {AI};
+  while (!list.empty()) {
+    Value val = list.front();
+    list.pop_front();
+    for (Operation *U : val.getUsers()) {
+      ValueRange indices;
+      if (auto LO = dyn_cast<memref::LoadOp>(U))
+        indices = LO.getIndices();
+      else if (auto SO = dyn_cast<memref::StoreOp>(U))
+        indices = SO.getIndices();
+      else if (auto LO = dyn_cast<affine::AffineLoadOp>(U)) {
+        if (!LO.getAffineMap().isConstant())
+          return false;
+        continue;
+      } else if (auto SO = dyn_cast<affine::AffineStoreOp>(U)) {
+        if (!SO.getAffineMap().isConstant())
+          return false;
+        continue;
+      } else if (auto GO = dyn_cast<LLVM::GEPOp>(U)) {
+        if (!constantIndices(GO.getDynamicIndices()))
+          return false;
+        list.push_back(GO);
+        continue;
+      } else if (isa<memref::CastOp, Memref2PointerOp, Pointer2MemrefOp,
+                     LLVM::BitcastOp, LLVM::AddrSpaceCastOp>(U)) {
+        list.push_back(U->getResult(0));
+        continue;
+      } else
+        return false;
+
+      bool split = false;
+      for (Value idx : indices) {
+        Attribute cst;
+        if (matchPattern(idx, m_Constant(&cst)))
+          continue;
+        if (!isChoiceOfConstants(idx))
+          return false;
+        split = true;
+      }
+      if (split)
+        toSplit.push_back(U);
+    }
+  }
+
+  for (Operation *op : toSplit) {
+    OpOperand *chosen = nullptr;
+    for (OpOperand &operand : op->getOpOperands()) {
+      Attribute cst;
+      if (!matchPattern(operand.get(), m_Constant(&cst)) &&
+          isChoiceOfConstants(operand.get())) {
+        chosen = &operand;
+        break;
+      }
+    }
+    Location loc = op->getLoc();
+    OpBuilder b(op);
+    Operation *root =
+        createBranchLike(b, loc, chosen->get(), op->getResultTypes());
+    // Each arm holds the access at the constant its choice chooses there, or
+    // the branch of a further choice.
+    struct Arm {
+      Operation *branch;
+      unsigned arm;
+      Value choice;
+    };
+    SmallVector<Arm> worklist{{root, 0, chosen->get()},
+                              {root, 1, chosen->get()}};
+    while (!worklist.empty()) {
+      Arm item = worklist.pop_back_val();
+      Block *block = &item.branch->getRegion(item.arm).front();
+      Value picked = armOf(item.choice, item.arm);
+      b.setInsertionPointToStart(block);
+      Attribute cst;
+      if (matchPattern(picked, m_Constant(&cst))) {
+        Operation *cloned = b.clone(*op);
+        cloned->setOperand(chosen->getOperandNumber(), picked);
+        yieldFrom(b, loc, item.branch, block, cloned->getResults());
+        continue;
+      }
+      Operation *nested =
+          createBranchLike(b, loc, picked, op->getResultTypes());
+      yieldFrom(b, loc, item.branch, block, nested->getResults());
+      worklist.push_back({nested, 0, picked});
+      worklist.push_back({nested, 1, picked});
+    }
+    op->replaceAllUsesWith(root->getResults());
+    op->erase();
+  }
+  return !toSplit.empty();
+}
+
+// The scalar leaves of an LLVM aggregate in memory order: the path to each, its
+// type and its byte offset; false when a leaf is not an integer, a float or a
+// pointer.
+static bool aggregateLeaves(Type type, int64_t offset, const DataLayout &dl,
+                            SmallVectorImpl<int64_t> &path,
+                            SmallVectorImpl<SmallVector<int64_t>> &paths,
+                            SmallVectorImpl<Type> &types,
+                            SmallVectorImpl<int64_t> &offsets) {
+  if (auto at = dyn_cast<LLVM::LLVMArrayType>(type)) {
+    auto size = typeSize(at.getElementType(), dl);
+    if (!size)
+      return false;
+    for (int64_t i = 0; i < at.getNumElements(); ++i) {
+      path.push_back(i);
+      if (!aggregateLeaves(at.getElementType(), offset + i * *size, dl, path,
+                           paths, types, offsets))
+        return false;
+      path.pop_back();
+    }
+    return true;
+  }
+  if (auto st = dyn_cast<LLVM::LLVMStructType>(type)) {
+    if (st.isOpaque())
+      return false;
+    int64_t fieldOffset = 0;
+    for (auto [i, field] : llvm::enumerate(st.getBody())) {
+      auto size = typeSize(field, dl);
+      if (!size)
+        return false;
+      if (!st.isPacked())
+        fieldOffset = llvm::alignTo(fieldOffset, dl.getTypeABIAlignment(field));
+      path.push_back(i);
+      if (!aggregateLeaves(field, offset + fieldOffset, dl, path, paths, types,
+                           offsets))
+        return false;
+      path.pop_back();
+      fieldOffset += *size;
+    }
+    return true;
+  }
+  if (!type.isIntOrFloat() && !isa<LLVM::LLVMPointerType>(type))
+    return false;
+  paths.push_back(SmallVector<int64_t>(path.begin(), path.end()));
+  types.push_back(type);
+  offsets.push_back(offset);
+  return true;
+}
+
+namespace {
+// A scalar access of an allocation being split, and the bytes it can reach: a
+// load or store through a view, or a leaf extracted from a load of a whole
+// aggregate.
+struct SplitAccess {
+  Operation *op;
+  Type type;
+  int64_t size, lo, hi;
+  // Where element zero of the view it is through falls.
+  int64_t base;
+};
+// A run of bytes of the allocation that its scalar accesses reach, read and
+// written as one scalar: the allocation it becomes.
+struct SplitPiece {
+  int64_t start, end;
+  Type type;
+  int64_t size;
+  Value memref;
+};
+// A whole aggregate stored or loaded at a constant byte of the allocation.
+struct SplitAggregate {
+  Operation *op;
+  int64_t offset;
+};
+// A copy into the allocation from memory it does not own, or out of it into
+// such memory.
+struct SplitCopy {
+  LLVM::MemcpyOp op;
+  int64_t offset, length;
+};
+} // namespace
+
+// The leaf of `type` that `path` names: its index among the leaves
+// aggregateLeaves lists, or none.
+static std::optional<unsigned> leafIndex(ArrayRef<SmallVector<int64_t>> paths,
+                                         ArrayRef<int64_t> path) {
+  auto it = llvm::find(paths, path);
+  if (it == paths.end())
+    return std::nullopt;
+  return it - paths.begin();
+}
+
+// Scalar replacement of an aggregate allocation forwarding cannot remove: the
+// runs of bytes its accesses reach become allocations of their own, each of
+// one scalar, so that what reads one run no longer reads through the rest. A
+// GPU lane's copy of a by-value lambda is the case in point: the whole capture
+// is stored into it, a few members are read back at indices that depend on the
+// lane, and a pointer among the captures would otherwise reach the kernel. The
+// capture the host builds is another: member by member, some copied in from
+// memory it does not own, and loaded whole only for the members the kernel
+// extracts.
+//
+// The allocation must be reached only through constant getelementptrs, rank-1
+// views, lifetime markers and copies into it of a constant length. Each access
+// through a view is an affine or memref load or store at an index linear in
+// values of known range, so the bytes it reaches are known. Scalar accesses
+// that overlap form one run, which must be accessed as a single scalar aligned
+// to it. A whole aggregate may be stored at a constant position: each of its
+// leaves goes to the run that holds it, and a leaf that lies in none is never
+// read, so its store goes away. A whole aggregate may be loaded at a constant
+// position when only its scalar leaves are used: each of those is a read of
+// its run. A copy fills each run it covers from the matching bytes of its
+// source, and must cover a run it reaches entirely.
+static bool splitAggregateAlloca(LLVM::AllocaOp alloc) {
+  Type elem = alloc.getElemType();
+  auto count = getConstantIntValue(alloc.getArraySize());
+  if (!count || !isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(elem))
+    return false;
+  DataLayout dl = DataLayout::closest(alloc);
+  auto elemSize = typeSize(elem, dl);
+  if (!elemSize)
+    return false;
+  int64_t total = *count * *elemSize;
+
+  // Everything that points into the allocation, at the byte it points to.
+  SmallVector<std::pair<Value, int64_t>> pointers = {{alloc, 0}};
+  SmallVector<LLVM::GEPOp> geps;
+  SmallVector<std::pair<enzymexla::Pointer2MemrefOp, int64_t>> views;
+  SmallVector<Operation *> markers;
+  SmallVector<SplitCopy> copies, copiesOut;
+  for (unsigned i = 0; i < pointers.size(); ++i) {
+    auto [pointer, base] = pointers[i];
+    for (OpOperand &use : pointer.getUses()) {
+      Operation *user = use.getOwner();
+      if (auto gep = dyn_cast<LLVM::GEPOp>(user);
+          gep && gep.getBase() == pointer) {
+        auto bytes = gepOffsets(gep, dl).constantBytes();
+        if (!bytes)
+          return false;
+        geps.push_back(gep);
+        pointers.push_back({gep, base + (int64_t)*bytes});
+      } else if (auto view = dyn_cast<enzymexla::Pointer2MemrefOp>(user)) {
+        if (view.getType().getRank() != 1 ||
+            !view.getType().getLayout().isIdentity())
+          return false;
+        views.push_back({view, base});
+      } else if (isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(user)) {
+        markers.push_back(user);
+      } else if (auto copy = dyn_cast<LLVM::MemcpyOp>(user);
+                 copy && !copy.getIsVolatile() &&
+                 (copy.getDst() == pointer || copy.getSrc() == pointer)) {
+        auto length = getConstantIntValue(copy.getLen());
+        if (!length || base < 0 || base + *length > total)
+          return false;
+        (copy.getDst() == pointer ? copies : copiesOut)
+            .push_back({copy, base, *length});
+      } else {
+        return false;
+      }
+    }
+  }
+  // A copy from one place of the allocation to another moves bytes between
+  // runs.
+  for (SplitCopy &copy : copies)
+    if (llvm::any_of(pointers, [&](auto pointer) {
+          return pointer.first == copy.op.getSrc();
+        }))
+      return false;
+  if (views.empty())
+    return false;
+  Attribute memorySpace = views.front().first.getType().getMemorySpace();
+
+  SmallVector<SplitAccess> scalars;
+  SmallVector<SplitAggregate> aggregateStores, aggregateLoads;
+  for (auto [view, base] : views) {
+    if (view.getType().getMemorySpace() != memorySpace)
+      return false;
+    Type type = view.getType().getElementType();
+    auto size = typeSize(type, dl);
+    if (!size || *size == 0)
+      return false;
+    bool aggregate = isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(type);
+    if (!aggregate && base % (int64_t)*size)
+      return false;
+    for (Operation *user : view->getUsers()) {
+      std::optional<std::pair<int64_t, int64_t>> range;
+      if (auto ld = dyn_cast<affine::AffineLoadOp>(user))
+        range =
+            enzyme::getConstantRange(ld.getAffineMap(), ld.getMapOperands());
+      else if (auto st = dyn_cast<affine::AffineStoreOp>(user);
+               st && st.getValueToStore() != view.getResult())
+        range =
+            enzyme::getConstantRange(st.getAffineMap(), st.getMapOperands());
+      else if (auto ld = dyn_cast<memref::LoadOp>(user))
+        range = enzyme::getConstantRange(ld.getIndices()[0]);
+      else if (auto st = dyn_cast<memref::StoreOp>(user);
+               st && st.getValueToStore() != view.getResult())
+        range = enzyme::getConstantRange(st.getIndices()[0]);
+      else
+        return false;
+      if (!range)
+        return false;
+      int64_t lo = base + range->first * (int64_t)*size,
+              hi = base + range->second * (int64_t)*size + (int64_t)*size - 1;
+      if (lo < 0 || hi >= total)
+        return false;
+      if (!aggregate) {
+        if (!type.isIntOrFloat() && !isa<LLVM::LLVMPointerType>(type))
+          return false;
+        scalars.push_back({user, type, (int64_t)*size, lo, hi, base});
+        continue;
+      }
+      if (range->first != range->second)
+        return false;
+      if (isa<affine::AffineStoreOp, memref::StoreOp>(user)) {
+        aggregateStores.push_back({user, lo});
+        continue;
+      }
+      SmallVector<int64_t> path, offsets;
+      SmallVector<SmallVector<int64_t>> paths;
+      SmallVector<Type> types;
+      if (!aggregateLeaves(type, lo, dl, path, paths, types, offsets))
+        return false;
+      for (Operation *extractUser : user->getUsers()) {
+        auto extract = dyn_cast<LLVM::ExtractValueOp>(extractUser);
+        if (!extract)
+          return false;
+        auto leaf = leafIndex(paths, extract.getPosition());
+        if (!leaf)
+          return false;
+        auto leafSize = typeSize(types[*leaf], dl);
+        if (!leafSize)
+          return false;
+        scalars.push_back({extract, types[*leaf], (int64_t)*leafSize,
+                           offsets[*leaf],
+                           offsets[*leaf] + (int64_t)*leafSize - 1, 0});
+      }
+      aggregateLoads.push_back({user, lo});
+    }
+  }
+  if (scalars.empty())
+    return false;
+
+  // The runs: overlapping scalar accesses, each run one scalar throughout.
+  llvm::stable_sort(scalars, [](const SplitAccess &a, const SplitAccess &b) {
+    return a.lo < b.lo;
+  });
+  SmallVector<SplitPiece> pieces;
+  DenseMap<Operation *, unsigned> pieceOf;
+  for (const SplitAccess &access : scalars) {
+    if (pieces.empty() || access.lo > pieces.back().end)
+      pieces.push_back(
+          {access.lo, access.hi, access.type, access.size, Value()});
+    SplitPiece &piece = pieces.back();
+    if (access.type != piece.type)
+      return false;
+    piece.end = std::max(piece.end, access.hi);
+    pieceOf[access.op] = pieces.size() - 1;
+  }
+  for (const SplitPiece &piece : pieces)
+    if (piece.start % piece.size || (piece.end + 1 - piece.start) % piece.size)
+      return false;
+  // One run over the whole allocation, accessed only in pieces, gains nothing.
+  if (aggregateStores.empty() && aggregateLoads.empty() && copies.empty() &&
+      pieces.size() == 1 && pieces.front().start == 0 &&
+      pieces.front().end + 1 == total)
+    return false;
+  // Every access through a view lands at whole elements of its run.
+  for (const SplitAccess &access : scalars)
+    if ((access.lo - pieces[pieceOf[access.op]].start) % access.size)
+      return false;
+
+  // Where each leaf of each aggregate store lands, or nowhere.
+  struct LeafStore {
+    SmallVector<int64_t> path;
+    unsigned piece;
+    int64_t index;
+  };
+  SmallVector<SmallVector<LeafStore>> leafStores;
+  for (const SplitAggregate &store : aggregateStores) {
+    SmallVector<int64_t> path, offsets;
+    SmallVector<SmallVector<int64_t>> paths;
+    SmallVector<Type> types;
+    if (!aggregateLeaves(cast<enzyme::StoreLikeInterface>(store.op)
+                             .getStoredValue()
+                             .getType(),
+                         store.offset, dl, path, paths, types, offsets))
+      return false;
+    auto &stores = leafStores.emplace_back();
+    for (auto [leafPath, type, offset] : llvm::zip(paths, types, offsets)) {
+      auto size = typeSize(type, dl);
+      if (!size)
+        return false;
+      int64_t lo = offset, hi = offset + *size - 1;
+      auto it = llvm::find_if(pieces, [&](const SplitPiece &piece) {
+        return piece.start <= hi && lo <= piece.end;
+      });
+      if (it == pieces.end())
+        continue;
+      if (it->type != type || lo < it->start || hi > it->end ||
+          (lo - it->start) % it->size)
+        return false;
+      stores.push_back({leafPath, (unsigned)(it - pieces.begin()),
+                        (lo - it->start) / it->size});
+    }
+  }
+  // The runs each copy fills, which it must cover whole.
+  SmallVector<SmallVector<unsigned>> copied;
+  for (const SplitCopy &copy : copies) {
+    auto &filled = copied.emplace_back();
+    for (auto [i, piece] : llvm::enumerate(pieces)) {
+      if (piece.end < copy.offset || copy.offset + copy.length <= piece.start)
+        continue;
+      if (piece.start < copy.offset || copy.offset + copy.length <= piece.end)
+        return false;
+      filled.push_back(i);
+    }
+  }
+
+  // The runs each copy out reads, which must make up all it copies: a byte of
+  // it no run holds may hold what an aggregate store put there.
+  SmallVector<SmallVector<unsigned>> copiedOut;
+  for (SplitCopy &copy : copiesOut) {
+    auto &read = copiedOut.emplace_back();
+    int64_t next = copy.offset;
+    for (auto [i, piece] : llvm::enumerate(pieces)) {
+      if (piece.end < copy.offset || copy.offset + copy.length <= piece.start)
+        continue;
+      if (piece.start != next || copy.offset + copy.length <= piece.end)
+        return false;
+      read.push_back(i);
+      next = piece.end + 1;
+    }
+    if (next != copy.offset + copy.length)
+      return false;
+    auto dstType = cast<LLVM::LLVMPointerType>(copy.op.getDst().getType());
+    if (dstType.getAddressSpace() != 0)
+      return false;
+  }
+
+  OpBuilder builder(alloc);
+  for (SplitPiece &piece : pieces) {
+    auto type =
+        MemRefType::get({(piece.end + 1 - piece.start) / piece.size},
+                        piece.type, MemRefLayoutAttrInterface{}, memorySpace);
+    piece.memref = memref::AllocaOp::create(builder, alloc.getLoc(), type);
+  }
+
+  // A leaf extracted from a whole load reads its run where the load did.
+  DenseMap<Operation *, Operation *> loadOfExtract;
+  for (const SplitAggregate &load : aggregateLoads)
+    for (Operation *user : load.op->getUsers())
+      loadOfExtract[user] = load.op;
+  for (const SplitAccess &access : scalars) {
+    const SplitPiece &piece = pieces[pieceOf[access.op]];
+    if (auto extract = dyn_cast<LLVM::ExtractValueOp>(access.op)) {
+      builder.setInsertionPoint(loadOfExtract[extract]);
+      AffineMap at = AffineMap::getConstantMap(
+          (access.lo - piece.start) / piece.size, extract.getContext());
+      Value value = affine::AffineLoadOp::create(
+          builder, extract.getLoc(), piece.memref, at, ValueRange());
+      extract.replaceAllUsesWith(value);
+      extract.erase();
+      continue;
+    }
+    int64_t shift = (piece.start - access.base) / piece.size;
+    builder.setInsertionPoint(access.op);
+    if (isa<memref::LoadOp, memref::StoreOp>(access.op)) {
+      unsigned at = isa<memref::LoadOp>(access.op) ? 1 : 2;
+      Value index = access.op->getOperand(at);
+      Value offset =
+          arith::ConstantIndexOp::create(builder, access.op->getLoc(), shift);
+      Value rebased =
+          arith::SubIOp::create(builder, access.op->getLoc(), index, offset);
+      access.op->setOperand(at - 1, piece.memref);
+      access.op->setOperand(at, rebased);
+      continue;
+    }
+    if (auto ld = dyn_cast<affine::AffineLoadOp>(access.op)) {
+      AffineMap map = ld.getAffineMap();
+      AffineMap shifted =
+          AffineMap::get(map.getNumDims(), map.getNumSymbols(),
+                         map.getResult(0) - shift, map.getContext());
+      Value value = affine::AffineLoadOp::create(
+          builder, ld.getLoc(), piece.memref, shifted, ld.getMapOperands());
+      ld.replaceAllUsesWith(value);
+      ld.erase();
+    } else {
+      auto st = cast<affine::AffineStoreOp>(access.op);
+      AffineMap map = st.getAffineMap();
+      AffineMap shifted =
+          AffineMap::get(map.getNumDims(), map.getNumSymbols(),
+                         map.getResult(0) - shift, map.getContext());
+      affine::AffineStoreOp::create(builder, st.getLoc(), st.getValueToStore(),
+                                    piece.memref, shifted, st.getMapOperands());
+      st.erase();
+    }
+  }
+  for (auto [store, leaves] : llvm::zip_equal(aggregateStores, leafStores)) {
+    Value value = cast<enzyme::StoreLikeInterface>(store.op).getStoredValue();
+    builder.setInsertionPoint(store.op);
+    for (const LeafStore &leaf : leaves) {
+      Value piece = LLVM::ExtractValueOp::create(builder, store.op->getLoc(),
+                                                 value, leaf.path);
+      AffineMap at =
+          AffineMap::getConstantMap(leaf.index, store.op->getContext());
+      affine::AffineStoreOp::create(builder, store.op->getLoc(), piece,
+                                    pieces[leaf.piece].memref, at,
+                                    ValueRange());
+    }
+    store.op->erase();
+  }
+  for (auto [copy, filled] : llvm::zip_equal(copies, copied)) {
+    LLVM::MemcpyOp op = copy.op;
+    builder.setInsertionPoint(op);
+    for (unsigned i : filled) {
+      const SplitPiece &piece = pieces[i];
+      Value source = op.getSrc();
+      if (piece.start != copy.offset)
+        source = LLVM::GEPOp::create(
+            builder, op.getLoc(), source.getType(), builder.getI8Type(), source,
+            ArrayRef<LLVM::GEPArg>{piece.start - copy.offset});
+      auto sourceType =
+          MemRefType::get({ShapedType::kDynamic}, piece.type,
+                          MemRefLayoutAttrInterface{}, memorySpace);
+      Value view = enzymexla::Pointer2MemrefOp::create(builder, op.getLoc(),
+                                                       sourceType, source);
+      for (int64_t j = 0, n = (piece.end + 1 - piece.start) / piece.size; j < n;
+           ++j) {
+        AffineMap at = AffineMap::getConstantMap(j, op.getContext());
+        Value value = affine::AffineLoadOp::create(builder, op.getLoc(), view,
+                                                   at, ValueRange());
+        affine::AffineStoreOp::create(builder, op.getLoc(), value, piece.memref,
+                                      at, ValueRange());
+      }
+    }
+    op.erase();
+  }
+  for (auto [copy, read] : llvm::zip_equal(copiesOut, copiedOut)) {
+    LLVM::MemcpyOp op = copy.op;
+    builder.setInsertionPoint(op);
+    for (unsigned i : read) {
+      const SplitPiece &piece = pieces[i];
+      Value dest = op.getDst();
+      if (piece.start != copy.offset)
+        dest = LLVM::GEPOp::create(
+            builder, op.getLoc(), dest.getType(), builder.getI8Type(), dest,
+            ArrayRef<LLVM::GEPArg>{piece.start - copy.offset});
+      auto destType = MemRefType::get({ShapedType::kDynamic}, piece.type);
+      Value view = enzymexla::Pointer2MemrefOp::create(builder, op.getLoc(),
+                                                       destType, dest);
+      for (int64_t j = 0, n = (piece.end + 1 - piece.start) / piece.size; j < n;
+           ++j) {
+        AffineMap at = AffineMap::getConstantMap(j, op.getContext());
+        Value value = affine::AffineLoadOp::create(
+            builder, op.getLoc(), piece.memref, at, ValueRange());
+        affine::AffineStoreOp::create(builder, op.getLoc(), value, view, at,
+                                      ValueRange());
+      }
+    }
+    op.erase();
+  }
+  for (const SplitAggregate &load : aggregateLoads)
+    load.op->erase();
+  for (auto [view, base] : views)
+    view.erase();
+  for (Operation *marker : markers)
+    marker->erase();
+  for (LLVM::GEPOp gep : llvm::reverse(geps))
+    gep.erase();
+  alloc.erase();
+  return true;
+}
+
+static bool splitAggregateAllocas(Operation *f) {
+  SmallVector<LLVM::AllocaOp> allocs;
+  f->walk([&](LLVM::AllocaOp alloc) { allocs.push_back(alloc); });
+  bool changed = false;
+  for (LLVM::AllocaOp alloc : allocs)
+    changed |= splitAggregateAlloca(alloc);
+  return changed;
+}
+
 void PolygeistMem2Reg::runOnOperation() {
   auto *f = getOperation();
+
+  // Resolving a callee by name walks every symbol the module has, and there is
+  // a callee to resolve for each call each allocation reaches. Nothing here
+  // adds or removes a symbol, so one collection serves the whole run.
+  SymbolTableCollection symbolTables;
 
   // Variable indicating that a memref has had a load removed
   // and or been deleted. Because there can be memrefs of
@@ -2013,42 +4543,60 @@ void PolygeistMem2Reg::runOnOperation() {
     // Load op's whose results were replaced by those forwarded from stores.
     SmallVector<Operation *, 8> loadOpsToErase;
 
+    // An allocation reached only through a branch between buffers is not yet
+    // promotable; splitting the accesses first gives it accesses of its own.
+    changed |= splitBufferBranchAccesses(f);
+
+    // A store of undef or poison leaves the slot holding any value, and what
+    // it held before is one; kept, it only stands between a load and the
+    // store that defined the value.
+    SmallVector<Operation *> undefStores;
+    f->walk([&](enzyme::StoreLikeInterface store) {
+      if (isa_and_nonnull<LLVM::UndefOp, LLVM::PoisonOp, ub::PoisonOp>(
+              store.getStoredValue().getDefiningOp()))
+        undefStores.push_back(store);
+    });
+    for (Operation *op : undefStores)
+      op->erase();
+    changed |= !undefStores.empty();
+
     // Walk all load's and perform store to load forwarding.
     SmallVector<mlir::Value, 4> toPromote;
     f->walk([&](mlir::memref::AllocaOp AI) {
-      if (isPromotable(AI)) {
+      if (isPromotable(AI, symbolTables)) {
         toPromote.push_back(AI);
       }
     });
     f->walk([&](mlir::memref::AllocOp AI) {
-      if (isPromotable(AI)) {
+      if (isPromotable(AI, symbolTables)) {
         toPromote.push_back(AI);
       }
     });
     f->walk([&](LLVM::AllocaOp AI) {
-      if (isPromotable(AI)) {
+      if (isPromotable(AI, symbolTables)) {
         toPromote.push_back(AI);
       }
     });
     f->walk([&](memref::GetGlobalOp AI) {
-      if (isPromotable(AI)) {
+      if (isPromotable(AI, symbolTables)) {
         toPromote.push_back(AI);
       }
     });
     DenseMap<Operation *, SmallVector<Operation *>> capturedAliasing;
     for (auto AI : toPromote) {
       LLVM_DEBUG(llvm::dbgs() << " attempting to promote " << AI << "\n");
-      auto lastStored = getLastStored(AI);
+      changed |= splitSelectIndexedAccesses(AI);
+      // A nested region may carry a layout of its own, so the sizes an offset
+      // is counted in are the ones in force where the allocation is.
+      auto lastStored =
+          getLastStored(AI, DataLayout::closest(AI.getDefiningOp()));
       for (const auto &vec : lastStored) {
-        LLVM_DEBUG(llvm::dbgs() << " + forwarding vec to promote {";
-                   for (auto m
-                        : vec) llvm::dbgs()
-                   << m << ",";
-                   llvm::dbgs() << "} of " << AI << "\n");
+        LLVM_DEBUG(llvm::dbgs() << " + forwarding vec to promote {" << vec
+                                << "} of " << AI << "\n");
         // llvm::errs() << " PRE " << AI << "\n";
         // f.dump();
-        changed |=
-            forwardStoreToLoad(AI, vec, loadOpsToErase, capturedAliasing);
+        changed |= forwardStoreToLoad(AI, vec, loadOpsToErase, capturedAliasing,
+                                      symbolTables);
         // llvm::errs() << " POST " << AI << "\n";
         // f.dump();
       }
@@ -2057,7 +4605,13 @@ void PolygeistMem2Reg::runOnOperation() {
     }
 
     // Erase all load op's whose results were replaced with store fwd'ed ones.
+    // One read may be forwarded out of more than one slot -- the whole of
+    // something and a piece of it are both slots it reads -- and is only there
+    // to be erased once.
+    SmallPtrSet<Operation *, 8> erased;
     for (auto *loadOp : loadOpsToErase) {
+      if (!erased.insert(loadOp).second)
+        continue;
       changed = true;
       loadOp->erase();
     }
@@ -2084,35 +4638,31 @@ void PolygeistMem2Reg::runOnOperation() {
         list.pop_front();
 
         for (auto *U : val.getUsers()) {
-          if (auto SO = dyn_cast<LLVM::StoreOp>(U)) {
-            if (SO.getValue() == val) {
+          if (auto SO = dyn_cast<enzyme::StoreLikeInterface>(U)) {
+            if (SO.getStoredValue() == val) {
               error = true;
               break;
             }
             toErase.push_back(U);
-          } else if (auto SO = dyn_cast<memref::StoreOp>(U)) {
-            if (SO.getValue() == val) {
+          } else if (isa<LLVM::MemsetOp, LLVM::MemcpyOp, LLVM::MemmoveOp>(U)) {
+            // Writing into the allocation goes away with it; reading out of it
+            // writes somewhere else and has to stay.
+            if (transferSource(U) == val) {
               error = true;
               break;
             }
             toErase.push_back(U);
-          } else if (auto SO = dyn_cast<affine::AffineStoreOp>(U)) {
-            if (SO.getValue() == val) {
-              error = true;
-              break;
-            }
+          } else if (isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(U)) {
             toErase.push_back(U);
           } else if (isa<memref::DeallocOp>(U)) {
             toErase.push_back(U);
           } else if (isa<func::CallOp>(U) &&
                      cast<func::CallOp>(U).getCallee() == "free") {
             toErase.push_back(U);
-          } else if (auto CO = dyn_cast<memref::CastOp>(U)) {
+          } else if (isa<memref::CastOp, Pointer2MemrefOp, Memref2PointerOp,
+                         LLVM::GEPOp>(U)) {
             toErase.push_back(U);
-            list.push_back(CO);
-            //} else if (auto CO = dyn_cast<SubIndexOp>(U)) {
-            //  toErase.push_back(U);
-            //  list.push_back(CO);
+            list.push_back(U->getResult(0));
           } else {
             error = true;
             break;
@@ -2133,5 +4683,11 @@ void PolygeistMem2Reg::runOnOperation() {
         // llvm::errs() << " failed to remove: " << memref << "\n";
       }
     }
+
+    // Once forwarding has done all it can, an aggregate allocation still
+    // standing may split into allocations of the runs of bytes it is accessed
+    // through, which forwarding then gets another go at.
+    if (!changed)
+      changed = splitAggregateAllocas(f);
   } while (changed);
 }

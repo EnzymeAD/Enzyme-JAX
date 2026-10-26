@@ -4,6 +4,7 @@ xprof >= 2.20
 protobuf >= 6
 
 jax-md; sys_platform == 'linux'
+jaxpi @ https://github.com/vimarsh6739/jaxpi/archive/6c22cfa9ac17eac4993aebf454b3af5d074fe430.tar.gz
 
 # maxtext can't be installed concurrently, but installing it fixes
 # https://github.com/wsmoses/maxtext/archive/bc50722be7d89e4003bd830b80e4ac968be658eb.tar.gz; python_version < "3.12"

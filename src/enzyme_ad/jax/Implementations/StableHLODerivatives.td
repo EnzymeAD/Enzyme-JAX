@@ -16,6 +16,8 @@ class HLORegionTerminatorOp<string m> : RegionTerminatorOp<"stablehlo", m>;
 
 class HLOInactiveOp<string m> : InactiveOp<"stablehlo", m>;
 
+def DotAlgorithmAttr : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{stablehlo::DotAlgorithmAttr();}]>;
+
 include "HLODerivatives.td"
 
 def : HLODerivative<"EinsumOp", (Op $lhs, $rhs),
@@ -34,13 +36,3 @@ def : HLODerivative<"UnaryEinsumOp", (Op $x),
                     ],
                     (UnaryEinsum (ResultTypes), (Shadow $x), (EinsumConfig))
                   >;
-
-def : ControlFlowOp<"stablehlo", "CaseOp", [{
-  Operation *createWithShadows(Operation *op, OpBuilder &builder,
-                               MGradientUtils *gutils, Operation *original,
-                               ValueRange remappedOperands,
-                               TypeRange rettys) const {
-    return stablehlo::CaseOp::create(builder, original->getLoc(), rettys,
-                                        remappedOperands, original->getAttrs(), cast<stablehlo::CaseOp>(op).getBranches().size());
-  }
-}]>;

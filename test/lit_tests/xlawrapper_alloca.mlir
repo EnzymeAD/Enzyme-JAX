@@ -8,7 +8,7 @@ module {
     // CHECK: %[[ALLOCA:.+]] = llvm.alloca
     // CHECK: llvm.br ^bb1
     // CHECK: ^bb2:
-    // CHECK: llvm.call @reactantXLAExec(%{{.+}}, %{{.+}}, %{{.+}}, %[[ALLOCA]])
+    // CHECK: llvm.call @reactantXLAExec(%{{.+}}, %{{.+}}, %{{.+}}, %[[ALLOCA]], %{{.+}}, %{{.+}})
     // CHECK-NOT: llvm.alloca
     
     %c0 = arith.constant 0 : index

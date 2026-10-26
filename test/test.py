@@ -166,6 +166,20 @@ class EnzymeJax(absltest.TestCase):
             ).all()
         )
 
+    def test_large_bool_constant(self):
+        # The pipeline folds the mask to an i1 constant of more elements than
+        # MLIR prints in full, so the module it hands back to JAX carries the
+        # constant in a form JAX's MLIR has to be able to read.
+        @jax.jit
+        @enzyme_jax_ir(argv=argv)
+        def mask_neg(x: jax.Array) -> jax.Array:
+            mask = jnp.arange(128) % 3 == 0
+            return jnp.where(mask, x, -x)
+
+        x = jnp.arange(128, dtype=jnp.float32)
+        expected = jnp.where(jnp.arange(128) % 3 == 0, x, -x)
+        self.assertTrue((mask_neg(x) == expected).all())
+
 
 if __name__ == "__main__":
     absltest.main()

@@ -15,9 +15,9 @@ module {
         %1 = llvm.icmp "ugt" %c0_i32, %0 : i32
         llvm.cond_br %1, ^bb2, ^bb1
       ^bb1:  // pred: ^bb0
-        %2 = llvm.load %arg0 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+        %2 = llvm.load %arg0 <alignment = 1> : !llvm.ptr<1> -> i64
         %3 = llvm.mul %2, %2 : i64
-        llvm.store %3, %arg0 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+        llvm.store %3, %arg0 <alignment = 1> : i64, !llvm.ptr<1>
         scf.yield
       ^bb2:  // pred: ^bb0
         llvm.call fastcc @throw_boundserror_2676() : () -> ()
@@ -28,7 +28,7 @@ module {
     return
   }
   func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
-    %0 = enzymexla.jit_call @foo (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
+    %0 = enzymexla.jit_call @foo (%arg0) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<64xi64>) -> tensor<64xi64>
     return %0 : tensor<64xi64>
   }
 }

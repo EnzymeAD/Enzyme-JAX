@@ -34,6 +34,7 @@
 #include <cassert>
 #include <cstddef>
 #include <forward_list>
+#include <list>
 #include <optional>
 
 namespace polly {
@@ -52,10 +53,10 @@ using llvm::LoadInst;
 using llvm::make_range;
 using llvm::MapVector;
 using llvm::MemIntrinsic;
-using llvm::PassInfoMixin;
 using llvm::PHINode;
 using llvm::RegionNode;
 using llvm::RegionPass;
+using llvm::RequiredPassInfoMixin;
 using llvm::RGPassManager;
 using llvm::SetVector;
 using llvm::SmallPtrSetImpl;
@@ -2774,7 +2775,7 @@ struct ScopInfoAnalysis : AnalysisInfoMixin<ScopInfoAnalysis> {
   Result run(Function &, FunctionAnalysisManager &);
 };
 
-struct ScopInfoPrinterPass final : PassInfoMixin<ScopInfoPrinterPass> {
+struct ScopInfoPrinterPass final : RequiredPassInfoMixin<ScopInfoPrinterPass> {
   ScopInfoPrinterPass(raw_ostream &OS) : Stream(OS) {}
 
   PreservedAnalyses run(Function &, FunctionAnalysisManager &);

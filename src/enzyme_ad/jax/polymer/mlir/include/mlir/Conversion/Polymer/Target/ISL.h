@@ -35,7 +35,9 @@ namespace polymer {
 class IslScop;
 class PolymerSymbolTable;
 
-std::unique_ptr<IslScop> createIslFromFuncOp(mlir::Operation *funcOp);
+std::unique_ptr<IslScop>
+createIslFromFuncOp(mlir::Operation *funcOp,
+                    bool allowScfIfConditionalWritesAsMay = false);
 
 /// Create a function (FuncOp) from the given OpenScop object in the given
 /// module (ModuleOp).

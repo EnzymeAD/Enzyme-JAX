@@ -292,6 +292,46 @@ static Value castValue(PatternRewriter &rewriter, Value value, Value target,
   }
 };
 
+// Whether this op can be cloned to recompute a value: nothing it does may be
+// observable, and it must sit directly in the loop's body.
+static bool isRecomputableInLoop(scf::ForOp forOp, Operation *def) {
+  return def && def->getParentRegion() == &forOp.getRegion() &&
+         isMemoryEffectFree(def) && def->getNumRegions() == 0;
+}
+
+// The ops needed to recompute `v` where the loop's own operands are available,
+// in block order. A value the loop does not vary can still be computed inside
+// it, so being defined outside is sufficient but not necessary.
+//
+// With `allowInductionVar` the slice may also vary with the induction
+// variable, and so is no longer invariant: it can hold values like `i + 1`,
+// and means what the caller wants only once the clone substitutes for the
+// induction variable.
+static bool collectLoopInvariantSlice(scf::ForOp forOp, Value v,
+                                      SmallVectorImpl<Operation *> &ops,
+                                      bool allowInductionVar = false) {
+  SmallVector<Value> todo{v};
+  SmallPtrSet<Operation *, 8> seen;
+  while (!todo.empty()) {
+    Value cur = todo.pop_back_val();
+    if ((allowInductionVar && cur == forOp.getInductionVar()) ||
+        forOp.isDefinedOutsideOfLoop(cur))
+      continue;
+    Operation *def = cur.getDefiningOp();
+    if (!isRecomputableInLoop(forOp, def))
+      return false;
+    if (!seen.insert(def).second)
+      continue;
+    if (ops.size() >= 8)
+      return false;
+    ops.push_back(def);
+    llvm::append_range(todo, def->getOperands());
+  }
+  llvm::sort(ops,
+             [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+  return true;
+}
+
 struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -311,6 +351,182 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
                    forOp.getResults(),        // op results
                    yieldOp.getOperands()      // iter yield
                    )) {
+
+      // A result that hands out the induction variable itself is the last
+      // executed IV -- or the init when the loop ran zero times. With a unit
+      // step and the iter arg starting at the lower bound (the shape a
+      // converted while has), the two cases meet in max(ub - step, lb) with
+      // no guard; otherwise the last IV is lb + ((ub-lb-1) / step) * step,
+      // selected against the init on whether the loop ran. The division is
+      // unsigned and its operands poison-free, so computing it speculatively
+      // on the zero-trip path is meaningless but harmless.
+      if (yld == forOp.getInductionVar()) {
+        Location loc = forOp.getLoc();
+        Value lb = forOp.getLowerBound(), ub = forOp.getUpperBound(),
+              step = forOp.getStep();
+
+        // Inside the body the iter arg is the previous iteration's IV -- or
+        // the init on the first one. When the init is the lower bound the
+        // two meet in max(iv - step, lb) with no first-iteration test.
+        if (!iterarg.use_empty()) {
+          rewriter.setInsertionPointToStart(&forOp.getRegion().front());
+          Value iv = forOp.getInductionVar();
+          Value prev = SubIOp::create(rewriter, loc, iv, step);
+          Value replacement;
+          if (outiter == lb) {
+            replacement = MaxSIOp::create(rewriter, loc, prev, lb);
+          } else {
+            Value first =
+                CmpIOp::create(rewriter, loc, CmpIPredicate::eq, iv, lb);
+            Value init = castValue(rewriter, outiter, yld, loc);
+            replacement = SelectOp::create(rewriter, loc, first, init, prev);
+          }
+          Value iterargCopy = iterarg;
+          rewriter.modifyOpInPlace(
+              forOp, [&] { iterargCopy.replaceAllUsesWith(replacement); });
+          canonicalize = true;
+        }
+
+        if (!res.use_empty()) {
+          rewriter.setInsertionPoint(forOp);
+          Value replacement;
+          if (matchPattern(step, m_One()) && outiter == lb) {
+            Value last = SubIOp::create(rewriter, loc, ub, step);
+            replacement = MaxSIOp::create(rewriter, loc, last, lb);
+          } else {
+            Value one = arith::ConstantOp::create(
+                rewriter, loc, rewriter.getIntegerAttr(ub.getType(), 1));
+            Value span = SubIOp::create(rewriter, loc, ub, lb);
+            Value m1 = SubIOp::create(rewriter, loc, span, one);
+            Value q = DivUIOp::create(rewriter, loc, m1, step);
+            Value off = MulIOp::create(rewriter, loc, q, step);
+            Value last = AddIOp::create(rewriter, loc, lb, off);
+            Value ran =
+                CmpIOp::create(rewriter, loc, CmpIPredicate::sgt, ub, lb);
+            Value init = castValue(rewriter, outiter, yld, loc);
+            replacement = SelectOp::create(rewriter, loc, ran, last, init);
+          }
+          Value resCopy = res;
+          rewriter.modifyOpInPlace(
+              forOp, [&] { resCopy.replaceAllUsesWith(replacement); });
+          canonicalize = true;
+        }
+        continue;
+      }
+
+      // A pointer advanced by a fixed distance each iteration is an induction
+      // variable like any other: on iteration n it is the init advanced by n
+      // times that distance. The advance can be a chain of geps, and each
+      // step of it can be a value as long as the loop does not vary it. The
+      // arithmetic is the same as the integer case, done in the gep's index.
+      if (isa<LLVM::LLVMPointerType>(iterarg.getType())) {
+        SmallVector<LLVM::GEPOp> chain;
+        Value cur = yld;
+        while (cur != iterarg) {
+          auto g = cur.getDefiningOp<LLVM::GEPOp>();
+          if (!g || g.getIndices().size() != 1)
+            break;
+          chain.push_back(g);
+          cur = g.getBase();
+        }
+        if (cur != iterarg || chain.empty())
+          continue;
+        // Offsets only add up when they are in the same units.
+        Type elemTy = chain.front().getElemType();
+        if (llvm::any_of(chain, [&](LLVM::GEPOp g) {
+              return g.getElemType() != elemTy;
+            }))
+          continue;
+        int64_t constStride = 0;
+        SmallVector<Value> dynStrides;
+        SmallVector<Operation *> strideSlice;
+        bool ok = true;
+        for (auto g : chain) {
+          auto idx = g.getIndices()[0];
+          if (auto attr = dyn_cast<IntegerAttr>(idx)) {
+            constStride += attr.getInt();
+            continue;
+          }
+          Value v = cast<Value>(idx);
+          if (!collectLoopInvariantSlice(forOp, v, strideSlice)) {
+            ok = false;
+            break;
+          }
+          dynStrides.push_back(v);
+        }
+        if (!ok)
+          continue;
+        Location loc = forOp.getLoc();
+
+        auto advancedBy = [&](Value count) {
+          // The stride may be computed in the body, after the point this is
+          // inserted at, so recompute it here.
+          IRMapping map;
+          for (Operation *op : strideSlice)
+            rewriter.clone(*op, map);
+          Value stride = nullptr;
+          for (Value orig : dynStrides) {
+            Value v = map.lookupOrDefault(orig);
+            Value c = castValue(rewriter, v, count, loc);
+            stride = stride
+                         ? AddIOp::create(rewriter, loc, stride, c).getResult()
+                         : c;
+          }
+          if (constStride || !stride) {
+            Value c = arith::ConstantOp::create(
+                rewriter, loc,
+                rewriter.getIntegerAttr(count.getType(), constStride));
+            stride = stride
+                         ? AddIOp::create(rewriter, loc, stride, c).getResult()
+                         : c.getDefiningOp()->getResult(0);
+          }
+          Value offset = MulIOp::create(rewriter, loc, count, stride);
+          // A gep index is a signless integer; loop arithmetic is often index.
+          if (isa<IndexType>(offset.getType()))
+            offset = IndexCastOp::create(rewriter, loc, rewriter.getI64Type(),
+                                         offset);
+          return LLVM::GEPOp::create(rewriter, loc, chain.back().getType(),
+                                     elemTy, outiter, ValueRange{offset},
+                                     chain.back().getNoWrapFlags())
+              .getResult();
+        };
+
+        if (!iterarg.use_empty()) {
+          rewriter.setInsertionPointToStart(&forOp.getRegion().front());
+          Value count = SubIOp::create(rewriter, loc, forOp.getInductionVar(),
+                                       forOp.getLowerBound());
+          count = DivUIOp::create(rewriter, loc, count, forOp.getStep());
+          Value replacement = advancedBy(count);
+          Value iterargCopy = iterarg;
+          rewriter.modifyOpInPlace(
+              forOp, [&] { iterargCopy.replaceAllUsesWith(replacement); });
+          canonicalize = true;
+        }
+
+        if (!res.use_empty()) {
+          rewriter.setInsertionPoint(forOp);
+          // The trip count is a ceiling division: a range the step does not
+          // divide evenly still runs the iteration that starts inside it. A
+          // range the loop never enters runs none.
+          Value span = SubIOp::create(rewriter, loc, forOp.getUpperBound(),
+                                      forOp.getLowerBound());
+          Value zero = arith::ConstantOp::create(
+              rewriter, loc, rewriter.getIntegerAttr(span.getType(), 0));
+          span = MaxSIOp::create(rewriter, loc, span, zero);
+          Value one = arith::ConstantOp::create(
+              rewriter, loc, rewriter.getIntegerAttr(span.getType(), 1));
+          Value bump = SubIOp::create(rewriter, loc, forOp.getStep(), one);
+          Value count = DivUIOp::create(
+              rewriter, loc, AddIOp::create(rewriter, loc, span, bump),
+              forOp.getStep());
+          Value replacement = advancedBy(count);
+          Value resCopy = res;
+          rewriter.modifyOpInPlace(
+              forOp, [&] { resCopy.replaceAllUsesWith(replacement); });
+          canonicalize = true;
+        }
+        continue;
+      }
 
       AddIOp addOp = yld.getDefiningOp<AddIOp>();
       if (!addOp)
@@ -414,6 +630,69 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
     }
 
     return success(canonicalize);
+  }
+};
+
+// A result whose iter arg the body never reads does not accumulate anything:
+// it is just the yielded value of the last iteration. When that value varies
+// with the loop only through the induction variable, the last one can be
+// computed outside, at the last induction variable the loop reaches -- or the
+// init, when the loop never runs.
+//
+// mfem walks a pointer this way: `TC *c = Cdata;` advanced with `c++` in an
+// inner loop, so the enclosing loop carries it while the inner loop's own copy
+// is dead. Nothing recognizes the enclosing loop as an induction until this
+// inner result is out of the way.
+struct ForOpFinalValueOfDeadIterArg : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp forOp,
+                                PatternRewriter &rewriter) const override {
+    auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+    Location loc = forOp.getLoc();
+    bool changed = false;
+
+    for (auto [init, iterarg, res, yld] :
+         llvm::zip(forOp.getInits(), forOp.getRegionIterArgs(),
+                   forOp.getResults(), yieldOp.getOperands())) {
+      if (!iterarg.use_empty() || res.use_empty())
+        continue;
+      SmallVector<Operation *> slice;
+      if (!collectLoopInvariantSlice(forOp, yld, slice,
+                                     /*allowInductionVar=*/true))
+        continue;
+
+      rewriter.setInsertionPoint(forOp);
+      Value lb = forOp.getLowerBound(), ub = forOp.getUpperBound(),
+            step = forOp.getStep();
+      // The last induction variable the loop reaches: lb +
+      // ((ub-lb-1)/step)*step.
+      Value one = arith::ConstantOp::create(
+          rewriter, loc, rewriter.getIntegerAttr(lb.getType(), 1));
+      Value span = SubIOp::create(rewriter, loc, ub, lb);
+      Value zero = arith::ConstantOp::create(
+          rewriter, loc, rewriter.getIntegerAttr(lb.getType(), 0));
+      Value clamped = MaxSIOp::create(rewriter, loc, span, zero);
+      Value back = SubIOp::create(rewriter, loc, clamped, one);
+      Value whole = MulIOp::create(
+          rewriter, loc, DivUIOp::create(rewriter, loc, back, step), step);
+      Value lastIV = AddIOp::create(rewriter, loc, lb, whole);
+
+      IRMapping map;
+      map.map(forOp.getInductionVar(), lastIV);
+      for (Operation *op : slice)
+        rewriter.clone(*op, map);
+      Value last = map.lookupOrDefault(yld);
+
+      Value ran = CmpIOp::create(rewriter, loc, CmpIPredicate::sgt, ub, lb);
+      Value replacement = SelectOp::create(rewriter, loc, ran, last, init);
+
+      Value resCopy = res;
+      rewriter.modifyOpInPlace(
+          forOp, [&] { resCopy.replaceAllUsesWith(replacement); });
+      changed = true;
+    }
+    return success(changed);
   }
 };
 
@@ -1155,6 +1434,13 @@ struct WhileToForHelper {
   }
 
   void initVariables() {
+    // One helper is asked about several comparisons in turn.  The induction
+    // variable and its increment are found together and are worth nothing
+    // apart: left behind from a comparison that was turned down, the variable
+    // reads as a detection that succeeded while the step it was found with is
+    // gone, and everything below reads the step.
+    indVar = nullptr;
+    addIOp = nullptr;
     step = nullptr;
     lb = nullptr;
     lb_addOne = false;
@@ -1241,8 +1527,17 @@ struct WhileToForHelper {
             auto beforeYield = cast<scf::ConditionOp>(
                 loop.getBefore().front().getTerminator());
             auto inductValue = beforeYield.getArgs()[ba3.getArgNumber()];
+            // The condition may pass a duplicate of the increment (clang
+            // often emits the addi twice); accept a structurally identical
+            // add of the same operands.
             if (inductValue != steppingVal) {
-              continue;
+              auto inductAdd = inductValue.getDefiningOp<AddIOp>();
+              if (!inductAdd || !((inductAdd.getLhs() == add.getLhs() &&
+                                   inductAdd.getRhs() == add.getRhs()) ||
+                                  (inductAdd.getLhs() == add.getRhs() &&
+                                   inductAdd.getRhs() == add.getLhs()))) {
+                continue;
+              }
             }
             arg = ba2;
           }
@@ -1480,6 +1775,40 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
         return rewriter.notifyMatchFailure(loop,
                                            "No legal and comparison found");
       }
+    } else if (auto ifOp = condOp.getCondition().getDefiningOp<scf::IfOp>()) {
+      // A condition of the form
+      //   %r:N = scf.if %c { yield .., %false, .. } else { yield .., %x, .. }
+      // is logically `!%c && %x`, and symmetrically `%c && %x` when it is the
+      // else branch which yields a constant false. Handle it like the `andi`
+      // case above, using the if's result itself as the extra condition. This
+      // is redundant with (but implied by) the comparison, and unlike %x it is
+      // available at the end of the before region.
+      if (ifOp.getElseRegion().empty()) {
+        return rewriter.notifyMatchFailure(loop, "If condition has no else");
+      }
+      unsigned idx = cast<OpResult>(condOp.getCondition()).getResultNumber();
+      bool thenFalse = matchPattern(ifOp.thenYield().getOperand(idx), m_Zero());
+      if (!thenFalse &&
+          !matchPattern(ifOp.elseYield().getOperand(idx), m_Zero())) {
+        return rewriter.notifyMatchFailure(
+            loop, "If condition does not short circuit to false");
+      }
+      helper.cmpIOp = ifOp.getCondition().getDefiningOp<CmpIOp>();
+      if (!helper.cmpIOp) {
+        return rewriter.notifyMatchFailure(loop, "No comparison found");
+      }
+      // If the then branch is the constant false one, the loop only continues
+      // when the if condition does not hold.
+      helper.cmpNegated = thenFalse;
+      lookThrough = condOp.getCondition();
+
+      if (!helper.computeLegality(rewriter, /*sizeCheck*/ true, lookThrough,
+                                  /*doWhile*/ true)) {
+        return rewriter.notifyMatchFailure(loop,
+                                           "No legal if comparison found");
+      }
+      assert(helper.lb);
+      assert(helper.ub);
     } else {
       return rewriter.notifyMatchFailure(loop, "No comparison found");
     }
@@ -1525,6 +1854,64 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
           doWhile = true;
           break;
         }
+      }
+    }
+
+    // With an extra condition the loop may also exit by exhausting the trip
+    // count. In that case the while still evaluates the before region one final
+    // time -- the evaluation whose comparison fails -- and it is that
+    // evaluation's condition args which become the loop results. That final
+    // evaluation is only observable through its side effects, which already
+    // force the extra iteration above, and through the loop results, so it is
+    // only needed here if the results are actually used. The after region stays
+    // guarded by the original bound, so it does not run an extra time.
+    if (lookThrough && !loop->use_empty())
+      doWhile = true;
+
+    // The same holds without an extra condition. A do-while's results are the
+    // condition args of that final evaluation -- the one whose comparison
+    // fails -- while the converted loop's results are snapshots from the last
+    // evaluation it runs. A used result is the same value either way only if
+    // its condition arg cannot change between one evaluation and the next: a
+    // value from outside the loop, or a passthrough of a slot the loop
+    // refills with itself. Anything else -- a value the before region
+    // computes, a permuted slot, an accumulator, even a slot advanced by a
+    // loop-invariant step -- observes the final evaluation and needs the
+    // extra iteration, pure or not. (An advancing slot looks recoverable in
+    // closed form, but nothing downstream is obliged to do so:
+    // ForOpInductionReplacement only rewrites a result whose post-conversion
+    // yield is addi(iterarg, step), and the conversion does not produce that
+    // shape -- counting on it returned one step short.)
+    if (!doWhile) {
+      auto afterYield =
+          cast<scf::YieldOp>(loop.getAfter().front().getTerminator());
+      auto definedOutside = [&](Value v) {
+        if (auto ba = dyn_cast<BlockArgument>(v))
+          return !loop->isAncestor(ba.getOwner()->getParentOp());
+        Operation *def = v.getDefiningOp();
+        return def && !loop->isAncestor(def);
+      };
+      // The after-region arg at position p carries before-arg `ba` iff the
+      // condition forwards `ba` in position p.
+      auto carriesSlot = [&](Value v, BlockArgument ba) {
+        auto aa = dyn_cast<BlockArgument>(v);
+        return aa && aa.getOwner() == &loop.getAfter().front() &&
+               condOp.getArgs()[aa.getArgNumber()] == ba;
+      };
+      for (auto [res, arg] : llvm::zip(loop.getResults(), condOp.getArgs())) {
+        if (res.use_empty())
+          continue;
+        if (definedOutside(arg))
+          continue;
+        if (auto ba = dyn_cast<BlockArgument>(arg)) {
+          if (ba.getOwner() == &loop.getBefore().front()) {
+            Value next = afterYield.getOperand(ba.getArgNumber());
+            if (carriesSlot(next, ba))
+              continue;
+          }
+        }
+        doWhile = true;
+        break;
       }
     }
 
@@ -1641,11 +2028,15 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
       SmallVector<Type> initTypes;
       for (auto T : loop.getInits())
         initTypes.push_back(T.getType());
-      Value cond =
-          arith::CmpIOp::create(rewriter, forloop.getLoc(),
-                                helper.negativeStep ? arith::CmpIPredicate::sgt
-                                                    : arith::CmpIPredicate::slt,
-                                forloop.getInductionVar(), helper.ub);
+      // The after region runs on every iteration but the extra one appended
+      // for the do-while. prepareFor negated a negative step, so the for
+      // always ascends and the extra iteration is always the one at the top:
+      // the original counter rides along as an iter arg either way. (sgt
+      // against the ub held for no iteration at all, so a descending
+      // do-while ran nothing but its before region.)
+      Value cond = arith::CmpIOp::create(rewriter, forloop.getLoc(),
+                                         arith::CmpIPredicate::slt,
+                                         forloop.getInductionVar(), helper.ub);
       if (lookThrough) {
         cond = AndIOp::create(rewriter, loop.getLoc(), cond, nextLookThrough);
       }
@@ -2226,7 +2617,12 @@ struct WhileLogicalNegation : public OpRewritePattern<WhileOp> {
           continue;
       }
 
-      if (!std::get<0>(pair).use_empty()) {
+      // Entering the after region means the whole conjunction held, so there
+      // every conjunct is true. Exiting only means the conjunction failed --
+      // at least one conjunct is false, with no say in which -- so the value
+      // a result leaves with is only known when the condition is a single
+      // conjunct.
+      if (condOps.size() == 1 && !std::get<0>(pair).use_empty()) {
         rewriter.modifyOpInPlace(op, [&] {
           rewriter.setInsertionPoint(op);
           auto truev =
@@ -2371,6 +2767,49 @@ struct RemoveWhileSelect : public OpRewritePattern<WhileOp> {
     rewriter.replaceOpWithNewOp<ConditionOp>(term, term.getCondition(),
                                              newYields);
     return success();
+  }
+};
+
+// Whether `v`, a value an iteration of `loop` carries into before-region
+// argument `i`, can only be that argument's initial value or the argument
+// itself: either one, a select between two such values, or an after-region
+// argument whose condition operand is one.
+static bool isInitOrSelf(Value v, WhileOp loop, unsigned i) {
+  if (v == loop.getInits()[i])
+    return true;
+  if (auto arg = dyn_cast<BlockArgument>(v)) {
+    if (arg.getOwner() == loop.getBeforeBody())
+      return arg.getArgNumber() == i;
+    if (arg.getOwner() == loop.getAfterBody())
+      return isInitOrSelf(loop.getConditionOp().getArgs()[arg.getArgNumber()],
+                          loop, i);
+    return false;
+  }
+  auto sel = v.getDefiningOp<arith::SelectOp>();
+  return sel && isInitOrSelf(sel.getTrueValue(), loop, i) &&
+         isInitOrSelf(sel.getFalseValue(), loop, i);
+}
+
+/// A loop-carried value that every iteration either keeps or resets to its
+/// initial value never changes: it is the initial value throughout. Clang
+/// leaves one such behind when it hoists a loop guard that re-reads a bound,
+/// e.g. MFEM's `for (qz < Q1D)` around MFEM_FOREACH_THREAD_DIRECT, and the
+/// loop it controls is then not recognized as counted.
+struct WhileInitOrSelfArg : public OpRewritePattern<WhileOp> {
+  using OpRewritePattern<WhileOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(WhileOp loop,
+                                PatternRewriter &rewriter) const override {
+    bool changed = false;
+    for (auto [i, arg] : llvm::enumerate(loop.getBeforeArguments())) {
+      Value init = loop.getInits()[i];
+      if (arg.use_empty() || arg.getType() != init.getType() ||
+          !isInitOrSelf(loop.getYieldOp().getOperand(i), loop, i))
+        continue;
+      rewriter.replaceAllUsesWith(arg, init);
+      changed = true;
+    }
+    return success(changed);
   }
 };
 
@@ -2818,6 +3257,141 @@ struct SelectTruncToTruncSelect : public OpRewritePattern<TruncIOp> {
     // Replace old extract with new select
     rewriter.replaceOp(op, newSelect);
 
+    return success();
+  }
+};
+
+// The do-while form of a halving loop: the whole body sits in the before
+// region, and the condition forwards i >> 1, continuing while it is nonzero.
+// The iteration space is logarithmic: k in [0, max(bitwidth - ctlz(start),
+// 1)) with i = start >> k, and the value forwarded out at the exit is always
+// zero. Rewriting to an scf.for gives the loop a linear induction variable
+// downstream analyses can reason about.
+struct DoWhileShiftToFor : public OpRewritePattern<WhileOp> {
+  using OpRewritePattern<WhileOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(WhileOp loop,
+                                PatternRewriter &rewriter) const override {
+    // The after region must be a pure passthrough: every yielded value is an
+    // after block argument, whose position names the condition operand it
+    // forwards. The order need not match the before arguments.
+    Block &after = loop.getAfter().front();
+    auto afterYield = cast<scf::YieldOp>(after.getTerminator());
+    for (Value o : afterYield.getOperands()) {
+      auto ba = dyn_cast<BlockArgument>(o);
+      if (!ba || ba.getOwner() != &after)
+        return failure();
+    }
+
+    auto condOp = loop.getConditionOp();
+    auto cmp = condOp.getCondition().getDefiningOp<CmpIOp>();
+    if (!cmp)
+      return failure();
+    if (!(cmp.getPredicate() == CmpIPredicate::ne ||
+          cmp.getPredicate() == CmpIPredicate::ugt) ||
+        !matchPattern(cmp.getRhs(), m_Zero()))
+      return failure();
+    auto shift = cmp.getLhs().getDefiningOp<ShRUIOp>();
+    if (!shift || !matchPattern(shift.getRhs(), m_One()))
+      return failure();
+    auto iv = dyn_cast<BlockArgument>(shift.getLhs());
+    if (!iv || iv.getOwner() != &loop.getBefore().front())
+      return failure();
+    // The induction variable is a before argument, but condition operands
+    // are indexed by the after arguments: the after yield translates between
+    // the two spaces.
+    unsigned beforeIvIdx = iv.getArgNumber();
+    unsigned afterIvIdx =
+        cast<BlockArgument>(afterYield.getOperand(beforeIvIdx)).getArgNumber();
+    if (condOp.getArgs()[afterIvIdx] != shift.getResult())
+      return failure();
+    // Every other result must be fed back into some before slot so its final
+    // value survives as a result of the for.
+    SmallVector<int> resultSlot(loop.getNumResults(), -1);
+    {
+      unsigned fi = 0;
+      for (auto [i, o] : llvm::enumerate(afterYield.getOperands())) {
+        if (i == beforeIvIdx)
+          continue;
+        unsigned resIdx = cast<BlockArgument>(o).getArgNumber();
+        if (resultSlot[resIdx] == -1)
+          resultSlot[resIdx] = fi;
+        fi++;
+      }
+    }
+    for (auto [resIdx, slot] : llvm::enumerate(resultSlot))
+      if (slot == -1 && resIdx != afterIvIdx)
+        return failure();
+
+    Location loc = loop.getLoc();
+    Value start = loop.getInits()[beforeIvIdx];
+    Type ivTy = iv.getType();
+    // An index variable has no fixed width: count in i64 instead, which the
+    // value-preserving cast zero-extends into, so the bit length comes out
+    // the same for any narrower lowering of index.
+    bool ivIsIndex = isa<IndexType>(ivTy);
+    Type lenTy = ivIsIndex ? (Type)rewriter.getI64Type() : ivTy;
+    unsigned width = lenTy.getIntOrFloatBitWidth();
+
+    // Trips: max(bitwidth - ctlz(start), 1); ctlz(0) is the bitwidth, so a
+    // zero start still runs the body once, matching the do-while.
+    Value cstart = start;
+    if (ivIsIndex)
+      cstart = arith::IndexCastUIOp::create(rewriter, loc, lenTy, start);
+    Value lz = math::CountLeadingZerosOp::create(rewriter, loc, cstart);
+    Value wC = ConstantIntOp::create(rewriter, loc, lenTy, width);
+    Value len = SubIOp::create(rewriter, loc, wC, lz);
+    Value oneC = ConstantIntOp::create(rewriter, loc, lenTy, 1);
+    Value trips = MaxUIOp::create(rewriter, loc, len, oneC);
+    Value ub = arith::IndexCastUIOp::create(rewriter, loc,
+                                            rewriter.getIndexType(), trips);
+    Value lb = ConstantIndexOp::create(rewriter, loc, 0);
+    Value step = ConstantIndexOp::create(rewriter, loc, 1);
+
+    SmallVector<Value> inits;
+    for (auto [i, init] : llvm::enumerate(loop.getInits()))
+      if (i != beforeIvIdx)
+        inits.push_back(init);
+
+    auto forOp = ForOp::create(rewriter, loc, lb, ub, step, inits);
+    // The builder only adds an implicit yield when there are no iter args;
+    // drop it so the cloned body can yield the carried values.
+    if (!forOp.getBody()->empty())
+      rewriter.eraseOp(&forOp.getBody()->back());
+    rewriter.setInsertionPointToStart(forOp.getBody());
+    Value k = forOp.getInductionVar();
+    if (!ivIsIndex)
+      k = arith::IndexCastUIOp::create(rewriter, loc, ivTy, k);
+    Value curIv = ShRUIOp::create(rewriter, loc, start, k);
+
+    IRMapping map;
+    unsigned fi = 0;
+    for (auto [i, arg] :
+         llvm::enumerate(loop.getBefore().front().getArguments())) {
+      if (i == beforeIvIdx)
+        map.map(arg, curIv);
+      else
+        map.map(arg, forOp.getRegionIterArgs()[fi++]);
+    }
+    for (Operation &op : loop.getBefore().front().without_terminator())
+      rewriter.clone(op, map);
+    SmallVector<Value> yields;
+    for (auto [i, o] : llvm::enumerate(afterYield.getOperands()))
+      if (i != beforeIvIdx)
+        yields.push_back(map.lookupOrDefault(
+            condOp.getArgs()[cast<BlockArgument>(o).getArgNumber()]));
+    scf::YieldOp::create(rewriter, loc, yields);
+
+    // At the exit the forwarded shift result is zero; other results carry.
+    rewriter.setInsertionPoint(loop);
+    Value exitZero = ivIsIndex
+                         ? (Value)ConstantIndexOp::create(rewriter, loc, 0)
+                         : (Value)ConstantIntOp::create(rewriter, loc, ivTy, 0);
+    SmallVector<Value> repl;
+    for (auto [i, res] : llvm::enumerate(loop.getResults()))
+      repl.push_back(i == afterIvIdx ? exitZero
+                                     : forOp.getResult(resultSlot[i]));
+    rewriter.replaceOp(loop, repl);
     return success();
   }
 };
@@ -3403,11 +3977,29 @@ struct ForLoopApplyEnzymeAttributes
       return success();
     }
 
+    // The calls whose attribute has been read out and put on the loop, which
+    // are the ones there is no longer anything to say through.
+    SmallVector<Operation *> read;
+    unsigned called = 0;
+
     for (auto use : *uses) {
       auto user = use.getUser();
       assert(isa<LLVM::CallOp>(user));
+      called++;
 
-      bool enable = matchPattern(user->getOperand(0), m_One());
+      APInt ckptType;
+      if (!matchPattern(user->getOperand(0), m_ConstantInt(&ckptType))) {
+        user->emitWarning() << "dynamic checkpointing type is not supported";
+        continue;
+      }
+
+      bool enable = ckptType.getSExtValue() >= 1,
+           enableBinomial = ckptType.getSExtValue() == 2, hasPeriod = false;
+
+      APInt checkpointingPeriod;
+      if (user->getNumOperands() >= 2)
+        hasPeriod = matchPattern(user->getOperand(1),
+                                 m_ConstantInt(&checkpointingPeriod));
 
       Operation *loop = user->getParentOp();
       while (loop && !isa<scf::ForOp, scf::WhileOp>(loop)) {
@@ -3415,16 +4007,65 @@ struct ForLoopApplyEnzymeAttributes
       }
 
       if (loop && isa<scf::ForOp, scf::WhileOp>(loop)) {
-        loop->setAttr(isCheckpointingAttr ? "enzyme_enable_checkpointing"
-                                          : "enzyme_enable_mincut",
-                      rewriter.getBoolAttr(enable));
+        if (isMincutAttr) {
+          if (!enable)
+            loop->setAttr("enzyme.disable_mincut", rewriter.getUnitAttr());
+        } else {
+          assert(isCheckpointingAttr);
+          loop->setAttr("enzyme.enable_checkpointing",
+                        rewriter.getBoolAttr(enable));
+
+          if (enableBinomial) {
+            loop->setAttr("enzyme.binomial_checkpointing",
+                          rewriter.getUnitAttr());
+          }
+          if (hasPeriod && !checkpointingPeriod.isAllOnes()) {
+            loop->setAttr("enzyme.checkpoint_period",
+                          rewriter.getIntegerAttr(rewriter.getI64Type(),
+                                                  checkpointingPeriod));
+          }
+        }
       }
 
-      rewriter.eraseOp(user);
+      read.push_back(user);
     }
 
-    rewriter.eraseOp(func);
+    if (read.empty())
+      return failure();
 
+    for (auto *user : read)
+      rewriter.eraseOp(user);
+
+    // A call the attribute could not be read out of is still a call, and what
+    // it names has to stay for it to name anything.
+    if (read.size() == called)
+      rewriter.eraseOp(func);
+
+    return success();
+  }
+};
+
+// An scf.while whose condition is false never enters its after region: it is
+// one execution of its before region, whose condition args are its results.
+struct InlineNeverLoopingWhile : public OpRewritePattern<WhileOp> {
+  using OpRewritePattern<WhileOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(WhileOp op,
+                                PatternRewriter &rewriter) const override {
+    scf::ConditionOp condOp = op.getConditionOp();
+    if (!matchPattern(condOp.getCondition(), m_Zero()))
+      return failure();
+    Block *before = op.getBeforeBody();
+    SmallVector<Value> results;
+    for (Value arg : condOp.getArgs()) {
+      if (auto blockArg = dyn_cast<BlockArgument>(arg);
+          blockArg && blockArg.getOwner() == before)
+        arg = op.getInits()[blockArg.getArgNumber()];
+      results.push_back(arg);
+    }
+    rewriter.eraseOp(condOp);
+    rewriter.inlineBlockBefore(before, op, op.getInits());
+    rewriter.replaceOp(op, results);
     return success();
   }
 };
@@ -3432,18 +4073,24 @@ struct ForLoopApplyEnzymeAttributes
 } // namespace enzyme
 } // namespace mlir
 
+void mlir::enzyme::populateInlineNeverLoopingWhilePattern(
+    RewritePatternSet &patterns) {
+  patterns.add<InlineNeverLoopingWhile>(patterns.getContext());
+}
+
 void CanonicalizeFor::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   populateSelectExtractPatterns(rpl);
   rpl.add<IfYieldMovementPattern, truncProp, ForOpInductionReplacement,
           RemoveUnusedForResults, RemoveUnusedArgs, MoveWhileToFor,
-          RemoveWhileSelect, SelectTruncToTruncSelect, MaxSimplify,
-          ForBoundUnSwitch, SelectI1Simplify, RemoveInductionVarRelated,
+          RemoveWhileSelect, WhileInitOrSelfArg, SelectTruncToTruncSelect,
+          MaxSimplify, ForBoundUnSwitch, SelectI1Simplify,
+          RemoveInductionVarRelated, ForOpFinalValueOfDeadIterArg,
           RotateWhileAnd, MoveWhileDown, MoveWhileDown2,
 
           ReplaceRedundantArgs,
 
-          WhileShiftToInduction,
+          WhileShiftToInduction, DoWhileShiftToFor,
 
           ForBreakAddUpgrade, RemoveUnusedResults,
 
@@ -3453,9 +4100,11 @@ void CanonicalizeFor::runOnOperation() {
           // [and should fix] MoveWhileDown3,
           MoveWhileInvariantIfResult, WhileLogicalNegation, SubToAdd,
           WhileCmpOffset, RemoveUnusedCondVar, ReturnSq,
-          MoveSideEffectFreeWhile>(getOperation()->getContext());
+          MoveSideEffectFreeWhile, InlineNeverLoopingWhile>(
+      getOperation()->getContext());
   //    WhileLICM,
   GreedyRewriteConfig config;
+  config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
   config.enableFolding();
   config.setMaxIterations(247);
   if (failed(applyPatternsGreedily(getOperation(), std::move(rpl), config))) {

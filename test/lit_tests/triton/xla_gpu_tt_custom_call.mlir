@@ -1,3 +1,4 @@
+// REQUIRES: triton
 // RUN: enzymexlamlir-opt %s --raise-triton-custom-call --canonicalize | FileCheck %s
 
 // XFAIL: *

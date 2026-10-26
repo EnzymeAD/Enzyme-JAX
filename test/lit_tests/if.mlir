@@ -48,6 +48,19 @@ module {
     %0 = stablehlo.add %result#0, %result#1 : tensor<i32>
     return %0 : tensor<i32>
   }
+
+  func.func @slice_if_multi_result(%x: tensor<2xf64>, %t: tensor<f64>, %pred: tensor<i1>) -> (tensor<f64>, tensor<1xf64>) {
+    %res:2 = "stablehlo.if"(%pred) ({
+      "stablehlo.return"(%t, %x) : (tensor<f64>, tensor<2xf64>) -> ()
+    }, {
+      %nt = stablehlo.negate %t : tensor<f64>
+      %nx = stablehlo.negate %x : tensor<2xf64>
+      "stablehlo.return"(%nt, %nx) : (tensor<f64>, tensor<2xf64>) -> ()
+    }) : (tensor<i1>) -> (tensor<f64>, tensor<2xf64>)
+    %early = stablehlo.add %res#0, %t : tensor<f64>
+    %sliced = stablehlo.slice %res#1 [1:2] : (tensor<2xf64>) -> tensor<1xf64>
+    return %early, %sliced : tensor<f64>, tensor<1xf64>
+  }
 }
 
 // CHECK:  func.func @f(%arg0: tensor<i32>, %arg1: tensor<i32>) -> tensor<i32> {
@@ -74,4 +87,17 @@ module {
 // CHECK-NEXT:    }) : (tensor<i1>) -> tensor<i32>
 // CHECK-NEXT:    %2 = stablehlo.add %0, %1 : tensor<i32>
 // CHECK-NEXT:    return %2 : tensor<i32>
+// CHECK-NEXT:  }
+
+// CHECK:  func.func @slice_if_multi_result(%arg0: tensor<2xf64>, %arg1: tensor<f64>, %arg2: tensor<i1>) -> (tensor<f64>, tensor<1xf64>) {
+// CHECK-NEXT:    %0 = stablehlo.slice %arg0 [1:2] : (tensor<2xf64>) -> tensor<1xf64>
+// CHECK-NEXT:    %1:2 = "stablehlo.if"(%arg2) ({
+// CHECK-NEXT:      stablehlo.return %arg1, %0 : tensor<f64>, tensor<1xf64>
+// CHECK-NEXT:    }, {
+// CHECK-NEXT:      %3 = stablehlo.negate %arg1 : tensor<f64>
+// CHECK-NEXT:      %4 = stablehlo.negate %0 : tensor<1xf64>
+// CHECK-NEXT:      stablehlo.return %3, %4 : tensor<f64>, tensor<1xf64>
+// CHECK-NEXT:    }) : (tensor<i1>) -> (tensor<f64>, tensor<1xf64>)
+// CHECK-NEXT:    %2 = stablehlo.add %1#0, %arg1 : tensor<f64>
+// CHECK-NEXT:    return %2, %1#1 : tensor<f64>, tensor<1xf64>
 // CHECK-NEXT:  }

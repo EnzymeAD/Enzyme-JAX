@@ -52,3 +52,17 @@ func.func @expm1_add2(%arg0: tensor<f64>) -> tensor<f64> {
 // CHECK-NEXT:    %0 = stablehlo.exponential_minus_one %arg0 : tensor<f64>
 // CHECK-NEXT:    return %0 : tensor<f64>
 // CHECK-NEXT: }
+
+func.func @expm1_add_complex_no_crash(%arg0: tensor<complex<f32>>) -> tensor<complex<f32>> {
+    %0 = stablehlo.exponential %arg0 : tensor<complex<f32>>
+    %cst = stablehlo.constant dense<(-1.0, 0.0)> : tensor<complex<f32>>
+    %1 = stablehlo.add %0, %cst : tensor<complex<f32>>
+    return %1 : tensor<complex<f32>>
+}
+
+// CHECK: func.func @expm1_add_complex_no_crash(%arg0: tensor<complex<f32>>) -> tensor<complex<f32>> {
+// CHECK-NEXT:    %cst = stablehlo.constant dense<(-1.000000e+00,0.000000e+00)> : tensor<complex<f32>>
+// CHECK-NEXT:    %0 = stablehlo.exponential %arg0 : tensor<complex<f32>>
+// CHECK-NEXT:    %1 = stablehlo.add %0, %cst : tensor<complex<f32>>
+// CHECK-NEXT:    return %1 : tensor<complex<f32>>
+// CHECK-NEXT: }

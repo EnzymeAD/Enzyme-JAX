@@ -7,7 +7,7 @@ func.func @custom_call(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>) {
 }
 
 func.func @main(%arg0: tensor<2x3x64x64xf32>) -> (tensor<2x3x64x64xf32>) {
-    %0 = enzyme.batch @custom_call(%arg0) {batch_shape = array<i64: 2, 3>} : (tensor<2x3x64x64xf32>) -> tensor<2x3x64x64xf32>
+    %0 = enzyme.batch @custom_call(%arg0) <{batch_shape = array<i64: 2, 3>}> : (tensor<2x3x64x64xf32>) -> tensor<2x3x64x64xf32>
     return %0 : tensor<2x3x64x64xf32>
 }
 

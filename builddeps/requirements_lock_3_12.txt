@@ -405,20 +405,18 @@ einops==0.8.1 \
     --hash=sha256:919387eb55330f5757c6bea9165c5ff5cfe63a642682ea788a6d472576d81737 \
     --hash=sha256:de5d960a7a761225532e0f1959e5315ebeafc0cd43394732f103ca44b9837e84
     # via jax-md
-etils[epath]==1.13.0 \
+etils[epath, epy]==1.13.0 \
     --hash=sha256:a5b60c71f95bcd2d43d4e9fb3dc3879120c1f60472bb5ce19f7a860b1d44f607 \
     --hash=sha256:d9cd4f40fbe77ad6613b7348a18132cc511237b6c076dbb89105c0b520a4c6bb
     # via
     #   orbax-checkpoint
     #   xprof
-etils[epy]==1.13.0 \
-    --hash=sha256:a5b60c71f95bcd2d43d4e9fb3dc3879120c1f60472bb5ce19f7a860b1d44f607 \
-    --hash=sha256:d9cd4f40fbe77ad6613b7348a18132cc511237b6c076dbb89105c0b520a4c6bb
-    # via orbax-checkpoint
 flax==0.12.2 \
     --hash=sha256:912fdd8a7c623ec8b2694b28d2827608e7fc82a3a6f8fff17ec5038f2bca66f4 \
     --hash=sha256:e9723b0881e571abe61885bb8770f53fdb3c383b6b3f5a923dcf6f1e9a687905
-    # via jax-md
+    # via
+    #   jax-md
+    #   jaxpi
 flexcache==0.3 \
     --hash=sha256:18743bd5a0621bfe2cf8d519e4c3bfdf57a269c15d1ced3fb4b64e0ff4600656 \
     --hash=sha256:d43c9fea82336af6e0115e308d9d33a185390b8346a017564611f1466dcd2e32
@@ -901,35 +899,27 @@ idna==3.11 \
 importlib-resources==6.5.2 \
     --hash=sha256:185f87adef5bcc288449d98fb4fba07cea78bc036455dd44c5fc4a2fe78fed2c \
     --hash=sha256:789cfdc3ed28c78b67a06acb8126751ced69a3d5f79c095a98298cd8a760ccec
-    # via
-    #   -r builddeps/test-requirements.txt
-    #   etils
+    # via etils
 jaraco-functools==4.4.0 \
     --hash=sha256:9eec1e36f45c818d9bf307c8948eb03b2b56cd44087b3cdc989abca1f20b9176 \
     --hash=sha256:da21933b0417b89515562656547a77b4931f98176eb173644c0d35032a33d6bb
     # via cheroot
-jax==0.8.2 \
-    --hash=sha256:1a685ded06a8223a7b52e45e668e406049dbbead02873f2b5a4d881ba7b421ae \
-    --hash=sha256:d0478c5dc74406441efcd25731166a65ee782f13c352fa72dc7d734351909355
-    # via
-    #   -r builddeps/requirements.in
-    #   -r builddeps/test-requirements.txt
-    #   chex
-    #   dinosaur
-    #   e3nn-jax
-    #   flax
-    #   jax-md
-    #   jraph
-    #   neuralgcm
-    #   optax
-    #   orbax-checkpoint
-    #   tree-math
 jax[cuda12]==0.8.2 \
     --hash=sha256:1a685ded06a8223a7b52e45e668e406049dbbead02873f2b5a4d881ba7b421ae \
     --hash=sha256:d0478c5dc74406441efcd25731166a65ee782f13c352fa72dc7d734351909355
     # via
     #   -r builddeps/requirements.in
-    #   -r builddeps/test-requirements.txt
+    #   chex
+    #   dinosaur
+    #   e3nn-jax
+    #   flax
+    #   jax-md
+    #   jaxpi
+    #   jraph
+    #   neuralgcm
+    #   optax
+    #   orbax-checkpoint
+    #   tree-math
 jax-cuda12-pjrt==0.8.2 \
     --hash=sha256:717a1b196a642409ce195ddf031c20bbeadcc886f55e49a1d3f4927373aeedae \
     --hash=sha256:e3bab41ca7c48e4163db9e7efd271b3aa85f0fe45f5ed0708d6bbed93a59f977
@@ -977,7 +967,6 @@ jaxlib==0.8.2 \
     --hash=sha256:f472cc72e3058e50b5f0230b236d5a1183bf6c3d5423d2a52eff07bcf34908de
     # via
     #   -r builddeps/requirements.in
-    #   -r builddeps/test-requirements.txt
     #   chex
     #   dinosaur
     #   e3nn-jax
@@ -986,6 +975,9 @@ jaxlib==0.8.2 \
     #   jraph
     #   neuralgcm
     #   optax
+jaxpi @ https://github.com/vimarsh6739/jaxpi/archive/6c22cfa9ac17eac4993aebf454b3af5d074fe430.tar.gz \
+    --hash=sha256:3d0a0e003718c18d8ed588da053cefe467f86b0245461f7131dc422638ff9b32
+    # via -r builddeps/test-requirements.txt
 jmp==0.0.4 \
     --hash=sha256:5dfeb0fd7c7a9f72a70fff0aab9d0cbfae32a809c02f4037ff3485ceb33e1730 \
     --hash=sha256:6aa7adbddf2bd574b28c7faf6e81a735eb11f53386447896909c6968dc36807d
@@ -1647,6 +1639,7 @@ numpy==2.1.3 \
     #   jax
     #   jax-md
     #   jaxlib
+    #   jaxpi
     #   jmp
     #   jraph
     #   matplotlib
@@ -1747,6 +1740,7 @@ optax==0.2.6 \
     # via
     #   flax
     #   jax-md
+    #   jaxpi
     #   neuralgcm
 orbax-checkpoint==0.11.31 \
     --hash=sha256:b00e39cd61cbd6c7c78b091ccac0ed1bbf3cf7788e761618e7070761195bfcc0 \

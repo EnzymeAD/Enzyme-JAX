@@ -28,10 +28,10 @@ module {
 }
 
 // CHECK: func.func @test_fail(%arg0: tensor<2xf32>) -> tensor<2xf32> {
-// CHECK-NEXT:   %cst = stablehlo.constant {enzymexla.complex_is_purely_imaginary = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<[(2.000000e+00,1.000000e+00), (0.000000e+00,2.000000e+00)]> : tensor<2xcomplex<f32>>
+// CHECK-NEXT:   %cst = stablehlo.constant {enzymexla.complex_is_purely_imaginary = [#enzymexla.guaranteed<NOTGUARANTEED>]} dense<[(2.000000e+00,1.000000e+00), (0.000000e+00,2.000000e+00)]> : tensor<2xcomplex<f32>>
 // CHECK-NEXT:   %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<2xf32>
-// CHECK-NEXT:   %0 = stablehlo.complex %cst_0, %arg0 {enzymexla.complex_is_purely_imaginary = [#enzymexla<guaranteed GUARANTEED>], enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xcomplex<f32>>
-// CHECK-NEXT:   %1 = stablehlo.add %0, %cst {enzymexla.complex_is_purely_imaginary = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xcomplex<f32>>
+// CHECK-NEXT:   %0 = stablehlo.complex %cst_0, %arg0 {enzymexla.complex_is_purely_imaginary = [#enzymexla.guaranteed<GUARANTEED>], enzymexla.complex_is_purely_real = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xcomplex<f32>>
+// CHECK-NEXT:   %1 = stablehlo.add %0, %cst {enzymexla.complex_is_purely_imaginary = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xcomplex<f32>>
 // CHECK-NEXT:   %2 = stablehlo.real %1 : (tensor<2xcomplex<f32>>) -> tensor<2xf32>
 // CHECK-NEXT:   return %2 : tensor<2xf32>
 // CHECK-NEXT: }

@@ -72,3 +72,21 @@ module {
 // CHECK-NEXT:    %3 = stablehlo.slice %2 [0:1, 0:42, 0:48] : (tensor<1x42x48xf64>) -> tensor<1x42x48xf64>
 // CHECK-NEXT:    return %3 : tensor<1x42x48xf64>
 // CHECK-NEXT:  }
+
+// -----
+
+module {
+  func.func @disjoint(%in: tensor<15x14x14xf64>, %update: tensor<1x8x8xf64>) -> tensor<3x8x8xf64> {
+    %c7 = stablehlo.constant dense<7> : tensor<i32>
+    %c3 = stablehlo.constant dense<3> : tensor<i32>
+    %dus = stablehlo.dynamic_update_slice %in, %update, %c7, %c3, %c3 : (tensor<15x14x14xf64>, tensor<1x8x8xf64>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<15x14x14xf64>
+    %s = stablehlo.slice %dus [9:12, 3:11, 3:11] : (tensor<15x14x14xf64>) -> tensor<3x8x8xf64>
+    return %s : tensor<3x8x8xf64>
+  }
+}
+
+// CHECK:  func.func @disjoint(%arg0: tensor<15x14x14xf64>, %arg1: tensor<1x8x8xf64>) -> tensor<3x8x8xf64> {
+// CHECK:    %[[DUS:.+]] = stablehlo.dynamic_update_slice %arg0, %arg1
+// CHECK-NEXT:    %[[S:.+]] = stablehlo.slice %[[DUS]] [9:12, 3:11, 3:11] : (tensor<15x14x14xf64>) -> tensor<3x8x8xf64>
+// CHECK-NEXT:    return %[[S]] : tensor<3x8x8xf64>
+// CHECK-NEXT:  }

@@ -25,6 +25,10 @@ struct SelectExtractElementToExtractElementSelect
     auto idx = op.getPosition();
 
     // Create new extract operations
+    if (isa<VectorType>(cond.getType())) {
+      cond = LLVM::ExtractElementOp::create(rewriter, op.getLoc(), cond, idx);
+    }
+
     auto aExtract =
         LLVM::ExtractElementOp::create(rewriter, op.getLoc(), a, idx);
     auto bExtract =
@@ -59,6 +63,10 @@ struct SelectExtractValueToExtractValueSelect
     auto idx = op.getPosition();
 
     // Create new extract operations
+    if (isa<VectorType, LLVM::LLVMArrayType, TupleType>(cond.getType())) {
+      cond = LLVM::ExtractValueOp::create(rewriter, op.getLoc(), cond, idx);
+    }
+
     auto aExtract = LLVM::ExtractValueOp::create(rewriter, op.getLoc(), a, idx);
     auto bExtract = LLVM::ExtractValueOp::create(rewriter, op.getLoc(), b, idx);
 

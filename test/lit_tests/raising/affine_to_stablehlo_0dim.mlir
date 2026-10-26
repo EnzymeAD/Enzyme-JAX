@@ -8,21 +8,21 @@ module @"reactant_run!" attributes {mhlo.num_partitions = 1 : i64, mhlo.num_repl
     affine.parallel (%arg3, %arg4, %arg5) = (0, 0, 0) to (4, 16, 16) {
       %0 = arith.index_castui %arg3 : index to i64 
       %1 = arith.sitofp %0 : i64 to f64 
-      %2 = arith.mulf %1, %cst {fastmathFlags = #llvm.fastmath<none>} : f64 
-      %3 = arith.mulf %1, %cst_0 {fastmathFlags = #llvm.fastmath<none>} : f64 
+      %2 = arith.mulf %1, %cst : f64 
+      %3 = arith.mulf %1, %cst_0 : f64 
       %4 = math.absf %2 : f64 
-      %5 = arith.cmpf olt, %cst_1, %4 {fastmathFlags = #llvm.fastmath<none>} : f64 
+      %5 = arith.cmpf olt, %cst_1, %4 : f64 
       %6 = arith.select %5, %2, %cst_1 : f64 
       %7 = arith.select %5, %cst_1, %2 : f64 
-      %8 = arith.addf %6, %7 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %9 = arith.subf %6, %8 {fastmathFlags = #llvm.fastmath<none>} : f64 
-      %10 = arith.addf %7, %9 {fastmathFlags = #llvm.fastmath<none>} : f64 
-      %11 = arith.addf %3, %10 {fastmathFlags = #llvm.fastmath<none>} : f64 
-      %12 = arith.addf %8, %11 {fastmathFlags = #llvm.fastmath<none>} : f64 
+      %8 = arith.addf %6, %7 : f64
+      %9 = arith.subf %6, %8 : f64 
+      %10 = arith.addf %7, %9 : f64 
+      %11 = arith.addf %3, %10 : f64 
+      %12 = arith.addf %8, %11 : f64 
       %13 = affine.load %arg1[0, %arg4 + 7, %arg5 + 7] : memref<1x30x30xf64, 1> 
-      %14 = arith.cmpf ole, %12, %13 {fastmathFlags = #llvm.fastmath<none>} : f64 
+      %14 = arith.cmpf ole, %12, %13 : f64 
       %15 = affine.load %arg1[0, %arg4 + 7, %arg5 + 6] : memref<1x30x30xf64, 1> 
-      %16 = arith.cmpf ole, %12, %15 {fastmathFlags = #llvm.fastmath<none>} : f64 
+      %16 = arith.cmpf ole, %12, %15 : f64 
       %17 = arith.ori %14, %16 : i1 
       %18 = affine.load %arg0[%arg3 + 7, %arg4 + 7, %arg5 + 7] : memref<18x30x30xf64, 1> 
       %19 = scf.if %17 -> (f64) {

@@ -6,8 +6,7 @@ module attributes {gpu.container_module} {
     %c1 = arith.constant 1 : index
     %c1_i64 = arith.constant 1 : i64
     %stream = llvm.inttoptr %c1_i64 : i64 to !llvm.ptr
-    %token = "enzymexla.stream2token"(%stream) : (!llvm.ptr) -> !gpu.async.token
-    gpu.launch_func [%token] @test_module::@test_kernel blocks in (%c1, %c1, %c1) threads in (%c32, %c1, %c1) args(%arg0 : !llvm.ptr)
+    gpu.launch_func <%stream : !llvm.ptr> @test_module::@test_kernel blocks in (%c1, %c1, %c1) threads in (%c32, %c1, %c1) args(%arg0 : !llvm.ptr)
     llvm.return
   }
 

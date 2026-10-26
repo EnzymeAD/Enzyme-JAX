@@ -41,6 +41,12 @@ void addNoNanDivSimplify(RewritePatternSet &patterns,
 void addNoNanZeroBasePowSimplify(RewritePatternSet &patterns,
                                  bool allowOnFloatingPointMath,
                                  MLIRContext &context, PatternBenefit benefit);
+void addNoNanCompareAbs(RewritePatternSet &patterns,
+                        bool allowOnFloatingPointMath, MLIRContext &context,
+                        PatternBenefit benefit);
+void addAbsOfExpSimplify(RewritePatternSet &patterns,
+                         bool allowOnFloatingPointMath, MLIRContext &context,
+                         PatternBenefit benefit);
 void addIotaSimplify(RewritePatternSet &patterns, int64_t maxConstantExpansion,
                      MLIRContext &context, PatternBenefit benefit);
 void addRecognizeFromConstant(RewritePatternSet &patterns, int64_t minFoldSize,
@@ -61,6 +67,8 @@ void addWhileSimplify(RewritePatternSet &patterns, bool hoist_all,
                       MLIRContext &context, PatternBenefit benefit);
 void addWhileLICM(RewritePatternSet &patterns, bool hoist_all,
                   MLIRContext &context, PatternBenefit benefit);
+void addLoopUnswitch(RewritePatternSet &patterns, int64_t maxOpsOutside,
+                     MLIRContext &context, PatternBenefit benefit);
 void addSliceLICM(RewritePatternSet &patterns, bool single_user,
                   MLIRContext &context, PatternBenefit benefit);
 void addDotGeneralLICM(RewritePatternSet &patterns, bool single_user,
@@ -111,6 +119,9 @@ void addConcatenateOpCanon(RewritePatternSet &patterns,
                            PatternBenefit benefit);
 void addTransposeElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                              MLIRContext &context, PatternBenefit benefit);
+void addTransposeElementwiseTranspose(RewritePatternSet &patterns,
+                                      bool allowPartial, MLIRContext &context,
+                                      PatternBenefit benefit);
 void addTransposeLikeBroadcastElementwise(RewritePatternSet &patterns,
                                           bool onlySingleUser,
                                           MLIRContext &context,
