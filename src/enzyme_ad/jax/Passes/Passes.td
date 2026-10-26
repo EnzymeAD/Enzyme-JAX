@@ -851,18 +851,8 @@ def RaiseTritonCustomCallPass : Pass<"raise-triton-custom-call"> {
 def LowerJITPass : Pass<"lower-jit"> {
   let summary = "Lower jit call to custom call";
   let dependentDialects = [
-    "stablehlo::StablehloDialect", 
-    "gpu::GPUDialect", 
-    "func::FuncDialect",
-    "math::MathDialect", 
-    "memref::MemRefDialect", 
-    "scf::SCFDialect",
-    "vector::VectorDialect", 
-    "nvgpu::NVGPUDialect", 
-    "NVVM::NVVMDialect",
-    "LLVM::LLVMDialect", 
-    "arith::ArithDialect", 
-    "tensor::TensorDialect"
+    "stablehlo::StablehloDialect",
+    "LLVM::LLVMDialect"
   ];
 
   let options = [
@@ -872,18 +862,6 @@ def LowerJITPass : Pass<"lower-jit"> {
         /*type=*/"bool",
         /*default=*/"true",
         /*description=*/"Whether to jit the kernel">,
-    Option<
-        /*C++ variable name=*/"compileLaunch",
-        /*CLI argument=*/"compileLaunch",
-        /*type=*/"bool",
-        /*default=*/"true",
-        /*description=*/"Whether to jit the host code">,
-    Option<
-        /*C++ variable name=*/"openmp",
-        /*CLI argument=*/"openmp",
-        /*type=*/"bool",
-        /*default=*/"true",
-        /*description=*/"whether to use openmp for lowering">,
     Option<
         /*C++ variable name=*/"dump_final_module",
         /*CLI argument=*/"dump_final_module",

@@ -9,7 +9,6 @@
 // This file implements a pass to print the MLIR module
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -17,25 +16,16 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
-#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
-#include "mlir/Pass/PassManager.h"
 #include "llvm/Support/raw_ostream.h"
-
-#include "mlir/Dialect/Math/IR/Math.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
-#include "mlir/Dialect/Vector/IR/VectorOps.h"
 
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/Core.h"
@@ -49,19 +39,6 @@
 #include "llvm/ExecutionEngine/Orc/TargetProcess/RegisterEHFrames.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/ExecutionEngine/SectionMemoryManager.h"
-
-#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
-#include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/GPU/IR/GPUDialect.h"
-#include "mlir/Dialect/GPU/Transforms/Passes.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Pass/PassManager.h"
-#include "mlir/Pass/PassOptions.h"
-#include "mlir/Transforms/Passes.h"
-
-#include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
-#include "mlir/Conversion/SCFToOpenMP/SCFToOpenMP.h"
 
 #include "mlir/Target/LLVMIR/Export.h"
 
@@ -84,10 +61,6 @@ using namespace enzymexla;
 using namespace stablehlo;
 
 namespace {
-
-void buildLowerToCPUPassPipeline(OpPassManager &pm) {
-  pm.addPass(createConvertPolygeistToLLVM());
-}
 
 gpu::ObjectAttr getSelectedObject(gpu::BinaryOp op) {
   ArrayRef<Attribute> objects = op.getObjectsAttr().getValue();
@@ -354,30 +327,17 @@ static LogicalResult replaceGetStreamOpsWithStreamArg(mlir::ModuleOp submod) {
 }
 
 CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
-                     FunctionOpInterface op, bool jit, bool openmp,
-                     bool returnPtr, bool dump_final_module, bool &usesStream) {
+                     FunctionOpInterface op, bool jit, bool returnPtr,
+                     bool dump_final_module, bool &usesStream) {
+  if (!isa<LLVM::LLVMFuncOp>(op)) {
+    op.emitError("jitted function must be lowered to llvm.func (e.g. by "
+                 "convert-polygeist-to-llvm) before lower-jit");
+    return {};
+  }
 
   OpBuilder builder(op);
 
   auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
-
-  FunctionType gpuTy0 = dyn_cast<FunctionType>(op.getFunctionType());
-  if (!gpuTy0) {
-    if (auto lty = dyn_cast<LLVM::LLVMFunctionType>(op.getFunctionType())) {
-      gpuTy0 = builder.getFunctionType(lty.getParams(), {});
-    } else {
-      op.emitError(
-          "Require target operand to have functiontype or llvmfunctiontype");
-      return {};
-    }
-  }
-  SmallVector<Type, 1> newParams;
-  for (Type p : gpuTy0.getInputs()) {
-    if (auto AT = dyn_cast<LLVM::LLVMArrayType>(p)) {
-      p = AT.getElementType();
-    }
-    newParams.push_back(p);
-  }
 
   auto parentModule = op->getParentOfType<ModuleOp>();
   auto submod = ModuleOp::create(builder, loc);
@@ -462,14 +422,12 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
   SmallVector<mlir::Type, 2> intys = {ptrty};
   if (usesStream)
     intys.push_back(ptrty);
-  SmallVector<mlir::Type> rettys;
-  if (returnPtr) {
-    rettys.push_back(ptrty);
-  }
-  FunctionType calleeType = builder.getFunctionType(intys, rettys);
-  auto func = func::FuncOp::create(builder, loc, "entry", calleeType);
+  Type retty =
+      returnPtr ? Type(ptrty) : LLVM::LLVMVoidType::get(op.getContext());
+  auto func = LLVM::LLVMFuncOp::create(
+      builder, loc, "entry", LLVM::LLVMFunctionType::get(retty, intys));
 
-  auto &entryBlock = *func.addEntryBlock();
+  auto &entryBlock = *func.addEntryBlock(builder);
   builder.setInsertionPointToStart(&entryBlock);
 
   mlir::Value buffers = entryBlock.getArgument(0);
@@ -483,10 +441,6 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
     auto argTy = arg.getType();
     if (auto AT = dyn_cast<LLVM::LLVMArrayType>(argTy)) {
       argTy = AT.getElementType();
-    }
-    if (auto AT = dyn_cast<MemRefType>(argTy)) {
-      argTy =
-          LLVM::LLVMPointerType::get(AT.getContext(), AT.getMemorySpaceAsInt());
     }
     auto ld = LLVM::LoadOp::create(builder, loc, argTy, gep);
     arguments.push_back(ld);
@@ -504,11 +458,6 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
                                            oldarg.getType(), ud, newval, c0);
     }
 
-    if (auto AT = dyn_cast<MemRefType>(oldarg.getType())) {
-      newval = enzymexla::Pointer2MemrefOp::create(builder, newarg.getLoc(),
-                                                   oldarg.getType(), newval);
-    }
-
     map.map(oldarg, newval);
   }
 
@@ -520,15 +469,15 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
 
   second->erase();
 
-  func.getBody().walk([](LLVM::ReturnOp op) {
+  // Reaching an unreachable (e.g. after a device `exit`) ends the call.
+  func.getBody().walk([&](LLVM::UnreachableOp op) {
     OpBuilder rewriter(op);
-    mlir::func::ReturnOp::create(rewriter, op.getLoc());
-    op.erase();
-  });
-
-  func.getBody().walk([](LLVM::UnreachableOp op) {
-    OpBuilder rewriter(op);
-    mlir::func::ReturnOp::create(rewriter, op.getLoc());
+    if (returnPtr)
+      LLVM::ReturnOp::create(
+          rewriter, op.getLoc(),
+          ValueRange(LLVM::ZeroOp::create(rewriter, op.getLoc(), ptrty)));
+    else
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange());
     op.erase();
   });
 
@@ -572,15 +521,7 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
     op->erase();
   }
 
-  PassManager pm(submod.getContext());
-  pm.addPass(createLowerAffinePass());
-  if (openmp)
-    pm.addPass(createConvertSCFToOpenMPPass());
-  else
-    pm.addPass(createSCFToControlFlowPass());
-  buildLowerToCPUPassPipeline(pm);
-  if (failed(pm.run(submod)) ||
-      (usesStream && failed(replaceGetStreamOpsWithStreamArg(submod)))) {
+  if (usesStream && failed(replaceGetStreamOpsWithStreamArg(submod))) {
     submod.erase();
     return {};
   }
@@ -596,19 +537,6 @@ namespace {
 struct LowerJITPass
     : public mlir::enzyme::impl::LowerJITPassBase<LowerJITPass> {
   using LowerJITPassBase::LowerJITPassBase;
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    OpPassManager pm;
-    buildLowerToCPUPassPipeline(pm);
-    pm.getDependentDialects(registry);
-    if (openmp)
-      registry.insert<mlir::omp::OpenMPDialect>();
-    registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
-                    mlir::math::MathDialect, mlir::memref::MemRefDialect,
-                    mlir::scf::SCFDialect, mlir::vector::VectorDialect,
-                    mlir::gpu::GPUDialect, mlir::nvgpu::NVGPUDialect,
-                    mlir::NVVM::NVVMDialect, mlir::LLVM::LLVMDialect>();
-  }
 
   // convert-polygeist-to-llvm registers each GPU module with the CUDA runtime
   // from a placeholder fat binary global `<module>_gpubin_cst`. Once the module
@@ -683,8 +611,8 @@ struct LowerJITPass
       }
 
       bool usesStream = false;
-      CallInfo cdata = CompileCall(symbolTable, op.getLoc(), fn, jit, openmp,
-                                   hasReturn, dump_final_module, usesStream);
+      CallInfo cdata = CompileCall(symbolTable, op.getLoc(), fn, jit, hasReturn,
+                                   dump_final_module, usesStream);
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
       if (jit) {

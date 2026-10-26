@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-jit{jit=false})" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(convert-scf-to-cf,convert-polygeist-to-llvm{preserve-xla-funcs=true},lower-jit{jit=false})" | FileCheck %s
 
 module {
   llvm.func internal unnamed_addr fastcc @throw_boundserror_2676() attributes {dso_local, no_inline, sym_visibility = "private"} {
