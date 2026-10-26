@@ -5370,6 +5370,10 @@ struct DUSSinkSlicesComm
     SmallVector<Operation *> created;
     DenseSet<Operation *> createdSet;
     DenseMap<std::tuple<Value, int64_t, int64_t, int64_t>, Value> cache;
+    // The other results of a widened multi-result call: reused by later
+    // widenings, but their narrow versions keep their other users (the
+    // narrow call stays for them, so a redirect would only add a shift).
+    DenseMap<std::tuple<Value, int64_t, int64_t, int64_t>, Value> aliases;
     // The DUS window along the dimension being widened: the target's extent,
     // the window's start and size. Rows of the widened values outside the
     // window are never read, so only the window decides whether a fallback
@@ -5411,28 +5415,52 @@ struct DUSSinkSlicesComm
     }
 
     // An op equivalent to `cand` that already exists ahead of it, if any.
-    // Looked for among the users of the first non-constant operand.
+    // Looked for among the users of the first non-constant operand. One
+    // placed after `cand` cannot be reused (the ops being built sit between
+    // the two), but `cand` can take its place once the widening has
+    // succeeded: it is remembered for `dedupe`. (The anchors are visited
+    // from the last up, so an earlier anchor's copy is usually below.)
     Operation *findExisting(Operation *cand) {
       for (Value operand : cand->getOperands()) {
         if (matchPattern(operand, m_Constant()) ||
             operand.getDefiningOp<sdy::ConstantOp>())
           continue;
         int seen = 0;
+        SmallVector<Operation *> below;
         for (Operation *user : operand.getUsers()) {
           if (++seen > 256)
             break;
-          if (user == cand || createdSet.contains(user))
+          if (user == cand || user == anchor ||
+              user->getBlock() != cand->getBlock())
             continue;
-          if (user->getBlock() != cand->getBlock() ||
-              !user->isBeforeInBlock(cand))
-            continue;
-          if (OperationEquivalence::isEquivalentTo(
+          if (!OperationEquivalence::isEquivalentTo(
                   user, cand, OperationEquivalence::IgnoreLocations))
+            continue;
+          if (user->isBeforeInBlock(cand))
             return user;
+          if (!createdSet.contains(user))
+            below.push_back(user);
         }
+        for (Operation *user : below)
+          duplicates.emplace_back(user, cand);
         break;
       }
       return nullptr;
+    }
+
+    // Equivalent ops below a created op, replaced by it once the widening
+    // has succeeded (a failed one erases the created op instead).
+    SmallVector<std::pair<Operation *, Operation *>> duplicates;
+    void dedupe() {
+      DenseSet<Operation *> gone;
+      for (auto [below, cand] : duplicates) {
+        if (gone.contains(below) || !createdSet.contains(cand) ||
+            !cand->isBeforeInBlock(below))
+          continue;
+        rewriter.replaceOp(below, cand->getResults());
+        gone.insert(below);
+      }
+      duplicates.clear();
     }
 
     // Records a freshly created op, or swaps it for an existing equivalent.
@@ -5479,68 +5507,111 @@ struct DUSSinkSlicesComm
         devices = getNumDevicesAlongDimension(xs, dim, op);
       // Target row i of the widened value reads source row i + na.
       const bool originMoves = windowReadMovesData(m, na, devices);
+      // When `x` itself is read shifted (the window moved, or a fallback
+      // moves a halo of it), first take what the slice keeps along the
+      // unsharded dimensions (the levels of a field), so that the shift is
+      // of that slab and not of the whole array: the partitioner exchanges
+      // the halo of its operand before slicing the other dimensions.
+      auto preSlice = [&]() {
+        SmallVector<int64_t> preStarts(xTy.getRank(), 0),
+            preLimits(xTy.getShape()), preStrides(xTy.getRank(), 1);
+        bool pre = false;
+        for (int64_t d = 0; d < xTy.getRank(); d++) {
+          if (d == dim || strides[d] != 1 ||
+              (starts[d] == 0 && limits[d] == xTy.getDimSize(d)))
+            continue;
+          int64_t dev = 1;
+          if (auto xs = sdy::getSharding(x))
+            dev = getNumDevicesAlongDimension(xs, d, op);
+          if (dev > 1)
+            continue;
+          preStarts[d] = starts[d];
+          preLimits[d] = limits[d];
+          starts[d] = 0;
+          limits[d] = limits[d] - preStarts[d];
+          pre = true;
+        }
+        if (!pre)
+          return;
+        Value xs = stablehlo::SliceOp::create(rewriter, op->getLoc(), x,
+                                              preStarts, preLimits, preStrides);
+        copySharding(x, xs);
+        x = finish(xs);
+        xTy = cast<RankedTensorType>(x.getType());
+      };
       Value xw = x;
       if (na < 0 || nb > m) {
         xw = widen(x, dim, -na, nb - m);
         if (xw) {
           nb -= na;
           na = 0;
-        } else if (nb - na == m) {
-          // `x` cannot be recomputed on the wider window (an argument, or an
-          // op the widener does not know), but the window has its size: the
-          // entries that would come from outside `x` are never read, so a
-          // rotation of `x` serves, and is the cheapest exchange of a halo.
-          // Rotations of one value by several amounts are later grouped.
-          // Never trade a read that moved no data for one that does.
-          int64_t amount = ((na % m) + m) % m;
-          if (amount != 0 && !originMoves) {
-            return nullptr;
-          }
-          xw = enzymexla::RotateOp::create(rewriter, op->getLoc(), x,
-                                           static_cast<int32_t>(amount),
-                                           static_cast<int32_t>(dim));
-          copySharding(x, xw);
-          xw = finish(xw);
-          na = 0;
-          nb = m;
         } else {
-          // Otherwise pad: the padded entries are never read either. Again
-          // only if that does not move data where the original did not.
-          {
-            int64_t padLo = std::max<int64_t>(0, -na),
-                    padHi = std::max<int64_t>(0, nb - m);
-            int64_t padded = m + padLo + padHi;
-            // The padded tensor's own layout against the source's, then the
-            // window read out of it.
-            bool moves =
-                shiftedReadMovesData(padded, na + padLo, nb - na, devices);
-            int64_t cp = (padded + devices - 1) / devices,
-                    cm = (m + devices - 1) / devices;
-            for (int64_t k = 0; k < devices && !moves; k++) {
-              int64_t r0 = std::max<int64_t>(0, k * cp - padLo);
-              int64_t r1 = std::min(m, (k + 1) * cp - padLo);
-              if (r0 < r1 && (r0 < k * cm || r1 > std::min(m, (k + 1) * cm)))
-                moves = true;
-            }
-            if (moves && !originMoves) {
+          preSlice();
+          xw = x;
+          // A pad whose operand is that slab would only be rebuilt as itself
+          // (the slab is whole along `dim`): nothing to sink.
+          if (isa<stablehlo::PadOp>(anchor) && anchor->getOperand(0) == x)
+            return nullptr;
+          if (nb - na == m) {
+            // `x` cannot be recomputed on the wider window (an argument, or an
+            // op the widener does not know), but the window has its size: the
+            // entries that would come from outside `x` are never read, so a
+            // rotation of `x` serves, and is the cheapest exchange of a halo.
+            // Rotations of one value by several amounts are later grouped.
+            // Never trade a read that moved no data for one that does.
+            int64_t amount = ((na % m) + m) % m;
+            if (amount != 0 && !originMoves) {
               return nullptr;
             }
+            xw = enzymexla::RotateOp::create(rewriter, op->getLoc(), x,
+                                             static_cast<int32_t>(amount),
+                                             static_cast<int32_t>(dim));
+            copySharding(x, xw);
+            xw = finish(xw);
+            na = 0;
+            nb = m;
+          } else {
+            // Otherwise pad: the padded entries are never read either. Again
+            // only if that does not move data where the original did not.
+            {
+              int64_t padLo = std::max<int64_t>(0, -na),
+                      padHi = std::max<int64_t>(0, nb - m);
+              int64_t padded = m + padLo + padHi;
+              // The padded tensor's own layout against the source's, then the
+              // window read out of it.
+              bool moves =
+                  shiftedReadMovesData(padded, na + padLo, nb - na, devices);
+              int64_t cp = (padded + devices - 1) / devices,
+                      cm = (m + devices - 1) / devices;
+              for (int64_t k = 0; k < devices && !moves; k++) {
+                int64_t r0 = std::max<int64_t>(0, k * cp - padLo);
+                int64_t r1 = std::min(m, (k + 1) * cp - padLo);
+                if (r0 < r1 && (r0 < k * cm || r1 > std::min(m, (k + 1) * cm)))
+                  moves = true;
+              }
+              if (moves && !originMoves) {
+                return nullptr;
+              }
+            }
+            Value zero = finish(stablehlo::ConstantOp::create(
+                rewriter, op->getLoc(),
+                cast<ElementsAttr>(makeAttr(
+                    RankedTensorType::get({}, xTy.getElementType()), 0))));
+            SmallVector<int64_t> low(xTy.getRank(), 0), high(xTy.getRank(), 0),
+                interior(xTy.getRank(), 0);
+            low[dim] = std::max<int64_t>(0, -na);
+            high[dim] = std::max<int64_t>(0, nb - m);
+            xw = stablehlo::PadOp::create(rewriter, op->getLoc(), x, zero, low,
+                                          high, interior);
+            copySharding(x, xw);
+            xw = finish(xw);
+            na += low[dim];
+            nb += low[dim];
           }
-          Value zero = finish(stablehlo::ConstantOp::create(
-              rewriter, op->getLoc(),
-              cast<ElementsAttr>(makeAttr(
-                  RankedTensorType::get({}, xTy.getElementType()), 0))));
-          SmallVector<int64_t> low(xTy.getRank(), 0), high(xTy.getRank(), 0),
-              interior(xTy.getRank(), 0);
-          low[dim] = std::max<int64_t>(0, -na);
-          high[dim] = std::max<int64_t>(0, nb - m);
-          xw = stablehlo::PadOp::create(rewriter, op->getLoc(), x, zero, low,
-                                        high, interior);
-          copySharding(x, xw);
-          xw = finish(xw);
-          na += low[dim];
-          nb += low[dim];
         }
+      } else if (originMoves) {
+        preSlice();
+        xw = x;
       }
       starts[dim] = na;
       limits[dim] = nb;
@@ -5561,6 +5632,8 @@ struct DUSSinkSlicesComm
         return v;
       auto key = std::make_tuple(v, dim, lo, hi);
       if (auto it = cache.find(key); it != cache.end())
+        return it->second;
+      if (auto it = aliases.find(key); it != aliases.end())
         return it->second;
       auto ty = dyn_cast<RankedTensorType>(v.getType());
       if (!ty || !ty.hasStaticShape())
@@ -5637,29 +5710,90 @@ struct DUSSinkSlicesComm
         res = widenSlice(op, ms.getOperand(), dim, starts, limits,
                          ms.getStrides(), lo, hi);
       } else if (auto cc = dyn_cast<stablehlo::CustomCallOp>(op);
-                 cc && cc.getCallTargetName() == "_SPMDInternalOp_MultiSlice" &&
-                 cc.getNumOperands() == 1) {
-        // The lowered form of a multislice; result i is again the slice
-        // shifted by i along the multislice dimension.
+                 cc && cc.getNumOperands() == 1 &&
+                 (cc.getCallTargetName() == "_SPMDInternalOp_MultiSlice" ||
+                  cc.getCallTargetName() == "_SPMDInternalOp_MultiRotate" ||
+                  cc.getCallTargetName() == "_SPMDInternalOp_Wrap")) {
+        // The lowered forms of a multislice, multirotate or wrap.
         auto cfg = cc->getAttrOfType<StringAttr>("backend_config");
         if (!cfg)
           return nullptr;
-        auto msDim = parseMultiSliceConfigInt(cfg.getValue(), "dimension");
-        auto starts =
-            parseMultiSliceConfigList(cfg.getValue(), "start_indices");
-        auto limits =
-            parseMultiSliceConfigList(cfg.getValue(), "limit_indices");
-        auto strides = parseMultiSliceConfigList(cfg.getValue(), "strides");
-        if (!msDim || !starts || !limits || !strides || *msDim < 0 ||
-            *msDim >= ty.getRank() || (int64_t)starts->size() != ty.getRank() ||
-            (int64_t)limits->size() != ty.getRank() ||
-            (int64_t)strides->size() != ty.getRank())
+        auto ccDim = parseMultiSliceConfigInt(cfg.getValue(), "dimension");
+        if (!ccDim)
           return nullptr;
-        int64_t shift = cast<OpResult>(v).getResultNumber();
-        (*starts)[*msDim] += shift;
-        (*limits)[*msDim] += shift;
-        res = widenSlice(op, cc.getOperand(0), dim, *starts, *limits, *strides,
-                         lo, hi);
+        bool isMultiSlice =
+            cc.getCallTargetName() == "_SPMDInternalOp_MultiSlice";
+        int64_t idx = cast<OpResult>(v).getResultNumber();
+        if (isMultiSlice && *ccDim == dim) {
+          // Result i is the slice shifted by i along the multislice dimension.
+          auto starts =
+              parseMultiSliceConfigList(cfg.getValue(), "start_indices");
+          auto limits =
+              parseMultiSliceConfigList(cfg.getValue(), "limit_indices");
+          auto strides = parseMultiSliceConfigList(cfg.getValue(), "strides");
+          if (!starts || !limits || !strides || *ccDim < 0 ||
+              *ccDim >= ty.getRank() ||
+              (int64_t)starts->size() != ty.getRank() ||
+              (int64_t)limits->size() != ty.getRank() ||
+              (int64_t)strides->size() != ty.getRank())
+            return nullptr;
+          (*starts)[*ccDim] += idx;
+          (*limits)[*ccDim] += idx;
+          res = widenSlice(op, cc.getOperand(0), dim, *starts, *limits,
+                           *strides, lo, hi);
+        } else if (*ccDim == dim) {
+          // A rotation or wrap along the widened dimension itself.
+          return nullptr;
+        } else {
+          // Along another dimension: the same call on the widened operand.
+          // Every result widens with it; a multislice's window grows along
+          // the widened dimension by what was added.
+          Value x = widen(cc.getOperand(0), dim, lo, hi);
+          if (!x)
+            return nullptr;
+          std::string newCfg = cfg.getValue().str();
+          if (isMultiSlice) {
+            auto limits =
+                parseMultiSliceConfigList(cfg.getValue(), "limit_indices");
+            if (!limits || dim >= (int64_t)limits->size())
+              return nullptr;
+            (*limits)[dim] += lo + hi;
+            size_t pos = newCfg.find("limit_indices=[");
+            size_t end = newCfg.find(']', pos);
+            if (pos == std::string::npos || end == std::string::npos)
+              return nullptr;
+            std::string list;
+            for (auto [i, l] : llvm::enumerate(*limits))
+              list += (i ? ", " : "") + std::to_string(l);
+            newCfg.replace(pos + strlen("limit_indices=["),
+                           end - pos - strlen("limit_indices=["), list);
+          }
+          SmallVector<Type> resTys;
+          for (Value r : cc.getResults())
+            resTys.push_back(
+                widenedType(cast<RankedTensorType>(r.getType()), dim, lo, hi));
+          OperationState state(loc, cc->getName());
+          state.addOperands(x);
+          state.addTypes(resTys);
+          for (NamedAttribute attr : cc->getAttrs())
+            if (attr.getName() == "backend_config")
+              state.addAttribute(attr.getName(),
+                                 rewriter.getStringAttr(newCfg));
+            else
+              state.addAttribute(attr.getName(), attr.getValue());
+          Operation *ncc = rewriter.create(state);
+          if (Operation *existing = findExisting(ncc)) {
+            rewriter.eraseOp(ncc);
+            ncc = existing;
+          } else {
+            track(ncc->getResult(0));
+          }
+          // The other results are widened by the same call.
+          for (auto [j, r] : llvm::enumerate(cc.getResults()))
+            if ((int64_t)j != idx)
+              aliases[std::make_tuple(r, dim, lo, hi)] = ncc->getResult(j);
+          res = ncc->getResult(idx);
+        }
       } else if (auto pad = dyn_cast<stablehlo::PadOp>(op)) {
         if (pad.getInteriorPadding()[dim] != 0)
           return nullptr;
@@ -5699,6 +5833,38 @@ struct DUSSinkSlicesComm
           copySharding(v, res);
           res = finish(res);
         }
+      } else if (auto reshape = dyn_cast<stablehlo::ReshapeOp>(op)) {
+        // A reshape that only inserts or removes unit dimensions: the
+        // widened dimension maps to the operand's dimension of the same
+        // size, in order among the non-unit dimensions.
+        auto inTy = cast<RankedTensorType>(reshape.getOperand().getType());
+        int64_t srcDim = -1;
+        {
+          int64_t j = 0;
+          bool ok = true;
+          for (int64_t i = 0; i < ty.getRank() && ok; i++) {
+            if (ty.getDimSize(i) == 1)
+              continue;
+            while (j < inTy.getRank() && inTy.getDimSize(j) == 1)
+              j++;
+            if (j >= inTy.getRank() || inTy.getDimSize(j) != ty.getDimSize(i))
+              ok = false;
+            else if (i == dim)
+              srcDim = j;
+            j++;
+          }
+          for (; j < inTy.getRank() && ok; j++)
+            if (inTy.getDimSize(j) != 1)
+              ok = false;
+          if (!ok || srcDim < 0)
+            return nullptr;
+        }
+        Value x = widen(reshape.getOperand(), srcDim, lo, hi);
+        if (!x)
+          return nullptr;
+        res = stablehlo::ReshapeOp::create(rewriter, loc, newTy, x);
+        copySharding(v, res);
+        res = finish(res);
       } else if (auto concat = dyn_cast<stablehlo::ConcatenateOp>(op)) {
         bool along = (int64_t)concat.getDimension() == dim;
         if (along && (lo < 0 || hi < 0))
@@ -5817,6 +5983,64 @@ struct DUSSinkSlicesComm
     }
   };
 
+  // The sharded dimensions `update` is narrower in than `ty`: only there
+  // does the window's position cost communication. Narrow unsharded
+  // dimensions stay narrow.
+  static bool narrowShardedDims(Operation *anchor, RankedTensorType ty,
+                                RankedTensorType updTy,
+                                sdy::TensorShardingAttr sharding,
+                                int maxExtraPercent,
+                                SmallVectorImpl<int64_t> &dims) {
+    int64_t wideSize = 1, narrowSize = 1;
+    for (int64_t d = 0; d < ty.getRank(); d++) {
+      if (updTy.getDimSize(d) == ty.getDimSize(d) ||
+          getNumDevicesAlongDimension(sharding, d, anchor) <= 1)
+        continue;
+      dims.push_back(d);
+      wideSize *= ty.getDimSize(d);
+      narrowSize *= updTy.getDimSize(d);
+    }
+    if (dims.empty())
+      return false;
+    return (wideSize - narrowSize) * 100 <=
+           (int64_t)maxExtraPercent * narrowSize;
+  }
+
+  // Widens `update`, written at `starts` into a value of type `ty` by
+  // `anchor`, along `dims`, and returns the slice of the wide value at the
+  // window; null when the update cannot be widened.
+  static Value sinkUpdate(Operation *anchor, Value update, RankedTensorType ty,
+                          ArrayRef<int64_t> starts, ArrayRef<int64_t> dims,
+                          PatternRewriter &rewriter) {
+    auto updTy = cast<RankedTensorType>(update.getType());
+    Widener widener(rewriter, anchor);
+    Value wide = update;
+    for (int64_t d : dims) {
+      widener.winExtent = ty.getDimSize(d);
+      widener.winOff = starts[d];
+      widener.winSize = updTy.getDimSize(d);
+      wide = widener.widen(wide, d, starts[d],
+                           ty.getDimSize(d) - starts[d] - updTy.getDimSize(d));
+      if (!wide) {
+        widener.rollback();
+        return nullptr;
+      }
+    }
+    widener.sinkOtherUses();
+    widener.dedupe();
+
+    SmallVector<int64_t> sliceStarts(ty.getRank(), 0), limits(updTy.getShape()),
+        strides(ty.getRank(), 1);
+    for (int64_t d : dims) {
+      sliceStarts[d] = starts[d];
+      limits[d] += starts[d];
+    }
+    Value res = stablehlo::SliceOp::create(rewriter, anchor->getLoc(), wide,
+                                           sliceStarts, limits, strides);
+    Widener::copySharding(update, res);
+    return res;
+  }
+
   LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dus,
                                 PatternRewriter &rewriter) const override {
     if (dus->getParentOfType<sdy::ManualComputationOp>())
@@ -5829,51 +6053,121 @@ struct DUSSinkSlicesComm
     SmallVector<int64_t> starts;
     if (!getDUSWindow(dus, starts))
       return failure();
-
-    // The dimensions the update is narrower in and that are sharded over
-    // several devices: only there does the window's position cost
-    // communication. Narrow unsharded dimensions stay narrow.
     SmallVector<int64_t> dims;
-    int64_t wideSize = 1, narrowSize = 1;
-    for (int64_t d = 0; d < ty.getRank(); d++) {
-      if (updTy.getDimSize(d) == ty.getDimSize(d) ||
-          getNumDevicesAlongDimension(sharding, d, dus) <= 1)
-        continue;
-      dims.push_back(d);
-      wideSize *= ty.getDimSize(d);
-      narrowSize *= updTy.getDimSize(d);
-    }
-    if (dims.empty() || isSliceAtDUSWindow(dus, starts, dims))
+    if (!narrowShardedDims(dus, ty, updTy, sharding, maxExtraPercent, dims) ||
+        isSliceAtDUSWindow(dus, starts, dims))
       return failure();
-    if ((wideSize - narrowSize) * 100 > (int64_t)maxExtraPercent * narrowSize)
+    Value update = sinkUpdate(dus, dus.getUpdate(), ty, starts, dims, rewriter);
+    if (!update)
       return failure();
-
-    Widener widener(rewriter, dus);
-    Value wide = dus.getUpdate();
-    for (int64_t d : dims) {
-      widener.winExtent = ty.getDimSize(d);
-      widener.winOff = starts[d];
-      widener.winSize = updTy.getDimSize(d);
-      wide = widener.widen(wide, d, starts[d],
-                           ty.getDimSize(d) - starts[d] - updTy.getDimSize(d));
-      if (!wide) {
-        widener.rollback();
-        return failure();
-      }
-    }
-    widener.sinkOtherUses();
-
-    SmallVector<int64_t> sliceStarts(ty.getRank(), 0), limits(updTy.getShape()),
-        strides(ty.getRank(), 1);
-    for (int64_t d : dims) {
-      sliceStarts[d] = starts[d];
-      limits[d] += starts[d];
-    }
-    Value update = stablehlo::SliceOp::create(rewriter, dus.getLoc(), wide,
-                                              sliceStarts, limits, strides);
-    Widener::copySharding(dus.getUpdate(), update);
     rewriter.modifyOpInPlace(dus,
                              [&] { dus.getUpdateMutable().assign(update); });
+    return success();
+  }
+};
+
+// The same for a pad with a splat padding value: `pad(u, c, low, high)` is
+// `dus(broadcast(c), u, low)`, which is how the main pipeline's
+// `select_pad_to_dus` wrote it before a DUS of a constant became a pad. The
+// slices feeding `u` move down the same way, and the pad becomes a DUS of a
+// slice of the wide value at its own window, which the partitioner handles
+// without moving data, written into the broadcast constant.
+struct PadSinkSlicesComm : public OpRewritePattern<stablehlo::PadOp> {
+  using Widener = DUSSinkSlicesComm::Widener;
+  int maxExtraPercent;
+  PadSinkSlicesComm(MLIRContext *context, int maxExtraPercent,
+                    PatternBenefit benefit = 1)
+      : OpRewritePattern<stablehlo::PadOp>(context, benefit),
+        maxExtraPercent(maxExtraPercent) {}
+
+  LogicalResult matchAndRewrite(stablehlo::PadOp pad,
+                                PatternRewriter &rewriter) const override {
+    if (pad->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+    auto sharding = mlir::sdy::getSharding(pad);
+    if (!sharding)
+      return failure();
+    if (llvm::any_of(pad.getInteriorPadding(),
+                     [](int64_t p) { return p != 0; }) ||
+        llvm::any_of(pad.getEdgePaddingLow(),
+                     [](int64_t p) { return p < 0; }) ||
+        llvm::any_of(pad.getEdgePaddingHigh(), [](int64_t p) { return p < 0; }))
+      return failure();
+    SplatElementsAttr splat;
+    if (auto sdyCst = pad.getPaddingValue().getDefiningOp<sdy::ConstantOp>())
+      splat = dyn_cast<SplatElementsAttr>(sdyCst.getValue());
+    else
+      matchPattern(pad.getPaddingValue(), m_Constant(&splat));
+    if (!splat)
+      return failure();
+    auto ty = pad.getType();
+    auto updTy = pad.getOperand().getType();
+    if (!ty.hasStaticShape() || !updTy.hasStaticShape())
+      return failure();
+    SmallVector<int64_t> starts(pad.getEdgePaddingLow());
+    SmallVector<int64_t> dims;
+    if (!DUSSinkSlicesComm::narrowShardedDims(pad, ty, updTy, sharding,
+                                              maxExtraPercent, dims))
+      return failure();
+    Value update = DUSSinkSlicesComm::sinkUpdate(pad, pad.getOperand(), ty,
+                                                 starts, dims, rewriter);
+    if (!update)
+      return failure();
+    // The wide value, at the pad's extent along the sharded dimensions and
+    // the operand's along the others. The pad becomes a select of it
+    // against the padding value inside the window (no data moves for an
+    // elementwise op), then a pad along the unsharded dimensions only.
+    auto slice = update.getDefiningOp<stablehlo::SliceOp>();
+    Value wide = slice ? slice.getOperand() : update;
+    auto wideTy = cast<RankedTensorType>(wide.getType());
+    auto loc = pad.getLoc();
+    Value mask;
+    auto i32Ty =
+        RankedTensorType::get(wideTy.getShape(), rewriter.getI32Type());
+    for (int64_t d : dims) {
+      Value iota = stablehlo::IotaOp::create(rewriter, loc, i32Ty, d);
+      Widener::copySharding(wide, iota);
+      Value lo = stablehlo::ConstantOp::create(
+          rewriter, loc, cast<ElementsAttr>(makeAttr(i32Ty, starts[d])));
+      Widener::copySharding(wide, lo);
+      Value hi = stablehlo::ConstantOp::create(
+          rewriter, loc,
+          cast<ElementsAttr>(makeAttr(i32Ty, starts[d] + updTy.getDimSize(d))));
+      Widener::copySharding(wide, hi);
+      Value ge = stablehlo::CompareOp::create(
+          rewriter, loc, iota, lo, stablehlo::ComparisonDirection::GE);
+      Widener::copySharding(wide, ge);
+      Value lt = stablehlo::CompareOp::create(
+          rewriter, loc, iota, hi, stablehlo::ComparisonDirection::LT);
+      Widener::copySharding(wide, lt);
+      Value in = stablehlo::AndOp::create(rewriter, loc, ge, lt);
+      Widener::copySharding(wide, in);
+      if (mask) {
+        mask = stablehlo::AndOp::create(rewriter, loc, mask, in);
+        Widener::copySharding(wide, mask);
+      } else {
+        mask = in;
+      }
+    }
+    Value fill = stablehlo::ConstantOp::create(
+        rewriter, loc,
+        cast<ElementsAttr>(
+            SplatElementsAttr::get(wideTy, splat.getSplatValue<Attribute>())));
+    Widener::copySharding(wide, fill);
+    Value res = stablehlo::SelectOp::create(rewriter, loc, mask, wide, fill);
+    Widener::copySharding(wide, res);
+    if (wideTy.getShape() != ty.getShape()) {
+      SmallVector<int64_t> low(pad.getEdgePaddingLow()),
+          high(pad.getEdgePaddingHigh()), interior(ty.getRank(), 0);
+      for (int64_t d : dims)
+        low[d] = high[d] = 0;
+      res = stablehlo::PadOp::create(rewriter, loc, res, pad.getPaddingValue(),
+                                     low, high, interior);
+      Widener::copySharding(pad, res);
+    }
+    if (slice)
+      rewriter.eraseOp(slice);
+    rewriter.replaceOp(pad, res);
     return success();
   }
 };
@@ -6000,6 +6294,11 @@ struct OptimizeCommunicationPass
 
     if (dus_sink_slices_comm > 0)
       patterns.add<DUSSinkSlicesComm>(context,
+                                      dus_sink_slices_max_extra_percent,
+                                      PatternBenefit(dus_sink_slices_comm));
+
+    if (dus_sink_slices_comm > 0)
+      patterns.add<PadSinkSlicesComm>(context,
                                       dus_sink_slices_max_extra_percent,
                                       PatternBenefit(dus_sink_slices_comm));
 
