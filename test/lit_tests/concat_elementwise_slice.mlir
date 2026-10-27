@@ -109,3 +109,18 @@ func.func @computed_operands(%a: tensor<8x4xf32>, %b: tensor<8x4xf32>) -> tensor
   %r = stablehlo.concatenate %p0, %p1, dim = 0 : (tensor<3x4xf32>, tensor<5x4xf32>) -> tensor<8x4xf32>
   return %r : tensor<8x4xf32>
 }
+
+// -----
+
+// A slice with another user survives the rewrite: left alone.
+
+// CHECK-LABEL: @slice_used_elsewhere
+// CHECK: stablehlo.concatenate
+func.func @slice_used_elsewhere(%a: tensor<8x4xf32>, %b: tensor<8x4xf32>) -> (tensor<8x4xf32>, tensor<3x4xf32>) {
+  %na = stablehlo.negate %a : tensor<8x4xf32>
+  %nb = stablehlo.negate %b : tensor<8x4xf32>
+  %p0 = stablehlo.slice %na [0:3, 0:4] : (tensor<8x4xf32>) -> tensor<3x4xf32>
+  %p1 = stablehlo.slice %nb [3:8, 0:4] : (tensor<8x4xf32>) -> tensor<5x4xf32>
+  %r = stablehlo.concatenate %p0, %p1, dim = 0 : (tensor<3x4xf32>, tensor<5x4xf32>) -> tensor<8x4xf32>
+  return %r, %p0 : tensor<8x4xf32>, tensor<3x4xf32>
+}

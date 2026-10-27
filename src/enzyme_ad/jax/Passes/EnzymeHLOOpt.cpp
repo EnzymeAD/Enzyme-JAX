@@ -33371,8 +33371,9 @@ struct ConcatElementwise final
 // op(concat(slice(a1), a2, slice(a3)), concat(slice(b1), b2, slice(b3))).
 // Unlike ConcatElementwise the op may have other users: it is then also
 // computed a second time on the concatenate's rows (one evaluation over the
-// concatenate's extent in all). Only when the op's operands are views
-// (arguments, constants, iotas, through slices, reshapes, transposes,
+// concatenate's extent in all); the slices may not, since one that
+// survives the rewrite leaves nothing gained. Only when the op's operands are
+// views (arguments, constants, iotas, through slices, reshapes, transposes,
 // reverses and broadcasts): the concatenates left are then of views, pure
 // data movement a backend fuses into the op's consumers, where a
 // concatenate of slices of a value it must also keep whole is materialized.
@@ -33408,6 +33409,9 @@ struct ConcatElementwiseSlice final
       if (!def)
         return failure();
       auto slice = dyn_cast<stablehlo::SliceOp>(def);
+      // A slice with other users survives the rewrite: nothing is gained.
+      if (slice && !isOnlyUsedInOperation(slice, concatOp))
+        return failure();
       Operation *elem = slice ? slice.getOperand().getDefiningOp() : def;
       if (!elem || !hasTraitElementwise(elem) || elem->getNumResults() != 1 ||
           elem->getNumRegions() != 0)
