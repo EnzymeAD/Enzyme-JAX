@@ -33365,6 +33365,89 @@ struct ConcatElementwise final
   }
 };
 
+// concat(slice(op(a1, b1)), op(a2, b2), slice(op(a3, b3))) along a
+// dimension, the same elementwise op (name, attributes, operand count and
+// types) behind every piece and at least one piece a slice of it, becomes
+// op(concat(slice(a1), a2, slice(a3)), concat(slice(b1), b2, slice(b3))).
+// Unlike ConcatElementwise the op may have other users: it is then also
+// computed a second time on the concatenate's rows (one evaluation over the
+// concatenate's extent in all). That lets the slices reach the sources
+// (slice_slice, slices of arguments) and the concatenate become one of
+// views, pure data movement a backend fuses into the op's consumers, where
+// a concatenate of slices of a value it must also keep whole is
+// materialized. The slices of a constant operand fold away.
+struct ConcatElementwiseSlice final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                              ConcatElementwiseSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
+                                    PatternRewriter &rewriter) const {
+    if (concatOp.getNumOperands() <= 1)
+      return failure();
+    Operation *first = nullptr;
+    SmallVector<std::pair<Operation *, stablehlo::SliceOp>> pieces;
+    bool anySlice = false;
+    for (Value v : concatOp.getOperands()) {
+      Operation *def = v.getDefiningOp();
+      if (!def)
+        return failure();
+      auto slice = dyn_cast<stablehlo::SliceOp>(def);
+      Operation *elem = slice ? slice.getOperand().getDefiningOp() : def;
+      if (!elem || !hasTraitElementwise(elem) || elem->getNumResults() != 1 ||
+          elem->getNumRegions() != 0)
+        return failure();
+      if (isa<stablehlo::ConvertOp>(elem)) // Conflicts with ConvertConcat
+        return failure();
+      auto resTy = dyn_cast<RankedTensorType>(elem->getResult(0).getType());
+      if (!resTy)
+        return failure();
+      for (Value operand : elem->getOperands()) {
+        auto oTy = dyn_cast<RankedTensorType>(operand.getType());
+        if (!oTy || oTy.getShape() != resTy.getShape())
+          return failure();
+      }
+      if (first) {
+        if (first->getName() != elem->getName() ||
+            first->getNumOperands() != elem->getNumOperands() ||
+            computeAttrs(first) != computeAttrs(elem))
+          return failure();
+        for (auto [a, b] : llvm::zip(first->getOperands(), elem->getOperands()))
+          if (cast<RankedTensorType>(a.getType()).getElementType() !=
+              cast<RankedTensorType>(b.getType()).getElementType())
+            return failure();
+      } else {
+        first = elem;
+      }
+      anySlice |= (bool)slice;
+      pieces.emplace_back(elem, slice);
+    }
+    if (!anySlice) // ConcatElementwise's case
+      return failure();
+    SmallVector<Value> elementwiseOperands;
+    for (unsigned i = 0; i < first->getNumOperands(); i++) {
+      SmallVector<Value> newConcatOperands;
+      for (auto [elem, slice] : pieces) {
+        Value operand = elem->getOperand(i);
+        if (slice)
+          operand = stablehlo::SliceOpCreate(
+              rewriter, slice.getLoc(), operand, slice.getStartIndices(),
+              slice.getLimitIndices(), slice.getStrides());
+        newConcatOperands.push_back(operand);
+      }
+      elementwiseOperands.push_back(stablehlo::ConcatenateOpCreate(
+          rewriter, concatOp.getLoc(), newConcatOperands,
+          concatOp.getDimension()));
+    }
+    auto newElementwiseOp = rewriter.create(
+        concatOp.getLoc(), first->getName().getIdentifier(),
+        ValueRange(elementwiseOperands), TypeRange(concatOp.getType()),
+        computeAttrs(first), {}, {});
+    rewriter.replaceOp(concatOp, newElementwiseOp);
+    return success();
+  }
+};
+
 struct ConcatReshapeReduce final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatReshapeReduce> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -45941,6 +46024,7 @@ struct EnzymeHLOOptPass
         ConcatReshapeBroadcast,
         ConcatReshapeReduce,
         ConcatElementwise,
+        ConcatElementwiseSlice,
         ConcatReshapeElementwise,
         TransposeAllUsersSlice,
         ReduceReduce,
