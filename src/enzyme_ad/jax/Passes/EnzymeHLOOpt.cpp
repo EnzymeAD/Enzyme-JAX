@@ -19142,6 +19142,46 @@ static bool matchConstantPrefixMask(Value pred, int64_t &dim, int64_t &K,
 // where iota_expr is either iota or add(iota, const_offset).
 // Replaces with concat(slice(A|B, ...), ...) along the iota/broadcast
 // dimension.
+// Whether slicing `v` costs nothing: it is a function argument, a constant,
+// an iota or a broadcast, possibly read through views (slice, reshape,
+// transpose, convert, pad, concatenate, dynamic slice or update) of such
+// values. Slicing an elementwise computation instead cuts it into pieces
+// the backend keeps apart: the pieces several concatenates share get
+// materialized rather than fused (a raised WENO stencil's boundary rows went
+// from one XLA kernel to six, 4x slower), so the select-to-slices rewrites
+// below only cut branches that are cheap to slice.
+static bool isCheapToSlice(Value v) {
+  SmallVector<Value> todo{v};
+  DenseSet<Value> seen;
+  while (!todo.empty()) {
+    Value cur = todo.pop_back_val();
+    if (!seen.insert(cur).second)
+      continue;
+    Operation *op = cur.getDefiningOp();
+    if (!op)
+      continue; // block argument
+    if (isa<stablehlo::ConstantOp, stablehlo::IotaOp,
+            stablehlo::BroadcastInDimOp>(op))
+      continue;
+    if (isa<stablehlo::SliceOp, stablehlo::ReshapeOp, stablehlo::TransposeOp,
+            stablehlo::ConvertOp, stablehlo::PadOp, stablehlo::ConcatenateOp,
+            stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(op)) {
+      for (Value operand : op->getOperands())
+        todo.push_back(operand);
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+// Whether a select may become a DUS of a slice of `update` into `base`:
+// the update is cheap to slice, or the base is a function argument (an
+// in-place update of an input, which the backend keeps a single kernel).
+static bool selectToDUSIsCheap(Value base, Value update) {
+  return isCheapToSlice(update) || isa<BlockArgument>(base);
+}
+
 struct SelectCompIotaConstSimplify final
     : CheckedOpRewritePattern<stablehlo::SelectOp,
                               SelectCompIotaConstSimplify> {
@@ -19318,6 +19358,11 @@ struct SelectCompIotaConstSimplify final
         }
     }
 
+    // Every branch that gets cut must be cheap to slice.
+    for (auto &e : slices)
+      if (e.count > 0 && !isCheapToSlice(e.tensor))
+        return failure();
+
     const auto loc = selectOp.getLoc();
     SmallVector<int64_t> starts(outputShape.size(), 0);
     SmallVector<int64_t> limits(outputShape);
@@ -19450,6 +19495,9 @@ struct SelectCompIotaConstToDUS final
       if (ub < 0)
         ub = 0;
 
+      if (!selectToDUSIsCheap(falseTensor, trueTensor))
+        return failure();
+
       auto ITy = RankedTensorType::get({}, rewriter.getI32Type());
 
       SmallVector<int64_t> startSlices(selectOp.getType().getShape().size(), 0);
@@ -19509,6 +19557,10 @@ struct SelectPadToDUS final
       if (pv != 0)
         return failure();
     }
+
+    if (!selectToDUSIsCheap(operandV ? falseTensor : trueTensor,
+                            operandV ? trueTensor : falseTensor))
+      return failure();
 
     SmallVector<int64_t> startSlices = llvm::to_vector(pad.getEdgePaddingLow());
     SmallVector<int64_t> limits =
