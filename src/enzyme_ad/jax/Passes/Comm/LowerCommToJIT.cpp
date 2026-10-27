@@ -2374,8 +2374,8 @@ struct LowerCommNcclGroupOpToJIT
           /*operandTupleIndices=*/ArrayRef<int64_t>{}));
     }
 
-    // The wrapper depends on the sequence of member ops, which is encoded in
-    // its name.
+    // The wrapper hard-codes the sequence of member ops, so we encode it
+    // in its name.
     std::string wrapper_name = "enzymexla_jitwrap_ncclGroup";
     for (StringRef functionName : functionNames)
       wrapper_name +=
