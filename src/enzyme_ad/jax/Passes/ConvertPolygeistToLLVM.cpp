@@ -5066,11 +5066,18 @@ struct ConvertPolygeistToLLVMPass
       // Functions belonging to the XLA host program (holding StableHLO or
       // taking/returning tensors) are kept as-is, body included. Functions
       // referenced by an xla_wrapper are still consumed by its lowering.
+      // A public function without arguments or results that no jit_call
+      // targets is an XLA entry point computing nothing (e.g. one whose
+      // results were all folded on the host), and is kept as well.
       SymbolTableCollection symbolTables;
-      DenseSet<Operation *> wrapped;
+      DenseSet<Operation *> wrapped, jitted;
       m->walk([&](enzymexla::XLAWrapperOp wrap) {
         if (auto fn = symbolTables.lookupNearestSymbolFrom(wrap, wrap.getFn()))
           wrapped.insert(fn);
+      });
+      m->walk([&](enzymexla::JITCallOp call) {
+        if (auto fn = symbolTables.lookupNearestSymbolFrom(call, call.getFn()))
+          jitted.insert(fn);
       });
       auto isTensor = [](Type t) { return isa<TensorType>(t); };
       DenseSet<Operation *> xlaFuncs;
@@ -5085,7 +5092,10 @@ struct ConvertPolygeistToLLVMPass
                   return WalkResult::advance();
                 })
                 .wasInterrupted();
-        if (anyStablehlo || llvm::any_of(func.getArgumentTypes(), isTensor) ||
+        bool emptyEntry = func.isPublic() && func.getNumArguments() == 0 &&
+                          func.getNumResults() == 0 && !jitted.contains(func);
+        if (anyStablehlo || emptyEntry ||
+            llvm::any_of(func.getArgumentTypes(), isTensor) ||
             llvm::any_of(func.getResultTypes(), isTensor))
           xlaFuncs.insert(func);
       }
