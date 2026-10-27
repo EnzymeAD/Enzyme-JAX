@@ -661,6 +661,10 @@ def ApplyConcatReshapeReducePatterns : EnzymeHLOPatternOp<
   let patterns = ["ConcatReshapeReduce"];
 }
 
+def ApplySinkElementwiseIntoConcat : EnzymeHLOPatternOp<
+    "sink_elementwise_into_concat"> {
+  let patterns = ["SinkElementwiseIntoConcat"];
+}
 def ApplyConcatElementwisePatterns : EnzymeHLOPatternOp<
     "concat_elementwise"> {
   let patterns = ["ConcatElementwise"];
