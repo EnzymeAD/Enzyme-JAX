@@ -177,6 +177,10 @@ def ApplyLogPlusConstProp : EnzymeHLOOptionalParameterPatternOp<
     "log_plus_one_const_prop">{
   let patterns = ["UnaryConstProp<stablehlo::Log1pOp,stablehlo::log1pOp>"];
 }
+def ApplyLog2ConstProp : EnzymeHLOOptionalParameterPatternOp<
+    "log2_const_prop">{
+  let patterns = ["UnaryConstProp<stablehlo::Log2Op,stablehlo::log2Op>"];
+}
 def ApplyNegConstProp : EnzymeHLOOptionalParameterPatternOp<
     "neg_const_prop"> {
   let patterns = ["UnaryConstProp<stablehlo::NegOp,stablehlo::negOp>"];
@@ -204,6 +208,10 @@ def ApplyExpConstProp : EnzymeHLOOptionalParameterPatternOp<
 def ApplyExpm1ConstProp : EnzymeHLOOptionalParameterPatternOp<
     "expm1_const_prop"> {
   let patterns = ["UnaryConstProp<stablehlo::Expm1Op,stablehlo::expm1Op>"];
+}
+def ApplyExp2ConstProp : EnzymeHLOOptionalParameterPatternOp<
+    "exp2_const_prop"> {
+  let patterns = ["UnaryConstProp<stablehlo::Exp2Op,stablehlo::exp2Op>"];
 }
 def ApplyTanhConstProp : EnzymeHLOOptionalParameterPatternOp<
     "tanh_const_prop"> {
@@ -922,6 +930,10 @@ def ApplyUnaryPadPushExpPatterns : EnzymeHLOPatternOp<
     "unary_pad_push_exp"> {
   let patterns = ["UnaryPadPush<stablehlo::ExpOp>"];
 }
+def ApplyUnaryPadPushExp2Patterns : EnzymeHLOPatternOp<
+    "unary_pad_push_exp2"> {
+  let patterns = ["UnaryPadPush<stablehlo::Exp2Op>"];
+}
 def ApplyCSEIotaPatterns : EnzymeHLOPatternOp<
     "cse_iota"> {
   let patterns = ["CSEIota"];
@@ -1010,6 +1022,10 @@ def ApplyCseExpm1Patterns : EnzymeHLOPatternOp<
     "cse_expm1"> {
   let patterns = ["CSE<stablehlo::Expm1Op>"];
 }
+def ApplyCseExp2Patterns : EnzymeHLOPatternOp<
+    "cse_exp2"> {
+  let patterns = ["CSE<stablehlo::Exp2Op>"];
+}
 def ApplyCseLogPatterns : EnzymeHLOPatternOp<
     "cse_log"> {
   let patterns = ["CSE<stablehlo::LogOp>"];
@@ -1017,6 +1033,10 @@ def ApplyCseLogPatterns : EnzymeHLOPatternOp<
 def ApplyCseLog1pPatterns : EnzymeHLOPatternOp<
     "cse_log1p"> {
   let patterns = ["CSE<stablehlo::Log1pOp>"];
+}
+def ApplyCseLog2Patterns : EnzymeHLOPatternOp<
+    "cse_log2"> {
+  let patterns = ["CSE<stablehlo::Log2Op>"];
 }
 def ApplyCseTanhPatterns : EnzymeHLOPatternOp<
     "cse_tanh"> {
@@ -3054,6 +3074,10 @@ def ApplyPowerMultiplyToPower : EnzymeHLOPatternOp<"power_multiply_to_power"> {
 
 def ApplyLogSimplify : EnzymeHLOPatternOp<"log_simplify"> {
   let patterns = ["LogSimplify"];
+}
+
+def ApplyLog2Simplify : EnzymeHLOPatternOp<"log2_simplify"> {
+  let patterns = ["Log2Simplify"];
 }
 
 def ApplyExponentialMinusOneFuse : EnzymeHLOPatternOp<"exponential_minus_one_fuse"> {

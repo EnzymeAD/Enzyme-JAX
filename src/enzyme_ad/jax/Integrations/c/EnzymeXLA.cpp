@@ -439,6 +439,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("cse_expm1<16>");
   list.push_back("cse_log<16>");
   list.push_back("cse_log1p<16>");
+  list.push_back("cse_exp2<16>");
+  list.push_back("cse_log2<16>");
   list.push_back("cse_tanh<16>");
   list.push_back("cse_logistic<16>");
   list.push_back("cse_sqrt<16>");
@@ -643,6 +645,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("split_convolution_into_reverse_convolution");
   list.push_back("power_multiply_to_power");
   list.push_back("log_simplify");
+  list.push_back("log2_simplify");
   list.push_back("neg_mul_const_simplify");
   list.push_back("neg_div_const_simplify");
   list.push_back("negate_reduce_window_sub");
@@ -870,6 +873,7 @@ static void addPadPasses(std::vector<std::string> &list,
   list.push_back("unary_pad_push_convert<1>");
   list.push_back("unary_pad_push_tanh<1>");
   list.push_back("unary_pad_push_exp<1>");
+  list.push_back("unary_pad_push_exp2<1>");
   list.push_back("concat_to_pad<1>");
   list.push_back("while_pad_induction_reduction");
   list.push_back("pad_concat_to_concat_pad");
@@ -900,6 +904,8 @@ static void addConstPropPasses(std::vector<std::string> &list,
       passWithBenefitAndArg("log_const_prop", 1, maxReusedConstPropSize));
   list.push_back(passWithBenefitAndArg("log_plus_one_const_prop", 1,
                                        maxReusedConstPropSize));
+  list.push_back(
+      passWithBenefitAndArg("log2_const_prop", 1, maxReusedConstPropSize));
   list.push_back(passWithArg("is_finite_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("not_const_prop", maxReusedConstPropSize));
   list.push_back("reduce_or_and");
@@ -910,6 +916,7 @@ static void addConstPropPasses(std::vector<std::string> &list,
   list.push_back(passWithArg("sin_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("exp_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("expm1_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("exp2_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("tanh_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("logistic_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("conj_const_prop", maxReusedConstPropSize));
