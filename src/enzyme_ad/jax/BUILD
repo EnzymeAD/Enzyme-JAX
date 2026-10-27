@@ -115,7 +115,6 @@ cc_library(
         [
             "xla_ffi/cuda/blas.cc",
             "xla_ffi/cuda/register.cc",
-            "xla_ffi/cuda/runtime_symbols.cc",
             "xla_ffi/cuda/throw_error.cc",
             "xla_ffi/host/mpi.cc",
             "xla_ffi/host/register.cc",

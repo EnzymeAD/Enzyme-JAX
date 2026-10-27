@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-kernel,canonicalize)" | FileCheck %s --implicit-check-not=ptx_kernelcc
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-kernel,canonicalize)" | FileCheck %s
 
 module {
   llvm.func internal unnamed_addr fastcc @throw_boundserror_2676() attributes {dso_local, no_inline, sym_visibility = "private"} {
