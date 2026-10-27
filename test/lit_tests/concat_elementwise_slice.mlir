@@ -1,9 +1,9 @@
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=concat_elementwise_slice" --transform-interpreter --enzyme-hlo-remove-transform --split-input-file | FileCheck %s
 
-// A concatenate of slices of the same elementwise op over different operands
-// becomes the op over concatenates of the sliced operands, even though the
-// op has other users: the slices then reach the arguments and the
-// concatenate is one of views.
+// A concatenate of slices of the same elementwise op over different view
+// operands becomes the op over concatenates of the sliced operands, even
+// though the op has other users: the slices then reach the arguments and
+// the concatenate is one of views.
 
 // CHECK-LABEL: @slices_of_multiplies
 // CHECK-DAG: %[[A0:.+]] = stablehlo.slice %arg0 [0:3, 0:4] : (tensor<8x4xf32>) -> tensor<3x4xf32>
@@ -89,5 +89,23 @@ func.func @no_slice(%a: tensor<3x4xf32>, %b: tensor<5x4xf32>) -> tensor<8x4xf32>
   %na = stablehlo.negate %a : tensor<3x4xf32>
   %nb = stablehlo.negate %b : tensor<5x4xf32>
   %r = stablehlo.concatenate %na, %nb, dim = 0 : (tensor<3x4xf32>, tensor<5x4xf32>) -> tensor<8x4xf32>
+  return %r : tensor<8x4xf32>
+}
+
+// -----
+
+// The op's operands are computed: hoisting would leave a concatenate per
+// operand of the next level too. Left alone.
+
+// CHECK-LABEL: @computed_operands
+// CHECK: stablehlo.concatenate
+func.func @computed_operands(%a: tensor<8x4xf32>, %b: tensor<8x4xf32>) -> tensor<8x4xf32> {
+  %ea = stablehlo.exponential %a : tensor<8x4xf32>
+  %eb = stablehlo.exponential %b : tensor<8x4xf32>
+  %ma = stablehlo.multiply %ea, %a : tensor<8x4xf32>
+  %mb = stablehlo.multiply %eb, %b : tensor<8x4xf32>
+  %p0 = stablehlo.slice %ma [0:3, 0:4] : (tensor<8x4xf32>) -> tensor<3x4xf32>
+  %p1 = stablehlo.slice %mb [3:8, 0:4] : (tensor<8x4xf32>) -> tensor<5x4xf32>
+  %r = stablehlo.concatenate %p0, %p1, dim = 0 : (tensor<3x4xf32>, tensor<5x4xf32>) -> tensor<8x4xf32>
   return %r : tensor<8x4xf32>
 }

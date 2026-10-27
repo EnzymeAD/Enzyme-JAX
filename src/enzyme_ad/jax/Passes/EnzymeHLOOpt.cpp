@@ -33371,15 +33371,30 @@ struct ConcatElementwise final
 // op(concat(slice(a1), a2, slice(a3)), concat(slice(b1), b2, slice(b3))).
 // Unlike ConcatElementwise the op may have other users: it is then also
 // computed a second time on the concatenate's rows (one evaluation over the
-// concatenate's extent in all). That lets the slices reach the sources
-// (slice_slice, slices of arguments) and the concatenate become one of
-// views, pure data movement a backend fuses into the op's consumers, where
-// a concatenate of slices of a value it must also keep whole is
-// materialized. The slices of a constant operand fold away.
+// concatenate's extent in all). Only when the op's operands are views
+// (arguments, constants, iotas, through slices, reshapes, transposes,
+// reverses and broadcasts): the concatenates left are then of views, pure
+// data movement a backend fuses into the op's consumers, where a
+// concatenate of slices of a value it must also keep whole is materialized.
+// Hoisting through a chain of computed operands instead leaves one
+// concatenate per operand at every level, which is worse than the one it
+// started from.
 struct ConcatElementwiseSlice final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                               ConcatElementwiseSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  static bool isView(Value v) {
+    Operation *op = v.getDefiningOp();
+    if (!op)
+      return true;
+    if (isa<stablehlo::ConstantOp, sdy::ConstantOp, stablehlo::IotaOp>(op))
+      return true;
+    if (isa<stablehlo::SliceOp, stablehlo::ReshapeOp, stablehlo::TransposeOp,
+            stablehlo::ReverseOp, stablehlo::BroadcastInDimOp>(op))
+      return isView(op->getOperand(0));
+    return false;
+  }
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
                                     PatternRewriter &rewriter) const {
@@ -33404,7 +33419,7 @@ struct ConcatElementwiseSlice final
         return failure();
       for (Value operand : elem->getOperands()) {
         auto oTy = dyn_cast<RankedTensorType>(operand.getType());
-        if (!oTy || oTy.getShape() != resTy.getShape())
+        if (!oTy || oTy.getShape() != resTy.getShape() || !isView(operand))
           return failure();
       }
       if (first) {
