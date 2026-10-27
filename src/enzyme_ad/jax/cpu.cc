@@ -1,6 +1,8 @@
-#include "xla/service/custom_call_status.h"
-#include "xla/service/custom_call_target_registry.h"
 #include <cstring>
+#include <string_view>
+
+#include "xla/ffi/api/ffi.h"
+#include "xla/ffi/ffi_api.h"
 
 #if (defined(_WIN32) || defined(__CYGWIN__)) &&                                \
     !defined(MLIR_CAPI_ENABLE_WINDOWS_DLL_DECLSPEC)
@@ -18,6 +20,8 @@
 #define MLIR_CAPI_EXPORTED __attribute__((visibility("default")))
 #endif
 
+namespace ffi = xla::ffi;
+
 template <bool withError> struct CallInfo;
 
 template <> struct CallInfo<false> {
@@ -29,25 +33,51 @@ template <> struct CallInfo<true> {
 };
 
 template <bool withError>
-void forwarding_custom_call(void *out, const void **in, const void *opaque_ptr,
-                            size_t opaque_len, XlaCustomCallStatus *status) {
-  const CallInfo<withError> *opaque =
-      static_cast<const CallInfo<withError> *>(opaque_ptr);
+static ffi::Error execute(std::string_view attr, ffi::RemainingArgs args,
+                          ffi::RemainingRets) {
+  // `attr` holds the raw bytes of the CallInfo built by lower-jit.
+  if (attr.size() != sizeof(CallInfo<withError>))
+    return ffi::Error::InvalidArgument(
+        "enzymexla_compile_cpu: unexpected call info size");
+  CallInfo<withError> cinfo;
+  std::memcpy(&cinfo, attr.data(), sizeof(cinfo));
+
+  // Results alias operands, so the jitted function only takes the operands.
+  size_t numargs = args.size();
+  const void *ptrs[numargs];
+  for (size_t i = 0; i < numargs; i++) {
+    auto buf = args.get<ffi::AnyBuffer>(i);
+    if (!buf.has_value())
+      return buf.error();
+    ptrs[i] = buf->untyped_data();
+  }
 
   if constexpr (withError) {
-    char *err = opaque->run(in);
-    if (err) {
-      XlaCustomCallStatusSetFailure(status, err, strlen(err));
-    }
+    if (char *err = cinfo.run(ptrs))
+      return ffi::Error::Internal(err);
   } else {
-    opaque->run(in);
+    cinfo.run(ptrs);
   }
+
+  return ffi::Error::Success();
 }
 
+XLA_FFI_DEFINE_HANDLER(kExecute, execute<false>,
+                       ffi::Ffi::Bind()
+                           .Attr<std::string_view>("attr")
+                           .RemainingArgs()
+                           .RemainingRets());
+
+XLA_FFI_DEFINE_HANDLER(kExecuteWithError, execute<true>,
+                       ffi::Ffi::Bind()
+                           .Attr<std::string_view>("attr")
+                           .RemainingArgs()
+                           .RemainingRets());
+
 extern "C" MLIR_CAPI_EXPORTED void RegisterEnzymeXLACPUHandler() {
-  xla::CustomCallTargetRegistry::Global()->Register(
-      "enzymexla_compile_cpu", (void *)&forwarding_custom_call<false>, "Host");
-  xla::CustomCallTargetRegistry::Global()->Register(
-      "enzymexla_compile_cpu_with_error", (void *)&forwarding_custom_call<true>,
-      "Host");
+  XLA_FFI_REGISTER_HANDLER(ffi::GetXlaFfiApi(), "enzymexla_compile_cpu", "Host",
+                           kExecute);
+  XLA_FFI_REGISTER_HANDLER(ffi::GetXlaFfiApi(),
+                           "enzymexla_compile_cpu_with_error", "Host",
+                           kExecuteWithError);
 }
