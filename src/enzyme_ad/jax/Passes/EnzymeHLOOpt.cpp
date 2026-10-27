@@ -28588,11 +28588,23 @@ struct NotCompare
   LogicalResult matchAndRewriteImpl(stablehlo::NotOp op,
                                     PatternRewriter &rewriter) const {
     auto cmp = op.getOperand().getDefiningOp<stablehlo::CompareOp>();
+
     if (!cmp)
       return failure();
 
     if (!llvm::hasSingleElement(cmp->getUsers()))
       return failure();
+
+    auto dir = cmp.getComparisonDirection();
+    auto elemTy = getElementTypeOrSelf(cmp.getLhs().getType());
+    if (isa<FloatType>(elemTy)) {
+      auto cmpType = cmp.getCompareType();
+      bool totalOrder =
+          cmpType && *cmpType == stablehlo::ComparisonType::TOTALORDER;
+      if (!totalOrder && dir != stablehlo::ComparisonDirection::EQ &&
+          dir != stablehlo::ComparisonDirection::NE)
+        return failure();
+    }
 
     rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
         op, cmp.getLhs(), cmp.getRhs(),
