@@ -28,7 +28,7 @@ namespace ffi_internal {
 // directly; jitted kernels then share the runtime instance XLA uses.
 void registerEnzymeJaXCudaRuntimeSymbols() {
 #define MAP_CUDART(name)                                                       \
-  EnzymeJaXMapSymbol(#name, reinterpret_cast<void *>(&name))
+  mlir::enzyme::EnzymeJaXMapSymbol(#name, reinterpret_cast<void *>(&name))
   MAP_CUDART(__cudaRegisterFatBinary);
   MAP_CUDART(__cudaRegisterFatBinaryEnd);
   MAP_CUDART(__cudaUnregisterFatBinary);
