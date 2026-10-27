@@ -18765,6 +18765,10 @@ struct RereadBarrier final : RewritePattern {
     auto barrier = stablehlo::OptimizationBarrierOp::create(
         rewriter, op->getLoc(), ValueRange{result});
     rewriter.replaceAllUsesExcept(result, barrier->getResult(0), barrier);
+    return success();
+  }
+};
+
 // A concatenate fused into its consumer carries the computation behind each
 // of its operands into that fusion, where XLA recomputes it for every element
 // of the consumer that reads the concatenated value (a wide concatenate of
