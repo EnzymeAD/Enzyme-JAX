@@ -35302,6 +35302,18 @@ struct LogSimplify final
       }
     }
 
+    { // log(exp2(x)) -> x * ln(2)
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::Exp2Op>();
+      if (defOp && isa<FloatType>(op.getType().getElementType())) {
+        auto ln2 = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), op.getType(),
+            cast<ElementsAttr>(makeAttr(op.getType(), 0.6931471805599453)));
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, defOp.getOperand(),
+                                                      ln2);
+        return success();
+      }
+    }
+
     {
       auto defOp = op.getOperand().getDefiningOp<stablehlo::MulOp>();
       if (defOp) {
@@ -35430,6 +35442,63 @@ struct LogSimplify final
           isOnlyUsedInOperation(defOp, op)) { // log(rsqrt(x)) -> -log(x) / 2
         auto logOperand =
             stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getOperand());
+        auto negTwo = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), defOp.getType(),
+            cast<ElementsAttr>(makeAttr(defOp.getType(), -2)));
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, logOperand, negTwo);
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
+struct Log2Simplify final
+    : public CheckedOpRewritePattern<stablehlo::Log2Op, Log2Simplify> {
+  using CheckedOpRewritePattern<stablehlo::Log2Op,
+                                Log2Simplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::Log2Op op,
+                                    PatternRewriter &rewriter) const {
+    { // log2(exp2(x)) -> x
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::Exp2Op>();
+      if (defOp) {
+        rewriter.replaceAllUsesWith(op.getResult(), defOp.getOperand());
+        return success();
+      }
+    }
+
+    { // log2(exp(x)) -> x * log2(e)
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
+      if (defOp && isa<FloatType>(op.getType().getElementType())) {
+        auto log2e = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), op.getType(),
+            cast<ElementsAttr>(makeAttr(op.getType(), 1.4426950408889634)));
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, defOp.getOperand(),
+                                                      log2e);
+        return success();
+      }
+    }
+
+    { // log2(sqrt(x)) -> log2(x) / 2
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::SqrtOp>();
+      if (defOp && isOnlyUsedInOperation(defOp, op)) {
+        auto logOperand = stablehlo::Log2Op::create(rewriter, op.getLoc(),
+                                                    defOp.getOperand());
+        auto two = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), defOp.getType(),
+            cast<ElementsAttr>(makeAttr(defOp.getType(), 2)));
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, logOperand, two);
+        return success();
+      }
+    }
+
+    { // log2(rsqrt(x)) -> -log2(x) / 2
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::RsqrtOp>();
+      if (defOp && isOnlyUsedInOperation(defOp, op)) {
+        auto logOperand = stablehlo::Log2Op::create(rewriter, op.getLoc(),
+                                                    defOp.getOperand());
         auto negTwo = stablehlo::ConstantOp::create(
             rewriter, op.getLoc(), defOp.getType(),
             cast<ElementsAttr>(makeAttr(defOp.getType(), -2)));
@@ -45550,7 +45619,7 @@ struct EnzymeHLOOptPass
         MaxSimplify, MinSimplify, OrSimplify, XorSimplify, MulSimplify,
         DivSimplify, RemSimplify, PowSimplify, NoopSlice, NoopReverse,
         SliceReverse, SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
-        SliceDynamicSlice, LogSimplify, ShiftRightLogicalSimplify,
+        SliceDynamicSlice, LogSimplify, Log2Simplify, ShiftRightLogicalSimplify,
         NegativePadToSlice, SliceSimplify, ConvertSimplify, TransposeSimplify,
         DotGeneralSimplify, DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
@@ -45605,6 +45674,7 @@ struct EnzymeHLOOptPass
              UnaryConstProp<stablehlo::IsFiniteOp, stablehlo::isFiniteOp>,
              UnaryConstProp<stablehlo::LogOp, stablehlo::logOp>,
              UnaryConstProp<stablehlo::Log1pOp, stablehlo::log1pOp>,
+             UnaryConstProp<stablehlo::Log2Op, stablehlo::log2Op>,
              UnaryConstProp<stablehlo::AbsOp, stablehlo::absOp>,
              UnaryConstProp<stablehlo::NegOp, stablehlo::negOp>,
              UnaryConstProp<stablehlo::SqrtOp, stablehlo::sqrtOp>,
@@ -45613,6 +45683,7 @@ struct EnzymeHLOOptPass
              UnaryConstProp<stablehlo::SineOp, stablehlo::sineOp>,
              UnaryConstProp<stablehlo::ExpOp, stablehlo::exponentialOp>,
              UnaryConstProp<stablehlo::Expm1Op, stablehlo::expm1Op>,
+             UnaryConstProp<stablehlo::Exp2Op, stablehlo::exp2Op>,
              UnaryConstProp<stablehlo::TanhOp, stablehlo::tanhOp>,
              UnaryConstProp<stablehlo::LogisticOp, stablehlo::logisticOp>,
              UnaryConstProp<chlo::ConjOp, conjOp>,
@@ -45700,8 +45771,8 @@ struct EnzymeHLOOptPass
     if (passses & 32)
       patterns
           .add<UnaryPadPush<stablehlo::ConvertOp>,
-               UnaryPadPush<stablehlo::TanhOp>, UnaryPadPush<stablehlo::ExpOp>>(
-              context);
+               UnaryPadPush<stablehlo::TanhOp>, UnaryPadPush<stablehlo::ExpOp>,
+               UnaryPadPush<stablehlo::Exp2Op>>(context);
 
     if (passses & 64)
       patterns.add<TransposePad>(context);
@@ -45728,7 +45799,8 @@ struct EnzymeHLOOptPass
           CSE<stablehlo::BatchNormTrainingOp>,
           CSE<stablehlo::BatchNormInferenceOp>, CSE<stablehlo::BatchNormGradOp>,
           CSE<stablehlo::ExpOp>, CSE<stablehlo::Expm1Op>, CSE<stablehlo::LogOp>,
-          CSE<stablehlo::Log1pOp>, CSE<stablehlo::TanhOp>,
+          CSE<stablehlo::Log1pOp>, CSE<stablehlo::Exp2Op>,
+          CSE<stablehlo::Log2Op>, CSE<stablehlo::TanhOp>,
           CSE<stablehlo::LogisticOp>, CSE<stablehlo::SqrtOp>,
           CSE<stablehlo::RsqrtOp>, CSE<stablehlo::CbrtOp>,
           CSE<stablehlo::SineOp>, CSE<stablehlo::CosineOp>,
