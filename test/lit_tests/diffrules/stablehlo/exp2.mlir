@@ -1,5 +1,9 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=exp2 outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=FORWARD
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=exp2 outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=REVERSE
+// The interpreter run executes @main below: its check.expect_almost_eq ops
+// compare the primal and the forward- and reverse-mode derivatives that enzyme
+// produced against the expected values, and a mismatch makes
+// stablehlo-translate exit non-zero.
 // RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt | stablehlo-translate - --interpret --allow-unregistered-dialect
 
 func.func @exp2(%x : tensor<3xf32>) -> tensor<3xf32> {

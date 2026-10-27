@@ -35270,6 +35270,11 @@ struct CommonAssociativeCommutativeOpReorder final
   }
 };
 
+// ln(2) and log2(e), for rebasing logarithms and exponentials between the
+// natural and base-2 forms. <cmath>'s M_LN2 / M_LOG2E are not portable.
+static constexpr double kLn2 = 0.6931471805599453;
+static constexpr double kLog2E = 1.4426950408889634;
+
 struct LogSimplify final
     : public CheckedOpRewritePattern<stablehlo::LogOp, LogSimplify> {
   using CheckedOpRewritePattern<stablehlo::LogOp,
@@ -35307,7 +35312,7 @@ struct LogSimplify final
       if (defOp && isa<FloatType>(op.getType().getElementType())) {
         auto ln2 = stablehlo::ConstantOp::create(
             rewriter, op.getLoc(), op.getType(),
-            cast<ElementsAttr>(makeAttr(op.getType(), 0.6931471805599453)));
+            cast<ElementsAttr>(makeAttr(op.getType(), kLn2)));
         rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, defOp.getOperand(),
                                                       ln2);
         return success();
@@ -35474,7 +35479,7 @@ struct Log2Simplify final
       if (defOp && isa<FloatType>(op.getType().getElementType())) {
         auto log2e = stablehlo::ConstantOp::create(
             rewriter, op.getLoc(), op.getType(),
-            cast<ElementsAttr>(makeAttr(op.getType(), 1.4426950408889634)));
+            cast<ElementsAttr>(makeAttr(op.getType(), kLog2E)));
         rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, defOp.getOperand(),
                                                       log2e);
         return success();
