@@ -14,8 +14,7 @@
 // CHECK-DAG: %[[B:.+]] = stablehlo.slice %arg1 [1:9, 0:4] : (tensor<10x4xf32>) -> tensor<8x4xf32>
 // CHECK-DAG: %[[M:.+]] = stablehlo.multiply %[[A]], %[[B]] : tensor<8x4xf32>
 // CHECK-DAG: %[[A2:.+]] = stablehlo.slice %arg0 [2:10, 0:4] : (tensor<10x4xf32>) -> tensor<8x4xf32>
-// CHECK-DAG: %[[B2:.+]] = stablehlo.slice %arg1 [1:9, 0:4] : (tensor<10x4xf32>) -> tensor<8x4xf32>
-// CHECK-DAG: %[[S:.+]] = stablehlo.add %[[A2]], %[[B2]] : tensor<8x4xf32>
+// CHECK-DAG: %[[S:.+]] = stablehlo.add %[[A2]], %[[B]] : tensor<8x4xf32>
 // CHECK-DAG: %[[P:.+]] = stablehlo.compare GE, %[[IOTA]], %[[K]] : (tensor<8x4xi32>, tensor<8x4xi32>) -> tensor<8x4xi1>
 // CHECK: %[[R:.+]] = stablehlo.select %[[P]], %[[S]], %[[M]] : tensor<8x4xi1>, tensor<8x4xf32>
 // CHECK: return %[[R]]
@@ -36,11 +35,15 @@ func.func @two_pieces(%a: tensor<10x4xf32>, %b: tensor<10x4xf32>) -> tensor<8x4x
 
 // -----
 
-// A piece whose rebuilt rows would read past its source is left alone.
+// A piece whose rebuilt rows would read past its source reads a zero pad
+// of the source there: those rows are never selected.
 
 // CHECK-LABEL: @out_of_source
-// CHECK: stablehlo.concatenate
-// CHECK-NOT: stablehlo.select
+// CHECK-DAG: %[[P:.+]] = stablehlo.pad %arg0, %{{.+}}, low = [1, 0], high = [0, 0], interior = [0, 0] : (tensor<8x4xf32>, tensor<f32>) -> tensor<9x4xf32>
+// CHECK-DAG: %[[S:.+]] = stablehlo.slice %[[P]] [0:8, 0:4] : (tensor<9x4xf32>) -> tensor<8x4xf32>
+// CHECK-DAG: %[[N:.+]] = stablehlo.negate %[[S]] : tensor<8x4xf32>
+// CHECK: stablehlo.select %{{.+}}, %[[N]], %{{.+}} : tensor<8x4xi1>, tensor<8x4xf32>
+// CHECK-NOT: stablehlo.concatenate
 func.func @out_of_source(%a: tensor<8x4xf32>, %b: tensor<8x4xf32>) -> tensor<8x4xf32> {
   %a0 = stablehlo.slice %a [0:3, 0:4] : (tensor<8x4xf32>) -> tensor<3x4xf32>
   %p0 = stablehlo.negate %a0 : tensor<3x4xf32>

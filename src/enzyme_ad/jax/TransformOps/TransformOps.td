@@ -621,14 +621,6 @@ def ApplyConcatReshapeReducePatterns : EnzymeHLOPatternOp<
   let patterns = ["ConcatReshapeReduce"];
 }
 
-def ApplySliceElementwiseDisjoint : EnzymeHLOPatternOp<
-    "slice_elementwise_disjoint"> {
-  let patterns = ["SliceElementwiseDisjoint"];
-}
-def ApplyDUSConcatToDUSChain : EnzymeHLOPatternOp<
-    "dus_concat_to_dus_chain"> {
-  let patterns = ["DUSConcatToDUSChain"];
-}
 def ApplySinkElementwiseIntoConcat : EnzymeHLOPatternOp<
     "sink_elementwise_into_concat"> {
   let patterns = ["SinkElementwiseIntoConcat"];
