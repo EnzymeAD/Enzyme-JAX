@@ -6,6 +6,8 @@ def AllGather : HLOInst<"AllGatherOp">;
 def AllReduce : HLOInst<"AllReduceOp">;
 def AllToAll : HLOInst<"AllToAllOp">;
 def And : HLOInst<"AndOp">;
+def AsyncDone : HLOInst<"AsyncDoneOp">;
+def AsyncStart : HLOInst<"AsyncStartOp">;
 def Atan2 : HLOInst<"Atan2Op">;
 def BatchNormGrad : HLOInst<"BatchNormGradOp">;
 def BatchNormInference : HLOInst<"BatchNormInferenceOp">;
@@ -19,6 +21,7 @@ def Cholesky : HLOInst<"CholeskyOp">;
 def Clamp : HLOInst<"ClampOp">;
 def CollectiveBroadcast : HLOInst<"CollectiveBroadcastOp">;
 def CollectivePermute : HLOInst<"CollectivePermuteOp">;
+def CollectiveReduceOp : HLOInst<"CollectiveReduceOp">;
 def Compare : HLOInst<"CompareOp">;
 def Complex : HLOInst<"ComplexOp">;
 def Composite : HLOInst<"CompositeOp">;
@@ -27,7 +30,7 @@ def Constant : HLOInst<"ConstantOp">;
 def Convert : HLOInst<"ConvertOp">;
 def Convolution : HLOInst<"ConvolutionOp">;
 def Cos : HLOInst<"CosineOp">;
-def CountLeadingZeros : HLOInst<"ClzOp">;
+def Clz : HLOInst<"ClzOp">;
 def CustomCall : HLOInst<"CustomCallOp">;
 def Div : HLOInst<"DivOp">;
 def DotGeneral : HLOInst<"DotGeneralOp", "->getResult(0)">;
@@ -40,6 +43,7 @@ def DynamicReshape : HLOInst<"DynamicReshapeOp">;
 def DynamicSlice : HLOInst<"DynamicSliceOp">;
 def DynamicUpdateSlice : HLOInst<"DynamicUpdateSliceOp">;
 def Exp : HLOInst<"ExpOp">;
+def Exp2 : HLOInst<"Exp2Op">;
 def Expm1 : HLOInst<"Expm1">;
 def Fft : HLOInst<"FftOp">;
 def Floor : HLOInst<"FloorOp">;
@@ -52,6 +56,7 @@ def Infeed : HLOInst<"InfeedOp">;
 def Iota : HLOInst<"IotaOp">;
 def IsFinite : HLOInst<"IsFiniteOp">;
 def Log : HLOInst<"LogOp">;
+def Log2 : HLOInst<"Log2Op">;
 def Log1p : HLOInst<"Log1pOp">;
 def Logistic : HLOInst<"LogisticOp">;
 def Map : HLOInst<"MapOp">;
@@ -65,7 +70,7 @@ def Or : HLOInst<"OrOp">;
 def Outfeed : HLOInst<"OutfeedOp">;
 def Pad : HLOInst<"PadOp">;
 def PartitionId : HLOInst<"PartitionIdOp">;
-def PopulationCount : HLOInst<"PopcntOp">;
+def Popcnt : HLOInst<"PopcntOp">;
 def Pow : HLOInst<"PowOp">;
 def Real : HLOInst<"RealOp">;
 def Recv : HLOInst<"RecvOp">;
@@ -76,6 +81,7 @@ def ReduceWindow : HLOInst<"ReduceWindowOp">;
 def Rem : HLOInst<"RemOp">;
 def ReplicaId : HLOInst<"ReplicaIdOp">;
 def Reshape : HLOInst<"ReshapeOp">;
+def ReturnOp : HLOInst<"ReturnOp">;
 def Reverse : HLOInst<"ReverseOp">;
 def Rng : HLOInst<"RngOp">;
 def RngBitGenerator : HLOInst<"RngBitGeneratorOp">;
@@ -85,6 +91,7 @@ def Rsqrt : HLOInst<"RsqrtOp">;
 def Select : HLOInst<"SelectOp">;
 def SelectAndScatter : HLOInst<"SelectAndScatterOp">;
 def Send : HLOInst<"SendOp">;
+def SetDimensionSize : HLOInst<"SetDimensionSizeOp">;
 def ShiftLeft : HLOInst<"ShiftLeftOp">;
 def ShiftRightArithmetic : HLOInst<"ShiftRightArithmeticOp">;
 def ShiftRightLogical : HLOInst<"ShiftRightLogicalOp">;
@@ -94,6 +101,7 @@ def Slice : HLOInst<"SliceOp">;
 def Sort : HLOInst<"SortOp">;
 def Sqrt : HLOInst<"SqrtOp">;
 def Sub : HLOInst<"SubtractOp">;
+def Tan : HLOInst<"TanOp">;
 def Tanh : HLOInst<"TanhOp">;
 def Transpose : HLOInst<"TransposeOp">;
 def TriangularSolve : HLOInst<"TriangularSolveOp">;
@@ -103,25 +111,75 @@ def UniformQuantize : HLOInst<"UniformQuantizeOp">;
 def While : HLOInst<"WhileOp">;
 def Xor : HLOInst<"XorOp">;
 
+// Required ops for the rules not in HLO
 def Conj : Inst<"ConjOp", "chlo", "", "">;
-
-/// StableHLO - WIP operations
-def ReturnOp : HLOInst<"ReturnOp">;
-
-// Deprecated operations from StableHLO - "Not in HLO" category
-def Broadcast : HLOInst<"BroadcastOp">;
-def CreateToken : HLOInst<"CreateTokenOp">;
-def CrossReplicaSum : HLOInst<"CrossReplicaSumOp">;
-def Dot : HLOInst<"DotOp">;
-def Einsum : HLOInst<"EinsumOp">;
-def TorchIndexSelect : HLOInst<"TorchIndexSelectOp">;
-def UnaryEinsum : HLOInst<"UnaryEinsumOp">;
 
 /// Helpers - Max/Min
 def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::EQ">;
 def GE : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GE">;
 def LT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::LT">;
 def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
+
+// Inactive ops
+def : HLOInactiveOp<"AfterAllOp">;
+def : HLOInactiveOp<"AndOp">;
+def : HLOInactiveOp<"CeilOp">;
+def : HLOInactiveOp<"ClzOp">;
+def : HLOInactiveOp<"CompareOp">;
+def : HLOInactiveOp<"CreateTokenOp">;
+def : HLOInactiveOp<"DynamicIotaOp">;
+def : HLOInactiveOp<"FloorOp">;
+def : HLOInactiveOp<"GetDimensionSizeOp">;
+def : HLOInactiveOp<"IotaOp">;
+def : HLOInactiveOp<"IsFiniteOp">;
+def : HLOInactiveOp<"NotOp">;
+def : HLOInactiveOp<"OrOp">;
+def : HLOInactiveOp<"PartitionIdOp">;
+def : HLOInactiveOp<"PopcntOp">;
+def : HLOInactiveOp<"ReplicaIdOp">;
+def : HLOInactiveOp<"RoundOp">;
+def : HLOInactiveOp<"RoundNearestEvenOp">;
+def : HLOInactiveOp<"RngOp">;
+def : HLOInactiveOp<"RngBitGeneratorOp">;
+def : HLOInactiveOp<"SetDimensionSizeOp">;
+def : HLOInactiveOp<"ShiftLeftOp">;
+def : HLOInactiveOp<"ShiftRightArithmeticOp">;
+def : HLOInactiveOp<"ShiftRightLogicalOp">;
+def : HLOInactiveOp<"SignOp">;
+def : HLOInactiveOp<"XorOp">;
+
+// MemoryIdentity ops
+def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
+
+def : HLOMemoryIdentityOp<"DynamicSliceOp", [], [0], (Op $operand, (Variadic<"getStartIndices">):$start_indices), [
+  (DynamicUpdateSlice (TypeOf $operand), (HLOConstantFP<"0"> $operand), (DiffeRet), $start_indices),
+  (AssertingInactiveArg)
+]>;
+
+def DUSUpdateShape : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  getI64Attr(builder, cast<TensorType>(op.getUpdate().getType()).getShape());
+}]>;
+
+def : HLOMemoryIdentityOp<"DynamicUpdateSliceOp", [], [0, 1], (Op $operand, $update, (Variadic<"getStartIndices">):$start_indices), [
+  (DynamicUpdateSlice (TypeOf $operand), (DiffeRet), (HLOConstantFP<"0"> $update), $start_indices),
+  (DynamicSlice (TypeOf $update), (DiffeRet), $start_indices, (DUSUpdateShape)),
+  (AssertingInactiveArg)
+]>;
+
+def : HLOMemoryIdentityOp<"PadOp", [], [-1], (Op $op, $padval), [
+  (Slice (TypeOf $op), (DiffeRet), (PadToSliceStart), (PadToSliceLimit), (PadToSliceStride)),
+  (AssertingInactiveArg)
+]>;
+
+def : HLOMemoryIdentityOp<"SliceOp", [], [0], (Op $x), [
+  (DynamicUpdateSlice (TypeOf $x), (HLOConstantFP<"0"> $x), (DiffeRet)),
+]>;
+
+// ReadOnlyIdentity ops
+def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
+def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (DiffeRet))]>;
+def : HLOReadOnlyIdentityOp<"ReverseOp", [0], (Op $x), [(Reverse (DiffeRet), (Dimensions))]>;
+def : HLOReadOnlyIdentityOp<"TransposeOp", [0], (Op $x), [(Transpose (TypeOf $x), (DiffeRet), (InversePermutation))]>;
 
 // Others
 def CheckedMul : SubRoutine<(Op $diffret, $x),
@@ -936,30 +994,6 @@ def : HLODerivative<"ConvolutionOp", (Op $lhs, $rhs),
                     )
                   >;
 
-def EinsumConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getEinsumConfig();
-}]>;
-
-def GradUnaryEinsumConfig : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  StringRef config = op.getEinsumConfig();
-  auto [input, output] = config.split(StringRef("->"));
-  builder.getStringAttr(output + "->" + input);
-}]>;
-
-def GradEinsumConfigLhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  StringRef config = op.getEinsumConfig();
-  auto [input, output] = config.split(StringRef("->"));
-  auto [lhs, rhs] = input.split(',');
-  builder.getStringAttr(output + "," + rhs + "->" + lhs);
-}]>;
-
-def GradEinsumConfigRhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  StringRef config = op.getEinsumConfig();
-  auto [input, output] = config.split(StringRef("->"));
-  auto [lhs, rhs] = input.split(',');
-  builder.getStringAttr(output + "," + lhs + "->" + rhs);
-}]>;
-
 // Derivative rules
 def : HLODerivative<"AddOp", (Op $x, $y),
                     [
@@ -976,8 +1010,6 @@ def : HLODerivative<"Atan2Op", (Op $y, $x),
                     ],
                     (CheckedDiv (Sub (Mul $x, (Shadow $y)), (Mul $y, (Shadow $x))), (Add (Mul $x, $x), (Mul $y, $y)))
                   >;
-
-def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
 
 // Gather Adjoint
 def ResultDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
@@ -1045,8 +1077,6 @@ def : HLODerivative<"GatherOp", (Op $operand, $start_indices),
                     )
                   >;
 
-def : HLOInactiveOp<"CeilOp">;
-
 def : HLODerivative<"ClampOp", (Op $min, $operand, $max), [
   (Select
     (And
@@ -1086,49 +1116,12 @@ def : HLODerivative<"CbrtOp", (Op $x), [
   (CheckedDiv (DiffeRet), (Mul (HLOConstantFP<"3">), (Mul (Cbrt $x), (Cbrt $x)))),
 ]>;
 
-def : HLOInactiveOp<"CompareOp">;
-
 def : HLODerivative<"ComplexOp", (Op $re, $im), [
   (Real (DiffeRet)),
   (Neg (Imag (DiffeRet))),
 ], (Complex (Shadow $re), (Shadow $im))>;
 
-def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
-
-def : HLOMemoryIdentityOp<"DynamicSliceOp", [], [0], (Op $operand, (Variadic<"getStartIndices">):$start_indices), [
-                      (DynamicUpdateSlice
-                        (TypeOf $operand),
-                        (HLOConstantFP<"0"> $operand),
-                        (DiffeRet),
-                        $start_indices
-                      ),
-                      (AssertingInactiveArg)
-                    ]>;
-
-def UpdateSliceShape : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  getI64Attr(builder, cast<TensorType>(op.getUpdate().getType()).getShape());
-}]>;
-
-def : HLOMemoryIdentityOp<"DynamicUpdateSliceOp", [], [0, 1], (Op $operand, $update, (Variadic<"getStartIndices">):$start_indices), 
-[
-                      (DynamicUpdateSlice
-                        (TypeOf $operand),
-                        (DiffeRet),
-                        (HLOConstantFP<"0"> $update),
-                        $start_indices
-                      ),
-                      (DynamicSlice
-                        (TypeOf $update),
-                        (DiffeRet),
-                        $start_indices,
-                        (UpdateSliceShape)
-                      ),
-                      (AssertingInactiveArg)
-                    ]>;
-
 def : HLODerivative<"CosineOp", (Op $x), [(CheckedMul (DiffeRet), (Neg (Sin $x)))], (Neg (Mul (Sin $x), (Shadow $x)))>;
-
-def : HLOInactiveOp<"CreateTokenOp">;
 
 def : HLODerivative<"DivOp", (Op $x, $y),
                     [
@@ -1177,13 +1170,11 @@ def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
                         (HLOConstantFP<"0">)))
                   >;
 
-def : HLOInactiveOp<"DynamicIotaOp">;
-
 def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
-def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
+def : HLODerivative<"Exp2Op", (Op $x), [(CheckedMul (DiffeRet), (Mul (Exp2 $x), (Log (HLOConstantFP<"2"> $x))))]>;
 
-def : HLOInactiveOp<"FloorOp">;
+def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
 def : HLODerivative<"ImagOp", (Op $x),
                   [
@@ -1192,11 +1183,9 @@ def : HLODerivative<"ImagOp", (Op $x),
                       (HLOConstantFP<"0">))
                   ], (Imag (Shadow $x))>;
 
-def : HLOInactiveOp<"IotaOp">;
-
-def : HLOInactiveOp<"IsFiniteOp">;
-
 def : HLODerivative<"LogOp", (Op $x), [(CheckedDiv (DiffeRet), $x)]>;
+
+def : HLODerivative<"Log2Op", (Op $x), [(CheckedDiv (DiffeRet), (Mul $x, (Log (HLOConstantFP<"2"> $x))))]>;
 
 def : HLODerivative<"Log1pOp", (Op $x), [(CheckedDiv (DiffeRet), (Add $x, (HLOConstantFP<"1"> $x)))]>;
 
@@ -1226,13 +1215,6 @@ def : HLODerivative<"MulOp", (Op $x, $y),
                   >;
 
 def : HLODerivative<"NegOp", (Op $x), [(Neg (DiffeRet))]>;
-
-def : HLOMemoryIdentityOp<"PadOp", [], [-1], (Op $op, $padval), [
-  (Slice (TypeOf $op), (DiffeRet), (PadToSliceStart), (PadToSliceLimit), (PadToSliceStride)),
-  (AssertingInactiveArg)
-]>;
-
-def : HLOInactiveOp<"PartitionIdOp">;
 
 def : HLODerivative<"PowOp", (Op $x, $y),
                   [
@@ -1268,18 +1250,6 @@ def : HLODerivative<"RemOp", (Op $x, $y),
                   ]
                   >;
 
-def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (DiffeRet))]>;
-
-def : HLODerivative<"ReverseOp", (Op $x), [(Reverse (DiffeRet), (Dimensions))], (Reverse (Shadow $x), (Dimensions))>;
-
-def : HLOInactiveOp<"RoundOp">;
-
-def : HLOInactiveOp<"RoundNearestEvenOp">;
-
-def : HLOInactiveOp<"RngOp">;
-
-def : HLOInactiveOp<"RngBitGeneratorOp">;
-
 def : HLODerivative<"RsqrtOp", (Op $x),
                     [
                       // (Select (FCmpUEQ $x, (ConstantFP<"0"> $x)), (ConstantFP<"0"> $x), (FDiv (DiffeRet), (FMul (ConstantFP<"-2"> $x), (Call<(SameFunc), [ReadNone,NoUnwind]> $x))))
@@ -1303,11 +1273,7 @@ def : HLODerivative<"SelectOp", (Op $cond, $lhs, $rhs),
                       (Select $cond, (SelectIfActive $lhs, (Shadow $lhs), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (Shadow $rhs), (HLOConstantFP<"0">)))
                   >;
 
-def : HLOInactiveOp<"SignOp">;
-
 def : HLODerivative<"SineOp", (Op $x), [(CheckedMul (DiffeRet), (Cos $x))]>;
-
-def : HLOReadOnlyIdentityOp<"SliceOp">;
 
 def : HLODerivative<"SubtractOp", (Op $x, $y),
                     [
@@ -1323,19 +1289,16 @@ def : HLODerivative<"SqrtOp", (Op $x),
                     ]
                   >;
 
+def : HLODerivative<"TanOp", (Op $x),
+                    [
+                      (CheckedDiv (DiffeRet), (Mul (Cos $x), (Cos $x)))
+                    ]
+                  >;
+
 def : HLODerivative<"TanhOp", (Op $x),
                     [
                       (CheckedMul (DiffeRet), (Sub (HLOConstantFP<"1">), (Mul (Tanh $x), (Tanh $x))))
                     ]
-                  >;
-
-def : HLOInactiveOp<"TorchIndexSelectOp">;
-
-def : HLODerivative<"TransposeOp", (Op $x),
-                    [
-                        (Transpose (TypeOf $x), (DiffeRet), (InversePermutation)),
-                    ],
-                    (SelectIfActive $x, (Transpose (Shadow $x), (Permutation)), (HLOConstantFP<"0">))
                   >;
 
 // FFT rules
