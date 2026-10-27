@@ -19163,9 +19163,15 @@ static bool isCheapToSlice(Value v) {
     if (isa<stablehlo::ConstantOp, stablehlo::IotaOp,
             stablehlo::BroadcastInDimOp>(op))
       continue;
+    // A gather reads its operand; slicing it slices the indices.
+    if (auto gather = dyn_cast<stablehlo::GatherOp>(op)) {
+      todo.push_back(gather.getOperand());
+      continue;
+    }
     if (isa<stablehlo::SliceOp, stablehlo::ReshapeOp, stablehlo::TransposeOp,
-            stablehlo::ConvertOp, stablehlo::PadOp, stablehlo::ConcatenateOp,
-            stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(op)) {
+            stablehlo::ReverseOp, stablehlo::ConvertOp, stablehlo::PadOp,
+            stablehlo::ConcatenateOp, stablehlo::DynamicSliceOp,
+            stablehlo::DynamicUpdateSliceOp>(op)) {
       for (Value operand : op->getOperands())
         todo.push_back(operand);
       continue;
@@ -19175,11 +19181,22 @@ static bool isCheapToSlice(Value v) {
   return true;
 }
 
+// Whether cutting the branches of `selectOp` is a cost question at all: it
+// is for floating-point (and complex) values, the stencil computations
+// above; integer selects are index arithmetic, small and worth cutting for
+// what the slices then fold.
+static bool cutsNeedCheapBranches(stablehlo::SelectOp selectOp) {
+  auto elTy = selectOp.getType().getElementType();
+  return isa<FloatType, ComplexType>(elTy);
+}
+
 // Whether a select may become a DUS of a slice of `update` into `base`:
 // the update is cheap to slice, or the base is a function argument (an
 // in-place update of an input, which the backend keeps a single kernel).
-static bool selectToDUSIsCheap(Value base, Value update) {
-  return isCheapToSlice(update) || isa<BlockArgument>(base);
+static bool selectToDUSIsCheap(stablehlo::SelectOp selectOp, Value base,
+                               Value update) {
+  return !cutsNeedCheapBranches(selectOp) || isCheapToSlice(update) ||
+         isa<BlockArgument>(base);
 }
 
 struct SelectCompIotaConstSimplify final
@@ -19359,9 +19376,10 @@ struct SelectCompIotaConstSimplify final
     }
 
     // Every branch that gets cut must be cheap to slice.
-    for (auto &e : slices)
-      if (e.count > 0 && !isCheapToSlice(e.tensor))
-        return failure();
+    if (cutsNeedCheapBranches(selectOp))
+      for (auto &e : slices)
+        if (e.count > 0 && !isCheapToSlice(e.tensor))
+          return failure();
 
     const auto loc = selectOp.getLoc();
     SmallVector<int64_t> starts(outputShape.size(), 0);
@@ -19495,7 +19513,7 @@ struct SelectCompIotaConstToDUS final
       if (ub < 0)
         ub = 0;
 
-      if (!selectToDUSIsCheap(falseTensor, trueTensor))
+      if (!selectToDUSIsCheap(selectOp, falseTensor, trueTensor))
         return failure();
 
       auto ITy = RankedTensorType::get({}, rewriter.getI32Type());
@@ -19558,7 +19576,7 @@ struct SelectPadToDUS final
         return failure();
     }
 
-    if (!selectToDUSIsCheap(operandV ? falseTensor : trueTensor,
+    if (!selectToDUSIsCheap(selectOp, operandV ? falseTensor : trueTensor,
                             operandV ? trueTensor : falseTensor))
       return failure();
 

@@ -138,3 +138,55 @@ func.func @pad_mask_arg_base(%a: tensor<16x8xf64>, %b: tensor<16x8xf64>) -> tens
   %s = stablehlo.select %m, %x, %b : tensor<16x8xi1>, tensor<16x8xf64>
   return %s : tensor<16x8xf64>
 }
+
+// -----
+
+// A reverse is a view: a halo fill picking between a slice and its reverse
+// is still cut into pieces.
+
+// CHECK-LABEL: @reverse_branch
+// CHECK-NOT: stablehlo.select
+// CHECK: stablehlo.concatenate
+func.func @reverse_branch(%a: tensor<16xf64>) -> tensor<16xf64> {
+  %iota = stablehlo.iota dim = 0 : tensor<16xi32>
+  %k = stablehlo.constant dense<8> : tensor<16xi32>
+  %p = stablehlo.compare LT, %iota, %k : (tensor<16xi32>, tensor<16xi32>) -> tensor<16xi1>
+  %r = stablehlo.reverse %a, dims = [0] : tensor<16xf64>
+  %s = stablehlo.select %p, %a, %r : tensor<16xi1>, tensor<16xf64>
+  return %s : tensor<16xf64>
+}
+
+// -----
+
+// Integer selects are index arithmetic and keep being cut whatever their
+// branches.
+
+// CHECK-LABEL: @integer_computed
+// CHECK-NOT: stablehlo.select
+// CHECK: stablehlo.concatenate
+func.func @integer_computed(%a: tensor<8x4xi64>, %b: tensor<8x4xi64>) -> tensor<8x4xi64> {
+  %iota = stablehlo.iota dim = 0 : tensor<8x4xi32>
+  %k = stablehlo.constant dense<3> : tensor<8x4xi32>
+  %p = stablehlo.compare LT, %iota, %k : (tensor<8x4xi32>, tensor<8x4xi32>) -> tensor<8x4xi1>
+  %x = stablehlo.multiply %a, %b : tensor<8x4xi64>
+  %y = stablehlo.add %a, %b : tensor<8x4xi64>
+  %r = stablehlo.select %p, %x, %y : tensor<8x4xi1>, tensor<8x4xi64>
+  return %r : tensor<8x4xi64>
+}
+
+// -----
+
+// A gather of an argument is a read of it: cut.
+
+// CHECK-LABEL: @gather_branch
+// CHECK-NOT: stablehlo.select
+// CHECK: stablehlo.dynamic_update_slice
+func.func @gather_branch(%a: tensor<16xf64>, %idx: tensor<16x1xi64>, %b: tensor<16xf64>) -> tensor<16xf64> {
+  %t = stablehlo.constant dense<true> : tensor<4xi1>
+  %f = stablehlo.constant dense<false> : tensor<i1>
+  %m = stablehlo.pad %t, %f, low = [0], high = [12], interior = [0] : (tensor<4xi1>, tensor<i1>) -> tensor<16xi1>
+  %g = "stablehlo.gather"(%a, %idx) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<16xf64>, tensor<16x1xi64>) -> tensor<16xf64>
+  %x = stablehlo.multiply %b, %b : tensor<16xf64>
+  %s = stablehlo.select %m, %g, %x : tensor<16xi1>, tensor<16xf64>
+  return %s : tensor<16xf64>
+}
