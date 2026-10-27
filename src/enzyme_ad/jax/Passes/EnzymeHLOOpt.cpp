@@ -33374,26 +33374,17 @@ struct ConcatElementwise final
 // concatenate's extent in all); the slices may not, since one that
 // survives the rewrite leaves nothing gained. The rewrite is made only
 // when at most one operand position needs a concatenate of its own, the
-// others being one value already: the same splat constant, the same scalar
-// broadcast, or adjacent windows of one source in order (a slice of it,
-// or the source itself). So the concatenate moves down the chain of the
-// one computed operand and never multiplies: hoisting over two computed
-// operands leaves a concatenate per operand at every level, measured on
-// the Breeze WENO tendency modules as 13 instead of 5 (scalar) and 73
-// instead of 40 (model), 10-30% slower.
+// others being one value already (classifyConcatPieces: the same splat
+// constant, the same scalar broadcast, or adjacent windows of one source
+// in order). So the concatenate moves down the chain of the one computed
+// operand and never multiplies: hoisting over two computed operands leaves
+// a concatenate per operand at every level, measured on the Breeze WENO
+// tendency modules as 13 instead of 5 (scalar) and 73 instead of 40
+// (model), 10-30% slower.
 struct ConcatElementwiseSlice final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                               ConcatElementwiseSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  // What the pieces' operands at one position of the op amount to.
-  struct Position {
-    enum Kind { Splat, Broadcast, Window, Concat } kind = Concat;
-    Attribute splat;
-    Value scalar;
-    Value source;
-    SmallVector<int64_t> starts, limits;
-  };
 
   LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
                                     PatternRewriter &rewriter) const {
@@ -33401,7 +33392,8 @@ struct ConcatElementwiseSlice final
       return failure();
     int64_t dim = concatOp.getDimension();
     Operation *first = nullptr;
-    SmallVector<std::pair<Operation *, stablehlo::SliceOp>> pieces;
+    SmallVector<Operation *> elems;
+    SmallVector<stablehlo::SliceOp> windows;
     bool anySlice = false;
     for (Value v : concatOp.getOperands()) {
       Operation *def = v.getDefiningOp();
@@ -33438,130 +33430,31 @@ struct ConcatElementwiseSlice final
         first = elem;
       }
       anySlice |= (bool)slice;
-      pieces.emplace_back(elem, slice);
+      elems.push_back(elem);
+      windows.push_back(slice);
     }
     if (!anySlice) // ConcatElementwise's case
       return failure();
 
-    // The window of a piece's operand: the piece's slice, or all of it.
-    auto window = [&](Value operand, stablehlo::SliceOp slice,
-                      SmallVectorImpl<int64_t> &starts,
-                      SmallVectorImpl<int64_t> &limits) {
-      auto ty = cast<RankedTensorType>(operand.getType());
-      if (slice) {
-        if (llvm::any_of(slice.getStrides(), [](int64_t s) { return s != 1; }))
-          return false;
-        starts.assign(slice.getStartIndices().begin(),
-                      slice.getStartIndices().end());
-        limits.assign(slice.getLimitIndices().begin(),
-                      slice.getLimitIndices().end());
-      } else {
-        starts.assign(ty.getRank(), 0);
-        limits.assign(ty.getShape().begin(), ty.getShape().end());
-      }
-      return true;
+    auto operandsAt = [&](unsigned i) {
+      SmallVector<Value> values;
+      for (Operation *elem : elems)
+        values.push_back(elem->getOperand(i));
+      return values;
     };
-    SmallVector<Position> positions(first->getNumOperands());
     int64_t concats = 0;
-    for (auto [i, pos] : llvm::enumerate(positions)) {
-      bool splat = true, broadcast = true, windowed = true;
-      for (auto [j, piece] : llvm::enumerate(pieces)) {
-        auto [elem, slice] = piece;
-        Value operand = elem->getOperand(i);
-        SplatElementsAttr sp;
-        if (splat && matchPattern(operand, m_Constant(&sp))) {
-          Attribute val = sp.getSplatValue<Attribute>();
-          if (j == 0)
-            pos.splat = val;
-          else if (pos.splat != val)
-            splat = false;
-        } else {
-          splat = false;
-        }
-        auto bc = operand.getDefiningOp<stablehlo::BroadcastInDimOp>();
-        if (broadcast && bc &&
-            cast<RankedTensorType>(bc.getOperand().getType()).getRank() == 0) {
-          if (j == 0)
-            pos.scalar = bc.getOperand();
-          else if (pos.scalar != bc.getOperand())
-            broadcast = false;
-        } else {
-          broadcast = false;
-        }
-        SmallVector<int64_t> starts, limits;
-        if (windowed && window(operand, slice, starts, limits)) {
-          if (j == 0) {
-            pos.source = operand;
-            pos.starts = starts;
-            pos.limits = limits;
-          } else if (pos.source != operand) {
-            windowed = false;
-          } else {
-            for (int64_t d = 0; d < (int64_t)starts.size() && windowed; d++) {
-              if (d == dim)
-                windowed = starts[d] == pos.limits[d];
-              else
-                windowed =
-                    starts[d] == pos.starts[d] && limits[d] == pos.limits[d];
-            }
-            if (windowed)
-              pos.limits[dim] = limits[dim];
-          }
-        } else {
-          windowed = false;
-        }
-      }
-      if (splat)
-        pos.kind = Position::Splat;
-      else if (broadcast)
-        pos.kind = Position::Broadcast;
-      else if (windowed)
-        pos.kind = Position::Window;
-      else
-        pos.kind = Position::Concat, concats++;
-    }
+    for (unsigned i = 0; i < first->getNumOperands(); i++)
+      if (classifyConcatPieces(operandsAt(i), windows, dim) ==
+          ConcatPieces::Concatenate)
+        concats++;
     if (concats > 1)
       return failure();
 
     auto loc = concatOp.getLoc();
-    auto resultShape = concatOp.getType().getShape();
     SmallVector<Value> elementwiseOperands;
-    for (auto [i, pos] : llvm::enumerate(positions)) {
-      auto elemTy = cast<RankedTensorType>(first->getOperand(i).getType())
-                        .getElementType();
-      auto fullTy = RankedTensorType::get(resultShape, elemTy);
-      switch (pos.kind) {
-      case Position::Splat:
-        elementwiseOperands.push_back(stablehlo::ConstantOp::create(
-            rewriter, loc, fullTy,
-            cast<ElementsAttr>(SplatElementsAttr::get(fullTy, pos.splat))));
-        break;
-      case Position::Broadcast:
-        elementwiseOperands.push_back(stablehlo::BroadcastInDimOpCreate(
-            rewriter, loc, pos.scalar, resultShape, ArrayRef<int64_t>()));
-        break;
-      case Position::Window: {
-        SmallVector<int64_t> strides(pos.starts.size(), 1);
-        elementwiseOperands.push_back(stablehlo::SliceOpCreate(
-            rewriter, loc, pos.source, pos.starts, pos.limits, strides));
-        break;
-      }
-      case Position::Concat: {
-        SmallVector<Value> newConcatOperands;
-        for (auto [elem, slice] : pieces) {
-          Value operand = elem->getOperand(i);
-          if (slice)
-            operand = stablehlo::SliceOpCreate(
-                rewriter, slice.getLoc(), operand, slice.getStartIndices(),
-                slice.getLimitIndices(), slice.getStrides());
-          newConcatOperands.push_back(operand);
-        }
-        elementwiseOperands.push_back(stablehlo::ConcatenateOpCreate(
-            rewriter, loc, newConcatOperands, dim));
-        break;
-      }
-      }
-    }
+    for (unsigned i = 0; i < first->getNumOperands(); i++)
+      elementwiseOperands.push_back(
+          ConcatenatePiecesCreate(rewriter, loc, operandsAt(i), windows, dim));
     auto newElementwiseOp = rewriter.create(
         loc, first->getName().getIdentifier(), ValueRange(elementwiseOperands),
         TypeRange(concatOp.getType()), computeAttrs(first), {}, {});

@@ -1597,6 +1597,25 @@ LogicalResult concatBroadcastSliceSimplify(PatternRewriter &rewriter,
                                            int64_t dim,
                                            SmallVectorImpl<Value> &newOperands);
 
+// What concat_dim(values[0] at the window of windows[0], values[1] at the
+// window of windows[1], ...) amounts to, windows[i] being a slice whose
+// window is taken of values[i] (null: all of it, or the window of values[i]
+// itself when it is a slice). One value when the windows are adjacent
+// windows of one value in order (canMergeSlicesAlongAxis), when the values
+// are constants of one splat, or when they are broadcasts of one scalar
+// (both also through slices); otherwise a concatenate.
+enum class ConcatPieces { OneSplat, OneBroadcast, OneWindow, Concatenate };
+ConcatPieces classifyConcatPieces(ArrayRef<Value> values,
+                                  ArrayRef<stablehlo::SliceOp> windows,
+                                  int64_t dim);
+// Builds that: the one constant, broadcast or slice (the value itself when
+// the windows cover it), or else the concatenate of the windows with
+// adjacent slices merged (concatSliceSimplify).
+Value ConcatenatePiecesCreate(PatternRewriter &rewriter, Location loc,
+                              ArrayRef<Value> values,
+                              ArrayRef<stablehlo::SliceOp> windows,
+                              int64_t dim);
+
 Value getIdentityValue(OpBuilder &builder, Location loc, Type elemType,
                        Operation *op);
 
