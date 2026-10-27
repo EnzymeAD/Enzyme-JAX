@@ -621,6 +621,14 @@ def ApplyConcatReshapeReducePatterns : EnzymeHLOPatternOp<
   let patterns = ["ConcatReshapeReduce"];
 }
 
+def ApplySliceElementwiseDisjoint : EnzymeHLOPatternOp<
+    "slice_elementwise_disjoint"> {
+  let patterns = ["SliceElementwiseDisjoint"];
+}
+def ApplyDUSConcatToDUSChain : EnzymeHLOPatternOp<
+    "dus_concat_to_dus_chain"> {
+  let patterns = ["DUSConcatToDUSChain"];
+}
 def ApplySinkElementwiseIntoConcat : EnzymeHLOPatternOp<
     "sink_elementwise_into_concat"> {
   let patterns = ["SinkElementwiseIntoConcat"];
@@ -2401,6 +2409,34 @@ def SumToReduceWindow : EnzymeHLOPatternOp<
 // constructing them in search.
 
 // benefit 65k + max_constant_expansion flag
+// parameter: the largest op count of the rebuilt operand
+def ApplyPadComputedToSelectPatterns : EnzymeHLOParameterizedPatternOp<
+    "pad_computed_to_select"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
+  let assemblyFormat = "prop-dict attr-dict";
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getI64IntegerAttr(1024)))};
+    }
+  }];
+}
+// parameter: the largest op count of the rebuilt pieces
+def ApplyConcatPiecesToSelectPatterns : EnzymeHLOParameterizedPatternOp<
+    "concat_pieces_to_select"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
+  let assemblyFormat = "prop-dict attr-dict";
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getI64IntegerAttr(1024)))};
+    }
+  }];
+}
 def ApplyIotaSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
     "iota_simplify"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);

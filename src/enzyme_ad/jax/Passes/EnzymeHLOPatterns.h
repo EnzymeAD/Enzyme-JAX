@@ -49,6 +49,10 @@ void addAbsOfExpSimplify(RewritePatternSet &patterns,
                          PatternBenefit benefit);
 void addIotaSimplify(RewritePatternSet &patterns, int64_t maxConstantExpansion,
                      MLIRContext &context, PatternBenefit benefit);
+void addConcatPiecesToSelect(RewritePatternSet &patterns, int64_t maxOps,
+                             MLIRContext &context, PatternBenefit benefit);
+void addPadComputedToSelect(RewritePatternSet &patterns, int64_t maxOps,
+                            MLIRContext &context, PatternBenefit benefit);
 void addRecognizeFromConstant(RewritePatternSet &patterns, int64_t minFoldSize,
                               MLIRContext &context, PatternBenefit benefit);
 void addConcatConstProp(RewritePatternSet &patterns,
