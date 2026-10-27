@@ -1,7 +1,8 @@
-#include "xla/ffi/api/c_api_internal.h"
+#include <cstring>
+#include <string_view>
+
 #include "xla/ffi/api/ffi.h"
 #include "xla/ffi/ffi_api.h"
-#include "xla/stream_executor/stream.h"
 
 #if (defined(_WIN32) || defined(__CYGWIN__)) &&                                \
     !defined(MLIR_CAPI_ENABLE_WINDOWS_DLL_DECLSPEC)
@@ -19,6 +20,8 @@
 #define MLIR_CAPI_EXPORTED __attribute__((visibility("default")))
 #endif
 
+namespace ffi = xla::ffi;
+
 template <bool withError> struct CallInfo;
 
 template <> struct CallInfo<false> {
@@ -29,84 +32,54 @@ template <> struct CallInfo<true> {
   char *(*run)(const void **, void *);
 };
 
-XLA_FFI_Error *instantiate(XLA_FFI_CallFrame *call_frame) { return nullptr; }
-
-XLA_FFI_Error *prepare(XLA_FFI_CallFrame *call_frame) { return nullptr; }
-
-XLA_FFI_Error *initialize(XLA_FFI_CallFrame *call_frame) { return nullptr; }
-
 template <bool withError>
-XLA_FFI_Error *execute(XLA_FFI_CallFrame *call_frame) {
-  // If passed a call frame with the metadata extension, just return the
-  // metadata.
-  if (call_frame->extension_start != nullptr &&
-      call_frame->extension_start->type == XLA_FFI_Extension_Metadata) {
-    auto extension = reinterpret_cast<XLA_FFI_Metadata_Extension *>(
-        call_frame->extension_start);
-    extension->metadata->api_version = XLA_FFI_Api_Version{
-        XLA_FFI_Api_Version_STRUCT_SIZE,
-        /*extension_start=*/nullptr,
-        XLA_FFI_API_MAJOR,
-        XLA_FFI_API_MINOR,
-    };
-    return nullptr;
-  }
+static ffi::Error execute(void *stream, std::string_view attr,
+                          ffi::RemainingArgs args, ffi::RemainingRets) {
+  // `attr` holds the raw bytes of the CallInfo built by lower-jit.
+  if (attr.size() != sizeof(CallInfo<withError>))
+    return ffi::Error::InvalidArgument(
+        "enzymexla_compile_gpu: unexpected call info size");
+  CallInfo<withError> cinfo;
+  std::memcpy(&cinfo, attr.data(), sizeof(cinfo));
 
-  auto *bspan =
-      reinterpret_cast<XLA_FFI_ByteSpan *>(call_frame->attrs.attrs[0]);
-
-  CallInfo<withError> *cinfo;
-  if constexpr (withError) {
-    cinfo = (CallInfo<true> *)bspan->ptr;
-  } else {
-    cinfo = (CallInfo<false> *)bspan->ptr;
-  }
-
-  auto internal_api = call_frame->api->internal_api;
-  auto ctx = call_frame->ctx;
-  stream_executor::Stream *streamp;
-  internal_api->XLA_FFI_INTERNAL_Stream_Get(ctx, (void **)&streamp);
-  void *stream = streamp->platform_specific_handle().stream;
-
-  size_t numargs = call_frame->args.size;
-  void *ptrs[numargs];
+  // Results alias operands, so the jitted function only takes the operands.
+  size_t numargs = args.size();
+  const void *ptrs[numargs];
   for (size_t i = 0; i < numargs; i++) {
-    ptrs[i] =
-        reinterpret_cast<XLA_FFI_Buffer *>(call_frame->args.args[i])->data;
+    auto buf = args.get<ffi::AnyBuffer>(i);
+    if (!buf.has_value())
+      return buf.error();
+    ptrs[i] = buf->untyped_data();
   }
-
-  const void **const_ptrs = const_cast<const void **>(ptrs);
 
   if constexpr (withError) {
-    char *err = cinfo->run(const_ptrs, stream);
-    if (err) {
-      XLA_FFI_Error_Create_Args error_args = {
-          XLA_FFI_Error_Create_Args_STRUCT_SIZE,
-          /*extension_start=*/nullptr,
-          /*message=*/err,
-          /*errc=*/XLA_FFI_Error_Code_INTERNAL};
-      auto ffi_api = call_frame->api;
-      return ffi_api->XLA_FFI_Error_Create(&error_args);
-    }
+    if (char *err = cinfo.run(ptrs, stream))
+      return ffi::Error::Internal(err);
   } else {
-    cinfo->run(const_ptrs, stream);
+    cinfo.run(ptrs, stream);
   }
 
-  return nullptr;
+  return ffi::Error::Success();
 }
 
+XLA_FFI_DEFINE_HANDLER(kExecute, execute<false>,
+                       ffi::Ffi::Bind()
+                           .Ctx<ffi::PlatformStream<void *>>()
+                           .Attr<std::string_view>("attr")
+                           .RemainingArgs()
+                           .RemainingRets());
+
+XLA_FFI_DEFINE_HANDLER(kExecuteWithError, execute<true>,
+                       ffi::Ffi::Bind()
+                           .Ctx<ffi::PlatformStream<void *>>()
+                           .Attr<std::string_view>("attr")
+                           .RemainingArgs()
+                           .RemainingRets());
+
 extern "C" MLIR_CAPI_EXPORTED void RegisterEnzymeXLAGPUHandler() {
-  XLA_FFI_Handler_Bundle bundle = {instantiate, prepare, initialize,
-                                   execute<false>};
-
-  xla::ffi::Ffi::RegisterStaticHandler(xla::ffi::GetXlaFfiApi(),
-                                       "enzymexla_compile_gpu", "CUDA", bundle,
-                                       /*XLA_FFI_Handler_Traits traits = */ 0);
-
-  XLA_FFI_Handler_Bundle bundle_with_error = {instantiate, prepare, initialize,
-                                              execute<true>};
-
-  xla::ffi::Ffi::RegisterStaticHandler(
-      xla::ffi::GetXlaFfiApi(), "enzymexla_compile_gpu_with_error", "CUDA",
-      bundle_with_error, /*XLA_FFI_Handler_Traits traits = */ 0);
+  XLA_FFI_REGISTER_HANDLER(ffi::GetXlaFfiApi(), "enzymexla_compile_gpu", "CUDA",
+                           kExecute);
+  XLA_FFI_REGISTER_HANDLER(ffi::GetXlaFfiApi(),
+                           "enzymexla_compile_gpu_with_error", "CUDA",
+                           kExecuteWithError);
 }

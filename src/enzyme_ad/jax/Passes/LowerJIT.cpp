@@ -636,36 +636,22 @@ struct LowerJITPass
         hasSideEffectAttr = rewriter.getBoolAttr(!isMemoryEffectFree(op));
       }
 
-      Operation *replacement;
-      if (usesStream)
-        replacement = stablehlo::CustomCallOp::create(
-            rewriter, op.getLoc(), op.getResultTypes(), op.getInputs(),
-            hasReturn
-                ? rewriter.getStringAttr("enzymexla_compile_gpu_with_error")
-                : rewriter.getStringAttr("enzymexla_compile_gpu"),
-            /* has_side_effect*/ hasSideEffectAttr,
-            /*backend_config*/ dattr,
-            /* api_version*/
-            CustomCallApiVersionAttr::get(
-                rewriter.getContext(),
-                mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-            /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
-            output_operand_aliases, /*result_tilings*/ nullptr);
-      else
-        replacement = stablehlo::CustomCallOp::create(
-            rewriter, op.getLoc(), op.getResultTypes(), op.getInputs(),
-            hasReturn
-                ? rewriter.getStringAttr("enzymexla_compile_cpu_with_error")
-                : rewriter.getStringAttr("enzymexla_compile_cpu"),
-            /* has_side_effect*/ hasSideEffectAttr,
-            /*backend_config*/ backendstr,
-            /* api_version*/
-            CustomCallApiVersionAttr::get(
-                rewriter.getContext(),
-                mlir::stablehlo::CustomCallApiVersion::
-                    API_VERSION_STATUS_RETURNING_UNIFIED),
-            /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
-            output_operand_aliases, /*result_tilings*/ nullptr);
+      StringRef target = usesStream
+                             ? (hasReturn ? "enzymexla_compile_gpu_with_error"
+                                          : "enzymexla_compile_gpu")
+                             : (hasReturn ? "enzymexla_compile_cpu_with_error"
+                                          : "enzymexla_compile_cpu");
+      Operation *replacement = stablehlo::CustomCallOp::create(
+          rewriter, op.getLoc(), op.getResultTypes(), op.getInputs(),
+          rewriter.getStringAttr(target),
+          /* has_side_effect*/ hasSideEffectAttr,
+          /*backend_config*/ dattr,
+          /* api_version*/
+          CustomCallApiVersionAttr::get(
+              rewriter.getContext(),
+              mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+          /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
+          output_operand_aliases, /*result_tilings*/ nullptr);
 
       op.replaceAllUsesWith(replacement);
       op.erase();
