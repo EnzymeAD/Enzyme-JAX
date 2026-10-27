@@ -1,0 +1,27 @@
+--- a/xla/service/gpu/llvm_gpu_backend/nvptx_backend.cc
++++ b/xla/service/gpu/llvm_gpu_backend/nvptx_backend.cc
+@@ -252,6 +252,24 @@
+   // Using div.approx produces incorrect result for float32(max)/float32(max).
+   backend_llvm_opts.emplace_back("-nvptx-prec-divf32=1");
+ 
++  // Contract a multiply feeding an add into an fma, as nvcc does by default.
++  // NVPTX only contracts when asked: LLVM dropped the global fp-contraction
++  // target option that once enabled it, and the emitters' fmul/fadd carry no
++  // `contract` flag, so without this every a*b+c is two instructions. On
++  // f64-starved consumer GPUs (1/64 rate) that is the kernel's issue bound:
++  // MFEM's sum-factorized apply kernels run 16% faster with it (RTX 5090).
++  // A level given by the client (xla_backend_extra_options) or registered
++  // globally wins: LLVM rejects a second occurrence of the option.
++  const auto& global_opts =
++      llvm_ir::LLVMCommandLineOptionsLock::GetGlobalOptions();
++  if (!debug_options.xla_backend_extra_options().contains("-nvptx-fma-level") &&
++      std::none_of(global_opts.begin(), global_opts.end(),
++                   [](const std::string& option) {
++                     return option.find("nvptx-fma-level") != std::string::npos;
++                   })) {
++    backend_llvm_opts.emplace_back("-nvptx-fma-level=1");
++  }
++
+   // SLPVectorizer is useful (vectorizes f16x2 ops) but slow.  Most of the
+   // slowness appears to be in trying to form horizontal reductions, which don't
+   // exist in PTX *anyway*.  Disable these.  While we're here, tweak
