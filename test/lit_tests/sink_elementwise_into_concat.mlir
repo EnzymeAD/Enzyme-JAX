@@ -90,3 +90,38 @@ func.func @select_concat_pred(%p: tensor<3x4xi1>, %q: tensor<5x4xi1>, %a: tensor
   %r = stablehlo.select %m, %a, %b : tensor<8x4xi1>, tensor<8x4xf32>
   return %r : tensor<8x4xf32>
 }
+
+// -----
+
+sdy.mesh @mesh = <["x"=2, "y"=2]>
+
+// Sinking along a sharded dimension is skipped so piece shardings do not
+// trigger cross-device resharding; sinking along an unsharded dimension
+// preserves per-value shardings.
+
+// CHECK-LABEL: @sharded_concat_dim_unchanged
+// CHECK: stablehlo.concatenate
+// CHECK: stablehlo.add
+// CHECK-NOT: stablehlo.slice
+func.func @sharded_concat_dim_unchanged(%a: tensor<3x4xf32>, %b: tensor<5x4xf32>, %y: tensor<8x4xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {}]>}) -> tensor<8x4xf32> {
+  %cat = stablehlo.concatenate %a, %b, dim = 0 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {}]>]>} : (tensor<3x4xf32>, tensor<5x4xf32>) -> tensor<8x4xf32>
+  %r = stablehlo.add %cat, %y {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {}]>]>} : tensor<8x4xf32>
+  return %r : tensor<8x4xf32>
+}
+
+// -----
+
+sdy.mesh @mesh = <["x"=2, "y"=2]>
+
+// CHECK-LABEL: @sharded_other_dim_preserved
+// CHECK-DAG: %[[S0:.+]] = stablehlo.slice %arg2 [0:3, 0:4] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}]>]>} : (tensor<8x4xf32>) -> tensor<3x4xf32>
+// CHECK-DAG: %[[A0:.+]] = stablehlo.add %arg0, %[[S0]] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}]>]>} : tensor<3x4xf32>
+// CHECK-DAG: %[[S1:.+]] = stablehlo.slice %arg2 [3:8, 0:4] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}]>]>} : (tensor<8x4xf32>) -> tensor<5x4xf32>
+// CHECK-DAG: %[[A1:.+]] = stablehlo.add %arg1, %[[S1]] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}]>]>} : tensor<5x4xf32>
+// CHECK: %[[R:.+]] = stablehlo.concatenate %[[A0]], %[[A1]], dim = 0 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}]>]>} : (tensor<3x4xf32>, tensor<5x4xf32>) -> tensor<8x4xf32>
+// CHECK: return %[[R]]
+func.func @sharded_other_dim_preserved(%a: tensor<3x4xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {"y"}]>}, %b: tensor<5x4xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {"y"}]>}, %y: tensor<8x4xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {"y"}]>}) -> tensor<8x4xf32> {
+  %cat = stablehlo.concatenate %a, %b, dim = 0 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}]>]>} : (tensor<3x4xf32>, tensor<5x4xf32>) -> tensor<8x4xf32>
+  %r = stablehlo.add %cat, %y {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}]>]>} : tensor<8x4xf32>
+  return %r : tensor<8x4xf32>
+}

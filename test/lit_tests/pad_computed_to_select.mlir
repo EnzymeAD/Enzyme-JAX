@@ -42,3 +42,19 @@ func.func @pad_of_view(%a: tensor<10x4xf32>, %v: tensor<f32>) -> tensor<8x4xf32>
   %p = stablehlo.pad %a0, %v, low = [1, 0], high = [2, 0], interior = [0, 0] : (tensor<5x4xf32>, tensor<f32>) -> tensor<8x4xf32>
   return %p : tensor<8x4xf32>
 }
+
+// -----
+
+// A pad of a concatenate of views is also pure data movement: left alone.
+
+// CHECK-LABEL: @pad_of_concat_of_views
+// CHECK: stablehlo.concatenate
+// CHECK: stablehlo.pad
+// CHECK-NOT: stablehlo.select
+func.func @pad_of_concat_of_views(%a: tensor<10x4xf32>, %v: tensor<f32>) -> tensor<8x4xf32> {
+  %a0 = stablehlo.slice %a [5:7, 0:4] : (tensor<10x4xf32>) -> tensor<2x4xf32>
+  %a1 = stablehlo.slice %a [0:3, 0:4] : (tensor<10x4xf32>) -> tensor<3x4xf32>
+  %cat = stablehlo.concatenate %a0, %a1, dim = 0 : (tensor<2x4xf32>, tensor<3x4xf32>) -> tensor<5x4xf32>
+  %p = stablehlo.pad %cat, %v, low = [1, 0], high = [2, 0], interior = [0, 0] : (tensor<5x4xf32>, tensor<f32>) -> tensor<8x4xf32>
+  return %p : tensor<8x4xf32>
+}
