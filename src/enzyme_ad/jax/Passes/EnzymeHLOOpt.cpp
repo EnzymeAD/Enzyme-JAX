@@ -28588,7 +28588,6 @@ struct NotCompare
   LogicalResult matchAndRewriteImpl(stablehlo::NotOp op,
                                     PatternRewriter &rewriter) const {
     auto cmp = op.getOperand().getDefiningOp<stablehlo::CompareOp>();
-
     if (!cmp)
       return failure();
 
