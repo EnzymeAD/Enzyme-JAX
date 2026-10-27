@@ -33305,6 +33305,144 @@ static SmallVector<NamedAttribute> computeAttrs(Operation *op) {
   return attrs;
 }
 
+// Sinks an elementwise op over concatenates (or pads) along one dimension
+// into the pieces: op(concat(a1, a2), concat(b1, b2)) becomes
+// concat(op(a1, b1), op(a2, b2)), slicing any other operand to the pieces
+// (the cuts are the union of the operands'). Where the pieces are computed
+// values this is the form a backend fuses into one kernel, each piece
+// feeding the concatenate alone, instead of materializing pieces that
+// several concatenates share. A late rewrite: ConcatElementwise and
+// ConcatPushBinop go the other way.
+struct SinkElementwiseIntoConcat : public RewritePattern {
+  SinkElementwiseIntoConcat(MLIRContext *context, PatternBenefit benefit = 1)
+      : RewritePattern(MatchAnyOpTypeTag(), benefit, context) {}
+
+  // The dimension `pad` pads, if it pads exactly one with no interior
+  // padding and no negative edges, else -1.
+  static int64_t singlePaddedDim(stablehlo::PadOp pad) {
+    int64_t pdim = -1;
+    for (auto [i, low, high, interior] :
+         llvm::enumerate(pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(),
+                         pad.getInteriorPadding())) {
+      if (interior != 0 || low < 0 || high < 0)
+        return -1;
+      if (low == 0 && high == 0)
+        continue;
+      if (pdim != -1)
+        return -1;
+      pdim = i;
+    }
+    return pdim;
+  }
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    // stablehlo.select carries no Elementwise trait (its predicate may be a
+    // scalar), so the check is Enzyme's, which admits it when the shapes
+    // agree.
+    if (!stablehlo::hasTraitElementwise(op) || op->getNumResults() != 1 ||
+        op->getNumOperands() == 0 || op->getNumRegions() != 0)
+      return failure();
+    auto type = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+    if (!type || !type.hasStaticShape())
+      return failure();
+
+    int64_t dim = -1;
+    SmallVector<int64_t> cuts;
+    for (Value v : op->getOperands()) {
+      auto vty = dyn_cast<RankedTensorType>(v.getType());
+      if (!vty || vty.getShape() != type.getShape())
+        return failure();
+      if (auto cc = v.getDefiningOp<stablehlo::ConcatenateOp>()) {
+        if (dim == -1)
+          dim = cc.getDimension();
+        else if (dim != (int64_t)cc.getDimension())
+          return failure();
+        int64_t acc = 0;
+        for (Value piece : cc.getInputs()) {
+          acc += cast<RankedTensorType>(piece.getType()).getDimSize(dim);
+          cuts.push_back(acc);
+        }
+      } else if (auto pad = v.getDefiningOp<stablehlo::PadOp>()) {
+        int64_t pdim = singlePaddedDim(pad);
+        if (pdim == -1)
+          return failure();
+        if (dim == -1)
+          dim = pdim;
+        else if (dim != pdim)
+          return failure();
+        cuts.push_back(pad.getEdgePaddingLow()[dim]);
+        cuts.push_back(type.getDimSize(dim) - pad.getEdgePaddingHigh()[dim]);
+      }
+    }
+    if (dim == -1)
+      return failure();
+    int64_t size = type.getDimSize(dim);
+    cuts.push_back(0);
+    cuts.push_back(size);
+    llvm::sort(cuts);
+    cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+    if (cuts.size() <= 2)
+      return failure();
+
+    SmallVector<Value> pieces;
+    for (size_t k = 0; k + 1 < cuts.size(); k++) {
+      int64_t s = cuts[k], e = cuts[k + 1];
+      SmallVector<Value> pieceOperands;
+      for (Value v : op->getOperands())
+        pieceOperands.push_back(pieceOf(rewriter, op->getLoc(), v, dim, s, e));
+      SmallVector<int64_t> shape(type.getShape());
+      shape[dim] = e - s;
+      OperationState state(op->getLoc(), op->getName());
+      state.addOperands(pieceOperands);
+      state.addTypes(RankedTensorType::get(shape, type.getElementType()));
+      state.addAttributes(op->getAttrs());
+      pieces.push_back(rewriter.create(state)->getResult(0));
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, pieces, dim);
+    return success();
+  }
+
+  // The window [s, e) of v along dim: a concatenate's or pad's piece where
+  // one lines up with it, a slice otherwise.
+  static Value pieceOf(PatternRewriter &rewriter, Location loc, Value v,
+                       int64_t dim, int64_t s, int64_t e) {
+    auto vty = cast<RankedTensorType>(v.getType());
+    if (auto cc = v.getDefiningOp<stablehlo::ConcatenateOp>()) {
+      if ((int64_t)cc.getDimension() == dim) {
+        int64_t acc = 0;
+        for (Value piece : cc.getInputs()) {
+          int64_t n = cast<RankedTensorType>(piece.getType()).getDimSize(dim);
+          if (acc == s && acc + n == e)
+            return piece;
+          acc += n;
+        }
+      }
+    } else if (auto pad = v.getDefiningOp<stablehlo::PadOp>()) {
+      if (singlePaddedDim(pad) == dim) {
+        int64_t low = pad.getEdgePaddingLow()[dim];
+        int64_t high = pad.getEdgePaddingHigh()[dim];
+        int64_t size = vty.getDimSize(dim);
+        if (s == low && e == size - high)
+          return pad.getOperand();
+        if (e <= low || s >= size - high) {
+          SmallVector<int64_t> shape(vty.getShape());
+          shape[dim] = e - s;
+          return stablehlo::BroadcastInDimOp::create(
+              rewriter, loc, RankedTensorType::get(shape, vty.getElementType()),
+              pad.getPaddingValue(), ArrayRef<int64_t>());
+        }
+      }
+    }
+    SmallVector<int64_t> starts(vty.getRank(), 0), limits(vty.getShape()),
+        strides(vty.getRank(), 1);
+    starts[dim] = s;
+    limits[dim] = e;
+    return stablehlo::SliceOp::create(rewriter, loc, v, starts, limits,
+                                      strides);
+  }
+};
+
 struct ConcatElementwise final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatElementwise> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
