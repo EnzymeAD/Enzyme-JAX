@@ -1,6 +1,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
@@ -23,8 +24,10 @@ using namespace mlir::enzyme::perfify;
 
 namespace {
 
-static bool matchPerfifyAnnotation(StringRef str, StringRef &payload) {
-  for (StringRef prefix : {"perfify_op=", "perfify_cond="}) {
+static bool matchPerfifyAnnotation(StringRef str, StringRef &payload,
+                                   ArrayRef<StringRef> prefixes = {
+                                       "perfify_op=", "perfify_cond="}) {
+  for (StringRef prefix : prefixes) {
     if (str.starts_with(prefix)) {
       payload = str.drop_front(prefix.size());
       while (payload.ends_with('\0'))
@@ -188,6 +191,35 @@ struct LiftPerfifyAnnotationsPass
     return success();
   }
 
+  // Builds the bound `hyp` compares against: perfify.estimated_cost
+  // @<prefix>_cost, or perfify.interval @<prefix>_range over
+  // @<prefix>_cost_min/_max.
+  FlatSymbolRefAttr buildBound(ImplicitLocOpBuilder &b, StringRef prefix,
+                               const CostHypothesis &hyp) {
+    if (!hyp.isInterval)
+      return buildEstimatedCost(b, (prefix + "_cost").str(), *hyp.lb);
+    FlatSymbolRefAttr lb =
+        hyp.lb ? buildEstimatedCost(b, (prefix + "_cost_min").str(), *hyp.lb)
+               : FlatSymbolRefAttr();
+    FlatSymbolRefAttr ub =
+        hyp.ub ? buildEstimatedCost(b, (prefix + "_cost_max").str(), *hyp.ub)
+               : FlatSymbolRefAttr();
+    auto interval =
+        IntervalOp::create(b, b.getStringAttr(prefix + "_range"), lb, ub);
+    return FlatSymbolRefAttr::get(interval.getNameAttr());
+  }
+
+  // Builds `perfify.hypothesis (perfify.cmp pred, cost, @bound) prePost`.
+  // Loop hypotheses bound the trip count and have no Hoare state (null
+  // prePost).
+  HypothesisOp buildHypothesis(ImplicitLocOpBuilder &b, CmpPredicate pred,
+                               Value cost, FlatSymbolRefAttr bound,
+                               HoareStatesAttr prePost) {
+    auto cmp =
+        CompareOp::create(b, b.getI1Type(), pred, cost, bound.getValue());
+    return HypothesisOp::create(b, b.getI1Type(), cmp.getResult(), prePost);
+  }
+
   // Fills `region` with
   // `perfify.assume (perfify.hypothesis (perfify.cmp pred, cost, @bound)
   // prePost)`, where `operands` builds cost and @bound inside the region.
@@ -198,16 +230,13 @@ struct LiftPerfifyAnnotationsPass
     OpBuilder::InsertionGuard guard(b);
     b.createBlock(&region);
     auto [cost, bound] = operands();
-    auto cmp =
-        CompareOp::create(b, b.getI1Type(), pred, cost, bound.getValue());
-    auto hyp = HypothesisOp::create(b, b.getI1Type(), cmp.getResult(), prePost);
+    auto hyp = buildHypothesis(b, pred, cost, bound,
+                               HoareStatesAttr::get(b.getContext(), prePost));
     AssumeOp::create(b, hyp.getResult(), BoolAttr());
   }
 
   // Lowers `hyp` for @funcName into a perfify.conditions Hoare triple,
   // appended to the module's perfify.assumptions op (created if absent).
-  // Since perfify.conditions is a terminator, each hypothesis gets its own
-  // block when the previous one is already terminated.
   void buildConditions(ModuleOp module, ImplicitLocOpBuilder &b,
                        StringRef funcName, const CostHypothesis &hyp) {
     MLIRContext *ctx = b.getContext();
@@ -221,8 +250,9 @@ struct LiftPerfifyAnnotationsPass
     }
 
     Region &body = assumptions.getBody();
-    if (body.empty() || body.back().getTerminator())
-      b.createBlock(&body, body.end());
+    // perfify.assumptions has no terminator: all conditions share one block
+    if (body.empty())
+      b.createBlock(&body);
     else
       b.setInsertionPointToEnd(&body.back());
     auto conditions = ConditionsOp::create(b, funcName, /*verify_huh=*/true);
@@ -239,22 +269,50 @@ struct LiftPerfifyAnnotationsPass
               buildEstimatedCost(b, "pre_cost", {CostTerm{startCost, {}}})};
         });
 
-    buildAssume(
-        b, conditions.getPostcondition(), HoareStates::Post, hyp.pred,
-        [&]() -> std::pair<Value, FlatSymbolRefAttr> {
-          Value fnCost = FnCostOp::create(b, CostType::get(ctx));
-          if (!hyp.isInterval)
-            return {fnCost, buildEstimatedCost(b, "post_cost", *hyp.lb)};
-          FlatSymbolRefAttr lb =
-              hyp.lb ? buildEstimatedCost(b, "post_cost_min", *hyp.lb)
-                     : FlatSymbolRefAttr();
-          FlatSymbolRefAttr ub =
-              hyp.ub ? buildEstimatedCost(b, "post_cost_max", *hyp.ub)
-                     : FlatSymbolRefAttr();
-          auto interval =
-              IntervalOp::create(b, b.getStringAttr("post_range"), lb, ub);
-          return {fnCost, FlatSymbolRefAttr::get(interval.getNameAttr())};
-        });
+    buildAssume(b, conditions.getPostcondition(), HoareStates::Post, hyp.pred,
+                [&]() -> std::pair<Value, FlatSymbolRefAttr> {
+                  Value fnCost = FnCostOp::create(b, CostType::get(ctx));
+                  return {fnCost, buildBound(b, "post", hyp)};
+                });
+  }
+
+  // Replaces each call to the perfify_loop marker `marker` with a trip count
+  // hypothesis at the top of the enclosing loop's body.
+  LogicalResult lowerLoopMarker(ModuleOp module, LLVM::LLVMFuncOp marker,
+                                StringRef payload) {
+    SmallVector<LLVM::CallOp> calls;
+    module.walk([&](LLVM::CallOp call) {
+      if (call.getCallee() == marker.getSymName())
+        calls.push_back(call);
+    });
+    std::optional<CostHypothesis> hyp = parseCostHypothesis(payload);
+    for (LLVM::CallOp call : calls) {
+      // the loop body runs once per iteration (scf.while's "after" region)
+      Operation *loop = call->getParentOp();
+      bool inBody = isa<scf::ForOp>(loop) ||
+                    (isa<scf::WhileOp>(loop) &&
+                     call->getParentRegion()->getRegionNumber() == 1);
+      if (!hyp || hyp->argIndex) {
+        call.emitWarning("ignoring malformed perfify loop trip count '")
+            << payload << R"(' (expected "<predicate> <bound>", e.g. "le N"))";
+      } else if (!inBody) {
+        call.emitWarning("ignoring perfify loop trip count outside an scf.for "
+                         "or scf.while body");
+      } else if (!call->getBlock()->getOps<HypothesisOp>().empty()) {
+        call.emitWarning("ignoring extra perfify loop trip count on a loop "
+                         "that already has one");
+      } else {
+        ImplicitLocOpBuilder b(call.getLoc(), call);
+        if (failed(declareSymbols(module, b, *hyp)))
+          return failure();
+        b.setInsertionPointToStart(call->getBlock());
+        Value trips = ArgOp::create(b, CostType::get(b.getContext()), 0);
+        buildHypothesis(b, hyp->pred, trips, buildBound(b, "trip", *hyp),
+                        HoareStatesAttr());
+      }
+      call.erase();
+    }
+    return success();
   }
 
   void runOnOperation() override {
@@ -348,6 +406,11 @@ struct LiftPerfifyAnnotationsPass
         continue;
 
       StringRef payload;
+      if (matchPerfifyAnnotation(annotStr, payload, {"perfify_loop="})) {
+        if (failed(lowerLoopMarker(module, func, payload)))
+          return signalPassFailure();
+        continue;
+      }
       if (!matchPerfifyAnnotation(annotStr, payload))
         continue;
 
