@@ -179,17 +179,17 @@ struct SliceToBatchElementwise : public SliceToBatchBase {
 bool raiseDynamicSliceToGather(
     mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
     llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
-    mlir::stablehlo::DynamicSliceOp dsOp, mlir::enzyme::WhileLoopInfo info);
+    mlir::stablehlo::DynamicSliceOp dsOp, mlir::enzyme::WhileLoopInfo &info);
 
 bool liftOperationByBatching(
     mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
     llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
-    mlir::Operation *op, mlir::enzyme::WhileLoopInfo info);
+    mlir::Operation *op, mlir::enzyme::WhileLoopInfo &info);
 
 bool liftReduceLikeOperation(
     mlir::PatternRewriter &rewriter, mlir::stablehlo::WhileOp whileOp,
     llvm::ArrayRef<SliceInfo<mlir::stablehlo::DynamicSliceOp>> slices,
-    mlir::Operation *op, mlir::enzyme::WhileLoopInfo info);
+    mlir::Operation *op, mlir::enzyme::WhileLoopInfo &info);
 
 struct GreedyWhileLoopBatchFission
     : public mlir::enzyme::CheckedOpRewritePattern<

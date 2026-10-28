@@ -91,7 +91,10 @@ struct WhileLoopInfo {
 
   std::optional<Bounds> getBounds(Value v);
 
-  llvm::MapVector<Value, AffineIndexInfo> getAffineIndexInfo() {
+  // The map has an entry per value that is affine in the induction variable;
+  // in a long loop body that is many entries, so it is handed out by
+  // reference. Bind it with `auto &`.
+  const llvm::MapVector<Value, AffineIndexInfo> &getAffineIndexInfo() const {
     return affineIndexInfo;
   }
 
@@ -99,21 +102,45 @@ struct WhileLoopInfo {
 
   unsigned getBoundsBitWidth() const { return boundsBitWidth; }
 
+  // Whether `v` has the same value on every iteration of the loop. On
+  // success `outerValue` is the value outside the loop it equals, when there
+  // is one (defined outside, or a carried argument passed straight through);
+  // otherwise it is null and `canBeHoisted` lists the ops that recompute `v`
+  // outside the loop, each once, in no particular order. With
+  // `checkOperands` false only the two direct cases are tried.
+  //
+  // Answers are remembered across calls, so asking about every value of a
+  // loop body costs one walk of the body rather than one per value. The
+  // memo describes the IR as it was when it was filled: call
+  // `invalidateInvarianceCache` after rewriting the loop, before asking
+  // again. (`computeInfo`'s affine-index map has the same contract.)
   bool isConstantAcrossIterations(Value v, bool checkOperands = true);
   bool isConstantAcrossIterations(Value v, Value &outerValue,
                                   SmallVector<Operation *> &canBeHoisted,
                                   bool checkOperands = true);
 
+  // Forget every remembered invariance answer. Needed after the loop body
+  // has been rewritten: an erased op's storage can be reused by a new one,
+  // and the memo is keyed by value identity.
+  void invalidateInvarianceCache() { invarianceCache.clear(); }
+
 private:
-  // The walk over a value's operands, carrying the values it has already
-  // found to vary with the iteration. Reaching one again over another path
-  // gives the same answer, and the branch that said so records nothing, so
-  // the answer is remembered rather than recomputed: a shared subgraph is
-  // otherwise walked once per path that reaches it. The set lives for one
-  // call, since the IR may change between calls.
-  bool isConstantAcrossIterations(Value v, Value &outerValue,
-                                  SmallVector<Operation *> &canBeHoisted,
-                                  bool checkOperands, DenseSet<Value> &varies);
+  // Whether a value computed in the body is the same on every iteration,
+  // i.e. whether every operand of its defining op is. The walk stops at the
+  // first operand found to vary, so a varying value costs the walk down to
+  // its first varying leaf; without the memo a chain of n such values would
+  // cost n^2 across n queries, and a shared invariant subgraph would be
+  // re-proved once per path reaching it.
+  bool computeInvariance(Value v);
+
+  // The ops that recompute an invariant `v` outside the loop: the defining
+  // ops of its operand DAG up to the values defined outside or passed
+  // straight through, each listed once.
+  void collectHoistableChain(Value v, SmallVectorImpl<Operation *> &chain);
+
+  // Values computed in the body only; the two direct cases are decided
+  // without it.
+  DenseMap<Value, bool> invarianceCache;
 
 public:
   bool canHoistOperationFromLoop(mlir::stablehlo::DynamicSliceOp sliceOp,
