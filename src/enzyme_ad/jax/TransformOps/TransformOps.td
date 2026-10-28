@@ -2008,6 +2008,11 @@ def ApplyGatherOfBroadcastBatchingDimsPatterns : EnzymeHLOPatternOp<
   let patterns = ["GatherOfBroadcastBatchingDims"];
 }
 
+def ApplyGatherOfBroadcastIndexedDimsPatterns : EnzymeHLOPatternOp<
+    "gather_of_broadcast_indexed_dims"> {
+  let patterns = ["GatherOfBroadcastIndexedDims"];
+}
+
 def ApplyReduceTransposeSimplifyPatterns : EnzymeHLOPatternOp<
     "reduce_transpose_simplify"> {
   let patterns = ["ReduceTransposeSimplify"];
