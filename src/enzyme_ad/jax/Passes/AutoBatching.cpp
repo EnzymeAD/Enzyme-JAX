@@ -2346,9 +2346,9 @@ bool raiseDynamicSliceToGather(
           rewriter, loc, RankedTensorType::get({}, hoistedIndicesElemTy),
           start);
     }
-    hoistedIndicesList.push_back(stablehlo::BroadcastInDimOp::create(
-        rewriter, loc, indexColumnTy, start,
-        rewriter.getDenseI64ArrayAttr({})));
+    hoistedIndicesList.push_back(
+        stablehlo::BroadcastInDimOp::create(rewriter, loc, indexColumnTy, start,
+                                            rewriter.getDenseI64ArrayAttr({})));
   }
 
   // Concatenate all hoisted indices along the last dimension
