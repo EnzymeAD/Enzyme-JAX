@@ -8,23 +8,39 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 
 namespace mlir::enzyme::perfify {
-// Handle optional type suffix (either "perfify.cmp <comparator>, %a, %b" or
-// "perfify.cmp <comparator>, %a, %b : !perfify.cost, !perfify.interval" is
-// valid)
-static ParseResult parseCmpOperandTypes(OpAsmParser &parser, Type &lhsType,
-                                        Type &rhsType) {
-  if (succeeded(parser.parseOptionalColon()))
-    return failure(parser.parseType(lhsType) || parser.parseComma() ||
-                   parser.parseType(rhsType));
-  lhsType = rhsType = CostType::get(parser.getContext());
-  return success();
+// Parses "[min_cost: @a, max_cost: @b]", with the keys in either order and
+// either one optional.
+static ParseResult parseIntervalBounds(OpAsmParser &parser,
+                                       FlatSymbolRefAttr &minCost,
+                                       FlatSymbolRefAttr &maxCost) {
+  return parser.parseCommaSeparatedList(
+      OpAsmParser::Delimiter::Square, [&]() -> ParseResult {
+        SMLoc loc = parser.getCurrentLocation();
+        StringRef key;
+        if (parser.parseKeyword(&key) || parser.parseColon())
+          return failure();
+        FlatSymbolRefAttr *bound = key == "min_cost"   ? &minCost
+                                   : key == "max_cost" ? &maxCost
+                                                       : nullptr;
+        if (!bound)
+          return parser.emitError(loc, "expected 'min_cost' or 'max_cost'");
+        if (*bound)
+          return parser.emitError(loc, "duplicate '") << key << "'";
+        return parser.parseAttribute(*bound);
+      });
 }
 
-static void printCmpOperandTypes(OpAsmPrinter &printer, Operation *,
-                                 Type lhsType, Type rhsType) {
-  if (isa<CostType>(lhsType) && isa<CostType>(rhsType))
-    return;
-  printer << " : " << lhsType << ", " << rhsType;
+static void printIntervalBounds(OpAsmPrinter &printer, Operation *,
+                                FlatSymbolRefAttr minCost,
+                                FlatSymbolRefAttr maxCost) {
+  printer << "[";
+  if (minCost)
+    printer << "min_cost: " << minCost;
+  if (minCost && maxCost)
+    printer << ", ";
+  if (maxCost)
+    printer << "max_cost: " << maxCost;
+  printer << "]";
 }
 } // namespace mlir::enzyme::perfify
 
@@ -45,15 +61,66 @@ LogicalResult SymCostOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return success();
 }
 
+// Finds the estimated_cost or interval that `ref` names in `from`'s region.
+static Operation *lookupCostBound(Operation *from, FlatSymbolRefAttr ref) {
+  if (ref)
+    for (Operation &op : from->getParentRegion()->getOps())
+      if (isa<EstimatedCostOp, IntervalOp>(op) &&
+          op.getAttr("name") == ref.getAttr())
+        return &op;
+  return nullptr;
+}
+
+Operation *CompareOp::getBoundOp() {
+  return lookupCostBound(*this, getBoundAttr());
+}
+
+EstimatedCostOp IntervalOp::getMinCostOp() {
+  return dyn_cast_or_null<EstimatedCostOp>(
+      lookupCostBound(*this, getMinCostAttr()));
+}
+
+EstimatedCostOp IntervalOp::getMaxCostOp() {
+  return dyn_cast_or_null<EstimatedCostOp>(
+      lookupCostBound(*this, getMaxCostAttr()));
+}
+
+LogicalResult EstimatedCostOp::verify() {
+  if (lookupCostBound(*this, FlatSymbolRefAttr::get(getNameAttr())) !=
+      getOperation())
+    return emitOpError("name is already defined in this region");
+  return success();
+}
+
 LogicalResult IntervalOp::verify() {
-  if (!getLb() && !getUb())
-    return emitOpError("requires at least one of 'lb' or 'ub'");
+  if (!getMinCostAttr() && !getMaxCostAttr())
+    return emitOpError("requires at least one of 'min_cost' or 'max_cost'");
+  if ((getMinCostAttr() && !getMinCostOp()) ||
+      (getMaxCostAttr() && !getMaxCostOp()))
+    return emitOpError("bounds must name a perfify.estimated_cost in this "
+                       "region");
+  if (lookupCostBound(*this, FlatSymbolRefAttr::get(getNameAttr())) !=
+      getOperation())
+    return emitOpError("name is already defined in this region");
   return success();
 }
 
 LogicalResult CompareOp::verify() {
-  if (isa<IntervalType>(getExpCost().getType()) &&
-      isa<IntervalType>(getFuncCost().getType()))
-    return emitOpError("cannot compare two intervals");
+  if (!getBoundOp())
+    return emitOpError("'")
+           << getBoundAttr()
+           << "' does not name a perfify.estimated_cost or perfify.interval "
+              "in this region";
+  return success();
+}
+
+LogicalResult HypothesisOp::verify() {
+  if (!getCmp().getDefiningOp<CompareOp>())
+    return emitOpError("operand must be defined by perfify.cmp");
+  if (isa_and_nonnull<ConditionsOp>((*this)->getParentOp()) &&
+      (*this)->getParentRegion()->getRegionNumber() !=
+          static_cast<unsigned>(getPrePost()))
+    return emitOpError("'") << stringifyHoareStates(getPrePost())
+                            << "' hypothesis is in the wrong conditions region";
   return success();
 }

@@ -37,20 +37,22 @@ module {
    
      perfify.conditions @foo true pre { // true here meaning verification is enabled
         %b0 = perfify.arg 0
-        %c0 = perfify.constant_cost {
+        perfify.estimated_cost @pre_cost {
          arith.constant 0
          perfify.yield
-        } : !perfify.cost
-        %cmp = perfify.cmp eq, %c0, %b0
-        perfify.assume %cmp
+        }
+        %cmp = perfify.cmp eq, %b0, @pre_cost
+        %h = perfify.hypothesis %cmp pre
+        perfify.assume %h
      } post {
         %cost = perfify.fn_cost : !perfify.cost // compute the value of the defined operation (func.return)
-        %c9 = perfify.constant_cost { // set up our cost as 9
+        perfify.estimated_cost @post_cost { // set up our cost as 9
          arith.constant 9
          perfify.yield
-        } : !perfify.cost
-        %cmp = perfify.cmp ne, %cost, %c9
-        perfify.assume %cmp
+        }
+        %cmp = perfify.cmp ne, %cost, @post_cost
+        %h = perfify.hypothesis %cmp post
+        perfify.assume %h
      }
     }
 }
@@ -91,19 +93,21 @@ module {
 // CHECK-NEXT:     }
 // CHECK-NEXT:     perfify.conditions @foo true pre {
 // CHECK-NEXT:       %0 = perfify.arg 0
-// CHECK-NEXT:       %1 = perfify.constant_cost {
+// CHECK-NEXT:       perfify.estimated_cost @pre_cost {
 // CHECK-NEXT:         %c0_i64 = arith.constant 0 : i64
 // CHECK-NEXT:         perfify.yield
-// CHECK-NEXT:       } : !perfify.cost
-// CHECK-NEXT:       %2 = perfify.cmp eq, %1, %0
+// CHECK-NEXT:       }
+// CHECK-NEXT:       %1 = perfify.cmp eq, %0, @pre_cost
+// CHECK-NEXT:       %2 = perfify.hypothesis %1 pre
 // CHECK-NEXT:       perfify.assume %2 {satres = true}
 // CHECK-NEXT:     } post {
 // CHECK-NEXT:       %0 = perfify.fn_cost : !perfify.cost
-// CHECK-NEXT:       %1 = perfify.constant_cost {
+// CHECK-NEXT:       perfify.estimated_cost @post_cost {
 // CHECK-NEXT:         %c9_i64 = arith.constant 9 : i64
 // CHECK-NEXT:         perfify.yield
-// CHECK-NEXT:       } : !perfify.cost
-// CHECK-NEXT:       %2 = perfify.cmp ne, %0, %1
+// CHECK-NEXT:       }
+// CHECK-NEXT:       %1 = perfify.cmp ne, %0, @post_cost
+// CHECK-NEXT:       %2 = perfify.hypothesis %1 post
 // CHECK-NEXT:       perfify.assume %2 {satres = false}
 // CHECK-NEXT:     }
 // CHECK-NEXT:   }

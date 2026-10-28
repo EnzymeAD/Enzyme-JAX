@@ -38,21 +38,20 @@ def FnCostOp : PerfifyOp<"fn_cost", []> { // this should be where we calculate
 def CompareOp : PerfifyOp<"cmp", []> {
   let arguments = (ins
     PerfifyCmpPredicateAttr:$predicate,
-    AnyTypeOf<[CostType, IntervalType]>:$exp_cost,
-    AnyTypeOf<[CostType, IntervalType]>:$func_cost
+    CostType:$cost,
+    FlatSymbolRefAttr:$bound
   );
-  let assemblyFormat = [{
-    $predicate `,` $exp_cost `,` $func_cost ``
-    custom<CmpOperandTypes>(type($exp_cost), type($func_cost)) attr-dict
-  }];
+  let assemblyFormat = "$predicate `,` $cost `,` $bound attr-dict";
   let results = (outs I1:$result);
+  let extraClassDeclaration = [{ Operation *getBoundOp(); }];
   let hasVerifier = 1;
 }
 
-def ConstantCostOp : PerfifyOp<"constant_cost", [IsolatedFromAbove]> {
+def EstimatedCostOp : PerfifyOp<"estimated_cost", [IsolatedFromAbove]> {
+  let arguments = (ins SymbolNameAttr:$name);
   let regions = (region AnyRegion:$body);
-  let assemblyFormat = "$body attr-dict `:` type($result)";
-  let results = (outs CostType:$result);
+  let assemblyFormat = "$name $body attr-dict";
+  let hasVerifier = 1;
 }
 
 def ArgOp : PerfifyOp<"arg", []> {
@@ -90,14 +89,22 @@ def YieldOp : PerfifyOp<"yield", [Terminator]> {
 }
 
 def HypothesisOp : PerfifyOp<"hypothesis", []> {
-  let arguments = (ins CostType:$cost_hyp, PerfifyHoareStates:$pre_post);
-  let assemblyFormat = "$cost_hyp $pre_post attr-dict";
+  let arguments = (ins I1:$cmp, PerfifyHoareStates:$pre_post);
+  let results = (outs I1:$result);
+  let assemblyFormat = "$cmp $pre_post attr-dict";
+  let hasVerifier = 1;
 }
 
-def IntervalOp : PerfifyOp<"interval", [AttrSizedOperandSegments]> {
-  let arguments = (ins Optional<CostType> : $lb, Optional<CostType> : $ub);
-  let assemblyFormat = "`[`$lb `,`$ub`]` attr-dict";
-  let results = (outs IntervalType : $result);
+def IntervalOp : PerfifyOp<"interval", []> {
+  let arguments = (ins SymbolNameAttr:$name,
+                   OptionalAttr<FlatSymbolRefAttr>:$min_cost,
+                   OptionalAttr<FlatSymbolRefAttr>:$max_cost);
+  let assemblyFormat =
+      "$name custom<IntervalBounds>($min_cost, $max_cost) attr-dict";
+  let extraClassDeclaration = [{
+    EstimatedCostOp getMinCostOp();
+    EstimatedCostOp getMaxCostOp();
+  }];
   let hasVerifier = 1;
 }
 
