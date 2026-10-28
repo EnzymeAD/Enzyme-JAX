@@ -2024,12 +2024,6 @@ def CompareIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["CompareIotaConstSimplify"];
 }
 
-def CompareRangeSimplifyPatterns : EnzymeHLOPatternOp<
-  "compare_range_simplify"
-> {
-  let patterns = ["CompareRangeSimplify"];
-}
-
 def ConvertIotaSimplifyPatterns : EnzymeHLOPatternOp<"convert_iota_simplify"> {
   let patterns = ["ConvertIotaSimplify"];
 }
