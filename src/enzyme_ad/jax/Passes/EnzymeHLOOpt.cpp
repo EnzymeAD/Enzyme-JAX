@@ -17094,7 +17094,10 @@ struct ReduceMinorDims final
     int64_t extent = 1;
     for (int64_t d : dims)
       extent *= inputTy.getDimSize(d);
-    if (extent > kMaxRowExtent)
+    static const int64_t maxRowExtent =
+        getenv("ENZYME_RMD_MAX_ROW") ? atoll(getenv("ENZYME_RMD_MAX_ROW"))
+                                     : kMaxRowExtent;
+    if (extent > maxRowExtent)
       return rewriter.notifyMatchFailure(op, "a long row");
     auto transposed = stablehlo::TransposeOp::create(rewriter, op.getLoc(),
                                                      op.getInputs()[0], perm);
