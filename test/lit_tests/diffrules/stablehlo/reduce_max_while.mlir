@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt | stablehlo-translate - --interpret
+// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --drop-unsupported-attributes | stablehlo-translate - --interpret
 // RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --enzyme-simplify-math --arith-raise --canonicalize | FileCheck %s
 
 // Reverse-mode reduce maximum inside a while must not use the forward input
@@ -56,9 +56,10 @@ module {
 }
 
 // CHECK-LABEL: func.func private @diffein_loop(
-// CHECK:         stablehlo.while
+// CHECK:         stablehlo.while({{.*}}) : tensor<i64>, tensor<4x8xf32>, tensor<5x8xi32>
 // CHECK:           stablehlo.reduce({{.*}}) applies stablehlo.maximum
+// CHECK:           stablehlo.reduce({{.*}}), ({{.*}}) across dimensions = [0] : (tensor<4x8xf32>, tensor<4x8xi32>, tensor<f32>, tensor<i32>) -> (tensor<8xf32>, tensor<8xi32>)
 // CHECK:         stablehlo.while
-// CHECK:           stablehlo.dynamic_slice {{.*}}sizes
-// CHECK:           %[[CMP:.+]] = stablehlo.compare {{ *}}EQ, %{{.+}}, %{{.+}} : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xi1>
+// CHECK:           stablehlo.dynamic_slice {{.*}}sizes = [1, 8] : (tensor<5x8xi32>
+// CHECK:           %[[CMP:.+]] = stablehlo.compare {{ *}}EQ, %{{.+}}, %{{.+}} : (tensor<4x8xi32>, tensor<4x8xi32>) -> tensor<4x8xi1>
 // CHECK:           stablehlo.select %[[CMP]],

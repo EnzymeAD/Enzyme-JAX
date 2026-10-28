@@ -19248,6 +19248,11 @@ struct SelectCompIotaConstSimplify final
         return failure();
     }
 
+    // A unit iota dimension broadcast along outputDim is constant there.
+    if (cast<RankedTensorType>(iota.getType()).getDimSize(iotaDim) !=
+        selectOp.getType().getDimSize(outputDim))
+      return failure();
+
     return rewriteAsSlices(selectOp, outputDim, K, direction, rewriter);
   }
 
@@ -19261,43 +19266,47 @@ struct SelectCompIotaConstSimplify final
     Value falseTensor = selectOp.getOnFalse();
     auto outputShape = selectOp.getType().getShape();
     const int64_t endValue = outputShape[outputDim];
-
-    if (K < 0 || K > endValue)
+    if (endValue == 0)
       return failure();
+
+    // The indices [lo, hi) along outputDim where the comparison holds (for
+    // NE, where it fails). A K outside the dimension, including K ==
+    // endValue for EQ and NE, makes the predicate uniform rather than a
+    // slice past the end.
+    K = std::clamp<int64_t>(K, -1, endValue);
+    int64_t lo = 0, hi = endValue;
+    switch (direction) {
+    case stablehlo::ComparisonDirection::LT:
+      hi = K;
+      break;
+    case stablehlo::ComparisonDirection::LE:
+      hi = K + 1;
+      break;
+    case stablehlo::ComparisonDirection::GT:
+      lo = K + 1;
+      break;
+    case stablehlo::ComparisonDirection::GE:
+      lo = K;
+      break;
+    case stablehlo::ComparisonDirection::EQ:
+    case stablehlo::ComparisonDirection::NE:
+      lo = K;
+      hi = K + 1;
+      break;
+    }
+    lo = std::clamp<int64_t>(lo, 0, endValue);
+    hi = std::clamp<int64_t>(hi, lo, endValue);
+
+    Value inside = trueTensor, outside = falseTensor;
+    if (direction == stablehlo::ComparisonDirection::NE)
+      std::swap(inside, outside);
 
     struct slice_data {
       Value tensor;
       int64_t count;
     };
-    SmallVector<slice_data, 3> slices;
-    switch (direction) {
-    case stablehlo::ComparisonDirection::LT:
-      slices.push_back({trueTensor, K});
-      slices.push_back({falseTensor, endValue - K});
-      break;
-    case stablehlo::ComparisonDirection::LE:
-      slices.push_back({trueTensor, K + 1});
-      slices.push_back({falseTensor, endValue - K - 1});
-      break;
-    case stablehlo::ComparisonDirection::GT:
-      slices.push_back({falseTensor, K + 1});
-      slices.push_back({trueTensor, endValue - K - 1});
-      break;
-    case stablehlo::ComparisonDirection::GE:
-      slices.push_back({falseTensor, K});
-      slices.push_back({trueTensor, endValue - K});
-      break;
-    case stablehlo::ComparisonDirection::EQ:
-      slices.push_back({falseTensor, K});
-      slices.push_back({trueTensor, 1});
-      slices.push_back({falseTensor, endValue - K - 1});
-      break;
-    case stablehlo::ComparisonDirection::NE:
-      slices.push_back({trueTensor, K});
-      slices.push_back({falseTensor, 1});
-      slices.push_back({trueTensor, endValue - K - 1});
-      break;
-    }
+    SmallVector<slice_data, 3> slices = {
+        {outside, lo}, {inside, hi - lo}, {outside, endValue - hi}};
 
     auto validCount = std::count_if(slices.begin(), slices.end(),
                                     [](slice_data d) { return d.count > 0; });
@@ -35261,6 +35270,11 @@ struct CommonAssociativeCommutativeOpReorder final
   }
 };
 
+// ln(2) and log2(e), for rebasing logarithms and exponentials between the
+// natural and base-2 forms. <cmath>'s M_LN2 / M_LOG2E are not portable.
+static constexpr double kLn2 = 0.6931471805599453;
+static constexpr double kLog2E = 1.4426950408889634;
+
 struct LogSimplify final
     : public CheckedOpRewritePattern<stablehlo::LogOp, LogSimplify> {
   using CheckedOpRewritePattern<stablehlo::LogOp,
@@ -35289,6 +35303,18 @@ struct LogSimplify final
       auto defOp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
       if (defOp) {
         rewriter.replaceAllUsesWith(op.getResult(), defOp.getOperand());
+        return success();
+      }
+    }
+
+    { // log(exp2(x)) -> x * ln(2)
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::Exp2Op>();
+      if (defOp && isa<FloatType>(op.getType().getElementType())) {
+        auto ln2 = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), op.getType(),
+            cast<ElementsAttr>(makeAttr(op.getType(), kLn2)));
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, defOp.getOperand(),
+                                                      ln2);
         return success();
       }
     }
@@ -35421,6 +35447,63 @@ struct LogSimplify final
           isOnlyUsedInOperation(defOp, op)) { // log(rsqrt(x)) -> -log(x) / 2
         auto logOperand =
             stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getOperand());
+        auto negTwo = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), defOp.getType(),
+            cast<ElementsAttr>(makeAttr(defOp.getType(), -2)));
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, logOperand, negTwo);
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
+struct Log2Simplify final
+    : public CheckedOpRewritePattern<stablehlo::Log2Op, Log2Simplify> {
+  using CheckedOpRewritePattern<stablehlo::Log2Op,
+                                Log2Simplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::Log2Op op,
+                                    PatternRewriter &rewriter) const {
+    { // log2(exp2(x)) -> x
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::Exp2Op>();
+      if (defOp) {
+        rewriter.replaceAllUsesWith(op.getResult(), defOp.getOperand());
+        return success();
+      }
+    }
+
+    { // log2(exp(x)) -> x * log2(e)
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
+      if (defOp && isa<FloatType>(op.getType().getElementType())) {
+        auto log2e = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), op.getType(),
+            cast<ElementsAttr>(makeAttr(op.getType(), kLog2E)));
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, defOp.getOperand(),
+                                                      log2e);
+        return success();
+      }
+    }
+
+    { // log2(sqrt(x)) -> log2(x) / 2
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::SqrtOp>();
+      if (defOp && isOnlyUsedInOperation(defOp, op)) {
+        auto logOperand = stablehlo::Log2Op::create(rewriter, op.getLoc(),
+                                                    defOp.getOperand());
+        auto two = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), defOp.getType(),
+            cast<ElementsAttr>(makeAttr(defOp.getType(), 2)));
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, logOperand, two);
+        return success();
+      }
+    }
+
+    { // log2(rsqrt(x)) -> -log2(x) / 2
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::RsqrtOp>();
+      if (defOp && isOnlyUsedInOperation(defOp, op)) {
+        auto logOperand = stablehlo::Log2Op::create(rewriter, op.getLoc(),
+                                                    defOp.getOperand());
         auto negTwo = stablehlo::ConstantOp::create(
             rewriter, op.getLoc(), defOp.getType(),
             cast<ElementsAttr>(makeAttr(defOp.getType(), -2)));
@@ -45541,7 +45624,7 @@ struct EnzymeHLOOptPass
         MaxSimplify, MinSimplify, OrSimplify, XorSimplify, MulSimplify,
         DivSimplify, RemSimplify, PowSimplify, NoopSlice, NoopReverse,
         SliceReverse, SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
-        SliceDynamicSlice, LogSimplify, ShiftRightLogicalSimplify,
+        SliceDynamicSlice, LogSimplify, Log2Simplify, ShiftRightLogicalSimplify,
         NegativePadToSlice, SliceSimplify, ConvertSimplify, TransposeSimplify,
         DotGeneralSimplify, DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
@@ -45596,6 +45679,7 @@ struct EnzymeHLOOptPass
              UnaryConstProp<stablehlo::IsFiniteOp, stablehlo::isFiniteOp>,
              UnaryConstProp<stablehlo::LogOp, stablehlo::logOp>,
              UnaryConstProp<stablehlo::Log1pOp, stablehlo::log1pOp>,
+             UnaryConstProp<stablehlo::Log2Op, stablehlo::log2Op>,
              UnaryConstProp<stablehlo::AbsOp, stablehlo::absOp>,
              UnaryConstProp<stablehlo::NegOp, stablehlo::negOp>,
              UnaryConstProp<stablehlo::SqrtOp, stablehlo::sqrtOp>,
@@ -45604,6 +45688,7 @@ struct EnzymeHLOOptPass
              UnaryConstProp<stablehlo::SineOp, stablehlo::sineOp>,
              UnaryConstProp<stablehlo::ExpOp, stablehlo::exponentialOp>,
              UnaryConstProp<stablehlo::Expm1Op, stablehlo::expm1Op>,
+             UnaryConstProp<stablehlo::Exp2Op, stablehlo::exp2Op>,
              UnaryConstProp<stablehlo::TanhOp, stablehlo::tanhOp>,
              UnaryConstProp<stablehlo::LogisticOp, stablehlo::logisticOp>,
              UnaryConstProp<chlo::ConjOp, conjOp>,
@@ -45691,8 +45776,8 @@ struct EnzymeHLOOptPass
     if (passses & 32)
       patterns
           .add<UnaryPadPush<stablehlo::ConvertOp>,
-               UnaryPadPush<stablehlo::TanhOp>, UnaryPadPush<stablehlo::ExpOp>>(
-              context);
+               UnaryPadPush<stablehlo::TanhOp>, UnaryPadPush<stablehlo::ExpOp>,
+               UnaryPadPush<stablehlo::Exp2Op>>(context);
 
     if (passses & 64)
       patterns.add<TransposePad>(context);
@@ -45719,7 +45804,8 @@ struct EnzymeHLOOptPass
           CSE<stablehlo::BatchNormTrainingOp>,
           CSE<stablehlo::BatchNormInferenceOp>, CSE<stablehlo::BatchNormGradOp>,
           CSE<stablehlo::ExpOp>, CSE<stablehlo::Expm1Op>, CSE<stablehlo::LogOp>,
-          CSE<stablehlo::Log1pOp>, CSE<stablehlo::TanhOp>,
+          CSE<stablehlo::Log1pOp>, CSE<stablehlo::Exp2Op>,
+          CSE<stablehlo::Log2Op>, CSE<stablehlo::TanhOp>,
           CSE<stablehlo::LogisticOp>, CSE<stablehlo::SqrtOp>,
           CSE<stablehlo::RsqrtOp>, CSE<stablehlo::CbrtOp>,
           CSE<stablehlo::SineOp>, CSE<stablehlo::CosineOp>,

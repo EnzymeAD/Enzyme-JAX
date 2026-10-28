@@ -718,9 +718,10 @@ NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(
     // data movement ops
     recursiveCheck = true;
     operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
-  } else if (isa<stablehlo::AbsOp, stablehlo::ExpOp, stablehlo::ConvertOp,
-                 stablehlo::CompareOp, stablehlo::TanhOp, stablehlo::LogisticOp,
-                 stablehlo::FloorOp, stablehlo::CeilOp>(op)) {
+  } else if (isa<stablehlo::AbsOp, stablehlo::ExpOp, stablehlo::Exp2Op,
+                 stablehlo::ConvertOp, stablehlo::CompareOp, stablehlo::TanhOp,
+                 stablehlo::LogisticOp, stablehlo::FloorOp, stablehlo::CeilOp>(
+                 op)) {
     // elementwise ops that are no-nan if all operands are not nan
     recursiveCheck = true;
     operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
@@ -820,8 +821,8 @@ FiniteResultAnalysis::State FiniteResultAnalysis::localGuaranteed(
     recursiveCheck = true;
     operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
   } else if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp,
-                 stablehlo::AbsOp, stablehlo::ExpOp, stablehlo::ConvertOp,
-                 stablehlo::CompareOp>(op)) {
+                 stablehlo::AbsOp, stablehlo::ExpOp, stablehlo::Exp2Op,
+                 stablehlo::ConvertOp, stablehlo::CompareOp>(op)) {
     // if both finite [but possibly nan], the result is finite, or nan
     recursiveCheck = true;
     operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
@@ -873,8 +874,8 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 
   // integer ops
   if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
-          stablehlo::IotaOp, stablehlo::OrOp, stablehlo::XorOp,
-          stablehlo::NotOp>(op)) {
+          stablehlo::Exp2Op, stablehlo::IotaOp, stablehlo::OrOp,
+          stablehlo::XorOp, stablehlo::NotOp>(op)) {
     return State::GUARANTEED;
   }
 

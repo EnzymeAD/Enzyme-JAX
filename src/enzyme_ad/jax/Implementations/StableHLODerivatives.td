@@ -16,6 +16,8 @@ class HLORegionTerminatorOp<string m> : RegionTerminatorOp<"stablehlo", m>;
 
 class HLOInactiveOp<string m> : InactiveOp<"stablehlo", m>;
 
+def DotAlgorithmAttr : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{stablehlo::DotAlgorithmAttr();}]>;
+
 include "HLODerivatives.td"
 
 def : HLODerivative<"EinsumOp", (Op $lhs, $rhs),

@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-jit{backend=cpu})" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(convert-polygeist-to-llvm{preserve-xla-funcs=true},lower-jit)" | FileCheck %s
 
 // A CPU jit_call whose body contains a floating point literal. Note that `jit`
 // defaults to true, so unlike cpujit.mlir this actually compiles @scale through

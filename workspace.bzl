@@ -1,7 +1,7 @@
-JAX_COMMIT = "6aaf234b1ee98800fcb80b9014a052a66dadbd8a"
+JAX_COMMIT = "81ac75636c20014dde4ec79a5c15bb172319d9b5"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "25d27195c099f3ab5a9e3d2bb99bd29ddb2aa1fe"
+ENZYME_COMMIT = "2922ff278865782e3ce665876873f6d4316abe7d"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
@@ -105,7 +105,7 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     # place copies and spills above the exec restore of an if/else join,
     # miscompiling kernels (llvm/llvm-project#222368). Drop once XLA's LLVM
     # includes it.
-    sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_amdgpu_bb_prolog.patch\\\", \\\"\\/\\/:patches\\/llvm_affine_parallel_signless_minmax.patch\\\",/g" third_party/llvm/workspace.bzl
+    sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_amdgpu_bb_prolog.patch\\\",/g" third_party/llvm/workspace.bzl
     """,
     """
     sed -i.bak0 "s/tf_http_archive/http_archive/g" third_party/llvm/workspace.bzl
@@ -133,6 +133,28 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     # (and the malloc.h that declares them) are used together.  The remaining
     # _MSC_VER guards are genuinely MSVC-only syntax and stay as they are.
     sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/#ifdef _MSC_VER\\/#ifdef _WIN32\\/g' slinky\\/base\\/util.h\\\"], strip_prefix/g" third_party/slinky/workspace.bzl
+    """,
+    """
+    sed -i.bak0 "s/^load(/load(\\\"@bazel_tools\\/\\/tools\\/build_defs\\/repo:http.bzl\\\", \\\"http_archive\\\")\\nload(/g" third_party/flatbuffers/workspace.bzl
+    """,
+    """
+    sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/flatbuffers/workspace.bzl
+    """,
+    """
+    sed -i.bak0 "s/\\/\\/third_party/@xla\\/\\/third_party/g" third_party/flatbuffers/workspace.bzl
+    """,
+    """
+    # flatbuffers takes the strtoll_l family to be there whenever
+    # _XOPEN_VERSION >= 700, but musl (the host toolchain of our
+    # BinaryBuilder builds) advertises that without providing them.  Only
+    # take them on glibc.
+    sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/_XOPEN_VERSION >= 700\\/_XOPEN_VERSION >= 700 and defined(__GLIBC__)\\/' include\\/flatbuffers\\/base.h\\\"], strip_prefix/g" third_party/flatbuffers/workspace.bzl
+    """,
+    """
+    # cc_to_llvm_ir spells its flags for clang-cl on Windows, but we build
+    # Windows with mingw clang, which takes the /clang: ones for files.  Give it
+    # the GNU-style flags it takes everywhere else.
+    perl -0777 -pi -e 's|\\s*"//xla/tsl:windows": \\[[^\\]]*\\] \\+ _to_clang_cl_flags\\(clang_flags \\+ list_copts\\),||' xla/codegen/intrinsic/cpp/cc_to_llvm_ir.bzl
     """,
     """
     # The second command disables llvm's use of __builtin_cpu_supports on apple

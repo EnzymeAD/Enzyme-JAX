@@ -593,6 +593,11 @@ def ConvertPolygeistToLLVM
            /*default=*/"false",
            "Use C-style nested-array lowering of memref instead of "
            "the default MLIR descriptor structure">,
+    Option<"preserveXLAFuncs", "preserve-xla-funcs", "bool",
+           /*default=*/"false",
+           "Leave functions holding StableHLO or tensor-typed signatures "
+           "(and their bodies) untouched instead of erasing them, so the pass "
+           "can run on a module that still contains the XLA host program">,
     Option<
         /*C++ variable name=*/"backend",
         /*CLI argument=*/"backend",
@@ -717,6 +722,7 @@ def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
     "chlo::ChloDialect",
     "enzymexla::EnzymeXLADialect",
     "LLVM::LLVMDialect",
+    "enzyme::EnzymeDialect",
   ];
 
   let options = [
@@ -845,18 +851,8 @@ def RaiseTritonCustomCallPass : Pass<"raise-triton-custom-call"> {
 def LowerJITPass : Pass<"lower-jit"> {
   let summary = "Lower jit call to custom call";
   let dependentDialects = [
-    "stablehlo::StablehloDialect", 
-    "gpu::GPUDialect", 
-    "func::FuncDialect",
-    "math::MathDialect", 
-    "memref::MemRefDialect", 
-    "scf::SCFDialect",
-    "vector::VectorDialect", 
-    "nvgpu::NVGPUDialect", 
-    "NVVM::NVVMDialect",
-    "LLVM::LLVMDialect", 
-    "arith::ArithDialect", 
-    "tensor::TensorDialect"
+    "stablehlo::StablehloDialect",
+    "LLVM::LLVMDialect"
   ];
 
   let options = [
@@ -866,96 +862,6 @@ def LowerJITPass : Pass<"lower-jit"> {
         /*type=*/"bool",
         /*default=*/"true",
         /*description=*/"Whether to jit the kernel">,
-    Option<
-        /*C++ variable name=*/"compileLaunch",
-        /*CLI argument=*/"compileLaunch",
-        /*type=*/"bool",
-        /*default=*/"true",
-        /*description=*/"Whether to jit the host code">,
-    Option<
-        /*C++ variable name=*/"toolkitPath",
-        /*CLI argument=*/"toolkitPath",
-        /*type=*/"std::string",
-        /*default=*/"",
-        /*description=*/"The location of the cuda toolkit">,
-    Option<
-        /*C++ variable name=*/"linkFiles",
-        /*CLI argument=*/"linkFiles",
-        /*type=*/"std::string",
-        /*default=*/"",
-        /*description=*/"Semicolon separated list of files to link">,
-    Option<
-        /*C++ variable name=*/"cubinChip",
-        /*CLI argument=*/"cubinChip",
-        /*type=*/"std::string",
-        /*default=*/"\"sm_50\"",
-        /*description=*/"cubinChip">,
-    Option<
-        /*C++ variable name=*/"cubinFeatures",
-        /*CLI argument=*/"cubinFeatures",
-        /*type=*/"std::string",
-        /*default=*/"\"+ptx60\"",
-        /*description=*/"cubinChip">,
-    Option<
-        /*C++ variable name=*/"indexBitWidth",
-        /*CLI argument=*/"indexBitWidth",
-        /*type=*/"int",
-        /*default=*/"64",
-        /*description=*/"indexBitWidth">,
-    Option<
-        /*C++ variable name=*/"run_init",
-        /*CLI argument=*/"run_init",
-        /*type=*/"bool",
-        /*default=*/"false",
-        /*description=*/"Run initialization of cuda module">,
-    Option<
-        /*C++ variable name=*/"debug",
-        /*CLI argument=*/"debug",
-        /*type=*/"bool",
-        /*default=*/"false",
-        /*description=*/"Compile in debug prints">,
-    Option<
-        /*C++ variable name=*/"cuResultHandlerPtr",
-        /*CLI argument=*/"cuResultHandlerPtr",
-        /*type=*/"size_t",
-        /*default=*/"0",
-        /*description=*/"Function handler to call with result of curesult">,
-    Option<
-        /*C++ variable name=*/"cuStreamSynchronizePtr",
-        /*CLI argument=*/"cuStreamSynchronizePtr",
-        /*type=*/"size_t",
-        /*default=*/"0",
-        /*description=*/"Function handler to sync results">,
-    Option<
-        /*C++ variable name=*/"cubinFormat",
-        /*CLI argument=*/"cubinFormat",
-        /*type=*/"std::string",
-        /*default=*/"\"bin\"",
-        /*description=*/"Binary format">,
-    Option<
-        /*C++ variable name=*/"cuOptLevel",
-        /*CLI argument=*/"cuOptLevel",
-        /*type=*/"int",
-        /*default=*/"2",
-        /*description=*/"Opt level for ptx">,
-    Option<
-        /*C++ variable name=*/"cubinTriple",
-        /*CLI argument=*/"cubinTriple",
-        /*type=*/"std::string",
-        /*default=*/"\"nvptx64-nvidia-cuda\"",
-        /*description=*/"Target triple">,
-    Option<
-        /*C++ variable name=*/"backend",
-        /*CLI argument=*/"backend",
-        /*type=*/"std::string",
-        /*default=*/"\"cuda\"",
-        /*description=*/"HW backend">,
-    Option<
-        /*C++ variable name=*/"openmp",
-        /*CLI argument=*/"openmp",
-        /*type=*/"bool",
-        /*default=*/"true",
-        /*description=*/"whether to use openmp for lowering">,
     Option<
         /*C++ variable name=*/"dump_final_module",
         /*CLI argument=*/"dump_final_module",
@@ -1257,6 +1163,18 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*type=*/"int",
        /*default=*/"1",
        /*description=*/"Perform a DUS with Padding to optimize the communication">,
+       Option<
+       /*C++ variable name=*/"dus_sink_slices_comm",
+       /*CLI argument=*/"dus_sink_slices_comm",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Move the slices feeding the update of a DUS on a sharded dimension down to the DUS, recomputing the update at the full extent">,
+       Option<
+       /*C++ variable name=*/"dus_sink_slices_max_extra_percent",
+       /*CLI argument=*/"dus_sink_slices_max_extra_percent",
+       /*type=*/"int",
+       /*default=*/"100",
+       /*description=*/"Largest amount of discarded work dus_sink_slices_comm may add, as a percentage of the update's size along the dimension">,
        Option<
        /*C++ variable name=*/"concat_two_operands_comm",
        /*CLI argument=*/"concat_two_operands_comm",
