@@ -2254,6 +2254,30 @@ bool raiseDynamicSliceToGather(
       return false;
   }
 
+  // Every non-dependent start index must be constant across iterations. The
+  // gather window starts there, so the ones not known to be zero are hoisted
+  // and become extra columns of the gather indices.
+  SmallVector<int64_t> invariantDims;
+  SmallVector<Value> invariantStarts;
+  DenseMap<Value, SmallVector<Operation *>> invariantHoistMap;
+  for (auto [i, startIndex] : llvm::enumerate(dsOp.getStartIndices())) {
+    if (llvm::is_contained(dependentDims, i)) {
+      continue;
+    }
+    Value outerStart;
+    SmallVector<Operation *> startCanBeHoisted;
+    if (!info.isConstantAcrossIterations(startIndex, outerStart,
+                                         startCanBeHoisted, true)) {
+      return false;
+    }
+    if (matchPattern(startIndex, m_Zero()))
+      continue;
+    invariantDims.push_back(i);
+    invariantStarts.push_back(outerStart);
+    if (!outerStart)
+      invariantHoistMap[startIndex] = startCanBeHoisted;
+  }
+
   rewriter.setInsertionPoint(whileOp);
 
   if (!outerOperand) {
@@ -2265,13 +2289,13 @@ bool raiseDynamicSliceToGather(
     outerOperand = hoistedValues[dsOperand];
   }
 
-  // Verify all non-dependent start indices are constant across iterations
-  for (auto [i, startIndex] : llvm::enumerate(dsOp.getStartIndices())) {
-    if (llvm::is_contained(dependentDims, i)) {
-      continue;
-    }
-    if (!info.isConstantAcrossIterations(startIndex, true)) {
-      return false;
+  if (!invariantHoistMap.empty()) {
+    DenseMap<Value, Value> hoistedValues;
+    hoistChainOfOps(invariantHoistMap, rewriter, whileOp, info, hoistedValues);
+    for (size_t k = 0; k < invariantDims.size(); k++) {
+      if (!invariantStarts[k])
+        invariantStarts[k] =
+            hoistedValues[dsOp.getStartIndices()[invariantDims[k]]];
     }
   }
 
@@ -2312,14 +2336,29 @@ bool raiseDynamicSliceToGather(
     hoistedIndicesList.push_back(reshaped);
   }
 
+  // The invariant start indices are the same in every row.
+  auto indexColumnTy =
+      RankedTensorType::get({numIters, 1}, hoistedIndicesElemTy);
+  for (Value start : invariantStarts) {
+    auto startTy = cast<RankedTensorType>(start.getType());
+    if (startTy.getElementType() != hoistedIndicesElemTy) {
+      start = stablehlo::ConvertOp::create(
+          rewriter, loc, RankedTensorType::get({}, hoistedIndicesElemTy),
+          start);
+    }
+    hoistedIndicesList.push_back(stablehlo::BroadcastInDimOp::create(
+        rewriter, loc, indexColumnTy, start,
+        rewriter.getDenseI64ArrayAttr({})));
+  }
+
   // Concatenate all hoisted indices along the last dimension
   Value gatherIndices;
   if (hoistedIndicesList.size() == 1) {
     gatherIndices = hoistedIndicesList[0];
   } else {
-    // Result shape: [numIters, numDependentDims]
+    // Result shape: [numIters, numDependentDims + numInvariantDims]
     SmallVector<int64_t> concatShape = {numIters,
-                                        (int64_t)dependentDims.size()};
+                                        (int64_t)hoistedIndicesList.size()};
     auto concatTy = RankedTensorType::get(concatShape, hoistedIndicesElemTy);
     gatherIndices = stablehlo::ConcatenateOp::create(
         rewriter, loc, concatTy, hoistedIndicesList, /*dimension=*/1);
@@ -2354,8 +2393,10 @@ bool raiseDynamicSliceToGather(
   // collapsedSliceDims: the dimensions we're indexing into
   SmallVector<int64_t> collapsedSliceDims = llvm::to_vector(dependentDims);
 
-  // startIndexMap: maps index vector dimensions to operand dimensions
+  // startIndexMap: maps index vector dimensions to operand dimensions, in the
+  // order the index columns were concatenated
   SmallVector<int64_t> startIndexMap = llvm::to_vector(dependentDims);
+  llvm::append_range(startIndexMap, invariantDims);
 
   // Calculate output shape: [numIters, ...sliceSizes for non-dependent dims...]
   SmallVector<int64_t> gatherOutputShape;
