@@ -1,11 +1,16 @@
 diff --git a/gpu/cuda/build_templates/cuda_cudart.BUILD.tpl b/gpu/cuda/build_templates/cuda_cudart.BUILD.tpl
-index e5951e0..7785b88 100644
+index e5951e0..15a53ae 100644
 --- a/gpu/cuda/build_templates/cuda_cudart.BUILD.tpl
 +++ b/gpu/cuda/build_templates/cuda_cudart.BUILD.tpl
-@@ -31,6 +31,9 @@ cc_import(
+@@ -31,6 +31,14 @@ cc_import(
      name = "cudart_shared_library",
      hdrs = [":headers"],
      shared_library = "lib/libcudart.so.%{libcudart_version}",
++    # The static CUDA libraries need culibos, which the static cudart brings in.
++    deps = if_static_cuda(
++        if_cuda_newer_than("13_0", ["@cuda_culibos//:culibos_static_library"], [":culibos_static_library"]),
++        [],
++    ),
 +    # Linked directly by @xla//xla/tsl/cuda:cudart, see XLA_PATCHES in
 +    # Enzyme-JAX's workspace.bzl.
 +    visibility = ["//visibility:public"],
