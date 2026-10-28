@@ -901,25 +901,42 @@ static Value convertToIndex(Value v) {
       .getResult();
 }
 
-struct GEPOfMemRefLoad : public OpRewritePattern<memref::LoadOp> {
-  using OpRewritePattern<memref::LoadOp>::OpRewritePattern;
+// A load or store through a view of a getelementptr of the accessed type
+// accesses the getelementptr's base, at the access's index plus the
+// getelementptr's. Folded here rather than left to canonicalization, so the
+// patterns below see the view of the base: an access with no affine form is a
+// memref access through a view of its getelementptr, and only through a view
+// of the buffer itself is an aggregate one (a complex number gathered or
+// scattered at a loaded index) expanded per leaf.
+template <typename OpTy>
+struct GEPOfMemRefAccess : public OpRewritePattern<OpTy> {
+  using OpRewritePattern<OpTy>::OpRewritePattern;
   const DataLayoutAnalysis &dl;
-  GEPOfMemRefLoad(MLIRContext *context, const DataLayoutAnalysis &dl)
-      : OpRewritePattern<memref::LoadOp>(context), dl(dl) {}
+  GEPOfMemRefAccess(MLIRContext *context, const DataLayoutAnalysis &dl)
+      : OpRewritePattern<OpTy>(context), dl(dl) {}
 
-  LogicalResult matchAndRewrite(memref::LoadOp ld,
+  static Type accessedType(memref::LoadOp ld) { return ld.getType(); }
+  static Type accessedType(memref::StoreOp st) {
+    return st.getValueToStore().getType();
+  }
+
+  LogicalResult matchAndRewrite(OpTy access,
                                 PatternRewriter &rewriter) const override {
-    auto dataLayout = dl.getAtOrAbove(ld);
-    if (cast<MemRefType>(ld.getMemRef().getType()).getShape().size() != 1)
+    Value memref = access.getMemRef();
+    if (cast<MemRefType>(memref.getType()).getShape().size() != 1)
       return failure();
-    auto ptr = ld.getMemRef().getDefiningOp<enzymexla::Pointer2MemrefOp>();
+    auto ptr = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>();
     if (!ptr)
       return failure();
     auto gep = ptr.getOperand().getDefiningOp<LLVM::GEPOp>();
     if (!gep)
       return failure();
     Type currentType = gep.getElemType();
-    if (currentType != ld.getType())
+    if (currentType != accessedType(access))
+      return failure();
+    // Checked before anything is built: a pattern that fails must leave the
+    // IR as it found it.
+    if (gep.getIndices().size() != 1)
       return failure();
 
     auto ptr2 = enzymexla::Pointer2MemrefOp::create(
@@ -934,16 +951,15 @@ struct GEPOfMemRefLoad : public OpRewritePattern<memref::LoadOp> {
         indices.push_back(convertToIndex(val));
       }
     }
-    if (indices.size() != 1)
-      return failure();
+    assert(indices.size() == 1);
     SmallVector<Value, 1> idx2;
-    for (auto midx : ld.getIndices())
+    for (auto midx : access.getIndices())
       idx2.push_back(midx);
     idx2[0] =
         arith::AddIOp::create(rewriter, gep.getLoc(), idx2[0], indices[0]);
-    rewriter.modifyOpInPlace(ld, [&]() {
-      ld.setMemRef(ptr2);
-      ld.getIndicesMutable().assign(idx2);
+    rewriter.modifyOpInPlace(access, [&]() {
+      access.setMemRef(ptr2);
+      access.getIndicesMutable().assign(idx2);
     });
     return success();
   }
@@ -2772,7 +2788,9 @@ convertLLVMToAffineAccess(Operation *op,
 
   {
     RewritePatternSet patterns(context);
-    patterns.insert<ConvertLLVMAllocaToMemrefAlloca, GEPOfMemRefLoad,
+    patterns.insert<ConvertLLVMAllocaToMemrefAlloca,
+                    GEPOfMemRefAccess<memref::LoadOp>,
+                    GEPOfMemRefAccess<memref::StoreOp>,
                     SimplifyInPlaceAlloc<memref::AllocOp>,
                     SimplifyInPlaceAlloc<memref::AllocaOp>,
                     SimplifyInPlaceAlloc<gpu::AllocOp>,
