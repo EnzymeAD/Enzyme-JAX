@@ -151,8 +151,8 @@ static void expandAggregateView(enzymexla::Pointer2MemrefOp p2m,
     SmallVector<Value> indices;
     for (AffineExpr expr :
          leafExprs(getAffineDimExpr(0, rewriter.getContext()), leaf))
-      indices.push_back(affine::expandAffineExpr(rewriter, loc, expr,
-                                                 ValueRange{index}, {}));
+      indices.push_back(
+          affine::expandAffineExpr(rewriter, loc, expr, ValueRange{index}, {}));
     return indices;
   };
   for (Operation *user : llvm::make_early_inc_range(p2m->getUsers())) {
@@ -2793,14 +2793,13 @@ convertLLVMToAffineAccess(Operation *op,
 
   {
     RewritePatternSet patterns(context);
-    patterns.insert<ConvertLLVMAllocaToMemrefAlloca,
-                    GEPOfMemRefAccess<memref::LoadOp>,
-                    GEPOfMemRefAccess<memref::StoreOp>,
-                    SimplifyInPlaceAlloc<memref::AllocOp>,
-                    SimplifyInPlaceAlloc<memref::AllocaOp>,
-                    SimplifyInPlaceAlloc<gpu::AllocOp>,
-                    ExpandAggregateViewOfScalarMemref>(context,
-                                                       dataLayoutAnalysis);
+    patterns.insert<
+        ConvertLLVMAllocaToMemrefAlloca, GEPOfMemRefAccess<memref::LoadOp>,
+        GEPOfMemRefAccess<memref::StoreOp>,
+        SimplifyInPlaceAlloc<memref::AllocOp>,
+        SimplifyInPlaceAlloc<memref::AllocaOp>,
+        SimplifyInPlaceAlloc<gpu::AllocOp>, ExpandAggregateViewOfScalarMemref>(
+        context, dataLayoutAnalysis);
     patterns.insert<MemsetZeroToAffineFill>(context);
     patterns.insert<ScalarLLVMConstantToArith<LLVM::ConstantOp>,
                     ScalarLLVMConstantToArith<LLVM::ZeroOp>>(context);
