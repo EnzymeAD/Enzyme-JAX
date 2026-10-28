@@ -44,6 +44,12 @@ XLA_PATCHES = [
     sed -i.bak0 "s/namespace/THIS_SHOULD_NEVER_BE_COMPILED/g" xla/tsl/cuda/{cublas,cublasLt,cufft,cusolver,cusparse,cudnn,cudart}_stub.cc
 """,
     """
+    # Link the shared cudart: kernels jitted by lower-jit register their fat
+    # binaries with the CUDA runtime, and with the static cudart only the first
+    # jitted kernel of a process launches.
+    sed -i.bak0 's,"@cuda_cudart//:cudart","@cuda_cudart//:cudart_shared_library",' xla/tsl/cuda/BUILD.bazel
+    """,
+    """
 	sed -i.bak0 "/amdgpu_backend/d" xla/backends/gpu/codegen/triton/BUILD
     """,
     """
