@@ -215,7 +215,7 @@ struct Relayout {
         perm = rootPermutation(in, elements);
         a = movedDim(perm);
         if (a < 0)
-          return perm;
+          return moveToFront(type.getRank(), 0);
       }
       if (llvm::is_contained(reduce.getDimensions(), a)) {
         handled = false;
