@@ -178,3 +178,60 @@ module {
     llvm.return %0#1 : i32
   }
 }
+
+// -----
+
+// A global in a condition is its address: passed to a call, or compared with
+// a pointer.
+module {
+  llvm.mlir.global external @g() {addr_space = 0 : i32} : i32
+
+  tessera.define private @lib.h(!llvm.ptr) -> i32 attributes {argModes = [unit], pure = true}
+  tessera.define private @lib.f(!llvm.ptr) -> i32 attributes {argModes = [unit], pure = true}
+  tessera.define private @lib.g(!llvm.ptr) -> i32 attributes {argModes = [unit], pure = true}
+
+  // CHECK-LABEL: llvm.func @global_argument
+  llvm.func @global_argument(%r: !llvm.ptr) -> i32 {
+    // CHECK: %[[G:.*]] = llvm.mlir.addressof @g : !llvm.ptr
+    // CHECK: tessera.call @lib.h(%[[G]])
+    %0 = tessera.guard "lib.h(@g) == 1" args(%r) {argNames = ["r"]} : (!llvm.ptr) -> i32 {
+      %1 = tessera.call @lib.g(%r) : (!llvm.ptr) -> i32
+      tessera.yield %1 : i32
+    } else {
+      %2 = tessera.call @lib.f(%r) : (!llvm.ptr) -> i32
+      tessera.yield %2 : i32
+    }
+    llvm.return %0 : i32
+  }
+
+  // CHECK-LABEL: llvm.func @global_address
+  llvm.func @global_address(%r: !llvm.ptr) -> i32 {
+    // CHECK: %[[G:.*]] = llvm.mlir.addressof @g : !llvm.ptr
+    // CHECK: %[[C:.*]] = llvm.icmp "eq" %arg0, %[[G]] : !llvm.ptr
+    // CHECK: llvm.cond_br %[[C]]
+    %0 = tessera.guard "r == @g" args(%r) {argNames = ["r"]} : (!llvm.ptr) -> i32 {
+      %1 = tessera.call @lib.g(%r) : (!llvm.ptr) -> i32
+      tessera.yield %1 : i32
+    } else {
+      %2 = tessera.call @lib.f(%r) : (!llvm.ptr) -> i32
+      tessera.yield %2 : i32
+    }
+    llvm.return %0 : i32
+  }
+
+  // Text is only compared at compile time, so a guard can't test it.
+  // CHECK-LABEL: llvm.func @text
+  // CHECK-NOT: tessera.call @lib.g
+  // CHECK: tessera.call @lib.f
+  llvm.func @text(%r: !llvm.ptr) -> i32 {
+    // expected-warning @+1 {{'r == 'cg'' compares text, which is only checked at compile time}}
+    %0 = tessera.guard "r == 'cg'" args(%r) {argNames = ["r"]} : (!llvm.ptr) -> i32 {
+      %1 = tessera.call @lib.g(%r) : (!llvm.ptr) -> i32
+      tessera.yield %1 : i32
+    } else {
+      %2 = tessera.call @lib.f(%r) : (!llvm.ptr) -> i32
+      tessera.yield %2 : i32
+    }
+    llvm.return %0 : i32
+  }
+}

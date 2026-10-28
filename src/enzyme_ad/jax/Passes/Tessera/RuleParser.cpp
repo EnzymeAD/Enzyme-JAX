@@ -12,19 +12,22 @@
 //           | expr relop expr
 //   relop ::= '==' | '!=' | '<' | '<=' | '>' | '>='
 //   expr  ::= term { ('+' | '-') term }
-//   term  ::= primary { ('*' | '/' | '%') primary }
+//   term  ::= factor { ('*' | '/' | '%') factor }
+//   factor ::= '-' factor | primary
 //   primary ::= call | var | int | float | string | global | builtin
 //             | '(' expr ')'
+//   builtin ::= 'log2' '(' expr ')'
 //   call  ::= ident '.' ident '(' [ expr { ',' expr } ] ')'
 //   var   ::= ident
 //   string ::= "'" { any character but "'" } "'"
 //   global ::= '@' symbol
 //
-// Strings, globals and log2 are only allowed on the right-hand side. Strings
+// log2 is only allowed on the right-hand side. A condition compares a string
+// (by its text) or a global (by its address) only with '==' or '!='. Strings
 // use single quotes so a rule can sit inside a C string without escaping.
-// Arithmetic (C precedence) is allowed on the right-hand side and in
-// comparisons. In a condition, '(' starts arithmetic rather than a nested
-// condition when an arithmetic or comparison operator follows its ')'.
+// Arithmetic (C precedence), including negation, is allowed on the right-hand
+// side and in comparisons. In a condition, '(' starts arithmetic rather than a
+// nested condition when an arithmetic or comparison operator follows its ')'.
 //
 //===----------------------------------------------------------------------===//
 
@@ -350,13 +353,21 @@ std::optional<Call> Parser::parseCall(std::string dialect_name) {
   }
   std::vector<Expr> args;
   advance();
-  while (current.type != TokenType::RParen) {
-    auto expr = parseExpr();
-    if (!expr)
-      return std::nullopt;
-    args.push_back(std::move(*expr));
-    if (current.type == TokenType::Comma)
+  if (current.type != TokenType::RParen) {
+    while (true) {
+      auto expr = parseExpr();
+      if (!expr)
+        return std::nullopt;
+      args.push_back(std::move(*expr));
+      if (current.type == TokenType::RParen)
+        break;
+      if (current.type != TokenType::Comma) {
+        error() << "expected ',' or ')' in call to '" << dialect_name << "."
+                << op_name << "', got '" << current.value << "'";
+        return std::nullopt;
+      }
       advance();
+    }
   }
   advance(); // consume ')'
   return Call{dialect_name, op_name, std::move(args)};
@@ -404,7 +415,7 @@ std::optional<Expr> Parser::parseExpr() {
 }
 
 std::optional<Expr> Parser::parseTerm() {
-  auto lhs = parsePrimary();
+  auto lhs = parseFactor();
   if (!lhs)
     return std::nullopt;
   while (true) {
@@ -418,11 +429,28 @@ std::optional<Expr> Parser::parseTerm() {
     else
       return lhs;
     advance();
-    auto rhs = parsePrimary();
+    auto rhs = parseFactor();
     if (!rhs)
       return std::nullopt;
     lhs = makeArith(op, std::move(*lhs), std::move(*rhs));
   }
+}
+
+std::optional<Expr> Parser::parseFactor() {
+  if (current.type != TokenType::Minus)
+    return parsePrimary();
+  advance(); // consume '-'
+  auto operand = parseFactor();
+  if (!operand)
+    return std::nullopt;
+  // A negated literal is a literal, so `f(- 1)` matches like `f(-1)`. The
+  // most negative integer has no positive counterpart, so it stays a Neg.
+  if (auto *n = std::get_if<IntLit>(&operand->data))
+    if (n->value != std::numeric_limits<int64_t>::min())
+      return Expr(IntLit{-n->value});
+  if (auto *n = std::get_if<FloatLit>(&operand->data))
+    return Expr(FloatLit{-n->value});
+  return Expr(Neg{std::make_shared<const Expr>(std::move(*operand))});
 }
 
 bool Parser::parenOpensExpr() {
@@ -477,7 +505,7 @@ std::optional<Expr> Parser::parsePrimary() {
     // An unqualified call is a built-in. The only one is log2, e.g. to turn
     // a divisor into a shift count; the condition must ensure a power of two.
     if (current.type == TokenType::LParen) {
-      if (!allowStrings) {
+      if (!allowBuiltins) {
         error() << "'" << s
                 << "(...)' can only be used on the right-hand side of an "
                    "optimization rule";
@@ -523,22 +551,11 @@ std::optional<Expr> Parser::parsePrimary() {
     return Expr(FloatLit{n});
   }
   if (current.type == TokenType::String) {
-    if (!allowStrings) {
-      error() << "a string can only be used on the right-hand side of an "
-                 "optimization rule";
-      return std::nullopt;
-    }
     std::string s = current.value;
     advance();
     return Expr(StrLit{std::move(s)});
   }
   if (current.type == TokenType::Global) {
-    if (!allowStrings) {
-      error() << "a global, '@" << current.value
-              << "', can only be used on the right-hand side of an "
-                 "optimization rule";
-      return std::nullopt;
-    }
     std::string s = current.value;
     advance();
     return Expr(GlobalRef{std::move(s)});
@@ -606,22 +623,25 @@ std::optional<Cond> Parser::parseUnary() {
     advance(); // consume the predicate name
     advance(); // consume '('
     std::vector<Expr> args;
-    while (current.type != TokenType::RParen) {
-      auto expr = parseExpr();
-      if (!expr)
-        return std::nullopt;
-      if (containsArith(*expr)) {
-        error() << "arithmetic cannot be used in an argument of predicate '"
-                << name << "'";
-        return std::nullopt;
-      }
-      args.push_back(std::move(*expr));
-      if (current.type == TokenType::Comma) {
+    if (current.type != TokenType::RParen) {
+      while (true) {
+        auto expr = parseExpr();
+        if (!expr)
+          return std::nullopt;
+        if (containsArith(*expr)) {
+          error() << "arithmetic cannot be used in an argument of predicate '"
+                  << name << "'";
+          return std::nullopt;
+        }
+        args.push_back(std::move(*expr));
+        if (current.type == TokenType::RParen)
+          break;
+        if (current.type != TokenType::Comma) {
+          error() << "expected ',' or ')' in predicate '" << name << "', got '"
+                  << current.value << "'";
+          return std::nullopt;
+        }
         advance();
-      } else if (current.type != TokenType::RParen) {
-        error() << "expected ',' or ')' in predicate '" << name << "', got '"
-                << current.value << "'";
-        return std::nullopt;
       }
     }
     advance(); // consume ')'
@@ -640,6 +660,14 @@ std::optional<Cond> Parser::parseUnary() {
   auto rhs = parseExpr();
   if (!rhs)
     return std::nullopt;
+  // Text and addresses are equal or not, but have no order.
+  if ((isAddressLiteral(*lhs) || isAddressLiteral(*rhs)) && *op != CmpOp::Eq &&
+      *op != CmpOp::Ne) {
+    error() << "a string or global can only be compared with '==' or '!=', "
+               "not '"
+            << getCmpOpSpelling(*op) << "'";
+    return std::nullopt;
+  }
   return Cond(Compare{*op, std::move(*lhs), std::move(*rhs)});
 }
 
@@ -675,7 +703,7 @@ std::optional<Rule> Parser::parseRule() {
     return std::nullopt;
   }
   advance();
-  allowStrings = true;
+  allowBuiltins = true;
   std::vector<Expr> rhs;
   while (true) {
     auto expr = parseExpr();
@@ -795,11 +823,17 @@ llvm::StringRef getArithOpSpelling(ArithOp op) {
 }
 
 bool containsArith(const Expr &expr) {
-  if (std::holds_alternative<Arith>(expr.data))
+  if (std::holds_alternative<Arith>(expr.data) ||
+      std::holds_alternative<Neg>(expr.data))
     return true;
   if (auto *call = std::get_if<Call>(&expr.data))
     return llvm::any_of(call->args, containsArith);
   return false;
+}
+
+bool isAddressLiteral(const Expr &expr) {
+  return std::holds_alternative<StrLit>(expr.data) ||
+         std::holds_alternative<GlobalRef>(expr.data);
 }
 
 bool isLiteralOnly(const Expr &expr) {
@@ -808,6 +842,8 @@ bool isLiteralOnly(const Expr &expr) {
     return true;
   if (auto *arith = std::get_if<Arith>(&expr.data))
     return isLiteralOnly(*arith->lhs) && isLiteralOnly(*arith->rhs);
+  if (auto *neg = std::get_if<Neg>(&expr.data))
+    return isLiteralOnly(*neg->operand);
   return false;
 }
 
@@ -849,6 +885,13 @@ std::string renderExpr(const Expr &expr) {
                                  " " + std::string(getArithOpSpelling(a.op)) +
                                  " " + renderArithOperand(*a.rhs, a.op, true);
                         },
+                        [](const Neg &n) {
+                          // Negation binds tighter than any binary operator.
+                          std::string text = renderExpr(*n.operand);
+                          if (std::holds_alternative<Arith>(n.operand->data))
+                            return "-(" + text + ")";
+                          return "-" + text;
+                        },
                     },
                     expr.data);
 }
@@ -879,6 +922,8 @@ void collectVars(const Expr &expr, llvm::StringSet<> &vars) {
     collectVars(*arith->lhs, vars);
     collectVars(*arith->rhs, vars);
   }
+  if (auto *neg = std::get_if<Neg>(&expr.data))
+    collectVars(*neg->operand, vars);
 }
 
 } // namespace

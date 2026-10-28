@@ -127,6 +127,8 @@ Type typeHintFor(const Expr &expr, GuardOp guard) {
       return type;
     return typeHintFor(*arith->rhs, guard);
   }
+  if (auto *neg = std::get_if<Neg>(&expr.data))
+    return typeHintFor(*neg->operand, guard);
   return Type();
 }
 
@@ -168,13 +170,22 @@ Value resolveOperand(const Expr &expr, OpBuilder &builder, Location loc,
             return LLVM::ConstantOp::create(
                 builder, loc, hint, builder.getFloatAttr(hint, n.value));
           },
-          [&](const StrLit &) -> Value {
-            llvm_unreachable("the parser only allows a string on the "
-                             "right-hand side of a rule");
+          // As arguments of a call in the condition; emitCompare refuses to
+          // compare a string's address.
+          [&](const StrLit &s) -> Value {
+            return buildStringLiteral(s.value, builder, loc, guard);
           },
-          [&](const GlobalRef &) -> Value {
-            llvm_unreachable("the parser only allows a global on the "
-                             "right-hand side of a rule");
+          [&](const GlobalRef &g) -> Value {
+            auto module = guard->getParentOfType<ModuleOp>();
+            auto global = module ? module.lookupSymbol<LLVM::GlobalOp>(g.symbol)
+                                 : LLVM::GlobalOp();
+            if (!global) {
+              emitCheckWarning(guard)
+                  << "condition refers to global '@" << g.symbol
+                  << "', which is not in this module";
+              return Value();
+            }
+            return LLVM::AddressOfOp::create(builder, loc, global);
           },
           [&](const Call &c) -> Value {
             return emitCall(c, builder, loc, guard);
@@ -212,6 +223,20 @@ Value resolveOperand(const Expr &expr, OpBuilder &builder, Location loc,
               return Value();
             }
             return buildArith(builder, loc, a.op, lhs, rhs);
+          },
+          [&](const Neg &n) -> Value {
+            Value operand =
+                resolveOperand(*n.operand, builder, loc, guard, hint);
+            if (!operand)
+              return Value();
+            if (!isa<IntegerType, FloatType>(operand.getType())) {
+              emitCheckWarning(guard)
+                  << "'-' in a condition is given a value of type "
+                  << operand.getType() << ", but arithmetic is on integers "
+                  << "and floats";
+              return Value();
+            }
+            return buildNeg(builder, loc, operand);
           },
       },
       expr.data);
@@ -268,6 +293,8 @@ Value emitCall(const Call &call, OpBuilder &builder, Location loc,
 bool containsCall(const Expr &expr) {
   if (auto *arith = std::get_if<Arith>(&expr.data))
     return containsCall(*arith->lhs) || containsCall(*arith->rhs);
+  if (auto *neg = std::get_if<Neg>(&expr.data))
+    return containsCall(*neg->operand);
   return std::holds_alternative<Call>(expr.data);
 }
 
@@ -294,6 +321,16 @@ bool containsCall(const Cond &cond) {
 
 Value emitCompare(const Compare &cmp, OpBuilder &builder, Location loc,
                   GuardOp guard) {
+  // Text is only compared at compile time; tessera-apply-pdl doesn't leave
+  // such a comparison for a guard.
+  if (std::holds_alternative<StrLit>(cmp.lhs.data) ||
+      std::holds_alternative<StrLit>(cmp.rhs.data)) {
+    emitCheckWarning(guard) << "'" << renderCond(Cond(Compare(cmp)))
+                            << "' compares text, which is only checked at "
+                               "compile time";
+    return Value();
+  }
+
   // A literal takes the type of the other side.
   Type hint = typeHintFor(cmp.lhs, guard);
   if (!hint)
@@ -319,6 +356,11 @@ Value emitCompare(const Compare &cmp, OpBuilder &builder, Location loc,
                                 rhs);
   if (isa<FloatType>(lhs.getType()))
     return LLVM::FCmpOp::create(builder, loc, toFCmpPredicate(cmp.op), lhs,
+                                rhs);
+  // Addresses, as of a global, are equal or not.
+  if (isa<LLVM::LLVMPointerType>(lhs.getType()) &&
+      (cmp.op == CmpOp::Eq || cmp.op == CmpOp::Ne))
+    return LLVM::ICmpOp::create(builder, loc, toICmpPredicate(cmp.op), lhs,
                                 rhs);
 
   emitCheckWarning(guard) << "cannot compare values of type " << lhs.getType()

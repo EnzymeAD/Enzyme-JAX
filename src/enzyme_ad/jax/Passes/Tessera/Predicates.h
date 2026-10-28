@@ -125,6 +125,19 @@ llvm::SmallVector<llvm::StringRef> getKnownPredicateNames();
 Value buildArith(OpBuilder &builder, Location loc, ArithOp op, Value lhs,
                  Value rhs);
 
+// The text of the C string `value` points to, if it is the address of a
+// constant holding one, as C passes a string literal: up to the first NUL.
+std::optional<llvm::StringRef> getStringLiteral(Value value);
+
+// The address of a NUL-terminated constant holding `text`, in the module
+// around `anchor`, shared by every use of the same text.
+Value buildStringLiteral(llvm::StringRef text, OpBuilder &builder, Location loc,
+                         Operation *anchor);
+
+// `-operand` in the LLVM dialect. Callers check that it is an integer or
+// float.
+Value buildNeg(OpBuilder &builder, Location loc, Value operand);
+
 } // namespace tessera
 } // namespace enzyme
 } // namespace mlir
