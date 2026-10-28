@@ -1,0 +1,81 @@
+diff --git a/xla/service/gpu/model/coalescing_analysis.cc b/xla/service/gpu/model/coalescing_analysis.cc
+--- a/xla/service/gpu/model/coalescing_analysis.cc
++++ b/xla/service/gpu/model/coalescing_analysis.cc
+@@ -53,6 +53,57 @@
+ 
+ namespace xla::gpu {
+ 
++namespace {
++
++// A transpose that only permutes dimensions inside a block of the operand no
++// larger than a couple of cache lines leaves coalescing intact: a warp reading
++// consecutive output elements touches the same lines as the untransposed
++// access, in a different order within each block. [27000,3,3]{2,1,0}
++// transposed with {0,2,1} on f64 permutes within 72-byte blocks.
++bool TransposesWithinSmallBlock(const HloInstruction* instr) {
++  constexpr int64_t kMaxBlockBytes = 256;
++  if (instr->opcode() != HloOpcode::kTranspose) {
++    return false;
++  }
++  const Shape& operand_shape = instr->operand(0)->shape();
++  const Shape& shape = instr->shape();
++  // The operand dimensions in the order the operand stores them, and the
++  // operand dimension each output dimension reads in the order the output
++  // stores them; size-1 dimensions do not matter for either.
++  std::vector<int64_t> operand_order;
++  std::vector<int64_t> output_order;
++  for (int64_t dim : operand_shape.layout().minor_to_major()) {
++    if (operand_shape.dimensions()[dim] > 1) {
++      operand_order.push_back(dim);
++    }
++  }
++  for (int64_t dim : shape.layout().minor_to_major()) {
++    if (shape.dimensions()[dim] > 1) {
++      output_order.push_back(instr->dimensions(dim));
++    }
++  }
++  if (operand_order.size() != output_order.size()) {
++    return false;
++  }
++  // The permuted block spans the operand dimensions up to the most major one
++  // whose position changes.
++  size_t moved = operand_order.size();
++  while (moved > 0 && operand_order[moved - 1] == output_order[moved - 1]) {
++    --moved;
++  }
++  int64_t block_bytes =
++      ShapeUtil::ByteSizeOfPrimitiveType(operand_shape.element_type());
++  for (size_t i = 0; i < moved; ++i) {
++    block_bytes *= operand_shape.dimensions()[operand_order[i]];
++    if (block_bytes > kMaxBlockBytes) {
++      return false;
++    }
++  }
++  return true;
++}
++
++}  // namespace
++
+ // Returns true if all input reads are coalesced. If consumer is not nullptr,
+ // producer and consumer are considered as one fusion, otherwise it's only the
+ // producer.
+@@ -82,7 +133,8 @@
+         for (auto* instr : instr->fused_instructions()) {
+           // Hack: we allow transposes of broadcasts or iotas.
+           if (TransposesMinorDimension(instr) &&
+-              !is_broadcast(instr->operand(0))) {
++              !is_broadcast(instr->operand(0)) &&
++              !TransposesWithinSmallBlock(instr)) {
+             return true;
+           }
+         }
+@@ -90,7 +142,8 @@
+       }
+       // Hack: we allow transposes of broadcasts or iotas.
+       return TransposesMinorDimension(instr) &&
+-             !is_broadcast(instr->operand(0));
++             !is_broadcast(instr->operand(0)) &&
++             !TransposesWithinSmallBlock(instr);
+     };
+     if (is_bad_transpose(producer)) {
+       return false;
