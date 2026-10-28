@@ -573,38 +573,44 @@ def ConvertPolygeistToLLVM
     "scf::SCFDialect",
     "ROCDL::ROCDLDialect"
   ];
-  let options = [
-    Option<"useBarePtrCallConv", "use-bare-ptr-memref-call-conv", "bool",
+  let options =
+      [Option<
+           "useBarePtrCallConv", "use-bare-ptr-memref-call-conv", "bool",
            /*default=*/"false",
            "Replace FuncOp's MemRef arguments with bare pointers to the MemRef "
            "element types">,
-    Option<"indexBitwidth", "index-bitwidth", "unsigned",
-           /*default=kDeriveIndexBitwidthFromDataLayout*/ "0",
-           "Bitwidth of the index type, 0 to use size of machine word">,
-    Option<"dataLayout", "data-layout", "std::string",
-           /*default=*/"\"\"",
-           "String description (LLVM format) of the data layout that is "
-           "expected on the produced module">,
-    Option<"useCStyleMemRef", "use-c-style-memref", "bool",
-           /*default=*/"true",
-           "Use C-style nested-array lowering of memref instead of "
-           "the default MLIR descriptor structure">,
-    Option<"use_async", "use_async", "bool",
-           /*default=*/"false",
-           "Use C-style nested-array lowering of memref instead of "
-           "the default MLIR descriptor structure">,
-    Option<"preserveXLAFuncs", "preserve-xla-funcs", "bool",
+       Option<"indexBitwidth", "index-bitwidth", "unsigned",
+              /*default=kDeriveIndexBitwidthFromDataLayout*/ "0",
+              "Bitwidth of the index type, 0 to use size of machine word">,
+       Option<"dataLayout", "data-layout", "std::string",
+              /*default=*/"\"\"",
+              "String description (LLVM format) of the data layout that is "
+              "expected on the produced module">,
+       Option<"useCStyleMemRef", "use-c-style-memref", "bool",
+              /*default=*/"true",
+              "Use C-style nested-array lowering of memref instead of "
+              "the default MLIR descriptor structure">,
+       Option<"use_async", "use_async", "bool",
+              /*default=*/"false",
+              "Use C-style nested-array lowering of memref instead of "
+              "the default MLIR descriptor structure">,
+       Option<
+           "preserveXLAFuncs", "preserve-xla-funcs", "bool",
            /*default=*/"false",
            "Leave functions holding StableHLO or tensor-typed signatures "
            "(and their bodies) untouched instead of erasing them, so the pass "
            "can run on a module that still contains the XLA host program">,
-    Option<
-        /*C++ variable name=*/"backend",
-        /*CLI argument=*/"backend",
-        /*type=*/"std::string",
-        /*default=*/"\"cpu\"",
-        /*description=*/"HW backend">
-  ];
+       Option<
+           "cudaGetKernel", "cuda-get-kernel", "bool",
+           /*default=*/"false",
+           "Resolve CUDA kernels with cudaGetKernel in the module constructor "
+           "and pass the resulting cudaKernel_t handle to runtime calls">,
+       Option<
+           /*C++ variable name=*/"backend",
+           /*CLI argument=*/"backend",
+           /*type=*/"std::string",
+           /*default=*/"\"cpu\"",
+           /*description=*/"HW backend">];
 }
 
 def DelinearizeIndexingPass : Pass<"delinearize-indexing"> {
