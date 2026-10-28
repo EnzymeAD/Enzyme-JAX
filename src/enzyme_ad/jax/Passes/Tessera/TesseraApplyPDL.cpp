@@ -107,6 +107,18 @@ static LogicalResult isFloatConstantEqualTo(PatternRewriter &rewriter,
   return success();
 }
 
+static LogicalResult isStringConstantEqualTo(PatternRewriter &rewriter,
+                                             PDLResultList &results,
+                                             ArrayRef<PDLValue> args) {
+  // args: the matched llvm.mlir.addressof, and the expected StringAttr.
+  Operation *addressOp = args[0].cast<Operation *>();
+  auto expectedAttr = dyn_cast<StringAttr>(args[1].cast<Attribute>());
+  if (!expectedAttr || addressOp->getNumResults() != 1)
+    return failure();
+  std::optional<StringRef> actual = getStringLiteral(addressOp->getResult(0));
+  return success(actual && *actual == expectedAttr.getValue());
+}
+
 // The rules already applied to an op, so the call a guard keeps in its else
 // region isn't matched by the same rule again, forever. Other rules can still
 // match it.
@@ -164,6 +176,8 @@ static void collectCallees(const Expr &expr, llvm::StringSet<> &callees) {
     collectCallees(*arith->lhs, callees);
     collectCallees(*arith->rhs, callees);
   }
+  if (auto *neg = std::get_if<Neg>(&expr.data))
+    collectCallees(*neg->operand, callees);
 }
 
 //===----------------------------------------------------------------------===//
@@ -206,12 +220,19 @@ static bool matchLhs(const Expr &expr, Operation *op,
                                llvm::APFloat::rmNearestTiesToEven, &losesInfo);
               return value.bitwiseIsEqual(expected);
             },
-            [&](const StrLit &) { return false; },
-            [&](const GlobalRef &) { return false; },
+            [&](const StrLit &s) {
+              std::optional<StringRef> text = getStringLiteral(operand);
+              return text && *text == s.value;
+            },
+            [&](const GlobalRef &g) {
+              auto address = operand.getDefiningOp<LLVM::AddressOfOp>();
+              return address && address.getGlobalName() == g.symbol;
+            },
             [&](const Call &) {
               return matchLhs(arg, operand.getDefiningOp(), bound);
             },
             [&](const Arith &) { return false; },
+            [&](const Neg &) { return false; },
         },
         arg.data);
     if (!matched)
@@ -476,6 +497,24 @@ static Type checkRhsValue(const Expr &expr, Operation *anchor,
             }
             return lhsType;
           },
+          [&](const Neg &n) -> Type {
+            Type type = checkRhsValue(*n.operand, anchor, bound, expected, why);
+            if (!type)
+              return Type();
+            if (!isa<IntegerType, FloatType>(type)) {
+              llvm::raw_string_ostream os(why);
+              os << "'-' is given a value of type " << type
+                 << ", but arithmetic is on integers and floats";
+              return Type();
+            }
+            if (!literalFits(*n.operand, type)) {
+              llvm::raw_string_ostream os(why);
+              os << "literal " << renderExpr(*n.operand) << " does not fit in "
+                 << type;
+              return Type();
+            }
+            return type;
+          },
       },
       expr.data);
 }
@@ -572,26 +611,6 @@ static LogicalResult checkRhs(const Rule &rule, Operation *root,
   return success();
 }
 
-// The address of a NUL-terminated constant holding `text`, shared by every
-// rewrite that passes the same string.
-static Value buildStringLiteral(llvm::StringRef text, OpBuilder &builder,
-                                Location loc, Operation *anchor) {
-  auto module = anchor->getParentOfType<ModuleOp>();
-  std::string name =
-      "__tessera_str_" + llvm::utohexstr(llvm::xxh3_64bits(text));
-  auto global = module.lookupSymbol<LLVM::GlobalOp>(name);
-  if (!global) {
-    OpBuilder::InsertionGuard guard(builder);
-    builder.setInsertionPointToStart(module.getBody());
-    std::string data = text.str() + '\0';
-    auto type = LLVM::LLVMArrayType::get(builder.getI8Type(), data.size());
-    global = LLVM::GlobalOp::create(builder, loc, type, /*isConstant=*/true,
-                                    LLVM::Linkage::Private, name,
-                                    builder.getStringAttr(data));
-  }
-  return LLVM::AddressOfOp::create(builder, loc, global);
-}
-
 // Build the IR for a right-hand-side expression, which checkRhs has already
 // shown will verify.
 static Value buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
@@ -662,6 +681,11 @@ static Value buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
                                                       : lhs.getType());
             }
             return buildArith(builder, loc, a.op, lhs, rhs);
+          },
+          [&](const Neg &n) -> Value {
+            Value operand = buildExprIR(*n.operand, builder, loc, boundVars,
+                                        symbolAnchor, expected);
+            return buildNeg(builder, loc, operand);
           },
       },
       expr.data);
@@ -926,6 +950,8 @@ struct TesseraApplyPDLPass
                                           isConstantEqualTo);
     pdlPattern.registerConstraintFunction("isFloatConstantEqualTo",
                                           isFloatConstantEqualTo);
+    pdlPattern.registerConstraintFunction("isStringConstantEqualTo",
+                                          isStringConstantEqualTo);
     pdlPattern.registerConstraintFunction("tesseraRuleNotApplied",
                                           tesseraRuleNotApplied);
     pdlPattern.registerConstraintFunction(
