@@ -5663,6 +5663,10 @@ struct DUSSinkSlicesComm
           copySharding(v, res);
           res = finish(res);
         } else {
+          // A pad of this constant would only be rebuilt as a pad of it:
+          // nothing to sink.
+          if (isa<stablehlo::PadOp>(anchor) && anchor->getOperand(0) == v)
+            return nullptr;
           // Drop the rows that leave the window, and pad zeros into the rows
           // that are never read; both fold on a constant.
           int64_t size = ty.getDimSize(dim);
