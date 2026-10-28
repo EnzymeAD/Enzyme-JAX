@@ -10,13 +10,11 @@ func.func @main(%arg0: tensor<1024xf32>, %arg1: tensor<1024x32xf32>, %arg2: tens
 }
 
 // CHECK:   func.func @main(%arg0: tensor<1024xf32>, %arg1: tensor<1024x32xf32>, %arg2: tensor<1024x32xf32>) -> (tensor<24xf32>, tensor<1024x32xf32>) {
-// CHECK-NEXT{LITERAL}:     %c = stablehlo.constant dense<[[0, 0], [1, 1], [2, 2], [3, 3], [4, 4], [5, 5], [6, 6], [7, 7], [8, 8], [9, 9], [10, 10], [11, 11], [12, 12], [13, 13], [14, 14], [15, 15], [16, 16], [17, 17], [18, 18], [19, 19], [20, 20], [21, 21], [22, 22], [23, 23]]> : tensor<24x2xi64>
-// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:     %0 = stablehlo.reduce(%arg1 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<1024x32xf32>, tensor<f32>) -> tensor<32xf32>
-// CHECK-NEXT:     %1 = stablehlo.broadcast_in_dim %0, dims = [1] : (tensor<32xf32>) -> tensor<24x32xf32>
-// CHECK-NEXT:     %2 = stablehlo.broadcast_in_dim %arg0, dims = [0] : (tensor<1024xf32>) -> tensor<1024x32xf32>
-// CHECK-NEXT:     %3 = "stablehlo.gather"(%1, %c) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, slice_sizes = array<i64: 1, 1>}> : (tensor<24x32xf32>, tensor<24x2xi64>) -> tensor<24xf32>
-// CHECK-NEXT:     return %3, %2 : tensor<24xf32>, tensor<1024x32xf32>
+// CHECK-NEXT:  %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:  %0 = stablehlo.reduce(%arg1 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<1024x32xf32>, tensor<f32>) -> tensor<32xf32>
+// CHECK-NEXT:  %1 = stablehlo.broadcast_in_dim %arg0, dims = [0] : (tensor<1024xf32>) -> tensor<1024x32xf32>
+// CHECK-NEXT:  %2 = stablehlo.slice %0 [0:24] : (tensor<32xf32>) -> tensor<24xf32>
+// CHECK-NEXT:  return %2, %1 : tensor<24xf32>, tensor<1024x32xf32>
 // CHECK-NEXT:   }
 
 func.func @main2(%arg0: tensor<1024xf32>, %arg1: tensor<1024x32xf32>, %arg2: tensor<1024x32xf32>) -> (tensor<24xf32>, tensor<1024x32xf32>) {
@@ -29,15 +27,13 @@ func.func @main2(%arg0: tensor<1024xf32>, %arg1: tensor<1024x32xf32>, %arg2: ten
 }
 
 // CHECK: func.func @main2(%arg0: tensor<1024xf32>, %arg1: tensor<1024x32xf32>, %arg2: tensor<1024x32xf32>) -> (tensor<24xf32>, tensor<1024x32xf32>) {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<5.000000e+00> : tensor<24xf32>
-// CHECK-NEXT{LITERAL}:     %c = stablehlo.constant dense<[[0, 0], [1, 1], [2, 2], [3, 3], [4, 4], [5, 5], [6, 6], [7, 7], [8, 8], [9, 9], [10, 10], [11, 11], [12, 12], [13, 13], [14, 14], [15, 15], [16, 16], [17, 17], [18, 18], [19, 19], [20, 20], [21, 21], [22, 22], [23, 23]]> : tensor<24x2xi64>
-// CHECK-NEXT:     %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:     %0 = stablehlo.reduce(%arg1 init: %cst_0) applies stablehlo.add across dimensions = [0] : (tensor<1024x32xf32>, tensor<f32>) -> tensor<32xf32>
-// CHECK-NEXT:     %1 = stablehlo.broadcast_in_dim %0, dims = [1] : (tensor<32xf32>) -> tensor<24x32xf32>
-// CHECK-NEXT:     %2 = stablehlo.broadcast_in_dim %arg0, dims = [0] : (tensor<1024xf32>) -> tensor<1024x32xf32>
-// CHECK-NEXT:     %3 = "stablehlo.gather"(%1, %c) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, slice_sizes = array<i64: 1, 1>}> : (tensor<24x32xf32>, tensor<24x2xi64>) -> tensor<24xf32>
-// CHECK-NEXT:     %4 = stablehlo.multiply %3, %cst : tensor<24xf32>
-// CHECK-NEXT:     return %4, %2 : tensor<24xf32>, tensor<1024x32xf32>
+// CHECK-NEXT:  %cst = stablehlo.constant dense<5.000000e+00> : tensor<24xf32>
+// CHECK-NEXT:  %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:  %0 = stablehlo.reduce(%arg1 init: %cst_0) applies stablehlo.add across dimensions = [0] : (tensor<1024x32xf32>, tensor<f32>) -> tensor<32xf32>
+// CHECK-NEXT:  %1 = stablehlo.broadcast_in_dim %arg0, dims = [0] : (tensor<1024xf32>) -> tensor<1024x32xf32>
+// CHECK-NEXT:  %2 = stablehlo.slice %0 [0:24] : (tensor<32xf32>) -> tensor<24xf32>
+// CHECK-NEXT:  %3 = stablehlo.multiply %2, %cst : tensor<24xf32>
+// CHECK-NEXT:  return %3, %1 : tensor<24xf32>, tensor<1024x32xf32>
 // CHECK-NEXT: }
 
 func.func @main3(%arg0: tensor<2x2xcomplex<f64>> {enzymexla.memory_effects = []}, %arg1: tensor<2x2xcomplex<f64>> {enzymexla.memory_effects = []}) -> (tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>) attributes {enzymexla.memory_effects = []} {
