@@ -173,3 +173,86 @@ module {
     tessera.optimization "if power_of_two(p + 1), lib.f(x, p) -> lib.g(x, p)"
   }
 }
+
+// -----
+
+// Negation: fneg for a float, `0 - v` for an integer. It binds tighter than
+// '*', so `-(p + 1)` needs its parentheses.
+module {
+  tessera.define private @lib.f(f64, i32) -> f64 attributes {argModes = [unit, unit], pure = true}
+  tessera.define private @lib.g(f64, i32) -> f64 attributes {argModes = [unit, unit], pure = true}
+
+  tessera.optimizations {
+    tessera.optimization "lib.f(x, p) -> lib.g(-x, -(p + 1) * 2)"
+  }
+
+  // CHECK-LABEL: llvm.func @negate
+  // CHECK-DAG: %[[N:.*]] = llvm.fneg %arg0 : f64
+  // CHECK-DAG: %[[ZERO:.*]] = llvm.mlir.constant(0 : i32) : i32
+  // CHECK-DAG: %[[A:.*]] = llvm.add %arg1, %{{.*}} : i32
+  // CHECK: %[[S:.*]] = llvm.sub %[[ZERO]], %[[A]] : i32
+  // CHECK: %[[M:.*]] = llvm.mul %[[S]], %{{.*}} : i32
+  // CHECK: tessera.call @lib.g(%[[N]], %[[M]])
+  llvm.func @negate(%x: f64, %p: i32) -> f64 {
+    %0 = tessera.call @lib.f(%x, %p) : (f64, i32) -> f64
+    llvm.return %0 : f64
+  }
+}
+
+// -----
+
+// Negation in a condition, settled or carried by a guard.
+module {
+  tessera.define private @lib.f(f64, i32) -> f64 attributes {argModes = [unit, unit], pure = true}
+  tessera.define private @lib.g(f64, i32) -> f64 attributes {argModes = [unit, unit], pure = true}
+
+  tessera.optimizations {
+    tessera.optimization "if -(p + 1) * 2 == - 8, lib.f(x, p) -> lib.g(x, p)"
+  }
+
+  // CHECK-LABEL: llvm.func @neg_settled
+  // CHECK-NOT: tessera.guard
+  // CHECK: tessera.call @lib.g
+  llvm.func @neg_settled(%x: f64) -> f64 {
+    %p = llvm.mlir.constant(3 : i32) : i32
+    %0 = tessera.call @lib.f(%x, %p) : (f64, i32) -> f64
+    llvm.return %0 : f64
+  }
+
+  // CHECK-LABEL: llvm.func @neg_guarded
+  // CHECK: tessera.guard "-(p + 1) * 2 == -8"
+  llvm.func @neg_guarded(%x: f64, %p: i32) -> f64 {
+    %0 = tessera.call @lib.f(%x, %p) : (f64, i32) -> f64
+    llvm.return %0 : f64
+  }
+}
+
+// -----
+
+// Negation is arithmetic, so it can't be matched on the left.
+module {
+  tessera.optimizations {
+    // expected-warning @+1 {{arithmetic can only be used on the right-hand side or in a condition of an optimization rule, not in what it matches}}
+    tessera.optimization "lib.f(-x) -> lib.g(x)"
+  }
+}
+
+// -----
+
+// A call's arguments are separated by commas.
+module {
+  tessera.optimizations {
+    // expected-warning @+1 {{expected ',' or ')' in call to 'lib.f', got 'p'}}
+    tessera.optimization "lib.f(x p) -> lib.g(x, p)"
+  }
+}
+
+// -----
+
+// With no trailing comma.
+module {
+  tessera.optimizations {
+    // expected-warning @+1 {{invalid optimization rule expression}}
+    tessera.optimization "lib.f(x, p) -> lib.g(x, p,)"
+  }
+}

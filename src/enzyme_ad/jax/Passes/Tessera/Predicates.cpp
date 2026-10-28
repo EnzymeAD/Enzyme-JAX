@@ -11,6 +11,8 @@
 #include "mlir/IR/SymbolTable.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/PropertyPropagation.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/xxhash.h"
 #include <variant>
 
 using namespace mlir;
@@ -210,6 +212,12 @@ constantIntOperand(const Expr &expr, const llvm::StringMap<Value> &boundVars) {
       return a.srem(b);
     }
   }
+  if (auto *neg = std::get_if<Neg>(&expr.data)) {
+    auto operand = constantIntOperand(*neg->operand, boundVars);
+    if (!operand)
+      return std::nullopt;
+    return -*operand;
+  }
   return std::nullopt;
 }
 
@@ -258,15 +266,81 @@ constantFloatOperand(const Expr &expr,
     }
     return a;
   }
+  if (auto *neg = std::get_if<Neg>(&expr.data)) {
+    auto operand = constantFloatOperand(*neg->operand, boundVars);
+    if (!operand)
+      return std::nullopt;
+    llvm::APFloat a = *operand;
+    a.changeSign();
+    return a;
+  }
   return std::nullopt;
 }
 
 Proof fromBool(bool value) { return value ? Proof::True : Proof::False; }
 
+// The text of a comparison operand, if it is a string literal or is bound to
+// the address of one.
+std::optional<StringRef>
+constantTextOperand(const Expr &expr, const llvm::StringMap<Value> &boundVars) {
+  if (auto *str = std::get_if<StrLit>(&expr.data))
+    return StringRef(str->value);
+  if (auto *var = std::get_if<Var>(&expr.data)) {
+    auto it = boundVars.find(var->name);
+    if (it != boundVars.end())
+      return getStringLiteral(it->second);
+  }
+  return std::nullopt;
+}
+
+// The global a comparison operand is the address of, if known.
+std::optional<StringRef>
+constantGlobalOperand(const Expr &expr,
+                      const llvm::StringMap<Value> &boundVars) {
+  if (auto *global = std::get_if<GlobalRef>(&expr.data))
+    return StringRef(global->symbol);
+  if (auto *var = std::get_if<Var>(&expr.data)) {
+    auto it = boundVars.find(var->name);
+    if (it == boundVars.end())
+      return std::nullopt;
+    if (auto address = it->second.getDefiningOp<LLVM::AddressOfOp>())
+      return address.getGlobalName();
+  }
+  return std::nullopt;
+}
+
+// Whether `cmp` compares text, which only a string literal on either side
+// makes it do. Two matched pointers compare by address, as in C.
+bool comparesText(const Compare &cmp) {
+  return std::holds_alternative<StrLit>(cmp.lhs.data) ||
+         std::holds_alternative<StrLit>(cmp.rhs.data);
+}
+
 // Fold a comparison of two constants, so `if n > 64` costs nothing when n is
 // constant.
 Proof proveCompare(const Compare &cmp,
                    const llvm::StringMap<Value> &boundVars) {
+  // The parser only lets '==' and '!=' compare text or addresses.
+  if (comparesText(cmp)) {
+    auto lhs = constantTextOperand(cmp.lhs, boundVars);
+    auto rhs = constantTextOperand(cmp.rhs, boundVars);
+    if (!lhs || !rhs)
+      return Proof::Unknown;
+    return fromBool((*lhs == *rhs) == (cmp.op == CmpOp::Eq));
+  }
+
+  // Only the same global is known to be at the same address: two globals may
+  // be aliases, or constants the linker merges, so a difference is left to
+  // the guard.
+  if (std::holds_alternative<GlobalRef>(cmp.lhs.data) ||
+      std::holds_alternative<GlobalRef>(cmp.rhs.data)) {
+    auto lhs = constantGlobalOperand(cmp.lhs, boundVars);
+    auto rhs = constantGlobalOperand(cmp.rhs, boundVars);
+    if (!lhs || !rhs || *lhs != *rhs)
+      return Proof::Unknown;
+    return fromBool(cmp.op == CmpOp::Eq);
+  }
+
   if (auto lhs = constantIntOperand(cmp.lhs, boundVars))
     if (auto rhs = constantIntOperand(cmp.rhs, boundVars)) {
       unsigned width = std::max(lhs->getBitWidth(), rhs->getBitWidth());
@@ -780,6 +854,13 @@ ResidualCondition residualize(const Cond &cond,
             Proof proof = proveCompare(c, boundVars);
             if (proof != Proof::Unknown)
               return settledAs(proof == Proof::True);
+            // Text has no runtime check, so, like a declared property, it
+            // holds only where the IR shows it.
+            if (comparesText(c)) {
+              if (unshown.empty())
+                unshown = renderCond(Cond(Compare(c)));
+              return settledAs(!positive);
+            }
             return remaining(Cond(Compare(c)));
           },
           [&](const NotCond &c) -> ResidualCondition {
@@ -847,6 +928,45 @@ llvm::SmallVector<llvm::StringRef> getKnownPredicateNames() {
   return names;
 }
 
+// The text of the C string `value` points to, if it is the address of a
+// constant holding one, as C passes a string literal: up to the first NUL.
+std::optional<StringRef> getStringLiteral(Value value) {
+  auto address = value.getDefiningOp<LLVM::AddressOfOp>();
+  if (!address)
+    return std::nullopt;
+  auto global = SymbolTable::lookupNearestSymbolFrom<LLVM::GlobalOp>(
+      address, address.getGlobalNameAttr());
+  if (!global || !global.getConstant())
+    return std::nullopt;
+  auto text = dyn_cast_or_null<StringAttr>(global.getValueAttr());
+  if (!text)
+    return std::nullopt;
+  size_t end = text.getValue().find('\0');
+  if (end == StringRef::npos)
+    return std::nullopt;
+  return text.getValue().take_front(end);
+}
+
+// The address of a NUL-terminated constant holding `text`, shared by every
+// rewrite that passes the same string.
+Value buildStringLiteral(llvm::StringRef text, OpBuilder &builder, Location loc,
+                         Operation *anchor) {
+  auto module = anchor->getParentOfType<ModuleOp>();
+  std::string name =
+      "__tessera_str_" + llvm::utohexstr(llvm::xxh3_64bits(text));
+  auto global = module.lookupSymbol<LLVM::GlobalOp>(name);
+  if (!global) {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(module.getBody());
+    std::string data = text.str() + '\0';
+    auto type = LLVM::LLVMArrayType::get(builder.getI8Type(), data.size());
+    global = LLVM::GlobalOp::create(builder, loc, type, /*isConstant=*/true,
+                                    LLVM::Linkage::Private, name,
+                                    builder.getStringAttr(data));
+  }
+  return LLVM::AddressOfOp::create(builder, loc, global);
+}
+
 Value buildArith(OpBuilder &builder, Location loc, ArithOp op, Value lhs,
                  Value rhs) {
   if (isa<FloatType>(lhs.getType())) {
@@ -876,6 +996,15 @@ Value buildArith(OpBuilder &builder, Location loc, ArithOp op, Value lhs,
     return LLVM::SRemOp::create(builder, loc, lhs, rhs);
   }
   llvm_unreachable("unknown arithmetic operator");
+}
+
+Value buildNeg(OpBuilder &builder, Location loc, Value operand) {
+  Type type = operand.getType();
+  if (isa<FloatType>(type))
+    return LLVM::FNegOp::create(builder, loc, operand);
+  Value zero = LLVM::ConstantOp::create(builder, loc, type,
+                                        builder.getIntegerAttr(type, 0));
+  return LLVM::SubOp::create(builder, loc, zero, operand);
 }
 
 } // namespace tessera

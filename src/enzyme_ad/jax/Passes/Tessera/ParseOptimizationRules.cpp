@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Passes/Passes.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/PDL/IR/PDL.h"
 #include "mlir/Dialect/PDL/IR/PDLOps.h"
 #include "mlir/Dialect/PDL/IR/PDLTypes.h"
@@ -104,15 +105,55 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
                         constOp, builder.getI32IntegerAttr(0)),
                     mlir::Value()};
           },
-          [&](const StrLit &) -> std::pair<mlir::Value, mlir::Value> {
-            llvm_unreachable("the parser only allows a string on the "
-                             "right-hand side");
+          [&](const StrLit &s) -> std::pair<mlir::Value, mlir::Value> {
+            // C passes a string literal as the address of a constant holding
+            // it; isStringConstantEqualTo reads the text.
+            auto resultTypeOp = pdl::TypeOp::create(
+                builder, loc, builder.getType<pdl::TypeType>(),
+                /*type=*/TypeAttr());
+            auto addressOp = pdl::OperationOp::create(
+                builder, loc, LLVM::AddressOfOp::getOperationName(),
+                /*operands=*/ValueRange{},
+                /*attrNames=*/ArrayRef<StringRef>{},
+                /*attrs=*/ValueRange{},
+                /*types=*/ValueRange{resultTypeOp});
+
+            auto expectedAttr = pdl::AttributeOp::create(
+                builder, loc, builder.getStringAttr(s.value));
+
+            pdl::ApplyNativeConstraintOp::create(
+                builder, loc, TypeRange{}, "isStringConstantEqualTo",
+                ValueRange{addressOp, expectedAttr});
+
+            return {pdl::ResultOp::create(
+                        builder, loc, builder.getType<pdl::ValueType>(),
+                        addressOp, builder.getI32IntegerAttr(0)),
+                    mlir::Value()};
           },
-          [&](const GlobalRef &) -> std::pair<mlir::Value, mlir::Value> {
-            llvm_unreachable("the parser only allows a global on the "
-                             "right-hand side");
+          [&](const GlobalRef &g) -> std::pair<mlir::Value, mlir::Value> {
+            // The global's address, named by the op's attribute.
+            auto resultTypeOp = pdl::TypeOp::create(
+                builder, loc, builder.getType<pdl::TypeType>(),
+                /*type=*/TypeAttr());
+            auto nameAttr = pdl::AttributeOp::create(
+                builder, loc,
+                FlatSymbolRefAttr::get(builder.getContext(), g.symbol));
+            auto addressOp = pdl::OperationOp::create(
+                builder, loc, LLVM::AddressOfOp::getOperationName(),
+                /*operands=*/ValueRange{},
+                /*attrNames=*/ArrayRef<StringRef>{"global_name"},
+                /*attrs=*/ValueRange{nameAttr},
+                /*types=*/ValueRange{resultTypeOp});
+            return {pdl::ResultOp::create(
+                        builder, loc, builder.getType<pdl::ValueType>(),
+                        addressOp, builder.getI32IntegerAttr(0)),
+                    mlir::Value()};
           },
           [&](const Arith &) -> std::pair<mlir::Value, mlir::Value> {
+            llvm_unreachable("the parser does not allow arithmetic in what a "
+                             "rule matches");
+          },
+          [&](const Neg &) -> std::pair<mlir::Value, mlir::Value> {
             llvm_unreachable("the parser does not allow arithmetic in what a "
                              "rule matches");
           },
@@ -165,6 +206,8 @@ findUnboundVar(const Expr &expr, const llvm::StringMap<mlir::Value> &bound) {
       return name;
     return findUnboundVar(*arith->rhs, bound);
   }
+  if (auto *neg = std::get_if<Neg>(&expr.data))
+    return findUnboundVar(*neg->operand, bound);
   return std::nullopt;
 }
 
