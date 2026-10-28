@@ -862,14 +862,19 @@ template <>
 void LoadStorePointer2MemrefGEP<memref::LoadOp>::createNewOp(
     memref::LoadOp op, Value baseMemref, SmallVector<Value> idxs,
     PatternRewriter &rewriter) const {
-  rewriter.replaceOpWithNewOp<memref::LoadOp>(op, baseMemref, idxs);
+  // The same address through another base: the alignment the access
+  // promised of it holds, and without it the access would be emitted at the
+  // element's ABI alignment (a 16-byte run behind an 8-aligned pointer).
+  rewriter.replaceOpWithNewOp<memref::LoadOp>(
+      op, baseMemref, idxs, /*nontemporal=*/false, op.getMaybeAlign());
 }
 
 template <>
 void LoadStorePointer2MemrefGEP<affine::AffineLoadOp>::createNewOp(
     affine::AffineLoadOp op, Value baseMemref, SmallVector<Value> idxs,
     PatternRewriter &rewriter) const {
-  rewriter.replaceOpWithNewOp<memref::LoadOp>(op, baseMemref, idxs);
+  rewriter.replaceOpWithNewOp<memref::LoadOp>(
+      op, baseMemref, idxs, /*nontemporal=*/false, op.getMaybeAlign());
 }
 
 template <>
@@ -877,7 +882,8 @@ void LoadStorePointer2MemrefGEP<memref::StoreOp>::createNewOp(
     memref::StoreOp op, Value baseMemref, SmallVector<Value> idxs,
     PatternRewriter &rewriter) const {
   rewriter.replaceOpWithNewOp<memref::StoreOp>(op, op.getValue(), baseMemref,
-                                               idxs);
+                                               idxs, /*nontemporal=*/false,
+                                               op.getMaybeAlign());
 }
 
 template <>
@@ -885,7 +891,8 @@ void LoadStorePointer2MemrefGEP<affine::AffineStoreOp>::createNewOp(
     affine::AffineStoreOp op, Value baseMemref, SmallVector<Value> idxs,
     PatternRewriter &rewriter) const {
   rewriter.replaceOpWithNewOp<memref::StoreOp>(op, op.getValue(), baseMemref,
-                                               idxs);
+                                               idxs, /*nontemporal=*/false,
+                                               op.getMaybeAlign());
 }
 
 template <>
