@@ -6,6 +6,7 @@
 #include "mlir/Analysis/DataLayoutAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -140,14 +141,18 @@ static void expandAggregateView(enzymexla::Pointer2MemrefOp p2m,
     return AffineMap::get(map.getNumDims(), map.getNumSymbols(),
                           leafExprs(map.getResult(0), leaf), map.getContext());
   };
+  // A memref access is one with no affine form, and its index may be any
+  // value -- a gather or scatter index loaded inside the loop. Its leaves'
+  // indices are computed in arith, as the index itself is: affine-cfg raises
+  // them to an affine access where they have an affine form, while an
+  // affine.apply would be taken for an affine index whatever its operand.
   auto leafIndex = [&](Location loc, Value index,
                        int64_t leaf) -> SmallVector<Value> {
-    AffineMap map = leafMap(
-        AffineMap::get(1, 0, getAffineDimExpr(0, rewriter.getContext())), leaf);
     SmallVector<Value> indices;
-    for (unsigned i = 0; i < map.getNumResults(); i++)
-      indices.push_back(affine::AffineApplyOp::create(
-          rewriter, loc, map.getSubMap({i}), ValueRange{index}));
+    for (AffineExpr expr :
+         leafExprs(getAffineDimExpr(0, rewriter.getContext()), leaf))
+      indices.push_back(affine::expandAffineExpr(rewriter, loc, expr,
+                                                 ValueRange{index}, {}));
     return indices;
   };
   for (Operation *user : llvm::make_early_inc_range(p2m->getUsers())) {

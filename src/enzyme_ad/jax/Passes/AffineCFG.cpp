@@ -1717,19 +1717,8 @@ mapOperands); return success();
 */
 
 bool isValidIndex(Value val, Region *scope) {
-  // An affine.apply may take any index for operand. Composed into an access,
-  // its operands become the access's dimensions and symbols, so its result is
-  // an affine index only where they are valid as such: a value loaded inside
-  // an affine.parallel (a gather or scatter index) is neither, and an
-  // affine.apply of it stays a computation for the access to take as is.
-  if (auto apply = val.getDefiningOp<affine::AffineApplyOp>()) {
-    unsigned numDims = apply.getAffineMap().getNumDims();
-    for (auto [i, operand] : llvm::enumerate(apply.getMapOperands()))
-      if (i < numDims ? !isValidIndex(operand, scope)
-                      : !isValidSymbolInt(operand, /*recur*/ true, scope))
-        return false;
+  if (val.getDefiningOp<affine::AffineApplyOp>())
     return true;
-  }
 
   if (isValidSymbolInt(val, /*recur*/ true, scope))
     return true;
