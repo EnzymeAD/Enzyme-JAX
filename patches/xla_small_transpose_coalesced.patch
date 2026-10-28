@@ -1,0 +1,102 @@
+diff --git a/xla/service/gpu/model/coalescing_analysis.cc b/xla/service/gpu/model/coalescing_analysis.cc
+--- a/xla/service/gpu/model/coalescing_analysis.cc
++++ b/xla/service/gpu/model/coalescing_analysis.cc
+@@ -45,6 +45,7 @@
+ #include "xla/layout.h"
+ #include "xla/service/gpu/gpu_fusible.h"
+ #include "xla/service/gpu/hlo_fusion_analysis.h"
++#include "xla/service/gpu/ir_emission_utils.h"
+ #include "xla/shape.h"
+ #include "xla/shape_util.h"
+ #include "xla/stream_executor/device_description.h"
+@@ -53,6 +54,59 @@
+ 
+ namespace xla::gpu {
+ 
++namespace {
++
++// A transpose the tiled transpose emitter does not handle is emitted by the
++// loop emitter, which reads the operand in the output's order whether the
++// transpose is a fusion of its own or part of its consumer: fusing it keeps
++// the same reads and drops a write and a read of the result. Only a transpose
++// the tiled emitter would handle is worth keeping apart (e.g. the 3x3
++// per-point matrices of a finite-element kernel, [N,3,3] with {0,2,1}, are
++// not).
++bool IsLoopEmittedTranspose(const HloInstruction* instr) {
++  constexpr int64_t kMaxBlockBytes = 1024;
++  if (instr->opcode() != HloOpcode::kTranspose ||
++      GetDescriptionForTiledTransposeEmitter(*instr).has_value()) {
++    return false;
++  }
++  // The permuted block of the operand: its dimensions in storage order up to
++  // the most major one the permutation moves. Reading it in the output's
++  // order touches, per warp, lines the block's other readers reuse from L1
++  // only while the block is small.
++  const Shape& operand_shape = instr->operand(0)->shape();
++  const Shape& shape = instr->shape();
++  std::vector<int64_t> operand_order;
++  std::vector<int64_t> output_order;
++  for (int64_t dim : operand_shape.layout().minor_to_major()) {
++    if (operand_shape.dimensions()[dim] > 1) {
++      operand_order.push_back(dim);
++    }
++  }
++  for (int64_t dim : shape.layout().minor_to_major()) {
++    if (shape.dimensions()[dim] > 1) {
++      output_order.push_back(instr->dimensions(dim));
++    }
++  }
++  if (operand_order.size() != output_order.size()) {
++    return false;
++  }
++  size_t moved = operand_order.size();
++  while (moved > 0 && operand_order[moved - 1] == output_order[moved - 1]) {
++    --moved;
++  }
++  int64_t block_bytes =
++      ShapeUtil::ByteSizeOfPrimitiveType(operand_shape.element_type());
++  for (size_t i = 0; i < moved; ++i) {
++    block_bytes *= operand_shape.dimensions()[operand_order[i]];
++    if (block_bytes > kMaxBlockBytes) {
++      return false;
++    }
++  }
++  return true;
++}
++
++}  // namespace
++
+ // Returns true if all input reads are coalesced. If consumer is not nullptr,
+ // producer and consumer are considered as one fusion, otherwise it's only the
+ // producer.
+@@ -82,7 +136,8 @@
+         for (auto* instr : instr->fused_instructions()) {
+           // Hack: we allow transposes of broadcasts or iotas.
+           if (TransposesMinorDimension(instr) &&
+-              !is_broadcast(instr->operand(0))) {
++              !is_broadcast(instr->operand(0)) &&
++              !IsLoopEmittedTranspose(instr)) {
+             return true;
+           }
+         }
+@@ -90,7 +145,8 @@
+       }
+       // Hack: we allow transposes of broadcasts or iotas.
+       return TransposesMinorDimension(instr) &&
+-             !is_broadcast(instr->operand(0));
++             !is_broadcast(instr->operand(0)) &&
++             !IsLoopEmittedTranspose(instr);
+     };
+     if (is_bad_transpose(producer)) {
+       return false;
+diff --git a/xla/service/gpu/model/BUILD b/xla/service/gpu/model/BUILD
+--- a/xla/service/gpu/model/BUILD
++++ b/xla/service/gpu/model/BUILD
+@@ -721,6 +721,7 @@
+         "//xla/hlo/ir:hlo",
+         "//xla/service/gpu:gpu_fusible",
+         "//xla/service/gpu:hlo_fusion_analysis",
++        "//xla/service/gpu:ir_emission_utils",
+         "//xla/stream_executor:device_description",
+         "@com_google_absl//absl/algorithm:container",
+         "@com_google_absl//absl/container:flat_hash_map",
