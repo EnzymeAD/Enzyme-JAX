@@ -2343,6 +2343,11 @@ def WhileSliceElementwiseCarry : EnzymeHLOPatternOp<
   let patterns = ["WhileSliceElementwiseCarry"];
 }
 
+def WhileSplitConcatCarry : EnzymeHLOPatternOp<
+    "while_split_concat_carry"> {
+  let patterns = ["WhileSplitConcatCarry"];
+}
+
 def SinkDUS : EnzymeHLOPatternOp<
     "sink_dus"> {
   let patterns = ["SinkDUS"];

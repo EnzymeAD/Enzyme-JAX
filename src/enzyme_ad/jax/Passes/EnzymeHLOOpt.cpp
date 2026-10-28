@@ -26970,6 +26970,173 @@ struct WhileSliceElementwiseCarry final
   }
 };
 
+// A loop-carried value the body yields as a concatenate of pieces, and that
+// the loop (its condition, its body and its readers after the loop) only ever
+// reads through slices each lying within one piece: the loop carries the
+// pieces instead. That drops the concatenate the body rebuilt every
+// iteration, lets the slices of a whole piece fold away, and no longer leaves
+// a slice along the concatenated dimension to read strided out of whichever
+// layout the backend picks for the carried buffer.
+struct WhileSplitConcatCarry final
+    : CheckedOpRewritePattern<stablehlo::WhileOp, WhileSplitConcatCarry> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // The piece [offsets[p], offsets[p+1]) the slice reads along dim, or -1 if
+  // it reads nothing or straddles two pieces.
+  static int64_t pieceOf(stablehlo::SliceOp slice, int64_t dim,
+                         ArrayRef<int64_t> offsets) {
+    int64_t start = slice.getStartIndices()[dim];
+    int64_t limit = slice.getLimitIndices()[dim];
+    if (limit <= start)
+      return -1;
+    for (size_t p = 0; p + 1 < offsets.size(); ++p)
+      if (offsets[p] <= start && limit <= offsets[p + 1])
+        return p;
+    return -1;
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
+    Block &body = whileOp.getBody().front();
+    Block &cond = whileOp.getCond().front();
+    auto yield = cast<stablehlo::ReturnOp>(body.getTerminator());
+    for (unsigned idx = 0; idx < whileOp.getNumResults(); ++idx) {
+      auto concat =
+          yield.getOperand(idx).getDefiningOp<stablehlo::ConcatenateOp>();
+      if (!concat || concat.getNumOperands() < 2)
+        continue;
+      auto ty = cast<RankedTensorType>(concat.getType());
+      if (!ty.hasStaticShape())
+        continue;
+      int64_t dim = concat.getDimension();
+      SmallVector<int64_t> offsets{0};
+      for (Value piece : concat.getOperands())
+        offsets.push_back(
+            offsets.back() +
+            cast<RankedTensorType>(piece.getType()).getDimSize(dim));
+
+      bool legal = true;
+      for (Value v :
+           {Value(whileOp.getResult(idx)), Value(body.getArgument(idx)),
+            Value(cond.getArgument(idx))}) {
+        for (Operation *user : v.getUsers()) {
+          auto slice = dyn_cast<stablehlo::SliceOp>(user);
+          if (!slice || pieceOf(slice, dim, offsets) < 0) {
+            legal = false;
+            break;
+          }
+        }
+        if (!legal)
+          break;
+      }
+      if (!legal)
+        continue;
+
+      rewrite(whileOp, idx, concat, offsets, rewriter);
+      return success();
+    }
+    return failure();
+  }
+
+  static void rewrite(stablehlo::WhileOp whileOp, unsigned idx,
+                      stablehlo::ConcatenateOp concat,
+                      ArrayRef<int64_t> offsets, PatternRewriter &rewriter) {
+    Location loc = whileOp.getLoc();
+    auto ty = cast<RankedTensorType>(whileOp.getResult(idx).getType());
+    int64_t dim = concat.getDimension();
+    int64_t rank = ty.getRank();
+    unsigned numPieces = concat.getNumOperands();
+
+    // The carried value becomes its pieces, in place.
+    rewriter.setInsertionPoint(whileOp);
+    SmallVector<Value> inits;
+    SmallVector<Type> types;
+    for (unsigned i = 0; i < whileOp.getNumOperands(); ++i) {
+      if (i != idx) {
+        inits.push_back(whileOp->getOperand(i));
+        types.push_back(whileOp.getResult(i).getType());
+        continue;
+      }
+      for (unsigned p = 0; p < numPieces; ++p) {
+        SmallVector<int64_t> start(rank, 0), limit(ty.getShape()),
+            strides(rank, 1);
+        start[dim] = offsets[p];
+        limit[dim] = offsets[p + 1];
+        inits.push_back(stablehlo::SliceOp::create(
+            rewriter, loc, whileOp->getOperand(idx), start, limit, strides));
+        types.push_back(concat.getOperand(p).getType());
+      }
+    }
+    auto newWhile = stablehlo::WhileOp::create(rewriter, loc, types, inits,
+                                               whileOp->getAttrs());
+    rewriter.inlineRegionBefore(whileOp.getCond(), newWhile.getCond(),
+                                newWhile.getCond().end());
+    rewriter.inlineRegionBefore(whileOp.getBody(), newWhile.getBody(),
+                                newWhile.getBody().end());
+
+    // Every reader is a slice within one piece: read that of the piece, or
+    // the piece itself when it reads the whole of it.
+    auto redirect = [&](Value old, function_ref<Value(unsigned)> piece) {
+      SmallVector<Operation *> users(old.getUsers().begin(),
+                                     old.getUsers().end());
+      for (Operation *user : users) {
+        auto slice = cast<stablehlo::SliceOp>(user);
+        unsigned p = pieceOf(slice, dim, offsets);
+        Value src = piece(p);
+        SmallVector<int64_t> start(slice.getStartIndices()),
+            limit(slice.getLimitIndices());
+        start[dim] -= offsets[p];
+        limit[dim] -= offsets[p];
+        if (src.getType() == slice.getType() &&
+            llvm::all_of(start, [](int64_t s) { return s == 0; }) &&
+            llvm::all_of(slice.getStrides(),
+                         [](int64_t s) { return s == 1; })) {
+          rewriter.replaceOp(slice, src);
+          continue;
+        }
+        rewriter.setInsertionPoint(slice);
+        rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+            slice, src, start, limit, slice.getStrides());
+      }
+    };
+
+    for (Region *region : {&newWhile.getCond(), &newWhile.getBody()}) {
+      Block &block = region->front();
+      rewriter.modifyOpInPlace(newWhile, [&] {
+        for (unsigned p = 0; p < numPieces; ++p)
+          block.insertArgument(idx + 1 + p, concat.getOperand(p).getType(),
+                               loc);
+      });
+      redirect(block.getArgument(idx),
+               [&](unsigned p) { return block.getArgument(idx + 1 + p); });
+      rewriter.modifyOpInPlace(newWhile, [&] { block.eraseArgument(idx); });
+    }
+
+    // The body yields the pieces.
+    auto yield =
+        cast<stablehlo::ReturnOp>(newWhile.getBody().front().getTerminator());
+    SmallVector<Value> yielded;
+    for (unsigned i = 0; i < yield.getNumOperands(); ++i) {
+      if (i != idx) {
+        yielded.push_back(yield.getOperand(i));
+        continue;
+      }
+      llvm::append_range(yielded, concat.getOperands());
+    }
+    rewriter.setInsertionPoint(yield);
+    rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(yield, yielded);
+
+    redirect(whileOp.getResult(idx),
+             [&](unsigned p) { return newWhile.getResult(idx + p); });
+    for (unsigned i = 0; i < whileOp.getNumResults(); ++i)
+      if (i != idx)
+        rewriter.replaceAllUsesWith(
+            whileOp.getResult(i),
+            newWhile.getResult(i < idx ? i : i + numPieces - 1));
+    rewriter.eraseOp(whileOp);
+  }
+};
+
 struct WhileConcat
     : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
