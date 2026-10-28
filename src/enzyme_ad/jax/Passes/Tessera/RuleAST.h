@@ -93,16 +93,19 @@ struct FloatLit {
   double value;
 };
 
-// A string literal, `'cg'`. Right-hand side only, passed as a pointer to a
-// NUL-terminated constant, for libraries that pick things by name (such as
-// PETSc solvers).
+// A string literal, `'cg'`, for libraries that pick things by name (such as
+// PETSc solvers). On the right-hand side it is passed as a pointer to a
+// NUL-terminated constant; in what a rule matches it matches the address of a
+// constant holding that text, as C passes a string literal. A condition can
+// compare one by its text, with '==' or '!='.
 struct StrLit {
   std::string value;
 };
 
-// The address of a global, `@_ZN4mfem8IntRulesE`. Right-hand side only, for
-// passing a library's global object. A rule can write the C++ name,
-// `mfem::IntRules`, and lift-tessera-annotations swaps in the symbol.
+// The address of a global, `@_ZN4mfem8IntRulesE`, for passing, matching or
+// comparing (by address, with '==' or '!=') a library's global object. A rule
+// can write the C++ name, `mfem::IntRules`, anywhere but in what it matches,
+// and lift-tessera-annotations swaps in the symbol.
 struct GlobalRef {
   std::string symbol;
 };
@@ -123,6 +126,12 @@ struct Arith {
   std::shared_ptr<const Expr> lhs, rhs;
 };
 
+// `-operand`, such as `-alpha`. Allowed wherever Arith is. The parser folds a
+// negated literal into the literal, so `- 1` is IntLit{-1}.
+struct Neg {
+  std::shared_ptr<const Expr> operand;
+};
+
 // A call to a library op, `blas.gemm(...)`, or, with no dialect, a builtin
 // function such as `log2(n)`.
 struct Call {
@@ -133,7 +142,7 @@ struct Call {
 };
 
 struct Expr {
-  std::variant<Var, IntLit, FloatLit, StrLit, GlobalRef, Call, Arith> data;
+  std::variant<Var, IntLit, FloatLit, StrLit, GlobalRef, Call, Arith, Neg> data;
 
   Expr() = default; // default constructor
   Expr(Var v) : data(v) {}
@@ -143,10 +152,14 @@ struct Expr {
   Expr(GlobalRef g) : data(std::move(g)) {}
   Expr(Call c) : data(std::move(c)) {} // move because Call has a vector
   Expr(Arith a) : data(std::move(a)) {}
+  Expr(Neg n) : data(std::move(n)) {}
 };
 
-// Whether `expr` contains arithmetic anywhere.
+// Whether `expr` contains arithmetic (including negation) anywhere.
 bool containsArith(const Expr &expr);
+
+// Whether `expr` is a string or a global, each of which denotes an address.
+bool isAddressLiteral(const Expr &expr);
 
 // Whether `expr` is only literals and arithmetic, so its type comes from
 // context.
@@ -227,9 +240,8 @@ struct Parser {
   Token current;
   Location loc;
   bool failed = false;
-  // String literals, globals and built-in functions are only allowed on the
-  // right-hand side of a rule.
-  bool allowStrings = false;
+  // Built-in functions are only allowed on the right-hand side of a rule.
+  bool allowBuiltins = false;
 
   Parser(std::string input, Location location) : lexer{input}, loc{location} {
     advance();
@@ -249,9 +261,12 @@ struct Parser {
   std::optional<Call> parseCall(std::string dialect_name);
   // expr ::= term { ('+' | '-') term }
   std::optional<Expr> parseExpr();
-  // term ::= primary { ('*' | '/' | '%') primary }
+  // term ::= factor { ('*' | '/' | '%') factor }
   std::optional<Expr> parseTerm();
-  // primary ::= call | var | int | float | string | builtin | '(' expr ')'
+  // factor ::= '-' factor | primary
+  std::optional<Expr> parseFactor();
+  // primary ::= call | var | int | float | string | global | builtin
+  //           | '(' expr ')'
   std::optional<Expr> parsePrimary();
   // With `current` a '(' in a condition: whether it starts an arithmetic
   // expression, `(p + 1) * 2 == q`, rather than a parenthesized condition.
