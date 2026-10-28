@@ -16920,7 +16920,8 @@ struct ReshapeReduceWindow final
     // Check if the operand of the reshape is a reduce_window operation
     auto reduceWindow =
         reshapeOp.getOperand().getDefiningOp<stablehlo::ReduceWindowOp>();
-    if (!reduceWindow)
+    if (!reduceWindow || reduceWindow.getInputs().size() != 1 ||
+        reduceWindow.getInitValues().size() != 1 || !reduceWindow->hasOneUse())
       return failure();
 
     // Check if there is any non-reshape user of this reduce_window operation
