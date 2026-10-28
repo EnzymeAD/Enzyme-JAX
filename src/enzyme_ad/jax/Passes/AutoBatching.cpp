@@ -1194,7 +1194,7 @@ static bool isSelfLaneCarriedLoad(stablehlo::DynamicSliceOp dsOp,
     dsSliceSizes[argDim] = dsOp.getSliceSizes()[dsDim];
   }
 
-  auto affineIndexInfo = info.getAffineIndexInfo();
+  auto &affineIndexInfo = info.getAffineIndexInfo();
   bool foundDepIndex = false;
   for (auto [dsStart, dusStart, dsSliceSize, dusSliceSize] :
        llvm::zip_equal(dsStartIndices, store->startIndices, dsSliceSizes,
@@ -1261,9 +1261,36 @@ static bool isTransparentForBatching(Operation *op) {
 // batched, so that the decision to hoist can be taken over the whole thing
 // rather than one op at a time.
 struct HoistableSliceComputation {
+  // What the computations rooted at every candidate slice of one loop share:
+  // whether a value can be batched does not depend on which computation asks,
+  // so the answer is kept once per loop rather than once per candidate. A
+  // loop body of n ops with n candidates otherwise re-walks it n times.
+  struct LoopContext {
+    stablehlo::WhileOp whileOp;
+    WhileLoopInfo &info;
+    ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> candidateSlices;
+    const llvm::MapVector<Operation *,
+                          SmallVector<SliceInfo<stablehlo::DynamicSliceOp>>>
+        &userOpToSlicesMap;
+    SmallPtrSet<Operation *, 8> candidateSliceOps;
+    DenseMap<Value, bool> batchableCache;
+
+    LoopContext(
+        stablehlo::WhileOp whileOp, WhileLoopInfo &info,
+        ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> candidateSlices,
+        const llvm::MapVector<Operation *,
+                              SmallVector<SliceInfo<stablehlo::DynamicSliceOp>>>
+            &userOpToSlicesMap)
+        : whileOp(whileOp), info(info), candidateSlices(candidateSlices),
+          userOpToSlicesMap(userOpToSlicesMap) {
+      for (auto &slice : candidateSlices)
+        candidateSliceOps.insert(slice.sliceOp);
+    }
+  };
+
+  LoopContext *ctx;
   stablehlo::WhileOp whileOp;
   WhileLoopInfo *info;
-  ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> candidateSlices;
   const llvm::MapVector<Operation *,
                         SmallVector<SliceInfo<stablehlo::DynamicSliceOp>>>
       *userOpToSlicesMap;
@@ -1271,22 +1298,16 @@ struct HoistableSliceComputation {
   SliceInfo<stablehlo::DynamicSliceOp> sInfo;
   SetVector<Operation *> ops; // topologically ordered
   SetVector<Value> results;   // frontier: values escaping `ops`
-  DenseMap<Value, bool> batchableCache;
 
   // The last state whose frontier was profitable; grow() falls back to it
   // rather than leaving the computation forked.
   SetVector<Operation *> checkpointedOps;
   SetVector<Value> checkpointedResults;
 
-  HoistableSliceComputation(
-      stablehlo::WhileOp whileOp, WhileLoopInfo &info,
-      ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> candidateSlices,
-      const llvm::MapVector<Operation *,
-                            SmallVector<SliceInfo<stablehlo::DynamicSliceOp>>>
-          &userOpToSlicesMap,
-      SliceInfo<stablehlo::DynamicSliceOp> sInfo)
-      : whileOp(whileOp), info(&info), candidateSlices(candidateSlices),
-        userOpToSlicesMap(&userOpToSlicesMap), sInfo(sInfo) {
+  HoistableSliceComputation(LoopContext &ctx,
+                            SliceInfo<stablehlo::DynamicSliceOp> sInfo)
+      : ctx(&ctx), whileOp(ctx.whileOp), info(&ctx.info),
+        userOpToSlicesMap(&ctx.userOpToSlicesMap), sInfo(sInfo) {
     ops.insert(sInfo.sliceOp);
     results.insert(sInfo.sliceOp.getResult());
     checkpoint();
@@ -1481,16 +1502,16 @@ private:
   // candidate slice. A loop whose body is one big expression over several
   // loads would otherwise stall at the first op that joins two of them.
   bool isBatchableValue(Value v) {
-    auto it = batchableCache.find(v);
-    if (it != batchableCache.end()) {
+    auto it = ctx->batchableCache.find(v);
+    if (it != ctx->batchableCache.end()) {
       return it->second;
     }
     // Guard against cycles; a block argument fed by the terminator can bring
     // the walk back to where it started.
-    batchableCache[v] = false;
+    ctx->batchableCache[v] = false;
 
     bool batchable = computeIsBatchableValue(v);
-    batchableCache[v] = batchable;
+    ctx->batchableCache[v] = batchable;
     return batchable;
   }
 
@@ -1516,10 +1537,7 @@ private:
     // at exactly the lane this iteration writes back. Anything else read off a
     // carried buffer is a genuine recurrence.
     if (auto dsOp = dyn_cast<stablehlo::DynamicSliceOp>(defOp)) {
-      if (llvm::any_of(candidateSlices,
-                       [&](const SliceInfo<stablehlo::DynamicSliceOp> &slice) {
-                         return slice.sliceOp == dsOp;
-                       })) {
+      if (ctx->candidateSliceOps.contains(dsOp)) {
         return true;
       }
       if (isSelfLaneCarriedLoad(dsOp, whileOp, *info)) {
@@ -1557,7 +1575,7 @@ private:
       return false;
     }
 
-    auto affineIndexInfo = info->getAffineIndexInfo();
+    auto &affineIndexInfo = info->getAffineIndexInfo();
     bool foundDepIndex = false;
     for (Value startIndex : dusOp.getStartIndices()) {
       if (info->isConstantAcrossIterations(startIndex, false)) {
@@ -1630,7 +1648,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
 
   auto &whileBody = whileOp.getBody().front();
 
-  auto affineIndexInfoMap = info.getAffineIndexInfo();
+  auto &affineIndexInfoMap = info.getAffineIndexInfo();
 
   auto parentFunc = whileOp->getParentOp();
   if (!parentFunc)
@@ -1643,7 +1661,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   SmallPtrSet<Operation *, 8> seenOps;
   SmallVector<SliceInfo<stablehlo::DynamicSliceOp>> candidateSlices;
 
-  for (auto [value, affineIndexInfo] : affineIndexInfoMap) {
+  for (auto &[value, affineIndexInfo] : affineIndexInfoMap) {
     for (auto user : value.getUsers()) {
       if (user->getBlock() != &whileBody || seenOps.contains(user)) {
         continue;
@@ -1719,9 +1737,10 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   SmallPtrSet<Operation *, 8> alreadyHoisted;
 
   SmallVector<HoistableSliceComputation, 2> profitable;
+  HoistableSliceComputation::LoopContext computationCtx(
+      whileOp, info, candidateSlices, userOpToSlicesMap);
   for (auto &slice : candidateSlices) {
-    HoistableSliceComputation computation(whileOp, info, candidateSlices,
-                                          userOpToSlicesMap, slice);
+    HoistableSliceComputation computation(computationCtx, slice);
     computation.grow();
 
     if (computation.isProfitable()) {
@@ -1754,7 +1773,7 @@ GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
     stablehlo::DynamicSliceOp sliceOp, mlir::enzyme::WhileLoopInfo &loopInfo,
     Block &whileBody, stablehlo::WhileOp whileOp) const {
   auto operand = sliceOp.getOperand();
-  auto affineIndexInfoMap = loopInfo.getAffineIndexInfo();
+  auto &affineIndexInfoMap = loopInfo.getAffineIndexInfo();
 
   if (operand.getParentBlock() == &whileBody) {
     auto failureRetVal = ValidBatchingInfo{
@@ -1804,7 +1823,7 @@ bool traverseOperandsForHoisting(
     SmallVectorImpl<int64_t> &hoistedDims,
     SmallVectorImpl<SliceInfo<stablehlo::DynamicSliceOp>> &mappedSliceInfos,
     DenseMap<Value, SmallVector<Operation *>> &hoistMap) {
-  auto affineIndexInfoMap = info.getAffineIndexInfo();
+  auto &affineIndexInfoMap = info.getAffineIndexInfo();
 
   batchLiftingModes.resize(operands.size());
   batchOperands.resize(operands.size());
@@ -2014,7 +2033,7 @@ LogicalResult constructNewOperandsForHoistedOp(
           stablehlo::MulOp::create(rewriter, whileOp->getLoc(), stepVal,
                                    startVal));
 
-      auto affineIndexInfo = info.getAffineIndexInfo()[baseOp];
+      auto affineIndexInfo = info.getAffineIndexInfo().lookup(baseOp);
       auto scale = createConst(affineIndexInfo.scale.getSExtValue());
       auto offset = createConst(affineIndexInfo.offset.getSExtValue());
       auto res = stablehlo::AddOp::create(
@@ -2034,7 +2053,7 @@ LogicalResult constructNewOperandsForHoistedOp(
 bool liftReduceLikeOperation(
     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
     ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, Operation *op,
-    WhileLoopInfo info) {
+    WhileLoopInfo &info) {
   // we can hoist `sub` / `div` by emitting a `neg` / `reciprocal` and then
   // apply the hoisting. note that this only applies if the LHS is the loop
   // caried dependency
@@ -2197,7 +2216,7 @@ bool liftReduceLikeOperation(
 bool raiseDynamicSliceToGather(
     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
     ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices,
-    stablehlo::DynamicSliceOp dsOp, WhileLoopInfo info) {
+    stablehlo::DynamicSliceOp dsOp, WhileLoopInfo &info) {
   // Pattern: x[..., y[idx], z[idx], ...] where idx is an affine function of
   // the loop induction variable. We need to:
   // 1. Hoist the computation of y[idx], z[idx], etc. for all loop iterations
@@ -2479,15 +2498,15 @@ bool raiseDynamicSliceToGather(
   auto replacement = stablehlo::ReshapeOpCreate(
       rewriter, loc, dynSlice, cast<ShapedType>(dsOp.getType()).getShape());
   rewriter.replaceOp(dsOp, replacement);
+  info.invalidateInvarianceCache();
   return true;
 }
 
 bool liftOperationByBatching(
     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
     ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, Operation *op,
-    WhileLoopInfo info) {
+    WhileLoopInfo &info) {
   auto moduleOp = op->getParentOfType<ModuleOp>();
-  auto affineIndexInfoMap = info.getAffineIndexInfo();
 
   SmallVector<BatchLiftingMode> batchLiftingModes;
   SmallVector<Value> batchOperands;
@@ -2587,6 +2606,9 @@ bool liftOperationByBatching(
       rewriter, whileOp->getLoc(), dynamicSlice,
       cast<ShapedType>(op->getResult(0).getType()).getShape());
   rewriter.replaceOp(op, newReshape);
+  // `op` is gone and new ops now live in the body: the invariance memo must
+  // not be read against them.
+  info.invalidateInvarianceCache();
 
   enzyme::batchutils::batchOperationInline(
       rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()));

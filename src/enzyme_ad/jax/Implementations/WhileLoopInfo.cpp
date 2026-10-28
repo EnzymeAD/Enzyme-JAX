@@ -97,13 +97,14 @@ LogicalResult WhileLoopInfo::computeInfo() {
   }
 
   propagateAffineIndexInfo();
-  auto affineIndexInfoMap = getAffineIndexInfo();
+  auto &affineIndexInfoMap = getAffineIndexInfo();
 
   auto incV = bodyTerm->getOperand(induct.getArgNumber());
 
   // if part of the index map then exit early
-  if (affineIndexInfoMap.contains(incV)) {
-    auto indexInfo = affineIndexInfoMap[incV];
+  if (auto indexIt = affineIndexInfoMap.find(incV);
+      indexIt != affineIndexInfoMap.end()) {
+    auto indexInfo = indexIt->second;
     if (indexInfo.scale.isOne()) {
       stepInt = indexInfo.offset;
       foundStep = true;
@@ -423,68 +424,143 @@ bool WhileLoopInfo::isConstantAcrossIterations(Value v, bool checkOperands) {
   return isConstantAcrossIterations(v, outerValue, canBeHoisted, checkOperands);
 }
 
-bool WhileLoopInfo::isConstantAcrossIterations(
-    Value v, Value &outerValue, SmallVector<Operation *> &canBeHoisted,
-    bool checkOperands) {
-  DenseSet<Value> varies;
-  return isConstantAcrossIterations(v, outerValue, canBeHoisted, checkOperands,
-                                    varies);
-}
-
-bool WhileLoopInfo::isConstantAcrossIterations(
-    Value v, Value &outerValue, SmallVector<Operation *> &canBeHoisted,
-    bool checkOperands, DenseSet<Value> &varies) {
+// The two cases that need no walk: defined outside the loop, or a carried
+// argument passed straight through. On success `outerValue` is the value
+// outside the loop.
+static bool isDirectlyInvariant(stablehlo::WhileOp op, Value v,
+                                Value &outerValue) {
   if (definedOutside(v, op)) {
     outerValue = v;
     return true;
   }
-
   auto &body = op.getBody().front();
   auto blockArg = dyn_cast<BlockArgument>(v);
-  if (v.getParentBlock() == &body && blockArg) {
-    int64_t blockArgIndex = blockArg.getArgNumber();
-    auto terminator = body.getTerminator();
-    if (terminator && blockArgIndex < terminator->getNumOperands() &&
-        terminator->getOperand(blockArgIndex) ==
-            body.getArgument(blockArgIndex)) {
-      outerValue = op->getOperand(blockArgIndex);
-      return true;
-    }
+  if (!blockArg || v.getParentBlock() != &body)
+    return false;
+  int64_t blockArgIndex = blockArg.getArgNumber();
+  auto terminator = body.getTerminator();
+  if (terminator && blockArgIndex < terminator->getNumOperands() &&
+      terminator->getOperand(blockArgIndex) ==
+          body.getArgument(blockArgIndex)) {
+    outerValue = op->getOperand(blockArgIndex);
+    return true;
   }
+  return false;
+}
+
+bool WhileLoopInfo::isConstantAcrossIterations(
+    Value v, Value &outerValue, SmallVector<Operation *> &canBeHoisted,
+    bool checkOperands) {
+  if (isDirectlyInvariant(op, v, outerValue))
+    return true;
 
   if (!checkOperands)
     return false;
 
-  if (varies.contains(v))
+  if (!computeInvariance(v))
     return false;
 
-  auto defOp = v.getDefiningOp();
-  if (!defOp) {
-    varies.insert(v);
-    return false;
-  }
+  // Invariant, but computed in the body: the caller recomputes it outside.
+  outerValue = nullptr;
+  collectHoistableChain(v, canBeHoisted);
+  return true;
+}
 
-  // bail out if the operation is not isolated from above. we need to analyze
-  // all the operations in the regions to ensure that this is constant across
-  // iterations
-  if (defOp->getNumRegions() != 0 &&
-      !defOp->hasTrait<mlir::OpTrait::IsIsolatedFromAbove>()) {
-    varies.insert(v);
-    return false;
-  }
+bool WhileLoopInfo::computeInvariance(Value root) {
+  if (auto it = invarianceCache.find(root); it != invarianceCache.end())
+    return it->second;
 
-  // all operands of the defining op are constant across iterations
-  // don't populate the outerValue in this case
-  if (llvm::all_of(defOp->getOperands(), [&](Value operand) {
-        return isConstantAcrossIterations(operand, outerValue, canBeHoisted,
-                                          true, varies);
-      })) {
-    outerValue = nullptr;
-    canBeHoisted.push_back(defOp);
+  // Iterative so that a long chain of ops does not become a long chain of
+  // frames: a loop body a few thousand ops deep is not unusual after AD. A
+  // frame is a value whose operands are being decided, and how far along it
+  // is.
+  struct Frame {
+    Value v;
+    Operation *defOp;
+    unsigned nextOperand;
+  };
+  SmallVector<Frame> stack;
+
+  // Start deciding `v`: either it is varying outright, or a frame is opened
+  // for its operands. Returns whether a frame was opened.
+  auto open = [&](Value v) {
+    auto defOp = v.getDefiningOp();
+    // A block argument not passed straight through varies with the
+    // iteration. So, as far as this analysis goes, does an op whose regions
+    // can read the body: its nested ops are not analyzed.
+    if (!defOp || (defOp->getNumRegions() != 0 &&
+                   !defOp->hasTrait<mlir::OpTrait::IsIsolatedFromAbove>())) {
+      invarianceCache[v] = false;
+      return false;
+    }
+    // Provisionally varying while its operands are decided; flipped once
+    // they all turn out invariant.
+    invarianceCache[v] = false;
+    stack.push_back(Frame{v, defOp, 0});
     return true;
+  };
+
+  open(root);
+  while (!stack.empty()) {
+    Frame &frame = stack.back();
+    bool varies = false, descended = false;
+    while (frame.nextOperand < frame.defOp->getNumOperands()) {
+      Value operand = frame.defOp->getOperand(frame.nextOperand);
+      Value outerValue;
+      if (isDirectlyInvariant(op, operand, outerValue)) {
+        ++frame.nextOperand;
+        continue;
+      }
+      auto it = invarianceCache.find(operand);
+      if (it != invarianceCache.end()) {
+        if (it->second) {
+          ++frame.nextOperand;
+          continue;
+        }
+        varies = true;
+        break;
+      }
+      // Undecided: decide the operand first. This frame resumes afterwards
+      // at the same operand, whose verdict is then in the memo. (`open` may
+      // grow the stack, which invalidates `frame`; it is not touched again
+      // in this round.)
+      if (open(operand)) {
+        descended = true;
+      } else {
+        varies = true;
+      }
+      break;
+    }
+    if (descended)
+      continue;
+    // The memo already says "varies" from `open`; only the other outcome
+    // needs recording.
+    if (!varies)
+      invarianceCache[frame.v] = true;
+    stack.pop_back();
   }
-  varies.insert(v);
-  return false;
+
+  return invarianceCache[root];
+}
+
+void WhileLoopInfo::collectHoistableChain(Value v,
+                                          SmallVectorImpl<Operation *> &chain) {
+  SmallPtrSet<Operation *, 8> seen;
+  SmallVector<Value> worklist{v};
+  while (!worklist.empty()) {
+    Value cur = worklist.pop_back_val();
+    Value outerValue;
+    if (isDirectlyInvariant(op, cur, outerValue))
+      continue;
+    // Every value below an invariant one is in the memo, and invariant.
+    assert(invarianceCache.lookup(cur) && "operand of an invariant value");
+    Operation *defOp = cur.getDefiningOp();
+    if (!seen.insert(defOp).second)
+      continue;
+    chain.push_back(defOp);
+    for (Value operand : defOp->getOperands())
+      worklist.push_back(operand);
+  }
 }
 
 namespace mlir {
