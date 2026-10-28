@@ -51,3 +51,26 @@ module {
     llvm.return %0 : f32
   }
 }
+
+// -----
+
+// Negation in a guard's condition.
+module {
+  tessera.define private @lib.f(f64) -> f32 attributes {argModes = [unit], pure = true}
+  tessera.define private @lib.g(f64) -> f32 attributes {argModes = [unit], pure = true}
+
+  // CHECK-LABEL: llvm.func @negate
+  llvm.func @negate(%x: f64) -> f32 {
+    // CHECK: %[[N:.*]] = llvm.fneg %arg0 : f64
+    // CHECK: %[[H:.*]] = llvm.mlir.constant(5.000000e-01 : f64) : f64
+    // CHECK: llvm.fcmp "ogt" %[[N]], %[[H]] : f64
+    %0 = tessera.guard "-x > 0.5" args(%x) {argNames = ["x"]} : (f64) -> f32 {
+      %1 = tessera.call @lib.g(%x) : (f64) -> f32
+      tessera.yield %1 : f32
+    } else {
+      %2 = tessera.call @lib.f(%x) : (f64) -> f32
+      tessera.yield %2 : f32
+    }
+    llvm.return %0 : f32
+  }
+}

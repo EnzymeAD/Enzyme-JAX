@@ -50,21 +50,91 @@ module {
 
 // -----
 
-// There is nothing to bind a global to in what a rule matches.
+// A global in what a rule matches matches its address, and no other.
 module {
+  llvm.mlir.global external @g() {addr_space = 0 : i32} : i32
+  llvm.mlir.global external @h() {addr_space = 0 : i32} : i32
+
+  tessera.define private @lib.f(!llvm.ptr) -> i32 attributes {argModes = [unit], pure = true}
+  tessera.define private @lib.g(i32) -> i32 attributes {argModes = [unit], pure = true}
+
   tessera.optimizations {
-    // expected-warning @+1 {{a global, '@g', can only be used on the right-hand side of an optimization rule}}
     tessera.optimization "lib.f(@g) -> lib.g(1)"
+  }
+
+  // CHECK-LABEL: llvm.func @matched
+  // CHECK: tessera.call @lib.g
+  // CHECK-NOT: tessera.call @lib.f
+  llvm.func @matched() -> i32 {
+    %a = llvm.mlir.addressof @g : !llvm.ptr
+    %0 = tessera.call @lib.f(%a) : (!llvm.ptr) -> i32
+    llvm.return %0 : i32
+  }
+
+  // CHECK-LABEL: llvm.func @other_global
+  // CHECK: tessera.call @lib.f
+  llvm.func @other_global() -> i32 {
+    %a = llvm.mlir.addressof @h : !llvm.ptr
+    %0 = tessera.call @lib.f(%a) : (!llvm.ptr) -> i32
+    llvm.return %0 : i32
+  }
+
+  // CHECK-LABEL: llvm.func @unknown
+  // CHECK: tessera.call @lib.f
+  llvm.func @unknown(%a: !llvm.ptr) -> i32 {
+    %0 = tessera.call @lib.f(%a) : (!llvm.ptr) -> i32
+    llvm.return %0 : i32
   }
 }
 
 // -----
 
-// Or in a condition.
+// A condition compares a global by its address. The same global settles it.
+// Two different globals may still share an address (an alias, or constants
+// the linker merges), so otherwise the guard compares at run time.
+module {
+  llvm.mlir.global external @g() {addr_space = 0 : i32} : i32
+  llvm.mlir.global external @h() {addr_space = 0 : i32} : i32
+
+  tessera.define private @lib.f(!llvm.ptr) -> i32 attributes {argModes = [unit], pure = true}
+  tessera.define private @lib.g(!llvm.ptr) -> i32 attributes {argModes = [unit], pure = true}
+
+  tessera.optimizations {
+    tessera.optimization "if r == @g, lib.f(r) -> lib.g(r)"
+  }
+
+  // CHECK-LABEL: llvm.func @same_global
+  // CHECK-NOT: tessera.guard
+  // CHECK: tessera.call @lib.g
+  llvm.func @same_global() -> i32 {
+    %r = llvm.mlir.addressof @g : !llvm.ptr
+    %0 = tessera.call @lib.f(%r) : (!llvm.ptr) -> i32
+    llvm.return %0 : i32
+  }
+
+  // CHECK-LABEL: llvm.func @other_global
+  // CHECK: tessera.guard "r == @g"
+  llvm.func @other_global() -> i32 {
+    %r = llvm.mlir.addressof @h : !llvm.ptr
+    %0 = tessera.call @lib.f(%r) : (!llvm.ptr) -> i32
+    llvm.return %0 : i32
+  }
+
+  // CHECK-LABEL: llvm.func @unknown
+  // CHECK: tessera.guard "r == @g"
+  llvm.func @unknown(%r: !llvm.ptr) -> i32 {
+    %0 = tessera.call @lib.f(%r) : (!llvm.ptr) -> i32
+    llvm.return %0 : i32
+  }
+}
+
+// -----
+
+// Addresses have no order.
 module {
   tessera.optimizations {
-    // expected-warning @+1 {{a global, '@g', can only be used on the right-hand side of an optimization rule}}
-    tessera.optimization "if lib.h(@g) == 1, lib.f(x) -> lib.g(x)"
+    // expected-warning @+1 {{a string or global can only be compared with '==' or '!=', not '>='}}
+    tessera.optimization "if r >= @g, lib.f(r) -> lib.g(r)"
   }
 }
 
