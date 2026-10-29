@@ -11,6 +11,8 @@ config.enzymexla_tools_dir = "@ENZYMEXLA_BINARY_DIR@"
 if len(config.enzymexla_tools_dir) == 0:
   config.enzymexla_tools_dir = os.getcwd()
 
+config.stablehlo_tools_dir = "@STABLEHLO_TOOLS_DIR@"
+
 config.enable_triton = "@ENABLE_TRITON@" == "1"
 
 cfgfile = os.path.dirname(os.path.abspath(__file__)) + "/lit.cfg.py"
