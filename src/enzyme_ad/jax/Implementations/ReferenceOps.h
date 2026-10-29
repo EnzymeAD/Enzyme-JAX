@@ -6,6 +6,8 @@
 namespace mlir {
 namespace enzyme {
 
+stablehlo::Tensor conjOp(const stablehlo::Tensor &input, ShapedType resultType);
+
 stablehlo::Tensor reluOp(const stablehlo::Tensor &input, ShapedType resultType);
 
 stablehlo::Tensor softplusOp(const stablehlo::Tensor &input,

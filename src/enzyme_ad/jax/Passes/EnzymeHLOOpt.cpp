@@ -870,23 +870,6 @@ void fillInsertedStartIndices(PatternRewriter &rewriter, Location loc,
   }
 }
 
-stablehlo::Element conj(const stablehlo::Element &orig) {
-  if (stablehlo::isSupportedComplexType(orig.getType())) {
-    mlir::Complex<APFloat> val = orig.getComplexValue();
-    return stablehlo::Element(orig.getType(),
-                              mlir::Complex<APFloat>(val.real(), -val.imag()));
-  }
-
-  llvm_unreachable("Unsupported type");
-}
-
-stablehlo::Tensor conjOp(const stablehlo::Tensor &orig, ShapedType resultType) {
-  stablehlo::Tensor result(resultType);
-  for (auto it = result.index_begin(); it != result.index_end(); ++it)
-    result.set(*it, conj(orig.get(*it)));
-  return result;
-}
-
 struct ReshapeDUS final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -18396,8 +18379,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {

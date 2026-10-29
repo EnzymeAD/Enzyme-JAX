@@ -2,6 +2,7 @@
 
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/reference/Ops.h"
+#include "stablehlo/reference/Types.h"
 
 #include <cassert>
 #include <cmath>
@@ -35,6 +36,23 @@ mapWithUpcastToDouble(const stablehlo::Tensor &input, ShapedType resultType,
                             z.imag().convertToDouble());
     result.set(*it, stablehlo::convert(elemType, complexFn(zd)));
   }
+  return result;
+}
+
+stablehlo::Element conj(const stablehlo::Element &orig) {
+  if (stablehlo::isSupportedComplexType(orig.getType())) {
+    mlir::Complex<APFloat> val = orig.getComplexValue();
+    return stablehlo::Element(orig.getType(),
+                              mlir::Complex<APFloat>(val.real(), -val.imag()));
+  }
+
+  llvm_unreachable("Unsupported type");
+}
+
+stablehlo::Tensor conjOp(const stablehlo::Tensor &orig, ShapedType resultType) {
+  stablehlo::Tensor result(resultType);
+  for (auto it = result.index_begin(); it != result.index_end(); ++it)
+    result.set(*it, conj(orig.get(*it)));
   return result;
 }
 
