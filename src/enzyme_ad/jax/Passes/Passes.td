@@ -573,33 +573,44 @@ def ConvertPolygeistToLLVM
     "scf::SCFDialect",
     "ROCDL::ROCDLDialect"
   ];
-  let options = [
-    Option<"useBarePtrCallConv", "use-bare-ptr-memref-call-conv", "bool",
+  let options =
+      [Option<
+           "useBarePtrCallConv", "use-bare-ptr-memref-call-conv", "bool",
            /*default=*/"false",
            "Replace FuncOp's MemRef arguments with bare pointers to the MemRef "
            "element types">,
-    Option<"indexBitwidth", "index-bitwidth", "unsigned",
-           /*default=kDeriveIndexBitwidthFromDataLayout*/ "0",
-           "Bitwidth of the index type, 0 to use size of machine word">,
-    Option<"dataLayout", "data-layout", "std::string",
-           /*default=*/"\"\"",
-           "String description (LLVM format) of the data layout that is "
-           "expected on the produced module">,
-    Option<"useCStyleMemRef", "use-c-style-memref", "bool",
-           /*default=*/"true",
-           "Use C-style nested-array lowering of memref instead of "
-           "the default MLIR descriptor structure">,
-    Option<"use_async", "use_async", "bool",
+       Option<"indexBitwidth", "index-bitwidth", "unsigned",
+              /*default=kDeriveIndexBitwidthFromDataLayout*/ "0",
+              "Bitwidth of the index type, 0 to use size of machine word">,
+       Option<"dataLayout", "data-layout", "std::string",
+              /*default=*/"\"\"",
+              "String description (LLVM format) of the data layout that is "
+              "expected on the produced module">,
+       Option<"useCStyleMemRef", "use-c-style-memref", "bool",
+              /*default=*/"true",
+              "Use C-style nested-array lowering of memref instead of "
+              "the default MLIR descriptor structure">,
+       Option<"use_async", "use_async", "bool",
+              /*default=*/"false",
+              "Use C-style nested-array lowering of memref instead of "
+              "the default MLIR descriptor structure">,
+       Option<
+           "preserveXLAFuncs", "preserve-xla-funcs", "bool",
            /*default=*/"false",
-           "Use C-style nested-array lowering of memref instead of "
-           "the default MLIR descriptor structure">,
-    Option<
-        /*C++ variable name=*/"backend",
-        /*CLI argument=*/"backend",
-        /*type=*/"std::string",
-        /*default=*/"\"cpu\"",
-        /*description=*/"HW backend">
-  ];
+           "Leave functions holding StableHLO or tensor-typed signatures "
+           "(and their bodies) untouched instead of erasing them, so the pass "
+           "can run on a module that still contains the XLA host program">,
+       Option<
+           "cudaGetKernel", "cuda-get-kernel", "bool",
+           /*default=*/"false",
+           "Resolve CUDA kernels with cudaGetKernel in the module constructor "
+           "and pass the resulting cudaKernel_t handle to runtime calls">,
+       Option<
+           /*C++ variable name=*/"backend",
+           /*CLI argument=*/"backend",
+           /*type=*/"std::string",
+           /*default=*/"\"cpu\"",
+           /*description=*/"HW backend">];
 }
 
 def DelinearizeIndexingPass : Pass<"delinearize-indexing"> {
@@ -846,18 +857,8 @@ def RaiseTritonCustomCallPass : Pass<"raise-triton-custom-call"> {
 def LowerJITPass : Pass<"lower-jit"> {
   let summary = "Lower jit call to custom call";
   let dependentDialects = [
-    "stablehlo::StablehloDialect", 
-    "gpu::GPUDialect", 
-    "func::FuncDialect",
-    "math::MathDialect", 
-    "memref::MemRefDialect", 
-    "scf::SCFDialect",
-    "vector::VectorDialect", 
-    "nvgpu::NVGPUDialect", 
-    "NVVM::NVVMDialect",
-    "LLVM::LLVMDialect", 
-    "arith::ArithDialect", 
-    "tensor::TensorDialect"
+    "stablehlo::StablehloDialect",
+    "LLVM::LLVMDialect"
   ];
 
   let options = [
@@ -867,96 +868,6 @@ def LowerJITPass : Pass<"lower-jit"> {
         /*type=*/"bool",
         /*default=*/"true",
         /*description=*/"Whether to jit the kernel">,
-    Option<
-        /*C++ variable name=*/"compileLaunch",
-        /*CLI argument=*/"compileLaunch",
-        /*type=*/"bool",
-        /*default=*/"true",
-        /*description=*/"Whether to jit the host code">,
-    Option<
-        /*C++ variable name=*/"toolkitPath",
-        /*CLI argument=*/"toolkitPath",
-        /*type=*/"std::string",
-        /*default=*/"",
-        /*description=*/"The location of the cuda toolkit">,
-    Option<
-        /*C++ variable name=*/"linkFiles",
-        /*CLI argument=*/"linkFiles",
-        /*type=*/"std::string",
-        /*default=*/"",
-        /*description=*/"Semicolon separated list of files to link">,
-    Option<
-        /*C++ variable name=*/"cubinChip",
-        /*CLI argument=*/"cubinChip",
-        /*type=*/"std::string",
-        /*default=*/"\"sm_50\"",
-        /*description=*/"cubinChip">,
-    Option<
-        /*C++ variable name=*/"cubinFeatures",
-        /*CLI argument=*/"cubinFeatures",
-        /*type=*/"std::string",
-        /*default=*/"\"+ptx60\"",
-        /*description=*/"cubinChip">,
-    Option<
-        /*C++ variable name=*/"indexBitWidth",
-        /*CLI argument=*/"indexBitWidth",
-        /*type=*/"int",
-        /*default=*/"64",
-        /*description=*/"indexBitWidth">,
-    Option<
-        /*C++ variable name=*/"run_init",
-        /*CLI argument=*/"run_init",
-        /*type=*/"bool",
-        /*default=*/"false",
-        /*description=*/"Run initialization of cuda module">,
-    Option<
-        /*C++ variable name=*/"debug",
-        /*CLI argument=*/"debug",
-        /*type=*/"bool",
-        /*default=*/"false",
-        /*description=*/"Compile in debug prints">,
-    Option<
-        /*C++ variable name=*/"cuResultHandlerPtr",
-        /*CLI argument=*/"cuResultHandlerPtr",
-        /*type=*/"size_t",
-        /*default=*/"0",
-        /*description=*/"Function handler to call with result of curesult">,
-    Option<
-        /*C++ variable name=*/"cuStreamSynchronizePtr",
-        /*CLI argument=*/"cuStreamSynchronizePtr",
-        /*type=*/"size_t",
-        /*default=*/"0",
-        /*description=*/"Function handler to sync results">,
-    Option<
-        /*C++ variable name=*/"cubinFormat",
-        /*CLI argument=*/"cubinFormat",
-        /*type=*/"std::string",
-        /*default=*/"\"bin\"",
-        /*description=*/"Binary format">,
-    Option<
-        /*C++ variable name=*/"cuOptLevel",
-        /*CLI argument=*/"cuOptLevel",
-        /*type=*/"int",
-        /*default=*/"2",
-        /*description=*/"Opt level for ptx">,
-    Option<
-        /*C++ variable name=*/"cubinTriple",
-        /*CLI argument=*/"cubinTriple",
-        /*type=*/"std::string",
-        /*default=*/"\"nvptx64-nvidia-cuda\"",
-        /*description=*/"Target triple">,
-    Option<
-        /*C++ variable name=*/"backend",
-        /*CLI argument=*/"backend",
-        /*type=*/"std::string",
-        /*default=*/"\"cuda\"",
-        /*description=*/"HW backend">,
-    Option<
-        /*C++ variable name=*/"openmp",
-        /*CLI argument=*/"openmp",
-        /*type=*/"bool",
-        /*default=*/"true",
-        /*description=*/"whether to use openmp for lowering">,
     Option<
         /*C++ variable name=*/"dump_final_module",
         /*CLI argument=*/"dump_final_module",
@@ -1769,12 +1680,19 @@ def GpuModuleToBinarySink : Pass<"enzymexla-gpu-module-to-binary", ""> {
     the target's optimization pipeline means EarlyCSE/GVN can no longer
     re-hoist the clones, shortening live ranges that otherwise inflate
     register pressure in large kernels.
+
+    By default, sets `-nvptx-fma-level=1` when the NVPTX target is registered
+    and the option has not already been specified, matching nvcc/XLA FMA
+    contraction behavior. Additional LLVM command-line options can be forwarded
+    via `llvm-opts`.
   }];
   let options =
       [Option<"toolkitPath", "toolkit", "std::string", [{""}], "Toolkit path.">,
        ListOption<"linkFiles", "l", "std::string", "Extra files to link to.">,
        Option<"cmdOptions", "opts", "std::string", [{""}],
               "Command line options to pass to the tools.">,
+       Option<"llvmOptions", "llvm-opts", "std::string", [{""}],
+              "Command line options to forward to LLVM.">,
        Option<"compilationTarget", "format", "std::string", [{"fatbin"}],
               "The target representation of the compilation process.">,
        Option<"elfSection", "section", "std::string", [{""}],

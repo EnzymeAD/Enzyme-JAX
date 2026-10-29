@@ -150,6 +150,17 @@ static void expandAggregateView(enzymexla::Pointer2MemrefOp p2m,
           rewriter, loc, map.getSubMap({i}), ValueRange{index}));
     return indices;
   };
+  // What an access of a leaf may say of its alignment: what the access of
+  // the whole said of the aggregate's, less the leaf's offset in it -- the
+  // leaves of one scalar lie one after the other. Said nothing, the leaf
+  // access is at its scalar's ABI alignment as before.
+  uint64_t leafSize = DataLayout::closest(p2m).getTypeSize(
+      cast<MemRefType>(replacement.getType()).getElementType());
+  auto leafAlign = [&](llvm::MaybeAlign whole, int64_t leaf) {
+    if (!whole)
+      return whole;
+    return llvm::MaybeAlign(llvm::MinAlign(whole->value(), leaf * leafSize));
+  };
   for (Operation *user : llvm::make_early_inc_range(p2m->getUsers())) {
     rewriter.setInsertionPoint(user);
     Location loc = user->getLoc();
@@ -157,9 +168,9 @@ static void expandAggregateView(enzymexla::Pointer2MemrefOp p2m,
       for (auto [leaf, path] : llvm::enumerate(paths)) {
         Value piece = LLVM::ExtractValueOp::create(rewriter, loc,
                                                    st.getValueToStore(), path);
-        affine::AffineStoreOp::create(rewriter, loc, piece, replacement,
-                                      leafMap(st.getMap(), leaf),
-                                      st.getMapOperands());
+        affine::AffineStoreOp::create(
+            rewriter, loc, piece, replacement, leafMap(st.getMap(), leaf),
+            st.getMapOperands(), leafAlign(st.getMaybeAlign(), leaf));
       }
       rewriter.eraseOp(st);
     } else if (auto st = dyn_cast<memref::StoreOp>(user)) {
@@ -167,7 +178,9 @@ static void expandAggregateView(enzymexla::Pointer2MemrefOp p2m,
         Value piece = LLVM::ExtractValueOp::create(rewriter, loc,
                                                    st.getValueToStore(), path);
         memref::StoreOp::create(rewriter, loc, piece, replacement,
-                                leafIndex(loc, st.getIndices()[0], leaf));
+                                leafIndex(loc, st.getIndices()[0], leaf),
+                                /*nontemporal=*/false,
+                                leafAlign(st.getMaybeAlign(), leaf));
       }
       rewriter.eraseOp(st);
     } else {
@@ -175,13 +188,16 @@ static void expandAggregateView(enzymexla::Pointer2MemrefOp p2m,
       for (auto [leaf, path] : llvm::enumerate(paths)) {
         Value piece;
         if (auto ld = dyn_cast<affine::AffineLoadOp>(user))
-          piece = affine::AffineLoadOp::create(rewriter, loc, replacement,
-                                               leafMap(ld.getMap(), leaf),
-                                               ld.getMapOperands());
-        else
+          piece = affine::AffineLoadOp::create(
+              rewriter, loc, replacement, leafMap(ld.getMap(), leaf),
+              ld.getMapOperands(), leafAlign(ld.getMaybeAlign(), leaf));
+        else {
+          auto mld = cast<memref::LoadOp>(user);
           piece = memref::LoadOp::create(
               rewriter, loc, replacement,
-              leafIndex(loc, cast<memref::LoadOp>(user).getIndices()[0], leaf));
+              leafIndex(loc, mld.getIndices()[0], leaf), /*nontemporal=*/false,
+              leafAlign(mld.getMaybeAlign(), leaf));
+        }
         value = LLVM::InsertValueOp::create(rewriter, loc, value, piece, path);
       }
       rewriter.replaceOp(user, value);
@@ -2540,7 +2556,13 @@ convertLLVMToAffineAccess(Operation *op,
           ic.replace(load, newLoad);
           rewriter.replaceOp(load, newLoad);
           for (auto attr : attrs) {
-            newLoad->setAttr(attr.getName(), attr.getValue());
+            // affine.load owns an alignment attribute too, and setAttr of an
+            // unset owned one lands in the discardable dictionary, where
+            // getAlignment() does not look.
+            if (attr.getName() == "alignment")
+              newLoad.setAlignmentAttr(cast<IntegerAttr>(attr.getValue()));
+            else
+              newLoad->setAttr(attr.getName(), attr.getValue());
           }
           continue;
         }
@@ -2624,7 +2646,11 @@ convertLLVMToAffineAccess(Operation *op,
                              expr),
               ic(mao.operands));
           for (auto attr : attrs) {
-            newStore->setAttr(attr.getName(), attr.getValue());
+            // See the load path above.
+            if (attr.getName() == "alignment")
+              newStore.setAlignmentAttr(cast<IntegerAttr>(attr.getValue()));
+            else
+              newStore->setAttr(attr.getName(), attr.getValue());
           }
         }
         continue;

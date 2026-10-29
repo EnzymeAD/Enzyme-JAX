@@ -1,4 +1,5 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-jit{jit=false})" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(convert-polygeist-to-llvm{backend=cuda preserve-xla-funcs=true},lower-jit{jit=false})" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(convert-polygeist-to-llvm{backend=cuda preserve-xla-funcs=true cuda-get-kernel=true},lower-jit{jit=false})" | FileCheck %s --check-prefixes=CHECK,GET-KERNEL
 
 module attributes {gpu.container_module} {
   gpu.module @gpumod_kern {
@@ -37,7 +38,11 @@ module attributes {gpu.container_module} {
 }
 
 // CHECK: func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
-// CHECK-NEXT:    %0 = stablehlo.custom_call @enzymexla_compile_gpu(%arg0) {api_version = 4 : i32, backend_config = {attr = "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00"}, output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
+// CHECK-NEXT:    %0 = stablehlo.custom_call @enzymexla_compile_gpu(%arg0) {api_version = 4 : i32, backend_config = {attr = "\00\00\00\00\00\00\00\00"}, output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
 // CHECK-NEXT:    return %0 : tensor<64xi64>
 // CHECK-NEXT:  }
-// CHECK-NEXT:}
+// GET-KERNEL-LABEL: llvm.func private @gpumod_kern_gpubin_ctor()
+// GET-KERNEL-DAG: %[[FUNPTR:.+]] = llvm.mlir.addressof @__polygeist_gpumod_kern_kern_fun_ptr : !llvm.ptr
+// GET-KERNEL-DAG: %[[STUB:.+]] = llvm.mlir.addressof @__polygeist_gpumod_kern_kern_device_stub : !llvm.ptr
+// GET-KERNEL: llvm.call @__cudaRegisterFatBinaryEnd
+// GET-KERNEL-NEXT: llvm.call @cudaGetKernel(%[[FUNPTR]], %[[STUB]]) : (!llvm.ptr, !llvm.ptr) -> i32

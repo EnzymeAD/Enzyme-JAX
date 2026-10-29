@@ -1743,6 +1743,11 @@ static std::string getFuncStubName(StringRef moduleName, StringRef name) {
       llvm::formatv("__polygeist_{0}_{1}_device_stub", moduleName, name));
 };
 
+static std::string getFuncGlobalName(StringRef moduleName, StringRef name) {
+  return std::string(
+      llvm::formatv("__polygeist_{0}_{1}_fun_ptr", moduleName, name));
+}
+
 // The host-side pointer a kernel is registered under, and which every symbolic
 // reference to that kernel must lower to. Clang emits a device stub for each
 // __global__ function and that stub is the address user code can take, so bind
@@ -1804,10 +1809,11 @@ public:
   ConvertLaunchFuncOpToGpuRuntimeCallPattern(LLVMTypeConverter &typeConverter,
                                              StringRef gpuBinaryAnnotation,
                                              std::string gpuTarget,
-                                             HostStubNames hostStubNames)
+                                             HostStubNames hostStubNames,
+                                             bool cudaGetKernel = false)
       : ConvertOpToGpuRuntimeCallPattern<gpu::LaunchFuncOp>(typeConverter),
         gpuBinaryAnnotation(gpuBinaryAnnotation), gpuTarget(gpuTarget),
-        hostStubNames(std::move(hostStubNames)) {}
+        hostStubNames(std::move(hostStubNames)), cudaGetKernel(cudaGetKernel) {}
 
 private:
   Value generateParamsArray(gpu::LaunchFuncOp launchOp, OpAdaptor adaptor,
@@ -1820,6 +1826,7 @@ private:
   llvm::SmallString<32> gpuBinaryAnnotation;
   std::string gpuTarget;
   HostStubNames hostStubNames;
+  bool cudaGetKernel;
 };
 
 class ConvertGPUModuleOp
@@ -1827,10 +1834,10 @@ class ConvertGPUModuleOp
 public:
   ConvertGPUModuleOp(LLVMTypeConverter &typeConverter,
                      StringRef gpuBinaryAnnotation, std::string gpuTarget,
-                     HostStubNames hostStubNames)
+                     HostStubNames hostStubNames, bool cudaGetKernel = false)
       : ConvertOpToGpuRuntimeCallPattern<gpu::GPUModuleOp>(typeConverter),
         gpuBinaryAnnotation(gpuBinaryAnnotation), gpuTarget(gpuTarget),
-        hostStubNames(std::move(hostStubNames)) {}
+        hostStubNames(std::move(hostStubNames)), cudaGetKernel(cudaGetKernel) {}
 
 private:
   LogicalResult
@@ -1840,6 +1847,7 @@ private:
   llvm::SmallString<32> gpuBinaryAnnotation;
   std::string gpuTarget;
   HostStubNames hostStubNames;
+  bool cudaGetKernel;
 };
 
 // tuple helpers
@@ -2587,6 +2595,7 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
       auto aoo = LLVM::AddressOfOp::create(ctorBuilder, ctorloc, moduleGlobal);
       LLVM::StoreOp::create(ctorBuilder, loc, module->getResult(0),
                             aoo->getResult(0));
+      SmallVector<std::pair<StringRef, Value>> registeredKernels;
       for (Operation &op : kernelModule->getRegion(0).front()) {
         if (auto f = dyn_cast<gpu::GPUFuncOp>(op)) {
           if (!f.isKernel())
@@ -2646,6 +2655,8 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
               nullPtr};
 
           LLVM::CallOp::create(rewriter, ctorloc, cudaRegisterFn.value(), args);
+          if (cudaGetKernel && gpuTarget == "cuda")
+            registeredKernels.emplace_back(f.getName(), bitcast);
         } else if (LLVM::GlobalOp g = dyn_cast<LLVM::GlobalOp>(op)) {
           int addrSpace = g.getAddrSpace();
           if (addrSpace != 1 /* device */ && addrSpace != 4 /* constant */)
@@ -2719,6 +2730,35 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
 
         LLVM::CallOp::create(rewriter, ctorloc, cudaRegisterFatbinFn.value(),
                              ValueRange(module->getResult(0)));
+
+        if (cudaGetKernel && !registeredKernels.empty()) {
+          Type getKernelTys[] = {llvmPointerType, llvmPointerType};
+          auto cudaGetKernelFn = LLVM::lookupOrCreateFn(
+              rewriter, moduleOp, "cudaGetKernel", getKernelTys, llvmInt32Type);
+          if (failed(cudaGetKernelFn)) {
+            llvm::errs()
+                << " cudaGetKernel already exists with different types\n";
+            return failure();
+          }
+          for (auto &[kernelName, stubPtr] : registeredKernels) {
+            auto funcGlobalName = getFuncGlobalName(moduleName, kernelName);
+            LLVM::GlobalOp kernelGlobal;
+            {
+              PatternRewriter::InsertionGuard B(rewriter);
+              rewriter.setInsertionPointToEnd(moduleOp.getBody());
+              kernelGlobal = LLVM::GlobalOp::create(
+                  rewriter, ctorloc, llvmPointerType, /* isConstant */ false,
+                  LLVM::Linkage::Internal, funcGlobalName,
+                  /* initValue */ mlir::Attribute(),
+                  /* alignment */ 8, /* addrSpace */ 0);
+            }
+            auto kernelGlobalAddr =
+                LLVM::AddressOfOp::create(ctorBuilder, ctorloc, kernelGlobal);
+            Value getKernelArgs[] = {kernelGlobalAddr, stubPtr};
+            LLVM::CallOp::create(rewriter, ctorloc, cudaGetKernelFn.value(),
+                                 getKernelArgs);
+          }
+        }
       }
       LLVM::ReturnOp::create(ctorBuilder, ctorloc, ValueRange());
     }
@@ -2804,18 +2844,22 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   if (!kernelModule)
     return rewriter.notifyMatchFailure(launchOp, "Expected a kernel module");
 
-  // auto getFuncGlobalName = [](StringRef moduleName, StringRef name) {
-  //   return std::string(
-  //       llvm::formatv("__polygeist_{0}_{1}_fun_ptr", moduleName, name));
-  // };
+  Value bitcast;
+  if (cudaGetKernel && gpuTarget == "cuda") {
+    auto funcGlobalName =
+        getFuncGlobalName(launchOp.getKernelModuleName().getValue(),
+                          launchOp.getKernelName().getValue());
+    auto aoo = LLVM::AddressOfOp::create(rewriter, loc, llvmPointerType,
+                                         funcGlobalName);
+    bitcast = LLVM::LoadOp::create(rewriter, loc, llvmPointerType, aoo);
+  } else {
+    std::string funcStubName = lookupHostStubName(
+        hostStubNames, launchOp.getKernelModuleName().getValue(),
+        launchOp.getKernelName().getValue());
 
-  // Build module constructor and destructor
-  std::string funcStubName = lookupHostStubName(
-      hostStubNames, launchOp.getKernelModuleName().getValue(),
-      launchOp.getKernelName().getValue());
-
-  auto bitcast =
-      LLVM::AddressOfOp::create(rewriter, loc, llvmPointerType, funcStubName);
+    bitcast =
+        LLVM::AddressOfOp::create(rewriter, loc, llvmPointerType, funcStubName);
+  }
 
   Value zero = LLVM::ConstantOp::create(rewriter, loc, llvmInt32Type, 0);
   auto nullpointer = LLVM::ZeroOp::create(rewriter, loc, llvmPointerType);
@@ -3323,12 +3367,14 @@ public:
   /// The attribute name to use instead of `gpu.kernel`.
   StringRef backend;
   HostStubNames hostStubNames;
+  bool cudaGetKernel;
 
   ConvertOccupancyOp(LLVMTypeConverter &typeConverter, StringRef backend,
-                     HostStubNames hostStubNames)
+                     HostStubNames hostStubNames, bool cudaGetKernel = false)
       : ConvertOpToGpuRuntimeCallPattern<enzymexla::GPUOccupancyOp>(
             typeConverter),
-        backend(backend), hostStubNames(std::move(hostStubNames)) {}
+        backend(backend), hostStubNames(std::move(hostStubNames)),
+        cudaGetKernel(cudaGetKernel) {}
 
 private:
   LogicalResult
@@ -3383,10 +3429,20 @@ private:
       ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, intty, one_entry);
     }
 
-    std::string funcStubName = lookupHostStubName(
-        hostStubNames, op.getFn().getRootReference().getValue(),
-        op.getFn().getLeafReference().getValue());
-    auto addr = LLVM::AddressOfOp::create(rewriter, loc, ptrty, funcStubName);
+    Value addr;
+    if (cudaGetKernel && backend == "cuda") {
+      auto funcGlobalName =
+          getFuncGlobalName(op.getFn().getRootReference().getValue(),
+                            op.getFn().getLeafReference().getValue());
+      auto aoo =
+          LLVM::AddressOfOp::create(rewriter, loc, ptrty, funcGlobalName);
+      addr = LLVM::LoadOp::create(rewriter, loc, ptrty, aoo);
+    } else {
+      std::string funcStubName = lookupHostStubName(
+          hostStubNames, op.getFn().getRootReference().getValue(),
+          op.getFn().getLeafReference().getValue());
+      addr = LLVM::AddressOfOp::create(rewriter, loc, ptrty, funcStubName);
+    }
     Value args[] = {ptr, addr, adaptor.getBlockSize(),
                     adaptor.getDynamicSMemSize(), adaptor.getFlags()};
     LLVM::CallOp::create(rewriter, loc, occupancyFn.value(), args);
@@ -3402,12 +3458,15 @@ public:
   /// The attribute name to use instead of `gpu.kernel`.
   StringRef backend;
   HostStubNames hostStubNames;
+  bool cudaGetKernel;
 
   ConvertGPUKernelAddressOp(LLVMTypeConverter &typeConverter, StringRef backend,
-                            HostStubNames hostStubNames)
+                            HostStubNames hostStubNames,
+                            bool cudaGetKernel = false)
       : ConvertOpToGpuRuntimeCallPattern<enzymexla::GPUKernelAddressOp>(
             typeConverter),
-        backend(backend), hostStubNames(std::move(hostStubNames)) {}
+        backend(backend), hostStubNames(std::move(hostStubNames)),
+        cudaGetKernel(cudaGetKernel) {}
 
 private:
   LogicalResult
@@ -3417,6 +3476,16 @@ private:
     if (backend != "cuda" && backend != "rocm")
       return rewriter.notifyMatchFailure(
           op, "KernelAddress lowering only supported for CUDA and ROCM");
+
+    if (cudaGetKernel && backend == "cuda") {
+      auto funcGlobalName =
+          getFuncGlobalName(op.getFn().getRootReference().getValue(),
+                            op.getFn().getLeafReference().getValue());
+      auto aoo = LLVM::AddressOfOp::create(rewriter, op.getLoc(), op.getType(),
+                                           funcGlobalName);
+      rewriter.replaceOpWithNewOp<LLVM::LoadOp>(op, op.getType(), aoo);
+      return success();
+    }
 
     std::string funcStubName = lookupHostStubName(
         hostStubNames, op.getFn().getRootReference().getValue(),
@@ -5007,19 +5076,20 @@ struct ConvertPolygeistToLLVMPass
     if (useCStyleMemRef) {
       auto hostStubNames = computeHostStubNames(m);
       patterns.add<ConvertLaunchFuncOpToGpuRuntimeCallPattern>(
-          converter, "gpu.binary", gpuTarget, hostStubNames);
+          converter, "gpu.binary", gpuTarget, hostStubNames, cudaGetKernel);
 
       patterns.add<ConvertGPUModuleOp>(converter, "gpu.binary", gpuTarget,
-                                       hostStubNames);
+                                       hostStubNames, cudaGetKernel);
       // patterns.add<LegalizeLaunchFuncOpPattern>(
       //     converter, /*kernelBarePtrCallConv*/ true,
       //     /*kernelIntersperseSizeCallConv*/ false);
       patterns.add<ConvertAllocOpToGpuRuntimeCallPattern<true>>(converter,
                                                                 gpuTarget);
-      patterns.add<ConvertOccupancyOp>(converter, gpuTarget, hostStubNames);
+      patterns.add<ConvertOccupancyOp>(converter, gpuTarget, hostStubNames,
+                                       cudaGetKernel);
 
       patterns.add<ConvertGPUKernelAddressOp>(converter, gpuTarget,
-                                              hostStubNames);
+                                              hostStubNames, cudaGetKernel);
 
       patterns.add<ConvertDeallocOpToGpuRuntimeCallPattern<true>>(converter,
                                                                   gpuTarget);
@@ -5062,6 +5132,52 @@ struct ConvertPolygeistToLLVMPass
     configureOpenMPToLLVMConversionLegality(target, converter);
     target.addIllegalOp<scf::ForOp, scf::IfOp, scf::ParallelOp, scf::WhileOp,
                         scf::ExecuteRegionOp, func::FuncOp>();
+    if (preserveXLAFuncs) {
+      // Functions belonging to the XLA host program (holding StableHLO or
+      // taking/returning tensors) are kept as-is, body included. Functions
+      // referenced by an xla_wrapper are still consumed by its lowering.
+      // A public function without arguments or results that no jit_call
+      // targets is an XLA entry point computing nothing (e.g. one whose
+      // results were all folded on the host), and is kept as well.
+      SymbolTableCollection symbolTables;
+      DenseSet<Operation *> wrapped, jitted;
+      m->walk([&](enzymexla::XLAWrapperOp wrap) {
+        if (auto fn = symbolTables.lookupNearestSymbolFrom(wrap, wrap.getFn()))
+          wrapped.insert(fn);
+      });
+      m->walk([&](enzymexla::JITCallOp call) {
+        if (auto fn = symbolTables.lookupNearestSymbolFrom(call, call.getFn()))
+          jitted.insert(fn);
+      });
+      auto isTensor = [](Type t) { return isa<TensorType>(t); };
+      DenseSet<Operation *> xlaFuncs;
+      for (auto func : m.getOps<func::FuncOp>()) {
+        if (wrapped.contains(func))
+          continue;
+        bool anyStablehlo =
+            func->walk([](Operation *op) -> WalkResult {
+                  if (op->getDialect() &&
+                      op->getDialect()->getNamespace() == "stablehlo")
+                    return WalkResult::interrupt();
+                  return WalkResult::advance();
+                })
+                .wasInterrupted();
+        bool emptyEntry = func.isPublic() && func.getNumArguments() == 0 &&
+                          func.getNumResults() == 0 && !jitted.contains(func);
+        if (anyStablehlo || emptyEntry ||
+            llvm::any_of(func.getArgumentTypes(), isTensor) ||
+            llvm::any_of(func.getResultTypes(), isTensor))
+          xlaFuncs.insert(func);
+      }
+      target.addDynamicallyLegalOp<func::FuncOp>(
+          [xlaFuncs](func::FuncOp func) -> std::optional<bool> {
+            return xlaFuncs.contains(func);
+          });
+      target.markOpRecursivelyLegal<func::FuncOp>(
+          [xlaFuncs](func::FuncOp func) -> std::optional<bool> {
+            return xlaFuncs.contains(func);
+          });
+    }
     target.addDynamicallyLegalDialect<LLVM::LLVMDialect>(areAllTypesConverted);
     target.addDynamicallyLegalOp<LLVM::GlobalOp>(
         [&](LLVM::GlobalOp op) -> std::optional<bool> {
@@ -5233,6 +5349,11 @@ struct ConvertPolygeistToLLVMPass
     }
 
     if (m->walk([](UnrealizedConversionCastOp op) {
+           // The stream is only known once lower-jit builds the entry point,
+           // which replaces these casts with its stream argument.
+           if (op->getNumOperands() == 1 &&
+               op->getOperand(0).getDefiningOp<enzymexla::GetStreamOp>())
+             return WalkResult::advance();
            InFlightDiagnostic diag =
                op->emitError() << "Unhandled unrealized conversion cast " << op;
            if (auto fn = op->getParentOfType<FunctionOpInterface>())

@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --map-symbol="symbols=mock_function=0x1,MOCK_GLOBAL=2" --lower-jit="backend=cpu" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --map-symbol="symbols=mock_function=0x1,MOCK_GLOBAL=2" --lower-jit | FileCheck %s
 
 
 module {

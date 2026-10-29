@@ -16,12 +16,24 @@
 
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/raw_ostream.h"
+#if __has_include("llvm/Support/LibraryOptionsContext.h")
+#include "llvm/Support/LibraryOptionsContext.h"
+#define ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT 1
+#else
+#define ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT 0
+#endif
+
+#include <mutex>
 
 namespace mlir {
 namespace enzyme {
@@ -129,6 +141,63 @@ public:
       return signalPassFailure();
     }
 
+    static std::mutex llvmOptsMutex;
+    std::lock_guard<std::mutex> llvmOptsLock(llvmOptsMutex);
+
+    auto &registered = llvm::cl::getRegisteredOptions();
+    SmallVector<llvm::cl::Option *> unsetOptions;
+    unsetOptions.reserve(registered.size());
+    for (auto &entry : registered) {
+      if (entry.second->getNumOccurrences() == 0)
+        unsetOptions.push_back(entry.second);
+    }
+    llvm::scope_exit restoreOptions([&]() {
+      for (llvm::cl::Option *opt : unsetOptions) {
+        if (opt->getNumOccurrences() > 0)
+          opt->reset();
+      }
+    });
+
+    if (auto it = registered.find("nvptx-fma-level");
+        it != registered.end() && it->second->getNumOccurrences() == 0) {
+      it->second->addOccurrence(0, "nvptx-fma-level", "1");
+    }
+
+    bool hasLlvmOptions = false;
+#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
+    llvm::cl::LibraryOptionsContext libraryOpts;
+#endif
+    if (!llvmOptions.empty()) {
+      auto tokenized = gpu::TargetOptions::tokenizeCmdOptions(llvmOptions);
+      if (!tokenized.second.empty()) {
+        hasLlvmOptions = true;
+        SmallVector<const char *, 8> argv;
+        argv.reserve(tokenized.second.size() + 1);
+        argv.push_back("enzymexla-gpu-module-to-binary");
+        argv.append(tokenized.second.begin(), tokenized.second.end());
+        std::string errMsg;
+        llvm::raw_string_ostream errStream(errMsg);
+#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
+        bool ok = llvm::cl::parseCommandLineOptions(
+            libraryOpts, argv, /*Overview=*/"", &errStream);
+#else
+        bool ok = llvm::cl::ParseCommandLineOptions(
+            static_cast<int>(argv.size()), argv.data(), /*Overview=*/"",
+            &errStream);
+#endif
+        errStream.flush();
+        if (!ok) {
+          if (errMsg.empty())
+            getOperation()->emitError()
+                << "Failed to parse LLVM options: '" << llvmOptions << "'";
+          else
+            getOperation()->emitError()
+                << "Failed to parse LLVM options: " << StringRef(errMsg).trim();
+          return signalPassFailure();
+        }
+      }
+    }
+
     std::optional<SymbolTable> parentTable;
     auto lazyTableBuilder = [&]() -> SymbolTable * {
       if (!parentTable) {
@@ -143,18 +212,26 @@ public:
     for (const std::string &path : linkFiles)
       librariesToLink.push_back(StringAttr::get(&getContext(), path));
 
+    auto initialCallback = [&](llvm::Module &M) {
+#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
+      if (hasLlvmOptions)
+        M.getContext().getLibraryOptions().assign(libraryOpts);
+#else
+      (void)M;
+      (void)hasLlvmOptions;
+#endif
+    };
     int mode = sinkMode;
     bool dump = dumpIR;
     auto sinkCallback = [mode, dump](llvm::Module &M) {
       sinkCheapOpsLate(M, mode, dump);
     };
-    gpu::TargetOptions targetOptions(
-        toolkitPath, librariesToLink, cmdOptions, elfSection, *targetFormat,
-        lazyTableBuilder, /*initialLlvmIRCallback=*/{},
-        /*linkedLlvmIRCallback=*/{}, /*optimizedLlvmIRCallback=*/sinkCallback);
+    gpu::TargetOptions targetOptions(toolkitPath, librariesToLink, cmdOptions,
+                                     elfSection, *targetFormat,
+                                     lazyTableBuilder, initialCallback,
+                                     /*linkedLlvmIRCallback=*/{},
+                                     /*optimizedLlvmIRCallback=*/sinkCallback);
 
-    // The IR dump in the sink callback writes straight to stderr, so it also
-    // needs sequential serialization to stay ordered and uninterleaved.
     if (!parallel || dumpIR) {
       if (failed(gpu::transformGpuModulesToBinaries(
               getOperation(),

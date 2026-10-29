@@ -40,6 +40,7 @@ def DynamicReshape : HLOInst<"DynamicReshapeOp">;
 def DynamicSlice : HLOInst<"DynamicSliceOp">;
 def DynamicUpdateSlice : HLOInst<"DynamicUpdateSliceOp">;
 def Exp : HLOInst<"ExpOp">;
+def Exp2 : HLOInst<"Exp2Op">;
 def Expm1 : HLOInst<"Expm1">;
 def Fft : HLOInst<"FftOp">;
 def Floor : HLOInst<"FloorOp">;
@@ -52,6 +53,10 @@ def Infeed : HLOInst<"InfeedOp">;
 def Iota : HLOInst<"IotaOp">;
 def IsFinite : HLOInst<"IsFiniteOp">;
 def Log : HLOInst<"LogOp">;
+def Log2 : HLOInst<"Log2Op">;
+
+// ln(2), for rebasing the base-2 exponential and logarithm derivatives.
+def Ln2 : HLOConstantFP<"0.6931471805599453">;
 def Log1p : HLOInst<"Log1pOp">;
 def Logistic : HLOInst<"LogisticOp">;
 def Map : HLOInst<"MapOp">;
@@ -1183,6 +1188,9 @@ def : HLODerivative<"ExpOp", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
 def : HLODerivative<"Expm1Op", (Op $x), [(CheckedMul (DiffeRet), (Exp $x))]>;
 
+// d/dx 2^x = 2^x * ln(2)
+def : HLODerivative<"Exp2Op", (Op $x), [(CheckedMul (DiffeRet), (Mul (Exp2 $x), (Ln2 $x)))]>;
+
 def : HLOInactiveOp<"FloorOp">;
 
 def : HLODerivative<"ImagOp", (Op $x),
@@ -1199,6 +1207,9 @@ def : HLOInactiveOp<"IsFiniteOp">;
 def : HLODerivative<"LogOp", (Op $x), [(CheckedDiv (DiffeRet), $x)]>;
 
 def : HLODerivative<"Log1pOp", (Op $x), [(CheckedDiv (DiffeRet), (Add $x, (HLOConstantFP<"1"> $x)))]>;
+
+// d/dx log2(x) = 1 / (x * ln(2))
+def : HLODerivative<"Log2Op", (Op $x), [(CheckedDiv (DiffeRet), (Mul $x, (Ln2 $x)))]>;
 
 def : HLODerivative<"LogisticOp", (Op $x), [(CheckedMul (DiffeRet), (CheckedMul (Logistic $x), (Sub (HLOConstantFP<"1">), (Logistic $x))))]>;
 
