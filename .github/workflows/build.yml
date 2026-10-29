@@ -80,22 +80,27 @@ jobs:
           m = re.search(r"SUBCOMMAND: [^\n]*Testing //test/lit_tests:cse_iota\.mlir\.test'[^\n]*\n(\(cd .*?\n[^\n]*\))\n", s, re.S)
           cmd = m.group(1) + "\n" if m else "echo 'no spawn found'\n"
           open('/tmp/spawn.sh', 'w').write(cmd)
-          # The bare test binary with the same environment, no test-setup.sh.
-          direct = re.sub(r"external/bazel_tools/tools/test/test-setup\.sh test/lit_tests/cse_iota\.mlir\.test (.*)\)\n$",
-                          r"bash -c 'cd \"$TEST_SRCDIR/$TEST_WORKSPACE\" && exec /root/.bazel/execroot/__main__/bazel-out/k8-opt/bin/test/lit_tests/cse_iota.mlir.test \1')\n", cmd)
+          last = re.search(r"\n(  external/bazel_tools/tools/test/test-setup\.sh [^\n]*\))\n$", cmd).group(1)
+          # The bare test binary with the same environment (runfiles paths made absolute, as test-setup.sh does), no test-setup.sh.
+          direct = cmd.replace(last, "  bash -c 'export RUNFILES_DIR=$PWD/$RUNFILES_DIR TEST_SRCDIR=$PWD/$TEST_SRCDIR PYTHON_RUNFILES=$PWD/$PYTHON_RUNFILES JAVA_RUNFILES=$PWD/$JAVA_RUNFILES; cd $TEST_SRCDIR/$TEST_WORKSPACE && exec $OLDPWD/bazel-out/k8-opt/bin/test/lit_tests/cse_iota.mlir.test -v test/lit_tests/cse_iota.mlir')")
           open('/tmp/spawn_direct.sh', 'w').write(direct)
+          # test-setup.sh around /bin/true: the wrapper's own cost.
+          wrapper = cmd.replace(last, "  external/bazel_tools/tools/test/test-setup.sh /bin/true)")
+          open('/tmp/spawn_wrapper.sh', 'w').write(wrapper)
           # test-setup.sh with TEST_TMPDIR and every testlogs output on tmpfs.
           shm = cmd.replace("bazel-out/k8-opt/testlogs/", "/dev/shm/testlogs/").replace("TEST_TMPDIR=_tmp/", "TEST_TMPDIR=/dev/shm/tmp/")
           open('/tmp/spawn_shm.sh', 'w').write(shm)
-          print(direct[-300:]); print(shm[-200:])
+          print(direct[-330:]); print(wrapper[-120:])
           PY
           mkdir -p /dev/shm/testlogs/test/lit_tests/cse_iota.mlir.test /dev/shm/tmp
+          echo "-- one direct run, checked:"; bash /tmp/spawn_direct.sh 2>&1 | tail -3
+          echo "-- one wrapper-only run, checked:"; bash /tmp/spawn_wrapper.sh 2>&1 | tail -2
           par() { name=$1; shift; for r in 1 2 3; do ( time ( for i in $(seq 32); do bash "$@" > /dev/null 2>&1 & done; wait ) ) 2>&1 | grep real | sed "s/^/$name x32: /"; done; ( time bash "$@" > /dev/null 2>&1 ) 2>&1 | grep real | sed "s/^/$name x1: /"; }
           par spawn /tmp/spawn.sh
           par direct /tmp/spawn_direct.sh
+          par wrapper /tmp/spawn_wrapper.sh
           par shm /tmp/spawn_shm.sh
-          echo "== compile phase: local_cpu_resources sweep (remote cache bypassed, fresh copt per variant)"
-          for n in 32 24 16; do bazel shutdown > /dev/null 2>&1 || true; ( time bazel build $BAZEL_FLAGS --remote_cache= --noremote_accept_cached --copt=-DDIAG_CPUS=$n --local_cpu_resources=$n @llvm-project//mlir:IR @llvm-project//llvm:Analysis ) 2>&1 | grep -E "real|processes:|ERROR" | sed "s/^/cpus=$n: /"; done
+          echo 'true' > /tmp/bashtrue.sh; par bashtrue /tmp/bashtrue.sh
           echo "== files opened for writing / created by one spawn (strace)"
           strace -f -ttt -e trace=%file -o /tmp/strace_spawn.txt bash /tmp/spawn.sh > /dev/null 2>&1 || true
           python3 - <<'PY' || true
