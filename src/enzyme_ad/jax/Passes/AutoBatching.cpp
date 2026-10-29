@@ -1622,6 +1622,76 @@ isAffineIndexOnlyUser(ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices) {
                       });
 }
 
+// Whether `v` is computed from the loop's index and constants alone: the
+// index itself, constants and iotas, and ops over such values. Anything that
+// reaches data -- a value from outside the loop that is not a constant, a
+// carried value other than the index -- is not.
+static bool indexOnly(Value v, Block &whileBody, Value inductionVar,
+                      DenseMap<Value, bool> &memo) {
+  if (v == inductionVar)
+    return true;
+  if (v.getParentBlock() != &whileBody)
+    return matchPattern(v, m_Constant());
+  if (auto found = memo.find(v); found != memo.end())
+    return found->second;
+  Operation *def = v.getDefiningOp();
+  bool result = def != nullptr;
+  if (def)
+    for (Value operand : def->getOperands())
+      if (!indexOnly(operand, whileBody, inductionVar, memo)) {
+        result = false;
+        break;
+      }
+  memo[v] = result;
+  return result;
+}
+
+// Whether lifting `op`, a compare or broadcast of the loop's index, out of
+// the loop takes real work along: through the elementwise ops, views and
+// reshapes it feeds in the loop body, the index reaches data (a gather or
+// dynamic slice of a value that is not index-only, an elementwise op
+// combining the index with one), a reduction or a contraction, which the
+// batching then does for every iteration at once. Index arithmetic that only
+// reaches a write stays: lifted, it would be read back from a hoisted iota
+// per iteration and leave the loop as it was.
+static bool indexUserCanLeaveLoop(Operation *op, Block &whileBody,
+                                  Value inductionVar) {
+  DenseMap<Value, bool> memo;
+  auto isData = [&](Value v) {
+    return !indexOnly(v, whileBody, inductionVar, memo);
+  };
+  SmallVector<Operation *> todo{op};
+  SmallPtrSet<Operation *, 16> seen;
+  while (!todo.empty()) {
+    Operation *cur = todo.pop_back_val();
+    if (!seen.insert(cur).second)
+      continue;
+    for (Operation *user : cur->getUsers()) {
+      if (user->getBlock() != &whileBody)
+        continue;
+      if (auto slice = dyn_cast<stablehlo::DynamicSliceOp>(user)) {
+        if (isData(slice.getOperand()))
+          return true;
+      } else if (auto gather = dyn_cast<stablehlo::GatherOp>(user)) {
+        if (isData(gather.getOperand()))
+          return true;
+      } else if (isa<stablehlo::ReduceOp, stablehlo::DotGeneralOp>(user)) {
+        return true;
+      } else if (CheckElementwise(user) ||
+                 isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
+                     stablehlo::TransposeOp, stablehlo::ConcatenateOp>(user)) {
+        for (Value operand : user->getOperands())
+          if (operand.getDefiningOp() != cur && isData(operand))
+            return true;
+      } else {
+        continue;
+      }
+      todo.push_back(user);
+    }
+  }
+  return false;
+}
+
 LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
   // Never fission a checkpoint segment loop. Batching trades memory for
@@ -1721,14 +1791,18 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   }
 
   // for certain operations on index variables it is more efficient to hoist
-  // those out of the loop and then perform indirect indexing
-  for (auto &[val, info] : affineIndexInfoMap) {
+  // those out of the loop and then perform indirect indexing -- when what
+  // they feed can leave the loop with them; lifted alone, such an op only
+  // trades a scalar for a slice of a hoisted iota per iteration.
+  Value inductionVar = info.getInductionVariable();
+  for (auto &[val, indexInfo] : affineIndexInfoMap) {
     for (auto user : val.getUsers()) {
       if (avoidBatching(user)) {
         continue;
       }
 
-      if (isa<stablehlo::CompareOp, stablehlo::BroadcastInDimOp>(user)) {
+      if (isa<stablehlo::CompareOp, stablehlo::BroadcastInDimOp>(user) &&
+          indexUserCanLeaveLoop(user, whileBody, inductionVar)) {
         userOpToSlicesMap[user].push_back(
             SliceInfo<stablehlo::DynamicSliceOp>{});
       }
