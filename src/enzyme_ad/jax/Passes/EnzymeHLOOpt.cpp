@@ -9471,12 +9471,115 @@ struct ScatterToDynamicUpdateSlice final
 // result: with an absorbing operand the op computes in the view's layout
 // (transposed_view_elementwise) and its consumer takes the transpose; with
 // several views, a transposed copy of each would replace one of the result.
+// Whether v is transpose(x, q), or a slice of it, with q the inverse of
+// perm: transpose(v, perm) is then x, or a slice of x.
+static bool cancelsOn(Value v, ArrayRef<int64_t> perm) {
+  if (auto slice = v.getDefiningOp<stablehlo::SliceOp>())
+    v = slice.getOperand();
+  auto transpose = v.getDefiningOp<stablehlo::TransposeOp>();
+  if (!transpose)
+    return false;
+  for (auto [i, d] : llvm::enumerate(perm))
+    if (transpose.getPermutation()[d] != (int64_t)i)
+      return false;
+  return true;
+}
+
+// The elements of the views of memory a transpose pushed into the computed
+// value v lands on, as transposed copies: through elementwise ops and slices
+// the permutation passes to the operands, through a transpose it composes
+// with that transpose's (and cancels when the composition is the identity),
+// and a view of memory reached with a permutation left is a copy of the
+// window it is read through. False when the walk meets an op it cannot
+// follow: the push may yet reach a producer that absorbs the transpose.
+static bool viewElementsReached(Value v, ArrayRef<int64_t> perm,
+                                int64_t &elements) {
+  struct Reached {
+    Value value;
+    SmallVector<int64_t> perm;
+    int64_t window;
+  };
+  SmallVector<Reached> worklist = {
+      {v, llvm::to_vector(perm),
+       cast<RankedTensorType>(v.getType()).getNumElements()}};
+  SmallPtrSet<Operation *, 16> seen;
+  while (!worklist.empty()) {
+    Reached cur = worklist.pop_back_val();
+    auto type = dyn_cast<RankedTensorType>(cur.value.getType());
+    if (!type || type.getRank() == 0 ||
+        llvm::equal(cur.perm, llvm::seq<int64_t>(0, cur.perm.size())))
+      continue;
+    if (isMemoryView(cur.value)) {
+      elements += cur.window;
+      continue;
+    }
+    Operation *op = cur.value.getDefiningOp();
+    if (!op)
+      return false;
+    if (!seen.insert(op).second)
+      continue;
+    if (seen.size() > 64)
+      return false;
+    if (isa<stablehlo::BroadcastInDimOp, stablehlo::IotaOp>(op) ||
+        matchPattern(cur.value, m_Constant()))
+      continue;
+    if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
+      SmallVector<int64_t> composed;
+      for (int64_t d : cur.perm)
+        composed.push_back(transpose.getPermutation()[d]);
+      worklist.push_back({transpose.getOperand(), composed, cur.window});
+      continue;
+    }
+    if (auto slice = dyn_cast<stablehlo::SliceOp>(op)) {
+      worklist.push_back({slice.getOperand(), cur.perm, cur.window});
+      continue;
+    }
+    if ((stablehlo::hasTraitElementwise(op) || isa<stablehlo::SelectOp>(op)) &&
+        op->getNumRegions() == 0) {
+      for (Value operand : op->getOperands())
+        worklist.push_back({operand, cur.perm, cur.window});
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
 static bool transposePushAddsCopies(stablehlo::TransposeOp op) {
   Operation *elem = op.getOperand().getDefiningOp();
   ArrayRef<int64_t> perm = op.getPermutation();
-  // Left on the result, the transpose must be taken by the consumers.
-  if (!sinksTranspose(op.getResult(), perm))
-    return false;
+  // Left on the result, the transpose must be taken by the consumers; when
+  // they cannot, it is a copy either way: of the result where it is, or of
+  // each view it is pushed onto. It stays on the result when the views are
+  // at least as large (the choice transposed_view_elementwise makes when it
+  // takes a transpose off a view this size), and moves up otherwise.
+  if (!sinksTranspose(op.getResult(), perm)) {
+    int64_t viewElements = 0;
+    for (Value operand : elem->getOperands()) {
+      auto type = dyn_cast<RankedTensorType>(operand.getType());
+      if (!type || type.getRank() == 0 || absorbsTranspose(operand, perm))
+        continue;
+      // Pushed onto a view read through the inverse transpose (directly or
+      // under a slice), it cancels that one: a copy fewer. Pushed onto a
+      // computed value, it lands on the views of memory that value reads as
+      // they are (each a copy), or may yet meet a producer that absorbs it:
+      // counted only where the walk is conclusive. The views among the
+      // operands themselves take a copy either way, so with those at least
+      // as large as the result the push gains nothing whatever the computed
+      // ones do (and transposed_view_elementwise would take it back).
+      if (cancelsOn(operand, perm))
+        return false;
+      if (!isMemoryView(operand)) {
+        int64_t reached = 0;
+        if (viewElementsReached(operand, perm, reached))
+          viewElements += reached;
+        continue;
+      }
+      viewElements += type.getNumElements();
+    }
+    return viewElements >=
+           cast<RankedTensorType>(op.getType()).getNumElements();
+  }
   unsigned views = 0, cancelled = 0;
   bool absorbs = false;
   for (Value operand : elem->getOperands()) {
@@ -16620,7 +16723,13 @@ struct TransposedViewElementwiseBase final
     }
     if (!other)
       return rewriter.notifyMatchFailure(op, "every operand is a transpose");
-    if (!sinksTranspose(op->getResult(0), perm))
+    // When the consumers would read a transposed copy of the result, the
+    // rewrite still pays off if that copy is no bigger than the window of
+    // the view the op reads: the window's transposed copy (what the view
+    // costs) is traded for the result's, and the transpose-propagating
+    // patterns may still move the latter further down.
+    if (!sinksTranspose(op->getResult(0), perm) &&
+        windowElements(op, perm) < resultType.getNumElements())
       return rewriter.notifyMatchFailure(
           op, "the consumers would read a transposed copy of the result");
 
@@ -16671,6 +16780,47 @@ private:
     if (!t || !isMemoryView(t.getOperand()))
       return nullptr;
     return t;
+  }
+
+  // The elements the op reads through views with this permutation: the
+  // transposed copies the views cost when they are left in place. A view
+  // read through overlapping windows (or whole) by several ops costs one
+  // copy for all of them; such an operand is not counted.
+  static int64_t windowElements(Operation *op, ArrayRef<int64_t> perm) {
+    int64_t elements = 0;
+    for (Value operand : op->getOperands()) {
+      if (!readsThrough(operand, perm))
+        continue;
+      auto t = operand.getDefiningOp<stablehlo::TransposeOp>();
+      if (auto slice = operand.getDefiningOp<stablehlo::SliceOp>())
+        t = slice.getOperand().getDefiningOp<stablehlo::TransposeOp>();
+      if (t.getResult().hasOneUse() || disjointWindows(t))
+        elements += cast<RankedTensorType>(operand.getType()).getNumElements();
+    }
+    return elements;
+  }
+
+  // Whether the transpose is read only through slices of pairwise disjoint
+  // windows: each reads its own part of the transposed copy.
+  static bool disjointWindows(stablehlo::TransposeOp t) {
+    SmallVector<stablehlo::SliceOp> slices;
+    for (Operation *user : t->getUsers()) {
+      auto slice = dyn_cast<stablehlo::SliceOp>(user);
+      if (!slice)
+        return false;
+      slices.push_back(slice);
+    }
+    for (size_t i = 0; i < slices.size(); i++)
+      for (size_t j = i + 1; j < slices.size(); j++) {
+        bool apart = false;
+        for (auto [as, al, bs, bl] : llvm::zip(
+                 slices[i].getStartIndices(), slices[i].getLimitIndices(),
+                 slices[j].getStartIndices(), slices[j].getLimitIndices()))
+          apart |= al <= bs || bl <= as;
+        if (!apart)
+          return false;
+      }
+    return true;
   }
 
   // Whether the operand is read through a transpose with this permutation
