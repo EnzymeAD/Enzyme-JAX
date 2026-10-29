@@ -1959,6 +1959,11 @@ def ApplyDivRemOfSumWithMultiplePatterns : EnzymeHLOPatternOp<
   let patterns = ["DivRemOfSumWithMultiple<stablehlo::DivOp>",
                   "DivRemOfSumWithMultiple<stablehlo::RemOp>"];
 }
+
+def ApplyDynamicSliceIotaPatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_iota"> {
+  let patterns = ["DynamicSliceIota"];
+}
 def ApplyConstPropThroughBarrierPatterns : EnzymeHLOPatternOp<
     "const_prop_through_barrier"> {
   let patterns = ["ConstPropThroughBarrier"];
