@@ -66,10 +66,13 @@ jobs:
           run inprocess --experimental_inprocess_symlink_creation
           run trimmed --extra_toolchains=//builddeps:trimmed_py_toolchain
           run trimmed_inprocess --extra_toolchains=//builddeps:trimmed_py_toolchain --experimental_inprocess_symlink_creation
+          run dir --extra_toolchains=//builddeps:dir_py_toolchain
+          run dir_inprocess --extra_toolchains=//builddeps:dir_py_toolchain --experimental_inprocess_symlink_creation
           run base_again
-          echo "== runfiles file counts (base / trimmed)"
-          bazel build $BAZEL_FLAGS //test/lit_tests:cse_iota.mlir.test > /dev/null 2>&1; find -L bazel-bin/test/lit_tests/cse_iota.mlir.test.runfiles -type f | wc -l
-          bazel build $BAZEL_FLAGS --extra_toolchains=//builddeps:trimmed_py_toolchain //test/lit_tests:cse_iota.mlir.test > /dev/null 2>&1; find -L bazel-bin/test/lit_tests/cse_iota.mlir.test.runfiles -type f | wc -l
+          echo "== runfiles symlink counts (base / trimmed / dir)"
+          bazel build $BAZEL_FLAGS //test/lit_tests:cse_iota.mlir.test > /dev/null 2>&1; find bazel-bin/test/lit_tests/cse_iota.mlir.test.runfiles -type l | wc -l
+          bazel build $BAZEL_FLAGS --extra_toolchains=//builddeps:trimmed_py_toolchain //test/lit_tests:cse_iota.mlir.test > /dev/null 2>&1; find bazel-bin/test/lit_tests/cse_iota.mlir.test.runfiles -type l | wc -l
+          bazel build $BAZEL_FLAGS --extra_toolchains=//builddeps:dir_py_toolchain //test/lit_tests:cse_iota.mlir.test > /dev/null 2>&1; find bazel-bin/test/lit_tests/cse_iota.mlir.test.runfiles -type l | wc -l
           # Output base on tmpfs: a fresh output base, so the build is repeated
           # (remote cache hits); the time of that build is reported too.
           echo "== build with output base on /dev/shm"
@@ -80,6 +83,7 @@ jobs:
           run shmroot --repository_cache=$RC
           run shmroot_trimmed --repository_cache=$RC --extra_toolchains=//builddeps:trimmed_py_toolchain
           run shmroot_trimmed_inprocess --repository_cache=$RC --extra_toolchains=//builddeps:trimmed_py_toolchain --experimental_inprocess_symlink_creation
+          run shmroot_dir --repository_cache=$RC --extra_toolchains=//builddeps:dir_py_toolchain
           bazel $BZ shutdown || true
       - name: Upload diagnostics
         if: ${{ !cancelled() }}
