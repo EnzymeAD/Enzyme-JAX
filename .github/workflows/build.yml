@@ -96,6 +96,10 @@ jobs:
 
           if [ ${{ runner.os }} == Linux ]; then
             BAZEL_FLAGS="${BAZEL_FLAGS} --config=public_cache_push"
+            # The Linux runners are gVisor sandboxes whose filesystem makes
+            # bazel's per-test sandbox (one symlink per runfile, ~4.6k for a
+            # lit test) cost ~50 s per test. Keep the sandboxes on tmpfs.
+            BAZEL_FLAGS="${BAZEL_FLAGS} --sandbox_base=/dev/shm"
           fi
           if [ ${{ runner.os }} == macOS ]; then
             BAZEL_FLAGS="${BAZEL_FLAGS} --define=enable_triton=false --cxxopt=-Wno-nullability-completeness --host_cxxopt=-Wno-nullability-completeness"
