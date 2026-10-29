@@ -506,8 +506,9 @@ bool isSafeToRemoveAtomic(enzyme::AffineAtomicRMWOp rmw, IslScop &scop,
 
 void convertRmw(enzyme::AffineAtomicRMWOp rmw) {
   OpBuilder b(rmw);
-  auto read = affine::AffineLoadOp::create(b, rmw.getLoc(), rmw.getMemref(),
-                                           rmw.getMap(), rmw.getIndices());
+  llvm::MaybeAlign align(rmw.getAlignment().value_or(0));
+  auto read = affine::AffineLoadOp::create(
+      b, rmw.getLoc(), rmw.getMemref(), rmw.getMap(), rmw.getIndices(), align);
 
   mlir::Value modify;
   switch (rmw.getKind()) {
@@ -572,7 +573,7 @@ void convertRmw(enzyme::AffineAtomicRMWOp rmw) {
           arith::FastMathFlagsAttr::get(rmw.getContext(), rmw.getFastmath()));
 
   affine::AffineStoreOp::create(b, rmw.getLoc(), modify, rmw.getMemref(),
-                                rmw.getMap(), rmw.getIndices());
+                                rmw.getMap(), rmw.getIndices(), align);
   rmw.getResult().replaceAllUsesWith(read);
   rmw.erase();
 }
