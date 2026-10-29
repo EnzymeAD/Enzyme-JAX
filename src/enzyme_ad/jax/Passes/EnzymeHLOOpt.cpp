@@ -45952,19 +45952,25 @@ struct EnzymeHLOOptPass
             context);
 
     // binary constant propagation patterns
-    patterns.add<BinaryConstProp<stablehlo::AddOp, stablehlo::addOp>,
-                 BinaryConstProp<stablehlo::AndOp, stablehlo::andOp>,
-                 BinaryConstProp<stablehlo::Atan2Op, stablehlo::atan2Op>,
-                 BinaryConstProp<stablehlo::ComplexOp, stablehlo::complexOp>,
-                 BinaryConstProp<stablehlo::DivOp, stablehlo::divideOp>,
-                 BinaryConstProp<stablehlo::MaxOp, stablehlo::maxOp>,
-                 BinaryConstProp<stablehlo::MinOp, stablehlo::minOp>,
-                 BinaryConstProp<stablehlo::MulOp, stablehlo::multiplyOp>,
-                 BinaryConstProp<stablehlo::OrOp, stablehlo::orOp>,
-                 BinaryConstProp<stablehlo::PowOp, stablehlo::powerOp>,
-                 BinaryConstProp<stablehlo::RemOp, stablehlo::remOp>,
-                 BinaryConstProp<stablehlo::SubtractOp, stablehlo::subtractOp>,
-                 BinaryConstProp<stablehlo::XorOp, stablehlo::xorOp>>(context);
+    patterns
+        .add<BinaryConstProp<stablehlo::AddOp, stablehlo::addOp>,
+             BinaryConstProp<stablehlo::AndOp, stablehlo::andOp>,
+             BinaryConstProp<stablehlo::Atan2Op, stablehlo::atan2Op>,
+             BinaryConstProp<stablehlo::ComplexOp, stablehlo::complexOp>,
+             BinaryConstProp<stablehlo::DivOp, stablehlo::divideOp>,
+             BinaryConstProp<stablehlo::MaxOp, stablehlo::maxOp>,
+             BinaryConstProp<stablehlo::MinOp, stablehlo::minOp>,
+             BinaryConstProp<stablehlo::MulOp, stablehlo::multiplyOp>,
+             BinaryConstProp<stablehlo::OrOp, stablehlo::orOp>,
+             BinaryConstProp<stablehlo::PowOp, stablehlo::powerOp>,
+             BinaryConstProp<stablehlo::RemOp, stablehlo::remOp>,
+             BinaryConstProp<stablehlo::SubtractOp, stablehlo::subtractOp>,
+             BinaryConstProp<stablehlo::XorOp, stablehlo::xorOp>,
+             BinaryConstProp<stablehlo::ShiftLeftOp, stablehlo::shiftLeftOp>,
+             BinaryConstProp<stablehlo::ShiftRightArithmeticOp,
+                             stablehlo::shiftRightArithmeticOp>,
+             BinaryConstProp<stablehlo::ShiftRightLogicalOp,
+                             stablehlo::shiftRightLogicalOp>>(context);
 
     patterns.add<GatherConstProp, ClampConstProp>(context);
 
