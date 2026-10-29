@@ -75,6 +75,10 @@ def ApplyReduceOrAndPadPatterns : EnzymeHLOPatternOp<
     "reduce_or_and_pad"> {
   let patterns = ["ReduceOrAndPad"];
 }
+def ApplyReduceOrAndPadWindowPatterns : EnzymeHLOPatternOp<
+    "reduce_or_and_pad_window"> {
+  let patterns = ["ReduceOrAndPadWindow"];
+}
 def ApplyReduceOrAndPatterns : EnzymeHLOPatternOp<
     "reduce_or_and"> {
   let patterns = ["ReduceOrAnd"];

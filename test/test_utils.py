@@ -356,6 +356,7 @@ add_simplify<16>;
 sub_simplify<16>;
 and_simplify<16>;
 reduce_or_and_pad;
+reduce_or_and_pad_window;
 max_simplify<16>;
 min_simplify<16>;
 or_simplify<16>;

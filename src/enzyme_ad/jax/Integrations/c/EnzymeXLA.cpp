@@ -478,6 +478,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("sub_simplify<16>");
   list.push_back("and_simplify<16>");
   list.push_back("reduce_or_and_pad");
+  list.push_back("reduce_or_and_pad_window");
   list.push_back("max_simplify<16>");
   list.push_back("min_simplify<16>");
   list.push_back("or_simplify<16>");

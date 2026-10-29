@@ -10090,6 +10090,128 @@ struct ReduceOrAndPad
   }
 };
 
+// An or-reduce over an `and` one of whose factors is a pad with false along
+// a reduced dimension only sees the pad's window: outside it that factor is
+// false and the elements contribute nothing. Every factor is sliced to the
+// window and the reduce runs over the slice (dually an and-reduce over an
+// `or` with a true pad). The pad is found through the and-tree and through
+// the broadcasts and transposes that carry the reduced dimension. The
+// raiser's lane masks take this shape: a shared-memory guard padded to the
+// lane bound, and-ed with the other lane conditions and or-reduced over the
+// lanes, keeps the reduce at the padded size, and nothing downstream can
+// cut it.
+struct ReduceOrAndPadWindow
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                     ReduceOrAndPadWindow> {
+  using CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                ReduceOrAndPadWindow>::CheckedOpRewritePattern;
+
+  // The leaves of the tree of `isAnd` ops rooted at v.
+  static void collectLeaves(Value v, bool isAnd,
+                            SmallVectorImpl<Value> &leaves) {
+    Operation *def = v.getDefiningOp();
+    if (def &&
+        (isAnd ? isa<stablehlo::AndOp>(def) : isa<stablehlo::OrOp>(def))) {
+      collectLeaves(def->getOperand(0), isAnd, leaves);
+      collectLeaves(def->getOperand(1), isAnd, leaves);
+      return;
+    }
+    leaves.push_back(v);
+  }
+
+  // The window [start, start + size) along dim d outside of which some
+  // factor of v is the absorbing value (false for an and-tree, true for an
+  // or-tree): a pad with that padding value, reached through the tree,
+  // broadcasts and transposes.
+  static std::optional<std::pair<int64_t, int64_t>>
+  findWindow(Value v, int64_t d, bool isAnd) {
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return std::nullopt;
+    if (isAnd ? isa<stablehlo::AndOp>(def) : isa<stablehlo::OrOp>(def)) {
+      if (auto w = findWindow(def->getOperand(0), d, isAnd))
+        return w;
+      return findWindow(def->getOperand(1), d, isAnd);
+    }
+    if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(def)) {
+      for (auto [i, od] : llvm::enumerate(bcast.getBroadcastDimensions()))
+        if (od == d)
+          return findWindow(bcast.getOperand(), i, isAnd);
+      return std::nullopt;
+    }
+    if (auto tr = dyn_cast<stablehlo::TransposeOp>(def))
+      return findWindow(tr.getOperand(), tr.getPermutation()[d], isAnd);
+    auto pad = dyn_cast<stablehlo::PadOp>(def);
+    if (!pad || !(isAnd ? matchPattern(pad.getPaddingValue(), m_Zero())
+                        : matchPattern(pad.getPaddingValue(), m_One())))
+      return std::nullopt;
+    if (llvm::any_of(pad.getInteriorPadding(),
+                     [](int64_t p) { return p != 0; }) ||
+        llvm::any_of(pad.getEdgePaddingLow(),
+                     [](int64_t p) { return p < 0; }) ||
+        llvm::any_of(pad.getEdgePaddingHigh(), [](int64_t p) { return p < 0; }))
+      return std::nullopt;
+    if (pad.getEdgePaddingLow()[d] == 0 && pad.getEdgePaddingHigh()[d] == 0)
+      return std::nullopt;
+    int64_t size =
+        cast<RankedTensorType>(pad.getOperand().getType()).getDimSize(d);
+    if (size == 0)
+      return std::nullopt;
+    return std::make_pair(pad.getEdgePaddingLow()[d], size);
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return failure();
+    auto kind = stablehlo::CheckCommonReduceOp(op).kind;
+    bool isOr = kind == stablehlo::ReduceOpKind::Or;
+    if (!isOr && kind != stablehlo::ReduceOpKind::And)
+      return failure();
+    Value input = op.getInputs()[0];
+    auto inTy = dyn_cast<RankedTensorType>(input.getType());
+    if (!inTy || !inTy.hasStaticShape() || !inTy.getElementType().isInteger(1))
+      return failure();
+    Operation *root = input.getDefiningOp();
+    if (!root ||
+        (isOr ? !isa<stablehlo::AndOp>(root) : !isa<stablehlo::OrOp>(root)))
+      return failure();
+
+    int64_t rank = inTy.getRank();
+    SmallVector<int64_t> starts(rank, 0), limits(inTy.getShape()),
+        strides(rank, 1);
+    bool cut = false;
+    for (int64_t d : op.getDimensions())
+      if (auto w = findWindow(input, d, isOr)) {
+        starts[d] = w->first;
+        limits[d] = w->first + w->second;
+        cut = true;
+      }
+    if (!cut)
+      return failure();
+
+    SmallVector<Value> leaves;
+    collectLeaves(input, isOr, leaves);
+    Value acc;
+    for (Value leaf : leaves) {
+      Value sliced = stablehlo::SliceOpCreate(rewriter, op.getLoc(), leaf,
+                                              starts, limits, strides);
+      if (!acc)
+        acc = sliced;
+      else if (isOr)
+        acc = stablehlo::AndOp::create(rewriter, op.getLoc(), acc, sliced);
+      else
+        acc = stablehlo::OrOp::create(rewriter, op.getLoc(), acc, sliced);
+    }
+    auto newOp = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(), op.getResultTypes(), ValueRange(acc),
+        op.getInitValues(), op.getDimensions());
+    newOp.getRegion().takeBody(op.getRegion());
+    rewriter.replaceOp(op, newOp.getResults());
+    return success();
+  }
+};
+
 struct AndSimplify
     : public CheckedOpRewritePattern<stablehlo::AndOp, AndSimplify> {
   using CheckedOpRewritePattern<stablehlo::AndOp,
@@ -45865,11 +45987,12 @@ struct EnzymeHLOOptPass
     patterns.add<BitcastConvertCancellation>(context);
 
     patterns.add<
-        AddSimplify, SubSimplify, AndSimplify, ReduceOrAndPad, ReduceOrAnd,
-        MaxSimplify, MinSimplify, OrSimplify, XorSimplify, MulSimplify,
-        DivSimplify, RemSimplify, PowSimplify, NoopSlice, NoopReverse,
-        SliceReverse, SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
-        SliceDynamicSlice, LogSimplify, Log2Simplify, ShiftRightLogicalSimplify,
+        AddSimplify, SubSimplify, AndSimplify, ReduceOrAndPad,
+        ReduceOrAndPadWindow, ReduceOrAnd, MaxSimplify, MinSimplify, OrSimplify,
+        XorSimplify, MulSimplify, DivSimplify, RemSimplify, PowSimplify,
+        NoopSlice, NoopReverse, SliceReverse, SliceSlice,
+        DynamicSliceDynamicSlice, DynamicSliceSlice, SliceDynamicSlice,
+        LogSimplify, Log2Simplify, ShiftRightLogicalSimplify,
         NegativePadToSlice, SliceSimplify, ConvertSimplify, TransposeSimplify,
         DotGeneralSimplify, DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
