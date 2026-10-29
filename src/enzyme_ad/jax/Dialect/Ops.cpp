@@ -1574,9 +1574,39 @@ JITRegionOp ReadOnlyArg<JITRegionOp>::create(PatternRewriter &rewriter,
   return newRegion;
 }
 
+template <>
+void ReadNoneArg<JITRegionOp>::updateOperandSegmentSizes(
+    JITRegionOp region, int32_t numLiveOperands,
+    PatternRewriter &rewriter) const {}
+
+template <>
+StringAttr
+ReadNoneArg<JITRegionOp>::getInputAttrsName(JITRegionOp region) const {
+  return region.getOperandAttrsAttrName();
+}
+
+// An input is erased when the region never accesses its buffer and no result
+// is read from it.
+template <>
+LogicalResult
+ReadNoneArg<JITRegionOp>::matchAndRewrite(JITRegionOp region,
+                                          PatternRewriter &rewriter) const {
+  Block *body = region.getBodyBlock();
+  BitVector deadInputs(region.getInputs().size(), false);
+  for (BlockArgument arg : body->getArguments())
+    deadInputs[arg.getArgNumber()] =
+        arg.use_empty() && !region.getAliasingResult(arg.getArgNumber());
+  if (deadInputs.none())
+    return failure();
+
+  rewriter.modifyOpInPlace(region, [&] { body->eraseArguments(deadInputs); });
+  eraseInputs(region, deadInputs, rewriter);
+  return success();
+}
+
 void JITRegionOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                               MLIRContext *context) {
-  results.insert<ReadOnlyArg<JITRegionOp>>(context);
+  results.insert<ReadOnlyArg<JITRegionOp>, ReadNoneArg<JITRegionOp>>(context);
 }
 
 LogicalResult JITRegionOp::verifyRegions() {

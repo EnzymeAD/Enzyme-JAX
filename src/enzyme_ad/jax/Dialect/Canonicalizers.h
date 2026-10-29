@@ -176,6 +176,66 @@ public:
   void updateOperandSegmentSizes(OpTy call, int32_t numLiveOperands,
                                  PatternRewriter &rewriter) const;
 
+  // The name of the attribute of `call` holding one dictionary per input.
+  StringAttr getInputAttrsName(OpTy call) const {
+    return call.getArgAttrsAttrName();
+  }
+
+  // Erases the inputs `deadArgs` of `call`, which no result is read from.
+  void eraseInputs(OpTy call, const BitVector &deadArgs,
+                   PatternRewriter &rewriter) const {
+    BitVector nonLiveCallOperands(call.getNumOperands(), false);
+    for (int index : deadArgs.set_bits())
+      nonLiveCallOperands.set(call.getInputs().getBeginOperandIndex() + index);
+
+    int32_t numLiveOperands = 0;
+    for (int32_t idx = call.getInputs().getBeginOperandIndex();
+         idx < nonLiveCallOperands.size(); idx++) {
+      if (nonLiveCallOperands[idx])
+        continue;
+      numLiveOperands++;
+    }
+
+    SmallVector<Attribute> outputAliases;
+    auto operand_aliases = call.getOutputOperandAliases();
+
+    for (auto alias_attr : operand_aliases) {
+      auto alias = cast<stablehlo::OutputOperandAliasAttr>(alias_attr);
+      auto operandIndex = alias.getOperandIndex();
+      size_t nextIndex = operandIndex;
+      for (int index : deadArgs.set_bits()) {
+        if (index <= operandIndex)
+          nextIndex--;
+      }
+      outputAliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+          call->getContext(), alias.getOutputTupleIndices(), nextIndex,
+          alias.getOperandTupleIndices()));
+    }
+
+    rewriter.modifyOpInPlace(call, [&]() {
+      call->eraseOperands(nonLiveCallOperands);
+      updateOperandSegmentSizes(call, numLiveOperands, rewriter);
+      auto filterLive = [&](ArrayAttr attrs) -> ArrayAttr {
+        if (!attrs || attrs.size() != deadArgs.size())
+          return attrs;
+        SmallVector<Attribute> live;
+        for (auto [i, a] : llvm::enumerate(attrs))
+          if (!deadArgs[i])
+            live.push_back(a);
+        return ArrayAttr::get(call->getContext(), live);
+      };
+      if (auto layouts =
+              dyn_cast_or_null<ArrayAttr>(call.getOperandLayoutsAttr()))
+        call.setOperandLayoutsAttr(filterLive(layouts));
+      StringAttr inputAttrsName = getInputAttrsName(call);
+      if (auto inputAttrs =
+              call->template getAttrOfType<ArrayAttr>(inputAttrsName))
+        call->setAttr(inputAttrsName, filterLive(inputAttrs));
+      call.setOutputOperandAliasesAttr(
+          ArrayAttr::get(call->getContext(), outputAliases));
+    });
+  }
+
   LogicalResult matchAndRewrite(OpTy launchOp,
                                 PatternRewriter &rewriter) const override {
     SymbolTableCollection symbolTable;
@@ -276,57 +336,8 @@ public:
       }
     });
 
-    for (auto call : calls) {
-      BitVector nonLiveCallOperands(call.getNumOperands(), false);
-      for (int index : deadArgs.set_bits())
-        nonLiveCallOperands.set(call.getInputs().getBeginOperandIndex() +
-                                index);
-
-      int32_t numLiveOperands = 0;
-      for (int32_t idx = call.getInputs().getBeginOperandIndex();
-           idx < nonLiveCallOperands.size(); idx++) {
-        if (nonLiveCallOperands[idx])
-          continue;
-        numLiveOperands++;
-      }
-
-      SmallVector<Attribute> outputAliases;
-      auto operand_aliases = call.getOutputOperandAliases();
-
-      for (auto alias_attr : operand_aliases) {
-        auto alias = cast<stablehlo::OutputOperandAliasAttr>(alias_attr);
-        auto operandIndex = alias.getOperandIndex();
-        size_t nextIndex = operandIndex;
-        for (int index : deadArgs.set_bits()) {
-          if (index <= operandIndex)
-            nextIndex--;
-        }
-        outputAliases.push_back(stablehlo::OutputOperandAliasAttr::get(
-            call->getContext(), alias.getOutputTupleIndices(), nextIndex,
-            alias.getOperandTupleIndices()));
-      }
-
-      rewriter.modifyOpInPlace(call, [&]() {
-        call->eraseOperands(nonLiveCallOperands);
-        updateOperandSegmentSizes(call, numLiveOperands, rewriter);
-        auto filterLive = [&](ArrayAttr attrs) -> ArrayAttr {
-          if (!attrs || attrs.size() != deadArgs.size())
-            return attrs;
-          SmallVector<Attribute> live;
-          for (auto [i, a] : llvm::enumerate(attrs))
-            if (!deadArgs[i])
-              live.push_back(a);
-          return ArrayAttr::get(call->getContext(), live);
-        };
-        if (auto layouts =
-                dyn_cast_or_null<ArrayAttr>(call.getOperandLayoutsAttr()))
-          call.setOperandLayoutsAttr(filterLive(layouts));
-        if (auto argAttrs = call.getArgAttrsAttr())
-          call.setArgAttrsAttr(filterLive(argAttrs));
-        call.setOutputOperandAliasesAttr(
-            ArrayAttr::get(call->getContext(), outputAliases));
-      });
-    }
+    for (auto call : calls)
+      eraseInputs(call, deadArgs, rewriter);
     return success();
   }
 };
