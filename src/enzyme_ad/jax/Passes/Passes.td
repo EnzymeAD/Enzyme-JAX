@@ -17,7 +17,7 @@ def TestPolymerPass : Pass<"test-polymer"> {
   ];
 }
 
-def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops", 
+def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops",
                                           "mlir::FunctionOpInterface"> {
   let summary = "Canonicalize loops";
   let dependentDialects = ["affine::AffineDialect"];
@@ -61,12 +61,12 @@ def PropagateConstantBoundsPass
   let summary = "Propagate constant bounds";
   let description = [{
     Propagate constant bounds information:
-    1. thread index 
-    2. Block dimension 
+    1. thread index
+    2. Block dimension
     3. Block index.
     Additionally, set all the following attributes for all kernel pointers:
     1. align 128
-    2. no alias 
+    2. no alias
     3. dereferenceable = tensor.size() * sizeof(element_type)
   }];
   let dependentDialects = [
@@ -626,7 +626,7 @@ def LowerKernelPass : Pass<"lower-kernel"> {
   let summary = "Lower kernel to custom call";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
-    "gpu::GPUDialect", 
+    "gpu::GPUDialect",
     "func::FuncDialect",
     "affine::AffineDialect",
     "scf::SCFDialect",
@@ -641,6 +641,57 @@ def LowerKernelPass : Pass<"lower-kernel"> {
         /*type=*/"std::string",
         /*default=*/"\"cuda\"",
         /*description=*/"HW backend">,
+  ];
+}
+
+def KernelCallToGPUWrapperPass
+    : Pass<"kernel-call-to-gpu-wrapper", "mlir::ModuleOp"> {
+  let summary = "Expose kernel calls as differentiable GPU wrapper loops";
+  let description = [{
+    Replaces each kernel_call by a jit_call of a new function taking the
+    kernel's pointer arguments, which runs the kernel body in a gpu_wrapper
+    over an affine.parallel of its grid and blocks.
+  }];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "LLVM::LLVMDialect",
+  ];
+}
+
+def JITCallToJITRegionPass : Pass<"jit-call-to-jit-region", "mlir::ModuleOp"> {
+  let summary = "Inline jit_calls into jit_regions";
+  let description = [{
+    Replaces each jit_call of a single-block function returning nothing, whose
+    arguments are pointers or memrefs holding its tensor operands, by a
+    jit_region running a copy of the function's body on the buffers of the
+    operands. Pointer arguments are pointers to the buffers. Calls of other
+    functions are left alone, and private functions left without uses are
+    erased.
+  }];
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "memref::MemRefDialect",
+  ];
+}
+
+def JITRegionToJITCallPass : Pass<"jit-region-to-jit-call", "mlir::ModuleOp"> {
+  let summary = "Outline jit_regions into functions called by jit_calls";
+  let description = [{
+    Moves the body of each jit_region into a new private function taking the
+    region's buffers as memref arguments, and replaces the region by a
+    jit_call of that function with the same operands, aliases and attributes.
+    Constants defined above the region and used in it are cloned into the
+    function. Its gpu_wrappers are placed in async.executes waiting on the
+    stream XLA runs the jit_call on, which convert-parallel-to-gpu1 gives to
+    the kernels it launches.
+  }];
+  let dependentDialects = [
+    "async::AsyncDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "gpu::GPUDialect",
   ];
 }
 
@@ -673,7 +724,7 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
   let summary = "Lower MPI Ops to LLVM";
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect",
-    "gpu::GPUDialect", 
+    "gpu::GPUDialect",
     "LLVM::LLVMDialect",
   ];
   let options = [
@@ -1012,7 +1063,7 @@ def GPULaunchRecognition : Pass<"gpu-launch-recognition"> {
   let summary = "Recognize and convert GPU kernel launches to GPU dialect operations";
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect",
-    "arith::ArithDialect", 
+    "arith::ArithDialect",
     "gpu::GPUDialect",
     "mlir::NVVM::NVVMDialect",
     "mlir::ROCDL::ROCDLDialect",
@@ -1043,7 +1094,13 @@ def ConvertParallelToGPU1 : Pass<"convert-parallel-to-gpu1"> {
   let summary = "Convert parallel loops to gpu";
   let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect", "scf::SCFDialect"];
   let options = [
-  Option<"arch", "arch", "std::string", /*default=*/"\"sm_60\"", "Target GPU architecture">
+  Option<"arch", "arch", "std::string", /*default=*/"\"sm_60\"", "Target GPU architecture">,
+  Option<
+     /*C++ variable name=*/"emitSingleAlternative",
+     /*CLI argument=*/"emit_single_alternative",
+     /*type=*/"bool",
+     /*default=*/"false",
+     /*description=*/"Emit a single alternative matching the original gpu_wrapper/parallel op bounds instead of duplicating the kernel through many block-size alternatives">
   ];
 }
 
