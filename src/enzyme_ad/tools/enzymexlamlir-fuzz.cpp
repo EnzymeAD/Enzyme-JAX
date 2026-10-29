@@ -590,11 +590,9 @@ static bool hasUninterpretableOp(Operation *root) {
       return WalkResult::interrupt();
     }
     // unimplemented or broken ops in the refrence interpreter
-    // fft is bugged in the interpreter currently
     StringRef name = op->getName().getStringRef();
-    if (name == "stablehlo.einsum" || name == "stablehlo.broadcast" ||
-        name == "stablehlo.batch_norm_training" ||
-        name == "stablehlo.batch_norm_inference" || name == "stablehlo.fft") {
+    if (name == "stablehlo.einsum" || name == "stablehlo.batch_norm_training" ||
+        name == "stablehlo.batch_norm_inference") {
       found = true;
       return WalkResult::interrupt();
     }
@@ -667,6 +665,12 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
   clonedOpt.setName("main");
   tempOptMod->push_back(clonedOpt);
 
+  if (mlir::failed(legalizationPM.run(*tempOptMod))) {
+    llvm::WithColor::warning(diagStream())
+        << "Legalization failed on optimized IR. Skipping.\n";
+    return Verdict::Skipped;
+  }
+
   if (hasUninterpretableOp(*tempUnoptMod) ||
       hasUninterpretableOp(*tempOptMod)) {
     llvm::WithColor::warning(diagStream())
@@ -679,12 +683,6 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
   if (mlir::failed(unoptResults)) {
     llvm::WithColor::warning(diagStream())
         << "Unoptimized evaluation failed.\n";
-    return Verdict::Skipped;
-  }
-
-  if (mlir::failed(legalizationPM.run(*tempOptMod))) {
-    llvm::WithColor::warning(diagStream())
-        << "Legalization failed on optimized IR. Skipping.\n";
     return Verdict::Skipped;
   }
 
@@ -885,18 +883,23 @@ int main(int argc, char **argv) {
   }
 
   mlir::PassManager legalizationPM(&context);
-  // Make it possible to run the chlo tests
   auto &funcPM = legalizationPM.nest<mlir::func::FuncOp>();
-  funcPM.addPass(mlir::stablehlo::createChloLegalizeToStablehloPass());
 
   // Lower EnzymeXLA custom operations to StableHLO
   funcPM.addPass(mlir::enzyme::createLowerEnzymeXLAMathPass());
+  // Linalg lowers into BLAS/LAPACK ops, so it must run before those lowerings
+  funcPM.addPass(mlir::enzyme::createLowerEnzymeXLALinalgPass());
   funcPM.addPass(mlir::enzyme::createLowerEnzymeXLABLASPass());
   funcPM.addPass(mlir::enzyme::createLowerEnzymeXLALapackPass());
   funcPM.addPass(mlir::enzyme::createEnzymeBatchToStableHLOPass());
-  funcPM.addPass(mlir::enzyme::createLowerEnzymeXLALinalgPass());
   funcPM.addPass(mlir::enzyme::createLowerEnzymeJacobianStableHLO());
   funcPM.addPass(mlir::enzyme::createLowerEnzymeXLAMLPass());
+
+  // Make it possible to run the chlo tests; runs after the EnzymeXLA lowerings
+  // since BLAS/LAPACK emit chlo ops
+  funcPM.addPass(mlir::stablehlo::createChloLegalizeToStablehloPass());
+  funcPM.addPass(mlir::stablehlo::createStablehloLegalizeDeprecatedOpsPass(
+      {/*failOnUnusedOps=*/false}));
 
   auto BaseConstraints = parseRestrictInput(restrictInput);
   bool anyToolError = false;
