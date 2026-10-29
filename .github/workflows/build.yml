@@ -53,8 +53,10 @@ jobs:
         shell: bash
         run: |
           set -x
+          set +o pipefail
           echo "== machine"; nproc; df -h /dev/shm /root/.bazel || true; mount | grep -E "shm|/root" | head -5 || true
-          TESTS=$(bazel query 'tests(//test/lit_tests/...)' 2>/dev/null | head -64)
+          bazel query 'tests(//test/lit_tests/...)' > /tmp/all_tests.txt 2>/dev/null
+          TESTS=$(head -64 /tmp/all_tests.txt)
           run() { name=$1; shift; echo "== $name"; ( time bazel test $BAZEL_FLAGS --nocache_test_results --test_output=errors --profile=/tmp/prof_$name.json "$@" $TESTS ) 2>&1 | grep -E "Executed|Elapsed|real|TIMEOUT|FAILED" || true; }
           run default
           run shm --sandbox_base=/dev/shm
