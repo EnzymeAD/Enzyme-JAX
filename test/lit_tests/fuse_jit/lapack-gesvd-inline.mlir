@@ -50,7 +50,7 @@ module {
   }
 }
 
-// CHECK-LABEL: llvm.func @fused__enzymexla_wrapper_lapack_dgesvd__enzymexla_wrapper_lapack_dgesvd_(
+// CHECK-LABEL: llvm.func private @fused__enzymexla_wrapper_lapack_dgesvd__enzymexla_wrapper_lapack_dgesvd_(
 // CHECK-COUNT-4: llvm.call @enzymexla_lapack_dgesvd_(
 // CHECK: llvm.return
 // CHECK-LABEL: func.func @lapack_gesvd_chain(
