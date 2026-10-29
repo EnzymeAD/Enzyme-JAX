@@ -60,7 +60,9 @@ jobs:
           TESTS=$(head -64 /tmp/all_tests.txt)
           # Build everything the variant's configuration needs first, so that
           # the timed run only executes the tests. BZ carries startup options.
-          run() { name=$1; shift; echo "== $name"; bazel $BZ build $BAZEL_FLAGS "$@" $TESTS > /dev/null 2>&1 || true; ( time bazel $BZ test $BAZEL_FLAGS --nocache_test_results --test_output=errors --profile=/tmp/prof_$name.json "$@" $TESTS ) 2>&1 | grep -E "Executed|Elapsed|real|TIMEOUT|FAILED" || true; }
+          # A per-variant --test_env keeps every timed run in a configuration
+          # of its own, so bazel never treats the tests as already run.
+          run() { name=$1; shift; echo "== $name"; bazel $BZ build $BAZEL_FLAGS --test_env=DIAG_VARIANT=$name "$@" $TESTS > /tmp/build_$name.txt 2>&1 || true; ( time bazel $BZ test $BAZEL_FLAGS --test_env=DIAG_VARIANT=$name --nocache_test_results --test_output=errors --profile=/tmp/prof_$name.json "$@" $TESTS ) > /tmp/out_$name.txt 2>&1; grep -E "Executed|Elapsed|real|TIMEOUT|FAILED|skipped" /tmp/out_$name.txt || true; }
           BZ=""
           run base
           run inprocess --experimental_inprocess_symlink_creation
@@ -92,4 +94,6 @@ jobs:
           name: lit-timing-diag
           path: |
             /tmp/prof_*.json
+            /tmp/out_*.txt
+            /tmp/build_*.txt
           retention-days: 7
