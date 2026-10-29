@@ -43,7 +43,9 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/GPU/Transforms/NVVM/Passes.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
+#include "mlir/Dialect/GPU/Transforms/ROCDL/Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
@@ -399,6 +401,9 @@ void initializePasses() {
   mlir::registerConvertNVVMToLLVMPass();
 
   mlir::registerGPUPasses();
+  // nvvm-attach-target and rocdl-attach-target moved out of the GPU passes
+  mlir::registerGPUNVVMPasses();
+  mlir::registerGPUROCDLPasses();
 
   // Transform dialect and extensions.
   mlir::transform::registerInterpreterPass();
