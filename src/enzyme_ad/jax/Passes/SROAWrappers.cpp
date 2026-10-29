@@ -142,7 +142,8 @@ struct SROAWrappersPass
       }
 
       PassInstrumentationCallbacks PIC;
-      PassBuilder PB(nullptr, PTO, std::nullopt, nullptr);
+      PassBuilder PB(llvmModule->getContext(), nullptr, PTO, std::nullopt,
+                     nullptr);
 
       PB.registerModuleAnalyses(MAM);
       PB.registerCGSCCAnalyses(CGAM);
