@@ -1,6 +1,7 @@
 #include "cuda/register.h"
 #include "absl/base/call_once.h"
 #include "host/register.h"
+#include "rocm/register.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
 extern "C" MLIR_CAPI_EXPORTED void registerEnzymeJaXXLAFFI() {
@@ -8,5 +9,6 @@ extern "C" MLIR_CAPI_EXPORTED void registerEnzymeJaXXLAFFI() {
   absl::call_once(once, []() {
     enzymexla::ffi_internal::registerEnzymeJaXXLAHostFFI();
     enzymexla::ffi_internal::registerEnzymeJaXXLACudaFFI();
+    enzymexla::ffi_internal::registerEnzymeJaXXLARocmFFI();
   });
 }

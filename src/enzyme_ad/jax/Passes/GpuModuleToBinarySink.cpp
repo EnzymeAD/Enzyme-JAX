@@ -11,6 +11,7 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/Threading.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "llvm/ADT/MapVector.h"
@@ -228,12 +229,71 @@ public:
     gpu::TargetOptions targetOptions(toolkitPath, librariesToLink, cmdOptions,
                                      elfSection, *targetFormat,
                                      lazyTableBuilder, initialCallback,
-                                     /*linkedLlvmIRCallback=*/{}, sinkCallback);
-    if (failed(gpu::transformGpuModulesToBinaries(
-            getOperation(),
-            gpu::OffloadingLLVMTranslationAttrInterface(nullptr),
-            targetOptions)))
+                                     /*linkedLlvmIRCallback=*/{},
+                                     /*optimizedLlvmIRCallback=*/sinkCallback);
+
+    if (!parallel || dumpIR) {
+      if (failed(gpu::transformGpuModulesToBinaries(
+              getOperation(),
+              gpu::OffloadingLLVMTranslationAttrInterface(nullptr),
+              targetOptions)))
+        return signalPassFailure();
+      return;
+    }
+
+    SmallVector<gpu::GPUModuleOp> gpuMods;
+
+    Operation *op = getOperation();
+    for (Region &region : op->getRegions())
+      for (Block &block : region.getBlocks())
+        for (auto module : block.getOps<gpu::GPUModuleOp>())
+          gpuMods.push_back(module);
+
+    SmallVector<SmallVector<Attribute>> results(gpuMods.size());
+
+    if (mlir::failableParallelForEach(
+            &getContext(), llvm::enumerate(gpuMods),
+            [&](auto p) -> LogicalResult {
+              gpu::GPUModuleOp mod = p.value();
+              ArrayAttr targets = mod.getTargetsAttr();
+              if (!targets)
+                return mod.emitError("the module has no target attributes");
+
+              for (Attribute targetAttr : targets) {
+                auto target = dyn_cast<gpu::TargetAttrInterface>(targetAttr);
+                if (!target)
+                  return mod.emitError("target attribute doesn't implement "
+                                       "`TargetAttrInterface`");
+                std::optional<gpu::SerializedObject> serializedModule =
+                    target.serializeToObject(mod, targetOptions);
+                if (!serializedModule)
+                  return mod.emitError(
+                      "An error happened while serializing the module.");
+
+                Attribute object =
+                    target.createObject(mod, *serializedModule, targetOptions);
+                if (!object)
+                  return mod.emitError(
+                      "An error happened while creating the object.");
+
+                results[p.index()].push_back(object);
+              }
+
+              return success();
+            })
+            .failed())
       return signalPassFailure();
+
+    OpBuilder builder(getOperation());
+    for (auto [objects, module] : llvm::zip_equal(results, gpuMods)) {
+      auto handler =
+          dyn_cast_or_null<gpu::OffloadingLLVMTranslationAttrInterface>(
+              module.getOffloadingHandlerAttr());
+      builder.setInsertionPointAfter(module);
+      gpu::BinaryOp::create(builder, module.getLoc(), module.getName(), handler,
+                            builder.getArrayAttr(objects));
+      module->erase();
+    }
   }
 };
 
