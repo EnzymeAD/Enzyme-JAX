@@ -28,16 +28,13 @@ func.func @budget(%out: memref<1024xf64, 1>, %in: memref<1024xf64, 1>, %qbuf: me
 // CHECK-NEXT:     %c1 = arith.constant 1 : index
 // CHECK-NEXT:     %0 = affine.load %arg2[] : memref<i32, 1>
 // CHECK-NEXT:     %1 = arith.index_cast %0 : i32 to index
-// CHECK-NEXT:     %memref = gpu.alloc  () : memref<i32, 1>
 // CHECK-NEXT:     affine.store %0, %alloca[] : memref<i32>
 // CHECK-NEXT:     %c4 = arith.constant 4 : index
-// CHECK-NEXT:     enzymexla.memcpy  %memref, %alloca, %c4 : memref<i32, 1>, memref<i32>
-// CHECK-NEXT:     enzymexla.xla_wrapper @rxla$raised_0 (%arg1, %arg0, %memref) : (memref<1024xf64, 1>, memref<1024xf64, 1>, memref<i32, 1>) -> ()
+// CHECK-NEXT:     enzymexla.xla_wrapper @rxla$raised_0 (%arg1, %arg0, %0) <num_specialized = 1> : (memref<1024xf64, 1>, memref<1024xf64, 1>, i32) -> ()
 // CHECK-NEXT:     %c0 = arith.constant 0 : index
-// CHECK-NEXT:     gpu.dealloc  %memref : memref<i32, 1>
 // CHECK-NEXT:     return
 // CHECK-NEXT:   }
-// CHECK-NEXT:   func.func private @rxla$raised_0(%arg0: tensor<1024xf64>, %arg1: tensor<1024xf64>, %arg2: tensor<i32>) -> (tensor<1024xf64>, tensor<1024xf64>, tensor<i32>) {
+// CHECK-NEXT:   func.func private @rxla$raised_0(%arg0: tensor<1024xf64>, %arg1: tensor<1024xf64>, %arg2: tensor<i32>) -> (tensor<1024xf64>, tensor<1024xf64>) {
 // CHECK-NEXT:     %c = stablehlo.constant dense<1> : tensor<i64>
 // CHECK-NEXT:     %0 = stablehlo.convert %arg2 : (tensor<i32>) -> tensor<i64>
 // CHECK-NEXT:     %1 = stablehlo.iota dim = 0 : tensor<1xi64>
@@ -118,5 +115,6 @@ func.func @budget(%out: memref<1024xf64, 1>, %in: memref<1024xf64, 1>, %qbuf: me
 // CHECK-NEXT:     %39 = stablehlo.select %26, %36, %38 : tensor<32x32xi1>, tensor<32x32xf64>
 // CHECK-NEXT:     %40 = stablehlo.reshape %39 : (tensor<32x32xf64>) -> tensor<1024xf64>
 // CHECK-NEXT:     %41 = stablehlo.dynamic_update_slice %arg1, %40, %c_35 : (tensor<1024xf64>, tensor<1024xf64>, tensor<i64>) -> tensor<1024xf64>
-// CHECK-NEXT:     return %arg0, %41, %arg2 : tensor<1024xf64>, tensor<1024xf64>, tensor<i32>
+// CHECK-NEXT:     return %arg0, %41 : tensor<1024xf64>, tensor<1024xf64>
+// CHECK-NEXT:   }
 // CHECK-NEXT:   }

@@ -7602,6 +7602,20 @@ struct AffineToStableHLORaisingPass
           }
         });
       }
+      // A launch dimension: the lanes it bounds are padded to the launch
+      // budget and masked, and only its value lets a pass after this cut
+      // them back. The reference launch has one value per call site, as a
+      // loop bound does.
+      if (specialize_loop_bounds && g->getNumOperands() >= 6)
+        for (auto [i, arg] : llvm::enumerate(operands)) {
+          auto found = hostScalarOf.find(arg);
+          if (found == hostScalarOf.end())
+            continue;
+          Value root = launchDimRoot(found->second);
+          for (unsigned d = 0; d < 6; ++d)
+            if (launchDimRoot(g->getOperand(d)) == root)
+              wanted.insert(newBlock->getArgument(i));
+        }
       // Every scalar integer argument (a length, a flag): the host passes it
       // by value, and specialized it never reaches the device as a buffer
       // of its own -- an allocation, a copy and a free each launch. A scalar
