@@ -33,7 +33,7 @@ module {
   }
 }
 
-// CHECK:       llvm.func private @fused__first_second(%[[ARG:.+]]: !llvm.ptr<1>) {
+// CHECK:       llvm.func private @fused__first_second(%[[ARG:[^:]+]]: !llvm.ptr<1>) attributes {sym_visibility = "private"} {
 // CHECK:         llvm.store %{{.+}}, %[[ARG]] : f32, !llvm.ptr<1>
 // CHECK:         %[[CAST:.+]] = llvm.addrspacecast %[[ARG]] : !llvm.ptr<1> to !llvm.ptr
 // CHECK:         llvm.store %{{.+}}, %[[CAST]] : f32, !llvm.ptr

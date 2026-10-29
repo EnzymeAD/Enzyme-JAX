@@ -616,11 +616,14 @@ LogicalResult rewriteFusion(enzymexla::JITCallOp firstCall,
     // summaries must remain conservative.
     auto fusedFunc = rewriter.create<LLVM::LLVMFuncOp>(firstCall.getLoc(),
                                                        fusedName, funcType);
-    // Nothing else can call the fusion of private wrappers.
+    // Nothing else can call the fusion of private wrappers. Its symbol is
+    // private too, so that symbol-dce erases it once fused again.
     if (llvm::all_of(fusionFuncs, [](LLVM::LLVMFuncOp func) {
           return func.getLinkage() == LLVM::Linkage::Private;
-        }))
+        })) {
       fusedFunc.setLinkage(LLVM::Linkage::Private);
+      fusedFunc.setPrivate();
+    }
 
     Block *fusedBlock = fusedFunc.addEntryBlock(rewriter);
     rewriter.setInsertionPointToEnd(fusedBlock);
