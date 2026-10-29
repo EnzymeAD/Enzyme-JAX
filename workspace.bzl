@@ -1,7 +1,7 @@
 JAX_COMMIT = "3e6335a8b546c80744e338318f45d862d5190b53"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "d63fe909c84cc2d54a03d1ca41e8996adc778d35"
+ENZYME_COMMIT = "783eb0e59d87a78018b551b78fd0d181e0710bea"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
@@ -276,10 +276,7 @@ sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.
     sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/eigen3/workspace.bzl
     sed -i.bak0 "s/build_file = \\\"/build_file = \\\"@xla/g" third_party/eigen3/workspace.bzl
 
-    # Patches applied to the Eigen checkout: the clang PacketMath casts, and the
-    # #error Eigen 1da510b8 raises for device code below sm_60 (the jaxlib
-    # kernels built with it for sm_50 never used the half intrinsics it guards).
-    sed -i.bak0 "s/urls = /patch_cmds = \\[\\\"sed -i.bak -e 's\\/return PACKET_TYPE(0) == PACKET_TYPE(0);\\/return (PACKET_TYPE)(PACKET_TYPE(0) == PACKET_TYPE(0));\\/g' -e 's\\/return CAST_FROM_INT(CAST_TO_INT(a) == CAST_TO_INT(a));\\/return CAST_FROM_INT((decltype(CAST_TO_INT(a)))(CAST_TO_INT(a) == CAST_TO_INT(a)));\\/' Eigen\\/src\\/Core\\/arch\\/clang\\/PacketMath.h\\\",\\\"sed -i.bak -e '\\/Eigen requires CUDA compute capability\\/d' Eigen\\/src\\/Core\\/util\\/Macros.h\\\"\\],urls = /g" third_party/eigen3/workspace.bzl
+    sed -i.bak0 "s/urls = /patch_cmds = \\[\\\"sed -i.bak -e 's\\/return PACKET_TYPE(0) == PACKET_TYPE(0);\\/return (PACKET_TYPE)(PACKET_TYPE(0) == PACKET_TYPE(0));\\/g' -e 's\\/return CAST_FROM_INT(CAST_TO_INT(a) == CAST_TO_INT(a));\\/return CAST_FROM_INT((decltype(CAST_TO_INT(a)))(CAST_TO_INT(a) == CAST_TO_INT(a)));\\/' Eigen\\/src\\/Core\\/arch\\/clang\\/PacketMath.h\\\"\\],urls = /g" third_party/eigen3/workspace.bzl
     """,
     """
     echo '#ifdef REACTANT_TOOLCHAIN_IS_BB' >> xla/tsl/util/filewrapper.cc
