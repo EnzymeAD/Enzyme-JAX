@@ -50,30 +50,12 @@ jobs:
         timeout-minutes: 180
         run: |
           bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
-      - name: Runner identity
+      - name: Compile phase with and without the sandbox
         shell: bash
         run: |
           set -x
-          uname -a; cat /proc/version; cat /proc/cpuinfo | head -12; nproc; free -g
-          dmesg 2>&1 | head -30 || true
-          cat /proc/self/mountinfo | head -20 || true
-          ls -la /proc/sys/fs /sys/kernel 2>&1 | head -20 || true
-          cat /proc/self/status | grep -E "Seccomp|NoNewPrivs|CapEff" || true
-          env | grep -i -E "runner|gvisor|docker|container|image" | sort || true
-          cat /etc/os-release | head -4 || true
-          getconf CLK_TCK; ulimit -a | head -5
-          python3 - <<'PY'
-          import os, time
-          t=time.time(); n=0
-          while time.time()-t < 1: os.getpid(); n+=1
-          print(f"getpid/s: {n}")
-          t=time.time(); n=0
-          while time.time()-t < 1: os.stat('/proc/self'); n+=1
-          print(f"stat/s: {n}")
-          t=time.time()
-          for i in range(200): os.spawnlp(os.P_WAIT, '/bin/true', 'true')
-          print(f"fork+exec /bin/true: {(time.time()-t)/200*1000:.2f} ms each")
-          PY
+          bazel build $BAZEL_FLAGS --remote_cache= --noremote_accept_cached --copt=-DDIAG_CPUS=0 @llvm-project//mlir:IR @llvm-project//llvm:Analysis > /dev/null 2>&1 || true
+          for v in sandbox local sandbox local; do bazel shutdown > /dev/null 2>&1 || true; extra=""; [ $v = local ] && extra="--spawn_strategy=local"; ( time bazel build $BAZEL_FLAGS --remote_cache= --noremote_accept_cached --copt=-DDIAG_V=$v$RANDOM $extra @llvm-project//mlir:IR @llvm-project//llvm:Analysis ) 2>&1 | grep -E "real|processes:|ERROR" | sed "s/^/$v: /"; done
       - name: Upload diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
