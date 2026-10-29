@@ -555,8 +555,16 @@ struct CreateParallelOps : public OpRewritePattern<enzymexla::GPUWrapperOp> {
 ///
 #if 1
 struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
-  using OpRewritePattern<enzymexla::GPUWrapperOp>::OpRewritePattern;
+  SplitParallelOp(MLIRContext *context, bool emitSingleAlternative = false)
+      : OpRewritePattern(context),
+        emitSingleAlternative(emitSingleAlternative) {}
   const char *PATTERN = "split-parallel-op";
+
+  // When true, skip the many block-size alternatives below and emit a
+  // single alternative reproducing the original gpu_wrapper/parallel op
+  // bounds exactly (falling back to the usual single-alternative path when
+  // no exact match can be derived).
+  bool emitSingleAlternative;
 
   // TODO this should differ from arch to arch
   const unsigned MAX_GPU_THREADS = 1024;
@@ -591,8 +599,14 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       auto newWrapper = rewriter.clone(*wrapper.getOperation());
       auto blockSize = createSplitOp(cast<enzymexla::GPUWrapperOp>(newWrapper),
                                      defaultThreads, rewriter);
-      if (emittedBlockSizes.contains(blockSize) ||
-          /* failed */ blockSize == -1) {
+      if (blockSize == -1) {
+        // createSplitOp already replaced newWrapper with an error code on
+        // this failure path, nothing left to clean up.
+      } else if (emittedBlockSizes.contains(blockSize)) {
+        // A prior candidate already produced this same effective block
+        // size: drop this duplicate clone instead of leaving it behind as
+        // dead (but still side-effecting) sibling code in the region.
+        rewriter.eraseOp(newWrapper);
       } else {
         emittedBlockSizes.insert(blockSize);
         descs.push_back(rewriter.getStringAttr(
@@ -660,7 +674,18 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     bool hasExactMatch = matchWrapperShape(pop, wrapper, exactDims);
 
     enzymexla::AlternativesOp alternativesOp = nullptr;
-    if (char *blockSizeStr = getenv("POLYGEIST_GPU_KERNEL_BLOCK_SIZE")) {
+    if (emitSingleAlternative) {
+      alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
+      alternativesOp->setAttr("alternatives.type",
+                              rewriter.getStringAttr("gpu_kernel"));
+      if (hasExactMatch) {
+        exactMatch(alternativesOp, exactDims);
+      } else {
+        emitAlternative(-1, alternativesOp);
+      }
+      alternativesOp->setAttr("alternatives.descs",
+                              rewriter.getArrayAttr(descs));
+    } else if (char *blockSizeStr = getenv("POLYGEIST_GPU_KERNEL_BLOCK_SIZE")) {
       alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
       alternativesOp->setAttr("alternatives.type",
                               rewriter.getStringAttr("gpu_kernel"));
@@ -1181,8 +1206,9 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
         Operation *def = cur.getDefiningOp();
         if (!def || def->getParentRegion() != outerBlock->getParent())
           continue;
-        assert(def->getNumRegions() == 0 &&
-               "bounds computed by an op with regions");
+        if (def->getNumRegions() != 0)
+          return rewriter.notifyMatchFailure(
+              def, "bounds computed by an op with regions");
         if (!pinned.insert(def).second)
           continue;
         llvm::append_range(todo, def->getOperands());
@@ -2348,7 +2374,7 @@ struct ConvertParallelToGPU1Pass
         CreateParallelOps,
         ParallelizeBlockOps
         >(&getContext());
-      patterns.insert<SplitParallelOp>(&getContext());
+      patterns.insert<SplitParallelOp>(&getContext(), emitSingleAlternative);
       // clang-format on
     };
     auto runNormalization = [&]() {
@@ -2504,7 +2530,7 @@ struct ConvertParallelToGPU1Pass
           }
         }
         runLICM();
-      } else if (GPUKernelEmitCoarsenedAlternatives) {
+      } else if (!emitSingleAlternative && GPUKernelEmitCoarsenedAlternatives) {
         // If the user did not specify coarsening factors, generate
         // pre-determined set of alternative coarsened kernels
 
