@@ -3,7 +3,7 @@ load("@llvm-project//llvm:lit_test.bzl", "lit_test")
 [
     lit_test(
         name = "%s.test" % src,
-        timeout = "moderate",
+        timeout = "short",
         srcs = [src],
         data = [
             "//:enzymexlamlir-opt",
