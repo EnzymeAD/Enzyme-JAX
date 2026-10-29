@@ -121,6 +121,8 @@ cc_library(
             "xla_ffi/host/register.cc",
             "xla_ffi/host/throw_error.cc",
             "xla_ffi/register.cc",
+            "xla_ffi/rocm/register.cc",
+            "xla_ffi/rocm/runtime_symbols.cc",
         ],
     hdrs =
         [
@@ -128,9 +130,11 @@ cc_library(
         ] + glob([
             "xla_ffi/host/**/*.h",
             "xla_ffi/cuda/**/*.h",
+            "xla_ffi/rocm/**/*.h",
         ]),
     copts = select({
         "@local_config_cuda//:is_cuda_enabled": ["-DENZYMEJAX_CUDA=1"],
+        "@local_config_rocm//rocm:using_hipcc": ["-DENZYMEJAX_ROCM=1"],
         "//conditions:default": [],
     }),
     visibility = ["//visibility:public"],
@@ -160,6 +164,10 @@ cc_library(
             "@local_config_cuda//cuda:cuda_headers",
             "@xla//xla/tsl/cuda:cublas",
             "@xla//xla/tsl/cuda:cudart",
+        ],
+        "@local_config_rocm//rocm:using_hipcc": [
+            "@local_config_rocm//rocm:hip",
+            "@local_config_rocm//rocm:rocm_headers",
         ],
         "//conditions:default": [],
     }),
