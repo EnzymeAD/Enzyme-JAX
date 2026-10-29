@@ -1759,6 +1759,7 @@ struct LowerCommNcclCommUserRankOpToJIT
 
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -1896,6 +1897,7 @@ struct LowerCommNcclCommCountOpToJIT
 
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -2225,6 +2227,7 @@ getOrCreateNcclSendRecvWrapper(ConversionPatternRewriter &rewriter,
       SmallVector<Type>(5, type_ptr), false);
   auto wrapperFunc =
       LLVM::LLVMFuncOp::create(rewriter, loc, wrapper_name, funcType);
+  markCommWrapper(wrapperFunc);
   wrapperFunc->setAttr("enzymexla.device_abi", rewriter.getStringAttr("cuda"));
 
   Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
@@ -2395,6 +2398,7 @@ struct LowerCommNcclGroupOpToJIT
           SmallVector<Type>(operands.size(), type_ptr), false);
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
       wrapperFunc->setAttr("enzymexla.device_abi",
                            rewriter.getStringAttr("cuda"));
 
@@ -2484,6 +2488,7 @@ struct LowerCommNcclAllReduceOpToJIT
 
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -2737,6 +2742,7 @@ struct LowerCommNcclBroadcastOpToJIT
 
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
