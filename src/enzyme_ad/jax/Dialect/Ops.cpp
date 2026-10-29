@@ -2853,7 +2853,8 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
                      .getShape()
                      .size() == indices.size());
           rewriter.replaceOpWithNewOp<memref::LoadOp>(
-              loadOp, subindex.getSource(), indices);
+              loadOp, subindex.getSource(), indices, /*nontemporal=*/false,
+              loadOp.getMaybeAlign());
           changed = true;
         }
       } else if (auto storeOp = dyn_cast<memref::StoreOp>(use.getOwner())) {
@@ -2877,7 +2878,8 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
                      .getShape()
                      .size() == indices.size());
           rewriter.replaceOpWithNewOp<memref::StoreOp>(
-              storeOp, storeOp.getValue(), subindex.getSource(), indices);
+              storeOp, storeOp.getValue(), subindex.getSource(), indices,
+              /*nontemporal=*/false, storeOp.getMaybeAlign());
           changed = true;
         }
       } else if (auto storeOp = dyn_cast<memref::AtomicRMWOp>(use.getOwner())) {
@@ -2926,7 +2928,8 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
                        .getShape()
                        .size() == indices.size());
             rewriter.replaceOpWithNewOp<memref::StoreOp>(
-                storeOp, storeOp.getValue(), subindex.getSource(), indices);
+                storeOp, storeOp.getValue(), subindex.getSource(), indices,
+                /*nontemporal=*/false, storeOp.getMaybeAlign());
             changed = true;
           }
         }
@@ -2951,7 +2954,8 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
                        .getShape()
                        .size() == indices.size());
             rewriter.replaceOpWithNewOp<memref::LoadOp>(
-                storeOp, subindex.getSource(), indices);
+                storeOp, subindex.getSource(), indices, /*nontemporal=*/false,
+                storeOp.getMaybeAlign());
             changed = true;
           }
         }
@@ -3027,7 +3031,8 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                      .getShape()
                      .size() == indices.size());
           rewriter.replaceOpWithNewOp<memref::LoadOp>(
-              loadOp, subindex.getSource(), indices);
+              loadOp, subindex.getSource(), indices, /*nontemporal=*/false,
+              loadOp.getMaybeAlign());
           changed = true;
         }
       } else if (auto storeOp = dyn_cast<memref::StoreOp>(use.getOwner())) {
@@ -3066,7 +3071,8 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                      .getShape()
                      .size() == indices.size());
           rewriter.replaceOpWithNewOp<memref::StoreOp>(
-              storeOp, storeOp.getValue(), subindex.getSource(), indices);
+              storeOp, storeOp.getValue(), subindex.getSource(), indices,
+              /*nontemporal=*/false, storeOp.getMaybeAlign());
           changed = true;
         }
       } else if (auto storeOp =
@@ -3090,7 +3096,8 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                        .getShape()
                        .size() == indices.size());
             rewriter.replaceOpWithNewOp<memref::StoreOp>(
-                storeOp, storeOp.getValue(), subindex.getSource(), indices);
+                storeOp, storeOp.getValue(), subindex.getSource(), indices,
+                /*nontemporal=*/false, storeOp.getMaybeAlign());
             changed = true;
           }
         }
@@ -3115,7 +3122,8 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                        .getShape()
                        .size() == indices.size());
             rewriter.replaceOpWithNewOp<memref::LoadOp>(
-                storeOp, subindex.getSource(), indices);
+                storeOp, subindex.getSource(), indices, /*nontemporal=*/false,
+                storeOp.getMaybeAlign());
             changed = true;
           }
         }

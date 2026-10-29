@@ -52,7 +52,7 @@ module {
     // CHECK-NEXT:     %11 = arith.divui %8, %c10 : index
     // CHECK-NEXT:     %12 = memref.load %9[%11, %10] alignment(8) : memref<100x10xf64, 1>
     // CHECK-NEXT:     %13 = "enzymexla.pointer2memref"(%1) : (!llvm.ptr<1>) -> memref<100x10xf64, 1>
-    // CHECK-NEXT:     %14 = affine.load %13[(%arg2 * 8) floordiv 10, (%arg2 * 8) mod 10] : memref<100x10xf64, 1>
+    // CHECK-NEXT:     %14 = affine.load %13[(%arg2 * 8) floordiv 10, (%arg2 * 8) mod 10] {alignment = 8 : i64} : memref<100x10xf64, 1>
     // CHECK-NEXT:     %15 = arith.cmpi eq, %arg2, %c99 : index
     // CHECK-NEXT:     scf.if %15 {
       // CHECK-NEXT:       memref.store %12, %alloca[] : memref<f64>
