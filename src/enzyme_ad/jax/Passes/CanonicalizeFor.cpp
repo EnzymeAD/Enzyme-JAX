@@ -2836,6 +2836,14 @@ struct AffineIfSameYield : public OpRewritePattern<affine::AffineIfOp> {
         affine::AffineIfOp::create(rewriter, ifOp.getLoc(), newTypes,
                                    ifOp.getIntegerSet(), ifOp.getOperands(),
                                    /*withElseRegion=*/true);
+    unsigned next = 0;
+    for (OpResult res : ifOp.getResults()) {
+      unsigned i = res.getResultNumber();
+      if (next < keep.size() && keep[next] == i)
+        rewriter.replaceAllUsesWith(res, newIf.getResult(next++));
+      else
+        rewriter.replaceAllUsesWith(res, thenYield->getOperand(i));
+    }
     for (unsigned r = 0; r < 2; ++r) {
       Region &oldRegion = r ? ifOp.getElseRegion() : ifOp.getThenRegion();
       Region &newRegion = r ? newIf.getElseRegion() : newIf.getThenRegion();
@@ -2846,14 +2854,6 @@ struct AffineIfSameYield : public OpRewritePattern<affine::AffineIfOp> {
       for (unsigned i : keep)
         ops.push_back(yield->getOperand(i));
       rewriter.modifyOpInPlace(yield, [&] { yield->setOperands(ops); });
-    }
-    unsigned next = 0;
-    for (OpResult res : ifOp.getResults()) {
-      unsigned i = res.getResultNumber();
-      if (next < keep.size() && keep[next] == i)
-        rewriter.replaceAllUsesWith(res, newIf.getResult(next++));
-      else
-        rewriter.replaceAllUsesWith(res, thenYield->getOperand(i));
     }
     rewriter.eraseOp(ifOp);
     return success();
