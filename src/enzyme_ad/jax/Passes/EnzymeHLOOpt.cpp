@@ -29183,12 +29183,75 @@ struct ScatterIndicesAreUnique
     if (op.getUniqueIndices())
       return failure(); // already unique, no need to do anything
 
-    auto scatterIndices = op.getScatterIndices();
+    Value scatterIndices = op.getScatterIndices();
     auto dimNumbers = op.getScatterDimensionNumbers();
+    int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
     Attribute scatterIndicesAttr;
     bool uniqueIndices = false;
 
-    if (scatterIndices.getType().getNumElements() == 1) {
+    // The indices the kernel's guard masks off are out of bounds and write
+    // nothing: a select between the indices and an out-of-bounds constant
+    // is as unique as the indices. A constant per scatter point broadcast
+    // along the batching dimensions alone repeats nothing within a batch
+    // position, and batch positions never collide: the uniqueness is the
+    // operand's, with the index vector dimension mapped through.
+    auto operandTy = cast<RankedTensorType>(op.getInputs()[0].getType());
+    auto outOfBounds = [&](Value v) {
+      SplatElementsAttr splat;
+      if (!matchPattern(v, m_Constant(&splat)))
+        return false;
+      APInt c = splat.getSplatValue<APInt>();
+      if (c.isNegative())
+        return true;
+      for (int64_t od : dimNumbers.getScatterDimsToOperandDims())
+        if (c.sge(operandTy.getDimSize(od)))
+          return true;
+      return false;
+    };
+    while (true) {
+      if (auto sel = scatterIndices.getDefiningOp<stablehlo::SelectOp>()) {
+        if (outOfBounds(sel.getOnFalse())) {
+          scatterIndices = sel.getOnTrue();
+          continue;
+        }
+        if (outOfBounds(sel.getOnTrue())) {
+          scatterIndices = sel.getOnFalse();
+          continue;
+        }
+      }
+      if (auto bcast =
+              scatterIndices.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        auto dims = bcast.getBroadcastDimensions();
+        auto bt = cast<RankedTensorType>(bcast.getType());
+        auto ot = cast<RankedTensorType>(bcast.getOperand().getType());
+        bool ok = true;
+        for (int64_t d = 0; d < bt.getRank() && ok; ++d)
+          if (!llvm::is_contained(dims, d) &&
+              !llvm::is_contained(dimNumbers.getScatterIndicesBatchingDims(),
+                                  d))
+            ok = false;
+        for (auto [i, d] : llvm::enumerate(dims))
+          if (ot.getDimSize(i) != bt.getDimSize(d))
+            ok = false;
+        if (ok) {
+          int64_t mapped = ot.getRank();
+          for (auto [i, d] : llvm::enumerate(dims))
+            if (d == indexVectorDim)
+              mapped = i;
+          if (indexVectorDim < bt.getRank() && mapped == ot.getRank())
+            ok = false;
+          if (ok) {
+            indexVectorDim = mapped;
+            scatterIndices = bcast.getOperand();
+            continue;
+          }
+        }
+      }
+      break;
+    }
+    auto indicesTy = cast<RankedTensorType>(scatterIndices.getType());
+
+    if (indicesTy.getNumElements() == 1) {
       uniqueIndices = true;
     } else if (auto iotaOp =
                    scatterIndices.getDefiningOp<stablehlo::IotaOp>()) {
@@ -29196,7 +29259,7 @@ struct ScatterIndicesAreUnique
       // repeats the same values along all other dimensions. We can only
       // mark indices as unique when every scatter point gets a distinct
       // index tuple.
-      auto rank = scatterIndices.getType().getRank();
+      auto rank = indicesTy.getRank();
       if (rank == 1) {
         // 1-D iota is always unique: either it is a single index tuple
         // (indexVectorDim==0, one scatter point) or N scalar indices
@@ -29204,7 +29267,6 @@ struct ScatterIndicesAreUnique
         uniqueIndices = true;
       } else {
         int64_t iotaDim = iotaOp.getIotaDimension();
-        int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
         if (iotaDim != indexVectorDim) {
           // Iota varies along a scatter (non-index-vector) dimension.
           // Each position along that axis gets a distinct iota value,
@@ -29215,7 +29277,7 @@ struct ScatterIndicesAreUnique
           // Note: when indexVectorDim == rank (scalar indices), it never
           // equals any valid dim index, so the loop naturally checks all
           // dims except iotaDim.
-          auto shape = scatterIndices.getType().getShape();
+          auto shape = indicesTy.getShape();
           bool allOtherDimsUnit = true;
           for (int64_t i = 0; i < rank; ++i) {
             if (i != iotaDim && i != indexVectorDim && shape[i] != 1) {
@@ -29235,10 +29297,9 @@ struct ScatterIndicesAreUnique
       auto denseAttr = dyn_cast<DenseIntElementsAttr>(scatterIndicesAttr);
       if (!denseAttr)
         return failure();
-      auto shape = cast<ShapedType>(scatterIndices.getType()).getShape();
+      auto shape = cast<ShapedType>(indicesTy).getShape();
       if (shape.empty())
         return failure();
-      int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
       int64_t tupleSize =
           indexVectorDim < (int64_t)shape.size() ? shape[indexVectorDim] : 1;
       int64_t numPoints = denseAttr.getNumElements() / tupleSize;
@@ -29294,7 +29355,7 @@ struct ScatterIndicesAreUnique
 
     auto newOp = stablehlo::ScatterOp::create(
         rewriter, op.getLoc(), op.getResultTypes(), op.getInputs(),
-        scatterIndices, op.getUpdates(), dimNumbers,
+        op.getScatterIndices(), op.getUpdates(), dimNumbers,
         op.getIndicesAreSortedAttr(), rewriter.getBoolAttr(uniqueIndices));
     newOp.getUpdateComputation().takeBody(op.getUpdateComputation());
     rewriter.replaceOp(op, newOp);
