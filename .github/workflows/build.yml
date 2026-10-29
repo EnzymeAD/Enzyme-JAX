@@ -53,36 +53,20 @@ jobs:
         shell: bash
         run: |
           set -x
-          apt-get update -qq > /dev/null 2>&1 && apt-get install -y -qq strace procps > /dev/null 2>&1 || true
-          echo "== machine"; nproc; free -g; uptime; grep -m1 "model name" /proc/cpuinfo; df -h /root/.bazel /tmp "$PWD" || true
-          mount | grep -E " / | /root| /tmp| /__w" | head -10 || true
-          cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || true
-          bazel version
-          T=//test/lit_tests:cse_iota.mlir.test
-          echo "== bazel test, default (sandboxed), profiled"
-          time bazel test $BAZEL_FLAGS --nocache_test_results --test_output=all --test_summary=detailed --profile=/tmp/prof_sandbox.json $T || true
-          echo "== bazel test, local strategy"
-          time bazel test $BAZEL_FLAGS --nocache_test_results --test_output=all --test_summary=detailed --strategy=TestRunner=local --spawn_strategy=local --profile=/tmp/prof_local.json $T || true
-          echo "== bazel test, python import timing (top entries)"
-          bazel test $BAZEL_FLAGS --nocache_test_results --test_output=all --test_env=PYTHONPROFILEIMPORTTIME=1 $T 2>&1 | grep -E "import time:" | sort -t'|' -k2 -n | tail -15 || true
-          echo "== direct run of the test binary"
-          ( cd bazel-bin/test/lit_tests && time ./cse_iota.mlir.test -v ) || true
-          echo "== direct run under strace"
-          ( cd bazel-bin/test/lit_tests && strace -f -tt -e trace=execve,connect,wait4,clone,clone3,exit_group -o /tmp/strace.txt ./cse_iota.mlir.test -v ) || true
-          wc -l /tmp/strace.txt || true; head -3 /tmp/strace.txt || true; tail -3 /tmp/strace.txt || true
-          echo "== 16 parallel direct runs"
-          ( cd bazel-bin/test/lit_tests && time ( for i in $(seq 16); do ./cse_iota.mlir.test -v > /dev/null 2>&1 & done; wait ) ) || true
-          echo "== 32 lit tests through bazel, sandboxed"
-          time bazel test $BAZEL_FLAGS --nocache_test_results --test_output=errors --test_summary=detailed --profile=/tmp/prof_32.json $(bazel query 'tests(//test/lit_tests/...)' 2>/dev/null | head -32) || true
+          echo "== machine"; nproc; df -h /dev/shm /root/.bazel || true; mount | grep -E "shm|/root" | head -5 || true
+          TESTS=$(bazel query 'tests(//test/lit_tests/...)' 2>/dev/null | head -64)
+          run() { name=$1; shift; echo "== $name"; ( time bazel test $BAZEL_FLAGS --nocache_test_results --test_output=errors --profile=/tmp/prof_$name.json "$@" $TESTS ) 2>&1 | grep -E "Executed|Elapsed|real|TIMEOUT|FAILED" || true; }
+          run default
+          run shm --sandbox_base=/dev/shm
+          run nolegacy --nolegacy_external_runfiles
+          run shm_nolegacy --sandbox_base=/dev/shm --nolegacy_external_runfiles
+          run local --strategy=TestRunner=local
+          run local_nolegacy --strategy=TestRunner=local --nolegacy_external_runfiles
       - name: Upload diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: lit-timing-diag
           path: |
-            /tmp/prof_sandbox.json
-            /tmp/prof_local.json
-            /tmp/prof_32.json
-            /tmp/strace.txt
-            bazel-out/**/test.log
+            /tmp/prof_*.json
           retention-days: 7
