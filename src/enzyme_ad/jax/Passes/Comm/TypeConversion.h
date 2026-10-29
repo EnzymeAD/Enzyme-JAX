@@ -12,6 +12,11 @@ public:
   StablehloTypeConverter(unsigned requestWidth = 64);
 };
 
+struct MpiToNcclTypeConverter : public TypeConverter {
+public:
+  MpiToNcclTypeConverter();
+};
+
 } // namespace mlir::comm
 
 #endif // ENZYMEXLA_PASSES_COMM_TYPE_CONVERSION_H

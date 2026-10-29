@@ -34,6 +34,7 @@ void registerEnzymeJaXCudaRuntimeSymbols() {
   MAP_CUDART(__cudaUnregisterFatBinary);
   MAP_CUDART(__cudaRegisterFunction);
   MAP_CUDART(__cudaRegisterVar);
+  MAP_CUDART(cudaGetKernel);
   MAP_CUDART(cudaLaunchKernel);
   MAP_CUDART(cudaMalloc);
   MAP_CUDART(cudaFree);

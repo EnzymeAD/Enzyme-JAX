@@ -125,14 +125,19 @@ LogicalResult unrollWhileOp(mlir::stablehlo::WhileOp op, RewriterBase &rewriter,
   // within the same budget as the threshold allows at the full iteration
   // limit: a few iterations of a long body cost no more than many of a
   // short one.
-  if (iters > 1 && maxOperationThreshold > -1 &&
-      std::distance(loopBodyBlock->begin(), loopBodyBlock->end()) >
-          maxOperationThreshold) {
-    // every op the copies would carry, those of nested regions included
+  //
+  // The body's length counts the ops of its nested regions: a loop whose own
+  // block is short but which wraps another loop copies that loop with every
+  // iteration. Measuring the block alone let a nest of short loops around a
+  // long body unroll level by level into every iteration of every level at
+  // once (the reverse pass of a checkpointed nested loop, once its dead
+  // results are gone, is exactly that shape).
+  if (iters > 1 && maxOperationThreshold > -1) {
     int64_t ops = 0;
     op.getBody().walk([&](Operation *) { ++ops; });
-    if (maxNumIterations == -1 ||
-        iters * ops > maxNumIterations * maxOperationThreshold)
+    if (ops > maxOperationThreshold &&
+        (maxNumIterations == -1 ||
+         iters * ops > maxNumIterations * maxOperationThreshold))
       return failure();
   }
 

@@ -862,14 +862,19 @@ template <>
 void LoadStorePointer2MemrefGEP<memref::LoadOp>::createNewOp(
     memref::LoadOp op, Value baseMemref, SmallVector<Value> idxs,
     PatternRewriter &rewriter) const {
-  rewriter.replaceOpWithNewOp<memref::LoadOp>(op, baseMemref, idxs);
+  // The same address through another base: the alignment the access
+  // promised of it holds, and without it the access would be emitted at the
+  // element's ABI alignment (a 16-byte run behind an 8-aligned pointer).
+  rewriter.replaceOpWithNewOp<memref::LoadOp>(
+      op, baseMemref, idxs, /*nontemporal=*/false, op.getMaybeAlign());
 }
 
 template <>
 void LoadStorePointer2MemrefGEP<affine::AffineLoadOp>::createNewOp(
     affine::AffineLoadOp op, Value baseMemref, SmallVector<Value> idxs,
     PatternRewriter &rewriter) const {
-  rewriter.replaceOpWithNewOp<memref::LoadOp>(op, baseMemref, idxs);
+  rewriter.replaceOpWithNewOp<memref::LoadOp>(
+      op, baseMemref, idxs, /*nontemporal=*/false, op.getMaybeAlign());
 }
 
 template <>
@@ -877,7 +882,8 @@ void LoadStorePointer2MemrefGEP<memref::StoreOp>::createNewOp(
     memref::StoreOp op, Value baseMemref, SmallVector<Value> idxs,
     PatternRewriter &rewriter) const {
   rewriter.replaceOpWithNewOp<memref::StoreOp>(op, op.getValue(), baseMemref,
-                                               idxs);
+                                               idxs, /*nontemporal=*/false,
+                                               op.getMaybeAlign());
 }
 
 template <>
@@ -885,7 +891,8 @@ void LoadStorePointer2MemrefGEP<affine::AffineStoreOp>::createNewOp(
     affine::AffineStoreOp op, Value baseMemref, SmallVector<Value> idxs,
     PatternRewriter &rewriter) const {
   rewriter.replaceOpWithNewOp<memref::StoreOp>(op, op.getValue(), baseMemref,
-                                               idxs);
+                                               idxs, /*nontemporal=*/false,
+                                               op.getMaybeAlign());
 }
 
 template <>
@@ -2853,7 +2860,8 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
                      .getShape()
                      .size() == indices.size());
           rewriter.replaceOpWithNewOp<memref::LoadOp>(
-              loadOp, subindex.getSource(), indices);
+              loadOp, subindex.getSource(), indices, /*nontemporal=*/false,
+              loadOp.getMaybeAlign());
           changed = true;
         }
       } else if (auto storeOp = dyn_cast<memref::StoreOp>(use.getOwner())) {
@@ -2877,7 +2885,8 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
                      .getShape()
                      .size() == indices.size());
           rewriter.replaceOpWithNewOp<memref::StoreOp>(
-              storeOp, storeOp.getValue(), subindex.getSource(), indices);
+              storeOp, storeOp.getValue(), subindex.getSource(), indices,
+              /*nontemporal=*/false, storeOp.getMaybeAlign());
           changed = true;
         }
       } else if (auto storeOp = dyn_cast<memref::AtomicRMWOp>(use.getOwner())) {
@@ -2926,7 +2935,8 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
                        .getShape()
                        .size() == indices.size());
             rewriter.replaceOpWithNewOp<memref::StoreOp>(
-                storeOp, storeOp.getValue(), subindex.getSource(), indices);
+                storeOp, storeOp.getValue(), subindex.getSource(), indices,
+                /*nontemporal=*/false, storeOp.getMaybeAlign());
             changed = true;
           }
         }
@@ -2951,7 +2961,8 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
                        .getShape()
                        .size() == indices.size());
             rewriter.replaceOpWithNewOp<memref::LoadOp>(
-                storeOp, subindex.getSource(), indices);
+                storeOp, subindex.getSource(), indices, /*nontemporal=*/false,
+                storeOp.getMaybeAlign());
             changed = true;
           }
         }
@@ -3027,7 +3038,8 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                      .getShape()
                      .size() == indices.size());
           rewriter.replaceOpWithNewOp<memref::LoadOp>(
-              loadOp, subindex.getSource(), indices);
+              loadOp, subindex.getSource(), indices, /*nontemporal=*/false,
+              loadOp.getMaybeAlign());
           changed = true;
         }
       } else if (auto storeOp = dyn_cast<memref::StoreOp>(use.getOwner())) {
@@ -3066,7 +3078,8 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                      .getShape()
                      .size() == indices.size());
           rewriter.replaceOpWithNewOp<memref::StoreOp>(
-              storeOp, storeOp.getValue(), subindex.getSource(), indices);
+              storeOp, storeOp.getValue(), subindex.getSource(), indices,
+              /*nontemporal=*/false, storeOp.getMaybeAlign());
           changed = true;
         }
       } else if (auto storeOp =
@@ -3090,7 +3103,8 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                        .getShape()
                        .size() == indices.size());
             rewriter.replaceOpWithNewOp<memref::StoreOp>(
-                storeOp, storeOp.getValue(), subindex.getSource(), indices);
+                storeOp, storeOp.getValue(), subindex.getSource(), indices,
+                /*nontemporal=*/false, storeOp.getMaybeAlign());
             changed = true;
           }
         }
@@ -3115,7 +3129,8 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                        .getShape()
                        .size() == indices.size());
             rewriter.replaceOpWithNewOp<memref::LoadOp>(
-                storeOp, subindex.getSource(), indices);
+                storeOp, subindex.getSource(), indices, /*nontemporal=*/false,
+                storeOp.getMaybeAlign());
             changed = true;
           }
         }

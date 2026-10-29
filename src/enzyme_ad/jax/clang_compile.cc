@@ -562,7 +562,7 @@ struct tensor<T, n0, N...>
 
   std::optional<PGOOptions> PGOOpt;
   PassInstrumentationCallbacks PIC;
-  PassBuilder PB(TM.get(), PTO, PGOOpt, &PIC);
+  PassBuilder PB(mod->getContext(), TM.get(), PTO, PGOOpt, &PIC);
 
   augmentPassBuilder(PB);
 

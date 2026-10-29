@@ -625,6 +625,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("concat_reduce");
   list.push_back("concat_dot_general");
   list.push_back("concat_elementwise");
+  list.push_back("concat_elementwise_slice");
   list.push_back("reduce_reduce");
   list.push_back("reduce_halving_reduce_window");
   list.push_back("conj_real");

@@ -5983,6 +5983,12 @@ struct DUSSinkSlicesComm
     }
   };
 
+  // A constant (sdy or stablehlo): nothing feeding it to sink.
+  static bool isConstantValue(Value v) {
+    Operation *op = v.getDefiningOp();
+    return op && isa<stablehlo::ConstantOp, sdy::ConstantOp>(op);
+  }
+
   // The sharded dimensions `update` is narrower in than `ty`: only there
   // does the window's position cost communication. Narrow unsharded
   // dimensions stay narrow.
@@ -6055,7 +6061,8 @@ struct DUSSinkSlicesComm
       return failure();
     SmallVector<int64_t> dims;
     if (!narrowShardedDims(dus, ty, updTy, sharding, maxExtraPercent, dims) ||
-        isSliceAtDUSWindow(dus, starts, dims))
+        isSliceAtDUSWindow(dus, starts, dims) ||
+        isConstantValue(dus.getUpdate()))
       return failure();
     Value update = sinkUpdate(dus, dus.getUpdate(), ty, starts, dims, rewriter);
     if (!update)
@@ -6103,6 +6110,10 @@ struct PadSinkSlicesComm : public OpRewritePattern<stablehlo::PadOp> {
     auto ty = pad.getType();
     auto updTy = pad.getOperand().getType();
     if (!ty.hasStaticShape() || !updTy.hasStaticShape())
+      return failure();
+    // A pad of a constant has no slice to sink, and the widener would widen
+    // a non-splat constant by padding it: that is this pad again, forever.
+    if (DUSSinkSlicesComm::isConstantValue(pad.getOperand()))
       return failure();
     SmallVector<int64_t> starts(pad.getEdgePaddingLow());
     SmallVector<int64_t> dims;

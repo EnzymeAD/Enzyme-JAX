@@ -143,8 +143,8 @@ def MpiOpAttr : Comm_Attr<"MpiOp", "mpi.op", [TypedAttrInterface]> {
 def NcclRedOpEnum : I32EnumAttr<"NcclRedOpEnum", "Named predefined NCCL reduction operators", [
       I32EnumAttrCase<"ncclSum", 0>,
       I32EnumAttrCase<"ncclProd", 1>,
-      I32EnumAttrCase<"ncclMin", 2>,
-      I32EnumAttrCase<"ncclMax", 3>,
+      I32EnumAttrCase<"ncclMax", 2>,
+      I32EnumAttrCase<"ncclMin", 3>,
       I32EnumAttrCase<"ncclAvg", 4>,
     ]> {
   let genSpecializedAttr = 0;

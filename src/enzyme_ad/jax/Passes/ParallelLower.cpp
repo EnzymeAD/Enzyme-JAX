@@ -1046,8 +1046,9 @@ void ParallelLower::runOnOperation() {
                                                    storeOp.getMapOperands());
         indices.push_back(apply->getResult(0));
       }
-      builder.replaceOpWithNewOp<memref::StoreOp>(storeOp, storeOp.getValue(),
-                                                  storeOp.getMemref(), indices);
+      builder.replaceOpWithNewOp<memref::StoreOp>(
+          storeOp, storeOp.getValue(), storeOp.getMemref(), indices,
+          /*nontemporal=*/false, storeOp.getMaybeAlign());
     });
 
     container.walk([&](affine::AffineLoadOp storeOp) {
@@ -1061,7 +1062,8 @@ void ParallelLower::runOnOperation() {
         indices.push_back(apply->getResult(0));
       }
       builder.replaceOpWithNewOp<memref::LoadOp>(storeOp, storeOp.getMemref(),
-                                                 indices);
+                                                 indices, /*nontemporal=*/false,
+                                                 storeOp.getMaybeAlign());
     });
     builder.eraseOp(launchOp);
   }

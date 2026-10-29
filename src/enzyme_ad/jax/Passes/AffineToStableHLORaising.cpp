@@ -7388,7 +7388,8 @@ struct AffineToStableHLORaisingPass
                   assert(maybeExpanded.has_value() &&
                          "failed to expand affine map");
                   auto newLoad = memref::LoadOp::create(
-                      B, loadOp.getLoc(), loadOp.getMemref(), *maybeExpanded);
+                      B, loadOp.getLoc(), loadOp.getMemref(), *maybeExpanded,
+                      /*nontemporal=*/false, loadOp.getMaybeAlign());
                   loadOp.replaceAllUsesWith(newLoad.getResult());
                   loadOp.erase();
                 } else {
@@ -7407,9 +7408,10 @@ struct AffineToStableHLORaisingPass
                       B, storeOp.getLoc(), storeOp.getAffineMap(), indices);
                   assert(maybeExpanded.has_value() &&
                          "failed to expand affine map");
-                  memref::StoreOp::create(B, storeOp.getLoc(),
-                                          storeOp.getValueToStore(),
-                                          storeOp.getMemref(), *maybeExpanded);
+                  memref::StoreOp::create(
+                      B, storeOp.getLoc(), storeOp.getValueToStore(),
+                      storeOp.getMemref(), *maybeExpanded,
+                      /*nontemporal=*/false, storeOp.getMaybeAlign());
                   storeOp.erase();
                 }
               }

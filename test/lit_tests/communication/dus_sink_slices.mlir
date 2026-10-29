@@ -476,3 +476,30 @@ func.func @moved_levels(%a: tensor<20x16xf32> {sdy.sharding = #sdy.sharding<@mes
 // CHECK-NEXT: %[[MW:.+]] = stablehlo.slice %[[M]] [0:4, 3:13]
 // CHECK-NEXT: %[[E:.+]] = stablehlo.dynamic_update_slice %arg1, %[[MW]], %c, %c_0
 // CHECK-NEXT: return %[[D]], %[[E]]
+
+// -----
+
+// A pad of a non-splat constant, and a DUS of one: nothing to sink, and the
+// widener would widen the constant by padding it, which is the same pad again.
+
+// CHECK-LABEL: @pad_of_constant
+// CHECK: stablehlo.pad
+// CHECK-NOT: stablehlo.select
+// CHECK-LABEL: @dus_of_constant
+// CHECK: stablehlo.dynamic_update_slice
+module {
+  sdy.mesh @mesh = <["x"=2, "y"=2]>
+  func.func @pad_of_constant(%a: tensor<50xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"y"}]>}) -> (tensor<50xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"y"}]>}) {
+    %c = stablehlo.constant {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"y"}]>]>} dense<[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0, 25.0, 26.0, 27.0, 28.0, 29.0, 30.0, 31.0, 32.0, 33.0, 34.0, 35.0, 36.0, 37.0, 38.0, 39.0, 40.0]> : tensor<40xf64>
+    %zero = stablehlo.constant dense<0.0> : tensor<f64>
+    %p = stablehlo.pad %c, %zero, low = [5], high = [5], interior = [0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"y"}]>]>} : (tensor<40xf64>, tensor<f64>) -> tensor<50xf64>
+    %r = stablehlo.add %p, %a {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"y"}]>]>} : tensor<50xf64>
+    return %r : tensor<50xf64>
+  }
+  func.func @dus_of_constant(%a: tensor<50xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"y"}]>}) -> (tensor<50xf64> {sdy.sharding = #sdy.sharding<@mesh, [{"y"}]>}) {
+    %c = stablehlo.constant {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"y"}]>]>} dense<[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0, 25.0, 26.0, 27.0, 28.0, 29.0, 30.0, 31.0, 32.0, 33.0, 34.0, 35.0, 36.0, 37.0, 38.0, 39.0, 40.0]> : tensor<40xf64>
+    %i = stablehlo.constant dense<5> : tensor<i32>
+    %r = stablehlo.dynamic_update_slice %a, %c, %i {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"y"}]>]>} : (tensor<50xf64>, tensor<40xf64>, tensor<i32>) -> tensor<50xf64>
+    return %r : tensor<50xf64>
+  }
+}

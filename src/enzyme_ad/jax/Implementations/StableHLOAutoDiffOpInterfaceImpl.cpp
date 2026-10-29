@@ -261,7 +261,7 @@ bool hasSameOperandAndResultTypes(Operation &op) {
          llvm::all_of(op.getResultTypes(), typeMatch);
 }
 
-static bool isEligibleForCompactPrint(ReduceOp op) {
+template <typename OpTy> static bool isEligibleForCompactPrint(OpTy op) {
   // Check E1.
   auto &block = op.getBody().front();
   if (!hasSingleElement(block.without_terminator()))
@@ -359,14 +359,24 @@ public:
 
     IRMapping map;
     for (auto &operand : orig->getOpOperands()) {
+      bool isInitVal = operand.getOperandNumber() >=
+                       red.getInitValues().getBeginOperandIndex();
       if (!gutils->isConstantValue(operand.get())) {
+        if (gutils->width > 1 && isInitVal) {
+          orig->emitError()
+              << "Unsupported non-constant init arg to batched reduce forward "
+                 "handler(opidx="
+              << operand.getOperandNumber() << ", op=" << operand.get()
+              << ")\n";
+          return failure();
+        }
         map.map(operand.get(), gutils->invertPointerM(operand.get(), builder));
         continue;
       }
       if (auto iface =
               dyn_cast<AutoDiffTypeInterface>(operand.get().getType())) {
         if (!iface.isMutable()) {
-          Type retTy = iface.getShadowType();
+          Type retTy = iface.getShadowType(isInitVal ? 1 : gutils->width);
           auto toret = cast<AutoDiffTypeInterface>(retTy).createNullValue(
               builder, operand.get().getLoc());
           map.map(operand.get(), toret);
@@ -404,31 +414,80 @@ public:
       shadow = builder.clone(*orig, map);
     }
 
-    auto invAdd = gutils->invertedPointers.lookup(innerOp.getResult(0));
-    gutils->invertedPointers.erase(innerOp.getResult(0));
-    gutils->erase(invAdd.getDefiningOp());
+    if (auto invAdd =
+            gutils->invertedPointers.lookupOrNull(innerOp.getResult(0))) {
+      gutils->invertedPointers.erase(innerOp.getResult(0));
+      gutils->erase(invAdd.getDefiningOp());
+    }
     BitVector baToErase(cast<OpTy>(primal).getBody().front().getNumArguments());
     for (auto ba : red.getBody().front().getArguments()) {
-      auto invBA = cast<BlockArgument>(gutils->invertedPointers.lookup(ba));
-      gutils->invertedPointers.erase(ba);
-      baToErase.set(invBA.getArgNumber());
+      if (auto invBA = dyn_cast_or_null<BlockArgument>(
+              gutils->invertedPointers.lookupOrNull(ba))) {
+        gutils->invertedPointers.erase(ba);
+        baToErase.set(invBA.getArgNumber());
+      }
     }
     cast<OpTy>(primal).getBody().front().eraseArguments(baToErase);
 
     if (gutils->width > 1) { // batched forward mode
-      auto dimsAttr =
-          dyn_cast<DenseI64ArrayAttr>(shadow->getAttr("dimensions"));
-      if (!dimsAttr) {
-        shadow->emitError("Missing 'dimensions' attribute on ReduceOp");
-        return failure();
+      if constexpr (std::is_same_v<OpTy, ReduceOp>) {
+        auto dimsAttr =
+            dyn_cast<DenseI64ArrayAttr>(shadow->getAttr("dimensions"));
+        if (!dimsAttr) {
+          shadow->emitError("Missing 'dimensions' attribute on ReduceOp");
+          return failure();
+        }
+
+        SmallVector<int64_t> dims;
+        for (int64_t d : dimsAttr.asArrayRef())
+          dims.push_back(d + 1);
+
+        shadow->setAttr("dimensions",
+                        DenseI64ArrayAttr::get(builder.getContext(), dims));
+      } else if constexpr (std::is_same_v<OpTy, ReduceWindowOp>) {
+        auto shadowRW = cast<ReduceWindowOp>(shadow);
+        SmallVector<int64_t> windowDims = {1};
+        windowDims.append(shadowRW.getWindowDimensions().begin(),
+                          shadowRW.getWindowDimensions().end());
+        shadowRW.setWindowDimensionsAttr(
+            builder.getDenseI64ArrayAttr(windowDims));
+
+        if (shadowRW.getWindowStrides()) {
+          SmallVector<int64_t> windowStrides = {1};
+          windowStrides.append(shadowRW.getWindowStrides()->begin(),
+                               shadowRW.getWindowStrides()->end());
+          shadowRW.setWindowStridesAttr(
+              builder.getDenseI64ArrayAttr(windowStrides));
+        }
+
+        if (shadowRW.getBaseDilations()) {
+          SmallVector<int64_t> baseDilations = {1};
+          baseDilations.append(shadowRW.getBaseDilations()->begin(),
+                               shadowRW.getBaseDilations()->end());
+          shadowRW.setBaseDilationsAttr(
+              builder.getDenseI64ArrayAttr(baseDilations));
+        }
+
+        if (shadowRW.getWindowDilations()) {
+          SmallVector<int64_t> windowDilations = {1};
+          windowDilations.append(shadowRW.getWindowDilations()->begin(),
+                                 shadowRW.getWindowDilations()->end());
+          shadowRW.setWindowDilationsAttr(
+              builder.getDenseI64ArrayAttr(windowDilations));
+        }
+
+        if (shadowRW.getPadding()) {
+          auto paddingOriginal =
+              llvm::to_vector(shadowRW.getPadding()->getValues<int64_t>());
+          auto paddingType = RankedTensorType::get(
+              {static_cast<int64_t>(1 + paddingOriginal.size() / 2), 2},
+              builder.getI64Type());
+          SmallVector<int64_t> newPadding = {0, 0};
+          newPadding.append(paddingOriginal.begin(), paddingOriginal.end());
+          shadowRW.setPaddingAttr(
+              mlir::DenseIntElementsAttr::get(paddingType, newPadding));
+        }
       }
-
-      SmallVector<int64_t> dims;
-      for (int64_t d : dimsAttr.asArrayRef())
-        dims.push_back(d + 1);
-
-      shadow->setAttr("dimensions",
-                      DenseI64ArrayAttr::get(builder.getContext(), dims));
     }
 
     size_t shadowCnt = 0;
@@ -2509,13 +2568,14 @@ struct ADDataFlowWhileOp
   }
 };
 
+template <typename OpTy>
 struct ADDataFlowReduceOp
-    : public ADDataFlowOpInterface::ExternalModel<ADDataFlowReduceOp,
-                                                  ReduceOp> {
+    : public ADDataFlowOpInterface::ExternalModel<ADDataFlowReduceOp<OpTy>,
+                                                  OpTy> {
 
   SmallVector<Value> getPotentialIncomingValuesRes(Operation *op,
                                                    mlir::OpResult v) const {
-    auto srt = cast<ReduceOp>(op);
+    auto srt = cast<OpTy>(op);
     auto resvals = cast<ReturnOp>(op->getRegion(0).front().back());
     return {
         srt.getInputs()[v.getResultNumber()],
@@ -2525,7 +2585,7 @@ struct ADDataFlowReduceOp
   }
   SmallVector<Value>
   getPotentialIncomingValuesArg(Operation *op, mlir::BlockArgument v) const {
-    auto srt = cast<ReduceOp>(op);
+    auto srt = cast<OpTy>(op);
     auto resvals = cast<ReturnOp>(op->getRegion(0).front().back());
     if (v.getArgNumber() < srt.getInitValues().size())
       return {srt.getInitValues()[v.getArgNumber()],
@@ -2537,11 +2597,12 @@ struct ADDataFlowReduceOp
   }
   SmallVector<Value> getPotentialTerminatorUsers(Operation *op, Operation *term,
                                                  Value v) const {
-    auto srt = cast<ReduceOp>(op);
+    auto srt = cast<OpTy>(op);
     SmallVector<Value> sv;
     for (size_t i = 0; i < srt.getInputs().size(); i++) {
       if (term->getOperands()[i] == v) {
         sv.push_back(srt.getResults()[i]);
+        sv.push_back(op->getRegion(0).front().getArguments()[i]);
         sv.push_back(op->getRegion(0)
                          .front()
                          .getArguments()[srt.getInitValues().size() + i]);
@@ -5299,7 +5360,9 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     WhileOp::attachInterface<ADDataFlowWhileOp>(*context);
     SortOp::attachInterface<ADDataFlowSortOp>(*context);
     ScatterOp::attachInterface<ADDataFlowScatterOp>(*context);
-    ReduceOp::attachInterface<ADDataFlowReduceOp>(*context);
+    ReduceOp::attachInterface<ADDataFlowReduceOp<ReduceOp>>(*context);
+    ReduceWindowOp::attachInterface<ADDataFlowReduceOp<ReduceWindowOp>>(
+        *context);
 
     ScatterOp::attachInterface<ScatterActivity>(*context);
     ConvertOp::attachInterface<ConvertActivity>(*context);
@@ -5309,6 +5372,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     ReturnOp::attachInterface<AutoDiffHLOReturn>(*context);
 
     ReduceOp::attachInterface<AutoDiffReduceFwd<ReduceOp>>(*context);
+    ReduceWindowOp::attachInterface<AutoDiffReduceFwd<ReduceWindowOp>>(
+        *context);
     stablehlo::IfOp::attachInterface<AutoDiffIfRev>(*context);
     stablehlo::IfOp::attachInterface<AutoDiffIfFwd>(*context);
     stablehlo::IfOp::attachInterface<AutoDiffIfCF>(*context);
@@ -5322,6 +5387,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     WhileOp::attachInterface<AutoDiffWhileFwd>(*context);
     WhileOp::attachInterface<AutoDiffWhileRev>(*context);
     ReduceOp::attachInterface<AutoDiffReduceCF<ReduceOp>>(*context);
+    ReduceWindowOp::attachInterface<AutoDiffReduceCF<ReduceWindowOp>>(*context);
     WhileOp::attachInterface<AutoDiffReduceCF<WhileOp>>(*context);
     BroadcastInDimOp::attachInterface<AutoDiffBroadcastInDimRev>(*context);
     stablehlo::SliceOp::attachInterface<AutoDiffSliceRev>(*context);
