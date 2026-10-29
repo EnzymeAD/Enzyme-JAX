@@ -46,16 +46,13 @@ llvm.func @cfg_guard(%out: !llvm.ptr, %in: !llvm.ptr, %dbuf: !llvm.ptr) {
 // CHECK-NEXT:    %3 = arith.index_cast %1 : i32 to index
 // CHECK-NEXT:    %4 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr) -> memref<?xf64>
 // CHECK-NEXT:    %5 = "enzymexla.pointer2memref"(%arg1) : (!llvm.ptr) -> memref<?xf64>
-// CHECK-NEXT:    %memref = gpu.alloc  () : memref<i32, 1>
 // CHECK-NEXT:    affine.store %1, %alloca[] : memref<i32>
 // CHECK-NEXT:    %c4 = arith.constant 4 : index
-// CHECK-NEXT:    enzymexla.memcpy  %memref, %alloca, %c4 : memref<i32, 1>, memref<i32>
-// CHECK-NEXT:    enzymexla.xla_wrapper @rxla$raised_0 (%5, %4, %memref) : (memref<?xf64>, memref<?xf64>, memref<i32, 1>) -> ()
+// CHECK-NEXT:    enzymexla.xla_wrapper @rxla$raised_0 (%5, %4, %1) <num_specialized = 1> : (memref<?xf64>, memref<?xf64>, i32) -> ()
 // CHECK-NEXT:    %c0 = arith.constant 0 : index
-// CHECK-NEXT:    gpu.dealloc  %memref : memref<i32, 1>
 // CHECK-NEXT:    llvm.return
 // CHECK-NEXT:  }
-// CHECK-NEXT:  func.func private @rxla$raised_0(%arg0: tensor<?xf64>, %arg1: tensor<?xf64>, %arg2: tensor<i32>) -> (tensor<?xf64>, tensor<?xf64>, tensor<i32>) {
+// CHECK-NEXT:  func.func private @rxla$raised_0(%arg0: tensor<?xf64>, %arg1: tensor<?xf64>, %arg2: tensor<i32>) -> (tensor<?xf64>, tensor<?xf64>) {
 // CHECK-NEXT:    %c = stablehlo.constant dense<1> : tensor<i64>
 // CHECK-NEXT:    %0 = stablehlo.convert %arg2 : (tensor<i32>) -> tensor<i64>
 // CHECK-NEXT:    %1 = stablehlo.iota dim = 0 : tensor<1xi64>
@@ -137,5 +134,6 @@ llvm.func @cfg_guard(%out: !llvm.ptr, %in: !llvm.ptr, %dbuf: !llvm.ptr) {
 // CHECK-NEXT:    %45 = stablehlo.dynamic_update_slice %42, %44, %c_29 : (tensor<?xf64>, tensor<24xf64>, tensor<i64>) -> tensor<?xf64>
 // CHECK-NEXT:    %cst_31 = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // CHECK-NEXT:    %46 = stablehlo.dynamic_pad %45, %cst_31, %38, %39, %c_28 : (tensor<?xf64>, tensor<f64>, tensor<1xi64>, tensor<1xi64>, tensor<1xi64>) -> tensor<?xf64>
-// CHECK-NEXT:    return %arg0, %46, %arg2 : tensor<?xf64>, tensor<?xf64>, tensor<i32>
+// CHECK-NEXT:    return %arg0, %46 : tensor<?xf64>, tensor<?xf64>
+// CHECK-NEXT:  }
 // CHECK-NEXT:  }
