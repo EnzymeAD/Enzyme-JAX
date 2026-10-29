@@ -1822,6 +1822,11 @@ def AndPadPad : EnzymeHLOPatternOp<
     "and_pad_pad"> {
   let patterns = ["AndPadPad"];
 }
+def ApplyAndOrPadIntersectPatterns : EnzymeHLOPatternOp<
+    "and_or_pad_intersect"> {
+  let patterns = ["AndOrPadIntersect<stablehlo::AndOp, false>",
+                  "AndOrPadIntersect<stablehlo::OrOp, true>"];
+}
 
 def SelectOpUsedWithinIf : EnzymeHLOPatternOp<
     "select_op_used_within_if"> {
