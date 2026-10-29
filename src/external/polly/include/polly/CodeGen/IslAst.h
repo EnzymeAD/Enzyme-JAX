@@ -172,31 +172,6 @@ struct IslAstAnalysis : AnalysisInfoMixin<IslAstAnalysis> {
                  ScopStandardAnalysisResults &SAR);
 };
 
-class IslAstInfoWrapperPass final : public ScopPass {
-  std::unique_ptr<IslAstInfo> Ast;
-
-public:
-  static char ID;
-
-  IslAstInfoWrapperPass() : ScopPass(ID) {}
-
-  IslAstInfo &getAI() { return *Ast; }
-  const IslAstInfo &getAI() const { return *Ast; }
-
-  /// Build the AST for the given SCoP @p S.
-  bool runOnScop(Scop &S) override;
-
-  /// Register all analyses and transformation required.
-  void getAnalysisUsage(AnalysisUsage &AU) const override;
-
-  /// Release the internal memory.
-  void releaseMemory() override;
-
-  /// Print a source code representation of the program.
-  void printScop(raw_ostream &OS, Scop &S) const override;
-};
-
-llvm::Pass *createIslAstInfoWrapperPassPass();
 llvm::Pass *createIslAstInfoPrinterLegacyPass(llvm::raw_ostream &OS);
 
 struct IslAstPrinterPass final
@@ -211,7 +186,6 @@ struct IslAstPrinterPass final
 } // namespace polly
 
 namespace llvm {
-void initializeIslAstInfoWrapperPassPass(llvm::PassRegistry &);
 void initializeIslAstInfoPrinterLegacyPassPass(llvm::PassRegistry &);
 } // namespace llvm
 

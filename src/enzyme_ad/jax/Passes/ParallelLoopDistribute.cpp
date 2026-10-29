@@ -2663,7 +2663,8 @@ struct Reg2MemIf : public OpRewritePattern<T> {
           // Only erase during the else, since we need that there
           memref::StoreOp::create(rewriter, storeOp.getLoc(), val,
                                   map.lookupOrDefault(storeOp.getMemref()),
-                                  inds);
+                                  inds, /*nontemporal=*/false,
+                                  storeOp.getMaybeAlign());
         }
       } else if (!isUndef(val)) {
         memref::StoreOp::create(rewriter, op.getLoc(), val, alloc,
@@ -2723,7 +2724,8 @@ struct Reg2MemIf : public OpRewritePattern<T> {
             inds.push_back(map.lookupOrDefault(ind));
 
           rewriter.replaceOpWithNewOp<memref::StoreOp>(
-              storeOp, val, map.lookupOrDefault(storeOp.getMemref()), inds);
+              storeOp, val, map.lookupOrDefault(storeOp.getMemref()), inds,
+              /*nontemporal=*/false, storeOp.getMaybeAlign());
         }
       } else if (!isUndef(val)) {
         memref::StoreOp::create(rewriter, op.getLoc(), val, alloc,

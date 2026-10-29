@@ -113,6 +113,7 @@ cc_library(
         [
             "xla_ffi/cuda/blas.cc",
             "xla_ffi/cuda/register.cc",
+            "xla_ffi/cuda/runtime_symbols.cc",
             "xla_ffi/cuda/throw_error.cc",
             "xla_ffi/host/mpi.cc",
             "xla_ffi/host/register.cc",
@@ -2028,6 +2029,7 @@ cc_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:LLVMDialect",
         "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SCFDialect",
         "@z3//:z3_static",
     ],
 )

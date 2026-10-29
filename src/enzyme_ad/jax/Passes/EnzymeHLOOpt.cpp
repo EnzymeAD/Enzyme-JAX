@@ -5731,7 +5731,7 @@ private:
       if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
         inv.assign(transpose.getPermutation().begin(),
                    transpose.getPermutation().end());
-      } else if (isWindowView(op) && !isa<stablehlo::ReshapeOp>(op) ||
+      } else if ((isWindowView(op) && !isa<stablehlo::ReshapeOp>(op)) ||
                  isUnitReshape(op)) {
         SmallVector<int64_t> m = viewMap(op);
         inv.assign(cast<RankedTensorType>(op->getResult(0).getType()).getRank(),
@@ -16920,7 +16920,8 @@ struct ReshapeReduceWindow final
     // Check if the operand of the reshape is a reduce_window operation
     auto reduceWindow =
         reshapeOp.getOperand().getDefiningOp<stablehlo::ReduceWindowOp>();
-    if (!reduceWindow)
+    if (!reduceWindow || reduceWindow.getInputs().size() != 1 ||
+        reduceWindow.getInitValues().size() != 1 || !reduceWindow->hasOneUse())
       return failure();
 
     // Check if there is any non-reshape user of this reduce_window operation
@@ -18907,6 +18908,55 @@ struct CompareOpCanon final
     if (lhsAttr && guaranteedNonNegativeResult(rhs, rewriter)) {
       if (succeeded(
               simplifyNonNegative(lhsAttr, invertDirection(direction), rhs))) {
+        return success();
+      }
+    }
+
+    // The ranges of signed integer operands may decide the compare for every
+    // element: the guard of a grid's last block when the block count divides
+    // the extent, (n - 1 - lane) - b * block >= 0 over every block and lane.
+    auto elementType = dyn_cast<IntegerType>(
+        cast<RankedTensorType>(lhs.getType()).getElementType());
+    if (elementType && elementType.getWidth() > 1 &&
+        !elementType.isUnsignedInteger() &&
+        (!compType || *compType == ComparisonType::SIGNED)) {
+      auto [alo, ahi] = enzyme::getProvableIntegerRange(lhs);
+      auto [blo, bhi] = enzyme::getProvableIntegerRange(rhs);
+      std::optional<bool> value;
+      switch (direction) {
+      case ComparisonDirection::LT:
+        if (ahi.slt(blo))
+          value = true;
+        else if (alo.sge(bhi))
+          value = false;
+        break;
+      case ComparisonDirection::LE:
+        if (ahi.sle(blo))
+          value = true;
+        else if (alo.sgt(bhi))
+          value = false;
+        break;
+      case ComparisonDirection::GT:
+        if (alo.sgt(bhi))
+          value = true;
+        else if (ahi.sle(blo))
+          value = false;
+        break;
+      case ComparisonDirection::GE:
+        if (alo.sge(bhi))
+          value = true;
+        else if (ahi.slt(blo))
+          value = false;
+        break;
+      case ComparisonDirection::EQ:
+      case ComparisonDirection::NE:
+        if (ahi.slt(blo) || alo.sgt(bhi))
+          value = direction == ComparisonDirection::NE;
+        break;
+      }
+      if (value) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, SplatElementsAttr::get(type, rewriter.getBoolAttr(*value)));
         return success();
       }
     }
@@ -28594,6 +28644,17 @@ struct NotCompare
     if (!llvm::hasSingleElement(cmp->getUsers()))
       return failure();
 
+    auto dir = cmp.getComparisonDirection();
+    auto elemTy = getElementTypeOrSelf(cmp.getLhs().getType());
+    if (isa<FloatType>(elemTy)) {
+      auto cmpType = cmp.getCompareType();
+      bool totalOrder =
+          cmpType && *cmpType == stablehlo::ComparisonType::TOTALORDER;
+      if (!totalOrder && dir != stablehlo::ComparisonDirection::EQ &&
+          dir != stablehlo::ComparisonDirection::NE)
+        return failure();
+    }
+
     rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
         op, cmp.getLhs(), cmp.getRhs(),
         negatedComparisonDirection(cmp.getComparisonDirection()),
@@ -28935,6 +28996,108 @@ struct GatherOfBroadcastBatchingDims final
         dn.getIndexVectorDim());
     rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
         op, op.getType(), bcast.getOperand(), op.getStartIndices(), newDn,
+        rewriter.getDenseI64ArrayAttr(sliceSizes),
+        op.getIndicesAreSortedAttr());
+    return success();
+  }
+};
+
+// A gather of a broadcast that indexes, with a window of one element, a
+// dimension the broadcast added reads the same element of the source
+// whatever that index component is: the component carries nothing. Gather
+// from the source without it. A raised kernel indexes the small table it
+// captured by value ([3,3,3,9]: a broadcast of nine scalar arguments) with
+// a constant grid; without the added dimensions the grid folds to a slice.
+struct GatherOfBroadcastIndexedDims final
+    : CheckedOpRewritePattern<stablehlo::GatherOp,
+                              GatherOfBroadcastIndexedDims> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
+    auto bcast = op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!bcast)
+      return failure();
+    auto dn = op.getDimensionNumbers();
+    auto srcTy = cast<RankedTensorType>(bcast.getOperand().getType());
+    auto resTy = cast<RankedTensorType>(bcast.getType());
+    Value indices = op.getStartIndices();
+    auto idxTy = cast<RankedTensorType>(indices.getType());
+    if (!srcTy.hasStaticShape() || !idxTy.hasStaticShape())
+      return failure();
+    // The source's dimensions keep their order and extent.
+    ArrayRef<int64_t> dims = bcast.getBroadcastDimensions();
+    SmallVector<int64_t> toSrc(resTy.getRank(), -1);
+    for (auto [i, d] : llvm::enumerate(dims)) {
+      if ((i > 0 && d <= dims[i - 1]) ||
+          srcTy.getDimSize(i) != resTy.getDimSize(d))
+        return failure();
+      toSrc[d] = i;
+    }
+    // Every dimension the broadcast adds is indexed by one component, with a
+    // window of one element, collapsed.
+    ArrayRef<int64_t> map = dn.getStartIndexMap();
+    SmallVector<bool> keep(map.size(), true);
+    for (int64_t d = 0; d < resTy.getRank(); ++d) {
+      if (toSrc[d] >= 0)
+        continue;
+      auto *it = llvm::find(map, d);
+      if (it == map.end() || op.getSliceSizes()[d] != 1 ||
+          !llvm::is_contained(dn.getCollapsedSliceDims(), d))
+        return failure();
+      keep[it - map.begin()] = false;
+    }
+    if (llvm::all_of(keep, [](bool k) { return k; }) ||
+        llvm::none_of(keep, [](bool k) { return k; }))
+      return failure();
+    // The index vector is a dimension of the indices (a vector of one
+    // component is implicit only when there is one, and it is kept): drop the
+    // components by slicing it, one slice per run of kept ones.
+    int64_t ivd = dn.getIndexVectorDim();
+    if (ivd >= idxTy.getRank())
+      return failure();
+    SmallVector<Value> pieces;
+    for (size_t c = 0; c < keep.size();) {
+      if (!keep[c]) {
+        ++c;
+        continue;
+      }
+      size_t e = c;
+      while (e < keep.size() && keep[e])
+        ++e;
+      SmallVector<int64_t> starts(idxTy.getRank(), 0), limits(idxTy.getShape()),
+          strides(idxTy.getRank(), 1);
+      starts[ivd] = c;
+      limits[ivd] = e;
+      pieces.push_back(stablehlo::SliceOpCreate(rewriter, op.getLoc(), indices,
+                                                starts, limits, strides));
+      c = e;
+    }
+    Value newIndices = pieces.size() == 1
+                           ? pieces[0]
+                           : stablehlo::ConcatenateOp::create(
+                                 rewriter, op.getLoc(), pieces, ivd);
+    auto mapped = [&](ArrayRef<int64_t> ds) {
+      SmallVector<int64_t> out;
+      for (int64_t d : ds)
+        if (toSrc[d] >= 0)
+          out.push_back(toSrc[d]);
+      return out;
+    };
+    SmallVector<int64_t> newMap;
+    for (auto [c, d] : llvm::enumerate(map))
+      if (keep[c])
+        newMap.push_back(toSrc[d]);
+    SmallVector<int64_t> sliceSizes;
+    for (auto [d, size] : llvm::enumerate(op.getSliceSizes()))
+      if (toSrc[d] >= 0)
+        sliceSizes.push_back(size);
+    auto newDn = stablehlo::GatherDimensionNumbersAttr::get(
+        op.getContext(), dn.getOffsetDims(), mapped(dn.getCollapsedSliceDims()),
+        mapped(dn.getOperandBatchingDims()), dn.getStartIndicesBatchingDims(),
+        newMap, ivd);
+    rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
+        op, op.getType(), bcast.getOperand(), newIndices, newDn,
         rewriter.getDenseI64ArrayAttr(sliceSizes),
         op.getIndicesAreSortedAttr());
     return success();
@@ -33365,6 +33528,107 @@ struct ConcatElementwise final
   }
 };
 
+// concat(slice(op(a1, b1)), op(a2, b2), slice(op(a3, b3))) along a
+// dimension, the same elementwise op (name, attributes, operand count and
+// types) behind every piece and at least one piece a slice of it, becomes
+// op(concat(slice(a1), a2, slice(a3)), concat(slice(b1), b2, slice(b3))).
+// Unlike ConcatElementwise the op may have other users: it is then also
+// computed a second time on the concatenate's rows (one evaluation over the
+// concatenate's extent in all); the slices may not, since one that
+// survives the rewrite leaves nothing gained. The rewrite is made only
+// when at most one operand position needs a concatenate of its own, the
+// others being one value already (classifyConcatPieces: the same splat
+// constant, the same scalar broadcast, or adjacent windows of one source
+// in order). So the concatenate moves down the chain of the one computed
+// operand and never multiplies: hoisting over two computed operands leaves
+// a concatenate per operand at every level.
+struct ConcatElementwiseSlice final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                              ConcatElementwiseSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
+                                    PatternRewriter &rewriter) const {
+    if (concatOp.getNumOperands() <= 1)
+      return failure();
+    int64_t dim = concatOp.getDimension();
+    Operation *first = nullptr;
+    SmallVector<Operation *> elems;
+    SmallVector<stablehlo::SliceOp> windows;
+    elems.reserve(concatOp.getNumOperands());
+    windows.reserve(concatOp.getNumOperands());
+    bool anySlice = false;
+    for (Value v : concatOp.getOperands()) {
+      Operation *def = v.getDefiningOp();
+      if (!def)
+        return failure();
+      auto slice = dyn_cast<stablehlo::SliceOp>(def);
+      // A slice with other users survives the rewrite: nothing is gained.
+      if (slice && !isOnlyUsedInOperation(slice, concatOp))
+        return failure();
+      Operation *elem = slice ? slice.getOperand().getDefiningOp() : def;
+      if (!elem || !hasTraitElementwise(elem) || elem->getNumResults() != 1 ||
+          elem->getNumRegions() != 0)
+        return failure();
+      if (isa<stablehlo::ConvertOp>(elem)) // Conflicts with ConvertConcat
+        return failure();
+      auto resTy = dyn_cast<RankedTensorType>(elem->getResult(0).getType());
+      if (!resTy)
+        return failure();
+      for (Value operand : elem->getOperands()) {
+        auto oTy = dyn_cast<RankedTensorType>(operand.getType());
+        if (!oTy || oTy.getShape() != resTy.getShape())
+          return failure();
+      }
+      if (first) {
+        if (first->getName() != elem->getName() ||
+            first->getNumOperands() != elem->getNumOperands() ||
+            computeAttrs(first) != computeAttrs(elem))
+          return failure();
+        for (auto [a, b] : llvm::zip(first->getOperands(), elem->getOperands()))
+          if (cast<RankedTensorType>(a.getType()).getElementType() !=
+              cast<RankedTensorType>(b.getType()).getElementType())
+            return failure();
+      } else {
+        first = elem;
+      }
+      anySlice |= (bool)slice;
+      elems.push_back(elem);
+      windows.push_back(slice);
+    }
+    if (!anySlice) // ConcatElementwise's case
+      return failure();
+
+    auto operandsAt = [&](unsigned i) {
+      SmallVector<Value> values;
+      values.reserve(elems.size());
+      for (Operation *elem : elems)
+        values.push_back(elem->getOperand(i));
+      return values;
+    };
+    unsigned numOperands = first->getNumOperands();
+    int64_t concats = 0;
+    for (unsigned i = 0; i < numOperands; i++)
+      if (classifyConcatPieces(operandsAt(i), windows, dim) ==
+          ConcatPieces::Concatenate)
+        concats++;
+    if (concats > 1)
+      return failure();
+
+    auto loc = concatOp.getLoc();
+    SmallVector<Value> elementwiseOperands;
+    elementwiseOperands.reserve(numOperands);
+    for (unsigned i = 0; i < numOperands; i++)
+      elementwiseOperands.push_back(
+          ConcatenatePiecesCreate(rewriter, loc, operandsAt(i), windows, dim));
+    auto newElementwiseOp = rewriter.create(
+        loc, first->getName().getIdentifier(), ValueRange(elementwiseOperands),
+        TypeRange(concatOp.getType()), computeAttrs(first), {}, {});
+    rewriter.replaceOp(concatOp, newElementwiseOp);
+    return success();
+  }
+};
+
 struct ConcatReshapeReduce final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatReshapeReduce> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -35270,6 +35534,11 @@ struct CommonAssociativeCommutativeOpReorder final
   }
 };
 
+// ln(2) and log2(e), for rebasing logarithms and exponentials between the
+// natural and base-2 forms. <cmath>'s M_LN2 / M_LOG2E are not portable.
+static constexpr double kLn2 = 0.6931471805599453;
+static constexpr double kLog2E = 1.4426950408889634;
+
 struct LogSimplify final
     : public CheckedOpRewritePattern<stablehlo::LogOp, LogSimplify> {
   using CheckedOpRewritePattern<stablehlo::LogOp,
@@ -35298,6 +35567,18 @@ struct LogSimplify final
       auto defOp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
       if (defOp) {
         rewriter.replaceAllUsesWith(op.getResult(), defOp.getOperand());
+        return success();
+      }
+    }
+
+    { // log(exp2(x)) -> x * ln(2)
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::Exp2Op>();
+      if (defOp && isa<FloatType>(op.getType().getElementType())) {
+        auto ln2 = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), op.getType(),
+            cast<ElementsAttr>(makeAttr(op.getType(), kLn2)));
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, defOp.getOperand(),
+                                                      ln2);
         return success();
       }
     }
@@ -35430,6 +35711,63 @@ struct LogSimplify final
           isOnlyUsedInOperation(defOp, op)) { // log(rsqrt(x)) -> -log(x) / 2
         auto logOperand =
             stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getOperand());
+        auto negTwo = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), defOp.getType(),
+            cast<ElementsAttr>(makeAttr(defOp.getType(), -2)));
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, logOperand, negTwo);
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
+struct Log2Simplify final
+    : public CheckedOpRewritePattern<stablehlo::Log2Op, Log2Simplify> {
+  using CheckedOpRewritePattern<stablehlo::Log2Op,
+                                Log2Simplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::Log2Op op,
+                                    PatternRewriter &rewriter) const {
+    { // log2(exp2(x)) -> x
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::Exp2Op>();
+      if (defOp) {
+        rewriter.replaceAllUsesWith(op.getResult(), defOp.getOperand());
+        return success();
+      }
+    }
+
+    { // log2(exp(x)) -> x * log2(e)
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
+      if (defOp && isa<FloatType>(op.getType().getElementType())) {
+        auto log2e = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), op.getType(),
+            cast<ElementsAttr>(makeAttr(op.getType(), kLog2E)));
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, defOp.getOperand(),
+                                                      log2e);
+        return success();
+      }
+    }
+
+    { // log2(sqrt(x)) -> log2(x) / 2
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::SqrtOp>();
+      if (defOp && isOnlyUsedInOperation(defOp, op)) {
+        auto logOperand = stablehlo::Log2Op::create(rewriter, op.getLoc(),
+                                                    defOp.getOperand());
+        auto two = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), defOp.getType(),
+            cast<ElementsAttr>(makeAttr(defOp.getType(), 2)));
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, logOperand, two);
+        return success();
+      }
+    }
+
+    { // log2(rsqrt(x)) -> -log2(x) / 2
+      auto defOp = op.getOperand().getDefiningOp<stablehlo::RsqrtOp>();
+      if (defOp && isOnlyUsedInOperation(defOp, op)) {
+        auto logOperand = stablehlo::Log2Op::create(rewriter, op.getLoc(),
+                                                    defOp.getOperand());
         auto negTwo = stablehlo::ConstantOp::create(
             rewriter, op.getLoc(), defOp.getType(),
             cast<ElementsAttr>(makeAttr(defOp.getType(), -2)));
@@ -44470,27 +44808,35 @@ static void buildScatterUpdateRegion(PatternRewriter &rewriter, Location loc,
   stablehlo::ReturnOp::create(rewriter, loc, result);
 }
 
+// The real/imag "limb" dimension is always appended as the *trailing*
+// dimension. With XLA's default (row-major) layout, f64[d0, ..., dn, 2] has
+// exactly the memory layout of complex<f64>[d0, ..., dn], so the real and
+// imaginary parts of one element stay adjacent in memory. It also keeps the
+// scatter/gather in the canonical form XLA expects (batch dims first, window
+// dims last): with a *leading* limb dimension, XLA's ScatterSimplifier /
+// GatherSimplifier had to materialize a transpose of the full updates/result
+// tensor into the order [indices..., 2], which for a large scatter-add costs
+// more than the scatter itself (EnzymeAD/Reactant.jl#3563).
 static Value concatRealAndImag(PatternRewriter &rewriter, Location loc,
                                Value realPart, Value imagPart) {
   auto tensorType = cast<RankedTensorType>(realPart.getType());
   auto shape = tensorType.getShape();
 
-  // Reshape each to add a leading dimension of size 1:
-  //   [d0, ..., dn] -> [1, d0, ..., dn]
-  SmallVector<int64_t> reshapedShape;
+  // Reshape each to add a trailing dimension of size 1:
+  //   [d0, ..., dn] -> [d0, ..., dn, 1]
+  SmallVector<int64_t> reshapedShape(shape.begin(), shape.end());
   reshapedShape.push_back(1);
-  reshapedShape.append(shape.begin(), shape.end());
 
   auto realReshaped =
       stablehlo::ReshapeOpCreate(rewriter, loc, realPart, reshapedShape);
   auto imagReshaped =
       stablehlo::ReshapeOpCreate(rewriter, loc, imagPart, reshapedShape);
 
-  // Concatenate along the new leading dimension (dim = 0):
-  //   [1, d0, ..., dn] + [1, d0, ..., dn] -> [2, d0, ..., dn]
+  // Concatenate along the new trailing dimension (dim = rank):
+  //   [d0, ..., dn, 1] + [d0, ..., dn, 1] -> [d0, ..., dn, 2]
   return stablehlo::ConcatenateOp::create(
              rewriter, loc, ValueRange{realReshaped, imagReshaped},
-             rewriter.getI64IntegerAttr(0))
+             rewriter.getI64IntegerAttr(shape.size()))
       .getResult();
 }
 
@@ -44514,28 +44860,30 @@ static Value sliceAndCombineComplex(PatternRewriter &rewriter, Location loc,
   auto tensorType = cast<RankedTensorType>(splitTensor.getType());
   auto shape = tensorType.getShape();
   int64_t rank = tensorType.getRank();
+  assert(rank >= 1 && shape.back() == 2 &&
+         "expected a trailing real/imag dimension of size 2");
 
   // Result shape: [d0, ..., dn]
-  SmallVector<int64_t> resultShape(shape.begin() + 1, shape.end());
+  SmallVector<int64_t> resultShape(shape.begin(), shape.end() - 1);
 
   SmallVector<int64_t> sliceStart(rank, 0);
   SmallVector<int64_t> sliceLimit(shape.begin(), shape.end());
   SmallVector<int64_t> sliceStride(rank, 1);
 
-  // Real part: slice [0:1, ...]
-  sliceLimit[0] = 1;
+  // Real part: slice [..., 0:1]
+  sliceLimit[rank - 1] = 1;
 
   auto realSlice = stablehlo::SliceOpCreate(
       rewriter, loc, splitTensor, sliceStart, sliceLimit, sliceStride);
 
-  // Imag part: slice [1:2, ...]
-  sliceStart[0] = 1;
-  sliceLimit[0] = 2;
+  // Imag part: slice [..., 1:2]
+  sliceStart[rank - 1] = 1;
+  sliceLimit[rank - 1] = 2;
 
   auto imagSlice = stablehlo::SliceOpCreate(
       rewriter, loc, splitTensor, sliceStart, sliceLimit, sliceStride);
 
-  // Reshape to remove leading dim of 1
+  // Reshape to remove trailing dim of 1
   auto realResult =
       stablehlo::ReshapeOpCreate(rewriter, loc, realSlice, resultShape);
   auto imagResult =
@@ -44616,7 +44964,8 @@ struct SplitComplexScatter final
     }
 
     // Step 1: For each input/update pair, split into real/imag, reshape,
-    // and concatenate along a new leading dimension of size 2.
+    // and concatenate along a new trailing dimension of size 2.
+    int64_t updateRank = -1;
     SmallVector<Value> concatInputs, concatUpdates;
     for (auto [input, update] :
          llvm::zip_equal(op.getInputs(), op.getUpdates())) {
@@ -44626,6 +44975,7 @@ struct SplitComplexScatter final
       // Process update: depends on scatter kind
       auto curUpdateType = cast<RankedTensorType>(update.getType());
       auto updateShape = curUpdateType.getShape();
+      updateRank = curUpdateType.getRank();
       auto realUpdateType = RankedTensorType::get(updateShape, innerElemType);
 
       Value realUpdate, imagUpdate;
@@ -44673,36 +45023,22 @@ struct SplitComplexScatter final
       concatUpdates.push_back(concatUpdate);
     }
 
-    // Step 2: Adjust scatter dimension numbers for the extra leading
-    // dimension. The new leading input dim maps to the new leading update
-    // dim via update_window_dims.
+    // Step 2: Adjust scatter dimension numbers for the extra trailing
+    // dimension. The new trailing input dim becomes a window dim that maps
+    // to the new trailing update dim. Window dims are matched to operand dims
+    // in increasing order, and the new dim is the largest on both sides, so
+    // appending it to update_window_dims is sufficient; all other dimension
+    // numbers (which refer to the untouched leading dims of the operand and
+    // of the scatter indices) are unchanged.
     auto dnums = op.getScatterDimensionNumbers();
 
-    SmallVector<int64_t> newUpdateWindowDims;
-    newUpdateWindowDims.push_back(0);
-    for (auto d : dnums.getUpdateWindowDims()) {
-      newUpdateWindowDims.push_back(d + 1);
-    }
-
-    SmallVector<int64_t> newInsertedWindowDims;
-    for (auto d : dnums.getInsertedWindowDims()) {
-      newInsertedWindowDims.push_back(d + 1);
-    }
-
-    SmallVector<int64_t> newInputBatchingDims;
-    for (auto d : dnums.getInputBatchingDims()) {
-      newInputBatchingDims.push_back(d + 1);
-    }
-
-    SmallVector<int64_t> newScatterDimsToOperandDims;
-    for (auto d : dnums.getScatterDimsToOperandDims()) {
-      newScatterDimsToOperandDims.push_back(d + 1);
-    }
+    SmallVector<int64_t> newUpdateWindowDims(dnums.getUpdateWindowDims());
+    newUpdateWindowDims.push_back(updateRank);
 
     auto newDnumsAttr = stablehlo::ScatterDimensionNumbersAttr::get(
-        op.getContext(), newUpdateWindowDims, newInsertedWindowDims,
-        newInputBatchingDims, dnums.getScatterIndicesBatchingDims(),
-        newScatterDimsToOperandDims, dnums.getIndexVectorDim());
+        op.getContext(), newUpdateWindowDims, dnums.getInsertedWindowDims(),
+        dnums.getInputBatchingDims(), dnums.getScatterIndicesBatchingDims(),
+        dnums.getScatterDimsToOperandDims(), dnums.getIndexVectorDim());
 
     // Step 3: Create a single scatter op on the concatenated tensors
     auto scatterOp = stablehlo::ScatterOp::create(
@@ -44743,59 +45079,42 @@ struct SplitComplexGather final
     auto innerElemType = complexType.getElementType();
 
     // Step 1: Extract real and imaginary parts, reshape each to add a
-    // leading dimension of size 1, then concatenate along the leading
-    // dimension to form a float tensor with leading dim 2.
-    // e.g., tensor<4xcomplex<f32>> -> real: tensor<4xf32> -> tensor<1x4xf32>
-    //                                 imag: tensor<4xf32> -> tensor<1x4xf32>
-    //                                 concat: tensor<2x4xf32>
+    // trailing dimension of size 1, then concatenate along the trailing
+    // dimension to form a float tensor with trailing dim 2.
+    // e.g., tensor<4xcomplex<f32>> -> real: tensor<4xf32> -> tensor<4x1xf32>
+    //                                 imag: tensor<4xf32> -> tensor<4x1xf32>
+    //                                 concat: tensor<4x2xf32>
     auto concatOperand =
         splitComplexAndConcat(rewriter, op.getLoc(), op.getOperand());
 
     // Step 2: Adjust the gather dimension numbers and slice sizes to account
-    // for the extra leading dimension.
+    // for the extra trailing dimension. Offset dims are matched to the
+    // non-collapsed, non-batching operand dims in increasing order, and the
+    // new dim is the largest on both sides, so appending it to offset_dims
+    // (as the new trailing result dim) is sufficient; collapsed_slice_dims,
+    // operand_batching_dims and start_index_map refer to the untouched
+    // leading operand dims and are unchanged.
     auto dnums = op.getDimensionNumbers();
 
-    // Add the new leading dimension to offset_dims
-    SmallVector<int64_t> newOffsetDims;
-    newOffsetDims.push_back(0);
-    for (auto d : dnums.getOffsetDims()) {
-      newOffsetDims.push_back(d + 1);
-    }
-    // The new offset dim corresponds to the first dimension of the new result
-
-    SmallVector<int64_t> newCollapsedSliceDims;
-    for (auto d : dnums.getCollapsedSliceDims()) {
-      newCollapsedSliceDims.push_back(d + 1);
-    }
-
-    SmallVector<int64_t> newOperandBatchingDims;
-    for (auto d : dnums.getOperandBatchingDims()) {
-      newOperandBatchingDims.push_back(d + 1);
-    }
-
-    SmallVector<int64_t> newStartIndexMap;
-    for (auto d : dnums.getStartIndexMap()) {
-      newStartIndexMap.push_back(d + 1);
-    }
+    SmallVector<int64_t> newOffsetDims(dnums.getOffsetDims());
+    newOffsetDims.push_back(resultType.getRank());
 
     auto newDnums = stablehlo::GatherDimensionNumbersAttr::get(
-        op.getContext(), newOffsetDims, newCollapsedSliceDims,
-        newOperandBatchingDims, dnums.getStartIndicesBatchingDims(),
-        newStartIndexMap, dnums.getIndexVectorDim());
+        op.getContext(), newOffsetDims, dnums.getCollapsedSliceDims(),
+        dnums.getOperandBatchingDims(), dnums.getStartIndicesBatchingDims(),
+        dnums.getStartIndexMap(), dnums.getIndexVectorDim());
 
-    // Prepend 2 to slice_sizes for the new leading dimension
-    SmallVector<int64_t> newSliceSizes;
+    // Append 2 to slice_sizes for the new trailing dimension
+    SmallVector<int64_t> newSliceSizes(op.getSliceSizes());
     newSliceSizes.push_back(2);
-    newSliceSizes.append(op.getSliceSizes().begin(), op.getSliceSizes().end());
     auto newSliceSizesAttr =
         DenseI64ArrayAttr::get(op.getContext(), newSliceSizes);
 
     // Step 3: Perform the gather on the concatenated operand
-    // Result type: trailing dim of size 2 + original result shape
+    // Result type: original result shape + trailing dim of size 2
     auto resultShape = resultType.getShape();
-    SmallVector<int64_t> newResultShape;
+    SmallVector<int64_t> newResultShape(resultShape);
     newResultShape.push_back(2);
-    newResultShape.append(resultShape.begin(), resultShape.end());
     auto newResultType = RankedTensorType::get(newResultShape, innerElemType);
 
     auto gatherOp = stablehlo::GatherOp::create(
@@ -44803,7 +45122,7 @@ struct SplitComplexGather final
         op.getStartIndices(), newDnums, newSliceSizesAttr,
         op.getIndicesAreSortedAttr());
 
-    // Step 4: Slice the result along the leading dimension to extract
+    // Step 4: Slice the result along the trailing dimension to extract
     // real and imag parts, reshape, and recombine.
     auto complexResult =
         sliceAndCombineComplex(rewriter, op.getLoc(), gatherOp);
@@ -45550,7 +45869,7 @@ struct EnzymeHLOOptPass
         MaxSimplify, MinSimplify, OrSimplify, XorSimplify, MulSimplify,
         DivSimplify, RemSimplify, PowSimplify, NoopSlice, NoopReverse,
         SliceReverse, SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
-        SliceDynamicSlice, LogSimplify, ShiftRightLogicalSimplify,
+        SliceDynamicSlice, LogSimplify, Log2Simplify, ShiftRightLogicalSimplify,
         NegativePadToSlice, SliceSimplify, ConvertSimplify, TransposeSimplify,
         DotGeneralSimplify, DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
@@ -45605,6 +45924,7 @@ struct EnzymeHLOOptPass
              UnaryConstProp<stablehlo::IsFiniteOp, stablehlo::isFiniteOp>,
              UnaryConstProp<stablehlo::LogOp, stablehlo::logOp>,
              UnaryConstProp<stablehlo::Log1pOp, stablehlo::log1pOp>,
+             UnaryConstProp<stablehlo::Log2Op, stablehlo::log2Op>,
              UnaryConstProp<stablehlo::AbsOp, stablehlo::absOp>,
              UnaryConstProp<stablehlo::NegOp, stablehlo::negOp>,
              UnaryConstProp<stablehlo::SqrtOp, stablehlo::sqrtOp>,
@@ -45613,6 +45933,7 @@ struct EnzymeHLOOptPass
              UnaryConstProp<stablehlo::SineOp, stablehlo::sineOp>,
              UnaryConstProp<stablehlo::ExpOp, stablehlo::exponentialOp>,
              UnaryConstProp<stablehlo::Expm1Op, stablehlo::expm1Op>,
+             UnaryConstProp<stablehlo::Exp2Op, stablehlo::exp2Op>,
              UnaryConstProp<stablehlo::TanhOp, stablehlo::tanhOp>,
              UnaryConstProp<stablehlo::LogisticOp, stablehlo::logisticOp>,
              UnaryConstProp<chlo::ConjOp, conjOp>,
@@ -45700,8 +46021,8 @@ struct EnzymeHLOOptPass
     if (passses & 32)
       patterns
           .add<UnaryPadPush<stablehlo::ConvertOp>,
-               UnaryPadPush<stablehlo::TanhOp>, UnaryPadPush<stablehlo::ExpOp>>(
-              context);
+               UnaryPadPush<stablehlo::TanhOp>, UnaryPadPush<stablehlo::ExpOp>,
+               UnaryPadPush<stablehlo::Exp2Op>>(context);
 
     if (passses & 64)
       patterns.add<TransposePad>(context);
@@ -45728,7 +46049,8 @@ struct EnzymeHLOOptPass
           CSE<stablehlo::BatchNormTrainingOp>,
           CSE<stablehlo::BatchNormInferenceOp>, CSE<stablehlo::BatchNormGradOp>,
           CSE<stablehlo::ExpOp>, CSE<stablehlo::Expm1Op>, CSE<stablehlo::LogOp>,
-          CSE<stablehlo::Log1pOp>, CSE<stablehlo::TanhOp>,
+          CSE<stablehlo::Log1pOp>, CSE<stablehlo::Exp2Op>,
+          CSE<stablehlo::Log2Op>, CSE<stablehlo::TanhOp>,
           CSE<stablehlo::LogisticOp>, CSE<stablehlo::SqrtOp>,
           CSE<stablehlo::RsqrtOp>, CSE<stablehlo::CbrtOp>,
           CSE<stablehlo::SineOp>, CSE<stablehlo::CosineOp>,
@@ -45927,6 +46249,7 @@ struct EnzymeHLOOptPass
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique, ScatterOutOfBoundsNoop,
         GatherOfMaskedScatter, GatherOfBroadcastBatchingDims,
+        GatherOfBroadcastIndexedDims,
         ReduceTransposeSimplify,
         WhileScatterAccumulatorNoAdd,
         BroadcastIotaSimplify,
@@ -45941,6 +46264,7 @@ struct EnzymeHLOOptPass
         ConcatReshapeBroadcast,
         ConcatReshapeReduce,
         ConcatElementwise,
+        ConcatElementwiseSlice,
         ConcatReshapeElementwise,
         TransposeAllUsersSlice,
         ReduceReduce,

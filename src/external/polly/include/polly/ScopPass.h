@@ -6,11 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file defines the ScopPass class.  ScopPasses are just RegionPasses,
-// except they operate on Polly IR (Scop and ScopStmt) built by ScopInfo Pass.
-// Because they operate on Polly IR, not the LLVM IR, ScopPasses are not allowed
-// to modify the LLVM IR. Due to this limitation, the ScopPass class takes
-// care of declaring that no LLVM passes are invalidated.
+// This file defines the pass manager plumbing for passes that operate on
+// Polly IR (Scop and ScopStmt) built by the ScopInfo analysis: the scop
+// analysis manager, its function proxies and the function-to-scop adaptor.
 //
 //===----------------------------------------------------------------------===//
 
@@ -19,7 +17,6 @@
 
 #include "polly/ScopInfo.h"
 #include "llvm/ADT/PriorityWorklist.h"
-#include "llvm/Analysis/RegionPass.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/PassManagerImpl.h"
@@ -154,33 +151,6 @@ using OwningScopAnalysisManagerFunctionProxy =
 using ScopPassManager =
     PassManager<Scop, ScopAnalysisManager, ScopStandardAnalysisResults &,
                 SPMUpdater &>;
-
-/// ScopPass - This class adapts the RegionPass interface to allow convenient
-/// creation of passes that operate on the Polly IR. Instead of overriding
-/// runOnRegion, subclasses override runOnScop.
-class ScopPass : public RegionPass {
-  Scop *S;
-
-protected:
-  explicit ScopPass(char &ID) : RegionPass(ID), S(nullptr) {}
-
-  /// runOnScop - This method must be overloaded to perform the
-  /// desired Polyhedral transformation or analysis.
-  ///
-  virtual bool runOnScop(Scop &S) = 0;
-
-  /// Print method for SCoPs.
-  virtual void printScop(raw_ostream &OS, Scop &S) const {}
-
-  /// getAnalysisUsage - Subclasses that override getAnalysisUsage
-  /// must call this.
-  ///
-  void getAnalysisUsage(AnalysisUsage &AU) const override;
-
-private:
-  bool runOnRegion(Region *R, RGPassManager &RGM) override;
-  void print(raw_ostream &OS, const Module *) const override;
-};
 
 struct ScopStandardAnalysisResults {
   DominatorTree &DT;

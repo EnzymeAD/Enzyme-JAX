@@ -212,3 +212,38 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr = dense<64> : vector<4
 // CHECK-NEXT: affine.store %[[V1]], %[[V12]][0] : memref<?xf64>
 // CHECK-NEXT: return
 // CHECK-NEXT: }
+
+// -----
+
+// A temporary stored whole, its two i128 members then written behind an
+// 8-aligned pointer, and those copied out through one: the stores in the
+// copy's place are of that run, and keep the 8 bytes the copy promised of its
+// pointer rather than claim the integer's ABI alignment of 16.
+module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr = dense<64> : vector<4xi64>, i64 = dense<64> : vector<2xi64>, i128 = dense<128> : vector<2xi64>, i32 = dense<32> : vector<2xi64>, i8 = dense<8> : vector<2xi64>, f64 = dense<64> : vector<2xi64>>} {
+  func.func @copy_out_wide(%init: !llvm.struct<(ptr, i128, i128)>, %x: i128, %dst: !llvm.ptr) {
+    %one = arith.constant 1 : i64
+    %c32 = arith.constant 32 : i64
+    %t = llvm.alloca %one x !llvm.struct<(ptr, i128, i128)> {alignment = 8 : i64} : (i64) -> !llvm.ptr
+    %w = "enzymexla.pointer2memref"(%t) : (!llvm.ptr) -> memref<?x!llvm.struct<(ptr, i128, i128)>>
+    affine.store %init, %w[0] : memref<?x!llvm.struct<(ptr, i128, i128)>>
+    %d = "enzymexla.pointer2memref"(%t) : (!llvm.ptr) -> memref<?xi128>
+    affine.store %x, %d[1] {alignment = 8 : i64} : memref<?xi128>
+    affine.store %x, %d[2] {alignment = 8 : i64} : memref<?xi128>
+    %r = llvm.getelementptr %t[16] : (!llvm.ptr) -> !llvm.ptr, i8
+    "llvm.intr.memcpy"(%dst, %r, %c32) <{arg_attrs = [{llvm.align = 8 : i64}, {llvm.align = 8 : i64}, {}], isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @copy_out_wide(%arg0: !llvm.struct<(ptr, i128, i128)>, %arg1: i128, %arg2: !llvm.ptr) {
+// CHECK-NEXT:   %c1_i64 = arith.constant 1 : i64
+// CHECK-NEXT:   %c32_i64 = arith.constant 32 : i64
+// CHECK-NEXT:   %0 = llvm.extractvalue %arg0[1] : !llvm.struct<(ptr, i128, i128)> 
+// CHECK-NEXT:   %1 = llvm.extractvalue %arg0[2] : !llvm.struct<(ptr, i128, i128)> 
+// CHECK-NEXT:   %2 = "enzymexla.pointer2memref"(%arg2) : (!llvm.ptr) -> memref<?xi128>
+// CHECK-NEXT:   affine.store %arg1, %2[0] {alignment = 8 : i64} : memref<?xi128>
+// CHECK-NEXT:   %3 = llvm.getelementptr %arg2[16] : (!llvm.ptr) -> !llvm.ptr, i8
+// CHECK-NEXT:   %4 = "enzymexla.pointer2memref"(%3) : (!llvm.ptr) -> memref<?xi128>
+// CHECK-NEXT:   affine.store %arg1, %4[0] {alignment = 8 : i64} : memref<?xi128>
+// CHECK-NEXT:   return
+// CHECK-NEXT: }

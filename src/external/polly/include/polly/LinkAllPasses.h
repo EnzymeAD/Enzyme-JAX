@@ -28,8 +28,6 @@ namespace polly {
 llvm::Pass *createCodePreparationPass();
 llvm::Pass *createScopInlinerPass();
 llvm::Pass *createDeadCodeElimWrapperPass();
-llvm::Pass *createDependenceInfoPass();
-llvm::Pass *createDependenceInfoPrinterLegacyPass(llvm::raw_ostream &OS);
 llvm::Pass *createDependenceInfoWrapperPassPass();
 llvm::Pass *
 createDependenceInfoPrinterLegacyFunctionPass(llvm::raw_ostream &OS);
@@ -45,11 +43,8 @@ llvm::Pass *createPolyhedralInfoPass();
 llvm::Pass *createPolyhedralInfoPrinterLegacyPass(llvm::raw_ostream &OS);
 llvm::Pass *createScopDetectionWrapperPassPass();
 llvm::Pass *createScopDetectionPrinterLegacyPass(llvm::raw_ostream &OS);
-llvm::Pass *createScopInfoRegionPassPass();
-llvm::Pass *createScopInfoPrinterLegacyRegionPass(llvm::raw_ostream &OS);
 llvm::Pass *createScopInfoWrapperPassPass();
 llvm::Pass *createScopInfoPrinterLegacyFunctionPass(llvm::raw_ostream &OS);
-llvm::Pass *createIslAstInfoWrapperPassPass();
 llvm::Pass *createIslAstInfoPrinterLegacyPass(llvm::raw_ostream &OS);
 llvm::Pass *createCodeGenerationPass();
 llvm::Pass *createIslScheduleOptimizerWrapperPass();
@@ -80,8 +75,6 @@ struct PollyForcePassLinking {
 
     polly::createCodePreparationPass();
     polly::createDeadCodeElimWrapperPass();
-    polly::createDependenceInfoPass();
-    polly::createDependenceInfoPrinterLegacyPass(llvm::outs());
     polly::createDependenceInfoWrapperPassPass();
     polly::createDependenceInfoPrinterLegacyFunctionPass(llvm::outs());
     polly::createDOTOnlyPrinterWrapperPass();
@@ -93,14 +86,11 @@ struct PollyForcePassLinking {
     polly::createJSONImporterPrinterLegacyPass(llvm::outs());
     polly::createScopDetectionWrapperPassPass();
     polly::createScopDetectionPrinterLegacyPass(llvm::outs());
-    polly::createScopInfoRegionPassPass();
-    polly::createScopInfoPrinterLegacyRegionPass(llvm::outs());
     polly::createScopInfoWrapperPassPass();
     polly::createScopInfoPrinterLegacyFunctionPass(llvm::outs());
     polly::createPollyCanonicalizePass();
     polly::createPolyhedralInfoPass();
     polly::createPolyhedralInfoPrinterLegacyPass(llvm::outs());
-    polly::createIslAstInfoWrapperPassPass();
     polly::createIslAstInfoPrinterLegacyPass(llvm::outs());
     polly::createCodeGenerationPass();
     polly::createIslScheduleOptimizerWrapperPass();
@@ -126,20 +116,15 @@ void initializeCodePreparationPass(llvm::PassRegistry &);
 void initializeScopInlinerPass(llvm::PassRegistry &);
 void initializeScopDetectionWrapperPassPass(llvm::PassRegistry &);
 void initializeScopDetectionPrinterLegacyPassPass(llvm::PassRegistry &);
-void initializeScopInfoRegionPassPass(PassRegistry &);
-void initializeScopInfoPrinterLegacyRegionPassPass(llvm::PassRegistry &);
 void initializeScopInfoWrapperPassPass(PassRegistry &);
 void initializeScopInfoPrinterLegacyFunctionPassPass(PassRegistry &);
 void initializeDeadCodeElimWrapperPassPass(llvm::PassRegistry &);
 void initializeJSONExporterPass(llvm::PassRegistry &);
 void initializeJSONImporterPass(llvm::PassRegistry &);
 void initializeJSONImporterPrinterLegacyPassPass(llvm::PassRegistry &);
-void initializeDependenceInfoPass(llvm::PassRegistry &);
-void initializeDependenceInfoPrinterLegacyPassPass(llvm::PassRegistry &);
 void initializeDependenceInfoWrapperPassPass(llvm::PassRegistry &);
 void initializeDependenceInfoPrinterLegacyFunctionPassPass(
     llvm::PassRegistry &);
-void initializeIslAstInfoWrapperPassPass(llvm::PassRegistry &);
 void initializeIslAstInfoPrinterLegacyPassPass(llvm::PassRegistry &);
 void initializeCodeGenerationPass(llvm::PassRegistry &);
 void initializeIslScheduleOptimizerWrapperPassPass(llvm::PassRegistry &);

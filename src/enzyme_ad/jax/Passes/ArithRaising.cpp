@@ -358,10 +358,11 @@ struct RaiseAtan : public OpRewritePattern<math::AtanOp> {
   }
 };
 
-// stablehlo has a natural logarithm and a natural exponential but no base-2 or
-// base-10 forms, so the math dialect's other bases are rescaled onto those.
-// The libdevice raising hands us math.log2/log10/exp2 for __nv_log2, __nv_log10
-// and __nv_exp2, so without these they reach XLA export unraised.
+// stablehlo has natural and base-2 logarithms and exponentials but no base-10
+// form, so math.log10 is rescaled onto the natural one. The libdevice raising
+// hands us math.log10 for __nv_log10, so without this it reaches XLA export
+// unraised. math.log2 and math.exp2 raise directly to stablehlo.log2 and
+// stablehlo.exp2 (see the RaiseUnary list below).
 struct RaiseLog10 : public OpRewritePattern<math::Log10Op> {
   using OpRewritePattern<math::Log10Op>::OpRewritePattern;
 
@@ -381,53 +382,6 @@ struct RaiseLog10 : public OpRewritePattern<math::Log10Op> {
     Value log = stablehlo::LogOp::create(rewriter, loc, log10Op.getOperand());
 
     rewriter.replaceOpWithNewOp<stablehlo::MulOp>(log10Op, log, scale);
-    return success();
-  }
-};
-
-struct RaiseLog2 : public OpRewritePattern<math::Log2Op> {
-  using OpRewritePattern<math::Log2Op>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(math::Log2Op log2Op,
-                                PatternRewriter &rewriter) const override {
-    // log2(x) -> log(x) * (1 / ln(2))
-    auto ty = dyn_cast<RankedTensorType>(log2Op.getResult().getType());
-    if (!ty || !isa<FloatType>(ty.getElementType()))
-      return failure();
-
-    auto loc = log2Op.getLoc();
-    // 1 / ln(2)
-    Attribute constAttr =
-        FloatAttr::get(ty.getElementType(), 1.44269504088896340736);
-    Value scale = stablehlo::ConstantOp::create(
-        rewriter, loc, ty, SplatElementsAttr::get(ty, constAttr));
-    Value log = stablehlo::LogOp::create(rewriter, loc, log2Op.getOperand());
-
-    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(log2Op, log, scale);
-    return success();
-  }
-};
-
-struct RaiseExp2 : public OpRewritePattern<math::Exp2Op> {
-  using OpRewritePattern<math::Exp2Op>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(math::Exp2Op exp2Op,
-                                PatternRewriter &rewriter) const override {
-    // exp2(x) -> exp(x * ln(2))
-    auto ty = dyn_cast<RankedTensorType>(exp2Op.getResult().getType());
-    if (!ty || !isa<FloatType>(ty.getElementType()))
-      return failure();
-
-    auto loc = exp2Op.getLoc();
-    // ln(2)
-    Attribute constAttr =
-        FloatAttr::get(ty.getElementType(), 0.69314718055994530942);
-    Value scale = stablehlo::ConstantOp::create(
-        rewriter, loc, ty, SplatElementsAttr::get(ty, constAttr));
-    Value scaled =
-        stablehlo::MulOp::create(rewriter, loc, exp2Op.getOperand(), scale);
-
-    rewriter.replaceOpWithNewOp<stablehlo::ExpOp>(exp2Op, scaled);
     return success();
   }
 };
@@ -814,6 +768,8 @@ struct ArithRaisingPass
         RaiseUnary<math::Log1pOp,       stablehlo::Log1pOp,    stablehlo::Log1pOp>,
         RaiseUnary<math::ExpOp,         stablehlo::ExpOp,      mhlo::ExpOp>,
         RaiseUnary<math::ExpM1Op,       stablehlo::Expm1Op,    stablehlo::Expm1Op>,
+        RaiseUnary<math::Log2Op,        stablehlo::Log2Op,     mhlo::Log2Op>,
+        RaiseUnary<math::Exp2Op,        stablehlo::Exp2Op,     mhlo::Exp2Op>,
         RaiseUnary<math::TanhOp,        stablehlo::TanhOp,     stablehlo::TanhOp>,
         RaiseUnary<math::SqrtOp,        stablehlo::SqrtOp,     mhlo::SqrtOp>,
         RaiseUnary<math::RsqrtOp,       stablehlo::RsqrtOp,    mhlo::RsqrtOp>,
@@ -848,10 +804,9 @@ struct ArithRaisingPass
                RaiseExtUI, RaiseToConvert<arith::ExtSIOp>,
                RaiseToConvert<arith::TruncIOp>, RaiseMulAdd<math::FmaOp>,
                RaiseMulAdd<enzymexla::FMulAddOp>, RaiseCopySign, RaiseTruncOp,
-               RaiseAtan, RaiseLog10, RaiseLog2, RaiseExp2, RaiseMaxNumF,
-               RaiseMinNumF, RaiseIsNaN, RaiseConstant, RaiseFPToSI,
-               RaiseSIToFP, RaiseUIToFP, RaiseSelect, RaiseCmpI, RaiseSinCos>(
-              context);
+               RaiseAtan, RaiseLog10, RaiseMaxNumF, RaiseMinNumF, RaiseIsNaN,
+               RaiseConstant, RaiseFPToSI, RaiseSIToFP, RaiseUIToFP,
+               RaiseSelect, RaiseCmpI, RaiseSinCos>(context);
 
     walkAndApplyPatterns(getOperation(), std::move(patterns));
   }
