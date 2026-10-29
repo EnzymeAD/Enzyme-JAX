@@ -5731,7 +5731,7 @@ private:
       if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
         inv.assign(transpose.getPermutation().begin(),
                    transpose.getPermutation().end());
-      } else if (isWindowView(op) && !isa<stablehlo::ReshapeOp>(op) ||
+      } else if ((isWindowView(op) && !isa<stablehlo::ReshapeOp>(op)) ||
                  isUnitReshape(op)) {
         SmallVector<int64_t> m = viewMap(op);
         inv.assign(cast<RankedTensorType>(op->getResult(0).getType()).getRank(),
