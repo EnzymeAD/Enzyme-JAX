@@ -1,5 +1,7 @@
 load("@jax//jaxlib:symlink_files.bzl", "symlink_inputs")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
+load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda")
+load("@local_config_rocm//rocm:build_defs.bzl", "if_rocm")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_python//python:py_library.bzl", "py_library")
@@ -132,11 +134,7 @@ cc_library(
             "xla_ffi/cuda/**/*.h",
             "xla_ffi/rocm/**/*.h",
         ]),
-    copts = select({
-        "@local_config_cuda//:is_cuda_enabled": ["-DENZYMEJAX_CUDA=1"],
-        "@local_config_rocm//rocm:using_hipcc": ["-DENZYMEJAX_ROCM=1"],
-        "//conditions:default": [],
-    }),
+    copts = if_cuda(["-DENZYMEJAX_CUDA=1"]) + if_rocm(["-DENZYMEJAX_ROCM=1"]),
     visibility = ["//visibility:public"],
     deps = [
         ":EnzymeXLADialect",
@@ -157,20 +155,16 @@ cc_library(
     ] + select({
         "@xla//xla/tsl:windows": [],
         "//conditions:default": ["@mpitrampoline"],
-    }) + select({
-        "@local_config_cuda//:is_cuda_enabled": [
-            "@jax//jaxlib:ffi_helpers",
-            "@jax//jaxlib/cuda:cuda_blas_handle_pool",
-            "@local_config_cuda//cuda:cuda_headers",
-            "@xla//xla/tsl/cuda:cublas",
-            "@xla//xla/tsl/cuda:cudart",
-        ],
-        "@local_config_rocm//rocm:using_hipcc": [
-            "@local_config_rocm//rocm:hip",
-            "@local_config_rocm//rocm:rocm_headers",
-        ],
-        "//conditions:default": [],
-    }),
+    }) + if_cuda([
+        "@jax//jaxlib:ffi_helpers",
+        "@jax//jaxlib/cuda:cuda_blas_handle_pool",
+        "@local_config_cuda//cuda:cuda_headers",
+        "@xla//xla/tsl/cuda:cublas",
+        "@xla//xla/tsl/cuda:cudart",
+    ]) + if_rocm([
+        "@local_config_rocm//rocm:hip",
+        "@local_config_rocm//rocm:rocm_headers",
+    ]),
 )
 
 cc_library(
