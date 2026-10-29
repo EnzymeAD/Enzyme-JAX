@@ -68,39 +68,9 @@ jobs:
           # inputs into sandbox ... (File exists)".
           run() { name=$1; shift; for i in 1 2; do v=${name}_$i; echo "== $v"; bazel $BZ shutdown > /dev/null 2>&1 || true; rm -rf /dev/shm/bazel-sandbox.* || true; bazel $BZ build $BAZEL_FLAGS --test_env=DIAG_VARIANT=$v "$@" $TESTS > /tmp/build_$v.txt 2>&1 || true; ( time bazel $BZ test $BAZEL_FLAGS --test_env=DIAG_VARIANT=$v --nocache_test_results --test_output=errors --profile=/tmp/prof_$v.json "$@" $TESTS ) > /tmp/out_$v.txt 2>&1 || true; grep -E "Executed|Elapsed|real|TIMEOUT|FAILED|skipped|ERROR" /tmp/out_$v.txt || true; done; }
           BZ=""
-          DIR=--extra_toolchains=//builddeps:dir_py_toolchain
-          apt-get update -qq > /dev/null 2>&1 && apt-get install -y -qq strace > /dev/null 2>&1 || true
-          echo "== the exact test spawn (local strategy, -s)"
-          bazel shutdown > /dev/null 2>&1 || true
-          bazel test $BAZEL_FLAGS $DIR -s --strategy=TestRunner=local --test_env=DIAG_VARIANT=spawn --nocache_test_results //test/lit_tests:cse_iota.mlir.test > /tmp/out_spawn.txt 2>&1 || true
-          grep -E "Executed|FAILED" /tmp/out_spawn.txt || true
-          python3 - <<'PY' || true
-          import re
-          s = re.sub(r'\x1b\[[0-9;]*m', '', open('/tmp/out_spawn.txt', errors='replace').read())
-          m = re.search(r"SUBCOMMAND: [^\n]*Testing //test/lit_tests:cse_iota\.mlir\.test'[^\n]*\n(\(cd .*?\n[^\n]*\))\n", s, re.S)
-          cmd = m.group(1) + "\n" if m else "echo 'no spawn found'\n"
-          open('/tmp/spawn.sh', 'w').write(cmd)
-          last = re.search(r"\n(  external/bazel_tools/tools/test/test-setup\.sh [^\n]*\))\n$", cmd).group(1)
-          # The bare test binary with the same environment (runfiles paths made absolute, as test-setup.sh does), no test-setup.sh.
-          direct = cmd.replace(last, "  bash -c 'export RUNFILES_DIR=$PWD/$RUNFILES_DIR TEST_SRCDIR=$PWD/$TEST_SRCDIR PYTHON_RUNFILES=$PWD/$PYTHON_RUNFILES JAVA_RUNFILES=$PWD/$JAVA_RUNFILES; cd $TEST_SRCDIR/$TEST_WORKSPACE && exec $OLDPWD/bazel-out/k8-opt/bin/test/lit_tests/cse_iota.mlir.test -v test/lit_tests/cse_iota.mlir')")
-          open('/tmp/spawn_direct.sh', 'w').write(direct)
-          # test-setup.sh around /bin/true: the wrapper's own cost.
-          wrapper = cmd.replace(last, "  external/bazel_tools/tools/test/test-setup.sh /bin/true)")
-          open('/tmp/spawn_wrapper.sh', 'w').write(wrapper)
-          # test-setup.sh with TEST_TMPDIR and every testlogs output on tmpfs.
-          shm = cmd.replace("bazel-out/k8-opt/testlogs/", "/dev/shm/testlogs/").replace("TEST_TMPDIR=_tmp/", "TEST_TMPDIR=/dev/shm/tmp/")
-          open('/tmp/spawn_shm.sh', 'w').write(shm)
-          print(direct[-330:]); print(wrapper[-120:])
-          PY
-          mkdir -p /dev/shm/testlogs/test/lit_tests/cse_iota.mlir.test /dev/shm/tmp
-          echo "-- one direct run, checked:"; bash /tmp/spawn_direct.sh 2>&1 | tail -3
-          echo "-- one wrapper-only run, checked:"; bash /tmp/spawn_wrapper.sh 2>&1 | tail -2
-          par() { name=$1; shift; for r in 1 2 3; do ( time ( for i in $(seq 32); do bash "$@" > /dev/null 2>&1 & done; wait ) ) 2>&1 | grep real | sed "s/^/$name x32: /"; done; ( time bash "$@" > /dev/null 2>&1 ) 2>&1 | grep real | sed "s/^/$name x1: /"; }
-          par spawn /tmp/spawn.sh
-          par direct /tmp/spawn_direct.sh
-          par wrapper /tmp/spawn_wrapper.sh
-          par shm /tmp/spawn_shm.sh
-          echo 'true' > /tmp/bashtrue.sh; par bashtrue /tmp/bashtrue.sh
+          echo "== compile phase: local_cpu_resources sweep (remote cache bypassed, fresh copt per variant, warmed up first)"
+          bazel build $BAZEL_FLAGS --remote_cache= --noremote_accept_cached --copt=-DDIAG_CPUS=0 @llvm-project//mlir:IR @llvm-project//llvm:Analysis > /dev/null 2>&1 || true
+          for n in 24 32 28 24 32; do bazel shutdown > /dev/null 2>&1 || true; ( time bazel build $BAZEL_FLAGS --remote_cache= --noremote_accept_cached --copt=-DDIAG_CPUS=$n$RANDOM --local_cpu_resources=$n @llvm-project//mlir:IR @llvm-project//llvm:Analysis ) 2>&1 | grep -E "real|processes:|ERROR" | sed "s/^/cpus=$n: /"; done
           echo "== files opened for writing / created by one spawn (strace)"
           strace -f -ttt -e trace=%file -o /tmp/strace_spawn.txt bash /tmp/spawn.sh > /dev/null 2>&1 || true
           python3 - <<'PY' || true
