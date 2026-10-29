@@ -10370,6 +10370,65 @@ struct RemSimplify
   }
 };
 
+// (m * x + y) / c and (m * x + y) % c when c divides m and y is provably
+// non-negative: the multiple contributes whole blocks of c, so the quotient is
+// (m / c) * x + y / c and the remainder y % c. The index of a lane within a
+// block of a linearized grid, `(36 e + l) / 6` and `(36 e + l) % 6`, becomes
+// `6 e + l / 6` and `l % 6`.
+template <typename OpTy>
+struct DivRemOfSumWithMultiple final
+    : CheckedOpRewritePattern<OpTy, DivRemOfSumWithMultiple<OpTy>> {
+  using CheckedOpRewritePattern<
+      OpTy, DivRemOfSumWithMultiple<OpTy>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
+    auto ty = dyn_cast<RankedTensorType>(op.getType());
+    if (!ty || !isa<IntegerType>(ty.getElementType()))
+      return failure();
+    SplatElementsAttr cAttr;
+    if (!matchPattern(op.getRhs(), m_Constant(&cAttr)))
+      return failure();
+    APInt c = cAttr.getSplatValue<APInt>();
+    if (!c.sgt(1))
+      return failure();
+    auto add = op.getLhs().template getDefiningOp<stablehlo::AddOp>();
+    if (!add)
+      return failure();
+    for (int k = 0; k < 2; ++k) {
+      Value multiple = add->getOperand(k), rest = add->getOperand(1 - k);
+      auto mul = multiple.getDefiningOp<stablehlo::MulOp>();
+      if (!mul)
+        continue;
+      for (int j = 0; j < 2; ++j) {
+        SplatElementsAttr mAttr;
+        if (!matchPattern(mul->getOperand(j), m_Constant(&mAttr)))
+          continue;
+        APInt m = mAttr.getSplatValue<APInt>();
+        if (!m.sgt(0) || !m.srem(c).isZero())
+          continue;
+        auto [lo, hi] = enzyme::getProvableIntegerRange(rest);
+        if (lo.isNegative())
+          continue;
+        Value x = mul->getOperand(1 - j);
+        Location loc = op.getLoc();
+        if constexpr (std::is_same_v<OpTy, stablehlo::RemOp>) {
+          rewriter.replaceOpWithNewOp<stablehlo::RemOp>(op, rest, op.getRhs());
+          return success();
+        }
+        Value blocks = stablehlo::ConstantOp::create(
+            rewriter, loc,
+            cast<ElementsAttr>(makeAttr(ty, m.sdiv(c).getSExtValue())));
+        Value quotient =
+            stablehlo::DivOp::create(rewriter, loc, rest, op.getRhs());
+        Value scaled = stablehlo::MulOp::create(rewriter, loc, x, blocks);
+        rewriter.replaceOpWithNewOp<stablehlo::AddOp>(op, scaled, quotient);
+        return success();
+      }
+    }
+    return failure();
+  }
+};
+
 struct PowSimplify
     : public CheckedOpRewritePattern<stablehlo::PowOp, PowSimplify> {
   using CheckedOpRewritePattern<stablehlo::PowOp,
@@ -45896,11 +45955,13 @@ struct EnzymeHLOOptPass
     patterns.add<
         AddSimplify, SubSimplify, AndSimplify, ReduceOrAndPad, ReduceOrAnd,
         MaxSimplify, MinSimplify, OrSimplify, XorSimplify, MulSimplify,
-        DivSimplify, RemSimplify, PowSimplify, NoopSlice, NoopReverse,
-        SliceReverse, SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
-        SliceDynamicSlice, LogSimplify, Log2Simplify, ShiftRightLogicalSimplify,
-        NegativePadToSlice, SliceSimplify, ConvertSimplify, TransposeSimplify,
-        DotGeneralSimplify, DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
+        DivSimplify, RemSimplify, DivRemOfSumWithMultiple<stablehlo::DivOp>,
+        DivRemOfSumWithMultiple<stablehlo::RemOp>, PowSimplify, NoopSlice,
+        NoopReverse, SliceReverse, SliceSlice, DynamicSliceDynamicSlice,
+        DynamicSliceSlice, SliceDynamicSlice, LogSimplify, Log2Simplify,
+        ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
+        ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
+        DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
         BroadcastToReshape, ReshapeEmptyBroadcast, ReshapeBroadcast,
         BroadcastReshape, ConstPropThroughBarrier, ReplaceNegAddWithSubtract,

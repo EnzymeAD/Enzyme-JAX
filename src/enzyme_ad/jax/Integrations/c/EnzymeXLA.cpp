@@ -485,6 +485,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("mul_simplify<16>");
   list.push_back("div_simplify<16>");
   list.push_back("rem_simplify<16>");
+  list.push_back("div_rem_of_sum_with_multiple<16>");
   list.push_back("pow_simplify<16>");
   list.push_back("simplify_extend<16>");
   list.push_back("simplify_wrap<16>");
