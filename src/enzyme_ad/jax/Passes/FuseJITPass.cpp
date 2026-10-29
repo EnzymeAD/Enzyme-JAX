@@ -541,7 +541,7 @@ LogicalResult rewriteFusion(enzymexla::JITCallOp firstCall,
     // summaries must remain conservative.
     auto fusedFunc = rewriter.create<LLVM::LLVMFuncOp>(firstCall.getLoc(),
                                                        fusedName, funcType);
-    // Retain the CommWrapperAttr so that fused call stays a candidate for 
+    // Retain the CommWrapperAttr so that fused call stays a candidate for
     // later adjacent fusion
     if (llvm::all_of(fusionFuncs, [](LLVM::LLVMFuncOp func) {
           return func->hasAttr(CommWrapperAttrName);
