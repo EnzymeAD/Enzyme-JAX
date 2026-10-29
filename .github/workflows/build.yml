@@ -69,36 +69,37 @@ jobs:
           run() { name=$1; shift; for i in 1 2; do v=${name}_$i; echo "== $v"; bazel $BZ shutdown > /dev/null 2>&1 || true; rm -rf /dev/shm/bazel-sandbox.* || true; bazel $BZ build $BAZEL_FLAGS --test_env=DIAG_VARIANT=$v "$@" $TESTS > /tmp/build_$v.txt 2>&1 || true; ( time bazel $BZ test $BAZEL_FLAGS --test_env=DIAG_VARIANT=$v --nocache_test_results --test_output=errors --profile=/tmp/prof_$v.json "$@" $TESTS ) > /tmp/out_$v.txt 2>&1 || true; grep -E "Executed|Elapsed|real|TIMEOUT|FAILED|skipped|ERROR" /tmp/out_$v.txt || true; done; }
           BZ=""
           DIR=--extra_toolchains=//builddeps:dir_py_toolchain
-          run dir $DIR
-          run dir_j16 $DIR --local_test_jobs=16
-          run dir_j8 $DIR --local_test_jobs=8
-          run dir_j4 $DIR --local_test_jobs=4
-          run dir_j1 $DIR --local_test_jobs=1
           echo "== the exact test spawn (local strategy, -s), re-run by hand"
           bazel shutdown > /dev/null 2>&1 || true
           bazel test $BAZEL_FLAGS $DIR -s --strategy=TestRunner=local --test_env=DIAG_VARIANT=spawn --nocache_test_results //test/lit_tests:cse_iota.mlir.test > /tmp/out_spawn.txt 2>&1 || true
           grep -E "Executed|FAILED" /tmp/out_spawn.txt || true
-          python3 - <<'PY'
+          python3 - <<'PY' || true
           import re
-          s = open('/tmp/out_spawn.txt', errors='replace').read()
-          m = re.search(r"SUBCOMMAND: # //test/lit_tests:cse_iota\.mlir\.test \[action 'Testing[^\n]*\n(\(cd .*?test-setup\.sh[^\n]*\))", s, re.S)
+          s = re.sub(r'\x1b\[[0-9;]*m', '', open('/tmp/out_spawn.txt', errors='replace').read())
+          m = re.search(r"SUBCOMMAND: [^\n]*Testing //test/lit_tests:cse_iota\.mlir\.test'[^\n]*\n(\(cd .*?\n[^\n]*\))\n", s, re.S)
           open('/tmp/spawn.sh', 'w').write(m.group(1) + "\n" if m else "echo 'no spawn found'\n")
-          print(open('/tmp/spawn.sh').read()[-600:])
+          print(open('/tmp/spawn.sh').read()[-400:])
           PY
-          for i in 1 2 3; do ( time bash /tmp/spawn.sh > /tmp/spawn_run_$i.txt 2>&1 ) 2>&1 | grep real; done
-          tail -2 /tmp/spawn_run_1.txt
+          for i in 1 2 3; do ( time bash /tmp/spawn.sh > /tmp/spawn_run_$i.txt 2>&1 ) 2>&1 | grep real || true; done
+          tail -2 /tmp/spawn_run_1.txt || true
           echo "== the same spawn with the test binary straced"
-          sed 's#external/bazel_tools/tools/test/test-setup.sh#strace -f -ttt -e trace=execve,clone,clone3,wait4,exit_group -o /tmp/strace_spawn.txt external/bazel_tools/tools/test/test-setup.sh#' /tmp/spawn.sh > /tmp/spawn_strace.sh
-          ( time bash /tmp/spawn_strace.sh > /tmp/spawn_strace_run.txt 2>&1 ) 2>&1 | grep real; wc -l /tmp/strace_spawn.txt; head -2 /tmp/strace_spawn.txt; tail -2 /tmp/strace_spawn.txt
+          sed 's#external/bazel_tools/tools/test/test-setup.sh#strace -f -ttt -e trace=execve,clone,clone3,wait4,exit_group -o /tmp/strace_spawn.txt external/bazel_tools/tools/test/test-setup.sh#' /tmp/spawn.sh > /tmp/spawn_strace.sh || true
+          ( time bash /tmp/spawn_strace.sh > /tmp/spawn_strace_run.txt 2>&1 ) 2>&1 | grep real || true; wc -l /tmp/strace_spawn.txt || true; head -2 /tmp/strace_spawn.txt || true; tail -2 /tmp/strace_spawn.txt || true
           echo "== 32 parallel copies of the spawn"
-          ( time ( for i in $(seq 32); do bash /tmp/spawn.sh > /dev/null 2>&1 & done; wait ) ) 2>&1 | grep real
+          ( time ( for i in $(seq 32); do bash /tmp/spawn.sh > /dev/null 2>&1 & done; wait ) ) 2>&1 | grep real || true
           echo "== process spawn microbenchmarks: 32 parallel x 20 sequential"
           PY=$(ls -d /root/.bazel/external/python_3_11_x86_64-unknown-linux-gnu/bin/python3 2>/dev/null || which python3)
-          ( time ( for i in $(seq 32); do ( for j in $(seq 20); do /bin/true; done ) & done; wait ) ) 2>&1 | grep real
-          ( time ( for i in $(seq 32); do ( for j in $(seq 20); do bash -c true; done ) & done; wait ) ) 2>&1 | grep real
-          ( time ( for i in $(seq 32); do ( for j in $(seq 20); do $PY -c pass; done ) & done; wait ) ) 2>&1 | grep real
-          ( time ( for i in $(seq 32); do ( for j in $(seq 20); do $PY -S -c pass; done ) & done; wait ) ) 2>&1 | grep real
-          ( time ( for i in $(seq 32); do ( for j in $(seq 20); do bazel-bin/enzymexlamlir-opt --version > /dev/null; done ) & done; wait ) ) 2>&1 | grep real
+          ( time ( for i in $(seq 32); do ( for j in $(seq 20); do /bin/true; done ) & done; wait ) ) 2>&1 | grep real || true
+          ( time ( for i in $(seq 32); do ( for j in $(seq 20); do bash -c true; done ) & done; wait ) ) 2>&1 | grep real || true
+          ( time ( for i in $(seq 32); do ( for j in $(seq 20); do $PY -c pass; done ) & done; wait ) ) 2>&1 | grep real || true
+          ( time ( for i in $(seq 32); do ( for j in $(seq 20); do bazel-bin/enzymexlamlir-opt --version > /dev/null; done ) & done; wait ) ) 2>&1 | grep real || true
+          echo "== full lit suite"
+          TESTS=//test/lit_tests/...
+          run() { name=$1; shift; echo "== $name"; bazel shutdown > /dev/null 2>&1 || true; rm -rf /dev/shm/bazel-sandbox.* || true; bazel build $BAZEL_FLAGS --test_env=DIAG_VARIANT=$name "$@" $TESTS > /tmp/build_$name.txt 2>&1 || true; ( time bazel test $BAZEL_FLAGS --test_env=DIAG_VARIANT=$name --nocache_test_results --test_output=errors "$@" $TESTS ) > /tmp/out_$name.txt 2>&1 || true; grep -E "Executed|Elapsed|real|TIMEOUT|FAILED|skipped|ERROR" /tmp/out_$name.txt || true; }
+          run full_base
+          run full_base_j16 --local_test_jobs=16
+          run full_dir $DIR
+          run full_dir_j16 $DIR --local_test_jobs=16
       - name: Upload diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
