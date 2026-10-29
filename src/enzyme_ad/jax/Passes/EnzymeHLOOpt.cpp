@@ -21631,7 +21631,13 @@ static constexpr int64_t kMaxEvaluatedIndexElements = 4096;
 // its rank), with dimensions numbered as `indices` numbers them.
 static bool extractComponentIotas(Value indices, int64_t indexVectorDim,
                                   int64_t comp,
-                                  SmallVectorImpl<IotaLikeTensor> &result) {
+                                  SmallVectorImpl<IotaLikeTensor> &result);
+
+// The terms of `indices` read from its structure: constants, iotas and the
+// ops below, each read through `extractComponentIotas`.
+static bool
+extractComponentIotasTerms(Value indices, int64_t indexVectorDim, int64_t comp,
+                           SmallVectorImpl<IotaLikeTensor> &result) {
   auto ty = dyn_cast<RankedTensorType>(indices.getType());
   if (!ty || !ty.hasStaticShape() || !isa<IntegerType>(ty.getElementType()))
     return false;
@@ -21965,8 +21971,23 @@ static bool extractComponentIotas(Value indices, int64_t indexVectorDim,
     return true;
   }
 
-  // Built of constants and iotas the reading above does not follow: its
-  // values.
+  return false;
+}
+
+// The terms of component `comp` of the index vectors in `indices` (along
+// `indexVectorDim`; a whole index tensor when that dimension is past its
+// rank), with dimensions numbered as `indices` numbers them: read from its
+// structure, or, where the structure is not followed, from its values when
+// it is built of constants and iotas and small. Reading the values of a
+// part lets a slice of a table that is not linear as a whole be read where
+// its box is.
+static bool extractComponentIotas(Value indices, int64_t indexVectorDim,
+                                  int64_t comp,
+                                  SmallVectorImpl<IotaLikeTensor> &result) {
+  size_t terms = result.size();
+  if (extractComponentIotasTerms(indices, indexVectorDim, comp, result))
+    return true;
+  result.truncate(terms);
   if (auto values =
           evaluateIntegerConstant(indices, kMaxEvaluatedIndexElements))
     return extractComponentIotasFromAttr(*values, indexVectorDim, comp, result);
