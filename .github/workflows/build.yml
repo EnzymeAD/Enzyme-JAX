@@ -94,6 +94,8 @@ jobs:
           par spawn /tmp/spawn.sh
           par direct /tmp/spawn_direct.sh
           par shm /tmp/spawn_shm.sh
+          echo "== compile phase: local_cpu_resources sweep (remote cache bypassed, fresh copt per variant)"
+          for n in 32 24 16; do bazel shutdown > /dev/null 2>&1 || true; ( time bazel build $BAZEL_FLAGS --remote_cache= --noremote_accept_cached --copt=-DDIAG_CPUS=$n --local_cpu_resources=$n @llvm-project//mlir:IR @llvm-project//llvm:Analysis ) 2>&1 | grep -E "real|processes:|ERROR" | sed "s/^/cpus=$n: /"; done
           echo "== files opened for writing / created by one spawn (strace)"
           strace -f -ttt -e trace=%file -o /tmp/strace_spawn.txt bash /tmp/spawn.sh > /dev/null 2>&1 || true
           python3 - <<'PY' || true
