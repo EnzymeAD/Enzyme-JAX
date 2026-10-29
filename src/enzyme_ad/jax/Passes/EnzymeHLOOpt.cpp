@@ -44422,6 +44422,294 @@ struct ScatterMaskedIndexSimplify final
   }
 };
 
+// A scatter or gather whose index is computed with the quotient or the
+// remainder of an iota by a constant c that divides the iota's extent reads
+// that dimension as two: the quotient counts blocks of c and the remainder the
+// position in a block. The op is rewritten over the index tensor with the
+// dimension split into (extent / c, c), the batch dimension of its updates or
+// result split the same way, and the index expression rebuilt at the split
+// shape with each quotient and remainder as its iota, which the grid analysis
+// of the canon patterns reads.
+namespace {
+struct DivRemSplit {
+  int64_t dim;
+  int64_t divisor;
+};
+} // namespace
+
+// Whether `op` computes each element from the same elements of its operands.
+static bool isSplittableElementwise(Operation *op) {
+  return isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp,
+             stablehlo::DivOp, stablehlo::RemOp, stablehlo::MaxOp,
+             stablehlo::MinOp, stablehlo::AndOp, stablehlo::OrOp,
+             stablehlo::XorOp, stablehlo::NotOp, stablehlo::NegOp,
+             stablehlo::AbsOp, stablehlo::SelectOp, stablehlo::CompareOp,
+             stablehlo::ConvertOp, stablehlo::ShiftLeftOp,
+             stablehlo::ShiftRightArithmeticOp, stablehlo::ShiftRightLogicalOp>(
+      op);
+}
+
+// The iota dimension and the divisor of a divide or remainder of an iota of
+// `op`'s own shape (directly or widened) by a positive splat constant.
+static std::optional<std::pair<int64_t, int64_t>> divRemOfIota(Operation *op) {
+  if (!isa<stablehlo::DivOp, stablehlo::RemOp>(op))
+    return std::nullopt;
+  Value lhs = op->getOperand(0);
+  if (auto cvt = lhs.getDefiningOp<stablehlo::ConvertOp>())
+    lhs = cvt.getOperand();
+  auto iota = lhs.getDefiningOp<stablehlo::IotaOp>();
+  auto ty = cast<RankedTensorType>(op->getResult(0).getType());
+  if (!iota || iota.getType().getShape() != ty.getShape())
+    return std::nullopt;
+  SplatElementsAttr c;
+  if (!matchPattern(op->getOperand(1), m_Constant(&c)))
+    return std::nullopt;
+  APInt cv = c.getSplatValue<APInt>();
+  if (!cv.sgt(1) || cv.getActiveBits() > 62)
+    return std::nullopt;
+  return std::make_pair(iota.getIotaDimension(), cv.getSExtValue());
+}
+
+// Reads the computation of `v`: constants, iotas, broadcasts into the shape
+// and elementwise ops over operands of the shape, all static. `dims[k]` is the
+// dimension of the index tensor that dimension k of `v` lies along. Records
+// the split the first quotient or remainder of an iota asks for: the divisor
+// must divide the extent, with room to split.
+static bool findDivRemSplit(Value v, ArrayRef<int64_t> dims,
+                            std::optional<DivRemSplit> &split,
+                            DenseSet<Value> &seen) {
+  if (!seen.insert(v).second)
+    return true;
+  Operation *def = v.getDefiningOp();
+  if (!def || def->getNumResults() != 1)
+    return false;
+  auto ty = dyn_cast<RankedTensorType>(v.getType());
+  if (!ty || !ty.hasStaticShape())
+    return false;
+  if (auto cst = dyn_cast<stablehlo::ConstantOp>(def))
+    return isa<DenseElementsAttr>(cst.getValue());
+  if (isa<stablehlo::IotaOp>(def))
+    return true;
+  if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(def)) {
+    SmallVector<int64_t> inner;
+    for (int64_t bd : bcast.getBroadcastDimensions())
+      inner.push_back(dims[bd]);
+    return findDivRemSplit(bcast.getOperand(), inner, split, seen);
+  }
+  if (!isSplittableElementwise(def))
+    return false;
+  for (Value operand : def->getOperands())
+    if (cast<ShapedType>(operand.getType()).getShape() != ty.getShape())
+      return false;
+  if (!split)
+    if (auto at = divRemOfIota(def)) {
+      int64_t extent = ty.getDimSize(at->first);
+      if (at->second < extent && extent % at->second == 0)
+        split = DivRemSplit{dims[at->first], at->second};
+    }
+  for (Value operand : def->getOperands())
+    if (!findDivRemSplit(operand, dims, split, seen))
+      return false;
+  return true;
+}
+
+// `v` recreated with its dimension `o` split into (extent / c, c): an iota
+// along it is `c * quotient + remainder`, and a quotient or remainder of one
+// is its iota. `v` itself when none of its dimensions is the split one.
+static Value rebuildSplit(PatternRewriter &rewriter, Location loc, Value v,
+                          int64_t o, int64_t c,
+                          DenseMap<std::pair<Value, int64_t>, Value> &memo) {
+  if (o < 0)
+    return v;
+  auto key = std::make_pair(v, o);
+  if (auto found = memo.find(key); found != memo.end())
+    return found->second;
+  Operation *def = v.getDefiningOp();
+  auto vty = cast<RankedTensorType>(v.getType());
+  SmallVector<int64_t> shape(vty.getShape());
+  int64_t extent = shape[o];
+  shape[o] = extent / c;
+  shape.insert(shape.begin() + o + 1, c);
+  auto rty = RankedTensorType::get(shape, vty.getElementType());
+  auto iotaAt = [&](int64_t dim) -> Value {
+    return stablehlo::IotaOp::create(rewriter, loc, rty, dim);
+  };
+  Value out;
+  if (auto cst = dyn_cast<stablehlo::ConstantOp>(def)) {
+    out = stablehlo::ConstantOp::create(
+        rewriter, loc, cast<DenseElementsAttr>(cst.getValue()).reshape(rty));
+  } else if (auto iota = dyn_cast<stablehlo::IotaOp>(def)) {
+    int64_t id = iota.getIotaDimension();
+    if (id != o) {
+      out = iotaAt(id + (id > o ? 1 : 0));
+    } else {
+      Value blocks = stablehlo::ConstantOp::create(
+          rewriter, loc, cast<ElementsAttr>(makeAttr(rty, c)));
+      Value quotient = iotaAt(o);
+      Value whole = stablehlo::MulOp::create(rewriter, loc, quotient, blocks);
+      Value remainder = iotaAt(o + 1);
+      out = stablehlo::AddOp::create(rewriter, loc, whole, remainder);
+    }
+  } else if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(def)) {
+    // The operand dimension along the split one is split with it when it
+    // spans it; a dimension of one there stays, broadcast over both parts.
+    auto oty = cast<RankedTensorType>(bcast.getOperand().getType());
+    int64_t inner = -1;
+    for (auto [k, bd] : llvm::enumerate(bcast.getBroadcastDimensions()))
+      if (bd == o && oty.getDimSize(k) == extent)
+        inner = k;
+    Value operand =
+        rebuildSplit(rewriter, loc, bcast.getOperand(), inner, c, memo);
+    SmallVector<int64_t> dims;
+    for (auto [k, bd] : llvm::enumerate(bcast.getBroadcastDimensions())) {
+      dims.push_back(bd + (bd > o ? 1 : 0));
+      if ((int64_t)k == inner)
+        dims.push_back(o + 1);
+    }
+    out =
+        stablehlo::BroadcastInDimOp::create(rewriter, loc, rty, operand, dims);
+  } else if (auto at = divRemOfIota(def);
+             at && at->first == o && at->second == c) {
+    out = iotaAt(isa<stablehlo::DivOp>(def) ? o : o + 1);
+  } else {
+    IRMapping map;
+    for (Value operand : def->getOperands())
+      map.map(operand, rebuildSplit(rewriter, loc, operand, o, c, memo));
+    Operation *clone = rewriter.clone(*def, map);
+    clone->getResult(0).setType(rty);
+    out = clone->getResult(0);
+  }
+  memo[key] = out;
+  return out;
+}
+
+// The split the index computation of `indices` asks for, if any and if the
+// whole computation can be rebuilt.
+static std::optional<DivRemSplit> indexDivRemSplit(Value indices) {
+  auto ty = dyn_cast<RankedTensorType>(indices.getType());
+  if (!ty || !ty.hasStaticShape())
+    return std::nullopt;
+  SmallVector<int64_t> dims(ty.getRank());
+  std::iota(dims.begin(), dims.end(), 0);
+  std::optional<DivRemSplit> split;
+  DenseSet<Value> seen;
+  if (!findDivRemSplit(indices, dims, split, seen))
+    return std::nullopt;
+  return split;
+}
+
+struct ScatterDivRemSplit final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterDivRemSplit> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
+    Value indices = op.getScatterIndices();
+    auto split = indexDivRemSplit(indices);
+    if (!split)
+      return failure();
+    int64_t d = split->dim;
+    auto dn = op.getScatterDimensionNumbers();
+    int64_t ivd = dn.getIndexVectorDim();
+    if (d == ivd || llvm::is_contained(dn.getScatterIndicesBatchingDims(), d))
+      return failure();
+    // The updates' scatter dimension that follows index dimension d.
+    int64_t k = d - (ivd < d ? 1 : 0);
+    SmallVector<int64_t> windowDims(dn.getUpdateWindowDims());
+    auto updTy = cast<RankedTensorType>(op.getUpdates()[0].getType());
+    SmallVector<int64_t> scatterDims;
+    for (int64_t i = 0; i < updTy.getRank(); ++i)
+      if (!llvm::is_contained(windowDims, i))
+        scatterDims.push_back(i);
+    if (k >= (int64_t)scatterDims.size())
+      return failure();
+    int64_t q = scatterDims[k];
+
+    Location loc = op.getLoc();
+    DenseMap<std::pair<Value, int64_t>, Value> memo;
+    Value newIndices =
+        rebuildSplit(rewriter, loc, indices, d, split->divisor, memo);
+    SmallVector<Value> newUpdates;
+    for (Value u : op.getUpdates()) {
+      SmallVector<int64_t> shape(
+          cast<RankedTensorType>(u.getType()).getShape());
+      shape[q] /= split->divisor;
+      shape.insert(shape.begin() + q + 1, split->divisor);
+      newUpdates.push_back(stablehlo::ReshapeOpCreate(rewriter, loc, u, shape));
+    }
+    for (int64_t &w : windowDims)
+      if (w > q)
+        ++w;
+    SmallVector<int64_t> indicesBatching;
+    for (int64_t i : dn.getScatterIndicesBatchingDims())
+      indicesBatching.push_back(i + (i > d ? 1 : 0));
+    auto newDn = stablehlo::ScatterDimensionNumbersAttr::get(
+        op.getContext(), windowDims, dn.getInsertedWindowDims(),
+        dn.getInputBatchingDims(), indicesBatching,
+        dn.getScatterDimsToOperandDims(), ivd + (ivd > d ? 1 : 0));
+    auto newOp = stablehlo::ScatterOp::create(
+        rewriter, loc, op.getResultTypes(), op.getInputs(), newIndices,
+        newUpdates, newDn, op.getIndicesAreSorted(), op.getUniqueIndices());
+    newOp.getUpdateComputation().takeBody(op.getUpdateComputation());
+    rewriter.replaceOp(op, newOp.getResults());
+    return success();
+  }
+};
+
+struct GatherDivRemSplit final
+    : CheckedOpRewritePattern<stablehlo::GatherOp, GatherDivRemSplit> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
+    Value indices = op.getStartIndices();
+    auto split = indexDivRemSplit(indices);
+    if (!split)
+      return failure();
+    int64_t d = split->dim;
+    auto dn = op.getDimensionNumbers();
+    int64_t ivd = dn.getIndexVectorDim();
+    if (d == ivd || llvm::is_contained(dn.getStartIndicesBatchingDims(), d))
+      return failure();
+    // The result's batch dimension that follows index dimension d.
+    int64_t k = d - (ivd < d ? 1 : 0);
+    auto resTy = cast<RankedTensorType>(op.getType());
+    SmallVector<int64_t> offsetDims(dn.getOffsetDims());
+    SmallVector<int64_t> batchDims;
+    for (int64_t i = 0; i < resTy.getRank(); ++i)
+      if (!llvm::is_contained(offsetDims, i))
+        batchDims.push_back(i);
+    if (k >= (int64_t)batchDims.size())
+      return failure();
+    int64_t p = batchDims[k];
+
+    Location loc = op.getLoc();
+    DenseMap<std::pair<Value, int64_t>, Value> memo;
+    Value newIndices =
+        rebuildSplit(rewriter, loc, indices, d, split->divisor, memo);
+    SmallVector<int64_t> shape(resTy.getShape());
+    shape[p] /= split->divisor;
+    shape.insert(shape.begin() + p + 1, split->divisor);
+    for (int64_t &o : offsetDims)
+      if (o > p)
+        ++o;
+    SmallVector<int64_t> indicesBatching;
+    for (int64_t i : dn.getStartIndicesBatchingDims())
+      indicesBatching.push_back(i + (i > d ? 1 : 0));
+    auto newDn = stablehlo::GatherDimensionNumbersAttr::get(
+        op.getContext(), offsetDims, dn.getCollapsedSliceDims(),
+        dn.getOperandBatchingDims(), indicesBatching, dn.getStartIndexMap(),
+        ivd + (ivd > d ? 1 : 0));
+    Value gathered = stablehlo::GatherOp::create(
+        rewriter, loc, RankedTensorType::get(shape, resTy.getElementType()),
+        op.getOperand(), newIndices, newDn, op.getSliceSizesAttr(),
+        op.getIndicesAreSortedAttr());
+    rewriter.replaceOp(op, stablehlo::ReshapeOpCreate(rewriter, loc, gathered,
+                                                      resTy.getShape()));
+    return success();
+  }
+};
+
 struct ScatterOpCanon final
     : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -46263,6 +46551,8 @@ struct EnzymeHLOOptPass
         ScatterMaskedIndexSlice,
         ScatterMaskedIndexSimplify,
         ScatterOpCanon,
+        ScatterDivRemSplit,
+        GatherDivRemSplit,
         GetDimensionSizeOpCanon,
         GetTupleElementOpCanon,
         IfRemoveUnused,
