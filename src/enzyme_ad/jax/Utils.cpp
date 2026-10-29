@@ -3952,40 +3952,71 @@ static void pieceWindow(Value v, stablehlo::SliceOp window, Value &source,
   strides.assign(ty.getRank(), 1);
 }
 
-ConcatPieces classifyConcatPieces(ArrayRef<Value> values,
-                                  ArrayRef<stablehlo::SliceOp> windows,
-                                  int64_t dim) {
-  assert(values.size() == windows.size() && !values.empty());
-  if (auto splat = splatOf(values[0]))
-    if (llvm::all_of(values, [&](Value v) { return splatOf(v) == splat; }))
-      return ConcatPieces::OneSplat;
-  if (Value scalar = broadcastScalarOf(values[0]))
-    if (llvm::all_of(values,
-                     [&](Value v) { return broadcastScalarOf(v) == scalar; }))
-      return ConcatPieces::OneBroadcast;
+// The classification and, for the one-value kinds, what the one value is
+// made of: the splat, the scalar, or the window (starts and strides of the
+// first piece, limits of the last).
+struct ConcatPiecesInfo {
+  ConcatPieces kind;
+  Attribute splat;
+  Value scalar;
   Value source;
   SmallVector<int64_t> starts, limits, strides;
-  pieceWindow(values[0], windows[0], source, starts, limits, strides);
+};
+
+static ConcatPiecesInfo
+analyzeConcatPieces(ArrayRef<Value> values,
+                    ArrayRef<stablehlo::SliceOp> windows, int64_t dim) {
+  assert(values.size() == windows.size() &&
+         "one window (or null) per value expected");
+  assert(!values.empty() && "no pieces to concatenate");
+  ConcatPiecesInfo info;
+  if (auto splat = splatOf(values[0]))
+    if (llvm::all_of(values, [&](Value v) { return splatOf(v) == splat; })) {
+      info.kind = ConcatPieces::OneSplat;
+      info.splat = *splat;
+      return info;
+    }
+  if (Value scalar = broadcastScalarOf(values[0]))
+    if (llvm::all_of(values,
+                     [&](Value v) { return broadcastScalarOf(v) == scalar; })) {
+      info.kind = ConcatPieces::OneBroadcast;
+      info.scalar = scalar;
+      return info;
+    }
+  pieceWindow(values[0], windows[0], info.source, info.starts, info.limits,
+              info.strides);
   for (size_t i = 1; i < values.size(); i++) {
     Value nextSource;
     SmallVector<int64_t> nextStarts, nextLimits, nextStrides;
     pieceWindow(values[i], windows[i], nextSource, nextStarts, nextLimits,
                 nextStrides);
-    if (nextSource != source ||
-        !canMergeSlicesAlongAxis(dim, starts, nextStarts, limits, nextLimits,
-                                 strides, nextStrides))
-      return ConcatPieces::Concatenate;
-    limits = nextLimits;
+    if (nextSource != info.source ||
+        !canMergeSlicesAlongAxis(dim, info.starts, nextStarts, info.limits,
+                                 nextLimits, info.strides, nextStrides)) {
+      info.kind = ConcatPieces::Concatenate;
+      return info;
+    }
+    info.limits = nextLimits;
   }
-  return ConcatPieces::OneWindow;
+  info.kind = ConcatPieces::OneWindow;
+  return info;
+}
+
+// See Utils.h: whether the concatenate of the windows of the values is one
+// value already, and of which kind.
+ConcatPieces classifyConcatPieces(ArrayRef<Value> values,
+                                  ArrayRef<stablehlo::SliceOp> windows,
+                                  int64_t dim) {
+  return analyzeConcatPieces(values, windows, dim).kind;
 }
 
 Value ConcatenatePiecesCreate(PatternRewriter &rewriter, Location loc,
                               ArrayRef<Value> values,
                               ArrayRef<stablehlo::SliceOp> windows,
                               int64_t dim) {
-  auto kind = classifyConcatPieces(values, windows, dim);
-  if (kind == ConcatPieces::OneSplat || kind == ConcatPieces::OneBroadcast) {
+  ConcatPiecesInfo info = analyzeConcatPieces(values, windows, dim);
+  if (info.kind == ConcatPieces::OneSplat ||
+      info.kind == ConcatPieces::OneBroadcast) {
     SmallVector<int64_t> shape;
     for (auto [i, v] : llvm::enumerate(values)) {
       stablehlo::SliceOp window = windows[i];
@@ -3997,35 +4028,28 @@ Value ConcatenatePiecesCreate(PatternRewriter &rewriter, Location loc,
         shape[dim] += ty.getDimSize(dim);
     }
     auto elemTy = cast<RankedTensorType>(values[0].getType()).getElementType();
-    if (kind == ConcatPieces::OneSplat) {
+    if (info.kind == ConcatPieces::OneSplat) {
       auto ty = RankedTensorType::get(shape, elemTy);
       return stablehlo::ConstantOp::create(
           rewriter, loc, ty,
-          cast<ElementsAttr>(SplatElementsAttr::get(ty, *splatOf(values[0]))));
+          cast<ElementsAttr>(SplatElementsAttr::get(ty, info.splat)));
     }
-    return stablehlo::BroadcastInDimOpCreate(rewriter, loc,
-                                             broadcastScalarOf(values[0]),
-                                             shape, ArrayRef<int64_t>());
+    return stablehlo::BroadcastInDimOpCreate(rewriter, loc, info.scalar, shape,
+                                             ArrayRef<int64_t>());
   }
-  if (kind == ConcatPieces::OneWindow) {
-    Value source;
-    SmallVector<int64_t> starts, limits, strides, lastStarts, lastLimits,
-        lastStrides;
-    pieceWindow(values.front(), windows.front(), source, starts, limits,
-                strides);
-    pieceWindow(values.back(), windows.back(), source, lastStarts, lastLimits,
-                lastStrides);
-    return stablehlo::SliceOpCreate(rewriter, loc, source, starts, lastLimits,
-                                    strides);
-  }
+  if (info.kind == ConcatPieces::OneWindow)
+    return stablehlo::SliceOpCreate(rewriter, loc, info.source, info.starts,
+                                    info.limits, info.strides);
   SmallVector<Value> operands;
+  operands.reserve(values.size());
   for (auto [i, v] : llvm::enumerate(values)) {
     stablehlo::SliceOp window = windows[i];
-    operands.push_back(window
-                           ? stablehlo::SliceOpCreate(
-                                 rewriter, loc, v, window.getStartIndices(),
-                                 window.getLimitIndices(), window.getStrides())
-                           : v);
+    if (window)
+      operands.push_back(stablehlo::SliceOpCreate(
+          rewriter, loc, v, window.getStartIndices(), window.getLimitIndices(),
+          window.getStrides()));
+    else
+      operands.push_back(v);
   }
   SmallVector<Value> merged;
   (void)concatSliceSimplify(rewriter, operands, dim, merged);

@@ -33378,9 +33378,7 @@ struct ConcatElementwise final
 // constant, the same scalar broadcast, or adjacent windows of one source
 // in order). So the concatenate moves down the chain of the one computed
 // operand and never multiplies: hoisting over two computed operands leaves
-// a concatenate per operand at every level, measured on the Breeze WENO
-// tendency modules as 13 instead of 5 (scalar) and 73 instead of 40
-// (model), 10-30% slower.
+// a concatenate per operand at every level.
 struct ConcatElementwiseSlice final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                               ConcatElementwiseSlice> {
@@ -33394,6 +33392,8 @@ struct ConcatElementwiseSlice final
     Operation *first = nullptr;
     SmallVector<Operation *> elems;
     SmallVector<stablehlo::SliceOp> windows;
+    elems.reserve(concatOp.getNumOperands());
+    windows.reserve(concatOp.getNumOperands());
     bool anySlice = false;
     for (Value v : concatOp.getOperands()) {
       Operation *def = v.getDefiningOp();
@@ -33438,12 +33438,14 @@ struct ConcatElementwiseSlice final
 
     auto operandsAt = [&](unsigned i) {
       SmallVector<Value> values;
+      values.reserve(elems.size());
       for (Operation *elem : elems)
         values.push_back(elem->getOperand(i));
       return values;
     };
+    unsigned numOperands = first->getNumOperands();
     int64_t concats = 0;
-    for (unsigned i = 0; i < first->getNumOperands(); i++)
+    for (unsigned i = 0; i < numOperands; i++)
       if (classifyConcatPieces(operandsAt(i), windows, dim) ==
           ConcatPieces::Concatenate)
         concats++;
@@ -33452,7 +33454,8 @@ struct ConcatElementwiseSlice final
 
     auto loc = concatOp.getLoc();
     SmallVector<Value> elementwiseOperands;
-    for (unsigned i = 0; i < first->getNumOperands(); i++)
+    elementwiseOperands.reserve(numOperands);
+    for (unsigned i = 0; i < numOperands; i++)
       elementwiseOperands.push_back(
           ConcatenatePiecesCreate(rewriter, loc, operandsAt(i), windows, dim));
     auto newElementwiseOp = rewriter.create(
