@@ -19880,6 +19880,81 @@ struct SelectToLogical final
   }
 };
 
+// and(pad(a, false), pad(b, false)) is false wherever either pad is: only
+// the intersection of the two windows can be true, so the and runs over
+// that window and is padded back out with false (dually or(pad(a, true),
+// pad(b, true))). The windows may differ in any dimension; an empty
+// intersection is the constant. The raiser's lane masks and the x and y
+// guards padded to the lane bound this way, and a slice of the mask (a
+// kernel's actual block) then folds to the sliced operands.
+template <typename T, bool Absorb>
+struct AndOrPadIntersect
+    : public CheckedOpRewritePattern<T, AndOrPadIntersect<T, Absorb>> {
+  using CheckedOpRewritePattern<
+      T, AndOrPadIntersect<T, Absorb>>::CheckedOpRewritePattern;
+
+  static bool absorbing(Value v) {
+    return Absorb ? matchPattern(v, m_One()) : matchPattern(v, m_Zero());
+  }
+
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
+    auto pad1 = op.getLhs().template getDefiningOp<stablehlo::PadOp>();
+    auto pad2 = op.getRhs().template getDefiningOp<stablehlo::PadOp>();
+    if (!pad1 || !pad2 || anyPadSizesNegative(pad1) ||
+        anyPadSizesNegative(pad2))
+      return failure();
+    if (!absorbing(pad1.getPaddingValue()) ||
+        !absorbing(pad2.getPaddingValue()))
+      return failure();
+    if (llvm::any_of(pad1.getInteriorPadding(),
+                     [](int64_t p) { return p != 0; }) ||
+        llvm::any_of(pad2.getInteriorPadding(),
+                     [](int64_t p) { return p != 0; }))
+      return failure();
+    // Both windows at the same place: BinopPadPad's case.
+    if (pad1.getEdgePaddingLow() == pad2.getEdgePaddingLow() &&
+        pad1.getEdgePaddingHigh() == pad2.getEdgePaddingHigh())
+      return failure();
+    auto resTy = cast<RankedTensorType>(op.getType());
+    if (!resTy.hasStaticShape())
+      return failure();
+    auto ty1 = cast<RankedTensorType>(pad1.getOperand().getType());
+    auto ty2 = cast<RankedTensorType>(pad2.getOperand().getType());
+    int64_t rank = resTy.getRank();
+    SmallVector<int64_t> lo(rank), hi(rank), s1(rank), e1(rank), s2(rank),
+        e2(rank), ones(rank, 1);
+    for (int64_t d = 0; d < rank; ++d) {
+      int64_t l1 = pad1.getEdgePaddingLow()[d],
+              l2 = pad2.getEdgePaddingLow()[d];
+      lo[d] = std::max(l1, l2);
+      hi[d] = std::min(l1 + ty1.getDimSize(d), l2 + ty2.getDimSize(d));
+      if (hi[d] <= lo[d]) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, resTy,
+            cast<ElementsAttr>(
+                SplatElementsAttr::get(resTy, rewriter.getBoolAttr(Absorb))));
+        return success();
+      }
+      s1[d] = lo[d] - l1;
+      e1[d] = hi[d] - l1;
+      s2[d] = lo[d] - l2;
+      e2[d] = hi[d] - l2;
+    }
+    Value a = stablehlo::SliceOpCreate(rewriter, op.getLoc(), pad1.getOperand(),
+                                       s1, e1, ones);
+    Value b = stablehlo::SliceOpCreate(rewriter, op.getLoc(), pad2.getOperand(),
+                                       s2, e2, ones);
+    Value inner = T::create(rewriter, op.getLoc(), a, b);
+    SmallVector<int64_t> high(rank);
+    for (int64_t d = 0; d < rank; ++d)
+      high[d] = resTy.getDimSize(d) - hi[d];
+    rewriter.replaceOpWithNewOp<stablehlo::PadOp>(
+        op, inner, pad1.getPaddingValue(), lo, high,
+        SmallVector<int64_t>(rank, 0));
+    return success();
+  }
+};
+
 struct AndPadPad final : CheckedOpRewritePattern<stablehlo::AndOp, AndPadPad> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
@@ -45865,10 +45940,12 @@ struct EnzymeHLOOptPass
     patterns.add<BitcastConvertCancellation>(context);
 
     patterns.add<
-        AddSimplify, SubSimplify, AndSimplify, ReduceOrAndPad, ReduceOrAnd,
-        MaxSimplify, MinSimplify, OrSimplify, XorSimplify, MulSimplify,
-        DivSimplify, RemSimplify, PowSimplify, NoopSlice, NoopReverse,
-        SliceReverse, SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
+        AddSimplify, SubSimplify, AndSimplify, ReduceOrAndPad,
+        AndOrPadIntersect<stablehlo::AndOp, false>,
+        AndOrPadIntersect<stablehlo::OrOp, true>, ReduceOrAnd, MaxSimplify,
+        MinSimplify, OrSimplify, XorSimplify, MulSimplify, DivSimplify,
+        RemSimplify, PowSimplify, NoopSlice, NoopReverse, SliceReverse,
+        SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
         SliceDynamicSlice, LogSimplify, Log2Simplify, ShiftRightLogicalSimplify,
         NegativePadToSlice, SliceSimplify, ConvertSimplify, TransposeSimplify,
         DotGeneralSimplify, DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
