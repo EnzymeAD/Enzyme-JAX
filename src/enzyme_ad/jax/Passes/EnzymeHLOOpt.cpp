@@ -18912,6 +18912,55 @@ struct CompareOpCanon final
       }
     }
 
+    // The ranges of signed integer operands may decide the compare for every
+    // element: the guard of a grid's last block when the block count divides
+    // the extent, (n - 1 - lane) - b * block >= 0 over every block and lane.
+    auto elementType = dyn_cast<IntegerType>(
+        cast<RankedTensorType>(lhs.getType()).getElementType());
+    if (elementType && elementType.getWidth() > 1 &&
+        !elementType.isUnsignedInteger() &&
+        (!compType || *compType == ComparisonType::SIGNED)) {
+      auto [alo, ahi] = enzyme::getProvableIntegerRange(lhs);
+      auto [blo, bhi] = enzyme::getProvableIntegerRange(rhs);
+      std::optional<bool> value;
+      switch (direction) {
+      case ComparisonDirection::LT:
+        if (ahi.slt(blo))
+          value = true;
+        else if (alo.sge(bhi))
+          value = false;
+        break;
+      case ComparisonDirection::LE:
+        if (ahi.sle(blo))
+          value = true;
+        else if (alo.sgt(bhi))
+          value = false;
+        break;
+      case ComparisonDirection::GT:
+        if (alo.sgt(bhi))
+          value = true;
+        else if (ahi.sle(blo))
+          value = false;
+        break;
+      case ComparisonDirection::GE:
+        if (alo.sge(bhi))
+          value = true;
+        else if (ahi.slt(blo))
+          value = false;
+        break;
+      case ComparisonDirection::EQ:
+      case ComparisonDirection::NE:
+        if (ahi.slt(blo) || alo.sgt(bhi))
+          value = direction == ComparisonDirection::NE;
+        break;
+      }
+      if (value) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, SplatElementsAttr::get(type, rewriter.getBoolAttr(*value)));
+        return success();
+      }
+    }
+
     return failure();
   }
 };
