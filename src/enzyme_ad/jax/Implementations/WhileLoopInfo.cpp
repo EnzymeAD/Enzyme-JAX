@@ -246,8 +246,7 @@ bool WhileLoopInfo::isConstantValue(Value v, llvm::APInt &constVal) {
   }
 
   Value outerValue;
-  SmallVector<Operation *> canBeHoisted;
-  if (isConstantAcrossIterations(v, outerValue, canBeHoisted, false) &&
+  if (isDirectlyInvariant(op, v, outerValue) &&
       matchPattern(outerValue, m_ConstantInt(&constVal))) {
     return true;
   }
@@ -418,17 +417,8 @@ void WhileLoopInfo::propagateAffineIndexInfo(
   } while (anyNewPropagated && totalIterations < 4);
 }
 
-bool WhileLoopInfo::isConstantAcrossIterations(Value v, bool checkOperands) {
-  Value outerValue;
-  SmallVector<Operation *> canBeHoisted;
-  return isConstantAcrossIterations(v, outerValue, canBeHoisted, checkOperands);
-}
-
-// The two cases that need no walk: defined outside the loop, or a carried
-// argument passed straight through. On success `outerValue` is the value
-// outside the loop.
-static bool isDirectlyInvariant(stablehlo::WhileOp op, Value v,
-                                Value &outerValue) {
+bool enzyme::isDirectlyInvariant(stablehlo::WhileOp op, Value v,
+                                 Value &outerValue) {
   if (definedOutside(v, op)) {
     outerValue = v;
     return true;
@@ -448,14 +438,19 @@ static bool isDirectlyInvariant(stablehlo::WhileOp op, Value v,
   return false;
 }
 
-bool WhileLoopInfo::isConstantAcrossIterations(
-    Value v, Value &outerValue, SmallVector<Operation *> &canBeHoisted,
-    bool checkOperands) {
+bool enzyme::isDirectlyInvariant(stablehlo::WhileOp op, Value v) {
+  Value outerValue;
+  return isDirectlyInvariant(op, v, outerValue);
+}
+
+bool WhileLoopInvariance::isConstantAcrossIterations(Value v) {
+  return isDirectlyInvariant(op, v) || computeInvariance(v);
+}
+
+bool WhileLoopInvariance::isConstantAcrossIterations(
+    Value v, Value &outerValue, SmallVector<Operation *> &canBeHoisted) {
   if (isDirectlyInvariant(op, v, outerValue))
     return true;
-
-  if (!checkOperands)
-    return false;
 
   if (!computeInvariance(v))
     return false;
@@ -466,7 +461,7 @@ bool WhileLoopInfo::isConstantAcrossIterations(
   return true;
 }
 
-bool WhileLoopInfo::computeInvariance(Value root) {
+bool WhileLoopInvariance::computeInvariance(Value root) {
   if (auto it = invarianceCache.find(root); it != invarianceCache.end())
     return it->second;
 
@@ -543,8 +538,8 @@ bool WhileLoopInfo::computeInvariance(Value root) {
   return invarianceCache[root];
 }
 
-void WhileLoopInfo::collectHoistableChain(Value v,
-                                          SmallVectorImpl<Operation *> &chain) {
+void WhileLoopInvariance::collectHoistableChain(
+    Value v, SmallVectorImpl<Operation *> &chain) {
   SmallPtrSet<Operation *, 8> seen;
   SmallVector<Value> worklist{v};
   while (!worklist.empty()) {
@@ -575,6 +570,7 @@ void hoistStartIndicesOutsideLoop(OpTy op, OpBuilder &builder,
 
   DenseMap<Value, SmallVector<Operation *>> hoistMap;
   SmallVector<int64_t> needToHoist;
+  WhileLoopInvariance invariance(whileLoopInfo.getOp());
   for (size_t i = 0; i < op.getStartIndices().size(); i++) {
     auto startIndex = op.getStartIndices()[i];
 
@@ -585,8 +581,8 @@ void hoistStartIndicesOutsideLoop(OpTy op, OpBuilder &builder,
 
     SmallVector<Operation *> canBeHoisted;
     Value outerValue;
-    auto isConst = whileLoopInfo.isConstantAcrossIterations(
-        startIndex, outerValue, canBeHoisted, true);
+    auto isConst = invariance.isConstantAcrossIterations(startIndex, outerValue,
+                                                         canBeHoisted);
     assert(isConst);
     (void)isConst;
     if (outerValue) {
@@ -1274,9 +1270,7 @@ void hoistChainOfOps(DenseMap<Value, SmallVector<Operation *>> &hoistMap,
 
         if (!definedOutside(operand, whileOp)) {
           Value outerValue;
-          SmallVector<Operation *> canBeHoisted;
-          if (info.isConstantAcrossIterations(operand, outerValue, canBeHoisted,
-                                              false)) {
+          if (isDirectlyInvariant(whileOp, operand, outerValue)) {
             mapper.map(operand, outerValue);
           }
         }

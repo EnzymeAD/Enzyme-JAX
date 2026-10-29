@@ -102,47 +102,6 @@ struct WhileLoopInfo {
 
   unsigned getBoundsBitWidth() const { return boundsBitWidth; }
 
-  // Whether `v` has the same value on every iteration of the loop. On
-  // success `outerValue` is the value outside the loop it equals, when there
-  // is one (defined outside, or a carried argument passed straight through);
-  // otherwise it is null and `canBeHoisted` lists the ops that recompute `v`
-  // outside the loop, each once, in no particular order. With
-  // `checkOperands` false only the two direct cases are tried.
-  //
-  // Answers are remembered across calls, so asking about every value of a
-  // loop body costs one walk of the body rather than one per value. The
-  // memo describes the IR as it was when it was filled: call
-  // `invalidateInvarianceCache` after rewriting the loop, before asking
-  // again. (`computeInfo`'s affine-index map has the same contract.)
-  bool isConstantAcrossIterations(Value v, bool checkOperands = true);
-  bool isConstantAcrossIterations(Value v, Value &outerValue,
-                                  SmallVector<Operation *> &canBeHoisted,
-                                  bool checkOperands = true);
-
-  // Forget every remembered invariance answer. Needed after the loop body
-  // has been rewritten: an erased op's storage can be reused by a new one,
-  // and the memo is keyed by value identity.
-  void invalidateInvarianceCache() { invarianceCache.clear(); }
-
-private:
-  // Whether a value computed in the body is the same on every iteration,
-  // i.e. whether every operand of its defining op is. The walk stops at the
-  // first operand found to vary, so a varying value costs the walk down to
-  // its first varying leaf; without the memo a chain of n such values would
-  // cost n^2 across n queries, and a shared invariant subgraph would be
-  // re-proved once per path reaching it.
-  bool computeInvariance(Value v);
-
-  // The ops that recompute an invariant `v` outside the loop: the defining
-  // ops of its operand DAG up to the values defined outside or passed
-  // straight through, each listed once.
-  void collectHoistableChain(Value v, SmallVectorImpl<Operation *> &chain);
-
-  // Values computed in the body only; the two direct cases are decided
-  // without it.
-  DenseMap<Value, bool> invarianceCache;
-
-public:
   bool canHoistOperationFromLoop(mlir::stablehlo::DynamicSliceOp sliceOp,
                                  SmallVectorImpl<int64_t> &dimensions);
   // Whether hoisting `sliceOp` over `dimensions` out of the loop can succeed,
@@ -204,6 +163,33 @@ private:
 
   AffineIndexInfo updateAffineIndexInfo(AffineIndexInfo curInfo,
                                         llvm::APInt scale, llvm::APInt offset);
+};
+
+// Whether `v` is defined outside `op` or is a carried argument passed straight
+// through. On success `outerValue` is the value outside the loop it equals.
+bool isDirectlyInvariant(stablehlo::WhileOp op, Value v, Value &outerValue);
+bool isDirectlyInvariant(stablehlo::WhileOp op, Value v);
+
+// Memoized loop-invariance analysis of a while body. Call `invalidate` after
+// rewriting the body.
+struct WhileLoopInvariance {
+  explicit WhileLoopInvariance(stablehlo::WhileOp op_) : op(op_) {}
+
+  // On success `outerValue` is the equal value outside the loop if there is
+  // one; otherwise it is null and `canBeHoisted` lists the ops to recompute
+  // `v` outside the loop.
+  bool isConstantAcrossIterations(Value v);
+  bool isConstantAcrossIterations(Value v, Value &outerValue,
+                                  SmallVector<Operation *> &canBeHoisted);
+
+  void invalidate() { invarianceCache.clear(); }
+
+private:
+  bool computeInvariance(Value v);
+  void collectHoistableChain(Value v, SmallVectorImpl<Operation *> &chain);
+
+  stablehlo::WhileOp op;
+  DenseMap<Value, bool> invarianceCache;
 };
 
 template <typename OpTy>

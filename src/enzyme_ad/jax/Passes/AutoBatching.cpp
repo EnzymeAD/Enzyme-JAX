@@ -1203,7 +1203,7 @@ static bool isSelfLaneCarriedLoad(stablehlo::DynamicSliceOp dsOp,
       return false;
     }
 
-    if (!info.isConstantAcrossIterations(dsStart, false) &&
+    if (!isDirectlyInvariant(whileOp, dsStart) &&
         affineIndexInfo.contains(dsStart)) {
       foundDepIndex = true;
       if (dsSliceSize != 1) {
@@ -1268,6 +1268,7 @@ struct HoistableSliceComputation {
   struct LoopContext {
     stablehlo::WhileOp whileOp;
     WhileLoopInfo &info;
+    WhileLoopInvariance &invariance;
     ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> candidateSlices;
     const llvm::MapVector<Operation *,
                           SmallVector<SliceInfo<stablehlo::DynamicSliceOp>>>
@@ -1277,11 +1278,13 @@ struct HoistableSliceComputation {
 
     LoopContext(
         stablehlo::WhileOp whileOp, WhileLoopInfo &info,
+        WhileLoopInvariance &invariance,
         ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> candidateSlices,
         const llvm::MapVector<Operation *,
                               SmallVector<SliceInfo<stablehlo::DynamicSliceOp>>>
             &userOpToSlicesMap)
-        : whileOp(whileOp), info(info), candidateSlices(candidateSlices),
+        : whileOp(whileOp), info(info), invariance(invariance),
+          candidateSlices(candidateSlices),
           userOpToSlicesMap(userOpToSlicesMap) {
       for (auto &slice : candidateSlices)
         candidateSliceOps.insert(slice.sliceOp);
@@ -1291,6 +1294,7 @@ struct HoistableSliceComputation {
   LoopContext *ctx;
   stablehlo::WhileOp whileOp;
   WhileLoopInfo *info;
+  WhileLoopInvariance *invariance;
   const llvm::MapVector<Operation *,
                         SmallVector<SliceInfo<stablehlo::DynamicSliceOp>>>
       *userOpToSlicesMap;
@@ -1307,7 +1311,8 @@ struct HoistableSliceComputation {
   HoistableSliceComputation(LoopContext &ctx,
                             SliceInfo<stablehlo::DynamicSliceOp> sInfo)
       : ctx(&ctx), whileOp(ctx.whileOp), info(&ctx.info),
-        userOpToSlicesMap(&ctx.userOpToSlicesMap), sInfo(sInfo) {
+        invariance(&ctx.invariance), userOpToSlicesMap(&ctx.userOpToSlicesMap),
+        sInfo(sInfo) {
     ops.insert(sInfo.sliceOp);
     results.insert(sInfo.sliceOp.getResult());
     checkpoint();
@@ -1380,16 +1385,18 @@ struct HoistableSliceComputation {
       ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices = it->second;
 
       if (auto dsOp = dyn_cast<stablehlo::DynamicSliceOp>(op)) {
-        if (raiseDynamicSliceToGather(rewriter, whileOp, slices, dsOp, *info)) {
+        if (raiseDynamicSliceToGather(rewriter, whileOp, slices, dsOp, *info,
+                                      *invariance)) {
           anyOpRewritten = true;
         }
       } else if ((dyn_cast<BatchOpInterface>(op) ||
                   stablehlo::hasTraitElementwise(op)) &&
                  op->getNumResults() == 1) {
-        if (liftOperationByBatching(rewriter, whileOp, slices, op, *info)) {
+        if (liftOperationByBatching(rewriter, whileOp, slices, op, *info,
+                                    *invariance)) {
           anyOpRewritten = true;
-        } else if (liftReduceLikeOperation(rewriter, whileOp, slices, op,
-                                           *info)) {
+        } else if (liftReduceLikeOperation(rewriter, whileOp, slices, op, *info,
+                                           *invariance)) {
           anyOpRewritten = true;
         }
       }
@@ -1517,9 +1524,7 @@ private:
 
   bool computeIsBatchableValue(Value v) {
     // Loop invariant, or hoistable to loop invariant.
-    Value outerValue;
-    SmallVector<Operation *> canBeHoisted;
-    if (info->isConstantAcrossIterations(v, outerValue, canBeHoisted, true)) {
+    if (invariance->isConstantAcrossIterations(v)) {
       return true;
     }
 
@@ -1578,7 +1583,7 @@ private:
     auto &affineIndexInfo = info->getAffineIndexInfo();
     bool foundDepIndex = false;
     for (Value startIndex : dusOp.getStartIndices()) {
-      if (info->isConstantAcrossIterations(startIndex, false)) {
+      if (isDirectlyInvariant(whileOp, startIndex)) {
         continue;
       }
       if (!affineIndexInfo.contains(startIndex)) {
@@ -1646,6 +1651,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   if (info.getConstantNumIters() <= 0)
     return rewriter.notifyMatchFailure(whileOp, "loop runs no iterations");
 
+  WhileLoopInvariance invariance(whileOp);
   auto &whileBody = whileOp.getBody().front();
 
   auto &affineIndexInfoMap = info.getAffineIndexInfo();
@@ -1670,8 +1676,8 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
       seenOps.insert(user);
 
       if (auto sliceOp = dyn_cast<stablehlo::DynamicSliceOp>(user)) {
-        auto result =
-            isDynamicSliceValidForBatching(sliceOp, info, whileBody, whileOp);
+        auto result = isDynamicSliceValidForBatching(sliceOp, info, invariance,
+                                                     whileBody, whileOp);
 
         if (isValidForBatchingResult(result.result)) {
           candidateSlices.push_back(SliceInfo<stablehlo::DynamicSliceOp>{
@@ -1738,7 +1744,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
 
   SmallVector<HoistableSliceComputation, 2> profitable;
   HoistableSliceComputation::LoopContext computationCtx(
-      whileOp, info, candidateSlices, userOpToSlicesMap);
+      whileOp, info, invariance, candidateSlices, userOpToSlicesMap);
   for (auto &slice : candidateSlices) {
     HoistableSliceComputation computation(computationCtx, slice);
     computation.grow();
@@ -1757,9 +1763,11 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   for (auto &[op, slices] : userOpToSlicesMap) {
     if (!alreadyHoisted.count(op) && isAffineIndexOnlyUser(slices)) {
       alreadyHoisted.insert(op);
-      if (liftOperationByBatching(rewriter, whileOp, slices, op, info)) {
+      if (liftOperationByBatching(rewriter, whileOp, slices, op, info,
+                                  invariance)) {
         anyOpRewritten = true;
-      } else if (liftReduceLikeOperation(rewriter, whileOp, slices, op, info)) {
+      } else if (liftReduceLikeOperation(rewriter, whileOp, slices, op, info,
+                                         invariance)) {
         anyOpRewritten = true;
       }
     }
@@ -1771,7 +1779,8 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
 GreedyWhileLoopBatchFission::ValidBatchingInfo
 GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
     stablehlo::DynamicSliceOp sliceOp, mlir::enzyme::WhileLoopInfo &loopInfo,
-    Block &whileBody, stablehlo::WhileOp whileOp) const {
+    mlir::enzyme::WhileLoopInvariance &invariance, Block &whileBody,
+    stablehlo::WhileOp whileOp) const {
   auto operand = sliceOp.getOperand();
   auto &affineIndexInfoMap = loopInfo.getAffineIndexInfo();
 
@@ -1798,7 +1807,7 @@ GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
       continue;
     }
 
-    if (loopInfo.isConstantAcrossIterations(startIndex, true)) {
+    if (invariance.isConstantAcrossIterations(startIndex)) {
       continue;
     }
 
@@ -1817,6 +1826,7 @@ GreedyWhileLoopBatchFission::isDynamicSliceValidForBatching(
 bool traverseOperandsForHoisting(
     ArrayRef<Value> operands, stablehlo::WhileOp whileOp,
     ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, WhileLoopInfo &info,
+    WhileLoopInvariance &invariance,
     SmallVectorImpl<BatchLiftingMode> &batchLiftingModes,
     SmallVectorImpl<Value> &batchOperands,
     SmallVectorImpl<SmallVector<int64_t>> &sliceDims,
@@ -1834,7 +1844,8 @@ bool traverseOperandsForHoisting(
   for (auto [i, operand] : llvm::enumerate(operands)) {
     Value outerValue;
     SmallVector<Operation *> canBeHoisted;
-    if (info.isConstantAcrossIterations(operand, outerValue, canBeHoisted)) {
+    if (invariance.isConstantAcrossIterations(operand, outerValue,
+                                              canBeHoisted)) {
       if (outerValue) {
         SplatElementsAttr splat;
         if (matchPattern(operand, m_Constant(&splat))) {
@@ -2053,7 +2064,7 @@ LogicalResult constructNewOperandsForHoistedOp(
 bool liftReduceLikeOperation(
     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
     ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, Operation *op,
-    WhileLoopInfo &info) {
+    WhileLoopInfo &info, WhileLoopInvariance &invariance) {
   // we can hoist `sub` / `div` by emitting a `neg` / `reciprocal` and then
   // apply the hoisting. note that this only applies if the LHS is the loop
   // caried dependency
@@ -2119,9 +2130,9 @@ bool liftReduceLikeOperation(
 
   SmallVector<Value> opOperands = {otherOperand};
 
-  if (!traverseOperandsForHoisting(opOperands, whileOp, slices, info,
-                                   batchLiftingModes, batchOperands, sliceDims,
-                                   hoistedDims, mappedSliceInfos, hoistMap)) {
+  if (!traverseOperandsForHoisting(
+          opOperands, whileOp, slices, info, invariance, batchLiftingModes,
+          batchOperands, sliceDims, hoistedDims, mappedSliceInfos, hoistMap)) {
     return false;
   }
 
@@ -2216,7 +2227,8 @@ bool liftReduceLikeOperation(
 bool raiseDynamicSliceToGather(
     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
     ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices,
-    stablehlo::DynamicSliceOp dsOp, WhileLoopInfo &info) {
+    stablehlo::DynamicSliceOp dsOp, WhileLoopInfo &info,
+    WhileLoopInvariance &invariance) {
   // Pattern: x[..., y[idx], z[idx], ...] where idx is an affine function of
   // the loop induction variable. We need to:
   // 1. Hoist the computation of y[idx], z[idx], etc. for all loop iterations
@@ -2240,8 +2252,8 @@ bool raiseDynamicSliceToGather(
 
     SmallVector<Value> singleOperand = {startIndex};
     if (!traverseOperandsForHoisting(singleOperand, whileOp, slices, info,
-                                     modes, operands, dims, hoisted, mapped,
-                                     hoistMap)) {
+                                     invariance, modes, operands, dims, hoisted,
+                                     mapped, hoistMap)) {
       return false;
     }
 
@@ -2260,8 +2272,8 @@ bool raiseDynamicSliceToGather(
   Value outerOperand;
   Value dsOperand = dsOp.getOperand();
   SmallVector<Operation *> canBeHoisted;
-  if (!info.isConstantAcrossIterations(dsOperand, outerOperand, canBeHoisted,
-                                       true)) {
+  if (!invariance.isConstantAcrossIterations(dsOperand, outerOperand,
+                                             canBeHoisted)) {
     return false;
   }
 
@@ -2285,8 +2297,8 @@ bool raiseDynamicSliceToGather(
     }
     Value outerStart;
     SmallVector<Operation *> startCanBeHoisted;
-    if (!info.isConstantAcrossIterations(startIndex, outerStart,
-                                         startCanBeHoisted, true)) {
+    if (!invariance.isConstantAcrossIterations(startIndex, outerStart,
+                                               startCanBeHoisted)) {
       return false;
     }
     if (matchPattern(startIndex, m_Zero()))
@@ -2498,14 +2510,14 @@ bool raiseDynamicSliceToGather(
   auto replacement = stablehlo::ReshapeOpCreate(
       rewriter, loc, dynSlice, cast<ShapedType>(dsOp.getType()).getShape());
   rewriter.replaceOp(dsOp, replacement);
-  info.invalidateInvarianceCache();
+  invariance.invalidate();
   return true;
 }
 
 bool liftOperationByBatching(
     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
     ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, Operation *op,
-    WhileLoopInfo &info) {
+    WhileLoopInfo &info, WhileLoopInvariance &invariance) {
   auto moduleOp = op->getParentOfType<ModuleOp>();
 
   SmallVector<BatchLiftingMode> batchLiftingModes;
@@ -2523,9 +2535,9 @@ bool liftOperationByBatching(
     return false;
 
   auto opOperands = llvm::to_vector(op->getOperands());
-  if (!traverseOperandsForHoisting(opOperands, whileOp, slices, info,
-                                   batchLiftingModes, batchOperands, sliceDims,
-                                   hoistedDims, mappedSliceInfos, hoistMap)) {
+  if (!traverseOperandsForHoisting(
+          opOperands, whileOp, slices, info, invariance, batchLiftingModes,
+          batchOperands, sliceDims, hoistedDims, mappedSliceInfos, hoistMap)) {
     return false;
   }
 
@@ -2608,7 +2620,7 @@ bool liftOperationByBatching(
   rewriter.replaceOp(op, newReshape);
   // `op` is gone and new ops now live in the body: the invariance memo must
   // not be read against them.
-  info.invalidateInvarianceCache();
+  invariance.invalidate();
 
   enzyme::batchutils::batchOperationInline(
       rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()));
@@ -2643,6 +2655,7 @@ mlir::LogicalResult WhileElementwiseReductionToReduce::matchAndRewriteImpl(
 
   bool anyRewritten = false;
   SmallVector<SliceInfo<stablehlo::DynamicSliceOp>> slices; // dummy
+  WhileLoopInvariance invariance(whileOp);
 
   for (size_t i = 0; i < whileOp.getNumOperands(); i++) {
     auto iterArg = body.getArgument(i);
@@ -2660,8 +2673,8 @@ mlir::LogicalResult WhileElementwiseReductionToReduce::matchAndRewriteImpl(
       continue;
     }
 
-    anyRewritten |=
-        liftReduceLikeOperation(rewriter, whileOp, slices, user, info);
+    anyRewritten |= liftReduceLikeOperation(rewriter, whileOp, slices, user,
+                                            info, invariance);
   }
 
   return success(anyRewritten);
@@ -2727,6 +2740,7 @@ WhileIsCopySimplify::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
 
   auto &whileBody = whileOp.getBody().front();
   auto affineIndexInfo = info.getAffineIndexInfo();
+  WhileLoopInvariance invariance(whileOp);
 
   auto returnOp = dyn_cast<stablehlo::ReturnOp>(whileBody.getTerminator());
   if (!returnOp) {
@@ -2774,7 +2788,7 @@ WhileIsCopySimplify::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
       int64_t indirectDim = -1;
       stablehlo::DynamicSliceOp indexSlice;
       for (auto [dim, startIndex] : llvm::enumerate(dusOp.getStartIndices())) {
-        if (info.isConstantAcrossIterations(startIndex, false))
+        if (isDirectlyInvariant(whileOp, startIndex))
           continue;
         if (indirectDim != -1) {
           indirectDim = -1;
@@ -2836,8 +2850,8 @@ WhileIsCopySimplify::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
     SmallVector<Operation *> canBeHoisted;
     Value outerValue;
     auto origUpdate = dusOp.getUpdate();
-    if (info.isConstantAcrossIterations(origUpdate, outerValue, canBeHoisted,
-                                        true)) {
+    if (invariance.isConstantAcrossIterations(origUpdate, outerValue,
+                                              canBeHoisted)) {
       RankedTensorType origUpdateTy = origUpdate.getType();
       if (llvm::any_of(dusInductionVarDims, [&](auto i) {
             return origUpdateTy.getDimSize(i) != 1;
@@ -3078,7 +3092,7 @@ SmallVector<int64_t> WhileIsCopySimplify::getInductionVariableDimension(
 
   for (auto [i, startIndex] : llvm::enumerate(startIndices)) {
     // we could hoist the other dimensions but licm should fix this
-    if (info.isConstantAcrossIterations(startIndex, false)) {
+    if (isDirectlyInvariant(whileOp, startIndex)) {
       continue;
     }
 
@@ -3115,6 +3129,7 @@ struct ParallelWhileBatcher {
   PatternRewriter &rewriter;
   Location loc;
   enzyme::WhileLoopInfo &info;
+  enzyme::WhileLoopInvariance invariance;
   int64_t numIters;
   DenseSet<Value> batched;
   DenseMap<Value, unsigned> chainRoot; // buffer value -> carried arg number
@@ -3127,8 +3142,8 @@ struct ParallelWhileBatcher {
   ParallelWhileBatcher(PatternRewriter &rewriter, Location loc,
                        enzyme::WhileLoopInfo &info, int64_t numIters,
                        Region *loopBody)
-      : rewriter(rewriter), loc(loc), info(info), numIters(numIters),
-        loopBody(loopBody) {}
+      : rewriter(rewriter), loc(loc), info(info), invariance(info.getOp()),
+        numIters(numIters), loopBody(loopBody) {}
 
   bool isBatched(Value v) const { return batched.contains(v); }
   // The operand a write into a carried buffer takes the buffer in as, or
@@ -3565,7 +3580,7 @@ struct ParallelWhileBatcher {
           if (isBatched(st))
             dims.push_back(d);
           else
-            othersInvariant &= info.isConstantAcrossIterations(st);
+            othersInvariant &= invariance.isConstantAcrossIterations(st);
         }
         Value windows;
         if (othersInvariant && dims.size() == 1 &&
