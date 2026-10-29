@@ -54,7 +54,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     exit(1);
   }
   if (options->lowerInvoke) {
-    llvm::PassBuilder PB;
+    llvm::PassBuilder PB(Context);
     llvm::LoopAnalysisManager LAM;
     llvm::FunctionAnalysisManager FAM;
     llvm::CGSCCAnalysisManager CGAM;
