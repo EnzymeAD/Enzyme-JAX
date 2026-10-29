@@ -1680,12 +1680,19 @@ def GpuModuleToBinarySink : Pass<"enzymexla-gpu-module-to-binary", ""> {
     the target's optimization pipeline means EarlyCSE/GVN can no longer
     re-hoist the clones, shortening live ranges that otherwise inflate
     register pressure in large kernels.
+
+    By default, sets `-nvptx-fma-level=1` when the NVPTX target is registered
+    and the option has not already been specified, matching nvcc/XLA FMA
+    contraction behavior. Additional LLVM command-line options can be forwarded
+    via `llvm-opts`.
   }];
   let options =
       [Option<"toolkitPath", "toolkit", "std::string", [{""}], "Toolkit path.">,
        ListOption<"linkFiles", "l", "std::string", "Extra files to link to.">,
        Option<"cmdOptions", "opts", "std::string", [{""}],
               "Command line options to pass to the tools.">,
+       Option<"llvmOptions", "llvm-opts", "std::string", [{""}],
+              "Command line options to forward to LLVM.">,
        Option<"compilationTarget", "format", "std::string", [{"fatbin"}],
               "The target representation of the compilation process.">,
        Option<"elfSection", "section", "std::string", [{""}],
