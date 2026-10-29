@@ -69,14 +69,54 @@ jobs:
           run() { name=$1; shift; for i in 1 2; do v=${name}_$i; echo "== $v"; bazel $BZ shutdown > /dev/null 2>&1 || true; rm -rf /dev/shm/bazel-sandbox.* || true; bazel $BZ build $BAZEL_FLAGS --test_env=DIAG_VARIANT=$v "$@" $TESTS > /tmp/build_$v.txt 2>&1 || true; ( time bazel $BZ test $BAZEL_FLAGS --test_env=DIAG_VARIANT=$v --nocache_test_results --test_output=errors --profile=/tmp/prof_$v.json "$@" $TESTS ) > /tmp/out_$v.txt 2>&1 || true; grep -E "Executed|Elapsed|real|TIMEOUT|FAILED|skipped|ERROR" /tmp/out_$v.txt || true; done; }
           BZ=""
           DIR=--extra_toolchains=//builddeps:dir_py_toolchain
-          echo "== full lit suite"
-          TESTS=//test/lit_tests/...
-          run() { name=$1; shift; echo "== $name"; bazel shutdown > /dev/null 2>&1 || true; rm -rf /dev/shm/bazel-sandbox.* || true; bazel build $BAZEL_FLAGS --test_env=DIAG_VARIANT=$name "$@" $TESTS > /tmp/build_$name.txt 2>&1 || true; ( time bazel test $BAZEL_FLAGS --test_env=DIAG_VARIANT=$name --nocache_test_results --test_output=errors "$@" $TESTS ) > /tmp/out_$name.txt 2>&1 || true; grep -E "Executed|Elapsed|real|TIMEOUT|FAILED|skipped|ERROR" /tmp/out_$name.txt || true; }
-          run full_dir_j8 $DIR --local_test_jobs=8
-          run full_dir_j12 $DIR --local_test_jobs=12
-          run full_dir_j24 $DIR --local_test_jobs=24
-          run full_base_j8 --local_test_jobs=8
-          run full_dir_j16_again $DIR --local_test_jobs=16
+          apt-get update -qq > /dev/null 2>&1 && apt-get install -y -qq strace > /dev/null 2>&1 || true
+          echo "== the exact test spawn (local strategy, -s)"
+          bazel shutdown > /dev/null 2>&1 || true
+          bazel test $BAZEL_FLAGS $DIR -s --strategy=TestRunner=local --test_env=DIAG_VARIANT=spawn --nocache_test_results //test/lit_tests:cse_iota.mlir.test > /tmp/out_spawn.txt 2>&1 || true
+          grep -E "Executed|FAILED" /tmp/out_spawn.txt || true
+          python3 - <<'PY' || true
+          import re
+          s = re.sub(r'\x1b\[[0-9;]*m', '', open('/tmp/out_spawn.txt', errors='replace').read())
+          m = re.search(r"SUBCOMMAND: [^\n]*Testing //test/lit_tests:cse_iota\.mlir\.test'[^\n]*\n(\(cd .*?\n[^\n]*\))\n", s, re.S)
+          cmd = m.group(1) + "\n" if m else "echo 'no spawn found'\n"
+          open('/tmp/spawn.sh', 'w').write(cmd)
+          # The bare test binary with the same environment, no test-setup.sh.
+          direct = re.sub(r"external/bazel_tools/tools/test/test-setup\.sh test/lit_tests/cse_iota\.mlir\.test (.*)\)\n$",
+                          r"bash -c 'cd \"$TEST_SRCDIR/$TEST_WORKSPACE\" && exec /root/.bazel/execroot/__main__/bazel-out/k8-opt/bin/test/lit_tests/cse_iota.mlir.test \1')\n", cmd)
+          open('/tmp/spawn_direct.sh', 'w').write(direct)
+          # test-setup.sh with TEST_TMPDIR and every testlogs output on tmpfs.
+          shm = cmd.replace("bazel-out/k8-opt/testlogs/", "/dev/shm/testlogs/").replace("TEST_TMPDIR=_tmp/", "TEST_TMPDIR=/dev/shm/tmp/")
+          open('/tmp/spawn_shm.sh', 'w').write(shm)
+          print(direct[-300:]); print(shm[-200:])
+          PY
+          mkdir -p /dev/shm/testlogs/test/lit_tests/cse_iota.mlir.test /dev/shm/tmp
+          par() { name=$1; shift; for r in 1 2 3; do ( time ( for i in $(seq 32); do bash "$@" > /dev/null 2>&1 & done; wait ) ) 2>&1 | grep real | sed "s/^/$name x32: /"; done; ( time bash "$@" > /dev/null 2>&1 ) 2>&1 | grep real | sed "s/^/$name x1: /"; }
+          par spawn /tmp/spawn.sh
+          par direct /tmp/spawn_direct.sh
+          par shm /tmp/spawn_shm.sh
+          echo "== files opened for writing / created by one spawn (strace)"
+          strace -f -ttt -e trace=%file -o /tmp/strace_spawn.txt bash /tmp/spawn.sh > /dev/null 2>&1 || true
+          python3 - <<'PY' || true
+          import re, collections
+          w = collections.Counter(); r = collections.Counter(); n = 0
+          for line in open('/tmp/strace_spawn.txt', errors='replace'):
+              n += 1
+              m = re.search(r'(openat|open|creat|mkdir|mkdirat|rename|renameat|unlink|unlinkat|symlink|chmod)\((?:AT_FDCWD, )?"([^"]*)"(.*)', line)
+              if not m: continue
+              call, path, rest = m.groups()
+              key = re.sub(r'(execroot/__main__/[^/]+/[^/]+/[^/]+).*', r'\1', path)
+              key = re.sub(r'(/root/\.bazel/external/[^/]+).*', r'\1', key)
+              key = re.sub(r'(/__w/[^/]+/[^/]+/[^/]+).*', r'\1', key)
+              key = re.sub(r'(/dev/shm/[^/]+).*', r'\1', key)
+              key = re.sub(r'(/usr/[^/]+/[^/]+).*', r'\1', key)
+              if call in ('openat', 'open') and not re.search(r'O_WRONLY|O_RDWR|O_CREAT', rest):
+                  r[key] += 1
+              else:
+                  w[call + ' ' + key] += 1
+          print(f"{n} traced lines")
+          print("--- writes/creates:"); [print(f"{c:5d} {k}") for k, c in w.most_common(25)]
+          print("--- reads (opens), top:"); [print(f"{c:5d} {k}") for k, c in r.most_common(12)]
+          PY
       - name: Upload diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
