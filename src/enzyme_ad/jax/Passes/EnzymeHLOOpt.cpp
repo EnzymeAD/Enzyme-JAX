@@ -33528,6 +33528,107 @@ struct ConcatElementwise final
   }
 };
 
+// concat(slice(op(a1, b1)), op(a2, b2), slice(op(a3, b3))) along a
+// dimension, the same elementwise op (name, attributes, operand count and
+// types) behind every piece and at least one piece a slice of it, becomes
+// op(concat(slice(a1), a2, slice(a3)), concat(slice(b1), b2, slice(b3))).
+// Unlike ConcatElementwise the op may have other users: it is then also
+// computed a second time on the concatenate's rows (one evaluation over the
+// concatenate's extent in all); the slices may not, since one that
+// survives the rewrite leaves nothing gained. The rewrite is made only
+// when at most one operand position needs a concatenate of its own, the
+// others being one value already (classifyConcatPieces: the same splat
+// constant, the same scalar broadcast, or adjacent windows of one source
+// in order). So the concatenate moves down the chain of the one computed
+// operand and never multiplies: hoisting over two computed operands leaves
+// a concatenate per operand at every level.
+struct ConcatElementwiseSlice final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                              ConcatElementwiseSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
+                                    PatternRewriter &rewriter) const {
+    if (concatOp.getNumOperands() <= 1)
+      return failure();
+    int64_t dim = concatOp.getDimension();
+    Operation *first = nullptr;
+    SmallVector<Operation *> elems;
+    SmallVector<stablehlo::SliceOp> windows;
+    elems.reserve(concatOp.getNumOperands());
+    windows.reserve(concatOp.getNumOperands());
+    bool anySlice = false;
+    for (Value v : concatOp.getOperands()) {
+      Operation *def = v.getDefiningOp();
+      if (!def)
+        return failure();
+      auto slice = dyn_cast<stablehlo::SliceOp>(def);
+      // A slice with other users survives the rewrite: nothing is gained.
+      if (slice && !isOnlyUsedInOperation(slice, concatOp))
+        return failure();
+      Operation *elem = slice ? slice.getOperand().getDefiningOp() : def;
+      if (!elem || !hasTraitElementwise(elem) || elem->getNumResults() != 1 ||
+          elem->getNumRegions() != 0)
+        return failure();
+      if (isa<stablehlo::ConvertOp>(elem)) // Conflicts with ConvertConcat
+        return failure();
+      auto resTy = dyn_cast<RankedTensorType>(elem->getResult(0).getType());
+      if (!resTy)
+        return failure();
+      for (Value operand : elem->getOperands()) {
+        auto oTy = dyn_cast<RankedTensorType>(operand.getType());
+        if (!oTy || oTy.getShape() != resTy.getShape())
+          return failure();
+      }
+      if (first) {
+        if (first->getName() != elem->getName() ||
+            first->getNumOperands() != elem->getNumOperands() ||
+            computeAttrs(first) != computeAttrs(elem))
+          return failure();
+        for (auto [a, b] : llvm::zip(first->getOperands(), elem->getOperands()))
+          if (cast<RankedTensorType>(a.getType()).getElementType() !=
+              cast<RankedTensorType>(b.getType()).getElementType())
+            return failure();
+      } else {
+        first = elem;
+      }
+      anySlice |= (bool)slice;
+      elems.push_back(elem);
+      windows.push_back(slice);
+    }
+    if (!anySlice) // ConcatElementwise's case
+      return failure();
+
+    auto operandsAt = [&](unsigned i) {
+      SmallVector<Value> values;
+      values.reserve(elems.size());
+      for (Operation *elem : elems)
+        values.push_back(elem->getOperand(i));
+      return values;
+    };
+    unsigned numOperands = first->getNumOperands();
+    int64_t concats = 0;
+    for (unsigned i = 0; i < numOperands; i++)
+      if (classifyConcatPieces(operandsAt(i), windows, dim) ==
+          ConcatPieces::Concatenate)
+        concats++;
+    if (concats > 1)
+      return failure();
+
+    auto loc = concatOp.getLoc();
+    SmallVector<Value> elementwiseOperands;
+    elementwiseOperands.reserve(numOperands);
+    for (unsigned i = 0; i < numOperands; i++)
+      elementwiseOperands.push_back(
+          ConcatenatePiecesCreate(rewriter, loc, operandsAt(i), windows, dim));
+    auto newElementwiseOp = rewriter.create(
+        loc, first->getName().getIdentifier(), ValueRange(elementwiseOperands),
+        TypeRange(concatOp.getType()), computeAttrs(first), {}, {});
+    rewriter.replaceOp(concatOp, newElementwiseOp);
+    return success();
+  }
+};
+
 struct ConcatReshapeReduce final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatReshapeReduce> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -46163,6 +46264,7 @@ struct EnzymeHLOOptPass
         ConcatReshapeBroadcast,
         ConcatReshapeReduce,
         ConcatElementwise,
+        ConcatElementwiseSlice,
         ConcatReshapeElementwise,
         TransposeAllUsersSlice,
         ReduceReduce,

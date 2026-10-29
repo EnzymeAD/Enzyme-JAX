@@ -3906,6 +3906,157 @@ LogicalResult concatSliceSimplify(PatternRewriter &rewriter,
   return success(changed);
 }
 
+// A splat constant, also through slices of it.
+static std::optional<Attribute> splatOf(Value v) {
+  while (auto slice = v.getDefiningOp<stablehlo::SliceOp>())
+    v = slice.getOperand();
+  SplatElementsAttr splat;
+  if (matchPattern(v, m_Constant(&splat)))
+    return splat.getSplatValue<Attribute>();
+  if (auto cst = v.getDefiningOp<sdy::ConstantOp>())
+    if (auto splat = dyn_cast<SplatElementsAttr>(cst.getValue()))
+      return splat.getSplatValue<Attribute>();
+  return std::nullopt;
+}
+
+// The scalar a broadcast of a scalar broadcasts, also through slices of it.
+static Value broadcastScalarOf(Value v) {
+  while (auto slice = v.getDefiningOp<stablehlo::SliceOp>())
+    v = slice.getOperand();
+  auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>();
+  if (bcast &&
+      cast<RankedTensorType>(bcast.getOperand().getType()).getRank() == 0)
+    return bcast.getOperand();
+  return nullptr;
+}
+
+// The window of `v` as a piece: that of `window` when given, of `v` itself
+// when it is a slice, else all of it.
+static void pieceWindow(Value v, stablehlo::SliceOp window, Value &source,
+                        SmallVectorImpl<int64_t> &starts,
+                        SmallVectorImpl<int64_t> &limits,
+                        SmallVectorImpl<int64_t> &strides) {
+  auto slice = window ? window : v.getDefiningOp<stablehlo::SliceOp>();
+  if (slice) {
+    source = window ? v : slice.getOperand();
+    starts.assign(slice.getStartIndices().begin(),
+                  slice.getStartIndices().end());
+    limits.assign(slice.getLimitIndices().begin(),
+                  slice.getLimitIndices().end());
+    strides.assign(slice.getStrides().begin(), slice.getStrides().end());
+    return;
+  }
+  auto ty = cast<RankedTensorType>(v.getType());
+  source = v;
+  starts.assign(ty.getRank(), 0);
+  limits.assign(ty.getShape().begin(), ty.getShape().end());
+  strides.assign(ty.getRank(), 1);
+}
+
+// The classification and, for the one-value kinds, what the one value is
+// made of: the splat, the scalar, or the window (starts and strides of the
+// first piece, limits of the last).
+struct ConcatPiecesInfo {
+  ConcatPieces kind;
+  Attribute splat;
+  Value scalar;
+  Value source;
+  SmallVector<int64_t> starts, limits, strides;
+};
+
+static ConcatPiecesInfo
+analyzeConcatPieces(ArrayRef<Value> values,
+                    ArrayRef<stablehlo::SliceOp> windows, int64_t dim) {
+  assert(values.size() == windows.size() &&
+         "one window (or null) per value expected");
+  assert(!values.empty() && "no pieces to concatenate");
+  ConcatPiecesInfo info;
+  if (auto splat = splatOf(values[0]))
+    if (llvm::all_of(values, [&](Value v) { return splatOf(v) == splat; })) {
+      info.kind = ConcatPieces::OneSplat;
+      info.splat = *splat;
+      return info;
+    }
+  if (Value scalar = broadcastScalarOf(values[0]))
+    if (llvm::all_of(values,
+                     [&](Value v) { return broadcastScalarOf(v) == scalar; })) {
+      info.kind = ConcatPieces::OneBroadcast;
+      info.scalar = scalar;
+      return info;
+    }
+  pieceWindow(values[0], windows[0], info.source, info.starts, info.limits,
+              info.strides);
+  for (size_t i = 1; i < values.size(); i++) {
+    Value nextSource;
+    SmallVector<int64_t> nextStarts, nextLimits, nextStrides;
+    pieceWindow(values[i], windows[i], nextSource, nextStarts, nextLimits,
+                nextStrides);
+    if (nextSource != info.source ||
+        !canMergeSlicesAlongAxis(dim, info.starts, nextStarts, info.limits,
+                                 nextLimits, info.strides, nextStrides)) {
+      info.kind = ConcatPieces::Concatenate;
+      return info;
+    }
+    info.limits = nextLimits;
+  }
+  info.kind = ConcatPieces::OneWindow;
+  return info;
+}
+
+// See Utils.h: whether the concatenate of the windows of the values is one
+// value already, and of which kind.
+ConcatPieces classifyConcatPieces(ArrayRef<Value> values,
+                                  ArrayRef<stablehlo::SliceOp> windows,
+                                  int64_t dim) {
+  return analyzeConcatPieces(values, windows, dim).kind;
+}
+
+Value ConcatenatePiecesCreate(PatternRewriter &rewriter, Location loc,
+                              ArrayRef<Value> values,
+                              ArrayRef<stablehlo::SliceOp> windows,
+                              int64_t dim) {
+  ConcatPiecesInfo info = analyzeConcatPieces(values, windows, dim);
+  if (info.kind == ConcatPieces::OneSplat ||
+      info.kind == ConcatPieces::OneBroadcast) {
+    SmallVector<int64_t> shape;
+    for (auto [i, v] : llvm::enumerate(values)) {
+      stablehlo::SliceOp window = windows[i];
+      auto ty =
+          cast<RankedTensorType>((window ? window.getResult() : v).getType());
+      if (i == 0)
+        shape.assign(ty.getShape().begin(), ty.getShape().end());
+      else
+        shape[dim] += ty.getDimSize(dim);
+    }
+    auto elemTy = cast<RankedTensorType>(values[0].getType()).getElementType();
+    if (info.kind == ConcatPieces::OneSplat) {
+      auto ty = RankedTensorType::get(shape, elemTy);
+      return stablehlo::ConstantOp::create(
+          rewriter, loc, ty,
+          cast<ElementsAttr>(SplatElementsAttr::get(ty, info.splat)));
+    }
+    return stablehlo::BroadcastInDimOpCreate(rewriter, loc, info.scalar, shape,
+                                             ArrayRef<int64_t>());
+  }
+  if (info.kind == ConcatPieces::OneWindow)
+    return stablehlo::SliceOpCreate(rewriter, loc, info.source, info.starts,
+                                    info.limits, info.strides);
+  SmallVector<Value> operands;
+  operands.reserve(values.size());
+  for (auto [i, v] : llvm::enumerate(values)) {
+    stablehlo::SliceOp window = windows[i];
+    if (window)
+      operands.push_back(stablehlo::SliceOpCreate(
+          rewriter, loc, v, window.getStartIndices(), window.getLimitIndices(),
+          window.getStrides()));
+    else
+      operands.push_back(v);
+  }
+  SmallVector<Value> merged;
+  (void)concatSliceSimplify(rewriter, operands, dim, merged);
+  return ConcatenateOpCreate(rewriter, loc, merged, dim);
+}
+
 Value ConcatenateOpCreate(
     OpBuilder &builder, Location loc, ArrayRef<Value> inputs, int64_t dimension,
     std::optional<sdy::TensorShardingPerValueAttr> sharding) {

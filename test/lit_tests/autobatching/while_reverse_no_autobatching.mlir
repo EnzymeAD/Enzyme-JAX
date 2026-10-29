@@ -248,7 +248,7 @@ module {
   }
 }
 
-// CHECK: %[[WHILE_FWD:.+]]:3 = stablehlo.while(%iterArg = %{{.*}}, %iterArg_13 = %{{.*}}, %iterArg_14 = %{{.*}}) : tensor<i64>, tensor<64x64xf64>, tensor<229x64x64xf64>
-// CHECK: %[[WHILE_REV:.+]]:4 = stablehlo.while(%iterArg = %{{.*}}, %iterArg_13 = %{{.*}}, %iterArg_14 = %{{.*}}, %iterArg_15 = %{{.*}}) : tensor<i64>, tensor<64x64xf64>, tensor<64x64xf64>, tensor<64x64xf64>
+// CHECK: %[[WHILE_FWD:.+]]:3 = stablehlo.while(%iterArg = %{{.*}}, %iterArg_{{[0-9]+}} = %{{.*}}, %iterArg_{{[0-9]+}} = %{{.*}}) : tensor<i64>, tensor<64x64xf64>, tensor<229x64x64xf64>
+// CHECK: %[[WHILE_REV:.+]]:4 = stablehlo.while(%iterArg = %{{.*}}, %iterArg_{{[0-9]+}} = %{{.*}}, %iterArg_{{[0-9]+}} = %{{.*}}, %iterArg_{{[0-9]+}} = %{{.*}}) : tensor<i64>, tensor<64x64xf64>, tensor<64x64xf64>, tensor<64x64xf64>
 // CHECK:      %[[CKPT:.+]] = stablehlo.dynamic_slice %[[WHILE_FWD]]#2, %{{.*}}, %{{.*}}, %{{.*}}, sizes = [1, 64, 64] {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<229x64x64xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x64x64xf64>
 // CHECK-NOT:  stablehlo.dynamic_slice
