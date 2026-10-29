@@ -1700,6 +1700,8 @@ cc_library(
                "@llvm-project//mlir:ControlFlowDialect",
                "@llvm-project//mlir:DLTIDialect",
                "@llvm-project//mlir:GPUDialect",
+               "@llvm-project//mlir:GPUNVVMTransforms",
+               "@llvm-project//mlir:GPUROCDLTransforms",
                "@llvm-project//mlir:GPUTransforms",
                "@llvm-project//mlir:NVVMDialect",
                "@llvm-project//mlir:ROCDLDialect",
@@ -2031,6 +2033,7 @@ cc_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:LLVMDialect",
         "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SCFDialect",
         "@z3//:z3_static",
     ],
 )

@@ -5731,7 +5731,7 @@ private:
       if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
         inv.assign(transpose.getPermutation().begin(),
                    transpose.getPermutation().end());
-      } else if (isWindowView(op) && !isa<stablehlo::ReshapeOp>(op) ||
+      } else if ((isWindowView(op) && !isa<stablehlo::ReshapeOp>(op)) ||
                  isUnitReshape(op)) {
         SmallVector<int64_t> m = viewMap(op);
         inv.assign(cast<RankedTensorType>(op->getResult(0).getType()).getRank(),
@@ -16920,7 +16920,8 @@ struct ReshapeReduceWindow final
     // Check if the operand of the reshape is a reduce_window operation
     auto reduceWindow =
         reshapeOp.getOperand().getDefiningOp<stablehlo::ReduceWindowOp>();
-    if (!reduceWindow)
+    if (!reduceWindow || reduceWindow.getInputs().size() != 1 ||
+        reduceWindow.getInitValues().size() != 1 || !reduceWindow->hasOneUse())
       return failure();
 
     // Check if there is any non-reshape user of this reduce_window operation
@@ -18907,6 +18908,55 @@ struct CompareOpCanon final
     if (lhsAttr && guaranteedNonNegativeResult(rhs, rewriter)) {
       if (succeeded(
               simplifyNonNegative(lhsAttr, invertDirection(direction), rhs))) {
+        return success();
+      }
+    }
+
+    // The ranges of signed integer operands may decide the compare for every
+    // element: the guard of a grid's last block when the block count divides
+    // the extent, (n - 1 - lane) - b * block >= 0 over every block and lane.
+    auto elementType = dyn_cast<IntegerType>(
+        cast<RankedTensorType>(lhs.getType()).getElementType());
+    if (elementType && elementType.getWidth() > 1 &&
+        !elementType.isUnsignedInteger() &&
+        (!compType || *compType == ComparisonType::SIGNED)) {
+      auto [alo, ahi] = enzyme::getProvableIntegerRange(lhs);
+      auto [blo, bhi] = enzyme::getProvableIntegerRange(rhs);
+      std::optional<bool> value;
+      switch (direction) {
+      case ComparisonDirection::LT:
+        if (ahi.slt(blo))
+          value = true;
+        else if (alo.sge(bhi))
+          value = false;
+        break;
+      case ComparisonDirection::LE:
+        if (ahi.sle(blo))
+          value = true;
+        else if (alo.sgt(bhi))
+          value = false;
+        break;
+      case ComparisonDirection::GT:
+        if (alo.sgt(bhi))
+          value = true;
+        else if (ahi.sle(blo))
+          value = false;
+        break;
+      case ComparisonDirection::GE:
+        if (alo.sge(bhi))
+          value = true;
+        else if (ahi.slt(blo))
+          value = false;
+        break;
+      case ComparisonDirection::EQ:
+      case ComparisonDirection::NE:
+        if (ahi.slt(blo) || alo.sgt(bhi))
+          value = direction == ComparisonDirection::NE;
+        break;
+      }
+      if (value) {
+        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+            op, SplatElementsAttr::get(type, rewriter.getBoolAttr(*value)));
         return success();
       }
     }
@@ -28594,6 +28644,17 @@ struct NotCompare
     if (!llvm::hasSingleElement(cmp->getUsers()))
       return failure();
 
+    auto dir = cmp.getComparisonDirection();
+    auto elemTy = getElementTypeOrSelf(cmp.getLhs().getType());
+    if (isa<FloatType>(elemTy)) {
+      auto cmpType = cmp.getCompareType();
+      bool totalOrder =
+          cmpType && *cmpType == stablehlo::ComparisonType::TOTALORDER;
+      if (!totalOrder && dir != stablehlo::ComparisonDirection::EQ &&
+          dir != stablehlo::ComparisonDirection::NE)
+        return failure();
+    }
+
     rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
         op, cmp.getLhs(), cmp.getRhs(),
         negatedComparisonDirection(cmp.getComparisonDirection()),
@@ -28935,6 +28996,108 @@ struct GatherOfBroadcastBatchingDims final
         dn.getIndexVectorDim());
     rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
         op, op.getType(), bcast.getOperand(), op.getStartIndices(), newDn,
+        rewriter.getDenseI64ArrayAttr(sliceSizes),
+        op.getIndicesAreSortedAttr());
+    return success();
+  }
+};
+
+// A gather of a broadcast that indexes, with a window of one element, a
+// dimension the broadcast added reads the same element of the source
+// whatever that index component is: the component carries nothing. Gather
+// from the source without it. A raised kernel indexes the small table it
+// captured by value ([3,3,3,9]: a broadcast of nine scalar arguments) with
+// a constant grid; without the added dimensions the grid folds to a slice.
+struct GatherOfBroadcastIndexedDims final
+    : CheckedOpRewritePattern<stablehlo::GatherOp,
+                              GatherOfBroadcastIndexedDims> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
+    auto bcast = op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!bcast)
+      return failure();
+    auto dn = op.getDimensionNumbers();
+    auto srcTy = cast<RankedTensorType>(bcast.getOperand().getType());
+    auto resTy = cast<RankedTensorType>(bcast.getType());
+    Value indices = op.getStartIndices();
+    auto idxTy = cast<RankedTensorType>(indices.getType());
+    if (!srcTy.hasStaticShape() || !idxTy.hasStaticShape())
+      return failure();
+    // The source's dimensions keep their order and extent.
+    ArrayRef<int64_t> dims = bcast.getBroadcastDimensions();
+    SmallVector<int64_t> toSrc(resTy.getRank(), -1);
+    for (auto [i, d] : llvm::enumerate(dims)) {
+      if ((i > 0 && d <= dims[i - 1]) ||
+          srcTy.getDimSize(i) != resTy.getDimSize(d))
+        return failure();
+      toSrc[d] = i;
+    }
+    // Every dimension the broadcast adds is indexed by one component, with a
+    // window of one element, collapsed.
+    ArrayRef<int64_t> map = dn.getStartIndexMap();
+    SmallVector<bool> keep(map.size(), true);
+    for (int64_t d = 0; d < resTy.getRank(); ++d) {
+      if (toSrc[d] >= 0)
+        continue;
+      auto *it = llvm::find(map, d);
+      if (it == map.end() || op.getSliceSizes()[d] != 1 ||
+          !llvm::is_contained(dn.getCollapsedSliceDims(), d))
+        return failure();
+      keep[it - map.begin()] = false;
+    }
+    if (llvm::all_of(keep, [](bool k) { return k; }) ||
+        llvm::none_of(keep, [](bool k) { return k; }))
+      return failure();
+    // The index vector is a dimension of the indices (a vector of one
+    // component is implicit only when there is one, and it is kept): drop the
+    // components by slicing it, one slice per run of kept ones.
+    int64_t ivd = dn.getIndexVectorDim();
+    if (ivd >= idxTy.getRank())
+      return failure();
+    SmallVector<Value> pieces;
+    for (size_t c = 0; c < keep.size();) {
+      if (!keep[c]) {
+        ++c;
+        continue;
+      }
+      size_t e = c;
+      while (e < keep.size() && keep[e])
+        ++e;
+      SmallVector<int64_t> starts(idxTy.getRank(), 0), limits(idxTy.getShape()),
+          strides(idxTy.getRank(), 1);
+      starts[ivd] = c;
+      limits[ivd] = e;
+      pieces.push_back(stablehlo::SliceOpCreate(rewriter, op.getLoc(), indices,
+                                                starts, limits, strides));
+      c = e;
+    }
+    Value newIndices = pieces.size() == 1
+                           ? pieces[0]
+                           : stablehlo::ConcatenateOp::create(
+                                 rewriter, op.getLoc(), pieces, ivd);
+    auto mapped = [&](ArrayRef<int64_t> ds) {
+      SmallVector<int64_t> out;
+      for (int64_t d : ds)
+        if (toSrc[d] >= 0)
+          out.push_back(toSrc[d]);
+      return out;
+    };
+    SmallVector<int64_t> newMap;
+    for (auto [c, d] : llvm::enumerate(map))
+      if (keep[c])
+        newMap.push_back(toSrc[d]);
+    SmallVector<int64_t> sliceSizes;
+    for (auto [d, size] : llvm::enumerate(op.getSliceSizes()))
+      if (toSrc[d] >= 0)
+        sliceSizes.push_back(size);
+    auto newDn = stablehlo::GatherDimensionNumbersAttr::get(
+        op.getContext(), dn.getOffsetDims(), mapped(dn.getCollapsedSliceDims()),
+        mapped(dn.getOperandBatchingDims()), dn.getStartIndicesBatchingDims(),
+        newMap, ivd);
+    rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
+        op, op.getType(), bcast.getOperand(), newIndices, newDn,
         rewriter.getDenseI64ArrayAttr(sliceSizes),
         op.getIndicesAreSortedAttr());
     return success();
@@ -33360,6 +33523,107 @@ struct ConcatElementwise final
         ValueRange(elementwiseOperands), TypeRange(concatOp.getType()),
         computeAttrs(concatOpOperands[0]), {}, {});
 
+    rewriter.replaceOp(concatOp, newElementwiseOp);
+    return success();
+  }
+};
+
+// concat(slice(op(a1, b1)), op(a2, b2), slice(op(a3, b3))) along a
+// dimension, the same elementwise op (name, attributes, operand count and
+// types) behind every piece and at least one piece a slice of it, becomes
+// op(concat(slice(a1), a2, slice(a3)), concat(slice(b1), b2, slice(b3))).
+// Unlike ConcatElementwise the op may have other users: it is then also
+// computed a second time on the concatenate's rows (one evaluation over the
+// concatenate's extent in all); the slices may not, since one that
+// survives the rewrite leaves nothing gained. The rewrite is made only
+// when at most one operand position needs a concatenate of its own, the
+// others being one value already (classifyConcatPieces: the same splat
+// constant, the same scalar broadcast, or adjacent windows of one source
+// in order). So the concatenate moves down the chain of the one computed
+// operand and never multiplies: hoisting over two computed operands leaves
+// a concatenate per operand at every level.
+struct ConcatElementwiseSlice final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                              ConcatElementwiseSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp concatOp,
+                                    PatternRewriter &rewriter) const {
+    if (concatOp.getNumOperands() <= 1)
+      return failure();
+    int64_t dim = concatOp.getDimension();
+    Operation *first = nullptr;
+    SmallVector<Operation *> elems;
+    SmallVector<stablehlo::SliceOp> windows;
+    elems.reserve(concatOp.getNumOperands());
+    windows.reserve(concatOp.getNumOperands());
+    bool anySlice = false;
+    for (Value v : concatOp.getOperands()) {
+      Operation *def = v.getDefiningOp();
+      if (!def)
+        return failure();
+      auto slice = dyn_cast<stablehlo::SliceOp>(def);
+      // A slice with other users survives the rewrite: nothing is gained.
+      if (slice && !isOnlyUsedInOperation(slice, concatOp))
+        return failure();
+      Operation *elem = slice ? slice.getOperand().getDefiningOp() : def;
+      if (!elem || !hasTraitElementwise(elem) || elem->getNumResults() != 1 ||
+          elem->getNumRegions() != 0)
+        return failure();
+      if (isa<stablehlo::ConvertOp>(elem)) // Conflicts with ConvertConcat
+        return failure();
+      auto resTy = dyn_cast<RankedTensorType>(elem->getResult(0).getType());
+      if (!resTy)
+        return failure();
+      for (Value operand : elem->getOperands()) {
+        auto oTy = dyn_cast<RankedTensorType>(operand.getType());
+        if (!oTy || oTy.getShape() != resTy.getShape())
+          return failure();
+      }
+      if (first) {
+        if (first->getName() != elem->getName() ||
+            first->getNumOperands() != elem->getNumOperands() ||
+            computeAttrs(first) != computeAttrs(elem))
+          return failure();
+        for (auto [a, b] : llvm::zip(first->getOperands(), elem->getOperands()))
+          if (cast<RankedTensorType>(a.getType()).getElementType() !=
+              cast<RankedTensorType>(b.getType()).getElementType())
+            return failure();
+      } else {
+        first = elem;
+      }
+      anySlice |= (bool)slice;
+      elems.push_back(elem);
+      windows.push_back(slice);
+    }
+    if (!anySlice) // ConcatElementwise's case
+      return failure();
+
+    auto operandsAt = [&](unsigned i) {
+      SmallVector<Value> values;
+      values.reserve(elems.size());
+      for (Operation *elem : elems)
+        values.push_back(elem->getOperand(i));
+      return values;
+    };
+    unsigned numOperands = first->getNumOperands();
+    int64_t concats = 0;
+    for (unsigned i = 0; i < numOperands; i++)
+      if (classifyConcatPieces(operandsAt(i), windows, dim) ==
+          ConcatPieces::Concatenate)
+        concats++;
+    if (concats > 1)
+      return failure();
+
+    auto loc = concatOp.getLoc();
+    SmallVector<Value> elementwiseOperands;
+    elementwiseOperands.reserve(numOperands);
+    for (unsigned i = 0; i < numOperands; i++)
+      elementwiseOperands.push_back(
+          ConcatenatePiecesCreate(rewriter, loc, operandsAt(i), windows, dim));
+    auto newElementwiseOp = rewriter.create(
+        loc, first->getName().getIdentifier(), ValueRange(elementwiseOperands),
+        TypeRange(concatOp.getType()), computeAttrs(first), {}, {});
     rewriter.replaceOp(concatOp, newElementwiseOp);
     return success();
   }
@@ -45985,6 +46249,7 @@ struct EnzymeHLOOptPass
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique, ScatterOutOfBoundsNoop,
         GatherOfMaskedScatter, GatherOfBroadcastBatchingDims,
+        GatherOfBroadcastIndexedDims,
         ReduceTransposeSimplify,
         WhileScatterAccumulatorNoAdd,
         BroadcastIotaSimplify,
@@ -45999,6 +46264,7 @@ struct EnzymeHLOOptPass
         ConcatReshapeBroadcast,
         ConcatReshapeReduce,
         ConcatElementwise,
+        ConcatElementwiseSlice,
         ConcatReshapeElementwise,
         TransposeAllUsersSlice,
         ReduceReduce,

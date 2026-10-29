@@ -1,5 +1,6 @@
 // RUN: enzymexlamlir-opt --lower-comm-to-stablehlo %s | FileCheck %s --check-prefix=SHLO
 // RUN: enzymexlamlir-opt --lower-comm-to-jit %s | FileCheck %s --check-prefix=JIT
+// RUN: enzymexlamlir-opt --legalize-mpi-to-nccl %s | FileCheck %s --check-prefix=NCCL
 
 func.func @main(%comm : !comm.mpi.comm) {
     comm.mpi.barrier %comm : !comm.mpi.comm
@@ -19,3 +20,8 @@ func.func @main(%comm : !comm.mpi.comm) {
 // JIT-LABEL: func.func @main
 // JIT-SAME:                 (%[[COMM:.*]]: tensor<i64>) {
 // JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Barrier (%[[COMM]]) : (tensor<i64>) -> ()
+
+// NCCL-LABEL: func.func @main
+// NCCL-SAME: (%[[COMM:.*]]: !comm.nccl.comm) {
+// NCCL-NEXT: comm.nccl.barrier %[[COMM]] : !comm.nccl.comm
+// NCCL-NEXT: return

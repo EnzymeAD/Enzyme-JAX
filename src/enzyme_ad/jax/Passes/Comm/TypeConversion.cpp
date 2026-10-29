@@ -25,4 +25,13 @@ StablehloTypeConverter::StablehloTypeConverter(unsigned requestWidth) {
   });
 }
 
+Type convertCommMpiToNccl(MpiCommType type) {
+  return NcclCommType::get(type.getContext());
+}
+
+MpiToNcclTypeConverter::MpiToNcclTypeConverter() {
+  addConversion([](Type type) { return type; });
+  addConversion(convertCommMpiToNccl);
+}
+
 } // namespace mlir::comm

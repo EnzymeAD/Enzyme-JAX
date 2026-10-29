@@ -625,6 +625,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("concat_reduce");
   list.push_back("concat_dot_general");
   list.push_back("concat_elementwise");
+  list.push_back("concat_elementwise_slice");
   list.push_back("reduce_reduce");
   list.push_back("reduce_halving_reduce_window");
   list.push_back("conj_real");
@@ -744,6 +745,7 @@ static void addScatterGatherPasses(std::vector<std::string> &list,
   list.push_back("scatter_out_of_bounds_noop");
   list.push_back("gather_of_masked_scatter");
   list.push_back("gather_of_broadcast_batching_dims");
+  list.push_back("gather_of_broadcast_indexed_dims");
   list.push_back("scatter_masked_index_slice");
   list.push_back("scatter_masked_index_simplify");
   list.push_back("split_complex_scatter");

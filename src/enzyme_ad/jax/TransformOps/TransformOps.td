@@ -633,6 +633,10 @@ def ApplyConcatElementwisePatterns : EnzymeHLOPatternOp<
     "concat_elementwise"> {
   let patterns = ["ConcatElementwise"];
 }
+def ApplyConcatElementwiseSlicePatterns : EnzymeHLOPatternOp<
+    "concat_elementwise_slice"> {
+  let patterns = ["ConcatElementwiseSlice"];
+}
 
 def ApplyConcatReshapeElementwisePatterns : EnzymeHLOPatternOp<
     "concat_reshape_elementwise"> {
@@ -1980,6 +1984,11 @@ def ApplyGatherOfMaskedScatterPatterns : EnzymeHLOPatternOp<
 def ApplyGatherOfBroadcastBatchingDimsPatterns : EnzymeHLOPatternOp<
     "gather_of_broadcast_batching_dims"> {
   let patterns = ["GatherOfBroadcastBatchingDims"];
+}
+
+def ApplyGatherOfBroadcastIndexedDimsPatterns : EnzymeHLOPatternOp<
+    "gather_of_broadcast_indexed_dims"> {
+  let patterns = ["GatherOfBroadcastIndexedDims"];
 }
 
 def ApplyReduceTransposeSimplifyPatterns : EnzymeHLOPatternOp<
