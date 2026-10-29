@@ -42,7 +42,7 @@ module {
   }
 }
 
-// CHECK-LABEL: llvm.func private @fused__enzymexla_blas_dsymm_wrapper_enzymexla_blas_dsyrk_wrapper(
+// CHECK-LABEL: llvm.func @fused__enzymexla_blas_dsymm_wrapper_enzymexla_blas_dsyrk_wrapper(
 // CHECK: llvm.call @enzymexla_blas_dsymm_(
 // CHECK: llvm.call @enzymexla_blas_dsyrk_(
 // CHECK: llvm.return

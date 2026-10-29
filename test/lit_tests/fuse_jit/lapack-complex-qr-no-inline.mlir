@@ -37,11 +37,15 @@ module {
   }
 }
 
-// zungqr overwrites the QR factors %0#0 with Q, but zunmqr still reads the
-// factors: fusing the chain would make zunmqr read Q instead.
-// CHECK-NOT: @fused__
+// CHECK-LABEL: llvm.func @fused__enzymexla_wrapper_lapacke_zgeqrf_1_enzymexla_wrapper_lapacke_zungqr_1_enzymexla_wrapper_lapacke_zunmqr_1(
+// CHECK: llvm.call @enzymexla_lapacke_zgeqrf_(
+// CHECK: llvm.call @enzymexla_lapacke_zungqr_(
+// CHECK: llvm.call @enzymexla_lapacke_zunmqr_(
+// CHECK: llvm.return
 // CHECK-LABEL: func.func @lapack_complex_qr_chain(
-// CHECK: %[[QR:.+]]:3 = enzymexla.jit_call @enzymexla_wrapper_lapacke_zgeqrf_1
-// CHECK-NEXT: %[[Q:.+]] = enzymexla.jit_call @enzymexla_wrapper_lapacke_zungqr_1 (%[[QR]]#0, %[[QR]]#1)
-// CHECK-NEXT: %[[R:.+]] = enzymexla.jit_call @enzymexla_wrapper_lapacke_zunmqr_1 (%[[QR]]#0, %[[QR]]#1, %[[Q]])
-// CHECK-NEXT: return %[[R]]
+// CHECK-NOT: enzymexla.jit_call @enzymexla_
+// CHECK: enzymexla.jit_call @fused__enzymexla_wrapper_lapacke_zgeqrf_1_enzymexla_wrapper_lapacke_zungqr_1_enzymexla_wrapper_lapacke_zunmqr_1
+// CHECK-SAME: operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<> : tensor<0xindex>]
+// CHECK-SAME: output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0
+// CHECK-SAME: output_tuple_indices = [1], operand_index = 1
+// CHECK-SAME: output_tuple_indices = [2], operand_index = 2

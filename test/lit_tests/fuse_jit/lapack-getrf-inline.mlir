@@ -54,7 +54,7 @@ module {
   }
 }
 
-// CHECK-LABEL: llvm.func private @fused__enzymexla_lapack_dgetrf_wrapper_enzymexla_lapack_dgetrf_wrapper(
+// CHECK-LABEL: llvm.func @fused__enzymexla_lapack_dgetrf_wrapper_enzymexla_lapack_dgetrf_wrapper(
 // CHECK-COUNT-2: llvm.call @enzymexla_lapack_dgetrf_(
 // CHECK: llvm.return
 // CHECK-LABEL: func.func @lapack_getrf_chain(

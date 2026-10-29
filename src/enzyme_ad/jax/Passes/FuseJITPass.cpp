@@ -176,18 +176,6 @@ LogicalResult validateFusionExtension(
     // Internal results reuse their producer's storage slot.
     auto source = info.resultSlotMap.find(operand);
     if (source != info.resultSlotMap.end()) {
-      // Writing the slot clobbers the result it holds, so only the calls of
-      // the group before this one may read that result.
-      if (llvm::is_contained(aliasedOperands, operandIdx) &&
-          llvm::any_of(operand.getUsers(), [&](Operation *user) {
-            return user != call.getOperation() &&
-                   !(llvm::any_of(info.fusionCalls,
-                                  [&](enzymexla::JITCallOp member) {
-                                    return member.getOperation() == user;
-                                  }) &&
-                     user->isBeforeInBlock(call));
-          }))
-        return failure();
       extension.operandSlots.push_back(source->second);
       continue;
     }
@@ -483,27 +471,15 @@ JITFusionInfo collectDependencyFusionInfo(enzymexla::JITCallOp seedCall) {
   return info;
 }
 
-// Binds a wrapper argument to a fused pointer, casting the pointer when the
-// wrapper expects another address space.
-void mapPointer(OpBuilder &builder, BlockArgument wrapperArg, Value fusedArg,
-                IRMapping &mapping) {
-  if (fusedArg.getType() != wrapperArg.getType())
-    fusedArg = builder.create<LLVM::AddrSpaceCastOp>(
-        wrapperArg.getLoc(), wrapperArg.getType(), fusedArg);
-  mapping.map(wrapperArg, fusedArg);
-}
-
-void mapCallInputs(OpBuilder &builder, LLVM::LLVMFuncOp wrapperFunc,
-                   LLVM::LLVMFuncOp fusedFunc, ArrayRef<unsigned> operandSlots,
-                   IRMapping &mapping) {
+void mapCallInputs(LLVM::LLVMFuncOp wrapperFunc, LLVM::LLVMFuncOp fusedFunc,
+                   ArrayRef<unsigned> operandSlots, IRMapping &mapping) {
   // Bind source wrapper arguments to their physical fused pointers.
   for (auto [argIdx, slot] : llvm::enumerate(operandSlots))
-    mapPointer(builder, wrapperFunc.getArgument(argIdx),
-               fusedFunc.getArgument(slot), mapping);
+    mapping.map(wrapperFunc.getArgument(argIdx), fusedFunc.getArgument(slot));
 }
 
-void mapCallResults(OpBuilder &builder, enzymexla::JITCallOp call,
-                    LLVM::LLVMFuncOp wrapperFunc, LLVM::LLVMFuncOp fusedFunc,
+void mapCallResults(enzymexla::JITCallOp call, LLVM::LLVMFuncOp wrapperFunc,
+                    LLVM::LLVMFuncOp fusedFunc,
                     const DenseMap<Value, unsigned> &resultSlotMap,
                     IRMapping &mapping) {
   // JIT results name their aliased operand pointers, not LLVM return values.
@@ -515,8 +491,7 @@ void mapCallResults(OpBuilder &builder, enzymexla::JITCallOp call,
     // Map an appended result pointer when the wrapper ABI contains one.
     unsigned wrapperArgIdx = call.getNumOperands() + resultIdx;
     if (wrapperArgIdx < wrapperFunc.getNumArguments())
-      mapPointer(builder, wrapperFunc.getArgument(wrapperArgIdx), mappedResult,
-                 mapping);
+      mapping.map(wrapperFunc.getArgument(wrapperArgIdx), mappedResult);
   }
 }
 
@@ -546,14 +521,9 @@ LogicalResult rewriteFusion(enzymexla::JITCallOp firstCall,
   for (Operation *constant : fusionInfo.constantsToMove)
     rewriter.moveOpBefore(constant, firstCall);
 
-  // The JIT wrapper ABI passes every tensor or scalar buffer as a pointer,
-  // in the address space of the first wrapper argument bound to it.
-  SmallVector<Type> llvmArgTypes(fusedArgs.size());
-  for (auto [wrapperFunc, operandSlots] :
-       llvm::zip_equal(fusionFuncs, fusionInfo.callOperandSlots))
-    for (auto [argIdx, slot] : llvm::enumerate(operandSlots))
-      if (!llvmArgTypes[slot])
-        llvmArgTypes[slot] = wrapperFunc.getArgument(argIdx).getType();
+  // The JIT wrapper ABI passes every tensor or scalar buffer as !llvm.ptr.
+  SmallVector<Type> llvmArgTypes(
+      fusedArgs.size(), LLVM::LLVMPointerType::get(rewriter.getContext()));
 
   std::string fusedName =
       getAvailableFusedName(module, buildFusedName(fusionCalls));
@@ -570,11 +540,6 @@ LogicalResult rewriteFusion(enzymexla::JITCallOp firstCall,
     // summaries must remain conservative.
     auto fusedFunc = rewriter.create<LLVM::LLVMFuncOp>(firstCall.getLoc(),
                                                        fusedName, funcType);
-    // Nothing else can call the fusion of private wrappers.
-    if (llvm::all_of(fusionFuncs, [](LLVM::LLVMFuncOp func) {
-          return func.getLinkage() == LLVM::Linkage::Private;
-        }))
-      fusedFunc.setLinkage(LLVM::Linkage::Private);
 
     Block *fusedBlock = fusedFunc.addEntryBlock(rewriter);
     rewriter.setInsertionPointToEnd(fusedBlock);
@@ -585,10 +550,9 @@ LogicalResult rewriteFusion(enzymexla::JITCallOp firstCall,
       // Wrapper arguments are reused SSA keys, so each clone needs a fresh map.
       IRMapping mapping;
 
-      mapCallInputs(rewriter, wrapperFunc, fusedFunc,
-                    fusionInfo.callOperandSlots[i], mapping);
-      mapCallResults(rewriter, call, wrapperFunc, fusedFunc, resultSlotMap,
-                     mapping);
+      mapCallInputs(wrapperFunc, fusedFunc, fusionInfo.callOperandSlots[i],
+                    mapping);
+      mapCallResults(call, wrapperFunc, fusedFunc, resultSlotMap, mapping);
 
       for (auto &op : wrapperFunc.front().without_terminator())
         rewriter.clone(op, mapping);
@@ -655,11 +619,7 @@ struct FuseDAG : public OpRewritePattern<enzymexla::JITCallOp> {
     JITFusionInfo fusionInfo = collectDependencyFusionInfo(jitCallOp);
     if (fusionInfo.fusionCalls.size() < 2)
       return failure();
-    // The fused call replaces the group at its first call, which need not be
-    // the seed.
-    enzymexla::JITCallOp firstCall = fusionInfo.fusionCalls.front();
-    rewriter.setInsertionPoint(firstCall);
-    return rewriteFusion(firstCall, rewriter, fusionInfo);
+    return rewriteFusion(jitCallOp, rewriter, fusionInfo);
   }
 };
 
