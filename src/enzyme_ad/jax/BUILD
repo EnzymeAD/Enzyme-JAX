@@ -1700,6 +1700,8 @@ cc_library(
                "@llvm-project//mlir:ControlFlowDialect",
                "@llvm-project//mlir:DLTIDialect",
                "@llvm-project//mlir:GPUDialect",
+               "@llvm-project//mlir:GPUNVVMTransforms",
+               "@llvm-project//mlir:GPUROCDLTransforms",
                "@llvm-project//mlir:GPUTransforms",
                "@llvm-project//mlir:NVVMDialect",
                "@llvm-project//mlir:ROCDLDialect",
