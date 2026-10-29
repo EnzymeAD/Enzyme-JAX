@@ -22331,12 +22331,57 @@ struct GatherOpCanon final
     }
 
     auto dimNumbers = op.getDimensionNumbers();
+    // A grid reaching past the end of a one-dimensional operand reads its
+    // last element there, as a gather clamps each start index: the operand
+    // padded with that element to the grid's reach is read in bounds. The
+    // lanes a kernel's launch rounds up to read this way.
+    SmallVector<Operation *> padding;
+    if (operandTy.getRank() == 1 && operandTy.hasStaticShape() &&
+        dimNumbers.getOperandBatchingDims().empty()) {
+      SmallVector<IotaLikeTensor> terms;
+      auto indicesTy = cast<RankedTensorType>(indices.getType());
+      if (indicesTy.hasStaticShape() && extractGridIotas(indices, terms)) {
+        // The reach, rounded up to whole blocks of the largest stride so that
+        // the padded operand factors by the grid's strides.
+        int64_t lo = 0, hi = 0, block = 1;
+        for (auto &term : terms) {
+          int64_t start =
+              cast<IntegerAttr>(term.start).getValue().getSExtValue();
+          int64_t scale =
+              cast<IntegerAttr>(term.scale).getValue().getSExtValue();
+          int64_t span =
+              scale == 0 ? 0
+                         : scale * (indicesTy.getDimSize(term.dimension) - 1);
+          lo += start + std::min<int64_t>(span, 0);
+          hi += start + std::max<int64_t>(span, 0);
+          block = std::max(block, std::abs(scale));
+        }
+        int64_t n = operandTy.getDimSize(0);
+        if (lo >= 0 && hi >= n && hi < 2 * n) {
+          hi = llvm::alignTo(hi + 1, block) - 1;
+          Location loc = op.getLoc();
+          Value last = stablehlo::SliceOpCreate(rewriter, loc, operand, {n - 1},
+                                                {n}, {1});
+          padding.push_back(last.getDefiningOp());
+          last = stablehlo::ReshapeOpCreate(rewriter, loc, last, {});
+          padding.push_back(last.getDefiningOp());
+          operand = stablehlo::PadOp::create(
+              rewriter, loc, operand, last, rewriter.getDenseI64ArrayAttr({0}),
+              rewriter.getDenseI64ArrayAttr({hi + 1 - n}),
+              rewriter.getDenseI64ArrayAttr({0}));
+          padding.push_back(operand.getDefiningOp());
+          operandTy = cast<RankedTensorType>(operand.getType());
+        }
+      }
+    }
     GridIndexingAnalysis analysis;
     if (failed(analyzeGridIndexing(indices, operand,
                                    dimNumbers.getIndexVectorDim(),
                                    dimNumbers.getStartIndexMap(), analysis,
                                    dimNumbers.getOperandBatchingDims(),
                                    dimNumbers.getStartIndicesBatchingDims()))) {
+      for (Operation *padOp : llvm::reverse(padding))
+        rewriter.eraseOp(padOp);
       return failure();
     }
 
