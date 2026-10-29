@@ -10229,6 +10229,23 @@ struct MulSimplify
   }
 };
 
+// Whether every element of the integer `dividend` provably lies in [0, c)
+// for the positive splat constant `divisor` c: its quotient by c is 0 and its
+// remainder itself.
+static bool dividendWithinDivisor(Value dividend, Value divisor) {
+  auto ty = dyn_cast<RankedTensorType>(dividend.getType());
+  if (!ty || !isa<IntegerType>(ty.getElementType()))
+    return false;
+  SplatElementsAttr c;
+  if (!matchPattern(divisor, m_Constant(&c)))
+    return false;
+  APInt cv = c.getSplatValue<APInt>();
+  if (!cv.sgt(0))
+    return false;
+  auto [lo, hi] = enzyme::getProvableIntegerRange(dividend);
+  return lo.isNonNegative() && hi.slt(cv.sext(128));
+}
+
 struct DivSimplify
     : public CheckedOpRewritePattern<stablehlo::DivOp, DivSimplify> {
   using CheckedOpRewritePattern<stablehlo::DivOp,
@@ -10250,6 +10267,12 @@ struct DivSimplify
     if (rhsConst && (matchPattern(rhsAttr, m_NegOneFloat()) ||
                      matchPattern(rhsAttr, m_NegOne()))) {
       rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, op.getLhs());
+      return success();
+    }
+    // x / c -> 0 when 0 <= x < c (an iota shorter than c, a lane index).
+    if (dividendWithinDivisor(op.getLhs(), op.getRhs())) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
       return success();
     }
 
@@ -10334,6 +10357,12 @@ struct RemSimplify
     if (matchPattern(op.getRhs(), m_One())) {
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
           op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+      return success();
+    }
+
+    // x % c -> x when 0 <= x < c (an iota shorter than c, a lane index).
+    if (dividendWithinDivisor(op.getLhs(), op.getRhs())) {
+      rewriter.replaceOp(op, op.getLhs());
       return success();
     }
 
