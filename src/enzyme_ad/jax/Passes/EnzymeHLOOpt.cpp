@@ -22279,8 +22279,377 @@ static Value putGridViewBack(PatternRewriter &rewriter, Location loc,
   return stablehlo::ReshapeOpCreate(rewriter, loc, view, operandTy.getShape());
 }
 
+// Whether `op` is in a loop tagged parallel, which the batching will take
+// out: the index of the batched op reads as one grid, and folds as a whole;
+// a slice per iteration leaves the batched form in pieces.
+static bool inParallelLoop(Operation *op) {
+  for (Operation *p = op->getParentOp(); p; p = p->getParentOp())
+    if (isa<stablehlo::WhileOp>(p) && p->hasAttr("enzymexla.parallel"))
+      return true;
+  return false;
+}
+
 /// Converts gather ops to slice ops in case we have a single set of constant
 /// indices.
+// An index into a one-dimensional operand that is affine in iotas and in
+// scalars computed elsewhere (a loop's counter, scaled): the part over iotas
+// and constants, rebuilt with every scalar as zero, and each scalar with the
+// constant it multiplies the index by. The grid analysis reads the static
+// part; the scalars move the slice's start along the factored dimension
+// their multiplier is a stride of, when their range keeps it in bounds.
+namespace {
+struct DynamicIndexOffsets {
+  Value staticIndices;
+  SmallVector<std::pair<Value, int64_t>> terms;
+  SmallVector<Operation *> created;
+};
+} // namespace
+
+// The coefficient of each dynamic scalar in `v`, or nullopt when `v` is not
+// affine in them: through adds, subtracts, multiplies by a constant, and the
+// views that keep every element (reshapes, transposes, broadcasts,
+// conversions). A broadcast of a one-element value that is not index-only
+// is a scalar term, the constants it is multiplied by its coefficient; so
+// is a dynamic slice of an index-only value at a scalar start, when the
+// scalar's range keeps the slice in place (a dynamic slice clamps it): the
+// value is the slice at zero plus the start times the value's scale along
+// that dimension. An op not listed is static only if none of its operands
+// carries a scalar.
+// The provable range of the scalar `s`: by the range analysis, or, for a
+// value a while loop computes from its counter, by the loop's bounds.
+static std::optional<std::pair<int64_t, int64_t>> scalarRange(Value s) {
+  auto [lo, hi] = enzyme::getProvableIntegerRange(s);
+  auto ety = cast<RankedTensorType>(s.getType()).getElementType();
+  unsigned width = cast<IntegerType>(ety).getWidth();
+  bool bounded = lo.sgt(APInt::getSignedMinValue(width).sext(128)) ||
+                 hi.slt(APInt::getSignedMaxValue(width).sext(128));
+  if (!bounded) {
+    auto whileOp = s.getParentBlock()->getParentOp();
+    auto loop = dyn_cast_or_null<stablehlo::WhileOp>(whileOp);
+    if (!loop)
+      return std::nullopt;
+    WhileLoopInfo info(loop);
+    if (failed(info.computeInfo()) || !info.isValid())
+      return std::nullopt;
+    info.propagateBounds();
+    auto bounds = info.getBounds(s);
+    if (!bounds || bounds->min.getSignificantBits() > 62 ||
+        bounds->max.getSignificantBits() > 62)
+      return std::nullopt;
+    return std::make_pair(bounds->min.getSExtValue(),
+                          bounds->max.getSExtValue());
+  }
+  if (lo.getSignificantBits() > 62 || hi.getSignificantBits() > 62)
+    return std::nullopt;
+  return std::make_pair(lo.getSExtValue(), hi.getSExtValue());
+}
+
+// Whether `v` is computed from constants and iotas alone (such a value folds
+// to a constant, or reads as part of the grid).
+static bool isIndexOnly(Value v) {
+  SmallVector<Value> work{v};
+  DenseSet<Value> seen;
+  while (!work.empty()) {
+    Value cur = work.pop_back_val();
+    if (!seen.insert(cur).second)
+      continue;
+    Operation *def = cur.getDefiningOp();
+    if (!def)
+      return false;
+    if (matchPattern(cur, m_Constant()) || isa<stablehlo::IotaOp>(def))
+      continue;
+    if (def->getNumRegions() || !isMemoryEffectFree(def))
+      return false;
+    for (Value operand : def->getOperands())
+      work.push_back(operand);
+  }
+  return true;
+}
+
+// Whether the one-element integer `v` is a scalar the index carries: not a
+// constant, and not computed from constants and iotas alone.
+static bool isDynamicIndexScalar(Value v) {
+  auto ty = dyn_cast<RankedTensorType>(v.getType());
+  return ty && ty.getNumElements() == 1 &&
+         isa<IntegerType>(ty.getElementType()) && !isIndexOnly(v);
+}
+
+// The scalar `v` with the constants it is multiplied by peeled off: the
+// value under the multiplies (and the conversions and reshapes between
+// them), and their product.
+static std::pair<Value, int64_t> peelScalarFactors(Value v) {
+  int64_t factor = 1;
+  while (Operation *def = v.getDefiningOp()) {
+    if (isa<stablehlo::ConvertOp, stablehlo::ReshapeOp>(def)) {
+      v = def->getOperand(0);
+      continue;
+    }
+    auto mul = dyn_cast<stablehlo::MulOp>(def);
+    if (!mul)
+      break;
+    SplatElementsAttr c;
+    Value other;
+    if (matchPattern(mul.getRhs(), m_Constant(&c)))
+      other = mul.getLhs();
+    else if (matchPattern(mul.getLhs(), m_Constant(&c)))
+      other = mul.getRhs();
+    else
+      break;
+    APInt k = c.getSplatValue<APInt>();
+    if (k.getSignificantBits() > 31 || std::abs(factor) > (int64_t(1) << 31))
+      break;
+    factor *= k.getSExtValue();
+    v = other;
+  }
+  return {v, factor};
+}
+
+static std::optional<DenseMap<Value, int64_t>>
+dynamicIndexCoefficients(Value v,
+                         DenseMap<Value, DenseMap<Value, int64_t>> &memo) {
+  if (auto found = memo.find(v); found != memo.end())
+    return found->second;
+  DenseMap<Value, int64_t> coeffs;
+  Operation *def = v.getDefiningOp();
+  // A block argument, or a value that is not of integers (a computation an
+  // index is converted from): static for the grid.
+  if (!def || !isa<IntegerType>(getElementTypeOrSelf(v.getType())))
+    return coeffs;
+  auto combine = [&](Value a, Value b, int64_t sign) -> bool {
+    auto ca = dynamicIndexCoefficients(a, memo);
+    auto cb = dynamicIndexCoefficients(b, memo);
+    if (!ca || !cb)
+      return false;
+    coeffs = *ca;
+    for (auto &[s, c] : *cb)
+      coeffs[s] += sign * c;
+    return true;
+  };
+  if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(def)) {
+    Value operand = bcast.getOperand();
+    if (isDynamicIndexScalar(operand)) {
+      auto [scalar, factor] = peelScalarFactors(operand);
+      coeffs[scalar] = factor;
+    } else {
+      auto inner = dynamicIndexCoefficients(operand, memo);
+      if (!inner)
+        return std::nullopt;
+      coeffs = *inner;
+    }
+  } else if (isa<stablehlo::ReshapeOp, stablehlo::TransposeOp,
+                 stablehlo::ConvertOp>(def)) {
+    auto inner = dynamicIndexCoefficients(def->getOperand(0), memo);
+    if (!inner)
+      return std::nullopt;
+    coeffs = *inner;
+  } else if (auto slice = dyn_cast<stablehlo::DynamicSliceOp>(def)) {
+    Value operand = slice.getOperand();
+    auto ty = cast<RankedTensorType>(operand.getType());
+    if (!ty.hasStaticShape() || !isIndexOnly(operand))
+      return std::nullopt;
+    SmallVector<IotaLikeTensor> parts;
+    if (!extractComponentIotas(operand, ty.getRank(), 0, parts))
+      return std::nullopt;
+    for (auto [d, start] : llvm::enumerate(slice.getStartIndices())) {
+      if (matchPattern(start, m_Constant()))
+        continue;
+      if (!isDynamicIndexScalar(start))
+        return std::nullopt;
+      auto [scalar, factor] = peelScalarFactors(start);
+      auto range = scalarRange(scalar);
+      int64_t room = ty.getDimSize(d) - slice.getSliceSizes()[d];
+      if (!range ||
+          std::min(range->first * factor, range->second * factor) < 0 ||
+          std::max(range->first * factor, range->second * factor) > room)
+        return std::nullopt;
+      int64_t scale = 0;
+      for (auto &part : parts)
+        if (part.dimension == int64_t(d))
+          scale += cast<IntegerAttr>(part.scale).getValue().getSExtValue();
+      coeffs[scalar] += scale * factor;
+    }
+  } else if (auto add = dyn_cast<stablehlo::AddOp>(def)) {
+    if (!combine(add.getLhs(), add.getRhs(), 1))
+      return std::nullopt;
+  } else if (auto sub = dyn_cast<stablehlo::SubtractOp>(def)) {
+    if (!combine(sub.getLhs(), sub.getRhs(), -1))
+      return std::nullopt;
+  } else if (auto mul = dyn_cast<stablehlo::MulOp>(def)) {
+    SplatElementsAttr c;
+    int k = matchPattern(mul.getRhs(), m_Constant(&c))   ? 0
+            : matchPattern(mul.getLhs(), m_Constant(&c)) ? 1
+                                                         : -1;
+    auto inner = dynamicIndexCoefficients(def->getOperand(k < 0 ? 0 : k), memo);
+    if (!inner)
+      return std::nullopt;
+    if (k < 0) {
+      // A product of two computed values: affine only when neither side
+      // carries a scalar.
+      auto other = dynamicIndexCoefficients(def->getOperand(1), memo);
+      if (!other || !inner->empty() || !other->empty())
+        return std::nullopt;
+    } else {
+      APInt factor = c.getSplatValue<APInt>();
+      if (factor.getSignificantBits() > 62)
+        return std::nullopt;
+      for (auto &[s, coeff] : *inner)
+        coeffs[s] = coeff * factor.getSExtValue();
+    }
+  } else {
+    for (Value operand : def->getOperands()) {
+      auto inner = dynamicIndexCoefficients(operand, memo);
+      if (!inner || !inner->empty())
+        return std::nullopt;
+    }
+  }
+  SmallVector<Value> zeros;
+  for (auto &[s, c] : coeffs)
+    if (c == 0)
+      zeros.push_back(s);
+  for (Value s : zeros)
+    coeffs.erase(s);
+  memo[v] = coeffs;
+  return coeffs;
+}
+
+// `indices` split as above, when it carries any scalar: the static part is
+// built from the ops that depend on a scalar, cloned with each scalar's
+// broadcast replaced by zeros.
+static std::optional<DynamicIndexOffsets>
+splitDynamicIndexOffsets(PatternRewriter &rewriter, Value indices) {
+  DenseMap<Value, DenseMap<Value, int64_t>> memo;
+  auto coeffs = dynamicIndexCoefficients(indices, memo);
+  if (!coeffs || coeffs->empty())
+    return std::nullopt;
+  DynamicIndexOffsets split;
+  for (auto &[s, c] : *coeffs)
+    split.terms.push_back({s, c});
+  llvm::sort(split.terms, [](auto &a, auto &b) {
+    return a.first.getAsOpaquePointer() < b.first.getAsOpaquePointer();
+  });
+  // The ops depending on a scalar, operands first.
+  SmallVector<Operation *> order;
+  DenseSet<Operation *> seen;
+  std::function<void(Value)> visit = [&](Value v) {
+    Operation *def = v.getDefiningOp();
+    if (!def || !seen.insert(def).second)
+      return;
+    auto found = memo.find(v);
+    if (found == memo.end() || found->second.empty())
+      return;
+    for (Value operand : def->getOperands())
+      visit(operand);
+    order.push_back(def);
+  };
+  visit(indices);
+  IRMapping map;
+  Location loc = indices.getLoc();
+  for (Operation *op : order) {
+    if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+      if (isDynamicIndexScalar(bcast.getOperand())) {
+        Value zero = stablehlo::ConstantOp::create(
+            rewriter, loc, cast<ElementsAttr>(makeAttr(bcast.getType(), 0)));
+        split.created.push_back(zero.getDefiningOp());
+        map.map(bcast.getResult(), zero);
+        continue;
+      }
+    }
+    if (auto slice = dyn_cast<stablehlo::DynamicSliceOp>(op)) {
+      // The slice at zero along the scalar starts; a constant start is
+      // clamped as the dynamic slice clamps it.
+      auto shape =
+          cast<RankedTensorType>(slice.getOperand().getType()).getShape();
+      SmallVector<int64_t> starts, limits, strides;
+      for (auto [start, size, dim] : llvm::zip_equal(
+               slice.getStartIndices(), slice.getSliceSizes(), shape)) {
+        DenseIntElementsAttr attr;
+        int64_t at = matchPattern(start, m_Constant(&attr))
+                         ? std::clamp(attr.getValues<APInt>()[0].getSExtValue(),
+                                      int64_t(0), dim - size)
+                         : 0;
+        starts.push_back(at);
+        limits.push_back(at + size);
+        strides.push_back(1);
+      }
+      Value sliced = stablehlo::SliceOpCreate(rewriter, loc, slice.getOperand(),
+                                              starts, limits, strides);
+      if (sliced != slice.getOperand())
+        split.created.push_back(sliced.getDefiningOp());
+      map.map(slice.getResult(), sliced);
+      continue;
+    }
+    Operation *clone = rewriter.clone(*op, map);
+    split.created.push_back(clone);
+  }
+  split.staticIndices = map.lookupOrDefault(indices);
+  return split;
+}
+
+// Places each scalar term of `split` on a dimension of the factored operand
+// of `analysis`: its multiplier must be a multiple of the dimension's stride,
+// and the slice moved by its range must stay in bounds. Gives the start of
+// each factored dimension as an i32 scalar, the static start plus the
+// scalars' contributions; nullopt when a term cannot be placed. Nothing is
+// built unless every term is placed.
+static std::optional<SmallVector<Value>>
+dynamicSliceStarts(PatternRewriter &rewriter, Location loc,
+                   const GridIndexingAnalysis &analysis,
+                   const DynamicIndexOffsets &split) {
+  for (auto cut : analysis.cuts)
+    if (cut.second >= 0)
+      return std::nullopt;
+  int64_t rank = analysis.operandShape.size();
+  SmallVector<int64_t> strides(rank, 1);
+  for (int64_t d = rank - 2; d >= 0; --d)
+    strides[d] = strides[d + 1] * analysis.operandShape[d + 1];
+  // Per dimension: the (scalar, multiplier in that dimension) placed there.
+  SmallVector<SmallVector<std::pair<Value, int64_t>>> placed(rank);
+  SmallVector<int64_t> lo(rank, 0), hi(rank, 0);
+  for (auto [s, m] : split.terms) {
+    auto range = scalarRange(s);
+    if (!range)
+      return std::nullopt;
+    bool done = false;
+    for (int64_t d = 0; d < rank && !done; ++d) {
+      if (m % strides[d] != 0)
+        continue;
+      int64_t k = m / strides[d];
+      int64_t minMove = std::min(k * range->first, k * range->second);
+      int64_t maxMove = std::max(k * range->first, k * range->second);
+      if (analysis.sliceStarts[d] + lo[d] + minMove < 0 ||
+          analysis.sliceStarts[d] + hi[d] + maxMove + analysis.sliceSizes[d] >
+              analysis.operandShape[d])
+        continue;
+      lo[d] += minMove;
+      hi[d] += maxMove;
+      placed[d].push_back({s, k});
+      done = true;
+    }
+    if (!done)
+      return std::nullopt;
+  }
+  auto i32 = RankedTensorType::get({}, rewriter.getI32Type());
+  SmallVector<Value> starts;
+  for (int64_t d = 0; d < rank; ++d) {
+    Value start = stablehlo::ConstantOp::create(
+        rewriter, loc,
+        cast<ElementsAttr>(makeAttr(i32, analysis.sliceStarts[d])));
+    for (auto [s, k] : placed[d]) {
+      Value scalar = stablehlo::ReshapeOpCreate(rewriter, loc, s, {});
+      if (scalar.getType() != i32)
+        scalar = stablehlo::ConvertOp::create(rewriter, loc, i32, scalar);
+      if (k != 1) {
+        Value factor = stablehlo::ConstantOp::create(
+            rewriter, loc, cast<ElementsAttr>(makeAttr(i32, k)));
+        scalar = stablehlo::MulOp::create(rewriter, loc, scalar, factor);
+      }
+      start = stablehlo::AddOp::create(rewriter, loc, start, scalar);
+    }
+    starts.push_back(start);
+  }
+  return starts;
+}
+
 struct GatherOpCanon final
     : CheckedOpRewritePattern<stablehlo::GatherOp, GatherOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -22331,21 +22700,45 @@ struct GatherOpCanon final
     }
 
     auto dimNumbers = op.getDimensionNumbers();
+    // Scalars the index carries (a loop's counter, scaled) move the slice's
+    // start when the grid read with them as zero has a place for each;
+    // otherwise, and in a loop the batching will take out, the index is read
+    // as it is.
+    std::optional<DynamicIndexOffsets> dynamic;
+    if (operandTy.getRank() == 1 &&
+        dimNumbers.getOperandBatchingDims().empty() && !inParallelLoop(op))
+      dynamic = splitDynamicIndexOffsets(rewriter, indices);
     GridIndexingAnalysis analysis;
-    if (failed(analyzeGridIndexing(indices, operand,
-                                   dimNumbers.getIndexVectorDim(),
-                                   dimNumbers.getStartIndexMap(), analysis,
-                                   dimNumbers.getOperandBatchingDims(),
-                                   dimNumbers.getStartIndicesBatchingDims()))) {
-      return failure();
+    std::optional<SmallVector<Value>> dynamicStarts;
+    if (dynamic) {
+      if (succeeded(analyzeGridIndexing(
+              dynamic->staticIndices, operand, dimNumbers.getIndexVectorDim(),
+              dimNumbers.getStartIndexMap(), analysis,
+              dimNumbers.getOperandBatchingDims(),
+              dimNumbers.getStartIndicesBatchingDims())) &&
+          analysis.inBounds)
+        dynamicStarts =
+            dynamicSliceStarts(rewriter, op.getLoc(), analysis, *dynamic);
+      if (!dynamicStarts) {
+        for (Operation *created : llvm::reverse(dynamic->created))
+          rewriter.eraseOp(created);
+        dynamic.reset();
+        analysis = GridIndexingAnalysis();
+      }
     }
+    if (!dynamic && failed(analyzeGridIndexing(
+                        indices, operand, dimNumbers.getIndexVectorDim(),
+                        dimNumbers.getStartIndexMap(), analysis,
+                        dimNumbers.getOperandBatchingDims(),
+                        dimNumbers.getStartIndicesBatchingDims())))
+      return failure();
 
     auto gridTy =
         RankedTensorType::get(analysis.gridShape, rewriter.getI64Type());
 
     // Special case: If there is only one active grid dimension mapping, we can
     // slice directly out of the 1D operand without reshaping/broadcasting.
-    if (analysis.mappings.size() == 1) {
+    if (analysis.mappings.size() == 1 && !dynamic) {
       int64_t stride = analysis.mappings[0].scale;
       int64_t count = analysis.sliceSizes[0];
       int64_t start = analysis.minTotalOffset;
@@ -22439,9 +22832,15 @@ struct GatherOpCanon final
     }
 
     // Slice the multi-dimensional sub-tensor.
-    Value sliced = stablehlo::SliceOpCreate(
-        rewriter, op.getLoc(), reshapedOperand, analysis.sliceStarts,
-        sliceLimits, sliceStrides);
+    Value sliced;
+    if (dynamicStarts)
+      sliced = stablehlo::DynamicSliceOp::create(
+          rewriter, op.getLoc(), reshapedOperand, *dynamicStarts,
+          analysis.sliceSizes);
+    else
+      sliced = stablehlo::SliceOpCreate(rewriter, op.getLoc(), reshapedOperand,
+                                        analysis.sliceStarts, sliceLimits,
+                                        sliceStrides);
 
     // Reverse any slice dimensions that had a negative scale in the grid index.
     if (!analysis.reverseDims.empty()) {
@@ -44460,15 +44859,39 @@ private:
     auto indices = op.getScatterIndices();
     auto dimNumbers = op.getScatterDimensionNumbers();
 
+    // Scalars the index carries (a loop's counter, scaled) move the update's
+    // start when the grid read with them as zero has a place for each;
+    // otherwise, and in a loop the batching will take out, the index is read
+    // as it is.
+    std::optional<DynamicIndexOffsets> dynamic;
+    if (operandTy.getRank() == 1 && dimNumbers.getInputBatchingDims().empty() &&
+        !inParallelLoop(op))
+      dynamic = splitDynamicIndexOffsets(rewriter, indices);
     GridIndexingAnalysis analysis;
-    if (failed(analyzeGridIndexing(
-            indices, operand, dimNumbers.getIndexVectorDim(),
-            dimNumbers.getScatterDimsToOperandDims(), analysis,
-            dimNumbers.getInputBatchingDims(),
-            dimNumbers.getScatterIndicesBatchingDims())) ||
-        !analysis.inBounds) {
-      return failure();
+    std::optional<SmallVector<Value>> dynamicStarts;
+    if (dynamic) {
+      if (succeeded(analyzeGridIndexing(
+              dynamic->staticIndices, operand, dimNumbers.getIndexVectorDim(),
+              dimNumbers.getScatterDimsToOperandDims(), analysis,
+              dimNumbers.getInputBatchingDims(),
+              dimNumbers.getScatterIndicesBatchingDims())) &&
+          analysis.inBounds)
+        dynamicStarts =
+            dynamicSliceStarts(rewriter, op.getLoc(), analysis, *dynamic);
+      if (!dynamicStarts) {
+        for (Operation *created : llvm::reverse(dynamic->created))
+          rewriter.eraseOp(created);
+        dynamic.reset();
+        analysis = GridIndexingAnalysis();
+      }
     }
+    if (!dynamic && (failed(analyzeGridIndexing(
+                         indices, operand, dimNumbers.getIndexVectorDim(),
+                         dimNumbers.getScatterDimsToOperandDims(), analysis,
+                         dimNumbers.getInputBatchingDims(),
+                         dimNumbers.getScatterIndicesBatchingDims())) ||
+                     !analysis.inBounds))
+      return failure();
 
     auto gridTy =
         RankedTensorType::get(analysis.gridShape, rewriter.getI64Type());
@@ -44520,6 +44943,8 @@ private:
               makeAttr(RankedTensorType::get({}, rewriter.getI32Type()),
                        analysis.sliceStarts[k])));
     }
+    if (dynamicStarts)
+      sliceStartsVal = *dynamicStarts;
 
     Value updatedOperand = stablehlo::DynamicUpdateSliceOp::create(
         rewriter, op.getLoc(), reshapedOperand, reshapedUpdate, sliceStartsVal);
