@@ -11236,6 +11236,21 @@ struct ReduceMinMaxIotaLike
   }
 };
 
+static std::optional<stablehlo::ComparisonType> getEffectiveComparisonType(
+    stablehlo::CompareOp op) {
+  using stablehlo::ComparisonType;
+  if (auto compType = op.getCompareType();
+      compType && *compType != ComparisonType::NOTYPE) {
+    return *compType;
+  }
+  Type elemType = getElementTypeOrSelf(op.getLhs().getType());
+  if (isa<FloatType, ComplexType>(elemType)) return ComparisonType::FLOAT;
+  if (elemType.isUnsignedInteger() || elemType.isInteger(1))
+    return ComparisonType::UNSIGNED;
+  if (elemType.isInteger()) return ComparisonType::SIGNED;
+  return std::nullopt;
+}
+
 struct CompareIotaConstSimplify
     : public CheckedOpRewritePattern<stablehlo::CompareOp,
                                      CompareIotaConstSimplify> {
@@ -11271,7 +11286,8 @@ struct CompareIotaConstSimplify
     if (!matchPattern(cst, m_ConstantInt(&cstAPInt)))
       return rewriter.notifyMatchFailure(cmpOp, "Non-constant comparison");
 
-    std::optional<stablehlo::ComparisonType> compType = cmpOp.getCompareType();
+    std::optional<stablehlo::ComparisonType> compType =
+        getEffectiveComparisonType(cmpOp);
 
     int64_t cstI = compType == stablehlo::ComparisonType::SIGNED
                        ? cstAPInt.getSExtValue()
@@ -18789,7 +18805,7 @@ struct CompareOpCanon final
     ComparisonDirection direction = op.getComparisonDirection();
     Value lhs = op.getLhs();
     Value rhs = op.getRhs();
-    std::optional<ComparisonType> compType = op.getCompareType();
+    std::optional<ComparisonType> compType = getEffectiveComparisonType(op);
 
     TypedAttr lhsAttr;
     matchPattern(lhs, m_Constant(&lhsAttr));

@@ -15,6 +15,26 @@ func.func @nonneg_lt_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
 // CHECK-NEXT: %c = stablehlo.constant dense<false> : tensor<4xi1>
 // CHECK-NEXT: return %c
 
+func.func @nonneg_lt_neg_default_type(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+    %c = stablehlo.constant dense<-5> : tensor<4xi64>
+    %0 = stablehlo.abs %arg0 : tensor<4xi64>
+    %cmp = stablehlo.compare LT, %0, %c : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
+    return %cmp : tensor<4xi1>
+}
+// CHECK-LABEL: func.func @nonneg_lt_neg_default_type
+// CHECK-NEXT: %c = stablehlo.constant dense<false> : tensor<4xi1>
+// CHECK-NEXT: return %c
+
+func.func @nonneg_lt_neg_notype(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+    %c = stablehlo.constant dense<-5> : tensor<4xi64>
+    %0 = stablehlo.abs %arg0 : tensor<4xi64>
+    %cmp = stablehlo.compare LT, %0, %c, NOTYPE : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
+    return %cmp : tensor<4xi1>
+}
+// CHECK-LABEL: func.func @nonneg_lt_neg_notype
+// CHECK-NEXT: %c = stablehlo.constant dense<false> : tensor<4xi1>
+// CHECK-NEXT: return %c
+
 // abs(x) is always >= 0, so abs(x) <= -5 is always false
 func.func @nonneg_le_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
     %c = stablehlo.constant dense<-5> : tensor<4xi64>
