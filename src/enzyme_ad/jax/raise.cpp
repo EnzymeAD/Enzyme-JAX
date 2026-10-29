@@ -223,6 +223,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       // out of the lanes, then out of the launch): the raiser can capture a
       // buffer whose pointer the host read, not one read inside the kernel.
       pass_pipeline += "parallel-licm," + canonicalize + ",";
+      pass_pipeline += "canonicalize-scf-for," + canonicalize + ",";
       pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true";
       if (options->specializeIndexStrides)
