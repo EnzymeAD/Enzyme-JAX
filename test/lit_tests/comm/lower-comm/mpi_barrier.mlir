@@ -12,7 +12,7 @@ func.func @main(%comm : !comm.mpi.comm) {
 // JIT-LABEL: llvm.func @MPI_Barrier
 // JIT-SAME:                        (!llvm.ptr) -> i32
 // JIT-LABEL: llvm.func @enzymexla_jitwrap_MPI_Barrier
-// JIT-SAME:                                          (%arg0: !llvm.ptr) {
+// JIT-SAME:                                          (%arg0: !llvm.ptr) attributes {enzymexla.comm} {
 // JIT-NEXT:   %0 = llvm.load %arg0 : !llvm.ptr -> !llvm.ptr
 // JIT-NEXT:   %1 = llvm.call @MPI_Barrier(%0) : (!llvm.ptr) -> i32
 // JIT-NEXT:   llvm.return

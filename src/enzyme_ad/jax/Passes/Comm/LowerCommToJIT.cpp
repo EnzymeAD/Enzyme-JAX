@@ -92,6 +92,12 @@ const char *convertMlirTypeToMpiDatatypeName(Type type,
     return nullptr;
 }
 
+// Mark comm-related JIT wrappers -- for fuse-jit
+static void markCommWrapper(LLVM::LLVMFuncOp wrapperFunc) {
+  wrapperFunc->setAttr("enzymexla.comm",
+                       UnitAttr::get(wrapperFunc.getContext()));
+}
+
 // MPI constants like `MPI_STATUS_IGNORE` are macros, not linkable symbols, and
 // their value may be null (e.g. in Open MPI), which the JIT linker rejects as
 // an unresolved symbol. So we embed their value instead of taking the address
@@ -241,6 +247,7 @@ struct LowerCommMpiCommRankOpToJIT
 
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -339,6 +346,7 @@ struct LowerCommMpiCommSizeOpToJIT
 
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -437,6 +445,7 @@ struct LowerCommMpiCommSplitOpToJIT
 
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -541,6 +550,7 @@ struct LowerCommMpiBarrierOpToJIT
 
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -626,6 +636,7 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
 
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -762,6 +773,7 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
 
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -921,6 +933,7 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
 
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -1071,6 +1084,7 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
 
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -1235,6 +1249,7 @@ struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
 
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -1329,6 +1344,7 @@ struct LowerCommMpiWaitallOpToJIT
 
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -1433,6 +1449,7 @@ struct LowerCommMpiAllreduceOpToJIT
 
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -1582,6 +1599,7 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
 
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
