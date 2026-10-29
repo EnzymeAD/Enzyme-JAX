@@ -68,22 +68,37 @@ jobs:
           # inputs into sandbox ... (File exists)".
           run() { name=$1; shift; for i in 1 2; do v=${name}_$i; echo "== $v"; bazel $BZ shutdown > /dev/null 2>&1 || true; rm -rf /dev/shm/bazel-sandbox.* || true; bazel $BZ build $BAZEL_FLAGS --test_env=DIAG_VARIANT=$v "$@" $TESTS > /tmp/build_$v.txt 2>&1 || true; ( time bazel $BZ test $BAZEL_FLAGS --test_env=DIAG_VARIANT=$v --nocache_test_results --test_output=errors --profile=/tmp/prof_$v.json "$@" $TESTS ) > /tmp/out_$v.txt 2>&1 || true; grep -E "Executed|Elapsed|real|TIMEOUT|FAILED|skipped|ERROR" /tmp/out_$v.txt || true; done; }
           BZ=""
-          run base
-          run base_pw --strategy=TestRunner=processwrapper-sandbox
-          run base_local --strategy=TestRunner=local
-          run dir --extra_toolchains=//builddeps:dir_py_toolchain
-          run dir_pw --extra_toolchains=//builddeps:dir_py_toolchain --strategy=TestRunner=processwrapper-sandbox
-          run dir_local --extra_toolchains=//builddeps:dir_py_toolchain --strategy=TestRunner=local
-          run dir_noxml --extra_toolchains=//builddeps:dir_py_toolchain --noexperimental_split_xml_generation
-          echo "== one sandboxed test with the sandbox kept, then its command re-run by hand"
-          bazel shutdown > /dev/null 2>&1 || true; rm -rf /dev/shm/bazel-sandbox.* || true
-          bazel test $BAZEL_FLAGS --extra_toolchains=//builddeps:dir_py_toolchain --test_env=DIAG_VARIANT=debug --nocache_test_results --sandbox_debug //test/lit_tests:cse_iota.mlir.test > /tmp/out_debug.txt 2>&1 || true
-          grep -E "Executed|real|TIMEOUT|FAILED" /tmp/out_debug.txt || true
-          SB=$(ls -d /dev/shm/bazel-sandbox.*/linux-sandbox/*/ 2>/dev/null | head -1); echo "sandbox dir: $SB"; ls "$SB" 2>/dev/null | head
-          ( cd "$SB/execroot/__main__" 2>/dev/null && time ./bazel-out/k8-opt/bin/test/lit_tests/cse_iota.mlir.test -v > /tmp/direct_in_sandbox.txt 2>&1 ) 2>&1 || true
-          tail -3 /tmp/direct_in_sandbox.txt || true
-          ( cd "$SB/execroot/__main__" 2>/dev/null && time env TEST_TMPDIR=/tmp/tt TEST_WORKSPACE=__main__ TEST_SRCDIR="$PWD/bazel-out/k8-opt/bin/test/lit_tests/cse_iota.mlir.test.runfiles" RUNFILES_DIR="$PWD/bazel-out/k8-opt/bin/test/lit_tests/cse_iota.mlir.test.runfiles" XML_OUTPUT_FILE=/tmp/tt/test.xml bash external/bazel_tools/tools/test/test-setup.sh bazel-out/k8-opt/bin/test/lit_tests/cse_iota.mlir.test -v > /tmp/setup_in_sandbox.txt 2>&1 ) 2>&1 || true
-          tail -3 /tmp/setup_in_sandbox.txt || true
+          DIR=--extra_toolchains=//builddeps:dir_py_toolchain
+          run dir $DIR
+          run dir_j16 $DIR --local_test_jobs=16
+          run dir_j8 $DIR --local_test_jobs=8
+          run dir_j4 $DIR --local_test_jobs=4
+          run dir_j1 $DIR --local_test_jobs=1
+          echo "== the exact test spawn (local strategy, -s), re-run by hand"
+          bazel shutdown > /dev/null 2>&1 || true
+          bazel test $BAZEL_FLAGS $DIR -s --strategy=TestRunner=local --test_env=DIAG_VARIANT=spawn --nocache_test_results //test/lit_tests:cse_iota.mlir.test > /tmp/out_spawn.txt 2>&1 || true
+          grep -E "Executed|FAILED" /tmp/out_spawn.txt || true
+          python3 - <<'PY'
+          import re
+          s = open('/tmp/out_spawn.txt', errors='replace').read()
+          m = re.search(r"SUBCOMMAND: # //test/lit_tests:cse_iota\.mlir\.test \[action 'Testing[^\n]*\n(\(cd .*?test-setup\.sh[^\n]*\))", s, re.S)
+          open('/tmp/spawn.sh', 'w').write(m.group(1) + "\n" if m else "echo 'no spawn found'\n")
+          print(open('/tmp/spawn.sh').read()[-600:])
+          PY
+          for i in 1 2 3; do ( time bash /tmp/spawn.sh > /tmp/spawn_run_$i.txt 2>&1 ) 2>&1 | grep real; done
+          tail -2 /tmp/spawn_run_1.txt
+          echo "== the same spawn with the test binary straced"
+          sed 's#external/bazel_tools/tools/test/test-setup.sh#strace -f -ttt -e trace=execve,clone,clone3,wait4,exit_group -o /tmp/strace_spawn.txt external/bazel_tools/tools/test/test-setup.sh#' /tmp/spawn.sh > /tmp/spawn_strace.sh
+          ( time bash /tmp/spawn_strace.sh > /tmp/spawn_strace_run.txt 2>&1 ) 2>&1 | grep real; wc -l /tmp/strace_spawn.txt; head -2 /tmp/strace_spawn.txt; tail -2 /tmp/strace_spawn.txt
+          echo "== 32 parallel copies of the spawn"
+          ( time ( for i in $(seq 32); do bash /tmp/spawn.sh > /dev/null 2>&1 & done; wait ) ) 2>&1 | grep real
+          echo "== process spawn microbenchmarks: 32 parallel x 20 sequential"
+          PY=$(ls -d /root/.bazel/external/python_3_11_x86_64-unknown-linux-gnu/bin/python3 2>/dev/null || which python3)
+          ( time ( for i in $(seq 32); do ( for j in $(seq 20); do /bin/true; done ) & done; wait ) ) 2>&1 | grep real
+          ( time ( for i in $(seq 32); do ( for j in $(seq 20); do bash -c true; done ) & done; wait ) ) 2>&1 | grep real
+          ( time ( for i in $(seq 32); do ( for j in $(seq 20); do $PY -c pass; done ) & done; wait ) ) 2>&1 | grep real
+          ( time ( for i in $(seq 32); do ( for j in $(seq 20); do $PY -S -c pass; done ) & done; wait ) ) 2>&1 | grep real
+          ( time ( for i in $(seq 32); do ( for j in $(seq 20); do bazel-bin/enzymexlamlir-opt --version > /dev/null; done ) & done; wait ) ) 2>&1 | grep real
       - name: Upload diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
@@ -93,4 +108,8 @@ jobs:
             /tmp/prof_*.json
             /tmp/out_*.txt
             /tmp/build_*.txt
+            /tmp/spawn*.sh
+            /tmp/spawn_*.txt
+            /tmp/strace_spawn.txt
+            /tmp/out_spawn.txt
           retention-days: 7
