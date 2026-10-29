@@ -1953,6 +1953,12 @@ def ApplyConcatOperandBarrierPatterns : EnzymeHLOPatternOp<
     "concat_operand_barrier"> {
   let patterns = ["ConcatOperandBarrier"];
 }
+
+def ApplyDivRemOfSumWithMultiplePatterns : EnzymeHLOPatternOp<
+    "div_rem_of_sum_with_multiple"> {
+  let patterns = ["DivRemOfSumWithMultiple<stablehlo::DivOp>",
+                  "DivRemOfSumWithMultiple<stablehlo::RemOp>"];
+}
 def ApplyConstPropThroughBarrierPatterns : EnzymeHLOPatternOp<
     "const_prop_through_barrier"> {
   let patterns = ["ConstPropThroughBarrier"];
