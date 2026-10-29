@@ -62,7 +62,11 @@ jobs:
           # the timed run only executes the tests. BZ carries startup options.
           # A per-variant --test_env keeps every timed run in a configuration
           # of its own, so bazel never treats the tests as already run.
-          run() { name=$1; shift; echo "== $name"; bazel $BZ build $BAZEL_FLAGS --test_env=DIAG_VARIANT=$name "$@" $TESTS > /tmp/build_$name.txt 2>&1 || true; ( time bazel $BZ test $BAZEL_FLAGS --test_env=DIAG_VARIANT=$name --nocache_test_results --test_output=errors --profile=/tmp/prof_$name.json "$@" $TESTS ) > /tmp/out_$name.txt 2>&1; grep -E "Executed|Elapsed|real|TIMEOUT|FAILED|skipped" /tmp/out_$name.txt || true; }
+          # Each variant runs twice (noise between repeats was ~4 s). The
+          # sandbox stash bazel keeps for reuse is dropped between variants:
+          # carried across configurations it failed with "Could not copy
+          # inputs into sandbox ... (File exists)".
+          run() { name=$1; shift; for i in 1 2; do v=${name}_$i; echo "== $v"; bazel $BZ shutdown > /dev/null 2>&1 || true; rm -rf /dev/shm/bazel-sandbox.* || true; bazel $BZ build $BAZEL_FLAGS --test_env=DIAG_VARIANT=$v "$@" $TESTS > /tmp/build_$v.txt 2>&1 || true; ( time bazel $BZ test $BAZEL_FLAGS --test_env=DIAG_VARIANT=$v --nocache_test_results --test_output=errors --profile=/tmp/prof_$v.json "$@" $TESTS ) > /tmp/out_$v.txt 2>&1 || true; grep -E "Executed|Elapsed|real|TIMEOUT|FAILED|skipped|ERROR" /tmp/out_$v.txt || true; done; }
           BZ=""
           run base
           run inprocess --experimental_inprocess_symlink_creation
@@ -70,7 +74,6 @@ jobs:
           run trimmed_inprocess --extra_toolchains=//builddeps:trimmed_py_toolchain --experimental_inprocess_symlink_creation
           run dir --extra_toolchains=//builddeps:dir_py_toolchain
           run dir_inprocess --extra_toolchains=//builddeps:dir_py_toolchain --experimental_inprocess_symlink_creation
-          run base_again
           echo "== runfiles symlink counts (base / trimmed / dir)"
           bazel build $BAZEL_FLAGS //test/lit_tests:cse_iota.mlir.test > /dev/null 2>&1; find bazel-bin/test/lit_tests/cse_iota.mlir.test.runfiles -type l | wc -l
           bazel build $BAZEL_FLAGS --extra_toolchains=//builddeps:trimmed_py_toolchain //test/lit_tests:cse_iota.mlir.test > /dev/null 2>&1; find bazel-bin/test/lit_tests/cse_iota.mlir.test.runfiles -type l | wc -l
