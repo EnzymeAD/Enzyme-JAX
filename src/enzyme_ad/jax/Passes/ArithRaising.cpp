@@ -739,6 +739,7 @@ struct ArithRaisingPass
         RaiseUnary<math::AtanOp,        chlo::AtanOp,          chlo::AtanOp>,
         RaiseUnary<math::AtanhOp,       chlo::AtanhOp,         chlo::AtanhOp>,
         RaiseUnary<math::SinOp,         stablehlo::SineOp,     mhlo::SineOp>,
+        RaiseUnary<math::SinhOp,        chlo::SinhOp,          chlo::SinhOp>,
         RaiseUnary<math::CosOp,         stablehlo::CosineOp,   mhlo::CosineOp>,
         RaiseUnary<math::CoshOp,        chlo::CoshOp,          chlo::CoshOp>,
         RaiseUnary<math::LogOp,         stablehlo::LogOp,      mhlo::LogOp>,
