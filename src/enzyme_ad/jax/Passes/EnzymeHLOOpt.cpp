@@ -45954,6 +45954,7 @@ struct EnzymeHLOOptPass
              UnaryConstProp<chlo::AtanOp, atanOp>,
              UnaryConstProp<chlo::AtanhOp, atanhOp>,
              UnaryConstProp<chlo::CoshOp, coshOp>,
+             UnaryConstProp<chlo::SinhOp, sinhOp>,
              UnaryConstProp<enzymexla::ReluOp, reluOp>,
              UnaryConstProp<enzymexla::SoftplusOp, softplusOp>, GeluConstProp>(
             context);

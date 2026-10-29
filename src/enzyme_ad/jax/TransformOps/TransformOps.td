@@ -303,6 +303,10 @@ def ApplyCoshConstProp : EnzymeHLOOptionalParameterPatternOp<
     "cosh_const_prop">{
   let patterns = ["UnaryConstProp<chlo::CoshOp,coshOp>"];
 }
+def ApplySinhConstProp : EnzymeHLOOptionalParameterPatternOp<
+    "sinh_const_prop">{
+  let patterns = ["UnaryConstProp<chlo::SinhOp,sinhOp>"];
+}
 def ApplyReluConstProp : EnzymeHLOOptionalParameterPatternOp<
     "relu_const_prop">{
   let patterns = ["UnaryConstProp<enzymexla::ReluOp,reluOp>"];

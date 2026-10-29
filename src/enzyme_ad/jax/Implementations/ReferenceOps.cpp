@@ -158,5 +158,12 @@ stablehlo::Tensor coshOp(const stablehlo::Tensor &input,
       [](std::complex<double> z) { return std::cosh(z); });
 }
 
+stablehlo::Tensor sinhOp(const stablehlo::Tensor &input,
+                         ShapedType resultType) {
+  return mapWithUpcastToDouble(
+      input, resultType, [](double x) { return std::sinh(x); },
+      [](std::complex<double> z) { return std::sinh(z); });
+}
+
 } // namespace enzyme
 } // namespace mlir

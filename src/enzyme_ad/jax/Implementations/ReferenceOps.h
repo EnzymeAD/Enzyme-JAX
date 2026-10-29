@@ -34,5 +34,7 @@ stablehlo::Tensor atanhOp(const stablehlo::Tensor &input,
 
 stablehlo::Tensor coshOp(const stablehlo::Tensor &input, ShapedType resultType);
 
+stablehlo::Tensor sinhOp(const stablehlo::Tensor &input, ShapedType resultType);
+
 } // namespace enzyme
 } // namespace mlir
