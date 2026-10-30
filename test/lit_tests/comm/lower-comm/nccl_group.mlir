@@ -14,18 +14,14 @@ func.func @main(%buf: tensor<5xi32>, %peer: tensor<i32>) -> tensor<5xi32> {
 // synchronized before ncclGroupStart, and the NCCL calls keep their order.
 // CHECK-LABEL: llvm.func @enzymexla_jitwrap_ncclGroup_Send_Recv
 // CHECK-SAME: (%[[SEND_BUF:[^:]*]]: !llvm.ptr, %{{[^:]*}}: !llvm.ptr, %{{[^:]*}}: !llvm.ptr, %{{[^:]*}}: !llvm.ptr, %{{[^:]*}}: !llvm.ptr, %[[RECV_BUF:[^:]*]]: !llvm.ptr, %{{[^:]*}}: !llvm.ptr, %{{[^:]*}}: !llvm.ptr, %{{[^:]*}}: !llvm.ptr, %{{[^:]*}}: !llvm.ptr)
-// CHECK-SAME: enzymexla.device_abi = "cuda"
 // CHECK: %[[STREAM:.*]] = "enzymexla.get_stream"() : () -> !llvm.ptr
-// CHECK: %[[SEND_PTR:.*]] = llvm.load %[[SEND_BUF]] : !llvm.ptr -> !llvm.ptr
-// CHECK-COUNT-4: llvm.call @cuMemcpyAsync
-// CHECK: %[[RECV_PTR:.*]] = llvm.load %[[RECV_BUF]] : !llvm.ptr -> !llvm.ptr
-// CHECK-COUNT-4: llvm.call @cuMemcpyAsync
+// CHECK-COUNT-8: llvm.call @cuMemcpyAsync
 // CHECK-NOT: llvm.call @nccl
 // CHECK: llvm.call @cuStreamSynchronize(%[[STREAM]])
 // CHECK-NOT: llvm.call @cuMemcpyAsync
 // CHECK: llvm.call @ncclGroupStart() : () -> i32
-// CHECK: llvm.call @ncclSend(%[[SEND_PTR]], {{.*}}, %[[STREAM]])
-// CHECK: llvm.call @ncclRecv(%[[RECV_PTR]], {{.*}}, %[[STREAM]])
+// CHECK: llvm.call @ncclSend(%[[SEND_BUF]], {{.*}}, %[[STREAM]])
+// CHECK: llvm.call @ncclRecv(%[[RECV_BUF]], {{.*}}, %[[STREAM]])
 // CHECK: llvm.call @ncclGroupEnd() : () -> i32
 // CHECK-NEXT: llvm.return
 

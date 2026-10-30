@@ -16,7 +16,7 @@ func.func @main(%send_buffer: tensor<4xf64>, %peer: tensor<i32>,
 }
 
 // NCCL-LABEL: llvm.func @fused__enzymexla_jitwrap_ncclSend_enzymexla_jitwrap_ncclRecv
-// NCCL-SAME: attributes {enzymexla.comm, enzymexla.device_abi = "cuda"}
+// NCCL-SAME: attributes {enzymexla.comm}
 // NCCL: llvm.call @ncclSend
 // NCCL: llvm.call @ncclRecv
 

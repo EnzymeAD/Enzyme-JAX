@@ -2055,14 +2055,14 @@ static void declareNcclFunctions(ConversionPatternRewriter &rewriter,
 
 // Emits, at the current insertion point inside a JIT wrapper, calls to
 // `ncclSend`/`ncclRecv` (given by `functionNames`), wrapped in
-// `ncclGroupStart`/`ncclGroupEnd` if `group` is set. `slotPtrs` holds five
+// `ncclGroupStart`/`ncclGroupEnd` if `group` is set. `argPtrs` holds five
 // wrapper arguments per call: buffer, count, datatype, peer, and comm.
 static void emitNcclSendRecvCalls(ConversionPatternRewriter &rewriter,
                                   Location loc,
                                   ArrayRef<StringRef> functionNames,
-                                  ValueRange slotPtrs, Value stream,
+                                  ValueRange argPtrs, Value stream,
                                   bool group) {
-  assert(slotPtrs.size() == 5 * functionNames.size() &&
+  assert(argPtrs.size() == 5 * functionNames.size() &&
          "expected buffer, count, datatype, peer, and comm wrapper arguments "
          "per call");
   auto context = rewriter.getContext();
@@ -2079,17 +2079,12 @@ static void emitNcclSendRecvCalls(ConversionPatternRewriter &rewriter,
   SmallVector<HostArgs> hostArgs;
 
   for (size_t i = 0; i < functionNames.size(); ++i) {
-    ValueRange slots = slotPtrs.slice(5 * i, 5);
-    Value arg_buffer_ptr =
-        LLVM::LoadOp::create(rewriter, loc, type_ptr, slots[0]).getResult();
-    Value arg_count_ptr =
-        LLVM::LoadOp::create(rewriter, loc, type_ptr, slots[1]).getResult();
-    Value arg_datatype_ptr =
-        LLVM::LoadOp::create(rewriter, loc, type_ptr, slots[2]).getResult();
-    Value arg_peer_ptr =
-        LLVM::LoadOp::create(rewriter, loc, type_ptr, slots[3]).getResult();
-    Value arg_comm_ptr =
-        LLVM::LoadOp::create(rewriter, loc, type_ptr, slots[4]).getResult();
+    ValueRange args = argPtrs.slice(5 * i, 5);
+    Value arg_buffer_ptr = args[0];
+    Value arg_count_ptr = args[1];
+    Value arg_datatype_ptr = args[2];
+    Value arg_peer_ptr = args[3];
+    Value arg_comm_ptr = args[4];
 
     // copy scalars from device to host memory
     Value one = LLVM::ConstantOp::create(rewriter, loc, type_i32,
@@ -2228,7 +2223,6 @@ getOrCreateNcclSendRecvWrapper(ConversionPatternRewriter &rewriter,
   auto wrapperFunc =
       LLVM::LLVMFuncOp::create(rewriter, loc, wrapper_name, funcType);
   markCommWrapper(wrapperFunc);
-  wrapperFunc->setAttr("enzymexla.device_abi", rewriter.getStringAttr("cuda"));
 
   Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
   rewriter.setInsertionPointToStart(entryBlock);
@@ -2399,8 +2393,6 @@ struct LowerCommNcclGroupOpToJIT
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
       markCommWrapper(wrapperFunc);
-      wrapperFunc->setAttr("enzymexla.device_abi",
-                           rewriter.getStringAttr("cuda"));
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -2499,39 +2491,20 @@ struct LowerCommNcclAllReduceOpToJIT
       //        rewriter.getStringAttr("allocate"),
       //        rewriter.getStringAttr("free")});
       //   wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
-      wrapperFunc->setAttr("enzymexla.device_abi",
-                           rewriter.getStringAttr("cuda"));
       // Add argument-level memory effects attribute to all arguments
       //   for (unsigned i = 0; i < 2; ++i) {
       //     wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
       //                            memoryEffectsAttr);
       //   }
 
-      Value arg_buffer_slot_ptr = entryBlock->getArgument(0);
-      Value arg_count_slot_ptr = entryBlock->getArgument(1);
-      Value arg_datatype_slot_ptr = entryBlock->getArgument(2);
-      Value arg_redop_slot_ptr = entryBlock->getArgument(3);
-      Value arg_comm_slot_ptr = entryBlock->getArgument(4);
+      Value arg_buffer_ptr = entryBlock->getArgument(0);
+      Value arg_count_ptr = entryBlock->getArgument(1);
+      Value arg_datatype_ptr = entryBlock->getArgument(2);
+      Value arg_redop_ptr = entryBlock->getArgument(3);
+      Value arg_comm_ptr = entryBlock->getArgument(4);
       Value stream =
           enzymexla::GetStreamOp::create(rewriter, op.getLoc(), type_ptr)
               .getResult();
-
-      Value arg_buffer_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(),
-                                                  type_ptr, arg_buffer_slot_ptr)
-                                 .getResult();
-      Value arg_count_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(),
-                                                 type_ptr, arg_count_slot_ptr)
-                                .getResult();
-      Value arg_datatype_ptr =
-          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
-                               arg_datatype_slot_ptr)
-              .getResult();
-      Value arg_redop_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(),
-                                                 type_ptr, arg_redop_slot_ptr)
-                                .getResult();
-      Value arg_comm_ptr = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
-                                                arg_comm_slot_ptr)
-                               .getResult();
 
       // copy scalars from device to host memory
       Value one = LLVM::ConstantOp::create(

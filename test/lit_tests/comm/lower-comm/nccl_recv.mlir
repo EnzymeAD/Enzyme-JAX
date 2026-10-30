@@ -7,7 +7,7 @@ func.func @main(%peer: tensor<i32>) -> tensor<5xi32> {
 }
 
 // CHECK-LABEL: llvm.func @enzymexla_jitwrap_ncclRecv
-// CHECK-SAME: enzymexla.device_abi = "cuda"
+// CHECK-SAME: (%[[WRAP_BUF:[^:]*]]: !llvm.ptr
 // CHECK: %[[STREAM:.*]] = "enzymexla.get_stream"() : () -> !llvm.ptr
 // CHECK: %[[HOST_COUNT:.*]] = llvm.alloca {{.*}} x i64
 // CHECK: %[[HOST_DATATYPE:.*]] = llvm.alloca {{.*}} x i32
@@ -26,7 +26,7 @@ func.func @main(%peer: tensor<i32>) -> tensor<5xi32> {
 // CHECK: %[[DATATYPE:.*]] = llvm.load %[[HOST_DATATYPE]] : !llvm.ptr -> i32
 // CHECK: %[[PEER:.*]] = llvm.load %[[HOST_PEER]] : !llvm.ptr -> i32
 // CHECK: %[[WRAP_COMM:.*]] = llvm.load %[[HOST_COMM]] : !llvm.ptr -> !llvm.ptr
-// CHECK: llvm.call @ncclRecv({{.*}}, %[[COUNT]], %[[DATATYPE]], %[[PEER]], %[[WRAP_COMM]], %[[STREAM]])
+// CHECK: llvm.call @ncclRecv(%[[WRAP_BUF]], %[[COUNT]], %[[DATATYPE]], %[[PEER]], %[[WRAP_COMM]], %[[STREAM]])
 // CHECK: llvm.return
 // CHECK-DAG: llvm.func @cuMemcpyAsync(!llvm.ptr, !llvm.ptr, i64, i32, !llvm.ptr) -> i32
 // CHECK-DAG: llvm.func @cuStreamSynchronize(!llvm.ptr) -> i32
