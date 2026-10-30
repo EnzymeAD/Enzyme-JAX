@@ -30,11 +30,11 @@ module {
   }
 }
 
-// CHECK: func.func @main(%arg0: tensor<3x4xf32>, %arg1: tensor<6x3xf32>) -> (tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>) {
+// CHECK:    func.func @main(%arg0: tensor<3x4xf32>, %arg1: tensor<6x3xf32>) -> (tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>, tensor<4xf32>) {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<3.000000e+01> : tensor<6x4xf32>
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<f32>
-// CHECK-NEXT:    %0 = stablehlo.broadcast_in_dim %arg1, dims = [0, 2] : (tensor<6x3xf32>) -> tensor<6x4x3xf32>
-// CHECK-NEXT:    %1 = stablehlo.reduce(%0 init: %cst_0) applies stablehlo.multiply across dimensions = [2] : (tensor<6x4x3xf32>, tensor<f32>) -> tensor<6x4xf32>
+// CHECK-NEXT:    %0 = stablehlo.reduce(%arg1 init: %cst_0) applies stablehlo.multiply across dimensions = [1] : (tensor<6x3xf32>, tensor<f32>) -> tensor<6xf32>
+// CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %0, dims = [0] : (tensor<6xf32>) -> tensor<6x4xf32>
 // CHECK-NEXT:    %2 = stablehlo.power %1, %cst : tensor<6x4xf32>
 // CHECK-NEXT:    %3 = stablehlo.slice %2 [0:1, 0:4] : (tensor<6x4xf32>) -> tensor<1x4xf32>
 // CHECK-NEXT:    %4 = stablehlo.reshape %3 : (tensor<1x4xf32>) -> tensor<4xf32>
