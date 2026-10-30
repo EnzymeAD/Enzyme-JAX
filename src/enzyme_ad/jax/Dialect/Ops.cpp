@@ -3865,3 +3865,151 @@ LogicalResult enzymexla::MultiPadOp::verify() {
 
   return success();
 }
+
+static LogicalResult verifyAttentionCommon(Operation *op, Value query,
+                                           Value key, Value value, Value output,
+                                           Value lse, Value bias, Value mask,
+                                           Value qLengths, Value kvLengths) {
+  auto qType = dyn_cast<RankedTensorType>(query.getType());
+  auto kType = dyn_cast<RankedTensorType>(key.getType());
+  auto vType = dyn_cast<RankedTensorType>(value.getType());
+  auto outType = dyn_cast<RankedTensorType>(output.getType());
+  auto lseType = dyn_cast<RankedTensorType>(lse.getType());
+
+  if (!qType || !kType || !vType || !outType || !lseType)
+    return op->emitOpError(
+        "expected ranked tensor types for attention operands and results");
+
+  if (qType.getRank() != 4 || kType.getRank() != 4 || vType.getRank() != 4 ||
+      outType.getRank() != 4)
+    return op->emitOpError(
+        "query, key, value, and output must be 4D tensors in BTNH layout");
+
+  if (lseType.getRank() != 3)
+    return op->emitOpError("lse must be a 3D tensor of shape (B, N_q, T)");
+
+  Type elTy = qType.getElementType();
+  if (!isa<FloatType>(elTy))
+    return op->emitOpError("query must have a floating-point element type");
+
+  if (kType.getElementType() != elTy || vType.getElementType() != elTy ||
+      outType.getElementType() != elTy)
+    return op->emitOpError(
+        "query, key, value, and output must have the same element type");
+
+  if (!isa<FloatType>(lseType.getElementType()))
+    return op->emitOpError("lse must have a floating-point element type");
+
+  int64_t B = qType.getDimSize(0);
+  int64_t T = qType.getDimSize(1);
+  int64_t N_q = qType.getDimSize(2);
+  int64_t D_qk = qType.getDimSize(3);
+
+  int64_t B_k = kType.getDimSize(0);
+  int64_t S = kType.getDimSize(1);
+  int64_t N_kv = kType.getDimSize(2);
+  int64_t D_k = kType.getDimSize(3);
+
+  int64_t B_v = vType.getDimSize(0);
+  int64_t S_v = vType.getDimSize(1);
+  int64_t N_v = vType.getDimSize(2);
+  int64_t D_v = vType.getDimSize(3);
+
+  if (B != B_k || B != B_v)
+    return op->emitOpError("batch size mismatch between query, key, and value");
+  if (S != S_v)
+    return op->emitOpError("sequence length mismatch between key and value");
+  if (N_kv != N_v)
+    return op->emitOpError("num_heads mismatch between key and value");
+  if (D_qk != D_k)
+    return op->emitOpError("head_dim mismatch between query and key");
+  if (N_kv <= 0 || N_q <= 0 || (N_q % N_kv != 0))
+    return op->emitOpError(
+        "query num_heads must be a positive multiple of key/value num_heads");
+
+  if (outType.getShape() != ArrayRef<int64_t>({B, T, N_q, D_v}))
+    return op->emitOpError("output shape must be (B, T, N_q, D_v)");
+
+  if (lseType.getShape() != ArrayRef<int64_t>({B, N_q, T}))
+    return op->emitOpError("lse shape must be (B, N_q, T)");
+
+  auto checkBroadcastable4D = [&](ArrayRef<int64_t> shape,
+                                  StringRef name) -> LogicalResult {
+    if ((shape[0] != 1 && shape[0] != B) ||
+        (shape[1] != 1 && shape[1] != N_q) ||
+        (shape[2] != 1 && shape[2] != T) || (shape[3] != 1 && shape[3] != S))
+      return op->emitOpError()
+             << name << " shape must be broadcastable to (B, N_q, T, S)";
+    return success();
+  };
+
+  if (bias) {
+    auto biasType = dyn_cast<RankedTensorType>(bias.getType());
+    if (!biasType || biasType.getRank() != 4)
+      return op->emitOpError("bias must be a 4D ranked tensor");
+    if (biasType.getElementType() != elTy)
+      return op->emitOpError("bias must have the same element type as query");
+    if (failed(checkBroadcastable4D(biasType.getShape(), "bias")))
+      return failure();
+  }
+
+  if (mask) {
+    auto maskType = dyn_cast<RankedTensorType>(mask.getType());
+    if (!maskType || maskType.getRank() != 4)
+      return op->emitOpError("mask must be a 4D ranked tensor");
+    if (!maskType.getElementType().isInteger(1))
+      return op->emitOpError("mask must have i1 element type");
+    if (failed(checkBroadcastable4D(maskType.getShape(), "mask")))
+      return failure();
+  }
+
+  auto checkLengths = [&](Value lengths, StringRef name) -> LogicalResult {
+    if (!lengths)
+      return success();
+    auto lenType = dyn_cast<RankedTensorType>(lengths.getType());
+    if (!lenType || lenType.getRank() != 1)
+      return op->emitOpError() << name << " must be a 1D ranked tensor";
+    if (!isa<IntegerType>(lenType.getElementType()))
+      return op->emitOpError() << name << " must have an integer element type";
+    if (lenType.getDimSize(0) != 1 && lenType.getDimSize(0) != B)
+      return op->emitOpError() << name << " length must be 1 or B";
+    return success();
+  };
+
+  if (failed(checkLengths(qLengths, "q_lengths")) ||
+      failed(checkLengths(kvLengths, "kv_lengths")))
+    return failure();
+
+  return success();
+}
+
+LogicalResult enzymexla::AttentionOp::verify() {
+  return verifyAttentionCommon(getOperation(), getQuery(), getKey(), getValue(),
+                               getOutput(), getLse(), getBias(), getMask(),
+                               getQLengths(), getKvLengths());
+}
+
+LogicalResult enzymexla::AttentionGradOp::verify() {
+  if (failed(verifyAttentionCommon(getOperation(), getQuery(), getKey(),
+                                   getValue(), getOutput(), getLse(), getBias(),
+                                   getMask(), getQLengths(), getKvLengths())))
+    return failure();
+
+  if (getDOutput().getType() != getOutput().getType())
+    return emitOpError("d_output must have the same type as output");
+  if (getDQuery().getType() != getQuery().getType())
+    return emitOpError("d_query must have the same type as query");
+  if (getDKey().getType() != getKey().getType())
+    return emitOpError("d_key must have the same type as key");
+  if (getDValue().getType() != getValue().getType())
+    return emitOpError("d_value must have the same type as value");
+
+  if (getDBias()) {
+    if (!getBias())
+      return emitOpError("d_bias result present when bias operand is absent");
+    if (getDBias().getType() != getBias().getType())
+      return emitOpError("d_bias must have the same type as bias");
+  }
+
+  return success();
+}
