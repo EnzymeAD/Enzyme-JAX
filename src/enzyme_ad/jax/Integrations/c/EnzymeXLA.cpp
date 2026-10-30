@@ -754,6 +754,7 @@ static void addScatterGatherPasses(std::vector<std::string> &list,
   list.push_back("scatter_update_computation_const_prop");
   // gather patterns
   list.push_back("dynamic_gather_op_is_not_dynamic<16>");
+  list.push_back("gather_select_index_dead");
   list.push_back("gather_op_canon<16>");
   list.push_back("gather_elementwise");
   list.push_back("elementwise_gather");
