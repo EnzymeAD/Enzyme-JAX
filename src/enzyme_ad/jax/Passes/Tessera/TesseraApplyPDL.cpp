@@ -24,6 +24,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/xxhash.h"
 #include <memory>
@@ -41,6 +42,9 @@ namespace tessera {
 using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::enzyme::tessera;
+
+// With -debug-only=tessera-apply-pdl, each applied rule is printed.
+#define DEBUG_TYPE "tessera-apply-pdl"
 
 namespace {
 
@@ -994,6 +998,8 @@ static LogicalResult tesseraRewrite(ApplyState &state,
     Block::iterator first =
         before ? std::next(before->getIterator()) : root->getBlock()->begin();
     recordFactsOnNewCalls(llvm::make_range(first, root->getIterator()));
+    LLVM_DEBUG(llvm::dbgs() << DEBUG_TYPE ": applied '" << ruleAttr.getValue()
+                            << "' at " << loc << "\n");
     replaceRoot(replacement);
     return success();
   }
@@ -1024,6 +1030,9 @@ static LogicalResult tesseraRewrite(ApplyState &state,
     YieldOp::create(rewriter, loc, clone->getResults());
   }
 
+  LLVM_DEBUG(llvm::dbgs() << DEBUG_TYPE ": applied '" << ruleAttr.getValue()
+                          << "' at " << loc << ", guarded by '"
+                          << guard.getCond() << "'\n");
   replaceRoot(guard.getResults());
   return success();
 }
