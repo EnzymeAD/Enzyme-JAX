@@ -4,7 +4,7 @@
 //
 // Grammar:
 //
-//   rule  ::= [ 'if' cond ',' ] expr '->' { call ';' } expr
+//   rule  ::= [ 'if' cond ',' ] expr '->' { [ var '=' ] call ';' } expr
 //   cond  ::= conj { '||' conj }
 //   conj  ::= unary { '&&' unary }
 //   unary ::= '!' unary | '(' cond ')' | pred
@@ -26,6 +26,9 @@
 // named predicate like `SPD(m)` takes only variables it binds (checked where
 // the predicate is proven or tested); a comparison like `lib.f(n) == 1` can
 // call with any expression.
+//
+// A variable bound by `var '='` names the call's return value, and can't
+// reuse a name already bound (checked by parse-optimization-rules).
 //
 // log2 is only allowed on the right-hand side. A condition compares a string
 // (by its text) or a global (by its address) only with '==' or '!='. Strings
@@ -281,12 +284,16 @@ Token Lexer::nextToken() {
     return Token{TokenType::Greater, ""};
   }
 
-  // '=', '&' and '|' are only valid doubled.
-  if (peek() == '=' && peekNext() == '=') {
+  if (peek() == '=') {
     advance();
-    advance();
-    return Token{TokenType::EqEq, ""};
+    if (peek() == '=') {
+      advance();
+      return Token{TokenType::EqEq, ""};
+    }
+    return Token{TokenType::Equal, "="};
   }
+
+  // '&' and '|' are only valid doubled.
 
   if (peek() == '&' && peekNext() == '&') {
     advance();
@@ -710,13 +717,29 @@ std::optional<Rule> Parser::parseRule() {
   advance();
   allowBuiltins = true;
   std::vector<Expr> rhs;
+  std::vector<std::string> names;
   while (true) {
+    std::string name;
+    if (current.type == TokenType::Ident &&
+        peekAhead().type == TokenType::Equal) {
+      name = current.value;
+      advance(); // consume the name
+      advance(); // consume '='
+    }
     auto expr = parseExpr();
     if (!expr)
       return std::nullopt;
     rhs.push_back(std::move(*expr));
-    if (current.type != TokenType::Semicolon)
+    names.push_back(name);
+    if (current.type != TokenType::Semicolon) {
+      if (!name.empty()) {
+        error() << "'" << name
+                << "' is bound by the last expression of an optimization "
+                   "rule, so nothing can use it";
+        return std::nullopt;
+      }
       break;
+    }
     // Only the last expression's value is used, so earlier ones must be calls.
     auto *call = std::get_if<Call>(&rhs.back().data);
     if (!call || call->isBuiltin()) {
@@ -731,7 +754,8 @@ std::optional<Rule> Parser::parseRule() {
     error() << "unexpected text after the end of an optimization rule";
     return std::nullopt;
   }
-  return Rule{std::move(cond), std::move(*lhs), std::move(rhs)};
+  return Rule{std::move(cond), std::move(*lhs), std::move(rhs),
+              std::move(names)};
 }
 
 //===----------------------------------------------------------------------===//
@@ -955,6 +979,9 @@ std::string substituteRuleNames(llvm::StringRef text,
     return text.str();
   llvm::StringSet<> bound;
   collectVars(rule->lhs, bound);
+  for (const std::string &name : rule->names)
+    if (!name.empty())
+      bound.insert(name);
 
   // Edit the text in place, not re-render it, to keep the rule's spelling.
   struct Spanned {

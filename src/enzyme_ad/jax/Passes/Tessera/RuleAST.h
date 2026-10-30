@@ -40,6 +40,7 @@ enum class TokenType {
   Dot,
   Comma,
   Semicolon,
+  Equal,
   Arrow,
   // Arithmetic operators.
   Plus,
@@ -222,16 +223,19 @@ inline std::unique_ptr<Cond> box(Cond c) {
 // Rules
 //===----------------------------------------------------------------------===//
 
-// A rewrite rule: `[ 'if' cond ',' ] lhs '->' rhs { ';' rhs }`. With no
-// condition it always applies. The right-hand side runs in order; earlier
-// expressions are calls made for their effects: `f(x) -> g(x); f(x)` adds a
-// call to g before f. A call that modifies a variable updates it for what
-// follows, as in C. The matched call's modified variables get their final
-// values, and its other results come from the last expression.
+// A rewrite rule: `[ 'if' cond ',' ] lhs '->' { [ x '=' ] call ';' } rhs`.
+// With no condition it always applies. The right-hand side runs in order;
+// earlier expressions are calls made for their effects: `f(x) -> g(x); f(x)`
+// adds a call to g before f. `t = g(x);` names g's return value for what
+// follows. A call that modifies a variable updates it for what follows, as in
+// C. The matched call's modified variables get their final values, and its
+// other results come from the last expression.
 struct Rule {
   std::optional<Cond> cond;
   Expr lhs;
   std::vector<Expr> rhs;
+  // The variable each of `rhs` binds, or "" if it binds none.
+  std::vector<std::string> names;
 
   // The expression whose value replaces the matched call.
   const Expr &result() const { return rhs.back(); }

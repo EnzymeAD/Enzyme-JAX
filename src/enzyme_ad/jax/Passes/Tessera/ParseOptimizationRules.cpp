@@ -189,7 +189,7 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
       expr.data);
 }
 
-// The first variable in `expr` that the left-hand side doesn't bind, if any.
+// The first variable in `expr` that `bound` lacks, if any.
 // Checked here because the native rewrite that builds the right-hand side
 // can't fail.
 std::optional<std::string>
@@ -259,14 +259,24 @@ struct ParseOptimizationRulesPass
           continue;
         }
 
-        std::optional<std::string> unbound;
-        for (const Expr &expr : rule->rhs)
-          if ((unbound = findUnboundVar(expr, boundVars)))
+        // A name bound on the right-hand side can be used after its binding.
+        llvm::StringMap<mlir::Value> visible = boundVars;
+        std::string problem;
+        for (auto [expr, name] : llvm::zip(rule->rhs, rule->names)) {
+          if (auto unbound = findUnboundVar(expr, visible)) {
+            problem = "it uses '" + *unbound +
+                      "' on the right-hand side, but it is not bound on the "
+                      "left";
             break;
-        if (unbound) {
-          emitWarning(loc) << "optimization rule ignored: it uses '" << *unbound
-                           << "' on the right-hand side, but it is not bound "
-                              "on the left";
+          }
+          if (!name.empty() && !visible.try_emplace(name).second) {
+            problem = "its right-hand side binds '" + name +
+                      "', which is already bound";
+            break;
+          }
+        }
+        if (!problem.empty()) {
+          emitWarning(loc) << "optimization rule ignored: " << problem;
           pattern.erase();
           continue;
         }
