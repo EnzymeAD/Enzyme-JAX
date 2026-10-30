@@ -640,6 +640,54 @@ struct DynamicSliceSlice final
   }
 };
 
+// A dynamic slice of an iota is, along the iota's dimension, the iota of the
+// slice's shape from the slice's start there (clamped so that the slice fits,
+// as a dynamic slice clamps it): the start broadcast plus that iota, or the
+// start alone for a slice of one.
+struct DynamicSliceIota final
+    : CheckedOpRewritePattern<stablehlo::DynamicSliceOp, DynamicSliceIota> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto iota = op.getOperand().getDefiningOp<stablehlo::IotaOp>();
+    if (!iota)
+      return failure();
+    auto ty = op.getType();
+    if (!ty.hasStaticShape())
+      return failure();
+    int64_t d = iota.getIotaDimension();
+    Value start = op.getStartIndices()[d];
+    // Inside a loop, a slice at a start the loop computes is the form batch
+    // fission gives an index computation it lifted out of the loop (the
+    // lifted value over every iteration, read back per iteration); folding
+    // it would have the fission lift it again.
+    if (auto whileOp = op->getParentOfType<stablehlo::WhileOp>())
+      if (whileOp->isAncestor(start.getParentBlock()->getParentOp()))
+        return failure();
+    auto startTy = cast<RankedTensorType>(start.getType());
+    Location loc = op.getLoc();
+    int64_t room = iota.getType().getDimSize(d) - ty.getDimSize(d);
+    Value lo = stablehlo::ConstantOp::create(
+        rewriter, loc, cast<ElementsAttr>(makeAttr(startTy, 0)));
+    Value hi = stablehlo::ConstantOp::create(
+        rewriter, loc, cast<ElementsAttr>(makeAttr(startTy, room)));
+    Value clamped = stablehlo::ClampOp::create(rewriter, loc, lo, start, hi);
+    Type elem = ty.getElementType();
+    if (startTy.getElementType() != elem)
+      clamped = stablehlo::ConvertOp::create(
+          rewriter, loc, RankedTensorType::get({}, elem), clamped);
+    Value result = stablehlo::BroadcastInDimOp::create(
+        rewriter, loc, ty, clamped, ArrayRef<int64_t>{});
+    if (ty.getDimSize(d) > 1) {
+      Value iota = stablehlo::IotaOp::create(rewriter, loc, ty, d);
+      result = stablehlo::AddOp::create(rewriter, loc, result, iota);
+    }
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
 struct DynamicSliceToStatic final
     : CheckedOpRewritePattern<stablehlo::DynamicSliceOp, DynamicSliceToStatic> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -45905,10 +45953,11 @@ struct EnzymeHLOOptPass
         AddSimplify, SubSimplify, AndSimplify, ReduceOrAndPad, ReduceOrAnd,
         MaxSimplify, MinSimplify, OrSimplify, XorSimplify, MulSimplify,
         DivSimplify, RemSimplify, PowSimplify, NoopSlice, NoopReverse,
-        SliceReverse, SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
-        SliceDynamicSlice, LogSimplify, Log2Simplify, ShiftRightLogicalSimplify,
-        NegativePadToSlice, SliceSimplify, ConvertSimplify, TransposeSimplify,
-        DotGeneralSimplify, DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
+        DynamicSliceIota, SliceReverse, SliceSlice, DynamicSliceDynamicSlice,
+        DynamicSliceSlice, SliceDynamicSlice, LogSimplify, Log2Simplify,
+        ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
+        ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
+        DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
         BroadcastToReshape, ReshapeEmptyBroadcast, ReshapeBroadcast,
         BroadcastReshape, ConstPropThroughBarrier, ReplaceNegAddWithSubtract,

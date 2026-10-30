@@ -1954,6 +1954,11 @@ def ApplyRemSimplifyPatterns : EnzymeHLOPatternOp<
     "rem_simplify"> {
   let patterns = ["RemSimplify"];
 }
+
+def ApplyDynamicSliceIotaPatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_iota"> {
+  let patterns = ["DynamicSliceIota"];
+}
 def ApplyConstPropThroughBarrierPatterns : EnzymeHLOPatternOp<
     "const_prop_through_barrier"> {
   let patterns = ["ConstPropThroughBarrier"];
