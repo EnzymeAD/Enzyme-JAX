@@ -22,6 +22,11 @@
 //   string ::= "'" { any character but "'" } "'"
 //   global ::= '@' symbol
 //
+// The left-hand side must be a call (checked by parse-optimization-rules). A
+// named predicate like `SPD(m)` takes only variables it binds (checked where
+// the predicate is proven or tested); a comparison like `lib.f(n) == 1` can
+// call with any expression.
+//
 // log2 is only allowed on the right-hand side. A condition compares a string
 // (by its text) or a global (by its address) only with '==' or '!='. Strings
 // use single quotes so a rule can sit inside a C string without escaping.
@@ -721,6 +726,10 @@ std::optional<Rule> Parser::parseRule() {
       return std::nullopt;
     }
     advance();
+  }
+  if (current.type != TokenType::End) {
+    error() << "unexpected text after the end of an optimization rule";
+    return std::nullopt;
   }
   return Rule{std::move(cond), std::move(*lhs), std::move(rhs)};
 }
