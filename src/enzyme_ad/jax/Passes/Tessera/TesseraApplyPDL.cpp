@@ -407,19 +407,19 @@ static SmallVector<StringRef> getWrittenVars(const Call &call,
 // The types the right-hand side would produce, without building it. Fails,
 // setting `why`, if it wouldn't verify (a missing callee, a wrong type).
 static LogicalResult checkRhsCall(const Call &call, Operation *anchor,
-                                  const llvm::StringMap<Value> &bound,
+                                  const llvm::StringMap<Type> &types,
                                   SmallVectorImpl<Type> &resultTypes,
                                   std::string &why);
 
 static Type checkRhsValue(const Expr &expr, Operation *anchor,
-                          const llvm::StringMap<Value> &bound, Type expected,
+                          const llvm::StringMap<Type> &types, Type expected,
                           std::string &why) {
   return std::visit(
       overloaded{
           [&](const Var &v) -> Type {
-            if (Value value = bound.lookup(v.name))
-              return value.getType();
-            why = "'" + v.name + "' is not bound by the left-hand side";
+            if (Type type = types.lookup(v.name))
+              return type;
+            why = "'" + v.name + "' is not bound";
             return Type();
           },
           [&](const IntLit &) -> Type {
@@ -444,7 +444,7 @@ static Type checkRhsValue(const Expr &expr, Operation *anchor,
             // log2 gives a count of the same width as its argument.
             if (c.isBuiltin()) {
               Type type =
-                  checkRhsValue(c.args.front(), anchor, bound, expected, why);
+                  checkRhsValue(c.args.front(), anchor, types, expected, why);
               if (type && !isa<IntegerType>(type)) {
                 llvm::raw_string_ostream os(why);
                 os << "log2 takes an integer, but is given a value of type "
@@ -454,7 +454,7 @@ static Type checkRhsValue(const Expr &expr, Operation *anchor,
               return type;
             }
             SmallVector<Type> results;
-            if (failed(checkRhsCall(c, anchor, bound, results, why)))
+            if (failed(checkRhsCall(c, anchor, types, results, why)))
               return Type();
             // Only a call on its own updates a variable (see buildReplacement).
             for (StringRef name :
@@ -479,18 +479,17 @@ static Type checkRhsValue(const Expr &expr, Operation *anchor,
             // same order.
             Type lhsType, rhsType;
             if (isLiteralOnly(*a.lhs) && !isLiteralOnly(*a.rhs)) {
-              rhsType = checkRhsValue(*a.rhs, anchor, bound, expected, why);
+              rhsType = checkRhsValue(*a.rhs, anchor, types, expected, why);
               if (!rhsType)
                 return Type();
-              lhsType = checkRhsValue(*a.lhs, anchor, bound, rhsType, why);
+              lhsType = checkRhsValue(*a.lhs, anchor, types, rhsType, why);
             } else {
-              lhsType = checkRhsValue(*a.lhs, anchor, bound, expected, why);
+              lhsType = checkRhsValue(*a.lhs, anchor, types, expected, why);
               if (!lhsType)
                 return Type();
-              rhsType = checkRhsValue(*a.rhs, anchor, bound,
-                                      isLiteralOnly(*a.lhs) ? expected
-                                                            : lhsType,
-                                      why);
+              rhsType = checkRhsValue(
+                  *a.rhs, anchor, types,
+                  isLiteralOnly(*a.lhs) ? expected : lhsType, why);
             }
             if (!lhsType || !rhsType)
               return Type();
@@ -523,7 +522,7 @@ static Type checkRhsValue(const Expr &expr, Operation *anchor,
             return lhsType;
           },
           [&](const Neg &n) -> Type {
-            Type type = checkRhsValue(*n.operand, anchor, bound, expected, why);
+            Type type = checkRhsValue(*n.operand, anchor, types, expected, why);
             if (!type)
               return Type();
             if (!isa<IntegerType, FloatType>(type)) {
@@ -545,7 +544,7 @@ static Type checkRhsValue(const Expr &expr, Operation *anchor,
 }
 
 static LogicalResult checkRhsCall(const Call &call, Operation *anchor,
-                                  const llvm::StringMap<Value> &bound,
+                                  const llvm::StringMap<Type> &types,
                                   SmallVectorImpl<Type> &resultTypes,
                                   std::string &why) {
   std::string name = calleeName(call);
@@ -564,7 +563,7 @@ static LogicalResult checkRhsCall(const Call &call, Operation *anchor,
   }
   for (auto [index, arg] : llvm::enumerate(call.args)) {
     Type expected = callOperandValueType(define, index);
-    Type actual = checkRhsValue(arg, anchor, bound, expected, why);
+    Type actual = checkRhsValue(arg, anchor, types, expected, why);
     if (!actual)
       return failure();
     if (!literalFits(arg, actual)) {
@@ -585,6 +584,21 @@ static LogicalResult checkRhsCall(const Call &call, Operation *anchor,
   resultTypes.clear();
   llvm::append_range(resultTypes, define.getCallResultTypes());
   return success();
+}
+
+// The result of a call to `define` that is its return value rather than a
+// written argument, if there is exactly one.
+static std::optional<unsigned> getReturnResult(DefineOp define) {
+  std::optional<unsigned> found;
+  for (unsigned result = 0, e = define.getCallResultTypes().size(); result != e;
+       ++result) {
+    if (define.getWrittenArgForCallResult(result))
+      continue;
+    if (found)
+      return std::nullopt;
+    found = result;
+  }
+  return found;
 }
 
 // The variables the matched call modifies, as getWrittenVars gives them.
@@ -615,18 +629,31 @@ static LogicalResult checkRhs(const Rule &rule, Operation *root,
     if (!name.empty())
       modifiable.insert(name);
 
+  llvm::StringMap<Type> types;
+  for (const auto &entry : bound)
+    types[entry.getKey()] = entry.getValue().getType();
+
   // A call on its own may modify only what the root does, so the change
   // reaches the root's users. After the loop, `results` is the last call's.
   SmallVector<Type> results;
-  for (const Expr &expr : rule.rhs) {
+  for (auto [expr, binding] : llvm::zip(rule.rhs, rule.names)) {
     auto *call = std::get_if<Call>(&expr.data);
     if (!call || call->isBuiltin())
       continue;
-    if (failed(checkRhsCall(*call, root, bound, results, why)))
+    if (failed(checkRhsCall(*call, root, types, results, why)))
       return failure();
+    DefineOp define = lookupDefine(root, calleeName(*call));
+    if (!binding.empty()) {
+      std::optional<unsigned> result = getReturnResult(define);
+      if (!result) {
+        why = "its right-hand side binds '" + binding + "' to '" +
+              calleeName(*call) + "', which does not return exactly one value";
+        return failure();
+      }
+      types[binding] = results[*result];
+    }
     llvm::StringSet<> modified;
-    for (StringRef name :
-         getWrittenVars(*call, lookupDefine(root, calleeName(*call)))) {
+    for (StringRef name : getWrittenVars(*call, define)) {
       if (name.empty())
         continue;
       if (!modifiable.contains(name)) {
@@ -672,7 +699,7 @@ static LogicalResult checkRhs(const Rule &rule, Operation *root,
     return failure();
   }
   Type expected = needed.front();
-  Type actual = checkRhsValue(result, root, bound, expected, why);
+  Type actual = checkRhsValue(result, root, types, expected, why);
   if (!actual)
     return failure();
   if (actual != expected) {
@@ -764,11 +791,12 @@ static Value buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
       expr.data);
 }
 
-// Build the right-hand side and return the root's replacement. A call that
-// modifies a variable updates it for what follows. Each variable the root
-// modifies is replaced by its final value, and the root's other results by the
-// last expression's, in order. A call that repeats the match, as in `f(x) ->
-// g(x); f(x)`, is marked so the rule doesn't match it again forever.
+// Build the right-hand side and return the root's replacement. A binding
+// names a call's return value, and a call that modifies a variable updates it,
+// for what follows. Each variable the root modifies is replaced by its final
+// value, and the root's other results by the last expression's, in order. A
+// call that repeats the match, as in `f(x) -> g(x); f(x)`, is marked so the
+// rule doesn't match it again forever.
 static SmallVector<Value> buildReplacement(const Rule &rule,
                                            StringAttr ruleAttr,
                                            OpBuilder &builder, Location loc,
@@ -780,7 +808,7 @@ static SmallVector<Value> buildReplacement(const Rule &rule,
 
   llvm::StringMap<Value> vars = bound;
   SmallVector<Value> supplied;
-  for (const Expr &expr : rule.rhs) {
+  for (auto [expr, binding] : llvm::zip(rule.rhs, rule.names)) {
     Type expected =
         &expr == &rule.result() && needed.size() == 1 ? needed.front() : Type();
     Operation *op = nullptr;
@@ -793,8 +821,10 @@ static SmallVector<Value> buildReplacement(const Rule &rule,
       supplied = {value};
       continue;
     }
-    SmallVector<StringRef> written =
-        getWrittenVars(*call, lookupDefine(root, calleeName(*call)));
+    DefineOp define = lookupDefine(root, calleeName(*call));
+    if (!binding.empty())
+      vars[binding] = op->getResult(*getReturnResult(define));
+    SmallVector<StringRef> written = getWrittenVars(*call, define);
     supplied.clear();
     for (auto [result, name] : llvm::enumerate(written)) {
       if (name.empty())

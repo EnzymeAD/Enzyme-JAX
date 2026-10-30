@@ -278,3 +278,94 @@ module {
     llvm.return %0 : i64
   }
 }
+
+// -----
+
+// `t = g(x);` names g's return value, so a rule needn't nest calls.
+module {
+  tessera.define private @lib.norm(f64) -> f64 attributes {argModes = [unit], pure = true}
+  tessera.define private @lib.dot(f64, f64) -> f64 attributes {argModes = [unit, unit], pure = true}
+  tessera.define private @lib.sqrt(f64) -> f64 attributes {argModes = [unit], pure = true}
+
+  tessera.optimizations {
+    tessera.optimization "lib.norm(x) -> t = lib.dot(x, x); lib.sqrt(t)"
+  }
+
+  // CHECK-LABEL: llvm.func @binding
+  // CHECK-NEXT: %[[D:.*]] = tessera.call @lib.dot(%arg0, %arg0) : (f64, f64) -> f64
+  // CHECK-NEXT: %[[S:.*]] = tessera.call @lib.sqrt(%[[D]]) : (f64) -> f64
+  // CHECK-NEXT: llvm.return %[[S]]
+  llvm.func @binding(%x: f64) -> f64 {
+    %0 = tessera.call @lib.norm(%x) : (f64) -> f64
+    llvm.return %0 : f64
+  }
+}
+
+// -----
+
+// A binding names the return value even when the call also modifies a
+// variable.
+module {
+  tessera.define private @lib.solve(!llvm.ptr, !llvm.ptr) -> i32 attributes {argModes = [{dir = #tessera.dir<in>, type = f64}, {dir = #tessera.dir<inout>, type = f64}], pure = false}
+  tessera.define private @lib.fast_solve(!llvm.ptr, !llvm.ptr) -> i32 attributes {argModes = [{dir = #tessera.dir<in>, type = f64}, {dir = #tessera.dir<inout>, type = f64}], pure = false}
+  tessera.define private @lib.check(i32) -> i32 attributes {argModes = [unit], pure = false}
+  llvm.func @sink(f64)
+
+  tessera.optimizations {
+    tessera.optimization "lib.solve(a, x) -> s = lib.fast_solve(a, x); lib.check(s)"
+  }
+
+  // CHECK-LABEL: llvm.func @binding_modifies
+  // CHECK-NEXT: %[[F:.*]]:2 = tessera.call @lib.fast_solve(%arg0, %arg1) : (f64, f64) -> (f64, i32)
+  // CHECK-NEXT: %[[C:.*]] = tessera.call @lib.check(%[[F]]#1) : (i32) -> i32
+  // CHECK-NEXT: llvm.call @sink(%[[F]]#0) : (f64) -> ()
+  // CHECK-NEXT: llvm.return %[[C]]
+  llvm.func @binding_modifies(%a: f64, %x: f64) -> i32 {
+    %0:2 = tessera.call @lib.solve(%a, %x) : (f64, f64) -> (f64, i32)
+    llvm.call @sink(%0#0) : (f64) -> ()
+    llvm.return %0#1 : i32
+  }
+}
+
+// -----
+
+// A binding must name a call's single return value.
+module {
+  tessera.define private @lib.solve(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = f64}, {dir = #tessera.dir<inout>, type = f64}], pure = true}
+  tessera.define private @lib.scale(!llvm.ptr) attributes {argModes = [{dir = #tessera.dir<inout>, type = f64}], pure = true}
+  tessera.define private @lib.fast_solve(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = f64}, {dir = #tessera.dir<inout>, type = f64}], pure = true}
+
+  tessera.optimizations {
+    tessera.optimization "lib.solve(a, x) -> t = lib.scale(x); lib.fast_solve(a, x)"
+  }
+
+  // CHECK-LABEL: llvm.func @binding_no_return
+  // CHECK-NEXT: tessera.call @lib.solve(%arg0, %arg1)
+  llvm.func @binding_no_return(%a: f64, %x: f64) -> f64 {
+    // expected-warning @+1 {{optimization rule 'lib.solve(a, x) -> t = lib.scale(x); lib.fast_solve(a, x)' cannot be applied: its right-hand side binds 't' to 'lib.scale', which does not return exactly one value}}
+    %0 = tessera.call @lib.solve(%a, %x) : (f64, f64) -> f64
+    llvm.return %0 : f64
+  }
+}
+
+// -----
+
+// A binding can't reuse a name, and the last expression can't bind one.
+module {
+  tessera.define private @lib.f(i64) -> i64 attributes {argModes = [unit], pure = false}
+  tessera.define private @lib.g(i64) -> i64 attributes {argModes = [unit], pure = false}
+
+  tessera.optimizations {
+    // expected-warning @+1 {{optimization rule ignored: its right-hand side binds 'x', which is already bound}}
+    tessera.optimization "lib.f(x) -> x = lib.g(x); lib.g(x)"
+    // expected-warning @+1 {{optimization rule ignored: 't' is bound by the last expression of an optimization rule, so nothing can use it}}
+    tessera.optimization "lib.f(x) -> t = lib.g(x)"
+  }
+
+  // CHECK-LABEL: llvm.func @binding_misuse
+  // CHECK-NEXT: tessera.call @lib.f(%arg0)
+  llvm.func @binding_misuse(%x: i64) -> i64 {
+    %0 = tessera.call @lib.f(%x) : (i64) -> i64
+    llvm.return %0 : i64
+  }
+}
