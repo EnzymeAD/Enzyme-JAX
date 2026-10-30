@@ -90,7 +90,7 @@ module {
             %af = arith.addi %ae, %ad : i64 // 3 muli in @foo + call to @bar
             perfify.yield %af : i64
         }
-        %cmp = perfify.cmp eq, %cost, @post_cost
+        %cmp = perfify.cmp le, %cost, @post_cost
         %h = perfify.hypothesis %cmp post
         perfify.assume %h
      }
@@ -183,7 +183,7 @@ module {
 // CHECK-NEXT:         %7 = arith.addi %6, %5 : i64
 // CHECK-NEXT:         perfify.yield %7 : i64
 // CHECK-NEXT:       }
-// CHECK-NEXT:       %1 = perfify.cmp eq, %0, @post_cost
+// CHECK-NEXT:       %1 = perfify.cmp le, %0, @post_cost
 // CHECK-NEXT:       %2 = perfify.hypothesis %1 post
 // CHECK-NEXT:       perfify.assume %2 {satres = true}
 // CHECK-NEXT:     }
