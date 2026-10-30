@@ -9,7 +9,7 @@ func.func @main(%buf: tensor<5xi32>) -> tensor<5xi32> {
 }
 
 // JIT-LABEL: llvm.func @enzymexla_jitwrap_ncclAllReduce
-// JIT-SAME: enzymexla.device_abi = "cuda"
+// JIT-SAME: (%[[WRAP_BUF:[^:]*]]: !llvm.ptr
 // JIT: %[[STREAM:.*]] = "enzymexla.get_stream"() : () -> !llvm.ptr
 // JIT: %[[HOST_COUNT:.*]] = llvm.alloca
 // JIT: %[[HOST_DATATYPE:.*]] = llvm.alloca
@@ -28,7 +28,7 @@ func.func @main(%buf: tensor<5xi32>) -> tensor<5xi32> {
 // JIT: %[[DATATYPE:.*]] = llvm.load %[[HOST_DATATYPE]] : !llvm.ptr -> i32
 // JIT: %[[REDOP:.*]] = llvm.load %[[HOST_REDOP]] : !llvm.ptr -> i32
 // JIT: %[[WRAP_COMM:.*]] = llvm.load %[[HOST_COMM]] : !llvm.ptr -> !llvm.ptr
-// JIT: llvm.call @ncclAllReduce({{.*}}, %[[COUNT]], %[[DATATYPE]], %[[REDOP]], %[[WRAP_COMM]], %[[STREAM]])
+// JIT: llvm.call @ncclAllReduce(%[[WRAP_BUF]], %[[WRAP_BUF]], %[[COUNT]], %[[DATATYPE]], %[[REDOP]], %[[WRAP_COMM]], %[[STREAM]])
 // JIT: llvm.return
 // JIT-DAG: llvm.func @cuMemcpyAsync(!llvm.ptr, !llvm.ptr, i64, i32, !llvm.ptr) -> i32
 // JIT-DAG: llvm.func @cuStreamSynchronize(!llvm.ptr) -> i32
