@@ -22,6 +22,61 @@ func.func @tanh_neg_complex(%arg0: tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f
 // CHECK-NEXT:    %[[NEG:.+]] = stablehlo.negate %[[TANH]] : tensor<4xcomplex<f32>>
 // CHECK-NEXT:    return %[[NEG]] : tensor<4xcomplex<f32>>
 
+func.func @real_neg(%arg0: tensor<4xcomplex<f32>>) -> tensor<4xf32> {
+  %0 = stablehlo.negate %arg0 : tensor<4xcomplex<f32>>
+  %1 = stablehlo.real %0 : (tensor<4xcomplex<f32>>) -> tensor<4xf32>
+  return %1 : tensor<4xf32>
+}
+
+// CHECK-LABEL: func.func @real_neg
+// CHECK-NEXT:    %[[REAL:.+]] = stablehlo.real %arg0 : (tensor<4xcomplex<f32>>) -> tensor<4xf32>
+// CHECK-NEXT:    %[[NEG:.+]] = stablehlo.negate %[[REAL]] : tensor<4xf32>
+// CHECK-NEXT:    return %[[NEG]] : tensor<4xf32>
+
+func.func @imag_neg(%arg0: tensor<4xcomplex<f32>>) -> tensor<4xf32> {
+  %0 = stablehlo.negate %arg0 : tensor<4xcomplex<f32>>
+  %1 = stablehlo.imag %0 : (tensor<4xcomplex<f32>>) -> tensor<4xf32>
+  return %1 : tensor<4xf32>
+}
+
+// CHECK-LABEL: func.func @imag_neg
+// CHECK-NEXT:    %[[IMAG:.+]] = stablehlo.imag %arg0 : (tensor<4xcomplex<f32>>) -> tensor<4xf32>
+// CHECK-NEXT:    %[[NEG:.+]] = stablehlo.negate %[[IMAG]] : tensor<4xf32>
+// CHECK-NEXT:    return %[[NEG]] : tensor<4xf32>
+
+func.func @conj_neg(%arg0: tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>> {
+  %0 = stablehlo.negate %arg0 : tensor<4xcomplex<f32>>
+  %1 = chlo.conj %0 : tensor<4xcomplex<f32>> -> tensor<4xcomplex<f32>>
+  return %1 : tensor<4xcomplex<f32>>
+}
+
+// CHECK-LABEL: func.func @conj_neg
+// CHECK-NEXT:    %[[CONJ:.+]] = chlo.conj %arg0 : tensor<4xcomplex<f32>> -> tensor<4xcomplex<f32>>
+// CHECK-NEXT:    %[[NEG:.+]] = stablehlo.negate %[[CONJ]] : tensor<4xcomplex<f32>>
+// CHECK-NEXT:    return %[[NEG]] : tensor<4xcomplex<f32>>
+
+func.func @erf_neg(%arg0: tensor<4xf32>) -> tensor<4xf32> {
+  %0 = stablehlo.negate %arg0 : tensor<4xf32>
+  %1 = chlo.erf %0 : tensor<4xf32> -> tensor<4xf32>
+  return %1 : tensor<4xf32>
+}
+
+// CHECK-LABEL: func.func @erf_neg
+// CHECK-NEXT:    %[[ERF:.+]] = chlo.erf %arg0 : tensor<4xf32> -> tensor<4xf32>
+// CHECK-NEXT:    %[[NEG:.+]] = stablehlo.negate %[[ERF]] : tensor<4xf32>
+// CHECK-NEXT:    return %[[NEG]] : tensor<4xf32>
+
+func.func @erf_inv_neg(%arg0: tensor<4xf32>) -> tensor<4xf32> {
+  %0 = stablehlo.negate %arg0 : tensor<4xf32>
+  %1 = chlo.erf_inv %0 : tensor<4xf32> -> tensor<4xf32>
+  return %1 : tensor<4xf32>
+}
+
+// CHECK-LABEL: func.func @erf_inv_neg
+// CHECK-NEXT:    %[[ERFINV:.+]] = chlo.erf_inv %arg0 : tensor<4xf32> -> tensor<4xf32>
+// CHECK-NEXT:    %[[NEG:.+]] = stablehlo.negate %[[ERFINV]] : tensor<4xf32>
+// CHECK-NEXT:    return %[[NEG]] : tensor<4xf32>
+
 // The odd rewrite would keep the original negate alive and add another one.
 func.func @sin_neg_multi_use(%arg0: tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>) {
   %0 = stablehlo.negate %arg0 : tensor<4xf32>
