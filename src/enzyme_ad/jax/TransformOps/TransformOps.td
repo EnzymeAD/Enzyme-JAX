@@ -617,6 +617,10 @@ def ApplyBroadcastReducePatterns : EnzymeHLOPatternOp<
     "broadcast_reduce"> {
   let patterns = ["BroadcastReduce"];
 }
+def ApplyReduceBroadcastSourcePatterns : EnzymeHLOPatternOp<
+    "reduce_broadcast_source"> {
+  let patterns = ["ReduceBroadcastSource"];
+}
 def ApplySliceDotGeneralPatterns : EnzymeHLOPatternOp<
     "slice_dot_general"> {
   let patterns = ["SliceDotGeneral"];
@@ -2948,6 +2952,23 @@ def ApplyTransposeBatchNormGradPatterns : EnzymeHLOPatternOp<
 def ApplySelectBroadcastInDimPatterns : EnzymeHLOPatternOp<
     "select_broadcast_in_dim"> {
   let patterns = ["SelectBroadcastInDim"];
+}
+def ApplySelectBroadcastConstantsPatterns : EnzymeHLOPatternOp<
+    "select_broadcast_constants"> {
+  let patterns = ["SelectBroadcastConstants"];
+}
+def ApplyPadBroadcastConstantPatterns : EnzymeHLOParameterizedPatternOp<
+    "pad_broadcast_constant"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
+  let assemblyFormat = "prop-dict attr-dict";
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getI64IntegerAttr(4096)))};
+    }
+  }];
 }
 
 def ApplyTransposeIfPatterns : EnzymeHLOPatternOp<
