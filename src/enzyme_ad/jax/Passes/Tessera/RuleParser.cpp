@@ -30,6 +30,9 @@
 // A variable bound by `var '='` names the call's return value, and can't
 // reuse a name already bound (checked by parse-optimization-rules).
 //
+// A call passes the C function's arguments, in order. One the function only
+// writes (val=out) must be a variable, which names where the result goes.
+//
 // log2 is only allowed on the right-hand side. A condition compares a string
 // (by its text) or a global (by its address) only with '==' or '!='. Strings
 // use single quotes so a rule can sit inside a C string without escaping.
@@ -943,8 +946,6 @@ std::optional<Cond> parseConditionText(llvm::StringRef text, Location loc) {
   return cond;
 }
 
-namespace {
-
 void collectVars(const Expr &expr, llvm::StringSet<> &vars) {
   if (auto *var = std::get_if<Var>(&expr.data))
     vars.insert(var->name);
@@ -959,7 +960,28 @@ void collectVars(const Expr &expr, llvm::StringSet<> &vars) {
     collectVars(*neg->operand, vars);
 }
 
-} // namespace
+void collectVars(const Cond &cond, llvm::StringSet<> &vars) {
+  std::visit(overloaded{
+                 [&](const Pred &p) {
+                   for (const Expr &arg : p.args)
+                     collectVars(arg, vars);
+                 },
+                 [&](const Compare &c) {
+                   collectVars(c.lhs, vars);
+                   collectVars(c.rhs, vars);
+                 },
+                 [&](const NotCond &n) { collectVars(*n.operand, vars); },
+                 [&](const AndCond &a) {
+                   collectVars(*a.lhs, vars);
+                   collectVars(*a.rhs, vars);
+                 },
+                 [&](const OrCond &o) {
+                   collectVars(*o.lhs, vars);
+                   collectVars(*o.rhs, vars);
+                 },
+             },
+             cond.data);
+}
 
 std::string substituteRuleNames(llvm::StringRef text,
                                 const llvm::StringMap<std::string> &values,

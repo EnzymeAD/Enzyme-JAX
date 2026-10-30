@@ -95,7 +95,7 @@ module {
   tessera.define private @lib.inv_fast(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = f64}, {dir = #tessera.dir<out>, type = f64}], pure = true}
 
   tessera.optimizations {
-    tessera.optimization "if x > 0.0, lib.inv(x) -> lib.inv_fast(x)"
+    tessera.optimization "if x > 0.0, lib.inv(x, y) -> lib.inv_fast(x, y)"
   }
 
   // CHECK-LABEL: llvm.func @written_argument

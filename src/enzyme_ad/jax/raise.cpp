@@ -119,7 +119,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   std::string pass_pipeline =
       "invoke-to-call,inline{default-pipeline=canonicalize "
       "max-iterations=4},sroa-wrappers{set_private=false attributor=false},"
-      "lift-tessera-annotations,parse-optimization-rules,"
+      "lift-tessera-annotations,"
       "libdevice-funcs-raise,"
       "gpu-launch-recognition{backend=";
   pass_pipeline += backend;
@@ -163,7 +163,8 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "" + canonicalize + ",sort-memory,llvm-to-tessera,"
       "polygeist-mem2reg," + canonicalize + ","
       "tessera-propagate-properties,"
-      "tessera-apply-pdl,tessera-lower-guards,tessera-to-llvm,";
+      "parse-optimization-rules,tessera-apply-pdl,tessera-lower-guards,"
+      "tessera-to-llvm,";
   // Differentiation runs before the backends diverge, so on xla the
   // generated derivative launches raise to stablehlo like any other kernel.
   if (outfile.size() && getenv("EXPORT_REACTANT")) {

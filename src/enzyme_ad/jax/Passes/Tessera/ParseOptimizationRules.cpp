@@ -41,10 +41,17 @@ using namespace mlir::enzyme::tessera;
 
 namespace {
 
+// A rule passes a call's C arguments, but a tessera.call has no operand for
+// one the function only writes (val=out). Without a define, the callee is
+// never called, so every argument is taken as an operand.
+bool isOutputArg(tessera::DefineOp define, unsigned index) {
+  return define && !define.getCallOperandForArg(index);
+}
+
 std::pair<mlir::Value, mlir::Value>
 emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
              llvm::StringMap<mlir::Value> &boundVars,
-             SmallVectorImpl<std::string> &orderedVars) {
+             SmallVectorImpl<std::string> &orderedVars, ModuleOp module) {
   return std::visit(
       overloaded{
           [&](const Var &v) -> std::pair<mlir::Value, mlir::Value> {
@@ -158,12 +165,14 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
                              "rule matches");
           },
           [&](const Call &c) -> std::pair<mlir::Value, mlir::Value> {
+            auto define = module.lookupSymbol<tessera::DefineOp>(
+                c.dialect + "." + c.opname);
             SmallVector<mlir::Value> argValues;
-            for (int i = 0; i < c.args.size(); i++) {
-              auto argPDL =
-                  emitMatchPDL(c.args[i], builder, loc, boundVars, orderedVars);
-              argValues.push_back(argPDL.first);
-            }
+            for (auto [index, arg] : llvm::enumerate(c.args))
+              if (!isOutputArg(define, index))
+                argValues.push_back(emitMatchPDL(arg, builder, loc, boundVars,
+                                                 orderedVars, module)
+                                        .first);
             auto calleeAttr = pdl::AttributeOp::create(
                 builder, loc,
                 FlatSymbolRefAttr::get(builder.getContext(),
@@ -211,6 +220,41 @@ findUnboundVar(const Expr &expr, const llvm::StringMap<mlir::Value> &bound) {
   return std::nullopt;
 }
 
+// Check each call in a left-hand side against its define. Adds to `outputs`
+// each variable passed where a call writes its result, and to `matched` each
+// other variable. Returns what is wrong, if anything.
+std::optional<std::string> checkLhsArgs(const Expr &expr, ModuleOp module,
+                                        llvm::StringSet<> &outputs,
+                                        llvm::StringSet<> &matched) {
+  if (auto *var = std::get_if<Var>(&expr.data))
+    matched.insert(var->name);
+  auto *call = std::get_if<Call>(&expr.data);
+  if (!call)
+    return std::nullopt;
+  std::string name = call->dialect + "." + call->opname;
+  auto define = module.lookupSymbol<tessera::DefineOp>(name);
+  if (define && call->args.size() != define.getArgModeEntries().size())
+    return "'" + name + "' takes " +
+           std::to_string(define.getArgModeEntries().size()) +
+           " argument(s), but the rule passes it " +
+           std::to_string(call->args.size());
+  for (auto [index, arg] : llvm::enumerate(call->args)) {
+    if (!isOutputArg(define, index)) {
+      if (auto why = checkLhsArgs(arg, module, outputs, matched))
+        return why;
+      continue;
+    }
+    auto *var = std::get_if<Var>(&arg.data);
+    if (!var)
+      return "argument " + std::to_string(index) + " of '" + name +
+             "' is where it writes its result, so the rule must pass a "
+             "variable";
+    if (!outputs.insert(var->name).second)
+      return "'" + var->name + "' is where two calls write their results";
+  }
+  return std::nullopt;
+}
+
 struct ParseOptimizationRulesPass
     : public enzyme::tessera::impl::ParseOptimizationRulesPassBase<
           ParseOptimizationRulesPass> {
@@ -239,6 +283,23 @@ struct ParseOptimizationRulesPass
         if (!rule)
           continue;
 
+        // An output names where the matched call writes, so it has no value
+        // to match or test.
+        llvm::StringSet<> outputs, matched;
+        std::optional<std::string> lhsProblem =
+            checkLhsArgs(rule->lhs, module, outputs, matched);
+        if (rule->cond)
+          collectVars(*rule->cond, matched);
+        for (const auto &output : outputs)
+          if (!lhsProblem && matched.contains(output.getKey()))
+            lhsProblem = "'" + output.getKey().str() +
+                         "' is where a call writes its result, so it can't "
+                         "also be matched or tested";
+        if (lhsProblem) {
+          emitWarning(loc) << "optimization rule ignored: " << *lhsProblem;
+          continue;
+        }
+
         // Create pdl.pattern op that will store PDL for parsed rewrite rule
         builder.setInsertionPointToStart(patternsModule.getBody());
         auto pattern = pdl::PatternOp::create(builder, loc, /*benefit=*/1,
@@ -250,8 +311,8 @@ struct ParseOptimizationRulesPass
         SmallVector<std::string> orderedVars;
 
         // Emit PDL for the left-hand side (the pattern to match).
-        auto root =
-            emitMatchPDL(rule->lhs, builder, loc, boundVars, orderedVars);
+        auto root = emitMatchPDL(rule->lhs, builder, loc, boundVars,
+                                 orderedVars, module);
         if (!root.second) {
           emitWarning(loc) << "optimization rule ignored: its left-hand side "
                               "must be a call";
@@ -259,8 +320,11 @@ struct ParseOptimizationRulesPass
           continue;
         }
 
-        // A name bound on the right-hand side can be used after its binding.
+        // An output, or a name bound on the right-hand side, can be used
+        // after it is written (checked by tessera-apply-pdl).
         llvm::StringMap<mlir::Value> visible = boundVars;
+        for (const auto &output : outputs)
+          visible.try_emplace(output.getKey());
         std::string problem;
         for (auto [expr, name] : llvm::zip(rule->rhs, rule->names)) {
           if (auto unbound = findUnboundVar(expr, visible)) {
@@ -283,10 +347,9 @@ struct ParseOptimizationRulesPass
 
         // The right-hand side isn't written in PDL. tessera-apply-pdl builds it
         // with a native rewrite, because it needs things only known after a
-        // match: result types from the callees' tessera.defines (which don't
-        // exist yet here), whether a condition is proven (rewrite or guard),
-        // and which producers a chain rule can move. So the rule is passed as
-        // text, with the matched values and their names.
+        // match: whether a condition is proven (rewrite or guard), and which
+        // producers a chain rule can move. So the rule is passed as text, with
+        // the matched values and their names.
         auto ruleAttr = pdl::AttributeOp::create(
             builder, loc, builder.getStringAttr(optimization_op.getRule()));
         SmallVector<Attribute> nameAttrs;
@@ -323,6 +386,11 @@ struct ParseOptimizationRulesPass
                                externalArgs);
       }
     }
+
+    // The rules are now patterns.
+    for (auto optimizations_op :
+         llvm::make_early_inc_range(module.getOps<tessera::OptimizationsOp>()))
+      optimizations_op.erase();
   }
 };
 } // namespace
