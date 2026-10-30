@@ -333,18 +333,22 @@ struct SimpleCycleAnalysisPass
     llvm_unreachable("unknown perfify.cmp predicate");
   }
 
-  z3::expr evaluateCostRegion(mlir::Region *costRegion, z3::solver &solver) {
+  std::optional<z3::expr> evaluateCostRegion(mlir::Region *costRegion,
+                                             z3::solver &solver) {
     z3::context &ctx = solver.ctx();
     llvm::DenseMap<mlir::Value, z3::expr> valueExprs;
     std::optional<z3::expr> result;
     for (mlir::Operation &regionOp : costRegion->getOps()) {
       std::optional<z3::expr> expr;
       if (auto constOp = dyn_cast<arith::ConstantOp>(regionOp)) {
-        if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
-          llvm::SmallString<40> valueStr;
-          intAttr.getValue().toString(valueStr, 10, false);
-          expr = ctx.int_val(valueStr.c_str());
+        auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue());
+        if (!intAttr) {
+          llvm::outs() << "non-integer constant in cost expression\n";
+          return std::nullopt;
         }
+        llvm::SmallString<40> valueStr;
+        intAttr.getValue().toString(valueStr, 10, /*Signed=*/true);
+        expr = ctx.int_val(valueStr.c_str());
       } else if (auto symOp = dyn_cast<SymCostOp>(regionOp)) {
         std::string symName = ("sym_" + symOp.getSymAttr().getValue()).str();
         expr = ctx.int_const(symName.c_str());
@@ -352,30 +356,33 @@ struct SimpleCycleAnalysisPass
       } else if (isa<arith::AddIOp, arith::MulIOp>(regionOp)) {
         auto lhs = valueExprs.find(regionOp.getOperand(0));
         auto rhs = valueExprs.find(regionOp.getOperand(1));
-        if (lhs != valueExprs.end() && rhs != valueExprs.end()) {
-          expr = isa<arith::AddIOp>(regionOp) ? (lhs->second + rhs->second)
-                                              : (lhs->second * rhs->second);
-        } else {
+        if (lhs == valueExprs.end() || rhs == valueExprs.end()) {
           llvm::outs() << "unresolvable operand in cost expression for "
                        << regionOp.getName().getStringRef() << "\n";
+          return std::nullopt;
         }
+        expr = isa<arith::AddIOp>(regionOp) ? (lhs->second + rhs->second)
+                                            : (lhs->second * rhs->second);
       } else if (auto yieldOp = dyn_cast<YieldOp>(regionOp)) {
         if (mlir::Value yielded = yieldOp.getValue()) {
           auto it = valueExprs.find(yielded);
-          if (it != valueExprs.end()) {
-            result = it->second;
+          if (it == valueExprs.end()) {
+            llvm::outs() << "unresolvable yield in cost expression\n";
+            return std::nullopt;
           }
+          result = it->second;
         }
       } else {
         llvm::outs() << "unsupported op in cost region: "
                      << regionOp.getName().getStringRef() << "\n";
+        return std::nullopt;
       }
       if (expr && regionOp.getNumResults() > 0) {
         valueExprs.insert({regionOp.getResult(0), *expr});
         result = expr;
       }
     }
-    return result.value_or(ctx.int_val(0));
+    return result;
   }
 
   void visitRegion(Region &region, AsmState *state, z3::solver &solver,
