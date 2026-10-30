@@ -1940,6 +1940,247 @@ struct AttentionGradBatchOpInterface
   }
 };
 
+// Shifts `val` by one position along `dim` and fills the vacated position with
+// zero: result[i] = val[i - 1] if `down` is set, and val[i + 1] otherwise.
+static Value shiftByOne(OpBuilder &builder, Location loc, Value val,
+                        int64_t dim, bool down) {
+  auto ty = cast<RankedTensorType>(val.getType());
+  int64_t rank = ty.getRank();
+  int64_t m = ty.getDimSize(dim);
+  if (m == 0)
+    return val;
+
+  SmallVector<int64_t> start(rank, 0);
+  SmallVector<int64_t> limit(ty.getShape());
+  SmallVector<int64_t> strides(rank, 1);
+  if (down)
+    limit[dim] = m - 1;
+  else
+    start[dim] = 1;
+  SmallVector<int64_t> slicedShape(ty.getShape());
+  slicedShape[dim] = m - 1;
+  Value sliced = stablehlo::SliceOp::create(
+      builder, loc, RankedTensorType::get(slicedShape, ty.getElementType()),
+      val, start, limit, strides);
+
+  SmallVector<int64_t> low(rank, 0), high(rank, 0), interior(rank, 0);
+  if (down)
+    low[dim] = 1;
+  else
+    high[dim] = 1;
+  Value zero = cast<AutoDiffTypeInterface>(
+                   RankedTensorType::get({}, ty.getElementType()))
+                   .createNullValue(builder, loc);
+  return stablehlo::PadOp::create(
+      builder, loc, sliced, zero, getI64Attr(builder, low),
+      getI64Attr(builder, high), getI64Attr(builder, interior));
+}
+
+// Solves the tridiagonal system given by `dl`, `d` and `du` for `rhs`, which
+// carries a leading derivative width dimension when `width` is greater than 1.
+// The width is folded into the right hand side columns so that a single solve
+// handles all derivative directions.
+static Value tridiagonalSolveWithWidth(OpBuilder &builder, Location loc,
+                                       Value dl, Value d, Value du, Value rhs,
+                                       Type infoTy, int64_t width) {
+  if (width == 1)
+    return TridiagonalSolveOp::create(builder, loc, rhs.getType(), infoTy, dl,
+                                      d, du, rhs)
+        .getX();
+
+  // [W, ..., m, nrhs] -> [..., m, W, nrhs]
+  auto rhsTy = cast<RankedTensorType>(rhs.getType());
+  int64_t rank = rhsTy.getRank();
+  SmallVector<int64_t> perm;
+  for (int64_t i = 1; i < rank - 1; ++i)
+    perm.push_back(i);
+  perm.push_back(0);
+  perm.push_back(rank - 1);
+  Value transposed = stablehlo::TransposeOp::create(
+      builder, loc, rhs, builder.getDenseI64ArrayAttr(perm));
+
+  SmallVector<int64_t> foldedShape(rhsTy.getShape().drop_front());
+  foldedShape.back() *= width;
+  auto foldedTy = RankedTensorType::get(foldedShape, rhsTy.getElementType());
+  Value folded =
+      stablehlo::ReshapeOp::create(builder, loc, foldedTy, transposed);
+  Value solved = TridiagonalSolveOp::create(builder, loc, foldedTy, infoTy, dl,
+                                            d, du, folded)
+                     .getX();
+  Value unfolded =
+      stablehlo::ReshapeOp::create(builder, loc, transposed.getType(), solved);
+
+  // [..., m, W, nrhs] -> [W, ..., m, nrhs]
+  SmallVector<int64_t> invPerm = {rank - 2};
+  for (int64_t i = 0; i < rank - 2; ++i)
+    invPerm.push_back(i);
+  invPerm.push_back(rank - 1);
+  return stablehlo::TransposeOp::create(builder, loc, unfolded,
+                                        builder.getDenseI64ArrayAttr(invPerm));
+}
+
+// Returns `x` shifted along its row dimension so that row i holds row
+// i + `offset` of `x`, for `offset` in {-1, 0, 1}. The product of a diagonal
+// with the matching shift of `x` gives that diagonal's contribution to A X.
+static Value shiftRows(OpBuilder &builder, Location loc, Value x,
+                       int64_t offset) {
+  if (offset == 0)
+    return x;
+  int64_t rowDim = cast<RankedTensorType>(x.getType()).getRank() - 2;
+  return shiftByOne(builder, loc, x, rowDim, /*down=*/offset < 0);
+}
+
+struct TridiagonalSolveOpInterfaceFwd
+    : public AutoDiffOpInterface::ExternalModel<TridiagonalSolveOpInterfaceFwd,
+                                                TridiagonalSolveOp> {
+  LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+    auto op = cast<TridiagonalSolveOp>(orig);
+    if (gutils->isConstantValue(op.getX())) {
+      gutils->eraseIfUnused(orig);
+      return success();
+    }
+
+    auto newOp = cast<TridiagonalSolveOp>(gutils->getNewFromOriginal(orig));
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointAfter(newOp);
+    Location loc = op.getLoc();
+    int64_t W = gutils->width;
+
+    // A dX = dB - dA X
+    Value x = prependAttentionWidth(builder, loc, newOp.getX(), W);
+    auto xTy = cast<RankedTensorType>(x.getType());
+    SmallVector<int64_t> diagDims(xTy.getRank() - 1);
+    std::iota(diagDims.begin(), diagDims.end(), 0);
+
+    Value rhs;
+    if (!gutils->isConstantValue(op.getB()))
+      rhs = gutils->invertPointerM(op.getB(), builder);
+
+    auto subtractDiagProduct = [&](Value diag, int64_t offset) {
+      if (gutils->isConstantValue(diag))
+        return;
+      Value dDiag = stablehlo::BroadcastInDimOp::create(
+          builder, loc, xTy, gutils->invertPointerM(diag, builder),
+          builder.getDenseI64ArrayAttr(diagDims));
+      Value prod = stablehlo::MulOp::create(builder, loc, dDiag,
+                                            shiftRows(builder, loc, x, offset));
+      if (rhs)
+        rhs = stablehlo::SubtractOp::create(builder, loc, rhs, prod);
+      else
+        rhs = stablehlo::NegOp::create(builder, loc, prod);
+    };
+    subtractDiagProduct(op.getDl(), -1);
+    subtractDiagProduct(op.getD(), 0);
+    subtractDiagProduct(op.getDu(), 1);
+
+    if (!rhs)
+      rhs = cast<AutoDiffTypeInterface>(xTy).createNullValue(builder, loc);
+
+    Value dX = tridiagonalSolveWithWidth(builder, loc, newOp.getDl(),
+                                         newOp.getD(), newOp.getDu(), rhs,
+                                         newOp.getInfo().getType(), W);
+    gutils->setDiffe(op.getX(), dX, builder);
+
+    gutils->eraseIfUnused(orig);
+    return success();
+  }
+};
+
+struct TridiagonalSolveOpInterfaceRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<
+          TridiagonalSolveOpInterfaceRev, TridiagonalSolveOp> {
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<TridiagonalSolveOp>(orig);
+    if (gutils->isConstantValue(op.getX()))
+      return success();
+
+    Value dX = gutils->diffe(op.getX(), builder);
+    gutils->zeroDiffe(op.getX(), builder);
+    if (caches.empty())
+      return success();
+
+    Location loc = op.getLoc();
+    int64_t W = gutils->width;
+    bool dlActive = !gutils->isConstantValue(op.getDl());
+    bool dActive = !gutils->isConstantValue(op.getD());
+    bool duActive = !gutils->isConstantValue(op.getDu());
+
+    Value dl = gutils->popCache(caches[0], builder);
+    Value d = gutils->popCache(caches[1], builder);
+    Value du = gutils->popCache(caches[2], builder);
+
+    // The adjoint of B solves A^T dB = dX. The lower diagonal of A^T is the
+    // upper diagonal of A shifted down, and vice versa.
+    int64_t diagDim = cast<RankedTensorType>(dl.getType()).getRank() - 1;
+    Value dlT = shiftByOne(builder, loc, du, diagDim, /*down=*/true);
+    Value duT = shiftByOne(builder, loc, dl, diagDim, /*down=*/false);
+    Value dB = tridiagonalSolveWithWidth(builder, loc, dlT, d, duT, dX,
+                                         op.getInfo().getType(), W);
+    if (!gutils->isConstantValue(op.getB()))
+      gutils->addToDiffe(op.getB(), dB, builder);
+
+    if (!dlActive && !dActive && !duActive)
+      return success();
+
+    // dA = -dB X^T, restricted to the three diagonals of A.
+    Value x = prependAttentionWidth(builder, loc,
+                                    gutils->popCache(caches[3], builder), W);
+    int64_t colDim = cast<RankedTensorType>(x.getType()).getRank() - 1;
+    auto addDiagAdjoint = [&](Value diag, int64_t offset) {
+      if (gutils->isConstantValue(diag))
+        return;
+      Value prod = stablehlo::MulOp::create(builder, loc, dB,
+                                            shiftRows(builder, loc, x, offset));
+      Value sum = reduceSumAlongDims(builder, loc, prod, {colDim});
+      gutils->addToDiffe(diag, stablehlo::NegOp::create(builder, loc, sum),
+                         builder);
+    };
+    addDiagAdjoint(op.getDl(), -1);
+    addDiagAdjoint(op.getD(), 0);
+    addDiagAdjoint(op.getDu(), 1);
+
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    auto op = cast<TridiagonalSolveOp>(orig);
+    bool anyDiagActive = !gutils->isConstantValue(op.getDl()) ||
+                         !gutils->isConstantValue(op.getD()) ||
+                         !gutils->isConstantValue(op.getDu());
+    if (gutils->isConstantValue(op.getX()) ||
+        (!anyDiagActive && gutils->isConstantValue(op.getB())))
+      return {};
+
+    SmallVector<Value> caches;
+    Operation *newOp = gutils->getNewFromOriginal(op);
+    OpBuilder cacheBuilder(newOp);
+
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getDl()), cacheBuilder));
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getD()), cacheBuilder));
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getDu()), cacheBuilder));
+
+    if (anyDiagActive) {
+      cacheBuilder.setInsertionPointAfter(newOp);
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(op.getX()), cacheBuilder));
+    }
+
+    return caches;
+  }
+
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
+    return success();
+  }
+};
+
 void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
     DialectRegistry &registry) {
   registry.addExtension(+[](MLIRContext *context, EnzymeXLADialect *) {
@@ -1961,6 +2202,11 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
     AttentionGradOp::attachInterface<AttentionGradOpInterfaceRev>(*context);
     AttentionGradOp::attachInterface<AttentionGradOpInterfaceFwd>(*context);
     AttentionGradOp::attachInterface<AttentionGradBatchOpInterface>(*context);
+
+    TridiagonalSolveOp::attachInterface<TridiagonalSolveOpInterfaceFwd>(
+        *context);
+    TridiagonalSolveOp::attachInterface<TridiagonalSolveOpInterfaceRev>(
+        *context);
 
     // Register batching interfaces
     JITCallOp::attachInterface<SHLOGenericBatchOpInterface<JITCallOp>>(
