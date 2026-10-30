@@ -639,3 +639,272 @@ module {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
 // CHECK:   } post {
 // CHECK:   perfify.assume %{{.*}} {satres = false}
+
+// -----
+
+// an unsatisfiable precondition proves nothing, so @vacuous_callee has no bound
+// for @vacuous_caller to use: neither holds
+module {
+  func.func @vacuous_callee(%a0: i64) -> i64 {
+    %m = arith.muli %a0, %a0 : i64
+    return %m : i64
+  }
+  func.func @vacuous_caller(%a0: i64) -> i64 {
+    %x = func.call @vacuous_callee(%a0) : (i64) -> i64
+    return %x : i64
+  }
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %c = arith.constant 2 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @vacuous_callee true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp lt, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+    perfify.conditions @vacuous_caller true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @vacuous_callee true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
+// CHECK-LABEL: perfify.conditions @vacuous_caller true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
+
+// -----
+
+// le reads the lower bound of an interval, so against [, 10] it is false. The
+// trip count hypothesis is unsatisfiable, not a bound of 10: does not hold
+module {
+  func.func @loop_le_upper_only(%a0: i64) -> i64 {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %n = arith.index_cast %a0 : i64 to index
+    %m = scf.for %i = %c0 to %n step %c1 iter_args(%acc = %a0) -> (i64) {
+      %t = perfify.arg 0
+      perfify.estimated_cost @trip_ub {
+        %c = arith.constant 10 : i64
+        perfify.yield %c : i64
+      }
+      perfify.interval @trip_range [max_cost: @trip_ub]
+      %tcmp = perfify.cmp le, %t, @trip_range
+      perfify.hypothesis %tcmp
+      %s = arith.muli %acc, %acc : i64
+      scf.yield %s : i64
+    }
+    return %m : i64
+  }
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %c = arith.constant 2 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "arith.constant" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "arith.index_cast" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "scf.for" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "scf.yield" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @loop_le_upper_only true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @loop_le_upper_only true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
+
+// -----
+
+// an empty trip count interval [20, 10] is unsatisfiable: does not hold
+module {
+  func.func @loop_empty_interval(%a0: i64) -> i64 {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %n = arith.index_cast %a0 : i64 to index
+    %m = scf.for %i = %c0 to %n step %c1 iter_args(%acc = %a0) -> (i64) {
+      %t = perfify.arg 0
+      perfify.estimated_cost @trip_ub {
+        %c = arith.constant 10 : i64
+        perfify.yield %c : i64
+      }
+      perfify.estimated_cost @trip_lb {
+        %c = arith.constant 20 : i64
+        perfify.yield %c : i64
+      }
+      perfify.interval @trip_range [min_cost: @trip_lb, max_cost: @trip_ub]
+      %tcmp = perfify.cmp eq, %t, @trip_range
+      perfify.hypothesis %tcmp
+      %s = arith.muli %acc, %acc : i64
+      scf.yield %s : i64
+    }
+    return %m : i64
+  }
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %c = arith.constant 2 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "arith.constant" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "arith.index_cast" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "scf.for" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "scf.yield" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @loop_empty_interval true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @loop_empty_interval true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
+
+// -----
+
+// a negative op cost is unsatisfiable, so it cannot lower the total: does not hold
+module {
+  func.func @negative_cost(%a0: i64) -> i64 {
+    %m = arith.muli %a0, %a0 : i64
+    return %m : i64
+  }
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %c = arith.constant -1 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @negative_cost true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @negative_cost true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}

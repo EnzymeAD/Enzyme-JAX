@@ -121,14 +121,14 @@ struct SimpleCycleAnalysisPass
         auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
         if (auto bounds = boundRegions(cmpOp)) {
           hypotheses[*pre_post] = *bounds;
-          if (auto holds = buildHypothesis(cmpOp.getPredicate(), *bounds,
-                                           *pre_post == HoareStates::Pre
-                                               ? cost_var.front()
-                                               : cost_var.back(),
-                                           solver)) {
-            solver.add(*pre_post == HoareStates::Pre ? *holds : !*holds);
-          } else {
-            unprovenAssertions = true;
+          // a post hypothesis is checked at its perfify.assume
+          if (*pre_post == HoareStates::Pre) {
+            if (auto holds = buildHypothesis(cmpOp.getPredicate(), *bounds,
+                                             cost_var.front(), solver)) {
+              solver.add(*holds);
+            } else {
+              unprovenAssertions = true;
+            }
           }
         } else {
           llvm::outs() << "no bound found for "
@@ -139,10 +139,9 @@ struct SimpleCycleAnalysisPass
       // where the z3 checks actually happen
       bool met = false;
       if (auto hyp = assumeOp.getCondition().getDefiningOp<HypothesisOp>()) {
-        auto check_res = solver.check();
         met = hyp.getPrePost() == HoareStates::Pre
-                  ? check_res == z3::sat
-                  : check_res == z3::unsat && !unprovenAssertions;
+                  ? solver.check() == z3::sat
+                  : checkPostHypothesis(hyp, solver, cost_var);
         if (met) {
           auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
           auto args = hypotheses.find(*hyp.getPrePost());
@@ -168,6 +167,27 @@ struct SimpleCycleAnalysisPass
     }
     for (Region &region : op->getRegions())
       visitRegion(region, state, solver, cost_var);
+  }
+
+  bool checkPostHypothesis(HypothesisOp hyp, z3::solver &solver,
+                           const std::vector<z3::expr> &cost_var) {
+    auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
+    auto bounds = boundRegions(cmpOp);
+    bool postHypothesisOutput;
+    std::optional<z3::expr> holds =
+        bounds ? buildHypothesis(cmpOp.getPredicate(), *bounds, cost_var.back(),
+                                 solver)
+               : std::nullopt;
+    if (!holds || solver.check() != z3::sat) {
+      llvm::outs() << "constraints are unsatisfiable or undecided\n";
+      postHypothesisOutput = false;
+    } else {
+      solver.push();
+      solver.add(!*holds);
+      postHypothesisOutput = (solver.check() == z3::unsat && !unprovenAssertions);
+      solver.pop();
+    }
+    return postHypothesisOutput;
   }
 
   // Chain the cost of every op in `region` (nested regions first, matching a
