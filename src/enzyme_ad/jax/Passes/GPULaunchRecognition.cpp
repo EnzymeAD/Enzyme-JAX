@@ -11,6 +11,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringSet.h"
 
@@ -153,8 +154,7 @@ struct GPULaunchRecognitionPass
 
     Attribute target;
     if (backend == "rocm") {
-      auto chip = "gfx1030";
-      auto features = "+wavefrontsize64";
+      auto [chip, features] = enzyme::getROCDLChipAndFeatures(sm, feat);
 
       target = moduleBuilder.getAttr<ROCDL::ROCDLTargetAttr>(
           /*optLevel=*/3, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
