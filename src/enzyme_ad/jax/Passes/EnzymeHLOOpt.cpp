@@ -6971,7 +6971,6 @@ struct WhileDeadResults final
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
                                     PatternRewriter &rewriter) const {
-    bool isTotalPure = isPure(op);
     std::map<int64_t, int> forwardIsPure;
     std::map<int64_t, std::set<int64_t>> backwardsUsesOfArguments;
     SmallVector<size_t> emptyResults;
@@ -6982,6 +6981,11 @@ struct WhileDeadResults final
     }
     if (emptyResults.size() == 0)
       return failure();
+
+    // A walk of every nested op; only worth it once the loop is known to have
+    // a result nobody reads. The greedy driver revisits a loop after every
+    // rewrite inside it, so most attempts end at the check above.
+    bool isTotalPure = isPure(op);
 
     DenseMap<Value, llvm::SmallPtrSet<size_t, 3> *> users(
         emptyResults.size() + op.getCond().front().getOperations().size());
