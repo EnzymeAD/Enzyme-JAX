@@ -339,7 +339,7 @@ def YieldOp : TesseraOp<"yield", [Pure, HasParent<"GuardOp">, ReturnLike,
 // OptimizationOp
 //===----------------------------------------------------------------------===//
 
-def OptimizationOp : TesseraOp<"optimization", [Pure]> {
+def OptimizationOp : TesseraOp<"optimization", []> {
   let summary = "A tessera optimization rule";
   let description = [{
     The 'tessera.optimization' operation represents a single optimization rule defined by the user in string form.
@@ -360,10 +360,11 @@ def OptimizationOp : TesseraOp<"optimization", [Pure]> {
 // OptimizationsOp
 //===----------------------------------------------------------------------===//
 
-def OptimizationsOp : TesseraOp<"optimizations", [Pure, NoTerminator]> {
+def OptimizationsOp : TesseraOp<"optimizations", [NoTerminator]> {
   let summary = "A set of tessera optimization rules";
   let description = [{
     The 'tessera.optimizations' operation groups multiple optimization rules into a single container.
+    It is not Pure, so it isn't removed as dead before parse-optimization-rules, which consumes it.
 
     Example: 
 ```mlir
