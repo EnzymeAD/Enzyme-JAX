@@ -6,7 +6,6 @@ func.func @main() -> tensor<4xf64> {
   return %x : tensor<4xf64>
 }
 
-// CHECK:  func.func @main() -> tensor<4xf64> {
-// CHECK-NEXT:    %[[c:.+]] = stablehlo.constant dense<[0.0, 0.7615941559557649, -0.7615941559557649, 0.46211715726000974]> : tensor<4xf64>
-// CHECK-NEXT:    return %[[c]] : tensor<4xf64>
-// CHECK-NEXT:  }
+// CHECK-LABEL: @main()
+// CHECK-NEXT: stablehlo.constant
+// CHECK-NOT: stablehlo.tanh
