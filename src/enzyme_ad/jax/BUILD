@@ -1805,6 +1805,7 @@ cc_library(
         "@zlib",
     ] + if_z3 + if_cuda([
         "@local_config_cuda//cuda:cuda_headers",
+        "@local_config_nccl//:nccl_headers",
         "@xla//xla/tsl/cuda:cudart",
     ]),
 )

@@ -13,8 +13,8 @@
 #include "stablehlo/dialect/StablehloOps.h"
 
 #ifdef ENZYMEJAX_CUDA
-#include "cuda/cuda_runtime_api.h"
-#include "nccl.h"
+#include "third_party/gpus/cuda/include/cuda_runtime_api.h"
+#include "third_party/nccl/nccl.h"
 #endif
 
 #define DEBUG_TYPE "lower-comm-to-jit"
