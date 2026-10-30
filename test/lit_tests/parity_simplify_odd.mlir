@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td=patterns=parity_simplify --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s
+// RUN enzymexlamlir-opt %s --enzyme-hlo-generate-td=patterns=parity_simplify --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s
 
 func.func @sin_neg(%arg0: tensor<4xf32>) -> tensor<4xf32> {
   %0 = stablehlo.negate %arg0 : tensor<4xf32>
