@@ -388,6 +388,22 @@ static bool literalFits(const Expr &literal, Type type) {
          (n->value >= 0 && llvm::isUIntN(width, n->value));
 }
 
+// For each result of a call to `define`, the variable `call` passes for the
+// argument that result writes back, or "" if there isn't one.
+static SmallVector<StringRef> getWrittenVars(const Call &call,
+                                             DefineOp define) {
+  SmallVector<StringRef> names(define.getCallResultTypes().size());
+  for (unsigned result = 0, e = names.size(); result != e; ++result) {
+    std::optional<unsigned> arg = define.getWrittenArgForCallResult(result);
+    std::optional<unsigned> operand =
+        arg ? define.getCallOperandForArg(*arg) : std::nullopt;
+    if (operand && *operand < call.args.size())
+      if (auto *var = std::get_if<Var>(&call.args[*operand].data))
+        names[result] = var->name;
+  }
+  return names;
+}
+
 // The types the right-hand side would produce, without building it. Fails,
 // setting `why`, if it wouldn't verify (a missing callee, a wrong type).
 static LogicalResult checkRhsCall(const Call &call, Operation *anchor,
@@ -440,6 +456,15 @@ static Type checkRhsValue(const Expr &expr, Operation *anchor,
             SmallVector<Type> results;
             if (failed(checkRhsCall(c, anchor, bound, results, why)))
               return Type();
+            // Only a call on its own updates a variable (see buildReplacement).
+            for (StringRef name :
+                 getWrittenVars(c, lookupDefine(anchor, calleeName(c))))
+              if (!name.empty()) {
+                why = "'" + calleeName(c) + "' modifies '" + name.str() +
+                      "' inside another call, but only a call on its own can "
+                      "modify a variable";
+                return Type();
+              }
             if (results.empty()) {
               why = "'" + calleeName(c) +
                     "' is used as an argument, but produces no result";
@@ -562,43 +587,91 @@ static LogicalResult checkRhsCall(const Call &call, Operation *anchor,
   return success();
 }
 
+// The variables the matched call modifies, as getWrittenVars gives them.
+static SmallVector<StringRef> getRootWrittenVars(const Rule &rule,
+                                                 Operation *root) {
+  const Call &lhs = std::get<Call>(rule.lhs.data);
+  return getWrittenVars(lhs, lookupDefine(root, calleeName(lhs)));
+}
+
+// The root's result types that aren't a variable it modifies, so must come
+// from the last expression.
+static SmallVector<Type> getUnwrittenResultTypes(Operation *root,
+                                                 ArrayRef<StringRef> written) {
+  SmallVector<Type> types;
+  for (auto [type, name] : llvm::zip(root->getResultTypes(), written))
+    if (name.empty())
+      types.push_back(type);
+  return types;
+}
+
 // Check that the right-hand side can replace `root` as a whole.
 static LogicalResult checkRhs(const Rule &rule, Operation *root,
                               const llvm::StringMap<Value> &bound,
                               std::string &why) {
-  // Calls made for their effect only need to be buildable.
-  for (const Expr &expr : llvm::drop_end(rule.rhs)) {
-    SmallVector<Type> results;
-    if (failed(
-            checkRhsCall(std::get<Call>(expr.data), root, bound, results, why)))
+  SmallVector<StringRef> rootWritten = getRootWrittenVars(rule, root);
+  llvm::StringSet<> modifiable;
+  for (StringRef name : rootWritten)
+    if (!name.empty())
+      modifiable.insert(name);
+
+  // A call on its own may modify only what the root does, so the change
+  // reaches the root's users. After the loop, `results` is the last call's.
+  SmallVector<Type> results;
+  for (const Expr &expr : rule.rhs) {
+    auto *call = std::get_if<Call>(&expr.data);
+    if (!call || call->isBuiltin())
+      continue;
+    if (failed(checkRhsCall(*call, root, bound, results, why)))
       return failure();
+    llvm::StringSet<> modified;
+    for (StringRef name :
+         getWrittenVars(*call, lookupDefine(root, calleeName(*call)))) {
+      if (name.empty())
+        continue;
+      if (!modifiable.contains(name)) {
+        why = "its right-hand side calls '" + calleeName(*call) +
+              "', which modifies '" + name.str() +
+              "', but the call it replaces does not";
+        return failure();
+      }
+      if (!modified.insert(name).second) {
+        why = "its right-hand side passes '" + name.str() + "' to '" +
+              calleeName(*call) + "' for two arguments it modifies";
+        return failure();
+      }
+    }
   }
 
+  SmallVector<Type> needed = getUnwrittenResultTypes(root, rootWritten);
   const Expr &result = rule.result();
   auto *call = std::get_if<Call>(&result.data);
   if (call && !call->isBuiltin()) {
-    SmallVector<Type> results;
-    if (failed(checkRhsCall(*call, root, bound, results, why)))
-      return failure();
-    if (!llvm::equal(results, root->getResultTypes())) {
+    SmallVector<StringRef> written =
+        getWrittenVars(*call, lookupDefine(root, calleeName(*call)));
+    SmallVector<Type> supplied;
+    for (auto [type, name] : llvm::zip(results, written))
+      if (name.empty())
+        supplied.push_back(type);
+    if (!llvm::equal(supplied, needed)) {
       llvm::raw_string_ostream os(why);
       os << "'" << calleeName(*call) << "' produces (";
-      llvm::interleaveComma(results, os);
+      llvm::interleaveComma(supplied, os);
       os << "), but the call it replaces produces (";
-      llvm::interleaveComma(root->getResultTypes(), os);
+      llvm::interleaveComma(needed, os);
       os << ")";
       return failure();
     }
     return success();
   }
 
-  if (root->getNumResults() != 1) {
+  if (needed.size() != 1) {
     why = "its right-hand side is a single value, but the call it replaces "
           "produces " +
-          std::to_string(root->getNumResults()) + " results";
+          std::to_string(needed.size()) + " results";
     return failure();
   }
-  Type expected = root->getResult(0).getType();
+  Type expected = needed.front();
   Type actual = checkRhsValue(result, root, bound, expected, why);
   if (!actual)
     return failure();
@@ -692,33 +765,50 @@ static Value buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
 }
 
 // Build the right-hand side and return the root's replacement. A call that
-// repeats the match, as in `f(x) -> g(x); f(x)`, is marked so the rule doesn't
-// match it again forever.
+// modifies a variable updates it for what follows. Each variable the root
+// modifies is replaced by its final value, and the root's other results by the
+// last expression's, in order. A call that repeats the match, as in `f(x) ->
+// g(x); f(x)`, is marked so the rule doesn't match it again forever.
 static SmallVector<Value> buildReplacement(const Rule &rule,
                                            StringAttr ruleAttr,
                                            OpBuilder &builder, Location loc,
                                            const llvm::StringMap<Value> &bound,
                                            Operation *root) {
+  SmallVector<StringRef> rootWritten = getRootWrittenVars(rule, root);
+  SmallVector<Type> needed = getUnwrittenResultTypes(root, rootWritten);
   std::string lhsText = renderExpr(rule.lhs);
-  auto build = [&](const Expr &expr, Type expected) {
+
+  llvm::StringMap<Value> vars = bound;
+  SmallVector<Value> supplied;
+  for (const Expr &expr : rule.rhs) {
+    Type expected =
+        &expr == &rule.result() && needed.size() == 1 ? needed.front() : Type();
     Operation *op = nullptr;
-    Value value = buildExprIR(expr, builder, loc, bound, root, expected, &op);
+    Value value = buildExprIR(expr, builder, loc, vars, root, expected, &op);
     if (op && renderExpr(expr) == lhsText)
       markRuleApplied(op, ruleAttr);
-    return std::make_pair(value, op);
-  };
 
-  for (const Expr &expr : llvm::drop_end(rule.rhs))
-    build(expr, Type());
+    auto *call = std::get_if<Call>(&expr.data);
+    if (!call || call->isBuiltin()) {
+      supplied = {value};
+      continue;
+    }
+    SmallVector<StringRef> written =
+        getWrittenVars(*call, lookupDefine(root, calleeName(*call)));
+    supplied.clear();
+    for (auto [result, name] : llvm::enumerate(written)) {
+      if (name.empty())
+        supplied.push_back(op->getResult(result));
+      else
+        vars[name] = op->getResult(result);
+    }
+  }
 
-  const Expr &result = rule.result();
-  Type expected =
-      root->getNumResults() == 1 ? root->getResult(0).getType() : Type();
-  auto [value, op] = build(result, expected);
-  auto *call = std::get_if<Call>(&result.data);
-  if (call && !call->isBuiltin())
-    return SmallVector<Value>(op->getResults().begin(), op->getResults().end());
-  return {value};
+  SmallVector<Value> replacement;
+  auto next = supplied.begin();
+  for (StringRef name : rootWritten)
+    replacement.push_back(name.empty() ? *next++ : vars.lookup(name));
+  return replacement;
 }
 
 //===----------------------------------------------------------------------===//
