@@ -6971,7 +6971,6 @@ struct WhileDeadResults final
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
                                     PatternRewriter &rewriter) const {
-    bool isTotalPure = isPure(op);
     std::map<int64_t, int> forwardIsPure;
     std::map<int64_t, std::set<int64_t>> backwardsUsesOfArguments;
     SmallVector<size_t> emptyResults;
@@ -6982,6 +6981,11 @@ struct WhileDeadResults final
     }
     if (emptyResults.size() == 0)
       return failure();
+
+    // A walk of every nested op; only worth it once the loop is known to have
+    // a result nobody reads. The greedy driver revisits a loop after every
+    // rewrite inside it, so most attempts end at the check above.
+    bool isTotalPure = isPure(op);
 
     DenseMap<Value, llvm::SmallPtrSet<size_t, 3> *> users(
         emptyResults.size() + op.getCond().front().getOperations().size());
@@ -10229,6 +10233,23 @@ struct MulSimplify
   }
 };
 
+// Whether every element of the integer `dividend` provably lies in [0, c)
+// for the positive splat constant `divisor` c: its quotient by c is 0 and its
+// remainder itself.
+static bool dividendWithinDivisor(Value dividend, Value divisor) {
+  auto ty = dyn_cast<RankedTensorType>(dividend.getType());
+  if (!ty || !isa<IntegerType>(ty.getElementType()))
+    return false;
+  SplatElementsAttr c;
+  if (!matchPattern(divisor, m_Constant(&c)))
+    return false;
+  APInt cv = c.getSplatValue<APInt>();
+  if (!cv.sgt(0))
+    return false;
+  auto [lo, hi] = enzyme::getProvableIntegerRange(dividend);
+  return lo.isNonNegative() && hi.slt(cv.sext(128));
+}
+
 struct DivSimplify
     : public CheckedOpRewritePattern<stablehlo::DivOp, DivSimplify> {
   using CheckedOpRewritePattern<stablehlo::DivOp,
@@ -10250,6 +10271,12 @@ struct DivSimplify
     if (rhsConst && (matchPattern(rhsAttr, m_NegOneFloat()) ||
                      matchPattern(rhsAttr, m_NegOne()))) {
       rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, op.getLhs());
+      return success();
+    }
+    // x / c -> 0 when 0 <= x < c (an iota shorter than c, a lane index).
+    if (dividendWithinDivisor(op.getLhs(), op.getRhs())) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
       return success();
     }
 
@@ -10334,6 +10361,12 @@ struct RemSimplify
     if (matchPattern(op.getRhs(), m_One())) {
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
           op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+      return success();
+    }
+
+    // x % c -> x when 0 <= x < c (an iota shorter than c, a lane index).
+    if (dividendWithinDivisor(op.getLhs(), op.getRhs())) {
+      rewriter.replaceOp(op, op.getLhs());
       return success();
     }
 
@@ -45952,19 +45985,25 @@ struct EnzymeHLOOptPass
             context);
 
     // binary constant propagation patterns
-    patterns.add<BinaryConstProp<stablehlo::AddOp, stablehlo::addOp>,
-                 BinaryConstProp<stablehlo::AndOp, stablehlo::andOp>,
-                 BinaryConstProp<stablehlo::Atan2Op, stablehlo::atan2Op>,
-                 BinaryConstProp<stablehlo::ComplexOp, stablehlo::complexOp>,
-                 BinaryConstProp<stablehlo::DivOp, stablehlo::divideOp>,
-                 BinaryConstProp<stablehlo::MaxOp, stablehlo::maxOp>,
-                 BinaryConstProp<stablehlo::MinOp, stablehlo::minOp>,
-                 BinaryConstProp<stablehlo::MulOp, stablehlo::multiplyOp>,
-                 BinaryConstProp<stablehlo::OrOp, stablehlo::orOp>,
-                 BinaryConstProp<stablehlo::PowOp, stablehlo::powerOp>,
-                 BinaryConstProp<stablehlo::RemOp, stablehlo::remOp>,
-                 BinaryConstProp<stablehlo::SubtractOp, stablehlo::subtractOp>,
-                 BinaryConstProp<stablehlo::XorOp, stablehlo::xorOp>>(context);
+    patterns
+        .add<BinaryConstProp<stablehlo::AddOp, stablehlo::addOp>,
+             BinaryConstProp<stablehlo::AndOp, stablehlo::andOp>,
+             BinaryConstProp<stablehlo::Atan2Op, stablehlo::atan2Op>,
+             BinaryConstProp<stablehlo::ComplexOp, stablehlo::complexOp>,
+             BinaryConstProp<stablehlo::DivOp, stablehlo::divideOp>,
+             BinaryConstProp<stablehlo::MaxOp, stablehlo::maxOp>,
+             BinaryConstProp<stablehlo::MinOp, stablehlo::minOp>,
+             BinaryConstProp<stablehlo::MulOp, stablehlo::multiplyOp>,
+             BinaryConstProp<stablehlo::OrOp, stablehlo::orOp>,
+             BinaryConstProp<stablehlo::PowOp, stablehlo::powerOp>,
+             BinaryConstProp<stablehlo::RemOp, stablehlo::remOp>,
+             BinaryConstProp<stablehlo::SubtractOp, stablehlo::subtractOp>,
+             BinaryConstProp<stablehlo::XorOp, stablehlo::xorOp>,
+             BinaryConstProp<stablehlo::ShiftLeftOp, stablehlo::shiftLeftOp>,
+             BinaryConstProp<stablehlo::ShiftRightArithmeticOp,
+                             stablehlo::shiftRightArithmeticOp>,
+             BinaryConstProp<stablehlo::ShiftRightLogicalOp,
+                             stablehlo::shiftRightLogicalOp>>(context);
 
     patterns.add<GatherConstProp, ClampConstProp>(context);
 
