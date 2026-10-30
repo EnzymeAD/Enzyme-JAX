@@ -144,3 +144,137 @@ module {
     llvm.return %0 : i32
   }
 }
+
+// -----
+
+// A call that modifies a variable updates it for the calls after it, as in C,
+// and the matched call's modified variable is replaced by its final value.
+module {
+  tessera.define private @lib.solve(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = f64}, {dir = #tessera.dir<inout>, type = f64}], pure = true}
+  tessera.define private @lib.scale(!llvm.ptr) attributes {argModes = [{dir = #tessera.dir<inout>, type = f64}], pure = true}
+  tessera.define private @lib.fast_solve(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = f64}, {dir = #tessera.dir<inout>, type = f64}], pure = true}
+
+  tessera.optimizations {
+    tessera.optimization "lib.solve(a, x) -> lib.scale(x); lib.fast_solve(a, x)"
+  }
+
+  // CHECK-LABEL: llvm.func @modified_variable
+  // CHECK-NEXT: %[[S:.*]] = tessera.call @lib.scale(%arg1) : (f64) -> f64
+  // CHECK-NEXT: %[[F:.*]] = tessera.call @lib.fast_solve(%arg0, %[[S]]) : (f64, f64) -> f64
+  // CHECK-NEXT: llvm.return %[[F]]
+  llvm.func @modified_variable(%a: f64, %x: f64) -> f64 {
+    %0 = tessera.call @lib.solve(%a, %x) : (f64, f64) -> f64
+    llvm.return %0 : f64
+  }
+}
+
+// -----
+
+// Modified variables are replaced by name, not by position, so passing them
+// in another order doesn't swap them.
+module {
+  tessera.define private @lib.f(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<inout>, type = f64}, {dir = #tessera.dir<inout>, type = f64}], pure = true}
+  tessera.define private @lib.g(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<inout>, type = f64}, {dir = #tessera.dir<inout>, type = f64}], pure = true}
+
+  tessera.optimizations {
+    tessera.optimization "lib.f(x, y) -> lib.g(y, x)"
+  }
+
+  // CHECK-LABEL: llvm.func @by_name
+  // CHECK-NEXT: %[[G:.*]]:2 = tessera.call @lib.g(%arg1, %arg0) : (f64, f64) -> (f64, f64)
+  // CHECK-NEXT: llvm.fsub %[[G]]#1, %[[G]]#0 : f64
+  llvm.func @by_name(%x: f64, %y: f64) -> f64 {
+    %0:2 = tessera.call @lib.f(%x, %y) : (f64, f64) -> (f64, f64)
+    %1 = llvm.fsub %0#0, %0#1 : f64
+    llvm.return %1 : f64
+  }
+}
+
+// -----
+
+// The matched call's return value comes from the last expression, even when
+// an earlier call is the one that modifies its variable.
+module {
+  tessera.define private @lib.solve(!llvm.ptr, !llvm.ptr) -> i32 attributes {argModes = [{dir = #tessera.dir<in>, type = f64}, {dir = #tessera.dir<inout>, type = f64}], pure = false}
+  tessera.define private @lib.fast_solve(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = f64}, {dir = #tessera.dir<inout>, type = f64}], pure = false}
+  llvm.func @sink(f64)
+
+  tessera.optimizations {
+    tessera.optimization "lib.solve(a, x) -> lib.fast_solve(a, x); 0"
+  }
+
+  // CHECK-LABEL: llvm.func @status
+  // CHECK-DAG: %[[C:.*]] = llvm.mlir.constant(0 : i32) : i32
+  // CHECK-DAG: %[[F:.*]] = tessera.call @lib.fast_solve(%arg0, %arg1) : (f64, f64) -> f64
+  // CHECK: llvm.call @sink(%[[F]]) : (f64) -> ()
+  // CHECK-NEXT: llvm.return %[[C]]
+  llvm.func @status(%a: f64, %x: f64) -> i32 {
+    %0:2 = tessera.call @lib.solve(%a, %x) : (f64, f64) -> (f64, i32)
+    llvm.call @sink(%0#0) : (f64) -> ()
+    llvm.return %0#1 : i32
+  }
+}
+
+// -----
+
+// A call may only modify what the matched call does, since nothing else
+// passes the change on.
+module {
+  tessera.define private @lib.solve(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = f64}, {dir = #tessera.dir<inout>, type = f64}], pure = true}
+  tessera.define private @lib.scale(!llvm.ptr) attributes {argModes = [{dir = #tessera.dir<inout>, type = f64}], pure = true}
+  tessera.define private @lib.fast_solve(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = f64}, {dir = #tessera.dir<inout>, type = f64}], pure = true}
+
+  tessera.optimizations {
+    tessera.optimization "lib.solve(a, x) -> lib.scale(a); lib.fast_solve(a, x)"
+  }
+
+  // CHECK-LABEL: llvm.func @modifies_read_only
+  // CHECK-NEXT: tessera.call @lib.solve(%arg0, %arg1)
+  llvm.func @modifies_read_only(%a: f64, %x: f64) -> f64 {
+    // expected-warning @+1 {{optimization rule 'lib.solve(a, x) -> lib.scale(a); lib.fast_solve(a, x)' cannot be applied: its right-hand side calls 'lib.scale', which modifies 'a', but the call it replaces does not}}
+    %0 = tessera.call @lib.solve(%a, %x) : (f64, f64) -> f64
+    llvm.return %0 : f64
+  }
+}
+
+// -----
+
+// A nested call can't modify a variable: C leaves the order of arguments
+// unspecified, so only a call on its own does.
+module {
+  tessera.define private @lib.solve(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = f64}, {dir = #tessera.dir<inout>, type = f64}], pure = true}
+  tessera.define private @lib.scale(!llvm.ptr) attributes {argModes = [{dir = #tessera.dir<inout>, type = f64}], pure = true}
+  tessera.define private @lib.fast_solve(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = f64}, {dir = #tessera.dir<inout>, type = f64}], pure = true}
+
+  tessera.optimizations {
+    tessera.optimization "lib.solve(a, x) -> lib.fast_solve(a, lib.scale(x))"
+  }
+
+  // CHECK-LABEL: llvm.func @nested_modifies
+  // CHECK-NEXT: tessera.call @lib.solve(%arg0, %arg1)
+  llvm.func @nested_modifies(%a: f64, %x: f64) -> f64 {
+    // expected-warning @+1 {{optimization rule 'lib.solve(a, x) -> lib.fast_solve(a, lib.scale(x))' cannot be applied: 'lib.scale' modifies 'x' inside another call, but only a call on its own can modify a variable}}
+    %0 = tessera.call @lib.solve(%a, %x) : (f64, f64) -> f64
+    llvm.return %0 : f64
+  }
+}
+
+// -----
+
+// Text after the rule is reported, not dropped.
+module {
+  tessera.define private @lib.f(i64) -> i64 attributes {argModes = [unit], pure = false}
+  tessera.define private @lib.g(i64) -> i64 attributes {argModes = [unit], pure = false}
+
+  tessera.optimizations {
+    // expected-warning @+1 {{optimization rule ignored: unexpected text after the end of an optimization rule}}
+    tessera.optimization "lib.f(x) -> lib.g(x) lib.g(x)"
+  }
+
+  // CHECK-LABEL: llvm.func @trailing_text
+  // CHECK-NEXT: tessera.call @lib.f(%arg0)
+  llvm.func @trailing_text(%x: i64) -> i64 {
+    %0 = tessera.call @lib.f(%x) : (i64) -> i64
+    llvm.return %0 : i64
+  }
+}
