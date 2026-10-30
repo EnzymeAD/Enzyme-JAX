@@ -1737,11 +1737,25 @@ struct WhileToForHelper {
   }
 };
 
+// A loop marked as a fixed point (enzyme.fixed_point, set by
+// apply-fixed-point-directives) must keep its shape: its body has to stay one
+// step of the iteration and its exit has to stay the convergence test. Turning
+// it into a counted scf.for with the body under an scf.if on a carried flag
+// would run no-op iterations after convergence, and the fixed-point reverse
+// rule, which differentiates the last step, would then differentiate a no-op.
+// Such loops are left for the StableHLO raising, which rotates them into a
+// stablehlo.while and keeps the marker.
+static bool isMarkedFixedPointLoop(Operation *loop) {
+  return enzymexla::FixedPointOp::isMarked(loop);
+}
+
 struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
   using OpRewritePattern<WhileOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(WhileOp loop,
                                 PatternRewriter &rewriter) const override {
+    if (isMarkedFixedPointLoop(loop))
+      return failure();
     auto condOp = loop.getConditionOp();
     SmallVector<Value, 2> results = {condOp.getArgs()};
     WhileToForHelper helper(loop,
@@ -3355,6 +3369,8 @@ struct DoWhileShiftToFor : public OpRewritePattern<WhileOp> {
 
   LogicalResult matchAndRewrite(WhileOp loop,
                                 PatternRewriter &rewriter) const override {
+    if (isMarkedFixedPointLoop(loop))
+      return failure();
     // The after region must be a pure passthrough: every yielded value is an
     // after block argument, whose position names the condition operand it
     // forwards. The order need not match the before arguments.
@@ -3486,6 +3502,8 @@ struct WhileShiftToInduction : public OpRewritePattern<WhileOp> {
 
   LogicalResult matchAndRewrite(WhileOp loop,
                                 PatternRewriter &rewriter) const override {
+    if (isMarkedFixedPointLoop(loop))
+      return failure();
     auto condOp = loop.getConditionOp();
 
     if (!llvm::hasNItems(loop.getBefore().back(), 2))

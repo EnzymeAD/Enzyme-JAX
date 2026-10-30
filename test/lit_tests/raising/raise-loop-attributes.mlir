@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --split-input-file --pass-pipeline='builtin.module(libdevice-funcs-raise,canonicalize,llvm-to-memref-access,polygeist-mem2reg,canonicalize,convert-llvm-to-cf,canonicalize,polygeist-mem2reg,canonicalize,enzyme-lift-cf-to-scf,canonicalize,func.func(canonicalize-loops),llvm.func(canonicalize-loops),canonicalize-scf-for,canonicalize,affine-cfg,canonicalize,func.func(canonicalize-loops),llvm.func(canonicalize-loops),canonicalize,llvm-to-affine-access,canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,affine-cfg,canonicalize,llvm-to-affine-access,canonicalize,func.func(affine-loop-invariant-code-motion),canonicalize)' | FileCheck %s
+// RUN: enzymexlamlir-opt %s --split-input-file --pass-pipeline='builtin.module(libdevice-funcs-raise,canonicalize,llvm-to-memref-access,polygeist-mem2reg,canonicalize,convert-llvm-to-cf,canonicalize,polygeist-mem2reg,canonicalize,enzyme-lift-cf-to-scf,canonicalize,apply-fixed-point-directives,func.func(canonicalize-loops),llvm.func(canonicalize-loops),canonicalize-scf-for,canonicalize,affine-cfg,canonicalize,func.func(canonicalize-loops),llvm.func(canonicalize-loops),canonicalize,llvm-to-affine-access,canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,affine-cfg,canonicalize,llvm-to-affine-access,canonicalize,func.func(affine-loop-invariant-code-motion),canonicalize)' | FileCheck %s
 
 module {
   llvm.func local_unnamed_addr @_Z26CUDA_LBM_kernel_loop_inneriPfS_(%arg0: i32 {llvm.noundef}, %arg1: !llvm.ptr {llvm.noundef}, %arg2: !llvm.ptr {llvm.noundef}) attributes {} {
@@ -102,3 +102,50 @@ module {
   llvm.func local_unnamed_addr @_Z26__enzyme_set_checkpointingm(i64 {llvm.noundef}, i64 {llvm.noundef}) attributes {approx_func_fp_math = true, frame_pointer = #llvm.framePointerKind<all>, no_infs_fp_math = true, no_nans_fp_math = true, no_signed_zeros_fp_math = true, passthrough = [["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>, tune_cpu = "generic", unsafe_fp_math = true}
   llvm.func local_unnamed_addr @_ZL4kernPfS_(!llvm.ptr {llvm.noundef}, !llvm.ptr {llvm.noundef}) attributes {approx_func_fp_math = true, frame_pointer = #llvm.framePointerKind<all>, no_infs_fp_math = true, no_nans_fp_math = true, no_signed_zeros_fp_math = true, passthrough = [["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>, tune_cpu = "generic", unsafe_fp_math = true}
 }
+
+// -----
+
+// A convergence loop with a mixed exit (iteration cap and residual test), as
+// a kernel's do-while lowers to, marked as a fixed point by the
+// __enzyme_set_fixed_point call in its body (negative settings and a null
+// control: the defaults). apply-fixed-point-directives (in the
+// pipeline above, right after the CFG lifting) turns the call into the marker,
+// and the marked loop stays an scf.while for the StableHLO raising to rotate:
+// without the marker, canonicalize-scf-for would make it a counted scf.for
+// with the body under an scf.if on a carried flag, running no-op iterations
+// after convergence.
+module {
+  llvm.func @__enzyme_set_fixed_point(f64, i64, !llvm.ptr)
+  llvm.func @fixed_point_mixed(%n: i32 {llvm.noundef}, %x0: f64, %a: f64, %tol: f64) -> f64 {
+    %c1 = llvm.mlir.constant(1 : i32) : i32
+    %c0 = llvm.mlir.constant(0 : i32) : i32
+    %two = llvm.mlir.constant(2.0 : f64) : f64
+    %dred = llvm.mlir.constant(-1.0 : f64) : f64
+    %dmax = llvm.mlir.constant(-1 : i64) : i64
+    %null = llvm.mlir.zero : !llvm.ptr
+    llvm.br ^bb1(%c0, %x0 : i32, f64)
+  ^bb1(%i: i32, %x: f64):
+    llvm.call @__enzyme_set_fixed_point(%dred, %dmax, %null) : (f64, i64, !llvm.ptr) -> ()
+    %x2 = llvm.fmul %x, %x : f64
+    %r = llvm.fsub %x2, %a : f64
+    %d = llvm.fmul %two, %x : f64
+    %q = llvm.fdiv %r, %d : f64
+    %xn = llvm.fsub %x, %q : f64
+    %aq = llvm.intr.fabs(%q) : (f64) -> f64
+    %gt = llvm.fcmp "ogt" %aq, %tol : f64
+    %in = llvm.add %i, %c1 : i32
+    %lt = llvm.icmp "slt" %in, %n : i32
+    %go = llvm.and %gt, %lt : i1
+    llvm.cond_br %go, ^bb1(%in, %xn : i32, f64), ^bb2(%xn : f64)
+  ^bb2(%res: f64):
+    llvm.return %res : f64
+  }
+}
+
+// CHECK-NOT: __enzyme_set_fixed_point
+// CHECK-LABEL: llvm.func @fixed_point_mixed(
+// CHECK-NOT: scf.for
+// CHECK:     scf.while
+// CHECK:       scf.condition
+// CHECK-NOT: scf.for
+// CHECK:     } attributes {enzyme.fixed_point}
