@@ -137,32 +137,30 @@ struct SimpleCycleAnalysisPass
       }
     } else if (auto assumeOp = dyn_cast<AssumeOp>(op)) {
       // where the z3 checks actually happen
-      bool met = false;
-      if (auto hyp = assumeOp.getCondition().getDefiningOp<HypothesisOp>()) {
-        met = hyp.getPrePost() == HoareStates::Pre
-                  ? solver.check() == z3::sat
-                  : checkPostHypothesis(hyp, solver, cost_var);
-        if (met) {
-          auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
-          auto args = hypotheses.find(*hyp.getPrePost());
-          if (args != hypotheses.end()) {
-            // read lb/ub with the predicate, as in buildHypothesis
-            auto &bounds =
-                funcBoundsMap[assumeOp->getParentOfType<ConditionsOp>()];
-            (hyp.getPrePost() == HoareStates::Pre ? bounds.first
-                                                  : bounds.second) =
-                std::make_pair(cmpOp.getPredicate(), args->second);
-          }
+      auto hyp = assumeOp.getCondition().getDefiningOp<HypothesisOp>();
+      bool met = hyp.getPrePost() == HoareStates::Pre
+                     ? solver.check() == z3::sat
+                     : checkPostHypothesis(hyp, solver, cost_var);
+      if (met) {
+        auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
+        auto args = hypotheses.find(*hyp.getPrePost());
+        if (args != hypotheses.end()) {
+          // read lb/ub with the predicate, as in buildHypothesis
+          auto &bounds =
+              funcBoundsMap[assumeOp->getParentOfType<ConditionsOp>()];
+          (hyp.getPrePost() == HoareStates::Pre ? bounds.first
+                                                : bounds.second) =
+              std::make_pair(
+                  cmpOp.getPredicate(),
+                  args->second); // where ->second refers to the HypothesisArgs,
+                                 // i.e. interval for pre/post-condition
         }
-#ifdef Z3_DEBUG_PERFIFY
-        std::cout << solver << std::endl;
-        llvm::outs() << (met ? "Met perf check!" : "Did not meet perf check")
-                     << "\n";
-#endif
-      } else {
-        llvm::outs()
-            << "perfify.assume condition must be a perfify.hypothesis\n";
       }
+#ifdef Z3_DEBUG_PERFIFY
+      std::cout << solver << std::endl;
+      llvm::outs() << (met ? "Met perf check!" : "Did not meet perf check")
+                   << "\n";
+#endif
       assumeOp.setSatresAttr(BoolAttr::get(&getContext(), met));
     }
     for (Region &region : op->getRegions())
@@ -184,7 +182,8 @@ struct SimpleCycleAnalysisPass
     } else {
       solver.push();
       solver.add(!*holds);
-      postHypothesisOutput = (solver.check() == z3::unsat && !unprovenAssertions);
+      postHypothesisOutput =
+          (solver.check() == z3::unsat && !unprovenAssertions);
       solver.pop();
     }
     return postHypothesisOutput;
