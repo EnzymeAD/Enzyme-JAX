@@ -3191,8 +3191,9 @@ struct ParallelWhileBatcher {
   }
 
   // A carried buffer is the root of a chain of writes (scatter,
-  // dynamic_update_slice, a nested loop it is carried through) that ends at
-  // the yield, and its only other uses, at any point of the chain, are reads
+  // dynamic_update_slice, a nested loop it is carried through, and the
+  // reshapes a write is made in another shape through) that ends at the
+  // yield, and its only other uses, at any point of the chain, are reads
   // (gather, dynamic_slice): the iterations are independent, so a read sees
   // this iteration's earlier writes over the buffer the loop started from and
   // nothing another iteration writes, which is what a read of the batched
@@ -3215,6 +3216,8 @@ struct ParallelWhileBatcher {
         in = &dus->getOpOperand(0);
       } else if (auto w = dyn_cast_or_null<stablehlo::WhileOp>(link)) {
         in = &w->getOpOperand(cast<OpResult>(cur).getResultNumber());
+      } else if (auto rs = dyn_cast_or_null<stablehlo::ReshapeOp>(link)) {
+        in = &rs->getOpOperand(0);
       } else {
         return failure();
       }
@@ -3622,6 +3625,11 @@ struct ParallelWhileBatcher {
       } else if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(&op);
                  dot && isBatched(dot.getLhs()) != isBatched(dot.getRhs())) {
         emitOneSidedDot(dot, bm);
+      } else if (isa<stablehlo::ReshapeOp>(&op) && isChainLink(&op)) {
+        // The buffer in another shape, which every iteration shares as it
+        // does the buffer.
+        Operation *n = rewriter.clone(op, bm);
+        bm.map(op.getResult(0), n->getResult(0));
       } else if (auto iface = dyn_cast<BatchOpInterface>(&op);
                  iface &&
                  succeeded(iface.createBatch(rewriter, bm, batchSizes))) {
