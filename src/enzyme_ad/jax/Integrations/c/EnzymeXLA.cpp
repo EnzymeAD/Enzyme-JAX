@@ -931,6 +931,14 @@ static void addConstPropPasses(std::vector<std::string> &list,
   list.push_back(passWithArg("sign_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("floor_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("tan_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("acos_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("acosh_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("asin_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("asinh_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("atan_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("atanh_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("cosh_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("sinh_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("relu_const_prop", maxReusedConstPropSize));
   list.push_back("gelu_const_prop");
   list.push_back(passWithArg("softplus_const_prop", maxReusedConstPropSize));

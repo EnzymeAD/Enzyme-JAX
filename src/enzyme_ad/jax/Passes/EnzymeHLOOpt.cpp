@@ -870,23 +870,6 @@ void fillInsertedStartIndices(PatternRewriter &rewriter, Location loc,
   }
 }
 
-stablehlo::Element conj(const stablehlo::Element &orig) {
-  if (stablehlo::isSupportedComplexType(orig.getType())) {
-    mlir::Complex<APFloat> val = orig.getComplexValue();
-    return stablehlo::Element(orig.getType(),
-                              mlir::Complex<APFloat>(val.real(), -val.imag()));
-  }
-
-  llvm_unreachable("Unsupported type");
-}
-
-stablehlo::Tensor conjOp(const stablehlo::Tensor &orig, ShapedType resultType) {
-  stablehlo::Tensor result(resultType);
-  for (auto it = result.index_begin(); it != result.index_end(); ++it)
-    result.set(*it, conj(orig.get(*it)));
-  return result;
-}
-
 struct ReshapeDUS final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -45980,6 +45963,14 @@ struct EnzymeHLOOptPass
              UnaryConstProp<stablehlo::SignOp, stablehlo::signOp>,
              UnaryConstProp<stablehlo::FloorOp, stablehlo::floorOp>,
              UnaryConstProp<stablehlo::TanOp, stablehlo::tanOp>,
+             UnaryConstProp<chlo::AcosOp, acosOp>,
+             UnaryConstProp<chlo::AcoshOp, acoshOp>,
+             UnaryConstProp<chlo::AsinOp, asinOp>,
+             UnaryConstProp<chlo::AsinhOp, asinhOp>,
+             UnaryConstProp<chlo::AtanOp, atanOp>,
+             UnaryConstProp<chlo::AtanhOp, atanhOp>,
+             UnaryConstProp<chlo::CoshOp, coshOp>,
+             UnaryConstProp<chlo::SinhOp, sinhOp>,
              UnaryConstProp<enzymexla::ReluOp, reluOp>,
              UnaryConstProp<enzymexla::SoftplusOp, softplusOp>, GeluConstProp>(
             context);
