@@ -1355,6 +1355,10 @@ def GatherOpCanonPatterns : EnzymeHLOPatternOp<
     "gather_op_canon"> {
   let patterns = ["GatherOpCanon"];
 }
+def ApplyGatherGridUnrollPatterns : EnzymeHLOPatternOp<
+    "gather_grid_unroll"> {
+  let patterns = ["GatherGridUnroll"];
+}
 
 def ScatterOpCanonPatterns : EnzymeHLOPatternOp<
     "scatter_op_canon"> {
