@@ -50,29 +50,25 @@ jobs:
         timeout-minutes: 180
         run: |
           bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
-      - name: Compile phase with the output base on tmpfs, sandboxed and not
+      - name: Output base on tmpfs (explicit --output_base, which the runner's bazelrc otherwise pins to /root/.bazel)
         shell: bash
         run: |
           set -x
           RC=$(bazel info repository_cache)
-          BZ="--output_user_root=/dev/shm/bazel"
-          ( time bazel $BZ build $BAZEL_FLAGS --repository_cache=$RC --remote_cache= --noremote_accept_cached --copt=-DDIAG_CPUS=0 @llvm-project//mlir:IR @llvm-project//llvm:Analysis ) 2>&1 | grep -E "real|ERROR" | sed "s/^/warmup (tmpfs output base, fetch + build): /" || true
-          du -sh /dev/shm/bazel 2>/dev/null; df -h /dev/shm | tail -1
+          BZ="--output_base=/dev/shm/bazel_ob"
+          ( time bazel $BZ build $BAZEL_FLAGS --repository_cache=$RC --remote_cache= --noremote_accept_cached --copt=-DDIAG_CPUS=0 @llvm-project//mlir:IR @llvm-project//llvm:Analysis ) 2>&1 | grep -E "real|ERROR" | sed "s/^/warmup (fetch + build): /" || true
+          du -sh /dev/shm/bazel_ob /dev/shm/bazel_ob/execroot/__main__/bazel-out /dev/shm/bazel_ob/external 2>/dev/null; df -h /dev/shm | tail -1
           for v in sandbox local sandbox local; do bazel $BZ shutdown > /dev/null 2>&1 || true; extra=""; [ $v = local ] && extra="--spawn_strategy=local"; ( time bazel $BZ build $BAZEL_FLAGS --repository_cache=$RC --remote_cache= --noremote_accept_cached --copt=-DDIAG_V=$v$RANDOM $extra @llvm-project//mlir:IR @llvm-project//llvm:Analysis ) 2>&1 | grep -E "real|processes:|ERROR" | sed "s/^/tmpfs-outbase $v: /"; done
-          du -sh /dev/shm/bazel 2>/dev/null; df -h /dev/shm | tail -1
-          bazel $BZ shutdown || true
-      - name: Full lit suite without the sandbox and with the test tmpdir on tmpfs
-        shell: bash
-        run: |
-          set -x
+          du -sh /dev/shm/bazel_ob 2>/dev/null; df -h /dev/shm | tail -1
+          echo "== full lit suite, #3769's configuration, output base on tmpfs"
           DIR=--extra_toolchains=//builddeps:dir_py_toolchain
           TESTS=//test/lit_tests/...
-          mkdir -p /dev/shm/tt
-          run() { name=$1; shift; echo "== $name"; bazel shutdown > /dev/null 2>&1 || true; rm -rf /dev/shm/bazel-sandbox.* /dev/shm/tt/* || true; bazel build $BAZEL_FLAGS --test_env=DIAG_VARIANT=$name "$@" $TESTS > /tmp/build_$name.txt 2>&1 || true; ( time bazel test $BAZEL_FLAGS --test_env=DIAG_VARIANT=$name --nocache_test_results --test_output=errors "$@" $TESTS ) > /tmp/out_$name.txt 2>&1 || true; grep -E "Executed|Elapsed|real|TIMEOUT|FAILED|skipped|ERROR" /tmp/out_$name.txt || true; }
-          run only_local_tmpdir --spawn_strategy=local --test_tmpdir=/dev/shm/tt
-          run j24_local_tmpdir --local_test_jobs=24 --spawn_strategy=local --test_tmpdir=/dev/shm/tt
-          run dir_j24_local_tmpdir $DIR --local_test_jobs=24 --spawn_strategy=local --test_tmpdir=/dev/shm/tt
-          run dir_j24 $DIR --local_test_jobs=24
+          bazel $BZ shutdown > /dev/null 2>&1 || true; rm -rf /dev/shm/bazel-sandbox.* || true
+          bazel $BZ build $BAZEL_FLAGS --repository_cache=$RC $DIR $TESTS > /tmp/build_ob_dir_j24.txt 2>&1 || true
+          ( time bazel $BZ test $BAZEL_FLAGS --repository_cache=$RC $DIR --local_test_jobs=24 --test_env=DIAG_VARIANT=ob --nocache_test_results --test_output=errors $TESTS ) > /tmp/out_ob_dir_j24.txt 2>&1 || true
+          grep -E "Executed|real|TIMEOUT|FAILED|ERROR" /tmp/out_ob_dir_j24.txt || true
+          du -sh /dev/shm/bazel_ob 2>/dev/null; df -h /dev/shm | tail -1
+          bazel $BZ shutdown || true
       - name: Upload diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
