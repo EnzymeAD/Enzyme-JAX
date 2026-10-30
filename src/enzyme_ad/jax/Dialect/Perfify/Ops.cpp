@@ -1,11 +1,11 @@
-#include "mlir/IR/Builders.h"
-#include "llvm/ADT/TypeSwitch.h"
-
 #include "Dialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 namespace mlir::enzyme::perfify {
 // Parses "[min_cost: @a, max_cost: @b]", with the keys in either order and
@@ -117,10 +117,26 @@ LogicalResult CompareOp::verify() {
 LogicalResult HypothesisOp::verify() {
   if (!getCmp().getDefiningOp<CompareOp>())
     return emitOpError("operand must be defined by perfify.cmp");
-  if (isa_and_nonnull<ConditionsOp>((*this)->getParentOp()) &&
-      (*this)->getParentRegion()->getRegionNumber() !=
-          static_cast<unsigned>(getPrePost()))
-    return emitOpError("'") << stringifyHoareStates(getPrePost())
-                            << "' hypothesis is in the wrong conditions region";
-  return success();
+  Operation *parent = (*this)->getParentOp();
+  unsigned regionNum = (*this)->getParentRegion()->getRegionNumber();
+  if (isa_and_nonnull<ConditionsOp>(parent)) {
+    if (!getPrePost())
+      return emitOpError("requires 'pre' or 'post' inside perfify.conditions");
+    if (regionNum != static_cast<unsigned>(*getPrePost()))
+      return emitOpError("'")
+             << stringifyHoareStates(*getPrePost())
+             << "' hypothesis is in the wrong conditions region";
+    return success();
+  }
+  // a loop trip-count hypothesis: in the body that runs once per iteration
+  if (isa_and_nonnull<scf::ForOp>(parent) ||
+      (isa_and_nonnull<scf::WhileOp>(parent) && regionNum == 1)) {
+    if (getPrePost())
+      return emitOpError("loop hypothesis must not be 'pre' or 'post'");
+    if (!getCmp().getDefiningOp<CompareOp>().getCost().getDefiningOp<ArgOp>())
+      return emitOpError("loop hypothesis must compare a perfify.arg");
+    return success();
+  }
+  return emitOpError("must be in perfify.conditions, an scf.for body, or an "
+                     "scf.while 'after' region");
 }

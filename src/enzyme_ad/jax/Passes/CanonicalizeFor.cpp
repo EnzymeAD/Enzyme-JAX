@@ -9,6 +9,7 @@
 // This file implements a pass to print the MLIR module
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -2771,42 +2772,124 @@ struct RemoveWhileSelect : public OpRewritePattern<WhileOp> {
 };
 
 // Whether `v`, a value an iteration of `loop` carries into before-region
-// argument `i`, can only be that argument's initial value or the argument
-// itself: either one, a select between two such values, or an after-region
-// argument whose condition operand is one.
-static bool isInitOrSelf(Value v, WhileOp loop, unsigned i) {
+// argument `i`, can only be that argument's initial value: the value itself,
+// a before-region argument in `invariant` that starts from the same value
+// (the arguments of `invariant` are shown unchanging together), an
+// after-region argument whose condition operand is one, or a select, an
+// scf.if or an affine.if choosing between such values.
+static bool isInitOrSelf(Value v, WhileOp loop, unsigned i,
+                         const BitVector &invariant) {
   if (v == loop.getInits()[i])
     return true;
   if (auto arg = dyn_cast<BlockArgument>(v)) {
     if (arg.getOwner() == loop.getBeforeBody())
-      return arg.getArgNumber() == i;
+      return invariant[arg.getArgNumber()] &&
+             loop.getInits()[arg.getArgNumber()] == loop.getInits()[i];
     if (arg.getOwner() == loop.getAfterBody())
       return isInitOrSelf(loop.getConditionOp().getArgs()[arg.getArgNumber()],
-                          loop, i);
+                          loop, i, invariant);
     return false;
   }
-  auto sel = v.getDefiningOp<arith::SelectOp>();
-  return sel && isInitOrSelf(sel.getTrueValue(), loop, i) &&
-         isInitOrSelf(sel.getFalseValue(), loop, i);
+  if (auto sel = v.getDefiningOp<arith::SelectOp>())
+    return isInitOrSelf(sel.getTrueValue(), loop, i, invariant) &&
+           isInitOrSelf(sel.getFalseValue(), loop, i, invariant);
+  if (auto ifOp = v.getDefiningOp<scf::IfOp>()) {
+    unsigned idx = cast<OpResult>(v).getResultNumber();
+    return isInitOrSelf(ifOp.thenYield().getOperand(idx), loop, i, invariant) &&
+           isInitOrSelf(ifOp.elseYield().getOperand(idx), loop, i, invariant);
+  }
+  if (auto ifOp = v.getDefiningOp<affine::AffineIfOp>()) {
+    unsigned idx = cast<OpResult>(v).getResultNumber();
+    return isInitOrSelf(ifOp.getThenBlock()->getTerminator()->getOperand(idx),
+                        loop, i, invariant) &&
+           isInitOrSelf(ifOp.getElseBlock()->getTerminator()->getOperand(idx),
+                        loop, i, invariant);
+  }
+  return false;
 }
+
+/// A result both branches of an affine.if yield the same value for is that
+/// value: the branch chosen does not matter to it. (The scf.if canonicalizers
+/// fold such a result; affine's do not.) What is left of the loop-invariance
+/// above once mem2reg has made the re-read bound the init goes through one.
+struct AffineIfSameYield : public OpRewritePattern<affine::AffineIfOp> {
+  using OpRewritePattern<affine::AffineIfOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineIfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (ifOp.getNumResults() == 0 || !ifOp.hasElse())
+      return failure();
+    Operation *thenYield = ifOp.getThenBlock()->getTerminator();
+    Operation *elseYield = ifOp.getElseBlock()->getTerminator();
+    SmallVector<unsigned> keep;
+    for (OpResult res : ifOp.getResults()) {
+      unsigned i = res.getResultNumber();
+      if (thenYield->getOperand(i) != elseYield->getOperand(i))
+        keep.push_back(i);
+    }
+    if (keep.size() == ifOp.getNumResults())
+      return failure();
+    SmallVector<Type> newTypes;
+    for (unsigned i : keep)
+      newTypes.push_back(ifOp.getResult(i).getType());
+    auto newIf =
+        affine::AffineIfOp::create(rewriter, ifOp.getLoc(), newTypes,
+                                   ifOp.getIntegerSet(), ifOp.getOperands(),
+                                   /*withElseRegion=*/true);
+    unsigned next = 0;
+    for (OpResult res : ifOp.getResults()) {
+      unsigned i = res.getResultNumber();
+      if (next < keep.size() && keep[next] == i)
+        rewriter.replaceAllUsesWith(res, newIf.getResult(next++));
+      else
+        rewriter.replaceAllUsesWith(res, thenYield->getOperand(i));
+    }
+    for (unsigned r = 0; r < 2; ++r) {
+      Region &oldRegion = r ? ifOp.getElseRegion() : ifOp.getThenRegion();
+      Region &newRegion = r ? newIf.getElseRegion() : newIf.getThenRegion();
+      rewriter.inlineRegionBefore(oldRegion, newRegion, newRegion.begin());
+      rewriter.eraseBlock(&newRegion.back());
+      Operation *yield = newRegion.front().getTerminator();
+      SmallVector<Value> ops;
+      for (unsigned i : keep)
+        ops.push_back(yield->getOperand(i));
+      rewriter.modifyOpInPlace(yield, [&] { yield->setOperands(ops); });
+    }
+    rewriter.eraseOp(ifOp);
+    return success();
+  }
+};
 
 /// A loop-carried value that every iteration either keeps or resets to its
 /// initial value never changes: it is the initial value throughout. Clang
 /// leaves one such behind when it hoists a loop guard that re-reads a bound,
 /// e.g. MFEM's `for (qz < Q1D)` around MFEM_FOREACH_THREAD_DIRECT, and the
-/// loop it controls is then not recognized as counted.
+/// loop it controls is then not recognized as counted. Two such values that
+/// start the same may also be reset to each other, so the set of them is
+/// found together: whatever is reset to anything else drops out until the
+/// rest holds.
 struct WhileInitOrSelfArg : public OpRewritePattern<WhileOp> {
   using OpRewritePattern<WhileOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(WhileOp loop,
                                 PatternRewriter &rewriter) const override {
+    BitVector invariant(loop.getInits().size(), true);
+    bool narrowed = true;
+    while (narrowed) {
+      narrowed = false;
+      for (unsigned i : invariant.set_bits())
+        if (!isInitOrSelf(loop.getYieldOp().getOperand(i), loop, i,
+                          invariant)) {
+          invariant.reset(i);
+          narrowed = true;
+        }
+    }
     bool changed = false;
-    for (auto [i, arg] : llvm::enumerate(loop.getBeforeArguments())) {
-      Value init = loop.getInits()[i];
-      if (arg.use_empty() || arg.getType() != init.getType() ||
-          !isInitOrSelf(loop.getYieldOp().getOperand(i), loop, i))
+    for (unsigned i : invariant.set_bits()) {
+      BlockArgument arg = loop.getBeforeArguments()[i];
+      if (arg.use_empty())
         continue;
-      rewriter.replaceAllUsesWith(arg, init);
+      rewriter.replaceAllUsesWith(arg, loop.getInits()[i]);
       changed = true;
     }
     return success(changed);
@@ -4083,10 +4166,11 @@ void CanonicalizeFor::runOnOperation() {
   populateSelectExtractPatterns(rpl);
   rpl.add<IfYieldMovementPattern, truncProp, ForOpInductionReplacement,
           RemoveUnusedForResults, RemoveUnusedArgs, MoveWhileToFor,
-          RemoveWhileSelect, WhileInitOrSelfArg, SelectTruncToTruncSelect,
-          MaxSimplify, ForBoundUnSwitch, SelectI1Simplify,
-          RemoveInductionVarRelated, ForOpFinalValueOfDeadIterArg,
-          RotateWhileAnd, MoveWhileDown, MoveWhileDown2,
+          RemoveWhileSelect, WhileInitOrSelfArg, AffineIfSameYield,
+          SelectTruncToTruncSelect, MaxSimplify, ForBoundUnSwitch,
+          SelectI1Simplify, RemoveInductionVarRelated,
+          ForOpFinalValueOfDeadIterArg, RotateWhileAnd, MoveWhileDown,
+          MoveWhileDown2,
 
           ReplaceRedundantArgs,
 

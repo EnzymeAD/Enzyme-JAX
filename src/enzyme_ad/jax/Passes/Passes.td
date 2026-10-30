@@ -1718,7 +1718,10 @@ def GpuModuleToBinarySink : Pass<"enzymexla-gpu-module-to-binary", ""> {
               "2: also sink into deeper loops">,
        Option<"dumpIR", "dump", "bool", "false",
               "Print each serialized module's LLVM IR as handed to "
-              "instruction selection, after any sinking">];
+              "instruction selection, after any sinking">,
+       Option<"parallel", "parallel", "bool", "false",
+              "Serialize gpu.modules concurrently on the context's thread "
+              "pool (ignored when dump is set)">];
   let dependentDialects = ["gpu::GPUDialect", "LLVM::LLVMDialect", ];
 }
 
