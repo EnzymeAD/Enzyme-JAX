@@ -412,6 +412,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("imag_of_exp_simplify<16>");
   list.push_back("conj_complex_negate<16>");
   list.push_back("negate_imag_conj<16>");
+  list.push_back("parity_simplify<16>");
   list.push_back("get_dimension_size_op_canon<16>");
   list.push_back("reshape_op_canon<16>");
   list.push_back("merge_consecutive_reshapes<16>");

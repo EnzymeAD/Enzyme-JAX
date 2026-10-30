@@ -21362,6 +21362,86 @@ struct NegateImagConj final
   }
 };
 
+enum class Parity { Even, Odd };
+
+// Default guard of ParitySimplify, which accepts every op.
+struct ParityNoGuard {
+  bool operator()(Operation *) const { return true; }
+};
+
+// For real x, imag(x) folds to +0 while the odd rewrite gives -imag(x) = -0.
+struct ParityComplexImagGuard {
+  bool operator()(stablehlo::ImagOp op) const {
+    return isa<ComplexType>(op.getOperand().getType().getElementType());
+  }
+};
+
+// Guard is a function object; the pattern only applies to ops it accepts.
+template <typename T, Parity P, typename Guard = ParityNoGuard>
+struct ParitySimplify;
+
+// Even f: (f (neg x)) -> (f x)
+//         (f (abs x)) -> (f x)
+template <typename T, typename Guard>
+struct ParitySimplify<T, Parity::Even, Guard> final
+    : CheckedOpRewritePattern<T, ParitySimplify<T, Parity::Even, Guard>> {
+  using CheckedOpRewritePattern<
+      T, ParitySimplify<T, Parity::Even, Guard>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
+    if (!Guard{}(op))
+      return failure();
+
+    Value operand = op->getOperand(0);
+
+    // abs(x) is either x or -x, except for complex x where it is the real
+    // modulus, which the type check rules out.
+    Value x;
+    if (auto neg = operand.template getDefiningOp<stablehlo::NegOp>())
+      x = neg.getOperand();
+    else if (auto abs = operand.template getDefiningOp<stablehlo::AbsOp>();
+             abs && abs.getOperand().getType() == abs.getType())
+      x = abs.getOperand();
+    if (!x)
+      return failure();
+
+    rewriter.modifyOpInPlace(op, [&] { op->setOperand(0, x); });
+    return success();
+  }
+};
+
+// Odd f: (f (neg x)) -> (neg (f x))
+template <typename T, typename Guard>
+struct ParitySimplify<T, Parity::Odd, Guard> final
+    : CheckedOpRewritePattern<T, ParitySimplify<T, Parity::Odd, Guard>> {
+  using CheckedOpRewritePattern<
+      T, ParitySimplify<T, Parity::Odd, Guard>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
+    if (!Guard{}(op))
+      return failure();
+
+    auto neg = op->getOperand(0).template getDefiningOp<stablehlo::NegOp>();
+    if (!neg)
+      return failure();
+
+    // Integer negation wraps at INT_MIN, so e.g. sign(-INT_MIN) = -1 while
+    // -sign(INT_MIN) = 1.
+    if (isa<IntegerType>(getElementTypeOrSelf(op.getType())))
+      return failure();
+
+    // Hoisting the negate does not shrink the IR unless the original one dies.
+    if (!neg->hasOneUse())
+      return failure();
+
+    IRMapping mapping;
+    mapping.map(neg.getResult(), neg.getOperand());
+    Operation *newOp = rewriter.clone(*op, mapping);
+    rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, newOp->getResult(0));
+    return success();
+  }
+};
+
 struct GetDimensionSizeOpCanon final
     : CheckedOpRewritePattern<stablehlo::GetDimensionSizeOp,
                               GetDimensionSizeOpCanon> {
@@ -46252,6 +46332,24 @@ struct EnzymeHLOOptPass
         CompareExt,
         ConjComplexNegate,
         NegateImagConj,
+        ParitySimplify<stablehlo::AbsOp, Parity::Even>,
+        ParitySimplify<stablehlo::CosineOp, Parity::Even>,
+        ParitySimplify<chlo::CoshOp, Parity::Even>,
+        // ParitySimplify<stablehlo::SineOp, Parity::Odd>,
+        // ParitySimplify<stablehlo::TanOp, Parity::Odd>,
+        // ParitySimplify<stablehlo::TanhOp, Parity::Odd>,
+        // ParitySimplify<stablehlo::CbrtOp, Parity::Odd>,
+        // ParitySimplify<stablehlo::SignOp, Parity::Odd>,
+        // ParitySimplify<stablehlo::RealOp, Parity::Odd>,
+        // ParitySimplify<stablehlo::ImagOp, Parity::Odd, ParityComplexImagGuard>,
+        // ParitySimplify<chlo::SinhOp, Parity::Odd>,
+        // ParitySimplify<chlo::AsinOp, Parity::Odd>,
+        // ParitySimplify<chlo::AsinhOp, Parity::Odd>,
+        // ParitySimplify<chlo::AtanOp, Parity::Odd>,
+        // ParitySimplify<chlo::AtanhOp, Parity::Odd>,
+        // ParitySimplify<chlo::ConjOp, Parity::Odd>,
+        // ParitySimplify<chlo::ErfOp, Parity::Odd>,
+        // ParitySimplify<chlo::ErfInvOp, Parity::Odd>,
         ConvertOpCanon,
         DivideSqrtToMultiplyRsqrt,
         DynamicBroadcastInDimAllDimsNonExpanding,
