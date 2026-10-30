@@ -1415,11 +1415,11 @@ struct AttentionGradOpInterfaceFwd
         builder, loc, scoreWTy, dotDeltaBnt,
         builder.getDenseI64ArrayAttr(lseBcastDims));
 
-    Value dotDS = stablehlo::AddOp::create(
-        builder, loc, stablehlo::MulOp::create(builder, loc, dotP, dPMulW),
-        stablehlo::MulOp::create(
-            builder, loc, PW,
-            stablehlo::SubtractOp::create(builder, loc, dotDP, dotDeltaBcast)));
+    Value dotPTerm = stablehlo::MulOp::create(builder, loc, dotP, dPMulW);
+    Value dotDPMinusDelta =
+        stablehlo::SubtractOp::create(builder, loc, dotDP, dotDeltaBcast);
+    Value pTerm = stablehlo::MulOp::create(builder, loc, PW, dotDPMinusDelta);
+    Value dotDS = stablehlo::AddOp::create(builder, loc, dotPTerm, pTerm);
 
     if (dbResActive) {
       auto biasTy = cast<RankedTensorType>(op.getDBias().getType());
@@ -1672,10 +1672,11 @@ struct AttentionGradOpInterfaceRev
     }
 
     if (!gutils->isConstantValue(op.getDOutput())) {
-      Value safeDOutBar = stablehlo::AddOp::create(
-          builder, loc,
-          stablehlo::MulOp::create(builder, loc, deltaBtndBar, safeOutW),
-          attnDotPV(builder, loc, dPBar, vCW, W));
+      Value deltaTerm =
+          stablehlo::MulOp::create(builder, loc, deltaBtndBar, safeOutW);
+      Value dPTerm = attnDotPV(builder, loc, dPBar, vCW, W);
+      Value safeDOutBar =
+          stablehlo::AddOp::create(builder, loc, deltaTerm, dPTerm);
       if (dvResActive) {
         safeDOutBar =
             stablehlo::AddOp::create(builder, loc, safeDOutBar,
