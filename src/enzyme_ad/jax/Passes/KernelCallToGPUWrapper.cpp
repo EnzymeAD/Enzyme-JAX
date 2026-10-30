@@ -149,7 +149,9 @@ struct KernelCallToGPUWrapperPass
         (call.getFn().getLeafReference().getValue() + "_gpu_wrapper").str(),
         LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(call.getContext()),
                                     argTypes));
+    // Private for symbol-dce too, which ignores the LLVM linkage.
     wrapperFn.setLinkage(LLVM::Linkage::Private);
+    wrapperFn.setPrivate();
     symbolTables.getSymbolTable(module).insert(wrapperFn);
     Block *entry = wrapperFn.addEntryBlock(builder);
     ValueRange buffers = entry->getArguments();

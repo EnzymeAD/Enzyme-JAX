@@ -26,7 +26,7 @@ module {
 // CHECK-NEXT:    return %[[R]]
 
 // CHECK-LABEL: llvm.func private @kernel_gpu_wrapper(
-// CHECK-SAME:      %[[P:.+]]: !llvm.ptr<1>) {
+// CHECK-SAME:      %[[P:[^:]+]]: !llvm.ptr<1>) attributes {sym_visibility = "private"} {
 // CHECK:         "enzymexla.gpu_wrapper"
 // CHECK:           affine.parallel (%{{.+}}, %{{.+}}, %{{.+}}, %[[TX:.+]], %{{.+}}, %{{.+}}) =
 // CHECK:             scf.execute_region {
