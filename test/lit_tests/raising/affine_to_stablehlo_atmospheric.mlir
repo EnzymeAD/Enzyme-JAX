@@ -1746,4 +1746,4 @@ module {
   }
 }
 
-// CHECK: stablehlo.atan2 
+// CHECK: chlo.atan
