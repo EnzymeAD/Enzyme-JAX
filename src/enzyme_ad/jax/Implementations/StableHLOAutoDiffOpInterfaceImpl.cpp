@@ -24,6 +24,8 @@
 #include "llvm/ADT/PointerUnion.h"
 
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/Interfaces/MemorySlotInterfaces.h"
+#include "mlir/Interfaces/Utils/MemorySlotUtils.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/RegionUtils.h"
 
@@ -4260,6 +4262,143 @@ struct CaseOpEnzymeOpsRemover
   }
 };
 
+class TokenTypeInterface
+    : public AutoDiffTypeInterface::ExternalModel<TokenTypeInterface,
+                                                  stablehlo::TokenType> {
+public:
+  Attribute createNullAttr(Type self) const { return {}; }
+
+  Value createNullValue(Type self, OpBuilder &builder, Location loc) const {
+    return stablehlo::AfterAllOp::create(builder, loc, ValueRange());
+  }
+
+  Value createAddOp(Type self, OpBuilder &builder, Location loc, Value a,
+                    Value b) const {
+    llvm_unreachable("tokens are never accumulated");
+  }
+
+  Value createConjOp(Type self, OpBuilder &builder, Location loc,
+                     Value a) const {
+    return a;
+  }
+
+  Type getShadowType(Type self, int64_t width) const {
+    assert(width == 1 && "tokens cannot be batched");
+    return self;
+  }
+
+  bool isMutable(Type self) const { return false; }
+
+  LogicalResult zeroInPlace(Type self, OpBuilder &builder, Location loc,
+                            Value val) const {
+    return failure();
+  }
+
+  bool isZero(Type self, Value val) const { return false; }
+  bool isZeroAttr(Type self, Attribute attr) const { return false; }
+};
+
+static bool isHLOValueType(Type type) {
+  return isa<RankedTensorType, stablehlo::TokenType>(type);
+}
+
+struct WhileOpPromotableRegion
+    : public PromotableRegionOpInterface::ExternalModel<WhileOpPromotableRegion,
+                                                        WhileOp> {
+  bool isRegionPromotable(Operation *op, const MemorySlot &slot, Region *region,
+                          bool hasValueStores) const {
+    if (!hasValueStores)
+      return true;
+
+    return region == &cast<WhileOp>(op).getBody() &&
+           isHLOValueType(slot.valueType);
+  }
+
+  void setupPromotion(
+      Operation *op, const MemorySlot &slot, Value reachingDef,
+      bool hasValueStores,
+      llvm::SmallMapVector<Region *, Value, 2> &regionsToProcess) const {
+    auto whileOp = cast<WhileOp>(op);
+    Region &condRegion = whileOp.getCond();
+    Region &bodyRegion = whileOp.getBody();
+    if (!hasValueStores) {
+      regionsToProcess.insert({&condRegion, reachingDef});
+      regionsToProcess.insert({&bodyRegion, reachingDef});
+      return;
+    }
+
+    whileOp.getOperandMutable().append(reachingDef);
+
+    condRegion.addArgument(slot.valueType, slot.ptr.getLoc());
+    regionsToProcess.insert({&condRegion, condRegion.getArguments().back()});
+
+    bodyRegion.addArgument(slot.valueType, slot.ptr.getLoc());
+    regionsToProcess.insert({&bodyRegion, bodyRegion.getArguments().back()});
+  }
+
+  Value
+  finalizePromotion(Operation *op, const MemorySlot &slot, Value reachingDef,
+                    bool hasValueStores,
+                    const llvm::DenseMap<Block *, Value> &reachingAtBlockEnd,
+                    OpBuilder &builder) const {
+    if (!hasValueStores)
+      return reachingDef;
+
+    auto whileOp = cast<WhileOp>(op);
+    Region &bodyRegion = whileOp.getBody();
+    memoryslot::updateTerminator(&bodyRegion.front(),
+                                 bodyRegion.getArguments().back(),
+                                 reachingAtBlockEnd);
+
+    SmallVector<Type> resultTypes(op->getResultTypes());
+    resultTypes.push_back(slot.valueType);
+
+    IRRewriter rewriter(builder);
+    Operation *newOp =
+        memoryslot::replaceWithNewResults(rewriter, op, resultTypes);
+    return newOp->getResults().back();
+  }
+};
+
+template <typename OpTy>
+struct BranchOpPromotableRegion
+    : public PromotableRegionOpInterface::ExternalModel<
+          BranchOpPromotableRegion<OpTy>, OpTy> {
+  bool isRegionPromotable(Operation *op, const MemorySlot &slot, Region *region,
+                          bool hasValueStores) const {
+    return !hasValueStores || isHLOValueType(slot.valueType);
+  }
+
+  void setupPromotion(
+      Operation *op, const MemorySlot &slot, Value reachingDef,
+      bool hasValueStores,
+      llvm::SmallMapVector<Region *, Value, 2> &regionsToProcess) const {
+    for (Region &region : op->getRegions())
+      regionsToProcess.insert({&region, reachingDef});
+  }
+
+  Value
+  finalizePromotion(Operation *op, const MemorySlot &slot, Value reachingDef,
+                    bool hasValueStores,
+                    const llvm::DenseMap<Block *, Value> &reachingAtBlockEnd,
+                    OpBuilder &builder) const {
+    if (!hasValueStores)
+      return reachingDef;
+
+    for (Region &region : op->getRegions())
+      memoryslot::updateTerminator(&region.front(), reachingDef,
+                                   reachingAtBlockEnd);
+
+    SmallVector<Type> resultTypes(op->getResultTypes());
+    resultTypes.push_back(slot.valueType);
+
+    IRRewriter rewriter(builder);
+    Operation *newOp =
+        memoryslot::replaceWithNewResults(rewriter, op, resultTypes);
+    return newOp->getResults().back();
+  }
+};
+
 struct SHLOReduceOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOReduceOpBatchInterface,
                                              ReduceOp> {
@@ -5356,6 +5495,13 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     WhileOp::attachInterface<WhileOpEnzymeOpsRemover>(*context);
     stablehlo::IfOp::attachInterface<IfOpEnzymeOpsRemover>(*context);
     stablehlo::CaseOp::attachInterface<CaseOpEnzymeOpsRemover>(*context);
+
+    stablehlo::TokenType::attachInterface<TokenTypeInterface>(*context);
+    WhileOp::attachInterface<WhileOpPromotableRegion>(*context);
+    stablehlo::IfOp::attachInterface<BranchOpPromotableRegion<stablehlo::IfOp>>(
+        *context);
+    stablehlo::CaseOp::attachInterface<
+        BranchOpPromotableRegion<stablehlo::CaseOp>>(*context);
 
     WhileOp::attachInterface<ADDataFlowWhileOp>(*context);
     SortOp::attachInterface<ADDataFlowSortOp>(*context);

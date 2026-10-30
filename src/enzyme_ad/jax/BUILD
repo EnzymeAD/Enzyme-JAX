@@ -1578,6 +1578,7 @@ cc_library(
         "@llvm-project//mlir:MemRefTransforms",
         "@llvm-project//mlir:MemRefUtils",
         "@llvm-project//mlir:MemorySlotInterfaces",
+        "@llvm-project//mlir:MemorySlotUtils",
         "@llvm-project//mlir:NVGPUDialect",
         "@llvm-project//mlir:NVGPUToNVVM",
         "@llvm-project//mlir:NVVMDialect",
