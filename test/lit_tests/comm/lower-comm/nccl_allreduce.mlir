@@ -17,10 +17,10 @@ func.func @main(%buf: tensor<5xi32>) -> tensor<5xi32> {
 // JIT: %[[HOST_COMM:.*]] = llvm.alloca
 // JIT: %[[COUNT_BYTES:.*]] = llvm.mlir.constant(8 : i64) : i64
 // JIT: llvm.call @cuMemcpyAsync(%[[HOST_COUNT]], {{.*}}, %[[COUNT_BYTES]], %[[STREAM]])
-// JIT: %[[REDOP_BYTES:.*]] = llvm.mlir.constant(4 : i64) : i64
-// JIT: llvm.call @cuMemcpyAsync(%[[HOST_REDOP]], {{.*}}, %[[REDOP_BYTES]], %[[STREAM]])
 // JIT: %[[DATATYPE_BYTES:.*]] = llvm.mlir.constant(4 : i64) : i64
 // JIT: llvm.call @cuMemcpyAsync(%[[HOST_DATATYPE]], {{.*}}, %[[DATATYPE_BYTES]], %[[STREAM]])
+// JIT: %[[REDOP_BYTES:.*]] = llvm.mlir.constant(4 : i64) : i64
+// JIT: llvm.call @cuMemcpyAsync(%[[HOST_REDOP]], {{.*}}, %[[REDOP_BYTES]], %[[STREAM]])
 // JIT: %[[COMM_BYTES:.*]] = llvm.mlir.constant(8 : i64) : i64
 // JIT: llvm.call @cuMemcpyAsync(%[[HOST_COMM]], {{.*}}, %[[COMM_BYTES]], %[[STREAM]])
 // JIT: llvm.call @cuStreamSynchronize(%[[STREAM]])
