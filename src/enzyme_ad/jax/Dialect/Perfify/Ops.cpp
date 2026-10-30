@@ -140,3 +140,29 @@ LogicalResult HypothesisOp::verify() {
   return emitOpError("must be in perfify.conditions, an scf.for body, or an "
                      "scf.while 'after' region");
 }
+
+LogicalResult ConditionsOp::verifyRegions() {
+  for (Region *region : {&getPrecondition(), &getPostcondition()}) {
+    auto hypotheses = region->getOps<HypothesisOp>();
+    if (!llvm::hasSingleElement(hypotheses))
+      return emitOpError("requires exactly one perfify.hypothesis in each "
+                         "region");
+    HypothesisOp hyp = *hypotheses.begin();
+
+    auto assumes = region->getOps<AssumeOp>();
+    if (!llvm::hasSingleElement(assumes) ||
+        (*assumes.begin()).getCondition() != hyp.getResult())
+      return emitOpError("each region must assume its perfify.hypothesis");
+
+    auto fnCosts = region->getOps<FnCostOp>();
+    Value cost = hyp.getCmp().getDefiningOp<CompareOp>().getCost();
+    if (region == &getPrecondition()) {
+      if (!fnCosts.empty() || !cost.getDefiningOp<ArgOp>())
+        return emitOpError("precondition must compare a perfify.arg");
+    } else if (!llvm::hasSingleElement(fnCosts) ||
+               !cost.getDefiningOp<FnCostOp>()) {
+      return emitOpError("postcondition must compare its perfify.fn_cost");
+    }
+  }
+  return success();
+}
