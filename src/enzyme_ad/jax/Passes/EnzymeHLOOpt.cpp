@@ -21348,17 +21348,34 @@ struct NegateImagConj final
 
 enum class Parity { Even, Odd };
 
-template <typename T, Parity P> struct ParitySimplify;
+// Default guard of ParitySimplify, which accepts every op.
+struct ParityNoGuard {
+  bool operator()(Operation *) const { return true; }
+};
+
+// For real x, imag(x) folds to +0 while the odd rewrite gives -imag(x) = -0.
+struct ParityComplexImagGuard {
+  bool operator()(stablehlo::ImagOp op) const {
+    return isa<ComplexType>(op.getOperand().getType().getElementType());
+  }
+};
+
+// Guard is a function object; the pattern only applies to ops it accepts.
+template <typename T, Parity P, typename Guard = ParityNoGuard>
+struct ParitySimplify;
 
 // Even f: (f (neg x)) -> (f x)
 //         (f (abs x)) -> (f x)
-template <typename T>
-struct ParitySimplify<T, Parity::Even> final
-    : CheckedOpRewritePattern<T, ParitySimplify<T, Parity::Even>> {
+template <typename T, typename Guard>
+struct ParitySimplify<T, Parity::Even, Guard> final
+    : CheckedOpRewritePattern<T, ParitySimplify<T, Parity::Even, Guard>> {
   using CheckedOpRewritePattern<
-      T, ParitySimplify<T, Parity::Even>>::CheckedOpRewritePattern;
+      T, ParitySimplify<T, Parity::Even, Guard>>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
+    if (!Guard{}(op))
+      return failure();
+
     Value operand = op->getOperand(0);
 
     // abs(x) is either x or -x, except for complex x where it is the real
@@ -21378,13 +21395,16 @@ struct ParitySimplify<T, Parity::Even> final
 };
 
 // Odd f: (f (neg x)) -> (neg (f x))
-template <typename T>
-struct ParitySimplify<T, Parity::Odd> final
-    : CheckedOpRewritePattern<T, ParitySimplify<T, Parity::Odd>> {
+template <typename T, typename Guard>
+struct ParitySimplify<T, Parity::Odd, Guard> final
+    : CheckedOpRewritePattern<T, ParitySimplify<T, Parity::Odd, Guard>> {
   using CheckedOpRewritePattern<
-      T, ParitySimplify<T, Parity::Odd>>::CheckedOpRewritePattern;
+      T, ParitySimplify<T, Parity::Odd, Guard>>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
+    if (!Guard{}(op))
+      return failure();
+
     auto neg = op->getOperand(0).template getDefiningOp<stablehlo::NegOp>();
     if (!neg)
       return failure();
@@ -46270,7 +46290,7 @@ struct EnzymeHLOOptPass
         ParitySimplify<stablehlo::CbrtOp, Parity::Odd>,
         ParitySimplify<stablehlo::SignOp, Parity::Odd>,
         ParitySimplify<stablehlo::RealOp, Parity::Odd>,
-        ParitySimplify<stablehlo::ImagOp, Parity::Odd>,
+        ParitySimplify<stablehlo::ImagOp, Parity::Odd, ParityComplexImagGuard>,
         ParitySimplify<chlo::SinhOp, Parity::Odd>,
         ParitySimplify<chlo::AsinOp, Parity::Odd>,
         ParitySimplify<chlo::AsinhOp, Parity::Odd>,

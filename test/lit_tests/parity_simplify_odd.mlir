@@ -44,6 +44,18 @@ func.func @imag_neg(%arg0: tensor<4xcomplex<f32>>) -> tensor<4xf32> {
 // CHECK-NEXT:    %[[NEG:.+]] = stablehlo.negate %[[IMAG]] : tensor<4xf32>
 // CHECK-NEXT:    return %[[NEG]] : tensor<4xf32>
 
+// For real x, imag(x) folds to +0 while -imag(x) would be -0.
+func.func @imag_neg_real(%arg0: tensor<4xf32>) -> tensor<4xf32> {
+  %0 = stablehlo.negate %arg0 : tensor<4xf32>
+  %1 = stablehlo.imag %0 : tensor<4xf32>
+  return %1 : tensor<4xf32>
+}
+
+// CHECK-LABEL: func.func @imag_neg_real
+// CHECK-NEXT:    %[[NEG:.+]] = stablehlo.negate %arg0 : tensor<4xf32>
+// CHECK-NEXT:    %[[IMAG:.+]] = stablehlo.imag %[[NEG]] : tensor<4xf32>
+// CHECK-NEXT:    return %[[IMAG]] : tensor<4xf32>
+
 func.func @conj_neg(%arg0: tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>> {
   %0 = stablehlo.negate %arg0 : tensor<4xcomplex<f32>>
   %1 = chlo.conj %0 : tensor<4xcomplex<f32>> -> tensor<4xcomplex<f32>>

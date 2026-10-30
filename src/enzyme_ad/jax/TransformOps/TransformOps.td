@@ -1357,7 +1357,7 @@ def ParitySimplifyPatterns : EnzymeHLOPatternOp<
     "ParitySimplify<stablehlo::CbrtOp, Parity::Odd>",
     "ParitySimplify<stablehlo::SignOp, Parity::Odd>",
     "ParitySimplify<stablehlo::RealOp, Parity::Odd>",
-    "ParitySimplify<stablehlo::ImagOp, Parity::Odd>",
+    "ParitySimplify<stablehlo::ImagOp, Parity::Odd, ParityComplexImagGuard>",
     "ParitySimplify<chlo::CoshOp, Parity::Even>",
     "ParitySimplify<chlo::SinhOp, Parity::Odd>",
     "ParitySimplify<chlo::AsinOp, Parity::Odd>",
