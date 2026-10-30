@@ -2008,9 +2008,60 @@ struct LowerCommNcclGetCommWorldOpToJIT
 //   }
 // };
 
+// Declares the CUDA driver functions `cuMemcpyAsync` and `cuStreamSynchronize`
+// in the module, if not already declared.
+static void declareCudaDriverFunctions(ConversionPatternRewriter &rewriter,
+                                       ModuleOp moduleOp, Location loc) {
+  auto context = moduleOp.getContext();
+  auto type_ptr = LLVM::LLVMPointerType::get(context);
+  auto type_i32 = IntegerType::get(context, 32);
+  auto type_size_t = IntegerType::get(context, sizeof(size_t) * 8);
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+  if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>("cuMemcpyAsync")) {
+    auto funcType = LLVM::LLVMFunctionType::get(
+        type_i32, {type_ptr, type_ptr, type_size_t, type_ptr}, false);
+    LLVM::LLVMFuncOp::create(rewriter, loc, "cuMemcpyAsync", funcType,
+                             LLVM::Linkage::External);
+  }
+
+  if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>("cuStreamSynchronize")) {
+    auto funcType = LLVM::LLVMFunctionType::get(type_i32, {type_ptr}, false);
+    LLVM::LLVMFuncOp::create(rewriter, loc, "cuStreamSynchronize", funcType,
+                             LLVM::Linkage::External);
+  }
+}
+
+// Emits a `cuMemcpyAsync` of `size` bytes from `src` to `dst` on `stream`.
+static void emitCuMemcpyAsync(ConversionPatternRewriter &rewriter, Location loc,
+                              Value dst, Value src, size_t size, Value stream) {
+  auto context = rewriter.getContext();
+  auto type_i32 = IntegerType::get(context, 32);
+  auto type_size_t = IntegerType::get(context, sizeof(size_t) * 8);
+  Value bytes =
+      LLVM::ConstantOp::create(rewriter, loc, type_size_t,
+                               rewriter.getIntegerAttr(type_size_t, size))
+          .getResult();
+  // TODO error checking: currently, we ignore the int return code
+  LLVM::CallOp::create(rewriter, loc, TypeRange{type_i32},
+                       SymbolRefAttr::get(context, "cuMemcpyAsync"),
+                       ValueRange{dst, src, bytes, stream});
+}
+
+// Emits a `cuStreamSynchronize` of `stream`.
+static void emitCuStreamSynchronize(ConversionPatternRewriter &rewriter,
+                                    Location loc, Value stream) {
+  auto context = rewriter.getContext();
+  LLVM::CallOp::create(rewriter, loc, TypeRange{IntegerType::get(context, 32)},
+                       SymbolRefAttr::get(context, "cuStreamSynchronize"),
+                       ValueRange{stream});
+}
+
 // Declares `functionName` (`ncclSend`, `ncclRecv`, `ncclGroupStart`, or
-// `ncclGroupEnd`), plus `cuMemcpyAsync` and `cuStreamSynchronize`, in the
-// module, if not already declared.
+// `ncclGroupEnd`), plus the CUDA driver functions, in the module, if not
+// already declared.
 static void declareNcclFunctions(ConversionPatternRewriter &rewriter,
                                  ModuleOp moduleOp, Location loc,
                                  StringRef functionName) {
@@ -2022,21 +2073,10 @@ static void declareNcclFunctions(ConversionPatternRewriter &rewriter,
   auto type_nccl_datatype =
       IntegerType::get(context, sizeof(ncclDataType_t) * 8);
 
+  declareCudaDriverFunctions(rewriter, moduleOp, loc);
+
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPointToStart(moduleOp.getBody());
-
-  if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>("cuMemcpyAsync")) {
-    auto funcType = LLVM::LLVMFunctionType::get(
-        type_i32, {type_ptr, type_ptr, type_size_t, type_i32, type_ptr}, false);
-    LLVM::LLVMFuncOp::create(rewriter, loc, "cuMemcpyAsync", funcType,
-                             LLVM::Linkage::External);
-  }
-
-  if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>("cuStreamSynchronize")) {
-    auto funcType = LLVM::LLVMFunctionType::get(type_i32, {type_ptr}, false);
-    LLVM::LLVMFuncOp::create(rewriter, loc, "cuStreamSynchronize", funcType,
-                             LLVM::Linkage::External);
-  }
 
   if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(functionName)) {
     bool isGroupCall =
@@ -2103,24 +2143,14 @@ static void emitNcclSendRecvCalls(ConversionPatternRewriter &rewriter,
         LLVM::AllocaOp::create(rewriter, loc, type_ptr, type_ptr, one)
             .getResult();
 
-    Value kind = LLVM::ConstantOp::create(
-                     rewriter, loc, type_i32,
-                     rewriter.getI32IntegerAttr(cudaMemcpyDeviceToHost))
-                     .getResult();
-
-    auto copyToHost = [&](Value dst, Value src, size_t size) {
-      Value memcpy_count =
-          LLVM::ConstantOp::create(rewriter, loc, type_size_t,
-                                   rewriter.getIntegerAttr(type_size_t, size))
-              .getResult();
-      LLVM::CallOp::create(rewriter, loc, TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
-                           ValueRange{dst, src, memcpy_count, kind, stream});
-    };
-    copyToHost(host_count_ptr, arg_count_ptr, sizeof(size_t));
-    copyToHost(host_datatype_ptr, arg_datatype_ptr, sizeof(ncclDataType_t));
-    copyToHost(host_peer_ptr, arg_peer_ptr, sizeof(int32_t));
-    copyToHost(host_comm_ptr, arg_comm_ptr, sizeof(void *));
+    emitCuMemcpyAsync(rewriter, loc, host_count_ptr, arg_count_ptr,
+                      sizeof(size_t), stream);
+    emitCuMemcpyAsync(rewriter, loc, host_datatype_ptr, arg_datatype_ptr,
+                      sizeof(ncclDataType_t), stream);
+    emitCuMemcpyAsync(rewriter, loc, host_peer_ptr, arg_peer_ptr,
+                      sizeof(int32_t), stream);
+    emitCuMemcpyAsync(rewriter, loc, host_comm_ptr, arg_comm_ptr,
+                      sizeof(void *), stream);
 
     hostArgs.push_back({arg_buffer_ptr, host_count_ptr, host_datatype_ptr,
                         host_peer_ptr, host_comm_ptr});
@@ -2128,9 +2158,7 @@ static void emitNcclSendRecvCalls(ConversionPatternRewriter &rewriter,
 
   // Host scalars must be ready before they are passed by value to NCCL. This
   // happens before `ncclGroupStart` so the group only contains NCCL calls.
-  LLVM::CallOp::create(rewriter, loc, TypeRange{type_i32},
-                       SymbolRefAttr::get(context, "cuStreamSynchronize"),
-                       ValueRange{stream});
+  emitCuStreamSynchronize(rewriter, loc, stream);
 
   if (group)
     LLVM::CallOp::create(rewriter, loc, TypeRange{type_nccl_result},
@@ -2440,24 +2468,7 @@ struct LowerCommNcclAllReduceOpToJIT
     std::string function_name = "ncclAllReduce";
     std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>("cuMemcpyAsync")) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(moduleOp.getBody());
-      auto funcType = LLVM::LLVMFunctionType::get(
-          type_i32, {type_ptr, type_ptr, type_size_t, type_i32, type_ptr},
-          false);
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), "cuMemcpyAsync",
-                               funcType, LLVM::Linkage::External);
-    }
-
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>("cuStreamSynchronize")) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(moduleOp.getBody());
-      auto funcType =
-          LLVM::LLVMFunctionType::get(type_i32, {type_ptr}, false);
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), "cuStreamSynchronize",
-                               funcType, LLVM::Linkage::External);
-    }
+    declareCudaDriverFunctions(rewriter, moduleOp, op.getLoc());
 
     if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
@@ -2527,76 +2538,18 @@ struct LowerCommNcclAllReduceOpToJIT
           LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr, one)
               .getResult();
 
-      Value kind = LLVM::ConstantOp::create(
-                       rewriter, op.getLoc(), type_i32,
-                       rewriter.getI32IntegerAttr(cudaMemcpyDeviceToHost))
-                       .getResult();
+      emitCuMemcpyAsync(rewriter, op.getLoc(), host_count_ptr, arg_count_ptr,
+                        sizeof(size_t), stream);
+      emitCuMemcpyAsync(rewriter, op.getLoc(), host_redop_ptr, arg_redop_ptr,
+                        sizeof(ncclRedOp_t), stream);
+      emitCuMemcpyAsync(rewriter, op.getLoc(), host_datatype_ptr,
+                        arg_datatype_ptr, sizeof(ncclDataType_t), stream);
+      emitCuMemcpyAsync(rewriter, op.getLoc(), host_comm_ptr, arg_comm_ptr,
+                        sizeof(void *), stream);
 
-      Value memcpy_count =
-          LLVM::ConstantOp::create(
-              rewriter, op.getLoc(), type_size_t,
-              rewriter.getIntegerAttr(type_size_t, sizeof(size_t)))
-              .getResult();
-      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
-                           ValueRange{
-                               host_count_ptr,
-                               arg_count_ptr,
-                               memcpy_count,
-                               kind,
-                               stream,
-                           });
-
-      memcpy_count = LLVM::ConstantOp::create(
-                         rewriter, op.getLoc(), type_size_t,
-                         rewriter.getIntegerAttr(type_size_t,
-                                                 sizeof(ncclRedOp_t)))
-                         .getResult();
-      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
-                           ValueRange{
-                               host_redop_ptr,
-                               arg_redop_ptr,
-                               memcpy_count,
-                               kind,
-                               stream,
-                           });
-
-      memcpy_count = LLVM::ConstantOp::create(
-                         rewriter, op.getLoc(), type_size_t,
-                         rewriter.getIntegerAttr(type_size_t,
-                                                 sizeof(ncclDataType_t)))
-                         .getResult();
-      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
-                           ValueRange{
-                               host_datatype_ptr,
-                               arg_datatype_ptr,
-                               memcpy_count,
-                               kind,
-                               stream,
-                           });
-
-      memcpy_count =
-          LLVM::ConstantOp::create(
-              rewriter, op.getLoc(), type_size_t,
-              rewriter.getIntegerAttr(type_size_t, sizeof(void *)))
-              .getResult();
-      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cuMemcpyAsync"),
-                           ValueRange{
-                               host_comm_ptr,
-                               arg_comm_ptr,
-                               memcpy_count,
-                               kind,
-                               stream,
-                           });
-
-      // CUDA runtime and driver APIs use the same stream handle. The host
-      // scalars must be ready before they are passed by value to NCCL.
-      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cuStreamSynchronize"),
-                           ValueRange{stream});
+      // The host scalars must be ready before they are passed by value to
+      // NCCL.
+      emitCuStreamSynchronize(rewriter, op.getLoc(), stream);
 
       Value count =
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_size_t,
