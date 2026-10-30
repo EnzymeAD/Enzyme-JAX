@@ -14,13 +14,13 @@ func.func @main(%buf: tensor<5xi32>, %peer: tensor<i32>) {
 // CHECK: %[[HOST_PEER:.*]] = llvm.alloca {{.*}} x i32
 // CHECK: %[[HOST_COMM:.*]] = llvm.alloca {{.*}} x !llvm.ptr
 // CHECK: %[[COUNT_BYTES:.*]] = llvm.mlir.constant(8 : i64) : i64
-// CHECK: llvm.call @cuMemcpyAsync(%[[HOST_COUNT]], {{.*}}, %[[COUNT_BYTES]], {{.*}}, %[[STREAM]])
+// CHECK: llvm.call @cuMemcpyAsync(%[[HOST_COUNT]], {{.*}}, %[[COUNT_BYTES]], %[[STREAM]])
 // CHECK: %[[DATATYPE_BYTES:.*]] = llvm.mlir.constant(4 : i64) : i64
-// CHECK: llvm.call @cuMemcpyAsync(%[[HOST_DATATYPE]], {{.*}}, %[[DATATYPE_BYTES]], {{.*}}, %[[STREAM]])
+// CHECK: llvm.call @cuMemcpyAsync(%[[HOST_DATATYPE]], {{.*}}, %[[DATATYPE_BYTES]], %[[STREAM]])
 // CHECK: %[[PEER_BYTES:.*]] = llvm.mlir.constant(4 : i64) : i64
-// CHECK: llvm.call @cuMemcpyAsync(%[[HOST_PEER]], {{.*}}, %[[PEER_BYTES]], {{.*}}, %[[STREAM]])
+// CHECK: llvm.call @cuMemcpyAsync(%[[HOST_PEER]], {{.*}}, %[[PEER_BYTES]], %[[STREAM]])
 // CHECK: %[[COMM_BYTES:.*]] = llvm.mlir.constant(8 : i64) : i64
-// CHECK: llvm.call @cuMemcpyAsync(%[[HOST_COMM]], {{.*}}, %[[COMM_BYTES]], {{.*}}, %[[STREAM]])
+// CHECK: llvm.call @cuMemcpyAsync(%[[HOST_COMM]], {{.*}}, %[[COMM_BYTES]], %[[STREAM]])
 // CHECK: llvm.call @cuStreamSynchronize(%[[STREAM]])
 // CHECK: %[[COUNT:.*]] = llvm.load %[[HOST_COUNT]] : !llvm.ptr -> i64
 // CHECK: %[[DATATYPE:.*]] = llvm.load %[[HOST_DATATYPE]] : !llvm.ptr -> i32
@@ -28,7 +28,7 @@ func.func @main(%buf: tensor<5xi32>, %peer: tensor<i32>) {
 // CHECK: %[[WRAP_COMM:.*]] = llvm.load %[[HOST_COMM]] : !llvm.ptr -> !llvm.ptr
 // CHECK: llvm.call @ncclSend(%[[WRAP_BUF]], %[[COUNT]], %[[DATATYPE]], %[[PEER]], %[[WRAP_COMM]], %[[STREAM]])
 // CHECK: llvm.return
-// CHECK-DAG: llvm.func @cuMemcpyAsync(!llvm.ptr, !llvm.ptr, i64, i32, !llvm.ptr) -> i32
+// CHECK-DAG: llvm.func @cuMemcpyAsync(!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> i32
 // CHECK-DAG: llvm.func @cuStreamSynchronize(!llvm.ptr) -> i32
 // CHECK-DAG: llvm.func @ncclSend(!llvm.ptr, i64, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
 // CHECK-LABEL: func.func @main

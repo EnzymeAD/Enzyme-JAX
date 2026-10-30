@@ -16,13 +16,13 @@ func.func @main(%buf: tensor<5xi32>) -> tensor<5xi32> {
 // JIT: %[[HOST_REDOP:.*]] = llvm.alloca
 // JIT: %[[HOST_COMM:.*]] = llvm.alloca
 // JIT: %[[COUNT_BYTES:.*]] = llvm.mlir.constant(8 : i64) : i64
-// JIT: llvm.call @cuMemcpyAsync(%[[HOST_COUNT]], {{.*}}, %[[COUNT_BYTES]], {{.*}}, %[[STREAM]])
+// JIT: llvm.call @cuMemcpyAsync(%[[HOST_COUNT]], {{.*}}, %[[COUNT_BYTES]], %[[STREAM]])
 // JIT: %[[REDOP_BYTES:.*]] = llvm.mlir.constant(4 : i64) : i64
-// JIT: llvm.call @cuMemcpyAsync(%[[HOST_REDOP]], {{.*}}, %[[REDOP_BYTES]], {{.*}}, %[[STREAM]])
+// JIT: llvm.call @cuMemcpyAsync(%[[HOST_REDOP]], {{.*}}, %[[REDOP_BYTES]], %[[STREAM]])
 // JIT: %[[DATATYPE_BYTES:.*]] = llvm.mlir.constant(4 : i64) : i64
-// JIT: llvm.call @cuMemcpyAsync(%[[HOST_DATATYPE]], {{.*}}, %[[DATATYPE_BYTES]], {{.*}}, %[[STREAM]])
+// JIT: llvm.call @cuMemcpyAsync(%[[HOST_DATATYPE]], {{.*}}, %[[DATATYPE_BYTES]], %[[STREAM]])
 // JIT: %[[COMM_BYTES:.*]] = llvm.mlir.constant(8 : i64) : i64
-// JIT: llvm.call @cuMemcpyAsync(%[[HOST_COMM]], {{.*}}, %[[COMM_BYTES]], {{.*}}, %[[STREAM]])
+// JIT: llvm.call @cuMemcpyAsync(%[[HOST_COMM]], {{.*}}, %[[COMM_BYTES]], %[[STREAM]])
 // JIT: llvm.call @cuStreamSynchronize(%[[STREAM]])
 // JIT: %[[COUNT:.*]] = llvm.load %[[HOST_COUNT]] : !llvm.ptr -> i64
 // JIT: %[[DATATYPE:.*]] = llvm.load %[[HOST_DATATYPE]] : !llvm.ptr -> i32
@@ -30,7 +30,7 @@ func.func @main(%buf: tensor<5xi32>) -> tensor<5xi32> {
 // JIT: %[[WRAP_COMM:.*]] = llvm.load %[[HOST_COMM]] : !llvm.ptr -> !llvm.ptr
 // JIT: llvm.call @ncclAllReduce(%[[WRAP_BUF]], %[[WRAP_BUF]], %[[COUNT]], %[[DATATYPE]], %[[REDOP]], %[[WRAP_COMM]], %[[STREAM]])
 // JIT: llvm.return
-// JIT-DAG: llvm.func @cuMemcpyAsync(!llvm.ptr, !llvm.ptr, i64, i32, !llvm.ptr) -> i32
+// JIT-DAG: llvm.func @cuMemcpyAsync(!llvm.ptr, !llvm.ptr, i64, !llvm.ptr) -> i32
 // JIT-DAG: llvm.func @cuStreamSynchronize(!llvm.ptr) -> i32
 // JIT-DAG: llvm.func @ncclAllReduce(!llvm.ptr, !llvm.ptr, i64, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
 // JIT-LABEL: func.func @main
