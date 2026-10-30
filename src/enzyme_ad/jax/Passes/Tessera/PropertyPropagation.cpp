@@ -387,8 +387,7 @@ std::optional<HandleVariable> findParameterVariable(BlockArgument arg) {
 
 // The variable through which `handle`, passed to `use`, reaches its object.
 // Nothing if there isn't one, or if it's used in a way this can't track.
-std::optional<HandleVariable> findHandleVariable(Value handle,
-                                                 Operation *use) {
+std::optional<HandleVariable> findHandleVariable(Value handle, Operation *use) {
   // A handle in a pointer variable, `Mat A`, is loaded from it; an object
   // variable, `BilinearForm a(...)`, is its own handle, and so is a pointer
   // parameter, `IntVec &ids`.
@@ -768,8 +767,7 @@ SmallVector<StringAttr> PropertyAnalysis::computeValueFacts(Value value,
     Value address = stripCasts(load.getAddr());
     if (auto arg = dyn_cast<BlockArgument>(address))
       if (!isa<LLVM::LLVMPointerType>(value.getType()))
-        if (std::optional<HandleVariable> variable =
-                findParameterVariable(arg))
+        if (std::optional<HandleVariable> variable = findParameterVariable(arg))
           for (StringAttr name : objectFactsBefore(load, *variable))
             if (!llvm::is_contained(facts, name))
               facts.push_back(name);
