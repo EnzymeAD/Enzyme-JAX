@@ -24,7 +24,7 @@ module {
   tessera.define private @lib.inverse_spd(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<out>, type = !mat}], pure = true}
 
   tessera.optimizations {
-    tessera.optimization "if SPD(m), lib.inverse(m) -> lib.inverse_spd(m)"
+    tessera.optimization "if SPD(m), lib.inverse(m, r) -> lib.inverse_spd(m, r)"
   }
 
   // CHECK-LABEL: llvm.func @guaranteed_return
@@ -55,7 +55,7 @@ module {
   tessera.define private @lib.inverse_spd(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<out>, type = !mat}], pure = true}
 
   tessera.optimizations {
-    tessera.optimization "if SPD(m), lib.inverse(m) -> lib.inverse_spd(m)"
+    tessera.optimization "if SPD(m), lib.inverse(m, r) -> lib.inverse_spd(m, r)"
   }
 
   // CHECK-LABEL: llvm.func @preserved_through_chain
@@ -79,7 +79,7 @@ module {
     %a = tessera.call @lib.mass(%n) : (i64) -> !mat
     %k = tessera.call @lib.stiffness(%n) : (i64) -> !mat
     %d = tessera.call @lib.add(%a, %k) : (!mat, !mat) -> !mat
-    // expected-remark @below {{optimization rule 'if SPD(m), lib.inverse(m) -> lib.inverse_spd(m)' was not applied here: could not show SPD(m)}}
+    // expected-remark @below {{optimization rule 'if SPD(m), lib.inverse(m, r) -> lib.inverse_spd(m, r)' was not applied here: could not show SPD(m)}}
     %r = tessera.call @lib.inverse(%d) : (!mat) -> !mat
     llvm.return %r : !mat
   }
@@ -102,7 +102,7 @@ module {
   tessera.define private @lib.trace(!llvm.ptr) -> f64 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}], pure = true}
 
   tessera.optimizations {
-    tessera.optimization "if SPD(m), lib.inverse(m) -> lib.inverse_spd(m)"
+    tessera.optimization "if SPD(m), lib.inverse(m, r) -> lib.inverse_spd(m, r)"
     tessera.optimization "if positive(x), lib.sqrt(x) -> lib.sqrt_positive(x)"
   }
 
@@ -241,7 +241,7 @@ module {
   tessera.define private @lib.inverse_spd(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<out>, type = !mat}], pure = true}
 
   tessera.optimizations {
-    tessera.optimization "if SPD(m), lib.inverse(m) -> lib.inverse_spd(m)"
+    tessera.optimization "if SPD(m), lib.inverse(m, r) -> lib.inverse_spd(m, r)"
   }
 
   // CHECK-LABEL: llvm.func @assumed_parameter

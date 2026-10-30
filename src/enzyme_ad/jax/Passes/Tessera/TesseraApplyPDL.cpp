@@ -188,8 +188,14 @@ static void collectCallees(const Expr &expr, llvm::StringSet<> &callees) {
 // What the match bound
 //===----------------------------------------------------------------------===//
 
-// Argument i of a left-hand-side call is operand i of the op it matched, so
-// the match can be recovered from the root and the AST.
+// A rule passes a call's C arguments, but a tessera.call has no operand for
+// one the function only writes (val=out). The operand `call` has for argument
+// `index`, or null for such an output.
+static Value getArgOperand(CallOp call, unsigned index) {
+  std::optional<unsigned> operand =
+      lookupDefine(call, call.getCallee()).getCallOperandForArg(index);
+  return operand ? call->getOperand(*operand) : Value();
+}
 
 // Whether `op` matches the left-hand side, binding each variable. The pattern
 // checks this too, but PDL may run tesseraRuleApplicable before its own
@@ -199,10 +205,14 @@ static bool matchLhs(const Expr &expr, Operation *op,
   auto *call = std::get_if<Call>(&expr.data);
   auto callOp = dyn_cast_or_null<CallOp>(op);
   if (!call || !callOp || callOp.getCallee() != calleeName(*call) ||
-      op->getNumOperands() != call->args.size())
+      call->args.size() !=
+          lookupDefine(op, calleeName(*call)).getArgModeEntries().size())
     return false;
   for (auto [index, arg] : llvm::enumerate(call->args)) {
-    Value operand = op->getOperand(index);
+    // An output names where the call writes; it matches nothing.
+    Value operand = getArgOperand(callOp, index);
+    if (!operand)
+      continue;
     bool matched = std::visit(
         overloaded{
             [&](const Var &v) {
@@ -249,12 +259,13 @@ static bool matchLhs(const Expr &expr, Operation *op,
 static void collectProducers(const Expr &expr, Operation *op,
                              llvm::SetVector<Operation *> &producers) {
   auto *call = std::get_if<Call>(&expr.data);
-  if (!call || !op || op->getNumOperands() != call->args.size())
+  auto callOp = dyn_cast_or_null<CallOp>(op);
+  if (!call || !callOp)
     return;
   for (auto [index, arg] : llvm::enumerate(call->args)) {
     if (!std::holds_alternative<Call>(arg.data))
       continue;
-    Operation *producer = op->getOperand(index).getDefiningOp();
+    Operation *producer = getArgOperand(callOp, index).getDefiningOp();
     collectProducers(arg, producer, producers);
     if (producer)
       producers.insert(producer);
@@ -399,10 +410,8 @@ static SmallVector<StringRef> getWrittenVars(const Call &call,
   SmallVector<StringRef> names(define.getCallResultTypes().size());
   for (unsigned result = 0, e = names.size(); result != e; ++result) {
     std::optional<unsigned> arg = define.getWrittenArgForCallResult(result);
-    std::optional<unsigned> operand =
-        arg ? define.getCallOperandForArg(*arg) : std::nullopt;
-    if (operand && *operand < call.args.size())
-      if (auto *var = std::get_if<Var>(&call.args[*operand].data))
+    if (arg && *arg < call.args.size())
+      if (auto *var = std::get_if<Var>(&call.args[*arg].data))
         names[result] = var->name;
   }
   return names;
@@ -421,9 +430,12 @@ static Type checkRhsValue(const Expr &expr, Operation *anchor,
   return std::visit(
       overloaded{
           [&](const Var &v) -> Type {
+            // parse-optimization-rules checked every name is declared, so
+            // this is an output read before anything writes it.
             if (Type type = types.lookup(v.name))
               return type;
-            why = "'" + v.name + "' is not bound";
+            why = "its right-hand side reads '" + v.name +
+                  "' before anything writes it";
             return Type();
           },
           [&](const IntLit &) -> Type {
@@ -559,14 +571,26 @@ static LogicalResult checkRhsCall(const Call &call, Operation *anchor,
           "helper, nothing in this translation unit caused it to be emitted)";
     return failure();
   }
-  if (call.args.size() != define.getNumCallOperands()) {
+  unsigned numArgs = define.getArgModeEntries().size();
+  if (call.args.size() != numArgs) {
     why = "its right-hand side calls '" + name + "' with " +
           std::to_string(call.args.size()) + " argument(s), but it takes " +
-          std::to_string(define.getNumCallOperands());
+          std::to_string(numArgs);
     return failure();
   }
   for (auto [index, arg] : llvm::enumerate(call.args)) {
-    Type expected = callOperandValueType(define, index);
+    // An output is written, not read, so it only has to be a variable.
+    std::optional<unsigned> operand = define.getCallOperandForArg(index);
+    if (!operand) {
+      if (!std::holds_alternative<Var>(arg.data)) {
+        why = "argument " + std::to_string(index) + " of '" + name +
+              "' is where it writes its result, so the rule must pass a "
+              "variable";
+        return failure();
+      }
+      continue;
+    }
+    Type expected = callOperandValueType(define, *operand);
     Type actual = checkRhsValue(arg, anchor, types, expected, why);
     if (!actual)
       return failure();
@@ -576,11 +600,11 @@ static LogicalResult checkRhsCall(const Call &call, Operation *anchor,
             "parameter type";
       return failure();
     }
-    if (!callOperandAccepts(define, index, actual)) {
+    if (!callOperandAccepts(define, *operand, actual)) {
       llvm::raw_string_ostream os(why);
       os << "argument " << index << " of '" << name << "' expects "
          << define.getFunctionType().getInput(
-                *define.getArgIndexForCallOperand(index))
+                *define.getArgIndexForCallOperand(*operand))
          << ", but the rule passes it a value of type " << actual;
       return failure();
     }
@@ -657,9 +681,11 @@ static LogicalResult checkRhs(const Rule &rule, Operation *root,
       types[binding] = results[*result];
     }
     llvm::StringSet<> modified;
-    for (StringRef name : getWrittenVars(*call, define)) {
+    SmallVector<StringRef> written = getWrittenVars(*call, define);
+    for (auto [type, name] : llvm::zip(results, written)) {
       if (name.empty())
         continue;
+      types[name] = type;
       if (!modifiable.contains(name)) {
         why = "its right-hand side calls '" + calleeName(*call) +
               "', which modifies '" + name.str() +
@@ -673,6 +699,14 @@ static LogicalResult checkRhs(const Rule &rule, Operation *root,
       }
     }
   }
+
+  // An output of the root has no value unless the right-hand side writes it.
+  for (StringRef name : rootWritten)
+    if (!name.empty() && !types.count(name)) {
+      why = "the call it replaces writes '" + name.str() +
+            "', but its right-hand side never does";
+      return failure();
+    }
 
   SmallVector<Type> needed = getUnwrittenResultTypes(root, rootWritten);
   const Expr &result = rule.result();
@@ -758,9 +792,11 @@ static Value buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
             DefineOp define = lookupDefine(symbolAnchor, calleeName(c));
             SmallVector<Value> argValues;
             for (auto [index, arg] : llvm::enumerate(c.args))
-              argValues.push_back(
-                  buildExprIR(arg, builder, loc, boundVars, symbolAnchor,
-                              callOperandValueType(define, index)));
+              if (std::optional<unsigned> operand =
+                      define.getCallOperandForArg(index))
+                argValues.push_back(
+                    buildExprIR(arg, builder, loc, boundVars, symbolAnchor,
+                                callOperandValueType(define, *operand)));
 
             // Including the leading results for written arguments.
             auto call = CallOp::create(builder, loc, calleeName(c),
