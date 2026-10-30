@@ -21346,6 +21346,66 @@ struct NegateImagConj final
   }
 };
 
+enum class Parity { Even, Odd };
+
+template <typename T, Parity P> struct ParitySimplify;
+
+// Even f: (f (neg x)) -> (f x)
+//         (f (abs x)) -> (f x)
+template <typename T>
+struct ParitySimplify<T, Parity::Even> final
+    : CheckedOpRewritePattern<T, ParitySimplify<T, Parity::Even>> {
+  using CheckedOpRewritePattern<
+      T, ParitySimplify<T, Parity::Even>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
+    Value operand = op->getOperand(0);
+
+    // abs(x) is either x or -x, except for complex x where it is the real
+    // modulus, which the type check rules out.
+    Value x;
+    if (auto neg = operand.template getDefiningOp<stablehlo::NegOp>())
+      x = neg.getOperand();
+    else if (auto abs = operand.template getDefiningOp<stablehlo::AbsOp>();
+             abs && abs.getOperand().getType() == abs.getType())
+      x = abs.getOperand();
+    if (!x)
+      return failure();
+
+    rewriter.modifyOpInPlace(op, [&] { op->setOperand(0, x); });
+    return success();
+  }
+};
+
+// Odd f: (f (neg x)) -> (neg (f x))
+template <typename T>
+struct ParitySimplify<T, Parity::Odd> final
+    : CheckedOpRewritePattern<T, ParitySimplify<T, Parity::Odd>> {
+  using CheckedOpRewritePattern<
+      T, ParitySimplify<T, Parity::Odd>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(T op, PatternRewriter &rewriter) const {
+    auto neg = op->getOperand(0).template getDefiningOp<stablehlo::NegOp>();
+    if (!neg)
+      return failure();
+
+    // Integer negation wraps at INT_MIN, so e.g. sign(-INT_MIN) = -1 while
+    // -sign(INT_MIN) = 1.
+    if (isa<IntegerType>(getElementTypeOrSelf(op.getType())))
+      return failure();
+
+    // Hoisting the negate does not shrink the IR unless the original one dies.
+    if (!neg->hasOneUse())
+      return failure();
+
+    IRMapping mapping;
+    mapping.map(neg.getResult(), neg.getOperand());
+    Operation *newOp = rewriter.clone(*op, mapping);
+    rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, newOp->getResult(0));
+    return success();
+  }
+};
+
 struct GetDimensionSizeOpCanon final
     : CheckedOpRewritePattern<stablehlo::GetDimensionSizeOp,
                               GetDimensionSizeOpCanon> {
@@ -46201,6 +46261,19 @@ struct EnzymeHLOOptPass
         CompareExt,
         ConjComplexNegate,
         NegateImagConj,
+        ParitySimplify<stablehlo::AbsOp, Parity::Even>,
+        ParitySimplify<stablehlo::CosineOp, Parity::Even>,
+        ParitySimplify<stablehlo::SineOp, Parity::Odd>,
+        ParitySimplify<stablehlo::TanOp, Parity::Odd>,
+        ParitySimplify<stablehlo::TanhOp, Parity::Odd>,
+        ParitySimplify<stablehlo::CbrtOp, Parity::Odd>,
+        ParitySimplify<stablehlo::SignOp, Parity::Odd>,
+        ParitySimplify<chlo::CoshOp, Parity::Even>,
+        ParitySimplify<chlo::SinhOp, Parity::Odd>,
+        ParitySimplify<chlo::AsinOp, Parity::Odd>,
+        ParitySimplify<chlo::AsinhOp, Parity::Odd>,
+        ParitySimplify<chlo::AtanOp, Parity::Odd>,
+        ParitySimplify<chlo::AtanhOp, Parity::Odd>,
         ConvertOpCanon,
         DivideSqrtToMultiplyRsqrt,
         DynamicBroadcastInDimAllDimsNonExpanding,
