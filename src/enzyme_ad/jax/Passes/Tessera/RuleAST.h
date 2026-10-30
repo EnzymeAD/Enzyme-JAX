@@ -15,6 +15,7 @@
 #include "mlir/IR/Location.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include <memory>
 #include <optional>
 #include <string>
@@ -228,8 +229,9 @@ inline std::unique_ptr<Cond> box(Cond c) {
 // earlier expressions are calls made for their effects: `f(x) -> g(x); f(x)`
 // adds a call to g before f. `t = g(x);` names g's return value for what
 // follows. A call that modifies a variable updates it for what follows, as in
-// C. The matched call's modified variables get their final values, and its
-// other results come from the last expression.
+// C; a val=out argument is a variable the call only writes. The matched
+// call's modified variables get their final values, and its other results
+// come from the last expression.
 struct Rule {
   std::optional<Cond> cond;
   Expr lhs;
@@ -287,6 +289,10 @@ struct Parser {
 // Parse a bare condition, as a tessera.guard carries. Warns and returns
 // nullopt if it doesn't parse.
 std::optional<Cond> parseConditionText(llvm::StringRef text, Location loc);
+
+// Add the variables `expr` or `cond` uses to `vars`.
+void collectVars(const Expr &expr, llvm::StringSet<> &vars);
+void collectVars(const Cond &cond, llvm::StringSet<> &vars);
 
 // Render an expression or condition as text, with parentheses where needed so
 // it parses back to the same tree (a tessera.guard stores its condition so).
