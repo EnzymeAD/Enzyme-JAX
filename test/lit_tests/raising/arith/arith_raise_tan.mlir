@@ -2,8 +2,7 @@
 
 module {
   // CHECK-LABEL: @tan_f32
-  // CHECK: %[[TAN:.+]] = chlo.tan %arg0 : tensor<4xf32>
-  // CHECK: return %[[TAN]] : tensor<4xf32>
+  // CHECK: stablehlo.tan
   // CHECK-NOT: math.tan
   func.func @tan_f32(%arg0: tensor<4xf32>) -> tensor<4xf32> {
     %0 = math.tan %arg0 : tensor<4xf32>
@@ -11,8 +10,7 @@ module {
   }
 
   // CHECK-LABEL: @tan_f64
-  // CHECK: %[[TAN:.+]] = chlo.tan %arg0 : tensor<4xf64>
-  // CHECK: return %[[TAN]] : tensor<4xf64>
+  // CHECK: stablehlo.tan
   // CHECK-NOT: math.tan
   func.func @tan_f64(%arg0: tensor<4xf64>) -> tensor<4xf64> {
     %0 = math.tan %arg0 : tensor<4xf64>
