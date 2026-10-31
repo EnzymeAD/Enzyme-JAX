@@ -3352,6 +3352,106 @@ static DenseElementsAttr constantGlobalInitializer(LLVM::AddressOfOp addr) {
   return dense;
 }
 
+// The bits an element of a buffer of `elemTy` occupies in memory. A boolean
+// is stored as a byte (XLA's PRED, the i8 a bool loads and stores as).
+static int64_t storageBits(Type elemTy) {
+  if (elemTy.isInteger(1))
+    return 8;
+  return cast<AutoDiffTypeInterface>(elemTy).getApproxSize();
+}
+
+// `input` seen as a buffer of `ty`'s element type with `ty`'s shape, the way
+// a pointer2memref views memory. The one dynamic dimension of a view of a
+// static tensor is sized from the elements the tensor holds. A byte view of
+// booleans reads each as 0 or 1 and a boolean view of bytes reads a nonzero
+// byte as true, so those two convert the elements instead of reinterpreting
+// the bits. Null when the view cannot be built.
+static Value reinterpretBuffer(OpBuilder &builder, Location loc, Value input,
+                               RankedTensorType ty) {
+  auto inTy = cast<RankedTensorType>(input.getType());
+  Type inElem = inTy.getElementType(), outElem = ty.getElementType();
+  int64_t inSize = storageBits(inElem), outSize = storageBits(outElem);
+  bool boolBytes = (inElem.isInteger(1) && outElem.isInteger(8)) ||
+                   (inElem.isInteger(8) && outElem.isInteger(1));
+
+  if (inTy.hasStaticShape() && !ty.hasStaticShape() &&
+      llvm::count(ty.getShape(), ShapedType::kDynamic) == 1) {
+    int64_t bits = inTy.getNumElements() * inSize;
+    int64_t known = 1;
+    for (int64_t d : ty.getShape())
+      if (d != ShapedType::kDynamic)
+        known *= d;
+    if (bits % (outSize * known) == 0) {
+      SmallVector<int64_t> shape(ty.getShape());
+      *llvm::find(shape, ShapedType::kDynamic) = bits / (outSize * known);
+      ty = RankedTensorType::get(shape, outElem);
+    }
+  }
+  // A static tensor has no dimension to read a view's size back from, and
+  // its elements must fill the view exactly.
+  if (inTy.hasStaticShape() &&
+      (!ty.hasStaticShape() ||
+       inTy.getNumElements() * inSize != ty.getNumElements() * outSize))
+    return nullptr;
+
+  if (boolBytes) {
+    Value res = stablehlo::ConvertOp::create(
+        builder, loc, RankedTensorType::get(inTy.getShape(), outElem), input);
+    return stablehlo::ReshapeOpCreate(builder, loc, res, ty.getShape());
+  }
+  if (outSize == inSize) {
+    Value res = stablehlo::BitcastConvertOp::create(
+        builder, loc, RankedTensorType::get(inTy.getShape(), outElem), input);
+    return stablehlo::ReshapeOpCreate(builder, loc, res, ty.getShape());
+  }
+  if (outSize < inSize) {
+    // Each element splits into a trailing dimension of narrower ones.
+    int64_t ratio = inSize / outSize;
+    SmallVector<int64_t> dims2 = llvm::to_vector(inTy.getShape());
+    dims2.push_back(ratio);
+    Value res = stablehlo::BitcastConvertOp::create(
+        builder, loc, RankedTensorType::get(dims2, outElem), input);
+    if (ty.hasStaticShape())
+      return stablehlo::ReshapeOpCreate(builder, loc, res, ty.getShape());
+    SmallVector<Value> vals;
+    for (size_t i = 0; i < ty.getShape().size(); i++) {
+      auto val = stablehlo::GetDimensionSizeOp::create(builder, loc, input, i);
+      Value vval = val;
+      if (i == ty.getShape().size() - 1) {
+        auto cst = arith::ConstantOp::create(
+            builder, loc, val.getType(),
+            cast<ElementsAttr>(makeAttr(val.getType(), ratio)));
+        vval = stablehlo::MulOp::create(builder, loc, vval, cst);
+      }
+      vval =
+          stablehlo::ReshapeOpCreate(builder, loc, vval, ArrayRef<int64_t>{1});
+      vals.push_back(vval);
+    }
+    auto idxs = stablehlo::ConcatenateOpCreate(builder, loc, vals, 0);
+    return stablehlo::DynamicReshapeOp::create(builder, loc, ty, res, idxs);
+  }
+  // A run of narrower elements, as a trailing dimension, makes each wider one.
+  SmallVector<int64_t> dims2 = llvm::to_vector(ty.getShape());
+  dims2.push_back(outSize / inSize);
+  Value res = stablehlo::ReshapeOpCreate(builder, loc, input, dims2);
+  return stablehlo::BitcastConvertOp::create(builder, loc, ty, res);
+}
+
+// Whether some op stores through `memref` itself.
+static bool isWrittenThrough(Value memref) {
+  for (Operation *user : memref.getUsers()) {
+    auto iface = dyn_cast<MemoryEffectOpInterface>(user);
+    if (!iface)
+      continue;
+    SmallVector<MemoryEffects::EffectInstance> effects;
+    iface.getEffectsOnValue(memref, effects);
+    for (auto &effect : effects)
+      if (isa<MemoryEffects::Write>(effect.getEffect()))
+        return true;
+  }
+  return false;
+}
+
 static LogicalResult
 tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         llvm::DenseMap<Value, affine::AffineValueMap> &maps,
@@ -4942,110 +5042,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     }
 
     auto ty = RankedTensorType::get(MT.getShape(), MT.getElementType());
-
-    auto inTy = cast<RankedTensorType>(input.getType());
-    size_t outSize =
-        cast<AutoDiffTypeInterface>(ty.getElementType()).getApproxSize();
-    size_t inSize =
-        cast<AutoDiffTypeInterface>(inTy.getElementType()).getApproxSize();
-
-    // A view of a static tensor holds a known number of elements: size its
-    // one dynamic dimension from that instead of reading it back at runtime.
-    if (inTy.hasStaticShape() && !ty.hasStaticShape() &&
-        llvm::count(ty.getShape(), ShapedType::kDynamic) == 1) {
-      int64_t bytes = inTy.getNumElements() * (int64_t)inSize;
-      int64_t known = 1;
-      for (int64_t d : ty.getShape())
-        if (d != ShapedType::kDynamic)
-          known *= d;
-      if (bytes % ((int64_t)outSize * known) == 0) {
-        SmallVector<int64_t> shape(ty.getShape());
-        *llvm::find(shape, ShapedType::kDynamic) =
-            bytes / ((int64_t)outSize * known);
-        ty = RankedTensorType::get(shape, ty.getElementType());
-      }
-    }
-
-    Value res;
-    if (outSize == inSize) {
-      res = stablehlo::BitcastConvertOp::create(
-          builder,
-          rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), ty,
-          input);
-    } else if (outSize < inSize) {
-      SmallVector<int64_t> dims2 = llvm::to_vector(ty.getShape());
-      auto oidx = dims2.size();
-      dims2.push_back(inSize / outSize);
-      if (oidx != 0 && dims2[oidx - 1] != ShapedType::kDynamic) {
-        dims2[oidx - 1] /= inSize / outSize;
-      }
-      res = stablehlo::BitcastConvertOp::create(
-          builder,
-          rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
-          RankedTensorType::get(dims2, ty.getElementType()), input);
-      bool anyDynamic = false;
-      for (auto idx : dims2) {
-        if (idx == ShapedType::kDynamic) {
-          anyDynamic = true;
-          break;
-        }
-      }
-      if (anyDynamic) {
-        SmallVector<Value> vals;
-        for (size_t i = 0; i < ty.getShape().size(); i++) {
-          auto val = stablehlo::GetDimensionSizeOp::create(
-              builder,
-              rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
-              input, i);
-          Value vval = val;
-          if (i == ty.getShape().size() - 1) {
-            auto cst = arith::ConstantOp::create(
-                builder,
-                rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
-                val.getType(),
-                cast<ElementsAttr>(makeAttr(val.getType(), inSize / outSize)));
-            vval = stablehlo::MulOp::create(
-                builder,
-                rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
-                vval, cst);
-          }
-          vval = stablehlo::ReshapeOpCreate(
-              builder,
-              rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
-              vval, ArrayRef<int64_t>{1});
-          vals.push_back(vval);
-        }
-
-        auto idxs = stablehlo::ConcatenateOpCreate(
-            builder,
-            rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
-            vals, 0);
-        res = stablehlo::DynamicReshapeOp::create(
-            builder,
-            rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), ty,
-            res, idxs);
-      } else {
-        res = stablehlo::ReshapeOpCreate(
-            builder,
-            rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), res,
-            ty.getShape());
-      }
-    } else {
-      SmallVector<int64_t> dims2 = llvm::to_vector(ty.getShape());
-      auto oidx = dims2.size();
-      dims2.push_back(outSize / inSize);
-      if (oidx != 0 && dims2[oidx - 1] != ShapedType::kDynamic) {
-        dims2[oidx - 1] /= outSize / inSize;
-      }
-      res = stablehlo::ReshapeOpCreate(
-          builder,
-          rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), input,
-          dims2);
-      res = stablehlo::BitcastConvertOp::create(
-          builder,
-          rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), ty,
-          res);
-    }
+    Value res = reinterpretBuffer(
+        builder, rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
+        input, ty);
+    if (!res)
+      return op->emitError("cannot view ") << input.getType() << " as " << MT;
     mapping.map(result, res);
     return success();
   }
@@ -5527,10 +5528,46 @@ static bool tryRaisingToStableHLO(func::FuncOp func,
     return false;
   }
 
+  // An argument's result is its final value. A store through a view of it
+  // (a pointer2memref of its pointer with another element type) landed in
+  // the view's tensor, which reads back as the argument's own type.
+  SmallVector<enzymexla::Pointer2MemrefOp> views;
+  body->walk([&](enzymexla::Pointer2MemrefOp p2m) {
+    if (p2m.getSource().getDefiningOp<enzymexla::Memref2PointerOp>())
+      views.push_back(p2m);
+  });
   SmallVector<Value> results;
   for (auto arg : body->getArguments()) {
-    auto val = mapping.lookup(arg);
-    results.push_back(val);
+    Value val = mapping.lookup(arg);
+    Value written = nullptr;
+    for (auto p2m : views) {
+      if (p2m.getSource()
+                  .getDefiningOp<enzymexla::Memref2PointerOp>()
+                  .getSource() != arg ||
+          !isWrittenThrough(p2m.getResult()))
+        continue;
+      Value cur = mapping.lookupOrNull(p2m.getResult());
+      if (!cur)
+        continue;
+      // Two written buffers, with neither seeing the other's stores, hold
+      // no single final value.
+      if (written || !isa<BlockArgument>(val)) {
+        func.emitError("argument written both directly and through a view, "
+                       "or through several views: ")
+            << arg;
+        newFunc->erase();
+        return false;
+      }
+      written = reinterpretBuffer(
+          builder, rewriteLocation(p2m.getLoc(), options.strip_llvm_debuginfo),
+          cur, cast<RankedTensorType>(val.getType()));
+      if (!written) {
+        p2m.emitError("cannot read a view back as ") << val.getType();
+        newFunc->erase();
+        return false;
+      }
+    }
+    results.push_back(written ? written : val);
   }
 
   func::ReturnOp::create(
