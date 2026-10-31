@@ -223,10 +223,11 @@ buildKernelBodyModule(DistributedKernelOp kernelOp);
 //
 // Since an external compiler names these helper functions the same way for
 // every kernel it compiles, splicing more than one kernel into the same
-// module collides on those names; each sibling is inserted through the
-// containing module's SymbolTable, which auto-renames on conflict, and any
-// reference to a renamed sibling within the body just spliced in step 1 is
-// rewritten to match. Renaming/rewriting is scoped to kernelOp's own region,
+// module collides on those names; each sibling is inserted under its name
+// with an `_actcall` suffix through the containing module's SymbolTable,
+// which auto-renames on conflict, and every reference to it within the body
+// just spliced in step 1 is rewritten to match. Renaming/rewriting is scoped
+// to kernelOp's own region,
 // never module-wide, so an unrelated pre-existing symbol of the same name
 // elsewhere in the module is never touched.
 //

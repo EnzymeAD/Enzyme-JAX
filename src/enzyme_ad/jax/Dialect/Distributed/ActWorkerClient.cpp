@@ -15,6 +15,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <sys/file.h>
@@ -430,6 +431,20 @@ llvm::StringMap<PerWorkerActCache> &inProcessActCache() {
 }
 
 } // namespace
+
+::mlir::FailureOr<std::string> lookupActRepoPath(::mlir::Operation *diagOp) {
+  const char *value = std::getenv(kActRepoPathEnvVar);
+  if (!value || !*value) {
+    return diagOp->emitError()
+           << kActRepoPathEnvVar
+           << " must be set to the act-eva-egan checkout for real ACT dispatch";
+  }
+  if (!llvm::sys::fs::is_directory(value)) {
+    return diagOp->emitError() << kActRepoPathEnvVar << "='" << value
+                               << "' is not a directory";
+  }
+  return std::string(value);
+}
 
 ::mlir::LogicalResult ensureActPatchedKernel(DistributedKernelOp kernelOp,
                                              const ActWorkerConfig &config) {

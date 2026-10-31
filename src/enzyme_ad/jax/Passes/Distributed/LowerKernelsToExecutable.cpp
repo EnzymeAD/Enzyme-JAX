@@ -122,6 +122,12 @@ struct LowerKernelsToExecutablePass
     // fields point at is keyed by (target, calling user), not by kernel.
     ActWorkerConfig config;
     if (realDispatch) {
+      FailureOr<std::string> actRepoPath = lookupActRepoPath(getOperation());
+      if (failed(actRepoPath)) {
+        signalPassFailure();
+        return;
+      }
+      config.actRepoPath = *actRepoPath;
       config.target = actTarget;
       config.workdirRoot = actWorkerDirRoot;
       config.workerScriptDir = actWorkerScriptDir;

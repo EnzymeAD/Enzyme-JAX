@@ -2027,6 +2027,10 @@ struct DistributedSearchStrategiesPass
       signalPassFailure();
       return;
     }
+    if (allActDispatchOptions && failed(lookupActRepoPath(getOperation()))) {
+      signalPassFailure();
+      return;
+    }
 
     ModuleOp moduleOp = getOperation();
     mlir::OpBuilder builder(moduleOp.getContext());

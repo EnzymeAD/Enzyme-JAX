@@ -483,19 +483,24 @@ LogicalResult spliceKernelBodyModule(DistributedKernelOp kernelOp,
          "DistributedKernelOp expected to live inside a module");
   SymbolTable containingSymbols(containingModule);
 
+  // ACT's own names already carry `_<n>` suffixes (@act_stage_0_1 belongs to
+  // its second launch), the same shape SymbolTable::insert's uniquing
+  // appends. Tagging each name with `_actcall` before inserting keeps the
+  // two apart: an auto-renamed sibling (`..._actcall_<n>`) can never take
+  // the name of a sibling not yet spliced, whose references in the body
+  // would then be rewritten along with it to the wrong declaration.
   for (auto patchedFn : patchedModule.getOps<func::FuncOp>()) {
     if (patchedFn == patchedKernelFn) {
       continue;
     }
     StringAttr oldName = patchedFn.getSymNameAttr();
-    Operation *clone = patchedFn->clone();
+    auto clone = cast<func::FuncOp>(patchedFn->clone());
+    clone.setSymName((oldName.getValue() + "_actcall").str());
     StringAttr newName = containingSymbols.insert(clone);
-    if (newName != oldName &&
-        failed(SymbolTable::replaceAllSymbolUses(oldName, newName, kernelOp))) {
+    if (failed(SymbolTable::replaceAllSymbolUses(oldName, newName, kernelOp))) {
       return kernelOp.emitError()
              << "failed to rewrite references to '" << oldName
-             << "' (renamed to '" << newName
-             << "' to avoid a symbol collision) in the spliced kernel body";
+             << "' (renamed to '" << newName << "') in the spliced kernel body";
     }
   }
 

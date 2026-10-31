@@ -40,8 +40,8 @@ struct ActWorkerConfig {
   // Path to the act-eva-egan checkout, bind-mounted read-only at /workspace
   // and added to PYTHONPATH inside the container (act_worker.py's own doc
   // comment explains why the image's baked-in PYTHONPATH doesn't already
-  // cover this).
-  std::string actRepoPath = "/mnt/eganj/act-eva-egan";
+  // cover this). Filled from lookupActRepoPath.
+  std::string actRepoPath;
 
   // Docker image containing the built ACT toolchain.
   std::string dockerImage = "act-eva-egan:latest-amd64";
@@ -67,6 +67,16 @@ struct ActWorkerConfig {
   // doc comment for the full reasoning.
   double requestTimeoutSeconds = 60.0;
 };
+
+// Environment variable naming the act-eva-egan checkout for
+// ActWorkerConfig::actRepoPath. An environment variable rather than a pass
+// option because it describes the machine, not the compilation, and would
+// otherwise have to be threaded through every scored candidate's pipeline.
+inline constexpr const char *kActRepoPathEnvVar = "ACT_REPO_PATH";
+
+// Reads kActRepoPathEnvVar, emitting an error on diagOp and returning failure
+// if it is unset, empty, or not a directory.
+::mlir::FailureOr<std::string> lookupActRepoPath(::mlir::Operation *diagOp);
 
 // Ensures kernelOp's body has been costed and rewritten by ACT for
 // config.target, splicing the result in via spliceKernelBodyModule.
