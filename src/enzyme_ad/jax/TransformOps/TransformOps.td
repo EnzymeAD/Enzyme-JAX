@@ -2127,6 +2127,22 @@ def ParallelWhileToBatchedScatterPatterns : EnzymeHLOPatternOp<
   let patterns = ["ParallelWhileToBatchedScatter"];
 }
 
+// The same, batching the iterations in at least `parameter` chunks.
+def ParallelWhileToBatchedScatterChunkedPatterns
+    : EnzymeHLOParameterizedPatternOp<
+          "parallel_while_to_batched_scatter_chunked"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
+  let assemblyFormat = "prop-dict attr-dict";
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getI64IntegerAttr(2)))};
+    }
+  }];
+}
+
 def TransposeWhilePatterns : EnzymeHLOPatternOp<
   "transpose_while"
 > {
