@@ -357,15 +357,21 @@ struct TesseraToLLVMPass
   void runOnOperation() override {
     MLIRContext *ctx = &getContext();
     LLVMTypeConverter typeConverter(ctx);
-    RewritePatternSet patterns(ctx);
 
-    patterns.add<DefineOpRewrite>(typeConverter, ctx);
-    patterns.add<CallOpRewrite, ReturnOpRewrite>(ctx);
+    auto config = GreedyRewriteConfig().setRegionSimplificationLevel(
+        GreedySimplifyRegionLevel::Normal);
 
-    if (failed(applyPatternsGreedily(
-            getOperation(), std::move(patterns),
-            GreedyRewriteConfig().setRegionSimplificationLevel(
-                GreedySimplifyRegionLevel::Normal)))) {
+    // Calls are converted first: each needs its tessera.define, which
+    // converting the define would remove.
+    RewritePatternSet callPatterns(ctx);
+    callPatterns.add<CallOpRewrite, ReturnOpRewrite>(ctx);
+    RewritePatternSet definePatterns(ctx);
+    definePatterns.add<DefineOpRewrite>(typeConverter, ctx);
+
+    if (failed(applyPatternsGreedily(getOperation(), std::move(callPatterns),
+                                     config)) ||
+        failed(applyPatternsGreedily(getOperation(), std::move(definePatterns),
+                                     config))) {
       llvm::errs() << "Failed to convert tessera dialect operations to LLVM "
                       "dialect operations\n";
       return signalPassFailure();
