@@ -3,7 +3,6 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/AsmState.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/RegionGraphTraits.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
@@ -73,20 +72,19 @@ struct SimpleCycleAnalysisPass
       }
     });
     Operation *op = getOperation();
-    mlir::AsmState state(op);
     z3::context ctx;
     z3::solver solver(ctx);
     std::vector<z3::expr> cost_var;
     cost_var.push_back(solver.ctx().int_const("cost0"));
     solver.add(cost_var.front() >= 0); // the starting cost is never negative
 
-    visitOperation(op, &state, solver, cost_var);
+    visitOperation(op, solver, cost_var);
   }
 
-  void visitOperation(Operation *op, AsmState *state, z3::solver &solver,
+  void visitOperation(Operation *op, z3::solver &solver,
                       std::vector<z3::expr> &cost_var) {
     if (auto arg = dyn_cast<ArgOp>(
-            op)) { // this is an argument to set up the cost hypothesis.
+            op)) { // this is an argument to set up the cost hypothesis.0
                    // It does not refer to the target function's arity
       NamedAttribute argAttr = op->getAttrs()[0];
       if (auto intAttr =
@@ -124,8 +122,10 @@ struct SimpleCycleAnalysisPass
       unprovenAssertions = false;
       cost_var.erase(cost_var.begin() + 1, cost_var.end());
       solver.push();
-      for (Region &region : op->getRegions())
-        visitRegion(region, state, solver, cost_var);
+
+      for (Region &region : op->getRegions()) {
+        visitRegion(region, solver, cost_var);
+      }
       solver.pop();
       return;
     } else if (auto funcCost = dyn_cast<FnCostOp>(op)) {
@@ -185,7 +185,7 @@ struct SimpleCycleAnalysisPass
       assumeOp.setSatresAttr(BoolAttr::get(&getContext(), met));
     }
     for (Region &region : op->getRegions())
-      visitRegion(region, state, solver, cost_var);
+      visitRegion(region, solver, cost_var);
   }
 
   bool checkPostHypothesis(HypothesisOp hyp, z3::solver &solver,
@@ -497,16 +497,16 @@ struct SimpleCycleAnalysisPass
     return result;
   }
 
-  void visitRegion(Region &region, AsmState *state, z3::solver &solver,
+  void visitRegion(Region &region, z3::solver &solver,
                    std::vector<z3::expr> &cost_var) {
     for (Block &block : region.getBlocks())
-      visitBlock(block, state, solver, cost_var);
+      visitBlock(block, solver, cost_var);
   }
 
-  void visitBlock(Block &block, AsmState *state, z3::solver &solver,
+  void visitBlock(Block &block, z3::solver &solver,
                   std::vector<z3::expr> &cost_var) {
     for (Operation &op : block.getOperations())
-      visitOperation(&op, state, solver, cost_var);
+      visitOperation(&op, solver, cost_var);
   }
 };
 } // namespace
