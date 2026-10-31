@@ -541,6 +541,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("convert_convert_int<1>");
   list.push_back("reshape_iota<1>");
   list.push_back("broadcast_reduce<1>");
+  list.push_back("reduce_broadcast_source");
   list.push_back("slice_dot_general<1>");
   list.push_back("if_inline<1>");
   list.push_back("if_to_select<1>");
@@ -634,6 +635,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("convert_binop_convert_min");
   list.push_back("convert_binop_convert_max");
   list.push_back("select_broadcast_in_dim");
+  list.push_back("select_broadcast_constants");
+  list.push_back("pad_broadcast_constant<16>(4096)");
   list.push_back("if_op_lift_common_ops");
   list.push_back("involution_neg_simplify");
   list.push_back("involution_conj_simplify");

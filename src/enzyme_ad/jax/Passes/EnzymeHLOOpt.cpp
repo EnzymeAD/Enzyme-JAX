@@ -14917,6 +14917,61 @@ struct ReduceMaxMinMulPositiveScalar
   }
 };
 
+// A reduce of a broadcast along dimensions the broadcast's operand has (of
+// their size) is the broadcast of the operand reduced along them: the other
+// dimensions of the broadcast only repeat the reduced values.
+struct ReduceBroadcastSource final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceBroadcastSource> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return failure();
+    auto bcast = op.getInputs()[0].getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!bcast)
+      return failure();
+    auto srcTy = cast<RankedTensorType>(bcast.getOperand().getType());
+    auto inTy = cast<RankedTensorType>(bcast.getType());
+    auto resTy = cast<RankedTensorType>(op.getType(0));
+    if (!srcTy.hasStaticShape() || !inTy.hasStaticShape())
+      return failure();
+    ArrayRef<int64_t> bcastDims = bcast.getBroadcastDimensions();
+    SmallVector<int64_t> srcReduced;
+    for (int64_t d : op.getDimensions()) {
+      auto it = llvm::find(bcastDims, d);
+      if (it == bcastDims.end())
+        return failure();
+      int64_t s = it - bcastDims.begin();
+      if (srcTy.getDimSize(s) != inTy.getDimSize(d))
+        return failure();
+      srcReduced.push_back(s);
+    }
+    llvm::sort(srcReduced);
+    // The reduced operand's shape, and the result dimension each of its
+    // dimensions is broadcast to.
+    SmallVector<int64_t> shape, dims;
+    for (int64_t s = 0; s < srcTy.getRank(); ++s) {
+      if (llvm::is_contained(srcReduced, s))
+        continue;
+      shape.push_back(srcTy.getDimSize(s));
+      int64_t d = bcastDims[s];
+      dims.push_back(d - llvm::count_if(op.getDimensions(),
+                                        [&](int64_t r) { return r < d; }));
+    }
+    auto reduced = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(),
+        TypeRange{RankedTensorType::get(shape, resTy.getElementType())},
+        ValueRange{bcast.getOperand()}, op.getInitValues(),
+        rewriter.getDenseI64ArrayAttr(srcReduced));
+    IRMapping map;
+    op.getBody().cloneInto(&reduced.getBody(), map);
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, resTy, reduced.getResult(0), rewriter.getDenseI64ArrayAttr(dims));
+    return success();
+  }
+};
+
 struct BroadcastReduce
     : public CheckedOpRewritePattern<stablehlo::ReduceOp, BroadcastReduce> {
   using CheckedOpRewritePattern<stablehlo::ReduceOp,
@@ -34191,6 +34246,229 @@ struct TransposeBatchNormGrad final
   }
 };
 
+// A pad of a splat constant (a mask, as compare_iota_const_simplify writes
+// one), under reshapes that only add or drop unit dimensions, read as the
+// constant over its padded dimensions (at most 4096 elements), with `dims`
+// the dimensions of `v` those are; null when `v` is not one.
+static ElementsAttr padOfSplatAsConstant(Value v,
+                                         SmallVectorImpl<int64_t> &dims) {
+  auto ty = dyn_cast<RankedTensorType>(v.getType());
+  if (!ty || !ty.hasStaticShape())
+    return nullptr;
+  Value cur = v;
+  while (auto reshape = cur.getDefiningOp<stablehlo::ReshapeOp>())
+    cur = reshape.getOperand();
+  auto pad = cur.getDefiningOp<stablehlo::PadOp>();
+  if (!pad)
+    return nullptr;
+  auto padTy = cast<RankedTensorType>(pad.getType());
+  auto operandTy = cast<RankedTensorType>(pad.getOperand().getType());
+  SplatElementsAttr splat, value;
+  if (!padTy.hasStaticShape() || padTy.getNumElements() == 0 ||
+      !matchPattern(pad.getOperand(), m_Constant(&splat)) ||
+      !matchPattern(pad.getPaddingValue(), m_Constant(&value)))
+    return nullptr;
+  for (int64_t interior : pad.getInteriorPadding())
+    if (interior != 0)
+      return nullptr;
+  // The reshapes keep the non-unit dimensions in order: the i-th one of the
+  // pad is the i-th one of `v`. A pad along a unit dimension is not read.
+  SmallVector<int64_t> padNonUnit, vNonUnit;
+  for (int64_t d = 0; d < padTy.getRank(); ++d) {
+    if (padTy.getDimSize(d) != 1)
+      padNonUnit.push_back(d);
+    else if (pad.getEdgePaddingLow()[d] != 0 ||
+             pad.getEdgePaddingHigh()[d] != 0)
+      return nullptr;
+  }
+  for (int64_t d = 0; d < ty.getRank(); ++d)
+    if (ty.getDimSize(d) != 1)
+      vNonUnit.push_back(d);
+  if (padNonUnit.size() != vNonUnit.size())
+    return nullptr;
+  for (auto [a, b] : llvm::zip(padNonUnit, vNonUnit))
+    if (padTy.getDimSize(a) != ty.getDimSize(b))
+      return nullptr;
+  SmallVector<int64_t> shape, operandShape, low, interior;
+  int64_t elements = 1;
+  dims.clear();
+  for (auto [i, d] : llvm::enumerate(padNonUnit)) {
+    if (pad.getEdgePaddingLow()[d] == 0 && pad.getEdgePaddingHigh()[d] == 0)
+      continue;
+    dims.push_back(vNonUnit[i]);
+    shape.push_back(padTy.getDimSize(d));
+    operandShape.push_back(operandTy.getDimSize(d));
+    low.push_back(pad.getEdgePaddingLow()[d]);
+    interior.push_back(0);
+    elements *= padTy.getDimSize(d);
+  }
+  if (dims.empty() || elements > 4096)
+    return nullptr;
+  auto resultTy = RankedTensorType::get(shape, ty.getElementType());
+  return fromTensor(stablehlo::padOp(
+      stablehlo::constantOp(splat.resizeSplat(
+          RankedTensorType::get(operandShape, ty.getElementType()))),
+      stablehlo::constantOp(value), stablehlo::Sizes(low),
+      stablehlo::Sizes(interior), resultTy));
+}
+
+// A select of constants each broadcast to the result (a splat constant
+// counts as one broadcast from nothing) is the select of them broadcast
+// over the dimensions any of them has, broadcast to the result: that select
+// folds to one constant, which the dimensions none of them varies along
+// kept from folding.
+struct SelectBroadcastConstants final
+    : public CheckedOpRewritePattern<stablehlo::SelectOp,
+                                     SelectBroadcastConstants> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // Bounds the elements of the select built.
+  static constexpr int64_t kMaxElements = 4096;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
+                                    PatternRewriter &rewriter) const {
+    auto ty = op.getType();
+    if (!ty.hasStaticShape())
+      return failure();
+    int64_t rank = ty.getRank();
+    // Each operand's source constant and the result dimensions its
+    // dimensions go to.
+    // Each operand's constant (built, not yet an op) and the result
+    // dimensions its dimensions go to.
+    SmallVector<std::pair<ElementsAttr, SmallVector<int64_t>>, 3> sources;
+    SmallVector<bool> used(rank, false);
+    for (Value v : {op.getPred(), op.getOnTrue(), op.getOnFalse()}) {
+      SmallVector<int64_t> dims;
+      ElementsAttr cst;
+      if (auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        if (!matchPattern(bcast.getOperand(), m_Constant(&cst)) ||
+            !cast<RankedTensorType>(bcast.getOperand().getType())
+                 .hasStaticShape())
+          return failure();
+        dims = llvm::to_vector(bcast.getBroadcastDimensions());
+      } else if (auto mask = padOfSplatAsConstant(v, dims)) {
+        // a mask (a pad of a splat): the constant over its padded dimensions
+        cst = mask;
+      } else if (SplatElementsAttr splat; matchPattern(v, m_Constant(&splat))) {
+        cst = splat.resizeSplat(RankedTensorType::get(
+            {}, cast<RankedTensorType>(v.getType()).getElementType()));
+      } else {
+        return failure();
+      }
+      for (int64_t d : dims)
+        used[d] = true;
+      sources.push_back({cst, dims});
+    }
+    SmallVector<int64_t> common, shape;
+    int64_t elements = 1;
+    for (int64_t d = 0; d < rank; ++d)
+      if (used[d]) {
+        common.push_back(d);
+        shape.push_back(ty.getDimSize(d));
+        elements *= ty.getDimSize(d);
+      }
+    if (common.size() == size_t(rank) || elements > kMaxElements)
+      return failure();
+    SmallVector<Value, 3> operands;
+    for (auto &[cst, dims] : sources) {
+      SmallVector<int64_t> toCommon;
+      for (int64_t d : dims)
+        toCommon.push_back(llvm::find(common, d) - common.begin());
+      Value src = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), cast<RankedTensorType>(cst.getType()), cst);
+      operands.push_back(stablehlo::BroadcastInDimOp::create(
+          rewriter, op.getLoc(),
+          RankedTensorType::get(shape, cst.getElementType()), src,
+          rewriter.getDenseI64ArrayAttr(toCommon)));
+    }
+    Value select = stablehlo::SelectOp::create(
+        rewriter, op.getLoc(), operands[0], operands[1], operands[2]);
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, ty, select, rewriter.getDenseI64ArrayAttr(common));
+    return success();
+  }
+};
+
+// A pad of a constant broadcast to the result, along dimensions the
+// constant has, is the broadcast of the constant padded -- a small constant,
+// folded here: the table of a raised kernel's guarded store comes with its
+// rows cut to the live ones and padded back with -1, over the batch.
+struct PadBroadcastConstant final
+    : public CheckedOpRewritePattern<stablehlo::PadOp, PadBroadcastConstant> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // Bounds the elements of the constant folded.
+  size_t max_constant_expansion;
+  PadBroadcastConstant(size_t max_constant_expansion, MLIRContext *context,
+                       PatternBenefit benefit = 1,
+                       ArrayRef<StringRef> generatedNames = {})
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
+        max_constant_expansion(max_constant_expansion) {}
+
+  LogicalResult matchAndRewriteImpl(stablehlo::PadOp op,
+                                    PatternRewriter &rewriter) const {
+    auto ty = op.getType();
+    // (The reference evaluation does not take an empty tensor.)
+    if (!ty.hasStaticShape() || ty.getNumElements() == 0 ||
+        cast<RankedTensorType>(op.getOperand().getType()).getNumElements() == 0)
+      return failure();
+    for (int64_t interior : op.getInteriorPadding())
+      if (interior != 0)
+        return failure();
+    DenseElementsAttr padValue;
+    if (!matchPattern(op.getPaddingValue(), m_Constant(&padValue)))
+      return failure();
+    int64_t rank = ty.getRank();
+    SmallVector<bool> padded(rank, false);
+    for (int64_t d = 0; d < rank; ++d)
+      padded[d] =
+          op.getEdgePaddingLow()[d] != 0 || op.getEdgePaddingHigh()[d] != 0;
+    // The constant, and the result dimensions its dimensions go to: a
+    // padded dimension must be one of them.
+    DenseElementsAttr cst;
+    SmallVector<int64_t> dims;
+    Value operand = op.getOperand();
+    if (auto bcast = operand.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      if (!matchPattern(bcast.getOperand(), m_Constant(&cst)))
+        return failure();
+      dims = llvm::to_vector(bcast.getBroadcastDimensions());
+      for (int64_t d = 0; d < rank; ++d)
+        if (padded[d] && !llvm::is_contained(dims, d))
+          return failure();
+    } else {
+      return failure();
+    }
+    // A pad of a splat is a mask (compare_iota_const_simplify's form of
+    // one): left as it is, and read by the select fold.
+    if (cst.isSplat())
+      return failure();
+    auto cstTy = cast<RankedTensorType>(cst.getType());
+    SmallVector<int64_t> low, interior, shape;
+    int64_t elements = 1;
+    for (auto [i, d] : llvm::enumerate(dims)) {
+      low.push_back(op.getEdgePaddingLow()[d]);
+      interior.push_back(0);
+      shape.push_back(ty.getDimSize(d));
+      elements *= ty.getDimSize(d);
+      if (cstTy.getDimSize(i) + op.getEdgePaddingLow()[d] +
+              op.getEdgePaddingHigh()[d] !=
+          ty.getDimSize(d))
+        return failure();
+    }
+    if (elements > int64_t(max_constant_expansion))
+      return failure();
+    auto paddedTy = RankedTensorType::get(shape, ty.getElementType());
+    auto paddedAttr = fromTensor(stablehlo::padOp(
+        stablehlo::constantOp(cst), stablehlo::constantOp(padValue),
+        stablehlo::Sizes(low), stablehlo::Sizes(interior), paddedTy));
+    Value folded = stablehlo::ConstantOp::create(rewriter, op.getLoc(),
+                                                 paddedTy, paddedAttr);
+    rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+        op, ty, folded, rewriter.getDenseI64ArrayAttr(dims));
+    return success();
+  }
+};
+
 struct SelectBroadcastInDim final
     : public CheckedOpRewritePattern<stablehlo::SelectOp,
                                      SelectBroadcastInDim> {
@@ -45532,6 +45810,14 @@ void mlir::transform::addPadSimplify(RewritePatternSet &patterns,
   patterns.insert<PadSimplify>(maxConstantExpansion, &context, benefit);
 }
 
+void mlir::transform::addPadBroadcastConstant(RewritePatternSet &patterns,
+                                              int64_t maxConstantExpansion,
+                                              MLIRContext &context,
+                                              PatternBenefit benefit) {
+  patterns.insert<PadBroadcastConstant>(maxConstantExpansion, &context,
+                                        benefit);
+}
+
 void mlir::transform::addDynamicUpdateSliceConstProp(
     RewritePatternSet &patterns, int64_t maxConstantExpansion,
     MLIRContext &context, PatternBenefit benefit) {
@@ -46121,9 +46407,12 @@ struct EnzymeHLOOptPass
     if (passses & 2048)
       patterns.add<TransposeTranspose>(context);
 
-    if (passses & (2048 * 2))
+    if (passses & (2048 * 2)) {
+      patterns.add<ReduceBroadcastSource, SelectBroadcastConstants>(context);
+      patterns.add<PadBroadcastConstant>(max_constant_expansion, context);
       patterns.add<BroadcastReduce, SliceDotGeneral, SliceReshapeDotGeneral>(
           context);
+    }
 
     if (passses & (2048 * 4)) {
       patterns.add<PadDotGeneral>(false, context);

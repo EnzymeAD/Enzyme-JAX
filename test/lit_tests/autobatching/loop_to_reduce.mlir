@@ -334,11 +334,11 @@ module {
 }
 
 // CHECK: func.func @main(%arg0: tensor<10x8x5xi32> {enzymexla.memory_effects = []}) -> tensor<10x5xi32> attributes {enzymexla.memory_effects = []} {
-// CHECK-NEXT:   %c = stablehlo.constant dense<2> : tensor<10x5xi32>
-// CHECK-NEXT:   %c_0 = stablehlo.constant dense<-1> : tensor<i32>
+// CHECK-NEXT:   %c = stablehlo.constant dense<-1> : tensor<i32>
+// CHECK-NEXT:   %c_0 = stablehlo.constant dense<2> : tensor<10x5xi32>
 // CHECK-NEXT:   %0 = stablehlo.slice %arg0 [0:10, 1:8:2, 0:5] : (tensor<10x8x5xi32>) -> tensor<10x4x5xi32>
-// CHECK-NEXT:   %1 = stablehlo.reduce(%0 init: %c_0) applies stablehlo.and across dimensions = [1] : (tensor<10x4x5xi32>, tensor<i32>) -> tensor<10x5xi32>
-// CHECK-NEXT:   %2 = stablehlo.and %1, %c : tensor<10x5xi32>
+// CHECK-NEXT:   %1 = stablehlo.reduce(%0 init: %c) applies stablehlo.and across dimensions = [1] : (tensor<10x4x5xi32>, tensor<i32>) -> tensor<10x5xi32>
+// CHECK-NEXT:   %2 = stablehlo.and %1, %c_0 : tensor<10x5xi32>
 // CHECK-NEXT:   return %2 : tensor<10x5xi32>
 // CHECK-NEXT: }
 
@@ -366,11 +366,11 @@ module {
 }
 
 // CHECK: func.func @main(%arg0: tensor<10x8x5xi32> {enzymexla.memory_effects = []}) -> tensor<10x5xi32> attributes {enzymexla.memory_effects = []} {
-// CHECK-NEXT:   %c = stablehlo.constant dense<2> : tensor<10x5xi32>
-// CHECK-NEXT:   %c_0 = stablehlo.constant dense<0> : tensor<i32>
+// CHECK-NEXT:   %c = stablehlo.constant dense<0> : tensor<i32>
+// CHECK-NEXT:   %c_0 = stablehlo.constant dense<2> : tensor<10x5xi32>
 // CHECK-NEXT:   %0 = stablehlo.slice %arg0 [0:10, 1:8:2, 0:5] : (tensor<10x8x5xi32>) -> tensor<10x4x5xi32>
-// CHECK-NEXT:   %1 = stablehlo.reduce(%0 init: %c_0) applies stablehlo.or across dimensions = [1] : (tensor<10x4x5xi32>, tensor<i32>) -> tensor<10x5xi32>
-// CHECK-NEXT:   %2 = stablehlo.or %1, %c : tensor<10x5xi32>
+// CHECK-NEXT:   %1 = stablehlo.reduce(%0 init: %c) applies stablehlo.or across dimensions = [1] : (tensor<10x4x5xi32>, tensor<i32>) -> tensor<10x5xi32>
+// CHECK-NEXT:   %2 = stablehlo.or %1, %c_0 : tensor<10x5xi32>
 // CHECK-NEXT:   return %2 : tensor<10x5xi32>
 // CHECK-NEXT: }
 
@@ -398,11 +398,11 @@ module {
 }
 
 // CHECK: func.func @main(%arg0: tensor<10x8x5xi32> {enzymexla.memory_effects = []}) -> tensor<10x5xi32> attributes {enzymexla.memory_effects = []} {
-// CHECK-NEXT:   %c = stablehlo.constant dense<2> : tensor<10x5xi32>
-// CHECK-NEXT:   %c_0 = stablehlo.constant dense<0> : tensor<i32>
+// CHECK-NEXT:   %c = stablehlo.constant dense<0> : tensor<i32>
+// CHECK-NEXT:   %c_0 = stablehlo.constant dense<2> : tensor<10x5xi32>
 // CHECK-NEXT:   %0 = stablehlo.slice %arg0 [0:10, 1:8:2, 0:5] : (tensor<10x8x5xi32>) -> tensor<10x4x5xi32>
-// CHECK-NEXT:   %1 = stablehlo.reduce(%0 init: %c_0) applies stablehlo.xor across dimensions = [1] : (tensor<10x4x5xi32>, tensor<i32>) -> tensor<10x5xi32>
-// CHECK-NEXT:   %2 = stablehlo.xor %1, %c : tensor<10x5xi32>
+// CHECK-NEXT:   %1 = stablehlo.reduce(%0 init: %c) applies stablehlo.xor across dimensions = [1] : (tensor<10x4x5xi32>, tensor<i32>) -> tensor<10x5xi32>
+// CHECK-NEXT:   %2 = stablehlo.xor %1, %c_0 : tensor<10x5xi32>
 // CHECK-NEXT:   return %2 : tensor<10x5xi32>
 // CHECK-NEXT: }
 
